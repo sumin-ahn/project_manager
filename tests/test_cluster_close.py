@@ -2327,11 +2327,10 @@ def _close_through_main(tf, base: Path, monkeypatch, argv: list[str],
     env = _build_close_env(tf, base, monkeypatch)
     finisher = env.finisher(finisher_class)
     monkeypatch.setattr(tf, "TicketFinisher", lambda **kwargs: finisher)
-    monkeypatch.setattr(tf, "_resolve_finish_slot", lambda repo, slot: (None, None))
 
-    # 이 대조의 축은 티켓형↔묶음형 동형이지 정체성 해소가 아니다 — 양쪽에 같은 좌표를 실어
+    # 이 대조의 축은 티켓형↔묶음형 동형이지 정체성 해소가 아니다 — 양쪽에 같은 task 를 실어
     # 무인자 해소(정체성 미해소 중단)를 축 밖으로 뺀다.
-    rc = tf._main([*argv, "--repo", "code", "--slot", "1"])
+    rc = tf._main([*argv, "--task", "t"])  # 픽스처 티켓의 소유 task
 
     return (rc, tuple(tuple(args) for args in env.board_calls),
             env.rounds_entries(), tuple(sorted(env.ledger().items())))
@@ -2355,7 +2354,8 @@ def test_the_ticket_form_and_the_cluster_form_take_the_same_path(tf, tmp_path,
     assert ticket_side == cluster_side, out
     rc, board, rounds, ledger = ticket_side
     assert rc == 0, out
-    assert board == (("complete", _TICKET, "--tests-pass", "--cluster-close", _CLUSTER),)
+    assert board == (("complete", _TICKET, "--tests-pass", "--cluster-close", _CLUSTER,
+                      "--task", "t"),)
     assert rounds == (
         (f"tickets/rounds/{_TICKET}/{_ROUND_FILE}", "## 라운드 표본\n"),
         (f"tickets/rounds/{_TICKET}/{_DEVELOPER_ROUND_FILE}", "## 구현 표본\n"),

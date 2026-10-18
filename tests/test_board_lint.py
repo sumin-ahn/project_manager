@@ -27,6 +27,7 @@ import pytest
 
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
+from conftest import ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -3453,14 +3454,14 @@ def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
                         ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
         monkeypatch.setattr(board, name, value)
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
-    # 세션은 env 명시로 바인딩한다(per-clone conf `session=` 폴백 폐지·T-0779) — 미바인딩이면
-    # 이 테스트가 보려는 실패(손상 frontmatter fail-loud) 대신 세션 미해소로 먼저 죽는다.
-    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    # claim 은 `--task` 와 그 task 폴더(앵커)가 필요하다(T-0962) — 없으면 이 테스트가 보려는
+    # 실패(손상 frontmatter fail-loud) 대신 task 미지정으로 먼저 죽는다.
+    ensure_product_slot(board, task="pm-1")
     monkeypatch.setattr(board, "_git_config_email", lambda: None)
     ticket = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
 
     with pytest.raises(Exception):
-        board.cmd_claim(SimpleNamespace(id="T-0002", repo=None, slot=None, user=None))
+        board.cmd_claim(SimpleNamespace(id="T-0002", task="pm-1", user=None))
     assert ticket.exists(), "차단된 claim 이 티켓을 옮겼다"
 
 
@@ -3504,7 +3505,7 @@ def test_designated_mutation_stays_fail_loud_across_lifecycle_commands(
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
     monkeypatch.setattr(board, "_git_config_email", lambda: None)
     ticket = _ticket(board, seed_status, "T-0002", _BROKEN_FRONTMATTER)
-    args = SimpleNamespace(id="T-0002", repo=None, slot=None, user=None, **extra_kwargs)
+    args = SimpleNamespace(id="T-0002", task=None, user=None, **extra_kwargs)
     command = getattr(board, f"cmd_{mutation}")
 
     with pytest.raises(board.yaml.YAMLError):  # F-006 — strict loader 의 예상 parser 예외로 한정

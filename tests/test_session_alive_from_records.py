@@ -119,7 +119,7 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
         "state": "idle", "test_cmd": None,
     }], "tasks": []}), encoding="utf-8")
 
-    leased = wp.alloc("proj", session="proj_1", git_runner=lambda _argv: (0, ""))
+    leased = wp.alloc("proj", owner_task="proj_1", git_runner=lambda _argv: (0, ""))
     assert wp.lease_is_open(leased) is True
 
     released = wp.release("work/proj_1", git_runner=lambda _argv: (0, ""))

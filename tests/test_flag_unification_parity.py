@@ -92,8 +92,9 @@ _FLAG_PARSER_TOOLS = ("board.py", "ticket_finish.py")
 
 @pytest.mark.parametrize("tool_key", _FLAG_PARSER_TOOLS)
 def test_flag_parser_tool_accepts_repo_and_slot_homomorphically(tool_key, tool_parsers, ia_mod):
-    """`--repo X --slot N` 이 4 도구 모두 같은 `Identity(kind="slot", session="X_N")` 로 해소된다
-    (실 CLI 파서로 parse → 공용 `identity_args.parse_identity` 로 판정 — 두 층 다 실물)."""
+    """`--repo X --slot N` 이 도구 모두 같은 위치 인자 `Identity(kind="slot", repo="X", slot=N)` 로
+    해소된다(실 CLI 파서로 parse → 공용 `identity_args.parse_identity` 로 판정 — 두 층 다 실물).
+    세션 이름은 만들지 않는다(T-0962)."""
     parser, prefix = tool_parsers[tool_key]
     ns = parser.parse_args([*prefix, "--repo", "proj", "--slot", "3"])
     assert ns.repo == "proj"
@@ -102,7 +103,7 @@ def test_flag_parser_tool_accepts_repo_and_slot_homomorphically(tool_key, tool_p
     assert identity.kind == "slot"
     assert identity.repo == "proj"
     assert identity.slot == 3
-    assert identity.session == "proj_3"
+    assert identity.task is None
 
 
 @pytest.mark.parametrize("tool_key", _FLAG_PARSER_TOOLS)

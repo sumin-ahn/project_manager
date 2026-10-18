@@ -98,17 +98,26 @@ class _TaskPool:
         return SimpleNamespace(name=name, prefix=prefix)
 
 
+# 발행은 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962).
+_TASK = "gate-task"
+
+
 def _new_args(prefix: str, user_ack: str | None):
     return argparse.Namespace(
         title="gate", prefix=prefix, user_ack=user_ack, touches=None, depends=None,
-        tag=None, estimate="small", design=None, task=None, repo=None, slot=None,
+        tag=None, estimate="small", design=None, task=_TASK, repo=None, slot=None,
         user=None,
     )
 
 
+def _new(board, prefix: str, user_ack: str | None) -> int:
+    ensure_product_slot(board, task=_TASK)
+    return board.cmd_new(_new_args(prefix, user_ack))
+
+
 def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypatch):
     if surface == "new":
-        return board.cmd_new(_new_args(prefix, user_ack))
+        return _new(board, prefix, user_ack)
     if surface == "init":
         return board.cmd_init(argparse.Namespace(
             prefix=prefix, user_ack=user_ack, area="area", owner="owner", user=None,
@@ -295,12 +304,12 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
     assert (single_case_passes, split_case_failures) == (7, 4)
 
 
-@pytest.mark.parametrize("derived", ["task", "session", "single-area"])
+@pytest.mark.parametrize("derived", ["task", "single-area"])
 @pytest.mark.parametrize("split_case", [False, True], ids=["single-case", "split-case"])
 def test_cmd_new_derived_prefixes_share_canonical_gate(
     board, capsys, derived, split_case,
 ):
-    """task·세션·단일 areas 유도값도 명시 prefix와 같은 판정을 지난다."""
+    """task·단일 areas 유도값도 명시 prefix와 같은 판정을 지난다(세션 유도층은 없다·T-0962)."""
     task = None
     repo = None
     slot = None
@@ -319,16 +328,11 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
             encoding="utf-8",
         )
         task = "job"
-    elif derived == "session":
-        # 두 repo를 등록해 count-based 경로를 배제하고 명시 slot→repo→areas 유도를 강제한다.
-        board.areas_append("AAA", "area", "owner", repo="svc")
-        board.areas_append("OTHER", "other", "owner", repo="other")
-        repo = "svc"
-        slot = 1
-        ensure_product_slot(board, repo=repo, number=slot)
     else:
         assert derived == "single-area"
         board.areas_append("AAA", "area", "owner", repo="svc")
+        task = _TASK
+        ensure_product_slot(board, task=task)
 
     if split_case:
         _seed_ticket(board, "T-aaa-001")
@@ -392,7 +396,7 @@ def test_areas_ticket_cross_case_conflict_scans_all_sources_and_blocks_new(
         return real_scan(skipped)
 
     monkeypatch.setattr(board, "_scan_prefix_tickets", counted_scan)
-    assert board.cmd_new(_new_args("AaA", "AaA")) == 1
+    assert _new(board, "AaA", "AaA") == 1
     assert calls["n"] == 1
     assert {
         row["id"] for row in board._scan_prefix_tickets()
@@ -461,7 +465,7 @@ def test_case_variant_conflict_is_deterministic_and_lists_every_source(
     assert "정리 처방" in err and "임의 변형 선택" in err
 
     monkeypatch.setattr(board, "known_prefixes", real_known_prefixes)
-    assert board.cmd_new(_new_args("AaA", "AaA")) == 1
+    assert _new(board, "AaA", "AaA") == 1
     assert "case 변형이 2개 이상" in capsys.readouterr().err
 
 
@@ -526,7 +530,7 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(
     monkeypatch.setattr(board, "board_lock", racing_lock)
 
     if surface == "new":
-        rc = board.cmd_new(_new_args("fresh", "fresh"))
+        rc = _new(board, "fresh", "fresh")
     elif surface == "init":
         rc = board.cmd_init(argparse.Namespace(
             prefix="fresh", user_ack="fresh", area="area", owner="owner", user=None,

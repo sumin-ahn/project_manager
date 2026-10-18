@@ -278,7 +278,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
                                  protected=_FakeBoard()._repo_protected("app"))
     assert made.branch == "cyc-1" and wp.current_branch(slot1.slot) == "cyc-1"
     # 추가 대여용 idle 슬롯 seed — 명의 없는 생성은 곧바로 무소유 idle 이다.
-    seed = wp.create_slot("app", base="trunk", session="seed", init_submodules=False)
+    seed = wp.create_slot("app", base="trunk", init_submodules=False)
     assert seed.state == "idle"
     # alloc(owner_task) = 항상 신규 idle 대여(I3·멱등 폐기) — 같은 repo 2번째 슬롯을 task 가 보유.
     slot2 = wp.alloc("app", owner_task=task)

@@ -161,21 +161,6 @@ def test_layer2_repo_row_when_prefix_blank(tool, monkeypatch):
     assert _resolve(mod, seam, stub, monkeypatch) == NON_PYTEST_CMD
 
 
-def test_layer2_repo_resolved_from_session(tool, monkeypatch):
-    """2층 — 활성 repo 는 세션명 `<repo>_<N>` 유도가 1순위다(등록 repo 2개여도 확정)."""
-    mod, seam = tool
-    stub = _StubBoard(
-        rows=[
-            {"repo": "other", "prefix": "", "test_cmd": "npm test"},
-            {"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD},
-        ],
-        prefix=None,
-        repos={"heru", "other"},
-        session="heru_1",
-    )
-    assert _resolve(mod, seam, stub, monkeypatch) == NON_PYTEST_CMD
-
-
 def test_layer2_ambiguous_repo_falls_through(tool, monkeypatch):
     """2층 — 세션 유도 불가 + 등록 repo 2개 = 모호 → 그 층을 건너뛴다(추측 금지)."""
     mod, seam = tool
@@ -187,19 +172,6 @@ def test_layer2_ambiguous_repo_falls_through(tool, monkeypatch):
         prefix=None,
         repos={"a", "b"},
         session=None,
-        conf={"test.cmd": LOCAL_CONF_CMD},
-    )
-    assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
-
-
-def test_layer2_unknown_session_repo_falls_through(tool, monkeypatch):
-    """2층 — 세션이 가리키는 repo 행이 없으면(미등록) 다음 층으로."""
-    mod, seam = tool
-    stub = _StubBoard(
-        rows=[{"repo": "other", "prefix": "", "test_cmd": "npm test"}],
-        prefix=None,
-        repos={"other"},
-        session="heru_1",
         conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD

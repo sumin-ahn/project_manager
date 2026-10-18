@@ -41,9 +41,11 @@ def live(tmp_path_factory) -> dict:
     pm_config(home, "repo", "add", "app", "--git", str(bare))
     pm_config(home, "worktree", "add", "app", "--user-ack", "app")
     pm_config(home, "task", "new", "demo")
+    # 발행은 `--task` 와 그 task 가 보유한 폴더가 필요하다(T-0962) — 만든 슬롯을 task 에 빌린다.
+    pm_config(home, "alloc", "app", "--task", "demo")
     subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "board.py"), "new",
-         "픽스처 대조용 티켓", "--estimate", "small"],
+         "픽스처 대조용 티켓", "--estimate", "small", "--task", "demo"],
         cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=True)
     completed = subprocess.run(

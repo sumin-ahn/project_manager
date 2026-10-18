@@ -2,8 +2,7 @@
 
 repo별 worktree 풀의 슬롯 리스 라이프사이클을 검증한다:
 
-  - alloc: idle 슬롯 리스 · idempotent(같은 세션 재진입) · resume/branch 우선 re-alloc ·
-    branch 재할당(같은 슬롯 다른 branch) · 풀 소진 NeedsCreate.
+  - alloc: task 명의(owner_task 필수) idle 슬롯 리스 · resume/branch 체크아웃 · 풀 소진 NeedsCreate.
   - release: 작업완료 반납 · 커밋 안 한 변경 거부(ReleaseRefused·stash 없음).
   - reclaim_stale: pid 죽은 leased 회수(dirty→stash) · pid 살아있으면 미회수.
   - force_release: 점유 무시 강제 idle 화 · 커밋 안 한 변경은 거부(stash 없음).
@@ -288,7 +287,7 @@ def test_alloc_idle_slot_leases_it(wp):
     """idle 슬롯이 있으면 그걸 leased 로 전이해 리스한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit()
-    lease = wp.alloc("A", session="me", git_runner=git)
+    lease = wp.alloc("A", owner_task="me", git_runner=git)
     assert lease.slot == "work/A_1"
     assert lease.state == "leased"
     assert lease.session == "me"
@@ -297,49 +296,22 @@ def test_alloc_idle_slot_leases_it(wp):
     assert wp.list_leases()[0].state == "leased"
 
 
-def test_alloc_idempotent_returns_existing_lease(wp):
-    """같은 세션이 이미 이 repo 에 leased 슬롯을 가지면 그걸 반환(get-or-create-my-lease)."""
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
+def test_t0962_alloc_requires_owner_task(wp):
+    """[[T-0962]] 범위 편입 1 — owner_task 없는 대여는 거부되고 장부는 그대로다(세션 명의 대여 없음).
+
+    빈 task 이름은 첫 장부 쓰기 전에 ValueError, 인자 자체가 없으면 호출이 성립하지 않는다(TypeError),
+    옛 `session=` 명의 인자도 받지 않는다. idle 슬롯은 대여되지 않고 무소유 idle 로 남는다.
+    """
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit()
-    first = wp.alloc("A", session="me", git_runner=git)
-    second = wp.alloc("A", session="me", git_runner=git)
-    assert first.slot == second.slot == "work/A_1"
-    # 슬롯이 두 개로 늘지 않음(idempotent).
-    assert len([l for l in wp.list_leases() if l.repo == "A"]) == 1
-
-
-def test_alloc_resume_reattaches_same_branch_slot(wp):
-    """resume(작업스트림 브랜치)으로 같은 브랜치의 슬롯을 re-alloc(회전 연속성).
-
-    매칭은 슬롯 worktree 의 live HEAD(`current_branch(slot)`·ADR-0013 amend T-0072) —
-    FakeGit(head="a5-pay") 가 그 슬롯이 a5-pay 를 체크아웃 중임을 모델링한다(저장 필드 아님).
-    """
-    # 이전 작업스트림의 슬롯 — branch 매칭이 아니라 슬롯 live HEAD 매칭으로 잡는다.
-    _seed(wp, _lease(wp, slot="work/A_2", repo="A",
-                     session="old", state="leased"))
-    git = FakeGit(head="a5-pay")  # 슬롯 live HEAD = a5-pay
-    lease = wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
-    assert lease.slot == "work/A_2"
-    assert wp.current_branch("work/A_2", git_runner=git) == "a5-pay"  # live HEAD 유지
-    assert lease.session == "new"
-    # 같은 슬롯 재체크아웃 발생 (--no-recurse-submodules — ambient recurse override·ADR-0051).
-    assert git.did("checkout", "--no-recurse-submodules", "a5-pay")
-
-
-def test_alloc_branch_reassign_same_slot_different_branch(wp):
-    """branch 재할당 — 같은 세션 슬롯에서 다른 branch 로 재체크아웃(슬롯 유지·live HEAD 전환).
-
-    슬롯 live HEAD(a1-old)가 요청 branch(a2-new)와 다르면 재체크아웃 — checkout 이 git HEAD
-    를 바꾼다(장부엔 branch 를 쓰지 않는다·ADR-0013 amend T-0072·git=진실).
-    """
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A",
-                     session="me", state="leased"))
-    git = FakeGit(head="a1-old")  # 슬롯 live HEAD = a1-old
-    lease = wp.alloc("A", branch="a2-new", session="me", git_runner=git)
-    assert lease.slot == "work/A_1"          # 같은 슬롯
-    assert git.did("checkout", "--no-recurse-submodules", "a2-new")  # 재체크아웃(live HEAD 와 다르므로)
-    # checkout 이 슬롯 live HEAD 를 a2-new 로 전환(git=진실).
-    assert wp.current_branch("work/A_1", git_runner=git) == "a2-new"
+    with pytest.raises(ValueError, match="owner_task"):
+        wp.alloc("A", owner_task="", git_runner=git)
+    with pytest.raises(TypeError):
+        wp.alloc("A", git_runner=git)
+    with pytest.raises(TypeError):
+        wp.alloc("A", session="me", git_runner=git)
+    [lease] = wp.list_leases()
+    assert (lease.slot, lease.state, lease.session) == ("work/A_1", "idle", "")
 
 
 def test_alloc_pool_exhausted_raises_needscreate(wp):
@@ -349,7 +321,7 @@ def test_alloc_pool_exhausted_raises_needscreate(wp):
                      state="leased"))
     git = FakeGit()
     with pytest.raises(wp.NeedsCreate) as ei:
-        wp.alloc("A", session="me", git_runner=git)
+        wp.alloc("A", owner_task="me", git_runner=git)
     assert ei.value.repo == "A"
 
 
@@ -357,7 +329,7 @@ def test_alloc_empty_pool_raises_needscreate(wp):
     """장부가 비어있으면(슬롯 0) 풀 소진 → NeedsCreate."""
     git = FakeGit()
     with pytest.raises(wp.NeedsCreate):
-        wp.alloc("B", session="me", git_runner=git)
+        wp.alloc("B", owner_task="me", git_runner=git)
 
 
 # ── alloc checkout 실패 negative (codex must-fix 2·ADR-0013) ──────────────────
@@ -393,47 +365,13 @@ class _CheckoutFailGit:
         return (0, "")
 
 
-def test_alloc_idempotent_checkout_failure_preserves_ledger(wp):
-    """case1(idempotent·branch 변경) checkout 실패 → CheckoutFailed·리스 state 보존.
-
-    슬롯 live HEAD(a1-old)가 요청 branch(a2-new)와 달라 checkout 시도 → 실패 → raise.
-    """
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A",
-                     session="me", state="leased"))
-    git = _CheckoutFailGit(head="a1-old")  # 슬롯 live HEAD = a1-old
-    with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", branch="a2-new", session="me", git_runner=git)
-    # 리스 state/session 그대로(성공처럼 갱신 안 됨). branch 는 장부 권위 아님 — live HEAD 도
-    # 그대로 a1-old(checkout 실패라 안 바뀜).
-    after = wp.list_leases()[0]
-    assert after.state == "leased"
-    assert wp.current_branch("work/A_1", git_runner=git) == "a1-old"
-
-
-def test_alloc_resume_realloc_checkout_failure_preserves_ledger(wp):
-    """case2(resume/branch re-alloc) checkout 실패 → CheckoutFailed·state/session 미갱신.
-
-    살아있는 pid 의 idle 슬롯(live HEAD 가 그 브랜치)으로 re-alloc 을 유도한다 —
-    reclaim_stale(진입 회수)이 끼어들지 않게 idle 로 seed(live HEAD 매칭만으로 case2 진입).
-    """
-    _seed(wp, _lease(wp, slot="work/A_2", repo="A",
-                     session="", state="idle"))
-    git = _CheckoutFailGit(head="a5-pay")  # 슬롯 live HEAD = a5-pay (매칭)
-    with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
-    # case2 가 state/session/pid 를 성공처럼 갱신하지 않음(checkout 선행·실패 시 raise).
-    after = wp.list_leases()[0]
-    assert after.session == ""        # "new" 로 갱신 안 됨
-    assert after.state == "idle"      # leased 전이 안 됨
-
-
 def test_alloc_idle_lease_checkout_failure_preserves_idle(wp):
     """case3(idle 리스·branch 변경) checkout 실패 → CheckoutFailed·idle 상태 보존(leased 전이 안 됨)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A",
                      session="", state="idle"))
     git = _CheckoutFailGit(head="a1-old")  # 슬롯 live HEAD = a1-old
     with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", branch="a2-new", session="me", git_runner=git)
+        wp.alloc("A", branch="a2-new", owner_task="me", git_runner=git)
     # idle 그대로 — 부분 leased 전이 차단.
     after = wp.list_leases()[0]
     assert after.state == "idle"
@@ -449,7 +387,7 @@ def test_alloc_checkout_success_updates_ledger_sensitivity(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A",
                      session="", state="idle"))
     git = FakeGit(head="a1-old")  # 슬롯 live HEAD = a1-old·checkout rc0
-    lease = wp.alloc("A", branch="a2-new", session="me", git_runner=git)
+    lease = wp.alloc("A", branch="a2-new", owner_task="me", git_runner=git)
     assert lease.state == "leased"
     assert lease.session == "me"
     # checkout 이 슬롯 live HEAD 를 a2-new 로 전환(장부 저장 아님·ADR-0013 amend T-0072).
@@ -498,7 +436,7 @@ def test_alloc_idle_branch_checked_out_elsewhere_raises_checkoutfailed(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = _AllocElsewhereGit(head="a1-old", locked_branch="task/main")
     with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", branch="task/main", session="me", git_runner=git)
+        wp.alloc("A", branch="task/main", owner_task="me", git_runner=git)
     after = wp.list_leases()[0]
     assert after.state == "idle"
     assert after.session == ""
@@ -563,23 +501,6 @@ def test_task_alloc_ignores_branch_reattach_path(wp):
     assert s1.session == "other" and s1.state == "leased"   # 타 lease 탈취 안 됨
 
 
-def test_slot_session_alloc_cannot_steal_task_slot_via_branch_reattach(wp):
-    """슬롯-세션 alloc(branch=X)이 그 브랜치를 체크아웃 중인 **task 소유 슬롯**을 재부착 탈취 못 함(④·R3).
-
-    reclaim 조인과 동형으로 재부착(2경로)도 `session ∈ tasks 장부` lease 를 제외한다 — bound 부재
-    구장부 task lease 도 보호. idle 이 없으면 NeedsCreate(정직한 소진).
-    """
-    _seed(wp,
-          # job 소유(bound 부재 구장부) lease 가 브랜치 a5 를 체크아웃 중·pid 살아있음(alive).
-          wp.Lease(slot="work/A_1", repo="A", session="job", started="t", state="leased", bound=False))
-    _seed_tasks(wp, "job")
-    git = FakeGit(head="a5")   # slot 1 live HEAD = a5(재부착 후보)
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", session="other", branch="a5", git_runner=git)   # 슬롯-세션 alloc
-    s1 = wp.list_leases()[0]
-    assert s1.session == "job" and s1.state == "leased"   # 탈취 안 됨(tasks 조인 재부착 제외)
-
-
 def test_task_alloc_branch_no_idle_raises_needscreate(wp):
     """owner_task + branch 인데 idle 없음 → 재부착으로 도피하지 않고 NeedsCreate(I3·codex must-fix ②).
 
@@ -593,22 +514,6 @@ def test_task_alloc_branch_no_idle_raises_needscreate(wp):
     # slot 1(other)은 그대로 — 탈취 안 됨.
     s1 = wp.list_leases()[0]
     assert s1.session == "other" and s1.state == "leased"
-
-
-def test_slot_session_alloc_idempotent_path_unchanged(wp):
-    """슬롯-세션 도착 alloc(owner_task 없음)은 idempotent 현행 유지 — I3 는 task 축만 바꾼다.
-
-    같은 session='me' 로 두 번 alloc → 같은 슬롯 반환(get-or-create-my-lease)·복수 안 생김.
-    task-명의(owner_task) 경로와 대조되는 불변 제약(slot-모드 100% 불변·ADR-0068).
-    """
-    _seed(wp,
-          _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"),
-          _lease(wp, slot="work/A_2", repo="A", session="", state="idle"))
-    git = FakeGit()
-    first = wp.alloc("A", session="me", git_runner=git)
-    second = wp.alloc("A", session="me", git_runner=git)
-    assert first.slot == second.slot == "work/A_1"   # idempotent(신규 대여 안 함)
-    assert not first.bound                            # slot-세션 도착 alloc 은 bound 아님
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1284,7 +1189,7 @@ def test_create_slot_adds_worktree_and_submodule_init(wp):
     """create_slot — worktree add + submodule init + 장부 idle 등록(번호 자동)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="main", git_runner=git)
     assert lease.slot == "work/A_1"
     assert lease.state == "idle"
     # 작업 슬롯은 슬롯 전용 브랜치 `A_1` 을 base 에서 파고 부모를 git config 에 기록한다.
@@ -1331,7 +1236,7 @@ def test_create_slot_picks_next_free_number(wp):
           _lease(wp, slot="work/A_2", repo="A", session="y", state="idle"))
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="main", git_runner=git)
     assert lease.slot == "work/A_3"
 
 
@@ -1343,7 +1248,7 @@ def test_create_slot_skip_submodule_when_disabled(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="main", session="me", init_submodules=False, git_runner=git)
+    wp.create_slot("A", base="main", init_submodules=False, git_runner=git)
     assert not git.did("submodule", "update")
 
 
@@ -1359,7 +1264,7 @@ def test_create_slot_worktree_add_failure_raises(wp):
             return (1, "fatal: ...")
         return (0, "")
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", session="me", git_runner=failing)
+        wp.create_slot("A", base="main", git_runner=failing)
     # 실패 시 장부에 슬롯 등록 안 됨.
     assert wp.list_leases() == []
 
@@ -1380,7 +1285,7 @@ def test_create_slot_submodule_init_failure_raises_before_register(wp):
             return (1, "fatal: submodule init failed")
         return (0, "")  # worktree add 등은 성공
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", session="me", git_runner=failing)
+        wp.create_slot("A", base="main", git_runner=failing)
     # 등록 전 raise → 장부에 슬롯 0 (불완전 슬롯 미등록).
     assert wp.list_leases() == []
 
@@ -1398,7 +1303,7 @@ def test_create_slot_submodule_init_success_registers(wp):
         if argv[:2] == ["rev-parse", "--verify"] and argv[-1].endswith("^{commit}"):
             return (0, _DEFAULT_HEAD_SHA + "\n")   # 분기 커밋 해소(부모 기록 pm-fork).
         return (0, "")  # worktree add·submodule 모두 성공
-    lease = wp.create_slot("A", base="main", session="me", git_runner=succeeding)
+    lease = wp.create_slot("A", base="main", git_runner=succeeding)
     assert lease.state == "idle"
     assert len(wp.list_leases()) == 1
 
@@ -1412,7 +1317,7 @@ def test_create_slot_submodule_init_uses_force(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="main", session="me", git_runner=git)
+    wp.create_slot("A", base="main", git_runner=git)
     # git 스냅(T-0350)의 read-only `submodule status` 는 제외하고 *init(update)* 명령만 검사한다.
     sub_calls = [c for c in git.calls if c[:2] == ["submodule", "update"]]
     assert sub_calls == [["submodule", "update", "--init", "--recursive", "--force"]]
@@ -1434,7 +1339,7 @@ def test_create_slot_submodule_init_failure_message_surfaces_rc(wp):
             return (1, "")  # 비0 + 빈 out (Windows 캡처 유실 재현)
         return (0, "")
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="main", session="me", git_runner=failing_empty)
+        wp.create_slot("A", base="main", git_runner=failing_empty)
     msg = str(exc.value)
     assert "rc=1" in msg
     assert "submodule" in msg  # 실행한 argv 가 메시지에 노출
@@ -1455,7 +1360,7 @@ def test_create_slot_valid_bare_passes_guard(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(is_bare=True)
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="main", git_runner=git)
     assert lease.slot == "work/A_1"
     assert lease.state == "idle"
     # 가드가 rev-parse 로 실 bare 를 판정했다(경로 존재만이 아님).
@@ -1473,7 +1378,7 @@ def test_create_slot_broken_bare_fails_loud(wp):
     _mk_bare_placeholder(wp, "A")          # 경로는 존재 (부분 bare 잔존 모사)
     git = FakeGit(is_bare=False)           # rev-parse "false" = 무효 bare
     with pytest.raises(wp.BareRepoMissing) as exc:
-        wp.create_slot("A", base="main", session="me", git_runner=git)
+        wp.create_slot("A", base="main", git_runner=git)
     assert exc.value.broken is True
     msg = str(exc.value)
     assert "부분/깨진 bare" in msg          # exists-but-broken 진단(경로부재 메시지와 구별)
@@ -1493,7 +1398,7 @@ def test_create_slot_bare_valid_format_but_no_head_fails_loud(wp):
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(is_bare=True, head_resolves=False)   # 형식은 bare 지만 HEAD 미해소(빈 bare)
     with pytest.raises(wp.BareRepoMissing) as exc:
-        wp.create_slot("A", base="main", session="me", git_runner=git)
+        wp.create_slot("A", base="main", git_runner=git)
     assert exc.value.broken is True
     assert not git.did("worktree", "add"), "HEAD 없는 bare 인데 worktree add 가 불림(조용한 통과)"
     assert wp.list_leases() == []
@@ -1510,7 +1415,7 @@ def test_create_slot_missing_vs_broken_bare_distinct(wp):
     # 경로부재: placeholder 안 만듦 → exists()=False → broken=False.
     git = FakeGit(is_bare=True)
     with pytest.raises(wp.BareRepoMissing) as exc_missing:
-        wp.create_slot("A", base="main", session="me", git_runner=git)
+        wp.create_slot("A", base="main", git_runner=git)
     assert exc_missing.value.broken is False
     assert "hydrate" in str(exc_missing.value)   # 종전 부재 안내(T-0291)
 
@@ -1524,12 +1429,12 @@ def test_create_slot_bare_validation_uses_injected_runner(wp):
     _mk_bare_placeholder(wp, "A")
     # 유효 mock → 통과.
     ok = FakeGit(is_bare=True)
-    lease = wp.create_slot("A", base="main", session="me", git_runner=ok)
+    lease = wp.create_slot("A", base="main", git_runner=ok)
     assert lease.state == "idle"
     # 같은 placeholder, 무효 mock → fail-loud (판정이 mock 에서 옴·경로는 동일).
     bad = FakeGit(is_bare=False)
     with pytest.raises(wp.BareRepoMissing):
-        wp.create_slot("A", base="main", session="me", git_runner=bad)
+        wp.create_slot("A", base="main", git_runner=bad)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1546,7 +1451,7 @@ def test_create_slot_base_derives_slot_branch(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()   # fetch_rc=0·origin_has_base=True → origin/develop 해소
-    lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="develop", git_runner=git)
     assert lease.slot == "work/A_1"
     # fetch 가 worktree add 전에 불렸다(origin 최신 갱신).
     assert git.did("fetch", "origin")
@@ -1561,7 +1466,7 @@ def test_create_slot_base_fetches_before_worktree_add(wp):
     """base 파생 — `fetch origin` 이 worktree add *보다 먼저* 불린다 (T-0274·origin 최신 선반영)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="develop", session="me", git_runner=git)
+    wp.create_slot("A", base="develop", git_runner=git)
     fetch_idx = next(i for i, c in enumerate(git.calls) if c[:2] == ["fetch", "origin"])
     add_idx = next(i for i, c in enumerate(git.calls) if c[:2] == ["worktree", "add"])
     assert fetch_idx < add_idx
@@ -1575,7 +1480,7 @@ def test_create_slot_base_fetch_failure_falls_back_to_local(wp, capsys):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(fetch_rc=1)   # fetch 실패
-    lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="develop", git_runner=git)
     assert lease.slot == "work/A_1"          # 슬롯 생성은 계속(fail-soft)
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls == [["worktree", "add", "--no-track", "-b", "A_1",
@@ -1592,7 +1497,7 @@ def test_create_slot_base_origin_ref_unresolvable_falls_back_to_local(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(fetch_rc=0, origin_has_base=False)   # fetch ok·origin ref 미해소
-    wp.create_slot("A", base="develop", session="me", git_runner=git)
+    wp.create_slot("A", base="develop", git_runner=git)
     assert git.did("fetch", "origin")
     assert git.did("show-ref", "--verify", "--quiet", "refs/remotes/origin/develop")
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
@@ -1611,7 +1516,7 @@ def test_create_slot_base_uses_no_track(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="develop", session="me", git_runner=git)
+    wp.create_slot("A", base="develop", git_runner=git)
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls and "--no-track" in add_calls[0]      # 자동 upstream 억제(유일 방어선)
     # 명시 tracking config 도 없음 — config 쓰기는 부모 기록 두 키뿐.
@@ -1624,7 +1529,7 @@ def test_create_slot_base_picks_next_free_number_in_branch_name(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="x", state="leased"))
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="develop", git_runner=git)
     assert lease.slot == "work/A_2"
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     # 슬롯 번호 2 → 브랜치 이름 `A_2`, 파생 기준=origin/develop(T-0274), `--no-track` 명시.
@@ -1684,7 +1589,7 @@ def test_create_slot_binds_test_cmd_to_lease(wp):
     """create_slot(test_cmd=) → 생성 Lease 에 저장되고 장부에 직렬화된다(T-0066)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git, test_cmd="make hil2")
+    lease = wp.create_slot("A", base="main", git_runner=git, test_cmd="make hil2")
     assert lease.test_cmd == "make hil2"
     # 장부에 영속화 — list_leases 가 같은 슬롯의 test_cmd 를 돌려준다.
     persisted = next(l for l in wp.list_leases() if l.slot == lease.slot)
@@ -1695,7 +1600,7 @@ def test_create_slot_test_cmd_default_none(wp):
     """create_slot 기본 호출(test_cmd 미지정) → None(기존 호출 무영향·하위호환)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="main", git_runner=git)
     assert lease.test_cmd is None
 
 
@@ -1703,7 +1608,7 @@ def test_create_slot_round_trips_test_cmd_through_ledger(wp):
     """create_slot(test_cmd=) 후 장부 파일을 다시 read → 같은 test_cmd(직렬화 왕복·하위호환)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="main", session="me", git_runner=git, test_cmd="ninja test")
+    wp.create_slot("A", base="main", git_runner=git, test_cmd="ninja test")
     # 새 _read_ledger 로 파일에서 재로드 — to_dict→파일→from_dict 전 경로 검증.
     with wp._lease_lock():
         reloaded = wp._read_ledger()
@@ -1729,7 +1634,7 @@ def test_create_slot_worktree_add_runs_in_bare_context(wp, monkeypatch):
     # bare 실검증 가드(T-0294)는 captured 러너(`_real_git_runner`)로 rev-parse 한다 — placeholder
     # 는 실 bare 가 아니므로 실 러너면 무효 판정된다. FakeGit(is_bare=True)로 stub 해 가드 통과.
     monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: FakeGit())
-    wp.create_slot("A", base="main", session="me", init_submodules=False)
+    wp.create_slot("A", base="main", init_submodules=False)
     assert captured[0] == wp.bare_repo_path("A"), \
         f"worktree add 컨텍스트가 family bare 가 아님: {captured[0]!r}"
 
@@ -1742,7 +1647,7 @@ def test_create_slot_missing_bare_raises_guard(wp):
     """
     git = FakeGit()
     with pytest.raises(wp.BareRepoMissing):
-        wp.create_slot("A", base="main", session="me", git_runner=git)
+        wp.create_slot("A", base="main", git_runner=git)
     assert not git.did("worktree", "add"), "가드 전에 worktree add 가 불림(폴백 위험)"
     assert wp.list_leases() == []
 
@@ -2004,55 +1909,6 @@ def test_default_session_pool_row_present_falls_back_host_pid_despite_single_reg
     assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
-def _provisional_sessions(wp, seen):
-    """worktree add 시점의 disk 장부 session 값을 잡아 두는 git runner.
-
-    확정된 pool 슬롯은 무소유(session 빈 문자열)라, `_default_session()` 해소값이 실리는 자리는
-    provisional 마커 하나다 — 그 자리를 그대로 관측한다(값을 사후 재계산하지 않는다).
-    """
-    def git(argv):
-        if "rev-parse" in argv and "--is-bare-repository" in argv:
-            return (0, "true\n")
-        if argv[:2] == ["rev-parse", "--verify"] and argv[-1].endswith("^{commit}"):
-            return (0, _DEFAULT_HEAD_SHA + "\n")   # 분기 커밋 해소(부모 기록 pm-fork).
-        if argv[:2] == ["worktree", "add"]:
-            seen["sessions"] = [l.session for l in wp._read_ledger()]
-        return (0, "")
-    return git
-
-
-def test_create_slot_default_session_uses_home_row_when_registered(wp, proj, monkeypatch):
-    """전이 일관성: 홈이 슬롯 행으로 등록돼 있으면 create_slot 이 그 행의 session 을 상속한다 —
-    저장측(worktree_pool)과 매칭측(board.session_name)이 같은 장부 행 하나를 본다."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
-    _seed(wp, _lease(wp, slot=".", repo="A", session="A_1", state="leased"))
-    _mk_bare_placeholder(wp, "A")
-    seen = {}
-    lease = wp.create_slot("A", base="main", git_runner=_provisional_sessions(wp, seen),
-                           test_cmd="make hil2")  # session 미지정
-    assert seen["sessions"] == ["A_1", "A_1"]     # 홈 행 + 방금 만든 provisional
-    assert lease.session == ""                    # 확정은 무소유 pool 슬롯
-
-
-def test_create_slot_default_session_uses_env_binding(wp, proj, monkeypatch):
-    """END-TO-END: env 바인딩 → create_slot 이 그 값을 provisional 마커에 저장.
-
-    저장측(이 모듈)과 매칭측(board.session_name)이 같은 층을 읽어야 per-slot test_cmd·claim
-    소유권이 맞는다. conf 폴백이 사라진 뒤 남은 명시 층이 env 다.
-    """
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setenv("PM_SESSION_NAME", "foo")
-    _write_local_conf(proj, "session=ignored\n")   # 읽는 층 없음
-    _mk_bare_placeholder(wp, "A")
-    seen = {}
-    lease = wp.create_slot("A", base="main", git_runner=_provisional_sessions(wp, seen),
-                           test_cmd="make hil2")  # session 미지정
-    assert seen["sessions"] == ["foo"]
-    assert lease.session == ""                    # 확정은 무소유 pool 슬롯
-
-
 # ════════════════════════════════════════════════════════════════════════
 # 리스장부 동시쓰기 안전 (자체 파일락) — spawn 워커
 # ════════════════════════════════════════════════════════════════════════
@@ -2079,7 +1935,7 @@ def _worker_create(proj_str, idx, ready, go, out_q):
     ready.put(idx)
     go.wait()
     try:
-        lease = wp.create_slot(f"R{idx}", base="main", session=f"s{idx}", git_runner=git)
+        lease = wp.create_slot(f"R{idx}", base="main", git_runner=git)
         out_q.put(("OK", lease.slot))
     except BaseException as e:  # noqa: BLE001
         import traceback
@@ -2171,7 +2027,7 @@ def test_lease_lock_burns_the_windows_branch_through_the_real_consumer(
     monkeypatch.setattr(lock_module, "_windows_lock_api", lambda: api)
 
     _mk_bare_placeholder(wp, "W")
-    lease = wp.create_slot("W", base="main", session="sW", git_runner=FakeGit())
+    lease = wp.create_slot("W", base="main", git_runner=FakeGit())
 
     assert acquired, "주입이 no-op — 장부 락이 Windows 분기를 지나지 않았다"
     assert len(acquired) == len(released), "획득/해제 짝이 안 맞는다(락 누수)"
@@ -2397,7 +2253,7 @@ def test_real_git_create_slot_branch_checkout_and_release(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)  # .repos/A.git bare = worktree base
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     assert lease.slot == "work/A_1"
     slot_dir = wp.slot_path("work/A_1")
     assert slot_dir.is_dir(), "worktree 폴더가 실제로 안 생김"
@@ -2436,7 +2292,7 @@ def test_real_git_list_git_worktrees_and_reconcile(proj, tmp_path):
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     assert lease.slot == "work/A_1"
 
     # (1) list_git_worktrees — 슬롯 worktree 를 branch 와 함께 열거(bare 원은 slot=None).
@@ -2478,8 +2334,8 @@ def test_real_git_switch_refuses_branch_checked_out_by_other_worktree(proj, tmp_
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
 
-    holder = wp.create_slot("A", base="main", session="me1", init_submodules=False)
-    other = wp.create_slot("A", base="main", session="me2", init_submodules=False)
+    holder = wp.create_slot("A", base="main", init_submodules=False)
+    other = wp.create_slot("A", base="main", init_submodules=False)
     assert holder.slot == "work/A_1" and other.slot == "work/A_2"
 
     # holder 에 커밋 1개를 더해 holder tip 을 caller HEAD 와 다른 커밋으로 만든다(검사 공허화 방지).
@@ -2547,7 +2403,7 @@ def test_real_git_create_slot_base_derives_slot_branch_from_base(proj, tmp_path)
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
 
-    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"
     slot_dir = wp.slot_path("work/A_1")
 
@@ -2602,7 +2458,7 @@ def test_real_git_create_slot_base_derives_from_origin_when_advanced(proj, tmp_p
     assert local_frozen != develop_tip, "전제 위반 — 로컬 develop 이 이미 origin tip"
 
     # create_slot(base=develop) — fetch 로 origin/develop→D2 갱신 후 거기서 슬롯 파생.
-    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"
     slot_dir = wp.slot_path("work/A_1")
 
@@ -2643,7 +2499,7 @@ def test_real_git_create_slot_base_no_upstream_on_slot_branch(proj, tmp_path):
     # autoSetupMerge 기본 활성(git 기본값)임을 명시 — --no-track 이 없으면 upstream 이 걸릴 조건.
     _git(bare, "config", "branch.autoSetupMerge", "true")
 
-    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="develop", init_submodules=False)
     slot_dir = wp.slot_path("work/A_1")
     assert lease.slot == "work/A_1"
     # 파생은 origin/develop 에서 됐다(파일 존재).
@@ -2691,7 +2547,7 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
     # 엔진 공용 삭제 seam 을 그대로 쓴다(속성 해제 후 재시도·못 지우면 loud).
     wp._load_file_lock().force_rmtree(origin)
 
-    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"           # fetch 실패해도 슬롯 생성 계속(fail-soft)
     slot_dir = wp.slot_path("work/A_1")
     assert slot_dir.is_dir()
@@ -2711,7 +2567,7 @@ def test_real_git_create_slot_missing_bare_raises(proj, tmp_path):
     _init_repo(proj)  # multi-PM은 git repo 지만 .repos/A.git 은 없음
     wp = _load_wp_bound(proj)
     with pytest.raises(wp.BareRepoMissing):
-        wp.create_slot("A", base="main", session="me", init_submodules=False)
+        wp.create_slot("A", base="main", init_submodules=False)
     # 가드가 worktree add 전에 막아 슬롯 폴더도·장부도 안 생김(침묵 폴백 0).
     assert not wp.slot_path("work/A_1").exists()
     assert wp.list_leases() == []
@@ -2728,13 +2584,13 @@ def test_real_git_reattach_resume_preserves_dirty(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path(lease.slot)
     # dirty 작업 — 미커밋 파일.
     (slot_dir / "wip.txt").write_text("work in progress\n", encoding="utf-8")
 
     # 같은 세션 resume(branch A_1) → 같은 슬롯 재부착(dirty 그대로·checkout 은 같은 브랜치라 무해).
-    reattached = wp.alloc("A", resume="A_1", session="me")
+    reattached = wp.alloc("A", resume="A_1", owner_task="me")
     assert reattached.slot == lease.slot
     assert (slot_dir / "wip.txt").exists(), "dirty 작업이 재부착 후 유실됨"
     assert (slot_dir / "wip.txt").read_text(encoding="utf-8") == "work in progress\n"
@@ -2776,7 +2632,7 @@ def test_real_git_submodule_init_in_new_slot(proj, tmp_path, monkeypatch):
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(family_origin), str(bare))
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=True)
+    lease = wp.create_slot("A", base="main", init_submodules=True)
     slot_dir = wp.slot_path(lease.slot)
 
     # worktree add 만 했다면 vendor/sub 가 비어있다 — create_slot 의 submodule init(슬롯 cwd)
@@ -2848,7 +2704,7 @@ def test_real_git_resync_detached_submodule_follows_new_branch_pin(proj, tmp_pat
     wp = _load_wp_bound(proj)
     _mk_family_versioned_submodule(wp, tmp_path)
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=True)
+    lease = wp.create_slot("A", base="main", init_submodules=True)
     slot_dir = wp.slot_path(lease.slot)
     sub_lib = slot_dir / "vendor" / "sub" / "lib.txt"
     assert sub_lib.read_text(encoding="utf-8") == "v1\n", "슬롯 초기 submodule 이 main pin(v1) 아님"
@@ -2872,7 +2728,7 @@ def test_real_git_resync_on_branch_submodule_preserved(proj, tmp_path, monkeypat
     wp = _load_wp_bound(proj)
     _mk_family_versioned_submodule(wp, tmp_path)
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=True)
+    lease = wp.create_slot("A", base="main", init_submodules=True)
     slot_dir = wp.slot_path(lease.slot)
     sub_dir = slot_dir / "vendor" / "sub"
     sub_lib = sub_dir / "lib.txt"
@@ -2907,7 +2763,7 @@ def test_real_git_resync_on_branch_submodule_preserved_under_recurse_true(proj, 
     wp = _load_wp_bound(proj)
     _mk_family_versioned_submodule(wp, tmp_path)
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=True)
+    lease = wp.create_slot("A", base="main", init_submodules=True)
     slot_dir = wp.slot_path(lease.slot)
     sub_dir = slot_dir / "vendor" / "sub"
     sub_lib = sub_dir / "lib.txt"
@@ -2960,7 +2816,7 @@ def test_create_slot_worktree_add_and_submodule_use_interactive_on_real_path(wp,
     monkeypatch.setattr(wp, "_real_git_runner_interactive", spy_interactive)
     monkeypatch.setattr(wp, "_real_git_runner", spy_capture)
 
-    wp.create_slot("A", base="main", session="me")  # git_runner 미주입 = 실경로
+    wp.create_slot("A", base="main")  # git_runner 미주입 = 실경로
 
     bare = wp.bare_repo_path("A")
     slot_p = wp.slot_path("work/A_1")
@@ -2994,7 +2850,7 @@ def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypa
 
     monkeypatch.setattr(wp, "_real_git_runner_interactive", trap)
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="main", git_runner=git)
     assert lease.state == "idle"
     # 주입 runner 가 worktree add·submodule 둘 다 처리(인터랙티브 우회).
     assert git.did("worktree", "add", "--no-track", "-b", "A_1")
@@ -3019,7 +2875,7 @@ def test_create_slot_worktree_add_failure_trip_message(wp):
         return (0, "")
 
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="main", session="me", git_runner=failing)
+        wp.create_slot("A", base="main", git_runner=failing)
     msg = str(exc.value)
     assert "rc=1" in msg                       # rc 기반 진단(빈 out 에도)
     assert "PM_GIT_TIMEOUT" in msg             # env 노브 안내
@@ -3115,7 +2971,7 @@ def test_create_slot_submodule_failure_rolls_back_worktree(wp):
     _mk_bare_placeholder(wp, "A")
     git = _SubmoduleFailRollbackGit()
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", session="me", git_runner=git)
+        wp.create_slot("A", base="main", git_runner=git)
     # 롤백: `git worktree remove <slot> --force` 가 불렸다(주입 runner 경로).
     assert git.did("worktree", "remove"), "submodule 실패 후 worktree 롤백(remove)이 안 불림(댕글링)"
     remove_calls = [c for c in git.calls if c[:2] == ["worktree", "remove"]]
@@ -3144,7 +3000,7 @@ def test_create_slot_rollback_failure_still_raises_original(wp):
             return (1, "remove failed")  # 롤백 실패(rc≠0)
         return (0, "")
     with pytest.raises(RuntimeError, match="submodule init failed"):
-        wp.create_slot("A", base="main", session="me", git_runner=remove_rc_fail)
+        wp.create_slot("A", base="main", git_runner=remove_rc_fail)
     assert wp.list_leases() == []
 
     def remove_raises(argv):
@@ -3158,7 +3014,7 @@ def test_create_slot_rollback_failure_still_raises_original(wp):
             raise OSError("remove blew up")  # 롤백이 예외
         return (0, "")
     with pytest.raises(RuntimeError, match="submodule init failed"):
-        wp.create_slot("A", base="main", session="me", git_runner=remove_raises)
+        wp.create_slot("A", base="main", git_runner=remove_raises)
     assert wp.list_leases() == []
 
 
@@ -3181,7 +3037,7 @@ def test_create_slot_worktree_add_failure_does_not_rollback(wp):
             return (1, "fatal: add failed")
         return (0, "")
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", session="me", git_runner=add_fail)
+        wp.create_slot("A", base="main", git_runner=add_fail)
     assert not any(c[:2] == ["worktree", "remove"] for c in calls), \
         "worktree add 실패인데 롤백 remove 가 불림(지울 worktree 없음)"
     assert wp.list_leases() == []
@@ -3352,7 +3208,7 @@ def test_create_slot_avoids_orphan_slot_number(wp):
         if argv[:3] == ["worktree", "list", "--porcelain"]:
             return (0, orphan_porc)
         return (0, "")   # worktree add·submodule 성공
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="main", git_runner=git)
     assert lease.slot == "work/A_2", "orphan A_1 을 회피해 A_2 를 파야 함(git 병합·audit #4)"
 
 
@@ -3377,7 +3233,7 @@ def test_create_slot_writes_provisional_before_worktree_add(wp):
             seen["at_add"] = [(l.slot, l.state) for l in wp._read_ledger()]
             return (0, "")
         return (0, "")
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="main", git_runner=git)
     assert seen["at_add"] == [("work/A_1", "creating")], \
         "provisional('creating')이 worktree add 전에 disk 장부에 없음(SIGKILL 흔적 상실)"
     assert lease.state == "idle"
@@ -3407,7 +3263,7 @@ def test_create_slot_keyboard_interrupt_rolls_back_and_removes_provisional(wp):
             return (0, "")
         return (0, "")                              # worktree add·list 성공
     with pytest.raises(KeyboardInterrupt):
-        wp.create_slot("A", base="main", session="me", git_runner=git)
+        wp.create_slot("A", base="main", git_runner=git)
     assert removed, "KeyboardInterrupt 인데 worktree 롤백(remove)이 안 불림(orphan 잔존)"
     assert wp.list_leases() == [], "provisional('creating')이 제거 안 됨(Ctrl-C 후 장부 잔존)"
 
@@ -3427,7 +3283,7 @@ def test_create_slot_already_exists_error_hints_orphan(wp):
             return (1, "fatal: '.../work/A_1' already exists")
         return (0, "")
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="main", session="me", git_runner=git)
+        wp.create_slot("A", base="main", git_runner=git)
     msg = str(exc.value)
     assert "orphan" in msg
     assert "pm-config status" in msg
@@ -3488,7 +3344,7 @@ def test_alloc_skips_idle_slot_with_missing_worktree(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     # work/A_1 dir 미생성 = worktree 부재.
     with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", session="me")   # git_runner 미주입 = 실경로 fs 가드
+        wp.alloc("A", owner_task="me")   # git_runner 미주입 = 실경로 fs 가드
     assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "idle")], \
         "부재 worktree idle 이 leased 로 승격됨(위험차단 실패)"
 
@@ -3497,7 +3353,7 @@ def test_alloc_reuses_idle_slot_with_present_worktree(wp):
     """sensitivity 대조 — worktree dir 이 존재하는 idle 슬롯은 실경로에서도 정상 재사용 (T-0295)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     wp.slot_path("work/A_1").mkdir(parents=True, exist_ok=True)   # worktree 존재 모델
-    lease = wp.alloc("A", session="me")   # 실경로·target_branch 없음 → checkout 불요·git 안 탐
+    lease = wp.alloc("A", owner_task="me")   # 실경로·target_branch 없음 → checkout 불요·git 안 탐
     assert lease.slot == "work/A_1" and lease.state == "leased"
 
 
@@ -3512,7 +3368,7 @@ def test_alloc_resume_does_not_reattach_creating_orphan(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="creating"))
     git = FakeGit(head="a5-pay")   # 슬롯 live HEAD = a5-pay (creating 이지만 브랜치 체크아웃됨)
     with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
+        wp.alloc("A", resume="a5-pay", owner_task="new", git_runner=git)
     assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "creating")], \
         "creating orphan 이 resume 으로 leased 재부착됨(should-fix 실패)"
 
@@ -3996,7 +3852,7 @@ def test_current_branch_real_git_reads_checked_out_branch(proj, tmp_path):
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
 
     # 미주입(실경로) current_branch 가 실 worktree HEAD 를 읽는다.
     assert wp.current_branch(lease.slot) == "A_1"
@@ -4018,7 +3874,7 @@ def test_current_branch_real_git_tag_collision_returns_pure_name(proj, tmp_path)
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path(lease.slot)
 
     # 슬롯을 `v1.3.0` 브랜치로 옮긴 뒤 동명 태그 생성 — 이 상태에서 `symbolic-ref --short HEAD` 는
@@ -4045,7 +3901,7 @@ def test_alloc_resume_matches_on_live_head_not_stored_field(wp):
     # 장부엔 branch 필드가 없다(직렬화 폐지) — 매칭은 오직 live HEAD.
     assert "branch" not in wp.list_leases()[0].to_dict()
     git = FakeGit(head="a5-pay")  # 슬롯 worktree 가 a5-pay 를 체크아웃 중(live)
-    lease = wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
+    lease = wp.alloc("A", resume="a5-pay", owner_task="new", git_runner=git)
     assert lease.slot == "work/A_2"
     assert lease.state == "leased"
     assert lease.session == "new"
@@ -4062,7 +3918,7 @@ def test_alloc_resume_no_live_match_falls_through_to_idle_or_needscreate(wp):
     _seed(wp, _lease(wp, slot="work/A_2", repo="A",
                      session="", state="idle"))
     git = FakeGit(head="other-branch")  # 슬롯 live HEAD ≠ resume 브랜치
-    lease = wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
+    lease = wp.alloc("A", resume="a5-pay", owner_task="new", git_runner=git)
     # 분기3(idle 리스) 경로 — 슬롯을 leased 로 잡고 a5-pay 로 재체크아웃(live HEAD 전환).
     assert lease.slot == "work/A_2"
     assert lease.state == "leased"
@@ -5651,7 +5507,7 @@ def _create_slot_on_main(wp):
 
     슬롯 생성은 슬롯 전용 브랜치 `A_<N>` 을 판다 — 보호 브랜치 위 커밋·push 를 재현하려면 슬롯을
     `main` 으로 옮겨야 한다(bare 의 main 은 어느 worktree 도 점유하지 않는다)."""
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path(lease.slot)
     _git(slot_dir, "checkout", "-q", "main")
     return lease, slot_dir
@@ -7179,7 +7035,7 @@ def test_alloc_records_arrival_git_snapshot(wp):
     """alloc(idle 리스 경로) 이 arrival git 스냅을 기록한다(부트스트랩 bind/alloc 시 스냅·interface)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit(head="a1", head_sha=_NEW_SHA)
-    lease = wp.alloc("A", session="new", git_runner=git)
+    lease = wp.alloc("A", owner_task="new", git_runner=git)
     assert lease.git is not None
     assert lease.git["branch"] == "a1" and lease.git["head"] == _NEW_SHA
     assert wp.list_leases()[0].git["head"] == _NEW_SHA
@@ -7192,7 +7048,7 @@ def test_create_slot_work_slot_records_parent_not_ledger_base(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(head="A_1", head_sha=_NEW_SHA)   # 파생 슬롯은 브랜치 A_1 (head 모델)
-    lease = wp.create_slot("A", base="develop", session="me", git_runner=git)
+    lease = wp.create_slot("A", base="develop", git_runner=git)
     assert "base" not in lease.git
     assert lease.git["head"] == _NEW_SHA
     assert git.config == {"branch.A_1.pm-parent": "develop", "branch.A_1.pm-fork": _NEW_SHA}
@@ -8183,7 +8039,7 @@ def test_alloc_leases_minimal_idle_number(wp):
           _lease(wp, slot="work/A_1", repo="A", session="", state="idle"),
           _lease(wp, slot="work/A_2", repo="A", session="", state="idle"))
     git = FakeGit()
-    lease = wp.alloc("A", session="task-x", git_runner=git)
+    lease = wp.alloc("A", owner_task="task-x", git_runner=git)
     assert lease.slot == "work/A_1"     # 최소 번호
     assert lease.session == "task-x"    # task 정체성이 session 축에 실림(⑥)
 
@@ -8192,7 +8048,7 @@ def test_alloc_task_session_is_release_ownership_key(wp):
     """alloc(session=task) 로 대여한 슬롯은 그 task 의 release 소유검사를 통과한다(왕복·F2↔F3)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit(dirty=False)
-    wp.alloc("A", session="job", git_runner=git)
+    wp.alloc("A", owner_task="job", git_runner=git)
     lease = wp.release("work/A_1", owner_task="job", git_runner=git)  # 같은 task → 통과
     assert lease.state == "idle"
 
@@ -8657,7 +8513,7 @@ def test_create_slot_readonly_detached_no_session_role_recorded(wp):
     """create_slot(readonly=True) — `worktree add --detach`·role="readonly"·session/pid 없음·base 기록(⑬·§F11)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", session="me", git_runner=git)  # base 있는 대조 세팅 위해 별도
+    lease = wp.create_slot("A", base="main", git_runner=git)  # base 있는 대조 세팅 위해 별도
     # 위는 일반 슬롯(대조) — 아래가 readonly 검증.
     lease = wp.create_slot("A", base="main", readonly=True, git_runner=git)
     # detached 생성 — `git worktree add --detach <path> [ref]`(슬롯 전용 브랜치 -b 안 씀).
@@ -8689,7 +8545,7 @@ def test_readonly_slot_excluded_from_alloc(wp):
                        state="leased", role="readonly"))
     git = FakeGit()
     with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", session="me", git_runner=git)
+        wp.alloc("A", owner_task="me", git_runner=git)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -8740,7 +8596,7 @@ def test_bound_lease_survives_other_session_alloc_pm78(wp):
     # 타 명의(task main) alloc — 진입 reclaim_stale 이 bound 슬롯을 회수하지 못하고, 유일 슬롯이
     # leased 라 idle 후보가 없다 → NeedsCreate(사용자 게이트).
     with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", session="main", git_runner=git)
+        wp.alloc("A", owner_task="main", git_runner=git)
     # bound 슬롯은 유실 없이 그대로(session/state/bound 보존).
     survived = wp.list_leases()[0]
     assert survived.session == "A_1" and survived.state == "leased" and survived.bound is True
@@ -8756,19 +8612,10 @@ def test_alloc_branch_realloc_does_not_hijack_other_session_bound(wp):
     _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", started="t", state="leased", bound=True))
     git = FakeGit(head="a5-pay")   # bound 슬롯 live HEAD = a5-pay(요청 branch 와 매칭)
     with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", branch="a5-pay", session="thief", git_runner=git)
+        wp.alloc("A", branch="a5-pay", owner_task="thief", git_runner=git)
     survived = wp.list_leases()[0]
     assert survived.session == "A_1" and survived.state == "leased" and survived.bound is True
     assert wp.current_branch("work/A_1", git_runner=git) == "a5-pay"   # 탈취 재체크아웃 없음
-
-
-def test_alloc_branch_realloc_reattaches_unbound_same_branch(wp):
-    """대조(sensitivity) — bound 아닌 슬롯은 branch-매칭 재부착이 현행대로 동작한다(2경로 회귀 유지·T-0389)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="old", started="t", state="leased"))   # bound 아님
-    git = FakeGit(head="a5-pay")
-    lease = wp.alloc("A", resume="a5-pay", session="new", git_runner=git)
-    assert lease.slot == "work/A_1" and lease.session == "new"   # 정상 재부착
-    assert lease.bound is False
 
 
 def test_alloc_idle_relance_clears_bound_marker(wp, proj):
@@ -8782,7 +8629,7 @@ def test_alloc_idle_relance_clears_bound_marker(wp, proj):
     _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="idle", bound=True))
     git = FakeGit()
-    leased = wp.alloc("A", session="me", git_runner=git)
+    leased = wp.alloc("A", owner_task="me", git_runner=git)
     assert leased.slot == "work/A_1" and leased.bound is False   # pool 대여 = 마커 해제
     assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
 
@@ -9555,9 +9402,9 @@ def test_real_git_rebase_onto_explicit_uses_given_ref_not_stale_origin(proj, tmp
     # 전제 — origin/release 는 R0 에 동결, 로컬 release 는 R1(local_tip)로 앞섬.
     assert _git(bare, "rev-parse", "refs/remotes/origin/release").stdout.strip() != local_tip
 
-    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", session="me")
+    lease = wp.alloc("A", owner_task="me")
     slot_dir = wp.slot_path(lease.slot)
     real_runner = wp._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
@@ -9580,9 +9427,9 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale(proj, tmp_path,
     origin, bare = _mk_release_family(tmp_path, wp)
     local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", session="me")
+    lease = wp.alloc("A", owner_task="me")
     slot_dir = wp.slot_path(lease.slot)
     real_runner = wp._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
@@ -9605,9 +9452,9 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale_stderr(proj, tm
     origin, bare = _mk_release_family(tmp_path, wp)
     _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", session="me")
+    lease = wp.alloc("A", owner_task="me")
     slot_dir = wp.slot_path(lease.slot)
     spy, _calls = _spy_runner(wp._real_git_runner(slot_dir))
 
@@ -9631,9 +9478,9 @@ def test_real_git_rebase_no_onto_diverged_prefers_local_and_reports_two_counts(
     monkeypatch.setattr(wp, "_default_session", lambda: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", session="me")
+    lease = wp.alloc("A", owner_task="me")
     slot_dir = wp.slot_path(lease.slot)
 
     # 로컬(=bare 의 refs/heads/release)을 2 커밋 전진 — origin 은 안 건드림.
@@ -9676,9 +9523,9 @@ def test_real_git_rebase_no_onto_prefers_origin_when_advanced(proj, tmp_path, mo
     monkeypatch.setattr(wp, "_default_session", lambda: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", session="me")
+    lease = wp.alloc("A", owner_task="me")
     slot_dir = wp.slot_path(lease.slot)
 
     # origin 을 로컬(bare refs/heads/release)보다 앞서게 — origin 은 non-bare 워킹 repo 라 직접 커밋.
@@ -10077,7 +9924,6 @@ def _family_slot(proj, tmp_path, *, base="main", **create_kwargs):
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _origin, bare = _mk_release_family(tmp_path, wp)
-    create_kwargs.setdefault("session", "me")
     lease = wp.create_slot("A", base=base, init_submodules=False, **create_kwargs)
     slot_dir = wp.slot_path(lease.slot)
     return wp, bare, lease, slot_dir, wp._real_git_runner(slot_dir)
@@ -10260,7 +10106,7 @@ def test_real_git_create_slot_without_base_raises_before_side_effects(proj, tmp_
     bare = _mk_real_bare(wp, "A", tmp_path)
     for missing in ("", None):
         with pytest.raises(ValueError, match="base"):
-            wp.create_slot("A", base=missing, session="me", init_submodules=False)
+            wp.create_slot("A", base=missing, init_submodules=False)
     assert wp.list_leases() == []
     assert not wp.slot_path("work/A_1").exists()
     assert _local_branches(bare) == ["main"]
@@ -10270,7 +10116,7 @@ def test_real_git_create_slot_without_base_raises_before_side_effects(proj, tmp_
 @_git_required
 def test_real_git_create_task_branch_creates_from_parent_and_records(proj, tmp_path):
     """task 소유 슬롯에 부모 끝 커밋에서 새 브랜치 · 부모 기록 · 장부 스냅 branch 재기록."""
-    wp, bare, lease, slot_dir, runner = _family_slot(proj, tmp_path, session=None, owner_task="job")
+    wp, bare, lease, slot_dir, runner = _family_slot(proj, tmp_path, owner_task="job")
     origin_release = _head_sha(bare, "refs/remotes/origin/release")
 
     result = wp.create_task_branch(lease.slot, "task/feat", parent="release", owner_task="job",
@@ -10289,7 +10135,7 @@ def test_real_git_create_task_branch_creates_from_parent_and_records(proj, tmp_p
 def test_real_git_create_task_branch_refusals_have_no_side_effects(proj, tmp_path):
     """거부(invalid-ref·protected·exists·ambiguous-ref·df-conflict·parent-missing·not-owner·dirty) —
     브랜치·HEAD·부모 기록·장부 불변."""
-    wp, _bare, lease, slot_dir, runner = _family_slot(proj, tmp_path, session=None, owner_task="job")
+    wp, _bare, lease, slot_dir, runner = _family_slot(proj, tmp_path, owner_task="job")
     before_branches = _local_branches(slot_dir)
     before_head = _head_sha(slot_dir)
     before_ledger = wp.LEASES_FILE.read_bytes()
@@ -10340,7 +10186,7 @@ def test_real_git_alloc_missing_branch_does_not_create_it(proj, tmp_path):
     wp.release(lease.slot)
     before_branches = _local_branches(slot_dir)
     with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", branch="no-such", session="other")
+        wp.alloc("A", branch="no-such", owner_task="other")
     assert _local_branches(slot_dir) == before_branches
     assert wp.current_branch(lease.slot) == "A_1"
 
@@ -10349,7 +10195,7 @@ def test_real_git_alloc_missing_branch_does_not_create_it(proj, tmp_path):
 def test_real_git_rebase_onto_replaces_parent_record(proj, tmp_path):
     """`rebase --onto main` 성공 → 부모 이름이 main 으로 바뀌고 분기 커밋=main 끝 커밋."""
     wp, bare, lease, _slot_dir, runner = _family_slot(proj, tmp_path, base="release",
-                                                       session=None, owner_task="job")
+                                                       owner_task="job")
     [r] = wp.rebase([lease.slot], onto="main", owner_task="job")
     assert r.outcome == wp.REBASE_REBASED, r.reason
     assert r.base == "main"
@@ -10360,7 +10206,7 @@ def test_real_git_rebase_onto_replaces_parent_record(proj, tmp_path):
 def test_real_git_rebase_without_parent_record_skips(proj, tmp_path):
     """부모 기록을 지운 슬롯 → `no-parent` 스킵 · HEAD 불변(부모를 추측하지 않는다)."""
     wp, _bare, lease, slot_dir, runner = _family_slot(proj, tmp_path, base="release",
-                                                       session=None, owner_task="job")
+                                                       owner_task="job")
     _git(slot_dir, "config", "--unset", "branch.A_1.pm-parent")
     _git(slot_dir, "config", "--unset", "branch.A_1.pm-fork")
     before_head = _head_sha(slot_dir)
@@ -10399,7 +10245,7 @@ def test_real_git_slot_git_status_parent_children_stashes(proj, tmp_path):
 def test_real_git_readonly_slot_status_parent_from_lease_base(proj, tmp_path):
     """readonly 슬롯(브랜치 없음) status 부모는 장부 `lease.git.base`(따라가는 브랜치·detach 커밋)."""
     wp, _bare, lease, _slot_dir, _runner = _family_slot(proj, tmp_path, base="release",
-                                                         session=None, readonly=True)
+                                                         readonly=True)
     base = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
     st = wp.slot_git_status(lease.slot)
     assert st["branch"] is None

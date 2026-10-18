@@ -1253,16 +1253,17 @@ def test_release_wave_multirepo_claude_full_wave(tmp_path):
 # 로 못박고(실 board API create→view), 이 라이브 half 는 실 opencode 세션이 각 identity 로 티켓을
 # 생성한 뒤 뷰 섞임을 side-effect 로 검증한다(라이브 opencode end-to-end·release tier).
 
-# 각 identity = (repo, prefix, session, user). prefix(al/be)는 repo(alpha/beta)와 별개 축(ID
-# 네임스페이스·소문자 sanity `_validate_prefix`) — `test_board_scoping_isolation._seed_composite` 와
+# 각 identity = (repo, prefix, task, user). prefix(al/be)는 repo(alpha/beta)와 별개 축(ID
+# 네임스페이스·소문자 sanity `_validate_prefix`)이고, task 는 그 user 의 귀속 정체성이다(T-0962 —
+# 귀속 쓰기는 `--task`). task 마다 그 repo 폴더 1개를 빌린다. `test_board_scoping_isolation._seed_composite` 와
 # 동일 매핑을 라이브 홈에 재현한다. areas.md `area_owner` 칼럼이 open 티켓 소유(`_ticket_owner`·
 # alpha→alice·beta→bob)를 정의한다(user-first·ADR-0056: querying identity 는 현재 사용자).
 _MULTIUSER_REPOS = ("alpha", "beta")
 _MULTIUSER_AREA_OWNERS = {"alpha": "alice", "beta": "bob"}
 _MULTIUSER_IDENTITIES = (
-    # (repo,   prefix, session,   user)
-    ("alpha", "al", "alpha_1", "alice"),
-    ("beta",  "be", "beta_1",  "bob"),
+    # (repo,   prefix, task,         user)
+    ("alpha", "al", "alice-wave", "alice"),
+    ("beta",  "be", "bob-wave",   "bob"),
 )
 
 
@@ -1271,11 +1272,21 @@ def _import_multiuser_home(tmp_path: Path, harness: str) -> Path:
 
     `_import_multipm_home` 을 재사용하되 `area_owners` 로 repo add 에 `--user <owner>` 를 실어
     areas.md `area_owner` 칼럼을 alpha→alice·beta→bob 로 distinct 2 user 로 세팅한다(=
-    `test_board_scoping_isolation._seed_composite` 의 areas 매핑을 라이브 홈에 재현). LLM 없이 도는
-    hermetic 셋업(`_real_models_runner` 스텁 상속). home 을 반환한다.
+    `test_board_scoping_isolation._seed_composite` 의 areas 매핑을 라이브 홈에 재현). 그 위에서
+    identity 마다 task 를 만들고 `pm-config alloc <repo> --task <task>` 로 그 repo 폴더를 빌린다(귀속
+    쓰기의 정체성은 `--task`·T-0962). LLM 없이 도는 hermetic 셋업(`_real_models_runner` 스텁 상속).
+    home 을 반환한다.
     """
-    return _import_multipm_home(tmp_path, harness, repos=_MULTIUSER_REPOS,
+    home = _import_multipm_home(tmp_path, harness, repos=_MULTIUSER_REPOS,
                                 area_owners=_MULTIUSER_AREA_OWNERS)
+    for repo, _prefix, task, _user in _MULTIUSER_IDENTITIES:
+        for step in (("task", "new", task), ("alloc", repo, "--task", task)):
+            proc = _pm_config(home, *step)
+            assert proc.returncode == 0, (
+                f"multiuser 홈 {' '.join(step)} rc={proc.returncode}\n"
+                f"stdout={proc.stdout[-600:]}\nstderr={proc.stderr[-600:]}"
+            )
+    return home
 
 
 def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
@@ -1288,25 +1299,23 @@ def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
     네임스페이스(T-al-*/T-be-*)를 가르고, 이 release-test 프롬프트 자체가 신규 테스트
     prefix 승인 주체이므로 각 prefix의 **첫** `new` 원 명령에만 값-결속된
     `--user-ack <prefix>`를 명시한다. 에이전트가 ack를 자동 추가하는 형상은 테스트하지
-    않으며(기계 가드가 금지), 두 번째 `new`는 이미 등록된 prefix를 쓴다. claim 은
-    `--repo <repo> --slot 1` 로 슬롯을 박는다.
-    (`new` 는 `--repo`/`--slot` 인자가 없다 — created_by 슬롯은 무관하고 `--user` 가 귀속 user 를 정한다.)
+    않으며(기계 가드가 금지), 두 번째 `new`는 이미 등록된 prefix를 쓴다. new 두 줄과 claim 줄은
+    그 identity 의 `--task <task>` 를 싣는다(귀속 쓰기의 정체성·T-0962 — task 폴더가 1개라 위치 인자 없음).
     board.py 경로는 준다 — 새 위험축은 identity 귀속·뷰 격리이지 문서 운영성이 아니다(단일 full wave 커버).
     """
     blocks = []
-    for repo, prefix, session, user in identities:
-        slot = session.rsplit("_", 1)[-1]  # session `<repo>_<N>` → 슬롯 N (ADR-0057 --repo/--slot)
+    for _repo, prefix, task, user in identities:
         blocks.append(
-            f"Person {user} (prefix {prefix}, session {session}) — do these 3 commands:\n"
+            f"Person {user} (prefix {prefix}, task {task}) — do these 3 commands:\n"
             f'  1. python3 .project_manager/tools/board.py new "open probe {user}" '
-            f"--prefix {prefix} --user-ack {prefix} --user {user}\n"
+            f"--prefix {prefix} --user-ack {prefix} --user {user} --task {task}\n"
             f"     (prints a ticket id like T-{prefix}-001 — this is {user}'s UNCLAIMED open; "
             f"do NOT claim it)\n"
             f'  2. python3 .project_manager/tools/board.py new "wip probe {user}" '
-            f"--prefix {prefix} --user {user}\n"
+            f"--prefix {prefix} --user {user} --task {task}\n"
             f"     (prints a SECOND id, e.g. T-{prefix}-002 — note it)\n"
             f"  3. python3 .project_manager/tools/board.py claim <SECOND_ID> "
-            f"--user {user} --repo {repo} --slot {slot}\n"
+            f"--user {user} --task {task}\n"
         )
     body = "\n".join(blocks)
     people = " and ".join(u for _r, _p, _s, u in identities)
@@ -1315,8 +1324,8 @@ def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
         f"people: {people}. The board engine is .project_manager/tools/board.py. Act as EACH "
         "person in turn and create their tickets with THEIR identity flags EXACTLY as written — "
         "this release-test instruction explicitly approves each first command's value-bound "
-        "--user-ack for its new test prefix; do not invent or alter acknowledgements. The --user "
-        "and --prefix flags decide who owns each ticket, so never omit them. Finish "
+        "--user-ack for its new test prefix; do not invent or alter acknowledgements. The --user, "
+        "--task and --prefix flags decide who owns each ticket, so never omit them. Finish "
         "one person completely before starting the next.\n\n"
         f"{body}\n"
         "Substitute the EXACT ticket id printed by each `new` command into the matching `claim` "
@@ -1328,7 +1337,7 @@ def _board_list(home: Path, *args: str) -> subprocess.CompletedProcess:
     """home 의 board.py list 를 subprocess 로 호출(엔진 도구·LLM 아님 → 부모 env OK).
 
     격리 판정은 **테스트가 직접** board.py 를 돌려 실 산출(뷰)을 파싱한다 — LLM 출력 phrasing
-    비결정에 강건(side-effect 단언·T-0157 동형). `--repo <repo> --slot 1` 은 아무것도 안 바꾸는 뷰 렌즈.
+    비결정에 강건(side-effect 단언·T-0157 동형). `--task <task>` 는 아무것도 안 바꾸는 뷰 렌즈.
     """
     return subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "board.py"), "list", *args],
@@ -1340,8 +1349,8 @@ def _board_list(home: Path, *args: str) -> subprocess.CompletedProcess:
 def _set_home_user(home: Path, user: str) -> None:
     """home local.conf 에 `identity.user=` 를 append(last-wins) — 필터 뷰 querying identity 를 그 user 로 스탬프.
 
-    user-first(ADR-0056·T-0312): `list --repo <repo> --slot <N>` 은 **현재 사용자 ∩ 슬롯**이라, 각 identity 의
-    세션 뷰는 *그 user 로* 조회해야 자기 claim 이 보인다(옛 area_owner-derivation 폐기 — `--repo`/`--slot` 이
+    user-first(ADR-0056·T-0312): `list --task <task>` 는 **현재 사용자 ∩ task**라, 각 identity 의
+    task 뷰는 *그 user 로* 조회해야 자기 claim 이 보인다(옛 area_owner-derivation 폐기 — `--task` 가
     area_owner 로 user 를 유도하지 않는다). `load_local_config` 는 KEY 마지막 값 채택이라 append 가
     이긴다(`_append_tiny_ctx_window` 동형). machine composite(`test_board_scoping_isolation`
     `_write_conf(user=…)`)의 라이브 짝.
@@ -1375,7 +1384,7 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
     테스트가 직접 board.py list 를 돌려(side-effect·LLM phrasing 비결정 강건) 실 뷰를 파싱한다:
       (전제) 두 user 가 실제로 티켓을 만들었고(wave 완주) 각자 미claim open 을 남겼다 — 미claim open
              이 없으면 섞임 assert 가 공허해진다(degrade 가 유출할 대상 open 이 실재해야 catch).
-      (a) alice 세션(alpha_1) 뷰 = T-al-* 만·bob(T-be-*) **미열람** · bob 세션(beta_1) 뷰 = 역.
+      (a) alice task(alice-wave) 뷰 = T-al-* 만·bob(T-be-*) **미열람** · bob task(bob-wave) 뷰 = 역.
       (c) 각자 자기(T-<own>-*) 열람 (섞임 격리가 자기 것까지 지우는 over-exclude 도 잡음).
     ID prefix(T-al-*/T-be-*)가 소유 user 와 1:1 대응(각 user 가 자기 --prefix 로 발행)이라, "alice 뷰에
     T-be-* 0" = alice 세션이 bob 소유 티켓을 유출 안 함 = ADR-0053 세션격리. degrade(전체 open=mine)면
@@ -1391,7 +1400,7 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
     assert full.returncode == 0, (
         f"board.py list --status all rc={full.returncode}\n{full.stderr[-800:]}\n" + tail)
     all_rows = _parse_list_rows(full.stdout)
-    for _repo, prefix, _session, user in identities:
+    for _repo, prefix, _task, user in identities:
         owned = [tid for _st, tid in all_rows if tid.startswith(f"T-{prefix}-")]
         assert owned, (
             f"실 {harness} multiuser wave: user '{user}'(prefix {prefix}) 티켓 미생성 — wave 미완주.\n"
@@ -1402,43 +1411,42 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
             f"실 {harness} multiuser wave: user '{user}' 미claim open(T-{prefix}-*) 부재 — 섞임 "
             f"격리 assert 가 공허해진다(유출 대상 open 이 실재해야 catch).\nall={all_rows}\n" + tail)
 
-    # (a)·(c) 각 identity 세션 뷰 — 타 user 미열람 · 자기 열람.
-    prefixes = [p for _r, p, _s, _u in identities]
-    for repo, prefix, session, user in identities:
-        slot = session.rsplit("_", 1)[-1]  # `<repo>_<N>` → 슬롯 N
-        # user-first(ADR-0056·T-0312): 세션 뷰 querying identity = 현재 사용자. 각 identity 의
-        # `--repo <repo> --slot <N>` 뷰는 *그 user 로* 조회해야 자기 슬롯 claim 이 보인다(area_owner-
+    # (a)·(c) 각 identity task 뷰 — 타 user 미열람 · 자기 열람.
+    prefixes = [p for _r, p, _t, _u in identities]
+    for _repo, prefix, task, user in identities:
+        # user-first(ADR-0056·T-0312): task 뷰 querying identity = 현재 사용자. 각 identity 의
+        # `--task <task>` 뷰는 *그 user 로* 조회해야 자기 task claim 이 보인다(area_owner-
         # derivation 폐기). 그 user 로 스탬프 후 조회 — 아니면 over-exclude(자기 claim 도 안 보임).
         _set_home_user(home, user)
-        view = _board_list(home, "--repo", repo, "--slot", slot)
+        view = _board_list(home, "--task", task)
         assert view.returncode == 0, (
-            f"board.py list --repo {repo} --slot {slot} rc={view.returncode}\n{view.stderr[-800:]}\n" + tail)
+            f"board.py list --task {task} rc={view.returncode}\n{view.stderr[-800:]}\n" + tail)
         ids = {tid for _st, tid in _parse_list_rows(view.stdout)}
         others = [op for op in prefixes if op != prefix]
         leaked = {tid for tid in ids if any(tid.startswith(f"T-{op}-") for op in others)}
         assert not leaked, (
-            f"실 {harness}: {user} 세션({session}) 뷰에 타 user 티켓 유출 {sorted(leaked)} — 세션 뷰 "
+            f"실 {harness}: {user} task({task}) 뷰에 타 user 티켓 유출 {sorted(leaked)} — 세션 뷰 "
             f"섞임(ADR-0053 위반·degrade 재현).\n뷰={sorted(ids)}\n" + tail)
         assert any(tid.startswith(f"T-{prefix}-") for tid in ids), (
-            f"실 {harness}: {user} 세션({session}) 뷰가 자기 티켓(T-{prefix}-*)을 미열람 — 섞임 격리가 "
+            f"실 {harness}: {user} task({task}) 뷰가 자기 티켓(T-{prefix}-*)을 미열람 — 섞임 격리가 "
             f"자기 것까지 지움(over-exclude).\n뷰={sorted(ids)}\n" + tail)
 
     # task 렌즈(`--task <이름>`·T-0365·[[ADR-0059]] Decision 10) 라이브 커버 — 기계 composite
     # (`test_board_scoping_isolation` 의 task 축 surface)와 **짝**(decision: 둘 중 하나만 갱신하면
-    # 라이브/기계 뷰가 어긋난다). 라이브 wave 는 slot-mode claim(claimed_by=<user>/<repo>_1)만 남기므로
-    # 그 위에서 task 렌즈가 (i) 타 user 무유출 (ii) slot claim 을 task 이름으로 안 끌어옴(⑥ 기계 판별·
-    # claimed_by 재사용) 을 실증한다. task 바인딩 claim 이 없는 fresh task 명은 (claim 0 + 내 소유 open
+    # 라이브/기계 뷰가 어긋난다). 라이브 wave 는 identity task 의 claim(claimed_by=<user>/<task>)만 남기므로
+    # 그 위에서 다른 task 이름의 렌즈가 (i) 타 user 무유출 (ii) 그 claim 을 다른 task 이름으로 안 끌어옴
+    # (claimed_by 재사용) 을 실증한다. task 바인딩 claim 이 없는 fresh task 명은 (claim 0 + 내 소유 open
     # backlog) 로 좁혀져야 한다 — 무필터 전체 보드로 새지 않음(핸들러가 `--task` 를 실 소비).
     owned_open_by_prefix = {p: {tid for st, tid in all_rows
                                 if tid.startswith(f"T-{p}-") and st == "open"}
-                            for _r, p, _s, _u in identities}
+                            for _r, p, _t, _u in identities}
     owned_claimed_by_prefix = {p: {tid for st, tid in all_rows
                                    if tid.startswith(f"T-{p}-") and st == "claimed"}
-                               for _r, p, _s, _u in identities}
-    for repo, prefix, session, user in identities:
+                               for _r, p, _t, _u in identities}
+    for _repo, prefix, _task, user in identities:
         _set_home_user(home, user)
-        # ⑥ 예약(task 명 ≠ <repo>_<N>)에 안 걸리는 자유 task 명 — slot 토큰(<repo>_1)과 겹치지
-        # 않아야 판별 검증이 유효(예 `alpha_1` 을 주면 slot 토큰과 우연 일치해 공허해진다).
+        # identity task(`<user>-wave`)와 다른 자유 task 명 — 같은 이름이면 그 task 의 claim 이 정당하게
+        # 보여 판별 검증이 공허해진다.
         fresh_task = f"{prefix}-probe-task"
         tview = _board_list(home, "--task", fresh_task)
         assert tview.returncode == 0, (
@@ -1449,11 +1457,11 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
         assert not leaked, (
             f"실 {harness}: {user} task 렌즈(--task {fresh_task})에 타 user 티켓 유출 {sorted(leaked)} — "
             f"task-aware 세션 격리 위반(ADR-0059).\n뷰={sorted(tids)}\n" + tail)
-        # slot claim(<user>/<repo>_1·T-{prefix}-* claimed)은 task 이름과 안 겹쳐(⑥) task 렌즈에서
-        # 걸러진다 — 남는 건 claim 0 + 내 소유 open backlog. 미claim open 은 실재(전제 assert)라 뷰가 안 빈다.
+        # identity task 의 claim(<user>/<task>·T-{prefix}-* claimed)은 fresh task 이름과 안 겹쳐 그
+        # 렌즈에서 걸러진다 — 남는 건 claim 0 + 내 소유 open backlog. 미claim open 은 실재(전제 assert)라 뷰가 안 빈다.
         assert not (owned_claimed_by_prefix[prefix] & tids), (
-            f"실 {harness}: {user} task 렌즈(--task {fresh_task})에 slot claim "
-            f"{sorted(owned_claimed_by_prefix[prefix] & tids)} 유입 — ⑥ 기계 판별 실패(slot 토큰을 task 로 매칭).\n"
+            f"실 {harness}: {user} task 렌즈(--task {fresh_task})에 다른 task 의 claim "
+            f"{sorted(owned_claimed_by_prefix[prefix] & tids)} 유입 — task 렌즈가 claimed_by task 를 무시.\n"
             f"뷰={sorted(tids)}\n" + tail)
         assert tids == owned_open_by_prefix[prefix], (
             f"실 {harness}: {user} task 렌즈(--task {fresh_task}) != 내 소유 open backlog "
@@ -1473,10 +1481,10 @@ def test_release_wave_multiuser_composite_opencode(tmp_path):
     T-0304(`test_board_scoping_isolation`)의 무-LLM composite 게이트의 **라이브 opencode 짝**(ADR-0053).
     셋업(`_import_multiuser_home`): 공유 보드 홈에 repo alpha(area_owner alice)·beta(area_owner bob)를
     distinct user 로 등록. opencode(agentic·ollama glm-5.2)가 `_multiuser_wave_prompt` 로 각 identity 의
-    [미claim open + claim] 티켓을 자기 `--user`/`--prefix`/`--repo`/`--slot` 으로 만든다.
+    [미claim open + claim] 티켓을 자기 `--user`/`--prefix`/`--task` 로 만든다.
 
     격리 판정은 **테스트가 직접** board.py list 를 돌려(side-effect·LLM phrasing 비결정 강건) —
-    alice 세션(alpha_1) 뷰는 bob 티켓(T-be-*) 미열람·자기(T-al-*) 열람, bob 세션(beta_1) 뷰는 역 —
+    alice task(alice-wave) 뷰는 bob 티켓(T-be-*) 미열람·자기(T-al-*) 열람, bob task(bob-wave) 뷰는 역 —
     즉 **뷰가 섞이지 않음**을 실 산출로 assert(`_assert_multiuser_view_isolation`). `--dir` 로 루트 핀
     (opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama). cross-slot 축은 T-0304 기계 게이트 커버.
     """
@@ -2283,21 +2291,28 @@ def test_import_multiuser_home_sets_up_two_distinct_area_owners(tmp_path):
 
 
 def test_multiuser_wave_prompt_has_per_identity_mechanics():
-    """multiuser wave 프롬프트가 귀속 mechanics와 사용자-명시 prefix ack를 담는다.
+    """multiuser wave 프롬프트가 귀속 mechanics와 사용자-명시 prefix ack를 담는다(T-0962 AT-012).
 
-    라이브 미실행 시에도 프롬프트 구조를 가드 — `--user <user>`(귀속 user·multi_user 신호)·`--prefix`
-    (ID 네임스페이스)·미claim open(유출 대상)·claim `--repo <repo> --slot 1`(슬롯)이 빠지면 잡힌다.
+    라이브 미실행 시에도 프롬프트 구조를 가드 — identity 마다 new 두 줄과 claim 한 줄이 `--task <task>`
+    (귀속 정체성)를 싣고 어느 줄에도 `--slot` 이 없으며, `--user-ack` 는 첫 new 줄에만 있다. `--user`
+    (귀속 user·multi_user 신호)·`--prefix`(ID 네임스페이스)·미claim open(유출 대상)이 빠져도 잡힌다.
     """
     prompt = _multiuser_wave_prompt()
-    for repo, prefix, session, user in _MULTIUSER_IDENTITIES:
-        slot = session.rsplit("_", 1)[-1]
+    lines = prompt.splitlines()
+    for _repo, prefix, task, user in _MULTIUSER_IDENTITIES:
         assert user in prompt, f"프롬프트에 user '{user}' 미언급"
         assert f"--prefix {prefix}" in prompt, f"프롬프트에 --prefix {prefix} 누락"
-        assert prompt.count(f"--user-ack {prefix}") == 1, (
-            f"프롬프트의 신규 prefix {prefix} 승인은 첫 원 명령에 정확히 1회여야 함"
-        )
         assert f"--user {user}" in prompt, f"프롬프트에 --user {user} 누락(귀속 user 미스탬프)"
-        assert f"--repo {repo} --slot {slot}" in prompt, f"프롬프트에 --repo {repo} --slot {slot} 누락(claim 슬롯)"
+        news = [line for line in lines if "board.py new" in line and f"--user {user}" in line]
+        claims = [line for line in lines if "board.py claim" in line and f"--user {user}" in line]
+        assert len(news) == 2 and len(claims) == 1, (news, claims)
+        for line in (*news, *claims):
+            assert f"--task {task}" in line, f"귀속 줄에 --task {task} 누락: {line!r}"
+        assert f"--user-ack {prefix}" in news[0] and "--user-ack" not in news[1] + claims[0], (
+            f"프롬프트의 신규 prefix {prefix} 승인은 첫 new 줄에만 정확히 1회여야 함"
+        )
+        assert prompt.count(f"--user-ack {prefix}") == 1
+    assert "--slot" not in prompt, "프롬프트에 --slot 잔존(슬롯 세션 정체성)"
     assert "board.py new" in prompt and "board.py claim" in prompt
     # 미claim open(유출 대상) + claim 둘 다 지시 — 섞임 격리의 catch 대상 open 필요.
     assert "open probe" in prompt and "do NOT claim" in prompt

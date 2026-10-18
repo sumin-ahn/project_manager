@@ -421,61 +421,26 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
     return str(REPO)
 
 
-# ── --repo/--slot 슬롯 정체성 (pm_handoff 미러) ──
-# 명시 `--repo`/`--slot` 은 실행 정체성이다 — 대여 기록과 조인 확인한 슬롯 키로 세션·board 인자
-# (멤버 `claimed_by` 소유 확인)를 정하고, 복구 문(`--reconcile-integrated`)에서는 그 슬롯이 복구할
-# 제품 트리다. 정상 종결의 작업 트리는 이 값으로 고르지 않는다 — 묶음 기록의 브랜치로 찾는다
-# (`ClusterCloser._resolve_code_tree`). 무인자 진입은 정체성을 task 로 해소해
-# (`pm_log.resolve_snapshot_identity`) task 갈래로 합류하고, 미해소면 멈춘다. 판정은 pm_handoff
-# `_resolve_explicit_identity_slot`(조인 검증)을 동적 로드해 재사용한다(복제 0).
+# ── 복구 문의 `--repo/--slot` 제품 트리 (pm_handoff 미러) ──
+# `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`)에서만 받고, 그 슬롯이 복구할 제품
+# 트리다(정체성 아님). 정상 종결의 정체성은 `--task`(무인자면 `pm_log.resolve_snapshot_identity`)이고
+# 작업 트리는 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`). 판정은 pm_handoff
+# `_resolve_explicit_identity_slot`(대여 기록 조인 검증)을 동적 로드해 재사용한다(복제 0).
 
-def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None, str | None]:
-    """`--repo`/`--slot` 에서 슬롯 키를 해소한다 — `(worktree_slot, error_msg)`.
+def _resolve_finish_slot(repo: str, slot: int) -> tuple[str | None, str | None]:
+    """복구 문의 `--repo`/`--slot` 에서 슬롯 키를 해소한다 — `(worktree_slot, error_msg)`.
 
-    해소한 슬롯 키는 소유 확인 정체성(세션·board 인자)과 복구 문의 제품 트리에 쓴다. 작업
-    트리 선택에는 쓰지 않는다. pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
-      - `(work/<repo>_<N>, None)` — `--repo`(+`--slot`) 명시 → pm_handoff
-        `_resolve_explicit_identity_slot` 로 (세션↔repo 조인 검증) 통과 후 결정론적 해소.
-      - `(None, None)` — 명시 인자 없음, 또는 판정 불능(pm_handoff 사본 부재 + `--slot` 없음)
-        → 호출부는 슬롯 키 없이 진행한다(세션은 명시 인자가 준 값 그대로, board 인자 없음).
-      - `(None, error_msg)` — 명시 repo/slot 이 리스 장부와 조인 불일치 → 호출부 fail-loud.
-
-    무인자 진입은 여기 오지 않는다 — 호출부가 정체성을 task 로 먼저 해소해 task 갈래로
-    합류시킨다. `repo`/`slot` 명시인데 pm_handoff 부재면 검증(리스 조인)을 할 수 없으므로
-    단순 조립만 해 신뢰한다.
+      - `(work/<repo>_<N>, None)` — pm_handoff `_resolve_explicit_identity_slot` 의 대여 기록
+        조인 검증을 통과한 슬롯 키.
+      - `(None, error_msg)` — 대여 기록과 조인 불일치, 또는 pm_handoff 사본이 없어 검증할 수
+        없음 → 호출부 fail-loud. 검증 없이 경로를 조립하지 않는다.
     """
     hp = _load_pm_handoff()
     if hp is None:
-        # pm_handoff 부재 — (리스 조인) 검증 불가하니 단순 조립만.
-        if slot is not None:
-            return f"work/{repo}_{slot}", None
-        return None, None
+        return None, (
+            f"pm_handoff.py 사본이 없어 work/{repo}_{slot} 을 대여 기록과 대조할 수 없다 — "
+            "엔진 사본을 `pm_update` 로 복구한 뒤 다시 실행하라.")
     return hp._resolve_explicit_identity_slot(repo, slot)
-
-
-def _board_identity_argv(identity, slot_identity=None) -> list[str]:
-    """`board.py` 하위 호출에 넘길 정체성 인자 (`--repo/--slot`) — 없으면 빈 목록.
-
-    board 의 lifecycle mutation 은 `claimed_by` 와 실행 세션을 대조하므로, 여기서
-    해소한 정체성을 인자로 넘겨야 같은 세션으로 판정된다. 우선순위:
-
-      1. **명시 `--repo X --slot N`** — 사람이 claim 할 때 쓴 좌표 그대로 넘긴다.
-      2. 장부가 준 슬롯 좌표(`--repo X` 단독으로 슬롯이 유도된 경우) — `SlotIdentity` 의
-         `repo`/`number` 는 장부 행에서 온 **재접속 좌표**다(키 문자열을 뜯지 않는다).
-      3. `--repo` 만 알면 그것만 넘긴다(board 가 같은 규칙으로 다시 유도한다).
-      4. 아무것도 없으면 빈 목록 — board 의 기존 해소 체인(env·단일 lease)이 그대로 돈다.
-    """
-    repo, number = getattr(identity, "repo", None), getattr(identity, "slot", None)
-    if not (repo and number):
-        ledger_repo = getattr(slot_identity, "repo", None)
-        ledger_number = getattr(slot_identity, "number", None)
-        if ledger_repo and ledger_number:
-            repo, number = ledger_repo, ledger_number
-    if repo and number:
-        return ["--repo", str(repo), "--slot", str(number)]
-    if repo:
-        return ["--repo", str(repo)]
-    return []
 
 
 def _probe_os_name() -> str:
@@ -1856,7 +1821,6 @@ def build_log_skeleton(
     entry_type: str = "<!-- feat/fix/verify/… -->",
     date: str | None = None,
     task: str | None = None,
-    session: str | None = None,
 ) -> str:
     if date is None:
         date = datetime.date.today().isoformat()
@@ -1865,11 +1829,7 @@ def build_log_skeleton(
         entry_type=entry_type,
         ticket_id=ticket_id,
         title=title,
-        task_tag=(
-            f" ({_TASK_TAG_PREFIX}{task})" if task
-            else f" ({session})" if session
-            else ""
-        ),
+        task_tag=(f" ({_TASK_TAG_PREFIX}{task})" if task else ""),
         new_total=new_total,
         board_before=board_before,
         board_after=board_after,
@@ -3271,7 +3231,6 @@ class TicketFinisher:
         dry_run: bool,
         skip_pytest: bool = False,
         task: str | None = None,
-        session: str | None = None,
         board_identity_args: Sequence[str] = (),
         close: bool = False,
         cluster_close: str | None = None,
@@ -3406,7 +3365,6 @@ class TicketFinisher:
             board_before=board_before,
             board_after=board_after,
             task=task,
-            session=session,
         )
 
         log_has_entry = self._log_has_entry(ticket_id)
@@ -3755,7 +3713,6 @@ class ClusterCloser:
         board_py: Path = BOARD_PY,
         slot: str | None = None,
         task: str | None = None,
-        session: str | None = None,
         board_identity_args: Sequence[str] = (),
         dry_run: bool = False,
         skip_pytest: bool = False,
@@ -3771,7 +3728,6 @@ class ClusterCloser:
         self._board_py = board_py
         self._slot = slot
         self._task = task
-        self._session = session
         self._board_identity_args = list(board_identity_args)
         self._dry_run = dry_run
         self._skip_pytest = skip_pytest
@@ -3983,7 +3939,7 @@ class ClusterCloser:
         찾은 트리가 작업 폴더면 그 행의 경로(`REPO/<slot>`)로 넘긴다 — git 목록은 실경로를 내므로
         심링크 슬롯을 실경로로 넘기면 슬롯 좌표(`work/<repo>_<N>/` touches)를 풀 수 없다.
 
-        task·슬롯 정체성은 보지 않는다 — 누가 그 트리를 빌렸는지는 작업 트리 선택의 입력이
+        task 정체성은 보지 않는다 — 누가 그 트리를 빌렸는지는 작업 트리 선택의 입력이
         아니다(소유 확인은 멤버 `claimed_by` 대조가 따로 한다). "한 브랜치는 한 트리" 는 한
         저장소 안에서만 성립하고 우회도 있으므로 없음·둘 이상은 고르지 않고 멈춘다. 대여 기록
         판독 불능·목록 조회 실패는 관측 실패(정지)다.
@@ -3991,8 +3947,8 @@ class ClusterCloser:
         key, branch = "branch", self._declared_branch("branch")
         if branch is None:
             return None, (f"{self._cluster}는 제품 브랜치 미결속 장부다. 기존 "
-                          "`board.py cluster new <ticket-group> --tickets <티켓들> --repo <repo> --slot <N>` "
-                          "또는 `--task <task>`으로 명시 재결속하라")
+                          "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
+                          "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라")
         ledger_status, rows = identity_args._read_lease_rows_status(LEASES_FILE)
         if ledger_status == identity_args.LEDGER_UNREADABLE:
             raise _CloseObservationFailure(
@@ -4202,7 +4158,6 @@ class ClusterCloser:
                 dry_run=self._dry_run,
                 skip_pytest=self._skip_pytest,
                 task=self._task,
-                session=self._session,
                 board_identity_args=self._board_identity_args,
                 close=True,
                 cluster_close=self._cluster,
@@ -5129,10 +5084,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--user-ack", default=None, metavar="C-<ticket-group>",
         help="reconcile 대상 cluster ID와 정확히 같은 사용자 승인값.",
     )
-    # ── 실행 정체성 (`--repo`/`--slot`·`--task`) ──────────
-    # 멤버 `claimed_by` 와 대조하는 소유 확인 정체성이다 — 작업 트리는 묶음 기록의 브랜치로
-    # 찾으므로 이 값으로 고르지 않는다. 복구 문에서는 `--repo --slot` 이 복구할 제품 트리다.
-    # `--repo` 단독은 활성(leased) 슬롯 1개면 자동해소·0/≥2 는 fail-loud.
+    # ── 실행 정체성 `--task` · 복구 문 제품 트리 `--repo`/`--slot` ──────────
+    # `--task` 는 멤버 `claimed_by` 와 대조하는 소유 확인 정체성이다 — 작업 트리는 묶음 기록의
+    # 브랜치로 찾으므로 이 값으로 고르지 않는다. `--repo --slot` 은 복구 문 전용(복구할 제품 트리).
     identity_args.add_identity_args(parser)
     parser.add_argument(
         "--no-pytest",
@@ -5175,17 +5129,16 @@ def _main(argv: list[str] | None = None) -> int:
                 "--reconcile-integrated는 --repo <repo> --slot <N> 둘 다 필수이고 --task를 받지 않는다."
             )
 
-    # task 정체성은 독립 축이다. 혼합을 parse_identity의 bare-slot 오류보다
-    # 먼저 거부해 `--repo`를 추가하라는 잘못된 해결책을 안내하지 않는다.
-    if args.task is not None and (args.repo is not None or args.slot is not None):
+    # `--repo`/`--slot` 은 복구 문의 제품 트리 지정 전용이다 — parse_identity 의 bare-slot 오류보다
+    # 먼저 거부해 `--repo` 를 추가하라는 잘못된 해결책을 안내하지 않는다.
+    if not args.reconcile_integrated and (args.repo is not None or args.slot is not None):
         parser.error(
-            "--task 는 독립 정체성이다 — --repo/--slot 과 함께 쓸 수 없다 "
-            "(작업 트리는 묶음 기록의 브랜치로 찾는다)."
+            "--repo/--slot 은 --reconcile-integrated 의 제품 트리 지정에만 쓴다 — 정상 종결의 "
+            "정체성은 --task <task> 다(생략하면 이 cwd 의 작업 폴더·단일 활성 task 로 해소)."
         )
 
-    # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = uniform fail-loud)은 `--no-pytest` 와
+    # 정체성 인자 *검증*(`slot < 1` = uniform fail-loud)은 `--no-pytest` 와
     # 무관하게 **항상** 수행한다. 정체성은 소유 확인의 입력이라 회귀 skip 으로 건너뛰지 않는다.
-    # slot-mode 모호 게이트도 같다 — 회귀 skip 여부와 독립이다(아래 비-task 경로 주석).
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as exc:
@@ -5214,10 +5167,10 @@ def _main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-    # 무인자 진입(`--task`·`--repo/--slot` 전무)도 정체성 축은 task 하나다 — 생산자와 같은
-    # 체인(`cwd 작업 폴더 → 단일 활성 task`)으로 해소해 아래 task 갈래로 합류시킨다. 해소되면
-    # 슬롯 자동해소 갈래가 필요 없고, 안 되면 정체성을 지어내지 않고 멈춘다.
-    if identity.task is None and identity.kind == "none":
+    # 무인자 정상 종결도 정체성 축은 task 하나다 — 생산자와 같은
+    # 체인(`cwd 작업 폴더 → 단일 활성 task`)으로 해소해 아래 task 갈래로 합류시킨다. 안 되면
+    # 정체성을 지어내지 않고 멈춘다.
+    if identity.task is None and not args.reconcile_integrated:
         pm_log = _load_pm_log()
         resolved_task, identity_source = pm_log.resolve_snapshot_identity(REPO, Path.cwd())
         if resolved_task is None:
@@ -5232,42 +5185,20 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"정체성 자동 해소: task={resolved_task} ({identity_source}; pm_log 공유 체인)")
         identity.task = resolved_task
 
-    session: str | None = identity.session
-    # 이번 실행이 명시한 슬롯 키(`work/<repo>_<N>`) — 복구 문(`--reconcile-integrated`)이 복구할
-    # 제품 트리다. 정상 종결의 작업 트리는 이 값이 아니라 묶음 기록의 브랜치로 찾는다
-    # (`ClusterCloser._resolve_code_tree`).
+    # 복구 문이 복구할 제품 트리(`work/<repo>_<N>`). 정상 종결의 작업 트리는 이 값이 아니라
+    # 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`).
     close_slot: str | None = None
-    # board 하위 호출(complete)에 실을 정체성 인자. 명시 인자가 1순위이고, `--repo` 단독처럼
-    # 좌표가 덜 찬 경우에만 장부가 해소한 슬롯 좌표로 채운다(아래 slot 분기).
+    # board 하위 호출(complete)에 실을 정체성 인자 — task-mode 귀속은 `<user>/<task>` 라 board 도
+    # 같은 축으로 소유를 대조한다. 복구 문은 board 정체성 인자를 싣지 않는다.
     board_identity: list[str] = []
     if identity.task:
-        # task 정체성은 소유 확인(멤버 `claimed_by` 대조)에만 쓴다 — task 가 슬롯을 몇 개
-        # 쥐었는지는 보지 않는다. task-mode 귀속은 `<user>/<task>` 다 — board 도 같은 축으로
-        # 소유를 대조해야 한다.
         board_identity = ["--task", identity.task]
     else:
-        # 슬롯 정체성(`--repo`/`--slot`)은 대여 행과 조인 확인한 뒤 세션·board 인자로 쓴다. 작업
-        # 트리 선택에는 쓰지 않는다. 모호는 `--repo/--slot` 또는 `--task` 명시로만 푼다.
-        worktree_slot, ambiguity = _resolve_finish_slot(identity.repo, identity.slot)
-        if ambiguity is not None:
-            print(f"\n[중단] 슬롯 정체성 해소 모호 — {ambiguity}", file=sys.stderr)
-            print(
-                "  → `--repo <name> [--slot <N>]`(예: --repo project_manager --slot 1) 으로 슬롯을 "
-                "명시하거나 `--task <task>` 으로 실행하라.",
-                file=sys.stderr,
-            )
+        worktree_slot, problem = _resolve_finish_slot(identity.repo, identity.slot)
+        if problem is not None:
+            print(f"\n[중단] 복구 문의 제품 트리 해소 실패 — {problem}", file=sys.stderr)
             return 1
-        if worktree_slot:
-            close_slot = worktree_slot
-            # 귀속 세션은 **장부 행이 그 슬롯에 준 정체성**이다 — 경로 basename 을 정체성으로
-            # 읽으면 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행 `slot="."`)은 `.` 로,
-            # 장부가 다른 session 을 들고 있는 슬롯은 갈린 값으로 귀속된다(리뷰 F-001).
-            # 미해소(장부에도 없고 경로도 슬롯 키가 아님)면 명시 `--repo/--slot` 이 준 값을
-            # 유지한다(`identity.session` — 종전 폴백 관례).
-            resolved = identity_args.resolve_slot_identity(worktree_slot, LEASES_FILE)
-            if resolved is not None:
-                session = resolved.key
-            board_identity = _board_identity_argv(identity, resolved)
+        close_slot = worktree_slot
 
     # 코드 트리는 여기서 정하지 않는다 — 종결이 묶음 기록의 브랜치로 찾아 넘긴다(`use_code_tree`).
     finisher = TicketFinisher()
@@ -5291,7 +5222,6 @@ def _main(argv: list[str] | None = None) -> int:
         board_py=BOARD_PY,
         slot=close_slot,
         task=identity.task,
-        session=session,
         board_identity_args=board_identity,
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,

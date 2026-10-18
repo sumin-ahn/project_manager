@@ -2801,8 +2801,7 @@ def cmd_status(
 
     **2축 cockpit** — 다슬롯 관리 부담을 한눈에 보이게 두 축으로 나눈다:
       - **task 축** — 사람이 명명한 task 별 {보유 작업공간(`work/<repo>_<N>` 목록)·prefix}
-        (`list_tasks`+`slots_for_task`). slot 축과 깔끔히
-        분리된다 — slot-모드 세션은 task 없이 slot 풀 축에만 나타난다.
+        (`list_tasks`+`slots_for_task`). slot 축과 깔끔히 분리된다.
       - **slot 풀 축** — 슬롯별 {state·보유 task·role} + **슬롯당 git 요약**
         (`<branch>@<head> (base: <b>@<sha> · N behind)`·`slot_git_status`). behind 는 base 기록
         (`git.base`)이 있을 때만·미기록은 `-`+이유(자동 추론 금지).
@@ -2862,7 +2861,7 @@ def cmd_status(
     # 근절 취지). board 티켓 스캔 복제는 하지 않는다.
     resolved_user = _default_user()
     multi_user = _distinct_area_owners() > 1
-    _remedy = "`board init --owner <you>` 또는 `board migrate-identity`"
+    _remedy = "`board init --owner <you>` 또는 `board migrate-identity --task <task>`"
     _authoritative = "실 격리는 `board list --mine`(strict-exclude loud-warn)이 authoritative"
     print(f"## 정체성(user): {resolved_user or '(미해소 — local.conf identity.user= / git config user.email 미설정)'}")
     if not multi_user:
@@ -2884,8 +2883,7 @@ def cmd_status(
         print("## 이 세션의 리스: (없음)")
 
     # task 축 — 사람이 명명한 task 별 {보유 작업공간·prefix}. list_tasks
-    # + slots_for_task(session==task 명의 leased 슬롯). slot-모드 세션은
-    # 이 축에 안 올라온다(task 없이 slot 풀 축에만). task 명 집합은 slot 풀 축의 "보유 task"
+    # + slots_for_task(session==task 명의 leased 슬롯). task 명 집합은 slot 풀 축의 "보유 task"
     # 귀속에도 쓴다. 형제 사본은 rev 검증을 통과한 것만 로드되므로(`_load_module`) 이 함수들이
     # 없는 사본은 여기 오지 못한다 — 있는지 더듬지 않고 그대로 부른다.
     tasks = []
@@ -2898,7 +2896,7 @@ def cmd_status(
     # truthy name 만 — 레코드가 name 미보유(None/빈값)면 집합에 넣지 않는다(방어). None 이 섞이면
     # idle lease(session=None/"")가 `보유 task=None` 으로 오귀인될 수 있다(reviewer suggestion).
     task_names = {n for n in (getattr(t, "name", None) for t in tasks) if n}
-    print("## task 상황 (사람이 명명한 작업스트림·slot-모드 세션 제외):")
+    print("## task 상황 (사람이 명명한 작업스트림):")
     if not tasks:
         print("  (task 없음 — 명명한 task 미등록·세션은 아래 풀 축에만 나타남)")
     for t in tasks:
@@ -2946,7 +2944,7 @@ def cmd_status(
             f"{'열림' if wp.lease_is_open(l) else '닫힘'}{role_str}"
         )
         # 보유 task 귀속(장부 축) — lease.session 이 task 명이면 그 task 가 이 슬롯을 보유(session
-        # 축). slot-모드/idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **장부 유래라 항상 출력** —
+        # 축). idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **장부 유래라 항상 출력** —
         # slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다. git 요약만
         # fail-soft: 조회 실패/API 부재면 그 부분만 `(조회 불가)` 로 대체하고 task 귀속은 잃지 않는다.
         task_disp = l.session if (l.session and l.session in task_names) else "-"

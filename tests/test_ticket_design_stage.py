@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module, bind_product_cluster
+from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -316,23 +316,26 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
-    # 세션 귀속은 env 명시로 고정한다 — 실행 환경 값이 새지 않게 alias 를 지우고 이 파일의
-    # 세션을 바인딩한다(claim 은 세션 미해소 시 fail-loud 라 hermetic 하려면 바인딩이 필요하고,
-    # per-clone conf `session=` 폴백은 폐지됐다·T-0779).
+    # 귀속 쓰기(new·claim)는 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962) — 실행
+    # 환경 세션 값이 새지 않게 env 를 비우고 이 파일의 task 폴더를 준비한다.
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
+    ensure_product_slot(mod, task=_TASK)
     return mod
+
+
+_TASK = "pm-1"
 
 
 def _new_args(estimate="small", design=None):
     return argparse.Namespace(title="t", touches=None, depends=None, tag=None,
                               estimate=estimate, design=design, prefix=None,
-                              user=None, session=None)
+                              user=None, task=_TASK)
 
 
 def _claim_args(tid="T-0001"):
-    return argparse.Namespace(id=tid, repo=None, slot=None, user=None)
+    return argparse.Namespace(id=tid, user=None, task=_TASK)
 
 
 def _seed_open(board, *, design, body=None, tid="T-0001", estimate=None):
@@ -732,6 +735,7 @@ def board_git(tmp_path, monkeypatch):
         r = _git(argv, cwd)
         assert r.returncode == 0, f"board-git setup 실패: git {argv} → {r.stderr}"
     mod._board_dir = board
+    ensure_product_slot(mod, task=_TASK)
     return mod
 
 
@@ -803,7 +807,7 @@ def test_promote_accepts_filled_design_section_with_done(board_git):
     board_git.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, fm["id"])
 
-    bind_product_cluster(board_git, fm["id"])
+    bind_product_cluster(board_git, fm["id"], task=_TASK)
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md")), \
         "승격된 티켓이 open/ 으로 이동 안 됨."
@@ -819,7 +823,7 @@ def test_promote_unaffected_for_na_ticket_with_skeleton_design(board_git):
     assert fm["design"] == board_git.DESIGN_NA
     board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
 
-    bind_product_cluster(board_git, fm["id"])
+    bind_product_cluster(board_git, fm["id"], task=_TASK)
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
@@ -927,7 +931,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     # `done` 은 architect 점검 라운드도 함께 요구한다(면제 경로가 없어진 자리) — 실산출 1건.
     _seed_harvested_architect_round(board_git, tid)
 
-    bind_product_cluster(board_git, tid)
+    bind_product_cluster(board_git, tid, task=_TASK)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
     assert list((board_dir / "tickets" / "open").glob(f"{tid}-*.md")), \
         "승격 후 promote 가 open/ 으로 이동해야 한다."
@@ -963,7 +967,7 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     fm["design"] = board_git.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, tid)
-    bind_product_cluster(board_git, tid)
+    bind_product_cluster(board_git, tid, task=_TASK)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
 
     assert board_git.main(["design", tid, "n/a"]) == 0

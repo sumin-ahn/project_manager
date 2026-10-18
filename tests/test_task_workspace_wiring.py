@@ -239,47 +239,32 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
 
 def test_actor_session_override_task_mode_returns_task(board):
     """task 지정 시 귀속 세션 override = task 이름 — claim/new created_by 가 <user>/<task>."""
-    ns = argparse.Namespace(repo=None, slot=None, task="myjob")
+    ns = argparse.Namespace(task="myjob")
     assert board._actor_session_override(ns) == "myjob"
-    # provenance 연산은 task+repo/slot 혼합을 조용히 task 우선하지 않고 거부한다.
-    ns2 = argparse.Namespace(repo="A", slot=1, task="myjob")
+    # 비실행 명령은 task+repo/slot 혼합을 조용히 task 우선하지 않는다 — parser 가 `--repo`/`--slot`
+    # 자체를 받지 않는다(T-0962).
     with pytest.raises(SystemExit) as exc:
-        board._actor_session_override(ns2)
-    assert "--repo/--slot 과 함께 쓸 수 없다" in str(exc.value)
+        board.build_parser().parse_args(
+            ["complete", "T-0001", "--task", "myjob", "--repo", "A", "--slot", "1"])
+    assert exc.value.code == 2
+
+
+_PROVENANCE_MIX_ARGV = {
+    "init": ["init", "--task", "job", "--repo", "A", "--slot", "1"],
+    "migrate-identity": ["migrate-identity", "--task", "job", "--repo", "A", "--slot", "1"],
+    "reid": ["reid", "T-0001", "T-0002", "--task", "job", "--repo", "A", "--slot", "1"],
+}
 
 
 @pytest.mark.parametrize("command", ["init", "migrate-identity", "reid"])
-def test_board_provenance_commands_reject_task_repo_mix_at_ingress(
-    board, monkeypatch, command
-):
-    """세션 provenance 소비 3종이 본체 부작용 전에 동일 혼합 금지 검증을 탄다."""
-    args = {
-        "claim": argparse.Namespace(id="T-0001", repo="A", slot=1, task="job", user=None),
-        "new": argparse.Namespace(
-            title="X", touches=None, depends=None, tag=None, estimate="small",
-            prefix=None, user=None, repo="A", slot=1, task="job",
-        ),
-        "init": argparse.Namespace(
-            prefix=None, area=None, owner=None, user=None, repo="A", slot=1, task="job",
-        ),
-        "migrate-identity": argparse.Namespace(
-            dry_run=True, user="u", scope="all", repo="A", slot=1, task="job",
-        ),
-        "reid": argparse.Namespace(
-            old_id="T-0001", new_id="T-0002", dry_run=True,
-            repo="A", slot=1, task="job",
-        ),
-    }[command]
-    fn = {
-        "claim": board.cmd_claim,
-        "new": board.cmd_new,
-        "init": board.cmd_init,
-        "migrate-identity": board.cmd_migrate_identity,
-        "reid": board.cmd_reid,
-    }[command]
+def test_board_provenance_commands_reject_task_repo_mix_at_ingress(board, command):
+    """세션 provenance 소비 3종은 본체 부작용 전에 parser 에서 위치 인자 `--slot` 을 거부한다(rc 2).
+
+    폴더를 고르지 않는 명령이라 `--slot` 이 없다(init 의 `--repo` 는 등록 이름이라 남는다·T-0962).
+    """
     with pytest.raises(SystemExit) as exc:
-        fn(args)
-    assert "--repo/--slot 과 함께 쓸 수 없다" in str(exc.value)
+        board.build_parser().parse_args(_PROVENANCE_MIX_ARGV[command])
+    assert exc.value.code == 2
 
 
 # ── board.py new — task 설정 prefix(F5) + created_by=<user>/<task> ────────────
@@ -343,7 +328,7 @@ def _stub_new_env(board, monkeypatch, *, tasks):
                         if getattr(args, "task", None) else (None, None))
     seen = {}
     monkeypatch.setattr(board, "id_prefix",
-                        lambda override, session=None: seen.__setitem__("override", override) or override)
+                        lambda override: seen.__setitem__("override", override) or override)
     monkeypatch.setattr(board, "identity_tag",
                         lambda session_override=None, user_override=None: "u/x")
     monkeypatch.setattr(board, "registered_prefixes", lambda: [])
@@ -374,10 +359,10 @@ def test_new_explicit_prefix_wins_over_task(board, monkeypatch):
 
 
 def test_new_no_prefix_no_task_defaults_none(board, monkeypatch):
-    """3단 해소 tier3 — `--prefix` 없음 + task 없음(또는 task prefix None) → 무prefix(기본 없음)."""
-    seen = _stub_new_env(board, monkeypatch, tasks=[])
+    """3단 해소 tier3 — `--prefix` 없음 + task prefix 없음 → 무prefix(기본 없음)."""
+    seen = _stub_new_env(board, monkeypatch, tasks=[{"name": "job0"}])
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
-                            estimate="small", prefix=None, user="smahn", task=None)
+                            estimate="small", prefix=None, user="smahn", task="job0")
     assert board.cmd_new(ns) == 0
     assert seen["override"] is None                  # 무prefix → id_prefix(None) → legacy T-NNNN(tier3)
 
@@ -463,7 +448,7 @@ def test_ticket_finish_rejects_task_workspace_pin_mix_before_finisher(
         tf.main(["T-0001", "--task", "job10", *extra])
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "--task 는 독립 정체성" in err
+    assert "--repo/--slot 은 --reconcile-integrated 의 제품 트리 지정에만 쓴다" in err
     if extra == ["--slot", "1"]:
         assert "--slot 은 --repo 필수" not in err
     assert called["finisher"] is False
@@ -561,7 +546,7 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     call = board.cmd_regression if consumer == 'regression' else board.cmd_livegate
     assert call(args) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
-    assert board.session_name('main', required=True) == 'main'
+    assert board.session_name('main') == 'main'
 
 
 @pytest.mark.parametrize('consumer', ['regression', 'livegate'])
@@ -579,11 +564,14 @@ def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
     assert not board.LIVEGATE_FLAG.exists()
 
 
-@pytest.mark.parametrize('command', ['cmd_init', 'cmd_reid', 'cmd_migrate_identity'])
+@pytest.mark.parametrize('command', ['init', 'reid', 'migrate-identity'])
 def test_t0929_consumers_session_commands_keep_mix_refusal(board, monkeypatch, command):
     _t0929_mock_workspaces(board, monkeypatch)
-    with pytest.raises(SystemExit, match='함께 쓸 수 없다'):
-        getattr(board, command)(argparse.Namespace(task='main', repo='A', slot=5))
+    argv = {'init': ['init'], 'reid': ['reid', 'T-0001', 'T-0002'],
+            'migrate-identity': ['migrate-identity']}[command]
+    with pytest.raises(SystemExit) as exc:   # 위치 인자 `--slot` 은 parser 가 받지 않는다(T-0962)
+        board.build_parser().parse_args([*argv, '--task', 'main', '--repo', 'A', '--slot', '5'])
+    assert exc.value.code == 2
 
 
 def test_t0929_consumers_finish_keeps_mix_refusal(tf, monkeypatch):

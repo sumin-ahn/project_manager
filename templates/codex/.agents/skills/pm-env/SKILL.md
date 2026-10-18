@@ -97,7 +97,7 @@ sync는 폴더 밖의 submodule을 제외하고 꺼냈으나 초기화되지 않
 ./pm-config.sh worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force]  # 슬롯 통째 제거(사용자 승인값·번호 재사용)
 ```
 
-- status의 **task 상황**은 task별 보유 작업공간(`work/<repo>_<N>`)·prefix(slot-모드 세션 제외), **slot
+- status의 **task 상황**은 task별 보유 작업공간(`work/<repo>_<N>`)·prefix, **slot
   풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (부모: <parent>@<sha> · 앞 N · 뒤 M)`
   요약이다. 부모 기록이 없으면 `(부모 기록 없음)`을 표시하고 추론하지 않는다. readonly는 branch
   `(detached)`와 따라갈 브랜치만 의미한다.

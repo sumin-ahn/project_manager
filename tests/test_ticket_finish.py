@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import importlib.util
 import inspect
+import json
 import os
 import shutil
 import subprocess
@@ -489,17 +490,6 @@ def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
     )
     assert skeleton.splitlines()[0] == (
         "## [2026-08-06] feat | [[T-0547]] — 박제 (task:orch-dev-T0547)"
-    )
-
-
-def test_log_skeleton_adds_canonical_slot_tag_when_session_is_resolved(tf):
-    """slot 완료 entry는 handoff와 같은 canonical 세션 태그를 헤더 말미에 생산한다."""
-    skeleton = tf.build_log_skeleton(
-        ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
-        entry_type="feat", date="2026-08-06", session="project_manager_2",
-    )
-    assert skeleton.splitlines()[0] == (
-        "## [2026-08-06] feat | [[T-0547]] — 박제 (project_manager_2)"
     )
 
 
@@ -1240,19 +1230,6 @@ def test_resolve_finish_slot_m3_rejects_repo_join_mismatch(tf, tmp_path, monkeyp
     assert err is not None and "M3" in err and "조인" in err
 
 
-def test_resolve_finish_slot_repo_alone_resolves_single_active(tf, tmp_path, monkeypatch):
-    """--repo 단독 + 그 repo 활성 슬롯 정확히 1개 → actor 자동해소(ADR-0057 결정 3)."""
-    _bind_pm_handoff_repo(tf, monkeypatch, tmp_path)
-    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    leases.parent.mkdir(parents=True)
-    leases.write_text(
-        '{"leases": [{"slot": "work/myrepo_3", "repo": "myrepo", "session": "myrepo_3", '
-        '"state": "leased"}]}',
-        encoding="utf-8",
-    )
-    assert tf._resolve_finish_slot("myrepo", None) == ("work/myrepo_3", None)
-
-
 def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, capsys):
     """(b) --no-pytest → [1/5] 회귀 skip(pytest 미호출)·board complete 는 --tests-pass 유지·rc 0.
 
@@ -1336,71 +1313,11 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
     return captured
 
 
-def test_main_repo_slot_forwards_session_and_slot_but_no_code_tree(tf, monkeypatch):
-    """--repo/--slot → main 은 트리 인자 없이 해소된 세션·슬롯만 넘긴다(작업 트리는 종결이 찾는다)."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
-    captured = _capture_main_forward(tf, monkeypatch)
-
-    rc = tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"])
-    assert rc == 0
-    assert captured["finisher_kwargs"] == {}
-    assert captured["skip_pytest"] is False
-    assert captured["session"] == "project_manager_1"
-    assert captured["slot"] == "work/project_manager_1"
-
-
 # ── board 정체성 forward (T-0781) ───────────────────────────────────────────
 #
 # board 의 complete 는 `claimed_by` 와 실행 세션을 대조한다. ticket_finish 는 자기 정체성을
 # 이미 해소해 두고도 board 에 넘기지 않았다 — 그 상태로 소유 게이트가 켜지면 다중 슬롯
 # 채택자의 `/pm-wave-finish` 주 경로가 "남의 티켓" 으로 전부 거부된다.
-
-def test_run_forwards_board_identity_args_to_complete(tf, tmp_path):
-    """run(board_identity_args=…) → 내부 board complete argv 끝에 그 인자가 실린다(argv 캡처)."""
-    board_calls: list[list[str]] = []
-    finisher = tf.TicketFinisher(
-        run_pytest_fn=lambda: (0, "1 passed"),
-        run_board_fn=lambda args: (board_calls.append(args), (0, "board ok"))[1],
-        run_git_fn=lambda args: (0, ""),
-        board_count_fn=lambda: 10,
-        ticket_title_fn=lambda tid: "테스트 티켓",
-        affected_domain_fn=lambda tid: None,
-        stage_scope_fn=lambda tid: tf.StageScope((), None),
-        status_entries_fn=lambda: (),
-        dod_block_fn=lambda tid: None,
-        log_file=tmp_path / "log.md",
-    )
-
-    rc = finisher.run("T-1234", section=None, dry_run=False, skip_pytest=True,
-                      session="pay_2", board_identity_args=["--repo", "pay", "--slot", "2"])
-
-    assert rc == 0
-    assert board_calls == [
-        ["complete", "T-1234", "--tests-pass", "--repo", "pay", "--slot", "2"]]
-
-
-def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
-    """`--repo/--slot` 으로 부른 ticket_finish 는 그 좌표를 board complete 로 forward 한다."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
-    captured = _capture_main_forward(tf, monkeypatch)
-
-    assert tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"]) == 0
-    assert captured["board_identity_args"] == [
-        "--repo", "project_manager", "--slot", "1"]
-
-
-@pytest.mark.parametrize("identity, slot_identity, expected", [
-    (SimpleNamespace(repo="pay", slot=2, task=None), None,
-     ["--repo", "pay", "--slot", "2"]),
-    (SimpleNamespace(repo="pay", slot=None, task=None),
-     SimpleNamespace(repo="pay", number=3), ["--repo", "pay", "--slot", "3"]),
-    (SimpleNamespace(repo="pay", slot=None, task=None), None, ["--repo", "pay"]),
-    (SimpleNamespace(repo=None, slot=None, task=None), None, []),
-])
-def test_board_identity_argv_prefers_explicit_then_ledger_coordinates(
-        tf, identity, slot_identity, expected):
-    """명시 좌표 > 장부 좌표 > repo 단독 > 없음 — 좌표는 장부 행에서 온다(키 문자열을 안 뜯는다)."""
-    assert tf._board_identity_argv(identity, slot_identity) == expected
 
 
 def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys):
@@ -1444,19 +1361,21 @@ def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys)
 
 
 def test_main_no_pytest_forwards_the_skip_but_no_code_tree(tf, monkeypatch):
-    """--no-pytest + 슬롯 해소 성공 → 회귀 skip 만 넘기고 트리 인자는 없다(세션·슬롯은 그대로).
+    """--no-pytest + task 정체성 → 회귀 skip 만 넘기고 트리 인자는 없다(정체성은 task 그대로).
 
     코드 트리는 종결이 묶음 기록의 브랜치로 찾아 넘기므로 회귀 skip 여부와 무관하게 같은 트리다.
+    정상 종결의 정체성은 `--task` 다 — 슬롯 세션·슬롯 키를 넘기지 않는다(T-0962).
     """
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
 
-    rc = tf.main(["T-1234", "--no-pytest", "--repo", "project_manager", "--slot", "1"])
+    rc = tf.main(["T-1234", "--no-pytest", "--task", "alpha"])
     assert rc == 0
     assert captured["finisher_kwargs"] == {}
     assert captured["skip_pytest"] is True   # [1/5] 회귀만 skip
-    assert captured["session"] == "project_manager_1"
-    assert captured["slot"] == "work/project_manager_1"
+    assert captured["task"] == "alpha"
+    assert captured["board_identity_args"] == ["--task", "alpha"]
+    assert captured["slot"] is None
+    assert "session" not in captured
 
 
 def test_main_slot_without_repo_rejected(tf, capsys):
@@ -1475,14 +1394,15 @@ def test_resolve_finish_slot_solo_returns_none(tf, monkeypatch):
     assert tf._resolve_finish_slot(None, None) == (None, None)
 
 
-def test_resolve_finish_slot_pm_handoff_absent_fail_soft(tf, monkeypatch):
-    """pm_handoff 부재(None) → 부재+무인자는 (None,None)·명시(repo+slot)는 단순 `work/` 조립
-    (M3 리스 조인검증 불가하니 신뢰·현행 폴백 패턴·솔로 무변경). repo 단독은 M3 검증(actor 활성슬롯
-    해소)이 pm_handoff 없인 불가하니 미해소(None,None)."""
+def test_resolve_finish_slot_pm_handoff_absent_is_an_error(tf, monkeypatch):
+    """pm_handoff 부재(None) → 복구 문의 제품 트리를 대여 기록과 대조할 수 없어 오류다(T-0962).
+
+    검증 없이 `work/<repo>_<N>` 을 조립해 신뢰하던 대체 동작은 없다 — `(None, 오류문)` 이고
+    호출부가 rc 1 로 멈춘다."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
-    assert tf._resolve_finish_slot(None, None) == (None, None)
-    assert tf._resolve_finish_slot("myrepo", 2) == ("work/myrepo_2", None)
-    assert tf._resolve_finish_slot("myrepo", None) == (None, None)
+    path, problem = tf._resolve_finish_slot("myrepo", 2)
+    assert path is None
+    assert problem is not None and "pm_handoff" in problem and "work/myrepo_2" in problem
 
 
 # ── engine_written_paths — rounds/T-NNNN/ stage 후보 (T-0753·ADR-0090 R5) ───────
@@ -2651,19 +2571,15 @@ def _wave_repo(tmp_path: Path, *, git: bool = True,
 
 
 def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
-    # 인자 전무(kind="none") — 세션은 env 명시로 결정론적으로 바인딩한다(per-clone conf
-    # `session=` 폴백은 폐지·T-0779). 다른 축엔 무관심하다.
-    saved = os.environ.get("PM_SESSION_NAME")
-    os.environ["PM_SESSION_NAME"] = "me"
-    os.environ.pop("CLAUDE_SESSION_NAME", None)
-    try:
-        return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me"))
-    finally:
-        # 같은 워커의 다음 테스트로 새지 않게 원복한다(ambient env 오염 0).
-        if saved is None:
-            os.environ.pop("PM_SESSION_NAME", None)
-        else:
-            os.environ["PM_SESSION_NAME"] = saved
+    # claim 은 `--task` 와 그 task 가 보유한 폴더가 필요하다(T-0962) — 솔로 형상이라 홈 자신이 그
+    # task 의 폴더(장부 행 `slot="."`)다. 다른 축엔 무관심하다.
+    ledger = board.LEASES_FILE
+    if not ledger.exists():
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(json.dumps({"leases": [
+            {"slot": ".", "repo": board.REPO.name, "session": "me",
+             "state": "leased", "role": "work"}]}), encoding="utf-8")
+    return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me", task="me"))
 
 
 def test_completion_has_no_change_size_cap(tmp_path, capsys):
@@ -3334,7 +3250,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     _git(env.slot, "checkout", _INTEGRATION_BRANCH)
     _git(env.code, "branch", "-D", _CLUSTER_BRANCH)
     assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="rebound",
-        tickets=env.ticket, spike=None, repo="code", slot=1, task=None)) == 0
+        tickets=env.ticket, spike=None, repo="code", slot=1, task="t")) == 0
     ledger = board.cluster_ledger_path("rebound")
     declaration = board.load_cluster("rebound")
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
@@ -3367,3 +3283,21 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     assert env.home_log()[1:] == home
     assert list((env.board_dir / "tickets/done").glob("T-*.md"))
     assert _git(env.code, "merge-base", "--is-ancestor", _rev(env.slot), _INTEGRATION_BRANCH).returncode == 0
+
+
+# ── T-0962 — `--repo`/`--slot` 은 복구 문 전용 · log 머리말은 task 태그만 ──────────
+
+def test_t0962_finish_takes_repo_slot_only_for_reconcile(tf, capsys):
+    """AT-005 — 정상 종결(티켓·묶음)의 `--repo --slot` 은 rc 2, 세션 인자는 어디에도 없다."""
+    for argv in (["T-0001", "--repo", "proj", "--slot", "1", "--dry-run", "--no-pytest"],
+                 ["--cluster", "C-x", "--repo", "proj", "--slot", "1", "--dry-run"]):
+        with pytest.raises(SystemExit) as exc:
+            tf.main(argv)
+        assert exc.value.code == 2
+        assert "--reconcile-integrated" in capsys.readouterr().err
+    skeleton = tf.build_log_skeleton("T-0001", "제목", 1, 1, 1, date="2026-10-18", task="alpha")
+    assert "(task:alpha)" in skeleton.splitlines()[0]
+    with pytest.raises(TypeError):
+        tf.build_log_skeleton("T-0001", "제목", 1, 1, 1, session="proj_1")
+    assert "session" not in inspect.signature(tf.TicketFinisher.run).parameters
+    assert "session" not in inspect.signature(tf.ClusterCloser).parameters

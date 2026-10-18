@@ -1554,10 +1554,15 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
 ):
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._claim_code_tree = lambda *_a, **_k: str(home)
+    # 확인 트리는 `--task` 가 보유한 폴더에서만 해소한다(T-0962 — PM 홈 접기 없음).
+    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
+    board.LEASES_FILE.write_text(json.dumps({"leases": [{
+        "slot": ".", "repo": "proj", "session": "main", "state": "leased",
+    }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     rounds_module = pd._load_ticket_rounds()
     import contextlib
     for ticket in _MEMBERS:
@@ -1575,7 +1580,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     capsys.readouterr()
 
     rc = pd._cmd_rounds(
-        ["resolve", "--cluster", _CLUSTER, "--pm-verified"],
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified", "--task", "main"],
         run_fn=lambda *_a, **_k: pytest.fail(
             "PM-owned terminal confirmation은 reviewer contract command를 실행하지 않는다"
         ),
@@ -1599,10 +1604,15 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     """machine 확인 append 뒤 처분 실패를 재시도해도 같은 round block을 중복하지 않는다."""
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._claim_code_tree = lambda *_a, **_k: str(home)
+    # 확인 트리는 `--task` 가 보유한 폴더에서만 해소한다(T-0962 — PM 홈 접기 없음).
+    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
+    board.LEASES_FILE.write_text(json.dumps({"leases": [{
+        "slot": ".", "repo": "proj", "session": "main", "state": "leased",
+    }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     rounds_module = pd._load_ticket_rounds()
     import contextlib
     for ticket in _MEMBERS:
@@ -1623,11 +1633,11 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
         "partial state의 남은 행은 PM-owned라 command를 실행하지 않는다"
     )
     assert pd._cmd_rounds(
-        ["resolve", "--cluster", _CLUSTER, "--pm-verified"], run_fn=no_command,
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified", "--task", "main"], run_fn=no_command,
     ) == 0
     # 이미 처분된 상태의 재실행도 append/중복 없이 성공해야 한다.
     assert pd._cmd_rounds(
-        ["resolve", "--cluster", _CLUSTER, "--pm-verified"], run_fn=no_command,
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified", "--task", "main"], run_fn=no_command,
     ) == 0
 
     for ticket in _MEMBERS:

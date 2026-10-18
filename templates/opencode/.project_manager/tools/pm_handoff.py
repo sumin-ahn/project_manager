@@ -617,68 +617,45 @@ def _task_pm_state_file(task: str) -> Path:
 
 
 
-# ── 명시 `--repo`/`--slot` → actor 실행 슬롯 (board·ticket_finish 공용 seam) ──────────
-# 이 도구 자신은 쓰지 않는다 — 핸드오프 정체성은 task 하나다. board.py `regression`·
-# ticket_finish `_resolve_finish_slot` 이 자기 `--repo`/`--slot` 을 파싱한 뒤 리스-조인 검증을
-# 위해 동적 로드해 부른다(판정 복붙 0).
+# ── 명시 `--repo --slot` → 복구 문 제품 트리 (ticket_finish 공용 seam) ──────────
+# 이 도구 자신은 쓰지 않는다 — 핸드오프 정체성은 task 하나다. ticket_finish `_resolve_finish_slot`
+# (복구 문 `--reconcile-integrated`)이 자기 `--repo`/`--slot` 을 파싱한 뒤 리스-조인 검증을 위해
+# 동적 로드해 부른다(판정 복붙 0).
 def _resolve_explicit_identity_slot(
-    repo: str | None,
-    slot: int | None,
+    repo: str,
+    slot: int,
     leases_file: Path | None = None,
 ) -> tuple[str | None, str | None]:
-    """명시 `--repo`(+`--slot`) 를 실행 worktree 슬롯으로 해소한다 — `(worktree_slot, error_msg)`.
+    """명시 `--repo --slot` 을 worktree 슬롯 키로 해소한다 — `(worktree_slot, error_msg)`.
 
-    규칙(actor 연산·handoff/ticket_finish 둘 다 actor):
-      - `repo`·`slot` 둘 다 주어짐 → `work/<repo>_<slot>` 조립. (라이더): 리스 장부가
-        읽히면(`identity_args.repo_slot_numbers` 가 `None` 아님) 그 슬롯이 실제 **활성(leased)**
-        리스에 있는지 검증한다 — 없으면 세션↔repo 조인 불일치로 `(None, error_msg)`(fail-loud).
-        장부 미해독(파일 부재/깨짐 → `None`)은 *검증불가*라 fail-soft(그대로 신뢰) — "판정불가"와
-        "모순"은 다르게 다룬다(과잉 차단 방지).
-      - `repo` 만 주어짐(슬롯 무) → `identity_args.resolve_actor_slot` 로 활성 슬롯 해소.
-        활성 슬롯 ≥2(`SlotResolutionError`)나 0개(미해소)는 모두 *명시 요청이 조인 안 된 것*이라
-        와 같은 결로 `(None, error_msg)` (fail-loud) — repo 만 명시했는데 조용히 무관한
-        auto-resolve 경로로 새는 것을 막는다.
-      - 둘 다 없음(`repo is None`) → `(None, None)` — 호출부 관여 밖이다.
+    `work/<repo>_<slot>` 을 고른다. 리스 장부가 읽히면(`identity_args.repo_slot_numbers` 가 `None`
+    아님) 그 슬롯이 실제 **활성(leased)** 리스에 있는지 검증한다 — 없으면 조인 불일치로
+    `(None, error_msg)`(fail-loud). 장부 미해독(파일 부재/깨짐 → `None`)은 *검증불가*라
+    fail-soft(그대로 신뢰) — "판정불가"와 "모순"은 다르게 다룬다(과잉 차단 방지).
 
     `leases_file` 미지정이면 *호출 시점* REPO 기준으로 재구성한다(monkeypatch 추종·hermetic —
     다른 리스 해소 함수들과 동형).
     """
-    if repo is None:
-        return None, None
     if leases_file is None:
         leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    if slot is not None:
-        known = identity_args.repo_slot_numbers(repo, leases_file)
-        if known is not None and slot not in known:
-            listing = ", ".join(str(n) for n in known) if known else "없음"
-            return None, (
-                f"[M3] 세션↔repo 조인 불일치 — repo '{repo}' 의 활성 슬롯({listing}) 중 "
-                f"{slot} 이 없다. `--slot` 을 정확히 지정하라."
-            )
-        # 실행 슬롯 경로는 **장부 행의 slot 값**이 권위다 — 번호로 `work/<repo>_<N>` 을 재조립하면
-        # 장부가 다른 경로를 들고 있는 슬롯에서 존재하지 않는 cwd 가 나온다. 장부 미해독(부재/
-        # 손상/행 부재)은 *검증 불가*라 종전 canonical 조립으로 폴백하지만, **모순**(같은 번호를
-        # 서로 다른 경로가 주장)은 폴백 대상이 아니다 — 두 답 중 하나를 조용히 고르면 pm_state·
-        # 로그를 엉뚱한 슬롯에 쓴다(리뷰 F-004·"판정불가"와 "모순"은 다르게 다룬다).
-        resolution = identity_args.slot_path_resolution(repo, slot, leases_file)
-        if resolution.status == identity_args.SLOT_PATH_CONFLICT:
-            return None, (
-                f"[M3] 장부 모순 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
-            )
-        return (resolution.path or f"work/{repo}_{slot}"), None
-    # repo 만(슬롯 무) — actor 활성슬롯 자동해소.
-    try:
-        workspace = identity_args.resolve_actor_workspace(repo, leases_file)
-    except identity_args.SlotResolutionError as exc:
-        return None, str(exc)
-    if workspace is None:
+    known = identity_args.repo_slot_numbers(repo, leases_file)
+    if known is not None and slot not in known:
+        listing = ", ".join(str(n) for n in known) if known else "없음"
         return None, (
-            f"[M3] repo '{repo}' 에 활성(leased) 슬롯이 없다 — 세션↔repo 조인 불가. "
-            "`--slot <N>` 으로 명시하거나 셋업을 확인하라."
+            f"[M3] 대여 기록 조인 불일치 — repo '{repo}' 의 활성 슬롯({listing}) 중 "
+            f"{slot} 이 없다. `--slot` 을 정확히 지정하라."
         )
-    # 경로 = 행의 `slot` 값 그대로(세션에서 `work/<session>` 재조립 금지 — 세션은 task 이름일 수
-    # 있고 그러면 없는 경로가 나온다).
-    return workspace.slot, None
+    # 실행 슬롯 경로는 **장부 행의 slot 값**이 권위다 — 번호로 `work/<repo>_<N>` 을 재조립하면
+    # 장부가 다른 경로를 들고 있는 슬롯에서 존재하지 않는 cwd 가 나온다. 장부 미해독(부재/
+    # 손상/행 부재)은 *검증 불가*라 종전 canonical 조립으로 폴백하지만, **모순**(같은 번호를
+    # 서로 다른 경로가 주장)은 폴백 대상이 아니다 — 두 답 중 하나를 조용히 고르면 pm_state·
+    # 로그를 엉뚱한 슬롯에 쓴다(리뷰 F-004·"판정불가"와 "모순"은 다르게 다룬다).
+    resolution = identity_args.slot_path_resolution(repo, slot, leases_file)
+    if resolution.status == identity_args.SLOT_PATH_CONFLICT:
+        return None, (
+            f"[M3] 장부 모순 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
+        )
+    return (resolution.path or f"work/{repo}_{slot}"), None
 
 
 
@@ -1723,7 +1700,6 @@ def _inject_task_into_template(template: str, task: str) -> str:
     (트리거 = 재개 명령 1:1).
     task 이름은 호출부(`build_handoff_prompt_output`)가 `validate_task_name_engine` 로 삽입 전
     검증하므로 단일 안전 토큰(공백·괄호·path 문자·예약패턴 불가)이 보장돼 quoting 이 불필요하다.
-    슬롯 모드는 이 경로를 타지 않는다(호출부에서 task None).
     """
     return _BARE_BOOTSTRAP_TRIGGER_RE.sub(
         lambda match: f"{match.group('trigger')} --task {task}",
@@ -1850,21 +1826,12 @@ def parse_pytest_summary(output: str) -> str:
 
 
 def _active_repo_name(board_module) -> str | None:
-    """활성 repo 명 — 세션 유도가 1순위, 없으면 등록 repo 가 정확히 1개일 때만 그것.
+    """활성 repo 명 — 등록 repo 가 정확히 1개일 때만 그것.
 
-    board 의 `id_prefix` 해소 체인과 **같은 순서**를 repo 축에서 되풀이한다. 바인딩된 세션명
-    `<repo>_<N>` 에서 repo 를 떼는 것(`_repo_from_session`)이 1순위이고, 세션이 없거나 그
-    형태가 아니면 등록 repo 가 정확히 1개일 때만(모호성 0) 그것을 활성 repo 로 본다. 2개
-    이상이면 어느 쪽인지 알 수 없으므로 None 이라 호출부가 다음 층으로 내려간다(추측 금지).
+    board 의 `id_prefix` 해소 체인(count-based)과 **같은 규칙**을 repo 축에서 되풀이한다. 세션
+    이름에서 repo 를 떼지 않는다. 2개 이상이면 어느 쪽인지 알 수 없으므로 None 이라 호출부가
+    다음 층으로 내려간다(추측 금지).
     """
-    try:
-        session = board_module.session_name()
-    except Exception:  # noqa: BLE001 — 세션 미해소는 다음 유도층으로(fail-soft).
-        session = None
-    if session:
-        repo = board_module._repo_from_session(session)
-        if repo:
-            return repo
     repos = board_module.registered_repos()
     if len(repos) == 1:
         return next(iter(repos))
@@ -2863,7 +2830,7 @@ class PmHandoff:
         """슬롯 worktree 디렉터리가 stale(장부엔 있으나 dir 부재)인지 — task 슬롯별 회귀 vacuous-pass 가드.
 
         `_regression_cwd(slot)` 는 stale 슬롯(장부 조인 통과·dir 부재)을 **soft 하게 REPO 로 폴백**한다
-        슬롯 모드에선 무해하나, **task 슬롯별 회귀**에선 그 REPO 에서 pytest 가 돌아 그
+        — **task 슬롯별 회귀**에선 그 REPO 에서 pytest 가 돌아 그
         슬롯이 green 처럼 보인다(vacuous-pass·엉뚱한 트리 green). 그래서 이 경로에선 REPO
         폴백을 금지하고 부재를 fail-loud(그 슬롯 red)로 올린다. 실재 판별은 worktree_pool `slot_path(slot).
         exists()`(엔진 소유 축·`_regression_cwd` 의 `REPO/slot` 과 동형). 판별 불가(worktree_pool 부재·

@@ -3465,7 +3465,7 @@ def test_main_subcommand_with_tty_does_not_enter_console(pc, monkeypatch):
 
 
 def test_alloc_success_leases_under_task_session(pc, capsys):
-    """alloc <repo> --task <이름>(기바인딩) → worktree_pool.alloc(repo, session=task) 로 대여·rc0."""
+    """alloc <repo> --task <이름>(기바인딩) → worktree_pool.alloc(repo, owner_task=task) 로 대여·rc0."""
     wp = FakeWorktreePool(alloc_returns=FakeLease(slot="work/svc_1", repo="svc", state="leased"))
     rc = pc.cmd_alloc(
         argparse.Namespace(repo="svc", task="job"), worktree_pool=wp, board=FakeBoard()

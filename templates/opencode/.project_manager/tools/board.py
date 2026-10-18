@@ -4098,21 +4098,27 @@ except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도
     raise
 
 
-# 귀속 쓰기(claim·migrate·init owner)가 세션을 해소하지 못했을 때의 중단 메시지. 모호(활성
-# 슬롯 ≥2)와 미등록(행 0)을 한 문장으로 안내한다 — 조용한 폴백이 없으므로 처방이 메시지에
-# 있어야 한다.
-UNREGISTERED_SESSION_ABORT = (
-    "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
-    "`--repo <repo> --slot <N>` 로 세션을 명시하라 (예: `--repo project_manager --slot 1`). "
-    + identity_args.NO_WORK_FOLDER_REMEDY
+# 귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)에 `--task` 가 없을 때의 중단 문구.
+# 정체성은 task 하나라 다른 값(환경변수·단일 대여)으로 대신하지 않는다.
+TASK_REQUIRED = (
+    "[중단] {action}: 귀속 쓰기는 `--task <task>` 가 필요하다 — 정체성은 task 하나다. "
+    "`{command} --task <task>` 로 다시 실행하라(task 의 폴더가 2개 이상이면 "
+    "`--repo <repo> --slot <N>` 을 함께 준다). task 폴더는 "
+    "`pm-config alloc <repo> --task <task>` 로 빌린다."
+)
+
+# 실행 소비자(claim·new·cluster new·regression·livegate record·rounds resolve)에 `--task` 없이
+# `--repo`/`--slot` 이 왔을 때의 중단 문구. {retry} 는 입력값을 채운 다시 칠 인자다.
+SLOT_SELECTOR_WITHOUT_TASK = (
+    "[중단] `--repo`/`--slot` 은 task 가 보유한 폴더를 고르는 위치 인자다(정체성 아님). "
+    "`{retry}` 로 다시 실행하라."
 )
 
 
-def session_name(override: str | None = None, *, required: bool = False) -> str | None:
-    """세션 식별자 해소 — count-based 유도:
+def session_name(override: str | None = None) -> str | None:
+    """세션 식별자 해소(조회·소유 대조용) — count-based 유도:
 
-        override(`--repo`/`--slot` 해소값 — 액터 서브가 `_actor_session_override` 로
-                 미리 계산해 넘긴다)
+        override(`--task` 값 — 액터 서브가 `_actor_session_override` 로 미리 검증해 넘긴다)
           > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
           > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
           > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
@@ -4125,14 +4131,12 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
     session=`)에 있던 것이 범위 오류였다 — 슬롯 1개는 N=1 부분집합일 뿐이라
     "이 클론이 어떤 홈이다"를 이 프로세스만 아는 파일에 스스로 적어두는 쪽지를
     두지 않는다. 그 키가 conf 에 남아 있어도 읽지 않는다(모르는 키로 표면화될 뿐 동작 불변).
-    세션은 **공유 장부로부터의 유도**(lease 단일-행) 또는 **명시**(env·`--repo/--slot`)로만
+    세션은 **공유 장부로부터의 유도**(lease 단일-행) 또는 **명시**(env·`--task`)로만
     해소한다 — 어느 층도 저장하지 않고 매 호출 재유도한다.
 
-    `required=True`(귀속 쓰기: claim·migrate·init owner 기본값)에서 미해소(None)면 fail-loud —
-    `--repo <repo> --slot <N>` 명시를 안내하고 `sys.exit` 한다(silent 오귀속 금지). `required=False`
-    (surface: whoami/status/list --mine)면 None 을 반환한다(호출부가 "(비바인딩)" 표시). 구
-    `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처(worktree_pool `_default_session` 의
-    lease 취득 임시 명명)에만 잔존한다 — 여기(귀속 해소)선 제거.
+    귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)는 이 함수를 정체성으로 쓰지 않는다 —
+    `--task` 가 없으면 `TASK_REQUIRED` 로 멈춘다. 여기 미해소(None)는 surface(whoami/status/
+    list --mine)의 "(비바인딩)" 표시와 소유 대조 거부로 이어진다.
 
     저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
     소유권이 미스되므로 세 모듈(board.session_name·worktree_pool._default_
@@ -4152,8 +4156,6 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
     if len(leased) == 1:
         return leased[0]
     # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 폴백 없음.
-    if required:
-        sys.exit(UNREGISTERED_SESSION_ABORT)
     return None
 
 
@@ -4214,9 +4216,9 @@ def identity_tag(session_override: str | None = None,
     같다**(graceful·하위호환). 읽기측은 `/` 로 split 해 user/slot 을 분리하되, `/` 없는 값
     (구 ticket·user 미상)은 slot-only 로 읽어야 한다(fail-soft).
 
-    세션 미바인딩(`session_name` None·surface·required=False)이면 슬롯 토큰이 없으므로 user
-    만(있으면) 반환하고 둘 다 없으면 None 이다(graceful). 귀속 쓰기 호출부(claim)는
-    이 함수 전에 `session_name(required=True)` 로 세션을 확정하므로 pm 이 None 으로 새지 않는다.
+    세션 미바인딩(`session_name` None·surface)이면 세션 토큰이 없으므로 user
+    만(있으면) 반환하고 둘 다 없으면 None 이다(graceful). 귀속 쓰기 호출부(new·claim)는
+    `--task` 를 `session_override` 로 넘기므로 pm 이 None 으로 새지 않는다.
     """
     pm = session_name(session_override)
     user = user_name(user_override)
@@ -4225,100 +4227,44 @@ def identity_tag(session_override: str | None = None,
     return f"{user}/{pm}" if user else pm
 
 
-def _reject_task_slot_identity_mix(args: argparse.Namespace) -> None:
-    """세션 정체성 소비의 task와 repo/slot 혼합을 거부한다.
+def _actor_session_override(args: argparse.Namespace) -> str | None:
+    """비실행 명령(소유 대조·귀속 쓰기)의 정체성 — 검증한 `--task` 값, 없으면 None.
 
-    init·reid·migrate-identity 등은 독립 task 축을 유지한다. 허용된 실행 소비는
-    _execution_actor_session_override에서 task 귀속과 실행 좌표를 따로 처리한다.
+    이 명령들의 parser 에는 `--repo`/`--slot` 이 없다. 무검증 task 명이 created_by/claimed_by/
+    lease-session 으로 영속되지 않도록 여기서 한 번 검증한다(실행 소비자는
+    `_execution_actor_session_override` 가 같은 검증을 부른다).
     """
-    if getattr(args, "task", None) is not None and (
-        getattr(args, "repo", None) is not None
-        or getattr(args, "slot", None) is not None
-    ):
-        sys.exit(
-            "[중단] --task 는 독립 정체성이다 — --repo/--slot 과 함께 쓸 수 없다 "
-            "(task 보유 작업공간은 장부에서 자동 해소)."
-        )
+    task = getattr(args, "task", None)
+    if not task:
+        return None
+    _validate_actor_task_or_exit(task)
+    return task
 
 
-def _actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> str | None:
-    """`--repo`/`--slot`에서 actor 연산(claim·init·migrate-identity·regression·
-    livegate record·reid)의 세션 override 문자열을 해소한다 — 구 `args.session` 을 대체하는
-    단일 seam(전 actor 서브 공유·중복 0).
+def _slot_selector_retry(identity: "identity_args.Identity") -> str:
+    """위치 인자만 준 호출의 다시 칠 인자 — 입력한 repo·slot 을 채운다."""
+    retry = f"--task <task> --repo {identity.repo}"
+    if identity.slot is not None:
+        retry += f" --slot {identity.slot}"
+    return retry
 
-    **`soft=True`**(명시 `--cwd` 핀 호출부 + `cmd_init`) — `--repo` 단독 해소가 모호(활성 ≥2·
-    `SlotResolutionError`)하거나 미해소(활성 0)여도 `sys.exit` 대신 `None` 을 돌린다.
-    `cmd_init` 이 soft 인 이유: init 에서 `--repo X` 의 1순위 의미는 *areas 등록명 지정*이고,
-    fresh clone 은 정의상 활성 lease 가 0이라 hard 해소면 그 등록 처방이 자기 자리에서 죽는다.
-    init 의 세션은 등록행 owner 기본값에만 쓰이므로 미해소는 빈 owner(미상)로 강등한다 —
-    귀속 쓰기(claim 등)의 hard 계약은 그대로다. 실행 위치가
-    `--cwd` 로 핀된 regression run 은 session 이 cwd/디스패치에 불요하고 슬롯 test_cmd 유도에만
-    남으므로(cwd override 최우선), 모호/미해소를 하드 실패시키지 않고 test_cmd 폴백(repo/local)에
-    맡긴다 — livegate cf14d9b(`--cwd` 시 eager 해소 생략)의 동형 처방. `--slot` 명시(kind="slot")·
-    task 는 애초에 raise 하지 않으므로 soft 무영향(그 슬롯 test_cmd 를 그대로 유지). 사용 오류
-    (ValueError — `--slot` 단독·`--slot < 1`)는 soft 여도 하드 실패(모호 아님·usage error).
 
-    `identity_args.parse_identity` 로 kind 를 가른다:
-      - kind="slot"(`--repo X --slot N`) — 리스 조회 없이 즉시 `"<repo>_<N>"`(완전 해소·정체성
-        문자열 그대로 — 옛 `--session <repo>_<N>` 과 byte-identical).
-      - kind="repo"(`--repo X` 단독) — `identity_args.resolve_actor_slot`(repo X 의 활성 리스가
-        정확히 1개면 그 세션·≥2개는 `SlotResolutionError`·**0개는 fail-loud**). 명시 repo 는
-        해소되거나 명시적으로 실패한다 — 0개를 None 폴백하면 kind=none 과 구분 못 해 다른 세션
-        silent 오귀속(codex r2). **kind=none(인자 전무)만** None → 기존 no-flag 체인.
-      - kind="none"(인자 전무) — None → 기존 체인 그대로(무변경).
-    `--slot` 단독(`--repo` 없음)·`--slot < 1` 은 `parse_identity` 가 `ValueError` 로 거부한다 —
-    여기서 잡아 board.py 관례(`[중단]` 접두)로 fail-loud 한다.
+def _execution_actor_session_override(args: argparse.Namespace) -> str | None:
+    """실행 소비자의 정체성 — 검증한 `--task` 값, 없으면 None.
+
+    `--repo`/`--slot` 은 task 가 보유한 폴더를 고르는 위치 인자라 `--task` 와 함께일 때만 받는다.
+    `--task` 없이 오면 어떤 쓰기·git 호출보다 먼저 `SLOT_SELECTOR_WITHOUT_TASK` 로 멈춘다.
     """
-    _reject_task_slot_identity_mix(args)
     try:
         identity = identity_args.parse_identity(args)
-    except ValueError as e:
-        sys.exit(f"[중단] {e}")
+    except ValueError as exc:
+        sys.exit(f"[중단] {exc}")
     if identity.task:
-        # task-mode 귀속 — claimed_by/created_by 는 `<user>/<task>`. 작업공간
-        # 이 아니라 **정체성 축**이라 task 이름을 그대로 세션 override 로 돌린다.
-        #
-        # **깔때기 1회 검증**: 이 분기를 claim/new/migrate/reid 가 지나고,
-        # 실행-위치 도구(regression/livegate/ticket_finish)는 `_resolve_task_workspace_cwd` 가
-        # 같은 `_validate_actor_task_or_exit` 를 부른다 — 무검증 task 명이 created_by/claimed_by/
-        # lease-session 으로 영속되는 클래스를 소비 지점 전체에서 한 번에 닫는다(point-patch 아님).
         _validate_actor_task_or_exit(identity.task)
         return identity.task
-    if identity.kind == "slot":
-        return identity.session
-    if identity.kind == "repo":
-        # `--repo X` 명시 = actor 정체성을 X 로 하겠다는 의도. 활성 1슬롯이면 해소, ≥2면 fail-loud.
-        # **0개(미해소)도 fail-loud** — None 반환하면 호출부가 "인자 전무(kind=none)"와 구분 못 해
-        # env/단일-lease 로 폴백→다른 세션으로 **silent 오귀속**(예 `--repo typo` 가 단일
-        # lease 세션으로 claim). 명시-정체성 계약·오귀속 방지 목적이라 explicit-unresolved
-        # 는 폴백 아니라 명시적 실패로 닫는다(codex r2·kind=none 만 폴백·[[answer-feasibility-dont-decide]] 정신).
-        try:
-            session = identity_args.resolve_actor_slot(identity.repo, LEASES_FILE)
-        except identity_args.SlotResolutionError as e:
-            if soft:
-                return None   # --cwd 핀— 모호를 cwd 실행이 존중, test_cmd 폴백에 맡김.
-            sys.exit(f"[중단] {e}")
-        if session is None:
-            if soft:
-                return None   # --cwd 핀— 미해소도 cwd 실행이 존중(soft).
-            sys.exit(
-                f"[중단] repo '{identity.repo}' 의 활성 슬롯을 해소할 수 없다(활성 리스 0개). "
-                f"`--repo {identity.repo} --slot <N>` 으로 슬롯을 명시하거나, 인자 없이(자동 해소) 실행하라."
-            )
-        return session
+    if identity.kind != "none":
+        sys.exit(SLOT_SELECTOR_WITHOUT_TASK.format(retry=_slot_selector_retry(identity)))
     return None
-
-
-def _execution_actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> str | None:
-    """허용된 실행 소비의 actor. 선택 좌표는 task 귀속을 바꾸지 않는다."""
-    if getattr(args, "task", None):
-        try:
-            identity = identity_args.parse_identity(args)
-        except ValueError as exc:
-            sys.exit(f"[중단] {exc}")
-        _validate_actor_task_or_exit(identity.task)
-        return identity.task
-    return _actor_session_override(args, soft=soft)
 
 
 def _validate_actor_task_or_exit(task: str) -> None:
@@ -4382,87 +4328,24 @@ def _resolve_task_workspace_cwd(
     return str(tree), command
 
 
-def _repo_from_session(session: str) -> str | None:
-    """세션명 `<repo>_<N>` 에서 repo 를 추출한다.
-
-    슬롯 세션명은 `{repo}_{N}`(N=숫자 슬롯·worktree_pool `_slot_for`·pm_bootstrap lean
-    끝의 `_<숫자>` 마디를 슬롯 번호로 떼고 나머지를 repo 로
-    잡는다(`rpartition('_')` — 마지막 `_` 만 분리) — repo 명이 `_` 를 포함해도(예
-    `my_app_1` → repo `my_app`·`a_2_3` → `a_2`) 정확히 갈린다. 끝
-    마디가 숫자가 아니거나(커스텀 세션명 `pm`·`my-session`·`foo_bar`) repo 부분이
-    비면(`_1`) `<repo>_<N>` 형태가 아니므로 None (유도 skip → id_prefix 가 다음 층으로).
-
-    **값은 장부가 준다**: 이름 형태로 "슬롯 축인가"만 가르고 실제 repo/번호는
-    `identity_args.session_coordinates` 가 그 세션 명의 행에서 읽는다 — 이름과 행이 어긋난 장부
-    (`repo=A · slot=work/A_1 · session=B_7` — pool alloc 이 다른 repo 의 단일-lease 세션명을 실으면
-    생긴다)에서 이름 분해는 장부에 없는 repo `B` 를 내고, 그 값으로 만든 안내/렌즈는 조인 실패한다
-    (리뷰 F-002). 장부에 그 세션 행이 없으면 이름이 유일한 진실이라 종전 값과 같다.
-    """
-    return _session_slot_coordinates(session)[0]
-
-
-def _session_slot_coordinates(session: str) -> "tuple[str | None, int | None]":
-    """세션명 → 재접속 좌표 `(repo, N)` — 이름 형태 게이트 + **장부 값** 좌표(`_repo_from_session`
-    과 `reid` remedy 안내가 공유하는 단일 해소)."""
-    head, sep, tail = session.rpartition("_")
-    if not sep or not head or not tail.isdigit():
-        return None, None
-    repo, number = identity_args.session_coordinates(session, LEASES_FILE)
-    return (repo or head), (number if number is not None else int(tail))
-
-
-def _prefix_from_session(session: str | None = None) -> str | None:
-    """바인딩된 세션의 repo → areas.md 그 repo 행의 prefix.
-
-    `session_name(session)`(count-based·surface·required=False)이 세션을 해소하면 세션명을
-    `<repo>_<N>` 로 파싱해(`_repo_from_session`) repo 를 얻고, areas.md 에서 그 repo 행의
-    prefix 를 돌려준다 — per-repo prefix 의 단일 진실은 areas.md 칼럼이다. 다음은
-    모두 None → id_prefix 가 다음 층(count-based)으로 폴백:
-      - 세션 미해소(None·모호 M>1·비바인딩) — `session_name()` 이 None(required=False라 fail-loud 아님).
-      - 세션명이 `<repo>_<N>` 형태 아님(커스텀 세션명) — `_repo_from_session` None.
-      - 그 repo 가 areas.md 에 미등록(또는 prefix 칼럼 빈 값·areas.md 부재).
-
-    `session` 명시는 M>1 슬롯 순회(`_regression_run_slot`→`_test_cmd`)가 슬롯별로
-    prefix 를 뽑을 때 쓴다 — `session_name(session)` 이 그 override 를 즉시 반환하므로 슬롯 lease
-    test_cmd 가 빈 areas 폴백이 *그 슬롯의* repo prefix 로 정확 해소된다. session 을 안 넘기면
-    (`None`) 전역 `session_name()` 재해소로 떨어져, M>1 순회에서 전 슬롯이 None(모호)·env 오귀속
-    prefix 로 같은 areas test_cmd 를 돌리는 false-green 이 생긴다(push 게이트·codex must-fix).
-    """
-    resolved = session_name(session)   # override(session) 우선·미지정 시 전역 해소(required=False → None 가능)
-    if not resolved:
-        return None
-    repo = _repo_from_session(resolved)
-    if not repo:
-        return None
-    _header, rows = _parse_areas()
-    for row in rows:
-        if row.get("repo") == repo:
-            return row.get("prefix") or None
-    return None
-
-
-def id_prefix(override: str | None = None, *, session: str | None = None) -> str | None:
+def id_prefix(override: str | None = None) -> str | None:
     """Resolve ticket-ID namespace prefix (multi-repo areas·N×M).
 
     prefix 는 M>1 repo 의 ID 네임스페이스(협업용 아님)다. 해소 체인(count-based
     유도):
 
         override(--prefix)
-          > 세션 유도: session_name(session) → 세션명 `<repo>_<N>` → repo → areas.md 행 prefix
           > 등록 repo(prefix) 가 정확히 1개면 그 prefix               (count-based)
           > None
 
     None → 무prefix `T-NNNN`(`none` 카테고리·1급 형상). Non-None → `T-<PREFIX>-NNN` 네임스페이스.
 
-    `session`(키워드 전용) 은 세션 유도층에만 쓰이는 override 다 — M>1 슬롯 순회(`_test_cmd`)가
-    슬롯별 prefix 해소를 위해 그 슬롯 세션명을 넘긴다. 미지정(`None`)이면 세션 유도가 전역
-    `session_name()` 을 해소한다(현행·cmd_new/status/init 무변경). count-based 층은 session 과
-    무관하다(전역 registry).
+    세션 이름에서 repo 를 떼어 prefix 를 유도하는 층은 없다 — 엔진은 세션 토큰을 분해하지 않는다.
 
     **local.conf `prefix=` 층은 없다.** prefix 는 areas.md 의 per-repo 칼럼이 단일 진실이고,
     clone 전역 키로 남의 prefix 를 silent 오네임스페이스하던 클래스를 원천 차단한다. 그 키가
     conf 에 남아 있어도 읽지 않는다. 해소 실패는 `none` 카테고리(`T-NNNN`)이며, multi-repo
-    (등록 repo ≥2) 홈에서 세션 유도·count-based 가 둘 다 실패하면 `cmd_new` 가 fail-loud
+    (등록 repo ≥2) 홈에서 count-based 가 실패하면 `cmd_new` 가 fail-loud
     (오네임스페이스 방지).
     """
     if override:
@@ -4471,18 +4354,13 @@ def id_prefix(override: str | None = None, *, session: str | None = None) -> str
         # 미등록이면 입력 그대로 — 최초 사용이 canonical case 를 확립하고, 발행 시 `_next_id` 가
         # 기존 티켓 시리즈 case 로 정련한다(기존 `T-AAA-*` 를 `--prefix aaa` 가 이어감).
         return _fold_lookup(override, registered_prefixes()) or override
-    # 2. 세션 유도 — 바인딩된 세션명 `<repo>_<N>` → repo → areas.md prefix (단일 진실).
-    #    session override 를 thread — M>1 슬롯 순회가 슬롯별 정확 해소(전역 재해소 false-green 차단).
-    derived = _prefix_from_session(session)
-    if derived:
-        return derived
-    # 3. count-based — 등록 repo(prefix) 가 정확히 1개면 그것(단일 self-host·모호성 0).
+    # count-based — 등록 repo(prefix) 가 정확히 1개면 그것(단일 self-host·모호성 0).
     #    cmd_new 의 ≥2 fail-loud 가드와 같은 `registered_prefixes()` 를 세어 lockstep 유지.
     registered = registered_prefixes()
     if len(registered) == 1:
         return next(iter(registered))
-    # 4. 미해소 → None. 등록 0(prefix 칼럼이 빈 repo 행만 있는 홈)은 `none` 카테고리(`T-NNNN`)이고,
-    #    등록 ≥2 인데 세션 유도가 실패했으면 `cmd_new` 가 fail-loud 한다(오귀속 차단).
+    # 미해소 → None. 등록 0(prefix 칼럼이 빈 repo 행만 있는 홈)은 `none` 카테고리(`T-NNNN`)이고,
+    #    등록 ≥2 면 `cmd_new` 가 fail-loud 한다(오귀속 차단).
     return None
 
 
@@ -5070,25 +4948,15 @@ def _created_by_user(created_by: str | None) -> str | None:
 
 
 def _created_by_session(created_by: str | None) -> str | None:
-    """`created_by`(`<user>/<session>`·`<user>`·슬롯-only)에서 *session* 토큰 추출.
+    """`created_by`(`<user>/<session>`·`<user>`)에서 *session* 토큰 추출.
 
-    session = `created_by` 의 `/` 뒤 마지막 토큰(`<repo>_<N>` 슬롯 세션 또는 task 이름). 세션 기본
-    뷰(무인자 `list`·명시 세션 뷰)의 "내 스트림 open" 판정에 쓴다 — 현 세션(`session_name`)과
+    session = `created_by` 의 `/` 뒤 마지막 토큰(task 이름). 세션 기본
+    뷰(무인자 `list`)의 "내 스트림 open" 판정에 쓴다 — 현 세션(`session_name`)과
     이 값이 일치하는 open 이 내 스트림이다. 이전 task-prefix 판정을 대체한다(prefix 는 ID 라벨일
     뿐 스트림 판정 아님).
 
-    **`/` 없는 값의 모호성**: `identity_tag` 는 (a) 세션 미바인딩 발행 시 순수 **user**(user 해소·슬롯
-    부재)·(b) **user 미해소** 발행 시 순수 **session**(슬롯/task-only)을 둘 다 slash 없이 낸다 — 두
-    경우가 겹친다. 슬롯 세션 예약 패턴(`<repo>_<N>`·task 명은 이 패턴 금지)으로 기계 판별한다:
-    slash 없는 값이 그 패턴에 부합하면(`_repo_from_session` non-None) **session 토큰**으로 취급해
-    user-미해소로 슬롯-발행한 open 이 자기 세션 뷰에서 소실되는 것을 막는다. 부합하지 않으면
-    (순수 user·`<repo>_<N>` 아닌 task-only) None — 세션 미상이라 어느 세션 스트림에도 안 든다
-    ([[prefer-data-migration-over-fallback]]로 backfill 대상).
-
-    `_created_by_user`(user 토큰)와의 대칭이 깨지는 지점: 저쪽은 slash 없는 값을 전부 *user* 로
-    보지만, 이쪽은 slot-session 패턴에 부합하면 *session* 으로 본다 — user 식별자가 우연히
-    `<repo>_<N>` 형태면 양쪽이 겹쳐 오분류할 수 있으나, 그건 예약 체계가 이미 수용하는 동일
-    클래스의 모호성(슬롯 세션 이름공간 예약)이다.
+    `/` 없는 값은 세션 토큰이 없는 것으로 본다(None) — 이름 모양으로 세션을 추측하지 않는다.
+    옛 슬롯 세션 토큰은 `migrate-identity --task <task>` 로 옮긴다.
     """
     if created_by is None:
         return None
@@ -5097,29 +4965,14 @@ def _created_by_session(created_by: str | None) -> str | None:
         return None
     if "/" in cb:
         return cb.rsplit("/", 1)[-1] or None
-    # slash 없음 — user-only(세션 미바인딩)와 slot-only(user 미해소)가 겹치는 모호 값. 슬롯 세션
-    # 예약 패턴(`<repo>_<N>`)에 부합하면 session 토큰으로 판별(user-미해소 슬롯 발행 open 소실 방지).
-    return cb if _repo_from_session(cb) is not None else None
+    return None
 
 
-def _slot_matches(claimed_by: str, my_slot: str, *, mode: str = "exact") -> bool:
-    """`claimed_by`(`<user>/<pm-slot>` 또는 legacy 슬롯-only)의 slot 토큰이 `my_slot` 인가.
-
-    `mode="exact"`(기본·`--mine`/`--repo X --slot N`): 완전 일치 — slot 식별자 전체를 안다.
-    `mode="repo"`(`--repo X` 단독·view/actor repo-scope): slot 규칙
-    (`work/<repo>_<N>` → 세션 이름 `<repo>_<N>`)상 `my_slot` 이 repo 이름이므로, slot 토큰의
-    repo(`_repo_from_session`·repo 명 `_` 안전·`--repo my` 가 `my_app_1` 오매칭 안 함)가
-    `my_slot`(그 repo 의 어느 슬롯이든) 이거나 토큰 자체가 `my_slot`(드문 비-숫자
-    커스텀 슬롯)이면 매칭한다 — "그 repo 의 내 슬롯 전체".
-
-    (구 `suffix=True` — 숫자 N 만으로 repo 불문 cross-repo 매칭하던 bare `--slot N` 뷰는
-    `--slot` 은 `--repo` 없이는 fail-loud
-    """
+def _slot_matches(claimed_by: str, my_slot: str) -> bool:
+    """`claimed_by`(`<user>/<session>` 또는 legacy 세션-only)의 세션 토큰이 `my_slot` 과 완전 일치하는가."""
     if not claimed_by:
         return False
     slot_token = claimed_by.rsplit("/", 1)[-1]
-    if mode == "repo":
-        return slot_token == my_slot or _repo_from_session(slot_token) == my_slot
     return slot_token == my_slot
 
 
@@ -5218,8 +5071,8 @@ def scan_task_tickets(user: str | None, task: str,
 
 def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
                     my_slot: str, area_owner_in_use: bool, multi_user: bool,
-                    *, slot_mode: str = "exact", slot_scoped: bool = False) -> bool:
-    """이 티켓이 `--mine`/`--repo`/`--slot` 뷰에 들어가는지 — (b) 내 claim ∨ (a) 내 소유 open.
+                    *, slot_scoped: bool = False) -> bool:
+    """이 티켓이 `--mine`/`--task` 뷰에 들어가는지 — (b) 내 claim ∨ (a) 내 소유 open.
 
     **단일 불변식**(전 surface 수렴·point-patch 금지): 필터 뷰 멤버십 = (내
     claim) ∪ (내 소유 open). 타 사용자의 claim·미claim open 은 **어떤 필터 뷰에도 안 나온다** —
@@ -5228,10 +5081,10 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
     **단일 사용자(distinct user ≤1·`multi_user` False)에서만** 허용한다.
 
     (b) 내 claim — 상태 무관 연속성 (user-first). `claimed_by` 의 user 토큰 유무로 가른다:
-      - **user-qualified**(`_claimed_by_user(cb)` non-None·`<user>/<slot>`): 내 것 iff `cb_user ==
-        my_user`. **slot-scoped 뷰**(`--repo`/`--slot`)면 `_slot_matches` AND 로 *내 것
-        ∩ 그 슬롯(또는 그 repo 의 내 슬롯 전체)*(타 슬롯의 내 claim 은 slot 뷰서 제외·`--mine`
-        엔 나옴). **비제약 뷰**(`--mine`)면 user 만(전 슬롯). 타 사용자 claim(user 불일치)·my_user
+      - **user-qualified**(`_claimed_by_user(cb)` non-None·`<user>/<session>`): 내 것 iff `cb_user ==
+        my_user`. **task 뷰**(`--task`)면 `_slot_matches` AND 로 *내 것
+        ∩ 그 task*(타 task 의 내 claim 은 task 뷰서 제외·`--mine`
+        엔 나옴). **비제약 뷰**(`--mine`)면 user 만(전 task). 타 사용자 claim(user 불일치)·my_user
         미해소(귀속 불가)는 제외 — 남의 user-claim 을 slot 번호로 끌어오는 누출 0.
       - **legacy 슬롯-only**(`cb_user is None`·user 토큰 없음): **진짜 단일 사용자(distinct user ≤1·
         `not multi_user`)에서만** `_slot_matches`(내 슬롯)로 포함한다. 게이트가 `my_user is None` 이
@@ -5243,8 +5096,8 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
       - my_user·owner 둘 다 해소 → strict `owner == my_user`(유출 0·유일 포함 규칙).
       - 미해소(my_user None ∨ owner None) + `multi_user` → `return False`(strict-exclude).
       - 미해소 + 단일 사용자(¬multi_user) → `return True`(all-open degrade 보존·빈 보드 금지·회귀 0).
-    open 은 미claim 이라 슬롯이 없다 — slot-scoped 뷰에서도 (a) 는 슬롯 무관 backlog(`--mine` 과
-    동일 풀)로 두고 슬롯으로 좁히지 않는다.
+    open 은 미claim 이라 세션이 없다 — task 뷰에서도 (a) 는 task 무관 backlog(`--mine` 과
+    동일 풀)로 두고 task 로 좁히지 않는다.
     """
     cb = fm.get("claimed_by") or ""
     # (b) 내 claim — user-first. user 토큰 유무로 가른다.
@@ -5254,9 +5107,9 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
             # user-qualified claim(`<user>/<slot>`) — 내 것 iff user 일치(+ slot-scoped 면 그 슬롯).
             # my_user 미해소(None)면 귀속 불가 → 미포함(남의 user-claim 을 slot 번호로 끌어오는 누출 0).
             if my_user is not None and cb_user == my_user and (
-                    not slot_scoped or _slot_matches(cb, my_slot, mode=slot_mode)):
+                    not slot_scoped or _slot_matches(cb, my_slot)):
                 return True
-        elif not multi_user and _slot_matches(cb, my_slot, mode=slot_mode):
+        elif not multi_user and _slot_matches(cb, my_slot):
             # legacy 슬롯-only claim(user 토큰 없음) — **진짜 단일 사용자(distinct user ≤1·not multi_user)**
             # 에서만 slot 매칭으로 포함. 게이트가 `my_user is None` 이 아니라 `not multi_user` 인 건
             # `user_name()` 이 git email 폴백으로 단일 사용자도 my_user 를 해소할 수 있어(흔함)
@@ -5277,7 +5130,7 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
 def _in_default_view(status: str, fm: dict, my_user: str | None,
                      my_session: str | None, area_owner_in_use: bool,
                      multi_user: bool) -> bool:
-    """세션 기본 뷰(무인자 `list`·명시 세션 뷰) 멤버십 — **내 user ∧ session 스트림**.
+    """세션 기본 뷰(무인자 `list`) 멤버십 — **내 user ∧ session 스트림**.
 
     세션의 기본 화면은 그 세션이 **생성한 open + 그 세션 claim** 만 출력한다 — 단,
     user-qualified 귀속은 **현재 user 도 일치**해야 한다. 동명 task(`alice/main` 대 `bob/main`)와
@@ -5300,7 +5153,7 @@ def _in_default_view(status: str, fm: dict, my_user: str | None,
         # 무바인딩 — user-단위 폴백(--mine 동형·전 슬롯). open 소유·claim 판정은 단일
         # predicate 재사용(point-patch 금지). my_slot="" 은 slot 매칭 미발동(무바인딩=슬롯 없음).
         return _ticket_is_mine(status, fm, my_user, "", area_owner_in_use,
-                               multi_user, slot_mode="exact", slot_scoped=False)
+                               multi_user, slot_scoped=False)
     if status == "open":
         created_by = str(fm.get("created_by") or "").strip()
         if _created_by_session(created_by) != my_session:
@@ -5316,7 +5169,7 @@ def _in_default_view(status: str, fm: dict, my_user: str | None,
     # 비-open(claimed/blocked/done) — claim session AND user. `_claimed_by_user` 가 None 인
     # legacy 슬롯-only와 my_user 미해소는 multi-user strict-exclude / 단일 사용자 session-only degrade.
     claimed_by = fm.get("claimed_by") or ""
-    if not _slot_matches(claimed_by, my_session, mode="exact"):
+    if not _slot_matches(claimed_by, my_session):
         return False
     claimed_user = _claimed_by_user(claimed_by)
     if my_user is not None and claimed_user is not None:
@@ -5352,7 +5205,7 @@ def _ticket_ownership(fm: dict, args: argparse.Namespace) -> _OwnershipVerdict:
     """이 실행 정체성이 `fm` 티켓의 claim 소유자인가 (claimed_by 부재면 무대상=통과).
 
     - `claimed_by` 없음 → 소유자 자체가 없으므로 통과(새 차단 아님·open 티켓의 claim/block 무영향).
-    - 세션 미해소 → 거부. claim 이 `session_name(required=True)` 로 이미 fail-loud 인 조건과
+    - 세션 미해소 → 거부. claim 이 `--task` 없이는 멈추는 조건과
       대칭이다 — 소유를 증명할 수 없는 상태에서 남의 티켓을 옮기는 쪽이 더 나쁘다.
     - user-qualified `claimed_by`(`<user>/<slot>`) → user 와 slot 이 **둘 다** 일치해야 한다.
     - 레거시 슬롯-only `claimed_by` → 다중사용자 보드면 귀속이 모호하므로 거부하고, solo
@@ -5378,17 +5231,10 @@ def _ticket_ownership(fm: dict, args: argparse.Namespace) -> _OwnershipVerdict:
 
 
 def _owner_session_remedy(claimed_by: str) -> str:
-    """소유 세션을 다시 잡는 canonical 좌표 안내 (`--repo X --slot N`).
-
-    `cmd_reid` 가 쓰던 규칙 그대로다 — 슬롯 세션 예약 패턴(`<repo>_<N>`)이면 좌표로 분해해
-    실행 가능한 지시를 주고, 아니면(task·커스텀 세션명) 세션 이름만 병기한다(틀린 좌표를
-    지어내지 않는다).
-    """
-    slot_token = claimed_by.rsplit("/", 1)[-1]
-    repo, number = _session_slot_coordinates(slot_token)
-    if repo is not None and number is not None:
-        return f"--repo {repo} --slot {number}"
-    return f"--repo <repo> --slot <N>(소유 세션 `{slot_token}`)"
+    """소유 task 를 다시 잡는 처방 문장 — 소유 토큰을 `--task` 로 그대로 싣는다(토큰을 분해하지 않는다)."""
+    owner_token = claimed_by.rsplit("/", 1)[-1]
+    return (f"소유 task 에서 `--task {owner_token}` 로 재실행하라(소유 표기가 옛 슬롯 이름이면 "
+            "소유자가 먼저 `board.py migrate-identity --task <task>` 로 옮긴다)")
 
 
 def _ownership_rejection(action: str, tid: str,
@@ -5407,13 +5253,12 @@ def _ownership_rejection(action: str, tid: str,
             f"(현재 세션 `{verdict.session}`)")
     lines = [head + "."]
     if verdict.unresolved:
-        lines.append("  → 소유 세션에서 `--repo <repo> --slot <N>`(또는 `--task <task>`)로 "
-                     "세션을 명시해 재실행하라.")
+        lines.append(f"  → {remedy}.")
     else:
-        lines.append(f"  → 이동: 소유 세션(`{remedy}`)에서 `board.py unclaim {tid}` 후 이 "
-                     f"세션에서 `board.py claim {tid}`.")
+        lines.append(f"  → 이동: {remedy} — `board.py unclaim {tid}` 후 이 "
+                     f"세션에서 `board.py claim {tid} --task <task>`.")
     lines.append(f"  → 소유 세션이 없으면: `board.py unclaim {tid} --takeover "
-                 "--reason <사유>` (소유만 해제·사유는 티켓 본문과 board-git 에 남는다).")
+                 "--reason <사유> --task <task>` (소유만 해제·사유는 티켓 본문과 board-git 에 남는다).")
     return "\n".join(lines)
 
 
@@ -8390,12 +8235,10 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
          `session` 명시는 M>1 슬롯 순회가 슬롯별로
          호출할 때 쓴다(무명시는 `session_name()` 해소). 장부 부재/매칭없음/빈 값이면 다음
          레이어로 폴백.
-      3. **활성 repo 의 areas.md test_cmd** — 멀티-PM 모드(areas.md 존재)에서
-         활성 prefix(`id_prefix(None, session=session)`)의 레지스트리 행에 비어 있지 않은
-         `test_cmd` 가 있으면 그것. per-repo 스택(pytest/go test…)을 수용한다. **`session` 을
-         id_prefix 에도 thread** — M>1 슬롯 순회에서 슬롯 lease test_cmd 가 비면 prefix 유도가
-         *그 슬롯의* repo 로 해소돼야 한다(전역 재해소 시 모호 None·env 오귀속으로 전 슬롯이
-         같은 test_cmd 를 돌리는 false-green·codex must-fix).
+      3. **등록 repo 1개의 areas.md test_cmd** — 멀티-PM 모드(areas.md 존재)에서
+         `id_prefix(None)`(등록 prefix 가 정확히 1개일 때만)의 레지스트리 행에 비어 있지 않은
+         `test_cmd` 가 있으면 그것. 세션 이름에서 repo 를 떼어 행을 고르지 않는다 — 슬롯별
+         명령은 2층(대여 행 test_cmd)이 준다.
       4. **최종 폴백** — 위 전부 미스면 현 단일 `local.conf test.cmd`.
          없으면 실행 가능한 Python으로 `pytest tests/ -q`를 만들고 pytest-xdist를 import할 수
          있는 환경에서는 `-n auto`를 붙인다.
@@ -8405,7 +8248,7 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
     slot_cmd = _active_slot_test_cmd(session)
     if slot_cmd:
         return slot_cmd
-    prefix = id_prefix(None, session=session)
+    prefix = id_prefix(None)
     if prefix:
         row = _areas_row_for_prefix(prefix)
         if row and row.get("test_cmd"):
@@ -9688,7 +9531,7 @@ def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | N
 
 
 # ── M>1 회귀 슬롯 해소 ────────────────────────────────────
-# 훅은 `--repo/--slot` 을 못 넘긴다(pre-push 훅 스크립트 무변경·check||run 체인). 명시/env/단일-lease
+# 훅은 `--task` 를 못 넘긴다(pre-push 훅 스크립트 무변경·check||run 체인). 명시/env/단일-lease
 # 는 그 슬롯(현행 결과 동일)이지만, 활성 슬롯이 여럿(leased ≥2·무명시)이면 **어느 세션이 push 하든**
 # 전 leased 슬롯이 green 이어야 한다 — check-first(저비용·기록 baseline)로 이미 green 인 슬롯의
 # pytest 재실행을 억제하고 stale/red 만 run, 하나라도 red 면 push 차단
@@ -9869,14 +9712,15 @@ def cmd_regression(args: argparse.Namespace) -> int:
     """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출).
 
     M>1(leased ≥2) 홈은 전 leased 슬롯 all-or-nothing 으로 해소한다: 훅은
-    --repo/--slot 을 못 넘기므로 활성 슬롯이 여럿이면 슬롯별 check-first(저비용) 후 stale/red 만
+    --task 를 못 넘기므로 활성 슬롯이 여럿이면 슬롯별 check-first(저비용) 후 stale/red 만
     run 하며 하나라도 red 면 push 를 차단한다.
 
     **보호 게이트는 ambient env(PM_SESSION_NAME/CLAUDE_SESSION_NAME)로 좁혀지면 안 된다**
     (codex): 훅 프로세스가 env 세션을 상속하면 "어느 세션이 push 하든 전 leased 슬롯 green"이
-    조용히 자기 슬롯 단일 경로로 우회된다. 그래서 M>1 디스패치 판정은 **CLI `--repo`/`--slot` 명시**
-    (문서화된 의도적 조작)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/
-    명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
+    조용히 자기 슬롯 단일 경로로 우회된다. 그래서 M>1 디스패치 판정은 **CLI `--task` 명시**
+    (문서화된 의도적 조작, 폴더는 위치 인자로 고름)만 단일-슬롯으로 좁히고 env 는 이 판정에서
+    제외한다 — 단일-lease/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로
+    유효.) `--task` 없는 `--repo`/`--slot` 은 run·check 모두 실행 명령 판정 함수가 거부한다.
     """
     # 구형 서명 훅 = 차단 — run/check 두 진입 모두에서 대조한다. 옛 세대 본문은 트리를 가리지
     # 않고 **항상** 회귀를 불렀으므로, 여기서 막으면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅으로는
@@ -9900,29 +9744,19 @@ def cmd_regression(args: argparse.Namespace) -> int:
             # 여지가 있다. 해소 함수가 해당 행과 선택 repo/local 기본값만 판독한다.
             args.cmd = task_test_cmd
         print(f"regression: 작업공간(task {args.task}) → {task_cwd}")
-    # 디스패치 판정은 CLI --repo/--slot(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
+    # 디스패치 판정은 CLI --task(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
     # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
-    #
-    # **명시 `--cwd`(run) 대칭**:
-    # `--cwd` 가 명시되면 실행 위치가 그 경로로 핀돼(단일 위치) session 이 cwd/디스패치에 불요하다.
-    # 그런데 eager `_actor_session_override` 가 `--repo` 단독+활성 ≥2(또는 0)에서 SlotResolutionError
-    # 를 오발화해 readonly-핀 처방(`regression run --repo <r> --cwd <readonly>`)을 막던
-    # 것 — livegate 와 같은 노출이다. `--cwd` 핀이면 actor 해소를 **soft**(모호/미해소 → None·raise
-    # 아님)로 낮춰 그 cwd 실행을 존중하고 M>1 순회도 건너뛴다(명시 cwd=단일 위치). session 은 슬롯
-    # test_cmd 유도에만 남으므로(cwd override 최우선) `--repo`/`--slot` 명시면 그 슬롯 test_cmd 를
-    # 그대로 유지하고(soft 는 kind=slot 을 안 건드림·pickable 할 때만), 모호(→None)면 `--cmd`/repo/
-    # local 폴백을 탄다(결정 절 (a)).
+    # 명시 `--cwd`(run)면 실행 위치가 그 경로로 핀돼(단일 위치) M>1 순회를 건너뛴다.
     _run_cwd_pinned = args.action == "run" and getattr(args, "cwd", None)
-    explicit_override = (_execution_actor_session_override(args, soft=bool(_run_cwd_pinned))
-                         if args.action == "run" else _actor_session_override(args))
+    explicit_override = _execution_actor_session_override(args)
     if not _run_cwd_pinned and explicit_override is None:
         leased = identity_args.leased_sessions(LEASES_FILE)
         if len(leased) >= 2:
             slots = sorted(set(leased))
             return (_regression_multi_run(args, slots) if args.action == "run"
                     else _regression_multi_check(slots))
-    # 단일-슬롯 (명시 --repo/--slot·단일-lease·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
-    # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄·--cwd 핀은 soft 해소).
+    # 단일-슬롯 (명시 --task·단일-lease·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
+    # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄).
     sess = session_name(explicit_override)
     if args.action == "run":
         # `--ticket` 스코프도 확정 실패(None·형식 불명·손상)는 빈 목록 = FULL 이다 — 확정 못 한
@@ -10057,18 +9891,10 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # 인자 없는 훅과 명령 증거가 없던 legacy 기록의 기존 앵커 소비는 유지한다.
     if "command" in data:
         selected_cwd = getattr(args, "cwd", None)
-        identity = identity_args.parse_identity(args)
         selected_slot = None
-        if identity.task:
+        if getattr(args, "task", None):
             selected_slot, _cmd = _resolve_task_workspace_cwd(args, require_test_cmd=False)
-        elif identity.kind == "slot":
-            selected_slot = identity_args.slot_path_for_number(
-                identity.repo, identity.slot, LEASES_FILE)
-        elif identity.kind == "repo":
-            workspace = identity_args.resolve_actor_workspace(identity.repo, LEASES_FILE)
-            selected_slot = workspace.slot if workspace is not None else None
-        if ((identity.kind != "none" or identity.task) and selected_slot is None
-                or selected_slot is not None and os.path.abspath(REPO / selected_slot) != anchor
+        if (selected_slot is not None and os.path.abspath(REPO / selected_slot) != anchor
                 or selected_cwd is not None and os.path.abspath(selected_cwd) != anchor):
             print("regression: stale (선택 작업공간과 core 기록 좌표 불일치) "
                   "— core 재실행 필요.", file=sys.stderr)
@@ -10467,7 +10293,7 @@ def _livegate_cwd(override: str | None = None, session: str | None = None) -> st
       - `override`(CLI `--cwd` — 릴리즈 readonly 슬롯 핀)가 있으면 그것,
       - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
         슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 지목용),
-      - 활성 슬롯이 미해소면 **fail-loud**(`sys.exit`) — `--repo <repo> --slot <N>`/`--cwd <path>`
+      - 활성 슬롯이 미해소면 **fail-loud**(`sys.exit`) — `--task <task>`/`--cwd <path>`
         명시를 안내한다.
 
     슬롯 하나만 쓰는 홈도 그 홈 자신이 슬롯 행이라 첫 층에서 해소된다(행의 `slot` 이 홈을
@@ -10485,8 +10311,8 @@ def _livegate_cwd(override: str | None = None, session: str | None = None) -> st
         "[중단] livegate cwd 미해소 — 이 세션의 활성 슬롯을 특정할 수 없다(활성 슬롯이 "
         "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 침묵 폴백하면 "
         "tests 없는 트리에서 broken slot 을 수집해 false fail 이 되므로 거부한다. "
-        "`--repo <repo> --slot <N>` 로 슬롯을 명시하거나 `--cwd <worktree 절대경로>` 로 직접 "
-        f"지정하라 (예: `--repo project_manager --slot 1`). {identity_args.NO_WORK_FOLDER_REMEDY}"
+        "`--task <task>`(폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)로 실행하거나 "
+        f"`--cwd <worktree 절대경로>` 로 직접 지정하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
     )
 
 
@@ -10574,10 +10400,10 @@ def _livegate_record(args: argparse.Namespace) -> int:
     push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
     (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일).
 
-    `--repo`/`--slot`은 regression/handoff 과 동형으로 `session_name` 해소를 거쳐
-    `_livegate_cwd` 에 thread 한다 (M>1 홈에서 슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회
-    불요). 무명시 + leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그 메시지가
-    안내하는 `--repo <repo> --slot <N>` 이 실제로 이 subparser 에서 수용돼 dead-end 가 아니다
+    `--task`(폴더가 2개 이상이면 `--repo`/`--slot` 위치 인자 추가)가 실행 위치를 고른다(M>1 홈에서
+    슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회 불요). `--task` 없는 `--repo`/`--slot` 은 실행
+    명령 판정 함수가 거부한다. 무명시 + leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그
+    메시지가 안내하는 `--task <task>` 가 실제로 이 subparser 에서 수용돼 dead-end 가 아니다
     (remedy 정직·anti-pattern 회피).
     """
     # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd 로
@@ -10588,12 +10414,10 @@ def _livegate_record(args: argparse.Namespace) -> int:
             args.cwd = task_cwd
         print(f"livegate: 작업공간(task {args.task}) → {task_cwd}")
     # `--cwd` 명시(릴리즈 readonly 슬롯 핀)면 session 해소 자체를 생략한다 —
-    # `_livegate_cwd` 는 override 최우선이라 session 이 불요한데, eager 해소가 `--repo` 단독
-    # actor 특정(resolve_actor_slot)을 타서 readonly(leased) 슬롯 추가로 활성 ≥2 가 되는 순간
-    # 모호 fail-loud 를 오발화시켰다.
+    # `_livegate_cwd` 는 override 최우선이라 session 이 불요하다.
     _explicit_cwd = getattr(args, "cwd", None)
     live_session = (None if _explicit_cwd
-                    else session_name(_actor_session_override(args)))
+                    else session_name(_execution_actor_session_override(args)))
     cwd = _livegate_cwd(_explicit_cwd, session=live_session)
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
@@ -12349,130 +12173,34 @@ def _frontmatter_with_claimed_rev(
     return rebuilt
 
 
-def _load_pm_handoff():
-    """pm_handoff 모듈을 동적 로드한다 — 부재/로드 실패는 None(fail-soft).
-
-    `ticket_finish._load_pm_handoff` 와 동형(경로-앵커 형제 로드·같은 검증자) — claim 의 코드
-    트리 해소가 finish 와 **같은 seam**(`_resolve_explicit_identity_slot`)을 쓰려면 이 도구도
-    같은 방식으로 pm_handoff 를 끌어와야 한다(사본 복제 금지·엔진 관례). 부재/로드 실패는
-    측정 보조 필드(claimed_rev) 미박제로 접힐 뿐이라 claim 을 막지 않는다."""
-    hp_path = Path(__file__).resolve().parent / "pm_handoff.py"
-    if not hp_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            hp_path, "pm_handoff.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 claim 을 막지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # pm_handoff 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
-def _warn_claim_code_tree_folded_to_repo_home(slot_path: str) -> None:
-    """claim 코드 트리 해소가 이 세션의 슬롯이 아닌 PM 홈으로 접혔음을 알린다.
-
-    이 세션의 활성 슬롯이 **다른 트리**를 가리키는데 측정 트리가 PM 홈이면, claim 시점엔
-    REPO 자체가 git repo 라 rev 가 조용히 읽혀 오-앵커가 드러나지 않는다 — 여기서 loud 하게
-    짚어 완료 기록 시점의 오안내("다른 저장소의 것이거나 히스토리가 다시 쓰였는지
-    확인하라")를 막는다. 홈 자신이 그 세션의 슬롯인 형상은 오-앵커가 아니므로 호출되지
-    않는다(판정은 장부 파일의 존재가 아니라 해소된 슬롯 경로 값이다)."""
-    print(
-        f"주의: claim 시점 코드 트리 해소가 PM 홈(REPO)으로 접혔다 — 이 세션의 활성 슬롯은 "
-        f"{slot_path} 다(오-앵커 위험). `--repo <name> [--slot <N>]` 또는 `--task <task>` 으로 "
-        "코드 트리를 명시하라.",
-        file=sys.stderr,
-    )
-
-
 def _claim_code_tree(args: argparse.Namespace) -> str | None:
-    """claim 시점 rev 를 읽을 **코드 트리** — 완료 기록 측정 트리와 같은 해소 규칙.
+    """claim·발행·묶음 선언·확인 실행이 읽을 코드 트리 — task 가 보유한 작업공간.
 
-    분리된 PM 홈엔 코드가 없으므로 diff 측정 트리는 task 작업공간 > `--repo`/`--slot` 슬롯
-    worktree > (인자 전무) 세션/REPO 순으로 해소된다. `--repo`/`--slot` 명시(kind="slot"/"repo")는
-    `ticket_finish._resolve_finish_slot` 이 쓰는 그 seam(pm_handoff `_resolve_explicit_identity_slot`)
-    을 형제 로드해 재사용한다 — `session_name()` 이 유도한 세션 문자열(`<repo>_<N>`)이 리스 장부의
-    실제 `session` 필드(task 이름 등 임의 문자열)와 일치한다는 전제가 깨지는 형상(F-001: 리스
-    session 이 `<repo>_<N>` 이 아닌 실측)에서도 finish 와 같은 좌표를 잰다. **인자 전무**
-    (kind="none")만 종전 세션/REPO 층을 그대로 쓴다.
-
-    task 입력은 leased work·경로·HEAD·브랜치를 선검사하고 실패하면 중단한다.
-    비-task의 기존 보조 앵커 경로는 해소 실패를 None으로 반환한다.
+    실행 명령 판정 함수를 먼저 거친다 — `--task` 없는 `--repo`/`--slot` 은 여기서 멈추고, 인자가
+    전무하면 None 이다(호출부가 각자의 문구로 멈춘다). task 입력은 leased work·경로·HEAD·브랜치를
+    선검사하고 실패하면 중단한다.
     """
-    if getattr(args, "task", None):
-        return _resolve_task_workspace_cwd(args)[0]
-    identity = identity_args.parse_identity(args)
-    if identity.kind in ("slot", "repo"):
-        hp = _load_pm_handoff()
-        worktree_slot = None
-        if hp is not None:
-            try:
-                worktree_slot, _err = hp._resolve_explicit_identity_slot(
-                    identity.repo, identity.slot, LEASES_FILE,
-                )
-            except Exception as exc:  # noqa: BLE001 — fail-soft: 해소 실패는 필드 미박제로 접는다.
-                if _is_engine_rev_skew(exc):
-                    raise
-                worktree_slot = None
-        return str(REPO / worktree_slot) if worktree_slot else None
-    # kind == "none" — 인자 전무: 회귀 cwd 와 같은 트리(`_regression_cwd` = 이 트리 자신·REPO).
-    # 활성 슬롯 우회는 없다 — 다른 트리를 겨냥하려면 `--repo/--slot` 또는 `--task` 로 명시한다.
-    tree = _regression_cwd()
-    active = _active_slot_path()
-    if active and os.path.abspath(active) != os.path.abspath(tree):
-        _warn_claim_code_tree_folded_to_repo_home(active)
-    return tree
+    if _execution_actor_session_override(args) is None:
+        return None
+    return _resolve_task_workspace_cwd(args)[0]
 
 
-def _claim_head_rev(args: argparse.Namespace) -> str | None:
-    """claim 시점 HEAD. task 실행은 미해소를 거부하며 기존 비-task 경고 계약을 유지한다.
-
-    새 task claim은 실제 선택 트리의 SHA를 claimed_rev에 남긴다. 과거 티켓의
-    claimed_rev·actor는 이 읽기 경로에서 보충하거나 바꾸지 않는다.
-    """
+def _claim_head_rev(args: argparse.Namespace) -> str:
+    """claim 시점 HEAD — task 작업공간의 HEAD(읽지 못하면 중단)."""
     tree = _claim_code_tree(args)
     rev = _git_head_at(tree) if tree else ""
-    if not rev and getattr(args, "task", None):
-        sys.exit(f"[중단] task claim 앵커 HEAD를 읽지 못했다: {tree}")
     if not rev:
-        where = tree or "코드 트리 미해소"
-        print(f"주의: claim 시점 rev 박제 skip — {where} 의 git HEAD 를 읽지 못했다"
-              "(비-git·해소 불가). 완료 기록의 자기 축 회귀는 비교 baseline 이 없어 그 축을 "
-              "건너뛴다.", file=sys.stderr)
-        return None
+        sys.exit(f"[중단] task claim 앵커 HEAD를 읽지 못했다: {tree}")
     return rev
 
 
-def _reject_slot_identity_on_task_folder(args: argparse.Namespace, action: str) -> None:
-    """`--repo X --slot N`(task 없음) 귀속 쓰기가 task 보유 폴더를 가리키면 부작용 전에 거부한다.
-
-    귀속 정체성은 그 폴더의 보유자여야 한다. task 가 보유한 폴더에서 슬롯 세션 `X_N` 은 보유자가
-    아니라, 그 귀속은 task 정체성의 종결·조회에서 남의 것이 된다.
-    """
-    if getattr(args, "task", None):
-        return
-    identity = identity_args.parse_identity(args)
-    if identity.kind != "slot":
-        return
-    try:
-        task = identity_args.slot_holder_task(identity.repo, identity.slot, LEASES_FILE)
-    except identity_args.WorkspaceResolutionError as exc:
-        sys.exit(f"[중단] {action}: {exc}")
-    if task is not None:
-        sys.exit(f"[중단] {action}: 폴더 work/{identity.repo}_{identity.slot} 은 task '{task}' 가 "
-                 f"보유한다 — 슬롯 정체성(--repo {identity.repo} --slot {identity.slot})으로 귀속하지 "
-                 f"않는다. `--task {task} --repo {identity.repo} --slot {identity.slot}` 로 실행하라.")
-
-
 def cmd_claim(args: argparse.Namespace) -> int:
-    # claim = 귀속 쓰기 — 세션 미해소면 fail-loud
-    # 명시 --repo/--slot > env > 단일-lease 유도 > 미해소(fail-loud).
+    # claim = 귀속 쓰기 — `--task` 가 없으면 어떤 쓰기·git 호출보다 먼저 멈춘다. 함께 준
+    # `--repo`/`--slot` 은 그 task 가 보유한 폴더(claim 앵커)를 고른다.
     override = _execution_actor_session_override(args)
-    _reject_slot_identity_on_task_folder(args, "claim")
-    sess = session_name(override, required=True)
-    # claimed_by 는 `<user>/<slot>` — user 미상이면 슬롯만
-    # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
+    if override is None:
+        sys.exit(TASK_REQUIRED.format(action="claim", command=f"board.py claim {args.id}"))
+    # claimed_by 는 `<user>/<task>` — user 미상이면 task 만(graceful).
     assignee = identity_tag(session_override=override,
                             user_override=getattr(args, "user", None))
     # 코드 트리 HEAD 박제 — 락 밖(읽기 전용 git 조회)이라 board mutation 창을 넓히지 않는다.
@@ -12876,6 +12604,14 @@ _UNCLAIM_SOURCE_STATUSES: tuple[str, ...] = ("claimed", "blocked")
 def cmd_unclaim(args: argparse.Namespace) -> int:
     takeover = bool(getattr(args, "takeover", False))
     reason = (getattr(args, "reason", None) or "").strip()
+    # `--takeover` 는 귀속 쓰기다(본문 Takeover 절에 이전을 실행한 task 를 남긴다) — `--task` 가
+    # 없으면 락·쓰기 전에 거부한다. takeover 없는 unclaim 은 소유 대조라 `--task` 가 선택이다.
+    takeover_task = _actor_session_override(args) if takeover else None
+    if takeover and takeover_task is None:
+        print(TASK_REQUIRED.format(
+            action=f"unclaim {args.id} --takeover",
+            command=f"board.py unclaim {args.id} --takeover --reason <사유>"), file=sys.stderr)
+        return 1
     if takeover and not reason:
         # 사유 없는 강제 이전은 이력이 남지 않는다 — 락을 잡기 전에 거부한다(부작용 0).
         print(f"[중단] unclaim {args.id}: `--takeover` 는 `--reason <사유>` 가 필수다 "
@@ -12913,8 +12649,8 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
         fm.pop("claimed_rev", None)
         if takeover:
             body = body + (f"\n## Takeover\n{reason} — {now_utc()} "
-                           f"(소유 `{previous_owner}` 해제 · 실행 세션 "
-                           f"`{ownership.session or '미해소'}`)\n")
+                           f"(소유 `{previous_owner}` 해제 · 실행 task "
+                           f"`{takeover_task}`)\n")
         dump_ticket(new_path, fm, body)
     refresh_board()
     message = (f"unclaim {args.id} (takeover: {reason})" if takeover
@@ -13356,7 +13092,7 @@ def _init_repo_name(args: argparse.Namespace) -> str | None:
 
     표를 깨는 문자(`|`·개행)나 빈 이름이면 **아무것도 쓰지 않고** None 을 돌려준다(호출부가 rc 1)
     — 그 경우의 처방은 `--repo <repo>` 명시다. canonical 형식(영숫자 시작·이후 영숫자/`_`/`-`)을
-    벗어난 폴더명은 등록은 하되 1줄로 알린다(슬롯 세션명 `<repo>_<N>` 가독성·`repo add` 와의 정합).
+    벗어난 폴더명은 등록은 하되 1줄로 알린다(폴더 이름 `<repo>_<N>` 가독성·`repo add` 와의 정합).
     """
     name = (getattr(args, "repo", None) or REPO.name or "").strip()
     if not name or any(ch in name for ch in _AREAS_CELL_BREAKERS):
@@ -13366,7 +13102,7 @@ def _init_repo_name(args: argparse.Namespace) -> str | None:
         return None
     if not _INIT_REPO_NAME_CANONICAL.match(name):
         print(f"  ⚠ 등록 repo 이름 {name!r} 이 canonical 형식(`[A-Za-z0-9][A-Za-z0-9_-]*`)을 "
-              "벗어난다 — 그대로 등록하지만, 슬롯 세션명(`<repo>_<N>`)과 `pm-config repo` 조작이 "
+              "벗어난다 — 그대로 등록하지만, 폴더 이름(`<repo>_<N>`)과 `pm-config repo` 조작이 "
               "읽기 어려워진다. `board.py init --repo <repo>` 으로 등록명을 지정할 수 있다.")
     return name
 
@@ -13391,7 +13127,6 @@ def cmd_init(args: argparse.Namespace) -> int:
       - 행 있음·다른 카테고리 → 부작용 0 fail-loud(카테고리 변경은 `board.py prefix rename` 소관).
     `--area <설명>` 은 새 행을 만들며 카테고리를 함께 등록할 때만 필요하다.
     """
-    _reject_task_slot_identity_mix(args)
     requested_prefix = args.prefix
     prefix = requested_prefix
     prefix_precheck: str | None = None
@@ -13411,10 +13146,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             return 1
         prefix = canonical
         prefix_precheck = canonical
-    # 세션 override 해소는 **soft** 다 — init 에서 `--repo X` 는 1순위로 *등록명 지정*이고,
-    # fresh clone 은 정의상 활성 lease 가 0이라 hard 해소면 등록 처방(`--repo <repo>`)이 그
-    # 자리에서 죽는다. 여기서 세션은 owner 기본값에만 쓰이므로 미해소는 빈 owner 로 강등한다.
-    override = _actor_session_override(args, soft=True)
+    # owner 기본값은 `--task` 다(환경변수·단일 대여에서 유도하지 않는다). `--repo` 는 등록명이다.
+    owner_task = _actor_session_override(args)
     repo_name = _init_repo_name(args)
     if repo_name is None:
         return 1
@@ -13466,7 +13199,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             # init 은 lease 장부·세션 바인딩이 아직 없는 부트스트랩 지점이라 미해소를 fail-loud
             # 하지 않는다(빈 칼럼 = 미상). 그 뒤의 등록(`pm-config repo add`)은 세션 귀속 쓰기라
             # 미해소를 거부한다 — 게이트 위치가 다르다.
-            owner = args.owner or override or session_name() or ""
+            owner = args.owner or owner_task or ""
             area_owner = user_name(getattr(args, "user", None))
             # 자기 행(폴더 이름 등록)이면 git·base 를 함께 싣는다 — 안내 명령(`pm-config worktree
             # add <repo>`)이 base 와 clone 원 주소를 이 행에서 읽는다. `--repo` 로 폴더와 다른 이름을
@@ -13546,7 +13279,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # 완료 안내의 ID 포맷은 **이 clone 에서 `board.py new` 가 실제로 발행할 값**이다 —
     # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 함수·같은 세션 override)에서 뽑는다.
     # 등록이 생략/거부된 형상에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.
-    issued = id_prefix(None, session=override)
+    issued = id_prefix(None)
     # `id_prefix(None)` 의 미해소(None)는 두 형상을 가린다 — (a) 등록 ≤1(count-based 로 곧
     # 무prefix `T-NNNN` 이 발행) (b) 등록 ≥2 인데 세션 유도가 실패(모호). `cmd_new` 는 후자에서
     # 자신의 ≥2 가드로 fail-loud 하므로 무명시 `T-NNNN` 은 실제로 발행되지 않는다 — 완료 안내가
@@ -13556,8 +13289,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         mode = f"repo {repo_name} · 카테고리 모호(등록 카테고리 ≥2·세션 미바인딩)"
         id_line = ("무명시 `board.py new` 발행 불가 — 등록 카테고리가 여럿이고 세션이 "
                    "바인딩되지 않았다. `board.py new --prefix <PFX> --user-ack <PFX>` 로 "
-                   "명시하거나 세션을 바인딩하라(`PM_SESSION_NAME=<repo>_<N>` env 또는 "
-                   "단일 활성 슬롯 lease).")
+                   "명시하거나 task prefix 를 지정하라(`pm-config task prefix <task> <PFX>`).")
     else:
         mode = f"repo {repo_name} · 카테고리 {issued or 'none(무prefix)'}"
         idfmt = f"T-{issued}-NNN" if issued else "T-NNNN (none 카테고리)"
@@ -13674,25 +13406,57 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
     return "".join(out), changes
 
 
-def _migrate_ticket_fm(fm: dict, user: str, slot: str) -> list[str]:
-    """티켓 frontmatter 를 *제자리* backfill 하고 per-field 변경 요약을 반환(빈 = no-op).
+def _migrate_ticket_fm(fm: dict, user: str, task: str, status: str,
+                       registered: set[str]) -> tuple[list[str], list[str]]:
+    """티켓 frontmatter 를 *제자리* backfill 하고 `(변경 요약, 바꾸지 않은 타 사용자 토큰)` 을 반환.
 
     멱등·비파괴: 부재/빈 `created_by` 만 user 로, 슬롯-only(`/` 없음·non-empty) `claimed_by`
-    만 `<user>/<slot>` 로 채운다. 기존 non-empty 값(이미 `<user>/<slot>` 형태 포함)은 불변.
+    만 `<user>/<토큰>` 으로 채운다. 기존 non-empty 값(이미 `<user>/<토큰>` 형태 포함)은 불변.
     키 순서는 dict 제자리 수정이라 보존(없던 created_by 추가는 끝에 붙음 → dump 순서 유지).
+
+    **슬롯 세션 토큰 이전**: 비종결(open·claimed·blocked)과 draft 의 `created_by`·`claimed_by` 중
+    마지막 `/` 뒤 토큰이 등록 repo 의 폴더 이름 패턴(`<repo>_<N>`)인 값은 사용자 부분이 실행
+    사용자이거나 없으면 `<user>/<task>` 로 옮긴다. 다른 사용자의 토큰은 바이트 그대로 두고 두 번째
+    목록으로 돌려준다(그 사용자가 자기 task 로 실행한다). done·discarded 는 옮기지 않는다.
     """
     changes: list[str] = []
+    foreign: list[str] = []
     created_by = fm.get("created_by")
     # 부재(키 없음·None)거나 빈/공백 문자열이면 backfill. 기존 non-empty 값은 불변(멱등).
     if not (str(created_by).strip() if created_by is not None else ""):
         fm["created_by"] = user
         changes.append(f"created_by → {user}")
+    if status not in TERMINAL_STATUS_DIRS:
+        for field in ("created_by", "claimed_by"):
+            value = fm.get(field)
+            if not (isinstance(value, str) and value.strip()):
+                continue
+            owner_user, _sep, token = value.strip().rpartition("/")
+            if not identity_args.is_reserved_task_name(token, registered):
+                continue
+            if owner_user and owner_user != user:
+                foreign.append(f"{field}={value}")
+                continue
+            fm[field] = f"{user}/{task}"
+            changes.append(f"{field} {value} → {fm[field]}")
     cb = fm.get("claimed_by")
     if isinstance(cb, str) and cb.strip() and "/" not in cb:
         # 슬롯-only(구 형태·user 차원 없음) → user 차원 prepend(슬롯값 보존).
         fm["claimed_by"] = f"{user}/{cb}"
         changes.append(f"claimed_by {cb} → {user}/{cb}")
-    return changes
+    return changes, foreign
+
+
+def _print_migrate_foreign(tid: str, status: str, foreign: list[str]) -> None:
+    """바꾸지 않은 타 사용자 슬롯 토큰을 stderr 로 알린다(rc 불변)."""
+    for item in foreign:
+        print(f"  {tid} ({status}/): {item} — 다른 사용자의 옛 슬롯 표기라 바꾸지 않는다"
+              "(그 사용자가 `board.py migrate-identity --task <task>` 로 옮긴다)", file=sys.stderr)
+
+
+def _migrate_scan_dirs(statuses: tuple[str, ...]) -> list[tuple[str, Path]]:
+    """migrate 스캔 디렉토리 — 요청 status 디렉토리 + draft 격리 디렉토리(pseudo-status `draft`)."""
+    return [(status, tickets_dir() / status) for status in statuses] + [("draft", drafts_dir())]
 
 
 def _migrate_identity_preview(
@@ -13712,13 +13476,15 @@ def _migrate_identity_preview(
             print(f"  areas.md: {c}")
         total += len(area_changes)
     # 티켓 미리보기 — glob 스캔 후 변경 산출만(쓰기 없음).
-    for status in statuses:
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
+    registered = registered_repos()
+    for status, directory in _migrate_scan_dirs(statuses):
+        for p in sorted(directory.glob("T-*.md")):
             fm, _body = load_ticket(p)
-            changes = _migrate_ticket_fm(fm, user, slot)
+            changes, foreign = _migrate_ticket_fm(fm, user, slot, status, registered)
+            tid = fm.get("id") or p.stem
+            _print_migrate_foreign(tid, status, foreign)
             if not changes:
                 continue
-            tid = fm.get("id") or p.stem
             total += len(changes)
             for c in changes:
                 print(f"  {tid} ({status}/): {c}")
@@ -13770,19 +13536,21 @@ def _migrate_tickets_apply(
     """
     total = 0
     wrote = False
+    registered = registered_repos()
     with board_lock():
-        for status in statuses:
-            for p in sorted((tickets_dir() / status).glob("T-*.md")):
+        for status, directory in _migrate_scan_dirs(statuses):
+            for p in sorted(directory.glob("T-*.md")):
                 try:
                     fm, body = load_ticket(p)
                 except FileNotFoundError:
                     print(f"  skip {p.name}: 스캔 후 사라짐(수동/구버전 writer 이동) — "
                           "backfill 안 함", file=sys.stderr)
                     continue
-                changes = _migrate_ticket_fm(fm, user, slot)
+                changes, foreign = _migrate_ticket_fm(fm, user, slot, status, registered)
+                tid = fm.get("id") or p.stem
+                _print_migrate_foreign(tid, status, foreign)
                 if not changes:
                     continue
-                tid = fm.get("id") or p.stem
                 try:
                     cur_status, cur_path = find_ticket_for_mutation(tid)
                 except FileNotFoundError:
@@ -13826,37 +13594,39 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
     abort(식별자 없이는 backfill 불가). `--dry-run` 은 쓰기 0·per-file 미리보기. `--scope`
     active(open+claimed) | all(기본·done 포함). 멱등(빈 필드만)·비파괴(순서/body/표 보존).
 
-    `--repo`/`--slot`은 출력·기본 identity 표시용이며 **backfill 대상 슬롯을 바꾸지
-    않는다**. 슬롯-only `claimed_by`(`pm-1` 같은 `/` 없는 값)는 user 차원만 prepend 하고 *기존
-    슬롯 토큰을 보존*한다(`pm-1` → `<user>/pm-1`). `--repo`/`--slot` 은 부재 created_by 의
-    표시값과 로그 표기에만 쓰이고, 이미 기록된 슬롯 토큰을 자신의 값으로 덮어쓰지 않는다(비파괴).
+    `--task` 는 필수다(귀속 쓰기). 비종결·draft 티켓의 옛 슬롯 세션 토큰(`<repo>_<N>`)은 실행
+    사용자 몫(사용자 부분이 같거나 없음)이면 `<user>/<task>` 로 옮기고, 다른 사용자 몫은 그대로
+    두고 stderr 로 알린다(rc 0). 그 밖의 슬롯-only `claimed_by`(`pm-1` 같은 `/` 없는 값)는 user
+    차원만 prepend 하고 *기존 토큰을 보존*한다(`pm-1` → `<user>/pm-1`). done·discarded 는 사용자
+    backfill 외에 바꾸지 않는다.
 
     **단일-세션 업그레이드 op (동시성 모델)**: 일회성 전체 backfill이라는 운영 성격은 유지한다.
     다만 areas와 티켓 모두 board_lock writer이며, 티켓 scan/read/transform/dump는 lifecycle/tier와
     하나의 순서로 관측된다. 두 helper의 lock 구간은 중첩되지 않고 board.md 재생성은 모두 끝난 뒤
     lock 밖에서 1회 한다.
     """
-    _reject_task_slot_identity_mix(args)
     user = user_name(getattr(args, "user", None))
     if not user:
         print("[중단] user 식별자 미해소 — `--user <id>` 를 주거나 local.conf identity.user= / "
               "git config user.email 를 설정하라(식별자 없이는 backfill 불가).",
               file=sys.stderr)
         return 1
-    # backfill slot = 귀속 쓰기(claimed_by 에 박음·required=True) — 세션 미해소면
-    # fail-loud(None 슬롯으로 backfill 하면 오귀속). 명시 --repo/--slot> env >
-    # 단일-lease 유도.
-    slot = session_name(_actor_session_override(args), required=True)
+    # 이전 대상 task = 귀속 쓰기(claimed_by·created_by 에 박음) — `--task` 가 없으면 어떤 쓰기보다
+    # 먼저 멈춘다(환경변수·단일 대여 값으로 대신하지 않는다).
+    slot = _actor_session_override(args)
+    if slot is None:
+        sys.exit(TASK_REQUIRED.format(action="migrate-identity",
+                                      command="board.py migrate-identity"))
     dry_run = bool(getattr(args, "dry_run", False))
     scope = getattr(args, "scope", "all") or "all"
     statuses = ("open", "claimed") if scope == "active" else STATUS_DIRS
 
     tag = "[dry-run] " if dry_run else ""
     # scope 문구 정합: migrate 는 소유 무관 *전 티켓*을 스캔·backfill 한다
-    # (all=done 포함 전체·active=open+claimed). `list --mine`/`--repo`/`--slot`(=현재-사용자 ∩
-    # 슬롯 뷰)와 스캔 대상이 다르므로 "전체 스캔" 을 명시해 두 기준이 어긋나 보이는 오독을 없앤다.
+    # (all=done 포함 전체·active=open+claimed, 둘 다 draft 포함). `list --mine`/`--task`(=현재-사용자
+    # 뷰)와 스캔 대상이 다르므로 "전체 스캔" 을 명시해 두 기준이 어긋나 보이는 오독을 없앤다.
     scope_note = "전체 스캔·소유 무관" if scope == "all" else "open+claimed 스캔·소유 무관"
-    print(f"{tag}migrate-identity — user={user} · slot={slot} · scope={scope} ({scope_note})")
+    print(f"{tag}migrate-identity — user={user} · task={slot} · scope={scope} ({scope_note})")
 
     if dry_run:
         total, wrote = _migrate_identity_preview(user, slot, statuses)
@@ -13879,17 +13649,15 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
 
 
 def cmd_new(args: argparse.Namespace) -> int:
+    # 발행 = 귀속 쓰기(created_by = `<user>/<task>`). `--task` 가 없으면 prefix 판정·draft 생성·
+    # ID 발행 어떤 부작용보다 먼저 멈춘다. `--task` 는 정체성 깔때기에서 task 명 검증을 받고,
+    # 함께 준 `--repo`/`--slot` 은 그 task 가 보유한 폴더를 고르는 위치 인자일 뿐이다.
+    actor_session = _execution_actor_session_override(args)
+    if actor_session is None:
+        sys.exit(TASK_REQUIRED.format(action="new", command='board.py new "<제목>"'))
     # 명시 --prefix sanity (예약어 `none`·형식 [a-z0-9_]+) — 위반이면 ID 스캔·파일
     # 발행 전에 부작용 0 으로 즉시 거부. 유도/count-based 로 해소된 legacy prefix 는 검증하지
     # 않는다(기존 발행분 존중) — 사용자가 *명시*한 override 만 입력측 sanity 대상이다.
-    # task-mode(`--task`)는 정체성 깔때기(`_actor_session_override`)를 지나 **task 명 검증**(무검증
-    # created_by 영속 차단)을 받고 세션 override(=task 이름·F5b)를 해소한다 —
-    # cmd_new 는 구조상 이 깔때기를 안 지나므로 여기서 명시 소비해 소비 지점 폐쇄에 합류한다. 무-task 는
-    # None(기존 created_by 체인 무변경). 부작용(ID 발행·파일 write) 이전이라 불법 task 는 여기서 fail-loud.
-    # `--task` → task 명(F5b) · `--repo/--slot`→ `<repo>_<N>` 슬롯 세션 · 무명시 → None.
-    # 하나의 세션 override 문자열이지만 축이 둘(task vs slot)이라 아래 분기가 축을 명시 구분한다.
-    actor_session = _execution_actor_session_override(args)
-    _reject_slot_identity_on_task_folder(args, "new")
     requested_override = getattr(args, "prefix", None)
     override = requested_override
     if override:
@@ -13897,24 +13665,20 @@ def cmd_new(args: argparse.Namespace) -> int:
         if reason:
             print(f"[중단] {reason}", file=sys.stderr)
             return 1
-    elif getattr(args, "task", None):
-        # 우선순위: --prefix 명시 > task 설정 prefix > 유도 체인. **`--task` 일 때만** task 설정
-        # prefix(`task prefix`·검증·기록)를 조회한다 — slot 세션명(`<repo>_<N>`)을 task_prefix
-        # 에 넣던 혼선 제거. 기본 None=무prefix.
+    else:
+        # 우선순위: --prefix 명시 > task 설정 prefix(`task prefix`·검증·기록) > count-based.
         task_pfx = identity_args.task_prefix(actor_session, LEASES_FILE)
         if task_pfx:
             override = task_pfx
     # 명시/task 값은 우선순위상 이미 최종 후보다. areas-only fold lookup(`id_prefix(override)`)으로
     # 먼저 canonical화하지 않고 아래 **공통 3소스 funnel**에 원 표기 그대로 넘긴다. 그래야
     # 오염된 areas `AAA`/`aaa`의 set 순회가 명시 경로 진단 입력을 다시 비결정적으로 고르지 않는다.
-    # 둘 다 없을 때만 actor_session을 세션→count 유도 체인에 thread한다 — 안 넘기면 등록
-    # repo ≥2 환경의 `new "x" --repo alpha --slot 1`이 전역 재해소(모호 None)되어 거부된다.
-    prefix = override if override else id_prefix(None, session=actor_session)
+    prefix = override if override else id_prefix(None)
     prefix_precheck: str | None = None
     prefix_surface = "board new --prefix" if requested_override else "board new derived prefix"
     if prefix is not None:
         # 명시/유도 분기 **뒤의 최종 발행 prefix**가 canonical 판정의 단일 funnel이다.
-        # task·세션·단일 areas 유도값도 명시 --prefix와 같은 3소스 snapshot을
+        # task·단일 areas 유도값도 명시 --prefix와 같은 3소스 snapshot을
         # 통과해야 한다. 여기서 복수 case면 같은 fail-loud 진단으로 막고, 단일 case면 그
         # canonical 표기를 발행값으로 고정한다. 신규 명시값만 user_ack가 실제 의미를 가지며,
         # 유도값은 자신을 제공한 3소스 중 하나에 이미 존재하므로 승인 없이 existing으로 통과한다.
@@ -13944,9 +13708,8 @@ def cmd_new(args: argparse.Namespace) -> int:
     if len(registered) >= 2:
         if not prefix:
             print("multi-repo 네임스페이스 모드(등록 repo ≥2) — prefix 필요(미해소). "
-                  "`--prefix <PFX>` 로 명시하거나 세션을 바인딩하라"
-                  "(`PM_SESSION_NAME=<repo>_<N>` env 또는 단일 활성 슬롯 lease → areas.md "
-                  "repo→prefix 유도). 새 카테고리가 필요하면 1순위로 사용자에게 "
+                  "`--prefix <PFX>` 로 명시하거나 task prefix 를 지정하라"
+                  "(`pm-config task prefix <task> <PFX>`). 새 카테고리가 필요하면 1순위로 사용자에게 "
                   "그 prefix 승인을 요청하라. 승인한 사용자만 부차적으로 "
                   "`board.py init --prefix <PFX> --area <name> --user-ack <PFX>`를 "
                   "대상값에 결속해 실행한다(세션 자동 부착 금지).",
@@ -13969,12 +13732,11 @@ def cmd_new(args: argparse.Namespace) -> int:
     draft_body = tmpl_body.replace("T-NNNN", draft_lint_id).replace("<제목>", args.title)
     is_draft = _board_git_enabled() and bool(
         _body_lint_issues(draft_lint_id, draft_body, strict_sections=True, design=design))
-    # 코드 없는 task draft는 허용한다. 명시 선택은 draft에서도 검증한다.
-    binding_required = ((not is_draft and _board_git_enabled())
-                        or getattr(args, "repo", None) or getattr(args, "slot", None)
-                        or (getattr(args, "task", None) and not is_draft))
-    binding_message = ("[중단] 공유 발행의 코드 트리와 기준 브랜치를 명시하라 "
-                       "(`--repo <repo> --slot <N>` 또는 `--task <task>`). "
+    # 코드 없는 task draft는 허용한다. 위치 인자(`--repo`/`--slot`)를 줬으면 draft에서도 검증한다.
+    binding_required = (not is_draft
+                        or getattr(args, "repo", None) or getattr(args, "slot", None))
+    binding_message = ("[중단] 발행의 코드 트리와 기준 브랜치를 task 폴더에서 읽지 못했다 "
+                       "(`--task <task>`, task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가). "
                        "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 결속하라.")
     if binding_required:
         tree, base = _cluster_publish_base_branch(args)
@@ -14027,13 +13789,10 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["title"] = args.title
         fm["status"] = "draft" if is_draft else "open"
         fm["created"] = datetime.date.today().isoformat()
-        # created_by = `<user>/<pm-slot>` (provenance·불변·생성 시 set).
-        # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 슬롯만(graceful).
+        # created_by = `<user>/<task>` (provenance·불변·생성 시 set·세션 기본 뷰 스트림 판정 입력).
+        # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 task 만(graceful).
         fm["created_by"] = identity_tag(
-            # task-mode(`--task`)면 created_by = <user>/<task>(F5b 귀속 축). `--repo --slot`이면
-            # <user>/<repo>_<N>(생성-세션 기록·세션 기본 뷰 스트림 판정 입력) — 둘 다 `_actor_session_override`
-            # 가 해소해 `actor_session` 에 담는다. 무명시는 session_override=None → identity_tag 내부 체인 해소.
-            session_override=(actor_session or None),
+            session_override=actor_session,
             user_override=getattr(args, "user", None))
         fm["claimed_by"] = None
         fm["claimed_at"] = None
@@ -14052,9 +13811,8 @@ def cmd_new(args: argparse.Namespace) -> int:
         # 전에 기존 cluster new로 제품 브랜치와 멤버를 명시 결속한다.
         cluster_ledger: Path | None = None
         # 마지막 제품 판정과 기록에 같은 결과를 사용한다. helper의 재조회로 바꾸지 않는다.
-        final_binding_required = ((not is_draft and _board_git_enabled())
-                                  or getattr(args, "repo", None) or getattr(args, "slot", None)
-                                  or (getattr(args, "task", None) and not is_draft))
+        final_binding_required = (not is_draft
+                                  or getattr(args, "repo", None) or getattr(args, "slot", None))
         if not is_draft or final_binding_required:
             publish_basis = _cluster_publish_base_branch(args)
             if final_binding_required and (not publish_basis[0] or not publish_basis[1]):
@@ -14102,13 +13860,9 @@ def cmd_new(args: argparse.Namespace) -> int:
         label = "draft 격리 기록" if is_draft else "기록"
         print(f"  ⚠ board-git {label} 보류: local-only/uncommitted", file=sys.stderr)
     # 발행 시점 판단 재료 — 겹침 0 이면 전부 침묵. 차단 없음(rc 불변).
-    # 슬롯 재료의 repo 는 이 발행의 명시 args 정체성이다 — `--repo`/`--slot` 이 REPO.name(물리
-    # 폴더명)과 다른 등록명을 공식 지원하므로(위 §prefix 네임스페이스 가드와 같은 계약), 여기서도
-    # 그 값을 재사용한다(`_actor_session_override` 가 이미 통과시킨 같은 args → 새 해소 축 아님).
-    try:
-        new_repo = identity_args.parse_identity(args).repo
-    except ValueError:
-        new_repo = None
+    # 슬롯 재료의 repo 는 이 발행의 위치 인자 `--repo` 다 — REPO.name(물리 폴더명)과 다른
+    # 등록명을 공식 지원하므로 그 값을 재사용한다(첫 줄의 실행 명령 판정 함수가 이미 검증한 args).
+    new_repo = identity_args.parse_identity(args).repo
     for line in _publish_overlap_material(tid, fm.get("touches"), new_repo or REPO.name):
         print(line, file=sys.stderr)
     return 0
@@ -14697,8 +14451,8 @@ def cluster_binding_problem(cluster: str, *, tree: str | None = None) -> str | N
     base = str((ledger or {}).get("base_branch") or "").strip()
     if not branch or not base:
         return (f"{cluster}는 제품 브랜치 미결속 장부다. 기존 "
-                "`board.py cluster new <ticket-group> --tickets <티켓들> --repo <repo> --slot <N>` "
-                "또는 `--task <task>`으로 명시 재결속하라")
+                "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
+                "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라")
     if tree is not None:
         return None if (_cluster_branch_state(tree, branch) is True
                         and _cluster_branch_state(tree, base) is True) else (
@@ -14771,12 +14525,9 @@ def _cluster_publish_base_branch(
 ) -> tuple[str | None, str | None]:
     """장부에 박을 `(코드 트리, 기준 브랜치)` — 트리 미해소·브랜치 없는 트리(detached·비-git)는 None.
 
-    명시 입력만 기존 `_claim_code_tree`로 해소한다. 인자 없는 PM 홈 fallback은
-    제품 결속의 증거가 아니므로 기준 브랜치를 기록하지 않는다.
+    `--task` 가 보유한 폴더만 `_claim_code_tree`로 해소한다. task 가 없으면 제품 결속의 증거가
+    없으므로 기준 브랜치를 기록하지 않는다.
     """
-    identity = identity_args.parse_identity(args)
-    if identity.kind == "none" and not identity.task:
-        return None, None
     tree = _claim_code_tree(args)
     if not tree or not (Path(tree) / ".git").exists() or not _git_head_at(tree):
         return None, None
@@ -14930,7 +14681,8 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
     이미 **여러 티켓의** 묶음에 속한 티켓은 옮기지 않는다 — 소속 이동은 사람 판정이라 엔진이
     조용히 하지 않는다.
 
-    코드 트리는 **명시로만** 받는다(`--repo/--slot` 또는 `--task`) — 이 명령은 git 브랜치를
+    코드 트리는 **`--task` 가 보유한 폴더로만** 받는다(폴더가 2개 이상이면 `--repo/--slot` 위치
+    인자로 고른다) — 이 명령은 git 브랜치를
     만들고 그 트리의 현재 브랜치를 기점으로 장부에 박는 쓰기라, 트리를 추측하면 엉뚱한
     저장소에 브랜치가 생기고 다른 묶음의 브랜치가 기점으로 실린다.
     """
@@ -14938,17 +14690,12 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
     if reason:
         print(f"[중단] {reason}", file=sys.stderr)
         return 1
-    try:
-        identity = identity_args.parse_identity(args)
-    except ValueError as exc:
-        print(f"[중단] {exc}", file=sys.stderr)
-        return 1
-    if identity.kind == "none" and not (identity.task or "").strip():
+    if _claim_code_tree(args) is None:
         print("[중단] cluster new 는 통합 브랜치를 만들 코드 트리를 명시로 받는다 — "
-              "`--repo <repo> --slot <N>` 또는 `--task <task>` 을 지정하라.", file=sys.stderr)
+              "`--task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)를 지정하라.",
+              file=sys.stderr)
         return 1
-    if identity.task:
-        _claim_code_tree(args)
+    identity = identity_args.parse_identity(args)   # 위 판정을 통과한 같은 args(ValueError 없음)
     cluster = cluster_id_for_name(args.name)
     raw = (getattr(args, "tickets", None) or "").strip()
     if not raw:
@@ -15287,72 +15034,47 @@ def cmd_list(args: argparse.Namespace) -> int:
     # 필터 없는 전체(모든 세션·타 사용자)는 `--all` 이다(status 셀렉터는 어느 뷰에도 적용).
     #
     # user-first: 필터 뷰의 "me" 는 **항상 현재 사용자**(`user_name()` =
-    # local.conf identity.user= > git config user.email)다. `--repo`/`--slot` 의 my_user 를
+    # local.conf identity.user= > git config user.email)다. 렌즈의 my_user 를
     # area_owner-derived(`_area_owner_from_session`/`_area_owner_for_single_area`)로
     # area_owner 미설정(흔함)이면 my_user=None 이 돼 slot-only 매칭·
     # all-open degrade 로 타 슬롯 claim·타 사용자 티켓이 유출되던 근본을 없앤다. area_owner 는
     # 이제 open-티켓 *소유* 정의(`_ticket_owner`)로만 남고, "누가 조회하는가" 와 무관하다.
     #
     # 뷰 스코프:
-    #   - `--mine` = 내 것(내 claim ∪ 내 open), **전 슬롯**(slot_scoped=False).
-    #   - `--repo X --slot N`(kind=slot) = 내 것 **∩ 그 슬롯**(slot_scoped=True·완전 일치) — 옛
-    #     `--session <repo>_<N>` 과 동형(`_slot_matches` mode="exact").
-    #   - `--repo X`(kind=repo·슬롯 무) = 내 것 **∩ 그 repo 의 내 슬롯 전체**(slot_scoped=True·
-    #     `_slot_matches` mode="repo"·prefix 매칭) — 신규 repo-scope 뷰. 옛 bare `--slot N`
-    #     (repo 불문 cross-repo suffix 매칭)은 제거됐다 — `--slot` 단독은 이제 fail-loud.
+    #   - `--mine` = 내 것(내 claim ∪ 내 open), **전 task**(slot_scoped=False).
     #   - `--task <task>` = 내 것 **∩ 그 task**(slot_scoped=True·
     #     완전 일치) — 멤버십 = claimed_by 바인딩이 그 task(`<user>/<task>`)인
-    #     claim + 내 소유 open backlog. task 는 slot 축과 직교지만 조회 렌즈로선 slot 축을 task
-    #     이름으로 재사용한다 — `_slot_matches` exact 가 claimed_by 의 `/` 뒤 토큰을 task 와 대조하고
-    #     예약(task 명 ≠ `<repo>_<N>`) 덕에 slot 세션값 `<user>/<repo>_<N>` 과 **기계 판별**된다
-    #     (추가 필드 0). `_ticket_is_mine` 단일 predicate 를 그대로 상속(point-patch 금지).
-    #   `--mine`·`--repo`(+`--slot`)·`--task` 는 상호 배타(뷰 스코프는 하나만) — 타 사용자는 어느
-    #   필터 뷰에도 안 나온다(`list --all` 전용).
-    try:
-        identity = identity_args.parse_identity(args)
-    except ValueError as e:
-        sys.exit(f"[중단] {e}")
+    #     claim + 내 소유 open backlog. `_slot_matches` exact 가 claimed_by 의 `/` 뒤 토큰을 task 와
+    #     대조한다. `_ticket_is_mine` 단일 predicate 를 그대로 상속(point-patch 금지).
+    #   `--mine`·`--task` 는 상호 배타(뷰 스코프는 하나만) — 타 사용자는 어느
+    #   필터 뷰에도 안 나온다(`list --all` 전용). 슬롯·repo 렌즈는 없다.
     explicit_mine = bool(getattr(args, "mine", False))
-    # task 렌즈(`--task <task>`) — slot 축과 직교지만 조회 뷰로선 별개 필터 스코프라 --mine/
-    # --repo/--slot 과 상호 배타(어느 축으로 좁힐지 모호 방지·뷰 스코프는 하나). None=미지정.
-    task_lens = identity.task
+    task_lens = getattr(args, "task", None)
     if task_lens is not None:
-        # read 경로도 깔때기 소비 — 미검증이면 `--task alpha_1`(슬롯
-        # 예약 패턴) 입력이 `_slot_matches` exact 에서 slot claim 을 task 처럼 매칭해 기계 판별이
-        # 깨진다. 부작용 0 조회지만 소비 지점 폐쇄(전 surface 단일 규칙)에 합류한다.
+        # read 경로도 깔때기 소비 — 미검증이면 `--task alpha_1`(폴더
+        # 이름 패턴) 입력이 옛 슬롯 claim 을 task 처럼 매칭한다. 부작용 0 조회지만 소비 지점
+        # 폐쇄(전 surface 단일 규칙)에 합류한다.
         _validate_actor_task_or_exit(task_lens)
-    if task_lens is not None and (explicit_mine or identity.kind != "none"):
-        sys.exit("[중단] --task 는 --mine/--repo/--slot 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
-    if explicit_mine and identity.kind != "none":
-        sys.exit("[중단] --mine 은 --repo/--slot 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
-    mine = explicit_mine or identity.kind != "none" or task_lens is not None
+    if task_lens is not None and explicit_mine:
+        sys.exit("[중단] --task 는 --mine 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
+    mine = explicit_mine or task_lens is not None
     # `--all`= 기존 무인자 전체 뷰(모든 세션·타 사용자 포함)의 이관. 무인자
     # 기본은 이제 **세션 기본 뷰**(default_view — 내 세션 스트림만·타 세션분 완전 비노출)다. `--all` 은
-    # 렌즈(`--mine`/`--repo`/`--slot`/`--task`)와 상호 배타(뷰 스코프는 하나만). default_view 는
+    # 렌즈(`--mine`/`--task`)와 상호 배타(뷰 스코프는 하나만). default_view 는
     # 어떤 렌즈도 `--all` 도 없을 때(순수 무인자) 발동한다.
     all_flag = bool(getattr(args, "all", False))
     if all_flag and mine:
-        sys.exit("[중단] --all 은 --mine/--repo/--slot/--task 와 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
+        sys.exit("[중단] --all 은 --mine/--task 와 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
     default_view = not all_flag and not mine
-    # 세션 뷰— **무인자 기본 뷰** 또는 **명시 세션 뷰**(`--repo X --slot N`·kind="slot").
-    # 둘 다 "그 세션 스트림"(생성 open + 그 세션 claim)만 출력한다(`_in_default_view`). `--repo X`
-    # 단독(repo-scope)·`--mine`(user-wide)·`--task`(task 렌즈)는 세션 뷰가 아니라 기존 `_ticket_is_mine`
-    # 렌즈(의미론 불변) — 단일 세션이 아니거나(repo/task) user-단위(--mine)라 생성-세션 스트림이 부적.
-    session_view = default_view or identity.kind == "slot"
-    # slot-scoped 뷰(--repo/--slot·--task)는 claim 을 그 슬롯/repo/task 로 교집합한다(--mine 은
-    # 전 슬롯·전 task). task 렌즈는 slot 축을 task 이름으로 재사용(claimed_by 재사용
-    # ) — slot_mode="exact"(task 토큰 완전 일치)라 예약으로 slot 세션과 기계 판별.
-    slot_scoped = identity.kind != "none" or task_lens is not None
-    slot_mode = "repo" if identity.kind == "repo" else "exact"
+    # 세션 뷰 = **무인자 기본 뷰**. "그 세션 스트림"(생성 open + 그 세션 claim)만 출력한다
+    # (`_in_default_view`). `--mine`(user-wide)·`--task`(task 렌즈)는 세션 뷰가 아니라 기존
+    # `_ticket_is_mine` 렌즈(의미론 불변).
+    session_view = default_view
+    # task 렌즈는 claim 을 그 task 로 교집합한다(--mine 은 전 task).
+    slot_scoped = task_lens is not None
     if task_lens is not None:
         my_user = user_name()
         my_slot = task_lens
-    elif identity.kind == "slot":
-        my_user = user_name()
-        my_slot = identity.session
-    elif identity.kind == "repo":
-        my_user = user_name()
-        my_slot = identity.repo
     else:
         # 무렌즈 경로 — `--mine`(user-wide) 또는 기본 뷰(default_view·세션 스코프). 둘 다
         # 현재 사용자/세션을 해소한다(전체 뷰 `--all` 만 정체성 무해소·additive). 기본 뷰의 my_slot
@@ -15361,9 +15083,9 @@ def cmd_list(args: argparse.Namespace) -> int:
         my_user = user_name() if resolve_identity else None
         my_slot = session_name() if resolve_identity else ""
         if mine and my_slot is None:
-            # 세션 미바인딩(surface·required=False) — slot-claim 필터를 못 좁힌다.
+            # 세션 미바인딩(surface) — claim 필터를 못 좁힌다.
             # 안내는 stderr 로 내 stdout 티켓 목록 포맷을 오염시키지 않는다(소유 open 은 계속 표시).
-            print("(비바인딩 — 세션 미해소·claim 필터 비활성; `--repo <repo> --slot <N>` 로 지정)",
+            print("(비바인딩 — 세션 미해소·claim 필터 비활성; `--task <task>` 로 지정)",
                   file=sys.stderr)
     # graceful degrade: (a) 풀(내 소유 open) 필터는 보드에 area_owner 가 *운영
     # 중일 때만* 그 파티션을 1차 소유로 쓴다. areas.md 에 area_owner 가 하나도 안 채워졌으면
@@ -15405,7 +15127,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             if args.tag and args.tag not in _tag_values(fm):
                 continue
             if session_view:
-                # 세션 뷰(무인자 기본 또는 `--repo X --slot N`) — 그 세션 스트림(생성 open +
+                # 세션 뷰(무인자 기본) — 그 세션 스트림(생성 open +
                 # 그 세션 claim)만. 타 세션분은 카운트 줄 포함 완전 비노출(전체는 `--all`).
                 in_view = _in_default_view(
                     status, fm, my_user, my_slot, area_owner_in_use, multi_user)
@@ -15425,7 +15147,6 @@ def cmd_list(args: argparse.Namespace) -> int:
                 continue
             if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
                                             area_owner_in_use, multi_user,
-                                            slot_mode=slot_mode,
                                             slot_scoped=slot_scoped):
                 # 이 제외가 *strict-exclude* 였는지 판정: 같은 predicate 를 multi_user=False 로
                 # 재평가해 단일 사용자(all-open degrade)라면 포함됐을 open 이면 = 다중사용자라서 드롭한
@@ -15434,7 +15155,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 # 사용자 티켓 제외는 단일 사용자에서도 제외라 무신호다.
                 if multi_user and not strict_exclude_fired and _ticket_is_mine(
                         status, fm, my_user, my_slot,
-                        area_owner_in_use, False, slot_mode=slot_mode,
+                        area_owner_in_use, False,
                         slot_scoped=slot_scoped):
                     strict_exclude_fired = True
                 continue
@@ -15447,7 +15168,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             "⚠ 세션격리(strict-exclude): 다중사용자 보드에서 귀속이 미해소되거나 현재 사용자와 "
             "어긋난 티켓을 이 뷰에서 제외했다. 단일 사용자인데 email(git config user.email)을 바꿨다면 "
             "옛 티켓 귀속(old→new)이 어긋나 2인으로 오판된 것 — created_by/claimed_by 를 backfill "
-            "로 정합: `python3 .project_manager/tools/board.py migrate-identity --dry-run` "
+            "로 정합: `python3 .project_manager/tools/board.py migrate-identity --task <task> --dry-run` "
             "(단일-세션 op·다른 세션 claim 중 실행 금지). 진짜 다중사용자면 정체성 설정 "
             "`board init --owner <you>`.",
             file=sys.stderr,
@@ -16558,7 +16279,6 @@ def cmd_reid(args: argparse.Namespace) -> int:
     디렉토리+.drafts 에 이미 존재하면 abort). 번호 자동발급 카운터는 `_next_id` 가 max 기반이라 어느
     번호로 옮겨도 무충돌이다 — 다음 발급이 최대치를 자연히 이으므로 별도 조정 없이 확인만 한다(결정).
     """
-    _reject_task_slot_identity_mix(args)
     old_id, requested_new_id = args.old_id, args.new_id
     new_id = requested_new_id
     dry_run = bool(getattr(args, "dry_run", False))
@@ -16635,11 +16355,9 @@ def cmd_reid(args: argparse.Namespace) -> int:
         # 두면 한쪽만 user 축을 보는 식으로 갈린다. 문구만 이 surface(단일세션 op)의 것을 쓴다.
         ownership = _ticket_ownership(fm, args)
         if not ownership.ok:
-            # remedy 는 canonical `--repo/--slot` 로 안내 — 소유 슬롯이 `<repo>_<N>` 형태면
-            # 분해해 그대로 보여주고(정직한 remedy), 아니면(커스텀 세션명) 세션명만 병기한다.
             remedy = _owner_session_remedy(ownership.owner or "")
-            print(f"[중단] {old_id} 은 `{ownership.owner}` 가 claim 중 — reid 는 단일세션 op 다. 소유 "
-                  f"세션에서 `{remedy}` 로 재실행하거나 먼저 unclaim 하라.",
+            print(f"[중단] {old_id} 은 `{ownership.owner}` 가 claim 중 — reid 는 단일세션 op 다. "
+                  f"{remedy}. 또는 먼저 unclaim 하라.",
                   file=sys.stderr)
             return None, 1
         # NEW collision — `_detect_collisions` 재사용(zero-pad 폭 정규화 포함). {OLD:NEW} 를 전 티켓
@@ -21039,17 +20757,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="내 것만 (렌즈·단일 보드 위 필터·user-first): 내 open"
                         "(area_owner==나 ∨ created_by==나) + 내 claim(claimed_by.user==나)·**전 슬롯**. "
                         "querying identity=현재 사용자(local.conf identity.user= > git email). 타 사용자는 "
-                        "안 나온다. user 미상이면 전체 open + 내 슬롯 claim 으로 graceful degrade. "
-                        "`--repo`/`--slot` 과 상호 배타(뷰 스코프는 하나만·cmd_list 런타임 검사).")
-    # `--repo`/`--slot` 조회 전용 세션 뷰(`--repo X --slot N`, kind="slot")는 현재 사용자와
-    # 세션이 모두 일치하는 생성 open + claim만 비춘다. 무인자 기본 뷰와 같은 의미론이며,
-    # `--repo X` 단독은 기존 user 단위 렌즈다. actor 명령과 플래그명은 같지만 여기서는
-    # 아무것도 바꾸지 않는다. 전체 보드(타 사용자 포함)는 `list --all`로 본다.
+                        "안 나온다. user 미상이면 전체 open + 내 세션 claim 으로 graceful degrade. "
+                        "`--task` 와 상호 배타(뷰 스코프는 하나만·cmd_list 런타임 검사).")
+    # 렌즈는 `--task`·`--mine`·`--all`·무인자 기본 뷰다(슬롯·repo 렌즈 없음). 전체 보드(타 사용자
+    # 포함)는 `list --all`로 본다.
     p.add_argument("--all", action="store_true",
                    help="전체 보드: 무인자 기본 뷰(내 세션 스트림만 = 생성 open + 내 claim)를 "
                         "끄고 모든 세션·타 사용자 티켓을 상세로 보인다(경합 가시·타 PM 열람). 뷰 스코프라 "
-                        "`--mine`/`--repo`/`--slot`/`--task` 와 상호 배타.")
-    identity_args.add_identity_args(p)
+                        "`--mine`/`--task` 와 상호 배타.")
+    identity_args.add_task_arg(p)
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show one ticket")
@@ -21064,8 +20780,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_claim)
 
     # claimed 티켓을 만지는 mutation 4종(complete·block·unclaim·unblock)과 처분(discard)은
-    # `claimed_by` 와 실행 세션을 대조한다 — 그래서 claim 과 **같은** 정체성 인자를 받는다
-    # (신규 플래그를 발명하지 않고 공용 `add_identity_args` 를 재사용).
+    # `claimed_by` 와 실행 세션을 대조한다 — 그래서 claim 과 **같은** 정체성 `--task` 를 받는다
+    # (폴더를 고르지 않으므로 위치 인자 `--repo`/`--slot` 은 없다·공용 `add_task_arg`).
     p = sub.add_parser("complete", help="mv claimed → done (sync gate enforced · 소유자만)")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--tests-pass", action="store_true",
@@ -21079,7 +20795,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 보안 capability가 아니라 ClusterCloser의 사고 방지용 exact path-binding이다.
     # 사용자 완료 표면을 하나로 유지하려 help에서는 감춘다.
     p.add_argument("--cluster-close", default=None, help=argparse.SUPPRESS)
-    identity_args.add_identity_args(p)   # claim 소유 대조용 세션 해소
+    identity_args.add_task_arg(p)   # claim 소유 대조용 세션 해소
     p.set_defaults(fn=cmd_complete)
 
     p = sub.add_parser("discard",
@@ -21090,7 +20806,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="처분 종류 — merged(다른 티켓으로 흡수) · dropped(취소·폐기)")
     p.add_argument("--reason", required=True,
                    help="처분 사유 (병합 대상 티켓 ID 도 여기에 적는다)")
-    identity_args.add_identity_args(p)
+    identity_args.add_task_arg(p)
     p.set_defaults(fn=cmd_discard)
 
     p = sub.add_parser("reopen",
@@ -21102,7 +20818,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("block", help="mv open|claimed → blocked (claimed 는 소유자만)")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--reason", required=True)
-    identity_args.add_identity_args(p)
+    identity_args.add_task_arg(p)
     p.set_defaults(fn=cmd_block)
 
     p = sub.add_parser(
@@ -21114,14 +20830,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="소유자 부재 이전 — 타 세션 claim 을 강제 해제한다(--reason 필수). "
                         "소유자 이전의 유일한 문이다.")
     p.add_argument("--reason", help="--takeover 사유 (티켓 본문·board-git 커밋에 남는다)")
-    identity_args.add_identity_args(p)
+    identity_args.add_task_arg(p)
     p.set_defaults(fn=cmd_unclaim)
 
     p = sub.add_parser(
         "unblock",
         help="mv blocked → claimed(claimed_by 보유·소유 보존) 또는 open(무소유) · 소유자만")
     p.add_argument("id", metavar="T-NNNN")
-    identity_args.add_identity_args(p)
+    identity_args.add_task_arg(p)
     p.set_defaults(fn=cmd_unblock)
 
     p = sub.add_parser("new", help="create a new ticket")
@@ -21136,24 +20852,16 @@ def build_parser() -> argparse.ArgumentParser:
                         f"estimate={DESIGN_REQUIRED_ESTIMATE} → {DESIGN_REQUIRED}, "
                         f"그 외 {DESIGN_NA}. required 면 설계 절 완성 + `{DESIGN_DONE}` 승격 "
                         f"전까지 claim 이 차단된다.")
-    p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). 생략 시 세션이 가리키는 "
-                   "areas.md repo 행의 prefix → 등록 prefix 가 정확히 1개면 그것 / 그래도 미해소면 "
+    p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). 생략 시 task 설정 "
+                   "prefix → 등록 prefix 가 정확히 1개면 그것 / 그래도 미해소면 "
                    "none(무prefix 1급 → legacy T-NNNN)")
     p.add_argument("--user-ack", metavar="<prefix>",
                    help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf identity.user= / "
                    "git config user.email)")
-    p.add_argument("--task", help="task 이름 — task-mode 발행. `--prefix` 생략 시 task "
-                   "설정 prefix(기본 없음)·created_by 는 <user>/<task>. 슬롯 세션 예약 패턴 <repo>_<N> 금지.")
-    # `--repo`/`--slot`— 생성-세션 기록. claim 과 동일 identity 해소 경로
-    # (`_actor_session_override`)를 재사용해 created_by = `<user>/<repo>_<N>` 로 박는다(세션 기본
-    # 뷰 스트림 판정 입력). `--task`와 공존은 fail-loud. 미명시 시 현행
-    # (user-only / 유도 세션) 유지. `add_identity_args` 는 `--task` 를 이미 위에서 등록해 미사용.
-    p.add_argument("--repo", metavar="이름", default=None,
-                   help="repo 이름 — 생성-세션 정체성. `--slot` 과 함께면 created_by = "
-                        "<user>/<repo>_<N>. 단독이면 그 repo 의 활성 슬롯 유도(≥2 모호면 fail-loud).")
-    p.add_argument("--slot", metavar="N", type=int, default=None,
-                   help="슬롯 번호 — `--repo` 필수(단독 불가). 함께 주면 생성-세션 <repo>_<N>.")
+    # `--task` 필수(created_by = <user>/<task>) · `--repo`/`--slot` 은 그 task 가 보유한 폴더(코드
+    # 트리·기준 브랜치)를 고르는 위치 인자 — claim 과 같은 실행 소비자 인자.
+    identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("promote", help="draft(board-git 미커밋) 티켓을 승격 — 본문 채운 뒤 board-git sync "
@@ -21168,7 +20876,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     cp = cluster_sub.add_parser(
         "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료 "
-                    "(코드 트리는 `--repo/--slot` 또는 `--task` 로 명시 필수 — 없으면 거부)")
+                    "(코드 트리는 `--task` 의 폴더로 명시 필수·폴더가 2개 이상이면 `--repo/--slot` "
+                    "위치 인자 추가 — 없으면 거부)")
     cp.add_argument("name", metavar="<ticket-group>",
                     help="클러스터 이름(장부 id 는 `C-<ticket-group>` · 통합 브랜치는 `task/<ticket-group>`)")
     cp.add_argument("--tickets", metavar="T-...,T-...", required=True,
@@ -21221,25 +20930,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--user-ack", metavar="<prefix>",
                    help="새 prefix 등록에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
     p.add_argument("--area", help="영역 설명 (새 prefix 최초 등록 시 필요)")
-    p.add_argument("--owner", help="등록 식별자(registrant·기본: session 이름)")
+    p.add_argument("--owner", help="등록 식별자(registrant·기본: --task 값, 없으면 빈 칸)")
     p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력). "
                                   "미지정 시 local.conf identity.user= / git config user.email 로 해소(없으면 빈 값).")
-    identity_args.add_identity_args(p)
+    p.add_argument("--repo", metavar="이름", default=None,
+                   help="areas.md 에 등록할 repo 이름(기본: 이 clone 루트 폴더명)")
+    p.add_argument("--task", metavar="이름", default=None,
+                   help="등록 식별자(owner) 기본값으로 쓸 task 이름")
     p.set_defaults(fn=cmd_init)
 
     p = sub.add_parser("migrate-identity",
                        help="이전 데이터 일회성 backfill — areas area_owner·ticket "
-                            "created_by·슬롯-only claimed_by (멱등·비파괴·dry-run 선검토). "
+                            "created_by·슬롯-only claimed_by·비종결 티켓의 옛 슬롯 세션 토큰 → "
+                            "<user>/<task> (`--task` 필수·멱등·비파괴·dry-run 선검토). "
                             "일회성 전체 스캔 op. areas와 ticket RMW는 각각 board_lock으로 "
                             "lifecycle/tier writer와 직렬화한다.")
     p.add_argument("--dry-run", action="store_true",
                    help="변경 미리보기(쓰기 0·per-file 요약). 먼저 실행 권장.")
     p.add_argument("--user", help="identity override (기본: local.conf identity.user= / git config "
                    "user.email · 미해소 시 abort)")
-    identity_args.add_identity_args(p)  # slot 표시값(기본: $PM_SESSION_NAME/$CLAUDE_SESSION_NAME
-    # → lease 장부의 단일 leased 슬롯) —
-    # backfill 대상 슬롯을 *바꾸지 않음*. 슬롯-only claimed_by 는 기존 슬롯 토큰을 보존하고
-    # user 차원만 prepend(비파괴).
+    identity_args.add_task_arg(p)  # 필수 — 옛 슬롯 세션 토큰을 옮길 실행 사용자의 task
     p.add_argument("--scope", choices=["active", "all"], default="all",
                    help="active=open+claimed 만 · all=done 포함(기본)")
     p.set_defaults(fn=cmd_migrate_identity)
@@ -21250,8 +20960,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test.cmd → Python pytest 병렬 기본)")
     p.add_argument("--cwd", help="회귀 실행 cwd (seam·기본=이 트리 REPO · 슬롯 자동해소 없음 — "
                                  "다른 트리는 여기서 명시)")
-    identity_args.add_identity_args(p)  # 명시 슬롯 = 디스패치(M>1 순회 생략)와 그 슬롯 test_cmd
-    # 만 좁힌다 · 실행 트리는 REPO(다른 트리는 `--cwd`/`--task` 로 명시) · M>1 홈에서 무명시면
+    identity_args.add_identity_args(p)  # `--task`(+위치 인자) = 디스패치(M>1 순회 생략)와 그 폴더
+    # 실행 · 실행 트리는 REPO(다른 트리는 `--cwd`/`--task` 로 명시) · M>1 홈에서 무명시면
     # 전 leased 슬롯 all-or-nothing
     p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
     p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
@@ -21268,7 +20978,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree) / "
                                  "check=livegate.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
                                  "(seam·record↔check 대칭)")
-    identity_args.add_identity_args(p)  # record 의 슬롯(M>1 홈에서 cwd 해소·regression 과 동형·
+    identity_args.add_identity_args(p)  # record 의 task 폴더(M>1 홈에서 cwd 해소·regression 과 동형·
     # 무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요)
     p.set_defaults(fn=cmd_livegate)
 
@@ -21374,7 +21084,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("old_id", metavar="OLD-ID", help="재부여할 기존 티켓 ID (예: T-0036)")
     p.add_argument("new_id", metavar="NEW-ID",
                    help="새 티켓 ID — T-NNNN 또는 T-<prefix>-NNN (발행 문법·legacy prefix 포함)")
-    identity_args.add_identity_args(p)  # claim 중 티켓의 소유 세션 확인용
+    identity_args.add_task_arg(p)  # claim 중 티켓의 소유 세션 확인용
     p.add_argument("--user-ack", metavar="<prefix>",
                    help="NEW-ID가 새 prefix를 신설할 때 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
     p.add_argument("--dry-run", action="store_true", help="규모 preview(N ID·M refs·K 파일)·쓰기 0")

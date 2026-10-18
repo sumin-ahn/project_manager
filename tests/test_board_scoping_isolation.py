@@ -31,6 +31,7 @@ import argparse
 import contextlib
 import importlib.util
 import io
+import os
 import re
 import types
 from pathlib import Path
@@ -145,14 +146,16 @@ def _write_conf(board, **kv) -> None:
 
 
 def _new(board, capsys, *, prefix, session, user, title) -> str:
-    """실 `cmd_new` 로 티켓을 발행하고(created_by = <user>/<repo>_<N> 스탬프) 발행 ID 를 캡처한다.
+    """실 `cmd_new` 로 티켓을 발행하고(created_by = <user>/<task> 스탬프) 발행 ID 를 캡처한다.
 
-    ADR-0067: `cmd_new` 의 `--repo`/`--slot`(decomposed 세션 기록)으로 created_by 에 생성-세션을
-    박아야 세션 기본 뷰 스트림 판정(`_created_by_session`)이 그 세션 open 을 잡는다."""
+    매트릭스의 세션 라벨 `<repo>_<N>` 은 폴더 `work/<repo>_<N>` 과 그 폴더를 보유한 task
+    (`_task_of`)로 옮겨 쓴다 — 정체성은 `--task` 이고 `--repo`/`--slot` 은 위치 인자다(T-0962).
+    created_by 의 세션 토큰(task)이 세션 기본 뷰 스트림 판정(`_created_by_session`)의 입력이다."""
     repo, slot = _split_session(session)
-    ensure_product_slot(board, repo=repo, number=slot)
+    task = _task_of(session)
+    ensure_product_slot(board, repo=repo, number=slot, task=task)
     rc = board.cmd_new(argparse.Namespace(
-        prefix=prefix, repo=repo, slot=slot, task=None, user=user, title=title,
+        prefix=prefix, repo=repo, slot=slot, task=task, user=user, title=title,
         touches=None, depends=None, tag=None, estimate="small"))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_new rc={rc}: {out}"
@@ -162,36 +165,47 @@ def _new(board, capsys, *, prefix, session, user, title) -> str:
 
 
 def _split_session(session: str) -> tuple[str, int]:
-    """세션 문자열 `<repo>_<N>` 을 (repo, slot 정수) 로 분해 — 테스트 helper 전용(ADR-0057
-    decomposed CLI 를 흉내: `cmd_claim`/`cmd_list` 는 이제 `args.repo`/`args.slot` 만 읽는다)."""
+    """매트릭스 세션 라벨 `<repo>_<N>` 을 폴더 좌표 (repo, 번호 정수) 로 분해 — 테스트 helper 전용."""
     repo, _, num = session.rpartition("_")
     return repo, int(num)
 
 
-def _claim(board, capsys, tid, *, session, user) -> None:
-    """실 `cmd_claim` 으로 claim(claimed_by=<user>/<slot> 스탬프) — `--repo`/`--slot`(ADR-0057)
-    로 호출한다. board-git 비활성이라 즉시 확정."""
+def _task_of(session: str) -> str:
+    """매트릭스 세션 라벨 `<repo>_<N>` 의 폴더를 보유한 task 이름(폴더 이름 패턴이 아닌 이름)."""
     repo, slot = _split_session(session)
-    rc = board.cmd_claim(argparse.Namespace(id=tid, repo=repo, slot=slot, user=user))
+    return f"{repo}-t{slot}"
+
+
+def _claim(board, capsys, tid, *, session, user) -> None:
+    """실 `cmd_claim` 으로 claim(claimed_by=<user>/<task> 스탬프) — `--task`(+위치 인자)로 호출한다.
+    board-git 비활성이라 즉시 확정."""
+    repo, slot = _split_session(session)
+    rc = board.cmd_claim(argparse.Namespace(
+        id=tid, task=_task_of(session), repo=repo, slot=slot, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim rc={rc}: {out}"
 
 
 def _view(board, capsys, **flags) -> list[str]:
-    """실 `cmd_list` 렌즈(mine/repo/slot/task)를 돌려 출력에서 ticket ID 목록을 추출한다.
+    """실 `cmd_list` 렌즈(mine/task/all·무인자 기본 뷰)를 돌려 출력에서 ticket ID 목록을 추출한다.
 
-    `session="<repo>_<N>"` 편의 kwarg 는 내부에서 repo/slot(exact 완전일치) 으로 분해한다(호출부
-    가독성 보존 — ADR-0057 이후 `cmd_list` 는 `args.repo`/`args.slot` 만 읽는다). `repo=`(단독=
-    repo-scope 뷰)/`slot=`(단독이면 `--repo` 없어 fail-loud)/`task=`(task 바인딩 렌즈·T-0365) 직접
-    지정도 지원한다.
+    `session="<repo>_<N>"` 편의 kwarg 는 그 라벨의 task 를 세션으로 바인딩(`PM_SESSION_NAME`)한
+    무인자 기본 뷰다 — 슬롯 렌즈는 없고(T-0962) 같은 "그 세션 스트림" 의미는 기본 뷰가 낸다.
     """
-    repo = flags.get("repo")
-    slot = flags.get("slot")
-    if flags.get("session") is not None:
-        repo, slot = _split_session(flags["session"])
-    rc = board.cmd_list(argparse.Namespace(
-        status=flags.get("status"), tag=None, mine=flags.get("mine", False),
-        all=flags.get("all", False), repo=repo, slot=slot, task=flags.get("task")))
+    session = flags.get("session")
+    env_before = os.environ.get("PM_SESSION_NAME")
+    if session is not None:
+        os.environ["PM_SESSION_NAME"] = _task_of(session)
+    try:
+        rc = board.cmd_list(argparse.Namespace(
+            status=flags.get("status"), tag=None, mine=flags.get("mine", False),
+            all=flags.get("all", False), task=flags.get("task")))
+    finally:
+        if session is not None:
+            if env_before is None:
+                os.environ.pop("PM_SESSION_NAME", None)
+            else:
+                os.environ["PM_SESSION_NAME"] = env_before
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_list rc={rc}: {out}"
     ids: list[str] = []
@@ -286,51 +300,6 @@ def test_mine_view_isolates_users_real_create_to_view(board, capsys):
 # 결정 2/3·T-0314 — 구 bare `--slot N`[repo 불문 cross-repo suffix 매칭]을 대체)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_bare_slot_without_repo_fails_loud_in_composite(board, capsys):
-    """구 bare `--slot N`(repo 불문 cross-repo 매칭)은 ADR-0057 로 제거됐다 — composite
-    다중슬롯 맥락에서도 `--repo` 없는 `--slot` 은 여전히 fail-loud(uniform·solo 예외 없음)."""
-    _seed_composite(board, capsys)
-    _write_conf(board, user="alice", session="alpha_1")
-    with pytest.raises(SystemExit) as exc:
-        board.cmd_list(argparse.Namespace(status=None, tag=None, mine=False,
-                                          repo=None, slot=1))
-    assert "--repo" in str(exc.value)
-
-
-def test_repo_alone_view_shows_all_my_slots_in_repo(board, capsys):
-    """`--repo alpha` 단독(kind=repo) = 현재 사용자(alice) ∩ **그 repo 의 내 슬롯 전체**
-    (user-first·ADR-0056·신규 repo-scope 뷰 — spike §3.1).
-
-    **타 사용자 무유출(codex leak 가드 계승)**: alice 의 alpha_1+alpha_2 claim 을 모두 보이고
-    (repo-prefix 매칭), bob(beta·타 사용자·타 repo) 은 어느 쪽도 안 섞인다."""
-    comp = _seed_composite(board, capsys)
-    _write_conf(board, user="alice", session="alpha_1")
-
-    alpha_ids = set(_view(board, capsys, repo="alpha"))
-    assert comp.al1_claim in alpha_ids                # 내 alpha_1 claim
-    assert comp.al2_claim in alpha_ids                # 신규: 내 alpha_2 claim 도 포함(그 repo 전체)
-    assert not (comp.bob_all & alpha_ids)             # bob(타 사용자·타 repo) 무유출
-
-    beta_ids = set(_view(board, capsys, repo="beta"))
-    assert comp.al1_claim not in beta_ids and comp.al2_claim not in beta_ids  # repo 불일치 → 제외
-    assert not (comp.bob_all & beta_ids)              # bob(타 사용자) claim/open 전부 무유출
-    # open 은 슬롯무관 backlog(ADR-0056 #3) — repo 뷰와 무관하게 내 open 은 그대로 보인다.
-    assert beta_ids == {comp.al1_open, comp.al2_open}
-
-
-def test_session_excludes_other_users_slot_exclusive_claim(board, capsys):
-    """(b) 명시: alice(현재 사용자) slot1 세션(alpha_1)이 bob 의 어떤 claim 도 미열람한다.
-
-    타 user claim 은 user 불일치(cb_user=bob≠alice)로 제외 — bob 의 slot2 전용 claim(beta_2)도,
-    slot1 claim(beta_1)도 모두. 비공허: alice 자기 alpha_1 claim(al1_claim)은 보여 뷰가 안 빈다.
-    """
-    comp = _seed_composite(board, capsys)
-    _write_conf(board, user="alice", session="alpha_1")
-    alice_ids = set(_view(board, capsys, session="alpha_1"))
-    assert comp.al1_claim in alice_ids                # 비공허 — 내 alpha_1 claim 은 보임
-    assert comp.be2_claim not in alice_ids
-    assert not (comp.bob_all & alice_ids)             # bob 티켓(claim·open) 전부 무유출
-
 
 # ════════════════════════════════════════════════════════════════════════
 # surface 5 — `list --task <이름>` : task 바인딩 렌즈 (T-0365·[[ADR-0059]] Decision 10)
@@ -408,27 +377,6 @@ def test_task_lens_isolates_by_binding(board, capsys):
     assert ids == {comp.al_refactor, comp.al1_open, comp.al2_open}
 
 
-def test_task_and_slot_lenses_machine_discriminate(board, capsys):
-    """⑥ 예약 규칙 기계 판별: slot claim `<user>/<repo>_<N>` 은 --task 렌즈에, task claim
-    `<user>/<task>` 는 --slot 렌즈에 서로 안 섞인다(claimed_by 재사용·추가 필드 0·§F5b).
-
-    같은 user(alice)의 두 claim 형태를 두 렌즈로 교차 조회해 각 렌즈가 자기 축의 claim 만 매칭하고
-    타 축 claim 을 걸러냄을 실 데이터로 못박는다(DoD: slot 값 vs task 값 판별).
-    """
-    comp = _seed_task_composite(board, capsys)
-    _write_conf(board, user="alice", session="alpha_1")
-
-    # task 렌즈: task claim O · slot claim X.
-    task_ids = set(_view(board, capsys, task="refactor"))
-    assert comp.al_refactor in task_ids
-    assert comp.al1_claim not in task_ids, "slot claim <alice>/<alpha_1> 이 --task 렌즈에 섞임(⑥ 위반)"
-
-    # slot 렌즈: slot claim O · task claim X.
-    slot_ids = set(_view(board, capsys, session="alpha_1"))
-    assert comp.al1_claim in slot_ids
-    assert comp.al_refactor not in slot_ids, "task claim <alice>/<refactor> 가 --slot 렌즈에 섞임(⑥ 위반)"
-
-
 def test_list_task_flag_is_consumed_not_silent_noop(board, capsys):
     """(이월 ②) 파서-수용/핸들러-소비: cmd_list 가 `--task` 를 실제 소비해 필터가 좁혀진다.
 
@@ -467,13 +415,18 @@ def test_task_lens_rejects_reserved_slot_pattern(board, capsys):
 
 
 def test_task_lens_mutually_exclusive_with_other_scopes(board, capsys):
-    """`--task` 는 --mine/--repo/--slot 과 상호 배타(뷰 스코프는 하나·모호 방지) — 함께 주면 fail-loud."""
+    """`--task` 는 --mine 과 상호 배타(뷰 스코프는 하나·모호 방지) — 함께 주면 fail-loud.
+
+    `--repo`/`--slot` 렌즈는 없어(T-0962) list parser 가 받지 않는다(rc 2)."""
     _seed_composite(board, capsys)
     _write_conf(board, user="alice", session="alpha_1")
-    for extra in ({"mine": True}, {"repo": "alpha"}, {"repo": "alpha", "slot": 1}):
+    with pytest.raises(SystemExit) as exc:
+        _view(board, capsys, task="refactor", mine=True)
+    assert "--task" in str(exc.value)
+    for extra in (["--repo", "alpha"], ["--repo", "alpha", "--slot", "1"]):
         with pytest.raises(SystemExit) as exc:
-            _view(board, capsys, task="refactor", **extra)
-        assert "--task" in str(exc.value)
+            board.build_parser().parse_args(["list", "--task", "refactor", *extra])
+        assert exc.value.code == 2
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -538,12 +491,12 @@ def _make_pre_fix_is_mine(board):
     """ADR-0053(T-0302) fix **이전**의 `_ticket_is_mine` 재현 — multi_user 게이트 없이
     `my_user is None ∨ not area_owner_in_use` 면 전체 open=mine 으로 degrade(=유출·spike §1)."""
     def _is_mine(status, fm, my_user, my_slot, area_owner_in_use, multi_user,
-                 *, slot_mode="exact", slot_scoped=False):
+                 *, slot_scoped=False):
         cb = fm.get("claimed_by") or ""
         if cb:
             cb_user = board._claimed_by_user(cb)
             if (my_user is not None and cb_user == my_user) or \
-                    board._slot_matches(cb, my_slot, mode=slot_mode):
+                    board._slot_matches(cb, my_slot):
                 return True
         if status == "open":
             if my_user is None or not area_owner_in_use:
@@ -551,28 +504,6 @@ def _make_pre_fix_is_mine(board):
             return board._ticket_area_owner(fm.get("id") or "") == my_user
         return False
     return _is_mine
-
-
-def test_pre_fix_session_scoping_leaks_red_proof(board, capsys, monkeypatch):
-    """RED-증명(ADR-0067·`--repo/--slot` 세션 뷰): 옛 세션 뷰는 open 을 user-단위(`_ticket_is_mine`·
-    슬롯무관 backlog)로 보여 같은 사용자의 **타 슬롯 생성 open**(al2_open·alpha_2)을 alpha_1 뷰에
-    유출했다(PM 77 발단). 생성-세션 스트림 fix 는 이를 제외한다.
-
-    green 스위트의 `assert al2_open not in alice_s1` 가 바로 이 유출을 잡는다(catch 검증·
-    [[verify-real-output-not-just-review]])."""
-    comp = _seed_composite(board, capsys)   # 실 predicate(생성-세션 스트림)로는 격리(위 green 테스트가 확증)
-    _write_conf(board, user="alice", session="alpha_1")
-    # 옛 동작 재현: 세션 뷰가 생성-세션 스트림 대신 user-단위(`_ticket_is_mine`·slot-scoped)로 판정 —
-    # open 은 슬롯무관이라 alice 소유의 alpha_2 생성 open 도 alpha_1 뷰에 섞인다(ADR-0067 이 닫은 누출).
-    def _pre_fix_in_view(status, fm, my_user, my_session, area_owner_in_use, multi_user):
-        return board._ticket_is_mine(status, fm, my_user, my_session or "", area_owner_in_use,
-                                     multi_user, slot_mode="exact", slot_scoped=True)
-
-    monkeypatch.setattr(board, "_in_default_view", _pre_fix_in_view)
-
-    leaked = set(_view(board, capsys, session="alpha_1"))
-    # RED: pre-fix user-단위 open 은 alice 의 타 슬롯(alpha_2) 생성 open 을 alpha_1 세션 뷰에 섞는다.
-    assert comp.al2_open in leaked, "pre-fix user-단위 open 이 유출 재현 못함 — RED-proof 무효(sim 오류)"
 
 
 def test_pre_fix_mine_unmigrated_leaks_red_proof(board, capsys, monkeypatch):
@@ -618,76 +549,6 @@ def test_solo_single_user_fallback_preserves_all_open(board, capsys):
 # ════════════════════════════════════════════════════════════════════════
 # codex must-fix (cmd_new --repo/--slot 경로) — 생성-세션 기록 + prefix 유도
 # ════════════════════════════════════════════════════════════════════════
-
-def test_new_repo_slot_user_unresolved_open_visible_in_own_session_view(board, capsys):
-    """**codex must-fix 1**: user 미해소 발행이면 `identity_tag` 가 슬롯-only(slash 없음)를 낸다.
-
-    `_created_by_session` 이 slash 없는 값을 전부 None(세션 부재)으로 봤으면 그 open 이 자기 slot
-    세션 뷰(`--repo alpha --slot 1`)에서 즉시 소실됐다(ADR-0067 "생성 세션 open" 위반). ⑥ 슬롯 세션
-    예약 패턴 판별로 session 토큰으로 취급 → 자기 생성 open 이 보여야 한다.
-    """
-    board.areas_append("al", "alpha", "owner", repo="alpha")
-    # conf user= 없음 + git stub None → user 미해소 → created_by = 슬롯-only "alpha_1"(slash 없음).
-    tid = _new(board, capsys, prefix="al", session="alpha_1", user=None, title="unresolved user open")
-    path = next((board.TICKETS_DIR / "open").glob(f"{tid}-*.md"))
-    fm, _ = board.load_ticket(path)
-    assert fm["created_by"] == "alpha_1", (
-        f"user 미해소 발행 created_by 가 슬롯-only(모호 값) 아님 — sim 무효: {fm['created_by']}")
-    # alpha_1 세션 뷰에 그 open 이 보인다(생성-세션 스트림 소실 회귀 방지).
-    ids = set(_view(board, capsys, session="alpha_1"))
-    assert tid in ids, f"user 미해소 슬롯-발행 open 이 자기 세션 뷰에서 소실(must-fix 1 미해소): {ids}"
-
-
-def test_new_repo_slot_derives_prefix_multi_repo(board, capsys):
-    """**codex must-fix 2**: 등록 repo ≥2 에서 `new --repo alpha --slot 1`(무 --prefix)이 해소한
-    세션으로 prefix 를 유도(alpha→al)해 발행 성공한다.
-
-    `id_prefix(override, session=task_session)` 로 세션을 안 넘기면 전역 재해소(모호 None)로 유도 실패 →
-    "prefix 필요"(등록 repo ≥2 가드)로 거부되던 회귀."""
-    board.AREAS_FILE.write_text(_COMPOSITE_AREAS, encoding="utf-8")   # alpha=al · beta=be (2 등록)
-    ensure_product_slot(board, repo="alpha", number=1)
-    rc = board.cmd_new(argparse.Namespace(
-        prefix=None, repo="alpha", slot=1, task=None, user="alice",
-        title="multi repo derive", touches=None, depends=None, tag=None, estimate="small"))
-    out = capsys.readouterr().out
-    assert rc == 0, f"multi-repo(등록 2)에서 `--repo/--slot` prefix 유도 실패(거부됨): {out}"
-    m = _CREATED_RE.search(out)
-    assert m, f"created ID 없음: {out}"
-    assert m.group(1).startswith("T-al-"), f"alpha→al prefix 유도 실패(전역 재해소 fallback?): {m.group(1)}"
-
-
-def test_claim_repo_slot_querying_user_unresolved_visible_in_own_session_view(board, capsys):
-    """user-qualified claim(`alice/alpha_1`)이 있는데 **조회 user 가 미해소**(git
-    email 부재)면, 옛 세션 뷰(user-first `_ticket_is_mine` 재사용)는 my_user None 이라 자기 세션 claim
-    을 숨겼다(cb_user!=None·my_user None → user 분기 실패·legacy 분기도 미발동). 세션 뷰 claim
-    축은 session 라벨로 통일해 조회 user 미해소여도 세션(alpha_1)이 일치하면 보인다.
-    """
-    board.areas_append("al", "alpha", "owner", repo="alpha")
-    tid = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="wip")
-    _claim(board, capsys, tid, session="alpha_1", user="alice")
-    cpath = next((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
-    fm, _ = board.load_ticket(cpath)
-    assert fm["claimed_by"] == "alice/alpha_1", f"claim 스탬프 예상 밖 — sim 무효: {fm['claimed_by']}"
-    # 조회 user 미해소(conf user= 없음·git stub None) — 세션만 alpha_1 로 조회.
-    ids = set(_view(board, capsys, session="alpha_1"))
-    assert tid in ids, f"조회 user 미해소인데 자기 세션 claim 이 세션 뷰에서 소실(R2 must-fix 미해소): {ids}"
-
-
-def test_slot_view_claim_same_session_isolated_by_user_real_create(board, capsys):
-    """실 create/claim 경로에서도 동명 세션의 타 user claim은 기본 뷰에서 제외된다.
-
-    바로 위 user 미해소 solo 가시성은 유지하되, user 해소 시에는 user ∧ session을
-    strict 적용한다."""
-    board.areas_append("al", "alpha", "owner", repo="alpha")
-    # alice·bob 둘 다 alpha_1 세션으로 실 claim (동명 세션·user 상이).
-    a = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="alice wip")
-    _claim(board, capsys, a, session="alpha_1", user="alice")
-    b = _new(board, capsys, prefix="al", session="alpha_1", user="bob", title="bob wip")
-    _claim(board, capsys, b, session="alpha_1", user="bob")
-    _write_conf(board, user="alice", session="alpha_1")
-    ids = set(_view(board, capsys, session="alpha_1"))
-    assert a in ids
-    assert b not in ids, f"타 user(bob)의 동명 세션(alpha_1) claim 누출: {ids}"
 
 
 # ════════════════════════════════════════════════════════════════════════

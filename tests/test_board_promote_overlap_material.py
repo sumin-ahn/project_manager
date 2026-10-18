@@ -333,9 +333,12 @@ def board_git(tmp_path, monkeypatch):
     return mod
 
 
+_TASK = "binding-task"  # conftest `ensure_product_slot`·`bind_product_cluster` 의 기본 task
+
+
 def _new_args(**overrides) -> argparse.Namespace:
     args = dict(title="겹침 재료", touches=None, depends=None, tag=None,
-                estimate="small", prefix=None, user=None, session=None, design=None)
+                estimate="small", prefix=None, user=None, task=_TASK, design=None)
     args.update(overrides)
     return argparse.Namespace(**args)
 
@@ -450,12 +453,12 @@ def test_cmd_new_reports_registered_repo_idle_count_not_physical_folder_name(
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
     _write_ledger(
         board_git,
-        _lease_row(slot="work/canonical_1", repo="canonical", session="canonical_1", state="leased"),
+        _lease_row(slot="work/canonical_1", repo="canonical", session=_TASK, state="leased"),
         _lease_row(slot="work/canonical_2", repo="canonical", session="canonical_2", state="idle"),
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
-    ensure_product_slot(board_git, repo="canonical")
-    rc = board_git.cmd_new(_new_args(repo="canonical", touches="tools/x.py"))
+    ensure_product_slot(board_git, repo="canonical", task=_TASK)
+    rc = board_git.cmd_new(_new_args(repo="canonical", slot=1, touches="tools/x.py"))
     assert rc == 0
     err = capsys.readouterr().err
     assert "idle) 슬롯 2개" in err, f"REPO.name 을 다시 유도했다면 0개가 나온다: {err!r}"
@@ -465,7 +468,7 @@ def test_cmd_new_reports_registered_repo_idle_count_not_physical_folder_name(
 def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
         board_git, capsys):
     """F-002 재현(promote 축) — `promote`는 `--repo` 인자가 없다. 티켓 `created_by` provenance 의
-    세션(`canonical_1`)을 장부로 재해소해 canonical repo(`canonical`)를 얻어야 한다(REPO.name 아님)."""
+    task(`binding-task`)를 장부로 재해소해 canonical repo(`canonical`)를 얻어야 한다(REPO.name 아님)."""
     assert board_git.REPO.name != "canonical"
     board_dir = board_git._board_dir
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"
@@ -475,23 +478,23 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
-    ensure_product_slot(board_git, repo="canonical")
+    ensure_product_slot(board_git, repo="canonical", task=_TASK)
     assert board_git.cmd_new(_new_args(
         touches="tools/x.py", repo="canonical", slot=1)) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = board_git.load_ticket(draft)
     tid = fm["id"]
-    assert fm["created_by"].rsplit("/", 1)[-1] == "canonical_1", fm["created_by"]
+    assert fm["created_by"].rsplit("/", 1)[-1] == _TASK, fm["created_by"]
     board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
 
     _write_ledger(
         board_git,
-        _lease_row(slot="work/canonical_1", repo="canonical", session="canonical_1", state="leased"),
+        _lease_row(slot="work/canonical_1", repo="canonical", session=_TASK, state="leased"),
         _lease_row(slot="work/canonical_2", repo="canonical", session="canonical_2", state="idle"),
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
-    bind_product_cluster(board_git, tid)
+    bind_product_cluster(board_git, tid, repo="canonical", task=_TASK)
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err
@@ -566,6 +569,7 @@ def test_legacy_no_board_git_still_emits_material(tmp_path, monkeypatch, capsys)
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
+    ensure_product_slot(mod, task=_TASK)  # 홈 git board 발행도 task 폴더가 필요하다(T-0962)
     rc = mod.cmd_new(_new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     err = capsys.readouterr().err

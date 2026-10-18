@@ -111,8 +111,7 @@ def _run(board, capsys, **flags) -> str:
     """무인자/`--all` cmd_list 를 돌려 전체 stdout 을 반환한다."""
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
-                              all=flags.get("all", False), task=flags.get("task"),
-                              repo=flags.get("repo"), slot=flags.get("slot"))
+                              all=flags.get("all", False), task=flags.get("task"))
     rc = board.cmd_list(args)
     assert rc == 0
     return capsys.readouterr().out
@@ -253,14 +252,6 @@ def test_default_view_unresolved_user_multi_user_strict_excludes(board, capsys, 
     assert "(no tickets)" in out
 
 
-def test_default_view_solo_legacy_created_session_open_shown(board, capsys):
-    """solo legacy session-only `created_by`도 기존 degrade대로 자기 슬롯 open을 보존한다."""
-    _write_conf(board, user="alice")
-    _seed(board, "T-0001", "open", created_by="project_manager_1")
-    out = _run(board, capsys)
-    assert _ids(out) == ["T-0001"]
-
-
 def test_default_view_solo_resolved_user_legacy_slot_claim_shown(board, capsys):
     """조회 user가 해소된 solo에서도 legacy 슬롯-only claim은 자기 세션에 보인다.
 
@@ -270,26 +261,6 @@ def test_default_view_solo_resolved_user_legacy_slot_claim_shown(board, capsys):
     _seed(board, "T-0001", "claimed", claimed_by="project_manager_1")
     out = _run(board, capsys)
     assert _ids(out) == ["T-0001"]
-
-
-def test_bootstrap_parsers_consume_user_session_filtered_slot_view(board, capsys):
-    """부트스트랩의 bound-slot 렌즈가 소비하는 count/open 목록도 board 필터 결과와 자동 정합."""
-    _write_conf(board, user="alice")
-    _seed(board, "T-0001", "open", created_by="alice/project_manager_1")
-    _seed(board, "T-0002", "open", created_by="bob/project_manager_1")
-    _seed(board, "T-0003", "claimed", claimed_by="alice/project_manager_1")
-    _seed(board, "T-0004", "claimed", claimed_by="bob/project_manager_1")
-
-    default_out = _run(board, capsys)
-    slot_out = _run(board, capsys, repo="project_manager", slot=1)
-    assert set(_ids(default_out)) == {"T-0001", "T-0003"}
-    assert set(_ids(slot_out)) == {"T-0001", "T-0003"}
-
-    bootstrap = _load_bootstrap()
-    # 버킷 골격은 board `STATUS_DIRS` 파생이다(T-0839) — 조회에 안 걸린 상태는 0 으로 남는다.
-    assert bootstrap.parse_board_counts(slot_out) == {
-        "open": 1, "claimed": 1, "blocked": 0, "done": 0, "discarded": 0}
-    assert bootstrap.parse_open_tickets(slot_out) == ["T-0001"]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -336,17 +307,6 @@ def test_default_view_solo_no_identity_degrades_to_all_open(board, capsys, monke
 # ════════════════════════════════════════════════════════════════════════
 # ⑤ 명시 세션 뷰(--repo/--slot)도 생성-세션 스트림 (user-단위 아님)
 # ════════════════════════════════════════════════════════════════════════
-
-def test_slot_view_uses_created_session_stream(board, capsys):
-    """`--repo X --slot N` 명시 세션 뷰: open 은 그 세션 생성분 + 그 세션 claim 만 — 같은 사용자
-    타 슬롯 생성 open 은 안 나온다(옛 user-단위 open 누출 근절·ADR-0067)."""
-    _write_conf(board, user="alice")
-    _seed(board, "T-0001", "open", created_by="alice/proj_1")   # 그 슬롯 생성 → 상세
-    _seed(board, "T-0002", "open", created_by="alice/proj_2")   # 같은 사용자 타 슬롯 → 비노출
-    _seed(board, "T-0003", "claimed", claimed_by="alice/proj_1")  # 그 슬롯 claim → 상세
-    out = _run(board, capsys, repo="proj", slot=1)
-    assert set(_ids(out)) == {"T-0001", "T-0003"}
-    assert "T-0002" not in out
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -402,23 +362,22 @@ def test_all_mutually_exclusive_with_mine(board):
     """`--all` + `--mine` 는 상호 배타 — fail-loud(뷰 스코프는 하나만)."""
     with pytest.raises(SystemExit) as exc:
         board.cmd_list(argparse.Namespace(status=None, tag=None, mine=True,
-                                          all=True, task=None, repo=None, slot=None))
+                                          all=True, task=None))
     assert "--all" in str(exc.value)
 
 
 def test_all_mutually_exclusive_with_repo_slot(board):
-    """`--all` + `--repo/--slot` 도 상호 배타 — fail-loud."""
+    """`list` 는 `--repo/--slot` 을 받지 않는다 — `--all` 과 함께여도 parser 가 거부(rc 2)."""
     with pytest.raises(SystemExit) as exc:
-        board.cmd_list(argparse.Namespace(status=None, tag=None, mine=False,
-                                          all=True, task=None, repo="proj", slot=1))
-    assert "--all" in str(exc.value)
+        board.build_parser().parse_args(["list", "--all", "--repo", "proj", "--slot", "1"])
+    assert exc.value.code == 2
 
 
 def test_all_mutually_exclusive_with_task(board):
     """`--all` + `--task` 도 상호 배타 — fail-loud (뷰 스코프는 하나만)."""
     with pytest.raises(SystemExit) as exc:
         board.cmd_list(argparse.Namespace(status=None, tag=None, mine=False,
-                                          all=True, task="refactor", repo=None, slot=None))
+                                          all=True, task="refactor"))
     assert "--all" in str(exc.value)
 
 

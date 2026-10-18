@@ -18,10 +18,11 @@ from pathlib import Path
 import pytest
 
 from _git import commit_env
-from conftest import anchor_board_module, bind_product_cluster
+from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
+_CLAIM_TASK = "growth-task"
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None, reason="git 바이너리 부재 — 실 board-git 케이스 skip.")
@@ -721,8 +722,10 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
 
     lifecycle_argv = (
         ["block", "T-1008", "--reason", "경합 probe"] if lifecycle == "block" else
-        ["claim", "T-1008", "--repo", "repo", "--slot", "1", "--user", "test"]
+        ["claim", "T-1008", "--task", _CLAIM_TASK, "--user", "test"]
     )
+    if lifecycle == "claim":
+        ensure_product_slot(board, task=_CLAIM_TASK)  # claim 앵커 = task 폴더(T-0962)
 
     def run_growth():
         try:
@@ -823,7 +826,8 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
 
     growth_argv = (["section-add", "T-1009", "--role", "developer"]
                    if growth == "section-add" else ["tier", "T-1009", "hard"])
-    claim_argv = ["claim", "T-1009", "--repo", "repo", "--slot", "1", "--user", "test"]
+    ensure_product_slot(board, task=_CLAIM_TASK)  # claim 앵커 = task 폴더(T-0962)
+    claim_argv = ["claim", "T-1009", "--task", _CLAIM_TASK, "--user", "test"]
 
     def run_claim():
         try:

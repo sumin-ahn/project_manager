@@ -3079,7 +3079,7 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(board, monkey
     board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
     selected = str(board.REPO / 'work/A_5')
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
-    assert board.cmd_regression(_run_args(repo='A', cwd=selected, cmd='pytest -q')) == 0
+    assert board.cmd_regression(_run_args(cwd=selected, cmd='pytest -q')) == 0
     assert fake.calls[0]['kwargs']['cwd'] == selected
     assert _flag(board)['head'] == 'head5'
 
@@ -3187,10 +3187,10 @@ def test_t0936_core_command_and_selected_workspace(board, monkeypatch):
     monkeypatch.setattr(board, '_resolve_task_workspace_cwd', lambda args, **kw: (str(selected), 'selected-core'))
     assert board.cmd_regression(_run_args(task='main', final=True)) == 0
     assert _flag(board)['command'] == 'selected-core' and _flag(board)['conf_anchor'] == str(selected)
-    assert board.cmd_regression(argparse.Namespace(action='check', repo='proj', slot=5)) == 0
+    assert board.cmd_regression(argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 0
     data = json.loads(board.LEASES_FILE.read_text(encoding='utf-8')); data['leases'][1]['test_cmd']='changed-core'
     board.LEASES_FILE.write_text(json.dumps(data), encoding='utf-8')
-    assert board.cmd_regression(argparse.Namespace(action='check', repo='proj', slot=5)) == 1
+    assert board.cmd_regression(argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 1
 
 
 @pytest.mark.parametrize('mode', ['scoped', 'review', 'final'])
@@ -3277,11 +3277,13 @@ def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, t
 @pytest.mark.parametrize("task", [False, True])
 def test_t0936_single_slot_core_command_priority(board, monkeypatch, prefix, platform, task):
     target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix, platform, task)
-    argv = ["regression", "run", "--repo", "A", "--slot", "1", "--final"]
-    argv += ["--task", "main"] if task else ["--cwd", str(target)]
+    # 선택은 `--task`(+위치 인자) 또는 `--cwd` 핀이다 — `--task` 없는 `--repo/--slot` 은 없다(T-0962).
+    argv = ["regression", "run", "--final"]
+    argv += ["--task", "main", "--repo", "A", "--slot", "1"] if task else ["--cwd", str(target)]
     assert board.cmd_regression(board.build_parser().parse_args(argv)) == 0
     assert _flag(board)["command"] == ("repo-core" if task or prefix else "local-core")
-    check = ["regression", "check", "--repo", "A", "--slot", "1", "--cwd", str(target)]
+    check = ["regression", "check"]
+    check += ["--task", "main", "--repo", "A", "--slot", "1"] if task else ["--cwd", str(target)]
     assert board.cmd_regression(board.build_parser().parse_args(check)) == 0
     assert len(calls) == 1
 
@@ -3295,32 +3297,39 @@ def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, mo
     if layer=="default": board.LOCAL_CONF.write_text("", encoding="utf-8")
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_bad\n", encoding="utf-8")
     expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":board.default_pytest_cmd()}[layer]
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--repo","A","--slot","1","--cwd",str(target),"--final"]))==0
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
     assert _flag(board)["command"]==expected+" --deselect tests/test_sample.py::test_bad"
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(target)]))==0
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==0
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_other\n", encoding="utf-8")
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(target)]))==1
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==1
 
 
 @pytest.mark.parametrize("explicit_cwd", [False, True])
 @pytest.mark.parametrize("task", [False, True])
 def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explicit_cwd, task):
-    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A", task=task)
+    # T-0962: check 의 폴더 선택은 `--task`(+위치 인자)뿐이다 — 대여 행은 task 보유로 두고, `task` 축은
+    # run 의 선택(`--task` 위치 인자 / `--cwd` 핀)을, `explicit_cwd` 축은 check 에 `--cwd` 를 겹친
+    # 형상을 고른다. `--task` 와 `--cwd` 는 함께 쓸 수 없어 겹친 check 는 기록 대조 전에 멈춘다.
+    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A", task=True)
     sibling = board.REPO / "work/A_2"
-    sibling.mkdir(parents=True)
+    (sibling / ".git").mkdir(parents=True)
     ledger["leases"][0]["test_cmd"]="core-A"
-    ledger["leases"].append({"slot":"work/A_2", "repo":"A", "session":"main" if task else "A_2", "state":"leased", "role":"work", "test_cmd":"core-B"})
+    ledger["leases"].append({"slot":"work/A_2", "repo":"A", "session":"main", "state":"leased", "role":"work", "test_cmd":"core-B"})
     board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
-    run=["regression","run","--repo","A","--slot","1","--final"]
-    run += ["--task","main"] if task else ["--cwd",str(target)]
+    run=["regression","run","--final"]
+    run += ["--task","main","--repo","A","--slot","1"] if task else ["--cwd",str(target)]
     assert board.cmd_regression(board.build_parser().parse_args(run))==0
     original=board.REGRESSION_FLAG.read_bytes()
-    same=["regression","check","--repo","A","--slot","1"]
-    if explicit_cwd: same += ["--cwd",str(target)]
-    assert board.cmd_regression(board.build_parser().parse_args(same))==0
-    different=["regression","check","--repo","A","--slot","2"]
-    if explicit_cwd: different += ["--cwd",str(sibling)]
-    assert board.cmd_regression(board.build_parser().parse_args(different))==1
+    same=["regression","check","--task","main","--repo","A","--slot","1"]
+    different=["regression","check","--task","main","--repo","A","--slot","2"]
+    if explicit_cwd:
+        for argv, cwd in ((same, target), (different, sibling)):
+            with pytest.raises(SystemExit):
+                board.cmd_regression(board.build_parser().parse_args([*argv, "--cwd", str(cwd)]))
+    else:
+        # 선택 없이 `--cwd` 로 잰 기록은 task 가 고른 폴더의 green 으로 인정되지 않는다(명령 축 불일치).
+        assert board.cmd_regression(board.build_parser().parse_args(same))==(0 if task else 1)
+        assert board.cmd_regression(board.build_parser().parse_args(different))==1
     # check는 자식을 실행하거나 기록을 바꾸지 않는다.
     assert len(calls)==1 and board.REGRESSION_FLAG.read_bytes()==original
 
@@ -3330,8 +3339,11 @@ def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(boar
     ledger["leases"][0]["test_cmd"]="core-A"
     board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
     other=board.REPO / "other"; other.mkdir()
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--repo","A","--slot","1","--cwd",str(target),"--final"]))==0
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
     assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(other)]))==1
+    # `--task` 없는 `--repo/--slot` 선택은 기록 좌표 대조 전에 위치 인자 문구로 멈춘다(T-0962).
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(other)]))
+    assert "--task" in str(exc.value.code)
     assert board.cmd_regression(board.build_parser().parse_args(["regression","check"]))==0
     assert len(calls)==1

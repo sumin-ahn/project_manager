@@ -34,7 +34,7 @@
   실패했다"는 다르다. 뒤쪽을 무대상으로 접으면 근거 없는 종결 기록만 남는다.
 - 살아 있는 멤버의 branch 또는 base_branch 부재는 미결속이며 무대상으로 처리하지 않는다. 기준을 추측하지 않고 첫 부작용 전에 거부하며 기존 명시 결속 명령을 안내한다.
 - 명시 제품 발행의 자동 크기 1 장부는 실제 제품 base_branch를 보존할 수 있으나 branch가 없으면 실행·종결 전에 기존 `board.py cluster new`로 결속한다. PM 홈과 제품의 동명 main만으로 출처를 판단하거나 기존 장부를 자동 덮어쓰지 않는다.
-- 재결속은 기존 `python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN> --repo <repo> --slot <N>`을 사용한다. task의 다중 작업공간은 `--task <task> --repo <repo> --slot <N>`으로 제품 트리를 지정한다. 새 선택 인자나 장부 필드는 없다.
+- 재결속은 기존 `python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN> --task <task>`을 사용한다. task의 폴더가 2개 이상이면 `--task <task> --repo <repo> --slot <N>`으로 제품 트리를 지정한다. 새 선택 인자나 장부 필드는 없다.
 
 ## all-done recovery (반쪽 종결 전용)
 

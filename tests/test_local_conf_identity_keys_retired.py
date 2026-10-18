@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ensure_product_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 TEMPLATE_DIRS = ("claude_code", "codex", "opencode")
@@ -390,12 +392,13 @@ def test_legacy_conf_session_does_not_resolve_a_session(board):
 
 
 def test_legacy_conf_session_fails_loud_on_attributed_write(board):
-    """같은 형상의 귀속 쓰기 → fail-loud 문구를 **실값**으로 단언한다."""
+    """같은 형상의 귀속 쓰기 → fail-loud 문구를 **실값**으로 단언한다(귀속은 `--task` 만·T-0962)."""
     board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
-        board.session_name(required=True)
-    assert str(exc.value) == board.UNREGISTERED_SESSION_ABORT
-    assert "`--repo <repo> --slot <N>`" in str(exc.value)
+        board.cmd_new(_new_args())
+    assert str(exc.value) == board.TASK_REQUIRED.format(
+        action="new", command='board.py new "<제목>"')
+    assert "`--task <task>`" in str(exc.value)
 
 
 def test_legacy_conf_prefix_does_not_namespace_new_tickets(board):
@@ -408,8 +411,8 @@ def test_legacy_conf_prefix_does_not_namespace_new_tickets(board):
 def test_lease_ledger_shape_resolves_the_session(board):
     """실 lease 장부(단일 leased 행) 형상이면 같은 홈에서 세션이 해소된다 — 역방향 확인.
 
-    폴백 제거가 *정상* 사용을 막지 않는다: 슬롯을 대여한 홈은 장부에서 세션이 나오고,
-    귀속 쓰기도 fail-loud 하지 않는다.
+    폴백 제거가 *정상* 사용을 막지 않는다: 슬롯을 대여한 홈은 장부에서 조회 세션이 나온다
+    (귀속 쓰기는 이 세션이 아니라 `--task` 로만 한다 — T-0962).
     """
     import json
     board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
@@ -417,7 +420,6 @@ def test_lease_ledger_shape_resolves_the_session(board):
         "slot": "work/proj_1", "repo": "proj", "session": "proj_1", "state": "leased",
     }]}), encoding="utf-8")
     assert board.session_name() == "proj_1"
-    assert board.session_name(required=True) == "proj_1"
 
 
 def test_env_binding_resolves_the_session(board):
@@ -426,7 +428,7 @@ def test_env_binding_resolves_the_session(board):
     import os
     os.environ["PM_SESSION_NAME"] = "proj_2"
     try:
-        assert board.session_name(required=True) == "proj_2"
+        assert board.session_name() == "proj_2"
     finally:
         os.environ.pop("PM_SESSION_NAME", None)
 
@@ -437,15 +439,18 @@ def test_env_binding_resolves_the_session(board):
 # repo 가 두 repo 로 등록돼 세션→repo→prefix 해소가 깨진다.
 
 def _init_args(**kv):
-    base = dict(prefix=None, area=None, owner=None, repo=None, slot=None,
+    base = dict(prefix=None, area=None, owner=None, repo=None, task=None,
                 user=None, user_ack=None)
     base.update(kv)
     return argparse.Namespace(**base)
 
 
+_TASK = "pm-1"
+
+
 def _new_args(**kv):
     base = dict(title="t", prefix=None, touches=None, depends=None, tag=None,
-                estimate="small", user_ack=None)
+                estimate="small", user_ack=None, task=None)
     base.update(kv)
     return argparse.Namespace(**base)
 
@@ -531,14 +536,15 @@ def test_category_named_after_the_clone_folder_stays_one_row(board):
 def test_explicit_repo_flag_names_the_areas_row_not_the_prefix(board):
     """`--repo svc --prefix acct` → repo 칼럼은 `svc`, prefix 칼럼은 `acct`.
 
-    repo 칼럼에 카테고리가 들어가면 세션 `svc_1` → repo `svc` 행 조회가 빗나가 prefix 해소가 깨진다.
+    repo 칼럼에 카테고리가 들어가면 등록 repo 이름(task 폴더의 repo 와 대조하는 값)이 카테고리로
+    오염된다. prefix 는 등록 prefix 1개 count 로 해소된다(세션 토큰 분해 없음·T-0962).
     """
     assert board.cmd_init(_init_args(repo="svc", prefix="acct", area="회계",
                                      user_ack="acct")) == 0
     assert board.registered_repos() == {"svc"}
     board.invalidate_known_prefixes_cache()
     assert board.registered_prefixes() == {"acct"}
-    assert board._prefix_from_session("svc_1") == "acct"      # 세션 유도 해소가 산다
+    assert board.id_prefix(None) == "acct"                    # 등록 1개 count 해소
 
 
 def test_repo_only_init_registers_with_zero_active_leases(board):
@@ -609,8 +615,8 @@ def test_completion_surface_flags_ambiguity_instead_of_a_bare_id_it_cannot_issue
     # 완료 안내는 발행 불가 포맷을 성공 메시지로 내지 않고, 명시 --prefix 커맨드를 지목한다.
     assert "T-NNNN (none 카테고리)" not in out
     assert "--prefix <PFX>" in out
-    # 직후 무명시 cmd_new 는 안내가 예고한 대로 실제로 거부된다 — 안내와 실 거동의 정합.
-    assert board.cmd_new(_new_args()) == 1
+    # 직후 무prefix cmd_new 는 안내가 예고한 대로 실제로 거부된다 — 안내와 실 거동의 정합.
+    assert board.cmd_new(_new_args(task=_TASK)) == 1
 
 
 def test_completion_surface_still_issues_the_bare_format_when_unambiguous(board, capsys):
@@ -630,4 +636,5 @@ def test_completion_surface_still_issues_the_bare_format_when_unambiguous(board,
     out = capsys.readouterr().out
     assert "T-NNNN (none 카테고리)" in out
     assert "--prefix <PFX>" not in out
-    assert board.cmd_new(_new_args()) == 0                       # 안내대로 무명시 발행이 실제로 된다
+    ensure_product_slot(board, task=_TASK)                       # 발행은 task 폴더가 필요하다(T-0962)
+    assert board.cmd_new(_new_args(task=_TASK)) == 0             # 안내대로 무prefix 발행이 실제로 된다

@@ -29,7 +29,7 @@ audience: pm-internal
 | 종결 | `ticket_finish.py --cluster`(종결이 `rounds resolve --cluster` 를 부른다) | 묶음 1 | — |
 
 ```bash
-python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <repo> --slot <N>
+python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --task <task>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role architect --cwd <worktree 절대경로>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role developer --cwd <worktree 절대경로>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role code-reviewer --cwd <worktree 절대경로> --focus <검토 중점 파일>
@@ -46,7 +46,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group>
 
 ## 사전 조건
 
-- 묶음이 선언돼 있고 멤버 티켓이 claim 됐다 (`/pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>`).
+- 묶음이 선언돼 있고 멤버 티켓이 claim 됐다 (`/pm-wave-claim` 통과 · claim 정체성 `--task <task>`).
 - claim 뒤 작업 폴더를 `worktree_pool.py switch <slot> task/<ticket-group>`(`<slot>=work/<repo>_<N>`)로 묶음 브랜치에 옮겼다(코드 변경이 없어도 · 작업·종결 전).
 - 예외 — **draft의 architect 본문 점검 라운드는 claim 이전**이다. 엔진이 draft × architect만 허용하고(developer·code-reviewer의 draft 라운드는 거부) 이 경로는 board-git sync 0회다.
 - depends_on 모두 done.
@@ -68,7 +68,7 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 
 ## task-mode 작업 위치 주입
 
-task-mode(v1.3.0)에서는 dev 작업 worktree를 PM이 해소한 **절대경로**로 프롬프트에 넣는다. cwd는 해소에 참여하지 않는다:
+dev 작업 worktree를 PM이 해소한 **절대경로**로 프롬프트에 넣는다. cwd는 해소에 참여하지 않는다:
 
 ```bash
 python3 .project_manager/tools/board.py regression run --task <task>
@@ -77,7 +77,6 @@ python3 .project_manager/tools/board.py regression run --task <task>
 
 - 출력된 `<worktree 절대경로>`를 developer 프롬프트의 **작업 위치**에 넣는다.
 - task가 슬롯을 여럿 보유하면 실행 대상을 `--task <task> --repo <repo> --slot <N>`으로 지정한다. 지목하는 폴더는 switch 로 묶음 브랜치에 옮긴 작업 폴더다(통합 폴더 아님). 예: `python3 .project_manager/tools/board.py regression run --task main --repo project_manager --slot 2`. 귀속은 main이며 실행 대상만 슬롯2(묶음 브랜치로 switch 한 작업 폴더)이다. 선택 없는 다중 슬롯, 같은 repo의 슬롯이 여럿인데 repo만 지정한 경우, 타 task·idle·쓰기용 readonly 슬롯은 부작용 전에 거부한다. 암묵 선택과 반납을 통한 위치 선택은 사용하지 않는다.
-- 슬롯 세션(비-task)은 종전대로이며 이 주입은 task-mode만 적용.
 
 ## 위임 설정 조회와 transport 선택 (`pm_delegate`)
 
@@ -237,7 +236,7 @@ Agent 툴 호출:
      `rounds/`(이전 라운드)는 읽기 전용으로만 읽어라. PM 홈 티켓은 편집하지 마라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
-     작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯 세션은 생략>.
+     작업 위치(worktree 절대경로): <해소 절대경로>.
 
      ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
      등록 worktree 에 board 가 없으면 엔진이 그 트리의 `.git` 포인터에서 소유 PM 홈을 유도하고,

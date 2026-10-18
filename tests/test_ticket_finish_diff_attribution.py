@@ -18,6 +18,7 @@ from test_cluster_close import _review_round_text
 
 
 REPO = Path(__file__).resolve().parents[1]
+_TASK = "finish-task"  # 슬롯 작업 폴더를 보유한 task (T-0962 — 정상 종결의 정체성은 `--task`)
 TOOLS = REPO / ".project_manager" / "tools"
 
 
@@ -122,7 +123,7 @@ def _split_home_shape(
     tools.parent.mkdir(parents=True)
     shutil.copytree(TOOLS, tools)
     slot_name = slot.rsplit("/", 1)[-1]
-    seed_slot(home, slot=slot, repo=slot_name.rsplit("_", 1)[0], session=slot_name)
+    seed_slot(home, slot=slot, repo=slot_name.rsplit("_", 1)[0], session=_TASK)
     _write_claimed_ticket(home, ticket_id, touches)
     log_dir = home / ".project_manager" / "wiki" / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -151,7 +152,7 @@ def _split_home_shape(
     # 제품 통합 브랜치를 가진 별도 worktree를 준비한다 (측정·stage oracle은 그대로).
     board = module._board_module_at(tools / "board.py")
     base = current_branch(worktree)
-    cluster = bind_product_cluster(board, ticket_id, repo="myrepo", number=1)
+    cluster = bind_product_cluster(board, ticket_id, repo="myrepo", number=1, task=_TASK)
     branch = board.load_cluster(cluster)["branch"]
     _git(worktree, "checkout", "-q", branch)
     _git(worktree, "worktree", "add", "-q", str(tmp_path / "product-integration"), base)
@@ -222,7 +223,7 @@ def _commit_subjects(root: Path) -> list[str]:
 
 
 def test_no_pytest_stages_touches_in_slot_worktree_not_pm_home(tmp_path, monkeypatch, capsys):
-    """--no-pytest + 명시 슬롯 → [4/5] 가 코드 touches 를 슬롯 worktree 에, log 산출물을 PM 홈에.
+    """--no-pytest + 명시 task → [4/5] 가 코드 touches 를 슬롯 worktree 에, log 산출물을 PM 홈에.
 
     PM 홈에도 같은 좌표의 사본이 dirty 하지만 stage 되지 않아야 한다 — 계획의 분기 축은 코드
     트리 위치이지 `--task` 유무가 아니다. [5/5] 커밋 안내도 같은 계획을 따라 repo별로 나온다.
@@ -233,7 +234,7 @@ def test_no_pytest_stages_touches_in_slot_worktree_not_pm_home(tmp_path, monkeyp
     )
     trees = _probe_code_tree(tf, monkeypatch)
 
-    rc = tf.main(["T-6703", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+    rc = tf.main(["T-6703", "--task", _TASK, "--no-pytest"])
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -261,7 +262,7 @@ def test_symlinked_slot_keeps_measurement_and_stage_on_one_tree(
     )
     trees = _probe_code_tree(tf, monkeypatch)
 
-    rc = tf.main(["T-6704", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+    rc = tf.main(["T-6704", "--task", _TASK, "--no-pytest"])
 
     out = capsys.readouterr().out
     assert rc == 0                                   # 코드 트리를 본다(PM 홈 2000줄 사본 아님)
@@ -284,7 +285,7 @@ def test_home_resident_touch_is_staged_in_pm_home(tmp_path, monkeypatch, capsys)
     )
     _probe_code_tree(tf, monkeypatch)
 
-    rc = tf.main(["T-6705", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+    rc = tf.main(["T-6705", "--task", _TASK, "--no-pytest"])
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -314,7 +315,7 @@ def test_home_resident_touch_deletion_is_committed_in_pm_home(tmp_path, monkeypa
     (home / home_touch).unlink()
     _probe_code_tree(tf, monkeypatch)
 
-    rc = tf.main(["T-6706", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+    rc = tf.main(["T-6706", "--task", _TASK, "--no-pytest"])
 
     assert rc == 0
     assert capsys.readouterr() is not None
@@ -342,7 +343,7 @@ def test_symlinked_slot_with_prefixed_touch_uses_code_tree(tmp_path, monkeypatch
     )
     trees = _probe_code_tree(tf, monkeypatch)
 
-    rc = tf.main(["T-6707", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+    rc = tf.main(["T-6707", "--task", _TASK, "--no-pytest"])
 
     err = capsys.readouterr().err
     assert rc == 0                                   # 코드 트리를 본다(PM 홈 2000줄 사본 아님)

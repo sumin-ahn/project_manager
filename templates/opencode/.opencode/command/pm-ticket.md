@@ -23,13 +23,13 @@ PM이 draft 발행 → 본문 fill → promote를 실행하는 운영 스킬이�
 ## 1. draft 발행
 
 ```bash
-python3 .project_manager/tools/board.py new "<한 줄 제목>" \
+python3 .project_manager/tools/board.py new "<한 줄 제목>" --task <task> \
   [--touches <경로,경로>] [--depends <T-NNNN,...>] [--tag <tag,...>] \
   [--estimate small|medium|large] [--prefix <카테고리>] \
   [--design required|done|n/a]
 ```
 
-- 코드 트리 없는 draft 작성은 허용한다. 공유 발행의 기준은 기존 task 또는 repo/slot 입력으로 명시한 실제 제품 트리에서 해소한다. PM 홈·현재 cwd·created_by·단일 슬롯을 근거로 제품 브랜치를 추측하지 않는다.
+- 코드 트리 없는 draft 작성은 허용한다. 발행의 기준은 `--task` 가 보유한 실제 제품 트리에서 해소한다(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자를 붙인다). PM 홈·현재 cwd·created_by·단일 슬롯을 근거로 제품 브랜치를 추측하지 않는다.
 - board-git 공유 형상: template placeholder가 남은 새 티켓은 자동으로 **draft**(`tickets/.drafts/`, board-git 미커밋)로 격리되어 다른 슬롯의 pull/handoff에 나타나지 않는다. 별도 flag는 없으며(`--draft` 없음) 미충전이면 draft다.
 - §3 본문 점검 라운드는 `pm_delegate.py ticket prepare|harvest --role architect`로 준비·회수한다 —
   **이 위임 경로만 규범이다**(PM이 자기 초안을 점검한 라운드는 독립 점검이 아니다). `board.py

@@ -161,8 +161,8 @@ def board(tmp_path, monkeypatch):
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     # 정체성 축을 tmp 에 묶는다 — 소유 대조(T-0781)가 user 축을 보므로, 실 clone 의 local.conf
-    # /전역 git email 이 새면 픽스처 claim(`me/…`)과 어긋난다. 세션은 각 테스트가 명시
-    # (`--repo/--slot` 또는 `PM_SESSION_NAME`)한다 — conf `session=` 폴백은 폐지됐다(T-0779).
+    # /전역 git email 이 새면 픽스처 claim(`me/…`)과 어긋난다. 정체성은 각 테스트가 `--task` 로
+    # 명시한다 — conf `session=` 폴백은 폐지됐다(T-0779)·슬롯 정체성도 없다(T-0962).
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("identity.user=me\n", encoding="utf-8")
@@ -170,11 +170,16 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mod, "LEASES_FILE",
         tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
+    ensure_product_slot(mod, task=_TASK)
     return mod
 
 
+# claim·new 는 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962) — 픽스처가 준비한다.
+_TASK = "binding-task"
+
+
 def _claim_args(tid: str = "T-0001") -> argparse.Namespace:
-    return argparse.Namespace(id=tid, repo="me", slot=1, user="me")
+    return argparse.Namespace(id=tid, task=_TASK, user="me")
 
 
 def _porcelain(board_dir: Path) -> dict[str, str]:
@@ -1052,7 +1057,7 @@ def test_push_timeout_without_remote_effect_rolls_back(board, tmp_path, monkeypa
 
 def _new_args(title: str) -> argparse.Namespace:
     return argparse.Namespace(title=title, touches=None, depends=None, tag=None,
-                              estimate="small", prefix=None, user=None, session=None)
+                              estimate="small", prefix=None, user=None)
 
 
 @requires_git
@@ -1075,13 +1080,13 @@ def test_best_effort_transitions_commit_only_their_paths(board, tmp_path, mutati
     if mutation == "complete":
         rc = board.cmd_complete(argparse.Namespace(
             id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False,
-            repo="me", slot=1))
+            task=_TASK))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/done/T-0001-t.md"}
     elif mutation == "block":
         rc = board.cmd_block(argparse.Namespace(id="T-0001", reason="r"))
         expected = {"tickets/open/T-0001-t.md", "tickets/blocked/T-0001-t.md"}
     elif mutation == "unclaim":
-        rc = board.cmd_unclaim(argparse.Namespace(id="T-0001", repo="me", slot=1))
+        rc = board.cmd_unclaim(argparse.Namespace(id="T-0001", task=_TASK))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/open/T-0001-t.md"}
     else:
         rc = board.cmd_unblock(argparse.Namespace(id="T-0001"))
@@ -1108,9 +1113,8 @@ def test_new_commits_only_the_created_ticket(board, tmp_path):
     board_dir = _make_board_git(tmp_path, remote=bare)
     dirty = _seed_dirty_three(board_dir)
 
-    ensure_product_slot(board)
     args = _new_args("새 티켓")
-    args.repo, args.slot = "binding", 1
+    args.task = _TASK
     assert board.cmd_new(args) == 0
 
     created = _head_files(board_dir)
@@ -1366,50 +1370,13 @@ def test_claim_anchor_task_shape_stamps_the_slot_worktree_head(board, tmp_path, 
 
 
 @requires_git
-def test_claim_anchor_slot_shape_stamps_the_worktree_head_even_when_lease_session_differs(
-        board, tmp_path, monkeypatch):
-    """`--repo`/`--slot` 형상 — 리스 `session` 이 `<repo>_<N>` 이 아니어도(F-001 실측 형상)
-    슬롯 worktree HEAD 를 잰다 — 세션 문자열 불일치로 PM 홈에 조용히 접히지 않는다."""
-    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
-    repo_head = _init_code_git(tmp_path, seed_text="home\n")
-    slot_head = _init_code_git(tmp_path / "work" / "proj_1", seed_text="slot\n")
-    assert repo_head != slot_head
-    # 리스 session 은 "proj_1" 이 아니라 임의 문자열("main") — 실측 형상 재현.
-    board.LEASES_FILE.write_text(json.dumps({"leases": [
-        {"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased"},
-    ]}), encoding="utf-8")
-    _seed_open_ticket(tmp_path, "T-9011")
-
-    assert board.cmd_claim(argparse.Namespace(id="T-9011", repo="proj", slot=1, user="me")) == 0
-
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9011"))
-    assert fm["claimed_rev"] == slot_head
-    assert fm["claimed_rev"] != repo_head
-
-
-@requires_git
-def test_claim_anchor_solo_shape_stamps_the_repo_head(board, tmp_path, monkeypatch):
-    """인자 전무(솔로) — REPO 자체가 코드 트리다(리스 장부 없음·기존 세션/REPO 층 무변경)."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setenv("PM_SESSION_NAME", "me")
-    repo_head = _init_code_git(tmp_path, seed_text="home\n")
-    _seed_open_ticket(tmp_path, "T-9012")
-
-    assert board.cmd_claim(argparse.Namespace(id="T-9012", user="me")) == 0
-
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9012"))
-    assert fm["claimed_rev"] == repo_head
-
-
-@requires_git
 def test_claim_stamps_the_claim_time_code_tree_head(board, tmp_path, monkeypatch):
-    """`claim` 이 그 시점 코드 트리 HEAD 를 `claimed_rev` 로 박제한다(솔로 형상)."""
-    monkeypatch.setenv("PM_SESSION_NAME", "me")
-    expected = _init_code_git(tmp_path, seed_text="home\n")
+    """`claim` 이 그 시점 코드 트리(task 폴더) HEAD 를 `claimed_rev` 로 박제한다."""
+    _init_code_git(tmp_path, seed_text="home\n")
+    expected = _git(["rev-parse", "HEAD"], tmp_path / "work" / "binding_1").stdout.strip()
     _seed_open_ticket(tmp_path, "T-9013")
 
-    assert board.cmd_claim(argparse.Namespace(id="T-9013", user="me")) == 0
+    assert board.cmd_claim(argparse.Namespace(id="T-9013", user="me", task=_TASK)) == 0
 
     fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9013"))
     assert fm["claimed_rev"] == expected
@@ -1418,86 +1385,20 @@ def test_claim_stamps_the_claim_time_code_tree_head(board, tmp_path, monkeypatch
         "claim 3종(주체·시각·rev)이 떨어져 기록되면 사람이 티켓에서 앵커를 못 읽는다."
 
 
-def test_claim_without_a_git_tree_warns_and_still_claims(board, tmp_path, monkeypatch, capsys):
-    """비-git 트리에선 필드를 생략하고 경고만 낸다 — 박제 실패가 claim 을 막지 않는다."""
-    monkeypatch.setenv("PM_SESSION_NAME", "me")
-    _seed_open_ticket(tmp_path, "T-9014")
-    # "이 트리에서 git HEAD 를 읽을 수 없다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
-    # 정하지 않도록 board 가 이미 쓰는 `_git_head_at` seam 으로 해소 실패를 명시한다.
-    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: "")
-
-    assert board.cmd_claim(argparse.Namespace(id="T-9014", user="me")) == 0
-
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9014"))
-    assert "claimed_rev" not in fm
-    assert "rev 박제 skip" in capsys.readouterr().err
-
-
-@requires_git
-def test_claim_warns_when_bare_claim_folds_to_repo_home_despite_an_active_slot(
-        board, tmp_path, monkeypatch, capsys):
-    """인자 전무 claim 이 REPO 를 재는데 **이 세션의 활성 슬롯**이 다른 트리면 경고한다(F-001).
-
-    [[T-0793]] 이후 판정은 리스 장부의 존재가 아니라 **이 세션 행이 해소하는 슬롯 경로 값**이다
-    (`_warn_claim_code_tree_folded_to_repo_home` 독스트링) — 리스 장부는 있어도 이 세션과
-    매칭되는 행이 없는 형상(구 케이스)은 이제 무경고다(홈 자신이 그 세션의 슬롯인 형상과
-    값으로 구분되지 않아서다). 여기서는 이 세션("me") 행이 실재하고 다른 슬롯을 가리키게
-    해 그 값 대조를 직접 겨눈다.
-
-    값은 여전히 REPO HEAD(기존 폴백 무변경) — 이 테스트는 그 폴백이 *조용하지 않다* 는 것만
-    추가로 단언한다."""
-    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
-    repo_head = _init_code_git(tmp_path, seed_text="home\n")
-    monkeypatch.setenv("PM_SESSION_NAME", "me")
-    # 이 세션("me")의 리스가 REPO 가 아닌 다른 슬롯을 가리키는데, bare claim(kind=none)은
-    # 여전히 REPO 트리를 잰다 — 그 접힘이 경고 대상이다.
-    board.LEASES_FILE.write_text(json.dumps({"leases": [
-        {"slot": "work/other_1", "repo": "other", "session": "me", "state": "leased"},
-    ]}), encoding="utf-8")
-    _seed_open_ticket(tmp_path, "T-9015")
-
-    assert board.cmd_claim(argparse.Namespace(id="T-9015", user="me")) == 0
-
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9015"))
-    assert fm["claimed_rev"] == repo_head
-    err = capsys.readouterr().err
-    assert "PM 홈(REPO)으로 접혔다" in err
-    assert str(tmp_path / "work" / "other_1") in err
-
-
-def test_claim_stays_silent_when_no_lease_row_matches_this_session(
-        board, tmp_path, monkeypatch, capsys):
-    """리스 장부는 있어도 이 세션과 매칭되는 행이 없으면 REPO 로 접혀도 무경고다.
-
-    "장부 파일이 존재한다" 는 판정 축이 아니다 — 홈 자신이 이 세션의 슬롯인 형상과 값으로
-    구분되지 않으면 상시 오발화하므로 [[T-0793]] 이후 이 형상은 의도적으로 침묵한다."""
-    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
-    _init_code_git(tmp_path, seed_text="home\n")
-    board.LEASES_FILE.write_text(json.dumps({"leases": [
-        {"slot": "work/other_1", "repo": "other", "session": "other-session", "state": "leased"},
-    ]}), encoding="utf-8")
-    monkeypatch.setenv("PM_SESSION_NAME", "me")
-    _seed_open_ticket(tmp_path, "T-9019")
-
-    assert board.cmd_claim(argparse.Namespace(id="T-9019", user="me")) == 0
-
-    assert "PM 홈(REPO)으로 접혔다" not in capsys.readouterr().err
-
-
 @requires_git
 def test_unclaim_clears_the_claimed_rev_anchor(board, tmp_path, monkeypatch):
     """unclaim 은 `claimed_by`/`claimed_at` 과 함께 `claimed_rev` 도 비운다(F-003).
 
     소유가 풀린 티켓에 옛 claim 의 앵커가 남으면, 다음 claim 이 해소에 실패해도(비-git 등)
     stale rev 가 앵커로 살아남아 인터페이스의 '필드 생략' 이 깨진다."""
-    monkeypatch.setenv("PM_SESSION_NAME", "me")
-    repo_head = _init_code_git(tmp_path, seed_text="home\n")
+    _init_code_git(tmp_path, seed_text="home\n")
+    task_head = _git(["rev-parse", "HEAD"], tmp_path / "work" / "binding_1").stdout.strip()
     _seed_open_ticket(tmp_path, "T-9016")
-    assert board.cmd_claim(argparse.Namespace(id="T-9016", user="me")) == 0
+    assert board.cmd_claim(argparse.Namespace(id="T-9016", user="me", task=_TASK)) == 0
     fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9016"))
-    assert fm["claimed_rev"] == repo_head
+    assert fm["claimed_rev"] == task_head
 
-    assert board.cmd_unclaim(argparse.Namespace(id="T-9016")) == 0
+    assert board.cmd_unclaim(argparse.Namespace(id="T-9016", task=_TASK)) == 0
 
     fm, _body = board.load_ticket(
         tmp_path / ".project_manager" / "board" / "tickets" / "open" / "T-9016-t.md")
@@ -1506,23 +1407,29 @@ def test_unclaim_clears_the_claimed_rev_anchor(board, tmp_path, monkeypatch):
 
 def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
         board, tmp_path, monkeypatch):
-    """claim 해소 실패(비-git) 시 티켓에 이미 값이 있어도 `claimed_rev` 를 비운다(F-003).
+    """재사용된 open 티켓의 stale `claimed_rev` 는 claim 뒤 남지 않는다(F-003).
 
     unclaim 을 거치지 않고 stale 값이 남은 open 티켓(구 claim 주기 재사용) 형상을 직접
-    재현한다 — `_cmd_claim_locked` 의 해소-실패 분기가 옛 값을 그대로 두지 않는지 단언한다."""
-    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    재현한다 — claim 은 task 폴더 HEAD 로 옛 값을 덮고, HEAD 를 못 읽으면 claim 자체가 멈춰
+    stale 값이 claim 앵커로 승격되지 않는다(T-0962: 비-task 의 rev 생략 claim 은 없다)."""
     path = _seed_open_ticket(tmp_path, "T-9017")
     fm, body = board.load_ticket(path)
     fm["claimed_rev"] = "a" * 40
     board.dump_ticket(path, fm, body)
-    # "이 트리에서 git HEAD 를 읽을 수 없다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
-    # 정하지 않도록 board 가 이미 쓰는 `_git_head_at` seam 으로 해소 실패를 명시한다.
+    before = path.read_bytes()
+    real_head_at = board._git_head_at
+    # "이 트리에서 git HEAD 를 읽을 수 없다"가 첫 입력이다 — `_git_head_at` seam 으로 명시한다.
     monkeypatch.setattr(board, "_git_head_at", lambda _cwd: "")
+    with pytest.raises(SystemExit):
+        board.cmd_claim(argparse.Namespace(id="T-9017", user="me", task=_TASK))
+    assert path.read_bytes() == before
 
-    assert board.cmd_claim(argparse.Namespace(id="T-9017", user="me")) == 0
+    monkeypatch.setattr(board, "_git_head_at", real_head_at)
+    assert board.cmd_claim(argparse.Namespace(id="T-9017", user="me", task=_TASK)) == 0
 
     fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9017"))
-    assert "claimed_rev" not in fm
+    assert fm["claimed_rev"] == real_head_at(str(tmp_path / "work" / "binding_1"))
+    assert fm["claimed_rev"] != "a" * 40
 
 
 def _t0929_claim_setup(board, root):
@@ -1575,62 +1482,41 @@ def test_t0929_claim_anchor_failure_before_mutation(board, tmp_path, monkeypatch
 
 
 @requires_git
-def test_slot_identity_attribution_on_task_held_folder_is_refused(board, tmp_path, monkeypatch):
-    """[[T-0959]] AT-007 — `--task` 없이 `--repo --slot` 으로 task 가 보유한 폴더를 지목한 claim·new 는 쓰기 전에 거부한다.
-
-    예전에는 claim 이 슬롯 정체성(`<사용자>/proj_1`)으로 통과하고, 같은 폴더를 보유한 task 의 종결에서야 남의
-    티켓으로 막혔다. 대여 행이 슬롯 세션의 것이거나 장부가 없으면 종전대로 슬롯 정체성으로 귀속한다(역방향).
-    장부를 읽을 수 없으면 보유자를 확인할 수 없어 거부한다.
-    """
-    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    _init_code_git(tmp_path, seed_text="home\n")
-    _init_code_git(tmp_path / "work" / "proj_1", seed_text="slot\n")
-
-    def write_ledger(session: str) -> None:
-        board.LEASES_FILE.write_text(json.dumps({
-            "tasks": [{"name": "mytask"}],
-            "leases": [{"slot": "work/proj_1", "repo": "proj", "session": session, "state": "leased"}],
-        }), encoding="utf-8")
-
-    write_ledger("mytask")
-    ticket = _seed_open_ticket(tmp_path, "T-9020")
+def test_t0962_attribution_writes_require_task(board, tmp_path, monkeypatch):
+    """AT-001 — 귀속 쓰기(claim·new)는 `--task` 필수다. 환경변수 세션·단일 대여로 대신하지 않는다."""
+    bare = _bare(tmp_path, "bare-t0962")
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    (tmp_path / ".project_manager" / "local.conf").write_text(
+        "identity.user=alice\n", encoding="utf-8")
+    head = _init_code_git(tmp_path / "work" / "proj_1", seed_text="proj\n")
+    board.LEASES_FILE.write_text(json.dumps({
+        "leases": [{"slot": "work/proj_1", "repo": "proj", "session": "mytask",
+                    "state": "leased", "role": "work"}],
+        "tasks": [{"name": "mytask"}]}), encoding="utf-8")
+    monkeypatch.setenv("PM_SESSION_NAME", "proj_1")
+    tickets = board_dir / "tickets"
+    ticket = tickets / "open" / "T-0001-t.md"
     before = ticket.read_bytes()
-    with pytest.raises(SystemExit) as refused:
-        board.cmd_claim(argparse.Namespace(id="T-9020", repo="proj", slot=1, user="me"))
-    assert "task 'mytask' 가 보유한다" in str(refused.value)
-    assert "--task mytask --repo proj --slot 1" in str(refused.value)
-    assert ticket.read_bytes() == before and not _claimed_ticket(tmp_path, "T-9020").exists()
 
-    tickets = tmp_path / ".project_manager" / "board" / "tickets"
+    def snapshot() -> list[str]:
+        # 상태 디렉터리(+draft 격리)를 한 단계씩 연다 — 쓰기가 생기면 이 목록이 바뀐다.
+        return sorted(path.relative_to(tickets).as_posix()
+                      for folder in (*board.STATUS_DIRS, ".drafts")
+                      for path in (tickets / folder).glob("*.md"))
 
-    def ticket_files() -> list[str]:
-        return sorted(path.name for status in ("open", "claimed", "blocked", "done", ".drafts", "clusters")
-                      for path in (tickets / status).glob("*.md"))
+    files_before = snapshot()
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_claim(argparse.Namespace(id="T-0001", user=None))
+    assert "--task" in str(exc.value.code)
+    assert ticket.read_bytes() == before
+    assert snapshot() == files_before
 
-    existing = ticket_files()
-    new_args = argparse.Namespace(title="slot new probe", touches=None, depends=None, tag=None,
-                                  estimate="small", prefix=None, user=None, session=None,
-                                  repo="proj", slot=1, task=None)
-    with pytest.raises(SystemExit) as refused_new:
-        board.cmd_new(new_args)
-    assert "task 'mytask' 가 보유한다" in str(refused_new.value)
-    assert ticket_files() == existing
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_new(_new_args("probe"))
+    assert "--task" in str(exc.value.code)
+    assert snapshot() == files_before
 
-    for index, ledger in enumerate(("proj_1", None), start=1):     # 슬롯 세션 행 · 장부 없음
-        if ledger is None:
-            board.LEASES_FILE.unlink()
-        else:
-            write_ledger(ledger)
-        tid = f"T-902{index}"
-        _seed_open_ticket(tmp_path, tid)
-        assert board.cmd_claim(argparse.Namespace(id=tid, repo="proj", slot=1, user="me")) == 0
-        fm, _body = board.load_ticket(_claimed_ticket(tmp_path, tid))
-        assert str(fm["claimed_by"]).endswith("/proj_1"), fm["claimed_by"]
-
-    board.LEASES_FILE.write_text("{not json", encoding="utf-8")
-    _seed_open_ticket(tmp_path, "T-9029")
-    with pytest.raises(SystemExit) as unreadable:
-        board.cmd_claim(argparse.Namespace(id="T-9029", repo="proj", slot=1, user="me"))
-    assert "장부를 읽을 수 없어" in str(unreadable.value)
-    assert not _claimed_ticket(tmp_path, "T-9029").exists()
+    assert board.cmd_claim(argparse.Namespace(id="T-0001", user=None, task="mytask")) == 0
+    fm, _body = board.load_ticket(tickets / "claimed" / "T-0001-t.md")
+    assert fm["claimed_by"] == "alice/mytask"
+    assert fm["claimed_rev"] == head

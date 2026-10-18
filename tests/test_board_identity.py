@@ -31,6 +31,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ensure_product_slot
+
+# 귀속 쓰기 정체성 — 픽스처가 이 task 의 제품 폴더를 준비한다(T-0962).
+_TASK = "pm-1"
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -99,9 +104,11 @@ def board(tmp_path, monkeypatch):
     (pm / ".local").mkdir(parents=True, exist_ok=True)  # board_lock 의 lock 파일 위치
     # 기본: git 폴백 미설정(None) — 실 git config 누출 차단. 명시 테스트가 덮는다.
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
-    # 세션 바인딩은 env 명시 — per-clone conf `session=` 폴백은 폐지됐다(T-0779).
-    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    # 조회 세션 바인딩은 env 명시 — per-clone conf `session=` 폴백은 폐지됐다(T-0779). 귀속 쓰기
+    # (new·claim)는 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962).
+    monkeypatch.setenv("PM_SESSION_NAME", _TASK)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    ensure_product_slot(mod, task=_TASK)
     mod._proj = proj
     return mod
 
@@ -211,10 +218,10 @@ def test_identity_tag_honors_overrides(board):
 # cmd_new — created_by (provenance·생성 시 set)
 # ════════════════════════════════════════════════════════════════════════
 
-def _new_args(title="t", prefix=None, user=None, session=None):
+def _new_args(title="t", prefix=None, user=None):
     return argparse.Namespace(title=title, prefix=prefix, touches=None,
                               depends=None, tag=None, estimate="small",
-                              user=user, session=session)
+                              user=user, task=_TASK)
 
 
 def test_cmd_new_sets_created_by_user_slot(board):
@@ -225,14 +232,6 @@ def test_cmd_new_sets_created_by_user_slot(board):
     assert len(created) == 1
     fm, _ = board.load_ticket(created[0])
     assert fm["created_by"] == "alice/pm-1"
-
-
-def test_cmd_new_created_by_slot_only_when_user_unknown(board):
-    """user 미상이면 created_by = 슬롯만 (graceful·하위호환)."""
-    _write_conf(board)
-    assert board.cmd_new(_new_args()) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
-    assert fm["created_by"] == "pm-1"
 
 
 def test_cmd_new_created_by_honors_explicit_user(board):
@@ -255,7 +254,7 @@ def _seed_open(board, tid="T-0001"):
 
 
 def _claim_args(tid="T-0001", repo=None, slot=None, user=None):
-    return argparse.Namespace(id=tid, repo=repo, slot=slot, user=user)
+    return argparse.Namespace(id=tid, repo=repo, slot=slot, user=user, task=_TASK)
 
 
 def test_cmd_claim_sets_claimed_by_user_slot(board):
@@ -269,60 +268,9 @@ def test_cmd_claim_sets_claimed_by_user_slot(board):
     assert fm["claimed_by"] == "alice/pm-1"
 
 
-def test_cmd_claim_claimed_by_slot_only_when_user_unknown(board):
-    """user 미상이면 claimed_by = 슬롯만 — 기존 슬롯-only 동작 보존(graceful)."""
-    _write_conf(board)
-    _seed_open(board)
-    assert board.cmd_claim(_claim_args()) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))[0])
-    assert fm["claimed_by"] == "pm-1"
-
-
 # ════════════════════════════════════════════════════════════════════════
-# cmd_claim — `--repo`/`--slot`(ADR-0057) 해소 3케이스 + `--slot` 단독 fail-loud (T-0314)
+# cmd_claim — `--slot` 단독 fail-loud (T-0314)
 # ════════════════════════════════════════════════════════════════════════
-
-def test_cmd_claim_repo_and_slot_resolve_to_composed_session(board):
-    """kind=slot(`--repo X --slot N`) — 리스 조회 없이 즉시 `"<repo>_<N>"` 으로 완전 해소.
-
-    구 `args.session` 임의 문자열 override(예: `"pay-pm"`)는 decomposed 인자로는 재현 불가 —
-    ADR-0057 이후 슬롯 정체성은 항상 `<repo>_<N>` 형태(internal 표현 불변)다."""
-    _seed_open(board)
-    assert board.cmd_claim(_claim_args(repo="pay", slot=3, user="bob")) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))[0])
-    assert fm["claimed_by"] == "bob/pay_3"
-
-
-def test_cmd_claim_repo_alone_resolves_single_active_lease(board):
-    """kind=repo(`--repo X` 단독) — 그 repo 의 활성 리스가 정확히 1개면 그 세션으로 해소
-    (`identity_args.resolve_actor_slot`·ADR-0057 결정 3)."""
-    _write_leases(board, {"repo": "pay", "slot": 3})
-    _seed_open(board)
-    assert board.cmd_claim(_claim_args(repo="pay", user="bob")) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))[0])
-    assert fm["claimed_by"] == "bob/pay_3"
-
-
-def test_cmd_claim_repo_alone_ambiguous_fails_loud(board):
-    """kind=repo — 그 repo 의 활성 리스가 ≥2 개면 SlotResolutionError 로 fail-loud
-    (기존 SlotResolutionError 의미 보존·신규 solo 분기 아님)."""
-    _write_leases(board, {"repo": "pay", "slot": 1}, {"repo": "pay", "slot": 2})
-    _seed_open(board)
-    with pytest.raises(SystemExit) as exc:
-        board.cmd_claim(_claim_args(repo="pay", user="bob"))
-    assert "pay" in str(exc.value)
-
-
-def test_cmd_claim_repo_alone_zero_active_slots_fails_loud(board):
-    """kind=repo — 명시 `--repo X` 인데 그 repo 활성 리스가 0개면 **fail-loud** (codex r2·ADR-0057).
-    None 폴백하면 kind=none 과 구분 못 해 env/단일-lease 로 silent 오귀속(`--repo typo` → 다른 repo
-    세션으로 claim) — 명시 repo 는 해소되거나 명시적으로 실패한다. 여기선 다른 repo 활성 lease 를 둬
-    (폴백 유혹) `--repo pay`(0슬롯)가 그 세션으로 오귀속되지 않고 fail-loud 함을 lock."""
-    _write_leases(board, {"repo": "other", "slot": 1})  # 단일 lease(다른 repo) — 옛 폴백 오귀속 유혹
-    _seed_open(board)
-    with pytest.raises(SystemExit) as exc:
-        board.cmd_claim(_claim_args(repo="pay", user="bob"))
-    assert "pay" in str(exc.value) and "활성 슬롯" in str(exc.value)
 
 
 def test_cmd_claim_slot_alone_without_repo_fails_loud(board):
@@ -462,3 +410,68 @@ def test_blocked_with_claimed_by_stays_visible_in_default_and_mine_views(board, 
     out = capsys.readouterr().out
     assert rc == 0
     assert "T-0001" in out, "blocked+claimed_by 티켓이 --mine 뷰에서 사라졌다"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0962 — `--task` 없는 위치 인자(`--repo`/`--slot`)는 실행 소비자 전부에서 부작용 전에 거부
+# ════════════════════════════════════════════════════════════════════════
+
+_T0962_COMMANDS = {
+    "claim": ["claim", "T-0001"],
+    "new": ["new", "probe"],
+    "cluster-new": ["cluster", "new", "grp", "--tickets", "T-0001"],
+    "regression-run": ["regression", "run", "--cmd", "true"],
+    "livegate-record": ["livegate", "record"],
+}
+_T0962_FORMS = {
+    "repo-slot": ["--repo", "proj", "--slot", "1"],
+    "repo-alone": ["--repo", "proj"],
+}
+
+
+@pytest.mark.parametrize("form", sorted(_T0962_FORMS))
+@pytest.mark.parametrize("command", sorted(_T0962_COMMANDS))
+def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command, form):
+    """AT-002 — task 가 폴더를 보유해도 `--task` 없는 `--repo`/`--slot` 은 정체성이 아니다."""
+    from _git_fixture import init_git_repo
+    init_git_repo(board._proj / "work" / "proj_1", commit="proj fixture")
+    board.LEASES_FILE.write_text(json.dumps({
+        "leases": [{"slot": "work/proj_1", "repo": "proj", "session": "mytask",
+                    "state": "leased", "role": "work"}],
+        "tasks": [{"name": "mytask"}]}), encoding="utf-8")
+    monkeypatch.setattr(board, "REGRESSION_FLAG", board.LOCAL_DIR / "regression.json")
+    monkeypatch.setattr(board, "LIVEGATE_FLAG", board.LOCAL_DIR / "livegate.json")
+    _seed_open(board)
+    runner_calls: list = []
+    monkeypatch.setattr(board, "_run_regression_cmd",
+                        lambda *a, **k: runner_calls.append(a) or (0, "", ""))
+    monkeypatch.setattr(board, "_run_platform_cells",
+                        lambda *a, **k: runner_calls.append(a) or ([], [], 0))
+    real_run = board.subprocess.run
+
+    def guarded_run(cmd, *args, **kwargs):
+        if cmd == board.LIVEGATE_TEST_CMD:
+            runner_calls.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(board.subprocess, "run", guarded_run)
+
+    def snapshot() -> dict:
+        tickets = board.TICKETS_DIR
+        folders = (tickets, *(tickets / name for name in (*board.STATUS_DIRS, ".drafts")))
+        files = {path.relative_to(tickets).as_posix(): path.read_bytes()
+                 for folder in folders for path in folder.glob("*") if path.is_file()}
+        for flag in (board.REGRESSION_FLAG, board.LIVEGATE_FLAG):
+            files[flag.name] = flag.read_bytes() if flag.exists() else None
+        return files
+
+    before = snapshot()
+    args = board.build_parser().parse_args(_T0962_COMMANDS[command] + _T0962_FORMS[form])
+    with pytest.raises(SystemExit) as exc:
+        args.fn(args)
+    message = str(exc.value.code)
+    assert "위치 인자" in message and "--task" in message
+    if form == "repo-slot":
+        assert "--repo proj --slot 1" in message
+    assert snapshot() == before
+    assert runner_calls == []

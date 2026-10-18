@@ -46,9 +46,12 @@ python3 .project_manager/tools/pm_config.py init                    # 무prefix 
 
 # 3b) 작업 폴더 만들기 (귀속 조작·부트스트랩의 전제 — 슬롯 행이 0개면 fail-loud 안내로 멈춘다)
 python3 .project_manager/tools/pm_config.py worktree add <repo> --user-ack <repo>
+#   task 를 만들고 그 폴더를 빌린다 (new·claim 의 정체성은 --task · 발행은 task 폴더의 코드 트리를 읽는다)
+python3 .project_manager/tools/pm_config.py task new <task>
+python3 .project_manager/tools/pm_config.py alloc <repo> --task <task>
 
 # 4) board.py 동작 확인 — 첫 ticket 발행
-python3 .project_manager/tools/board.py new "첫 ticket — 환경 셋업 검증" --tag infra
+python3 .project_manager/tools/board.py new "첫 ticket — 환경 셋업 검증" --task <task> --tag infra
 python3 .project_manager/tools/board.py list
 
 # 5) free-form placeholder 직접 채우기 (sed 로 안 되는 서술 항목 — placeholders.md):
