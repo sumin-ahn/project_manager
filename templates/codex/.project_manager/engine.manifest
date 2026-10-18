@@ -25,6 +25,8 @@
 # pm-retired-path: .project_manager/tools/file_lock.py -> .project_manager/tools/pm_engine/infra/fs.py
 # pm-retired-path: .project_manager/tools/console_encoding.py -> .project_manager/tools/pm_engine/infra/console.py
 # pm-retired-path: .project_manager/tools/repo_owned_files.py -> .project_manager/tools/pm_engine/infra/repo_files.py
+# pm-retired-path: .project_manager/tools/identity_args.py -> .project_manager/tools/pm_engine/domain/identity_args.py
+# pm-retired-path: .project_manager/tools/repo_coordinates.py -> .project_manager/tools/pm_engine/infra/repo_coordinates.py
 .project_manager/tools/board.py
 # engine_rev: 엔진 사본 rev 스탬프 단일 진실 — sibling 로더가 로드한 형제 모듈의
 #   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
@@ -60,13 +62,6 @@
 # pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
 .project_manager/tools/pm_config.py
-# identity_args: 공용 정체성 인자 모듈 — --repo/--slot 파싱(discriminated) + 리스(활성슬롯) 읽기·해소
-#   단일 진실. 전 CLI 가 순차 채택 — 신설 도구라 등록 필수
-#   (미등록=전파 안 됨·pm_render 사례).
-.project_manager/tools/identity_args.py
-# repo_coordinates: PM-home ticket touches(`work/<repo>_<N>/...`)를 검증된 workspace/lease와
-#   일치할 때만 소유-repo 상대 좌표로 바꾸는 공용 normalizer. 불일치는 fail-loud.
-.project_manager/tools/repo_coordinates.py
 # local_conf: CLI 진입 파일(--keys·--keys --json·--render-adapter-block), 구현은 pm_engine
 #   (domain/conf_schema·infra/conf_store·cli/local_conf). 관리자가 프로젝트 사본마다 `--keys --json` 으로
 #   부른다.

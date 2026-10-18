@@ -47,7 +47,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.domain import identity_args  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -75,14 +76,6 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"  # �
 TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소)
 # areas.md 경로는 상수로 굳히지 않는다 — board/ 분리 시 board/ 안으로
 # 옮겨가므로, `_resolve_per_repo_test_cmd` 가 board 모듈의 `areas_file()`(board_root 추종)에 위임.
-
-# ── identity_args sibling 로드 ──────────────
-# `--repo`/`--slot` 파싱을 공용 모듈 identity_args 에서 가져온다. 스크립트-위치 앵커
-# (`Path(__file__).resolve().parent`=tools/)에서 `spec_from_file_location` 으로 동적 로드해
-# sys.path 를 오염시키지 않는다 (board.py `_load_identity_args`·pm_handoff 와 동형). 스크립트
-# 직접 실행(sys.path[0]=tools/)이든 테스트 로드(spec_from_file_location·패키지 아님이라 sys.path
-# 미충전)든 어느 쪽이든 `Path(__file__).resolve().parent` 가 정확히 tools/ 라 동일하게 동작한다
-# (pm_handoff 동일 관용구).
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
@@ -115,7 +108,7 @@ def _is_engine_rev_skew(exc) -> bool:
 
     fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
     판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
-    (예: 신 ticket_finish→신 pm_handoff→구 identity_args 검출이 None 강등되지 않게)."""
+    (예: 신 ticket_finish→신 pm_handoff→구 형제 검출이 None 강등되지 않게)."""
     return getattr(exc, "_engine_rev_skew", False)
 
 
@@ -127,16 +120,6 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
         file=sys.stderr,
     )
     return 1
-
-
-def _load_identity_args():
-    """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
-    `_load_identity_args`·pm_handoff 동형·sys.path 무오염). `--repo/--slot` 정체성 파싱에
-    load-bearing 이라 로드 실패는 엔진 손상 — 예외를 그대로 낸다(fail-loud·board.py 동일)."""
-    ia_path = Path(__file__).resolve().parent / "identity_args.py"
-    return _load_module_from_path(
-        ia_path, "identity_args.py", verifier=_verify_engine_rev,
-    )
 
 
 def _load_pm_log():
@@ -156,22 +139,6 @@ def _engine_temp_root(repo: Path) -> Path:
         TOOLS_DIR / "pm_relay.py", "pm_relay.py", verifier=_verify_engine_rev, cache=True,
     )
     return relay.temp_root(repo)
-
-
-try:
-    identity_args = _load_identity_args()
-except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
-    if _is_engine_rev_skew(exc):
-        if __name__ == "__main__":
-            print(
-                f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
-                "동기화한 뒤 다시 실행하세요.",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-        raise
-    raise
-_runtime_skill_entry = identity_args._runtime_skill_entry
 
 
 # ── 회귀 cwd 자동해소 (pm_handoff `_regression_cwd` 재사용·DRY) ────
@@ -923,34 +890,17 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     if not touches:
         return []
 
-    # 접두 없는 기존 ticket은 normalizer 로드 자체를 건너뛴다. 부분 동기 adopter에
-    # repo_coordinates.py가 없어도 기존 repo-relative soft 알림은 그대로 살아야 한다.
+    # 접두 없는 기존 ticket은 좌표 정규화를 건너뛴다.
     prefixed = [path for path in touches if _has_worktree_touch_prefix(path)]
-    try:
-        coords = _load_repo_coordinates() if prefixed else None
-    except RuntimeError as exc:
-        if _is_engine_rev_skew(exc):
-            raise
-        print(f"ticket_finish: repo 좌표 normalizer skew — {exc}", file=sys.stderr)
-        return None
-    if prefixed and coords is None:
-        for path in prefixed:
-            print(
-                f"ticket_finish: touch {path!r} 좌표 정규화 경고 — repo 좌표 normalizer "
-                f"로드 실패 ({TOOLS_DIR / 'repo_coordinates.py'}); 이 경로는 제외",
-                file=sys.stderr,
-            )
-        touches = [path for path in touches if not _has_worktree_touch_prefix(path)]
-    elif coords is not None:
-        error_type = getattr(coords, "RepoCoordinateError", RuntimeError)
+    if prefixed:
         normalized: list[str] = []
         for path in touches:
             if not _has_worktree_touch_prefix(path):
                 normalized.append(path)
                 continue
             try:
-                normalized.append(coords.normalize_repo_path(path, pm_root=REPO))
-            except error_type as exc:
+                normalized.append(repo_coordinates.normalize_repo_path(path, pm_root=REPO))
+            except repo_coordinates.RepoCoordinateError as exc:
                 print(
                     f"ticket_finish: touch {path!r} 좌표 정규화 경고 — {exc}; "
                     "이 경로는 제외",
@@ -1067,28 +1017,11 @@ def load_board_module(board_py: Path):
     return board
 
 
-def _load_repo_coordinates():
-    """공용 repo 좌표 normalizer를 경로 로드한다. 부재/손상은 stage_scope가 loud error로 바꾼다."""
-
-    path = TOOLS_DIR / "repo_coordinates.py"
-    if not path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            path, "repo_coordinates.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — 호출부가 stage 불능 사유로 표면화.
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-    return mod
-
-
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
 
 
 def _has_worktree_touch_prefix(path: str) -> bool:
-    """접두 없는 채택자에서 coordinate sibling 로드를 피하기 위한 경량 판정."""
+    """touch 가 `work/<repo>_<N>/` 슬롯 접두를 가졌는지 보는 경량 판정."""
     norm = path.replace(os.sep, "/").replace("\\", "/")
     while norm.startswith("./"):
         norm = norm[2:]
@@ -1285,23 +1218,12 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
         if touches_workspace is not None and any(
                 _has_worktree_touch_prefix(path) for path in declared_touches):
             try:
-                coords = _load_repo_coordinates()
-            except RuntimeError as exc:
-                if _is_engine_rev_skew(exc):
-                    raise
-                return StageScope((), f"repo 좌표 normalizer skew ({exc})")
-            if coords is None:
-                return StageScope(
-                    (),
-                    f"repo 좌표 normalizer를 로드하지 못했다 ({TOOLS_DIR / 'repo_coordinates.py'})",
-                )
-            try:
-                declared_touches = coords.normalize_repo_paths(
+                declared_touches = repo_coordinates.normalize_repo_paths(
                     declared_touches,
                     pm_root=REPO,
                     workspace=touches_workspace,
                 )
-            except getattr(coords, "RepoCoordinateError", RuntimeError) as exc:
+            except repo_coordinates.RepoCoordinateError as exc:
                 return StageScope((), f"touches 좌표 정규화 실패 ({exc})")
         declared.extend(repo / touch for touch in declared_touches)
     if include_engine_outputs:
@@ -2014,17 +1936,14 @@ class TicketFinisher:
             return None
         if not any(_has_worktree_touch_prefix(touch) for touch in touches):
             return list(touches)
-        coords = _load_repo_coordinates()
-        if coords is None:
-            return None
         # 측정 트리 해소는 try **밖**이다 — 그쪽은 형제 엔진 로더를 타므로(회귀 cwd 자동해소)
         # 여기 좌표 예외 처리에 섞이면 사본 skew 가 "정규화 실패" 한 줄로 위장된다.
         workspace = self._code_tree()
         try:
-            return list(coords.normalize_repo_paths(
+            return list(repo_coordinates.normalize_repo_paths(
                 touches, pm_root=REPO, workspace=workspace,
             ))
-        except getattr(coords, "RepoCoordinateError", RuntimeError):
+        except repo_coordinates.RepoCoordinateError:
             return None
 
     @staticmethod
@@ -3149,7 +3068,7 @@ class TicketFinisher:
             # (pm_handoff --no-pytest 동형·red 아님·skip 로 진행). 측정 total 은 log 스켈레톤에서 "?".
             print(
                 "  [--no-pytest] 회귀 측정 skip — 측정은 별도("
-                f"{_runtime_skill_entry('pm-qa')} 등). board complete 는 --tests-pass 유지."
+                f"{lease_store._runtime_skill_entry('pm-qa')} 등). board complete 는 --tests-pass 유지."
             )
             new_total: int | str = "?"
         else:
@@ -3801,7 +3720,7 @@ class ClusterCloser:
             return None, (f"{self._cluster}는 제품 브랜치 미결속 장부다. 기존 "
                           "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
                           "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라")
-        ledger_status, rows = identity_args._read_lease_rows_status(LEASES_FILE)
+        ledger_status, rows = lease_store._read_lease_rows_status(LEASES_FILE)
         if ledger_status == identity_args.LEDGER_UNREADABLE:
             raise _CloseObservationFailure(
                 f"대여 기록을 읽지 못했다 ({LEASES_FILE}) — 작업 트리를 찾을 곳을 정할 수 없다.")
@@ -4943,7 +4862,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-pytest",
         action="store_true",
-        help=f"[1/5] 회귀 단계를 skip 한다 (측정은 {_runtime_skill_entry('pm-qa')} 등으로 "
+        help=f"[1/5] 회귀 단계를 skip 한다 (측정은 {lease_store._runtime_skill_entry('pm-qa')} 등으로 "
              "별도·board complete 는 --tests-pass 유지). 회귀 실행만 skip — 코드 트리 해소·"
              "diff 측정·stage 는 그대로다.",
     )

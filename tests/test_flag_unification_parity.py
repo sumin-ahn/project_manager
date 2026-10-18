@@ -1,6 +1,6 @@
 """플래그 통일 — parity guard class-closer (T-0319 · ADR-0057).
 
-공용 헬퍼(`identity_args.py`·T-0322) 채택 정합 + 재발 방지를 잠그는 두 그룹의 기계 가드:
+공용 헬퍼(`pm_engine.domain.identity_args`·T-0322) 채택 정합 + 재발 방지를 잠그는 두 그룹의 기계 가드:
 
   1. **semantics parity** — 정체성 인자를 파싱하는 전 도구(board·pm_bootstrap·pm_handoff·
      ticket_finish·pm_config·pm_relay·worktree_pool)의 argparse 가 `--repo`/`--slot` 를 동형
@@ -38,6 +38,7 @@ from typing import NamedTuple
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.domain import identity_args
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -60,7 +61,7 @@ def _load_tool(filename: str, *, name: str | None = None):
 
 @pytest.fixture(scope="module")
 def ia_mod():
-    return _load_tool("identity_args.py", name="identity_args")
+    return identity_args
 
 
 @pytest.fixture(scope="module")

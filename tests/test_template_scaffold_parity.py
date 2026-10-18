@@ -31,6 +31,8 @@ from pathlib import Path
 import pytest
 
 from _harness_matrix import HARNESSES, _PM_IMPORT
+from pm_engine.domain import identity_args
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TEMPLATES = REPO / "templates"
@@ -731,8 +733,8 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     probe._ledger = lambda: ledger
     reads = []
     monkeypatch.setattr(
-        finish.identity_args, "_read_lease_rows_status",
-        lambda path: reads.append(path) or (finish.identity_args.LEDGER_OK, []),
+        lease_store, "_read_lease_rows_status",
+        lambda path: reads.append(path) or (identity_args.LEDGER_OK, []),
     )
     tree, problem = probe._resolve_code_tree()
     assert tree is None and "미결속" in problem and "cluster new" in problem

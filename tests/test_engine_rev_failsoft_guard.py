@@ -1226,7 +1226,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 218 = 219 − T-0969 가 지운 한 경계. `board._verified_at_backfill_targets` 의 `except Exception`
     #   (backfill 의 조용한 건너뜀 갈래)은 backfill 명령 삭제로 repin 의 strict 열거만 남아
     #   try 째 없어졌다. 열거 오류는 repin 의 validate-all-first 가 그대로 받는다.
-    assert len(report.boundaries) == 218, "propagation sweep boundary ratchet changed"
+    # 208 = 218 − T-0966 이 지운 10 경계. 정체성·좌표 형제 로더가 패키지 import(`pm_engine.domain.identity_args`·
+    #   `pm_engine.infra.lease_store`·`pm_engine.infra.repo_coordinates`)로 바뀌어 코드째 없어졌다: 모듈 적재 시점 로드
+    #   (`board`·`pm_handoff`·`ticket_finish`·`worktree_pool` 의 `<module>`), 좌표 로더(`board`·`delegate_scope`·
+    #   `ticket_finish` 의 `_load_repo_coordinates`), `pm_bootstrap._load_identity_args`, 좌표 소비 두 자리
+    #   (`ticket_finish.affected_domain_titles` 한 곳·`stage_scope`).
+    assert len(report.boundaries) == 208, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1363,7 +1368,6 @@ def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
 @pytest.mark.parametrize(
     ("source_name", "function", "occurrence"),
     [
-        ("delegate_scope.py", "_load_repo_coordinates", 0),
         ("delegate_scope.py", "ticket_touches", 0),
         ("delegate_scope.py", "ticket_touches", 1),
         ("worktree_pool.py", "_rerecord_branch_snapshot", 0),
@@ -1854,20 +1858,19 @@ def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("filename", "arguments"),
+    ("filename", "arguments", "witness"),
     [
-        ("board.py", ["list"]),
-        ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"]),
+        ("board.py", ["list"], "pm_log.py"),
+        ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"], "board.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
-        ("pm_bootstrap.py", ["--task", "probe"]),
-        ("pm_handoff.py", []),
-        ("ticket_finish.py", []),
-        ("pm_config.py", ["status"]),
-        ("worktree_pool.py", ["--help"]),
+        ("pm_bootstrap.py", ["--task", "probe"], "pm_log.py"),
+        ("pm_handoff.py", [], "pm_log.py"),
+        ("ticket_finish.py", [], "pm_log.py"),
+        ("pm_config.py", ["status"], "worktree_pool.py"),
     ],
 )
 def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(
-    filename, arguments, tmp_path,
+    filename, arguments, witness, tmp_path,
 ):
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
@@ -1875,7 +1878,7 @@ def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(
         shutil.copy2(source, tools / source.name)
     shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
                     ignore=shutil.ignore_patterns("__pycache__"))
-    identity = tools / "identity_args.py"
+    identity = tools / witness
     mutated, replacements = re.subn(
         r'^ENGINE_REV = "[^"]+"$',
         'ENGINE_REV = "stale-cli-copy"',

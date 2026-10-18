@@ -30,7 +30,7 @@ git 이 브랜치 이름 변경·삭제 때 설정을 함께 옮기고 지운다
 `pm-preserved-reason`(삭제 판정 사유). 슬롯 제거가 브랜치를 보존할 때 쓰고(보호·기본 브랜치
 제외), 그 브랜치가 다시 슬롯에 체크아웃되면 지운다.
 (예외 — 보호목록 조회만 board 를 **동적 sibling 로드**한다: `_load_board`·
-`_resolve_protected`. `identity_args`와 동형의 단방향 로더로 top-level import
+`_resolve_protected`. 단방향 로더라 board top-level import
 는 여전히 없고, 로드 실패는 default 보호목록 폴백이다.)
 """
 
@@ -53,7 +53,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import identity_args  # noqa: E402
+from pm_engine.infra import console, fs, lease_store, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -1844,7 +1845,7 @@ def _slot_number(repo: str, lease: "Lease") -> float:
     계상한다 — 슬롯 식별자 문자열의 마지막 `_` 를 뜯던 자리다. 행이 이 repo 번호를 주지 않으면
     (비-숫자 커스텀 슬롯·경로에 번호가 없는 행) `inf` 로 밀어 숫자 슬롯을 앞세운다(결정론적
     정렬·부재/이상 슬롯이 최소 자리를 차지하지 않게)."""
-    numbers = _identity_args._row_slot_numbers(repo, lease.slot, lease.session)
+    numbers = identity_args._row_slot_numbers(repo, lease.slot, lease.session)
     return float(min(numbers)) if numbers else float("inf")
 
 
@@ -1859,7 +1860,7 @@ def _existing_slot_numbers(repo: str, leases: list[Lease]) -> set[int]:
     """
     nums: set[int] = set()
     for lease in leases:
-        nums |= _identity_args._row_slot_numbers(repo, lease.slot, lease.session)
+        nums |= identity_args._row_slot_numbers(repo, lease.slot, lease.session)
     return nums
 
 
@@ -2069,7 +2070,7 @@ def _render_initial_task_pm_state(template_text: str, date_str: str) -> str:
     if first_entry is not None:
         section = (
             section[:first_entry.start()]
-            + TASK_PM_STATE_EMPTY_MARKER
+            + identity_args.TASK_PM_STATE_EMPTY_MARKER
             + "\n"
             + section[first_entry.end():]
         )
@@ -2082,7 +2083,7 @@ def _render_initial_task_pm_state(template_text: str, date_str: str) -> str:
         section = (
             section[:insert_at]
             + "\n"
-            + TASK_PM_STATE_EMPTY_MARKER
+            + identity_args.TASK_PM_STATE_EMPTY_MARKER
             + section[insert_at:]
         )
     section = re.sub(
@@ -2345,7 +2346,7 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
     `pm-config task prefix <task> <p|none>` 의 write 백엔드다 — 장부 top-level `tasks` 레코드
     의 `prefix` 필드를 `prefix`(문자열=지정/변경·None=해제) 로 덮는다. **중간 변경 자유**
     (task 종속 없음) — bind_task 는 prefix 를 안 만지고(생성=None·재개=유지) 변경은 여기 단일
-    지점이다. `board.py new --task <task>` 이 `identity_args.task_prefix` 로 이 값을 read 해
+    지점이다. `board.py new --task <task>` 이 `lease_store.task_prefix` 로 이 값을 read 해
     해소(명시 `--prefix` > task 설정 > 기본 없음)에 쓴다.
 
     **장부 IO 는 이 모듈이 단일 소유**(직접 JSON read/write 금지·flock/스키마) — `_lease_lock`
@@ -2657,7 +2658,7 @@ def slots_for_task_strict(name: str) -> list[Lease]:
             ) from exc
         # 행의 repo 값이 슬롯 이름이 주장하는 repo 와 어긋나면 장부 모순이다. 이름이 repo 를
         # 주장하지 않는 슬롯(`.` 등)은 대조 대상이 아니다 — 이름 모양을 강제하지 않는다.
-        claimed_repo, separator, slot_number = _identity_args.slot_path_name(slot).rpartition("_")
+        claimed_repo, separator, slot_number = identity_args.slot_path_name(slot).rpartition("_")
         if not isinstance(repo, str) or not repo:
             raise ValueError(
                 f"task {name!r} 보유 슬롯 {slot!r}의 repo 값이 비었다 — 장부 행이 불완전하다"
@@ -3496,7 +3497,7 @@ def create_slot(
             if rc != 0:
                 if readonly:
                     tail = (f"에서 readonly 슬롯을 detach 한다 — 네트워크 복구 후 "
-                            f"`{_runtime_skill_entry('pm-worktree')} refresh` 로 최신 released tip "
+                            f"`{lease_store._runtime_skill_entry('pm-worktree')} refresh` 로 최신 released tip "
                             "으로 갱신하라 (fail-soft).")
                 else:
                     tail = "에서 슬롯을 판다 — 네트워크 복구 후 새 슬롯은 origin 최신에서 시작한다 (fail-soft)."
@@ -4806,7 +4807,7 @@ class ReadonlySlotMutation(RuntimeError):
         super().__init__(
             f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly)이라 `{op}` 를 거부한다 — 문서 검증 "
             f"기준면(released base·detached)이라 git 상태를 바꾸는 op 은 불가하다. 갱신은 "
-            f"`{_runtime_skill_entry('pm-worktree')} refresh {slot} "
+            f"`{lease_store._runtime_skill_entry('pm-worktree')} refresh {slot} "
             f"[--onto <branch>]`(fetch→detach 이동)로만 한다."
         )
 
@@ -4839,7 +4840,7 @@ class ReadonlySlotNotLeasable(RuntimeError):
             f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly)이라 `{op}`(대여/반납) 대상이 "
             f"아니다 — 무소유 공유 자산(배타 대여 없음·session 없음). 제거하려면 "
             f"`worktree remove {slot} --force`, 최신 갱신은 "
-            f"`{_runtime_skill_entry('pm-worktree')} refresh {slot}`."
+            f"`{lease_store._runtime_skill_entry('pm-worktree')} refresh {slot}`."
         )
 
 
@@ -5367,8 +5368,8 @@ _DEFAULT_PROTECTED = ("main", "master", "develop")
 def _load_board():
     """board.py 를 형제 모듈로 동적 로드한다 — **보호목록 조회 전용** (fail-soft None).
 
-    이 모듈은 board 를 import 하지 않는다 — `_load_identity_args`
-    `pm_config._load_module`·`pm_bootstrap._load_board` 와 동형의 sibling 동적 로더로,
+    이 모듈은 board 를 import 하지 않는다 — `pm_config._load_module`·`pm_bootstrap._load_board`
+    와 동형의 sibling 동적 로더로,
     단방향(board 는 worktree_pool 을 로드하지 않는다)이라 순환이 없다. `__file__` 앵커(REPO 전역이
     아님) — 테스트가 경로 전역을 tmp 로 재배선해도 형제 파일 위치는 이 파일 옆으로 고정된다.
 
@@ -6424,7 +6425,7 @@ def _normalize_slot(slot_arg: str) -> str:
     slot = s if ("/" in s or s == _SLOT_HOME_VALUE) else f"work/{s}"
     parts = [part for part in slot.split("/") if part and part != _SLOT_HOME_VALUE]
     for part in parts:
-        reason = _identity_args.path_component_rejection(part)
+        reason = identity_args.path_component_rejection(part)
         if reason is not None:
             raise SlotResolutionError(
                 f"슬롯 값 {slot_arg!r} 형식 오류 — 마디 {reason}"
@@ -6510,43 +6511,6 @@ def _resolve_current_slot(slot_arg: str | None) -> str:
     )
 
 
-def _load_identity_args():
-    """공용 정체성 모듈 `identity_args.py` 를 로드한다.
-
-    `__file__` 기준(스크립트-위치 앵커) — `REPO` 전역이 아니라 이 파일 자신의 실제 디스크 경로로
-    해석한다. 테스트가 `_load_wp_bound` 로 이 모듈을 로드한 뒤 `REPO`/`LEASES_FILE` 등 전역을
-    tmp 경로로 재배선해도(hermetic), `identity_args.py` 는 항상 이 파일과 같은 tools/ 디렉토리에
-    물리적으로 있으므로 `__file__` 앵커는 재배선 영향을 받지 않는다(스크립트+테스트 양쪽 동작).
-
-    다른 도구의 sibling 로더(`pm_config._load_module`·`pm_bootstrap._load_worktree_pool`)와
-    동형 관용구
-    (리스 IO 층은 `worktree_pool` 을 되-import 하지 않는 단방향 관계).
-    """
-    path = Path(__file__).resolve().parent / "identity_args.py"
-    return _load_module_from_path(
-        path, "identity_args.py", verifier=_verify_engine_rev,
-    )
-
-
-# state 생성과 handoff 갱신이 같은 marker를 쓰도록 literal은 identity_args 한 곳만 소유한다.
-# 앞서 정의된 함수들은 이 전역을 호출 시점에 조회하므로 module import 계약은 그대로다.
-try:
-    _identity_args = _load_identity_args()
-except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
-    if _is_engine_rev_skew(exc):
-        if __name__ == "__main__":
-            print(
-                f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
-                "동기화한 뒤 다시 실행하세요.",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-        raise
-    raise
-TASK_PM_STATE_EMPTY_MARKER = _identity_args.TASK_PM_STATE_EMPTY_MARKER
-_runtime_skill_entry = _identity_args._runtime_skill_entry
-
-
 def _explicit_slot_path(repo: str, number: int) -> str:
     """명시 `--repo X --slot N` → **장부 행의 slot 경로 값**(모순은 fail-loud·부재는 canonical).
 
@@ -6556,8 +6520,8 @@ def _explicit_slot_path(repo: str, number: int) -> str:
     부재는 종전 canonical 관례(`<repo>_<N>` — `_resolve_current_slot` 이 `work/` 를 붙인다)로
     폴백하고, **모순만** fail-loud 다(추측 금지·리뷰 F-004).
     """
-    resolution = _identity_args.slot_path_resolution(repo, number, LEASES_FILE)
-    if resolution.status == _identity_args.SLOT_PATH_CONFLICT:
+    resolution = lease_store.slot_path_resolution(repo, number, LEASES_FILE)
+    if resolution.status == identity_args.SLOT_PATH_CONFLICT:
         raise SlotResolutionError(
             f"대상 슬롯을 특정할 수 없다 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
         )
@@ -6565,18 +6529,17 @@ def _explicit_slot_path(repo: str, number: int) -> str:
 
 
 def _resolve_actor_slot_for_repo(repo: str) -> str:
-    """`--repo` 단독(슬롯 무) 폴더 해소 — 공용 `identity_args.resolve_actor_workspace` 위임.
+    """`--repo` 단독(슬롯 무) 폴더 해소 — 공용 `lease_store.resolve_actor_workspace` 위임.
 
     dev/sync 는 실 git side-effect 를 내는 폴더 연산이다(귀속을 쓰지 않는다): 그 repo 의 활성(leased) 슬롯이 정확히 1개면 자동 해소, 0개/≥2개는 fail-loud(`--slot <N>`
-    명시 안내). 로컬 리스 읽기를 재구현하지 않는다 — `identity_args` 가 리스
+    명시 안내). 로컬 리스 읽기를 재구현하지 않는다 — `lease_store` 가 리스
     장부를 직접 point-read 한다. `identity_args.SlotResolutionError`(모호·다른 모듈의 클래스)는
     이 모듈의 `SlotResolutionError` 로 번역해 전파한다 — CLI `main` 의 단일 except 로 수렴시키기
     위함(호출부가 두 예외 타입을 각각 알 필요 없음).
     """
-    ia = _load_identity_args()
     try:
-        workspace = ia.resolve_actor_workspace(repo, LEASES_FILE)
-    except ia.SlotResolutionError as exc:
+        workspace = lease_store.resolve_actor_workspace(repo, LEASES_FILE)
+    except identity_args.SlotResolutionError as exc:
         raise SlotResolutionError(str(exc)) from exc
     if workspace is None:
         raise SlotResolutionError(
@@ -6877,7 +6840,6 @@ def _main(argv: "list[str] | None" = None) -> int:
         leased).
     """
     console.configure_console_utf8()
-    ia = _load_identity_args()
     parser = argparse.ArgumentParser(
         prog="worktree_pool.py",
         description="worktree/submodule 운영중 관리 backbone (dev/sync).",
@@ -6888,11 +6850,11 @@ def _main(argv: "list[str] | None" = None) -> int:
         "dev", help="submodule 을 dev 브랜치로 지정(on-branch 화 → selective resync 가 skip).")
     p_dev.add_argument("submodule", help="슬롯 worktree 상대 submodule 경로(예 vendor/sub).")
     p_dev.add_argument("branch", help="지정할 dev 브랜치명(없으면 생성·있으면 전환).")
-    ia.add_identity_args(p_dev)
+    identity_args.add_identity_args(p_dev)
 
     p_sync = subparsers.add_parser(
         "sync", help="현재 슬롯 submodule 을 pin 에 selective 재동기(수동 트리거).")
-    ia.add_identity_args(p_sync)
+    identity_args.add_identity_args(p_sync)
 
     # status — 위치인자 <slot>(dev/sync 의 --repo/--slot identity 와 다른 표면·pool 관리).
     p_status = subparsers.add_parser(
@@ -6963,7 +6925,7 @@ def _main(argv: "list[str] | None" = None) -> int:
         return _cmd_switch(args)
 
     try:
-        identity = ia.parse_identity(args)
+        identity = identity_args.parse_identity(args)
     except ValueError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1

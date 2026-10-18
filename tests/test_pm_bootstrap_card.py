@@ -82,12 +82,6 @@ def handoff_mod():
     return _load("pm_handoff")
 
 
-@pytest.fixture(scope="module")
-def ia_mod():
-    """공용 `identity_args` — 카드가 내는 정체성 토큰(`--repo`/`--slot`)의 canonical grammar 원천."""
-    return _load("identity_args")
-
-
 # 정체성 dict — lean(멀티-PM) 모드가 카드에 넘기는 형태(`_bind_and_identity` 산출과 동형).
 LEAN_IDENTITY = {
     "repo": "project_manager",

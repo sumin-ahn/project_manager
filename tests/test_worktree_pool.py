@@ -42,6 +42,8 @@ import pytest
 from _git import commit_env
 from _textio import write_crlf, write_lf
 from _win_skip import posix_mode_supported
+from pm_engine.domain import identity_args
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -5936,18 +5938,12 @@ def _install_engine(engine_root: Path) -> None:
     `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
     REPO=Path(__file__).parents[2]=engine_root → livegate.json 을 engine_root/.project_manager/.local 에서 읽는다.
 
-    `identity_args.py`(ADR-0057·T-0322)도 함께 심는다 — board.py 가 같은
-    tools/ 디렉토리에서 경로-앵커 로드(`_load_identity_args`)하는 **load-bearing
-    sibling**이라, 빠지면 이 최소-격리 엔진(board.py 단일 파일)이 import 시점에 fail-loud 로
-    죽는다(전 서브에 정체성 파싱·보드 write 직렬화가 필수).
-
-    (T-0397 rev 스탬프는 board·identity_args 소스에 baked 리터럴이라 실 복사본이면
-    서로 일치한다 — engine_rev.py 는 런타임 verify 가 읽지 않으므로 이 최소 격리 엔진엔 불요.)
+    (T-0397 rev 스탬프는 board 소스의 baked 리터럴이고 패키지 모듈에는 없다 — engine_rev.py 는
+    런타임 verify 가 읽지 않으므로 이 최소 격리 엔진엔 불요.)
     """
     tools = engine_root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
     shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
-    shutil.copy(str(TOOLS / "identity_args.py"), str(tools / "identity_args.py"))
     shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
                     ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     shutil.copy(str(TOOLS / "python_floor.py"), str(tools / "python_floor.py"))
@@ -7422,11 +7418,7 @@ def test_bind_task_creates_new_record_with_zero_workspaces(wp):
     state = wp.task_pm_state_file("newjob")
     assert state.exists()
     state_text = state.read_text(encoding="utf-8")
-    assert (
-        wp.TASK_PM_STATE_EMPTY_MARKER
-        == wp._load_identity_args().TASK_PM_STATE_EMPTY_MARKER
-    )
-    assert wp.TASK_PM_STATE_EMPTY_MARKER in state_text
+    assert identity_args.TASK_PM_STATE_EMPTY_MARKER in state_text
     assert "{{DATE}}" not in state_text
     assert "task 생성/재개 시 자동 생성" in state_text
     # 슬롯 리스는 0개(task 는 슬롯과 직교·⑥).
@@ -7715,15 +7707,12 @@ def test_set_task_prefix_preserves_sibling_leases_and_tasks(wp):
 
 
 def test_set_task_prefix_read_by_identity_args_task_prefix(wp):
-    """소비측 통합 — `set_task_prefix` 가 쓴 값을 `identity_args.task_prefix`(board.py new F5 소비)가 읽는다."""
-    ia_spec = importlib.util.spec_from_file_location("ia_test", TOOLS / "identity_args.py")
-    ia = importlib.util.module_from_spec(ia_spec)
-    ia_spec.loader.exec_module(ia)          # 순수 point-read(leases_file 인자) — 전역 재배선 불요.
+    """소비측 통합 — `set_task_prefix` 가 쓴 값을 `lease_store.task_prefix`(board.py new F5 소비)가 읽는다."""
     wp.bind_task("job1", session="s-test")
     wp.set_task_prefix("job1", "pay")
-    assert ia.task_prefix("job1", wp.LEASES_FILE) == "pay"
+    assert lease_store.task_prefix("job1", wp.LEASES_FILE) == "pay"
     wp.set_task_prefix("job1", None)
-    assert ia.task_prefix("job1", wp.LEASES_FILE) is None   # 해제도 소비측에 반영
+    assert lease_store.task_prefix("job1", wp.LEASES_FILE) is None   # 해제도 소비측에 반영
 
 
 # ── close_task_session — task 종료 기록(open=False) + 재개 (핸드오프 "두고 간다"·`task close`) ──
@@ -7871,7 +7860,7 @@ def test_create_task_creates_unoccupied_record_and_state(wp):
     assert data["tasks"][0]["session"] == "" and data["tasks"][0]["prefix"] is None
     state = wp.task_pm_state_file("newjob")
     assert state.exists()
-    assert wp.TASK_PM_STATE_EMPTY_MARKER in state.read_text(encoding="utf-8")
+    assert identity_args.TASK_PM_STATE_EMPTY_MARKER in state.read_text(encoding="utf-8")
     assert wp.list_leases() == []          # 슬롯 대여는 alloc 소관(직교)
 
 

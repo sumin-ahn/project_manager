@@ -43,8 +43,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.app import hooks  # noqa: E402
-from pm_engine.domain import conf_schema, git_policy, shell_policy  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, git, process, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema, git_policy, identity_args, shell_policy  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, git, lease_store, process, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -288,8 +288,8 @@ def _registered_slot_paths(
     lexical_work_root = pm_home / "work"
     paths: list[Path] = []
     for repo in sorted(repos):
-        # identity_args가 소유하는 `work/<repo>_<N>` + leased-state 판정을 재사용한다.
-        numbers = identity_args.repo_slot_numbers(repo, ledger)
+        # lease_store가 소유하는 `work/<repo>_<N>` + leased-state 판정을 재사용한다.
+        numbers = lease_store.repo_slot_numbers(repo, ledger)
         for number in numbers or []:
             lexical = lexical_work_root / f"{repo}_{number}"
             # resolve 전에 lexical identity를 검증한다. 내부 alias도 resolve 후에는 정상 slot과
@@ -1312,27 +1312,6 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
     return 1
 
 
-def _load_identity_args():
-    """공용 정체성 인자 모듈(`identity_args.py`)을 같은 tools/ 디렉토리에서
-    경로 로드한다 (`_load_pm_update_module`/`_load_domain_module` 동형 — 스크립트-위치 앵커·
-    sys.path 무오염).
-
-    board.py 는 스크립트 실행(`python3 tools/board.py`)과 테스트(`spec_from_file_location`)
-    양쪽으로 로드되는데, 어느 쪽이든 `Path(__file__).resolve().parent` 는 정확히 tools/ 를
-    가리키므로 이 경로-앵커 로더가 양쪽에서 동일하게 동작한다 — 평범한 `import identity_args`
-    는 스크립트 실행에서만(sys.path[0] 에 우연히 tools/ 가 실림) 동작하고, 테스트 로드에선
-    sys.path 에 tools/ 가 없어 실패한다.
-
-    identity_args 는 board.py 의 전 서브(claim·init·list·migrate-identity·regression·livegate·
-    reid) 정체성 파싱에 **load-bearing**이다 — 로드 실패는 엔진 자체 손상이므로(lint 계열의
-    advisory fail-soft 관용구와 달리) 조용히 흡수하지 않고 그대로 예외를 낸다(fail-loud).
-    """
-    ia_path = Path(__file__).resolve().parent / "identity_args.py"
-    return _load_module_from_path(
-        ia_path, "identity_args.py", verifier=_verify_engine_rev,
-    )
-
-
 def _conf_default_int(key: str) -> int:
     """이 conf 키의 엔진 기본값(정수) — 정본은 `conf_schema.KEY_REGISTRY` 다.
 
@@ -1372,26 +1351,6 @@ def _load_ticket_rounds():
     )
 
 
-def _load_repo_coordinates():
-    """touches 좌표 정규화 단일 소유자(`repo_coordinates.py`)를 같은 tools/ 에서 지연 로드한다.
-
-    `work/<repo>_<N>/` 슬롯 접두를 리스 장부 대조로 검증한 뒤에만 벗기는 규칙이 그쪽에 있고
-    board 는 소비만 한다(규칙 사본 0). 로드 실패는 None — 호출부가 그 경로를 **판정불능**으로
-    세고 통과로 위장하지 않는다(부분 동기 사본에서 좌표 축만 시야 밖). 사본 skew 는
-    fail-loud 로 재-raise 한다(`_load_pm_bootstrap_module` 동형).
-    """
-    coordinates_py = Path(__file__).resolve().parent / "repo_coordinates.py"
-    try:
-        return _load_module_from_path(
-            coordinates_py, "repo_coordinates.py",
-            verifier=_verify_engine_rev, cache=True,
-        )
-    except Exception as exc:  # noqa: BLE001 — 부재/손상 사본은 판정불능 입력이다.
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-
-
 def _write_machine_line(text: str) -> None:
     """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
@@ -1400,21 +1359,6 @@ def _write_machine_line(text: str) -> None:
     직접 쓴다(콘솔 코덱 전환과 독립).
     """
     console.write_machine_line(text)
-
-
-try:
-    identity_args = _load_identity_args()
-except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
-    if _is_engine_rev_skew(exc):
-        if __name__ == "__main__":
-            print(
-                f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
-                "동기화한 뒤 다시 실행하세요.",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-        raise
-    raise
 
 
 # 귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)에 `--task` 가 없을 때의 중단 문구.
@@ -1471,7 +1415,7 @@ def session_name(override: str | None = None) -> str | None:
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    leased = identity_args.leased_sessions(LEASES_FILE)
+    leased = lease_store.leased_sessions(LEASES_FILE)
     if len(leased) == 1:
         return leased[0]
     # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 폴백 없음.
@@ -1618,7 +1562,7 @@ def _resolve_task_workspace_cwd(
         sys.exit("[중단] --task 모드에서는 --cwd를 명시할 수 없다, 외부 경로 override를 허용하지 않는다. 기존 repo/slot 좌표로 선택하라.")
     _execution_actor_session_override(args)
     try:
-        ws = identity_args.resolve_task_workspace(identity_args.parse_identity(args), LEASES_FILE)
+        ws = lease_store.resolve_task_workspace(identity_args.parse_identity(args), LEASES_FILE)
     except (ValueError, identity_args.WorkspaceResolutionError) as exc:
         sys.exit(f"[중단] {exc}")
     if ws.readonly:
@@ -6706,7 +6650,7 @@ def _core_command_at(anchor: str, session: str | None = None, *,
                 return ""
             # 실제 task 등록 행만 선택 repo 층을 사용한다. 세션 인자 부재는 task가 아니다.
             command = (matching[0].get("test_cmd") if matching and (
-                row.get("session") in identity_args.task_names(leases)
+                row.get("session") in lease_store.task_names(leases)
                 or matching[0].get("prefix")) else None)
         command = command or local_config(home).get("test.cmd")
         return " ".join(p for p in (command or default_pytest_cmd(),
@@ -7065,7 +7009,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
     _run_cwd_pinned = args.action == "run" and getattr(args, "cwd", None)
     explicit_override = _execution_actor_session_override(args)
     if not _run_cwd_pinned and explicit_override is None:
-        leased = identity_args.leased_sessions(LEASES_FILE)
+        leased = lease_store.leased_sessions(LEASES_FILE)
         if len(leased) >= 2:
             slots = sorted(set(leased))
             return (_regression_multi_run(args, slots) if args.action == "run"
@@ -7770,7 +7714,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
         return drift_rc
     regression_session = (
         live_session
-        if live_session and len(identity_args.leased_sessions(LEASES_FILE)) >= 2
+        if live_session and len(lease_store.leased_sessions(LEASES_FILE)) >= 2
         else None
     )
     regression_data, platform_anchor, platform_commands, problem = _release_core_context(
@@ -10043,7 +9987,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(INIT_GUIDE.format(mode=mode, id_line=id_line))
     # 이 도구는 lease 장부의 writer 가 아니다(단일 writer 규약) — 작업 폴더를 만드는 것은
     # `pm-config worktree add` 다. 채택자가 그 다음 순서를 모른 채 남지 않도록 상태만 알린다.
-    if not identity_args.leased_sessions(LEASES_FILE):
+    if not lease_store.leased_sessions(LEASES_FILE):
         print(
             "  ⚠ 이 홈은 아직 작업 폴더가 없다 — 귀속 조작(claim·complete)이 세션 미해소로 "
             "중단된다. `pm-config worktree add <repo> --user-ack <repo>` 로 먼저 만들어라.",
@@ -10413,7 +10357,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             return 1
     else:
         # 우선순위: --prefix 명시 > task 설정 prefix(`task prefix`·검증·기록) > count-based.
-        task_pfx = identity_args.task_prefix(actor_session, LEASES_FILE)
+        task_pfx = lease_store.task_prefix(actor_session, LEASES_FILE)
         if task_pfx:
             override = task_pfx
     # 명시/task 값은 우선순위상 이미 최종 후보다. areas-only fold lookup(`id_prefix(override)`)으로
@@ -10700,9 +10644,9 @@ def cmd_promote(args: argparse.Namespace) -> int:
     # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
     # `promote` 는 `--repo`/`--slot` 인자가 없다 — 슬롯 재료의 repo 는 이 티켓의 provenance
     # (`created_by`)에서 세션 토큰을 뽑아(`_created_by_session` — 기존 세션-뷰 seam) 장부
-    # 등록 repo 로 재해소한다(`identity_args.session_coordinates` — 행이 있으면 행의 repo,
+    # 등록 repo 로 재해소한다(`lease_store.session_coordinates` — 행이 있으면 행의 repo,
     # 없으면 세션명 키 분해로 폴백). 둘 다 기존 seam 재사용 — 새 해소 축 아님.
-    promote_repo, _promote_slot_number = identity_args.session_coordinates(
+    promote_repo, _promote_slot_number = lease_store.session_coordinates(
         _created_by_session(fm.get("created_by")), LEASES_FILE)
     for line in _publish_overlap_material(args.id, fm.get("touches"), promote_repo or REPO.name):
         print(line, file=sys.stderr)
@@ -10772,12 +10716,11 @@ def _fold_publish_touches(items: list[str], coordinates: Any, delegate: Any) -> 
     동형으로 `workspace=None`(lease 장부 매핑으로 검증)을 쓴다. 다른 슬롯 선언·미실재 슬롯은
     항목 단위로 드롭한다(크래시 0).
     """
-    error_type = getattr(coordinates, "RepoCoordinateError", RuntimeError)
     folded: list[str] = []
     for item in items:
         try:
             normalized = coordinates.normalize_repo_path(str(item), pm_root=REPO)
-        except error_type:
+        except coordinates.RepoCoordinateError:
             continue
         value = delegate._touch_notation(
             coordinates.canonicalize_path_notation(str(normalized)))
@@ -10790,16 +10733,16 @@ def _publish_idle_slot_count(repo: str) -> int | None:
     """`repo`(canonical 등록 repo 정체성 — 물리 폴더명 아님)의 가용(idle) 슬롯 수.
 
     장부 미해소(부재/손상)면 `None`(재료 줄 생략). 데이터 원천은 lease 장부 하나, 읽기는
-    `identity_args.repo_slot_state_counts` 술어 하나뿐이다(board 안에 새 장부 read 를 만들지
+    `lease_store.repo_slot_state_counts` 술어 하나뿐이다(board 안에 새 장부 read 를 만들지
     않는다). `creating` 은 idle 로 세지 않는다.
 
     `repo` 는 호출부가 이미 해소한 canonical 값을 받는다 — `new` 는 `--repo`/`--slot` 로 명시된
     args 정체성(`identity_args.parse_identity`), `promote` 는 티켓 `created_by` provenance 를
-    `identity_args.session_coordinates` 로 재해소한 장부 등록 repo 다. 물리 폴더명(`REPO.name`)은
+    `lease_store.session_coordinates` 로 재해소한 장부 등록 repo 다. 물리 폴더명(`REPO.name`)은
     `--repo` 로 다른 등록명을 공식 지원하는 `new` 형상에서 장부 repo 와 어긋날 수 있어(리뷰 실측),
     이 함수 안에서 다시 유도하지 않는다 — 새 해소 축을 만들지 않고 호출부의 값을 그대로 쓴다.
     """
-    counts = identity_args.repo_slot_state_counts(repo, LEASES_FILE)
+    counts = lease_store.repo_slot_state_counts(repo, LEASES_FILE)
     if counts is None:
         return None
     return counts.get("idle", 0)
@@ -10852,18 +10795,17 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
     `repo` 는 슬롯 재료(`_publish_idle_slot_count`)가 lease 장부를 조회할 canonical 정체성 —
     호출부가 이미 해소한 값을 그대로 받는다(이 함수 안에서 유도하지 않는다).
 
-    좌표/비교 소유자(`repo_coordinates`·`pm_delegate`) 부재·로드 실패나 touches 형식 불명은
+    비교 소유자(`pm_delegate`) 부재·로드 실패나 touches 형식 불명은
     이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
-    동기 사본에서 좌표 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
+    동기 사본에서 이 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
     """
     own_items = _normalized_touches(touches)
     if not own_items:
         return []
-    coordinates = _load_repo_coordinates()
     delegate = _load_pm_delegate_module()
-    if coordinates is None or delegate is None:
+    if delegate is None:
         return []
-    own_folded = _fold_publish_touches(own_items, coordinates, delegate)
+    own_folded = _fold_publish_touches(own_items, repo_coordinates, delegate)
     if not own_folded:
         return []
     candidates = _publish_overlap_candidates((tid,))
@@ -10872,7 +10814,7 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
         other_items = _normalized_touches(other_fm.get("touches"))
         if not other_items:
             continue
-        other_folded = _fold_publish_touches(other_items, coordinates, delegate)
+        other_folded = _fold_publish_touches(other_items, repo_coordinates, delegate)
         if not other_folded:
             continue
         for own_path in own_folded:
@@ -11203,7 +11145,7 @@ def cluster_binding_problem(cluster: str, *, tree: str | None = None) -> str | N
         return None if (_cluster_branch_state(tree, branch) is True
                         and _cluster_branch_state(tree, base) is True) else (
             f"{cluster}의 branch {branch} 또는 base_branch {base}를 제품 트리 {tree}에서 확인하지 못했다")
-    status, rows = identity_args._read_lease_rows_status(LEASES_FILE)
+    status, rows = lease_store._read_lease_rows_status(LEASES_FILE)
     if status == identity_args.LEDGER_UNREADABLE:
         return f"{cluster} 제품 결속을 검증할 대여 기록을 읽지 못했다"
     repositories: set[str] = set()
@@ -11373,14 +11315,13 @@ def _cluster_overlap_material(
     같다(`repo_coordinates`·`pm_delegate` · 사본 0). 판정불능(소유자 로드 실패·형식 불명)은
     이 축 전체를 침묵으로 접는다 — 차단하지 않되 통과로 위장하지도 않는다(재료 축 그대로).
     """
-    coordinates = _load_repo_coordinates()
     delegate = _load_pm_delegate_module()
-    if coordinates is None or delegate is None:
+    if delegate is None:
         return []
     folded: dict[str, tuple[str, ...]] = {}
     for tid, touches in members:
         items = _normalized_touches(touches)
-        folded[tid] = _fold_publish_touches(items, coordinates, delegate) if items else ()
+        folded[tid] = _fold_publish_touches(items, repo_coordinates, delegate) if items else ()
     own_paths = tuple(dict.fromkeys(
         path for paths in folded.values() for path in paths))
     if not own_paths:
@@ -11390,7 +11331,7 @@ def _cluster_overlap_material(
         other_items = _normalized_touches(other_fm.get("touches"))
         if not other_items:
             continue
-        other_folded = _fold_publish_touches(other_items, coordinates, delegate)
+        other_folded = _fold_publish_touches(other_items, repo_coordinates, delegate)
         if not other_folded:
             continue
         for own_path in own_paths:
@@ -14187,16 +14128,12 @@ def _touches_existence_issues(
     entries = [str(item).strip() for item in (touches or []) if str(item).strip()]
     if not entries:
         return [], 0
-    coordinates = _load_repo_coordinates()
-    if coordinates is None:
-        return [], len(entries)      # 좌표 소유자 부재 → 이 축 전체가 시야 밖
-    error_type = getattr(coordinates, "RepoCoordinateError", RuntimeError)
     missing: list[str] = []
     unverifiable = 0
     for entry in entries:
         try:
-            normalized = coordinates.normalize_repo_path(entry, pm_root=REPO)
-        except error_type:
+            normalized = repo_coordinates.normalize_repo_path(entry, pm_root=REPO)
+        except repo_coordinates.RepoCoordinateError:
             unverifiable += 1
             continue
         # 접두가 검증된 경로는 그 워크스페이스에서만 찾는다(다른 슬롯의 동명 파일로 해소되면

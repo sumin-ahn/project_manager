@@ -36,7 +36,8 @@ TOOLS = REPO / ".project_manager" / "tools"
 _CENTRAL_LOADER = ("pm_engine/infra/repo_files.py", "load_module")
 # 이동한 인프라 모듈 — 평면 형제가 아니라 패키지 안에 있다(`_copy_tools` 가 패키지째 복사).
 _ENGINE_PACKAGE = "pm_engine"
-_MOVED_MODULES = frozenset({"file_lock", "console_encoding", "repo_owned_files"})
+_MOVED_MODULES = frozenset({"file_lock", "console_encoding", "repo_owned_files",
+                            "identity_args", "repo_coordinates"})
 
 
 def _central_guard_sources(tools: Path) -> list[tuple[str, Path]]:
@@ -1224,12 +1225,12 @@ def test_mutation_class_body_deep_import_is_red(tmp_path):
 def test_mutation_stamped_sibling_gate_omission_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
     _rename_literal_gate_and_remove_member(
-        tools / "domain.py", "_STAMPED_SIBLINGS", "_STAMPED_SIBLINGS", "board.py"
+        tools / "pm_config.py", "_STAMPED_SIBLINGS", "_STAMPED_SIBLINGS", "board.py"
     )
 
     report = collect_central_guard_report(tools)
     assert any(
-        "domain.py" in item and "board.py" in item and "verifier gate" in item
+        "pm_config.py" in item and "board.py" in item and "verifier gate" in item
         for item in report.violations
     )
 

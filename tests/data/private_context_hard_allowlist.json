@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 480,
+  "count": 484,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 324
+    "python-prose": 328
   },
   "entries": [
     {
@@ -360,14 +360,6 @@
       "count": 1
     },
     {
-      "path": ".project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": ".project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -576,6 +568,30 @@
       "count": 1
     },
     {
+      "path": ".project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "37e18feb47b1d13e195f51ac417e50680d394e34c629be987e98bb670d5f1990",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_engine/infra/repo_coordinates.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
       "path": ".project_manager/tools/pm_handoff.py",
       "kind": "work_item",
       "match": "T-0001",
@@ -637,14 +653,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {
@@ -1080,14 +1088,6 @@
       "count": 1
     },
     {
-      "path": "templates/claude_code/.project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": "templates/claude_code/.project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -1296,6 +1296,30 @@
       "count": 1
     },
     {
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "37e18feb47b1d13e195f51ac417e50680d394e34c629be987e98bb670d5f1990",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/repo_coordinates.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
       "path": "templates/claude_code/.project_manager/tools/pm_handoff.py",
       "kind": "work_item",
       "match": "T-0001",
@@ -1357,14 +1381,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {
@@ -1912,14 +1928,6 @@
       "count": 1
     },
     {
-      "path": "templates/codex/.project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": "templates/codex/.project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -2128,6 +2136,30 @@
       "count": 1
     },
     {
+      "path": "templates/codex/.project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "37e18feb47b1d13e195f51ac417e50680d394e34c629be987e98bb670d5f1990",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_engine/infra/repo_coordinates.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
       "path": "templates/codex/.project_manager/tools/pm_handoff.py",
       "kind": "work_item",
       "match": "T-0001",
@@ -2189,14 +2221,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {
@@ -2968,14 +2992,6 @@
       "count": 1
     },
     {
-      "path": "templates/opencode/.project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": "templates/opencode/.project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -3184,6 +3200,30 @@
       "count": 1
     },
     {
+      "path": "templates/opencode/.project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "37e18feb47b1d13e195f51ac417e50680d394e34c629be987e98bb670d5f1990",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_engine/infra/lease_store.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_engine/infra/repo_coordinates.py",
+      "kind": "work_item",
+      "match": "T-0729",
+      "surface": "python-prose",
+      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
+      "count": 1
+    },
+    {
       "path": "templates/opencode/.project_manager/tools/pm_handoff.py",
       "kind": "work_item",
       "match": "T-0001",
@@ -3245,14 +3285,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {

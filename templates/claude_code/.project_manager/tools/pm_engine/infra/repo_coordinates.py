@@ -32,17 +32,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from pathlib import Path
+
+from pm_engine.infra import fs
 
 
 _WORKTREE_PREFIX = re.compile(
     r"^(?P<slot>work/(?P<repo>[^/]+)_(?P<number>\d+))(?:/(?P<relative>.*))?$"
 )
-
-# baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
-# RepoCoordinateError 속성 접근 전에 명시적인 sibling-skew 오류로 막는다.
-ENGINE_REV = "v1.8.1"
 
 
 class RepoCoordinateError(ValueError):
@@ -156,12 +153,6 @@ def _workspace_slot(workspace: Path | str, pm_root: Path) -> tuple[str, Path]:
         raise RepoCoordinateError(f"workspace 디렉토리가 실재하지 않는다: {resolved}")
     return slot, resolved
 
-
-# ── 엔진 패키지 import (공유 읽기는 `fs.read_text_shared`) ──
-_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _TOOLS_DIR not in sys.path:
-    sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import fs  # noqa: E402
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
 # 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).

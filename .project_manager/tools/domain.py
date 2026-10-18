@@ -44,7 +44,7 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.infra import console, fs, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
@@ -204,7 +204,7 @@ def _repository_query_batch():
 ENGINE_REV = "v1.8.1"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. AST deep-import 가드가 실제 target과 정합을 단언한다.
-_STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py"})
+_STAMPED_SIBLINGS = frozenset({"board.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -260,11 +260,6 @@ def _load_board():
     return _load_module("board", "board.py")
 
 
-def _load_repo_coordinates():
-    """공용 repo 좌표 normalizer를 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
-    return _load_module("repo_coordinates", "repo_coordinates.py")
-
-
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
 
 
@@ -285,26 +280,14 @@ def _normalize_ticket_touches(touches: list[str]) -> list[str]:
     """
     if not any(_has_worktree_touch_prefix(path) for path in touches):
         return touches
-    coords = _load_repo_coordinates()
-    if coords is None:
-        for path in touches:
-            if _has_worktree_touch_prefix(path):
-                print(
-                    f"domain: touch {path!r} 좌표 정규화 경고 — repo 좌표 normalizer "
-                    f"로드 실패 ({TOOLS_DIR / 'repo_coordinates.py'}); 이 경로는 제외",
-                    file=sys.stderr,
-                )
-        return [path for path in touches if not _has_worktree_touch_prefix(path)]
-
-    error_type = getattr(coords, "RepoCoordinateError", RuntimeError)
     normalized: list[str] = []
     for path in touches:
         if not _has_worktree_touch_prefix(path):
             normalized.append(path)
             continue
         try:
-            normalized.append(coords.normalize_repo_path(path, pm_root=REPO))
-        except error_type as exc:
+            normalized.append(repo_coordinates.normalize_repo_path(path, pm_root=REPO))
+        except repo_coordinates.RepoCoordinateError as exc:
             print(
                 f"domain: touch {path!r} 좌표 정규화 경고 — {exc}; 이 경로는 제외",
                 file=sys.stderr,

@@ -1,6 +1,6 @@
 """T-0355 — task-mode 작업공간(F6) 도구 배선 + 해소 절대경로 surface (spike §3b F6·결정 ⑦).
 
-identity_args.resolve_task_workspace 의 단위 검증은 test_identity_args.py 가 담당하고, 여기선
+lease_store.resolve_task_workspace 의 단위 검증은 test_identity_args.py 가 담당하고, 여기선
 그 F6 해소가 실행-위치 필요 도구(`board.py regression run`·`livegate record`)에
 **배선**돼 (a) 특정 슬롯 worktree **절대경로**로 cwd 를 고정하고 (b) 그 절대경로를 surface 하며
 (c) cwd 는 해소에 참여하지 않음(T-0345 불변)을 본다. `ticket_finish.py` 는 F6 대상이 아니다 —

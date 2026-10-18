@@ -53,6 +53,7 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import identity_args  # noqa: E402
 from pm_engine.infra import console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -77,14 +78,6 @@ def _verify_engine_rev(sibling_module, sibling_filename):
 def _is_engine_rev_skew(exc) -> bool:
     """fail-soft 로더에서도 엔진 사본 skew만은 삼키지 않게 식별한다."""
     return getattr(exc, "_engine_rev_skew", False)
-
-
-def _load_identity_args():
-    """공용 task 이름 validator를 같은 tools/에서 경로 로드한다."""
-    ia_path = Path(__file__).resolve().parent / "identity_args.py"
-    return _load_module_from_path(
-        ia_path, "identity_args.py", verifier=_verify_engine_rev,
-    )
 
 
 def _write_machine_line(text: str) -> None:
@@ -1498,7 +1491,6 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
             return 1
         task = identity_name
     if task is not None:
-        identity_args = _load_identity_args()
         try:
             identity_args.validate_task_name(task, _registered_repos())
         except identity_args.InvalidTaskName as exc:

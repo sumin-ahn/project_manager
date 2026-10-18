@@ -1,9 +1,9 @@
 """T-0397 — 엔진 사본 rev 스탬프 정합 fail-loud (사본 skew → 명시 에러).
 
-엔진 도구가 형제 모듈(identity_args·worktree_pool …)을 `spec_from_file_location` 으로
+엔진 도구가 형제 모듈(worktree_pool·board …)을 `spec_from_file_location` 으로
 동적 로드할 때, 사본 skew(신 도구 + 구/불일치 형제)를 로드 시점에 명시 에러로 전환하는지
-검증한다. 회사 실측(신 pm_handoff + 구 identity_args → `identity.task` AttributeError)을
-재현해, 이제 cryptic AttributeError 대신 "어느 파일이 구형인지" 지목하는 fail-loud 가 나는지
+검증한다. 계기는 회사 실측(신 pm_handoff + 구 identity_args → `identity.task` AttributeError)이고,
+이제 cryptic AttributeError 대신 "어느 파일이 구형인지" 지목하는 fail-loud 가 나는지
 확인한다.
 
 모두 hermetic — 실 tools/ 파일을 tmp 디렉토리로 복사하고 형제를 mutate 해 skew 를 만든 뒤
@@ -18,11 +18,6 @@ from pathlib import Path
 import pytest
 
 TOOLS = Path(__file__).resolve().parents[1] / ".project_manager" / "tools"
-
-# 구형(T-0397 이전) identity_args — ENGINE_REV 상수가 아예 없다. 회사 실측 시나리오의 형제.
-_OLD_IDENTITY_ARGS = "# 구형 identity_args (T-0397 스탬프 이전) — ENGINE_REV 부재.\nTASK = 1\n"
-# 구버전 릴리즈에서 온 stale identity_args — 스탬프는 있으나 rev 값이 다르다.
-_STALE_IDENTITY_ARGS = '# stale identity_args (구 릴리즈).\nENGINE_REV = "v1.3.4"\n'
 
 # 현재 엔진 rev — 리터럴 하드코딩 금지(v1.4.0 bump 실측: 첫 bump 이 v1.3.5 리터럴 단언 6건 노출).
 # bump 가 전 스탬프를 일괄 재작성하므로 단언은 로더의 실제 baked 값을 동적 참조한다(bump-내구).
@@ -113,72 +108,7 @@ def test_check_fails_when_rev_mismatches():
     assert er.ENGINE_REV in msg               # 로더(기대) rev 도 표시
 
 
-# ── 회사 실측 시나리오: 신 pm_handoff + 구 identity_args ──────────────────────
-
-
-def test_new_pm_handoff_old_identity_args_fails_loud(tmp_path):
-    """신 pm_handoff 가 구 identity_args(ENGINE_REV 부재)를 로드 → 명시 에러(AttributeError 아님).
-
-    회사 실측(`identity.task` AttributeError) 재현 — 이제 로드 시점에 어느 파일이 구형인지
-    지목하는 fail-loud 로 전환된다."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_handoff.py": None,
-        "identity_args.py": _OLD_IDENTITY_ARGS,
-    })
-    with pytest.raises(RuntimeError) as exc:  # EngineRevSkew ⊂ RuntimeError
-        _load(tools, "pm_handoff")
-    msg = str(exc.value)
-    assert "identity_args.py" in msg
-    assert "불일치" in msg
-    assert "pm-update" in msg
-
-
-def test_new_pm_handoff_stale_identity_args_fails_loud(tmp_path):
-    """신 pm_handoff + stale identity_args(구 릴리즈 rev) → 불일치 fail-loud(값 지목)."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_handoff.py": None,
-        "identity_args.py": _STALE_IDENTITY_ARGS,
-    })
-    with pytest.raises(RuntimeError) as exc:
-        _load(tools, "pm_handoff")
-    msg = str(exc.value)
-    assert "identity_args.py" in msg
-    assert "v1.3.4" in msg                    # stale 형제 rev
-    assert _cur_rev() in msg                    # 엔진 rev
-
-
-def test_normal_sync_no_effect(tmp_path):
-    """정상 동기(모든 형제 canonical) → skew 없음·정상 로드(거동 변경 0)."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_handoff.py": None,
-        "identity_args.py": None,
-    })
-    mod = _load(tools, "pm_handoff")           # no raise
-    assert mod.ENGINE_REV == _cur_rev()
-    assert mod.identity_args is not None       # 형제 로드 성공
-    assert mod.identity_args.ENGINE_REV == _cur_rev()
-
-
-def test_partial_copy_current_engine_rev_but_old_baked_sibling_detected(tmp_path):
-    """**구조적 핵심**(codex R2): engine_rev.py 가 present+current(v1.3.5)여도 구 baked 형제는 검출된다.
-
-    차기 릴리즈 부분복사 = 신 engine_rev.py + 구 stamped sibling(옛 baked 리터럴). 런타임 공유-읽기
-    설계였다면 형제가 같은 신 engine_rev.py 를 읽어 자기-일치→**미검출**이었을 결함이다. baked 리터럴
-    은 형제 소스에 고정돼 따라가므로(v1.3.4), 로더의 baked(v1.3.5)와 mismatch → fail-loud 로 검출된다."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,                    # 신·current(v1.3.5) — present 여도 detection 유효
-        "pm_handoff.py": None,                    # 신 로더(baked v1.3.5)
-        "identity_args.py": _STALE_IDENTITY_ARGS,  # 구 릴리즈 방식 형제(baked v1.3.4)
-    })
-    with pytest.raises(RuntimeError) as exc:
-        _load(tools, "pm_handoff")
-    msg = str(exc.value)
-    assert "identity_args.py" in msg
-    assert "v1.3.4" in msg                        # 구 형제 baked rev
-    assert _cur_rev() in msg                        # 신 로더 baked rev
+# ── engine_rev.py 부재 ──────────────────────
 
 
 def test_missing_engine_rev_is_benign_at_runtime(tmp_path):
@@ -187,26 +117,12 @@ def test_missing_engine_rev_is_benign_at_runtime(tmp_path):
     (engine_rev.py 는 bump CLI·평시 가드 테스트의 참조일 뿐, 형제 verify 는 이 파일을 읽지 않는다.)"""
     tools = _build_tools(tmp_path, {
         "pm_handoff.py": None,
-        "identity_args.py": None,
     })                                            # engine_rev.py 는 일부러 뺌 — 그래도 정상 로드
     mod = _load(tools, "pm_handoff")              # no raise (baked 리터럴 일치)
     assert mod.ENGINE_REV == _cur_rev()
-    assert mod.identity_args is not None
 
 
 # ── 다른 로더도 같은 패턴(board·worktree_pool 사본 skew) ──────────────────────
-
-
-def test_board_old_identity_args_fails_loud(tmp_path):
-    """board 도 구 identity_args 를 로드하면 fail-loud(동일 패턴·전 도구 대칭)."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "board.py": None,
-        "identity_args.py": _OLD_IDENTITY_ARGS,
-    })
-    with pytest.raises(RuntimeError) as exc:
-        _load(tools, "board")
-    assert "identity_args.py" in str(exc.value)
 
 
 def test_board_normal_sync_ok(tmp_path):
@@ -214,46 +130,16 @@ def test_board_normal_sync_ok(tmp_path):
     tools = _build_tools(tmp_path, {
         "engine_rev.py": None,
         "board.py": None,
-        "identity_args.py": None,
         "local_conf.py": None,
     })
     mod = _load(tools, "board")
     assert mod.ENGINE_REV == _cur_rev()
-    assert mod.identity_args is not None
 
 
 # ── fail-soft 로더 경유 중첩 skew 재-raise (must-fix ②·삼킴 방지) ────────────────
 # 신 도구가 fail-soft 로 stamped 형제를 로드하고, 그 형제가 *또 다른* 구 형제를 중첩 로드해
 # skew 를 낼 때, 바깥 로더의 `except Exception` 이 그 skew 를 None 으로 삼키면 안 된다(fail-loud
 # 보존). 검출은 예외 마커(`_engine_rev_skew`)로 — 로드 실패/부재만 흡수한다.
-
-
-def test_pm_bootstrap_load_board_reraises_nested_skew(tmp_path):
-    """신 pm_bootstrap → 신 board → 구 identity_args 중첩 skew 는 _load_board 가 fail-loud(None 아님)."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_bootstrap.py": None,
-        "board.py": None,
-        "identity_args.py": _OLD_IDENTITY_ARGS,   # board 가 중첩 로드 → skew
-    })
-    pmb = _load(tools, "pm_bootstrap")
-    with pytest.raises(RuntimeError) as exc:
-        pmb._load_board()                          # fail-soft 였다면 조용히 None
-    assert "identity_args.py" in str(exc.value)    # 중첩 형제가 지목됨
-
-
-def test_pm_config_load_module_reraises_nested_skew(tmp_path):
-    """신 pm_config → 신 board → 구 identity_args 중첩 skew 는 _load_module 이 fail-loud(None 아님)."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_config.py": None,
-        "board.py": None,
-        "identity_args.py": _OLD_IDENTITY_ARGS,
-    })
-    pmc = _load(tools, "pm_config")
-    with pytest.raises(RuntimeError) as exc:
-        pmc._load_module("board", "board.py")
-    assert "identity_args.py" in str(exc.value)
 
 
 # ── 동기 실행 **밖**의 fail-loud 불변 (T-0607) ───────────────────────────────
@@ -315,7 +201,6 @@ def test_pm_bootstrap_load_board_normal_returns_module(tmp_path):
         "engine_rev.py": None,
         "pm_bootstrap.py": None,
         "board.py": None,
-        "identity_args.py": None,
         "local_conf.py": None,
     })
     pmb = _load(tools, "pm_bootstrap")
@@ -355,24 +240,6 @@ def test_pm_delegate_delegate_scope_normal_sync_ok(tmp_path):
 
     scope = delegate._load_delegate_scope()
     assert scope.ENGINE_REV == delegate.ENGINE_REV == _cur_rev()
-
-
-def test_delegate_scope_stale_repo_coordinates_fails_loud(tmp_path):
-    """신 delegate_scope → stale repo_coordinates는 normalize 호출 전 명시 skew로 실패한다."""
-    tools = _build_tools(tmp_path, {
-        "delegate_scope.py": None,
-        "repo_coordinates.py": _stale_source("repo_coordinates"),
-    })
-    scope = _load(tools, "delegate_scope")
-
-    with pytest.raises(RuntimeError) as exc:
-        scope._load_repo_coordinates(tools)
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    msg = str(exc.value)
-    assert "delegate_scope.py" in msg
-    assert "repo_coordinates.py" in msg
-    assert "v0.0.0-stale" in msg
 
 
 def test_delegate_scope_stale_board_fails_loud_before_attribute_access(tmp_path):
@@ -415,7 +282,6 @@ def test_board_pm_delegate_loader_stale_sibling_fails_loud(tmp_path):
     """board의 fail-soft pm_delegate 로더도 직접 revision skew만은 None으로 삼키지 않는다."""
     tools = _build_tools(tmp_path, {
         "board.py": None,
-        "identity_args.py": None,
         "local_conf.py": None,
         "pm_delegate.py": _stale_source("pm_delegate"),
     })
@@ -440,7 +306,6 @@ def test_board_pm_delegate_loader_reraises_nested_skew(tmp_path):
     )
     tools = _build_tools(tmp_path, {
         "board.py": None,
-        "identity_args.py": None,
         "local_conf.py": None,
         "pm_delegate.py": nested,
     })
@@ -455,7 +320,6 @@ def test_board_lint_delegate_reraises_marked_skew(tmp_path, monkeypatch):
     """lint_delegate 자체의 fail-soft catch도 소비 중 발생한 marked skew를 []로 강등하지 않는다."""
     tools = _build_tools(tmp_path, {
         "board.py": None,
-        "identity_args.py": None,
         "local_conf.py": None,
     })
     board = _load(tools, "board")
@@ -475,7 +339,6 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
     """stale pm_delegate가 있어도 비소비 read/mutation 경로인 list·claim은 정상 dispatch된다."""
     tools = _build_tools(tmp_path, {
         "board.py": None,
-        "identity_args.py": None,
         "local_conf.py": None,
         # 소유 PM 홈 유도는 board 가 형제 로드하는 단일 구현이다(read dispatch 진입 경로).
         "pm_log.py": None,
@@ -534,41 +397,6 @@ def test_pm_delegate_verify_does_not_skip_unregistered_filename(tmp_path):
         delegate._verify_engine_rev(StaleSibling, "renamed_or_typo.py")
     assert getattr(exc.value, "_engine_rev_skew", False) is True
     assert "renamed_or_typo.py" in str(exc.value)
-
-
-def test_delegate_scope_ticket_touches_reraises_board_nested_identity_skew(tmp_path):
-    """fresh board→stale identity_args 실 경로의 marker를 DelegateScopeError로 소실하지 않는다."""
-    tools = _build_tools(tmp_path, {
-        "delegate_scope.py": None,
-        "board.py": None,
-        "identity_args.py": _stale_source("identity_args"),
-    })
-    scope = _load(tools, "delegate_scope")
-
-    with pytest.raises(RuntimeError) as exc:
-        scope.ticket_touches(tools / "board.py", "T-0001", pm_root=tmp_path)
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert not isinstance(exc.value, scope.DelegateScopeError)
-    assert "identity_args.py" in str(exc.value)
-
-
-def test_delegate_scope_repo_coordinates_loader_reraises_nested_skew(tmp_path):
-    """repo_coordinates exec 중 발생한 marker도 DelegateScopeError로 감싸지 않는다."""
-    nested = (
-        "err = RuntimeError('repo coordinate nested skew')\n"
-        "err._engine_rev_skew = True\n"
-        "raise err\n"
-    )
-    tools = _build_tools(tmp_path, {
-        "delegate_scope.py": None,
-        "repo_coordinates.py": nested,
-    })
-    scope = _load(tools, "delegate_scope")
-
-    with pytest.raises(RuntimeError, match="repo coordinate nested skew") as exc:
-        scope._load_repo_coordinates(tools)
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert not isinstance(exc.value, scope.DelegateScopeError)
 
 
 def test_delegate_scope_ticket_operation_reraises_nested_skew(tmp_path):

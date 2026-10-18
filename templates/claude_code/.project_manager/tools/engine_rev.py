@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """엔진 사본 rev 스탬프 — 사본 skew fail-loud 의 단일 진실 값 + bump CLI.
 
-엔진 도구들은 형제 모듈(`identity_args`·`worktree_pool`·`board`·`pm_handoff` …)을
+엔진 도구들은 형제 모듈(`worktree_pool`·`board`·`pm_handoff` …)을
 `spec_from_file_location` 으로 동적 로드한다. 사본 skew(신 도구 + 구 형제 — 부분/수동
 복사, 중단된 배포)가 생기면 신 도구가 구 형제의 *부재 속성*에 접근해 임의 지점의
 AttributeError 로 폭발한다.
@@ -56,11 +56,9 @@ STAMPED_MODULES = (
     "worktree_pool.py",
     "pm_bootstrap.py",
     "pm_config.py",
-    "identity_args.py",
     "domain.py",
     "contradiction_lint.py",
     "pm_adr.py",
-    "repo_coordinates.py",
     "pm_delegate.py",
     "delegate_scope.py",
     "delegate_channel_guard.py",

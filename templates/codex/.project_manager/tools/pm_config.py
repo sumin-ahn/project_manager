@@ -102,7 +102,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 from urllib.parse import urlsplit
@@ -130,7 +130,7 @@ ENGINE_REV = "v1.8.1"
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
 _STAMPED_SIBLINGS = frozenset({
-    "identity_args.py", "board.py", "worktree_pool.py", "pm_import.py",
+    "board.py", "worktree_pool.py", "pm_import.py",
     # pm_relay.py 는 모델 원천 표(`MODEL_SOURCE`)와 하네스 CLI 계약의 소유자다 — 구형 사본을
     # 조용히 읽으면 안내·조회가 이 세대에 없는 값을 말한다.
     "pm_relay.py",
@@ -159,7 +159,7 @@ def _is_engine_rev_skew(exc) -> bool:
 
     fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
     판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
-    (예: 신 pm_config→신 board→구 identity_args 검출이 None 강등되지 않게)."""
+    (예: 신 pm_config→신 board→구 형제 검출이 None 강등되지 않게)."""
     return getattr(exc, "_engine_rev_skew", False)
 
 
@@ -245,15 +245,10 @@ def _default_session(*, identity=None) -> str | None:
     `whoami` surface(required=False)가 "(비바인딩)" 으로 표시한다(비바인딩 세션이 남의 리스로
     self-identify 하던 직접 증상 수정). `<host>-<pid>` 꼬리는 두지 않는다.
 
-    lease 장부(`state=="leased"` 행의 session 목록) 읽기는 공용 `identity_args.leased_sessions`
-    로 위임한다
-    board.py/worktree_pool 의 동형 사본과 단일 진실로 수렴). board.py 를 직접 import 하지
-    않는 관성(isolation·touches 격리)은 여기서도 유지한다 — `_load_module`
-    (spec_from_file_location) 로 `identity_args` 를 로드한다(board.py·worktree_pool 로딩과
-    동형 패턴·스크립트 직접 실행/테스트 양쪽에서 동일하게 동작). `identity` 주입으로 hermetic
-    테스트 가능(미주입 시 실 모듈 로드 — `identity_args` 는 파일 IO 0 순수 모듈이라 실 로드도
-    안전·부작용 0). 장부 경로는 호출 시점 `REPO` 에서 구성한다(monkeypatch 존중·
-    `_local_conf_user` 와 동형).
+    lease 장부(`state=="leased"` 행의 session 목록) 읽기는 공용 `lease_store.leased_sessions`
+    로 위임한다(board.py/worktree_pool 의 동형 사본과 단일 진실로 수렴). `identity` 주입으로
+    hermetic 테스트 가능(미주입 시 `lease_store`). 장부 경로는 호출 시점 `REPO` 에서 구성한다
+    (monkeypatch 존중·`_local_conf_user` 와 동형).
 
     저장측(worktree_pool)과 매칭측(여기)이 어긋나면 "이 세션의 리스" surface 가 board 매칭과
     어긋나므로 세 모듈이 같은 우선순위를 공유한다. 장부 0행에서 세션 이름을 유도하는 층은
@@ -262,9 +257,9 @@ def _default_session(*, identity=None) -> str | None:
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    identity_mod = identity or _load_module("identity_args", "identity_args.py")
+    identity_mod = identity or lease_store
     leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    leased = identity_mod.leased_sessions(leases_file) if identity_mod is not None else []
+    leased = identity_mod.leased_sessions(leases_file)
     if len(leased) == 1:
         return leased[0]
     # leased 0(미등록) 또는 ≥2(모호) → 미해소(surface 는 "(비바인딩)").

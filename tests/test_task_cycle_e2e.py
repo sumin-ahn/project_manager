@@ -30,6 +30,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import identity_args
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -268,7 +270,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     assert any(t.name == task for t in wp.list_tasks()), "① 부트스트랩이 task 를 생성하지 않았다"
     task_state = wp.task_pm_state_file(task)
     assert task_state.exists(), "① task 생성 시 pm_state 즉시 생성 계약 위반"
-    assert wp.TASK_PM_STATE_EMPTY_MARKER in task_state.read_text(encoding="utf-8")
+    assert identity_args.TASK_PM_STATE_EMPTY_MARKER in task_state.read_text(encoding="utf-8")
 
     # ── ② worktree add --task(생성+편입) + alloc(추가 대여·I3) ───────────────────
     # add --task = create_slot(owner_task): 새 슬롯 생성 + 그 슬롯을 task 명의 대여(ⓓB). 슬롯 브랜치
@@ -345,7 +347,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     assert leases["work/app_2"].git is not None, "app_2 도 재스냅 대상(전 슬롯)"
 
     # (c) 인계 트리거 = `--task` 앵커(T-0394) — 슬롯 열거 없이 task-only.
-    expected_trigger = handoff_mod._runtime_skill_entry("pm-bootstrap") + f" --task {task}"
+    expected_trigger = lease_store._runtime_skill_entry("pm-bootstrap") + f" --task {task}"
     assert expected_trigger in out3, "인계 트리거에 --task 앵커 없음"
 
     # (d) 정상 종료 기록(닫힘) — 차기 재개가 묻지 않고 이어지도록.

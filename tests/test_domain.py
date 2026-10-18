@@ -25,6 +25,7 @@ import pytest
 from _git_fixture import init_git_repo
 
 from _win_skip import posix_filenames_supported
+from pm_engine.infra import repo_coordinates
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1103,27 +1104,14 @@ def test_ticket_touch_unsafe_relative_warns_and_is_excluded_from_query(
 
 def test_ticket_touches_without_worktree_prefix_skip_coordinate_loader(
         dm, monkeypatch):
-    """접두 없는 adopter는 repo_coordinates sibling이 없어도 기존 동작을 보존한다."""
+    """접두 없는 adopter는 좌표 정규화를 부르지 않고 기존 동작을 보존한다."""
     monkeypatch.setattr(
-        dm, "_load_repo_coordinates",
-        lambda: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
+        repo_coordinates, "normalize_repo_path",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
     )
     assert dm._normalize_ticket_touches(["src/a.py", "tests"]) == [
         "src/a.py", "tests",
     ]
-
-
-def test_coordinate_loader_old_sibling_fails_with_explicit_skew_not_attribute_error(
-        dm, tmp_path, monkeypatch):
-    """RepoCoordinateError도 stamp도 없는 구 사본은 소비 전에 명시 skew로 차단된다."""
-    (tmp_path / "repo_coordinates.py").write_text(
-        "def normalize_repo_path(path, **kwargs):\n"
-        "    raise ValueError('old copy')\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(dm, "TOOLS_DIR", tmp_path)
-    with pytest.raises(RuntimeError, match="버전 불일치"):
-        dm._load_repo_coordinates()
 
 
 def test_affected_ticket_no_touches_prints_none(dm, tmp_path, monkeypatch, capsys):

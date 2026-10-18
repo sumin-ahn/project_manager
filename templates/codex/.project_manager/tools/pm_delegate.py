@@ -65,8 +65,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.app import hooks  # noqa: E402
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema, identity_args  # noqa: E402
+from pm_engine.infra import console, fs, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -3866,14 +3866,6 @@ def _load_delegate_channel_guard():
     path = Path(__file__).resolve().parent / "delegate_channel_guard.py"
     return _load_module_from_path(
         path, "delegate_channel_guard.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
-def _load_repo_coordinates():
-    """ticket touches 표기 정규화(Windows 구분자·`./` 접두)를 단일 진실에서 재사용한다."""
-    path = Path(__file__).resolve().parent / "repo_coordinates.py"
-    return _load_module_from_path(
-        path, "repo_coordinates.py", verifier=_verify_engine_rev,
     )
 
 
@@ -11351,7 +11343,6 @@ def claimed_touch_overlaps(
     손상 frontmatter 는 board 의 순회 로더(`load_ticket_soft`)가 경고 1줄과 함께 건너뛴다.
     """
     board = _load_board_for_repo(Path(pm_root))
-    coordinates = _load_repo_coordinates()
     found = board.find_ticket_exact(ticket)
     if found is None:
         return ()
@@ -11361,7 +11352,7 @@ def claimed_touch_overlaps(
     target_fm = target[0]
     claimed_by = str(target_fm.get("claimed_by") or "").strip()
     target_pairs = _touch_notations(
-        target_fm.get("touches"), board, coordinates,
+        target_fm.get("touches"), board, repo_coordinates,
         pm_root=pm_root, workspace=workspace,
     )
     if not claimed_by or not target_pairs:
@@ -11379,7 +11370,7 @@ def claimed_touch_overlaps(
         if str(other_fm.get("claimed_by") or "").strip() != claimed_by:
             continue
         other_pairs = _touch_notations(
-            other_fm.get("touches"), board, coordinates,
+            other_fm.get("touches"), board, repo_coordinates,
             pm_root=pm_root, workspace=workspace,
         )
         if not other_pairs:
@@ -12972,12 +12963,10 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
             "이상이고, accepted 가 있었다면 그 채널 기계 확인이 1건 이상 존재"
         ),
     )
-    board = _load_board()
-    identity_module = board.identity_args
-    identity_module.add_identity_args(resolve)
+    identity_args.add_identity_args(resolve)
     args = parser.parse_args(argv)
     try:
-        identity_module.parse_identity(args)
+        identity_args.parse_identity(args)
     except ValueError as exc:
         parser.error(str(exc))
     if not _is_valid_cluster_id(args.cluster):
