@@ -64,6 +64,7 @@ from typing import Callable, Iterator, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app import hooks  # noqa: E402
 from pm_engine.domain import conf_schema  # noqa: E402
 from pm_engine.infra import console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
@@ -8042,14 +8043,14 @@ def _delegate_task_env(cwd: Path) -> dict[str, str]:
     `cwd` 가 task 가 잡은 슬롯이면 `{PM_DELEGATE_TASK: <task>}` 다. 슬롯 밖이거나 task 가 잡지 않은
     슬롯이면 빈 dict 다 — 그 위임의 슬롯 쓰기는 가드가 거부한다(`board.judge_tool_input`)."""
     board = _load_board()
-    found = board.slot_containing(board.REPO, cwd)
+    found = hooks.slot_containing(board.REPO, cwd)
     if found is None:
         return {}
     row, tasks = found
     owner = row.get("session")
     if row.get("state") != "leased" or not any(task.get("name") == owner for task in tasks):
         return {}
-    return {board.SLOT_WRITE_DELEGATE_TASK_ENV: owner}
+    return {hooks.SLOT_WRITE_DELEGATE_TASK_ENV: owner}
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:

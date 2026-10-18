@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.infra import process
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -47,7 +49,7 @@ def _patch(monkeypatch, board, *, name: str, present: set[str], runs: set[str]):
     runs    = `_interp_runs` 가 True 를 돌려주는 명령 집합(실행 성공).
     둘의 차집합(존재하지만 실행 실패)이 '죽은 shim'.
     """
-    monkeypatch.setattr(board, "_probe_os_name", lambda: name)
+    monkeypatch.setattr(process, "_probe_os_name", lambda: name)
     monkeypatch.setattr(
         board.shutil, "which",
         lambda cmd: f"/fake/{cmd}" if cmd in present else None,
@@ -99,7 +101,7 @@ def test_posix_prefers_python3(monkeypatch, board):
         tried.append(cmd)
         return f"/usr/bin/{cmd}" if cmd in {"python3", "python"} else None
 
-    monkeypatch.setattr(board, "_probe_os_name", lambda: "posix")
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
     monkeypatch.setattr(board.shutil, "which", _which)
     monkeypatch.setattr(board, "_interp_runs", lambda cmd: cmd in {"python3", "python"})
 

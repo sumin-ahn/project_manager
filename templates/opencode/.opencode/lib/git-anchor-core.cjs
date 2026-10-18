@@ -20,7 +20,7 @@ const { supportedPythonCandidates } = require("./delegate-channel-core.cjs");
 const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 const BOARD_PY = path.join(ENGINE_ROOT, ".project_manager", "tools", "board.py");
 
-// 허용 표식과 허용 기록 폴더 이름 — board.py `GIT_GRANT_LINE`·`GIT_GRANT_DIR_NAME` 과 같은 값.
+// 허용 표식과 허용 기록 폴더 이름 — pm_engine/domain/git_policy.py `GIT_GRANT_LINE`·`GIT_GRANT_DIR_NAME` 과 같은 값.
 const GRANT_MARKER = /git[ \t]+허용[ \t]*:/;
 const GRANT_DIR_NAME = "git-grants";
 // 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.

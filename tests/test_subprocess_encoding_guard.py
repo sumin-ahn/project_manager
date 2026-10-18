@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from _engine_tree import engine_python_files
+from pm_engine.infra import git
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -15,14 +15,6 @@ TOOLS = REPO / ".project_manager" / "tools"
 # 배포본(templates/*)의 엔진 사본도 스캔한다 — parity 가드(byte-identical)로 전이 커버되지만,
 # 이 가드 단독으로도 출하물의 로캘 의존 호출 유입을 잡도록 자족화(T-0468 codex 게이트 must-fix).
 ENGINE_TOOL_DIRS = [TOOLS, *sorted((REPO / "templates").glob("*/.project_manager/tools"))]
-
-
-def _load_board():
-    spec = importlib.util.spec_from_file_location("board_t0468", TOOLS / "board.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_engine_text_subprocess_calls_declare_encoding():
@@ -50,7 +42,6 @@ def test_engine_text_subprocess_calls_declare_encoding():
 
 def test_git_rev_parse_decodes_utf8_path_under_cp949_locale_harness(tmp_path):
     """CP949 기본 디코딩은 깨지는 UTF-8 경로도 명시 UTF-8로 정상 반환한다."""
-    board = _load_board()
     expected = "worktrees/한글-경로"
     raw_stdout = f"{expected}\n".encode("utf-8")
 
@@ -66,7 +57,7 @@ def test_git_rev_parse_decodes_utf8_path_under_cp949_locale_harness(tmp_path):
         stdout = raw_stdout.decode(str(encoding), str(errors))
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
-    result = board._git_rev_parse(
+    result = git._git_rev_parse(
         tmp_path, "--git-common-dir", runner=cp949_locale_runner
     )
 
@@ -82,10 +73,9 @@ def test_git_rev_parse_decodes_utf8_path_under_cp949_locale_harness(tmp_path):
 
 def test_git_rev_parse_does_not_swallow_unicode_decode_error(tmp_path):
     """예상 밖 디코딩 오류는 misanchor 가드를 조용히 건너뛰지 않는다."""
-    board = _load_board()
 
     def broken_decoder(argv, **kwargs):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
     with pytest.raises(UnicodeDecodeError):
-        board._git_rev_parse(tmp_path, "--git-dir", runner=broken_decoder)
+        git._git_rev_parse(tmp_path, "--git-dir", runner=broken_decoder)

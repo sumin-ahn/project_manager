@@ -100,7 +100,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, process, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -1255,14 +1255,14 @@ def _running_on_windows() -> bool:
 
 
 def _split_reviewer_argv(reviewer_cmd: str) -> list[str]:
-    """`reviewer_cmd` 를 **실행 플랫폼 규칙**으로 argv 분해한다 (분해 규칙은 board 공용 seam 소유).
+    """`reviewer_cmd` 를 **실행 플랫폼 규칙**으로 argv 분해한다 (분해 규칙은 `pm_engine.infra.process` 소유).
 
     `shlex.split` 를 직접 부르면 POSIX 규칙이라 Windows 실행 경로의 ``\\`` 가 escape 로 소비된다 —
     ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 로 뭉개져 확정 기동 실패로 끝나고, 그
     실행은 "리뷰어를 찾을 수 없음"으로 흡수돼 교차검증이 조용히 환불된다. 분해 규칙 사본을 여기
-    만들지 않고 `board.split_command_argv` 하나를 쓴다(같은 보호 규칙·같은 복원).
+    만들지 않고 `pm_engine.infra.process.split_command_argv` 하나를 쓴다(같은 보호 규칙·같은 복원).
     """
-    return _load_board().split_command_argv(
+    return process.split_command_argv(
         reviewer_cmd, windows=_running_on_windows(),
     )
 

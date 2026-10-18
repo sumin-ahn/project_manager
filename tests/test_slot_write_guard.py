@@ -14,6 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.app import hooks
+from pm_engine.domain import git_policy
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
@@ -63,8 +66,8 @@ def home(tmp_path, monkeypatch):
     return root
 
 
-def _action(board, case: str) -> str:
-    return board._GIT_GUARD_ACTION_LINES[case]
+def _action(case: str) -> str:
+    return git_policy._GIT_GUARD_ACTION_LINES[case]
 
 
 def _set_todos(home: Path, task: str, todos: list[dict]) -> None:
@@ -94,7 +97,7 @@ def test_write_warns_when_the_session_task_has_no_open_todo(board, home):
         {"file_path": str(home / "work" / "app_1" / "x.py"), "content": "x"},
     )
     assert judgment["verdict"] == "warn"
-    assert _action(board, board._GIT_GUARD_CASE_NO_OPEN_TODO) in judgment["reason"]
+    assert _action(git_policy._GIT_GUARD_CASE_NO_OPEN_TODO) in judgment["reason"]
     assert "task alpha 에 열린 todo 가 없다" in judgment["reason"]
 
 
@@ -106,7 +109,7 @@ def test_write_outside_any_slot_also_warns_without_an_open_todo(board, home, tmp
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
     assert judgment["verdict"] == "warn"
-    assert _action(board, board._GIT_GUARD_CASE_NO_OPEN_TODO) in judgment["reason"]
+    assert _action(git_policy._GIT_GUARD_CASE_NO_OPEN_TODO) in judgment["reason"]
 
 
 def test_write_passes_once_an_open_todo_exists(board, home, tmp_path):
@@ -132,8 +135,8 @@ def test_todo_rule_does_not_fire_when_no_task_resolves(board, home, tmp_path):
         {"file_path": str(home / "work" / "app_1" / "x.py"), "content": "x"},
     )
     assert inside["verdict"] == "deny"
-    assert _action(board, board._GIT_GUARD_CASE_SLOT_NO_TASK) in inside["reason"]
-    assert _action(board, board._GIT_GUARD_CASE_NO_OPEN_TODO) not in inside["reason"], \
+    assert _action(git_policy._GIT_GUARD_CASE_SLOT_NO_TASK) in inside["reason"]
+    assert _action(git_policy._GIT_GUARD_CASE_NO_OPEN_TODO) not in inside["reason"], \
         "같은 사실로 두 번 거부했다"
 
 
@@ -171,7 +174,7 @@ def test_delegated_session_inherits_the_owner_task_todos(board, home, tmp_path, 
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
     assert warned["verdict"] == "warn"
-    assert _action(board, board._GIT_GUARD_CASE_NO_OPEN_TODO) in warned["reason"]
+    assert _action(git_policy._GIT_GUARD_CASE_NO_OPEN_TODO) in warned["reason"]
     _set_todos(home, "alpha", [{"text": "일", "created": "2026-09-16T00:00:00+00:00"}])
     assert board.judge_tool_input(
         home, "", str(tmp_path), "Write",
@@ -193,10 +196,10 @@ def test_write_tools_pass_only_in_the_slot_of_the_sessions_task(board, home, too
         got = judge("S-alpha", home / "work" / f"app_{number}" / "a.py")
         lines = got["reason"].splitlines()
         assert got["verdict"] == "deny", number
-        assert lines[:2] == [board.GIT_GUARD_STOP_LINE, _action(board, board._GIT_GUARD_CASE_SLOT_NOT_OWNED)]
+        assert lines[:2] == [git_policy.GIT_GUARD_STOP_LINE, _action(git_policy._GIT_GUARD_CASE_SLOT_NOT_OWNED)]
     stranger = judge("S-other", home / "work" / "app_1" / "a.py")
     assert stranger["verdict"] == "deny"
-    assert stranger["reason"].splitlines()[1] == _action(board, board._GIT_GUARD_CASE_SLOT_NO_TASK)
+    assert stranger["reason"].splitlines()[1] == _action(git_policy._GIT_GUARD_CASE_SLOT_NO_TASK)
     # 슬롯 밖(PM 홈 기록·다른 폴더)은 판정하지 않는다.
     assert judge("S-other", home / ".project_manager" / "wiki" / "domain" / "x.md")["verdict"] == "ok"
     assert judge("", home.parent / "elsewhere" / "a.py")["verdict"] == "ok"
@@ -239,7 +242,7 @@ def test_delegated_harness_writes_as_the_open_task_it_was_given(board, home, mon
     monkeypatch.setenv("PM_DELEGATE_TASK", "beta")
     closed = board.judge_tool_input(home, "child", str(home), "Write", {"file_path": slot_4})
     assert closed["verdict"] == "deny"
-    assert closed["reason"].splitlines()[1] == _action(board, board._GIT_GUARD_CASE_SLOT_NO_TASK)
+    assert closed["reason"].splitlines()[1] == _action(git_policy._GIT_GUARD_CASE_SLOT_NO_TASK)
 
 
 def test_shell_command_naming_a_foreign_slot_warns_once_per_slot(board, home):
@@ -337,7 +340,7 @@ def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(board, ho
         "cwd": str(home), "tool_input": {"file_path": target, "content": "x"},
     }, home)["hookSpecificOutput"]
     assert output["permissionDecision"] == "deny"
-    assert _action(board, board._GIT_GUARD_CASE_SLOT_NOT_OWNED) in output["permissionDecisionReason"]
+    assert _action(git_policy._GIT_GUARD_CASE_SLOT_NOT_OWNED) in output["permissionDecisionReason"]
 
     codex = _load("slot_write_guard_codex", CODEX_DISPATCHER)
     monkeypatch.setattr(codex, "_load_board", lambda _root: board)
@@ -484,7 +487,7 @@ _T0931_GIT_FORMS = [
 def test_t0931_git_forms_read_write_and_owner_matrix(board, home, monkeypatch, subcommand, args, writes):
     """명령 형태별로 자기·타 task·idle·readonly·세션 부재를 같은 판정자로 확인한다."""
     monkeypatch.setattr(board, '_git_anchor_identity', lambda anchor, **kw: ('slot', Path(anchor), home))
-    monkeypatch.setattr(board, '_git_alias_resolved', lambda invocation, **kw: invocation)
+    monkeypatch.setattr(hooks, '_git_alias_resolved', lambda invocation, **kw: invocation)
     def no_git_mutation(*a, **k):
         pytest.fail('판정 테스트가 git 변경을 실행했다')
     for number, session in [(1, 'S-alpha'), (2, 'S-alpha'), (3, 'S-alpha'), (4, 'S-alpha'), (1, 'S-missing')]:
@@ -492,4 +495,4 @@ def test_t0931_git_forms_read_write_and_owner_matrix(board, home, monkeypatch, s
         result = board.judge_git_anchor(home, session, str(target), ['git', subcommand, *args], runner=no_git_mutation)
         expected = 'deny' if writes and (number != 1 or session != 'S-alpha') else 'ok'
         assert result['verdict'] == expected, (number, session, result)
-    assert board._git_writes_slot(subcommand, args) is writes
+    assert git_policy._git_writes_slot(subcommand, args) is writes
