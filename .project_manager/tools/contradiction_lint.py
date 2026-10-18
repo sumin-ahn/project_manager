@@ -34,136 +34,11 @@ import sys
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 
 # ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
@@ -288,19 +163,6 @@ def _load_board():
     return mod
 
 
-def _load_file_lock():
-    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
-
-    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
-    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
-    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
-    """
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
-        verifier=_verify_engine_rev, cache=True,
-    )
-
-
 def _wikilink_re() -> re.Pattern[str]:
     """wikilink 문법 — board `_WIKILINK_RE` 재사용(자체 regex 금지), 실패 시 동일 폴백 복제."""
     board = _load_board()
@@ -356,7 +218,7 @@ def collect_reference_scope(
     wl_re = _wikilink_re()
 
     def _read(p):
-        return _load_file_lock().read_text_shared(p, encoding="utf-8")
+        return fs.read_text_shared(p, encoding="utf-8")
     base = repo or REPO
 
     hits: list[ScopeHit] = []
@@ -528,7 +390,7 @@ def _load_adr(decisions_dir: Path, num: int) -> tuple[str, str]:
     matches = sorted(decisions_dir.glob(f"{num:04d}-*.md"))
     if not matches:
         return "", ""
-    text = _load_file_lock().read_text_shared(matches[0], encoding="utf-8")
+    text = fs.read_text_shared(matches[0], encoding="utf-8")
     m = re.search(r"^title:\s*(.+)$", text, re.MULTILINE)
     title = m.group(1).strip().strip("'\"") if m else ""
     return title, text
@@ -562,12 +424,7 @@ def _parse_ids(tokens: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
     args = build_parser().parse_args(argv)
     targets = _parse_ids(args.amends) + _parse_ids(args.supersedes)
     if not targets:

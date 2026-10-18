@@ -1157,8 +1157,8 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
 def test_append_atomic_creates_and_appends(board, tmp_path):
     """board 가 바인딩한 seam append — 파일 없으면 생성, 있으면 끝에 원자 추가(덮어쓰기 아님)."""
     f = tmp_path / "log.md"
-    board.file_lock.append_atomic(f, "line1\n")
-    board.file_lock.append_atomic(f, "line2\n")
+    board.fs.append_atomic(f, "line1\n")
+    board.fs.append_atomic(f, "line2\n")
     assert f.read_text(encoding="utf-8") == "line1\nline2\n"
 
 

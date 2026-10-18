@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import remove_git_tree
+from pm_engine.domain import conf_schema
 # T-0908 의 URL 캐시 픽스처(로컬 bare + `file://` · 네트워크 0)를 그대로 쓴다 — 캐시 자리·
 # 형상 판정을 두 벌로 만들지 않는다.
 from test_pm_update_url_cache import (  # noqa: E402
@@ -313,7 +314,7 @@ def test_status_json_with_remote_stops_without_a_partial_document(home, wp):
     _git(home / ".repos" / "app.git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
     _git(home / slot, "config", "branch.feat/x.remote", "origin")
     _git(home / slot, "config", "branch.feat/x.merge", "refs/heads/feat/x")  # 원격에 물을 대상이 있다
-    wp.file_lock.force_rmtree(home / ".origin")
+    wp.fs.force_rmtree(home / ".origin")
 
     done = _run_cli(home, "status", "--json", "--with-remote")
 
@@ -486,7 +487,7 @@ def test_status_json_git_section_is_not_shadowed_by_a_tag_of_the_same_name(home)
 @_git_required
 def test_status_json_conf_five_lists_from_real_local_conf(home, pc):
     """필수 누락·폐지 키·미지 키·표준과 다른 값 — 실 local.conf 를 읽어 판정한다."""
-    local_conf = _load("local_conf_status_json", "local_conf.py")
+    local_conf = conf_schema
     required = local_conf.required_keys()
     assert required, "픽스처 전제: 레지스트리에 필수 키가 있어야 한다"
     legacy_key = next(iter(local_conf.LEGACY_KEY_MAP))
@@ -514,7 +515,7 @@ def test_status_json_conf_five_lists_from_real_local_conf(home, pc):
 def test_status_json_missing_for_latest_reads_source_registry(home, tmp_path):
     """`--from` 소스의 레지스트리가 요구하는 필수 키 — "갱신하면 필요" 축."""
     source = _engine_home(tmp_path / "source")
-    source_conf = source / ".project_manager" / "tools" / "local_conf.py"
+    source_conf = source / ".project_manager" / "tools" / "pm_engine" / "domain" / "conf_schema.py"
     source_conf.write_text(
         source_conf.read_text(encoding="utf-8")
         + '\nKEY_REGISTRY["future.knob"] = KeySpec(\n'
@@ -800,6 +801,8 @@ def _url_upstream_home(tmp_path: Path) -> Path:
     framework = _make_framework_repo(tmp_path / "fw")
     shutil.copyfile(TOOLS / "local_conf.py",
                     framework / ".project_manager" / "tools" / "local_conf.py")
+    shutil.copytree(TOOLS / "pm_engine", framework / ".project_manager" / "tools" / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     subprocess.run(["git", "-C", str(framework), "add", "-A"], check=True,
                    capture_output=True)
     subprocess.run(["git", "-C", str(framework), "commit", "-qm", "registry"],

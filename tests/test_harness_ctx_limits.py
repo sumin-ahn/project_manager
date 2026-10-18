@@ -33,6 +33,8 @@ from pathlib import Path
 import pytest
 
 from _manager_home import _known_ctx_installation, known_ctx_seams
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -60,7 +62,7 @@ def pm_import():
 
 @pytest.fixture(scope="module")
 def local_conf():
-    return _load("local_conf")
+    return conf_store
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +115,7 @@ def _only_insertions(old: str, new: str) -> bool:
 
 def _snapshot_fixture_bytes(root, *, excluded_names=()):
     """격리 fixture 바이트를 기존 열거 seam으로 전수 확인한다."""
-    repo_files = _load('repo_owned_files')
+    repo_files = _load('pm_engine/infra/repo_files')
     entries = repo_files.list_repo_owned_entries(
         root, '.', mode=repo_files.OWNED,
         git_runner=lambda _args: (127, 'isolated fixture, filesystem oracle'),
@@ -447,7 +449,7 @@ def test_shipped_defaults_and_resolved_native_fixed_point(pm_import, tmp_path):
 def _plan(local_conf, tmp_path: Path, text: str) -> dict:
     path = tmp_path / "local.conf"
     path.write_text(text, encoding="utf-8")
-    return local_conf.rename_updates(local_conf.load(path))
+    return conf_schema.rename_updates(local_conf.load(path))
 
 
 def test_rename_updates_turns_remaining_into_used(local_conf, tmp_path):
@@ -476,17 +478,6 @@ def test_rename_updates_splits_common_window_per_harness(local_conf, tmp_path):
     assert plan["harness.codex.ctx_window_tokens"] == "250000", "하네스 전용 구키가 져서는 안 된다"
     assert plan["harness.claude.ctx_window_tokens"] == "300000"
     assert plan["harness.opencode.ctx_window_tokens"] == "300000"
-
-    # 하네스 목록을 못 읽는 사본 — 옛 줄만 지우고 값을 잃지 않는다(멈춘다).
-    lonely = tmp_path / "lonely-tools"
-    lonely.mkdir()
-    shutil.copyfile(TOOLS / "local_conf.py", lonely / "local_conf.py")
-    spec = importlib.util.spec_from_file_location("harness_ctx_lonely_conf", lonely / "local_conf.py")
-    isolated = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(isolated)
-    assert isolated._harness_names() == ()
-    with pytest.raises(ValueError, match="등록 하네스 목록"):
-        _plan(isolated, tmp_path, "ctx.window_tokens=300000\n")
 
 
 def test_rename_updates_keeps_explicit_new_key_over_non_integer_old(local_conf, tmp_path):
@@ -695,10 +686,12 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
         shutil.copyfile(TEMPLATE_FILES[harness][0], target)
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
-    for name in ("local_conf.py", "repo_owned_files.py", "file_lock.py", "console_encoding.py",
-                 "pm_relay.py", "python_floor.py"):
+    for name in ("local_conf.py", "pm_relay.py", "python_floor.py"):
         if not (tools / name).exists():
             shutil.copyfile(TOOLS / name, tools / name)
+    if not (tools / "pm_engine").exists():
+        shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
+                        ignore=shutil.ignore_patterns("__pycache__"))
     for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
         setattr(module, name, seam)
     if values:
@@ -802,11 +795,11 @@ def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, 
                                                                       monkeypatch):
     """AT-002 — 기록 값은 시각·Codex 캐시·환경변수·실행 파일 경로가 바뀌어도 그대로다(None 반환 없음)."""
     root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
-    first = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in local_conf.CTX_HARNESSES}
+    first = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in conf_schema.CTX_HARNESSES}
     assert first["claude"] == {"E": 600000, "P": 564000, "checkpoint": 480000, "precompact": 540000,
                                "checkpoint_at_pct": 80, "precompact_at_pct": 90, "models": ["claude-opus-5-5"],
                                "applied_at": first["claude"]["applied_at"], "warning": None}
-    assert [first[harness]["E"] for harness in local_conf.CTX_HARNESSES] == [600000, 570000, 200000]
+    assert [first[harness]["E"] for harness in conf_schema.CTX_HARNESSES] == [600000, 570000, 200000]
 
     path = root / local_conf.CTX_BUDGET_RELPATH
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -824,8 +817,8 @@ def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, 
     (moved / "claude").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     monkeypatch.setenv("PATH", str(moved) + os.pathsep + os.environ.get("PATH", ""))
 
-    later = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in local_conf.CTX_HARNESSES}
-    for harness in local_conf.CTX_HARNESSES:
+    later = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in conf_schema.CTX_HARNESSES}
+    for harness in conf_schema.CTX_HARNESSES:
         assert {**later[harness], "applied_at": None} == {**first[harness], "applied_at": None}, harness
     assert all(row["status"] == "ok" for row in pm_import.ctx_budget_status(root, values).values())
 
@@ -855,7 +848,7 @@ def test_t0943_reader_errors_name_the_apply_command(pm_import, local_conf, tmp_p
         values = {**values, "harness.claude.ctx_window_tokens": "500000"}
     else:
         values = {**values, "ctx.compact_at_pct": "93"}
-    with pytest.raises(local_conf.CtxBudgetError, match="`pm_config.py apply`"):
+    with pytest.raises(conf_schema.CtxBudgetError, match="`pm_config.py apply`"):
         local_conf.read_ctx_budget(root, values, "claude", "claude-opus-5-5")
     status = pm_import.ctx_budget_status(root, values)["claude"]
     assert status == {"status": "error", "reason": status["reason"]}
@@ -1389,15 +1382,15 @@ def test_t0949_settings_mismatch_each_tool(pm_import, local_conf, tmp_path, monk
     root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
     _t0949_no_lookup(pm_import, monkeypatch)
     untouched = _t0949_status(pm_import, root, values)
-    assert {name: row["status"] for name, row in untouched.items()} == dict.fromkeys(local_conf.CTX_HARNESSES, "ok")
+    assert {name: row["status"] for name, row in untouched.items()} == dict.fromkeys(conf_schema.CTX_HARNESSES, "ok")
     assert {name: row["settings_mismatch"] for name, row in untouched.items()} == dict.fromkeys(
-        local_conf.CTX_HARNESSES, [])
+        conf_schema.CTX_HARNESSES, [])
 
     _t0949_rewrite(root, relpath, old, new)
     status = _t0949_status(pm_import, root, values)
     assert status[harness]["settings_mismatch"] == [{"path": path, "file": file_value, "record": record_value}]
     assert {name: row["settings_mismatch"] for name, row in status.items() if name != harness} == dict.fromkeys(
-        set(local_conf.CTX_HARNESSES) - {harness}, [])
+        set(conf_schema.CTX_HARNESSES) - {harness}, [])
     # 차이는 오류가 아니다 — 기존 표시 필드 값은 그대로이고 차이 목록만 더한다.
     assert {key: value for key, value in status[harness].items() if key != "settings_mismatch"} == {
         key: value for key, value in untouched[harness].items() if key != "settings_mismatch"}

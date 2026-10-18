@@ -38,6 +38,8 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, utf8_child_env
+from pm_engine.cli import local_conf as local_conf_cli
+from pm_engine.domain import conf_schema
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1185,7 +1187,7 @@ def test_no_dead_global_idle_timeout_knob(relay, monkeypatch):
     monkeypatch.setenv("PM_IDLE_TIMEOUT", "42")
     assert not hasattr(relay, "IDLE_TIMEOUT_ENV")
     assert not hasattr(relay, "idle_timeout_default")
-    assert relay.idle_timeout_for_signal(relay.PROGRESS_SIGNAL_EVENT_STREAM) == \
+    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM) == \
         relay.DEFAULT_IDLE_TIMEOUT_SEC
 
 
@@ -1234,8 +1236,8 @@ def test_unset_adopter_is_safe_by_default(relay):
     assert profile.idle_timeout >= 3600.0
     # 미지 하네스/리뷰어도 관대한 쪽으로 떨어진다(모르는 축을 죽이지 않는다).
     assert relay.resolve_harness_profile("brand-new", {}).wall_timeout >= profile.wall_timeout
-    assert relay.UNKNOWN_HARNESS_PROFILE.progress_signal == relay.PROGRESS_SIGNAL_NONE
-    assert relay.REVIEWER_FALLBACK_PROFILE.progress_signal == relay.PROGRESS_SIGNAL_NONE
+    assert relay.UNKNOWN_HARNESS_PROFILE.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
+    assert relay.REVIEWER_FALLBACK_PROFILE.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
 
 def test_harness_conf_override_resolution_order(relay, capsys):
@@ -1264,24 +1266,24 @@ def test_harness_conf_override_resolution_order(relay, capsys):
 
 def test_idle_timeout_for_signal_declares_axes(relay):
     """선언 테이블 — 신호 있는 축은 상한 적용, 신호 없는/미지의 축은 None(벽시계 유지)."""
-    assert relay.idle_timeout_for_signal(relay.PROGRESS_SIGNAL_EVENT_STREAM) == \
+    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM) == \
         relay.DEFAULT_IDLE_TIMEOUT_SEC
-    assert relay.idle_timeout_for_signal(relay.PROGRESS_SIGNAL_PLAINTEXT, 33.0) == 33.0
-    assert relay.idle_timeout_for_signal(relay.PROGRESS_SIGNAL_NONE) is None
+    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_PLAINTEXT, 33.0) == 33.0
+    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_NONE) is None
     assert relay.idle_timeout_for_signal("made-up-axis") is None  # 보수 기본
 
 
 def test_profile_table_covers_every_declared_harness(pd, relay):
     """프로필 테이블이 위임 하네스 전부를 덮고, 관측 선언이 엔진 값과 정합."""
-    assert set(relay.HARNESS_PROFILES) == set(pd.HARNESS_CHOICES)
+    assert set(relay.HARNESS_PROFILES) == set(conf_schema.HARNESS_CHOICES)
     for harness, profile in relay.HARNESS_PROFILES.items():
-        assert profile.progress_signal == relay.PROGRESS_SIGNAL_EVENT_STREAM, harness
+        assert profile.progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, harness
         assert profile.idle_timeout < profile.wall_timeout, harness  # 주 판정이 먼저 울린다
     # startup stall 워치독은 실측된 축(opencode)만 — 신호 축 전부에 켜면 새 false-kill 이 생긴다.
     assert relay.HARNESS_PROFILES["opencode"].startup_watchdog is True
     assert relay.HARNESS_PROFILES["codex"].startup_watchdog is False
     assert relay.HARNESS_PROFILES["claude"].startup_watchdog is False
-    assert pd.harness_profile("nope", {}).progress_signal == relay.PROGRESS_SIGNAL_NONE
+    assert pd.harness_profile("nope", {}).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
 
 def test_unknown_defaults_are_derived_from_most_permissive_profile(relay):
@@ -1299,7 +1301,7 @@ def test_unknown_defaults_are_derived_from_most_permissive_profile(relay):
     assert source.count(marker) == 1
     source = source.replace(
         marker,
-        '\n    "future": HarnessProfile(PROGRESS_SIGNAL_EVENT_STREAM, False, 6000.0, 16000.0),'
+        '\n    "future": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, False, 6000.0, 16000.0),'
         + marker,
     )
     namespace = {"__file__": str(TOOLS / "pm_relay.py"), "__name__": "mutated_pm_relay"}
@@ -1396,11 +1398,11 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
             "additional_reviewer",
             "_reviewer_progress_signal",
             "    if not argv:\n"
-            "        return relay.PROGRESS_SIGNAL_NONE\n",
+            "        return conf_schema.PROGRESS_SIGNAL_NONE\n",
             "    if argv and argv[0] == \"opencode\":\n"
-            "        return relay.PROGRESS_SIGNAL_NONE\n"
+            "        return conf_schema.PROGRESS_SIGNAL_NONE\n"
             "    if not argv:\n"
-            "        return relay.PROGRESS_SIGNAL_NONE\n",
+            "        return conf_schema.PROGRESS_SIGNAL_NONE\n",
         ),
         # 내부 리뷰 B: 과거 함수 통째 면제였던 timeout 소유 함수 안의 하네스별 강제값.
         (
@@ -1594,7 +1596,7 @@ def test_fill_claude_plain_blob_disables_idle_from_actual_argv(
 
     assert tuple(argv[:2]) == pm_import.CLAUDE_FILL_CMD
     assert fake.calls[0]["idle_timeout"] is None
-    assert relay.HARNESS_PROFILES["claude"].progress_signal == relay.PROGRESS_SIGNAL_EVENT_STREAM
+    assert relay.HARNESS_PROFILES["claude"].progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
 
 
 @pytest.mark.parametrize(
@@ -2022,14 +2024,14 @@ def test_harness_budget_keys_are_documented_in_the_registry(board, relay):
     GPU 부족은 엔진 속성이 아니라 배포 환경 조건이라 per-clone 으로 조여야 하는데, 키 설명이
     없으면 채택자는 false-kill 을 당하고도 노브를 못 찾는다. conf 파일은 실값만 담으므로
     (시드 주석 블록 폐지) 레지스트리와 그 조회 표면(`local_conf.py --keys`)이 노출을 단독으로 진다."""
-    conf_module = board._load_local_conf()
+    conf_module = conf_schema
     for suffix in ("idle_timeout", "wall_timeout"):
         for harness in relay.HARNESS_PROFILES:
             spec = conf_module.key_spec(f"harness.{harness}.{suffix}")
             assert spec is not None and spec.description, (harness, suffix)
             # 안 채워도 되는 값임은 안 채웠을 때 일어나는 일(`unset`)이 알린다.
             assert "도구마다 정해진 기본 시간을 씁니다." in spec.unset
-    table = conf_module.render_key_table()
+    table = local_conf_cli.render_key_table()
     assert "idle_timeout,wall_timeout" in table
 
 
@@ -2262,7 +2264,7 @@ def test_additional_reviewer_follows_reviewer_harness_profile(external, relay):
         int(relay.LOCAL_GPU_WALL_TIMEOUT_SEC)
     # 테이블에 없는 리뷰어 CLI 는 신호 없음 fallback(모르는 리뷰어를 무진행으로 죽이지 않는다).
     unknown = external.reviewer_profile("my-reviewer --flag", {})
-    assert unknown.progress_signal == relay.PROGRESS_SIGNAL_NONE
+    assert unknown.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
     assert unknown.wall_timeout == relay.DEFAULT_WALL_TIMEOUT_SEC
     # 이 모듈은 자체 타임아웃 상수를 두지 않는다(값이 두 군데면 규칙이 둘).
     source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
@@ -2275,7 +2277,7 @@ def test_windows_codex_names_share_progress_and_time_profile(
     """Windows 표기도 진행신호·시간값 모두 동일한 정규화 키(codex)를 쓴다."""
     profile = external.reviewer_profile(command, {})
     assert external.reviewer_name(command) == "codex"
-    assert profile.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
+    assert profile.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
     assert profile.idle_timeout == relay.HARNESS_PROFILES["codex"].idle_timeout
     assert profile.wall_timeout == relay.HARNESS_PROFILES["codex"].wall_timeout
     assert profile.wall_timeout != relay.REVIEWER_FALLBACK_PROFILE.wall_timeout
@@ -2284,7 +2286,7 @@ def test_windows_codex_names_share_progress_and_time_profile(
 def test_reviewer_idle_timeout_uses_resolved_profile_signal(external, relay, monkeypatch):
     """리뷰 표면도 profile.progress_signal 을 소비 — 신호 없는 선언을 평문으로 하드코딩하지 않는다."""
     no_signal = relay.HARNESS_PROFILES["codex"]._replace(
-        progress_signal=relay.PROGRESS_SIGNAL_NONE)
+        progress_signal=conf_schema.PROGRESS_SIGNAL_NONE)
     monkeypatch.setattr(external, "reviewer_profile", lambda *_a, **_k: no_signal)
     assert external._reviewer_idle_timeout("future-runner", 123) is None
 
@@ -2292,50 +2294,50 @@ def test_reviewer_idle_timeout_uses_resolved_profile_signal(external, relay, mon
 def test_reviewer_progress_signal_requires_known_executable_and_option_contract(external, relay):
     """basename+CLI별 옵션 계약 매트릭스: 이름만/플래그만 어느 한쪽으로는 추론하지 않는다."""
     absolute_codex = external.reviewer_profile("/usr/local/bin/codex exec", {})
-    assert absolute_codex.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
+    assert absolute_codex.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
     assert external.reviewer_profile(
         "/usr/local/bin/codex exec --json", {}
-    ).progress_signal == relay.PROGRESS_SIGNAL_EVENT_STREAM
+    ).progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
     assert external.reviewer_profile(
         "future-reviewer --json", {}
-    ).progress_signal == relay.PROGRESS_SIGNAL_NONE
+    ).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
     single = external.reviewer_profile("claude -p --output-format json", {})
     stream = external.reviewer_profile(
         "claude -p --output-format stream-json --verbose", {}
     )
-    assert single.progress_signal == relay.PROGRESS_SIGNAL_NONE
+    assert single.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
     assert external._reviewer_idle_timeout(
         "claude -p --output-format json", 1
     ) is None
-    assert stream.progress_signal == relay.PROGRESS_SIGNAL_EVENT_STREAM
+    assert stream.progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
     assert external._reviewer_idle_timeout(
         "claude -p --output-format stream-json --verbose", 1
     ) == 1.0
     assert external.reviewer_profile(
         "codex exec --json", {}
-    ).progress_signal == relay.PROGRESS_SIGNAL_EVENT_STREAM
+    ).progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
     assert external.reviewer_profile(
         "opencode run --format json", {}
-    ).progress_signal == relay.PROGRESS_SIGNAL_EVENT_STREAM
+    ).progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
 
     configured = external.reviewer_profile(
         "future-reviewer --json",
-        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT},
+        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT},
     )
-    assert configured.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
+    assert configured.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
 
 def test_unknown_reviewer_can_only_opt_into_progress_explicitly(external, relay):
     """미지 기본은 NONE이며 자유 문자열 CLI는 local.conf 명시 선언으로만 idle 축에 들어간다."""
     assert external.reviewer_profile(
         "future-reviewer --quiet", {}
-    ).progress_signal == relay.PROGRESS_SIGNAL_NONE
+    ).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
     configured = external.reviewer_profile(
         "future-reviewer --quiet",
-        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT},
+        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT},
     )
-    assert configured.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
+    assert configured.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
 
 def test_reviewer_profile_facade_reads_local_conf(external, relay, monkeypatch):
@@ -2345,12 +2347,12 @@ def test_reviewer_profile_facade_reads_local_conf(external, relay, monkeypatch):
         "local_config",
         lambda: {
             "harness.claude.wall_timeout": "4321",
-            external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT,
+            external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT,
         },
     )
     profile = external.reviewer_profile("claude -p --output-format json")
     assert profile.wall_timeout == 4321.0
-    assert profile.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
+    assert profile.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
 
 def test_additional_reviewer_cli_rejects_nonpositive_idle_timeout(external, capsys):

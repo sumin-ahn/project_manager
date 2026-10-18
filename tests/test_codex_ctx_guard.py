@@ -40,6 +40,7 @@ import pytest
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from _hook_commands import inline_script_payloads, powershell_native_arguments
+from pm_engine.domain import conf_schema
 
 REPO = Path(__file__).resolve().parents[1]
 CODEX = REPO / "templates" / "codex" / ".codex"
@@ -650,7 +651,7 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     parsed = board.local_config()  # LOCAL_CONF 가 conf_path 로 patch 됨.
     assert not [key for key in parsed if key.startswith("harness.")]
     # 설명은 레지스트리가 소유한다 — 키가 사라진 게 아니라 자리를 옮겼다.
-    spec = board._load_local_conf().key_spec("harness.codex.ctx_window_tokens")
+    spec = conf_schema.key_spec("harness.codex.ctx_window_tokens")
     assert spec is not None and "사용 한도" in spec.description
 
 

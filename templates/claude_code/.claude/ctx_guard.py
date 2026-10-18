@@ -6,7 +6,7 @@ statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을
 
 엔진 계약:
   - 분모(적용 한도 E)와 임계(``ctx.checkpoint_at_pct`` / ``ctx.precompact_at_pct`` · 적용 한도 대비
-    **쓴** %)는 엔진의 압축 한도 기록에서 읽는다(``local_conf.read_ctx_budget``). 기록이 없거나
+    **쓴** %)는 엔진의 압축 한도 기록에서 읽는다(``conf_store.read_ctx_budget``). 기록이 없거나
     손상됐거나 local.conf 와 다르면 ``CtxBudgetError`` 이고, 세션 모델이 기록 모델과 다르면 값은 그대로
     쓰되 경고를 낸다. 훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접 파싱**한다.
   - ``stop`` 분류는 statusline/relay 소비를 위해 유지하지만 훅에서는 최종 비차단 넛지로 소비한다.
@@ -144,21 +144,13 @@ def load_local_config(root: Path) -> dict[str, str]:
     return conf
 
 
-def _ctx_leaf(root):
-    import importlib.util
-    path = Path(root) / ".project_manager/tools/repo_owned_files.py"
-    spec = importlib.util.spec_from_file_location("ctx_owned_loader", path)
-    loader = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(loader)
-    def verify(module, filename):
-        if getattr(module, "ENGINE_REV", None) != getattr(loader, "ENGINE_REV", None):
-            raise RuntimeError(f"ctx 엔진 사본 불일치: {filename}")
-    return loader.load_module(path.with_name("local_conf.py"), "local_conf.py", verifier=verify, cache=True)
-
-
 def read_budget(root, conf: dict[str, str], session_model: str | None) -> dict:
-    """claude 압축 한도 기록 — E·경고 비율·경고(``local_conf.read_ctx_budget``). 기록 문제는 ``CtxBudgetError``."""
-    return _ctx_leaf(root).read_ctx_budget(root, conf, "claude", session_model)
+    """claude 압축 한도 기록 — E·경고 비율·경고(``conf_store.read_ctx_budget``). 기록 문제는 ``CtxBudgetError``."""
+    tools = Path(root) / ".project_manager/tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from pm_engine.infra import conf_store
+    return conf_store.read_ctx_budget(root, conf, "claude", session_model)
 
 
 # ── statusLine: context_window → used % (분모 = 해소된 예산) ──────────

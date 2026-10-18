@@ -1027,7 +1027,7 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     assert pm_import.main(
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
     ) == 0
-    seam = dest / ".project_manager" / "tools" / "repo_owned_files.py"
+    seam = dest / ".project_manager" / "tools" / "pm_engine" / "infra" / "repo_files.py"
     assert seam.is_file() and "def load_module(" in seam.read_text(encoding="utf-8")
 
     from _manager_home import known_ctx_env

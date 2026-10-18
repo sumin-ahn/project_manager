@@ -40,6 +40,8 @@ import pytest
 
 from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
 from _win_skip import posix_bash_supported
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store, fs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -64,7 +66,7 @@ def _owner_only(path: Path) -> bool:
     `chmod` 는 read-only 속성만 만져 `S_IMODE` 가 0o666 으로 남는다(실측). 보장("다른 사용자에게
     읽히지 않는다")은 같고 수단만 다르므로(POSIX 퍼미션 / Windows ACL) 수단을 아는 seam 에 묻는다.
     """
-    return _load("file_lock").owner_only_access(path)
+    return fs.owner_only_access(path)
 
 
 @pytest.fixture
@@ -474,12 +476,10 @@ def test_reviewer_role_cannot_be_overridden_by_config(
 def test_codex_max_reasoning_is_available_to_the_reviewer_profile(external, relay):
     """추가 리뷰어 기본 프로필이 쓰는 ladder 상단(codex `max`)이 허용집합에 등재돼 있다.
 
-    허용집합의 선언 형태(tuple 리터럴)도 함께 못박는다 — `local_conf._sibling_mapping` 이 이 선언을
-    소스 텍스트로 읽어 설정 화면 선택지를 만들고, `frozenset({...})`(Call 노드)로 되돌아가면 그
-    파생이 **조용히** 빈 목록으로 강등된다(리뷰어 argv 는 그대로라 여기서만 잡힌다).
+    허용집합은 설정 어휘(`conf_schema.REASONING_ALLOWED`)에 ladder 순서로 선언된다.
     """
-    assert relay.REASONING_ALLOWED["codex"] == ("low", "medium", "high", "xhigh", "max")
-    assert "max" in relay.REASONING_ALLOWED["codex"]
+    assert conf_schema.REASONING_ALLOWED["codex"] == ("low", "medium", "high", "xhigh", "max")
+    assert "max" in conf_schema.REASONING_ALLOWED["codex"]
     target = external.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex",
          "additional_reviewer.model": "gpt-5.6-sol",
@@ -544,7 +544,7 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
     """`--file` 프롬프트에는 diff 원문이 들어간다 — 소유자 전용으로 만들고 rc 무관 지운다.
 
     "소유자 전용" 의 수단은 플랫폼마다 다르다(POSIX 퍼미션 0600 / Windows ACL) — 판정은
-    퍼미션 비트가 아니라 `file_lock.owner_only_access` 로 OS 에 되묻는다(`_owner_only`).
+    퍼미션 비트가 아니라 `fs.owner_only_access` 로 OS 에 되묻는다(`_owner_only`).
     """
     # 추론 값을 두지 않는다 — opencode 추론 값은 실행 직전 모델 목록 조회로 확인되고(그 시험은
     # `test_opencode_reviewer_reasoning_checked_before_call`) 이 시험의 대상은 프롬프트 파일이다.
@@ -1895,14 +1895,19 @@ def _sibling_loads(name: str) -> set[str]:
     """모듈이 실제로 **로드**하는 형제 엔진 파일명 집합.
 
     문자열 상수·주석의 언급(진입점 경로 표기 등)은 import 가 아니다 — 로더 호출
-    (`_require_engine_sibling`/`_load_module_from_path`)의 파일명 인자와 `import` 문만 센다."""
+    (`_require_engine_sibling`/`_load_module_from_path`)의 파일명 인자와 `import` 문만 센다.
+    엔진 패키지 import(`from pm_engine.<층> import <모듈>`)는 `pm_engine/<층>/<모듈>.py` 로 센다."""
     tree = ast.parse((TOOLS / name).read_text(encoding="utf-8"))
     loaded: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             loaded.update(f"{alias.name}.py" for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            loaded.add(f"{node.module}.py")
+            if node.module.startswith("pm_engine."):
+                package = node.module.replace(".", "/")
+                loaded.update(f"{package}/{alias.name}.py" for alias in node.names)
+            else:
+                loaded.add(f"{node.module}.py")
         elif isinstance(node, ast.Call):
             called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             if called not in ("_require_engine_sibling", "_load_module_from_path"):
@@ -1937,9 +1942,11 @@ def _assert_relay_dag():
         complete.add(name)
     visit('pm_relay.py')
     assert graph == {
-        'pm_relay.py': {'file_lock.py', 'repo_owned_files.py', 'local_conf.py'},
-        'local_conf.py': {'file_lock.py', 'repo_owned_files.py', 'console_encoding.py'},
-        'file_lock.py': set(), 'repo_owned_files.py': set(), 'console_encoding.py': set(),
+        'pm_relay.py': {'pm_engine/domain/conf_schema.py', 'pm_engine/infra/conf_store.py',
+                        'pm_engine/infra/fs.py'},
+        'pm_engine/infra/conf_store.py': {'pm_engine/domain/conf_schema.py', 'pm_engine/infra/fs.py'},
+        'pm_engine/domain/conf_schema.py': set(),
+        'pm_engine/infra/fs.py': set(),
     }
 
 
@@ -1956,7 +1963,7 @@ def _assert_relay_conf_isolation(source):
             elif isinstance(node, ast.ClassDef):
                 collect(node.body, prefix + node.name + '.')
     collect(tree.body)
-    forbidden = {'_load_ctx_leaf', 'ctx_budget', 'load_conf', 'read_ctx_budget'}
+    forbidden = {'ctx_budget', 'load_conf', 'read_ctx_budget'}
     roots = [name for name in functions if name.startswith('Supervisor.') or 'raw' in name.lower()]
     top = ast.Module(body=[node for node in tree.body if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[])
     functions['<import>'] = top
@@ -1983,17 +1990,15 @@ def _assert_relay_conf_isolation(source):
 def test_pm_relay_is_cycle_free(relay, monkeypatch):
     _assert_relay_dag()
     _assert_relay_conf_isolation((TOOLS / 'pm_relay.py').read_text(encoding='utf-8'))
-    leaf = relay._load_ctx_leaf()
     def forbidden(*_args, **_kwargs):
         raise AssertionError('import-time conf 조회')
-    monkeypatch.setattr(leaf, 'load', forbidden)
+    monkeypatch.setattr(conf_store, 'load', forbidden)
     _load('pm_relay')
-    assert Path(relay._load_file_lock().__file__).name == 'file_lock.py'
 
 
 def test_t0932_relay_dag_cycle_sensitivity(monkeypatch):
     original = _sibling_loads
-    monkeypatch.setitem(globals(), '_sibling_loads', lambda name: original(name) | ({'pm_relay.py'} if name == 'local_conf.py' else set()))
+    monkeypatch.setitem(globals(), '_sibling_loads', lambda name: original(name) | ({'pm_relay.py'} if name == 'pm_engine/infra/conf_store.py' else set()))
     with pytest.raises(AssertionError, match='순환'):
         _assert_relay_dag()
 

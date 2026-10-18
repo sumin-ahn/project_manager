@@ -4,7 +4,7 @@
 `[Errno 9] Bad file descriptor` 로 거부한다. 리눅스 개발 트리에서 항상 green 인 플랫폼 비대칭이라
 정적으로 막는다 — 판정은 fsync 인자를 그 fd/handle 을 만든 open 호출까지 역산해서 내린다
 (`os.open` 은 플래그, `open`/`os.fdopen`/`_fdopen_*` 는 mode). 내구성은 쓰기와 같은 자리에서
-수행한다 — append 는 `file_lock.append_atomic` 이 자기 쓰기 fd 위에서 sync 한다.
+수행한다 — append 는 `fs.append_atomic` 이 자기 쓰기 fd 위에서 sync 한다.
 
 가드 경계: 판정 불능(비리터럴 mode·미해소 플래그·추적 불가 인자)도 red 다. `_ALLOWED` 로
 예외 처리하려면 파일·행·사유를 함께 등재해야 하며, 예외가 검사 없는 우회로가 되어서는 안 된다.
@@ -18,6 +18,7 @@ import tokenize
 from pathlib import Path
 
 import pytest
+from _engine_tree import engine_python_files
 
 
 # (파일명, 행번호, 사유) — 현재 canonical 엔진에는 예외가 없다.
@@ -264,9 +265,9 @@ def _scan_source(source: str, filename: str = "<snippet>") -> list[
 
 def _scan_tools() -> list[tuple[str, int, bool | None]]:
     calls: list[tuple[str, int, bool | None]] = []
-    for path in sorted(TOOLS.glob("*.py")):
+    for path in engine_python_files(TOOLS):
         calls.extend(
-            _scan_source(path.read_text(encoding="utf-8"), path.name)
+            _scan_source(path.read_text(encoding="utf-8"), path.relative_to(TOOLS).as_posix())
         )
     return calls
 
@@ -316,15 +317,15 @@ def test_fsync_guard_sees_every_engine_call_site():
     for filename, _lineno, _writable in _scan_tools():
         by_ast[filename] = by_ast.get(filename, 0) + 1
     by_token: dict[str, int] = {}
-    for path in sorted(TOOLS.glob("*.py")):
+    for path in engine_python_files(TOOLS):
         count = _fsync_call_count_by_token(path.read_text(encoding="utf-8"))
         if count:
-            by_token[path.name] = count
+            by_token[path.relative_to(TOOLS).as_posix()] = count
 
     assert by_ast == by_token, "AST 시야와 토큰 실측이 어긋난다"
     assert by_ast, "엔진에 fsync 호출이 한 건도 없다 — 내구성 표면 소실"
     # append 내구성은 공용 seam 이 소유한다 (호출부 재-open 금지·T-0716).
-    assert by_ast.get("file_lock.py") == 1
+    assert by_ast.get("pm_engine/infra/fs.py") == 1
 
 
 @pytest.mark.parametrize(
@@ -439,7 +440,7 @@ def test_reintroduced_readonly_ledger_sync_is_red():
     assert "fsync" not in ledger_append, (
         "장부 append 호출부가 자체 sync 를 들고 있다 — 내구성은 append seam 소유다"
     )
-    anchor = "        file_lock.append_atomic(path, payload, mode=0o600)\n"
+    anchor = "        fs.append_atomic(path, payload, mode=0o600)\n"
     mutated = source.replace(
         anchor,
         anchor

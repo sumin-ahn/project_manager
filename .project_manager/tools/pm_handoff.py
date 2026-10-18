@@ -54,136 +54,11 @@ import sys
 from pathlib import Path
 from typing import Callable, Iterator
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -241,24 +116,6 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
-def _require_engine_sibling(path: Path, filename: str) -> None:
-    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
-
-    부재는 raw `FileNotFoundError` 로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
-    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다
-    (board.py `_require_engine_sibling` 동형·self-contained 복제). *옵션* 형제
-    (`_load_worktree_pool` 등 fail-soft 대상)에는 쓰지 않는다 — 부재가 정상 경로인 곳이다."""
-    if path.exists():
-        return
-    err = RuntimeError(
-        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
-        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
-        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-    )
-    err._engine_rev_skew = True
-    raise err
-
-
 def _report_engine_rev_skew_at_terminal(exc) -> int:
     """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
     print(
@@ -282,24 +139,8 @@ def _load_identity_args():
     )
 
 
-def _load_file_lock():
-    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
-
-    `_load_identity_args` 동형 — 경로-앵커 로더다. **import 시점** 바인딩으로 둔다(아래
-    `file_lock = ...`·board.py 동형): 락을 잡을 때마다 형제를 로드하면 pm_handoff 를 fail-soft
-    로 소비하는 호출층이 사본 skew 를 조용히 삼키는 경로가 대시보드 write 의 호출 그래프만큼
-    늘어난다 — import 경계 단일 fail-loud 로 그 확산을 막는다.
-    """
-    lock_path = Path(__file__).resolve().parent / "file_lock.py"
-    _require_engine_sibling(lock_path, "file_lock.py")
-    return _load_module_from_path(
-        lock_path, "file_lock.py", verifier=_verify_engine_rev,
-    )
-
-
 try:
     identity_args = _load_identity_args()
-    file_lock = _load_file_lock()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
     if _is_engine_rev_skew(exc):
         if __name__ == "__main__":
@@ -1092,7 +933,7 @@ _NESTED_SESSION_ENTRY_RE = re.compile(r"^  - (## \[[^\n]+)$", re.MULTILINE)
 
 def _read_log_text_exact(path: Path) -> str:
     """UTF-8 log를 universal-newline 변환 없이 읽어 원문 bytes를 보존한다."""
-    return file_lock.read_bytes_shared(Path(path)).decode("utf-8")
+    return fs.read_bytes_shared(Path(path)).decode("utf-8")
 
 
 def _handoff_header_belongs_to_session(header: str, session: str | None) -> bool:
@@ -2267,7 +2108,7 @@ def _dashboard_lock_file() -> Path:
     return REPO / ".project_manager" / ".local" / "dashboard.lock"
 
 
-# ── 대시보드 파일락 (경로 규약만 소유·플랫폼 분기는 공용 `file_lock` seam) ────────────
+# ── 대시보드 파일락 (경로 규약만 소유·플랫폼 분기는 공용 `fs` seam) ────────────
 # 대시보드는 슬롯-공유 파일이라 read-modify-write 를 직렬화하지 않으면 **두 다른 슬롯이 동시
 # 핸드오프**할 때 lost update 가 난다(둘 다 같은 이전 파일을 읽고 나중 write 가 상대 슬롯 섹션
 # 갱신을 덮음"타 슬롯 byte 불변/현재 스냅샷" 위반). "슬롯=단일 세션" 은 *같은 슬롯*
@@ -2282,10 +2123,10 @@ def _dashboard_lock() -> Iterator[None]:
     해제(stale-lock 없음·worktree_pool `_lease_lock` 동형). **재진입 금지** — 대시보드의 모든
     read→upsert→write 가 이 한 구간 안에서 일어나 cross-slot lost update 를 막는다.
 
-    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `file_lock` seam 이 소유하고
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam 이 소유하고
     (모듈 상단 import 시점 바인딩) 이 도구는 *어느 파일에 거는지*(경로 규약)만 정한다.
     """
-    with file_lock.exclusive_file_lock(_dashboard_lock_file()):
+    with fs.exclusive_file_lock(_dashboard_lock_file()):
         yield
 
 
@@ -2370,7 +2211,7 @@ def _claimed_tickets_for_session(
         result: list[str] = []
         for f in candidates:
             try:
-                head = file_lock.read_text_shared(f, encoding="utf-8")[:2000]  # frontmatter 만 필요.
+                head = fs.read_text_shared(f, encoding="utf-8")[:2000]  # frontmatter 만 필요.
             except OSError:
                 continue
             if require_status_claimed:
@@ -3239,7 +3080,7 @@ class PmHandoff:
             rows = relay.unfinished_raw_records(ledger)
         except Exception as exc:  # noqa: BLE001 — fail-soft: 손상 장부가 핸드오프를 막지 않는다.
             if _is_engine_rev_skew(exc):
-                raise  # 조회는 deep 형제(`file_lock`)까지 들어간다 — 사본 skew 를 "조회 실패"로
+                raise  # 조회는 deep 형제(`pm_relay`)까지 들어간다 — 사본 skew 를 "조회 실패"로
                        # 접으면 부분 복사 사실이 비차단 1줄에 묻힌다(`_load_pm_relay` 와 같은 규칙).
             print(f"  ⚠ 미마감 raw 조회 실패 ({exc}) — sweep skip.")
             return
@@ -3420,15 +3261,15 @@ class PmHandoff:
         )
         # read-modify-write 전체를 락 안에서 — 다른 슬롯이 사이에 write 해도 최신 파일을 다시
         # 읽어 그 슬롯 섹션을 보존한다(직렬화·lost update 0·타 슬롯 byte 불변). write 는
-        # tmp 파일 → `file_lock.atomic_replace` 원자 교체 — crash/동시 read 시 빈·부분 파일 노출 차단
+        # tmp 파일 → `fs.atomic_replace` 원자 교체 — crash/동시 read 시 빈·부분 파일 노출 차단
         # (worktree_pool `_write_ledger` 동형·codex suggestion).
         with _dashboard_lock():
-            existing = file_lock.read_text_shared(dash_file, encoding="utf-8") if dash_file.exists() else ""
+            existing = fs.read_text_shared(dash_file, encoding="utf-8") if dash_file.exists() else ""
             updated = upsert_dashboard_section(existing, session_identity, section)
             dash_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = dash_file.with_suffix(dash_file.suffix + ".tmp")
             tmp.write_text(updated, encoding="utf-8", newline="\n")
-            file_lock.atomic_replace(tmp, dash_file)
+            fs.atomic_replace(tmp, dash_file)
         return dash_file
 
     # ── 메인 흐름 ─────────────────────────────────────────────────────────────
@@ -3605,7 +3446,7 @@ class PmHandoff:
             )
             return 1
         inferred = infer_next_task_session_num(
-            file_lock.read_text_shared(self._pm_state_file, encoding="utf-8"),
+            fs.read_text_shared(self._pm_state_file, encoding="utf-8"),
             _read_log_text_exact(self._log_file) if self._log_file.exists() else "",
             task,
             task_released=(
@@ -3747,7 +3588,7 @@ class PmHandoff:
         else:
             # ── 3. pm_state.md sliding window 정리 ─────────────────────────────
             print("\n[3/7] pm_state.md 세션 식별 sliding window 정리...")
-            state_text = file_lock.read_text_shared(self._pm_state_file, encoding="utf-8")
+            state_text = fs.read_text_shared(self._pm_state_file, encoding="utf-8")
 
             try:
                 # update_session_window 자체가 같은 차수면 byte no-op이다. 재실행에서도 이
@@ -3827,7 +3668,7 @@ class PmHandoff:
         # ── 5. 인계 프롬프트 stdout 출력 ───────────────────────────────────────
         # 템플릿(정적)은 pm_playbook.md 에서 추출한다 — sliding window 편집 대상(pm_state.md)과 분리.
         print("\n[5/7] 인계 프롬프트 출력...")
-        playbook_text = file_lock.read_text_shared(self._pm_playbook_file, encoding="utf-8")
+        playbook_text = fs.read_text_shared(self._pm_playbook_file, encoding="utf-8")
         prompt_output = build_handoff_prompt_output(
             pm_playbook_text=playbook_text,
             session_num=_normalize_session_num(session_num),
@@ -4142,12 +3983,7 @@ def main(
 ) -> int:
     """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
     try:
-        _console_encoding = _load_module_from_path(
-            Path(__file__).resolve().with_name("console_encoding.py"),
-            "console_encoding.py",
-            verifier=_verify_engine_rev,
-        )
-        _console_encoding.configure_console_utf8()
+        console.configure_console_utf8()
         return _main(argv, identity_resolver=identity_resolver)
     except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
         if _is_engine_rev_skew(exc):

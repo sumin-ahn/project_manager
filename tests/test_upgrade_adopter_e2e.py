@@ -59,57 +59,15 @@ from test_codex_hook_dispatch import (
 )
 from _win_skip import posix_bash_supported
 from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
-
-# v1.7.13의 실제 실행 소스다. 태그 조회나 최신 함수 합성으로 대체하지 않는다.
-T0927_LEGACY_COMMIT = "e4f2436f55d79f70147d19fd65187f88fd3650be"
-T0927_UPDATER_BLOB = "cd05ffc1c3e0217d92daa33cdf04fd7440bd26c9"
-
-
-@pytest.fixture(scope="module")
-def t0927_legacy_source(tmp_path_factory):
-    from _manager_home import _git
-    root = tmp_path_factory.mktemp("t0927-v1713") / "source"
-    _git("clone", "--quiet", "--no-checkout", "--no-hardlinks", str(REPO), str(root))
-    _git("-C", str(root), "checkout", "--quiet", "--detach", T0927_LEGACY_COMMIT)
-    assert _git("-C", str(root), "rev-parse", "HEAD").stdout.strip() == T0927_LEGACY_COMMIT
-    assert _git("-C", str(root), "hash-object", ".project_manager/tools/pm_update.py").stdout.strip() == T0927_UPDATER_BLOB
-    assert "def migrate_renamed_conf_keys" not in (
-        root / ".project_manager/tools/pm_update.py").read_text(encoding="utf-8")
-    return root
 
 
 @pytest.fixture(scope="module")
 def t0927_upstream(tmp_path_factory):
     from _manager_home import make_committed_source
     return make_committed_source(tmp_path_factory.mktemp("t0927-current"))
-
-
-@pytest.fixture
-def t0927_installed_adopter(tmp_path, t0927_legacy_source, t0927_upstream):
-    from _manager_home import _run
-    dest = tmp_path / "old-adopter"
-    _run([sys.executable, str(t0927_legacy_source / ".project_manager/tools/pm_import.py"),
-          "--new", str(dest), "--harness", "claude", "--fill", "manual",
-          "--from", str(t0927_legacy_source), "--upstream", str(t0927_upstream)],
-         cwd=t0927_legacy_source)
-    updater = dest / ".project_manager/tools/pm_update.py"
-    assert updater.read_bytes() == (t0927_legacy_source / ".project_manager/tools/pm_update.py").read_bytes()
-    return dest
-
-
-@pytest.fixture
-def t0927_old_adopter(t0927_installed_adopter):
-    dest = t0927_installed_adopter
-    conf = dest / ".project_manager/local.conf"
-    # 새 압축 키가 없는 실제 구 사용자의 설정이다. 다른 설정과 설치 기록은 그대로 둔다.
-    lines = [line for line in conf.read_text(encoding="utf-8").splitlines(keepends=True)
-             if not line.startswith(("ctx.stop_pct=", "ctx.precompact_at_pct="))]
-    # 남은 10%의 이동 결과인 사용 90%보다 큰 유효 압축 지점을 명시한다.
-    conf.write_text("".join(lines) + "\nctx.stop_pct=10\nctx.compact_at_pct=94\n",
-                    encoding="utf-8", newline="\n")
-    return dest
 
 
 def _t0927_direct_update(dest, *extra):
@@ -119,21 +77,6 @@ def _t0927_direct_update(dest, *extra):
         cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
                                        native_bin=dest.parent / "known-ctx-native"))
-
-
-def test_t0927_old_process_boundary_requires_fresh_run2(t0927_old_adopter, t0927_upstream):
-    dest = t0927_old_adopter
-    conf = dest / ".project_manager/local.conf"
-    run1 = _t0927_direct_update(dest)
-    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
-    assert "ctx.stop_pct=10" in conf.read_text(encoding="utf-8")
-    assert (dest / ".project_manager/tools/pm_update.py").read_bytes() == (
-        t0927_upstream / ".project_manager/tools/pm_update.py").read_bytes()
-    run2 = _t0927_direct_update(dest)
-    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
-    text = conf.read_text(encoding="utf-8")
-    assert "ctx.stop_pct=" not in text
-    assert "ctx.precompact_at_pct=90" in text
 
 
 def _t0956_self_row(dest: Path) -> tuple[str, str]:
@@ -147,66 +90,6 @@ def _t0956_self_row(dest: Path) -> tuple[str, str]:
     own = [row for row in rows if row.get("repo") == dest.name]
     assert len(own) == 1, own
     return own[0].get("git", ""), own[0].get("base", "")
-
-
-def test_t0956_v1713_self_row_filled_by_update(t0927_installed_adopter):
-    """[[T-0956]] AT-008 — v1.7.13 사본의 빈 자기 행을 갱신 이관이 채운다.
-
-    1차 갱신은 옛 갱신기 프로세스라 이관을 모른다(빈 칸 그대로). 그 뒤 dry-run 은 기록 예정만
-    알리고 쓰지 않는다. 2차 갱신이 git=홈 절대경로·base=현재 브랜치를 채우고, 3차는 아무것도
-    쓰지 않고 그 줄도 내지 않는다(멱등).
-    """
-    dest = t0927_installed_adopter
-    areas = dest / ".project_manager/areas.md"
-    assert _t0956_self_row(dest) == ("", "")
-
-    run1 = _t0927_direct_update(dest)
-    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
-    assert _t0956_self_row(dest) == ("", "")
-
-    before = areas.read_bytes()
-    dry = _t0927_direct_update(dest, "--dry-run")
-    assert dry.returncode == 0, f"{dry.stdout}\n{dry.stderr}"
-    assert "자기 행 git·base 기록 예정" in dry.stdout, dry.stdout
-    assert areas.read_bytes() == before
-
-    run2 = _t0927_direct_update(dest)
-    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
-    branch = subprocess.run(["git", "-C", str(dest), "symbolic-ref", "--short", "HEAD"],
-                            capture_output=True, text=True, encoding="utf-8").stdout.strip()
-    assert _t0956_self_row(dest) == (str(dest.resolve()), branch)
-    assert "자기 행 git·base 기록:" in run2.stdout, run2.stdout
-
-    filled = areas.read_bytes()
-    run3 = _t0927_direct_update(dest)
-    assert run3.returncode == 0, f"{run3.stdout}\n{run3.stderr}"
-    assert "자기 행" not in run3.stdout
-    assert areas.read_bytes() == filled
-
-
-def test_t0944_old_process_run1_renders_claude_effort(t0927_old_adopter, t0927_upstream):
-    """v1.7.13 프로세스가 도는 첫 갱신이 claude 카드 effort 렌더에서 멈추지 않는다 (T-0944).
-
-    첫 실행은 메모리에 옛 pm_update 가 있고, 카드 렌더 직전에 새로 복사된 pm_render 를 디스크에서
-    읽는다. 새 pm_render 가 추론 허용값을 호출자 인자로 요구하면 옛 호출자는 그 인자를 몰라 rc 1 로
-    멈춘다(리뷰 F-001 재현). 위 경계 테스트의 채택자에는 위임 추론 값이 없어 이 경로를 지나지 않으므로
-    추론 값을 둔 claude 채택자로 따로 고정한다.
-    """
-    dest = t0927_old_adopter
-    conf = dest / ".project_manager/local.conf"
-    conf.write_text(
-        conf.read_text(encoding="utf-8")
-        + "delegate.developer.model=sonnet\ndelegate.developer.reasoning=high\n",
-        encoding="utf-8", newline="\n")
-    card = dest / ".claude/agents/developer.md"
-    assert "effort:" not in card.read_text(encoding="utf-8")
-    run1 = _t0927_direct_update(dest)
-    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
-    run2 = _t0927_direct_update(dest)
-    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
-    lines = card.read_text(encoding="utf-8").splitlines()
-    assert 'effort: "high"' in lines, "\n".join(lines[:8])
-    assert 'model: "sonnet"' in lines, "\n".join(lines[:8])
 
 
 # ── OpenCode 위임 카드 `variant` — 갱신의 추론 값 정리와 옛 갱신기 첫 실행 (T-0946) ─────────────
@@ -237,39 +120,21 @@ def t0946_fake_opencode(tmp_path, monkeypatch):
     return fakebin
 
 
-def _t0946_install(source: Path, dest: Path, upstream: Path, *, known_ctx: bool) -> Path:
-    """`source` 의 pm_import 로 opencode 채택자를 설치한다. 현재 소스의 설치는 모델 한도를 조회하므로
-    고정 한도(`known_ctx_env`)로 돌린다(그 조회가 없는 v1.7.13 설치는 그대로)."""
+def _t0946_install(source: Path, dest: Path, upstream: Path) -> Path:
+    """`source` 의 pm_import 로 opencode 채택자를 설치한다. 설치는 모델 한도를 조회하므로
+    고정 한도(`known_ctx_env`)로 돌린다."""
     from _manager_home import _run, known_ctx_env
     argv = [sys.executable, str(source / ".project_manager/tools/pm_import.py"),
             "--new", str(dest), "--harness", "opencode", "--fill", "manual",
             "--from", str(source), "--upstream", str(upstream)]
-    _run(argv, cwd=source,
-         env=known_ctx_env(native_bin=dest.parent / "known-ctx-native") if known_ctx else None)
+    _run(argv, cwd=source, env=known_ctx_env(native_bin=dest.parent / "known-ctx-native"))
     return dest
 
 
 @pytest.fixture
 def t0946_current_opencode_adopter(tmp_path, t0927_upstream, t0946_fake_opencode):
     """현재 소스로 설치한 opencode 채택자 — 새 갱신기가 이미 설치된 형상."""
-    return _t0946_install(t0927_upstream, tmp_path / "current-opencode", t0927_upstream,
-                          known_ctx=True)
-
-
-@pytest.fixture
-def t0946_legacy_opencode_adopter(tmp_path, t0927_legacy_source, t0927_upstream,
-                                  t0946_fake_opencode):
-    """v1.7.13(e4f2436f) 로 설치한 opencode 채택자 — 첫 갱신은 옛 갱신기가 돈다(RUN1)."""
-    dest = _t0946_install(t0927_legacy_source, tmp_path / "legacy-opencode", t0927_upstream,
-                          known_ctx=False)
-    assert (dest / ".project_manager/tools/pm_update.py").read_bytes() == (
-        t0927_legacy_source / ".project_manager/tools/pm_update.py").read_bytes()
-    conf = dest / ".project_manager/local.conf"
-    lines = [line for line in conf.read_text(encoding="utf-8").splitlines(keepends=True)
-             if not line.startswith(("ctx.stop_pct=", "ctx.precompact_at_pct="))]
-    conf.write_text("".join(lines) + "\nctx.stop_pct=10\nctx.compact_at_pct=94\n",
-                    encoding="utf-8", newline="\n")
-    return dest
+    return _t0946_install(t0927_upstream, tmp_path / "current-opencode", t0927_upstream)
 
 
 def test_t0946_update_prunes_reasoning_before_rendering(t0946_current_opencode_adopter):
@@ -284,37 +149,6 @@ def test_t0946_update_prunes_reasoning_before_rendering(t0946_current_opencode_a
     assert "delegate.researcher.reasoning=" not in conf.read_text(encoding="utf-8")
     lines = (dest / _T0946_RESEARCHER_CARD).read_text(encoding="utf-8").splitlines()
     assert lines[3] == 'model: "ollama/glm-5.2:cloud"', "\n".join(lines[:6])
-    assert lines[4].startswith("# variant:"), "\n".join(lines[:6])
-
-
-def test_t0946_old_process_run1_renders_opencode_variant(t0946_legacy_opencode_adopter):
-    """옛 갱신기 첫 실행(RUN1)도 새 렌더러로 그 모델의 variant 를 카드에 싣고, 다음 실행도 통과한다."""
-    dest = t0946_legacy_opencode_adopter
-    _t0946_append_conf(dest, _t0946_profile("ollama/ornith1.5:35b-a3b"))
-
-    run1 = _t0927_direct_update(dest)
-    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
-    run2 = _t0927_direct_update(dest)
-    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
-    lines = (dest / _T0946_RESEARCHER_CARD).read_text(encoding="utf-8").splitlines()
-    assert 'variant: "high"' in lines, "\n".join(lines[:6])
-
-
-def test_t0946_run1_stops_then_run2_prunes_the_variant(t0946_legacy_opencode_adopter):
-    """무효 값이 있는 채택자의 RUN1 은 그 카드에서 멈추며 재실행을 안내하고, RUN2(새 갱신기)가 정리한다."""
-    dest = t0946_legacy_opencode_adopter
-    conf = _t0946_append_conf(dest, _t0946_profile("ollama/glm-5.2:cloud"))
-
-    run1 = _t0927_direct_update(dest)
-    assert run1.returncode != 0, run1.stdout
-    assert "delegate.researcher.reasoning=high" in run1.stderr, run1.stderr
-    assert "pm-config update 를 다시 실행" in run1.stderr, run1.stderr
-
-    run2 = _t0927_direct_update(dest)
-    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
-    assert "delegate.researcher.reasoning=high" in run2.stdout, run2.stdout
-    assert "delegate.researcher.reasoning=" not in conf.read_text(encoding="utf-8")
-    lines = (dest / _T0946_RESEARCHER_CARD).read_text(encoding="utf-8").splitlines()
     assert lines[4].startswith("# variant:"), "\n".join(lines[:6])
 
 
@@ -1053,7 +887,15 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
 #   T-0956 수정 라운드(리뷰 F-005)에서 한 번 더 이동했다 — 주석 한 줄의 자리 표기
 #   (`harness.<이름>` → `harness.<harness>`)뿐이고 실행 코드·배달 경계·anchor 는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "7ae3684a7478a9ffc7bab3b188bcca67b76cdc87530839ee8d8705b60f3e95d2"
+#   T-0964 에서 또 이동했다 — 설정 레지스트리가 패키지(`pm_engine.domain.conf_schema`·
+#   `pm_engine.infra.conf_store`)로 옮겨 가며 `_load_local_conf` 경로 적재가 사라지고 호출이 모듈
+#   속성 호출로 바뀌었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고,
+#   배달 경계(planning → apply → self-update 순서)와 배달 파일 집합도 불변이다 — 현재화한 것은
+#   기대 SHA 하나뿐이다.
+#   같은 묶음의 수정 라운드(T-0963 리뷰 F-002)에서 한 번 더 이동했다 — conf 쓰기 락 래퍼가 쓰는 곳 없는
+#   `yield` 를 버리고 공용 seam 을 그대로 돌려주게 됐고 `contextlib` import 가 빠졌다. 잠금 구간·배달
+#   경계·anchor 는 무편집이다.
+_T0585_PM_UPDATE_SHA256 = "bfee404cf09435398fe8c501c8fe9c3b8aae6ef607c6cb2b83c53aa1b3231ab2"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1405,6 +1247,14 @@ def _t0585_pm_update_source() -> str:
     겹치지 않고 그대로 유일 해소됐다(marker assert·anachronism 부재 단언 선통과). 배달 경계
     (source/manifest planning → apply → self-update 순서)와 배달 파일 집합은 무편집이다 — 이관이
     만지는 것은 manifest 밖의 areas.md 한 행뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
+
+    T-0963 — 형제 적재 블록이 엔진 패키지 import(`from pm_engine.infra import ...`)로 바뀌고 형제 로더·
+    강등 함수(`_load_repo_owned_files`·`_shared_read_api` 일습·`_atomic_replace_or_degrade`·중앙 로더
+    선복구 `central_loader_needs_recovery`·`_predeploy_central_loader`)가 사라졌다. 역적용 delta 의
+    marker 는 전부 `sync_adapter_configs`/훅 세트 게이트·전달 분기 쪽이라 그대로 유일 해소됐고
+    (marker assert·anachronism 부재 단언 선통과), 배달 경계(source/manifest planning → apply →
+    self-update 순서)와 배달 파일 집합의 계획 규칙은 그대로다 — manifest 의 디렉터리 행은 같은 계획이
+    파일들로 펼친다. 현재화한 것은 기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1528,7 +1378,14 @@ def _install_t0585_updater(dest: Path) -> None:
 # 전부 그 절 밖이라 그대로 유일 해소된다.
 # T-0956 수정 라운드(리뷰 F-005): 주석 한 줄의 자리 표기(`harness.<이름>` → `harness.<harness>`)로
 # 전문 SHA 만 이동했다. 실행 코드와 marker 는 무편집이다.
-_PRE_T0876_PM_UPDATE_SHA256 = "cef8ecff3d4d5f0214f18cdb55cd4c90abc79b4697fba4b28e57ad84f134eeb8"
+# T-0963: 형제 적재 블록의 패키지 import 전환과 형제 로더·강등·중앙 로더 선복구 삭제로 전문 SHA 가
+# 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
+# T-0964: 설정 레지스트리의 패키지 이동으로 `_load_local_conf` 경로 적재가 모듈 속성 호출
+# (`conf_store`·`conf_schema`)로 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그
+# 구간 밖이라 그대로 유일 해소된다.
+# T-0963 리뷰 F-002: conf 쓰기 락 래퍼의 `yield` 잔재와 `contextlib` import 삭제로 전문 SHA 가 이동했다.
+# marker 는 무편집이다.
+_PRE_T0876_PM_UPDATE_SHA256 = "e196a0e8628b201358e0bf7e5745d7dc643c40c9f450cbf5a2c898acb7236674"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -2439,14 +2296,14 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
 
 
 def test_public_update_procedure_documents_the_v1713_three_runs():
-    """공개 절차(README)가 v1.7.13 경로의 세 실행을 적는다 — RUN1 은 옛 갱신기 배달, RUN2 는 새 갱신기
-    완료, 마지막 실행이 변경 0 확인이다(v1.8.0 이상 사본은 RUN2 가 변경 0 확인)."""
+    """공개 절차(README)가 v1.7.13 이하 사본은 v1.8.0 을 먼저 거친다고 적는다 — 이 판으로의 직행은
+    지원하지 않는다(T-0963). 절차는 미리보기·갱신·변경 0 확인 세 줄이다."""
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     section = readme.split("엔진 갱신은 채택자 루트에서 받는다", 1)[1][:900]
 
-    assert "RUN1" in section and "RUN2" in section
+    assert "v1.8.0 을 먼저 거친다" in section
     assert "변경 0" in section
-    assert section.count("./pm-update.sh") >= 3      # dry-run + RUN1 + RUN2
+    assert section.count("./pm-update.sh") >= 3      # dry-run + 갱신 + 변경 0 확인
 
 
 # ── 옛 홈 자신 행 제거 (T-0919 마이그레이션) ──────────────────────────────────
@@ -2496,14 +2353,6 @@ def test_upgrade_adopter_drops_the_legacy_home_row_on_sync(tmp_path):
 # ── 전달/완료 두 프로세스 갱신 (T-0951) ─────────────────────────────────────────────────────────────
 # 실제 git 상류(`make_committed_source`)·실제 설치(`pm_import --new`)·서브프로세스 실행만 쓴다.
 
-# v1.7.13 사본의 위임 설정 형상 — 하네스별 프로필 줄(설계 경계 실측 2.1 과 같은 값).
-_T0951_DELEGATE_PROFILES = {
-    "claude": "delegate.developer.model=sonnet\ndelegate.developer.reasoning=high\n",
-    "codex": "delegate.developer.model=gpt-5.5\ndelegate.developer.reasoning=high\n",
-    "opencode": ("delegate.researcher.harness=opencode\n"
-                 "delegate.researcher.model=ollama/ornith1.5:35b-a3b\n"
-                 "delegate.researcher.reasoning=high\n"),
-}
 _T0951_SKEW_NOTICE = "엔진 사본 버전 불일치"
 
 
@@ -2515,48 +2364,83 @@ def t0951_opencode_path(request, tmp_path, monkeypatch):
     return request.getfixturevalue("t0946_fake_opencode")
 
 
-@pytest.mark.parametrize("delegate", [False, True], ids=["plain", "delegate"])
+# 패키지 트리 첫 채택의 고정 기점 — 태그 조회나 최신 함수 합성으로 대체하지 않는다.
+_PINNED_V18_COMMITS = {
+    "v1.8.0": "9612e2ec19c5742d27f5fa78f930cfbed40ee384",
+    "v1.8.1": "298ffe604ab951146b0acc4d70b57a16a563a1bc",
+}
+# 엔진 패키지로 옮겨 평면 위치에서 은퇴한 모듈(manifest `# pm-retired-path:`).
+_PACKAGE_RETIRED_FLAT_MODULES = ("file_lock.py", "console_encoding.py", "repo_owned_files.py")
+
+
+def _pinned_source(tmp_path: Path, commit: str) -> Path:
+    """이 저장소를 고정 커밋으로 clone 한 설치 소스."""
+    from _manager_home import _git
+    root = tmp_path / "pinned-source"
+    _git("clone", "--quiet", "--no-checkout", "--no-hardlinks", str(REPO), str(root))
+    _git("-C", str(root), "checkout", "--quiet", "--detach", commit)
+    assert _git("-C", str(root), "rev-parse", "HEAD").stdout.strip() == commit
+    return root
+
+
 @pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
-def test_s1_pinned_v1713_adopter_converges_by_the_third_run(
-        harness, delegate, tmp_path, t0927_legacy_source, t0927_upstream, t0951_opencode_path):
-    """v1.7.13 사본은 RUN1(옛 갱신기 배달)·RUN2(새 갱신기 완료)·RUN3(변경 0) 으로 수렴한다 (AT-001).
+@pytest.mark.parametrize("generation", sorted(_PINNED_V18_COMMITS))
+def test_pinned_v18_adopter_updates_to_package_tree_in_one_run(
+        generation, harness, tmp_path, t0927_upstream, t0951_opencode_path):
+    """v1.8.0·v1.8.1 사본은 엔진 패키지 트리(`pm_engine/`)를 한 번의 갱신으로 받는다 (T-0963 AT-002).
 
-    RUN1 은 옛 갱신기가 같은 프로세스에서 새 엔진 모듈을 부른다 — 그 호출면(50개 이름)을 이 티켓이
-    바꾸지 않았는지가 RUN1 rc 0 으로 드러난다. RUN2 는 변경이 있는 실행이라(어댑터 설정·원장·conf,
-    opencode 는 카드 렌더) 변경 0 단언은 RUN3 에 둔다."""
-    from _manager_home import _run
-    dest = tmp_path / f"v1713-{harness}"
-    _run([sys.executable, str(t0927_legacy_source / ".project_manager/tools/pm_import.py"),
+    1회차는 설치된 옛 갱신기가 엔진 코드를 옮기고 받은 엔진의 완료 프로세스가 마친다. 다음 실행은
+    변경 0 확인이다. 옛 평면 모듈 셋은 은퇴 지시로 치워지고 패키지 모듈은 상류와 바이트가 같다."""
+    from _manager_home import _run, known_ctx_env
+    source = _pinned_source(tmp_path, _PINNED_V18_COMMITS[generation])
+    dest = tmp_path / f"{generation}-{harness}"
+    _run([sys.executable, str(source / ".project_manager/tools/pm_import.py"),
           "--new", str(dest), "--harness", harness, "--fill", "manual",
-          "--from", str(t0927_legacy_source), "--upstream", str(t0927_upstream)],
-         cwd=t0927_legacy_source)
-    assert (dest / ".project_manager/tools/pm_update.py").read_bytes() == (
-        t0927_legacy_source / ".project_manager/tools/pm_update.py").read_bytes()
-    conf = dest / ".project_manager/local.conf"
-    lines = [line for line in conf.read_text(encoding="utf-8").splitlines(keepends=True)
-             if not line.startswith(("ctx.stop_pct=", "ctx.precompact_at_pct="))]
-    text = "".join(lines) + "\nctx.stop_pct=10\nctx.compact_at_pct=94\n"
-    if delegate:
-        text += _T0951_DELEGATE_PROFILES[harness]
-    conf.write_text(text, encoding="utf-8", newline="\n")
+          "--from", str(source), "--upstream", str(t0927_upstream)],
+         cwd=source, env=known_ctx_env(native_bin=dest.parent / "known-ctx-native"))
+    tools = dest / ".project_manager/tools"
+    assert (tools / "file_lock.py").is_file(), "고정 기점 설치가 옛 평면 형상이 아니다"
 
-    for stage in ("RUN1", "RUN2"):
-        run = _t0927_direct_update(dest)
-        assert run.returncode == 0, f"{stage}\n{run.stdout}\n{run.stderr}"
+    run1 = _t0927_direct_update(dest)
+    assert run1.returncode == 0, f"RUN1\n{run1.stdout}\n{run1.stderr}"
     before = _snapshot_tree(dest)
-    run3 = _t0927_direct_update(dest)
-    assert run3.returncode == 0, f"RUN3\n{run3.stdout}\n{run3.stderr}"
-    assert "변경 없음" in run3.stdout, run3.stdout
-    assert _snapshot_tree(dest) == before, "RUN3 이 트리를 바꿨다"
+    run2 = _t0927_direct_update(dest)
+    assert run2.returncode == 0, f"RUN2\n{run2.stdout}\n{run2.stderr}"
+    assert "변경 없음" in run2.stdout, run2.stdout
+    assert _snapshot_tree(dest) == before, "RUN2 가 트리를 바꿨다"
+
+    for name in _PACKAGE_RETIRED_FLAT_MODULES:
+        assert not (tools / name).exists(), name
+    package_fs = ".project_manager/tools/pm_engine/infra/fs.py"
+    assert (dest / package_fs).read_bytes() == (t0927_upstream / package_fs).read_bytes()
+    status = subprocess.run(
+        [sys.executable, str(tools / "pm_config.py"), "status", "--json"],
+        cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    assert status.returncode == 0, status.stderr
+    # 설정 레지스트리는 패키지(`pm_engine/domain/conf_schema.py`)로 옮겨 갔고 `local_conf.py` 는
+    # CLI 진입 파일로 남는다 — 관리자가 프로젝트 사본마다 부르는 `--keys --json` 이 갱신 뒤에도 돈다(T-0964).
+    assert (tools / "pm_engine/domain/conf_schema.py").is_file()
+    keys = subprocess.run(
+        [sys.executable, str(tools / "local_conf.py"), "--keys", "--json"],
+        cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    assert keys.returncode == 0, keys.stderr
+    assert keys.stdout.startswith('{"schema"'), keys.stdout[:200]
 
 
 def _t0951_engine_code_rows(source: Path) -> list[str]:
-    """상류 manifest 의 엔진 코드 행(`.project_manager/tools/` 아래 `.py`) — 출하 순서 그대로."""
+    """상류 manifest 의 엔진 코드 행(`.project_manager/tools/` 아래 `.py`) — 출하 순서 그대로.
+
+    디렉터리 행(엔진 패키지 `pm_engine`)은 그 아래 `.py` 파일들로 펼친다."""
     rows = []
     for line in (source / ".project_manager/engine.manifest").read_text(encoding="utf-8").splitlines():
         rel = line.split("#", 1)[0].split()[0] if line.split("#", 1)[0].split() else ""
-        if rel.startswith(".project_manager/tools/") and rel.endswith(".py"):
+        if not rel.startswith(".project_manager/tools/"):
+            continue
+        if rel.endswith(".py"):
             rows.append(rel)
+        elif (source / rel).is_dir():
+            rows.extend(path.relative_to(source).as_posix()
+                        for path in engine_python_files(source / rel))
     return rows
 
 
@@ -2683,7 +2567,9 @@ def test_mixed_source_tree_fails_loud(tmp_path):
     from _manager_home import _git, make_committed_source, make_pm_home
     source = make_committed_source(tmp_path / "source")
     home = make_pm_home(tmp_path / "home", upstream=source, source=source)
-    _t0951_set_engine_rev(source / ".project_manager/tools/pm_import.py", "v1.7.13")
+    # 혼합 대상은 갱신 경로가 rev 대조로 적재하는 형제다. pm_import 의 대조 짝이던 local_conf 는 패키지
+    # (`pm_engine`)로 옮겨 각인이 없다(T-0964).
+    _t0951_set_engine_rev(source / ".project_manager/tools/board.py", "v1.7.13")
     _git("-C", str(source), "commit", "-qam", "mixed engine rev")
     conf = home / ".project_manager/local.conf"
     revs_before = [line for line in conf.read_text(encoding="utf-8").splitlines()

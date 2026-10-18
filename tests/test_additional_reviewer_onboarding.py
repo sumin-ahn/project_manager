@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.cli import local_conf as local_conf_cli
+from pm_engine.domain import conf_schema
 from test_terminology import _shipped_text_surface
 
 REPO = Path(__file__).resolve().parents[1]
@@ -712,7 +714,7 @@ RETIRED_SWITCH_MAP_LINE = f'"{RETIRED_SWITCH_KEY}": None,'
 
 def _retired_switch_offenders(files):
     """출하 표면에서 삭제된 채널 스위치 키를 산 전제로 든 줄 전수."""
-    local_conf = _load("local_conf")
+    local_conf = local_conf_cli
     offenders = []
     for path in files:
         inside_generated_ledger = False
@@ -775,7 +777,7 @@ def test_the_channel_has_no_switch_at_all(board, pm_update):
     질문·경고·기본값 논쟁이 다시 자란다.
     """
     core = _additional_reviewer()
-    local_conf = _load("local_conf")
+    local_conf = conf_schema
 
     for retired in ("_is_enabled", "disabled_gate_notice",
                     "ADDITIONAL_REVIEWER_ENABLED_KEY"):

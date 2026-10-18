@@ -505,7 +505,7 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
     한다 — pm_log는 락 경로 규약과 부모 디렉토리 생성만 정한다.
     """
     mod = _load_module()
-    lock_mod = mod._load_file_lock()
+    lock_mod = mod.fs
     calls = []
     monkeypatch.setattr(
         lock_mod.os,
@@ -532,7 +532,7 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
 def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch):
     """append_log는 락 구간 *안에서* seam append를 호출한다 (직접 write 0)."""
     mod = _load_module()
-    lock_mod = mod._load_file_lock()
+    lock_mod = mod.fs
     calls = []
     monkeypatch.setattr(
         lock_mod,
@@ -551,7 +551,7 @@ def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch
 def test_append_log_locked_is_the_lock_free_inner_primitive(tmp_path, monkeypatch):
     """판정과 append를 한 외부 lock에 묶는 소비자는 inner primitive를 재락 없이 쓴다."""
     mod = _load_module()
-    lock_mod = mod._load_file_lock()
+    lock_mod = mod.fs
     calls = []
     monkeypatch.setattr(
         lock_mod,
@@ -573,7 +573,7 @@ def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
     한다 — pm_log는 경로 규약만 정한다.
     """
     mod = _load_module()
-    lock_mod = mod._load_file_lock()
+    lock_mod = mod.fs
     current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     calls = []
     monkeypatch.setattr(

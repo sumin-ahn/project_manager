@@ -98,136 +98,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 from urllib.parse import urlsplit
 
@@ -253,12 +129,8 @@ ENGINE_REV = "v1.8.1"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
-_STAMPED_SIBLINGS = frozenset({"file_lock.py", 
+_STAMPED_SIBLINGS = frozenset({
     "identity_args.py", "board.py", "worktree_pool.py", "pm_import.py",
-    # local_conf.py 는 `_load_local_conf` 가 이미 rev 대조로 로드하는 형제다. 여기 명시해야
-    # **다른 세대**를 의도적으로 여는 자리(`_source_missing_required` — 소스 checkout 의 사본)가
-    # 그 gate 아래의 명시적 우회로 읽힌다(선언 없는 무검증 로드와 구분).
-    "local_conf.py",
     # pm_relay.py 는 모델 원천 표(`MODEL_SOURCE`)와 하네스 CLI 계약의 소유자다 — 구형 사본을
     # 조용히 읽으면 안내·조회가 이 세대에 없는 값을 말한다.
     "pm_relay.py",
@@ -326,19 +198,6 @@ def _load_module(name: str, filename: str):
             raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
-
-
-def _load_file_lock():
-    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
-
-    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
-    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
-    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
-    """
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
-        verifier=_verify_engine_rev, cache=True,
-    )
 
 
 def _runtime_skill_entry(skill: str) -> str:
@@ -412,19 +271,10 @@ def _default_session(*, identity=None) -> str | None:
     return None
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _local_conf_user() -> str | None:
     """`.project_manager/local.conf` 의 `identity.user=` (없거나 OSError → None).
 
-    `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`local_conf.py`)가 하고 이 함수는
+    `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`conf_store`)가 하고 이 함수는
     키 이름과 빈값→None 관례만 소유한다(`board.local_config().get("identity.user")` 와 동일 의미).
     부재/읽기실패는 None(폴백)이고, 구표기 키 잔존은 소비 지점 계약대로 fail-loud 다.
     """
@@ -491,7 +341,7 @@ def _areas_rows() -> list[dict[str, str]]:
     areas_file = (board_dir / "areas.md" if (board_dir / "tickets").is_dir()
                   else REPO / ".project_manager" / "areas.md")
     try:
-        lines = _load_file_lock().read_text_shared(areas_file, encoding="utf-8").splitlines()
+        lines = fs.read_text_shared(areas_file, encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return []
     header: list[str] = []
@@ -557,7 +407,7 @@ def _local_conf_value(key: str) -> str | None:
     `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
     """
     conf_file = REPO / ".project_manager" / "local.conf"
-    return _load_local_conf().load_checked(conf_file).get(key)
+    return conf_store.load_checked(conf_file).get(key)
 
 
 def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
@@ -972,7 +822,7 @@ def _read_protected_sidecar(repo: str, *, worktree_pool=None) -> list[str] | Non
     if path is None or not path.is_file():
         return None
     try:
-        text = _load_file_lock().read_text_shared(path, encoding="utf-8")
+        text = fs.read_text_shared(path, encoding="utf-8")
     except OSError:
         return None
     return [line.strip() for line in text.splitlines() if line.strip()]
@@ -1460,7 +1310,7 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
         return False
     try:
         existing = (
-            _load_file_lock().read_text_shared(exclude, encoding="utf-8")
+            fs.read_text_shared(exclude, encoding="utf-8")
             if exclude.is_file() else ""
         )
         if any(line.strip() == TICKET_COPY_POOL_IGNORE_RULE
@@ -2444,13 +2294,7 @@ def _write_machine_line(text: str) -> None:
     되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를 직접 쓴다
     (board `_write_machine_line` 동형).
     """
-    console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-        cache=True,
-    )
-    console_encoding.write_machine_line(text)
+    console.write_machine_line(text)
 
 
 class RemoteCheckError(RuntimeError):
@@ -2629,39 +2473,48 @@ def _status_json_repos() -> list[dict]:
 def _source_missing_required(source_root: Path, values: dict) -> list[str]:
     """**소스** 레지스트리 기준 필수 누락 — "갱신하면 필요" 축.
 
-    비교 기준은 소스 checkout 의 `local_conf.py` 다(이 사본의 선언이 아니라 갱신하면 오게 될
-    선언). rev 대조는 하지 않는다 — 새 세대를 읽는 것이 목적이라 `allow_unverified` 로 연다.
-    소스에 그 파일이 없으면 예외가 그대로 올라간다(비교 못 하는 상태를 빈 목록으로 접지 않는다).
+    비교 기준은 소스 checkout 의 레지스트리다(이 사본의 선언이 아니라 갱신하면 오게 될 선언).
+    이 프로세스에는 이 사본의 `pm_engine` 이 이미 적재돼 있어 소스 패키지를 import 하면 이 사본
+    선언을 읽게 된다. 그래서 소스의 진입 파일 `local_conf.py --keys --json` 을 하위 프로세스로
+    돌려 그 키 표에서 `kind == "key"` 이고 `required` 가 참인 키를 선언 순서로 모으고 `values` 에
+    없는 것을 돌려준다(`conf_schema.missing_required` 와 같은 판정). 하위 프로세스 실패·JSON 파싱
+    실패·필드 부재는 그대로 올라간다(비교 못 하는 상태를 빈 목록으로 접지 않는다).
 
-    **신뢰 경계**: 이 호출은 소스 트리의 Python 을 import 해 **실행**한다 — 채택자가
+    **신뢰 경계**: 이 호출은 소스 트리의 Python 을 **실행**한다 — 채택자가
     `upstream.path` 로 등록한 checkout(URL 이면 이 실행이 clone/fetch 한 캐시) 한정이고,
     그 트리의 엔진은 `pm-config update` 가 이미 복사·실행하는 것과 같은 경계다.
     """
-    module = _load_module_from_path(
-        Path(source_root) / ".project_manager" / "tools" / "local_conf.py",
-        "local_conf.py", allow_unverified=True,
+    entry = Path(source_root) / ".project_manager" / "tools" / "local_conf.py"
+    result = subprocess.run(
+        [sys.executable, str(entry), "--keys", "--json"],
+        capture_output=True, text=True, encoding="utf-8",
     )
-    return list(module.missing_required(values))
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"소스 키 표를 읽지 못했다 ({entry} --keys --json · rc={result.returncode}): "
+            f"{result.stderr.strip()}")
+    document = json.loads(result.stdout)
+    return [row["key"] for row in document["keys"]
+            if row["kind"] == "key" and row["required"] and row["key"] not in values]
 
 
 def _status_json_conf(pm_import_mod, source_root: Path | None) -> dict:
     """설정 완전성 — 필수 누락·폐지 키·미지 키·표준과 다른 값·최신 기준 누락 다섯 목록.
 
-    판정은 `local_conf` 레지스트리 하나가 낸다(값 해석 사본 0). 압축 한도(`ctx_budget`)는 기록과
+    판정은 `conf_schema` 레지스트리 하나가 낸다(값 해석 사본 0). 압축 한도(`ctx_budget`)는 기록과
     도구 설정 파일을 함께 읽는 `pm_import.ctx_budget_status` 가 낸다. `missing_for_latest` 는 소스
     checkout 이 해소된 호출(`--from` 또는 `--with-adapters`)에서만 채워지고 그 밖에는 null 이다.
     """
-    local_conf = _load_local_conf()
-    result = local_conf.load(REPO / ".project_manager" / "local.conf")
+    result = conf_store.load(REPO / ".project_manager" / "local.conf")
     values = result.values
     return {
         "ctx_budget": pm_import_mod.ctx_budget_status(REPO, values),
-        "missing_required": list(local_conf.missing_required(values)),
+        "missing_required": list(conf_schema.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
                    for key, replacement in sorted(result.legacy.items())],
         "unknown": list(result.unknown),
         "nonstandard": [{"key": key, "value": value, "default": default}
-                        for key, (value, default) in sorted(local_conf.nonstandard(values).items())],
+                        for key, (value, default) in sorted(conf_schema.nonstandard(values).items())],
         "missing_for_latest": (None if source_root is None
                                else _source_missing_required(source_root, values)),
     }
@@ -4187,7 +4040,7 @@ def cmd_upstream(
         if not local_conf.is_file():
             print(f"upstream: (local.conf 없음 — {local_conf})")
             return 0
-        conf = pm_import_mod._parse_conf_keys(_load_file_lock().read_text_shared(local_conf, encoding="utf-8"))
+        conf = pm_import_mod._parse_conf_keys(fs.read_text_shared(local_conf, encoding="utf-8"))
         value = conf.get("upstream.path", "").strip()
         if not value:
             print("upstream: (미등록) — `pm-config upstream set <url|path>` 로 설정하라.")
@@ -5025,7 +4878,8 @@ def _print_delegate_model_guidance(
         if len(models) > len(shown):
             print(f"      (앞 {len(shown)}개만 표시 — 전량은 {how_to_check})")
 
-    values = conf if conf is not None else _load_local_conf()
+    values = (conf if conf is not None
+              else conf_store.load_checked(REPO / ".project_manager" / "local.conf"))
     aliases = _model_alias_members(values or {})
     if aliases:
         print("  이 환경에서 쓰는 모델 (`delegate.model_alias` 선언 멤버):")
@@ -5670,12 +5524,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _main(argv: list[str] | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
 
     raw = list(sys.argv[1:] if argv is None else argv)
 
@@ -5740,12 +5589,7 @@ def _main(argv: list[str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
     try:
-        _console_encoding = _load_module_from_path(
-            Path(__file__).resolve().with_name("console_encoding.py"),
-            "console_encoding.py",
-            verifier=_verify_engine_rev,
-        )
-        _console_encoding.configure_console_utf8()
+        console.configure_console_utf8()
         return _main(argv)
     except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
         if _is_engine_rev_skew(exc):

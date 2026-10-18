@@ -22,6 +22,16 @@
 #    세대 정합을 따로 검사한다.
 
 # ── 도구 (순수 엔진) ─────────────────────────────────────────────
+# pm_engine: 엔진 구현 패키지(디렉터리 행 · 하위 파일 전부 동기). 평면 엔진 파일 행보다 먼저 둔다 —
+#   갱신기는 이 행을 먼저 전달한다(pm_update.read_manifest 정렬). domain/conf_schema(local.conf 키
+#   레지스트리·설정 어휘·구표기 판정)·infra/console(전 CLI 공용 콘솔 인코딩)·infra/fs(배타 파일락·
+#   원자 추가/교체·공유 읽기·강제 삭제·소유자 전용 권한)·infra/repo_files(git 우선 repo 소유 파일
+#   열거·경로 적재기 load_module)·infra/conf_store(local.conf·압축 한도 기록 읽기)·cli/local_conf
+#   (키 표·JSON·어댑터 생성 블록 출력).
+.project_manager/tools/pm_engine
+# pm-retired-path: .project_manager/tools/file_lock.py -> .project_manager/tools/pm_engine/infra/fs.py
+# pm-retired-path: .project_manager/tools/console_encoding.py -> .project_manager/tools/pm_engine/infra/console.py
+# pm-retired-path: .project_manager/tools/repo_owned_files.py -> .project_manager/tools/pm_engine/infra/repo_files.py
 .project_manager/tools/board.py
 # engine_rev: 엔진 사본 rev 스탬프 단일 진실 — sibling 로더가 로드한 형제 모듈의
 #   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
@@ -29,9 +39,6 @@
 .project_manager/tools/engine_rev.py
 # python_floor: 실제 `py <script>` shebang 디스패치와 동형인 Python 3.11 하한 probe.
 .project_manager/tools/python_floor.py
-# console_encoding: 전 CLI 공용 Windows codepage 65001 + UTF-8 스트림 부트스트랩.
-#   신규 __main__ 진입점도 정적 전수 가드가 이 helper 호출을 강제한다.
-.project_manager/tools/console_encoding.py
 # domain: v2 도메인 지식 레이어 엔진 (covers 파서·touches∩covers·staleness·freshness lint·capture). domain/ 페이지는 인스턴스 소유(manifest 밖)
 .project_manager/tools/domain.py
 .project_manager/tools/pm_bootstrap.py
@@ -69,21 +76,9 @@
 # repo_coordinates: PM-home ticket touches(`work/<repo>_<N>/...`)를 검증된 workspace/lease와
 #   일치할 때만 소유-repo 상대 좌표로 바꾸는 공용 normalizer. 불일치는 fail-loud.
 .project_manager/tools/repo_coordinates.py
-# repo_owned_files: git 우선 repo 소유 파일 열거 공용 seam. tracked_only/owned 모드를 선언한다.
-#   owned는 git 실패 시 폴백, tracked_only는 비저장소(rc 128)/git 부재만 loud 경고 후 폴백하고
-#   옵션 미지원(rc 129)·손상 index·unmerged는 누출 방지를 위해 실패한다.
-.project_manager/tools/repo_owned_files.py
-# file_lock: 배타 파일락 + O_APPEND 원자 append 공용 seam — POSIX flock / Windows msvcrt /
-#   무락 폴백(프리미티브 부재 시에만·있는데 실패면 전파) 단일 구현. 소비자 6: board(board.lock·
-#   board-git.lock·append)·pm_log(log.lock·append)·pm_relay(raw 장부 .lock)·pm_handoff(대시보드
-#   .lock)·worktree_pool(리스 장부 .lock)·additional_reviewer(라운드 장부 .lock). 락 파일 경로 규약은
-#   각 도구 소유. 등록 필수(미등록=전파 안 됨).
-.project_manager/tools/file_lock.py
-# local_conf: local.conf 파싱/구표기 판정 공용 seam — `KEY=value`·`#` 주석·중복키 last-wins·
-#   미존재/IO 실패는 빈 맵. 구표기(flat) 키가 남아 있으면 소비 시점에 fail-loud 하고 키마다
-#   신표기를 처방한다(pm_update/pm_import 의 파일 반영 경로만 비차단 안내). 소비자 9:
-#   board·additional_reviewer·pm_delegate·pm_update·pm_import·pm_config·pm_bootstrap·ticket_finish·
-#   pm_handoff. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
+# local_conf: CLI 진입 파일(--keys·--keys --json·--render-adapter-block), 구현은 pm_engine
+#   (domain/conf_schema·infra/conf_store·cli/local_conf). 관리자가 프로젝트 사본마다 `--keys --json` 으로
+#   부른다.
 .project_manager/tools/local_conf.py
 # delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open. 래퍼 delegate_channel_guard_hook.sh 는 어댑터층(ADAPTER_HOOK_SET)
 .project_manager/tools/delegate_channel_guard.py

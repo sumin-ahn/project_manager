@@ -25,6 +25,7 @@ import ast
 import importlib.util
 from collections import Counter
 from pathlib import Path
+from _engine_tree import engine_python_files
 
 
 _ALLOWED: set[tuple[str, str, str, str]] = {
@@ -168,7 +169,7 @@ def _scan_text_writes() -> tuple[
 ]:
     calls: list[tuple[str, int, str, str, bool]] = []
     unresolved_modes: list[tuple[str, int, str, str]] = []
-    for path in sorted(TOOLS.glob("*.py")):
+    for path in engine_python_files(TOOLS):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         fdopen_aliases, os_aliases = _import_aliases(tree)
         function_names = _enclosing_function_names(tree)

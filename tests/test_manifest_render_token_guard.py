@@ -92,7 +92,8 @@ def pm_update():
 
 @pytest.fixture(scope="module")
 def repo_files():
-    return _load("repo_owned_files")
+    from pm_engine.infra import repo_files as module
+    return module
 
 
 @pytest.fixture(scope="module")
@@ -120,7 +121,7 @@ def _flavor_manifests(pm_import) -> dict[str, Path]:
 def _bare_entry_files(pm_update, repo_files, manifest_path: Path) -> list[tuple[str, Path]]:
     """(dest relpath, source 절대경로) — bare 등재(=`@render` 아님) 항목이 나르는 파일 전수.
 
-    디렉토리 항목은 canonical seam(`repo_owned_files`)으로 펼친다 — 이 판정의 대상은 "채택자가
+    디렉토리 항목은 canonical seam(`pm_engine.infra.repo_files`)으로 펼친다 — 이 판정의 대상은 "채택자가
     실제로 받는 repo 추적 파일" 이라 출하 인벤토리와 같은 채널이어야 한다(자체 tree-walk 신설 0).
     source 부재(`@target-owned` 등)는 빈 목록이라 자연 제외된다.
 

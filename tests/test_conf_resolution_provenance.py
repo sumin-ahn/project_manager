@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from _engine_tree import engine_python_files
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -712,8 +713,8 @@ def test_additional_reviewer_raw_records_conf_and_profile(external, tmp_path):
 
 def test_find_repo_root_tool_inventory_and_scope_are_explicit():
     found = {
-        path.name
-        for path in TOOLS.glob("*.py")
+        path.relative_to(TOOLS).as_posix()
+        for path in engine_python_files(TOOLS)
         if "def _find_repo_root()" in path.read_text(encoding="utf-8")
     }
     assert found == {

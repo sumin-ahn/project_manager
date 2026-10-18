@@ -21,6 +21,7 @@ import threading
 from pathlib import Path
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.infra import fs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -131,7 +132,6 @@ def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
     한 구간" 계약과 같은 자리다.
     """
     pm_update = _load_engine("pm_update")
-    file_lock = _load_engine("file_lock")
     dest = tmp_path / "home"
     ledger = _seed_ledger(dest, [
         {"slot": ".", "session": "home"},
@@ -143,7 +143,7 @@ def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
     dropped: list[int] = []
 
     def holder():
-        with file_lock.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
+        with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
             held.set()
             release.wait(_RELEASE_WAIT_SECONDS)
 

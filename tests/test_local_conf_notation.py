@@ -32,6 +32,10 @@ from pathlib import Path
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from _engine_tree import engine_python_files
+from pm_engine.cli import local_conf as local_conf_cli
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -46,7 +50,7 @@ def _load(name: str, alias: str | None = None):
 
 @pytest.fixture
 def conf_module():
-    return _load("local_conf")
+    return conf_schema
 
 
 def _write_conf(root: Path, text: str) -> Path:
@@ -81,13 +85,13 @@ _PARSE_TABLE = (
 def test_parsing_semantics_are_one_table(conf_module, tmp_path, text, expected):
     """파싱 의미는 이 표 하나다 — 소비 모듈이 늘어도 같은 텍스트는 같은 dict 로 해소된다."""
     path = _write_conf(tmp_path, text)
-    assert conf_module.load(path).values == expected
+    assert conf_store.load(path).values == expected
     assert conf_module.parse(text) == expected
 
 
 def test_missing_conf_is_an_empty_result_not_an_error(conf_module, tmp_path):
     """conf 부재는 정상 형상이다 — 새 clone 이 첫 명령에서 터지지 않는다."""
-    assert conf_module.load(tmp_path / "없는" / "local.conf").values == {}
+    assert conf_store.load(tmp_path / "없는" / "local.conf").values == {}
 
 
 def test_unreadable_conf_splits_by_caller_policy(conf_module, tmp_path):
@@ -99,12 +103,12 @@ def test_unreadable_conf_splits_by_caller_policy(conf_module, tmp_path):
     path = _write_conf(tmp_path, "")
     path.write_bytes(b"\xff\xfe\x00")            # UTF-8 로 못 읽는 바이트
 
-    assert conf_module.load(path).values == {}            # fail-soft 진입
-    assert conf_module.load_checked(path) == {}
+    assert conf_store.load(path).values == {}            # fail-soft 진입
+    assert conf_store.load_checked(path) == {}
     with pytest.raises(UnicodeError):                      # 전파 진입
-        conf_module.load_strict(path)
+        conf_store.load_strict(path)
     with pytest.raises(UnicodeError):
-        conf_module.load_checked_readable(path)
+        conf_store.load_checked_readable(path)
 
 
 def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
@@ -179,12 +183,12 @@ def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, 
 def test_non_blocking_legacy_keys_are_named_but_do_not_block(conf_module, tmp_path):
     """읽는 코드가 이미 0인 구키는 안내만 받는다 — 무해한 한 줄이 전 명령을 세우지 않는다."""
     path = _write_conf(tmp_path, "session=pm\nprefix=T\ntest.cmd=pytest -q\n")
-    result = conf_module.load(path)
+    result = conf_store.load(path)
 
     assert set(result.legacy) == {"session", "prefix"}
     assert conf_module.blocking_legacy(result.legacy) == {}
     conf_module.assert_no_legacy(result)                      # raise 하지 않는다
-    assert conf_module.load_checked_readable(path)["test.cmd"] == "pytest -q"
+    assert conf_store.load_checked_readable(path)["test.cmd"] == "pytest -q"
 
 
 def test_pm_update_apply_delivers_engine_files_on_a_legacy_conf(tmp_path, capsys):
@@ -246,7 +250,7 @@ def test_the_exception_text_points_at_adopter_owned_files(tmp_path):
     도구가 여기서 멈추면 이 예외가 채택자가 보는 유일한 안내다 — 교체 안내에만 붙어 있으면
     `pm-update` 를 다시 돌리기 전까지 그 파일이 stale 이라는 사실을 어디서도 듣지 못한다.
     """
-    conf_module = _load("local_conf", "pointer_local_conf")
+    conf_module = conf_schema
     _write_conf(tmp_path, _LEGACY_CONF)
     board = _load("board", "pointer_board")
     board.REPO = tmp_path
@@ -287,7 +291,7 @@ def test_the_collection_floor_axis_is_named_as_removed_not_renamed(conf_module, 
     assert [key for key in conf_module.KNOWN_KEYS if key.startswith("regression.")] == []
 
     path = _write_conf(tmp_path, "test.cmd=pytest -q\nregression.min_collected=7000\n")
-    result = conf_module.load(path)
+    result = conf_store.load(path)
     assert result.legacy == {}                      # dot 표기는 구표기가 아니다
     conf_module.assert_no_legacy(result)            # raise 하지 않는다(차단 0)
     assert "regression.min_collected" in result.unknown   # advisory 로만 지목된다
@@ -298,7 +302,7 @@ def test_the_collection_floor_axis_is_named_as_removed_not_renamed(conf_module, 
 
 def _engine_sources() -> dict[Path, str]:
     return {path: path.read_text(encoding="utf-8")
-            for path in sorted(TOOLS.glob("*.py"))}
+            for path in engine_python_files(TOOLS)}
 
 
 def test_no_legacy_key_literal_survives_in_the_engine(conf_module):
@@ -315,7 +319,7 @@ def test_no_legacy_key_literal_survives_in_the_engine(conf_module):
         r"[\"'](" + "|".join(re.escape(key) for key in replaced) + r")[\"']")
     offenders: list[str] = []
     for path, source in _engine_sources().items():
-        if path.name == "local_conf.py":
+        if path.name == "conf_schema.py":
             continue                                  # 매핑표 자신이 이 키들을 소유한다
         offenders.extend(f"{path.name}: {key}" for key in lookups.findall(source))
     assert offenders == [], offenders
@@ -354,7 +358,7 @@ _NOTATION_TEXT_SUFFIXES = frozenset({".py", ".md", ".sh", ".cmd", ".cjs", ".js",
 _NOTATION_SKIP_PARTS = frozenset({"__pycache__", ".local", ".git"})
 # 구키를 **의도적으로 지목**하는 자리 — 그 밖은 신표기여야 한다.
 _NOTATION_ALLOWLIST = (
-    ".project_manager/tools/local_conf.py",   # 전수 매핑표·안내 문구의 소유자(사본 포함)
+    ".project_manager/tools/pm_engine/domain/conf_schema.py",   # 전수 매핑표·안내 문구의 소유자(사본 포함)
     "CHANGELOG.md",                           # 릴리즈 이력 — 그 시점의 이름을 보존한다
 )
 # 가드 시야 밖(대조에서 제외) — 엔진이 생성하는 wiki 산출물(추적 대상 아님).
@@ -453,8 +457,7 @@ def test_invariant_one_notation_is_dot_only(conf_module):
 
 def test_invariant_two_per_harness_has_a_single_syntax(conf_module):
     """불변식 2 — per-harness 지정 문법은 `harness.<name>.<속성>` 하나다."""
-    relay = _load("pm_relay", "notation_relay")
-    for harness in relay.HARNESS_CHOICES:
+    for harness in conf_schema.HARNESS_CHOICES:
         assert conf_module.unknown_keys(
             {f"harness.{harness}.ctx_window_tokens": "1"}) == ()
         # suffix 표기는 신키가 아니라 **구표기**로 판정된다 — 두 문법 공존이 없다.
@@ -477,11 +480,10 @@ def test_adapter_parsers_read_the_new_per_harness_key(conf_module):
         REPO / "templates/opencode/.opencode/pm_orch_opencode.py",
         REPO / "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
     )
-    relay = _load("pm_relay", "adapter_notation_relay")
     for path in adapters:
         text = path.read_text(encoding="utf-8")
         # suffix 표기는 **차단 대상 이름**으로만 등장한다(조회 자리 0) — 그 선언은 엔진 생성분이다.
-        for harness in relay.HARNESS_CHOICES:
+        for harness in conf_schema.HARNESS_CHOICES:
             assert f"ctx_window_tokens_{harness}" not in text, path
         assert conf_module.LEGACY_SUFFIX_PREFIX in text, path      # 차단 접두는 있어야 한다
         assert "ctx_window_tokens" in text, path
@@ -503,7 +505,7 @@ def test_migration_notice_splits_what_update_moves_from_what_you_decide(
     같은 값이 같은 하네스의 새 이름으로 갈 뿐이라 그 변명이 가리키던 위험이 없다.
     """
     path = _write_conf(tmp_path, _LEGACY_CONF + "reviewer_cmd=codex exec\n")
-    lines = conf_module.migration_notice(conf_module.load(path))
+    lines = conf_module.migration_notice(conf_store.load(path))
     text = "\n".join(lines)
 
     assert conf_module.DELEGATE_DEFAULT_CHANGE_NOTICE in lines[0]
@@ -522,7 +524,7 @@ def test_migration_notice_splits_what_update_moves_from_what_you_decide(
 def test_default_change_notice_is_unconditional(conf_module, tmp_path):
     """구키가 아예 없는 채택자에게도 기본값 변경 1줄은 나간다 — fail-loud 가 못 잡는 형상이다."""
     path = _write_conf(tmp_path, "test.cmd=pytest -q\n")
-    lines = conf_module.migration_notice(conf_module.load(path))
+    lines = conf_module.migration_notice(conf_store.load(path))
 
     assert lines == [conf_module.DELEGATE_DEFAULT_CHANGE_NOTICE]
     assert "delegate.enabled=false" in lines[0]                # 끄는 법을 함께 말한다
@@ -648,7 +650,7 @@ def test_the_registry_documents_the_keys_the_conf_no_longer_explains(conf_module
     for key in conf_module.KNOWN_KEYS:
         spec = conf_module.key_spec(key)
         assert spec is not None and spec.description.strip(), key
-    table = conf_module.render_key_table()
+    table = local_conf_cli.render_key_table()
     for key in conf_module.KNOWN_KEYS:
         assert key in table, key
     for axis in ("additional_reviewer.", "upstream.", "harness.", "delegate."):
@@ -695,7 +697,7 @@ def test_no_surface_calls_the_delegate_switch_a_consent_axis():
         REPO / ".project_manager/wiki/pm_playbook.md",
         REPO / "templates/codex/.codex/config.toml",
         *_DELEGATE_CARDS,
-        *sorted(TOOLS.glob("*.py")),
+        *engine_python_files(TOOLS),
     ]
     offenders: list[str] = []
     for path in surfaces:
@@ -818,7 +820,7 @@ def test_adapter_parser_stops_on_legacy_conf_before_resolving_values(
 
     assert blocked.returncode != 0, blocked.stdout
     assert blocked.stdout.strip() == "", "값 해소 뒤에 멈췄다(기본값이 이미 쓰였다)"
-    assert conf_module.adapter_stop_message(
+    assert local_conf_cli.adapter_stop_message(
         tmp_path / ".project_manager" / "local.conf",
         sorted(_ADAPTER_LEGACY_KEYS)) in blocked.stderr
 
@@ -846,7 +848,7 @@ def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
 
     assert blocked.returncode != 0, blocked.stdout
     assert blocked.stdout.strip() == ""
-    assert conf_module.adapter_stop_message(
+    assert local_conf_cli.adapter_stop_message(
         tmp_path / ".project_manager" / "local.conf",
         sorted(_ADAPTER_LEGACY_KEYS)) in blocked.stderr
 
@@ -866,5 +868,5 @@ def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
 def test_adapter_blocked_key_block_is_generated_not_hand_copied(conf_module, relpath):
     """각 파서가 품은 차단 키 선언이 엔진 생성 산출과 **글자 단위로** 같다(사본 drift 0)."""
     style = {".py": "python", ".cjs": "js"}[Path(relpath).suffix]
-    assert conf_module.render_adapter_block(style) in (
+    assert local_conf_cli.render_adapter_block(style) in (
         REPO / relpath).read_text(encoding="utf-8")

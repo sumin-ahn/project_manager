@@ -41,201 +41,24 @@ import uuid
 from pathlib import Path
 from typing import Iterable, Iterator, NamedTuple, Protocol, TextIO
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, fs  # noqa: E402
 
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
 ENGINE_REV = "v1.8.1"
 
 
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-        )
-        err._engine_rev_skew = True
-        raise err
-
-
-def _require_engine_sibling(path: Path, filename: str) -> None:
-    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
-
-    부재는 raw `FileNotFoundError`로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
-    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew로 표출한다
-    (board.py `_require_engine_sibling` 동형·self-contained 복제).
-    """
-    if path.exists():
-        return
-    err = RuntimeError(
-        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
-        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
-        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-    )
-    err._engine_rev_skew = True
-    raise err
-
-
-def _load_file_lock():
-    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/에서 경로 로드한다.
-
-    장부 락 경로(읽기·쓰기 모두 이 락을 지난다)에서만 지연 로드한다 — 회전 루프(supervisor)와
-    driver import 경로는 이 seam에 의존하지 않게 두려는 것이다. 로드 실패는 흡수하지 않고(fail-loud) 캐시하되,
-    중앙 loader가 소비 때마다 baked rev를 재검증하므로 사본 skew는 계속 표출된다.
-    """
-    lock_path = Path(__file__).resolve().parent / "file_lock.py"
-    _require_engine_sibling(lock_path, "file_lock.py")
-    return _load_module_from_path(
-        lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
-def _load_ctx_leaf():
-    path = Path(__file__).resolve().with_name("local_conf.py")
-    _require_engine_sibling(path, "local_conf.py")
-    return _load_module_from_path(path, "local_conf.py", verifier=_verify_engine_rev, cache=True)
-
-
 def ctx_budget(root, harness, session_model):
     """relay·훅이 쓰는 (적용 한도 E, 압축 임박 경고 %, 모델 불일치 경고 또는 None).
 
-    압축 한도 기록 부재·손상·입력 불일치는 `local_conf.CtxBudgetError` 로 올린다(기본값 대체 없음).
+    압축 한도 기록 부재·손상·입력 불일치는 `conf_schema.CtxBudgetError` 로 올린다(기본값 대체 없음).
     회전 임계가 bootstrap 상한 이하면 `validate_relay_budget` 이 멈춘다."""
-    leaf = _load_ctx_leaf()
-    values = leaf.load_checked(Path(root) / ".project_manager" / "local.conf")
-    budget = leaf.read_ctx_budget(root, values, harness, session_model)
+    values = conf_store.load_checked(Path(root) / ".project_manager" / "local.conf")
+    budget = conf_store.read_ctx_budget(root, values, harness, session_model)
     validate_relay_budget(budget["E"], budget["precompact_at_pct"])
     return budget["E"], budget["precompact_at_pct"], budget["warning"]
 
@@ -453,10 +276,10 @@ def _raw_lock_path(ledger_path: Path) -> Path:
 def _raw_ledger_lock(ledger_path: Path) -> Iterator[None]:
     """장부 read-modify-write를 배타 파일락으로 직렬화한다.
 
-    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `file_lock` seam이 소유하고
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam이 소유하고
     락 경로 규약(장부 옆 `.lock`)과 권한(0o600)만 이 도구가 정한다.
     """
-    with _load_file_lock().exclusive_file_lock(
+    with fs.exclusive_file_lock(
         _raw_lock_path(ledger_path), mode=0o600,
     ):
         yield
@@ -466,7 +289,7 @@ def _read_raw_ledger(ledger_path: Path) -> dict:
     """장부 부재만 빈 장부로 보고 손상은 fail-loud한다."""
     if not ledger_path.exists():
         return {"version": RAW_LEDGER_VERSION, "records": []}
-    data = json.loads(_load_file_lock().read_text_shared(ledger_path, encoding="utf-8"))
+    data = json.loads(fs.read_text_shared(ledger_path, encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("records"), list):
         raise ValueError(f"raw 장부 형식 오류: {ledger_path}")
     return data
@@ -482,7 +305,7 @@ def _write_raw_ledger(ledger_path: Path, ledger: dict) -> None:
         fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
-        _load_file_lock().atomic_replace(tmp, ledger_path)
+        fs.atomic_replace(tmp, ledger_path)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -1066,31 +889,9 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
 # 안전하게 deep-import 할 수 있다 — additional_reviewer 는 pm_delegate 를 import 하지 않는다(역방향
 # deep-import 가 이미 있어 순환이 된다).
 
-HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
 # 권한축 — write(편집 가능) / read(읽기 전용). 역할이 아니라 **축**이 드라이버 플래그를 정한다.
 WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
 READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
-
-# reasoning 드라이버별 정적 허용집합 — (codex-cli 0.145.0·claude 2.1.218). 허용집합 밖 지정은
-# fail-loud(조용한 무시/강등 금지):
-#   · codex(`-c model_reasoning_effort`): low/medium/high/xhigh/max — 0.145.0 xhigh 실측 수용(exec
-#     앞/뒤 위치 무관 rc=0). `max` 는 추가 리뷰어 기본 프로필(gpt-5.6-sol)이 쓰는 ladder 상단이며,
-#     codex 는 미지원값을 provider 로 넘기지 않고 CLI 에서 세우므로 허용집합에 명시 등재한다.
-#   · claude(`--effort`): low/medium/high/xhigh/max — claude CLI 가 미지원값에 "Valid values: low,
-#     medium, high, xhigh, max" 경고를 뱉어 **CLI-authoritative 실측**.
-#   opencode 는 이 표에 없다. 추론 강도(카드 `variant`·cross `--variant`)는 그 모델의 `variants` 키
-#   중 하나여야 적용되고, 없는 이름은 오류 없이 버려진다(1.18.5·1.18.34 실행 파일 판독). 모델마다
-#   variants 가 다르므로(없음·low/medium/high 등) 허용값은 정적 표가 아니라 모델 목록 조회
-#   (`opencode models --verbose`)의 `variants` 에서 얻는다 — `PER_MODEL_REASONING_HARNESSES`·
-#   `reasoning_allowed`.
-#   값이 **tuple 리터럴**인 것은 형식이 아니라 계약이다: 설정 키 레지스트리가 이 선언을 소스
-#   텍스트로(`ast.literal_eval`) 읽어 설정 화면의 선택지를 만든다 — `frozenset({...})` 는 Call
-#   노드라 읽히지 않고, 그 실패는 fail-soft 라 선택지가 조용히 빈 목록이 된다. 순서는 ladder 순이다.
-REASONING_ALLOWED: dict[str, tuple[str, ...]] = {
-    "codex": ("low", "medium", "high", "xhigh", "max"),
-    "claude": ("low", "medium", "high", "xhigh", "max"),
-}
-
 
 class ModelSource(NamedTuple):
     """하네스별 **모델 값의 원천** 선언 — 목록을 엔진에 박지 않고 어디서 읽는지만 적는다.
@@ -1434,9 +1235,9 @@ class HarnessContractError(RuntimeError):
 
 def validate_harness(harness: str) -> str:
     """지원 하네스만 통과시킨다(조용한 폴백 금지·명시 등록 요구)."""
-    if harness not in HARNESS_CHOICES:
+    if harness not in conf_schema.HARNESS_CHOICES:
         raise HarnessContractError(
-            f"미지원 harness {harness!r} — 지원: {', '.join(HARNESS_CHOICES)}. "
+            f"미지원 harness {harness!r} — 지원: {', '.join(conf_schema.HARNESS_CHOICES)}. "
             "조용한 폴백 금지(명시 등록 요구)."
         )
     return harness
@@ -1444,7 +1245,7 @@ def validate_harness(harness: str) -> str:
 
 # 정적 허용값이 없는 하네스 — 추론 허용값을 모델 목록 조회의 `variants` 에서 얻는다(파생·이름 리터럴 0).
 PER_MODEL_REASONING_HARNESSES: tuple[str, ...] = tuple(
-    name for name in HARNESS_CHOICES if name not in REASONING_ALLOWED)
+    name for name in conf_schema.HARNESS_CHOICES if name not in conf_schema.REASONING_ALLOWED)
 
 
 def normalize_reasoning(value: str | None) -> str | None:
@@ -1463,7 +1264,7 @@ def reasoning_allowed(
     내지 않으면 판정할 수 없으므로 `HarnessContractError` 다(조회 실패도 그대로 올라간다).
     """
     validate_harness(harness)
-    static = REASONING_ALLOWED.get(harness)
+    static = conf_schema.REASONING_ALLOWED.get(harness)
     if static is not None:
         return static
     source = MODEL_SOURCE[harness]
@@ -2020,17 +1821,6 @@ CLOUD_WALL_TIMEOUT_SEC = 3600.0   # 관측 최대 완주(1429.1s)의 2.5배 — 
 LOCAL_GPU_IDLE_TIMEOUT_SEC = 5400.0    # 1.5시간
 LOCAL_GPU_WALL_TIMEOUT_SEC = 14400.0   # 4시간
 
-# ── 드라이버 진행-신호 능력 선언 (분기 특례가 아니라 테이블) ────────────────────────
-# 무진행 판정은 "드라이버가 살아있음을 스트림으로 알릴 수 있는가"에만 의존한다. 하니스별 if 분기를
-# 만들지 않고 **능력을 선언**한다 — 신호를 못 내는 드라이버가 생기면 선언만 바꾸면 된다.
-PROGRESS_SIGNAL_EVENT_STREAM = "event-stream"  # 줄 단위 이벤트(codex --json·opencode --format json·claude stream-json)
-PROGRESS_SIGNAL_PLAINTEXT = "plaintext"        # 평문 증분(codex exec 기본 — 진행 로그가 stderr 로 흐름)
-PROGRESS_SIGNAL_NONE = "none"                  # 종료 시 단일 덩어리 — 무진행 판정 불가 → 벽시계 유지
-
-PROGRESS_SIGNAL_KINDS: frozenset[str] = frozenset(
-    {PROGRESS_SIGNAL_EVENT_STREAM, PROGRESS_SIGNAL_PLAINTEXT, PROGRESS_SIGNAL_NONE}
-)
-
 # 호출층 Bash 상한을 관측할 수 있는 세션 축의 단일 선언. 공개 상한이 없는 codex는 None으로
 # 남기며, 그 자체는 advisory 대상이 아니다.
 HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
@@ -2051,7 +1841,7 @@ class HarnessProfile(NamedTuple):
     "하네스별 특례 분기 금지"의 금지 대상은 *코드 분기*이고, 드라이버별 *선언된 값*은 이 테이블의
     존재 이유다. 코드가 갈리면(하네스 이름으로 판정 경로가 바뀌면) 그건 위반이다."""
 
-    progress_signal: str      # PROGRESS_SIGNAL_* — 무진행 판정 가능 여부
+    progress_signal: str      # conf_schema.PROGRESS_SIGNAL_* — 무진행 판정 가능 여부
     startup_watchdog: bool    # 첫-stdout-이벤트 창 + 유한 재시도 적용 여부
     idle_timeout: float       # 무진행 상한(주 판정·초)
     wall_timeout: float       # 벽시계 백스톱(초)
@@ -2059,13 +1849,13 @@ class HarnessProfile(NamedTuple):
 
 HARNESS_PROFILES: dict[str, HarnessProfile] = {
     # 클라우드 축 — 원격 추론이라 침묵/완주 모두 짧다(위 ⓐⓑ 실측).
-    "codex": HarnessProfile(PROGRESS_SIGNAL_EVENT_STREAM, False,
+    "codex": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, False,
                             CLOUD_IDLE_TIMEOUT_SEC, CLOUD_WALL_TIMEOUT_SEC),
-    "claude": HarnessProfile(PROGRESS_SIGNAL_EVENT_STREAM, False,
+    "claude": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, False,
                              CLOUD_IDLE_TIMEOUT_SEC, CLOUD_WALL_TIMEOUT_SEC),
     # 로컬 GPU 축 — 긴 침묵 + 장시간 완주(사용자 실측 증언). startup stall 워치독은 이 축에서만
     # 실측된 결함(upstream #13841)이라 여기만 True 다.
-    "opencode": HarnessProfile(PROGRESS_SIGNAL_EVENT_STREAM, True,
+    "opencode": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, True,
                                LOCAL_GPU_IDLE_TIMEOUT_SEC, LOCAL_GPU_WALL_TIMEOUT_SEC),
 }
 
@@ -2077,13 +1867,13 @@ DEFAULT_WALL_TIMEOUT_SEC = max(profile.wall_timeout for profile in HARNESS_PROFI
 
 # 미지 하네스(설정 오류·신규 추가 누락) — 진행 신호를 **모르므로** 무진행 판정 대상이 아니고
 # (모르는 드라이버를 무진행으로 죽이지 않는다), 벽시계는 가장 관대한 선언값으로 유한하게 남는다.
-UNKNOWN_HARNESS_PROFILE = HarnessProfile(PROGRESS_SIGNAL_NONE, False,
+UNKNOWN_HARNESS_PROFILE = HarnessProfile(conf_schema.PROGRESS_SIGNAL_NONE, False,
                                          DEFAULT_IDLE_TIMEOUT_SEC, DEFAULT_WALL_TIMEOUT_SEC)
 
 # 미지 **리뷰어** 커맨드 — 출력 형식을 모르므로 진행 신호가 있다고 가정하지 않는다. 종료 시 한 번에
 # 출력하는 CLI를 평문 증분 축으로 오인하면 정상 침묵 구간이 곧 idle kill 대상이 된다. 모를 때
 # 신호 없음(벽시계만)이 false-kill에 안전하고, 값은 가장 관대한 쪽으로 유한하게 남긴다.
-REVIEWER_FALLBACK_PROFILE = HarnessProfile(PROGRESS_SIGNAL_NONE, False,
+REVIEWER_FALLBACK_PROFILE = HarnessProfile(conf_schema.PROGRESS_SIGNAL_NONE, False,
                                            DEFAULT_IDLE_TIMEOUT_SEC, DEFAULT_WALL_TIMEOUT_SEC)
 
 # local.conf 하네스별 override 키 — GPU 여유/네트워크 같은 **환경 조건**은 엔진 속성이 아니라
@@ -2158,7 +1948,8 @@ def idle_timeout_for_signal(progress_signal: str,
 
     configured=None 이면 테이블 파생 기본을 쓴다. 미지의 선언은 **보수적으로** 신호 없음으로
     취급한다(모르는 드라이버를 무진행으로 죽이지 않는다 — false-kill 방향 금지)."""
-    if progress_signal not in PROGRESS_SIGNAL_KINDS or progress_signal == PROGRESS_SIGNAL_NONE:
+    if (progress_signal not in conf_schema.PROGRESS_SIGNAL_KINDS
+            or progress_signal == conf_schema.PROGRESS_SIGNAL_NONE):
         return None
     value = DEFAULT_IDLE_TIMEOUT_SEC if configured is None else configured
     normalized = normalize_timeout_seconds(value)
@@ -3163,7 +2954,7 @@ def claim_session_once(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            seen = _load_file_lock().read_bytes_shared(path).decode(
+            seen = fs.read_bytes_shared(path).decode(
                 "utf-8", errors="replace",
             ).splitlines()
         except FileNotFoundError:

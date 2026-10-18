@@ -36,6 +36,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _engine_tree import engine_python_files
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -64,7 +65,7 @@ def _load_path(path: Path, module_name: str):
 
 @pytest.fixture(scope="module")
 def console_encoding():
-    return _load("console_encoding")
+    return _load_path(TOOLS / "pm_engine" / "infra" / "console.py", "t0693_console")
 
 
 def _install_capture_console(module, monkeypatch):
@@ -359,15 +360,13 @@ def test_delegate_channel_guard_hook_payloads_are_utf8(
 
 
 def _break_console_seam_loader(guard, monkeypatch):
-    """가드 진입의 `console_encoding` 로드만 실패시킨다(사본 skew·형제 부재 모사)."""
-    real_loader = guard._load_module_from_path
+    """가드 진입의 콘솔 설정(`console.configure_console_utf8`)만 실패시킨다."""
 
-    def _broken_loader(path, expected_filename, **kwargs):
-        if expected_filename == "console_encoding.py":
-            raise RuntimeError("simulated missing console_encoding")
-        return real_loader(path, expected_filename, **kwargs)
+    def _broken_configure():
+        raise RuntimeError("simulated missing console_encoding")
 
-    monkeypatch.setattr(guard, "_load_module_from_path", _broken_loader)
+    monkeypatch.setattr(
+        guard, "console", SimpleNamespace(configure_console_utf8=_broken_configure))
 
 
 def test_delegate_channel_guard_fallback_line_survives_a_missing_seam(
@@ -488,7 +487,7 @@ def test_machine_line_keeps_the_human_output_order(console_encoding, capture_con
 
 def test_order_is_lost_when_the_pre_flush_is_removed(tmp_path, monkeypatch):
     """감도 실증 — seam 의 선-flush 한 줄을 지우면 기계 줄이 사람 출력 앞으로 밀린다."""
-    source = (TOOLS / "console_encoding.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine" / "infra" / "console.py").read_text(encoding="utf-8")
     anchor = '    _flush_quietly(target)\n    buffer.write(line.encode("utf-8"))\n'
     assert source.count(anchor) == 1, "변이 앵커 소실"
     mutated_path = tmp_path / "console_encoding.py"
@@ -582,7 +581,7 @@ EXCLUDED_ADAPTER_SCRIPTS = (
 
 def guarded_sources() -> tuple[Path, ...]:
     """가드 시야 = 엔진 `tools/*.py` 전수 + 기계 JSON 을 쓰는 어댑터 훅."""
-    return tuple(sorted(TOOLS.glob("*.py"))) + (ADAPTER_HOOK,)
+    return tuple(engine_python_files(TOOLS)) + (ADAPTER_HOOK,)
 
 
 def _dotted_name(call: ast.Call) -> str:
@@ -678,7 +677,7 @@ def test_guard_view_equals_the_surface_and_matches_an_independent_text_scan():
     """가드 시야 == 표면(엔진 전수 + 어댑터 훅) · 텍스트 전수 측정과 어긋나지 않는다."""
     scanned, violations = scan_console_json(guarded_sources())
     surface = tuple(
-        _display(path) for path in sorted(TOOLS.glob("*.py"))
+        _display(path) for path in engine_python_files(TOOLS)
     ) + (_display(ADAPTER_HOOK),)
 
     assert scanned == surface
@@ -723,7 +722,7 @@ def test_allowed_exceptions_are_reasoned():
             "            _write_machine_line(\n"
             "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"
-            "                machine_seam,\n"
+            "                console,\n"
             "            )\n",
             "            json.dump(\n"
             "                _validated_codex_envelope(result), output_stream, ensure_ascii=False\n"
@@ -737,7 +736,7 @@ def test_allowed_exceptions_are_reasoned():
             "            _write_machine_line(\n"
             "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"
-            "                machine_seam,\n"
+            "                console,\n"
             "            )\n",
             "            output_stream.write(\n"
             "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False)\n"

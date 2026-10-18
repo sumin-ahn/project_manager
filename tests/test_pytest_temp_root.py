@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from _engine_tree import engine_python_files
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_CONFTEST = ROOT / "conftest.py"
@@ -115,7 +116,7 @@ def test_engine_copies_have_no_out_of_project_temp_path_literals():
     for copy_root in _ENGINE_COPY_ROOTS:
         tools = ROOT / copy_root / ".project_manager" / "tools"
         assert tools.is_dir(), f"엔진 사본 없음: {tools}"
-        for path in sorted(tools.glob("*.py")):
+        for path in engine_python_files(tools):
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
             docstrings = _docstring_constants(tree)
@@ -162,7 +163,7 @@ def test_engine_copies_create_temp_only_under_an_explicit_dir():
     for copy_root in _ENGINE_COPY_ROOTS:
         tools = ROOT / copy_root / ".project_manager" / "tools"
         assert tools.is_dir(), f"엔진 사본 없음: {tools}"
-        for path in sorted(tools.glob("*.py")):
+        for path in engine_python_files(tools):
             for lineno in _temp_creator_calls_without_dir(
                 path.read_text(encoding="utf-8")
             ):
@@ -230,7 +231,7 @@ def test_engine_copies_resolve_the_os_temp_dir_only_in_the_declared_seam():
     for copy_root in _ENGINE_COPY_ROOTS:
         tools = ROOT / copy_root / ".project_manager" / "tools"
         assert tools.is_dir(), f"엔진 사본 없음: {tools}"
-        for path in sorted(tools.glob("*.py")):
+        for path in engine_python_files(tools):
             for site in _out_of_seam_system_temp_calls(
                 path.read_text(encoding="utf-8")
             ):

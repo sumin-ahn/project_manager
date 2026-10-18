@@ -29,6 +29,7 @@ import pytest
 
 from _test_exec import python_argv_command
 from _win_skip import _can_symlink as can_symlink, posix_mode_supported
+from pm_engine.infra import conf_store
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -3093,10 +3094,7 @@ def test_stale_role_limit_key_does_not_change_reservation(pd, rounds_env):
 
     # 옛 키 값 1 이 아직 판정에 쓰이면 두 번째 라운드부터 거부된다.
     assert plan.ordinal == declared
-    local_conf = pd._load_module_from_path(
-        pm_home / ".project_manager" / "tools" / "local_conf.py",
-        "local_conf.py", verifier=pd._verify_engine_rev,
-    )
+    local_conf = conf_store
     assert stale_key in local_conf.load(conf_path).unknown
 
 
@@ -3784,7 +3782,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
         _attempt_rejected_prepare()
     assert (_round_files(), _run_dirs(), _unterminated_ledger_rows()) == baseline
 
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     expected_run_dirs = baseline[1]
     for exc_factory, label in [
         (lambda: RuntimeError("정리 폭발(probe)"), "RuntimeError"),

@@ -12,7 +12,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-MODULE_PATH = TOOLS / "console_encoding.py"
+MODULE_PATH = TOOLS / "pm_engine" / "infra" / "console.py"
 CONFTEST_PATH = REPO / "tests" / "conftest.py"
 PROCESS_STATE_KEY = "_project_manager_console_encoding_state_v1"
 
@@ -524,14 +524,14 @@ def test_actual_cache_false_entry_pattern_preserves_process_state_across_two_loa
     owner_spec.loader.exec_module(owner)
     first = owner._load_module_from_path(
         MODULE_PATH,
-        "console_encoding.py",
-        verifier=owner._verify_engine_rev,
+        "console.py",
+        allow_unverified=True,
         cache=False,
     )
     second = owner._load_module_from_path(
         MODULE_PATH,
-        "console_encoding.py",
-        verifier=owner._verify_engine_rev,
+        "console.py",
+        allow_unverified=True,
         cache=False,
     )
     assert first is not second

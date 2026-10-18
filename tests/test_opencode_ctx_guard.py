@@ -453,11 +453,11 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
 # ── 2c. ctx 예산 (ADR-0041 · T-0943): 압축 한도 기록 · modelLimit 폐기 ─────────
 
 def test_plugin_reads_budget_and_ratios_from_the_engine_record():
-    """분모 E 와 두 비율은 엔진 압축 한도 기록(`local_conf.read_ctx_budget`)에서 온다 — 플러그인이
+    """분모 E 와 두 비율은 엔진 압축 한도 기록(`conf_store.read_ctx_budget`)에서 온다 — 플러그인이
     local.conf 비율을 따로 해석하거나 기본값으로 바꾸지 않는다(T-0943 · 설계 Q1)."""
     src = _plugin_src()
     assert "function readBudget" in src
-    assert 'leaf.read_ctx_budget(root,conf,"opencode",model)' in src
+    assert 'conf_store.read_ctx_budget(root,conf,"opencode",model)' in src
     assert "readBudget(loadLocalConf(root), root, `${info.providerID}/${info.modelID}`)" in src
     assert "const t = result.budget;" in src and "computeCtxState(used, t.E, t)" in src
     for removed in ("readPct(", "resolveThresholds", "resolveBudget", "validatedBudget",
@@ -2701,8 +2701,11 @@ def test_t0943_plugin_missing_record_toasts_error(tmp_path):
     """기록이 없으면 toast 로 오류를 알리고(무음 반환 아님) 넛지는 만들지 않는다. 대기 결속 상태는 없다."""
     root = _t0943_project(tmp_path)
     (root / ".project_manager" / "local.conf").write_text("", encoding="utf-8")
-    for name in ("local_conf.py", "repo_owned_files.py", "file_lock.py", "console_encoding.py"):
-        shutil.copyfile(REPO / ".project_manager" / "tools" / name, root / ".project_manager" / "tools" / name)
+    shutil.copyfile(REPO / ".project_manager" / "tools" / "local_conf.py",
+                    root / ".project_manager" / "tools" / "local_conf.py")
+    shutil.copytree(REPO / ".project_manager" / "tools" / "pm_engine",
+                    root / ".project_manager" / "tools" / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     result = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 190000)
     assert result["system"] == []
     errors = [text for text in result["toasts"] if "[ctx-budget]" in text]

@@ -29,7 +29,7 @@
    깨지고, capsys 없는 테스트는 세션 1회 생성되는 전역 fd capture 가 영구 오염돼 이후 모든
    setup·teardown 이 error 가 된다(xdist 는 워커 부모가 `python.exe` 라 재현되지 않는다). 엔진은 이미
    이 캡처 하네스가 UTF-8 reader 임을 선언받는 탈출구를 갖고 있다
-   (`console_encoding._utf8_reader_requested()` — `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`). 그
+   (`pm_engine.infra.console._utf8_reader_requested()` — `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`). 그
    탈출구는 자식 env 가 아니라 **호출하는 프로세스 자신의** `os.environ` 을 읽으므로, pytest
    자기 프로세스에 직접 심어야 발화한다. 아래 ④ 가 모듈 로드 시점(=pytest 프로세스 기동 시점)에
    1회 선언한다 — Windows 캡처 전환 자체를 검증하는 `tests/test_console_encoding.py` 는
@@ -44,6 +44,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -57,6 +58,14 @@ import pytest
 # 는 `os.environ` 을 직접 읽으므로(모듈 재로드·`cache=False` 두 번 로드와 무관), 여기서 한 번
 # 심으면 그 뒤 어떤 경로로 `configure_console_utf8()` 이 호출돼도 값으로 발화한다.
 os.environ["PYTHONUTF8"] = "1"
+
+# 엔진 패키지(`pm_engine`)를 일반 import 로 읽도록 tools 경로를 1회 넣는다(평면 엔진 파일과 같은 규칙).
+_TOOLS_DIR = str(Path(__file__).resolve().parents[1] / ".project_manager" / "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+# 한 프로세스의 `pm_engine` 은 하나다. 먼저 이 checkout 의 패키지를 적재해 두어야 tmp 사본 평면 파일을
+# 경로 적재해도 그 사본 트리(통과 뒤 지워지는 tmp_path)의 패키지에 결속되지 않는다.
+import pm_engine.infra  # noqa: E402,F401
 
 # 테스트가 raw 목적지를 tempdir 로 주면 tempdir에 감사 raw가 영구 누적된다.
 # 세션 기본 tempdir를 pytest 소유 디렉터리로 격리해 다른 checkout/PM 프로세스 출력과 섞지 않는다.

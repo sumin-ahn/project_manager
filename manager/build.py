@@ -184,6 +184,15 @@ def _engine_module(filename: str):
     return load_engine_module(filename)
 
 
+def _engine_console():
+    """번들 엔진의 콘솔 설정 모듈 — 관리자 패키지가 import 한 그 모듈이다."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from manager import console
+
+    return console
+
+
 def imprint_build_info() -> Path:
     """빌드 checkout 의 origin URL 을 각인한다."""
     upstream_url = _engine_module("pm_import.py").derive_origin_url(REPO_ROOT)
@@ -230,7 +239,7 @@ def run_pyinstaller() -> None:
 def main() -> int:
     # 빌드 로그는 한글이다 — 표준 출력이 UTF-8 이 아닌 빌드 서버(GitHub Windows 는 cp1252)에서
     # 첫 줄에 멈추지 않게 관리자 본체(`manager/__main__.py`)와 같은 엔진 콘솔 설정을 먼저 부른다.
-    _engine_module("console_encoding.py").configure_console_utf8()
+    _engine_console().configure_console_utf8()
     imprint_build_info()
     try:
         run(npm("ci"), cwd=UI_ROOT)

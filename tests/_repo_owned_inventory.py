@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-_HELPER = REPO / ".project_manager" / "tools" / "repo_owned_files.py"
+_HELPER = REPO / ".project_manager" / "tools" / "pm_engine" / "infra" / "repo_files.py"
 _MODULE_NAME = f"_tests_repo_owned_files:{_HELPER.resolve()}"
 
 
@@ -19,7 +19,7 @@ def _load_repo_owned_files():
     spec = importlib.util.spec_from_file_location(_MODULE_NAME, _HELPER)
     if spec is None or spec.loader is None:
         raise RuntimeError(
-            "repo_owned_files.py를 로드할 수 없음 — canonical 도구 사본을 확인하라"
+            "pm_engine/infra/repo_files.py를 로드할 수 없음 — canonical 도구 사본을 확인하라"
         )
     module = importlib.util.module_from_spec(spec)
     sys.modules[_MODULE_NAME] = module

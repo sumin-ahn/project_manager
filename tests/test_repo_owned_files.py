@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import types
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ def _load(name: str, filename: str):
 
 @pytest.fixture(scope="module")
 def repo_files():
-    return _load("repo_owned_files_test", "repo_owned_files.py")
+    return _load("repo_owned_files_test", "pm_engine/infra/repo_files.py")
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -437,7 +438,7 @@ def test_pm_update_nested_checkout_keeps_git_ignore_guarantee(tmp_path):
 
 def test_pm_update_non_git_directory_rc128_warns_and_falls_back(tmp_path, monkeypatch):
     pm_update = _load("pm_update_nongit_fallback_test", "pm_update.py")
-    repo_files = pm_update._load_repo_owned_files()
+    repo_files = pm_update.repo_files
     source = tmp_path / "source"
     ship = source / "ship"
     ship.mkdir(parents=True)
@@ -730,7 +731,7 @@ def test_pm_import_dest_fallback_uses_owned_mode(repo_files, tmp_path):
 
 def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path, monkeypatch):
     pm_import = _load("pm_import_repo_files_nongit_test", "pm_import.py")
-    repo_files = pm_import._load_repo_owned_files()
+    repo_files = pm_import.repo_files
     dest = tmp_path / "adopter"
     dest.mkdir()
     (dest / "copied.md").write_text("copied\n", encoding="utf-8")
@@ -764,10 +765,10 @@ def test_repo_owned_loader_cache_preserves_warning_class_identity():
     pm_import = _load("pm_import_repo_files_identity_test", "pm_import.py")
     domain = _load("domain_repo_files_identity_test", "domain.py")
 
-    update_first = pm_update._load_repo_owned_files()
-    update_second = pm_update._load_repo_owned_files()
-    import_module = pm_import._load_repo_owned_files()
-    domain_module = domain._load_repo_owned_files()
+    update_first = pm_update.repo_files
+    update_second = pm_update.repo_files
+    import_module = pm_import.repo_files
+    domain_module = domain.repo_files
 
     assert update_first is update_second is import_module is domain_module
     assert (
@@ -782,8 +783,12 @@ def test_pm_import_normal_copied_scope_never_enters_dest_walk(tmp_path, monkeypa
     copied = {Path(".project_manager/tools/board.py"), Path("AGENTS.md")}
     monkeypatch.setattr(
         pm_import,
-        "_load_repo_owned_files",
-        lambda: pytest.fail("정상 import copied_relpaths 경로가 dest 전수 열거에 진입함"),
+        "repo_files",
+        types.SimpleNamespace(
+            list_repo_owned_files=lambda *_a, **_k: pytest.fail(
+                "정상 import copied_relpaths 경로가 dest 전수 열거에 진입함"),
+            OWNED="owned",
+        ),
     )
 
     assert pm_import._resolve_fill_scope(tmp_path, copied) is copied

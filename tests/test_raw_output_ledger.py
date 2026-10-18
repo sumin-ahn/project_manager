@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _engine_tree import engine_python_files
 
 # 원문 삭제 코드가 새로 생기지 않았는지 확인하는 grep 대상 — `raw_<이름>.unlink(...)` /
 # `raw_<이름>.rmtree(...)` 형(스폰 전 0바이트 정리 하나만 정당). T-0774 DoD 4.
@@ -172,7 +173,7 @@ def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
     offenders = []
     for tools_dir in tool_dirs:
         assert tools_dir.is_dir(), tools_dir
-        for path in sorted(tools_dir.glob("*.py")):
+        for path in engine_python_files(tools_dir):
             text = path.read_text(encoding="utf-8")
             if "pm_raw_outputs" in text:
                 offenders.append(f"{path}: pm_raw_outputs")

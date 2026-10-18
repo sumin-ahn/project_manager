@@ -22,10 +22,11 @@ import warnings
 from pathlib import Path
 
 import pytest
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-FILE_LOCK_PY = TOOLS / "file_lock.py"
+FILE_LOCK_PY = TOOLS / "pm_engine" / "infra" / "fs.py"
 
 # Win32 파일 영역 락 API 이름 — 재복제 가드가 세는 대상(주석·문자열 제외·AST 판정).
 _WIN32_LOCK_API_NAMES = {"LockFileEx", "UnlockFileEx"}
@@ -359,11 +360,11 @@ def _win32_lock_api_reference_count(source: str) -> int:
 def test_win32_lock_api_lives_only_in_the_shared_seam():
     """Win32 파일 영역 락 호출도 공용 seam 한 곳뿐이다 (도구별 재복제 0)."""
     measured = {
-        path.name
-        for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix()
+        for path in engine_python_files(TOOLS)
         if _win32_lock_api_reference_count(path.read_text(encoding="utf-8"))
     }
-    assert measured == {"file_lock.py"}, f"Win32 락 API 재복제: {sorted(measured)}"
+    assert measured == {"pm_engine/infra/fs.py"}, f"Win32 락 API 재복제: {sorted(measured)}"
 
 
 def test_win32_guard_ignores_the_names_in_comments_and_strings():
@@ -380,7 +381,7 @@ def test_win32_guard_counts_a_reintroduced_call_in_another_tool():
     """다른 도구에 Win32 락 호출을 되살리면 가드가 red 로 잡는다 (감도 실증)."""
     source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        "    with file_lock.exclusive_file_lock(LEASES_LOCK):\n        yield",
+        "    with fs.exclusive_file_lock(LEASES_LOCK):\n        yield",
         "    import ctypes\n"
         "    ctypes.windll.kernel32.LockFileEx(0, 2, 0, 1, 0, None)\n"
         "    yield",

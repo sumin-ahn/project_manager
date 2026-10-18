@@ -198,7 +198,7 @@ def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypat
     conf_path.write_text("runtime.py=python\n", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
-    seam = bootstrap._load_file_lock()
+    seam = bootstrap.fs
     original_read_text = seam.read_text_shared
 
     def fail_for_local_conf(path, *args, **kwargs):

@@ -96,136 +96,12 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterator, NamedTuple, Sequence
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
@@ -257,13 +133,6 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "스폰 전 중단의 raw 정리는 **주 예외를 덮지 않는 것**이 계약이다 — 정리 중 사본 불일치로 "
         "갈아타면 이 실행이 왜 죽었는지가 사라지고 라운드 환불 판정의 근거도 함께 사라진다. "
         "불일치는 경고 한 줄로 남기고 중단 사유(주 예외)를 그대로 전파한다"
-    ),
-    "shared_read_seam": (
-        "판독은 형제 없이도 떠야 한다 — 이 모듈의 진단·재앵커 경로는 seam 이 필요한 "
-        "`--gate` 구간 밖이고(로더 주석의 기능 축), pm_delegate 가 그 경로를 deep-import 로 "
-        "재사용한다. seam 부재로 판독이 죽으면 부분 동기 트리에서 진단 자체가 사라진다. "
-        "부재/손상/혼합 사본을 흡수하되 조용하지 않게 사유를 stderr 로 남기고 종전 읽기로 "
-        "진행한다(잃는 것은 Windows 에서 이 판독 중의 원자 교체 한 번)"
     ),
     "ticket_harvest": (
         "회수는 이미 **끝나고 과금된** 라운드의 기록이다 — 여기서 사본 불일치로 traceback 을 내면 "
@@ -396,7 +265,7 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
     """PM 홈의 실재 worktree 후보를 lease 장부에서 파생한다(하네스 목록/슬롯 추측 없음)."""
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     try:
-        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
     except FileNotFoundError:
         return ()
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -693,7 +562,7 @@ ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
 ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY = "additional_reviewer.progress_signal"
 
 # 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
-# 분기로 번지지 않는다. attr 값은 동적 로드한 pm_relay의 공개 상수명이다.
+# 분기로 번지지 않는다. attr 값은 `conf_schema` 의 진행 신호 상수명이다.
 _REVIEWER_PROGRESS_CONTRACTS = {
     "codex": {
         "default": "PROGRESS_SIGNAL_PLAINTEXT",
@@ -1139,18 +1008,9 @@ _RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _conf_default(key: str) -> str | None:
-    """이 conf 키의 엔진 기본값 — 정본은 `local_conf.KEY_REGISTRY` 다(선언이 없으면 None)."""
-    return _load_local_conf().default_for(key)
+    """이 conf 키의 엔진 기본값 — 정본은 `conf_schema.KEY_REGISTRY` 다(선언이 없으면 None)."""
+    return conf_schema.default_for(key)
 
 
 def _conf_default_int(key: str) -> int:
@@ -1161,7 +1021,7 @@ def _conf_default_int(key: str) -> int:
 def local_config(repo: Path | None = None) -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
-    return _load_local_conf().load_checked_readable(path)
+    return conf_store.load_checked_readable(path)
 
 
 def _local_config_for_repo(repo: Path) -> dict[str, str]:
@@ -1424,9 +1284,7 @@ def _normalized_reviewer_key(argv: list[str]) -> str:
     return re.sub(r"[^a-z0-9_.-]", "_", executable) or "reviewer"
 
 
-def _reviewer_progress_signal(
-    reviewer_cmd: str, conf: dict[str, str], relay
-) -> str:
+def _reviewer_progress_signal(reviewer_cmd: str, conf: dict[str, str]) -> str:
     """실행 파일 basename과 그 CLI의 **옵션 계약** 또는 명시 설정으로 진행 신호를 판정한다.
 
     이름만 같거나 스트리밍처럼 보이는 플래그만 있다는 이유로 추론하지 않는다. 알려진 실행 파일의
@@ -1435,24 +1293,24 @@ def _reviewer_progress_signal(
     """
     explicit = (conf.get(ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY) or "").strip()
     if explicit:
-        if explicit in relay.PROGRESS_SIGNAL_KINDS:
+        if explicit in conf_schema.PROGRESS_SIGNAL_KINDS:
             return explicit
         print(
             f"경고: local.conf {ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY}={explicit!r} 은 "
-            f"{sorted(relay.PROGRESS_SIGNAL_KINDS)} 중 하나가 아님 — argv 형식 판정 사용.",
+            f"{sorted(conf_schema.PROGRESS_SIGNAL_KINDS)} 중 하나가 아님 — argv 형식 판정 사용.",
             file=sys.stderr,
         )
     try:
         argv = _split_reviewer_argv(reviewer_cmd)
     except ValueError:
-        return relay.PROGRESS_SIGNAL_NONE
+        return conf_schema.PROGRESS_SIGNAL_NONE
     if not argv:
-        return relay.PROGRESS_SIGNAL_NONE
+        return conf_schema.PROGRESS_SIGNAL_NONE
 
     executable = _normalized_reviewer_key(argv)
     contract = _REVIEWER_PROGRESS_CONTRACTS.get(executable)
     if contract is None:
-        return relay.PROGRESS_SIGNAL_NONE
+        return conf_schema.PROGRESS_SIGNAL_NONE
 
     def option_value(name: str) -> str | None:
         for index, token in enumerate(argv[1:], start=1):
@@ -1465,11 +1323,11 @@ def _reviewer_progress_signal(
 
     for flag, signal_attr in contract["flags"].items():
         if flag in argv[1:]:
-            return getattr(relay, signal_attr)
+            return getattr(conf_schema, signal_attr)
     for (option, expected), signal_attr in contract["options"].items():
         if option_value(option) == expected:
-            return getattr(relay, signal_attr)
-    return getattr(relay, contract["default"])
+            return getattr(conf_schema, signal_attr)
+    return getattr(conf_schema, contract["default"])
 
 
 def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
@@ -1491,7 +1349,7 @@ def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
         legacy_wall_key=ADDITIONAL_REVIEWER_TIMEOUT_KEY,
     )
     return profile._replace(
-        progress_signal=_reviewer_progress_signal(reviewer_cmd, conf, relay)
+        progress_signal=_reviewer_progress_signal(reviewer_cmd, conf)
     )
 
 
@@ -1683,90 +1541,15 @@ def _save_round_ledger(ledger: dict) -> None:
         board._write_release_must_fix_marker(livegate_flag, problems)
 
 
-def _load_file_lock():
-    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
-
-    `_load_relay`·`_load_board` 와 같은 경로-앵커 로더이고, 그 둘처럼 **쓰는 경로에서만** 지연
-    로드한다 — 이 seam 이 필요한 구간은 `--gate` 실행의 라운드 장부 예약/마감과 호출 산출물의
-    접근 제한뿐이라 나머지 경로(진단·재앵커를 deep-import 로 재사용하는
-    pm_delegate 포함)를 seam 부재로 무너뜨리지 않는다. 로드 실패는 흡수하지 않고(fail-loud)
-    캐시하되, 중앙 loader 가 소비 때마다 baked rev 를 재검증하므로 사본 skew 는 계속 표출된다.
-
-    (지연/import-시점 선택의 근거는 **기능 축**이다 — "seam 없이도 살아야 하는 경로가 있나".
-    board·worktree_pool 은 모든 변경 경로가 락을 지나 import 바인딩이 맞고, 여기는 아니다.
-    fail-soft 경계 ratchet 은 그 선택의 *결과*를 계량할 뿐 근거가 아니다.)
-    """
-    lock_path = Path(__file__).resolve().parent / "file_lock.py"
-    _require_engine_sibling(lock_path, "file_lock.py")
-    return _load_module_from_path(
-        lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
-# ── 공유 읽기 (등재 예외 · 형제 없이도 떠야 하는 판독) ──────────────────────
-# 원자 교체 대상을 읽는 지점은 공용 seam 을 지난다([[T-0729]]) — 일반 `open` 리더가 하나라도
-# 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막는다. 다만 이 모듈의 판독은 위 로더 주석의
-# 기능 축 그대로 **형제 없이도 떠야 한다**(진단·재앵커는 seam 이 필요한 `--gate` 구간
-# 밖이고, pm_delegate 가 그 경로를 deep-import 로 재사용한다). 그래서 여기는 **등재된 예외**다 —
-# seam 이 있으면 쓰고, 없거나 로드가 실패하면 사유를 남기고 종전 읽기로 진행한다.
-
-# 강등 사유는 프로세스당 한 번만 알린다 — 판독마다 찍으면 진단이 자기 소음에 묻힌다.
-_shared_read_degraded = False
-
-
-def _warn_shared_read_degraded(cause: str) -> None:
-    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
-    global _shared_read_degraded
-    if _shared_read_degraded:
-        return
-    _shared_read_degraded = True
-    print(
-        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
-        "에서는 이 판독이 열려 있는 동안 원자 교체가 실패할 수 있습니다. `pm-update` 로 "
-        ".project_manager/tools/ 전체를 재동기하십시오.",
-        file=sys.stderr,
-    )
-
-
-def _shared_read_api(name: str):
-    """공유 읽기 seam 의 함수 하나 — 없거나 못 쓰면 `None` (등재 예외의 강등 분기·loud).
-
-    **부재/손상 로드**와 **구세대 사본**(로드는 되는데 그 함수가 없는 형상)을 함께 본다 — 쓰기
-    축의 등재 예외가 `getattr(..., "atomic_replace", None)` 로 두 형상을 같이 받는 것과 같다.
-    한쪽만 보면 부분 업그레이드 트리에서 AttributeError 로 죽는다.
-    """
-    global _shared_read_degraded
-    try:
-        seam = _load_file_lock()
-    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합은 이 판독의 정상 입력이다.
-        skew = _absorb_engine_rev_skew_for_recovery(exc, "shared_read_seam")
-        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
-        _warn_shared_read_degraded(cause)
-        return None
-    api = getattr(seam, name, None)
-    if api is None:
-        _warn_shared_read_degraded(f"구세대 file_lock 사본에 {name} 이(가) 없음")
-    return api
-
-
-def _read_text_shared(path, *, encoding=None, errors=None, newline=None) -> str:
-    """`file_lock.read_text_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
-    api = _shared_read_api("read_text_shared")
-    if api is not None:
-        return api(path, encoding=encoding, errors=errors, newline=newline)
-    with open(path, "r", encoding=encoding, errors=errors, newline=newline) as handle:
-        return handle.read()
-
-
 def _restrict_to_owner(path: Path) -> None:
     """호출 산출물을 소유자 전용 접근으로 제한한다 (플랫폼 수단은 공용 seam 소유).
 
     `os.chmod(0o600/0o700)` 을 직접 부르지 않는 이유는 그 호출이 **Windows 에서 아무 제한도
     걸지 않기 때문**이다(실측 `S_IMODE`=0o666). opencode transport 샌드박스에는 검토 대상 diff
     원문이 들어가므로 "다른 사용자에게 읽히지 않는다" 는 이 도구의 보안 경계다 —
-    수단(퍼미션/ACL)은 `file_lock` 이 소유하고 여기서는 보장만 요구한다.
+    수단(퍼미션/ACL)은 `fs` 가 소유하고 여기서는 보장만 요구한다.
     """
-    _load_file_lock().restrict_to_owner(path)
+    fs.restrict_to_owner(path)
 
 
 def _load_pm_delegate():
@@ -1822,10 +1605,10 @@ def _round_ledger_lock() -> Iterator[None]:
     없음). **재진입 금지**(flock 관례·board_lock 동형) — 예약과 환불은 *각자 독립* 락 구간이다
     (중첩 아님).
 
-    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `file_lock` seam 이 소유하고 이
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam 이 소유하고 이
     도구는 *어느 파일에 거는지*(경로 규약)만 정한다.
     """
-    with _load_file_lock().exclusive_file_lock(_round_ledger_lock_path()):
+    with fs.exclusive_file_lock(_round_ledger_lock_path()):
         yield
 
 
@@ -3529,7 +3312,7 @@ def _load_ticket_text_and_body(path: Path) -> tuple[str, str]:
     시드를 렌더할 때 본 것과 **같은 명세 텍스트**를 입력으로 써야 하고, 준비(`pm_delegate`)는
     파일 전문을 쓴다.
     """
-    raw = _read_text_shared(path, encoding="utf-8")
+    raw = fs.read_text_shared(path, encoding="utf-8")
     _frontmatter, body = _split_ticket_frontmatter(raw, source=path)
     return raw, body
 
@@ -3686,7 +3469,7 @@ def _parse_estimate_from_file(path: Path) -> str | None:
 def _parse_touches_from_file(path: Path) -> list[str]:
     """ticket 파일에서 frontmatter touches 를 추출한다."""
     fm_text, _body = _split_ticket_frontmatter(
-        _read_text_shared(path, encoding="utf-8"), source=path,
+        fs.read_text_shared(path, encoding="utf-8"), source=path,
     )
     if fm_text is None:
         return []
@@ -3726,7 +3509,7 @@ def _load_review_context() -> str:
     """인스턴스 overlay 또는 기본 헤더에 티켓 결정 권위 규약을 빠짐없이 결합한다."""
     if REVIEW_CONTEXT_FILE.exists():
         try:
-            context = _read_text_shared(REVIEW_CONTEXT_FILE, encoding="utf-8").strip() + "\n"
+            context = fs.read_text_shared(REVIEW_CONTEXT_FILE, encoding="utf-8").strip() + "\n"
             if _AUTHORITATIVE_TICKET_CONTEXT not in context:
                 context += "\n" + _AUTHORITATIVE_TICKET_CONTEXT + "\n"
             return context
@@ -5061,9 +4844,8 @@ def _read_local_config(path: Path) -> dict[str, str]:
 
     판독 실패는 **삼키지 않는다**(`load_strict`) — 호출부가 그 예외로 fail-closed 하므로, 빈 conf
     로 강등하면 보호 선언을 확인하지 못한 채 나간다."""
-    module = _load_local_conf()
-    result = module.load_strict(path)
-    module.assert_no_legacy(result)
+    result = conf_store.load_strict(path)
+    conf_schema.assert_no_legacy(result)
     return result.values
 
 
@@ -5806,7 +5588,7 @@ def _reserve_additional_reviewer_round(
             f"additional-reviewer 라운드 기록은 open/claimed 티켓만 허용: "
             f"{ticket} in {status}/"
         )
-    with _load_file_lock().open_shared(
+    with fs.open_shared(
         ticket_path, binary=False, encoding="utf-8", newline="",
     ) as handle:
         ticket_text = handle.read()
@@ -6033,12 +5815,7 @@ def _run_review_round(
 
 def main(argv: list[str] | None = None) -> int:
     """한 호출 동안만 selector 해소 전역을 주입하고 재진입 전에 원복한다."""
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
     global REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR, _PM_HOME_OVERRIDE
     original = (
         REPO, LOCAL_CONF, REVIEW_CONTEXT_FILE, TICKETS_DIR, _PM_HOME_OVERRIDE,

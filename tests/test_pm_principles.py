@@ -25,10 +25,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_PRINCIPLES_PY = TOOLS / "pm_principles.py"
-# 로더가 실행 중 지연 로드하는 형제 seam — 중앙 로더(repo_owned_files)·공용 읽기(file_lock)·
-# 기계 출력(console_encoding). 채택자 트리엔 항상 함께 있고, 로더는 이들을 rev 검증으로만 부르므로
-# 사본 fixture 도 같은 집합을 깔아야 실제 형상과 같아진다.
-ENGINE_SIBLING_PY = ("repo_owned_files.py", "file_lock.py", "console_encoding.py")
+# 로더가 import 하는 엔진 패키지(콘솔·공용 읽기·repo 파일). 채택자 트리엔 항상 함께 있으므로
+# 사본 fixture 도 같이 깔아야 실제 형상과 같아진다.
+ENGINE_PACKAGE = "pm_engine"
 CANONICAL_REGISTRY = REPO / ".project_manager" / "wiki" / "pm_principles.md"
 CODEX_DISPATCHER_PY = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
 CODEX_LIVE_HOOK_FIXTURE = REPO / "tests" / "fixtures" / "codex_0_147_0_live_hook_payloads.json"
@@ -38,8 +37,8 @@ def _write_engine_tools(tools_dir: Path) -> None:
     """tmp 채택자 트리의 `.project_manager/tools/` 에 로더와 그 형제 seam 을 배치한다."""
     tools_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(PM_PRINCIPLES_PY, tools_dir / "pm_principles.py")
-    for name in ENGINE_SIBLING_PY:
-        shutil.copyfile(TOOLS / name, tools_dir / name)
+    shutil.copytree(TOOLS / ENGINE_PACKAGE, tools_dir / ENGINE_PACKAGE,
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     shutil.copyfile(TOOLS / "python_floor.py", tools_dir / "python_floor.py")
 
 

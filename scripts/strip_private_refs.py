@@ -78,7 +78,6 @@ _DELTA_PATTERNS = private_refs._DELTA_PATTERNS
 TokenSpan = private_refs.TokenSpan
 RemovalSpan = private_refs.RemovalSpan
 DataLiteralMarkerError = private_refs.DataLiteralMarkerError
-_load_repo_owned_files = private_refs._load_repo_owned_files
 repo_owned_paths = private_refs.repo_owned_paths
 shipping_paths = private_refs.shipping_paths
 _line_offsets = private_refs._line_offsets

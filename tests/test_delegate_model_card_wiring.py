@@ -341,7 +341,7 @@ def _write_local_conf(dest_root: Path, text: str) -> Path:
     return path
 
 
-# claude·codex 카드가 받는 추론 허용값(`pm_relay.REASONING_ALLOWED` 의 두 하네스 공통 값). 실 경로
+# claude·codex 카드가 받는 추론 허용값(`conf_schema.REASONING_ALLOWED` 의 두 하네스 공통 값). 실 경로
 # 테스트가 이 값을 `_render_text` 의 허용집합 확인에 통과시키므로, 엔진 허용집합이 바뀌면 여기서
 # red 가 난다. opencode 카드는 가짜 모델 목록이 각 모델에 같은 값을 variants 로 준다.
 _REASONING_LADDER = ("low", "medium", "high", "xhigh", "max")
@@ -631,7 +631,7 @@ def test_hard_cards_are_git_tracked(pm_update):
     untracked 파일은 조용히 전파에서 빠진다 — 카드를 만들고 add 하지 않으면 채택자 트리엔
     영원히 안 나가고, 그 사실은 어느 렌더 가드에도 걸리지 않는다.
     """
-    repo_files = pm_update._load_repo_owned_files()
+    repo_files = pm_update.repo_files
     for tree in CARD_TREES:
         relative = Path(tree.relative_dir)
         tracked = {

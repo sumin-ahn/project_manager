@@ -32,11 +32,15 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import utf8_child_env
+from pm_engine.cli import local_conf as local_conf_cli
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
 LOCAL_CONF_PY = TOOLS / "local_conf.py"
+LOCAL_CONF_CLI_PY = TOOLS / "pm_engine" / "cli" / "local_conf.py"
 README = REPO / "README.md"
 
 
@@ -253,7 +257,7 @@ def test_known_keys_comments_and_blank_lines_produce_no_finding(board, monkeypat
 
 
 def test_platform_commands_preserve_declared_order_and_are_known():
-    conf = _load_module("local_conf_platform_valid", LOCAL_CONF_PY)
+    conf = conf_schema
     values = conf.parse(
         "qa.platforms=linux-arm,windows\n"
         "test.linux-arm.cmd=run-arm\n"
@@ -270,7 +274,7 @@ def test_platform_commands_preserve_declared_order_and_are_known():
     "win dows", "", "a" * 33,
 ))
 def test_platform_declaration_rejects_invalid_or_duplicate_names(declaration):
-    conf = _load_module("local_conf_platform_invalid_" + str(abs(hash(declaration))), LOCAL_CONF_PY)
+    conf = conf_schema
     values = {"qa.platforms": declaration, f"test.{declaration}.cmd": "wrapper"}
     if declaration == "":
         assert conf.platform_test_commands(values) == ()
@@ -285,13 +289,13 @@ def test_platform_declaration_rejects_invalid_or_duplicate_names(declaration):
     {"qa.platforms": "windows", "test.windows.cmd": "wrapper", "test.linux.cmd": "other"},
 ))
 def test_platform_declaration_rejects_missing_blank_and_orphan_commands(values):
-    conf = _load_module("local_conf_platform_resolution_" + str(id(values)), LOCAL_CONF_PY)
+    conf = conf_schema
     with pytest.raises(ValueError):
         conf.platform_test_commands(values)
 
 
 def test_no_platform_declaration_keeps_legacy_semantics_but_orphan_is_advisory_unknown():
-    conf = _load_module("local_conf_platform_legacy", LOCAL_CONF_PY)
+    conf = conf_schema
     assert conf.platform_test_commands({}) == ()
     assert conf.platform_test_commands({"qa.platforms": ""}) == ()
     assert conf.unknown_keys({"test.windows.cmd": "wrapper"}) == ("test.windows.cmd",)
@@ -364,7 +368,7 @@ def test_removing_a_known_key_from_the_registry_turns_its_conf_line_red(board, m
 
     assert board.lint_local_conf_keys() == [], "대조군(레지스트리 온전)부터 이미 red"
 
-    conf_module = board._load_local_conf()
+    conf_module = conf_schema
     reduced = tuple(key for key in conf_module.KNOWN_KEYS if key != "runtime.py")
     assert len(reduced) == len(conf_module.KNOWN_KEYS) - 1
     monkeypatch.setattr(conf_module, "KNOWN_KEYS", reduced)
@@ -452,7 +456,7 @@ def test_cmd_init_is_quiet_on_a_fresh_home(monkeypatch, tmp_path, capsys):
 
 @pytest.fixture(scope="module")
 def conf_module():
-    return _load_module("local_conf_registry", LOCAL_CONF_PY)
+    return conf_schema
 
 
 @pytest.fixture(scope="module")
@@ -508,7 +512,7 @@ def test_declared_groups_is_a_single_key_groups_order_filter(conf_module):
     used = {spec.group for spec in conf_module.KEY_REGISTRY.values()}
     assert used <= set(conf_module.KEY_GROUPS), used - set(conf_module.KEY_GROUPS)
 
-    tree = ast.parse(LOCAL_CONF_PY.read_text(encoding="utf-8"))
+    tree = ast.parse(LOCAL_CONF_CLI_PY.read_text(encoding="utf-8"))
     function = next(node for node in tree.body
                     if isinstance(node, ast.FunctionDef) and node.name == "_declared_groups")
     statements = [node for node in function.body
@@ -516,13 +520,13 @@ def test_declared_groups_is_a_single_key_groups_order_filter(conf_module):
     assert len(statements) == 1 and isinstance(statements[0], ast.Return), \
         "본문이 단일 return 이 아니다 — 순서 필터 뒤에 다른 경로가 붙었다"
 
-    declared = conf_module._declared_groups()
+    declared = local_conf_cli._declared_groups()
     assert declared == [group for group in conf_module.KEY_GROUPS if group in used]
 
     # `--keys` 표: 절 이름·순서가 그 목록 그대로이고, 각 절의 키 목록이 레지스트리 순서 그대로다.
     sections: dict[str, list[str]] = {}
     current = None
-    for line in conf_module.render_key_table().splitlines():
+    for line in local_conf_cli.render_key_table().splitlines():
         if line.startswith("[") and line.endswith("]"):
             current = line[1:-1]
             sections[current] = []
@@ -566,17 +570,16 @@ def test_every_pattern_family_declares_a_spec_and_resolves_its_members(conf_modu
 def test_no_row_exists_that_nothing_reads(conf_module):
     """어디서도 안 읽히는 칸은 레지스트리에 없다 — 화면에 서면 채워도 아무 일이 없다.
 
-    hard 티어는 `pm_delegate.TIERED_ROLES` 역할만 읽고(나머지 역할의 `--tier` 는 usage error),
-    안내 문서 모델 칸은 렌더 표(`pm_render._OPERATIONAL_CONF_KEYS`)에 토큰이 있는 도구만 읽는다.
+    hard 티어는 `TIERED_ROLES` 역할만 읽고(나머지 역할의 `--tier` 는 usage error),
+    안내 문서 모델 칸은 렌더 표(`OPERATIONAL_CONF_KEYS`)에 토큰이 있는 도구만 읽는다.
     """
-    tiered = conf_module._tiered_roles()
-    assert tiered == ("developer",), "티어 역할을 pm_delegate 에서 못 읽었다"
-    for role in conf_module._role_names():
+    tiered = conf_module.TIERED_ROLES
+    for role in conf_module.ROLE_CHOICES:
         for key in (f"delegate.{role}.hard.model", f"delegate.{role}.hard.fallback.harness"):
             expected = conf_module.DELEGATE_ROLE_PATTERN if role in tiered else None
             assert conf_module.pattern_for(key) == expected, key
-    rendered = conf_module._sibling_literal("pm_render.py", "_OPERATIONAL_CONF_KEYS").values()
-    for name in conf_module._harness_names():
+    rendered = conf_schema.OPERATIONAL_CONF_KEYS.values()
+    for name in conf_module.HARNESS_CHOICES:
         key = f"harness.{name}.pro_model"
         assert (conf_module.pattern_for(key) is not None) == (key in rendered), key
 
@@ -712,7 +715,7 @@ def keys_document() -> dict:
 
 def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_document):
     """실명 레지스트리와 패턴 레지스트리가 `kind` 로 갈려 **선언 순서 그대로** 실린다."""
-    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 6
+    assert keys_document["schema"] == local_conf_cli.KEY_JSON_SCHEMA == 6
     assert keys_document["groups"] == list(conf_module.KEY_GROUPS)
 
     named = [row for row in keys_document["keys"] if row["kind"] == "key"]
@@ -767,7 +770,7 @@ def test_every_row_carries_unit_switch_and_readonly(conf_module, keys_document):
     assert units == set(keys_document["units"])
     reviewer = [row["key"] for row in rows if row["unit"] == conf_module._REVIEWER_UNIT]
     assert reviewer == [f"additional_reviewer.{suffix}" for suffix in conf_module._ROLE_SUFFIXES]
-    assert keys_document["unit_fields"] == conf_module._ROLE_FIELD_LABELS
+    assert keys_document["unit_fields"] == local_conf_cli._ROLE_FIELD_LABELS
 
     # 스위치 — 가리키는 키는 레지스트리에 있고 그 자신은 스위치에 묶이지 않는다.
     switches = {row["governed_by"]["key"] for row in rows if row["governed_by"]}
@@ -792,7 +795,7 @@ def test_the_delegate_switch_on_values_are_the_engine_verdict(conf_module, keys_
                     if row["governed_by"] and row["governed_by"]["on"] is not None)
 
     assert governor["key"] == delegate.DELEGATE_ENABLED_KEY
-    assert governor["on"] == list(delegate.DELEGATE_ENABLED_VALUES)
+    assert governor["on"] == list(conf_schema.DELEGATE_ENABLED_VALUES)
     for value in governor["on"]:
         assert delegate._is_enabled({governor["key"]: value.upper()})
     for value in ("false", "0", "no", "off"):
@@ -831,7 +834,7 @@ def test_the_human_table_is_byte_identical_with_or_without_the_json_flag(conf_mo
     table = _keys_json()
 
     assert table.returncode == 0, table.stderr
-    assert table.stdout == conf_module.render_key_table() + "\n"
+    assert table.stdout == local_conf_cli.render_key_table() + "\n"
 
 
 @pytest.mark.parametrize("args", [["--json", "--keys"], ["--keys", "--json", "--json"],
@@ -901,7 +904,7 @@ def test_harness_choices_are_the_relay_declaration_in_declaration_order(
     assert len(rows) == 1 + 10, [row["key"] for row in rows]   # 추가 리뷰어 1 · 역할×티어 10
     for row in rows:
         assert row["choices"]["depends_on"] is None            # 하네스는 무엇에도 종속하지 않는다
-        assert row["choices"]["values"] == {"": list(relay_module.HARNESS_CHOICES)}
+        assert row["choices"]["values"] == {"": list(conf_schema.HARNESS_CHOICES)}
         assert row["choices"]["fetch"] is None
         assert row["choices"]["free_text"] is False
 
@@ -911,7 +914,7 @@ def test_reasoning_choices_are_the_relay_allowed_sets_bucketed_by_harness(
     """추론 강도 선택지는 `pm_relay.REASONING_ALLOWED` 와 하네스마다 **집합으로 같다**."""
     rows = _choice_rows(keys_document, "reasoning")
     expected = {harness: set(values)
-                for harness, values in relay_module.REASONING_ALLOWED.items()}
+                for harness, values in conf_schema.REASONING_ALLOWED.items()}
 
     assert expected and all(expected.values()), "허용집합이 비었다 — 파생이 조용히 강등됐다"
     assert len(rows) == 1 + 10, [row["key"] for row in rows]
@@ -948,7 +951,7 @@ def test_reasoning_descriptions_point_at_the_owner_instead_of_copying_the_ladder
     복제한 목록은 반드시 갈린다 — 설명이 `codex 는 low/medium/high/xhigh` 라고 적어 둔 동안
     선언은 이미 `max` 를 갖고 있었다(설명만 보고 고른 값이 소비 지점에서 거부된다).
     """
-    ladder = {value for values in relay_module.REASONING_ALLOWED.values()
+    ladder = {value for values in conf_schema.REASONING_ALLOWED.values()
               for value in values}
     assert ladder, "허용집합이 비었다(공허 가드)"
     pattern = re.compile(r"\b(" + "|".join(sorted(ladder, key=len, reverse=True)) + r")\b")
@@ -1041,10 +1044,9 @@ def test_recommended_values_are_inside_their_own_choices(conf_module, keys_docum
 
 def test_recommended_keys_are_real_role_and_tier_combinations(conf_module):
     """권장 표의 키는 `<role><tier>` 실조합이다 — 없는 역할·티어에 권장을 달지 않는다."""
-    combinations = {f"{role}{tier}" for role in conf_module._role_names()
+    combinations = {f"{role}{tier}" for role in conf_module.ROLE_CHOICES
                     for tier in conf_module._role_tiers(role)}
 
-    assert conf_module._role_names(), "역할 축을 못 읽었다 — 파생이 강등됐다"
     assert set(conf_module.DELEGATE_RECOMMENDED) <= combinations
     for values in conf_module.DELEGATE_RECOMMENDED.values():
         assert set(values) == set(conf_module._ROLE_SUFFIXES)   # 세트를 통째로 쓴다
@@ -1065,23 +1067,12 @@ def test_the_human_table_does_not_read_the_new_json_fields(conf_module):
     바이트 동일성 테스트는 같은 함수끼리 비교라 새 필드 누출을 못 잡는다. 표를 만드는 두 함수의
     소스에 그 이름이 아예 없음을 못박아 "JSON 표면에만 산다" 를 직접 확인한다.
     """
-    rendered = inspect.getsource(conf_module.render_key_table)
-    displayed = inspect.getsource(conf_module._default_display)
+    rendered = inspect.getsource(local_conf_cli.render_key_table)
+    displayed = inspect.getsource(local_conf_cli._default_display)
 
     for token in ("choices", "recommended"):
         assert token not in rendered, token
         assert token not in displayed, token
-
-
-def test_sibling_mapping_reads_the_declaration_and_degrades_to_an_empty_table(
-        conf_module, relay_module):
-    """형제 표 파생은 실 선언을 읽고, 못 읽는 형상에서는 빈 표로 강등한다(막는 것 0)."""
-    mapping = conf_module._sibling_mapping("pm_relay.py", "REASONING_ALLOWED")
-
-    assert mapping == {harness: tuple(values)
-                       for harness, values in relay_module.REASONING_ALLOWED.items()}
-    assert conf_module._sibling_mapping("pm_relay.py", "NO_SUCH_DECLARATION") == {}
-    assert conf_module._sibling_mapping("no_such_sibling.py", "REASONING_ALLOWED") == {}
 
 
 # ── 하네스 사용 한도 구성원 (T-0923 AT-024) ──────────────────────────────────
@@ -1116,13 +1107,13 @@ def _assert_blocking_removed_key(conf_module, key: str) -> None:
     assert key not in conf_module.KEY_REGISTRY, key
     assert conf_module.key_spec(key) is None, key
     for style in ("python", "js"):
-        assert f'"{key}",' in conf_module.render_adapter_block(style), (style, key)
+        assert f'"{key}",' in local_conf_cli.render_adapter_block(style), (style, key)
 
 
 def _assert_conf_line_is_blocked(conf_module, tmp_path: Path, line: str, key: str) -> None:
     path = _write_conf(tmp_path, f"test.cmd=pytest -q\n{line}\n")
     with pytest.raises(conf_module.LegacyConfKeyError) as caught:
-        conf_module.load_checked_readable(path)
+        conf_store.load_checked_readable(path)
     assert f"`{key}` → 제거(대체 키 없음)" in str(caught.value)
 
 

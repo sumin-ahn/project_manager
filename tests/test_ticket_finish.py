@@ -2952,7 +2952,7 @@ def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_e
     root = _axis_repo(tmp_path)
     finisher = tf.TicketFinisher()
 
-    file_lock = tf._load_file_lock()
+    file_lock = tf.fs
     real_force_rmtree = file_lock.force_rmtree
     attempted: list[Path] = []
     injected = OSError("디렉터리 정리 실패 — 시뮬레이션(권한 거부)")
@@ -2983,7 +2983,7 @@ def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_fa
 
     finisher = _axis_finisher(tf, root, board_py)
 
-    file_lock = tf._load_file_lock()
+    file_lock = tf.fs
     real_force_rmtree = file_lock.force_rmtree
     attempted: list[Path] = []
     injected = OSError("디렉터리 정리 실패 — 시뮬레이션(잠긴 핸들)")
@@ -3053,7 +3053,7 @@ def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node
         _write_alternates_canary(on_tree, target_sha)
         on_rc, on_out = finisher._run_pytest_subset(on_tree, [_ALTERNATES_CANARY_FILE])
     finally:
-        tf._load_file_lock().force_rmtree(on_tree)
+        tf.fs.force_rmtree(on_tree)
     t1 = time.time()
 
     off_tree = finisher._materialize_tree(tf.REPO, "HEAD")
@@ -3062,7 +3062,7 @@ def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node
         _write_alternates_canary(off_tree, target_sha)
         off_rc, off_out = finisher._run_pytest_subset(off_tree, [_ALTERNATES_CANARY_FILE])
     finally:
-        tf._load_file_lock().force_rmtree(off_tree)
+        tf.fs.force_rmtree(off_tree)
     t2 = time.time()
 
     on_failed = tf._self_axis_failed_node_ids(on_out)
@@ -3109,7 +3109,7 @@ def test_gate_execution_does_not_mutate_the_original_repository(tf):
     scratch = finisher._materialize_tree(tf.REPO, "HEAD")
     # `ignore_errors=True` 는 read-only git object 를 남긴다 — baseline scratch 는 이제
     # 저장소 안 임시 루트에 서므로 남으면 그대로 쌓인다. 엔진과 같은 삭제 seam 을 쓴다.
-    tf._load_file_lock().force_rmtree(scratch)
+    tf.fs.force_rmtree(scratch)
 
     after = _repo_fingerprint(finisher, tf.REPO)
     assert before == after

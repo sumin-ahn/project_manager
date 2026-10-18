@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import contextlib
 import datetime
 import filecmp
 import hashlib
@@ -69,141 +68,14 @@ import zlib
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
-
-if TYPE_CHECKING:
-    from repo_owned_files import RepoOwnedEntry
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
@@ -236,7 +108,8 @@ RETIRED_PATH_BACKUP_ROOT_REL = ".pm_import_backups"
 # read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들(복수·순서 무관). `@source=<path>` 는
 # 값 운반 마커라 prefix 검사로 별도 처리(이 튜플 밖).
 _MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
-_CENTRAL_LOADER_REL = ".project_manager/tools/repo_owned_files.py"
+# 엔진 구현 패키지 디렉터리 행 — 평면 엔진 파일보다 먼저 전달한다(read_manifest 정렬).
+_ENGINE_PACKAGE_REL = ".project_manager/tools/pm_engine"
 
 
 class ManifestEntry(str):
@@ -361,109 +234,14 @@ def _templates_dir() -> Path:
     return REPO / "templates"
 
 
-def _load_file_lock():
-    """공용 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 로드 (`_load_pm_render` 패턴 동형).
-
-    conf write 구간을 배타락으로 닫는 데 쓴다. board 처럼 import
-    시점에 바인딩하지 않는 이유는 pm_update 가 **복구 채널**이기 때문이다 — 엔진 사본이 깨진
-    채택자에게도 이 도구는 떠야 하고, 동기가 이미 끝난 뒤의 온보딩 질문이 형제 로드 실패로 죽으면
-    자기 자신을 못 고친다. 그래서 로드 실패는 호출부가 fail-soft 로 받는다(락 없는 단일 추가로
-    물러나되 재읽기·재판정은 유지 — 프로세스 간 배타성만 잃는다).
-    """
-    lock_py = Path(__file__).resolve().parent / "file_lock.py"
-    return _load_module_from_path(
-        lock_py, "file_lock.py", allow_unverified=True, cache=True,
-        cache_key=f"_project_manager_file_lock:{lock_py}",
-    )
-
-
-# ── 공유 읽기 (등재 예외 · 복구 채널의 판독) ────────────────────────────────
-# 원자 교체 대상을 읽는 지점은 공용 seam 을 지난다([[T-0729]]) — 일반 `open` 리더가 하나라도
-# 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막는다. 다만 pm_update 는 **복구 채널**이라
-# 형제 사본이 없거나 깨진 트리에서도 떠야 한다(위 로더 주석과 같은 근거·`_atomic_replace_or_degrade`
-# 의 판독 쪽 짝). 그래서 여기는 **등재된 예외**다 — seam 이 있으면 쓰고, 없으면 사유를 남기고
-# 종전 읽기로 진행한다.
-
-
-# 강등 사유는 프로세스당 한 번만 알린다 — 판독마다 찍으면 진단이 자기 소음에 묻힌다.
-_shared_read_degraded = False
-
-
-def _warn_shared_read_degraded(cause: str) -> None:
-    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
-    global _shared_read_degraded
-    if _shared_read_degraded:
-        return
-    _shared_read_degraded = True
-    print(
-        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
-        "에서는 이 판독이 열려 있는 동안 원자 교체가 실패할 수 있습니다. `pm-update` 로 "
-        ".project_manager/tools/ 전체를 재동기하십시오.",
-        file=sys.stderr,
-    )
-
-
-def _shared_read_api(name: str):
-    """공유 읽기 seam 의 함수 하나 — 없거나 못 쓰면 `None` (등재 예외의 강등 분기·loud).
-
-    **부재/손상 로드**와 **구세대 사본**(로드는 되는데 그 함수가 없는 형상)을 함께 본다 — 쓰기
-    축의 등재 예외가 `getattr(..., "atomic_replace", None)` 로 두 형상을 같이 받는 것과 같다.
-    한쪽만 보면 부분 업그레이드 트리에서 AttributeError 로 죽는다.
-    """
-    global _shared_read_degraded
-    try:
-        seam = _load_file_lock()
-    except Exception as exc:  # noqa: BLE001 — 부재/손상은 이 판독의 정상 입력이다(표식 skew 는 올린다).
-        if _is_engine_rev_skew(exc):
-            raise
-        _warn_shared_read_degraded(f"{type(exc).__name__}: {exc}")
-        return None
-    api = getattr(seam, name, None)
-    if api is None:
-        _warn_shared_read_degraded(f"구세대 file_lock 사본에 {name} 이(가) 없음")
-    return api
-
-
-def _read_text_shared(path, *, encoding=None, errors=None, newline=None) -> str:
-    """`file_lock.read_text_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
-    api = _shared_read_api("read_text_shared")
-    if api is not None:
-        return api(path, encoding=encoding, errors=errors, newline=newline)
-    with open(path, "r", encoding=encoding, errors=errors, newline=newline) as handle:
-        return handle.read()
-
-
-def _read_bytes_shared(path) -> bytes:
-    """`file_lock.read_bytes_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
-    api = _shared_read_api("read_bytes_shared")
-    if api is not None:
-        return api(path)
-    with open(path, "rb") as handle:
-        return handle.read()
-
-
-def _open_shared(path, *, binary, encoding=None, errors=None, newline=None):
-    """`file_lock.open_shared` — seam 을 못 쓰면 같은 의미의 종전 열기로 강등한다."""
-    api = _shared_read_api("open_shared")
-    if api is not None:
-        return api(path, binary=binary, encoding=encoding, errors=errors, newline=newline)
-    if binary:
-        return open(path, "rb")
-    return open(path, "r", encoding=encoding, errors=errors, newline=newline)
-
-
-@contextlib.contextmanager
 def _local_conf_write_lock(conf_path: Path):
-    """conf 커밋 구간의 배타락 — 공용 seam(`file_lock.local_conf_write_lock`)이 유일한 락 규칙이다.
+    """conf 커밋 구간의 배타락 — 공용 seam(`fs.local_conf_write_lock`)이 유일한 락 규칙이다.
 
     구간의 단위는 write 가 아니라 **"이 conf 를 읽고 판단하고 쓰는" 전체**다 — 현재 상태를 락
     밖에서 읽어 계획을 세우면 커밋 시점엔 이미 낡은 계획(stale plan)이라 그사이 들어온 결정을
-    잘못된 분기로 덮거나 누락한다. 형제 적재 실패는 그대로 올라간다(완료 단계는 같은 세대 형제만
-    적재한다 · 락 프리미티브 부재의 무락 진행은 `file_lock` 자신의 규약이다).
+    잘못된 분기로 덮거나 누락한다.
     """
-    lock = _load_file_lock()
-    with lock.local_conf_write_lock(conf_path):
-        yield lock
+    return fs.local_conf_write_lock(conf_path)
 
 
 def print_conf_migration_notice(dest_root: Path) -> None:
@@ -476,8 +254,7 @@ def print_conf_migration_notice(dest_root: Path) -> None:
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.exists():
         return  # init 전 — 채택자 conf 가 아직 없다
-    module = _load_local_conf()
-    for line in module.migration_notice(module.load(local_conf)):
+    for line in conf_schema.migration_notice(conf_store.load(local_conf)):
         print(f"[pm_update] {line}")
 
 
@@ -497,13 +274,13 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
     미주석=render/target_owned False·source_rel None → 오늘과 동일(순수 copy2·전파 대상·후방호환).
     """
     out: list[ManifestEntry] = []
-    for line in _read_text_shared(path, encoding="utf-8").splitlines():
+    for line in fs.read_text_shared(path, encoding="utf-8").splitlines():
         entry = _parse_manifest_line(line)
         if entry is not None:
             out.append(entry)
-    # 구형·flavor manifest의 물리 행 순서가 남아 있어도 새 updater는 중앙 loader를 먼저
-    # 배포한다. self-update가 pm_update 직후 중단돼도 재실행 시 이 정규화가 복구 창을 닫는다.
-    return sorted(out, key=lambda entry: str(entry) != _CENTRAL_LOADER_REL)
+    # 구형·flavor manifest의 물리 행 순서가 남아 있어도 새 updater는 엔진 패키지를 먼저
+    # 배포한다. 평면 파일 복사 중 끊겨도 패키지는 이미 완전하다.
+    return sorted(out, key=lambda entry: str(entry) != _ENGINE_PACKAGE_REL)
 
 
 class RetiredPathError(RuntimeError):
@@ -531,7 +308,7 @@ def parse_retired_path_directives(manifest_path: Path) -> list[tuple[str, str]]:
     """manifest의 `# pm-retired-path: OLD -> NEW` 주석만 strict하게 파싱한다."""
     declarations: list[tuple[str, str]] = []
     seen_old: set[str] = set()
-    text = _read_text_shared(manifest_path, encoding="utf-8")
+    text = fs.read_text_shared(manifest_path, encoding="utf-8")
     for line_no, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
         if not stripped.startswith(RETIRED_PATH_DIRECTIVE_PREFIX):
@@ -714,20 +491,20 @@ def _validate_retired_path_plan(
         if not source_new.is_file() or _path_is_link_or_reparse(source_new):
             raise RetiredPathError(f"upstream replacement가 regular file이 아님: {source_new}")
         _assert_no_link_components(dest_root, dest_new, label="destination replacement")
-        source_hash = hashlib.sha256(_read_bytes_shared(source_new)).digest()
+        source_hash = hashlib.sha256(fs.read_bytes_shared(source_new)).digest()
         prospective = prospective_replacements.get(new)
         if prospective is not None:
             if not prospective.is_file() or _path_is_link_or_reparse(prospective):
                 raise RetiredPathError(
                     f"적용 계획의 replacement source가 regular file이 아님: {prospective}"
                 )
-            dest_hash = hashlib.sha256(_read_bytes_shared(prospective)).digest()
+            dest_hash = hashlib.sha256(fs.read_bytes_shared(prospective)).digest()
         else:
             if not dest_new.is_file() or _path_is_link_or_reparse(dest_new):
                 raise RetiredPathError(
                     f"destination replacement가 regular file이 아님: {dest_new}"
                 )
-            dest_hash = hashlib.sha256(_read_bytes_shared(dest_new)).digest()
+            dest_hash = hashlib.sha256(fs.read_bytes_shared(dest_new)).digest()
         if source_hash != dest_hash:
             raise RetiredPathError(
                 f"replacement hash 불일치(적용 미완료): {dest_new}"
@@ -775,7 +552,7 @@ def retire_manifest_paths(
         _validate_retired_path_plan(dest_root, source_root, manifest, declarations)
         lock_path = dest_root / RETIRED_PATH_LOCK_REL
         _assert_no_link_components(dest_root, lock_path.parent, label="retired lock")
-        with _load_file_lock().exclusive_file_lock(lock_path):
+        with fs.exclusive_file_lock(lock_path):
             plan = _validate_retired_path_plan(
                 dest_root, source_root, manifest, declarations,
             )
@@ -900,7 +677,7 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
     if not manifest_paths:
         raise ValueError("합칠 engine.manifest가 없습니다.")
     paths = [Path(p) for p in manifest_paths]
-    first_text = _read_text_shared(paths[0], encoding="utf-8")
+    first_text = fs.read_text_shared(paths[0], encoding="utf-8")
     merged: list[ManifestEntry] = []
     seen: dict[str, ManifestEntry] = {}
     additions: list[tuple[str, list[ManifestEntry]]] = []
@@ -969,23 +746,8 @@ def _entry_target_owned_flag(entry) -> bool:
     return bool(getattr(entry, "target_owned", False))
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다.
-
-    이 모듈의 다른 형제 로드와 같이 `allow_unverified=True` 다 — pm_update 는 **엔진 사본을 고치는
-    쪽**이라 형제 rev 불일치를 이유로 자기 실행을 막으면 그 사본을 고칠 수단이 사라진다. 갱신 중의
-    세대 혼합은 없다 — 전달 프로세스가 엔진 코드를 옮긴 뒤 완료 단계는 받은 갱신기의 새 프로세스가
-    같은 세대 형제만 적재해 실행한다(`_launch_completion`).
-    """
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        allow_unverified=True, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _read_local_conf(path: Path) -> dict[str, str]:
-    """local.conf → key=value dict (공용 로더 `local_conf.load` · **판정 없음**).
+    """local.conf → key=value dict (공용 로더 `conf_store.load` · **판정 없음**).
 
     apply 경로가 이 함수를 지난다 — 구표기 conf 를 가진 채택자도 **엔진 파일은 받아야** 안내대로
     고칠 수 있다. 그래서 여기서는 `assert_no_legacy` 를 부르지 않는다(값을 실제로 소비하는
@@ -997,85 +759,7 @@ def _read_local_conf(path: Path) -> dict[str, str]:
     """
     if not Path(path).is_file():
         return {}
-    return _load_local_conf().load(path).values
-
-
-def _load_repo_owned_files():
-    """공용 seam을 복구채널 명시 면제로 로드한다.
-
-    중앙 로더는 stdlib-only이며 engine_rev를 import하지 않는다. 따라서 손상·구형 engine_rev와
-    무관하게 복구 채널이 열리고, path-key 캐시는 stamped 소비 시점에 다시 검증된다.
-    """
-    path = Path(__file__).resolve().with_name("repo_owned_files.py").resolve()
-    module = _load_module_from_path(
-        path,
-        "repo_owned_files.py",
-        allow_unverified=True,
-        cache=True,
-        cache_key=f"_project_manager_repo_owned_files:{path}",
-    )
-    missing = _missing_repo_owned_files_api(module)
-    if missing:
-        raise RuntimeError(
-            "repo_owned_files.py 복구 API가 불완전함 "
-            f"({', '.join(missing)} 누락); pm-update로 .project_manager/tools 전체를 "
-            "재동기화하라."
-        )
-    return module
-
-
-# ``main``도 이 seam의 예외 타입으로 실패를 분류한다. 분류 지점마다 방어하지 않고 예외 타입을
-# 필수 API 계약에 포함해, 불완전한 seam은 attribute 조회 전에 선복구 대상으로 일관되게 거부한다.
-_REPO_OWNED_FILES_REQUIRED = (
-    "load_module",
-    "RepoFilesGitError",
-    "_real_git_runner",
-    "list_repo_owned_entries",
-    "list_repo_owned_files",
-    "TRACKED_ONLY",
-    "OWNED",
-)
-
-
-def _missing_repo_owned_files_api(module) -> list[str]:
-    """공용 seam 소비에 필요한 API 누락 — 로드와 선복구가 공유하는 단일 판정."""
-    return [
-        name for name in _REPO_OWNED_FILES_REQUIRED
-        if not hasattr(module, name)
-    ]
-
-
-def _atomic_replace_or_degrade(tmp: Path, dest: Path) -> None:
-    """원자 교체 — 공용 seam(`file_lock.atomic_replace`) 우선, 못 쓰면 **loud** 강등한다.
-
-    엔진의 다른 교체 지점과 달리 여기는 seam 을 **설치하는 쪽**이다(`_predeploy_central_loader`
-    가 중앙 로더를 내려놓는 부트스트랩 쓰기가 이 함수를 지난다). 그 시점의 목적지 트리는
-    중단된 업데이트로 `file_lock.py` 가 없거나 손상일 수 있고, 여기서 예외를 올리면 채택자는
-    깨진 트리를 **스스로 고칠 수단을 잃는다** — 복구 채널이 자기 잠금하는 형상이다.
-
-    그래서 이 한 지점만 등재된 예외다([[T-0729]] §결정 · 가드 등재부에 사유 필수). 강등은
-    조용하지 않다 — 사유를 stderr 로 남겨 채택자가 "복구 경로에서 옛 방식이 발동했다"를 안다.
-    정상 트리에서는 항상 seam 을 타므로, 잃는 보장은 "Windows 에서 대상이 열려 있으면 그 한 번의
-    교체가 실패한다" 뿐이고 그것도 이미 고장난 트리에 한정된다.
-    """
-    degrade_reason = ""
-    try:
-        replace = getattr(_load_file_lock(), "atomic_replace", None)
-        if replace is None:
-            degrade_reason = "구세대 file_lock 사본에 atomic_replace 가 없음"
-    except Exception as exc:  # noqa: BLE001 — 부재/손상은 이 부트스트랩의 정상 입력이다(표식 skew 는 올린다).
-        if _is_engine_rev_skew(exc):
-            raise
-        replace, degrade_reason = None, f"{type(exc).__name__}: {exc}"
-    if replace is not None:
-        replace(tmp, dest)
-        return
-    print(
-        f"경고: 원자 교체 공용 seam 을 쓸 수 없어 os.replace 로 진행합니다 ({degrade_reason}) — "
-        f"Windows 에서는 대상이 열려 있으면 이 교체가 실패할 수 있습니다: {dest}",
-        file=sys.stderr,
-    )
-    os.replace(tmp, dest)
+    return conf_store.load(path).values
 
 
 def _atomic_copy2(source: Path, dest: Path) -> None:
@@ -1091,7 +775,7 @@ def _atomic_copy2(source: Path, dest: Path) -> None:
     tmp = Path(tmp_name)
     try:
         shutil.copy2(source, tmp)
-        _atomic_replace_or_degrade(tmp, dest)
+        fs.atomic_replace(tmp, dest)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -1125,63 +809,6 @@ def resolve_hook_set_predicate(source_root=None):
         )
     return lambda rel, _t=generation.declarations: bool(
         pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
-
-
-def central_loader_needs_recovery(dest_root: Path) -> bool:
-    """dest 의 중앙 로더 seam이 부재·손상·구형인가(선복구가 실제로 write 할 상황인가).
-
-    경로 스코프 실행이 "이 경로만 전파" 계약을 지키려면 선복구를 건너뛰어야 하는데, 그때 조용히
-    넘기면 seam이 깨진 인스턴스는 다음 실행도 같은 자리에서 막힌다 — 판정만 따로 떼어 호출부가
-    **알리고** 건너뛸 수 있게 한다."""
-    try:
-        current = _load_module_from_path(
-            dest_root / _CENTRAL_LOADER_REL, "repo_owned_files.py", allow_unverified=True,
-        )
-    except Exception:  # noqa: BLE001 — 로드 실패도 복구 대상(아래 판정과 같은 결론).
-        current = None
-    return bool(_missing_repo_owned_files_api(current))
-
-
-def _predeploy_central_loader(source_root: Path, dest_root: Path) -> None:
-    """손상/구형 seam을 검증된 tracked 일반 파일로 원자 선복구한다."""
-    global _TOOLS_BOOTSTRAP_MODULE
-    source = source_root / _CENTRAL_LOADER_REL
-    dest = dest_root / _CENTRAL_LOADER_REL
-    if not central_loader_needs_recovery(dest_root):
-        return
-    try:
-        source.lstat()
-    except FileNotFoundError:
-        # seam을 manifest에 싣지 않은 레거시/부분 fixture는 기존 계획 경로를 보존한다.
-        # 실제 신 엔진 source는 manifest 순서 가드가 이 파일의 존재를 별도로 강제한다.
-        return
-    except OSError as exc:
-        raise RuntimeError(f"중앙 로더 source 상태를 확인할 수 없음: {source}: {exc}") from exc
-    relative = Path(_CENTRAL_LOADER_REL)
-    if not _is_shippable_regular_file(source_root, relative, index_mode=None):
-        raise RuntimeError(f"중앙 로더 source가 일반 파일이 아님: {source}")
-    try:
-        source_module = _load_module_from_path(
-            source, "repo_owned_files.py", allow_unverified=True,
-        )
-    except Exception as exc:  # noqa: BLE001 — source seam 자체의 손상을 복구 실패로 표면화.
-        raise RuntimeError(f"중앙 로더 source를 불러올 수 없음: {source}") from exc
-    missing = _missing_repo_owned_files_api(source_module)
-    if missing:
-        raise RuntimeError(
-            "중앙 로더 source 복구 API가 불완전함 "
-            f"({', '.join(missing)} 누락): {source}"
-        )
-    tracked = _shipping_inventory(source_module, source_root, _CENTRAL_LOADER_REL)
-    accepted = _shippable_tracked_entries(source_root, tracked)
-    if accepted != [(relative, source)]:
-        raise RuntimeError(f"중앙 로더 source가 tracked 일반 파일이 아님: {source}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_copy2(source, dest)
-    _TOOLS_BOOTSTRAP_MODULE = None
-    sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-    sys.modules.pop(f"_project_manager_repo_owned_files:{dest.resolve()}", None)
-    print(f"  [recovery-first] {_CENTRAL_LOADER_REL}")
 
 
 class SkippedRepoShippingEntryWarning(RuntimeWarning):
@@ -1265,7 +892,7 @@ def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
 
 def _shippable_tracked_entries(
     root: Path,
-    entries: list["RepoOwnedEntry"],
+    entries: list[repo_files.RepoOwnedEntry],
 ) -> list[tuple[Path, Path]]:
     """tracked 엔트리를 안전한 byte-copy source로 좁히고 제외 이유를 loud하게 합친다."""
     accepted: list[tuple[Path, Path]] = []
@@ -1355,12 +982,10 @@ def _iter_files(root: Path, rel: str):
             stacklevel=2,
         )
     elif src.is_dir():
-        repo_files = _load_repo_owned_files()
         tracked = _shipping_inventory(repo_files, root, rel)
         for relative, source in _shippable_tracked_entries(root, tracked):
             yield relative.as_posix(), source
     elif src.is_file():
-        repo_files = _load_repo_owned_files()
         tracked = _shipping_inventory(repo_files, root, rel)
         for accepted_relative, source in _shippable_tracked_entries(root, tracked):
             yield accepted_relative.as_posix(), source
@@ -1681,7 +1306,7 @@ def _dest_guest_manifest_entries(effective_dest: Path) -> list[ManifestEntry]:
     경로만이 아니라 마커까지 필요하다 — 파싱해서 돌려준다(파서는 `_parse_manifest_line` 공유)."""
     manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
-        block = _extract_guest_manifest_block(_read_text_shared(manifest_file, encoding="utf-8"))
+        block = _extract_guest_manifest_block(fs.read_text_shared(manifest_file, encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         return []
     if not block:
@@ -1786,7 +1411,7 @@ def _guest_engine_backfill_entries(
         return [], []
     dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
-        dest_owned = _core_manifest_paths(_read_text_shared(dest_manifest, encoding="utf-8"))
+        dest_owned = _core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))
         pm_import = _load_pm_import()
         harness_by_flavor = {
             template_dir: harness
@@ -1853,7 +1478,7 @@ def _refuse_unregistered_scope_paths(
 def _scope_validation_manifest(effective_dest: Path, source_root: Path) -> list | None:
     """스코프 **소유권 선검증**용 manifest 합 — dest 것과 source 것의 합집합(best-effort).
 
-    실 계획 manifest 는 중앙 로더 선복구(dest 쓰기) 뒤에 해소된다. 미등재 요청이 rc1 로 끝나는데
+    실 계획 manifest 는 manifest 자기치유 판정 뒤에 해소된다. 미등재 요청이 rc1 로 끝나는데
     그 전에 쓰기가 일어나면 "거부인데 파일이 바뀐다" 가 되므로, 쓰기 전에 읽기만으로 한 번 거른다.
     이 시점 판정은 **관대해야** 한다(합집합): self-heal 이 upstream 등재분을 계획 기준으로 올리는
     경우가 있어 dest manifest 만 보면 유효 요청을 오거부한다. 좁은 판정은 계획 확정 뒤 한 번 더
@@ -2854,7 +2479,7 @@ def resolve_manifest_selfheal(
                 "upstream_manifests": [root_manifest], "manifest_text": None,
                 "merge_conflicts": []}
     local_entries = read_manifest(dest_manifest)
-    local_text = _read_text_shared(dest_manifest, encoding="utf-8")
+    local_text = fs.read_text_shared(dest_manifest, encoding="utf-8")
     if guest_backfill_paths is None:
         # 호출부가 이미 해소했으면 넘긴다(중복 IO·pm_import 재로드 회피). 안 넘기면 여기서 해소해
         #   진단 판정이 호출 경로마다 갈리지 않게 한다.
@@ -3244,7 +2869,7 @@ def _dominant_newline(text: str, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
 def _path_newline(path: Path) -> str:
     """그 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `_DEFAULT_TEXT_NEWLINE`."""
     try:
-        with _open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
+        with fs.open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
             return _dominant_newline(handle.read(), _DEFAULT_TEXT_NEWLINE)
     except (OSError, UnicodeError):
         return _DEFAULT_TEXT_NEWLINE
@@ -3291,7 +2916,7 @@ def _render_text(
     판정을 흔들지 않는다.
     """
     operational, empty_keys = _operational_from_local_conf(conf)
-    text = _read_text_shared(Path(source_path), encoding="utf-8")
+    text = fs.read_text_shared(Path(source_path), encoding="utf-8")
     rendered = render_mod.render_adapter(
         text,
         operational=operational,
@@ -3328,7 +2953,7 @@ def _render_skill_entry_text(
     template_dir: str | tuple[str, ...] | list[str],
 ) -> str:
     """--target export용 파일 wrapper — operational은 건드리지 않고 호출 표기만 치환."""
-    text = _read_text_shared(Path(source_path), encoding="utf-8")
+    text = fs.read_text_shared(Path(source_path), encoding="utf-8")
     return render_skill_entry_notation(
         text, template_dir, source=str(source_path)
     )
@@ -3443,7 +3068,7 @@ def _is_text_source(source_path: Path) -> bool:
     IO 실패도 보수적으로 False(byte-copy·기존 동작).
     """
     try:
-        _read_text_shared(Path(source_path), encoding="utf-8")
+        fs.read_text_shared(Path(source_path), encoding="utf-8")
     except (UnicodeDecodeError, OSError):
         return False
     return True
@@ -3465,7 +3090,7 @@ def _rendered_text_matches_dest(rendered: str, dst) -> bool:
     (판정을 무디게 만들지 않는다). 읽기 실패·비-UTF8 dest 는 보수적으로 '다름'(False) — plan 이
     그 path 를 change 로 띄워 apply 가 명확히 실패하게 한다(침묵 폴백 금지)."""
     try:
-        current = _read_bytes_shared(dst).decode("utf-8")
+        current = fs.read_bytes_shared(dst).decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return False
     return _normalize_newlines(rendered) == _normalize_newlines(current)
@@ -3578,7 +3203,7 @@ def plan(
                     # 판정은 단일 flavor 분기와 **같은 헬퍼**다 — guest 절 차감 core 비교 + 옛 세대
                     #   마커. 여기만 마커 축이 빠지면 다중-harness 형상에서 마커 세대가 영구 잔존한다.
                     if _manifest_self_prop_needs_update(
-                            _read_text_shared(Path(dst), encoding="utf-8"), manifest_source_text,
+                            fs.read_text_shared(Path(dst), encoding="utf-8"), manifest_source_text,
                             guest_backfill_lines):
                         changes.append((rel, source, dst, "update"))
                 except (OSError, UnicodeDecodeError):
@@ -3648,7 +3273,7 @@ def plan(
                 # 변환 지점이 실제로 있는 파일만 생성 산출물로 표시한다. 토큰 부재 파일은 기존
                 # copy2 경로를 유지해 metadata/출력 churn을 만들지 않는다. 미등록 template 값은
                 # helper가 여기서 fail-loud한다(dry-run도 원문 복사 false-green 금지).
-                source_text = _read_text_shared(Path(sp), encoding="utf-8")
+                source_text = fs.read_text_shared(Path(sp), encoding="utf-8")
                 rendered_entry = source_text
                 if item_notation_template is not None:
                     rendered_entry = _render_skill_entry_text(sp, item_notation_template)
@@ -3711,8 +3336,8 @@ def plan(
                 #   다중-harness 합집합 분기와 **같은 헬퍼**를 쓴다(사유·근거는 그 docstring).
                 try:
                     if _manifest_self_prop_needs_update(
-                            _read_text_shared(Path(dst), encoding="utf-8"),
-                            _read_text_shared(Path(sp), encoding="utf-8"),
+                            fs.read_text_shared(Path(dst), encoding="utf-8"),
+                            fs.read_text_shared(Path(sp), encoding="utf-8"),
                             guest_backfill_lines):
                         changes.append((r, sp, dst, "update"))
                 except (OSError, UnicodeDecodeError):
@@ -3966,7 +3591,7 @@ def _retired_manifest_files(
 
     판정 좌표는 dest→source **역방향** 매핑이다 — `_dest_relpath_for`(board-분리 dest remap)와
     `_remap_to_dest`(`@source` source-remap)를 되짚어 upstream 읽기 경로를 만들고 그 실재만 본다.
-    dest 파일 열거는 공용 seam(`repo_owned_files` OWNED = 추적 + 미추적-비ignore)이다. 직접
+    dest 파일 열거는 공용 seam(`repo_files` OWNED = 추적 + 미추적-비ignore)이다. 직접
     rglob 하면 ignore 산출물(`__pycache__` 등)이 후보로 새어 보고가 노이즈에 묻힌다.
 
     ``dest_map`` 은 이번 계획이 훑은 출하 좌표(`plan(inventory_out=…)`) — 상류가 실제로 공급하는
@@ -3993,11 +3618,7 @@ def _retired_manifest_files(
     planned = {
         str(coordinate).replace("\\", "/").strip("/") for coordinate in (dest_map or ())
     }
-    try:
-        repo_files = _load_repo_owned_files()
-        dest_runner = repo_files._real_git_runner(effective_dest)
-    except (OSError, RuntimeError, ValueError):
-        return []
+    dest_runner = repo_files._real_git_runner(effective_dest)
 
     retired: set[str] = set()
     for index, entry in enumerate(manifest):
@@ -4025,10 +3646,8 @@ def _retired_manifest_files(
             # filesystem 폴백이 채택자 프로젝트 전부를 순회한다(등재 밖은 애초에 판정 대상도 아님).
             # 비-git dest 의 폴백 경고는 여기서 삼킨다 — 진단 보고 하나 때문에 채택자에게 엔진
             # 내부 seam 경고 원문을 노출할 이유가 없다(열거 자체는 폴백으로 정상 동작한다).
-            fallback_warning = getattr(
-                repo_files, "RepoFilesFallbackWarning", RuntimeWarning)
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore", fallback_warning)
+                warnings.simplefilter("ignore", repo_files.RepoFilesFallbackWarning)
                 dest_files = [
                     dest_entry.path.as_posix()
                     for dest_entry in repo_files.list_repo_owned_entries(
@@ -4304,7 +3923,7 @@ def _copy_manifest_preserving_guest(
     try:
         if dst.is_file():
             dst_text, migrated = _migrate_legacy_guest_markers(
-                _normalize_newlines(_read_text_shared(dst, encoding="utf-8")))
+                _normalize_newlines(fs.read_text_shared(dst, encoding="utf-8")))
             if migrated:
                 print("✓ guest 절 마커 세대 마이그레이션 (구 리터럴 → 현행)")
             guest_block = _extract_guest_manifest_block(dst_text)
@@ -4316,7 +3935,7 @@ def _copy_manifest_preserving_guest(
     # 읽기는 실제 파일에만 의미가 있으므로 경로일 때만 seam 을 지난다(아래 `isinstance` 분기와
     # 같은 판정).
     new_text = _normalize_newlines(
-        _read_text_shared(sp, encoding="utf-8") if isinstance(sp, Path)
+        fs.read_text_shared(sp, encoding="utf-8") if isinstance(sp, Path)
         else sp.read_text(encoding="utf-8"))
     guest_block = _prune_guest_block_owned_by_core(guest_block, new_text)
     if not guest_block and isinstance(sp, Path):
@@ -4394,7 +4013,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
         ):
             if render_mod is None:
                 render_mod = _load_pm_render()
-            text = _read_text_shared(Path(sp), encoding="utf-8")
+            text = fs.read_text_shared(Path(sp), encoding="utf-8")
             rendered = text
             if getattr(dst, "entry_notation_template", None) is not None:
                 rendered = render_mod.render_skill_entry_notation(
@@ -4565,14 +4184,13 @@ def _commit_render_outputs(_dest_root: Path, outputs, _pm_import) -> tuple[tuple
 def _is_reasoning_profile_key(key: str) -> bool:
     """추론 값이 있는 프로필(위임 세트·대체 세트·추가 리뷰어)의 선택 축 키(`.harness`·`.model`·`.reasoning`)인가.
 
-    새 표를 두지 않는다: 레지스트리에서 그 키의 축이 프로필 축(`local_conf._ROLE_SUFFIXES`)이고 같은 세트의
+    새 표를 두지 않는다: 레지스트리에서 그 키의 축이 프로필 축(`conf_schema._ROLE_SUFFIXES`)이고 같은 세트의
     `.reasoning` 키 축이 `reasoning` 인지로 판정한다. 하네스·모델만 바꿔도 남은 추론 값이 그 모델 밖이 될 수
     있어 셋 다 건다."""
-    local_conf = _load_local_conf()
-    spec = local_conf.key_spec(key)
-    if spec is None or spec.choices not in local_conf._ROLE_SUFFIXES:
+    spec = conf_schema.key_spec(key)
+    if spec is None or spec.choices not in conf_schema._ROLE_SUFFIXES:
         return False
-    reasoning = local_conf.key_spec(f"{key.rsplit('.', 1)[0]}.reasoning")
+    reasoning = conf_schema.key_spec(f"{key.rsplit('.', 1)[0]}.reasoning")
     return reasoning is not None and reasoning.choices == "reasoning"
 
 
@@ -4584,10 +4202,9 @@ def _reasoning_values(conf: Mapping[str, str]) -> list[tuple[str, str, str, str 
     filled = [(key, value) for key, value in conf.items() if (value or "").strip()]
     if not filled:
         return []
-    local_conf = _load_local_conf()
     found: list[tuple[str, str, str, str | None]] = []
     for key, value in filled:
-        spec = local_conf.key_spec(key)
+        spec = conf_schema.key_spec(key)
         if spec is None or spec.choices != "reasoning":
             continue
         profile = key.rsplit(".", 1)[0]
@@ -5550,9 +5167,8 @@ def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
               / "worktree-leases.json")
     if not ledger.is_file():
         return 0
-    seam = _load_file_lock()
-    with seam.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
-        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
+    with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
         leases = data.get("leases") or []
         kept = [row for row in leases if row.get("slot") != "."]
         dropped = len(leases) - len(kept)
@@ -5568,7 +5184,7 @@ def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8", newline="\n",
             )
-            seam.atomic_replace(tmp, ledger)
+            fs.atomic_replace(tmp, ledger)
     return dropped
 
 
@@ -5599,9 +5215,8 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
               / "worktree-leases.json")
     if not ledger.is_file():
         return 0
-    seam = _load_file_lock()
-    with seam.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
-        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
+    with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
         leases = data.get("leases") or []
         moved: list[str] = []
         for row in leases:
@@ -5630,7 +5245,7 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8", newline="\n",
             )
-            seam.atomic_replace(tmp, ledger)
+            fs.atomic_replace(tmp, ledger)
     return len(moved)
 
 
@@ -5702,24 +5317,23 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
     conf_path = Path(effective_dest) / ".project_manager" / "local.conf"
     if not conf_path.is_file():
         return {}
-    module = _load_local_conf()
     if not write:
-        result = module.load(conf_path)
-        updates = module.rename_updates(result)
+        result = conf_store.load(conf_path)
+        updates = conf_schema.rename_updates(result)
         if not updates:
             return {}
         moved = {old: new for old, new in result.legacy.items()
                  if new is not None and old in updates}
     else:
         with _local_conf_write_lock(conf_path):
-            result = module.load(conf_path)
-            updates = module.rename_updates(result)
+            result = conf_store.load(conf_path)
+            updates = conf_schema.rename_updates(result)
             if not updates:
                 return {}
             moved = {old: new for old, new in result.legacy.items()
                      if new is not None and old in updates}
             _load_pm_import()._write_conf_keys_locked(conf_path, updates)
-            remaining = module.rename_updates(module.load(conf_path))
+            remaining = conf_schema.rename_updates(conf_store.load(conf_path))
             if remaining:
                 raise RuntimeError(
                     f"local.conf 키 이동 실패: 잔존 키={', '.join(remaining)}; 파일={conf_path}")
@@ -5727,7 +5341,7 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
     print(f"{prefix}local.conf 키 이름 {len(moved)}개 이동{' 예정' if not write else ''} — "
           "갱신이 바꾼 이름이라 갱신이 옮긴다(남은 % 는 쓴 % 로, 공통 사용 한도는 "
           "하네스마다 같은 값으로).")
-    for line in module.migration_lines(moved):
+    for line in conf_schema.migration_lines(moved):
         print(f"  {line}")
     return moved
 
@@ -5756,7 +5370,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
         result["status"] = "no_agents"
         return result
 
-    adopter_agents = _read_text_shared(agents_path, encoding="utf-8")
+    adopter_agents = fs.read_text_shared(agents_path, encoding="utf-8")
     operational_keys = _entry_doc_operational_keys()
 
     # 세대 clean-match 탐색 (구형 미수정?).
@@ -5784,13 +5398,13 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
             _read_local_conf(dest / ".project_manager" / "local.conf"))
         operational = {**captured, **local_op}
         new_text = _render_new_entry_doc(
-            _read_text_shared(new_tmpl_path, encoding="utf-8"), operational, operational_keys)
+            fs.read_text_shared(new_tmpl_path, encoding="utf-8"), operational, operational_keys)
         if new_text is None:
             # operational 재렌더 미완 — 무손·loud 로 낙하(미완 파일을 쓰지 않는다).
             result["status"] = "loud_manual"
             result["matched_generation"] = matched_gen
             return result
-        adopter_jsonc = _read_text_shared(jsonc_path, encoding="utf-8")
+        adopter_jsonc = fs.read_text_shared(jsonc_path, encoding="utf-8")
         new_jsonc, jsonc_changed = _ensure_jsonc_instructions(adopter_jsonc)
         result.update(status="migrated", matched_generation=matched_gen,
                       agents_replaced=True, jsonc_updated=jsonc_changed)
@@ -5812,7 +5426,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
         result["status"] = "loud_manual"
         return result
     # 신형/무관 — AGENTS.md 미터치. opencode.jsonc instructions 만 idempotent 보장(부분 전환 복구·멱등).
-    adopter_jsonc = _read_text_shared(jsonc_path, encoding="utf-8")
+    adopter_jsonc = fs.read_text_shared(jsonc_path, encoding="utf-8")
     new_jsonc, jsonc_changed = _ensure_jsonc_instructions(adopter_jsonc)
     result["jsonc_updated"] = jsonc_changed
     result["status"] = "recovered" if jsonc_changed else "noop"
@@ -5982,7 +5596,7 @@ def _legacy_growth_ticket_files(dest_root: Path) -> list[Path]:
     for status in _BOARD_TICKET_SCAN_DIRS:
         for path in sorted((tickets_dir / status).glob("T-*.md")):
             try:
-                text = _read_text_shared(path, encoding="utf-8")
+                text = fs.read_text_shared(path, encoding="utf-8")
             except (OSError, UnicodeError):
                 continue
             if _has_legacy_growth_marker_line(text):
@@ -6118,8 +5732,7 @@ def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
     (`HarnessCtxError`)은 설정 파일을 쓰지 않고 멈춘다 — 호출부가 rc 1 로 끝내 upstream.rev 기록에
     닿지 않는다. 그 밖의 실패는 그대로 올라간다."""
     prefix = "[dry-run] 하네스 설정 반영 예정" if not write else "  ✓ 하네스 설정 반영"
-    local_conf = _load_local_conf()
-    remaining = local_conf.blocking_legacy(local_conf.load(
+    remaining = conf_schema.blocking_legacy(conf_store.load(
         Path(effective_dest) / ".project_manager" / "local.conf").legacy)
     if remaining:
         print(f"{'[dry-run] ' if not write else ''}하네스 설정 반영을 건너뛴다 — local.conf 에 "
@@ -6463,7 +6076,7 @@ def _read_hook_artifact(path: Path) -> str | None:
     아니다" 라는 같은 결론이고, 따라서 같은 해소(재설치)로 가야 한다. 예외를 밖으로 내면 호출부의
     fail-soft 가 그걸 `unavailable`(=재설치 안 함)로 처리해 **깨진 훅이 영영 복구되지 않는다**."""
     try:
-        return _read_text_shared(path, encoding="utf-8")
+        return fs.read_text_shared(path, encoding="utf-8")
     except OSError:
         return None            # 부재·권한·IO — 재설치 대상.
     except UnicodeDecodeError:
@@ -6762,7 +6375,7 @@ def _refuse_scope_with_pending_engine_code(changes) -> int:
 def _transfer_engine_code(args, argv: list[str], scope_paths: list[str]) -> int:
     """전달 프로세스 — 엔진 코드만 옮기고 받은 갱신기를 완료 프로세스로 띄운다(rc 는 그 프로세스의 것).
 
-    상류 해소·중앙 로더 선복구(전량 쓰기 실행만)·manifest 자기치유 판정·엔진 코드 계획은 전부
+    상류 해소·manifest 자기치유 판정·엔진 코드 계획은 전부
     복사 **전**에 끝난다. 복사를 시작한 뒤에는 엔진 모듈을 새로 적재하지 않는다. `--dry-run` 은 엔진
     코드 변경이 있으면 그 변경만 보여 주고 끝난다(받은 갱신기가 디스크에 없어 렌더·훅·어댑터 미리보기를
     그릴 수 없다). `--paths` 는 엔진 코드 변경이 남아 있으면 어떤 쓰기보다 먼저 거부한다."""
@@ -6770,12 +6383,6 @@ def _transfer_engine_code(args, argv: list[str], scope_paths: list[str]) -> int:
     if rc:
         return rc
     effective_dest = REPO
-    if not args.dry_run and not scope_paths:
-        try:
-            _predeploy_central_loader(source_root, effective_dest)
-        except (OSError, RuntimeError) as exc:
-            print(f"오류: 중앙 로더 선복구 실패 — {exc}", file=sys.stderr)
-            return 1
     try:
         engine = _engine_code_plan(effective_dest, source_root)
     except FileNotFoundError as exc:
@@ -6799,7 +6406,7 @@ def _transfer_engine_code(args, argv: list[str], scope_paths: list[str]) -> int:
               "실행하면 나온다.")
         return 0
     if not args.dry_run:
-        # manifest 순서(중앙 로더 먼저 — `read_manifest`)대로 바이트를 옮긴다. `apply` 는 훅 세트
+        # manifest 순서(엔진 패키지 먼저 — `read_manifest`)대로 바이트를 옮긴다. `apply` 는 훅 세트
         #   판정자와 렌더러를 해소하므로 부르지 않는다(엔진 코드 행은 훅 세트·렌더 대상이 아니다).
         for _rel, src, dst, _kind in changes:
             Path(dst).parent.mkdir(parents=True, exist_ok=True)
@@ -6814,7 +6421,7 @@ def _launch_completion(dest_root: Path, source_root: Path, transferred: int,
 
     출력은 이 프로세스가 받아 같은 스트림에 다시 쓴다 — 완료 프로세스의 부모는 python.exe 라
     PowerShell 캡처를 알아보지 못하므로, 직접 쓰게 하면 그 파이프에서 한글이 깨진다. 이 프로세스의
-    콘솔 판정(`console_encoding`)이 그대로 적용되게 줄 단위로 중계한다. `PYTHONIOENCODING=utf-8` 은
+    콘솔 판정(`console`)이 그대로 적용되게 줄 단위로 중계한다. `PYTHONIOENCODING=utf-8` 은
     완료 프로세스가 콘솔 설정에 닿기 전의 출력도 UTF-8 로, `PYTHONUNBUFFERED=1` 은 두 스트림의 줄이
     도착 순서대로 오게 한다. 기동 실패(인터프리터·파일 부재)는 그대로 올라간다. 테스트 교체 지점이다
     (`tests/_manager_home.complete_in_process`)."""
@@ -7028,8 +6635,8 @@ def _main(argv: list[str] | None = None) -> int:
     guest_backfill, guest_backfill_flavors = _guest_engine_backfill_entries(
         effective_dest, source_root, guest_entries)
 
-    # ── `--paths` 소유권 선검증: **어떤 dest 쓰기보다 먼저**(중앙 로더 선복구 포함). 미등재 요청은
-    #    rc1 로 끝나는데 그 전에 seam 복구 write 가 일어나면 "거부인데 파일이 바뀐다" 가 된다.
+    # ── `--paths` 소유권 선검증: **어떤 dest 쓰기보다 먼저**. 미등재 요청은
+    #    rc1 로 끝나는데 그 전에 write 가 일어나면 "거부인데 파일이 바뀐다" 가 된다.
     #    판정은 읽기만 하고 관대하다(dest∪source manifest 합집합) — 좁은 판정은 계획 확정 뒤 한 번
     #    더 돈다. manifest 를 못 읽으면 선검증을 생략한다(정규 경로가 같은 오류를 더 정확히 낸다).
     if scope_paths:
@@ -7046,25 +6653,6 @@ def _main(argv: list[str] | None = None) -> int:
                 early_manifest, scope_paths, effective_dest)
             if rc:
                 return rc
-
-    # dry-run은 무변경 계약을 지킨다. 실제 sync에서는 manifest 해석/출하 인벤토리보다 먼저
-    # 중앙 seam을 복구해, missing/syntax/empty/old 어느 중단 상태에서도 같은 명령을 재실행한다.
-    # **경로 스코프는 예외**다: 그 실행의 계약은 "명시 경로만 전파" 라, 스코프 밖인 이 seam 을
-    # 고치면 요청하지 않은 파일이 바뀐다. 스코프에 그 경로가 들어 있으면 정상대로 복구하고,
-    # 아니면 건너뛰되 **복구가 필요한 상태면 알린다**(조용한 방치 금지 — 전량 sync 로 안내).
-    if not args.dry_run:
-        loader_in_scope = not scope_paths or _in_scope_paths(
-            _CENTRAL_LOADER_REL, scope_paths)
-        if loader_in_scope:
-            try:
-                _predeploy_central_loader(source_root, effective_dest)
-            except (OSError, RuntimeError) as exc:
-                print(f"오류: 중앙 로더 선복구 실패 — {exc}", file=sys.stderr)
-                return 1
-        elif central_loader_needs_recovery(effective_dest):
-            print(f"  ⚠️ 중앙 로더({_CENTRAL_LOADER_REL})가 복구 대상이지만 경로 스코프 밖이라 "
-                  "건드리지 않는다 — 전량 sync 를 돌리거나 그 경로를 --paths 에 포함하라.",
-                  file=sys.stderr)
 
     # ── manifest 자기치유 (self-update 2-pass) — upstream engine.manifest 를 이번 sync 의
     #    계획 기준으로 승격해, 로컬 manifest 가 구형이어도 신규 등재분이 한 번의 실행으로 plan→apply
@@ -7514,12 +7102,7 @@ def main(argv: list[str] | None = None) -> int:
 
     apply/render/IO 등 다른 예외는 프로그래밍·시퀀싱 오류이므로 기존처럼 호출자에게 전파한다.
     """
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        allow_unverified=True,
-    )
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
     try:
         return _main(argv)
     except EmptyShippingInventoryError as exc:
@@ -7530,14 +7113,7 @@ def main(argv: list[str] | None = None) -> int:
         #   skew 가 이 경계를 지난다는 사실을 명시해 둔다.
         if _is_engine_rev_skew(exc):
             raise
-        # 중앙 seam 복구는 _main이 --from을 해소한 뒤 선행한다. 예외 타입 판별 때문에
-        # main import 시점부터 seam을 요구하면 missing/syntax 복구가 다시 자기잠김된다.
-        repo_files = None
-        try:
-            repo_files = _load_repo_owned_files()
-        except Exception:  # noqa: BLE001 — 분류 보조 실패가 원 예외를 가리면 안 된다.
-            pass
-        if repo_files is None or not isinstance(exc, repo_files.RepoFilesGitError):
+        if not isinstance(exc, repo_files.RepoFilesGitError):
             raise
         print(
             "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "

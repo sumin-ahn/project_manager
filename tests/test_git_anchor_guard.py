@@ -649,7 +649,7 @@ def test_relative_engine_copy_hash_read_failure_is_fail_soft(
         raise OSError("fixture unreadable")
 
     # 사본 해시 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
-    monkeypatch.setattr(board.file_lock, "read_bytes_shared", unreadable)
+    monkeypatch.setattr(board.fs, "read_bytes_shared", unreadable)
     got = board.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
     )

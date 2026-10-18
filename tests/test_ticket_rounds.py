@@ -520,7 +520,7 @@ def test_load_verify_and_reserve_survive_the_lockless_harvest_window(
     """회수(무락) 중간 파일이 디스크에 있는 창에서도 같은 티켓의 로드·판정·예약이 정상이다."""
     target = _reserve(rounds, tickets_dir, "T-0001", "developer")
     harvested = "## 구현 보충 (developer · 2026-01-03)\n\n회수 본문\n"
-    seam = rounds._load_file_lock()
+    seam = rounds.fs
     original_replace = seam.atomic_replace
     inside_window = threading.Event()
     release = threading.Event()
@@ -993,13 +993,13 @@ def test_module_loads_only_the_file_lock_and_delegate_siblings():
         and len(node.args) >= 2
         and isinstance(node.args[1], ast.Constant)
     }
-    assert loaded == {"file_lock.py", "pm_delegate.py"}
+    assert loaded == {"pm_delegate.py"}
 
 
 def test_reads_and_replacements_go_through_the_shared_file_lock_seam(rounds, tickets_dir, monkeypatch):
     """판독·교체가 공용 seam 을 지난다 — 일반 `open`/`os.replace` 로 내려앉지 않는다."""
     path = _reserve(rounds, tickets_dir, "T-0001", "developer")
-    seam = rounds._load_file_lock()
+    seam = rounds.fs
     calls: list[str] = []
 
     def record_read(*args, **kwargs):

@@ -23,7 +23,7 @@ ctx 기계 가드: 세 하네스 모두 driver 가 usage 로 예산 초과를 �
 **post-turn** 회전 marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전).
 marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전
 회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = 엔진 압축 한도 기록의
-codex 적용 한도 E(`local_conf.read_ctx_budget`)이고, 엔진은 같은 기록으로 `.codex/config.toml` 의
+codex 적용 한도 E(`conf_store.read_ctx_budget`)이고, 엔진은 같은 기록으로 `.codex/config.toml` 의
 `model_auto_compact_token_limit` 을 쓴다(`pm_import.apply_harness_ctx`).
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
@@ -697,9 +697,12 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
     if hook_is_subagent(payload):
         return {}
     root = Path(root)
-    engine, _ = _load_engine()
+    tools = repo_root(Path(__file__).resolve().parent) / ".project_manager" / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from pm_engine.infra import conf_store
     try:
-        budget = engine._load_ctx_leaf().read_ctx_budget(
+        budget = conf_store.read_ctx_budget(
             root, load_local_config(root), "codex", payload.get("model"))
     except ValueError as exc:  # 압축 한도 기록 부재·손상·입력 불일치 — 프롬프트 제출 때 알린다.
         return {"systemMessage": f"[ctx-budget] {exc}"} if event == "UserPromptSubmit" else {}

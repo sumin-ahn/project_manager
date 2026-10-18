@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import pytest
+from _engine_tree import engine_python_files
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -33,8 +34,8 @@ def _exposes_runtime_skill_entry(tree: ast.AST) -> bool:
 
 def _runtime_modules() -> tuple[str, ...]:
     return tuple(sorted(
-        path.stem
-        for path in TOOLS.glob("*.py")
+        path.relative_to(TOOLS).with_suffix("").as_posix()
+        for path in engine_python_files(TOOLS)
         if _exposes_runtime_skill_entry(
             ast.parse(path.read_text(encoding="utf-8"))
         )
@@ -127,7 +128,7 @@ def test_all_tool_modules_have_no_hardcoded_slash_skill_output_string():
     failures = {}
     # runtime seam 보유 목록과 별개로 tools 전체를 스캔한다. 따라서 helper를 추가하지 않은 새
     # 출력 모듈도 slash 리터럴을 넣는 순간 red가 된다(목록 누락으로 숨을 수 없음).
-    for path in sorted(TOOLS.glob("*.py")):
+    for path in engine_python_files(TOOLS):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         docstrings = _docstring_nodes(tree)
         rows = [

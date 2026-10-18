@@ -1,7 +1,7 @@
 """ctx 임계 미러 정합 가드 (T-0207·T-0550·T-0770·T-0906·T-0923·T-0943).
 
 쓴 % 임계(중간 기록 권고·압축 임박 경고)와 사용 한도의 기본값은 엔진 레지스트리 한 곳뿐이다 — 어댑터는
-압축 한도 기록(`local_conf.read_ctx_budget`)이 돌려준 비율과 적용 한도를 쓰고 기본값 사본을 두지 않는다
+압축 한도 기록(`conf_store.read_ctx_budget`)이 돌려준 비율과 적용 한도를 쓰고 기본값 사본을 두지 않는다
 (T-0943). 어댑터에 남은 미러는 레지스트리에 없는 파생 상수(2단 넛지 마진) 하나다.
 
 밴드 대조(`test_three_adapters_classify_the_same_band_table`)는 세 어댑터의 판정 함수를 **실제로
@@ -18,9 +18,10 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.domain import conf_schema
+
 REPO = Path(__file__).resolve().parents[1]
-# 엔진 사이트는 리터럴이 아니라 키 레지스트리다(T-0906) — board 의 ctx 상수는 거기로 옮겨졌다.
-LOCAL_CONF_PY = REPO / ".project_manager" / "tools" / "local_conf.py"
+# 엔진 사이트는 리터럴이 아니라 키 레지스트리다(T-0906 · `conf_schema`) — board 의 ctx 상수는 거기로 옮겨졌다.
 CLAUDE_GUARD = REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py"
 # opencode ctx-guard 상수는 진입점 shim(plugins/ctx-guard.js)이 아니라 core 모듈에 산다 — 진입점은
 # opencode 로드 규약(export=단일 함수·T-0283)을 위해 팩토리만 export 하는 얇은 shim 이고, 순수 헬퍼·
@@ -39,7 +40,7 @@ def _grab(path: Path, pattern: str) -> int:
 
 def _engine(key: str) -> int:
     """엔진 사이트 = 레지스트리가 선언한 이 키의 기본값 (어댑터 리터럴의 대조 기준)."""
-    declared = _load_module("local_conf_ctx_mirror", LOCAL_CONF_PY).default_for(key)
+    declared = conf_schema.default_for(key)
     assert declared is not None, f"레지스트리에 `{key}` 기본값 선언이 없다"
     return int(declared)
 

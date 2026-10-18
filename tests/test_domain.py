@@ -632,7 +632,7 @@ def test_domain_real_git_runner_wires_stdout_only_shared_policy(
             captured["kwargs"] = kwargs
             return sentinel
 
-    monkeypatch.setattr(dm, "_load_repo_owned_files", lambda: _RepoFiles)
+    monkeypatch.setattr(dm, "repo_files", _RepoFiles)
 
     assert dm._real_git_runner(tmp_path) is sentinel
     assert captured["cwd"] == tmp_path
@@ -2150,7 +2150,7 @@ def test_directory_expansion_failure_is_consistent_then_next_query_retries(
 
     monkeypatch.setattr(dm, "REPO", tmp_path)
     monkeypatch.setattr(dm, "load_pages", lambda _domain_dir=None: [page])
-    monkeypatch.setattr(dm, "_load_repo_owned_files", lambda: TransientRepoFiles)
+    monkeypatch.setattr(dm, "repo_files", TransientRepoFiles)
     monkeypatch.setattr(dm, "_real_git_runner", transient_factory)
 
     assert dm.main(["capture", "--touches", "src"]) == 0

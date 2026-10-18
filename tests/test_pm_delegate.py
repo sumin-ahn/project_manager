@@ -38,6 +38,7 @@ from _fake_opencode import OLLAMA_LISTING, calls, install_fake_opencode, path_wi
 from _git_fixture import init_git_repo
 from _textio import normalize_newline_bytes
 from _win_skip import _can_symlink, posix_bash_supported, posix_mode_supported
+from pm_engine.domain import conf_schema
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1954,7 +1955,7 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     restricted: list[Path] = []
     removed: list[Path] = []
     real_rmtree = file_lock.force_rmtree
@@ -2172,7 +2173,7 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
 def test_transport_prompt_write_restricts_owner_access_via_shared_seam(
         pd, monkeypatch, tmp_path):
     """`os.open` 의 0600 mode 인자는 ACL 플랫폼에서 무효 — 공용 소유자-제한 seam 이 배선돼 있다."""
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     restricted: list[Path] = []
     monkeypatch.setattr(
         file_lock, "restrict_to_owner",
@@ -2497,7 +2498,7 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     monkeypatch.setattr(
         file_lock, "force_rmtree",
         lambda path, **kwargs: (_ for _ in ()).throw(
@@ -3861,12 +3862,11 @@ def test_role_preambles_include_prohibition_phrases(pd):
 def _isolated_delegate(tmp_path: Path, registry_source: str):
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    # `file_lock.py` 도 함께 둔다 — 엔진 소스 판독이 공유 읽기 seam 을 지나므로(T-0729)
-    # 그 형제가 없으면 registry 해소가 skew 이전에 부재로 죽어 회귀가 다른 것을 잰다.
-    for filename in (
-        "pm_delegate.py", "repo_owned_files.py", "console_encoding.py", "file_lock.py",
-    ):
-        shutil.copy2(TOOLS / filename, tools / filename)
+    # 엔진 패키지(`pm_engine/`)도 함께 둔다 — 엔진 소스 판독이 공유 읽기 seam 을 지나므로(T-0729)
+    # 그것이 없으면 registry 해소가 skew 이전에 부재로 죽어 회귀가 다른 것을 잰다.
+    shutil.copy2(TOOLS / "pm_delegate.py", tools / "pm_delegate.py")
+    shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     (tools / "pm_import.py").write_text(
         f'ENGINE_REV = "{_load("pm_delegate_rev", TOOLS / "pm_delegate.py").ENGINE_REV}"\n'
         f"{registry_source}\n",
@@ -4875,7 +4875,7 @@ def test_fallback_is_documented_in_the_registry_not_seeded_into_conf(pd):
     설명을 conf 에 심으면 값과 어긋난 채 굳는다(그 파일은 아무도 다시 읽지 않는다). 엔진은
     폴백을 설정 없이 지어내지 않는다.
     """
-    conf_module = pd._load_local_conf()
+    conf_module = conf_schema
     spec = conf_module.key_spec("delegate.developer.hard.fallback.model")
     assert spec is not None and "실패 시 대신 쓸" in spec.description, "대체 축 설명이 없다"
     assert spec.default is None, "폴백은 엔진 기본값을 갖지 않는다"
@@ -5720,7 +5720,7 @@ def test_write_roles_single_source_matches_detector_default(pd):
     scope = _load("delegate_scope_roles", TOOLS / "delegate_scope.py")
     assert scope.WRITE_ROLES == pd.WRITE_ROLES
     # 역할 축은 write/read 2분할이 전부 — 새 역할이 생기면 read(허용 0) 쪽 기본값이 된다.
-    assert pd.WRITE_ROLES | pd.READ_ROLES == frozenset(pd.ROLE_CHOICES)
+    assert pd.WRITE_ROLES | pd.READ_ROLES == frozenset(conf_schema.ROLE_CHOICES)
 
 
 def test_midrun_io_error_does_not_fallback(pd, monkeypatch, tmp_path, capsys):

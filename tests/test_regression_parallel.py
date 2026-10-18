@@ -34,11 +34,11 @@ REPO = Path(__file__).resolve().parent.parent
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 실측된 두 형태 — 엔진 로더의 합성 이름(사본 구분용 경로 포함)과 테스트가 붙인 사본 이름
-# (`tests/test_file_lock.py` 가 file_lock.py 를 이 이름으로 연다). 어느 쪽도 컨트롤러에서 import 되지
+# (`tests/test_file_lock.py` 가 pm_engine/infra/fs.py 를 이 이름으로 연다). 어느 쪽도 컨트롤러에서 import 되지
 # 않는다: `spec_from_file_location` 호출부 192 파일이 제각각 이름을 붙여 되짚을 규칙이 없다.
 _UNRESOLVABLE_WARNING_NAMES = {
     "engine-synthetic": (
-        f"_project_manager_repo_owned_files:{TOOLS / 'repo_owned_files.py'}",
+        f"_project_manager_repo_owned_files:{TOOLS / 'pm_engine' / 'infra' / 'repo_files.py'}",
         "RepoFilesFallbackWarning"),
     "ad-hoc-copy": ("file_lock_under_test", "LocklessFallbackWarning"),
 }
@@ -79,7 +79,7 @@ def _warning_data(module_name: str, class_name: str) -> dict:
     data = serialize_warning_message(warnings.WarningMessage(
         message=_ProbeWarning(_WARNING_TEXT),
         category=_ProbeWarning,
-        filename=str(TOOLS / "repo_owned_files.py"),
+        filename=str(TOOLS / "pm_engine" / "infra" / "repo_files.py"),
         lineno=1,
     ))
     return dict(
@@ -163,6 +163,9 @@ def _write_probe_suite(root: Path, *, with_guards: bool) -> None:
     root.mkdir(parents=True, exist_ok=True)
     if with_guards:
         shutil.copy2(REPO / "tests" / "conftest.py", root / "conftest.py")
+        # 사본 conftest 는 자기 위치 기준 `../.project_manager/tools` 의 엔진 패키지를 적재한다.
+        shutil.copytree(TOOLS / "pm_engine", root.parent / ".project_manager" / "tools" / "pm_engine",
+                        ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     else:
         (root / "conftest.py").write_text("", encoding="utf-8")
     (root / "test_engine_warning_probe.py").write_text(
@@ -173,8 +176,8 @@ def _write_probe_suite(root: Path, *, with_guards: bool) -> None:
             import warnings
             from pathlib import Path
 
-            REPO_FILES_SOURCE = Path({str(TOOLS / "repo_owned_files.py")!r})
-            FILE_LOCK_SOURCE = Path({str(TOOLS / "file_lock.py")!r})
+            REPO_FILES_SOURCE = Path({str(TOOLS / "pm_engine" / "infra" / "repo_files.py")!r})
+            FILE_LOCK_SOURCE = Path({str(TOOLS / "pm_engine" / "infra" / "fs.py")!r})
             SYNTHETIC_NAME = f"_project_manager_repo_owned_files:{{REPO_FILES_SOURCE}}"
             AD_HOC_NAME = "file_lock_under_test"
 

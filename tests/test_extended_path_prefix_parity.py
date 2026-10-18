@@ -21,6 +21,7 @@ import importlib.util
 from pathlib import Path, PureWindowsPath
 
 import pytest
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -58,10 +59,10 @@ def test_the_extended_prefix_rule_has_exactly_one_implementation():
     스캔이 무의미해진다([[guard-must-cover-its-own-surface]]).
     """
     owners = {}
-    for path in sorted(TOOLS.glob("*.py")):
+    for path in engine_python_files(TOOLS):
         lines = _lines_with_prefix_literal(path.read_text(encoding="utf-8"))
         if lines:
-            owners[path.name] = lines
+            owners[path.relative_to(TOOLS).as_posix()] = lines
 
     assert RULE_OWNER in owners, "규칙 소유 모듈에서 확장 prefix 표기가 사라졌다(스캔 무효)"
     assert set(owners) == {RULE_OWNER}, (

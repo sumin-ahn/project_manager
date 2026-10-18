@@ -41,13 +41,13 @@ def test_migration_writes_through_tmp_and_atomic_replace(tmp_path):
     dest = tmp_path / "home"
     ledger = _make_ledger(dest, [{"slot": "."}, {"slot": "proj_1"}])
     seen: list[tuple[str, str]] = []
-    real_replace = _load("file_lock").atomic_replace
+    real_replace = pm_update.fs.atomic_replace
 
     def spy(src, dst):
         seen.append((Path(src).name, Path(dst).name))
         real_replace(src, dst)
 
-    seam = pm_update._load_file_lock()
+    seam = pm_update.fs
     original = seam.atomic_replace
     seam.atomic_replace = spy
     try:

@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from _git_fixture import init_git_repo
 from _slot_seed import SLOT, seed_slot
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1854,10 +1855,10 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
         "head":f.head, "status":"pass", "rc":0, "n":22, "ts":"now",
     }), encoding="utf-8")
     calls = []
-    def unavailable():
+    def unavailable(*_args):
         calls.append(True)
         raise FileNotFoundError("partial engine local_conf.py missing")
-    monkeypatch.setattr(f.board, "_load_local_conf", unavailable)
+    monkeypatch.setattr(conf_store, "load_checked_readable", unavailable)
     assert (_t0936_record(f) if consumer == "record" else _t0936_check(f)) == 0
     assert calls == [] and f.calls == []
     assert len(f.live) == (1 if consumer == "record" else 0)
@@ -1874,10 +1875,10 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_present_or_da
     if shape == "directory": conf.mkdir()
     else: conf.write_text("qa.platforms=windows\n" if shape == "declaration" else "", encoding="utf-8")
     calls = []
-    def unavailable():
+    def unavailable(*_args):
         calls.append(True)
         raise FileNotFoundError("partial engine local_conf.py missing")
-    monkeypatch.setattr(f.board, "_load_local_conf", unavailable)
+    monkeypatch.setattr(conf_store, "load_checked_readable", unavailable)
     if shape == "stat-denied":
         original = Path.lstat
         def lstat(path, *args, **kwargs):
