@@ -1255,7 +1255,7 @@ def test_repin_indented_fence_in_block_scalar_preserves_content(
     )
     path.write_text(original, encoding="utf-8")
     monkeypatch.setattr(
-        board, "_verified_at_backfill_targets", lambda **_kwargs: [path])
+        board, "_verified_at_backfill_targets", lambda: [path])
 
     full = "cafe0001" + "0" * 32
     assert board.repin_verified_at(full, "upstream") == [(path, "updated")]
@@ -1299,7 +1299,7 @@ def test_repin_multiline_yaml_value_aborts_all_without_damage(
     multiline.write_text(multiline_original, encoding="utf-8")
     monkeypatch.setattr(
         board, "_verified_at_backfill_targets",
-        lambda **_kwargs: [good, multiline],
+        lambda: [good, multiline],
     )
 
     full = "cafe0001" + "0" * 32
@@ -1335,7 +1335,7 @@ def test_repin_aborts_all_when_result_is_unreadable_by_consumer_parser(
     invalid.write_text(invalid_original, encoding="utf-8")
     monkeypatch.setattr(
         board, "_verified_at_backfill_targets",
-        lambda **_kwargs: [good, invalid],
+        lambda: [good, invalid],
     )
 
     with pytest.raises(ValueError):
@@ -1413,7 +1413,7 @@ def test_repin_validation_failure_is_nonzero_and_changes_nothing(
     broken.write_text(broken_original, encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "_verified_at_backfill_targets",
-                        lambda **_kwargs: [good, broken])
+                        lambda: [good, broken])
     monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
 
     rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
@@ -1450,7 +1450,7 @@ def test_repin_write_failure_reports_changed_prefix_and_stops(
     for path in paths:
         write_lf(path, original)
     monkeypatch.setattr(board, "_verified_at_backfill_targets",
-                        lambda **_kwargs: paths)
+                        lambda: paths)
     real_fsync = board.os.fsync
     fsync_calls = 0
 
@@ -1483,7 +1483,7 @@ def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "_repo_head_sha", lambda _repo=None: full)
     monkeypatch.setattr(board, "_verified_at_backfill_targets",
-                        lambda **_kwargs: paths)
+                        lambda: paths)
     real_fsync = board.os.fsync
     fsync_calls = 0
 

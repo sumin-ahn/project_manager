@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 이 티켓이 소유한 소비처 — board 밖에서 상태 집합을 읽는 자리. 나머지 하드코딩(`pm_import`·
-# `pm_update`·`ticket_finish`)은 각자 무변경 근거가 따로 있어 이 티켓 범위 밖이다.
+# `ticket_finish`)은 각자 무변경 근거가 따로 있어 이 티켓 범위 밖이다.
 STATUS_DIRS_CONSUMERS: tuple[str, ...] = ("additional_reviewer", "pm_log", "pm_bootstrap")
 
 # 주입용 가짜 상태 — board 가 아직 모르는 이름이어야 "정의를 바꾸면 따라온다"를 증명한다.

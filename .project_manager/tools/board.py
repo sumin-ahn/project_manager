@@ -16733,7 +16733,7 @@ _ROUND_STRAY_LINT_KIND = "round-stray"
 # 한 티켓의 라운드 판정이 실패한 자리 — 나머지 티켓 판정은 그대로 내고 이 티켓만 사유로 남긴다.
 _ROUND_UNREADABLE_LINT_KIND = "round-unreadable"
 # 구 단일-파일 컨테이너의 흔적. 본문에 이 주석이 남아 있으면 그 티켓의 역할 산출은 아직
-# 라운드 파일로 옮겨지지 않은 것이다(마이그레이션 대상).
+# 라운드 파일로 옮겨지지 않은 것이다(사람이 정리할 대상 · `legacy-growth-section` 차단).
 _LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
     f"<!-- {_LEGACY_SECTION_MARKER}:", f"<!-- {_LEGACY_SEAL_MARKER}")
 _LEGACY_GROWTH_LINT_KIND = "legacy-growth-section"

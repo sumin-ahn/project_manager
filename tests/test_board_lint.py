@@ -3468,6 +3468,7 @@ def test_legacy_growth_section_blocks_and_names_the_migration(board, monkeypatch
     assert "legacy-growth-section" not in board._ADVISORY_LINT_KINDS, "차단 축이어야 한다"
     assert "v1.8.1" in issues[0][2]
     assert "라운드 파일로 옮기거나" in issues[0][2]
+    assert issues[0] in board.lint_tickets()
 
 
 def test_legacy_growth_section_covers_every_status_and_drafts(board, monkeypatch, tmp_path):

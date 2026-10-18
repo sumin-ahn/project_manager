@@ -29,23 +29,17 @@ def _load_board():
     return module
 
 
-def _legacy_section(role: str, ordinal: int, *, body: str, sealed: bool = True,
-                    label: str | None = None) -> tuple[str, str]:
-    """구 형식 절 블록(marker·봉인 줄 포함)과 그 절의 본문을 함께 낸다."""
-    content = (
-        f"## {label or role} ({role} · 2026-08-17)\n"
+def _legacy_section(role: str, ordinal: int, *, body: str) -> str:
+    """구 형식 절 블록(marker·봉인 줄 포함)을 낸다."""
+    return (
+        f"<!-- pm-ticket-section:start role={role} -->\n"
+        f"## {role} ({role} · 2026-08-17)\n"
         "\n"
         f"{body}\n"
-    )
-    block = (
-        f"<!-- pm-ticket-section:start role={role} -->\n"
-        f"{content}"
         f"<!-- pm-ticket-section:end role={role} -->\n"
+        f"<!-- pm-ticket-seal role={role} ordinal={ordinal} "
+        f"sha256={_SEAL_SHA} by=harvest -->\n"
     )
-    if sealed:
-        block += (f"<!-- pm-ticket-seal role={role} ordinal={ordinal} "
-                  f"sha256={_SEAL_SHA} by=harvest -->\n")
-    return block, content
 
 
 def test_legacy_markers_inside_a_fenced_code_block_are_not_data():
@@ -99,7 +93,7 @@ def test_board_lint_skips_quoted_indented_and_fenced_markers(tmp_path, monkeypat
         _ticket_text("T-4200", "done") + "\n" + quoted_body,
         encoding="utf-8", newline="")
 
-    real_block, _content = _legacy_section("developer", 0, body="산출.")
+    real_block = _legacy_section("developer", 0, body="산출.")
     (tickets / "T-4201-real.md").write_text(
         _ticket_text("T-4201", "done") + "\n" + real_block,
         encoding="utf-8", newline="")
