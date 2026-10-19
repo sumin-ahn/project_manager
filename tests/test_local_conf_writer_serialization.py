@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from pm_engine.infra import fs
+from pm_engine.infra import fs, python_env
 from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
@@ -397,7 +397,7 @@ class _Barrier:
 def _init_merge(board, monkeypatch, conf):
     """board init 의 비파괴 병합(read→merge→write)을 대상 conf 에 태우는 클로저."""
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     return board._write_init_local_conf
 
 
@@ -483,6 +483,31 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_init_merge(
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["upstream.rev"] == "rev-2"
+    assert parsed["runtime.py"] == "python3"
+    assert parsed["session"] == "pm"
+
+
+def test_init_merge_reads_the_conf_it_writes(board, monkeypatch, tmp_path):
+    """병합 판단(어느 기본키가 없나)은 잠그고 쓰는 그 conf 를 읽는다 — 앵커 트리의 conf 가 아니다.
+
+    앵커 트리(`board.REPO`)에 기본키가 다 든 conf 가 있어도, 대상 conf 에 없는 기본키는 추가된다.
+    """
+    anchor_tree = tmp_path / "anchor"
+    _conf_at(anchor_tree, (
+        "runtime.py=oldpy\n"
+        "test.cmd=oldpy -m pytest\n"
+        "project.name=anchor\n"
+        "ctx.checkpoint_at_pct=1\n"
+        "ctx.precompact_at_pct=2\n"
+        "ctx.compact_at_pct=3\n"
+    ))
+    conf = _conf_at(tmp_path / "target", "session=pm\n")
+    monkeypatch.setattr(board, "REPO", anchor_tree)
+    commit = _init_merge(board, monkeypatch, conf)
+
+    commit()
+
+    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["runtime.py"] == "python3"
     assert parsed["session"] == "pm"
 
@@ -743,7 +768,7 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     taken: list[str] = []
     _spy_lock(board.fs, monkeypatch, taken)
 
@@ -751,7 +776,7 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["test.cmd"] == board.default_pytest_cmd("python3")
+    assert parsed["test.cmd"] == python_env.default_pytest_cmd("python3")
     # 세션·prefix 는 per-clone conf 의 키가 아니다 (T-0779).
     assert "session" not in parsed and "prefix" not in parsed
 
@@ -796,7 +821,7 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
     conf = _conf_at(tmp_path, existing)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     board._write_init_local_conf()
     pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
 

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import json
 import os
 import re
 import shutil
@@ -583,6 +584,16 @@ def atomic_replace(src: Path | str, dst: Path | str) -> None:
         api.close_handle(handle)
     if error:
         raise _atomic_replace_failure(source, absolute_target, error)
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    """dict → JSON 을 temp + `atomic_replace` 로 원자 교체한다 (crash 시 잔재/부분기록 방지).
+
+    `dump_ticket_atomic` 과 동형 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8", newline="\n")
+    atomic_replace(tmp, path)
 
 
 # ── 공유 읽기 (플랫폼 공용 seam) ─────────────────────────────────────────────

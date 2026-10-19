@@ -3,7 +3,7 @@
 board(tickets+areas)를 `.project_manager/board/`(submodule)로 분리할 수 있게 엔진이 board 루트를
 *실측*으로 탐지하는지 검증한다. 핵심 안전속성(머지 조건):
 
-  - **legacy(board/ 부재) 100% 무변경**: board_root()/tickets_dir()/areas_file() 가 모두 현
+  - **legacy(board/ 부재) 100% 무변경**: `Home.board_root`·`tickets_dir`·`areas_file` 이 모두 현
     위치(wiki/·areas.md)로 해소된다 → 기존 1688 테스트 green 유지. 이 파일이 그 fallback 을
     *직접* 단언한다(상수→함수 전환이 legacy 경로를 안 바꿈을 박제).
   - **board/ 존재 시 board 루트**: `.project_manager/board/tickets` 가 dir 이면 board/ 루트로
@@ -27,6 +27,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import pm_paths, pre_push_hook, python_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -67,49 +68,49 @@ def _make_board_dir(root: Path) -> Path:
 # ════════════════════════════════════════════════════════════════════════
 
 def test_board_root_legacy_falls_back_to_wiki(board):
-    """board/ 부재(legacy·솔로·미마이그) → board_root() == REPO/.project_manager/wiki (무변경)."""
-    assert board.board_root() == board._tmp / ".project_manager" / "wiki"
+    """board/ 부재(legacy·솔로·미마이그) → Home.board_root == REPO/.project_manager/wiki (무변경)."""
+    assert board._home().board_root == board._tmp / ".project_manager" / "wiki"
 
 
 def test_tickets_dir_legacy_is_wiki_tickets(board):
     """legacy → tickets_dir() == wiki/tickets (현 위치·기존 1688 테스트가 의존하는 경로)."""
-    assert board.tickets_dir() == board._tmp / ".project_manager" / "wiki" / "tickets"
+    assert pm_paths.tickets_dir(board._home()) == board._tmp / ".project_manager" / "wiki" / "tickets"
 
 
 def test_template_file_legacy_is_wiki_template(board):
     """legacy → template_file() == wiki/tickets/_template.md (현 위치)."""
-    assert board.template_file() == (
+    assert pm_paths.template_file(board._home()) == (
         board._tmp / ".project_manager" / "wiki" / "tickets" / "_template.md")
 
 
 def test_areas_file_legacy_is_project_manager_areas(board):
     """legacy → areas_file() == .project_manager/areas.md (wiki *밖*·현 위치·특수 조건분기)."""
-    assert board.areas_file() == board._tmp / ".project_manager" / "areas.md"
+    assert pm_paths.areas_file(board._home()) == board._tmp / ".project_manager" / "areas.md"
 
 
 def test_board_root_present_switches_to_board_dir(board):
-    """`.project_manager/board/tickets` 가 dir 이면 board_root() == .project_manager/board."""
+    """`.project_manager/board/tickets` 가 dir 이면 Home.board_root == .project_manager/board."""
     _make_board_dir(board._tmp)
-    assert board.board_root() == board._tmp / ".project_manager" / "board"
+    assert board._home().board_root == board._tmp / ".project_manager" / "board"
 
 
 def test_tickets_dir_present_is_board_tickets(board):
     """board/ 존재 → tickets_dir() == board/tickets (board 루트 추종)."""
     _make_board_dir(board._tmp)
-    assert board.tickets_dir() == board._tmp / ".project_manager" / "board" / "tickets"
+    assert pm_paths.tickets_dir(board._home()) == board._tmp / ".project_manager" / "board" / "tickets"
 
 
 def test_template_file_present_is_board_template(board):
     """board/ 존재 → template_file() == board/tickets/_template.md."""
     _make_board_dir(board._tmp)
-    assert board.template_file() == (
+    assert pm_paths.template_file(board._home()) == (
         board._tmp / ".project_manager" / "board" / "tickets" / "_template.md")
 
 
 def test_areas_file_present_moves_inside_board(board):
     """board/ 존재 → areas_file() == board/areas.md (submodule *안*·조건분기·legacy 와 다름)."""
     _make_board_dir(board._tmp)
-    assert board.areas_file() == board._tmp / ".project_manager" / "board" / "areas.md"
+    assert pm_paths.areas_file(board._home()) == board._tmp / ".project_manager" / "board" / "areas.md"
 
 
 def test_board_root_ignores_bare_board_dir_without_tickets(board):
@@ -118,8 +119,8 @@ def test_board_root_ignores_bare_board_dir_without_tickets(board):
     부분/오인 디렉토리(예: board/ 만 mkdir 됨)에 끌려가지 않게 — install_pre_push_hook 의
     git-path 실측 패턴 동형. 빈 board/ 로는 절대 새 경로로 가지 않는다(graceful)."""
     (board._tmp / ".project_manager" / "board").mkdir(parents=True)
-    assert board.board_root() == board._tmp / ".project_manager" / "wiki"
-    assert board.areas_file() == board._tmp / ".project_manager" / "areas.md"
+    assert board._home().board_root == board._tmp / ".project_manager" / "wiki"
+    assert pm_paths.areas_file(board._home()) == board._tmp / ".project_manager" / "areas.md"
 
 
 def test_board_root_follows_monkeypatched_repo_lazily(board):
@@ -127,9 +128,9 @@ def test_board_root_follows_monkeypatched_repo_lazily(board):
 
     상수였다면 실 REPO 에 굳어 hermetic 테스트가 깨진다 — 함수 seam 의 핵심 회귀 박제."""
     # board/ 없을 때 legacy, board/ 만들면 즉시 board 루트 — 같은 모듈 인스턴스에서 동적 전환.
-    assert board.board_root().name == "wiki"
+    assert board._home().board_root.name == "wiki"
     _make_board_dir(board._tmp)
-    assert board.board_root().name == "board"
+    assert board._home().board_root.name == "board"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -147,25 +148,25 @@ def test_pm_config_delegates_areas_to_board_no_own_constant():
     """pm_config 은 자체 AREAS_FILE 상수를 갖지 않는다 — areas 경로 해소를 board 에 위임한다.
 
     ADR-0013 isolation: pm_config 이 areas 경로를 *독립* 해소하면 board_root 분리 시 board.py
-    와 어긋나 repo add(board.areas_append)와 조회(board._parse_areas)가 다른 파일을 본다. 자체
-    상수 부재 = 동형 추종 보장(단일 진실 = board.areas_file)."""
+    와 어긋나 repo add(board.areas_append)와 조회(areas_store._parse_areas)가 다른 파일을 본다. 자체
+    상수 부재 = 동형 추종 보장(단일 진실 = pm_paths.areas_file)."""
     pm_config = _load_pm_config()
     assert not hasattr(pm_config, "AREAS_FILE"), \
         "pm_config 이 자체 AREAS_FILE 을 정의 — board 와 areas 경로가 갈릴 수 있다(repo add 클로버)."
 
 
 def test_pm_config_repo_add_writes_board_resolved_areas_legacy(board, tmp_path, monkeypatch):
-    """repo add(board.areas_append) 가 쓰는 areas 파일 == board.areas_file() (legacy 대칭).
+    """repo add(board.areas_append) 가 쓰는 areas 파일 == pm_paths.areas_file (legacy 대칭).
 
     pm_config.cmd_repo_add 는 board.areas_append 로 위임하므로, board 가 areas 경로를 옮기면
     pm_config 도 자동 추종한다 — 둘이 *같은* 파일을 가리킴을 직접 단언(대칭 가드)."""
-    # legacy: areas_append 가 board.areas_file() 위치에 쓴다.
+    # legacy: areas_append 가 pm_paths.areas_file 위치에 쓴다.
     (board._tmp / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "BOARD_LOCK", board._tmp / ".project_manager" / ".local" / "board.lock")
-    assert not board.areas_file().exists()
+    assert not pm_paths.areas_file(board._home()).exists()
     board.areas_append("PAY", "결제", "alice")
-    assert board.areas_file().exists(), "areas_append 가 board.areas_file() 위치에 쓰지 않음."
-    assert board.areas_file() == board._tmp / ".project_manager" / "areas.md"
+    assert pm_paths.areas_file(board._home()).exists(), "areas_append 가 pm_paths.areas_file 위치에 쓰지 않음."
+    assert pm_paths.areas_file(board._home()) == board._tmp / ".project_manager" / "areas.md"
 
 
 def test_areas_append_follows_board_root_when_separated(board, monkeypatch):
@@ -385,8 +386,8 @@ def _resolved_key(path: Path) -> str:
 
 def _git_answers(board, monkeypatch, hooks: Path) -> Path:
     """git 이 그 훅 폴더를 답한 형상 — 해소는 stub 하고 설치 자리 판정만 태운다."""
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     return hooks
 
 
@@ -395,14 +396,14 @@ def test_hook_installs_under_own_git_dir(board, monkeypatch, capsys):
     (board._tmp / ".git").mkdir()
     hooks = _git_answers(board, monkeypatch, board._tmp / ".git" / "hooks")
 
-    assert board.install_pre_push_hook() is True
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
 
     body = (hooks / "pre-push").read_text(encoding="utf-8")
-    assert board._PM_HOOK_SIGNATURE in body
+    assert pre_push_hook._PM_HOOK_SIGNATURE in body
     # 길이는 엔진 본문에서 유도한다 — 값을 복제하면 본문 한 글자에 이 테스트가 거짓 red 다.
     # 그래도 보호훅(22538 바이트)과는 세 자릿수로 갈려 덮어쓰기는 이 대조에 걸린다.
     assert len(body.encode("utf-8")) == len(
-        board.pre_push_hook_body("python3").encode("utf-8"))
+        pre_push_hook.pre_push_hook_body("python3").encode("utf-8"))
     assert capsys.readouterr().err == ""       # 설치했으면 사유를 낼 것이 없다
 
 
@@ -418,7 +419,7 @@ def test_hook_refuses_parent_repo_hooks_dir(board, monkeypatch, capsys):
     monkeypatch.setattr(board, "REPO", child)
     _git_answers(board, monkeypatch, parent_hooks)
 
-    assert board.install_pre_push_hook() is False
+    assert pre_push_hook.install_pre_push_hook(board._home()) is False
 
     assert parent_hook.read_bytes() == before
     assert not (child / ".git").exists()       # 자기 자리를 새로 만들지도 않는다
@@ -436,7 +437,7 @@ def test_hook_refuses_hooks_path_outside_own_git(board, monkeypatch, capsys):
     before = protected.read_bytes()
     _git_answers(board, monkeypatch, outside)
 
-    assert board.install_pre_push_hook() is False
+    assert pre_push_hook.install_pre_push_hook(board._home()) is False
 
     assert protected.read_bytes() == before
     assert not (board._tmp / ".git" / "hooks").exists()   # 다른 자리로 우회 설치하지도 않는다
@@ -450,6 +451,6 @@ def test_hook_installs_when_hooks_path_points_inside_own_git(board, monkeypatch)
     declared = (board._tmp / ".git" / "hooks").resolve()   # git 이 돌려주는 절대경로 선언
     hooks = _git_answers(board, monkeypatch, declared)
 
-    assert board.install_pre_push_hook() is True
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
 
-    assert board._PM_HOOK_SIGNATURE in (hooks / "pre-push").read_text(encoding="utf-8")
+    assert pre_push_hook._PM_HOOK_SIGNATURE in (hooks / "pre-push").read_text(encoding="utf-8")

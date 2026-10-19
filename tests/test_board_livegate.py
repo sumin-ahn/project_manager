@@ -6,7 +6,7 @@ push HEAD 의 green 을 소비하는 채널이다. 여기선 실 pytest 를 절�
 `subprocess.run` 대역으로 rc·요약행(수집 N)을 주입하고, worktree HEAD 는 `_git_head_at`
 대역으로 격리한다(라이브 실행 금지·전량 mock).
 
-**hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_DIR`·`LIVEGATE_FLAG`·`LEASES_FILE`)이
+**hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_DIR`·`LEASES_FILE`)이
 import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재지정해 실 루트를 건드리지 않는다
 (test_board_multipm.py 의 hermetic 패턴 동류).
 """
@@ -22,8 +22,9 @@ from pathlib import Path
 import pytest
 from _git_fixture import init_git_repo
 from _slot_seed import SLOT, seed_slot
-from pm_engine.domain import manifest_rules
-from pm_engine.infra import conf_store
+from pm_engine.domain import manifest_rules, pytest_report
+from pm_engine.infra import conf_store, git, pm_paths, regression_store, review_rounds, ticket_store
+from pm_engine.app import regression, release
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -82,10 +83,8 @@ def live_board(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
     monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
-    monkeypatch.setattr(mod, "REGRESSION_FLAG", local / "regression.json")
-    monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "cafef00dcafef00d0011223344556677")
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: "cafef00dcafef00d0011223344556677")
     mod._proj = proj
     return mod
 
@@ -170,7 +169,7 @@ def _chk_args(rev=None):
     return argparse.Namespace(action="check", rev=rev, cwd=None)
 
 
-def _platform_conf(live_board, command="run-windows") -> None:
+def _platform_conf(live_board, monkeypatch, command="run-windows") -> None:
     """platform 선언을 좌표 둘 다에 깐다 — 홈(기록의 conf_anchor)과 실행 cwd(슬롯 트리).
 
     게이트는 platform 증거가 있으면 그 기록의 `conf_anchor`(홈)를, 없으면 실행 cwd(장부 행이
@@ -182,12 +181,12 @@ def _platform_conf(live_board, command="run-windows") -> None:
                  live_board._proj / SLOT / ".project_manager" / "local.conf"):
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(text, encoding="utf-8")
-    live_board._run_regression_cmd = lambda command, cwd, env: (
-        0, live_board.PM_QA_RESULT_PREFIX + json.dumps({
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda command, cwd, env: (
+        0, regression.PM_QA_RESULT_PREFIX + json.dumps({
             "platform": env["PM_QA_PLATFORM"], "head": env["PM_QA_EXPECTED_HEAD"],
             "status": "pass", "collected": 3,
         }) + "\n", "",
-    )
+    ))
 
 
 def _platform_regression_record(live_board, *, status="pass", head=None,
@@ -200,12 +199,12 @@ def _platform_regression_record(live_board, *, status="pass", head=None,
         "ts": "2026-08-28T00:00:00+00:00",
         "command": "core-full",
     }
-    live_board.REGRESSION_FLAG.write_text(json.dumps(record), encoding="utf-8")
+    pm_paths.regression_flag(live_board._home()).write_text(json.dumps(record), encoding="utf-8")
     return record
 
 
 def _read_flag(live_board) -> dict:
-    return json.loads(live_board.LIVEGATE_FLAG.read_text(encoding="utf-8"))
+    return json.loads(pm_paths.livegate_flag(live_board._home()).read_text(encoding="utf-8"))
 
 
 # ── _livegate_ran_count 파서 (수집 N 추출) ─────────────────────────────────
@@ -220,7 +219,7 @@ def _read_flag(live_board) -> dict:
 ])
 def test_livegate_ran_count_parses_summary(live_board, output, expected):
     """요약행에서 수집 N = passed + failed + error(s) (deselected 제외·수집 0 은 0)."""
-    assert live_board._livegate_ran_count(output) == expected
+    assert pytest_report._livegate_ran_count(output) == expected
 
 
 # ── pm_update.drift_changes — 판정 불능 클래스 전수 + 바이트 drift 판정 ─────────────
@@ -488,13 +487,13 @@ def test_record_rc0_pin_match_records_pass(live_board, monkeypatch, capsys):
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     head_calls = []
-    monkeypatch.setattr(live_board, "_git_head_at", lambda cwd: (
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: (
         head_calls.append(cwd) or "cafef00dcafef00d0011223344556677"
     ))
     rc = live_board.cmd_livegate(_rec_args())
     assert rc == 0
     data = _read_flag(live_board)
-    assert data["n"] == live_board.LIVEGATE_RELEASE_PIN == 22
+    assert data["n"] == regression.LIVEGATE_RELEASE_PIN == 22
     assert data["status"] == "pass"
     assert data["rc"] == 0
     assert data["head"] == "cafef00dcafef00d0011223344556677"
@@ -508,7 +507,7 @@ def test_record_rc0_pin_match_records_pass(live_board, monkeypatch, capsys):
 
 def test_declared_platform_missing_regression_evidence_blocks_before_release(
         live_board, monkeypatch):
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 1
@@ -521,7 +520,7 @@ def test_declared_platform_missing_regression_evidence_blocks_before_release(
 ))
 def test_declared_platform_red_or_stale_regression_blocks_before_release(
         live_board, monkeypatch, status, head):
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board, status=status, head=head)
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
@@ -531,11 +530,11 @@ def test_declared_platform_red_or_stale_regression_blocks_before_release(
 
 def test_declared_platform_unverified_core_blocks_before_release(
         live_board, monkeypatch):
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     record = _platform_regression_record(live_board, status="fail")
-    record["rc"] = live_board.REGRESSION_RC_UNVERIFIED_COLLECTION
+    record["rc"] = regression.REGRESSION_RC_UNVERIFIED_COLLECTION
     record["collected"] = None
-    live_board.REGRESSION_FLAG.write_text(json.dumps(record), encoding="utf-8")
+    pm_paths.regression_flag(live_board._home()).write_text(json.dumps(record), encoding="utf-8")
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
 
@@ -545,17 +544,18 @@ def test_declared_platform_unverified_core_blocks_before_release(
 
 def test_declared_platform_valid_same_head_core_executes_platform_and_snapshots(
         live_board, monkeypatch):
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     regression = _platform_regression_record(live_board)
     platform_calls = []
-    original = live_board._run_regression_cmd
-    monkeypatch.setattr(live_board, "_run_regression_cmd", lambda *a: (platform_calls.append(a) or original(*a)))
+    # 지역 이름 `regression`(core 기록)이 모듈 이름을 가리므로 모듈은 경로로 지목한다.
+    original = importlib.import_module("pm_engine.app.regression")._run_regression_cmd
+    monkeypatch.setattr("pm_engine.app.regression._run_regression_cmd", lambda *a: (platform_calls.append(a) or original(*a)))
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 0
     shell_calls = [call for call in fake.calls if call["kwargs"].get("shell")]
     assert len(shell_calls) == 1
-    assert shell_calls[0]["args"][0] == live_board.LIVEGATE_TEST_CMD
+    assert shell_calls[0]["args"][0] == release.LIVEGATE_TEST_CMD
     data = _read_flag(live_board)
     assert set(data) == {
         "head", "status", "n", "rc", "ts", "scope", "collected",
@@ -570,20 +570,20 @@ def test_declared_platform_valid_same_head_core_executes_platform_and_snapshots(
 
 def test_declared_platform_livegate_check_rejects_current_command_change(
         live_board, monkeypatch):
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board)
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 0
     head = _read_flag(live_board)["head"]
-    _platform_conf(live_board, command="changed-wrapper")
+    _platform_conf(live_board, monkeypatch, command="changed-wrapper")
     assert live_board.cmd_livegate(_chk_args(rev=head)) == 1
 
 
 def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
         live_board, monkeypatch, capsys):
     """platform anchor의 구표기 local.conf는 traceback 대신 한 줄 fail-closed 진단이다."""
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board)
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
@@ -607,7 +607,7 @@ def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
 ))
 def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
         live_board, monkeypatch, damage):
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     regression = _platform_regression_record(live_board)
 
     def corrupt(record):
@@ -625,7 +625,7 @@ def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
             record["unexpected"] = "member"
 
     corrupt(regression)
-    live_board.REGRESSION_FLAG.write_text(json.dumps(regression), encoding="utf-8")
+    pm_paths.regression_flag(live_board._home()).write_text(json.dumps(regression), encoding="utf-8")
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 1
@@ -637,15 +637,15 @@ def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
     for key in ("scope", "collected", "previous_collected"):
         assert snapshot[key] == valid[key]
     corrupt(snapshot)
-    live_board.LIVEGATE_FLAG.write_text(json.dumps(snapshot), encoding="utf-8")
+    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(snapshot), encoding="utf-8")
     assert live_board.cmd_livegate(_chk_args(rev=snapshot["head"])) == 1
 
 
 def test_declared_platform_release_head_drift_records_red(live_board, monkeypatch):
-    _platform_conf(live_board)
+    _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board)
     head = ["cafef00dcafef00d0011223344556677"]
-    monkeypatch.setattr(live_board, "_git_head_at", lambda _cwd: head[0])
+    monkeypatch.setattr(git, "_git_head_at", lambda _cwd: head[0])
     fake = _FakeRun(0, "22 passed in 1.00s")
     def run(*args, **kwargs):
         result = fake(*args, **kwargs)
@@ -701,7 +701,7 @@ def test_record_missing_codex_axis_blocks(live_board, monkeypatch, capsys):
     pin=17 은 codex relay smoke 를 포함한다. codex 축이 (마커 소실·wrong-cwd·게이트 env 누락으로)
     안 돌면 수집이 16 으로 떨어지는데, 이때 '수집 16 ≠ pin 17' 로 red — codex green 없이 릴리즈가
     통과하는 false-green 을 막는다. (over-collection 마커 소실 5↔16 과 대칭인, codex-특정 under-collection.)"""
-    without_codex = live_board.LIVEGATE_RELEASE_PIN - 1  # codex relay smoke 누락 → 17에서 16으로.
+    without_codex = regression.LIVEGATE_RELEASE_PIN - 1  # codex relay smoke 누락 → 17에서 16으로.
     fake = _FakeRun(0, f"{without_codex} passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     rc = live_board.cmd_livegate(_rec_args())
@@ -711,7 +711,7 @@ def test_record_missing_codex_axis_blocks(live_board, monkeypatch, capsys):
     assert data["n"] == without_codex   # codex 빠져 16 수집
     assert data["rc"] == 0              # red 아님 — 수집 미달이라 fail
     err = capsys.readouterr().err
-    assert f"수집 {without_codex} ≠ pin {live_board.LIVEGATE_RELEASE_PIN}" in err
+    assert f"수집 {without_codex} ≠ pin {regression.LIVEGATE_RELEASE_PIN}" in err
     assert "수집 위장 차단" in err
 
 
@@ -743,7 +743,7 @@ def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
     PM 홈에서 실행돼 코드가 사는 슬롯 트리를 겨냥한다(T-0733)."""
     worktree = str(live_board._proj / "work" / "slot1")
     # `_active_slot_path(session=None)` 시그니처(ADR-0040 D2) — 선택 인자 수용.
-    monkeypatch.setattr(live_board, "_active_slot_path", lambda session=None: worktree)
+    monkeypatch.setattr(regression, "_active_slot_path", lambda _home, session=None: worktree)
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args())
@@ -824,9 +824,9 @@ def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     live_board.cmd_livegate(_rec_args())
-    tmp = live_board.LIVEGATE_FLAG.with_suffix(live_board.LIVEGATE_FLAG.suffix + ".tmp")
+    tmp = pm_paths.livegate_flag(live_board._home()).with_suffix(pm_paths.livegate_flag(live_board._home()).suffix + ".tmp")
     assert not tmp.exists(), "atomic write 후 .tmp 잔재가 남았다"
-    assert live_board.LIVEGATE_FLAG.exists()
+    assert pm_paths.livegate_flag(live_board._home()).exists()
 
 
 # ── record ⑤ 실행 엔진 사본 drift — 라이브 wave 전 조기 거부 ──────────────────────
@@ -862,7 +862,7 @@ def test_record_overwrites_existing_pass_when_engine_copy_shows_marked_skew(
     upstream = live_board._proj.parent / "upstream"
     _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True, rel=_DRIFT_NON_ENGINE_REL)
     live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    live_board.LIVEGATE_FLAG.write_text(json.dumps(
+    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "pass",
          "n": 22, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
     real_pm_update = live_board._load_pm_update_module()
@@ -900,7 +900,7 @@ def test_record_proceeds_when_engine_copy_in_sync(live_board, monkeypatch, capsy
     assert rc == 0
     assert len(spy.calls) == 1, "drift 0 인데 라이브 wave 가 실행되지 않았다"
     data = _read_flag(live_board)
-    assert data["n"] == live_board.LIVEGATE_RELEASE_PIN == 22
+    assert data["n"] == regression.LIVEGATE_RELEASE_PIN == 22
     assert data["status"] == "pass"
     assert data["rc"] == 0
     out = capsys.readouterr().out
@@ -982,7 +982,7 @@ def test_check_absent_record_blocks(live_board, capsys):
 def test_check_red_record_blocks(live_board, capsys):
     """status!=pass 기록 → rc1 + RED 사유 (수집·rc 표면화·rev 무관)."""
     live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    live_board.LIVEGATE_FLAG.write_text(json.dumps(
+    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "fail",
          "n": 5, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
     rc = live_board.cmd_livegate(_chk_args(rev="cafef00dcafef00d0011223344556677"))
@@ -995,7 +995,7 @@ def test_check_red_record_blocks(live_board, capsys):
 def test_check_rev_mismatch_blocks(live_board, capsys):
     """pass 기록이나 head != push rev → rc1 + 'rev 불일치' (재실행 요구·부재/red 와 구분)."""
     live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    live_board.LIVEGATE_FLAG.write_text(json.dumps(
+    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "pass",
          "n": 7, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
     rc = live_board.cmd_livegate(_chk_args(rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
@@ -1010,7 +1010,7 @@ def test_check_pass_matching_rev_green(live_board, capsys):
     """pass 기록 ∧ head==rev → rc0 green (보호훅 통과 경로)."""
     live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     sha = "cafef00dcafef00d0011223344556677"
-    live_board.LIVEGATE_FLAG.write_text(json.dumps(
+    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": sha, "status": "pass", "n": 7, "rc": 0,
          "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
     rc = live_board.cmd_livegate(_chk_args(rev=sha))
@@ -1264,9 +1264,9 @@ def _pv_round_tuple(ordinal: int, role: str, text: str):
 
 def _pv_complete(mod, tid: str) -> list[str]:
     """`_complete_gate` 를 `cmd_complete` 처럼 부른다 — 본문·명세를 넘겨야 리뷰 잔여까지 본다."""
-    _status, path = mod.find_ticket_exact(tid)
+    _status, path = ticket_store.find_ticket_exact(mod._home(), tid)
     spec_text = path.read_text(encoding="utf-8")
-    _fm, body = mod.load_ticket(path)
+    _fm, body = ticket_store.load_ticket(path)
     return mod._complete_gate(tid, _pv_gate_args(), body, spec_text=spec_text)
 
 
@@ -1292,11 +1292,10 @@ def pm_verified_release(tmp_path, monkeypatch):
     mod = _load_board()
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
-    monkeypatch.setattr(mod, "_git_config_get", lambda cwd, key: None)
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "feedface" * 5)
-    runner = _FakeRun(0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 800 deselected in 40.0s")
+    monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: "feedface" * 5)
+    runner = _FakeRun(0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 800 deselected in 40.0s")
     monkeypatch.setattr(mod.subprocess, "run", runner)
 
     # 완료 판정은 board 가 로드한 pm_delegate 로 리뷰 잔여를 판정한다 — 같은 모듈 인스턴스를
@@ -1503,7 +1502,7 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
     }
     pm_verified_release.write_ledger({tid: entry})
     # 배선대로(allow_pm_verified=True) 면 통과.
-    assert mod._gate_disposition_problem(
+    assert review_rounds._gate_disposition_problem(
         tid, entry,
         allow_pm_verified=True,
         pm_verified_problem=mod._gate_pm_verified_problem(
@@ -1511,7 +1510,7 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
         ),
     ) is None
     # 되돌리면(기본 False) 같은 형상이 다시 차단된다.
-    reverted = mod._gate_disposition_problem(tid, entry)
+    reverted = review_rounds._gate_disposition_problem(tid, entry)
     assert reverted is not None
     assert "허용하지 않습니다" in reverted
 
@@ -1618,13 +1617,12 @@ def t0936_release(tmp_path, monkeypatch):
     for tree in [anchor, execution, home]: (tree / '.project_manager/.local').mkdir(parents=True)
     local = home / '.project_manager/.local'
     for name, value in {'REPO':home, 'LOCAL_DIR':local, 'LOCAL_CONF':anchor/'.project_manager/local.conf',
-                        'REGRESSION_FLAG':local/'regression.json', 'LIVEGATE_FLAG':local/'livegate.json',
                         'LEASES_FILE':local/'worktree-leases.json', 'AREAS_FILE':home/'.project_manager/areas.md'}.items():
         monkeypatch.setattr(board, name, value)
     head = 'T0936-REV'
-    monkeypatch.setattr(board, '_git_head_at', lambda cwd: head)
-    monkeypatch.setattr(board, '_resolve_livegate_flag', lambda cwd: (board.LIVEGATE_FLAG, board._LG_ENGINE_ROOT))
-    monkeypatch.setattr(board, '_resolve_regression_flag', lambda cwd: (board.REGRESSION_FLAG, board._LG_ENGINE_ROOT))
+    monkeypatch.setattr(git, '_git_head_at', lambda cwd: head)
+    monkeypatch.setattr(regression_store, '_resolve_livegate_flag', lambda home, cwd: (pm_paths.livegate_flag(home), regression_store._LG_ENGINE_ROOT))
+    monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_ENGINE_ROOT))
     monkeypatch.setattr(board, '_sync_release_must_fix_marker', lambda flag: [])
     monkeypatch.setattr(board, '_refuse_release_for_engine_drift', lambda flag, cwd: 0)
     monkeypatch.delenv('PM_SESSION_NAME', raising=False)
@@ -1633,12 +1631,12 @@ def t0936_release(tmp_path, monkeypatch):
     (home/'.project_manager/local.conf').write_text(board.LOCAL_CONF.read_text(encoding='utf-8'), encoding='utf-8')
     core = {'head':head, 'status':'pass', 'rc':0, 'scope':'full', 'collected':3,
             'previous_collected':2, 'conf_anchor':str(anchor), 'command':'core-full', 'ts':'2026-10-02T00:00:00+00:00'}
-    board.REGRESSION_FLAG.write_text(json.dumps(core), encoding='utf-8')
+    pm_paths.regression_flag(board._home()).write_text(json.dumps(core), encoding='utf-8')
     calls = []; live = []
     def platform(command, cwd, env):
         calls.append((command,cwd,dict(env)))
-        return 0, board.PM_QA_RESULT_PREFIX+json.dumps({'platform':env['PM_QA_PLATFORM'],'head':head,'status':'pass','collected':3})+'\n', ''
-    monkeypatch.setattr(board, '_run_regression_cmd', platform)
+        return 0, regression.PM_QA_RESULT_PREFIX+json.dumps({'platform':env['PM_QA_PLATFORM'],'head':head,'status':'pass','collected':3})+'\n', ''
+    monkeypatch.setattr(regression, '_run_regression_cmd', platform)
     def release(*a, **kw):
         live.append((a,kw)); return types.SimpleNamespace(returncode=0,stdout='22 passed in 0.01s\n',stderr='')
     monkeypatch.setattr(board.subprocess, 'run', release)
@@ -1656,19 +1654,19 @@ def _t0936_check(f):
 
 def test_t0936_record_executes_platforms_before_live(t0936_release):
     f=t0936_release
-    original=f.board.REGRESSION_FLAG.read_bytes()
+    original=pm_paths.regression_flag(f.board._home()).read_bytes()
     assert _t0936_record(f)==0
     assert [c[0] for c in f.calls]==['arm-full','windows-full']
     assert all(c[1]==str(f.cwd) and c[2]['PM_QA_EXPECTED_HEAD']==f.head for c in f.calls)
     assert [c[2]['PM_QA_PLATFORM'] for c in f.calls]==['arm','windows']
     assert len(f.live)==1 and f.live[0][1]['cwd']==str(f.cwd)
-    assert f.live[0][0][0]==f.board.LIVEGATE_TEST_CMD
+    assert f.live[0][0][0]==release.LIVEGATE_TEST_CMD
     snapshot=_read_flag(f.board)
     assert snapshot['conf_anchor']==str(f.anchor) and snapshot['cwd']==str(f.cwd)
     assert snapshot['command']=='core-full' and snapshot['collected']==3 and snapshot['previous_collected']==2
     assert [cell['name'] for cell in snapshot['platforms']]==['arm','windows']
     assert _t0936_check(f)==0
-    assert len(f.calls)==2 and len(f.live)==1 and f.board.REGRESSION_FLAG.read_bytes()==original
+    assert len(f.calls)==2 and len(f.live)==1 and pm_paths.regression_flag(f.board._home()).read_bytes()==original
 
 
 @pytest.mark.parametrize('defect', ['missing','red','stale','unknown','zero','bool','command','anchor','schema','other-F','old-aggregate'])
@@ -1677,10 +1675,10 @@ def test_t0936_record_rejects_unusable_core_before_children(t0936_release, defec
     changes={'red':('status','fail'),'stale':('head','old'),'unknown':('collected',None),'zero':('collected',0),'bool':('collected',True),'command':('command','old-core'),'anchor':('conf_anchor','relative'),'schema':('extra',1),'old-aggregate':('platforms',[])}
     if defect in ['missing','other-F']:
         if defect=='other-F': (f.anchor/'regression.json').write_text(json.dumps(core),encoding='utf-8')
-        f.board.REGRESSION_FLAG.unlink()
+        pm_paths.regression_flag(f.board._home()).unlink()
     else:
         key,value=changes[defect]; core[key]=value
-        f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+        pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
     assert _t0936_record(f)==1
     assert f.calls==f.live==[] and _t0936_check(f)==1
 
@@ -1693,10 +1691,10 @@ def test_t0936_platform_defects_block_live(t0936_release, monkeypatch, defect):
         payload={'platform':env['PM_QA_PLATFORM'],'head':f.head,'status':'pass','collected':3}
         if defect in ['schema','name','head','status','zero','negative','bool','unknown']:
             key,value={'schema':('extra',1),'name':('platform','other'),'head':('head','old'),'status':('status','fail'),'zero':('collected',0),'negative':('collected',-1),'bool':('collected',True),'unknown':('collected',None)}[defect]; payload[key]=value
-        marker=f.board.PM_QA_RESULT_PREFIX+json.dumps(payload)+'\n'
-        if defect=='duplicate': marker=f.board.PM_QA_RESULT_PREFIX+'{"platform":"arm","platform":"arm","head":"'+f.head+'","status":"pass","collected":3}\n'
+        marker=regression.PM_QA_RESULT_PREFIX+json.dumps(payload)+'\n'
+        if defect=='duplicate': marker=regression.PM_QA_RESULT_PREFIX+'{"platform":"arm","platform":"arm","head":"'+f.head+'","status":"pass","collected":3}\n'
         return (1 if defect=='rc' else 0), ('' if defect in ['absent','stderr'] else marker*2 if defect=='multiple' else marker), (marker if defect=='stderr' else '')
-    monkeypatch.setattr(f.board,'_run_regression_cmd',run)
+    monkeypatch.setattr(regression,'_run_regression_cmd',run)
     assert _t0936_record(f)==1 and len(f.calls)==1 and f.live==[]
     data=_read_flag(f.board)
     assert data['status']=='fail' and data['platforms'][0]['status']=='fail'
@@ -1717,7 +1715,7 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
     elif defect.startswith('current-'):
         core=dict(f.core); key=defect[8:]
         key,value={'red':('status','fail'),'stale':('head','old'),'collected':('collected',9),'command':('command','old'),'anchor':('conf_anchor',str(f.cwd))}[key]
-        core[key]=value; f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+        core[key]=value; pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
     else:
         if defect=='missing-cell': record['platforms'].pop()
         elif defect.startswith('cell-'):
@@ -1725,7 +1723,7 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
         elif defect=='command-missing': record.pop('command')
         else:
             key,value={'core-scope':('scope','scoped'),'core-collected':('collected',9),'core-previous':('previous_collected',True),'core-command':('command','old'),'core-anchor':('conf_anchor',str(f.cwd)),'core-session':('session','wrong'),'rc':('rc',True),'pin':('n',21),'rev':('head','old'),'cwd-relative':('cwd','relative')}[defect]; record[key]=value
-        f.board.LIVEGATE_FLAG.write_text(json.dumps(record),encoding='utf-8')
+        pm_paths.livegate_flag(f.board._home()).write_text(json.dumps(record),encoding='utf-8')
     count=(len(f.calls),len(f.live))
     assert _t0936_check(f)==1 and count==(len(f.calls),len(f.live))
 
@@ -1733,13 +1731,13 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
 @pytest.mark.parametrize('phase', ['platform','before-live','after-live'])
 @pytest.mark.parametrize('drift', ['A-head','L-head','declaration','command'])
 def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase, drift):
-    f=t0936_release; original=f.board.REGRESSION_FLAG.read_bytes(); changed=[False]
+    f=t0936_release; original=pm_paths.regression_flag(f.board._home()).read_bytes(); changed=[False]
     def mutate():
         changed[0]=True
         if drift in ['declaration','command']:
             text=f.board.LOCAL_CONF.read_text(encoding='utf-8')
             f.board.LOCAL_CONF.write_text(text.replace('arm,windows','windows,arm') if drift=='declaration' else text.replace('core-full','changed-core'),encoding='utf-8')
-    monkeypatch.setattr(f.board,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.anchor if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
+    monkeypatch.setattr(git,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.anchor if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
     def platform(command,cwd,env):
         result=f.platform(command,cwd,env)
         if phase=='platform' or (phase=='before-live' and env['PM_QA_PLATFORM']=='windows'): mutate()
@@ -1748,9 +1746,9 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
         result=f.release(*a,**kw)
         if phase=='after-live': mutate()
         return result
-    monkeypatch.setattr(f.board,'_run_regression_cmd',platform); monkeypatch.setattr(f.board.subprocess,'run',release)
+    monkeypatch.setattr(regression,'_run_regression_cmd',platform); monkeypatch.setattr(f.board.subprocess,'run',release)
     assert _t0936_record(f)==1 and _read_flag(f.board)['status']=='fail'
-    assert f.board.REGRESSION_FLAG.read_bytes()==original
+    assert pm_paths.regression_flag(f.board._home()).read_bytes()==original
     if phase!='after-live': assert f.live==[]
 
 
@@ -1762,15 +1760,18 @@ def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, 
         core=dict(f.core)
         if defect=='A-relative': core['conf_anchor']='relative'
         elif defect=='A-missing': core['conf_anchor']=str(f.anchor/'missing')
-        elif defect in ['A-head','L-head']: monkeypatch.setattr(f.board,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.anchor if defect=='A-head' else f.cwd) else f.head)
+        elif defect in ['A-head','L-head']: monkeypatch.setattr(git,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.anchor if defect=='A-head' else f.cwd) else f.head)
         elif defect=='L-missing': f.cwd=f.cwd/'missing'
-        elif defect=='A-F': monkeypatch.setattr(f.board,'_resolve_regression_flag',lambda cwd:(f.anchor/'regression.json',f.board._LG_ENGINE_ROOT))
-        elif defect=='L-F': monkeypatch.setattr(f.board,'_resolve_livegate_flag',lambda cwd:(f.anchor/'livegate.json',f.board._LG_ENGINE_ROOT))
-        elif defect=='broken': monkeypatch.setattr(f.board,'_resolve_livegate_flag',lambda cwd:(f.board.LIVEGATE_FLAG,f.board._LG_BROKEN))
+        elif defect=='A-F': monkeypatch.setattr(regression_store,'_resolve_regression_flag',lambda _home, cwd:(f.anchor/'regression.json',regression_store._LG_ENGINE_ROOT))
+        elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.anchor/'livegate.json',regression_store._LG_ENGINE_ROOT))
+        elif defect=='broken': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.livegate_flag(home),regression_store._LG_BROKEN))
         elif defect=='clone-only':
-            f.board.REGRESSION_FLAG.unlink(); monkeypatch.setattr(f.board,'LOCAL_DIR',f.anchor)
-            (f.anchor/'regression.json').write_text(json.dumps(core),encoding='utf-8')
-        if defect!='clone-only': f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+            engine_home=f.board._home(); called=pm_paths.home_at(f.board.REPO, f.anchor)
+            pm_paths.regression_flag(engine_home).unlink()
+            monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(pm_paths.livegate_flag(engine_home),regression_store._LG_ENGINE_ROOT))
+            monkeypatch.setattr(f.board,'_home',lambda: called)
+            pm_paths.regression_flag(called).write_text(json.dumps(core),encoding='utf-8')
+        if defect!='clone-only': pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
     assert _t0936_record(f)==(0 if defect is None else 1)
     if defect is not None: assert f.calls==f.live==[]
 
@@ -1781,35 +1782,35 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
     if form=='no-platform-legacy':
         (f.board.REPO/'.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
         f.board.LOCAL_CONF.write_text('test.cmd=core-full\n',encoding='utf-8')
-        f.board.REGRESSION_FLAG.unlink()
+        pm_paths.regression_flag(f.board._home()).unlink()
         assert _t0936_record(f)==0 and f.calls==[] and len(f.live)==1 and _t0936_check(f)==0
     elif form in ['aggregate-pass','aggregate-fail']:
         core=dict(f.core); core.pop('command'); core['platforms']=[]
         if form=='aggregate-fail': core['status']='fail'
-        f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+        pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
         assert _t0936_record(f)==1 and f.calls==f.live==[]
     elif form=='declared-deleted':
         assert _t0936_record(f)==0
         f.board.LOCAL_CONF.write_text('test.cmd=core-full\n',encoding='utf-8')
         assert _t0936_check(f)==1
     else:
-        f.board.LIVEGATE_FLAG.write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
+        pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
         assert _t0936_check(f)==1
 
 
 @pytest.mark.parametrize('failure', ['config','core','platform','coordinate','interrupted'])
 def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypatch, failure):
     f=t0936_release
-    f.board.LIVEGATE_FLAG.write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
+    pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
     if failure=='config': f.board.LOCAL_CONF.write_text('test.cmd=core-full\nqa.platforms=windows\n',encoding='utf-8')
-    elif failure=='core': f.board.REGRESSION_FLAG.unlink()
-    elif failure=='coordinate': f.core['conf_anchor']='relative'; f.board.REGRESSION_FLAG.write_text(json.dumps(f.core),encoding='utf-8')
+    elif failure=='core': pm_paths.regression_flag(f.board._home()).unlink()
+    elif failure=='coordinate': f.core['conf_anchor']='relative'; pm_paths.regression_flag(f.board._home()).write_text(json.dumps(f.core),encoding='utf-8')
     else:
         def run(*a):
             assert _read_flag(f.board)['status']=='fail'
             if failure=='interrupted': raise RuntimeError('중간 중단')
             return 1,'',''
-        monkeypatch.setattr(f.board,'_run_regression_cmd',run)
+        monkeypatch.setattr(regression,'_run_regression_cmd',run)
     if failure=='interrupted':
         with pytest.raises(RuntimeError,match='중간 중단'): _t0936_record(f)
     else: assert _t0936_record(f)==1
@@ -1819,8 +1820,8 @@ def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypat
 @pytest.mark.parametrize('guard', ['sidecar','must-fix','drift','opt-in','live-rc','live-pin'])
 def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypatch, guard):
     f=t0936_release
-    assert f.board.LIVEGATE_RELEASE_PIN==22
-    if guard=='sidecar': monkeypatch.setattr(f.board,'_resolve_livegate_flag',lambda cwd:(f.board.LIVEGATE_FLAG,f.board._LG_BROKEN))
+    assert regression.LIVEGATE_RELEASE_PIN==22
+    if guard=='sidecar': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.livegate_flag(home),regression_store._LG_BROKEN))
     elif guard=='must-fix': monkeypatch.setattr(f.board,'_sync_release_must_fix_marker',lambda flag:['must-fix'])
     elif guard=='drift': monkeypatch.setattr(f.board,'_refuse_release_for_engine_drift',lambda flag,cwd:1)
     else:
@@ -1835,11 +1836,11 @@ def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypa
 
 def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_release, monkeypatch):
     f = t0936_release
-    f.board.REGRESSION_FLAG.unlink()
+    pm_paths.regression_flag(f.board._home()).unlink()
     f.board.LOCAL_CONF.write_text("test.cmd=core-full\n", encoding="utf-8")
     (f.board.REPO / ".project_manager/local.conf").write_text("test.cmd=core-full\n", encoding="utf-8")
     flag = f.board.REPO / "cold" / ".project_manager" / ".local/livegate.json"
-    monkeypatch.setattr(f.board, "_resolve_livegate_flag", lambda cwd: (flag, f.board._LG_ENGINE_ROOT))
+    monkeypatch.setattr(regression_store, "_resolve_livegate_flag", lambda _home, cwd: (flag, regression_store._LG_ENGINE_ROOT))
     assert _t0936_record(f) == 0
     assert json.loads(flag.read_text(encoding="utf-8"))["status"] == "pass"
     assert f.calls == [] and len(f.live) == 1
@@ -1849,10 +1850,10 @@ def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_relea
 def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
         t0936_release, monkeypatch, consumer):
     f = t0936_release
-    f.board.REGRESSION_FLAG.unlink()
+    pm_paths.regression_flag(f.board._home()).unlink()
     f.board.LOCAL_CONF.unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
-    f.board.LIVEGATE_FLAG.write_text(json.dumps({
+    pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({
         "head":f.head, "status":"pass", "rc":0, "n":22, "ts":"now",
     }), encoding="utf-8")
     calls = []
@@ -1869,7 +1870,7 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
 def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_present_or_damaged_conf(
         t0936_release, monkeypatch, shape):
     f = t0936_release
-    f.board.REGRESSION_FLAG.unlink()
+    pm_paths.regression_flag(f.board._home()).unlink()
     f.board.LOCAL_CONF.unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
     conf = f.cwd / ".project_manager/local.conf"

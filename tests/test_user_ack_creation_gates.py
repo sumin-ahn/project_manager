@@ -17,6 +17,8 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import ensure_product_slot
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import git, pre_push_hook, ticket_store
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -68,7 +70,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
-    monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(module, "_board_git_enabled", lambda: False)
     module.invalidate_known_prefixes_cache()
     module._project = project
@@ -250,7 +252,7 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
     def reset_sources():
         board.AREAS_FILE.unlink(missing_ok=True)
         board.LEASES_FILE.unlink(missing_ok=True)
-        for status in (*board.STATUS_DIRS, ".drafts"):
+        for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
             status_dir = board.TICKETS_DIR / status
             if status_dir.exists():
                 for path in status_dir.glob("T-*.md"):
@@ -316,8 +318,8 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
     if derived == "task":
         from _git_fixture import init_git_repo
         tree = init_git_repo(board.REPO / "work/svc_1", commit="task prefix fixture")
-        assert board._git_head_at(str(tree))
-        assert board._cluster_current_branch(str(tree)) == "main"
+        assert git._git_head_at(str(tree))
+        assert git._cluster_current_branch(str(tree)) == "main"
         board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         board.LEASES_FILE.write_text(
             json.dumps({
@@ -357,7 +359,7 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         assert ids == {"T-AAA-001"}
         assert "case 변형이 2개 이상" not in captured.err
         if derived == "task":
-            fm, _ = board.load_ticket(board.find_ticket_exact("T-AAA-001")[1])
+            fm, _ = ticket_store.load_ticket(ticket_store.find_ticket_exact(board._home(), "T-AAA-001")[1])
             assert fm["created_by"].split("/")[-1] == "job"
 
 

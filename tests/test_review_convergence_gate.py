@@ -26,7 +26,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import review_rounds
+from pm_engine.infra import review_rounds, ticket_store
+from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -857,20 +858,8 @@ def _coexisting_tickets(tmp_path) -> Path:
 
 
 def _real_board_shim(tmp_path, finish) -> Path:
-    """실 board 엔진을 tmp 보드에 앵커한 shim — 조회 판정은 **실 seam** 그대로다."""
-    shim = tmp_path / "board_shim_exact.py"
-    shim.write_text(
-        f"ENGINE_REV = {finish.ENGINE_REV!r}\n"
-        "import importlib.util, pathlib\n"
-        "_spec = importlib.util.spec_from_file_location("
-        f"'shim_board_exact', {str(TOOLS / 'board.py')!r})\n"
-        "_real = importlib.util.module_from_spec(_spec)\n"
-        "_spec.loader.exec_module(_real)\n"
-        f"_real.REPO = pathlib.Path({str(tmp_path)!r})\n"
-        "find_ticket_exact = _real.find_ticket_exact\n"
-        "load_ticket = _real.load_ticket\n",
-        encoding="utf-8")
-    return shim
+    """tmp 보드 홈의 board.py 위치 — ticket_finish 는 그 위치에서 만든 Home 으로 **실 seam** 조회를 한다."""
+    return tmp_path / ".project_manager" / "tools" / "board.py"
 
 
 def test_prefix_glob_first_match_is_the_reproduced_hazard(tmp_path):
@@ -889,8 +878,8 @@ def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
     monkeypatch.setattr(external, "REPO", tmp_path)
 
     # ① 회귀 강등 스코프 (board)
-    assert board._ticket_touches("T-0036") == ["src/pay.py"]
-    assert board._gate_ticket("T-0036")[1].name.startswith("T-0036-본래")
+    assert regression._ticket_touches(board._home(), "T-0036") == ["src/pay.py"]
+    assert regression._gate_ticket(board._home(), "T-0036")[1].name.startswith("T-0036-본래")
     # ② 리뷰 범위 (추가 리뷰어)
     assert external.parse_ticket_touches("T-0036", pm_home=tmp_path) == ["src/pay.py"]
     # ③ 완료 게이트 티켓 로드 (ticket_finish)
@@ -900,7 +889,7 @@ def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
     # prefixed 티켓 자신의 조회는 그대로 자기 값을 본다 (좁힘이 정상 조회를 삼키지 않는다).
     assert external.parse_ticket_touches("T-0036-001", pm_home=tmp_path) == ["src/unrelated.py"]
     assert finish.get_ticket_touches(shim, "T-0036-001") == ["src/unrelated.py"]
-    assert board._ticket_touches("T-0036-001") == ["src/unrelated.py"]
+    assert regression._ticket_touches(board._home(), "T-0036-001") == ["src/unrelated.py"]
 
 
 def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
@@ -913,7 +902,7 @@ def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
     monkeypatch.setattr(external, "REPO", tmp_path)
     shim = _real_board_shim(tmp_path, finish)
 
-    assert board._ticket_touches("T-0036-002") == []              # 스코프 없음 = FULL
+    assert regression._ticket_touches(board._home(), "T-0036-002") == []              # 스코프 없음 = FULL
     assert finish.get_ticket_touches(shim, "T-0036-002") == []
     with pytest.raises(external.AnchorResolutionError):           # touches 는 fail-loud 유지
         external.parse_ticket_touches("T-0036-002", pm_home=tmp_path)
@@ -955,8 +944,8 @@ def test_non_mapping_frontmatter_never_crashes_the_lookup(tmp_path, monkeypatch,
     monkeypatch.setattr(board, "REPO", tmp_path)
     path = _write_raw_ticket(tmp_path, "T-0050-x.md", f"---\n{frontmatter}\n---\n\n# 본문\n")
 
-    assert board._canonical_ticket_id(path) == "T-0050"      # AttributeError 없이 폴백
-    assert board.find_ticket_exact("T-0050") == ("claimed", path)
+    assert ticket_store._canonical_ticket_id(path) == "T-0050"      # AttributeError 없이 폴백
+    assert ticket_store.find_ticket_exact(board._home(), "T-0050") == ("claimed", path)
 
 
 def test_a_broken_ticket_does_not_hide_the_healthy_one(tmp_path, monkeypatch):
@@ -968,8 +957,8 @@ def test_a_broken_ticket_does_not_hide_the_healthy_one(tmp_path, monkeypatch):
         tmp_path, "T-0051-ok.md",
         "---\nid: T-0051\ntouches:\n- src/pay.py\n---\n\n# 본문\n")
 
-    assert board.find_ticket_exact("T-0051") == ("claimed", healthy)
-    assert board._ticket_touches("T-0051") == ["src/pay.py"]
+    assert ticket_store.find_ticket_exact(board._home(), "T-0051") == ("claimed", healthy)
+    assert regression._ticket_touches(board._home(), "T-0051") == ["src/pay.py"]
 
 
 def test_a_broken_ticket_scope_is_unresolved_not_a_crash(tmp_path, monkeypatch):
@@ -978,7 +967,7 @@ def test_a_broken_ticket_scope_is_unresolved_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "REPO", tmp_path)
     _write_raw_ticket(tmp_path, "T-0052-x.md", "---\n스칼라\n---\n\n# 본문\n")
 
-    assert board._ticket_touches("T-0052") is None
+    assert regression._ticket_touches(board._home(), "T-0052") is None
 
 
 # ══ ⑤ touches 형식 불명 = 강등 취소 (T-0605 ③) ══════════════════════════════
@@ -997,7 +986,7 @@ def test_ticket_touches_forces_a_list_of_strings(tmp_path, monkeypatch, declarat
     monkeypatch.setattr(board, "REPO", tmp_path)
     _write_raw_ticket(tmp_path, "T-0053-x.md", f"---\nid: T-0053\n{declaration}\n---\n\n# 본문\n")
 
-    assert board._ticket_touches("T-0053") == expected
+    assert regression._ticket_touches(board._home(), "T-0053") == expected
 
 
 # ══ ⑥ 구세대 outcome 은 신기록보다 앞 (T-0605 ⑥) ════════════════════════════
@@ -1027,4 +1016,4 @@ def test_the_ordering_rule_is_the_shared_board_seam(external):
     board = _load("board")
     rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
     assert external._ordered_round_outcomes(rounds) == sorted(
-        rounds, key=board.round_outcome_order_key)
+        rounds, key=review_rounds.round_outcome_order_key)

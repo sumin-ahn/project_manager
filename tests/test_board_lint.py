@@ -27,8 +27,8 @@ import pytest
 
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
-from pm_engine.domain import conf_schema
-from pm_engine.infra import conf_store, manifest_store
+from pm_engine.domain import conf_schema, ticket_rules
+from pm_engine.infra import conf_store, manifest_store, pm_paths, pre_push_hook, python_env, ticket_store
 from conftest import ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
@@ -72,9 +72,9 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
     decisions = wiki / "decisions"
     # 상태 디렉토리는 board 상수에서 유도한다 — 손으로 열거하면 새 상태가 픽스처 트리에서
     # 빠져 그 상태의 링크가 "실재 안 함"으로만 관측되고 정상 통과 축을 못 잰다.
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         (tickets / status).mkdir(parents=True, exist_ok=True)
-    for status in board.IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         (ideas / status).mkdir(parents=True, exist_ok=True)
     decisions.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", root)
@@ -273,7 +273,7 @@ def test_ticket_path_link_in_every_status_dir_is_classified(board, monkeypatch, 
     조용히 사라진다(검사 우회). 상태별로 실재 링크=권고 / 부재 링크=차단 두 축을 다 잰다.
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         real = f"T-0100-{status}-real.md"
         (wiki / "tickets" / status / real).write_text(
             f"---\nid: T-0100\n---\n# 실재 티켓\n", encoding="utf-8")
@@ -283,7 +283,7 @@ def test_ticket_path_link_in_every_status_dir_is_classified(board, monkeypatch, 
     issues = board.lint_unstable_refs()
 
     by_name = {name: (kind, detail) for name, kind, detail in issues}
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         real = f"T-0100-{status}-real.md"
         assert real in by_name, f"{status}/: 실재 슬러그 링크가 분류에서 빠짐 — {issues}"
         assert by_name[real][0] == "unstable-ref-advice", (status, by_name[real])
@@ -323,17 +323,17 @@ def test_struct_path_regex_has_no_hardcoded_status_names(board):
     소스 grep 으로 리터럴 열거의 재유입을 막고, 컴파일된 패턴이 실제로 상수 전량을 담는지 잰다.
     """
     source = BOARD_PY.read_text(encoding="utf-8")
-    known = (*board.STATUS_DIRS, *board.IDEA_STATUS_DIRS)
+    known = (*ticket_rules.STATUS_DIRS, *ticket_rules.IDEA_STATUS_DIRS)
 
     fragments = re.findall(r"(?:tickets|ideas)/\(\?:([^)]*)\)", source)
     literals = [f for f in fragments if any(name in f for name in known)]
 
     assert fragments, "구조 경로 정규식 조각을 소스에서 못 찾았다 — 가드 시야가 표면과 어긋났다"
     assert literals == [], f"상태명을 리터럴로 박은 구조 경로 정규식 잔존: {literals}"
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         assert re.escape(status) in board._TICKET_STATUS_PATTERN, status
         assert board._STRUCT_PATH_RE.search(f"tickets/{status}/T-0001-x.md"), status
-    for status in board.IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         assert re.escape(status) in board._IDEA_STATUS_PATTERN, status
         assert board._STRUCT_PATH_RE.search(f"ideas/{status}/0001-x.md"), status
 
@@ -588,7 +588,7 @@ def test_finance_dev_d4_prefixed_ticket_resolves_and_dangling(board, monkeypatch
     는 blocking dangling (T-0240·[[ADR-0042]]).
 
     제보 D4 는 구버전 fork 관찰 — `[[T-<prefix>-NNN]]` 을 실존인데도 dangling 으로 오탐. 현 엔진은
-    `_TICKET_ID_BODY` 공유 grammar(board.py:640) + `ticket_ids` 멤버십 단일 경로(board.py:3926~3929)
+    `ticket_rules._TICKET_ID_BODY` 공유 grammar + `ticket_ids` 멤버십 단일 경로(board.py)
     로 이미 정합해소한다. 이 테스트가 finance_dev 가 보고한 정확한 케이스로 그 정합을 못박아
     grammar/해소 drift(T-0164 클래스) 재발 시 빨간불이 되게 한다."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
@@ -709,14 +709,14 @@ def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
     monkeypatch.setattr(board, "REPO", root)
     (root / ".git").mkdir(exist_ok=True)
     hooks = root / ".git" / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
     return hooks
 
 
 def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
-    assert board.install_pre_push_hook() is True
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
     text = (hooks / "pre-push").read_text(encoding="utf-8")
     assert "board.py lint --gate" in text
     # 회귀 단계도 여전히 있어야 한다 (AND).
@@ -727,10 +727,10 @@ def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
 def test_pre_push_hook_idempotent(board, monkeypatch, tmp_path):
     """재설치 안전 — 두 번 설치해도 동일 본문 (board.py init 가 재설치)."""
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
-    board.install_pre_push_hook()
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
+    pre_push_hook.install_pre_push_hook(board._home())
     first = (hooks / "pre-push").read_text(encoding="utf-8")
-    board.install_pre_push_hook()
+    pre_push_hook.install_pre_push_hook(board._home())
     second = (hooks / "pre-push").read_text(encoding="utf-8")
     assert first == second
     assert second.count("board.py lint --gate") == 1
@@ -977,7 +977,7 @@ def test_promote_scope_retags_frontmatter(board, monkeypatch, tmp_path):
     adr = _adr_with_scope(wiki, "0001", "alpha", "family_scope: payments\n")
     rc = board.cmd_promote_scope(SimpleNamespace(file=str(adr), to="shared"))
     assert rc == 0
-    fm, _body = board.load_ticket(adr)
+    fm, _body = ticket_store.load_ticket(adr)
     assert fm["family_scope"] == "shared"
 
 
@@ -987,7 +987,7 @@ def test_promote_scope_adds_scope_when_absent(board, monkeypatch, tmp_path):
     adr = _adr_with_scope(wiki, "0001", "alpha")  # scope 라인 없음
     rc = board.cmd_promote_scope(SimpleNamespace(file=str(adr), to="payments"))
     assert rc == 0
-    fm, _body = board.load_ticket(adr)
+    fm, _body = ticket_store.load_ticket(adr)
     assert fm["family_scope"] == "payments"
 
 
@@ -997,7 +997,7 @@ def test_promote_scope_rejects_invalid_to(board, monkeypatch, tmp_path):
     adr = _adr_with_scope(wiki, "0001", "alpha", "family_scope: payments\n")
     rc = board.cmd_promote_scope(SimpleNamespace(file=str(adr), to="bad scope"))
     assert rc == 1
-    fm, _body = board.load_ticket(adr)
+    fm, _body = ticket_store.load_ticket(adr)
     assert fm["family_scope"] == "payments"  # 무변경
 
 
@@ -1015,7 +1015,7 @@ def test_promote_scope_noop_when_already_target(board, monkeypatch, tmp_path):
     adr = _adr_with_scope(wiki, "0001", "alpha", "family_scope: shared\n")
     rc = board.cmd_promote_scope(SimpleNamespace(file=str(adr), to="shared"))
     assert rc == 0
-    fm, _body = board.load_ticket(adr)
+    fm, _body = ticket_store.load_ticket(adr)
     assert fm["family_scope"] == "shared"
 
 
@@ -1031,7 +1031,7 @@ def test_promote_scope_rejects_file_outside_scope_aware_dirs(
                        encoding="utf-8")
     rc = board.cmd_promote_scope(SimpleNamespace(file=str(outside), to="shared"))
     assert rc == 1
-    fm, _body = board.load_ticket(outside)
+    fm, _body = ticket_store.load_ticket(outside)
     assert fm["family_scope"] == "payments"  # 무변경
 
 
@@ -1043,7 +1043,7 @@ def test_promote_scope_accepts_file_in_specs_dir(board, monkeypatch, tmp_path):
                     encoding="utf-8")
     rc = board.cmd_promote_scope(SimpleNamespace(file=str(spec), to="shared"))
     assert rc == 0
-    fm, _body = board.load_ticket(spec)
+    fm, _body = ticket_store.load_ticket(spec)
     assert fm["family_scope"] == "shared"
 
 
@@ -1213,7 +1213,7 @@ def test_lint_domain_no_circular_import_on_load():
     """board 와 domain 모듈 로드가 순환 없이 끝난다(deep-import seam 검증)."""
     board_mod = _load_board()
     domain_mod = _load_domain()
-    # domain 은 board.load_ticket 을 쓰지만, board 는 domain 을 최상단 import 하지 않는다.
+    # domain 은 ticket_store.load_ticket 을 쓰고, board 는 domain 을 최상단 import 하지 않는다.
     assert callable(board_mod.lint_domain)
     assert callable(domain_mod.load_pages)
 
@@ -2894,7 +2894,7 @@ def test_broken_frontmatter_is_unparseable_by_the_strict_loader(board, monkeypat
     _wire_repo(board, monkeypatch, tmp_path)
     path = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
     with pytest.raises(Exception):
-        board.load_ticket(path)
+        ticket_store.load_ticket(path)
 
 
 def test_scan_loader_skips_a_broken_ticket_loudly(board, monkeypatch, tmp_path, capsys):
@@ -2902,7 +2902,7 @@ def test_scan_loader_skips_a_broken_ticket_loudly(board, monkeypatch, tmp_path, 
     _wire_repo(board, monkeypatch, tmp_path)
     path = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
 
-    assert board.load_ticket_soft(path) is None
+    assert ticket_store.load_ticket_soft(board._home(), path) is None
     err = capsys.readouterr().err
     assert "건너뜁니다" in err and "T-0002" in err
     assert "인용" in err, "처방(콜론 포함 값은 인용)이 경고에 없다"
@@ -2912,7 +2912,7 @@ def test_scan_loader_rejects_non_mapping_frontmatter(board, monkeypatch, tmp_pat
     """frontmatter 가 매핑이 아닌 형상도 같은 축으로 접는다 — 뒤따르는 `fm.get` 이 안 터지게."""
     _wire_repo(board, monkeypatch, tmp_path)
     path = _ticket(board, "open", "T-0003", "---\n- 리스트\n- 형상\n---\n# 본문\n")
-    assert board.load_ticket_soft(path) is None
+    assert ticket_store.load_ticket_soft(board._home(), path) is None
     assert "매핑이 아니라" in capsys.readouterr().err
 
 
@@ -3216,8 +3216,8 @@ def test_fallback_lookup_warns_when_it_answers_with_a_different_ticket(
         "---\nid: T-7777-001\ntitle: t\nstatus: open\n---\n\n# T-7777-001\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(board, "tickets_dir", lambda: tickets)
-    monkeypatch.setattr(board, "drafts_dir", lambda: tickets / ".drafts")
+    monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: tickets)
+    monkeypatch.setattr(pm_paths, "drafts_dir", lambda _home: tickets / ".drafts")
     status, path = board.find_ticket("T-7777")
     assert path.name == "T-7777-001-other.md"
     err = capsys.readouterr().err
@@ -3231,7 +3231,7 @@ def test_fallback_lookup_warns_when_it_answers_with_a_different_ticket(
 # 해소되는 이행 잔재라 blocking 이다.
 
 def _lint_ticket(board, status: str, tid: str, *, body: str = "") -> Path:
-    directory = board.tickets_dir() / status
+    directory = pm_paths.tickets_dir(board._home()) / status
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{tid}-fixture.md"
     path.write_text(
@@ -3269,7 +3269,7 @@ ROUND_DATE = "2026-01-02"
 
 
 def _lint_round(board, tid: str, name: str, text: str) -> Path:
-    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir()) / name
+    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="")
     return path
@@ -3407,7 +3407,7 @@ def test_lint_rounds_surfaces_a_file_sitting_where_a_ticket_directory_belongs(
     _lint_ticket(board, "claimed", "T-3012")
     _lint_round(board, "T-3012", "01-developer.md",
                 "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
-    stray = board._load_ticket_rounds().rounds_dir(board.tickets_dir()) / "NOTES.md"
+    stray = board._load_ticket_rounds().rounds_dir(pm_paths.tickets_dir(board._home())) / "NOTES.md"
     stray.write_text("라운드 디렉터리가 아니다\n", encoding="utf-8")
 
     issues = board.lint_rounds()
@@ -3426,7 +3426,7 @@ def test_lint_rounds_fail_soft_boundary_is_one_ticket(board, monkeypatch, tmp_pa
                 rounds.render_round_seed(
                     "developer", path.read_text(encoding="utf-8"), today="2026-01-02"))
     # 판정 자체가 불가능한 이름(플랫폼 예약 장치명) — seam 이 loud 하게 거부한다.
-    unreadable = rounds.rounds_dir(board.tickets_dir()) / "CON"
+    unreadable = rounds.rounds_dir(pm_paths.tickets_dir(board._home())) / "CON"
     unreadable.mkdir(parents=True, exist_ok=True)
 
     issues = board.lint_rounds()
@@ -3729,7 +3729,7 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 
@@ -3851,8 +3851,6 @@ def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, t
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "LOCAL_DIR", local)
-    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
-    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
     # sidecar 좌표 해소는 git(`core.hooksPath`)에 묻는다 — tmp 트리가 자기 저장소라고 선언하지
     # 않으면 이 저장소의 답을 받아 실 PM 홈 기록을 읽는다(tests/_git_fixture 규약).
     init_git_repo(tmp_path)
@@ -3864,7 +3862,7 @@ def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, t
 
     snapshot = board.status_snapshot()
 
-    assert set(snapshot["counts"]) == set(board.STATUS_DIRS)
+    assert set(snapshot["counts"]) == set(ticket_rules.STATUS_DIRS)
     assert snapshot["counts"]["open"] == 1 and snapshot["counts"]["done"] == 1
     assert snapshot["open"] == [{"id": "T-0001", "title": "정상 티켓", "claimed_by": None}]
     assert snapshot["regression"] == {"head": "abc", "status": "pass", "collected": 42}
@@ -3876,8 +3874,6 @@ def test_status_snapshot_carries_lint_findings_without_failing(board, monkeypatc
     _wire_repo(board, monkeypatch, tmp_path)
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
-    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
     init_git_repo(tmp_path)
     _ticket(board, "open", "T-0001",
             "---\nid: T-0001\ntitle: 의존 깨짐\nstatus: open\ndepends_on: [T-9999]\n---\n"

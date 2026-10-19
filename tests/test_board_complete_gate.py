@@ -30,6 +30,8 @@ import json
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import pm_paths, review_rounds
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -48,7 +50,7 @@ def _load_board_bound(proj: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     wiki = proj / ".project_manager" / "wiki"
-    # tickets_dir()는 import-time TICKETS_DIR가 아니라 REPO→board_root()를 따른다. REPO까지
+    # tickets_dir는 import-time TICKETS_DIR가 아니라 REPO→Home.board_root를 따른다. REPO까지
     # tmp로 묶지 않으면 `board` fixture의 티켓 쓰기가 라이브 worktree scaffold에 착지한다.
     # BOARD_FILE은 import-time 상수라 같은 자리에서 별도로 묶어 refresh 파생 출력도 격리한다.
     mod.REPO = proj
@@ -97,14 +99,14 @@ def test_legacy_pm_fixed_resolution_is_unrecognized(board):
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
         "resolution": {"kind": "pm-fixed", "round_sequence": 1, "rounds": 1},
     }
-    assert board.gate_resolution(entry) is None
+    assert review_rounds.gate_resolution(entry) is None
 
 
 # ── T-0786(D1) — `pm-verified` 완료 게이트(기계 확인 증거) ────────────────
 
 def _write_ticket_with_rounds(board, tid: str, spec_body: str, rounds: list[tuple[int, str, str]]):
     """티켓 명세(status=claimed) + `tickets/rounds/<id>/NN-<role>.md` 를 tmp board 에 깐다."""
-    tickets_dir = board.tickets_dir()
+    tickets_dir = pm_paths.tickets_dir(board._home())
     spec_path = tickets_dir / "claimed" / f"{tid}-gate.md"
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(
@@ -775,7 +777,7 @@ def live_board(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "AREAS_FILE", pm / "areas.md")
     monkeypatch.setattr(mod, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
-    for status in mod.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         (pm / "wiki" / "tickets" / status).mkdir(parents=True, exist_ok=True)
     pm.mkdir(parents=True, exist_ok=True)
     (pm / "local.conf").write_text("identity.user=t\n", encoding="utf-8")
@@ -785,7 +787,7 @@ def live_board(tmp_path, monkeypatch):
 
 
 def _seed_ticket(board, tid: str, body: str, *, status: str = "claimed") -> Path:
-    path = (board.tickets_dir() / status / f"{tid}-픽스처.md")
+    path = (pm_paths.tickets_dir(board._home()) / status / f"{tid}-픽스처.md")
     path.write_text(
         _TICKET_FRONTMATTER.format(tid=tid, status=status) + body, encoding="utf-8")
     return path
@@ -797,7 +799,7 @@ def _complete_args(tid: str) -> argparse.Namespace:
 
 
 def _seed_cluster(board, cluster: str, tickets: tuple[str, ...], *, status: str = "open") -> Path:
-    path = board.tickets_dir() / "clusters" / f"{cluster}.md"
+    path = pm_paths.tickets_dir(board._home()) / "clusters" / f"{cluster}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "---\n"
@@ -850,7 +852,7 @@ def test_cluster_member_complete_requires_exact_closer_binding(
     exact.cluster_close = "C-gate"
     assert live_board.cmd_complete(exact) == 0
     assert not claimed.exists()
-    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
     assert len(sync_calls) == 1
 
 
@@ -892,7 +894,7 @@ def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monke
 
     _seed_cluster(live_board, "C-gate", (tid,), status="closing")
     assert live_board.cmd_complete(exact) == 0
-    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
     assert len(sync_calls) == 1
 
     legacy = "T-9887"                                   # 장부 없는 구세대 크기 1 결속
@@ -927,7 +929,7 @@ def test_legacy_ticket_completes_with_its_size_one_binding(live_board, capsys, m
     exact.cluster_close = f"C-{tid}"
     assert live_board.cmd_complete(exact) == 0
     assert not claimed.exists()
-    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
 
 
 def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, monkeypatch):
@@ -954,7 +956,7 @@ def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, m
     exact = _complete_args(tid)
     exact.cluster_close = "C-gate"
 
-    broken = live_board.tickets_dir() / "clusters" / "C-broken.md"
+    broken = pm_paths.tickets_dir(live_board._home()) / "clusters" / "C-broken.md"
     broken.write_text("---\nid: C-broken\ntickets: [T-9885\n---\n", encoding="utf-8")
     assert live_board.cmd_complete(exact) == 1
     assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before
@@ -971,7 +973,7 @@ def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, m
     # 손상 장부를 치우면 같은 호출이 그대로 통과한다(가드가 정상 경로를 막지 않는다).
     broken.unlink()
     assert live_board.cmd_complete(exact) == 0
-    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
     assert len(sync_calls) == 1
 
 
@@ -1006,7 +1008,7 @@ def test_cmd_complete_blocks_unchecked_dod_and_keeps_ticket_claimed(
     err = capsys.readouterr().err
     assert rc == 1, "미체크 DoD 인데 complete 가 통과함"
     assert path.exists(), "차단됐는데 티켓이 claimed/ 에서 사라짐"
-    assert not list((live_board.tickets_dir() / "done").glob("T-9001*")), \
+    assert not list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9001*")), \
         "차단됐는데 done/ 으로 이동함"
     assert "sync gate failed" in err and "DoD 미체크" in err
 
@@ -1021,7 +1023,7 @@ def test_cmd_complete_passes_with_checked_and_deferred_dod(live_board):
     rc = live_board.cmd_complete(_complete_args("T-9002"))
 
     assert rc == 0
-    assert list((live_board.tickets_dir() / "done").glob("T-9002*")), "done/ 이동 안 함"
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9002*")), "done/ 이동 안 함"
 
 
 def test_cmd_complete_blocks_an_undisposed_review_must_fix(live_board, capsys):
@@ -1049,7 +1051,7 @@ def test_cmd_complete_blocks_an_undisposed_review_must_fix(live_board, capsys):
         encoding="utf-8",
     )
     assert live_board.cmd_complete(_complete_args(tid)) == 0
-    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
 
 
 def test_internal_legacy_fixed_resolution_is_unrecognized(board):
@@ -1058,8 +1060,8 @@ def test_internal_legacy_fixed_resolution_is_unrecognized(board):
         ts="2026-08-12T00:01:00+00:00", target_rev="a" * 40,
     )]}
     entry["resolution"] = {"kind": "fixed", "evidence_gate": "T-9302",
-                           **board.gate_round_binding(entry)}
-    assert board.gate_resolution(entry) is None
+                           **review_rounds.gate_round_binding(entry)}
+    assert review_rounds.gate_resolution(entry) is None
 
 
 def test_done_tickets_are_not_retroactively_checked(live_board):
@@ -1146,7 +1148,7 @@ def test_cmd_complete_blocks_on_a_hidden_second_dod_section(live_board, capsys):
 
     assert rc == 1
     assert path.exists()
-    assert not list((live_board.tickets_dir() / "done").glob("T-9005*"))
+    assert not list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9005*"))
     assert "DoD 미체크" in capsys.readouterr().err
 
 
@@ -1159,7 +1161,7 @@ def test_cmd_complete_blocks_on_a_hidden_second_dod_section(live_board, capsys):
 
 
 def _write_round(board, tid: str, name: str, text: str) -> Path:
-    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir()) / name
+    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="")
     return path
@@ -1187,7 +1189,7 @@ def test_round_gap_blocks_completion(live_board, capsys):
 
     err = capsys.readouterr().err
     assert rc == 1 and path.exists()
-    assert not list((live_board.tickets_dir() / "done").glob("T-9101*"))
+    assert not list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9101*"))
     assert "round-gap" in err and "02" in err
 
 
@@ -1213,7 +1215,7 @@ def test_pending_round_does_not_block_completion(live_board, capsys):
 
     err = capsys.readouterr().err
     assert rc == 0, f"미회수 라운드가 완료를 막음: {err}"
-    assert list((live_board.tickets_dir() / "done").glob("T-9103*"))
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9103*"))
     assert "round-pending" in err and "01-developer.md" in err
 
 
@@ -1266,7 +1268,7 @@ def test_harvested_rounds_in_sequence_pass_the_gate(live_board):
                  _passed_review_round_text(_pm_delegate_module()))
 
     assert live_board.cmd_complete(_complete_args("T-9105")) == 0
-    assert list((live_board.tickets_dir() / "done").glob("T-9105*"))
+    assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9105*"))
 
 
 def test_gate_without_rounds_directory_is_silent(live_board, capsys):

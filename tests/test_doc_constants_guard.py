@@ -8,6 +8,7 @@
 import importlib.util
 import pathlib
 import re
+from pm_engine.domain import ticket_rules
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -187,11 +188,11 @@ def _board_subcommands(board) -> set[str]:
 
 
 def test_tickets_readme_lists_every_status_dir():
-    """상태 집합 서술(핵심 약속 bullet + 디렉토리 트리)이 board.STATUS_DIRS 전량을 덮는다."""
+    """상태 집합 서술(핵심 약속 bullet + 디렉토리 트리)이 ticket_rules.STATUS_DIRS 전량을 덮는다."""
     board = _load_board()
     for rel in TICKETS_README_COPIES:
         text = _read(rel)
-        for status in board.STATUS_DIRS:
+        for status in ticket_rules.STATUS_DIRS:
             assert f"`{status}/`" in text, (
                 f"{rel}: 상태 `{status}/` 가 핵심 약속 서술에서 빠짐")
             assert re.search(rf"── {re.escape(status)}/\s", text), (
@@ -207,7 +208,7 @@ def test_tickets_readme_documents_disposition_and_reopen_commands():
         text = _read(rel)
         assert "board.py discard" in text, f"{rel}: 처분 종결 명령 안내 누락"
         assert "board.py reopen" in text, f"{rel}: 종결 복구 명령 안내 누락"
-        for kind in board.DISPOSITION_KINDS:
+        for kind in ticket_rules.DISPOSITION_KINDS:
             assert kind in text, f"{rel}: 처분 종류 `{kind}` 서술 누락"
         # 서브커맨드는 ASCII 소문자 토큰이다 — `\w` 로 잡으면 한국어 조사(`board.py 가`)가
         # 서브커맨드로 오인된다.

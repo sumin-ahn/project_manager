@@ -11,7 +11,7 @@ from __future__ import print_function
 import sys
 
 
-# engine_rev.MIN_PYTHON 미러. tests/test_python_floor.py가 skew를 차단한다.
+# pm_engine.MIN_PYTHON 미러. tests/test_python_floor.py가 skew를 차단한다.
 MIN_PYTHON = (3, 11)
 
 

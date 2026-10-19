@@ -616,7 +616,7 @@ def _materialize(pd, ticket: _Ticket, tickets_dir: Path, ticket_id: str) -> Path
 
 def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
         pd, monkeypatch, tmp_path, capsys):
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     accepted = _review_section({
         "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
@@ -629,14 +629,6 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
         @contextlib.contextmanager
         def board_lock():
             yield
-
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", ticket_path
-
-        @staticmethod
-        def tickets_dir():
-            return tickets_dir
 
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())
@@ -694,7 +686,7 @@ def test_machine_confirmation_merges_into_the_same_confirmation_history(pd):
 def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys):
     """순번 빈틈(삭제 의심)은 판정 전에 막는다 — [[ADR-0090]] 3.8 의 유일한 red 축."""
     rounds_module = pd._load_ticket_rounds()
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     ticket = _review_section({
         "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
@@ -709,14 +701,6 @@ def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys)
         @contextlib.contextmanager
         def board_lock():
             yield
-
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", ticket_path
-
-        @staticmethod
-        def tickets_dir():
-            return tickets_dir
 
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())
@@ -862,7 +846,7 @@ def _materialize_rounds(pd, spec_text: str, rounds, tickets_dir: Path, ticket_id
 
 def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
     """실 라운드 파일로 깐 티켓에서 시드 라운드가 섞여도 `review delta` CLI 는 rc=0."""
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     round1_text = _review_section({
         "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
@@ -881,14 +865,6 @@ def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path
         def board_lock():
             yield
 
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", ticket_path
-
-        @staticmethod
-        def tickets_dir():
-            return tickets_dir
-
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())
     assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
@@ -897,7 +873,7 @@ def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path
 
 def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
     """developer 라운드 뒤에 시드 그대로인 리뷰 라운드가 이어져도 `verify-template` CLI 는 rc=0."""
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     round1_text = _review_section({
         "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
@@ -931,14 +907,6 @@ def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch
         @contextlib.contextmanager
         def board_lock():
             yield
-
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", ticket_path
-
-        @staticmethod
-        def tickets_dir():
-            return tickets_dir
 
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())

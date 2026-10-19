@@ -9,7 +9,7 @@
   - pm_import: 하니스 runner + board init 캡처가 encoding 명시.
   - ticket_finish / pm_handoff: _default_run_pytest/board/git 가 encoding 명시.
   - bench_weight: _run_subprocess 캡처가 encoding 명시.
-  - C5: pm_import {{PY}} 치환·local.conf py= 가 board._detect_py() 탐지값(플랫폼별
+  - C5: pm_import {{PY}} 치환·local.conf py= 가 python_env._detect_py() 탐지값(플랫폼별
         python/python3)을 쓰고 bare "python3" 를 하드코딩하지 않는다.
 
 이 테스트들은 *수정 전* 코드(encoding 미지정 / DEFAULT_PY="python3" 하드코딩)에서
@@ -32,6 +32,8 @@ import pytest
 from _textio import write_lf
 from _engine_tree import engine_python_files
 from pm_engine.infra.harness import contract
+from pm_engine.cli import regression_cmd
+from pm_engine.infra import pre_push_hook, python_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -220,7 +222,7 @@ def test_bench_weight_subprocess_passes_utf8(bench_weight, monkeypatch):
     _assert_utf8(rec.calls[0])
 
 
-# ── C5: {{PY}} 치환이 board._detect_py() 탐지값을 쓴다 (bare python3 미하드코딩) ─
+# ── C5: {{PY}} 치환이 python_env._detect_py() 탐지값을 쓴다 (bare python3 미하드코딩) ─
 
 
 def test_pm_substitution_py_matches_detected(pm_import):
@@ -238,11 +240,15 @@ def _stub_interp_runs(monkeypatch):
     강제는 Windows 에서 pathlib 을 깨뜨림. 대신 fake_which 가 `py`·`python3` 를 부재로
     돌려 OS 무관하게 'python' 만 후보로 통과시킨다.)
     """
+    import functools
     import subprocess
     import types
 
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **k: types.SimpleNamespace(returncode=0))
+    # 탐지 결과 캐시는 패키지 함수에 있어 프로세스 안 시험이 공유한다 — 이 시험 전용 캐시로 둔다.
+    monkeypatch.setattr(python_env, "_detect_py",
+                        functools.lru_cache(maxsize=1)(python_env._detect_py.__wrapped__))
 
 
 def test_detected_py_routes_through_detection_not_hardcoded(pm_import, monkeypatch):
@@ -275,7 +281,7 @@ def test_substitution_py_uses_python_when_python3_absent(pm_import, monkeypatch)
     assert sub["{{PY}}"] != "python3"
 
 
-# ── board.cmd_regression: pytest 자식에 UTF-8 env 강제 (T-0024) ──────────────
+# ── regression_cmd.cmd_regression: pytest 자식에 UTF-8 env 강제 (T-0024) ──────────────
 
 
 class _RcRecorder:
@@ -331,17 +337,17 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch, tmp_path,
         hooks = tmp_path / "h"
         hooks.mkdir()
         write_lf(hooks / "pre-push", "#!/bin/sh\nexit 0\n")   # 서명 없는 남의 훅 = 무영향
-        monkeypatch.setattr(board, "_pure_hooks_dir", lambda: hooks)
+        monkeypatch.setattr(pre_push_hook, "_pure_hooks_dir", lambda _home: hooks)
     else:
         # 순수 해소가 위치를 확정 못 하는 형상 — 엔진이 git 에 훅 위치를 묻는다(부수 자식).
-        monkeypatch.setattr(board, "_pure_hooks_dir", lambda: None)
+        monkeypatch.setattr(pre_push_hook, "_pure_hooks_dir", lambda _home: None)
     rec = _RcRecorder()
     monkeypatch.setattr(board.subprocess, "Popen", rec)
     # os.environ 보존 검증용 마커 키.
     monkeypatch.setenv("T0024_SENTINEL", "preserved")
     args = argparse.Namespace(action="run", cmd=None, ticket=None,
                               touches="tests/test_subprocess_encoding.py")
-    rc = board.cmd_regression(args)
+    rc = regression_cmd.cmd_regression(board._home(), args)
     assert rc == 0
     assert rec.calls, "pytest 자식 subprocess 호출이 일어나지 않음"
     # 주입 선-단언 — 의도한 형상이 **실제로** 태워졌는지 먼저 못박는다(형상이 안 서면 가드가

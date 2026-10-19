@@ -19,6 +19,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.app import slot_resolution
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -168,7 +170,7 @@ def test_regression_cwd_default_1_setup_falls_back_to_repo(hf):
     # _regression_cwd 는 areas/leases 인자를 노출하므로 hermetic 호출.
     areas = hf._tmp / ".project_manager" / "areas.md"
     leases = hf._tmp / ".project_manager" / ".local" / "worktree-leases.json"
-    assert hf._regression_cwd(None, areas, leases) == str(hf._tmp)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), None, areas, leases) == str(hf._tmp)
 
 
 # ══════════════════════════════════════════════════════════════════════════

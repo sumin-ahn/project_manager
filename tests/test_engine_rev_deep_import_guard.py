@@ -1795,11 +1795,6 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
     measured = {(source, function) for source, function, _line in report.loader_calls}
     assert {
         ("delegate_scope.py", "ticket_touches"),
-        ("ticket_finish.py", "count_board_done"),
-        # `get_ticket_title`·`_ticket_frontmatter` 는 자체 로드를 두지 않는다 — 티켓 조회는
-        # `_ticket_frontmatter_snapshot` 한 지점이라 계측 대상도 그쪽 하나다(제목과 게이트
-        # 입력이 같은 스냅샷을 본다 — T-0659 의 diff 귀속이 같은 지점을 재사용한다).
-        ("ticket_finish.py", "_ticket_frontmatter_snapshot"),
         ("ticket_finish.py", "_load_tool_module"),
     } <= measured
     assert ("board.py", "_run_lint_hooks") in measured
@@ -1841,10 +1836,6 @@ _LOADER_CASES = (
     (
         "pm_delegate", "additional_reviewer", lambda mod, _tools: mod._load_additional_reviewer(),
         "_load_additional_reviewer",
-    ),
-    (
-        "pm_import", "board", lambda mod, _tools: mod._detected_py(),
-        "_detected_py",
     ),
     (
         "pm_import", "pm_render", lambda mod, _tools: mod._load_pm_render_module(),
@@ -1978,7 +1969,6 @@ def _handler_reraises_marked_skew(handler: ast.ExceptHandler) -> bool:
 @pytest.mark.parametrize(
     ("function_name", "loader_name"),
     (
-        ("_protected_retry_command", "_load_board"),
         ("_protected_hook_wired", "_load_worktree_pool"),
     ),
 )
@@ -2015,10 +2005,6 @@ def test_pm_bootstrap_failsoft_consumers_reraise_marked_skew(
 @pytest.mark.parametrize(
     ("loader_name", "target_name", "call", "function_name"),
     (
-        (
-            "pm_import", "board", lambda mod: mod._detected_py(),
-            "_detected_py",
-        ),
         (
             "pm_import", "pm_render", lambda mod: mod._load_pm_render_module(),
             "_load_pm_render_module",

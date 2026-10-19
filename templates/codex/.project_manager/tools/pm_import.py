@@ -87,8 +87,9 @@ from typing import Callable, NamedTuple, NoReturn
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+import pm_engine  # noqa: E402
 from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, manifest_store, raw_output, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, manifest_store, python_env, raw_output, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -98,7 +99,7 @@ _load_module_from_path = repo_files.load_module
 ENGINE_REV = "v1.8.1"
 
 
-# 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — board `STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
+# 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — `ticket_rules.STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
 # tests/test_status_dirs_single_truth.py 가 값으로 고정한다).
 _SEEDED_STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done", "discarded")
 
@@ -128,26 +129,10 @@ def _is_engine_rev_skew(exc):
     return getattr(exc, "_engine_rev_skew", False)
 
 
-def _load_min_python() -> tuple[int, int] | None:
-    """engine_rev.py 의 하한을 읽되 불완전/구형 사본이면 확인을 건너뛴다."""
-    try:
-        path = Path(__file__).resolve().with_name("engine_rev.py")
-        mod = _load_module_from_path(
-            path, "engine_rev.py", allow_unverified=True,
-        )
-        return tuple(mod.MIN_PYTHON)
-    except Exception:
-        # 부분/구형 사본에서 새 선행검사가 import 자체를 깨지 않게 한다. 정상 배포에서는
-        # engine_rev.MIN_PYTHON을 읽고 아래 명시 오류를 유지한다(board._detect_py 동형 fail-soft).
-        return None
-
-
 def _require_python(version_info=None) -> None:
     """tomllib import 전에 현재 인터프리터 하한을 명시적으로 검증한다."""
     current = sys.version_info if version_info is None else version_info
-    minimum = _load_min_python()
-    if minimum is None:
-        return
+    minimum = tuple(pm_engine.MIN_PYTHON)
     if tuple(current[:2]) < minimum:
         major, minor = minimum
         raise SystemExit(
@@ -815,51 +800,31 @@ _UPSTREAM_GIT_CONFIG_KV = (
     ("http.followRedirects", "false"),  # redirect 추적 차단(잔여 SSRF 표면).
 )
 
-# 인터프리터 탐지는 board.py 의 _detect_py() 가 단일 진실. pm_import 가 자체
-# 탐지를 신설하지 않고 board.py 를 재사용한다 — 플랫폼별 python3/python 해석을 한 곳에 둔다.
-# board.py import 가 실패하면(예: yaml 부재) 리눅스 현행과 동치인 "python3" 로 폴백.
+# 인터프리터 탐지는 `python_env._detect_py()` 가 단일 진실. pm_import 가 자체 탐지를 신설하지
+# 않는다 — 플랫폼별 python3/python 해석을 한 곳에 둔다. 탐지가 실패하면 리눅스 현행과 동치인
+# "python3" 로 폴백.
 _DEFAULT_PY_FALLBACK = "python3"
 
 
 def _detected_py() -> str:
-    """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 board.py 에서 탐지한다.
+    """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 탐지한다.
 
-    board.py 의 _detect_py() 를 import 해 재사용(단일 진실). board.py 와 같은 디렉토리에
-    있으므로 spec_from_file_location 으로 직접 로드 — sys.path 오염 없이 호출 가능.
-    어떤 이유로든 로드/호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
+    `python_env._detect_py()` 를 재사용(단일 진실). 호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
     """
-    # 같은 canonical tools 디렉토리의 board.py라도 부분/수동 복사로 rev가 어긋날 수 있으므로
-    # 로드 직후 verify한다. 일반 로드 실패는 폴백하되 marked skew만 아래에서 재-raise한다.
-    board_py = Path(__file__).resolve().parent / "board.py"
     try:
-        board_mod = _load_module_from_path(
-            board_py, "board.py", verifier=_verify_engine_rev,
-        )
-        return board_mod._detect_py()
-    except Exception as exc:  # noqa: BLE001 — 탐지 실패는 폴백, skew만 fail-loud.
-        if _is_engine_rev_skew(exc):
-            raise
+        return python_env._detect_py()
+    except Exception:  # noqa: BLE001 — 탐지 실패는 폴백.
         return _DEFAULT_PY_FALLBACK
 
 
 def _default_test_cmd() -> str:
-    """기본 test_cmd — board의 xdist 가용성 판정과 같은 명령을 사용한다.
+    """기본 test_cmd — `python_env.default_pytest_cmd` 의 xdist 가용성 판정과 같은 명령을 사용한다.
 
     상수 하드코딩(`python3 -m pytest`)은 Windows 에서 깨진다(`python3`=비기능 shim 또는
-    엉뚱한 Store Python). `_detected_py()` 를 경유해 board.py `_detect_py()` 의 실행검증된
+    엉뚱한 Store Python). `_detected_py()` 를 경유해 `python_env._detect_py()` 의 실행검증된
     인터프리터를 쓴다 — local.conf `runtime.py=` 와 동일 소스라 일관.
     """
-    runtime = _detected_py()
-    board_py = Path(__file__).resolve().parent / "board.py"
-    try:
-        board_mod = _load_module_from_path(
-            board_py, "board.py", verifier=_verify_engine_rev,
-        )
-        return board_mod.default_pytest_cmd(runtime)
-    except Exception as exc:  # noqa: BLE001 — 부분 사본도 serial로 조용히 강등하지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
-        return f"{runtime} -m pytest tests/ -q -n auto"
+    return python_env.default_pytest_cmd(_detected_py())
 
 
 DEFAULT_TAGLINE = "한 줄 프로젝트 설명"
@@ -9468,7 +9433,7 @@ def _instance_project_name(dest_root: Path) -> str:
 _BOARD_SUBMODULE_PATH = ".project_manager/board"  # 표준 `git submodule add` 은 name == path.
 _BOARD_SETUP_GIT_TIMEOUT_SECONDS = 600  # remote clone/submodule add (네트워크·큰 board 여유).
 
-# board submodule areas.md 스캐폴드 canonical 칼럼 — board._AREAS_COLUMNS 를 미러한다(pm_import 는
+# board submodule areas.md 스캐폴드 canonical 칼럼 — areas_rules._AREAS_COLUMNS 를 미러한다(pm_import 는
 # stdlib-only·board import 회피). drift 는 test 가 board 를 로드해 대조한다(가드).
 _BOARD_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base",
                         "protected", "area_owner")
@@ -9578,8 +9543,8 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
       3. `.gitmodules` 에 `ignore = all`(committed·공유 default) 설정 — board PM-commit 이 design(코드)
          git status 를 오염시키지 않게(누출 0). board.py init 이 추가로 `.git/config`
          ignore=all 도 설정한다(`_configure_board_submodule` 재사용·per-clone).
-      4. 복사된 dormant `wiki/tickets` 제거 — board 는 이제 submodule 에 산다(`board_root()` 가
-         `board/tickets` 존재로 board/ 로 해소하므로 wiki/tickets 는 잉여).
+      4. 복사된 dormant `wiki/tickets` 제거 — board 는 이제 submodule 에 산다(board 루트가
+         `board/tickets` 존재로 board/ 로 해소되므로 wiki/tickets 는 잉여).
     """
     board_dir = dest_root / ".project_manager" / "board"
     copied_tickets = dest_root / ".project_manager" / "wiki" / "tickets"
@@ -9603,7 +9568,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
                       file=sys.stderr)
                 return 1
             shutil.copytree(copied_tickets, tmp_clone / "tickets")
-            # board.STATUS_DIRS 와 같은 집합 — 처분 종결 `discarded` 포함. 신규 공유
+            # ticket_rules.STATUS_DIRS 와 같은 집합 — 처분 종결 `discarded` 포함. 신규 공유
             # board 는 빈 상태 디렉토리도 추적돼야 다른 clone 이 checkout 에서 받는다.
             for status in _SEEDED_STATUS_DIRS:
                 sd = tmp_clone / "tickets" / status
@@ -10289,7 +10254,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"✓ {n_render} 파일 render (operational 토큰 치환)")
 
     # ── board submodule 셋업: --new --board-submodule 일 때만. board.py init
-    #    (아래 run_board_init) *이전* 에 둬야 (a) board_root() 가 board/ 로 해소되고 (b) board.py
+    #    (아래 run_board_init) *이전* 에 둬야 (a) board 루트가 board/ 로 해소되고 (b) board.py
     #    init 의 _configure_board_submodule() 이 .git/config ignore=all 을 설정한다. substitute·
     #    render *이후* — 복사·치환이 끝난 wiki/tickets 를 스캐폴드로 board 에 seed 하기 때문. inline
     #    기본(플래그 없음)은 이 블록을 건너뛰어 완전 무변경(현행 --new 회귀). 실패 시 fail-loud.

@@ -22,6 +22,9 @@ from pathlib import Path
 
 import pytest
 from _pytest_summary import pytest_summary
+from pm_engine.infra import areas_store, git, lease_store, pm_paths, regression_store
+from pm_engine.app import regression
+from pm_engine.cli import regression_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -54,11 +57,9 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
-    monkeypatch.setattr(mod, "REGRESSION_FLAG", local / "regression.json")
-    monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
-    monkeypatch.setattr(mod, "_git_head", lambda: "deadbeefdeadbeef")
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "deadbeefdeadbeef")
-    monkeypatch.setattr(mod, "_cluster_current_branch", lambda tree: "task/main")
+    monkeypatch.setattr(git, "_git_head", lambda _home: "deadbeefdeadbeef")
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: "deadbeefdeadbeef")
+    monkeypatch.setattr(git, "_cluster_current_branch", lambda tree: "task/main")
     mod._proj = proj
     return mod
 
@@ -93,7 +94,7 @@ class _FakeRun:
 def _install_fake(board, monkeypatch, fake):
     """회귀(Popen tee)·livegate(run 캡처) 두 seam 을 같은 대역으로 덮는다 (실 자식 0)."""
     # 실행 child 대역에 metadata 조회가 섞이지 않게 가짜 Git fixture를 격리한다.
-    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
+    monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(board.subprocess, "run", fake)
     monkeypatch.setattr(board.subprocess, "Popen", fake)
     return fake
@@ -114,7 +115,7 @@ def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatc
     (target / ".git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(10))
     _install_fake(board, monkeypatch, fake)
-    rc = board.cmd_regression(_reg_args(task="job1"))
+    rc = regression_cmd.cmd_regression(board._home(), _reg_args(task="job1"))
     assert rc == 0
     expected_cwd = str(board.REPO / "work" / "A_1")
     assert fake.calls, "regression subprocess 미기동"
@@ -131,7 +132,7 @@ def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
     ])
     _install_fake(board, monkeypatch, _FakeRun(0, "ok"))
     with pytest.raises(SystemExit):
-        board.cmd_regression(_reg_args(task="job2"))
+        regression_cmd.cmd_regression(board._home(), _reg_args(task="job2"))
 
 
 def test_regression_run_task_repo_selects_unique_owned_workspace(board, monkeypatch):
@@ -143,7 +144,7 @@ def test_regression_run_task_repo_selects_unique_owned_workspace(board, monkeypa
     (board.REPO / "work/A_1/.git").mkdir(parents=True)
     (board.REPO / "work/A_1/tests").mkdir()
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
-    assert board.cmd_regression(_reg_args(task="job3", repo="A")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _reg_args(task="job3", repo="A")) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO / "work/A_1")
 
 
@@ -153,7 +154,7 @@ def test_regression_run_rejects_task_cwd_before_subprocess(board, monkeypatch, t
     _install_fake(board, monkeypatch, fake)
 
     with pytest.raises(SystemExit) as exc:
-        board.cmd_regression(_reg_args(task="job3", cwd=str(tmp_path / "outside")))
+        regression_cmd.cmd_regression(board._home(), _reg_args(task="job3", cwd=str(tmp_path / "outside")))
 
     assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
@@ -167,7 +168,7 @@ def test_regression_run_non_task_cwd_remains_override(board, monkeypatch, tmp_pa
     fake = _FakeRun(0, pytest_summary())
     _install_fake(board, monkeypatch, fake)
 
-    assert board.cmd_regression(_reg_args(cwd=str(target), cmd="pytest -q")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _reg_args(cwd=str(target), cmd="pytest -q")) == 0
 
     assert fake.calls[0]["kwargs"]["cwd"] == str(target)
 
@@ -214,19 +215,19 @@ def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, 
     assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
     assert fake.calls == []
-    assert not board.LIVEGATE_FLAG.exists()
+    assert not pm_paths.livegate_flag(board._home()).exists()
 
 
 def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_path):
     """비-task livegate record의 명시 --cwd는 기존처럼 실행·기록 기준 경로로 유지된다."""
     target = tmp_path / "readonly"
     target.mkdir()
-    fake = _FakeRun(0, pytest_summary(board.LIVEGATE_RELEASE_PIN))
+    fake = _FakeRun(0, pytest_summary(regression.LIVEGATE_RELEASE_PIN))
     _install_fake(board, monkeypatch, fake)
     monkeypatch.setattr(
-        board,
+        regression_store,
         "_resolve_livegate_flag",
-        lambda cwd: (board.LIVEGATE_FLAG, board._LG_NO_HOOK),
+        lambda home, cwd: (pm_paths.livegate_flag(home), regression_store._LG_NO_HOOK),
     )
 
     assert board.cmd_livegate(_lg_args(cwd=str(target))) == 0
@@ -283,7 +284,7 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
                         if getattr(args, "task", None) else (None, None))
     seen = {}
 
-    def _fake_id_prefix(override, session=None):
+    def _fake_id_prefix(_home, override, session=None):
         seen["override"] = override
         return override
 
@@ -291,9 +292,9 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         seen["created_by"] = f"{user_override or 'u'}/{session_override}"
         return seen["created_by"]
 
-    monkeypatch.setattr(board, "id_prefix", _fake_id_prefix)
+    monkeypatch.setattr(areas_store, "id_prefix", _fake_id_prefix)
     monkeypatch.setattr(board, "identity_tag", _fake_tag)
-    monkeypatch.setattr(board, "registered_prefixes", lambda: [])
+    monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
     monkeypatch.setattr(board, "_board_git_sync_best_effort",
@@ -306,8 +307,8 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
     tmpl.write_text("---\nid: T-NNNN\ntitle: <제목>\n---\n본문\n", encoding="utf-8")
-    monkeypatch.setattr(board, "template_file", lambda: tmpl)
-    monkeypatch.setattr(board, "tickets_dir", lambda: board.REPO / "tickets")
+    monkeypatch.setattr(pm_paths, "template_file", lambda _home: tmpl)
+    monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     (board.REPO / "tickets" / "open").mkdir(parents=True, exist_ok=True)
 
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
@@ -327,11 +328,11 @@ def _stub_new_env(board, monkeypatch, *, tasks):
                         lambda args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
     seen = {}
-    monkeypatch.setattr(board, "id_prefix",
-                        lambda override: seen.__setitem__("override", override) or override)
+    monkeypatch.setattr(areas_store, "id_prefix",
+                        lambda _home, override: seen.__setitem__("override", override) or override)
     monkeypatch.setattr(board, "identity_tag",
                         lambda session_override=None, user_override=None: "u/x")
-    monkeypatch.setattr(board, "registered_prefixes", lambda: [])
+    monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
     monkeypatch.setattr(board, "_board_git_sync_best_effort",
@@ -342,8 +343,8 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
     tmpl.write_text("---\nid: T-NNNN\ntitle: <제목>\n---\n본문\n", encoding="utf-8")
-    monkeypatch.setattr(board, "template_file", lambda: tmpl)
-    monkeypatch.setattr(board, "tickets_dir", lambda: board.REPO / "tickets")
+    monkeypatch.setattr(pm_paths, "template_file", lambda _home: tmpl)
+    monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     (board.REPO / "tickets" / "open").mkdir(parents=True, exist_ok=True)
     return seen
 
@@ -470,7 +471,7 @@ def test_actor_override_rejects_unsafe_task_before_side_effect(board, bad):
 
 def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
     """등록 repo 의 `<repo>_<N>` 예약 패턴 task 명 거부(⑥·registered_repos fail-soft 해소)."""
-    monkeypatch.setattr(board, "registered_repos", lambda: {"project_manager"})
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: {"project_manager"})
     ns = argparse.Namespace(repo=None, slot=None, task="project_manager_1")
     with pytest.raises(SystemExit):
         board._actor_session_override(ns)
@@ -478,9 +479,9 @@ def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
 
 def test_actor_override_registered_repos_failsoft(board, monkeypatch):
     """areas 파싱 실패(registered_repos raise)여도 char/traversal 검증은 유지·정상 task 통과."""
-    def _boom():
+    def _boom(_home):
         raise RuntimeError("areas broken")
-    monkeypatch.setattr(board, "registered_repos", _boom)
+    monkeypatch.setattr(areas_store, "registered_repos", _boom)
     # 정상 task 는 통과(예약패턴만 완화·char 검증 유지).
     assert board._actor_session_override(argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
     # 불법 char 는 여전히 거부.
@@ -493,7 +494,7 @@ def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": []}), encoding="utf-8")
     tickets_open = board.REPO / "tickets" / "open"
-    monkeypatch.setattr(board, "tickets_dir", lambda: board.REPO / "tickets")
+    monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     tickets_open.mkdir(parents=True, exist_ok=True)
     # ID 발행/파일 write 이전에 거부되므로 template 등 미도달.
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
@@ -532,8 +533,8 @@ def _t0929_mock_workspaces(board, monkeypatch):
         rows.append({'slot': f'work/A_{n}', 'repo': 'A', 'session': 'main',
                      'role': 'work', 'state': 'leased', 'test_cmd': f'pytest -q -k slot{n}'})
     _write_leases(board.LEASES_FILE, rows)
-    monkeypatch.setattr(board, '_cluster_current_branch', lambda tree: f'task/slot{Path(tree).name[-1]}')
-    monkeypatch.setattr(board, '_git_head_at', lambda tree: f'head{Path(tree).name[-1]}')
+    monkeypatch.setattr(git, '_cluster_current_branch', lambda tree: f'task/slot{Path(tree).name[-1]}')
+    monkeypatch.setattr(git, '_git_head_at', lambda tree: f'head{Path(tree).name[-1]}')
     return rows
 
 
@@ -543,10 +544,10 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
-    call = board.cmd_regression if consumer == 'regression' else board.cmd_livegate
+    call = (lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else board.cmd_livegate
     assert call(args) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
-    assert board.session_name('main') == 'main'
+    assert lease_store.session_name(board._home(), 'main') == 'main'
 
 
 @pytest.mark.parametrize('consumer', ['regression', 'livegate'])
@@ -558,10 +559,10 @@ def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
     with pytest.raises(SystemExit, match='readonly'):
-        (board.cmd_regression if consumer == 'regression' else board.cmd_livegate)(args)
+        ((lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else board.cmd_livegate)(args)
     assert fake.calls == []
-    assert not board.REGRESSION_FLAG.exists()
-    assert not board.LIVEGATE_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
+    assert not pm_paths.livegate_flag(board._home()).exists()
 
 
 @pytest.mark.parametrize('command', ['init', 'reid', 'migrate-identity'])

@@ -29,6 +29,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from _test_exec import python_argv_command
+from pm_engine.infra import pm_paths
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -373,7 +374,7 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
     # 커밋된 산출은 이제 브랜치 tip 이라 리뷰 입력 결속을 그대로 통과한다.
     board = _fixture_board(pd, home)
     pd.assert_cluster_review_tree(
-        board, pd.cluster_review_input(board, _CLUSTER, repo=home), repo=home)
+        pd.cluster_review_input(board, _CLUSTER, repo=home), repo=home)
 
 
 @requires_git
@@ -496,7 +497,7 @@ def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, revie
     home, _tickets = review_env
     board = _fixture_board(pd, home)
     review = pd.cluster_review_input(board, _CLUSTER, repo=home)
-    specs = pd._cluster_member_specs(board, review.members)
+    specs = pd._cluster_member_specs(pm_paths.home_at(home), review.members)
     focus = "이번 라운드는 경계 판정의 값 대조를 중점으로 본다."
 
     prompt = pd.build_cluster_review_prompt(
@@ -522,7 +523,7 @@ def test_prompt_leaves_the_block_requirement_to_the_round_seed(pd, review_env):
     home, _tickets = review_env
     board = _fixture_board(pd, home)
     review = pd.cluster_review_input(board, _CLUSTER, repo=home)
-    specs = pd._cluster_member_specs(board, review.members)
+    specs = pd._cluster_member_specs(pm_paths.home_at(home), review.members)
 
     prompt = pd.build_cluster_review_prompt(review, specs, tree=home, focus=None)
 
@@ -587,7 +588,7 @@ def _reserve_prior_rounds(pd, home: Path, roles: tuple[str, ...]) -> None:
             else:
                 content = f"## {role} 산출\n- {ticket} 실측\n"
             rounds_module.reserve_round(
-                board.tickets_dir(), ticket, role,
+                pm_paths.tickets_dir(board._home()), ticket, role,
                 content=content,
                 lock=_contextlib.nullcontext(),
             )
@@ -1151,7 +1152,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
                         encoding="utf-8", newline="")
         for item in rounds:
             rounds_module.reserve_round(
-                board.tickets_dir(), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1470,11 +1471,11 @@ def test_confirmation_tree_must_be_the_cluster_branch(pd, review_env):
     board = _fixture_board(pd, home)
     board._claim_code_tree = lambda *_a, **_k: str(home)
 
-    assert pd._cluster_confirmation_tree(board, _CLUSTER) == home
+    assert pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home)) == home
 
     assert _git(home, "checkout", "-q", _BASE_BRANCH).returncode == 0
     with pytest.raises(pd.DelegateError, match="통합 브랜치가 아닙니다"):
-        pd._cluster_confirmation_tree(board, _CLUSTER)
+        pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home))
 
 
 @requires_git
@@ -1525,7 +1526,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
                         encoding="utf-8", newline="")
         for item in rounds:
             rounds_module.reserve_round(
-                board.tickets_dir(), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1574,7 +1575,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
         )
         for item in rounds:
             rounds_module.reserve_round(
-                board.tickets_dir(), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1591,7 +1592,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     for ticket in _MEMBERS:
         text = (tickets / f"{ticket}-review.md").read_text(encoding="utf-8")
         assert f'"command":"{pd.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND}"' in text
-        spec_text, rounds = pd._ticket_spec_and_rounds(board, ticket)
+        spec_text, rounds = pd._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
         assert pd.parse_pm_review_delta(spec_text, rounds).accepted == ()
         assert pd.review_completion_problem(spec_text, rounds) is None
     assert "PM-owned terminal 확인 1건 기입" in captured.out
@@ -1624,7 +1625,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
         )
         for item in rounds:
             rounds_module.reserve_round(
-                board.tickets_dir(), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1641,7 +1642,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     ) == 0
 
     for ticket in _MEMBERS:
-        spec_text, rounds = pd._ticket_spec_and_rounds(board, ticket)
+        spec_text, rounds = pd._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
         blocks = [
             block for block in pd._pm_review_json_blocks(spec_text)
             if block.kind == pd.PM_REVIEW_CONFIRMATION_BLOCK
@@ -1770,11 +1771,11 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
                     encoding="utf-8", newline="")
     for item in rounds:
         rounds_module.reserve_round(
-            board.tickets_dir(), rejected, item.role, content=item.text,
+            pm_paths.tickets_dir(board._home()), rejected, item.role, content=item.text,
             lock=contextlib.nullcontext(),
         )
     rounds_module.reserve_round(
-        board.tickets_dir(), passed, "code-reviewer",
+        pm_paths.tickets_dir(board._home()), passed, "code-reviewer",
         content=_reviewer_round_text(pd, []), lock=contextlib.nullcontext(),
     )
     capsys.readouterr()
@@ -1823,7 +1824,8 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
         'rounds', 'resolve', '--cluster', _CLUSTER, '--pm-verified', '--task', 'main']]
     identity = argparse.Namespace(task='main', repo='proj' if explicit else None, slot=5 if explicit else None)
     before = board.LEASES_FILE.read_bytes()
-    assert pd._cluster_confirmation_tree(board, _CLUSTER, identity=identity) == found
+    assert pd._cluster_confirmation_tree(
+        board, _CLUSTER, home=pm_paths.home_at(home), identity=identity) == found
     assert board.LEASES_FILE.read_bytes() == before
 
     # finish argv에서 실제 내부 확인·기입·처분까지 연결하며 외부 명령만 대역으로 둔다.
@@ -1838,7 +1840,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
         path = tickets / f'{ticket}-review.md'
         path.write_text(path.read_text(encoding='utf-8') + '\n' + spec, encoding='utf-8')
         for item in rounds:
-            rounds_module.reserve_round(board.tickets_dir(), ticket, item.role,
+            rounds_module.reserve_round(pm_paths.tickets_dir(board._home()), ticket, item.role,
                                         content=item.text, lock=contextlib.nullcontext())
     command_calls = []
     runner = _stub_run(0, 'hi\n')
@@ -1866,7 +1868,7 @@ def test_t0929_finish_confirmation_explicit_wrong_branch_refused(pd, review_env)
     assert _git(home, 'worktree', 'add', '-q', str(slot), _BASE_BRANCH).returncode == 0
     board.LEASES_FILE.write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
     with pytest.raises(pd.DelegateError, match='브랜치'):
-        pd._cluster_confirmation_tree(board, _CLUSTER, identity=argparse.Namespace(task='main', repo='proj', slot=1))
+        pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home), identity=argparse.Namespace(task='main', repo='proj', slot=1))
 
 
 @requires_git
@@ -1887,6 +1889,6 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
               tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md"))))
     identity = argparse.Namespace(task="main", repo=None if task_only else "proj", slot=None if task_only else 1)
     with pytest.raises(pd.DelegateError, match="cluster new"):
-        pd._cluster_confirmation_tree(board, _CLUSTER, identity=identity)
+        pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home), identity=identity)
     assert (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
             tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md")))) == before

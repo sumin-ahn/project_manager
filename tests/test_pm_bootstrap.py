@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from _slot_seed import fake_slot_path
+from pm_engine.app import slot_resolution
 
 
 def _idle_lease(slot: str):
@@ -472,7 +473,7 @@ def test_resolve_log_file_standalone_uses_repo_anchor(bootstrap, tmp_path):
 
 def test_task_reserved_name_rejected_at_cli(bootstrap, monkeypatch):
     """`--task <등록 repo>_<N>` = 슬롯 세션 예약 패턴 → rc2 거부(⑥·run 미도달)."""
-    monkeypatch.setattr(bootstrap, "_registered_repos", lambda *a, **k: ["project_manager"])
+    monkeypatch.setattr(slot_resolution, "_registered_repos", lambda *a, **k: ["project_manager"])
     monkeypatch.setattr(bootstrap.PmBootstrap, "run",
                         lambda self, **kw: (_ for _ in ()).throw(
                             AssertionError("run 도달 금지 — 예약 거부여야")))
@@ -483,7 +484,7 @@ def test_task_reserved_name_rejected_at_cli(bootstrap, monkeypatch):
 
 def test_task_free_name_reaches_run(bootstrap, monkeypatch):
     """자유 포맷 task 명은 통과해 run(task=…) 으로 전달된다(비공허)."""
-    monkeypatch.setattr(bootstrap, "_registered_repos", lambda *a, **k: ["project_manager"])
+    monkeypatch.setattr(slot_resolution, "_registered_repos", lambda *a, **k: ["project_manager"])
     captured = {}
     monkeypatch.setattr(bootstrap.PmBootstrap, "run",
                         lambda self, **kw: captured.update(kw) or 0)

@@ -9,6 +9,7 @@
   플랫폼별 rename 의미 차이를 이 모듈이 복제하지 않는다)
 * gate entry 정규화와 단조 sequence 예약/스폰 전 환불
 * 예약 순서 기준 must-fix 추이, 진행 중 예약을 포함한 상한, 발산 조기 차단
+* 게이트 처분 선언(`resolution`) 판정, 마지막 라운드 판정과 잔여 must-fix
 
 파일락의 경로와 임계 구역은 호출자가 소유한다. 저장 파일과 부가 기록(livegate/wave)은 호출
 도구가 정한다. 호출자는 반드시 같은 장부 옆의 파일락 안에서 read-modify-write를 수행한다.
@@ -218,32 +219,36 @@ def append_round_outcome(entry: dict, outcome: dict) -> dict:
 
 
 def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
-    """sequence 없는 구기록을 앞에 두는 안정 정렬 키."""
+    """라운드 산출의 **예약 순번** 정렬 키 — 이 판정의 공용 seam (사본 금지).
+
+    append 순서는 *완료* 순서라 라운드 번호가 아니다(동시 라운드가 역순으로 끝나면 뒤바뀐다).
+    그래서 나열은 예약 순번(`sequence`)을 따른다.
+
+    **순번이 없는 구세대 기록은 신기록보다 앞(오래된 쪽)이다.** 뒤에 두면 업그레이드 후 새 통과가
+    쌓여도 옛 반려가 영원히 '최신'이 되어, 이미 닫힌 게이트가 계속 활성으로 읽히고(회귀 강등)
+    확인 전용 라운드 자격도 영구히 열린다. 구기록은 정의상 순번 도입 *이전* 이라 앞이 맞다 —
+    같은 축의 안정 정렬로 구기록끼리는 append 순서를 보존한다.
+
+    이 판정을 쓰는 표면이 여럿이라(회귀 강등·추가 리뷰어의 조회 표·수렴 추이·확인 전용 라운드
+    자격) 이 모듈 한 곳에 둔다 — 사본을 만들면 그 사본이 다시 뒤집힌 '최신'을 답한다.
+    """
     sequence = outcome.get("sequence")
     valid = isinstance(sequence, int) and not isinstance(sequence, bool)
     return (valid, sequence if valid else 0)
 
 
-def ordered_round_outcomes(
-    rounds: Sequence[dict],
-    *,
-    order_key: Callable[[dict], object] | None = None,
-) -> list[dict]:
+def ordered_round_outcomes(rounds: Sequence[dict]) -> list[dict]:
     """append 완료 순서가 아니라 예약 sequence 순으로 산출을 정렬한다."""
-    return sorted(rounds, key=order_key or round_outcome_order_key)
+    return sorted(rounds, key=round_outcome_order_key)
 
 
-def recorded_must_fix_series(
-    entry: dict,
-    *,
-    order_key: Callable[[dict], object] | None = None,
-) -> tuple[int | None, ...]:
+def recorded_must_fix_series(entry: dict) -> tuple[int | None, ...]:
     """예약 순서의 must-fix 추이. 셀 근거가 없으면 None을 보존한다."""
     rounds = [
         row for row in (entry.get("rounds") or []) if isinstance(row, dict)
     ]
     series: list[int | None] = []
-    for outcome in ordered_round_outcomes(rounds, order_key=order_key):
+    for outcome in ordered_round_outcomes(rounds):
         value = outcome.get("must_fix")
         series.append(
             value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -290,11 +295,10 @@ def convergence_round_usage(
     entry: dict,
     *,
     wall_timeout_sec: int | None = None,
-    order_key: Callable[[dict], object] | None = None,
 ) -> tuple[int, int]:
     """(완료 산출 수, 실행 중 예약 수)."""
     return (
-        len(recorded_must_fix_series(entry, order_key=order_key)),
+        len(recorded_must_fix_series(entry)),
         inflight_reservations(entry, wall_timeout_sec=wall_timeout_sec),
     )
 
@@ -304,10 +308,9 @@ def convergence_refusal(
     limit: int,
     *,
     wall_timeout_sec: int | None = None,
-    order_key: Callable[[dict], object] | None = None,
 ) -> str | None:
     """must-fix 증가 또는 완료+진행 중 라운드 상한의 거부 사유."""
-    series = recorded_must_fix_series(entry, order_key=order_key)
+    series = recorded_must_fix_series(entry)
     if (
         len(series) >= 2
         and series[-1] is not None
@@ -316,7 +319,7 @@ def convergence_refusal(
     ):
         return CONVERGENCE_DIVERGING
     completed, inflight = convergence_round_usage(
-        entry, wall_timeout_sec=wall_timeout_sec, order_key=order_key
+        entry, wall_timeout_sec=wall_timeout_sec
     )
     if completed + inflight >= limit:
         last = series[-1] if series else None
@@ -332,3 +335,209 @@ def describe_pm_verified_resolution(declared: dict) -> str:
     """
     del declared
     return "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)"
+
+
+# ── 장부 위치와 게이트 판정 (회귀 강등·릴리즈 차단·조회 표 공용) ─────────────
+REVIEW_ROUNDS_LEDGER_NAME = "review_rounds.json"
+_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additional_reviewer WAVE_SECTION_KEY)
+
+
+def _review_rounds_ledger(home) -> Path:
+    """추가 리뷰 라운드 장부 경로 — `home.local_dir` 파생(테스트 격리 추종)."""
+    return home.local_dir / REVIEW_ROUNDS_LEDGER_NAME
+
+
+def gate_last_round(entry: dict) -> dict | None:
+    """게이트의 **마지막 라운드 산출** — 기록이 없으면 None (공용 seam·사본 금지).
+
+    "마지막이 어느 라운드인가"를 이 한 곳이 정한다 — append 순서가 아니라 예약 순번이다
+    (`round_outcome_order_key`). 이 판정을 세 표면이 쓴다: 회귀 강등의 최신 판정, 릴리즈 게이트의
+    잔여 must-fix, 처분 선언의 근거 게이트 통과 여부. 사본을 두면 그 사본이 서로 다른 라운드를
+    '최신'이라고 답한다. `rounds` 가 리스트가 아닌 손상 항목은 None 이다 — 이 seam 은 판정을
+    돌려줄 뿐이라 손상의 **처분**은 호출부가 정한다(회귀 강등은 fail-open·릴리즈는 fail-closed·
+    `gate_entry_corruption`)."""
+    rounds = entry.get("rounds")
+    if not isinstance(rounds, list):
+        return None
+    rounds = [row for row in rounds if isinstance(row, dict)]
+    if not rounds:
+        return None
+    return sorted(rounds, key=round_outcome_order_key)[-1]
+
+
+def _last_round_verdict(entry: dict) -> int | None:
+    """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
+
+    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `gate_last_round` —
+    additional_reviewer 조회 표와 같은 한 규칙)."""
+    outcome = gate_last_round(entry)
+    verdict = outcome.get("verdict") if outcome is not None else None
+    return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
+
+
+def gate_residual_must_fix(entry: dict) -> int | None:
+    """마지막 라운드가 남긴 must-fix 잔여 — 3-상태 (공용 seam).
+
+    반환은 `0`(잔여 없음) · `N>0`(N 건) · **`None`(미상)** 이다. 미상은 "호출은 됐는데 판정이
+    무효했다"(타임아웃·오염·섹션 부재로 셀 근거가 없던 라운드)이고, 그건 "잔여가 없다"가 아니라
+    **확인하지 못했다**이다 — 0 으로 접으면 판정 무효 라운드로 끝난 게이트에서 릴리즈 차단이
+    조용히 풀린다(실장부 실례). 형제 seam(additional_reviewer 의 수렴 판정)도 '미상'을 해소로 세지
+    않는 같은 규칙이다.
+
+    다만 **통과(rc 0)로 끝난 라운드의 미상은 비대상(0)** 이다 — 그쪽은 판정이 났고 must-fix 섹션이
+    없었을 뿐이라 반려 사실이 없다. suggestion 은 어느 경우에도 이 축에 들어오지 않는다(이월 허용).
+    """
+    outcome = gate_last_round(entry)
+    if outcome is None:
+        return 0
+    value = outcome.get("must_fix")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    return 0 if _last_round_verdict(entry) == 0 else None
+
+
+def gate_has_residual(entry: dict) -> bool:
+    """처분이 필요한 잔여가 있는가 — N>0 **또는 미상** (공용 seam).
+
+    릴리즈 차단과 처분 선언(`--resolve-gate`)이 이 한 술어를 공유한다. 두 표면이 갈리면 차단은
+    되는데 선언은 거부되는 데드락이 난다(미상 게이트가 정확히 그 형상이다)."""
+    residual = gate_residual_must_fix(entry)
+    return residual is None or residual > 0
+
+
+def gate_residual_label(entry: dict) -> str:
+    """잔여 표기 — `N건` / `미상(판정 무효 라운드)` (차단 사유·선언 응답 공용)."""
+    residual = gate_residual_must_fix(entry)
+    return "미상(판정 무효 라운드)" if residual is None else f"{residual}건"
+
+
+# ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
+# 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는가**를 장부에 남기는 절이다.
+# 쓰는 쪽은 additional_reviewer(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
+# 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다.
+# 기계 확인 증거로 여는 게이트 처분(`RESOLUTION_PM_VERIFIED`)은 장부마다 `allow_pm_verified` 명시
+# 시에만 인정된다(추가 리뷰어 release 축이 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
+
+# 처분 표기 어휘 — 선언 응답(additional_reviewer)과 차단 사유(여기)가 같은 말을 쓰게.
+GATE_RESOLUTION_LABELS: dict[str, str] = {
+    RESOLUTION_PM_VERIFIED: "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)",
+}
+
+# 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
+_GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
+_MISSING_BINDING = object()   # `round_sequence` 키 부재와 명시 null(정상 값)을 구분하는 표식.
+
+
+def gate_entry_corruption(entry: object) -> str | None:
+    """게이트 항목이 **해석 가능한 형상**인지 — 아니면 사유 (정상이면 None·공용 seam).
+
+    "존재하는데 읽을 수 없음"은 "잔여 없음"이 아니다. 손상 형상마다 조용한 통과 조각이 생기는 것이
+    이 축의 실패 모드였다 — 비-dict 항목은 순회에서 건너뛰고, 문자열 `rounds` 는 '기록 없음'으로,
+    정수 `rounds` 는 예외로 갈렸다(각각 통과·통과·중단). 셋을 한 술어로 모아 호출부가 **한 처분**
+    (릴리즈 차단)으로 수렴시킨다."""
+    if not isinstance(entry, dict):
+        return f"게이트 항목 형식 오류({type(entry).__name__}) — 해석 불가"
+    rounds = entry.get("rounds")
+    if rounds is not None and not isinstance(rounds, list):
+        return f"`rounds` 형식 오류({type(rounds).__name__}) — 라운드 이력 해석 불가"
+    if isinstance(rounds, list) and any(not isinstance(row, dict) for row in rounds):
+        return "`rounds` 에 매핑이 아닌 원소 — 라운드 이력 해석 불가"
+    resolution = entry.get("resolution")
+    if resolution is not None and not isinstance(resolution, dict):
+        return f"`resolution` 형식 오류({type(resolution).__name__}) — 처분 선언 해석 불가"
+    return None
+
+
+def gate_round_binding(entry: dict) -> dict:
+    """게이트의 **현재 라운드 좌표** — `{round_sequence, rounds}` (선언·검증 공용 seam).
+
+    처분은 "그때 그 잔여"에 대한 선언이다. 좌표 없이 게이트 단위로만 남기면 처분 뒤에 새 반려
+    라운드가 와도 옛 선언이 잔여를 계속 지운다(처분의 무기한 유효화). 좌표는 둘을 함께 본다 —
+    마지막 라운드의 예약 순번(정렬 좌표)과 산출 수. 순번 없는 구세대 산출만 있는 장부에서도
+    산출 수가 증가를 잡는다."""
+    rounds = entry.get("rounds")
+    rounds = [row for row in rounds if isinstance(row, dict)] if isinstance(rounds, list) else []
+    last = gate_last_round(entry)
+    sequence = last.get("sequence") if last is not None else None
+    if isinstance(sequence, bool) or not isinstance(sequence, int):
+        sequence = None
+    return {"round_sequence": sequence, "rounds": len(rounds)}
+
+
+def gate_resolution(entry: dict) -> dict | None:
+    """게이트 처분 선언의 해석 — 미선언·형식 불명이면 None(=미처분·공용 seam).
+
+    읽을 수 없는 값은 처분이 아니다(fail-closed) — 손상된 한 줄이 릴리즈 차단을 **여는** 방향으로
+    작동하면 그 게이트는 기계가 아니다. 라운드 좌표(`round_sequence`·`rounds`)도 같은 축이다:
+    좌표 없는 선언은 어느 잔여를 처분했는지 확인할 수 없으므로 처분으로 인정하지 않는다.
+    반환은 정규화된 `{kind, round_sequence, rounds, ts?}` 사본이다. 폐지 kind는 None으로
+    읽혀 잔여 게이트를 그대로 차단한다.
+    """
+    raw = entry.get("resolution")
+    if not isinstance(raw, dict):
+        return None
+    kind = raw.get("kind")
+    if kind != RESOLUTION_PM_VERIFIED:
+        return None
+    sequence = raw.get("round_sequence", _MISSING_BINDING)
+    count = raw.get("rounds")
+    if sequence is _MISSING_BINDING:
+        return None                      # 좌표 없는 선언 — 어느 잔여를 처분했는지 확인 불가.
+    if sequence is not None and (isinstance(sequence, bool) or not isinstance(sequence, int)):
+        return None
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    declared = {
+        "kind": kind,
+        "round_sequence": sequence,
+        "rounds": count,
+    }
+    ts = raw.get("ts")
+    if isinstance(ts, str) and ts.strip():
+        declared["ts"] = ts.strip()
+    return declared
+
+
+def gate_resolution_is_stale(entry: dict, declared: dict) -> bool:
+    """처분이 결속한 라운드 좌표가 **지금 장부와 다른가** (다르면 미처분 취급·공용 seam).
+
+    선언 이후 새 라운드가 기록됐다면 그 잔여는 처분되지 않은 새 사실이다. 좌표가 뒤로 간 경우
+    (장부 손편집)도 같은 처분이다 — 어느 쪽이든 선언이 가리키던 상태가 아니다."""
+    current = gate_round_binding(entry)
+    return any(current[key] != declared.get(key) for key in _GATE_RESOLUTION_BINDING_KEYS)
+
+
+def _gate_disposition_problem(
+    gate: str,
+    entry: object,
+    *,
+    allow_pm_verified: bool = False,
+    pm_verified_problem: Callable[[], str | None] | None = None,
+) -> str | None:
+    """게이트 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
+
+    순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
+    비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
+    → `pm-verified` 발동 증거의 라이브 재검증. 폐지 kind는 `gate_resolution=None`이라
+    미처분으로 fail-loud 한다."""
+    corruption = gate_entry_corruption(entry)
+    if corruption is not None:
+        return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
+    if not gate_has_residual(entry):
+        return None
+    prefix = f"  · {gate}: 최종 라운드 must_fix {gate_residual_label(entry)}"
+    declared = gate_resolution(entry)
+    if declared is None:
+        return f"{prefix} · 처분 선언 없음"
+    label = f"{GATE_RESOLUTION_LABELS[declared['kind']]} 선언"
+    if gate_resolution_is_stale(entry, declared):
+        current = gate_round_binding(entry)
+        return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
+                f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
+                f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
+    if not allow_pm_verified:
+        return f"{prefix} · {label} — 이 장부에서는 pm-verified 처분을 허용하지 않습니다"
+    if pm_verified_problem is None:
+        return f"{prefix} · {label} — 발동 조건을 재검증할 수 없습니다(호출부 설정 누락)"
+    problem = pm_verified_problem()
+    return None if problem is None else f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"

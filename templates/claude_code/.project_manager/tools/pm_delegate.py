@@ -64,9 +64,10 @@ from typing import Callable, Iterator, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.app import hooks  # noqa: E402
-from pm_engine.domain import conf_schema, identity_args  # noqa: E402
-from pm_engine.infra import console, fs, raw_output, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.app import hooks, regression  # noqa: E402
+from pm_engine.cli import task_args  # noqa: E402
+from pm_engine.domain import conf_schema, identity_args, ticket_rules  # noqa: E402
+from pm_engine.infra import console, fs, git, pm_paths, raw_output, repo_coordinates, repo_files, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -1017,7 +1018,7 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
         raise DelegateError(f"delegate-rounds 장부 schema 불일치: line={line_number}")
     if (
         not isinstance(row["ticket"], str)
-        or not _load_board()._is_valid_ticket_id(row["ticket"])
+        or not ticket_rules._is_valid_ticket_id(row["ticket"])
         or row["role"] not in TICKET_COPY_ROLES
         or not isinstance(row["ordinal"], int)
         or isinstance(row["ordinal"], bool)
@@ -1358,7 +1359,7 @@ def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
 def _pool_bare_for_code_root(cwd: Path) -> Path | None:
     """이 코드 트리가 두-git 풀 슬롯이면 그 풀의 공용 bare 를, 임베드면 None 을 돌려준다.
 
-    형상 규칙 사본을 만들지 않는다 — 소유 PM 홈은 `pm_log.owning_pm_home` 이 이 트리의 `.git`
+    형상 규칙 사본을 만들지 않는다 — 소유 PM 홈은 `pm_paths.owning_pm_home` 이 이 트리의 `.git`
     선언에서 유도하고, 여기서는 두 값만 비교한다. 그 유도가 인정하는 공용 저장소 형상은
     `<X>/.git`(임베드·단일 clone·그 clone 이 판 linked worktree)과 `<X>/.repos/<repo>.git`
     (풀 슬롯) 둘뿐이고 그 밖은 예외이므로, 공용 저장소가 `<PM 홈>/.git` 이 아니면 남는 형상은
@@ -1368,7 +1369,7 @@ def _pool_bare_for_code_root(cwd: Path) -> Path | None:
     if not common.is_absolute():
         common = cwd / common
     common = common.resolve()
-    pm_home = Path(_load_pm_log().owning_pm_home(cwd)).resolve()
+    pm_home = Path(pm_paths.owning_pm_home(cwd)).resolve()
     if common == (pm_home / ".git").resolve():
         return None
     return common
@@ -1504,17 +1505,16 @@ def anchor_board_to_repo(board, repo: Path):
     """실행 엔진 board 모듈의 데이터 경로 전역을 repo 기준으로 고정한다(코드는 실행 엔진, 데이터는 repo).
 
     형제 board 를 적재하면 모듈 전역이 실행 엔진 트리를 가리킨다. 다른 트리의 board 데이터를 다루는
-    두 호출자(`_load_board_for_repo` 와 additional_reviewer 회수)가 이 함수로 `REPO`·`LOCAL_DIR`·
-    `BOARD_LOCK`·`BOARD_FILE`·`LEASES_FILE`·`LOCAL_CONF` 6개를 repo 로 맞춘다. 함수형 경로
-    (`board_root()`·`tickets_dir()`·`areas_file()`)는 REPO 를 따라간다. 이 6개 밖의 경로 상수는
-    실행 엔진 트리에 남고, 두 호출자가 쓰는 board 함수는 그 상수를 읽지 않는다. 앵커 규칙이 두
-    군데면 규칙이 둘이 되므로 여기 하나로 둔다."""
-    board.REPO = Path(repo).resolve()
-    board.LOCAL_DIR = board.REPO / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
-    board.BOARD_FILE = board.REPO / ".project_manager" / "wiki" / "board.md"
-    board.LEASES_FILE = board.LOCAL_DIR / "worktree-leases.json"
-    board.LOCAL_CONF = board.REPO / ".project_manager" / "local.conf"
+    두 호출자(`_load_board_for_repo` 와 additional_reviewer 회수)가 이 함수로 `REPO`·`BOARD_LOCK`·
+    `BOARD_FILE`·`LEASES_FILE` 4개를 repo 로 맞춘다. 패키지로 옮긴 함수는 전역 대신 Home 을 받으므로
+    호출자가 `pm_paths.home_at(repo)` 를 넘긴다. 이 4개 밖의 경로 상수는 실행 엔진 트리에 남고, 두
+    호출자가 쓰는 board 함수는 그 상수를 읽지 않는다. 앵커 규칙이 두 군데면 규칙이 둘이 되므로
+    여기 하나로 둔다."""
+    home = pm_paths.home_at(Path(repo).resolve())
+    board.REPO = home.root
+    board.BOARD_LOCK = home.local_dir / "board.lock"
+    board.BOARD_FILE = home.root / ".project_manager" / "wiki" / "board.md"
+    board.LEASES_FILE = pm_paths.leases_file(home)
     return board
 
 
@@ -1798,7 +1798,7 @@ def prepare_ticket_copy(
     반환은 종전대로 라운드 파일 하나의 좌표다.
     """
     board = _load_board_for_repo(pm_home)
-    found = board.find_ticket_exact(ticket)
+    found = ticket_store.find_ticket_exact(pm_paths.home_at(Path(pm_home).resolve()), ticket)
     if found is None:
         raise DelegateError(f"ticket not found: {ticket}")
     _status, source = found
@@ -1863,6 +1863,7 @@ def prepare_cluster_copy(
     board = _load_board_for_repo(pm_home)
     rounds_module = _load_ticket_rounds()
     pm_home = Path(pm_home).resolve()
+    home = pm_paths.home_at(pm_home)
     cwd = Path(cwd).resolve()
     # 슬롯 HEAD 를 장부 행에 남기는 역할 — developer(변경 경로 판정의 기준)와 code-reviewer
     # (돌려받기 트리 조건의 기준 · 준비 뒤 HEAD 가 바뀌면 거부한다).
@@ -1884,7 +1885,7 @@ def prepare_cluster_copy(
     specs: dict[str, str] = {}
     with board.board_lock():
         for ticket in members:
-            found = board.find_ticket_exact(ticket)
+            found = ticket_store.find_ticket_exact(home, ticket)
             if found is None:
                 raise DelegateError(f"ticket not found: {ticket}")
             status, source = found
@@ -1900,7 +1901,7 @@ def prepare_cluster_copy(
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
 
-    tickets_dir = board.tickets_dir()
+    tickets_dir = pm_paths.tickets_dir(home)
     existing_rounds = {
         ticket: rounds_module.load_rounds(tickets_dir, ticket, ticket_text=text)
         for ticket, text in specs.items()
@@ -2030,7 +2031,7 @@ def prepare_cluster_copy(
                 budget_sequence = _budget_inputs()
                 formal_tickets: set[str] = set()
                 for ticket in members:
-                    refreshed = board.find_ticket_exact(ticket)
+                    refreshed = ticket_store.find_ticket_exact(home, ticket)
                     if refreshed is None:
                         raise DelegateError(f"ticket not found: {ticket}")
                     fresh_status, _fresh_source = refreshed
@@ -2232,12 +2233,12 @@ def prepare_cluster_copy(
     return ClusterCopyPlan(run_dir, cluster, run_id, role, tuple(plans))
 
 
-def _ticket_commit_message(board, ticket: str) -> str:
+def _ticket_commit_message(home, ticket: str) -> str:
     """그 티켓의 커밋 문안 — 명세 제목(없으면 티켓 ID). 조회 실패는 그대로 올린다."""
-    found = board.find_ticket_exact(ticket)
+    found = ticket_store.find_ticket_exact(home, ticket)
     if found is None:
         return ticket
-    fm, _body = board.load_ticket(found[1])
+    fm, _body = ticket_store.load_ticket(found[1])
     title = str((fm or {}).get("title") or "").strip() if isinstance(fm, dict) else ""
     return title or ticket
 
@@ -2254,7 +2255,7 @@ def _assert_developer_commit_tree(cwd: Path) -> None:
     자리는 회수의 다른 developer 게이트와 같다(board 교체 앞) — 커밋 직전으로 밀면 거부 시점에
     board 라운드 교체·장부 append·run-dir 삭제가 이미 끝나 같은 자리로 다시 회수할 수 없다.
     """
-    if Path(_load_pm_log().owning_pm_home(cwd)).resolve() != Path(cwd).resolve():
+    if Path(pm_paths.owning_pm_home(cwd)).resolve() != Path(cwd).resolve():
         return                              # 풀 슬롯 — 소유 PM 홈이 따로 있다.
     bares = sorted((Path(cwd) / ".repos").glob("*.git"))
     if not bares:
@@ -2288,7 +2289,7 @@ def _assert_developer_commit_tree(cwd: Path) -> None:
     )
 
 
-def _commit_developer_round_output(cwd: Path, *, ticket: str, board) -> str | None:
+def _commit_developer_round_output(cwd: Path, *, ticket: str, home) -> str | None:
     """dev 산출을 그 슬롯에서 커밋한다 — 커밋했으면 문안, 커밋할 변경이 없으면 None.
 
     dev 산출의 커밋 자리는 여기 하나다(손 커밋 0). 리뷰 입력은 묶음 브랜치 tip 이고 리뷰 준비는
@@ -2298,7 +2299,7 @@ def _commit_developer_round_output(cwd: Path, *, ticket: str, board) -> str | No
     """
     if not _slot_pending_changes(cwd):
         return None
-    message = _ticket_commit_message(board, ticket)
+    message = _ticket_commit_message(home, ticket)
     _cluster_git(cwd, "add", "-A")
     _cluster_git(cwd, "commit", "-m", message)
     return message
@@ -2409,6 +2410,7 @@ def harvest_ticket_copy(
         return TicketHarvestResult(False, True)
 
     board = _load_board_for_repo(pm_home)
+    home = pm_paths.home_at(Path(pm_home).resolve())
     if row["role"] == "architect":
         try:
             parse_architect_tests(text)
@@ -2423,7 +2425,7 @@ def harvest_ticket_copy(
         # 티켓 전역 delta 가 막히고 라운드 파일을 되돌릴 정식 수단이 없다(회수면에서 끊는다).
         problem = _review_round_harvest_problem(
             text, ticket=row["ticket"], reviewer_role=row["role"],
-            ordinal=int(row["ordinal"]), board=board, rounds_module=rounds_module,
+            ordinal=int(row["ordinal"]), home=home, rounds_module=rounds_module,
         )
         if problem is not None:
             raise DelegateError(
@@ -2439,11 +2441,11 @@ def harvest_ticket_copy(
         # 이미 board 에 착지한 뒤라 되돌릴 정식 수단이 없다(라운드 파일은 회수 후 불변).
         terminal_fix = _terminal_developer_round(
             ticket=row["ticket"], ordinal=int(row["ordinal"]),
-            board=board, rounds_module=rounds_module,
+            home=home, rounds_module=rounds_module,
         )
         problem = _developer_round_harvest_problem(
             text, reserved, ticket=row["ticket"], ordinal=int(row["ordinal"]),
-            board=board, rounds_module=rounds_module, cwd=cwd,
+            home=home, rounds_module=rounds_module, cwd=cwd,
             base_rev=str(row.get("base_rev") or "HEAD"),
         )
         if problem is not None:
@@ -2462,7 +2464,7 @@ def harvest_ticket_copy(
     # promote와 같은 락에서 공개 상태 확인·교체를 마친다. draft 회수는 로컬 산출이며,
     # promote가 명세와 충전된 라운드를 함께 기록한다.
     with board.board_lock():
-        found = board.find_ticket_exact(row["ticket"])
+        found = ticket_store.find_ticket_exact(home, row["ticket"])
         if found is None:
             raise DelegateError(f"회수할 티켓 명세가 없습니다: {row['ticket']}")
         is_draft = found[0] == "draft"
@@ -2488,7 +2490,7 @@ def harvest_ticket_copy(
         # 않는다. 커밋 문안은 티켓 제목이고, 종결의 커밋 단계는 이 커밋 뒤 "커밋할 변경 없음"
         # 을 관측해 건너뛴다(커밋 자리는 하나다).
         message = _commit_developer_round_output(
-            cwd, ticket=row["ticket"], board=board,
+            cwd, ticket=row["ticket"], home=home,
         )
         if message is not None:
             print(f"슬롯 커밋: {row['ticket']} — {message} ({cwd})")
@@ -2568,7 +2570,7 @@ def harvest_cluster_copy(
 
 
 def _review_round_harvest_problem(
-    text: str, *, ticket: str, reviewer_role: str, ordinal: int, board, rounds_module,
+    text: str, *, ticket: str, reviewer_role: str, ordinal: int, home, rounds_module,
 ) -> str | None:
     """내부 채널 회수 직전 리뷰 라운드 내용 판정 — 위반 사유 또는 None.
 
@@ -2586,7 +2588,7 @@ def _review_round_harvest_problem(
     올라 티켓 전체를 막을 수 있고, 거부는 산출을 파괴하지 않으므로(run-dir 유지) 되돌릴 수 있다.
     """
     try:
-        found = board.find_ticket_exact(ticket)
+        found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
             return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
         _status, spec_path = found
@@ -2594,7 +2596,7 @@ def _review_round_harvest_problem(
             spec_path, encoding="utf-8", newline="",
         )
         rounds = rounds_module.load_rounds(
-            board.tickets_dir(), ticket, ticket_text=spec_text,
+            pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
         )
     except (DelegateError, rounds_module.RoundsError, OSError, UnicodeError) as exc:
         return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
@@ -2639,8 +2641,7 @@ def _full_regression_command(cwd: Path) -> str:
     repo = Path(cwd).resolve()
     er = _load_additional_reviewer()
     config_root = Path(er.resolve_pm_home_for_repo(repo)).resolve()
-    board = _load_board_for_repo(config_root)
-    command = str(board._test_cmd(None, session=None)).strip()
+    command = str(regression._test_cmd(pm_paths.home_at(config_root), None, session=None)).strip()
     if not command:
         raise DelegateError("developer 단계 종료 전체 회귀 test_cmd를 해소하지 못했습니다")
     return command
@@ -2745,11 +2746,11 @@ def _fix_round(rounds: Sequence, ordinal: int) -> bool:
 
 
 def _terminal_developer_round(
-    *, ticket: str, ordinal: int, board, rounds_module,
+    *, ticket: str, ordinal: int, home, rounds_module,
 ) -> bool:
     """회수 거부 문구가 사람을 다시 투입해도 되는지 판정하는 단일 seam."""
     try:
-        found = board.find_ticket_exact(ticket)
+        found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
             return False
         _status, spec_path = found
@@ -2757,7 +2758,7 @@ def _terminal_developer_round(
             spec_path, encoding="utf-8", newline="",
         )
         rounds = rounds_module.load_rounds(
-            board.tickets_dir(), ticket, ticket_text=spec_text,
+            pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
         )
     except (rounds_module.RoundsError, OSError, UnicodeError):
         return False
@@ -2765,7 +2766,7 @@ def _terminal_developer_round(
 
 
 def _developer_round_harvest_problem(
-    text: str, reserved: str, *, ticket: str, ordinal: int, board, rounds_module,
+    text: str, reserved: str, *, ticket: str, ordinal: int, home, rounds_module,
     cwd: Path, base_rev: str = "HEAD",
 ) -> str | None:
     """developer 라운드 회수 직전 verify 판정 — 위반 사유 또는 None(리뷰 게이트와 같은 자리).
@@ -2798,7 +2799,7 @@ def _developer_round_harvest_problem(
     있다).
     """
     try:
-        found = board.find_ticket_exact(ticket)
+        found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
             return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
         _status, spec_path = found
@@ -2806,7 +2807,7 @@ def _developer_round_harvest_problem(
             spec_path, encoding="utf-8", newline="",
         )
         rounds = rounds_module.load_rounds(
-            board.tickets_dir(), ticket, ticket_text=spec_text,
+            pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
         )
     except (rounds_module.RoundsError, OSError, UnicodeError) as exc:
         return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
@@ -3125,6 +3126,7 @@ def abandon_ticket_copy(
             f"board={board_path.name} · 기대={expected.name}"
         )
     board = _load_board_for_repo(pm_home)
+    home = pm_paths.home_at(Path(pm_home).resolve())
     if superseded_by_ordinal is not None:
         # 값·실재 검증은 시드 대조(mismatch) 분기와 무관하게 인자를 받는 즉시 끝낸다 — 시드
         # 그대로인 호출(플래그가 no-op 인 호출)에도 잘못된 값을 걸러 장부에 남을 값을 항상
@@ -3137,7 +3139,7 @@ def abandon_ticket_copy(
             )
         existing_ordinals = {
             item.ordinal
-            for item in rounds_module.load_rounds(board.tickets_dir(), row["ticket"])
+            for item in rounds_module.load_rounds(pm_paths.tickets_dir(home), row["ticket"])
         }
         if superseded_by_ordinal not in existing_ordinals:
             raise DelegateError(
@@ -3254,7 +3256,7 @@ def abandon_ticket_copy(
     unlinked = False
     with board.board_lock():
         if os.path.lexists(board_path):
-            existing = rounds_module.load_rounds(board.tickets_dir(), row["ticket"])
+            existing = rounds_module.load_rounds(pm_paths.tickets_dir(home), row["ticket"])
             max_ordinal = max((item.ordinal for item in existing), default=row["ordinal"])
             if not discarded_recorded and row["ordinal"] >= max_ordinal:
                 try:
@@ -3862,19 +3864,6 @@ def _load_delegate_channel_guard():
     )
 
 
-
-
-def _load_pm_log():
-    """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`) — 코드 트리 형상 판정의 단일 진실.
-
-    `additional_reviewer.resolve_pm_home_for_repo` 도 결국 이 함수를 부르지만, 그쪽은 **설정·
-    board 앵커**를 정하는 seam 이라 호출부가 앵커를 다른 트리로 돌려놓기도 한다. 형상은 앵커
-    선택과 무관하게 코드 트리 자신의 `.git` 선언만으로 정해져야 하므로 유도 규칙을 직접 부른다.
-    """
-    path = Path(__file__).resolve().parent / "pm_log.py"
-    return _load_module_from_path(
-        path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
-    )
 
 
 def _load_ticket_rounds():
@@ -6762,21 +6751,22 @@ def append_pm_review_confirmation(
 ) -> Path:
     """확인 절을 티켓 명세 PM 영역에 append/동일 round 병합하고 board-git 에 싣는다.
 
-    명세 쓰기 seam 은 새로 만들지 않는다 — board 의 기존 조합(`load_ticket` →
+    명세 쓰기 seam 은 새로 만들지 않는다 — 기존 조합(`ticket_store.load_ticket` → board 의
     `dump_ticket_atomic` → `_rounds_mutation_sync_paths`)을 그대로 쓴다.
     """
     board = _load_board_for_repo(Path(pm_home))
+    home = pm_paths.home_at(Path(pm_home).resolve())
     changed = False
     with board.board_lock():
-        found = board.find_ticket_exact(ticket)
+        found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
             raise DelegateError(f"ticket not found: {ticket}")
         _status, path = found
-        fm, body = board.load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         if rounds is None:
             rounds_module = _load_ticket_rounds()
             rounds = rounds_module.load_rounds(
-                board.tickets_dir(), ticket, ticket_text=body,
+                pm_paths.tickets_dir(home), ticket, ticket_text=body,
             )
         merged, changed = _merge_pm_review_confirmation_section(
             body, section, rounds=rounds,
@@ -7565,7 +7555,7 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
         key=lambda item: item.ordinal,
     )
     if not reviews:
-        frontmatter, _body = _load_board()._parse_ticket_text(
+        frontmatter, _body = ticket_rules._parse_ticket_text(
             _normalized_newlines(ticket_text), "<티켓 명세>")
         if frontmatter.get("tier") == PM_DIRECT_TIER:
             return None
@@ -11279,14 +11269,14 @@ def _folded_touch_pairs(
 
 
 def _touch_notations(
-    raw: object, board, coordinates, *, pm_root: Path | str, workspace: Path | str,
+    raw: object, coordinates, *, pm_root: Path | str, workspace: Path | str,
 ) -> tuple[tuple[str, str], ...] | None:
     """frontmatter touches → 접힌 `(원 선언, 좌표)` 쌍. **형식 불명이면 None**(판정 보류).
 
-    형식 판정은 board 의 단일 진실(`_normalized_touches`)을 쓴다 — 스칼라/비문자열 원소를
+    형식 판정은 단일 진실(`ticket_rules._normalized_touches`)을 쓴다 — 스칼라/비문자열 원소를
     여기서 다시 해석하면 같은 frontmatter 를 두 문법으로 읽게 된다.
     """
-    items = board._normalized_touches(raw)
+    items = ticket_rules._normalized_touches(raw)
     if items is None:
         return None
     return _folded_touch_pairs(
@@ -11319,28 +11309,28 @@ def claimed_touch_overlaps(
 
     비교 좌표는 `workspace`(= 이 위임의 git 최상위) 기준으로 접은 값이라 접두/무접두 혼합 선언도
     같은 파일로 만난다. board 형상 둘(board-git 분리 `.project_manager/board/tickets/` · legacy
-    `wiki/tickets/`)은 board 자신의 `tickets_dir()` 해소를 그대로 타므로 여기서 갈라 보지 않는다.
-    손상 frontmatter 는 board 의 순회 로더(`load_ticket_soft`)가 경고 1줄과 함께 건너뛴다.
+    `wiki/tickets/`)은 `pm_paths.tickets_dir` 해소를 그대로 타므로 여기서 갈라 보지 않는다.
+    손상 frontmatter 는 순회 로더(`ticket_store.load_ticket_soft`)가 경고 1줄과 함께 건너뛴다.
     """
-    board = _load_board_for_repo(Path(pm_root))
-    found = board.find_ticket_exact(ticket)
+    home = pm_paths.home_at(Path(pm_root).resolve())
+    found = ticket_store.find_ticket_exact(home, ticket)
     if found is None:
         return ()
-    target = board.load_ticket_soft(found[1])
+    target = ticket_store.load_ticket_soft(home, found[1])
     if target is None:
         return ()
     target_fm = target[0]
     claimed_by = str(target_fm.get("claimed_by") or "").strip()
     target_pairs = _touch_notations(
-        target_fm.get("touches"), board, repo_coordinates,
+        target_fm.get("touches"), repo_coordinates,
         pm_root=pm_root, workspace=workspace,
     )
     if not claimed_by or not target_pairs:
         return ()
 
     overlaps: list[TicketTouchOverlap] = []
-    for path in sorted((board.tickets_dir() / "claimed").glob("*.md")):
-        loaded = board.load_ticket_soft(path)
+    for path in sorted((pm_paths.tickets_dir(home) / "claimed").glob("*.md")):
+        loaded = ticket_store.load_ticket_soft(home, path)
         if loaded is None:
             continue
         other_fm = loaded[0]
@@ -11350,7 +11340,7 @@ def claimed_touch_overlaps(
         if str(other_fm.get("claimed_by") or "").strip() != claimed_by:
             continue
         other_pairs = _touch_notations(
-            other_fm.get("touches"), board, repo_coordinates,
+            other_fm.get("touches"), repo_coordinates,
             pm_root=pm_root, workspace=workspace,
         )
         if not other_pairs:
@@ -12194,7 +12184,7 @@ def _cmd_ticket(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         if args.ticket_command == "copies":
-            if args.ticket is not None and not _load_board()._is_valid_ticket_id(args.ticket):
+            if args.ticket is not None and not ticket_rules._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             owner = _activate_internal_rounds_cli_owner()
             ledger = _delegate_rounds_ledger_path(owner)
@@ -12241,7 +12231,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                     file=sys.stderr,
                 )
                 return 3
-            if args.ticket and not _load_board()._is_valid_ticket_id(args.ticket):
+            if args.ticket and not ticket_rules._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             if args.cluster and not _is_valid_cluster_id(args.cluster):
                 parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
@@ -12426,8 +12416,7 @@ def _cmd_review(argv: list[str]) -> int:
     parser = build_subcommand_parser("review")
     assert parser is not None
     args = parser.parse_args(argv)
-    board = _load_board()
-    if args.ticket is not None and not board._is_valid_ticket_id(args.ticket):
+    if args.ticket is not None and not ticket_rules._is_valid_ticket_id(args.ticket):
         parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
     if args.cluster is not None and not _is_valid_cluster_id(args.cluster):
         parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
@@ -12459,9 +12448,10 @@ def _cmd_review_ticket(args: argparse.Namespace, ticket: str) -> int:
     try:
         owner = _activate_internal_rounds_cli_owner()
         owner_board = _load_board_for_repo(owner)
+        home = pm_paths.home_at(Path(owner).resolve())
         rounds_module = _load_ticket_rounds()
         with owner_board.board_lock():
-            found = owner_board.find_ticket_exact(ticket)
+            found = ticket_store.find_ticket_exact(home, ticket)
             if found is None:
                 raise DelegateError(f"ticket not found: {ticket}")
             status, path = found
@@ -12475,10 +12465,10 @@ def _cmd_review_ticket(args: argparse.Namespace, ticket: str) -> int:
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"티켓 읽기 실패: {path}: {exc}") from exc
             rounds = rounds_module.load_rounds(
-                owner_board.tickets_dir(), ticket, ticket_text=ticket_text,
+                pm_paths.tickets_dir(home), ticket, ticket_text=ticket_text,
             )
             problems = rounds_module.verify_rounds(
-                owner_board.tickets_dir(), ticket, ticket_text=ticket_text,
+                pm_paths.tickets_dir(home), ticket, ticket_text=ticket_text,
             )
         # 순번 유일성·연속성이 깨진 상태만 차단한다 — 산출 없음(`round-pending`)과 이름 문법
         # (`round-name`)은 표시용이라 판정을 막지 않는다(심각도는 소비자 소유다).
@@ -12668,7 +12658,7 @@ def _changelog_section_text(board, body: str, heading: str, *, path: Path) -> st
     return text
 
 
-def changelog_material(board, *, since: datetime.datetime) -> list[ChangelogMaterial]:
+def changelog_material(board, *, home, since: datetime.datetime) -> list[ChangelogMaterial]:
     """`since` 이후에 완료된 done 티켓의 재료 — 완료 시각 오름차순.
 
     done 티켓은 strict 로더로 읽고 필수 값(완료 시각·id·제목·근거 절)을 전부 요구한다. 하나라도
@@ -12677,8 +12667,8 @@ def changelog_material(board, *, since: datetime.datetime) -> list[ChangelogMate
     사유는 구간 밖(경계 포함) 완료다.
     """
     materials: list[tuple[datetime.datetime, ChangelogMaterial]] = []
-    for path in sorted((board.tickets_dir() / "done").glob("T-*.md")):
-        fm, body = board.load_ticket(path)
+    for path in sorted((pm_paths.tickets_dir(home) / "done").glob("T-*.md")):
+        fm, body = ticket_store.load_ticket(path)
         completed = _changelog_instant(
             fm.get("completed_at"), source=f"완료 티켓 `completed_at`: {path}",
         )
@@ -12733,7 +12723,9 @@ def _cmd_changelog(argv: list[str], git_run_fn: Callable | None = None) -> int:
         owner = _activate_internal_rounds_cli_owner()
         checkout = changelog_code_checkout(local_config(owner), pm_home=owner)
         since = changelog_since_instant(checkout, args.since, git_run_fn=git_run_fn)
-        materials = changelog_material(_load_board_for_repo(owner), since=since)
+        materials = changelog_material(
+            _load_board_for_repo(owner), home=pm_paths.home_at(Path(owner).resolve()), since=since,
+        )
     except (DelegateError, OSError, UnicodeError, ValueError) as exc:
         print(f"오류: changelog {args.changelog_command} 실패: {exc}", file=sys.stderr)
         return 1
@@ -12744,7 +12736,7 @@ def _cmd_changelog(argv: list[str], git_run_fn: Callable | None = None) -> int:
 
 
 def _cluster_confirmation_tree(
-    board, cluster: str, *, identity: argparse.Namespace | None = None,
+    board, cluster: str, *, home, identity: argparse.Namespace | None = None,
 ) -> Path:
     """확인 커맨드를 돌릴 트리 1곳 — 묶음 통합 브랜치를 체크아웃한 코드 트리.
 
@@ -12758,7 +12750,7 @@ def _cluster_confirmation_tree(
                  and getattr(selection, "repo", None) is None
                  and getattr(selection, "slot", None) is None)
     if task_only:
-        board._validate_actor_task_or_exit(selection.task)
+        task_args._validate_actor_task_or_exit(home, selection.task)
         finish = _load_module_from_path(
             Path(__file__).resolve().with_name("ticket_finish.py"), "ticket_finish.py",
             verifier=_verify_engine_rev,
@@ -12789,11 +12781,11 @@ def _cluster_confirmation_tree(
     problem = board.cluster_binding_problem(cluster, tree=str(tree))
     if problem:
         raise DelegateError(problem)
-    if not board._git_head_at(str(tree)):
+    if not git._git_head_at(str(tree)):
         raise DelegateError(f"확인 실행 코드 트리의 HEAD를 읽지 못했습니다: {tree}")
     branch = str((board.load_cluster(cluster) or {}).get("branch") or "").strip()
     if branch:
-        current = board._cluster_current_branch(str(tree))
+        current = git._cluster_current_branch(str(tree))
         if current != branch:
             raise DelegateError(
                 f"확인 커맨드 실행 트리가 묶음 통합 브랜치가 아닙니다: {tree} "
@@ -12803,9 +12795,9 @@ def _cluster_confirmation_tree(
     return tree
 
 
-def _ticket_spec_and_rounds(board, ticket: str) -> tuple[str, list]:
+def _ticket_spec_and_rounds(home, ticket: str) -> tuple[str, list]:
     """확인·처분 판정 입력 — 명세 원문과 그 티켓의 라운드 목록."""
-    found = board.find_ticket_exact(ticket)
+    found = ticket_store.find_ticket_exact(home, ticket)
     if found is None:
         raise DelegateError(f"ticket not found: {ticket}")
     _status, path = found
@@ -12817,12 +12809,12 @@ def _ticket_spec_and_rounds(board, ticket: str) -> tuple[str, list]:
         raise DelegateError(f"티켓 명세 읽기 실패: {path}: {exc}") from exc
     rounds_module = _load_ticket_rounds()
     return spec_text, rounds_module.load_rounds(
-        board.tickets_dir(), ticket, ticket_text=spec_text,
+        pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
     )
 
 
 def _resolve_ticket_pm_verified(
-    ticket: str, *, cluster: str, board, owner: Path, tree: Path,
+    ticket: str, *, cluster: str, home, owner: Path, tree: Path,
     run_fn: Callable | None = None,
 ) -> int:
     """티켓 하나의 리뷰 확인 입력 preflight → terminal 확인 기입 → 완료 판정 재확인.
@@ -12832,7 +12824,7 @@ def _resolve_ticket_pm_verified(
     판정 입력은 리뷰 라운드 파일과 명세 PM 영역뿐이다(다른 기록을 쓰지 않는다).
     """
     try:
-        spec_text, rounds = _ticket_spec_and_rounds(board, ticket)
+        spec_text, rounds = _ticket_spec_and_rounds(home, ticket)
         preflight_problem = review_resolution_input_problem(spec_text, rounds)
         if preflight_problem is not None:
             raise DelegateError(f"리뷰 확인 입력 preflight 실패: {preflight_problem}")
@@ -12864,7 +12856,7 @@ def _resolve_ticket_pm_verified(
                 )
         else:
             print(f"{ticket}: 기계 확인 대상 0건 — 실행 없이 완료 판정으로 넘어갑니다")
-        spec_text, rounds = _ticket_spec_and_rounds(board, ticket)
+        spec_text, rounds = _ticket_spec_and_rounds(home, ticket)
         completion_problem = review_completion_problem(spec_text, rounds)
         if completion_problem is not None:
             raise DelegateError(
@@ -12890,6 +12882,7 @@ def _cmd_rounds_resolve_cluster(
     실패한 자리만 다시 부르면 이어진다(회수와 같은 규율). 잔여 0 멤버는 무대상이다.
     """
     board = _load_board_for_repo(owner)
+    home = pm_paths.home_at(Path(owner).resolve())
     members = board.cluster_live_members(cluster)
     if not members:
         print(
@@ -12899,14 +12892,14 @@ def _cmd_rounds_resolve_cluster(
         )
         return 1
     try:
-        tree = _cluster_confirmation_tree(board, cluster, identity=identity)
+        tree = _cluster_confirmation_tree(board, cluster, home=home, identity=identity)
     except DelegateError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
     rc = 0
     for ticket in members:
         rc = max(rc, _resolve_ticket_pm_verified(
-            ticket, cluster=cluster, board=board, owner=owner, tree=tree,
+            ticket, cluster=cluster, home=home, owner=owner, tree=tree,
             run_fn=run_fn,
         ))
     return rc
@@ -13080,12 +13073,12 @@ def cluster_review_input(
     review = ClusterReviewInput(
         cluster, members, base_branch, branch, merge_base, paths, diff,
     )
-    assert_cluster_review_tree(board, review, repo=repo, git_run_fn=git_run_fn)
+    assert_cluster_review_tree(review, repo=repo, git_run_fn=git_run_fn)
     return review
 
 
 def assert_cluster_review_tree(
-    board, review: ClusterReviewInput, *, repo: Path,
+    review: ClusterReviewInput, *, repo: Path,
     git_run_fn: Callable | None = None,
 ) -> None:
     """리뷰 대상 트리가 묶음 브랜치이고 작업 트리 변경이 0 인지 결속한다(준비 트리 조건 · fail-closed).
@@ -13093,9 +13086,9 @@ def assert_cluster_review_tree(
     프롬프트가 싣는 diff 는 장부 브랜치의 `merge-base..tip` 이고, 리뷰어가 실제로 읽는 파일은
     이 트리의 내용이다. 트리가 그 브랜치가 아니거나 커밋되지 않은 변경이 있으면 둘이 서로 다른
     코드가 되어 판정 전체가 헛돈다. 브랜치 대조 seam 은 확인 커맨드 실행 트리와 같은 하나다
-    (`board._cluster_current_branch`).
+    (`git._cluster_current_branch`).
     """
-    current = board._cluster_current_branch(str(repo))
+    current = git._cluster_current_branch(str(repo))
     if current != review.branch:
         raise DelegateError(
             f"리뷰 대상 트리가 묶음 브랜치가 아닙니다: {repo} "
@@ -13195,11 +13188,11 @@ def _round_copy_preamble(
     return None
 
 
-def _cluster_member_specs(board, members: Sequence[str]) -> dict[str, str]:
+def _cluster_member_specs(home, members: Sequence[str]) -> dict[str, str]:
     """멤버 티켓 본문 — 프롬프트에 실릴 실값(선언 순서 보존)."""
     specs: dict[str, str] = {}
     for ticket in members:
-        found = board.find_ticket_exact(ticket)
+        found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
             raise DelegateError(f"ticket not found: {ticket}")
         _status, path = found
@@ -13218,7 +13211,7 @@ def cluster_review_sources(
 ) -> ClusterReviewSources:
     """리뷰 프롬프트 입력을 읽는다(부작용 0) — 입력 해소 안에서 준비 트리 조건을 결속한다."""
     review = cluster_review_input(board, cluster, repo=repo, git_run_fn=git_run_fn)
-    specs = _cluster_member_specs(board, review.members)
+    specs = _cluster_member_specs(pm_paths.home_at(Path(pm_home).resolve()), review.members)
     focus = (
         _cluster_review_focus(Path(focus_path), cwd=repo, pm_home=pm_home)
         if focus_path is not None else None

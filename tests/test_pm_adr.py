@@ -12,6 +12,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -184,7 +185,7 @@ def test_build_frontmatter_adversarial_title_roundtrips(adr, title):
 
 
 def test_build_adr_file_adversarial_title_parses_via_board(adr, tmp_path):
-    """적대 제목의 전체 ADR 파일이 board.load_ticket(lint 이 쓰는 파서)로 파싱된다(skip 안 됨)."""
+    """적대 제목의 전체 ADR 파일이 ticket_store.load_ticket(lint 이 쓰는 파서)로 파싱된다(skip 안 됨)."""
     board = _load("board")
     text = adr.build_adr_file(
         number=70, title='나쁜: 제목 "따옴표" # 해시', scope="internal-process",
@@ -193,7 +194,7 @@ def test_build_adr_file_adversarial_title_parses_via_board(adr, tmp_path):
     )
     p = tmp_path / "0070-x.md"
     p.write_text(text, encoding="utf-8")
-    fm, _body = board.load_ticket(p)
+    fm, _body = ticket_store.load_ticket(p)
     assert fm["title"] == '나쁜: 제목 "따옴표" # 해시'
     assert fm["status"] == "accepted"
     assert fm["amends"] == ["ADR-0061"]

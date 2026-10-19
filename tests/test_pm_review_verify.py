@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from _test_exec import python_shell_command
+from pm_engine.infra import review_rounds
 
 REPO = Path(__file__).resolve().parents[1]
 PM_DELEGATE = REPO / ".project_manager" / "tools" / "pm_delegate.py"
@@ -639,21 +640,19 @@ def test_verify_template_output_reparses_through_the_confirmation_parser(pd):
 
 
 def _fake_board(pd, spec_path: Path, tickets_dir: Path):
+    """board 대역 — 락만 준다. 티켓 조회는 소유 트리 Home 의 실 티켓 디렉터리를 읽는다."""
     class FakeBoard:
         @staticmethod
         @contextlib.contextmanager
         def board_lock():
             yield
 
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", spec_path
-
-        @staticmethod
-        def tickets_dir():
-            return tickets_dir
-
     return FakeBoard
+
+
+def _home_tickets_dir(tmp_path: Path) -> Path:
+    """소유 트리(`tmp_path`) Home 의 티켓 디렉터리 — `pm_paths.tickets_dir(home_at(tmp_path))`."""
+    return tmp_path / ".project_manager" / "wiki" / "tickets"
 
 
 def _materialize(pd, spec: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:
@@ -673,7 +672,7 @@ def _materialize(pd, spec: str, rounds, tickets_dir: Path, ticket_id: str) -> Pa
 def test_verify_template_cli_rc0_on_full_coverage_and_rc1_on_missing(
     pd, tmp_path, monkeypatch, capsys,
 ):
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = _home_tickets_dir(tmp_path)
     spec, rounds = _basic_ticket(pd)
     spec_path = _materialize(pd, spec, rounds, tickets_dir, "T-0786")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
@@ -696,7 +695,7 @@ def test_verify_template_cli_honors_explicit_round(pd, tmp_path, monkeypatch, ca
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
     spec = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
     dev2 = _round(pd, 2, "developer", _developer_round_text(pd, [_verify_row("F-001")]))
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = _home_tickets_dir(tmp_path)
     spec_path = _materialize(pd, spec, [r1, dev2], tickets_dir, "T-0786")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(
@@ -822,38 +821,38 @@ def test_legacy_disposition_blocks_still_parse_with_verify_confirmation_support_
 def test_board_gate_resolution_recognizes_pm_verified_kind(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 2, "rounds": 2, "ts": "2026-08-21T00:00:00+00:00",
         },
         "rounds": [{"sequence": 2}, {"sequence": 1}],
     }
-    declared = board.gate_resolution(entry)
+    declared = review_rounds.gate_resolution(entry)
     assert declared is not None
-    assert declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED
+    assert declared["kind"] == review_rounds.RESOLUTION_PM_VERIFIED
     assert declared["round_sequence"] == 2 and declared["rounds"] == 2
 
 
 def test_gate_disposition_problem_rejects_pm_verified_when_not_allowed(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 1, "rounds": 1,
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = board._gate_disposition_problem("T-0786", entry)
+    problem = review_rounds._gate_disposition_problem("T-0786", entry)
     assert problem is not None and "허용하지 않습니다" in problem
 
 
 def test_gate_disposition_problem_accepts_pm_verified_when_evidence_clears(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 1, "rounds": 1,
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = board._gate_disposition_problem(
+    problem = review_rounds._gate_disposition_problem(
         "T-0786", entry,
         allow_pm_verified=True, pm_verified_problem=lambda: None,
     )
@@ -863,12 +862,12 @@ def test_gate_disposition_problem_accepts_pm_verified_when_evidence_clears(board
 def test_gate_disposition_problem_surfaces_pm_verified_evidence_failure(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 1, "rounds": 1,
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = board._gate_disposition_problem(
+    problem = review_rounds._gate_disposition_problem(
         "T-0786", entry,
         allow_pm_verified=True,
         pm_verified_problem=lambda: "PM 판정 accepted 잔여가 있습니다: F-001",
@@ -1042,7 +1041,7 @@ def test_two_increasing_round_confirmations_for_the_same_finding_are_accepted(pd
 
 def _verify_cli(pd, tmp_path, monkeypatch, spec, rounds, *, extra=()) -> int:
     """실 board 트리(명세 파일 + 라운드 파일)에 형상을 깔고 CLI 를 그대로 돌린다."""
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = _home_tickets_dir(tmp_path)
     spec_path = _materialize(pd, spec, rounds, tickets_dir, "T-0805")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(

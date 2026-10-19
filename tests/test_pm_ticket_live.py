@@ -15,7 +15,7 @@
   그대로 두거나 무관 내용으로 채우면 fail).
 
 on-demand — 사용자가 `PM_ORCH_LIVE=1` 로 트리거(비용·flaky 감수). `release` 마커는 **달지 않는다**
-— 릴리즈 게이트 커플드-pin(board.LIVEGATE_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
+— 릴리즈 게이트 커플드-pin(regression.LIVEGATE_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
 orchestrator 소유라, 이 스킬을 릴리즈 tier 로 승격할지는 PM 결정에 맡긴다(승격 시 `@pytest.mark.
 release` 부착 + pin 14→N 갱신). 기본 skip(env 미설정·바이너리 부재·CI green 불변).
 
@@ -39,6 +39,7 @@ import pytest
 from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
 # codex 라이브 공용 헬퍼 (격리 CODEX_HOME + auth + codex exec·conftest 소유·ADR-0070 T-0407).
 from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -115,7 +116,7 @@ def _find_authored_ticket(dest: Path) -> tuple[Path, str] | None:
     if not candidates:
         return None
     path = max(candidates, key=lambda p: p.stat().st_mtime)
-    _fm, body = board.load_ticket(path)
+    _fm, body = ticket_store.load_ticket(path)
     return path, body
 
 

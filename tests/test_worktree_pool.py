@@ -49,10 +49,10 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 SYNC_TIMEOUT = 60
 
-# livegate fixture 의 `n` — board.LIVEGATE_RELEASE_PIN(릴리즈 wave 케이스 수)의 미러. 이 파일은
+# livegate fixture 의 `n` — regression.LIVEGATE_RELEASE_PIN(릴리즈 wave 케이스 수)의 미러. 이 파일은
 # 격리 원칙상 board.py 를 import 하지 않으므로(모듈 docstring) 값을 여기 둔다. 판정상 무관하다 —
 # `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은 안 보기 때문(check 채널·green 판정 무관).
-# 값 자체는 board.LIVEGATE_RELEASE_PIN(=17·T-0278/T-0309/T-0349/T-0400/T-0397/T-0407) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
+# 값 자체는 regression.LIVEGATE_RELEASE_PIN(=17·T-0278/T-0309/T-0349/T-0400/T-0397/T-0407) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
 _LIVEGATE_RELEASE_PIN = 22
 
 
@@ -1747,12 +1747,12 @@ def test_set_test_cmd_empty_ledger_raises_keyerror(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _default_session — board.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
+# _default_session — lease_store.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
 # env > lease 장부 leased 1개면 그 session(단일-lease 유도) > <host>-<pid>. per-clone
 # local.conf `session=` 층은 T-0779 가 폐지했다. board 와 tail 만
 # 다르다 — 여기는 lease *취득*의 국소 임시 명명이라 미해소를 <host>-<pid> 로 폴백한다
 # (host-pid 는 세션-귀속 아닌 국소 용처에만 잔존·ADR-0040). 저장측(이 모듈)과 매칭측
-# (board.session_name)이 어긋나면 per-slot test_cmd 가 미스된다(T-0066 must-fix).
+# (lease_store.session_name)이 어긋나면 per-slot test_cmd 가 미스된다(T-0066 must-fix).
 # ════════════════════════════════════════════════════════════════════════
 
 def _write_local_conf(proj, text):
@@ -1830,7 +1830,7 @@ def test_default_session_two_leases_falls_back_host_pid(wp, proj, monkeypatch):
     """leased ≥2 (모호) → `<host>-<pid>` (board 는 None·여긴 국소 폴백).
 
     host-pid 최종 폴백은 세션-귀속 아닌 국소 용처(lease 취득 임시 명명)에만 잔존한다(ADR-0040)
-    — board.session_name 은 같은 조건에서 None(surface)/fail-loud(required)로 간다(tail 상이).
+    — lease_store.session_name 은 같은 조건에서 None(surface)/fail-loud(required)로 간다(tail 상이).
     """
     import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
@@ -1857,7 +1857,7 @@ def test_no_local_conf_session_parser_remains(wp):
 
 # ════════════════════════════════════════════════════════════════════════
 # 단일-등록 유도 (F-002 · 리뷰 라운드 03 PM 재비준 — 공유 술어 동형 배선)
-# 격리 실측(F-002 재현)에서 board.session_name()='solo_1' 인데 worktree_pool._default_session()
+# 격리 실측(F-002 재현)에서 lease_store.session_name()='solo_1' 인데 worktree_pool._default_session()
 # ='<host>-<pid>' 로 갈려, bare claim 뒤 무명시 첫 slot 생성이 다른 session 을 저장해 claim 이
 # "mine" 필터에서 사라졌다. `_load_board()`(REPO 일치 가드 포함) → `identity_args.
 # single_registration_session` 공유 술어로 board 와 동일 유도가 되는지 여기서 고정한다.
@@ -5954,7 +5954,7 @@ def _write_livegate(engine_root: Path, *, head: str, status: str = "pass",
 
     `board.py livegate record` 가 쓰는 것과 같은 스키마·같은 위치(board.py REPO=engine_root →
     LOCAL_DIR=engine_root/.project_manager/.local). record 는 실 LLM 이라 안 돌리고 JSON 만 직접 심어
-    훅↔check 통합을 hermetic 히 태운다(head 가 push sha 와 일치하면 green). `n` = board.LIVEGATE_RELEASE_PIN
+    훅↔check 통합을 hermetic 히 태운다(head 가 push sha 와 일치하면 green). `n` = regression.LIVEGATE_RELEASE_PIN
     (릴리즈 wave 케이스 수)로 스키마 충실 — 단 `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은
     안 보므로(check 채널) green 판정엔 무관하다.
     """

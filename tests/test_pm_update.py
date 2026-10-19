@@ -132,7 +132,7 @@ def _make_upstream_manifest(root: Path, entries: list[str]) -> None:
     _track_source_tree(root)
 
 
-# ── _read_local_conf 파싱 단위 (board.local_config 규칙 미러) ────────────────
+# ── _read_local_conf 파싱 단위 (conf_store.local_config 규칙 미러) ────────────────
 
 def test_read_local_conf_parses_key_value(pm_update, tmp_path):
     conf = tmp_path / "local.conf"
@@ -5747,7 +5747,7 @@ def test_summarize_rename_inside_manifest_keeps_new_path_as_engine(pm_update, tm
 # ════════════════════════════════════════════════════════════════════════
 # manifest 는 `wiki/tickets/_template.md`(① canonical·legacy 실 위치)를 들고 있다. board 가
 # `.project_manager/board/`(submodule)로 분리된 adopter 에선 _template.md 가
-# `board/tickets/_template.md` 에 산다(board_root() 추종). pm_update 가 dest 를 board_root 로
+# `board/tickets/_template.md` 에 산다(board 루트 추종). pm_update 가 dest 를 board_root 로
 # 리매핑하지 않으면 매 sync 가 `wiki/tickets/_template.md` 를 부활시킨다(dead cruft·drift).
 # 아래는 양 형상 hermetic 검증 — board-분리 시 board/, legacy 시 wiki/ (회귀 무영향).
 
@@ -5758,7 +5758,7 @@ _BOARD_TEMPLATE_REL = ".project_manager/board/tickets/_template.md"
 def _make_board_separated(dest_root: Path) -> None:
     """dest 를 board-분리 형상으로 — `.project_manager/board/tickets/{open,...}` 생성.
 
-    board_root()/`_is_board_separated` 가 *실측*(board/tickets 가 dir 인가)으로 가르므로,
+    `pm_paths._board_root_at`·`_is_board_separated` 가 *실측*(board/tickets 가 dir 인가)으로 가르므로,
     그 디렉토리를 만들어 분리 adopter 를 모사한다(test_board_root._make_board_dir 동형)."""
     board_dir = dest_root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
@@ -5778,7 +5778,7 @@ def _make_template_upstream(root: Path) -> None:
     _track_source_tree(root)
 
 
-# ── 단위: _is_board_separated 실측 판별 (board.py board_root 동형) ────────────
+# ── 단위: _is_board_separated 실측 판별 (pm_paths._board_root_at 동형) ────────────
 
 def test_is_board_separated_false_when_no_board_dir(pm_update, tmp_path):
     """board/tickets 부재(legacy·솔로) → _is_board_separated == False."""

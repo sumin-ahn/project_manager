@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import areas_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -68,21 +69,11 @@ def _inputs(*lines):
 
 
 class FakeBoardAreas:
-    """board 모듈 대역 — _parse_areas(콘솔 repos 렌더) + _areas_row_for_prefix(표시값 resolve)
-    + _repo_base(worktree add 가 슬롯 브랜치 부모로 쓰는 그 repo 행 base)."""
+    """board 모듈 대역 — _repo_base(worktree add 가 슬롯 브랜치 부모로 쓰는 그 repo 행 base)."""
 
     def __init__(self, *, header=None, rows=None):
         self._header = header or ["repo", "prefix", "git", "test_cmd", "owner"]
         self._rows = rows or []
-
-    def _parse_areas(self):
-        return self._header, self._rows
-
-    def _areas_row_for_prefix(self, prefix):
-        for row in self._rows:
-            if row.get("prefix") == prefix or row.get("repo") == prefix:
-                return row
-        return None
 
     def _repo_base(self, repo):
         # board._repo_base 대역 — 그 repo 행의 base 칸. 미등록·빈 칸이면 None(worktree add 거부).
@@ -91,10 +82,11 @@ class FakeBoardAreas:
                 return row.get("base") or None
         return None
 
-    def default_pytest_cmd(self):
-        # board.default_pytest_cmd 대역 — 행과 local.conf 에 test.cmd 가 없을 때의 빌드명령 기본값.
-        #   대역이 없으면 결과가 실행한 작업 폴더의 local.conf(`test.cmd`) 유무에 따라 갈린다.
-        return "python3 -m pytest tests/ -q"
+
+def _set_areas(monkeypatch, board):
+    """콘솔 repos 렌더가 읽는 `areas_store._parse_areas` 자리에 대역의 행을 꽂는다."""
+    monkeypatch.setattr(areas_store, "_parse_areas",
+                        lambda _home, path=None: (board._header, board._rows))
 
 
 # `[w]` 가 create_slot 까지 가려면 repo 등록 base 가 있어야 한다 — svc 를 base=main 으로 등록한 행.
@@ -188,6 +180,7 @@ def test_console_renders_repos_from_areas(pc, monkeypatch, capsys):
         {"repo": "svc", "prefix": "svc", "git": "git@h:me/svc.git",
          "test_cmd": "pytest -q", "owner": "me"},
     ])
+    _set_areas(monkeypatch, board)
     wp = FakeWorktreePool(leases=[])
     rc = pc.run_console(input_fn=_inputs("q"), board=board, worktree_pool=wp)
     assert rc == 0
@@ -220,20 +213,6 @@ def test_console_empty_state_does_not_crash(pc, capsys):
     out = capsys.readouterr().out
     assert "등록된 repo 없음" in out
     assert "슬롯 없음" in out
-
-
-def test_console_renders_without_board_engine(pc, monkeypatch, capsys):
-    """board 엔진 부재(로드 실패)여도 repos 렌더가 안내만 하고 크래시 0.
-
-    board 미주입 + _load_module 이 None(board.py 부재/로드실패) → 렌더가 안내만 한다.
-    worktree_pool 만 주입해 그쪽은 정상, board 쪽 부재 경로를 격리해 친다.
-    """
-    wp = FakeWorktreePool(leases=[])
-    monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: None)  # board 로드 None
-    rc = pc.run_console(input_fn=_inputs("q"), board=None, worktree_pool=wp)
-    assert rc == 0
-    assert "repo 등록 상태 조회 불가" in capsys.readouterr().out
 
 
 def test_console_renders_without_worktree_engine(pc, monkeypatch, capsys):

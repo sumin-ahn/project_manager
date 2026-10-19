@@ -3,8 +3,8 @@
 A(board.py board_root + pm_config)가 board/ 분리를 board.py 안에서 해소했지만, **board.py 밖**
 도구들(ticket_finish·pm_handoff·pm_bootstrap·additional_reviewer)이 board path 를 자체 상수/legacy
 별칭으로 굳혀, board/ 분리(B) 후 stale(wiki) 위치를 봐 count 0/미해소가 되던 갭(code-reviewer
-포착)을 닫는다. 각 도구가 board_root() 를 *추종*하는지 — board import 도구는 함수 호출, 안 하는
-도구는 board.py 동형 자체 해소 — 를 hermetic 하게 단언한다.
+포착)을 닫는다. 각 도구가 board 루트(`pm_paths` 의 `Home.board_root`·`areas_file`)를 *추종*하는지를
+hermetic 하게 단언한다.
 
 검증 두 축(각 도구):
   - **legacy 무변경**: board/ 부재 → 현 위치(wiki/tickets·.project_manager/areas.md)로 해소
@@ -23,6 +23,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import areas_store, pm_paths, python_env
+from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -34,12 +36,6 @@ def _load(name: str):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-# T-0397 — ticket_finish 의 board 로더(count_board_done·get_ticket_*)가 로드한 board 모듈의
-# ENGINE_REV 를 실 엔진 rev 와 대조한다. 이 파일의 미니 fake board 도 유효 rev 스탬프를 지녀야
-# skew 로 오판되지 않는다(값은 실 engine_rev 에서 읽어 baked — 하드코딩·릴리즈 커플링 회피).
-_ENGINE_REV_STAMP = f"ENGINE_REV = {_load('engine_rev').ENGINE_REV!r}\n"
 
 
 def _make_board_dir(root: Path) -> Path:
@@ -59,7 +55,7 @@ def _make_wiki_tickets(root: Path) -> Path:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# pm_handoff — _tickets_dir(board_root 추종) · _areas_file / _regression_cwd(_areas_file 추종)
+# pm_handoff — _tickets_dir(board 루트 추종)
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -75,11 +71,6 @@ def test_handoff_tickets_dir_legacy_is_wiki(handoff):
     assert handoff._tickets_dir() == handoff._tmp / ".project_manager" / "wiki" / "tickets"
 
 
-def test_handoff_areas_file_legacy_is_project_manager_areas(handoff):
-    """legacy → _areas_file() == .project_manager/areas.md (wiki *밖*·현 위치)."""
-    assert handoff._areas_file() == handoff._tmp / ".project_manager" / "areas.md"
-
-
 def test_handoff_tickets_dir_present_is_board_tickets(handoff):
     """board/ 존재 → _tickets_dir() == board/tickets (board_root 추종).
 
@@ -88,14 +79,8 @@ def test_handoff_tickets_dir_present_is_board_tickets(handoff):
     assert handoff._tickets_dir() == handoff._tmp / ".project_manager" / "board" / "tickets"
 
 
-def test_handoff_areas_file_present_moves_inside_board(handoff):
-    """board/ 존재 → _areas_file() == board/areas.md (submodule 안·조건분기·legacy 와 다름)."""
-    _make_board_dir(handoff._tmp)
-    assert handoff._areas_file() == handoff._tmp / ".project_manager" / "board" / "areas.md"
-
-
 # ════════════════════════════════════════════════════════════════════════
-# pm_bootstrap — _registered_repos / _auto_slot / Bootstrapper._areas_file (_areas_file 추종)
+# slot_resolution — _registered_repos / _auto_slot · pm_bootstrap — Bootstrapper._areas_file (pm_paths.areas_file 추종)
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -104,19 +89,6 @@ def bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "REPO", tmp_path)
     mod._tmp = tmp_path
     return mod
-
-
-def test_bootstrap_areas_file_legacy_is_project_manager_areas(bootstrap):
-    """legacy → _areas_file() == .project_manager/areas.md (현 위치·무변경)."""
-    assert bootstrap._areas_file() == bootstrap._tmp / ".project_manager" / "areas.md"
-
-
-def test_bootstrap_areas_file_present_moves_inside_board(bootstrap):
-    """board/ 존재 → _areas_file() == board/areas.md (board_root 추종).
-
-    *수정 전*: AREAS_FILE 상수가 .project_manager/areas.md 에 굳어 이 단언이 fail."""
-    _make_board_dir(bootstrap._tmp)
-    assert bootstrap._areas_file() == bootstrap._tmp / ".project_manager" / "board" / "areas.md"
 
 
 def _write_areas(path: Path) -> None:
@@ -136,7 +108,7 @@ def test_bootstrap_registered_repos_reads_board_not_stale_wiki(bootstrap):
     _make_board_dir(bootstrap._tmp)
     _write_areas(bootstrap._tmp / ".project_manager" / "board" / "areas.md")
     # legacy 위치(.project_manager/areas.md)는 *비어 있음* — stale 위치를 보면 빈 목록이 된다.
-    repos = bootstrap._registered_repos()
+    repos = slot_resolution._registered_repos(pm_paths.home_at(bootstrap.REPO))
     assert repos == ["project_manager"], \
         f"_registered_repos 가 board/areas.md(진실)를 안 읽음 — stale legacy 봄: {repos}"
 
@@ -144,7 +116,7 @@ def test_bootstrap_registered_repos_reads_board_not_stale_wiki(bootstrap):
 def test_bootstrap_registered_repos_legacy_reads_project_manager_areas(bootstrap):
     """legacy(board/ 부재) → _registered_repos() 가 .project_manager/areas.md 를 읽는다(현행)."""
     _write_areas(bootstrap._tmp / ".project_manager" / "areas.md")
-    assert bootstrap._registered_repos() == ["project_manager"]
+    assert slot_resolution._registered_repos(pm_paths.home_at(bootstrap.REPO)) == ["project_manager"]
 
 
 def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap):
@@ -159,7 +131,7 @@ def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap):
         '{"leases": [{"repo": "project_manager", "slot": "work/project_manager_1"}]}',
         encoding="utf-8")
     # leases_file 만 명시(board_root 추종 areas 는 _registered_repos 가 자동해소).
-    resolved = bootstrap._auto_slot(leases_file=leases)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), leases_file=leases)
     assert (resolved.key, resolved.slot) == ("project_manager_1", "work/project_manager_1")
 
 
@@ -234,34 +206,21 @@ def test_external_parse_touches_legacy_reads_wiki(external):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ticket_finish — count_board_done(mod.tickets_dir() 추종) · _resolve_per_repo_test_cmd
+# ticket_finish — count_board_done(board.py 위치 Home 추종) · _resolve_per_repo_test_cmd
 # ════════════════════════════════════════════════════════════════════════
-# count_board_done(board_py) 는 *주어진 board.py 를 동적 로드* 해 그 모듈의 board-path 를 쓴다.
-# 그러므로 board_root 추종 검증은 "board 모듈이 board_root 를 따르고, ticket_finish 가 그 모듈의
-# legacy 상수(TICKETS_DIR)가 아니라 *함수*(tickets_dir())를 호출함" 을 박제하면 된다. 진실/스테일이
-# 다른 경로를 가리키는 미니 fake board.py 를 tmp 에 만들어, ticket_finish 가 어느 쪽을 부르는지
-# 결정적으로 가른다(수정 전엔 TICKETS_DIR 를 불러 stale, 수정 후엔 tickets_dir() 로 진실).
-
-_FAKE_BOARD_PY = '''\
-from pathlib import Path
-_BASE = Path(__file__).resolve().parent
-# 진실 = board_dir, 스테일 = wiki_dir — 둘이 *다른* done 디렉토리를 가리킨다.
-def tickets_dir():
-    return _BASE / "board_dir"        # board_root 추종 결과(진실)
-TICKETS_DIR = _BASE / "wiki_dir"      # legacy 상수(스테일) — 부르면 잘못된 done 을 센다
-'''
+# count_board_done(board_py) 는 board.py 위치(`<홈>/.project_manager/tools/board.py`)에서 만든
+# Home 의 티켓 디렉터리를 센다. 진실(board/tickets/done=1)과 스테일(wiki/tickets/done=99)을 함께 두어
+# 어느 쪽을 세는지 결정적으로 가른다.
 
 
 def _write_fake_board(tmp_path: Path) -> Path:
-    """진실(board_dir/done=1)과 스테일(wiki_dir/done=99)을 가르는 미니 board.py 를 만든다."""
-    bp = tmp_path / "fake_board.py"
-    bp.write_text(_ENGINE_REV_STAMP + _FAKE_BOARD_PY, encoding="utf-8")  # T-0397 rev 스탬프
-    (tmp_path / "board_dir" / "done").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "board_dir" / "done" / "T-0001-real.md").write_text("# real\n", encoding="utf-8")
-    (tmp_path / "wiki_dir" / "done").mkdir(parents=True, exist_ok=True)
+    """board/ 분리 홈(진실 board/tickets/done=1·스테일 wiki/tickets/done=99)의 board.py 경로."""
+    board_dir = _make_board_dir(tmp_path)
+    (board_dir / "tickets" / "done" / "T-0001-real.md").write_text("# real\n", encoding="utf-8")
+    wiki_done = _make_wiki_tickets(tmp_path) / "done"
     for i in range(99):
-        (tmp_path / "wiki_dir" / "done" / f"T-9{i:03d}-stale.md").write_text("# s\n", encoding="utf-8")
-    return bp
+        (wiki_done / f"T-9{i:03d}-stale.md").write_text("# s\n", encoding="utf-8")
+    return tmp_path / ".project_manager" / "tools" / "board.py"
 
 
 @pytest.fixture
@@ -270,53 +229,31 @@ def ticket_finish():
 
 
 def test_ticket_finish_count_board_done_calls_tickets_dir_not_constant(ticket_finish, tmp_path):
-    """count_board_done 가 board 모듈의 tickets_dir()(함수)를 부른다 — TICKETS_DIR 상수 아님.
+    """count_board_done 가 Home 의 board 루트(`pm_paths.tickets_dir`)를 센다 — 스테일 wiki 아님.
 
-    *수정 전*: `mod.TICKETS_DIR / "done"` 을 셌다 → wiki_dir(스테일·99) 로 드러났다(stale→fail).
-    *수정 후*: `mod.tickets_dir() / "done"` → board_dir(진실·1). 99 가 나오면 회귀."""
+    board/tickets(진실·1)를 세야 한다. 99 가 나오면 회귀."""
     bp = _write_fake_board(tmp_path)
     assert ticket_finish.count_board_done(bp) == 1, \
         "count_board_done 가 board 모듈 tickets_dir()(진실)를 안 부름 — TICKETS_DIR 상수(stale) 봄."
 
 
-def test_ticket_finish_count_board_done_failsoft_on_broken_board(ticket_finish, tmp_path):
-    """board.py 로드/속성 실패 → -1 (fail-soft·현행 보존 — tickets_dir() 부재여도 graceful)."""
-    bp = tmp_path / "broken_board.py"
-    bp.write_text(_ENGINE_REV_STAMP + "def tickets_dir():\n    raise RuntimeError('boom')\n",
-                  encoding="utf-8")  # T-0397 rev 스탬프 — 로드는 통과, tickets_dir() 만 boom→fail-soft
-    assert ticket_finish.count_board_done(bp) == -1
+def test_ticket_finish_resolve_test_cmd_uses_board_areas_file(ticket_finish, tmp_path, monkeypatch):
+    """_resolve_per_repo_test_cmd 의 areas.md 존재 가드가 Home 의 board 루트를 따른다(board/ 분리).
+
+    board/areas.md 가 실재하면 prefix 행의 test_cmd 가 해소돼야 한다."""
+    _make_board_dir(tmp_path)
+    (tmp_path / ".project_manager" / "board" / "areas.md").write_text(
+        "| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
+    monkeypatch.setattr(ticket_finish, "REPO", tmp_path)
+    monkeypatch.setattr(areas_store, "id_prefix", lambda _home, override=None: "PM")
+    monkeypatch.setattr(
+        areas_store, "_areas_row_for_prefix",
+        lambda _home, prefix: {"test_cmd": "go test ./..."} if prefix == "PM" else None)
+    assert ticket_finish._resolve_per_repo_test_cmd() == "go test ./..."
 
 
-def test_ticket_finish_resolve_test_cmd_uses_board_areas_file(ticket_finish, tmp_path):
-    """_resolve_per_repo_test_cmd 가 board 모듈의 areas_file().exists() 가드를 쓴다(board_root 추종).
-
-    *수정 전*: 자체 상수 AREAS_FILE(legacy) 존재 가드라 board/ 분리 후 stale 위치를 봤다.
-    fake board 의 areas_file() 가 실재 areas 를 가리키면 test_cmd 가 해소돼야 한다."""
-    areas = tmp_path / "board" / "areas.md"
-    areas.parent.mkdir(parents=True, exist_ok=True)
-    areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-
-    class _FakeBoard:
-        def areas_file(self):
-            return areas
-
-        def id_prefix(self):
-            return "PM"
-
-        def _areas_row_for_prefix(self, prefix):
-            return {"test_cmd": "go test ./..."} if prefix == "PM" else None
-
-    import unittest.mock as _mock
-    with _mock.patch.object(ticket_finish, "_load_board_module", lambda: _FakeBoard()):
-        assert ticket_finish._resolve_per_repo_test_cmd() == "go test ./..."
-
-
-def test_ticket_finish_resolve_test_cmd_none_when_board_areas_absent(ticket_finish, tmp_path):
-    """board 모듈 areas_file() 가 부재 경로면 None — 솔로 폴백(현행 pytest argv 보존)."""
-    class _FakeBoard:
-        def areas_file(self):
-            return tmp_path / "nonexistent" / "areas.md"
-
-    import unittest.mock as _mock
-    with _mock.patch.object(ticket_finish, "_load_board_module", lambda: _FakeBoard()):
-        assert ticket_finish._resolve_per_repo_test_cmd() is None
+def test_ticket_finish_resolve_test_cmd_default_when_board_areas_absent(
+        ticket_finish, tmp_path, monkeypatch):
+    """Home 의 areas.md 가 없으면 4층 기본 명령 — 솔로 폴백(현행 pytest 보존)."""
+    monkeypatch.setattr(ticket_finish, "REPO", tmp_path / "nonexistent")
+    assert ticket_finish._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()

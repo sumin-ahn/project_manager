@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, write_lf
-from pm_engine.infra import raw_output
+from pm_engine.infra import areas_store, pm_paths, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -651,30 +651,14 @@ def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
 
 
 def test_registered_repos_non_utf8_areas_failure_is_fail_soft(monkeypatch):
-    """board areas 파싱 실패는 None으로 강등해 기본 task 구문 검증을 유지한다."""
+    """areas 파싱 실패는 None으로 강등해 기본 task 구문 검증을 유지한다."""
     mod = _load_module()
 
-    class BrokenBoard:
-        @staticmethod
-        def registered_repos():
-            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    def broken(_home):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
-    monkeypatch.setattr(mod, "_load_module_from_path", lambda *args, **kwargs: BrokenBoard)
+    monkeypatch.setattr(areas_store, "registered_repos", broken)
     assert mod._registered_repos() is None
-
-
-def test_registered_repos_engine_rev_skew_is_fail_loud(monkeypatch):
-    """일반 오류와 달리 ENGINE_REV skew는 배포 손상이므로 그대로 전파한다."""
-    mod = _load_module()
-    skew = RuntimeError("skew")
-    skew._engine_rev_skew = True
-
-    def raise_skew(*args, **kwargs):
-        raise skew
-
-    monkeypatch.setattr(mod, "_load_module_from_path", raise_skew)
-    with pytest.raises(RuntimeError, match="skew"):
-        mod._registered_repos()
 
 
 # ── 소유 PM 홈 유도 (T-0888) ────────────────────────────────────────────────
@@ -716,9 +700,9 @@ def test_pm_home_resolution_is_position_independent(tmp_path):
     inside = _markerless_tree(slot / ".project_manager" / ".local" / "tmp" / "anchor")
 
     # 조상 훑기를 되살리면 (b) 만 합성 PM 홈을 돌려줘 두 값이 갈린다.
-    assert mod.owning_pm_home(outside) == outside.resolve()
-    assert mod.owning_pm_home(inside) == inside.resolve()
-    assert mod.owning_pm_home(slot) == pm_home.resolve()
+    assert pm_paths.owning_pm_home(outside) == outside.resolve()
+    assert pm_paths.owning_pm_home(inside) == inside.resolve()
+    assert pm_paths.owning_pm_home(slot) == pm_home.resolve()
 
 
 def test_registered_slot_resolves_from_git_pointer_without_subprocess(
@@ -743,7 +727,7 @@ def test_registered_slot_resolves_from_git_pointer_without_subprocess(
     monkeypatch.setattr(mod.subprocess, "run", _forbidden)
 
     for anchor in (slot, absolute_slot, snapshot):
-        assert mod.owning_pm_home(anchor) == pm_home.resolve(), anchor
+        assert pm_paths.owning_pm_home(anchor) == pm_home.resolve(), anchor
 
 
 def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "product") -> None:
@@ -861,7 +845,7 @@ def test_main_external_absolute_lease_uses_file_git_common_dir_pm_home(
         or SimpleNamespace(returncode=19),
     )
 
-    assert mod.owning_pm_home(worktree) == pm_home
+    assert pm_paths.owning_pm_home(worktree) == pm_home
     assert mod.main(argv) == 19
     assert len(calls) == 1  # PM 홈 해소 자체는 git subprocess를 만들지 않는다.
     call_argv, kwargs = calls[0]
@@ -918,7 +902,7 @@ def test_main_checkpoint_unregistered_slot_fails_loud_without_self_demotion(
     assert not (pm_home / ".project_manager").exists(), "전제 붕괴 — 미해소 형상이 아님"
     _redirect_paths(mod, monkeypatch, worktree)
 
-    with pytest.raises(mod.PmHomeResolutionError, match="에 .project_manager 가 없습니다"):
+    with pytest.raises(pm_paths.PmHomeResolutionError, match="에 .project_manager 가 없습니다"):
         mod.main(["checkpoint", "--task", "main"])
     assert not mod.CURRENT_FILE.exists()
 
@@ -930,7 +914,7 @@ def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
     log_dir.mkdir(parents=True)
     (log_dir / "current.md").write_text(_HEADER + _ENTRY_A, encoding="utf-8")
     monkeypatch.setattr(
-        mod,
+        pm_paths,
         "owning_pm_home",
         lambda *_: pytest.fail("tail must not resolve a PM-home anchor"),
     )

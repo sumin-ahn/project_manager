@@ -40,6 +40,8 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -84,7 +86,7 @@ def _template_section(body: str, heading: str) -> str:
     return body[start:] if rest == -1 else body[start:rest + 1]
 
 
-_TEMPLATE_FM, _TEMPLATE_BODY = board_mod.load_ticket(TEMPLATE)
+_TEMPLATE_FM, _TEMPLATE_BODY = ticket_store.load_ticket(TEMPLATE)
 # 미충전 설계 절 = 출하 템플릿의 그 절 자체(뼈대 문장 4개 포함).
 _DESIGN_SKELETON = _template_section(_TEMPLATE_BODY, board_mod._DESIGN_SECTION)
 
@@ -356,7 +358,7 @@ def _seed_open(board, *, design, body=None, tid="T-0001", estimate=None):
 def test_cmd_new_large_ticket_defaults_to_design_required(board):
     """estimate=large 발행은 `design: required` 로 박힌다(자동 추론은 이 축 하나뿐)."""
     assert board.cmd_new(_new_args(estimate="large")) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+    fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
     assert fm["design"] == board.DESIGN_REQUIRED
 
 
@@ -364,14 +366,14 @@ def test_cmd_new_large_ticket_defaults_to_design_required(board):
 def test_cmd_new_small_medium_default_to_na(board, estimate):
     """small/medium 은 `n/a` — 설계 오버헤드가 전 티켓 비용이 되지 않는다."""
     assert board.cmd_new(_new_args(estimate=estimate)) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+    fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
     assert fm["design"] == board.DESIGN_NA
 
 
 def test_cmd_new_honors_explicit_design(board):
     """`--design required` 명시가 estimate 유도를 덮는다."""
     assert board.cmd_new(_new_args(estimate="small", design="required")) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+    fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
     assert fm["design"] == board.DESIGN_REQUIRED
 
 
@@ -385,7 +387,7 @@ def test_cmd_new_rejects_invalid_design_before_writing(board, capsys):
 def test_cmd_new_body_includes_design_section(board):
     """발행 본문에 `## 설계` 절이 실린다(템플릿 절이 티켓으로 흐른다)."""
     assert board.cmd_new(_new_args()) == 0
-    _fm, body = board.load_ticket(
+    _fm, body = ticket_store.load_ticket(
         list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
     assert board._DESIGN_SECTION in body
 
@@ -749,7 +751,7 @@ def test_promote_rejects_design_required_with_unfilled_section(board_git, capsys
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == board_git.DESIGN_REQUIRED
     board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))   # 5절은 채우고 설계만 뼈대
 
@@ -771,7 +773,7 @@ def test_promote_rejects_design_required_even_when_section_is_filled(board_git, 
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == board_git.DESIGN_REQUIRED
     board_git.dump_ticket(draft, fm, _body())      # 설계 절까지 전부 충전·필드만 required
 
@@ -802,7 +804,7 @@ def test_promote_accepts_filled_design_section_with_done(board_git):
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     fm["design"] = board_git.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, fm["id"])
@@ -819,7 +821,7 @@ def test_promote_unaffected_for_na_ticket_with_skeleton_design(board_git):
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="small")) == 0
     draft = _draft_path(board_dir)
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == board_git.DESIGN_NA
     board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
 
@@ -896,7 +898,7 @@ def _seed_harvested_architect_round(board, tid: str) -> None:
     헤더 렌더는 라운드 사이드카 seam 을 그대로 쓴다 — 형식 사본을 테스트가 다시 쓰지 않는다.
     """
     rounds_module = board._load_ticket_rounds()
-    directory = rounds_module.rounds_dir_for_ticket(tid, board.tickets_dir())
+    directory = rounds_module.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
     directory.mkdir(parents=True, exist_ok=True)
     header = rounds_module.render_round_header(
         "architect", today=datetime.date.today().isoformat())
@@ -913,7 +915,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     assert fm["design"] == board_git.DESIGN_REQUIRED
     board_git.dump_ticket(draft, fm, _body())   # 5절 + 설계 절 전부 충전 · 필드만 required
@@ -925,7 +927,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
 
     assert board_git.main(["design", tid, board_git.DESIGN_DONE]) == 0
     assert "local draft; promote가 출하 소유" in capsys.readouterr().out
-    fm, _ = board_git.load_ticket(draft)   # 재파싱 성공 = YAML 손상 모드가 닫혔다.
+    fm, _ = ticket_store.load_ticket(draft)   # 재파싱 성공 = YAML 손상 모드가 닫혔다.
     assert fm["design"] == board_git.DESIGN_DONE
     assert board_git._design_state(fm["design"]) == board_git.DESIGN_DONE
     # `done` 은 architect 점검 라운드도 함께 요구한다(면제 경로가 없어진 자리) — 실산출 1건.
@@ -947,13 +949,13 @@ def test_design_setter_refuses_the_abolished_exemption_value(board_git, capsys):
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
-    tid = board_git.load_ticket(draft)[0]["id"]
+    tid = ticket_store.load_ticket(draft)[0]["id"]
     capsys.readouterr()
 
     assert board_git.main(["design", tid, "waived: 리뷰 상한 초과"]) == 1
 
     assert "design 값 인식 불가" in capsys.readouterr().err
-    assert board_git.load_ticket(draft)[0]["design"] == board_git.DESIGN_REQUIRED
+    assert ticket_store.load_ticket(draft)[0]["design"] == board_git.DESIGN_REQUIRED
 
 
 @requires_git
@@ -962,7 +964,7 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     fm["design"] = board_git.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
@@ -973,10 +975,10 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     assert board_git.main(["design", tid, "n/a"]) == 0
 
     opened = list((board_dir / "tickets" / "open").glob(f"{tid}-*.md"))[0]
-    fm, _ = board_git.load_ticket(opened)
+    fm, _ = ticket_store.load_ticket(opened)
     assert fm["design"] == "n/a"
     bare = Path(_git(["remote", "get-url", "origin"], board_dir).stdout.strip())
     remote = _git(["show", "main:tickets/open/" + opened.name], bare)
     assert remote.returncode == 0, remote.stderr
-    remote_fm, _ = board_git._parse_ticket_text(remote.stdout, "remote:open")
+    remote_fm, _ = ticket_rules._parse_ticket_text(remote.stdout, "remote:open")
     assert remote_fm["design"] == "n/a"

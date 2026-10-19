@@ -40,11 +40,6 @@ from pm_engine.infra import console  # noqa: E402
 # 리터럴을 일괄 재작성). 형식은 vX.Y.Z.
 ENGINE_REV = "v1.8.1"
 
-# 엔진 런타임 Python 하한의 단일 진실. pm_import 가 stdlib `tomllib` 를 직접 사용하므로
-# Python 3.11 이 지배 제약이다(PEP 585 표기 자체의 3.9 하한보다 높음). board 탐지와
-# Python 외부 파사드의 미러 리터럴은 이 값을 테스트로 대조해 skew 를 차단한다.
-MIN_PYTHON = (3, 11)
-
 # baked `ENGINE_REV` 리터럴을 지니는 엔진 모듈(= sibling skew 대조 대상). `--bump` 와 평시 가드
 # 테스트가 이 목록을 참조한다. deep-import AST 가드는 중앙 loader 호출의 expected filename,
 # verifier, 코드 소유 예외 및 각 ``_STAMPED_SIBLINGS`` gate를 이 목록과 대조한다. 따라서 새 형제

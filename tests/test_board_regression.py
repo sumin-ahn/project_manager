@@ -5,7 +5,7 @@
 수집수의 증감을 회귀 줄에 함께 낸다 — 변화율 1% 이상이면 눈에 띄게 적되 **아무것도 막지
 않는다**(판단은 사람이 한다). 수집 0(rc=5)과 선언 platform 의 수집수 검증 불가는 그대로 red 다.
 
-**hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`LOCAL_DIR`·`REGRESSION_FLAG`·
+**hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`LOCAL_DIR`·
 `LEASES_FILE`)은 import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 monkeypatch 재지정해
 실 루트의 local.conf·회귀 플래그를 읽거나 쓰지 않는다(test_board_multipm.py 동형 패턴).
 pytest 자식은 절대 실기동하지 않는다 — 회귀 러너 seam(`subprocess.Popen` — 출력을 tee 하며
@@ -28,6 +28,10 @@ import pytest
 from _pytest_summary import pytest_summary
 from _textio import utf8_child_env
 from _engine_tree import engine_python_files
+from pm_engine.cli import regression_cmd, task_args
+from pm_engine.domain import pytest_report, ticket_rules
+from pm_engine.infra import areas_store, git, pm_paths, pre_push_hook, python_env, regression_store, review_rounds, ticket_store
+from pm_engine.app import regression
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
@@ -68,13 +72,12 @@ def board(tmp_path, monkeypatch):
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
-        "REGRESSION_FLAG": local / "regression.json",
         "LEASES_FILE": local / "worktree-leases.json",
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
-    monkeypatch.setattr(mod, "_git_head", lambda: "deadbeef01234567")
-    monkeypatch.setattr(mod, "_git_head_at", lambda _cwd: "deadbeef01234567")
+    monkeypatch.setattr(git, "_git_head", lambda _home: "deadbeef01234567")
+    monkeypatch.setattr(git, "_git_head_at", lambda _cwd: "deadbeef01234567")
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -108,14 +111,13 @@ def actual_git_board(tmp_path, monkeypatch):
         "LOCAL_CONF": home / ".project_manager" / "local.conf",
         "AREAS_FILE": home / ".project_manager" / "areas.md",
         "LOCAL_DIR": local,
-        "REGRESSION_FLAG": local / "regression.json",
         "LEASES_FILE": local / "worktree-leases.json",
     }.items():
         monkeypatch.setattr(mod, name, value)
-    monkeypatch.setattr(mod, "_stale_pre_push_hook_refusal", lambda: None)
-    monkeypatch.setattr(mod, "_review_cycle_downgrade", lambda: ([], []))
+    monkeypatch.setattr(pre_push_hook, "_stale_pre_push_hook_refusal", lambda _home: None)
+    monkeypatch.setattr(regression, "_review_cycle_downgrade", lambda _home: ([], []))
     monkeypatch.setattr(
-        mod, "_run_regression_cmd",
+        regression, "_run_regression_cmd",
         lambda _cmd, _cwd, _env: (0, "1 passed in 0.01s\n", ""),
     )
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
@@ -179,7 +181,7 @@ def _run_args(**over):
 
 
 def _flag(board) -> dict:
-    return json.loads(board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    return json.loads(pm_paths.regression_flag(board._home()).read_text(encoding="utf-8"))
 
 
 def _write_flag(board, *, status: str, rc, collected=None, previous_collected=None,
@@ -189,7 +191,7 @@ def _write_flag(board, *, status: str, rc, collected=None, previous_collected=No
     `conf_anchor` 미기록이 기본 — 옛 플래그(후방호환 폴백) 형상을 그대로 태운다.
     """
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    board.REGRESSION_FLAG.write_text(json.dumps(
+    pm_paths.regression_flag(board._home()).write_text(json.dumps(
         {"head": head, "status": status, "rc": rc, "scope": "full",
          "collected": collected, "previous_collected": previous_collected,
          "ts": "2026-08-07T00:00:00+00:00", **extra}), encoding="utf-8")
@@ -198,7 +200,7 @@ def _write_flag(board, *, status: str, rc, collected=None, previous_collected=No
 def _install_run(board, monkeypatch, fake) -> _FakeRun:
     """회귀 러너 seam(`subprocess.Popen` — tee 하며 읽는다)을 대역으로 덮는다."""
     # 이 대역은 pytest 실행만 소유한다. 가짜 .git fixture의 metadata가 상위 repo로 새지 않는다.
-    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
+    monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     real_popen = board.subprocess.Popen
     def popen(*args, **kwargs):
         return fake(*args, **kwargs) if kwargs.get("shell") else real_popen(*args, **kwargs)
@@ -247,19 +249,19 @@ def _measure_declared_platforms(board, *, session=None):
     """이동한 플랫폼 실행기의 marker/aggregate 원 oracle을 직접 검증한다."""
     args = _run_args(final=True)
     if session is None:
-        board.cmd_regression(args)
-        flag = board.REGRESSION_FLAG
+        regression_cmd.cmd_regression(board._home(), args)
+        flag = pm_paths.regression_flag(board._home())
     else:
-        board._regression_run_slot(args, session, str(board.REPO))
-        flag = board._regression_flag_for(session)
+        regression_cmd._regression_run_slot(board._home(), args, session, str(board.REPO))
+        flag = regression_store._regression_flag_for(board._home(), session)
     core = json.loads(flag.read_text(encoding="utf-8"))
-    status, rc, _note = board._require_collected_count(
+    status, rc, _note = regression._require_collected_count(
         core["rc"], core["status"], core["collected"], require_collected=True)
-    commands = board._platform_test_commands(str(board.REPO))
+    commands = regression._platform_test_commands(board._home(), str(board.REPO))
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    cells, passed, platform_rc = board._run_platform_cells(
+    cells, passed, platform_rc = regression._run_platform_cells(
         commands, str(board.REPO), core["head"], env,
-        core_passed=status == "pass", head_after_core=board._git_head_at(str(board.REPO)))
+        core_passed=status == "pass", head_after_core=git._git_head_at(str(board.REPO)))
     aggregate = {key: value for key, value in core.items() if key != "command"}
     aggregate.update(platforms=cells, status="pass" if passed else "fail", rc=rc or platform_rc)
     flag.write_text(json.dumps(aggregate), encoding="utf-8")
@@ -273,10 +275,10 @@ def _measure_declared_platforms(board, *, session=None):
 def test_no_platform_full_keeps_one_child_and_legacy_flat_record_shape(
         board, monkeypatch):
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append((cmd, dict(env))) or (0, "3 passed in 0.01s\n", "")
     ))
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     assert len(calls) == 1
     assert set(_flag(board)) == {
         "head", "status", "rc", "scope", "collected", "previous_collected",
@@ -299,9 +301,9 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
             return 0, _marker("windows", head), ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert _measure_declared_platforms(board) == 0
-    assert [call[0] for call in calls] == [board._test_cmd(None), "run-arm", "run-windows"]
+    assert [call[0] for call in calls] == [regression._test_cmd(board._home(), None), "run-arm", "run-windows"]
     assert "PM_QA_PLATFORM" not in calls[0][1]
     assert [(call[1]["PM_QA_PLATFORM"], call[1]["PM_QA_EXPECTED_HEAD"])
             for call in calls[1:]] == [("linux-arm", head), ("windows", head)]
@@ -315,14 +317,14 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
     out = capsys.readouterr().out
     assert "regression platform[linux-arm]: pass · collected 3 · HEAD deadbeef" in out
     assert "regression platform[windows]: pass · collected 3 · HEAD deadbeef" in out
-    assert board._platform_record_problem(evidence, str(board.REPO), head, board._platform_test_commands(str(board.REPO))) is None
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression._platform_record_problem(evidence, str(board.REPO), head, regression._platform_test_commands(board._home(), str(board.REPO))) is None
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 def test_platform_record_validator_owns_top_level_status_check(board):
     """공용 validator 자체가 status=fail을 거부한다 — 호출부 선행순서에 기대지 않는다."""
     _set_platforms(board, windows="run-windows")
-    commands = board._platform_test_commands(str(board.REPO))
+    commands = regression._platform_test_commands(board._home(), str(board.REPO))
     record = {
         "head": "deadbeef01234567", "status": "fail", "rc": 0,
         "scope": "full", "collected": 3, "previous_collected": None,
@@ -335,7 +337,7 @@ def test_platform_record_validator_owns_top_level_status_check(board):
         }],
     }
 
-    assert board._platform_record_problem(
+    assert regression._platform_record_problem(
         record, str(board.REPO.resolve()), "deadbeef01234567", commands,
     ) == "aggregate status mismatch"
 
@@ -349,20 +351,20 @@ def test_platform_core_without_summary_is_unverified(
         encoding="utf-8",
     )
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
     ))
 
     assert _measure_declared_platforms(board) == 1
-    assert calls == [board._test_cmd(None)], "core evidence가 불명확하면 platform을 실행하지 않는다"
+    assert calls == [regression._test_cmd(board._home(), None)], "core evidence가 불명확하면 platform을 실행하지 않는다"
     evidence = _flag(board)
     assert evidence["status"] == "fail"
-    assert evidence["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
+    assert evidence["rc"] == regression.REGRESSION_RC_UNVERIFIED_COLLECTION
     assert evidence["collected"] is None and evidence["previous_collected"] is None
     assert evidence["platforms"][0]["status"] == "not-run"
 
     capsys.readouterr()
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
     assert "regression: RED" in err
     assert "rc=unverified-collection" in err
@@ -378,17 +380,17 @@ def test_multi_slot_platform_core_without_summary_uses_the_same_unverified_contr
         encoding="utf-8",
     )
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
     ))
 
     assert _measure_declared_platforms(board, session="A_1") == 1
     assert len(calls) == 1 and calls[0] != "run-windows"
     evidence = json.loads(
-        board._regression_flag_for("A_1").read_text(encoding="utf-8")
+        regression_store._regression_flag_for(board._home(), "A_1").read_text(encoding="utf-8")
     )
     assert evidence["status"] == "fail"
-    assert evidence["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
+    assert evidence["rc"] == regression.REGRESSION_RC_UNVERIFIED_COLLECTION
     assert evidence["platforms"][0]["status"] == "not-run"
 
 
@@ -400,16 +402,16 @@ def test_platform_core_red_preserves_core_reason_in_run_and_check(
         board, monkeypatch, capsys, core_rc, core_stdout, expected_rc):
     _set_platforms(board, windows="run-windows")
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (core_rc, core_stdout, "")
     ))
 
-    assert board.cmd_regression(_run_args(final=True)) == 1
-    assert calls == [board._test_cmd(None)]
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 1
+    assert calls == [regression._test_cmd(board._home(), None)]
     assert _flag(board)["rc"] == expected_rc
 
     capsys.readouterr()
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
     assert "regression: RED" in err and f"rc={expected_rc}" in err
     assert "stale" not in err
@@ -435,12 +437,12 @@ def test_any_platform_result_defect_turns_the_aggregate_red(
             return platform_result[0], platform_result[1], ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert _measure_declared_platforms(board) == 1
     evidence = _flag(board)
     assert evidence["status"] == "fail"
     assert evidence["platforms"][0]["status"] == "fail"
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 @pytest.mark.parametrize("duplicate_key", ("platform", "head", "status", "collected"))
@@ -453,10 +455,10 @@ def test_duplicate_platform_marker_member_is_invalid_for_run_and_check(
             return 0, _duplicate_marker(duplicate_key), ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert _measure_declared_platforms(board) == 1
     assert _flag(board)["platforms"][0]["rc"] == "invalid-result"
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 @pytest.mark.parametrize("damage", (
@@ -470,8 +472,8 @@ def test_platform_check_rejects_corrupt_full_core_aggregate(
         return ((0, _marker("windows", "deadbeef01234567"), "")
                 if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     evidence = _flag(board)
     if damage == "rc":
         evidence["rc"] = 7
@@ -485,15 +487,15 @@ def test_platform_check_rejects_corrupt_full_core_aggregate(
         evidence["ts"] = ""
     else:
         evidence["unexpected"] = "member"
-    board.REGRESSION_FLAG.write_text(json.dumps(evidence), encoding="utf-8")
+    pm_paths.regression_flag(board._home()).write_text(json.dumps(evidence), encoding="utf-8")
 
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 def test_core_red_skips_every_declared_platform_and_records_not_run(board, monkeypatch):
     _set_platforms(board, declaration="linux,windows", linux="run-linux", windows="run-windows")
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (1, "1 failed in 0.01s\n", "")
     ))
     assert _measure_declared_platforms(board) == 1
@@ -507,12 +509,12 @@ def test_host_head_drift_after_core_skips_platform_and_turns_aggregate_red(
         board, monkeypatch):
     _set_platforms(board, windows="run-windows")
     heads = iter(("deadbeef01234567", "moved-head"))
-    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: next(heads))
+    monkeypatch.setattr(git, "_git_head_at", lambda _cwd: next(heads))
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "3 passed in 0.01s\n", "")
     ))
-    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 1
     assert len(calls) == 1
     assert _flag(board)["head"] == "deadbeef01234567"
     assert _flag(board)["rc"] == "head-drift"
@@ -528,28 +530,28 @@ def test_platform_declaration_preflight_is_fail_closed_before_core(board, monkey
         called = True
         raise AssertionError("core must not run")
 
-    monkeypatch.setattr(board, "_run_regression_cmd", forbidden)
-    with pytest.raises(board.PlatformConfigError):
-        board._platform_test_commands(str(board.REPO))
+    monkeypatch.setattr(regression, "_run_regression_cmd", forbidden)
+    with pytest.raises(regression.PlatformConfigError):
+        regression._platform_test_commands(board._home(), str(board.REPO))
     assert not called
-    assert not board.REGRESSION_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
 
 
 def test_explicit_scoped_run_never_executes_declared_platform(board, monkeypatch):
     _set_platforms(board, windows="run-windows")
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "1 passed in 0.01s\n", "")
     ))
-    assert board.cmd_regression(_run_args(touches="tests/test_x.py")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(touches="tests/test_x.py")) == 0
     assert len(calls) == 1 and calls[0] != "run-windows"
-    assert not board.REGRESSION_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
 
 
 def test_declaration_preserves_review_cycle_downgrade(
         board, monkeypatch):
     _set_platforms(board, windows="run-windows")
-    monkeypatch.setattr(board, "_review_cycle_downgrade", lambda: (["T-1"], ["tests/test_x.py"]))
+    monkeypatch.setattr(regression, "_review_cycle_downgrade", lambda _home: (["T-1"], ["tests/test_x.py"]))
     calls = []
 
     def run(cmd, cwd, env):
@@ -557,26 +559,26 @@ def test_declaration_preserves_review_cycle_downgrade(
         return ((0, _marker("windows", "deadbeef01234567"), "")
                 if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args()) == 0
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert len(calls) == 1 and "test_x" in calls[0]
-    assert not board.REGRESSION_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
 
 
 def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, monkeypatch):
     _write_flag(board, status="pass", rc=0, collected=3,
                 conf_anchor=str(board.REPO))
     _set_platforms(board, windows="run-windows")
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0
 
     def run(cmd, cwd, env):
         return ((0, _marker("windows", "deadbeef01234567"), "")
                 if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     board.LOCAL_CONF.write_text("test.cmd=changed-core\nqa.platforms=windows\ntest.windows.cmd=changed-wrapper\n", encoding="utf-8")
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -592,27 +594,27 @@ def test_single_full_run_records_target_cwd_head_and_anchor(actual_git_board):
         capture_output=True, text=True, encoding="utf-8",
     ).stdout.strip()
 
-    assert board.cmd_regression(_run_args(cwd=str(target), final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cwd=str(target), final=True)) == 0
 
     evidence = _flag(board)
     assert evidence["head"] == target_head
     assert evidence["conf_anchor"] == str(target.resolve())
-    assert evidence["head"] != board._git_head(), "PM-home HEAD를 기록했다"
+    assert evidence["head"] != git._git_head(board._home()), "PM-home HEAD를 기록했다"
 
 
 @requires_git
 def test_single_check_turns_stale_when_recorded_target_head_changes(
         actual_git_board, capsys):
     board, target, git_env = actual_git_board
-    assert board.cmd_regression(_run_args(cwd=str(target), final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cwd=str(target), final=True)) == 0
     first_head = _flag(board)["head"]
     (target / "second.txt").write_text("second\n", encoding="utf-8")
     subprocess.run(["git", "add", "second.txt"], cwd=target, check=True)
     subprocess.run(["git", "commit", "-qm", "second"], cwd=target,
                    env=git_env, check=True)
 
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    assert first_head != board._git_head_at(str(target))
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
+    assert first_head != git._git_head_at(str(target))
     assert "stale" in capsys.readouterr().err
 
 
@@ -621,7 +623,7 @@ def test_single_check_turns_stale_when_recorded_target_head_changes(
 def test_single_check_fails_closed_for_present_invalid_anchor(
         actual_git_board, tmp_path, anchor_kind, capsys):
     board, target, _git_env = actual_git_board
-    target_head = board._git_head_at(str(target))
+    target_head = git._git_head_at(str(target))
     if anchor_kind == "empty":
         anchor = ""
     elif anchor_kind == "relative":
@@ -633,27 +635,27 @@ def test_single_check_fails_closed_for_present_invalid_anchor(
         nongit.mkdir()
         anchor = str(nongit)
     # empty anchor + empty fallback HEAD 동치도 green이 아니어야 한다.
-    recorded_head = board._git_head() if anchor_kind == "empty" else target_head
+    recorded_head = git._git_head(board._home()) if anchor_kind == "empty" else target_head
     _write_flag(board, status="pass", rc=0, collected=1,
                 head=recorded_head, conf_anchor=anchor)
 
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
     assert "stale" in capsys.readouterr().err
 
 
 def test_single_check_legacy_flag_without_conf_anchor_falls_back_to_repo(board):
     _write_flag(board, status="pass", rc=0, collected=1)
     assert "conf_anchor" not in _flag(board)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0
 
 
 def test_single_check_fails_closed_when_legacy_repo_head_is_unresolvable(
         board, monkeypatch, capsys):
-    monkeypatch.setattr(board, "_git_head", lambda: "")
+    monkeypatch.setattr(git, "_git_head", lambda _home: "")
     _write_flag(board, status="pass", rc=0, collected=1, head="")
     assert "conf_anchor" not in _flag(board)
 
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
     assert "Git HEAD 해소 실패" in capsys.readouterr().err
 
 
@@ -663,25 +665,25 @@ def test_single_check_fails_closed_when_legacy_repo_head_is_unresolvable(
 
 def test_collected_count_parses_passed_only(board):
     """`N passed in Xs` 표준 요약행 → N."""
-    assert board._collected_count("7577 passed in 145.23s\n") == 7577
+    assert pytest_report._collected_count("7577 passed in 145.23s\n") == 7577
 
 
 def test_collected_count_sums_passed_skipped_failed(board):
     """`N passed, M skipped` 형식 — 수집수 = passed + skipped + failed 합 (DoD)."""
     out = "3 failed, 7577 passed, 12 skipped in 149.90s\n"
-    assert board._collected_count(out) == 3 + 7577 + 12
+    assert pytest_report._collected_count(out) == 3 + 7577 + 12
 
 
 def test_collected_count_ignores_deselected_and_warnings(board):
     """deselected(quarantine·마커 필터)는 *돌지 않은* 수 — 세지 않는다. warning 도 아니다."""
     out = "100 passed, 4 deselected, 2 warnings in 3.10s\n"
-    assert board._collected_count(out) == 100
+    assert pytest_report._collected_count(out) == 100
 
 
 def test_collected_count_counts_xfail_and_error_kinds(board):
     """xfailed/xpassed/error 도 실행분 — passed 와 독립 카운트로 합산된다."""
     out = "1 failed, 2 passed, 3 xfailed, 4 xpassed, 5 errors in 1.00s\n"
-    assert board._collected_count(out) == 1 + 2 + 3 + 4 + 5
+    assert pytest_report._collected_count(out) == 1 + 2 + 3 + 4 + 5
 
 
 def test_collected_count_uses_last_summary_line(board):
@@ -690,7 +692,7 @@ def test_collected_count_uses_last_summary_line(board):
     출력 전체 검색이면 앞쪽 로그를 먼저 만나 수집수를 오판 → 하한 가드가 엉뚱하게 발화한다.
     """
     out = "captured log: subprocess reported 3 passed\n7577 passed in 145.23s\n"
-    assert board._collected_count(out) == 7577
+    assert pytest_report._collected_count(out) == 7577
 
 
 def test_collected_count_ignores_trailing_wrapper_log(board):
@@ -701,7 +703,7 @@ def test_collected_count_ignores_trailing_wrapper_log(board):
     """
     out = ("12 passed in 0.30s\n"
            "[wrapper] post-run report: 8000 passed, 1 failed in 900.00s\n")
-    assert board._collected_count(out) == 12
+    assert pytest_report._collected_count(out) == 12
 
 
 def test_summary_line_accepts_real_pytest_forms(board):
@@ -713,8 +715,8 @@ def test_summary_line_accepts_real_pytest_forms(board):
             "3 passed in 0.30 seconds",                     # 구 pytest 표기.
             "\x1b[32m12 passed\x1b[0m in 0.30s",            # --color=yes.
     ):
-        assert board._is_pytest_summary_line(line), line
-    assert board._collected_count(
+        assert pytest_report._is_pytest_summary_line(line), line
+    assert pytest_report._collected_count(
         "7577 passed, 40 skipped, 99 warnings in 388.86s (0:06:28)\n") == 7617
 
 
@@ -726,13 +728,13 @@ def test_summary_line_rejects_prose_and_partial_forms(board):
             "collected 7589 items",
             "PASSED tests/test_x.py::test_y",
     ):
-        assert not board._is_pytest_summary_line(line), line
+        assert not pytest_report._is_pytest_summary_line(line), line
 
 
 def test_collected_count_none_when_no_summary(board):
     """요약행 부재(수집 0 "no tests ran"·비-pytest 출력) → None (파싱 실패·가드 skip 신호)."""
-    assert board._collected_count("no tests ran in 0.01s\n") is None
-    assert board._collected_count("") is None
+    assert pytest_report._collected_count("no tests ran in 0.01s\n") is None
+    assert pytest_report._collected_count("") is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -741,28 +743,28 @@ def test_collected_count_none_when_no_summary(board):
 
 def test_collection_delta_text_is_empty_without_a_comparable_previous(board):
     """직전 기록이 없거나 수집수를 못 읽으면 문장이 빈다 — 증감을 지어내지 않는다."""
-    assert board.collection_delta_text(13323, None) == ""
-    assert board.collection_delta_text(None, 13323) == ""
-    assert board.collection_delta_text(None, None) == ""
-    assert board.collection_delta_text(13323, True) == ""     # bool 은 정수 취급 금지.
+    assert pytest_report.collection_delta_text(13323, None) == ""
+    assert pytest_report.collection_delta_text(None, 13323) == ""
+    assert pytest_report.collection_delta_text(None, None) == ""
+    assert pytest_report.collection_delta_text(13323, True) == ""     # bool 은 정수 취급 금지.
 
 
 def test_collection_delta_text_from_zero_previous_shows_difference_only(board):
     """직전 0 이면 비율을 내지 않고 차이만 낸다 (0 나눗셈 금지)."""
-    assert board.collection_delta_text(12, 0) == " (직전 0 · +12)"
+    assert pytest_report.collection_delta_text(12, 0) == " (직전 0 · +12)"
 
 
 def test_collection_delta_text_below_threshold_has_no_alert(board):
     """1% 미만 증감은 숫자만 — 정상 범위의 테스트 add/remove 에 소음을 내지 않는다."""
-    assert board.collection_delta_text(13334, 13323) == " (직전 13323 · +11)"
-    assert board.collection_delta_text(13312, 13323) == " (직전 13323 · -11)"
+    assert pytest_report.collection_delta_text(13334, 13323) == " (직전 13323 · +11)"
+    assert pytest_report.collection_delta_text(13312, 13323) == " (직전 13323 · -11)"
 
 
 def test_collection_delta_text_marks_one_percent(board):
     """1% 이상 증감(증가·감소 모두)은 비율과 경고 표기를 단다 — 임계값은 상수 하나가 소유."""
-    assert board.COLLECTION_DELTA_ALERT_PCT == 0.01
-    assert board.collection_delta_text(13500, 13323) == " (직전 13323 · +177 · 1.3% ⚠)"
-    assert board.collection_delta_text(13300, 13500) == " (직전 13500 · -200 · 1.5% ⚠)"
+    assert pytest_report.COLLECTION_DELTA_ALERT_PCT == 0.01
+    assert pytest_report.collection_delta_text(13500, 13323) == " (직전 13323 · +177 · 1.3% ⚠)"
+    assert pytest_report.collection_delta_text(13300, 13500) == " (직전 13500 · -200 · 1.5% ⚠)"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -776,39 +778,39 @@ def test_run_shows_delta_against_previous_record_without_blocking(
     하한 차단을 대체한 표시다 — 스위트가 줄어든 사실은 드러내되 판단은 사람이 한다.
     """
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     capsys.readouterr()
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0, "증감이 rc 를 바꿨다"
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0, "증감이 rc 를 바꿨다"
     data = _flag(board)
     assert data["status"] == "pass" and data["rc"] == 0
     assert data["collected"] == 12 and data["previous_collected"] == 7577
     out = capsys.readouterr().out
     assert "pass (rc=0) (직전 7577 · -7565 · 99.8% ⚠)" in out
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0
 
 
 def test_run_without_previous_record_shows_no_delta(board, monkeypatch, capsys):
     """첫 실행은 비교 대상이 없다 — 증감 문장 없이 현행 줄 그대로."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="3 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     data = _flag(board)
     assert data["status"] == "pass" and data["rc"] == 0
     assert data["collected"] == 3 and data["previous_collected"] is None
     out, err = capsys.readouterr()
     assert "pass (rc=0) @" in out
     assert "직전" not in out and "직전" not in err
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0
 
 
 def test_two_consecutive_records_chain_the_previous_collected(board, monkeypatch):
     """실 기록 파일 두 번 이어쓰기 — 뒤 기록의 `previous_collected` = 앞 기록의 `collected`."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     first = _flag(board)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7600 passed in 141.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     second = _flag(board)
 
     assert first["collected"] == 7577 and first["previous_collected"] is None
@@ -822,12 +824,12 @@ def test_failed_record_in_between_keeps_the_last_known_collected(board, monkeypa
     승계가 끊기면 실패 한 번에 기준점이 영구히 사라진다.
     """
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     _install_run(board, monkeypatch, _FakeRun(rc=1, stdout="[custom runner] boom\n"))
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
     middle = _flag(board)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7600 passed in 141.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
 
     assert middle["collected"] is None and middle["previous_collected"] == 7577
     assert _flag(board)["previous_collected"] == 7577
@@ -836,7 +838,7 @@ def test_failed_record_in_between_keeps_the_last_known_collected(board, monkeypa
 def test_run_parse_failure_is_pass_without_declared_platforms(board, monkeypatch, capsys):
     """수집수를 못 읽어도 platform 미선언이면 현행대로 pass — 증감 문장만 빈다."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="[custom runner] ok\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     data = _flag(board)
     assert data["status"] == "pass" and data["collected"] is None
     out, err = capsys.readouterr()
@@ -847,7 +849,7 @@ def test_run_real_red_keeps_its_rc(board, monkeypatch):
     """실 red(rc≠0)의 기록 rc 는 그 rc 그대로다 — 수집수는 판정에 관여하지 않는다."""
     _install_run(board, monkeypatch,
                  _FakeRun(rc=1, stdout="1 failed, 11 passed in 0.40s\n"))
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
     data = _flag(board)
     assert data["status"] == "fail"
     assert data["rc"] == 1
@@ -856,19 +858,19 @@ def test_run_real_red_keeps_its_rc(board, monkeypatch):
 def test_run_zero_collection_stays_red(board, monkeypatch, capsys):
     """수집 0(rc=5)은 하한 폐지와 무관하게 그대로 red — 한 개도 안 돌았다는 별개 사실."""
     _install_run(board, monkeypatch, _FakeRun(rc=5, stdout="no tests ran in 0.01s\n"))
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
     assert _flag(board)["status"] == "fail"
     assert "수집 0" in capsys.readouterr().out
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 def test_scoped_run_writes_no_record_and_no_delta(board, monkeypatch, capsys):
     """스코프(touches) 실행은 기록을 읽지도 쓰지도 않는다 — 다른 축의 수집수를 빼지 않는다."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     capsys.readouterr()
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args(touches="tests/test_board_regression.py")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(touches="tests/test_board_regression.py")) == 0
 
     out = capsys.readouterr().out
     assert "push 게이트 아님" in out
@@ -883,14 +885,14 @@ def test_scoped_run_writes_no_record_and_no_delta(board, monkeypatch, capsys):
 def test_check_green_line_shows_the_recorded_delta(board, capsys):
     """check green 은 기록이 담은 증감을 그대로 낸다(재계산·재해소 없음)."""
     _write_flag(board, status="pass", rc=0, collected=13500, previous_collected=13323)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0
     assert "green @ deadbeef (직전 13323 · +177 · 1.3% ⚠) ✓" in capsys.readouterr().out
 
 
 def test_check_green_without_previous_has_no_delta(board, capsys):
     """비교 대상이 없는 기록의 green 줄은 현행 모양 그대로."""
     _write_flag(board, status="pass", rc=0, collected=13500)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0
     out = capsys.readouterr().out
     assert "green @ deadbeef ✓" in out and "직전" not in out
 
@@ -898,7 +900,7 @@ def test_check_green_without_previous_has_no_delta(board, capsys):
 def test_check_old_flag_without_collected_is_green(board):
     """수집수 없는 옛 플래그도 그대로 green — 수집수는 아무것도 막지 않는다."""
     _write_flag(board, status="pass", rc=0, collected=None)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0
 
 
 def _seed_anchor_flag(board, anchor: Path, *, status="fail",
@@ -918,7 +920,7 @@ def test_run_inherits_anchor_of_blocking_record(board, monkeypatch, tmp_path):
     (tree_a / "tests").mkdir(parents=True)      # 그 트리가 회귀를 돌던 코드 트리다
     _seed_anchor_flag(board, tree_a)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(tree_a), "기본 트리에서 돌아 A 기록을 덮었다"
     assert _flag(board)["conf_anchor"] == str(tree_a)   # 갱신도 같은 앵커.
 
@@ -929,7 +931,7 @@ def test_run_does_not_inherit_anchor_of_green_record(board, monkeypatch, tmp_pat
     tree_a.mkdir()
     _seed_anchor_flag(board, tree_a, status="pass", rc=0, collected=7577)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
 
 
@@ -940,7 +942,7 @@ def test_run_explicit_cwd_wins_over_recorded_anchor(board, monkeypatch, tmp_path
     tree_b.mkdir()
     _seed_anchor_flag(board, tree_a)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args(cwd=str(tree_b))) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cwd=str(tree_b))) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(tree_b)
 
 
@@ -948,7 +950,7 @@ def test_run_falls_back_when_recorded_anchor_is_gone(board, monkeypatch, tmp_pat
     """앵커 트리가 정리됐으면 기본 트리로 폴백하고 그 사실을 시끄럽게 알린다 (fail-soft)."""
     _seed_anchor_flag(board, tmp_path / "removed")
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
     assert "앵커" in capsys.readouterr().err
 
@@ -958,7 +960,7 @@ def test_recorded_anchor_is_absolute(board, monkeypatch, tmp_path):
     (tmp_path / "sub").mkdir()
     monkeypatch.chdir(tmp_path)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args(cwd="sub")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cwd="sub")) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(tmp_path / "sub")
     assert _flag(board)["conf_anchor"] == str(tmp_path / "sub")
 
@@ -970,12 +972,12 @@ def test_corrupt_collected_degrades_instead_of_crashing(board, monkeypatch, caps
     해소를 깨면 안 된다는 기존 규율과 같은 축(codex suggestion).
     """
     _write_flag(board, status="pass", rc=0, collected="많음", previous_collected=7000)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0   # TypeError 아님.
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 0   # TypeError 아님.
     assert "직전" not in capsys.readouterr().out
     # 슬롯 경로도 동형 — 손상값이 green 판정에 들어가지 않는다.
-    assert board._flag_collected({"collected": ["12"]}) is None
-    assert board._flag_collected({"collected": True}) is None   # bool 은 정수 취급 금지.
-    assert board._flag_collected({"collected": 12}) == 12
+    assert regression_store._flag_collected({"collected": ["12"]}) is None
+    assert regression_store._flag_collected({"collected": True}) is None   # bool 은 정수 취급 금지.
+    assert regression_store._flag_collected({"collected": 12}) == 12
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -988,14 +990,14 @@ _VERBOSE_BODY = "collecting ...\nFAILED tests/test_x.py::test_y - AssertionError
 def test_tee_stream_echoes_each_line_and_returns_all(board):
     """tee 는 줄 단위로 즉시 echo 하면서 전체를 모아 돌려준다 (가시성 + 파싱 버퍼 동시)."""
     echoed: list[str] = []
-    text = board._tee_stream(io.StringIO("a\nb\nc\n"), echoed.append)
+    text = regression._tee_stream(io.StringIO("a\nb\nc\n"), echoed.append)
     assert echoed == ["a\n", "b\n", "c\n"], "줄이 모이고 나서 한꺼번에 나오면 무출력 대기가 남는다"
     assert text == "a\nb\nc\n"
 
 
 def test_tee_stream_handles_missing_stream(board):
     """스트림 미개방(None)은 빈 문자열 — 러너가 죽지 않는다."""
-    assert board._tee_stream(None, lambda line: None) == ""
+    assert regression._tee_stream(None, lambda line: None) == ""
 
 
 def test_run_regression_cmd_with_real_child_splits_streams(board, tmp_path, capsys):
@@ -1011,12 +1013,12 @@ def test_run_regression_cmd_with_real_child_splits_streams(board, tmp_path, caps
         "sys.stderr.write('노이즈 8000 passed\\n')\n"
         "sys.exit(3)\n", encoding="utf-8")
     cmd = f'"{sys.executable}" "{script}"'
-    rc, out, err = board._run_regression_cmd(cmd, str(tmp_path), utf8_child_env())
+    rc, out, err = regression._run_regression_cmd(cmd, str(tmp_path), utf8_child_env())
     assert rc == 3
     assert "12 passed in 0.30s" in out
     assert "노이즈 8000 passed" in err
     assert "노이즈" not in out, "stderr 가 stdout 버퍼로 섞이면 파싱이 오염된다"
-    assert board._collected_count(out) == 12
+    assert pytest_report._collected_count(out) == 12
     streamed = capsys.readouterr()
     assert "12 passed" in streamed.out and "노이즈" in streamed.err   # 실시간 tee.
 
@@ -1028,7 +1030,7 @@ def test_run_streams_child_output_live(board, monkeypatch, capsys):
     """
     _install_run(board, monkeypatch,
                  _FakeRun(rc=0, stdout=_VERBOSE_BODY + "7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     out = capsys.readouterr().out
     assert "collecting ..." in out and "7577 passed in 140.00s" in out
 
@@ -1037,7 +1039,7 @@ def test_run_streams_stderr_to_stderr(board, monkeypatch, capsys):
     """자식 stderr 는 stderr 로 흘린다 — 스트림 구분을 뭉개지 않는다(진단 보존)."""
     _install_run(board, monkeypatch, _FakeRun(
         rc=1, stdout="1 failed, 10 passed in 1.00s\n", stderr="ERROR: import 실패\n"))
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
     captured = capsys.readouterr()
     assert "ERROR: import 실패" in captured.err
     assert "1 failed, 10 passed" in captured.out
@@ -1051,7 +1053,7 @@ def test_stderr_counts_do_not_pollute_parsing(board, monkeypatch):
     """
     fake = _install_run(board, monkeypatch, _FakeRun(
         rc=0, stdout="12 passed in 0.30s\n", stderr="8000 passed in 900.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     data = _flag(board)
     assert data["collected"] == 12, "stderr 의 카운트 문자열이 수집수를 오염시켰다"
     # 메커니즘 핀 — 두 스트림을 합치는 형태로 되돌리면 위 오염이 되살아난다.
@@ -1081,27 +1083,27 @@ def multi_board(board, monkeypatch):
     """board + 2 leased 슬롯(A_1·B_1)·슬롯별 HEAD mock — M>1 all-or-nothing 순회 전제."""
     _write_ledger(board, "A_1", "B_1")
     heads = {_slot_cwd(board, "A_1"): "HEAD_A", _slot_cwd(board, "B_1"): "HEAD_B"}
-    monkeypatch.setattr(board, "_git_head_at", lambda cwd: heads.get(cwd, "HEAD_?"))
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: heads.get(cwd, "HEAD_?"))
     return board
 
 
 def test_multi_slot_regression_keeps_per_slot_head_seam(multi_board):
     board = multi_board
     for session, head in (("A_1", "HEAD_A"), ("B_1", "HEAD_B")):
-        flag = board._regression_flag_for(session)
+        flag = regression_store._regression_flag_for(board._home(), session)
         flag.write_text(json.dumps({
             "head": head, "status": "pass", "rc": 0, "scope": "full",
             "collected": 1, "previous_collected": None,
             "conf_anchor": _slot_cwd(board, session),
             "session": session, "ts": "2026-08-25T00:00:00+00:00",
         }), encoding="utf-8")
-    assert board._regression_slot_state("A_1", _slot_cwd(board, "A_1")).state == "green"
-    assert board._regression_slot_state("B_1", _slot_cwd(board, "B_1")).state == "green"
+    assert regression._regression_slot_state(board._home(), "A_1", _slot_cwd(board, "A_1")).state == "green"
+    assert regression._regression_slot_state(board._home(), "B_1", _slot_cwd(board, "B_1")).state == "green"
 
-    original = board._git_head_at
-    board._git_head_at = lambda cwd: "HEAD_A_2" if cwd == _slot_cwd(board, "A_1") else original(cwd)
-    assert board._regression_slot_state("A_1", _slot_cwd(board, "A_1")).state == "stale"
-    assert board._regression_slot_state("B_1", _slot_cwd(board, "B_1")).state == "green"
+    original = git._git_head_at
+    git._git_head_at = lambda cwd: "HEAD_A_2" if cwd == _slot_cwd(board, "A_1") else original(cwd)
+    assert regression._regression_slot_state(board._home(), "A_1", _slot_cwd(board, "A_1")).state == "stale"
+    assert regression._regression_slot_state(board._home(), "B_1", _slot_cwd(board, "B_1")).state == "green"
 
 
 def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
@@ -1127,17 +1129,17 @@ def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
             return 0, _marker("windows", head), ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args()) == 0
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert [cmd for cmd, _cwd, _env in calls if cmd.startswith("run-")] == []
     assert len(calls) == 2 and {cwd for _cmd, cwd, _env in calls} == {_slot_cwd(board,"A_1"), _slot_cwd(board,"B_1")}
-    a_record = json.loads(board._regression_flag_for("A_1").read_text(encoding="utf-8"))
-    b_record = json.loads(board._regression_flag_for("B_1").read_text(encoding="utf-8"))
+    a_record = json.loads(regression_store._regression_flag_for(board._home(), "A_1").read_text(encoding="utf-8"))
+    b_record = json.loads(regression_store._regression_flag_for(board._home(), "B_1").read_text(encoding="utf-8"))
     assert a_record["status"] == "pass"
     assert b_record["status"] == "pass"
     b_record["status"] = "fail"
-    board._regression_flag_for("B_1").write_text(json.dumps(b_record), encoding="utf-8")
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    regression_store._regression_flag_for(board._home(), "B_1").write_text(json.dumps(b_record), encoding="utf-8")
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 @pytest.mark.parametrize("damage,expected", (
@@ -1173,9 +1175,9 @@ def test_multi_slot_platform_record_rejects_red_or_partial_core_aggregate(
         record[damage] = "targeted"
     else:
         record[damage] = "B_1"
-    board._regression_flag_for(session).write_text(json.dumps(record), encoding="utf-8")
+    regression_store._regression_flag_for(board._home(), session).write_text(json.dumps(record), encoding="utf-8")
 
-    assert board._regression_slot_state(session, str(tree)).state == expected
+    assert regression._regression_slot_state(board._home(), session, str(tree)).state == expected
 
 
 def test_multi_run_records_delta_per_slot_without_blocking(
@@ -1183,7 +1185,7 @@ def test_multi_run_records_delta_per_slot_without_blocking(
     """M>1 순회도 슬롯마다 자기 직전 기록과 견준다 — 크게 줄어도 rc0(막지 않는다)."""
     b = multi_board
     for session, head, collected in (("A_1", "HEAD_A", 7577), ("B_1", "HEAD_B", 7000)):
-        flag = b._regression_flag_for(session)
+        flag = regression_store._regression_flag_for(b._home(), session)
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(json.dumps(
             {"head": "OLD_HEAD", "status": "pass", "rc": 0, "scope": "full",
@@ -1193,9 +1195,9 @@ def test_multi_run_records_delta_per_slot_without_blocking(
         _slot_cwd(b, "A_1"): (0, "7577 passed in 140.00s\n"),
         _slot_cwd(b, "B_1"): (0, "12 passed in 0.30s\n"),      # 크게 줄어든 슬롯
     }))
-    assert b.cmd_regression(_run_args()) == 0, "증감이 M>1 순회의 rc 를 바꿨다"
-    a_flag = json.loads(b._regression_flag_for("A_1").read_text(encoding="utf-8"))
-    b_flag = json.loads(b._regression_flag_for("B_1").read_text(encoding="utf-8"))
+    assert regression_cmd.cmd_regression(b._home(), _run_args()) == 0, "증감이 M>1 순회의 rc 를 바꿨다"
+    a_flag = json.loads(regression_store._regression_flag_for(b._home(), "A_1").read_text(encoding="utf-8"))
+    b_flag = json.loads(regression_store._regression_flag_for(b._home(), "B_1").read_text(encoding="utf-8"))
     assert a_flag["status"] == "pass" and a_flag["previous_collected"] == 7577
     assert b_flag["status"] == "pass" and b_flag["collected"] == 12
     assert b_flag["previous_collected"] == 7000
@@ -1214,15 +1216,15 @@ def test_multi_check_label_shows_the_unverified_hint(multi_board, capsys):
     for session, head, payload in (
             ("A_1", "HEAD_A", {"status": "pass", "rc": 0, "collected": 7577}),
             ("B_1", "HEAD_B", {"status": "fail",
-                               "rc": b.REGRESSION_RC_UNVERIFIED_COLLECTION,
+                               "rc": regression.REGRESSION_RC_UNVERIFIED_COLLECTION,
                                "collected": None}),
     ):
-        flag = b._regression_flag_for(session)
+        flag = regression_store._regression_flag_for(b._home(), session)
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(json.dumps({"head": head, "scope": "full", "session": session,
                                     "ts": "2026-08-07T00:00:00+00:00", **payload}),
                         encoding="utf-8")
-    assert b.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
     assert "B_1=red(rc=unverified-collection·수집수 미확인)" in err
     assert "(?)" not in err
@@ -1235,13 +1237,13 @@ def test_multi_check_label_keeps_the_other_rc_branches(multi_board, capsys):
     `unverified-collection` 힌트에서 인자를 뺀 변경이 옆 갈래를 함께 지우지 않았는지 본다.
     """
     b = multi_board
-    flag = b._regression_flag_for("A_1")
+    flag = regression_store._regression_flag_for(b._home(), "A_1")
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text(json.dumps({"head": "HEAD_A", "status": "fail", "rc": 5,
                                 "scope": "full", "collected": None, "session": "A_1",
                                 "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
     # B_1 = 기록 없음(missing) → rc 를 모르므로 상태만 적는다.
-    assert b.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
     assert "A_1=red(rc=5·수집0)" in err
     assert "B_1=missing" in err and "B_1=missing(" not in err
@@ -1252,14 +1254,14 @@ def test_multi_run_skips_green_slots_regardless_of_collection_size(
     """수집수는 green 재사용을 무효화하지 않는다 — HEAD 일치 green 슬롯은 전부 skip."""
     b = multi_board
     for session, head in (("A_1", "HEAD_A"), ("B_1", "HEAD_B")):
-        flag = b._regression_flag_for(session)
+        flag = regression_store._regression_flag_for(b._home(), session)
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(json.dumps(
             {"head": head, "status": "pass", "rc": 0, "scope": "full",
              "collected": 12, "previous_collected": 7577, "session": session,
              "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
     fake = _install_run(b, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
-    assert b.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(b._home(), _run_args()) == 0
     assert not fake.calls, "green 슬롯을 수집수 때문에 재실행했다"
     assert "skip(green) 2 · run 0" in capsys.readouterr().out
 
@@ -1318,30 +1320,30 @@ def handoff():
 def test_seam_outcome_count_reads_one_kind(board):
     """한 종류만 읽는다 — 부재는 None(수 0 과 구분해야 `deselected` 기본 0 이 성립)."""
     line = "5 failed, 1467 passed, 24 deselected in 10.00s"
-    assert board._pytest_outcome_count(line, "passed") == 1467
-    assert board._pytest_outcome_count(line, "failed") == 5
-    assert board._pytest_outcome_count(line, "deselected") == 24
-    assert board._pytest_outcome_count(line, "skipped") is None
+    assert pytest_report._pytest_outcome_count(line, "passed") == 1467
+    assert pytest_report._pytest_outcome_count(line, "failed") == 5
+    assert pytest_report._pytest_outcome_count(line, "deselected") == 24
+    assert pytest_report._pytest_outcome_count(line, "skipped") is None
 
 
 def test_seam_outcome_counts_narrows_kinds(board):
     """`kinds` 로 셀 종류를 좁힌다 — 소비처마다 '무엇이 실행인가' 가 다르다."""
     line = "1 failed, 6 passed, 3 skipped, 812 deselected in 40.0s"
-    assert sum(board._pytest_outcome_counts(line, board._LIVEGATE_RAN_KINDS)) == 7
-    assert sum(board._pytest_outcome_counts(line)) == 10   # 기본 6종 = skipped 포함.
+    assert sum(pytest_report._pytest_outcome_counts(line, pytest_report._LIVEGATE_RAN_KINDS)) == 7
+    assert sum(pytest_report._pytest_outcome_counts(line)) == 10   # 기본 6종 = skipped 포함.
 
 
 def test_seam_summary_tail_cuts_from_kind(board):
     """요약 문자열은 `N passed` 지점부터 줄 끝까지 — 대상 줄은 끝에서-탐색으로 고른다."""
     out = _FAKE_LOG + "5 failed, 1467 passed, 24 deselected in 10.00s\n"
-    assert board._pytest_summary_tail(out) == "1467 passed, 24 deselected in 10.00s"
+    assert pytest_report._pytest_summary_tail(out) == "1467 passed, 24 deselected in 10.00s"
 
 
 def test_seam_summary_tail_none_when_unresolved(board):
     """요약행 부재·그 종류 부재는 None — 호출부가 자기 폴백(출력 꼬리)을 고른다."""
-    assert board._pytest_summary_tail("no tests ran in 0.01s\n") is None
-    assert board._pytest_summary_tail("2 errors in 1.00s\n") is None
-    assert board._pytest_summary_tail("") is None
+    assert pytest_report._pytest_summary_tail("no tests ran in 0.01s\n") is None
+    assert pytest_report._pytest_summary_tail("2 errors in 1.00s\n") is None
+    assert pytest_report._pytest_summary_tail("") is None
 
 
 # ── 소비처 ① 릴리즈 라이브 게이트 (board 자신도 seam 소비) ─────────────────
@@ -1349,13 +1351,13 @@ def test_seam_summary_tail_none_when_unresolved(board):
 def test_livegate_ran_count_ignores_mid_output_log(board):
     """중간 로그의 `3 passed, 1 failed` 를 세면 pin 대조가 통째로 어긋난다."""
     out = _FAKE_LOG + "18 passed, 810 deselected in 45.67s\n"
-    assert board._livegate_ran_count(out) == 18
+    assert pytest_report._livegate_ran_count(out) == 18
 
 
 def test_livegate_ran_count_keeps_kind_selection(board):
     """세는 종류는 불변 — passed+failed+error 만(deselected·skipped 는 실행분 아님)."""
     out = "2 errors, 5 passed, 3 skipped, 812 deselected in 3.0s\n"
-    assert board._livegate_ran_count(out) == 7
+    assert pytest_report._livegate_ran_count(out) == 7
 
 
 # ── 소비처 ② 부트스트랩 회귀 dump ─────────────────────────────────────────
@@ -1370,12 +1372,6 @@ def test_bootstrap_counts_contract_unchanged(bootstrap):
     """반환 계약 불변 — total = passed + failed, 요약행 부재는 None."""
     assert bootstrap.parse_pytest_counts("279 passed in 6.55s") == (279, 279)
     assert bootstrap.parse_pytest_counts("ERROR: no tests collected") is None
-
-
-def test_bootstrap_counts_without_seam_is_parse_failure(bootstrap, monkeypatch):
-    """seam 부재(엔진 사본 불완전)는 파싱 실패로 흐른다 — 첫-매칭 사본으로 폴백하지 않는다."""
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: None)
-    assert bootstrap.parse_pytest_counts("7577 passed in 145.23s") is None
 
 
 # ── 소비처 ③ ticket 마감 ─────────────────────────────────────────────────
@@ -1396,13 +1392,6 @@ def test_ticket_finish_green_still_red_on_summary_failure(ticket_finish):
     """요약행에 failed 가 있으면 여전히 red — 판정 방향은 바뀌지 않는다."""
     out = "3 failed, 7574 passed in 149.90s\n"
     assert ticket_finish.is_pytest_green(out, returncode=0) is False
-
-
-def test_ticket_finish_without_seam_is_fail_closed(ticket_finish, monkeypatch):
-    """seam 부재는 파싱 실패 + red — 마감은 fail-closed 로 흐른다."""
-    monkeypatch.setattr(ticket_finish, "_load_board_module", lambda: None)
-    assert ticket_finish.parse_pytest_output("1472 passed in 12.34s") is None
-    assert ticket_finish.is_pytest_green("1472 passed in 12.34s", returncode=0) is False
 
 
 # ── 소비처 ④ 핸드오프 ────────────────────────────────────────────────────
@@ -1442,8 +1431,8 @@ _TRAILING_FAKE_WRAPPER = "[wrapper] post-run report: 8000 passed, 1 failed in 90
 def test_livegate_ran_count_ignores_trailing_fake(board):
     """릴리즈 pin 대조 — 꼬리 오염을 세면 수집 N 이 어긋나 pin 검증이 통째로 무너진다(실측 5)."""
     real = "18 passed, 810 deselected in 45.67s\n"
-    assert board._livegate_ran_count(real + _TRAILING_FAKE) == 18
-    assert board._livegate_ran_count(real + _TRAILING_FAKE_WRAPPER) == 18
+    assert pytest_report._livegate_ran_count(real + _TRAILING_FAKE) == 18
+    assert pytest_report._livegate_ran_count(real + _TRAILING_FAKE_WRAPPER) == 18
 
 
 def test_bootstrap_counts_ignore_trailing_fake(bootstrap):
@@ -1485,14 +1474,14 @@ def test_fixture_helper_output_satisfies_seam_grammar(board):
             ({"passed": 1467, "failed": 5, "deselected": 24}, 1472),
     ):
         line = pytest_summary(**kwargs)
-        assert board._is_pytest_summary_line(line.strip()), line
-        assert board._collected_count(line) == expected
+        assert pytest_report._is_pytest_summary_line(line.strip()), line
+        assert pytest_report._collected_count(line) == expected
 
 
 def test_seam_rejects_measured_child_harness_tail(board):
     """실측 오염 줄 자체를 seam 이 요약행으로 인정하지 않는다 (줄머리 앵커의 존재 이유)."""
-    assert not board._is_pytest_summary_line(_TRAILING_FAKE.strip())
-    assert board._collected_count("12 passed in 0.30s\n" + _TRAILING_FAKE) == 12
+    assert not pytest_report._is_pytest_summary_line(_TRAILING_FAKE.strip())
+    assert pytest_report._collected_count("12 passed in 0.30s\n" + _TRAILING_FAKE) == 12
 
 
 # ── 사본 0 — 승격이 반쪽으로 남지 않게 못 박는다 ───────────────────────────
@@ -1529,19 +1518,19 @@ def _write_rounds_ledger(board, gates: dict) -> None:
         for gate, rounds in gates.items()
     }
     payload["wave"] = {"id": "gen", "started": None, "spent": 0}
-    board._review_rounds_ledger().write_text(json.dumps(payload), encoding="utf-8")
+    review_rounds._review_rounds_ledger(board._home()).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _ticket_statuses(board, monkeypatch, statuses: dict) -> None:
     """보드 티켓 status 대역 — `{ticket_id: status}` 이외의 id 는 부재(None).
 
     강등 판정이 쓰는 조회 seam 은 정확-일치(`find_ticket_exact`)다 — 대역도 같은 자리에 건다."""
-    def _find_exact(tid, **_kwargs):
+    def _find_exact(_home, tid, **_kwargs):
         if tid not in statuses:
             return None
         return statuses[tid], Path(f"/board/{statuses[tid]}/{tid}.md")
 
-    monkeypatch.setattr(board, "find_ticket_exact", _find_exact)
+    monkeypatch.setattr(ticket_store, "find_ticket_exact", _find_exact)
 
 
 def test_active_review_cycle_is_the_last_round_not_a_pass(board, monkeypatch):
@@ -1556,7 +1545,7 @@ def test_active_review_cycle_is_the_last_round_not_a_pass(board, monkeypatch):
         "T-0001": "claimed", "T-0002": "claimed",
         "T-0003": "claimed", "T-0004": "claimed",
     })
-    assert board._active_review_gates() == ["T-0002", "T-0003"]
+    assert regression._active_review_gates(board._home()) == ["T-0002", "T-0003"]
 
 
 def test_done_ticket_ledger_residue_never_activates(board, monkeypatch):
@@ -1570,26 +1559,26 @@ def test_done_ticket_ledger_residue_never_activates(board, monkeypatch):
         "T-0001": "done", "T-0002": "open", "T-0003": "blocked",
         # T-0004 는 보드에서 아예 사라진 게이트(자유 문자열·삭제) — 부재도 활성 아님.
     })
-    assert board._active_review_gates() == []
+    assert regression._active_review_gates(board._home()) == []
 
 
 def test_done_ticket_residue_does_not_downgrade_a_full_run(board, monkeypatch, capsys):
     """done 티켓 장부 잔존 형상에서 FULL 요청은 강등되지 않고 게이트 플래그를 쓴다 (DoD)."""
     _write_rounds_ledger(board, {"T-0001": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0001": "done"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert "강등" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
 
 def test_missing_or_corrupt_ledger_never_downgrades(board):
     """장부 부재·손상은 강등하지 않는다 — 이 축의 실패가 회귀 게이트를 좁히면 안 된다."""
-    assert board._active_review_gates() == []
+    assert regression._active_review_gates(board._home()) == []
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    board._review_rounds_ledger().write_text("{ not json", encoding="utf-8")
-    assert board._active_review_gates() == []
+    review_rounds._review_rounds_ledger(board._home()).write_text("{ not json", encoding="utf-8")
+    assert regression._active_review_gates(board._home()) == []
 
 
 def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, capsys):
@@ -1597,12 +1586,12 @@ def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, ca
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
-    def _boom(tid):
+    def _boom(_home, tid):
         raise ValueError("frontmatter 손상")
 
-    monkeypatch.setattr(board, "_ticket_touches", _boom)
+    monkeypatch.setattr(regression, "_ticket_touches", _boom)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     out, err = capsys.readouterr()
     assert "강등을 취소" in err and "T-0002" in err
     assert "강등합니다" not in out
@@ -1615,24 +1604,24 @@ def test_full_run_is_downgraded_during_an_active_cycle(board, monkeypatch, capsy
     강등된 실행은 스코프 실행과 같다 — push 게이트 플래그를 쓰지 않는다."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     out = capsys.readouterr().out
     assert "활성 리뷰 사이클 [T-0002]" in out and "강등" in out
     assert "--final" in out                       # 수렴 후 FULL 경로를 함께 안내
     assert "regression(scoped, 1 touches)" in out
     assert '-k "pay"' in fake.calls[0]["args"][0]
-    assert not board.REGRESSION_FLAG.exists()     # FULL 게이트 플래그는 안 쓴다
+    assert not pm_paths.regression_flag(board._home()).exists()     # FULL 게이트 플래그는 안 쓴다
 
 
 def test_final_flag_keeps_the_full_gate(board, monkeypatch, capsys):
     """`--final` 은 활성 사이클 중에도 FULL 을 그대로 돈다 (수렴 후·pre-push 경로·DoD)."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     out = capsys.readouterr().out
     assert "강등" not in out
     assert "-k" not in fake.calls[0]["args"][0]
@@ -1643,9 +1632,9 @@ def test_closed_cycle_runs_full_without_the_flag(board, monkeypatch, capsys):
     """마지막 라운드가 통과면 사이클은 닫힌 것 — `--final` 없이도 FULL 이다."""
     _write_rounds_ledger(board, {"T-0001": [(1, 1), (2, 0)]})
     _ticket_statuses(board, monkeypatch, {"T-0001": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert "강등" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
@@ -1656,9 +1645,9 @@ def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
     게이트 이름은 자유 문자열이 실사용이라(`wave4-b1`) 티켓이 아닌 게이트가 정상적으로 있다."""
     _write_rounds_ledger(board, {"wave4-b1": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"wave4-b1": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: [])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: [])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert "강등" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
@@ -1672,7 +1661,7 @@ def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
 def _seed_ticket_file(board, tid: str, *, status: str, slug: str,
                       touches: str = "src/pay.py") -> Path:
     """tmp 보드에 실 티켓 파일을 심는다 (조회는 실 `find_ticket` glob 을 탄다)."""
-    path = board.tickets_dir() / status / f"{tid}-{slug}.md"
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-{slug}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     declared = f"touches:\n- {touches}" if touches else "touches: []"
     path.write_text(
@@ -1688,9 +1677,9 @@ def test_prefixed_ticket_does_not_answer_for_a_legacy_gate_id(board):
     # glob 은 실제로 오인 매칭한다(차단이 어디서 서는지 못박는다).
     assert board.find_ticket("T-0036")[1].name.startswith("T-0036-001")
 
-    assert board._gate_ticket("T-0036") is None
-    assert board._gate_ticket_is_claimed("T-0036") is False
-    assert board._ticket_touches("T-0036") == []     # 무관 touches 로 좁히지 않는다
+    assert regression._gate_ticket(board._home(), "T-0036") is None
+    assert regression._gate_ticket_is_claimed(board._home(), "T-0036") is False
+    assert regression._ticket_touches(board._home(), "T-0036") == []     # 무관 touches 로 좁히지 않는다
 
 
 def test_glob_mismatched_gate_never_downgrades_a_full_run(board, monkeypatch, capsys):
@@ -1700,8 +1689,8 @@ def test_glob_mismatched_gate_never_downgrades_a_full_run(board, monkeypatch, ca
     _write_rounds_ledger(board, {"T-0036": [(1, 1)]})
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
-    assert board._active_review_gates() == []
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert regression._active_review_gates(board._home()) == []
     assert "강등" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
@@ -1714,7 +1703,7 @@ def test_exact_ticket_gate_still_downgrades(board, monkeypatch, capsys):
     _write_rounds_ledger(board, {"T-0036": [(1, 1)]})
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     out = capsys.readouterr().out
     assert "활성 리뷰 사이클 [T-0036]" in out and "강등" in out
     assert '-k "pay"' in fake.calls[0]["args"][0]     # 본래 티켓의 touches 로 좁힌다
@@ -1724,18 +1713,18 @@ def test_free_form_gate_label_skips_the_ticket_lookup(board, monkeypatch):
     """티켓 ID 문법이 아닌 라벨(`wave4-b1`·glob 메타)은 조회 자체를 생략한다."""
     calls: list[str] = []
 
-    def _find(tid, **_kwargs):
+    def _find(_home, tid, **_kwargs):
         calls.append(tid)
         return None
 
-    monkeypatch.setattr(board, "find_ticket_exact", _find)
+    monkeypatch.setattr(ticket_store, "find_ticket_exact", _find)
     for label in ("wave4-b1", "T-*", "T-0036-001-fix", "리뷰", ""):
-        assert board._gate_ticket(label) is None
-        assert board._gate_ticket_is_claimed(label) is False
+        assert regression._gate_ticket(board._home(), label) is None
+        assert regression._gate_ticket_is_claimed(board._home(), label) is False
     assert calls == [], f"비-ID 라벨이 보드 조회를 탔다: {calls}"
 
     # canonical ID 는 종전대로 조회한다 (생략 규칙이 정상 게이트를 삼키지 않는다).
-    assert board._gate_ticket("T-0036-001") is None
+    assert regression._gate_ticket(board._home(), "T-0036-001") is None
     assert calls == ["T-0036-001"]
 
 
@@ -1745,7 +1734,7 @@ def test_ticket_id_gate_with_empty_touches_stays_full(board, monkeypatch, capsys
     _write_rounds_ledger(board, {"T-0037": [(1, 1)]})
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert "강등" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
@@ -1761,17 +1750,17 @@ def _two_active_gates(board, monkeypatch, resolver) -> None:
     """활성 게이트 둘(T-0002·T-0003)을 심고 touches 해소기를 주입한다."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)], "T-0003": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed", "T-0003": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", resolver)
+    monkeypatch.setattr(regression, "_ticket_touches", resolver)
 
 
 def test_one_gate_without_touches_cancels_the_whole_downgrade(
         board, monkeypatch, capsys):
     """게이트 하나가 빈 touches 면 다른 게이트의 touches 로 부분 강등하지 않는다 (DoD)."""
     _two_active_gates(board, monkeypatch,
-                      lambda tid: ["src/pay.py"] if tid == "T-0002" else [])
+                      lambda _home, tid: ["src/pay.py"] if tid == "T-0002" else [])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     out, err = capsys.readouterr()
     assert "강등합니다" not in out                       # 부분 강등 안내가 뜨지 않는다
     assert "T-0003" in err and "강등을 취소" in err       # 미해소 게이트를 지목한 사유 1줄
@@ -1781,7 +1770,7 @@ def test_one_gate_without_touches_cancels_the_whole_downgrade(
 
 def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, capsys):
     """touches 읽기 실패(손상 frontmatter)도 같은 취급 — 확정 못 한 게이트가 있으면 FULL."""
-    def _resolve(tid):
+    def _resolve(_home, tid):
         if tid == "T-0003":
             raise ValueError("frontmatter 손상")
         return ["src/pay.py"]
@@ -1789,7 +1778,7 @@ def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, cap
     _two_active_gates(board, monkeypatch, _resolve)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     out, err = capsys.readouterr()
     assert "강등합니다" not in out
     assert "T-0003" in err and "ValueError" in err      # 사유에 실패 형상을 남긴다
@@ -1801,15 +1790,15 @@ def test_all_gates_resolved_still_downgrade_to_the_union(board, monkeypatch, cap
     """정상 경로 무변경 — 활성 게이트 전부가 touches 를 확정하면 종전대로 합집합 강등이다."""
     _two_active_gates(
         board, monkeypatch,
-        lambda tid: ["src/pay.py"] if tid == "T-0002" else ["src/ledger.py"])
+        lambda _home, tid: ["src/pay.py"] if tid == "T-0002" else ["src/ledger.py"])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     out = capsys.readouterr().out
     assert "활성 리뷰 사이클 [T-0002, T-0003]" in out and "강등합니다" in out
     scoped = fake.calls[0]["args"][0]
     assert '-k "ledger or pay"' in scoped               # 두 게이트의 합집합
-    assert not board.REGRESSION_FLAG.exists()           # 강등 실행은 게이트 플래그를 안 쓴다
+    assert not pm_paths.regression_flag(board._home()).exists()           # 강등 실행은 게이트 플래그를 안 쓴다
 
 
 # ── 티켓 조회 공용 seam (T-0603 ④) ──────────────────────────────────────────
@@ -1824,12 +1813,12 @@ def test_find_ticket_exact_answers_only_for_the_canonical_id(board):
     _seed_ticket_file(board, "T-0036-001", status="open", slug="다른-티켓",
                       touches="src/unrelated.py")
 
-    legacy = board.find_ticket_exact("T-0036")
-    prefixed = board.find_ticket_exact("T-0036-001")
+    legacy = ticket_store.find_ticket_exact(board._home(), "T-0036")
+    prefixed = ticket_store.find_ticket_exact(board._home(), "T-0036-001")
     assert legacy is not None and legacy[0] == "claimed"
     assert legacy[1].name.startswith("T-0036-본래")
     assert prefixed is not None and prefixed[0] == "open"
-    assert board.find_ticket_exact("T-0036-002") is None      # 없는 ID 는 None
+    assert ticket_store.find_ticket_exact(board._home(), "T-0036-002") is None      # 없는 ID 는 None
 
 
 def test_find_ticket_prefers_the_exact_match_over_the_first_glob_hit(board):
@@ -1843,13 +1832,13 @@ def test_find_ticket_prefers_the_exact_match_over_the_first_glob_hit(board):
 
 def test_find_ticket_still_falls_back_when_no_exact_candidate_exists(board):
     """정확 일치 후보가 없으면 종전 glob 첫 매칭 그대로 — legacy 티켓 조회가 회귀하지 않는다."""
-    path = board.tickets_dir() / "open" / "T-0038-fix-123.md"
+    path = pm_paths.tickets_dir(board._home()) / "open" / "T-0038-fix-123.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     # frontmatter `id:` 부재 + 숫자로 끝나는 slug — 파일명 파서가 `T-0038-fix-123` 으로 읽어
     # canonical 이 `T-0038` 과 어긋나는 legacy 형상(`_canonical_ticket_id` 주석의 그 모호성).
     path.write_text("---\ntitle: 픽스처\nstatus: open\n---\n\n# 본문\n", encoding="utf-8")
 
-    assert board.find_ticket_exact("T-0038") is None
+    assert ticket_store.find_ticket_exact(board._home(), "T-0038") is None
     assert board.find_ticket("T-0038")[1] == path
 
 
@@ -1857,9 +1846,9 @@ def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, cap
     """명시 스코프(`--ticket`/`--touches`)는 종전 그대로다 (강등 판정 자체를 타지 않는다)."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/other.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/other.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args(touches="src/pay.py")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(touches="src/pay.py")) == 0
     out = capsys.readouterr().out
     assert "강등" not in out and "regression(scoped, 1 touches)" in out
 
@@ -1869,12 +1858,12 @@ def test_pre_push_hook_runs_the_final_full_gate(board, monkeypatch):
     # 설치는 자기 `.git` 아래로 해소될 때만 선다(T-0899) — 훅 폴더는 엔진이 만든다.
     (board.REPO / ".git").mkdir(parents=True, exist_ok=True)
     hooks = board.REPO / ".git" / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
-    assert board.install_pre_push_hook() is True
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
     text = (hooks / "pre-push").read_text(encoding="utf-8")
     assert "regression run --final" in text
-    assert text == board.pre_push_hook_body()      # 설치 본문 = drift 대조 본문(단일 진실)
+    assert text == pre_push_hook.pre_push_hook_body()      # 설치 본문 = drift 대조 본문(단일 진실)
 
 
 # ── 구형 서명 훅 = 차단 (fail-closed) ───────────────────────────────────────
@@ -1895,7 +1884,7 @@ def _legacy_hook(py: str = "python3") -> str:
 def board_legacy_body(py: str) -> str:
     """구세대 본문은 엔진 registry 가 소유한다 — 테스트가 사본을 두면 registry 가 죽어도 green."""
     mod = _load_board()
-    return mod._legacy_pre_push_hook_bodies(py)[0]
+    return pre_push_hook._legacy_pre_push_hook_bodies(py)[0]
 
 
 def _hooked_repo(board, monkeypatch, tmp_path, body: str | None):
@@ -1905,7 +1894,7 @@ def _hooked_repo(board, monkeypatch, tmp_path, body: str | None):
     "git 호출 없이 해소한다"는 이 판정의 성질이 검증되지 않는다."""
     hooks = board.REPO / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     hook = hooks / "pre-push"
     if body is not None:
         hook.write_text(body, encoding="utf-8")
@@ -1921,11 +1910,11 @@ def test_regression_run_refuses_a_legacy_hook(board, monkeypatch, tmp_path, caps
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
 
     assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 고치지 않는다
     assert fake.calls == []                                     # 회귀 미실행
-    assert not board.REGRESSION_FLAG.exists()                   # 기록 없음
+    assert not pm_paths.regression_flag(board._home()).exists()                   # 기록 없음
     err = capsys.readouterr().err
     assert "구버전" in err and "board.py init" in err and "py -3" in err
 
@@ -1935,7 +1924,7 @@ def test_regression_check_refuses_a_legacy_hook_too(board, monkeypatch, tmp_path
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
     _write_flag(board, status="pass", rc=0)                     # green 기록이 있어도 막힌다
 
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
     assert hook.read_text(encoding="utf-8") == _legacy_hook()
     assert "board.py init" in capsys.readouterr().err
@@ -1948,16 +1937,16 @@ def test_the_check_then_run_sequence_stays_blocked(board, monkeypatch, tmp_path,
     push 허가로 읽는다. 차단은 두 단계에 같은 결론을 주므로 그 창 자체가 없다."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1   # 훅 1단계
-    assert board.cmd_regression(_run_args()) == 1                          # 훅 2단계
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1   # 훅 1단계
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1                          # 훅 2단계
 
     assert hook.read_text(encoding="utf-8") == _legacy_hook()
     assert fake.calls == []
-    assert not board.REGRESSION_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
     err = capsys.readouterr().err
     assert err.count("board.py init") == 2      # 두 단계 모두 같은 처방을 말한다
 
@@ -1972,7 +1961,7 @@ def test_an_unknown_pm_hook_body_is_refused_too(board, monkeypatch, tmp_path, ca
     hook = _hooked_repo(board, monkeypatch, tmp_path, custom)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
 
     assert hook.read_text(encoding="utf-8") == custom           # 미접촉
     assert fake.calls == []
@@ -1984,14 +1973,14 @@ def test_a_current_generation_hook_passes_untouched(board, monkeypatch, tmp_path
     """현행 세대(`board.py init` 이 방금 설치한 본문)는 무소음 통과다 — 설치↔판정이 닫힌다."""
     hooks = board.REPO / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
-    assert board.install_pre_push_hook() is True
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
     hook = hooks / "pre-push"
     inode = hook.stat().st_ino
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
 
     assert hook.stat().st_ino == inode                          # 다시 쓰지 않는다
     assert _flag(board)["scope"] == "full"
@@ -2002,11 +1991,11 @@ def test_a_current_generation_hook_passes_untouched(board, monkeypatch, tmp_path
 def test_a_current_hook_with_the_adopters_launcher_passes(board, monkeypatch, tmp_path):
     """채택자의 런처 선택(`py -3.12`)이 세대 판정을 뒤집지 않는다 — 설치된 인터프리터로 대조."""
     hook = _hooked_repo(board, monkeypatch, tmp_path, None)
-    hook.write_text(board.pre_push_hook_body("py -3.12"), encoding="utf-8")
+    hook.write_text(pre_push_hook.pre_push_hook_body("py -3.12"), encoding="utf-8")
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
-    assert board._stale_pre_push_hook_refusal() is None
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert pre_push_hook._stale_pre_push_hook_refusal(board._home()) is None
 
 
 def test_a_foreign_hook_is_not_our_business(board, monkeypatch, tmp_path, capsys):
@@ -2015,7 +2004,7 @@ def test_a_foreign_hook_is_not_our_business(board, monkeypatch, tmp_path, capsys
     hook = _hooked_repo(board, monkeypatch, tmp_path, foreign)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
 
     assert hook.read_text(encoding="utf-8") == foreign
     assert capsys.readouterr().err == ""
@@ -2026,7 +2015,7 @@ def test_a_missing_hook_is_not_our_business(board, monkeypatch, tmp_path):
     hook = _hooked_repo(board, monkeypatch, tmp_path, None)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert not hook.exists()
 
 
@@ -2047,7 +2036,7 @@ def test_an_unreadable_hook_is_refused(board, monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(board.fs, "read_text_shared", _boom)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
 
     assert fake.calls == []
     err = capsys.readouterr().err
@@ -2059,18 +2048,18 @@ def test_the_refusal_resolves_a_present_hook_without_calling_git(board, monkeypa
 
     `_hooks_dir`(git `rev-parse`)를 호출하면 실패하도록 두고, 그래도 판정이 성립함을 단언한다.
     (훅을 못 찾은 형상에서만 git 권위 해소를 묻는다 — 아래 hooksPath 절.)"""
-    monkeypatch.setattr(board, "_hooks_dir",
-                        lambda: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir",
+                        lambda _home: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
     _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
-    assert board._stale_pre_push_hook_refusal() is not None
+    assert pre_push_hook._stale_pre_push_hook_refusal(board._home()) is not None
 
 
 def test_non_git_trees_are_left_alone(board, monkeypatch):
     """`.git` 없는 트리는 해소 자체가 None — 판정 밖(비-훅 형상을 차단하지 않는다)."""
-    monkeypatch.setattr(board, "_hooks_dir",
-                        lambda: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
-    assert board._pure_hooks_dir() is None
-    assert board._stale_pre_push_hook_refusal() is None
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir",
+                        lambda _home: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
+    assert pre_push_hook._pure_hooks_dir(board._home()) is None
+    assert pre_push_hook._stale_pre_push_hook_refusal(board._home()) is None
 
 
 def test_failed_replace_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
@@ -2087,7 +2076,7 @@ def test_failed_replace_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
     )
 
     with pytest.raises(OSError):
-        board._write_hook_atomic(hook, board.pre_push_hook_body("python3"))
+        pre_push_hook._write_hook_atomic(hook, pre_push_hook.pre_push_hook_body("python3"))
 
     assert not list(hook.parent.glob("pre-push.*.tmp"))
     assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 원본 미변경
@@ -2109,7 +2098,7 @@ def test_failed_chmod_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "chmod", _boom)
 
     with pytest.raises(OSError):
-        board._write_hook_atomic(hook, board.pre_push_hook_body("python3"))
+        pre_push_hook._write_hook_atomic(hook, pre_push_hook.pre_push_hook_body("python3"))
 
     assert not list(hook.parent.glob("pre-push.*.tmp"))
     assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 원본 미변경
@@ -2123,7 +2112,7 @@ def test_pure_hooks_dir_follows_a_linked_worktree_to_the_shared_hooks(board, tmp
     wt_git.mkdir(parents=True)
     (wt_git / "commondir").write_text("../..\n", encoding="utf-8")
     (board.REPO / ".git").write_text(f"gitdir: {wt_git}\n", encoding="utf-8")
-    assert board._pure_hooks_dir() == (main_git / "hooks").resolve()
+    assert pre_push_hook._pure_hooks_dir(board._home()) == (main_git / "hooks").resolve()
 
 
 # ── `core.hooksPath` 값 파싱 ────────────────────────────────────────────────
@@ -2141,7 +2130,7 @@ def _write_git_config(board, text: str) -> None:
 def test_pure_hooks_dir_parses_a_relative_hooks_path(board):
     """상대 `core.hooksPath` 는 worktree 루트(REPO) 기준으로 해소한다 (프로세스 cwd 아님)."""
     _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
-    assert board._pure_hooks_dir() == (board.REPO / ".githooks").resolve()
+    assert pre_push_hook._pure_hooks_dir(board._home()) == (board.REPO / ".githooks").resolve()
 
 
 def test_pure_hooks_dir_parses_an_absolute_hooks_path(board, tmp_path):
@@ -2149,7 +2138,7 @@ def test_pure_hooks_dir_parses_an_absolute_hooks_path(board, tmp_path):
     elsewhere = tmp_path / "repo-hooks" / "proj"
     elsewhere.mkdir(parents=True)
     _write_git_config(board, f"[core]\n\thooksPath = {elsewhere}\n")
-    assert board._pure_hooks_dir() == elsewhere.resolve()
+    assert pre_push_hook._pure_hooks_dir(board._home()) == elsewhere.resolve()
 
 
 @pytest.mark.parametrize("text", [
@@ -2164,7 +2153,7 @@ def test_pure_hooks_dir_parses_an_absolute_hooks_path(board, tmp_path):
 def test_hooks_path_key_is_case_insensitive_and_last_wins(board, text):
     """git config 키/섹션은 대소문자 무관이고 마지막 선언이 이긴다."""
     _write_git_config(board, text)
-    assert board._pure_hooks_dir() == (board.REPO / ".githooks").resolve()
+    assert pre_push_hook._pure_hooks_dir(board._home()) == (board.REPO / ".githooks").resolve()
 
 
 @pytest.mark.parametrize("text", [
@@ -2175,7 +2164,7 @@ def test_hooks_path_key_is_case_insensitive_and_last_wins(board, text):
 def test_absent_hooks_path_keeps_the_default_location(board, text):
     """`core.hooksPath` 선언이 없으면 기본 `.git/hooks` — 오탐 0."""
     _write_git_config(board, text)
-    assert board._pure_hooks_dir() == (board.REPO / ".git" / "hooks").resolve()
+    assert pre_push_hook._pure_hooks_dir(board._home()) == (board.REPO / ".git" / "hooks").resolve()
 
 
 @pytest.mark.parametrize("text", [
@@ -2188,16 +2177,16 @@ def test_unresolvable_config_leaves_the_gate_alone(board, text):
 
     여기서 막으면 **훅을 안 쓰는 형상까지** 회귀가 멈춘다(차단 사유는 '구형 훅이 실재한다'뿐)."""
     _write_git_config(board, text)
-    assert board._pure_hooks_dir() is None
-    assert board._stale_pre_push_hook_refusal() is None
+    assert pre_push_hook._pure_hooks_dir(board._home()) is None
+    assert pre_push_hook._stale_pre_push_hook_refusal(board._home()) is None
 
 
 def test_a_hooks_path_at_the_default_location_is_covered(board, monkeypatch, tmp_path):
     """기본 위치를 가리키는 선언도 판정이 커버한다 — 선언 형태가 세대 관리를 끊지 않는다."""
     _write_git_config(board, "[core]\n\thooksPath = .git/hooks\n")
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
-    assert board._pure_hooks_dir() == (board.REPO / ".git" / "hooks").resolve()
-    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+    assert pre_push_hook._pure_hooks_dir(board._home()) == (board.REPO / ".git" / "hooks").resolve()
+    assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(board._home()) or "")
     assert hook.read_text(encoding="utf-8") == _legacy_hook()
 
 
@@ -2206,12 +2195,12 @@ def test_a_hook_under_a_custom_hooks_path_is_covered(board, monkeypatch, tmp_pat
     custom = board.REPO / ".githooks"
     custom.mkdir(parents=True)
     _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     hook = custom / "pre-push"
     hook.write_text(_legacy_hook(), encoding="utf-8")
     hook.chmod(0o755)
 
-    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+    assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(board._home()) or "")
     assert hook.read_text(encoding="utf-8") == _legacy_hook()
 
 
@@ -2223,15 +2212,15 @@ def test_current_hook_still_downgrades_during_an_active_cycle(
     진입에서 막히므로, 여기 남는 강등은 항상 `--final` 을 싣는 현행 훅과 짝을 이룬다."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     hook = _hooked_repo(board, monkeypatch, tmp_path, None)
-    hook.write_text(board.pre_push_hook_body("python3"), encoding="utf-8")
+    hook.write_text(pre_push_hook.pre_push_hook_body("python3"), encoding="utf-8")
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
 
     assert "targeted 로 강등합니다" in capsys.readouterr().out
-    assert not board.REGRESSION_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
 
 
 # ── repo config 밖 `core.hooksPath` = git 권위 해소 (T-0605 ②) ────────────────
@@ -2252,7 +2241,7 @@ def _real_git_repo(board, monkeypatch, tmp_path) -> Path:
                    encoding="utf-8", errors="replace")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global.gitconfig"))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "system.gitconfig"))
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     return board.REPO
 
 
@@ -2284,11 +2273,11 @@ def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
     hook.chmod(0o755)
 
     # 재현 축 — 순수 해소만 보면 이 훅은 보이지 않는다(우회가 성립하던 자리).
-    assert board._pure_hooks_dir() == (board.REPO / ".git" / "hooks").resolve()
+    assert pre_push_hook._pure_hooks_dir(board._home()) == (board.REPO / ".git" / "hooks").resolve()
     assert not (board.REPO / ".git" / "hooks" / "pre-push").exists()
     # 차단 축 — git 권위 해소가 실제 실행되는 훅을 찾아 세대를 판정한다.
-    assert board._authoritative_hooks_resolution()[0] == hooks.resolve()
-    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+    assert pre_push_hook._authoritative_hooks_resolution(board._home())[0] == hooks.resolve()
+    assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(board._home()) or "")
     assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 고치지 않는다
 
 
@@ -2305,14 +2294,14 @@ def test_a_current_hook_under_a_global_hooks_path_passes(board, monkeypatch, tmp
     hooks.mkdir()
     _declare_global_hooks_path(tmp_path, hooks)
     hook = hooks / "pre-push"
-    hook.write_text(board.pre_push_hook_body("python3"), encoding="utf-8")
+    hook.write_text(pre_push_hook.pre_push_hook_body("python3"), encoding="utf-8")
 
     # 판정이 돌았음의 근거 — 해소가 실패하면 아래 통과는 아무 것도 뜻하지 않는다.
-    assert board._authoritative_hooks_resolution()[0] == hooks.resolve()
-    assert board._stale_pre_push_hook_refusal() is None
+    assert pre_push_hook._authoritative_hooks_resolution(board._home())[0] == hooks.resolve()
+    assert pre_push_hook._stale_pre_push_hook_refusal(board._home()) is None
     # 같은 자리의 구세대 본문은 차단된다 — 통과가 '판정 부재'가 아니라 '현행 판정'임을 가른다.
     hook.write_text(_legacy_hook(), encoding="utf-8")
-    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+    assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(board._home()) or "")
 
 
 @requires_git
@@ -2329,13 +2318,13 @@ def test_an_unanswerable_git_hooks_query_is_loud_instead_of_silent(
         "[core]\n\thooksPath = C:\\Users\\pm\\company-hooks\n", encoding="utf-8")
 
     # 재현 축 — git 이 답을 못 한다(rc≠0). 사유는 침묵 대신 값으로 나온다.
-    hooks_dir, reason = board._hooks_dir_resolution()
+    hooks_dir, reason = pre_push_hook._hooks_dir_resolution(board._home())
     assert hooks_dir is None
     assert reason and "rc=" in reason
-    assert board._authoritative_hooks_resolution()[0] is None
+    assert pre_push_hook._authoritative_hooks_resolution(board._home())[0] is None
 
     # 관측성 축 — 판정 생략이 사유와 함께 stderr 에 남는다(판정 부재를 통과로 읽지 않게).
-    assert board._stale_pre_push_hook_refusal() is None
+    assert pre_push_hook._stale_pre_push_hook_refusal(board._home()) is None
     err = capsys.readouterr().err
     assert "훅 디렉토리를 해소하지 못해" in err
     assert "rc=" in err
@@ -2350,9 +2339,9 @@ def test_an_uncallable_git_stays_silent_and_keeps_the_pure_verdict(board, monkey
         raise FileNotFoundError("git 없음")
 
     monkeypatch.setattr(board.subprocess, "run", _no_git)
-    assert board._hooks_dir_resolution() == (None, None)
-    assert board._hooks_dir() is None
-    assert board._authoritative_hooks_resolution()[0] is None
+    assert pre_push_hook._hooks_dir_resolution(board._home()) == (None, None)
+    assert pre_push_hook._hooks_dir(board._home()) is None
+    assert pre_push_hook._authoritative_hooks_resolution(board._home())[0] is None
     assert capsys.readouterr().err == ""
 
 
@@ -2361,26 +2350,26 @@ def test_a_failed_git_resolution_keeps_the_pure_verdict(board, monkeypatch, tmp_
 
     스텁 대상은 **git 을 부르는 그 지점**(`_hooks_dir_resolution`)이다 — 얇은 wrapper 만 막으면
     실제 호출 경로가 스텁을 지나쳐 이 테스트가 아무 것도 주입하지 못한다."""
-    monkeypatch.setattr(board, "_hooks_dir_resolution",
-                        lambda: (_ for _ in ()).throw(OSError("git 없음")))
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir_resolution",
+                        lambda _home: (_ for _ in ()).throw(OSError("git 없음")))
     _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
     custom = board.REPO / ".githooks"
     custom.mkdir(parents=True)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     (custom / "pre-push").write_text(_legacy_hook(), encoding="utf-8")
 
-    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+    assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(board._home()) or "")
 
 
 def test_a_tree_without_git_never_asks_git(board, monkeypatch):
     """`.git` 없는 트리는 권위 해소도 묻지 않는다 — 판정 대상 밖(조상 repo 를 끌어오지 않는다)."""
-    def _forbidden():
+    def _forbidden(_home):
         raise AssertionError("git 조회 금지")
 
-    monkeypatch.setattr(board, "_hooks_dir", _forbidden)
-    monkeypatch.setattr(board, "_hooks_dir_resolution", _forbidden)   # 실 git 호출 지점
-    assert board._repo_git_dir() is None
-    assert board._stale_pre_push_hook_refusal() is None
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", _forbidden)
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir_resolution", _forbidden)   # 실 git 호출 지점
+    assert pre_push_hook._repo_git_dir(board._home()) is None
+    assert pre_push_hook._stale_pre_push_hook_refusal(board._home()) is None
 
 
 # ── touches 정규화 = 리스트[str] 강제 (T-0605 ③) ─────────────────────────────
@@ -2400,7 +2389,7 @@ def test_a_tree_without_git_never_asks_git(board, monkeypatch):
 ])
 def test_touches_normalization_forces_a_list_of_strings(board, raw, expected):
     """정규화는 리스트[str] 만 인정하고 그 밖은 None(=확정 실패) 이다."""
-    assert board._normalized_touches(raw) == expected
+    assert ticket_rules._normalized_touches(raw) == expected
 
 
 def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
@@ -2408,10 +2397,10 @@ def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
     """스칼라 touches 는 문자 스코프가 아니라 **강등 취소 = FULL** 이다 (재현 → 차단·DoD)."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: None)
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: None)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
 
     out, err = capsys.readouterr()
     assert "강등을 취소" in err and "T-0002" in err
@@ -2423,10 +2412,10 @@ def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
 
 def test_ticket_scope_with_an_unresolvable_touches_stays_full(board, monkeypatch, capsys):
     """`--ticket` 스코프도 확정 실패면 FULL 이다 — 확정 못 한 선언으로 좁히지 않는다."""
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: None)
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: None)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(ticket="T-0002", final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(ticket="T-0002", final=True)) == 0
 
     assert '-k "' not in fake.calls[0]["args"][0]
     assert _flag(board)["scope"] == "full"
@@ -2434,10 +2423,10 @@ def test_ticket_scope_with_an_unresolvable_touches_stays_full(board, monkeypatch
 
 def test_declared_touches_still_scope_the_run(board, monkeypatch, capsys):
     """정상 경로 무변경 — 리스트[str] 선언은 종전대로 targeted 스코프를 만든다."""
-    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(ticket="T-0002")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(ticket="T-0002")) == 0
 
     assert '-k "pay"' in fake.calls[0]["args"][0]
 
@@ -2451,7 +2440,7 @@ def _ledger_with_legacy_round(board, gate: str, rounds: list[dict]) -> None:
     """`sequence` 유무가 섞인 산출을 그대로 심는다 (구기록 정렬 재현용)."""
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     payload = {gate: {"rounds": rounds}, "wave": {"id": "gen", "started": None, "spent": 0}}
-    board._review_rounds_ledger().write_text(json.dumps(payload), encoding="utf-8")
+    review_rounds._review_rounds_ledger(board._home()).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_a_sequenceless_old_rejection_is_not_the_latest_round(board, monkeypatch):
@@ -2462,9 +2451,9 @@ def test_a_sequenceless_old_rejection_is_not_the_latest_round(board, monkeypatch
     ])
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
-    assert board._last_round_verdict({"rounds": [
+    assert review_rounds._last_round_verdict({"rounds": [
         {"verdict": 1}, {"sequence": 1, "verdict": 0}]}) == 0
-    assert board._active_review_gates() == []          # 옛 반려가 영구 활성으로 남지 않는다
+    assert regression._active_review_gates(board._home()) == []          # 옛 반려가 영구 활성으로 남지 않는다
 
 
 def test_a_sequenceless_round_is_still_the_latest_when_alone(board, monkeypatch):
@@ -2472,13 +2461,13 @@ def test_a_sequenceless_round_is_still_the_latest_when_alone(board, monkeypatch)
     _ledger_with_legacy_round(board, "T-0002", [{"verdict": 1, "must_fix": 2}])
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
-    assert board._active_review_gates() == ["T-0002"]
+    assert regression._active_review_gates(board._home()) == ["T-0002"]
 
 
 def test_round_order_key_puts_sequenced_rounds_after_legacy_ones(board):
     """공용 정렬 seam — 순번 없는 기록이 앞, 순번 있는 기록이 순번 순으로 뒤."""
     rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
-    ordered = sorted(rounds, key=board.round_outcome_order_key)
+    ordered = sorted(rounds, key=review_rounds.round_outcome_order_key)
     assert ordered == [{"verdict": 1}, {"sequence": 1}, {"sequence": 2}]
 
 
@@ -2487,14 +2476,14 @@ def test_scalar_touches_in_a_real_ticket_never_becomes_a_character_scope(
     """실 frontmatter 재현 — 스칼라 선언이 문자 스코프(`-k "s or r or c …"`)로 서지 않는다.
 
     이 경로가 오염되면 그 실행은 무관 테스트만 돌고 rc0 을 남긴다('가짜 green')."""
-    tickets = board.tickets_dir() / "claimed"
+    tickets = pm_paths.tickets_dir(board._home()) / "claimed"
     tickets.mkdir(parents=True, exist_ok=True)
     (tickets / "T-0054-x.md").write_text(
         "---\nid: T-0054\ntouches: src/pay.py\n---\n\n# 본문\n", encoding="utf-8")
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board._ticket_touches("T-0054") is None
-    assert board.cmd_regression(_run_args(ticket="T-0054", final=True)) == 0
+    assert regression._ticket_touches(board._home(), "T-0054") is None
+    assert regression_cmd.cmd_regression(board._home(), _run_args(ticket="T-0054", final=True)) == 0
 
     assert '-k "' not in fake.calls[0]["args"][0]
     assert _flag(board)["scope"] == "full"
@@ -2565,8 +2554,8 @@ def _pushable_repo(board, monkeypatch, tmp_path, env: dict, *, with_tests: bool)
     assert _git_e2e(["remote", "add", "origin", str(bare)], repo, env).returncode == 0
     # 설치는 엔진 경로 그대로 — 테스트가 본문을 손으로 쓰면 설치기와 본문 사이의 drift 를 못 본다.
     monkeypatch.setattr(board, "REPO", repo)
-    monkeypatch.setattr(board, "_detect_py", lambda: "sh")
-    assert board.install_pre_push_hook() is True
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "sh")
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
     return repo
 
 
@@ -2652,9 +2641,9 @@ def test_the_lint_gate_still_blocks_a_push_from_a_tree_without_tests(
 
 def test_the_current_body_masks_the_regression_gate_and_stamps_a_new_rev(board):
     """현행 본문 = `[ -d tests ]` 가림 + 항상 도는 lint + 새 세대 스탬프(설치 훅의 자기 신고)."""
-    body = board.pre_push_hook_body("python3")
-    assert f"{board._PM_HOOK_REV_PREFIX}{board.PM_HOOK_REV}" in body
-    assert board.PM_HOOK_REV == 3                      # 본문이 바뀌면 세대도 바뀐다
+    body = pre_push_hook.pre_push_hook_body("python3")
+    assert f"{pre_push_hook._PM_HOOK_REV_PREFIX}{pre_push_hook.PM_HOOK_REV}" in body
+    assert pre_push_hook.PM_HOOK_REV == 3                      # 본문이 바뀌면 세대도 바뀐다
     assert "if [ -d tests ]; then" in body
     # 회귀 두 줄은 가림 블록 **안**, lint 줄은 블록 **밖**(항상).
     masked = body.split("if [ -d tests ]; then", 1)[1].split("\nfi\n", 1)
@@ -2664,12 +2653,12 @@ def test_the_current_body_masks_the_regression_gate_and_stamps_a_new_rev(board):
 
 def test_the_previous_generation_is_registered_as_legacy(board):
     """직전 세대(rev 2 · 트리를 안 보고 항상 회귀)가 registry 에 등재됐다 — 정확일치 2 세대."""
-    legacy = board._legacy_pre_push_hook_bodies("python3")
+    legacy = pre_push_hook._legacy_pre_push_hook_bodies("python3")
     assert len(legacy) == 2
-    rev2 = next(b for b in legacy if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    rev2 = next(b for b in legacy if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     assert "if [ -d tests ]" not in rev2                # 가림 없이 항상 회귀를 요구하던 본문
     assert "regression run --final" in rev2
-    assert all(b != board.pre_push_hook_body("python3") for b in legacy)
+    assert all(b != pre_push_hook.pre_push_hook_body("python3") for b in legacy)
 
 
 def test_the_installed_launcher_survives_the_indented_gate_line(board):
@@ -2677,10 +2666,10 @@ def test_the_installed_launcher_survives_the_indented_gate_line(board):
 
     되읽기가 깨지면 `py -3.12` 채택자의 현행 훅이 `python3` 본문과 대조돼 상시 구세대로 오판된다.
     """
-    body = board.pre_push_hook_body("py -3.12")
-    assert board._installed_hook_interpreter(body) == "py -3.12"
+    body = pre_push_hook.pre_push_hook_body("py -3.12")
+    assert pre_push_hook._installed_hook_interpreter(body) == "py -3.12"
     # 되읽은 인터프리터로 조립한 본문이 그 훅과 정확히 같아야 세대 판정이 통과한다.
-    assert board.pre_push_hook_body(board._installed_hook_interpreter(body)) == body
+    assert pre_push_hook.pre_push_hook_body(pre_push_hook._installed_hook_interpreter(body)) == body
 
 
 def test_a_previous_generation_hook_is_refused_with_the_init_prescription(
@@ -2689,16 +2678,16 @@ def test_a_previous_generation_hook_is_refused_with_the_init_prescription(
 
     이것이 이미 배포된 훅의 유일한 교체 경로다(엔진은 남의 훅도, 옛 훅도 손대지 않는다).
     """
-    rev2 = next(b for b in board._legacy_pre_push_hook_bodies("python3")
-                if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    rev2 = next(b for b in pre_push_hook._legacy_pre_push_hook_bodies("python3")
+                if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     hook = _hooked_repo(board, monkeypatch, tmp_path, rev2)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
 
     assert hook.read_text(encoding="utf-8") == rev2      # 고치지 않는다
     assert fake.calls == []                              # 회귀 미실행
-    assert not board.REGRESSION_FLAG.exists()            # 기록 없음
+    assert not pm_paths.regression_flag(board._home()).exists()            # 기록 없음
     err = capsys.readouterr().err
     assert "구버전" in err and "board.py init" in err
 
@@ -2712,16 +2701,16 @@ def test_the_regression_cwd_is_this_tree_even_with_a_leased_slot(board):
     """
     _write_ledger(board, "solo_1")
     # 슬롯 자체는 해소된다(장부·경로 조립은 살아 있다) — 회귀가 그리로 가지 않을 뿐이다.
-    assert board._active_slot_path("solo_1") == _slot_cwd(board, "solo_1")
-    assert board._regression_cwd() == str(board.REPO)
-    assert board._regression_cwd(None) == str(board.REPO)
+    assert regression._active_slot_path(board._home(), "solo_1") == _slot_cwd(board, "solo_1")
+    assert regression._regression_cwd(board._home()) == str(board.REPO)
+    assert regression._regression_cwd(board._home(), None) == str(board.REPO)
 
 
 def test_an_explicit_cwd_still_pins_the_regression_tree(board):
     """명시 `--cwd` 는 그대로다 — 다른 트리를 겨냥하는 유일한 채널(솔로/핀 실행 무변경)."""
     _write_ledger(board, "solo_1")
     pinned = str(board.REPO / "elsewhere")
-    assert board._regression_cwd(pinned) == pinned
+    assert regression._regression_cwd(board._home(), pinned) == pinned
 
 
 def test_two_leases_no_longer_refuse_the_regression_cwd(board):
@@ -2731,7 +2720,7 @@ def test_two_leases_no_longer_refuse_the_regression_cwd(board):
     (슬롯 순회는 `_regression_multi_run` 이 슬롯 경로를 자기 손으로 해소한다).
     """
     _write_ledger(board, "A_1", "B_1")
-    assert board._regression_cwd() == str(board.REPO)
+    assert regression._regression_cwd(board._home()) == str(board.REPO)
 
 
 # ── 스위트 없는 트리의 회귀 요청 = 실행 전 거부 (T-0733 R2 · F-009) ─────────
@@ -2745,10 +2734,10 @@ def test_a_run_is_refused_before_pytest_when_this_tree_has_no_suite(
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     _without_suite(board)
 
-    assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd="pytest tests/ -q", final=True)) == 1
 
     assert fake.calls == []                          # pytest 를 띄우지 않았다
-    assert not board.REGRESSION_FLAG.exists()        # 게이트 플래그도 쓰지 않았다
+    assert not pm_paths.regression_flag(board._home()).exists()        # 게이트 플래그도 쓰지 않았다
     err = capsys.readouterr().err
     assert "회귀 스위트가 없다" in err and "--cwd" in err and "--task" in err
 
@@ -2758,7 +2747,7 @@ def test_a_tree_with_a_suite_runs_as_before(board, monkeypatch):
     assert (board.REPO / "tests").is_dir()           # 픽스처 기본 = 코드 트리
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd="pytest tests/ -q", final=True)) == 0
 
     assert fake.calls and fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
     assert _flag(board)["scope"] == "full"
@@ -2770,8 +2759,9 @@ def test_an_explicit_cwd_is_respected_even_without_a_suite(board, monkeypatch, t
     pinned.mkdir()
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(
-        _run_args(cmd="pytest tests/ -q", cwd=str(pinned), final=True)) == 0
+    assert regression_cmd.cmd_regression(
+        board._home(), _run_args(cmd="pytest tests/ -q", cwd=str(pinned), final=True)
+    ) == 0
 
     assert fake.calls and fake.calls[0]["kwargs"]["cwd"] == str(pinned)
 
@@ -2782,7 +2772,7 @@ def test_a_test_cmd_that_names_its_own_paths_is_untouched(board, monkeypatch):
     (board.REPO / "src").mkdir(parents=True, exist_ok=True)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(cmd="pytest src -q", final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd="pytest src -q", final=True)) == 0
 
     assert fake.calls                                  # 그대로 실행(거부 없음)
 
@@ -2792,7 +2782,7 @@ def test_a_non_pytest_test_cmd_is_untouched(board, monkeypatch):
     _without_suite(board)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="ok\n"))
 
-    assert board.cmd_regression(_run_args(cmd="go test ./...", final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd="go test ./...", final=True)) == 0
 
     assert fake.calls
 
@@ -2800,11 +2790,11 @@ def test_a_non_pytest_test_cmd_is_untouched(board, monkeypatch):
 def test_the_rc5_note_says_the_tree_lacks_a_suite_not_a_session_mismatch(board, monkeypatch):
     """rc5 진단은 트리 사실을 말한다 — 세션/lease 처방은 회귀가 그걸 안 보므로 거짓이다."""
     _without_suite(board)
-    note = board._regression_rc5_note(5, str(board.REPO), None)
+    note = regression._regression_rc5_note(5, str(board.REPO), None)
     assert "`tests/` 가 없다" in note and "--cwd" in note
     assert "lease" not in note and "PM_SESSION_NAME" not in note
     # 명시 `--cwd` 는 트리 확정이라 힌트를 붙이지 않는다.
-    assert board._regression_rc5_note(5, str(board.REPO), "/pinned") == \
+    assert regression._regression_rc5_note(5, str(board.REPO), "/pinned") == \
         " · 수집 0 — 테스트 루트/cwd 확인"
 
 
@@ -2815,8 +2805,8 @@ def test_the_rc5_note_says_the_tree_lacks_a_suite_not_a_session_mismatch(board, 
 def test_a_previous_generation_hook_also_blocks_the_lint_gate(
         board, monkeypatch, tmp_path, capsys):
     """스위트 없는 트리에서도 구세대 훅은 `lint --gate` 가 같은 처방으로 막는다."""
-    rev2 = next(b for b in board._legacy_pre_push_hook_bodies("python3")
-                if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    rev2 = next(b for b in pre_push_hook._legacy_pre_push_hook_bodies("python3")
+                if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     hook = _hooked_repo(board, monkeypatch, tmp_path, rev2)
     _without_suite(board)                            # 회귀 게이트 비대상 트리
     # 이 tmp 보드는 init 을 안 돌린 등록 0 형상이라 areas 이관 안내(advisory)가 상시 붙는다 —
@@ -2836,7 +2826,7 @@ def test_a_previous_generation_hook_also_blocks_the_lint_gate(
 def test_the_lint_gate_stays_silent_under_a_current_hook(
         board, monkeypatch, tmp_path, capsys):
     """현행 세대 훅에서는 lint 게이트가 무소음 통과 — 부착이 과차단을 만들지 않는다."""
-    _hooked_repo(board, monkeypatch, tmp_path, board.pre_push_hook_body("python3"))
+    _hooked_repo(board, monkeypatch, tmp_path, pre_push_hook.pre_push_hook_body("python3"))
 
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
     assert "구버전" not in capsys.readouterr().err
@@ -2853,10 +2843,10 @@ def test_a_path_less_pytest_is_refused_in_a_tree_without_a_suite(
     _without_suite(board)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="1 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(cmd="pytest -q", final=True)) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd="pytest -q", final=True)) == 1
 
     assert fake.calls == []                        # 재귀 수집이 시작되지 않는다
-    assert not board.REGRESSION_FLAG.exists()      # FULL green 위장 기록도 없다
+    assert not pm_paths.regression_flag(board._home()).exists()      # FULL green 위장 기록도 없다
     err = capsys.readouterr().err
     assert "수집 경로 미지정" in err
 
@@ -2866,7 +2856,7 @@ def test_an_option_value_is_not_mistaken_for_a_collect_path(board, monkeypatch, 
     _without_suite(board)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="1 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(cmd="pytest -q -n 8 -k smoke", final=True)) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd="pytest -q -n 8 -k smoke", final=True)) == 1
 
     assert fake.calls == []
     assert "수집 경로 미지정" in capsys.readouterr().err
@@ -2875,7 +2865,7 @@ def test_an_option_value_is_not_mistaken_for_a_collect_path(board, monkeypatch, 
 def test_the_refusal_does_not_assert_what_kind_of_tree_this_is(board):
     """거부 문구는 트리 **정체**를 단정하지 않는다 — 판정한 것은 '스위트 부재' 하나뿐이다."""
     _without_suite(board)
-    refusal = board._suiteless_tree_refusal("pytest -q", str(board.REPO), None)
+    refusal = regression._suiteless_tree_refusal("pytest -q", str(board.REPO), None)
     assert refusal is not None
     assert "PM 홈" not in refusal                   # 정체 단정 금지(코드 트리 오설정도 같은 문구)
     assert "회귀 스위트가 없다" in refusal and str(board.REPO) in refusal
@@ -2887,7 +2877,7 @@ def test_a_refused_run_does_not_print_the_command_as_if_it_ran(
     _without_suite(board)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="1 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 1
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd="pytest tests/ -q", final=True)) == 1
 
     assert "regression: $" not in capsys.readouterr().out
 
@@ -2896,7 +2886,7 @@ def test_an_executed_run_still_prints_the_command(board, monkeypatch, capsys):
     """실행되는 경로의 안내는 그대로다 — 순서만 바뀌었지 관측성이 줄지 않았다."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
 
     assert "regression: $" in capsys.readouterr().out
 
@@ -2907,24 +2897,24 @@ def test_an_executed_run_still_prints_the_command(board, monkeypatch, capsys):
 
 def test_the_hook_notice_prefix_is_channel_neutral(board):
     """세 안내 문자열 모두 채널 중립 접두를 쓴다 — `regression:` 접두 0."""
-    notices = (board._STALE_HOOK_REFUSAL, board._UNREADABLE_HOOK_REFUSAL,
-               board._UNRESOLVED_HOOKS_NOTICE)
+    notices = (pre_push_hook._STALE_HOOK_REFUSAL, pre_push_hook._UNREADABLE_HOOK_REFUSAL,
+               pre_push_hook._UNRESOLVED_HOOKS_NOTICE)
     for notice in notices:
-        assert notice.startswith(board.PM_HOOK_NOTICE_PREFIX)
+        assert notice.startswith(pre_push_hook.PM_HOOK_NOTICE_PREFIX)
         assert not notice.startswith("regression:")
 
 
 def test_the_lint_gate_refusal_carries_the_neutral_prefix(
         board, monkeypatch, tmp_path, capsys):
     """`lint --gate` 로 나가는 차단 문구도 그 접두다(소비자가 채널 산출로 오독하지 않게)."""
-    rev2 = next(b for b in board._legacy_pre_push_hook_bodies("python3")
-                if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    rev2 = next(b for b in pre_push_hook._legacy_pre_push_hook_bodies("python3")
+                if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     _hooked_repo(board, monkeypatch, tmp_path, rev2)
 
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
 
     err = capsys.readouterr().err
-    assert err.startswith(board.PM_HOOK_NOTICE_PREFIX)
+    assert err.startswith(pre_push_hook.PM_HOOK_NOTICE_PREFIX)
     assert "regression:" not in err
 
 
@@ -2952,28 +2942,29 @@ def test_the_collection_floor_left_no_path_behind():
 
 def test_the_unverified_collection_label_stays_for_the_platform_contract(board, monkeypatch):
     """존치 라벨 — 선언 platform 의 "수집수는 정수" 계약은 하한과 다른 축이라 그대로 동작한다."""
-    assert board.REGRESSION_RC_UNVERIFIED_COLLECTION == "unverified-collection"
+    assert regression.REGRESSION_RC_UNVERIFIED_COLLECTION == "unverified-collection"
     _set_platforms(board, windows="run-windows")
-    monkeypatch.setattr(board, "_run_regression_cmd",
+    monkeypatch.setattr(regression, "_run_regression_cmd",
                         lambda cmd, cwd, env: (0, "[custom runner] ok\n", ""))
 
-    assert board._require_collected_count(0, "pass", None, require_collected=True)[:2] == ("fail", board.REGRESSION_RC_UNVERIFIED_COLLECTION)
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert regression._require_collected_count(0, "pass", None, require_collected=True)[:2] == ("fail", regression.REGRESSION_RC_UNVERIFIED_COLLECTION)
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     assert _flag(board)["collected"] is None
 
 
 def test_the_regression_record_has_exactly_one_writer():
     """회귀 기록을 쓰는 자리는 `_write_regression_flag` 하나이고 그 자리가 원자로 쓴다."""
-    source = (TOOLS / "board.py").read_text(encoding="utf-8")
-    body = source[source.index("def _write_regression_flag("):
-                  source.index("def _previous_collected(")]
+    source = "".join(path.read_text(encoding="utf-8") for path in engine_python_files(TOOLS))
+    store = (TOOLS / "pm_engine" / "infra" / "regression_store.py").read_text(encoding="utf-8")
+    body = store[store.index("def _write_regression_flag("):
+                 store.index("def _previous_collected(")]
 
-    assert "_write_json_atomic(flag, record)" in body
+    assert "fs.write_json_atomic(flag, record)" in body
     assert 'record["previous_collected"] = _previous_collected(flag)' in body
     # 다른 자리의 직접 쓰기 0 — 플래그 경로를 받는 raw/atomic 쓰기가 남으면 승계가 갈린다.
     assert "regression_flag.write_text" not in source
-    assert "_write_json_atomic(regression_flag" not in source
-    assert "_write_json_atomic(_regression_flag_for(" not in source
+    assert "write_json_atomic(regression_flag" not in source
+    assert "write_json_atomic(_regression_flag_for(" not in source
     assert source.count("_write_regression_flag(") == 1 + 4   # 정의 1 + 단일/슬롯의 시작 HEAD 실패 및 종료 기록 각 2자리
 
 
@@ -2983,7 +2974,7 @@ def test_the_delta_is_only_attached_where_the_record_is_read():
     부트스트랩·핸드오프는 기록을 읽지도 쓰지도 않고 자기 pytest 출력의 `passed+failed` 를 쓴다 —
     기록의 `collected`(skipped 포함)와 축이 달라 그대로 빼면 가짜 증감이 상시 뜬다.
     """
-    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    source = "".join(path.read_text(encoding="utf-8") for path in engine_python_files(TOOLS))
     call_sites = source.count("collection_delta_text(")
     assert call_sites == 1 + 3, f"증감 표시 자리가 3곳이 아니다(정의 1 + 호출 {call_sites - 1})"
     for name in ("pm_bootstrap.py", "pm_handoff.py"):
@@ -3036,7 +3027,7 @@ def test_t0929_selected_workspace_command_cwd_and_head(board, monkeypatch):
     from test_task_workspace_wiring import _t0929_mock_workspaces
     _t0929_mock_workspaces(board, monkeypatch)
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
-    assert board.cmd_regression(_run_args(task='main', repo='A', slot=5)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(task='main', repo='A', slot=5)) == 0
     assert fake.calls[0]['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
     assert 'slot5' in str(fake.calls[0]['args'])
     evidence = _flag(board)
@@ -3050,14 +3041,14 @@ def test_t0929_selected_workspace_preflight_precedes_runner(board, monkeypatch, 
     if failure == 'command':
         rows[-1]['test_cmd'] = None
         board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
-        monkeypatch.setattr(board, 'default_pytest_cmd', lambda: None)
+        monkeypatch.setattr(python_env, 'default_pytest_cmd', lambda: None)
     else:
-        monkeypatch.setattr(board, '_git_head_at' if failure == 'head' else '_cluster_current_branch', lambda tree: None)
+        monkeypatch.setattr(git, '_git_head_at' if failure == 'head' else '_cluster_current_branch', lambda tree: None)
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
     with pytest.raises(SystemExit):
-        board.cmd_regression(_run_args(task='main', repo='A', slot=5))
+        regression_cmd.cmd_regression(board._home(), _run_args(task='main', repo='A', slot=5))
     assert fake.calls == []
-    assert not board.REGRESSION_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
 
 
 def test_t0929_selected_workspace_missing_command_uses_selected_repo(board, monkeypatch):
@@ -3066,9 +3057,9 @@ def test_t0929_selected_workspace_missing_command_uses_selected_repo(board, monk
     rows[-1]['test_cmd'] = None
     board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
     monkeypatch.setenv('PM_SESSION_NAME', 'main')
-    monkeypatch.setattr(board, '_parse_areas', lambda: ([], [{'repo': 'A', 'test_cmd': 'pytest -q -k selected_repo'}]))
+    monkeypatch.setattr(areas_store, '_parse_areas', lambda _home: ([], [{'repo': 'A', 'test_cmd': 'pytest -q -k selected_repo'}]))
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
-    assert board.cmd_regression(_run_args(task='main', repo='A', slot=5)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(task='main', repo='A', slot=5)) == 0
     assert 'selected_repo' in str(fake.calls[0]['args'])
     assert 'slot1' not in str(fake.calls[0]['args'])
 
@@ -3080,7 +3071,7 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(board, monkey
     board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
     selected = str(board.REPO / 'work/A_5')
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
-    assert board.cmd_regression(_run_args(cwd=selected, cmd='pytest -q')) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cwd=selected, cmd='pytest -q')) == 0
     assert fake.calls[0]['kwargs']['cwd'] == selected
     assert _flag(board)['head'] == 'head5'
 
@@ -3089,25 +3080,25 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(board, monkey
 
 def _t0936_core_setup(board, monkeypatch, declaration='windows'):
     board.LOCAL_CONF.write_text('test.cmd=core-full\n' + (f'qa.platforms={declaration}\n' if declaration else ''), encoding='utf-8')
-    monkeypatch.setattr(board, '_stale_pre_push_hook_refusal', lambda: None)
-    monkeypatch.setattr(board, '_resolve_regression_flag', lambda cwd: (board.REGRESSION_FLAG, board._LG_NO_HOOK))
-    monkeypatch.setattr(board, '_platform_test_commands', lambda cwd: pytest.fail('개발 단계에서 플랫폼 선언 해소'))
-    monkeypatch.setattr(board, '_run_platform_cells', lambda *a, **k: pytest.fail('개발 단계에서 플랫폼 실행'))
+    monkeypatch.setattr(pre_push_hook, '_stale_pre_push_hook_refusal', lambda _home: None)
+    monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_NO_HOOK))
+    monkeypatch.setattr(regression, '_platform_test_commands', lambda _home, cwd: pytest.fail('개발 단계에서 플랫폼 선언 해소'))
+    monkeypatch.setattr(regression, '_run_platform_cells', lambda *a, **k: pytest.fail('개발 단계에서 플랫폼 실행'))
     calls = []
-    monkeypatch.setattr(board, '_run_regression_cmd', lambda cmd, cwd, env: (calls.append((cmd, cwd, env)) or (0, '3 passed in 0.01s\n', '')))
+    monkeypatch.setattr(regression, '_run_regression_cmd', lambda cmd, cwd, env: (calls.append((cmd, cwd, env)) or (0, '3 passed in 0.01s\n', '')))
     return calls
 
 
 @pytest.mark.parametrize('declaration', ['', 'windows', 'missing-command'])
 def test_t0936_development_core_only(board, monkeypatch, declaration):
     calls = _t0936_core_setup(board, monkeypatch, declaration)
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     assert [item[0] for item in calls] == ['core-full']
     assert 'PM_QA_PLATFORM' not in calls[0][2]
     record = _flag(board)
     assert record['command'] == 'core-full' and 'platforms' not in record
     assert record['head'] == 'deadbeef01234567' and record['conf_anchor'] == str(board.REPO)
-    assert board.cmd_regression(argparse.Namespace(action='check')) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 0
 
 
 @pytest.mark.parametrize('defect', [None, 'red', 'stale', 'missing'])
@@ -3116,28 +3107,28 @@ def test_t0936_multi_slot_core_only(multi_board, monkeypatch, defect):
     calls = _t0936_core_setup(board, monkeypatch)
     local = board.LOCAL_DIR / 'engine-root'
     local.mkdir()
-    monkeypatch.setattr(board, '_resolve_regression_flag', lambda cwd: (local / 'regression.json', board._LG_ENGINE_ROOT))
-    monkeypatch.setattr(board, '_test_cmd', lambda override, session=None: override or f'core-{session}')
+    monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda _home, cwd: (local / 'regression.json', regression_store._LG_ENGINE_ROOT))
+    monkeypatch.setattr(regression, '_test_cmd', lambda _home, override, session=None: override or f'core-{session}')
     monkeypatch.setenv('PM_SESSION_NAME', 'A_1')
     for session in ['A_1', 'B_1']:
         tree = Path(_slot_cwd(board, session)); tree.mkdir(parents=True)
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     assert [c[0] for c in calls] == ['core-A_1', 'core-B_1']
     for session in ['A_1', 'B_1']:
-        flag = board._regression_flag_for(session, local_dir=local)
+        flag = regression_store._regression_flag_for(board._home(), session, local_dir=local)
         data = json.loads(flag.read_text(encoding='utf-8'))
         assert data['session'] == session and data['conf_anchor'] == _slot_cwd(board, session)
         assert 'platforms' not in data
     calls.clear()
-    assert board.cmd_regression(_run_args(final=True)) == 0 and calls == []
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0 and calls == []
     if defect:
-        flag = board._regression_flag_for('B_1', local_dir=local)
+        flag = regression_store._regression_flag_for(board._home(), 'B_1', local_dir=local)
         data = json.loads(flag.read_text(encoding='utf-8'))
         if defect == 'missing': flag.unlink()
         else:
             data.update({'status': 'fail'} if defect == 'red' else {'head': 'old'})
             flag.write_text(json.dumps(data), encoding='utf-8')
-        assert board.cmd_regression(argparse.Namespace(action='check')) == 1
+        assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 1
 
 
 @pytest.mark.parametrize('slot', [False, True])
@@ -3146,14 +3137,14 @@ def test_t0936_multi_slot_core_only(multi_board, monkeypatch, defect):
 def test_t0936_core_start_head_binding(board, monkeypatch, slot, declaration, drift):
     calls = _t0936_core_setup(board, monkeypatch, declaration)
     head = ['' if drift == 'missing' else 'START']
-    monkeypatch.setattr(board, '_git_head_at', lambda cwd: head[0])
+    monkeypatch.setattr(git, '_git_head_at', lambda cwd: head[0])
     def run(cmd, cwd, env):
         calls.append((cmd, cwd, env)); head[0] = 'END'
         return 0, '3 passed in 0.01s\n', ''
-    monkeypatch.setattr(board, '_run_regression_cmd', run)
+    monkeypatch.setattr(regression, '_run_regression_cmd', run)
     args = _run_args(final=True, cmd='core-full')
-    assert (board._regression_run_slot(args, 'A_1', str(board.REPO)) if slot else board.cmd_regression(args)) != 0
-    flag = board._regression_flag_for('A_1') if slot else board.REGRESSION_FLAG
+    assert (regression_cmd._regression_run_slot(board._home(), args, 'A_1', str(board.REPO)) if slot else regression_cmd.cmd_regression(board._home(), args)) != 0
+    flag = regression_store._regression_flag_for(board._home(), 'A_1') if slot else pm_paths.regression_flag(board._home())
     record = json.loads(flag.read_text(encoding='utf-8'))
     assert record['head'] == ('' if drift == 'missing' else 'START') and record['status'] == 'fail'
     assert record['rc'] == 'head-drift'
@@ -3163,19 +3154,19 @@ def test_t0936_core_start_head_binding(board, monkeypatch, slot, declaration, dr
 @pytest.mark.parametrize('key,value', [('rc', True), ('rc', 5), ('scope', 'scoped'), ('collected', True), ('collected', '3'), ('collected', -1), ('previous_collected', True), ('ts', ''), ('conf_anchor', 'relative'), ('command', ''), ('extra', 1), ('status', 'fail')])
 def test_t0936_core_record_integrity(board, monkeypatch, key, value):
     _t0936_core_setup(board, monkeypatch)
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     record = _flag(board); record[key] = value
-    board.REGRESSION_FLAG.write_text(json.dumps(record), encoding='utf-8')
-    assert board.cmd_regression(argparse.Namespace(action='check')) == 1
+    pm_paths.regression_flag(board._home()).write_text(json.dumps(record), encoding='utf-8')
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 1
 
 
 def test_t0936_core_record_integrity_unknown_summary_and_rc5(board, monkeypatch):
     _t0936_core_setup(board, monkeypatch)
-    monkeypatch.setattr(board, '_run_regression_cmd', lambda *a: (0, 'custom success', ''))
-    assert board.cmd_regression(_run_args(final=True)) == 0 and _flag(board)['collected'] is None
-    assert board.cmd_regression(argparse.Namespace(action='check')) == 0
-    monkeypatch.setattr(board, '_run_regression_cmd', lambda *a: (5, 'no tests ran', ''))
-    assert board.cmd_regression(_run_args(final=True)) == 1 and _flag(board)['rc'] == 5
+    monkeypatch.setattr(regression, '_run_regression_cmd', lambda *a: (0, 'custom success', ''))
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0 and _flag(board)['collected'] is None
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 0
+    monkeypatch.setattr(regression, '_run_regression_cmd', lambda *a: (5, 'no tests ran', ''))
+    assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 1 and _flag(board)['rc'] == 5
 
 
 def test_t0936_core_command_and_selected_workspace(board, monkeypatch):
@@ -3185,45 +3176,45 @@ def test_t0936_core_command_and_selected_workspace(board, monkeypatch):
     board.LEASES_FILE.write_text(json.dumps({'leases': [
         {'slot':'work/proj_1','repo':'proj','session':'main','state':'leased','test_cmd':'sibling-core'},
         {'slot':'work/proj_5','repo':'proj','session':'main','state':'leased','test_cmd':'selected-core'}]}), encoding='utf-8')
-    monkeypatch.setattr(board, '_resolve_task_workspace_cwd', lambda args, **kw: (str(selected), 'selected-core'))
-    assert board.cmd_regression(_run_args(task='main', final=True)) == 0
+    monkeypatch.setattr(task_args, '_resolve_task_workspace_cwd', lambda _home, args, **kw: (str(selected), 'selected-core'))
+    assert regression_cmd.cmd_regression(board._home(), _run_args(task='main', final=True)) == 0
     assert _flag(board)['command'] == 'selected-core' and _flag(board)['conf_anchor'] == str(selected)
-    assert board.cmd_regression(argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 0
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 0
     data = json.loads(board.LEASES_FILE.read_text(encoding='utf-8')); data['leases'][1]['test_cmd']='changed-core'
     board.LEASES_FILE.write_text(json.dumps(data), encoding='utf-8')
-    assert board.cmd_regression(argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 1
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 1
 
 
 @pytest.mark.parametrize('mode', ['scoped', 'review', 'final'])
 def test_t0936_scoped_and_review_cycle_preserve_full(board, monkeypatch, mode):
     calls = _t0936_core_setup(board, monkeypatch)
-    board.REGRESSION_FLAG.write_text('previous full bytes', encoding='utf-8')
-    monkeypatch.setattr(board, '_review_cycle_downgrade', lambda: (['T-0936'], ['module.py']))
-    monkeypatch.setattr(board, '_scope_args', lambda touches: 'tests/test_module.py')
-    assert board.cmd_regression(_run_args(touches='module.py' if mode=='scoped' else None, final=mode=='final')) == 0
+    pm_paths.regression_flag(board._home()).write_text('previous full bytes', encoding='utf-8')
+    monkeypatch.setattr(regression, '_review_cycle_downgrade', lambda _home: (['T-0936'], ['module.py']))
+    monkeypatch.setattr(regression, '_scope_args', lambda touches: 'tests/test_module.py')
+    assert regression_cmd.cmd_regression(board._home(), _run_args(touches='module.py' if mode=='scoped' else None, final=mode=='final')) == 0
     if mode=='final': assert _flag(board)['scope']=='full' and calls[0][0]=='core-full'
     else:
-        assert board.REGRESSION_FLAG.read_text(encoding='utf-8')=='previous full bytes'
+        assert pm_paths.regression_flag(board._home()).read_text(encoding='utf-8')=='previous full bytes'
         assert calls[0][0]=='core-full tests/test_module.py'
 
 
 @pytest.mark.parametrize("contents", ["[]", "{broken"])
 def test_t0936_core_record_integrity_corrupt_file(board, monkeypatch, contents):
     _t0936_core_setup(board, monkeypatch)
-    board.REGRESSION_FLAG.write_text(contents, encoding="utf-8")
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    pm_paths.regression_flag(board._home()).write_text(contents, encoding="utf-8")
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
 @pytest.mark.parametrize("slot", [False, True])
 def test_t0936_core_record_integrity_cold_flag_coordinates(board, monkeypatch, slot):
     _t0936_core_setup(board, monkeypatch)
     local = board.REPO / "cold-engine" / ".project_manager" / ".local"
-    monkeypatch.setattr(board, "_resolve_regression_flag", lambda cwd: (local / "regression.json", board._LG_ENGINE_ROOT))
+    monkeypatch.setattr(regression_store, "_resolve_regression_flag", lambda _home, cwd: (local / "regression.json", regression_store._LG_ENGINE_ROOT))
     args = _run_args(final=True, cmd="core-full")
-    assert (board._regression_run_slot(args, "A_1", str(board.REPO)) if slot else board.cmd_regression(args)) == 0
-    flag = board._regression_flag_for("A_1", local_dir=local) if slot else local / "regression.json"
+    assert (regression_cmd._regression_run_slot(board._home(), args, "A_1", str(board.REPO)) if slot else regression_cmd.cmd_regression(board._home(), args)) == 0
+    flag = regression_store._regression_flag_for(board._home(), "A_1", local_dir=local) if slot else local / "regression.json"
     assert json.loads(flag.read_text(encoding="utf-8"))["status"] == "pass"
-    assert not board.REGRESSION_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
 
 
 @pytest.mark.parametrize("prefix,expected", [("", "local-core"), ("A", "repo-core")])
@@ -3239,15 +3230,15 @@ def test_t0936_core_command_and_selected_workspace_slot_prefix_priority(
     }]}), encoding="utf-8")
     board.AREAS_FILE.write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
-    monkeypatch.setattr(board, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
-    assert board._regression_run_slot(_run_args(), session, str(target)) == 0
-    flag = board._regression_flag_for(session)
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
+    monkeypatch.setattr(regression, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
+    assert regression_cmd._regression_run_slot(board._home(), _run_args(), session, str(target)) == 0
+    flag = regression_store._regression_flag_for(board._home(), session)
     assert json.loads(flag.read_text(encoding="utf-8"))["command"] == expected
     if consumer == "state":
-        assert board._regression_slot_state(session, str(target)).state == "green"
+        assert regression._regression_slot_state(board._home(), session, str(target)).state == "green"
     else:
-        assert board._regression_multi_run(_run_args(), [session]) == 0
+        assert regression_cmd._regression_multi_run(board._home(), _run_args(), [session]) == 0
         assert len(calls) == 1, "같은 HEAD/명령의 green 슬롯은 재실행하지 않는다"
 
 
@@ -3262,14 +3253,14 @@ def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, t
     row = {"slot":"work/A_1", "repo":"A", "session":"main" if task else "A_1", "state":"leased", "role":"work", "test_cmd":None}
     ledger = {"leases":[row], "tasks":[{"name":"main", "session":"S"}] if task else []}
     board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
-    monkeypatch.setattr(board, "_stale_pre_push_hook_refusal", lambda: None)
-    monkeypatch.setattr(board, "_review_cycle_downgrade", lambda: ([], []))
-    monkeypatch.setattr(board, "_resolve_regression_flag", lambda cwd: (board.REGRESSION_FLAG, board._LG_NO_HOOK))
-    monkeypatch.setattr(board, "_cluster_current_branch", lambda cwd: "task/main")
-    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
-    monkeypatch.setattr(board, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
+    monkeypatch.setattr(pre_push_hook, "_stale_pre_push_hook_refusal", lambda _home: None)
+    monkeypatch.setattr(regression, "_review_cycle_downgrade", lambda _home: ([], []))
+    monkeypatch.setattr(regression_store, "_resolve_regression_flag", lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_NO_HOOK))
+    monkeypatch.setattr(git, "_cluster_current_branch", lambda cwd: "task/main")
+    monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
+    monkeypatch.setattr(regression, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
     calls = []
-    monkeypatch.setattr(board, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
     return target, ledger, calls
 
 
@@ -3281,11 +3272,11 @@ def test_t0936_single_slot_core_command_priority(board, monkeypatch, prefix, pla
     # 선택은 `--task`(+위치 인자) 또는 `--cwd` 핀이다 — `--task` 없는 `--repo/--slot` 은 없다(T-0962).
     argv = ["regression", "run", "--final"]
     argv += ["--task", "main", "--repo", "A", "--slot", "1"] if task else ["--cwd", str(target)]
-    assert board.cmd_regression(board.build_parser().parse_args(argv)) == 0
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(argv)) == 0
     assert _flag(board)["command"] == ("repo-core" if task or prefix else "local-core")
     check = ["regression", "check"]
     check += ["--task", "main", "--repo", "A", "--slot", "1"] if task else ["--cwd", str(target)]
-    assert board.cmd_regression(board.build_parser().parse_args(check)) == 0
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(check)) == 0
     assert len(calls) == 1
 
 
@@ -3297,12 +3288,12 @@ def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, mo
         board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
     if layer=="default": board.LOCAL_CONF.write_text("", encoding="utf-8")
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_bad\n", encoding="utf-8")
-    expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":board.default_pytest_cmd()}[layer]
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
+    expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":python_env.default_pytest_cmd()}[layer]
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
     assert _flag(board)["command"]==expected+" --deselect tests/test_sample.py::test_bad"
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==0
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==0
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_other\n", encoding="utf-8")
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==1
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==1
 
 
 @pytest.mark.parametrize("explicit_cwd", [False, True])
@@ -3319,20 +3310,20 @@ def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explic
     board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
     run=["regression","run","--final"]
     run += ["--task","main","--repo","A","--slot","1"] if task else ["--cwd",str(target)]
-    assert board.cmd_regression(board.build_parser().parse_args(run))==0
-    original=board.REGRESSION_FLAG.read_bytes()
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(run))==0
+    original=pm_paths.regression_flag(board._home()).read_bytes()
     same=["regression","check","--task","main","--repo","A","--slot","1"]
     different=["regression","check","--task","main","--repo","A","--slot","2"]
     if explicit_cwd:
         for argv, cwd in ((same, target), (different, sibling)):
             with pytest.raises(SystemExit):
-                board.cmd_regression(board.build_parser().parse_args([*argv, "--cwd", str(cwd)]))
+                regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args([*argv, "--cwd", str(cwd)]))
     else:
         # 선택 없이 `--cwd` 로 잰 기록은 task 가 고른 폴더의 green 으로 인정되지 않는다(명령 축 불일치).
-        assert board.cmd_regression(board.build_parser().parse_args(same))==(0 if task else 1)
-        assert board.cmd_regression(board.build_parser().parse_args(different))==1
+        assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(same))==(0 if task else 1)
+        assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(different))==1
     # check는 자식을 실행하거나 기록을 바꾸지 않는다.
-    assert len(calls)==1 and board.REGRESSION_FLAG.read_bytes()==original
+    assert len(calls)==1 and pm_paths.regression_flag(board._home()).read_bytes()==original
 
 
 def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(board, monkeypatch):
@@ -3340,11 +3331,11 @@ def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(boar
     ledger["leases"][0]["test_cmd"]="core-A"
     board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
     other=board.REPO / "other"; other.mkdir()
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
     # `--task` 없는 `--repo/--slot` 선택은 기록 좌표 대조 전에 위치 인자 문구로 멈춘다(T-0962).
     with pytest.raises(SystemExit) as exc:
-        board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(other)]))
+        regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(other)]))
     assert "--task" in str(exc.value.code)
-    assert board.cmd_regression(board.build_parser().parse_args(["regression","check"]))==0
+    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check"]))==0
     assert len(calls)==1

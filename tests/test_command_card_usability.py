@@ -2693,9 +2693,9 @@ def test_run_live_or_timeout_returns_proc_on_success(monkeypatch):
 #   *5곳*이 함께 9 로 정합돼야 `livegate record`(수집 N==pin)가 통과한다(orchestrator 가 갱신):
 #     (1) test_release_wave._EXPECTED_RELEASE_TESTS  (AST 수집 pin)
 #     (2) test_release_wave._RELEASE_TEST_FILES      (스캔 파일 목록 — 이 파일 포함시켜야 함)
-#     (3) board.LIVEGATE_RELEASE_PIN                 (livegate record 의 수집 게이트 단일 진실)
+#     (3) regression.LIVEGATE_RELEASE_PIN            (livegate record 의 수집 게이트 단일 진실)
 #     (4) tests/test_board_livegate.py               (하드코딩 fake 출력/assert 여러 곳 — 7→9)
-#     (5) templates/{claude_code,opencode}/.project_manager/tools/board.py  (pm_update 전파·LIVEGATE_RELEASE_PIN)
+#     (5) templates/{claude_code,opencode}/.project_manager/tools/pm_engine/app/regression.py  (pm_update 전파·LIVEGATE_RELEASE_PIN)
 _EXPECTED_LOCAL_RELEASE_TESTS = 2
 
 
@@ -2706,7 +2706,7 @@ def test_command_card_release_marker_count_is_pinned():
         f"이 파일 `release` 마커 수 {actual} != 기대 {_EXPECTED_LOCAL_RELEASE_TESTS} — 마커 "
         f"소실/개명 의심. 라이브 케이스를 의도적으로 늘렸다면 _EXPECTED_LOCAL_RELEASE_TESTS 와 "
         f"전역 커플드-pin 5곳(위 주석: test_release_wave._EXPECTED_RELEASE_TESTS·_RELEASE_TEST_FILES·"
-        f"board.LIVEGATE_RELEASE_PIN·tests/test_board_livegate.py·templates/*/board.py)을 함께 갱신하라."
+        f"regression.LIVEGATE_RELEASE_PIN·tests/test_board_livegate.py·templates/*/pm_engine/app/regression.py)을 함께 갱신하라."
     )
 
 

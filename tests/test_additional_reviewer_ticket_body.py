@@ -9,6 +9,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import ticket_rules
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -263,7 +264,7 @@ def test_ticket_body_real_board_lookup_is_exact_across_status_dirs(
     external, tmp_path,
 ):
     tickets = tmp_path / ".project_manager" / "wiki" / "tickets"
-    for status in external._status_dirs():
+    for status in ticket_rules.STATUS_DIRS:
         (tickets / status).mkdir(parents=True, exist_ok=True)
     exact = tickets / "claimed" / "T-9001-exact.md"
     _ticket(exact, body="## 결정\n정확 티켓 본문\n")
@@ -288,7 +289,7 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
         (selected_home, "## 결정\n선택된 PM 홈 본문\n"),
     ):
         tickets = home / ".project_manager" / "wiki" / "tickets"
-        for status in external._status_dirs():
+        for status in ticket_rules.STATUS_DIRS:
             (tickets / status).mkdir(parents=True, exist_ok=True)
         _ticket(tickets / "claimed" / "T-9001-cross.md", body=body)
 

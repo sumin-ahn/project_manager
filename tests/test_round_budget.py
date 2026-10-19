@@ -25,6 +25,8 @@ import pytest
 
 from _test_exec import python_argv_command
 from conftest import anchor_board_module
+from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -398,7 +400,7 @@ def test_developer_prepare_requires_the_architect_test_contract(pd, budget_env):
     _seed(pm_home, tickets, "C-contract", ["T-7000"])
     board = _fixture_board(pd, pm_home)
     pd._load_ticket_rounds().reserve_round(
-        board.tickets_dir(), "T-7000", "architect",
+        pm_paths.tickets_dir(board._home()), "T-7000", "architect",
         content="## 설계\n- 테스트 계약 누락\n", lock=contextlib.nullcontext(),
     )
 
@@ -437,7 +439,7 @@ def test_initial_developer_harvest_requires_the_architect_target_in_its_diff(
     _seed(pm_home, tickets, "C-arch-target", ["T-7006"])
     board = _fixture_board(pd, pm_home)
     pd._load_ticket_rounds().reserve_round(
-        board.tickets_dir(), "T-7006", "architect",
+        pm_paths.tickets_dir(board._home()), "T-7006", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
     plan = pd.prepare_cluster_copy(
@@ -460,7 +462,7 @@ def test_developer_harvest_requires_an_exact_green_full_regression_record(
     _seed(pm_home, tickets, "C-stage-record", ["T-7009"])
     board = _fixture_board(pd, pm_home)
     pd._load_ticket_rounds().reserve_round(
-        board.tickets_dir(), "T-7009", "architect",
+        pm_paths.tickets_dir(board._home()), "T-7009", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
     plan = pd.prepare_cluster_copy(
@@ -517,14 +519,12 @@ def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
         def resolve_pm_home_for_repo(_repo):
             return pm_home
 
-    class _Board:
-        @staticmethod
-        def _test_cmd(_override, *, session):
-            assert session is None
-            return "python3 -m pytest tests/ -q -n 8"
+    def _test_cmd(home, _override, *, session):
+        assert session is None
+        return "python3 -m pytest tests/ -q -n 8" if home.root == pm_home.resolve() else None
 
     monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ER)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda root: _Board if root == pm_home else None)
+    monkeypatch.setattr(regression, "_test_cmd", _test_cmd)
     assert pd._full_regression_command(candidate) == "python3 -m pytest tests/ -q -n 8"
 
 
@@ -564,8 +564,8 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
     home = pm_home.resolve()
     assert Path(board.__file__) == PM_DELEGATE.resolve().with_name("board.py")
     assert (
-        board.REPO, board.LOCAL_DIR, board.BOARD_LOCK,
-        board.BOARD_FILE, board.LEASES_FILE, board.LOCAL_CONF,
+        board.REPO, board._home().local_dir, board.BOARD_LOCK,
+        board.BOARD_FILE, board.LEASES_FILE, board._home().local_conf,
     ) == (
         home,
         home / ".project_manager" / ".local",
@@ -593,7 +593,7 @@ def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
     _seed(pm_home, tickets, "C-arch-red", ["T-7003"])
     board = _fixture_board(pd, pm_home)
     pd._load_ticket_rounds().reserve_round(
-        board.tickets_dir(), "T-7003", "architect",
+        pm_paths.tickets_dir(board._home()), "T-7003", "architect",
         content=_architect_output(
             pd, command=python_argv_command("-m", "module_that_does_not_exist_t0871"), expected="green",
         ),
@@ -788,7 +788,7 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
         board_round.read_text(encoding="utf-8"))) == 1
 
     rounds_after = pd._load_ticket_rounds().load_rounds(
-        board.tickets_dir(), "T-7100")
+        pm_paths.tickets_dir(board._home()), "T-7100")
     assert pd._cluster_cycle_roles(rounds_after, frozenset(_CYCLE)) == ("architect",)
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
@@ -1301,7 +1301,7 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
         if len(entries) == 2:
             # 사전판정과 이 임계구역 사이에 다른 준비가 마지막 fix 자리를 가져갔다.
             rounds_module.reserve_round(
-                board.tickets_dir(), "T-7050", "developer", content="## 경쟁 예약\n",
+                pm_paths.tickets_dir(board._home()), "T-7050", "developer", content="## 경쟁 예약\n",
                 lock=contextlib.nullcontext(),
             )
         return real_lock(*args, **kwargs)
@@ -1534,7 +1534,7 @@ def _cluster_args(action: str, name: str, **kwargs) -> argparse.Namespace:
 
 
 def _issue(board, title: str) -> str:
-    directory = board.tickets_dir()
+    directory = pm_paths.tickets_dir(board._home())
     before = {path.name for path in directory.glob("*/T-*.md")}
     assert board.cmd_new(argparse.Namespace(
         title=title, touches=None, depends=None, tag=None, estimate="small",
@@ -1544,7 +1544,7 @@ def _issue(board, title: str) -> str:
         path for path in directory.glob("*/T-*.md") if path.name not in before
     ]
     assert len(created) == 1, created
-    return board._canonical_ticket_id(created[0])
+    return ticket_store._canonical_ticket_id(created[0])
 
 
 def test_cluster_replan_is_not_a_parser_surface(board_env):

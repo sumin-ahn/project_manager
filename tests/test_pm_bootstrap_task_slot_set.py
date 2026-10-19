@@ -17,6 +17,8 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 from _pytest_summary import pytest_summary
+from pm_engine.domain import ticket_rules
+from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -406,9 +408,9 @@ def test_task_zero_slots_cwd_stops_at_pm_home(bootstrap, tmp_path, monkeypatch):
     inst._task_name = "mytask"
     inst._task_workspace_slots = ()
     monkeypatch.setattr(
-        bootstrap,
+        slot_resolution,
         "_auto_slot",
-        lambda: (_ for _ in ()).throw(AssertionError("task-only가 전역 auto-slot을 호출함")),
+        lambda _home: (_ for _ in ()).throw(AssertionError("task-only가 전역 auto-slot을 호출함")),
     )
     assert inst._worktree_cwd() == str(bootstrap.REPO)
 
@@ -419,7 +421,7 @@ def test_task_only_first_turn_uses_current_task_pm_state_path(
     """task-only 첫-turn은 전역 auto-slot이 가리키는 타 task 슬롯 대신 현재 task state를 안내한다."""
     pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
     inst = _make(bootstrap, tmp_path, pool)
-    monkeypatch.setattr(bootstrap, "_auto_slot", lambda *_args: ("other_task_repo", 9))
+    monkeypatch.setattr(slot_resolution, "_auto_slot", lambda *_args: ("other_task_repo", 9))
 
     assert inst.run(task="mytask") == 0
     first_turn = capsys.readouterr().out.split("### 권장 첫 turn", 1)[1]
@@ -580,9 +582,9 @@ def test_task_multiple_slots_json_surfaces_representative_and_full_pytest_scope(
         "scopes": ["work/A_1", "work/B_2"],
     }
     assert data["board"]["counts_scope"] == "task mytask"
-    # 하위호환 top-level 네 키는 고정 스키마고, 전량 dict(`counts_task`)는 board `STATUS_DIRS`
+    # 하위호환 top-level 네 키는 고정 스키마고, 전량 dict(`counts_task`)는 `ticket_rules.STATUS_DIRS`
     # 파생이다(T-0839) — 별칭은 그 네 키 값을 보존하고 새 상태를 더 싣는다.
-    assert set(data["board"]["counts_task"]) == set(_load("board").STATUS_DIRS)
+    assert set(data["board"]["counts_task"]) == set(ticket_rules.STATUS_DIRS)
     for key in ("done", "open", "claimed", "blocked"):
         assert data["board"]["counts_task"][key] == data["board"][key]
     assert "counts_mine" not in data["board"]

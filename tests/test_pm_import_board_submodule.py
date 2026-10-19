@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import areas_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -155,7 +156,7 @@ def test_empty_remote_scaffolds_and_configures(pm_import, tmp_path):
     assert rc == 0
 
     board = dest / ".project_manager" / "board"
-    # submodule 형상 — board/.git(gitlink) + board/tickets 존재로 board_root() 가 board/ 로 해소.
+    # submodule 형상 — board/.git(gitlink) + board/tickets 존재로 board 루트가 board/ 로 해소.
     assert (board / ".git").exists()
     assert (board / "tickets").is_dir()
     for status in ("open", "claimed", "blocked", "done"):
@@ -425,12 +426,12 @@ def test_dry_run_no_board_side_effects(pm_import, tmp_path, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 6. areas 스캐폴드 drift 가드 (board._AREAS_COLUMNS 미러)
+# 6. areas 스캐폴드 drift 가드 (areas_rules._AREAS_COLUMNS 미러)
 # ════════════════════════════════════════════════════════════════════════════
 
 def test_areas_scaffold_columns_mirror_board(pm_import):
     board_mod = _load_mod("board")
-    assert pm_import._BOARD_AREAS_COLUMNS == board_mod._AREAS_COLUMNS
+    assert pm_import._BOARD_AREAS_COLUMNS == areas_rules._AREAS_COLUMNS
     scaffold = pm_import._board_areas_scaffold()
     assert board_mod._areas_header_line() in scaffold
     assert board_mod._areas_separator_line() in scaffold

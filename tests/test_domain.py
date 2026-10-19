@@ -12,11 +12,12 @@
     리터럴 파일 경로 · 빈 covers 매칭 0 · multi-glob.
   - main(list) — 페이지 1줄 출력 · 비어있으면 "(domain 페이지 없음)".
 
-board.load_ticket 을 재사용하므로(중복 파서 없음) frontmatter 의미는 그 계약을 따른다.
+ticket_store.load_ticket 을 재사용하므로(중복 파서 없음) frontmatter 의미는 그 계약을 따른다.
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -1132,65 +1133,55 @@ def test_affected_requires_ticket_or_touches(dm):
 
 
 class _FakeBoard:
-    """find_ticket/load_ticket 를 흉내내는 hermetic board 대역.
+    """find_ticket 을 흉내내는 hermetic board 대역 — 주입한 `touches` 를 가진 실 티켓 파일을 가리킨다.
 
-    fake ticket 경로(`/fake/...`)에는 주입한 `touches` frontmatter 를, 실제 .md 페이지
-    경로에는 진짜 board.load_ticket 파싱을 위임한다 — 그래야 같은 `_load_board` seam 을
-    공유하는 `_touches_from_ticket`(ticket)·`parse_page`(페이지)가 한 대역으로 동작한다.
+    frontmatter 파싱은 실 `ticket_store.load_ticket` 이 한다.
     """
 
-    def __init__(self, touches, real_board=None):
-        self._touches = touches
-        self._real = real_board
+    def __init__(self, directory, touches):
+        directory.mkdir(parents=True, exist_ok=True)
+        self._path = directory / "T-9999-fake.md"
+        self._path.write_text(
+            f"---\nid: T-9999\ntouches: {json.dumps(touches)}\n---\nbody\n", encoding="utf-8")
 
     def find_ticket(self, ticket_id):
-        return ("open", Path(f"/fake/{ticket_id}.md"))
-
-    def load_ticket(self, path):
-        # fake 대역 경로 판별은 os-agnostic — Windows 에선 str(Path("/fake/…")) 가
-        # 역슬래시라 startswith("/fake/") 가 빗나가 실 board 로 새어 크래시한다.
-        if Path(path).as_posix().startswith("/fake/"):
-            return ({"touches": self._touches}, "body")
-        return self._real.load_ticket(path)
+        return ("open", self._path)
 
 
-def test_touches_from_ticket_strips_list_whitespace_and_drops_empty(dm, monkeypatch):
+def test_touches_from_ticket_strips_list_whitespace_and_drops_empty(dm, tmp_path, monkeypatch):
     # frontmatter touches 리스트 원소의 앞뒤 공백 strip·빈 토큰 drop — "  src/b.py"
     # 같은 값이 매칭에서 조용히 누락되지 않게 (--touches CLI 와 동형).
-    monkeypatch.setattr(
-        dm, "_load_board",
-        lambda: _FakeBoard(["src/a.py", " src/b.py", "  ", "\tsrc/c.py "]),
-    )
+    board = _FakeBoard(tmp_path, ["src/a.py", " src/b.py", "  ", "\tsrc/c.py "])
+    monkeypatch.setattr(dm, "_load_board", lambda: board)
     assert dm._touches_from_ticket("T-9999") == ["src/a.py", "src/b.py", "src/c.py"]
 
 
-def test_touches_from_ticket_strips_scalar_string(dm, monkeypatch):
+def test_touches_from_ticket_strips_scalar_string(dm, tmp_path, monkeypatch):
     # 스칼라 문자열 touches(list 들여쓰기 누락)도 strip — 빈 문자열은 [] 로.
-    monkeypatch.setattr(dm, "_load_board", lambda: _FakeBoard("  src/x.py  "))
+    board = _FakeBoard(tmp_path, "  src/x.py  ")
+    monkeypatch.setattr(dm, "_load_board", lambda: board)
     assert dm._touches_from_ticket("T-9999") == ["src/x.py"]
-    monkeypatch.setattr(dm, "_load_board", lambda: _FakeBoard("   "))
+    board = _FakeBoard(tmp_path, "   ")
+    monkeypatch.setattr(dm, "_load_board", lambda: board)
     assert dm._touches_from_ticket("T-9999") == []
 
 
 def test_affected_ticket_whitespace_touches_match_both(dm, tmp_path, monkeypatch, capsys):
     # 회귀(end-to-end): ticket touches ["src/a.py", " src/b.py"](둘째 앞 공백)이 실제
     # _touches_from_ticket 에서 strip 돼 cmd_affected 가 두 페이지 모두 매칭한다 (strip
-    # 전이면 " src/b.py" 가 조용히 누락됐다). _load_board 만 대역(ticket touches 주입·
-    # 페이지 파싱은 진짜 board 에 위임)하고 strip 로직은 실제 코드를 거친다.
+    # 전이면 " src/b.py" 가 조용히 누락됐다). _load_board 만 대역(ticket 위치 주입)하고
+    # strip 로직은 실제 코드를 거친다.
     _write_page(
-        tmp_path, "a.md",
+        tmp_path / "domain", "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a.py",
     )
     _write_page(
-        tmp_path, "b.md",
+        tmp_path / "domain", "b.md",
         frontmatter="title: B\ntype: concept\ncovers:\n  - src/b.py",
     )
-    real_board = dm._load_board()
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
-    monkeypatch.setattr(
-        dm, "_load_board",
-        lambda: _FakeBoard(["src/a.py", " src/b.py"], real_board=real_board),
-    )
+    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path / "domain")
+    board = _FakeBoard(tmp_path / "board", ["src/a.py", " src/b.py"])
+    monkeypatch.setattr(dm, "_load_board", lambda: board)
     rc = dm.main(["affected", "--ticket", "T-9999"])
     assert rc == 0
     out = capsys.readouterr().out

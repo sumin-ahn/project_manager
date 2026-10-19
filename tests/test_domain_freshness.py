@@ -28,6 +28,7 @@ import pytest
 
 from _textio import write_lf
 from _win_skip import PROJECT_TEMP_ROOT, posix_filenames_supported
+from pm_engine.infra import git, ticket_store
 
 # 리터럴 `?`/`[]` 파일명은 Windows 에서 불법이라 실 git 이스케이프 테스트는 POSIX 전용 (codex R7).
 _posix_only = pytest.mark.skipif(not posix_filenames_supported(),
@@ -748,14 +749,14 @@ def test_unusable_upstream_paths_stay_advisory(
             # 손상 `.git` 을 만난 git 은 조상 저장소로 넘어가므로 픽스처 위치가 답을 정한다.
             # "이 후보는 유효한 checkout 이 아니다"가 이 케이스의 입력이니 그 한 질문에만
             # 답을 명시한다(나머지 git 조회는 그대로 위임).
-            real_git_run = board._git_run
+            real_git_run = git._git_run
 
             def _git_run(argv, *, runner=None, repo=None):
                 if repo is not None and Path(repo) == candidate:
                     return (128, "")
                 return real_git_run(argv, runner=runner, repo=repo)
 
-            monkeypatch.setattr(board, "_git_run", _git_run)
+            monkeypatch.setattr(git, "_git_run", _git_run)
         upstream = str(candidate)
     local_conf.write_text(f"upstream.path={upstream}\n", encoding="utf-8")
 
@@ -1205,7 +1206,7 @@ def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_
     monkeypatch.setattr(board, "_canonical_commit_oid", lambda *_args, **_kwargs: full)
     selected = ".project_manager/wiki/domain/malformed.md"
 
-    parsed, _body = board.load_ticket(page)
+    parsed, _body = ticket_store.load_ticket(page)
     assert isinstance(parsed, parsed_type)
     results = board.repin_verified_at(full, "self", pages=[selected])
     assert len(results) == 1
@@ -1339,7 +1340,7 @@ def test_repin_aborts_all_when_result_is_unreadable_by_consumer_parser(
     )
 
     with pytest.raises(ValueError):
-        board.load_ticket(invalid)
+        ticket_store.load_ticket(invalid)
     full = "cafe0001" + "0" * 32
     results = dict(board.repin_verified_at(full, "upstream"))
 

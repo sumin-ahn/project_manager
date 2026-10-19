@@ -37,6 +37,7 @@ from types import SimpleNamespace
 
 import pytest
 from _engine_tree import engine_python_files
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -225,7 +226,7 @@ def test_pm_log_ctx_guidance_json_payload_is_utf8(capture_console, monkeypatch):
 def test_pm_log_snapshot_json_payload_is_utf8(capture_console, monkeypatch, tmp_path):
     """snapshot 훅 페이로드는 ASCII 이스케이프지만 같은 seam 을 지나 UTF-8 bytes 로 나간다."""
     pm_log = _load("pm_log")
-    monkeypatch.setattr(pm_log, "owning_pm_home", lambda anchor: anchor)
+    monkeypatch.setattr(pm_paths, "owning_pm_home", lambda anchor: anchor)
     monkeypatch.setattr(
         pm_log, "build_snapshot", lambda *args, **kwargs: (LOSSY_SAMPLE, "")
     )

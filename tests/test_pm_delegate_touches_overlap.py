@@ -16,6 +16,7 @@ import pytest
 from _test_exec import python_argv_command
 from conftest import write_cluster_ledger
 from pm_engine.infra import repo_coordinates
+from pm_engine.domain import ticket_rules
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -690,14 +691,13 @@ def test_overlap_paths_union_is_sorted_and_deduplicated(pd):
 
 def test_scalar_touches_frontmatter_is_format_unknown(pd, tmp_path):
     """스칼라 `touches:` 는 board 형식 판정에서 None(판정 보류)이다 — 픽스처 의미 고정."""
-    board = pd._load_board_for_repo(tmp_path)
     coordinates = repo_coordinates
-    assert board._normalized_touches("src/pay.py") is None
+    assert ticket_rules._normalized_touches("src/pay.py") is None
     assert pd._touch_notations(
-        "src/pay.py", board, coordinates, pm_root=tmp_path, workspace=tmp_path,
+        "src/pay.py", coordinates, pm_root=tmp_path, workspace=tmp_path,
     ) is None
     assert pd._touch_notations(
-        ["src/pay.py"], board, coordinates, pm_root=tmp_path, workspace=tmp_path,
+        ["src/pay.py"], coordinates, pm_root=tmp_path, workspace=tmp_path,
     ) == (("src/pay.py", "src/pay.py"),)
 
 

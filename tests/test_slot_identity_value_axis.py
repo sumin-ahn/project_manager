@@ -13,7 +13,7 @@
      이 형상은 후속(홈 N=1 행 등록)의 선행 조건이며, 여기선 **읽기 해소만** 검증한다.
   4. **판정 불능은 fail-loud** — 장부가 없거나 손상됐고 경로도 슬롯 키가 아니면 정체성을 지어내지
      않는다(None/에러). 반대로 정상 형상을 과하게 조이지도 않는다(대조군).
-  5. **3각 파리티** — `board.session_name` · `worktree_pool._default_session` ·
+  5. **3각 파리티** — `lease_store.session_name` · `worktree_pool._default_session` ·
      `pm_config._default_session` 이 같은 장부에서 같은 층 순서로 해소한다(tail 만 상이).
 
 **hermetic 필수**: 엔진 모듈의 경로 전역은 import 시점에 실 repo 절대경로로 굳는다 — tmp PM 홈으로
@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 from pm_engine.domain import identity_args
-from pm_engine.infra import lease_store
+from pm_engine.infra import lease_store, pm_paths
+from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -164,9 +165,9 @@ def test_single_slot_shape_resolves_to_ledger_row(home):
     home.write_areas(["A"])
     home.mkslot("work/A_1")
 
-    resolved = home.bp._auto_slot(home.areas, home.ledger)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(home.bp.REPO), home.areas, home.ledger)
     assert (resolved.key, resolved.slot) == ("A_1", "work/A_1")
-    assert home.hf._regression_cwd(None, home.areas, home.ledger) == \
+    assert slot_resolution._regression_cwd(pm_paths.home_at(home.hf.REPO), None, home.areas, home.ledger) == \
         str(home.root / "work/A_1")
 
 
@@ -187,7 +188,7 @@ def test_actor_resolution_returns_ledger_session_verbatim(home):
     _mismatch_shape(home)
     assert lease_store.resolve_actor_workspace("A", home.ledger).session == "B_7"
     # 경로 축은 행의 slot 값 — 세션에서 `work/B_7` 을 만들지 않는다.
-    assert home.hf._resolve_explicit_identity_slot("A", 1, home.ledger) == \
+    assert slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(home.hf.REPO), "A", 1, home.ledger) == \
         ("work/A_1", None)
     assert home.wp._resolve_actor_slot_for_repo("A") == "work/A_1"
 
@@ -227,10 +228,10 @@ def test_home_row_number_axis_and_paths_are_ledger_derived(home):
     assert sorted(wp._existing_slot_numbers("adopter", wp.list_leases())) == [1]
     assert lease_store.slot_path_resolution("adopter", 1, home.ledger).path == "."
     assert lease_store.resolve_actor_workspace("adopter", home.ledger).session == key
-    assert hf._resolve_explicit_identity_slot("adopter", 1, home.ledger) == (".", None)
-    resolved = home.bp._auto_slot(home.areas, home.ledger)
+    assert slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "adopter", 1, home.ledger) == (".", None)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(home.bp.REPO), home.areas, home.ledger)
     assert (resolved.key, resolved.slot) == (key, ".")
-    assert hf._regression_cwd(None, home.areas, home.ledger) == str(home.root)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), None, home.areas, home.ledger) == str(home.root)
 
 
 def test_pool_slot_without_worktree_is_still_stale(home):
@@ -283,7 +284,7 @@ def test_divergent_duplicate_rows_fail_loud_instead_of_picking_one(home):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 5. 3각 파리티 — board.session_name ↔ worktree_pool ↔ pm_config
+# 5. 3각 파리티 — lease_store.session_name ↔ worktree_pool ↔ pm_config
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -306,7 +307,7 @@ def trio(home, monkeypatch):
 
 def _trio_sessions(trio):
     board, wp, pm_config = trio
-    return board.session_name(), wp._default_session(), pm_config._default_session()
+    return lease_store.session_name(board._home()), wp._default_session(), pm_config._default_session()
 
 
 @pytest.mark.parametrize("env_var", ["PM_SESSION_NAME", "CLAUDE_SESSION_NAME"])
@@ -351,7 +352,7 @@ def test_trio_zero_rows_does_not_derive_from_registration(home, trio):
     board, wp, pm_config = trio
     home.write_areas(["A"])
     home.write_ledger([])
-    assert board.session_name() is None and pm_config._default_session() is None
+    assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
     assert wp._default_session() != "A_1"
 
 
@@ -364,12 +365,12 @@ def test_trio_ambiguous_and_corrupt_share_unresolved_judgment(home, trio):
     board, wp, pm_config = trio
     home.write_areas(["A"])
     home.write_ledger([_pool_row("A", 1, "A_1"), _pool_row("A", 2, "A_2")])
-    assert board.session_name() is None and pm_config._default_session() is None
+    assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
     ambiguous_tail = wp._default_session()
     assert ambiguous_tail not in {"A_1", "A_2"}
 
     home.ledger.write_text("{not valid json", encoding="utf-8")
-    assert board.session_name() is None and pm_config._default_session() is None
+    assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
     assert wp._default_session() not in {"A_1", "A_2"}
 
 

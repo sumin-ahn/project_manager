@@ -42,7 +42,7 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
   - repo protected → (조회) board._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 정합 /
                 (설정) board.areas_set_cell(areas.md 단일 진실·board_lock in-place) →
                 worktree_pool.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
-  - repo list → board._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
+  - repo list → areas_store._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
   - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 게이트 뒤
                 worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
                 `--task <task>` 면 owner_task 로 넘겨 생성 직후 그 슬롯 task 명의 대여(ⓓB).
@@ -102,7 +102,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema, upstream_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, repo_files  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, python_env, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -233,7 +233,7 @@ def _real_clone_runner() -> GitRunner:
 
 
 def _default_session(*, identity=None) -> str | None:
-    """세션 식별자 — board.py `session_name()` 과 *동형* 우선순위:
+    """세션 식별자 — `lease_store.session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) > lease 장부
     state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) > None.
 
@@ -268,7 +268,7 @@ def _local_conf_user() -> str | None:
     """`.project_manager/local.conf` 의 `identity.user=` (없거나 OSError → None).
 
     `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`conf_store`)가 하고 이 함수는
-    키 이름과 빈값→None 관례만 소유한다(`board.local_config().get("identity.user")` 와 동일 의미).
+    키 이름과 빈값→None 관례만 소유한다(`conf_store.local_config(home).get("identity.user")` 와 동일 의미).
     부재/읽기실패는 None(폴백)이고, 구표기 키 잔존은 소비 지점 계약대로 fail-loud 다.
     """
     return _local_conf_value("identity.user") or None
@@ -311,9 +311,9 @@ def _default_user() -> str | None:
     return _git_config_email()
 
 
-# areas.md canonical 칼럼 순서 (board `_AREAS_COLUMNS` 와 같은 순서). 구 헤더는 이 순서의
+# areas.md canonical 칼럼 순서 (`areas_rules._AREAS_COLUMNS` 와 같은 순서). 구 헤더는 이 순서의
 # *prefix* 라, 헤더보다 넓은 행(구 헤더에 신 canonical row 가 append 된 업그레이드 행)은 이
-# 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(board `_areas_row_dict` 동형).
+# 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(`areas_rules._areas_row_dict` 동형).
 _AREAS_CANONICAL_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base",
                             "protected", "area_owner")
 
@@ -321,12 +321,12 @@ _AREAS_CANONICAL_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base"
 def _areas_rows() -> list[dict[str, str]]:
     """areas.md 데이터 행 → `{칼럼명: 값}` 목록 — pm_config 자체 파싱(board.py 미로드).
 
-    board 의 `_parse_areas` 와 **같은 매핑 규칙**이되 board 를 import 하지 않는다. `cmd_status`
+    `areas_store._parse_areas` 와 **같은 매핑 규칙**이다. `cmd_status`
     (정체성 posture)와 기계 조회(`status --json` 의 `repos`)가 이 파서 하나를 공유한다 — 같은
     파일을 두 번 파싱하지 않는다. 구분선(`|---|`)은 건너뛰고 첫 table row 를 헤더로 본다.
     파일 부재·읽기 실패·손상 UTF-8 은 빈 목록(fail-soft — 조회가 크래시하지 않는다).
 
-    자리는 `board.areas_file` 과 같은 판정이다 — 보드가 별도 저장소(`.project_manager/board/tickets`
+    자리는 `pm_paths.areas_file` 과 같은 판정이다 — 보드가 별도 저장소(`.project_manager/board/tickets`
     실재)면 그 안, 아니면 `.project_manager/areas.md`. 고정 경로로 읽던 때는 보드 분리 홈에서
     `repos` 가 늘 빈 목록이었다.
     """
@@ -381,8 +381,8 @@ def _local_conf_test_cmd() -> str | None:
     """`.project_manager/local.conf` 의 `test.cmd=` (없거나 OSError → None).
 
     `_local_conf_user` 와 동형 — board.py 를 import 하지 않으므로
-    touches 격리) `board.local_config().get("test.cmd")` 와 *동일 의미*를 stdlib 로 자체
-    구현한다. worktree add 빌드명령 프롬프트의 기본값(`board._test_cmd` 최종 폴백 레이어와
+    touches 격리) `conf_store.local_config(home).get("test.cmd")` 와 *동일 의미*를 stdlib 로 자체
+    구현한다. worktree add 빌드명령 프롬프트의 기본값(`regression._test_cmd` 최종 폴백 레이어와
     동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
     """
     return _local_conf_value("test.cmd")
@@ -395,7 +395,7 @@ _PROTECTED_GATE_SELF_TEST = "self-test"
 def _local_conf_value(key: str) -> str | None:
     """`local.conf` 한 키의 마지막 값 (부재/OSError → None).
 
-    `board.local_config()`와 같은 **last-wins**다. 중복 키의 마지막 값이
+    `conf_store.local_config()`와 같은 **last-wins**다. 중복 키의 마지막 값이
     비어 있으면 앞의 값을 해제한 것으로 보아 `""`를 반환한다. 동일 파일을
     `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
     """
@@ -467,46 +467,14 @@ def _repo_registry_git(repo: str, *, board=None) -> str | None:
             value = None
         if value:
             return value
-    parse_areas = getattr(board_mod, "_parse_areas", None) if board_mod else None
-    if parse_areas is not None:
-        try:
-            _header, rows = parse_areas()
-        except Exception as exc:  # noqa: BLE001 — provenance 미해소로 수렴(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
-            rows = []
-        for row in rows:
-            if row.get("repo") == repo and row.get("git"):
-                return row["git"]
+    try:
+        _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
+    except Exception:  # noqa: BLE001 — provenance 미해소로 수렴.
+        rows = []
+    for row in rows:
+        if row.get("repo") == repo and row.get("git"):
+            return row["git"]
     return None
-
-
-def _expanduser_path(path: Path) -> Path:
-    """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
-    return path.expanduser()
-
-
-def _expanded_user_path(value: str) -> Path:
-    """`~`/`~user` 를 확장한다 — **없는 사용자는 플랫폼과 무관하게 해소 실패**(RuntimeError).
-
-    POSIX 의 `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만, Windows 는 존재하지
-    않는 사용자도 `C:\\Users\\<name>` 으로 조립해 준다. 그래서 같은 입력이 한쪽에서만 해소되고
-    뒤 단계가 다른 분기를 탄다 — 보호 훅 설치는 "해소 실패"에서 멈춰야 하는데 Windows 에서는
-    phantom 홈 경로로 raw installer 까지 갔다(안전 경계가 열린다). `~user` 형태는 **그 사용자
-    홈의 실재**를 판정에 넣어 두 플랫폼이 같은 결론에 도달하게 한다.
-
-    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 축(HOME/USERPROFILE)으로 확장하므로 분기가
-    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 형상까지 막지 않게).
-    """
-    path = Path(value)
-    expanded = _expanduser_path(path)
-    first = path.parts[0] if path.parts else ""
-    if first.startswith("~") and len(first) > 1:
-        home = _expanduser_path(Path(first))
-        if not home.is_dir():
-            raise RuntimeError(
-                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
-    return expanded
 
 
 def _protected_push_gate_config(
@@ -520,7 +488,7 @@ def _protected_push_gate_config(
     upstream/registry provenance를 판별할 수 없으면 사용자 통제 밖 조건으로 영구 차단하지
     않고 adopter `self-test`로 강등한다. 증거 명령 자체는 그대로 fail-closed다.
     """
-    test_cmd = _resolve_repo_test_cmd(repo, board=board)
+    test_cmd = _resolve_repo_test_cmd(repo)
     upstream = _local_conf_value("upstream.path")
     if not upstream:
         if report_downgrade:
@@ -553,7 +521,7 @@ def _protected_push_gate_config(
     # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
     # Windows "stat: embedded null character in path") 입력을 안 실으면 진단이 남지 않는다.
     try:
-        candidate = _expanded_user_path(upstream)
+        candidate = pm_paths._expanded_user_path(upstream)
         if not candidate.is_absolute():
             candidate = REPO / candidate
         candidate = candidate.resolve()
@@ -570,59 +538,44 @@ def _protected_push_gate_config(
 
 
 def _default_test_cmd() -> str:
-    """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 board 기본.
+    """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 `python_env` 기본.
 
-    board._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
+    regression._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
     동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
     프롬프트 표시값 resolve 의 폴백.
     """
     configured = _local_conf_test_cmd()
     if configured:
         return configured
-    board = _load_module("board", "board.py")
-    if board is not None:
-        # 로드된 board 사본은 rev 대조를 통과한 것이다(`_STAMPED_SIBLINGS`) — 기본값 함수가
-        # 있는지 더듬지 않는다.
-        return board.default_pytest_cmd()
-    # 부분 설치에서 board 기본 해소가 불가능해도 serial 하드코딩으로 조용히 강등하지 않는다.
-    return "python3 -m pytest tests/ -q -n auto"
+    return python_env.default_pytest_cmd()
 
 
-def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:
+def _resolve_repo_test_cmd(repo: str) -> str:
     """프롬프트 `[기본: <X>]` 의 X — 그 repo 가 Enter 시 실제로 폴백할 test_cmd.
 
-    board._test_cmd 의 해소 체인을 *그 repo 한정으로* 재현한다 (board 직접 import 금지·
-    `_load_module` DI + areas 파서 `_parse_areas`/`_areas_row_for_prefix` 재사용):
+    regression._test_cmd 의 해소 체인을 *그 repo 한정으로* 재현한다 (areas 파서
+    `areas_store._parse_areas`/`_areas_row_for_prefix` 재사용):
       1. **활성 repo 의 areas.md test_cmd** — 그 repo(=prefix)의 레지스트리 행에 비어
          있지 않은 `test_cmd` 가 있으면 그것(per-repo 스택·`go test ./...` 등).
       2. **최종 폴백** — areas 미등록·빈 값이면 `local.conf test.cmd` 또는 `pytest -q`.
-    (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) board 부재/파서
-    부재면 최종 폴백만. 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
+    (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
     보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
     """
-    board_mod = board or _load_module("board", "board.py")
-    parse_areas = getattr(board_mod, "_parse_areas", None) if board_mod else None
-    if parse_areas is not None:
-        try:
-            _header, rows = parse_areas()
-        except Exception as exc:  # noqa: BLE001 — areas 파싱 실패는 아래 폴백(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
-            rows = []
-        for row in rows:
-            if row.get("repo") == repo and row.get("test_cmd"):
-                return row["test_cmd"]
-    # 구 3칼럼 registry에는 repo 칼럼이 없으므로 prefix lookup을 하위호환으로 유지한다.
-    row_for_prefix = getattr(board_mod, "_areas_row_for_prefix", None) if board_mod else None
-    if row_for_prefix is not None:
-        try:
-            row = row_for_prefix(repo)
-        except Exception as exc:  # noqa: BLE001 — areas 실패는 최종 폴백(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
-            row = None
-        if row and row.get("test_cmd"):
+    home = pm_paths.home_at(REPO)
+    try:
+        _header, rows = areas_store._parse_areas(home)
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 아래 폴백.
+        rows = []
+    for row in rows:
+        if row.get("repo") == repo and row.get("test_cmd"):
             return row["test_cmd"]
+    # 구 3칼럼 registry에는 repo 칼럼이 없으므로 prefix lookup을 하위호환으로 유지한다.
+    try:
+        row = areas_store._areas_row_for_prefix(home, repo)
+    except Exception:  # noqa: BLE001 — areas 실패는 최종 폴백.
+        row = None
+    if row and row.get("test_cmd"):
+        return row["test_cmd"]
     return _default_test_cmd()
 
 
@@ -848,21 +801,15 @@ def protected_hook_wired(
         return None
 
 
-def _areas_protected_cell(repo: str, *, board=None) -> str | None:
+def _areas_protected_cell(repo: str) -> str | None:
     """areas.md 그 repo 행의 **raw** `protected` 셀 — 행 부재 → None (출처 판정용).
 
     `_resolve_repo_protected`(폴백 적용된 *실효값*)와 달리 "명시했나 / 비었나 / 행이 없나"를
-    구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. board 부재/파싱 실패 → None.
+    구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. 파싱 실패 → None.
     """
-    board_mod = board or _load_module("board", "board.py")
-    parse = getattr(board_mod, "_parse_areas", None) if board_mod else None
-    if parse is None:
-        return None
     try:
-        _header, rows = parse()
-    except Exception as exc:  # noqa: BLE001 — 일반 areas 실패만 None(단 skew 재전파).
-        if _is_engine_rev_skew(exc):
-            raise
+        _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
+    except Exception:  # noqa: BLE001 — 일반 areas 실패만 None.
         return None
     for row in rows:
         if row.get("repo") == repo:
@@ -938,7 +885,7 @@ def _warn_missing_protected_branches(
     return missing
 
 
-def protected_retry_command(repo: str, *, board=None) -> str:
+def protected_retry_command(repo: str) -> str:
     """그 repo 의 보호목록 **재실행 안내 커맨드** — 현재 상태(명시/폴백/미등록) 단일 분기.
 
     안내는 *실행하면 지금 상태를 그대로 복원*해야 한다. 그런데 상태에 따라 정확한 커맨드가 다르다:
@@ -954,7 +901,7 @@ def protected_retry_command(repo: str, *, board=None) -> str:
     실패 경고가 전부 이 함수를 소비한다.
     pm_bootstrap 은 `_load_tool` 로 이 심볼을 소비한다(모듈 공개·`protected_hook_wired` 동형).
     """
-    cell = _areas_protected_cell(repo, board=board)
+    cell = _areas_protected_cell(repo)
     if cell is None:
         return f"{_FACADE_PROG} repo add {repo}"
     if not cell.strip():
@@ -1007,8 +954,7 @@ def _refresh_protected_gate_contracts(*, board=None, worktree_pool=None) -> tupl
     보호 훅의 기존 best-effort 계약대로 설정 기록 자체를 롤백하지는 않고 실패를 loud 보고한다.
     """
     board_mod = board or _load_module("board", "board.py")
-    registered = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if registered is None:
+    if board_mod is None:
         return [], []
     # hermetic 호출에서 pm_config.REPO만 임시 루트로 바꿨는데 실 board를 주입하지 않은 경우
     # 실 PM 홈 레지스트리/훅을 건드리지 않는다. 프로덕션 모듈끼리는 같은 REPO다.
@@ -1016,10 +962,8 @@ def _refresh_protected_gate_contracts(*, board=None, worktree_pool=None) -> tupl
     if Path(board_repo).resolve() != REPO.resolve():
         return [], []
     try:
-        repos = sorted(registered())
-    except Exception as exc:  # noqa: BLE001 — 설정 보존·일반 refresh 실패만 fail-soft.
-        if _is_engine_rev_skew(exc):
-            raise
+        repos = sorted(areas_store.registered_repos(pm_paths.home_at(REPO)))
+    except Exception:  # noqa: BLE001 — 설정 보존·일반 refresh 실패만 fail-soft.
         return [], []
     attempted: list[str] = []
     failed: list[str] = []
@@ -1497,7 +1441,7 @@ def cmd_repo_add(
     # 아래 already_registered 재사용(멱등) 경로로 빠지지만, case 만 다른 근접 중복(`svc` vs 등록
     # `SVC`)은 레지스트리에 fold-충돌하는 두 행을 만든다(네임스페이스 분할). **어떤 부작용(clone·
     # mkdir·등록·훅)보다 앞에서** 등록 canonical case 로 안내하고 fail-loud(부작용 0).
-    registered_names = board_mod.registered_repos()
+    registered_names = areas_store.registered_repos(pm_paths.home_at(REPO))
     if name not in registered_names:
         fold = name.lower()
         conflict = next((r for r in registered_names if r.lower() == fold), None)
@@ -1724,7 +1668,7 @@ def _print_protected_status(
     effective = _resolve_repo_protected(name, board=board)
     print(f"{name} · protected = {', '.join(effective)}")
 
-    cell = _areas_protected_cell(name, board=board)
+    cell = _areas_protected_cell(name)
     if cell is None:
         print("  출처: 미등록 repo (areas.md 에 그 행이 없음) — DEFAULT_PROTECTED 기본값 폴백")
     elif cell.strip():
@@ -1747,7 +1691,7 @@ def _print_protected_status(
     listed = ", ".join(sidecar) or "(빈 파일)"
     # 재실행 안내는 **현재 상태**(명시/폴백/미등록)에 맞춰야 한다 — 폴백 상태에 명시 커맨드를
     # 안내하면 사용자가 그대로 실행했을 때 출처가 조용히 "명시" 로 바뀐다(단일 분기 헬퍼).
-    retry = protected_retry_command(name, board=board)
+    retry = protected_retry_command(name)
     if sidecar != effective:
         # 내용 drift 가 지배적 — 배선 여부와 무관하게 재설치가 답이다(재설치가 둘 다 고친다).
         print(f"  훅 sidecar: {path} → {listed}  "
@@ -1868,21 +1812,16 @@ def cmd_repo_protected(
     # 정확하다(`tokens` 가 빈 리스트라 falsy → 옛 코드는 `repo add` 로 잘못 떨어졌다).
     _install_protected_hook_reporting(
         name, board=board_mod, worktree_pool=worktree_pool, action="정합화",
-        retry=protected_retry_command(name, board=board_mod))
+        retry=protected_retry_command(name))
 
     # 4) board-git best-effort 동기 — 공유 정책 변경은 즉시 공유돼야 값-연결이 산다.
     #    **경로 스코프 필수**: paths 없이 부르면 board 전체가 "repo protected"
     #    커밋에 쓸려 들어가 *남의 미커밋 편집*까지 대신 커밋한다. claim 이 dirty 를 안 막게 된
     #    지금은 board 가 상시 dirty 라 그 노출이 더 크다. areas.md 만 이 mutation 의 산출물이다.
-    #    (getattr 로 areas_file 을 받는 이유 = 구 엔진 board 사본과의 호환 — 없으면 종전 동작.)
     sync = getattr(board_mod, "_board_git_sync_best_effort", None)
-    areas_file = getattr(board_mod, "areas_file", None)
     if sync is not None:
         try:
-            if areas_file is not None:
-                sync("repo protected", (areas_file(),))
-            else:
-                sync("repo protected")
+            sync("repo protected", (pm_paths.areas_file(pm_paths.home_at(REPO)),))
         except Exception as exc:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
             if _is_engine_rev_skew(exc):
                 return _report_engine_rev_skew_at_terminal(exc)
@@ -1920,23 +1859,15 @@ def _pad_display(text: str, width: int) -> str:
     return text + " " * max(0, width - _display_width(text))
 
 
-def cmd_repo_list(args: argparse.Namespace, *, board=None) -> int:
+def cmd_repo_list(args: argparse.Namespace) -> int:
     """`repo list` — 등록 repo 표(repo·prefix·base·protected·test_cmd·area_owner).
 
     areas.md 레지스트리의 조회 표면이다 — 보호목록을 고치려면 *지금 뭐가 등록돼 있는지* 부터
     보여야 한다. 빈 셀은 그 칼럼의 폴백을 괄호로 밝힌다(특히 `protected` 빈 값 = 기본값 폴백 —
     "빈 칸" 을 "보호 없음" 으로 오독하지 않게). 순수 읽기(rc 0·미등록이어도 안내 후 0).
     """
-    board_mod = board or _load_module("board", "board.py")
-    if board_mod is None:
-        print(
-            "[중단] board.py 엔진을 찾을 수 없다 — 레지스트리 조회 불가 "
-            f"({TOOLS_DIR / 'board.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
     try:
-        _header, rows = board_mod._parse_areas()
+        _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
     except Exception as exc:  # noqa: BLE001 — 파싱 실패는 명시 에러(조용한 빈 표 금지).
         print(f"[중단] areas.md 파싱 실패 — {exc}", file=sys.stderr)
         return 1
@@ -2048,7 +1979,7 @@ def cmd_worktree_add(
         프롬프트 `[Enter=repo 기본값 유지: …]` 표시값은 그 repo 의 *실제 폴백*(areas test_cmd
         → local.conf → pytest -q·`_resolve_repo_test_cmd`)이라 Enter 가 무엇을 적용하는지 투명.
       - `--test` 미지정 + 비-tty(CI/파이프) → 프롬프트 생략·None(현행·repo areas/local.conf 로 해소).
-    board._test_cmd 가 활성 슬롯의 이 값을 areas 위 레이어로 읽으므로, 빈입력에 기본값을 박으면
+    regression._test_cmd 가 활성 슬롯의 이 값을 areas 위 레이어로 읽으므로, 빈입력에 기본값을 박으면
     areas per-repo test_cmd 를 잘못 덮는다 → 빈입력은 반드시 None(슬롯 미바인딩)이어야 한다.
 
     **성공 출력 다음 단계**: task 없이 만든 슬롯은 idle 이다. 출력은 그 슬롯을 쓰는 순서
@@ -2061,7 +1992,7 @@ def cmd_worktree_add(
     `create_slot` 의 BareRepoMissing 안내가 그대로 나간다(자동 삭제 없음).
 
     worktree_pool/board/input_fn/is_tty/clone_runner 주입으로 hermetic 테스트(실 worktree add·
-    라이브 input·실 clone 없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이
+    라이브 input·실 clone 없이 배선·분기 검증). board 는 base 해소(`_repo_base`)·hydrate 재사용용(콘솔이
     로드한 board 전달). `clone_runner` 는 hydrate 의 `cmd_repo_add` 로 넘기는 파이썬 키워드다(CLI 아님).
     """
     if not _require_worktree_add_user_ack(args):
@@ -2082,7 +2013,7 @@ def cmd_worktree_add(
     tty_check = is_tty if is_tty is not None else _stdin_is_tty
     test_cmd = getattr(args, "test", None)
     if test_cmd is None and tty_check():
-        display_default = _resolve_repo_test_cmd(args.repo, board=board)
+        display_default = _resolve_repo_test_cmd(args.repo)
         test_cmd = _prompt_test_cmd(input_fn, default=display_default)
 
     # base 해소 — areas.md 의 그 repo base 를 읽어 create_slot(base=) 로 전달한다.
@@ -2119,11 +2050,7 @@ def cmd_worktree_add(
                 file=sys.stderr,
             )
             return 1
-        # board 모듈 해소 후 넘긴다(cmd_alloc 과 동일 계약) — `_validate_prebound_task` 가
-        # registered_repos 로 예약명(`<repo>_<N>`) 을 거부하려면 board 가 있어야 한다. board=None 을
-        # 그대로 넘기면 예약패턴 검증이 통째로 완화돼 add 경로만 검증 구멍이 난다.
-        board_mod = board or _load_module("board", "board.py")
-        rc = _validate_prebound_task(wp, board_mod, task)
+        rc = _validate_prebound_task(wp, task)
         if rc:
             return rc
 
@@ -3125,25 +3052,22 @@ def cmd_release(
     return 0
 
 
-def _registered_repos(board_mod) -> "set[str] | None":
-    """등록 repo 이름 — task 명 예약패턴(`<repo>_<N>`) 판별 근거. board 에서 fail-soft 해소.
+def _registered_repos() -> "set[str] | None":
+    """등록 repo 이름 — task 명 예약패턴(`<repo>_<N>`) 판별 근거. areas.md 에서 fail-soft 해소.
 
-    board 모듈 부재·`registered_repos` 속성 부재·조회 예외를 전부 `None` 으로 내린다. `None` 은
+    areas.md 읽기 실패를 `None` 으로 내린다. `None` 은
     "등록 목록을 못 읽었다" 는 뜻이고, 그 상태에서도 `_validate_task_name` 의 traversal·절대경로·
     빈 이름 검증은 그대로 강제된다 — 완화되는 것은 예약패턴 하나다. 해소 규칙이 이 한 자리라
     `task new`(생성)와 `alloc`/`worktree add --task`(기바인딩 요구)가 같은 근거로 판정한다.
     """
-    reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if reg_fn is None:
-        return None
     try:
-        return reg_fn()
+        return areas_store.registered_repos(pm_paths.home_at(REPO))
     except (OSError, UnicodeError):
         # areas.md 를 못 읽은 경우다 — None(예약패턴 검증만 완화·traversal 검증은 유지).
         return None
 
 
-def _validate_prebound_task(wp, board_mod, task: str) -> int:
+def _validate_prebound_task(wp, task: str) -> int:
     """task 명 검증(예약패턴·traversal) + 기바인딩 요구 — `alloc`/`worktree add --task` 공용.
 
     task 이름이 lease session 으로 **기록**되는 write-capable 경로의 선검증이자,
@@ -3151,7 +3075,7 @@ def _validate_prebound_task(wp, board_mod, task: str) -> int:
     실패면 1(진단은 이 함수가 stderr 로 출력). 예약패턴 판별 근거는 `_registered_repos` 하나가
     해소한다(부재면 None → traversal 검증만·예약패턴만 완화).
     """
-    registered = _registered_repos(board_mod)
+    registered = _registered_repos()
     try:
         wp._validate_task_name(task, registered)
     except wp.InvalidTaskName as exc:
@@ -3216,7 +3140,6 @@ def cmd_alloc(
     args: argparse.Namespace,
     *,
     worktree_pool=None,
-    board=None,
 ) -> int:
     """`alloc <repo> --task <task>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여.
 
@@ -3236,9 +3159,10 @@ def cmd_alloc(
     `<repo>_<N>` 예약(기계판별 구멍)을 fail-loud rc1 하고, **task 는 기바인딩이어야 한다**를
     강제한다 — 미바인딩이면 "먼저 `pm-config task new <task>` 또는 `/pm-bootstrap --task <task>` 으로
     task 를 만들라" 안내(정체성 *생성*은 그 둘 소관·alloc은 이미 존재하는 task 에 슬롯을 붙일 뿐).
-    board 를 해소해 넘겨야 (registered_repos) 예약패턴 검증이 활성(부재면 traversal 만·예약패턴 완화).
+    예약패턴 판별 근거(등록 repo)는 `_registered_repos` 가 areas.md 에서 해소한다(읽기 실패면 traversal
+    검증만·예약패턴 완화).
 
-    worktree_pool/board 주입으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
+    worktree_pool 주입으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
@@ -3251,8 +3175,7 @@ def cmd_alloc(
 
     # 명 검증 + 기바인딩 요구 — 공유 헬퍼(`worktree add --task` 와 동일 규율).
     # InvalidTaskName/미바인딩 → rc1(부작용·alloc 이전·진단은 헬퍼가 출력).
-    board_mod = board or _load_module("board", "board.py")
-    rc = _validate_prebound_task(wp, board_mod, args.task)
+    rc = _validate_prebound_task(wp, args.task)
     if rc:
         return rc
 
@@ -3309,7 +3232,6 @@ def cmd_task_new(
     args: argparse.Namespace,
     *,
     worktree_pool=None,
-    board=None,
 ) -> int:
     """`task new <task>` — task 정체성만 생성(세션 묶기 없음·닫힘·슬롯 0).
 
@@ -3326,8 +3248,8 @@ def cmd_task_new(
     동명 종료 archive(`TaskArchived` — `task reopen` 안내) · **이미 있는 이름**(재개는 bootstrap
     몫이라 여기서 열림 표시를 만지지 않는다).
 
-    worktree_pool/board 주입으로 hermetic 테스트. 예약패턴 판별 근거는 `_registered_repos` 가
-    해소한다(부재면 None → traversal 검증만·`cmd_alloc` 과 같은 한 자리).
+    worktree_pool 주입으로 hermetic 테스트. 예약패턴 판별 근거는 `_registered_repos` 가
+    해소한다(읽기 실패면 None → traversal 검증만·`cmd_alloc` 과 같은 한 자리).
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
@@ -3339,9 +3261,8 @@ def cmd_task_new(
         return 1
     name = args.name
 
-    # 예약패턴(`<repo>_<N>`) 판별 근거 — board fail-soft 해소(부재면 None·traversal 검증은 유지).
-    board_mod = board or _load_module("board", "board.py")
-    registered = _registered_repos(board_mod)
+    # 예약패턴(`<repo>_<N>`) 판별 근거 — areas fail-soft 해소(실패면 None·traversal 검증은 유지).
+    registered = _registered_repos()
 
     try:
         task = wp.create_task(name, registered_repos=registered)
@@ -3788,7 +3709,7 @@ def cmd_task_prefix(
     # 1) task 명 검증(must-fix) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`)
     # 거부용(board fail-soft 해소·부재면 None → traversal 검증만). InvalidTaskName → rc1(부작용 이전).
     board_mod = board or _load_module("board", "board.py")
-    registered = _registered_repos(board_mod)
+    registered = _registered_repos()
     try:
         wp._validate_task_name(name, registered)
     except wp.InvalidTaskName as exc:
@@ -4565,18 +4486,13 @@ def _dest_relative_label(path, dest_root) -> str:
 # 커맨드형 CLI 와 공존(같은 핸들러). 엔진/입력은 DI seam → hermetic 테스트.
 
 
-def _render_repos(board_mod) -> None:
-    """areas.md per-repo 레지스트리 행을 surface 한다 (board._parse_areas 재사용).
+def _render_repos() -> None:
+    """areas.md per-repo 레지스트리 행을 surface 한다 (`areas_store._parse_areas` 재사용).
 
-    board 가 없거나 areas 파서가 없으면(부재·로드실패) 안내만 출력(크래시 0). areas.md
-    부재(미배선)면 빈 안내. 중복 파싱 구현 0 — board 의 헤더-인식 파서를 그대로 쓴다.
+    areas.md 부재(미배선)면 빈 안내. 중복 파싱 구현 0 — 헤더-인식 파서를 그대로 쓴다.
     """
     print("## repos (areas.md per-repo 레지스트리):")
-    parse_areas = getattr(board_mod, "_parse_areas", None) if board_mod else None
-    if parse_areas is None:
-        print("  (board.py 엔진/areas 파서 없음 — repo 등록 상태 조회 불가)")
-        return
-    _header, rows = parse_areas()
+    _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
     if not rows:
         print("  (등록된 repo 없음 — [r] 로 추가하라)")
         return
@@ -4610,11 +4526,11 @@ def _render_slots(wp) -> None:
         )
 
 
-def _render_state(board_mod, wp) -> None:
+def _render_state(wp) -> None:
     """콘솔 상태 1회 렌더 — repos(areas) + slots(리스). 액션마다 재호출(재렌더)."""
     print()
     print(f"# pm-config 콘솔 — 세션: {_default_session() or '(비바인딩)'}")
-    _render_repos(board_mod)
+    _render_repos()
     _render_slots(wp)
 
 
@@ -5005,7 +4921,7 @@ def run_console(
     board_mod = board or _load_module("board", "board.py")
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
 
-    _render_state(board_mod, wp)
+    _render_state(wp)
     while True:
         print(_CONSOLE_MENU)
         # 메뉴 선택도 액션 프롬프트와 *같은* 공유 헬퍼로 통일 — 중단(EOF/Ctrl-C) → 우아 종료.
@@ -5019,7 +4935,7 @@ def run_console(
             print("콘솔 종료.")
             return 0
         if choice == "s":
-            _render_state(board_mod, wp)
+            _render_state(wp)
             continue
         if choice == "r":
             result = _console_repo_add(input_fn, board_mod)
@@ -5044,7 +4960,7 @@ def run_console(
             print("\n콘솔 종료.")
             return 0
         # 액션 수행 후 바뀐 상태를 재렌더(입력마다 상태 변화 확인).
-        _render_state(board_mod, wp)
+        _render_state(wp)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

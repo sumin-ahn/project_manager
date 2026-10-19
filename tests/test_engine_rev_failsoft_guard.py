@@ -1238,7 +1238,19 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `pm_update.drift_changes`.
     # 202 = 203 − T-0968 이 지운 1 경계. 상류 분류 형제 로더 `pm_config._classify_upstream` 이 패키지
     #   import(`pm_engine.domain.upstream_rules`)로 바뀌어 코드째 없어졌다.
-    assert len(report.boundaries) == 202, "propagation sweep boundary ratchet changed"
+    # 187 = 202 − T-0971 이 지운 15 경계. board 의 경로·티켓·areas·conf 이름이 패키지(`pm_paths`·
+    #   `ticket_store`·`areas_store`·`conf_store`·`python_env`)로 옮겨져 그 이름만 적재하던 try 의
+    #   재전파 줄이 없어졌다: `pm_config` 5(`_areas_protected_cell`·`_refresh_protected_gate_contracts`·
+    #   `_repo_registry_git` 한 곳·`_resolve_repo_test_cmd` 두 곳), `pm_handoff._resolve_gate_cmd`,
+    #   `pm_import._default_test_cmd`, `pm_log` 2(`_registered_repos`·`_status_dirs`), `ticket_finish` 6
+    #   (`ClusterCloser` 의 `_board_git_paths`·`_reconcile_ticket_frontmatter`·`_ticket_status`,
+    #   `_home_state_prefixes` 한 곳, `_ticket_frontmatter_snapshot`, `count_board_done`).
+    # 179 = 187 − T-0972 가 지운 8 경계. 회귀 해소·pytest 판독이 패키지(`regression`·`slot_resolution`·
+    #   `python_env`)로 옮겨져 형제 로더와 그 재전파 줄이 없어졌다: 로더 정의 3(`pm_handoff._load_board`·
+    #   `_load_pm_bootstrap`, `ticket_finish._load_pm_handoff`), try 본문이 패키지 호출만 남은 5
+    #   (`board._platform_test_commands`·`pm_handoff._regression_cwd` 는 옮기며, `pm_import._detected_py`·
+    #   `ticket_finish._regression_cwd`·`_resolve_per_repo_test_cmd` 는 제자리에서).
+    assert len(report.boundaries) == 179, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1337,7 +1349,6 @@ def _blank_recovery_reason(source: str) -> str:
 @pytest.mark.parametrize(
     ("label", "source_name", "function", "occurrence"),
     [
-        ("S3", "pm_handoff.py", "_regression_cwd", 0),
         ("S4", "pm_config.py", "cmd_repo_protected", 0),
         ("S5", "pm_bootstrap.py", "main", 0),
     ],
@@ -1689,8 +1700,6 @@ def _raiser(exc):
 @pytest.mark.parametrize(
     "case",
     [
-        "handoff_auto_slot",
-        "finish_regression_cwd",
         "board_domain_pages",
         "board_domain_lint",
     ],
@@ -1699,30 +1708,15 @@ def test_runtime_loaded_sibling_and_same_method_boundaries_rethrow_marked_skew(
     case, monkeypatch,
 ):
     skew = _marked_skew()
-    if case == "handoff_auto_slot":
-        module = _runtime_tool("pm_handoff.py")
-        monkeypatch.setattr(
-            module, "_load_pm_bootstrap",
-            lambda: SimpleNamespace(_auto_slot=_raiser(skew)),
-        )
-        invoke = lambda: module._regression_cwd()
-    elif case == "finish_regression_cwd":
-        module = _runtime_tool("ticket_finish.py")
-        monkeypatch.setattr(
-            module, "_load_pm_handoff",
-            lambda: SimpleNamespace(_regression_cwd=_raiser(skew)),
-        )
-        invoke = lambda: module._regression_cwd()
-    else:
-        module = _runtime_tool("board.py")
-        domain = SimpleNamespace(DOMAIN_DIR=Path("domain"), load_pages=_raiser(skew))
-        if case == "board_domain_lint":
-            domain.lint_pages = _raiser(skew)
-        monkeypatch.setattr(module, "_load_domain_module", lambda: domain)
-        invoke = (
-            (lambda: module.lint_domain_freshness())
-            if case == "board_domain_pages" else (lambda: module.lint_domain())
-        )
+    module = _runtime_tool("board.py")
+    domain = SimpleNamespace(DOMAIN_DIR=Path("domain"), load_pages=_raiser(skew))
+    if case == "board_domain_lint":
+        domain.lint_pages = _raiser(skew)
+    monkeypatch.setattr(module, "_load_domain_module", lambda: domain)
+    invoke = (
+        (lambda: module.lint_domain_freshness())
+        if case == "board_domain_pages" else (lambda: module.lint_domain())
+    )
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew
@@ -1867,12 +1861,12 @@ def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
 @pytest.mark.parametrize(
     ("filename", "arguments", "witness"),
     [
-        ("board.py", ["list"], "pm_log.py"),
+        ("board.py", ["list"], "ticket_rounds.py"),
         ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"], "board.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
-        ("pm_bootstrap.py", ["--task", "probe"], "pm_log.py"),
+        ("pm_bootstrap.py", ["--task", "probe"], "board.py"),
         ("pm_handoff.py", [], "pm_log.py"),
-        ("ticket_finish.py", [], "pm_log.py"),
+        ("ticket_finish.py", [], "board.py"),
         ("pm_config.py", ["status"], "worktree_pool.py"),
     ],
 )

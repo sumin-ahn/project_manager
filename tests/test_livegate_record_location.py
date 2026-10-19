@@ -21,7 +21,7 @@ ADR-0027)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면, 
 
 **hermetic + 라이브 실행 금지**: 실 `pytest -m release` 는 절대 기동하지 않는다 — `subprocess.run`
 대역이 pytest 만 가로채고 git 은 실제로 돌려 `core.hooksPath` 해소를 충실히 검증한다. board.py
-경로 전역(`REPO`·`LOCAL_DIR`·`LIVEGATE_FLAG`)은 tmp 로 재지정(test_board_livegate 동류).
+경로 전역(`REPO`·`LOCAL_DIR`)은 tmp 로 재지정(test_board_livegate 동류).
 """
 from __future__ import annotations
 
@@ -35,6 +35,8 @@ import types
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import git, pm_paths, regression_store
+from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -130,9 +132,8 @@ def _make_topology(tmp_path, monkeypatch, *, with_hookspath=True,
     monkeypatch.setattr(mod, "LOCAL_CONF", worktree / ".project_manager/local.conf")
     monkeypatch.setattr(mod, "AREAS_FILE", worktree / ".project_manager/areas.md")
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")  # 부재
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: _HEAD_SHA)
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: _HEAD_SHA)
     return mod, engine, worktree, hooks_dir
 
 
@@ -140,7 +141,7 @@ def _hook_read_flag(hooks_dir: Path) -> Path:
     """훅이 실제로 읽는 livegate.json 을 sidecar 로부터 독립 재구성한다.
 
     훅은 `<hooks_dir>/engine-root`(PM 홈 절대경로)로 `<root>/.project_manager/tools/board.py`
-    를 돌리고, 그 사본의 `LIVEGATE_FLAG = <root>/.project_manager/.local/livegate.json` 을
+    를 돌리고, 그 사본의 기본 기록 위치(`pm_paths.livegate_flag` = `<root>/.project_manager/.local/livegate.json`)를
     읽는다. record 가 정렬해야 할 목표 위치 — `_resolve_livegate_flag` 와 독립 계산해 대조한다.
     """
     root = (hooks_dir / "engine-root").read_text(encoding="utf-8").splitlines()[0].strip()
@@ -180,14 +181,14 @@ def test_resolve_livegate_flag_engine_root_matches_hook_read(tmp_path, monkeypat
     """훅 활성 two-git 토폴로지 → `_resolve_livegate_flag` = 훅 read 위치(PM 홈 .local)·단일 소스."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
 
-    flag, mode = mod._resolve_livegate_flag(str(worktree))
+    flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(worktree))
 
-    assert mode == mod._LG_ENGINE_ROOT
+    assert mode == regression_store._LG_ENGINE_ROOT
     # 독립 재구성한 훅-read 위치와 일치(record 위치 == 훅 read 위치).
     assert flag == _hook_read_flag(hooks_dir)
     assert flag == engine / ".project_manager" / ".local" / "livegate.json"
     # 호출된 사본의 순진한 위치(worktree .local)로 쓰지 않는다 — 정확히 이게 PM 60 버그였다.
-    assert flag != mod.LIVEGATE_FLAG
+    assert flag != pm_paths.livegate_flag(mod._home())
 
 
 @_git_required
@@ -195,7 +196,7 @@ def test_record_writes_to_hook_read_location_not_called_copy(tmp_path, monkeypat
     """end-to-end: worktree board.py 로 record 해도 훅 read 위치(PM 홈 .local)에 기록·호출 사본엔 안 씀."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
     real_run = mod.subprocess.run
-    fake = _PytestOnlyFake(real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
+    fake = _PytestOnlyFake(real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
     rc = mod.cmd_livegate(_rec_args(cwd=str(worktree)))
@@ -206,9 +207,9 @@ def test_record_writes_to_hook_read_location_not_called_copy(tmp_path, monkeypat
     data = json.loads(hook_flag.read_text(encoding="utf-8"))
     assert data["status"] == "pass"
     assert data["head"] == _HEAD_SHA
-    assert data["n"] == mod.LIVEGATE_RELEASE_PIN
+    assert data["n"] == regression.LIVEGATE_RELEASE_PIN
     # 호출된 사본의 .local(worktree)에는 조용한 기록이 없어야 한다(단일 소스·false-green 차단).
-    assert not mod.LIVEGATE_FLAG.exists(), \
+    assert not pm_paths.livegate_flag(mod._home()).exists(), \
         "record 가 훅이 안 읽는 호출-사본 .local 에 조용히 기록했다(PM 60 footgun 재발)"
 
 
@@ -224,17 +225,17 @@ def test_platform_record_uses_engine_root_evidence_and_recorded_anchor_with_read
         json.dumps(_platform_regression_record(worktree)), encoding="utf-8")
     real_run = mod.subprocess.run
     fake = _PytestOnlyFake(
-        real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
+        real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
     platform_calls = []
     def platform(command, cwd, env):
         platform_calls.append((command, cwd, dict(env)))
-        return 0, mod.PM_QA_RESULT_PREFIX + json.dumps({
+        return 0, regression.PM_QA_RESULT_PREFIX + json.dumps({
             "platform": env["PM_QA_PLATFORM"], "head": _HEAD_SHA,
             "status": "pass", "collected": 3,
         }) + "\n", ""
-    monkeypatch.setattr(mod, "_run_regression_cmd", platform)
+    monkeypatch.setattr(regression, "_run_regression_cmd", platform)
     assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 0
     assert len(platform_calls) == 1
     assert platform_calls[0][0] == "run-windows" and platform_calls[0][1] == str(readonly)
@@ -257,7 +258,7 @@ def test_platform_evidence_in_called_copy_only_blocks_readonly_record(
         json.dumps(_platform_regression_record(worktree)), encoding="utf-8")
     real_run = mod.subprocess.run
     fake = _PytestOnlyFake(
-        real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
+        real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
     assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 1
@@ -272,14 +273,14 @@ def test_platform_evidence_in_called_copy_only_blocks_readonly_record(
 
 @_git_required
 def test_resolve_no_hookspath_falls_back_to_repo_local(tmp_path, monkeypatch):
-    """`core.hooksPath` 미설정(단일-repo/솔로) → LIVEGATE_FLAG(REPO/.local) 폴백·mode solo."""
+    """`core.hooksPath` 미설정(단일-repo/솔로) → `pm_paths.livegate_flag`(REPO/.local) 폴백·mode solo."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
 
-    flag, mode = mod._resolve_livegate_flag(str(worktree))
+    flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(worktree))
 
-    assert mode == mod._LG_NO_HOOK
-    assert flag == mod.LIVEGATE_FLAG
+    assert mode == regression_store._LG_NO_HOOK
+    assert flag == pm_paths.livegate_flag(mod._home())
 
 
 @_git_required
@@ -288,26 +289,26 @@ def test_resolve_hookspath_without_engine_root_is_no_hook_not_broken(tmp_path, m
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, write_engine_root=False)
 
-    flag, mode = mod._resolve_livegate_flag(str(worktree))
+    flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(worktree))
 
-    assert mode == mod._LG_NO_HOOK, "livegate 훅 아닌 hooksPath 를 broken 으로 오탐하면 안 됨"
-    assert flag == mod.LIVEGATE_FLAG
+    assert mode == regression_store._LG_NO_HOOK, "livegate 훅 아닌 hooksPath 를 broken 으로 오탐하면 안 됨"
+    assert flag == pm_paths.livegate_flag(mod._home())
 
 
 @_git_required
 def test_record_solo_records_at_repo_local(tmp_path, monkeypatch):
-    """솔로 폴백 경로에서 record 가 정상 pass 를 REPO/.local(LIVEGATE_FLAG)에 기록(현행 동작 보존)."""
+    """솔로 폴백 경로에서 record 가 정상 pass 를 REPO/.local(`pm_paths.livegate_flag`)에 기록(현행 동작 보존)."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
     real_run = mod.subprocess.run
-    fake = _PytestOnlyFake(real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
+    fake = _PytestOnlyFake(real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
     rc = mod.cmd_livegate(_rec_args(cwd=str(worktree)))
 
     assert rc == 0
-    assert mod.LIVEGATE_FLAG.exists()
-    data = json.loads(mod.LIVEGATE_FLAG.read_text(encoding="utf-8"))
+    assert pm_paths.livegate_flag(mod._home()).exists()
+    data = json.loads(pm_paths.livegate_flag(mod._home()).read_text(encoding="utf-8"))
     assert data["status"] == "pass"
 
 
@@ -319,9 +320,9 @@ def test_resolve_broken_when_engine_root_empty(tmp_path, monkeypatch):
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, engine_root_value="")
 
-    _flag, mode = mod._resolve_livegate_flag(str(worktree))
+    _flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(worktree))
 
-    assert mode == mod._LG_BROKEN
+    assert mode == regression_store._LG_BROKEN
 
 
 @_git_required
@@ -330,9 +331,9 @@ def test_resolve_broken_when_engine_root_lacks_board(tmp_path, monkeypatch):
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, board_in_engine=False)
 
-    _flag, mode = mod._resolve_livegate_flag(str(worktree))
+    _flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(worktree))
 
-    assert mode == mod._LG_BROKEN
+    assert mode == regression_store._LG_BROKEN
 
 
 @_git_required
@@ -341,7 +342,7 @@ def test_record_broken_engine_root_fails_loud_no_write(tmp_path, monkeypatch, ca
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, board_in_engine=False)
     real_run = mod.subprocess.run
-    fake = _PytestOnlyFake(real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
+    fake = _PytestOnlyFake(real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
     rc = mod.cmd_livegate(_rec_args(cwd=str(worktree)))
@@ -351,7 +352,7 @@ def test_record_broken_engine_root_fails_loud_no_write(tmp_path, monkeypatch, ca
     assert "engine-root sidecar 무효" in err
     assert "false-green 차단" in err
     # pass 위장을 어디에도 남기지 않는다 — 호출-사본 .local 도, engine .local 도.
-    assert not mod.LIVEGATE_FLAG.exists()
+    assert not pm_paths.livegate_flag(mod._home()).exists()
     assert not (engine / ".project_manager" / ".local" / "livegate.json").exists()
     # fail-fast: BROKEN 은 실행 전에 알 수 있으니 값비싼 `pytest -m release`(~6.5분 실 LLM·실과금)를
     # 아예 안 돈다. resolve+BROKEN 체크가 run *앞*에 온다 (T-0287 리뷰 should-fix·PM 60 낭비 회피).
@@ -388,12 +389,11 @@ def test_resolve_livegate_flag_no_hook_when_not_git_repo(tmp_path, monkeypatch):
     local = proj / ".project_manager" / ".local"
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
 
-    flag, mode = mod._resolve_livegate_flag(str(tmp_path / "nonrepo"))
+    flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(tmp_path / "nonrepo"))
 
-    assert mode == mod._LG_NO_HOOK
-    assert flag == mod.LIVEGATE_FLAG
+    assert mode == regression_store._LG_NO_HOOK
+    assert flag == pm_paths.livegate_flag(mod._home())
 
 
 # ── ⑤ 상대 core.hooksPath: git 시맨틱대로 worktree root 기준 해소 (T-0287 방어) ──
@@ -423,18 +423,17 @@ def test_resolve_relative_hookspath_resolves_against_worktree_root(tmp_path, mon
     local = worktree / ".project_manager" / ".local"
     monkeypatch.setattr(mod, "REPO", worktree)
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
 
     # 프로세스 cwd(=pytest 실행 위치)가 worktree 가 아니어도 worktree root 기준으로 해소돼야 한다.
-    flag, mode = mod._resolve_livegate_flag(str(worktree))
+    flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(worktree))
 
-    assert mode == mod._LG_ENGINE_ROOT, "상대 core.hooksPath 를 worktree root 기준 해소하지 못함"
+    assert mode == regression_store._LG_ENGINE_ROOT, "상대 core.hooksPath 를 worktree root 기준 해소하지 못함"
     assert flag == engine / ".project_manager" / ".local" / "livegate.json"
 
 
 # ── ⑥ check 단일 소스: record 와 대칭 (T-0306·모듈상수 직독 제거·wrong-copy 오독 차단) ──
 # check 도 record 와 **동일 해소**(`_resolve_livegate_flag`)를 거쳐 어느 board.py 사본/cwd 로 check
-# 하든 훅이 기록한 engine-root 파일을 읽는다(single-source). 모듈상수 `LIVEGATE_FLAG` 직독을 남겨두면
+# 하든 훅이 기록한 engine-root 파일을 읽는다(single-source). 기본 위치(`pm_paths.livegate_flag`) 직독을 남겨두면
 # 호출-사본의 stale/wrong `.local` 을 읽어 false-green/false-red 오독이 난다 — 그걸 못박는다.
 
 
@@ -450,15 +449,15 @@ def _write_livegate_json(path: Path, *, status: str, head: str, n=None, rc=0):
 def test_check_worktree_cwd_reads_engine_root_record(tmp_path, monkeypatch, capsys):
     """worktree cwd 로 check 해도 훅 read 위치(engine-root .local)의 기록을 읽어 green (단일 소스).
 
-    호출-사본(worktree) LIVEGATE_FLAG 에는 **상충하는 fail** 을 심어, check 가 그 wrong-copy 를
+    호출-사본(worktree) 기본 위치에는 **상충하는 fail** 을 심어, check 가 그 wrong-copy 를
     읽으면 red 로 갈리게 해둔다 — green 이 나오면 engine-root(훅 기록)를 읽은 것이다(false-red 차단).
     """
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
     hook_flag = _hook_read_flag(hooks_dir)
     _write_livegate_json(hook_flag, status="pass", head=_HEAD_SHA,
-                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
+                         n=regression.LIVEGATE_RELEASE_PIN, rc=0)
     # 호출-사본(worktree)의 순진한 위치엔 상충 fail — check 가 이걸 읽으면 안 된다.
-    _write_livegate_json(mod.LIVEGATE_FLAG, status="fail", head=_HEAD_SHA, n=0, rc=1)
+    _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="fail", head=_HEAD_SHA, n=0, rc=1)
 
     rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
@@ -470,13 +469,13 @@ def test_check_worktree_cwd_reads_engine_root_record(tmp_path, monkeypatch, caps
 def test_check_default_cwd_resolves_engine_root_not_module_const(tmp_path, monkeypatch):
     """`--cwd` 미지정 → 이 board.py 사본의 REPO(=worktree)로 해소·engine-root 기록을 읽는다.
 
-    default cwd 가 모듈상수 LIVEGATE_FLAG 직독으로 폴백하면 worktree 의 상충 fail 을 읽어 red 가 난다.
+    default cwd 가 기본 위치 직독으로 폴백하면 worktree 의 상충 fail 을 읽어 red 가 난다.
     green 이면 default(REPO)→hooksPath→engine-root 정렬이 살아있는 것(모듈상수 직독 제거 회귀).
     """
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
     _write_livegate_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
-                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
-    _write_livegate_json(mod.LIVEGATE_FLAG, status="fail", head=_HEAD_SHA, n=0, rc=1)
+                         n=regression.LIVEGATE_RELEASE_PIN, rc=0)
+    _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="fail", head=_HEAD_SHA, n=0, rc=1)
 
     rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=None))   # default → str(REPO)=worktree
 
@@ -488,7 +487,7 @@ def test_check_rev_mismatch_against_engine_root(tmp_path, monkeypatch, capsys):
     """engine-root 기록이 pass 라도 push rev 가 다르면 rc1 rev 불일치(engine-root 값으로 판정)."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
     _write_livegate_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
-                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
+                         n=regression.LIVEGATE_RELEASE_PIN, rc=0)
 
     rc = mod.cmd_livegate(_chk_args(rev="deadbeef" * 5, cwd=str(worktree)))
 
@@ -516,11 +515,11 @@ def test_check_broken_engine_root_fails_loud(tmp_path, monkeypatch, capsys):
 
 @_git_required
 def test_check_solo_no_hookspath_reads_repo_local(tmp_path, monkeypatch, capsys):
-    """`core.hooksPath` 미설정(단일-repo/솔로) → 현행 REPO/.local(LIVEGATE_FLAG) 폴백 read 무변경."""
+    """`core.hooksPath` 미설정(단일-repo/솔로) → 현행 REPO/.local(`pm_paths.livegate_flag`) 폴백 read 무변경."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
-    _write_livegate_json(mod.LIVEGATE_FLAG, status="pass", head=_HEAD_SHA,
-                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)
+    _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="pass", head=_HEAD_SHA,
+                         n=regression.LIVEGATE_RELEASE_PIN, rc=0)
 
     rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
@@ -532,12 +531,12 @@ def test_check_solo_no_hookspath_reads_repo_local(tmp_path, monkeypatch, capsys)
 def test_check_absent_record_at_engine_root_blocks(tmp_path, monkeypatch, capsys):
     """engine-root 로 정렬됐으나 아직 기록 없음 → rc1 '기록 없음'(호출-사본 stale 을 pass 로 오독 안 함).
 
-    호출-사본(worktree) LIVEGATE_FLAG 에 stale pass 를 심어도, check 는 engine-root(부재)를 봐서
+    호출-사본(worktree) 기본 위치에 stale pass 를 심어도, check 는 engine-root(부재)를 봐서
     '기록 없음' 을 낸다 — wrong-copy stale 을 green 으로 오독하지 않는다(false-green 차단).
     """
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
-    _write_livegate_json(mod.LIVEGATE_FLAG, status="pass", head=_HEAD_SHA,
-                         n=mod.LIVEGATE_RELEASE_PIN, rc=0)   # 호출-사본 stale pass
+    _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="pass", head=_HEAD_SHA,
+                         n=regression.LIVEGATE_RELEASE_PIN, rc=0)   # 호출-사본 stale pass
 
     rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 

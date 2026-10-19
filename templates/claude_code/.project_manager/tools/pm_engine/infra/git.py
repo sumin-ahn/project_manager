@@ -1,9 +1,10 @@
 """git 저장소 조회 (층: infra).
 
-`git rev-parse`·alias·명령 목록·미커밋 여부 조회. 판정 규칙은 `pm_engine.domain.git_policy` 가 소유한다.
+`git rev-parse`·설정값·alias·명령 목록·미커밋 여부 조회. 판정 규칙은 `pm_engine.domain.git_policy` 가 소유한다.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ def _shared_repository_root(anchor: Path, *, runner: Any = subprocess.run) -> Pa
     """`anchor` 가 PM 홈 공용 저장소(bare `<PM 홈>/.repos/<repo>.git`) 안이면 그 저장소 경로.
 
     bare 저장소는 작업 폴더가 없어 ``--show-toplevel`` 이 실패하므로 git-dir 로 따로 해소한다.
-    형상 규칙은 슬롯 소유 유도(`pm_log.owning_pm_home`)와 같다 — `.repos` 아래 `.git` 접미
+    형상 규칙은 슬롯 소유 유도(`pm_paths.owning_pm_home`)와 같다 — `.repos` 아래 `.git` 접미
     디렉터리이고 그 위가 `.project_manager` 를 가진 PM 홈이어야 한다.
     """
     answer = _git_rev_parse(anchor, "--is-bare-repository", "--absolute-git-dir", runner=runner)
@@ -129,3 +130,67 @@ def _is_linked_worktree(anchor: Path, *, runner: Any = subprocess.run) -> bool:
         return pp if pp.is_absolute() else (anchor / pp).resolve()
 
     return _abs(git_dir) != _abs(common_dir)
+
+
+def _git_head_at(cwd: str) -> str:
+    """주어진 작업 디렉토리의 git HEAD sha 를 반환한다 (실패/비-repo 면 '').
+
+    `_git_head` 는 Home 루트(board 프로세스의 `REPO`) 기준이지만, livegate 기록은 테스트가 실제로
+    돈 **활성 slot worktree**(=`_livegate_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
+    push 하는 sha(=worktree HEAD)와 대조되기 때문. 이 함수가 그 cwd-매개 HEAD 를 낸다.
+    """
+    r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+# board git 호출 timeout — pull/push 는 네트워크 왕복이라 user-email 폴백(5s)보다 길게
+# 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 관례).
+_BOARD_GIT_TIMEOUT_SECONDS = 30
+
+
+def _cluster_current_branch(tree: str) -> str | None:
+    """코드 트리의 현재 브랜치 — detached·비-git·git 부재는 None."""
+    result = _git_run(["symbolic-ref", "--quiet", "--short", "HEAD"], repo=Path(tree))
+    if result is None or result[0] != 0:
+        return None
+    return (result[1] or "").strip() or None
+
+
+def _git_run(argv: list[str], *, runner=None, repo: Path) -> tuple[int, str] | None:
+    """git 명령의 `(rc, stdout)` 반환·git 부재/예외 → None. runner seam(hermetic 테스트)·미주입
+    시 실 subprocess(`git -C repo`). rev-parse 해소 OID(prefix 검증용)가 필요한 곳이 쓴다."""
+    if runner is None:
+        if shutil.which("git") is None:
+            return None
+        repo = Path(repo)
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(repo), *argv],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+        except (OSError, subprocess.SubprocessError):  # 타임아웃/바이너리 이상은 None(환경적).
+            return None
+        return r.returncode, r.stdout or ""
+    try:
+        rc, out = runner(argv)
+    except Exception:  # noqa: BLE001 — 주입 runner raise 도 None.
+        return None
+    return rc, out
+
+
+def _git_head(home) -> str:
+    return _git_head_at(str(home.root))
+
+
+def _git_config_get(cwd: str, key: str) -> str | None:
+    """`git -C <cwd> config --get <key>` 값 (미설정/비-repo/빈값이면 None).
+
+    인코딩 명시(git path 출력이 cp949 로 디코딩되지 않도록 utf-8·`_hooks_dir` 동형).
+    """
+    r = subprocess.run(["git", "-C", cwd, "config", "--get", key],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    val = r.stdout.strip() if r.returncode == 0 else ""
+    return val or None

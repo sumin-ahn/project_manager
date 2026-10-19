@@ -40,7 +40,7 @@ import pytest
 from conftest import bind_product_cluster
 
 from conftest import write_cluster_ledger
-from pm_engine.infra import raw_output
+from pm_engine.infra import pm_paths, raw_output, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -291,8 +291,8 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     spec.write_text(spec.read_text(encoding="utf-8").replace(
         "tags: []", "cluster: C-T-9202\ntags: []"), encoding="utf-8")
     board = _fixture_board(pd, pm_home, sync_log)
-    board.drafts_dir().mkdir(parents=True)
-    spec.rename(board.drafts_dir() / spec.name)
+    pm_paths.drafts_dir(board._home()).mkdir(parents=True)
+    spec.rename(pm_paths.drafts_dir(board._home()) / spec.name)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
     plan = pd.prepare_ticket_copy(ticket="T-9202", role="architect", cwd=slot, pm_home=pm_home)
     active = []
@@ -336,7 +336,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     assert board.cmd_promote(argparse.Namespace(id="T-9202")) == 0
     assert len(published) == 1
     assert plan.board_path.parent in published[0]
-    assert board.find_ticket_exact("T-9202")[0] == "open"
+    assert ticket_store.find_ticket_exact(board._home(), "T-9202")[0] == "open"
 
 
 # ── R2 자기 참조 거부 ────────────────────────────────────────────────────────

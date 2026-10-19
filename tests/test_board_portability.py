@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from pm_engine.domain import conf_schema
+from pm_engine.infra import areas_store, conf_store, pre_push_hook, python_env, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -38,9 +39,9 @@ def board():
 
 @pytest.fixture(autouse=True)
 def _clear_detect_py_cache(board):
-    board._detect_py.cache_clear()
+    python_env._detect_py.cache_clear()
     yield
-    board._detect_py.cache_clear()
+    python_env._detect_py.cache_clear()
 
 
 # ── C1: load_ticket / dump_ticket round-trip (em-dash + 이모지) ──────────────
@@ -59,7 +60,7 @@ def test_dump_load_round_trip_em_dash_and_emoji(board, tmp_path):
     raw = path.read_bytes()
     assert HARD_CONTENT.encode("utf-8") in raw
 
-    fm2, body2 = board.load_ticket(path)
+    fm2, body2 = ticket_store.load_ticket(path)
     assert fm2["title"] == HARD_CONTENT
     assert body2 == body
 
@@ -106,7 +107,7 @@ def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
         return orig(target, *args, **kwargs)
 
     monkeypatch.setattr(board.fs, "read_text_shared", spy)
-    board.load_ticket(path)
+    ticket_store.load_ticket(path)
     assert captured.get("encoding") == "utf-8"
 
 
@@ -121,7 +122,7 @@ def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
     monkeypatch.setattr(board, "REPO", root)
     (root / ".git").mkdir(exist_ok=True)
     hooks = root / ".git" / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
     return hooks
 
 
@@ -135,14 +136,14 @@ def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
 
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     # python3 부재·python 존재 → _detect_py() == 'python'.
     monkeypatch.setattr(
         board.shutil, "which",
         lambda cmd: r"C:\Python\python.exe" if cmd == "python" else None,
     )
 
-    assert board.install_pre_push_hook() is True
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
 
     body = (hooks / "pre-push").read_text(encoding="utf-8")
     assert "python .project_manager/tools/board.py regression" in body
@@ -158,7 +159,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     """
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(board.shutil, "which", lambda cmd: "/usr/bin/python3" if cmd == "python3" else None)
 
     captured: dict = {}
@@ -170,7 +171,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
         return orig(self, data, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", spy)
-    board.install_pre_push_hook()
+    pre_push_hook.install_pre_push_hook(board._home())
     assert captured.get("encoding") == "utf-8"
     assert (hooks / "pre-push").is_file()      # 교체가 실제로 최종 경로에 착지했다
 
@@ -183,10 +184,12 @@ def _init_isolated(board, monkeypatch, tmp_path):
     `REPO` 까지 tmp 로 묶는다 — init 은 areas repo 행을 **항상** 등록하므로(T-0779) LOCAL_CONF
     만 격리하면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡아 실 areas.md 를 만든다
     (hermetic 위반). 등록 repo 이름은 `REPO.name` 에서 유도되므로 tmp 이름이 곧 그 값이다.
+    conf 는 `REPO` 의 Home 이 가리키는 자리(`proj/.project_manager/local.conf`)에 둔다 — init 은
+    기존 키를 Home 으로 읽고 `LOCAL_CONF` 로 쓴다.
     """
     proj = tmp_path / "proj"
     (proj / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
-    conf_path = tmp_path / "local.conf"
+    conf_path = proj / ".project_manager" / "local.conf"
     monkeypatch.setattr(board, "REPO", proj)
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "AREAS_FILE", proj / ".project_manager" / "areas.md")
@@ -197,7 +200,7 @@ def _init_isolated(board, monkeypatch, tmp_path):
                         proj / ".project_manager" / ".local" / "worktree-leases.json")
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
-    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     return conf_path
 
 
@@ -238,7 +241,7 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
                    "harness.claude.ctx_window_tokens",
                    "harness.opencode.ctx_window_tokens"):
         assert marker not in conf_text, f"conf 에 설명 블록 잔존: {marker}"
-    parsed = board.local_config()  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
+    parsed = conf_store.local_config(board._home())  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
     assert parsed.get("ctx.compact_at_pct") == str(
         board._conf_default_int("ctx.compact_at_pct"))
     assert not [key for key in parsed if key.startswith("harness.")]
@@ -330,7 +333,7 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 lease 장부·areas.md.
     assert "session=" not in conf_text and "prefix=" not in conf_text
     assert "runtime.py=" in conf_text
-    assert f"test.cmd={board.default_pytest_cmd(board._detect_py())}" in conf_text
+    assert f"test.cmd={python_env.default_pytest_cmd(python_env._detect_py())}" in conf_text
     assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" in conf_text
     assert "ctx.checkpoint_at_pct=" in conf_text and "ctx.precompact_at_pct=" in conf_text
 
@@ -349,7 +352,7 @@ def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
 
     assert board.cmd_init(args) == 0
 
-    assert board.registered_repos() == {"newsess"}
+    assert areas_store.registered_repos(board._home()) == {"newsess"}
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "session=my-pm" in conf_text          # init 이 안 쓰는 키는 byte 보존
     assert "session=newsess_2" not in conf_text  # 세션을 conf 에 쓰지 않는다
@@ -384,4 +387,4 @@ def test_init_rerun_guarantees_a_trailing_newline_after_the_last_key(
     conf_text = conf_path.read_text(encoding="utf-8")
     assert conf_text.endswith("\n")
     assert "ctx.compact_at_pct=95\n" in conf_text
-    assert board.local_config().get("ctx.compact_at_pct") == "95"
+    assert conf_store.local_config(board._home()).get("ctx.compact_at_pct") == "95"

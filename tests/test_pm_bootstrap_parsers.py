@@ -22,6 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import pre_push_hook
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -128,10 +130,10 @@ def test_parse_board_counts_happy():
 def test_parse_board_counts_empty():
     """빈 입력 → 모든 status 0 (KeyError 없이 dict 골격 유지).
 
-    골격 키는 board `STATUS_DIRS` 파생이라 손으로 적은 4버킷이 아니다(T-0839).
+    골격 키는 `ticket_rules.STATUS_DIRS` 파생이라 손으로 적은 4버킷이 아니다(T-0839).
     """
     mod = _load_module()
-    assert mod.parse_board_counts("") == dict.fromkeys(_load_board().STATUS_DIRS, 0)
+    assert mod.parse_board_counts("") == dict.fromkeys(ticket_rules.STATUS_DIRS, 0)
 
 
 def test_parse_board_counts_ignores_unknown_status():
@@ -139,7 +141,7 @@ def test_parse_board_counts_ignores_unknown_status():
     mod = _load_module()
     out = "  [archived] T-0099  옛날 ticket  pm  old\n  [open   ] T-0100  새 ticket  -  new\n"
     counts = mod.parse_board_counts(out)
-    expected = dict.fromkeys(_load_board().STATUS_DIRS, 0) | {"open": 1}
+    expected = dict.fromkeys(ticket_rules.STATUS_DIRS, 0) | {"open": 1}
     assert counts == expected
 
 
@@ -1553,9 +1555,9 @@ def test_collect_board_names_the_hook_generation_block_instead_of_unparsed():
     mod = _load_module()
     board_mod = mod._load_board()
     assert board_mod is not None, "board.py 사본을 로드하지 못했다"
-    hook_block = board_mod._STALE_HOOK_REFUSAL.format(
+    hook_block = pre_push_hook._STALE_HOOK_REFUSAL.format(
         kind="구버전", hook="/tmp/home/.git/hooks/pre-push") + "\n"
-    assert hook_block.startswith(board_mod.PM_HOOK_NOTICE_PREFIX)
+    assert hook_block.startswith(pre_push_hook.PM_HOOK_NOTICE_PREFIX)
 
     def board_fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":

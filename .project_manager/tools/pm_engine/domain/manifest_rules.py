@@ -157,16 +157,16 @@ class EmptyShippingInventoryError(RuntimeError):
 # ── board-분리 인지 dest 리매핑 ───────────────────────────
 # manifest 는 ticket 본문 템플릿을 `wiki/tickets/_template.md` 로 들고 있다(canonical·
 # legacy adopter 의 실 위치). 그러나 board(tickets+areas)가 `.project_manager/board/`
-# (submodule)로 분리된 adopter(board.py board_root)에선 `_template.md` 가
-# `board/tickets/_template.md` 에 산다(board_root() 추종·B 마이그레이션이 거기로 옮김).
+# (submodule)로 분리된 adopter(`pm_paths` board 루트)에선 `_template.md` 가
+# `board/tickets/_template.md` 에 산다(board 루트 추종·B 마이그레이션이 거기로 옮김).
 # manifest 항목은 legacy-correct 로 두고(자체 drift 회피), *동기 시 dest 경로만*
 # board_root 로 해소한다 — board-분리 dest 면 board/tickets/_template.md 로, legacy dest 면
 # 종전 wiki/tickets/_template.md 로(무변경). 이로써 board-분리 adopter 의 매 sync 가
 # wiki/tickets/_template.md 를 부활시키지 않는다(drift-0·실 발생 버그 reconcile).
 #
-# board.py board_root() 의 *실측* 판별(`<dest>/.project_manager/board/tickets` 가 dir 인가)을
+# `pm_paths._board_root_at` 의 *실측* 판별(`<dest>/.project_manager/board/tickets` 가 dir 인가)을
 # 동형 복제한다 — pm_update 는 stdlib-only(board 미import 결합 회피·_resolve_dest_source 와
-# 동형)이고, 판별은 단일 is_dir() probe 라 board.py line 71/95 와 정확히 같다. 어떤 manifest
+# 동형)이고, 판별은 단일 is_dir() probe 라 `pm_paths._board_root_at` 과 정확히 같다. 어떤 manifest
 # 항목이 board-분리 시 board/ 로 옮겨가는지는 아래 `_TEMPLATE_REL`→`_BOARD_TEMPLATE_REL`
 # 매핑(`_dest_relpath_for`)이 단일 진실.
 _TEMPLATE_REL = ".project_manager/wiki/tickets/_template.md"

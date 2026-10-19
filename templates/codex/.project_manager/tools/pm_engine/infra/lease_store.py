@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from pm_engine.domain import identity_args
-from pm_engine.infra import fs
+from pm_engine.infra import fs, pm_paths
 
 
 _CODEX_HARNESS_SESSION_MARKERS: tuple[str, ...] = (
@@ -430,3 +430,47 @@ def resolve_task_workspace(identity: identity_args.Identity, leases_file: Path) 
         raise identity_args.WorkspaceResolutionError(f"작업공간 {slot}은 task {task!r} 보유가 아니다, 소유검사 거부")
     return identity_args.Workspace(slot=slot, repo=repo, session=row.get("session") or None,
                      test_cmd=row.get("test_cmd"), readonly=readonly)
+
+
+def session_name(home, override: str | None = None) -> str | None:
+    """세션 식별자 해소(조회·소유 대조용) — count-based 유도:
+
+        override(`--task` 값 — 액터 서브가 `_actor_session_override` 로 미리 검증해 넘긴다)
+          > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
+          > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
+          > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
+          > None
+
+    `PM_SESSION_NAME` 이 정식 이름(엔진 변수·하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
+    (둘 다면 PM 승·조용히 동작·안내는 문서만·`--json` 출력 오염 방지).
+
+    **per-clone 저장 쪽지 폴백은 없다.** slot 종속 값이 프로젝트 공용 per-clone conf(`local.conf
+    session=`)에 있던 것이 범위 오류였다 — 슬롯 1개는 N=1 부분집합일 뿐이라
+    "이 클론이 어떤 홈이다"를 이 프로세스만 아는 파일에 스스로 적어두는 쪽지를
+    두지 않는다. 그 키가 conf 에 남아 있어도 읽지 않는다(모르는 키로 표면화될 뿐 동작 불변).
+    세션은 **공유 장부로부터의 유도**(lease 단일-행) 또는 **명시**(env·`--task`)로만
+    해소한다 — 어느 층도 저장하지 않고 매 호출 재유도한다.
+
+    귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)는 이 함수를 정체성으로 쓰지 않는다 —
+    `--task` 가 없으면 `TASK_REQUIRED` 로 멈춘다. 여기 미해소(None)는 surface(whoami/status/
+    list --mine)의 "(비바인딩)" 표시와 소유 대조 거부로 이어진다.
+
+    저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
+    소유권이 미스되므로 세 모듈(lease_store.session_name·worktree_pool._default_
+    session·pm_config._default_session)이 같은 우선순위를 공유한다(tail 만 용처별 상이).
+
+    장부에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
+    떨어진다 — "행이 없다"에서 세션 이름을 유도하지 않는다. 그 유도는 실제로 행을 보유했던
+    홈이 장부 손상으로 0행처럼 보이는 순간 silent 오귀속이 됐고, 등록 자체를 장부 행으로
+    옮기면서 유도할 대상이 사라졌다.
+    """
+    if override:
+        return override
+    env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
+    if env:
+        return env
+    leased = leased_sessions(pm_paths.leases_file(home))
+    if len(leased) == 1:
+        return leased[0]
+    # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 폴백 없음.
+    return None

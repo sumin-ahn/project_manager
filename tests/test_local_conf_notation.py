@@ -35,7 +35,8 @@ from _repo_owned_inventory import OWNED, repo_owned_paths
 from _engine_tree import engine_python_files
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
-from pm_engine.infra import conf_store
+from pm_engine.infra import conf_store, pm_paths, python_env
+from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -128,14 +129,14 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
     external.REPO = tmp_path
     config.REPO = tmp_path
 
-    assert board.local_config()["identity.user"] == "last@example.com"
+    assert conf_store.local_config(board._home())["identity.user"] == "last@example.com"
     assert external.local_config()["identity.user"] == "last@example.com"
     assert config._local_conf_value("identity.user") == "last@example.com"
 
 
 def test_module_level_local_config_seams_are_still_patchable(monkeypatch):
     """모듈 레벨 `local_config` 이름은 시그니처째 보존된다 — 63지점 테스트 seam."""
-    for name in ("board", "additional_reviewer", "ticket_finish", "pm_delegate"):
+    for name in ("additional_reviewer", "ticket_finish", "pm_delegate"):
         module = _load(name, f"seam_{name}")
         assert callable(module.local_config)
         monkeypatch.setattr(module, "local_config", lambda *a, **k: {"test.cmd": "x"})
@@ -152,8 +153,7 @@ _LEGACY_CONF = (
 )
 
 
-@pytest.mark.parametrize("name", ("board", "additional_reviewer", "ticket_finish",
-                                  "pm_delegate"))
+@pytest.mark.parametrize("name", ("additional_reviewer", "ticket_finish", "pm_delegate"))
 def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, name):
     """구표기 conf 를 **읽는 지점**이 멈춘다 — 조용히 엔진 기본값으로 떨어지지 않는다.
 
@@ -223,19 +223,15 @@ def test_gate_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp_
     로더를 fail-loud 로 만든 이유가 그 자리에서 무효가 된다.
     """
     _write_conf(tmp_path, _LEGACY_CONF + "test_cmd=false\n")
-    board = _load("board", f"gate_board_{name}")
-    board.REPO = tmp_path
-    board.LOCAL_CONF = tmp_path / ".project_manager" / "local.conf"
     handoff = _load("pm_handoff", f"gate_handoff_{name}")
 
-    # 실 파일을 읽는 board 모듈로 두 도구의 동형 경로를 돌린다(주입 dict 아님).
+    # 실 파일을 읽는 Home 으로 두 도구의 동형 경로를 돌린다(주입 dict 아님).
     with pytest.raises(RuntimeError) as caught:
         if name == "pm_handoff":
-            handoff._resolve_gate_cmd(board)
+            regression._resolve_gate_cmd(pm_paths.home_at(tmp_path))
         else:
             finish = _load("ticket_finish", "gate_ticket_finish")
-            finish._load_board_module = lambda: board
-            finish._load_pm_handoff = lambda: handoff
+            finish.REPO = tmp_path
             finish._resolve_per_repo_test_cmd()
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
@@ -257,7 +253,7 @@ def test_the_exception_text_points_at_adopter_owned_files(tmp_path):
     board.LOCAL_CONF = tmp_path / ".project_manager" / "local.conf"
 
     with pytest.raises(RuntimeError) as caught:
-        board.local_config()
+        conf_store.local_config(board._home())
 
     message = str(caught.value)
     for line in conf_module.adopter_pointer_lines():
@@ -631,14 +627,14 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 
     conf = (pm / "local.conf").read_text(encoding="utf-8")
     assert [line for line in conf.splitlines()
             if line.startswith("#") and "=" in line] == []
-    assert board.local_config()["test.cmd"] == board.default_pytest_cmd("python3")
+    assert conf_store.local_config(board._home())["test.cmd"] == python_env.default_pytest_cmd("python3")
 
 
 def test_the_registry_documents_the_keys_the_conf_no_longer_explains(conf_module):

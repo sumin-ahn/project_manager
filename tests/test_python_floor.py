@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import io
 import importlib.util
 import os
@@ -13,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from pm_engine.infra import process
+from pm_engine.infra import process, python_env
+import pm_engine
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -25,6 +27,11 @@ def _load(name: str):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _fresh_detect_cache(monkeypatch) -> None:
+    """탐지 결과 캐시를 이 시험 전용으로 둔다 — 패키지 함수의 캐시는 프로세스 안 시험이 공유한다."""
+    monkeypatch.setattr(python_env, "_detect_py", functools.lru_cache(maxsize=1)(python_env._detect_py.__wrapped__))
 
 
 def _fake_python(path: Path, *, version: str, supported: bool, selected: str) -> None:
@@ -47,7 +54,6 @@ def _fake_python(path: Path, *, version: str, supported: bool, selected: str) ->
 
 
 def test_min_python_single_source_and_tomllib_rationale():
-    engine_rev = _load("engine_rev")
     floor_tree = ast.parse((TOOLS / "python_floor.py").read_text(encoding="utf-8"))
     floor_value = next(
         ast.literal_eval(stmt.value)
@@ -56,9 +62,9 @@ def test_min_python_single_source_and_tomllib_rationale():
         and any(isinstance(target, ast.Name) and target.id == "MIN_PYTHON"
                 for target in stmt.targets)
     )
-    source = (TOOLS / "engine_rev.py").read_text(encoding="utf-8")
-    assert engine_rev.MIN_PYTHON == (3, 11)
-    assert floor_value == engine_rev.MIN_PYTHON
+    source = (TOOLS / "pm_engine" / "__init__.py").read_text(encoding="utf-8")
+    assert pm_engine.MIN_PYTHON == (3, 11)
+    assert floor_value == pm_engine.MIN_PYTHON
     assert "tomllib" in source
     assert "지배 제약" in source
 
@@ -128,7 +134,7 @@ def test_board_interp_runs_rejects_old_but_executable_python(monkeypatch):
         return Result(0 if argv[1] == "--version" else 1)
 
     monkeypatch.setattr(board.subprocess, "run", fake_run)
-    assert board._interp_runs("py") is False
+    assert python_env._interp_runs("py") is False
     assert calls[0][1] == "--version"
     assert calls[1][1].endswith("python_floor.py")
     assert "-c" not in calls[1]  # py -c 기본 버전과 py <script> shebang 디스패치의 괴리 폐쇄.
@@ -138,14 +144,9 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
     tmp_path, monkeypatch, capsys,
 ):
     """python_floor.py가 빠진 부분 사본도 3.12는 채택하고 2.7은 거르며 원인을 진단한다."""
-    isolated = tmp_path / "tools"
-    shutil.copytree(TOOLS, isolated)
-    (isolated / "python_floor.py").unlink()
-    spec = importlib.util.spec_from_file_location(
-        "t0482_board_without_python_floor", isolated / "board.py"
-    )
-    board = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(board)
+    board = _load("board")
+    _fresh_detect_cache(monkeypatch)
+    monkeypatch.setattr(python_env, "_python_floor_probe_path", lambda: str(tmp_path / "python_floor.py"))
 
     versions = {"python3": (2, 7), "python": (3, 12)}
 
@@ -166,11 +167,11 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
 
     monkeypatch.setattr(board.shutil, "which", lambda cmd: f"/fake/{cmd}" if cmd in versions else None)
     monkeypatch.setattr(board.subprocess, "run", fake_run)
-    assert board._detect_py() == "python"
+    assert python_env._detect_py() == "python"
 
     versions["python"] = (2, 7)
-    board._detect_py.cache_clear()
-    assert board._detect_py() == "python3"  # 기존 fail-soft 리터럴 폴백.
+    python_env._detect_py.cache_clear()
+    assert python_env._detect_py() == "python3"  # 기존 fail-soft 리터럴 폴백.
     err = capsys.readouterr().err
     assert "하한 probe 부재" in err
     assert "python3=2.7" in err
@@ -179,28 +180,18 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
 
 def test_board_detect_all_old_falls_back_and_reports_versions(monkeypatch, capsys):
     board = _load("board")
+    _fresh_detect_cache(monkeypatch)
     monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
     monkeypatch.setattr(board.shutil, "which", lambda cmd: f"/fake/{cmd}")
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: False)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: False)
     versions = {"python": "python=3.9", "py": "py=2.7", "python3": "python3=3.10"}
-    monkeypatch.setattr(board, "_interp_version_label", versions.get)
+    monkeypatch.setattr(python_env, "_interp_version_label", versions.get)
 
-    assert board._detect_py() == "python3"
+    assert python_env._detect_py() == "python3"
     err = capsys.readouterr().err
     assert "Python 3.11+ 필요" in err
     assert "py=2.7" in err
     assert "python=3.9" in err
-
-
-def test_board_detect_never_raises_when_floor_source_is_broken(monkeypatch, capsys):
-    board = _load("board")
-    monkeypatch.setattr(board.shutil, "which", lambda cmd: None)
-    monkeypatch.setattr(
-        board, "_minimum_python",
-        lambda: (_ for _ in ()).throw(OSError("broken engine_rev")),
-    )
-    assert board._detect_py() == "python3"
-    assert "하한 확인 불가" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash 부재")
@@ -273,9 +264,8 @@ def test_cmd_facades_probe_every_candidate_before_selection():
 
 
 def test_shell_floor_mirrors_engine_constant():
-    """Python 밖 하드코딩은 engine_rev.MIN_PYTHON 과 반드시 같은 리터럴이어야 한다."""
-    engine_rev = _load("engine_rev")
-    major, minor = engine_rev.MIN_PYTHON
+    """Python 밖 하드코딩은 pm_engine.MIN_PYTHON 과 반드시 같은 리터럴이어야 한다."""
+    major, minor = pm_engine.MIN_PYTHON
     literal = f"sys.version_info >= ({major}, {minor})"
     diagnostic_literal = f"Python {major}.{minor}+ 필요"
     # 루트 pm-config.cmd/pm-import.cmd는 출하 template mirror 목록이 아니며 위 cmd 전용 가드가 직접 검사한다.
@@ -294,7 +284,7 @@ def test_shell_floor_mirrors_engine_constant():
         if literal not in path.read_text(encoding="utf-8")
         and "python_floor.py" not in path.read_text(encoding="utf-8")
     ]
-    assert not missing, f"engine_rev.MIN_PYTHON 미러 누락/skew: {missing}"
+    assert not missing, f"pm_engine.MIN_PYTHON 미러 누락/skew: {missing}"
     diagnostic_mirrors = [
         REPO / "pm-config.sh",
         *(REPO / "templates").glob("*/pm-config.sh"),
@@ -337,20 +327,6 @@ def test_pm_import_precheck_is_310_parseable_and_precedes_tomllib():
     pm_import = _load("pm_import")
     with pytest.raises(SystemExit, match=r"Python 3\.11\+ 필요 · 현재 3\.10"):
         pm_import._require_python((3, 10, 99))
-
-
-def test_pm_import_missing_floor_source_skips_precheck(tmp_path):
-    isolated = tmp_path / "tools"
-    isolated.mkdir()
-    shutil.copy2(TOOLS / "pm_import.py", isolated / "pm_import.py")
-
-    spec = importlib.util.spec_from_file_location(
-        "t0482_pm_import_without_engine_rev", isolated / "pm_import.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert mod._load_min_python() is None
-    assert mod._require_python((2, 7, 18)) is None
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재")

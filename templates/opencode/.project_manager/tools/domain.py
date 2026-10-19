@@ -14,8 +14,8 @@ prose 는 verbatim 배치(요약/구조화 금지)·**git 무조작**(add/commit
 사람 손. 범위 밖(후속): derive(코드서 자동 채록·`derived:true`·Phase 5)·contradiction(LLM).
 
 설계:
-  - **frontmatter 파싱은 board.load_ticket 재사용** — 이름은 ticket 이나 임의 frontmatter md
-    파서다(board.py:714). 중복 파서 정의 금지(DRY·codex reuse 강조). board 는 같은 tools/
+  - **frontmatter 파싱은 ticket_store.load_ticket 재사용** — 이름은 ticket 이나 임의 frontmatter md
+    파서다. 중복 파서 정의 금지(DRY·codex reuse 강조). board 는 같은 tools/
     에서 `_load_module`(spec_from_file_location) 로 로드한다 — 패키지 설치 없이 동작하는
     board.py·pm_*.py 와 같은 로드 관례.
   - **covers 글롭 시맨틱**: anchored full-match(경로 전체) · `**`=0+ 세그먼트 재귀 ·
@@ -44,7 +44,7 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, manifest_store, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.infra import console, fs, manifest_store, repo_coordinates, repo_files, ticket_store  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
@@ -741,7 +741,7 @@ def covers_pathspecs(covers, *, repo: Path | None = None,
 
 
 def _parse_updated_date(updated) -> datetime.date | None:
-    """페이지 `updated` 를 date 로 정규화한다 (board.load_ticket=yaml.safe_load).
+    """페이지 `updated` 를 date 로 정규화한다 (ticket_store.load_ticket=yaml.safe_load).
 
     YAML 의 따옴표 없는 `2026-06-19` 는 `datetime.date` 로, 따옴표/기타는 문자열로 온다.
     date/datetime 는 그대로 date 화, 문자열은 ISO 앞 10자(`YYYY-MM-DD`)를 파싱한다. 파싱
@@ -841,21 +841,18 @@ def parse_page(path: Path) -> dict:
 
     Returns: {path, title, type, covers: list[str], derived: bool, updated, status,
     verified_at, repo}.
-    frontmatter 파싱은 board.load_ticket 재사용(임의 frontmatter md 파서·DRY).
+    frontmatter 파싱은 ticket_store.load_ticket 재사용(임의 frontmatter md 파서·DRY).
     covers 부재 → []·derived 부재 → False·status 부재 → None(정식 취급·draft 아님).
     `verified_at` 은 이 페이지 지식이 대조한 검증 기준 커밋 sha(board.py freshness
     lint 가 "그 sha 이후 covers 경로 커밋 있나"로 판정) — 부재/비-문자열 → None(freshness skip).
     `repo` 는 그 sha/covers 를 판정할 **소유 저장소 시계**(`self` | `upstream`) — 키 부재만
     `self` 로 자연 퇴화한다. 명시 빈 문자열/false/0/컨테이너는 그대로 보존해 board.py가
     `domain-unverifiable`로 표면화한다.
-    board 미로드/frontmatter 깨짐은 호출부가 처리하도록 예외를 그대로 전파한다(load_pages
+    frontmatter 깨짐은 호출부가 처리하도록 예외를 그대로 전파한다(load_pages
     가 graceful skip). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
     미승인 초안을 index 에서 제외한다(suffix 가 아닌 frontmatter status 가 필터 기준).
     """
-    board = _load_board()
-    if board is None:
-        raise RuntimeError(f"board.py 로드 실패 ({TOOLS_DIR / 'board.py'} 부재 또는 로드 오류).")
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     # covers 정규화 — 스칼라 문자열은 단일 글롭으로 감싼다(`list("src/x/**")` 가
     # 글자 분해돼 분해된 '*' 가 임의 단일-세그먼트 경로를 거짓 매칭하는 것 방지).
     # list 면 문자열 원소만, None·기타 타입은 빈 리스트(코드-무관).
@@ -1725,17 +1722,14 @@ def _has_engine_coverage_context(body: str) -> bool:
 
 
 def _page_body(page: dict) -> str:
-    """페이지 body(frontmatter 뒤 본문)를 읽는다 — board.load_ticket 재사용(DRY).
+    """페이지 body(frontmatter 뒤 본문)를 읽는다 — ticket_store.load_ticket 재사용(DRY).
 
     parse_page 는 frontmatter 만 담으므로 lint(인링크/라인수)용 body 를 따로 읽는다. 읽기/
     파싱 실패는 빈 문자열(fail-soft — 깨진 페이지가 lint 를 죽이지 않게·load_pages 가 이미
     파싱 가능한 것만 넘겼지만 방어적으로 흡수).
     """
-    board = _load_board()
-    if board is None:
-        return ""
     try:
-        _fm, body = board.load_ticket(page["path"])
+        _fm, body = ticket_store.load_ticket(page["path"])
     except Exception:  # noqa: BLE001 — fail-soft: 읽기 실패는 빈 body(lint 무crash).
         return ""
     return body
@@ -1978,7 +1972,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def _touches_from_ticket(ticket_id: str) -> list[str]:
-    """board.load_ticket 으로 ticket frontmatter 의 `touches` 를 읽는다(없으면 []).
+    """ticket_store.load_ticket 으로 ticket frontmatter 의 `touches` 를 읽는다(없으면 []).
 
     board 미로드·ticket 부재/깨짐 → [](graceful·crash 0). frontmatter `touches` 의
     문자열 원소만 취한다(비-문자열 오기는 방어적으로 버림 — parse_page covers 동형).
@@ -1989,7 +1983,7 @@ def _touches_from_ticket(ticket_id: str) -> list[str]:
         return []
     try:
         _status, path = board.find_ticket(ticket_id)
-        fm, _body = board.load_ticket(path)
+        fm, _body = ticket_store.load_ticket(path)
     except Exception as exc:  # noqa: BLE001 — 부재/깨진 ticket 은 graceful(빈 touches).
         print(f"domain: ticket {ticket_id} touches 읽기 skip — {exc}", file=sys.stderr)
         return []
@@ -2480,7 +2474,7 @@ def build_parser() -> argparse.ArgumentParser:
     target = p_affected.add_mutually_exclusive_group(required=True)
     target.add_argument(
         "--ticket", metavar="T-NNNN",
-        help="이 ticket 의 frontmatter touches 로 영향 페이지를 찾는다 (board.load_ticket).",
+        help="이 ticket 의 frontmatter touches 로 영향 페이지를 찾는다 (ticket_store.load_ticket).",
     )
     target.add_argument(
         "--touches", metavar="a,b,c",

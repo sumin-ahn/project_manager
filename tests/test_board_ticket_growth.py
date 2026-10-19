@@ -19,6 +19,8 @@ import pytest
 
 from _git import commit_env
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -243,7 +245,7 @@ def test_section_add_seed_is_the_shared_seam_render(board_env):
     written = (_rounds_dir(board_dir, "T-1014") / "01-developer.md").read_text(
         encoding="utf-8")
     assert written == expected
-    loaded = rounds.load_rounds(board.tickets_dir(), "T-1014", ticket_text=spec_text)
+    loaded = rounds.load_rounds(pm_paths.tickets_dir(board._home()), "T-1014", ticket_text=spec_text)
     assert [item.pending for item in loaded] == [True], "예약 직후 라운드는 산출 없음이어야 한다"
 
 
@@ -405,16 +407,16 @@ def test_tier_cli_records_updates_and_preserves_unrelated_frontmatter(board_env)
     before_count = int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout)
 
     assert board.main(["tier", "T-1002", "normal"]) == 0
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert fm["tier"] == "normal"
     assert fm["custom"] == {"nested": ["keep"]}
     assert board.main(["tier", "T-1002", "hard"]) == 0
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert fm["tier"] == "hard"
     assert fm["custom"] == {"nested": ["keep"]}
     assert int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout) == before_count + 2
     remote = _remote_text(bare, "tickets/claimed/T-1002-growth.md")
-    remote_fm, _ = board._parse_ticket_text(remote, "remote:claimed/T-1002")
+    remote_fm, _ = ticket_rules._parse_ticket_text(remote, "remote:claimed/T-1002")
     assert remote_fm["tier"] == "hard"
 
 
@@ -428,7 +430,7 @@ def test_growth_commands_allow_each_active_state(board_env, status, command):
     argv = (["section-add", "T-1003", "--role", "developer"]
             if command == "section-add" else ["tier", "T-1003", "pm-direct"])
     assert board.main(argv) == 0
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     if command == "section-add":
         assert _round_names(board_dir, "T-1003") == ["01-developer.md"]
     else:
@@ -600,7 +602,7 @@ def test_section_add_still_opens_a_ledgerless_draft_architect_round(
 
     assert board.main(["section-add", "T-1018", "--role", "architect"]) == 0
 
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert board.load_cluster(board.ticket_cluster("T-1018", fm)) is None
     assert _round_names(board_dir, "T-1018") == ["01-architect.md"]
     assert sync_calls == [] and _head(board_dir) == before_head
@@ -656,7 +658,7 @@ def test_growth_commands_commit_failure_preserves_local_mutation(board_env, caps
             if command == "section-add" else ["tier", "T-1006", "hard"])
     assert board.main(argv) == 0
     assert _head(board_dir) == before_head
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     if command == "section-add":
         assert _round_names(board_dir, "T-1006") == ["01-code-reviewer.md"]
     else:
@@ -761,7 +763,7 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
     destination = board_dir / "tickets" / ("blocked" if lifecycle == "block" else "claimed") / open_path.name
     assert destination.exists()
     assert len(list((board_dir / "tickets").glob(f"*/{open_path.name}"))) == 1
-    fm, _body = board.load_ticket(destination)
+    fm, _body = ticket_store.load_ticket(destination)
     assert fm["status"] == ("blocked" if lifecycle == "block" else "claimed")
     assert fm["tier"] == "hard"
 
@@ -864,7 +866,7 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
     final_path = board_dir / "tickets" / final_status / open_path.name
     assert final_path.exists()
     assert len(list((board_dir / "tickets").glob(f"*/{open_path.name}"))) == 1
-    fm, _body = board.load_ticket(final_path)
+    fm, _body = ticket_store.load_ticket(final_path)
     assert fm["status"] == final_status
     if growth == "section-add":
         assert _round_names(board_dir, "T-1009") == ["01-developer.md"]
@@ -956,7 +958,7 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
     assert not migration_thread.is_alive() and not growth_thread.is_alive(), "migration 경합 timeout"
     assert not errors, errors
     assert results == {"migration": (1, True), "growth": 0}
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert fm["created_by"] == "alice", "migration 결과 유실"
     assert fm["tier"] == "hard", "migration stale frontmatter가 tier를 덮음"
 
@@ -1069,7 +1071,7 @@ def test_promote_ships_the_draft_rounds_with_the_spec(board_env):
     assert board.main(["section-add", "T-1007", "--role", "architect"]) == 0
     assert _round_names(board_dir, "T-1007") == ["01-architect.md"]
     # `design: done` 은 회수된 점검 라운드도 함께 요구한다 — 시드 그대로면 승격이 막힌다.
-    round_path = (board.tickets_dir() / "rounds" / "T-1007" / "01-architect.md")
+    round_path = (pm_paths.tickets_dir(board._home()) / "rounds" / "T-1007" / "01-architect.md")
     round_path.write_text(
         round_path.read_text(encoding="utf-8") + "\n## 경계 실측\n- 실측 대조 근거\n",
         encoding="utf-8", newline="")
@@ -1116,18 +1118,18 @@ def test_design_cli_records_updates_and_preserves_unrelated_frontmatter(board_en
     before_count = int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout)
 
     assert board.main(["design", "T-1019", "required"]) == 0
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert fm["design"] == "required"
     assert fm["custom"] == {"nested": ["keep"]}
 
     assert board.main(["design", "T-1019", "done"]) == 0
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert fm["design"] == "done"
     assert board._design_state(fm["design"]) == board.DESIGN_DONE
     assert fm["custom"] == {"nested": ["keep"]}
     assert int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout) == before_count + 2
     remote = _remote_text(bare, "tickets/claimed/T-1019-growth.md")
-    remote_fm, _ = board._parse_ticket_text(remote, "remote:claimed/T-1019")
+    remote_fm, _ = ticket_rules._parse_ticket_text(remote, "remote:claimed/T-1019")
     assert remote_fm["design"] == "done"
 
 
@@ -1144,7 +1146,7 @@ def test_design_allows_every_active_state_including_draft(board_env, status):
 
     assert board.main(["design", tid, "done"]) == 0
 
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert fm["design"] == "done"
     after_count = int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout)
     if status == "draft":
@@ -1184,7 +1186,7 @@ def test_design_draft_never_syncs(board_env, monkeypatch, capsys):
 
     assert board.main(["design", "T-1022", "n/a"]) == 0
 
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     assert fm["design"] == "n/a"
     assert sync_calls == [] and _head(board_dir) == before_head
     assert "local draft; promote가 출하 소유" in capsys.readouterr().out

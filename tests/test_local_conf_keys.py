@@ -33,8 +33,8 @@ import pytest
 
 from _textio import utf8_child_env
 from pm_engine.cli import local_conf as local_conf_cli
-from pm_engine.domain import conf_schema
-from pm_engine.infra import conf_store
+from pm_engine.domain import conf_schema, ticket_rules
+from pm_engine.infra import conf_store, pre_push_hook, python_env
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -75,9 +75,9 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
     tickets = wiki / "tickets"
     ideas = wiki / "ideas"
     decisions = wiki / "decisions"
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         (tickets / status).mkdir(parents=True, exist_ok=True)
-    for status in board.IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         (ideas / status).mkdir(parents=True, exist_ok=True)
     decisions.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", root)
@@ -111,7 +111,7 @@ def test_board_does_not_duplicate_the_known_key_registry():
 
 
 def test_board_platform_resolution_does_not_duplicate_the_local_conf_parser():
-    source = BOARD_PY.read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine" / "app" / "regression.py").read_text(encoding="utf-8")
     start = source.index("def _platform_test_commands(")
     end = source.index("\ndef _platform_marker(", start)
     resolver = source[start:end]
@@ -312,7 +312,7 @@ def test_fresh_init_conf_has_zero_unknown_keys(board, monkeypatch, tmp_path):
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 
@@ -335,7 +335,7 @@ def test_init_merge_path_surfaces_the_same_findings_pre_existing_unknown_key(boa
     conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 
@@ -407,10 +407,10 @@ def _wired_init_board(monkeypatch, tmp_path, alias: str):
         "PM_STATE_TEMPLATE": pm_dir / "wiki" / "pm_state.template.md",
     }.items():
         monkeypatch.setattr(module, name, value)
-    monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
-    monkeypatch.setattr(module, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return module
@@ -624,7 +624,7 @@ _MOVED_DEFAULTS = (
 def test_moved_default_is_declared_once_and_read_by_its_consumer(
         conf_module, consumers, monkeypatch, key, declared, probe, expected):
     """레지스트리 선언값과 소비자가 읽는 값이 같다 — ctx 비율 셋은 board init 이 conf 에 쓰는 값이다."""
-    monkeypatch.setattr(consumers.board, "local_config", lambda *a, **k: {})
+    monkeypatch.setattr(conf_store, "local_config", lambda *a, **k: {})
     assert conf_module.default_for(key) == declared
     assert probe(consumers) == expected
 

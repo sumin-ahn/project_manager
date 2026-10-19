@@ -904,7 +904,11 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   pm_update 에서 그 정의가 빠지고 호출이 모듈 속성 호출로 바뀌었다. 역적용 delta 의 네 anchor 는
 #   전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은
 #   기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "e0e79a4e8fa05013a4a90d1d6dd62f8cec6251d7e2acefa8c87b51423450f5fa"
+#   T-0971 에서 또 이동했다 — 등록 repo 조회가 패키지(`pm_engine.infra.areas_store`)로 옮겨 가며
+#   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
+#   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
+#   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "b90ebb29097bcb8c88e91fbfb7ad12aab63d5485c959541bfb8c71038b4047b6"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1402,7 +1406,9 @@ def _install_t0585_updater(dest: Path) -> None:
 # `_parse_manifest_line` 이하 판독 함수가 빠졌다. 두 `_slice_replace` 의 끝 marker 가 가리키던 정의가
 # 없어져 끝 marker 를 그 자리 다음 정의(`class _RenderDst:`·`def _read_local_conf(`)로 옮겼고, 지우는
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
-_PRE_T0876_PM_UPDATE_SHA256 = "dc755933631b83a50210c9c6618847ce76a047e70d10e47149a8b815220fd153"
+# T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
+# 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
+_PRE_T0876_PM_UPDATE_SHA256 = "e3c62fac2807634e72b8778a54e2338f4436fba45edaad1ae320aff0ad569f13"
 
 
 def _pre_t0876_pm_update_source() -> str:

@@ -27,6 +27,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -77,7 +78,7 @@ def _make_board_dir(board_mod, root: Path, *, real_git: bool = False,
                     ticket: str | None = None) -> Path:
     """`<root>/.project_manager/board/` 에 board 분리 형상을 만든다 (tickets/ + areas.md + .git).
 
-    `real_git=False` 면 `.git` 을 빈 파일로 둔다 — `_ensure_board_gitignore`/`board_root()` 는
+    `real_git=False` 면 `.git` 을 빈 파일로 둔다 — `_ensure_board_gitignore`/`pm_paths._board_root_at` 은
     *존재*만 보므로 git 바이너리 없이도 분리 형상을 정확히 모사한다(내용 판정 테스트용).
     """
     board_dir = root / ".project_manager" / "board"
@@ -176,7 +177,7 @@ def test_ignore_pattern_matches_actual_drafts_location(board, tmp_path):
     디렉토리가 옮겨지면 여기서 red 가 난다(선언만 남고 오탐이 되살아나는 조용한 drift 차단).
     """
     board_dir = _make_board_dir(board, tmp_path)
-    rel = board.drafts_dir().resolve().relative_to(board_dir.resolve()).as_posix()
+    rel = pm_paths.drafts_dir(board._home()).resolve().relative_to(board_dir.resolve()).as_posix()
 
     assert board._BOARD_GIT_DRAFT_IGNORE_PATTERN == rel + "/"
     assert board._BOARD_DRAFT_IGNORE_FORMS == (rel, rel.rsplit("/", 1)[-1])

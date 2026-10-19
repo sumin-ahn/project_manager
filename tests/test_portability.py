@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import pre_push_hook, python_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -100,7 +101,7 @@ def test_default_python_nt_venv_absent_falls_back(monkeypatch, tmp_path, name):
     assert mod._default_python() == "/fake/sys/python"
 
 
-# ── board._detect_py() — which monkeypatch 3분기 ───────────────────────────
+# ── python_env._detect_py() — which monkeypatch 3분기 ───────────────────────────
 
 @pytest.fixture(scope="module")
 def board():
@@ -109,9 +110,9 @@ def board():
 
 @pytest.fixture(autouse=True)
 def _clear_detect_py_cache(board):
-    board._detect_py.cache_clear()
+    python_env._detect_py.cache_clear()
     yield
-    board._detect_py.cache_clear()
+    python_env._detect_py.cache_clear()
 
 
 def test_detect_py_prefers_python3(monkeypatch, board):
@@ -122,28 +123,28 @@ def test_detect_py_prefers_python3(monkeypatch, board):
     _interp_runs 를 True 로 stub 해 실 인터프리터 비의존. (os.name 은 안 건드림 — posix
     강제는 Windows pathlib 을 깨뜨림.)
     """
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(
         board.shutil, "which",
         lambda cmd: "/usr/bin/python3" if cmd == "python3" else None,
     )
-    assert board._detect_py() == "python3"
+    assert python_env._detect_py() == "python3"
 
 
 def test_detect_py_falls_back_to_python(monkeypatch, board):
     """py·python3 부재·python 존재 → bare 'python' (which 가 python 에만 truthy·_interp_runs stub)."""
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(
         board.shutil, "which",
         lambda cmd: r"C:\Python\python.exe" if cmd == "python" else None,
     )
-    assert board._detect_py() == "python"
+    assert python_env._detect_py() == "python"
 
 
 def test_detect_py_literal_fallback_when_neither(monkeypatch, board):
     """python3·python 둘 다 부재 → 'python3' 리터럴 폴백."""
     monkeypatch.setattr(board.shutil, "which", lambda cmd: None)
-    assert board._detect_py() == "python3"
+    assert python_env._detect_py() == "python3"
 
 
 # ── board init 이 탐지된 py 를 local.conf 에 실제로 기록하는지 ─────────────
@@ -155,7 +156,7 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     # 부수 파일 생성·훅 설치·추가리뷰 프롬프트는 이 단언과 무관 — 무력화.
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "no_such_template.md")
-    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
@@ -167,7 +168,7 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
     # python3 가 PATH 에 있는 환경 → _detect_py() 는 bare 'python3' 를 기록한다.
     # (which 가 python3 에만 truthy + _interp_runs stub 으로 머신·OS 무관 결정화 — T-0022.)
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(
         board.shutil, "which",
         lambda cmd: "/usr/bin/python3" if cmd == "python3" else None,

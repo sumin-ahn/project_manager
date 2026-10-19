@@ -25,6 +25,8 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 from _slot_seed import fake_slot_path
+from pm_engine.app import slot_resolution
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -570,7 +572,7 @@ def test_auto_slot_single_repo_single_slot_returns_identity(bootstrap, tmp_path)
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    resolved = bootstrap._auto_slot(areas_file=areas, leases_file=leases)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases)
     assert (resolved.key, resolved.slot) == ("project_manager_1", "work/project_manager_1")
     assert (resolved.repo, resolved.number) == ("project_manager", 1)
 
@@ -583,7 +585,7 @@ def test_auto_slot_zero_repos_returns_none(bootstrap, tmp_path):
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_two_repos_returns_none(bootstrap, tmp_path):
@@ -594,7 +596,7 @@ def test_auto_slot_two_repos_returns_none(bootstrap, tmp_path):
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
     ])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_two_slots_returns_none(bootstrap, tmp_path):
@@ -608,7 +610,7 @@ def test_auto_slot_two_slots_returns_none(bootstrap, tmp_path):
         {"slot": "work/project_manager_2", "repo": "project_manager",
          "session": "project_manager_2", "state": "leased"},
     ])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_missing_leases_returns_none(bootstrap, tmp_path):
@@ -616,7 +618,7 @@ def test_auto_slot_missing_leases_returns_none(bootstrap, tmp_path):
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"  # 미생성 → 부재
     _write_areas(areas, ["project_manager"])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
@@ -625,7 +627,7 @@ def test_auto_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     leases.write_text("{not valid json", encoding="utf-8")
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_schema_mismatch_returns_none(bootstrap, tmp_path):
@@ -634,7 +636,7 @@ def test_auto_slot_schema_mismatch_returns_none(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     leases.write_text(_auto_json.dumps(["not", "a", "dict"]), encoding="utf-8")
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_slot_for_other_repo_returns_none(bootstrap, tmp_path):
@@ -645,7 +647,7 @@ def test_auto_slot_slot_for_other_repo_returns_none(bootstrap, tmp_path):
     _write_leases(leases, [
         {"slot": "work/other_1", "repo": "other", "session": "other_1", "state": "leased"},
     ])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
@@ -657,7 +659,7 @@ def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
         {"slot": "work/project_manager_3", "repo": "project_manager",
          "session": "project_manager_3", "state": "leased"},
     ])
-    resolved = bootstrap._auto_slot(areas_file=areas, leases_file=leases)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases)
     assert (resolved.key, resolved.slot) == ("project_manager_3", "work/project_manager_3")
 
 
@@ -678,7 +680,7 @@ def test_auto_slot_idle_slot1_resolves_leased_slot2(bootstrap, tmp_path):
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "idle"),
                            _lease("project_manager", 2, "leased")])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases).key == "project_manager_2"
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases).key == "project_manager_2"
 
 
 def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
@@ -687,7 +689,7 @@ def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "leased")])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases).key == "project_manager_1"
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases).key == "project_manager_1"
 
 
 def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
@@ -696,7 +698,7 @@ def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "idle")])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
 
 
 # ── 13. _worktree_cwd — git/pytest 러너 worktree cwd 자동해소 (T-0125·T-0124 동형) ─

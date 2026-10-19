@@ -187,7 +187,7 @@ def _assert_repo_board_outputs_unchanged(
     )
     assert not changed, (
         "테스트 세션이 실 작업 트리의 live board 산출을 만들거나 변경했습니다 — "
-        "REPO/BOARD_FILE/tickets_dir()/board_root()를 모두 pytest tmp_path로 재앵커하세요:\n"
+        "REPO/BOARD_FILE 을 모두 pytest tmp_path로 재앵커하세요:\n"
         + "\n".join(f"  - {path}" for path in changed)
     )
 

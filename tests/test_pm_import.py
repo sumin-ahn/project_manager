@@ -32,7 +32,7 @@ from _textio import (
     dominant_newline_bytes, write_crlf, write_lf, write_matching_newlines,
 )
 from pm_engine.domain import manifest_rules, upstream_rules
-from pm_engine.infra import conf_store, manifest_store
+from pm_engine.infra import conf_store, manifest_store, pm_paths
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -667,9 +667,7 @@ def test_general_conf_writer_normalizes_every_key_atomically_for_all_readers(
     assert pm_import._parse_conf_keys(text)[key] == value
     monkeypatch.setattr(pm_config, "REPO", tmp_path)
     assert pm_config._local_conf_value(key) == value
-    board = _load_board()
-    board.LOCAL_CONF = local_conf
-    assert board.local_config()[key] == value
+    assert conf_store.local_config(pm_paths.home_at(tmp_path))[key] == value
 
 
 # ── T-0145: --from↔--upstream 디커플 + origin 자동도출 + upstream_rev baseline ──
@@ -4284,7 +4282,7 @@ _BOOTSTRAP_CONTRACT_DIRS = (
     "wiki/tickets/claimed",
     "wiki/tickets/done",
     "wiki/tickets/blocked",
-    "wiki/tickets/discarded",   # 처분 종결(T-0781) — board.STATUS_DIRS 와 같은 집합.
+    "wiki/tickets/discarded",   # 처분 종결(T-0781) — ticket_rules.STATUS_DIRS 와 같은 집합.
 )
 
 

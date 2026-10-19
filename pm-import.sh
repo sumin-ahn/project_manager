@@ -18,7 +18,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # (command -v 통과·실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 진단 후 python 폴백
 # (기존 파사드 fail-soft 계약 유지).
 # POSIX 후보에는 Windows py 런처의 shebang 간접 디스패치가 없으므로 script probe 대신 -c를 쓴다.
-# (3, 11)은 engine_rev.MIN_PYTHON 미러이며 테스트가 skew 를 차단한다.
+# (3, 11)은 pm_engine.MIN_PYTHON 미러이며 테스트가 skew 를 차단한다.
 PY=""
 for _cand in python3 python; do
     if command -v "$_cand" >/dev/null 2>&1 &&

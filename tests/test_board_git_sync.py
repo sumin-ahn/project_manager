@@ -32,6 +32,7 @@ import pytest
 from _git_fixture import remove_git_tree
 from conftest import (anchor_board_module, bind_product_cluster, ensure_product_slot,
                       write_cluster_ledger)
+from pm_engine.infra import ticket_store
 
 _TASK = "binding-task"
 
@@ -96,7 +97,7 @@ def _detach_head(board_dir: Path) -> str:
 def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001") -> Path:
     """`<root>/.project_manager/board/` 에 실 board git 을 만든다 (tickets/ + open ticket + remote).
 
-    별도 board git 형상(ADR-0033 ①)을 모사한다 — `board/tickets/` 가 dir 이라 board_root() 가
+    별도 board git 형상(ADR-0033 ①)을 모사한다 — `board/tickets/` 가 dir 이라 Home 의 board_root 가
     board/ 로 갈리고, `board/.git` 이 있어 `_board_git_enabled()` 가 True 가 된다. bare remote 를
     origin 으로 두고 main 을 push+upstream 설정해 pull/push 가 동작하게 한다.
     """
@@ -117,7 +118,7 @@ def _t0928_prepare_fixture(board, tmp_path, monkeypatch, *, legacy=False):
     from test_delegate_cluster_rounds import _load_pd, _spec_text
     pd = _load_pd()
     if legacy:
-        board_dir = board.board_root()
+        board_dir = board._home().board_root
         (board_dir / "tickets/open").mkdir(parents=True)
     else:
         remote = tmp_path / "initial-local-remote.git"
@@ -216,8 +217,8 @@ def test_t0928_prepare_sync_legacy_keeps_noop_semantics(board, tmp_path, monkeyp
 def test_t0928_prepare_sync_marks_malformed_touches_and_preserves_source(
         board, tmp_path, monkeypatch, malformed):
     pd, slot, board_dir = _t0928_prepare_fixture(board, tmp_path, monkeypatch)
-    spec = board.find_ticket_exact("T-0001")[1]
-    fm, body = board.load_ticket(spec)
+    spec = ticket_store.find_ticket_exact(board._home(), "T-0001")[1]
+    fm, body = ticket_store.load_ticket(spec)
     fm["touches"] = malformed
     board.dump_ticket(spec, fm, body)
     original = spec.read_bytes()
@@ -228,7 +229,7 @@ def test_t0928_prepare_sync_marks_malformed_touches_and_preserves_source(
     head = board._board_git_head()
     plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
     assert "touches 형식 오류" in board.BOARD_FILE.read_text(encoding="utf-8")
-    assert board.load_ticket(spec)[0]["touches"] == malformed
+    assert ticket_store.load_ticket(spec)[0]["touches"] == malformed
     assert spec.read_bytes() == original
     assert (plan.run_dir / "spec.md").read_bytes() == original
     assert len(pd.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
@@ -269,7 +270,7 @@ def board(tmp_path, monkeypatch):
 
 def test_board_git_disabled_when_legacy(board):
     """board 가 별도 git 이 아니면(legacy·wiki 안) `_board_git_enabled()` False → sync no-op."""
-    # board/ 자체가 없음 → board_root()==wiki, wiki/.git 부재 → False.
+    # board/ 자체가 없음 → Home board_root==wiki, wiki/.git 부재 → False.
     assert board._board_git_enabled() is False
 
 
