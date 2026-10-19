@@ -28,6 +28,8 @@ import re
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import identity_args
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -78,7 +80,7 @@ class Home:
         self.root = root
         self.ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
         self.areas = root / ".project_manager" / "areas.md"
-        self.ia = _load("identity_args")
+        self.ia = identity_args
         self.bp = _load("pm_bootstrap")
         self.hf = _load("pm_handoff")
         self.wp = _load("worktree_pool")
@@ -183,7 +185,7 @@ def _mismatch_shape(home: Home) -> None:
 def test_actor_resolution_returns_ledger_session_verbatim(home):
     """`--repo` 단독 actor 해소는 행의 session 값 그대로 — 번호로 세션을 재조립하지 않는다."""
     _mismatch_shape(home)
-    assert home.ia.resolve_actor_workspace("A", home.ledger).session == "B_7"
+    assert lease_store.resolve_actor_workspace("A", home.ledger).session == "B_7"
     # 경로 축은 행의 slot 값 — 세션에서 `work/B_7` 을 만들지 않는다.
     assert home.hf._resolve_explicit_identity_slot("A", 1, home.ledger) == \
         ("work/A_1", None)
@@ -200,7 +202,7 @@ def test_actor_resolution_returns_task_name_session(home):
                       tasks=[{"name": _TASK_SESSION, "prefix": None, "started": "t"}])
     home.write_areas([_ADOPTER_REPO])
     home.mkslot(f"work/{_ADOPTER_REPO}_1")
-    assert home.ia.resolve_actor_workspace(_ADOPTER_REPO, home.ledger).session == _TASK_SESSION
+    assert lease_store.resolve_actor_workspace(_ADOPTER_REPO, home.ledger).session == _TASK_SESSION
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -219,12 +221,12 @@ def _home_row_shape(home: Home, repo: str = "adopter") -> str:
 def test_home_row_number_axis_and_paths_are_ledger_derived(home):
     """홈 행도 번호를 점유하고, 경로 소비자는 행의 `slot` 값(=PM 홈)을 얻는다."""
     key = _home_row_shape(home)
-    ia, hf, wp = home.ia, home.hf, home.wp
+    hf, wp = home.hf, home.wp
 
-    assert ia.repo_slot_numbers("adopter", home.ledger) == [1]
+    assert lease_store.repo_slot_numbers("adopter", home.ledger) == [1]
     assert sorted(wp._existing_slot_numbers("adopter", wp.list_leases())) == [1]
-    assert ia.slot_path_resolution("adopter", 1, home.ledger).path == "."
-    assert ia.resolve_actor_workspace("adopter", home.ledger).session == key
+    assert lease_store.slot_path_resolution("adopter", 1, home.ledger).path == "."
+    assert lease_store.resolve_actor_workspace("adopter", home.ledger).session == key
     assert hf._resolve_explicit_identity_slot("adopter", 1, home.ledger) == (".", None)
     resolved = home.bp._auto_slot(home.areas, home.ledger)
     assert (resolved.key, resolved.slot) == (key, ".")
@@ -248,9 +250,9 @@ def test_pool_slot_without_worktree_is_still_stale(home):
 def test_corrupt_ledger_does_not_downgrade_actor_resolution_to_a_guess(home):
     """손상 장부에서 actor 해소는 미해소(None)다 — 번호/이름으로 세션을 짓지 않는다."""
     home.ledger.write_text("{not valid json", encoding="utf-8")
-    assert home.ia.resolve_actor_workspace("A", home.ledger) is None
-    assert home.ia.repo_slot_numbers("A", home.ledger) is None
-    assert home.ia.slot_path_resolution("A", 1, home.ledger).path is None
+    assert lease_store.resolve_actor_workspace("A", home.ledger) is None
+    assert lease_store.repo_slot_numbers("A", home.ledger) is None
+    assert lease_store.slot_path_resolution("A", 1, home.ledger).path is None
 
 
 def _divergent_shape(home: Home) -> None:
@@ -272,9 +274,9 @@ def test_divergent_duplicate_rows_fail_loud_instead_of_picking_one(home):
     """
     _divergent_shape(home)
     with pytest.raises(home.ia.SlotResolutionError):
-        home.ia.resolve_actor_workspace("A", home.ledger)
+        lease_store.resolve_actor_workspace("A", home.ledger)
 
-    resolution = home.ia.slot_identity_resolution("work/A_1", home.ledger)
+    resolution = lease_store.slot_identity_resolution("work/A_1", home.ledger)
     assert resolution.status == home.ia.SLOT_IDENTITY_CONFLICT
     assert resolution.identity is None
     assert "A_1" in resolution.detail and "B_2" in resolution.detail
@@ -411,7 +413,7 @@ def test_entry_task_workspace_resolves_the_ledger_row(home):
     _home_row_A(home)
     ia = home.ia
     identity = ia.Identity(kind="slot", repo="A", slot=1, task="A_1")
-    workspace = ia.resolve_task_workspace(identity, home.ledger)
+    workspace = lease_store.resolve_task_workspace(identity, home.ledger)
     assert (workspace.slot, workspace.repo, workspace.session) == (".", "A", "A_1")
 
 
@@ -460,7 +462,7 @@ def test_drive_marker_session_key_cannot_escape_the_state_root(home):
                         "state": "leased"}])
     home.write_areas(["A"])
     home.mkslot("work/A_1")
-    identity = home.ia.resolve_slot_identity("work/A_1", home.ledger)
+    identity = lease_store.resolve_slot_identity("work/A_1", home.ledger)
     # 장부 층이 그 값을 정체성으로 채택하지 않으므로 pool 명명 규약(경로 마디)이 키다.
     assert (identity.key, identity.source) == ("A_1", home.ia.IDENTITY_FROM_SLOT_PATH)
 
@@ -500,34 +502,34 @@ def test_identity_resolution_distinguishes_four_judgments(home):
     """네 판정이 각각 다른 값으로 나온다 — "못 읽었다"와 "두 답이 있다"가 안 접힌다."""
     ia = home.ia
     # 1. 장부 부재(파일 없음).
-    assert ia.slot_identity_resolution(".", home.ledger).status == ia.SLOT_IDENTITY_LEDGER_MISSING
+    assert lease_store.slot_identity_resolution(".", home.ledger).status == ia.SLOT_IDENTITY_LEDGER_MISSING
     # 2. 읽기 불가(파일은 있으나 손상).
     home.ledger.write_text("{not valid json", encoding="utf-8")
-    assert ia.slot_identity_resolution(".", home.ledger).status == \
+    assert lease_store.slot_identity_resolution(".", home.ledger).status == \
         ia.SLOT_IDENTITY_LEDGER_UNREADABLE
     # 3. 행 부재(정상 장부인데 그 슬롯 행이 없다).
     home.write_ledger([_pool_row("A", 1, "A_1")])
-    assert ia.slot_identity_resolution(".", home.ledger).status == ia.SLOT_IDENTITY_ROW_ABSENT
+    assert lease_store.slot_identity_resolution(".", home.ledger).status == ia.SLOT_IDENTITY_ROW_ABSENT
     # 4. 중복 모순.
     _divergent_shape(home)
-    assert ia.slot_identity_resolution("work/A_1", home.ledger).status == \
+    assert lease_store.slot_identity_resolution("work/A_1", home.ledger).status == \
         ia.SLOT_IDENTITY_CONFLICT
     # 대조군 — 정상 해소.
     home.write_ledger([_pool_row("A", 1, "A_1")])
-    assert ia.slot_identity_resolution("work/A_1", home.ledger).status == ia.SLOT_IDENTITY_OK
+    assert lease_store.slot_identity_resolution("work/A_1", home.ledger).status == ia.SLOT_IDENTITY_OK
 
 
 def test_slot_path_resolution_distinguishes_four_judgments(home):
     """번호→경로 축도 같은 네 판정을 구분한다(모호 None 이 canonical 폴백과 안 섞이게)."""
     ia = home.ia
-    assert ia.slot_path_resolution("A", 1, home.ledger).status == ia.SLOT_PATH_LEDGER_MISSING
+    assert lease_store.slot_path_resolution("A", 1, home.ledger).status == ia.SLOT_PATH_LEDGER_MISSING
     home.ledger.write_text("{not valid json", encoding="utf-8")
-    assert ia.slot_path_resolution("A", 1, home.ledger).status == ia.SLOT_PATH_LEDGER_UNREADABLE
+    assert lease_store.slot_path_resolution("A", 1, home.ledger).status == ia.SLOT_PATH_LEDGER_UNREADABLE
     home.write_ledger([_pool_row("A", 2, "A_2")])
-    assert ia.slot_path_resolution("A", 1, home.ledger).status == ia.SLOT_PATH_ROW_ABSENT
+    assert lease_store.slot_path_resolution("A", 1, home.ledger).status == ia.SLOT_PATH_ROW_ABSENT
     home.write_ledger([{"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
                        {"slot": "nested/A_1", "repo": "A", "session": "A_1", "state": "leased"}])
-    ambiguous = ia.slot_path_resolution("A", 1, home.ledger)
+    ambiguous = lease_store.slot_path_resolution("A", 1, home.ledger)
     assert ambiguous.status == ia.SLOT_PATH_CONFLICT and ambiguous.path is None
 
 
@@ -535,7 +537,7 @@ def test_normal_shapes_are_not_judged_conflicting(home):
     """역방향 — 정상 단일 행·정상 다중 task 형상이 모순으로 오판되지 않는다."""
     # 단일 행.
     home.write_ledger([_pool_row("A", 1, "A_1")])
-    assert home.ia.slot_identity_resolution("work/A_1", home.ledger).status == \
+    assert lease_store.slot_identity_resolution("work/A_1", home.ledger).status == \
         home.ia.SLOT_IDENTITY_OK
     # 다중 task — 같은 task 명의가 슬롯 여러 개, 슬롯마다 행 1개(정상 형상).
     home.write_ledger([_pool_row("A", 1, "job1"), _pool_row("A", 2, "job1"),
@@ -544,9 +546,9 @@ def test_normal_shapes_are_not_judged_conflicting(home):
                              {"name": "job2", "prefix": None, "started": "t"}])
     home.write_areas(["A", "B"])
     for slot, key in (("work/A_1", "A_1"), ("work/A_2", "A_2"), ("work/B_1", "B_1")):
-        resolution = home.ia.slot_identity_resolution(slot, home.ledger)
+        resolution = lease_store.slot_identity_resolution(slot, home.ledger)
         assert (resolution.status, resolution.identity.key) == (home.ia.SLOT_IDENTITY_OK, key)
     # idle 로 반납된 옛 행 + 새 leased 행이 같은 슬롯에 있어도 모순이 아니다(session 은 하나).
     home.write_ledger([{"slot": "work/A_1", "repo": "A", "session": "", "state": "idle"},
                        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"}])
-    assert home.ia.slot_identity_resolution("work/A_1", home.ledger).identity.key == "A_1"
+    assert lease_store.slot_identity_resolution("work/A_1", home.ledger).identity.key == "A_1"

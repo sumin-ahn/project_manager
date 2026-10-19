@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """opencode relay driver — `opencode run` subprocess 세션 구동 (어댑터·얇음).
 
-엔진 core(루트 `.project_manager/tools/pm_relay.py`)의 SessionDriver Protocol
+엔진 세션 연속성 모듈(`pm_engine.app.session.relay`)의 SessionDriver Protocol
 구현체. relay/respawn/marker 로직은 *엔진* Supervisor 에 있고(루트 `.project_manager/tools/`·
 DI 로 테스트), 이 파일은 **opencode CLI 고유**한 부분만 — `opencode run --format json` 을
 subprocess 로 호출하고 json 이벤트 스트림을 파싱한다(claude `pm_orch_claude.py` 와 동형).
@@ -22,7 +22,6 @@ opencode 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없�
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import shutil
 import subprocess
@@ -46,17 +45,18 @@ def repo_root(start: Path) -> Path:
 
 
 def _load_engine():
-    """루트 `.project_manager/tools/pm_relay.py`(엔진 core)를 importlib 로 로드.
+    """루트 `.project_manager/tools` 의 엔진 패키지에서 세션 연속성 모듈을 import 한다.
 
-    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 경로로 직접 로드한다
-    (claude `pm_orch_claude._load_engine` 동형). Supervisor·parse_opencode_json 을 빌려 쓴다.
+    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 tools 경로를 `sys.path` 에 넣은 뒤
+    `pm_engine.app.session.relay` 를 import 한다(claude `pm_orch_claude._load_engine` 동형).
+    Supervisor·마커 함수를 빌려 쓴다.
     """
     root = repo_root(Path(__file__).resolve().parent)
-    engine_path = root / ".project_manager" / "tools" / "pm_relay.py"
-    spec = importlib.util.spec_from_file_location("pm_relay", engine_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module, root
+    tools = root / ".project_manager" / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from pm_engine.app.session import relay
+    return relay, root
 
 
 # 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
@@ -160,8 +160,8 @@ class OpencodeCliDriver:
                  precompact_at_pct: int | None = None, root: Path | None = None,
                  mark_stop=None, spawn_result=None, agent: str = DEFAULT_AGENT,
                  opencode_bin: str = OPENCODE_BIN, timeout: int = TURN_TIMEOUT_SEC,
-                 runner=subprocess.run, stall_error=None, temp_root=None, attached_message=None,
-                 assert_prompt_in_cwd=None) -> None:
+                 runner=subprocess.run, stall_error=None, temp_root, attached_message,
+                 assert_prompt_in_cwd) -> None:
         # parse_opencode_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_opencode_json
         self._ctx_budget = ctx_budget
@@ -169,20 +169,13 @@ class OpencodeCliDriver:
         self._root = Path(root) if root is not None else None
         # mark_stop = 엔진 mark_ctx_post_turn_if_over(root, sid, used, budget, precompact_at_pct).
         self._mark_stop = mark_stop
-        # main은 SpawnResult를 명시 주입한다. parser만 주입한 기존/단위 경로도 parser 소유
-        # 엔진 타입을 찾아 쓰며, 제3자 parser면 구조 호환 tuple로 폴백한다.
-        parser_globals = getattr(parse_opencode_json, "__globals__", {})
-        self._spawn_result = (
-            spawn_result or parser_globals.get("SpawnResult")
-            or (lambda sid, reply: (sid, reply))
-        )
-        # 프롬프트는 cross 위임과 같이 `--dir` 안 파일로 `--file` 전달한다 — 자리(`temp_root`)·첨부 안내
-        # 문구·containment 검사는 엔진(pm_relay) 것을 쓴다(사본 없음). main 은 명시 주입하고, parser 만
-        # 주입한 단위 경로는 parser 를 소유한 엔진 것을 쓴다. 둘 다 없으면 여기서 멈춘다(KeyError).
-        self._temp_root = temp_root or parser_globals["temp_root"]
-        self._attached_message = attached_message or parser_globals["OPENCODE_ATTACHED_MSG"]
-        self._assert_prompt_in_cwd = (
-            assert_prompt_in_cwd or parser_globals["assert_opencode_prompt_in_cwd"])
+        # main 은 엔진 SpawnResult 를 명시 주입한다. 주입이 없으면 구조 호환 tuple 을 쓴다.
+        self._spawn_result = spawn_result or (lambda sid, reply: (sid, reply))
+        # 프롬프트는 cross 위임과 같이 `--dir` 안 파일로 `--file` 전달한다 — 자리(`raw_output.temp_root`)·
+        # 첨부 안내 문구·containment 검사(`contract`)는 엔진 것을 쓴다(사본 없음). 세 값은 필수 주입이다.
+        self._temp_root = temp_root
+        self._attached_message = attached_message
+        self._assert_prompt_in_cwd = assert_prompt_in_cwd
         self.agent = agent
         self.opencode_bin = opencode_bin
         self.timeout = timeout
@@ -342,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
         # 필수라 task 없는 relay 는 시작하지 않는다(claude·codex 런처와 같은 자리·같은 문구).
         parser.error("relay 에는 --task <task> 가 필요하다")
     engine, root = _load_engine()
+    from pm_engine.infra import raw_output
+    from pm_engine.infra.harness import contract, watchdog
 
     cwd = args.cwd or os.getcwd()
     load_local_config(root)  # 구표기 키가 남았으면 값을 읽기 전에 멈춘다.
@@ -351,18 +346,18 @@ def main(argv: list[str] | None = None) -> int:
     # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도).
     # 소진 시 StallWatchdogError → driver `_turn` 이 loud + fail-soft(stall_error 주입).
     driver = OpencodeCliDriver(
-        engine.parse_opencode_json,
+        contract.parse_opencode_json,
         ctx_budget=budget,
         precompact_at_pct=precompact_at_pct,
         root=root,
         mark_stop=engine.mark_ctx_post_turn_if_over,
         spawn_result=engine.SpawnResult,
         agent=args.agent,
-        runner=_make_watchdog_runner(engine),
-        stall_error=engine.StallWatchdogError,
-        temp_root=engine.temp_root,
-        attached_message=engine.OPENCODE_ATTACHED_MSG,
-        assert_prompt_in_cwd=engine.assert_opencode_prompt_in_cwd,
+        runner=_make_watchdog_runner(watchdog),
+        stall_error=watchdog.StallWatchdogError,
+        temp_root=raw_output.temp_root,
+        attached_message=contract.OPENCODE_ATTACHED_MSG,
+        assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
     )
     supervisor = engine.Supervisor(driver, root=root, task=args.task)
 

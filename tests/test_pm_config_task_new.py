@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import identity_args
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -127,7 +128,7 @@ def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, wp, capsys):
 
     state = wp.task_pm_state_file("job")
     assert state.exists(), "task 생성 시 pm_state 즉시 생성 계약 위반"
-    assert wp.TASK_PM_STATE_EMPTY_MARKER in state.read_text(encoding="utf-8")
+    assert identity_args.TASK_PM_STATE_EMPTY_MARKER in state.read_text(encoding="utf-8")
     assert wp.list_leases() == [], "슬롯 대여는 `alloc` 소관 — task new 가 대여했다"
 
     out = capsys.readouterr().out

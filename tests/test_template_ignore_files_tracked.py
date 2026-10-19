@@ -22,16 +22,15 @@ hermetic — stdlib + `git` 서브프로세스만(라이브 하니스·네트워
 """
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
-TOOLS = REPO / ".project_manager" / "tools"
 OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
 
 # 가드 ① 스캔 대상 = 출하 누락 시 각 도구의 패키징/빌드 동작이 바뀌는 ignore 규칙 파일 전부.
@@ -160,17 +159,9 @@ def _self_hiding_entries(text: str, file_name: str, tmp_path: Path) -> list[str]
     return hits
 
 
-def _load_pm_update():
-    spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _manifest_entry_source(manifest: Path, relpath: str) -> str | None:
     """manifest 에서 relpath 엔트리의 `@source=<rel>` 값. 미등재면 KeyError 대신 명시 sentinel."""
-    pm_update = _load_pm_update()
-    for entry in pm_update.read_manifest(manifest):
+    for entry in manifest_store.read_manifest(manifest):
         if str(entry).replace("\\", "/") == relpath:
             return getattr(entry, "source_rel", None)
     raise AssertionError(f"{manifest.name} 에 {relpath} 미등재")

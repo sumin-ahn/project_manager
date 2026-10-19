@@ -21,6 +21,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -114,7 +115,7 @@ def test_non_repo_cwd_blocks_before_spawn(pd, tmp_path, monkeypatch):
             run_fn=_fail_if_called,
         )
 
-    rows = pd._load_relay().raw_records(tmp_path / "raw" / "raw_outputs.json")
+    rows = raw_output.raw_records(tmp_path / "raw" / "raw_outputs.json")
     assert len(rows) == 1
     assert rows[0]["pre_spawn_rejected"] is True
     assert rows[0]["rc"] == 1

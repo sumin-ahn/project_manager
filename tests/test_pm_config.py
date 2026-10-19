@@ -300,17 +300,6 @@ def test_pm_config_local_leased_sessions_removed(pc):
     assert not hasattr(pc, "_leased_sessions")
 
 
-def test_pm_config_loads_identity_args_sibling_module(pc):
-    """sibling 모듈 `identity_args` 를 `_load_module` 로 로드 가능 — board.py/worktree_pool.py
-    와 동형 패턴(spec_from_file_location)이라 스크립트 직접 실행·테스트 양쪽에서 동작한다
-    (정적 top-level import 는 ADR-0013 격리 관성상 쓰지 않음)."""
-    mod = pc._load_module("identity_args", "identity_args.py")
-    assert mod is not None
-    assert hasattr(mod, "leased_sessions")
-    assert hasattr(mod, "parse_identity")
-    assert hasattr(mod, "add_identity_args")
-
-
 def test_default_session_delegates_to_identity_args_leased_sessions(pc, tmp_path, monkeypatch):
     """`_default_session` 이 리스 장부 읽기를 주입된 `identity_args` 대역의 `leased_sessions`
     로 위임한다 — 배선(호출 인자·반환값 사용) 단언. 장부 경로는 `REPO`(monkeypatch) 기준으로
@@ -359,8 +348,7 @@ def test_default_session_identity_leased_zero_is_unresolved(pc, tmp_path, monkey
 
 
 def test_default_session_no_identity_injected_uses_real_module(pc, tmp_path, monkeypatch):
-    """`identity=` 미주입 시 실 `identity_args` 모듈을 로드해 동작한다(순수 모듈·파일 IO 0 —
-    스크립트 직접 실행과 동일 경로)."""
+    """`identity=` 미주입 시 실 `lease_store` 모듈로 동작한다(스크립트 직접 실행과 동일 경로)."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)

@@ -10,9 +10,10 @@ import os
 import subprocess
 from pathlib import Path
 
+from pm_engine.domain import upstream_rules
 from pm_engine.infra import conf_store
 
-from . import CallError, ENGINE_LOCK, load_engine_module
+from . import CallError, ENGINE_LOCK
 
 # 조회 상한 — 가벼운 절의 git 호출은 슬롯마다 5회와 저장소마다 고정 몇 회다. Windows VM 실측
 # 슬롯 6개 2.4~2.7초. `--with-board` 는 티켓 883건에서 4.8초다.
@@ -63,7 +64,7 @@ def upstream(pm_home: Path | str) -> str | None:
     if not value:
         return None
     with ENGINE_LOCK:
-        kind = load_engine_module("pm_import.py").classify_upstream(value)
+        kind = upstream_rules.classify_upstream(value)
     if kind == "path":
         return str((Path(pm_home) / value).resolve())
     return value

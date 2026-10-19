@@ -28,7 +28,10 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.app.session import relay
 from pm_engine.domain import conf_schema
+from pm_engine.infra import raw_output
+from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -44,7 +47,7 @@ def _load(name: str, path: Path):
 
 @pytest.fixture(scope="module")
 def orch():
-    return _load("pm_relay", TOOLS / "pm_relay.py")
+    return relay
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +79,7 @@ def test_parse_opencode_extracts_sid_and_reply(orch):
         _text_ev(sid, "PONG"),
         _ev(type="step_finish", sessionID=sid, part={"type": "step-finish"}),
     ]
-    got_sid, reply, used_tokens = orch.parse_opencode_json(lines)
+    got_sid, reply, used_tokens = contract.parse_opencode_json(lines)
     assert got_sid == sid
     assert reply == "PONG"
     assert used_tokens is None
@@ -86,7 +89,7 @@ def test_parse_opencode_accumulates_multiple_text_parts(orch):
     """멀티 text part 는 등장 순서대로 누적 — 한 답변이 여러 part 로 쪼개져 와도 합친다."""
     sid = "ses_abc"
     lines = [_text_ev(sid, "Hello "), _text_ev(sid, "world"), _text_ev(sid, "!")]
-    got_sid, reply, _ = orch.parse_opencode_json(lines)
+    got_sid, reply, _ = contract.parse_opencode_json(lines)
     assert got_sid == sid
     assert reply == "Hello world!"
 
@@ -98,7 +101,7 @@ def test_parse_opencode_sid_from_first_event(orch):
         _ev(type="step_start", sessionID=sid, part={}),
         _text_ev(sid, "reply"),
     ]
-    got_sid, _, _ = orch.parse_opencode_json(lines)
+    got_sid, _, _ = contract.parse_opencode_json(lines)
     assert got_sid == sid
 
 
@@ -113,7 +116,7 @@ def test_parse_opencode_skips_malformed_lines(orch):
         "noise {",
         _text_ev(sid, "answer"),
     ]
-    got_sid, reply, _ = orch.parse_opencode_json(lines)
+    got_sid, reply, _ = contract.parse_opencode_json(lines)
     assert got_sid == sid
     assert reply == "answer"
 
@@ -122,15 +125,15 @@ def test_parse_opencode_ignores_non_dict_events(orch):
     """JSON 배열/스칼라 라인은 dict 가 아니라 skip(robust)."""
     sid = "ses_y"
     lines = ["[1,2,3]", "42", _text_ev(sid, "x")]
-    got_sid, reply, _ = orch.parse_opencode_json(lines)
+    got_sid, reply, _ = contract.parse_opencode_json(lines)
     assert got_sid == sid and reply == "x"
 
 
 def test_parse_opencode_empty_and_no_text(orch):
-    assert orch.parse_opencode_json([]) == (None, None, None)
+    assert contract.parse_opencode_json([]) == (None, None, None)
     # sid 만 있고 text part 0 → reply None.
     lines = [_ev(type="step_start", sessionID="ses_z", part={})]
-    assert orch.parse_opencode_json(lines) == ("ses_z", None, None)
+    assert contract.parse_opencode_json(lines) == ("ses_z", None, None)
 
 
 def test_parse_opencode_text_event_without_part_text(orch):
@@ -142,14 +145,14 @@ def test_parse_opencode_text_event_without_part_text(orch):
         _json.dumps({"type": "text", "sessionID": sid}),  # part 키 자체 없음.
         _text_ev(sid, "real"),
     ]
-    got_sid, reply, _ = orch.parse_opencode_json(lines)
+    got_sid, reply, _ = contract.parse_opencode_json(lines)
     assert got_sid == sid and reply == "real"
 
 
 def test_parse_opencode_no_sessionid(orch):
     """sessionID 없는 이벤트만 있으면 sid None(폴백은 driver 가 처리)."""
     lines = [_json.dumps({"type": "text", "part": {"type": "text", "text": "x"}})]
-    sid, reply, _ = orch.parse_opencode_json(lines)
+    sid, reply, _ = contract.parse_opencode_json(lines)
     assert sid is None and reply == "x"
 
 
@@ -166,7 +169,7 @@ def test_parse_opencode_step_finish_tokens_fixture(orch):
         type="step_finish", sessionID="ses_wire",
         part={"type": "step-finish", "tokens": tokens},
     )]
-    assert orch.parse_opencode_json(lines) == ("ses_wire", "ok", 8131)
+    assert contract.parse_opencode_json(lines) == ("ses_wire", "ok", 8131)
 
 
 def test_parse_opencode_step_finish_without_tokens_is_none(orch):
@@ -174,7 +177,7 @@ def test_parse_opencode_step_finish_without_tokens_is_none(orch):
     lines = [_ev(
         type="step_finish", sessionID="ses_none", part={"type": "step-finish"},
     )]
-    assert orch.parse_opencode_json(lines) == ("ses_none", None, None)
+    assert contract.parse_opencode_json(lines) == ("ses_none", None, None)
 
 
 def test_parse_opencode_last_step_finish_wins_and_fallback_includes_cache(orch):
@@ -190,7 +193,7 @@ def test_parse_opencode_last_step_finish_wins_and_fallback_includes_cache(orch):
             },
         }),
     ]
-    assert orch.parse_opencode_json(lines) == ("ses_last", None, 1365)
+    assert contract.parse_opencode_json(lines) == ("ses_last", None, 1365)
 
 
 def test_parse_opencode_fallback_rejects_non_integer_token_value(orch):
@@ -201,7 +204,7 @@ def test_parse_opencode_fallback_rejects_non_integer_token_value(orch):
             "cache": {"write": 7, "read": 6},
         },
     })]
-    assert orch.parse_opencode_json(lines) == ("ses_bad_int", None, None)
+    assert contract.parse_opencode_json(lines) == ("ses_bad_int", None, None)
 
 
 def test_parse_opencode_fallback_rejects_non_dict_cache(orch):
@@ -209,7 +212,7 @@ def test_parse_opencode_fallback_rejects_non_dict_cache(orch):
     lines = [_ev(type="step_finish", sessionID="ses_bad_cache", part={
         "tokens": {"input": 50, "output": 10, "reasoning": 5, "cache": []},
     })]
-    assert orch.parse_opencode_json(lines) == ("ses_bad_cache", None, None)
+    assert contract.parse_opencode_json(lines) == ("ses_bad_cache", None, None)
 
 
 def test_parse_opencode_last_step_finish_missing_tokens_clears_usage(orch):
@@ -220,7 +223,7 @@ def test_parse_opencode_last_step_finish_missing_tokens_clears_usage(orch):
         }),
         _ev(type="step_finish", sessionID="ses_last", part={"type": "step-finish"}),
     ]
-    assert orch.parse_opencode_json(lines) == ("ses_last", None, None)
+    assert contract.parse_opencode_json(lines) == ("ses_last", None, None)
 
 
 # ── opencode driver (FakeRunner DI·실 opencode 무호출) ───────────────────────
@@ -260,7 +263,7 @@ def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod,
         return _FakeCompleted(_json_stream(opencode_sid, "READY"))
 
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json, runner=fake_run, spawn_result=orch.SpawnResult,
+        contract.parse_opencode_json, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run, spawn_result=orch.SpawnResult,
     )
     engine_uuid = "11111111-2222-3333-4444-555555555555"
     spawned = driver.spawn(str(tmp_path), engine_uuid, "bootstrap text")
@@ -271,7 +274,7 @@ def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod,
     assert spawned.reply == "READY"
     cmd = captured["cmd"]
     prompt_file = Path(cmd[cmd.index("--file") + 1])
-    assert cmd[:5] == ["opencode", "run", orch.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file)]
+    assert cmd[:5] == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file)]
     assert cmd[cmd.index("--format") + 1] == "json"
     assert "--agent" in cmd and "pm" in cmd  # PM primary 기본 spawn 타깃(T-0045).
     assert "--dir" in cmd and str(tmp_path) in cmd  # child cwd 격리.
@@ -291,7 +294,7 @@ def test_opencode_driver_spawn_agent_arg(orch, driver_mod, tmp_path):
         return _FakeCompleted(_json_stream("ses_b", "READY"))
 
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json, agent="build", runner=fake_run
+        contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, agent="build", runner=fake_run
     )
     driver.spawn(str(tmp_path), "uuid", "boot")
     cmd = captured["cmd"]
@@ -307,14 +310,14 @@ def test_opencode_driver_turn_closes_supervisor_stdin(orch, driver_mod):
         captured["kwargs"] = kwargs
         return _FakeCompleted(_json_stream("ses_stdin", "ok"))
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     assert driver.relay_turn("ses_stdin", "prompt") == "ok"
     assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
 
 
 def test_opencode_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json, runner=lambda *args, **kwargs: _FakeCompleted("")
+        contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=lambda *args, **kwargs: _FakeCompleted("")
     )
     assert driver.relay_turn("ses", "prompt") == ""
     assert capsys.readouterr().err == (
@@ -333,7 +336,7 @@ def test_opencode_driver_spawn_sid_parse_failure_raises(orch, driver_mod, tmp_pa
     def fake_run(cmd, **kwargs):
         return _FakeCompleted("no sessionID here\nplain text")  # 비-JSON → sid None.
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     with pytest.raises(RuntimeError, match="sessionID"):
         driver.spawn(str(tmp_path), "engine-uuid-ignored", "boot")
 
@@ -348,7 +351,7 @@ def test_opencode_driver_relay_uses_session_flag(orch, driver_mod):
         captured["cmd"] = cmd
         return _FakeCompleted(_json_stream("ses_r", "hello back"))
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     reply = driver.relay_turn("ses_r", "ping")
     assert reply == "hello back"
     cmd = captured["cmd"]
@@ -372,7 +375,7 @@ def test_opencode_driver_relay_reuses_spawn_cwd(orch, driver_mod, tmp_path):
             return _FakeCompleted(_json_stream("ses_cwd", "READY"))
         return _FakeCompleted(_json_stream("ses_cwd", "ok"))
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     spawned = driver.spawn(str(tmp_path), "uuid", "boot")
     sid, _ = spawned
     driver.relay_turn(sid, "msg")
@@ -387,7 +390,7 @@ def test_opencode_driver_relay_unknown_session_no_dir(orch, driver_mod):
         captured["cmd"] = cmd
         return _FakeCompleted(_json_stream("ses_u", "r"))
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     reply = driver.relay_turn("ses_never_spawned", "x")
     assert reply == "r"
     assert "--dir" not in captured["cmd"]  # cwd 메타 없으면 --dir 생략.
@@ -399,7 +402,7 @@ def test_opencode_driver_close_is_noop_and_clears_meta(orch, driver_mod, tmp_pat
     def fake_run(cmd, **kwargs):
         return _FakeCompleted(_json_stream("ses_c", "READY"))
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     spawned = driver.spawn(str(tmp_path), "uuid", "boot")
     sid, _ = spawned
     assert sid in driver._session_cwd
@@ -416,7 +419,7 @@ def test_opencode_driver_relay_timeout_returns_empty(orch, driver_mod):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, 1)
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     assert driver.relay_turn("ses", "x") == ""
 
 
@@ -425,7 +428,7 @@ def test_opencode_driver_relay_oserror_returns_empty(orch, driver_mod):
     def fake_run(cmd, **kwargs):
         raise OSError("opencode not found")
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     assert driver.relay_turn("ses", "x") == ""
 
 
@@ -442,7 +445,7 @@ def test_opencode_driver_spawn_marks_after_turn_and_returns_spawn_result(
 
     tokens = {"input": 8128, "output": 3, "reasoning": 0, "cache": {"read": 0, "write": 0}}
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json,
+        contract.parse_opencode_json, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
         ctx_budget=10_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -463,7 +466,7 @@ def test_opencode_driver_relay_marks_when_usage_reaches_threshold(
     # old-red: 옛 input+output+reasoning=600은 미발화지만 cache 포함 fallback=8100은 발화한다.
     tokens = {"input": 500, "output": 100, "reasoning": 0, "cache": {"read": 7500, "write": 0}}
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json,
+        contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
         ctx_budget=10_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -487,7 +490,7 @@ def test_opencode_driver_relay_under_threshold_does_not_mark(
         "cache": {"read": 9000, "write": 9000},
     }
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json,
+        contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
         ctx_budget=10_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -504,7 +507,7 @@ def test_opencode_driver_ctx_guard_noop_when_di_missing(orch, driver_mod):
     """budget/root/mark_stop 미주입 기본 경로는 usage가 있어도 예외 없는 no-op이다."""
     tokens = {"input": 900_000, "output": 1, "reasoning": 0}
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json,
+        contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
         runner=lambda *args, **kwargs: _FakeCompleted(
             _json_stream("ses_no_di", "ok", tokens=tokens)
         ),
@@ -549,7 +552,6 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
 
     class _FakeEngine:
         Supervisor = _FakeSup
-        StallWatchdogError = RuntimeError
 
         @staticmethod
         def mark_ctx_post_turn_if_over(*args):
@@ -557,23 +559,15 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
 
         SpawnResult = staticmethod(_fake_spawn_result)
 
-        @staticmethod
-        def parse_opencode_json(lines):
-            return None, None, None
-
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.opencode.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n",
         encoding="utf-8",
     )
-    from test_harness_ctx_limits import install_ctx_record, _load as load_ctx_engine
+    from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, harness="opencode")
-    engine = load_ctx_engine("pm_relay")
-    _FakeEngine.temp_root = staticmethod(engine.temp_root)
-    _FakeEngine.OPENCODE_ATTACHED_MSG = engine.OPENCODE_ATTACHED_MSG
-    _FakeEngine.assert_opencode_prompt_in_cwd = staticmethod(engine.assert_opencode_prompt_in_cwd)
     _FakeEngine.ctx_budget = staticmethod(
-        lambda root, harness, model: captured.setdefault("budget", engine.ctx_budget(root, harness, model)))
+        lambda root, harness, model: captured.setdefault("budget", relay.ctx_budget(root, harness, model)))
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
@@ -593,19 +587,17 @@ def test_opencode_main_rejects_unsafe_budget_before_supervisor(
 
     class _FakeEngine:
         Supervisor = _UnexpectedSup
-        StallWatchdogError = RuntimeError
         SpawnResult = orch.SpawnResult
         validate_relay_budget = staticmethod(orch.validate_relay_budget)
         mark_ctx_post_turn_if_over = staticmethod(orch.mark_ctx_post_turn_if_over)
-        parse_opencode_json = staticmethod(orch.parse_opencode_json)
 
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.opencode.ctx_window_tokens=50500\nctx.precompact_at_pct=80\n", encoding="utf-8",
     )
-    from test_harness_ctx_limits import install_ctx_record, _load as load_ctx_engine
+    from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, harness="opencode")
-    _FakeEngine.ctx_budget = staticmethod(load_ctx_engine("pm_relay").ctx_budget)
+    _FakeEngine.ctx_budget = staticmethod(orch.ctx_budget)
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     with pytest.raises(ValueError, match="즉시 세션 회전 위험"):
         driver_mod.main(["--task", "demo-task", "--cwd", str(tmp_path)])
@@ -644,7 +636,7 @@ def test_opencode_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkey
     def fake_run(cmd, **kwargs):
         return _FakeCompleted(_json_stream("ses_safe", "READY"))
 
-    driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     spawned = driver.spawn(str(tmp_path), "uuid", "boot")
     sid, _ = spawned
     assert driver.relay_turn(sid, "x") == "READY"
@@ -675,7 +667,7 @@ def test_supervisor_with_opencode_driver_rotation(orch, driver_mod, tmp_path):
 
     import io
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json,
+        contract.parse_opencode_json, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
         ctx_budget=10_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -712,7 +704,7 @@ def test_live_opencode_sid_marker_identity_smoke(orch, driver_mod, tmp_path):
     swap 만 검증(deferred 부분 — claude smoke 와 동일 한계). 모델 부재 시 정직 fail.
     """
     driver = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json, runner=_live_runner_with_model(LIVE_MODEL)
+        contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=_live_runner_with_model(LIVE_MODEL)
     )
 
     # ── spawn: opencode 가 sid 발급 → driver 가 출력에서 파싱·반환 ──
@@ -769,8 +761,8 @@ def _live_runner_with_model(model: str):
     return runner
 
 
-# ── 모델 목록 조회(`pm_relay.model_listing`) — 모델과 모델별 variants (T-0946) ──────────────────
-# 조회 실행·판독·시간 상한의 주인은 pm_relay 하나다(pm_import 에서 옮겨 왔다). 가짜 실행 파일은
+# ── 모델 목록 조회(`contract.model_listing`) — 모델과 모델별 variants (T-0946) ──────────────────
+# 조회 실행·판독·시간 상한의 주인은 contract 하나다(pm_import 에서 옮겨 왔다). 가짜 실행 파일은
 # 실제 `opencode models --verbose` 출력 형식을 재현한다(`_fake_opencode`).
 from _fake_opencode import (  # noqa: E402
     OLLAMA_LISTING, calls, install_fake_opencode, listing_for, path_with,
@@ -794,8 +786,8 @@ def test_model_listing_reads_models_and_variants(orch, tmp_path):
     fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
     env = _fake_env(fakebin)
 
-    listing = orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path, env=env)
-    again = orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path, env=env)
+    listing = contract.model_listing(contract.MODEL_SOURCE["opencode"], cwd=tmp_path, env=env)
+    again = contract.model_listing(contract.MODEL_SOURCE["opencode"], cwd=tmp_path, env=env)
 
     assert listing.models == ("ollama/glm-5.2:cloud", "ollama/ornith1.5:35b-a3b")
     assert listing.variants == {
@@ -806,23 +798,23 @@ def test_model_listing_reads_models_and_variants(orch, tmp_path):
     recorded = calls(fakebin)
     assert len(recorded) == 1, f"같은 조건의 조회가 다시 실행됐다: {recorded}"
     assert recorded[0][1] == "models --verbose"
-    assert orch.model_listing(orch.MODEL_SOURCE["claude"], cwd=tmp_path, env={}).variants is None
+    assert contract.model_listing(contract.MODEL_SOURCE["claude"], cwd=tmp_path, env={}).variants is None
 
 
 @_needs_posix_fake
 def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
     """조회 실패(rc·PATH 부재·시간 초과·판독 실패·모델 0개)는 빈 값이 아니라 HarnessContractError 다."""
-    source = orch.MODEL_SOURCE["opencode"]
+    source = contract.MODEL_SOURCE["opencode"]
     failing = install_fake_opencode(tmp_path / "failing", OLLAMA_LISTING, rc=7)
-    with pytest.raises(orch.HarnessContractError) as excinfo:
-        orch.model_listing(source, cwd=tmp_path, env=_fake_env(failing))
+    with pytest.raises(contract.HarnessContractError) as excinfo:
+        contract.model_listing(source, cwd=tmp_path, env=_fake_env(failing))
     message = str(excinfo.value)
     assert "opencode models --verbose" in message and "rc=7" in message and "boom" in message
 
     empty = tmp_path / "empty-bin"
     empty.mkdir()
-    with pytest.raises(orch.HarnessContractError) as excinfo:
-        orch.model_listing(source, cwd=tmp_path, env={"PATH": str(empty)})
+    with pytest.raises(contract.HarnessContractError) as excinfo:
+        contract.model_listing(source, cwd=tmp_path, env={"PATH": str(empty)})
     assert "PATH 부재" in str(excinfo.value)
 
     without_variants = OLLAMA_LISTING.replace('  "variants": {}\n', '  "other": {}\n')
@@ -830,17 +822,17 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
     codex_catalog = json.dumps({"models": [{"slug": "gpt-5.6-sol"}]})
     for index, listing in enumerate((without_variants, "", codex_catalog)):
         broken = install_fake_opencode(tmp_path / f"broken-{index}", listing)
-        with pytest.raises(orch.HarnessContractError):
-            orch.model_listing(source, cwd=tmp_path, env=_fake_env(broken))
+        with pytest.raises(contract.HarnessContractError):
+            contract.model_listing(source, cwd=tmp_path, env=_fake_env(broken))
 
     def _raise_timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd="opencode models --verbose", timeout=60)
 
     monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
-    monkeypatch.setattr(orch, "resolve_executable", lambda name, env: name)
-    monkeypatch.setattr(orch.subprocess, "run", _raise_timeout)
-    with pytest.raises(orch.HarnessContractError) as excinfo:
-        orch.model_listing(source, cwd=tmp_path / "timeout", env={"PATH": str(empty)})
+    monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
+    monkeypatch.setattr(contract.subprocess, "run", _raise_timeout)
+    with pytest.raises(contract.HarnessContractError) as excinfo:
+        contract.model_listing(source, cwd=tmp_path / "timeout", env={"PATH": str(empty)})
     assert "60s timeout 초과" in str(excinfo.value)
     assert "PM_OPENCODE_MODELS_TIMEOUT" in str(excinfo.value)
 
@@ -848,19 +840,19 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
 def test_reasoning_allowed_sources_partition_the_harnesses(orch, tmp_path):
     """정적 허용값 하네스와 모델별 허용값 하네스가 지원 하네스를 겹침 없이 나눈다."""
     static = set(conf_schema.REASONING_ALLOWED)
-    per_model = set(orch.PER_MODEL_REASONING_HARNESSES)
+    per_model = set(contract.PER_MODEL_REASONING_HARNESSES)
     assert not static & per_model
     assert static | per_model == set(conf_schema.HARNESS_CHOICES)
     assert "opencode" not in conf_schema.REASONING_ALLOWED, "opencode 정적 허용값 행이 남았다"
-    for harness in orch.PER_MODEL_REASONING_HARNESSES:
-        assert orch.MODEL_SOURCE[harness].parse == "opencode-verbose", harness
-    assert orch.MODEL_SOURCE["opencode"].command == ("opencode", "models", "--verbose")
-    assert orch.reasoning_allowed("claude", None, cwd=tmp_path, env={}) == (
+    for harness in contract.PER_MODEL_REASONING_HARNESSES:
+        assert contract.MODEL_SOURCE[harness].parse == "opencode-verbose", harness
+    assert contract.MODEL_SOURCE["opencode"].command == ("opencode", "models", "--verbose")
+    assert contract.reasoning_allowed("claude", None, cwd=tmp_path, env={}) == (
         "low", "medium", "high", "xhigh", "max")
-    with pytest.raises(orch.HarnessContractError):
-        orch.reasoning_allowed("gemini", None, cwd=tmp_path, env={})
-    assert orch.normalize_reasoning("  ") is None
-    assert orch.normalize_reasoning(" high ") == "high"
+    with pytest.raises(contract.HarnessContractError):
+        contract.reasoning_allowed("gemini", None, cwd=tmp_path, env={})
+    assert contract.normalize_reasoning("  ") is None
+    assert contract.normalize_reasoning(" high ") == "high"
 
 
 # ── 조회 실패 사유 — 사유 한 줄이 원인을 지목한다(pm_import 에서 옮긴 시험) ──────────────────
@@ -871,7 +863,7 @@ def bare_executable(orch, monkeypatch):
     """`subprocess.run` 을 대역으로 바꾸는 조회 시험 — 실행 파일 해소는 이름 그대로 둔다(이 기계 PATH 무관).
 
     해소 자체는 `test_harness_cli_spawns_resolve_executable_*` 가 본다."""
-    monkeypatch.setattr(orch, "resolve_executable", lambda name, env: name)
+    monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
 
 
 class _FakeListingRun:
@@ -884,25 +876,25 @@ class _FakeListingRun:
 
 
 def _codex_source(orch):
-    return orch.MODEL_SOURCE["codex"]
+    return contract.MODEL_SOURCE["codex"]
 
 
 def test_model_listing_rc_failure_truncates_stderr_to_200(orch, tmp_path, monkeypatch, bare_executable):
     """rc≠0 의 stderr 는 앞 200자까지만 사유에 싣는다(로그 폭증 방지)."""
-    monkeypatch.setattr(orch.subprocess, "run",
+    monkeypatch.setattr(contract.subprocess, "run",
                         lambda *a, **k: _FakeListingRun(returncode=1, stderr="x" * 500))
-    with pytest.raises(orch.HarnessContractError) as excinfo:
-        orch.model_listing(_codex_source(orch), cwd=tmp_path / "rc", env={})
+    with pytest.raises(contract.HarnessContractError) as excinfo:
+        contract.model_listing(_codex_source(orch), cwd=tmp_path / "rc", env={})
     message = str(excinfo.value)
     assert "rc=1" in message and "x" * 200 in message and "x" * 201 not in message
 
 
 def test_model_listing_zero_models_is_a_failure(orch, tmp_path, monkeypatch, bare_executable):
     """rc 0 이어도 모델이 0개면 성공이 아니다(빈 목록 성공 위장 0)."""
-    monkeypatch.setattr(orch.subprocess, "run",
+    monkeypatch.setattr(contract.subprocess, "run",
                         lambda *a, **k: _FakeListingRun(stdout=json.dumps({"models": []})))
-    with pytest.raises(orch.HarnessContractError) as excinfo:
-        orch.model_listing(_codex_source(orch), cwd=tmp_path / "zero", env={})
+    with pytest.raises(contract.HarnessContractError) as excinfo:
+        contract.model_listing(_codex_source(orch), cwd=tmp_path / "zero", env={})
     assert "모델 0개" in str(excinfo.value)
 
 
@@ -915,9 +907,9 @@ def test_model_listing_uses_the_resolved_timeout(orch, tmp_path, monkeypatch, ba
         seen.update(kwargs, argv=argv)
         return _FakeListingRun(stdout=json.dumps({"models": [{"slug": "gpt-6-astra"}]}))
 
-    monkeypatch.setattr(orch.subprocess, "run", _capture)
-    listing = orch.model_listing(_codex_source(orch), cwd=tmp_path, env={"A": "1"})
-    assert listing == orch.ModelListing(("gpt-6-astra",), None)
+    monkeypatch.setattr(contract.subprocess, "run", _capture)
+    listing = contract.model_listing(_codex_source(orch), cwd=tmp_path, env={"A": "1"})
+    assert listing == contract.ModelListing(("gpt-6-astra",), None)
     assert seen["timeout"] == 200
     assert seen["argv"] == ["codex", "debug", "models"]
     assert seen["cwd"] == str(tmp_path) and seen["env"] == {"A": "1"}
@@ -937,10 +929,10 @@ def test_models_timeout_env_override(orch, monkeypatch, raw, expected):
     else:
         monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", raw)
     if expected is None:
-        with pytest.raises(orch.HarnessContractError, match="PM_OPENCODE_MODELS_TIMEOUT"):
-            orch.models_timeout()
+        with pytest.raises(contract.HarnessContractError, match="PM_OPENCODE_MODELS_TIMEOUT"):
+            contract.models_timeout()
     else:
-        assert orch.models_timeout() == expected
+        assert contract.models_timeout() == expected
 
 
 def test_the_json_catalog_parser_takes_slugs(orch, tmp_path, monkeypatch, bare_executable):
@@ -949,8 +941,8 @@ def test_the_json_catalog_parser_takes_slugs(orch, tmp_path, monkeypatch, bare_e
         {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "supported_reasoning_levels": []},
         {"slug": "gpt-5.6-sol"},
     ]})
-    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: _FakeListingRun(stdout=output))
-    listing = orch.model_listing(_codex_source(orch), cwd=tmp_path, env={})
+    monkeypatch.setattr(contract.subprocess, "run", lambda *a, **k: _FakeListingRun(stdout=output))
+    listing = contract.model_listing(_codex_source(orch), cwd=tmp_path, env={})
     assert listing.models == ("gpt-6-astra", "gpt-5.6-sol")
 
 
@@ -963,20 +955,20 @@ def test_the_json_catalog_parser_takes_slugs(orch, tmp_path, monkeypatch, bare_e
 ], ids=["not-json", "wrong-shape", "blank-slug", "missing-slug", "non-string-slug"])
 def test_a_catalog_that_does_not_parse_is_a_failure(orch, tmp_path, monkeypatch, output, bare_executable):
     """판독 실패는 빈 목록이 아니라 HarnessContractError 다(항목을 조용히 빼지 않는다)."""
-    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: _FakeListingRun(stdout=output))
-    with pytest.raises(orch.HarnessContractError) as excinfo:
-        orch.model_listing(_codex_source(orch), cwd=tmp_path, env={})
+    monkeypatch.setattr(contract.subprocess, "run", lambda *a, **k: _FakeListingRun(stdout=output))
+    with pytest.raises(contract.HarnessContractError) as excinfo:
+        contract.model_listing(_codex_source(orch), cwd=tmp_path, env={})
     assert "판독 실패" in str(excinfo.value)
 
 
 def test_an_undeclared_source_kind_or_parse_name_is_fail_loud(orch, tmp_path):
     """표가 모르는 kind·판독 이름은 선언과 판정이 갈린 것이다 — 아무 형식으로나 읽지 않는다."""
     for source in (
-        orch.ModelSource("nope", (), None, None, "", ""),
-        orch.ModelSource("live", (), ("x",), "nope", "", ""),
+        contract.ModelSource("nope", (), None, None, "", ""),
+        contract.ModelSource("live", (), ("x",), "nope", "", ""),
     ):
-        with pytest.raises(orch.HarnessContractError):
-            orch.model_listing(source, cwd=tmp_path, env={})
+        with pytest.raises(contract.HarnessContractError):
+            contract.model_listing(source, cwd=tmp_path, env={})
 
 
 def test_listing_for_matches_the_verbose_output_shape():
@@ -1035,45 +1027,45 @@ def test_harness_cli_spawns_resolve_executable_to_the_found_path(orch, tmp_path,
         looked_up.append((name, path))
         return shim if name == "opencode" else None
 
-    monkeypatch.setattr(orch.shutil, "which", _which)
+    monkeypatch.setattr(contract.shutil, "which", _which)
     seen = {}
 
     def _run(argv, **kwargs):
         seen["argv"] = list(argv)
         return _FakeListingRun(stdout=OLLAMA_LISTING)
 
-    monkeypatch.setattr(orch.subprocess, "run", _run)
+    monkeypatch.setattr(contract.subprocess, "run", _run)
     env = {"PATH": str(tmp_path / "npm")}
-    orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path / "listing", env=env)
+    contract.model_listing(contract.MODEL_SOURCE["opencode"], cwd=tmp_path / "listing", env=env)
     assert seen["argv"] == [shim, "models", "--verbose"]
     assert looked_up[-1] == ("opencode", str(tmp_path / "npm")), "해소가 자식 env 의 PATH 를 보지 않았다"
 
     recorder = _RecordingPopen()
-    monkeypatch.setattr(orch.subprocess, "Popen", recorder)
-    orch._WatchedPopen(["opencode", "run", "--format", "json"], env=env)
+    monkeypatch.setattr(contract.subprocess, "Popen", recorder)
+    watchdog._WatchedPopen(["opencode", "run", "--format", "json"], env=env)
     assert recorder.argv == [shim, "run", "--format", "json"]
 
 
 def test_harness_cli_spawns_resolve_executable_failure_keeps_the_path_message(orch, tmp_path, monkeypatch):
     """해소 실패는 실행 없이 PATH 부재로 멈춘다 — model_listing 은 지금 문구의 HarnessContractError,
     `_WatchedPopen` 은 확정 기동 실패(`FileNotFoundError`·자식 없음 표식)다."""
-    monkeypatch.setattr(orch.subprocess, "run",
+    monkeypatch.setattr(contract.subprocess, "run",
                         lambda *a, **k: pytest.fail("해소 실패인데 실행했다"))
-    monkeypatch.setattr(orch.subprocess, "Popen",
+    monkeypatch.setattr(contract.subprocess, "Popen",
                         lambda *a, **k: pytest.fail("해소 실패인데 실행했다"))
     empty = tmp_path / "empty"
     empty.mkdir()
     env = {"PATH": str(empty)}
-    with pytest.raises(orch.HarnessContractError) as listing_error:
-        orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path / "missing", env=env)
+    with pytest.raises(contract.HarnessContractError) as listing_error:
+        contract.model_listing(contract.MODEL_SOURCE["opencode"], cwd=tmp_path / "missing", env=env)
     assert str(listing_error.value).startswith(
         "opencode 실행 파일 PATH 부재 — 이 프로세스의 PATH 에서 찾지 못해 모델 목록과 variant 를 확인할 수 없다.")
 
     with pytest.raises(FileNotFoundError) as spawn_error:
-        orch._WatchedPopen(["opencode", "run"], env=env)
+        watchdog._WatchedPopen(["opencode", "run"], env=env)
     assert "opencode 실행 파일 PATH 부재" in str(spawn_error.value)
     assert spawn_error.value.filename == "opencode"
-    assert getattr(spawn_error.value, orch.SPAWN_FAILED_ATTR) is True
+    assert getattr(spawn_error.value, watchdog.SPAWN_FAILED_ATTR) is True
 
 
 @_needs_posix_fake
@@ -1081,13 +1073,13 @@ def test_harness_cli_spawns_resolve_executable_posix_unchanged(orch, tmp_path):
     """POSIX 는 이름 그대로 실행할 때 찾는 파일과 같은 파일을 실행한다 — 자식 env 의 PATH 가 정한다."""
     fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
     env = _fake_env(fakebin)
-    resolved = orch.resolve_executable("opencode", env)
+    resolved = contract.resolve_executable("opencode", env)
     assert resolved == shutil.which("opencode", path=env["PATH"]) == str(fakebin / "opencode")
-    proc = orch._WatchedPopen(["opencode", "models", "--verbose"], cwd=str(tmp_path), env=env)
+    proc = watchdog._WatchedPopen(["opencode", "models", "--verbose"], cwd=str(tmp_path), env=env)
     stdout, _stderr = proc.communicate(timeout=30)
     assert proc.returncode == 0 and stdout.startswith("ollama/glm-5.2:cloud")
     with pytest.raises(FileNotFoundError):
-        orch.resolve_executable("opencode", {"PATH": str(tmp_path / "nowhere")})
+        contract.resolve_executable("opencode", {"PATH": str(tmp_path / "nowhere")})
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PATHEXT 해소 — 실측은 Windows 에서만")
@@ -1097,7 +1089,7 @@ def test_harness_cli_spawns_resolve_executable_finds_npm_cmd_shim_on_windows(orc
     shim_dir.mkdir()
     (shim_dir / "opencode.cmd").write_text("@echo ollama/glm-5.2:cloud\r\n", encoding="utf-8")
     env = {**os.environ, "PATH": str(shim_dir)}
-    resolved = orch.resolve_executable("opencode", env)
+    resolved = contract.resolve_executable("opencode", env)
     assert Path(resolved).parent == shim_dir and resolved.lower().endswith(".cmd")
 
 
@@ -1129,21 +1121,21 @@ def _relay_driver_argvs(orch, driver_mod, tmp_path) -> list[list[str]]:
         return runner
 
     opencode = driver_mod.OpencodeCliDriver(
-        orch.parse_opencode_json, runner=recording(_json_stream("ses_m", "ok")))
+        contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=recording(_json_stream("ses_m", "ok")))
     sid, _ = opencode.spawn(str(tmp_path), "uuid", _MULTILINE_PROMPT)
     opencode.relay_turn(sid, _MULTILINE_PROMPT)
 
     codex_mod = _load("pm_orch_codex_multiline", REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py")
     codex_stream = "\n".join((json.dumps({"type": "thread.started", "thread_id": "tid_m"}), json.dumps(
         {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}})))
-    codex = codex_mod.CodexCliDriver(orch.parse_codex_json, runner=recording(codex_stream))
+    codex = codex_mod.CodexCliDriver(contract.parse_codex_json, spawn_result=relay.SpawnResult, mark_ctx_if_over=relay.mark_ctx_post_turn_if_over, runner=recording(codex_stream))
     tid, _ = codex.spawn(str(tmp_path), "uuid", _MULTILINE_PROMPT)
     codex.relay_turn(tid, _MULTILINE_PROMPT)
 
     claude_mod = _load("pm_orch_claude_multiline",
                        REPO / "templates" / "claude_code" / ".claude" / "pm_orch_claude.py")
     claude = claude_mod.ClaudeCliDriver(
-        orch.parse_stream_json, runner=recording(json.dumps({"type": "result", "result": "ok"})))
+        contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=recording(json.dumps({"type": "result", "result": "ok"})))
     claude.relay_turn("uuid-m", _MULTILINE_PROMPT)
     assert prompts == [_MULTILINE_PROMPT] * len(argvs), "드라이버가 프롬프트 전문을 전달하지 않았다"
     return argvs
@@ -1153,11 +1145,11 @@ def test_engine_spawn_argv_carries_no_multiline_value(orch, driver_mod, tmp_path
     """엔진·어댑터가 하네스 CLI 에 넘기는 실행 인자에는 여러 줄 값이 없다 — cross·추가 리뷰어 빌더, 모델
     목록 조회 명령, opencode 첨부 안내, relay 드라이버 셋. 프롬프트는 표준 입력이나 `--file` 이다
     (fill 은 test_pm_import_fill). Windows `.cmd` 는 cmd.exe 가 인자를 해석해 첫 줄 뒤를 조용히 버린다."""
-    argvs = [list(source.command) for source in orch.MODEL_SOURCE.values() if source.command]
-    for role in (*orch.WRITE_ROLES, *orch.READ_ROLES):
-        argvs.append(orch.build_claude_argv("sonnet", "high", role))
-        argvs.append(orch.build_codex_argv("gpt-6", "high", role, cwd=str(tmp_path)))
-        argvs.append(orch.build_opencode_argv(
+    argvs = [list(source.command) for source in contract.MODEL_SOURCE.values() if source.command]
+    for role in (*contract.WRITE_ROLES, *contract.READ_ROLES):
+        argvs.append(contract.build_claude_argv("sonnet", "high", role))
+        argvs.append(contract.build_codex_argv("gpt-6", "high", role, cwd=str(tmp_path)))
+        argvs.append(contract.build_opencode_argv(
             "ollama/m", "high", role, str(tmp_path), str(tmp_path / "prompt.md")))
     argvs.extend(_relay_driver_argvs(orch, driver_mod, tmp_path))
     multiline = [(argv, part) for argv in argvs for part in argv if "\n" in part or "\r" in part]
@@ -1180,14 +1172,14 @@ def test_relay_driver_runner_resolve_executable(orch, monkeypatch, module_name, 
         return _FakeCompleted("")
 
     monkeypatch.setattr(driver.subprocess, "run", _run)
-    monkeypatch.setattr(orch.shutil, "which", lambda name, path=None: rf"C:\npm\{name}.cmd")
-    runner = driver._make_resolving_runner(orch)
+    monkeypatch.setattr(contract.shutil, "which", lambda name, path=None: rf"C:\npm\{name}.cmd")
+    runner = driver._make_resolving_runner(contract)
     runner(["codex", "exec", "--json"], input="첫 줄\n둘째 줄", capture_output=True)
     assert seen["argv"] == [r"C:\npm\codex.cmd", "exec", "--json"]
     assert seen["kwargs"]["input"] == "첫 줄\n둘째 줄"
 
     seen.clear()
-    monkeypatch.setattr(orch.shutil, "which", lambda name, path=None: None)
+    monkeypatch.setattr(contract.shutil, "which", lambda name, path=None: None)
     with pytest.raises(FileNotFoundError, match="codex 실행 파일 PATH 부재"):
         runner(["codex", "exec"], input="x")
     assert seen == {}

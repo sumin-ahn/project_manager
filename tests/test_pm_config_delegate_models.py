@@ -1,7 +1,7 @@
 """`pm-config delegate models --harness <h> --json` — 모델 목록 읽기 전용 조회 (T-0916).
 
-설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 자리다. 목록의 원천은 `pm_relay.MODEL_SOURCE`
-한 표이고 조회는 `pm_relay.model_listing` 하나다(하네스 이름 조건 분기 0). 이 파일이 못박는 계약:
+설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 자리다. 목록의 원천은 `contract.MODEL_SOURCE`
+한 표이고 조회는 `contract.model_listing` 하나다(하네스 이름 조건 분기 0). 이 파일이 못박는 계약:
 
   - 응답은 `{"harness", "kind", "models", "variants"}` 한 줄이다. `variants` 는 모델별 추론 강도이고
     그것을 내는 원천(opencode)만 채운다(나머지 null). `free_text` 는 싣지 않는다 — 그 사실은 키
@@ -19,7 +19,6 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +31,7 @@ from _manager_home import tree_snapshot
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from pm_engine.domain import conf_schema
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -50,11 +50,6 @@ def _load(name: str, path: Path):
 @pytest.fixture(scope="module")
 def pc():
     return _load("pm_config_delegate_models", PM_CONFIG_PY)
-
-
-@pytest.fixture(scope="module")
-def relay():
-    return _load("relay_for_delegate_models", TOOLS / "pm_relay.py")
 
 
 def _run(*argv: str, env_extra: dict | None = None, drop: tuple[str, ...] = (),
@@ -86,20 +81,20 @@ def _empty_path(tmp_path: Path) -> dict:
 # ── ① 원천 표 — 지원 집합과 응답 모양 ───────────────────────────────────────
 
 
-def test_every_supported_harness_is_declared_in_the_model_source_table(relay):
+def test_every_supported_harness_is_declared_in_the_model_source_table():
     """지원 하네스와 모델 원천 표가 같은 집합이다 — 원천 없는 하네스를 남기지 않는다."""
-    assert tuple(relay.MODEL_SOURCE) == conf_schema.HARNESS_CHOICES
+    assert tuple(contract.MODEL_SOURCE) == conf_schema.HARNESS_CHOICES
 
 
-def test_an_alias_harness_answers_from_the_declared_table(relay):
+def test_an_alias_harness_answers_from_the_declared_table():
     """`kind="alias"` 는 CLI 가 계약한 별칭 목록 그대로다(하드코딩 사본 0)."""
     document = _payload(_run(*MODELS_ARGV, "--harness", "claude", "--json"))
 
     assert document == {"harness": "claude", "kind": "alias",
-                        "models": list(relay.MODEL_SOURCE["claude"].values), "variants": None}
+                        "models": list(contract.MODEL_SOURCE["claude"].values), "variants": None}
 
 
-def test_the_response_never_carries_the_free_text_axis(pc, relay, capsys):
+def test_the_response_never_carries_the_free_text_axis(pc, capsys):
     """응답 키는 넷뿐이다 — `free_text` 는 레지스트리 `choices` 가 소유한다(두 자리 금지).
 
     두 kind 를 다 본다: alias 는 실 서브프로세스로, live 는 조회 함수 주입으로(라이브 CLI 를
@@ -109,7 +104,7 @@ def test_the_response_never_carries_the_free_text_axis(pc, relay, capsys):
 
     rc = pc.cmd_delegate_models(
         SimpleNamespace(harness="opencode", json=True),
-        listing=lambda source: relay.ModelListing(("provider/model",), {"provider/model": ()}))
+        listing=lambda source: contract.ModelListing(("provider/model",), {"provider/model": ()}))
     live = json.loads(capsys.readouterr().out.strip())
 
     assert rc == 0
@@ -139,13 +134,13 @@ def test_live_response_carries_variants_only_for_per_model_sources(tmp_path):
 # ── ② live 원천(codex·opencode) — 실 subprocess 층 ─────────────────────────
 
 
-def test_the_codex_source_is_a_catalog_query_not_a_config_read(relay):
+def test_the_codex_source_is_a_catalog_query_not_a_config_read():
     """codex 는 현재 값 하나가 아니라 카탈로그를 준다 — `codex debug models` 실측(0.02~0.34초).
 
     옛 선언은 `~/.codex/config.toml` 의 `model` 한 줄을 읽어 **설정된 값 하나**만 냈고, 그래서
     설정 화면 모델 칸에 고를 것이 하나뿐이었다. 열거 수단이 없다는 전제가 틀렸다.
     """
-    source = relay.MODEL_SOURCE["codex"]
+    source = contract.MODEL_SOURCE["codex"]
 
     assert source.kind == "live"
     assert source.command == ("codex", "debug", "models")
@@ -217,26 +212,6 @@ def test_the_command_takes_only_the_declared_shape(argv):
 
 
 # ── ④\' 원천 표 자체를 못 읽는 사본 — rc 1 ─────────────────────────────────
-
-
-def test_a_copy_without_the_relay_engine_fails_with_its_own_return_code(tmp_path):
-    """`pm_relay.py` 가 없는 사본은 rc 1 이다 — 조회 실패(3)와 다른 사실이라 값도 다르다.
-
-    표를 물어볼 자리 자체가 없는 상태다(부분 사본·중단된 갱신). 이 자리를 3 으로 접으면
-    "표대로 물었는데 답을 못 얻었다" 와 구별되지 않는다.
-    """
-    tools = tmp_path / "copy" / ".project_manager" / "tools"
-    shutil.copytree(TOOLS, tools)
-    (tools / "pm_relay.py").unlink()
-
-    completed = subprocess.run(
-        [sys.executable, str(tools / "pm_config.py"), *MODELS_ARGV,
-         "--harness", "claude", "--json"],
-        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env())
-
-    assert completed.returncode == 1, completed.stdout
-    assert completed.stdout == ""
-    assert "pm_relay.py" in completed.stderr
 
 
 # ── ⑤ 읽기 전용 — 조회는 아무것도 쓰지 않는다 ──────────────────────────────

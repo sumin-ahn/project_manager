@@ -87,8 +87,9 @@ from typing import Callable, NamedTuple, NoReturn
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, manifest_store, raw_output, repo_files  # noqa: E402
+from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -289,7 +290,7 @@ FREE_FORM_TOKENS = (
 # *아니라* `opencode models` 결정적 조회로 해소한다(resolve_opencode_model) — 따라서 fill
 # 후보에서 분리됐다(중복·환각 제거). opencode 트리가 복사됐을 때만 해소 단계를 탄다.
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
-# 이 토큰을 해소할 때 가용 모델을 조회하는 원천의 하네스 키(`pm_relay.MODEL_SOURCE`).
+# 이 토큰을 해소할 때 가용 모델을 조회하는 원천의 하네스 키(`contract.MODEL_SOURCE`).
 OPENCODE_MODEL_SOURCE_HARNESS = "opencode"
 
 # fill 실 하니스 구동 게이트 환경변수(호출 횟수 축 — 무엇을 보여줄지가 아니라 몇 번 부를지다).
@@ -724,20 +725,16 @@ def _derive_sed_exclude_relpaths(manifest_path: Path) -> frozenset:
     조건으로, 직속 템플릿(`pm_state.template.md`)은 `_is_template_scaffold` 로 제외된다 — 현재
     산출은 정확히 {pm_role.md, pm_playbook.md, pm_principles.md}.
 
-    manifest 파싱은 pm_update.read_manifest 재사용(새 파서 신설 없음·_render_managed_relpaths 동형).
-    manifest 부재·로드 실패 → 리터럴 floor SED_EXCLUDE_FLOOR (fail-soft — 빈 집합이면 broken-manifest
+    manifest 파싱은 manifest_store.read_manifest 재사용(새 파서 신설 없음·_render_managed_relpaths 동형).
+    manifest 부재·파싱 실패 → 리터럴 floor SED_EXCLUDE_FLOOR (fail-soft — 빈 집합이면 broken-manifest
     엣지에서 방법론 문서가 조용히 오치환되므로 기존 제외를 floor 로 보장·should-fix). 정상
     파싱은 파생 결과를 그대로 반환한다(manifest 가 방법론 문서를 명시적으로 뺐다면 그 판단을 존중)."""
     wiki_prefix = ".project_manager/wiki/"
     if not manifest_path.is_file():
         return SED_EXCLUDE_FLOOR
-    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
     try:
-        mod = _load_module_from_path(
-            pm_update_py, "pm_update.py", allow_unverified=True,
-        )
-        entries = mod.read_manifest(manifest_path)
-    except Exception:  # noqa: BLE001 — 로드/파싱 실패는 floor 로 폴백(기존 제외 보존·should-fix).
+        entries = manifest_store.read_manifest(manifest_path)
+    except Exception:  # noqa: BLE001 — 파싱 실패는 floor 로 폴백(기존 제외 보존·should-fix).
         return SED_EXCLUDE_FLOOR
     out: set = set()
     for entry in entries:
@@ -934,51 +931,6 @@ def _real_git_runner(dest_root: Path) -> GitRunner:
     return runner
 
 
-# ── upstream URL 안전 계약 + self-describing 분류 ──────────
-# upstream 값은 git URL *또는* 로컬 경로다 — self-describing(모양으로 분기). git 을
-# 호출하는 모든 경로(ls-remote·remote get-url·rev-parse)가 이 계약을 지킨다:
-#   - argv-list(no shell·_real_git_runner 가 항상 list 전달) · leading-dash 거부(옵션 오인)
-#   - protocol allowlist(https/ssh/file 명시) · credential-in-URL 거부(SSRF·자격증명 누출)
-#   - scp-style(user@host:path)/Windows(C:\)/상대/모호 colon 분기로 URL↔경로 정확 판별
-# 비대화 auth(GIT_TERMINAL_PROMPT=0)·timeout 은 git 호출 runner(_real_upstream_git_runner)가
-# 강제한다. 이 검증 자체는 *순수 함수*(네트워크 0) — 도달성은 ls-remote 호출부가 따로 본다.
-
-# URL scheme allowlist — https/ssh/file *만*. http(평문)·git://(비인증
-# 평문·MITM 취약)·ftp·ext::<cmd>(임의명령)·임의 transport 는 전부 거부(SSRF·중간자·원격 코드
-# 실행 회피). git:// 는 ssh 위 전송이 아니라 *비인증 평문*이라 allowlist 에서 뺀다(codex MF2).
-_UPSTREAM_URL_SCHEMES = ("https://", "ssh://", "file://")
-
-# scp-style URL(`user@host:path`·`host:path`) 판별 — colon 앞에 슬래시가 없고(경로 아님)
-# Windows 드라이브(`C:`)가 아니어야 한다. git 의 scp 문법은 이 모양을 SSH 로 해석한다.
-_SCP_LIKE_RE = re.compile(r"^[^/\\:]+@[^/\\:]+:.+$|^[A-Za-z][A-Za-z0-9_.-]*:.+$")
-
-# Windows 드라이브 경로(`C:\...`·`C:/...`) — 단일 알파벳 + colon + 슬래시. scp-style 과
-# 구분해 *경로*로 취급(콜론 모호성 해소). 단일문자 호스트의 scp 와 충돌하지 않게 슬래시 요구.
-_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
-
-
-def classify_upstream(value: str) -> str:
-    """upstream 값을 self-describing 으로 분류한다 — 'url' | 'path'.
-
-    엔진의 소스 해소(URL→로컬 캐시 clone/fetch · 경로→그 checkout)와 스킬의 pull 판단이 이
-    한 규칙을 공유한다(값 모양만 본다·네트워크 0). 판정 순서:
-      1. 허용 scheme(`https://`·`ssh://`·`file://`) prefix → 'url'.
-      2. Windows 드라이브(`C:\\`·`C:/`) → 'path'(콜론 모호성 우선 해소).
-      3. scp-style(`user@host:path`·`host:path`) → 'url'(git SSH 문법).
-      4. 그 외 → 'path'(상대/절대 로컬 경로).
-    빈 문자열은 'path'(호출부 검증이 별도로 거른다 — 여기선 모양 분류만). scheme allowlist
-    밖(git://·http:// 등)은 prefix 매칭이 안 돼 scp-style 분기로 빠질 수 있으나, 안전 거부는
-    `validate_upstream_value`(`://` allowlist-밖 명시 reject)가 전담한다(분류 ≠ 허가).
-    """
-    if any(value.startswith(s) for s in _UPSTREAM_URL_SCHEMES):
-        return "url"
-    if _WINDOWS_DRIVE_RE.match(value):
-        return "path"
-    if _SCP_LIKE_RE.match(value):
-        return "url"
-    return "path"
-
-
 def validate_upstream_value(value: str) -> tuple[bool, str]:
     """upstream 값의 *순수* 안전 검증 (네트워크 0·도달성은 별도). (ok, reason).
 
@@ -1001,15 +953,15 @@ def validate_upstream_value(value: str) -> tuple[bool, str]:
     # scheme-form(`X://...`)인데 allowlist 밖이면 명시 거부 — http(평문)·git://(비인증 평문·MITM)·
     # ftp·ext::cmd(임의명령)·임의 transport 차단(SSRF·중간자·원격 코드 실행). scp-style(콜론만·
     # `://` 없음)은 아래에서 분류.
-    if "://" in value and not value.startswith(_UPSTREAM_URL_SCHEMES):
+    if "://" in value and not value.startswith(upstream_rules._UPSTREAM_URL_SCHEMES):
         scheme = value.split("://", 1)[0]
         return False, (
             f"upstream URL scheme {scheme!r} 비허용 — 허용: https/ssh/file "
             "(http·git:// 평문·ftp·ext::cmd 등 거부·SSRF/중간자/MITM 방지)."
         )
-    kind = classify_upstream(value)
+    kind = upstream_rules.classify_upstream(value)
     if kind == "url":
-        if value.startswith(_UPSTREAM_URL_SCHEMES) and not value.startswith("file://"):
+        if value.startswith(upstream_rules._UPSTREAM_URL_SCHEMES) and not value.startswith("file://"):
             # scheme-form URL — authority(userinfo@host[:port]) 부를 분리해 검사.
             after_scheme = value.split("://", 1)[1] if "://" in value else value
             authority = after_scheme.split("/", 1)[0]
@@ -1862,10 +1814,7 @@ def _prepare_selected_manifest_union(template_roots: list[Path]) -> dict | None:
     ]
     if len(manifest_paths) < 2:
         return None
-    pu = _load_pm_update()
-    if pu is None:
-        raise RuntimeError("pm_update.py를 로드할 수 없어 선택 manifest 합집합을 만들 수 없습니다.")
-    return pu.merge_manifest_sources(manifest_paths)
+    return manifest_store.merge_manifest_sources(manifest_paths)
 
 
 def _warn_selected_manifest_union_conflicts(merged: dict | None) -> None:
@@ -2167,22 +2116,18 @@ def _unregistered_skill_notation_message(unregistered: list[str]) -> str:
 def _render_managed_relpaths(dest_root: Path) -> set[str]:
     """복사된 트리의 engine.manifest 에서 `@render` path(repo 기준 relpath·POSIX) 집합.
 
-    pm_update.read_manifest 를 재사용해 `.render` True 항목만 모은다. manifest 부재·로드 실패
+    manifest_store.read_manifest 를 재사용해 `.render` True 항목만 모은다. manifest 부재·파싱 실패
     → 빈 set(render 대상 0·무동작). 디렉토리 path 는 하위 어댑터 산출물의 prefix 매칭에 쓴다."""
-    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
     manifest = dest_root / ".project_manager" / "engine.manifest"
     if not manifest.is_file():
         return set()
     try:
-        mod = _load_module_from_path(
-            pm_update_py, "pm_update.py", allow_unverified=True,
-        )
         return {
             str(e).replace("\\", "/")
-            for e in mod.read_manifest(manifest)
+            for e in manifest_store.read_manifest(manifest)
             if getattr(e, "render", False)
         }
-    except Exception:  # noqa: BLE001 — 로드/파싱 실패는 render 대상 0(무동작).
+    except Exception:  # noqa: BLE001 — 파싱 실패는 render 대상 0(무동작).
         return set()
 
 
@@ -3035,10 +2980,9 @@ def run_board_init(dest_root: Path) -> int:
     stdin=DEVNULL 의 isatty() 가 Windows 서 신뢰불가라, env 로
     `PM_NONINTERACTIVE=1` 을 명시 전달해 결정적으로 skip 시킨다 (isatty 폴백 보조).
 
-    `PYTHONDONTWRITEBYTECODE=1` 도 함께 전달한다— board.py 는 이제 같은
-    tools/ 디렉토리의 `identity_args.py` 를 `importlib.util.spec_from_file_location` 으로
-    동적 로드하는데, 이 실행이 갓 복사된 새 프로젝트 트리 안(`dest_root`)에서 일어나므로 표준
-    바이트코드 캐싱이 `dest_root/.project_manager/tools/__pycache__/` 를 새로 만든다 — fresh
+    `PYTHONDONTWRITEBYTECODE=1` 도 함께 전달한다— board.py 는 같은 tools/ 디렉토리의
+    `pm_engine` 패키지를 import 하는데, 이 실행이 갓 복사된 새 프로젝트 트리 안(`dest_root`)에서
+    일어나므로 표준 바이트코드 캐싱이 `dest_root/.project_manager/tools/__pycache__/` 를 새로 만든다 — fresh
     import 직후 빌드 산출물이 섞이는 것을 막는다(`test_import_excludes_pycache`).
     """
     tools = dest_root / ".project_manager" / "tools"
@@ -3423,17 +3367,16 @@ class ModelResolveResult:
 
 
 def _real_models_runner(source) -> tuple[bool, list[str]]:
-    """설치 대조·콘솔 `[m]` 용 모델 목록 — `pm_relay.model_listing` 을 감싼다. 반환: (성공 여부, 모델 목록).
+    """설치 대조·콘솔 `[m]` 용 모델 목록 — `contract.model_listing` 을 감싼다. 반환: (성공 여부, 모델 목록).
 
-    조회 실행·판독·시간 상한의 주인은 pm_relay 하나다(이 함수에 조회 코드 0). 조회 실패
+    조회 실행·판독·시간 상한의 주인은 `contract` 하나다(이 함수에 조회 코드 0). 조회 실패
     (`HarnessContractError` — PATH 부재·rc·timeout·판독 실패·모델 0개)는 그 사유를 stderr 한 줄로 남기고
     (False, []) 로 돌린다 — 설치를 깨지 않고 형식 안내로 강등하는 이 두 소비자의 계약이다. 그 밖의
     예외는 잡지 않는다.
     """
-    relay = _load_watchdog()
     try:
-        listing = relay.model_listing(source, cwd=Path.cwd(), env=dict(os.environ))
-    except relay.HarnessContractError as exc:
+        listing = contract.model_listing(source, cwd=Path.cwd(), env=dict(os.environ))
+    except contract.HarnessContractError as exc:
         print(f"{exc} — 모델 자동해소 skip", file=sys.stderr)
         return False, []
     return True, list(listing.models)
@@ -3636,7 +3579,7 @@ def resolve_opencode_model(
                                   note="opencode 모델 토큰 미잔존 — 해소 단계 비활성(claude-only).")
 
     runner = models_runner if models_runner is not None else (
-        lambda: _real_models_runner(_load_watchdog().MODEL_SOURCE[OPENCODE_MODEL_SOURCE_HARNESS]))
+        lambda: _real_models_runner(contract.MODEL_SOURCE[OPENCODE_MODEL_SOURCE_HARNESS]))
     stream = stdin if stdin is not None else sys.stdin
     is_tty = bool(getattr(stream, "isatty", lambda: False)())
 
@@ -3757,34 +3700,6 @@ class FillResult:
                 f"values={list(self.values)!r}, todos={self.todos!r})")
 
 
-def _load_watchdog():
-    """엔진 pm_relay 의 공용 워치독을 지연 로드한다 (deep-import seam·순환 회피).
-
-    pm_import 와 pm_relay 는 형제(`.project_manager/tools/`) — importlib 로 직접 로드해
-    PYTHONPATH 의존 없이(테스트 spec_from_file_location 경로 포함) run_with_first_event_watchdog·
-    하네스 프로필·timeout sentinel 을 빌려 쓴다(board._load_domain_module 선례 동형)."""
-    engine_path = Path(__file__).resolve().parent / "pm_relay.py"
-    return _load_module_from_path(
-        engine_path, "pm_relay.py", verifier=_verify_engine_rev,
-    )
-
-
-def _temp_root(root) -> Path:
-    """그 트리가 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
-
-    **rev 결속 없이 로드한다(`allow_unverified=True`).** 이 호출이 받아 오는 것은 *경로 하나*이고
-    어떤 판정의 입력도 아니다 — rev 결속이 지키는 것은 "신 해시 + 구 선언 코드" 조합이지 스크래치
-    자리가 아니다. 결속을 걸면 자기 갱신 mid-sync(형제 rev 혼재)에서 이 로드가 skew 로 터지고,
-    훅 세트 상류 세대 선언이 통째로 설치본 선언으로 강등된다 — 자리를 묻다가 판정을 잃는다.
-    자리 규약은 이 파일에 복제하지 않는다.
-    """
-    engine_path = Path(__file__).resolve().parent / "pm_relay.py"
-    relay = _load_module_from_path(
-        engine_path, "pm_relay.py", allow_unverified=True,
-    )
-    return relay.temp_root(Path(root))
-
-
 def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
     """실제 fill argv를 (하네스·증분 신호·프롬프트 전달 방식) 선언으로 해소한다."""
     for command, driver in FILL_DRIVER_BY_CMD.items():
@@ -3827,21 +3742,20 @@ def _fill_local_config(cwd: Path | str | None) -> dict[str, str]:
 
 def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | None:
     """fill도 위임·리뷰와 같은 호출층 상한 판정을 소비한다(never-block advisory)."""
-    relay = _load_watchdog()
-    profile = relay.resolve_harness_profile(harness, _fill_local_config(cwd))
+    profile = watchdog.resolve_harness_profile(harness, _fill_local_config(cwd))
     first_event_timeout = (
-        relay.first_event_timeout_default() if profile.startup_watchdog else None
+        watchdog.first_event_timeout_default() if profile.startup_watchdog else None
     )
-    retries = relay.stall_retries_default() if profile.startup_watchdog else 0
-    execution_budget = relay.watchdog_execution_budget(
+    retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0
+    execution_budget = watchdog.watchdog_execution_budget(
         profile.wall_timeout,
         first_event_timeout=first_event_timeout,
         retries=retries,
     )
-    return relay.harness_cap_advisory(
+    return watchdog.harness_cap_advisory(
         os.environ, execution_budget=execution_budget,
-        session_markers=relay.HARNESS_SESSION_MARKERS,
-        cap_env=relay.HARNESS_CAP_ENV,
+        session_markers=watchdog.HARNESS_SESSION_MARKERS,
+        cap_env=watchdog.HARNESS_CAP_ENV,
         render_missing=lambda _harness, cap_key, required: (
             f"[fill auto] 경고: 호출층 상한 {cap_key} 미해소 — "
             f"실행+정리+부분 산출물 보존 여유 {required}s 이상을 설정하세요."
@@ -3861,8 +3775,8 @@ def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | Non
 def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
     """워치독 kill/정리 실패의 stdout·stderr를 fill 실패 진단에 보존한다."""
     try:
-        return _load_watchdog().format_partial_output(head, exc)
-    except Exception as formatter_exc:  # noqa: BLE001 — 일반 formatter/load 실패는 fail-soft.
+        return watchdog.format_partial_output(head, exc)
+    except Exception as formatter_exc:  # noqa: BLE001 — 일반 formatter 실패는 fail-soft.
         if _is_engine_rev_skew(formatter_exc):
             raise
         return head
@@ -3945,7 +3859,7 @@ def _real_harness_runner(
     SF: cwd 가 주어지면 *대상 repo* 에서 구동한다(run_fill 이 dest_root 를 바인딩). 호출자
     cwd 가 아니라 import 대상에서 돌아야 하니스의 작업 디렉토리·파일 접근이 분석 대상과 맞는다.
 
-    세 하네스 모두 pm_relay 공용 워치독을 경유한다. 하네스별 차이는 코드 분기가 아니라
+    세 하네스 모두 `watchdog` 공용 워치독을 경유한다. 하네스별 차이는 코드 분기가 아니라
     HARNESS_PROFILES 선언(startup 감시 여부·진행 신호·idle/wall 상한)이며 대상 repo local.conf
     override도 같은 해소기를 탄다. startup stall만 선언된 유한 재시도를 하고, idle/wall kill은
     중복 과금·중복 호출을 피하려 자동 재시도하지 않은 채 부분 산출물과 함께 fail-soft 한다.
@@ -3954,25 +3868,18 @@ def _real_harness_runner(
     "Reading additional input from stdin..." 로 무기한 대기. 전달 방식·진행 신호 정책은 실제 argv와
     함께 FILL_DRIVER_BY_CMD에 선언돼 하네스 판정 코드와 분리된다."""
     try:
-        engine = _load_watchdog()
-    except Exception as exc:  # noqa: BLE001 — 일반 로드 실패만 fill fail-soft.
-        if _is_engine_rev_skew(exc):
-            raise
-        return False, _fill_failure_with_partial(f"[하니스 워치독 로드 오류: {exc}]", exc)
-
-    try:
         harness, emits_progress, prompt_transport = _fill_driver(argv)
         input_text = prompt if prompt_transport == FILL_PROMPT_STDIN else None
-        profile = engine.resolve_harness_profile(harness, _fill_local_config(cwd))
+        profile = watchdog.resolve_harness_profile(harness, _fill_local_config(cwd))
         progress_signal = (
             profile.progress_signal if emits_progress else conf_schema.PROGRESS_SIGNAL_NONE
         )
-        idle_timeout = engine.idle_timeout_for_signal(
+        idle_timeout = watchdog.idle_timeout_for_signal(
             progress_signal, profile.idle_timeout)
         first_event_timeout = (
-            engine.first_event_timeout_default() if profile.startup_watchdog else None
+            watchdog.first_event_timeout_default() if profile.startup_watchdog else None
         )
-        retries = engine.stall_retries_default() if profile.startup_watchdog else 0
+        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0
         idle_label = f"{idle_timeout:.0f}초" if idle_timeout is not None else "비활성(증분 신호 없음)"
         print(
             f"[fill auto] 실행 상한: idle={idle_label} · wall={profile.wall_timeout:.0f}초 "
@@ -3985,7 +3892,7 @@ def _real_harness_runner(
         return False, _fill_failure_with_partial(f"[하니스 프로필 준비 오류: {exc}]", exc)
 
     try:
-        result = engine.run_with_first_event_watchdog(
+        result = watchdog.run_with_first_event_watchdog(
             argv,
             first_event_timeout=first_event_timeout,
             overall_timeout=profile.wall_timeout,
@@ -3995,8 +3902,8 @@ def _real_harness_runner(
             input_text=input_text,
         )
     except subprocess.TimeoutExpired as exc:
-        wall_axis = getattr(engine, "TIMEOUT_AXIS_WALL", "wall")
-        idle_axis = getattr(engine, "TIMEOUT_AXIS_IDLE", "idle")
+        wall_axis = watchdog.TIMEOUT_AXIS_WALL
+        idle_axis = watchdog.TIMEOUT_AXIS_IDLE
         axis = getattr(exc, "timeout_axis", wall_axis)
         threshold = float(getattr(exc, "threshold_seconds", exc.timeout))
         silence = getattr(exc, "silence_seconds", None)
@@ -4012,12 +3919,12 @@ def _real_harness_runner(
     except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise
-        if isinstance(exc, engine.StallWatchdogError):
+        if isinstance(exc, watchdog.StallWatchdogError):
             axis = getattr(exc, "timeout_axis", None)
             threshold = getattr(exc, "threshold_seconds", None)
             threshold_label = f" {float(threshold):.0f}초" if threshold is not None else ""
-            first_event_axis = getattr(engine, "TIMEOUT_AXIS_FIRST_EVENT", "first-event")
-            idle_axis = getattr(engine, "TIMEOUT_AXIS_IDLE", "idle")
+            first_event_axis = watchdog.TIMEOUT_AXIS_FIRST_EVENT
+            idle_axis = watchdog.TIMEOUT_AXIS_IDLE
             if axis == first_event_axis:
                 kind = f"첫-이벤트 stall{threshold_label}"
             elif axis == idle_axis:
@@ -4061,7 +3968,7 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
 
       claude   → `claude -p` (프롬프트 = 표준 입력)
       opencode → `opencode run "<첨부 안내>" --file <prompt_file> --format json --dir <dest>`
-                 (cross 위임과 같은 `--file` 전달·안내 문구는 pm_relay 의 한 줄 상수)
+                 (cross 위임과 같은 `--file` 전달·안내 문구는 `contract` 의 한 줄 상수)
       codex    → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest>` (표준 입력)
 
     `prompt_file` 은 `--file` 전달 하네스에 run_fill 이 `dest_root` 안에 쓴 프롬프트 파일이다(opencode
@@ -4073,7 +3980,7 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
     if harness == "claude":
         return [*CLAUDE_FILL_CMD]
     if harness == "opencode":
-        return [*OPENCODE_FILL_CMD, _load_watchdog().OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
+        return [*OPENCODE_FILL_CMD, contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
                 "--format", "json", "--dir", str(dest_root)]
     if harness == "codex":
         # workdir 핀(codex 는 -C 로 작업 디렉토리 고정).
@@ -4116,9 +4023,9 @@ def _parse_codex_json(output: str) -> str:
 
     codex 는 줄당 JSON 이벤트(thread.started·turn.started·item.*·turn.completed·error)를 낸다.
     응답 = `item.type == "agent_message"` 인 item 의 `.text`(마지막 것 = 최종 응답·엔진
-    pm_relay.parse_codex_json 규칙과 정합). JSON 파싱 불가·구조 상이·미발견이면 원문 그대로
+    contract.parse_codex_json 규칙과 정합). JSON 파싱 불가·구조 상이·미발견이면 원문 그대로
     반환(사람이 읽게 — _parse_opencode_json 과 같은 fail-soft). pm_import 자족(형제 파서 미러·
-    _parse_opencode_json 선례 + 시그니처/목적 상이 — pm_relay 쪽은 orchestration 용 3-튜플
+    _parse_opencode_json 선례 + 시그니처/목적 상이 — `contract` 쪽은 orchestration 용 3-튜플
     (thread_id·reply·usage)·여긴 fill 초안용 str·fail-soft. 순환 import 는 어느 쪽이든 없음)."""
     reply = ""
     for line in output.splitlines():
@@ -4680,7 +4587,7 @@ def _resolve_add_harness_source(
                 fs.read_text_shared(local_conf, encoding="utf-8")).get("upstream.path", "").strip()
         except (UnicodeDecodeError, OSError):
             upstream = ""
-    kind = classify_upstream(upstream) if upstream else ""
+    kind = upstream_rules.classify_upstream(upstream) if upstream else ""
     if kind == "path":
         # 상대 경로는 인스턴스 루트(dest) 기준·절대면 그대로(pathlib: 절대 우변 승).
         candidate = (dest_root / upstream).resolve()
@@ -4829,8 +4736,8 @@ def _existing_create_if_absent_relpaths(
 
 
 def _load_pm_update():
-    """pm_update 모듈 지연 로드 (read_manifest + guest 절 마커/헬퍼 재사용·pm_import 은 pm_update 를
-    top-level import 하지 않는다). `read_manifest` 소비자들이 쓰는 그 spec 로드 패턴. 실패 시 None."""
+    """pm_update 모듈 지연 로드 (jsonc 편집 seam 재사용·pm_import 은 pm_update 를 top-level import
+    하지 않는다). 실패 시 None."""
     pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
     try:
         return _load_module_from_path(
@@ -4841,14 +4748,11 @@ def _load_pm_update():
 
 
 def _pm_update_read_manifest(manifest_path: Path) -> list:
-    """pm_update.read_manifest 재사용 (부재·로드/파싱 실패는 빈 리스트·무동작). 새 파서 신설 없음."""
+    """manifest_store.read_manifest 재사용 (부재·파싱 실패는 빈 리스트·무동작). 새 파서 신설 없음."""
     if not manifest_path.is_file():
         return []
-    mod = _load_pm_update()
-    if mod is None:
-        return []
     try:
-        return list(mod.read_manifest(manifest_path))
+        return list(manifest_store.read_manifest(manifest_path))
     except Exception:  # noqa: BLE001 — 파싱 실패는 빈 리스트(무동작).
         return []
 
@@ -4859,14 +4763,11 @@ def _dest_manifest_core_paths(dest_root: Path) -> set[str]:
 
     옛 flavor-native 판정(`_engine_render_relpaths`)은 *guest flavor* 관점이라 **claude-as-guest** 를
     놓쳤다 — dest 실소유로 대체한다. guest 절(add-harness 자기 산출·refresh 재복사 대상)은 stripped 라
-    제외 → refresh 가 guest 를 재복사한다. manifest 부재·pm_update 로드 실패는 빈 set(무차감)."""
+    제외 → refresh 가 guest 를 재복사한다. manifest 부재는 빈 set(무차감)."""
     manifest = dest_root / ".project_manager" / "engine.manifest"
     if not manifest.is_file():
         return set()
-    pu = _load_pm_update()
-    if pu is None:
-        return set()
-    return pu._core_manifest_paths(fs.read_text_shared(manifest, encoding="utf-8"))
+    return manifest_rules._core_manifest_paths(fs.read_text_shared(manifest, encoding="utf-8"))
 
 
 def _flavor_render_relpaths(template_root: Path) -> set[str]:
@@ -4877,7 +4778,7 @@ def _flavor_render_relpaths(template_root: Path) -> set[str]:
     `.claude/skills @render`(PM 스킬 채널·네이티브 소비)는 `.opencode` namespace 밖이지만
     opencode 어댑터가 반드시 소비한다. host 실소유 차감은 이 위에 downstream 으로 얹힌다(복사=
     `_in_adapter_namespace`·등재=`_guest_render_sync_plan`·둘 다 dest 실소유 `_path_owned_by` 기준). manifest
-    부재·pm_update 로드/파싱 실패는 빈 set(무동작)."""
+    부재·파싱 실패는 빈 set(무동작)."""
     manifest = template_root / ".project_manager" / "engine.manifest"
     if not manifest.is_file():
         return set()
@@ -4902,17 +4803,14 @@ def _guest_manifest_lines(
         후보 = flavor manifest 의 **비-`@render`** 엔트리 중 **복사 술어**(`_in_adapter_namespace`)를
         통과하는 것. 복사와 같은 술어를 쓰므로 "등재 ⊆ 복사" 가 구조적으로 보장된다 — 별도 판정을
         두면 claude-as-guest 처럼 복사하지 않은 경로를 등재해 pm_update 가 없던 파일을 만든다.
-        이 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 `pm_relay`
-        코어와 짝인 engine-mirror 가 설치 시점 사본으로 영구 동결된다(코어↔드라이버 skew).
+        이 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 엔진 패키지(`pm_engine`)
+        와 짝인 engine-mirror 가 설치 시점 사본으로 영구 동결된다(코어↔드라이버 skew).
 
     host 가 이미 소유한 것은 downstream 차감(`_guest_render_sync_plan` 의 `_path_owned_by`·기준
     `_core_manifest_paths`)이 dest 기준으로 정확히 뺀다(엔진 행은 `_in_adapter_namespace` 가 같은
     `dest_owned` 로 여기서 이미 뺀다). 두 종류 모두 host 인스턴스 소유라 `@target-owned` 를 붙인다 —
     렌더물은 재렌더 clobber 계약(MF-2), 엔진 행은 upstream flavor 부재 시 loud `[skip]` + rc0 이다.
-    직렬화는 `pm_update._manifest_entry_line` 재사용(마커 순서 결정적·손 f-string 금지)."""
-    pu = _load_pm_update()
-    if pu is None:
-        return []
+    직렬화는 `manifest_rules._manifest_entry_line` 재사용(마커 순서 결정적·손 f-string 금지)."""
     entries = _pm_update_read_manifest(
         template_root / ".project_manager" / "engine.manifest")
     render_paths = {str(e).replace("\\", "/")
@@ -4924,7 +4822,7 @@ def _guest_manifest_lines(
         if not render and not _in_adapter_namespace(
                 Path(rel), adapter_dirs, root_doc, dest_owned, render_paths):
             continue
-        lines.append(pu._manifest_entry_line(pu.ManifestEntry(
+        lines.append(manifest_rules._manifest_entry_line(manifest_rules.ManifestEntry(
             rel, render, True, getattr(entry, "source_rel", None))))
     return sorted(lines, key=lambda line: line.split()[0])
 
@@ -6564,7 +6462,7 @@ def _upstream_hook_set_declarations(
         #   여기다. 상류 트리에 만들면 읽기만 해야 할 트리를 쓰고, 그 트리가 쓰기 불가면
         #   (읽기 전용 마운트·권한·볼륨 고갈) 사유로 강등돼야 할 조회가 크래시가 된다.
         staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.",
-                                   dir=_temp_root(REPO))
+                                   dir=raw_output.temp_root(REPO))
         try:
             staged = Path(staging) / "pm_import.py"
             staged.write_bytes(payload)
@@ -7957,7 +7855,7 @@ def _ctx_native_protocol(command, root, requests):
     import queue
     import threading
     import time
-    executable = _load_watchdog().resolve_executable(command[0], None)  # 없으면 FileNotFoundError(PATH 부재)
+    executable = contract.resolve_executable(command[0], None)  # 없으면 FileNotFoundError(PATH 부재)
     incoming: queue.Queue = queue.Queue()
     proc = subprocess.Popen([executable, *command[1:]], cwd=root, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -9056,16 +8954,13 @@ def _guest_render_sync_plan(
     - **타 하네스 guest 항목은 불변**(다른 namespace — 순차 add 로 한 절에 공존).
     - 목표 = `guest_lines`(flavor·이미 namespace-limited) **−** host 실소유(경로-포함
       `_path_owned_by`·기준 `_core_manifest_paths`). add·refresh·dry-run preview 가 이 단일 계획을 공유
-      (판정 사본 0). manifest 부재·pm_update 로드 실패는 무동작(changed=False)."""
+      (판정 사본 0). manifest 부재는 무동작(changed=False)."""
     empty = {"added": [], "removed": [], "new_block": None, "changed": False}
     manifest = dest_root / ".project_manager" / "engine.manifest"
     if not manifest.is_file():
         return empty
-    pu = _load_pm_update()
-    if pu is None:
-        return empty
     text = fs.read_text_shared(manifest, encoding="utf-8")
-    block = pu._extract_guest_manifest_block(text)
+    block = manifest_rules._extract_guest_manifest_block(text)
     existing_lines = [
         ln.rstrip() for ln in (block.splitlines() if block else [])
         if ln.strip() and not ln.strip().startswith("#")]
@@ -9078,14 +8973,14 @@ def _guest_render_sync_plan(
     this_flavor_paths = {ln.split()[0] for ln in guest_lines}
 
     def _this_ns(path: str) -> bool:
-        return pu._path_owned_by(path, this_flavor_paths) or any(
+        return manifest_rules._path_owned_by(path, this_flavor_paths) or any(
             path == d.rstrip("/") or path.startswith(d.rstrip("/") + "/")
             for d in adapter_dirs)
 
     # 목표 = flavor 후보(namespace 무관·cross-ns 포함) − host 실소유. guest_lines 는 이미 flavor-declared.
-    core_owned = pu._core_manifest_paths(text)
+    core_owned = manifest_rules._core_manifest_paths(text)
     target = sorted(
-        ln for ln in guest_lines if not pu._path_owned_by(ln.split()[0], core_owned))
+        ln for ln in guest_lines if not manifest_rules._path_owned_by(ln.split()[0], core_owned))
     target_paths = {ln.split()[0] for ln in target}
     existing_this_lines = [ln for ln in existing_lines if _this_ns(ln.split()[0])]
     existing_this = {ln.split()[0] for ln in existing_this_lines}
@@ -9093,8 +8988,8 @@ def _guest_render_sync_plan(
     added = [ln for ln in target if ln.split()[0] not in existing_this]
     removed = sorted(existing_this - target_paths)  # upstream 에서 폐기된 this-ns 경로.
     merged = sorted(set(other_ns + target), key=lambda ln: ln.split()[0])
-    new_block = (pu._GUEST_MANIFEST_BEGIN + "\n" + "\n".join(merged) + "\n"
-                 + pu._GUEST_MANIFEST_END) if merged else None
+    new_block = (manifest_rules._GUEST_MANIFEST_BEGIN + "\n" + "\n".join(merged) + "\n"
+                 + manifest_rules._GUEST_MANIFEST_END) if merged else None
     # changed = 경로 추가/제거 **OR 마커 교정**(같은 경로·마커 상이) — 경로 집합만 보면 기존
     #   `.opencode/agents @render` → 목표 `@render @target-owned` 교정을 놓쳐 pm_update rc=2
     #   ). this-ns 기존 라인 ↔ 목표를 마커-무관 키 집합으로 비교한다(merged 는 이미 목표 마커 반영).
@@ -9125,11 +9020,6 @@ def _append_guest_render_to_manifest(
         print("  ⚠️ engine.manifest 부재 — guest 어댑터가 복사됐으나 render/lint 관리 밖입니다 "
               "(manifest-파생 등재 채널 없음).", file=sys.stderr)
         return {"added": [], "removed": []}
-    pu = _load_pm_update()
-    if pu is None:
-        print("  ⚠️ pm_update 로드 실패 — guest 어댑터가 복사됐으나 render/lint 관리 밖입니다 "
-              "(guest 절 등재 생략).", file=sys.stderr)
-        return {"added": [], "removed": []}
     plan = _guest_render_sync_plan(dest_root, guest_lines, adapter_dirs)
     if not plan["changed"]:
         return {"added": [], "removed": []}  # 멱등 — 이미 동기(재실행 refresh)
@@ -9137,7 +9027,7 @@ def _append_guest_render_to_manifest(
     #   CRLF 체크아웃(Windows `core.autocrlf=true`)에서 LF 로 되쓰면 우리가 append 한 guest 절
     #   말고도 파일 전체가 뒤집혀 append-only byte 불변식이 깨진다.
     text, newline = read_text_preserving_newline(manifest)
-    stripped = pu._strip_guest_manifest_block(text)
+    stripped = manifest_rules._strip_guest_manifest_block(text)
     if plan["new_block"]:
         if stripped and not stripped.endswith("\n"):
             stripped += "\n"
@@ -9148,7 +9038,7 @@ def _append_guest_render_to_manifest(
         write_text_preserving_newline(manifest, stripped, newline)
     # read_manifest 왕복 검증 (fail-loud·추가분 반영). 대조는 **등재 경로 전량**이다 —
     #   `@render` 로 좁히면 guest 절의 엔진 행(비-render·update 채널)이 매번 미반영으로 오판된다.
-    after = {str(e).replace("\\", "/") for e in pu.read_manifest(manifest)}
+    after = {str(e).replace("\\", "/") for e in manifest_store.read_manifest(manifest)}
     missing = [ln.split()[0] for ln in plan["added"] if ln.split()[0] not in after]
     if missing:
         raise RuntimeError(
@@ -9228,11 +9118,6 @@ def add_harness(
     if unregistered_notation:
         raise ValueError(
             f"add-harness: {_unregistered_skill_notation_message(unregistered_notation)}")
-    pm_update_mod = _load_pm_update()
-    if pm_update_mod is None:
-        raise RuntimeError(
-            "add-harness: pm_update.py를 로드할 수 없어 공유 경로 표기 context를 만들 수 없습니다."
-        )
     # 설치 하네스의 표기 manifest 는 **전원 확보**돼야 한다 — 하나라도 없으면 그 독자를 뺀 채
     #   공유 문서를 재렌더하게 되므로 복사 전에 중단한다(main import 와 같은 성질). 타입은
     #   FileNotFoundError — `add_harness_cli` 가 소스 템플릿 부재와 같은 친화 메시지 + rc 1 로
@@ -9251,7 +9136,7 @@ def add_harness(
             "문서가 잘못된 단독 표기로 재렌더되므로 복사 전에 중단합니다 — `--from` 이 그 flavor "
             "template 을 가진 checkout 인지 확인하세요."
         )
-    entry_notation_templates = pm_update_mod._entry_notation_templates_from_manifests(
+    entry_notation_templates = manifest_store._entry_notation_templates_from_manifests(
         notation_manifests, src_root)
     shared_agents_members = NEUTRAL_SHARED_ENTRY_DOCS[Path("AGENTS.md")][0]
     selected_shared_agents = tuple(
@@ -9702,7 +9587,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
         print(f"오류: {_BOARD_SUBMODULE_PATH} 가 이미 존재 — board submodule 셋업 중단.",
               file=sys.stderr)
         return 1
-    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=_temp_root(dest_root)))
+    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=raw_output.temp_root(dest_root)))
     try:
         # ── 1. clone remote → temp; 비었으면 스캐폴드 seed ──
         rc, out = _board_setup_git(["clone", remote_url, str(tmp_clone)], cwd=None)
@@ -10093,11 +9978,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        pm_update_mod = _load_pm_update()
-        if pm_update_mod is None:
-            raise RuntimeError(
-                "pm_update.py를 로드할 수 없어 하네스별 스킬 표기 context를 만들 수 없습니다."
-            )
         # 표기 독자 = **dest 실설치 하네스 ∪ 이번 선택**. `--into` 로 codex 인스턴스에 claude 를
         #   얹으면 공유 wiki 는 두 하네스가 함께 읽는다 — 이번 run 의 집합만 쓰면 새로 깔린
         #   문서가 claude 단독 표기로 나가 기존 codex 독자에게 틀린 표기가 된다(실측).
@@ -10130,7 +10010,7 @@ def main(argv: list[str] | None = None) -> int:
                 "공유 문서가 잘못된 단독 표기로 재렌더되므로 중단합니다 — `--from` 이 그 flavor "
                 "template 을 가진 checkout 인지 확인하세요."
             )
-        entry_notation_templates = pm_update_mod._entry_notation_templates_from_manifests(
+        entry_notation_templates = manifest_store._entry_notation_templates_from_manifests(
             notation_manifests
             or [root / ".project_manager" / "engine.manifest" for root in template_roots],
             source_root,

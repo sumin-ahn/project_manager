@@ -6,7 +6,7 @@ PM 이 판단하는 자리(티켓 분할·병렬 판정)에 그 판단에 필요
 
   1. 겹침 1건 이상이면 **내 touch 경로별 집계**(겹침 수 오름차순·경로 상한 8·경로당 ID 상한 6)를
      낸다. 겹침 0이면 슬롯 줄까지 포함해 **전부 침묵**.
-  2. 슬롯 수는 lease 장부 실측(`identity_args.repo_slot_state_counts`)에서 오고 하드코딩이 아니다.
+  2. 슬롯 수는 lease 장부 실측(`lease_store.repo_slot_state_counts`)에서 오고 하드코딩이 아니다.
   3. 좌표 정규화는 `repo_coordinates` 단일 소유자(workspace 없이 lease 매핑) — `work/<repo>_<N>/`
      접두 선언과 무접두 선언이 같은 파일로 만난다.
   4. 자기 자신·done·손상 frontmatter·형식 불명/빈 touches 후보가 있어도 크래시 0·rc 불변.

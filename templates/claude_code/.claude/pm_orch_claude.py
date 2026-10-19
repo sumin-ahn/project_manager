@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """claude relay driver — `claude -p` subprocess 세션 구동 (어댑터·얇음).
 
-엔진 core(`pm_relay.py`)의 SessionDriver Protocol 구현체. relay/respawn/marker 로직은
+엔진 세션 연속성 모듈(`pm_engine.app.session.relay`)의 SessionDriver Protocol 구현체. relay/respawn/marker 로직은
 *엔진* 에 있고(루트 `.project_manager/tools/`·DI 로 테스트), 이 파일은 **claude CLI 고유**한
 부분만 — `claude -p [--session-id <uuid>|--resume <uuid>] --output-format stream-json` 을
 subprocess 로 호출하고 stream-json 을 파싱한다(PoC `run_turn` 골격 재사용).
@@ -40,17 +40,17 @@ GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자
 
 
 def _load_engine():
-    """루트 `.project_manager/tools/pm_relay.py`(엔진 core)를 importlib 로 로드.
+    """루트 `.project_manager/tools` 의 엔진 패키지에서 세션 연속성 모듈을 import 한다.
 
-    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 경로로 직접 로드한다
-    (ctx_guard 가 board.py 를 import 하지 않고 local.conf 를 직접 파싱하는 것과 같은 관례).
+    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 tools 경로를 `sys.path` 에 넣은 뒤
+    `pm_engine.app.session.relay` 를 import 한다(`ctx_guard.read_budget` 과 같은 관례).
     """
     root = ctx_guard.repo_root(Path(__file__).resolve().parent)
-    engine_path = root / ".project_manager" / "tools" / "pm_relay.py"
-    spec = importlib.util.spec_from_file_location("pm_relay", engine_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module, root
+    tools = root / ".project_manager" / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from pm_engine.app.session import relay
+    return relay, root
 
 
 def _load_board(root: Path):
@@ -325,13 +325,8 @@ class ClaudeCliDriver:
         self._root = Path(root) if root is not None else None
         self._mark_stop = mark_stop
         self._warned_missing_usage = False
-        # main 은 타입을 명시 주입한다. parser만 주입하는 기존/단위 경로도 parser 소유 엔진의
-        # SpawnResult를 찾아 같은 선언 타입을 쓰며, 제3자 parser면 구조 호환 tuple로 폴백한다.
-        parser_globals = getattr(parse_stream_json, "__globals__", {})
-        self._spawn_result = (
-            spawn_result or parser_globals.get("SpawnResult")
-            or (lambda sid, reply: (sid, reply))
-        )
+        # main 은 엔진 SpawnResult 를 명시 주입한다. 주입이 없으면 구조 호환 tuple 을 쓴다.
+        self._spawn_result = spawn_result or (lambda sid, reply: (sid, reply))
         self.model = model
         self.claude_bin = claude_bin
         self.timeout = timeout
@@ -467,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _make_resolving_runner(engine):
-    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`pm_relay.resolve_executable`)로 찾아 실행한다.
+    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`contract.resolve_executable`)로 찾아 실행한다.
 
     Windows npm 설치의 `claude.cmd` 는 이름 그대로 실행하지 못한다. 해소 실패는 `FileNotFoundError`
     (PATH 부재)라 driver `_turn` 의 실행 실패 처리를 그대로 탄다."""
@@ -494,13 +489,14 @@ def main(argv: list[str] | None = None) -> int:
         # 필수라 task 없는 relay 는 시작하지 않는다. 훅 진입(같은 파서)은 task 를 받지 않아 여기서 본다.
         parser.error("relay 에는 --task <task> 가 필요하다")
     engine, root = _load_engine()
+    from pm_engine.infra.harness import contract
 
     cwd = args.cwd or os.getcwd()
     # 압축 한도 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
     ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "claude", None)
     driver = ClaudeCliDriver(
-        engine.parse_stream_json,
-        runner=_make_resolving_runner(engine),
+        contract.parse_stream_json,
+        runner=_make_resolving_runner(contract),
         ctx_budget=ctx_budget,
         budget_reader=lambda model: engine.ctx_budget(root, "claude", model),
         precompact_at_pct=precompact_at_pct,

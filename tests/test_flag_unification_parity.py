@@ -1,16 +1,16 @@
 """플래그 통일 — parity guard class-closer (T-0319 · ADR-0057).
 
-공용 헬퍼(`identity_args.py`·T-0322) 채택 정합 + 재발 방지를 잠그는 두 그룹의 기계 가드:
+공용 헬퍼(`pm_engine.domain.identity_args`·T-0322) 채택 정합 + 재발 방지를 잠그는 두 그룹의 기계 가드:
 
   1. **semantics parity** — 정체성 인자를 파싱하는 전 도구(board·pm_bootstrap·pm_handoff·
-     ticket_finish·pm_config·pm_relay·worktree_pool)의 argparse 가 `--repo`/`--slot` 를 동형
+     ticket_finish·pm_config·relay 계열·worktree_pool)의 argparse 가 `--repo`/`--slot` 를 동형
      수용하고, `--slot` 단독(=`--repo` 누락)이면 fail-loud 동일하게 거부하는지 단언한다. 7 도구
      중 5 개(board·pm_bootstrap·pm_handoff·ticket_finish·worktree_pool)는 공용
      `identity_args.add_identity_args`/`parse_identity` 를 실제 CLI 레이어로 채택했고(실코드
      감사), 나머지 2 개는 **설계상 CLI 표면이 다르다** — 그 사실도 이 파일이 함께 못박는다:
        - `pm_config` — identity 를 cwd/리스에서 암묵 해소(`_default_session`)하고 `--repo`/
          `--slot` 명시 override CLI 를 노출하지 않는다(T-0317 실코드 확인).
-       - `pm_relay`(엔진 core) — 정체성 CLI 자체가 없다(argparse 조차 import 안 함·T-0318 감사
+       - relay 계열(`relay`·`contract`·`watchdog`·`raw_output`, 엔진 core) — 정체성 CLI 자체가 없다(argparse 조차 import 안 함·T-0318 감사
          결론 — 하니스별 CLI 는 어댑터 `pm_orch_*.py` 몫).
      "동형"을 두 아키텍처 예외에 억지로 강제하지 않는다 — 실제로 그런 표면이 없다면 그 부재
      자체를 잠그는 것이 정확한 class-closer 다(허위 green 금지).
@@ -38,6 +38,7 @@ from typing import NamedTuple
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.domain import identity_args
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -60,7 +61,7 @@ def _load_tool(filename: str, *, name: str | None = None):
 
 @pytest.fixture(scope="module")
 def ia_mod():
-    return _load_tool("identity_args.py", name="identity_args")
+    return identity_args
 
 
 @pytest.fixture(scope="module")
@@ -181,11 +182,14 @@ def test_pm_config_has_no_explicit_repo_slot_or_session_cli_flags(pm_config_mod)
         assert legacy not in opts, f"pm_config 에 구 정체성 플래그 {legacy!r} 재유입"
 
 
-_PM_RELAY_PY = TOOLS / "pm_relay.py"
+_ENGINE_CORE_FILES = tuple(TOOLS / name for name in (
+    "pm_engine/app/session/relay.py", "pm_engine/infra/harness/contract.py",
+    "pm_engine/infra/harness/watchdog.py", "pm_engine/infra/raw_output.py",
+))
 
 
 def test_pm_relay_engine_core_exposes_no_identity_cli_surface():
-    """pm_relay.py(엔진 core)는 나머지 6 도구와 달리 정체성 CLI 표면이 아예 없다 — argparse
+    """relay 계열 모듈(엔진 core)은 나머지 6 도구와 달리 정체성 CLI 표면이 아예 없다 — argparse
     자체를 import 하지 않는 순수 라이브러리다(T-0318 감사 결론 — `test_pm_relay.py` 의 전용
     가드와 동형이나, 이 class-closer 파일에도 포함해 7-도구 전수를 한 자리에서 감사한다). 하니스
     별 CLI(`--cwd`/`--model`)는 어댑터(`templates/*/.claude/pm_orch_claude.py` 등) 몫이고,
@@ -195,7 +199,7 @@ def test_pm_relay_engine_core_exposes_no_identity_cli_surface():
     이 감사에서 명시 제외(음의 lookahead) — `--session-seq`/`--worktree-slot`/`--session-num`
     은 애초에 대상 자체가 아니다(정체성 CLI 자체가 없으므로 제거할 alias 도 없다).
     """
-    text = _PM_RELAY_PY.read_text(encoding="utf-8")
+    text = "".join(path.read_text(encoding="utf-8") for path in _ENGINE_CORE_FILES)
     assert "import argparse" not in text, "엔진 core 에 argparse CLI 가 생기면 어댑터/엔진 경계가 흐려진다."
     assert re.search(r"--session(?!-id)\b", text) is None, "정체성 --session 플래그가 있으면 안 된다."
     for legacy in ("--worktree-slot", "--session-num"):
@@ -242,7 +246,7 @@ class _OldFlagHit(NamedTuple):
 _SESSION_TOKEN_RE = re.compile(r"--session(-[a-zA-Z]+)?|--worktree-slot")
 
 # 허용 접미사 — "seq"(차수·뷰-무관·pm_handoff 정식 인자) · "id"(하니스 대화-연속성 session-id·
-# multi-PM 정체성과 무관한 별개 개념·pm_relay 감사와 동형). 그 외(특히 "num" = 구 alias)는 위반.
+# multi-PM 정체성과 무관한 별개 개념·relay 계열 감사와 동형). 그 외(특히 "num" = 구 alias)는 위반.
 _ALLOWED_SESSION_SUFFIXES = frozenset({"seq", "id"})
 
 

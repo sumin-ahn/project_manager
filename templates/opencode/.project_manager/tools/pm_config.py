@@ -59,7 +59,7 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
                   중복 0). `--from` 생략 시 dest local.conf upstream.path 자동 해소(imported 인스턴스).
-  - delegate models → pm_relay.model_listing(모델 원천 표 `MODEL_SOURCE` 한 행의 조회 — 별칭 표 그대로 /
+  - delegate models → contract.model_listing(모델 원천 표 `MODEL_SOURCE` 한 행의 조회 — 별칭 표 그대로 /
                   표가 선언한 조회 명령 실행). 응답에 모델별 `variants`(opencode)가 실린다.
                   읽기 전용이고 조회 실패는 빈 목록이 아니라 rc 3 이다(사유는 stderr 한 줄).
   - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
@@ -101,8 +101,9 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema, upstream_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, repo_files  # noqa: E402
+from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 from urllib.parse import urlsplit
@@ -130,10 +131,7 @@ ENGINE_REV = "v1.8.1"
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
 _STAMPED_SIBLINGS = frozenset({
-    "identity_args.py", "board.py", "worktree_pool.py", "pm_import.py",
-    # pm_relay.py 는 모델 원천 표(`MODEL_SOURCE`)와 하네스 CLI 계약의 소유자다 — 구형 사본을
-    # 조용히 읽으면 안내·조회가 이 세대에 없는 값을 말한다.
-    "pm_relay.py",
+    "board.py", "worktree_pool.py", "pm_import.py",
 })
 
 
@@ -159,7 +157,7 @@ def _is_engine_rev_skew(exc) -> bool:
 
     fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
     판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
-    (예: 신 pm_config→신 board→구 identity_args 검출이 None 강등되지 않게)."""
+    (예: 신 pm_config→신 board→구 형제 검출이 None 강등되지 않게)."""
     return getattr(exc, "_engine_rev_skew", False)
 
 
@@ -245,15 +243,10 @@ def _default_session(*, identity=None) -> str | None:
     `whoami` surface(required=False)가 "(비바인딩)" 으로 표시한다(비바인딩 세션이 남의 리스로
     self-identify 하던 직접 증상 수정). `<host>-<pid>` 꼬리는 두지 않는다.
 
-    lease 장부(`state=="leased"` 행의 session 목록) 읽기는 공용 `identity_args.leased_sessions`
-    로 위임한다
-    board.py/worktree_pool 의 동형 사본과 단일 진실로 수렴). board.py 를 직접 import 하지
-    않는 관성(isolation·touches 격리)은 여기서도 유지한다 — `_load_module`
-    (spec_from_file_location) 로 `identity_args` 를 로드한다(board.py·worktree_pool 로딩과
-    동형 패턴·스크립트 직접 실행/테스트 양쪽에서 동일하게 동작). `identity` 주입으로 hermetic
-    테스트 가능(미주입 시 실 모듈 로드 — `identity_args` 는 파일 IO 0 순수 모듈이라 실 로드도
-    안전·부작용 0). 장부 경로는 호출 시점 `REPO` 에서 구성한다(monkeypatch 존중·
-    `_local_conf_user` 와 동형).
+    lease 장부(`state=="leased"` 행의 session 목록) 읽기는 공용 `lease_store.leased_sessions`
+    로 위임한다(board.py/worktree_pool 의 동형 사본과 단일 진실로 수렴). `identity` 주입으로
+    hermetic 테스트 가능(미주입 시 `lease_store`). 장부 경로는 호출 시점 `REPO` 에서 구성한다
+    (monkeypatch 존중·`_local_conf_user` 와 동형).
 
     저장측(worktree_pool)과 매칭측(여기)이 어긋나면 "이 세션의 리스" surface 가 board 매칭과
     어긋나므로 세 모듈이 같은 우선순위를 공유한다. 장부 0행에서 세션 이름을 유도하는 층은
@@ -262,9 +255,9 @@ def _default_session(*, identity=None) -> str | None:
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
         return env
-    identity_mod = identity or _load_module("identity_args", "identity_args.py")
+    identity_mod = identity or lease_store
     leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    leased = identity_mod.leased_sessions(leases_file) if identity_mod is not None else []
+    leased = identity_mod.leased_sessions(leases_file)
     if len(leased) == 1:
         return leased[0]
     # leased 0(미등록) 또는 ≥2(모호) → 미해소(surface 는 "(비바인딩)").
@@ -488,24 +481,6 @@ def _repo_registry_git(repo: str, *, board=None) -> str | None:
     return None
 
 
-def _classify_upstream(value: str) -> str | None:
-    """`pm_import.classify_upstream`의 공용 URL/path 판별을 소비한다.
-
-    판별 규칙을 여기서 다시 쓰지 않는다. 엔진 부재/구버전이면 None으로 돌려 호출자가
-    안전한 adopter self-test로 강등한다.
-    """
-    pm_import_mod = _load_module("pm_import", "pm_import.py")
-    classify = getattr(pm_import_mod, "classify_upstream", None) if pm_import_mod else None
-    if classify is None:
-        return None
-    try:
-        return classify(value)
-    except Exception as exc:  # noqa: BLE001 — provenance 판별 실패는 self-test 강등(단 skew 재전파).
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-
-
 def _expanduser_path(path: Path) -> Path:
     """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
     return path.expanduser()
@@ -556,9 +531,9 @@ def _protected_push_gate_config(
             )
         return _PROTECTED_GATE_SELF_TEST, test_cmd
 
-    # URL/scp-like upstream 판별은 pm_import.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
+    # URL/scp-like upstream 판별은 upstream_rules.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
     # 따로 들면 `host:path` 같은 지원 형식이 경로로 갈라져 release gate가 빠진다.
-    kind = _classify_upstream(upstream)
+    kind = upstream_rules.classify_upstream(upstream)
     if kind == "url":
         repo_git = _repo_registry_git(repo, board=board)
         if not repo_git:
@@ -573,17 +548,6 @@ def _protected_push_gate_config(
                 if _git_remote_identity(upstream) == _git_remote_identity(repo_git)
                 else _PROTECTED_GATE_SELF_TEST)
         return mode, test_cmd
-
-    # classifier 자체가 미해소된 경우 경로라고 추측하지 않는다. release false-positive보다
-    # 채택자 자기 검증이 안전하고, B1의 판별불가 강등 계약과도 같다.
-    if kind is None:
-        if report_downgrade:
-            print(
-                f"⚠ 보호 push gate 강등({repo}): upstream URL/path 분류 축 미해소 — "
-                "release 대신 self-test를 사용한다; pm_import 엔진과 upstream 값을 확인하라.",
-                file=sys.stderr,
-            )
-        return _PROTECTED_GATE_SELF_TEST, test_cmd
 
     # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 호출부(`_install_protected_hook`)
     # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
@@ -3982,7 +3946,7 @@ def _validate_upstream_reachable(
     if not ok:
         return False, reason
     runner = git_runner if git_runner is not None else pm_import_mod._real_upstream_git_runner()
-    kind = pm_import_mod.classify_upstream(value)
+    kind = upstream_rules.classify_upstream(value)
     if kind == "url":
         # `--` 로 위치인자 종결(value 가 옵션으로 오인되지 않게·leading-dash 는 이미 거부됨이나 방어).
         rc, out = runner(["ls-remote", "--", value])
@@ -4045,7 +4009,7 @@ def cmd_upstream(
         if not value:
             print("upstream: (미등록) — `pm-config upstream set <url|path>` 로 설정하라.")
             return 0
-        kind = pm_import_mod.classify_upstream(value)
+        kind = upstream_rules.classify_upstream(value)
         print(f"upstream: {value}  ({kind})")
         return 0
 
@@ -4080,7 +4044,7 @@ def cmd_upstream(
     # upstream은 보호 push gate의 provenance 입력이다. 값이 같아도 끊긴/stale sidecar를
     # 자가치유하도록 등록 repo 전수를 중앙 설치 깔때기로 보낸다.
     _refresh_protected_gate_contracts(board=board, worktree_pool=worktree_pool)
-    kind = pm_import_mod.classify_upstream(value)
+    kind = upstream_rules.classify_upstream(value)
     print(f"✓ upstream 설정: {value}  ({kind}) — pm_update 가 --from 생략 시 이 값을 쓴다.")
     return 0
 
@@ -4665,7 +4629,7 @@ _CONSOLE_MENU = (
 # 안내한다. 값 형식이 하네스마다 근본적으로 달라 값 자체의 통일은 불가능하고, 통일 대상은
 # 취급 방식(= local.conf 단일 진실)이다.
 #
-# 형식·확인 방법·원천의 표는 이 파일에 없다 — `pm_relay.MODEL_SOURCE` 한 자리이고 사람 안내
+# 형식·확인 방법·원천의 표는 이 파일에 없다 — `contract.MODEL_SOURCE` 한 자리이고 사람 안내
 # (`[m]`)·기계 조회(`delegate models`)·설정 화면 선택지가 모두 그 표를 읽는다.
 # 실조회 목록은 길 수 있다 — 안내는 콘솔 한 화면을 넘기지 않는다(전량은 조회 명령으로).
 _DELEGATE_MODEL_LIST_LIMIT = 12
@@ -4850,10 +4814,7 @@ def _print_delegate_model_guidance(
             file=sys.stderr,
         )
         return 1
-    relay = _load_relay_contract()
-    if relay is None:
-        return 1
-    model_source = relay.MODEL_SOURCE
+    model_source = contract.MODEL_SOURCE
 
     print("\n## 위임 모델 안내 (local.conf `delegate.<role>[.hard].model` 단일 진실):")
     installed = _installed_harnesses(pm_import_mod)
@@ -4900,25 +4861,10 @@ def _console_delegate_models() -> None:
 
 
 # ── 모델 목록 조회 (`delegate models --harness <h> --json`) ────────────────────
-# 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 **읽기 전용** 자리다. 조회는 `pm_relay.model_listing`
+# 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 **읽기 전용** 자리다. 조회는 `contract.model_listing`
 # 하나이고(하네스 이름 분기 0) 응답은 `{"harness", "kind", "models", "variants"}` 네 필드다. 조회는 파일을
 # 쓰지 않고, 실패를 빈 목록으로 위장하지 않는다 — 실패(0개 포함)는 rc 3 이다.
 _DELEGATE_MODELS_QUERY_FAILED = 3
-
-
-def _load_relay_contract():
-    """하네스 계약(`pm_relay` — 모델 원천 표·모델 목록 조회) — 부재/로드 실패는 명시 에러 후 None.
-
-    표의 소유자는 하네스 CLI 계약을 단일 소유하는 `pm_relay` 다(여기 사본을 두지 않는다).
-    """
-    relay = _load_module("pm_relay", "pm_relay.py")
-    if relay is None:
-        print(
-            "[중단] pm_relay.py 엔진을 찾을 수 없다 — 모델 원천 표 조회 불가 "
-            f"({TOOLS_DIR / 'pm_relay.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-    return relay
 
 
 def _conf_assignment(text: str) -> tuple[str, str]:
@@ -4998,26 +4944,21 @@ def cmd_delegate_models(args, *, listing=None) -> int:
     (`{모델: [variant…]}`, variant 없는 모델은 `[]`)이고 그것을 내는 원천(opencode)만 채운다 — 나머지는
     null. 모델 목록과 같은 한 번의 조회에서 나온다. `free_text`(모델은 검증상 언제나 자유 문자열)는
     싣지 않는다 — 그 사실은 키 레지스트리의 `choices.free_text` 가 소유하고, 두 자리에 두면 갈린다.
-    `listing` 은 조회 함수(원천 행 → `ModelListing`)이고 기본은 `pm_relay.model_listing` 을 이 사본
+    `listing` 은 조회 함수(원천 행 → `ModelListing`)이고 기본은 `contract.model_listing` 을 이 사본
     폴더·이 프로세스 env 로 부르는 것이다.
-    rc: 0 성공 · 1 엔진 사본 부재(`pm_relay.py` 없음 — 원천 표 자체를 못 읽음) · 2
-    `--harness`/`--json` 미지정·미지원 · 3 조회 실패(사유는 stderr 한 줄). 1 과 3 은 다른
-    사실이다 — 물어볼 표가 없는 것과 표대로 물었는데 답을 못 얻은 것.
+    rc: 0 성공 · 2 `--harness`/`--json` 미지정·미지원 · 3 조회 실패(사유는 stderr 한 줄).
     """
-    relay = _load_relay_contract()
-    if relay is None:
-        return 1
-    table = relay.MODEL_SOURCE
+    table = contract.MODEL_SOURCE
     source = table.get(args.harness)
     if source is None:
         print(f"[중단] 미지원 harness {args.harness!r} — 지원: {', '.join(table)}.",
               file=sys.stderr)
         return 2
     lookup = listing if listing is not None else (
-        lambda row: relay.model_listing(row, cwd=REPO, env=dict(os.environ)))
+        lambda row: contract.model_listing(row, cwd=REPO, env=dict(os.environ)))
     try:
         result = lookup(source)
-    except relay.HarnessContractError as exc:
+    except contract.HarnessContractError as exc:
         print(f"[중단] {args.harness} 모델 목록을 얻지 못했다 — {exc}", file=sys.stderr)
         return _DELEGATE_MODELS_QUERY_FAILED
     variants = None if result.variants is None else {
@@ -5481,7 +5422,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_apply.set_defaults(func=cmd_apply)
 
     # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·장부 변경 0).
-    #   `--harness` 값의 닫힌 집합은 `pm_relay.MODEL_SOURCE` 의 키다. 그 표를 파서 조립 시점에
+    #   `--harness` 값의 닫힌 집합은 `contract.MODEL_SOURCE` 의 키다. 그 표를 파서 조립 시점에
     #   읽지 않는 것은 의도다 — 파서는 실패를 보고할 채널이 없어서, 표를 못 읽는 사본에서
     #   무관한 서브커맨드(`status` 등)까지 함께 죽는다. 값 판정은 핸들러가 같은 표로 하고 rc 2 다.
     p_delegate = sub.add_parser("delegate", help="위임 설정 조회 (models)")
@@ -5491,7 +5432,7 @@ def build_parser() -> argparse.ArgumentParser:
         "models", help="하네스가 인정하는 모델 목록 조회 (읽기 전용·JSON)")
     p_delegate_models.add_argument(
         "--harness", required=True,
-        help="조회할 하네스 (claude|codex|opencode — 등재는 pm_relay.MODEL_SOURCE 가 소유·"
+        help="조회할 하네스 (claude|codex|opencode — 등재는 contract.MODEL_SOURCE 가 소유·"
              "그 밖의 값은 rc 2).",
     )
     p_delegate_models.add_argument(

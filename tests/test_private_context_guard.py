@@ -26,6 +26,7 @@ import pytest
 
 from conftest import current_branch, write_cluster_ledger
 from _engine_tree import engine_python_files
+from pm_engine.infra import manifest_store
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -145,14 +146,13 @@ def _manifest_channel_python_paths(repo: Path) -> set[Path]:
     canonical 산문이고, **목적지 쪽**은 ① 안에 그 사본이 실재할 때만(예 ``.claude/ctx_guard.py``)
     공개 산문이므로 ``is_file()`` 로 걸러 편입한다. 경로를 하드코딩하지 않는다.
     """
-    pm_update_module = _load_tool_module("pm_update")
     paths: set[Path] = set()
     for dest_root in _manifest_dest_roots(repo):
-        manifest_path = pm_update_module.resolve_manifest_for_dest(dest_root, repo)
-        manifest = pm_update_module.read_manifest(manifest_path)
+        manifest_path = manifest_store.resolve_manifest_for_dest(dest_root, repo)
+        manifest = manifest_store.read_manifest(manifest_path)
         for entry_index in range(len(manifest)):
             shipped, _source_missing, _target_owned = (
-                pm_update_module.manifest_entry_shipping_inventory(
+                manifest_store.manifest_entry_shipping_inventory(
                     repo, manifest, entry_index, dest_root
                 )
             )
@@ -222,14 +222,13 @@ def _manifest_channel_language_paths(repo: Path) -> set[Path]:
     ``.project_manager/engine.manifest``·``.claude/precompact_capture_hook.sh``)도 이 한 함수로
     같이 잡힌다 — 별도 "루트 전용" 파생을 새로 만들지 않는다.
     """
-    pm_update_module = _load_tool_module("pm_update")
     paths: set[Path] = set()
     for dest_root in _manifest_dest_roots(repo):
-        manifest_path = pm_update_module.resolve_manifest_for_dest(dest_root, repo)
-        manifest = pm_update_module.read_manifest(manifest_path)
+        manifest_path = manifest_store.resolve_manifest_for_dest(dest_root, repo)
+        manifest = manifest_store.read_manifest(manifest_path)
         for entry_index in range(len(manifest)):
             shipped, _source_missing, _target_owned = (
-                pm_update_module.manifest_entry_shipping_inventory(
+                manifest_store.manifest_entry_shipping_inventory(
                     repo, manifest, entry_index, dest_root
                 )
             )

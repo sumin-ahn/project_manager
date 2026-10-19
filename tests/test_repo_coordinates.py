@@ -2,23 +2,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
 import pytest
-
-
-REPO = Path(__file__).resolve().parents[1]
-MODULE = REPO / ".project_manager" / "tools" / "repo_coordinates.py"
+from pm_engine.infra import repo_coordinates
 
 
 @pytest.fixture(scope="module")
 def coords():
-    spec = importlib.util.spec_from_file_location("repo_coordinates", MODULE)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return repo_coordinates
 
 
 def _write_lease(

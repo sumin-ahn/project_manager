@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """엔진 사본 rev 스탬프 — 사본 skew fail-loud 의 단일 진실 값 + bump CLI.
 
-엔진 도구들은 형제 모듈(`identity_args`·`worktree_pool`·`board`·`pm_handoff` …)을
+엔진 도구들은 형제 모듈(`worktree_pool`·`board`·`pm_handoff` …)을
 `spec_from_file_location` 으로 동적 로드한다. 사본 skew(신 도구 + 구 형제 — 부분/수동
 복사, 중단된 배포)가 생기면 신 도구가 구 형제의 *부재 속성*에 접근해 임의 지점의
 AttributeError 로 폭발한다.
@@ -56,17 +56,13 @@ STAMPED_MODULES = (
     "worktree_pool.py",
     "pm_bootstrap.py",
     "pm_config.py",
-    "identity_args.py",
     "domain.py",
     "contradiction_lint.py",
     "pm_adr.py",
-    "repo_coordinates.py",
     "pm_delegate.py",
     "delegate_scope.py",
     "delegate_channel_guard.py",
-    "pm_relay.py",
     "additional_reviewer.py",
-    "review_rounds.py",
     "ticket_rounds.py",
     "pm_render.py",
     "pm_import.py",
@@ -95,13 +91,6 @@ EXEMPT_FROM_STAMP = {
 # 코드 소유·빈 사유 금지라 새 미검증 loader가 자동으로 섞이지 않는다.
 EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
     ("board.py", "_run_lint_hooks"): "채택자 소유 .project_manager/hooks/lint_*.py 확장점",
-    ("pm_import.py", "_temp_root"):
-        "작업용 임시 루트의 **자리 하나**를 형제(`pm_relay`)에게 묻는 지연 로드다. 받아 오는 "
-        "것은 경로이고 어떤 판정의 입력도 아니다 — rev 결속이 지키는 것은 '신 해시 + 구 선언 "
-        "코드' 조합이지 스크래치 자리가 아니다. 결속을 걸면 자기 갱신 mid-sync(형제 rev 혼재)"
-        "에서 이 로드가 skew 로 터져 훅 세트 상류 세대 선언을 통째로 잃는다(자리를 묻다가 "
-        "판정을 잃는다). 구세대 사본이면 자리 이름이 달라질 뿐이고 그 트리는 만든 호출이 "
-        "곧바로 지운다",
     ("pm_import.py", "_upstream_hook_set_declarations"):
         "훅 세트 세대 선언을 읽으려 **다른 세대**의 상류 pm_import 를 의도적으로 로드한다 — "
         "rev 대조로 거르면 이 판정의 목적(세대 차 확인) 자체가 불가능해진다. 읽는 것은 선언 "

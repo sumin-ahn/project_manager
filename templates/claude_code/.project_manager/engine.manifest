@@ -20,16 +20,26 @@
 
 # ── 도구 (순수 엔진) ─────────────────────────────────────────────
 # pm_engine: 엔진 구현 패키지(디렉터리 행 · 하위 파일 전부 동기). 평면 엔진 파일 행보다 먼저 둔다 —
-#   갱신기는 이 행을 먼저 전달한다(pm_update.read_manifest 정렬). domain/conf_schema(local.conf 키
+#   갱신기는 이 행을 먼저 전달한다(manifest_store.read_manifest 정렬). domain/conf_schema(local.conf 키
 #   레지스트리·설정 어휘·구표기 판정)·infra/console(전 CLI 공용 콘솔 인코딩)·infra/fs(배타 파일락·
 #   원자 추가/교체·공유 읽기·강제 삭제·소유자 전용 권한)·infra/repo_files(git 우선 repo 소유 파일
 #   열거·경로 적재기 load_module)·infra/conf_store(local.conf·압축 한도 기록 읽기)·cli/local_conf
 #   (키 표·JSON·어댑터 생성 블록 출력)·domain/git_policy·domain/shell_policy(git·셸 명령 판정 규칙)·
-#   infra/git(git 저장소 조회)·infra/process(실행 플랫폼 argv 분해)·app/hooks(도구 호출 판정 보조).
+#   infra/git(git 저장소 조회)·infra/process(실행 플랫폼 argv 분해)·app/hooks(도구 호출 판정 보조)·
+#   domain/identity_args(정체성 인자·슬롯·task 값 판정)·infra/lease_store(리스 장부 읽기)·
+#   infra/repo_coordinates(티켓 경로 repo 좌표 정규화)·app/session/relay(세션 자동 회전)·
+#   infra/harness/contract·infra/harness/watchdog(하네스 CLI 계약·자식 프로세스 감시)·
+#   infra/raw_output(원출력 장부·임시 루트)·infra/review_rounds(리뷰 라운드 장부)·
+#   domain/manifest_rules(manifest 문법·경로 소유 판정)·infra/manifest_store(manifest 판독·배포 파일 목록)·
+#   domain/upstream_rules(상류 값 URL·경로 분류).
 .project_manager/tools/pm_engine
 # pm-retired-path: .project_manager/tools/file_lock.py -> .project_manager/tools/pm_engine/infra/fs.py
 # pm-retired-path: .project_manager/tools/console_encoding.py -> .project_manager/tools/pm_engine/infra/console.py
 # pm-retired-path: .project_manager/tools/repo_owned_files.py -> .project_manager/tools/pm_engine/infra/repo_files.py
+# pm-retired-path: .project_manager/tools/identity_args.py -> .project_manager/tools/pm_engine/domain/identity_args.py
+# pm-retired-path: .project_manager/tools/repo_coordinates.py -> .project_manager/tools/pm_engine/infra/repo_coordinates.py
+# pm-retired-path: .project_manager/tools/pm_relay.py -> .project_manager/tools/pm_engine/app/session/relay.py
+# pm-retired-path: .project_manager/tools/review_rounds.py -> .project_manager/tools/pm_engine/infra/review_rounds.py
 .project_manager/tools/board.py
 # engine_rev: 엔진 사본 rev 스탬프 단일 진실 — sibling 로더가 로드한 형제 모듈의
 #   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
@@ -48,12 +58,9 @@
 .project_manager/tools/pm_import.py
 # pm_render: 어댑터 render 엔진 (operational 토큰 치환). pm_update/pm_import 가 @render path 에 위임. 도구 전파 등록일 뿐 — @render *활성화*는 별도 결정
 .project_manager/tools/pm_render.py
-# relay core: 하니스 무관 thin stateless supervisor. 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)
-.project_manager/tools/pm_relay.py
 # additional_reviewer: 추가 리뷰어 어댑터 (기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/additional_reviewer.py
 # pm-retired-path: .project_manager/tools/external_review.py -> .project_manager/tools/additional_reviewer.py
-.project_manager/tools/review_rounds.py
 # ticket_rounds: 티켓 명세 파일 옆 라운드 사이드카(tickets/rounds/<id>/NN-<role>.md) 공용 seam —
 #   경로 규약·파일명 문법·티켓 전역 순번 배타 예약·로드/판정/렌더. 락과 보드 경로 해소는
 #   호출자 소유(board 를 로드하지 않는다). 신설 도구라 등록 필수(미등록=전파 안 됨).
@@ -65,13 +72,6 @@
 # pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
 .project_manager/tools/pm_config.py
-# identity_args: 공용 정체성 인자 모듈 — --repo/--slot 파싱(discriminated) + 리스(활성슬롯) 읽기·해소
-#   단일 진실. 전 CLI 가 순차 채택 — 신설 도구라 등록 필수
-#   (미등록=전파 안 됨·pm_render 사례).
-.project_manager/tools/identity_args.py
-# repo_coordinates: PM-home ticket touches(`work/<repo>_<N>/...`)를 검증된 workspace/lease와
-#   일치할 때만 소유-repo 상대 좌표로 바꾸는 공용 normalizer. 불일치는 fail-loud.
-.project_manager/tools/repo_coordinates.py
 # local_conf: CLI 진입 파일(--keys·--keys --json·--render-adapter-block), 구현은 pm_engine
 #   (domain/conf_schema·infra/conf_store·cli/local_conf). 관리자가 프로젝트 사본마다 `--keys --json` 으로
 #   부른다.
@@ -124,7 +124,7 @@
 .claude/skills    @render
 
 # ── 서브에이전트 훅/드라이버 (엔진-미러·framework-owned 전파 결착) ──────
-# ctx-guard·checkpoint nudge·statusline·relay 드라이버는 board 상수/pm_relay 엔진의 미러라
+# ctx-guard·checkpoint nudge·statusline·relay 드라이버는 board 상수/pm_engine 엔진의 미러라
 #   (test_ctx_default_mirror 가 board↔ctx_guard 상수 동기 강제) framework-owned 전파 대상이다 —
 #   engine safety-훅 fix 가 채택자에 닿게(frozen 근절). canonical 소스는 ship 템플릿
 #   `templates/claude_code/.claude/*` 라 `@source=<루트-상대>` 마커가 채택자 dest `.claude/*` 로

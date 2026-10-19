@@ -1966,13 +1966,6 @@ def test_protected_hook_resolution_boundaries_rethrow_marked_engine_rev_skew(
     with pytest.raises(RuntimeError):
         pc._resolve_repo_base("svc", board=_Board())
 
-    monkeypatch.setattr(
-        pc, "_load_module",
-        lambda *_args: SimpleNamespace(classify_upstream=lambda _value: (_ for _ in ()).throw(skew)),
-    )
-    with pytest.raises(RuntimeError):
-        pc._classify_upstream("https://example.test/repo.git")
-
     class _WiringPool:
         REPO_HOOKS_DIR = tmp_path / "hooks"
 

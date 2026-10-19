@@ -19,9 +19,9 @@ REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/strip_private_refs.py"
 PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
 
-# 엔진 사본 규약이 소유하는 이름 — 판정식이 아니라 형제 로드/스탬프 표면이라 스크립트가
-# 재수출하지 않는다(엔진 패키지 import 머리 두 이름 포함).
-_ENGINE_COPY_SURFACE = frozenset({"ENGINE_REV", "_TOOLS_DIR", "_load_module_from_path"})
+# 엔진 사본 규약이 소유하는 이름 — 판정식이 아니라 스탬프·엔진 패키지 import 머리 표면이라
+# 스크립트가 재수출하지 않는다.
+_ENGINE_COPY_SURFACE = frozenset({"ENGINE_REV", "_TOOLS_DIR"})
 
 
 def _load():

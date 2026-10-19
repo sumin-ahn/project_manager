@@ -561,18 +561,6 @@ def _write_leases(path: Path, entries: list[dict]) -> None:
     path.write_text(_auto_json.dumps({"leases": entries}), encoding="utf-8")
 
 
-def _identity(key: str, slot: str):
-    """`_auto_slot` 해소 결과 대역 — 엔진의 실제 `identity_args.SlotIdentity` 타입 그대로.
-
-    정체성 키(`key`)와 장부 경로 값(`slot`)을 분리해 나르는 계약을 테스트에서도 값으로 쓴다
-    (튜플 재조립 금지). 대역이 필요한 곳은 장부 없이 해소 결과만 주입하는 monkeypatch 지점뿐이고,
-    해소 자체를 보는 테스트는 실 장부 파일로 판정한다.
-    """
-    ia = _load("identity_args")
-    return ia.SlotIdentity(key=key, slot=slot,
-                           source=ia.IDENTITY_FROM_LEDGER_SESSION, session=key)
-
-
 def test_auto_slot_single_repo_single_slot_returns_identity(bootstrap, tmp_path):
     """등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개 → 그 행의 정체성(키 + 장부 경로 값)."""
     areas = tmp_path / "areas.md"

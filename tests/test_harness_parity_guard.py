@@ -67,7 +67,7 @@ class Site:
 # ── ① 하네스 이름이 조건식에 나오는 자리 (전부 CLI 형식) ──────────────────
 CONDITION_BRANCHES: dict[LedgerKey, Site] = {
     ("additional_reviewer.py", "_structured_reviewer_argv", "codex"): Site(
-        "argv 조립 — codex 는 `exec --json` 형식이라 relay 의 codex 빌더로 간다"),
+        "argv 조립 — codex 는 `exec --json` 형식이라 contract 의 codex 빌더로 간다"),
     ("additional_reviewer.py", "_structured_reviewer_argv", "claude"): Site(
         "argv 조립 — claude 는 `-p --output-format stream-json` 형식이라 별도 빌더로 간다"),
     ("additional_reviewer.py", "_structured_transport", "opencode"): Site(
@@ -75,9 +75,9 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
     ("delegate_channel_guard.py", "decide", "claude"): Site(
         "CLI 형식 — claude 네이티브 Task tool 이 있는 세션에서만 네이티브 경로를 고른다"),
     ("pm_delegate.py", "_build_target_argv", "codex"): Site(
-        "argv 조립 — codex 빌더 분기(형식 계약은 pm_relay 소유)"),
+        "argv 조립 — codex 빌더 분기(형식 계약은 contract 소유)"),
     ("pm_delegate.py", "_build_target_argv", "claude"): Site(
-        "argv 조립 — claude 빌더 분기(형식 계약은 pm_relay 소유)"),
+        "argv 조립 — claude 빌더 분기(형식 계약은 contract 소유)"),
     ("pm_delegate.py", "_dry_run_harness_annotations", "opencode"): Site(
         "dry-run 표기 — opencode 만 `--dir`/`--file` 자리표시자를 미리보기에 덧붙인다",
         expected_count=2),
@@ -137,22 +137,22 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
         "어댑터 설치 — 하네스마다 출하 template 디렉터리가 다르다", HARNESS_NAMES),
     ("pm_import.py", "INSTANCE_OWNED_ADAPTER_FILES"): (
         "어댑터 설치 — 인스턴스 소유 config 파일 이름이 하네스마다 다르다", HARNESS_NAMES),
-    ("pm_relay.py", "HARNESS_CAP_ENV"): (
+    ("watchdog.py", "HARNESS_CAP_ENV"): (
         "CLI 형식 — 호출층 상한을 관측할 수 있는 env 이름이 하네스마다 다르다", HARNESS_NAMES),
-    ("pm_relay.py", "HARNESS_PROFILES"): (
+    ("watchdog.py", "HARNESS_PROFILES"): (
         "CLI 형식 — 하네스별 실행 프로필(실행 파일·형식·시간 계약) 단일 선언표", HARNESS_NAMES),
-    ("pm_relay.py", "HARNESS_REPLY_ADAPTERS"): (
+    ("contract.py", "HARNESS_REPLY_ADAPTERS"): (
         "CLI 형식 — 회신 wire 포맷이 하네스마다 다르다", HARNESS_NAMES),
-    ("pm_relay.py", "HARNESS_RESUME_SUPPORT"): (
+    ("contract.py", "HARNESS_RESUME_SUPPORT"): (
         "CLI 형식 — 세션 재개 플래그 보유 여부 실측값", HARNESS_NAMES),
-    ("pm_relay.py", "HARNESS_SESSION_MARKERS"): (
+    ("watchdog.py", "HARNESS_SESSION_MARKERS"): (
         "CLI 형식 — 세션 감지 마커 env 이름이 하네스마다 다르다", HARNESS_NAMES),
-    ("pm_relay.py", "MODEL_SOURCE"): (
+    ("contract.py", "MODEL_SOURCE"): (
         "CLI 형식 — 모델 값의 원천(별칭·사용자 config·실조회)이 CLI 마다 다르다", HARNESS_NAMES),
     ("conf_schema.py", "REASONING_ALLOWED"): (
         "CLI 형식 — reasoning 정적 허용집합이 CLI 마다 다르다(미지원값 fail-loud 용 · opencode 는 "
         "모델별 variants 를 조회하므로 행이 없다)", ("claude", "codex")),
-    ("pm_relay.py", "_RUNTIME_ROLE_CONFIG_BUILDERS"): (
+    ("contract.py", "_RUNTIME_ROLE_CONFIG_BUILDERS"): (
         "CLI 형식 — 역할 config 를 argv/파일 중 무엇으로 넘기는지가 CLI 마다 다르다",
         HARNESS_NAMES),
     ("pm_render.py", "SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR"): (
@@ -179,12 +179,12 @@ DELEGATION_AUTHORITY_SITES: dict[LedgerKey, Site] = {
         _ROLE_AXIS_REASON, expected_count=2),
     ("pm_delegate.py", "check_write_target_reanchor", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("pm_delegate.py", "report_scope_audit", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_relay.py", "build_claude_argv", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_relay.py", "claude_tools", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_relay.py", "perm_axis", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
+    ("contract.py", "build_claude_argv", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
+    ("contract.py", "claude_tools", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
+    ("contract.py", "perm_axis", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("pm_delegate.py", "_apply_read_tmp_argv", SANDBOX_DOWNGRADE_LITERAL): Site(
         "역할축 — read 역할 argv 가 들고 온 sandbox 계약을 확인하고 임시 자리만 연다"),
-    ("pm_relay.py", "CODEX_SANDBOX", SANDBOX_DOWNGRADE_LITERAL): Site(
+    ("contract.py", "CODEX_SANDBOX", SANDBOX_DOWNGRADE_LITERAL): Site(
         "역할축 — read 축 codex sandbox 값 선언(하네스가 아니라 권한축이 키다)"),
 }
 

@@ -33,7 +33,7 @@ neutralize_model_todo·neutralize_delegate_model_todo 참조. 그 밖의 미해�
 여전히 fail-loud(false-green 근절 유지).
 
 순수 함수 중심(stdlib). pm_update(재렌더)·pm_import(최초) 양쪽이 호출한다. 형제 로드는 카드에
-추론 값을 채울 때 하네스 계약(`pm_relay.reasoning_allowed`)을 부르는 한 곳이고, opencode 카드는
+추론 값을 채울 때 하네스 계약(`contract.reasoning_allowed`)을 부르는 한 곳이고, opencode 카드는
 이때 모델 목록 조회가 돈다.
 """
 
@@ -48,26 +48,11 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import repo_files  # noqa: E402
-_load_module_from_path = repo_files.load_module
+from pm_engine.infra.harness import contract  # noqa: E402
 
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
 ENGINE_REV = "v1.8.1"
-
-
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            "엔진 사본 버전 불일치 — 로더 %s(rev=%r)가 형제 %s(rev=%r)를 로드했다 "
-            "(사본 skew: 부분/수동 복사 또는 구형 사본). `pm-update`(또는 pm_update.py)로 "
-            ".project_manager/tools/ 전체를 재동기하라."
-            % (Path(__file__).name, ENGINE_REV, sibling_filename, got)
-        )
-        err._engine_rev_skew = True
-        raise err
 
 
 # 하네스 agent 카드의 역할별 모델/추론 토큰 → local.conf 해소 키. **위임 토큰의 단일 표**다
@@ -614,27 +599,6 @@ def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
     return text, empty_keys
 
 
-_RELAY_MODULE = None  # `_load_relay` 가 처음 읽은 pm_relay — 조회 기억의 수명이 이 인스턴스다.
-
-
-def _load_relay():
-    """같은 tools/ 의 pm_relay(하네스 계약) — 첫 호출에 읽어 이 모듈에 둔다.
-
-    호출자 인자로 받지 않는다. 이전 엔진의 pm_update 가 메모리에 남은 첫 갱신에서도 카드 렌더 전에
-    pm_render·pm_relay 새 사본이 이미 복사돼 있으므로(engine.manifest 의 tools 행이 카드 행보다
-    앞선다) 새 계약을 모르는 호출자가 불러도 확인이 성립한다. 다른 형제 로드와 같이 rev 를 대조한다
-    — 갱신의 완료 단계는 엔진 코드를 받은 뒤 새 프로세스로 돌아 형제 rev 가 섞이지 않는다. 모듈
-    변수에 두는 이유는 pm_relay 의 조회 기억이 인스턴스마다라서다 — 렌더마다 새로 읽으면 카드마다
-    모델 목록 조회가 다시 돈다. 로드 실패·속성 부재·rev 불일치는 그대로 올린다.
-    """
-    global _RELAY_MODULE
-    if _RELAY_MODULE is None:
-        relay_py = Path(__file__).resolve().parent / "pm_relay.py"
-        _RELAY_MODULE = _load_module_from_path(relay_py, "pm_relay.py",
-                                               verifier=_verify_engine_rev)
-    return _RELAY_MODULE
-
-
 # 프로필 conf 키(`delegate.<role>[.<tier>]`) + `.model` → 그 모델 토큰. 위 표에서 파생한다(사본 0).
 _MODEL_TOKEN_BY_CONF_KEY: dict[str, str] = {
     conf_key: token_key for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items()
@@ -652,9 +616,9 @@ def _check_card_reasoning_values(
 
     대상은 텍스트에 토큰이 있고 operational 에 비어 있지 않은 값이 있는 추론 토큰뿐이다 — 부재는
     중화가, 빈 값은 `_assert_no_leak` 가 처리한다. 허용집합은 그런 값이 있을 때만 하네스 계약
-    (`pm_relay.reasoning_allowed`)에 묻는다 — 정적 허용값 하네스는 표를, 모델별 허용값 하네스
+    (`contract.reasoning_allowed`)에 묻는다 — 정적 허용값 하네스는 표를, 모델별 허용값 하네스
     (opencode)는 같은 프로필 모델의 variants 를 설치 폴더·이 프로세스 env 로 조회한다. 채울 값이
-    없는 렌더는 pm_relay 를 읽지 않는다. 하네스가 무효 값을 에러 없이 버리므로 값을 빼거나 기본값으로
+    없는 렌더는 하네스 계약을 묻지 않는다. 하네스가 무효 값을 에러 없이 버리므로 값을 빼거나 기본값으로
     바꾸지 않고 렌더를 멈춘다. 카드 하네스를 판정할 수 없거나 허용집합을 확인할 수 없어도 멈춘다.
     """
     adapter_dir = _card_adapter_dir(card_path)
@@ -674,11 +638,10 @@ def _check_card_reasoning_values(
                 f"없다(card_path={card_path!r}). 추론 값은 하네스가 정해진 카드에만 채운다.")
         model_token = _MODEL_TOKEN_BY_CONF_KEY[conf_key.rsplit(".", 1)[0] + ".model"]
         model = str(operational.get(model_token) or "") or None
-        relay = _load_relay()
         try:
-            allowed = relay.reasoning_allowed(
+            allowed = contract.reasoning_allowed(
                 card_harness, model, cwd=_installed_project_root(), env=dict(os.environ))
-        except relay.HarnessContractError as exc:
+        except contract.HarnessContractError as exc:
             raise RenderLeakError(
                 f"추론 값 렌더{where} 실패 — {setting} 를 확인할 수 없다: {exc}. opencode 를 이 "
                 "프로세스에서 실행할 수 있게 하거나 local.conf 의 그 줄을 고친 뒤 다시 실행한다."
@@ -713,7 +676,7 @@ def render_adapter(
     에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
     card_path: 이 산출물의 **인스턴스 상대 경로**(선택·pm_update 가 계획의 dest 좌표를 넘긴다).
     카드 하네스 판정의 유일한 입력이다 — 미배선이면 미사용 프로필 규칙이 발화하지 않는다.
-    카드에 추론 값을 채울 때 그 값이 카드 하네스·모델의 허용집합(`pm_relay.reasoning_allowed`) 밖이거나
+    카드에 추론 값을 채울 때 그 값이 카드 하네스·모델의 허용집합(`contract.reasoning_allowed`) 밖이거나
     확인할 수 없으면 RenderLeakError 다(`_check_card_reasoning_values`).
 
     template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로

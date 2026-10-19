@@ -27,7 +27,9 @@ from typing import TextIO
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app.session import relay  # noqa: E402
 from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -157,7 +159,7 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "경고 문구(matcher drift 관측 불완전)를 결과 envelope 에 실어 표면화한다"
     ),
     "prescription_interpreter_fail_open": (
-        "처방 줄의 인터프리터 표기 해소는 deny 판정의 부속이지 판정 자체가 아니다 — 형제 로드 "
+        "처방 줄의 인터프리터 표기 해소는 deny 판정의 부속이지 판정 자체가 아니다 — 해소 "
         "실패(사본 skew 포함)로 엔벨로프 키가 무너지거나 훅이 죽으면 차단 판정 자체가 사라진다. "
         "흡수하되 조용하지 않게 stderr 로 사유를 남기고 종전 표기로 내려앉는다"
     ),
@@ -196,35 +198,20 @@ def load_local_config() -> dict[str, str]:
     return pm_delegate.local_config()
 
 
-def _load_pm_relay():
-    """Load the relay that owns harness capabilities and skill entry notation."""
-    return _load_module_from_path(
-        Path(__file__).resolve().with_name("pm_relay.py"),
-        "pm_relay.py",
-        verifier=_verify_engine_rev,
-        cache=True,
-    )
-
-
 def _known_harnesses() -> frozenset[str]:
-    """Return the declared harness set from pm_relay's shared capability table."""
-    relay = _load_pm_relay()
-    markers = getattr(relay, "HARNESS_SESSION_MARKERS", None)
-    if not isinstance(markers, Mapping):
-        raise TypeError("pm_relay.HARNESS_SESSION_MARKERS must be a mapping")
-    return frozenset(str(name).strip() for name in markers if str(name).strip())
+    """Return the declared harness set from the watchdog module's shared capability table."""
+    return frozenset(
+        str(name).strip() for name in watchdog.HARNESS_SESSION_MARKERS if str(name).strip()
+    )
 
 
 def _runtime_skill_entry(skill: str) -> str:
     """Render the project skill entry with the current harness notation."""
-    helper = getattr(_load_pm_relay(), "_runtime_skill_entry", None)
-    if not callable(helper):
-        raise TypeError("pm_relay._runtime_skill_entry must be callable")
-    return helper(skill)
+    return relay._runtime_skill_entry(skill)
 
 
 # 처방 줄이 해소에 실패했을 때 쓰는 표기. POSIX 에서는 정확하고 Windows 에서는 shim 위험이 있으나,
-# 훅 경로에서 형제 로드 실패가 deny 판정 자체를 무너뜨리는 것보다 낫다 — 대신 침묵하지 않는다.
+# 훅 경로에서 해소 실패가 deny 판정 자체를 무너뜨리는 것보다 낫다 — 대신 침묵하지 않는다.
 _PRESCRIBED_INTERPRETER_FALLBACK = "python3"
 
 
@@ -232,16 +219,15 @@ def _prescribed_interpreter() -> str:
     """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
 
     Windows 의 ``python3``/``python`` 은 WindowsApps 가짜 shim 일 수 있어(이 파일이 위에서 rc 9009
-    로 기록해 둔 그 표기다) 런처가 1순위다. 그 판정은 ``pm_relay.entrypoint_command`` 하나가
+    로 기록해 둔 그 표기다) 런처가 1순위다. 그 판정은 ``contract.entrypoint_command`` 하나가
     소유한다 — 여기에 규칙 사본을 만들면 표기가 둘이 되어 반드시 갈린다.
 
-    이 함수는 **훅 경로**에서 불린다. 형제 모듈 로드가 실패해도 deny 판정과 엔벨로프 키를 무너뜨리면
+    이 함수는 **훅 경로**에서 불린다. 해소가 실패해도 deny 판정과 엔벨로프 키를 무너뜨리면
     안 되므로 종전 표기로 내려앉되, 그 사실을 stderr 로 남겨 조용한 강등이 되지 않게 한다.
     """
     try:
-        relay = _load_pm_relay()
-        interpreter, _entry = relay.entrypoint_command(
-            relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
+        interpreter, _entry = contract.entrypoint_command(
+            contract.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
         )
     except Exception as exc:  # noqa: BLE001 — 훅 fail-open: 판정을 막지 않는다.
         skew = _absorb_engine_rev_skew_for_recovery(

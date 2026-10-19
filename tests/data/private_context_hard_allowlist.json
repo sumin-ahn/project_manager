@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 480,
+  "count": 464,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 324
+    "python-prose": 308
   },
   "entries": [
     {
@@ -360,14 +360,6 @@
       "count": 1
     },
     {
-      "path": ".project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": ".project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -616,35 +608,11 @@
       "count": 1
     },
     {
-      "path": ".project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
       "path": ".project_manager/tools/pm_render.py",
       "kind": "work_item",
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {
@@ -1080,14 +1048,6 @@
       "count": 1
     },
     {
-      "path": "templates/claude_code/.project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": "templates/claude_code/.project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -1336,35 +1296,11 @@
       "count": 1
     },
     {
-      "path": "templates/claude_code/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
       "path": "templates/claude_code/.project_manager/tools/pm_render.py",
       "kind": "work_item",
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {
@@ -1912,14 +1848,6 @@
       "count": 1
     },
     {
-      "path": "templates/codex/.project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": "templates/codex/.project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -2168,35 +2096,11 @@
       "count": 1
     },
     {
-      "path": "templates/codex/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
       "path": "templates/codex/.project_manager/tools/pm_render.py",
       "kind": "work_item",
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {
@@ -2968,14 +2872,6 @@
       "count": 1
     },
     {
-      "path": "templates/opencode/.project_manager/tools/identity_args.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
-      "count": 1
-    },
-    {
       "path": "templates/opencode/.project_manager/tools/pm_adr.py",
       "kind": "work_item",
       "match": "ADR-0019",
@@ -3224,35 +3120,11 @@
       "count": 1
     },
     {
-      "path": "templates/opencode/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
       "path": "templates/opencode/.project_manager/tools/pm_render.py",
       "kind": "work_item",
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/repo_coordinates.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "8092ec645ae61d536fcd6af36ab8f22df3e222c34e2551453457bc6f393bb3d9",
       "count": 1
     },
     {

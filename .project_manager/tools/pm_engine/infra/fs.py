@@ -5,7 +5,7 @@
 파일락**으로 직렬화하고, append-only 파일은 **O_APPEND 원자 추가**로 lost update 를 피한다
 (board.py 의 "보드 동시성" 주석이 둘을 한 쌍으로 기술한다). 도구마다 복제돼 있던 두 구현을
 여기로 승격했다 — 배타락은 board(`board.lock`·`board-git.lock`)·pm_log(`log.lock`)·
-pm_relay(raw 장부 `<ledger>.lock`)·pm_handoff(`dashboard.lock`)·worktree_pool(리스 장부
+raw_output(raw 장부 `<ledger>.lock`)·pm_handoff(`dashboard.lock`)·worktree_pool(리스 장부
 `worktree-leases.lock`)가, O_APPEND 추가는 board(areas 등록)·pm_log(log append)가 각자
 복제하고 있었다. 사본마다 폴백 규칙·fd 수명·권한이 갈라질 수 있다.
 
@@ -71,7 +71,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 
-# 락 파일 기본 권한. 더 좁은 권한이 필요한 호출자는 `mode=` 로 명시한다(pm_relay raw 장부=0o600).
+# 락 파일 기본 권한. 더 좁은 권한이 필요한 호출자는 `mode=` 로 명시한다(raw_output raw 장부=0o600).
 DEFAULT_LOCK_MODE = 0o644
 
 # append 로 *새로 생기는* 파일의 기본 권한 (board areas·log/current.md 관례).

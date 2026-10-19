@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from _slot_seed import fake_slot_path
+from pm_engine.infra.harness import watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -82,12 +83,6 @@ def handoff_mod():
     return _load("pm_handoff")
 
 
-@pytest.fixture(scope="module")
-def ia_mod():
-    """공용 `identity_args` — 카드가 내는 정체성 토큰(`--repo`/`--slot`)의 canonical grammar 원천."""
-    return _load("identity_args")
-
-
 # 정체성 dict — lean(멀티-PM) 모드가 카드에 넘기는 형태(`_bind_and_identity` 산출과 동형).
 LEAN_IDENTITY = {
     "repo": "project_manager",
@@ -108,9 +103,8 @@ def _card(bootstrap, identity):
 
 def test_codex_harness_marker_table_matches_delegate_source(bootstrap):
     """부트스트랩 복제 선언은 위임 엔진의 codex 축 단일 출처와 정확히 같아야 한다."""
-    delegate = _load("pm_delegate")
     assert bootstrap._CODEX_HARNESS_SESSION_MARKERS == \
-        delegate._load_relay().HARNESS_SESSION_MARKERS["codex"]
+        watchdog.HARNESS_SESSION_MARKERS["codex"]
 
 
 def test_no_codex_env_fixture_iterates_bootstrap_marker_declaration():

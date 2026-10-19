@@ -40,6 +40,7 @@ import yaml
 
 from _fake_opencode import install_fake_opencode, listing_for, path_with
 from _win_skip import posix_bash_supported
+from pm_engine.infra.harness import contract
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -347,8 +348,8 @@ def _write_local_conf(dest_root: Path, text: str) -> Path:
 _REASONING_LADDER = ("low", "medium", "high", "xhigh", "max")
 
 # 모델별 허용값 하네스(opencode)의 트리는 렌더가 모델 목록을 조회한다 — 가짜 실행 파일(POSIX sh)을
-# 쓰므로 그 매개변수만 POSIX 전용이다. 트리 고르기는 하네스 이름이 아니라 pm_relay 표 소속이다.
-_PER_MODEL_HARNESSES = _load_tool("pm_relay").PER_MODEL_REASONING_HARNESSES
+# 쓰므로 그 매개변수만 POSIX 전용이다. 트리 고르기는 하네스 이름이 아니라 contract 표 소속이다.
+_PER_MODEL_HARNESSES = contract.PER_MODEL_REASONING_HARNESSES
 _TREE_PARAMS = tuple(
     pytest.param(tree, id=tree.label, marks=pytest.mark.skipif(
         tree.harness in _PER_MODEL_HARNESSES and not posix_bash_supported(),
@@ -407,7 +408,7 @@ def test_cards_render_local_conf_values_through_the_real_path(
 
     문자열 존재 검사가 아니라 **반환값**을 본다: 토큰이 있어도 채널 배선이 빠지면 여기서 red 다
     (선언이 실행면에 닿지 않는 상태를 그 자리에서 표면화한다). 렌더는 `pm_update._render_text` 를
-    거친다 — 추론 허용집합 확인(`pm_relay.reasoning_allowed`)까지 실 경로다.
+    거친다 — 추론 허용집합 확인(`contract.reasoning_allowed`)까지 실 경로다.
     """
     dest = tmp_path / f"dest-{tree.harness}"
     conf_text, expected = _conf_text(pm_render, tree.harness)

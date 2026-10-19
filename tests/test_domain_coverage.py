@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -496,7 +497,7 @@ def test_missing_engine_source_makes_denominator_error(domain, tmp_path):
 
 
 def test_manifest_paths_are_parsed_by_canonical_pm_update_reader(domain, tmp_path):
-    """공백을 포함한 path도 pm_update.read_manifest 의미론 그대로 분모에 들어간다."""
+    """공백을 포함한 path도 manifest_store.read_manifest 의미론 그대로 분모에 들어간다."""
     _root, _tools, domain_dir, manifest, readme = _coverage_tree(
         tmp_path,
         domain,
@@ -536,7 +537,7 @@ def test_engine_tool_denominator_consumes_manifest_reader_seam(
         calls.append(path)
         return [".project_manager/tools/alpha.py"]
 
-    monkeypatch.setattr(domain, "_load_manifest_reader", lambda: fake_read_manifest)
+    monkeypatch.setattr(manifest_store, "read_manifest", fake_read_manifest)
 
     report = domain.coverage_report(
         domain.load_pages(domain_dir),

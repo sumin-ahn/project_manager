@@ -686,7 +686,7 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
         shutil.copyfile(TEMPLATE_FILES[harness][0], target)
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
-    for name in ("local_conf.py", "pm_relay.py", "python_floor.py"):
+    for name in ("local_conf.py", "python_floor.py"):
         if not (tools / name).exists():
             shutil.copyfile(TOOLS / name, tools / name)
     if not (tools / "pm_engine").exists():

@@ -44,7 +44,7 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.infra import console, fs, manifest_store, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
@@ -204,7 +204,7 @@ def _repository_query_batch():
 ENGINE_REV = "v1.8.1"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. AST deep-import 가드가 실제 target과 정합을 단언한다.
-_STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py"})
+_STAMPED_SIBLINGS = frozenset({"board.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -260,16 +260,11 @@ def _load_board():
     return _load_module("board", "board.py")
 
 
-def _load_repo_coordinates():
-    """공용 repo 좌표 normalizer를 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
-    return _load_module("repo_coordinates", "repo_coordinates.py")
-
-
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
 
 
 def _has_worktree_touch_prefix(path: str) -> bool:
-    """normalizer를 로드하지 않고도 접두 사용 여부만 표기 변형에 견고하게 판정한다."""
+    """touch 가 `work/<repo>_<N>/` 슬롯 접두를 가졌는지 표기 변형에 견고하게 보는 경량 판정."""
     norm = path.replace(os.sep, "/").replace("\\", "/")
     while norm.startswith("./"):
         norm = norm[2:]
@@ -279,32 +274,20 @@ def _has_worktree_touch_prefix(path: str) -> bool:
 def _normalize_ticket_touches(touches: list[str]) -> list[str]:
     """ticket PM-home 좌표를 경로별 advisory 경고와 함께 정규화한다.
 
-    접두가 하나도 없으면 모듈을 아예 로드하지 않아 부분 동기 adopter의 기존 repo-relative
-    동작을 보존한다. 조회 표면은 한 경로 오류가 배치를 죽이지 않는다. 오류 경로는 loud
+    접두가 하나도 없으면 좌표 정규화를 건너뛰고 입력을 그대로 돌려준다.
+    조회 표면은 한 경로 오류가 배치를 죽이지 않는다. 오류 경로는 loud
     경고 후 제외하고 나머지를 계속 처리한다(검증 없이 strip하거나 원문을 하류에 넘기지 않음).
     """
     if not any(_has_worktree_touch_prefix(path) for path in touches):
         return touches
-    coords = _load_repo_coordinates()
-    if coords is None:
-        for path in touches:
-            if _has_worktree_touch_prefix(path):
-                print(
-                    f"domain: touch {path!r} 좌표 정규화 경고 — repo 좌표 normalizer "
-                    f"로드 실패 ({TOOLS_DIR / 'repo_coordinates.py'}); 이 경로는 제외",
-                    file=sys.stderr,
-                )
-        return [path for path in touches if not _has_worktree_touch_prefix(path)]
-
-    error_type = getattr(coords, "RepoCoordinateError", RuntimeError)
     normalized: list[str] = []
     for path in touches:
         if not _has_worktree_touch_prefix(path):
             normalized.append(path)
             continue
         try:
-            normalized.append(coords.normalize_repo_path(path, pm_root=REPO))
-        except error_type as exc:
+            normalized.append(repo_coordinates.normalize_repo_path(path, pm_root=REPO))
+        except repo_coordinates.RepoCoordinateError as exc:
             print(
                 f"domain: touch {path!r} 좌표 정규화 경고 — {exc}; 이 경로는 제외",
                 file=sys.stderr,
@@ -1563,28 +1546,6 @@ NUMERIC_COVERAGE_CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
-def _load_manifest_reader():
-    """형제 ``pm_update.read_manifest``를 canonical manifest parser로 로드한다."""
-    pm_update = _load_module("_domain_pm_update_manifest", "pm_update.py")
-    reader = getattr(pm_update, "read_manifest", None)
-    if not callable(reader):
-        raise RuntimeError(
-            "pm_update.read_manifest를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-        )
-    return reader
-
-
-def _load_manifest_shipping_inventory():
-    """형제 ``pm_update``의 실제 출하 inventory seam을 로드한다."""
-    pm_update = _load_module("_domain_pm_update_inventory", "pm_update.py")
-    inventory = getattr(pm_update, "manifest_entry_shipping_inventory", None)
-    if not callable(inventory):
-        raise RuntimeError(
-            "pm_update 출하 inventory를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-        )
-    return inventory
-
-
 def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
     """실제 출하 inventory를 tools/ 직계 Python 도구 분모로 협착한다."""
     tools_parent = Path(".project_manager") / "tools"
@@ -1604,8 +1565,7 @@ def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
     # coverage 제품 정의인 tools/ 직계 Python CLI 협착만 소유한다. flavor manifest의
     # @source는 upstream에만 있는 어댑터 source를 정상적으로 가리키므로, destination이 이
     # 분모에 기여할 수 없는 항목은 source 존재 여부까지 검사하지 않는다.
-    manifest = _load_manifest_reader()(manifest_path)
-    inventory_for = _load_manifest_shipping_inventory()
+    manifest = manifest_store.read_manifest(manifest_path)
     for entry_index, entry in enumerate(manifest):
         rel = Path(str(entry))
         if rel.is_absolute() or ".." in rel.parts:
@@ -1614,7 +1574,7 @@ def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
         can_ship_direct_python = rel.parent == tools_parent and rel.suffix == ".py"
         if not (can_ship_tools_tree or can_ship_direct_python):
             continue
-        files, source_missing, target_owned = inventory_for(
+        files, source_missing, target_owned = manifest_store.manifest_entry_shipping_inventory(
             repo_root,
             manifest,
             entry_index,

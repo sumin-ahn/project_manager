@@ -47,7 +47,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.domain import identity_args  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -386,7 +387,7 @@ def _is_engine_rev_skew(exc) -> bool:
 
     fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
     판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
-    (예: 신 pm_bootstrap→신 board→구 identity_args 검출이 None 강등되지 않게)."""
+    (예: 신 pm_bootstrap→신 board→구 형제 검출이 None 강등되지 않게)."""
     return getattr(exc, "_engine_rev_skew", False)
 
 
@@ -484,29 +485,6 @@ def _load_tool(name: str):
     return mod
 
 
-def _load_identity_args():
-    """공용 `identity_args` 모듈을 동적 로드한다.
-
-    `_load_worktree_pool`/`_load_board`/`_load_tool` 과 동형 — `spec_from_file_location`
-    (스크립트-위치 앵커·sys.path 무오염) — 스크립트 직접실행(`__main__`)·테스트
-    `spec_from_file_location` 로드 양쪽에서 똑같이 동작한다(sibling import 관성 회피). 부재/
-    로드 실패 시 None(fail-soft) — `_auto_slot` 는 이를 "장부를 읽을 수
-    없음"과 동일하게 미해소(None)로 돌려준다(B-1).
-    """
-    ia_path = TOOLS_DIR / "identity_args.py"
-    if not ia_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            ia_path, "identity_args.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
 def _registered_repos(areas_file: Path | None = None) -> list[str]:
     """areas.md 레지스트리에서 등록된 repo 이름 목록 (identity surface '등록영역' 표면용).
 
@@ -555,7 +533,7 @@ def _auto_slot(
 
     판정:
       1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
-      2. **공용 `identity_args.resolve_actor_workspace` 위임** —
+      2. **공용 `lease_store.resolve_actor_workspace` 위임** —
          그 repo 의 **leased** 슬롯이 정확히 1개면 그 세션을, 0개면 None 을 돌려준다. ≥2개(모호)
          는 그 프리미티브가 `identity_args.SlotResolutionError` 로 raise 하지만, 이 함수는
          **순수 resolver 계약**(정확히 1 아니면 항상 None·fail-soft)이라 그 예외를 여기서 흡수해
@@ -565,24 +543,21 @@ def _auto_slot(
     는 이전 None(2개→폴백) 대신 leased={2}→exactly-1→슬롯2 로 해소된다 — incidental(`_regression_cwd`·
     display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). `{1:leased}`→1 은 불변.
 
-    파일 부재/스키마 불일치/JSON 깨짐/`identity_args` 로드 실패 → None(미해소). `areas_file`
+    파일 부재/스키마 불일치/JSON 깨짐 → None(미해소). `areas_file`
     미지정(None)이면 `_registered_repos` 가 `_areas_file()`(board_root 추종)로 해소한다.
     """
     repos = _registered_repos(areas_file)
     if len(repos) != 1:
         return None
     repo = repos[0]
-    ia = _load_identity_args()
-    if ia is None:
-        return None
     try:
-        workspace = ia.resolve_actor_workspace(repo, leases_file)
-    except ia.SlotResolutionError:
+        workspace = lease_store.resolve_actor_workspace(repo, leases_file)
+    except identity_args.SlotResolutionError:
         return None  # ≥2 활성 슬롯(모호) — 순수 resolver 계약상 fail-soft None(raise 아님).
     if workspace is None:
         return None
     # 경로는 행의 `slot` 값, 정체성은 행이 준 키 — 세션에서 번호를 뜯어 경로를 재조립하지 않는다.
-    return ia.resolve_slot_identity(workspace.slot, leases_file)
+    return lease_store.resolve_slot_identity(workspace.slot, leases_file)
 
 
 # ── 경로 표기 직렬화 (POSIX 단일) ─────────
@@ -1208,18 +1183,14 @@ _LOG_HANDOFF_HEADER_RE = re.compile(
 
 
 def _session_slot_number(bound_session: str, leases_file: Path | None = None) -> int | None:
-    """세션 명의가 점유한 슬롯 번호 — **장부 행 값**(`identity_args.session_coordinates`).
+    """세션 명의가 점유한 슬롯 번호 — **장부 행 값**(`lease_store.session_coordinates`).
 
     장부에 그 세션 명의 행이 없으면 pool 명명 규약(키 분해)으로 폴백한다(그 형상에선 이름이
-    유일한 진실). `identity_args` 부재/로드 실패는 종전 이름 파싱으로 폴백(fail-soft).
+    유일한 진실).
     """
-    ia = _load_identity_args()
-    if ia is None:
-        m = re.search(r"_(\d+)$", bound_session)
-        return int(m.group(1)) if m else None
     if leases_file is None:
         leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    _repo, number = ia.session_coordinates(bound_session, leases_file)
+    _repo, number = lease_store.session_coordinates(bound_session, leases_file)
     return number
 
 
@@ -2285,7 +2256,7 @@ class PmBootstrap:
         """lease 장부에서 leased 엔트리의 `(session, slot)` 목록을 직접 read 한다 (touches 격리).
 
         session 은 엔트리 `session` 또는 슬롯(`work/<repo>_<N>`→`<repo>_<N>`)에서 유도(대시보드
-        키와 동형). worktree_pool 미import(`identity_args.repo_slot_numbers` 동형·stdlib json). **장부 부재/
+        키와 동형). worktree_pool 미import(`lease_store.repo_slot_numbers` 동형·stdlib json). **장부 부재/
         깨짐/스키마 불일치 → None**("활성 슬롯을 알 수 없음"·MF-1 필터가 no-op 폴백에 씀); 정상
         read 인데 leased 0개면 `[]`. `_lease_others`(폴백 dump)·`_active_leased_sessions`(교집합
         필터) 가 공유한다.
@@ -4052,15 +4023,9 @@ def _main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # task 명 검증 — 등록 repo 집합을 넘겨 `<등록 repo>_<N>` 예약 패턴까지 한 곳에서 거부한다
     # (엔진 validator 와 동형·부작용 이전).
-    ia = _load_identity_args()
-    if ia is None:
-        raise RuntimeError(
-            "identity_args 모듈을 로드할 수 없다 — .project_manager/tools/identity_args.py "
-            "확인 (canonical 정체성 인자·엔진 필수 peer 모듈)."
-        )
     try:
-        ia.validate_task_name(args.task, _registered_repos())
-    except ia.InvalidTaskName as exc:
+        identity_args.validate_task_name(args.task, _registered_repos())
+    except identity_args.InvalidTaskName as exc:
         build_parser().error(str(exc))
     bootstrap = PmBootstrap()
     return bootstrap.run(

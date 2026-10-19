@@ -40,6 +40,8 @@ from _textio import normalize_newline_bytes
 from _win_skip import _can_symlink, posix_bash_supported, posix_mode_supported
 from pm_engine.domain import conf_schema
 from conftest import write_cluster_ledger
+from pm_engine.infra import raw_output
+from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -67,7 +69,7 @@ def _fresh_config_anchor(pd, monkeypatch):
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
 
 
-# ── canned 하네스 출력 (파서 재사용 확인·pm_relay 실측 형식) ──────────────────────
+# ── canned 하네스 출력 (파서 재사용 확인·하네스 계약 실측 형식) ──────────────────────
 
 def _codex_stdout(reply: str = "DONE") -> str:
     return "\n".join([
@@ -889,16 +891,11 @@ def test_opencode_transport_save_is_wired_to_containment_guard(
     cwd.mkdir()
     calls = []
 
-    class RejectingRelay:
-        class HarnessContractError(Exception):
-            pass
+    def assert_opencode_prompt_in_cwd(cwd_arg, prompt_file):
+        calls.append((Path(cwd_arg), Path(prompt_file)))
+        raise contract.HarnessContractError("배선 가드 거부")
 
-        @staticmethod
-        def assert_opencode_prompt_in_cwd(cwd_arg, prompt_file):
-            calls.append((Path(cwd_arg), Path(prompt_file)))
-            raise RejectingRelay.HarnessContractError("배선 가드 거부")
-
-    monkeypatch.setattr(pd, "_load_relay", lambda: RejectingRelay)
+    monkeypatch.setattr(contract, "assert_opencode_prompt_in_cwd", assert_opencode_prompt_in_cwd)
 
     with pytest.raises(pd.DelegateError, match="배선 가드 거부"):
         pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
@@ -1029,7 +1026,7 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
             seen["attempt_parent"].unlink(missing_ok=True)
             seen["parked"].rmdir()
 
-    rows = pd._load_relay().raw_records(output_dir / "raw_outputs.json")
+    rows = raw_output.raw_records(output_dir / "raw_outputs.json")
     assert len(rows) == 1
     row = rows[0]
     raw_text = Path(row["raw_path"]).read_text(encoding="utf-8")
@@ -1051,9 +1048,8 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     output_dir = tmp_path / "raw"
     output_dir.mkdir()
     ledger_path = output_dir / "raw_outputs.json"
-    relay = pd._load_relay()
     # 결속 이전 형상 그대로 — extra 에 run_id·copy 를 전혀 싣지 않는다.
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
         role="developer", raw_path=output_dir / "seed.txt", attempt="primary",
         extra={"ticket": "T-9200"},
@@ -1065,15 +1061,15 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     assert "미마감 raw 1건" in out.out
     assert "경고" not in out.err          # 부재를 손상으로 읽지 않는다 — 경고 0
 
-    unfinished = relay.raw_records(ledger_path, unfinished_only=True)
+    unfinished = raw_output.raw_records(ledger_path, unfinished_only=True)
     assert len(unfinished) == 1
     assert "run_id" not in unfinished[0] and "copy" not in unfinished[0]
 
     # 마감도 결속 이전과 동일하게 정상 — extra 에 run_id·copy 를 계속 안 실어도 실패하지 않는다.
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
     )
-    finished = relay.raw_records(ledger_path)
+    finished = raw_output.raw_records(ledger_path)
     assert len(finished) == 1
     assert finished[0]["finished_at"] is not None
     assert "run_id" not in finished[0] and "copy" not in finished[0]
@@ -1362,7 +1358,6 @@ def test_opencode_cleanup_failure_warns_and_preserves_main_result(
 
 def test_opencode_transport_guard_rejects_external_and_symlink_paths(pd, tmp_path):
     """호출 전 가드는 lexical 외부 경로와 sandbox 안 symlink의 실제 외부 대상을 함께 거부한다."""
-    relay = pd._load_relay()
     cwd = tmp_path / "sandbox"
     outside = tmp_path / "outside"
     cwd.mkdir()
@@ -1370,13 +1365,13 @@ def test_opencode_transport_guard_rejects_external_and_symlink_paths(pd, tmp_pat
     prompt = outside / "prompt.md"
     prompt.write_text("지시", encoding="utf-8")
 
-    with pytest.raises(relay.HarnessContractError, match="sandbox 밖"):
-        relay.assert_opencode_prompt_in_cwd(cwd, prompt)
+    with pytest.raises(contract.HarnessContractError, match="sandbox 밖"):
+        contract.assert_opencode_prompt_in_cwd(cwd, prompt)
 
     link = cwd / "linked-outside"
     link.symlink_to(outside, target_is_directory=True)
-    with pytest.raises(relay.HarnessContractError, match="sandbox 밖"):
-        relay.assert_opencode_prompt_in_cwd(cwd, link / "prompt.md")
+    with pytest.raises(contract.HarnessContractError, match="sandbox 밖"):
+        contract.assert_opencode_prompt_in_cwd(cwd, link / "prompt.md")
 
 
 def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
@@ -2396,7 +2391,7 @@ def test_read_role_temp_place_is_the_project_temp_root(pd, monkeypatch, tmp_path
     cwd.mkdir()
     monkeypatch.setattr(pd, "REPO", pm_home)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
-    anchor = pd._load_relay().temp_root(pm_home)
+    anchor = raw_output.temp_root(pm_home)
 
     for harness in ("codex", "claude", "opencode"):
         temp_parent, component = pd._read_tmp_parent(harness)
@@ -2625,39 +2620,23 @@ def test_reanchor_fail_loud_in_main(pd, monkeypatch, tmp_path, capsys):
 
 # ══ must-fix 2: launch 오류 정규화 (_default_run_fn·traceback 금지) ═══════════
 
-_REAL_RELAY = None
-
-
-def _relay_module():
-    """실 pm_relay 모듈(1회 로드 캐시) — 대역이 선언 테이블/해소기를 **실제 엔진 것**으로 쓴다."""
-    global _REAL_RELAY
-    if _REAL_RELAY is None:
-        _REAL_RELAY = _load("pm_relay", TOOLS / "pm_relay.py")
-    return _REAL_RELAY
-
-
-class _RelayStub:
-    """실 pm_relay 위임 대역 — 필요한 지점만 덮어쓴다.
-
-    프로필 테이블·시간 예산 해소는 실제 엔진 것을 쓴다: 대역이 값 규칙을 자체 구현하면 "하네스별
-    값이 실제로 갈리는가"를 검증하는 테스트가 거짓이 된다."""
-
-    def __getattr__(self, name):
-        return getattr(_relay_module(), name)
-
-
-class _FakeRelayWatchdog(_RelayStub):
+class _FakeRelayWatchdog:
     """run_with_first_event_watchdog 이 주입 예외를 raise 하는 대역(3드라이버 공통 경로).
 
     codex/claude 도 워치독 경유가 됐으므로 이 대역이 3드라이버 전부를 커버한다. 호출 인자(kwargs)를
-    기록해 드라이버 선언(첫-이벤트 창·재시도·무진행 상한)이 실제로 전달되는지 단언할 수 있게 한다."""
-
-    StallWatchdogError = type("StallWatchdogError", (RuntimeError,), {})
+    기록해 드라이버 선언(첫-이벤트 창·재시도·무진행 상한)이 실제로 전달되는지 단언할 수 있게 한다.
+    `install` 이 `watchdog` 모듈의 세 속성을 이 대역 메서드로 바꾼다."""
 
     def __init__(self, exc=None, completed=None):
         self._exc = exc
         self._completed = completed
         self.calls: list[dict] = []
+
+    def install(self, monkeypatch):
+        for name in ("first_event_timeout_default", "stall_retries_default",
+                     "run_with_first_event_watchdog"):
+            monkeypatch.setattr(watchdog, name, getattr(self, name))
+        return self
 
     def first_event_timeout_default(self):
         return 1.0
@@ -2675,8 +2654,7 @@ class _FakeRelayWatchdog(_RelayStub):
 @pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
 def test_default_run_fn_launch_error_all_drivers(pd, monkeypatch, harness):
     """3드라이버 전부 바이너리 미설치(워치독 스폰 FileNotFoundError) → rc≠0·진단(traceback 아님)."""
-    monkeypatch.setattr(pd, "_load_relay",
-                        lambda: _FakeRelayWatchdog(FileNotFoundError(2, "nope", "bin")))
+    _FakeRelayWatchdog(FileNotFoundError(2, "nope", "bin")).install(monkeypatch)
     res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["returncode"] != 0 and res["timed_out"] is False
     assert "실행 불가" in res["stderr"]
@@ -2696,10 +2674,9 @@ class _SpyRelayKill:
 def test_default_run_fn_timeout_all_drivers(pd, monkeypatch, harness):
     """3드라이버 timeout(워치독이 그룹째 kill 후 TimeoutExpired 전파) → timed_out=True·§5.3.
 
-    프로세스그룹 kill 자체는 이제 워치독 소관이다(pm_relay 실-Popen 테스트가 잔존 0을 단언) —
+    프로세스그룹 kill 자체는 이제 워치독 소관이다(watchdog 실-Popen 테스트가 잔존 0을 단언) —
     여기서는 위임층의 정규화(분류 가능한 timed_out 신호)만 본다."""
-    monkeypatch.setattr(pd, "_load_relay",
-                        lambda: _FakeRelayWatchdog(subprocess.TimeoutExpired(cmd="x", timeout=1)))
+    _FakeRelayWatchdog(subprocess.TimeoutExpired(cmd="x", timeout=1)).install(monkeypatch)
     res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["timed_out"] is True and res["returncode"] != 0
     assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_TIMEOUT
@@ -2748,7 +2725,7 @@ def test_timeout_nonpositive_usage_error(pd, monkeypatch, tmp_path):
 def test_conf_delegate_timeout_failsoft(pd):
     """conf delegate.timeout 비수치/≤0 은 traceback 대신 **하네스 프로필 선언값**으로 fail-soft."""
     ns = type("NS", (), {"timeout": None})()
-    declared = int(_relay_module().HARNESS_PROFILES["codex"].wall_timeout)
+    declared = int(watchdog.HARNESS_PROFILES["codex"].wall_timeout)
     assert pd._resolve_timeout(ns, {"delegate.timeout": "abc"}, "codex") == declared
     assert pd._resolve_timeout(ns, {"delegate.timeout": "-5"}, "codex") == declared
     assert pd._resolve_timeout(ns, {"delegate.timeout": "600"}, "codex") == 600
@@ -2764,8 +2741,8 @@ def test_conf_delegate_timeout_failsoft(pd):
 def test_opencode_argv_has_message_positional(pd):
     """opencode run 은 --file 이 있어도 비어있지 않은 positional message 를 요구(부재 시 rc=1·실측)."""
     argv = pd.build_opencode_argv("m", None, "developer", "/w", "/p")
-    # 고정 message 선언은 공용 드라이버 계약(pm_relay)이 소유한다 — 위임 wrapper 는 그 값을 쓴다.
-    assert argv[:3] == ["opencode", "run", pd._load_relay().OPENCODE_ATTACHED_MSG]
+    # 고정 message 선언은 공용 드라이버 계약(contract)이 소유한다 — 위임 wrapper 는 그 값을 쓴다.
+    assert argv[:3] == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG]
     assert argv[2].strip()  # 비어있지 않음
 
 
@@ -4033,7 +4010,6 @@ def test_fallback_uses_its_own_harness_budget(pd, monkeypatch, tmp_path):
 
     시간 예산이 하네스별로 갈린 뒤(클라우드 vs 로컬 GPU) primary 값을 폴백에 그대로 쓰면,
     클라우드→로컬 GPU 폴백에서 3시간짜리 로컬 작업이 클라우드 예산에 잘린다."""
-    relay = _relay_module()
     conf = _enabled_conf(**{
         "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
         "delegate.developer.fallback.harness": "opencode",
@@ -4052,8 +4028,8 @@ def test_fallback_uses_its_own_harness_budget(pd, monkeypatch, tmp_path):
         conf, run_fn=fake)
     assert rc == 0
     assert [c["harness"] for c in fake.calls] == ["codex", "opencode"]
-    assert fake.calls[0]["timeout"] == int(relay.HARNESS_PROFILES["codex"].wall_timeout)
-    assert fake.calls[1]["timeout"] == int(relay.HARNESS_PROFILES["opencode"].wall_timeout)
+    assert fake.calls[0]["timeout"] == int(watchdog.HARNESS_PROFILES["codex"].wall_timeout)
+    assert fake.calls[1]["timeout"] == int(watchdog.HARNESS_PROFILES["opencode"].wall_timeout)
     assert fake.calls[1]["timeout"] > fake.calls[0]["timeout"]
 
 
@@ -4372,8 +4348,7 @@ def test_launch_failure_needs_explicit_signal_not_rc127(pd):
 @pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
 def test_default_run_fn_launch_error_carries_explicit_signal(pd, monkeypatch, harness):
     """실 드라이버의 launch 정규화도 rc 가 아니라 명시 신호를 싣는다(분류 근거 단일화)."""
-    monkeypatch.setattr(pd, "_load_relay",
-                        lambda: _FakeRelayWatchdog(FileNotFoundError(2, "No such file", "bin")))
+    _FakeRelayWatchdog(FileNotFoundError(2, "No such file", "bin")).install(monkeypatch)
     res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1,
                              harness=harness)
     assert res[pd.RUN_RESULT_LAUNCH_FAILED] is True
@@ -4382,14 +4357,13 @@ def test_default_run_fn_launch_error_carries_explicit_signal(pd, monkeypatch, ha
 
 def test_opencode_first_event_stall_is_infrastructure_class(pd, monkeypatch):
     """opencode 첫-이벤트 stall(재시도 소진)은 rc=1/timed_out=False 로 정규화돼도 인프라 실패다."""
-    stalled = _FakeRelayWatchdog.StallWatchdogError("3회 소진")
+    stalled = watchdog.StallWatchdogError("3회 소진")
     stalled.timeout_axis = "first-event"
     stalled.threshold_seconds = 90.0
     stalled.silence_seconds = 90.0
     stalled.output = "startup partial stdout\n"
     stalled.stderr = "startup partial stderr\n"
-    relay = _FakeRelayWatchdog(stalled)
-    monkeypatch.setattr(pd, "_load_relay", lambda: relay)
+    _FakeRelayWatchdog(stalled).install(monkeypatch)
     res = pd._default_run_fn(["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
                              timeout=1, harness="opencode")
     assert res["returncode"] == 1 and res["timed_out"] is False
@@ -4405,13 +4379,13 @@ def test_opencode_first_event_stall_is_infrastructure_class(pd, monkeypatch):
 
 def test_startup_watchdog_wall_axis_is_timeout_not_first_event_stall(pd, monkeypatch):
     """--timeout이 첫-event 창보다 짧아 wall이 먼저 울면 timeout 분류·안내를 유지한다."""
-    expired = _FakeRelayWatchdog.StallWatchdogError("overall watchdog")
+    expired = watchdog.StallWatchdogError("overall watchdog")
     expired.timeout_axis = "wall"
     expired.threshold_seconds = 30.0
     expired.silence_seconds = 30.0
     expired.output = "partial before wall\n"
     expired.stderr = "wall diagnostic\n"
-    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeRelayWatchdog(expired))
+    _FakeRelayWatchdog(expired).install(monkeypatch)
 
     res = pd._default_run_fn(
         ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
@@ -4690,12 +4664,19 @@ def test_fallback_identical_to_primary_is_loud_skip(pd, monkeypatch, tmp_path, c
     assert "폴백 비발동" in err and "동일(codex/gpt-x)" in err
 
 
-class _FakeStallKnobs(_RelayStub):
-    """opencode 첫-이벤트 워치독 노브만 덮는 relay 대역(env PM_OC_* 비의존 결정성)."""
+class _FakeStallKnobs:
+    """opencode 첫-이벤트 워치독 노브만 덮는 대역(env PM_OC_* 비의존 결정성).
+
+    `install` 이 `watchdog` 모듈의 두 노브 함수를 이 대역 메서드로 바꾼다."""
 
     def __init__(self, retries: int = 2, first_event_timeout: float = 90.0):
         self._retries = retries
         self._first_event_timeout = first_event_timeout
+
+    def install(self, monkeypatch):
+        monkeypatch.setattr(watchdog, "stall_retries_default", self.stall_retries_default)
+        monkeypatch.setattr(watchdog, "first_event_timeout_default", self.first_event_timeout_default)
+        return self
 
     def stall_retries_default(self):
         return self._retries
@@ -4707,25 +4688,26 @@ class _FakeStallKnobs(_RelayStub):
 def test_harness_timeout_budget_counts_opencode_retry_windows(pd, monkeypatch):
     """opencode 워치독은 **시도마다** overall 을 새로 잡는다 — 1회 실행 예산이 timeout 이 아니다.
 
-    stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(pm_relay 의 first_deadline
+    stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(watchdog 의 first_deadline
     분기) 실행 예산 = timeout + retries×min(창, timeout), 정리는 각 시도마다 10초다."""
-    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeStallKnobs(retries=2,
-                                                                   first_event_timeout=90.0))
+    _FakeStallKnobs(retries=2,
+                                                                   first_event_timeout=90.0).install(monkeypatch)
     assert pd._harness_timeout_budget("codex", 600) == 610      # 단일 시도 정리 10초
     assert pd._harness_timeout_budget("claude", 600) == 610
     assert pd._harness_timeout_budget("opencode", 600) == 810   # 600 + 2×90 + 3×10
     # wall 이 첫-이벤트 창보다 짧으면 중복 호출 없이 첫 시도에서 끝난다.
     assert pd._harness_timeout_budget("opencode", 30) == 40     # 30 + 단일 정리 10
-    # relay/프로필을 못 읽으면 기본 최대 2회가 wall 전부를 쓰는 안전 상한으로 낮게 예고하지 않는다.
-    monkeypatch.setattr(pd, "_load_relay", lambda: (_ for _ in ()).throw(OSError("no relay")))
+    # 노브를 못 읽으면 기본 최대 2회가 wall 전부를 쓰는 안전 상한으로 낮게 예고하지 않는다.
+    monkeypatch.setattr(watchdog, "stall_retries_default",
+                        lambda: (_ for _ in ()).throw(OSError("no knob")))
     assert pd._harness_timeout_budget("opencode", 600) == 1830
 
 
 def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch):
     """정적 하네스 상한 좌변은 단일 wall 이 아니라 primary+fallback 두 시도의 최악이다."""
-    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeStallKnobs(
-        retries=2, first_event_timeout=90.0))
-    # _FakeStallKnobs 는 HARNESS_PROFILES 를 _RelayStub 에서 실 relay 로 위임한다.
+    _FakeStallKnobs(
+        retries=2, first_event_timeout=90.0).install(monkeypatch)
+    # HARNESS_PROFILES 는 실 watchdog 선언을 그대로 쓴다.
     assert pd.max_declared_execution_path_budget() == 2 * (14400 + 2 * 90 + 3 * 10)
 
 
@@ -4754,8 +4736,7 @@ def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
 
 def test_runtime_harness_cap_table_matches_session_markers(pd):
     """상한 표는 모든 세션 감지 축을 빠짐없이 명시한다."""
-    relay = pd._load_relay()
-    assert set(relay.HARNESS_CAP_ENV) == set(relay.HARNESS_SESSION_MARKERS)
+    assert set(watchdog.HARNESS_CAP_ENV) == set(watchdog.HARNESS_SESSION_MARKERS)
 
 
 def _harness_cap_pairs(pd, env):
@@ -4764,7 +4745,7 @@ def _harness_cap_pairs(pd, env):
     엔진은 이 짝을 따로 만들지 않는다(`harness_cap_advisory` 가 문장으로 직접 낸다) —
     단언을 값으로 대조하기 위한 테스트 지역 조립이다.
     """
-    cap_env = pd._load_relay().HARNESS_CAP_ENV
+    cap_env = watchdog.HARNESS_CAP_ENV
     return tuple((name, cap_env.get(name)) for name in pd._session_harnesses(env))
 
 
@@ -4799,11 +4780,9 @@ def test_runtime_harness_cap_accepts_secondary_opencode_session_marker(pd):
 
 def test_runtime_harness_cap_unknown_marker_is_never_blocking(pd, monkeypatch):
     """상한 표보다 세션 마커가 먼저 늘어나도 조회 실패로 위임을 막지 않는다."""
-    relay = pd._load_relay()
-    relay.HARNESS_SESSION_MARKERS = {
-        **relay.HARNESS_SESSION_MARKERS, "gemini": ("GEMINI_SESSION",),
-    }
-    monkeypatch.setattr(pd, "_load_relay", lambda: relay)
+    monkeypatch.setattr(watchdog, "HARNESS_SESSION_MARKERS", {
+        **watchdog.HARNESS_SESSION_MARKERS, "gemini": ("GEMINI_SESSION",),
+    })
     env = {"GEMINI_SESSION": "session"}
 
     assert _harness_cap_pairs(pd, env) == (("gemini", None),)
@@ -4826,8 +4805,8 @@ def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
 
 def test_dry_run_budget_reflects_opencode_watchdog_retries(pd, monkeypatch, tmp_path, capsys):
     """opencode primary 형상은 재시도 창을 반영한 예산을 찍는다(2×timeout 표기는 거짓·codex R2)."""
-    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeStallKnobs(retries=2,
-                                                                   first_event_timeout=90.0))
+    _FakeStallKnobs(retries=2,
+                                                                   first_event_timeout=90.0).install(monkeypatch)
     conf = _fallback_conf(**{"delegate.developer.harness": "opencode",
                              "delegate.developer.model": "prov/m"})
     prompt = _write_prompt(tmp_path)
@@ -5766,10 +5745,10 @@ def test_spawn_stage_errors_still_classified_as_launch(pd, exc):
 def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
     """실 드라이버: 스폰 후 실행-중 OSError → 미분류 실패(rc=1·폴백 금지).
 
-    잔존 프로세스 정리(그룹 kill)는 T-0489 이후 워치독 소관이다 — pm_relay 가 드레인 OSError 를
+    잔존 프로세스 정리(그룹 kill)는 T-0489 이후 워치독 소관이다 — watchdog 이 드레인 OSError 를
     잡아 kill 후 재전파한다(tests/test_idle_progress_watchdog.py 가 단언)."""
     broken = OSError(32, "Broken pipe")
-    monkeypatch.setattr(pd, "_load_relay", lambda: _FakeRelayWatchdog(broken))
+    _FakeRelayWatchdog(broken).install(monkeypatch)
     res = pd._default_run_fn(["codex"], stdin_text="x", cwd="/tmp", env={}, timeout=5,
                              harness="codex")
     assert res["returncode"] == 1 and pd.RUN_RESULT_LAUNCH_FAILED not in res
@@ -5971,8 +5950,7 @@ def _seed_t0650_raw(
         ),
         encoding="utf-8",
     )
-    relay = pd._load_relay()
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         output_dir / "raw_outputs.json",
         surface=pd.DELEGATE_RAW_SURFACE,
         harness="codex",
@@ -5984,7 +5962,7 @@ def _seed_t0650_raw(
         extra={pd.RESUME_FIELD_TICKET: ticket},
     )
     if completed:
-        relay.finish_raw_record(
+        raw_output.finish_raw_record(
             output_dir / "raw_outputs.json",
             record_id,
             rc=0,
@@ -6090,7 +6068,7 @@ def test_t0650_cold_write_role_matrix_uses_real_ledger(
         assert "cold 재투입 거부" not in captured.err
         assert len(fake.calls) == 1
     if fresh_reason is not None:
-        rows = pd._load_relay().raw_records(output_dir / "raw_outputs.json")
+        rows = raw_output.raw_records(output_dir / "raw_outputs.json")
         assert sum(
             row.get(pd.FRESH_REASON_FIELD) == fresh_reason for row in rows
         ) == 1
@@ -6244,8 +6222,7 @@ def test_t0650_codex_resume_and_attach_raw_share_json_stdin_pipeline(
 
 def test_t0650_codex_resume_capability_and_argv_are_measured_contract(pd):
     """[C] 0.147.0 실측 선언표와 exec resume JSONL/stdin argv를 단위 가드한다."""
-    relay = pd._load_relay()
-    assert relay.HARNESS_RESUME_SUPPORT == {
+    assert contract.HARNESS_RESUME_SUPPORT == {
         "claude": True, "codex": True, "opencode": False,
     }
     argv = pd.build_codex_argv(
@@ -6255,8 +6232,8 @@ def test_t0650_codex_resume_capability_and_argv_are_measured_contract(pd):
     assert argv.index("-C") < argv.index("exec")
     assert argv[argv.index("exec"):argv.index("exec") + 2] == ["exec", "resume"]
     assert "--json" in argv and argv[-2:] == [_T0650_SESSION, "-"]
-    with pytest.raises(relay.HarnessContractError, match="세션 id 형식"):
-        relay.build_codex_argv(
+    with pytest.raises(contract.HarnessContractError, match="세션 id 형식"):
+        contract.build_codex_argv(
             "gpt-x", None, "developer", "/workspace", "--not-a-session",
         )
 
@@ -6365,7 +6342,7 @@ def test_t0650_live_codex_exec_resume_json_round_trip(pd, tmp_path):
         check=False,
     )
     assert fresh.returncode == 0, fresh.stderr
-    session_id, first_reply, _usage = pd._load_relay().parse_codex_json(
+    session_id, first_reply, _usage = contract.parse_codex_json(
         fresh.stdout.splitlines()
     )
     assert session_id and "T0650_LIVE_CODE" in (first_reply or "")
@@ -6379,7 +6356,7 @@ def test_t0650_live_codex_exec_resume_json_round_trip(pd, tmp_path):
         check=False,
     )
     assert resumed.returncode == 0, resumed.stderr
-    resumed_id, reply, _usage = pd._load_relay().parse_codex_json(
+    resumed_id, reply, _usage = contract.parse_codex_json(
         resumed.stdout.splitlines()
     )
     assert resumed_id == session_id

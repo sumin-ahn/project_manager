@@ -1,8 +1,7 @@
 """identity_args — 공용 정체성 인자 모듈 단위테스트 (T-0322 · ADR-0057).
 
-엔진 canonical(루트 `.project_manager/tools/identity_args.py`)을 importlib 로 직접 로드해
-검증한다(도구는 패키지가 아니므로 `spec_from_file_location` 관용구 — 기존 test_pm_bootstrap_*
-동류). 두 층을 각각 hermetic 하게 검증한다:
+엔진 패키지의 `pm_engine.domain.identity_args`(순수 인자 층)와 `pm_engine.infra.lease_store`
+(리스 IO 층)를 import 해 검증한다. 두 층을 각각 hermetic 하게 검증한다:
 
   - **순수 인자 층**: `add_identity_args`·`parse_identity` — 파일 IO 0. 실 argparse 로 파싱한
     `Namespace` 를 넣어 discriminated `Identity` 해소 규칙 전수(slot/repo/none/fail-loud)를 본다.
@@ -18,12 +17,14 @@ import json
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import identity_args
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 
-def _load(name: str = "identity_args"):
+def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -32,7 +33,7 @@ def _load(name: str = "identity_args"):
 
 @pytest.fixture(scope="module")
 def ia():
-    return _load()
+    return identity_args
 
 
 def _write_leases(path: Path, entries: list[dict]) -> None:
@@ -175,7 +176,7 @@ def test_leased_sessions_returns_only_leased_state(ia, tmp_path):
         {"slot": "work/A_2", "repo": "A", "session": "A_2", "state": "idle"},
         {"slot": "work/B_1", "repo": "B", "session": "B_1", "state": "leased"},
     ])
-    assert ia.leased_sessions(leases) == ["A_1", "B_1"]
+    assert lease_store.leased_sessions(leases) == ["A_1", "B_1"]
 
 
 def test_leased_sessions_excludes_empty_or_missing_session(ia, tmp_path):
@@ -184,7 +185,7 @@ def test_leased_sessions_excludes_empty_or_missing_session(ia, tmp_path):
         {"slot": "work/A_1", "repo": "A", "session": "", "state": "leased"},
         {"slot": "work/A_2", "repo": "A", "state": "leased"},  # session 키 부재
     ])
-    assert ia.leased_sessions(leases) == []
+    assert lease_store.leased_sessions(leases) == []
 
 
 def test_leased_sessions_missing_state_key_is_excluded(ia, tmp_path):
@@ -194,23 +195,23 @@ def test_leased_sessions_missing_state_key_is_excluded(ia, tmp_path):
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "A_1"},  # state 키 없음
     ])
-    assert ia.leased_sessions(leases) == []
+    assert lease_store.leased_sessions(leases) == []
 
 
 def test_leased_sessions_missing_file_returns_empty(ia, tmp_path):
-    assert ia.leased_sessions(tmp_path / "absent.json") == []
+    assert lease_store.leased_sessions(tmp_path / "absent.json") == []
 
 
 def test_leased_sessions_corrupt_json_returns_empty(ia, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     leases.write_text("{not valid json", encoding="utf-8")
-    assert ia.leased_sessions(leases) == []
+    assert lease_store.leased_sessions(leases) == []
 
 
 def test_leased_sessions_schema_mismatch_returns_empty(ia, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     leases.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
-    assert ia.leased_sessions(leases) == []
+    assert lease_store.leased_sessions(leases) == []
 
 
 # ── repo_slot_numbers — pm_bootstrap `_repo_slot_numbers` 흡수 ───────────────
@@ -223,7 +224,7 @@ def test_repo_slot_numbers_dedup_and_sorted(ia, tmp_path):
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},  # 중복
     ])
-    assert ia.repo_slot_numbers("A", leases) == [1, 2]
+    assert lease_store.repo_slot_numbers("A", leases) == [1, 2]
 
 
 def test_repo_slot_numbers_filters_other_repo(ia, tmp_path):
@@ -232,7 +233,7 @@ def test_repo_slot_numbers_filters_other_repo(ia, tmp_path):
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "B_1", "state": "leased"},
     ])
-    assert ia.repo_slot_numbers("A", leases) == [1]
+    assert lease_store.repo_slot_numbers("A", leases) == [1]
 
 
 def test_repo_slot_numbers_excludes_idle(ia, tmp_path):
@@ -241,7 +242,7 @@ def test_repo_slot_numbers_excludes_idle(ia, tmp_path):
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
         {"slot": "work/A_2", "repo": "A", "session": "A_2", "state": "idle"},
     ])
-    assert ia.repo_slot_numbers("A", leases) == [1]
+    assert lease_store.repo_slot_numbers("A", leases) == [1]
 
 
 def test_repo_slot_numbers_missing_state_key_defaults_leased(ia, tmp_path):
@@ -250,7 +251,7 @@ def test_repo_slot_numbers_missing_state_key_defaults_leased(ia, tmp_path):
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "A_1"},  # state 키 없음
     ])
-    assert ia.repo_slot_numbers("A", leases) == [1]
+    assert lease_store.repo_slot_numbers("A", leases) == [1]
 
 
 def test_repo_slot_numbers_no_match_returns_empty_list(ia, tmp_path):
@@ -259,23 +260,23 @@ def test_repo_slot_numbers_no_match_returns_empty_list(ia, tmp_path):
     _write_leases(leases, [
         {"slot": "work/B_1", "repo": "B", "session": "B_1", "state": "leased"},
     ])
-    assert ia.repo_slot_numbers("A", leases) == []
+    assert lease_store.repo_slot_numbers("A", leases) == []
 
 
 def test_repo_slot_numbers_missing_file_returns_none(ia, tmp_path):
-    assert ia.repo_slot_numbers("A", tmp_path / "absent.json") is None
+    assert lease_store.repo_slot_numbers("A", tmp_path / "absent.json") is None
 
 
 def test_repo_slot_numbers_corrupt_json_returns_none(ia, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     leases.write_text("{not valid json", encoding="utf-8")
-    assert ia.repo_slot_numbers("A", leases) is None
+    assert lease_store.repo_slot_numbers("A", leases) is None
 
 
 def test_repo_slot_numbers_schema_mismatch_returns_none(ia, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     leases.write_text(json.dumps({"leases": "not-a-list"}), encoding="utf-8")
-    assert ia.repo_slot_numbers("A", leases) is None
+    assert lease_store.repo_slot_numbers("A", leases) is None
 
 
 # ── F6 작업공간 2단 해소 — resolve_task_workspace (T-0355·spike §3b F6·결정 ⑦) ──────
@@ -285,7 +286,7 @@ def test_repo_slot_numbers_schema_mismatch_returns_none(ia, tmp_path):
 
 
 def _tw(ia, argv: list[str], leases: Path):
-    return ia.resolve_task_workspace(ia.parse_identity(_parse(ia, argv)), leases)
+    return lease_store.resolve_task_workspace(ia.parse_identity(_parse(ia, argv)), leases)
 
 
 def test_f6_none_unique_holding_auto_resolves(ia, tmp_path):
@@ -447,10 +448,10 @@ def test_task_prefix_reads_from_tasks_collection(ia, tmp_path):
         "leases": [],
         "tasks": [{"name": "job1", "prefix": "PAY"}, {"name": "job2", "prefix": None}],
     }), encoding="utf-8")
-    assert ia.task_prefix("job1", leases) == "PAY"
-    assert ia.task_prefix("job2", leases) is None      # 미설정
-    assert ia.task_prefix("absent", leases) is None    # 없는 task
-    assert ia.task_prefix("job1", tmp_path / "absent.json") is None  # 장부 부재 fail-soft
+    assert lease_store.task_prefix("job1", leases) == "PAY"
+    assert lease_store.task_prefix("job2", leases) is None      # 미설정
+    assert lease_store.task_prefix("absent", leases) is None    # 없는 task
+    assert lease_store.task_prefix("job1", tmp_path / "absent.json") is None  # 장부 부재 fail-soft
 
 
 # ── validate_task_name — CLI 층 공유 validator (T-0355 게이트 must-fix·깔때기 검증) ──
@@ -496,7 +497,7 @@ def test_t0929_workspace_selects_owned_coordinate(ia, tmp_path, argv, expected):
         {'slot': 'work/A_5', 'repo': 'A', 'session': 'main'},
         {'slot': 'work/B_1', 'repo': 'B', 'session': 'main'},
     ])
-    ws = ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', *argv])), leases)
+    ws = lease_store.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', *argv])), leases)
     assert (ws.slot, ws.session, ws.readonly) == (expected, 'main', False)
 
 
@@ -511,7 +512,7 @@ def test_t0929_workspace_rejects_invalid_join(ia, tmp_path, change):
     _write_leases(leases, [row])
     ident = ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5']))
     with pytest.raises(ia.WorkspaceResolutionError):
-        ia.resolve_task_workspace(ident, leases)
+        lease_store.resolve_task_workspace(ident, leases)
 
 
 @pytest.mark.parametrize('argv', [[], ['--repo', 'A']])
@@ -520,7 +521,7 @@ def test_t0929_workspace_ambiguity_preserves_leases(ia, tmp_path, argv):
     _write_leases(leases, [{'slot': f'work/A_{n}', 'repo': 'A', 'session': 'main'} for n in (1, 5)])
     before = leases.read_bytes()
     with pytest.raises(ia.WorkspaceResolutionError) as exc:
-        ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', *argv])), leases)
+        lease_store.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', *argv])), leases)
     assert '--slot' in str(exc.value)
     assert '반납' not in str(exc.value)
     assert leases.read_bytes() == before
@@ -530,7 +531,7 @@ def test_t0929_workspace_ambiguity_preserves_leases(ia, tmp_path, argv):
 def test_t0929_workspace_readonly_reference_retains_role(ia, tmp_path, owner):
     leases = tmp_path / 'leases.json'
     _write_leases(leases, [{'slot': 'work/A_5', 'repo': 'A', 'session': owner, 'role': 'readonly'}])
-    ws = ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+    ws = lease_store.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
     assert ws.readonly is True
 
 
@@ -538,13 +539,13 @@ def test_t0929_workspace_conflicting_owners_are_not_first_row(ia, tmp_path):
     leases = tmp_path / 'leases.json'
     _write_leases(leases, [{'slot': 'work/A_5', 'repo': 'A', 'session': owner} for owner in ('main', 'other')])
     with pytest.raises(ia.WorkspaceResolutionError):
-        ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+        lease_store.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
 
 
 def test_t0929_workspace_windows_notation_is_same_coordinate(ia, tmp_path):
     leases = tmp_path / 'leases.json'
     _write_leases(leases, [{'slot': 'work\\A_5\\', 'repo': 'A', 'session': 'main'}])
-    ws = ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+    ws = lease_store.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
     assert (ws.slot, ws.repo, ws.session) == ('work/A_5', 'A', 'main')
 
 
@@ -553,7 +554,7 @@ def test_t0929_workspace_inactive_readonly_is_not_a_reference(ia, tmp_path, stat
     leases = tmp_path / 'leases.json'
     _write_leases(leases, [{'slot': 'work/A_5', 'repo': 'A', 'session': '', 'role': 'readonly', 'state': state}])
     with pytest.raises(ia.WorkspaceResolutionError):
-        ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+        lease_store.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
 
 
 def test_t0962_identity_has_no_session_and_slot_helpers_are_gone(ia):

@@ -33,6 +33,8 @@ import types
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import review_rounds
+from pm_engine.infra.harness import watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -124,66 +126,12 @@ def test_build_prompt_preserves_legacy_positional_argument_order(
 # ── PM 하네스 세션 마커 / 호출층 상한 진단 ──────────────────────────────────
 
 
-def test_harness_session_marker_table_matches_relay_source(external):
-    """세 표면의 상한 판정 입력 표는 relay 단일 선언을 그대로 참조한다."""
-    delegate = _load("pm_delegate")
-    relay = _load("pm_relay")
-    external_relay = external._load_relay()
-    delegate_relay = delegate._load_relay()
-    assert relay.HARNESS_SESSION_MARKERS == external_relay.HARNESS_SESSION_MARKERS == \
-        delegate_relay.HARNESS_SESSION_MARKERS
-    assert relay.HARNESS_CAP_ENV == external_relay.HARNESS_CAP_ENV == \
-        delegate_relay.HARNESS_CAP_ENV
-    assert set(external_relay.HARNESS_CAP_ENV) == set(external_relay.HARNESS_SESSION_MARKERS)
-    assert set(delegate_relay.HARNESS_CAP_ENV) == set(delegate_relay.HARNESS_SESSION_MARKERS)
-    assert external_relay.HARNESS_CAP_ENV == delegate_relay.HARNESS_CAP_ENV
-    def assert_prefilter_coverage(marker_table):
-        declared_markers = {
-            marker
-            for markers in marker_table.values()
-            for marker in markers
-        }
-        assert all(external._is_possible_harness_session_key(marker)
-                   for marker in declared_markers)
-
-    assert_prefilter_coverage(relay.HARNESS_SESSION_MARKERS)
-    with pytest.raises(AssertionError):
-        assert_prefilter_coverage({
-            **relay.HARNESS_SESSION_MARKERS,
-            "future": ("GEMINI_SESSION",),
-        })
-
-
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
                                   "OPENCODE_CONFIG_DIR"))
 def test_harness_cap_advisory_ignores_config_and_unmeasured_keys(external, key):
     """설정 경로와 세션 근거 없는 키만으로는 호출층 상한 안내를 내지 않는다."""
     assert external.harness_cap_advisory(
         {key: "configured"}, execution_budget=10,
-    ) is None
-
-
-def test_harness_cap_advisory_does_not_load_relay_without_session_marker(monkeypatch):
-    """비하네스 셸은 advisory 계산/로더 실패 표면을 만들지 않고 즉시 반환한다."""
-    spec = importlib.util.spec_from_file_location(
-        "additional_reviewer_no_relay", TOOLS / "additional_reviewer.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    real_spec_from_file_location = importlib.util.spec_from_file_location
-
-    def reject_relay(name, location, *args, **kwargs):
-        if Path(location).name == "pm_relay.py":
-            raise AssertionError("relay must not load")
-        return real_spec_from_file_location(name, location, *args, **kwargs)
-
-    monkeypatch.setattr(importlib.util, "spec_from_file_location", reject_relay)
-    spec.loader.exec_module(module)
-    monkeypatch.setattr(
-        module, "_load_relay",
-        lambda: (_ for _ in ()).throw(AssertionError("relay must not load")),
-    )
-    assert module.harness_cap_advisory(
-        {"OPENCODE_CONFIG_DIR": "/config"}, execution_budget=10,
     ) is None
 
 
@@ -227,44 +175,36 @@ def test_timeout_output_routes_through_shared_partial_formatter(external, monkey
         def format_partial_output(head, exc):
             return f"shared:{head}:{exc.output}"
 
-    monkeypatch.setattr(external, "_load_relay", lambda: Relay())
+    monkeypatch.setattr(watchdog, "format_partial_output", Relay.format_partial_output)
     exc = subprocess.TimeoutExpired(["reviewer"], 1, output="partial")
     assert external._timeout_output(1, exc).endswith(":partial")
 
 
-@pytest.mark.parametrize("failure", (RuntimeError("loader"), ValueError("formatter")))
+@pytest.mark.parametrize("failure", (ValueError("formatter"),))
 def test_timeout_output_keeps_head_when_partial_formatter_fails(
         external, monkeypatch, failure):
-    """이미 timeout인 리뷰는 relay 로더·포맷터 실패로 CLI 밖으로 튀지 않는다."""
-    if isinstance(failure, RuntimeError):
-        monkeypatch.setattr(external, "_load_relay", lambda: (_ for _ in ()).throw(failure))
-    else:
-        class BrokenRelay:
-            @staticmethod
-            def format_partial_output(head, exc):
-                raise failure
-        monkeypatch.setattr(external, "_load_relay", lambda: BrokenRelay())
+    """이미 timeout인 리뷰는 포맷터 실패로 CLI 밖으로 튀지 않는다."""
+    class BrokenRelay:
+        @staticmethod
+        def format_partial_output(head, exc):
+            raise failure
+    monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
     exc = subprocess.TimeoutExpired(["reviewer"], 1, output="partial")
     assert external._timeout_output(1, exc).startswith("[리뷰어 타임아웃")
 
 
-@pytest.mark.parametrize("failure_site", ("loader", "formatter"))
+@pytest.mark.parametrize("failure_site", ("formatter",))
 def test_timeout_output_reraises_engine_rev_skew(external, monkeypatch, failure_site):
     """rev skew는 기존 loud 계약대로 timeout 포맷 경로에서도 숨기지 않는다."""
     skew = RuntimeError("skew")
     skew._engine_rev_skew = True
-    if failure_site == "loader":
-        monkeypatch.setattr(
-            external, "_load_relay",
-            lambda: (_ for _ in ()).throw(skew),
-        )
-    else:
-        class BrokenRelay:
-            @staticmethod
-            def format_partial_output(head, exc):
-                raise skew
 
-        monkeypatch.setattr(external, "_load_relay", lambda: BrokenRelay())
+    class BrokenRelay:
+        @staticmethod
+        def format_partial_output(head, exc):
+            raise skew
+
+    monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
     with pytest.raises(RuntimeError, match="skew"):
         external._timeout_output(1, subprocess.TimeoutExpired(["reviewer"], 1))
 
@@ -1057,7 +997,7 @@ def test_save_ledger_uses_unique_tmp_names(external, tmp_path, monkeypatch):
     # 장부는 review_rounds 가, shell 소비 잔여 표식은 board 가 각자 자기 seam 으로 교체한다 —
     # 두 지점 모두 건다. `_load_board` 는 호출마다 새 모듈을 만들므로 인스턴스를 고정한 뒤 건다
     # (고정하지 않으면 두 번째 저장이 패치 안 된 새 모듈로 쓴다).
-    _patch_atomic_replace(monkeypatch, external._load_review_rounds(), capture)
+    _patch_atomic_replace(monkeypatch, review_rounds, capture)
     board = external._load_board()
     monkeypatch.setattr(external, "_load_board", lambda: board)
     _patch_atomic_replace(monkeypatch, board, capture)
@@ -1974,9 +1914,9 @@ def test_rounds_report_numbers_rounds_by_reservation_sequence(external):
 
 # ── 스폰 경계 seam: 소유권 이전은 **자식 생성 직전** 한 자리 (T-0590 R3) ─────
 #
-# 소유권 이전이 러너 **호출** 직전에 있으면, 러너 안의 준비 구간(relay 로드·프로필 해소·워치독
+# 소유권 이전이 러너 **호출** 직전에 있으면, 러너 안의 준비 구간(프로필 해소·워치독
 # 셋업)과 exec 실패가 전부 "이미 넘긴 뒤"가 된다 — 스폰 0·호출 0 인 실행이 라운드/wave 예산을
-# 먹고, 상한 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 relay 워치독이
+# 먹고, 상한 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 watchdog 워치독이
 # `Popen` 을 부르기 한 줄 앞이고, 그 앞의 실패와 확정 기동 실패는 started=False 다.
 
 # 확정 기동 실패 표 — exec 자체가 실패해 자식이 뜬 적 없는 예외들(호출 0·과금 0).
@@ -1995,7 +1935,7 @@ def _codex_reply_wire(reply: str = _PASS_REPLY) -> str:
     """codex 구조화 wire(JSONL) 대역 — 최종 회신을 agent_message 이벤트로 싣는다.
 
     해소된 리뷰어 대상은 구조화 transport 라 stdout 이 하네스 wire 로 읽힌다
-    (`pm_relay.extract_harness_reply`). 평문을 그대로 두면 회신 미추출로 판정이 실패 축에 떨어져,
+    (`contract.extract_harness_reply`). 평문을 그대로 두면 회신 미추출로 판정이 실패 축에 떨어져,
     라운드 장부·예산을 보는 단언이 상한이 아니라 파싱 때문에 흔들린다."""
     events = [
         {"type": "thread.started", "thread_id": "t-1"},
@@ -2058,7 +1998,7 @@ def test_relay_marked_post_spawn_failure_stays_conservative(external):
     """`Popen` **성공 뒤**의 실패는 같은 예외 종류여도 started=True 로 남는다.
 
     종류만 보면 자식이 떴다 죽은 실행까지 환불 대상이 된다 — 그건 프롬프트가 이미 나간 실행이라
-    상한 무한 우회로 이어진다. relay 표식이 종류 판정을 이긴다.
+    상한 무한 우회로 이어진다. watchdog 표식이 종류 판정을 이긴다.
     """
     marked = PermissionError("정리 중 권한 오류")
     marked.spawn_failed = False
@@ -2070,7 +2010,7 @@ def test_relay_marked_post_spawn_failure_stays_conservative(external):
 def test_preparation_failure_before_the_boundary_is_started_false(external):
     """러너 안의 **준비 구간**(콜백 전) 실패는 자식이 없었다는 사실이 확정 — started=False."""
     handoffs = []
-    runner = _spawn_boundary_runner(raise_before=RuntimeError("relay 로드 실패"))
+    runner = _spawn_boundary_runner(raise_before=RuntimeError("프로필 해소 실패"))
     ok, out, started = external._run_reviewer_ex(
         "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
     assert (ok, started) == (False, False)
@@ -2131,20 +2071,15 @@ def test_legacy_runner_gets_the_callback_before_the_call_without_the_keyword(ext
 
 
 def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, monkeypatch):
-    """기본 러너는 콜백을 relay 공용 워치독까지 그대로 내려보낸다(경계 소유자 = relay)."""
+    """기본 러너는 콜백을 watchdog 공용 워치독까지 그대로 내려보낸다(경계 소유자 = watchdog)."""
     seen = {}
-    real_relay = external._load_relay()
 
-    class _Relay:
-        def __getattr__(self, name):
-            return getattr(real_relay, name)   # 선언 테이블·해소기는 실 relay 그대로.
+    def run_with_first_event_watchdog(argv, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="",
+                                           stderr="")
 
-        def run_with_first_event_watchdog(self, argv, **kw):
-            seen.update(kw)
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="",
-                                               stderr="")
-
-    monkeypatch.setattr(external, "_load_relay", lambda: _Relay())
+    monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     sentinel = object()
     external._watchdog_reviewer_run(
         ["codex"], input="p", timeout=5, on_spawn_attempt=sentinel)
@@ -2153,7 +2088,7 @@ def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, m
 
 # ── seam 오류(TypeError) 분기의 표식 우선순위 (T-0590 R4 추가 리뷰어 4차) ──────
 #
-# `_run_reviewer_ex` 의 TypeError 전용 분기는 relay 표식을 보지 않고 스폰 경계 위치만 봤다. 같은
+# `_run_reviewer_ex` 의 TypeError 전용 분기는 watchdog 표식을 보지 않고 스폰 경계 위치만 봤다. 같은
 # 예외 종류가 경계 앞뒤 어디서든 올라올 수 있으므로 그 위치 추정은 두 방향으로 다 틀린다 —
 # 표식 True 인데 경계를 지났으면 호출 0 인 실행이 예산을 먹고, 표식 False 인데 콜백이 아직 안
 # 돌았으면 이미 나간 호출이 환불된다. 우선순위는 한 줄이다: 표식 True→started False,
@@ -2161,7 +2096,7 @@ def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, m
 
 
 def _marked(exc: BaseException, spawn_failed: bool) -> BaseException:
-    """relay 가 스폰 경계에서 붙이는 그 표식을 그대로 얹는다(테스트 픽스처)."""
+    """watchdog 이 스폰 경계에서 붙이는 그 표식을 그대로 얹는다(테스트 픽스처)."""
     exc.spawn_failed = spawn_failed
     return exc
 
@@ -2170,7 +2105,7 @@ def test_seam_typeerror_marked_no_child_is_started_false(external):
     """경계 콜백이 돈 뒤 올라온 TypeError 라도 표식이 '자식 없음'이면 started=False (환불)."""
     handoffs = []
     runner = _spawn_boundary_runner(
-        raise_after=_marked(TypeError("relay 가 fork 전에 거절"), True))
+        raise_after=_marked(TypeError("watchdog 이 fork 전에 거절"), True))
     ok, out, started = external._run_reviewer_ex(
         "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
     assert (ok, started) == (False, False), "표식(자식 없음)을 무시하고 경계 위치로 판정했다"
@@ -2298,12 +2233,12 @@ def test_preparation_failure_before_popen_spends_no_budget(
 
 
 def test_marked_no_child_seam_error_spends_no_budget(external, monkeypatch, tmp_path):
-    """relay 가 '자식 없음'으로 표식한 seam 오류는 라운드·wave 예산을 먹지 않는다(환불 도달).
+    """watchdog 이 '자식 없음'으로 표식한 seam 오류는 라운드·wave 예산을 먹지 않는다(환불 도달).
 
     분기 반환값이 아니라 장부까지 본다 — 표식을 무시하던 TypeError 분기는 여기서 예산을 태워
     상한 1 형상의 다음 정상 호출을 rc=4 로 막았다."""
     failing = _spawn_boundary_runner(
-        raise_after=_marked(TypeError("relay 가 fork 전에 거절"), True))
+        raise_after=_marked(TypeError("watchdog 이 fork 전에 거절"), True))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
     gate = ["--gate", "T-9004", "--paths", "x.py"]

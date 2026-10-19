@@ -6,7 +6,7 @@
 :func:`out_of_scope_changes`와 :func:`format_warning`을 사용한다.
 
 Ticket ``touches``는 PM-home 좌표일 수 있으므로 비교 전에 반드시 공용
-``repo_coordinates.py`` normalizer를 거친다. 읽기 전용 역할과 빈 ``touches``는 허용 경로가
+``pm_engine.infra.repo_coordinates`` normalizer를 거친다. 읽기 전용 역할과 빈 ``touches``는 허용 경로가
 0개다. 항상-허용 예외는 두지 않는다. ``.project_manager/.local/`` 같은 런타임 상태는 gitignore가
 이미 status 입력에서 제외하며, 여기서 다시 광역 예외를 만들면 실제 stray 산출물까지 숨길 수 있다.
 """
@@ -24,7 +24,7 @@ from typing import NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import repo_files  # noqa: E402
+from pm_engine.infra import repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -371,19 +371,6 @@ def _signal_differs(before: dict[str, str], after: dict[str, str], path: str) ->
             and before_value != after_value)
 
 
-def _load_repo_coordinates(tools_dir: Path):
-    path = tools_dir / "repo_coordinates.py"
-    try:
-        module = _load_module_from_path(
-            path, "repo_coordinates.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — 좌표 판정 불능은 조용히 허용하면 안 된다.
-        if _is_engine_rev_skew(exc):
-            raise
-        raise DelegateScopeError(f"repo 좌표 normalizer 로드 실패: {path}: {exc}") from exc
-    return module
-
-
 def ticket_touches(
     board_py: Path | str,
     ticket_id: str,
@@ -463,9 +450,7 @@ def allowed_paths(
     if role not in roles or not touches:   # 쓰기 역할이 아니면 허용 0(신규 역할 = 안전 방향)
         return ALWAYS_ALLOWED_PATHS
 
-    coords = coordinates_module or _load_repo_coordinates(
-        Path(__file__).resolve().parent
-    )
+    coords = coordinates_module or repo_coordinates
     canonical: set[str] = set()
     for item in touches:
         try:

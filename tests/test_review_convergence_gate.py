@@ -26,6 +26,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import review_rounds
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -353,7 +354,7 @@ def test_inflight_reservation_counts_toward_the_convergence_cap(external, tmp_pa
         (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
             encoding="utf-8"))
     entry = external._gate_entry(ledger, "g")
-    assert external._load_review_rounds().inflight_reservations(entry) == 1
+    assert review_rounds.inflight_reservations(entry) == 1
     assert external._convergence_round_usage(entry) == (2, 1)
     assert external._convergence_refusal(entry, 3) == external.CONVERGENCE_CAP_UNRESOLVED
 
@@ -399,11 +400,11 @@ def test_fresh_reservation_counts_but_a_timed_out_one_does_not(external, tmp_pat
         return external._gate_entry(ledger, "g")
 
     fresh = _entry(5)
-    assert external._load_review_rounds().inflight_reservations(fresh, wall_timeout_sec=3600) == 1
+    assert review_rounds.inflight_reservations(fresh, wall_timeout_sec=3600) == 1
     stale = _entry(3600 + 60)
-    assert external._load_review_rounds().inflight_reservations(stale, wall_timeout_sec=3600) == 0
+    assert review_rounds.inflight_reservations(stale, wall_timeout_sec=3600) == 0
     # 백스톱을 안 넘기면 종전대로 전부 센다(회수는 시간 조건 하나뿐).
-    assert external._load_review_rounds().inflight_reservations(stale) == 1
+    assert review_rounds.inflight_reservations(stale) == 1
 
 
 def test_timed_out_reservation_does_not_lock_the_convergence_axis(
@@ -437,7 +438,7 @@ def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_p
     assert external.main(["--gate", "T-0602h", "--paths", "x.py"]) == 1
 
     entry = _ledger(tmp_path)["T-0602h"]
-    assert external._load_review_rounds().inflight_reservations(external._gate_entry({"g": entry}, "g")) == 0
+    assert review_rounds.inflight_reservations(external._gate_entry({"g": entry}, "g")) == 0
     reviewer = _Reviewer([1])
     monkeypatch.setattr(external, "run_review", reviewer)
     assert external.main(["--gate", "T-0602h", "--paths", "x.py"]) == 1   # 여전히 열려 있다
@@ -478,7 +479,7 @@ def test_a_short_caller_timeout_does_not_expire_a_long_running_reservation(exter
     이 오판이 곧 상한 초과 예약이다 — 실제로 나가 있는 호출을 0으로 세고 슬롯을 다시 내준다."""
     entry = _inflight_entry(deadline=_ahead(3600), started_at=_ago(600))
 
-    assert external._load_review_rounds().inflight_reservations(entry, wall_timeout_sec=60) == 1
+    assert review_rounds.inflight_reservations(entry, wall_timeout_sec=60) == 1
     assert external._convergence_refusal(entry, 1, wall_timeout_sec=60) is not None
 
 
@@ -486,7 +487,7 @@ def test_an_expired_deadline_is_reclaimed_even_with_a_long_caller_timeout(extern
     """반대 방향도 레코드가 이긴다 — 만료 시각을 지난 예약은 호출자 백스톱과 무관하게 회수된다."""
     entry = _inflight_entry(deadline=_ago(1), started_at=_ago(30))
 
-    assert external._load_review_rounds().inflight_reservations(entry, wall_timeout_sec=3600 * 24) == 0
+    assert review_rounds.inflight_reservations(entry, wall_timeout_sec=3600 * 24) == 0
 
 
 def test_a_legacy_record_without_a_deadline_keeps_the_previous_rule(external):
@@ -494,9 +495,9 @@ def test_a_legacy_record_without_a_deadline_keeps_the_previous_rule(external):
     fresh = _inflight_entry(deadline=None, started_at=_ago(5))
     stale = _inflight_entry(deadline=None, started_at=_ago(3600 + 60))
 
-    assert external._load_review_rounds().inflight_reservations(fresh, wall_timeout_sec=3600) == 1
-    assert external._load_review_rounds().inflight_reservations(stale, wall_timeout_sec=3600) == 0
-    assert external._load_review_rounds().inflight_reservations(stale) == 1        # 백스톱 없으면 전부 센다
+    assert review_rounds.inflight_reservations(fresh, wall_timeout_sec=3600) == 1
+    assert review_rounds.inflight_reservations(stale, wall_timeout_sec=3600) == 0
+    assert review_rounds.inflight_reservations(stale) == 1        # 백스톱 없으면 전부 센다
 
 
 def test_an_unreadable_deadline_is_counted_conservatively(external):
@@ -504,7 +505,7 @@ def test_an_unreadable_deadline_is_counted_conservatively(external):
     entry = _inflight_entry(deadline=None, started_at=_ago(5))
     entry["records"][0]["deadline"] = 12345                   # 문자열 아님 = 판정 불가
 
-    assert external._load_review_rounds().inflight_reservations(entry, wall_timeout_sec=3600) == 1
+    assert review_rounds.inflight_reservations(entry, wall_timeout_sec=3600) == 1
 
 
 def test_a_real_reservation_records_the_deadline_in_the_ledger(

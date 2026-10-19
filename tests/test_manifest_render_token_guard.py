@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -132,7 +133,7 @@ def _bare_entry_files(pm_update, repo_files, manifest_path: Path) -> list[tuple[
     byte-parity)은 `tests/test_manifest_template_parity.py` 소관이다.
     """
     out: list[tuple[str, Path]] = []
-    for entry in pm_update.read_manifest(manifest_path):
+    for entry in manifest_store.read_manifest(manifest_path):
         if entry.render:
             continue  # @render = 매 sync 재렌더 — 토큰-form 소스가 정상(진동 축 아님)
         dest_rel = str(entry).replace("\\", "/")

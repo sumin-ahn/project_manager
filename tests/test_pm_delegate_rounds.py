@@ -29,7 +29,7 @@ import pytest
 
 from _test_exec import python_argv_command
 from _win_skip import _can_symlink as can_symlink, posix_mode_supported
-from pm_engine.infra import conf_store
+from pm_engine.infra import conf_store, raw_output
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -3385,7 +3385,7 @@ def test_cross_delegation_binds_run_id_and_copy_to_its_delegate_rounds_reservati
     assert rc == 0
 
     round_row = next(row for row in _ledger_rows(home) if row["ticket"] == ticket)
-    raw_rows = pd._load_relay().raw_records(home / "raw" / "raw_outputs.json")
+    raw_rows = raw_output.raw_records(home / "raw" / "raw_outputs.json")
     raw_row = next(row for row in raw_rows if row.get("ticket") == ticket)
 
     assert raw_row["run_id"] == round_row["run_id"]
@@ -3453,7 +3453,7 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
     assert all(row["harvested_at"] is not None for row in round_rows)
 
     raw_rows = [
-        row for row in pd._load_relay().raw_records(home / "raw" / "raw_outputs.json")
+        row for row in raw_output.raw_records(home / "raw" / "raw_outputs.json")
         if row.get("ticket") == ticket
     ]
     assert len(raw_rows) == 2

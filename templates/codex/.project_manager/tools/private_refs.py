@@ -11,7 +11,8 @@ Python 소스는 표준 tokenizer 로 본다. 주석과 문서로 쓰인 단독 
 적용된다.
 
 ``ENGINE_REV`` 는 baked 리터럴이다(형제 사본 skew fail-loud · ``engine_rev.py --bump`` 대상).
-stdlib 과 엔진 패키지 ``pm_engine.infra.repo_files``(repo 소유 파일 열거 seam)만 쓴다.
+stdlib 과 엔진 패키지 ``pm_engine.infra.repo_files``(repo 소유 파일 열거 seam)·
+``pm_engine.infra.manifest_store``·``pm_engine.domain.manifest_rules``(manifest 판독·문법)만 쓴다.
 """
 
 from __future__ import annotations
@@ -29,8 +30,8 @@ from typing import Iterable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import repo_files  # noqa: E402
-_load_module_from_path = repo_files.load_module
+from pm_engine.domain import manifest_rules  # noqa: E402
+from pm_engine.infra import manifest_store, repo_files  # noqa: E402
 
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -135,25 +136,6 @@ def repo_owned_paths(root: Path) -> list[Path]:
     ]
 
 
-def _load_pm_update():
-    """``pm_update`` 를 같은 tools/ 에서 형제 로드한다.
-
-    ``pm_update.py`` 는 stamped 모듈이 아니라(``ENGINE_REV`` 미보유) skew 검증을 걸지 않는다 —
-    ``pm_update.py`` 자신이 ``pm_render``/``pm_import`` 를 로드할 때 쓰는 것과 같은
-    ``allow_unverified=True`` 관례다. 이 함수는 manifest 주석 경계(``_parse_manifest_line``)와
-    루트 목적지 사본 판정(``manifest_entry_shipping_inventory``)에 쓰인다 — 판정 사본을 새로
-    쓰지 않고 엔진의 manifest 파서·전개식을 그대로 호출한다.
-    """
-    path = REPO / ".project_manager" / "tools" / "pm_update.py"
-    return _load_module_from_path(
-        path,
-        "pm_update.py",
-        allow_unverified=True,
-        cache=True,
-        cache_key=f"_private_context_pm_update:{path.resolve()}",
-    )
-
-
 # ── 언어 축 ────────────────────────────────────────────────────────────────
 # python·markdown 을 뺀 출하 표면 — 셸·JS·TOML·manifest 등 산문 경계가 언어마다 다른 축.
 LANGUAGE_NOEXT = "noext"
@@ -201,13 +183,12 @@ def _root_destination_language_paths(root: Path) -> set[Path]:
     실제로 선언한** 항목만 전개한다(판정 사본 0) — 인스턴스-소유 예외는애초에 manifest 미등재라
     자동으로 빠진다.
     """
-    pm_update = _load_pm_update()
     resolved_root = root.resolve()
-    manifest_path = pm_update.resolve_manifest_for_dest(resolved_root, resolved_root)
-    manifest = pm_update.read_manifest(manifest_path)
+    manifest_path = manifest_store.resolve_manifest_for_dest(resolved_root, resolved_root)
+    manifest = manifest_store.read_manifest(manifest_path)
     found: set[Path] = set()
     for entry_index in range(len(manifest)):
-        shipped, _missing, _target_owned = pm_update.manifest_entry_shipping_inventory(
+        shipped, _missing, _target_owned = manifest_store.manifest_entry_shipping_inventory(
             resolved_root, manifest, entry_index, resolved_root
         )
         for dest_relative, _source in shipped:
@@ -810,17 +791,16 @@ def _js_prose_spans(source: str) -> list[tuple[int, int]]:
 
 
 def _manifest_prose_spans(source: str) -> list[tuple[int, int]]:
-    """엔진 파서 ``pm_update._parse_manifest_line`` 이 ``None`` 을 내는 비-빈 라인 전체.
+    """엔진 파서 ``manifest_rules._parse_manifest_line`` 이 ``None`` 을 내는 비-빈 라인 전체.
 
     새 정규식을 쓰지 않는다(판정 사본 금지) — 그 함수가 항상 ``None`` 을 내도록 바뀌면
     데이터 행까지 산문으로 잡혀 manifest 축 판정이 뒤집힌다(값 확인은 회귀가 한다).
     """
-    pm_update = _load_pm_update()
     spans: list[tuple[int, int]] = []
     for start, end, text in _line_records(source):
         if not text.strip():
             continue
-        if pm_update._parse_manifest_line(text) is None:
+        if manifest_rules._parse_manifest_line(text) is None:
             spans.append((start, end))
     return spans
 

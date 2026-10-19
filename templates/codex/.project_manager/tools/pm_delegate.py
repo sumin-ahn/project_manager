@@ -65,8 +65,9 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.app import hooks  # noqa: E402
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema, identity_args  # noqa: E402
+from pm_engine.infra import console, fs, raw_output, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -501,7 +502,7 @@ READ_REGRESSION_UNAVAILABLE_NOTE = (
 )
 
 # 위임 turn 의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **하네스 프로필**이 소유한다
-# (`pm_relay.HARNESS_PROFILES` — 클라우드 축 codex/claude 와 로컬 GPU 축 opencode 의 실측 근거가
+# (`watchdog.HARNESS_PROFILES` — 클라우드 축 codex/claude 와 로컬 GPU 축 opencode 의 실측 근거가
 # 거기 주석에 있다). 이 모듈에 단일 상수를 두지 않는 이유: 값이 두 군데면 규칙이 둘이 되고,
 # 실제로 초기 구현의 단일 기본값(클라우드 표본 기반)이 3시간짜리 로컬 opencode 위임을 죽였다.
 # 해소 순서: `--timeout`(일회성) > local.conf `harness.<name>.wall_timeout` > `delegate.timeout`
@@ -520,7 +521,7 @@ READ_REGRESSION_UNAVAILABLE_NOTE = (
 # 이 트리에서 `pytest ... --durations=30`으로 실제 종료 경로를 재었다: git scope audit 0.03s,
 # fallback raw 체인 0.02s, 나머지 분류·prompt 합성은 각 0.01s 미만. 이 보조 7단계는
 # 관측 최댓값을 초 단위로 올려 7s, 플랫폼 편차를 위해 다음 10초 경계로 올린다. 프로세스 정리는
-# 이 margin에 뭉뚱그리지 않는다 — pm_relay 공용 식이 부모 wait 5s + pipe drain 5s를 **시도마다**
+# 이 margin에 뭉뚱그리지 않는다 — `watchdog` 공용 식이 부모 wait 5s + pipe drain 5s를 **시도마다**
 # 실행 예산에 직접 산입한다(startup 재시도 포함).
 _HARNESS_CAP_KILL_GRACE_BUDGET_SEC = 10  # 호환/감사용: 정리 1회의 연속 wait+drain 최악값.
 _HARNESS_CAP_MEASURED_AUX_BUDGET_SEC = 7
@@ -537,7 +538,7 @@ FAILURE_CLASS_AUTH = "인증 실패"
 # RunResult 의 **명시 실패 신호** 키(rc 값 추론 금지·codex must-fix). 엔진(_default_run_fn·
 # _execute_attempt)만 세팅한다 — 하네스가 우연히 같은 rc 를 내도 분류되지 않는다.
 RUN_RESULT_LAUNCH_FAILED = "launch_failed"   # 바이너리 부재/PATH/exec 권한 — 프로세스가 뜨지 못함
-RUN_RESULT_STALLED = "stalled"               # opencode 첫-이벤트 stall(유한 재시도 소진·pm_relay)
+RUN_RESULT_STALLED = "stalled"               # opencode 첫-이벤트 stall(유한 재시도 소진·watchdog)
 RUN_RESULT_CLEANUP_FAILED = "cleanup_failed" # kill/drain 실패 — 부분 산출물 보존 + 자동 폴백 금지
 # 관측 침묵 초(마지막 진행 이벤트 이후) — 실패 신호가 아니라 **감사 관측치**다. 감사 헤더에 실려
 # 다음 kill 의 원인(하네스 상한 vs 무진행 vs 기타)을 사후 확정 가능하게 한다.
@@ -584,7 +585,7 @@ def fail_loud(message: str, *, rc: int = 1) -> int:
     return rc
 
 # 드라이버 계약 테이블(reasoning 허용집합·codex sandbox 모드·opencode agent·claude `--tools`·
-# opencode 첨부 message)은 **pm_relay 가 단일 소유**한다 — 같은 세 CLI 를 추가 리뷰어 표면도
+# opencode 첨부 message)은 **`contract` 가 단일 소유**한다 — 같은 세 CLI 를 추가 리뷰어 표면도
 # 스폰하므로 값이 두 군데면 규칙이 둘이 된다. 실측 근거 주석도 그 선언부에 있다. 이 모듈의
 # `_validate_*`/`build_*_argv` 는 그 계약을 부르는 얇은 wrapper 다.
 
@@ -625,7 +626,7 @@ _TEMP_ENV_REFERENCE_WINDOWS = "$env:TMPDIR"
 # config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
 # base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
 # adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
-# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지 선언은 relay가 소유한다.
+# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지 선언은 watchdog.HARNESS_SESSION_MARKERS 가 소유한다.
 _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_HOME", "OPENAI_API_KEY"),
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
@@ -2964,7 +2965,7 @@ def _developer_round_harvest_problem(
     return None
 
 
-def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
+def _abandon_raw_ledger_hint(pm_home: Path, row: dict) -> str:
     """거부 문구에 붙이는 **비-권위 참고** — 같은 (ticket, role) 의 미마감 raw 레코드.
 
     판정 술어에는 넣지 않는다. cross 실위임 raw 행에는 `run_id`·`copy` 가 실려 이 예약과
@@ -2974,8 +2975,8 @@ def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
     예약이 조용히 "증거 있음"으로 뒤바뀐다. 참고를 읽지 못하면 참고만 빠진다(판정은 그대로다).
     """
     try:
-        _raw_dir, ledger_path = relay.raw_storage_paths(pm_home, "delegate")
-        rows = relay.raw_records(ledger_path, unfinished_only=True, lock=False)
+        _raw_dir, ledger_path = raw_output.raw_storage_paths(pm_home, "delegate")
+        rows = raw_output.raw_records(ledger_path, unfinished_only=True, lock=False)
     except (OSError, ValueError, UnicodeError):
         return ""
     matches = [
@@ -2986,7 +2987,7 @@ def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
         return ""
     latest = matches[0]
     pid = latest.get("pid")
-    liveness = "생존" if relay.pid_is_alive(pid) else "사망"
+    liveness = "생존" if raw_output.pid_is_alive(pid) else "사망"
     return (
         " · 참고(판정 입력 아님): 같은 티켓·역할의 미마감 raw 레코드가 있습니다 — "
         f"id={latest.get('id')} pid={pid}({liveness})"
@@ -3010,7 +3011,7 @@ def _read_board_round_text(board_path: Path) -> str:
 
 
 def _abandon_liveness_problem(
-    row: dict, *, copy_path: Path, pm_home: Path, relay,
+    row: dict, *, copy_path: Path, pm_home: Path,
 ) -> str | None:
     """종료 증거 판정 — 거부 사유(통과면 None). **파괴 연산의 기본값은 거부다.**
 
@@ -3025,14 +3026,14 @@ def _abandon_liveness_problem(
         f"ticket={row['ticket']} · role={row['role']} · ordinal={row['ordinal']} · "
         f"prepared_at={row['prepared_at']} · copy={copy_path}"
     )
-    hint = _abandon_raw_ledger_hint(pm_home, row, relay)
+    hint = _abandon_raw_ledger_hint(pm_home, row)
     owner_pid = row.get("owner_pid")
     if owner_pid is None:
         return (
             "이 예약에는 종료 증거가 없습니다(장부 행에 owner_pid 없음) — run 이 끝났음을 "
             f"확인했다면 {ABANDON_ASSUME_DEAD_FLAG} 로 다시 부르세요: {coordinates}{hint}"
         )
-    if relay.pid_is_alive(owner_pid):
+    if raw_output.pid_is_alive(owner_pid):
         return (
             f"준비를 소유한 프로세스가 실행 중이라 포기하지 않습니다 — pid={owner_pid} "
             f"(`ps -p {owner_pid}` 로 확인) · 의도한 우회는 {ABANDON_ASSUME_DEAD_FLAG}: "
@@ -3088,7 +3089,6 @@ def abandon_ticket_copy(
     pm_home = Path(pm_home).resolve()
     cwd = Path(cwd).resolve()
     rounds_module = _load_ticket_rounds()
-    relay = _load_relay()
     # 선언이 둘이면 장부에 어느 것이 실릴지 모호하다 — 상태를 읽기 전에 거부한다.
     if superseded_by_ordinal is not None and discard_reason is not None:
         raise DelegateError(
@@ -3197,7 +3197,7 @@ def abandon_ticket_copy(
                 )
         if not assume_dead:
             problem = _abandon_liveness_problem(
-                row, copy_path=expected, pm_home=pm_home, relay=relay,
+                row, copy_path=expected, pm_home=pm_home,
             )
             if problem is not None:
                 raise DelegateError(problem)
@@ -3815,7 +3815,7 @@ def _with_ticket_copy_preamble(
     return note + "\n\n" + prompt
 
 
-# ── 형제 모듈 deep-import seam (pm_import._load_watchdog 관례·PYTHONPATH 무의존) ─────
+# ── 형제 모듈 deep-import seam (PYTHONPATH 무의존) ─────
 
 def _load_additional_reviewer():
     """엔진 additional_reviewer 를 importlib 로 직접 로드 — local_config·PM 홈 재앵커 판정
@@ -3842,15 +3842,6 @@ def _load_board():
     )
 
 
-def _load_relay():
-    """엔진 pm_relay 를 importlib 로 직접 로드 — 3-하네스 파서(parse_stream_json·parse_codex_json·
-    parse_opencode_json)·첫-이벤트 워치독·프로세스그룹 kill 을 재사용."""
-    path = Path(__file__).resolve().parent / "pm_relay.py"
-    return _load_module_from_path(
-        path, "pm_relay.py", verifier=_verify_engine_rev,
-    )
-
-
 def _load_delegate_scope():
     """엔진 delegate_scope 를 직접 로드해 위임 전·후 worktree 상태 비교 판정을 재사용한다."""
     path = Path(__file__).resolve().parent / "delegate_scope.py"
@@ -3866,14 +3857,6 @@ def _load_delegate_channel_guard():
     path = Path(__file__).resolve().parent / "delegate_channel_guard.py"
     return _load_module_from_path(
         path, "delegate_channel_guard.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
-def _load_repo_coordinates():
-    """ticket touches 표기 정규화(Windows 구분자·`./` 접두)를 단일 진실에서 재사용한다."""
-    path = Path(__file__).resolve().parent / "repo_coordinates.py"
-    return _load_module_from_path(
-        path, "repo_coordinates.py", verifier=_verify_engine_rev,
     )
 
 
@@ -7656,11 +7639,10 @@ def _is_enabled(conf: dict[str, str]) -> bool:
 # ── config 해소 (원자 tuple) ────────────────────────────────────────────
 
 def _validate_harness(harness: str) -> str:
-    """공용 드라이버 계약(pm_relay) 검증의 얇은 wrapper — 예외만 이 표면 타입으로 옮긴다."""
-    relay = _load_relay()
+    """공용 드라이버 계약(`contract`) 검증의 얇은 wrapper — 예외만 이 표면 타입으로 옮긴다."""
     try:
-        return relay.validate_harness(harness)
-    except relay.HarnessContractError as exc:
+        return contract.validate_harness(harness)
+    except contract.HarnessContractError as exc:
         raise DelegateError(str(exc)) from exc
 
 
@@ -7673,11 +7655,10 @@ def _validate_reasoning(
     목록 조회 결과가 정한다. 밖이거나 확인할 수 없으면 fail-loud(조용한 무시/자동 강등 금지).
     미지정=None(조회 없음). 해소 함수(`resolve_delegate`·`resolve_fallback`)는 실행하지 않는
     경로(채널 가드 훅·프로필 비교)에서도 불리므로 이 확인을 하지 않는다."""
-    relay = _load_relay()
     try:
-        return relay.validate_reasoning(
+        return contract.validate_reasoning(
             harness, reasoning, model=model, cwd=cwd, env=build_env(harness))
-    except relay.HarnessContractError as exc:
+    except contract.HarnessContractError as exc:
         raise DelegateError(str(exc)) from exc
 
 
@@ -7700,7 +7681,7 @@ def resolve_delegate(
         if not (cli_harness and cli_model):
             raise DelegateError("--harness 와 --model 은 동반 필수(부분 override 금지·원자 tuple).")
         harness = _validate_harness(cli_harness)
-        return harness, cli_model, _load_relay().normalize_reasoning(cli_reasoning)
+        return harness, cli_model, contract.normalize_reasoning(cli_reasoning)
 
     key = f"delegate.{role}" + (".hard" if tier == "hard" else "")
     harness = (conf.get(f"{key}.harness") or "").strip()
@@ -7718,7 +7699,7 @@ def resolve_delegate(
             "local.conf 에 delegate.<role>.harness/.model 을 설정하라."
         )
     harness = _validate_harness(harness)
-    return harness, model, _load_relay().normalize_reasoning(reasoning)
+    return harness, model, contract.normalize_reasoning(reasoning)
 
 
 def resolve_fallback(
@@ -7747,11 +7728,11 @@ def resolve_fallback(
             "부분 설정/조용한 기본값은 허용하지 않는다."
         )
     harness = _validate_harness(harness)
-    return harness, model, _load_relay().normalize_reasoning(reasoning_raw)
+    return harness, model, contract.normalize_reasoning(reasoning_raw)
 
 
-# ── 3 드라이버 argv 빌더 (pm_relay 공용 계약의 얇은 wrapper) ──────────────────
-# 조립 규칙과 실측 근거는 `pm_relay` 가 소유한다(추가 리뷰어 표면도 같은 빌더를 쓴다). 여기 함수는
+# ── 3 드라이버 argv 빌더 (contract 공용 계약의 얇은 wrapper) ──────────────────
+# 조립 규칙과 실측 근거는 `contract` 가 소유한다(추가 리뷰어 표면도 같은 빌더를 쓴다). 여기 함수는
 # 기존 공개 시그니처를 보존하는 호환 seam 이다.
 
 def _perm_axis(role: str) -> str:
@@ -7767,7 +7748,7 @@ def build_codex_argv(
     resume_session_id: str | None = None,
 ) -> list[str]:
     """codex argv(공용 계약 wrapper) — cwd 는 `-C` 로 핀하고 프롬프트는 stdin 주입."""
-    return _load_relay().build_codex_argv(
+    return contract.build_codex_argv(
         model, reasoning, role, str(cwd), resume_session_id,
     )
 
@@ -7777,7 +7758,7 @@ def build_claude_argv(model: str, reasoning: str | None, role: str,
     """claude argv(공용 계약 wrapper) — `--tools` 역할 제한 + stream-json 진행 신호.
 
     `resume_session_id` 는 세션 재사용 turn 에서만 실린다(형식 가드는 공용 계약이 소유)."""
-    return _load_relay().build_claude_argv(
+    return contract.build_claude_argv(
         model, reasoning, role, resume_session_id)
 
 
@@ -7785,7 +7766,7 @@ def build_opencode_argv(
     model: str, reasoning: str | None, role: str, cwd: str, prompt_file: str,
 ) -> list[str]:
     """opencode argv(공용 계약 wrapper) — `--file` 프롬프트·`--dir` cwd 핀·`--agent` 권한축."""
-    return _load_relay().build_opencode_argv(
+    return contract.build_opencode_argv(
         model, reasoning, role, str(cwd), str(prompt_file))
 
 
@@ -7802,23 +7783,22 @@ def build_opencode_argv(
 #     특례가 아니라 근거다: startup network fetch stall(upstream #13841)이 opencode 축에서만
 #     실측됐고, 첫-이벤트 창을 신호 축 전부에 켜면 기동이 느린 실행을 새로 false-kill 한다.
 #   · idle_timeout / wall_timeout — 클라우드 축(codex·claude)과 로컬 GPU 축(opencode)의 값이 다르다
-#     (근거 수치는 pm_relay 선언부 주석). 값이 갈리는 건 허용, **코드가 갈리면 위반**이다.
-# 테이블은 **pm_relay 가 단일 소유**한다 — additional_reviewer 도 같은 테이블을 읽어야 리뷰어 축과 위임
+#     (근거 수치는 `watchdog` 선언부 주석). 값이 갈리는 건 허용, **코드가 갈리면 위반**이다.
+# 테이블은 **`watchdog` 가 단일 소유**한다 — additional_reviewer 도 같은 테이블을 읽어야 리뷰어 축과 위임
 # 축의 규칙이 갈리지 않는다(값이 두 군데면 규칙이 둘).
 
 
 def harness_profile(harness: str, conf: dict[str, str] | None = None):
-    """하네스 → local.conf override 가 해소된 프로필(pm_relay 단일 테이블 재사용).
+    """하네스 → local.conf override 가 해소된 프로필(`watchdog` 단일 테이블 재사용).
 
     conf 미지정이면 per-clone local.conf 를 읽는다(판독 실패는 빈 conf 로 fail-soft — 설정 파일
-    문제로 위임이 죽지 않는다). 해소 순서는 pm_relay.resolve_harness_profile 이 소유한다."""
-    relay = _load_relay()
+    문제로 위임이 죽지 않는다). 해소 순서는 watchdog.resolve_harness_profile 이 소유한다."""
     if conf is None:
         try:
             conf = local_config()
         except (OSError, DelegateError):
             conf = {}
-    return relay.resolve_harness_profile(
+    return watchdog.resolve_harness_profile(
         harness, conf,
         legacy_idle_key=DELEGATE_IDLE_TIMEOUT_KEY,
         legacy_wall_key=DELEGATE_TIMEOUT_KEY,
@@ -7919,11 +7899,10 @@ def _prescribed_interpreter() -> str:
     """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
 
     Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어 런처가 1순위다. 그 판정은
-    `pm_relay.entrypoint_command` 하나가 소유하고, 여기서는 해소값의 인터프리터 토큰만 꺼내
+    `contract.entrypoint_command` 하나가 소유하고, 여기서는 해소값의 인터프리터 토큰만 꺼내
     쓴다 — 표기가 두 군데면 규칙이 둘이 된다."""
-    relay = _load_relay()
-    interpreter, _entry = relay.entrypoint_command(
-        relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
+    interpreter, _entry = contract.entrypoint_command(
+        contract.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
     )
     return interpreter
 
@@ -8613,7 +8592,7 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
 def _gettempdir() -> str:
     """OS 임시 디렉터리 — 소비자는 `_with_resolved_child_env` **하나**다(자식 env 의 임시 축).
 
-    엔진이 만드는 임시물의 자리는 `pm_relay.temp_root`(프로젝트 안) 하나다. 이 값은 엔진이
+    엔진이 만드는 임시물의 자리는 `raw_output.temp_root`(프로젝트 안) 하나다. 이 값은 엔진이
     만드는 자리가 아니라 **스폰하는 자식에게 넘기는 env 값**이라 남는다. 근거 둘(실측):
     (1) 받는 쪽이 하네스 CLI 와 그 자식 전부(node·npm·git·pytest)인데 엔진에 그 임시물의 목록도
     회수 훅도 없다 — 프로젝트 안을 주면 주인 없는 산출이 저장소에 쌓인다(격리 트리 실측
@@ -8628,8 +8607,7 @@ def _gettempdir() -> str:
 
 def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
     """raw/장부 위치를 해소된 PM 홈 소유자에서 정한다(REPO 미해소는 fail-loud)."""
-    relay = _load_relay()
-    return relay.raw_storage_paths(
+    return raw_output.raw_storage_paths(
         _CONFIG_REPO_OVERRIDE or REPO, "delegate", output_dir,
     )
 
@@ -8667,7 +8645,7 @@ def cold_reinjection_record(
         )
         return None
     try:
-        rows = _load_relay().raw_records(ledger_path)
+        rows = raw_output.raw_records(ledger_path)
     except (OSError, UnicodeError, ValueError) as exc:
         print(
             "경고: cold 재투입 비용 가드가 raw 장부를 읽지 못해 fail-open 합니다: "
@@ -8700,7 +8678,7 @@ def cold_reinjection_rejection(
         f"오류: cold 재투입 거부 — ticket={ticket} · role={role}의 완료 레코드가 "
         f"이미 있습니다(id={record.get('id')}).",
     ]
-    if _load_relay().harness_supports_resume(harness):
+    if contract.harness_supports_resume(harness):
         lines.append(f"  · 이어서 재실행: --resume-from {ticket}")
     lines.append("  · 의도적 fresh 재실행: --fresh <사유>")
     return "\n".join(lines)
@@ -8807,7 +8785,7 @@ def resolve_attached_raw(
     if not ledger_path.is_file():
         raise DelegateError(f"--attach-raw raw 장부가 없음: {ledger_path}")
     try:
-        rows = _load_relay().raw_records(ledger_path)
+        rows = raw_output.raw_records(ledger_path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise DelegateError(
             f"--attach-raw raw 장부 읽기 실패: {ledger_path} "
@@ -8916,12 +8894,11 @@ def _cmd_raw_close(argv: list[str]) -> int:
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
     _raw_dir, ledger_path = _raw_storage(output_dir)
     resolved_ledger = ledger_path.resolve()
-    relay = _load_relay()
 
     # 중복 id는 한 레코드에 대한 한 번의 마감 요청으로 정규화한다.
     record_ids = list(dict.fromkeys(args.record_ids))
     rows_by_id = {
-        str(row.get("id")): row for row in relay.raw_records(ledger_path)
+        str(row.get("id")): row for row in raw_output.raw_records(ledger_path)
     }
     selected: list[tuple[dict, float]] = []
     current = datetime.datetime.now(datetime.timezone.utc)
@@ -8941,14 +8918,14 @@ def _cmd_raw_close(argv: list[str]) -> int:
             )
             return 1
         pid = row.get("pid")
-        if not args.force and relay.pid_is_alive(pid):
+        if not args.force and raw_output.pid_is_alive(pid):
             print(
                 f"오류: raw 장부 레코드 PID가 실행 중이어서 마감 거부: "
                 f"{record_id} (pid={pid}; 의도한 우회는 --force)",
                 file=sys.stderr,
             )
             return 1
-        started = relay._parse_raw_time(row.get("started_at"))
+        started = raw_output._parse_raw_time(row.get("started_at"))
         if started is None:
             print(
                 f"오류: raw 장부 started_at 형식 오류: {record_id}",
@@ -8960,7 +8937,7 @@ def _cmd_raw_close(argv: list[str]) -> int:
     for row, elapsed_sec in selected:
         record_id = str(row["id"])
         try:
-            relay.finish_raw_record(
+            raw_output.finish_raw_record(
                 ledger_path,
                 record_id,
                 rc=-1,
@@ -8976,11 +8953,11 @@ def _cmd_raw_close(argv: list[str]) -> int:
         print(f"raw 레코드 마감: {record_id}")
         if not any(
             str(item.get("id")) == record_id
-            for item in relay.raw_records(ledger_path)
+            for item in raw_output.raw_records(ledger_path)
         ):
             print(
                 f"경고: raw 레코드 {record_id}는 완료 보존창"
-                f"({relay.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 "
+                f"({raw_output.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 "
                 "장부에서 제거됨"
             )
     print(f"마감 장부: {resolved_ledger}")
@@ -8988,7 +8965,7 @@ def _cmd_raw_close(argv: list[str]) -> int:
 
 
 def _print_orphan_raw_summary(
-    relay, output_dir: Path | None, ledger_path: Path, *, limit: int,
+    output_dir: Path | None, ledger_path: Path, *, limit: int,
 ) -> None:
     """장부 미참조 엔진 명명 원문을 경고 1줄 + 읽기 전용 목록으로 표면화한다.
 
@@ -8996,9 +8973,9 @@ def _print_orphan_raw_summary(
     한다. delegate·review 두 디렉터리를 모두 스캔한다(장부는 두 표면이 공유하는 한 파일).
     """
     repo_override = _CONFIG_REPO_OVERRIDE or REPO
-    delegate_dir, _ = relay.raw_storage_paths(repo_override, "delegate", output_dir)
-    review_dir, _ = relay.raw_storage_paths(repo_override, "review", output_dir)
-    summary = relay.scan_orphan_raw_files((delegate_dir, review_dir), ledger_path)
+    delegate_dir, _ = raw_output.raw_storage_paths(repo_override, "delegate", output_dir)
+    review_dir, _ = raw_output.raw_storage_paths(repo_override, "review", output_dir)
+    summary = raw_output.scan_orphan_raw_files((delegate_dir, review_dir), ledger_path)
     if summary.count == 0:
         return
     print(
@@ -9042,7 +9019,6 @@ def _cmd_raw(argv: list[str]) -> int:
     if args.limit <= 0:
         parser.error("--limit은 양수여야 합니다")
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
-    relay = _load_relay()
     _raw_dir, ledger_path = _raw_storage(output_dir)
     resolved_ledger = ledger_path.resolve()
     print(f"조회 장부: {resolved_ledger}")
@@ -9052,7 +9028,7 @@ def _cmd_raw(argv: list[str]) -> int:
                 "경고: 다른 엔진 사본 장부가 있습니다"
                 f"(이 조회에서는 읽지 않음): {peer_ledger}"
             )
-    rows = relay.raw_records(
+    rows = raw_output.raw_records(
         ledger_path, unfinished_only=args.unfinished
     )[:args.limit]
     label = "미마감 raw" if args.unfinished else "최근 raw"
@@ -9072,7 +9048,7 @@ def _cmd_raw(argv: list[str]) -> int:
             )
     # 고아(장부 미참조) 원문 표면화는 rows 유무와 독립이다 — 장부가 텅 비어 있어도(전량 prune)
     # 디스크에 원문이 남아 있을 수 있고 그게 바로 이 티켓이 잡는 역전이다.
-    _print_orphan_raw_summary(relay, output_dir, ledger_path, limit=args.limit)
+    _print_orphan_raw_summary(output_dir, ledger_path, limit=args.limit)
     return 0
 
 
@@ -9283,8 +9259,7 @@ def resolve_resume_plan(
     """
     if not selector:
         return None
-    relay = _load_relay()
-    if not relay.harness_supports_resume(harness):
+    if not contract.harness_supports_resume(harness):
         _resume_unavailable(f"{harness} 하네스는 재개 argv 가 미검증(선언표 미지원)")
         return None
     _raw_dir, ledger_path = _raw_storage(output_dir)
@@ -9292,7 +9267,7 @@ def resolve_resume_plan(
         _resume_unavailable(f"raw 장부 없음({ledger_path}) — 이 위치에 아직 위임 기록이 없음")
         return None
     try:
-        rows = relay.raw_records(ledger_path)
+        rows = raw_output.raw_records(ledger_path)
     except (OSError, ValueError) as exc:
         _resume_unavailable(f"raw 장부를 읽지 못함({exc})")
         return None
@@ -9308,7 +9283,7 @@ def resolve_resume_plan(
         )
         return None
     session_id = record.get(RESUME_FIELD_SESSION_ID)
-    if not relay.is_resumable_session_id(session_id):
+    if not contract.is_resumable_session_id(session_id):
         _resume_unavailable(
             f"레코드 {record.get('id')} 의 세션 id 형식 불일치({session_id!r})"
         )
@@ -9425,17 +9400,16 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
     return "\n".join(header)
 
 
-# ── reply 추출 (pm_relay 3파서 재사용) ────────────────────────────────────
+# ── reply 추출 (contract 3파서 재사용) ────────────────────────────────────
 
 def extract_reply(harness: str, stdout: str) -> str | None:
     """하네스 stdout 에서 최종 reply 텍스트를 추출한다(공용 추출기 wrapper).
 
     claude=parse_stream_json → result · codex=parse_codex_json → reply ·
     opencode=parse_opencode_json → reply. reply 미추출(파싱 실패·빈 출력)은 None(호출자 fail-loud)."""
-    relay = _load_relay()
     try:
-        return relay.extract_harness_reply(harness, stdout)
-    except relay.HarnessContractError as exc:
+        return contract.extract_harness_reply(harness, stdout)
+    except contract.HarnessContractError as exc:
         raise DelegateError(str(exc)) from exc
 
 
@@ -9547,9 +9521,9 @@ def _failure_scan_text(result: RunResult) -> str:
     발동한다(실측 재현 2건: codex `agent_message` 본문·user 프롬프트 에코 — 이 규칙 자체를 리뷰
     위임하면 자기참조로 재현된다). 하네스 stdout 은 JSONL 이벤트 스트림이고 진단은 error 이벤트에만
     담기므로, 스캔을 그 이벤트의 비-reply 필드로 좁혀 에코 유입을 원천 차단한다. 비-JSON/비-dict
-    라인은 무시한다(pm_relay 3파서와 동일 robust 정책).
+    라인은 무시한다(`contract` 3파서와 동일 robust 정책).
     """
-    import json  # 지연 import — 분류 경로에서만 쓴다(pm_relay 파서 대칭).
+    import json  # 지연 import — 분류 경로에서만 쓴다(`contract` 파서 대칭).
 
     parts: list[str] = [result.get("stderr", "") or ""]
     for raw in (result.get("stdout", "") or "").splitlines():
@@ -9722,9 +9696,9 @@ def _default_run_fn(
     """실 subprocess 실행(테스트는 이 seam 을 mock). timeout 시 **프로세스그룹 종료**(3드라이버 공통·
     start_new_session + killpg·자식[모델 fetch·pytest 등] 잔존 방지).
 
-    **3 드라이버 전부 pm_relay 워치독 경로** — codex/claude 도 증분 관측 대상이라야
+    **3 드라이버 전부 `watchdog` 워치독 경로** — codex/claude 도 증분 관측 대상이라야
     무진행 판정이 선다(옛 구조는 codex/claude 만 `Popen`+`communicate(timeout)` 벽시계 단독이었다).
-    드라이버별로 다른 건 코드 분기가 아니라 **선언**(`pm_relay.HARNESS_PROFILES`)이다: 신호 있는 축은
+    드라이버별로 다른 건 코드 분기가 아니라 **선언**(`watchdog.HARNESS_PROFILES`)이다: 신호 있는 축은
     무진행 판정, startup stall 이 실측된 축(opencode)만 첫-이벤트 창 + 재시도. 프롬프트는 codex/
     claude 가 stdin(워치독의 `input_text`), opencode 는 `--file`(stdin 불요).
 
@@ -9735,19 +9709,18 @@ def _default_run_fn(
     **스폰 단계 한정**: 프롬프트를 이미 보낸 뒤의 I/O 오류(communicate 중 EPIPE 등)를 launch
     실패로 표시하면 폴백이 발동해 **같은 프롬프트가 중복 호출**된다. 그래서 launch 신호는
     스폰 지점 예외에만 붙이고, 실행-중 OSError 는 미분류 실패(rc=1)로 남겨 기존 fail-loud 를 태운다."""
-    relay = _load_relay()
     profile = harness_profile(harness)
     # 워치독이 내부에서 스폰한다 — 바이너리/권한 계열(_LAUNCH_STAGE_ERRORS)만 launch 로 보고
     # 나머지 OSError 는 실행-중으로 간주한다(호출 후 중복 호출 금지).
     try:
-        completed = relay.run_with_first_event_watchdog(
+        completed = watchdog.run_with_first_event_watchdog(
             argv,
-            first_event_timeout=(relay.first_event_timeout_default()
+            first_event_timeout=(watchdog.first_event_timeout_default()
                                  if profile.startup_watchdog else None),
             overall_timeout=timeout,
-            retries=(relay.stall_retries_default()
+            retries=(watchdog.stall_retries_default()
                      if profile.startup_watchdog else 0),
-            idle_timeout=relay.idle_timeout_for_signal(profile.progress_signal,
+            idle_timeout=watchdog.idle_timeout_for_signal(profile.progress_signal,
                                                        profile.idle_timeout),
             cwd=str(cwd),
             env=env,
@@ -9759,15 +9732,15 @@ def _default_run_fn(
             "stderr": completed.stderr or "",
             "timed_out": False,
         }
-        silence = getattr(completed, relay.SILENCE_SEC_ATTR, None)
+        silence = getattr(completed, watchdog.SILENCE_SEC_ATTR, None)
         if silence is not None:
             result[RUN_RESULT_SILENCE_SEC] = silence
         return result
-    except relay.StallWatchdogError as exc:
+    except watchdog.StallWatchdogError as exc:
         timeout_axis = getattr(exc, "timeout_axis", None)
         threshold = getattr(exc, "threshold_seconds", None)
         silence = getattr(exc, "silence_seconds", None)
-        if timeout_axis == getattr(relay, "TIMEOUT_AXIS_WALL", "wall"):
+        if timeout_axis == watchdog.TIMEOUT_AXIS_WALL:
             wall_exc = subprocess.TimeoutExpired(
                 argv, threshold if threshold is not None else timeout,
                 output=getattr(exc, "output", "") or "",
@@ -9884,13 +9857,12 @@ def _build_target_argv(
 
 def _assert_opencode_transport_path(cwd: Path, prompt_file: Path) -> None:
     """공용 ``--file``/``--dir`` containment 계약을 위임 표면 예외로 번역한다."""
-    relay = _load_relay()
     try:
-        relay.assert_opencode_prompt_in_cwd(cwd, prompt_file)
-    except relay.HarnessContractError as exc:
+        contract.assert_opencode_prompt_in_cwd(cwd, prompt_file)
+    except contract.HarnessContractError as exc:
         raise DelegateError(str(exc)) from exc
-    # 공용 relay 계약을 먼저 호출해 기존 하네스 진단을 보존한 뒤 attempt 공통 strict-child
-    # 불변식도 같은 경로에 적용한다.
+    # 공용 하네스 계약(contract.assert_opencode_prompt_in_cwd)을 먼저 호출해 기존 하네스 진단을
+    # 보존한 뒤 attempt 공통 strict-child 불변식도 같은 경로에 적용한다.
     _assert_attempt_child_path(cwd, prompt_file, label="opencode prompt 전달 사본")
 
 
@@ -9989,11 +9961,11 @@ def _open_fixed_directory(path: Path, *, label: str) -> int:
 def _read_tmp_root() -> Path:
     """read 역할 격리 자리의 루트 — PM 홈이 소유한 프로젝트 안 임시 루트 하나다.
 
-    자리 규약을 여기 다시 적지 않고 `pm_relay.temp_root` 를 그대로 쓴다(원자 쓰기를 뺀 엔진의
+    자리 규약을 여기 다시 적지 않고 `raw_output.temp_root` 를 그대로 쓴다(원자 쓰기를 뺀 엔진의
     모든 임시물이 같은 부모를 쓴다). 앵커는 raw 박제와 같은 소유자다 — 위임 산출과 그 실행의
     임시물이 다른 clone 으로 흩어지지 않는다. 테스트는 이 함수 하나를 주입해 자리를 옮긴다.
     """
-    return _load_relay().temp_root(_CONFIG_REPO_OVERRIDE or REPO)
+    return raw_output.temp_root(_CONFIG_REPO_OVERRIDE or REPO)
 
 
 def _read_tmp_attempt_name() -> str:
@@ -10982,8 +10954,7 @@ def _execute_attempt(
     아니라 **가장 최신 attempt 행의 마감**이다 — primary 가 실패로 마감되고 폴백이 진행 중인
     창에서 전자를 쓰면 아직 도는 run 을 끝난 것으로 오판한다.
     """
-    relay = _load_relay()
-    if resume_session_id is not None and not relay.harness_supports_resume(harness):
+    if resume_session_id is not None and not contract.harness_supports_resume(harness):
         raise DelegateError(
             f"{harness} 하네스는 세션 재사용 미지원인데 재개 id 가 전달됐다 — "
             "미검증 argv 를 만들지 않는다."
@@ -10997,7 +10968,7 @@ def _execute_attempt(
     # env 해소도 실패할 수 있다(하네스 필수 키 누락은 fail-loud) — 그 실패가 attempt 사본과
     # read tmp 를 남기지 않도록 준비 산출물과 같은 소유권 seam 에서 되감는다.
     try:
-        env = relay.with_harness_runtime_role(
+        env = contract.with_harness_runtime_role(
             _apply_read_tmp_env(build_env(harness), harness, read_tmp), harness, role,
         )
         env.update(delegate_task_env)
@@ -11011,7 +10982,7 @@ def _execute_attempt(
     try:
         raw_path = _reserve_raw_output(harness, output_dir)
         _raw_dir, ledger_path = _raw_storage(output_dir)
-        record_id = relay.start_raw_record(
+        record_id = raw_output.start_raw_record(
             ledger_path,
             surface=DELEGATE_RAW_SURFACE,
             harness=harness,
@@ -11081,7 +11052,7 @@ def _execute_attempt(
             )
         finally:
             try:
-                relay.finish_raw_record(
+                raw_output.finish_raw_record(
                     ledger_path,
                     record_id,
                     rc=1,
@@ -11090,7 +11061,7 @@ def _execute_attempt(
                     finish_note="pre-spawn rejection",
                     extra={"pre_spawn_rejected": True},
                 )
-            except relay.RawRecordAlreadyFinished as finish_exc:
+            except raw_output.RawRecordAlreadyFinished as finish_exc:
                 print(
                     f"경고: 장부 마감 충돌 — {finish_exc} "
                     "(수동 마감 보존·pre-spawn 거부 raw는 기록 시도됨)",
@@ -11182,7 +11153,7 @@ def _execute_attempt(
     )
     observed = _observe_harness_result(harness, stdout)
     try:
-        relay.finish_raw_record(
+        raw_output.finish_raw_record(
             ledger_path,
             record_id,
             rc=rc,
@@ -11190,7 +11161,7 @@ def _execute_attempt(
             silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
             extra=_finished_ledger_fields(observed, resume_session_id),
         )
-    except relay.RawRecordAlreadyFinished as exc:
+    except raw_output.RawRecordAlreadyFinished as exc:
         # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 실행 결과는
         # 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
         print(f"경고: 장부 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
@@ -11205,11 +11176,10 @@ def _observe_harness_result(harness: str, stdout: str):
 
     이 관측은 감사 보강이라 실패해도 위임 자체를 죽이지 않는다. 회수 경로의 fail-loud 는 종전
     그대로 `extract_reply` 가 소유한다."""
-    relay = _load_relay()
     if not stdout:
-        return relay.HarnessReply(None, None, None)
+        return contract.HarnessReply(None, None, None)
     try:
-        return relay.extract_harness_result(harness, stdout)
+        return contract.extract_harness_result(harness, stdout)
     except Exception as exc:  # noqa: BLE001 — 관측 실패가 실행/마감을 막지 않는다.
         if _is_engine_rev_skew(exc):
             raise
@@ -11217,7 +11187,7 @@ def _observe_harness_result(harness: str, stdout: str):
             f"경고: 회신 구조화 관측 실패({exc}) — 장부에 세션 id/usage 를 남기지 못합니다.",
             file=sys.stderr,
         )
-        return relay.HarnessReply(None, None, None)
+        return contract.HarnessReply(None, None, None)
 
 
 def _finished_ledger_fields(
@@ -11351,7 +11321,6 @@ def claimed_touch_overlaps(
     손상 frontmatter 는 board 의 순회 로더(`load_ticket_soft`)가 경고 1줄과 함께 건너뛴다.
     """
     board = _load_board_for_repo(Path(pm_root))
-    coordinates = _load_repo_coordinates()
     found = board.find_ticket_exact(ticket)
     if found is None:
         return ()
@@ -11361,7 +11330,7 @@ def claimed_touch_overlaps(
     target_fm = target[0]
     claimed_by = str(target_fm.get("claimed_by") or "").strip()
     target_pairs = _touch_notations(
-        target_fm.get("touches"), board, coordinates,
+        target_fm.get("touches"), board, repo_coordinates,
         pm_root=pm_root, workspace=workspace,
     )
     if not claimed_by or not target_pairs:
@@ -11379,7 +11348,7 @@ def claimed_touch_overlaps(
         if str(other_fm.get("claimed_by") or "").strip() != claimed_by:
             continue
         other_pairs = _touch_notations(
-            other_fm.get("touches"), board, coordinates,
+            other_fm.get("touches"), board, repo_coordinates,
             pm_root=pm_root, workspace=workspace,
         )
         if not other_pairs:
@@ -11760,7 +11729,7 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
 # 있으므로 설정 경로로 확정했고, OPENCODE_CONFIG는 양쪽 어디에도 없어 판정에서 제외한다.
 def _session_harnesses(env: dict[str, str]) -> tuple[str, ...]:
     """실측 세션 마커와 일치하는 하네스를 모두 반환한다."""
-    session_markers = _load_relay().HARNESS_SESSION_MARKERS
+    session_markers = watchdog.HARNESS_SESSION_MARKERS
     return tuple(
         name for name, keys in session_markers.items()
         if any(env.get(key) for key in keys)
@@ -12166,7 +12135,7 @@ def _parse_ledger_timestamp(value: object) -> datetime.datetime | None:
 
 def _review_prompt_path(owner: Path, run_id: str) -> Path:
     """native 리뷰 프롬프트 파일 자리 — PM 홈 위임 raw 디렉터리 아래 run 마다 하나."""
-    delegate_dir, _ledger = _load_relay().raw_storage_paths(owner, "delegate")
+    delegate_dir, _ledger = raw_output.raw_storage_paths(owner, "delegate")
     return Path(delegate_dir) / f"review-prompt-{run_id}.md"
 
 
@@ -12972,12 +12941,10 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
             "이상이고, accepted 가 있었다면 그 채널 기계 확인이 1건 이상 존재"
         ),
     )
-    board = _load_board()
-    identity_module = board.identity_args
-    identity_module.add_identity_args(resolve)
+    identity_args.add_identity_args(resolve)
     args = parser.parse_args(argv)
     try:
-        identity_module.parse_identity(args)
+        identity_args.parse_identity(args)
     except ValueError as exc:
         parser.error(str(exc))
     if not _is_valid_cluster_id(args.cluster):
@@ -13416,7 +13383,7 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str], harness: st
     """위임 turn **벽시계 백스톱**(초)을 양의 정수로 해소한다.
 
     우선순위: `--timeout`(양수 — _validate_args 가 보장) > 하네스 프로필 해소값. 프로필 해소는
-    `pm_relay.resolve_harness_profile`(선언 기본 → `delegate.timeout` legacy → `harness.<name>.
+    `watchdog.resolve_harness_profile`(선언 기본 → `delegate.timeout` legacy → `harness.<name>.
     wall_timeout`)이 소유하므로 이 함수는 CLI 우선만 얹는다 — 값 규칙이 두 군데로 갈리지 않는다.
     깨진 conf 값은 그 해소기가 stderr 경고 후 선언 기본으로 fail-soft 한다(usage error 부적합)."""
     if args.timeout is not None:
@@ -13432,21 +13399,20 @@ def _harness_timeout_budget(harness: str, timeout: int) -> int:
     다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(`now >= first_deadline`
     분기), 실행 본체는 `timeout + retries×min(첫-이벤트 창, timeout)` 이다. 여기에 부모 wait 5초와
     pipe drain 5초의 연속 정리를 **모든 시도(retries+1)** 에 더한다. 나머지 축도 timeout 뒤 정리
-    1회를 같은 공용 식으로 센다. relay 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를
+    1회를 같은 공용 식으로 센다. watchdog 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를
     못 읽으면 재시도 0인 공용 식으로 계산한다.
     (무진행 판정은 벽시계 *안쪽* 에서만 앞당겨 끝내므로 이 상한을 늘리지 않는다.)"""
     try:
-        relay = _load_relay()
         startup_watchdog = harness_profile(harness).startup_watchdog
-        retries = max(0, int(relay.stall_retries_default())) if startup_watchdog else 0
+        retries = max(0, int(watchdog.stall_retries_default())) if startup_watchdog else 0
         first_event_window = (
-            float(relay.first_event_timeout_default()) if startup_watchdog else None
+            float(watchdog.first_event_timeout_default()) if startup_watchdog else None
         )
     except (OSError, ValueError, TypeError, AttributeError, ImportError):
         # 프로필/노브를 못 읽는 진단 경로에서도 호출층 상한을 낮게 예고하지 않는다. 공유 기본의
         # 현재 최대 재시도(2회)가 각자 wall 전부를 쓸 수 있다고 잡고 정리 3회를 더하는 안전 상한.
         return int(timeout * 3 + 3 * _HARNESS_CAP_KILL_GRACE_BUDGET_SEC)
-    return int(relay.watchdog_execution_budget(
+    return int(watchdog.watchdog_execution_budget(
         timeout,
         first_event_timeout=first_event_window,
         retries=retries,
@@ -13460,10 +13426,9 @@ def max_declared_execution_path_budget() -> int:
     최댓값이 아니라 **모든 선언 축 두 시도의 합**을 본다. 2단 폴백은 없으므로 깊이는 정확히 2다.
     startup watchdog 재시도 창도 각 시도의 예산에 포함한다.
     """
-    relay = _load_relay()
     budgets = [
         _harness_timeout_budget(harness, int(profile.wall_timeout))
-        for harness, profile in relay.HARNESS_PROFILES.items()
+        for harness, profile in watchdog.HARNESS_PROFILES.items()
     ]
     return max(primary + fallback for primary in budgets for fallback in budgets)
 
@@ -13481,13 +13446,12 @@ def harness_cap_advisory(env: dict[str, str] | None = None,
     env = os.environ if env is None else env
     if not _session_harnesses(env):
         return None
-    relay = _load_relay()
-    session_markers = relay.HARNESS_SESSION_MARKERS
-    cap_env = relay.HARNESS_CAP_ENV
+    session_markers = watchdog.HARNESS_SESSION_MARKERS
+    cap_env = watchdog.HARNESS_CAP_ENV
     required = max_declared_execution_path_budget()
     if execution_budget is not None:
         required = max(required, execution_budget)
-    return relay.harness_cap_advisory(
+    return watchdog.harness_cap_advisory(
         env, execution_budget=required,
         session_markers=session_markers, cap_env=cap_env,
         render_missing=lambda pm_harness, cap_key, required: (

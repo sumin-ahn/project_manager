@@ -45,6 +45,7 @@ from test_fresh_adopter_runtime_smoke import (
     _load_pm_import,
     _tickets_in,
 )
+from pm_engine.infra.harness import watchdog
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
@@ -333,14 +334,6 @@ def test_opencode_compaction_probe_uses_bounded_turns_with_threshold_history():
     assert all(_COMPACTION_RECOVERY_SENTINEL in prompt for prompt in prompts)
 
 
-def _load_pm_relay():
-    """엔진 pm_relay(첫-이벤트 워치독)를 importlib 로 로드 (T-0336·release 라이브 헬퍼용)."""
-    spec = importlib.util.spec_from_file_location("pm_relay", _TOOLS / "pm_relay.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _run_opencode_live(argv, *, cwd, env, timeout):
     """opencode 라이브 호출을 엔진 첫-이벤트 워치독으로 감싼다 (T-0336).
 
@@ -348,12 +341,11 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
     소진 시 StallWatchdogError → 테스트 **fail-loud**(라이브 환경 문제 가시화). overall_timeout 은
     기존 turn 상한(1800s) 유지 — mid-turn(정상 긴 생성) 침묵은 그 백스톱이 담당. subprocess.run 과
     동일한 CompletedProcess(returncode·stdout·stderr)를 반환해 side-effect 단언은 무변경."""
-    engine = _load_pm_relay()
-    return engine.run_with_first_event_watchdog(
+    return watchdog.run_with_first_event_watchdog(
         argv,
-        first_event_timeout=engine.first_event_timeout_default(),
+        first_event_timeout=watchdog.first_event_timeout_default(),
         overall_timeout=timeout,
-        retries=engine.stall_retries_default(),
+        retries=watchdog.stall_retries_default(),
         cwd=str(cwd),
         env=env,
     )

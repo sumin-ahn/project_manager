@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, write_lf
+from pm_engine.infra import raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1109,15 +1110,12 @@ def test_inflight_raw_query_never_enters_ledger_lock(tmp_path, monkeypatch):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_raw_ledger(pm_home, [_raw_record(tmp_path, "r1")])
-    real_relay = mod._load_pm_relay()
-
     @contextlib.contextmanager
     def _fail_if_locked(*_a, **_k):
         pytest.fail("진행 중 작업 절의 raw 조회가 배타 파일락에 진입함(lock=False 계약 위반)")
         yield  # pragma: no cover — 도달하면 이미 실패
 
-    monkeypatch.setattr(real_relay, "_raw_ledger_lock", _fail_if_locked)
-    monkeypatch.setattr(mod, "_load_pm_relay", lambda: real_relay)
+    monkeypatch.setattr(raw_output, "_raw_ledger_lock", _fail_if_locked)
 
     text, warning = mod.build_snapshot(pm_home, "s-main")
 

@@ -27,6 +27,7 @@ import pytest
 
 from _git_fixture import init_git_repo
 from conftest import write_cluster_ledger
+from pm_engine.infra import repo_coordinates
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -704,8 +705,8 @@ def test_affected_domain_titles_nonprefixed_touches_skip_coordinate_loader(
     monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     monkeypatch.setattr(
-        tf, "_load_repo_coordinates",
-        lambda: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
+        repo_coordinates, "normalize_repo_path",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
     )
     assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == []
 
@@ -1922,43 +1923,6 @@ def test_task_stage_scope_rejects_root_or_absolute_before_real_git_stage(
     assert staged == ""
 
 
-def test_task_stage_scope_old_coordinate_copy_has_guarded_exception_type(
-        tf, tmp_path, monkeypatch):
-    """구 사본의 RepoCoordinateError 속성 부재가 AttributeError traceback으로 새지 않는다."""
-    home = tmp_path / "pm-home"
-    workspace = home / "work" / "project_manager_1"
-    workspace.mkdir(parents=True)
-    board_py = _write_coordinate_stage_board(
-        tmp_path, ["work/project_manager_1/src/change.py"])
-
-    class _OldCoordinates:
-        @staticmethod
-        def normalize_repo_paths(*args, **kwargs):
-            raise RuntimeError("구 좌표 사본")
-
-    monkeypatch.setattr(tf, "REPO", home)
-    monkeypatch.setattr(tf, "_load_repo_coordinates", lambda: _OldCoordinates())
-    scope = tf.stage_scope(
-        "T-0473", board_py, home / "log.md", lambda args: (0, ""),
-        repo=workspace, touches_workspace=workspace,
-    )
-    assert scope.pathspec == ()
-    assert "구 좌표 사본" in scope.error
-
-
-def test_coordinate_loader_old_sibling_reports_explicit_skew(
-        tf, tmp_path, monkeypatch):
-    """stamp/예외 타입이 없는 구 sibling도 AttributeError가 아닌 엔진 skew로 식별한다."""
-    (tmp_path / "repo_coordinates.py").write_text(
-        "def normalize_repo_paths(paths, **kwargs):\n"
-        "    raise ValueError('old copy')\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(tf, "TOOLS_DIR", tmp_path)
-    with pytest.raises(RuntimeError, match="버전 불일치"):
-        tf._load_repo_coordinates()
-
-
 # ── 진입 게이트 공용 대역 ───────────────────────────────────────────────────
 
 
@@ -2057,8 +2021,8 @@ def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypat
 
 def test_measured_touches_leaves_plain_repo_paths_untouched(tf, tmp_path, monkeypatch):
     """접두 없는 채택자 형상은 normalizer 를 타지 않는다 (경량 판정·현행 무변경)."""
-    monkeypatch.setattr(tf, "_load_repo_coordinates",
-                        lambda: (_ for _ in ()).throw(AssertionError("normalizer 미호출")))
+    monkeypatch.setattr(repo_coordinates, "normalize_repo_paths",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalizer 미호출")))
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
     assert finisher._normalize_measured_touches(
         [".project_manager/tools/board.py"]) == [".project_manager/tools/board.py"]
@@ -2414,7 +2378,6 @@ def test_pm_direct_task_coordinate_failure_is_loud_and_never_uses_raw_touches(
             "touches": ["work/project_manager_1/src/app.py"],
         }, None),
     )
-    monkeypatch.setattr(tf, "_load_repo_coordinates", lambda: None)
     finisher = tf.TicketFinisher(
         board_py=tf.BOARD_PY,
         task_workspace=workspace,

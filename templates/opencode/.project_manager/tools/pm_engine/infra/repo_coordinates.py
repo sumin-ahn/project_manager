@@ -32,17 +32,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from pathlib import Path
+
+from pm_engine.infra import fs
 
 
 _WORKTREE_PREFIX = re.compile(
     r"^(?P<slot>work/(?P<repo>[^/]+)_(?P<number>\d+))(?:/(?P<relative>.*))?$"
 )
-
-# baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
-# RepoCoordinateError 속성 접근 전에 명시적인 sibling-skew 오류로 막는다.
-ENGINE_REV = "v1.8.1"
 
 
 class RepoCoordinateError(ValueError):
@@ -157,17 +154,11 @@ def _workspace_slot(workspace: Path | str, pm_root: Path) -> tuple[str, Path]:
     return slot, resolved
 
 
-# ── 엔진 패키지 import (공유 읽기는 `fs.read_text_shared`) ──
-_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _TOOLS_DIR not in sys.path:
-    sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import fs  # noqa: E402
-
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
 # 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
 
 
-# ── 공유 읽기 (원자 교체 대상 장부·[[T-0729]]) ────────────────────────────
+# ── 공유 읽기 (원자 교체 대상 장부) ──────────────────────────────────────
 # 이 모듈이 읽는 리스 장부(`worktree-leases.json`)는 `worktree_pool` 이 **원자 교체**하는
 # 파일이다. 일반 `open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로,
 # 판독도 공용 seam 의 공유 읽기(`fs.read_text_shared`)를 지난다.

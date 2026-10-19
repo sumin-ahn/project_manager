@@ -15,7 +15,7 @@
   ④ 드라이버 능력 **선언**(분기 특례 아님) + 신호 없는 축은 벽시계 유지.
   ⑤ claude `--output-format stream-json` 전환 후에도 회신 추출 동일(파서 동치).
   ⑥ 감사 헤더에 최종 이벤트 이후 침묵 초.
-  ⑧ `additional_reviewer` 도 **같은 공용 seam**(pm_relay)으로 전환 — 복붙 구현 0.
+  ⑧ `additional_reviewer` 도 **같은 공용 seam**(watchdog)으로 전환 — 복붙 구현 0.
   ⑨ kill 시점까지 받은 출력 보존(위임·추가리뷰·fill 세 표면).
 
 **벽시계의 위치**: DoD 는 "이벤트가 계속 흐르면 벽시계 초과해도 안 죽음"을 요구하고 §결정은
@@ -40,6 +40,7 @@ import pytest
 from _textio import normalize_newlines, utf8_child_env
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
+from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -57,11 +58,6 @@ def _load(name: str, path: Path):
 FILL_CAPABLE_HARNESSES = _load(
     "pm_import_fill_parametrize", TOOLS / "pm_import.py"
 ).FILL_CAPABLE_HARNESSES
-
-
-@pytest.fixture(scope="module")
-def relay():
-    return _load("pm_relay", TOOLS / "pm_relay.py")
 
 
 @pytest.fixture(scope="module")
@@ -213,13 +209,13 @@ _HARNESS_NAMES = frozenset({"codex", "claude", "opencode"})
 # 진행신호 함수는 하나도 면제하지 않는다. 값은 리뷰 가능한 근거이며 빈 근거는 아래 가드가 red 낸다
 # (T-0493 EXEMPT_FROM_STAMP와 같은 "면제에는 사유" 형식).
 _HARNESS_LITERAL_EXEMPTIONS = {
-    # argv 조립·wire 파서 선택은 위임/추가 리뷰어 공용 계약이라 pm_relay 가 소유한다(T-0590).
+    # argv 조립·wire 파서 선택은 위임/추가 리뷰어 공용 계약이라 contract 가 소유한다(T-0590).
     # pm_delegate 의 같은 이름 함수는 이제 리터럴 없는 wrapper 라 스캔에 걸리지 않는다.
-    ("pm_relay", "build_codex_argv"):
+    ("pm_engine/infra/harness/contract", "build_codex_argv"):
         "codex 실행 파일 토큰을 만드는 전용 argv 빌더",
-    ("pm_relay", "build_claude_argv"):
+    ("pm_engine/infra/harness/contract", "build_claude_argv"):
         "claude 실행 파일 토큰을 만드는 전용 argv 빌더",
-    ("pm_relay", "build_opencode_argv"):
+    ("pm_engine/infra/harness/contract", "build_opencode_argv"):
         "opencode 실행 파일 토큰을 만드는 전용 argv 빌더",
     # 회신 디코더는 면제가 필요 없어졌다 — 하네스별 wire 어댑터가 모듈 레벨 선언표
     # (`HARNESS_REPLY_ADAPTERS`)로 옮겨가 함수 본문에 하네스 리터럴이 남지 않는다(T-0595).
@@ -307,7 +303,9 @@ def _unexpected_harness_literal_hits(
         sources: dict[str, str] | None = None) -> dict[tuple[str, str], list[tuple[int, str]]]:
     sources = sources or {
         name: (TOOLS / f"{name}.py").read_text(encoding="utf-8")
-        for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_relay")
+        for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_engine/app/session/relay",
+                     "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
+                     "pm_engine/infra/raw_output")
     }
     unexpected = {}
     for module_name, source in sources.items():
@@ -329,10 +327,10 @@ def _direct_target(external, command: str = "codex"):
     `resolve_reviewer_target` 이 harness·model 을 채운 구조화 tuple 이다."""
     return external.ReviewerTarget(external.REVIEWER_SOURCE_STRUCTURED, command)
 
-def test_watched_popen_tracks_last_event_from_stdout(relay):
+def test_watched_popen_tracks_last_event_from_stdout():
     """stdout chunk 도착이 마지막 진행 시각을 세운다 + 부분 출력이 즉시 회수 가능."""
     argv = [sys.executable, "-c", "print('EVENT', flush=True); import time; time.sleep(0.3)"]
-    proc = relay._WatchedPopen(argv, cwd=None, env=None, text=True)
+    proc = watchdog._WatchedPopen(argv, cwd=None, env=None, text=True)
     try:
         stdout, _stderr = proc.communicate(timeout=15)
         assert "EVENT" in stdout
@@ -342,13 +340,13 @@ def test_watched_popen_tracks_last_event_from_stdout(relay):
         proc.kill()
 
 
-def test_watched_popen_tracks_last_event_from_stderr_only(relay):
+def test_watched_popen_tracks_last_event_from_stderr_only():
     """**stderr 로만** 뿜는 자식도 진행으로 관측된다 — 리뷰어 평문 축(진행 로그=stderr) 실측 형상.
 
     stdout 단독 관측이면 이 축은 "무진행"으로 오판돼 정상 리뷰가 전량 false-kill 된다."""
     argv = [sys.executable, "-c",
             "import sys; sys.stderr.write('PROGRESS\\n'); sys.stderr.flush()"]
-    proc = relay._WatchedPopen(argv, cwd=None, env=None, text=True)
+    proc = watchdog._WatchedPopen(argv, cwd=None, env=None, text=True)
     try:
         stdout, stderr = proc.communicate(timeout=15)
         assert stdout == "" and "PROGRESS" in stderr
@@ -358,7 +356,7 @@ def test_watched_popen_tracks_last_event_from_stderr_only(relay):
         proc.kill()
 
 
-def test_watched_popen_first_event_stays_stdout_only(relay):
+def test_watched_popen_first_event_stays_stdout_only():
     """`first_event_ready` 는 **stdout 전용 그대로**(T-0336 startup stall 의미론 보존).
 
     진행 관측이 stderr 를 포함한다고 첫-이벤트 판정까지 stderr 를 먹으면, opencode startup stall 이
@@ -366,7 +364,7 @@ def test_watched_popen_first_event_stays_stdout_only(relay):
     argv = [sys.executable, "-c",
             "import sys, time\n"
             "sys.stderr.write('NOISE\\n'); sys.stderr.flush(); time.sleep(1.0)"]
-    proc = relay._WatchedPopen(argv, cwd=None, env=None, text=True)
+    proc = watchdog._WatchedPopen(argv, cwd=None, env=None, text=True)
     try:
         deadline = __import__("time").monotonic() + 5
         while proc.last_event_at() is None and __import__("time").monotonic() < deadline:
@@ -377,10 +375,10 @@ def test_watched_popen_first_event_stays_stdout_only(relay):
         proc.kill()
 
 
-def test_watched_popen_writes_stdin_and_closes(relay):
+def test_watched_popen_writes_stdin_and_closes():
     """`input_text` 주입 — 전문을 쓰고 **닫아** EOF 를 준다(codex/claude 는 EOF 까지 읽는다)."""
     argv = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read().upper())"]
-    proc = relay._WatchedPopen(argv, cwd=None, env=None, text=True, input_text="prompt-body")
+    proc = watchdog._WatchedPopen(argv, cwd=None, env=None, text=True, input_text="prompt-body")
     try:
         stdout, _stderr = proc.communicate(timeout=15)
         assert stdout == "PROMPT-BODY"
@@ -392,20 +390,20 @@ def test_watched_popen_writes_stdin_and_closes(relay):
 # hermetic 케이스는 전부 주입 popen/clock 이라 실 어댑터를 안 태운다. 아래 둘은 낮은 임계(1~2초)로
 # **실제로 죽는지 / 실제로 안 죽는지** 를 실 subprocess 에서 본다(opencode·codex 바이너리 불요).
 
-def test_real_process_idle_kill_preserves_partial_and_leaves_no_orphan(relay):
+def test_real_process_idle_kill_preserves_partial_and_leaves_no_orphan():
     """한 줄 뿜고 침묵하는 실 자식 → 무진행 kill · 부분 산출물 보존 · 잔존 프로세스 0."""
     argv = [sys.executable, "-c",
             "import time; print('FIRST', flush=True); time.sleep(999)"]
     captured: list = []
 
     def watched(a):
-        proc = relay._WatchedPopen(a, cwd=None, env=None, text=True)
+        proc = watchdog._WatchedPopen(a, cwd=None, env=None, text=True)
         captured.append(proc)
         return proc
 
     logs: list[str] = []
-    with pytest.raises(relay.IdleTimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.IdleTimeoutExpired) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             argv, first_event_timeout=None, overall_timeout=60.0, retries=0,
             idle_timeout=1.0, popen=watched, log=logs.append, poll_interval=0.05,
         )
@@ -420,7 +418,7 @@ def test_real_process_idle_kill_preserves_partial_and_leaves_no_orphan(relay):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group 잔존 자식 실증은 POSIX 전용")
-def test_parent_exit_with_live_child_is_not_success_and_child_group_is_killed(relay):
+def test_parent_exit_with_live_child_is_not_success_and_child_group_is_killed():
     """부모 rc=0 뒤 자식이 상속 파이프를 쥔 형상도 전체 deadline에서 실패하고 실제 정리된다."""
     parent_code = (
         "import subprocess, sys\n"
@@ -429,8 +427,8 @@ def test_parent_exit_with_live_child_is_not_success_and_child_group_is_killed(re
         "print(child.pid, flush=True)\n"
     )
     started = __import__("time").monotonic()
-    with pytest.raises(relay.WallTimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.WallTimeoutExpired) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             [sys.executable, "-c", parent_code],
             first_event_timeout=None,
             overall_timeout=2.0,
@@ -454,7 +452,7 @@ def test_parent_exit_with_live_child_is_not_success_and_child_group_is_killed(re
 
 
 @pytest.mark.skipif(os.name != "posix", reason="stdin writer·process-group 실증은 POSIX 전용")
-def test_large_stdin_writer_keeps_run_open_and_live_child_is_killed(relay, tmp_path):
+def test_large_stdin_writer_keeps_run_open_and_live_child_is_killed(tmp_path):
     """4MiB writer가 막힌 채 부모만 rc=0이어도 성공 반환하지 않고 wall kill로 자식을 닫는다."""
     pid_file = tmp_path / "stdin-holder.pid"
     parent_code = (
@@ -464,8 +462,8 @@ def test_large_stdin_writer_keeps_run_open_and_live_child_is_killed(relay, tmp_p
         "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii')\n"
     )
-    with pytest.raises(relay.WallTimeoutExpired):
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.WallTimeoutExpired):
+        watchdog.run_with_first_event_watchdog(
             [sys.executable, "-c", parent_code, str(pid_file)],
             first_event_timeout=None,
             overall_timeout=0.25,
@@ -488,7 +486,7 @@ def test_large_stdin_writer_keeps_run_open_and_live_child_is_killed(relay, tmp_p
 
 
 @pytest.mark.skipif(os.name != "posix", reason="killpg 오류 계약은 POSIX 전용")
-def test_process_group_cleanup_failure_is_loud_even_after_parent_exit(relay, monkeypatch):
+def test_process_group_cleanup_failure_is_loud_even_after_parent_exit(monkeypatch):
     """부모 rc=0이어도 저장 pgid kill 실패를 best-effort 성공으로 삼키지 않는다."""
     class _ExitedParent:
         pid = 12345
@@ -500,14 +498,14 @@ def test_process_group_cleanup_failure_is_loud_even_after_parent_exit(relay, mon
     def denied(_pgid, _signal):
         raise PermissionError(1, "not permitted")
 
-    monkeypatch.setattr(relay.os, "killpg", denied)
-    with pytest.raises(relay.ProcessCleanupError, match="pgid=777"):
-        relay._kill_process_group(_ExitedParent(), process_group_id=777)
+    monkeypatch.setattr(watchdog.os, "killpg", denied)
+    with pytest.raises(watchdog.ProcessCleanupError, match="pgid=777"):
+        watchdog._kill_process_group(_ExitedParent(), process_group_id=777)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="분리 session 손자·killpg 경계 실증은 POSIX 전용")
 def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
-        relay, pd, monkeypatch, tmp_path, capsys):
+        pd, monkeypatch, tmp_path, capsys):
     """분리 session 손자가 drain을 막으면 raw 보존+fail-loud, 설정 폴백은 **호출 0회**다."""
     pid_file = tmp_path / "detached-grandchild.pid"
     parent_code = (
@@ -518,9 +516,7 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
         "print('PARTIAL-BEFORE-CLEANUP', flush=True)\n"
         "time.sleep(30)\n"
     )
-    monkeypatch.setattr(relay, "_KILL_GRACE_SEC", 0.2)
-    # pm_delegate는 자기 loader로 별도 relay module을 만들므로 같은 grace를 쓰도록 주입한다.
-    monkeypatch.setattr(pd, "_load_relay", lambda: relay)
+    monkeypatch.setattr(watchdog, "_KILL_GRACE_SEC", 0.2)
 
     calls = []
 
@@ -565,7 +561,7 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
                 pass
 
 
-def test_real_process_progressing_on_stderr_survives_idle_threshold(relay):
+def test_real_process_progressing_on_stderr_survives_idle_threshold():
     """stdout 은 종료 직전 한 번, 진행은 stderr 로만 흐르는 실 자식 → 무진행 kill 없이 완주.
 
     리뷰어 평문 축의 실제 형상이다(진행 로그=stderr·stdout=최종 회신). stdout 단독 관측이었다면
@@ -575,7 +571,7 @@ def test_real_process_progressing_on_stderr_survives_idle_threshold(relay):
             "for _ in range(12):\n"
             "    sys.stderr.write('tick\\n'); sys.stderr.flush(); time.sleep(0.2)\n"
             "sys.stdout.write('판정: 통과\\n')"]
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         argv, first_event_timeout=None, overall_timeout=60.0, retries=0,
         idle_timeout=1.0, poll_interval=0.05,
         env=utf8_child_env(),
@@ -585,7 +581,7 @@ def test_real_process_progressing_on_stderr_survives_idle_threshold(relay):
     assert normalize_newlines(result.stderr).count("tick") == 12
 
 
-def test_real_process_unterminated_stdout_chunks_survive_idle_threshold(relay):
+def test_real_process_unterminated_stdout_chunks_survive_idle_threshold():
     """개행 없이 flush 되는 byte stream 도 실제 chunk 도착으로 진행 판정한다.
 
     readline 기반이면 줄이 완성되지 않아 reader가 반환하지 않고 1초 idle 에 false-kill 된다.
@@ -595,7 +591,7 @@ def test_real_process_unterminated_stdout_chunks_survive_idle_threshold(relay):
             "import sys, time\n"
             "for _ in range(10):\n"
             "    sys.stdout.write('x'); sys.stdout.flush(); time.sleep(0.2)"]
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         argv, first_event_timeout=None, overall_timeout=10.0, retries=0,
         idle_timeout=1.0, poll_interval=0.05,
     )
@@ -605,13 +601,13 @@ def test_real_process_unterminated_stdout_chunks_survive_idle_threshold(relay):
 
 # ── ② 무진행 판정 (hermetic·주입 popen/clock) ────────────────────────────────────
 
-def test_progressing_stream_survives_far_beyond_idle_threshold(relay):
+def test_progressing_stream_survives_far_beyond_idle_threshold():
     """진행 이벤트가 계속 흐르면 **무진행 상한의 10배 경과** 에도 안 죽는다(판정 기준 교체 실증)."""
     clock = _FakeClock()
     proc = _ScriptedProc(clock, event_times=[i * 5.0 for i in range(20)], exit_at=100.0,
                          rc=0)
     logs: list[str] = []
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["drv"], first_event_timeout=None, overall_timeout=1000.0, retries=0,
         idle_timeout=10.0, popen=_scripted_popen([proc]), clock=clock,
         sleep=clock.advance, log=logs.append, poll_interval=1.0,
@@ -621,13 +617,13 @@ def test_progressing_stream_survives_far_beyond_idle_threshold(relay):
     assert logs == []
 
 
-def test_idle_stream_is_killed_with_loud_and_partial_output(relay):
+def test_idle_stream_is_killed_with_loud_and_partial_output():
     """무진행이면 죽는다 — kill + loud 1줄 + **kill 시점까지의 출력 보존**(전량 폐기 폐쇄)."""
     clock = _FakeClock()
     proc = _ScriptedProc(clock, event_times=[0.0], exit_at=None, chunk="PARTIAL\n")
     logs: list[str] = []
-    with pytest.raises(relay.IdleTimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.IdleTimeoutExpired) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=1000.0, retries=0,
             idle_timeout=10.0, popen=_scripted_popen([proc]), clock=clock,
             sleep=clock.advance, log=logs.append, poll_interval=1.0,
@@ -639,15 +635,15 @@ def test_idle_stream_is_killed_with_loud_and_partial_output(relay):
     assert len(logs) == 1 and "무진행" in logs[0] and "idle watchdog" in logs[0]
 
 
-def test_idle_timeout_expired_is_a_timeout_expired(relay):
+def test_idle_timeout_expired_is_a_timeout_expired():
     """`IdleTimeoutExpired` 는 `subprocess.TimeoutExpired` 하위 — 기존 분류/폴백 경로 회귀 0."""
-    exc = relay.IdleTimeoutExpired(["x"], 10.0, idle_seconds=12.0)
+    exc = watchdog.IdleTimeoutExpired(["x"], 10.0, idle_seconds=12.0)
     assert isinstance(exc, subprocess.TimeoutExpired)
     assert exc.idle_seconds == 12.0
     assert getattr(subprocess.TimeoutExpired(["x"], 10.0), "idle_seconds", None) is None
 
 
-def test_idle_none_keeps_legacy_single_drain(relay):
+def test_idle_none_keeps_legacy_single_drain():
     """`idle_timeout=None` = 현행 동작 불변 — 폴 루프 없이 단일 블로킹 드레인."""
     clock = _FakeClock()
 
@@ -661,7 +657,7 @@ def test_idle_none_keeps_legacy_single_drain(relay):
             return "OUT", "ERR"
 
     proc = _LegacyProc(clock, event_times=[0.0], exit_at=0.0, rc=0)
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["drv"], first_event_timeout=5.0, overall_timeout=600.0, retries=0,
         idle_timeout=None, popen=_scripted_popen([proc]), clock=clock,
         sleep=clock.advance, log=[].append, poll_interval=1.0,
@@ -670,25 +666,25 @@ def test_idle_none_keeps_legacy_single_drain(relay):
     assert proc.communicate_calls == 1 and proc.kill_count == 0
 
 
-def test_idle_none_wall_timeout_is_wrapped_with_actual_diagnostics(relay):
+def test_idle_none_wall_timeout_is_wrapped_with_actual_diagnostics():
     """단일 blocking communicate 경로도 raw TimeoutExpired를 그대로 흘리지 않고 진단을 싣는다."""
     clock = _FakeClock()
     proc = _ScriptedProc(clock, event_times=[10.0], exit_at=None, chunk="PROGRESS\n")
-    with pytest.raises(relay.WallTimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.WallTimeoutExpired) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=50.0, retries=0,
             idle_timeout=None, popen=_scripted_popen([proc]), clock=clock,
             sleep=clock.advance, log=[].append, poll_interval=1.0,
         )
     exc = excinfo.value
-    assert exc.timeout_axis == relay.TIMEOUT_AXIS_WALL
+    assert exc.timeout_axis == watchdog.TIMEOUT_AXIS_WALL
     assert exc.threshold_seconds == 50.0
     assert exc.silence_seconds == 40.0
     assert exc.output == "PROGRESS\n"
     assert proc.kill_count == 1
 
 
-def test_signalless_adapter_is_not_idle_judged(relay):
+def test_signalless_adapter_is_not_idle_judged():
     """진행을 노출 못 하는 어댑터는 **무진행 판정 대상이 아니다** — 벽시계만 남는다.
 
     모르는 드라이버를 무진행으로 죽이지 않는다(false-kill 방향 금지). 같은 스크립트라도 관측
@@ -696,7 +692,7 @@ def test_signalless_adapter_is_not_idle_judged(relay):
     clock = _FakeClock()
     blind = _BlindProc(clock, exit_at=100.0)
     assert not hasattr(blind, "last_event_at")
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["drv"], first_event_timeout=None, overall_timeout=1000.0, retries=0,
         idle_timeout=10.0, popen=_scripted_popen([blind]), clock=clock,
         sleep=clock.advance, log=[].append, poll_interval=1.0,
@@ -704,12 +700,12 @@ def test_signalless_adapter_is_not_idle_judged(relay):
     assert result.returncode == 0 and blind.kill_count == 0
 
 
-def test_signalless_adapter_still_bounded_by_wall_clock(relay):
+def test_signalless_adapter_still_bounded_by_wall_clock():
     """신호 없는 축도 **유한** 하다 — 벽시계 백스톱이 그대로 닫는다."""
     clock = _FakeClock()
     blind = _BlindProc(clock, exit_at=None)
     with pytest.raises(subprocess.TimeoutExpired):
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=50.0, retries=0,
             idle_timeout=10.0, popen=_scripted_popen([blind]), clock=clock,
             sleep=clock.advance, log=[].append, poll_interval=1.0,
@@ -717,7 +713,7 @@ def test_signalless_adapter_still_bounded_by_wall_clock(relay):
     assert blind.kill_count == 1
 
 
-def test_wall_clock_backstop_closes_even_while_progressing(relay):
+def test_wall_clock_backstop_closes_even_while_progressing():
     """진행 중이어도 벽시계 백스톱은 유한하게 닫는다(무제한 금지) + 부분 산출물 보존.
 
     감지기 자체가 고장나면(진행 신호가 계속 오는데 영원히 안 끝남) 무제한은 silent hang 이 된다."""
@@ -726,14 +722,14 @@ def test_wall_clock_backstop_closes_even_while_progressing(relay):
                          chunk="X\n")
     logs: list[str] = []
     with pytest.raises(subprocess.TimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=50.0, retries=0,
             idle_timeout=1000.0, popen=_scripted_popen([proc]), clock=clock,
             sleep=clock.advance, log=logs.append, poll_interval=1.0,
         )
-    assert not isinstance(excinfo.value, relay.IdleTimeoutExpired)  # 무진행이 아니라 벽시계
-    assert isinstance(excinfo.value, relay.WallTimeoutExpired)
-    assert excinfo.value.timeout_axis == relay.TIMEOUT_AXIS_WALL
+    assert not isinstance(excinfo.value, watchdog.IdleTimeoutExpired)  # 무진행이 아니라 벽시계
+    assert isinstance(excinfo.value, watchdog.WallTimeoutExpired)
+    assert excinfo.value.timeout_axis == watchdog.TIMEOUT_AXIS_WALL
     assert excinfo.value.threshold_seconds == 50.0
     assert excinfo.value.silence_seconds == 0.0
     assert excinfo.value.output, "벽시계 kill 도 부분 산출물을 보존해야 한다"
@@ -741,35 +737,35 @@ def test_wall_clock_backstop_closes_even_while_progressing(relay):
     assert len(logs) == 1 and "벽시계 백스톱" in logs[0]
 
 
-def test_silence_audit_clamps_reader_clock_race_to_zero(relay):
+def test_silence_audit_clamps_reader_clock_race_to_zero():
     """`now` 뒤 reader가 최신 시각을 쓰는 경합은 음수 감사값이 아니라 0초다."""
     class _ReaderWonRace:
         @staticmethod
         def last_event_at():
             return 10.25
 
-    assert relay._silence_seconds(_ReaderWonRace(), now=10.0, start=1.0) == 0.0
+    assert watchdog._silence_seconds(_ReaderWonRace(), now=10.0, start=1.0) == 0.0
 
 
-def test_first_event_stall_behaviour_unchanged_with_idle(relay):
+def test_first_event_stall_behaviour_unchanged_with_idle():
     """첫-이벤트 stall(유한 재시도 → StallWatchdogError) 기존 동작은 idle 도입 후에도 불변."""
     clock = _FakeClock()
     procs = [_ScriptedProc(clock, event_times=[], exit_at=None),
              _ScriptedProc(clock, event_times=[], exit_at=None)]
     logs: list[str] = []
-    with pytest.raises(relay.StallWatchdogError) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.StallWatchdogError) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             ["opencode", "run"], first_event_timeout=5.0, overall_timeout=600.0, retries=1,
             idle_timeout=900.0, popen=_scripted_popen(procs), clock=clock,
             sleep=clock.advance, log=logs.append, poll_interval=1.0,
         )
     assert [p.kill_count for p in procs] == [1, 1]
     assert len(logs) == 2 and all("stall watchdog" in m for m in logs)
-    assert excinfo.value.timeout_axis == relay.TIMEOUT_AXIS_FIRST_EVENT
+    assert excinfo.value.timeout_axis == watchdog.TIMEOUT_AXIS_FIRST_EVENT
     assert excinfo.value.threshold_seconds == 5.0
 
 
-def test_first_event_stall_preserves_output_received_before_kill(relay):
+def test_first_event_stall_preserves_output_received_before_kill():
     """startup stall도 stdout/stderr를 빈 값으로 고정하지 않고 예외에 싣는다."""
     clock = _FakeClock()
 
@@ -782,8 +778,8 @@ def test_first_event_stall_preserves_output_received_before_kill(relay):
             return "", "BOOT-DIAGNOSTIC\n" * delivered
 
     proc = _StderrOnlyStartup(clock, event_times=[0.0], exit_at=None)
-    with pytest.raises(relay.StallWatchdogError) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.StallWatchdogError) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             ["opencode", "run"], first_event_timeout=2.0, overall_timeout=30.0,
             retries=0, idle_timeout=10.0, popen=_scripted_popen([proc]),
             clock=clock, sleep=clock.advance, log=[].append, poll_interval=1.0,
@@ -792,7 +788,7 @@ def test_first_event_stall_preserves_output_received_before_kill(relay):
     assert "BOOT-DIAGNOSTIC" in excinfo.value.stderr
 
 
-def test_startup_wait_wall_axis_stops_after_first_attempt(relay):
+def test_startup_wait_wall_axis_stops_after_first_attempt():
     """startup 대기 중 wall이 먼저 발화하면 첫 시도에서 종료하고 호출을 반복하지 않는다."""
     clock = _FakeClock()
     procs = [_ScriptedProc(clock, event_times=[], exit_at=None) for _ in range(3)]
@@ -804,8 +800,8 @@ def test_startup_wait_wall_axis_stops_after_first_attempt(relay):
         launched.append(proc)
         return proc
 
-    with pytest.raises(relay.WallTimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.WallTimeoutExpired) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=90.0, overall_timeout=30.0, retries=2,
             idle_timeout=900.0, popen=popen, clock=clock,
             sleep=clock.advance, log=logs.append, poll_interval=1.0,
@@ -814,12 +810,12 @@ def test_startup_wait_wall_axis_stops_after_first_attempt(relay):
     assert len(launched) == 1
     assert procs[0].kill_count == 1
     assert [proc.kill_count for proc in procs[1:]] == [0, 0]
-    assert exc.timeout_axis == relay.TIMEOUT_AXIS_WALL
+    assert exc.timeout_axis == watchdog.TIMEOUT_AXIS_WALL
     assert exc.threshold_seconds == 30.0
     assert len(logs) == 1 and "자동 재시도 안 함" in logs[0]
 
 
-def test_coarse_poll_uses_earlier_first_event_deadline_and_retries(relay):
+def test_coarse_poll_uses_earlier_first_event_deadline_and_retries():
     """한 poll이 first=5s·wall=6s를 함께 넘겨도 실제로 먼저 지난 startup 축을 고른다."""
     clock = _FakeClock()
     launched = []
@@ -833,7 +829,7 @@ def test_coarse_poll_uses_earlier_first_event_deadline_and_retries(relay):
         launched.append(proc)
         return proc
 
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["drv"], first_event_timeout=5.0, overall_timeout=6.0, retries=1,
         idle_timeout=None, popen=popen, clock=clock,
         sleep=clock.advance, log=[].append, poll_interval=10.0,
@@ -845,9 +841,9 @@ def test_coarse_poll_uses_earlier_first_event_deadline_and_retries(relay):
 
 
 def test_keyboard_interrupt_during_post_spawn_initialization_kills_and_drains(
-        relay, monkeypatch):
+        monkeypatch):
     """실 자식 생성 직후 KeyboardInterrupt가 나도 생성자 트랜잭션이 kill·drain 후 재전파한다."""
-    real_popen = relay.subprocess.Popen
+    real_popen = watchdog.subprocess.Popen
     spawned = []
 
     def recording_popen(*args, **kwargs):
@@ -860,11 +856,11 @@ def test_keyboard_interrupt_during_post_spawn_initialization_kills_and_drains(
     def interrupt_event():
         raise interrupt
 
-    monkeypatch.setattr(relay.subprocess, "Popen", recording_popen)
-    monkeypatch.setattr(relay.threading, "Event", interrupt_event)
+    monkeypatch.setattr(watchdog.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(watchdog.threading, "Event", interrupt_event)
 
     with pytest.raises(KeyboardInterrupt) as excinfo:
-        relay._WatchedPopen(
+        watchdog._WatchedPopen(
             [sys.executable, "-c", "import time; time.sleep(999)"],
             cwd=None, env=None, text=True,
         )
@@ -877,9 +873,9 @@ def test_keyboard_interrupt_during_post_spawn_initialization_kills_and_drains(
 
 
 def test_thread_start_failure_during_post_spawn_initialization_kills_and_drains(
-        relay, monkeypatch):
+        monkeypatch):
     """reader Thread.start 실패도 이미 생성된 실 자식을 남기지 않고 원래 오류를 재전파한다."""
-    real_popen = relay.subprocess.Popen
+    real_popen = watchdog.subprocess.Popen
     spawned = []
 
     def recording_popen(*args, **kwargs):
@@ -892,11 +888,11 @@ def test_thread_start_failure_during_post_spawn_initialization_kills_and_drains(
     def fail_start(_thread):
         raise start_error
 
-    monkeypatch.setattr(relay.subprocess, "Popen", recording_popen)
-    monkeypatch.setattr(relay.threading.Thread, "start", fail_start)
+    monkeypatch.setattr(watchdog.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(watchdog.threading.Thread, "start", fail_start)
 
     with pytest.raises(RuntimeError, match="thread start failed") as excinfo:
-        relay._WatchedPopen(
+        watchdog._WatchedPopen(
             [sys.executable, "-c", "import time; time.sleep(999)"],
             cwd=None, env=None, text=True,
         )
@@ -949,7 +945,7 @@ def _reap(proc):
                 pass
 
 
-def test_spawn_rollback_closes_pipes_when_the_drain_cannot_close_them(relay):
+def test_spawn_rollback_closes_pipes_when_the_drain_cannot_close_them():
     """드레인이 파이프를 못 닫고 터져도 롤백이 래퍼를 닫는다 — 남은 핸들 0.
 
     주입 축은 Windows 실측 형상 그대로다: 리더 스레드를 못 만든 `communicate` 가 파이프를 연 채
@@ -967,9 +963,9 @@ def test_spawn_rollback_closes_pipes_when_the_drain_cannot_close_them(relay):
         # 주입 선-단언 — 닫힘을 볼 파이프가 실제로 열려 있는 상태에서 시작한다.
         assert not proc.stdout.closed and not proc.stderr.closed and not proc.stdin.closed
         with pytest.raises(RuntimeError, match="can't start new thread"):
-            relay._cleanup_failed_watched_spawn(
+            watchdog._cleanup_failed_watched_spawn(
                 proc, process_group_id, argv=["drv"], threads=[])
-        assert drain_timeouts == [relay._KILL_GRACE_SEC], (
+        assert drain_timeouts == [watchdog._KILL_GRACE_SEC], (
             "주입한 드레인이 실제로 걸리지 않았다 — 가드가 아무것도 시험하지 않는다")
         assert (proc.stdout.closed, proc.stderr.closed, proc.stdin.closed) == (
             True, True, True), "kill·drain 뒤 파이프 래퍼가 열린 채 남았다(핸들 잔존)"
@@ -977,7 +973,7 @@ def test_spawn_rollback_closes_pipes_when_the_drain_cannot_close_them(relay):
         _reap(proc)
 
 
-def test_spawn_rollback_drain_timeout_leaves_pipes_to_the_live_reader(relay):
+def test_spawn_rollback_drain_timeout_leaves_pipes_to_the_live_reader():
     """드레인 타임아웃은 **리더가 아직 읽는 중**이라는 뜻이라 그 밑에서 핸들을 닫지 않는다.
 
     CPython 은 타임아웃 시 재호출을 위해 리더 스레드와 fd 를 그대로 둔다. 그 자리에서 래퍼를
@@ -990,8 +986,8 @@ def test_spawn_rollback_drain_timeout_leaves_pipes_to_the_live_reader(relay):
 
     proc.communicate = timing_out_communicate
     try:
-        with pytest.raises(relay.ProcessCleanupError) as excinfo:
-            relay._cleanup_failed_watched_spawn(
+        with pytest.raises(watchdog.ProcessCleanupError) as excinfo:
+            watchdog._cleanup_failed_watched_spawn(
                 proc, process_group_id, argv=["drv"], threads=[])
         assert "닫히지 않음" in str(excinfo.value) and excinfo.value.output == "부분"
         assert not proc.stdout.closed and not proc.stderr.closed
@@ -999,14 +995,14 @@ def test_spawn_rollback_drain_timeout_leaves_pipes_to_the_live_reader(relay):
         _reap(proc)
 
 
-def test_watched_popen_communicate_closes_pipes_after_drain(relay):
+def test_watched_popen_communicate_closes_pipes_after_drain():
     """드레인 완료 뒤 `_WatchedPopen.communicate` 가 래퍼를 닫는다 — 산출물 회수는 그대로.
 
     kill·드레인이 정상으로 끝난 실행이 핸들을 남기면, 그 자식이 쓰던 작업 트리를 지우는 쪽이
     Windows 에서 계속 거부당한다(예외 traceback 이 프레임째 proc 을 붙잡아 GC 회수도 늦다).
     """
     argv = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read().upper())"]
-    proc = relay._WatchedPopen(argv, cwd=None, env=None, text=True, input_text="prompt-body")
+    proc = watchdog._WatchedPopen(argv, cwd=None, env=None, text=True, input_text="prompt-body")
     raw = proc._proc
     try:
         assert not raw.stdout.closed and not raw.stderr.closed   # 닫힘을 볼 대상이 열려 있다
@@ -1019,7 +1015,7 @@ def test_watched_popen_communicate_closes_pipes_after_drain(relay):
         _reap(raw)
 
 
-def test_real_idle_kill_leaves_no_open_pipe_handle(relay):
+def test_real_idle_kill_leaves_no_open_pipe_handle():
     """실 무진행 kill 경로(kill → 드레인)가 끝나면 자식 파이프 래퍼가 남지 않는다.
 
     주입은 proc 참조를 잡는 popen 하나뿐이고 kill·드레인은 실 경로 그대로다 — 남은 핸들이
@@ -1029,12 +1025,12 @@ def test_real_idle_kill_leaves_no_open_pipe_handle(relay):
     captured: list = []
 
     def watched(command):
-        proc = relay._WatchedPopen(command, cwd=None, env=None, text=True)
+        proc = watchdog._WatchedPopen(command, cwd=None, env=None, text=True)
         captured.append(proc)
         return proc
 
-    with pytest.raises(relay.IdleTimeoutExpired):
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.IdleTimeoutExpired):
+        watchdog.run_with_first_event_watchdog(
             argv, first_event_timeout=None, overall_timeout=60.0, retries=0,
             idle_timeout=1.0, popen=watched, log=[].append, poll_interval=0.05,
         )
@@ -1056,39 +1052,39 @@ class _UnclosableStream:
         raise self._error
 
 
-def test_pipe_close_failure_is_loud(relay):
+def test_pipe_close_failure_is_loud():
     """래퍼 close 실패는 `try/except` 로 삼키지 않는다 — 어느 스트림인지까지 실어 올린다."""
     stdout = _UnclosableStream(OSError("EBADF"))
     stderr = _UnclosableStream(ValueError("이미 분리됨"))
     proc = SimpleNamespace(stdout=stdout, stderr=stderr, stdin=None)
-    with pytest.raises(relay.ProcessCleanupError) as excinfo:
-        relay._close_child_pipes(proc, argv=["drv"])
+    with pytest.raises(watchdog.ProcessCleanupError) as excinfo:
+        watchdog._close_child_pipes(proc, argv=["drv"])
     message = str(excinfo.value)
     assert "stdout" in message and "stderr" in message
     assert (stdout.close_calls, stderr.close_calls) == (1, 1), (
         "한 스트림이 실패했다고 나머지 close 를 건너뛰면 그쪽 핸들이 남는다")
 
 
-def test_stdin_broken_pipe_on_close_is_not_a_cleanup_failure(relay):
+def test_stdin_broken_pipe_on_close_is_not_a_cleanup_failure():
     """kill 뒤 stdin 의 `BrokenPipeError` 는 읽는 쪽이 사라진 정상 형상 — 정리 실패가 아니다."""
     stdin = _UnclosableStream(BrokenPipeError("자식이 이미 종료"))
     proc = SimpleNamespace(stdout=None, stderr=None, stdin=stdin)
-    relay._close_child_pipes(proc, argv=["drv"])          # 예외 없음
+    watchdog._close_child_pipes(proc, argv=["drv"])          # 예외 없음
     assert stdin.close_calls == 1
     # 같은 예외가 읽기 파이프에서 오면 그건 정리 실패다(관용은 stdin 한 자리뿐).
     read_pipe = _UnclosableStream(BrokenPipeError("stdout"))
-    with pytest.raises(relay.ProcessCleanupError):
-        relay._close_child_pipes(
+    with pytest.raises(watchdog.ProcessCleanupError):
+        watchdog._close_child_pipes(
             SimpleNamespace(stdout=read_pipe, stderr=None, stdin=None), argv=["drv"])
 
 
-def test_keyboard_interrupt_kills_and_drains_real_process_group(relay):
+def test_keyboard_interrupt_kills_and_drains_real_process_group():
     """Ctrl-C가 startup 대기 중 들어와도 새 세션 자식을 kill+drain한 뒤 그대로 재전파한다."""
     argv = [sys.executable, "-c", "import time; time.sleep(999)"]
     captured = []
 
     def watched(command):
-        proc = relay._WatchedPopen(command, cwd=None, env=None, text=True)
+        proc = watchdog._WatchedPopen(command, cwd=None, env=None, text=True)
         captured.append(proc)
         return proc
 
@@ -1096,7 +1092,7 @@ def test_keyboard_interrupt_kills_and_drains_real_process_group(relay):
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             argv, first_event_timeout=90.0, overall_timeout=600.0, retries=2,
             popen=watched, sleep=interrupt,
         )
@@ -1110,7 +1106,7 @@ def test_keyboard_interrupt_kills_and_drains_real_process_group(relay):
             os.kill(proc._proc.pid, 0)
 
 
-def test_keyboard_interrupt_during_blocking_drain_is_cleaned_and_repropagated(relay):
+def test_keyboard_interrupt_during_blocking_drain_is_cleaned_and_repropagated():
     """startup 창 없는 소비처의 blocking drain Ctrl-C도 그룹 정리 후 같은 예외를 통과시킨다."""
     clock = _FakeClock()
 
@@ -1125,7 +1121,7 @@ def test_keyboard_interrupt_during_blocking_drain_is_cleaned_and_repropagated(re
 
     proc = _InterruptingDrain(clock, event_times=[], exit_at=None)
     with pytest.raises(KeyboardInterrupt):
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=600.0, retries=0,
             popen=_scripted_popen([proc]), clock=clock,
             sleep=clock.advance, log=[].append,
@@ -1135,13 +1131,13 @@ def test_keyboard_interrupt_during_blocking_drain_is_cleaned_and_repropagated(re
     assert proc.communicate_calls == 2, "Ctrl-C 뒤 파이프 drain을 수행하지 않음"
 
 
-def test_first_event_timeout_none_skips_startup_window(relay):
+def test_first_event_timeout_none_skips_startup_window():
     """`first_event_timeout=None` = startup 창 미적용 — 첫 stdout 이 늦어도 stall 로 안 죽는다.
 
     리뷰어 평문 축(첫 stdout = 종료 직전)이 startup 창에 걸려 죽는 새 false-kill 을 만들지 않는다."""
     clock = _FakeClock()
     late = _ScriptedProc(clock, event_times=[500.0], exit_at=500.0, rc=0)
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["codex", "exec"], first_event_timeout=None, overall_timeout=1000.0, retries=0,
         idle_timeout=None, popen=_scripted_popen([late]), clock=clock,
         sleep=clock.advance, log=[].append, poll_interval=1.0,
@@ -1149,20 +1145,20 @@ def test_first_event_timeout_none_skips_startup_window(relay):
     assert result.returncode == 0 and late.kill_count == 0
 
 
-def test_completed_process_carries_silence_observation(relay):
+def test_completed_process_carries_silence_observation():
     """완주 결과에 관측 침묵 초가 실린다 — 감사 헤더(⑥)의 입력."""
     clock = _FakeClock()
     proc = _ScriptedProc(clock, event_times=[0.0, 10.0], exit_at=30.0, rc=0)
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["drv"], first_event_timeout=None, overall_timeout=1000.0, retries=0,
         idle_timeout=100.0, popen=_scripted_popen([proc]), clock=clock,
         sleep=clock.advance, log=[].append, poll_interval=1.0,
     )
-    silence = getattr(result, relay.SILENCE_SEC_ATTR)
+    silence = getattr(result, watchdog.SILENCE_SEC_ATTR)
     assert silence is not None and silence >= 20.0   # 마지막 이벤트 t=10 · 종료 t≥30
 
 
-def test_drain_oserror_kills_process_group(relay):
+def test_drain_oserror_kills_process_group():
     """드레인 중 OSError(호출 후 I/O 오류)도 자식 잔존 없이 정리 후 전파(정책은 호출부)."""
     clock = _FakeClock()
 
@@ -1172,7 +1168,7 @@ def test_drain_oserror_kills_process_group(relay):
 
     proc = _BrokenProc(clock, event_times=[0.0], exit_at=0.0)
     with pytest.raises(OSError):
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=100.0, retries=0,
             idle_timeout=None, popen=_scripted_popen([proc]), clock=clock,
             sleep=clock.advance, log=[].append, poll_interval=1.0,
@@ -1182,121 +1178,121 @@ def test_drain_oserror_kills_process_group(relay):
 
 # ── ③ 값 축: 하네스별 선언 + local.conf override (값만 갈리고 코드는 하나) ──────────
 
-def test_no_dead_global_idle_timeout_knob(relay, monkeypatch):
+def test_no_dead_global_idle_timeout_knob(monkeypatch):
     """프로필보다 우선하지 못하던 죽은 PM_IDLE_TIMEOUT 노브/주장/API 를 함께 제거한다."""
     monkeypatch.setenv("PM_IDLE_TIMEOUT", "42")
-    assert not hasattr(relay, "IDLE_TIMEOUT_ENV")
-    assert not hasattr(relay, "idle_timeout_default")
-    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM) == \
-        relay.DEFAULT_IDLE_TIMEOUT_SEC
+    assert not hasattr(watchdog, "IDLE_TIMEOUT_ENV")
+    assert not hasattr(watchdog, "idle_timeout_default")
+    assert watchdog.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM) == \
+        watchdog.DEFAULT_IDLE_TIMEOUT_SEC
 
 
-def test_cloud_axis_values_are_grounded_in_measurement(relay):
+def test_cloud_axis_values_are_grounded_in_measurement():
     """클라우드 축(codex·claude) 값은 실측 위에 선다 — 관측 최대 침묵/완주를 넘는다.
 
     근거 수치(주석 박제): 도구 실행 침묵 p99 124.9s·**max 254.6s**(N=860/89파일), 이벤트 간
     비둘기집 하한 max 17.7s, 총 완주 p99 1036.6s·**max 1429.1s**(rc=0 153건)."""
-    assert relay.CLOUD_IDLE_TIMEOUT_SEC > 254.6      # 관측 최대 침묵 위
-    assert relay.CLOUD_WALL_TIMEOUT_SEC > 1429.1     # 관측 최대 완주 위
-    source = (TOOLS / "pm_relay.py").read_text(encoding="utf-8")
+    assert watchdog.CLOUD_IDLE_TIMEOUT_SEC > 254.6      # 관측 최대 침묵 위
+    assert watchdog.CLOUD_WALL_TIMEOUT_SEC > 1429.1     # 관측 최대 완주 위
+    source = (TOOLS / "pm_engine/infra/harness/watchdog.py").read_text(encoding="utf-8")
     for figure in ("254.6s", "1429.1s"):
         assert figure in source, f"시간 예산의 실측 근거 수치 {figure} 가 주석에서 사라졌다"
 
 
-def test_local_gpu_axis_survives_three_hour_delegation(relay):
+def test_local_gpu_axis_survives_three_hour_delegation():
     """로컬 GPU 축(opencode)은 **3시간 완주 + 긴 침묵**을 견딘다 — 사용자 실측 증언이 근거.
 
     증언: 회사 환경(로컬 GPU 부족)의 opencode 위임이 **3시간까지** 걸리고 진행 양상은 *"길게
     멈췄다 가끔 움직임"*. 클라우드 측정치로 값을 잡으면 그 정상 작업을 죽인다(1차 구현의 전제
     붕괴). 벽시계는 3시간 **위**, 무진행 상한은 긴 침묵을 견디는 값이어야 한다."""
     three_hours = 3 * 3600.0
-    profile = relay.HARNESS_PROFILES["opencode"]
+    profile = watchdog.HARNESS_PROFILES["opencode"]
     assert profile.wall_timeout > three_hours, "3시간 완주가 벽시계 백스톱에 잘린다"
-    assert profile.idle_timeout > relay.CLOUD_IDLE_TIMEOUT_SEC, (
+    assert profile.idle_timeout > watchdog.CLOUD_IDLE_TIMEOUT_SEC, (
         "로컬 GPU 축의 무진행 상한이 클라우드 축과 같거나 낮다 — 긴 침묵을 못 견딘다")
-    source = (TOOLS / "pm_relay.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine/infra/harness/watchdog.py").read_text(encoding="utf-8")
     assert "길게 멈췄다 가끔 움직임" in source, "로컬 GPU 축 값의 근거(사용자 증언)가 주석에 없다"
 
 
-def test_harness_values_actually_differ_by_axis(relay):
+def test_harness_values_actually_differ_by_axis():
     """축이 실제로 갈린다 — 클라우드와 로컬 GPU 가 같은 값이면 하네스별 선언이 무의미하다."""
-    cloud = relay.HARNESS_PROFILES["codex"]
-    local_gpu = relay.HARNESS_PROFILES["opencode"]
-    assert relay.HARNESS_PROFILES["claude"] == cloud._replace()   # 같은 축 = 같은 값
+    cloud = watchdog.HARNESS_PROFILES["codex"]
+    local_gpu = watchdog.HARNESS_PROFILES["opencode"]
+    assert watchdog.HARNESS_PROFILES["claude"] == cloud._replace()   # 같은 축 = 같은 값
     assert local_gpu.idle_timeout > cloud.idle_timeout
     assert local_gpu.wall_timeout > cloud.wall_timeout
 
 
-def test_unset_adopter_is_safe_by_default(relay):
+def test_unset_adopter_is_safe_by_default():
     """**설정 안 해도 안 죽는다** — 미설정(빈 conf) 채택자도 3시간 로컬 위임을 완주한다.
 
     미설정 채택자의 false-kill 은 이 판정 전환의 실패 조건이다(설정을 알아야만 안전하면 안 된다)."""
-    profile = relay.resolve_harness_profile("opencode", {})
+    profile = watchdog.resolve_harness_profile("opencode", {})
     assert profile.wall_timeout > 3 * 3600.0
     assert profile.idle_timeout >= 3600.0
     # 미지 하네스/리뷰어도 관대한 쪽으로 떨어진다(모르는 축을 죽이지 않는다).
-    assert relay.resolve_harness_profile("brand-new", {}).wall_timeout >= profile.wall_timeout
-    assert relay.UNKNOWN_HARNESS_PROFILE.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
-    assert relay.REVIEWER_FALLBACK_PROFILE.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
+    assert watchdog.resolve_harness_profile("brand-new", {}).wall_timeout >= profile.wall_timeout
+    assert watchdog.UNKNOWN_HARNESS_PROFILE.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
+    assert watchdog.REVIEWER_FALLBACK_PROFILE.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
 
-def test_harness_conf_override_resolution_order(relay, capsys):
+def test_harness_conf_override_resolution_order(capsys):
     """해소 순서: 선언 기본 → 표면-flat legacy 키 → 하네스별 키(뒤가 이긴다)."""
-    declared = relay.HARNESS_PROFILES["codex"]
-    assert relay.resolve_harness_profile("codex", {}) == declared
-    legacy = relay.resolve_harness_profile(
+    declared = watchdog.HARNESS_PROFILES["codex"]
+    assert watchdog.resolve_harness_profile("codex", {}) == declared
+    legacy = watchdog.resolve_harness_profile(
         "codex", {"delegate.timeout": "1234", "delegate.idle_timeout": "77"},
         legacy_idle_key="delegate.idle_timeout", legacy_wall_key="delegate.timeout")
     assert (legacy.wall_timeout, legacy.idle_timeout) == (1234.0, 77.0)
-    specific = relay.resolve_harness_profile(
+    specific = watchdog.resolve_harness_profile(
         "codex", {"delegate.timeout": "1234", "harness.codex.wall_timeout": "5555",
                   "harness.codex.idle_timeout": "999"},
         legacy_idle_key="delegate.idle_timeout", legacy_wall_key="delegate.timeout")
     assert (specific.wall_timeout, specific.idle_timeout) == (5555.0, 999.0)
     # 다른 하네스 키는 이 하네스에 영향 없음(축 격리).
-    isolated = relay.resolve_harness_profile("claude", {"harness.opencode.idle_timeout": "1"})
+    isolated = watchdog.resolve_harness_profile("claude", {"harness.opencode.idle_timeout": "1"})
     assert isolated.idle_timeout == declared.idle_timeout
     # 깨진 값은 경고 후 선언 기본으로 fail-soft(설정 파일 문제로 실행이 죽지 않는다).
-    broken = relay.resolve_harness_profile(
+    broken = watchdog.resolve_harness_profile(
         "codex", {"harness.codex.idle_timeout": "abc", "harness.codex.wall_timeout": "-5"})
     assert broken == declared
     err = capsys.readouterr().err
     assert "harness.codex.idle_timeout" in err and "harness.codex.wall_timeout" in err
 
 
-def test_idle_timeout_for_signal_declares_axes(relay):
+def test_idle_timeout_for_signal_declares_axes():
     """선언 테이블 — 신호 있는 축은 상한 적용, 신호 없는/미지의 축은 None(벽시계 유지)."""
-    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM) == \
-        relay.DEFAULT_IDLE_TIMEOUT_SEC
-    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_PLAINTEXT, 33.0) == 33.0
-    assert relay.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_NONE) is None
-    assert relay.idle_timeout_for_signal("made-up-axis") is None  # 보수 기본
+    assert watchdog.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM) == \
+        watchdog.DEFAULT_IDLE_TIMEOUT_SEC
+    assert watchdog.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_PLAINTEXT, 33.0) == 33.0
+    assert watchdog.idle_timeout_for_signal(conf_schema.PROGRESS_SIGNAL_NONE) is None
+    assert watchdog.idle_timeout_for_signal("made-up-axis") is None  # 보수 기본
 
 
-def test_profile_table_covers_every_declared_harness(pd, relay):
+def test_profile_table_covers_every_declared_harness(pd):
     """프로필 테이블이 위임 하네스 전부를 덮고, 관측 선언이 엔진 값과 정합."""
-    assert set(relay.HARNESS_PROFILES) == set(conf_schema.HARNESS_CHOICES)
-    for harness, profile in relay.HARNESS_PROFILES.items():
+    assert set(watchdog.HARNESS_PROFILES) == set(conf_schema.HARNESS_CHOICES)
+    for harness, profile in watchdog.HARNESS_PROFILES.items():
         assert profile.progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, harness
         assert profile.idle_timeout < profile.wall_timeout, harness  # 주 판정이 먼저 울린다
     # startup stall 워치독은 실측된 축(opencode)만 — 신호 축 전부에 켜면 새 false-kill 이 생긴다.
-    assert relay.HARNESS_PROFILES["opencode"].startup_watchdog is True
-    assert relay.HARNESS_PROFILES["codex"].startup_watchdog is False
-    assert relay.HARNESS_PROFILES["claude"].startup_watchdog is False
+    assert watchdog.HARNESS_PROFILES["opencode"].startup_watchdog is True
+    assert watchdog.HARNESS_PROFILES["codex"].startup_watchdog is False
+    assert watchdog.HARNESS_PROFILES["claude"].startup_watchdog is False
     assert pd.harness_profile("nope", {}).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
 
-def test_unknown_defaults_are_derived_from_most_permissive_profile(relay):
+def test_unknown_defaults_are_derived_from_most_permissive_profile():
     """호환 alias 가 특정 축을 가리키지 않고 선언 테이블 최댓값에서 파생된다.
 
     더 관대한 미래 축을 실제 소스 테이블에 주입해 모듈을 다시 실행한다. 오늘 값이 우연히
     opencode==max 라는 비교만으로 green 되는 가짜 게이트를 피한다.
     """
-    assert relay.DEFAULT_IDLE_TIMEOUT_SEC == max(
-        profile.idle_timeout for profile in relay.HARNESS_PROFILES.values())
-    assert relay.DEFAULT_WALL_TIMEOUT_SEC == max(
-        profile.wall_timeout for profile in relay.HARNESS_PROFILES.values())
-    source = (TOOLS / "pm_relay.py").read_text(encoding="utf-8")
+    assert watchdog.DEFAULT_IDLE_TIMEOUT_SEC == max(
+        profile.idle_timeout for profile in watchdog.HARNESS_PROFILES.values())
+    assert watchdog.DEFAULT_WALL_TIMEOUT_SEC == max(
+        profile.wall_timeout for profile in watchdog.HARNESS_PROFILES.values())
+    source = (TOOLS / "pm_engine/infra/harness/watchdog.py").read_text(encoding="utf-8")
     marker = "\n}\n\n# 프로필을 모르는 축의 기본"
     assert source.count(marker) == 1
     source = source.replace(
@@ -1304,7 +1300,8 @@ def test_unknown_defaults_are_derived_from_most_permissive_profile(relay):
         '\n    "future": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, False, 6000.0, 16000.0),'
         + marker,
     )
-    namespace = {"__file__": str(TOOLS / "pm_relay.py"), "__name__": "mutated_pm_relay"}
+    namespace = {"__file__": str(TOOLS / "pm_engine/infra/harness/watchdog.py"),
+                 "__name__": "mutated_watchdog"}
     exec(compile(source, namespace["__file__"], "exec"), namespace)
     assert namespace["DEFAULT_IDLE_TIMEOUT_SEC"] == 6000.0
     assert namespace["DEFAULT_WALL_TIMEOUT_SEC"] == 16000.0
@@ -1323,7 +1320,9 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
     # stale 면제는 검토 없이 범위만 넓힌 흔적이므로 제거한다.
     live = {
         (module_name, qualname)
-        for module_name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_relay")
+        for module_name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_engine/app/session/relay",
+                     "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
+                     "pm_engine/infra/raw_output")
         for qualname in _module_harness_literal_hits(
             module_name, (TOOLS / f"{module_name}.py").read_text(encoding="utf-8"))
     }
@@ -1432,10 +1431,10 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
         (
             "pm_import",
             "_real_harness_runner",
-            "        retries = engine.stall_retries_default() if profile.startup_watchdog else 0\n",
+            "        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n",
             '        if harness == "claude":\n'
             "            idle_timeout = None\n"
-            "        retries = engine.stall_retries_default() if profile.startup_watchdog else 0\n",
+            "        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n",
         ),
     ],
 )
@@ -1444,7 +1443,9 @@ def test_structural_guard_rejects_new_timeout_bypass_callers(
     """열거 튜플에 없던 호출자에 새 우회를 심어도 구조 스캔이 자동 red 낸다."""
     sources = {
         name: (TOOLS / f"{name}.py").read_text(encoding="utf-8")
-        for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_relay")
+        for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_engine/app/session/relay",
+                     "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
+                     "pm_engine/infra/raw_output")
     }
     sources[module_name] = _apply_mutation_anchor(
         sources[module_name], needle, replacement,
@@ -1500,20 +1501,22 @@ def test_mutation_anchor_normal_mutation_still_succeeds():
 # ── ④ 위임 표면 배선 ────────────────────────────────────────────────────────────
 
 class _RecordingRelay:
-    """공용 seam 호출을 기록하는 대역 — **선언 테이블/해소기는 실 pm_relay 것을 그대로 쓴다**.
+    """공용 seam 호출을 기록하는 대역 — **선언 테이블/해소기는 실 watchdog 것을 그대로 쓴다**.
 
     대역이 값 규칙(프로필·해소 순서)을 자체 구현하면 "하네스별 값이 실제로 갈리는가"를 보는
-    테스트가 거짓이 된다. 그래서 미정의 속성은 전부 실 모듈로 위임하고 워치독 호출만 가로챈다."""
+    테스트가 거짓이 된다. 그래서 `install` 은 워치독 호출과 두 노브만 `watchdog` 모듈에서 바꾼다."""
 
     def __init__(self, *, completed=None, exc=None, silence=None):
         self.calls: list[dict] = []
         self._completed = completed
         self._exc = exc
         self._silence = silence
-        self._relay = _load("pm_relay", TOOLS / "pm_relay.py")
 
-    def __getattr__(self, name):
-        return getattr(self._relay, name)
+    def install(self, monkeypatch):
+        for name in ("first_event_timeout_default", "stall_retries_default",
+                     "run_with_first_event_watchdog"):
+            monkeypatch.setattr(watchdog, name, getattr(self, name))
+        return self
 
     def first_event_timeout_default(self):
         return 90.0
@@ -1532,18 +1535,18 @@ class _RecordingRelay:
 
 
 def _wire_relay(pd, monkeypatch, fake, conf=None):
-    """위임 표면을 대역 relay + 격리 conf 로 배선(실 local.conf 비의존 hermetic)."""
-    monkeypatch.setattr(pd, "_load_relay", lambda: fake)
+    """위임 표면을 대역 워치독 + 격리 conf 로 배선(실 local.conf 비의존 hermetic)."""
+    fake.install(monkeypatch)
     monkeypatch.setattr(pd, "local_config", lambda: dict(conf or {}))
     return fake
 
 
 @pytest.mark.parametrize("harness", FILL_CAPABLE_HARNESSES)
 def test_fill_routes_every_driver_through_shared_watchdog(
-        pm_import, relay, monkeypatch, harness, tmp_path):
+        pm_import, monkeypatch, harness, tmp_path):
     """세 번째 표면 fill도 3 드라이버 전부 같은 profile+watchdog 판정을 탄다."""
     fake = _RecordingRelay()
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
     argv = pm_import._build_runner_argv(harness, tmp_path, tmp_path / "prompt.md")
 
@@ -1552,7 +1555,7 @@ def test_fill_routes_every_driver_through_shared_watchdog(
     assert ok is True
     assert len(fake.calls) == 1
     call = fake.calls[0]
-    profile = relay.HARNESS_PROFILES[harness]
+    profile = watchdog.HARNESS_PROFILES[harness]
     assert call["overall_timeout"] == profile.wall_timeout
     emits_progress = next(
         driver[1] for driver in pm_import.FILL_DRIVER_BY_CMD.values()
@@ -1575,7 +1578,7 @@ def test_fill_reads_target_repo_profile_overrides(pm_import, monkeypatch, tmp_pa
         encoding="utf-8",
     )
     fake = _RecordingRelay()
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     pm_import._real_harness_runner(["codex", "exec", "--json", "prompt"], "prompt", cwd=tmp_path)
@@ -1585,10 +1588,10 @@ def test_fill_reads_target_repo_profile_overrides(pm_import, monkeypatch, tmp_pa
 
 
 def test_fill_claude_plain_blob_disables_idle_from_actual_argv(
-        pm_import, relay, monkeypatch, tmp_path):
+        pm_import, monkeypatch, tmp_path):
     """평문 `claude -p`는 event-stream 프로필을 소비하지 않아 정상 실행을 idle kill하지 않는다."""
     fake = _RecordingRelay()
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
     argv = pm_import._build_runner_argv("claude", tmp_path, None)
 
@@ -1596,7 +1599,7 @@ def test_fill_claude_plain_blob_disables_idle_from_actual_argv(
 
     assert tuple(argv[:2]) == pm_import.CLAUDE_FILL_CMD
     assert fake.calls[0]["idle_timeout"] is None
-    assert relay.HARNESS_PROFILES["claude"].progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
+    assert watchdog.HARNESS_PROFILES["claude"].progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
 
 
 @pytest.mark.parametrize(
@@ -1620,7 +1623,7 @@ def test_fill_driver_requires_actual_incremental_output_flag(
 def test_fill_prints_effective_limits_before_spawn(pm_import, monkeypatch, capsys):
     """채택자가 호출 전에 실효 idle/wall과 Ctrl-C 중단 방법을 본다."""
     fake = _RecordingRelay()
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     pm_import._real_harness_runner(["claude", "-p", "prompt"], "prompt")
@@ -1632,14 +1635,14 @@ def test_fill_prints_effective_limits_before_spawn(pm_import, monkeypatch, capsy
 
 
 def test_fill_timeout_preserves_partial_stdout_and_stderr(
-        pm_import, relay, monkeypatch):
+        pm_import, monkeypatch):
     """idle kill 시점의 양쪽 스트림을 fill 실패 결과에 싣는다(전량 폐기 회귀 방지)."""
-    exc = relay.IdleTimeoutExpired(
+    exc = watchdog.IdleTimeoutExpired(
         ["codex"], 900, idle_seconds=901,
         output="PARTIAL-OUT", stderr="PARTIAL-ERR",
     )
     fake = _RecordingRelay(exc=exc)
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     ok, output = pm_import._real_harness_runner(["codex", "exec", "prompt"], "prompt")
@@ -1651,16 +1654,16 @@ def test_fill_timeout_preserves_partial_stdout_and_stderr(
     assert "수동 재시도" in output
 
 
-def test_fill_startup_stall_preserves_partial_output(pm_import, relay, monkeypatch):
+def test_fill_startup_stall_preserves_partial_output(pm_import, monkeypatch):
     """opencode startup 재시도 소진도 누적 부분 산출물을 버리지 않는다."""
     fake = _RecordingRelay()
-    exc = fake.StallWatchdogError(
-        "startup stall", timeout_axis=relay.TIMEOUT_AXIS_FIRST_EVENT,
+    exc = watchdog.StallWatchdogError(
+        "startup stall", timeout_axis=watchdog.TIMEOUT_AXIS_FIRST_EVENT,
         threshold_seconds=90, silence_seconds=90,
         output="START-OUT", stderr="START-ERR",
     )
     fake._exc = exc
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     ok, output = pm_import._real_harness_runner(
@@ -1671,16 +1674,16 @@ def test_fill_startup_stall_preserves_partial_output(pm_import, relay, monkeypat
     assert "START-OUT" in output and "START-ERR" in output
 
 
-def test_fill_stall_error_reports_wall_axis(pm_import, relay, monkeypatch):
+def test_fill_stall_error_reports_wall_axis(pm_import, monkeypatch):
     """startup 창보다 wall deadline이 먼저 발화하면 첫-이벤트 stall로 오진하지 않는다."""
     fake = _RecordingRelay()
-    exc = fake.StallWatchdogError(
-        "wall first", timeout_axis=relay.TIMEOUT_AXIS_WALL,
+    exc = watchdog.StallWatchdogError(
+        "wall first", timeout_axis=watchdog.TIMEOUT_AXIS_WALL,
         threshold_seconds=30, silence_seconds=30,
         output="WALL-OUT", stderr="WALL-ERR",
     )
     fake._exc = exc
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     ok, output = pm_import._real_harness_runner(
@@ -1692,58 +1695,12 @@ def test_fill_stall_error_reports_wall_axis(pm_import, relay, monkeypatch):
     assert "WALL-OUT" in output and "WALL-ERR" in output
 
 
-def test_fill_watchdog_load_failure_is_soft(pm_import, monkeypatch):
-    """relay 로드/프로필 해소 실패도 run_fill 계약처럼 예외를 전파하지 않는다."""
-    monkeypatch.setattr(
-        pm_import, "_load_watchdog",
-        lambda: (_ for _ in ()).throw(RuntimeError("relay unavailable")),
-    )
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
-
-    ok, output = pm_import._real_harness_runner(["claude", "-p", "prompt"], "prompt")
-
-    assert ok is False
-    assert "relay unavailable" in output
-
-
-def test_fill_watchdog_rev_skew_is_not_absorbed(pm_import, monkeypatch):
-    """워치독 로드의 marked rev skew는 fill fail-soft 결과로 강등하지 않는다."""
-    stale = type("StaleRelay", (), {"ENGINE_REV": "stale"})()
-    monkeypatch.setattr(
-        pm_import, "_load_watchdog",
-        lambda: pm_import._verify_engine_rev(stale, "pm_relay.py"),
-    )
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        pm_import._real_harness_runner(["claude", "-p", "prompt"], "prompt")
-
-    assert getattr(excinfo.value, "_engine_rev_skew", False) is True
-
-
-def test_fill_watchdog_missing_file_is_loader_diagnostic(pm_import, monkeypatch):
-    """pm_relay.py 부재는 하니스 바이너리 부재가 아니라 워치독 로드 실패로 진단한다."""
-    monkeypatch.setattr(
-        pm_import, "_load_watchdog",
-        lambda: (_ for _ in ()).throw(FileNotFoundError("pm_relay.py missing")),
-    )
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
-
-    ok, output = pm_import._real_harness_runner(["claude", "-p", "prompt"], "prompt")
-
-    assert ok is False
-    assert "워치독 로드 오류" in output
-    assert "pm_relay.py missing" in output
-    assert "하니스 명령" not in output
-    assert "PATH 확인" not in output
-
-
 def test_fill_profile_failure_is_soft_and_stage_specific(pm_import, monkeypatch):
     """프로필 준비 실패는 spawn 진단과 섞지 않고 해당 단계에서 fail-soft한다."""
     fake = _RecordingRelay()
-    fake.resolve_harness_profile = lambda *args: (_ for _ in ()).throw(
-        RuntimeError("profile unavailable"))
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    monkeypatch.setattr(watchdog, "resolve_harness_profile", lambda *args: (_ for _ in ()).throw(
+        RuntimeError("profile unavailable")))
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     ok, output = pm_import._real_harness_runner(["claude", "-p", "prompt"], "prompt")
@@ -1762,7 +1719,8 @@ def test_fill_marked_skew_passes_other_fail_soft_boundaries(
     skew._engine_rev_skew = True
     fake = _RecordingRelay()
     if stage == "profile":
-        fake.resolve_harness_profile = lambda *args: (_ for _ in ()).throw(skew)
+        monkeypatch.setattr(watchdog, "resolve_harness_profile",
+                            lambda *args: (_ for _ in ()).throw(skew))
     elif stage == "spawn":
         fake._exc = skew
     else:
@@ -1772,7 +1730,7 @@ def test_fill_marked_skew_passes_other_fail_soft_boundaries(
                 raise skew
 
         fake._completed = _SkewResult()
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -1789,7 +1747,7 @@ def test_fill_result_normalization_failure_is_soft(pm_import, monkeypatch):
             raise RuntimeError("broken result")
 
     fake = _RecordingRelay(completed=_BrokenResult())
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     ok, output = pm_import._real_harness_runner(["claude", "-p", "prompt"], "prompt")
@@ -1802,7 +1760,7 @@ def test_fill_result_normalization_failure_is_soft(pm_import, monkeypatch):
 def test_fill_spawn_missing_file_is_binary_diagnostic(pm_import, monkeypatch):
     """실 워치독 spawn의 FileNotFoundError만 하니스 바이너리 부재로 진단한다."""
     fake = _RecordingRelay(exc=FileNotFoundError(2, "missing", "claude"))
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
 
     ok, output = pm_import._real_harness_runner(["claude", "-p", "prompt"], "prompt")
@@ -1814,7 +1772,7 @@ def test_fill_spawn_missing_file_is_binary_diagnostic(pm_import, monkeypatch):
 
 
 @pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
-def test_delegate_routes_every_driver_through_shared_watchdog(pd, relay, monkeypatch, harness):
+def test_delegate_routes_every_driver_through_shared_watchdog(pd, monkeypatch, harness):
     """3 드라이버 **전부** 워치독 경유 — codex/claude 도 증분 관측 대상(옛 구조는 벽시계 단독)."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
     monkeypatch.setattr(pd.subprocess, "Popen", _forbidden_popen)
@@ -1823,13 +1781,13 @@ def test_delegate_routes_every_driver_through_shared_watchdog(pd, relay, monkeyp
     assert len(fake.calls) == 1
     call = fake.calls[0]
     # 무진행 상한은 **그 하네스 축의 선언값**이다(단일 기본값이 아니다).
-    assert call["idle_timeout"] == relay.HARNESS_PROFILES[harness].idle_timeout
+    assert call["idle_timeout"] == watchdog.HARNESS_PROFILES[harness].idle_timeout
     assert call["overall_timeout"] == 600         # 벽시계는 호출부가 준 백스톱
     # stdin 프롬프트 주입은 codex/claude 축의 load-bearing 경로(opencode 는 --file).
     assert call["input_text"] == "prompt"
 
 
-def test_delegate_idle_value_differs_by_axis(pd, relay, monkeypatch):
+def test_delegate_idle_value_differs_by_axis(pd, monkeypatch):
     """같은 판정 코드에 **다른 값**이 흐른다 — 로컬 GPU 축이 클라우드 축보다 관대하다."""
     seen = {}
     for harness in ("codex", "opencode"):
@@ -1839,8 +1797,8 @@ def test_delegate_idle_value_differs_by_axis(pd, relay, monkeypatch):
         seen[harness] = fake.calls[0]["idle_timeout"]
     assert seen["opencode"] > seen["codex"], (
         "축이 갈리지 않았다 — 로컬 GPU 위임(3시간·긴 침묵)이 클라우드 값에 죽는다")
-    assert seen["codex"] == relay.CLOUD_IDLE_TIMEOUT_SEC
-    assert seen["opencode"] == relay.LOCAL_GPU_IDLE_TIMEOUT_SEC
+    assert seen["codex"] == watchdog.CLOUD_IDLE_TIMEOUT_SEC
+    assert seen["opencode"] == watchdog.LOCAL_GPU_IDLE_TIMEOUT_SEC
 
 
 def test_delegate_harness_conf_override_reaches_the_watchdog(pd, monkeypatch):
@@ -1870,11 +1828,11 @@ def test_delegate_startup_window_follows_declaration(pd, monkeypatch, harness, s
         assert call["first_event_timeout"] is None and call["retries"] == 0
 
 
-def test_delegate_wall_timeout_resolution_is_per_harness(pd, relay):
+def test_delegate_wall_timeout_resolution_is_per_harness(pd):
     """벽시계 백스톱도 하네스별 — CLI > 하네스 키 > flat legacy > 선언 순으로 해소된다."""
     unset = type("NS", (), {"timeout": None})()
-    assert pd._resolve_timeout(unset, {}, "codex") == int(relay.CLOUD_WALL_TIMEOUT_SEC)
-    assert pd._resolve_timeout(unset, {}, "opencode") == int(relay.LOCAL_GPU_WALL_TIMEOUT_SEC)
+    assert pd._resolve_timeout(unset, {}, "codex") == int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
+    assert pd._resolve_timeout(unset, {}, "opencode") == int(watchdog.LOCAL_GPU_WALL_TIMEOUT_SEC)
     assert pd._resolve_timeout(unset, {"harness.opencode.wall_timeout": "20000"},
                                "opencode") == 20000
     cli = type("NS", (), {"timeout": 11})()
@@ -1899,9 +1857,9 @@ def test_delegate_timeout_preserves_partial_output_and_silence(pd, monkeypatch):
 
 
 def test_delegate_wall_clock_timeout_is_labelled_apart_from_idle(
-        pd, relay, monkeypatch):
+        pd, monkeypatch):
     """벽시계 백스톱 kill 은 실제 임계·실측 침묵을 싣고 무진행과 구분한다."""
-    exc = relay.WallTimeoutExpired(
+    exc = watchdog.WallTimeoutExpired(
         ["bin"], 3700.0, silence_seconds=12.5, output="PART"
     )
     _wire_relay(pd, monkeypatch, _RecordingRelay(exc=exc))
@@ -1912,7 +1870,7 @@ def test_delegate_wall_clock_timeout_is_labelled_apart_from_idle(
     assert "harness.codex.wall_timeout" in res["stderr"]
     assert pd.RUN_RESULT_IDLE_KILLED not in res
     assert res[pd.RUN_RESULT_SILENCE_SEC] == 12.5
-    assert res[pd.RUN_RESULT_TIMEOUT_AXIS] == relay.TIMEOUT_AXIS_WALL
+    assert res[pd.RUN_RESULT_TIMEOUT_AXIS] == watchdog.TIMEOUT_AXIS_WALL
     assert res[pd.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 3700.0
     assert res["stdout"] == "PART"
 
@@ -1940,13 +1898,13 @@ def _three_hour_local_gpu_run(clock):
     return _ScriptedProc(clock, event_times=[0.0, 3600.0, 7200.0], exit_at=3 * 3600.0, rc=0)
 
 
-def test_three_hour_local_delegation_survives_under_local_profile(relay):
+def test_three_hour_local_delegation_survives_under_local_profile():
     """3시간 완주 + 1시간 침묵이 **opencode 프로필 값**으로는 완주한다(미설정 채택자 안전)."""
     clock = _FakeClock()
-    profile = relay.HARNESS_PROFILES["opencode"]
+    profile = watchdog.HARNESS_PROFILES["opencode"]
     proc = _three_hour_local_gpu_run(clock)
     logs: list[str] = []
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["opencode", "run"], first_event_timeout=None,
         overall_timeout=profile.wall_timeout, retries=0,
         idle_timeout=profile.idle_timeout, popen=_scripted_popen([proc]), clock=clock,
@@ -1957,37 +1915,37 @@ def test_three_hour_local_delegation_survives_under_local_profile(relay):
     assert logs == []
 
 
-def test_three_hour_scenario_would_die_under_cloud_profile(relay):
+def test_three_hour_scenario_would_die_under_cloud_profile():
     """**같은 시나리오가 클라우드 축 값이면 죽는다** — 하네스별 값이 load-bearing 임을 직접 증명.
 
     이 대비가 곧 값 축의 sensitivity 다: opencode 프로필을 codex 값으로 바꾸는 순간 위 완주
     시나리오가 이 경로로 떨어진다(= 사용자가 실측한 3시간 위임이 false-kill)."""
     clock = _FakeClock()
     proc = _three_hour_local_gpu_run(clock)
-    with pytest.raises(relay.IdleTimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.IdleTimeoutExpired) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             ["opencode", "run"], first_event_timeout=None,
-            overall_timeout=relay.CLOUD_WALL_TIMEOUT_SEC, retries=0,
-            idle_timeout=relay.CLOUD_IDLE_TIMEOUT_SEC, popen=_scripted_popen([proc]),
+            overall_timeout=watchdog.CLOUD_WALL_TIMEOUT_SEC, retries=0,
+            idle_timeout=watchdog.CLOUD_IDLE_TIMEOUT_SEC, popen=_scripted_popen([proc]),
             clock=clock, sleep=clock.advance, log=[].append, poll_interval=60.0,
         )
-    assert excinfo.value.idle_seconds >= relay.CLOUD_IDLE_TIMEOUT_SEC
+    assert excinfo.value.idle_seconds >= watchdog.CLOUD_IDLE_TIMEOUT_SEC
     assert proc.kill_count == 1
 
 
-def test_local_gpu_axis_wall_backstop_still_finite(relay):
+def test_local_gpu_axis_wall_backstop_still_finite():
     """로컬 GPU 축도 **무제한이 아니다** — 진행이 계속돼도 4시간 백스톱은 닫는다."""
     clock = _FakeClock()
-    profile = relay.HARNESS_PROFILES["opencode"]
+    profile = watchdog.HARNESS_PROFILES["opencode"]
     forever = _ScriptedProc(clock, event_times=[i * 600.0 for i in range(200)], exit_at=None)
     with pytest.raises(subprocess.TimeoutExpired) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["opencode", "run"], first_event_timeout=None,
             overall_timeout=profile.wall_timeout, retries=0,
             idle_timeout=profile.idle_timeout, popen=_scripted_popen([forever]),
             clock=clock, sleep=clock.advance, log=[].append, poll_interval=60.0,
         )
-    assert not isinstance(excinfo.value, relay.IdleTimeoutExpired)
+    assert not isinstance(excinfo.value, watchdog.IdleTimeoutExpired)
     assert forever.kill_count == 1
 
 
@@ -2018,7 +1976,7 @@ def _init_args():
     return argparse.Namespace(prefix=None, area=None, owner=None, repo=None, slot=None, user=None)
 
 
-def test_harness_budget_keys_are_documented_in_the_registry(board, relay):
+def test_harness_budget_keys_are_documented_in_the_registry(board):
     """하네스별 시간 예산 키를 **레지스트리**가 노출한다 — 존재를 모르면 못 쓴다(T-0906).
 
     GPU 부족은 엔진 속성이 아니라 배포 환경 조건이라 per-clone 으로 조여야 하는데, 키 설명이
@@ -2026,7 +1984,7 @@ def test_harness_budget_keys_are_documented_in_the_registry(board, relay):
     (시드 주석 블록 폐지) 레지스트리와 그 조회 표면(`local_conf.py --keys`)이 노출을 단독으로 진다."""
     conf_module = conf_schema
     for suffix in ("idle_timeout", "wall_timeout"):
-        for harness in relay.HARNESS_PROFILES:
+        for harness in watchdog.HARNESS_PROFILES:
             spec = conf_module.key_spec(f"harness.{harness}.{suffix}")
             assert spec is not None and spec.description, (harness, suffix)
             # 안 채워도 되는 값임은 안 채웠을 때 일어나는 일(`unset`)이 알린다.
@@ -2096,7 +2054,7 @@ def test_claude_argv_declares_stream_json_with_required_verbose(pd):
     assert "json" not in argv[argv.index("--output-format") + 1:argv.index("--verbose")][1:]
 
 
-def test_claude_reply_extraction_identical_across_formats(pd, relay):
+def test_claude_reply_extraction_identical_across_formats(pd):
     """전환 전후 회신 추출 동일 — 두 형식이 같은 파서를 통과한다(⑤ 전제 검증).
 
     구 `--output-format json` = 종료 시 단일 덩어리(`type:result` 한 줄), 신 `stream-json` =
@@ -2111,8 +2069,8 @@ def test_claude_reply_extraction_identical_across_formats(pd, relay):
         json.dumps({"type": "result", "subtype": "success", "result": "REPLY-BODY",
                     "session_id": "sess-1"}),
     ])
-    assert relay.parse_stream_json(single_blob.splitlines()) == ("sess-1", "REPLY-BODY", None)
-    assert relay.parse_stream_json(stream.splitlines()) == ("sess-1", "REPLY-BODY", None)
+    assert contract.parse_stream_json(single_blob.splitlines()) == ("sess-1", "REPLY-BODY", None)
+    assert contract.parse_stream_json(stream.splitlines()) == ("sess-1", "REPLY-BODY", None)
     assert pd.extract_reply("claude", single_blob) == pd.extract_reply("claude", stream)
 
 
@@ -2147,10 +2105,10 @@ def test_execute_attempt_writes_silence_into_raw(pd, tmp_path):
 # ── ⑧ additional_reviewer 표면 — 같은 공용 seam ──────────────────────────────────────
 
 def test_additional_reviewer_default_runner_uses_shared_relay_seam(external, monkeypatch):
-    """리뷰어 기본 러너가 pm_relay 공용 워치독을 탄다 — `subprocess.run` 단일 호출이 아니다."""
+    """리뷰어 기본 러너가 공용 워치독(watchdog)을 탄다 — `subprocess.run` 단일 호출이 아니다."""
     fake = _RecordingRelay(
         completed=subprocess.CompletedProcess(["codex"], 0, "판정: 통과", ""))
-    monkeypatch.setattr(external, "_load_relay", lambda: fake)
+    fake.install(monkeypatch)
     monkeypatch.setattr(external.subprocess, "run", _forbidden_subprocess_run)
     ok, output, started = external._run_reviewer_ex("prompt", "codex exec", 1700, None)
     assert (ok, started) == (True, True) and "판정: 통과" in output
@@ -2168,7 +2126,7 @@ def test_additional_reviewer_opencode_profile_enables_startup_retry(
     """리뷰 축도 opencode 프로필의 startup watchdog/재시도를 소비한다."""
     fake = _RecordingRelay(
         completed=subprocess.CompletedProcess(["opencode"], 0, "판정: 통과", ""))
-    monkeypatch.setattr(external, "_load_relay", lambda: fake)
+    fake.install(monkeypatch)
     ok, _output, started = external._run_reviewer_ex(
         "prompt", "opencode run --format json", 14400, None
     )
@@ -2189,7 +2147,7 @@ def test_additional_reviewer_idle_kill_preserves_partial_output(external, monkey
     exc = subprocess.TimeoutExpired(["codex"], 900.0, output="REVIEW SO FAR",
                                     stderr="progress log")
     exc.idle_seconds = 905.0
-    monkeypatch.setattr(external, "_load_relay", lambda: _RecordingRelay(exc=exc))
+    _RecordingRelay(exc=exc).install(monkeypatch)
     ok, output, started = external._run_reviewer_ex("p", "codex exec", 1700, None)
     assert (ok, started) == (False, True)
     # 타임아웃 진단은 회신 채널 하나에 담긴다(T-0563 채널 구조 분리 — 구분자 파싱 없음).
@@ -2200,12 +2158,12 @@ def test_additional_reviewer_idle_kill_preserves_partial_output(external, monkey
 
 
 def test_additional_reviewer_wall_timeout_keeps_actual_diagnostics(
-        external, relay, monkeypatch):
+        external, monkeypatch):
     """벽시계 안내는 기존 조정 토큰과 실제 임계·실측 침묵을 함께 보존한다."""
-    exc = relay.WallTimeoutExpired(
+    exc = watchdog.WallTimeoutExpired(
         ["codex"], 1800.0, silence_seconds=7.0, output="PARTIAL"
     )
-    monkeypatch.setattr(external, "_load_relay", lambda: _RecordingRelay(exc=exc))
+    _RecordingRelay(exc=exc).install(monkeypatch)
     ok, output, started = external._run_reviewer_ex("p", "codex exec", 1700, None)
     assert (ok, started) == (False, True)
     diagnosis = output.answer
@@ -2219,7 +2177,7 @@ def test_additional_reviewer_run_review_saves_partial_output(external, monkeypat
     """타임아웃 결과도 원문 파일로 박제된다 — 부분 산출물이 디스크에 남아야 재개가 가능하다."""
     exc = subprocess.TimeoutExpired(["codex"], 900.0, output="HALF REVIEW")
     exc.idle_seconds = 902.0
-    monkeypatch.setattr(external, "_load_relay", lambda: _RecordingRelay(exc=exc))
+    _RecordingRelay(exc=exc).install(monkeypatch)
     result = external.run_review("p", target=_direct_target(external, "codex exec"), timeout=1700,
                                  output_dir=tmp_path)
     assert result["failed"] is True and result["started"] is True
@@ -2228,9 +2186,9 @@ def test_additional_reviewer_run_review_saves_partial_output(external, monkeypat
 
 
 def test_additional_reviewer_cleanup_failure_saves_partial_output(
-        external, relay, tmp_path):
+        external, tmp_path):
     """리뷰 소비처도 cleanup sentinel을 실패로 수합하고 부분 산출물을 raw에 박제한다."""
-    exc = relay.ProcessCleanupError(
+    exc = watchdog.ProcessCleanupError(
         "detached child kept pipe open",
         output="HALF REVIEW BEFORE CLEANUP",
         stderr="cleanup diagnostic",
@@ -2254,18 +2212,18 @@ def test_additional_reviewer_cleanup_failure_saves_partial_output(
 
 
 
-def test_additional_reviewer_follows_reviewer_harness_profile(external, relay):
+def test_additional_reviewer_follows_reviewer_harness_profile(external):
     """리뷰어 커맨드의 **하네스 프로필**을 따른다 — 별도 타임아웃 상수 0(값 출처 단일)."""
     unset = external.argparse.Namespace(timeout=None, idle_timeout=None)
     assert external._resolve_timeout(unset, {}, "codex exec --sandbox read-only") == \
-        int(relay.CLOUD_WALL_TIMEOUT_SEC)
+        int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
     # 로컬 GPU 리뷰어(opencode)를 물리면 그 축의 값으로 갈린다 — 표면이 아니라 축이 값을 정한다.
     assert external._resolve_timeout(unset, {}, "opencode run") == \
-        int(relay.LOCAL_GPU_WALL_TIMEOUT_SEC)
+        int(watchdog.LOCAL_GPU_WALL_TIMEOUT_SEC)
     # 테이블에 없는 리뷰어 CLI 는 신호 없음 fallback(모르는 리뷰어를 무진행으로 죽이지 않는다).
     unknown = external.reviewer_profile("my-reviewer --flag", {})
     assert unknown.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
-    assert unknown.wall_timeout == relay.DEFAULT_WALL_TIMEOUT_SEC
+    assert unknown.wall_timeout == watchdog.DEFAULT_WALL_TIMEOUT_SEC
     # 이 모듈은 자체 타임아웃 상수를 두지 않는다(값이 두 군데면 규칙이 둘).
     source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     assert "EXTERNAL_TIMEOUT_SECONDS" not in source
@@ -2273,25 +2231,25 @@ def test_additional_reviewer_follows_reviewer_harness_profile(external, relay):
 
 @pytest.mark.parametrize("command", ["codex.exe exec", "CODEX.EXE exec", "codex.cmd exec"])
 def test_windows_codex_names_share_progress_and_time_profile(
-        external, relay, command):
+        external, command):
     """Windows 표기도 진행신호·시간값 모두 동일한 정규화 키(codex)를 쓴다."""
     profile = external.reviewer_profile(command, {})
     assert external.reviewer_name(command) == "codex"
     assert profile.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
-    assert profile.idle_timeout == relay.HARNESS_PROFILES["codex"].idle_timeout
-    assert profile.wall_timeout == relay.HARNESS_PROFILES["codex"].wall_timeout
-    assert profile.wall_timeout != relay.REVIEWER_FALLBACK_PROFILE.wall_timeout
+    assert profile.idle_timeout == watchdog.HARNESS_PROFILES["codex"].idle_timeout
+    assert profile.wall_timeout == watchdog.HARNESS_PROFILES["codex"].wall_timeout
+    assert profile.wall_timeout != watchdog.REVIEWER_FALLBACK_PROFILE.wall_timeout
 
 
-def test_reviewer_idle_timeout_uses_resolved_profile_signal(external, relay, monkeypatch):
+def test_reviewer_idle_timeout_uses_resolved_profile_signal(external, monkeypatch):
     """리뷰 표면도 profile.progress_signal 을 소비 — 신호 없는 선언을 평문으로 하드코딩하지 않는다."""
-    no_signal = relay.HARNESS_PROFILES["codex"]._replace(
+    no_signal = watchdog.HARNESS_PROFILES["codex"]._replace(
         progress_signal=conf_schema.PROGRESS_SIGNAL_NONE)
     monkeypatch.setattr(external, "reviewer_profile", lambda *_a, **_k: no_signal)
     assert external._reviewer_idle_timeout("future-runner", 123) is None
 
 
-def test_reviewer_progress_signal_requires_known_executable_and_option_contract(external, relay):
+def test_reviewer_progress_signal_requires_known_executable_and_option_contract(external):
     """basename+CLI별 옵션 계약 매트릭스: 이름만/플래그만 어느 한쪽으로는 추론하지 않는다."""
     absolute_codex = external.reviewer_profile("/usr/local/bin/codex exec", {})
     assert absolute_codex.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
@@ -2328,7 +2286,7 @@ def test_reviewer_progress_signal_requires_known_executable_and_option_contract(
     assert configured.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
 
-def test_unknown_reviewer_can_only_opt_into_progress_explicitly(external, relay):
+def test_unknown_reviewer_can_only_opt_into_progress_explicitly(external):
     """미지 기본은 NONE이며 자유 문자열 CLI는 local.conf 명시 선언으로만 idle 축에 들어간다."""
     assert external.reviewer_profile(
         "future-reviewer --quiet", {}
@@ -2340,7 +2298,7 @@ def test_unknown_reviewer_can_only_opt_into_progress_explicitly(external, relay)
     assert configured.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
 
-def test_reviewer_profile_facade_reads_local_conf(external, relay, monkeypatch):
+def test_reviewer_profile_facade_reads_local_conf(external, monkeypatch):
     """conf 생략 facade도 local.conf의 값/신호 override를 읽어 위임 축과 대칭이다."""
     monkeypatch.setattr(
         external,
@@ -2375,19 +2333,19 @@ def test_additional_reviewer_cli_rejects_nonfinite_or_fractional_idle(external, 
 
 @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "0.5", "1.5"])
 def test_local_conf_timeout_normalization_rejects_nonfinite_and_fractional(
-        relay, raw, capsys):
+        raw, capsys):
     """local.conf 도 CLI 와 같은 정규화 경계를 탄다."""
-    profile = relay.resolve_harness_profile(
+    profile = watchdog.resolve_harness_profile(
         "codex", {"harness.codex.idle_timeout": raw})
-    assert profile.idle_timeout == relay.HARNESS_PROFILES["codex"].idle_timeout
+    assert profile.idle_timeout == watchdog.HARNESS_PROFILES["codex"].idle_timeout
     assert "유한한 정수 초" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), 0.5, 1.5, 0])
-def test_watchdog_api_rejects_invalid_idle_timeout_at_shared_boundary(relay, value):
+def test_watchdog_api_rejects_invalid_idle_timeout_at_shared_boundary(value):
     """CLI 를 우회한 직접 API 호출도 같은 정규화 경계에서 fail-loud 한다."""
     with pytest.raises(ValueError, match="유한한 정수 초"):
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["never-spawned"], first_event_timeout=None, overall_timeout=10,
             retries=0, idle_timeout=value,
             popen=lambda _argv: pytest.fail("검증 전 프로세스를 스폰함"),
@@ -2437,22 +2395,22 @@ def test_additional_reviewer_runtime_harness_cap_advisory(external):
     ) is None
 
 
-def test_both_surfaces_share_retry_cleanup_budget_formula(external, pd, relay):
+def test_both_surfaces_share_retry_cleanup_budget_formula(external, pd):
     """추가리뷰·위임이 startup 재시도마다 wait+drain 10초를 같은 공용 식으로 센다."""
     expected = 14400 + 2 * 90 + 3 * 10
-    assert relay.watchdog_execution_budget(
+    assert watchdog.watchdog_execution_budget(
         14400, first_event_timeout=90, retries=2
     ) == expected
     assert pd._harness_timeout_budget("opencode", 14400) == expected
     assert external._reviewer_execution_budget(
         "opencode run --format json", 14400
     ) == expected
-    assert relay.harness_cap_required_budget(expected) == expected + 10
+    assert watchdog.harness_cap_required_budget(expected) == expected + 10
 
 
-def test_wall_before_startup_window_has_single_attempt_budget(relay):
+def test_wall_before_startup_window_has_single_attempt_budget():
     """wall <= first-event 창이면 자동 재시도가 없으므로 실행·정리도 한 시도만 센다."""
-    assert relay.watchdog_execution_budget(
+    assert watchdog.watchdog_execution_budget(
         30, first_event_timeout=90, retries=2
     ) == 40
 
@@ -2464,10 +2422,10 @@ def test_all_surfaces_load_the_same_relay_judgment_code(pd, external, pm_import)
 
     한쪽만 고쳐진 상태(복붙 구현·자체 판정)면 이 단언이 무너진다 — 편입의 목적이 "거기도 고쳐야
     해서"가 아니라 "규칙이 둘로 갈리는 걸 막기 위해서"이므로 코드 동일성을 직접 잠근다."""
-    delegate_relay = pd._load_relay()
-    review_relay = external._load_relay()
-    fill_relay = pm_import._load_watchdog()
-    canonical = str(TOOLS / "pm_relay.py")
+    delegate_relay = pd.watchdog
+    review_relay = external.watchdog
+    fill_relay = pm_import.watchdog
+    canonical = str(TOOLS / "pm_engine/infra/harness/watchdog.py")
     for module in (delegate_relay, review_relay, fill_relay):
         fn = module.run_with_first_event_watchdog
         assert fn.__code__.co_filename == canonical
@@ -2475,14 +2433,14 @@ def test_all_surfaces_load_the_same_relay_judgment_code(pd, external, pm_import)
     assert delegate_relay.DEFAULT_IDLE_TIMEOUT_SEC == review_relay.DEFAULT_IDLE_TIMEOUT_SEC
 
 
-def test_idle_judgment_is_implemented_once(relay):
-    """무진행 판정 구현은 pm_relay 단독 — 세 표면에 복붙되면 red(규칙 분기 방지)."""
-    relay_src = (TOOLS / "pm_relay.py").read_text(encoding="utf-8")
+def test_idle_judgment_is_implemented_once():
+    """무진행 판정 구현은 watchdog 단독 — 세 표면에 복붙되면 red(규칙 분기 방지)."""
+    relay_src = (TOOLS / "pm_engine/infra/harness/watchdog.py").read_text(encoding="utf-8")
     assert relay_src.count("raise IdleTimeoutExpired(") == 1
     for tool in ("pm_delegate.py", "additional_reviewer.py", "pm_import.py"):
         src = (TOOLS / tool).read_text(encoding="utf-8")
         assert "IdleTimeoutExpired(" not in src, (
-            f"{tool} 이 무진행 판정을 자체 구현했다 — 공용 seam(pm_relay) 재사용이 DoD")
+            f"{tool} 이 무진행 판정을 자체 구현했다 — 공용 seam(watchdog) 재사용이 DoD")
         assert "run_with_first_event_watchdog" in src, (
             f"{tool} 이 공용 워치독 seam 을 안 탄다 — 한쪽만 고쳐진 상태")
 
@@ -2494,7 +2452,7 @@ def test_idle_judgment_is_implemented_once(relay):
 # 경계는 여기 한 자리이고, 어댑터가 exec 에 실패해 던진 OSError 에는 "자식 없음" 표식이 붙는다.
 
 
-def test_spawn_seam_fires_immediately_before_the_child(relay):
+def test_spawn_seam_fires_immediately_before_the_child():
     """콜백은 `popen(argv)` **직전**에 돈다 — 준비가 끝난 뒤, 자식이 생기기 전."""
     clock = _FakeClock()
     order: list[str] = []
@@ -2504,7 +2462,7 @@ def test_spawn_seam_fires_immediately_before_the_child(relay):
         order.append("popen")
         return proc
 
-    result = relay.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["drv"], first_event_timeout=5.0, overall_timeout=30.0, retries=0,
         idle_timeout=None, popen=popen, clock=clock, sleep=clock.advance,
         log=[].append, poll_interval=1.0,
@@ -2514,13 +2472,13 @@ def test_spawn_seam_fires_immediately_before_the_child(relay):
     assert order == ["handoff", "popen"]
 
 
-def test_spawn_seam_fires_once_across_stall_retries(relay):
+def test_spawn_seam_fires_once_across_stall_retries():
     """stall 재시도로 자식을 여러 번 띄워도 소유권 이전은 실행당 1회다(중복 이전 없음)."""
     clock = _FakeClock()
     procs = [_ScriptedProc(clock, event_times=[], exit_at=None) for _ in range(2)]
     handoffs: list[int] = []
-    with pytest.raises(relay.StallWatchdogError):
-        relay.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.StallWatchdogError):
+        watchdog.run_with_first_event_watchdog(
             ["opencode", "run"], first_event_timeout=5.0, overall_timeout=600.0,
             retries=1, idle_timeout=900.0, popen=_scripted_popen(procs), clock=clock,
             sleep=clock.advance, log=[].append, poll_interval=1.0,
@@ -2534,7 +2492,7 @@ def test_spawn_seam_fires_once_across_stall_retries(relay):
     "exc_type",
     [FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError],
 )
-def test_exec_failure_from_the_adapter_is_marked_as_no_child(relay, exc_type):
+def test_exec_failure_from_the_adapter_is_marked_as_no_child(exc_type):
     """어댑터의 exec 실패는 '자식 없음' 표식과 함께 그대로 올라간다(호출부 환불 판정 입력)."""
     handoffs: list[int] = []
 
@@ -2542,20 +2500,20 @@ def test_exec_failure_from_the_adapter_is_marked_as_no_child(relay, exc_type):
         raise exc_type("drv")
 
     with pytest.raises(exc_type) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
             idle_timeout=None, popen=popen, clock=_FakeClock(), sleep=lambda _s: None,
             log=[].append, on_spawn_attempt=lambda: handoffs.append(1),
         )
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is True
     assert handoffs == [1], "경계 콜백은 exec 시도 앞에서 이미 돌아야 한다"
 
 
-def test_preparation_failure_never_hands_off_ownership(relay):
+def test_preparation_failure_never_hands_off_ownership():
     """인자 검증 실패(=`Popen` 전)는 콜백을 태우지 않는다 — 소유권은 호출부에 남는다."""
     handoffs: list[int] = []
     with pytest.raises(ValueError):
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
             idle_timeout=0.5,                      # 유한 정수 초가 아님 → 검증 실패
             popen=lambda _argv: pytest.fail("검증 전 프로세스를 스폰함"),
@@ -2565,31 +2523,31 @@ def test_preparation_failure_never_hands_off_ownership(relay):
     assert handoffs == []
 
 
-def test_post_spawn_marking_wins_over_the_exec_failure_default(relay):
+def test_post_spawn_marking_wins_over_the_exec_failure_default():
     """이미 '자식 있었음'으로 표식된 예외는 경계 층이 덮어쓰지 않는다(최초 관측이 진실)."""
     marked = PermissionError("초기화 실패 롤백")
-    relay._mark_spawn_failed(marked, False)
+    watchdog._mark_spawn_failed(marked, False)
 
     def popen(_argv):
         raise marked
 
     with pytest.raises(PermissionError) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
             idle_timeout=None, popen=popen, clock=_FakeClock(), sleep=lambda _s: None,
             log=[].append, on_spawn_attempt=lambda: None,
         )
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False
 
 
-def test_watched_popen_marks_post_spawn_init_failure_as_spawned(relay, monkeypatch):
+def test_watched_popen_marks_post_spawn_init_failure_as_spawned(monkeypatch):
     """`Popen` 성공 뒤의 초기화 실패는 자식이 **있었던** 실행이라 표식이 False 다.
 
     실 자식을 띄운 뒤 리더 스레드 생성을 실패시켜, 롤백(그룹 kill·drain)을 거쳐 올라오는 원
     예외의 표식을 본다. 종류만 보고 환불하면 이 형상이 '호출 0' 으로 오분류된다.
     """
     class _NoThreads:
-        """relay 가 쓰는 threading 표면 대역 — Thread 생성만 실패시킨다."""
+        """watchdog 이 쓰는 threading 표면 대역 — Thread 생성만 실패시킨다."""
 
         Event = threading.Event
         Lock = threading.Lock
@@ -2598,10 +2556,10 @@ def test_watched_popen_marks_post_spawn_init_failure_as_spawned(relay, monkeypat
         def Thread(*args, **kwargs):        # noqa: N802 — 표준 API 이름을 맞춘다
             raise PermissionError("스레드 생성 거부")
 
-    monkeypatch.setattr(relay, "threading", _NoThreads)
+    monkeypatch.setattr(watchdog, "threading", _NoThreads)
     with pytest.raises(PermissionError) as excinfo:
-        relay._WatchedPopen([sys.executable, "-c", "import time; time.sleep(30)"])
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+        watchdog._WatchedPopen([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False
 
 
 # ── 스폰 경계 표식: 경계가 종류를 이긴다 (T-0590 R4) ─────────────────────────
@@ -2613,7 +2571,7 @@ def test_watched_popen_marks_post_spawn_init_failure_as_spawned(relay, monkeypat
 # 실행 전체를 '자식 없음'으로 되돌릴 수 없다(앞선 자식이 이미 프롬프트를 보냈을 수 있다).
 
 
-def test_a_second_attempt_launch_failure_never_unmarks_the_first_child(relay):
+def test_a_second_attempt_launch_failure_never_unmarks_the_first_child():
     """1회차가 자식을 띄우고 stall → 2회차 기동 실패: 표식은 '자식 있었음'(False)이다.
 
     시도 단위로만 보면 2회차는 exec 실패라 '자식 없음'이다. 그 표식이 그대로 올라가면 상위가
@@ -2632,7 +2590,7 @@ def test_a_second_attempt_launch_failure_never_unmarks_the_first_child(relay):
         raise FileNotFoundError("drv")            # 2회차: exec 실패(이 시도엔 자식 없음)
 
     with pytest.raises(FileNotFoundError) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=5.0, overall_timeout=600.0, retries=1,
             idle_timeout=None, popen=popen, clock=clock, sleep=clock.advance,
             log=[].append, poll_interval=1.0,
@@ -2641,37 +2599,37 @@ def test_a_second_attempt_launch_failure_never_unmarks_the_first_child(relay):
 
     assert attempts == ["spawned", "launch-failed"]     # 정확히 2회 시도
     assert first.kill_count == 1                        # 1회차 자식은 실제로 떴다가 kill 됐다
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False, (
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False, (
         "2회차 기동 실패가 1회차 자식을 '자식 없음'으로 되돌렸다 — 나간 호출이 환불된다")
     assert handoffs == [1]                              # 소유권 이전은 실행당 1회 그대로
 
 
-def test_watched_popen_marks_a_nul_argv_rejection_as_no_child(relay):
+def test_watched_popen_marks_a_nul_argv_rejection_as_no_child():
     """argv 에 NUL 이 섞이면 `Popen` 이 fork **전에** `ValueError` 로 거절한다 → 자식 없음.
 
     OSError 만 '자식 없음'으로 표식하면 이 형상은 표식이 없어, 상위가 보수적으로 '호출됐을 수
     있음'으로 읽고 예산을 태운다 — 실제로는 프로세스가 만들어진 적이 없다."""
     with pytest.raises(ValueError) as excinfo:
-        relay._WatchedPopen([sys.executable, "-c", "print(1)\x00"])
+        watchdog._WatchedPopen([sys.executable, "-c", "print(1)\x00"])
     assert "null" in str(excinfo.value)
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is True
 
 
-def test_nul_argv_through_the_real_watchdog_is_marked_no_child(relay):
+def test_nul_argv_through_the_real_watchdog_is_marked_no_child():
     """같은 형상이 실 어댑터를 쓰는 워치독 경로에서도 '자식 없음' 표식으로 올라온다."""
     handoffs: list[int] = []
     with pytest.raises(ValueError) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             [sys.executable, "-c", "print(1)\x00"],
             first_event_timeout=None, overall_timeout=30.0, retries=0,
             idle_timeout=None, log=[].append,
             on_spawn_attempt=lambda: handoffs.append(1),
         )
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is True
     assert handoffs == [1]      # 경계 콜백은 종전 자리 그대로 — 되돌림은 표식이 소유한다
 
 
-def test_watched_popen_marks_post_spawn_valueerror_as_spawned(relay, monkeypatch):
+def test_watched_popen_marks_post_spawn_valueerror_as_spawned(monkeypatch):
     """`Popen` **성공 뒤**의 `ValueError` 는 자식이 있었던 실행이다 → 표식 False.
 
     NUL 거절과 **같은 종류**의 예외로 반대편을 세운다: 종류로 환불을 정하면 이 형상이 '호출 0'
@@ -2684,14 +2642,14 @@ def test_watched_popen_marks_post_spawn_valueerror_as_spawned(relay, monkeypatch
         def Thread(*args, **kwargs):        # noqa: N802 — 표준 API 이름을 맞춘다
             raise ValueError("스레드 생성 거부")
 
-    monkeypatch.setattr(relay, "threading", _NoThreads)
+    monkeypatch.setattr(watchdog, "threading", _NoThreads)
     with pytest.raises(ValueError) as excinfo:
-        relay._WatchedPopen([sys.executable, "-c", "import time; time.sleep(30)"])
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+        watchdog._WatchedPopen([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False
 
 
 def test_cleanup_failure_after_a_post_spawn_valueerror_keeps_the_spawned_mark(
-        relay, monkeypatch):
+        monkeypatch):
     """자식 회수(정리)까지 실패해도 원 예외의 표식은 '자식 있었음' 그대로다.
 
     정리 실패는 잔존 프로세스 가능성을 뜻하는 **더 나쁜** 형상이다. 여기서 표식이 흔들려 환불
@@ -2705,14 +2663,14 @@ def test_cleanup_failure_after_a_post_spawn_valueerror_keeps_the_spawned_mark(
             raise ValueError("스레드 생성 거부")
 
     def _cleanup_boom(*args, **kwargs):
-        raise relay.ProcessCleanupError("정리 실패(주입)")
+        raise watchdog.ProcessCleanupError("정리 실패(주입)")
 
-    monkeypatch.setattr(relay, "threading", _NoThreads)
-    monkeypatch.setattr(relay, "_cleanup_failed_watched_spawn", _cleanup_boom)
+    monkeypatch.setattr(watchdog, "threading", _NoThreads)
+    monkeypatch.setattr(watchdog, "_cleanup_failed_watched_spawn", _cleanup_boom)
     with pytest.raises(ValueError) as excinfo:
-        relay._WatchedPopen([sys.executable, "-c", "pass"])
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
-    assert isinstance(excinfo.value.__cause__, relay.ProcessCleanupError)
+        watchdog._WatchedPopen([sys.executable, "-c", "pass"])
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False
+    assert isinstance(excinfo.value.__cause__, watchdog.ProcessCleanupError)
 
 
 # ── 스폰 경계 표식: `popen` 성공 뒤의 본문 실패 (T-0590 추가 리뷰어 4차) ─────────
@@ -2761,25 +2719,25 @@ class _BodyBoomProc(_ScriptedProc):
 @pytest.mark.parametrize("exc_type", _BODY_FAILURE_KINDS)
 @pytest.mark.parametrize("boom_at", ("first_event_ready", "poll", "communicate"))
 def test_body_failure_after_a_successful_popen_is_marked_as_spawned(
-    relay, exc_type, boom_at,
+    exc_type, boom_at,
 ):
     """`popen` 성공 뒤 본문에서 나온 예외는 종류·지점과 무관하게 '자식 있었음'(False)이다."""
     clock = _FakeClock()
     proc = _BodyBoomProc(clock, boom_at=boom_at, exc=exc_type("본문 실패"))
 
     with pytest.raises(exc_type) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=5.0, overall_timeout=600.0, retries=0,
             idle_timeout=None, popen=lambda _argv: proc, clock=clock,
             sleep=clock.advance, log=[].append, poll_interval=1.0,
         )
 
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False, (
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False, (
         "자식이 떴던 실행이 '자식 없음'으로 올라간다 — 상위가 종류만 보고 환불한다")
     assert proc.kill_count == 1, "본문 실패 뒤 자식을 회수하지 않았다"
 
 
-def test_clock_failure_after_a_successful_popen_is_marked_as_spawned(relay):
+def test_clock_failure_after_a_successful_popen_is_marked_as_spawned():
     """본문의 첫 문장(시계 읽기)이 터져도 자식은 이미 떴다 — 표식은 False 다."""
     proc = _ScriptedProc(_FakeClock(), event_times=[], exit_at=None)
     calls = {"n": 0}
@@ -2791,12 +2749,12 @@ def test_clock_failure_after_a_successful_popen_is_marked_as_spawned(relay):
         return 0.0
 
     with pytest.raises(PermissionError) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
             idle_timeout=None, popen=lambda _argv: proc, clock=clock,
             sleep=lambda _s: None, log=[].append,
         )
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False
 
 
 class _CleanupBoomProc(_BodyBoomProc):
@@ -2810,7 +2768,7 @@ class _CleanupBoomProc(_BodyBoomProc):
         raise self._cleanup_exc
 
 
-def test_cleanup_failure_after_a_body_failure_keeps_the_spawned_mark(relay):
+def test_cleanup_failure_after_a_body_failure_keeps_the_spawned_mark():
     """정리까지 실패해도(잔존 프로세스 가능성) 원 예외의 '자식 있었음' 표식은 보존된다.
 
     정리 실패는 과금 가능성이 가장 큰 형상이다 — 여기서 표식이 흔들려 환불 쪽으로 넘어가면
@@ -2819,16 +2777,16 @@ def test_cleanup_failure_after_a_body_failure_keeps_the_spawned_mark(relay):
     clock = _FakeClock()
     proc = _CleanupBoomProc(clock, boom_at="first_event_ready",
                             exc=PermissionError("본문 실패"),
-                            cleanup_exc=relay.ProcessCleanupError("정리 실패(주입)"))
+                            cleanup_exc=watchdog.ProcessCleanupError("정리 실패(주입)"))
 
     with pytest.raises(PermissionError) as excinfo:
-        relay.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["drv"], first_event_timeout=5.0, overall_timeout=600.0, retries=0,
             idle_timeout=None, popen=lambda _argv: proc, clock=clock,
             sleep=clock.advance, log=[].append, poll_interval=1.0,
         )
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
-    assert isinstance(excinfo.value.__cause__, relay.ProcessCleanupError)
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is False
+    assert isinstance(excinfo.value.__cause__, watchdog.ProcessCleanupError)
 
 
 # ── `Popen` 예외의 보수 판정 (T-0590 추가 리뷰어 4차) ────────────────────────
@@ -2852,7 +2810,7 @@ _NUL_INPUTS = (
 
 
 @pytest.mark.parametrize(("kwargs", "where"), _NUL_INPUTS)
-def test_nul_inputs_are_rejected_before_the_spawn_boundary(relay, kwargs, where):
+def test_nul_inputs_are_rejected_before_the_spawn_boundary(kwargs, where):
     """argv·cwd·env 의 NUL 은 `Popen` 을 **부르기 전에** 거절한다 → 자식 없음 표식.
 
     거절이 preflight 에서 나오므로 그 표식은 예외 종류를 보고 추측한 값이 아니라 경계 앞의
@@ -2860,14 +2818,14 @@ def test_nul_inputs_are_rejected_before_the_spawn_boundary(relay, kwargs, where)
     argv = kwargs.pop("argv")
     called = []
     with pytest.raises(ValueError) as excinfo:
-        relay._WatchedPopen(argv, **kwargs)
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+        watchdog._WatchedPopen(argv, **kwargs)
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is True
     assert "null" in str(excinfo.value) and where in str(excinfo.value)
     assert called == []
 
 
 class _PopenPatchedSubprocess:
-    """relay 가 보는 `subprocess` 표면 — `Popen` 만 대역이고 나머지는 실 모듈 그대로.
+    """watchdog 이 보는 `subprocess` 표면 — `Popen` 만 대역이고 나머지는 실 모듈 그대로.
 
     실 모듈 속성을 직접 갈아끼우면 이 테스트 파일 자신이 쓰는 `subprocess.Popen` 까지 바뀐다
     (대역 안에서 실 자식을 띄우는 반례가 자기 자신을 재귀 호출한다)."""
@@ -2879,14 +2837,14 @@ class _PopenPatchedSubprocess:
         return getattr(subprocess, name)
 
 
-def test_preflight_runs_before_subprocess_popen_is_touched(relay, monkeypatch):
+def test_preflight_runs_before_subprocess_popen_is_touched(monkeypatch):
     """preflight 는 `Popen` 을 아예 부르지 않는다(거절의 근거가 경계 **앞** 임을 실증)."""
     def _fail(*_args, **_kwargs):
         pytest.fail("preflight 가 거절해야 할 입력으로 Popen 을 불렀다")
 
-    monkeypatch.setattr(relay, "subprocess", _PopenPatchedSubprocess(_fail))
+    monkeypatch.setattr(watchdog, "subprocess", _PopenPatchedSubprocess(_fail))
     with pytest.raises(ValueError):
-        relay._WatchedPopen(["drv\x00"])
+        watchdog._WatchedPopen(["drv\x00"])
 
 
 @pytest.mark.parametrize(
@@ -2894,7 +2852,7 @@ def test_preflight_runs_before_subprocess_popen_is_touched(relay, monkeypatch):
     [FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError],
 )
 def test_definite_launch_failure_from_popen_keeps_the_refund_contract(
-    relay, monkeypatch, exc_type,
+    monkeypatch, exc_type,
 ):
     """exec 자체가 실패한 확정 기동 실패는 종전대로 '자식 없음'(True) — 환불 계약 보존.
 
@@ -2905,17 +2863,17 @@ def test_definite_launch_failure_from_popen_keeps_the_refund_contract(
     def _boom(*_args, **_kwargs):
         raise exc_type("launch")
 
-    monkeypatch.setattr(relay, "subprocess", _PopenPatchedSubprocess(_boom))
+    monkeypatch.setattr(watchdog, "subprocess", _PopenPatchedSubprocess(_boom))
     with pytest.raises(exc_type) as excinfo:
-        relay._WatchedPopen([sys.executable])
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+        watchdog._WatchedPopen([sys.executable])
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is True
 
 
-def test_missing_binary_through_the_real_popen_is_marked_no_child(relay, tmp_path):
+def test_missing_binary_through_the_real_popen_is_marked_no_child(tmp_path):
     """실 `Popen` 으로도 같다 — 없는 바이너리는 자식이 뜬 적 없다(표식 True)."""
     with pytest.raises(FileNotFoundError) as excinfo:
-        relay._WatchedPopen([str(tmp_path / "no-such-binary-xyz")])
-    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+        watchdog._WatchedPopen([str(tmp_path / "no-such-binary-xyz")])
+    assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR) is True
 
 
 class _ChildThenRaisePopen:
@@ -2946,20 +2904,20 @@ class _ChildThenRaisePopen:
     ),
 )
 def test_popen_exception_after_a_child_exists_is_not_ruled_a_no_child(
-    relay, monkeypatch, exc,
+    monkeypatch, exc,
 ):
     """`Popen` 안에서 자식이 뜬 뒤 나온 예외는 '자식 없음'으로 확정하지 않는다.
 
     preflight 가 내는 `ValueError` 와 **같은 종류**가 여기서도 나온다 — 종류로 확정하면 이 형상이
     호출 0 으로 오분류돼 과금된 실행이 환불된다. 확정할 수 없으면 보수쪽(False)이다."""
     spawned: list = []
-    monkeypatch.setattr(relay, "subprocess",
+    monkeypatch.setattr(watchdog, "subprocess",
                         _PopenPatchedSubprocess(_ChildThenRaisePopen(exc, spawned)))
     try:
         with pytest.raises(type(exc)) as excinfo:
-            relay._WatchedPopen([sys.executable])
+            watchdog._WatchedPopen([sys.executable])
         assert spawned, "반례 형상이 성립하려면 자식이 실제로 떠야 한다"
-        assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR, None) is not True, (
+        assert getattr(excinfo.value, watchdog.SPAWN_FAILED_ATTR, None) is not True, (
             "자식이 있었는데 '자식 없음'으로 확정했다 — 나간 호출이 환불된다")
     finally:
         for child in spawned:
@@ -2967,30 +2925,30 @@ def test_popen_exception_after_a_child_exists_is_not_ruled_a_no_child(
             child.wait(timeout=10)
 
 
-def test_same_exception_class_splits_by_boundary_not_by_kind(relay, monkeypatch):
+def test_same_exception_class_splits_by_boundary_not_by_kind(monkeypatch):
     """같은 `ValueError` 가 preflight 에서는 True, 자식 생성 뒤에서는 True 가 아니다(exact)."""
     with pytest.raises(ValueError) as pre:
-        relay._WatchedPopen(["drv\x00"])
+        watchdog._WatchedPopen(["drv\x00"])
 
     spawned: list = []
     monkeypatch.setattr(
-        relay, "subprocess",
+        watchdog, "subprocess",
         _PopenPatchedSubprocess(
             _ChildThenRaisePopen(ValueError("embedded null byte"), spawned)))
     try:
         with pytest.raises(ValueError) as post:
-            relay._WatchedPopen([sys.executable])
-        assert getattr(pre.value, relay.SPAWN_FAILED_ATTR) is True
-        assert getattr(post.value, relay.SPAWN_FAILED_ATTR, None) is not True
+            watchdog._WatchedPopen([sys.executable])
+        assert getattr(pre.value, watchdog.SPAWN_FAILED_ATTR) is True
+        assert getattr(post.value, watchdog.SPAWN_FAILED_ATTR, None) is not True
     finally:
         for child in spawned:
             child.kill()
             child.wait(timeout=10)
 
 
-def test_relay_and_reviewer_share_the_definite_launch_failure_table(relay, external):
+def test_relay_and_reviewer_share_the_definite_launch_failure_table(external):
     """확정 기동 실패 표가 두 층에서 같다 — 갈리면 한쪽만 환불하는 비대칭이 생긴다."""
-    assert relay._DEFINITE_LAUNCH_FAILURES == external._DEFINITE_LAUNCH_FAILURES
+    assert watchdog._DEFINITE_LAUNCH_FAILURES == external._DEFINITE_LAUNCH_FAILURES
 
 
 # ── local.conf 온보딩 위생 — 비파괴·멱등 (T-0615 · 시드 폐지 후 T-0767) ────────

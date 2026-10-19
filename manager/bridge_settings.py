@@ -176,7 +176,7 @@ class SettingsApi:
     def delegate_models(self, path: str, harness: str) -> dict:
         """그 사본의 `pm-config delegate models --harness <h> --json` 산출 그대로.
 
-        모델 목록의 정본은 그 사본의 모델 원천 표(`pm_relay.MODEL_SOURCE`)다 — 번들 목록으로
+        모델 목록의 정본은 그 사본의 모델 원천 표(`contract.MODEL_SOURCE`)다 — 번들 목록으로
         대신 답하지 않는다. 상한이 `HEAVY_TIMEOUT_SECONDS` 인 이유는 `kind="live"` 인 하네스가
         실제 CLI 를 부르기 때문이다(가벼운 절의 10초를 넘긴다).
 

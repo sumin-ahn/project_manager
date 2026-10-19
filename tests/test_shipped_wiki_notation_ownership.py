@@ -22,24 +22,14 @@ manifest 미소유 출하 wiki = **인스턴스 상태 seed**(`status.md`·`log/
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
 from _harness_matrix import HARNESSES, REPO, TEMPLATES, _PM_IMPORT
 from _repo_owned_inventory import TRACKED_ONLY, repo_owned_paths
+from pm_engine.infra import manifest_store
 
-
-def _load_pm_update():
-    path = REPO / ".project_manager" / "tools" / "pm_update.py"
-    spec = importlib.util.spec_from_file_location("wiki_ownership_pm_update", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_PM_UPDATE = _load_pm_update()
 
 WIKI_PREFIX = ".project_manager/wiki/"
 
@@ -96,7 +86,7 @@ def _manifest_entries(template_dir: str) -> set[str]:
     manifest = TEMPLATES / template_dir / ".project_manager" / "engine.manifest"
     return {
         str(entry).replace("\\", "/")
-        for entry in _PM_UPDATE.read_manifest(manifest)
+        for entry in manifest_store.read_manifest(manifest)
     }
 
 

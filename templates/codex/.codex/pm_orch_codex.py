@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """codex relay driver — `codex exec` subprocess 세션 구동 (어댑터·얇음).
 
-엔진 core(루트 `.project_manager/tools/pm_relay.py`)의 SessionDriver Protocol 구현체. relay/
+엔진 세션 연속성 모듈(`pm_engine.app.session.relay`)의 SessionDriver Protocol 구현체. relay/
 respawn/marker 로직은 *엔진* Supervisor 에 있고(루트 `.project_manager/tools/`·DI 로 테스트),
 이 파일은 **codex CLI 고유**한 부분만 — `codex exec --json` 을 subprocess 로 호출하고 JSONL
 이벤트 스트림을 파싱한다(opencode `pm_orch_opencode.py` 와 동형·claude 와는 세션 id 획득 방식만 다름).
@@ -71,16 +71,16 @@ def repo_root(start: Path) -> Path:
 
 
 def _load_engine():
-    """루트 `.project_manager/tools/pm_relay.py`(엔진 core)를 importlib 로 로드 (opencode 동형).
+    """루트 `.project_manager/tools` 의 엔진 패키지에서 세션 연속성 모듈을 import 한다 (opencode 동형).
 
-    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 경로로 직접 로드한다.
-    Supervisor·parse_codex_json·_marker_path 를 빌려 쓴다."""
+    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 tools 경로를 `sys.path` 에 넣은 뒤
+    `pm_engine.app.session.relay` 를 import 한다. Supervisor·마커 함수를 빌려 쓴다."""
     root = repo_root(Path(__file__).resolve().parent)
-    engine_path = root / ".project_manager" / "tools" / "pm_relay.py"
-    spec = importlib.util.spec_from_file_location("pm_relay", engine_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module, root
+    tools = root / ".project_manager" / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from pm_engine.app.session import relay
+    return relay, root
 
 
 # ── local.conf 직접 파싱 + ctx 예산 해소 (claude ctx_guard 미러·codex 는 옆에 ctx_guard 없음) ──
@@ -279,14 +279,8 @@ class CodexCliDriver:
         # 계약을 엔진이 소유하고 driver 는 예산 판정 후 트리거만 한다. post-turn 표식이라 Supervisor 가
         # 그 입력을 다시 보내지 않고 회전한다(이미 실행된 turn 의 이중 실행 방지). None 이면 가드 no-op.
         self._mark_stop = mark_stop
-        parser_globals = getattr(parse_codex_json, "__globals__", {})
-        self._mark_ctx_if_over = (
-            mark_ctx_if_over or parser_globals.get("mark_ctx_post_turn_if_over")
-        )
-        self._spawn_result = (
-            spawn_result or parser_globals.get("SpawnResult")
-            or (lambda sid, reply: (sid, reply))
-        )
+        self._mark_ctx_if_over = mark_ctx_if_over
+        self._spawn_result = spawn_result or (lambda sid, reply: (sid, reply))
         self._ctx_budget = ctx_budget
         # budget_reader(세션 모델) → (적용 한도, 압축 임박 경고 %, 모델 불일치 경고) — turn 마다 다시 읽는다.
         self._budget_reader = budget_reader
@@ -1534,7 +1528,7 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
 def _git_anchor_duplicate(root: Path, payload: dict, text: str) -> bool:
     """이 세션에서 **문자열이 완전히 같은** advisory 를 이미 냈으면 True(claude 헬퍼 재사용).
 
-    마커 I/O 실패(None)는 False — 발화를 유지한다(fail-open). 엔진 `pm_relay.claim_session_
+    마커 I/O 실패(None)는 False — 발화를 유지한다(fail-open). 엔진 `relay.claim_session_
     once` 를 그대로 부른다 — claude 와 같은 멤버십 디렉토리 `.project_manager/.local/ctx-stop/`
     를 공유하되 세션키가 달라 서로 섞이지 않는다(새 상태 파일·새 디렉토리 0)."""
     try:
@@ -1598,7 +1592,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _make_resolving_runner(engine):
-    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`pm_relay.resolve_executable`)로 찾아 실행한다.
+    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`contract.resolve_executable`)로 찾아 실행한다.
 
     Windows npm 설치의 `codex.cmd` 는 이름 그대로 실행하지 못한다. 해소 실패는 `FileNotFoundError`
     (PATH 부재)라 driver `_turn` 의 실행 실패 처리를 그대로 탄다."""
@@ -1630,14 +1624,15 @@ def main(argv: list[str] | None = None) -> int:
         # 필수라 task 없는 relay 는 시작하지 않는다. 훅 진입(같은 파서)은 task 를 받지 않아 여기서 본다.
         parser.error("relay 에는 --task <task> 가 필요하다")
     engine, root = _load_engine()
+    from pm_engine.infra.harness import contract
 
     cwd = args.cwd or os.getcwd()
     # driver-side ctx 가드 원천 — 압축 한도 기록의 예산·회전 임계 + 엔진 post-turn marker writer 주입.
     # 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
     ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "codex", None)
     driver = CodexCliDriver(
-        engine.parse_codex_json,
-        runner=_make_resolving_runner(engine),
+        contract.parse_codex_json,
+        runner=_make_resolving_runner(contract),
         ctx_budget=ctx_budget,
         budget_reader=lambda model: engine.ctx_budget(root, "codex", model),
         precompact_at_pct=precompact_at_pct,

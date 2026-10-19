@@ -29,7 +29,7 @@
     회신을 못 뽑은 실행은 rc=0 으로 끝났어도 **리뷰를 받지 못한 실행**이라 같은 축으로 내린다 —
     wire 원문은 원문 파일에 그대로 보존되고 raw 장부는 정상 마감된다.
     중단 판정: 주 = **무진행**(마지막 진행 출력 이후 침묵), 백스톱 = 벽시계. 값은 별도 상수가
-    아니라 **해소된 추가 리뷰어 대상의 하네스 프로필**(pm_relay·위임 채널과 동일 테이블)에서 오고, 배포별
+    아니라 **해소된 추가 리뷰어 대상의 하네스 프로필**(`watchdog`·위임 채널과 동일 테이블)에서 오고, 배포별
     조정은 local.conf `harness.<reviewer>.idle_timeout`/`.wall_timeout`(legacy
     `additional_reviewer.idle_timeout`/`additional_reviewer.timeout` 도 계속 유효)·일회성은
     `--idle-timeout`/`--timeout`. 어느 쪽으로 중단되든 그 시점까지 받은 출력은 원문 파일에
@@ -49,7 +49,7 @@
     으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
 
 설계:
-  - 어댑터 seam: canonical `additional_reviewer.{harness,model,reasoning}` tuple 을 pm_relay 의
+  - 어댑터 seam: canonical `additional_reviewer.{harness,model,reasoning}` tuple 을 `contract` 의
     3-harness 드라이버로 해소한다. 그 tuple 이 없으면 대상이 없어 fail-loud 다 — 모델을 고정하지
     않는 실행 경로는 남기지 않는다.
   - 도메인 외부화: 프로젝트 맥락은 `.project_manager/review_context.local.md`(인스턴스 소유)
@@ -100,7 +100,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, process, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, manifest_store, process, raw_output, repo_files, review_rounds  # noqa: E402
+from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -541,7 +542,7 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
 # 해소 결과뿐이고, 모델을 고정하지 않는 실행 경로를 남기지 않는다.
 
 # 리뷰어 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **해소된 대상의 하네스 프로필**이 소유한다
-# (`pm_relay.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 축 값). 이 모듈에
+# (`watchdog.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 축 값). 이 모듈에
 # 별도 타임아웃 상수를 두지 않는 이유가 이 티켓의 편입 이유와 같다: **값이 두 군데면 규칙이 둘이
 # 된다.** 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
 # 구조였고, 900 으로 올려도 같은 구조였다(실측: **입력·모델이 완전히 동일한 리뷰 2회 중 하나는
@@ -1138,7 +1139,7 @@ def _structured_reviewer_argv(
     harness: str, model: str, reasoning: str | None, *,
     cwd: str, prompt_file: str,
 ) -> list[str]:
-    """구조화 대상의 argv — 공용 드라이버 계약(pm_relay)만으로 조립한다.
+    """구조화 대상의 argv — 공용 드라이버 계약(`contract`)만으로 조립한다.
 
     모델·reasoning 은 **항상 argv 에 명시**되고 권한축은 code-reviewer(읽기)로 고정된다. 사용자
     config 기본값(모델·effort)이 실제 수신자를 바꿀 수 없는 이유가 이것이다 — 명시 플래그가
@@ -1148,12 +1149,11 @@ def _structured_reviewer_argv(
     없다. opencode 만 subprocess cwd 를 무시해 `--dir` 이 필요하고 프롬프트도 `--file` 첨부라,
     그 두 자리는 자리표시자로 렌더한 뒤 실행 시점에 실 경로로 조립한다.
     """
-    relay = _load_relay()
     if harness == "codex":
-        return relay.build_codex_argv(model, reasoning, REVIEWER_ROLE)
+        return contract.build_codex_argv(model, reasoning, REVIEWER_ROLE)
     if harness == "claude":
-        return relay.build_claude_argv(model, reasoning, REVIEWER_ROLE)
-    return relay.build_opencode_argv(model, reasoning, REVIEWER_ROLE, cwd, prompt_file)
+        return contract.build_claude_argv(model, reasoning, REVIEWER_ROLE)
+    return contract.build_opencode_argv(model, reasoning, REVIEWER_ROLE, cwd, prompt_file)
 
 
 def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
@@ -1169,7 +1169,7 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
     · model 이 **예약 sentinel**(`RESERVED_MODEL_VALUES` — 엔진이 '모델 미고정'을 뜻하는 낱말)이면
       거부한다. 값이 비어있지 않다는 것만으로 통과시키면 `additional_reviewer.model=default` 가
       "고정했다"는 선언과 함께 미고정 라벨을 장부에 박아, 감사가 자기 모순을 기록한다.
-    · harness 값 검증은 공용 드라이버 계약(pm_relay)이 소유한다. reasoning 은 정리만 하고, 그 모델이
+    · harness 값 검증은 공용 드라이버 계약(`contract`)이 소유한다. reasoning 은 정리만 하고, 그 모델이
       받는 값인지는 실행 직전 `check_reviewer_reasoning` 이 실행 cwd·env 로 확인한다(이 함수는
       비교용 `reviewer_profile_config` 에서도 불린다 — 거기서 모델 목록을 조회하지 않는다).
 
@@ -1214,14 +1214,13 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
             "  · 모델 미고정 실행 경로는 폐지됐습니다 — 실행하려면 모델을 고정해야 합니다."
         )
 
-    relay = _load_relay()
     try:
-        harness = relay.validate_harness(harness)
-    except relay.HarnessContractError as exc:
+        harness = contract.validate_harness(harness)
+    except contract.HarnessContractError as exc:
         raise ReviewerTargetError(
             f"추가 리뷰어 프로필 값 오류 — {exc}"
         ) from exc
-    reasoning = relay.normalize_reasoning(declared[ADDITIONAL_REVIEWER_REASONING_KEY])
+    reasoning = contract.normalize_reasoning(declared[ADDITIONAL_REVIEWER_REASONING_KEY])
 
     command = shlex.join(_structured_reviewer_argv(
         harness, model, reasoning,
@@ -1240,12 +1239,11 @@ def check_reviewer_reasoning(target: ReviewerTarget, *, cwd: Path) -> None:
     목록 조회 결과가 정한다. 추론 값이 없으면 조회하지 않는다."""
     if target.reasoning is None:
         return
-    relay = _load_relay()
     try:
-        relay.validate_reasoning(
+        contract.validate_reasoning(
             target.harness, target.reasoning, model=target.model, cwd=cwd,
             env=_load_pm_delegate().build_env(target.harness))
-    except relay.HarnessContractError as exc:
+    except contract.HarnessContractError as exc:
         raise ReviewerTargetError(f"추가 리뷰어 프로필 값 오류 — {exc}") from exc
 
 
@@ -1336,15 +1334,14 @@ def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
     시간값은 실행 파일 축의 공유 테이블을 쓰되, 진행 신호는 전체 argv/명시 설정으로 독립 판정한다.
     conf 미지정 facade도 local.conf를 읽어 `pm_delegate.harness_profile`과 대칭이다.
     """
-    relay = _load_relay()
     if conf is None:
         try:
             conf = local_config()
         except OSError:
             conf = {}
-    profile = relay.resolve_harness_profile(
+    profile = watchdog.resolve_harness_profile(
         reviewer_name(reviewer_cmd), conf,
-        fallback=relay.REVIEWER_FALLBACK_PROFILE,
+        fallback=watchdog.REVIEWER_FALLBACK_PROFILE,
         legacy_idle_key=ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY,
         legacy_wall_key=ADDITIONAL_REVIEWER_TIMEOUT_KEY,
     )
@@ -1358,7 +1355,7 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
     """추가 리뷰 **벽시계 백스톱**(초)을 `--timeout` > 리뷰어 프로필 순서로 해소한다.
 
     CLI 양수값은 argparse 검증을 통과한 명시 override다. 그 아래(legacy flat conf →
-    `harness.<reviewer>.wall_timeout` → 선언 기본)는 `pm_relay.resolve_harness_profile` 이 소유한다
+    `harness.<reviewer>.wall_timeout` → 선언 기본)는 `watchdog.resolve_harness_profile` 이 소유한다
     — 깨진 conf 값은 거기서 stderr 경고 후 fail-soft. pm_delegate._resolve_timeout 과 같은 계약이다.
     """
     if args.timeout is not None:
@@ -1368,8 +1365,8 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
 
 
 def _timeout_seconds_arg(raw: str) -> int:
-    """CLI timeout 을 pm_relay 의 단일 정규화 경계로 파싱한다."""
-    value = _load_relay().normalize_timeout_seconds(raw)
+    """CLI timeout 을 `watchdog` 의 단일 정규화 경계로 파싱한다."""
+    value = watchdog.normalize_timeout_seconds(raw)
     if value is None:
         raise argparse.ArgumentTypeError("유한한 정수 초(최소 1)여야 합니다")
     return value
@@ -1485,7 +1482,7 @@ def _legacy_round_ledger_path() -> Path:
 
 def _read_round_ledger_at(path: Path) -> dict:
     """지정 경로의 라운드 장부를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
-    return _load_review_rounds().read_ledger(path)
+    return review_rounds.read_ledger(path)
 
 
 def _load_round_ledger() -> dict:
@@ -1514,7 +1511,7 @@ def _inherit_legacy_round_entry(ledger: dict, gate: str) -> dict | None:
     # 같은 "저장 후 1회 고지" 규칙을 받는다.
     entry, retired_ack = _gate_entry_with_retirement(legacy, gate)
     if retired_ack:
-        _load_review_rounds().warn_retired_ack_field(gate, retired_ack)
+        review_rounds.warn_retired_ack_field(gate, retired_ack)
     ledger[gate] = entry
     return ledger[gate]
 
@@ -1536,7 +1533,7 @@ def _save_round_ledger(ledger: dict) -> None:
     livegate_flag = path.with_name("livegate.json")
     if problems:
         board._write_release_must_fix_marker(livegate_flag, problems)
-    _load_review_rounds().write_ledger(path, ledger)
+    review_rounds.write_ledger(path, ledger)
     if not problems:
         board._write_release_must_fix_marker(livegate_flag, problems)
 
@@ -1555,7 +1552,7 @@ def _restrict_to_owner(path: Path) -> None:
 def _load_pm_delegate():
     """리뷰 블록 스키마와 회수 내용 규칙의 단일 진실(`pm_delegate.py`)을 경로 로드한다.
 
-    `_load_relay`·`_load_board` 와 같은 경로-앵커 로더다. 스키마를 이 모듈이 다시 적으면 파서와
+    `_load_board` 와 같은 경로-앵커 로더다. 스키마를 이 모듈이 다시 적으면 파서와
     프롬프트가 갈리고, 회수 판정 규칙을 여기서 따로 구현하면 리뷰 채널마다 규칙이 갈린다.
     """
     path = Path(__file__).resolve().parent / "pm_delegate.py"
@@ -1575,15 +1572,6 @@ def _load_ticket_rounds():
     _require_engine_sibling(path, "ticket_rounds.py")
     return _load_module_from_path(
         path, "ticket_rounds.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
-def _load_review_rounds():
-    """라운드 장부 read/write·예약·수렴 판정 공용 seam을 지연 로드한다."""
-    path = Path(__file__).resolve().parent / "review_rounds.py"
-    _require_engine_sibling(path, "review_rounds.py")
-    return _load_module_from_path(
-        path, "review_rounds.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -1614,7 +1602,7 @@ def _round_ledger_lock() -> Iterator[None]:
 
 def _utc_now_iso() -> str:
     """장부 시각 표기 단일 소스 — UTC ISO-8601 (예약/마감/산출이 같은 형식을 쓴다)."""
-    return _load_review_rounds().utc_now_iso()
+    return review_rounds.utc_now_iso()
 
 
 def _target_rev_fingerprint(diff: str) -> str:
@@ -1628,7 +1616,7 @@ def _target_rev_fingerprint(diff: str) -> str:
 
 def _as_int(value: object) -> int:
     """장부 필드를 int 로 강제 (손상/누락 → 0·fail-soft)."""
-    return _load_review_rounds().as_int(value)
+    return review_rounds.as_int(value)
 
 
 # ── wave 예산 절 (전 게이트 합계) ───────────────────────────────────────────
@@ -1820,7 +1808,7 @@ def _gate_entry_with_retirement(ledger: dict, gate: str) -> tuple[dict, int]:
     반환 둘째 값은 이 호출이 방금 떨군 폐기 필드 원값(0=미검출)이다. 알림·영속 정책은
     호출부 소유다 — mutation/차단 경로(`_reserve_round_budget`)는 감지 즉시 저장 후 1회
     고지하고, 읽기 전용 조회(`render_rounds_report`)는 영속할 수 없는 고지를 하지 않는다."""
-    return _load_review_rounds().normalize_gate_entry(
+    return review_rounds.normalize_gate_entry(
         ledger, gate, reserved_keys=tuple(_RESERVED_LEDGER_KEYS),
     )
 
@@ -1883,7 +1871,7 @@ def _reserve_round(
     살아 있을 수 있는지는 그 예약을 만든 실행의 timeout 이 정하는 값이지, 나중에 장부를 읽는
     호출자의 timeout 이 아니다(짧은 timeout 의 후속 호출이 긴 timeout 으로 도는 라운드를 stale
     로 접으면 수렴 상한을 넘겨 예약할 수 있다). 백스톱이 없는 실행은 만료 시각도 없다(null)."""
-    return _load_review_rounds().reserve_round(
+    return review_rounds.reserve_round(
         entry, record_id, wall_timeout_sec=wall_timeout_sec,
         target_rev=target_rev,
     )
@@ -1894,7 +1882,7 @@ def _refund_round(entry: dict, record_id: str) -> bool:
 
     반환값은 **실제로 환불했는지**다 — 같은 조건으로 wave 예산도 되돌려야 하는데, 되돌릴 예약이
     없는데 spent 만 깎으면 두 축의 소비가 갈린다."""
-    return _load_review_rounds().refund_round(entry, record_id)
+    return review_rounds.refund_round(entry, record_id)
 
 
 # ── 라운드별 산출 기록 ──────────────────────────────────────────────────────
@@ -1966,7 +1954,7 @@ def _append_round_outcome(entry: dict, outcome: dict) -> dict:
 
     산출 **계산**(응답 파싱·시각)은 호출부가 락 밖에서 끝낸다 — 임계 구역은 장부 read-modify-write
     만 담당한다(파싱이 길어져도 다른 게이트 실행을 붙잡지 않는다)."""
-    return _load_review_rounds().append_round_outcome(entry, outcome)
+    return review_rounds.append_round_outcome(entry, outcome)
 
 
 # ── 수렴-형상 게이트 (라운드 장부 위의 판정) ────────────────────────────────
@@ -1980,7 +1968,7 @@ def _recorded_must_fix_series(entry: dict) -> tuple[int | None, ...]:
 
     나열 순서는 조회 표와 **같은 정렬**(`_ordered_round_outcomes`)이다 — append 순서는 완료
     순서라 동시 실행이 역순으로 끝나면 추이가 뒤바뀐다."""
-    return _load_review_rounds().recorded_must_fix_series(
+    return review_rounds.recorded_must_fix_series(
         entry, order_key=_load_board().round_outcome_order_key,
     )
 
@@ -1995,7 +1983,7 @@ def _convergence_round_usage(
     entry: dict, *, wall_timeout_sec: int | None = None,
 ) -> tuple[int, int]:
     """(완료 산출 수, 미마감 예약 수) — 상한 판정과 차단 안내가 **같은 수**를 쓴다."""
-    return _load_review_rounds().convergence_round_usage(
+    return review_rounds.convergence_round_usage(
         entry, wall_timeout_sec=wall_timeout_sec,
         order_key=_load_board().round_outcome_order_key,
     )
@@ -2012,7 +2000,7 @@ def _convergence_refusal(
           마지막 must_fix 가 0 이 아니면(미해소·'미상' 포함) 사유를 나눠 표기한다. 미상을 해소로
           접지 않는 건 보수 방향이다 — 셀 수 없던 라운드를 '0건'으로 읽으면 발산 형상이 통과한다.
     """
-    return _load_review_rounds().convergence_refusal(
+    return review_rounds.convergence_refusal(
         entry, limit, wall_timeout_sec=wall_timeout_sec,
         order_key=_load_board().round_outcome_order_key,
     )
@@ -2191,7 +2179,7 @@ def _reserve_round_budget(
             # 반복될 때마다 같은 경고가 되풀이된다 — 그 자체가 F-002 결함이었다.
             if retired_ack:
                 _save_round_ledger(ledger)
-                _load_review_rounds().warn_retired_ack_field(args.gate, retired_ack)
+                review_rounds.warn_retired_ack_field(args.gate, retired_ack)
             # 손상 복구(재계산된 spent)는 거부되는 실행에서도 저장한다 — 안 그러면 손상값이
             # 남아 매 실행 같은 경고를 반복하고 장부가 계속 거짓말을 한다. 저장 판정은 정규화와
             # **같은 술어**를 쓴다.
@@ -2361,9 +2349,9 @@ class _PreSpawnReservation:
     환불은 하되 예외는 그대로 다시 던진다 — 예상 못 한 실패를 판정 rc 로 바꾸면 진단이 사라진다.
 
     소유권은 **실 스폰 경계**의 `hand_off()` 로 넘어간다 — 스폰할 *수도* 있는 함수의 입구가
-    아니라, 인자·seam 검증과 러너 준비(relay 로드·프로필 해소·워치독 셋업)가 모두 끝나 다음
+    아니라, 인자·seam 검증과 러너 준비(프로필 해소·워치독 셋업)가 모두 끝나 다음
     문장이 `Popen` 을 부르는 그 한 줄 앞이다(`run_review` → `_run_reviewer_ex` →
-    `_watchdog_reviewer_run` → relay 워치독의 `on_spawn_attempt`). 그 뒤의 실패는 호출이 이미
+    `_watchdog_reviewer_run` → watchdog 워치독의 `on_spawn_attempt`). 그 뒤의 실패는 호출이 이미
     일어났을 수 있어 조건이 다르고, 마감 경로(`started` 판정)가 본다. `_settled` 는 한 번만
     서므로 여러 층이 같은 예외를 잡아도 이중 환불(상한이 조용히 늘어남)이 되지 않는다.
 
@@ -2582,7 +2570,7 @@ def _print_rounds_report(
 
 def _describe_resolution(declared: dict) -> str:
     """현재 유일한 처분 선언을 사람용 한 줄로 표기한다."""
-    return _load_review_rounds().describe_pm_verified_resolution(declared)
+    return review_rounds.describe_pm_verified_resolution(declared)
 
 
 def _resolve_gate_ignored_flags(args: argparse.Namespace) -> str:
@@ -2975,7 +2963,7 @@ def _canonical_measure_path(path: str) -> str:
 
 # ── 어댑터층 기계 mirror — engine.manifest `@source=` 방향에서 파생 ────────────────
 # 판정 입력은 그 타깃 engine.manifest 항목 하나뿐이다(새 설정 키·CLI 플래그 0). 항목이
-# bare(마커 없음)면 관례상 소스는 같은 상대경로를 **레포 루트**에서 읽는다는 뜻이라(`pm_update.
+# bare(마커 없음)면 관례상 소스는 같은 상대경로를 **레포 루트**에서 읽는다는 뜻이라(`manifest_rules.
 # _source_root_rel` 동형) templates/<타깃>/ 접두가 없는 다른 물리 경로를 가리키므로 늘 진짜 교차
 # 위치 복사다. `@source=<path>` 항목은 그 경로가 명시 소스다. 두 경우 다 "그 항목이 가리키는 실제
 # 소스 경로가 이 파일 자신의 templates/<타깃>/ 물리 경로와 같은가"만 보면 된다 — 같으면(자기참조)
@@ -2993,35 +2981,16 @@ _TEMPLATES_FLAVOR_RE = re.compile(r"^templates/([^/]+)/(.+)$")
 _adapter_manifest_entries_cache: dict[str, list | None] = {}
 
 
-def _load_pm_update_module():
-    """pm_update 모듈을 같은 tools/ 에서 경로 로드한다 (`read_manifest` 재사용).
-
-    board.py `_load_pm_update_module` 과 동형 복제 — pm_update.py 는 ENGINE_REV 를 굽지 않는
-    형제라 `allow_unverified=True`. 실패(부재·손상)는 None 으로 흡수한다 — 어댑터층 판정이
-    loud 하게 죽으면 안 되고(이 판정은 측정 축소 방향으로만 틀려야 한다), pm_update.py 부재/손상
-    시엔 위 `_MACHINE_MIRROR_RE` 단독 판정으로 조용히 강등된다."""
-    pm_update_py = Path(__file__).resolve().with_name("pm_update.py")
-    try:
-        return _load_module_from_path(
-            pm_update_py, "pm_update.py", allow_unverified=True, cache=True,
-        )
-    except Exception:  # noqa: BLE001 — 부재/손상은 무발화 강등(측정 축소 방향).
-        return None
-
-
 def _adapter_flavor_manifest(flavor: str) -> list | None:
     """`<flavor>` 출하 manifest 항목 (flavor 당 1회 로드·캐시). 실패/부재는 None."""
     if flavor not in _adapter_manifest_entries_cache:
-        entries = None
-        pm_update = _load_pm_update_module()
-        if pm_update is not None:
-            manifest_path = (
-                REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
-            )
-            try:
-                entries = pm_update.read_manifest(manifest_path)
-            except Exception:  # noqa: BLE001 — 부재/파싱 실패는 그 flavor 판정만 보류.
-                entries = None
+        manifest_path = (
+            REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+        )
+        try:
+            entries = manifest_store.read_manifest(manifest_path)
+        except Exception:  # noqa: BLE001 — 부재/파싱 실패는 그 flavor 판정만 보류.
+            entries = None
         _adapter_manifest_entries_cache[flavor] = entries
     return _adapter_manifest_entries_cache[flavor]
 
@@ -3035,7 +3004,7 @@ def _adapter_layer_machine_mirror(canonical_path: str) -> bool:
 
     ``@target-owned`` 항목은 **source 방향 비교 전에** 손작업으로 접는다(F-001
     리뷰) — 그 마커는 "upstream 에 source 가 아예 없는 게 정상"이라는 명시 선언이라
-    (`pm_update.TARGET_OWNED_TAG`), bare 경로의 관례적 "레포 루트가 source" 폴백을 이 항목에
+    (`manifest_rules.TARGET_OWNED_TAG`), bare 경로의 관례적 "레포 루트가 source" 폴백을 이 항목에
     적용하면 실재하지 않는 교차 위치와 비교해 기계 mirror로 오분류한다 — 수기 소유 파일이
     측정에서 통째로 빠져 사설 참조 검사를 우회하는 방향이라(과다 제외) 이 판정의 불변식(과다
     제외 0)을 정면으로 어긴다."""
@@ -3577,19 +3546,6 @@ def build_prompt(
 # ── 추가 리뷰어 실행 ──────────────────────────────────────────────────────
 
 
-def _load_relay():
-    """엔진 pm_relay 를 importlib 로 직접 로드 — **무진행 판정 공용 seam** 재사용
-    (`run_with_first_event_watchdog`·`idle_timeout_for_signal`·프로세스그룹 kill·부분 산출물 보존).
-
-    pm_delegate 가 이 모듈을 deep-import 해 재앵커를 재사용하는 선례의 대칭 방향이다
-    (형제 `.project_manager/tools/`·PYTHONPATH 무의존). **복붙 구현 금지** — 두 표면(위임·외부
-    리뷰)의 판정 규칙이 코드 상 하나여야 규칙이 둘로 갈리지 않는다."""
-    path = Path(__file__).resolve().parent / "pm_relay.py"
-    return _load_module_from_path(
-        path, "pm_relay.py", verifier=_verify_engine_rev,
-    )
-
-
 def _load_delegate_transport():
     """opencode sandbox 전달 사본 seam을 형제 pm_delegate에서 지연 로드한다.
 
@@ -3612,27 +3568,25 @@ def _reviewer_idle_timeout(reviewer_cmd: str, idle_timeout: float | None) -> flo
     stderr 로 촘촘히 흐르고(리뷰 1건 12,233줄) stdout 은 최종 회신뿐이라(498~759 바이트), chunk
     도착 자체를 신호로 보면 파서 없이 같은 판정이 선다. 특례 분기 없이 축 선언만 다르다.
     명시값이 없으면 해소 command가 가리키는 하네스 프로필 값을 쓴다(위임 축과 같은 테이블)."""
-    relay = _load_relay()
     profile = reviewer_profile(reviewer_cmd)
     resolved = idle_timeout if idle_timeout is not None else profile.idle_timeout
-    return relay.idle_timeout_for_signal(profile.progress_signal, resolved)
+    return watchdog.idle_timeout_for_signal(profile.progress_signal, resolved)
 
 
 def _reviewer_watchdog_settings(reviewer_cmd: str):
     """해소된 리뷰어 프로필의 startup 선언을 공용 워치독 인자로 변환한다."""
-    relay = _load_relay()
     profile = reviewer_profile(reviewer_cmd)
     first_event_timeout = (
-        relay.first_event_timeout_default() if profile.startup_watchdog else None
+        watchdog.first_event_timeout_default() if profile.startup_watchdog else None
     )
-    retries = relay.stall_retries_default() if profile.startup_watchdog else 0
-    return relay, first_event_timeout, retries
+    retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0
+    return first_event_timeout, retries
 
 
 def _reviewer_execution_budget(reviewer_cmd: str, timeout: int) -> int:
     """리뷰 1회의 실행+재시도별 실제 최악 정리 예산(위임 축과 같은 공용 식)."""
-    relay, first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
-    return int(relay.watchdog_execution_budget(
+    first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
+    return int(watchdog.watchdog_execution_budget(
         timeout,
         first_event_timeout=first_event_timeout,
         retries=retries,
@@ -3642,7 +3596,7 @@ def _reviewer_execution_budget(reviewer_cmd: str, timeout: int) -> int:
 def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
                            cwd=None, env=None, on_spawn_attempt=None,
                            **_ignored) -> subprocess.CompletedProcess:
-    """기본 리뷰어 러너 — pm_relay 공용 워치독 경유(무진행 주 판정 + 벽시계 백스톱).
+    """기본 리뷰어 러너 — `watchdog` 공용 워치독 경유(무진행 주 판정 + 벽시계 백스톱).
 
     `subprocess.run(..., timeout=)` 을 대체한다. 그 단일 호출은 증분 관측이 아예 없어서 (a) 정상
     진행을 벽시계로 죽이고 (b) `TimeoutExpired.stdout` 에 실려 온 부분 산출물을 아무도 안 읽어
@@ -3650,16 +3604,16 @@ def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
     이름 특례가 아니라 **해소된 공유 프로필 선언**을 따른다. 따라서 기본 codex(False)는 종전처럼
     꺼져 있고, 알려진 startup stall 축인 opencode(True)만 유한 재시도를 얻는다.
 
-    `cwd`/`env` 는 리뷰어 실행 조건이다 — 시그니처에 명시해 relay 워치독까지 내려보낸다
+    `cwd`/`env` 는 리뷰어 실행 조건이다 — 시그니처에 명시해 watchdog 워치독까지 내려보낸다
     (`**_ignored` 가 삼키면 실행 조건이 조용히 사라진다).
 
-    `on_spawn_attempt` 도 같은 이유로 명시한다 — 이 러너의 **앞부분**(relay 로드·프로필 해소·
+    `on_spawn_attempt` 도 같은 이유로 명시한다 — 이 러너의 **앞부분**(프로필 해소·
     워치독 준비)은 자식이 아직 없는 구간이라, 소유권 이전 콜백을 이 함수 입구에서 태우면 스폰 0·
-    호출 0 으로 끝난 준비 실패가 예산을 먹는다. 콜백은 relay 워치독의 실 스폰 경계까지 그대로
+    호출 0 으로 끝난 준비 실패가 예산을 먹는다. 콜백은 watchdog 워치독의 실 스폰 경계까지 그대로
     내려간다."""
     reviewer_cmd = shlex.join(argv)
-    relay, first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
-    return relay.run_with_first_event_watchdog(
+    first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
+    return watchdog.run_with_first_event_watchdog(
         argv,
         first_event_timeout=first_event_timeout,
         overall_timeout=float(timeout),
@@ -3681,19 +3635,9 @@ def harness_cap_advisory(
     않으며 Codex처럼 공개 상한 env가 없는 표면은 판정하지 않는다.
     """
     env = os.environ if env is None else env
-    # 설정 경로만 있는 비하네스 쉘에서는 형제 모듈을 읽지 않는다. 이 검사는
-    # 판정 표가 아니라 로더 조기 반환용 보수적 후보 필터이며, 실제 판정은 relay 선언만 쓴다.
-    if not any(
-        value and _is_possible_harness_session_key(key)
-        for key, value in env.items()
-    ):
-        return None
-    relay = _load_relay()
-    session_markers = relay.HARNESS_SESSION_MARKERS
-    cap_env = relay.HARNESS_CAP_ENV
-    return relay.harness_cap_advisory(
+    return watchdog.harness_cap_advisory(
         env, execution_budget=execution_budget,
-        session_markers=session_markers, cap_env=cap_env,
+        session_markers=watchdog.HARNESS_SESSION_MARKERS, cap_env=watchdog.HARNESS_CAP_ENV,
         render_missing=None,
         render_invalid=lambda harness, cap_key, raw, required: (
             f"[additional-reviewer] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
@@ -3706,11 +3650,6 @@ def harness_cap_advisory(
             "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
         ),
     )
-
-
-def _is_possible_harness_session_key(key: str) -> bool:
-    """relay를 안 읽는 조기 반환용 사설 필터(선언표 coverage는 테스트가 단언)."""
-    return key.startswith(("CODEX_", "CLAUDE", "OPENCODE")) and "CONFIG" not in key
 
 
 def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
@@ -3741,8 +3680,8 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
                 f"벽시계 상한 {timeout}초는 미도달. 재시도: `--idle-timeout <초>` 또는 local.conf "
                 f"`{ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
     try:
-        return _load_relay().format_partial_output(head, exc)
-    except Exception as formatter_exc:  # noqa: BLE001 - timeout diagnosis must survive formatter/load failure.
+        return watchdog.format_partial_output(head, exc)
+    except Exception as formatter_exc:  # noqa: BLE001 - timeout diagnosis must survive formatter failure.
         if _is_engine_rev_skew(formatter_exc):
             raise
         return head
@@ -3839,7 +3778,7 @@ def _reviewer_run_kwargs(run_fn: Callable, argv: list[str], *,
 #   NotADirectoryError   경로 중간 요소가 디렉토리가 아님(cwd·실행 파일 경로)
 #   IsADirectoryError    실행 대상이 디렉토리
 # 종류로 잡는 이유는 주입 러너(`subprocess.run` 호환)가 표식 없이 이 예외들을 그대로 올리기
-# 때문이고, relay 표식이 있으면 그쪽이 이긴다(`_launch_failed_definitely`).
+# 때문이고, watchdog 표식이 있으면 그쪽이 이긴다(`_launch_failed_definitely`).
 _DEFINITE_LAUNCH_FAILURES = (
     FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError,
 )
@@ -3848,7 +3787,7 @@ _DEFINITE_LAUNCH_FAILURES = (
 def _launch_failed_definitely(exc: BaseException) -> bool:
     """이 예외가 "자식이 뜬 적 없음"을 **확정**하는가.
 
-    1순위는 relay 가 스폰 경계에서 붙인 표식(`spawn_failed`)이다 — 그 층만 `Popen` 반환 전후를
+    1순위는 watchdog 이 스폰 경계에서 붙인 표식(`spawn_failed`)이다 — 그 층만 `Popen` 반환 전후를
     실제로 본다. 그래서 종류표에 없는 pre-child 거절(argv NUL 의 `ValueError`)도 표식이 True 면
     여기서 True 이고, 반대로 `Popen` 성공 뒤의 실패에 종류표의 예외가 실려 와도 표식이 False 라
     여기서도 False 다(재시도 도중 자식이 한 번이라도 떴던 실행 포함).
@@ -3865,9 +3804,9 @@ def _started_after(exc: BaseException, seam_reached: bool) -> bool:
 
     우선순위는 한 줄이다 — `spawn_failed=True` → started=False(자식 없음·환불 대상),
     `spawn_failed=False` → started=True(자식 있었음·환불 금지), **표식 없음** → 종전대로 스폰 경계
-    콜백이 돌았는지(`seam_reached`). 표식은 `Popen` 앞뒤를 실제로 본 층(relay)이 붙이므로 경계
-    콜백의 위치 추정보다 강하다: 콜백이 아직 안 돌았어도 relay 가 '자식 있었음'을 봤으면 그
-    실행은 이미 호출됐을 수 있고, 반대로 콜백이 돈 뒤라도 relay 가 '자식 없음'을 확정했으면 호출
+    콜백이 돌았는지(`seam_reached`). 표식은 `Popen` 앞뒤를 실제로 본 층(watchdog)이 붙이므로 경계
+    콜백의 위치 추정보다 강하다: 콜백이 아직 안 돌았어도 watchdog 이 '자식 있었음'을 봤으면 그
+    실행은 이미 호출됐을 수 있고, 반대로 콜백이 돈 뒤라도 watchdog 이 '자식 없음'을 확정했으면 호출
     0 이다. 이 판정을 분기마다 다시 쓰면 한 분기만 표식을 빠뜨려도 예산이 조용히 새므로 여기 한
     곳이 소유한다.
     """
@@ -3952,7 +3891,7 @@ def _run_reviewer_ex(
     보수적으로 started=True — 라운드 환불은 started=False 일 때만 해(반복 타임아웃으로 상한을
     무한 우회하지 못하게). 확실히 호출 전인 경우만 환불한다.
 
-    **판정 기준**: 기본 러너가 `subprocess.run` 단일 호출에서 pm_relay 공용 워치독으로
+    **판정 기준**: 기본 러너가 `subprocess.run` 단일 호출에서 `watchdog` 공용 워치독으로
     바뀌어, 주 판정이 "시작 후 경과"가 아니라 "마지막 진행 이후 무진행"이다(벽시계는 백스톱).
     `idle_timeout=None` 이면 reviewer_cmd 프로필 선언이 적용된다.
 
@@ -3968,8 +3907,8 @@ def _run_reviewer_ex(
     경계를 선언했는지에 따라 두 자리다:
 
     · 선언한 러너(기본 워치독 러너 — `on_spawn_attempt` 키워드를 이름으로 가짐)면 콜백을 **러너
-      안까지** 내려보내, relay 워치독이 `Popen` 하기 바로 앞에서 돈다. 러너 입구~`Popen` 사이의
-      준비 구간(relay 로드·프로필 해소·워치독 셋업)에서 실패하면 콜백이 아직 돌지 않았으므로
+      안까지** 내려보내, watchdog 워치독이 `Popen` 하기 바로 앞에서 돈다. 러너 입구~`Popen` 사이의
+      준비 구간(프로필 해소·워치독 셋업)에서 실패하면 콜백이 아직 돌지 않았으므로
       이 함수는 `started=False` 로 돌아간다 — 스폰 0·호출 0 인 실행이 예산을 먹지 않는다.
     · 선언하지 않은 기존 주입 러너면 종전 그대로 **호출 직전**에 한 번 돈다(호환 보존). 그 러너의
       내부 스폰 경계는 알 수 없으므로 그 뒤의 불확실 실패는 보수적으로 started=True 다.
@@ -3980,9 +3919,9 @@ def _run_reviewer_ex(
 
     콜백이 **돈 뒤에** 돌아온 `started=False`(확정 기동 실패)는 자식이 없었다고 판명된 결과라,
     호출부(`run_review` 의 `on_no_spawn`)가 그 자리에서 소유권을 되찾는다 — 판정 자체는 이 함수의
-    반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 확정 기동 실패의 판정 입력은 relay 가
+    반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 확정 기동 실패의 판정 입력은 watchdog 이
     붙이는 스폰 표식(`spawn_failed`)이 1순위, 없으면 예외 종류다 — `Popen` 성공 **뒤**의 실패에
-    같은 예외 종류가 실려 오면 relay 표식이 그것을 post-spawn 으로 못박아 보수적 started=True 가
+    같은 예외 종류가 실려 오면 watchdog 표식이 그것을 post-spawn 으로 못박아 보수적 started=True 가
     유지된다. 그 우선순위(표식 True→False·표식 False→True·표식 없음→스폰 경계 위치)는 확정 기동
     실패 분기만이 아니라 seam 호출 오류(`TypeError`)·일반 실행 오류 분기에도 **같이** 적용된다
     (`_started_after` 한 곳이 소유). 한 분기만 표식을 무시해도 그 자리로 예산이 샌다."""
@@ -4019,7 +3958,7 @@ def _run_reviewer_ex(
             on_spawn_attempt=_spawn_seam,
         )
         # ── 스폰 경계 seam ──────────────────────────────────────────────
-        # 스폰 경계를 **이름으로 선언한** 러너면 콜백이 그 안(relay 의 `Popen` 직전)에서 돈다 —
+        # 스폰 경계를 **이름으로 선언한** 러너면 콜백이 그 안(watchdog 의 `Popen` 직전)에서 돈다 —
         # 러너 입구~Popen 사이의 준비 실패는 스폰 0·호출 0 이라 예약이 환불 대상으로 남는다.
         # 선언하지 않은 기존 주입 러너는 종전 자리(호출 직전)에서 한 번 돈다(호환 보존).
         if "on_spawn_attempt" not in kwargs:
@@ -4049,7 +3988,7 @@ def _run_reviewer_ex(
         return False, ReviewerOutput(_timeout_output(timeout, exc)), True
     except _DEFINITE_LAUNCH_FAILURES as exc:
         # exec 자체가 실패해 자식이 뜬 적 없다(파일 부재·실행 권한·경로 형상) → started=False
-        # (환불 대상). 단 relay 표식이 "Popen 성공 뒤"라고 못박은 예외는 예외다 — 그건 자식이
+        # (환불 대상). 단 watchdog 표식이 "Popen 성공 뒤"라고 못박은 예외는 예외다 — 그건 자식이
         # 있었던 실행이라 보수 규칙으로 내려보낸다.
         if not _launch_failed_definitely(exc):
             return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), True
@@ -4064,14 +4003,13 @@ def _run_reviewer_ex(
             f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]"), False
     except TypeError as exc:
         # runner 내부에서 발생한 키워드/시그니처 skew. 판정은 다른 분기와 **같은 우선순위**다 —
-        # relay 표식이 있으면 그것이 이기고(True→환불·False→환불 금지), 없을 때만 스폰 경계 위치를
+        # watchdog 표식이 있으면 그것이 이기고(True→환불·False→환불 금지), 없을 때만 스폰 경계 위치를
         # 본다. 표식을 무시하고 경계 위치만 보면, `Popen` 뒤에 실려 온 TypeError 가 콜백이 아직 안
         # 돈 러너에서 올라올 때 이미 나간 호출이 환불된다.
         return (False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"),
                 _started_after(exc, spawn_reached))
     except Exception as exc:  # noqa: BLE001
-        # _load_relay는 호출마다 독립 module 객체를 만들 수 있어 클래스 identity 대신 sentinel의
-        # 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
+        # 클래스 identity 대신 sentinel의 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
         if _is_engine_rev_skew(exc):
             raise
         if getattr(exc, "process_cleanup_failed", False) is True:
@@ -4083,7 +4021,7 @@ def _run_reviewer_ex(
                 output += f"\n{exc.output}"
             return False, ReviewerOutput(output, getattr(exc, "stderr", "") or ""), True
         if _launch_failed_definitely(exc):
-            # relay 가 스폰 경계에서 "자식 없음"으로 표식한 실패 — 종류는 exec `OSError` 만이
+            # watchdog 이 스폰 경계에서 "자식 없음"으로 표식한 실패 — 종류는 exec `OSError` 만이
             # 아니다(argv NUL 의 `ValueError` 처럼 `Popen` 이 fork 전에 거절한 형상도 여기 온다).
             # 자식이 없었으므로 호출 0·과금 0 이고 환불 대상이다.
             return (False,
@@ -4091,7 +4029,7 @@ def _run_reviewer_ex(
                     False)
         # 스폰 경계 뒤의 실패는 시작 여부가 불확실하다 — 보수적으로 started=True (상한 우회 방지 >
         # 과잉 카운트). 경계 **전**의 실패는 자식이 아직 없었다는 사실이 확정이라 False 다. 단
-        # relay 가 '자식 있었음'(False)으로 못박은 예외는 경계 콜백이 아직 안 돌았어도 True 다 —
+        # watchdog 이 '자식 있었음'(False)으로 못박은 예외는 경계 콜백이 아직 안 돌았어도 True 다 —
         # 위 `_DEFINITE_LAUNCH_FAILURES` 분기와 같은 우선순위(표식 > 위치)를 여기서도 쓴다.
         return (False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"),
                 _started_after(exc, spawn_reached))
@@ -4284,9 +4222,9 @@ def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
     자기 앵커로 폴백하므로 이 앵커도 그것을 따른다 — 복구 채널 자기잠김 금지.
 
     delegate의 raw 장부는 표현 축이 아닌 저장 경로 축이므로 포맷터 통합에서 제외하고,
-    두 소비처 모두 relay.raw_storage_paths를 쓰는 현재 경계를 유지한다.
+    두 소비처 모두 raw_output.raw_storage_paths를 쓰는 현재 경계를 유지한다.
     """
-    return _load_relay().raw_storage_paths(
+    return raw_output.raw_storage_paths(
         _PM_HOME_OVERRIDE or REPO,
         "review",
         output_dir,
@@ -4375,7 +4313,7 @@ _PRE_SPAWN_ABORT_RC = 1
 
 
 def _abort_pre_spawn_raw(
-    relay, ledger_path: Path | None, record_id: str | None, raw_path: Path, *,
+    ledger_path: Path | None, record_id: str | None, raw_path: Path, *,
     reason: str, elapsed: float, local_conf_path: Path | None,
     resolved_profile: str | None, target: ReviewerTarget | None,
 ) -> None:
@@ -4416,7 +4354,7 @@ def _abort_pre_spawn_raw(
             file=sys.stderr,
         )
     try:
-        relay.finish_raw_record(
+        raw_output.finish_raw_record(
             ledger_path, record_id,
             rc=_PRE_SPAWN_ABORT_RC, elapsed_sec=elapsed, silence_sec=None,
         )
@@ -4466,7 +4404,7 @@ def run_review(
 
     `on_spawn_attempt` = 라운드 예약 소유권 이전 seam(기본 None = 종전 동작). 이 함수의 **앞부분**
     (raw 선점·장부 시작 레코드·구조화 transport·argv/kwargs 준비)과 러너 안의 준비 구간
-    (relay 로드·프로필 해소·워치독 셋업)은 아직 확실히 호출 전이라,
+    (프로필 해소·워치독 셋업)은 아직 확실히 호출 전이라,
     거기서 예외로 나가면 콜백은 돌지 않는다 — 호출부의 스폰 전 seam 이 예약을 한 번 환불하고
     예외는 원본 그대로 다시 던져진다. 나가는 길에 이 함수가 남긴 raw 선점/미마감 레코드도
     함께 닫는다(`_abort_pre_spawn_raw`).
@@ -4488,11 +4426,10 @@ def run_review(
     # raw 선점(mkdir/open)·장부 시작 레코드·구조화 transport·argv/kwargs 준비가 전부 이 안이고,
     # 자식은 아직 없다. 이 구간에서 예외로 나가면 (1) 예약 소유권을 넘기지 않아 호출부의 스폰 전
     # seam 이 한 번 환불하고, (2) 이 함수가 남긴 raw 선점/미마감 레코드를 정직하게 닫는다.
-    # 소유권 이전 시점 자체는 relay 워치독이 `Popen` 을 부르기 한 줄 앞이다(그보다 앞이면
+    # 소유권 이전 시점 자체는 watchdog 워치독이 `Popen` 을 부르기 한 줄 앞이다(그보다 앞이면
     # "스폰할 수도 있는 함수에 들어갔다"는 이유만으로 환불 권리가 사라진다).
     record_id: str | None = None
     ledger_path: Path | None = None
-    relay = None
     spawn_attempted = False
     # 러너가 "자식 없음"으로 **판명**해 돌아온 뒤인가 — 스폰 시도 창이 다시 열린 상태다.
     no_spawn_proven = False
@@ -4509,12 +4446,11 @@ def run_review(
 
     try:
         _raw_dir, ledger_path = _raw_storage(output_dir)
-        relay = _load_relay()
         model = target.ledger_model
         # 장부 레코드는 raw 헤더·stderr provenance·dry-run 과 **같은 해소 축**을 싣는다 — 그래야
         # raw 파일이 지워지거나 stderr 를 못 읽어도 "무엇이 어떤 설정으로 나갔는가"가 장부 하나로
         # 닫힌다. local_conf 는 그 축의 앵커라(어느 conf 가 이 대상을 골랐나) 함께 남긴다.
-        record_id = relay.start_raw_record(
+        record_id = raw_output.start_raw_record(
             ledger_path,
             surface="additional-reviewer",
             harness=name,
@@ -4535,7 +4471,7 @@ def run_review(
         run_env = env
         if target.structured:
             # 공용 표가 OpenCode 카드 부재의 runtime role을 주입하고 다른 하네스는 env만 복사한다.
-            run_env = relay.with_harness_runtime_role(
+            run_env = contract.with_harness_runtime_role(
                 env, target.harness, REVIEWER_ROLE,
             )
         with _structured_transport(target, prompt, cwd) as (argv, stdin_text):
@@ -4574,7 +4510,7 @@ def run_review(
         # wire 계약이 없다.
         review_usage: dict[str, int] | None = None
         if target.structured:
-            observed = relay.extract_harness_result(target.harness, output.answer)
+            observed = contract.extract_harness_result(target.harness, output.answer)
             review_usage = observed.usage
             if ok:
                 reply_extraction_failed = observed.reply is None
@@ -4590,7 +4526,7 @@ def run_review(
             target=target,
             )
         try:
-            relay.finish_raw_record(
+            raw_output.finish_raw_record(
                 ledger_path,
                 record_id,
                 rc=int(metrics["rc"]),
@@ -4598,7 +4534,7 @@ def run_review(
                 silence_sec=metrics.get("silence_sec"),
                 extra={"usage": review_usage} if review_usage else None,
             )
-        except relay.RawRecordAlreadyFinished as exc:
+        except raw_output.RawRecordAlreadyFinished as exc:
             # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 리뷰
             # 결과는 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
             print(f"경고: 장부 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
@@ -4636,7 +4572,7 @@ def run_review(
         # 않는다 — 닫힌 레코드를 실패 축으로 덮으면 장부가 두 번째 거짓말을 한다.
         if not spawn_attempted or (no_spawn_proven and not raw_finalized):
             _abort_pre_spawn_raw(
-                relay, ledger_path, record_id, raw_path,
+                ledger_path, record_id, raw_path,
                 reason=f"{type(exc).__name__}: {exc}",
                 elapsed=time.monotonic() - started_at,
                 local_conf_path=local_conf_path, resolved_profile=resolved_profile,
@@ -5638,7 +5574,7 @@ def _run_review_round(
 
     예산 확인·예약은 이 구간 **밖**에서 이미 끝났다. 넘겨받은 예약(`reservation`)의 앞부분(환경 준비, 그리고
     `run_review` 안의 raw 선점·장부 시작 레코드·transport·argv 준비, 그리고 러너 안의 준비
-    구간)은 아직 스폰 전이라 호출부의 환불 seam 이 소유하고, 소유권은 **실 스폰 경계**(relay
+    구간)은 아직 스폰 전이라 호출부의 환불 seam 이 소유하고, 소유권은 **실 스폰 경계**(watchdog
     워치독의 `Popen` 직전)의 `on_spawn_attempt` 콜백으로 넘어온다 — 그 뒤부터 이 구간이 예약을
     호출 결과로 마감한다.
 
@@ -5667,9 +5603,9 @@ def _run_review_round(
     )
 
     print(f"추가 리뷰어 실행 중 (유료 호출): {reviewer_cmd}", file=sys.stderr)
-    # 예약 소유는 `run_review` **진입**이 아니라 relay 워치독이 자식을 띄우기 **직전**에 넘어간다
+    # 예약 소유는 `run_review` **진입**이 아니라 watchdog 워치독이 자식을 띄우기 **직전**에 넘어간다
     # (`on_spawn_attempt`). run_review 의 앞부분(raw 선점·장부 시작 레코드·구조화 transport·
-    # argv/kwargs 준비)과 러너 안의 준비 구간(relay 로드·프로필 해소·워치독 셋업)은 자식이 아직
+    # argv/kwargs 준비)과 러너 안의 준비 구간(프로필 해소·워치독 셋업)은 자식이 아직
     # 없는 구간이라, 진입에서 넘기면 스폰 0·과금 0 으로 끝난 준비 실패(예: `--output-dir` 이
     # 일반 파일이라 raw 선점이 터지는 실행, 실행 권한 없는 리뷰어 바이너리)가 예약을 미완/소진으로
     # 남긴다 — `incomplete_limit=1` 이면 다음 **정상** 호출이 곧바로 rc=4 로 막힌다.

@@ -29,6 +29,7 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 from _pytest_summary import pytest_summary
+from pm_engine.domain import identity_args
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -212,12 +213,12 @@ def test_update_session_window_initializes_new_task_marker(hf):
     doc = _state().replace(
         "최근 N 차 (sliding window, 기본 3 차):\n",
         "최근 N 차 (sliding window, 기본 3 차):\n"
-        f"{hf.TASK_PM_STATE_EMPTY_MARKER}\n",
+        f"{identity_args.TASK_PM_STATE_EMPTY_MARKER}\n",
     )
     out = hf.update_session_window(
         doc, session_num=1, date_str="2026-07-23", wave_summary="첫 task 세션"
     )
-    assert hf.TASK_PM_STATE_EMPTY_MARKER not in out
+    assert identity_args.TASK_PM_STATE_EMPTY_MARKER not in out
     assert "**1차** (2026-07-23 · 첫 task 세션)" in out
 
 
@@ -226,7 +227,7 @@ def test_update_session_window_fills_three_before_evicting_oldest(hf):
     state = _state().replace(
         "최근 N 차 (sliding window, 기본 3 차):\n",
         "최근 N 차 (sliding window, 기본 3 차):\n"
-        f"{hf.TASK_PM_STATE_EMPTY_MARKER}\n",
+        f"{identity_args.TASK_PM_STATE_EMPTY_MARKER}\n",
     )
     observed: list[list[int]] = []
     for session_num in range(1, 5):
@@ -1803,7 +1804,7 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
         _state().replace(
             "최근 N 차 (sliding window, 기본 3 차):\n",
             "최근 N 차 (sliding window, 기본 3 차):\n"
-            f"{hf.TASK_PM_STATE_EMPTY_MARKER}\n",
+            f"{identity_args.TASK_PM_STATE_EMPTY_MARKER}\n",
         ),
         encoding="utf-8",
     )
@@ -1824,7 +1825,7 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
     assert task_pm_state.exists()
     state_text = task_pm_state.read_text(encoding="utf-8")
     assert "1차" in state_text
-    assert hf.TASK_PM_STATE_EMPTY_MARKER not in state_text
+    assert identity_args.TASK_PM_STATE_EMPTY_MARKER not in state_text
     # dashboard 자기 섹션 `## mytask`.
     assert "## mytask" in dashboard_file.read_text(encoding="utf-8")
     # log 헤더 태그 = sentinel `(task:mytask)`.

@@ -1,7 +1,7 @@
 """공용 동시-쓰기 파일 프리미티브 seam 회귀 (T-0561·T-0565).
 
 `pm_engine/infra/fs.py` 가 두 프리미티브를 소유한다 — **배타 파일락**(board `board.lock`·
-`board-git.lock` / pm_log `log.lock` / pm_relay raw 장부 `<ledger>.lock` / pm_handoff
+`board-git.lock` / pm_log `log.lock` / raw_output raw 장부 `<ledger>.lock` / pm_handoff
 `dashboard.lock` / worktree_pool `worktree-leases.lock` / additional_reviewer 라운드 장부
 `review_rounds.lock`)과 **O_APPEND 원자 추가**(board areas 등록 · pm_log log append). 각 도구가
 복제하던 플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)와 append 구현을 한 곳으로 수렴했다.
@@ -35,6 +35,7 @@ import pytest
 
 from _win_skip import posix_mode_supported
 from _engine_tree import engine_python_files
+from pm_engine.infra import raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -43,7 +44,7 @@ FILE_LOCK_PY = TOOLS / "pm_engine" / "infra" / "fs.py"
 SYNC_TIMEOUT = 120
 
 # 아직 공용 seam 으로 수렴하지 않은 사본의 등재부 — **현재 0건**(전 도구 수렴 완결: board·
-# pm_log·pm_relay·pm_handoff·worktree_pool·additional_reviewer). 비어 있는 상태가 정상이고,
+# pm_log·raw_output·pm_handoff·worktree_pool·additional_reviewer). 비어 있는 상태가 정상이고,
 # `test_lock_convergence_has_no_pending_duplicates` 가 그 완결을 박제한다. 새 사본이 불가피하면
 # 사유와 함께 등재하되(그만큼 가드가 느슨해진다) 그 완결 테스트도 함께 손대야 하므로, 조용히
 # 미수렴 사본이 되살아나지 않는다.
@@ -156,8 +157,8 @@ _REPLACE_PRIMITIVE = "replace"
 # `tools/*.py` 전수 스캔이라 사람이 목록을 관리하지 않는다.
 _ATOMIC_REPLACE_CONSUMERS = (
     "board.py", "delegate_channel_guard.py", "pm_handoff.py", "pm_import.py",
-    "pm_log.py", "pm_relay.py", "pm_update.py", "review_rounds.py",
-    "worktree_pool.py",
+    "pm_log.py", "pm_engine/infra/raw_output.py", "pm_update.py",
+    "pm_engine/infra/review_rounds.py", "worktree_pool.py",
 )
 
 
@@ -677,10 +678,9 @@ def test_relay_raw_ledger_lock_keeps_its_path_and_permission_convention(
     tmp_path, monkeypatch,
 ):
     """raw 장부 락 = 장부 옆 `<name>.lock` · 0o600 (수렴 전 동작 보존)."""
-    relay = _load(TOOLS / "pm_relay.py", "pm_relay_file_lock_seam")
     ledger = tmp_path / "raw_outputs.json"
     seen: list[tuple] = []
-    lock_module = relay.fs
+    lock_module = raw_output.fs
     real_open = os.open
     monkeypatch.setattr(
         lock_module.os,
@@ -689,7 +689,7 @@ def test_relay_raw_ledger_lock_keeps_its_path_and_permission_convention(
         or real_open(path, flags, mode),
     )
 
-    with relay._raw_ledger_lock(ledger):
+    with raw_output._raw_ledger_lock(ledger):
         pass
 
     assert seen == [(tmp_path / "raw_outputs.json.lock", 0o600)]
@@ -777,7 +777,7 @@ def test_lock_convergence_has_no_pending_duplicates():
 def test_converged_tools_delegate_instead_of_reimplementing():
     """수렴 도구는 락 컨텍스트를 seam 위임으로만 연다 (자체 open+acquire 재구현 0)."""
     for tool in (
-        "board.py", "pm_log.py", "pm_relay.py", "pm_handoff.py", "worktree_pool.py",
+        "board.py", "pm_log.py", "pm_engine/infra/raw_output.py", "pm_handoff.py", "worktree_pool.py",
         "additional_reviewer.py",
     ):
         source = (TOOLS / tool).read_text(encoding="utf-8")

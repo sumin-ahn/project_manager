@@ -26,6 +26,7 @@ from _repo_owned_inventory import (
     RepoFilesFallbackWarning,
     repo_owned_paths,
 )
+from pm_engine.infra.harness import watchdog
 
 _REPO = Path(__file__).resolve().parent.parent
 _SHIP_TEMPLATE = _REPO / "templates" / "claude_code" / ".claude" / "settings.json"
@@ -198,14 +199,13 @@ def _execution_command_budget_seconds(card_text: str) -> list[tuple[str, int]]:
     """
     budgets: list[tuple[str, int]] = []
     delegate = _load_tool("pm_delegate")
-    relay = _load_tool("pm_relay")
     command_budgets = {
         "pm_delegate.py": delegate.max_declared_execution_path_budget(),
         # 추가 리뷰어 대상은 `additional_reviewer.harness`+`.model` 로 해소된다 — 엔진 기본
         # 커맨드가 없으므로 어느 하네스가 설정돼도 담기는 값, 곧 선언 프로필 중 가장 긴 벽시계를
         # 최악 예산으로 본다.
         "additional_reviewer.py": int(max(
-            profile.wall_timeout for profile in relay.HARNESS_PROFILES.values())),
+            profile.wall_timeout for profile in watchdog.HARNESS_PROFILES.values())),
     }
     for script, budget in command_budgets.items():
         if re.search(
@@ -342,12 +342,11 @@ def test_harness_bash_cap_covers_local_gpu_delegation():
 def test_harness_bash_cap_margin_is_positive():
     """정리는 실행식에 직접 들고, 공용 보조 여유가 출하 상한의 실제 공간 안에 들어간다."""
     delegate = _load_tool("pm_delegate")
-    relay = _load_tool("pm_relay")
     # 부모 wait 5초 + pipe drain 5초는 margin이 아니라 매 시도 실행 예산에 직접 든다.
-    assert relay.process_cleanup_budget_per_attempt() == 10
+    assert watchdog.process_cleanup_budget_per_attempt() == 10
     assert delegate._HARNESS_CAP_KILL_GRACE_BUDGET_SEC == 10
     measured = delegate._HARNESS_CAP_MEASURED_AUX_BUDGET_SEC
-    assert delegate._HARNESS_CAP_MARGIN_SEC == relay.HARNESS_CAP_MARGIN_SEC
+    assert delegate._HARNESS_CAP_MARGIN_SEC == watchdog.HARNESS_CAP_MARGIN_SEC
     assert delegate._HARNESS_CAP_MARGIN_SEC == ((measured + 9) // 10) * 10 == 10
     actual_slack = _harness_bash_cap_sec() - delegate.max_declared_execution_path_budget()
     assert actual_slack >= 2 * delegate._HARNESS_CAP_MARGIN_SEC, (

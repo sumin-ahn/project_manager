@@ -526,15 +526,15 @@ def test_an_unreachable_value_comes_back_refused_word_for_word(api, pm_home, tmp
 
 # ── ⑥ 모델 목록 조회 ─────────────────────────────────────────────────────────
 #
-# 목록의 정본은 **그 사본의** 모델 원천 표(`pm_relay.MODEL_SOURCE`)다. 기대값을 손으로 적으면
+# 목록의 정본은 **그 사본의** 모델 원천 표(`contract.MODEL_SOURCE`)다. 기대값을 손으로 적으면
 # 표가 바뀌어도 red 가 되지 않으므로, 아래 테스트는 그 표를 읽어 원천 종류(alias·config·live)
 # 별로 하나씩 태운다 — 하네스 이름을 테스트도 적지 않는다.
 
 
 def _model_source_table(pm_home: Path) -> dict:
     """그 사본의 모델 원천 표 — 조회가 무엇을 답해야 하는지의 단일 진실."""
-    target = pm_home / ".project_manager" / "tools" / "pm_relay.py"
-    specification = importlib.util.spec_from_file_location(f"_pm_relay_settings:{pm_home}", target)
+    target = pm_home / ".project_manager" / "tools" / "pm_engine" / "infra" / "harness" / "contract.py"
+    specification = importlib.util.spec_from_file_location(f"_contract_settings:{pm_home}", target)
     module = importlib.util.module_from_spec(specification)
     sys.modules[specification.name] = module
     specification.loader.exec_module(module)
