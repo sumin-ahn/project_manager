@@ -80,7 +80,7 @@ def _active_slot_path(home, session: str | None = None) -> str | None:
     활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
     첫 행 — `session` 명시는 M>1 슬롯 순회가 슬롯별 cwd 를 뽑을 때 쓴다. 그 행의
     `slot` 을 `home.root / slot` 절대경로로 반환. 장부 부재/파싱실패/매칭없음/빈 slot → None
-    (fail-soft — 호출부가 다음 레이어[REPO]로 폴백).
+    (fail-soft — 호출부가 다음 레이어 `home.root` 로 폴백).
     """
     if not pm_paths.leases_file(home).exists():
         return None
@@ -103,7 +103,7 @@ def _active_slot_path(home, session: str | None = None) -> str | None:
         if sess and row.get("session") == sess and row.get("state") == "leased":
             slot = row.get("slot")
             if not slot:
-                return None  # 빈/None slot → None (다음 레이어[REPO]로)
+                return None  # 빈/None slot → None (다음 레이어 `home.root` 로)
             return str(home.root / slot)
     return None
 
