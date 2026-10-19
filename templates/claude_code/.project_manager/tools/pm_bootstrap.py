@@ -77,7 +77,6 @@ def _resolve_log_file(repo: Path = REPO) -> Path:
 LOG_FILE = _resolve_log_file()
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
-AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (`pm_paths.areas_file` 이 board 루트 추종)
 
 # `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — `refs/heads/<name>`. 이 접두 **정확히**를
 # 제거해야 순수 브랜치명이 된다(동명 태그 존재 시 `heads/<name>` 로 오염되는 `--short` 대신 full
@@ -316,8 +315,8 @@ _CODEX_CARD_SECTION = "\n".join((
 
 # ── board root 추종 ───────────────────────
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다. 등록영역
-# surface(`_registered_repos`)·단일 self-host 슬롯 판정(`_auto_slot`)이 읽는 areas.md 위치는
-# `pm_paths.areas_file` 이 해소한다. 상수 AREAS_FILE 는 hermetic 테스트 seam·legacy 기본값으로 유지.
+# surface(`slot_resolution._registered_repos`)·단일 self-host 슬롯 판정(`slot_resolution._auto_slot`)이
+# 읽는 areas.md 위치는 `pm_paths.areas_file` 이 해소한다.
 
 
 def _dashboard_file() -> Path:

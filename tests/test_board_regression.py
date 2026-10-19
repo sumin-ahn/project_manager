@@ -30,7 +30,7 @@ from _textio import utf8_child_env
 from _engine_tree import engine_python_files
 from pm_engine.cli import regression_cmd, task_args
 from pm_engine.domain import pytest_report, ticket_rules
-from pm_engine.infra import areas_store, git, pm_paths, pre_push_hook, process, python_env, regression_store, review_rounds, ticket_store
+from pm_engine.infra import areas_store, git, pm_paths, pre_push_hook, python_env, regression_store, review_rounds, ticket_store
 from pm_engine.app import regression
 
 requires_git = pytest.mark.skipif(
@@ -117,7 +117,7 @@ def actual_git_board(tmp_path, monkeypatch):
     monkeypatch.setattr(pre_push_hook, "_stale_pre_push_hook_refusal", lambda _home: None)
     monkeypatch.setattr(regression, "_review_cycle_downgrade", lambda _home: ([], []))
     monkeypatch.setattr(
-        process, "_run_regression_cmd",
+        regression, "_run_regression_cmd",
         lambda _cmd, _cwd, _env: (0, "1 passed in 0.01s\n", ""),
     )
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
@@ -255,7 +255,7 @@ def _measure_declared_platforms(board, *, session=None):
         regression_cmd._regression_run_slot(board._home(), args, session, str(board.REPO))
         flag = regression_store._regression_flag_for(board._home(), session)
     core = json.loads(flag.read_text(encoding="utf-8"))
-    status, rc, _note = pytest_report._require_collected_count(
+    status, rc, _note = regression._require_collected_count(
         core["rc"], core["status"], core["collected"], require_collected=True)
     commands = regression._platform_test_commands(board._home(), str(board.REPO))
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
@@ -275,7 +275,7 @@ def _measure_declared_platforms(board, *, session=None):
 def test_no_platform_full_keeps_one_child_and_legacy_flat_record_shape(
         board, monkeypatch):
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append((cmd, dict(env))) or (0, "3 passed in 0.01s\n", "")
     ))
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
@@ -301,7 +301,7 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
             return 0, _marker("windows", head), ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(process, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert _measure_declared_platforms(board) == 0
     assert [call[0] for call in calls] == [regression._test_cmd(board._home(), None), "run-arm", "run-windows"]
     assert "PM_QA_PLATFORM" not in calls[0][1]
@@ -351,7 +351,7 @@ def test_platform_core_without_summary_is_unverified(
         encoding="utf-8",
     )
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
     ))
 
@@ -359,7 +359,7 @@ def test_platform_core_without_summary_is_unverified(
     assert calls == [regression._test_cmd(board._home(), None)], "core evidence가 불명확하면 platform을 실행하지 않는다"
     evidence = _flag(board)
     assert evidence["status"] == "fail"
-    assert evidence["rc"] == pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION
+    assert evidence["rc"] == regression.REGRESSION_RC_UNVERIFIED_COLLECTION
     assert evidence["collected"] is None and evidence["previous_collected"] is None
     assert evidence["platforms"][0]["status"] == "not-run"
 
@@ -380,7 +380,7 @@ def test_multi_slot_platform_core_without_summary_uses_the_same_unverified_contr
         encoding="utf-8",
     )
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
     ))
 
@@ -390,7 +390,7 @@ def test_multi_slot_platform_core_without_summary_uses_the_same_unverified_contr
         regression_store._regression_flag_for(board._home(), "A_1").read_text(encoding="utf-8")
     )
     assert evidence["status"] == "fail"
-    assert evidence["rc"] == pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION
+    assert evidence["rc"] == regression.REGRESSION_RC_UNVERIFIED_COLLECTION
     assert evidence["platforms"][0]["status"] == "not-run"
 
 
@@ -402,7 +402,7 @@ def test_platform_core_red_preserves_core_reason_in_run_and_check(
         board, monkeypatch, capsys, core_rc, core_stdout, expected_rc):
     _set_platforms(board, windows="run-windows")
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (core_rc, core_stdout, "")
     ))
 
@@ -437,7 +437,7 @@ def test_any_platform_result_defect_turns_the_aggregate_red(
             return platform_result[0], platform_result[1], ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(process, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert _measure_declared_platforms(board) == 1
     evidence = _flag(board)
     assert evidence["status"] == "fail"
@@ -455,7 +455,7 @@ def test_duplicate_platform_marker_member_is_invalid_for_run_and_check(
             return 0, _duplicate_marker(duplicate_key), ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(process, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert _measure_declared_platforms(board) == 1
     assert _flag(board)["platforms"][0]["rc"] == "invalid-result"
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
@@ -472,7 +472,7 @@ def test_platform_check_rejects_corrupt_full_core_aggregate(
         return ((0, _marker("windows", "deadbeef01234567"), "")
                 if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
 
-    monkeypatch.setattr(process, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     evidence = _flag(board)
     if damage == "rc":
@@ -495,7 +495,7 @@ def test_platform_check_rejects_corrupt_full_core_aggregate(
 def test_core_red_skips_every_declared_platform_and_records_not_run(board, monkeypatch):
     _set_platforms(board, declaration="linux,windows", linux="run-linux", windows="run-windows")
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (1, "1 failed in 0.01s\n", "")
     ))
     assert _measure_declared_platforms(board) == 1
@@ -511,7 +511,7 @@ def test_host_head_drift_after_core_skips_platform_and_turns_aggregate_red(
     heads = iter(("deadbeef01234567", "moved-head"))
     monkeypatch.setattr(git, "_git_head_at", lambda _cwd: next(heads))
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "3 passed in 0.01s\n", "")
     ))
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 1
@@ -530,7 +530,7 @@ def test_platform_declaration_preflight_is_fail_closed_before_core(board, monkey
         called = True
         raise AssertionError("core must not run")
 
-    monkeypatch.setattr(process, "_run_regression_cmd", forbidden)
+    monkeypatch.setattr(regression, "_run_regression_cmd", forbidden)
     with pytest.raises(regression.PlatformConfigError):
         regression._platform_test_commands(board._home(), str(board.REPO))
     assert not called
@@ -540,7 +540,7 @@ def test_platform_declaration_preflight_is_fail_closed_before_core(board, monkey
 def test_explicit_scoped_run_never_executes_declared_platform(board, monkeypatch):
     _set_platforms(board, windows="run-windows")
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda cmd, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "1 passed in 0.01s\n", "")
     ))
     assert regression_cmd.cmd_regression(board._home(), _run_args(touches="tests/test_x.py")) == 0
@@ -559,7 +559,7 @@ def test_declaration_preserves_review_cycle_downgrade(
         return ((0, _marker("windows", "deadbeef01234567"), "")
                 if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
 
-    monkeypatch.setattr(process, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert len(calls) == 1 and "test_x" in calls[0]
     assert not pm_paths.regression_flag(board._home()).exists()
@@ -575,7 +575,7 @@ def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, 
         return ((0, _marker("windows", "deadbeef01234567"), "")
                 if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
 
-    monkeypatch.setattr(process, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     board.LOCAL_CONF.write_text("test.cmd=changed-core\nqa.platforms=windows\ntest.windows.cmd=changed-wrapper\n", encoding="utf-8")
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
@@ -990,14 +990,14 @@ _VERBOSE_BODY = "collecting ...\nFAILED tests/test_x.py::test_y - AssertionError
 def test_tee_stream_echoes_each_line_and_returns_all(board):
     """tee 는 줄 단위로 즉시 echo 하면서 전체를 모아 돌려준다 (가시성 + 파싱 버퍼 동시)."""
     echoed: list[str] = []
-    text = process._tee_stream(io.StringIO("a\nb\nc\n"), echoed.append)
+    text = regression._tee_stream(io.StringIO("a\nb\nc\n"), echoed.append)
     assert echoed == ["a\n", "b\n", "c\n"], "줄이 모이고 나서 한꺼번에 나오면 무출력 대기가 남는다"
     assert text == "a\nb\nc\n"
 
 
 def test_tee_stream_handles_missing_stream(board):
     """스트림 미개방(None)은 빈 문자열 — 러너가 죽지 않는다."""
-    assert process._tee_stream(None, lambda line: None) == ""
+    assert regression._tee_stream(None, lambda line: None) == ""
 
 
 def test_run_regression_cmd_with_real_child_splits_streams(board, tmp_path, capsys):
@@ -1013,7 +1013,7 @@ def test_run_regression_cmd_with_real_child_splits_streams(board, tmp_path, caps
         "sys.stderr.write('노이즈 8000 passed\\n')\n"
         "sys.exit(3)\n", encoding="utf-8")
     cmd = f'"{sys.executable}" "{script}"'
-    rc, out, err = process._run_regression_cmd(cmd, str(tmp_path), utf8_child_env())
+    rc, out, err = regression._run_regression_cmd(cmd, str(tmp_path), utf8_child_env())
     assert rc == 3
     assert "12 passed in 0.30s" in out
     assert "노이즈 8000 passed" in err
@@ -1129,7 +1129,7 @@ def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
             return 0, _marker("windows", head), ""
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(process, "_run_regression_cmd", run)
+    monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert [cmd for cmd, _cwd, _env in calls if cmd.startswith("run-")] == []
     assert len(calls) == 2 and {cwd for _cmd, cwd, _env in calls} == {_slot_cwd(board,"A_1"), _slot_cwd(board,"B_1")}
@@ -1216,7 +1216,7 @@ def test_multi_check_label_shows_the_unverified_hint(multi_board, capsys):
     for session, head, payload in (
             ("A_1", "HEAD_A", {"status": "pass", "rc": 0, "collected": 7577}),
             ("B_1", "HEAD_B", {"status": "fail",
-                               "rc": pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION,
+                               "rc": regression.REGRESSION_RC_UNVERIFIED_COLLECTION,
                                "collected": None}),
     ):
         flag = regression_store._regression_flag_for(b._home(), session)
@@ -2942,12 +2942,12 @@ def test_the_collection_floor_left_no_path_behind():
 
 def test_the_unverified_collection_label_stays_for_the_platform_contract(board, monkeypatch):
     """존치 라벨 — 선언 platform 의 "수집수는 정수" 계약은 하한과 다른 축이라 그대로 동작한다."""
-    assert pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION == "unverified-collection"
+    assert regression.REGRESSION_RC_UNVERIFIED_COLLECTION == "unverified-collection"
     _set_platforms(board, windows="run-windows")
-    monkeypatch.setattr(process, "_run_regression_cmd",
+    monkeypatch.setattr(regression, "_run_regression_cmd",
                         lambda cmd, cwd, env: (0, "[custom runner] ok\n", ""))
 
-    assert pytest_report._require_collected_count(0, "pass", None, require_collected=True)[:2] == ("fail", pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION)
+    assert regression._require_collected_count(0, "pass", None, require_collected=True)[:2] == ("fail", regression.REGRESSION_RC_UNVERIFIED_COLLECTION)
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     assert _flag(board)["collected"] is None
 
@@ -2959,12 +2959,12 @@ def test_the_regression_record_has_exactly_one_writer():
     body = store[store.index("def _write_regression_flag("):
                  store.index("def _previous_collected(")]
 
-    assert "_write_json_atomic(flag, record)" in body
+    assert "fs.write_json_atomic(flag, record)" in body
     assert 'record["previous_collected"] = _previous_collected(flag)' in body
     # 다른 자리의 직접 쓰기 0 — 플래그 경로를 받는 raw/atomic 쓰기가 남으면 승계가 갈린다.
     assert "regression_flag.write_text" not in source
-    assert "_write_json_atomic(regression_flag" not in source
-    assert "_write_json_atomic(_regression_flag_for(" not in source
+    assert "write_json_atomic(regression_flag" not in source
+    assert "write_json_atomic(_regression_flag_for(" not in source
     assert source.count("_write_regression_flag(") == 1 + 4   # 정의 1 + 단일/슬롯의 시작 HEAD 실패 및 종료 기록 각 2자리
 
 
@@ -3085,7 +3085,7 @@ def _t0936_core_setup(board, monkeypatch, declaration='windows'):
     monkeypatch.setattr(regression, '_platform_test_commands', lambda _home, cwd: pytest.fail('개발 단계에서 플랫폼 선언 해소'))
     monkeypatch.setattr(regression, '_run_platform_cells', lambda *a, **k: pytest.fail('개발 단계에서 플랫폼 실행'))
     calls = []
-    monkeypatch.setattr(process, '_run_regression_cmd', lambda cmd, cwd, env: (calls.append((cmd, cwd, env)) or (0, '3 passed in 0.01s\n', '')))
+    monkeypatch.setattr(regression, '_run_regression_cmd', lambda cmd, cwd, env: (calls.append((cmd, cwd, env)) or (0, '3 passed in 0.01s\n', '')))
     return calls
 
 
@@ -3141,7 +3141,7 @@ def test_t0936_core_start_head_binding(board, monkeypatch, slot, declaration, dr
     def run(cmd, cwd, env):
         calls.append((cmd, cwd, env)); head[0] = 'END'
         return 0, '3 passed in 0.01s\n', ''
-    monkeypatch.setattr(process, '_run_regression_cmd', run)
+    monkeypatch.setattr(regression, '_run_regression_cmd', run)
     args = _run_args(final=True, cmd='core-full')
     assert (regression_cmd._regression_run_slot(board._home(), args, 'A_1', str(board.REPO)) if slot else regression_cmd.cmd_regression(board._home(), args)) != 0
     flag = regression_store._regression_flag_for(board._home(), 'A_1') if slot else pm_paths.regression_flag(board._home())
@@ -3162,10 +3162,10 @@ def test_t0936_core_record_integrity(board, monkeypatch, key, value):
 
 def test_t0936_core_record_integrity_unknown_summary_and_rc5(board, monkeypatch):
     _t0936_core_setup(board, monkeypatch)
-    monkeypatch.setattr(process, '_run_regression_cmd', lambda *a: (0, 'custom success', ''))
+    monkeypatch.setattr(regression, '_run_regression_cmd', lambda *a: (0, 'custom success', ''))
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0 and _flag(board)['collected'] is None
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 0
-    monkeypatch.setattr(process, '_run_regression_cmd', lambda *a: (5, 'no tests ran', ''))
+    monkeypatch.setattr(regression, '_run_regression_cmd', lambda *a: (5, 'no tests ran', ''))
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 1 and _flag(board)['rc'] == 5
 
 
@@ -3230,7 +3230,7 @@ def test_t0936_core_command_and_selected_workspace_slot_prefix_priority(
     }]}), encoding="utf-8")
     board.AREAS_FILE.write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
     monkeypatch.setattr(regression, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
     assert regression_cmd._regression_run_slot(board._home(), _run_args(), session, str(target)) == 0
     flag = regression_store._regression_flag_for(board._home(), session)
@@ -3260,7 +3260,7 @@ def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, t
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(regression, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
     calls = []
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
     return target, ledger, calls
 
 

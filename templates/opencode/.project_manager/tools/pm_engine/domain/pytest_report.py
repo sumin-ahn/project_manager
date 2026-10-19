@@ -15,10 +15,6 @@ import re
 # rc5(수집 0)는 그대로 red 다(하한이 아니라 "테스트가 한 개도 안 돌았다"는 별개 사실).
 COLLECTION_DELTA_ALERT_PCT = 0.01          # 이 비율 이상이면 증감 문장에 경고 표기를 단다.
 
-# 선언 platform aggregate 는 "수집수는 정수" 라는 저장 계약을 갖는다 — 그 검증 불가는 여전히
-# 전용 라벨의 fail 이다(하한과 무관한 축이라 증감 전환 뒤에도 남는다).
-REGRESSION_RC_UNVERIFIED_COLLECTION = "unverified-collection"  # 수집수를 못 읽어 검증 불가
-
 # ── pytest 요약행 파서 (엔진 공용 seam) ────────────────────────────────────
 # 요약행은 **끝에서부터** 줄 단위로 찾는다. 캡처된 pytest 출력에는 테스트 자신이 찍은
 # `3 passed` 류 로그가 섞이고, 출력 전체를 `re.search` 하면 그 로그를 요약으로 오판한다.
@@ -153,25 +149,6 @@ def collection_delta_text(collected: int | None, previous: int | None) -> str:
     if previous and abs(diff) / previous >= COLLECTION_DELTA_ALERT_PCT:
         return body + f" · {abs(diff) / previous * 100:.1f}% ⚠)"
     return body + ")"
-
-
-def _require_collected_count(rc: int, status: str, collected: int | None, *,
-                             require_collected: bool = False,
-                             ) -> tuple[str, int | str, str]:
-    """선언 platform aggregate 의 "수집수는 정수" 저장 계약 — `(status, 기록 rc, 진단 note)`.
-
-    선언 platform 은 cell 마다 수집수를 대조하므로 core 수집수를 못 읽으면 그 대조가 통째로
-    성립하지 않는다. 그래서 rc0 이라도 파싱 실패면 `fail`(`unverified-collection`)로 기록한다 —
-    경고만 내고 pass 로 기록하면 검증하지 못한 결과가 push 를 통과한다. 비-pytest `test_cmd`
-    (요약행 규약 밖)로 platform 을 쓰려면 요약행 호환 러너가 필요하다(remedy 를 메시지에 싣는다).
-
-    platform 미선언이면 no-op 이다 — 수집수는 증감 표시에만 쓰이고 아무것도 막지 않는다.
-    """
-    if rc != 0 or not require_collected or collected is not None:
-        return status, rc, ""
-    return ("fail", REGRESSION_RC_UNVERIFIED_COLLECTION,
-            " · 수집수 파싱 실패 — 선언 platform aggregate 검증 불가"
-            "(요약행 호환 test_cmd 필요)")
 
 
 # 라이브 게이트의 "실행 수" 로 세는 outcome 종류 — 마커 안에서 *돈* 케이스만.

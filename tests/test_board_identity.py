@@ -33,7 +33,7 @@ import pytest
 
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
-from pm_engine.infra import pm_paths, process, ticket_store
+from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.app import regression, release
 
 # 귀속 쓰기 정체성 — 픽스처가 이 task 의 제품 폴더를 준비한다(T-0962).
@@ -444,7 +444,7 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
         "tasks": [{"name": "mytask"}]}), encoding="utf-8")
     _seed_open(board)
     runner_calls: list = []
-    monkeypatch.setattr(process, "_run_regression_cmd",
+    monkeypatch.setattr(regression, "_run_regression_cmd",
                         lambda *a, **k: runner_calls.append(a) or (0, "", ""))
     monkeypatch.setattr(regression, "_run_platform_cells",
                         lambda *a, **k: runner_calls.append(a) or ([], [], 0))

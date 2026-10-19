@@ -1,7 +1,7 @@
 """회귀 게이트 해소와 판정 (층: app).
 
-테스트 명령·실행 위치 해소, 리뷰 사이클 강등 범위, 스위트 없는 트리 거부, 선언 플랫폼 실행과 기록 정합 판정,
-슬롯별 회귀 상태 판정을 소유한다.
+테스트 명령·실행 위치 해소, 회귀 명령 실행과 출력 중계, 리뷰 사이클 강등 범위, 스위트 없는 트리 거부, 선언 플랫폼
+실행과 기록 정합 판정(수집수 저장 계약 포함), 슬롯별 회귀 상태 판정을 소유한다.
 """
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
+import threading
 from pathlib import Path
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from pm_engine.domain import conf_schema, pytest_report, shell_policy, ticket_rules
-from pm_engine.infra import areas_store, clock, conf_store, fs, git, lease_store, pm_paths, process, python_env, regression_store, review_rounds, ticket_store
+from pm_engine.domain import conf_schema, shell_policy, ticket_rules
+from pm_engine.infra import areas_store, clock, conf_store, fs, git, lease_store, pm_paths, python_env, regression_store, review_rounds, ticket_store
 
 
 def _active_slot_test_cmd(home, session: str | None = None) -> str | None:
@@ -24,8 +26,8 @@ def _active_slot_test_cmd(home, session: str | None = None) -> str | None:
     같은 repo 의 슬롯들이 서로 다른 빌드 타깃(HIL config 1/2/3·full vs a-only 등)을
     지속적으로 가질 수 있게 — `_test_cmd` 가 이를 repo areas *위* 레이어로 끼운다.
 
-    **board 는 worktree_pool 을 import 하지 않는다**.
-    대신 리스 장부 *파일*(`LEASES_FILE` = `.local/worktree-leases.json`·worktree_pool 과
+    **이 모듈은 worktree_pool 을 import 하지 않는다**.
+    대신 리스 장부 *파일*(`pm_paths.leases_file(home)` = `.local/worktree-leases.json`·worktree_pool 과
     같은 위치)을 stdlib json 으로 직접 read 한다 — areas.md 를 읽듯 데이터-결합만(모듈 결합
     아님). 리스는 worktree_pool 이 원자 교체(`fs.atomic_replace`)로 쓰므로 **락 없는
     point-read 가 일관 스냅샷**을 본다(쓰기 경합과 분리 — 부분쓰기 장부를 못 본다).
@@ -70,14 +72,14 @@ def _active_slot_path(home, session: str | None = None) -> str | None:
     lease 장부에서 해소한다. (push 게이트 회귀는 push 되는 트리 자신이 돈다 — `_regression_cwd`.)
 
     `_active_slot_test_cmd` 와 *동형* 데이터-결합: **worktree_pool 을 import 하지 않고**
-    리스 장부 파일(`LEASES_FILE`)을 stdlib json 으로 직접 read 한다.
+    리스 장부 파일(`pm_paths.leases_file(home)`)을 stdlib json 으로 직접 read 한다.
     slot 식별자는 `work/` 접두를 이미 포함(`work/<repo>_<N>`)하므로 worktree_pool 의
-    `slot_path()`(= `REPO / slot`)와 동일하게 board 가 import 없이 `REPO / lease["slot"]` 로 직접 구성한다.
+    `slot_path()`(= `REPO / slot`)와 동일하게 import 없이 `home.root / lease["slot"]` 로 직접 구성한다.
     리스는 worktree_pool 이 atomic-replace 로 쓰므로 락 없는 point-read 가 일관 스냅샷을 본다.
 
     활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
     첫 행 — `session` 명시는 M>1 슬롯 순회가 슬롯별 cwd 를 뽑을 때 쓴다. 그 행의
-    `slot` 을 `REPO / slot` 절대경로로 반환. 장부 부재/파싱실패/매칭없음/빈 slot → None
+    `slot` 을 `home.root / slot` 절대경로로 반환. 장부 부재/파싱실패/매칭없음/빈 slot → None
     (fail-soft — 호출부가 다음 레이어[REPO]로 폴백).
     """
     if not pm_paths.leases_file(home).exists():
@@ -359,6 +361,59 @@ def _platform_marker(stdout: str) -> tuple[dict | None, str | None]:
     return payload, None
 
 
+def _tee_stream(stream, echo: Callable[[str], None]) -> str:
+    """자식 스트림을 줄 단위로 **실시간 echo 하면서 동시에** 전체를 모아 돌려준다.
+
+    수집 증감 표시는 pytest 요약행을 읽어야 해서 출력을 버퍼에 담아야 하는데, 캡처만 하면
+    `git push` 회귀(pre-push 훅)가 수 분 동안 **완전 무출력**으로 멈춰 있는 것처럼 보인다
+    (실측 367s). tee 로 진행을 그대로 흘리면서 파싱용 버퍼를 유지해 둘 다 만족한다.
+    스트림 미개방(None)은 빈 문자열.
+    """
+    if stream is None:
+        return ""
+    chunks: list[str] = []
+    for line in stream:
+        chunks.append(line)
+        echo(line)
+    return "".join(chunks)
+
+
+def _run_regression_cmd(cmd: str, cwd: str,
+                        env: dict[str, str]) -> tuple[int, str, str]:
+    """회귀 test_cmd 를 실행하고 `(rc, stdout, stderr)` 를 돌려준다 — run 두 경로 공용 단일 지점.
+
+    출력을 버퍼에 담는 이유는 수집 증감 표시가 pytest 요약행을 읽어야 하기 때문이다(별도
+    `--co -q` 재실행 대신 *이미 돈* 실행의 요약을 쓴다·자식 1회). 동시에 `_tee_stream` 으로
+    실시간 echo 해 캡처 이전의 가시성을 그대로 유지한다(무출력 대기 근절).
+
+    **두 스트림을 분리해 돌려준다** — 요약행 파싱은 **stdout 단독**이어야 한다. pytest 요약은
+    stdout 에만 나오므로, stderr 에 섞인 로그(`3 passed …`)를 합치면 그게 "마지막 요약행"으로
+    뽑혀 수집수가 오염된다(false-green/false-RED 양방향). 재출력·진단은 두 스트림 모두 쓴다.
+    스트림 읽기는 스레드 2개로 동시에 — 한쪽만 읽으면 파이프가 차서 자식이 멈춘다(교착).
+    """
+    proc = subprocess.Popen(cmd, shell=True, cwd=cwd, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+    captured: dict[str, str] = {}
+
+    def _pump(name: str, stream, echo: Callable[[str], None]) -> None:
+        captured[name] = _tee_stream(stream, echo)
+
+    pumps = [
+        threading.Thread(target=_pump, daemon=True, args=(
+            "stdout", proc.stdout, lambda line: print(line, end="", flush=True))),
+        threading.Thread(target=_pump, daemon=True, args=(
+            "stderr", proc.stderr, lambda line: print(line, end="", flush=True,
+                                                      file=sys.stderr))),
+    ]
+    for pump in pumps:
+        pump.start()
+    rc = proc.wait()
+    for pump in pumps:
+        pump.join()
+    return rc, captured.get("stdout", ""), captured.get("stderr", "")
+
+
 def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
                         expected_head: str,
                         env: dict[str, str], *, core_passed: bool,
@@ -385,7 +440,7 @@ def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
             "PM_QA_PLATFORM": name,
             "PM_QA_EXPECTED_HEAD": expected_head,
         }
-        rc, stdout, _stderr = process._run_regression_cmd(command, cwd, cell_env)
+        rc, stdout, _stderr = _run_regression_cmd(command, cwd, cell_env)
         payload, marker_problem = _platform_marker(stdout)
         host_head = git._git_head_at(cwd)
         collected = payload.get("collected") if payload is not None else None
@@ -560,6 +615,30 @@ def _core_command_at(home, anchor: str, session: str | None = None, *,
                                 _quarantine_args(home)) if p)
 
 
+# 선언 platform aggregate 는 "수집수는 정수" 라는 저장 계약을 갖는다 — 그 검증 불가는 여전히
+# 전용 라벨의 fail 이다(하한과 무관한 축이라 증감 전환 뒤에도 남는다).
+REGRESSION_RC_UNVERIFIED_COLLECTION = "unverified-collection"  # 수집수를 못 읽어 검증 불가
+
+
+def _require_collected_count(rc: int, status: str, collected: int | None, *,
+                             require_collected: bool = False,
+                             ) -> tuple[str, int | str, str]:
+    """선언 platform aggregate 의 "수집수는 정수" 저장 계약 — `(status, 기록 rc, 진단 note)`.
+
+    선언 platform 은 cell 마다 수집수를 대조하므로 core 수집수를 못 읽으면 그 대조가 통째로
+    성립하지 않는다. 그래서 rc0 이라도 파싱 실패면 `fail`(`unverified-collection`)로 기록한다 —
+    경고만 내고 pass 로 기록하면 검증하지 못한 결과가 push 를 통과한다. 비-pytest `test_cmd`
+    (요약행 규약 밖)로 platform 을 쓰려면 요약행 호환 러너가 필요하다(remedy 를 메시지에 싣는다).
+
+    platform 미선언이면 no-op 이다 — 수집수는 증감 표시에만 쓰이고 아무것도 막지 않는다.
+    """
+    if rc != 0 or not require_collected or collected is not None:
+        return status, rc, ""
+    return ("fail", REGRESSION_RC_UNVERIFIED_COLLECTION,
+            " · 수집수 파싱 실패 — 선언 platform aggregate 검증 불가"
+            "(요약행 호환 test_cmd 필요)")
+
+
 def _core_record_problem(home, data: dict, anchor: str, head: str, *,
                          session: str | None = None, local_dir: Path | None = None,
                          release: bool = False) -> str | None:
@@ -578,10 +657,10 @@ def _core_record_problem(home, data: dict, anchor: str, head: str, *,
         if not isinstance(session, str) or not session:
             return "core session mismatch"
     if release:
-        status, rc, _note = pytest_report._require_collected_count(
+        status, rc, _note = _require_collected_count(
             data.get("rc"), data.get("status"), data.get("collected"), require_collected=True)
-        if status == "fail" and rc == pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION:
-            return pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION
+        if status == "fail" and rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
+            return REGRESSION_RC_UNVERIFIED_COLLECTION
     normalized = {k: v for k, v in data.items() if k != "command"}
     normalized["platforms"] = []
     problem = _platform_record_problem(
@@ -741,7 +820,7 @@ def _slot_state_label(session: str, state: str, rc: int | str | None) -> str:
     """
     if rc is None:
         return f"{session}={state}"
-    if rc == pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION:
+    if rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
         hint = "·수집수 미확인"
     else:
         hint = "·수집0" if rc == 5 else ""

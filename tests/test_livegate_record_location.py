@@ -35,7 +35,7 @@ import types
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import git, pm_paths, process, regression_store
+from pm_engine.infra import git, pm_paths, regression_store
 from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
@@ -235,7 +235,7 @@ def test_platform_record_uses_engine_root_evidence_and_recorded_anchor_with_read
             "platform": env["PM_QA_PLATFORM"], "head": _HEAD_SHA,
             "status": "pass", "collected": 3,
         }) + "\n", ""
-    monkeypatch.setattr(process, "_run_regression_cmd", platform)
+    monkeypatch.setattr(regression, "_run_regression_cmd", platform)
     assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 0
     assert len(platform_calls) == 1
     assert platform_calls[0][0] == "run-windows" and platform_calls[0][1] == str(readonly)

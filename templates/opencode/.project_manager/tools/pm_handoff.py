@@ -66,9 +66,7 @@ _load_module_from_path = repo_files.load_module
 REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 PM_PLAYBOOK_FILE = REPO / ".project_manager" / "wiki" / "pm_playbook.md"  # 정적 — 인계 프롬프트 템플릿 추출용
-TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"             # board 현황 카운트 legacy 별칭 (아래 _tickets_dir 가 추종)
 TOOLS_DIR = REPO / ".project_manager" / "tools"                          # worktree_pool 동적 로드 앵커 (multi-PM 모드)
-AREAS_FILE = REPO / ".project_manager" / "areas.md"                       # legacy 별칭 (`pm_paths.areas_file` 이 추종)
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
@@ -118,7 +116,6 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
 # ── board root 추종 ───────────────────────
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다. board 루트와
 # areas.md 위치는 `pm_paths` 가 해소한다(board/tickets 가 실 디렉토리면 board/ 루트, 아니면 wiki/).
-# 상수 TICKETS_DIR·AREAS_FILE 는 hermetic 테스트의 monkeypatch seam·legacy 기본값으로 유지.
 
 def _tickets_dir() -> Path:
     """ticket 디렉토리 — board 루트/tickets (board/ 분리 추종·legacy=wiki/tickets)."""

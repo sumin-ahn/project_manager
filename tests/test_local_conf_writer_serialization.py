@@ -487,6 +487,31 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_init_merge(
     assert parsed["session"] == "pm"
 
 
+def test_init_merge_reads_the_conf_it_writes(board, monkeypatch, tmp_path):
+    """병합 판단(어느 기본키가 없나)은 잠그고 쓰는 그 conf 를 읽는다 — 앵커 트리의 conf 가 아니다.
+
+    앵커 트리(`board.REPO`)에 기본키가 다 든 conf 가 있어도, 대상 conf 에 없는 기본키는 추가된다.
+    """
+    anchor_tree = tmp_path / "anchor"
+    _conf_at(anchor_tree, (
+        "runtime.py=oldpy\n"
+        "test.cmd=oldpy -m pytest\n"
+        "project.name=anchor\n"
+        "ctx.checkpoint_at_pct=1\n"
+        "ctx.precompact_at_pct=2\n"
+        "ctx.compact_at_pct=3\n"
+    ))
+    conf = _conf_at(tmp_path / "target", "session=pm\n")
+    monkeypatch.setattr(board, "REPO", anchor_tree)
+    commit = _init_merge(board, monkeypatch, conf)
+
+    commit()
+
+    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
+    assert parsed["runtime.py"] == "python3"
+    assert parsed["session"] == "pm"
+
+
 # ── 축 3'': 계획도 락 안이다 (stale plan 경쟁·R5 재현) ──────────────────────
 #
 # 앞의 경쟁들은 "쓰기끼리" 겹쳤다. 이 절은 한 단계 앞을 본다 — 현재 conf 를 **락 밖에서** 읽어

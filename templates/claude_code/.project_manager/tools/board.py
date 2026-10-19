@@ -4509,7 +4509,7 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
     local.conf 부재는 모두 같은 "upstream 미설정" 경로로 수렴)은 **거부가 아니다** — 게이트 부재가
     아니라 이 형상엔 적용 불가이므로 stderr 경고 1줄만 내고 기존 경로를 그대로 진행한다(upstream
     미등록 채택자의 릴리즈를 막지 않는다). fail 기록은 must-fix 축과 **같은 기록 함수**
-    (`_write_json_atomic`)를 쓴다(손기록 경로 신설 금지).
+    (`fs.write_json_atomic`)를 쓴다(손기록 경로 신설 금지).
 
     마킹된 엔진 사본 skew(`pm_update.drift_changes` 가 접지 않고 그대로 올리는 그 예외 —
     `_is_engine_rev_skew`)는 판정 불능이 아니라 이 게이트의 가장 강한 **확정 양성**이다 — 사본끼리
@@ -4531,7 +4531,7 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
             # 원자 fail 기록(must-fix 축과 같은 기록 함수) 뒤 표준 skew 진단 경계로 넘긴다 —
             # 사전 pass 기록이 남아 있어도 이 fail 로 교체한다(false-green 잔존 0).
             flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
-            regression_store._write_json_atomic(flag, {
+            fs.write_json_atomic(flag, {
                 "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
                 "ts": clock.now_utc(), "reason": release._LIVEGATE_ENGINE_DRIFT_REASON,
             })
@@ -4546,7 +4546,7 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
     if not changes:
         return 0
     flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
-    regression_store._write_json_atomic(flag, {
+    fs.write_json_atomic(flag, {
         "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
         "ts": clock.now_utc(), "reason": release._LIVEGATE_ENGINE_DRIFT_REASON,
     })
@@ -4603,7 +4603,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
         return 1
     cwd = os.path.abspath(cwd)
     flag.parent.mkdir(parents=True, exist_ok=True)
-    regression_store._write_json_atomic(flag, {"head": "", "status": "fail",
+    fs.write_json_atomic(flag, {"head": "", "status": "fail",
                               "n": 0, "rc": "pending", "ts": clock.now_utc()})
     # 미해소 must-fix 잔여 — 값비싼 라이브 wave 를 돌리기 **전에** 본다(BROKEN 조기 거부와 같은
     # 축). 장부가 없는 형상(추가 리뷰어 비활성 채택자)은 무대상이라 그대로 지나간다.
@@ -4663,17 +4663,17 @@ def _livegate_record(args: argparse.Namespace) -> int:
                            "platforms": cells, **snapshot}
             if not platforms_passed:
                 provisional.update(status="fail", n=0, rc=platform_rc)
-                regression_store._write_json_atomic(flag, provisional)
+                fs.write_json_atomic(flag, provisional)
                 problem = f"platform red: {platform_rc}"
             else:
                 problem = release._release_evidence_problem(_home(), provisional, flag, start_head)
     if problem is not None:
         if provisional is None:
-            regression_store._write_json_atomic(flag, {"head": start_head, "status": "fail", "n": 0,
+            fs.write_json_atomic(flag, {"head": start_head, "status": "fail", "n": 0,
                                       "rc": problem, "ts": clock.now_utc()})
         elif provisional["status"] == "pass":
             provisional.update(status="fail", n=0, rc="evidence-drift")
-            regression_store._write_json_atomic(flag, provisional)
+            fs.write_json_atomic(flag, provisional)
         print(f"livegate: fail — {problem}. 릴리즈 차단.", file=sys.stderr)
         return 1
     print(f"livegate: $ {release.LIVEGATE_TEST_CMD}  (cwd={cwd})")
@@ -4703,7 +4703,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
                 passed = False
         elif head != start_head:
             record["rc"] = "head-drift"
-    regression_store._write_json_atomic(flag, record)
+    fs.write_json_atomic(flag, record)
     if passed:
         print(f"livegate: pass @ {head[:8] or '?'} "
               f"(release {n}/{regression.LIVEGATE_RELEASE_PIN} green) ✓")
@@ -6484,7 +6484,7 @@ def _write_init_local_conf() -> None:
         # (additional_reviewer.*·delegate.*·upstream.*·harness.*·identity.user 등)를 절대
         # 삭제/변경하지 않는다. 통째 write 금지.
         text = fs.read_text_shared(LOCAL_CONF, encoding="utf-8")
-        existing = conf_store.local_config(_home())
+        existing = conf_store.load_checked_readable(LOCAL_CONF)
         updates: dict[str, str] = {}
         # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.compact_at_pct` 등)은 보존.
         defaults = {

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from pm_engine.domain import identity_args, pytest_report
-from pm_engine.infra import clock, fs, git, lease_store, pm_paths, pre_push_hook, process, regression_store
+from pm_engine.infra import clock, fs, git, lease_store, pm_paths, pre_push_hook, regression_store
 from pm_engine.app import regression
 from pm_engine.cli import task_args
 
@@ -51,7 +51,7 @@ def _regression_run_slot(home, args: argparse.Namespace, session: str, cwd: str)
         return 1
     print(f"regression[{session}]: $ {cmd}  (cwd={cwd})")
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    rc, out, _err = process._run_regression_cmd(cmd, cwd, env)
+    rc, out, _err = regression._run_regression_cmd(cmd, cwd, env)
     collected = pytest_report._collected_count(out)
     status = "pass" if rc == 0 else "fail"
     recorded_rc = rc
@@ -224,7 +224,7 @@ def cmd_regression(home, args: argparse.Namespace) -> int:
             print("regression: FULL 시작 HEAD 해소 실패", file=sys.stderr)
             return 1
         print(f"regression: $ {cmd}")
-        rc, out, _err = process._run_regression_cmd(cmd, cwd, env)
+        rc, out, _err = regression._run_regression_cmd(cmd, cwd, env)
         # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
         # 아니라 테스트 루트/cwd 결함이다.
         # 미해소 시 상시 vacuous green 이었다.

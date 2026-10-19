@@ -23,7 +23,7 @@ import pytest
 from _git_fixture import init_git_repo
 from _slot_seed import SLOT, seed_slot
 from pm_engine.domain import manifest_rules, pytest_report
-from pm_engine.infra import conf_store, git, pm_paths, process, regression_store, review_rounds, ticket_store
+from pm_engine.infra import conf_store, git, pm_paths, regression_store, review_rounds, ticket_store
 from pm_engine.app import regression, release
 
 REPO = Path(__file__).resolve().parents[1]
@@ -181,7 +181,7 @@ def _platform_conf(live_board, monkeypatch, command="run-windows") -> None:
                  live_board._proj / SLOT / ".project_manager" / "local.conf"):
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(text, encoding="utf-8")
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda command, cwd, env: (
+    monkeypatch.setattr(regression, "_run_regression_cmd", lambda command, cwd, env: (
         0, regression.PM_QA_RESULT_PREFIX + json.dumps({
             "platform": env["PM_QA_PLATFORM"], "head": env["PM_QA_EXPECTED_HEAD"],
             "status": "pass", "collected": 3,
@@ -532,7 +532,7 @@ def test_declared_platform_unverified_core_blocks_before_release(
         live_board, monkeypatch):
     _platform_conf(live_board, monkeypatch)
     record = _platform_regression_record(live_board, status="fail")
-    record["rc"] = pytest_report.REGRESSION_RC_UNVERIFIED_COLLECTION
+    record["rc"] = regression.REGRESSION_RC_UNVERIFIED_COLLECTION
     record["collected"] = None
     pm_paths.regression_flag(live_board._home()).write_text(json.dumps(record), encoding="utf-8")
     fake = _FakeRun(0, "22 passed in 1.00s")
@@ -547,8 +547,9 @@ def test_declared_platform_valid_same_head_core_executes_platform_and_snapshots(
     _platform_conf(live_board, monkeypatch)
     regression = _platform_regression_record(live_board)
     platform_calls = []
-    original = process._run_regression_cmd
-    monkeypatch.setattr(process, "_run_regression_cmd", lambda *a: (platform_calls.append(a) or original(*a)))
+    # 지역 이름 `regression`(core 기록)이 모듈 이름을 가리므로 모듈은 경로로 지목한다.
+    original = importlib.import_module("pm_engine.app.regression")._run_regression_cmd
+    monkeypatch.setattr("pm_engine.app.regression._run_regression_cmd", lambda *a: (platform_calls.append(a) or original(*a)))
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 0
@@ -1635,7 +1636,7 @@ def t0936_release(tmp_path, monkeypatch):
     def platform(command, cwd, env):
         calls.append((command,cwd,dict(env)))
         return 0, regression.PM_QA_RESULT_PREFIX+json.dumps({'platform':env['PM_QA_PLATFORM'],'head':head,'status':'pass','collected':3})+'\n', ''
-    monkeypatch.setattr(process, '_run_regression_cmd', platform)
+    monkeypatch.setattr(regression, '_run_regression_cmd', platform)
     def release(*a, **kw):
         live.append((a,kw)); return types.SimpleNamespace(returncode=0,stdout='22 passed in 0.01s\n',stderr='')
     monkeypatch.setattr(board.subprocess, 'run', release)
@@ -1693,7 +1694,7 @@ def test_t0936_platform_defects_block_live(t0936_release, monkeypatch, defect):
         marker=regression.PM_QA_RESULT_PREFIX+json.dumps(payload)+'\n'
         if defect=='duplicate': marker=regression.PM_QA_RESULT_PREFIX+'{"platform":"arm","platform":"arm","head":"'+f.head+'","status":"pass","collected":3}\n'
         return (1 if defect=='rc' else 0), ('' if defect in ['absent','stderr'] else marker*2 if defect=='multiple' else marker), (marker if defect=='stderr' else '')
-    monkeypatch.setattr(process,'_run_regression_cmd',run)
+    monkeypatch.setattr(regression,'_run_regression_cmd',run)
     assert _t0936_record(f)==1 and len(f.calls)==1 and f.live==[]
     data=_read_flag(f.board)
     assert data['status']=='fail' and data['platforms'][0]['status']=='fail'
@@ -1745,7 +1746,7 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
         result=f.release(*a,**kw)
         if phase=='after-live': mutate()
         return result
-    monkeypatch.setattr(process,'_run_regression_cmd',platform); monkeypatch.setattr(f.board.subprocess,'run',release)
+    monkeypatch.setattr(regression,'_run_regression_cmd',platform); monkeypatch.setattr(f.board.subprocess,'run',release)
     assert _t0936_record(f)==1 and _read_flag(f.board)['status']=='fail'
     assert pm_paths.regression_flag(f.board._home()).read_bytes()==original
     if phase!='after-live': assert f.live==[]
@@ -1765,8 +1766,11 @@ def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, 
         elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.anchor/'livegate.json',regression_store._LG_ENGINE_ROOT))
         elif defect=='broken': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.livegate_flag(home),regression_store._LG_BROKEN))
         elif defect=='clone-only':
-            pm_paths.regression_flag(f.board._home()).unlink(); monkeypatch.setattr(f.board,'LOCAL_DIR',f.anchor)
-            (f.anchor/'regression.json').write_text(json.dumps(core),encoding='utf-8')
+            engine_home=f.board._home(); called=pm_paths.home_at(f.board.REPO, f.anchor)
+            pm_paths.regression_flag(engine_home).unlink()
+            monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(pm_paths.livegate_flag(engine_home),regression_store._LG_ENGINE_ROOT))
+            monkeypatch.setattr(f.board,'_home',lambda: called)
+            pm_paths.regression_flag(called).write_text(json.dumps(core),encoding='utf-8')
         if defect!='clone-only': pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
     assert _t0936_record(f)==(0 if defect is None else 1)
     if defect is not None: assert f.calls==f.live==[]
@@ -1806,7 +1810,7 @@ def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypat
             assert _read_flag(f.board)['status']=='fail'
             if failure=='interrupted': raise RuntimeError('중간 중단')
             return 1,'',''
-        monkeypatch.setattr(process,'_run_regression_cmd',run)
+        monkeypatch.setattr(regression,'_run_regression_cmd',run)
     if failure=='interrupted':
         with pytest.raises(RuntimeError,match='중간 중단'): _t0936_record(f)
     else: assert _t0936_record(f)==1

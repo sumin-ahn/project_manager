@@ -129,8 +129,8 @@ def local_config(home, repo: Path | None = None) -> dict[str, str]:
     """Per-clone local config (`.project_manager/local.conf`, git-ignored).
 
     `repo` 를 주면 **그 트리의** conf 를 읽는다(`<repo>/.project_manager/local.conf`) —
-    이 board.py 사본의 `REPO` 가 아니라 판정 대상 트리가 앵커여야 하는 소비처(회귀 수집 증감 —
-    스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
+    판정 대상 트리가 `home.root` 와 다른 소비처(회귀 수집 증감 — 스위트는 실행 cwd 트리의
+    것이다)를 위한 인자. 미지정이면 `home.local_conf` 를 읽는다.
     `additional_reviewer.local_config(repo)` 와 동형 시그니처.
 
     파싱·판정은 공용 로더(`conf_store`·`conf_schema`)가 소유한다 — 이 함수는 경로만 정하고 값 소비

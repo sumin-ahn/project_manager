@@ -109,7 +109,7 @@ def _refuse_release_for_must_fix(flag: Path, cwd: str, problems: list[str]) -> i
     (이 게이트가 막으려는 바로 그 형상). 실행 전 거부라 수집 N 은 0 이고 rc 는 미실행(None)이다.
     """
     flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (pass 기록과 같은 규칙)
-    regression_store._write_json_atomic(flag, {
+    fs.write_json_atomic(flag, {
         "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
         "ts": clock.now_utc(), "reason": _LIVEGATE_MUST_FIX_REASON,
     })

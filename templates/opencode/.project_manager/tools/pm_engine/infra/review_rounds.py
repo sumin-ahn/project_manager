@@ -219,7 +219,19 @@ def append_round_outcome(entry: dict, outcome: dict) -> dict:
 
 
 def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
-    """sequence 없는 구기록을 앞에 두는 안정 정렬 키."""
+    """라운드 산출의 **예약 순번** 정렬 키 — 이 판정의 공용 seam (사본 금지).
+
+    append 순서는 *완료* 순서라 라운드 번호가 아니다(동시 라운드가 역순으로 끝나면 뒤바뀐다).
+    그래서 나열은 예약 순번(`sequence`)을 따른다.
+
+    **순번이 없는 구세대 기록은 신기록보다 앞(오래된 쪽)이다.** 뒤에 두면 업그레이드 후 새 통과가
+    쌓여도 옛 반려가 영원히 '최신'이 되어, 이미 닫힌 게이트가 계속 활성으로 읽히고(회귀 강등)
+    확인 전용 라운드 자격도 영구히 열린다. 구기록은 정의상 순번 도입 *이전* 이라 앞이 맞다 —
+    같은 축의 안정 정렬로 구기록끼리는 append 순서를 보존한다.
+
+    이 판정을 쓰는 표면이 여럿이라(회귀 강등·추가 리뷰어의 조회 표·수렴 추이·확인 전용 라운드
+    자격) 이 모듈 한 곳에 둔다 — 사본을 만들면 그 사본이 다시 뒤집힌 '최신'을 답한다.
+    """
     sequence = outcome.get("sequence")
     valid = isinstance(sequence, int) and not isinstance(sequence, bool)
     return (valid, sequence if valid else 0)
@@ -331,7 +343,7 @@ _REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additio
 
 
 def _review_rounds_ledger(home) -> Path:
-    """추가 리뷰 라운드 장부 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종)."""
+    """추가 리뷰 라운드 장부 경로 — `home.local_dir` 파생(테스트 격리 추종)."""
     return home.local_dir / REVIEW_ROUNDS_LEDGER_NAME
 
 

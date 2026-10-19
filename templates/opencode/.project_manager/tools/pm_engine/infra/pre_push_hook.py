@@ -176,7 +176,7 @@ def install_pre_push_hook(home) -> bool:
 
 
 def _write_hook_atomic(hook: Path, body: str) -> None:
-    """훅 파일을 temp + `fs.atomic_replace` 로 **원자 교체**한다 (`_write_json_atomic` 동형).
+    """훅 파일을 temp + `fs.atomic_replace` 로 **원자 교체**한다 (`fs.write_json_atomic` 동형).
 
     같은 inode 에 truncate-rewrite 하면 **실행 중인 훅을 자기 자신이 덮을 수 있다** — shell 은
     스크립트를 실행하며 읽으므로 파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라

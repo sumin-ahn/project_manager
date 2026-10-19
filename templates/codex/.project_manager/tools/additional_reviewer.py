@@ -3218,7 +3218,7 @@ def parse_ticket_touches(ticket_id: str, *, pm_home: Path | None = None) -> list
 def _split_ticket_frontmatter(text: str, *, source: Path) -> tuple[str | None, str]:
     """frontmatter 원문과 본문을 한 경계에서 분리한다(None이면 frontmatter 없음).
 
-    board.load_ticket을 재사용하지 않는 이유는 본문을 YAML 재직렬화나 strip 없이 byte-for-byte
+    ticket_store.load_ticket을 재사용하지 않는 이유는 본문을 YAML 재직렬화나 strip 없이 byte-for-byte
     보존해야 하고, touches의 경량 파서도 YAML 의존 없이 같은 원문을 소비하기 때문이다. opener가
     있으면 closer도 반드시 있어야 하며 두 소비자 모두 같은 AnchorResolutionError로 fail-loud 한다.
     """

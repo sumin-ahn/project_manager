@@ -29,7 +29,7 @@ def _write_regression_flag(flag: Path, record: dict) -> None:
     """
     record["previous_collected"] = _previous_collected(flag)
     flag.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(flag, record)
+    fs.write_json_atomic(flag, record)
 
 
 def _previous_collected(flag: Path) -> int | None:
@@ -128,16 +128,6 @@ def _regression_flag_for(home, session: str | None, *, local_dir: Path | None = 
         return base / "regression.json"
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", session)
     return base / f"regression-{slug}.json"
-
-
-def _write_json_atomic(path: Path, data: dict) -> None:
-    """dict → JSON 을 temp + `fs.atomic_replace` 로 원자 교체한다 (crash 시 잔재/부분기록 방지).
-
-    `dump_ticket_atomic` 과 동형 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
-    """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8", newline="\n")
-    fs.atomic_replace(tmp, path)
 
 
 # ── livegate 기록 위치 = 훅 read 위치 정렬 (two-git 단일 소스) ─────────────

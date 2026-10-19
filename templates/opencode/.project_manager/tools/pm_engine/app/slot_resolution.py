@@ -27,16 +27,16 @@ def _regression_cwd(
     해소 순서:
       - `worktree_slot`(호출부가 고른 슬롯) 이 있으면 `repo_root / worktree_slot`
         (단 그 디렉토리가 실제로 없으면 stale 슬롯 → `repo_root` 로 폴백·경고 1줄),
-      - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(**행의 `slot` 경로 값** ·
+      - 없으면 같은 모듈 `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(**행의 `slot` 경로 값** ·
         **같은 존재 검사**를 탄다 — 디렉토리가 없으면 명시 분기와 동형으로 `repo_root` 폴백·경고),
-      - 그것도 없으면(판정 불능 — 모호·엔진 사본 부재) **현 `repo_root`**. 등록된 홈은 홈 자신이
+      - 그것도 없으면(판정 불능 — 모호) **현 `repo_root`**. 등록된 홈은 홈 자신이
         슬롯 행이라 위 층에서 해소되므로 이 층은 "행이 없으니 이 트리겠지"라는 추론이 아니라
         판정 불능의 마지막 트리다(회귀 실행 중 crash 회피).
 
     판정 로직은 `_auto_slot` 재사용이다(DRY). areas/leases/repo_root 는 명시 인자로 노출해 hermetic
     테스트 가능. `areas_file` 미지정이면 `pm_paths.areas_file`(board 루트 추종)로 해소한다 —
     legacy 위치를 보면 _auto_slot 이
-    등록 repo 를 0개로 세 self-host 슬롯을 미해소한다. `repo_root` 미지정이면 모듈 `REPO`.
+    등록 repo 를 0개로 세 self-host 슬롯을 미해소한다. `repo_root` 미지정이면 `home.root`.
 
     슬롯이 리스 장부 조인은 통과했더라도(명시든 자동해소든)
     실제 worktree 디렉토리가 물리적으로 없을 수 있다(장부-파일시스템 out-of-sync·저빈도 엣지) —
@@ -99,8 +99,8 @@ def _resolve_explicit_identity_slot(
     `(None, error_msg)`(fail-loud). 장부 미해독(파일 부재/깨짐 → `None`)은 *검증불가*라
     fail-soft(그대로 신뢰) — "판정불가"와 "모순"은 다르게 다룬다(과잉 차단 방지).
 
-    `leases_file` 미지정이면 *호출 시점* REPO 기준으로 재구성한다(monkeypatch 추종·hermetic —
-    다른 리스 해소 함수들과 동형).
+    `leases_file` 미지정이면 `pm_paths.leases_file(home)` 으로 해소한다(hermetic — 다른 리스 해소
+    함수들과 동형).
     """
     if leases_file is None:
         leases_file = pm_paths.leases_file(home)

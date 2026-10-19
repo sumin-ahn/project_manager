@@ -12760,7 +12760,6 @@ def _cluster_confirmation_tree(
         finisher = finish.TicketFinisher(board_py=Path(board.__file__))
         closer = finish.ClusterCloser(cluster, finisher=finisher, board_py=Path(board.__file__))
         closer._board = board
-        closer._home = home
         try:
             resolved, problem = closer._resolve_code_tree()
         except finish._CloseObservationFailure as exc:

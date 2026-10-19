@@ -621,7 +621,7 @@ def _identity_section(pm_home: Path, session_id: str, task: str) -> str:
 def _ticket_counts(pm_home: Path) -> tuple[Path, dict[str, int]]:
     """`pm_home` board 의 상태별 티켓 수 — 버킷은 `ticket_rules.STATUS_DIRS`(단일 진실) 파생이다.
 
-    상태 디렉토리 스캔 자체는 board.py 호출 없이 디렉토리 존재만 본다(집합만 board 에서 온다).
+    상태 디렉토리 스캔 자체는 board.py 호출 없이 디렉토리 존재만 본다(집합만 `ticket_rules` 에서 온다).
     """
     manager = Path(pm_home) / ".project_manager"
     # board 분리 형상 우선, legacy는 wiki/tickets.

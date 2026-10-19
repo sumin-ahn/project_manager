@@ -2285,7 +2285,7 @@ def test_protected_push_gate_config_url_without_registry_git_downgrades_to_self_
 
 def test_local_conf_value_duplicate_empty_is_last_wins_like_board(
         pc, tmp_path, monkeypatch):
-    """A2 — 마지막 빈 값도 앞 값을 해제한다(board.local_config과 같은 last-wins)."""
+    """A2 — 마지막 빈 값도 앞 값을 해제한다(conf_store.local_config과 같은 last-wins)."""
     home = tmp_path / "local-conf-values"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
