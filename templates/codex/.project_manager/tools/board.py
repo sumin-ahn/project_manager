@@ -4376,7 +4376,7 @@ def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
 
 # `pm-verified` 재검증이 스코프하는 **리뷰 채널** — 게이트가 실린 장부가 곧 채널이다. 그 채널만
 # 본다(다른 채널의 accepted 잔여·기계 확인은 이 게이트의 증거가 아니다 — 채널 격리). role
-# 문자열의 단일 진실은 pm_delegate 라 사본을 두지 않고 재검증 시점에 해소한다
+# 문자열의 단일 진실은 review_form 이라 사본을 두지 않고 재검증 시점에 해소한다
 # (`_pm_verified_channel_role`). code-reviewer 잔여는 장부가 아니라 리뷰 라운드 파일에서 판정한다
 # (`_review_completion_problem`).
 GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
@@ -5783,9 +5783,9 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
 
 
 def _pm_verified_channel_role(channel: str) -> str | None:
-    """게이트 채널 → pm_delegate 의 reviewer role 문자열 (모르는 채널이면 None → fail-closed).
+    """게이트 채널 → review_form 의 reviewer role 문자열 (모르는 채널이면 None → fail-closed).
 
-    role 문자열은 pm_delegate 가 단일 진실이라 board 에 사본을 두지 않는다."""
+    role 문자열은 review_form 이 단일 진실이라 board 에 사본을 두지 않는다."""
     return {
         GATE_CHANNEL_ADDITIONAL: review_form.ADDITIONAL_REVIEWER_ROLE,
     }.get(channel)
@@ -5794,10 +5794,10 @@ def _pm_verified_channel_role(channel: str) -> str | None:
 def _pm_verified_delegate_problem(
     tid: str, *, channel: str, entry: dict, checker_name: str,
 ) -> str | None:
-    """티켓/채널 입력을 해소해 pm_delegate의 지정 pm-verified checker를 호출한다.
+    """티켓/채널 입력을 해소해 review_state 의 지정 pm-verified checker를 호출한다.
 
     preflight와 post-resolution evidence가 티켓/채널/표면 하한 해소를 복제하지 않게 하는 공용
-    배선이다. 실제 판정은 checker_name이 가리키는 pm_delegate 함수만 소유한다.
+    배선이다. 실제 판정은 checker_name이 가리키는 review_state 함수만 소유한다.
 
     추가 리뷰어 release 게이트는 `GATE_CHANNEL_ADDITIONAL` 로 호출하고, 판정 표면 하한은 **그
     채널 장부 entry 의 잔여 must-fix 건수**다. 채널 스코프 없이 티켓 전역을 보면 다른 채널의
@@ -5842,10 +5842,10 @@ def _gate_pm_verified_problem(
 
 
 def _review_problem(tid: str, checker_name: str, spec_text: str | None) -> str | None:
-    """리뷰 잔여 판정 배선 — 명세와 리뷰 라운드 파일을 읽어 pm_delegate 판정 함수에 넘긴다.
+    """리뷰 잔여 판정 배선 — 명세와 리뷰 라운드 파일을 읽어 review_state 판정 함수에 넘긴다.
 
-    판정 입력은 board 라운드 파일과 명세 PM 영역뿐이다. 판정 불능(티켓·명세·pm_delegate·
-    판정 seam 부재)은 통과가 아니라 차단 사유다.
+    판정 입력은 board 라운드 파일과 명세 PM 영역뿐이다. 판정 불능(티켓·명세·라운드 파일을
+    읽지 못함)은 통과가 아니라 차단 사유다.
     """
     if spec_text is None:
         found = ticket_store.find_ticket_exact(_home(), tid)
@@ -7409,7 +7409,7 @@ _LIST_ACTIVE_STATUSES: tuple[str, ...] = ticket_rules.ACTIVE_STATUS_DIRS
 # ── 발행 시점 touches 겹침 재료 (판단 지점에 판단 재료가 있어야 한다) ──────────
 # `new`/`promote` 판단 지점에 다른 활성·draft 티켓과의 touches 겹침 + 가용(idle) 슬롯 수를
 # stderr 재료로 낸다. **절대 차단하지 않는다** — 재료를 놓을 뿐 판정은 PM 이 한다. 좌표
-# 정규화는 `repo_coordinates` 단일 소유자, 비교 규칙(`_touch_paths_overlap`)은 `pm_delegate`
+# 정규화는 `repo_coordinates` 단일 소유자, 비교 규칙(`_touch_paths_overlap`)은 `ticket_rules`
 # 단일 소유자를 재사용한다(board 는 이 축에 자체 문자열 비교를 만들지 않는다 — 접두
 # `work/<repo>_<N>/` 선언이 활성 티켓 상당수라 순진한 비교는 조용히 0이 된다).
 _PUBLISH_OVERLAP_HEADER = "=== ⚠ 발행 touches 겹침 (다른 활성/draft 티켓) ==="
@@ -7543,7 +7543,7 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
     `repo` 는 슬롯 재료(`_publish_idle_slot_count`)가 lease 장부를 조회할 canonical 정체성 —
     호출부가 이미 해소한 값을 그대로 받는다(이 함수 안에서 유도하지 않는다).
 
-    비교 소유자(`pm_delegate`) 부재·로드 실패나 touches 형식 불명은
+    touches 형식 불명은
     이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
     동기 사본에서 이 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
     """
@@ -8049,7 +8049,7 @@ def _cluster_overlap_material(
 
     후보에서 멤버 전부를 뺀다 — 멤버끼리의 겹침은 묶음을 반대할 근거가 아니라 묶음의 근거라
     별도 줄로 표기한다(침묵시키면 재료가 준다). 좌표 정규화·비교 규칙 소유자는 발행 재료와
-    같다(`repo_coordinates`·`pm_delegate` · 사본 0). 판정불능(소유자 로드 실패·형식 불명)은
+    같다(`repo_coordinates`·`ticket_rules` · 사본 0). 판정불능(형식 불명)은
     이 축 전체를 침묵으로 접는다 — 차단하지 않되 통과로 위장하지도 않는다(재료 축 그대로).
     """
     folded: dict[str, tuple[str, ...]] = {}

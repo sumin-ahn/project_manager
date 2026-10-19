@@ -74,7 +74,7 @@ class RoundProblem(NamedTuple):
 def _safe_ticket_id(ticket_id: str) -> str:
     """경로 한 마디로 쓸 수 있는지만 본다.
 
-    ID **문법**(`T-NNNN`·prefix 형)은 board 소유라 여기서 복제하지 않는다 — 복제하면 발행측이
+    ID **문법**(`T-NNNN`·prefix 형)은 `ticket_rules` 소유라 여기서 복제하지 않는다 — 복제하면 발행측이
     문법을 넓힐 때 이 사본만 남아 멀쩡한 티켓의 라운드를 막는다. 여기서 막는 것은 라운드
     디렉터리 밖을 가리키는 이름과 빈 이름이다.
 
@@ -160,7 +160,7 @@ def _round_header_re(role: str) -> re.Pattern[str]:
 
 
 def _text_is_refused(text: str) -> bool:
-    """엔진이 판정 표면 밖으로 뺀 라운드인가 — 판독은 표식 소유자(`pm_delegate`)가 낸다."""
+    """엔진이 판정 표면 밖으로 뺀 라운드인가 — 판독은 표식 소유자(`review_form`)가 낸다."""
     return review_form.pm_review_refused_marker_present(text)
 
 

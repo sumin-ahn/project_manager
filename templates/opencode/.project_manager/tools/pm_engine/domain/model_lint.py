@@ -69,8 +69,7 @@ def lint_same_model(conf: dict[str, str]) -> list[tuple[str, str]]:
     이 경고는 독립성 위반을 알리는 게 아니라, 같은 모델이면 같은 맹점을 공유해 검출력이 낮아진다는
     **정도의 문제**를 표면화한다. 모델 선택이 제약된 형상(회사 기준 모델 고정 등)은 정상 운영이며
     이 경고를 해소 못 해도 결함이 아니다. 미설정 역할(reviewer 또는 특정 dev tier)은 조용히 skip(경고 대상 아님). **순수 함수**
-    (I/O·board import 없음) — board lint 가 이 함수를 deep-import 로 호출해 advisory 로 표면화한다
-    (순환 import 방지 — pm_delegate 는 board 를 import 하지 않는다)."""
+    (I/O·board import 없음) — board lint 가 이 함수를 호출해 advisory 로 표면화한다."""
     reviewer = _lint_role_model(conf, "code-reviewer")
     if reviewer is None:
         return []
