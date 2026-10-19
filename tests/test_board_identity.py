@@ -32,6 +32,8 @@ from pathlib import Path
 import pytest
 
 from conftest import ensure_product_slot
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import ticket_store
 
 # 귀속 쓰기 정체성 — 픽스처가 이 task 의 제품 폴더를 준비한다(T-0962).
 _TASK = "pm-1"
@@ -230,7 +232,7 @@ def test_cmd_new_sets_created_by_user_slot(board):
     assert board.cmd_new(_new_args()) == 0
     created = list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
     assert len(created) == 1
-    fm, _ = board.load_ticket(created[0])
+    fm, _ = ticket_store.load_ticket(created[0])
     assert fm["created_by"] == "alice/pm-1"
 
 
@@ -238,7 +240,7 @@ def test_cmd_new_created_by_honors_explicit_user(board):
     """args.user 명시가 local.conf 보다 우선해 created_by 에 반영된다."""
     _write_conf(board, user="alice")
     assert board.cmd_new(_new_args(user="carol")) == 0
-    fm, _ = board.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+    fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
     assert fm["created_by"] == "carol/pm-1"
 
 
@@ -264,7 +266,7 @@ def test_cmd_claim_sets_claimed_by_user_slot(board):
     assert board.cmd_claim(_claim_args()) == 0
     claimed = list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))
     assert len(claimed) == 1
-    fm, _ = board.load_ticket(claimed[0])
+    fm, _ = ticket_store.load_ticket(claimed[0])
     assert fm["claimed_by"] == "alice/pm-1"
 
 
@@ -309,7 +311,7 @@ def _ticket_in_status(board, tid, status):
     """`status` 디렉터리에서 `tid` 티켓 정확히 1개를 찾아 frontmatter/본문을 반환한다."""
     files = list((board.TICKETS_DIR / status).glob(f"{tid}-*.md"))
     assert len(files) == 1, f"{tid} 가 {status}/ 에 정확히 1개 있어야 한다: {files}"
-    return board.load_ticket(files[0])
+    return ticket_store.load_ticket(files[0])
 
 
 def test_claimed_block_unblock_round_trip_preserves_identity(board):
@@ -458,7 +460,7 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
 
     def snapshot() -> dict:
         tickets = board.TICKETS_DIR
-        folders = (tickets, *(tickets / name for name in (*board.STATUS_DIRS, ".drafts")),
+        folders = (tickets, *(tickets / name for name in (*ticket_rules.STATUS_DIRS, ".drafts")),
                    board.clusters_dir())
         files = {path.relative_to(tickets).as_posix(): path.read_bytes()
                  for folder in folders for path in folder.glob("*") if path.is_file()}

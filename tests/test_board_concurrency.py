@@ -32,6 +32,7 @@ import pytest
 
 from _textio import utf8_child_env
 from conftest import ensure_product_slot
+from pm_engine.infra import areas_store, git, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -540,8 +541,8 @@ def test_task_derived_new_rechecks_after_concurrent_area_case_write(
     from _git_fixture import init_git_repo
     board = _load_board_bound(proj)
     tree = init_git_repo(proj / "work/svc_1", commit="task prefix race fixture")
-    assert board._git_head_at(str(tree))
-    assert board._cluster_current_branch(str(tree)) == "main"
+    assert git._git_head_at(str(tree))
+    assert git._cluster_current_branch(str(tree)) == "main"
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(
         json.dumps({
@@ -580,7 +581,7 @@ def test_task_derived_new_rechecks_after_concurrent_area_case_write(
     assert (new_proc.exitcode, writer.exitcode) == (0, 0)
     assert result == expected
     if result[0] == 0:
-        fm, _ = board.load_ticket(board.find_ticket_exact(result[1][0])[1])
+        fm, _ = ticket_store.load_ticket(ticket_store.find_ticket_exact(board._home(), result[1][0])[1])
         assert fm["created_by"].split("/")[-1] == "job"
 
 
@@ -920,7 +921,7 @@ def test_claim_critical_section_holds_board_lock(board):
                              "depends_on": []}, "# seed\n")
 
     observed: dict[str, bool] = {}
-    orig_load = board.load_ticket
+    orig_load = ticket_store.load_ticket
     orig_find = board.find_ticket_for_mutation
     armed: list[bool] = []
 
@@ -943,12 +944,12 @@ def test_claim_critical_section_holds_board_lock(board):
             observed.setdefault("lock_free_during_load", _probe_lock_free(board.BOARD_LOCK))
         return orig_load(p)
 
-    board.load_ticket = probing_load
+    ticket_store.load_ticket = probing_load
     board.find_ticket_for_mutation = arming_find
     try:
         rc = board.cmd_claim(_Args(id=tid, task=_TASK))
     finally:
-        board.load_ticket = orig_load
+        ticket_store.load_ticket = orig_load
         board.find_ticket_for_mutation = orig_find
 
     assert rc == 0, f"비경합 claim 이 성공해야 함: rc={rc}"
@@ -1081,7 +1082,7 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
     a_scanning = threading.Event()    # A 가 scan 에 진입(첫 ticket 을 load)했음을 알림
     a_may_finish = threading.Event()  # 테스트가 A 의 scan 재개를 허용
 
-    orig_load = board.load_ticket
+    orig_load = ticket_store.load_ticket
     state = {"paused": False}
 
     def hooked_load(p):
@@ -1102,7 +1103,7 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
         except BaseException as e:  # noqa: BLE001
             err["a"] = e
 
-    board.load_ticket = hooked_load
+    ticket_store.load_ticket = hooked_load
     a = threading.Thread(target=run_a)
     a.start()
     try:
@@ -1136,7 +1137,7 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
         b.join(timeout=SYNC_TIMEOUT)
     finally:
         a_may_finish.set()  # 누수 방지
-        board.load_ticket = orig_load
+        ticket_store.load_ticket = orig_load
 
     assert not err, f"refresh 스레드 예외: {err}"
 
@@ -1170,7 +1171,7 @@ def test_areas_append_uses_atomic_append(board):
     assert text.count("| repo | prefix | git | test_cmd | owner |") == 1   # 헤더 한 번만 (ADR-0014 per-repo 스키마)
     assert "| PAY | PAY |  |  | alice |" in text   # repo 미지정 → prefix·git/test_cmd 빈칸
     assert "| ACC | ACC |  |  | bob |" in text
-    assert board.registered_prefixes() == {"PAY", "ACC"}
+    assert areas_store.registered_prefixes(board._home()) == {"PAY", "ACC"}
 
 
 def _worker_areas(proj_str: str, idx: int, ready, go) -> None:
@@ -1216,7 +1217,7 @@ def test_concurrent_areas_append_no_lost_rows(proj):
     assert all(p.exitcode == 0 for p in procs), (
         f"areas 워커 비정상 종료: exitcodes={[p.exitcode for p in procs]}")
 
-    prefixes = board.registered_prefixes()
+    prefixes = areas_store.registered_prefixes(board._home())
     # SEED + 워커별 고유 prefix n 개 = n+1 개 전부 보존.
     expected = {"SEED"} | {f"P{i}" for i in range(n)}
     assert prefixes == expected, f"lost rows: {expected - prefixes}"
@@ -1266,7 +1267,7 @@ def test_concurrent_areas_append_from_empty_header_once_all_rows(proj):
         f"헤더가 1회가 아님(최초 생성 race — 헤더 중복):\n{text}")
     assert text.count("# Area Registry") == 1, f"헤더 블록 중복:\n{text}"
     # 모든 워커 row 보존(클로버 0).
-    prefixes = board.registered_prefixes()
+    prefixes = areas_store.registered_prefixes(board._home())
     expected = {f"P{i}" for i in range(n)}
     assert prefixes == expected, f"lost rows: {expected - prefixes} (전체={prefixes})"
 

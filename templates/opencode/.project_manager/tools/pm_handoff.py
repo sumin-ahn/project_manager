@@ -58,7 +58,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args  # noqa: E402
-from pm_engine.infra import console, fs, lease_store, raw_output, repo_files  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, python_env, raw_output, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -70,7 +70,7 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"                          # workt
 # 회귀 cwd 자동해소— board.py·pm_bootstrap.py 와 *같은 위치*. _regression_cwd 가
 # pm_bootstrap._auto_slot 에 명시 인자로 넘겨 단일 self-host 슬롯을 해소한다. worktree_pool 은
 # import 하지 않는다(touches 격리·데이터 결합만) — pm_bootstrap 을 동적로드해 그 판정을 재사용.
-AREAS_FILE = REPO / ".project_manager" / "areas.md"                       # legacy 별칭 (아래 _areas_file 가 추종)
+AREAS_FILE = REPO / ".project_manager" / "areas.md"                       # legacy 별칭 (`pm_paths.areas_file` 이 추종)
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -119,36 +119,13 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
 
 
 # ── board root 추종 ───────────────────────
-# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다.
-# 그러면 회귀 cwd 자동해소(_auto_slot 의 areas 입력)가 wiki/ legacy 위치를 보면 *stale*(미해소)
-# 이다. pm_handoff 는 board.py 를 import 하지 않으므로(touches 격리), board.py 의 graceful 탐지
-# 로직을 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 board/ 루트, 아니면 wiki/(legacy).
-# 미분리/미마이그 adopter 에선 board/tickets 부재 → 현 위치 100% 폴백(회귀 0).
+# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다. board 루트와
+# areas.md 위치는 `pm_paths` 가 해소한다(board/tickets 가 실 디렉토리면 board/ 루트, 아니면 wiki/).
 # 상수 TICKETS_DIR·AREAS_FILE 는 hermetic 테스트의 monkeypatch seam·legacy 기본값으로 유지.
 
-def _board_root() -> Path:
-    """board(tickets+areas) 루트 — board/ 분리 시 `<REPO>/.project_manager/board`, 아니면
-    legacy `<REPO>/.project_manager/wiki` (board.py `board_root` 동형·import 없이 복제)."""
-    base = REPO / ".project_manager"
-    if (base / "board" / "tickets").is_dir():
-        return base / "board"
-    return base / "wiki"
-
-
 def _tickets_dir() -> Path:
-    """ticket 디렉토리 — _board_root()/tickets (board/ 분리 추종·legacy=wiki/tickets)."""
-    return _board_root() / "tickets"
-
-
-def _areas_file() -> Path:
-    """areas 레지스트리 경로 (board.py `areas_file` 동형·조건분기).
-
-    areas.md 는 legacy 에서 `.project_manager/areas.md`(wiki *밖*)에 산다. board/ 분리 시엔
-    board submodule *안*(board/areas.md)으로 옮겨진다 → board/tickets 존재로 가른다.
-    """
-    if (REPO / ".project_manager" / "board" / "tickets").is_dir():
-        return _board_root() / "areas.md"
-    return REPO / ".project_manager" / "areas.md"
+    """ticket 디렉토리 — board 루트/tickets (board/ 분리 추종·legacy=wiki/tickets)."""
+    return pm_paths.tickets_dir(pm_paths.home_at(REPO))
 
 
 # ── worktree_pool import seam ───────────────────────────
@@ -287,7 +264,7 @@ def validate_task_name_engine(task: str) -> None:
     (직접 소비도 우회 불가)를 handoff 진입점 전체에 적용한다 — `"my task"`(공백)·`../evil`(traversal)·
     `<repo>_<N>`(슬롯 예약패턴) 류가 CLI 를 우회해 트리거 파싱 파손·경로 이탈을 내는 갭을 닫는다.
 
-    registered_repos 는 board 에서 fail-soft 해소(부재/파싱 실패면 None → 예약패턴만 완화하고
+    registered_repos 는 areas.md 에서 fail-soft 해소(파싱 실패면 None → 예약패턴만 완화하고
     traversal/whitespace/괄호/빈이름 구문 검증은 유지). worktree_pool 로드 실패는 검증 불가라
     RuntimeError(fail-loud) — silent skip 이 갭을 재오픈하지 않게 한다.
 
@@ -299,14 +276,10 @@ def validate_task_name_engine(task: str) -> None:
             "worktree_pool 엔진을 찾을 수 없다 — --task 이름 검증 불가 "
             f"({TOOLS_DIR / 'worktree_pool.py'} 부재/로드 실패·multi-PM 셋업/엔진 전파 확인)."
         )
-    board_mod = _load_board()
-    registered = None
-    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if _reg_fn is not None:
-        try:
-            registered = _reg_fn()
-        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴만 완화·traversal 유지).
-            registered = None
+    try:
+        registered = areas_store.registered_repos(pm_paths.home_at(REPO))
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴만 완화·traversal 유지).
+        registered = None
     wp._validate_task_name(task, registered)
 
 
@@ -333,7 +306,7 @@ def _regression_cwd(
 
     판정 로직은 pm_bootstrap `_auto_slot` 재사용 —
     복붙하지 않고 동적 로드한다(DRY). areas/leases/repo_root 는 명시 인자로 노출해 hermetic
-    테스트 가능. `areas_file` 미지정이면 `_areas_file()`(board_root 추종)로 해소한다 —
+    테스트 가능. `areas_file` 미지정이면 `pm_paths.areas_file`(board 루트 추종)로 해소한다 —
     legacy 위치를 보면 _auto_slot 이
     등록 repo 를 0개로 세 self-host 슬롯을 미해소한다. `repo_root` 미지정이면 모듈 `REPO`.
 
@@ -348,7 +321,7 @@ def _regression_cwd(
     if repo_root is None:
         repo_root = REPO
     if areas_file is None:
-        areas_file = _areas_file()
+        areas_file = pm_paths.areas_file(pm_paths.home_at(REPO))
     if worktree_slot:
         candidate = repo_root / worktree_slot
         if candidate.is_dir():
@@ -551,7 +524,7 @@ PENDING_INTENT_PLACEHOLDER = (
 _TASK_TAG_PREFIX = "task:"
 _UNRESOLVED_BOUNDARY_ENTRY_LIMIT = 10
 _ENTRY_TYPE_RE = r"(?:\S+|<!-- feat/fix/verify/… -->)"
-# board.py의 발행 문법(`_TICKET_ID_BODY`) 미러: legacy `T-NNNN`와
+# 발행 문법(`ticket_rules._TICKET_ID_BODY`) 미러: legacy `T-NNNN`와
 # namespaced `T-<prefix>-NNN`을 함께 소비한다. prefix는 영숫자로 시작하고 이후
 # 영숫자/underscore/hyphen을 허용한다(`T-PAY-001`, `T-service-a-001`).
 _TICKET_ID_BODY = r"T-(?:[A-Za-z0-9][A-Za-z0-9_-]*-\d+|\d+)"
@@ -1601,40 +1574,40 @@ def parse_pytest_summary(output: str) -> str:
 # → 진짜 red 를 놓친다).
 #
 # 이 절이 해소 체인의 **단일 사본**이다 — `ticket_finish._resolve_per_repo_test_cmd` 는 자기
-# board seam 으로 모듈만 얻어 `_resolve_gate_cmd(board_module)` 에 위임한다(`_regression_cwd`
+# 트리의 `Home` 을 넘겨 `_resolve_gate_cmd(home)` 에 위임한다(`_regression_cwd`
 # 위임과 같은 방향). 해소 함수가 이 도구엔 없고 저쪽에만 있던 미러 이탈이 이 결함의 절반이었다.
 
 
-def _active_repo_name(board_module) -> str | None:
+def _active_repo_name(home) -> str | None:
     """활성 repo 명 — 등록 repo 가 정확히 1개일 때만 그것.
 
-    board 의 `id_prefix` 해소 체인(count-based)과 **같은 규칙**을 repo 축에서 되풀이한다. 세션
+    `areas_store.id_prefix` 해소 체인(count-based)과 **같은 규칙**을 repo 축에서 되풀이한다. 세션
     이름에서 repo 를 떼지 않는다. 2개 이상이면 어느 쪽인지 알 수 없으므로 None 이라 호출부가
     다음 층으로 내려간다(추측 금지).
     """
-    repos = board_module.registered_repos()
+    repos = areas_store.registered_repos(home)
     if len(repos) == 1:
         return next(iter(repos))
     return None
 
 
-def _areas_test_cmd_by_repo(board_module) -> str | None:
+def _areas_test_cmd_by_repo(home) -> str | None:
     """areas.md 활성 **repo** 행의 `test_cmd`. 미해소/미등록/빈 값 → None.
 
     prefix 칼럼이 **빈** 무prefix 형상을 위한 층이다. 행 매칭은 `_repo_base`·`_areas_git_url`
     과 동형이다 — `repo` 칼럼 일치 first-match.
     """
-    repo = _active_repo_name(board_module)
+    repo = _active_repo_name(home)
     if not repo:
         return None
-    _header, rows = board_module._parse_areas()
+    _header, rows = areas_store._parse_areas(home)
     for row in rows:
         if row.get("repo") == repo and row.get("test_cmd"):
             return row["test_cmd"]
     return None
 
 
-def _resolve_gate_cmd(board_module) -> str | None:
+def _resolve_gate_cmd(home) -> str | None:
     """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 실패면 None(기본 폴백).
 
     해소 체인 — 앞선 층이 비어 있지 않은 값을 주면 거기서 멈춘다:
@@ -1642,9 +1615,9 @@ def _resolve_gate_cmd(board_module) -> str | None:
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
       3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
-      4. board `default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
+      4. `python_env.default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
 
-    areas.md 존재 가드는 board 의 `areas_file()`(board_root 추종)에 위임한다 — board/ 분리 시
+    areas.md 존재 가드는 `pm_paths.areas_file`(board 루트 추종)에 위임한다 — board/ 분리 시
     areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치를 보면 stale 이다. **3층은 그
     가드 밖**이다 — 채택자 진입문서가 게이트의 단일 진실로 선언하는 레이어라 areas.md 가 아예
     없는 형상에서도 읽혀야 한다.
@@ -1653,44 +1626,33 @@ def _resolve_gate_cmd(board_module) -> str | None:
     (현행 보존).
     """
     try:
-        if board_module.areas_file().exists():
+        if pm_paths.areas_file(home).exists():
             # 1층 — 활성 prefix 행 (multi-repo 네임스페이스).
-            prefix = board_module.id_prefix()
+            prefix = areas_store.id_prefix(home)
             if prefix:
-                row = board_module._areas_row_for_prefix(prefix)
+                row = areas_store._areas_row_for_prefix(home, prefix)
                 if row and row.get("test_cmd"):
                     return row["test_cmd"]
             # 2층 — 활성 repo 행 (prefix 칼럼이 빈 무prefix 형상).
-            by_repo = _areas_test_cmd_by_repo(board_module)
+            by_repo = _areas_test_cmd_by_repo(home)
             if by_repo:
                 return by_repo
         # 3층 — local.conf 명시 설정 (areas.md 부재 형상에서도 유효·가드 밖).
-        conf_cmd = board_module.local_config().get("test.cmd")
+        conf_cmd = conf_store.local_config(home).get("test.cmd")
         if conf_cmd:
             return conf_cmd
     except Exception as exc:  # noqa: BLE001 — 해소 실패는 기본 폴백(현행 보존).
-        if _is_engine_rev_skew(exc):
-            raise      # 형제 사본 불일치는 폴백 한 줄로 삼키지 않는다(fail-loud 보존).
-        # 구표기 conf 잔존도 같은 규칙이다 — 삼키면 채택자가 conf 에 적어 둔 게이트가 사라진 채
+        # 구표기 conf 잔존은 삼키지 않는다 — 삼키면 채택자가 conf 에 적어 둔 게이트가 사라진 채
         # 기본 pytest 로 조용히 강등된다(중앙 로더를 fail-loud 로 만든 이유가 여기서 무효가 된다).
         if getattr(exc, "_legacy_conf_key", False):
             raise
         return None
-    # 여기 오는 board 사본은 rev 검증을 통과한 것이다(`None` 은 위 try 의 첫 호출에서 이미
-    # AttributeError 로 걸러져 폴백으로 빠진다) — 함수가 있는지 더듬지 않는다.
-    return board_module.default_pytest_cmd()
+    return python_env.default_pytest_cmd()
 
 
 def _resolve_per_repo_test_cmd() -> str | None:
-    """이 도구의 board seam(`_load_board`)으로 회귀 게이트를 해소한다.
-
-    체인은 `_resolve_gate_cmd` 가 소유한다(단일 사본). board 로드 실패(None)는 예외가 아니라
-    기본 폴백이다.
-    """
-    board_module = _load_board()
-    if board_module is None:
-        return None
-    return _resolve_gate_cmd(board_module)
+    """이 트리(`REPO`)의 회귀 게이트를 해소한다. 체인은 `_resolve_gate_cmd` 가 소유한다(단일 사본)."""
+    return _resolve_gate_cmd(pm_paths.home_at(REPO))
 
 
 # ── 게이트 종류 (pytest 스위트인가 임의 명령인가) ────────────────────────

@@ -35,6 +35,7 @@ import types
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import git
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -132,7 +133,7 @@ def _make_topology(tmp_path, monkeypatch, *, with_hookspath=True,
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")  # 부재
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: _HEAD_SHA)
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: _HEAD_SHA)
     return mod, engine, worktree, hooks_dir
 
 

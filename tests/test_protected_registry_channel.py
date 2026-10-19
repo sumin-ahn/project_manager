@@ -26,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pm_engine.infra import areas_store, pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -48,8 +49,11 @@ def _load(name: str):
 
 
 @pytest.fixture
-def board(tmp_path, monkeypatch):
-    """실 board 모듈 + 경로 전역을 tmp 로 재지정한 hermetic 인스턴스 (test_board_per_repo 동형)."""
+def board(tmp_path, monkeypatch, pc):
+    """실 board 모듈 + 경로 전역을 tmp 로 재지정한 hermetic 인스턴스 (test_board_per_repo 동형).
+
+    pm_config 는 자기 `REPO` 로 Home 을 만들어 areas.md 를 읽으므로 같은 tmp 홈에 묶는다.
+    """
     pm = tmp_path / "home" / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     mod = _load("board")
@@ -61,6 +65,7 @@ def board(tmp_path, monkeypatch):
         "BOARD_LOCK": pm / ".local" / "board.lock",
     }.items():
         monkeypatch.setattr(mod, name, val)
+    monkeypatch.setattr(pc, "REPO", tmp_path / "home")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     # board-git 동기는 이 파일 범위 밖(별 git) — no-op 으로 고정하고 호출만 기록한다.
@@ -207,7 +212,7 @@ def test_repo_add_without_protected_keeps_default_fallback(pc, board, tmp_path):
         _add_args(), board=board, clone_runner=GitFake(),
         repos_dir=tmp_path / ".repos", worktree_pool=FakePool(tmp_path / "hooks"))
     assert rc == 0
-    _header, rows = board._parse_areas()
+    _header, rows = areas_store._parse_areas(board._home())
     assert rows[0]["protected"] == ""
     assert board._repo_protected("svc") == list(board.DEFAULT_PROTECTED)
 
@@ -217,7 +222,7 @@ def test_repo_add_protected_normalizes_spacing(pc, board, tmp_path):
     pc.cmd_repo_add(
         _add_args(protected="main, release"), board=board, clone_runner=GitFake(),
         repos_dir=tmp_path / ".repos", worktree_pool=FakePool(tmp_path / "hooks"))
-    _header, rows = board._parse_areas()
+    _header, rows = areas_store._parse_areas(board._home())
     assert rows[0]["protected"] == "main,release"
 
 
@@ -231,7 +236,7 @@ def test_repo_add_bad_protected_rejected_before_side_effects(pc, board, tmp_path
         repos_dir=tmp_path / ".repos", worktree_pool=pool)
     assert rc == 1
     assert gitr.calls == [] and pool.calls == []
-    assert board.registered_repos() == set()
+    assert areas_store.registered_repos(board._home()) == set()
     assert "[중단]" in capsys.readouterr().err
 
 
@@ -504,7 +509,7 @@ def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path
     write_sidecar(hooks, "svc", ["main"])
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: False)
     assert inst._reconcile_protected_sidecar("svc") is True
     assert pool.calls == [("svc", ["main"])]
@@ -519,7 +524,7 @@ def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path,
     write_sidecar(hooks, "svc", ["main"])
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: True)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == [] and capsys.readouterr().err == ""
@@ -532,13 +537,13 @@ def test_bootstrap_wiring_unknown_keeps_current_behaviour(bootstrap, tmp_path,
     write_sidecar(hooks, "svc", ["main"])
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: None)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == []
 
 
-def test_bootstrap_wiring_judgment_delegates_to_pm_config(bootstrap, pc, tmp_path):
+def test_bootstrap_wiring_judgment_delegates_to_pm_config(bootstrap, pc, tmp_path, monkeypatch):
     """배선 판정은 `pm_config.protected_hook_wired` 를 **소비**한다(재구현/복붙 아님).
 
     부트스트랩이 `_load_tool("pm_config")` 로 실제 그 심볼을 잡는지 + 같은 입력에서 판정이
@@ -549,7 +554,7 @@ def test_bootstrap_wiring_judgment_delegates_to_pm_config(bootstrap, pc, tmp_pat
         "pm_bootstrap 이 소비할 판정 심볼이 pm_config 에 없다(재구현으로 흘렀나?)"
     pool, hooks, _repos = _wired_pool(tmp_path, repo="svc")
     write_sidecar(hooks, "svc", ["main"])
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     assert inst._protected_hook_wired("svc") == pc.protected_hook_wired(
         "svc", worktree_pool=pool)
 
@@ -601,7 +606,7 @@ def test_protected_set_default_literal_clears_column(pc, board, tmp_path, capsys
     rc = pc.cmd_repo_protected(_protected_args("service-a", "DEFAULT"), board=board,
                                worktree_pool=pool, repos_dir=tmp_path / ".repos")
     assert rc == 0
-    _header, rows = board._parse_areas()
+    _header, rows = areas_store._parse_areas(board._home())
     assert rows[0]["protected"] == ""
     assert board._repo_protected("service-a") == list(board.DEFAULT_PROTECTED)
     assert pool.calls == [("service-a", list(board.DEFAULT_PROTECTED))]
@@ -620,7 +625,7 @@ def test_protected_set_triggers_board_git_sync(pc, board, tmp_path):
     message, paths = board._sync_calls[0]
     assert message == "repo protected"
     assert paths is not None, "경로 스코프 없이 board-git 동기를 부르면 누출 클래스가 재발한다"
-    assert list(paths) == [board.areas_file()]
+    assert list(paths) == [pm_paths.areas_file(board._home())]
 
 
 def test_protected_set_is_idempotent(pc, board, tmp_path):
@@ -761,7 +766,7 @@ def test_protected_bad_repo_name_rejected(pc, board, tmp_path, capsys):
 def test_repo_list_renders_registry_columns(pc, board, capsys):
     """등록 repo 표에 repo·prefix·base·protected·test_cmd·area_owner 가 나온다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    rc = pc.cmd_repo_list(argparse.Namespace(), board=board)
+    rc = pc.cmd_repo_list(argparse.Namespace())
     out = capsys.readouterr().out
     assert rc == 0
     for column in ("repo", "prefix", "base", "protected", "test_cmd", "area_owner"):
@@ -773,7 +778,7 @@ def test_repo_list_renders_registry_columns(pc, board, capsys):
 def test_repo_list_marks_empty_protected_as_default(pc, board, capsys):
     """빈 `protected` 는 "기본값" 을 명시한다 — 빈 칸을 "보호 없음" 으로 오독하지 않게."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pc.cmd_repo_list(argparse.Namespace(), board=board)
+    pc.cmd_repo_list(argparse.Namespace())
     out = capsys.readouterr().out
     assert "main,master,develop · 기본값" in out
 
@@ -789,7 +794,7 @@ def test_repo_list_aligns_columns_by_display_width(pc, board, capsys):
         "| aa | P | g | 테스트 명령 | o | main | main | 한글이름 |\n"
         "| bb | Q | g | pytest -q | o | main | main | ascii |\n",
         encoding="utf-8")
-    pc.cmd_repo_list(argparse.Namespace(), board=board)
+    pc.cmd_repo_list(argparse.Namespace())
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(("aa", "bb"))]
     assert len(lines) == 2
     # 두 데이터 행에서 마지막 칼럼(area_owner)의 시작 표시 폭이 같아야 정렬이 맞다.
@@ -810,7 +815,7 @@ def test_display_width_counts_wide_chars_as_two(pc):
 
 def test_repo_list_empty_registry_guides_to_repo_add(pc, board, capsys):
     """등록이 없으면 빈 표 대신 `repo add` 안내(rc 0)."""
-    assert pc.cmd_repo_list(argparse.Namespace(), board=board) == 0
+    assert pc.cmd_repo_list(argparse.Namespace()) == 0
     assert "등록된 repo 없음" in capsys.readouterr().out
 
 
@@ -868,7 +873,8 @@ class _ReconcileBoard:
     def _repo_protected(self, repo):
         return list(self._protected)
 
-    def _parse_areas(self):
+    def areas_rows(self):
+        """`areas_store._parse_areas` 대역 값 — pm_config 가 읽는 areas 행."""
         if self._cell is None:
             return [], []                      # 미등록(행 없음)
         return [], [{
@@ -881,8 +887,14 @@ class _ReconcileBoard:
         return None
 
 
-def _reconciler(bootstrap, tmp_path, *, board, pool):
-    """`_reconcile_protected_sidecar` 만 구동하는 최소 PmBootstrap (실 IO 0)."""
+def _reconciler(bootstrap, tmp_path, monkeypatch, *, board, pool):
+    """`_reconcile_protected_sidecar` 만 구동하는 최소 PmBootstrap (실 IO 0).
+
+    pm_config 가 읽는 areas 행(`areas_store._parse_areas`)은 board 대역의 행으로 꽂는다.
+    """
+    if board is not None:
+        monkeypatch.setattr(areas_store, "_parse_areas",
+                            lambda _home, path=None: board.areas_rows())
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
@@ -904,12 +916,12 @@ def _marked_skew(message="injected engine rev skew"):
     return exc
 
 
-def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys):
+def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys, monkeypatch):
     """sidecar 가 areas 와 다르면 재설치한다 — *다른 clone* 의 변경을 세션 시작에 흡수."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
     pool = FakePool(hooks)
-    inst = _reconciler(bootstrap, tmp_path,
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is True
     assert pool.calls == [("svc", ["main", "release"])]
@@ -940,7 +952,7 @@ def test_bootstrap_reinstall_preserves_resolved_self_test_contract(
     write_sidecar(hooks, "svc", ["main"])
     pool = FakePool(hooks)
     inst = _reconciler(
-        bootstrap, tmp_path,
+        bootstrap, tmp_path, monkeypatch,
         board=_ReconcileBoard(["main", "release"], test_cmd="go test ./..."),
         pool=pool)
 
@@ -968,7 +980,7 @@ def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(
     write_gate_contract(hooks, "svc", "self-test", "old-test-command")
     pool = FakePool(hooks)
     board = _ReconcileBoard(["main"], test_cmd="go test ./...")
-    inst = _reconciler(bootstrap, tmp_path, board=board, pool=pool)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=board, pool=pool)
 
     assert inst._reconcile_protected_sidecar("svc") is True
     assert pool.calls == [("svc", ["main"])]
@@ -978,7 +990,7 @@ def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(
 
 
 def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
-        bootstrap, tmp_path, capsys):
+        bootstrap, tmp_path, capsys, monkeypatch):
     """**must-fix**: `install_protected_hook` 이 (예외 없이) False 면 성공 알림이 나가면 안 된다.
 
     `install_protected_hook` 은 bare 부재·`core.hooksPath` 설정 실패를 **False 반환**으로 알린다.
@@ -989,7 +1001,7 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
     pool = FakePool(hooks, ok=False)
-    inst = _reconciler(bootstrap, tmp_path,
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == [("svc", ["main", "release"])]      # 시도는 했다
@@ -1002,7 +1014,7 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
     assert (hooks / "svc" / "protected").read_text(encoding="utf-8").split() == ["main"]
 
 
-def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys):
+def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, monkeypatch):
     """중앙 설치 깔때기가 raw 예외를 False로 강등해도 실패 안내는 loud하다."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
@@ -1011,7 +1023,7 @@ def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys):
         def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
             raise RuntimeError("hooksPath 설정 실패")
 
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["release"]),
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
     assert inst._reconcile_protected_sidecar("svc") is False
     err = capsys.readouterr().err
@@ -1037,17 +1049,17 @@ def test_bootstrap_no_reconcile_when_in_sync(
     )
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = FakePool(hooks)
-    inst = _reconciler(bootstrap, tmp_path,
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == []
     assert capsys.readouterr().err == ""
 
 
-def test_bootstrap_reconcile_skips_when_sidecar_absent(bootstrap, tmp_path):
+def test_bootstrap_reconcile_skips_when_sidecar_absent(bootstrap, tmp_path, monkeypatch):
     """훅 미설치(sidecar 부재)면 설치하지 않는다 — 설치는 repo add/worktree add 축."""
     pool = FakePool(tmp_path / "hooks")
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=pool)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == []
 
@@ -1056,7 +1068,7 @@ def test_bootstrap_reconcile_failsoft_without_board(bootstrap, tmp_path, monkeyp
     """board 부재는 fail-soft — 판정 생략(세션 진입 무영향)."""
     monkeypatch.setattr(bootstrap, "_load_board", lambda: None)
     pool = FakePool(tmp_path / "hooks")
-    inst = _reconciler(bootstrap, tmp_path, board=None, pool=pool)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=None, pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == []
 
@@ -1064,11 +1076,11 @@ def test_bootstrap_reconcile_failsoft_without_board(bootstrap, tmp_path, monkeyp
 def test_bootstrap_reconcile_failsoft_without_pool(bootstrap, tmp_path, monkeypatch):
     """worktree_pool 부재도 fail-soft — 재설치 seam 이 없으면 조용히 생략."""
     monkeypatch.setattr(bootstrap, "_load_worktree_pool", lambda: None)
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]), pool=None)
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=None)
     assert inst._reconcile_protected_sidecar("svc") is False
 
 
-def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path):
+def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path, monkeypatch):
     """재설치가 raise 해도 삼킨다(보호 훅은 추가 가드 — 진입을 막지 않는다)."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
@@ -1077,13 +1089,13 @@ def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path):
         def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
             raise RuntimeError("boom")
 
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["release"]),
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
     assert inst._reconcile_protected_sidecar("svc") is False
 
 
 def test_bootstrap_reconcile_comparison_rethrows_marked_engine_rev_skew(
-        bootstrap, tmp_path):
+        bootstrap, tmp_path, monkeypatch):
     """A1 — drift 비교의 넓은 fail-soft는 marked sibling skew를 False로 삼키지 않는다."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
@@ -1094,13 +1106,13 @@ def test_bootstrap_reconcile_comparison_rethrows_marked_engine_rev_skew(
             raise skew
 
     inst = _reconciler(
-        bootstrap, tmp_path, board=_SkewBoard(["main"]), pool=FakePool(hooks))
+        bootstrap, tmp_path, monkeypatch, board=_SkewBoard(["main"]), pool=FakePool(hooks))
     with pytest.raises(RuntimeError, match="engine rev skew"):
         inst._reconcile_protected_sidecar("svc")
 
 
 def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(
-        bootstrap, tmp_path):
+        bootstrap, tmp_path, monkeypatch):
     """A1/B4 경계 — 같은 비교 catch의 일반 parser 오류는 여전히 False다."""
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["main"])
@@ -1110,7 +1122,7 @@ def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(
             raise RuntimeError("ordinary parser failure")
 
     inst = _reconciler(
-        bootstrap, tmp_path, board=_BoomBoard(["main"]), pool=FakePool(hooks))
+        bootstrap, tmp_path, monkeypatch, board=_BoomBoard(["main"]), pool=FakePool(hooks))
     assert inst._reconcile_protected_sidecar("svc") is False
 
 
@@ -1132,7 +1144,7 @@ def test_bootstrap_reconcile_install_rethrows_marked_engine_rev_skew(
         lambda name: fake_pm_config if name == "pm_config" else None,
     )
     inst = _reconciler(
-        bootstrap, tmp_path, board=_ReconcileBoard(["release"]), pool=pool)
+        bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]), pool=pool)
     with pytest.raises(RuntimeError, match="engine rev skew"):
         inst._reconcile_protected_sidecar("svc")
 
@@ -1175,7 +1187,7 @@ class _Lease:
 
 def test_task_entry_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch, capsys):
     """task 진입이 보유 슬롯의 repo 마다 reconcile 을 부른다 — 그 세션의 첫 커밋보다 앞."""
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]),
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]),
                        pool=FakePool(tmp_path / "hooks"))
     seen: list[str] = []
     monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
@@ -1189,7 +1201,7 @@ def test_task_entry_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch, 
 
 def test_task_without_slots_does_not_reconcile(bootstrap, tmp_path, monkeypatch, capsys):
     """보유 슬롯 0개면 대상 repo 가 없어 reconcile 도 자연 no-op."""
-    inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]),
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]),
                        pool=FakePool(tmp_path / "hooks"))
     seen: list[str] = []
     monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
@@ -1203,7 +1215,7 @@ def test_task_without_slots_does_not_reconcile(bootstrap, tmp_path, monkeypatch,
 def test_retry_command_uses_default_literal_when_falling_back(pc, board):
     """폴백 상태(빈 칼럼)의 안내는 `default` — 명시 커맨드를 안내하면 출처가 조용히 바뀐다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    cmd = pc.protected_retry_command("service-b", board=board)
+    cmd = pc.protected_retry_command("service-b")
     assert cmd.endswith("repo protected service-b default")
     assert "main,master,develop" not in cmd
 
@@ -1211,14 +1223,14 @@ def test_retry_command_uses_default_literal_when_falling_back(pc, board):
 def test_retry_command_uses_current_list_when_explicit(pc, board):
     """명시 설정 상태면 그 목록을 그대로 재적용하는 커맨드(멱등)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    assert pc.protected_retry_command("service-a", board=board).endswith(
+    assert pc.protected_retry_command("service-a").endswith(
         "repo protected service-a main")
 
 
 def test_retry_command_points_to_repo_add_when_unregistered(pc, board):
     """미등록이면 셀을 고칠 대상이 없다 — `repo add` 가 먼저다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    assert pc.protected_retry_command("nope", board=board).endswith("repo add nope")
+    assert pc.protected_retry_command("nope").endswith("repo add nope")
 
 
 def test_default_reset_failure_retry_is_not_repo_add(pc, board, tmp_path, capsys):
@@ -1273,7 +1285,7 @@ def test_unwired_guidance_in_fallback_state_offers_default(pc, board, tmp_path, 
 
 
 def test_bootstrap_failure_guidance_in_fallback_state_offers_default(
-        bootstrap, tmp_path, capsys):
+        bootstrap, tmp_path, capsys, monkeypatch):
     """bootstrap reconcile 실패 안내도 폴백 상태면 `default` — 같은 단일 분기를 소비한다.
 
     폴백(빈 칼럼)인데 `main,master,develop` 명시 커맨드를 안내하면, 그걸 실행한 사용자가
@@ -1282,7 +1294,7 @@ def test_bootstrap_failure_guidance_in_fallback_state_offers_default(
     hooks = tmp_path / "hooks"
     write_sidecar(hooks, "svc", ["master"])
     inst = _reconciler(
-        bootstrap, tmp_path,
+        bootstrap, tmp_path, monkeypatch,
         board=_ReconcileBoard(["main", "master", "develop"], cell=""),   # 폴백 상태
         pool=FakePool(hooks, ok=False))
     assert inst._reconcile_protected_sidecar("svc") is False
@@ -1291,16 +1303,15 @@ def test_bootstrap_failure_guidance_in_fallback_state_offers_default(
     assert "repo protected svc main,master,develop" not in err
 
 
-def test_bootstrap_retry_command_delegates_to_pm_config(bootstrap, pc, tmp_path):
+def test_bootstrap_retry_command_delegates_to_pm_config(bootstrap, pc, tmp_path, monkeypatch):
     """부트스트랩이 분기를 재구현하지 않고 `pm_config.protected_retry_command` 를 소비한다."""
     loaded = bootstrap._load_tool("pm_config")
     assert loaded is not None and hasattr(loaded, "protected_retry_command"), \
         "부트스트랩이 소비할 안내 분기 심볼이 pm_config 에 없다(재구현으로 흘렀나?)"
     fake_board = _ReconcileBoard(["main"], cell="")
-    inst = _reconciler(bootstrap, tmp_path, board=fake_board,
+    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=fake_board,
                        pool=FakePool(tmp_path / "hooks"))
-    assert inst._protected_retry_command("svc") == pc.protected_retry_command(
-        "svc", board=fake_board)
+    assert inst._protected_retry_command("svc") == pc.protected_retry_command("svc")
 
 
 # ════════════════════════════════════════════════════════════════════════

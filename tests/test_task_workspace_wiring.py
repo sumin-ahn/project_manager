@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from _pytest_summary import pytest_summary
+from pm_engine.infra import areas_store, git, lease_store, pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -57,8 +58,8 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "REGRESSION_FLAG", local / "regression.json")
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "_git_head", lambda: "deadbeefdeadbeef")
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "deadbeefdeadbeef")
-    monkeypatch.setattr(mod, "_cluster_current_branch", lambda tree: "task/main")
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: "deadbeefdeadbeef")
+    monkeypatch.setattr(git, "_cluster_current_branch", lambda tree: "task/main")
     mod._proj = proj
     return mod
 
@@ -283,7 +284,7 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
                         if getattr(args, "task", None) else (None, None))
     seen = {}
 
-    def _fake_id_prefix(override, session=None):
+    def _fake_id_prefix(_home, override, session=None):
         seen["override"] = override
         return override
 
@@ -291,9 +292,9 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         seen["created_by"] = f"{user_override or 'u'}/{session_override}"
         return seen["created_by"]
 
-    monkeypatch.setattr(board, "id_prefix", _fake_id_prefix)
+    monkeypatch.setattr(areas_store, "id_prefix", _fake_id_prefix)
     monkeypatch.setattr(board, "identity_tag", _fake_tag)
-    monkeypatch.setattr(board, "registered_prefixes", lambda: [])
+    monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
     monkeypatch.setattr(board, "_board_git_sync_best_effort",
@@ -306,8 +307,8 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
     tmpl.write_text("---\nid: T-NNNN\ntitle: <제목>\n---\n본문\n", encoding="utf-8")
-    monkeypatch.setattr(board, "template_file", lambda: tmpl)
-    monkeypatch.setattr(board, "tickets_dir", lambda: board.REPO / "tickets")
+    monkeypatch.setattr(pm_paths, "template_file", lambda _home: tmpl)
+    monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     (board.REPO / "tickets" / "open").mkdir(parents=True, exist_ok=True)
 
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
@@ -327,11 +328,11 @@ def _stub_new_env(board, monkeypatch, *, tasks):
                         lambda args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
     seen = {}
-    monkeypatch.setattr(board, "id_prefix",
-                        lambda override: seen.__setitem__("override", override) or override)
+    monkeypatch.setattr(areas_store, "id_prefix",
+                        lambda _home, override: seen.__setitem__("override", override) or override)
     monkeypatch.setattr(board, "identity_tag",
                         lambda session_override=None, user_override=None: "u/x")
-    monkeypatch.setattr(board, "registered_prefixes", lambda: [])
+    monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
     monkeypatch.setattr(board, "_board_git_sync_best_effort",
@@ -342,8 +343,8 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
     tmpl.write_text("---\nid: T-NNNN\ntitle: <제목>\n---\n본문\n", encoding="utf-8")
-    monkeypatch.setattr(board, "template_file", lambda: tmpl)
-    monkeypatch.setattr(board, "tickets_dir", lambda: board.REPO / "tickets")
+    monkeypatch.setattr(pm_paths, "template_file", lambda _home: tmpl)
+    monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     (board.REPO / "tickets" / "open").mkdir(parents=True, exist_ok=True)
     return seen
 
@@ -470,7 +471,7 @@ def test_actor_override_rejects_unsafe_task_before_side_effect(board, bad):
 
 def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
     """등록 repo 의 `<repo>_<N>` 예약 패턴 task 명 거부(⑥·registered_repos fail-soft 해소)."""
-    monkeypatch.setattr(board, "registered_repos", lambda: {"project_manager"})
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: {"project_manager"})
     ns = argparse.Namespace(repo=None, slot=None, task="project_manager_1")
     with pytest.raises(SystemExit):
         board._actor_session_override(ns)
@@ -478,9 +479,9 @@ def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
 
 def test_actor_override_registered_repos_failsoft(board, monkeypatch):
     """areas 파싱 실패(registered_repos raise)여도 char/traversal 검증은 유지·정상 task 통과."""
-    def _boom():
+    def _boom(_home):
         raise RuntimeError("areas broken")
-    monkeypatch.setattr(board, "registered_repos", _boom)
+    monkeypatch.setattr(areas_store, "registered_repos", _boom)
     # 정상 task 는 통과(예약패턴만 완화·char 검증 유지).
     assert board._actor_session_override(argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
     # 불법 char 는 여전히 거부.
@@ -493,7 +494,7 @@ def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": []}), encoding="utf-8")
     tickets_open = board.REPO / "tickets" / "open"
-    monkeypatch.setattr(board, "tickets_dir", lambda: board.REPO / "tickets")
+    monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     tickets_open.mkdir(parents=True, exist_ok=True)
     # ID 발행/파일 write 이전에 거부되므로 template 등 미도달.
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
@@ -532,8 +533,8 @@ def _t0929_mock_workspaces(board, monkeypatch):
         rows.append({'slot': f'work/A_{n}', 'repo': 'A', 'session': 'main',
                      'role': 'work', 'state': 'leased', 'test_cmd': f'pytest -q -k slot{n}'})
     _write_leases(board.LEASES_FILE, rows)
-    monkeypatch.setattr(board, '_cluster_current_branch', lambda tree: f'task/slot{Path(tree).name[-1]}')
-    monkeypatch.setattr(board, '_git_head_at', lambda tree: f'head{Path(tree).name[-1]}')
+    monkeypatch.setattr(git, '_cluster_current_branch', lambda tree: f'task/slot{Path(tree).name[-1]}')
+    monkeypatch.setattr(git, '_git_head_at', lambda tree: f'head{Path(tree).name[-1]}')
     return rows
 
 
@@ -546,7 +547,7 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     call = board.cmd_regression if consumer == 'regression' else board.cmd_livegate
     assert call(args) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
-    assert board.session_name('main') == 'main'
+    assert lease_store.session_name(board._home(), 'main') == 'main'
 
 
 @pytest.mark.parametrize('consumer', ['regression', 'livegate'])

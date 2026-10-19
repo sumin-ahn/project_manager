@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from pm_engine.infra import fs
+from pm_engine.infra import fs, python_env
 from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
@@ -751,7 +751,7 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["test.cmd"] == board.default_pytest_cmd("python3")
+    assert parsed["test.cmd"] == python_env.default_pytest_cmd("python3")
     # 세션·prefix 는 per-clone conf 의 키가 아니다 (T-0779).
     assert "session" not in parsed and "prefix" not in parsed
 

@@ -114,7 +114,7 @@ def load_checked(path: Path | str) -> dict[str, str]:
 def load_checked_readable(path: Path | str) -> dict[str, str]:
     """부재는 빈 결과, **존재하는데 판독 실패면 예외를 그대로 올린다** + 구표기 fail-loud.
 
-    `local_config()` 계열(board·ticket_finish·additional_reviewer)의 정책이다 — 그 호출부들은
+    `local_config()` 계열(`conf_store.local_config`·ticket_finish·additional_reviewer)의 정책이다 — 그 호출부들은
     `OSError`/`UnicodeError` 를 잡아 "실행 전에 중단" 으로 닫는다. 여기서 빈 dict 로 강등하면
     설정 선언을 **확인하지 못한 채** 통과한 실행이 된다."""
     conf_path = Path(path)
@@ -123,3 +123,21 @@ def load_checked_readable(path: Path | str) -> dict[str, str]:
     result = load_strict(conf_path)
     conf_schema.assert_no_legacy(result)
     return result.values
+
+
+def local_config(home, repo: Path | None = None) -> dict[str, str]:
+    """Per-clone local config (`.project_manager/local.conf`, git-ignored).
+
+    `repo` 를 주면 **그 트리의** conf 를 읽는다(`<repo>/.project_manager/local.conf`) —
+    이 board.py 사본의 `REPO` 가 아니라 판정 대상 트리가 앵커여야 하는 소비처(회귀 수집 증감 —
+    스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
+    `additional_reviewer.local_config(repo)` 와 동형 시그니처.
+
+    파싱·판정은 공용 로더(`conf_store`·`conf_schema`)가 소유한다 — 이 함수는 경로만 정하고 값 소비
+    지점의 계약(구표기 키가 남아 있으면 `LegacyConfKeyError` fail-loud)을 그대로 물려받는다.
+    Missing → {}. per-clone 설정(`runtime.py`·`test.cmd`·`ctx.*`·`upstream.*`)은 git 으로
+    공유하지 않는다. `session=`/`prefix=` 는 폐지된 키다 — 세션의 진실은 lease 장부,
+    prefix 는 areas.md 칼럼이다(구표기 판정이 그 잔존을 지목한다).
+    """
+    path = (repo / ".project_manager" / "local.conf") if repo is not None else home.local_conf
+    return load_checked_readable(path)

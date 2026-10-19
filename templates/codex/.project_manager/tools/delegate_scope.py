@@ -24,7 +24,7 @@ from typing import NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import repo_coordinates, repo_files  # noqa: E402
+from pm_engine.infra import repo_coordinates, repo_files, ticket_store  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -404,7 +404,7 @@ def ticket_touches(
         if hasattr(board, "REPO"):
             board.REPO = Path(pm_root)
         _status, ticket_path = board.find_ticket(ticket_id)
-        frontmatter, _body = board.load_ticket(ticket_path)
+        frontmatter, _body = ticket_store.load_ticket(ticket_path)
     except Exception as exc:  # noqa: BLE001 — 잘못된 ticket 입력을 허용 0으로 오인하지 않는다.
         if _is_engine_rev_skew(exc):
             raise

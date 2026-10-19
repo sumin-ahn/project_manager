@@ -47,8 +47,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import identity_args  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, raw_output, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, raw_output, repo_coordinates, repo_files, ticket_store  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -75,7 +75,7 @@ LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"  # 리스 장부 (task 해소 read-only)
 TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소)
 # areas.md 경로는 상수로 굳히지 않는다 — board/ 분리 시 board/ 안으로
-# 옮겨가므로, `_resolve_per_repo_test_cmd` 가 board 모듈의 `areas_file()`(board_root 추종)에 위임.
+# 옮겨가므로, `_resolve_per_repo_test_cmd` 가 `pm_paths.areas_file`(board 루트 추종)을 쓰는 해소 체인에 위임.
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
@@ -298,8 +298,8 @@ def local_config() -> dict[str, str]:
 #
 # 활성 repo 가 비-Python(Go 등)이거나 `tests/` 자체가 없을 수 있어 `pytest tests/ -q` 가
 # 틀린다 — 회귀는 그 repo 의 `test_cmd`(areas.md 레지스트리 prefix 행/repo 행 > local.conf)를
-# 써야 한다. 해소 체인의 단일 사본은 pm_handoff `_resolve_gate_cmd` 이고 이 도구는 자기 board
-# 로드 seam 만 얹어 위임한다(아래 `_resolve_per_repo_test_cmd`).
+# 써야 한다. 해소 체인의 단일 사본은 pm_handoff `_resolve_gate_cmd` 이고 이 도구는 자기 트리의
+# `Home` 을 넘겨 위임한다(아래 `_resolve_per_repo_test_cmd`).
 #
 # **프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
 # 어느 층도 값을 주지 못하면 None 을 돌려, 호출부가 현행 argv 를 그대로 쓰게 한다(board 의
@@ -308,9 +308,8 @@ def local_config() -> dict[str, str]:
 def _load_board_module():
     """board.py 를 경로 import 해 모듈로 반환한다 (실패 시 None).
 
-    별도 함수로 둔 건 테스트가 areas.md/local.conf 해소를 hermetic 하게 가로채는 seam —
-    board 의 areas/local 경로 전역을 tmp 로 재바인딩한 모듈을 주입할 수 있게 한다.
-    per-repo test_cmd 해소·PM-홈 오실행 detector·pytest 요약행 파서 seam 이 공유한다.
+    별도 함수로 둔 건 테스트가 모듈을 주입할 수 있게 하는 seam 이다.
+    PM-홈 오실행 detector·pytest 요약행 파서 seam 이 공유한다.
     """
     try:
         mod = _load_module_from_path(
@@ -369,25 +368,21 @@ def _resolve_per_repo_test_cmd() -> str | None:
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
       3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
-      4. board `default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
+      4. `python_env.default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
 
     **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
     위임한다(`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff
     엔 없던 미러 이탈이 무prefix 채택자 결함의 절반이었다: 사본 둘을 만들면 다음 갱신에서
-    다시 갈린다. board 모듈은 **이 도구의 seam**(`_load_board_module`)이 준다 — areas/
-    local.conf 해소를 hermetic 하게 가로채는 기존 테스트 seam 이 그대로 살아 있다.
+    다시 갈린다. 해소 기준은 이 도구 앵커(`REPO`)의 `Home` 이다.
 
     pm_handoff 부재/로드 실패는 None(기본 폴백·fail-soft·현행 보존)이고, 형제 사본 skew 는
     fail-loud 로 올린다(`_regression_cwd` 와 동형).
     """
-    mod = _load_board_module()
-    if mod is None:
-        return None
     hp = _load_pm_handoff()
     if hp is None:
         return None
     try:
-        return hp._resolve_gate_cmd(mod)
+        return hp._resolve_gate_cmd(pm_paths.home_at(REPO))
     except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 기본 폴백.
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
@@ -513,27 +508,20 @@ def is_pytest_green(output: str, returncode: int = 0) -> bool:
 # ── board.py 연동 ───────────────────────────────────────────────────────
 
 def count_board_done(board_py: Path) -> int:
-    """board.md 의 done 티켓 수를 반환한다 (board.py 를 import 해서).
+    """done 티켓 수를 반환한다 (board.py 위치의 Home 티켓 디렉터리).
 
-    board.py 를 직접 import 해 find_ticket / STATUS_DIRS 를 활용한다.
     실패 시 -1 반환.
     """
     try:
-        mod = _load_module_from_path(
-            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
-        )
-        # board_root() 추종 — board/ 분리시 ticket 이 board/tickets 로 빠지므로
-        # legacy 별칭 상수(mod.TICKETS_DIR)가 아니라 함수를 부른다(분리 후 stale wiki/ 안 봄).
-        done_dir = mod.tickets_dir() / "done"
+        # board 루트 추종 — board/ 분리시 ticket 이 board/tickets 로 빠진다(Home 의 board 루트).
+        done_dir = pm_paths.tickets_dir(_board_home(board_py)) / "done"
         return len(list(done_dir.glob("T-*.md")))
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
+    except Exception:
         return -1
 
 
 def get_ticket_title(board_py: Path, ticket_id: str) -> str:
-    """ticket_id 의 title 을 board.py 를 import 해서 읽어온다 (실패 시 빈 문자열).
+    """ticket_id 의 title 을 board.py 위치 Home 의 티켓에서 읽어온다 (실패 시 빈 문자열).
 
     조회는 `_ticket_frontmatter` 한 지점을 쓴다 — 제목과 touches 가 서로 다른 파일을
     보면 마감 로그가 가리키는 티켓과 게이트가 판정한 티켓이 갈린다.
@@ -543,7 +531,7 @@ def get_ticket_title(board_py: Path, ticket_id: str) -> str:
 
 
 class TicketFrontmatterSnapshot(NamedTuple):
-    """현재 티켓 frontmatter 읽기 결과 — 미발견과 board 로드 실패를 분리한다."""
+    """현재 티켓 frontmatter 읽기 결과 — 미발견과 티켓 읽기 실패를 분리한다."""
     frontmatter: dict
     error: str | None
 
@@ -551,24 +539,19 @@ class TicketFrontmatterSnapshot(NamedTuple):
 def _ticket_frontmatter_snapshot(
     board_py: Path, ticket_id: str,
 ) -> TicketFrontmatterSnapshot:
-    """ticket frontmatter 와 board 모듈/파일 읽기 실패 진단을 함께 돌려준다.
+    """ticket frontmatter 와 파일 읽기 실패 진단을 함께 돌려준다.
 
     touches 소비처의 단일 해소 지점 — 같은 티켓을 두 번 다르게 찾지 않는다.
-    조회는 board 의 공용 정확-일치 seam(`find_ticket_exact`)이다: `{id}-*.md` prefix glob 의
+    조회는 공용 정확-일치 seam(`ticket_store.find_ticket_exact`)이다: `{id}-*.md` prefix glob 의
     첫 매칭을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의 touches** 로 완료
     게이트가 판정한다(조용한 오판). 정확 일치가 없으면 폴백 없이 {} 다 — 판정 입력이 없는 것과
     무관 티켓으로 판정하는 것 중 전자가 안전하다(게이트는 off 로 떨어질 뿐이다)."""
     try:
-        mod = _load_module_from_path(
-            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
-        )
-        found = mod.find_ticket_exact(ticket_id)
+        found = ticket_store.find_ticket_exact(_board_home(board_py), ticket_id)
         if found is None:
             return TicketFrontmatterSnapshot({}, None)
-        fm, _body = mod.load_ticket(found[1])
+        fm, _body = ticket_store.load_ticket(found[1])
     except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         detail = " ".join(str(exc).split()) or type(exc).__name__
         return TicketFrontmatterSnapshot({}, f"{board_py}: {detail}")
     return TicketFrontmatterSnapshot(fm if isinstance(fm, dict) else {}, None)
@@ -666,9 +649,9 @@ class ClaimedTouchesSnapshot(NamedTuple):
 
 
 def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
-    """ticket_id 의 frontmatter `touches`(파일/디렉토리 경로 목록)를 board.py 로 읽는다.
+    """ticket_id 의 frontmatter `touches`(파일/디렉토리 경로 목록)를 board.py 위치 Home 에서 읽는다.
 
-    문자열 원소만 취한다(비-문자열 오기는 버림). board 미로드·ticket 부재/깨짐 →
+    문자열 원소만 취한다(비-문자열 오기는 버림). ticket 부재/깨짐 →
     [](graceful·crash 0 — soft 알림은 막지 않는다). domain soft 알림 step 이 쓴다.
     """
     # --touches CLI 와 동형: 각 원소 strip·빈 값/비-문자열 drop (silent-miss 방어).
@@ -683,7 +666,7 @@ def _frontmatter_head(text: str) -> str:
     return text if end == -1 else text[:end]
 
 
-def _done_paths_in_window(board, since: str | None) -> list[Path]:
+def _done_paths_in_window(board, home, since: str | None) -> list[Path]:
     """`done/` 중 `completed_at >= since` 인 티켓 경로 (창 밖·판정 불능은 제외).
 
     판독은 frontmatter **머리**의 스칼라 한 개뿐이다 — `done/` 은 수백 건이라 완료 기록마다
@@ -699,7 +682,7 @@ def _done_paths_in_window(board, since: str | None) -> list[Path]:
     window_start = parse_utc_iso(since)
     if window_start is None:
         return []
-    done_dir = board.tickets_dir() / "done"
+    done_dir = pm_paths.tickets_dir(home) / "done"
     if not done_dir.is_dir():
         return []
     read_text_shared = fs.read_text_shared
@@ -739,13 +722,14 @@ def get_in_window_ticket_touches(
         board = _load_module_from_path(
             Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
         )
-        claimed_dir = board.tickets_dir() / "claimed"
+        home = _board_home(board_py)
+        claimed_dir = pm_paths.tickets_dir(home) / "claimed"
         if not claimed_dir.is_dir():
             raise FileNotFoundError(f"claimed 티켓 디렉터리 부재: {claimed_dir}")
         window_paths = [("claimed", path)
                         for path in sorted(claimed_dir.glob("T-*.md"))]
         window_paths += [("done", path)
-                         for path in _done_paths_in_window(board, since)]
+                         for path in _done_paths_in_window(board, home, since)]
     except Exception as exc:  # noqa: BLE001 — 보드 미로드면 타 티켓 제외 없이 과다 판정 쪽 유지.
         if _is_engine_rev_skew(exc):
             raise
@@ -756,7 +740,7 @@ def get_in_window_ticket_touches(
     errors: list[str] = []
     for status, path in window_paths:
         try:
-            fm, _body = board.load_ticket(path)
+            fm, _body = ticket_store.load_ticket(path)
         except Exception as exc:  # noqa: BLE001 — 호출부가 전체 보정을 보수적으로 skip 한다.
             detail = " ".join(str(exc).split()) or type(exc).__name__
             errors.append(f"{path}: {detail}")
@@ -994,8 +978,8 @@ def _load_tool_module(path: Path):
 def load_board_module(board_py: Path):
     """board.py 를 로드하고 그 모듈의 `REPO` 를 **이 도구의 REPO 로 재-앵커** 해서 돌려준다.
 
-    board 모듈은 자기 파일 위치에서 REPO 를 해소하므로, `board_root()`/`tickets_dir()`/
-    `_board_git_enabled()` 같은 **함수** 판정이 이 도구가 보는 트리를 따라오게 하려면 재-앵커가
+    board 모듈은 자기 파일 위치에서 REPO 를 해소하므로, `_board_git_enabled()` 같은
+    **함수** 판정이 이 도구가 보는 트리를 따라오게 하려면 재-앵커가
     필요하다(실 형상에선 같은 값이라 항등, REPO 를 치환한 hermetic 테스트에선 tmp 를 따라온다).
     모듈은 `spec_from_file_location` 으로 뜬 **이 호출 전용 사본**이라 전역 오염이 없다.
     """
@@ -1086,14 +1070,15 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     except FileNotFoundError:
         return paths        # 티켓 부재 — 이 실행이 옮긴 티켓이 없다(log 만).
     paths.append(ticket_path)
-    paths.extend(board.tickets_dir() / status / ticket_path.name
-                 for status in board.STATUS_DIRS)
+    tickets_dir = pm_paths.tickets_dir(pm_paths.home_at(REPO))
+    paths.extend(tickets_dir / status / ticket_path.name
+                 for status in ticket_rules.STATUS_DIRS)
     if rounds is not None:
         paths.extend(
-            _round_stage_candidates(rounds, board.tickets_dir(), ticket_id))
+            _round_stage_candidates(rounds, tickets_dir, ticket_id))
     # 묶음 장부 — 종결이 status 를 쓰는 소속 장부와, 발행이 만들고 묶음 선언이 흡수(삭제)한 크기 1
     # 장부. 실존·추적 판정은 `git_scope_stageable` 이 한다(흡수 장부는 추적 중일 때만 삭제로 남는다).
-    frontmatter, _body = board.load_ticket(ticket_path)
+    frontmatter, _body = ticket_store.load_ticket(ticket_path)
     paths.append(board.cluster_ledger_path(board.ticket_cluster(ticket_id, frontmatter)))
     paths.append(board.cluster_ledger_path(ticket_id))
     return paths
@@ -1303,6 +1288,11 @@ _PRIVATE_REF_UNCOMMITTED_NOTE = " (미커밋 신규)"
 _PRIVATE_REF_UNMERGED_NOTE = " (통합 미반영 {sha})"
 
 
+def _board_home(board_py: Path):
+    """`board_py` 가 설치된 트리의 Home — board.py 의 `REPO` 해소와 같은 설치 깊이다."""
+    return pm_paths.home_at(Path(board_py).resolve().parents[2])
+
+
 def _board_module_at(board_py: Path):
     """board 모듈 — `board_py` **자기 위치**의 트리를 본다 (로드 실패는 None).
 
@@ -1338,10 +1328,10 @@ def ticket_cluster_ledger(board_py: Path, ticket_id: str) -> tuple[str | None, d
         load_cluster_fn = getattr(mod, "load_cluster", None)
         if ticket_cluster_fn is None or load_cluster_fn is None:
             return None, None  # 묶음 장부 이전 board 사본 — 묶음 개념이 없다.
-        found = mod.find_ticket_exact(ticket_id)
+        found = ticket_store.find_ticket_exact(_board_home(board_py), ticket_id)
         frontmatter: dict = {}
         if found is not None:
-            loaded, _body = mod.load_ticket(found[1])
+            loaded, _body = ticket_store.load_ticket(found[1])
             frontmatter = loaded if isinstance(loaded, dict) else {}
         cluster = ticket_cluster_fn(ticket_id, frontmatter)
         return cluster, load_cluster_fn(cluster)
@@ -2217,7 +2207,7 @@ class TicketFinisher:
             return None
         try:
             _status, path = board.find_ticket(ticket_id)
-            _fm, body = board.load_ticket(path)
+            _fm, body = ticket_store.load_ticket(path)
         except Exception as exc:  # noqa: BLE001 — 조회 실패는 뒤 게이트가 소유(preflight fail-soft).
             if _is_engine_rev_skew(exc):
                 raise
@@ -2236,7 +2226,7 @@ class TicketFinisher:
     def _home_state_prefixes(self, tree: Path) -> tuple[str, ...]:
         """`tree` 안에 PM 홈 dev-state(board 루트·wiki 루트)가 있으면 그 트리-상대 접두를 낸다.
 
-        새 경로를 여기서 하드코딩하지 않는다 — `board.board_root()`·`pm_log.WIKI_DIR` 은 엔진이
+        새 경로를 여기서 하드코딩하지 않는다 — Home 의 board 루트·`pm_log.WIKI_DIR` 은 엔진이
         이미 소유한 PM 홈 값이다. 분리 형상에서는 두 루트가 PM 홈(`REPO`)에 있고 `tree` 는 다른
         코드 worktree라 결과가 빈 튜플이다(제외 대상 자체가 없다 — 규칙이 약해지지 않는다).
         임베디드 형상에서는 `tree == REPO` 라 둘 다 그 안에 있어, 다른 PM 세션의 wiki WIP 로 내
@@ -2246,15 +2236,7 @@ class TicketFinisher:
             tree_resolved = tree.resolve()
         except OSError:
             return ()
-        candidates: list[Path] = []
-        board = load_board_module(self._board_py)
-        board_root_fn = getattr(board, "board_root", None) if board else None
-        if board_root_fn is not None:
-            try:
-                candidates.append(Path(board_root_fn()))
-            except Exception as exc:  # noqa: BLE001 — 인구 계산 실패는 제외 없이(포함 유지) 접는다.
-                if _is_engine_rev_skew(exc):
-                    raise
+        candidates: list[Path] = [pm_paths.home_at(REPO).board_root]
         try:
             pm_log = _load_pm_log()
             candidates.append(Path(pm_log.WIKI_DIR))
@@ -2787,14 +2769,14 @@ class TicketFinisher:
         return result.returncode, result.stdout
 
     def _default_board_count(self) -> int:
-        """board.md 의 done 티켓 수를 반환한다 (board.py 를 import 해서).
+        """done 티켓 수를 반환한다 (board.py 위치의 Home 티켓 디렉터리).
 
         실패 시 -1 반환.
         """
         return count_board_done(self._board_py)
 
     def _default_ticket_title(self, ticket_id: str) -> str:
-        """ticket_id 의 title 을 board.py 를 import 해서 읽어온다.
+        """ticket_id 의 title 을 board.py 위치 Home 의 티켓에서 읽어온다.
 
         실패 시 빈 문자열 반환.
         """
@@ -3365,7 +3347,7 @@ _CLOSE_STEP_KEY = "close_step"            # 장부에 남기는 단계 진행 �
 _CLUSTER_STATUS_OPEN = "open"             # 열거의 소유자는 board — 그 열거 안에 있을 때만 쓴다
 _CLUSTER_STATUS_CLOSING = "closing"
 _CLUSTER_STATUS_CLOSED = "closed"
-# 처분 종결(board `STATUS_DIRS` 안의 값 · 열거의 소유자는 board). `done` 과 달리 구현이 끝나서
+# 처분 종결(`ticket_rules.STATUS_DIRS` 안의 값 · 열거의 소유자는 ticket_rules). `done` 과 달리 구현이 끝나서
 # 닫힌 것이 아니라 흡수·폐기로 닫힌 상태다 — 완료 기록 대상도 코드 산출도 없으므로 종결
 # 파이프라인의 코드 단계는 이 멤버를 대상으로 삼지 않는다.
 _TICKET_STATUS_DISCARDED = "discarded"
@@ -3498,6 +3480,7 @@ class ClusterCloser:
         # 리뷰 처분 실행 함수. 묶음 표면 rounds resolve --cluster 를 한 번 부른다.
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
         self._board = _board_module_at(board_py)
+        self._home = _board_home(board_py)
         # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
         # 기록 축(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 축(완료 기록·커밋·
         # 재배치·머지)은 살아 있는 멤버를 본다.
@@ -3543,18 +3526,11 @@ class ClusterCloser:
     def _ticket_status(self, tid: str) -> str | None:
         """그 티켓이 지금 놓인 board 상태 (board 에 없으면 None — 관측 성공).
 
-        조회 seam 부재·조회 실패는 판정 불능이라 정지다 — 완료 기록이 이미 끝났는지 모른 채
+        조회 실패는 판정 불능이라 정지다 — 완료 기록이 이미 끝났는지 모른 채
         진행하면 앞 단계 부작용을 반복한다."""
-        find = getattr(self._board, "find_ticket_exact", None) if self._board else None
-        if find is None:
-            raise _CloseObservationFailure(
-                f"티켓 상태 조회 seam 을 로드하지 못했다 ({self._board_py}) — 완료 기록이 이미 "
-                "끝났는지 관측할 수 없다. board 사본을 확인하라.")
         try:
-            found = find(tid)
+            found = ticket_store.find_ticket_exact(self._home, tid)
         except Exception as exc:  # noqa: BLE001 — 조회 실패는 판정 불능(정지).
-            if _is_engine_rev_skew(exc):
-                raise
             raise _CloseObservationFailure(
                 f"{tid} 상태를 관측하지 못했다 — {type(exc).__name__}: {exc}") from exc
         return found[0] if found is not None else None
@@ -3860,7 +3836,7 @@ class ClusterCloser:
         board = self._board
         seams = {
             name: (getattr(board, name, None) if board else None)
-            for name in ("find_ticket_exact", "load_ticket", "build_parser",
+            for name in ("build_parser",
                          "cluster_complete_binding_problem", "_ticket_ownership",
                          "_ownership_rejection", "_round_completion_problems")
         }
@@ -3869,12 +3845,12 @@ class ClusterCloser:
             raise _CloseObservationFailure(
                 f"완료 게이트 판정 seam 을 로드하지 못했다 ({self._board_py}: {missing}) — "
                 "차단 사유를 관측할 수 없다. board 사본을 확인하라.")
-        found = seams["find_ticket_exact"](tid)
+        found = ticket_store.find_ticket_exact(self._home, tid)
         if found is None:
             raise _CloseObservationFailure(
                 f"{tid} 명세 파일을 board 에서 찾지 못했다 — 차단 사유를 관측할 수 없다.")
         _status, path = found
-        frontmatter, _body = seams["load_ticket"](path)
+        frontmatter, _body = ticket_store.load_ticket(path)
         spec_text = fs.read_text_shared(path, encoding="utf-8")
         problems: list[str] = []
         binding = seams["cluster_complete_binding_problem"](
@@ -4137,17 +4113,10 @@ class ClusterCloser:
         ledger_path_fn = getattr(board, "cluster_ledger_path", None) if board else None
         if ledger_path_fn is not None and self._ledger() is not None:
             paths.append(ledger_path_fn(self._cluster))
-        find = getattr(board, "find_ticket_exact", None) if board else None
-        if find is None:
-            raise _CloseObservationFailure(
-                f"티켓 파일 조회 seam 을 로드하지 못했다 ({self._board_py}) — 무엇을 기록할지 "
-                "관측할 수 없다. board 사본을 확인하라.")
         for tid in self._declared_tickets:
             try:
-                found = find(tid)
+                found = ticket_store.find_ticket_exact(self._home, tid)
             except Exception as exc:  # noqa: BLE001 — 조회 실패는 정지.
-                if _is_engine_rev_skew(exc):
-                    raise
                 raise _CloseObservationFailure(
                     f"{tid} 명세 경로를 관측하지 못했다 — "
                     f"{type(exc).__name__}: {exc}") from exc
@@ -4394,21 +4363,13 @@ class ClusterCloser:
         return tuple(path for _code, path in entries)
 
     def _reconcile_ticket_frontmatter(self, tid: str) -> tuple[dict | None, str | None]:
-        find = getattr(self._board, "find_ticket_exact", None) if self._board else None
-        load = getattr(self._board, "load_ticket", None) if self._board else None
-        if find is None or load is None:
-            return None, f"{tid} 티켓 조회 seam이 없다 ({self._board_py})"
         try:
-            found = find(tid)
+            found = ticket_store.find_ticket_exact(self._home, tid)
             if found is None:
                 return None, f"{tid} 티켓을 찾지 못했다"
             status, path = found
-            fm, _body = load(path)
+            fm, _body = ticket_store.load_ticket(path)
         except Exception as exc:  # noqa: BLE001 — recovery 판정 불능은 fail-closed.
-            # 동적 board 사본의 marked skew는 일반 판독 실패 문구로 접으면 사본 불일치를 숨긴다.
-            # 따라서 그것만 전파하고, 나머지 조회 실패만 값으로 바꿔 첫 write 전 정지한다.
-            if _is_engine_rev_skew(exc):
-                raise
             return None, f"{tid} 티켓을 읽지 못했다: {type(exc).__name__}: {exc}"
         if status != "done" or str(fm.get("status") or "") != "done":
             return None, f"{tid}가 all-done 상태가 아니다 (directory={status}, frontmatter={fm.get('status')})"
@@ -4449,10 +4410,9 @@ class ClusterCloser:
         members_fn = getattr(self._board, "cluster_tickets", None) if self._board else None
         strict_catalog_fn = (
             getattr(self._board, "all_clusters_strict", None) if self._board else None)
-        board_root_fn = getattr(self._board, "board_root", None) if self._board else None
-        if members_fn is None or strict_catalog_fn is None or board_root_fn is None:
+        if members_fn is None or strict_catalog_fn is None:
             return None, None, "cluster 멤버십 전수 검증 seam이 없다"
-        board_root = Path(board_root_fn())
+        board_root = self._home.board_root
         if not (board_root / ".git").exists():
             return None, None, f"recovery는 분리 board-git이 필요하다: {board_root}"
         members = tuple(members_fn(ledger))
@@ -4607,7 +4567,7 @@ class ClusterCloser:
 
     def _reconcile_ledger_pending(self) -> bool:
         """Crash 뒤 closed ledger가 board-git에 아직 미기록인지 관측한다."""
-        board_root = Path(getattr(self._board, "board_root")())
+        board_root = self._home.board_root
         ledger_path = Path(getattr(self._board, "cluster_ledger_path")(self._cluster))
         try:
             pathspec = ledger_path.relative_to(board_root).as_posix()
@@ -4914,15 +4874,12 @@ def _main(argv: list[str] | None = None) -> int:
     # (`identity_args.validate_task_name`·worktree_pool 엔진 validator 와 동형·로직 중복 0)를 소비해,
     # 실행-위치 해소 이전 불법 task 명(traversal/공백/`<repo>_<N>` 예약)을 fail-loud 한다. `--slot`
     # 검증과 동형으로 `--no-pytest` 무관 **항상** 수행(회귀 skip 여도 정체성 검증은 우회 안 됨). 예약패턴
-    # 판정용 registered_repos 는 board 모듈에서 fail-soft 해소(부재/실패 시 char/traversal 검증만).
+    # 판정용 registered_repos 는 `areas_store.registered_repos` 로 fail-soft 해소(실패 시 char/traversal 검증만).
     if identity.task:
-        registered = None
-        _bmod = _load_board_module()
-        if _bmod is not None and hasattr(_bmod, "registered_repos"):
-            try:
-                registered = _bmod.registered_repos()
-            except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
-                registered = None
+        try:
+            registered = areas_store.registered_repos(pm_paths.home_at(REPO))
+        except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
+            registered = None
         try:
             identity_args.validate_task_name(identity.task, registered)
         except identity_args.InvalidTaskName as exc:

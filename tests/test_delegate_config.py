@@ -17,6 +17,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -78,7 +79,7 @@ def test_lint_delegate_surfaces_advisory(board, monkeypatch):
         "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
         "delegate.code-reviewer.harness": "claude", "delegate.code-reviewer.model": "gpt-x",
     }
-    monkeypatch.setattr(board, "local_config", lambda: same)
+    monkeypatch.setattr(conf_store, "local_config", lambda _home: same)
     findings = board.lint_delegate()
     assert len(findings) == 1
     label, kind, detail = findings[0]
@@ -89,10 +90,10 @@ def test_lint_delegate_surfaces_advisory(board, monkeypatch):
 
 def test_lint_delegate_clean_no_finding(board, monkeypatch):
     """모델 상이·미설정이면 lint_delegate 는 finding 0(솔로/미사용 무영향)."""
-    monkeypatch.setattr(board, "local_config", lambda: {
+    monkeypatch.setattr(conf_store, "local_config", lambda _home: {
         "delegate.developer.model": "gpt-x", "delegate.code-reviewer.model": "opus"})
     assert board.lint_delegate() == []
-    monkeypatch.setattr(board, "local_config", lambda: {})
+    monkeypatch.setattr(conf_store, "local_config", lambda _home: {})
     assert board.lint_delegate() == []
 
 
@@ -105,7 +106,7 @@ def _same_model_conf() -> dict:
 
 def test_lint_tickets_wires_delegate(board, monkeypatch):
     """실제 lint_tickets() 가 delegate 경고를 포함한다(배선 직접 검증·blocking 필터 재구현 아님)."""
-    monkeypatch.setattr(board, "local_config", lambda: _same_model_conf())
+    monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(board, "_load_domain_module", lambda: None)  # 실 DOMAIN_DIR 스캔 격리.
     kinds = {kind for _label, kind, _detail in board.lint_tickets()}
     assert "delegate-same-model" in kinds
@@ -113,7 +114,7 @@ def test_lint_tickets_wires_delegate(board, monkeypatch):
 
 def test_cmd_lint_gate_delegate_is_advisory_exit0(board, monkeypatch, capsys):
     """실제 cmd_lint(--gate) 는 delegate 동일-모델 경고만 있을 때 종료코드 0(advisory·never-block)."""
-    monkeypatch.setattr(board, "local_config", lambda: _same_model_conf())
+    monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(board, "_load_domain_module", lambda: None)  # advisory 격리(gate 산술만).
     rc = board.cmd_lint(argparse.Namespace(gate=True))
     assert rc == 0                                          # block_count 0 → gate 통과
@@ -144,7 +145,7 @@ def test_init_conf_carries_values_only(board):
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text, f"conf 에 설명 블록 잔존: {marker}"
     # 활성 키는 전부 실값이다 — 위임 축은 한 줄도 없다(기본 허용이라 기록할 값이 없다).
-    parsed = board.local_config()
+    parsed = conf_store.local_config(board._home())
     assert not [key for key in parsed if key.startswith("delegate.")], parsed
     for key in ("runtime.py", "test.cmd", "project.name",
                 "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct"):
@@ -179,7 +180,7 @@ def test_init_merges_without_appending_a_delegate_block(board):
     text = board.LOCAL_CONF.read_text(encoding="utf-8")
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text
-    parsed = board.local_config()
+    parsed = conf_store.local_config(board._home())
     assert parsed["ctx.compact_at_pct"] == "85"             # 커스텀 값 보존
     assert parsed["additional_reviewer.harness"] == "codex"  # 기존 값 보존
     assert parsed["session"] == "pm"
@@ -199,7 +200,7 @@ def test_init_preserves_an_explicit_delegate_switch(board):
 
     board.cmd_init(_init_args())
 
-    parsed = board.local_config()
+    parsed = conf_store.local_config(board._home())
     assert parsed["delegate.enabled"] == "false"
     assert parsed["delegate.developer.harness"] == "codex"
     active = [ln for ln in board.LOCAL_CONF.read_text(encoding="utf-8").splitlines()

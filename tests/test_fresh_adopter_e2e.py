@@ -39,6 +39,7 @@ from _harness_matrix import (
 )
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from _skill_command import ARGUMENTS_SECTION
+from pm_engine.domain import ticket_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -138,13 +139,13 @@ def _check_off_dod(dest: Path, tid: str) -> Path:
 
 
 def _board_status_dirs() -> tuple[str, ...]:
-    """엔진 `board.STATUS_DIRS`(open/claimed/blocked/done) 파생 — lifecycle 이 요구하는 ticket 상태
+    """엔진 `ticket_rules.STATUS_DIRS`(open/claimed/blocked/done) 파생 — lifecycle 이 요구하는 ticket 상태
     디렉토리를 손-열거 4종 하드코딩하지 않는다(이 티켓 원칙). `blocked` 만 누락된 반쪽 T-0433 수정도
     잡는다(3종만 검사하면 그 반쪽이 라이브 경로를 타고 green 이 됐다·round3 S)."""
     spec = importlib.util.spec_from_file_location("_board_status_probe", TOOLS / "board.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return tuple(mod.STATUS_DIRS)
+    return tuple(ticket_rules.STATUS_DIRS)
 
 
 _TICKET_STATUS_DIRS = _board_status_dirs()

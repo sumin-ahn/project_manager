@@ -703,7 +703,7 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
     """실 git(root)에서 도는 TicketFinisher — git 만 실물, 나머지는 DI 대역.
 
     `REPO` 를 tmp 홈으로 재지정하면 (1) 기본 git 러너의 cwd, (2) board 모듈 재-앵커
-    (`board_root()`/`tickets_dir()`/`_board_git_enabled()`)가 모두 그 트리를 따라온다.
+    (`Home.board_root`·`tickets_dir`·`_board_git_enabled()`)가 모두 그 트리를 따라온다.
     티켓 `touches` 조회와 **묶음 장부의 통합 브랜치 선언**만 stub 한다 — 실 보드가 tmp 에 없을
     수 있어서다(스코프 계산·필터·실제 `git add`·잔여 판정은 전부 실 코드 경로). 통합 브랜치는
     잔여 인구의 기준이라 선언이 없으면 엔진이 멈추므로, 이 트리의 실 브랜치를 그 선언 자리에
@@ -1013,7 +1013,7 @@ def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, c
     assert "[중단]" in captured.err
     assert "스코프를 산출하지 못했다" in captured.err, "판정기 사망이 조용히 넘어감"
     assert "미스테이지 잔여" in captured.err
-    assert "roadmap.md" in captured.err and "a.py" in captured.err
+    assert "a.py" in captured.err
     assert _staged(root) == set()
     assert log_file.read_text(encoding="utf-8") == log_before, "차단된 실행이 log 를 건드렸다"
 

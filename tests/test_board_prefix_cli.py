@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from conftest import ensure_product_slot
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import areas_store, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -98,9 +100,9 @@ def _seed_wiki(board, name: str, text: str) -> Path:
 def _ids_on_disk(board) -> set[str]:
     """디스크의 모든 티켓 파일명에서 canonical ID 를 추출한다 (파일 rename 검증용)."""
     out = set()
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         for p in (board.TICKETS_DIR / status).glob("T-*.md"):
-            tid = board._ticket_id_from_filename(p.name)
+            tid = ticket_rules._ticket_id_from_filename(p.name)
             if tid:
                 out.add(tid)
     return out
@@ -113,7 +115,7 @@ def _issued_ids(board) -> set[str]:
     파일시스템에서 첫 생성 이름으로 접히기 때문이다(`_seed_ticket` 의 `slug` 참고).
     """
     out = set()
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         for p in (board.TICKETS_DIR / status).glob("T-*.md"):
             tid = board._issued_ticket_id(p)
             if tid:
@@ -265,7 +267,7 @@ def test_rename_no_collision_swaps_prefix_and_files(board, capsys):
     assert _ids_on_disk(board) == {"T-bar-001", "T-bar-002"}
     # 본문 frontmatter id 도 rewrite.
     renamed = board.TICKETS_DIR / "open" / "T-bar-001-slug.md"
-    fm, _ = board.load_ticket(renamed)
+    fm, _ = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-bar-001"
     # wiki 참조까지 rewrite.
     assert wiki.read_text(encoding="utf-8") == "refs [[T-bar-001]] and T-bar-002\n"
@@ -460,7 +462,7 @@ def test_merge_reorder_swap_survives_file_rename(board):
     assert rc == 0
     assert _ids_on_disk(board) == {"T-foo-001", "T-foo-002", "T-foo-003"}
     # foo-002(가장 이른 created)가 T-foo-001 로.
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-foo-001-slug.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-foo-001-slug.md")
     assert fm["id"] == "T-foo-001"
 
 
@@ -586,14 +588,14 @@ def test_delete_registered_prefix_clears_areas_cell(board, capsys):
     """0 티켓·areas 등록됨 → 그 행의 prefix 셀을 실제로 비운다(행·repo 등록 보존·promise=do)."""
     board.areas_append("foo", "area-foo", "reg", repo="foo", git="g:foo",
                        test_cmd="pytest -q", area_owner="alice")
-    assert board._areas_row_for_prefix("foo") is not None
+    assert areas_store._areas_row_for_prefix(board._home(), "foo") is not None
     rc = board.cmd_prefix_delete(_ns(prefix="foo", dry_run=False))
     assert rc == 0
     out = capsys.readouterr().out
     assert "셀" in out and "비움" in out
     # prefix 셀만 비웠고(등록 이름 해제) 행 자체와 다른 셀(repo·test_cmd·area_owner)은 보존.
-    assert board._areas_row_for_prefix("foo") is None
-    _h, rows = board._parse_areas()
+    assert areas_store._areas_row_for_prefix(board._home(), "foo") is None
+    _h, rows = areas_store._parse_areas(board._home())
     foo_rows = [r for r in rows if r.get("repo") == "foo"]
     assert len(foo_rows) == 1                       # 행 유지(무손실)
     assert foo_rows[0]["prefix"] == ""              # prefix 셀만 비움
@@ -607,7 +609,7 @@ def test_delete_dry_run_registered_no_write(board, capsys):
     rc = board.cmd_prefix_delete(_ns(prefix="foo", dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
-    assert board._areas_row_for_prefix("foo") is not None   # 쓰기 0 — 등록 유지
+    assert areas_store._areas_row_for_prefix(board._home(), "foo") is not None   # 쓰기 0 — 등록 유지
 
 
 def test_areas_clear_prefix_cell_preserves_other_rows(board):
@@ -616,7 +618,7 @@ def test_areas_clear_prefix_cell_preserves_other_rows(board):
     board.areas_append("bar", "ab", "reg", repo="bar", test_cmd="pt-bar")
     cleared = board._areas_clear_prefix_cell("foo")
     assert cleared == 1
-    _h, rows = board._parse_areas()
+    _h, rows = areas_store._parse_areas(board._home())
     foo = [r for r in rows if r.get("repo") == "foo"][0]
     bar = [r for r in rows if r.get("repo") == "bar"][0]
     assert foo["prefix"] == ""              # foo 만 비움
@@ -824,7 +826,7 @@ def test_relabel_includes_drafts_dir(board, capsys):
     assert rc == 0
     renamed_draft = board.TICKETS_DIR / ".drafts" / "T-bar-002-slug.md"
     assert renamed_draft.exists() and not draft.exists()    # .drafts 파일명 rename 됨.
-    fm, _ = board.load_ticket(renamed_draft)
+    fm, _ = ticket_store.load_ticket(renamed_draft)
     assert fm["id"] == "T-bar-002"                           # frontmatter id 도 rewrite.
     assert not (board.TICKETS_DIR / ".drafts" / "T-foo-002-slug.md").exists()
 
@@ -846,7 +848,7 @@ def test_relabel_dst_occupied_aborts_before_any_write(board, monkeypatch, capsys
     # 본문·파일명 전부 무변경 — 점유자 본문 보존(덮어쓰기 없음).
     assert src_path.exists() and dst_path.exists()
     assert "dst body" in dst_path.read_text(encoding="utf-8")
-    fm, _ = board.load_ticket(src_path)
+    fm, _ = ticket_store.load_ticket(src_path)
     assert fm["id"] == "T-foo-001"                     # rewrite 도 안 일어남(쓰기 0).
 
 

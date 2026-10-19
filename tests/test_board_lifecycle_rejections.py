@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ensure_product_slot
+from pm_engine.domain import ticket_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -39,7 +40,7 @@ def board(tmp_path, monkeypatch):
     wiki = pm / "wiki"
     local = pm / ".local"
     mod = _load_board()
-    for status in mod.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         (wiki / "tickets" / status).mkdir(parents=True, exist_ok=True)
     (wiki / "log").mkdir(parents=True, exist_ok=True)
     local.mkdir(parents=True, exist_ok=True)
@@ -116,7 +117,7 @@ def _expected_rejection_text(board, command: str, tid: str, status: str) -> str:
         allowed = "/".join(board._DISCARD_SOURCE_STATUSES)
         return f"cannot discard {tid}: in {status}/, must be {allowed}"
     if command == "reopen":
-        allowed = "/".join(board.TERMINAL_STATUS_DIRS)
+        allowed = "/".join(ticket_rules.TERMINAL_STATUS_DIRS)
         return f"cannot reopen {tid}: in {status}/, must be {allowed}"
     if command == "promote":
         return f"cannot promote {tid}: currently in {status}/ (promote 는 open/draft 만)"
@@ -132,7 +133,7 @@ def _expected_rejection_text(board, command: str, tid: str, status: str) -> str:
 #   discard:  status in _DISCARD_SOURCE_STATUSES = ACTIVE_STATUS_DIRS (open/claimed/blocked)
 #   reopen:   status in TERMINAL_STATUS_DIRS = ("done", "discarded")
 #   promote:  status in ("open", "draft")  — "draft" 는 STATUS_DIRS 밖(별도 축)이라 여기 무관.
-# 무효 상태 = STATUS_DIRS - 유효 상태. 손으로 나열하지 않고 board 모듈 상수에서 뺀다
+# 무효 상태 = STATUS_DIRS - 유효 상태. 손으로 나열하지 않고 `ticket_rules` 상수에서 뺀다
 # (새 상태가 STATUS_DIRS 에 늘면 이 매트릭스가 자동으로 그 상태를 포함한다).
 
 def _args(board, command: str, tid: str) -> argparse.Namespace:
@@ -159,7 +160,7 @@ def _valid_statuses(board, command: str) -> frozenset[str]:
         "unclaim": frozenset(board._UNCLAIM_SOURCE_STATUSES),
         "unblock": frozenset({"blocked"}),
         "discard": frozenset(board._DISCARD_SOURCE_STATUSES),
-        "reopen": frozenset(board.TERMINAL_STATUS_DIRS),
+        "reopen": frozenset(ticket_rules.TERMINAL_STATUS_DIRS),
         "promote": frozenset({"open"}),
     }[command]
 
@@ -172,7 +173,7 @@ def _wrong_state_cases(board) -> list[tuple[str, str]]:
     cases: list[tuple[str, str]] = []
     for command in _COMMANDS:
         valid = _valid_statuses(board, command)
-        for status in board.STATUS_DIRS:
+        for status in ticket_rules.STATUS_DIRS:
             if status not in valid:
                 cases.append((command, status))
     return cases

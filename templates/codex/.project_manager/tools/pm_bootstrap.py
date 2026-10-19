@@ -47,8 +47,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import identity_args  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, repo_files  # noqa: E402
+from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, pm_paths, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -76,7 +76,7 @@ def _resolve_log_file(repo: Path = REPO) -> Path:
 LOG_FILE = _resolve_log_file()
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
-AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (아래 _areas_file 가 board_root 추종)
+AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (`pm_paths.areas_file` 이 board 루트 추종)
 # worktree 리스 장부 — worktree_pool.LEASES_FILE 와 *같은 위치*. _auto_slot 이
 # 단일 슬롯 판정에 stdlib json 으로 직접 read 한다(worktree_pool 미import·touches
 # 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
@@ -318,25 +318,9 @@ _CODEX_CARD_SECTION = "\n".join((
 
 
 # ── board root 추종 ───────────────────────
-# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다.
-# 그러면 등록영역 surface(`_registered_repos`)·단일 self-host 슬롯 판정(`_auto_slot`)이
-# areas.md 의 wiki-밖 legacy 위치를 보면 *stale*(등록 repo 0개·슬롯 미해소)이다.
-# pm_bootstrap 은 board.py 를 직접 import 하지 않으므로(touches 격리·areas 를 stdlib read),
-# board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 areas 가
-# board/ 안(board/areas.md), 아니면 legacy `.project_manager/areas.md`. 미분리면 현 위치
-# 100% 폴백(회귀 0). 상수 AREAS_FILE 는 hermetic 테스트 seam·legacy 기본값으로 유지.
-
-def _areas_file() -> Path:
-    """areas 레지스트리 경로 (board.py `areas_file` 동형·board_root 추종).
-
-    `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된 형상
-    areas 도 board/ 안(`board/areas.md`). 아니면 legacy wiki-밖 위치
-    (`.project_manager/areas.md`·현 위치·무변경).
-    """
-    base = REPO / ".project_manager"
-    if (base / "board" / "tickets").is_dir():
-        return base / "board" / "areas.md"
-    return base / "areas.md"
+# board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다. 등록영역
+# surface(`_registered_repos`)·단일 self-host 슬롯 판정(`_auto_slot`)이 읽는 areas.md 위치는
+# `pm_paths.areas_file` 이 해소한다. 상수 AREAS_FILE 는 hermetic 테스트 seam·legacy 기본값으로 유지.
 
 
 def _dashboard_file() -> Path:
@@ -344,7 +328,7 @@ def _dashboard_file() -> Path:
 
     pm_handoff `_dashboard_file()` 과 *같은 위치* — 핸드오프 write / 부트스트랩 read 의 공유
     채널(log/current.md 와 동형·새 git 기계 0). 섹션 grammar 는 pm_handoff `parse_dashboard_
-    sections` 를 동적로드 재사용(DRY) — 경로만 여기서 REPO 기준 해소한다(`_areas_file` 동형).
+    sections` 를 동적로드 재사용(DRY) — 경로만 여기서 REPO 기준 해소한다.
     """
     return REPO / ".project_manager" / "wiki" / "log" / "dashboard.md"
 
@@ -490,10 +474,10 @@ def _registered_repos(areas_file: Path | None = None) -> list[str]:
 
     board.py 를 import 하지 않는다(touches 격리·병렬충돌 회피) — areas.md 의 `repo`/`prefix`
     칼럼을 stdlib 로 가볍게 읽는다. 파일 부재/스키마 불일치 → 빈 목록(fail-soft·무해).
-    `areas_file` 미지정이면 `_areas_file()`(board_root 추종)로 *호출 시점* 해소.
+    `areas_file` 미지정이면 `pm_paths.areas_file`(board 루트 추종)로 *호출 시점* 해소.
     """
     if areas_file is None:
-        areas_file = _areas_file()
+        areas_file = pm_paths.areas_file(pm_paths.home_at(REPO))
     if not areas_file.exists():
         return []
     rows: list[str] = []
@@ -544,7 +528,7 @@ def _auto_slot(
     display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). `{1:leased}`→1 은 불변.
 
     파일 부재/스키마 불일치/JSON 깨짐 → None(미해소). `areas_file`
-    미지정(None)이면 `_registered_repos` 가 `_areas_file()`(board_root 추종)로 해소한다.
+    미지정(None)이면 `_registered_repos` 가 `pm_paths.areas_file`(board 루트 추종)로 해소한다.
     """
     repos = _registered_repos(areas_file)
     if len(repos) != 1:
@@ -623,18 +607,6 @@ GIT_NETWORK_TIMEOUT = 20
 
 # ── board 카운트 파서 ────────────────────────────────────────────────────
 
-def _status_dirs() -> tuple[str, ...]:
-    """티켓 상태 디렉토리 집합 — board 의 `STATUS_DIRS` 단일 진실을 지연 로드로 승계한다(fail-soft).
-
-    버킷 골격을 손으로 적으면 board 가 상태를 추가할 때(`discarded` — 처분 종결) 그 상태 행이
-    `if status in counts` 가드에 걸려 **조용히** 버려진다(crash 0 · dump 에 미표시). `_load_board`
-    는 부재/로드 실패에 None 을 주는 소프트 로더라 여기서도 빈 튜플로 접고(소비측이 "미해소"로
-    명시 표기), 사본 skew 만 그 로더가 fail-loud 로 올린다.
-    """
-    board = _load_board()
-    return tuple(getattr(board, "STATUS_DIRS", ())) if board is not None else ()
-
-
 def parse_board_counts(board_output: str) -> dict[str, int]:
     """board list 출력에서 status 별 카운트를 파싱한다.
 
@@ -642,11 +614,11 @@ def parse_board_counts(board_output: str) -> dict[str, int]:
       "  [open   ] T-NNNN  title...  claimed_by  tags"
     status 필드는 7자 width 로 패딩된다.
 
-    버킷 골격 = `_status_dirs()`(board `STATUS_DIRS`) 파생이므로 board 가 아는 상태는 전부
+    버킷 골격 = `ticket_rules.STATUS_DIRS` 파생이므로 board 가 아는 상태는 전부
     키로 존재하고(행이 없으면 0), board 가 모르는 토큰(예 `archived`)만 무시된다. 반환 키 순서는
-    `STATUS_DIRS` 순서다. board 미해소면 빈 dict (렌더가 "미해소"로 표기).
+    `STATUS_DIRS` 순서다.
     """
-    counts: dict[str, int] = {status: 0 for status in _status_dirs()}
+    counts: dict[str, int] = {status: 0 for status in ticket_rules.STATUS_DIRS}
     line_pattern = re.compile(r"^\s+\[(\w+)\s*\]")
     for line in board_output.splitlines():
         match = line_pattern.match(line)
@@ -1397,10 +1369,7 @@ def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine")
     슬롯무관 공유 backlog 전량·접힘 카운트 폐기) 모든 status 에 같은 `scope_label` 을 붙인다 —
     옛 `_OPEN_SCOPE_LABEL`(공유 backlog 정정) 축이 소멸(open 이 더는 전역 대기열 수가 아님).
     """
-    parts = _board_count_parts(counts, scope_label, delimiter=": ")
-    if not parts:
-        return "- (상태 목록 미해소 — board.py STATUS_DIRS 를 읽지 못함)"
-    return "- " + " / ".join(parts)
+    return "- " + " / ".join(_board_count_parts(counts, scope_label, delimiter=": "))
 
 
 def _format_board_git_freshness(board_git: dict) -> str:
@@ -1533,7 +1502,7 @@ class PmBootstrap:
         self._board_py = board_py
         # board submodule 디렉토리— 명시(hermetic 테스트) 없으면 *호출 시점*
         # `REPO / ".project_manager" / "board"` 로 해소한다(board 감지와 동일 앵커·
-        # `_areas_file()` 의 `board/tickets` 판정과 동형). freshness 수집이 이 경로가
+        # `pm_paths.areas_file` 의 `board/tickets` 판정과 동형). freshness 수집이 이 경로가
         # 실 디렉토리(`.git` 존재)인지로 분리(submodule) 여부를 판정한다.
         self._board_dir = board_dir if board_dir is not None else REPO / ".project_manager" / "board"
         # pm_state seam (차수 announce + 인계 dump) — bound slot 의 per-slot pm_state.
@@ -1541,10 +1510,10 @@ class PmBootstrap:
         # 해소(`pm_handoff._pm_state_path` 동적로드·migrate=False·read-only·DRY). 부트스트랩은
         # pm_state 를 *편집하지 않으므로*(read/write 주체는 pm_handoff) 경로만 잡고 텍스트만 읽는다.
         self._pm_state_file = pm_state_file
-        # areas_file 미지정이면 `_areas_file()`(board_root 추종)로 해소 — board/
+        # areas_file 미지정이면 `pm_paths.areas_file`(board 루트 추종)로 해소 — board/
         # 분리 후 등록영역 surface(_registered_repos)가 stale 안 보게. 명시
         # 인자(hermetic 테스트)는 그대로 존중.
-        self._areas_file = areas_file if areas_file is not None else _areas_file()
+        self._areas_file = areas_file if areas_file is not None else pm_paths.areas_file(pm_paths.home_at(REPO))
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 task
         # 바인딩·보유 슬롯 조회 시점에 동적 로드한다.
@@ -1703,8 +1672,8 @@ class PmBootstrap:
         # 하고 abort 하지 않는다(핵심 list 는 이미 성공했으므로 done 카운트만 저하 없는 선에서).
         done_rc, done_output = self._run_board_fn(["list", "--status", "done", *lens])
         # `"done"` 리터럴은 상태 *집합*이 아니라 이 재조회 하나의 대상이다(default 뷰가 done 만
-        # 접기 때문) — 집합 파생 대상 아님. board 미해소로 골격이 비면 덮어쓸 자리도 없다.
-        if done_rc == 0 and "done" in counts:
+        # 접기 때문) — 집합 파생 대상 아님.
+        if done_rc == 0:
             counts["done"] = parse_board_counts(done_output).get("done", 0)
 
         # `--gate` 로 호출 — 차단 카테고리에만 rc=1, advisory(status drift·
@@ -2513,10 +2482,7 @@ class PmBootstrap:
         # 전용 `_OPEN_SCOPE_LABEL` 축 소멸 — open 이 더는 슬롯무관 공유 backlog 전량이 아님).
         _scope = board.get("counts_scope", "mine")
         _summary_parts = _board_count_parts(counts, _scope, delimiter=" ")
-        board_summary = (
-            " / ".join(_summary_parts) + "." if _summary_parts
-            else "board 카운트 미해소."
-        )
+        board_summary = " / ".join(_summary_parts) + "."
         if pytest_result is not None:
             regression_summary = (
                 f" 회귀 {pytest_result['passed']} / {pytest_result['total']}, lint {lint}."
@@ -3681,7 +3647,7 @@ class PmBootstrap:
         retry_fn = getattr(pm_config, "protected_retry_command", None) if pm_config else None
         if retry_fn is not None:
             try:
-                return retry_fn(repo, board=self._board or _load_board())
+                return retry_fn(repo)
             except Exception as exc:  # noqa: BLE001 — 일반 실패만 아래 일반 안내로 강등.
                 if _is_engine_rev_skew(exc):
                     raise

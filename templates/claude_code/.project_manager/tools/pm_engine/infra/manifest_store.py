@@ -260,7 +260,7 @@ def _iter_files(root: Path, rel: str):
 def _is_board_separated(dest_root: Path) -> bool:
     """dest 가 board-분리 형상인가 — `<dest>/.project_manager/board/tickets` 가 실 dir.
 
-    board.py board_root() 의 판별과 동형(line 71/95) — pm_update 가 board 를 import 하지 않고
+    `pm_paths._board_root_at` 의 판별과 동형 — pm_update 가 board 를 import 하지 않고
     같은 *실측* probe 로 dest 레이아웃을 가른다. board/tickets 가 없으면 legacy(False·무변경).
     """
     return (Path(dest_root) / ".project_manager" / "board" / "tickets").is_dir()
@@ -270,7 +270,7 @@ def _dest_relpath_for(rel: str, dest_root: Path) -> str:
     """manifest source relpath → dest 기록 relpath (board-분리 인지 리매핑).
 
     `wiki/tickets/_template.md` 항목은 board-분리 dest 에서 `board/tickets/_template.md` 로
-    리매핑한다(board_root() 추종) — source 는 upstream 의 wiki/ 에서 그대로 읽되 dest 만 옮긴다.
+    리매핑한다(board 루트 추종) — source 는 upstream 의 wiki/ 에서 그대로 읽되 dest 만 옮긴다.
     legacy dest(board/ 미분리)거나 다른 모든 항목은 입력 그대로(무변경·후방호환). 경로 비교는
     OS-무관하게 posix-normalize 한다(_iter_files 가 str(Path) 로 yield 해 Windows 에선 `\\` 가
     섞일 수 있다)."""

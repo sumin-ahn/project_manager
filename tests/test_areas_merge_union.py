@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, ensure_product_slot
+from pm_engine.domain import ticket_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -80,8 +81,8 @@ def _make_board_dir(board_mod, root: Path, *, real_git: bool = False,
                     remote: Path | None = None, ticket: str | None = None) -> Path:
     """`<root>/.project_manager/board/` 에 board 분리 형상을 만든다 (tickets/ + areas.md + .git).
 
-    `real_git=False` 면 `.git` 을 빈 파일로 둔다 — `_ensure_board_gitattributes`/`board_root()`
-    는 *존재*만 보므로 git 바이너리 없이도 분리 형상을 정확히 모사한다(내용 판정 테스트용).
+    `real_git=False` 면 `.git` 을 빈 파일로 둔다 — `_ensure_board_gitattributes`/`pm_paths._board_root_at`
+    은 *존재*만 보므로 git 바이너리 없이도 분리 형상을 정확히 모사한다(내용 판정 테스트용).
     `remote` 를 주면 origin 등록 + main push(upstream) 로 pull/push 경로까지 살린다(claim 용).
     """
     board_dir = root / ".project_manager" / "board"
@@ -145,7 +146,7 @@ def test_text_lf_rule_uses_last_matching_attributes(board):
 
 def test_text_lf_requires_every_status_draft_path_and_extension(board):
     """상태·확장자 한 축만 덮는 규칙을 전체 board 텍스트 배포로 오판하지 않는다."""
-    storage_dirs = (*board.STATUS_DIRS, ".drafts")
+    storage_dirs = (*ticket_rules.STATUS_DIRS, ".drafts")
     extensions = board._BOARD_TEXT_ATTR_EXTENSIONS
     assert "md" in extensions, "티켓 Markdown 이 대상에서 빠졌다(공허 판정)"
     assert board._BOARD_TEXT_ATTR_TARGETS == tuple(
@@ -208,7 +209,7 @@ def _status_and_root_only_declaration(board) -> str:
     """상태 디렉터리 + board 루트 직계만 덮는 LF 선언 — 라운드 중첩 경로는 못 덮는다."""
     lines = [
         f"tickets/{status}/*.{extension} text eol=lf\n"
-        for status in (*board.STATUS_DIRS, ".drafts")
+        for status in (*ticket_rules.STATUS_DIRS, ".drafts")
         for extension in board._BOARD_TEXT_ATTR_EXTENSIONS
     ]
     lines += [

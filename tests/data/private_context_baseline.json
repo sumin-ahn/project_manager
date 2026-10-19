@@ -25,27 +25,7 @@
     ".project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
         "kind": "decision_label"
       },
       {
@@ -57,11 +37,6 @@
         "count": 1,
         "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
-        "kind": "session_stamp"
       },
       {
         "count": 1,
@@ -95,12 +70,12 @@
       },
       {
         "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
         "kind": "session_stamp"
       },
       {
         "count": 1,
-        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -184,6 +159,28 @@
         "kind": "session_stamp"
       }
     ],
+    ".project_manager/tools/pm_engine/domain/ticket_rules.py": [
+      {
+        "count": 1,
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      }
+    ],
     ".project_manager/tools/pm_engine/infra/harness/contract.py": [
       {
         "count": 1,
@@ -193,6 +190,13 @@
       {
         "count": 1,
         "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
+    ".project_manager/tools/pm_engine/infra/ticket_store.py": [
+      {
+        "count": 1,
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
         "kind": "session_stamp"
       }
     ],
@@ -421,27 +425,7 @@
     "templates/claude_code/.project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
         "kind": "decision_label"
       },
       {
@@ -453,11 +437,6 @@
         "count": 1,
         "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
-        "kind": "session_stamp"
       },
       {
         "count": 1,
@@ -491,12 +470,12 @@
       },
       {
         "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
         "kind": "session_stamp"
       },
       {
         "count": 1,
-        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -580,6 +559,28 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/claude_code/.project_manager/tools/pm_engine/domain/ticket_rules.py": [
+      {
+        "count": 1,
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      }
+    ],
     "templates/claude_code/.project_manager/tools/pm_engine/infra/harness/contract.py": [
       {
         "count": 1,
@@ -589,6 +590,13 @@
       {
         "count": 1,
         "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/infra/ticket_store.py": [
+      {
+        "count": 1,
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
         "kind": "session_stamp"
       }
     ],
@@ -820,27 +828,7 @@
     "templates/codex/.project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
         "kind": "decision_label"
       },
       {
@@ -852,11 +840,6 @@
         "count": 1,
         "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
-        "kind": "session_stamp"
       },
       {
         "count": 1,
@@ -890,12 +873,12 @@
       },
       {
         "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
         "kind": "session_stamp"
       },
       {
         "count": 1,
-        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -979,6 +962,28 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/codex/.project_manager/tools/pm_engine/domain/ticket_rules.py": [
+      {
+        "count": 1,
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      }
+    ],
     "templates/codex/.project_manager/tools/pm_engine/infra/harness/contract.py": [
       {
         "count": 1,
@@ -988,6 +993,13 @@
       {
         "count": 1,
         "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/infra/ticket_store.py": [
+      {
+        "count": 1,
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
         "kind": "session_stamp"
       }
     ],
@@ -1410,27 +1422,7 @@
     "templates/opencode/.project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
         "kind": "decision_label"
       },
       {
@@ -1442,11 +1434,6 @@
         "count": 1,
         "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "008d5e16318b84caa812a9bd91f4cea8e497267abff874bfa0b95ecc94c54792",
-        "kind": "session_stamp"
       },
       {
         "count": 1,
@@ -1480,12 +1467,12 @@
       },
       {
         "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
+        "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
         "kind": "session_stamp"
       },
       {
         "count": 1,
-        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -1569,6 +1556,28 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/domain/ticket_rules.py": [
+      {
+        "count": 1,
+        "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61ac529bc3b0769aeafee840ca0b4aeb226d52e0c9a4d5213e24ed1c23d25e6e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "61db054d36f4c9029010e6037620ee47d04ae5bff919c3ec9b77186aa37fefc1",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_engine/infra/harness/contract.py": [
       {
         "count": 1,
@@ -1578,6 +1587,13 @@
       {
         "count": 1,
         "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/infra/ticket_store.py": [
+      {
+        "count": 1,
+        "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
         "kind": "session_stamp"
       }
     ],

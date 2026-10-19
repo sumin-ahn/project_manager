@@ -6214,16 +6214,16 @@ def _leased_sessions() -> list[str]:
 
 
 def _default_session() -> str:
-    """세션 식별자 기본값 — board.py `session_name()` 과 *동형* 우선순위:
+    """세션 식별자 기본값 — `lease_store.session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` env > `$CLAUDE_SESSION_NAME` env(deprecated alias·silent) >
     lease 장부 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
     `<host>-<pid>`.
 
     `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
     (둘 다면 PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**
-    (board.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
+    (lease_store.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
 
-    board.session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
+    lease_store.session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
     떨어진다. board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌 회피) 리스
     카운팅은 자체 구현한다. 장부 0행에서 세션 이름을 유도하는 층은 없다.
     """
@@ -6450,7 +6450,7 @@ def _resolve_current_slot(slot_arg: str | None) -> str:
 
     3에서 매칭 leased 슬롯이 0개(무바인딩)이거나 ≥2(모호)면 `SlotResolutionError` raise — CLI
     main 이 rc 1 + `--repo/--slot` 안내로 surface 한다(침묵 오타깃 금지). 이 해소는 dev/sync
-    mutation의 대상 선택이므로 장부를 strict로 읽고, `_default_session`(board.session_name 동형)을
+    mutation의 대상 선택이므로 장부를 strict로 읽고, `_default_session`(lease_store.session_name 동형)을
     재사용한다(기존 관례). (인자 전무 시
     이 no-flag 체인은 불변.)
 

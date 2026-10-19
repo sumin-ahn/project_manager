@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, bind_product_cluster
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -226,7 +227,7 @@ def test_promote_rejects_half_filled_draft(board_git):
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
-    fm, _ = board_git.load_ticket(draft_path)
+    fm, _ = ticket_store.load_ticket(draft_path)
     board_git.dump_ticket(draft_path, fm, _HALF_FILLED_BODY)
 
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
@@ -245,7 +246,7 @@ def test_promote_accepts_self_contained_draft(board_git):
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
-    fm, _ = board_git.load_ticket(draft_path)
+    fm, _ = ticket_store.load_ticket(draft_path)
     board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
 
     bind_product_cluster(board_git, tid)
@@ -305,7 +306,7 @@ def test_promote_rejects_section_deleted_draft(board_git):
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
-    fm, _ = board_git.load_ticket(draft_path)
+    fm, _ = ticket_store.load_ticket(draft_path)
     board_git.dump_ticket(draft_path, fm, _SECTION_DELETED_BODY)
 
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
@@ -329,7 +330,7 @@ def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     board_git.cmd_new(_new_args("라운드 동반"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
-    fm, _ = board_git.load_ticket(draft_path)
+    fm, _ = ticket_store.load_ticket(draft_path)
     board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
 
     rc_section = board_git.cmd_section_add(

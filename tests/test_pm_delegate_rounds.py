@@ -29,7 +29,7 @@ import pytest
 
 from _test_exec import python_argv_command
 from _win_skip import _can_symlink as can_symlink, posix_mode_supported
-from pm_engine.infra import conf_store, raw_output
+from pm_engine.infra import conf_store, pm_paths, raw_output, ticket_store
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1372,10 +1372,10 @@ def _without_verify_block(pd, text: str) -> str:
 def _verify_template_of(pd, pm_home: Path, ticket: str):
     """board 에 실제로 착지한 명세·라운드 파일로 분류기를 돌린다."""
     board = pd._load_board_for_repo(pm_home)
-    _status, spec_path = board.find_ticket_exact(ticket)
+    _status, spec_path = ticket_store.find_ticket_exact(board._home(), ticket)
     spec_text = spec_path.read_text(encoding="utf-8")
     rounds = pd._load_ticket_rounds().load_rounds(
-        board.tickets_dir(), ticket, ticket_text=spec_text,
+        pm_paths.tickets_dir(board._home()), ticket, ticket_text=spec_text,
     )
     return pd.pm_review_verify_template(spec_text, rounds)
 
@@ -1383,9 +1383,9 @@ def _verify_template_of(pd, pm_home: Path, ticket: str):
 def _board_round_is_pending(pd, pm_home: Path, ticket: str, ordinal: int) -> bool:
     """board 에 착지한 그 라운드가 '산출 없음' 인가 — 실제 소비 경로(`load_rounds`)로 읽는다."""
     board = pd._load_board_for_repo(pm_home)
-    _status, spec_path = board.find_ticket_exact(ticket)
+    _status, spec_path = ticket_store.find_ticket_exact(board._home(), ticket)
     rounds = pd._load_ticket_rounds().load_rounds(
-        board.tickets_dir(), ticket,
+        pm_paths.tickets_dir(board._home()), ticket,
         ticket_text=spec_path.read_text(encoding="utf-8"),
     )
     return next(item.pending for item in rounds if item.ordinal == ordinal)
@@ -2809,6 +2809,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     internal_error = capsys.readouterr().err
     external_problem = external._reserve_additional_reviewer_round(
         "T-7235", external_reply, delegate=pd, rounds_module=rounds_module, board=board,
+        board_home=pm_paths.home_at(pm_home.resolve()),
     )
 
     # 같은 사유 종류 — 채널 ID 접두만 빼면 문장이 bytes 로 같다.

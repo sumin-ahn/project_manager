@@ -18,6 +18,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -100,9 +102,9 @@ def _seed_wiki(board, name: str, text: str) -> Path:
 def _ids_on_disk(board) -> set[str]:
     """디스크의 모든 티켓 파일명에서 canonical ID 를 추출한다 (파일 rename 검증용·.drafts 포함)."""
     out = set()
-    for status in (*board.STATUS_DIRS, ".drafts"):
+    for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
         for p in (board.TICKETS_DIR / status).glob("T-*.md"):
-            tid = board._ticket_id_from_filename(p.name)
+            tid = ticket_rules._ticket_id_from_filename(p.name)
             if tid:
                 out.add(tid)
     return out
@@ -126,7 +128,7 @@ def _ns(old_id: str, new_id: str, *, dry_run: bool = False,
     "T-123-001", "T-x_y-009",
 ])
 def test_is_valid_ticket_id_accepts_issue_grammar(board, tid):
-    assert board._is_valid_ticket_id(tid)
+    assert ticket_rules._is_valid_ticket_id(tid)
 
 
 @pytest.mark.parametrize("tid", [
@@ -136,7 +138,7 @@ def test_is_valid_ticket_id_accepts_issue_grammar(board, tid):
     "T-0250\n", "T-0250\r\n", "T-finance-036\n", "\nT-0250", "T-025\n0",
 ])
 def test_is_valid_ticket_id_rejects_non_ids(board, tid):
-    assert not board._is_valid_ticket_id(tid)
+    assert not ticket_rules._is_valid_ticket_id(tid)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -149,7 +151,7 @@ def test_reid_number_change_renames_and_updates_frontmatter(board):
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0250"}
     renamed = board.TICKETS_DIR / "open" / "T-0250-slug.md"
-    fm, _ = board.load_ticket(renamed)
+    fm, _ = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-0250"
 
 
@@ -239,7 +241,7 @@ def test_reid_numeric_ending_slug_preserves_slug_on_rename(board):
     assert rc == 0
     renamed = board.TICKETS_DIR / "open" / "T-0250-fix-123.md"
     assert renamed.exists() and not path.exists()              # 파일명 rename·slug 보존.
-    fm, body = board.load_ticket(renamed)
+    fm, body = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-0250"
     assert "[[T-0250]]" in body and "T-0036" not in body       # 본문 참조 rewrite.
     assert wiki.read_text(encoding="utf-8") == "see [[T-0250]]\n"
@@ -270,7 +272,7 @@ def test_reid_rewrites_depends_on_and_blocks_in_other_ticket(board):
     other = _seed_ticket(board, "T-0040", depends_on=["T-0036"], blocks=["T-0036"])
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
     assert rc == 0
-    fm, _ = board.load_ticket(other)
+    fm, _ = ticket_store.load_ticket(other)
     assert fm["depends_on"] == ["T-0250"]
     assert fm["blocks"] == ["T-0250"]
 
@@ -288,7 +290,7 @@ def test_reid_rewrites_reference_in_body_of_other_ticket(board):
     other = _seed_ticket(board, "T-0041", body="이 작업은 [[T-0036]] 뒤에 온다·(T-0036) 참고")
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
     assert rc == 0
-    _, body = board.load_ticket(other)
+    _, body = ticket_store.load_ticket(other)
     assert "[[T-0250]]" in body and "(T-0250)" in body
     assert "T-0036" not in body
 
@@ -448,7 +450,7 @@ def test_reid_own_session_claim_allowed(board):
     rc = board.cmd_reid(_ns("T-0036", "T-0250", task="proj-task"))
     assert rc == 0
     renamed = board.TICKETS_DIR / "claimed" / "T-0250-slug.md"
-    fm, _ = board.load_ticket(renamed)
+    fm, _ = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-0250"
     assert fm["claimed_by"] == "me/proj-task"   # claim 은 보존(reid 는 ID 만 바꾼다)
 
@@ -640,14 +642,14 @@ def test_cli_reid_dispatches_to_cmd_reid(board):
 # 티켓이 되고 옛 ID 자리엔 티켓 없는 라운드가 남는다.
 
 def _seed_round(board, tid: str, name: str, text: str) -> Path:
-    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir()) / name
+    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="")
     return path
 
 
 def _rounds_dir(board, tid: str) -> Path:
-    return board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir())
+    return board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
 
 
 def test_reid_moves_the_rounds_directory_with_the_ticket(board):

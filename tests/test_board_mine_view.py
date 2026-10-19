@@ -23,6 +23,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import ticket_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -185,15 +186,15 @@ def test_ticket_id_from_filename_prefixed(board):
     `_next_id` 가 prefixed 파일(`T-PAY-001-결제.md`)을 만드므로 파일명 파서도 같은
     grammar(`_TICKET_ID_BODY`)여야 한다. 구 정규식 `T-(?:[A-Za-z]+-)?\\d+` 는 `P0`(숫자)·
     `service-a`(하이픈 2개) prefix 를 못 잡아 ID 를 잘못 잘랐다(T-0164 감사 round-3 클래스)."""
-    assert board._ticket_id_from_filename("T-PAY-001-결제모듈.md") == "T-PAY-001"
-    assert board._ticket_id_from_filename("T-P0-001-우선순위.md") == "T-P0-001"
-    assert board._ticket_id_from_filename("T-service-a-001-서비스.md") == "T-service-a-001"
+    assert ticket_rules._ticket_id_from_filename("T-PAY-001-결제모듈.md") == "T-PAY-001"
+    assert ticket_rules._ticket_id_from_filename("T-P0-001-우선순위.md") == "T-P0-001"
+    assert ticket_rules._ticket_id_from_filename("T-service-a-001-서비스.md") == "T-service-a-001"
 
 
 def test_ticket_id_from_filename_legacy(board):
     """legacy `T-NNNN-…` 파일명도 그대로 추출 — prefix 없는 4자리 ID."""
-    assert board._ticket_id_from_filename("T-0036-foo.md") == "T-0036"
-    assert board._ticket_id_from_filename("not-a-ticket.md") is None
+    assert ticket_rules._ticket_id_from_filename("T-0036-foo.md") == "T-0036"
+    assert ticket_rules._ticket_id_from_filename("not-a-ticket.md") is None
 
 
 @pytest.mark.parametrize(
@@ -213,7 +214,7 @@ def test_ticket_id_from_filename_legacy(board):
 )
 def test_ticket_id_from_filename_slug_boundary(board, filename, expected):
     """공용 ID 문법은 유지하고 filename의 `-slug`/정확 `.md` 경계만 요구한다."""
-    assert board._ticket_id_from_filename(filename) == expected
+    assert ticket_rules._ticket_id_from_filename(filename) == expected
 
 
 def test_ticket_area_owner_via_prefix_to_repo(board):

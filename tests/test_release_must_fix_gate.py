@@ -12,6 +12,7 @@ import types
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import git
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -141,7 +142,7 @@ def release(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(board, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
-    monkeypatch.setattr(board, "_git_head_at", lambda cwd: "f" * 40)
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: "f" * 40)
     runner = _Run(board.LIVEGATE_RELEASE_PIN)
     monkeypatch.setattr(board.subprocess, "run", runner)
     args = argparse.Namespace(

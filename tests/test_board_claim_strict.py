@@ -35,6 +35,8 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import git, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1218,7 +1220,7 @@ def test_ticket_mutations_pass_scoped_paths():
                if isinstance(node, ast.FunctionDef) and node.name == "fill_self_repo_row"]
     (fill_call,) = [call for call in calls
                     if fill.lineno <= call.lineno <= fill.end_lineno]
-    assert ast.unparse(fill_call.args[1]) == "(areas_file(),)", \
+    assert ast.unparse(fill_call.args[1]) == "(pm_paths.areas_file(_home()),)", \
         "자기 행 이관의 board git 기록 스코프가 areas.md 하나가 아님"
 
 
@@ -1365,7 +1367,7 @@ def test_claim_anchor_task_shape_stamps_the_slot_worktree_head(board, tmp_path, 
 
     assert board.cmd_claim(argparse.Namespace(id="T-9010", task="mytask", user="me")) == 0
 
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9010"))
+    fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9010"))
     assert fm["claimed_rev"] == slot_head
     assert fm["claimed_rev"] != repo_head
 
@@ -1379,7 +1381,7 @@ def test_claim_stamps_the_claim_time_code_tree_head(board, tmp_path, monkeypatch
 
     assert board.cmd_claim(argparse.Namespace(id="T-9013", user="me", task=_TASK)) == 0
 
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9013"))
+    fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9013"))
     assert fm["claimed_rev"] == expected
     keys = list(fm)
     assert keys[keys.index("claimed_at") + 1] == "claimed_rev", \
@@ -1396,12 +1398,12 @@ def test_unclaim_clears_the_claimed_rev_anchor(board, tmp_path, monkeypatch):
     task_head = _git(["rev-parse", "HEAD"], tmp_path / "work" / "binding_1").stdout.strip()
     _seed_open_ticket(tmp_path, "T-9016")
     assert board.cmd_claim(argparse.Namespace(id="T-9016", user="me", task=_TASK)) == 0
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9016"))
+    fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9016"))
     assert fm["claimed_rev"] == task_head
 
     assert board.cmd_unclaim(argparse.Namespace(id="T-9016", task=_TASK)) == 0
 
-    fm, _body = board.load_ticket(
+    fm, _body = ticket_store.load_ticket(
         tmp_path / ".project_manager" / "board" / "tickets" / "open" / "T-9016-t.md")
     assert "claimed_rev" not in fm
 
@@ -1414,21 +1416,21 @@ def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
     재현한다 — claim 은 task 폴더 HEAD 로 옛 값을 덮고, HEAD 를 못 읽으면 claim 자체가 멈춰
     stale 값이 claim 앵커로 승격되지 않는다(T-0962: 비-task 의 rev 생략 claim 은 없다)."""
     path = _seed_open_ticket(tmp_path, "T-9017")
-    fm, body = board.load_ticket(path)
+    fm, body = ticket_store.load_ticket(path)
     fm["claimed_rev"] = "a" * 40
     board.dump_ticket(path, fm, body)
     before = path.read_bytes()
-    real_head_at = board._git_head_at
+    real_head_at = git._git_head_at
     # "이 트리에서 git HEAD 를 읽을 수 없다"가 첫 입력이다 — `_git_head_at` seam 으로 명시한다.
-    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: "")
+    monkeypatch.setattr(git, "_git_head_at", lambda _cwd: "")
     with pytest.raises(SystemExit):
         board.cmd_claim(argparse.Namespace(id="T-9017", user="me", task=_TASK))
     assert path.read_bytes() == before
 
-    monkeypatch.setattr(board, "_git_head_at", real_head_at)
+    monkeypatch.setattr(git, "_git_head_at", real_head_at)
     assert board.cmd_claim(argparse.Namespace(id="T-9017", user="me", task=_TASK)) == 0
 
-    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9017"))
+    fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9017"))
     assert fm["claimed_rev"] == real_head_at(str(tmp_path / "work" / "binding_1"))
     assert fm["claimed_rev"] != "a" * 40
 
@@ -1447,7 +1449,7 @@ def test_t0929_claim_anchor_selected_head_and_task_actor(board, tmp_path):
     heads, _ = _t0929_claim_setup(board, tmp_path)
     _seed_open_ticket(tmp_path, 'T-9029')
     assert board.cmd_claim(argparse.Namespace(id='T-9029', task='main', repo='proj', slot=5, user='me')) == 0
-    fm, _ = board.load_ticket(_claimed_ticket(tmp_path, 'T-9029'))
+    fm, _ = ticket_store.load_ticket(_claimed_ticket(tmp_path, 'T-9029'))
     assert fm['claimed_rev'] == heads[5] != heads[1]
     assert fm['claimed_by'] == 'me/main'
 
@@ -1468,9 +1470,9 @@ def test_t0929_claim_anchor_failure_before_mutation(board, tmp_path, monkeypatch
         target = tmp_path / 'work/proj_5'
         remove_git_tree(target if failure == 'missing' else target / '.git')
     elif failure == 'head':
-        monkeypatch.setattr(board, '_git_head_at', lambda tree: '')
+        monkeypatch.setattr(git, '_git_head_at', lambda tree: '')
     else:
-        monkeypatch.setattr(board, '_cluster_current_branch', lambda tree: None)
+        monkeypatch.setattr(git, '_cluster_current_branch', lambda tree: None)
     source = _seed_open_ticket(tmp_path, 'T-9029')
     before = source.read_bytes()
     calls = []
@@ -1502,7 +1504,7 @@ def test_t0962_attribution_writes_require_task(board, tmp_path, monkeypatch):
     def snapshot() -> list[str]:
         # 상태 디렉터리(+draft 격리)를 한 단계씩 연다 — 쓰기가 생기면 이 목록이 바뀐다.
         return sorted(path.relative_to(tickets).as_posix()
-                      for folder in (*board.STATUS_DIRS, ".drafts")
+                      for folder in (*ticket_rules.STATUS_DIRS, ".drafts")
                       for path in (tickets / folder).glob("*.md"))
 
     files_before = snapshot()
@@ -1518,7 +1520,7 @@ def test_t0962_attribution_writes_require_task(board, tmp_path, monkeypatch):
     assert snapshot() == files_before
 
     assert board.cmd_claim(argparse.Namespace(id="T-0001", user=None, task="mytask")) == 0
-    fm, _body = board.load_ticket(tickets / "claimed" / "T-0001-t.md")
+    fm, _body = ticket_store.load_ticket(tickets / "claimed" / "T-0001-t.md")
     assert fm["claimed_by"] == "alice/mytask"
     assert fm["claimed_rev"] == head
     # claim 앵커는 늘 task 폴더 HEAD 다 — 앵커 생략 계약(기본값 None)은 없다(T-0962 리뷰 F-004).

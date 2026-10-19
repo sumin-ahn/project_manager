@@ -41,6 +41,7 @@ from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from _hook_commands import inline_script_payloads, powershell_native_arguments
 from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 CODEX = REPO / "templates" / "codex" / ".codex"
@@ -648,7 +649,7 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     conf_text = conf_path.read_text(encoding="utf-8")
     for harness in ("codex", "claude", "opencode"):
         assert f"harness.{harness}.ctx_window_tokens" not in conf_text
-    parsed = board.local_config()  # LOCAL_CONF 가 conf_path 로 patch 됨.
+    parsed = conf_store.local_config(board._home())  # LOCAL_CONF 가 conf_path 로 patch 됨.
     assert not [key for key in parsed if key.startswith("harness.")]
     # 설명은 레지스트리가 소유한다 — 키가 사라진 게 아니라 자리를 옮겼다.
     spec = conf_schema.key_spec("harness.codex.ctx_window_tokens")

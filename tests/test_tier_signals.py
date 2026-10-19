@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from _git_fixture import init_git_repo
+from pm_engine.infra import ticket_store
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -206,8 +207,8 @@ def test_tier_signals_cli_is_advisory_rc_zero(tmp_path, monkeypatch, capsys):
     tools = _tool_tree(tmp_path)
     ticket = tmp_path / "ticket.md"
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "find_ticket_exact", lambda _tid: ("claimed", ticket))
-    monkeypatch.setattr(board, "load_ticket", lambda _path: ({
+    monkeypatch.setattr(ticket_store, "find_ticket_exact", lambda _home, _tid: ("claimed", ticket))
+    monkeypatch.setattr(ticket_store, "load_ticket", lambda _path: ({
         "touches": [".project_manager/tools/shared.py"],
     }, ""))
 

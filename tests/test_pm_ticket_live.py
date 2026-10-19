@@ -39,6 +39,7 @@ import pytest
 from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
 # codex 라이브 공용 헬퍼 (격리 CODEX_HOME + auth + codex exec·conftest 소유·ADR-0070 T-0407).
 from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -115,7 +116,7 @@ def _find_authored_ticket(dest: Path) -> tuple[Path, str] | None:
     if not candidates:
         return None
     path = max(candidates, key=lambda p: p.stat().st_mtime)
-    _fm, body = board.load_ticket(path)
+    _fm, body = ticket_store.load_ticket(path)
     return path, body
 
 

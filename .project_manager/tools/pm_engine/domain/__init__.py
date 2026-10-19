@@ -1,1 +1,1 @@
-"""도메인 층: 순수 규칙·레지스트리(conf_schema)·git 명령 판정 규칙(git_policy)·셸 명령 판정 규칙(shell_policy)·정체성 인자와 슬롯·task 값 판정(identity_args)·engine.manifest 문법과 경로 소유 판정(manifest_rules)·상류 값 URL·경로 분류(upstream_rules). 파일·프로세스·콘솔에 닿지 않는다."""
+"""도메인 층: 순수 규칙·레지스트리(conf_schema)·git 명령 판정 규칙(git_policy)·셸 명령 판정 규칙(shell_policy)·정체성 인자와 슬롯·task 값 판정(identity_args)·engine.manifest 문법과 경로 소유 판정(manifest_rules)·상류 값 URL·경로 분류(upstream_rules)·실행 기준 경로 값(home)·티켓 상태·ID·frontmatter 문법(ticket_rules)·areas.md 표 문법(areas_rules). 파일·프로세스·콘솔에 닿지 않는다."""

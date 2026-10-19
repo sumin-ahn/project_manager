@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -80,7 +81,7 @@ def _register_slot(root: Path, *, slot: str = "work/demo_1", repo: str = "demo")
 
 def _seed(mod, status: str, tid: str, touches, **extra) -> Path:
     """활성/draft 후보 티켓 하나를 `tickets_dir()/<status>` (또는 `.drafts`)에 직접 심는다."""
-    directory = mod.drafts_dir() if status == "draft" else (mod.tickets_dir() / status)
+    directory = pm_paths.drafts_dir(mod._home()) if status == "draft" else (pm_paths.tickets_dir(mod._home()) / status)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{tid}-x.md"
     fm = {"id": tid, "title": "x", "status": status, "touches": touches,
@@ -142,7 +143,7 @@ def test_draft_status_is_a_candidate(anchored):
 
 def test_corrupted_candidate_frontmatter_is_skipped_fail_soft(anchored, capsys):
     """손상 frontmatter 후보 1건이 있어도 나머지 판정은 계속되고 크래시하지 않는다."""
-    bad = anchored.tickets_dir() / "open" / "T-bad-x.md"
+    bad = pm_paths.tickets_dir(anchored._home()) / "open" / "T-bad-x.md"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text("not: [valid yaml\n---\nbody", encoding="utf-8")
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
@@ -152,7 +153,7 @@ def test_corrupted_candidate_frontmatter_is_skipped_fail_soft(anchored, capsys):
 
 def test_candidate_with_unclear_touches_format_is_dropped_not_crashed(anchored):
     """후보 touches 가 리스트가 아닌 스칼라(형식 불명)면 그 후보만 조용히 빠진다."""
-    path = anchored.tickets_dir() / "open" / "T-0002-x.md"
+    path = pm_paths.tickets_dir(anchored._home()) / "open" / "T-0002-x.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     anchored.dump_ticket(path, {
         "id": "T-0002", "title": "x", "status": "open", "touches": "tools/x.py",
@@ -385,7 +386,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
     assert board_git.cmd_new(_new_args(
         touches=".project_manager/tools/board.py")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
@@ -404,7 +405,7 @@ def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(touches="unique/path/only_here.py")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
@@ -482,7 +483,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
     assert board_git.cmd_new(_new_args(
         touches="tools/x.py", repo="canonical", slot=1)) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
-    fm, _ = board_git.load_ticket(draft)
+    fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     assert fm["created_by"].rsplit("/", 1)[-1] == _TASK, fm["created_by"]
     board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))

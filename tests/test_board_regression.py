@@ -28,6 +28,9 @@ import pytest
 from _pytest_summary import pytest_summary
 from _textio import utf8_child_env
 from _engine_tree import engine_python_files
+from pm_engine.cli import task_args
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import areas_store, git, pm_paths, python_env, ticket_store
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
@@ -74,7 +77,7 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(mod, "_git_head", lambda: "deadbeef01234567")
-    monkeypatch.setattr(mod, "_git_head_at", lambda _cwd: "deadbeef01234567")
+    monkeypatch.setattr(git, "_git_head_at", lambda _cwd: "deadbeef01234567")
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -259,7 +262,7 @@ def _measure_declared_platforms(board, *, session=None):
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     cells, passed, platform_rc = board._run_platform_cells(
         commands, str(board.REPO), core["head"], env,
-        core_passed=status == "pass", head_after_core=board._git_head_at(str(board.REPO)))
+        core_passed=status == "pass", head_after_core=git._git_head_at(str(board.REPO)))
     aggregate = {key: value for key, value in core.items() if key != "command"}
     aggregate.update(platforms=cells, status="pass" if passed else "fail", rc=rc or platform_rc)
     flag.write_text(json.dumps(aggregate), encoding="utf-8")
@@ -507,7 +510,7 @@ def test_host_head_drift_after_core_skips_platform_and_turns_aggregate_red(
         board, monkeypatch):
     _set_platforms(board, windows="run-windows")
     heads = iter(("deadbeef01234567", "moved-head"))
-    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: next(heads))
+    monkeypatch.setattr(git, "_git_head_at", lambda _cwd: next(heads))
     calls = []
     monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (0, "3 passed in 0.01s\n", "")
@@ -612,7 +615,7 @@ def test_single_check_turns_stale_when_recorded_target_head_changes(
                    env=git_env, check=True)
 
     assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    assert first_head != board._git_head_at(str(target))
+    assert first_head != git._git_head_at(str(target))
     assert "stale" in capsys.readouterr().err
 
 
@@ -621,7 +624,7 @@ def test_single_check_turns_stale_when_recorded_target_head_changes(
 def test_single_check_fails_closed_for_present_invalid_anchor(
         actual_git_board, tmp_path, anchor_kind, capsys):
     board, target, _git_env = actual_git_board
-    target_head = board._git_head_at(str(target))
+    target_head = git._git_head_at(str(target))
     if anchor_kind == "empty":
         anchor = ""
     elif anchor_kind == "relative":
@@ -1081,7 +1084,7 @@ def multi_board(board, monkeypatch):
     """board + 2 leased 슬롯(A_1·B_1)·슬롯별 HEAD mock — M>1 all-or-nothing 순회 전제."""
     _write_ledger(board, "A_1", "B_1")
     heads = {_slot_cwd(board, "A_1"): "HEAD_A", _slot_cwd(board, "B_1"): "HEAD_B"}
-    monkeypatch.setattr(board, "_git_head_at", lambda cwd: heads.get(cwd, "HEAD_?"))
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: heads.get(cwd, "HEAD_?"))
     return board
 
 
@@ -1098,8 +1101,8 @@ def test_multi_slot_regression_keeps_per_slot_head_seam(multi_board):
     assert board._regression_slot_state("A_1", _slot_cwd(board, "A_1")).state == "green"
     assert board._regression_slot_state("B_1", _slot_cwd(board, "B_1")).state == "green"
 
-    original = board._git_head_at
-    board._git_head_at = lambda cwd: "HEAD_A_2" if cwd == _slot_cwd(board, "A_1") else original(cwd)
+    original = git._git_head_at
+    git._git_head_at = lambda cwd: "HEAD_A_2" if cwd == _slot_cwd(board, "A_1") else original(cwd)
     assert board._regression_slot_state("A_1", _slot_cwd(board, "A_1")).state == "stale"
     assert board._regression_slot_state("B_1", _slot_cwd(board, "B_1")).state == "green"
 
@@ -1536,12 +1539,12 @@ def _ticket_statuses(board, monkeypatch, statuses: dict) -> None:
     """보드 티켓 status 대역 — `{ticket_id: status}` 이외의 id 는 부재(None).
 
     강등 판정이 쓰는 조회 seam 은 정확-일치(`find_ticket_exact`)다 — 대역도 같은 자리에 건다."""
-    def _find_exact(tid, **_kwargs):
+    def _find_exact(_home, tid, **_kwargs):
         if tid not in statuses:
             return None
         return statuses[tid], Path(f"/board/{statuses[tid]}/{tid}.md")
 
-    monkeypatch.setattr(board, "find_ticket_exact", _find_exact)
+    monkeypatch.setattr(ticket_store, "find_ticket_exact", _find_exact)
 
 
 def test_active_review_cycle_is_the_last_round_not_a_pass(board, monkeypatch):
@@ -1672,7 +1675,7 @@ def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
 def _seed_ticket_file(board, tid: str, *, status: str, slug: str,
                       touches: str = "src/pay.py") -> Path:
     """tmp 보드에 실 티켓 파일을 심는다 (조회는 실 `find_ticket` glob 을 탄다)."""
-    path = board.tickets_dir() / status / f"{tid}-{slug}.md"
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-{slug}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     declared = f"touches:\n- {touches}" if touches else "touches: []"
     path.write_text(
@@ -1724,11 +1727,11 @@ def test_free_form_gate_label_skips_the_ticket_lookup(board, monkeypatch):
     """티켓 ID 문법이 아닌 라벨(`wave4-b1`·glob 메타)은 조회 자체를 생략한다."""
     calls: list[str] = []
 
-    def _find(tid, **_kwargs):
+    def _find(_home, tid, **_kwargs):
         calls.append(tid)
         return None
 
-    monkeypatch.setattr(board, "find_ticket_exact", _find)
+    monkeypatch.setattr(ticket_store, "find_ticket_exact", _find)
     for label in ("wave4-b1", "T-*", "T-0036-001-fix", "리뷰", ""):
         assert board._gate_ticket(label) is None
         assert board._gate_ticket_is_claimed(label) is False
@@ -1824,12 +1827,12 @@ def test_find_ticket_exact_answers_only_for_the_canonical_id(board):
     _seed_ticket_file(board, "T-0036-001", status="open", slug="다른-티켓",
                       touches="src/unrelated.py")
 
-    legacy = board.find_ticket_exact("T-0036")
-    prefixed = board.find_ticket_exact("T-0036-001")
+    legacy = ticket_store.find_ticket_exact(board._home(), "T-0036")
+    prefixed = ticket_store.find_ticket_exact(board._home(), "T-0036-001")
     assert legacy is not None and legacy[0] == "claimed"
     assert legacy[1].name.startswith("T-0036-본래")
     assert prefixed is not None and prefixed[0] == "open"
-    assert board.find_ticket_exact("T-0036-002") is None      # 없는 ID 는 None
+    assert ticket_store.find_ticket_exact(board._home(), "T-0036-002") is None      # 없는 ID 는 None
 
 
 def test_find_ticket_prefers_the_exact_match_over_the_first_glob_hit(board):
@@ -1843,13 +1846,13 @@ def test_find_ticket_prefers_the_exact_match_over_the_first_glob_hit(board):
 
 def test_find_ticket_still_falls_back_when_no_exact_candidate_exists(board):
     """정확 일치 후보가 없으면 종전 glob 첫 매칭 그대로 — legacy 티켓 조회가 회귀하지 않는다."""
-    path = board.tickets_dir() / "open" / "T-0038-fix-123.md"
+    path = pm_paths.tickets_dir(board._home()) / "open" / "T-0038-fix-123.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     # frontmatter `id:` 부재 + 숫자로 끝나는 slug — 파일명 파서가 `T-0038-fix-123` 으로 읽어
     # canonical 이 `T-0038` 과 어긋나는 legacy 형상(`_canonical_ticket_id` 주석의 그 모호성).
     path.write_text("---\ntitle: 픽스처\nstatus: open\n---\n\n# 본문\n", encoding="utf-8")
 
-    assert board.find_ticket_exact("T-0038") is None
+    assert ticket_store.find_ticket_exact(board._home(), "T-0038") is None
     assert board.find_ticket("T-0038")[1] == path
 
 
@@ -2400,7 +2403,7 @@ def test_a_tree_without_git_never_asks_git(board, monkeypatch):
 ])
 def test_touches_normalization_forces_a_list_of_strings(board, raw, expected):
     """정규화는 리스트[str] 만 인정하고 그 밖은 None(=확정 실패) 이다."""
-    assert board._normalized_touches(raw) == expected
+    assert ticket_rules._normalized_touches(raw) == expected
 
 
 def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
@@ -2487,7 +2490,7 @@ def test_scalar_touches_in_a_real_ticket_never_becomes_a_character_scope(
     """실 frontmatter 재현 — 스칼라 선언이 문자 스코프(`-k "s or r or c …"`)로 서지 않는다.
 
     이 경로가 오염되면 그 실행은 무관 테스트만 돌고 rc0 을 남긴다('가짜 green')."""
-    tickets = board.tickets_dir() / "claimed"
+    tickets = pm_paths.tickets_dir(board._home()) / "claimed"
     tickets.mkdir(parents=True, exist_ok=True)
     (tickets / "T-0054-x.md").write_text(
         "---\nid: T-0054\ntouches: src/pay.py\n---\n\n# 본문\n", encoding="utf-8")
@@ -3050,9 +3053,9 @@ def test_t0929_selected_workspace_preflight_precedes_runner(board, monkeypatch, 
     if failure == 'command':
         rows[-1]['test_cmd'] = None
         board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
-        monkeypatch.setattr(board, 'default_pytest_cmd', lambda: None)
+        monkeypatch.setattr(python_env, 'default_pytest_cmd', lambda: None)
     else:
-        monkeypatch.setattr(board, '_git_head_at' if failure == 'head' else '_cluster_current_branch', lambda tree: None)
+        monkeypatch.setattr(git, '_git_head_at' if failure == 'head' else '_cluster_current_branch', lambda tree: None)
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
     with pytest.raises(SystemExit):
         board.cmd_regression(_run_args(task='main', repo='A', slot=5))
@@ -3066,7 +3069,7 @@ def test_t0929_selected_workspace_missing_command_uses_selected_repo(board, monk
     rows[-1]['test_cmd'] = None
     board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
     monkeypatch.setenv('PM_SESSION_NAME', 'main')
-    monkeypatch.setattr(board, '_parse_areas', lambda: ([], [{'repo': 'A', 'test_cmd': 'pytest -q -k selected_repo'}]))
+    monkeypatch.setattr(areas_store, '_parse_areas', lambda _home: ([], [{'repo': 'A', 'test_cmd': 'pytest -q -k selected_repo'}]))
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
     assert board.cmd_regression(_run_args(task='main', repo='A', slot=5)) == 0
     assert 'selected_repo' in str(fake.calls[0]['args'])
@@ -3146,7 +3149,7 @@ def test_t0936_multi_slot_core_only(multi_board, monkeypatch, defect):
 def test_t0936_core_start_head_binding(board, monkeypatch, slot, declaration, drift):
     calls = _t0936_core_setup(board, monkeypatch, declaration)
     head = ['' if drift == 'missing' else 'START']
-    monkeypatch.setattr(board, '_git_head_at', lambda cwd: head[0])
+    monkeypatch.setattr(git, '_git_head_at', lambda cwd: head[0])
     def run(cmd, cwd, env):
         calls.append((cmd, cwd, env)); head[0] = 'END'
         return 0, '3 passed in 0.01s\n', ''
@@ -3185,7 +3188,7 @@ def test_t0936_core_command_and_selected_workspace(board, monkeypatch):
     board.LEASES_FILE.write_text(json.dumps({'leases': [
         {'slot':'work/proj_1','repo':'proj','session':'main','state':'leased','test_cmd':'sibling-core'},
         {'slot':'work/proj_5','repo':'proj','session':'main','state':'leased','test_cmd':'selected-core'}]}), encoding='utf-8')
-    monkeypatch.setattr(board, '_resolve_task_workspace_cwd', lambda args, **kw: (str(selected), 'selected-core'))
+    monkeypatch.setattr(task_args, '_resolve_task_workspace_cwd', lambda _home, args, **kw: (str(selected), 'selected-core'))
     assert board.cmd_regression(_run_args(task='main', final=True)) == 0
     assert _flag(board)['command'] == 'selected-core' and _flag(board)['conf_anchor'] == str(selected)
     assert board.cmd_regression(argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 0
@@ -3265,7 +3268,7 @@ def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, t
     monkeypatch.setattr(board, "_stale_pre_push_hook_refusal", lambda: None)
     monkeypatch.setattr(board, "_review_cycle_downgrade", lambda: ([], []))
     monkeypatch.setattr(board, "_resolve_regression_flag", lambda cwd: (board.REGRESSION_FLAG, board._LG_NO_HOOK))
-    monkeypatch.setattr(board, "_cluster_current_branch", lambda cwd: "task/main")
+    monkeypatch.setattr(git, "_cluster_current_branch", lambda cwd: "task/main")
     monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(board, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
     calls = []
@@ -3297,7 +3300,7 @@ def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, mo
         board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
     if layer=="default": board.LOCAL_CONF.write_text("", encoding="utf-8")
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_bad\n", encoding="utf-8")
-    expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":board.default_pytest_cmd()}[layer]
+    expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":python_env.default_pytest_cmd()}[layer]
     assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
     assert _flag(board)["command"]==expected+" --deselect tests/test_sample.py::test_bad"
     assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==0

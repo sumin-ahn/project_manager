@@ -30,6 +30,7 @@ from pathlib import Path, PureWindowsPath
 import pytest
 from _pytest_summary import pytest_summary
 from pm_engine.domain import identity_args
+from pm_engine.infra import areas_store, conf_store, pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1572,16 +1573,11 @@ def test_main_task_traversal_rejected(hf, captured_run, bad):
 
 
 def test_main_task_reserved_slot_name_rejected(hf, captured_run, monkeypatch):
-    """예약명(`<repo>_<N>`) task 거부 — shared validator 가 registered_repos(board fail-soft)로 판별.
+    """예약명(`<repo>_<N>`) task 거부 — shared validator 가 registered_repos(areas fail-soft)로 판별.
 
     `--task project_manager_1` 오입력이 dashboard `## project_manager_1` 를 실 slot-1 섹션과 충돌
-    시키는 것을 차단한다(reviewer). board.registered_repos 를 monkeypatch 로 hermetic 주입한다."""
-    class _FakeBoard:
-        @staticmethod
-        def registered_repos():
-            return ["project_manager"]
-
-    monkeypatch.setattr(hf, "_load_board", lambda: _FakeBoard())
+    시키는 것을 차단한다(reviewer). areas_store.registered_repos 를 monkeypatch 로 hermetic 주입한다."""
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: ["project_manager"])
     with pytest.raises(SystemExit):
         hf.main(
             ["--no-pytest", "--task", "project_manager_1"]
@@ -2697,46 +2693,26 @@ def test_task_regression_red_slot_blocks_handoff(hf, tmp_path, capsys):
 _ADOPTER_GATE_CMD = "env PYTHONPATH=src .venv/bin/python -m viewer bind"
 
 
-class _AdopterBoard:
-    """무prefix 채택자 board 대역 — areas/local.conf 표면만 바꾸고 나머지는 실 board 위임.
+def _install_adopter_areas(monkeypatch, areas_path, test_cmd):
+    """무prefix 채택자 areas/local.conf 표면 대역 — 해소 체인이 읽는 패키지 함수 자리에 꽂는다.
 
     pytest 요약행 파서 seam(`_pytest_summary_line` 등)은 실 board 것을 그대로 쓴다 — 이 케이스가
     바꾸는 것은 **게이트 종류**뿐이고 pytest 경로 판정은 무회귀여야 하기 때문이다.
     """
-
-    def __init__(self, areas_path, test_cmd):
-        self._real = _load_tool("board")
-        self._areas_path = areas_path
-        self._test_cmd = test_cmd
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-    def areas_file(self):
-        return self._areas_path
-
-    def id_prefix(self):
-        return None                       # prefix 칼럼이 빈 등록 형상.
-
-    def session_name(self):
-        return None
-
-    def registered_repos(self):
-        return {"heru"}
-
-    def _parse_areas(self):
-        return ([], [{"repo": "heru", "prefix": "", "test_cmd": self._test_cmd}])
-
-    def local_config(self):
-        return {}
+    monkeypatch.setattr(pm_paths, "areas_file", lambda _home: areas_path)
+    monkeypatch.setattr(areas_store, "id_prefix",
+                        lambda _home, override=None: None)   # prefix 칼럼이 빈 등록 형상.
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: {"heru"})
+    monkeypatch.setattr(areas_store, "_parse_areas", lambda _home, path=None: (
+        [], [{"repo": "heru", "prefix": "", "test_cmd": test_cmd}]))
+    monkeypatch.setattr(conf_store, "local_config", lambda _home, repo=None: {})
 
 
 def _adopter_gate_handoff(hf, tmp_path, monkeypatch, result):
     """무prefix 채택자 areas 를 보는 task 회귀 핸드오프 + 관찰 러너."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(
-        hf, "_load_board", lambda: _AdopterBoard(areas, _ADOPTER_GATE_CMD))
+    _install_adopter_areas(monkeypatch, areas, _ADOPTER_GATE_CMD)
     box = [None]
     pytest_fn, cwds = _recording_pytest(box, result=result)
     pool = _TaskSetPool(["work/heru_1"], states={"work/heru_1": {"dirty": True}})

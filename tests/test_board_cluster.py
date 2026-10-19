@@ -27,6 +27,8 @@ import pytest
 from _git_fixture import remove_git_tree
 from _slot_seed import SLOT, SLOT_REPO, lease_row, seed_slot
 from conftest import anchor_board_module
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import git, pm_paths, ticket_store
 
 # 코드 트리를 보유한 task — claim·new·cluster new 는 `--task` 정체성이 필요하다(T-0962).
 _TASK = "main"
@@ -222,13 +224,13 @@ def _issue_ticket(board, title: str) -> str:
     assert board.cmd_new(_new_args(title, repo=SLOT_REPO, slot=1)) == 0
     created = [path for path in _all_ticket_files(board) if path.name not in before]
     assert len(created) == 1, created
-    return board._canonical_ticket_id(created[0])
+    return ticket_store._canonical_ticket_id(created[0])
 
 
 def _all_ticket_files(board) -> list[Path]:
-    tickets = board.tickets_dir()
+    tickets = pm_paths.tickets_dir(board._home())
     paths: list[Path] = []
-    for status in (*board.STATUS_DIRS, ".drafts"):
+    for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
         directory = tickets / status
         if directory.is_dir():
             paths.extend(sorted(directory.glob("T-*.md")))
@@ -236,8 +238,8 @@ def _all_ticket_files(board) -> list[Path]:
 
 
 def _ticket_fm(board, tid: str) -> dict:
-    _status, path = board.find_ticket_exact(tid)
-    return board.load_ticket(path)[0]
+    _status, path = ticket_store.find_ticket_exact(board._home(), tid)
+    return ticket_store.load_ticket(path)[0]
 
 
 def _write_legacy_ticket(board_dir: Path, tid: str, *, status: str = "done",
@@ -552,8 +554,8 @@ def test_cluster_new_separates_internal_overlap_from_outside_overlap(env, capsys
     second = _issue_ticket(board, "겹침 멤버 둘")
     outsider = _issue_ticket(board, "묶음 밖")
     for tid in (first, second, outsider):
-        _status, path = board.find_ticket_exact(tid)
-        fm, body = board.load_ticket(path)
+        _status, path = ticket_store.find_ticket_exact(board._home(), tid)
+        fm, body = ticket_store.load_ticket(path)
         fm["touches"] = [".project_manager/tools/board.py"]
         board.dump_ticket(path, fm, body)
     capsys.readouterr()
@@ -581,7 +583,7 @@ def test_new_creates_a_size_one_cluster_and_keeps_the_existing_stdout_lines(
     assert board.cmd_new(_new_args("크기 1", repo=SLOT_REPO, slot=1)) == 0
 
     captured = capsys.readouterr()
-    tid = board._canonical_ticket_id(_all_ticket_files(board)[0])
+    tid = ticket_store._canonical_ticket_id(_all_ticket_files(board)[0])
     stdout_lines = [line for line in captured.out.splitlines() if line.strip()]
     assert stdout_lines[0].startswith(f"created {tid} (")
     assert stdout_lines[1].startswith("  → fill in 목표 / 완료 조건 / 참고")
@@ -625,7 +627,7 @@ def test_cluster_members_without_ledger_is_empty(env, capsys):
     """
     board, board_dir = env
     legacy = _write_legacy_ticket(board_dir, "T-0777", status="open")
-    fm = board.load_ticket(legacy)[0]
+    fm = ticket_store.load_ticket(legacy)[0]
 
     assert "cluster" not in fm
     assert board.ticket_cluster("T-0777", fm) == "C-T-0777"
@@ -773,11 +775,11 @@ def test_draft_defers_attribution_until_promote(board, tmp_path, capsys):
 
     assert board.cmd_new(_new_args("미충전")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*.md"))[0]
-    tid = board._canonical_ticket_id(draft)
+    tid = ticket_store._canonical_ticket_id(draft)
     assert not board.clusters_dir().exists()
-    assert not board.load_ticket(draft)[0].get("cluster")
+    assert not ticket_store.load_ticket(draft)[0].get("cluster")
 
-    fm, _body = board.load_ticket(draft)
+    fm, _body = ticket_store.load_ticket(draft)
     board.dump_ticket(draft, fm, _TEMPLATE_TEXT.split("---\n", 2)[2]
                       .replace("T-NNNN", tid).replace("<제목>", "미충전"))
     assert board.cmd_cluster(_cluster_args("new", "draft-bound", tickets=tid)) == 0
@@ -915,8 +917,8 @@ def test_t0929_selected_tree_new_and_cluster_anchor(split_env, tmp_path):
     branch = 'task/selected'
     assert _git(['checkout', '-qb', branch], slot).returncode == 0
     assert board.cmd_new(_new_args('선택 발행', task='main', repo=SLOT_REPO, slot=2)) == 0
-    tid = board.load_ticket(_all_ticket_files(board)[0])[0]['id']
-    fm, _ = board.load_ticket(board.find_ticket_exact(tid)[1])
+    tid = ticket_store.load_ticket(_all_ticket_files(board)[0])[0]['id']
+    fm, _ = ticket_store.load_ticket(ticket_store.find_ticket_exact(board._home(), tid)[1])
     assert fm['created_by'].endswith('/main')
     assert board.load_cluster(fm['cluster'])['base_branch'] == branch
     assert board.cmd_cluster(_cluster_args('new', 'selected', tickets=tid, task='main', slot=2)) == 0
@@ -936,9 +938,9 @@ def test_t0929_selected_tree_failure_before_writes(split_env, tmp_path, monkeypa
     if failure == 'ambiguous':
         args.repo = args.slot = None
     elif failure == 'head':
-        monkeypatch.setattr(board, '_git_head_at', lambda tree: '')
+        monkeypatch.setattr(git, '_git_head_at', lambda tree: '')
     elif failure == 'branch':
-        monkeypatch.setattr(board, '_cluster_current_branch', lambda tree: None)
+        monkeypatch.setattr(git, '_cluster_current_branch', lambda tree: None)
     else:
         data = json.loads(board.LEASES_FILE.read_text(encoding='utf-8'))
         data['leases'][-1]['role'] = 'readonly'
@@ -969,7 +971,7 @@ def test_t0930_publish_binding(split_env, tmp_path, capsys):
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == before
     assert board.cmd_new(_new_args("명시 제품", repo=SLOT_REPO, slot=1)) == 0
     path = _all_ticket_files(board)[0]
-    fm, _ = board.load_ticket(path)
+    fm, _ = ticket_store.load_ticket(path)
     ledger = board.load_cluster(fm["cluster"])
     assert ledger["base_branch"] == "main"
     assert ledger["branch"] is None
@@ -1089,7 +1091,7 @@ def test_t0930_publish_revalidation_records_the_validated_final_basis(
     assert board.cmd_new(_new_args("최종 제품 기준 기록", repo=SLOT_REPO, slot=1)) == 0
     assert observed[0] == (str(slot), _BASE_BRANCH)
     assert len(observed) == 2
-    ticket = board.load_ticket(_all_ticket_files(board)[0])[0]
+    ticket = ticket_store.load_ticket(_all_ticket_files(board)[0])[0]
     ledger = board.load_cluster(ticket["cluster"])
     assert ledger["base_branch"] == observed[-1][1]
     assert ledger["base_branch"] == ("task/final-product" if change else _BASE_BRANCH)
@@ -1115,7 +1117,7 @@ def test_t0930_publish_revalidation_preserves_legacy_local_new(board, tmp_path):
     assert not board._board_git_enabled()
     assert board.cmd_new(_new_args("로컬 발행")) == 0
     path = _all_ticket_files(board)[0]
-    fm, _ = board.load_ticket(path)
+    fm, _ = ticket_store.load_ticket(path)
     ledger = board.load_cluster(fm["cluster"])
     before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
     assert ledger["base_branch"] == _BASE_BRANCH and ledger["branch"] is None

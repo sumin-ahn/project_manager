@@ -33,7 +33,7 @@ import pytest
 
 from _textio import utf8_child_env
 from pm_engine.cli import local_conf as local_conf_cli
-from pm_engine.domain import conf_schema
+from pm_engine.domain import conf_schema, ticket_rules
 from pm_engine.infra import conf_store
 from pm_engine.infra.harness import contract
 
@@ -75,9 +75,9 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
     tickets = wiki / "tickets"
     ideas = wiki / "ideas"
     decisions = wiki / "decisions"
-    for status in board.STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         (tickets / status).mkdir(parents=True, exist_ok=True)
-    for status in board.IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         (ideas / status).mkdir(parents=True, exist_ok=True)
     decisions.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", root)
@@ -624,7 +624,7 @@ _MOVED_DEFAULTS = (
 def test_moved_default_is_declared_once_and_read_by_its_consumer(
         conf_module, consumers, monkeypatch, key, declared, probe, expected):
     """레지스트리 선언값과 소비자가 읽는 값이 같다 — ctx 비율 셋은 board init 이 conf 에 쓰는 값이다."""
-    monkeypatch.setattr(consumers.board, "local_config", lambda *a, **k: {})
+    monkeypatch.setattr(conf_store, "local_config", lambda *a, **k: {})
     assert conf_module.default_for(key) == declared
     assert probe(consumers) == expected
 

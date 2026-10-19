@@ -20,7 +20,6 @@ import ast
 import contextlib
 import datetime
 import functools
-import importlib.util
 import json
 import os
 import re
@@ -43,8 +42,9 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.app import hooks  # noqa: E402
-from pm_engine.domain import conf_schema, git_policy, identity_args, shell_policy  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, git, lease_store, manifest_store, process, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.cli import task_args  # noqa: E402
+from pm_engine.domain import areas_rules, conf_schema, git_policy, identity_args, shell_policy, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, git, lease_store, manifest_store, pm_paths, process, python_env, repo_coordinates, repo_files, ticket_store  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -63,7 +63,7 @@ LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다 — 그러면
 # git 형상이 design(superproject)/board(submodule) 둘로 갈려 PM 운영 commit 이 코드 git 을
 # 오염하지 않는다. 분리되지 않은 legacy(미마이그 adopter)에선 board 가
-# wiki/ 안에 그대로 산다. 아래 board_root() 가 *실측*으로 둘을 가른다 — board/tickets 가
+# wiki/ 안에 그대로 산다. `pm_paths._board_root_at` 이 *실측*으로 둘을 가른다 — board/tickets 가
 # 실제 dir 이면 board/ 루트, 아니면 wiki/ 루트(legacy). install_pre_push_hook 의 git-path
 # 탐지 패턴 동형(존재할 때만 새 경로·없으면 현 위치).
 #
@@ -82,70 +82,9 @@ _READ_BOARD_ROOT_OVERRIDE: Path | None = None
 _READ_PM_HOME_OVERRIDE: Path | None = None
 
 
-def _board_root_at(repo: Path) -> Path:
-    """`repo`가 직접 소유한 board 루트를 graceful 규칙 하나로 해소한다."""
-    base = repo / ".project_manager"
-    if (base / "board" / "tickets").is_dir():
-        return base / "board"
-    return base / "wiki"
-
-
-def board_root() -> Path:
-    """board(tickets+areas) 루트 — board/ 분리 시 `<REPO>/.project_manager/board`, 아니면
-    legacy `<REPO>/.project_manager/wiki`.
-
-    등록 worktree에서 실행된 read dispatch가 단일 소유 PM 홈을 장부로 확정한 동안에는
-    그 홈의 board 루트를 반환한다. override는 read 명령 실행 구간에만 유효하므로 mutation/
-    sidecar 게이트를 우회하지 않는다.
-
-    `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된
-    형상 → board/ 루트. 아니면 board 가 아직 wiki/ 안에 있는 legacy 형상 →
-    wiki/ 루트(현 위치·무변경). install_pre_push_hook 의 디렉토리-탐지와 동형 — *존재할
-    때만* 새 경로로 갈리고, 없으면 현재 위치로 100% 폴백한다(미마이그 무영향).
-    """
-    if _READ_BOARD_ROOT_OVERRIDE is not None:
-        return _READ_BOARD_ROOT_OVERRIDE
-    return _board_root_at(REPO)
-
-
-def tickets_dir() -> Path:
-    """ticket 디렉토리 — board_root()/tickets (board/ 분리 추종·legacy=wiki/tickets)."""
-    return board_root() / "tickets"
-
-
-def template_file() -> Path:
-    """ticket 본문 템플릿 — tickets_dir()/_template.md (board_root 추종)."""
-    return tickets_dir() / "_template.md"
-
-
-def drafts_dir() -> Path:
-    """미충전 draft 격리 디렉토리 — tickets_dir()/.drafts (board_root 추종).
-
-    `board.py new` 가 board-git 활성(공유) 상태에서 placeholder/thin 본문을 감지하면
-    티켓을 `tickets/open/` 이 아니라 이 디렉토리에 둔다 — STATUS_DIRS(`open/claimed/
-    blocked/done/discarded`) *밖*이라 STATUS_DIRS 를 순회하는 어떤 mutation(`_board_git_stage_and_commit`
-    의 `git add -A`·`_board_git_status_porcelain` 의 `git status --porcelain`·list·lint 등)도
-    draft 를 보지 못한다 — 다음 mutation 이 무관 draft 를 실수로 board-git 에 커밋하는 leak
-    을 원천 차단한다.
-    `_BOARD_GIT_DRAFT_PATHSPEC` 로 board-git 호출에서도 이중으로 명시 제외한다(방어적 이중화).
-    본문을 채운 뒤 `board.py promote <id>` 가 `open/` 으로 이동 + board-git 커밋한다.
-    """
-    return tickets_dir() / ".drafts"
-
-
-def areas_file() -> Path:
-    """areas 레지스트리 경로 (board_root 추종·*조건분기*).
-
-    areas.md 는 legacy 에서 `.project_manager/areas.md`(wiki *밖*·committed shared registry)에
-    산다 — tickets 처럼 wiki/ 안이 아니다. board/ 분리 시엔 board submodule *안*으로 옮겨야
-    PM 운영(repo add 가 append)이 코드 git 을 오염하지 않는다. 그래서:
-      - board/ 존재 → `board_root()/areas.md` (= board/areas.md·submodule 안)
-      - legacy     → `<REPO>/.project_manager/areas.md` (현 위치·wiki 밖·무변경)
-    """
-    root = board_root()
-    if root.name == "board" and (root / "tickets").is_dir():
-        return root / "areas.md"
-    return root.parent / "areas.md"
+def _home():
+    """이 실행의 기준 경로 — 자기 앵커 `REPO`, read 폴백 중이면 소유 PM 홈의 board·로컬 입력."""
+    return pm_paths.home_at(REPO, _READ_PM_HOME_OVERRIDE, _READ_BOARD_ROOT_OVERRIDE)
 
 
 # board-관련 경로의 module-level 별칭 — 위 함수가 *실제* 해소 경로다(board_root 추종). 이
@@ -175,24 +114,6 @@ DELEGATE_CHANNEL_GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_chan
 CODEX_DELEGATE_OBSERVATIONS = (
     LOCAL_DIR / "delegate-channel" / "codex-observations.jsonl"
 )
-# 티켓 상태 디렉토리 — 이 튜플이 조회·렌더·집계·원격 race 판정의 단일 진실이다(board.py 안
-# 소비처는 전부 여기를 순회한다). `discarded` = **처분 종결**(병합·폐기): 구현이 끝나서 닫힌
-# `done` 과 달리 "이 티켓은 다른 티켓으로 흡수됐거나 폐기됐다"는 종결이라, 둘을 같은 디렉토리에
-# 담으면 done 이 "작업 완료" 를 뜻하지 못한다.
-STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done", "discarded")
-# 종결 상태 — 더 이상 진행되지 않는 두 종류(구현 완료 · 처분). 활성 뷰·task 소진 게이트가
-# 이 집합을 뺀다. "done 하나만 종결" 을 가정한 옛 판정은 전부 이 상수를 소비해야 한다.
-TERMINAL_STATUS_DIRS: tuple[str, ...] = ("done", "discarded")
-# 활성(비-종결) 상태 — 기본 `list` 뷰와 처분(discard) 출발 상태가 같은 유도를 공유한다.
-ACTIVE_STATUS_DIRS: tuple[str, ...] = tuple(
-    status for status in STATUS_DIRS if status not in TERMINAL_STATUS_DIRS)
-# 처분 종류(frontmatter `disposition`) — 병합(다른 티켓으로 흡수) · 폐기(취소·대체).
-DISPOSITION_MERGED = "merged"
-DISPOSITION_DROPPED = "dropped"
-DISPOSITION_KINDS: tuple[str, ...] = (DISPOSITION_MERGED, DISPOSITION_DROPPED)
-# Ideas have a simpler lifecycle than tickets — no claim/complete middle
-# states, just `open → promoted|killed`.
-IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 
 
 # ── PM-홈 worktree 오실행 가드 (mutation dispatch 게이트) ───────────────
@@ -996,37 +917,24 @@ def _has_real_board(pm_dir: Path) -> bool:
     for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
         if not base.is_dir():
             continue
-        for status in STATUS_DIRS:
+        for status in ticket_rules.STATUS_DIRS:
             status_dir = base / status
             if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
                 return True
     return False
 
 
-def _load_pm_log():
-    """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`)을 형제 경로에서 로드한다.
-
-    해소 판정의 구현은 하나다 — board·additional_reviewer 가 같은 함수를 부른다. 조상 훑기·
-    git subprocess 없이 anchor 자신의 `.git` 선언만 읽는다.
-    """
-    path = Path(__file__).resolve().parent / "pm_log.py"
-    return _load_module_from_path(
-        path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_pm_log:{path.parent}",
-    )
-
-
 def _pm_home_worktree_misanchor(anchor: Path) -> Path | None:
     """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 면 그 PM 홈 경로를,
     아니면 None.
 
-    소유 판정은 `pm_log.owning_pm_home` 유도 하나가 낸다 — anchor 자신이 실 board 를 가지면
+    소유 판정은 `pm_paths.owning_pm_home` 유도 하나가 낸다 — anchor 자신이 실 board 를 가지면
     자기 것이고(자체 board 사용 존중), 그 밖에는 anchor 의 `.git` 선언이 답을 정한다. 유도가
     실패하면 자기 앵커로 강등하지 않고 그대로 올린다(fail-loud).
     """
     if _has_real_board(anchor / ".project_manager"):
         return None
-    pm_home = _load_pm_log().owning_pm_home(anchor)
+    pm_home = pm_paths.owning_pm_home(anchor)
     return None if pm_home == Path(anchor).resolve() else pm_home
 
 
@@ -1132,18 +1040,18 @@ def _ledger_registration(
 def _resolve_read_board(anchor: Path) -> _ReadBoardResolution:
     """read-only board를 uniform 규칙으로 해소한다.
 
-    자기 앵커가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `pm_log.owning_pm_home` 유도가
+    자기 앵커가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `pm_paths.owning_pm_home` 유도가
     소유 PM 홈을 낸다 — 유도 결과가 앵커 자신이면 legacy/비분리 graceful 경로를 그대로
     보존하고, 다른 홈이면 그 board를 연다. 유도 실패는 여기서 삼키지 않는다 — 같은 실패가
     mutation 경로에서는 traceback, read 경로에서는 안내로 갈리지 않도록 번역은 `main()`
     한 곳이 한다.
     """
     if _has_real_board(anchor / ".project_manager"):
-        return _ReadBoardResolution(_board_root_at(anchor), anchor)
-    home = _load_pm_log().owning_pm_home(anchor)
+        return _ReadBoardResolution(pm_paths._board_root_at(anchor), anchor)
+    home = pm_paths.owning_pm_home(anchor)
     if home == Path(anchor).resolve():
-        return _ReadBoardResolution(_board_root_at(anchor), None)
-    return _ReadBoardResolution(_board_root_at(home), home)
+        return _ReadBoardResolution(pm_paths._board_root_at(anchor), None)
+    return _ReadBoardResolution(pm_paths._board_root_at(home), home)
 
 
 def _guard_worktree_misanchor(action: str) -> bool:
@@ -1200,24 +1108,6 @@ def _expanded_user_path(value: str) -> Path:
             raise RuntimeError(
                 f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
     return expanded
-
-
-def local_config(repo: Path | None = None) -> dict[str, str]:
-    """Per-clone local config (`.project_manager/local.conf`, git-ignored).
-
-    `repo` 를 주면 **그 트리의** conf 를 읽는다(`<repo>/.project_manager/local.conf`) —
-    이 board.py 사본의 `REPO` 가 아니라 판정 대상 트리가 앵커여야 하는 소비처(회귀 수집 증감 —
-    스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
-    `additional_reviewer.local_config(repo)` 와 동형 시그니처.
-
-    파싱·판정은 공용 로더(`conf_store`·`conf_schema`)가 소유한다 — 이 함수는 경로만 정하고 값 소비
-    지점의 계약(구표기 키가 남아 있으면 `LegacyConfKeyError` fail-loud)을 그대로 물려받는다.
-    Missing → {}. per-clone 설정(`runtime.py`·`test.cmd`·`ctx.*`·`upstream.*`)은 git 으로
-    공유하지 않는다. `session=`/`prefix=` 는 폐지된 키다 — 세션의 진실은 lease 장부,
-    prefix 는 areas.md 칼럼이다(구표기 판정이 그 잔존을 지목한다).
-    """
-    path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
-    return conf_store.load_checked_readable(path)
 
 
 def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
@@ -1361,57 +1251,6 @@ TASK_REQUIRED = (
     "`pm-config alloc <repo> --task <task>` 로 빌린다."
 )
 
-# 실행 소비자(claim·new·cluster new·regression·livegate record·rounds resolve)에 `--task` 없이
-# `--repo`/`--slot` 이 왔을 때의 중단 문구. {retry} 는 입력값을 채운 다시 칠 인자다.
-SLOT_SELECTOR_WITHOUT_TASK = (
-    "[중단] `--repo`/`--slot` 은 task 가 보유한 폴더를 고르는 위치 인자다(정체성 아님). "
-    "`{retry}` 로 다시 실행하라."
-)
-
-
-def session_name(override: str | None = None) -> str | None:
-    """세션 식별자 해소(조회·소유 대조용) — count-based 유도:
-
-        override(`--task` 값 — 액터 서브가 `_actor_session_override` 로 미리 검증해 넘긴다)
-          > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
-          > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
-          > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
-          > None
-
-    `PM_SESSION_NAME` 이 정식 이름(엔진 변수·하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
-    (둘 다면 PM 승·조용히 동작·안내는 문서만·`--json` 출력 오염 방지).
-
-    **per-clone 저장 쪽지 폴백은 없다.** slot 종속 값이 프로젝트 공용 per-clone conf(`local.conf
-    session=`)에 있던 것이 범위 오류였다 — 슬롯 1개는 N=1 부분집합일 뿐이라
-    "이 클론이 어떤 홈이다"를 이 프로세스만 아는 파일에 스스로 적어두는 쪽지를
-    두지 않는다. 그 키가 conf 에 남아 있어도 읽지 않는다(모르는 키로 표면화될 뿐 동작 불변).
-    세션은 **공유 장부로부터의 유도**(lease 단일-행) 또는 **명시**(env·`--task`)로만
-    해소한다 — 어느 층도 저장하지 않고 매 호출 재유도한다.
-
-    귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)는 이 함수를 정체성으로 쓰지 않는다 —
-    `--task` 가 없으면 `TASK_REQUIRED` 로 멈춘다. 여기 미해소(None)는 surface(whoami/status/
-    list --mine)의 "(비바인딩)" 표시와 소유 대조 거부로 이어진다.
-
-    저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
-    소유권이 미스되므로 세 모듈(board.session_name·worktree_pool._default_
-    session·pm_config._default_session)이 같은 우선순위를 공유한다(tail 만 용처별 상이).
-
-    장부에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
-    떨어진다 — "행이 없다"에서 세션 이름을 유도하지 않는다. 그 유도는 실제로 행을 보유했던
-    홈이 장부 손상으로 0행처럼 보이는 순간 silent 오귀속이 됐고, 등록 자체를 장부 행으로
-    옮기면서 유도할 대상이 사라졌다.
-    """
-    if override:
-        return override
-    env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
-    if env:
-        return env
-    leased = lease_store.leased_sessions(LEASES_FILE)
-    if len(leased) == 1:
-        return leased[0]
-    # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 폴백 없음.
-    return None
-
 
 # user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
 # 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 관례·_interp_runs 동류).
@@ -1455,7 +1294,7 @@ def user_name(override: str | None = None) -> str | None:
     """
     if override:
         return override
-    conf_user = local_config().get("identity.user")
+    conf_user = conf_store.local_config(_home()).get("identity.user")
     if conf_user:
         return conf_user
     return _git_config_email()
@@ -1474,7 +1313,7 @@ def identity_tag(session_override: str | None = None,
     만(있으면) 반환하고 둘 다 없으면 None 이다(graceful). 귀속 쓰기 호출부(new·claim)는
     `--task` 를 `session_override` 로 넘기므로 pm 이 None 으로 새지 않는다.
     """
-    pm = session_name(session_override)
+    pm = lease_store.session_name(_home(), session_override)
     user = user_name(user_override)
     if pm is None:
         return user
@@ -1491,173 +1330,14 @@ def _actor_session_override(args: argparse.Namespace) -> str | None:
     task = getattr(args, "task", None)
     if not task:
         return None
-    _validate_actor_task_or_exit(task)
+    task_args._validate_actor_task_or_exit(_home(), task)
     return task
 
-
-def _slot_selector_retry(identity: "identity_args.Identity") -> str:
-    """위치 인자만 준 호출의 다시 칠 인자 — 입력한 repo·slot 을 채운다."""
-    retry = f"--task <task> --repo {identity.repo}"
-    if identity.slot is not None:
-        retry += f" --slot {identity.slot}"
-    return retry
-
-
-def _execution_actor_session_override(args: argparse.Namespace) -> str | None:
-    """실행 소비자의 정체성 — 검증한 `--task` 값, 없으면 None.
-
-    `--repo`/`--slot` 은 task 가 보유한 폴더를 고르는 위치 인자라 `--task` 와 함께일 때만 받는다.
-    `--task` 없이 오면 어떤 쓰기·git 호출보다 먼저 `SLOT_SELECTOR_WITHOUT_TASK` 로 멈춘다.
-    """
-    try:
-        identity = identity_args.parse_identity(args)
-    except ValueError as exc:
-        sys.exit(f"[중단] {exc}")
-    if identity.task:
-        _validate_actor_task_or_exit(identity.task)
-        return identity.task
-    if identity.kind != "none":
-        sys.exit(SLOT_SELECTOR_WITHOUT_TASK.format(retry=_slot_selector_retry(identity)))
-    return None
-
-
-def _validate_actor_task_or_exit(task: str) -> None:
-    """task 명 공유 validator 소비 — 불법이면 fail-loud (깔때기 단일 지점).
-
-    정체성 깔때기(`_actor_session_override`·귀속)와 실행-위치 해소(`_resolve_task_workspace_cwd`)가
-    **같은 한 지점**을 소비해, 무검증 task 명이 created_by/claimed_by/lease-session 으로 영속되거나
-    실행-위치로 쓰이기 **이전** 부작용 0 로 거부한다. 공유 validator = `identity_args.validate_task_name`
-    (worktree_pool 엔진 validator 와 동형·로직 중복 0). 예약패턴(`<repo>_<N>`) 판정용 registered_repos
-    는 areas 에서 fail-soft 해소(파싱 실패 시 char/traversal 검증만).
-    """
-    try:
-        registered = registered_repos()
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
-        registered = None
-    try:
-        identity_args.validate_task_name(task, registered)
-    except identity_args.InvalidTaskName as e:
-        sys.exit(
-            f"[중단] {e} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
-            f"(`<repo>_<N>`)은 쓸 수 없다."
-        )
-
-
-def _resolve_task_workspace_cwd(
-    args: argparse.Namespace, *, require_test_cmd: bool = False,
-) -> tuple[str, str | None] | None:
-    """허용된 task 실행 소비의 leased work 트리와 해당 행의 test_cmd를 해소한다."""
-    if not getattr(args, "task", None):
-        return None
-    if getattr(args, "cwd", None) is not None:
-        sys.exit("[중단] --task 모드에서는 --cwd를 명시할 수 없다, 외부 경로 override를 허용하지 않는다. 기존 repo/slot 좌표로 선택하라.")
-    _execution_actor_session_override(args)
-    try:
-        ws = lease_store.resolve_task_workspace(identity_args.parse_identity(args), LEASES_FILE)
-    except (ValueError, identity_args.WorkspaceResolutionError) as exc:
-        sys.exit(f"[중단] {exc}")
-    if ws.readonly:
-        sys.exit("[중단] readonly 슬롯은 task 실행 쓰기 대상이 아니다, 참조는 기존 --cwd 핀을 사용하라.")
-    tree = REPO / ws.slot
-    if not tree.is_dir() or not (tree / ".git").exists():
-        sys.exit(f"[중단] task 코드 트리의 경로 또는 git 트리가 없다: {tree}")
-    if not _git_head_at(str(tree)):
-        sys.exit(f"[중단] task 코드 트리의 git HEAD를 읽지 못했다: {tree}")
-    if not _cluster_current_branch(str(tree)):
-        sys.exit(f"[중단] task 코드 트리의 브랜치를 읽지 못했다: {tree}")
-    command = ws.test_cmd
-    if require_test_cmd:
-        command = getattr(args, "cmd", None)
-        if command is None:
-            command = ws.test_cmd
-            if not command:
-                _header, rows = _parse_areas()
-                matching = [row for row in rows if row.get("repo") == ws.repo]
-                if len(matching) > 1:
-                    sys.exit(f"[중단] 선택 repo {ws.repo!r}의 test_cmd 장부가 모호하다")
-                command = (matching[0].get("test_cmd") if matching else None)
-                command = command or local_config().get("test.cmd") or default_pytest_cmd()
-        if not isinstance(command, str) or not command.strip():
-            sys.exit(f"[중단] task 선택 작업공간의 test_cmd를 해소할 수 없다: {tree}")
-    return str(tree), command
-
-
-def id_prefix(override: str | None = None) -> str | None:
-    """Resolve ticket-ID namespace prefix (multi-repo areas·N×M).
-
-    prefix 는 M>1 repo 의 ID 네임스페이스(협업용 아님)다. 해소 체인(count-based
-    유도):
-
-        override(--prefix)
-          > 등록 repo(prefix) 가 정확히 1개면 그 prefix               (count-based)
-          > None
-
-    None → 무prefix `T-NNNN`(`none` 카테고리·1급 형상). Non-None → `T-<PREFIX>-NNN` 네임스페이스.
-
-    세션 이름에서 repo 를 떼어 prefix 를 유도하는 층은 없다 — 엔진은 세션 토큰을 분해하지 않는다.
-
-    **local.conf `prefix=` 층은 없다.** prefix 는 areas.md 의 per-repo 칼럼이 단일 진실이고,
-    clone 전역 키로 남의 prefix 를 silent 오네임스페이스하던 클래스를 원천 차단한다. 그 키가
-    conf 에 남아 있어도 읽지 않는다. 해소 실패는 `none` 카테고리(`T-NNNN`)이며, multi-repo
-    (등록 repo ≥2) 홈에서 count-based 가 실패하면 `cmd_new` 가 fail-loud
-    (오네임스페이스 방지).
-    """
-    if override:
-        # override 를 등록된 canonical case 로 해소 (prefix 동일성=case-insensitive fold):
-        # 입력 `aaa` 가 등록 `AAA` 로 fold-매치되면 등록 case `AAA` 로 발행(네임스페이스 분할 방지).
-        # 미등록이면 입력 그대로 — 최초 사용이 canonical case 를 확립하고, 발행 시 `_next_id` 가
-        # 기존 티켓 시리즈 case 로 정련한다(기존 `T-AAA-*` 를 `--prefix aaa` 가 이어감).
-        return _fold_lookup(override, registered_prefixes()) or override
-    # count-based — 등록 repo(prefix) 가 정확히 1개면 그것(단일 self-host·모호성 0).
-    #    cmd_new 의 ≥2 fail-loud 가드와 같은 `registered_prefixes()` 를 세어 lockstep 유지.
-    registered = registered_prefixes()
-    if len(registered) == 1:
-        return next(iter(registered))
-    # 미해소 → None. 등록 0(prefix 칼럼이 빈 repo 행만 있는 홈)은 `none` 카테고리(`T-NNNN`)이고,
-    #    등록 ≥2 면 `cmd_new` 가 fail-loud 한다(오귀속 차단).
-    return None
-
-
-# areas.md 신/구 스키마.
-#   - 구 스키마: `| prefix | area | owner |`                      (멀티-CLONE)
-#   - per-repo: `| repo | prefix | git | test_cmd | owner |`      (per-repo 레지스트리)
-#   - base 스키마: `| repo | prefix | git | test_cmd | owner | base |`  (base 브랜치)
-#   - protected 스키마: `| repo | prefix | git | test_cmd | owner | base | protected |`  (보호브랜치)
-#   - 신 스키마: `| … | protected | area_owner |`                 (user 소유)
-#     area_owner = `--mine` 기본 풀 입력의 *user* 소유. 기존 `owner`
-#     (per-repo registry registrant)를 overload 하지 않는 *별도* 칼럼이다(codex sug — 의미 충돌 회피).
-# 파싱은 **헤더 행을 읽어 칼럼명→인덱스**로 매핑한다(위치-비의존) — 모든 스키마를 같은
-# 코드로 읽고, 누락 칼럼은 빈 값으로 떨어뜨려 하위호환을 보장한다(`base`/`protected` 칼럼
-# 없는 구 레지스트리 → 행 dict 에 그 키 없음 → `_repo_base`/`_repo_protected` 가 폴백).
-_AREAS_SEP_RE = re.compile(r"^\|[\s:|-]+\|?$")  # markdown 구분선 `|---|---|`
 
 # 보호 브랜치 default (엔진 상수) — areas.md `protected` 칼럼이 미지정/미등록일 때
 # 폴백. PM 이 자율로 commit/push 못 하는 브랜치(pre-push 훅·bootstrap 경고가 이걸 본다).
 # per-repo override 는 areas.md `protected` 칼럼(쉼표분리·예 `main,develop`).
 DEFAULT_PROTECTED = ("main", "master", "develop")
-
-
-def _split_areas_row(line: str) -> list[str] | None:
-    """`| a | b | c |` 한 줄을 셀 리스트로. table row 가 아니면 None.
-
-    구분선(`|---|---|`)·빈 줄·비-`|` 줄은 None. 앞뒤 파이프를 벗기고 셀을 strip.
-    """
-    s = line.strip()
-    if not s.startswith("|") or _AREAS_SEP_RE.match(s):
-        return None
-    # 앞뒤 경계 파이프 제거 후 분할 (내부 셀 사이 파이프로 split).
-    inner = s.strip("|")
-    return [c.strip() for c in inner.split("|")]
-
-
-# areas.md canonical 칼럼 순서 (신 스키마). 구 헤더(`base`/
-# `protected`/`area_owner` 없음)는 이 순서의 *prefix* 다(`repo|prefix|git|test_cmd|owner` 또는
-# …`|base`/…`|protected`). 그래서 헤더보다 셀이 많은 행(구 헤더에 신 칼럼 row 가 append 된
-# *업그레이드* 프로젝트 — `repo add` 가 완전 canonical row 를 더 짧은 헤더에 붙인 경우)을 이
-# canonical 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(게이트가
-# base 에 대해 건 가드를 protected[7칸]→area_owner[8칸]까지 확장).
-_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base", "protected",
-                  "area_owner")
 
 
 def _areas_header_line() -> str:
@@ -1666,12 +1346,12 @@ def _areas_header_line() -> str:
     `_AREAS_COLUMNS`(단일 진실)에서 파생한다 — `areas_append` 의 신규 파일 헤더와
     `_migrate_areas_text` 의 구-헤더 업그레이드가 같은 8칼럼 헤더를 쓰도록 한 곳에서 만든다.
     """
-    return "| " + " | ".join(_AREAS_COLUMNS) + " |"
+    return "| " + " | ".join(areas_rules._AREAS_COLUMNS) + " |"
 
 
 def _areas_separator_line() -> str:
     """canonical areas.md 구분선 (`|---|---|…|`·칼럼 수만큼 `---`·줄바꿈 없음)."""
-    return "|" + "|".join("---" for _ in _AREAS_COLUMNS) + "|"
+    return "|" + "|".join("---" for _ in areas_rules._AREAS_COLUMNS) + "|"
 
 
 # ── areas.md 칼럼 인덱스 해소 (공용 헬퍼) ───────────────────────────
@@ -1680,22 +1360,6 @@ def _areas_separator_line() -> str:
 # 행 dict 매핑
 # (`_areas_row_dict`) 헤더 인덱스 + 구-헤더 업그레이드 계획(`_areas_column_index`) 데이터
 # 행의 wider-row 보정(`_areas_row_cell_index`) 을 여기 한 곳에 모은다.
-
-
-def _areas_row_dict(header_cells: list[str], cells: list[str]) -> dict[str, str]:
-    """데이터 행 셀 → `{칼럼명: 값}` (헤더 매핑 · wider row 는 canonical 순서).
-
-    셀 수가 헤더보다 **많으면**(더 넓은 신 스키마 row 를 더 좁은 구 헤더에 append 한 업그레이드
-    프로젝트) 헤더를 무시하고 `_AREAS_COLUMNS` 순서로 매핑한다(base/protected/area_owner 유실
-    차단·폭 초과는 `col{i}` 폴백). 그 외는 자기 헤더로 매핑(모자란 셀은 빈 문자열).
-    """
-    if len(cells) > len(header_cells):
-        return {
-            (_AREAS_COLUMNS[i] if i < len(_AREAS_COLUMNS) else f"col{i}"): cells[i]
-            for i in range(len(cells))
-        }
-    return {header_cells[i]: (cells[i] if i < len(cells) else "")
-            for i in range(len(header_cells))}
 
 
 def _areas_column_index(header_cells: list[str],
@@ -1715,9 +1379,9 @@ def _areas_column_index(header_cells: list[str],
     """
     if column in header_cells:
         return header_cells.index(column), None, 0
-    if tuple(header_cells) == _AREAS_COLUMNS[:len(header_cells)]:
-        return (_AREAS_COLUMNS.index(column), _areas_header_line(),
-                len(_AREAS_COLUMNS))
+    if tuple(header_cells) == areas_rules._AREAS_COLUMNS[:len(header_cells)]:
+        return (areas_rules._AREAS_COLUMNS.index(column), _areas_header_line(),
+                len(areas_rules._AREAS_COLUMNS))
     return (len(header_cells),
             "| " + " | ".join(header_cells + [column]) + " |",
             len(header_cells) + 1)
@@ -1731,54 +1395,9 @@ def _areas_row_cell_index(header_cells: list[str], cells: list[str],
     순서로 매핑하므로, 쓰기측도 **정확히 같은** 인덱스를 잡아야 한다. 그 외는
     `_areas_column_index` 가 준 헤더 인덱스 그대로.
     """
-    if len(cells) > len(header_cells) and column in _AREAS_COLUMNS:
-        return _AREAS_COLUMNS.index(column)
+    if len(cells) > len(header_cells) and column in areas_rules._AREAS_COLUMNS:
+        return areas_rules._AREAS_COLUMNS.index(column)
     return header_idx
-
-
-def _parse_areas(path: Path | None = None) -> tuple[list[str], list[dict[str, str]]]:
-    """areas.md 를 (header 칼럼명 리스트, 데이터 행 dict 리스트) 로 파싱한다.
-
-    헤더-인식: 첫 table row 를 칼럼명(소문자)으로 보고, 이후 데이터 행을
-    `{칼럼명: 셀값}` 으로 매핑한다. 누락 칼럼은 빈 문자열. 신/구 스키마 공용.
-
-    **신 스키마 행 관용(하위호환)**: `areas_append` 는 *항상* 그 시점의 완전한
-    canonical per-repo row 를 쓴다(6칸 base·7칸 protected). 구 헤더(6칸 base / 5칸
-    per-repo `repo|…|owner` / 3칸 멀티-clone `prefix|area|owner`)에 그 *더 넓은* row 가 append 된
-    업그레이드 프로젝트에서, 헤더 길이만큼만 매핑하면 `protected`/`base`(또는 `repo` 등)가
-    유실/오매핑된다 → **셀 수가 헤더보다 많으면**(=더 넓은 신 스키마 row 를 더 좁은 구 헤더에 붙임)
-    헤더와 무관하게 `_AREAS_COLUMNS`(canonical) 순서로 매핑한다(append-only 보존·파일 미수정).
-    `== canonical폭` 만 보면 *직전 버전*(6칸)이 append 한 row 가 _AREAS_COLUMNS 가 7칸으로 자란 뒤
-    헤더 매핑으로 떨어져 `base` 유실 → `> len(header)` 가 6칸·7칸 신 row 둘 다 보존.
-    셀 수가 헤더 이하인 행(구 6/5/3칸 데이터 row)은 자기 헤더로 매핑(현행). areas.md 부재 → ([], []).
-    """
-    af = path if path is not None else areas_file()
-    if not af.exists():
-        return [], []
-    header: list[str] = []
-    rows: list[dict[str, str]] = []
-    for line in fs.read_text_shared(af, encoding="utf-8").splitlines():
-        cells = _split_areas_row(line)
-        if cells is None:
-            continue
-        if not header:
-            header = [c.lower() for c in cells]
-            continue
-        # 헤더보다 넓은 행 = 신(더 넓은) 스키마 canonical row 를 더 좁은 구 헤더에 append 한
-        # 업그레이드 케이스(6칸·7칸 row 를 5/3칸 헤더 아래) → canonical 순서로
-        # 매핑해 base/protected 유실 차단. 매핑 규칙은 `_areas_row_dict` 단일 진실(쓰기측
-        # `areas_set_cell`·`_migrate_areas_text` 와 공유).
-        rows.append(_areas_row_dict(header, cells))
-    return header, rows
-
-
-def _areas_row_for_prefix(prefix: str) -> dict[str, str] | None:
-    """활성 prefix 의 areas.md 데이터 행(dict). 미등록/부재 → None."""
-    _header, rows = _parse_areas()
-    for row in rows:
-        if row.get("prefix") == prefix:
-            return row
-    return None
 
 
 def _repo_base(repo: str) -> str | None:
@@ -1795,7 +1414,7 @@ def _repo_base(repo: str) -> str | None:
       - `base` 칼럼 자체가 없는 구 레지스트리(헤더에 base 없음 → 행 dict 에 base 키 없음).
       - `base` 칼럼이 빈 값(부분 등록).
     """
-    _header, rows = _parse_areas()
+    _header, rows = areas_store._parse_areas(_home())
     for row in rows:
         if row.get("repo") == repo:
             return row.get("base") or None
@@ -1820,7 +1439,7 @@ def _areas_git_url(repo: str) -> str | None:
       - `git` 칼럼 자체가 없는 구 레지스트리(헤더에 git 없음 → 행 dict 에 git 키 없음).
       - `git` 칼럼이 빈 값(부분 등록).
     """
-    _header, rows = _parse_areas()
+    _header, rows = areas_store._parse_areas(_home())
     for row in rows:
         if row.get("repo") == repo:
             return row.get("git") or None
@@ -1842,7 +1461,7 @@ def _repo_protected(repo: str) -> list[str]:
       - `protected` 칼럼이 빈 값(부분 등록).
     명시 지정이면 쉼표분리·strip·빈 토큰 제거 후 그 목록(전부 빈 토큰이면 default 폴백).
     """
-    _header, rows = _parse_areas()
+    _header, rows = areas_store._parse_areas(_home())
     for row in rows:
         if row.get("repo") == repo:
             raw = row.get("protected") or ""
@@ -1862,42 +1481,8 @@ def _repo_protected(repo: str) -> list[str]:
 # 2축 분기(`_owns_any_area`+`area_filter`)를 전역 플래그 1개로 단순화(동반·사용자 결정
 # 2026-06-26: 데이터 정합은 `board migrate-identity` 가 책임·런타임 폴백은 최소).
 
-# 티켓 ID prefix 추출 — `_next_id` ID 발행 규칙의 *정확한 역*:
-#   prefixed = `T-{prefix}-{NNN}` (`_next_id` line 1011·prefix 는 리터럴 삽입·끝 -NNN 은 숫자),
-#   legacy   = `T-{NNNN}`        (`_next_id` line 1013·하이픈 1개·prefix 없음).
-# prefix 문법은 **등록/검증측(`pm_config._REPO_NAME_RE`·`^[A-Za-z0-9][A-Za-z0-9_-]*$`)과 정합**한다
-# — repo add·init `--prefix` 가 그 패턴으로 prefix 를 검증·등록하므로 소비측도 같은 grammar 여야
-# 한다(소비 grammar 가 등록 grammar 보다 좁으면 `123` 같은 순수-숫자
-# prefix 가 등록은 되는데 소비측에서 legacy 로 오인돼 `_ticket_prefix`/wikilink/bootstrap 이 prefix
-# 로 인식 못 함). 영숫자로 시작(leading `-` 배제)·이후 영숫자/`_`/`-` — 그래서 `P0`(숫자 포함)·
-# `service-a`(family-scope·하이픈)·`123`(순수 숫자) prefix 모두 발행·해소된다(`T-P0-001`·
-# `T-service-a-001`·`T-123-001`). 역파서는 끝의 `-NNN`(숫자) 한 마디만 떼고 나머지를 prefix 로 잡는다.
-# legacy 와의 구분은 **구조적**으로 유지된다(prefix grammar 가 순수 숫자를 포함해도): full-ID
-# regex `^T-(prefix)-\d+$` 가 *내부 하이픈*(prefix-NNN 2세그먼트)을 요구하므로 `T-0164`(하이픈
-# 1개)는 매칭 안 됨 → None(legacy), `T-123-001`(하이픈 2개)는 prefix `123` 으로 갈린다. 발행측이
-# legacy 를 prefix 없는 `T-NNNN` 단일 하이픈으로만 내므로 이 하이픈-수 경계가 둘을 정확히 가른다.
-# ID grammar 의 단일 진실 — prefix 마디 본체. `_TICKET_PREFIX_RE` + prefixed-ID 를 매칭하는 다른
-# 파서(`_ticket_id_from_filename`·wikilink lint·bootstrap `_TICKET_ID`)가 *전부* 이 한 조각(또는
-# 동형 grammar)을 쓴다 — grammar drift 방지(round-3 클래스: 한 곳 고치면 같은 가정의 다른
-# 파서가 어긋남). `P0`(숫자)·`service-a`(하이픈)·`x_y`(언더스코어)·`123`(순수 숫자) prefix 포섭.
-_TICKET_PREFIX_BODY = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 _TICKET_PREFIX_RE = re.compile(
-    rf"^T-(?P<prefix>{_TICKET_PREFIX_BODY})-\d+$")
-# prefixed | legacy 둘 다 매칭하는 ID 본체 (anchor 없음 — 호출측이 ^…$·\b 등으로 감싼다).
-# 파일명/wikilink 파서가 공유한다(자체 `[A-Za-z]+` regex 두지 말 것 — `P0`/`service-a` 누락).
-_TICKET_ID_BODY = rf"T-(?:{_TICKET_PREFIX_BODY}-\d+|\d+)"
-# 명시 NEW-ID(`reid`) 형식 sanity 용 full-match 앵커 — 발행 문법(`_TICKET_ID_BODY`)을 그대로
-# 감싸 `T-NNNN`·`T-<pfx>-NNN` 둘 다 받고 그 외(빈 문자열·`foo`·`T-`·`X-1`)는 거른다. prefix 마디는
-# 소비측 grammar(`_TICKET_PREFIX_BODY`·대문자/하이픈 legacy 포함)라 **자유 입력**이다 — 기존
-# 네임스페이스로의 relabel 을 위해 좁은 `_validate_prefix`(소문자 카테고리)를 적용하지 않는다.
-# 앵커는 `\A…\Z` — `$` 는 Python 에서 trailing newline 앞에서도 매치해 `T-0250\n`
-# 같은 개행-포함 ID 를 통과시킨다(파일명/frontmatter/참조에 깨진 ID 기록 위험). `\Z` 는 문자열 끝에서만.
-_FULL_TICKET_ID_RE = re.compile(rf"\A{_TICKET_ID_BODY}\Z")
-
-
-def _is_valid_ticket_id(tid: str) -> bool:
-    """`tid` 가 발행 규칙 ID 문법(`T-NNNN`·`T-<pfx>-NNN`)에 완전 일치하는지 (reid NEW-ID sanity)."""
-    return bool(_FULL_TICKET_ID_RE.match(tid))
+    rf"^T-(?P<prefix>{ticket_rules._TICKET_PREFIX_BODY})-\d+$")
 
 
 def _ticket_prefix(tid: str) -> str | None:
@@ -1955,19 +1540,6 @@ def _validate_prefix(prefix: str) -> str | None:
                 "). 하이픈·특수문자·공백·빈 문자열은 금지"
                 "(하이픈은 `T-{prefix}-NNN` ID 구분자와 충돌).")
     return None
-
-
-def _fold_lookup(prefix: str, pool: set[str]) -> str | None:
-    """`pool` 에서 `prefix` 와 case-insensitive fold 로 같은 항목을 찾아 반환·없으면 None.
-
-    prefix 동일성은 소문자 fold 비교다 — 등록/발행된 canonical case 를 대소문자 무관하게 되찾는다
-    (`aaa` 입력 → 등록 `AAA` 반환). 오염된 입력에서도 호출 결과 자체는 프로세스 hash seed에
-    흔들리지 않도록 exact case를 tie-break 키로 정렬한다. 신규-prefix 승인 게이트는 이 helper의
-    단일값 선택에 기대지 않고, fold 변형이 둘 이상이면 출처와 함께 fail-loud한다.
-    """
-    fold = prefix.lower()
-    return next((p for p in sorted(pool, key=lambda value: (value.lower(), value))
-                 if p.lower() == fold), None)
 
 
 def _fold_key(prefix: str | None) -> str | None:
@@ -2118,11 +1690,11 @@ def _ticket_area_owner(tid: str) -> str | None:
     """
     prefix = _ticket_prefix(tid)
     if not prefix:
-        _header, rows = _parse_areas()
+        _header, rows = areas_store._parse_areas(_home())
         if len(rows) == 1:
             return rows[0].get("area_owner") or None
         return None
-    row = _areas_row_for_prefix(prefix)
+    row = areas_store._areas_row_for_prefix(_home(), prefix)
     if not row:
         return None
     return row.get("area_owner") or None
@@ -2144,7 +1716,7 @@ def _area_owner_in_use() -> bool:
 
     areas.md 부재·모든 area_owner 빈 값이면 False. ≥1 채워짐이면 True.
     """
-    _header, rows = _parse_areas()
+    _header, rows = areas_store._parse_areas(_home())
     return any((row.get("area_owner") or "").strip() for row in rows)
 
 
@@ -2159,7 +1731,7 @@ def _distinct_area_owners() -> int:
     다중성을 여기서 세어 `multi_user = distinct ticket-user >1 OR distinct area_owner >1` 로
     단일 사용자 정의를 완결한다. areas.md 부재/전부 빈 값이면 0(단일 사용자 신호 보존·회귀 0).
     """
-    _header, rows = _parse_areas()
+    _header, rows = areas_store._parse_areas(_home())
     return len({owner for row in rows if (owner := (row.get("area_owner") or "").strip())})
 
 
@@ -2255,13 +1827,13 @@ def _distinct_ticket_users() -> int:
     정의(소유 데이터가 티켓에 실려야 다중사용자로 본다)다.
     """
     users: set[str] = set()
-    for status in STATUS_DIRS:
-        for p in (tickets_dir() / status).glob("T-*.md"):
+    for status in ticket_rules.STATUS_DIRS:
+        for p in (pm_paths.tickets_dir(_home()) / status).glob("T-*.md"):
             # 순회 소비자는 **공용 soft 로더**를 쓴다(사본 금지) — 자체 except 목록은 비-dict
             # frontmatter(스칼라·리스트: 파싱은 성공)를 걸러내지 못해 바로 아래 `fm.get` 이
             # AttributeError 로 죽었다. 기본 `list` 가 이 함수를 먼저 부르므로 보드 조회 전체가
             # 티켓 한 건 때문에 traceback 이 된다.
-            loaded = load_ticket_soft(p)
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             fm, _ = loaded
@@ -2300,11 +1872,11 @@ def scan_task_tickets(user: str | None, task: str,
     """
     claimed: list[dict] = []
     prefix_open: list[dict] = []
-    for status in STATUS_DIRS:
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
+    for status in ticket_rules.STATUS_DIRS:
+        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
             # 순회 소비자 공통 규약 — 손상/비-dict frontmatter 는 공용 soft 로더가 경고 1줄과
             # 함께 걸러낸다(`_distinct_ticket_users` 동형·자체 except 사본 금지).
-            loaded = load_ticket_soft(p)
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             fm, _ = loaded
@@ -2313,7 +1885,7 @@ def scan_task_tickets(user: str | None, task: str,
             cb = fm.get("claimed_by") or ""
             # 종결 status(done·discarded)는 claimed 축에서 제외 — 종결 티켓은 claimed_by 가
             # 남아 있어도 끝난 작업이고, 담으면 해소 수단이 없어 task end 가 영구 차단된다.
-            if status not in TERMINAL_STATUS_DIRS and cb and _slot_matches(cb, task):
+            if status not in ticket_rules.TERMINAL_STATUS_DIRS and cb and _slot_matches(cb, task):
                 cb_user = _claimed_by_user(cb)
                 if user is None or cb_user is None or cb_user == user:
                     claimed.append(row)
@@ -2467,7 +2039,7 @@ def _ticket_ownership(fm: dict, args: argparse.Namespace) -> _OwnershipVerdict:
     claimed_by = str(fm.get("claimed_by") or "").strip()
     if not claimed_by:
         return _OwnershipVerdict(True, None, None, False)
-    session = session_name(_actor_session_override(args))
+    session = lease_store.session_name(_home(), _actor_session_override(args))
     if session is None:
         return _OwnershipVerdict(False, claimed_by, None, True)
     owner_user = _claimed_by_user(claimed_by)
@@ -2513,35 +2085,6 @@ def _ownership_rejection(action: str, tid: str,
     lines.append(f"  → 소유 세션이 없으면: `board.py unclaim {tid} --takeover "
                  "--reason <사유> --task <task>` (소유만 해제·사유는 티켓 본문과 board-git 에 남는다).")
     return "\n".join(lines)
-
-
-def registered_prefixes() -> set[str]:
-    """Prefixes registered in areas.md (shared registry). Empty set if no registry.
-
-    등록 repo가 2개 이상이면 multi-repo(N×M) 신호로 쓰여 `board.py new`의
-    prefix 미해소를 막는다. 단, 명시 prefix는 레지스트리 등록 자체가 필수가 아니며
-    3소스에 없는 새 카테고리라면 값-결속 사용자 승인을 지난 뒤 사용할 수 있다.
-    prefix 칼럼이 전부 빈 보드는 무prefix(`none` 카테고리)를, 1개인 보드는 그 단일 prefix
-    유도를 허용한다.
-
-    헤더-인식 파서(`_parse_areas`)로 `prefix` 칼럼을 읽는다 — 구 스키마
-    (`| prefix | … |`)와 신 스키마(`| repo | prefix | … |`) 모두에서
-    prefix 칼럼 위치에 상관없이 동작한다.
-    """
-    _header, rows = _parse_areas()
-    return {p for row in rows if (p := row.get("prefix"))}
-
-
-def registered_repos() -> set[str]:
-    """Repo names registered in areas.md (per-repo registry `repo` 칼럼). 부재→빈 set.
-
-    `registered_prefixes` 의 repo-명 짝. `repo add`(pm_config)가 멱등 재등록을 판별할 때
-    쓴다 — repo명 자동시드 폐지후 prefix 칼럼이 비므로 repo 존재 여부를 prefix
-    로 셀 수 없다(빈 prefix 는 `registered_prefixes` 에 안 잡힘). repo 칼럼으로 직접 세어
-    중복 등록(같은 repo 두 번 append)을 막는다.
-    """
-    _header, rows = _parse_areas()
-    return {r for row in rows if (r := row.get("repo"))}
 
 
 def areas_append(prefix: str, area: str, owner: str,
@@ -2603,7 +2146,7 @@ def _areas_append_locked(
     _base = base or ""
     _protected = protected or ""
     _area_owner = area_owner or ""
-    af = areas_file()
+    af = pm_paths.areas_file(_home())
     if not af.exists():
         af.write_text(
             "# Area Registry\n\n"
@@ -2691,9 +2234,9 @@ def _areas_set_cell_text(text: str, repo: str, column: str,
             nl, body = "\r\n", line[:-2]
         elif line.endswith("\n"):
             nl, body = "\n", line[:-1]
-        cells = _split_areas_row(body)
+        cells = areas_rules._split_areas_row(body)
         if cells is None:
-            if upgrade and not sep_replaced and _AREAS_SEP_RE.match(body.strip()):
+            if upgrade and not sep_replaced and areas_rules._AREAS_SEP_RE.match(body.strip()):
                 out.append("|" + "|".join("---" for _ in range(sep_cols)) + "|" + nl)
                 sep_replaced = True
             else:
@@ -2708,7 +2251,7 @@ def _areas_set_cell_text(text: str, repo: str, column: str,
                 upgrade = True
                 out.append(new_header + nl)
             continue
-        if _areas_row_dict(header_cells, cells).get("repo") != repo:
+        if areas_rules._areas_row_dict(header_cells, cells).get("repo") != repo:
             out.append(line)
             continue
         matches += 1
@@ -2759,14 +2302,14 @@ def _areas_set_cell_locked(repo: str, column: str, value: str) -> tuple[str, str
     검증·원자 write 규칙은 `areas_set_cell` 과 동일하다(그쪽 docstring 이 계약의 단일 진실).
     캐시 무효화는 호출부 몫이다 — 락 안에서 무효화해도 락을 놓기 전엔 새 값이 안 보인다.
     """
-    if column not in _AREAS_COLUMNS:
+    if column not in areas_rules._AREAS_COLUMNS:
         raise ValueError(
-            f"알 수 없는 areas.md 칼럼 {column!r} — 허용: {', '.join(_AREAS_COLUMNS)}")
+            f"알 수 없는 areas.md 칼럼 {column!r} — 허용: {', '.join(areas_rules._AREAS_COLUMNS)}")
     if "|" in value or "\n" in value or "\r" in value:
         raise ValueError(
             f"areas.md 셀 값에 `|`/개행을 쓸 수 없다(표 corruption): {value!r}")
     value = value.strip()
-    af = areas_file()
+    af = pm_paths.areas_file(_home())
     # `newline=""`(universal-newline OFF) 로 읽고 쓴다 — CRLF 채택자(Windows)의 파일을
     # 셀 하나 바꾸려다 LF 로 무단 정규화하지 않게(`rewrite_refs` 와 같은 관용구).
     text = ""
@@ -2834,21 +2377,9 @@ def board_lock() -> Iterator[None]:
 # green 을 검증. 비차단 pre-warm 은 PM 이 `run_in_background` 로 `regression run` 을 돌리는
 # 워크플로(하니스 background).
 
-def _git_head_at(cwd: str) -> str:
-    """주어진 작업 디렉토리의 git HEAD sha 를 반환한다 (실패/비-repo 면 '').
-
-    `_git_head` 는 board 프로세스의 `REPO` 기준이지만, livegate 기록은 테스트가 실제로
-    돈 **활성 slot worktree**(=`_livegate_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
-    push 하는 sha(=worktree HEAD)와 대조되기 때문. 이 함수가 그 cwd-매개 HEAD 를 낸다.
-    """
-    r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"],
-                       capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
-    return r.stdout.strip() if r.returncode == 0 else ""
-
 
 def _git_head() -> str:
-    return _git_head_at(str(REPO))
+    return git._git_head_at(str(REPO))
 
 
 def _hooks_dir_resolution() -> tuple[Path | None, str | None]:
@@ -3385,7 +2916,7 @@ _BOARD_TEXT_ATTR_EXTENSIONS: tuple[str, ...] = ("md", "json", "txt", "jsonl")
 # 커버리지 판정 대상 — 상태 디렉토리 × 확장자(중첩 경로) ∪ board 루트 직계(앵커드 선언 탐지).
 _BOARD_TEXT_ATTR_TARGETS: tuple[str, ...] = tuple(
     f"tickets/{status}/T-0000-ticket.{extension}"
-    for status in (*STATUS_DIRS, ".drafts")
+    for status in (*ticket_rules.STATUS_DIRS, ".drafts")
     for extension in _BOARD_TEXT_ATTR_EXTENSIONS
 ) + tuple(f"board-root-file.{extension}" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
 _INLINE_AREAS_ATTR_TARGETS: tuple[str, ...] = (
@@ -3422,7 +2953,7 @@ def _board_git_root_file_backfill_target(
     """
     if name not in _BOARD_GIT_ROOT_FILES:
         raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
-    path = board_root() / name
+    path = _home().board_root / name
     try:
         try:
             info = path.lstat()
@@ -3675,8 +3206,8 @@ def _ensure_board_gitattributes() -> bool:
     fail-soft: board 미분리(legacy)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
     반환 True = 이번 호출이 보강했다.
     """
-    root = board_root()
-    if not (root / ".git").exists() or areas_file().parent != root:
+    root = _home().board_root
+    if not (root / ".git").exists() or pm_paths.areas_file(_home()).parent != root:
         return False  # board 미분리(legacy) 또는 areas 가 이 git 밖 — no-op.
     target = _board_git_root_file_backfill_target(
         ".gitattributes",
@@ -3777,7 +3308,7 @@ def _board_git_root_files_need_backfill() -> bool:
     들어가지 않는다. 부재·비정규·읽기 실패·규칙 누락은 True 로 두어 실제 ensure 가 공용
     git/WIP 판정을 하고 필요한 write 또는 loud 보류를 수행하게 한다.
     """
-    root = board_root()
+    root = _home().board_root
     if not (root / ".git").exists():
         return False
     for name in _BOARD_GIT_ROOT_FILES:
@@ -3812,7 +3343,7 @@ def _ensure_board_gitignore() -> bool:
     fail-soft: board 미분리(legacy)·IO 실패면 아무 것도 하지 않고 False.
     반환 True = 이번 호출이 보강했다.
     """
-    root = board_root()
+    root = _home().board_root
     if not (root / ".git").exists():
         return False  # board 미분리(legacy) — no-op(draft 격리는 board-git 형상 전용).
     target = _board_git_root_file_backfill_target(
@@ -3856,7 +3387,7 @@ def _board_git_root_files_snapshot() -> _BoardGitRootFilesSnapshot:
     """
     snapshot: dict[str, _BoardGitRootFileState] = {}
     for name in _BOARD_GIT_ROOT_FILES:
-        path = board_root() / name
+        path = _home().board_root / name
         try:
             info = path.lstat()
         except FileNotFoundError:
@@ -3900,7 +3431,7 @@ def _board_git_restore_root_files(
     restored: list[str] = []
     for name in snapshot.backfilled:
         before = snapshot.states.get(name)
-        path = board_root() / name
+        path = _home().board_root / name
         expected = _board_git_expected_backfill_state(name, before) if before is not None else None
         if before is None or expected is None:
             print(f"  ⚠ board rollback 이 {name} backfill 원본을 확인하지 못해 덮어쓰지 않았다: "
@@ -3973,15 +3504,12 @@ def _ensure_board_root_files() -> tuple[str, ...]:
 # 있기 때문이다(claim 이 dirty 를 더는 막지 않으므로 더 그렇다). 조율 권위는 로컬 tree 의
 # clean 여부가 아니라 **원격 ref 의 FF push(CAS)** 다.
 #
-# **활성 게이트 = board 가 별도 git 일 때만**(`board_root()/.git` 존재). legacy(board 가
+# **활성 게이트 = board 가 별도 git 일 때만**(`Home.board_root/.git` 존재). legacy(board 가
 # wiki/ 안·별도 git 아님)면 sync 는 전부 no-op(git 호출 0·현 동작 byte-identical) —
-# board_root() graceful 탐지와 동형이고, 기존 회귀가 green 으로 남는 핵심이다. 모든 git
+# `pm_paths._board_root_at` graceful 탐지와 동형이고, 기존 회귀가 green 으로 남는 핵심이다. 모든 git
 # 호출은 fail-soft subprocess(엔진 관례·UTF-8 고정·짧은 timeout) — 거짓 원자성/락 보장을
 # 만들지 않는다(best-effort 는 정직하게 경고, claim 만 명시 실패).
 
-# board git 호출 timeout — pull/push 는 네트워크 왕복이라 user-email 폴백(5s)보다 길게
-# 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 관례).
-_BOARD_GIT_TIMEOUT_SECONDS = 30
 
 # claim 차단 사유 코드 — prefetch 가 claim 을 막을 때의 *원인* 이다. 옛
 # sentinel 문자열(`\0dirty`·`\0detached`)을 대체한다: 사유가 넷(dirty/rebase 충돌/offline/
@@ -4019,45 +3547,45 @@ _BOARD_GIT_BLOCK_LABELS: dict[str, str] = {
 # 제외한다. draft 는 STATUS_DIRS 순회 밖이라 이미 안 보이지만, 이 pathspec 은 방어적
 # 이중화다 — draft 경로가 board_root 바로 아래(add -A 의 스캔 범위)에 있는 한, 어떤 향후
 # 변경으로 draft 가 STATUS_DIRS 스캔 함수에 실수로 노출되더라도 git 수준에서 한 번 더 막는다.
-# pathspec 은 board_root() 기준 상대경로 리터럴이라 위치 이동(legacy↔board 분리) 무관 동작한다.
+# pathspec 은 `Home.board_root` 기준 상대경로 리터럴이라 위치 이동(legacy↔board 분리) 무관 동작한다.
 _BOARD_GIT_DRAFT_PATHSPEC: tuple[str, ...] = (".", ":!tickets/.drafts")
 
 
 def _board_git_enabled() -> bool:
-    """board 가 별도 git 으로 분리됐고 sync 가능한가 — `board_root()/.git` 존재 + git 바이너리.
+    """board 가 별도 git 으로 분리됐고 sync 가능한가 — `Home.board_root/.git` 존재 + git 바이너리.
 
     True 면 ticket mutation 이 board git 에 commit/pull/push 한다. False 면 sync 전부
-    no-op(legacy·git 부재) — `board_root()` 가 wiki/ 를 가리키는 legacy 에선
+    no-op(legacy·git 부재) — `Home.board_root` 가 wiki/ 를 가리키는 legacy 에선
     `wiki/.git` 가 없어 자동으로 False(superproject git 은 REPO 루트에 산다). board/ 분리
     형상에서만 `board/.git`(submodule git 파일/디렉토리)이 존재한다. git 바이너리 부재면
     분리 형상이라도 no-op(fail-soft·sync 불능).
     """
     if shutil.which("git") is None:
         return False
-    return (board_root() / ".git").exists()
+    return (_home().board_root / ".git").exists()
 
 
 def _board_git(args: list[str], *, check: bool = False,
                timeout: float | None = None) -> subprocess.CompletedProcess:
-    """board git working dir(`board_root()`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
+    """board git working dir(`Home.board_root`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
 
     엔진 subprocess 관례: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
-    `-C board_root()` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
+    `-C home.board_root` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
     가 기본 — 호출부가 returncode 로 분기하며, 예외(timeout·바이너리 이상)는 호출부가
     fail-soft 로 처리한다. `timeout` 미지정은 `_BOARD_GIT_TIMEOUT_SECONDS`(30s) — advisory
     freshness fetch 처럼 대화형 hang 을 짧게 끊어야 하는 호출부만 override 한다(기존
     경로 무변경).
     """
     return subprocess.run(
-        ["git", "-C", str(board_root()), *args],
+        ["git", "-C", str(_home().board_root), *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=_BOARD_GIT_TIMEOUT_SECONDS if timeout is None else timeout, check=check)
+        timeout=git._BOARD_GIT_TIMEOUT_SECONDS if timeout is None else timeout, check=check)
 
 
 def _board_git_lock_file() -> Path:
     """board-git mutation 직렬화 락 파일 — `<REPO>/.project_manager/.local/board-git.lock`.
 
-    `BOARD_LOCK` 처럼 import-time 상수로 굳히지 않고 **REPO 추종 lazy 해소**로 둔다(board_root()
+    `BOARD_LOCK` 처럼 import-time 상수로 굳히지 않고 **REPO 추종 lazy 해소**로 둔다(`Home.board_root`
     선례) — hermetic 테스트는 `REPO` 를 monkeypatch 하므로 락 파일이 자동으로 tmp 로 따라간다.
     별도 상수 seam 을 하나 더 두면 그걸 잊은 새 테스트가 실 루트에 락 파일을 쓴다.
     """
@@ -4195,7 +3723,7 @@ def _board_git_rebase_in_progress() -> bool:
             continue
         raw = r.stdout.strip()
         # `--git-path` 는 -C(board_root) 기준 상대경로를 낸다 — 절대경로면 `/` 연산이 그대로 채택.
-        if raw and (board_root() / raw).exists():
+        if raw and (_home().board_root / raw).exists():
             return True
     return False
 
@@ -4258,7 +3786,7 @@ def _board_git_fetch(remote: str) -> bool:
 # 추종해 유도한다 — 신규 상태(예: 처분 종결 `discarded`)가 생겨도 "open 이 아니면 선점" 이라는
 # 판정이 자동으로 그 상태를 덮는다(손-열거하면 새 상태가 조용히 claim 가능해진다).
 _CLAIM_RACE_LOST_STATUSES: tuple[str, ...] = tuple(
-    status for status in STATUS_DIRS if status != "open")
+    status for status in ticket_rules.STATUS_DIRS if status != "open")
 
 
 def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None:
@@ -4276,7 +3804,7 @@ def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None
     if r.returncode != 0:
         return None
     pattern = re.compile(
-        rf"^tickets/({'|'.join(STATUS_DIRS)})/{re.escape(ticket_id)}(-.*)?\.md$")
+        rf"^tickets/({'|'.join(ticket_rules.STATUS_DIRS)})/{re.escape(ticket_id)}(-.*)?\.md$")
     for entry in r.stdout.split("\0"):
         m = pattern.match(entry.strip())
         if m:
@@ -4345,12 +3873,12 @@ def _board_git_remote_has_commit(upstream: _BoardGitUpstream, commit: str) -> bo
 # ── repo-중립 스코프 프리미티브 ─────────────────────────────────
 # **공유 워킹트리 mutation 은 선언된 경로만 건드린다**
 # 스코프 원칙을 repo-중립으로 올린 것이다. 아래 함수들이 그 판정의 **단일 구현**이고,
-# `_board_git_*` 는 `board_root()` 를 물린 얇은 wrapper, 디자인 git(PM 홈·wiki)은
+# `_board_git_*` 는 `Home.board_root` 를 물린 얇은 wrapper, 디자인 git(PM 홈·wiki)은
 # `ticket_finish` 가 `REPO` 를 물려 같은 함수를 부른다. 판정을 두 벌로 복제하지 않는다 —
 # 복제하면 다음 사람이 한쪽만 고쳐 반대쪽이 조용히 샌다(v1.4.1 실측).
 #
 # `run_git` 은 `(argv) -> (rc, stdout)` 러너 seam 이다 — 호출 repo 마다 git 실행 관용구가
-# 다르기 때문(board-git 은 `-C board_root()` 인 `_board_git`, ticket_finish 는 cwd=REPO 인
+# 다르기 때문(board-git 은 `-C home.board_root` 인 `_board_git`, ticket_finish 는 cwd=REPO 인
 # 주입형 `_run_git_fn`). 미지정이면 `-C repo` 기본 러너를 쓴다.
 
 GitRunner = Callable[[list[str]], tuple[int, str]]
@@ -4361,7 +3889,7 @@ def _git_scope_run(repo: Path, args: list[str]) -> tuple[int, str]:
     r = subprocess.run(
         ["git", "-C", str(repo), *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=False)
+        timeout=git._BOARD_GIT_TIMEOUT_SECONDS, check=False)
     return r.returncode, r.stdout
 
 
@@ -4614,7 +4142,7 @@ def _board_git_rc_out(args: list[str]) -> tuple[int, str]:
 
 def _board_git_relpath(path: Path) -> str | None:
     """절대 경로 → board git 루트 기준 상대 pathspec (board git 밖이면 None)."""
-    return git_scope_relpath(board_root(), path)
+    return git_scope_relpath(_home().board_root, path)
 
 
 def _board_git_scope_pathspec(paths: Sequence[Path], *,
@@ -4623,7 +4151,7 @@ def _board_git_scope_pathspec(paths: Sequence[Path], *,
 
     스코프 규칙(repo 밖 제외·금지 구역 제외·중복 제거)은 repo-중립 프리미티브
     `git_scope_pathspec` 이 단일 구현으로 갖고 있고, 여기선 board 고유분만 얹는다:
-      - `board_root()` 를 repo 로, `tickets/.drafts/`(`_BOARD_GIT_SCOPE_EXCLUDE`)를 금지 구역으로.
+      - `Home.board_root` 를 repo 로, `tickets/.drafts/`(`_BOARD_GIT_SCOPE_EXCLUDE`)를 금지 구역으로.
       - `root_files` 로 준 board 루트 파일(`_BOARD_GIT_ROOT_FILES` 부분집합)만 덧붙인다 —
         **이번 호출의 backfill 이 실제로 쓴 것**(`_ensure_board_root_files()` 반환)만 온다.
         무조건 붙이면 사용자가 편집 중인 `.gitattributes`/`.gitignore` 를 아무 티켓 mutation 이
@@ -4633,10 +4161,10 @@ def _board_git_scope_pathspec(paths: Sequence[Path], *,
     반환이 비면 커밋할 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
     """
     rels: list[str] = list(git_scope_pathspec(
-        board_root(), paths, exclude_prefixes=_BOARD_GIT_SCOPE_EXCLUDE))
+        _home().board_root, paths, exclude_prefixes=_BOARD_GIT_SCOPE_EXCLUDE))
     for name in root_files:
-        rel = _board_git_relpath(board_root() / name)
-        if rel and rel not in rels and (board_root() / name).is_file():
+        rel = _board_git_relpath(_home().board_root / name)
+        if rel and rel not in rels and (_home().board_root / name).is_file():
             rels.append(rel)
     return tuple(rels)
 
@@ -4644,11 +4172,11 @@ def _board_git_scope_pathspec(paths: Sequence[Path], *,
 def _board_git_stageable(pathspec: Sequence[str]) -> tuple[str, ...]:
     """`add`/`commit` 이 매치할 수 있는 경로만 남긴다 (`git_scope_stageable` 의 board 바인딩).
 
-    판정 본체(존재/추적 필터·fail-soft)는 repo-중립 프리미티브에 있다 — 여기선 board_root()
+    판정 본체(존재/추적 필터·fail-soft)는 repo-중립 프리미티브에 있다 — 여기선 `Home.board_root`
     와 board-git 러너(`_board_git_rc_out`)를 물린다. 미매치 pathspec 이 `add` 를 rc=128 fatal
     로 죽이는 것을 막는 필터라, 디자인 git 쪽 새 스코프도 같은 구현을 쓴다.
     """
-    return git_scope_stageable(board_root(), pathspec, run_git=_board_git_rc_out)
+    return git_scope_stageable(_home().board_root, pathspec, run_git=_board_git_rc_out)
 
 
 def _board_git_stage_and_commit(
@@ -4699,7 +4227,7 @@ def _board_git_stage_and_commit(
             _board_git_scope_pathspec(paths, root_files=wrote_root_files))
         if not pathspec:
             return False  # 커밋할 스코프 없음(전부 board 밖·draft·미존재) — no-op.
-        git_scope_stage_and_commit(board_root(), message, pathspec,
+        git_scope_stage_and_commit(_home().board_root, message, pathspec,
                                    run_git=_board_git_rc_out,
                                    after_stage=_capture_staged_root_index)
     return _board_git_head() != before
@@ -5098,7 +4626,7 @@ def _board_git_index_pathspec(paths: Sequence[Path], *,
     for name in root_files:
         if name not in _BOARD_GIT_ROOT_FILES:
             continue
-        rel = _board_git_relpath(board_root() / name)
+        rel = _board_git_relpath(_home().board_root / name)
         if rel and rel not in rels:
             rels.append(rel)
     return tuple(rels)
@@ -5295,7 +4823,7 @@ def _board_git_root_indexes_safe_to_restore(
         return ()
     safe: list[str] = []
     for name in root_files:
-        rel = _board_git_relpath(board_root() / name)
+        rel = _board_git_relpath(_home().board_root / name)
         if rel is None:
             continue
         now = current.get(rel)
@@ -5421,7 +4949,7 @@ def _active_slot_test_cmd(session: str | None = None) -> str | None:
     leases = data.get("leases", [])
     if not isinstance(leases, list):
         return None
-    sess = session if session is not None else session_name()
+    sess = session if session is not None else lease_store.session_name(_home())
     for row in leases:
         if not isinstance(row, dict):
             continue
@@ -5464,7 +4992,7 @@ def _active_slot_path(session: str | None = None) -> str | None:
     leases = data.get("leases", [])
     if not isinstance(leases, list):
         return None
-    sess = session if session is not None else session_name()
+    sess = session if session is not None else lease_store.session_name(_home())
     for row in leases:
         if not isinstance(row, dict):
             continue
@@ -5500,12 +5028,12 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
     slot_cmd = _active_slot_test_cmd(session)
     if slot_cmd:
         return slot_cmd
-    prefix = id_prefix(None)
+    prefix = areas_store.id_prefix(_home(), None)
     if prefix:
-        row = _areas_row_for_prefix(prefix)
+        row = areas_store._areas_row_for_prefix(_home(), prefix)
         if row and row.get("test_cmd"):
             return row["test_cmd"]
-    return local_config().get("test.cmd") or default_pytest_cmd()
+    return conf_store.local_config(_home()).get("test.cmd") or python_env.default_pytest_cmd()
 
 
 def _regression_cwd(override: str | None = None) -> str:
@@ -5651,59 +5179,9 @@ def _detect_py() -> str:
     return "python3"
 
 
-@functools.lru_cache(maxsize=None)
-def _pytest_xdist_available(py: str) -> bool:
-    """엔진 Python 환경에 pytest-xdist가 설치됐는지 import 없이 확인한다.
-
-    ``default_pytest_cmd``의 runtime은 이 엔진이 실행 검증해 고른 interpreter다. 여기서 다시
-    subprocess를 열면 regression 테스트가 주입한 Popen/run seam을 침범하고, 스캐폴드 기본값을
-    묻는 순수 해소가 프로세스 생성 부작용을 갖는다. module spec 조회만으로 같은 환경을 판정한다.
-    ``py``는 cache key이자 호출 계약을 보존한다.
-    """
-    return importlib.util.find_spec("xdist") is not None
-
-
-def default_pytest_cmd(py: str | None = None) -> str:
-    """Python 프로젝트의 스캐폴드 test_cmd; xdist가 있으면 병렬이 기본이다."""
-    # 이미 이 엔진을 실행 중인 interpreter는 재-probe할 이유가 없다. 기본값 해소가
-    # subprocess를 열면 regression runner의 Popen DI seam을 선점해 실제 테스트 호출 관측을
-    # 오염시킨다. scaffold init은 감지한 runtime을 명시 인자로 넘기므로 그 계약도 보존된다.
-    runtime = py or sys.executable or "python3"
-    parallel = " -n auto" if _pytest_xdist_available(runtime) else ""
-    return f"{runtime} -m pytest tests/ -q{parallel}"
-
-
 # conf 예시 시드는 없다 — 키 목록·설명은 레지스트리 한 곳이 소유한다(`local_conf.py --keys`).
 # 파일이 자기 규칙("여기엔 실값만 둔다")을 스스로 어기지 않게, 엔진은 conf 에 주석 스키마를
 # 배달하지 않는다. 모르는 키는 `board.py lint` advisory 로 드러나므로 배달 경로가 필요 없다.
-
-
-def _normalized_touches(raw: object) -> list[str] | None:
-    """frontmatter `touches` → 경로 목록(**리스트[str] 강제**) · 형식이 불명이면 None.
-
-    선언이 스칼라 문자열이면(`touches: src/pay.py` — YAML 로는 유효하다) `list(...)` 가 **문자
-    목록**을 만든다: `-k "a or c or p or …"` 같은 오염된 회귀 스코프가 서고, 그 실행의 rc0 은
-    아무 것도 검증하지 않은 '가짜 green' 이다. 비문자열 원소(숫자·매핑)는 그 뒤 경로 연산에서
-    크래시한다.
-
-    그래서 반환은 셋 중 하나다:
-      · `list[str]` — 정상 선언(빈 문자열 원소는 걷는다).
-      · `[]` — 선언 없음(`None`·빈 목록).
-      · `None` — **형식 불명**. 호출부는 강등을 취소하고 FULL 로 남긴다(강등 fail-closed 규칙과
-        동형 — 스코프를 확정하지 못한 채 좁히면 안 된다).
-    """
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        return None
-    normalized: list[str] = []
-    for item in raw:
-        if not isinstance(item, str):
-            return None
-        text = item.strip()
-        if text:
-            normalized.append(text)
-    return normalized
 
 
 def _ticket_touches(tid: str) -> list[str] | None:
@@ -5720,10 +5198,10 @@ def _ticket_touches(tid: str) -> list[str] | None:
     found = _gate_ticket(tid)
     if found is None:
         return []
-    loaded = load_ticket_soft(found[1])
+    loaded = ticket_store.load_ticket_soft(_home(), found[1])
     if loaded is None:
         return None
-    return _normalized_touches(loaded[0].get("touches"))
+    return ticket_rules._normalized_touches(loaded[0].get("touches"))
 
 
 def _scope_args(touches: list[str]) -> str:
@@ -5970,10 +5448,10 @@ def _gate_ticket(gate: str) -> tuple[str, Path] | None:
       (b) 애초에 티켓 ID 문법(`_is_valid_ticket_id`)이 아닌 라벨은 조회 자체를 생략한다 — glob
          메타(`*`·`?`·`[`)가 든 이름이 보드를 훑는 것도, 없는 티켓을 매번 찾는 것도 뜻이 없다.
     """
-    if not _is_valid_ticket_id(gate):
+    if not ticket_rules._is_valid_ticket_id(gate):
         return None
     try:
-        return find_ticket_exact(gate)
+        return ticket_store.find_ticket_exact(_home(), gate)
     except OSError:
         return None
 
@@ -6407,7 +5885,7 @@ class PlatformConfigError(RuntimeError):
 def _platform_test_commands(cwd: str) -> tuple[tuple[str, str], ...]:
     """그 실행 트리의 선언 platform command를 공용 local.conf seam으로 해소한다."""
     try:
-        values = local_config(Path(cwd))
+        values = conf_store.local_config(_home(), Path(cwd))
         return conf_schema.platform_test_commands(values)
     except (OSError, UnicodeError, ValueError) as exc:
         raise PlatformConfigError(str(exc)) from exc
@@ -6479,7 +5957,7 @@ def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
         }
         rc, stdout, _stderr = _run_regression_cmd(command, cwd, cell_env)
         payload, marker_problem = _platform_marker(stdout)
-        host_head = _git_head_at(cwd)
+        host_head = git._git_head_at(cwd)
         collected = payload.get("collected") if payload is not None else None
         valid_collected = (
             isinstance(collected, int) and not isinstance(collected, bool)
@@ -6635,7 +6113,7 @@ def _core_command_at(anchor: str, session: str | None = None, *,
             return ""
         command = row.get("test_cmd")
         if not command:
-            _header, rows = _parse_areas(home / ".project_manager" / "areas.md")
+            _header, rows = areas_store._parse_areas(_home(), home / ".project_manager" / "areas.md")
             matching = [r for r in rows if r.get("repo") == row.get("repo")]
             if len(matching) > 1:
                 return ""
@@ -6643,10 +6121,10 @@ def _core_command_at(anchor: str, session: str | None = None, *,
             command = (matching[0].get("test_cmd") if matching and (
                 row.get("session") in lease_store.task_names(leases)
                 or matching[0].get("prefix")) else None)
-        command = command or local_config(home).get("test.cmd")
-        return " ".join(p for p in (command or default_pytest_cmd(),
+        command = command or conf_store.local_config(_home(), home).get("test.cmd")
+        return " ".join(p for p in (command or python_env.default_pytest_cmd(),
                                     _quarantine_args()) if p)
-    command = (local_config(Path(anchor)).get("test.cmd") if anchor != str(REPO)
+    command = (conf_store.local_config(_home(), Path(anchor)).get("test.cmd") if anchor != str(REPO)
                else None)
     return " ".join(p for p in (command or _test_cmd(None, session=session),
                                 _quarantine_args()) if p)
@@ -6685,7 +6163,7 @@ def _core_record_problem(data: dict, anchor: str, head: str, *,
     if release and (not isinstance(data["collected"], int)
                     or isinstance(data["collected"], bool) or data["collected"] <= 0):
         return "core collection invalid"
-    if _git_head_at(anchor) != head:
+    if git._git_head_at(anchor) != head:
         return "core anchor head mismatch"
     if command != _core_command_at(anchor, session, local_dir=local_dir):
         return "core command changed"
@@ -6835,7 +6313,7 @@ def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
     if not isinstance(data, dict):
         return _SlotRegressionState("missing", None, None)
     collected = _flag_collected(data)
-    current_head = _git_head_at(cwd)
+    current_head = git._git_head_at(cwd)
     if not current_head or data.get("head") != current_head:
         return _SlotRegressionState("stale", data.get("rc"), collected)
     if data.get("status") != "pass":
@@ -6864,7 +6342,7 @@ def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> in
         return 1
     flag = _regression_flag_for(session, local_dir=base.parent)
     cmd = " ".join(p for p in (_test_cmd(args.cmd, session=session), _quarantine_args()) if p)
-    expected_head = _git_head_at(cwd)
+    expected_head = git._git_head_at(cwd)
     if not expected_head:
         _write_regression_flag(flag, {
             "head": "", "status": "fail", "rc": "head-drift", "scope": "full",
@@ -6878,7 +6356,7 @@ def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> in
     collected = _collected_count(out)
     status = "pass" if rc == 0 else "fail"
     recorded_rc = rc
-    if _git_head_at(cwd) != expected_head:
+    if git._git_head_at(cwd) != expected_head:
         status, recorded_rc = "fail", "head-drift"
     record = {
         "head": expected_head, "status": status, "rc": recorded_rc, "scope": "full",
@@ -6985,7 +6463,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # 로 고정하고 슬롯 test_cmd 를 실어 잘못된 형제-슬롯 유도를 피한다. 절대경로를
     # surface 해 dev/git 짐작 여지를 없앤다(cwd 비참여). run 만 실행 위치가 필요하다.
     if args.action == "run" and getattr(args, "task", None):
-        task_cwd, task_test_cmd = _resolve_task_workspace_cwd(args, require_test_cmd=True)
+        task_cwd, task_test_cmd = task_args._resolve_task_workspace_cwd(_home(), args, require_test_cmd=True)
         if getattr(args, "cwd", None) is None:
             args.cwd = task_cwd
         if getattr(args, "cmd", None) is None:
@@ -6998,7 +6476,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
     # 명시 `--cwd`(run)면 실행 위치가 그 경로로 핀돼(단일 위치) M>1 순회를 건너뛴다.
     _run_cwd_pinned = args.action == "run" and getattr(args, "cwd", None)
-    explicit_override = _execution_actor_session_override(args)
+    explicit_override = task_args._execution_actor_session_override(_home(), args)
     if not _run_cwd_pinned and explicit_override is None:
         leased = lease_store.leased_sessions(LEASES_FILE)
         if len(leased) >= 2:
@@ -7007,7 +6485,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
                     else _regression_multi_check(slots))
     # 단일-슬롯 (명시 --task·단일-lease·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
     # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄).
-    sess = session_name(explicit_override)
+    sess = lease_store.session_name(_home(), explicit_override)
     if args.action == "run":
         # `--ticket` 스코프도 확정 실패(None·형식 불명·손상)는 빈 목록 = FULL 이다 — 확정 못 한
         # 선언으로 좁히면 그 실행의 rc0 이 아무 것도 검증하지 않은 '가짜 green' 이 된다.
@@ -7054,7 +6532,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
             return 1
         # 실행 안내는 **거부 판정 뒤**다 — 돌지 않은 명령을 `$ …` 로 남기면 로그·핸드오프
         # 인용에서 실행한 것처럼 읽힌다(거부 문구가 스스로 '측정·기록 안 함'을 말하는 것과 같은 축).
-        expected_head = _git_head_at(cwd) if not scoped else ""
+        expected_head = git._git_head_at(cwd) if not scoped else ""
         if not scoped and not expected_head:
             _write_regression_flag(regression_flag, {
                 "head": "", "status": "fail", "rc": "head-drift", "scope": "full",
@@ -7078,7 +6556,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
                   "— dev 피드백 · push 게이트 아님")
             return 0 if status == "pass" else 1
         recorded_rc = rc
-        if _git_head_at(cwd) != expected_head:
+        if git._git_head_at(cwd) != expected_head:
             status, recorded_rc = "fail", "head-drift"
         record = {"head": expected_head, "status": status, "rc": recorded_rc, "scope": "full",
                   "collected": collected, "conf_anchor": cwd, "command": cmd, "ts": now_utc()}
@@ -7123,7 +6601,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
             print("regression: stale (기록 conf_anchor가 유효한 절대 디렉토리가 아님) "
                   "— 재실행 필요.", file=sys.stderr)
             return 1
-        head = _git_head_at(anchor)
+        head = git._git_head_at(anchor)
         if not head:
             print(f"regression: stale (기록 conf_anchor {anchor}의 Git HEAD 해소 실패) "
                   "— 재실행 필요.", file=sys.stderr)
@@ -7143,7 +6621,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
         selected_cwd = getattr(args, "cwd", None)
         selected_slot = None
         if getattr(args, "task", None):
-            selected_slot, _cmd = _resolve_task_workspace_cwd(args, require_test_cmd=False)
+            selected_slot, _cmd = task_args._resolve_task_workspace_cwd(_home(), args, require_test_cmd=False)
         if (selected_slot is not None and os.path.abspath(REPO / selected_slot) != anchor
                 or selected_cwd is not None and os.path.abspath(selected_cwd) != anchor):
             print("regression: stale (선택 작업공간과 core 기록 좌표 불일치) "
@@ -7462,7 +6940,7 @@ def _refuse_release_for_must_fix(flag: Path, cwd: str, problems: list[str]) -> i
     """
     flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (pass 기록과 같은 규칙)
     _write_json_atomic(flag, {
-        "head": _git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+        "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
         "ts": now_utc(), "reason": _LIVEGATE_MUST_FIX_REASON,
     })
     print(_MUST_FIX_BLOCK_GUIDANCE.format(
@@ -7505,7 +6983,7 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
             # 사전 pass 기록이 남아 있어도 이 fail 로 교체한다(false-green 잔존 0).
             flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
             _write_json_atomic(flag, {
-                "head": _git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+                "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
                 "ts": now_utc(), "reason": _LIVEGATE_ENGINE_DRIFT_REASON,
             })
             return _report_engine_rev_skew_at_terminal(exc)
@@ -7520,7 +6998,7 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
         return 0
     flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
     _write_json_atomic(flag, {
-        "head": _git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+        "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
         "ts": now_utc(), "reason": _LIVEGATE_ENGINE_DRIFT_REASON,
     })
     shown = changes[:_ENGINE_DRIFT_LISTED_MAX]
@@ -7616,7 +7094,7 @@ def _release_evidence_problem(data: dict, flag: Path, rev: str) -> str | None:
     for path in (anchor, cwd):
         if not isinstance(path, str) or not os.path.isabs(path) or not Path(path).is_dir():
             return "release coordinates invalid"
-        if _git_head_at(path) != rev:
+        if git._git_head_at(path) != rev:
             return "release head drift"
     resolved, mode = _resolve_livegate_flag(cwd)
     core_resolved, core_mode = _resolve_regression_flag(anchor)
@@ -7657,7 +7135,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
     # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd 로
     # 고정하고 surface 한다(cwd 비참여·livegate 는 고정 release cmd 라 test_cmd 는 불요).
     if getattr(args, "task", None):
-        task_cwd, _ = _resolve_task_workspace_cwd(args)
+        task_cwd, _ = task_args._resolve_task_workspace_cwd(_home(), args)
         if getattr(args, "cwd", None) is None:
             args.cwd = task_cwd
         print(f"livegate: 작업공간(task {args.task}) → {task_cwd}")
@@ -7665,7 +7143,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
     # `_livegate_cwd` 는 override 최우선이라 session 이 불요하다.
     _explicit_cwd = getattr(args, "cwd", None)
     live_session = (None if _explicit_cwd
-                    else session_name(_execution_actor_session_override(args)))
+                    else lease_store.session_name(_home(), task_args._execution_actor_session_override(_home(), args)))
     cwd = _livegate_cwd(_explicit_cwd, session=live_session)
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
@@ -7711,7 +7189,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
     regression_data, platform_anchor, platform_commands, problem = _release_core_context(
         flag, cwd, regression_session,
     )
-    start_head = _git_head_at(cwd) if platform_commands else ""
+    start_head = git._git_head_at(cwd) if platform_commands else ""
     snapshot = {}
     cells = []
     provisional = None
@@ -7767,7 +7245,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
     if output.strip():
         print(output if output.endswith("\n") else output + "\n", end="")
     n = _livegate_ran_count(output)
-    head = _git_head_at(cwd)
+    head = git._git_head_at(cwd)
     passed = (rc == 0 and n == LIVEGATE_RELEASE_PIN
               and (not platform_commands or (bool(start_head) and head == start_head)))
     status = "pass" if passed else "fail"
@@ -7908,37 +7386,6 @@ def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
     raise FileNotFoundError(f"{kind} not found: {item_id}")
 
 
-def _ticket_search_dirs() -> list[tuple[str, Path]]:
-    """티켓 조회 범위 — (status 라벨, 디렉토리) 순서쌍. STATUS_DIRS → draft 격리 디렉토리."""
-    return [*((status, tickets_dir() / status) for status in STATUS_DIRS),
-            ("draft", drafts_dir())]
-
-
-def find_ticket_exact(
-    tid: str, *, search_dirs: Sequence[tuple[str, Path]] | None = None,
-) -> tuple[str, Path] | None:
-    """canonical ID 가 **정확히** `tid` 인 티켓의 (status, path) — 없으면 None (공용 seam).
-
-    `{tid}-*.md` **prefix glob 의 첫 매칭**을 티켓-ID 조회로 쓰면 legacy ID(`T-NNNN`)가 같은
-    번호로 시작하는 prefixed ID(`T-NNNN-001`)에 오인 매칭된다 — 어느 쪽이 잡힐지는 디렉토리
-    순서가 정하고, 그 결과 회귀 강등 스코프·완료 게이트가 **무관한 티켓의
-    frontmatter** 를 보게 된다(전부 조용한 오판). 그래서 후보 전체를 훑어 frontmatter canonical
-    ID(`_canonical_ticket_id`)가 정확히 일치하는 것만 인정한다.
-
-    이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어 티켓 조회·`ticket_finish` 티켓 로드)
-    공용 seam 으로 둔다 — 사본을 만들면 그 사본이 다시 첫-매칭으로 흘러 half-fix 가 재발한다.
-    `search_dirs` 를 주면 그 (status 라벨, 디렉토리) 순서로만 본다 — 다른 PM 홈의 보드를 읽는
-    호출부(`additional_reviewer --pm-home`)가 자기 범위를 명시하는 자리다. 미지정이면 이 board 의
-    STATUS_DIRS → drafts.
-    """
-    for status, directory in (search_dirs if search_dirs is not None
-                              else _ticket_search_dirs()):
-        for path in sorted(Path(directory).glob(f"{tid}-*.md")):
-            if _canonical_ticket_id(path) == tid:
-                return status, path
-    return None
-
-
 def find_ticket_for_mutation(tid: str) -> tuple[str, Path]:
     """상태-변경 명령 전용 조회 — canonical ID **정확 일치만** (없으면 FileNotFoundError).
 
@@ -7955,7 +7402,7 @@ def find_ticket_for_mutation(tid: str) -> tuple[str, Path]:
     안내는 "왜 못 찾았나"를 말한다 — 같은 번호로 시작하는 후보가 실재하면 그 canonical ID 를
     함께 보여, 오타 입력이 조용한 오이동 대신 정확한 재입력으로 이어지게 한다.
     """
-    exact = find_ticket_exact(tid)
+    exact = ticket_store.find_ticket_exact(_home(), tid)
     if exact is not None:
         return exact
     near = _near_miss_ticket_ids(tid)
@@ -7972,9 +7419,9 @@ def _near_miss_ticket_ids(tid: str) -> list[str]:
     """
     near: list[str] = []
     with contextlib.suppress(OSError):
-        for _status, directory in _ticket_search_dirs():
+        for _status, directory in ticket_store._ticket_search_dirs(_home()):
             for path in sorted(Path(directory).glob(f"{tid}-*.md")):
-                canonical = _canonical_ticket_id(path)
+                canonical = ticket_store._canonical_ticket_id(path)
                 if canonical and canonical != tid and canonical not in near:
                     near.append(canonical)
     return near
@@ -7998,14 +7445,14 @@ def find_ticket(tid: str) -> tuple[str, Path]:
     (`drafts_dir()`)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show` 가 draft 를
     조회할 수 있게 한다.
     """
-    exact = find_ticket_exact(tid)
+    exact = ticket_store.find_ticket_exact(_home(), tid)
     if exact is not None:
         return exact
 
     def _loud_if_mismatch(result: tuple[str, Path]) -> tuple[str, Path]:
         # 폴백이 남의 티켓을 무음으로 답하는 마지막 표면 가시화 — 차단이 아니라 경고
         # (legacy `id:` 부재 티켓 조회는 유지·정확 후보가 있으면 여기 도달하지 않는다).
-        canonical = _canonical_ticket_id(result[1])
+        canonical = ticket_store._canonical_ticket_id(result[1])
         if canonical and canonical != tid:
             print(
                 f"⚠ 정확 일치 티켓 없음 — {result[1].name} (canonical {canonical}) 로 폴백",
@@ -8014,16 +7461,16 @@ def find_ticket(tid: str) -> tuple[str, Path]:
         return result
 
     try:
-        return _loud_if_mismatch(find_item(tickets_dir(), STATUS_DIRS, tid, "ticket"))
+        return _loud_if_mismatch(find_item(pm_paths.tickets_dir(_home()), ticket_rules.STATUS_DIRS, tid, "ticket"))
     except FileNotFoundError:
-        for p in drafts_dir().glob(f"{tid}-*.md"):
+        for p in pm_paths.drafts_dir(_home()).glob(f"{tid}-*.md"):
             return _loud_if_mismatch(("draft", p))
         raise
 
 
 def find_idea(iid: str) -> tuple[str, Path]:
     """Return (status_dir, path) for idea `iid`. Raises FileNotFoundError."""
-    return find_item(IDEAS_DIR, IDEA_STATUS_DIRS, iid, "idea")
+    return find_item(IDEAS_DIR, ticket_rules.IDEA_STATUS_DIRS, iid, "idea")
 
 
 # ── 개행 표기 보존 ───────────────────────────────────────────────────────────
@@ -8070,61 +7517,6 @@ def _write_text_keeping_newlines(path: Path, text: str) -> None:
         handle.write(text)
 
 
-def _parse_ticket_text(text: str, source: Path | str) -> tuple[dict[str, Any], str]:
-    """`load_ticket`의 실제 frontmatter 문법으로 문자열을 파싱한다.
-
-    파일 I/O와 파서를 분리해, 쓰기 전 변환 결과도 런타임 소비자와 완전히 같은 문법으로
-    검증할 수 있게 한다. `source`는 오류 메시지의 파일 식별자일 뿐 파싱에는 관여하지 않는다.
-    """
-    if not text.startswith("---\n"):
-        raise ValueError(f"missing frontmatter: {source}")
-    # Split on the FIRST closing '---' after the opener
-    after_open = text[4:]
-    end = after_open.find("\n---\n")
-    if end == -1:
-        raise ValueError(f"unterminated frontmatter: {source}")
-    fm_text = after_open[:end]
-    body = after_open[end + 5:]
-    fm = yaml.safe_load(fm_text) or {}
-    return fm, body
-
-
-def load_ticket(path: Path) -> tuple[dict[str, Any], str]:
-    """Return (frontmatter dict, body string)."""
-    return _parse_ticket_text(fs.read_text_shared(path, encoding="utf-8"), path)
-
-
-# 손상 frontmatter fail-soft — **디렉토리 순회** 전용 로더.
-#
-# 한 티켓의 YAML 이 깨지면(실측: 콜론을 인용 없이 쓴 스칼라 값) 그 파일을
-# 읽는 순간 예외가 나고, 순회 소비자(`list`·`lint`·`refresh`)가 통째로 traceback 으로 죽는다 —
-# 보드 전체가 한 파일 때문에 조회 불능이 되는 클래스다. 순회에서는 그 티켓만 건너뛰되 **조용히
-# 넘기지 않는다**(경고 1줄 + 경로 + 사유). 지정 대상 mutation(claim/complete/block/…)은 그대로
-# `load_ticket` 을 써 fail-loud 다 — 고치라고 지목받은 파일이 조용히 무시되면 안 된다.
-_LOAD_TICKET_SOFT_ERRORS = (OSError, UnicodeError, ValueError, yaml.YAMLError)
-
-
-def load_ticket_soft(path: Path) -> tuple[dict[str, Any], str] | None:
-    """순회용 `load_ticket` — 읽기/파싱 실패면 경고 1줄 뒤 None (그 티켓만 skip).
-
-    frontmatter 가 dict 가 아닌 형상(스칼라·리스트)도 같은 축으로 접는다 — 뒤따르는 `fm.get(...)`
-    이 AttributeError 로 터지면 fail-soft 가 반쪽이다.
-    """
-    try:
-        fm, body = load_ticket(path)
-    except _LOAD_TICKET_SOFT_ERRORS as exc:
-        print(f"경고: 티켓을 읽지 못해 건너뜁니다 — {_rel_to_repo(path)} "
-              f"({type(exc).__name__}: {exc})\n"
-              "  · frontmatter YAML 문법을 확인하세요 (콜론 포함 값은 인용 필요 — "
-              'title: "a: b").', file=sys.stderr)
-        return None
-    if not isinstance(fm, dict):
-        print(f"경고: 티켓 frontmatter 가 매핑이 아니라 건너뜁니다 — {_rel_to_repo(path)} "
-              f"({type(fm).__name__})", file=sys.stderr)
-        return None
-    return fm, body
-
-
 def _issued_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | None:
     """그 파일이 **발행한 티켓 ID** — frontmatter `id` 가 진실, 미기재/읽기 실패만 파일명 폴백.
 
@@ -8142,13 +7534,13 @@ def _issued_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | Non
     `fm` 을 이미 읽었으면 넘겨서 재파싱을 피한다(`_scan_prefix_tickets` 순회).
     """
     if fm is None:
-        loaded = load_ticket_soft(path)
+        loaded = ticket_store.load_ticket_soft(_home(), path)
         fm = loaded[0] if loaded is not None else None
     raw = (fm or {}).get("id")
     tid = str(raw).strip() if raw is not None else ""
     if tid and _ticket_id_number(tid) is None:
         tid = ""                       # ID 문법 아님 — 진실로 쓸 수 없다(파일명 폴백).
-    return tid or _ticket_id_from_filename(path.name)
+    return tid or ticket_rules._ticket_id_from_filename(path.name)
 
 
 def _ticket_document(fm: dict[str, Any], body: str, newline: str) -> str:
@@ -8455,7 +7847,7 @@ def _section_add_owning_cluster(tid: str, path: Path) -> str | None:
     loud 판독 대신 아래 묶음 소유 거부 문구를 받는다 — 둘 다 첫 쓰기 앞 rc=1 이라 갈리는 것은
     진단 문구뿐이다. 장부가 없는 티켓은 종전대로 `load_ticket` 이 손상을 loud 하게 낸다.
     """
-    loaded = load_ticket_soft(path)
+    loaded = ticket_store.load_ticket_soft(_home(), path)
     fm = loaded[0] if loaded is not None else {}
     cluster = ticket_cluster(tid, fm if isinstance(fm, dict) else {})
     return cluster if load_cluster(cluster) is not None else None
@@ -8565,13 +7957,13 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         rc, path = _active_ticket_path(args.id, "section-add", role=role)
         if path is None:
             return rc
-        load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
-        is_draft = path.resolve().parent == drafts_dir().resolve()
+        ticket_store.load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
+        is_draft = path.resolve().parent == pm_paths.drafts_dir(_home()).resolve()
         with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
             spec_text = handle.read()
 
     try:
-        existing = rounds.load_rounds(tickets_dir(), args.id, ticket_text=spec_text)
+        existing = rounds.load_rounds(pm_paths.tickets_dir(_home()), args.id, ticket_text=spec_text)
         seed = rounds.render_round_seed(
             role, spec_text, today=today,
             previous_round=rounds.previous_round_of_role(existing, role),
@@ -8580,7 +7972,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
             rounds=existing,
         )
         round_path = rounds.reserve_round(
-            tickets_dir(), args.id, role,
+            pm_paths.tickets_dir(_home()), args.id, role,
             content=_round_seed_header_override(seed, label, role, today),
             lock=board_lock(),
         )
@@ -8593,13 +7985,13 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         # 함께 커밋한다(refresh/pull/commit/push 소유가 promote 라는 기존 규칙).
         print(
             f"section added {args.id}: {label} ({role} · {today}) → "
-            f"{_rel_to_repo(round_path)} (local draft; promote가 출하 소유)"
+            f"{pm_paths._rel_to_repo(_home(), round_path)} (local draft; promote가 출하 소유)"
         )
     else:
         ready = _rounds_mutation_sync_paths(
             f"section-add {args.id} {role}", (round_path,))
         print(f"section added {args.id}: {label} ({role} · {today}) → "
-              f"{_rel_to_repo(round_path)}"
+              f"{pm_paths._rel_to_repo(_home(), round_path)}"
               f"{_board_git_mutation_state_suffix(ready)}")
     return 0
 
@@ -8659,7 +8051,7 @@ def cmd_tier(args: argparse.Namespace) -> int:
         rc, path = _active_ticket_path(args.id, "tier")
         if path is None:
             return rc
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         fm["tier"] = args.tier
         dump_ticket_atomic(path, fm, body)
 
@@ -8686,10 +8078,10 @@ def cmd_design(args: argparse.Namespace) -> int:
         rc, path = _active_ticket_path(args.id, "design")
         if path is None:
             return rc
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         fm["design"] = args.value
         dump_ticket_atomic(path, fm, body)
-        is_draft = path.resolve().parent == drafts_dir().resolve()
+        is_draft = path.resolve().parent == pm_paths.drafts_dir(_home()).resolve()
 
     if is_draft:
         # draft는 board-git 미커밋 authoring 영역이다 — promote가 출하 시점에 함께 커밋한다
@@ -8703,12 +8095,12 @@ def cmd_design(args: argparse.Namespace) -> int:
 
 def cmd_tier_signals(args: argparse.Namespace) -> int:
     """touches 기반 h1·h2·문서-전용 신호를 advisory로 표시한다."""
-    found = find_ticket_exact(args.id)
+    found = ticket_store.find_ticket_exact(_home(), args.id)
     if found is None:
         print(f"ticket not found: {args.id}", file=sys.stderr)
         return 1
     _status, path = found
-    fm, _body = load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     touches = fm.get("touches")
     if not isinstance(touches, list):
         touches = []
@@ -8747,7 +8139,7 @@ def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
 
 def move_ticket(src: Path, dst_status: str) -> Path:
     """Atomic mv into a ticket status directory."""
-    return move_item(tickets_dir(), src, dst_status)
+    return move_item(pm_paths.tickets_dir(_home()), src, dst_status)
 
 
 def move_idea(src: Path, dst_status: str) -> Path:
@@ -8776,7 +8168,7 @@ def next_numeric_id(base_dir: Path, statuses: tuple[str, ...],
 # ID 스캔용 status 튜플 — STATUS_DIRS + draft 격리 디렉토리(`.drafts`). draft 도 이미
 # 발행된 ID(파일명에 박제)이므로 스캔에서 빠지면 promote 전 다음 `new` 가 같은 번호를 재사용해
 # 충돌한다. `next_numeric_id` 는 `base_dir / d` 로 순회하므로 디렉토리명 그대로 넣으면 된다.
-_ID_SCAN_STATUSES: tuple[str, ...] = (*STATUS_DIRS, ".drafts")
+_ID_SCAN_STATUSES: tuple[str, ...] = (*ticket_rules.STATUS_DIRS, ".drafts")
 
 
 def _next_prefixed_id(prefix: str) -> str:
@@ -8802,7 +8194,7 @@ def _next_prefixed_id(prefix: str) -> str:
     max_num = 0
     anchor: tuple[int, str] | None = None   # (최저 번호, 그 ID) — canonical case 의 결정적 출처.
     for d in _ID_SCAN_STATUSES:
-        for p in (tickets_dir() / d).glob("T-*.md"):
+        for p in (pm_paths.tickets_dir(_home()) / d).glob("T-*.md"):
             tid = _issued_ticket_id(p)
             if not tid:
                 continue
@@ -8830,12 +8222,12 @@ def _next_id(prefix: str | None = None) -> str:
     """
     if prefix:
         return _next_prefixed_id(prefix)
-    n = next_numeric_id(tickets_dir(), _ID_SCAN_STATUSES, "T-*.md", r"T-(\d+)-")
+    n = next_numeric_id(pm_paths.tickets_dir(_home()), _ID_SCAN_STATUSES, "T-*.md", r"T-(\d+)-")
     return f"T-{n:04d}"
 
 
 def _next_idea_id() -> str:
-    n = next_numeric_id(IDEAS_DIR, IDEA_STATUS_DIRS, "[0-9]*.md", r"(\d+)-")
+    n = next_numeric_id(IDEAS_DIR, ticket_rules.IDEA_STATUS_DIRS, "[0-9]*.md", r"(\d+)-")
     return f"{n:04d}"
 
 
@@ -8873,15 +8265,15 @@ def _claim_code_tree(args: argparse.Namespace) -> str | None:
     전무하면 None 이다(호출부가 각자의 문구로 멈춘다). task 입력은 leased work·경로·HEAD·브랜치를
     선검사하고 실패하면 중단한다.
     """
-    if _execution_actor_session_override(args) is None:
+    if task_args._execution_actor_session_override(_home(), args) is None:
         return None
-    return _resolve_task_workspace_cwd(args)[0]
+    return task_args._resolve_task_workspace_cwd(_home(), args)[0]
 
 
 def _claim_head_rev(args: argparse.Namespace) -> str:
     """claim 시점 HEAD — task 작업공간의 HEAD(읽지 못하면 중단)."""
     tree = _claim_code_tree(args)
-    rev = _git_head_at(tree) if tree else ""
+    rev = git._git_head_at(tree) if tree else ""
     if not rev:
         sys.exit(f"[중단] task claim 앵커 HEAD를 읽지 못했다: {tree}")
     return rev
@@ -8890,7 +8282,7 @@ def _claim_head_rev(args: argparse.Namespace) -> str:
 def cmd_claim(args: argparse.Namespace) -> int:
     # claim = 귀속 쓰기 — `--task` 가 없으면 어떤 쓰기·git 호출보다 먼저 멈춘다. 함께 준
     # `--repo`/`--slot` 은 그 task 가 보유한 폴더(claim 앵커)를 고른다.
-    override = _execution_actor_session_override(args)
+    override = task_args._execution_actor_session_override(_home(), args)
     if override is None:
         sys.exit(TASK_REQUIRED.format(action="claim", command=f"board.py claim {args.id}"))
     # claimed_by 는 `<user>/<task>` — user 미상이면 task 만(graceful).
@@ -8944,7 +8336,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
         if status != "open":
             print(f"cannot claim {args.id}: currently in {status}/", file=sys.stderr)
             return 1
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         # Check dependencies
         for dep in fm.get("depends_on") or []:
             try:
@@ -9023,7 +8415,7 @@ def _pm_verified_delegate_problem(
     추가 리뷰어 release 게이트는 `GATE_CHANNEL_ADDITIONAL` 로 호출하고, 판정 표면 하한은 **그
     채널 장부 entry 의 잔여 must-fix 건수**다. 채널 스코프 없이 티켓 전역을 보면 다른 채널의
     기계 확인이 이 게이트의 잔여를 여는 구멍이 생긴다."""
-    found = find_ticket_exact(tid)
+    found = ticket_store.find_ticket_exact(_home(), tid)
     if found is None:
         return f"티켓을 찾지 못했습니다: {tid}"
     _status, path = found
@@ -9038,7 +8430,7 @@ def _pm_verified_delegate_problem(
     if reviewer_role is None:
         return f"pm-verified 재검증 채널을 확정할 수 없습니다: {channel!r}"
     rounds_module = _load_ticket_rounds()
-    rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=spec_text)
+    rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
     checker = getattr(delegate, checker_name, None)
     if checker is None:
         return f"pm_delegate.py 에 {checker_name} seam이 없어 판정할 수 없습니다"
@@ -9075,7 +8467,7 @@ def _review_problem(tid: str, checker_name: str, spec_text: str | None) -> str |
     판정 seam 부재)은 통과가 아니라 차단 사유다.
     """
     if spec_text is None:
-        found = find_ticket_exact(tid)
+        found = ticket_store.find_ticket_exact(_home(), tid)
         if found is None:
             return f"티켓을 찾지 못해 리뷰 잔여를 판정할 수 없습니다: {tid}"
         try:
@@ -9090,7 +8482,7 @@ def _review_problem(tid: str, checker_name: str, spec_text: str | None) -> str |
         return f"pm_delegate.py 에 {checker_name} seam 이 없어 리뷰 잔여를 판정할 수 없습니다"
     rounds_module = _load_ticket_rounds()
     try:
-        rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=spec_text)
+        rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
     except rounds_module.RoundsError as exc:
         return f"리뷰 라운드를 읽지 못해 리뷰 잔여를 판정할 수 없습니다: {exc}"
     return checker(spec_text, rounds)
@@ -9117,7 +8509,7 @@ def _round_completion_problems(tid: str, spec_text: str) -> list[str]:
     낸다 — 미회수는 게이트가 아니라는 결정이고, 판정 코드의 단일 진실은 사이드카 seam 이다.
     """
     rounds = _load_ticket_rounds()
-    problems = rounds.verify_rounds(tickets_dir(), tid, ticket_text=spec_text)
+    problems = rounds.verify_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
     blocking_codes = (rounds.PROBLEM_GAP, rounds.PROBLEM_DUPLICATE)
     blocking: list[str] = []
     for item in problems:
@@ -9155,7 +8547,7 @@ def _complete_gate(tid: str, args: argparse.Namespace,
         if not id_re.search(log_text):
             problems.append(
                 f"no log/current.md entry mentions {tid} — append one to "
-                f"{_rel_to_repo(LOG_FILE)} (or pass --allow-missing-log)")
+                f"{pm_paths._rel_to_repo(_home(), LOG_FILE)} (or pass --allow-missing-log)")
 
     # 2. regression must be confirmed by the implementing session.
     if not (args.tests_pass or args.allow_untested):
@@ -9199,7 +8591,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
         # 이 body snapshot 뒤에 끼어들어 유실되지 않는다.
         with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
             spec_text = handle.read()
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
 
         # 묶음 멤버 lifecycle mutation은 정상 종결 파이프라인에 결속한다. ownership, DoD,
         # move/dump와 board-git sync보다 앞이라 거부 시 ticket/ledger/git write가 0이다.
@@ -9259,7 +8651,7 @@ def cmd_block(args: argparse.Namespace) -> int:
         if status not in ("open", "claimed"):
             print(f"cannot block from {status}/", file=sys.stderr)
             return 1
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         # 소유 대조 — claimed 티켓(=소유자 있음)의 상태 변경은 그 소유 세션만. open 티켓은
         # claimed_by 가 없어 무대상이다(현행 무변경).
         ownership = _ticket_ownership(fm, args)
@@ -9312,7 +8704,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
             print(f"cannot unclaim {args.id}: in {status}/, must be "
                   f"{'/'.join(_UNCLAIM_SOURCE_STATUSES)}", file=sys.stderr)
             return 1
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         # 소유 대조 — 정상 경로는 소유자만. `--takeover` 는 **소유자 부재 이전의 유일한 문**
         # 이다(complete/block/unblock 엔 이 인수를 두지 않는다 — 문이 넷이면 소유 규칙이 네 벌이
         # 된다). 이전 사유는 본문 노트와 board-git 커밋 메시지 양쪽에 남긴다(board-git 없는
@@ -9357,7 +8749,7 @@ def cmd_unblock(args: argparse.Namespace) -> int:
             print(f"cannot unblock {args.id}: in {status}/, must be blocked",
                   file=sys.stderr)
             return 1
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         # 소유 대조 — claimed_by 를 보유한 blocked(=claimed 기원)는 그 소유 세션만 되돌린다.
         # 소유자 없는 open-기원 blocked 는 무대상(현행 무변경).
         ownership = _ticket_ownership(fm, args)
@@ -9387,7 +8779,7 @@ def cmd_unblock(args: argparse.Namespace) -> int:
 # pseudo-status "draft" 도 출처에 넣는다 — draft(drafts_dir())는 번호만 배정된 채 board-git
 # 밖에 있고, discard 가 아니면 그 번호를 설명하는 기록이 보드에 영영 안 남는다(사람이 `rm`
 # 으로 치우던 자리). draft 는 `claimed_by` 가 없어 아래 소유 대조를 그대로 통과한다.
-_DISCARD_SOURCE_STATUSES: tuple[str, ...] = (*ACTIVE_STATUS_DIRS, "draft")
+_DISCARD_SOURCE_STATUSES: tuple[str, ...] = (*ticket_rules.ACTIVE_STATUS_DIRS, "draft")
 
 
 _ROUND_PENDING_UNHARVESTED_QUERY = (
@@ -9458,7 +8850,7 @@ def _discard_round_pending_notice(tid: str) -> None:
     """
     rounds_module = _load_ticket_rounds()
     pending = [
-        item for item in rounds_module.load_rounds(tickets_dir(), tid) if item.pending
+        item for item in rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid) if item.pending
     ]
     if not pending:
         return
@@ -9495,7 +8887,7 @@ def cmd_discard(args: argparse.Namespace) -> int:
                   f"{'/'.join(_DISCARD_SOURCE_STATUSES)} "
                   f"(이미 종결된 티켓은 `reopen` 후 다시 처분하라)", file=sys.stderr)
             return 1
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         # 소유 대조 — 남이 claim 해 진행 중인 티켓을 다른 세션이 처분으로 닫으면 그 작업이
         # 통째로 사라진다(complete 와 같은 축).
         ownership = _ticket_ownership(fm, args)
@@ -9546,11 +8938,11 @@ def cmd_reopen(args: argparse.Namespace) -> int:
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
-        if status not in TERMINAL_STATUS_DIRS:
+        if status not in ticket_rules.TERMINAL_STATUS_DIRS:
             print(f"cannot reopen {args.id}: in {status}/, must be "
-                  f"{'/'.join(TERMINAL_STATUS_DIRS)}", file=sys.stderr)
+                  f"{'/'.join(ticket_rules.TERMINAL_STATUS_DIRS)}", file=sys.stderr)
             return 1
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         to_draft = fm.get("discarded_from") == "draft"
         dest_status = "draft" if to_draft else "open"
         new_path = move_ticket(path, ".drafts" if to_draft else "open")
@@ -9632,7 +9024,7 @@ def _write_init_local_conf() -> None:
     # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
     # (임계 구간을 프로브 시간만큼 늘리지 않는다).
     detected_py = _detect_py()
-    detected_test_cmd = default_pytest_cmd(detected_py)
+    detected_test_cmd = python_env.default_pytest_cmd(detected_py)
     with _local_conf_write_lock(LOCAL_CONF):
         if not LOCAL_CONF.exists():
             # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
@@ -9654,7 +9046,7 @@ def _write_init_local_conf() -> None:
         # (additional_reviewer.*·delegate.*·upstream.*·harness.*·identity.user 등)를 절대
         # 삭제/변경하지 않는다. 통째 write 금지.
         text = fs.read_text_shared(LOCAL_CONF, encoding="utf-8")
-        existing = local_config()
+        existing = conf_store.local_config(_home())
         updates: dict[str, str] = {}
         # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.compact_at_pct` 등)은 보존.
         defaults = {
@@ -9745,7 +9137,7 @@ def fill_self_repo_row(*, write: bool) -> str | None:
     반환 = 채운(채울) 값 설명 또는 None.
     """
     with board_lock():
-        _header, rows = _parse_areas()
+        _header, rows = areas_store._parse_areas(_home())
         own = [row for row in rows if row.get("repo") == REPO.name]
         if len(own) > 1:
             raise AreasDuplicateRepo(REPO.name, len(own))
@@ -9761,7 +9153,7 @@ def fill_self_repo_row(*, write: bool) -> str | None:
             _areas_set_cell_locked(REPO.name, "base", base)
     if write:
         # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock). inline board 는 무동작.
-        _board_git_sync_best_effort("areas 자기 행 git·base", (areas_file(),))
+        _board_git_sync_best_effort("areas 자기 행 git·base", (pm_paths.areas_file(_home()),))
     return f"repo={REPO.name} | git={git} | base={base}"
 
 
@@ -9852,12 +9244,12 @@ def cmd_init(args: argparse.Namespace) -> int:
             prefix = fresh
         # 멱등 키 = **이 clone 의 repo 행**. prefix 존재만으로 등록을 생략하면 사용자가 승인까지
         # 지불한 카테고리가 조용히 버려지고, prefix 를 repo 이름으로 쓰면 한 물리 repo 가 2행이 된다.
-        _header, _rows = _parse_areas()
+        _header, _rows = areas_store._parse_areas(_home())
         own_rows = [row for row in _rows if row.get("repo") == repo_name]
         if len(own_rows) > 1:
             print(f"[중단] areas.md 에 repo {repo_name!r} 행이 {len(own_rows)}개다(중복) — 어느 행이 "
                   "이 clone 인지 기계가 정할 수 없다. 한 행만 남기고 수동 정리한 뒤 다시 실행하라 "
-                  f"({_rel_to_repo(areas_file())}·`board.py lint` 의 areas-duplicate-repo 참조). "
+                  f"({pm_paths._rel_to_repo(_home(), pm_paths.areas_file(_home()))}·`board.py lint` 의 areas-duplicate-repo 참조). "
                   "등록·conf 어떤 것도 쓰지 않았다.", file=sys.stderr)
             return 1
         # 다른 repo 행이 이미 그 카테고리를 쓰고 있으면 ID 네임스페이스가 겹친다 — 두 repo 가
@@ -9926,7 +9318,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         # add`/`repo protected` 와 **같은 스코프 채널**로 이 mutation 이 만진 경로만 기록한다
         # (board 가 별도 git 이 아니면 no-op·best-effort 라 실패해도 init 을 되돌리지 않는다).
         # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock).
-        _board_git_sync_best_effort("init areas 등록", (areas_file(),))
+        _board_git_sync_best_effort("init areas 등록", (pm_paths.areas_file(_home()),))
     print(area_message)
     print("✓ local.conf: py·test_cmd·ctx 비율 (세션·prefix 는 conf 키가 아니다 — "
           "세션=lease 장부 · prefix=areas.md)")
@@ -9942,7 +9334,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         seed = fs.read_text_shared(PM_STATE_TEMPLATE, encoding="utf-8").replace(
             "{{DATE}}", datetime.date.today().isoformat())
         PM_STATE_FILE.write_text(seed, encoding="utf-8", newline="\n")
-        print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
+        print(f"✓ pm_state.md 생성 ({pm_paths._rel_to_repo(_home(), PM_STATE_TEMPLATE)} 에서)")
     # 미설치면 사유를 `install_pre_push_hook` 이 stderr 에 남긴다 — 여기서는 설치한 자리를 밝힌다.
     if install_pre_push_hook():
         print("✓ pre-push 게이트 훅 설치 — 자기 저장소의 .git/hooks "
@@ -9960,12 +9352,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     # 완료 안내의 ID 포맷은 **이 clone 에서 `board.py new` 가 실제로 발행할 값**이다 —
     # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 `id_prefix`)에서 뽑는다.
     # 등록이 생략/거부된 형상에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.
-    issued = id_prefix(None)
+    issued = areas_store.id_prefix(_home(), None)
     # `id_prefix(None)` 의 미해소(None)는 두 형상을 가린다 — (a) 등록 ≤1(count-based 로 곧
     # 무prefix `T-NNNN` 이 발행) (b) 등록 ≥2(모호). `cmd_new` 는 후자에서
     # 자신의 ≥2 가드로 fail-loud 하므로 무명시 `T-NNNN` 은 실제로 발행되지 않는다 — 완료 안내가
     # 그 포맷을 성공 메시지로 내면 거짓이다(같은 `registered_prefixes()` 로 `cmd_new` 와 lockstep).
-    ambiguous = issued is None and len(registered_prefixes()) >= 2
+    ambiguous = issued is None and len(areas_store.registered_prefixes(_home())) >= 2
     if ambiguous:
         mode = f"repo {repo_name} · 카테고리 모호(등록 카테고리 ≥2)"
         id_line = ("무명시 `board.py new` 발행 불가 — 등록 카테고리가 여럿이다. "
@@ -10032,7 +9424,7 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
     upgrade = False
     sep_cols = 0     # 업그레이드 후 구분선이 가질 칼럼 수(canonical 8 또는 구 헤더+1).
     sep_replaced = False  # 헤더 직후 구분선 1회만 교체(이후 구분선은 verbatim).
-    canonical_ao = _AREAS_COLUMNS.index("area_owner")
+    canonical_ao = areas_rules._AREAS_COLUMNS.index("area_owner")
     changes: list[str] = []
     out: list[str] = []
     for line in lines:
@@ -10043,11 +9435,11 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
             nl, body = "\r\n", line[:-2]
         elif line.endswith("\n"):
             nl, body = "\n", line[:-1]
-        cells = _split_areas_row(body)
+        cells = areas_rules._split_areas_row(body)
         if cells is None:
             # 비-table 줄(주석·빈 줄·구분선)은 기본 verbatim. 단 업그레이드 모드에서 헤더
             # 직후 첫 구분선(`|---|`)은 새 칼럼 수에 맞춰 교체한다(헤더 폭과 정합).
-            if upgrade and not sep_replaced and _AREAS_SEP_RE.match(body.strip()):
+            if upgrade and not sep_replaced and areas_rules._AREAS_SEP_RE.match(body.strip()):
                 out.append("|" + "|".join("---" for _ in range(sep_cols)) + "|" + nl)
                 sep_replaced = True
             else:
@@ -10107,7 +9499,7 @@ def _migrate_ticket_fm(fm: dict, user: str, task: str, status: str,
     if not (str(created_by).strip() if created_by is not None else ""):
         fm["created_by"] = user
         changes.append(f"created_by → {user}")
-    if status not in TERMINAL_STATUS_DIRS:
+    if status not in ticket_rules.TERMINAL_STATUS_DIRS:
         for field in ("created_by", "claimed_by"):
             value = fm.get(field)
             if not (isinstance(value, str) and value.strip()):
@@ -10137,7 +9529,7 @@ def _print_migrate_foreign(tid: str, status: str, foreign: list[str]) -> None:
 
 def _migrate_scan_dirs(statuses: tuple[str, ...]) -> list[tuple[str, Path]]:
     """migrate 스캔 디렉토리 — 요청 status 디렉토리 + draft 격리 디렉토리(pseudo-status `draft`)."""
-    return [(status, tickets_dir() / status) for status in statuses] + [("draft", drafts_dir())]
+    return [(status, pm_paths.tickets_dir(_home()) / status) for status in statuses] + [("draft", pm_paths.drafts_dir(_home()))]
 
 
 def _migrate_identity_preview(
@@ -10149,7 +9541,7 @@ def _migrate_identity_preview(
     """
     total = 0
     # areas.md 미리보기(읽기 전용).
-    af = areas_file()
+    af = pm_paths.areas_file(_home())
     if af.exists():
         text = fs.read_text_shared(af, encoding="utf-8")
         _, area_changes = _migrate_areas_text(text, user)
@@ -10157,10 +9549,10 @@ def _migrate_identity_preview(
             print(f"  areas.md: {c}")
         total += len(area_changes)
     # 티켓 미리보기 — glob 스캔 후 변경 산출만(쓰기 없음).
-    registered = registered_repos()
+    registered = areas_store.registered_repos(_home())
     for status, directory in _migrate_scan_dirs(statuses):
         for p in sorted(directory.glob("T-*.md")):
-            fm, _body = load_ticket(p)
+            fm, _body = ticket_store.load_ticket(p)
             changes, foreign = _migrate_ticket_fm(fm, user, slot, status, registered)
             tid = fm.get("id") or p.stem
             _print_migrate_foreign(tid, status, foreign)
@@ -10183,7 +9575,7 @@ def _migrate_areas_apply(user: str) -> tuple[int, bool]:
     **재진입 금지**: board_lock 은 OS flock(non-reentrant). 락 안에서 부르는 IO
     (`_migrate_areas_text`·AREAS_FILE read/write)는 락을 다시 잡지 않는다. 반환 `(total, wrote)`.
     """
-    af = areas_file()
+    af = pm_paths.areas_file(_home())
     if not af.exists():
         return 0, False
     total = 0
@@ -10217,12 +9609,12 @@ def _migrate_tickets_apply(
     """
     total = 0
     wrote = False
-    registered = registered_repos()
+    registered = areas_store.registered_repos(_home())
     with board_lock():
         for status, directory in _migrate_scan_dirs(statuses):
             for p in sorted(directory.glob("T-*.md")):
                 try:
-                    fm, body = load_ticket(p)
+                    fm, body = ticket_store.load_ticket(p)
                 except FileNotFoundError:
                     print(f"  skip {p.name}: 스캔 후 사라짐(수동/구버전 writer 이동) — "
                           "backfill 안 함", file=sys.stderr)
@@ -10300,7 +9692,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
                                       command="board.py migrate-identity"))
     dry_run = bool(getattr(args, "dry_run", False))
     scope = getattr(args, "scope", "all") or "all"
-    statuses = ("open", "claimed") if scope == "active" else STATUS_DIRS
+    statuses = ("open", "claimed") if scope == "active" else ticket_rules.STATUS_DIRS
 
     tag = "[dry-run] " if dry_run else ""
     # scope 문구 정합: migrate 는 소유 무관 *전 티켓*을 스캔·backfill 한다
@@ -10333,7 +9725,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 발행 = 귀속 쓰기(created_by = `<user>/<task>`). `--task` 가 없으면 prefix 판정·draft 생성·
     # ID 발행 어떤 부작용보다 먼저 멈춘다. `--task` 는 정체성 깔때기에서 task 명 검증을 받고,
     # 함께 준 `--repo`/`--slot` 은 그 task 가 보유한 폴더를 고르는 위치 인자일 뿐이다.
-    actor_session = _execution_actor_session_override(args)
+    actor_session = task_args._execution_actor_session_override(_home(), args)
     if actor_session is None:
         sys.exit(TASK_REQUIRED.format(action="new", command='board.py new "<제목>"'))
     # 명시 --prefix sanity (예약어 `none`·형식 [a-z0-9_]+) — 위반이면 ID 스캔·파일
@@ -10354,7 +9746,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 명시/task 값은 우선순위상 이미 최종 후보다. areas-only fold lookup(`id_prefix(override)`)으로
     # 먼저 canonical화하지 않고 아래 **공통 3소스 funnel**에 원 표기 그대로 넘긴다. 그래야
     # 오염된 areas `AAA`/`aaa`의 set 순회가 명시 경로 진단 입력을 다시 비결정적으로 고르지 않는다.
-    prefix = override if override else id_prefix(None)
+    prefix = override if override else areas_store.id_prefix(_home(), None)
     prefix_precheck: str | None = None
     prefix_surface = "board new --prefix" if requested_override else "board new derived prefix"
     if prefix is not None:
@@ -10385,7 +9777,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     # `_validate_prefix` + `require_prefix_user_ack` 두 단계로 닫히며, 기존 fold-매치는 무마찰이다.
     # 아래 ≥2 가드는 별개 — 등록 repo 가 ≥2 인데 prefix 를 *안* 준 implicit 모호성 방지다
     # (유도 체인·미해소 fail-loud).
-    registered = registered_prefixes()
+    registered = areas_store.registered_prefixes(_home())
     if len(registered) >= 2:
         if not prefix:
             print("multi-repo 네임스페이스 모드(등록 repo ≥2) — prefix 필요(미해소). "
@@ -10407,7 +9799,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(f"[중단] {design_reason}", file=sys.stderr)
         return 1
 
-    tmpl_fm, tmpl_body = load_ticket(template_file())
+    tmpl_fm, tmpl_body = ticket_store.load_ticket(pm_paths.template_file(_home()))
     # ID 발행 전에는 템플릿의 ID로 본문 경로만 판정한다.
     draft_lint_id = str(tmpl_fm.get("id") or "")
     draft_body = tmpl_body.replace("T-NNNN", draft_lint_id).replace("<제목>", args.title)
@@ -10504,14 +9896,14 @@ def cmd_new(args: argparse.Namespace) -> int:
                 tid, args, publish_basis=publish_basis)
 
         if is_draft:
-            drafts_dir().mkdir(parents=True, exist_ok=True)
-            path = drafts_dir() / filename
+            pm_paths.drafts_dir(_home()).mkdir(parents=True, exist_ok=True)
+            path = pm_paths.drafts_dir(_home()) / filename
         else:
-            path = tickets_dir() / "open" / filename
+            path = pm_paths.tickets_dir(_home()) / "open" / filename
         dump_ticket(path, fm, body)
     invalidate_known_prefixes_cache()
 
-    print(f"created {tid} ({_rel_to_repo(path)})")
+    print(f"created {tid} ({pm_paths._rel_to_repo(_home(), path)})")
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint --gate` "
           "(placeholders left in the body fail lint)")
     if cluster_ledger is not None:
@@ -10575,7 +9967,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
             print(f"cannot promote {args.id}: currently in {status}/ (promote 는 open/draft 만)",
                   file=sys.stderr)
             return 1
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         if _board_git_enabled():
             issues = _body_lint_issues(args.id, body, strict_sections=True,
                                        design=fm.get("design"),
@@ -10617,7 +10009,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         # draft 의 라운드도 promote 가 출하한다 — draft 명세는 board-git ignore 지만
         # `tickets/<라운드 디렉터리>/<티켓>/` 은 ignore 밖이라, 승격 커밋에 함께 싣지 않으면
         # 준비된 라운드가 미커밋으로 눌러앉는다(스코프 전개는 디렉터리를 파일로 펼친다).
-        round_dir = _load_ticket_rounds().rounds_dir_for_ticket(args.id, tickets_dir())
+        round_dir = _load_ticket_rounds().rounds_dir_for_ticket(args.id, pm_paths.tickets_dir(_home()))
         if round_dir.is_dir():
             touched.append(round_dir)
     if moved:
@@ -10646,7 +10038,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
 
 # `list` 기본뷰(무-status)의 활성 상태 — 종결(done·discarded)을 접어 범람을 해소한다.
 # `--status all` 이 STATUS_DIRS 전체(종결 포함)를 연다.
-_LIST_ACTIVE_STATUSES: tuple[str, ...] = ACTIVE_STATUS_DIRS
+_LIST_ACTIVE_STATUSES: tuple[str, ...] = ticket_rules.ACTIVE_STATUS_DIRS
 
 
 # ── 발행 시점 touches 겹침 재료 (판단 지점에 판단 재료가 있어야 한다) ──────────
@@ -10679,15 +10071,15 @@ def _publish_overlap_candidates(
     excluded = frozenset(exclude_ids)   # 문자열 하나가 들어와도 부분문자열 매칭이 되지 않게.
     paths: list[Path] = []
     for status in _LIST_ACTIVE_STATUSES:
-        status_dir = tickets_dir() / status
+        status_dir = pm_paths.tickets_dir(_home()) / status
         if status_dir.is_dir():
             paths.extend(sorted(status_dir.glob("*.md")))
-    drafts = drafts_dir()
+    drafts = pm_paths.drafts_dir(_home())
     if drafts.is_dir():
         paths.extend(sorted(drafts.glob("*.md")))
     candidates: list[tuple[str, dict[str, Any]]] = []
     for path in paths:
-        loaded = load_ticket_soft(path)
+        loaded = ticket_store.load_ticket_soft(_home(), path)
         if loaded is None:
             continue
         fm = loaded[0]
@@ -10790,7 +10182,7 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
     이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
     동기 사본에서 이 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
     """
-    own_items = _normalized_touches(touches)
+    own_items = ticket_rules._normalized_touches(touches)
     if not own_items:
         return []
     delegate = _load_pm_delegate_module()
@@ -10802,7 +10194,7 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
     candidates = _publish_overlap_candidates((tid,))
     per_path: dict[str, set[str]] = {path: set() for path in own_folded}
     for other_id, other_fm in candidates:
-        other_items = _normalized_touches(other_fm.get("touches"))
+        other_items = ticket_rules._normalized_touches(other_fm.get("touches"))
         if not other_items:
             continue
         other_folded = _fold_publish_touches(other_items, repo_coordinates, delegate)
@@ -10868,7 +10260,7 @@ _CLUSTER_DUPLICATE_LINT_KIND = "cluster-duplicate"
 
 def clusters_dir() -> Path:
     """클러스터 장부 디렉토리 — `tickets_dir()/clusters` (board_root 추종·STATUS_DIRS 밖)."""
-    return tickets_dir() / CLUSTERS_DIRNAME
+    return pm_paths.tickets_dir(_home()) / CLUSTERS_DIRNAME
 
 
 def cluster_id_for_name(name: str) -> str:
@@ -10901,7 +10293,7 @@ def is_auto_cluster_id(cluster: str) -> str | None:
     선언하지 않은 묶음이 생긴다. 사람이 선언하는 이름은 이 모양을 쓸 수 없다(아래 sanity).
     """
     name = cluster_name_of(cluster)
-    return name if _is_valid_ticket_id(name) else None
+    return name if ticket_rules._is_valid_ticket_id(name) else None
 
 
 def _validate_cluster_name(name: str) -> str | None:
@@ -10931,7 +10323,7 @@ def load_cluster(cluster: str) -> dict[str, Any] | None:
     path = cluster_ledger_path(cluster)
     if not path.is_file():
         return None
-    loaded = load_ticket_soft(path)
+    loaded = ticket_store.load_ticket_soft(_home(), path)
     return loaded[0] if loaded is not None else None
 
 
@@ -10960,7 +10352,7 @@ def all_clusters() -> list[dict[str, Any]]:
         return []
     out: list[dict[str, Any]] = []
     for path in sorted(directory.glob(f"{CLUSTER_ID_PREFIX}*.md")):
-        loaded = load_ticket_soft(path)
+        loaded = ticket_store.load_ticket_soft(_home(), path)
         if loaded is None:
             continue
         fm = loaded[0]
@@ -10982,13 +10374,13 @@ def all_clusters_strict() -> tuple[list[dict[str, Any]], str | None]:
         return [], None
     out: list[dict[str, Any]] = []
     for path in sorted(directory.glob(f"{CLUSTER_ID_PREFIX}*.md")):
-        loaded = load_ticket_soft(path)
+        loaded = ticket_store.load_ticket_soft(_home(), path)
         if loaded is None:
-            return [], (f"cluster 장부를 읽지 못했다: {_rel_to_repo(path)} — 귀속 유일성을 "
+            return [], (f"cluster 장부를 읽지 못했다: {pm_paths._rel_to_repo(_home(), path)} — 귀속 유일성을 "
                         "전수 확인할 수 없어 정지한다(장부를 고친 뒤 다시 실행하라)")
         fm = loaded[0]
         if not str(fm.get("id") or "").strip():
-            return [], (f"cluster 장부에 id 선언이 없다: {_rel_to_repo(path)} — 귀속 유일성을 "
+            return [], (f"cluster 장부에 id 선언이 없다: {pm_paths._rel_to_repo(_home(), path)} — 귀속 유일성을 "
                         "전수 확인할 수 없어 정지한다(장부를 고친 뒤 다시 실행하라)")
         out.append(fm)
     return out, None
@@ -11011,7 +10403,7 @@ def ticket_cluster_from_text(tid: str, ticket_text: str) -> str:
     """
     fm: Any = {}
     try:
-        fm, _body = _parse_ticket_text(ticket_text, "<티켓 명세>")
+        fm, _body = ticket_rules._parse_ticket_text(ticket_text, "<티켓 명세>")
     except (ValueError, yaml.YAMLError):
         fm = {}
     if not isinstance(fm, dict):
@@ -11040,7 +10432,7 @@ def cluster_live_members(cluster: str) -> tuple[str, ...]:
     """
     live = []
     for tid in cluster_members(cluster):
-        found = find_ticket_exact(tid)
+        found = ticket_store.find_ticket_exact(_home(), tid)
         if found is not None and found[0] == "discarded":
             continue
         live.append(tid)
@@ -11106,10 +10498,10 @@ def cluster_complete_binding_problem(
         return f"{owner} 장부는 closed인데 {tid}가 claimed다 — 모순을 complete로 덮지 않는다"
 
     for member in members:
-        found = find_ticket_exact(member)
+        found = ticket_store.find_ticket_exact(_home(), member)
         if found is None:
             return f"{owner} 멤버 {member} 티켓을 찾지 못했다"
-        loaded = load_ticket_soft(found[1])
+        loaded = ticket_store.load_ticket_soft(_home(), found[1])
         member_cluster = str((loaded[0] if loaded else {}).get("cluster") or "").strip()
         if not member_cluster or cluster_id_for_name(member_cluster) != owner:
             return (f"{owner} 멤버 {member}의 cluster 역참조가 일치하지 않는다: "
@@ -11150,7 +10542,7 @@ def cluster_binding_problem(cluster: str, *, tree: str | None = None) -> str | N
         if branch_state is None or base_state is None:
             return f"{cluster}의 제품 브랜치를 관측하지 못했다: {folder}"
         if branch_state and base_state:
-            common = _git_run(["rev-parse", "--git-common-dir"], repo=folder)
+            common = git._git_run(["rev-parse", "--git-common-dir"], repo=folder)
             if common is None or common[0] != 0:
                 return f"{cluster} 제품 저장소 근거를 읽지 못했다: {folder}"
             repositories.add(str((folder / common[1].strip()).resolve()))
@@ -11208,12 +10600,12 @@ def _cluster_publish_base_branch(
     없으므로 기준 브랜치를 기록하지 않는다.
     """
     tree = _claim_code_tree(args)
-    if not tree or not (Path(tree) / ".git").exists() or not _git_head_at(tree):
+    if not tree or not (Path(tree) / ".git").exists() or not git._git_head_at(tree):
         return None, None
-    top = _git_run(["rev-parse", "--show-toplevel"], repo=Path(tree))
+    top = git._git_run(["rev-parse", "--show-toplevel"], repo=Path(tree))
     if top is None or top[0] != 0 or Path(top[1].strip()).resolve() != Path(tree).resolve():
         return None, None
-    return tree, (_cluster_current_branch(tree) if tree else None)
+    return tree, (git._cluster_current_branch(tree) if tree else None)
 
 
 def _cluster_release_member(cluster: str, tid: str) -> Path | None:
@@ -11248,17 +10640,9 @@ def _cluster_release_member(cluster: str, tid: str) -> Path | None:
     return dump_cluster(fm)
 
 
-def _cluster_current_branch(tree: str) -> str | None:
-    """코드 트리의 현재 브랜치 — detached·비-git·git 부재는 None."""
-    result = _git_run(["symbolic-ref", "--quiet", "--short", "HEAD"], repo=Path(tree))
-    if result is None or result[0] != 0:
-        return None
-    return (result[1] or "").strip() or None
-
-
 def _cluster_branch_state(tree: str, branch: str) -> bool | None:
     """그 트리에 브랜치가 있는가 — 판정 불능(git 부재·비-git·fatal)은 None."""
-    result = _git_run(
+    result = git._git_run(
         ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], repo=Path(tree))
     if result is None or result[0] > 1:
         return None
@@ -11279,7 +10663,7 @@ def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
         return f"이미 있음 ({tree})"
     if not base:
         return f"생성 보류(기점 브랜치 미해소: {tree})"
-    result = _git_run(["branch", branch, base], repo=Path(tree))
+    result = git._git_run(["branch", branch, base], repo=Path(tree))
     if result is None or result[0] != 0:
         return f"생성 실패(기점 {base} · {tree})"
     # 만든 자리에서 부모를 적는다 — 기점 브랜치가 부모이고 그 끝 커밋이 갈라진 커밋이다.
@@ -11311,7 +10695,7 @@ def _cluster_overlap_material(
         return []
     folded: dict[str, tuple[str, ...]] = {}
     for tid, touches in members:
-        items = _normalized_touches(touches)
+        items = ticket_rules._normalized_touches(touches)
         folded[tid] = _fold_publish_touches(items, repo_coordinates, delegate) if items else ()
     own_paths = tuple(dict.fromkeys(
         path for paths in folded.values() for path in paths))
@@ -11319,7 +10703,7 @@ def _cluster_overlap_material(
         return []
     per_path: dict[str, set[str]] = {path: set() for path in own_paths}
     for other_id, other_fm in _publish_overlap_candidates(tuple(folded)):
-        other_items = _normalized_touches(other_fm.get("touches"))
+        other_items = ticket_rules._normalized_touches(other_fm.get("touches"))
         if not other_items:
             continue
         other_folded = _fold_publish_touches(other_items, repo_coordinates, delegate)
@@ -11385,7 +10769,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
         tid = item.strip()
         if not tid or tid in members:
             continue
-        if not _is_valid_ticket_id(tid):
+        if not ticket_rules._is_valid_ticket_id(tid):
             print(f"[중단] 티켓 ID 형식이 아니다: {tid!r}", file=sys.stderr)
             return 1
         members.append(tid)
@@ -11398,13 +10782,13 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
     with board_lock():
         ledger_path = cluster_ledger_path(cluster)
         if ledger_path.exists():
-            print(f"[중단] 이미 있는 클러스터 장부: {_rel_to_repo(ledger_path)} "
+            print(f"[중단] 이미 있는 클러스터 장부: {pm_paths._rel_to_repo(_home(), ledger_path)} "
                   "(멤버 조회는 `cluster show`)", file=sys.stderr)
             return 1
         resolved: list[tuple[str, Path, dict[str, Any], str, str | None]] = []
         drafts: list[str] = []
         for tid in members:
-            found = find_ticket_exact(tid)
+            found = ticket_store.find_ticket_exact(_home(), tid)
             if found is None:
                 print(f"[중단] ticket not found: {tid}", file=sys.stderr)
                 return 2
@@ -11413,7 +10797,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
                 print(f"[중단] 종결 티켓은 클러스터 멤버가 아니다: {tid} ({status}/)",
                       file=sys.stderr)
                 return 1
-            fm, body = load_ticket(path)
+            fm, body = ticket_store.load_ticket(path)
             owner = _cluster_of_record(tid)
             if owner is not None and owner != cluster and len(cluster_members(owner)) > 1:
                 print(f"[중단] {tid} 는 이미 다른 묶음의 멤버다: {owner}"
@@ -11446,13 +10830,13 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
                     # 갱신됐으므로, 조용히 성공하면 두 장부가 같은 티켓을 멤버로 쥔 중복 귀속이
                     # 남는다(lint `cluster-duplicate` 로만 보이는 모순).
                     print(f"[중단] 옛 장부에서 {tid} 를 빼지 못했다: "
-                          f"{_rel_to_repo(cluster_ledger_path(owner))}: {exc} — "
+                          f"{pm_paths._rel_to_repo(_home(), cluster_ledger_path(owner))}: {exc} — "
                           f"{cluster} 와 중복 귀속 상태다. 옛 장부를 정리한 뒤 `lint` 로 "
                           "확인하라(새 장부·티켓 명세는 이미 갱신됐다).", file=sys.stderr)
                     return 1
                 if released is not None:
                     touched.append(released)
-    print(f"created {cluster} ({_rel_to_repo(cluster_ledger_path(cluster))}) — "
+    print(f"created {cluster} ({pm_paths._rel_to_repo(_home(), cluster_ledger_path(cluster))}) — "
           f"멤버 {len(members)}: {', '.join(members)}")
     print(f"  통합 브랜치 {branch} — {branch_note}")
     if spike:
@@ -11494,12 +10878,12 @@ def _cmd_cluster_show(args: argparse.Namespace) -> int:
     print("  budget: " + (" · ".join(f"{key}={value}" for key, value in budget.items())
                           or "—"))
     for tid in declared:
-        found = find_ticket_exact(tid)
+        found = ticket_store.find_ticket_exact(_home(), tid)
         if found is None:
             print(f"  {tid}  (부재)")
             continue
         member_status, path = found
-        loaded = load_ticket_soft(path)
+        loaded = ticket_store.load_ticket_soft(_home(), path)
         title = str((loaded[0] if loaded else {}).get("title") or "")
         print(f"  {tid}  {member_status}  {title}")
     return 0
@@ -11557,7 +10941,7 @@ def _board_fetch_head_fresh(ttl: float) -> bool:
         return False
     p = Path(r.stdout.strip())
     if not p.is_absolute():
-        p = board_root() / p   # rev-parse 는 -C board_root() 기준 상대 경로를 낼 수 있다.
+        p = _home().board_root / p   # rev-parse 는 -C home.board_root 기준 상대 경로를 낼 수 있다.
     try:
         return (time.time() - p.stat().st_mtime) < ttl
     except OSError:
@@ -11682,7 +11066,7 @@ def _print_ticket_remote_mismatch(ticket_id: str, local_status: str, *,
     """
     if not snapshot_verified:
         return
-    if local_status not in STATUS_DIRS:
+    if local_status not in ticket_rules.STATUS_DIRS:
         return
     if not _board_git_enabled():
         return
@@ -11732,7 +11116,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         # read 경로도 깔때기 소비 — 미검증이면 `--task alpha_1`(폴더
         # 이름 패턴) 입력이 옛 슬롯 claim 을 task 처럼 매칭한다. 부작용 0 조회지만 소비 지점
         # 폐쇄(전 surface 단일 규칙)에 합류한다.
-        _validate_actor_task_or_exit(task_lens)
+        task_args._validate_actor_task_or_exit(_home(), task_lens)
     if task_lens is not None and explicit_mine:
         sys.exit("[중단] --task 는 --mine 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
     mine = explicit_mine or task_lens is not None
@@ -11759,7 +11143,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         # (=현 세션)은 내 세션 claim 매칭과 생성-세션 스트림 판별(created_by 세션 일치)의 입력이다.
         resolve_identity = mine or default_view
         my_user = user_name() if resolve_identity else None
-        my_slot = session_name() if resolve_identity else ""
+        my_slot = lease_store.session_name(_home()) if resolve_identity else ""
         if mine and my_slot is None:
             # 세션 미바인딩(surface) — claim 필터를 못 좁힌다.
             # 안내는 stderr 로 내 stdout 티켓 목록 포맷을 오염시키지 않는다(소유 open 은 계속 표시).
@@ -11785,7 +11169,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     # · `--status <특정>`=그 status 만(기존 동작 무변경).
     status_arg = getattr(args, "status", None)
     if status_arg == "all":
-        allowed_statuses = STATUS_DIRS
+        allowed_statuses = ticket_rules.STATUS_DIRS
     elif status_arg:
         allowed_statuses = (status_arg,)
     else:
@@ -11794,11 +11178,11 @@ def cmd_list(args: argparse.Namespace) -> int:
     # 세션격리 strict-exclude 신호: 다중사용자 판정 때문에 귀속 미해소/불일치 티켓을 이 뷰에서
     # 조용히 드롭했는지 잡는다. 단일 사용자면 재평가 자체를 생략해 오버헤드와 오탐을 피한다.
     strict_exclude_fired = False
-    for status in STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         if status not in allowed_statuses:
             continue
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(p)
+        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             fm, _ = loaded
@@ -11880,9 +11264,9 @@ def cmd_prefix_list(args: argparse.Namespace) -> int:
     # prefix(또는 None=무prefix) → [(순번, 실 ID), …]. 실 ID 를 들고 있어 min/max 를 재구성
     # 없이 그대로 범위로 쓴다(zero-pad 재구성 mismatch 회피).
     buckets: dict[str | None, list[tuple[int, str]]] = {}
-    for status in STATUS_DIRS:
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(p)
+    for status in ticket_rules.STATUS_DIRS:
+        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             fm, _ = loaded
@@ -11949,9 +11333,9 @@ def _scan_prefix_tickets(skipped: list[Path] | None = None) -> list[dict[str, An
     out: list[dict[str, Any]] = []
     # .drafts 포함 — draft 도 이미 발행된 ID(find_ticket/_next_id 인지).
     # relabel 이 draft 를 놓치면 old-prefix draft 가 잔존, promote 시 혼재가 보드로 재유입된다.
-    for status in (*STATUS_DIRS, ".drafts"):
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(p)
+    for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
+        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 if skipped is not None:
                     skipped.append(p)
@@ -11992,7 +11376,7 @@ def _prefix_scan(op: str) -> tuple[list[dict[str, Any]] | None, int]:
     tickets = _scan_prefix_tickets(skipped)
     if not skipped:
         return tickets, 0
-    sample = ", ".join(_rel_to_repo(p) for p in skipped[:5])
+    sample = ", ".join(pm_paths._rel_to_repo(_home(), p) for p in skipped[:5])
     if len(skipped) > 5:
         sample += " …"
     print(_UNREADABLE_SCAN_BLOCK.format(op=op, count=len(skipped), sample=sample),
@@ -12013,7 +11397,7 @@ def _cheap_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
     `_prefix_target_snapshot`이 이미 확인한 case 변형과 출처를 잃지 않게 한다.
     """
     try:
-        area_prefixes = set(registered_prefixes())
+        area_prefixes = set(areas_store.registered_prefixes(_home()))
 
         task_prefixes: set[str] = set()
         if LEASES_FILE.exists():
@@ -12087,7 +11471,7 @@ def _known_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
         skipped: list[Path] = []
         ticket_rows = _scan_prefix_tickets(skipped)
         if skipped:
-            sample = ", ".join(_rel_to_repo(path) for path in skipped[:5])
+            sample = ", ".join(pm_paths._rel_to_repo(_home(), path) for path in skipped[:5])
             if len(skipped) > 5:
                 sample += " …"
             raise PrefixSourcesUnreadable(
@@ -12425,34 +11809,6 @@ def _is_rewritable(path: Path) -> bool:
     return True
 
 
-def _canonical_ticket_id(path: Path) -> str | None:
-    """티켓의 canonical ID — frontmatter `id:` 1차 진실·파일명 파싱은 폴백 (숫자-slug 모호성 해소).
-
-    파일명 파서(`_ticket_id_from_filename`)는 legacy `T-NNNN` + **숫자로 끝나는 slug**
-    (`T-0036-fix-123.md`)를 prefixed ID `T-0036-fix-123` 으로 오인한다(하이픈-마디 grammar 모호성·
-    `dump_ticket`/`_next_id` 이 발행 시 확정해 쓰는 frontmatter `id:` 가
-    권위 진실이므로 이를 우선하고, 부재/읽기 실패(비-UTF-8·frontmatter 깨짐) 시에만 파일명 파싱으로
-    폴백한다(fail-soft). `_scan_prefix_tickets` 의 `fm.get("id") or …` 와 동형 semantics — 스캔측과
-    rename-planning 측이 같은 canonical 해소를 쓰게 해 파일명↔content 불일치를 원천 차단한다.
-
-    **frontmatter 가 매핑이 아닌 형상**(스칼라·리스트)도 같은 축으로 접는다(`load_ticket_soft`
-    규약 — 손상 = 없는 것으로 보고 파일명 폴백). YAML 이 비어 있지 않은 스칼라면 파싱은 성공하고
-    `fm.get` 이 AttributeError 로 터지는데, 이 함수는 정확-일치 조회(`find_ticket_exact`)의
-    후보 순회 안에서 불리므로 그 예외가 **활성 리뷰 판정·강등 판정보다 먼저** 실행을 죽인다
-    (손상 티켓은 skip 하고 FULL 로 남긴다는 규약이 깨진다).
-    """
-    try:
-        fm, _ = load_ticket(path)
-    except _LOAD_TICKET_SOFT_ERRORS:  # 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
-        fm = {}
-    if not isinstance(fm, dict):
-        fm = {}
-    fid = fm.get("id")
-    if isinstance(fid, str) and fid:
-        return fid
-    return _ticket_id_from_filename(path.name)
-
-
 def _plan_file_renames(id_map: dict[str, str]) -> list[tuple[Path, Path]]:
     """slug 파일명 rename 계획 — `T-old-slug.md` → `T-new-slug.md` (상태 디렉토리 보존).
 
@@ -12469,11 +11825,11 @@ def _plan_file_renames(id_map: dict[str, str]) -> list[tuple[Path, Path]]:
     유지하고 stderr 경고로 수동 확인을 유도한다(silent 누락 금지·`rewrite_refs` 의 skip 경고와 짝).
     """
     renames: list[tuple[Path, Path]] = []
-    for status in (*STATUS_DIRS, ".drafts"):   # .drafts 포함 — _scan_prefix_tickets 와 lockstep.
-        for p in (tickets_dir() / status).glob("T-*.md"):
-            tid = _canonical_ticket_id(p)       # frontmatter id 1차 진실 (숫자-slug 모호성 해소).
+    for status in (*ticket_rules.STATUS_DIRS, ".drafts"):   # .drafts 포함 — _scan_prefix_tickets 와 lockstep.
+        for p in (pm_paths.tickets_dir(_home()) / status).glob("T-*.md"):
+            tid = ticket_store._canonical_ticket_id(p)       # frontmatter id 1차 진실 (숫자-slug 모호성 해소).
             if not (tid and p.name.startswith(tid)):
-                tid = _ticket_id_from_filename(p.name)   # 접두 불일치(corrupt) → 파일명 폴백.
+                tid = ticket_rules._ticket_id_from_filename(p.name)   # 접두 불일치(corrupt) → 파일명 폴백.
             if not (tid and tid in id_map):
                 continue
             if not _is_rewritable(p):
@@ -12496,14 +11852,14 @@ def _plan_rounds_dir_renames(
     plans: list[tuple[Path, Path]] = []
     rounds = _load_ticket_rounds()
     for src, dst in renames:
-        old_id = _ticket_id_from_filename(src.name)
-        new_id = _ticket_id_from_filename(dst.name)
+        old_id = ticket_rules._ticket_id_from_filename(src.name)
+        new_id = ticket_rules._ticket_id_from_filename(dst.name)
         if not old_id or not new_id or old_id == new_id:
             continue
-        src_dir = rounds.rounds_dir_for_ticket(old_id, tickets_dir())
+        src_dir = rounds.rounds_dir_for_ticket(old_id, pm_paths.tickets_dir(_home()))
         if src_dir.is_dir():
             plans.append(
-                (src_dir, rounds.rounds_dir_for_ticket(new_id, tickets_dir()))
+                (src_dir, rounds.rounds_dir_for_ticket(new_id, pm_paths.tickets_dir(_home())))
             )
     return plans
 
@@ -12541,7 +11897,7 @@ def _home_git_status_porcelain() -> str | None:
         r = subprocess.run(
             ["git", "-C", str(REPO), "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=False)
+            timeout=git._BOARD_GIT_TIMEOUT_SECONDS, check=False)
     except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외는 가드 skip(None).
         return None
     if r.returncode != 0:
@@ -12856,7 +12212,7 @@ def _areas_clear_prefix_cell(prefix: str) -> int:
     없거나 areas.md 부재면 0(무변경). 변경된 행만 canonical `| … |`(areas_append 와 동형)로 재조립
     하고 나머지 줄(헤더·구분선·무관 행·산문)은 원문 그대로 보존한다.
     """
-    af = areas_file()
+    af = pm_paths.areas_file(_home())
     with board_lock():
         if not af.exists():
             return 0
@@ -12867,7 +12223,7 @@ def _areas_clear_prefix_cell(prefix: str) -> int:
         cleared = 0
         out: list[str] = []
         for line in text.splitlines():
-            cells = _split_areas_row(line)
+            cells = areas_rules._split_areas_row(line)
             if cells is None:                       # 구분선·빈 줄·비-표 산문
                 out.append(line)
                 continue
@@ -12924,7 +12280,7 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
               "사용자만 대상값과 같은 `--user-ack <B|T>`를 붙인다(세션 자동 부착 금지).",
               file=sys.stderr)
         return 1
-    registered = _areas_row_for_prefix(target) is not None
+    registered = areas_store._areas_row_for_prefix(_home(), target) is not None
     if not registered:
         print(f"prefix {args.prefix} — 0 티켓·areas 등록 없음. 확인만(변경 없음).")
         return 0
@@ -12964,11 +12320,11 @@ def cmd_reid(args: argparse.Namespace) -> int:
     # 정적 sanity(락·재조회 불요) — 값싼 거부 먼저. OLD/NEW 형식·자기 자신.
     # OLD-ID 도 형식 선검증: find_ticket 은 glob 기반이라 메타문자(`*`·`?`·`[]`)
     # 든 OLD 가 임의 티켓에 매치된 뒤 rewrite 는 리터럴 키라 no-op 인데 성공처럼 끝날 수 있다.
-    if not _is_valid_ticket_id(old_id):
+    if not ticket_rules._is_valid_ticket_id(old_id):
         print(f"[중단] OLD-ID {old_id!r} 형식 위반 — `T-NNNN`(무prefix) 또는 `T-<prefix>-NNN`"
               "(발행 문법) 이어야 한다.", file=sys.stderr)
         return 1
-    if not _is_valid_ticket_id(requested_new_id):
+    if not ticket_rules._is_valid_ticket_id(requested_new_id):
         print(f"[중단] NEW-ID {requested_new_id!r} 형식 위반 — `T-NNNN`(무prefix) 또는 "
               "`T-<prefix>-NNN`(발행 문법·legacy prefix 포함) 이어야 한다.",
               file=sys.stderr)
@@ -13024,7 +12380,7 @@ def cmd_reid(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return None, 1
         path = matches[0]["path"]
-        fm, _ = load_ticket(path)
+        fm, _ = ticket_store.load_ticket(path)
         # 타 세션 claim 가드 — 단일세션 op(migrate-identity·prefix rename 동류). claim 중인
         # 티켓은 그 소유 세션만 reid 할 수 있다(다른 세션이 작업 중인 ID 를 바꿔 참조를 흔들지 않게).
         # 적용 경로에서는 아래 `_prefix_relabel`이 fresh map/소유 검사를 board_lock 안에서 다시
@@ -13118,7 +12474,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(body)
     rounds_module = _load_ticket_rounds()
     try:
-        rounds = rounds_module.load_rounds(tickets_dir(), args.id, ticket_text=body)
+        rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), args.id, ticket_text=body)
     except rounds_module.RoundsError as exc:
         # 표시면은 조회를 막지 않는다 — 사유는 그 자리에 loud 하게 남기고 판정은 lint·
         # 완료 게이트(같은 seam)가 한다.
@@ -13183,11 +12539,11 @@ _IDEA_BODY_TEMPLATE = """# Idea-{iid} — {title}
 
 def cmd_idea_list(args: argparse.Namespace) -> int:
     rows: list[tuple[str, dict]] = []
-    for status in IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         if args.status and args.status != status:
             continue
         for p in sorted((IDEAS_DIR / status).glob("[0-9]*.md")):
-            loaded = load_ticket_soft(p)
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             fm, _ = loaded
@@ -13224,7 +12580,7 @@ def cmd_idea_new(args: argparse.Namespace) -> int:
 
     path = IDEAS_DIR / "open" / filename
     dump_ticket(path, fm, body)
-    print(f"created idea {iid} ({_rel_to_repo(path)})")
+    print(f"created idea {iid} ({pm_paths._rel_to_repo(_home(), path)})")
     print("  → fill in 한 줄 요약 / 동기 / 위험 / 다음 행동")
     return 0
 
@@ -13249,12 +12605,12 @@ def _transition_idea(iid: str, dst_status: str) -> int:
         print(f"cannot {verb} idea {iid}: currently in {status}/",
               file=sys.stderr)
         return 1
-    fm, body = load_ticket(path)
+    fm, body = ticket_store.load_ticket(path)
     new_path = move_idea(path, dst_status)
     fm["status"] = dst_status
     fm["updated"] = datetime.date.today().isoformat()
     dump_ticket(new_path, fm, body)
-    print(f"{dst_status} idea {iid} ({_rel_to_repo(new_path)})")
+    print(f"{dst_status} idea {iid} ({pm_paths._rel_to_repo(_home(), new_path)})")
     return 0
 
 
@@ -13268,7 +12624,7 @@ def cmd_idea_kill(args: argparse.Namespace) -> int:
 
 def cmd_refresh(_args: argparse.Namespace) -> int:
     refresh_board()
-    print(f"board refreshed: {_rel_to_repo(BOARD_FILE)}")
+    print(f"board refreshed: {pm_paths._rel_to_repo(_home(), BOARD_FILE)}")
     issues = lint_tickets()
     if issues:
         print(f"⚠️  {len(issues)} lint issue(s) — run `board.py lint` for detail",
@@ -13356,7 +12712,7 @@ def status_snapshot() -> dict:
     세는 축은 `STATUS_DIRS` 다섯이다 — `.drafts`(발행 전 초안)는 그 밖이라 세지 않는다.
     sidecar 좌표는 push 보호훅이 쓰는 것과 **같은 해소**를 거친다(사본/cwd 별 오독 차단).
     """
-    counts = {status: 0 for status in STATUS_DIRS}
+    counts = {status: 0 for status in ticket_rules.STATUS_DIRS}
     open_rows: list[dict] = []
     for status, front_matter in _all_tickets():
         counts[status] = counts.get(status, 0) + 1
@@ -13428,15 +12784,6 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 1
 
 
-def _rel_to_repo(path: Path) -> str:
-    """Best-effort pretty path. Falls back to absolute when path is outside REPO
-    (e.g. in unit tests using tmp_path)."""
-    try:
-        return str(path.relative_to(REPO))
-    except ValueError:
-        return str(path)
-
-
 # ── lint ───────────────────────────────────────────────────────────────
 
 def _all_tickets() -> list[tuple[str, dict]]:
@@ -13445,9 +12792,9 @@ def _all_tickets() -> list[tuple[str, dict]]:
     손상 티켓은 경고 1줄과 함께 빠진다(`load_ticket_soft`) — 한 파일이 lint 전체를 죽이지 않는다.
     """
     out: list[tuple[str, dict]] = []
-    for status in STATUS_DIRS:
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(p)
+    for status in ticket_rules.STATUS_DIRS:
+        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             out.append((status, loaded[0]))
@@ -13774,7 +13121,7 @@ def _dod_open_items(body: str) -> list[str]:
             f"DoD 전량 이월(사유 있는 이월 {deferred_count} / 체크박스 {checkbox_count}개): "
             "구현된 항목이 하나도 없다 "
             "— done 이 아니라 **처분**이다. 병합·폐기라면 "
-            f"`board.py discard <ID> {'|'.join(DISPOSITION_KINDS)} --reason <사유>` 로 "
+            f"`board.py discard <ID> {'|'.join(ticket_rules.DISPOSITION_KINDS)} --reason <사유>` 로 "
             "종결하라(부분 이월은 `[x]` 가 하나 이상일 때 통과한다)")
     return problems
 
@@ -13971,7 +13318,7 @@ def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str
     `_DESIGN_EVIDENCE_REMEDY` 와 같다 — 이 함수를 부르는 시드 seam 은 실 ticket id 를 모른다.
     """
     try:
-        fm, body = _parse_ticket_text(ticket_text, "<티켓 명세>")
+        fm, body = ticket_rules._parse_ticket_text(ticket_text, "<티켓 명세>")
     except (ValueError, yaml.YAMLError) as exc:
         # ValueError = frontmatter 구획 자체가 없거나 안 닫힘(`_parse_ticket_text`),
         # yaml.YAMLError = 구획은 있는데 스칼라 문법 위반(예: 콜론 포함 값을 인용 없이 쓴
@@ -14070,7 +13417,7 @@ def _content_search_roots() -> tuple[Path, ...]:
     경로의 상당수가 "부재" 로 읽힌다. 리스 장부는 `_active_slot_path` 와 같은 데이터-결합으로
     읽고(worktree_pool 미import·원자 교체 대상이라 락 없는 point-read 가 일관 스냅샷),
     장부 부재·손상·형식 이상은 PM 홈 단독으로 폴백한다(fail-soft — 슬롯은 *추가* 레이어).
-    장부 경로는 호출 시점 `REPO` 로 해소한다(`board_root()` 관례·재앵커 추종).
+    장부 경로는 호출 시점 `REPO` 로 해소한다(`Home.board_root` 관례·재앵커 추종).
     """
     roots: list[Path] = [REPO]
     ledger = REPO / ".project_manager" / ".local" / "worktree-leases.json"
@@ -14268,7 +13615,7 @@ def _architect_round_issues(
     if state not in (DESIGN_REQUIRED, DESIGN_DONE):
         return []
     rounds_module = _load_ticket_rounds()
-    rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=body)
+    rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=body)
     architect_rounds = [item for item in rounds if item.role == _ARCHITECT_ROLE]
     if not architect_rounds:
         return [(tid, _ARCHITECT_ROUND_KIND,
@@ -14369,8 +13716,8 @@ def lint_bodies() -> list[tuple[str, str, str]]:
     """
     issues: list[tuple[str, str, str]] = []
     for status in ("open", "claimed"):
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(p)
+        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             fm, body = loaded
@@ -14388,9 +13735,9 @@ def lint_ideas() -> list[tuple[str, str, str]]:
     means a manual `mv` bypassed board.py (drift — see ideas/README.md).
     """
     issues: list[tuple[str, str, str]] = []
-    for status in IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         for p in sorted((IDEAS_DIR / status).glob("[0-9]*.md")):
-            loaded = load_ticket_soft(p)
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue
             fm, _ = loaded
@@ -14504,13 +13851,13 @@ def lint_scopes() -> list[tuple[str, str, str]]:
     `scope-advice` 로 권고해야 한다.
     """
     issues: list[tuple[str, str, str]] = []
-    known = registered_prefixes()  # areas.md 부재면 빈 set → 등록 대조 생략.
+    known = areas_store.registered_prefixes(_home())  # areas.md 부재면 빈 set → 등록 대조 생략.
     for base in _SCOPE_AWARE_DIRS:
         if not base.is_dir():
             continue
         for p in sorted(base.glob("*.md")):
             try:
-                fm, _body = load_ticket(p)
+                fm, _body = ticket_store.load_ticket(p)
             except (ValueError, OSError, yaml.YAMLError):
                 # frontmatter 없음(README) 또는 placeholder({{DATE}} 등 비-YAML) — scope 인지
                 # 대상 아님(fail-soft). 한 문서 파싱 실패가 lint 전체를 막지 않게 흡수한다.
@@ -14520,7 +13867,7 @@ def lint_scopes() -> list[tuple[str, str, str]]:
             if "family_scope" not in fm:
                 continue  # 부재 = shared 기본 — 정상, 보고 없음.
             raw = fm.get("family_scope")
-            src = _rel_to_repo(p)
+            src = pm_paths._rel_to_repo(_home(), p)
             if not isinstance(raw, str):
                 # list/dict/number 등 — frontmatter 형식 오류. 헬퍼는 shared 폴백하지만
                 # lint 는 조용히 삼키지 않고 권고한다.
@@ -14566,24 +13913,24 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
     else:
         path = path.resolve()
     if not _in_scope_aware_dir(path):
-        print(f"refusing to retag {_rel_to_repo(path)}: scope 승격은 decisions/·specs/ "
+        print(f"refusing to retag {pm_paths._rel_to_repo(_home(), path)}: scope 승격은 decisions/·specs/ "
               "문서만 대상 (ADR/spec scope 승격 명령).", file=sys.stderr)
         return 1
     if not path.exists():
-        print(f"file not found: {_rel_to_repo(path)}", file=sys.stderr)
+        print(f"file not found: {pm_paths._rel_to_repo(_home(), path)}", file=sys.stderr)
         return 2
     try:
-        fm, body = load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
     except ValueError as exc:
-        print(f"cannot retag {_rel_to_repo(path)}: {exc}", file=sys.stderr)
+        print(f"cannot retag {pm_paths._rel_to_repo(_home(), path)}: {exc}", file=sys.stderr)
         return 1
     old_scope = family_scope(fm)
     if old_scope == new_scope and isinstance(fm.get("family_scope"), str):
-        print(f"family_scope already {new_scope!r} — no change ({_rel_to_repo(path)})")
+        print(f"family_scope already {new_scope!r} — no change ({pm_paths._rel_to_repo(_home(), path)})")
         return 0
     fm["family_scope"] = new_scope
     dump_ticket(path, fm, body)
-    print(f"promoted scope {old_scope!r} → {new_scope!r} ({_rel_to_repo(path)})")
+    print(f"promoted scope {old_scope!r} → {new_scope!r} ({pm_paths._rel_to_repo(_home(), path)})")
     return 0
 
 
@@ -14634,7 +13981,7 @@ def _collect_wikilink_files() -> list[Path]:
     # ticket 의 `[[ADR-NNNN]]` 구조참조가 wiki-only 스캔에선 안 보여 dangling 이 *미검출*된다.
     # tickets_dir() 를 union 해 두 루트를 모두 본다. legacy(board_root==wiki)면 이 경로는 이미
     # wiki.rglob 에 포함되므로 set dedup 으로 no-op(중복 0). board/areas.md 등 비-md 는 제외.
-    tk = tickets_dir()
+    tk = pm_paths.tickets_dir(_home())
     if tk.is_dir():
         files.extend(tk.rglob("*.md"))
     files = list(dict.fromkeys(files))  # 순서보존 dedup (legacy 중복 제거 + board union 합집합)
@@ -14666,7 +14013,7 @@ def _resolve_wikilink_targets() -> tuple[set[str], set[str], set[str]]:
             if n is not None:
                 adr_nums.add(n)
     idea_nums: set[str] = set()
-    for status in IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         for p in (IDEAS_DIR / status).glob("[0-9]*.md"):
             n = _leading_num(p.name)
             if n is not None:
@@ -14703,7 +14050,7 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
             text = fs.read_text_shared(path, encoding="utf-8")
         except OSError:
             continue
-        src = _rel_to_repo(path)
+        src = pm_paths._rel_to_repo(_home(), path)
         text = _strip_code(text)
         for raw in _WIKILINK_RE.findall(text):
             name = raw.strip()
@@ -14712,7 +14059,7 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
             is_ticket = False
             if m_adr:
                 ok = (m_adr.group(1).lstrip("0") or "0") in adr_nums
-            elif re.fullmatch(_TICKET_ID_BODY, name):
+            elif re.fullmatch(ticket_rules._TICKET_ID_BODY, name):
                 # prefixed(`T-PAY-001`)·legacy(`T-0164`) wikilink 둘 다 ticket 참조로 본다
                 # (multi-repo 보드). grammar 는 `_TICKET_ID_BODY` 공유(자체 regex 금지).
                 ok = name in ticket_ids
@@ -15037,7 +14384,7 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
         elif target.is_file():
             files = [target]
         for p in files:
-            rel_posix = _rel_to_repo(p).replace("\\", "/")
+            rel_posix = pm_paths._rel_to_repo(_home(), p).replace("\\", "/")
             if rel_posix in seen:
                 continue
             seen.add(rel_posix)
@@ -15096,8 +14443,8 @@ _MD_LINK_TARGET_RE = re.compile(
 # 상태 조각은 **상수에서 유도**한다 — 리터럴로 적으면 상태 디렉토리가 늘어날 때 그 상태의 링크가
 # 조용히 lint 밖으로 빠진다(dangling·슬러그 권고 둘 다 미검사). `re.escape` 는 상태명에 정규식
 # 메타문자가 섞여도 문자 그대로 매칭시킨다.
-_TICKET_STATUS_PATTERN = "|".join(re.escape(status) for status in STATUS_DIRS)
-_IDEA_STATUS_PATTERN = "|".join(re.escape(status) for status in IDEA_STATUS_DIRS)
+_TICKET_STATUS_PATTERN = "|".join(re.escape(status) for status in ticket_rules.STATUS_DIRS)
+_IDEA_STATUS_PATTERN = "|".join(re.escape(status) for status in ticket_rules.IDEA_STATUS_DIRS)
 _STRUCT_PATH_RE = re.compile(
     r"(?:^|/)(?:"
     r"decisions/([^/]+\.md)"
@@ -15161,7 +14508,7 @@ def lint_unstable_refs() -> list[tuple[str, str, str]]:
             text = fs.read_text_shared(path, encoding="utf-8")
         except OSError:
             continue
-        src = _rel_to_repo(path)
+        src = pm_paths._rel_to_repo(_home(), path)
         # 코드 span/fence 안의 예시 링크·wikilink 는 실제 참조 아님 → 제거 후 스캔(오탐 0).
         text = _strip_code(text)
 
@@ -15191,7 +14538,7 @@ def lint_unstable_refs() -> list[tuple[str, str, str]]:
                             f"→ [[ADR-{num.zfill(4)}]] 권고", src)
             elif tic_f:
                 target = _find_ticket_file(tic_f)
-                tid = _ticket_id_from_filename(tic_f)
+                tid = ticket_rules._ticket_id_from_filename(tic_f)
                 if target is None:
                     _record(tic_f, True,
                             f"tickets/.../{tic_f} 실재 안 함 (슬러그 링크 dangling)"
@@ -15246,8 +14593,8 @@ def lint_unstable_refs() -> list[tuple[str, str, str]]:
 
 def _find_ticket_file(filename: str) -> Path | None:
     """tickets/<state>/<filename> 중 실재하는 첫 경로 (상태 무관 — mv 로 이동했을 수 있음)."""
-    for status in STATUS_DIRS:
-        p = tickets_dir() / status / filename
+    for status in ticket_rules.STATUS_DIRS:
+        p = pm_paths.tickets_dir(_home()) / status / filename
         if p.exists():
             return p
     return None
@@ -15255,25 +14602,11 @@ def _find_ticket_file(filename: str) -> Path | None:
 
 def _find_idea_file(filename: str) -> Path | None:
     """ideas/<state>/<filename> 중 실재하는 첫 경로 (상태 무관)."""
-    for status in IDEA_STATUS_DIRS:
+    for status in ticket_rules.IDEA_STATUS_DIRS:
         p = IDEAS_DIR / status / filename
         if p.exists():
             return p
     return None
-
-
-def _ticket_id_from_filename(filename: str) -> str | None:
-    """ticket 파일명에서 canonical ID 추출. 없으면 None.
-
-    prefixed(`T-PAY-001-foo.md` → `T-PAY-001`·`T-service-a-001-…`)도 추출 — 발행측
-    `_next_id` 가 prefixed 파일을 만드므로. grammar 는 `_TICKET_ID_BODY` 공유.
-    """
-    # ID 뒤에는 filename slug 구분자(`-`) 또는 정확한 `.md` 종료만 올 수 있다. 이 경계가
-    # 없으면 숫자로 시작하는 legacy slug(`T-0683-3하네스.md`)를 prefixed ID
-    # `T-0683-3`으로 탐욕 소비한다. 공용 ID/prefix 문법은 그대로 두고 filename 소비처에서만
-    # backtrack을 허용한다.
-    m = re.match(rf"({_TICKET_ID_BODY})(?=-|\.md\Z)", filename)
-    return m.group(1) if m else None
 
 
 # 차단되지 않는 자문성 lint kind — push 를 막지 않는 권고/드리프트 카테고리.
@@ -15373,8 +14706,8 @@ def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
     adrs: dict[str, dict] = {}
     for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
         try:
-            fm, _ = load_ticket(p)
-        except _LOAD_TICKET_SOFT_ERRORS:  # 깨진/frontmatter 없는 파일은 skip(비차단).
+            fm, _ = ticket_store.load_ticket(p)
+        except ticket_store._load_ticket_soft_errors():  # 깨진/frontmatter 없는 파일은 skip(비차단).
             continue
         adrs[_adr_id_from_path(p)] = fm or {}
 
@@ -15444,8 +14777,8 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
         return findings
     for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
         try:
-            fm, _ = load_ticket(p)
-        except _LOAD_TICKET_SOFT_ERRORS:  # 깨진/frontmatter 없는 파일은 skip(비차단).
+            fm, _ = ticket_store.load_ticket(p)
+        except ticket_store._load_ticket_soft_errors():  # 깨진/frontmatter 없는 파일은 skip(비차단).
             continue
         fm = fm or {}
         adr_id = _adr_id_from_path(p)
@@ -15498,7 +14831,7 @@ def _git_commits_between(sha: str, pathspecs: list[str], *,
                 r = subprocess.run(
                     ["git", "-C", str(repo), *argv],
                     capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+                    errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
                 return r.returncode, r.stdout or ""
             except (OSError, subprocess.SubprocessError):  # fail-soft: 타임아웃/예외를 rc≠0 로.
                 return 1, ""
@@ -15539,32 +14872,9 @@ _ANCHOR_UNKNOWN = "unknown"            # 환경적 판정불가(git 부재·rc�
 _AMBIGUOUS_STDERR_SIGNALS: tuple[str, ...] = ("ambiguous", "short object id")
 
 
-def _git_run(argv: list[str], *, runner=None,
-             repo: Path | None = None) -> tuple[int, str] | None:
-    """git 명령의 `(rc, stdout)` 반환·git 부재/예외 → None. runner seam(hermetic 테스트)·미주입
-    시 실 subprocess(`git -C repo`; 부재=REPO). rev-parse 해소 OID(prefix 검증용)가 필요한 곳이 쓴다."""
-    if runner is None:
-        if shutil.which("git") is None:
-            return None
-        repo = Path(repo) if repo is not None else REPO
-        try:
-            r = subprocess.run(
-                ["git", "-C", str(repo), *argv],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
-        except (OSError, subprocess.SubprocessError):  # 타임아웃/바이너리 이상은 None(환경적).
-            return None
-        return r.returncode, r.stdout or ""
-    try:
-        rc, out = runner(argv)
-    except Exception:  # noqa: BLE001 — 주입 runner raise 도 None.
-        return None
-    return rc, out
-
-
 def _git_rc(argv: list[str], *, runner=None, repo: Path | None = None) -> int | None:
     """git 명령의 rc 만 반환(stdout 무시)·git 부재/예외 → None (`_git_run` 얇은 래퍼·사본 0)."""
-    res = _git_run(argv, runner=runner, repo=repo)
+    res = git._git_run(argv, runner=runner, repo=REPO if repo is None else repo)
     return res[0] if res is not None else None
 
 
@@ -15587,7 +14897,7 @@ def _rev_parse_ambiguous(sha: str, *, runner=None,
         try:
             r = subprocess.run(
                 ["git", "-C", str(repo), *argv], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+                encoding="utf-8", errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
         except (OSError, subprocess.SubprocessError):  # 진단 실패는 False(rc 기반 분류 유지).
             return False
         stderr = r.stderr or ""
@@ -15626,8 +14936,8 @@ def _sha_anchor_status(sha: str, *, runner=None,
         return (_ANCHOR_UNKNOWN, None)
     if not _is_hex_sha(sha):
         return (_ANCHOR_NON_SHA, None)  # 움직이는 ref — rev-parse 시도 안 함.
-    res = _git_run(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
-                   runner=runner, repo=repo)
+    res = git._git_run(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+                       runner=runner, repo=REPO if repo is None else repo)
     if res is None:
         return (_ANCHOR_UNKNOWN, None)
     rc, resolved = res
@@ -15699,7 +15009,7 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
         shown = value if value else "<empty>"
         return (None, f"repo({shown}) 미지원 — self 또는 upstream 이어야 함")
     try:
-        upstream = (local_config().get("upstream.path") or "").strip()
+        upstream = (conf_store.local_config(_home()).get("upstream.path") or "").strip()
     except (OSError, UnicodeError, RuntimeError) as exc:
         if _is_engine_rev_skew(exc):
             raise      # 형제 사본 불일치는 "미해소" 한 줄로 삼키지 않는다(fail-loud 보존).
@@ -15726,7 +15036,7 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
         return (None, f"upstream 경로 부재/이동({candidate})")
     if not (candidate / ".git").exists():
         return (None, f"upstream 경로가 git checkout 아님({candidate})")
-    checkout = _git_run(["rev-parse", "--is-inside-work-tree"], repo=candidate)
+    checkout = git._git_run(["rev-parse", "--is-inside-work-tree"], repo=candidate)
     if checkout is None or checkout[0] != 0 or checkout[1].strip().lower() != "true":
         return (None, f"upstream 경로 git checkout 검증 실패({candidate})")
     return (candidate, None)
@@ -15749,8 +15059,8 @@ def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
     if not doc_file.exists():
         return []
     try:
-        fm, _ = load_ticket(doc_file)
-    except _LOAD_TICKET_SOFT_ERRORS:  # frontmatter 없음/깨짐은 skip(비차단).
+        fm, _ = ticket_store.load_ticket(doc_file)
+    except ticket_store._load_ticket_soft_errors():  # frontmatter 없음/깨짐은 skip(비차단).
         return []
     sha = str((fm or {}).get("verified_at") or "").strip()
     if not sha:
@@ -15909,7 +15219,7 @@ def _repo_head_sha(repo: Path | None = None) -> str | None:
         r = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_BOARD_GIT_TIMEOUT_SECONDS)
+            timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
     except (OSError, subprocess.SubprocessError):  # 타임아웃/바이너리 이상은 None(fail-soft).
         return None
     if r.returncode != 0:
@@ -16110,7 +15420,7 @@ def _freshness_replacement_error(
     except (ValueError, yaml.YAMLError) as exc:
         return f"변환 YAML 파싱 실패:{exc}"
     try:
-        consumed, _body = _parse_ticket_text(replaced, "<repin 변환 결과>")
+        consumed, _body = ticket_rules._parse_ticket_text(replaced, "<repin 변환 결과>")
     except (ValueError, yaml.YAMLError) as exc:
         return f"변환 결과 실소비 파서 파싱 실패:{exc}"
     if not isinstance(consumed, dict):
@@ -16382,7 +15692,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
 def _load_domain_module():
     """domain.py 를 경로 import 해 모듈로 반환한다 (부재/실패 시 None).
 
-    **순환 회피 deep-import seam** — domain.py 가 `board.load_ticket` 을 import 하므로
+    **순환 회피 deep-import seam** — domain.py 가 `board.find_ticket` 을 쓰려고 board 를 적재하므로
     board 가 모듈 최상단에서 domain 을 import 하면 순환이다. lint_domain *함수 내부*에서만
     이 헬퍼로 지연 로드한다. domain.py 부재
     (신규 clone·구버전)·로드 실패 → None (호출부가 graceful skip).
@@ -16487,7 +15797,7 @@ def lint_local_conf() -> list[tuple[str, str, str]]:
         if _is_engine_rev_skew(exc):
             raise
         return []
-    where = _rel_to_repo(LOCAL_CONF)
+    where = pm_paths._rel_to_repo(_home(), LOCAL_CONF)
     findings = [
         (where, _LOCAL_CONF_LINT_KIND, line.strip())
         for line in conf_schema.migration_lines(result.legacy)
@@ -16557,7 +15867,7 @@ def lint_local_conf_readable() -> list[tuple[str, str, str]]:
     try:
         _lint_local_conf_read()
     except LocalConfUnreadable as exc:
-        return [(_rel_to_repo(LOCAL_CONF), _LOCAL_CONF_UNREADABLE_LINT_KIND,
+        return [(pm_paths._rel_to_repo(_home(), LOCAL_CONF), _LOCAL_CONF_UNREADABLE_LINT_KIND,
                  f"local.conf 를 읽지 못했다: {exc} — 값이 없는 것이 아니라 읽지 못한 것이다"
                  "(파일 인코딩/권한 확인)")]
     return []
@@ -16591,7 +15901,7 @@ def lint_local_conf_keys() -> list[tuple[str, str, str]]:
     unknown = read.unknown
     if not unknown:
         return []
-    where = _rel_to_repo(LOCAL_CONF)
+    where = pm_paths._rel_to_repo(_home(), LOCAL_CONF)
     keys = ", ".join(f"`{key}`" for key in unknown)
     return [(where, _LOCAL_CONF_UNKNOWN_LINT_KIND,
              f"엔진이 모르는 local.conf 키: {keys} (오타 또는 폐기 키 — "
@@ -16620,7 +15930,7 @@ def lint_local_conf_required() -> list[tuple[str, str, str]]:
     if not missing:
         return []
     keys = ", ".join(f"`{key}`" for key in missing)
-    return [(_rel_to_repo(LOCAL_CONF), _LOCAL_CONF_MISSING_LINT_KIND,
+    return [(pm_paths._rel_to_repo(_home(), LOCAL_CONF), _LOCAL_CONF_MISSING_LINT_KIND,
              f"local.conf 필수 키 누락: {keys} (`board.py init` 이 채운다 — 설명·기본값은 "
              f"`{_LOCAL_CONF_KEYS_CMD}`)")]
 
@@ -16638,7 +15948,7 @@ def lint_delegate() -> list[tuple[str, str, str]]:
         mod = _load_pm_delegate_module()
         if mod is None:
             return []
-        findings = mod.lint_same_model(local_config())
+        findings = mod.lint_same_model(conf_store.local_config(_home()))
     except Exception as exc:  # noqa: BLE001 — 일반 실패만 빈 결과, skew는 fail-loud.
         if _is_engine_rev_skew(exc):
             raise
@@ -16679,7 +15989,7 @@ def lint_rounds() -> list[tuple[str, str, str]]:
     """
     try:
         rounds = _load_ticket_rounds()
-        root = rounds.rounds_dir(tickets_dir())
+        root = rounds.rounds_dir(pm_paths.tickets_dir(_home()))
         entries = sorted(root.iterdir()) if root.is_dir() else []
     # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다. 형제
     # 로드 실패나 디렉터리 판독 실패가 무관한 board 조회를 죽이지 않게 축을 생략하되, 엔진 rev
@@ -16695,13 +16005,13 @@ def lint_rounds() -> list[tuple[str, str, str]]:
         if not entry.is_dir():
             findings.append((
                 entry.name, _ROUND_STRAY_LINT_KIND,
-                f"라운드 디렉터리 자리에 파일이 있다: {_rel_to_repo(entry)} "
+                f"라운드 디렉터리 자리에 파일이 있다: {pm_paths._rel_to_repo(_home(), entry)} "
                 "(이 자리엔 티켓별 라운드 디렉터리만 산다)",
             ))
             continue
         ticket = entry.name
         try:
-            for problem in rounds.verify_rounds(tickets_dir(), ticket):
+            for problem in rounds.verify_rounds(pm_paths.tickets_dir(_home()), ticket):
                 findings.append((ticket, problem.code, problem.detail))
             leftovers = sorted(
                 item.name for item in entry.iterdir()
@@ -16743,7 +16053,7 @@ def lint_clusters() -> list[tuple[str, str, str]]:
         cluster = str(fm.get("id") or "").strip()
         for tid in cluster_tickets(fm):
             owners.setdefault(tid, []).append(cluster)
-            if find_ticket_exact(tid) is None:
+            if ticket_store.find_ticket_exact(_home(), tid) is None:
                 findings.append((
                     cluster, _CLUSTER_MEMBER_LINT_KIND,
                     f"멤버 티켓 부재: {tid} — 장부가 board 에 없는 티켓을 가리킨다"
@@ -16768,9 +16078,9 @@ def lint_legacy_growth_sections() -> list[tuple[str, str, str]]:
     시야는 `_has_legacy_growth_markers`(column 0 주석 줄 · ``` 펜스 밖)다.
     """
     findings: list[tuple[str, str, str]] = []
-    for status in (*STATUS_DIRS, ".drafts"):
-        for path in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(path)
+    for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
+        for path in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
+            loaded = ticket_store.load_ticket_soft(_home(), path)
             if loaded is None:
                 continue
             fm, body = loaded
@@ -16864,7 +16174,7 @@ def lint_areas_repo_unregistered() -> list[tuple[str, str, str]]:
     미차단). areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
     """
     try:
-        if registered_repos():
+        if areas_store.registered_repos(_home()):
             return []
     except Exception:  # noqa: BLE001 — areas 파싱 실패는 무발화(advisory 가 lint 를 깨지 않는다).
         return []
@@ -16886,7 +16196,7 @@ def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
     미차단). areas.md 부재/파싱 실패는 빈 결과(무영향).
     """
     try:
-        _header, rows = _parse_areas()
+        _header, rows = areas_store._parse_areas(_home())
     except Exception:  # noqa: BLE001 — areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
         return []
     counts: dict[str, int] = {}
@@ -16898,7 +16208,7 @@ def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
         (repo, "areas-duplicate-repo",
          f"areas.md 에 repo 행이 {n}개 — first-match 로 조용히 굳는다(어느 행이 이기는지 "
          f"merge 순서에 달림). 한 행만 남기고 수동 정리하라 "
-         f"({_rel_to_repo(areas_file())}). 정리 전엔 `pm-config repo protected {repo} …` "
+         f"({pm_paths._rel_to_repo(_home(), pm_paths.areas_file(_home()))}). 정리 전엔 `pm-config repo protected {repo} …` "
          "같은 셀 변경이 거부된다.")
         for repo, n in sorted(counts.items()) if n > 1
     ]
@@ -16910,7 +16220,7 @@ def lint_areas_merge_union() -> list[tuple[str, str, str]]:
     union 이 빠지면 두 clone 의 동시 등록이 merge 에서 한쪽 행을 잃거나 충돌한다 — 레지스트리
     설계가 기대는 보장이 조용히 사라지는 상태라 상시 가시화한다. 형상별로 *유효한* 선언 위치가
     다르므로 그에 맞는 파일만 본다(`_BOARD_AREAS_ATTR_TARGETS` / `_INLINE_AREAS_ATTR_TARGETS`):
-      - board 분리 → `board_root()/.gitattributes` 의 `areas.md merge=union`
+      - board 분리 → `Home.board_root/.gitattributes` 의 `areas.md merge=union`
       - inline     → 루트 `.gitattributes` 의 `.project_manager/areas.md merge=union`
     판정은 **파일 내용**만 본다 — `git check-attr` 를 런타임에 부르지 않는다(비용·이식성).
     그래서 사각이 둘 있다(둘 다 advisory 라 무해·완전 판정은 check-attr 이 필요): in-tree
@@ -16921,18 +16231,18 @@ def lint_areas_merge_union() -> list[tuple[str, str, str]]:
     kind=`areas-merge-union`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push 미차단).
     areas.md 부재(미등록)·읽기 실패는 빈 결과.
     """
-    af = areas_file()
+    af = pm_paths.areas_file(_home())
     if not af.exists():
         return []
-    root = board_root()
+    root = _home().board_root
     separated = (root / ".git").exists() and af.parent == root
     if separated:
         attrs, targets = root / ".gitattributes", _BOARD_AREAS_ATTR_TARGETS
-        fix = (f"`{_rel_to_repo(attrs)}` 에 `areas.md merge=union` 을 추가하라 — 다음 board "
+        fix = (f"`{pm_paths._rel_to_repo(_home(), attrs)}` 에 `areas.md merge=union` 을 추가하라 — 다음 board "
                "mutation(claim/new/complete 등)이 자동 보강해 그 commit 으로 함께 push 한다.")
     else:
         attrs, targets = REPO / ".gitattributes", _INLINE_AREAS_ATTR_TARGETS
-        fix = (f"`{_rel_to_repo(attrs)}` 에 `.project_manager/areas.md merge=union` 을 "
+        fix = (f"`{pm_paths._rel_to_repo(_home(), attrs)}` 에 `.project_manager/areas.md merge=union` 을 "
                "추가하라(inline 형상의 선언 위치).")
     try:
         text = fs.read_text_shared(attrs, encoding="utf-8") if attrs.is_file() else ""
@@ -16940,7 +16250,7 @@ def lint_areas_merge_union() -> list[tuple[str, str, str]]:
         return []
     if _areas_union_declared(text, targets):
         return []
-    return [(_rel_to_repo(af), "areas-merge-union",
+    return [(pm_paths._rel_to_repo(_home(), af), "areas-merge-union",
              f"areas.md 에 merge=union 이 유효하지 않다 — 동시 등록(다른 clone 의 행 append)이 "
              f"merge 에서 충돌하거나 한쪽 행을 잃는다. {fix}")]
 
@@ -17029,10 +16339,10 @@ def refresh_board() -> None:
 
 def _refresh_board_locked() -> None:
     """board.md 재생성의 scan+render+write 본체. **board_lock 보유 전제**."""
-    by_status: dict[str, list[dict]] = {s: [] for s in STATUS_DIRS}
-    for status in STATUS_DIRS:
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(p)
+    by_status: dict[str, list[dict]] = {s: [] for s in ticket_rules.STATUS_DIRS}
+    for status in ticket_rules.STATUS_DIRS:
+        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
+            loaded = ticket_store.load_ticket_soft(_home(), p)
             if loaded is None:
                 continue        # 손상 1건이 board.md 재생성 전체를 죽이지 않는다(경고는 위에서).
             by_status[status].append(loaded[0])
@@ -17050,7 +16360,7 @@ def _refresh_board_locked() -> None:
         "> 작업 흐름: [`tickets/README.md`](tickets/README.md).",
         "",
     ]
-    totals = " · ".join(f"{s}={len(by_status[s])}" for s in STATUS_DIRS)
+    totals = " · ".join(f"{s}={len(by_status[s])}" for s in ticket_rules.STATUS_DIRS)
     lines.append(f"**현황:** {totals}")
     lines.append("")
 
@@ -17059,10 +16369,10 @@ def _refresh_board_locked() -> None:
     emoji = {"open": "🟢", "claimed": "🟡", "blocked": "🔴", "done": "✅",
              "discarded": "🗃️"}
 
-    for status in STATUS_DIRS:
+    for status in ticket_rules.STATUS_DIRS:
         items = by_status[status]
         # 종결 섹션(done·discarded)은 비면 헤더도 접는다 — 보드가 진행 중 작업에 집중하게.
-        if status in TERMINAL_STATUS_DIRS and not items:
+        if status in ticket_rules.TERMINAL_STATUS_DIRS and not items:
             continue
         lines.append(f"## {emoji[status]} {status.upper()} ({len(items)})")
         lines.append("")
@@ -17139,7 +16449,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help="list tickets")
-    p.add_argument("--status", choices=(*STATUS_DIRS, "all"),
+    p.add_argument("--status", choices=(*ticket_rules.STATUS_DIRS, "all"),
                    help="status 뷰 셀렉터: 생략 시 활성만(open/claimed/blocked·done 접기)· "
                         "특정 status 하나만 보려면 그 값(예: done)· 전체(done 포함)는 `all`.")
     p.add_argument("--tag")
@@ -17191,8 +16501,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("discard",
                        help="mv open|claimed|blocked → discarded (처분 종결 — 병합·폐기)")
     p.add_argument("id", metavar="T-NNNN")
-    p.add_argument("disposition", metavar="|".join(DISPOSITION_KINDS),
-                   choices=DISPOSITION_KINDS,
+    p.add_argument("disposition", metavar="|".join(ticket_rules.DISPOSITION_KINDS),
+                   choices=ticket_rules.DISPOSITION_KINDS,
                    help="처분 종류 — merged(다른 티켓으로 흡수) · dropped(취소·폐기)")
     p.add_argument("--reason", required=True,
                    help="처분 사유 (병합 대상 티켓 ID 도 여기에 적는다)")
@@ -17425,7 +16735,7 @@ def build_parser() -> argparse.ArgumentParser:
     idea_sub = idea.add_subparsers(dest="idea_cmd", required=True)
 
     ip = idea_sub.add_parser("list", help="list ideas")
-    ip.add_argument("--status", choices=IDEA_STATUS_DIRS)
+    ip.add_argument("--status", choices=ticket_rules.IDEA_STATUS_DIRS)
     ip.add_argument("--tag")
     ip.set_defaults(fn=cmd_idea_list)
 
@@ -17512,7 +16822,7 @@ def _main(argv: list[str] | None = None) -> int:
             subcommand=subcommand,
             pm_home=resolution.home if resolution.home != REPO else None,
         )
-        local_root = _board_root_at(REPO)
+        local_root = pm_paths._board_root_at(REPO)
         if resolution.home is not None and resolution.home != REPO:
             with _read_pm_inputs_at(resolution.home, resolution.root):
                 return args.fn(args)
@@ -17538,7 +16848,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 — marked skew·PM 홈 미확정만 진단+rc로 종료.
         if _is_engine_rev_skew(exc):
             return _report_engine_rev_skew_at_terminal(exc)
-        if isinstance(exc, _load_pm_log().PmHomeResolutionError):
+        if isinstance(exc, pm_paths.PmHomeResolutionError):
             print(f"[중단] 소유 PM 홈을 확정할 수 없습니다: {exc}", file=sys.stderr)
             return 1
         raise

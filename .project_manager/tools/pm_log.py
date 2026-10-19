@@ -53,8 +53,8 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import identity_args  # noqa: E402
-from pm_engine.infra import console, fs, raw_output, repo_files  # noqa: E402
+from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, console, fs, pm_paths, raw_output, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -477,107 +477,6 @@ def _lease_slot_path(pm_home: Path, row: dict) -> Path | None:
     return slot if slot.is_absolute() else Path(pm_home) / slot
 
 
-def _git_common_dir_from_files(repo: Path) -> Path | None:
-    """``repo/.git`` 포인터만으로 공용 Git 디렉토리를 해소한다.
-
-    linked worktree의 ``.git`` 파일은 실제 git-dir을, 그 아래 ``commondir``은 공용
-    저장소를 가리킨다. snapshot 빌더의 subprocess 0 계약을 넓히지 않으면서 외부 absolute
-    lease slot도 그 저장소를 소유한 PM 홈으로 역추적할 수 있게 하는 순수 파일 seam이다.
-    """
-    repo = Path(repo).resolve(strict=False)
-    try:
-        dot_git = repo / ".git"
-        if dot_git.is_dir():
-            git_dir = dot_git
-        elif dot_git.is_file():
-            pointer = fs.read_text_shared(dot_git, encoding="utf-8").strip()
-            if not pointer.startswith("gitdir:"):
-                return None
-            target = Path(pointer[len("gitdir:"):].strip())
-            git_dir = target if target.is_absolute() else repo / target
-        else:
-            return None
-
-        common_pointer = git_dir / "commondir"
-        if not common_pointer.is_file():
-            return git_dir.resolve(strict=False)
-        raw_common = fs.read_text_shared(common_pointer, encoding="utf-8").strip()
-        if not raw_common:
-            return None
-        common = Path(raw_common)
-        return (common if common.is_absolute() else git_dir / common).resolve(
-            strict=False
-        )
-    except (OSError, UnicodeError, ValueError):
-        return None
-
-
-class PmHomeResolutionError(RuntimeError):
-    """anchor 자신의 선언에서 소유 PM 홈을 확정하지 못한 오류."""
-
-
-# 두-git 형상의 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 놓인다 — 슬롯을 만든
-# 도구(`worktree_pool.bare_repo_path` = `pm_config.REPOS_DIR / f"{repo}.git"`)가 써 넣은
-# 자리라 조상 추측이 아니라 선언이다.
-_GIT_DIR_NAME = ".git"
-_BARE_REPOS_DIR_NAME = ".repos"
-
-
-def _pm_home_from_common_dir(common_dir: Path) -> Path | None:
-    """공용 Git 저장소 경로에서 그 저장소를 만든 PM 홈을 되돌린다(선언 형상 2종)."""
-    if common_dir.name == _GIT_DIR_NAME:
-        # `<X>/.git` — 단일-git PM 홈이 자기 checkout 에서 판 worktree.
-        return common_dir.parent
-    if (
-        common_dir.suffix == _GIT_DIR_NAME
-        and common_dir.parent.name == _BARE_REPOS_DIR_NAME
-    ):
-        # `<X>/.repos/<repo>.git` — worktree 풀이 만든 두-git 슬롯과 그 슬롯에서 판 스냅샷.
-        return common_dir.parent.parent
-    return None
-
-
-def owning_pm_home(anchor: Path) -> Path:
-    """anchor 자신이 들고 있는 선언만으로 소유 PM 홈을 유도한다 — 답은 하나이거나 예외다.
-
-    입력은 anchor 의 `.git` 포인터(슬롯을 만든 도구가 쓴 값) 하나다. 조상 훑기·cwd·환경·
-    subprocess 를 쓰지 않으므로 같은 모양의 트리는 파일시스템 어디에 있어도 같은 답을 낸다.
-
-      - `.git` 없음/디렉터리        → anchor 자신 (아무의 linked worktree 도 아니다)
-      - `.git` 파일 → `<X>/.repos/<repo>.git` 또는 `<X>/.git` → `X`
-      - 그 밖의 commondir           → 실패
-
-    유도된 `X` 는 `<X>/.project_manager` 실재를 요구하고, 부재는 실패다 — 못 받으면 anchor
-    자신으로 강등하지 않는다.
-
-    lease 장부는 판정 입력이 아니다. 그 파일은 어느 슬롯을 누구에게 빌려줬는지 적는 슬롯 배정
-    원장이지 소유 증거가 아니며, gitignored·per-clone 이라 anchor 의 함수도 아니다. 소유는
-    commondir 형상이 이미 정한다 — `<X>/.repos/<repo>.git` 이면 X 가 그 bare 를 만든 주체이고
-    `<X>/.git` 이면 X 가 main checkout 이다.
-    """
-    anchor = Path(anchor).resolve(strict=False)
-    if not (anchor / _GIT_DIR_NAME).is_file():
-        # 없음(합성 트리·비-git 채택 폴더) · 디렉터리(PM 홈 main checkout·일반 clone).
-        return anchor
-    common_dir = _git_common_dir_from_files(anchor)
-    if common_dir is None:
-        raise PmHomeResolutionError(
-            f"{anchor}: `.git` 포인터에서 공용 Git 저장소를 읽지 못했습니다."
-        )
-    pm_home = _pm_home_from_common_dir(common_dir)
-    if pm_home is None:
-        raise PmHomeResolutionError(
-            f"{anchor}: 공용 Git 저장소 {common_dir} 형상에서 소유 PM 홈을 찾지 못했습니다."
-        )
-    pm_home = pm_home.resolve(strict=False)
-    if not (pm_home / ".project_manager").is_dir():
-        raise PmHomeResolutionError(
-            f"{anchor}: 공용 Git 저장소 {common_dir} 의 소유 PM 홈을 찾지 못했습니다 — "
-            f"{pm_home} 에 .project_manager 가 없습니다."
-        )
-    return pm_home
-
-
 def _lease_rows(pm_home: Path) -> list[dict]:
     data = _read_json_object(
         Path(pm_home) / ".project_manager" / ".local" / "worktree-leases.json"
@@ -719,28 +618,8 @@ def _identity_section(pm_home: Path, session_id: str, task: str) -> str:
     )
 
 
-def _status_dirs() -> tuple[str, ...]:
-    """티켓 상태 디렉토리 집합 — board 의 `STATUS_DIRS` 단일 진실을 지연 로드로 승계한다(fail-soft).
-
-    census 버킷을 손으로 적으면 board 가 상태를 추가할 때(`discarded` — 처분 종결) 그 상태의
-    티켓이 장부 집계에서 **조용히** 빠진다(crash 0 이라 아무도 못 본다). 로드 실패는
-    `_registered_repos` 와 같은 fail-soft — 빈 튜플이면 소비측이 "미해소"로 명시 표기한다
-    (손으로 적은 목록으로 되돌아가지 않는다). 사본 skew 만 fail-loud.
-    """
-    board_path = Path(__file__).resolve().parent / "board.py"
-    try:
-        board = _load_module_from_path(
-            board_path, "board.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — 부재/로드 실패는 census 표기만 완화.
-        if _is_engine_rev_skew(exc):
-            raise
-        return ()
-    return tuple(getattr(board, "STATUS_DIRS", ()))
-
-
 def _ticket_counts(pm_home: Path) -> tuple[Path, dict[str, int]]:
-    """`pm_home` board 의 상태별 티켓 수 — 버킷은 `_status_dirs()`(board 단일 진실) 파생이다.
+    """`pm_home` board 의 상태별 티켓 수 — 버킷은 `ticket_rules.STATUS_DIRS`(단일 진실) 파생이다.
 
     상태 디렉토리 스캔 자체는 board.py 호출 없이 디렉토리 존재만 본다(집합만 board 에서 온다).
     """
@@ -749,7 +628,7 @@ def _ticket_counts(pm_home: Path) -> tuple[Path, dict[str, int]]:
     board_root = manager / "board"
     tickets = (board_root if board_root.is_dir() else manager / "wiki") / "tickets"
     counts: dict[str, int] = {}
-    for status in _status_dirs():
+    for status in ticket_rules.STATUS_DIRS:
         try:
             counts[status] = sum(1 for path in (tickets / status).glob("T-*.md") if path.is_file())
         except OSError:
@@ -782,9 +661,9 @@ def _ledger_section(pm_home: Path, task: str) -> str:
     task_slots = [label for label, _path in _lease_task_slots(pm_home, task)]
     tickets, counts = _ticket_counts(pm_home)
     state_text = ", ".join(f"{key} {states[key]}" for key in sorted(states)) or "장부 없음"
-    # 버킷 순서·집합은 `_status_dirs()`(board `STATUS_DIRS`) 그대로다 — 새 상태는 손대지 않고
+    # 버킷 순서·집합은 `ticket_rules.STATUS_DIRS` 그대로다 — 새 상태는 손대지 않고
     # 뒤에 붙고, 기존 status 표기는 바뀌지 않는다.
-    count_text = " / ".join(f"{key} {value}" for key, value in counts.items()) or "(상태 목록 미해소)"
+    count_text = " / ".join(f"{key} {value}" for key, value in counts.items())
     return (
         "## 장부 포인터\n"
         f"- 활성 tasks ({len(active)}): {', '.join(active) if active else '(없음)'}\n"
@@ -1280,7 +1159,7 @@ def build_snapshot(
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
-    pm_home = owning_pm_home(REPO)
+    pm_home = pm_paths.owning_pm_home(REPO)
     text, warning = build_snapshot(pm_home, args.session_id)
     if warning:
         print(warning, file=sys.stderr)
@@ -1300,16 +1179,10 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
 
 def _registered_repos() -> set[str] | None:
-    """예약 task 판정용 등록 repo를 fail-soft 해소한다(skew만 fail-loud)."""
-    board_path = Path(__file__).resolve().parent / "board.py"
+    """예약 task 판정용 등록 repo를 fail-soft 해소한다."""
     try:
-        board = _load_module_from_path(
-            board_path, "board.py", verifier=_verify_engine_rev,
-        )
-        return board.registered_repos()
-    except Exception as exc:  # noqa: BLE001 — 부재/areas 파싱 실패는 예약패턴 검증만 완화.
-        if _is_engine_rev_skew(exc):
-            raise
+        return areas_store.registered_repos(pm_paths.home_at(REPO))
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화.
         return None
 
 
@@ -1647,7 +1520,7 @@ def main(argv: list[str] | None = None) -> int:
     # snapshot/checkpoint가 등록 worktree에서 발화하면 PM 홈의 동기화된 엔진으로 치환한다.
     # tail/archive 등 기존 명령은 자기 앵커 의미를 보존한다.
     if args.cmd in {"snapshot", "checkpoint"}:
-        pm_home = owning_pm_home(REPO)
+        pm_home = pm_paths.owning_pm_home(REPO)
         if pm_home != REPO.resolve(strict=False):
             canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
             if not canonical.is_file():

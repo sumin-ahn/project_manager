@@ -17,6 +17,7 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 from _pytest_summary import pytest_summary
+from pm_engine.domain import ticket_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -580,9 +581,9 @@ def test_task_multiple_slots_json_surfaces_representative_and_full_pytest_scope(
         "scopes": ["work/A_1", "work/B_2"],
     }
     assert data["board"]["counts_scope"] == "task mytask"
-    # 하위호환 top-level 네 키는 고정 스키마고, 전량 dict(`counts_task`)는 board `STATUS_DIRS`
+    # 하위호환 top-level 네 키는 고정 스키마고, 전량 dict(`counts_task`)는 `ticket_rules.STATUS_DIRS`
     # 파생이다(T-0839) — 별칭은 그 네 키 값을 보존하고 새 상태를 더 싣는다.
-    assert set(data["board"]["counts_task"]) == set(_load("board").STATUS_DIRS)
+    assert set(data["board"]["counts_task"]) == set(ticket_rules.STATUS_DIRS)
     for key in ("done", "open", "claimed", "blocked"):
         assert data["board"]["counts_task"][key] == data["board"][key]
     assert "counts_mine" not in data["board"]

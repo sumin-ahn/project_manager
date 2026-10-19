@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, ensure_product_slot
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -281,7 +282,7 @@ def test_promote_commits_when_body_filled(board, tmp_path, monkeypatch):
     ticket_id = path.name.split("-seed")[0] if "seed" in path.name else "-".join(path.stem.split("-")[:2])
 
     # 본문을 self-contained 하게 채운다(placeholder 제거 + 필수 섹션 유지).
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     filled_body = (
         f"# {ticket_id} — 제목\n\n"
         "## 목표\n실제 목표를 채웠다.\n\n"
@@ -351,7 +352,7 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path, monkeypatch):
     for p in (board_dir / "tickets" / ".drafts").glob("T-*-*.md"):
         if p != draft_path:
             filled_id = "-".join(p.stem.split("-")[:2])
-            fm, _ = board.load_ticket(p)
+            fm, _ = ticket_store.load_ticket(p)
             filled_body = (
                 f"# {filled_id} — 두 번째\n\n"
                 "## 목표\n실제 목표.\n\n"
@@ -403,7 +404,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
         board.cmd_new(_new_args("실 티켓"))
         for p in (board_dir / "tickets" / ".drafts").glob("T-*-*.md"):
             if p != draft_path:
-                fm, _ = board.load_ticket(p)
+                fm, _ = ticket_store.load_ticket(p)
                 seed_id = "-".join(p.stem.split("-")[:2])
                 # DoD 는 체크 상태로 심는다 — 이 테스트의 주제는 draft leak 이지만 아래에서
                 # 실제로 complete 까지 태우므로 DoD 기록 게이트(T-0596)를 만족해야 한다.
@@ -514,7 +515,7 @@ def test_discard_accepts_a_draft_and_commits_only_the_new_file(board, tmp_path):
     assert not draft_path.exists(), "draft 원본이 .drafts/ 에 남아있으면 안 된다."
     discarded = list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))
     assert discarded, "discard 뒤 discarded/ 에 파일이 있어야 한다."
-    fm, body = board.load_ticket(discarded[0])
+    fm, body = ticket_store.load_ticket(discarded[0])
     assert fm["status"] == "discarded"
     assert fm["disposition"] == "dropped"
     assert fm["discarded_from"] == "draft"
@@ -548,7 +549,7 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
     board.cmd_new(_new_args("라운드 딸린 draft"))
     tid, draft_path = _draft_id_and_path(board_dir)
     rounds = board._load_ticket_rounds()
-    round_dir = rounds.rounds_dir_for_ticket(tid, board.tickets_dir())
+    round_dir = rounds.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
     round_dir.mkdir(parents=True, exist_ok=True)
     seed_text = rounds.render_round_seed(
         "architect", draft_path.read_text(encoding="utf-8"),
@@ -632,7 +633,7 @@ def test_reopen_of_a_draft_discard_returns_to_drafts(board, tmp_path):
         "draft 출처 reopen 이 open/ 으로 갔다(placeholder 게이트를 우회함)."
     restored = list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md"))
     assert restored, "draft 출처 reopen 이 .drafts/ 로 복귀하지 않았다."
-    fm, body = board.load_ticket(restored[0])
+    fm, body = ticket_store.load_ticket(restored[0])
     assert fm["status"] == "draft"
     assert "discarded_from" not in fm
     assert "## Reopened" in body
@@ -665,8 +666,8 @@ def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
     _git(["init", "-q", "-b", "main"], tmp_path)
     _git(["commit", "--allow-empty", "-qm", "home seed"], tmp_path)
     assert board.cmd_new(_new_args("초안")) == 0
-    path = next(board.drafts_dir().glob("T-*.md"))
-    fm, _ = board.load_ticket(path)
+    path = next(pm_paths.drafts_dir(board._home()).glob("T-*.md"))
+    fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
     from test_board_cluster import _TEMPLATE_TEXT as filled
     body = filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "초안")
@@ -683,7 +684,7 @@ def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
     recorded = ledger.read_bytes()
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
     assert ledger.read_bytes() == recorded
-    assert board.find_ticket_exact(tid)[0] == "open"
+    assert ticket_store.find_ticket_exact(board._home(), tid)[0] == "open"
     assert _git(["symbolic-ref", "--short", "HEAD"], slot).stdout.strip() == "main"
 
 
@@ -694,8 +695,8 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
     assert board.cmd_new(_new_args("검증 초안")) == 0
-    path = next(board.drafts_dir().glob("T-*.md"))
-    fm, _ = board.load_ticket(path)
+    path = next(pm_paths.drafts_dir(board._home()).glob("T-*.md"))
+    fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
     from test_board_cluster import _TEMPLATE_TEXT as filled
     board.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
@@ -708,7 +709,7 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     elif damage == "missing":
         ledger["tickets"] = []
     elif damage == "reverse":
-        fm, body = board.load_ticket(path)
+        fm, body = ticket_store.load_ticket(path)
         fm["cluster"] = "C-other"
         board.dump_ticket(path, fm, body)
     else:
@@ -729,14 +730,14 @@ def test_t0930_promote_binding_task_draft_without_workspace(board, tmp_path, mon
     args = _new_args("코드 없는 task 초안")
     args.task = "main"
     assert board.cmd_new(args) == 0
-    path = next(board.drafts_dir().glob("T-*.md"))
-    assert board.load_ticket(path)[0]["created_by"].endswith("/main")
+    path = next(pm_paths.drafts_dir(board._home()).glob("T-*.md"))
+    assert ticket_store.load_ticket(path)[0]["created_by"].endswith("/main")
     before = path.read_bytes()
     args.repo, args.slot = "missing", 1
     with pytest.raises(SystemExit):
         board.cmd_new(args)
     assert path.read_bytes() == before
-    assert len(list(board.drafts_dir().glob("T-*.md"))) == 1
+    assert len(list(pm_paths.drafts_dir(board._home()).glob("T-*.md"))) == 1
 
 
 @requires_git
@@ -748,7 +749,7 @@ def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypa
     monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
     assert board.cmd_new(_new_args("로컬 발행")) == 0
     path = next((wiki / "tickets/open").glob("T-*.md"))
-    fm, _ = board.load_ticket(path)
+    fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
     before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 0

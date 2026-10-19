@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ensure_product_slot
+from pm_engine.infra import git, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -320,8 +321,8 @@ def _claim_task(board, capsys, tid, *, task, user) -> None:
     repo = {"refactor": "alpha", "docs": "beta"}[task]
     slot = f"work/{repo}_3"
     tree = init_git_repo(board.REPO / slot, commit=f"task fixture {task}")
-    head = board._git_head_at(str(tree))
-    assert head and board._cluster_current_branch(str(tree)) == "main"
+    head = git._git_head_at(str(tree))
+    assert head and git._cluster_current_branch(str(tree)) == "main"
     leases = (json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))
               if board.LEASES_FILE.exists() else {"leases": []})
     leases["leases"].append({
@@ -332,8 +333,8 @@ def _claim_task(board, capsys, tid, *, task, user) -> None:
         id=tid, repo=None, slot=None, task=task, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim --task rc={rc}: {out}"
-    status, path = board.find_ticket_exact(tid)
-    fm, _ = board.load_ticket(path)
+    status, path = ticket_store.find_ticket_exact(board._home(), tid)
+    fm, _ = ticket_store.load_ticket(path)
     assert status == "claimed"
     assert (fm["claimed_by"], fm["claimed_rev"]) == (f"{user}/{task}", head)
 

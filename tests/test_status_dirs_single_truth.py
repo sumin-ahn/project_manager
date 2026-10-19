@@ -8,9 +8,10 @@
   - `pm_log` 장부 census — 그 상태 티켓이 핸드오프 스냅샷 집계에서 누락
   - `pm_bootstrap` dump — `if status in counts` 가드가 그 상태 행을 버림
 
-여기서 고정하는 것은 **값의 단일 진실**이다: (1) 세 소비처의 상태 집합 seam 이 board 값과
-같고(사본이면 red), (2) 정의를 한 곳에서 바꾸면 세 소비처의 판정이 손대지 않고 함께 바뀌며,
-(3) 종전 4버킷 렌더 bytes 는 그대로고 새 상태는 뒤에 붙기만 한다. 존재 검사가 아니라 값 단언이다.
+여기서 고정하는 것은 **값의 단일 진실**이다: (1) 세 소비처가 `ticket_rules.STATUS_DIRS` 를 직접
+읽고(사본이면 (5) 절의 AST 가드가 red), (2) 정의를 한 곳에서 바꾸면 세 소비처의 판정이 손대지 않고
+함께 바뀌며, (3) 종전 4버킷 렌더 bytes 는 그대로고 새 상태는 뒤에 붙기만 한다. 존재 검사가 아니라
+값 단언이다.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import ticket_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -69,30 +71,15 @@ def _seed_ticket(tickets_dir: Path, status: str, ticket_id: str) -> Path:
     return path
 
 
-# ── (1) 세 소비처의 seam 값 == board 단일 진실 ────────────────────────────────
-
-@pytest.mark.parametrize("tool", STATUS_DIRS_CONSUMERS)
-def test_status_dirs_seam_equals_board_value(board, tool):
-    """소비처의 `_status_dirs()` 가 board `STATUS_DIRS` 와 **값이 같다**.
-
-    사본을 되살리면(예 `discarded` 빠진 4튜플) 여기서 값이 갈려 red 다 — 존재 검사가 아니라
-    board 실값과의 등가 단언이다.
-    """
-    mod = _load(tool)
-    assert mod._status_dirs() == tuple(board.STATUS_DIRS)
-    # 사본이 남아 있었다면 통과했을 옛 집합이 지금은 board 값이 아님을 함께 못박는다.
-    assert mod._status_dirs() != ("open", "claimed", "blocked", "done")
-
-
 # ── (2) additional_reviewer — 경로 해소·실-board 판정이 board 집합을 따른다 ──────
 
 def test_additional_reviewer_resolves_ticket_in_every_status_dir(external, board, tmp_path):
     """모든 `STATUS_DIRS` 상태의 티켓이 리뷰 대상 경로로 해소된다 (사본이면 `discarded` 에서 red)."""
     tickets = tmp_path / ".project_manager" / "board" / "tickets"
-    for index, status in enumerate(board.STATUS_DIRS):
+    for index, status in enumerate(ticket_rules.STATUS_DIRS):
         _seed_ticket(tickets, status, f"T-90{index:02d}")
 
-    for index, status in enumerate(board.STATUS_DIRS):
+    for index, status in enumerate(ticket_rules.STATUS_DIRS):
         resolved = external._find_ticket_file(f"T-90{index:02d}", pm_home=tmp_path)
         assert resolved == tickets / status / f"T-90{index:02d}.md"
 
@@ -105,7 +92,7 @@ def test_additional_reviewer_owns_real_board_matches_board_for_every_status(
     `discarded` 만 가진 PM 홈은 board 기준 실 board 다 — 옛 사본은 이를 빈 scaffold(False)로
     오판했다(가드가 엉뚱한 앵커를 통과시키는 축).
     """
-    for index, status in enumerate(board.STATUS_DIRS):
+    for index, status in enumerate(ticket_rules.STATUS_DIRS):
         pm_dir = tmp_path / f"home{index}" / ".project_manager"
         _seed_ticket(pm_dir / "board" / "tickets", status, "T-0001")
         assert external._owns_real_board(pm_dir) is True
@@ -120,13 +107,11 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
     external, board, tmp_path, monkeypatch,
 ):
     """board 정의에 상태를 주입하면 경로 해소·실-board 판정이 **손대지 않고** 따라온다."""
-    monkeypatch.setattr(board, "STATUS_DIRS", (*board.STATUS_DIRS, FAKE_STATUS))
-    monkeypatch.setattr(external, "_load_board", lambda: board)
+    monkeypatch.setattr(ticket_rules, "STATUS_DIRS", (*ticket_rules.STATUS_DIRS, FAKE_STATUS))
 
     tickets = tmp_path / ".project_manager" / "board" / "tickets"
     _seed_ticket(tickets, FAKE_STATUS, "T-9100")
 
-    assert external._status_dirs()[-1] == FAKE_STATUS
     assert external._find_ticket_file("T-9100", pm_home=tmp_path) == (
         tickets / FAKE_STATUS / "T-9100.md")
     assert external._owns_real_board(tmp_path / ".project_manager") is True
@@ -147,7 +132,7 @@ def test_pm_log_census_counts_every_status_dir(pm_log, board, tmp_path):
     """census 가 `STATUS_DIRS` 전 상태를 센다 — 상태별로 **다른 수**를 넣어 값으로 확인한다."""
     tickets = tmp_path / ".project_manager" / "board" / "tickets"
     expected = {}
-    for index, status in enumerate(board.STATUS_DIRS, start=1):
+    for index, status in enumerate(ticket_rules.STATUS_DIRS, start=1):
         for serial in range(index):
             _seed_ticket(tickets, status, f"T-{index}{serial:03d}")
         expected[status] = index
@@ -165,8 +150,7 @@ def test_pm_log_census_follows_injected_status_without_code_change(
     pm_log, board, tmp_path, monkeypatch,
 ):
     """상태 집합에 하나 주입하면 census 집계·렌더가 손대지 않고 그 버킷을 낸다."""
-    monkeypatch.setattr(
-        pm_log, "_status_dirs", lambda: (*board.STATUS_DIRS, FAKE_STATUS))
+    monkeypatch.setattr(ticket_rules, "STATUS_DIRS", (*ticket_rules.STATUS_DIRS, FAKE_STATUS))
     tickets = tmp_path / ".project_manager" / "board" / "tickets"
     _seed_ticket(tickets, FAKE_STATUS, "T-9200")
     _seed_ticket(tickets, FAKE_STATUS, "T-9201")
@@ -189,10 +173,10 @@ def test_pm_bootstrap_dump_counts_and_renders_every_status_dir(bootstrap, board)
     """
     output = "".join(
         _board_line(status, f"T-93{index:02d}")
-        for index, status in enumerate(board.STATUS_DIRS)
+        for index, status in enumerate(ticket_rules.STATUS_DIRS)
     )
     counts = bootstrap.parse_board_counts(output)
-    assert counts == dict.fromkeys(board.STATUS_DIRS, 1)
+    assert counts == dict.fromkeys(ticket_rules.STATUS_DIRS, 1)
 
     rendered = bootstrap._format_board_counts_line(counts, "mine")
     # 종전 4버킷 표기·순서(done 머리)는 bytes 그대로, 새 상태는 꼬리에 추가만.
@@ -205,8 +189,7 @@ def test_pm_bootstrap_dump_follows_injected_status_without_code_change(
     bootstrap, board, monkeypatch,
 ):
     """상태 집합에 하나 주입하면 파서 골격과 dump 줄이 손대지 않고 그 버킷을 낸다."""
-    monkeypatch.setattr(
-        bootstrap, "_status_dirs", lambda: (*board.STATUS_DIRS, FAKE_STATUS))
+    monkeypatch.setattr(ticket_rules, "STATUS_DIRS", (*ticket_rules.STATUS_DIRS, FAKE_STATUS))
     output = _board_line(FAKE_STATUS, "T-9400") + _board_line("open", "T-9401")
 
     counts = bootstrap.parse_board_counts(output)
@@ -219,7 +202,7 @@ def test_pm_bootstrap_still_ignores_status_board_does_not_know(bootstrap, board)
     """board 가 모르는 토큰은 여전히 무시된다 — 파생이 골격을 넓히는 게 아니다(오탐 0)."""
     output = _board_line("archived", "T-9500") + _board_line("open", "T-9501")
     counts = bootstrap.parse_board_counts(output)
-    assert counts == dict.fromkeys(board.STATUS_DIRS, 0) | {"open": 1}
+    assert counts == dict.fromkeys(ticket_rules.STATUS_DIRS, 0) | {"open": 1}
 
 
 # ── (5) 남은 하드코딩 0 (사본 재발 차단 · AST 기반) ─────────────────────────
@@ -341,13 +324,13 @@ def _find_status_set_copies(source: str, known: set[str]) -> list[tuple[str, ...
 def test_no_hardcoded_status_set_left_in_consumers(board, tool):
     """소비처 소스에 상태 집합 리터럴 사본이 하나도 남아 있지 않다 (값 단언·재발 차단).
 
-    역방향 확인: 현재 파생 구현(`_status_dirs()`·`pm_bootstrap._board_count_parts` 등)은 이
+    역방향 확인: 현재 파생 구현(`ticket_rules.STATUS_DIRS` 직접 참조·`pm_bootstrap._board_count_parts` 등)은 이
     가드를 통과한다 — `pm_bootstrap._build_json` 의 JSON top-level 4키 dict(값이 `Call` 인
     하위호환 고정 스키마)도 `_exempt_dict_ids()` 가 위치/구조(함수 `_build_json` 안·`"board"`
     키의 값)로 특정해 면제하므로 오탐되지 않는다 — 값 종류(Call 여부)로 면제하지 않는다.
     """
     source = (TOOLS / f"{tool}.py").read_text(encoding="utf-8")
-    copies = _find_status_set_copies(source, set(board.STATUS_DIRS))
+    copies = _find_status_set_copies(source, set(ticket_rules.STATUS_DIRS))
     assert copies == [], f"{tool}.py 에 상태 집합 사본이 남아 있다: {copies}"
 
 
@@ -387,11 +370,11 @@ def test_hardcoded_status_guard_detects_a_reintroduced_copy(board, shape):
     Call-valued 고정 스키마 dict 가 실존해, 이 가드 완화가 그것까지 잡지 않는지를 실측한다.
     """
     source = _REINTRODUCED_COPY_SHAPES[shape]
-    copies = _find_status_set_copies(source, set(board.STATUS_DIRS))
+    copies = _find_status_set_copies(source, set(ticket_rules.STATUS_DIRS))
     assert len(copies) == 1, f"{shape} shape 를 놓쳤다: {copies}"
 
 
 def test_pm_import_seeded_status_dirs_equal_board_status_dirs(board):
-    """pm_import 가 신규 공유 board 에 스캐폴드하는 상태 디렉토리는 board STATUS_DIRS 와 값이 같다."""
+    """pm_import 가 신규 공유 board 에 스캐폴드하는 상태 디렉토리는 `ticket_rules.STATUS_DIRS` 와 값이 같다."""
     mod = _load("pm_import")
-    assert mod._SEEDED_STATUS_DIRS == board.STATUS_DIRS
+    assert mod._SEEDED_STATUS_DIRS == ticket_rules.STATUS_DIRS

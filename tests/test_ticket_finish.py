@@ -27,7 +27,7 @@ import pytest
 
 from _git_fixture import init_git_repo
 from conftest import write_cluster_ledger
-from pm_engine.infra import repo_coordinates
+from pm_engine.infra import areas_store, conf_store, pm_paths, python_env, repo_coordinates, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -132,7 +132,8 @@ def test_is_pytest_green_no_passed_is_false(tf):
 # 위임한다). 단 **솔로/프레임워크 자기 회귀(어느 층도 미해소)는 현행 `pytest tests/ -q` venv
 # 실행을 반드시 보존**(도그푸딩 불변). 층별 우선순위·두 도구 파리티·무prefix 채택자 e2e 는
 # `test_regression_gate_resolution.py` 가 소유하고, 여기서는 이 도구 표면의 계약을 본다.
-# `tf` 모듈 전역(_load_board_module)을 재바인딩해 hermetic 하게 검증한다.
+# 해소 체인이 읽는 패키지 함수(`pm_paths.areas_file`·`areas_store`·`conf_store.local_config`)를
+# 대역으로 갈아끼워 hermetic 하게 검증한다.
 
 
 class _FakeBoard:
@@ -171,50 +172,45 @@ class _FakeBoard:
         return dict(self._conf)
 
 
-def test_resolve_per_repo_cmd_solo_no_areas_returns_none(tf, tmp_path, monkeypatch):
-    """솔로 폴백 — areas.md 부재면 None(호출부가 현행 pytest argv 보존)."""
-    monkeypatch.setattr(
-        tf, "_load_board_module",
-        lambda: _FakeBoard(None, None, areas_path=tmp_path / "no-areas.md"),
-    )
-    assert tf._resolve_per_repo_test_cmd() is None
+def _install_stub(stub, monkeypatch):
+    """해소 체인이 읽는 패키지 함수 자리에 대역을 꽂는다."""
+    monkeypatch.setattr(pm_paths, "areas_file", lambda _home: stub.areas_file())
+    monkeypatch.setattr(areas_store, "id_prefix", lambda _home, override=None: stub.id_prefix())
+    monkeypatch.setattr(areas_store, "_areas_row_for_prefix",
+                        lambda _home, prefix: stub._areas_row_for_prefix(prefix))
+    monkeypatch.setattr(areas_store, "_parse_areas", lambda _home, path=None: stub._parse_areas())
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: stub.registered_repos())
+    monkeypatch.setattr(conf_store, "local_config", lambda _home, repo=None: stub.local_config())
+
+
+def test_resolve_per_repo_cmd_solo_no_areas_returns_default(tf, tmp_path, monkeypatch):
+    """솔로 폴백 — areas.md 부재면 4층 기본 명령(`python_env.default_pytest_cmd`)."""
+    _install_stub(_FakeBoard(None, None, areas_path=tmp_path / "no-areas.md"), monkeypatch)
+    assert tf._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_multipm_returns_row_cmd(tf, tmp_path, monkeypatch):
     """multi-PM — areas.md 있고 활성 prefix 행에 test_cmd 있으면 그 문자열(예: go test)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(
-        tf, "_load_board_module",
-        lambda: _FakeBoard("A1", {"test_cmd": "go test ./..."}, areas_path=areas),
-    )
+    _install_stub(_FakeBoard("A1", {"test_cmd": "go test ./..."}, areas_path=areas), monkeypatch)
     assert tf._resolve_per_repo_test_cmd() == "go test ./..."
 
 
-def test_resolve_per_repo_cmd_multipm_no_prefix_returns_none(tf, tmp_path, monkeypatch):
-    """multi-PM이라도 활성 prefix 없으면 None(솔로 폴백 — 현행 보존)."""
+def test_resolve_per_repo_cmd_multipm_no_prefix_returns_default(tf, tmp_path, monkeypatch):
+    """multi-PM이라도 활성 prefix 없으면 4층 기본 명령(솔로 폴백 — 현행 보존)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(
-        tf, "_load_board_module", lambda: _FakeBoard(None, None, areas_path=areas))
-    assert tf._resolve_per_repo_test_cmd() is None
+    _install_stub(_FakeBoard(None, None, areas_path=areas), monkeypatch)
+    assert tf._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()
 
 
-def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_none(tf, tmp_path, monkeypatch):
-    """multi-PM이라도 행의 test_cmd 빈 값이면 None(부분 등록 — 현행 보존)."""
+def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_default(tf, tmp_path, monkeypatch):
+    """multi-PM이라도 행의 test_cmd 빈 값이면 4층 기본 명령(부분 등록 — 현행 보존)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(
-        tf, "_load_board_module",
-        lambda: _FakeBoard("A1", {"test_cmd": ""}, areas_path=areas),
-    )
-    assert tf._resolve_per_repo_test_cmd() is None
-
-
-def test_resolve_per_repo_cmd_board_load_failure_returns_none(tf, tmp_path, monkeypatch):
-    """board import 실패(None)면 None — fail-soft 로 솔로 폴백(현행 보존)."""
-    monkeypatch.setattr(tf, "_load_board_module", lambda: None)
-    assert tf._resolve_per_repo_test_cmd() is None
+    _install_stub(_FakeBoard("A1", {"test_cmd": ""}, areas_path=areas), monkeypatch)
+    assert tf._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypatch):
@@ -226,24 +222,18 @@ def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypat
     """
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(
-        tf, "_load_board_module",
-        lambda: _FakeBoard(
-            None, None, areas_path=areas,
-            rows=[{"repo": "heru", "prefix": "", "test_cmd": "viewer bind"}],
-            repos={"heru"},
-        ),
-    )
+    _install_stub(_FakeBoard(
+        None, None, areas_path=areas,
+        rows=[{"repo": "heru", "prefix": "", "test_cmd": "viewer bind"}],
+        repos={"heru"},
+    ), monkeypatch)
     assert tf._resolve_per_repo_test_cmd() == "viewer bind"
 
 
 def test_resolve_per_repo_cmd_reads_local_conf_without_areas(tf, tmp_path, monkeypatch):
     """areas.md 가 아예 없어도 local.conf test_cmd 를 읽는다 (T-0730·3층은 areas 가드 밖)."""
-    monkeypatch.setattr(
-        tf, "_load_board_module",
-        lambda: _FakeBoard(None, None, areas_path=tmp_path / "no-areas.md",
-                           conf={"test.cmd": "go test ./..."}),
-    )
+    _install_stub(_FakeBoard(None, None, areas_path=tmp_path / "no-areas.md",
+                             conf={"test.cmd": "go test ./..."}), monkeypatch)
     assert tf._resolve_per_repo_test_cmd() == "go test ./..."
 
 
@@ -542,17 +532,14 @@ def _real_engine_rev() -> str:
 
 
 def _write_fake_board(tmp_path, touches_repr):
-    """조회 seam(find_ticket_exact)/load_ticket 만 정의하는 board.py 대역을 tmp 에 쓴다(hermetic)."""
-    board_py = tmp_path / "fake_board.py"
-    board_py.write_text(
-        f"ENGINE_REV = {_real_engine_rev()!r}\n"  # T-0397 rev 스탬프
-        "def find_ticket_exact(ticket_id, **kwargs):\n"
-        "    return ('open', 'p')\n"
-        "def load_ticket(path):\n"
-        f"    return ({{'touches': {touches_repr}}}, 'body')\n",
-        encoding="utf-8",
-    )
-    return board_py
+    """touches 를 가진 티켓 `T-0001` 을 tmp 홈에 쓰고 그 홈의 board.py 경로를 돌려준다(hermetic).
+
+    조회는 board.py 위치(`<홈>/.project_manager/tools/board.py`)에서 만든 Home 의 티켓 디렉터리를 읽는다.
+    """
+    ticket = tmp_path / ".project_manager" / "wiki" / "tickets" / "open" / "T-0001-fake.md"
+    ticket.parent.mkdir(parents=True, exist_ok=True)
+    ticket.write_text(f"---\nid: T-0001\ntouches: {touches_repr}\n---\nbody\n", encoding="utf-8")
+    return tmp_path / ".project_manager" / "tools" / "board.py"
 
 
 def test_get_ticket_touches_strips_list_whitespace_and_drops_empty(tf, tmp_path):
@@ -563,8 +550,8 @@ def test_get_ticket_touches_strips_list_whitespace_and_drops_empty(tf, tmp_path)
 
 def test_get_ticket_touches_strips_scalar_string(tf, tmp_path):
     """get_ticket_touches — 스칼라 문자열도 strip·빈 문자열 → []."""
-    assert tf.get_ticket_touches(_write_fake_board(tmp_path, "'  src/x.py '"), "T") == ["src/x.py"]
-    assert tf.get_ticket_touches(_write_fake_board(tmp_path, "'   '"), "T") == []
+    assert tf.get_ticket_touches(_write_fake_board(tmp_path, "'  src/x.py '"), "T-0001") == ["src/x.py"]
+    assert tf.get_ticket_touches(_write_fake_board(tmp_path, "'   '"), "T-0001") == []
 
 
 def test_affected_domain_titles_domain_absent_returns_none(tf, tmp_path, monkeypatch):
@@ -1374,24 +1361,16 @@ def test_resolve_finish_slot_pm_handoff_absent_is_an_error(tf, monkeypatch):
 class _FakeRoundsBoard:
     """`engine_written_paths` 전용 최소 board 대역 — 그 함수가 실제로 읽는 속성만 노출한다."""
 
-    STATUS_DIRS = ("open", "claimed", "blocked", "done")
-
     def __init__(self, tickets_dir: Path, ticket_path: Path, *, board_git_enabled=False):
         self._tickets_dir = tickets_dir
         self._ticket_path = ticket_path
         self._board_git_enabled_value = board_git_enabled
-
-    def tickets_dir(self) -> Path:
-        return self._tickets_dir
 
     def find_ticket(self, ticket_id):
         return ("claimed", self._ticket_path)
 
     def _board_git_enabled(self) -> bool:
         return self._board_git_enabled_value
-
-    def load_ticket(self, path):
-        return ({"cluster": "C-fake"}, "")
 
     def ticket_cluster(self, ticket_id, frontmatter):
         return frontmatter.get("cluster") or f"C-{ticket_id}"
@@ -1401,11 +1380,20 @@ class _FakeRoundsBoard:
         return self._tickets_dir / "clusters" / f"{name}.md"
 
 
-def test_engine_written_paths_includes_existing_round_files(tf, tmp_path):
+def _rounds_home(tf, tmp_path, monkeypatch) -> tuple[Path, Path]:
+    """`tf.REPO` 를 tmp 홈에 묶고 그 Home 의 티켓 디렉터리와 묶음 소속 티켓 파일을 만든다."""
+    monkeypatch.setattr(tf, "REPO", tmp_path)
+    tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
+    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    ticket_path.parent.mkdir(parents=True)
+    ticket_path.write_text("---\nid: T-0753\ncluster: C-fake\n---\n", encoding="utf-8")
+    return tickets_dir, ticket_path
+
+
+def test_engine_written_paths_includes_existing_round_files(tf, tmp_path, monkeypatch):
     """rounds/<id>/ 아래 실존하는 라운드 파일이 stage 후보에 들어간다 (디렉터리 통째가 아니라
     파일 단위)."""
-    tickets_dir = tmp_path / "tickets"
-    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    tickets_dir, ticket_path = _rounds_home(tf, tmp_path, monkeypatch)
     round_dir = tickets_dir / "rounds" / "T-0753"
     round_dir.mkdir(parents=True)
     dev_round = round_dir / "01-developer.md"
@@ -1421,11 +1409,10 @@ def test_engine_written_paths_includes_existing_round_files(tf, tmp_path):
     assert round_dir not in paths  # 디렉터리 자체는 후보로 들어가지 않는다
 
 
-def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_path):
+def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_path, monkeypatch):
     """board-git 분리 형상에선 티켓과 함께 라운드도 stage 후보에서 빠진다(현행 티켓 제외 규칙
     동일)."""
-    tickets_dir = tmp_path / "tickets"
-    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    tickets_dir, ticket_path = _rounds_home(tf, tmp_path, monkeypatch)
     round_dir = tickets_dir / "rounds" / "T-0753"
     round_dir.mkdir(parents=True)
     (round_dir / "01-developer.md").write_text("dev\n", encoding="utf-8")
@@ -1437,13 +1424,12 @@ def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_p
 
 
 def test_engine_written_paths_excludes_non_round_and_temporary_files_by_grammar(
-        tf, tmp_path):
+        tf, tmp_path, monkeypatch):
     """라운드 판정은 `parse_round_filename` 문법 하나 — 점-접두 임시 잔여뿐 아니라 라운드가
     아닌 `.md`(`notes.md`·`01-dev.md`)도 stage 후보 밖이고, 진짜 라운드만 후보에 남는다
     (리뷰 F-002 — `.md` 접미 + 점-접두 제외 조합으로 되돌리면 `notes.md`·`01-dev.md`가 다시
     후보에 실려 이 테스트가 red 가 된다)."""
-    tickets_dir = tmp_path / "tickets"
-    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    tickets_dir, ticket_path = _rounds_home(tf, tmp_path, monkeypatch)
     round_dir = tickets_dir / "rounds" / "T-0753"
     round_dir.mkdir(parents=True)
     dev_round = round_dir / "01-developer.md"
@@ -1523,13 +1509,13 @@ def test_round_stage_candidates_uses_round_filename_grammar_not_ad_hoc_suffix(
     ]
 
 
-def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path):
+def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path, monkeypatch):
     """untracked 신규 라운드 파일이 실 git repo 에서 `git add` 로 실제 stage 된다 (리뷰 F-005 —
-    후보 산출뿐 아니라 real git 경로까지 왕복). board 대역은 조회 세 자리(`tickets_dir`·
-    `find_ticket`·`_board_git_enabled`)만 대역하고, `git_scope_stage_pathspec` 자체는 실
+    후보 산출뿐 아니라 real git 경로까지 왕복). board 대역은 조회 두 자리(`find_ticket`·
+    `_board_git_enabled`)만 대역하고, `git_scope_stage_pathspec` 자체는 실
     board.py 것을 그대로 빌려 real git 서브프로세스(status/ls-files/check-ignore)를 태운다."""
     repo = tmp_path / "repo"
-    tickets_dir = repo / "tickets"
+    tickets_dir = repo / ".project_manager" / "wiki" / "tickets"
     ticket_path = tickets_dir / "claimed" / "T-0753.md"
     ticket_path.parent.mkdir(parents=True)
     # 종결은 티켓 frontmatter 로 소속 장부를 찾는다 — 손상 티켓은 이제 그대로 실패한다([[T-0959]]).
@@ -1559,21 +1545,18 @@ def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path):
         "_spec.loader.exec_module(_real_board)\n"
         "git_scope_stage_pathspec = _real_board.git_scope_stage_pathspec\n"
         "git_scope_pathspec = _real_board.git_scope_pathspec\n"
-        "load_ticket = _real_board.load_ticket\n"
         "ticket_cluster = _real_board.ticket_cluster\n"
         "def cluster_ledger_path(cluster):\n"
         "    return _TICKETS_DIR / 'clusters' / (cluster if cluster.startswith('C-') else 'C-' + cluster)\n"
-        f"STATUS_DIRS = {tf.load_board_module(tf.BOARD_PY).STATUS_DIRS!r}\n"
         f"_TICKET_PATH = _Path({str(ticket_path)!r})\n"
         f"_TICKETS_DIR = _Path({str(tickets_dir)!r})\n"
-        "def tickets_dir():\n"
-        "    return _TICKETS_DIR\n"
         "def find_ticket(ticket_id):\n"
         "    return ('claimed', _TICKET_PATH)\n"
         "def _board_git_enabled():\n"
         "    return False\n",
         encoding="utf-8",
     )
+    monkeypatch.setattr(tf, "REPO", repo)
 
     scope = tf.stage_scope(
         "T-0753", board_py, repo / "log.md", git,
@@ -1769,14 +1752,19 @@ def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, 
 
 
 def _write_coordinate_stage_board(tmp_path, touches: list[str]) -> Path:
-    """touches와 file-only stage primitive를 제공하는 hermetic board 모듈."""
-    path = tmp_path / "board_coordinate_stage.py"
+    """touches 를 가진 티켓 `T-0473` 과 file-only stage primitive 를 제공하는 hermetic board 홈.
+
+    티켓 조회는 board.py 위치(`<홈>/.project_manager/tools/board.py`)에서 만든 Home 을 읽는다.
+    """
+    pm = tmp_path / "board-home" / ".project_manager"
+    ticket = pm / "wiki" / "tickets" / "open" / "T-0473-fake.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text(f"---\nid: T-0473\ntouches: {json.dumps(touches)}\n---\nbody\n",
+                      encoding="utf-8")
+    path = pm / "tools" / "board.py"
+    path.parent.mkdir(parents=True)
     path.write_text(
         f"ENGINE_REV = {_real_engine_rev()!r}\n"
-        "def find_ticket_exact(ticket_id, **kwargs):\n"
-        "    return ('open', 'ticket')\n"
-        "def load_ticket(path):\n"
-        f"    return ({{'touches': {touches!r}}}, 'body')\n"
         "def git_scope_stage_pathspec(repo, declared, run_git=None):\n"
         "    return [p.relative_to(repo).as_posix() for p in declared if p.is_file()]\n",
         encoding="utf-8",
@@ -1970,8 +1958,8 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
         stage_scope_fn=lambda tid: tf.StageScope((), None),
         status_entries_fn=lambda: (),
         dod_block_fn=lambda tid: None,
-        # 잔여 preflight 는 board.board_root() 조회를 태운다 — 이 fixture 의 board_py 는
-        # ENGINE_REV 가 없는 손상 사본이라 그 조회 자체가 skew fail-loud 다. 이 테스트의 초점은
+        # 잔여 preflight 는 board 사본을 적재하는 묶음 장부 조회를 태운다 — 이 fixture 의 board_py 는
+        # ENGINE_REV 가 없는 손상 사본이라 그 적재 자체가 skew fail-loud 다. 이 테스트의 초점은
         # frontmatter 손상 폴백이라 off 로 그 관심사만 남긴다.
         residual_block_fn=lambda tid: None,
         log_file=tmp_path / "log.md",
@@ -2240,8 +2228,10 @@ def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
     assert finisher.run("T-0437", section=None, dry_run=False, skip_pytest=True) == 0
 
 
-def _write_dod_board(tmp_path, body_repr: str, *, with_gate: bool = True) -> Path:
+def _write_dod_board(tmp_path, body: str, *, with_gate: bool = True) -> Path:
     """`_dod_open_items` 를 노출하는 board.py 대역 (판정 규칙은 실 board 문법 그대로)."""
+    ticket = tmp_path / "dod-ticket.md"
+    ticket.write_text("---\nid: T-1234\n---\n" + body, encoding="utf-8")
     gate = (
         "def _dod_open_items(body):\n"
         "    return [line.strip() for line in body.splitlines()\n"
@@ -2253,10 +2243,9 @@ def _write_dod_board(tmp_path, body_repr: str, *, with_gate: bool = True) -> Pat
         f"ENGINE_REV = {_real_engine_rev()!r}\n"
         "REPO = None\n"
         "_DOD_VALUE_FORMS = '`- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`'\n"
+        "from pathlib import Path as _Path\n"
         "def find_ticket(ticket_id):\n"
-        "    return ('claimed', ticket_id)\n"
-        f"def load_ticket(path):\n"
-        f"    return ({{}}, {body_repr})\n"
+        f"    return ('claimed', _Path({str(ticket)!r}))\n"
         + gate,
         encoding="utf-8",
     )
@@ -2266,7 +2255,7 @@ def _write_dod_board(tmp_path, body_repr: str, *, with_gate: bool = True) -> Pat
 def test_default_dod_preflight_consumes_the_board_gate(tf, tmp_path):
     """기본 seam 은 board 의 DoD 판정을 그대로 부른다 (규칙 사본 0·값 형식도 board 것)."""
     board_py = _write_dod_board(
-        tmp_path, repr("## 완료 조건\n- [x] 한 건\n- [ ] 남은 항목\n"))
+        tmp_path, "## 완료 조건\n- [x] 한 건\n- [ ] 남은 항목\n")
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
 
     block = finisher._default_dod_block("T-1234")
@@ -2279,14 +2268,14 @@ def test_default_dod_preflight_consumes_the_board_gate(tf, tmp_path):
 def test_default_dod_preflight_passes_a_closed_ticket(tf, tmp_path):
     """전항 마감이면 None — 정상 완료 흐름은 무영향."""
     board_py = _write_dod_board(
-        tmp_path, repr("## 완료 조건\n- [x] 한 건\n- [>] 이월분 (이월: v1.7.1·T-0602)\n"))
+        tmp_path, "## 완료 조건\n- [x] 한 건\n- [>] 이월분 (이월: v1.7.1·T-0602)\n")
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
     assert finisher._default_dod_block("T-1234") is None
 
 
 def test_default_dod_preflight_is_off_without_the_board_gate(tf, tmp_path):
     """구세대 board 사본(게이트 부재)은 preflight 가 조용히 off — 진짜 게이트가 뒤에 있다."""
-    board_py = _write_dod_board(tmp_path, repr("- [ ] 남은 항목\n"), with_gate=False)
+    board_py = _write_dod_board(tmp_path, "- [ ] 남은 항목\n", with_gate=False)
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
     assert finisher._default_dod_block("T-1234") is None
 
@@ -3182,8 +3171,8 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
     assert board.cluster_tickets(board.load_cluster(_CLUSTER)) == []
     # 재결속 장부를 보존하면서 실제 draft 승격과 claim을 이어 실행한다.
-    path = board.find_ticket_exact(env.ticket)[1]
-    fm, _ = board.load_ticket(path)
+    path = ticket_store.find_ticket_exact(board._home(), env.ticket)[1]
+    fm, _ = ticket_store.load_ticket(path)
     from test_board_cluster import _TEMPLATE_TEXT as filled
     body = filled.split("---", 2)[2].replace("T-NNNN", env.ticket).replace("<제목>", "종결 픽스처").replace("- [ ]", "- [x]")
     fm["status"] = "draft"

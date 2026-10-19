@@ -23,6 +23,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import areas_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -45,21 +46,19 @@ def pc():
 # ── 주입형 fake (DI seam — hermetic·test_pm_config_facade 동형 최소 대역) ───────
 
 
-class FakeBoard:
-    """board 대역 — areas_append 기록·registered_repos 제어 (refspec 테스트에 필요한 면만).
+def _set_registered(monkeypatch, *repos):
+    """이미 등록된 **repo명** 대역 — pm_config 가 읽는 `areas_store.registered_repos` 자리.
 
-    `registered` = 이미 등록된 **repo명** 집합(멱등 재등록 판별 축·ADR-0042 후 repo 칼럼 기준).
+    멱등 재등록 판별 축(ADR-0042 후 repo 칼럼 기준).
     """
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: set(repos))
 
-    def __init__(self, *, registered=()):
-        self._registered = set(registered)
+
+class FakeBoard:
+    """board 대역 — areas_append 기록 (refspec 테스트에 필요한 면만)."""
+
+    def __init__(self):
         self.append_calls: list = []
-
-    def registered_repos(self):
-        return set(self._registered)
-
-    def registered_prefixes(self):     # 자동시드 폐지 후 cmd_repo_add 는 미사용 — 하위 배선용 유지.
-        return set(self._registered)
 
     def areas_append(self, prefix, area, owner, *, repo=None, git=None,
                      test_cmd=None, base=None, protected=None, area_owner=None):
@@ -168,7 +167,7 @@ def test_fresh_clone_sets_refspec_and_fetches(pc, tmp_path):
     config 가 `-C <bare> config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`
     형태로(덮어쓰기·멱등), fetch 가 `-C <bare> fetch origin` 형태로 같은 주입 runner 에 불린다.
     """
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
     repos = tmp_path / ".repos"
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr, repos_dir=repos)
@@ -187,7 +186,7 @@ def test_fresh_clone_sets_refspec_and_fetches(pc, tmp_path):
 
 def test_refspec_config_precedes_fetch(pc, tmp_path):
     """refspec config 가 fetch *보다 먼저* 불린다 (refspec 없으면 fetch 가 origin/* 못 채움)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr,
                          repos_dir=tmp_path / ".repos")
@@ -206,7 +205,7 @@ def test_existing_bare_reuse_still_corrects_refspec(pc, tmp_path):
 
     refspec-없는 과거 bare(다음 채택자/슬롯)를 복구한다 — clone 은 안 하지만 보정은 멱등 수행.
     """
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)    # bare 가 이미 존재 → clone skip
@@ -217,13 +216,14 @@ def test_existing_bare_reuse_still_corrects_refspec(pc, tmp_path):
     assert _fetch_call(gitr) is not None
 
 
-def test_already_registered_bare_exists_still_corrects_refspec(pc, tmp_path):
+def test_already_registered_bare_exists_still_corrects_refspec(pc, tmp_path, monkeypatch):
     """이미 등록 + bare 존재(등록 no-op) 경로도 refspec 보정 — early return 전 수행 (T-0152).
 
     refspec 보정은 등록/clone 멱등 분기보다 *앞*(clone 블록 직후)이라, already_registered
     early-return 경로에서도 보정이 돈다(과거 bare 복구가 등록 상태와 무관해야 함).
     """
-    board = FakeBoard(registered=("svc",))
+    _set_registered(monkeypatch, "svc")
+    board = FakeBoard()
     gitr = GitFake()
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
@@ -245,7 +245,7 @@ def test_repo_add_broken_bare_fails_loud_no_side_effects(pc, tmp_path, capsys):
     worktree add 가 날 git 에러로 죽음)시키는 대신 rc1 + 수동 삭제·재hydrate 진단으로 막는다.
     파괴적 자동삭제는 하지 않고(사용자 위임) 등록/보정도 하지 않는다(부작용 0).
     """
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake(is_bare=False)               # 부분/깨진 bare 모델
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)      # 경로는 존재(부분 bare 잔존 모사)
@@ -267,7 +267,7 @@ def test_repo_add_bare_valid_format_but_no_head_fails_loud(pc, tmp_path, capsys)
     없어 worktree add base 로 못 쓴다 — is-bare 형식만 보면 재사용으로 통과하던 갭을 HEAD 해소
     검사가 닫는다. is_bare=True·head_resolves=False 만으로 broken 판정·부작용 0.
     """
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake(is_bare=True, head_resolves=False)   # 형식은 bare·HEAD 미해소(빈 bare)
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
@@ -278,13 +278,14 @@ def test_repo_add_bare_valid_format_but_no_head_fails_loud(pc, tmp_path, capsys)
     assert _clone_call(gitr) is None
 
 
-def test_repo_add_valid_existing_bare_reused_not_fail(pc, tmp_path):
+def test_repo_add_valid_existing_bare_reused_not_fail(pc, tmp_path, monkeypatch):
     """대조 — 유효 bare(rev-parse "true")면 fail-loud 없이 재사용 rc0 (T-0294 sensitivity).
 
     위 broken negative 와 같은 경로(bare 존재)에서 is_bare 만 True/False 로 갈려 rc0/rc1 이
     갈린다 → `_is_valid_bare` 판정이 유일한 분기임을 보인다(가드 제거 시 broken 도 통과).
     """
-    board = FakeBoard(registered=("svc",))
+    _set_registered(monkeypatch, "svc")
+    board = FakeBoard()
     gitr = GitFake(is_bare=True)
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
@@ -301,13 +302,13 @@ def test_refspec_correction_idempotent_on_rerun(pc, tmp_path):
 
     config set 은 덮어쓰기라 두 번째 실행도 무해(같은 값으로 재set). 호출 count 가 정확히 1.
     """
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     repos = tmp_path / ".repos"
     # 1차: 신규 clone → refspec 보정.
     pc.cmd_repo_add(_args(), board=board, clone_runner=GitFake(), repos_dir=repos)
     (repos / "svc.git").mkdir(parents=True, exist_ok=True)   # bare 존재 모사(1차 clone 결과)
     # 2차: 재실행(기존 bare) → 다시 refspec 보정(멱등).
-    board2 = FakeBoard(registered=())
+    board2 = FakeBoard()
     gitr2 = GitFake()
     rc = pc.cmd_repo_add(_args(), board=board2, clone_runner=gitr2, repos_dir=repos)
     assert rc == 0
@@ -320,7 +321,7 @@ def test_refspec_correction_idempotent_on_rerun(pc, tmp_path):
 
 def test_clone_failure_skips_refspec_and_fetch(pc, tmp_path, capsys):
     """clone 실패(rc≠0)면 refspec/fetch 호출 0 — early return·부작용 0 (T-0152·fail-soft)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake(clone_rc=128)
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr,
                          repos_dir=tmp_path / ".repos")
@@ -335,7 +336,7 @@ def test_clone_failure_skips_refspec_and_fetch(pc, tmp_path, capsys):
 
 def test_refspec_config_failure_skips_fetch_but_repo_add_succeeds(pc, tmp_path, capsys):
     """refspec config 실패 시 fetch 는 skip(미설정이면 origin/* 못 채움)하되 repo add rc 0 (fail-soft)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake(config_rc=1)
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr,
                          repos_dir=tmp_path / ".repos")
@@ -348,7 +349,7 @@ def test_refspec_config_failure_skips_fetch_but_repo_add_succeeds(pc, tmp_path, 
 
 def test_fetch_failure_warns_but_repo_add_succeeds(pc, tmp_path, capsys):
     """fetch 실패(네트워크)는 경고 surface 하되 repo add rc 0 — refspec 은 박혔으니 복구 가능 (fail-soft)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake(fetch_rc=1)
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr,
                          repos_dir=tmp_path / ".repos")
@@ -368,7 +369,7 @@ def test_repo_add_seeds_empty_prefix_not_repo_name(pc, tmp_path):
     이전엔 `areas_append(name, …)` 로 repo명이 prefix 칼럼에 박혀 다음 티켓이 `T-<repo>-NNN`
     으로 튀었다. 이제 positional prefix 는 `""` — repo명은 작업 카테고리가 아니다.
     """
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     rc = pc.cmd_repo_add(_args(name="svc"), board=board, clone_runner=GitFake(),
                          repos_dir=tmp_path / ".repos")
     assert rc == 0
@@ -378,14 +379,15 @@ def test_repo_add_seeds_empty_prefix_not_repo_name(pc, tmp_path):
     assert call["repo"] == "svc"          # repo 칼럼엔 repo명 유지(등록 식별)
 
 
-def test_repo_add_idempotent_by_repo_name_not_prefix(pc, tmp_path):
+def test_repo_add_idempotent_by_repo_name_not_prefix(pc, tmp_path, monkeypatch):
     """이미 등록된 repo(빈 prefix) 재실행 → 중복 append 0 — 멱등 판별이 repo명 기준 (ADR-0042·DoD 1).
 
     자동시드 폐지로 prefix 칼럼이 비어 `registered_prefixes()` 로는 이 repo 를 못 세므로,
     멱등 판별을 `registered_repos()`(repo 칼럼)로 옮겼다 — 재실행이 같은 repo 를 두 줄로
     append 하지 않는다(append-only 레지스트리 오염 방지).
     """
-    board = FakeBoard(registered=("svc",))    # repo명으로 이미 등록됨
+    _set_registered(monkeypatch, "svc")
+    board = FakeBoard()    # repo명으로 이미 등록됨
     (tmp_path / ".repos" / "svc.git").mkdir(parents=True)
     rc = pc.cmd_repo_add(_args(name="svc"), board=board, clone_runner=GitFake(),
                          repos_dir=tmp_path / ".repos")
@@ -393,13 +395,14 @@ def test_repo_add_idempotent_by_repo_name_not_prefix(pc, tmp_path):
     assert board.append_calls == []           # 중복 등록 안 됨(멱등)
 
 
-def test_repo_add_rejects_case_only_duplicate_repo_name(pc, tmp_path, capsys):
+def test_repo_add_rejects_case_only_duplicate_repo_name(pc, tmp_path, capsys, monkeypatch):
     """`repo add svc` 인데 이미 `SVC` 등록 → rc 1·부작용 0 (repo명 case-insensitive·ADR-0055·T-0311·DoD 3).
 
     case 만 다른 근접 중복은 레지스트리에 fold-충돌하는 두 행을 만든다(네임스페이스 분할) — clone/
     등록/훅 어떤 부작용보다 앞에서 fail-loud 하고 등록 canonical case 로 안내한다.
     """
-    board = FakeBoard(registered=("SVC",))    # 대문자로 이미 등록됨
+    _set_registered(monkeypatch, "SVC")
+    board = FakeBoard()    # 대문자로 이미 등록됨
     gitr = GitFake()
     rc = pc.cmd_repo_add(_args(name="svc"), board=board, clone_runner=gitr,
                          repos_dir=tmp_path / ".repos")
@@ -442,7 +445,7 @@ def test_fresh_clone_sets_default_branch_tracking(pc, tmp_path):
     두 config 가 bare 컨텍스트(-C <bare>)로 같은 주입 runner 에 불린다 — refspec 보정
     (origin/* 절반) 옆에서 tracking 나머지 절반을 채운다.
     """
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
     repos = tmp_path / ".repos"
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr, repos_dir=repos)
@@ -455,7 +458,7 @@ def test_fresh_clone_sets_default_branch_tracking(pc, tmp_path):
 
 def test_existing_bare_reuse_still_sets_branch_tracking(pc, tmp_path):
     """기존 bare 재사용(clone skip) 경로도 tracking 보정 — 과거 tracking-없는 bare 자가치유 (T-0273)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)    # bare 이미 존재 → clone skip
@@ -465,9 +468,10 @@ def test_existing_bare_reuse_still_sets_branch_tracking(pc, tmp_path):
     assert _branch_config_calls(gitr)          # tracking 보정은 멱등 수행
 
 
-def test_already_registered_bare_exists_still_sets_branch_tracking(pc, tmp_path):
+def test_already_registered_bare_exists_still_sets_branch_tracking(pc, tmp_path, monkeypatch):
     """이미 등록 + bare 존재(등록 no-op) 경로도 tracking 보정 — early return 이전 위치라 수행 (T-0273)."""
-    board = FakeBoard(registered=("svc",))
+    _set_registered(monkeypatch, "svc")
+    board = FakeBoard()
     gitr = GitFake()
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
@@ -479,12 +483,12 @@ def test_already_registered_bare_exists_still_sets_branch_tracking(pc, tmp_path)
 
 def test_branch_tracking_idempotent_on_rerun(pc, tmp_path):
     """재실행(기존 bare)에서도 tracking 보정이 정확히 remote+merge 2개 — set=덮어쓰기 멱등 (T-0273)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     repos = tmp_path / ".repos"
     pc.cmd_repo_add(_args(), board=board, clone_runner=GitFake(), repos_dir=repos)
     (repos / "svc.git").mkdir(parents=True, exist_ok=True)   # 1차 clone 결과 모사
     gitr2 = GitFake()
-    rc = pc.cmd_repo_add(_args(), board=FakeBoard(registered=()),
+    rc = pc.cmd_repo_add(_args(), board=FakeBoard(),
                          clone_runner=gitr2, repos_dir=repos)
     assert rc == 0
     assert len(_branch_config_calls(gitr2)) == 2   # 정확히 remote+merge (중복 폭주 0)
@@ -492,7 +496,7 @@ def test_branch_tracking_idempotent_on_rerun(pc, tmp_path):
 
 def test_branch_tracking_non_main_default(pc, tmp_path):
     """기본 브랜치가 main 아닌 경우(develop)도 정확 해소 → branch.develop.* (T-0273·DoD)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake(head="develop")
     repos = tmp_path / ".repos"
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr, repos_dir=repos)
@@ -505,7 +509,7 @@ def test_branch_tracking_non_main_default(pc, tmp_path):
 
 def test_branch_tracking_config_failure_warns_but_repo_add_succeeds(pc, tmp_path, capsys):
     """tracking config 실패는 경고 surface 하되 repo add rc 0 — tracking 은 추가 가드 (T-0273·fail-soft)."""
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake(branch_config_rc=1)
     rc = pc.cmd_repo_add(_args(), board=board, clone_runner=gitr,
                          repos_dir=tmp_path / ".repos")
@@ -600,7 +604,7 @@ def test_real_clone_creates_origin_main_tracking_ref(pc, tmp_path):
     repos = tmp_path / ".repos"
     rc = pc.cmd_repo_add(
         _args(git=str(src), name="svc"),
-        board=FakeBoard(registered=()),
+        board=FakeBoard(),
         repos_dir=repos,
     )
     assert rc == 0
@@ -641,7 +645,7 @@ def test_t0956_repo_add_refuses_zero_commit_source(pc, tmp_path, capsys):
     git("init", "-q")
     repos = tmp_path / ".repos"
 
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     rc = pc.cmd_repo_add(_args(git=str(src), name="svc"), board=board, repos_dir=repos)
     assert rc == 1
     assert "커밋이 없다" in capsys.readouterr().err
@@ -693,7 +697,7 @@ def test_t0956_repo_add_refuses_dangling_head_source(pc, tmp_path, capsys):
     git(work, "push", "-q", str(source), "main")
     repos = tmp_path / ".repos"
 
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     rc = pc.cmd_repo_add(_args(git=str(source), name="svc", base="main"), board=board,
                          repos_dir=repos)
     assert rc == 1
@@ -734,7 +738,7 @@ def test_real_clone_sets_default_branch_upstream_tracking(pc, tmp_path):
     repos = tmp_path / ".repos"
     rc = pc.cmd_repo_add(
         _args(git=str(src), name="svc"),
-        board=FakeBoard(registered=()),
+        board=FakeBoard(),
         repos_dir=repos,
     )
     assert rc == 0
@@ -795,7 +799,7 @@ def test_repo_add_owner_unresolved_hint_omits_nonexistent_session_flag(
     둘 다 없음이다(슬롯 세션은 이 축의 입력이 아니다).
     """
     _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path)
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
     rc = pc.cmd_repo_add(
         _args(owner=None), board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
@@ -817,7 +821,7 @@ def test_repo_add_owner_comes_from_the_user_identity_not_a_slot_session(
     진실은 `identity.user`(없으면 git user.email)라 슬롯 행 0개에서도 해소된다.
     """
     _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path, git_email="me@example.invalid")
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
 
     rc = pc.cmd_repo_add(
@@ -831,7 +835,7 @@ def test_repo_add_owner_comes_from_the_user_identity_not_a_slot_session(
 def test_repo_add_owner_explicit_bypasses_unresolved_session(pc, tmp_path, monkeypatch):
     """`--owner` 명시면 세션 미바인딩이어도 정상 등록(short-circuit) — 회귀 0 확인."""
     _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path)
-    board = FakeBoard(registered=())
+    board = FakeBoard()
     gitr = GitFake()
     rc = pc.cmd_repo_add(
         _args(owner="me"), board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
@@ -846,13 +850,14 @@ def _exclude_rule_lines(exclude: Path, rule: str) -> list[str]:
             if line.strip() == rule]
 
 
-def test_repo_add_installs_the_ticket_copy_exclude_idempotently(pc, tmp_path):
+def test_repo_add_installs_the_ticket_copy_exclude_idempotently(pc, tmp_path, monkeypatch):
     """[[T-0903]] — `repo add` 가 bare `info/exclude` 에 사본 루트 규칙을 멱등 설치한다.
 
     호출 자리는 refspec/tracking 보정 옆(이미 등록 early-return **이전**)이라, 규칙 없이
     만들어진 기존 풀도 다음 `repo add` 한 번으로 규칙을 얻는다. 두 번 불러도 줄은 하나다.
     """
-    board = FakeBoard(registered=("svc",))     # 이미 등록 → early-return 경로
+    _set_registered(monkeypatch, "svc")
+    board = FakeBoard()     # 이미 등록 → early-return 경로
     repos = tmp_path / ".repos"
     (repos / "svc.git" / "info").mkdir(parents=True)   # clone 이 깐 bare 형상
     exclude = repos / "svc.git" / "info" / "exclude"
@@ -872,9 +877,10 @@ def test_repo_add_installs_the_ticket_copy_exclude_idempotently(pc, tmp_path):
     assert body.count(pc._TICKET_COPY_EXCLUDE_COMMENT) == 1
 
 
-def test_repo_add_creates_the_exclude_file_when_the_bare_has_none(pc, tmp_path):
+def test_repo_add_creates_the_exclude_file_when_the_bare_has_none(pc, tmp_path, monkeypatch):
     """`info/exclude` 가 없는 bare 도 규칙을 얻는다 — 파일·`info/` 를 만들어 append 한다."""
-    board = FakeBoard(registered=("svc",))
+    _set_registered(monkeypatch, "svc")
+    board = FakeBoard()
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
 
@@ -886,12 +892,13 @@ def test_repo_add_creates_the_exclude_file_when_the_bare_has_none(pc, tmp_path):
         pc.TICKET_COPY_POOL_IGNORE_RULE]
 
 
-def test_missing_bare_warns_and_keeps_repo_add_green(pc, tmp_path, capsys):
+def test_missing_bare_warns_and_keeps_repo_add_green(pc, tmp_path, capsys, monkeypatch):
     """bare 부재는 no-op + 경고다 — 없는 자리에 `<repo>.git` 을 만들면 나중 clone 이 죽는다.
 
     fail-soft(rc 0)이지 조용한 생략이 아니다. 진짜 게이트는 `ticket prepare` 의 fail-loud 다.
     """
-    board = FakeBoard(registered=("svc",))
+    _set_registered(monkeypatch, "svc")
+    board = FakeBoard()
     repos = tmp_path / ".repos"
     repos.mkdir()
 

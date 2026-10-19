@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.domain import identity_args
+from pm_engine.infra import areas_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -88,23 +89,19 @@ def wp(home):
     return _load_wp_bound(home)
 
 
-class FakeBoard:
-    """board 대역 — 예약패턴 판별 근거(`registered_repos`)만 준다(areas 실파일 무접촉)."""
-
-    def __init__(self, registered=("app",)):
-        self._registered = registered
-
-    def registered_repos(self):
-        return list(self._registered)
+@pytest.fixture(autouse=True)
+def _registered(monkeypatch):
+    """예약패턴 판별 근거(`areas_store.registered_repos`) 대역 — 등록 repo `app` (areas 실파일 무접촉)."""
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: ["app"])
 
 
-def _run_new(pc, wp, name, *, board=None):
+def _raise_areas_read(_home):
+    raise OSError("areas broken")
+
+
+def _run_new(pc, wp, name):
     """`task new <이름>` 을 실 엔진(tmp 바인딩)으로 1회 실행 — rc 반환."""
-    return pc.cmd_task_new(
-        argparse.Namespace(name=name),
-        worktree_pool=wp,
-        board=board if board is not None else FakeBoard(),
-    )
+    return pc.cmd_task_new(argparse.Namespace(name=name), worktree_pool=wp)
 
 
 def _ledger_rows(wp) -> list[dict]:
@@ -226,29 +223,27 @@ def test_task_new_unsafe_name_refused_before_any_write(pc, wp, bad, capsys):
 
 def test_task_new_reserved_slot_pattern_refused_via_registered_repos(pc, wp, capsys):
     """`<등록 repo>_<N>` 예약패턴 → rc1 (board 에서 해소한 등록 repo 가 판별 근거)."""
-    rc = _run_new(pc, wp, "app_2", board=FakeBoard(registered=("app",)))
+    rc = _run_new(pc, wp, "app_2")
 
     assert rc == 1
     assert not wp.LEASES_FILE.exists()
     assert "부적합 task 명" in capsys.readouterr().err
 
 
-def test_task_new_survives_board_absence_with_traversal_still_blocked(pc, wp, capsys):
-    """board 부재(registered 해소 불가)여도 생성은 되고 traversal 검증은 유지된다(fail-soft)."""
+def test_task_new_survives_board_absence_with_traversal_still_blocked(pc, wp, monkeypatch, capsys):
+    """areas.md 읽기 실패(registered 해소 불가)여도 생성은 되고 traversal 검증은 유지된다(fail-soft)."""
+    monkeypatch.setattr(areas_store, "registered_repos", _raise_areas_read)
 
-    class BoardWithoutRegistry:
-        pass
-
-    assert _run_new(pc, wp, "job", board=BoardWithoutRegistry()) == 0
+    assert _run_new(pc, wp, "job") == 0
     assert _ledger_rows(wp)[0]["session"] == ""
     capsys.readouterr()
-    assert _run_new(pc, wp, "../evil", board=BoardWithoutRegistry()) == 1
+    assert _run_new(pc, wp, "../evil") == 1
 
 
 def test_task_new_engine_missing_errors(pc, monkeypatch, capsys):
     """worktree_pool 부재(None) → 명시 에러 rc1(침묵 무력화 금지)."""
     monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
-    rc = pc.cmd_task_new(argparse.Namespace(name="job"), worktree_pool=None, board=None)
+    rc = pc.cmd_task_new(argparse.Namespace(name="job"), worktree_pool=None)
     assert rc == 1
     assert "worktree_pool" in capsys.readouterr().err
 
@@ -260,43 +255,33 @@ def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validati
         pc, wp, monkeypatch, capsys):
     """예약패턴 판별 근거의 해소가 `_registered_repos` 한 자리다 — 두 호출부가 같은 값을 본다.
 
-    board 모듈 부재·`registered_repos` 속성 부재·조회 예외는 셋 다 None(예약패턴만 완화되고
-    traversal 검증은 유지)이고, 실 레지스트리가 있으면 같은 목록이다. 규칙이 두 자리로 갈리면
-    같은 이름이 `task new` 에서는 거부되고 `alloc`/`worktree add --task` 에서는 통과한다(또는
-    반대)."""
+    areas.md 읽기 실패는 None(예약패턴만 완화되고 traversal 검증은 유지)이고, 실 레지스트리가
+    있으면 같은 목록이다. 규칙이 두 자리로 갈리면 같은 이름이 `task new` 에서는 거부되고
+    `alloc`/`worktree add --task` 에서는 통과한다(또는 반대)."""
 
-    class BoardWithoutRegistry:
-        pass
-
-    class RaisingBoard:
-        # 실제로 나는 것은 areas.md 읽기 실패다 — 그 밖의 예외는 엔진 결함이라 헬퍼가 올린다.
-        def registered_repos(self):
-            raise OSError("areas broken")
-
-    board = FakeBoard(registered=("app",))
-    assert pc._registered_repos(None) is None
-    assert pc._registered_repos(BoardWithoutRegistry()) is None
-    assert pc._registered_repos(RaisingBoard()) is None
-    assert pc._registered_repos(board) == ["app"]
+    # 실제로 나는 것은 areas.md 읽기 실패다 — 그 밖의 예외는 엔진 결함이라 헬퍼가 올린다.
+    with monkeypatch.context() as patched:
+        patched.setattr(areas_store, "registered_repos", _raise_areas_read)
+        assert pc._registered_repos() is None
+    assert pc._registered_repos() == ["app"]
 
     calls: list = []
     resolve = pc._registered_repos
 
-    def _record(board_mod):
-        resolved = resolve(board_mod)
-        calls.append((board_mod, resolved))
+    def _record():
+        resolved = resolve()
+        calls.append(resolved)
         return resolved
 
     monkeypatch.setattr(pc, "_registered_repos", _record)
 
     # 생성 경로(기바인딩 미요구)와 기바인딩 요구 경로가 같은 이름을 같은 근거로 거부한다.
-    assert _run_new(pc, wp, "app_2", board=board) == 1
-    assert pc._validate_prebound_task(wp, board, "app_2") == 1
+    assert _run_new(pc, wp, "app_2") == 1
+    assert pc._validate_prebound_task(wp, "app_2") == 1
     assert "부적합 task 명" in capsys.readouterr().err
 
-    assert [seen for seen, _ in calls] == [board, board], \
+    assert calls == [["app"], ["app"]], \
         "두 호출부가 같은 해소 자리를 부르지 않았다(사본이 남아 있다)"
-    assert [resolved for _, resolved in calls] == [["app"], ["app"]]
     assert not wp.LEASES_FILE.exists(), "거부 경로가 장부를 건드렸다"
 
 

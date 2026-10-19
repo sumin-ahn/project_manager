@@ -173,7 +173,7 @@ def _yaml_value(val) -> str:
     """단일 값을 YAML-safe inline 표현으로 직렬화한다 (scalar 는 필요 시 quoting·list 는 flow `[a, b]`).
 
     frontmatter 를 문자열 템플릿으로 직조할 때 값을 그대로 보간하면(`title: {title}`) `--title "A: B"`
-    같은 **정상** 제목의 `:`·`#`·따옴표가 frontmatter YAML 을 깨서, `board.py` load_ticket 이 그 ADR 을
+    같은 **정상** 제목의 `:`·`#`·따옴표가 frontmatter YAML 을 깨서, `ticket_store.load_ticket` 이 그 ADR 을
     파싱 못 하고 `lint_adr_lifecycle` 이 조용히 skip 한다(깨진 문서가 lint 를 통과·codex must-fix).
     yaml.safe_dump 이 값에 특수문자가 있을 때만 quoting 하므로 기존 unquoted 스타일(평범한 제목·flow
     list)은 그대로 보존되고, 위험 케이스만 안전하게 quoting 된다. 스칼라 문서 끝 마커(`...`)는 제거해
@@ -269,7 +269,7 @@ def _find_target_file(decisions_dir: Path, num: int) -> Path | None:
 def _split_frontmatter(text: str) -> tuple[str, str] | None:
     """`---\\n...\\n---\\n` frontmatter 블록과 나머지를 분리한다 (없으면 None).
 
-    board.load_ticket 동형 — 첫 닫는 `---` 로 분리. 반환은 (frontmatter_텍스트, 나머지)."""
+    ticket_store.load_ticket 동형 — 첫 닫는 `---` 로 분리. 반환은 (frontmatter_텍스트, 나머지)."""
     if not text.startswith("---\n"):
         return None
     after = text[4:]

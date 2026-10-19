@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -249,8 +250,8 @@ def _t0928_prior_roles(pd, pm_home, tickets, members, role):
 
 
 def _t0928_set_status(board, ticket, status):
-    old_status, path = board.find_ticket_exact(ticket)
-    target_dir = board.drafts_dir() if status == "draft" else board.tickets_dir() / status
+    old_status, path = ticket_store.find_ticket_exact(board._home(), ticket)
+    target_dir = pm_paths.drafts_dir(board._home()) if status == "draft" else pm_paths.tickets_dir(board._home()) / status
     target_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(path.read_text(encoding="utf-8").replace(
         f"status: {old_status}", f"status: {status}"), encoding="utf-8")
@@ -624,7 +625,7 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
         "architect", (tickets / "T-6016-cluster.md").read_text(encoding="utf-8"),
         today="2026-01-01")
     board_path = rounds_module.reserve_round(
-        board.tickets_dir(), "T-6016", "architect", content=seed,
+        pm_paths.tickets_dir(board._home()), "T-6016", "architect", content=seed,
         lock=board.board_lock(),
     )
     legacy_dir = slot / pd.TICKET_COPY_REL_ROOT / "T-6016" / ("b" * 32)

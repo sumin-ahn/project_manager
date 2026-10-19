@@ -74,7 +74,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, manifest_store, repo_files  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, manifest_store, pm_paths, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -5405,7 +5405,7 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
             missing = "board.py" if board is None else "worktree_pool.py"
             result["reason"] = f"dest 엔진 {missing} 부재/로드 실패"
             return result
-        repos = sorted(board.registered_repos())
+        repos = sorted(areas_store.registered_repos(pm_paths.home_at(Path(dest_root).resolve())))
         if not repos:
             result["status"] = "no_repos"
             return result

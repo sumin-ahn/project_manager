@@ -1238,7 +1238,14 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `pm_update.drift_changes`.
     # 202 = 203 − T-0968 이 지운 1 경계. 상류 분류 형제 로더 `pm_config._classify_upstream` 이 패키지
     #   import(`pm_engine.domain.upstream_rules`)로 바뀌어 코드째 없어졌다.
-    assert len(report.boundaries) == 202, "propagation sweep boundary ratchet changed"
+    # 187 = 202 − T-0971 이 지운 15 경계. board 의 경로·티켓·areas·conf 이름이 패키지(`pm_paths`·
+    #   `ticket_store`·`areas_store`·`conf_store`·`python_env`)로 옮겨져 그 이름만 적재하던 try 의
+    #   재전파 줄이 없어졌다: `pm_config` 5(`_areas_protected_cell`·`_refresh_protected_gate_contracts`·
+    #   `_repo_registry_git` 한 곳·`_resolve_repo_test_cmd` 두 곳), `pm_handoff._resolve_gate_cmd`,
+    #   `pm_import._default_test_cmd`, `pm_log` 2(`_registered_repos`·`_status_dirs`), `ticket_finish` 6
+    #   (`ClusterCloser` 의 `_board_git_paths`·`_reconcile_ticket_frontmatter`·`_ticket_status`,
+    #   `_home_state_prefixes` 한 곳, `_ticket_frontmatter_snapshot`, `count_board_done`).
+    assert len(report.boundaries) == 187, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1867,12 +1874,12 @@ def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
 @pytest.mark.parametrize(
     ("filename", "arguments", "witness"),
     [
-        ("board.py", ["list"], "pm_log.py"),
+        ("board.py", ["list"], "ticket_rounds.py"),
         ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"], "board.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
-        ("pm_bootstrap.py", ["--task", "probe"], "pm_log.py"),
+        ("pm_bootstrap.py", ["--task", "probe"], "board.py"),
         ("pm_handoff.py", [], "pm_log.py"),
-        ("ticket_finish.py", [], "pm_log.py"),
+        ("ticket_finish.py", [], "board.py"),
         ("pm_config.py", ["status"], "worktree_pool.py"),
     ],
 )

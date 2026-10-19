@@ -481,19 +481,12 @@ def _materialize(pd, spec: str, rounds, tickets_dir: Path, ticket_id: str) -> Pa
 
 
 def _fake_board(spec_path: Path, tickets_dir: Path):
+    """board 대역 — 락만 준다. 티켓 조회는 소유 트리 Home 의 실 티켓 디렉터리를 읽는다."""
     class FakeBoard:
         @staticmethod
         @contextlib.contextmanager
         def board_lock():
             yield
-
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", spec_path
-
-        @staticmethod
-        def tickets_dir():
-            return tickets_dir
 
     return FakeBoard
 
@@ -563,7 +556,7 @@ def test_disposition_template_rejects_confirmation_only_round(
     with pytest.raises(pd.DelegateError, match="confirmation-only.*신규 finding이 없습니다"):
         pd.render_pm_review_disposition_template("", [first, second], 2)
 
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     spec_path = _materialize(pd, "", [first, second], tickets_dir, "T-0700")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(
@@ -590,7 +583,7 @@ def test_disposition_template_defaults_latest_and_honors_explicit_ordinal(pd):
 def test_disposition_template_cli_and_pending_error_prescribe_same_command(
     pd, tmp_path, monkeypatch, capsys,
 ):
-    tickets_dir = tmp_path / "tickets"
+    tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     spec_path = _materialize(
         pd, "", [_reviewer_round(pd, _review_payload("F-007"))], tickets_dir, "T-0700",
     )

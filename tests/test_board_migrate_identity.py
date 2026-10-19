@@ -21,6 +21,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import areas_store, pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -142,7 +143,7 @@ def test_user_override_unblocks_abort(board, capsys):
     _seed(board, "T-0001", "open")
     rc, out, _ = _run(board, capsys, user="alice")
     assert rc == 0
-    fm, _body = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
+    fm, _body = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     assert fm["created_by"] == "alice"
 
 
@@ -184,7 +185,7 @@ def test_ticket_created_by_backfilled_when_absent(board, capsys):
     _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")  # created_by 없음
     _run(board, capsys)
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     assert fm["created_by"] == "alice"
 
 
@@ -193,7 +194,7 @@ def test_ticket_created_by_null_backfilled(board, capsys):
     _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", fm_extra={"created_by": None})
     _run(board, capsys)
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     assert fm["created_by"] == "alice"
 
 
@@ -203,7 +204,7 @@ def test_slot_only_claimed_by_converted(board, capsys):
     _seed(board, "T-0005", "claimed",
           fm_extra={"created_by": "alice", "claimed_by": "pm-1"})
     _run(board, capsys)
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "claimed" / "T-0005-seed.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "claimed" / "T-0005-seed.md")
     assert fm["claimed_by"] == "alice/pm-1"
 
 
@@ -213,7 +214,7 @@ def test_existing_user_slot_claimed_by_unchanged(board, capsys):
     _seed(board, "T-0005", "claimed",
           fm_extra={"created_by": "bob", "claimed_by": "bob/pm-2"})
     _run(board, capsys)
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "claimed" / "T-0005-seed.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "claimed" / "T-0005-seed.md")
     assert fm["claimed_by"] == "bob/pm-2"   # user 차원 이미 있음 → 불변
     assert fm["created_by"] == "bob"        # 기존 created_by 보존
 
@@ -253,7 +254,7 @@ def test_nondestructive_preserves_key_order_and_body(board, capsys):
     # body verbatim 보존.
     assert body in text
     # 기존 키들이 created_by 보다 앞(순서 보존) — id·title·status·depends_on·tags 먼저.
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     keys = list(fm.keys())
     assert keys.index("id") < keys.index("created_by")
     assert keys.index("tags") < keys.index("created_by")
@@ -292,7 +293,7 @@ def test_scope_active_skips_done(board, capsys):
     done_p = _seed(board, "T-0009", "done")
     before_done = done_p.read_text(encoding="utf-8")
     _run(board, capsys, scope="active")
-    open_fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
+    open_fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     assert open_fm["created_by"] == "alice"      # open 은 채워짐
     assert done_p.read_text(encoding="utf-8") == before_done  # done 불변
 
@@ -302,7 +303,7 @@ def test_scope_all_includes_done(board, capsys):
     _write_conf(board, user="alice")
     _seed(board, "T-0009", "done")
     _run(board, capsys, scope="all")
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "done" / "T-0009-seed.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "done" / "T-0009-seed.md")
     assert fm["created_by"] == "alice"
 
 
@@ -428,7 +429,7 @@ def test_old_header_upgrade_preserves_existing_columns_and_comments(board, capsy
     board.AREAS_FILE.write_text(_AREAS_OLD_7COL, encoding="utf-8")
     _run(board, capsys)
     # 기존 칼럼 값이 그대로 — 행 dict 로 읽어 검증(파서 동형).
-    row = board._areas_row_for_prefix("PAY")
+    row = areas_store._areas_row_for_prefix(board._home(), "PAY")
     assert row["repo"] == "service-a"
     assert row["git"] == "g:a"
     assert row["test_cmd"] == "pytest -q"
@@ -502,7 +503,7 @@ def test_mixed_noncanon_header_backfills_both_rows(board, capsys):
     assert board._ticket_area_owner("T-LEG-001") == "alice"   # 3칼럼 row(degrade append).
     assert board._ticket_area_owner("T-PAY-001") == "alice"   # 8칼럼 wider row(index 7).
     # 8칼럼 row 의 기존 칼럼 값은 불변(test_cmd 오인 채움이 아님을 확인).
-    pay = board._areas_row_for_prefix("PAY")
+    pay = areas_store._areas_row_for_prefix(board._home(), "PAY")
     assert pay["test_cmd"] == "pytest -q"   # index 3 보존(area_owner 로 오염 안 됨).
     assert pay["protected"] == "main"        # index 6 보존.
     # 표 밖 주석 보존.
@@ -697,7 +698,7 @@ def test_ticket_backfill_acquires_one_global_lock(board, capsys, monkeypatch):
     rc, _, _ = _run(board, capsys)
     assert rc == 0
     assert count["n"] == 1, "ticket migration의 scan→dump board_lock 경계 누락/중복"
-    assert board.load_ticket(
+    assert ticket_store.load_ticket(
         board.TICKETS_DIR / "open" / "T-0001-seed.md")[0]["created_by"] == "alice"
 
 
@@ -751,7 +752,7 @@ def test_ticket_gone_before_write_is_skipped(board, capsys, monkeypatch):
     assert rc == 0
     assert "skip T-0001" in err and "없음" in err
     # 살아있는 T-0002 는 정상 backfill(한 티켓 skip 이 나머지를 막지 않음).
-    fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-0002-seed.md")
+    fm, _ = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0002-seed.md")
     assert fm["created_by"] == "alice"
 
 
@@ -773,7 +774,7 @@ def test_surviving_ticket_atomic_write(board, capsys, monkeypatch):
     _seed(board, "T-0001", "open")
     rc, _, err = _run(board, capsys)
     assert rc == 0
-    fm, _b = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
+    fm, _b = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     assert fm["created_by"] == "alice"
     # atomic write 가 살아있는 티켓에 정확히 1회.
     assert len(calls) == 1 and calls[0].endswith("T-0001-seed.md")
@@ -855,9 +856,9 @@ def test_full_run_completes_without_deadlock(board, capsys):
     rc, out, _ = _run(board, capsys)
     assert rc == 0
     # 데드락 없이 완료 — 모든 backfill 이 적용됨.
-    assert board.load_ticket(
+    assert ticket_store.load_ticket(
         board.TICKETS_DIR / "open" / "T-0001-seed.md")[0]["created_by"] == "alice"
-    assert board.load_ticket(
+    assert ticket_store.load_ticket(
         board.TICKETS_DIR / "claimed" / "T-0005-seed.md")[0]["claimed_by"] == "alice/pm-1"
     assert board._ticket_area_owner("T-PAY-001") == "alice"
     # 파생 board.md 가 refresh 됨(락 밖 1회 호출·실제 실행).
@@ -871,7 +872,7 @@ def test_surviving_ticket_still_backfilled(board, capsys):
     _seed(board, "T-0001", "open")
     rc, _, err = _run(board, capsys)
     assert rc == 0
-    fm, _b = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
+    fm, _b = ticket_store.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     assert fm["created_by"] == "alice"
 
 
@@ -897,8 +898,8 @@ def test_t0962_slot_session_tokens_move_to_task(board, capsys):
     (board.TICKETS_DIR / "blocked").mkdir(parents=True, exist_ok=True)
     t3 = _seed(board, "T-0003", "blocked",
                fm_extra={"created_by": "alice", "claimed_by": "proj_1"})
-    board.drafts_dir().mkdir(parents=True, exist_ok=True)
-    t4 = board.drafts_dir() / "T-0004-seed.md"
+    pm_paths.drafts_dir(board._home()).mkdir(parents=True, exist_ok=True)
+    t4 = pm_paths.drafts_dir(board._home()) / "T-0004-seed.md"
     board.dump_ticket(t4, {"id": "T-0004", "title": "t", "status": "draft",
                            "created_by": "alice/proj_1"}, "# seed\n")
     t5 = _seed(board, "T-0005", "done",
@@ -923,11 +924,11 @@ def test_t0962_slot_session_tokens_move_to_task(board, capsys):
 
     rc, _out, err = _run(board, capsys, task="mytask")
     assert rc == 0
-    assert board.load_ticket(t1)[0]["created_by"] == "alice/mytask"
-    fm2 = board.load_ticket(t2)[0]
+    assert ticket_store.load_ticket(t1)[0]["created_by"] == "alice/mytask"
+    fm2 = ticket_store.load_ticket(t2)[0]
     assert (fm2["created_by"], fm2["claimed_by"]) == ("alice/mytask", "alice/mytask")
-    assert board.load_ticket(t3)[0]["claimed_by"] == "alice/mytask"
-    assert board.load_ticket(t4)[0]["created_by"] == "alice/mytask"
+    assert ticket_store.load_ticket(t3)[0]["claimed_by"] == "alice/mytask"
+    assert ticket_store.load_ticket(t4)[0]["created_by"] == "alice/mytask"
     for path, data in untouched.items():
         assert path.read_bytes() == data
     assert "T-0006" in err and "bob/proj_1" in err

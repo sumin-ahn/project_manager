@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ensure_product_slot
-from pm_engine.infra import git
+from pm_engine.infra import git, pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -346,7 +346,7 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
         prefix_cmd=None,
         fn=lambda _args: observed.append(
             (
-                b.board_root(), b.tickets_dir(), b.areas_file(), b.DECISIONS_DIR,
+                b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()), b.DECISIONS_DIR,
                 b.IDEAS_DIR, b.SPECS_DIR, b.ARCHITECTURE_FILE, b.STATUS_FILE,
                 b.HOOKS_DIR, b.LOCAL_CONF, b.LEASES_FILE, b.DOMAIN_PY,
                 b.PM_DELEGATE_PY, *b._SCOPE_AWARE_DIRS,
@@ -374,7 +374,7 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
             owner_pm / "wiki" / "decisions", owner_pm / "wiki" / "specs",
         )
     ]
-    assert b.board_root() == worktree / ".project_manager" / "wiki"
+    assert b._home().board_root == worktree / ".project_manager" / "wiki"
     assert b._READ_BOARD_ROOT_OVERRIDE is None
     assert b._READ_PM_HOME_OVERRIDE is None
     capsys.readouterr()
@@ -635,7 +635,6 @@ def test_detector_none_for_markerless_tree_inside_a_pm_home(tmp_path):
 def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
     """소유 PM 홈을 확정 못 하는 linked worktree 는 자기 앵커로 강등하지 않고 터진다."""
     b = _load_board()
-    pm_log = b._load_pm_log()
     source = tmp_path / "foreign-source"
     source.mkdir()
     _git(["init", "-q", "-b", "main"], source)
@@ -648,7 +647,7 @@ def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
     _git(["worktree", "add", "-q", str(stray)], source)
     _make_scaffold_board(stray / ".project_manager")
 
-    with pytest.raises(pm_log.PmHomeResolutionError, match="PM 홈을 찾지 못했습니다"):
+    with pytest.raises(pm_paths.PmHomeResolutionError, match="PM 홈을 찾지 못했습니다"):
         b._pm_home_worktree_misanchor(stray)
 
 
@@ -907,7 +906,7 @@ def test_read_board_resolution_opens_only_read_dispatch(
 
     def resolve(anchor):
         calls.append(anchor)
-        return b._ReadBoardResolution(b._board_root_at(anchor), None)
+        return b._ReadBoardResolution(pm_paths._board_root_at(anchor), None)
 
     monkeypatch.setattr(b, "_resolve_read_board", resolve)
     monkeypatch.setattr(b, "_print_read_anchor", lambda **_kwargs: None)

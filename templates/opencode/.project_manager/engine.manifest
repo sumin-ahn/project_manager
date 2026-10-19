@@ -25,7 +25,10 @@
 #   infra/harness/contract·infra/harness/watchdog(하네스 CLI 계약·자식 프로세스 감시)·
 #   infra/raw_output(원출력 장부·임시 루트)·infra/review_rounds(리뷰 라운드 장부)·
 #   domain/manifest_rules(manifest 문법·경로 소유 판정)·infra/manifest_store(manifest 판독·배포 파일 목록)·
-#   domain/upstream_rules(상류 값 URL·경로 분류).
+#   domain/upstream_rules(상류 값 URL·경로 분류)·domain/home(실행 기준 경로 값)·infra/pm_paths(PM 홈 경로
+#   해소·소유 PM 홈 유도)·domain/ticket_rules·infra/ticket_store(티켓 문법·조회·읽기)·
+#   domain/areas_rules·infra/areas_store(areas.md 문법·읽기)·infra/python_env(기본 테스트 명령)·
+#   cli/task_args(실행 정체성 검증·task 작업공간 해소).
 .project_manager/tools/pm_engine
 # pm-retired-path: .project_manager/tools/file_lock.py -> .project_manager/tools/pm_engine/infra/fs.py
 # pm-retired-path: .project_manager/tools/console_encoding.py -> .project_manager/tools/pm_engine/infra/console.py

@@ -99,8 +99,8 @@ from typing import Callable, Iterator, NamedTuple, Sequence
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, manifest_store, process, raw_output, repo_files, review_rounds  # noqa: E402
+from pm_engine.domain import conf_schema, ticket_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -209,42 +209,10 @@ def _load_board():
     return _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
 
 
-def _status_dirs() -> tuple[str, ...]:
-    """티켓 상태 디렉토리 집합 — board 의 `STATUS_DIRS` 단일 진실을 그대로 승계한다.
-
-    이 모듈이 사본을 들면 board 가 상태를 추가할 때(`discarded` — 처분 종결) 사본만 옛 집합에
-    머물러 *같은 board 를 두고 다른 답*을 낸다: 리뷰 대상 경로 해소(`_find_ticket_file`)가 그
-    상태의 티켓을 "board 에 없음"으로 fail-loud 하고, 실-board 판정(`_owns_real_board`)이 그
-    상태만 가진 PM 홈을 빈 scaffold 로 오판한다. 최상위 import 대신 `_load_board()`(경로-앵커
-    지연 로드)를 쓰는 이유는 이 파일의 다른 board 소비와 같다 — 형제 로드 규약(순환 import 없음·
-    도구 standalone 실행).
-
-    fail-soft 비대칭: `pm_log`·`pm_bootstrap` 의 동명 헬퍼는 board 로드 실패를 빈 튜플로 접어
-    호출측이 "미해소"를 명시 표기한다. 여기는 접지 않는다 — `_load_board()` 예외가 그대로
-    전파돼 `_owns_real_board` → `_pm_home_reanchor` → `pm_delegate.check_write_target_reanchor`
-    경로가 board 부재 시 종전 `False`(통과) 대신 abort 한다. 이 모듈은 이미 20여 곳에서
-    `_load_board()` 를 무조건 호출하므로 board 부재는 사실상 모듈 전체가 불능인 상태이고, 이
-    판정은 그 불능을 다른 자리보다 먼저 드러낼 뿐이다(판정 정합·의도된 비대칭).
-    """
-    return tuple(_load_board().STATUS_DIRS)
-
-
-def _load_pm_log():
-    """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`)을 형제 경로에서 로드한다.
-
-    해소 판정의 구현은 하나다 — 이 모듈과 board 가 같은 함수를 부른다.
-    """
-    path = Path(__file__).resolve().with_name("pm_log.py")
-    return _load_module_from_path(
-        path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_pm_log:{path.parent}",
-    )
-
-
 def resolve_pm_home_for_repo(anchor: Path) -> Path:
     """repo/worktree가 소속된 PM 홈을 anchor 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
 
-    판정 입력은 `pm_log.owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
+    판정 입력은 `pm_paths.owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
     저장소가 소유 PM 홈을 지목하고, 그 홈에 `.project_manager` 가 실재하는지만 확인한다.
     `.git` 이 없거나 디렉터리인 트리(PM 홈 main checkout·일반 clone)는 자기 자신이라는
     확정된 답이다. 미지 commondir·`.project_manager` 부재는 `AnchorResolutionError` 다 —
@@ -254,10 +222,9 @@ def resolve_pm_home_for_repo(anchor: Path) -> Path:
     조기 반환하면, 소유자를 확정하지 못한 트리가 휘발 장부에 라운드를 기록할 수 있다.
     """
     anchor = anchor.resolve()
-    pm_log = _load_pm_log()
     try:
-        pm_home = pm_log.owning_pm_home(anchor)
-    except pm_log.PmHomeResolutionError as exc:
+        pm_home = pm_paths.owning_pm_home(anchor)
+    except pm_paths.PmHomeResolutionError as exc:
         raise AnchorResolutionError(str(exc)) from exc
     return pm_home
 
@@ -471,7 +438,7 @@ def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) 
 
 def _tickets_dir() -> Path:
     """ticket 디렉토리 — board/ 분리 시 `<REPO>/.project_manager/board/tickets`, 아니면
-    legacy `<REPO>/.project_manager/wiki/tickets` (board.py `tickets_dir` 동형·import 없이 복제)."""
+    legacy `<REPO>/.project_manager/wiki/tickets` (`pm_paths.tickets_dir` 동형)."""
     base = REPO / ".project_manager"
     if (base / "board" / "tickets").is_dir():
         return base / "board" / "tickets"
@@ -486,7 +453,7 @@ def _tickets_dir() -> Path:
 # 잡고, 여긴 PM 홈에서 실행된 추가 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
 # 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
 # 명시 인자로 받아 DI seam 이 된다. 판정 *형태*는 board `_has_real_board` 동형이되 상태 집합은
-# 복제하지 않고 board 단일 진실(`_status_dirs()`)을 승계한다 — 사본은 새 상태에서 갈린다.
+# 복제하지 않고 단일 진실(`ticket_rules.STATUS_DIRS`)을 승계한다 — 사본은 새 상태에서 갈린다.
 
 def _owns_real_board(pm_dir: Path) -> bool:
     """`.project_manager` 디렉토리(`pm_dir`)가 실 티켓(`T-*.md`)을 가진 board 를 소유하는가.
@@ -497,7 +464,7 @@ def _owns_real_board(pm_dir: Path) -> bool:
     for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
         if not base.is_dir():
             continue
-        for status in _status_dirs():
+        for status in ticket_rules.STATUS_DIRS:
             status_dir = base / status
             if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
                 return True
@@ -3208,7 +3175,7 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
     ticket 디렉토리는 `_tickets_dir()`로 *호출 시점* 해소한다 —
     board/ 분리 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
 
-    조회 판정은 board 의 공용 정확-일치 seam(`find_ticket_exact`)이 소유한다 — `{id}-*.md`
+    조회 판정은 공용 정확-일치 seam(`ticket_store.find_ticket_exact`)이 소유한다 — `{id}-*.md`
     prefix glob 의 **첫 매칭**을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의
     touches** 로 검토 범위가 정해진다(조용한 오판). 사본 판정을 두지 않는 이유는
     같은 클래스가 표면마다 half-fix 로 재발해서다. 슬러그 없는 파일명(`T-NNNN.md`)은 prefix
@@ -3217,11 +3184,9 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
     if not ticket_id or re.search(r"[\\/*?\[\]]", ticket_id):
         raise AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
     tickets_dir = _tickets_dir_for(pm_home)
-    # board 를 한 번만 로드해 조회 seam 과 상태 집합을 *같은 사본*에서 가져온다.
-    board = _load_board()
-    status_dirs = tuple(board.STATUS_DIRS)
-    found = board.find_ticket_exact(
-        ticket_id,
+    status_dirs = tuple(ticket_rules.STATUS_DIRS)
+    found = ticket_store.find_ticket_exact(
+        pm_paths.home_at(REPO), ticket_id,
         search_dirs=[(status, tickets_dir / status) for status in status_dirs],
     )
     if found is not None:
@@ -3395,8 +3360,7 @@ def _parse_title_from_file(path: Path) -> str | None:
     board 의 YAML frontmatter 로더(`_parse_estimate_from_file` 과 같은 seam)를 재사용한다 —
     자체 정규식은 estimate 축에서 이미 확인된 결함(YAML 주석 꼬리가 값에 붙는 오독)을 title 에서
     반복할 뿐이라 두지 않는다."""
-    board = _load_board()
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     title = fm.get("title") if isinstance(fm, dict) else None
     return title.strip() or None if isinstance(title, str) else None
 
@@ -3418,14 +3382,13 @@ def _ticket_body_selection_header(path: Path, ticket_id: str) -> str:
 def _parse_frontmatter_scalar(path: Path, key: str) -> str | None:
     """ticket frontmatter 의 문자열 스칼라 (없거나 비-문자열이면 None).
 
-    board 의 frontmatter 로더(`load_ticket` = YAML)를 형제 seam 으로 재사용한다. 자체 정규식
+    frontmatter 로더(`ticket_store.load_ticket` = YAML)를 재사용한다. 자체 정규식
     파싱은 YAML 이 주석으로 읽는 꼬리(`estimate: small # reviewed`)를 값에 붙여 `small` 을
     모르는 값으로 만들었다 — board 가 읽는 값과 다른 값을 보였다. 같은 값을 두 번 해석하지
     않는 것이 유일한 해소다.
 
     비-문자열(리스트·숫자)은 값을 지어내지 않고 None 이다."""
-    board = _load_board()
-    fm, _body = board.load_ticket(path)
+    fm, _body = ticket_store.load_ticket(path)
     value = fm.get(key) if isinstance(fm, dict) else None
     return value.strip() or None if isinstance(value, str) else None
 
@@ -5393,8 +5356,7 @@ def _harvest_target_ticket(
     gate = getattr(args, "gate", None)
     if not gate:
         return None, None
-    board = _load_board()
-    if not board._is_valid_ticket_id(gate):
+    if not ticket_rules._is_valid_ticket_id(gate):
         return None, None                     # 자유 문자열 게이트 — 회수 대상 아님(조용).
     try:
         _find_ticket_file(gate, pm_home=pm_home)
@@ -5494,6 +5456,7 @@ def _harvest_additional_reviewer_section(
     try:
         return _reserve_additional_reviewer_round(
             ticket, reply, delegate=delegate, rounds_module=rounds_module, board=board,
+            board_home=pm_paths.home_at(Path(home).resolve()),
         )
     # 라운드 규약 위반은 `RuntimeError` 하위형이라 **사본 skew 절보다 먼저** 받는다 — 순서를
     # 뒤집으면 예약 충돌·이름 문법 위반이 skew 판정을 지나 traceback 으로 나간다.
@@ -5507,7 +5470,7 @@ def _harvest_additional_reviewer_section(
 
 
 def _reserve_additional_reviewer_round(
-    ticket: str, reply: str, *, delegate, rounds_module, board,
+    ticket: str, reply: str, *, delegate, rounds_module, board, board_home,
 ) -> str | None:
     """내용 검증 → 통과 시 라운드 예약 + board 부분 커밋 (위반 사유 또는 None).
 
@@ -5515,7 +5478,7 @@ def _reserve_additional_reviewer_round(
     판정이 실제로 쓰이는 상태와 같은 스냅샷을 봐야 한다.
     """
     role = delegate.ADDITIONAL_REVIEWER_ROLE
-    found = board.find_ticket_exact(ticket)
+    found = ticket_store.find_ticket_exact(board_home, ticket)
     if found is None:
         raise delegate.DelegateError(f"ticket not found: {ticket}")
     status, ticket_path = found
@@ -5528,7 +5491,7 @@ def _reserve_additional_reviewer_round(
         ticket_path, binary=False, encoding="utf-8", newline="",
     ) as handle:
         ticket_text = handle.read()
-    tickets_dir = board.tickets_dir()
+    tickets_dir = pm_paths.tickets_dir(board_home)
     rounds = rounds_module.load_rounds(
         tickets_dir, ticket, ticket_text=ticket_text,
     )

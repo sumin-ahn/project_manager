@@ -36,6 +36,7 @@ import pytest
 from _git_fixture import init_git_repo
 
 from conftest import anchor_board_module, bind_product_cluster
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -354,7 +355,7 @@ def _seed_round(mod, tid: str, role: str, *, harvested: bool,
                 ticket_text: str = "") -> Path:
     """라운드 파일을 시드하고(엔진 골격) 필요하면 산출로 덮어쓴다."""
     rounds = mod._load_ticket_rounds()
-    directory = rounds.rounds_dir_for_ticket(tid, mod.tickets_dir())
+    directory = rounds.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(mod._home()))
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / rounds.round_filename(1, role)
     seed = rounds.render_round_seed(role, ticket_text or _body(), today="2026-01-01")
@@ -500,7 +501,7 @@ def _fill_draft(mod, board_dir: Path, body: str, **frontmatter) -> str:
     """draft 를 발행하고 본문·frontmatter 를 케이스 형상으로 덮는다 → 티켓 ID."""
     assert mod.cmd_new(_new_args(**frontmatter.pop("new_args", {}))) == 0
     path = _draft(board_dir)
-    fm, _ = mod.load_ticket(path)
+    fm, _ = ticket_store.load_ticket(path)
     fm.update(frontmatter)
     mod.dump_ticket(path, fm, body)
     return fm["id"]

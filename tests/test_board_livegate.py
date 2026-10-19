@@ -23,7 +23,7 @@ import pytest
 from _git_fixture import init_git_repo
 from _slot_seed import SLOT, seed_slot
 from pm_engine.domain import manifest_rules
-from pm_engine.infra import conf_store
+from pm_engine.infra import conf_store, git, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -85,7 +85,7 @@ def live_board(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "REGRESSION_FLAG", local / "regression.json")
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "cafef00dcafef00d0011223344556677")
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: "cafef00dcafef00d0011223344556677")
     mod._proj = proj
     return mod
 
@@ -488,7 +488,7 @@ def test_record_rc0_pin_match_records_pass(live_board, monkeypatch, capsys):
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     head_calls = []
-    monkeypatch.setattr(live_board, "_git_head_at", lambda cwd: (
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: (
         head_calls.append(cwd) or "cafef00dcafef00d0011223344556677"
     ))
     rc = live_board.cmd_livegate(_rec_args())
@@ -645,7 +645,7 @@ def test_declared_platform_release_head_drift_records_red(live_board, monkeypatc
     _platform_conf(live_board)
     _platform_regression_record(live_board)
     head = ["cafef00dcafef00d0011223344556677"]
-    monkeypatch.setattr(live_board, "_git_head_at", lambda _cwd: head[0])
+    monkeypatch.setattr(git, "_git_head_at", lambda _cwd: head[0])
     fake = _FakeRun(0, "22 passed in 1.00s")
     def run(*args, **kwargs):
         result = fake(*args, **kwargs)
@@ -1264,9 +1264,9 @@ def _pv_round_tuple(ordinal: int, role: str, text: str):
 
 def _pv_complete(mod, tid: str) -> list[str]:
     """`_complete_gate` 를 `cmd_complete` 처럼 부른다 — 본문·명세를 넘겨야 리뷰 잔여까지 본다."""
-    _status, path = mod.find_ticket_exact(tid)
+    _status, path = ticket_store.find_ticket_exact(mod._home(), tid)
     spec_text = path.read_text(encoding="utf-8")
-    _fm, body = mod.load_ticket(path)
+    _fm, body = ticket_store.load_ticket(path)
     return mod._complete_gate(tid, _pv_gate_args(), body, spec_text=spec_text)
 
 
@@ -1295,7 +1295,7 @@ def pm_verified_release(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(mod, "_git_config_get", lambda cwd, key: None)
-    monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "feedface" * 5)
+    monkeypatch.setattr(git, "_git_head_at", lambda cwd: "feedface" * 5)
     runner = _FakeRun(0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 800 deselected in 40.0s")
     monkeypatch.setattr(mod.subprocess, "run", runner)
 
@@ -1622,7 +1622,7 @@ def t0936_release(tmp_path, monkeypatch):
                         'LEASES_FILE':local/'worktree-leases.json', 'AREAS_FILE':home/'.project_manager/areas.md'}.items():
         monkeypatch.setattr(board, name, value)
     head = 'T0936-REV'
-    monkeypatch.setattr(board, '_git_head_at', lambda cwd: head)
+    monkeypatch.setattr(git, '_git_head_at', lambda cwd: head)
     monkeypatch.setattr(board, '_resolve_livegate_flag', lambda cwd: (board.LIVEGATE_FLAG, board._LG_ENGINE_ROOT))
     monkeypatch.setattr(board, '_resolve_regression_flag', lambda cwd: (board.REGRESSION_FLAG, board._LG_ENGINE_ROOT))
     monkeypatch.setattr(board, '_sync_release_must_fix_marker', lambda flag: [])
@@ -1739,7 +1739,7 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
         if drift in ['declaration','command']:
             text=f.board.LOCAL_CONF.read_text(encoding='utf-8')
             f.board.LOCAL_CONF.write_text(text.replace('arm,windows','windows,arm') if drift=='declaration' else text.replace('core-full','changed-core'),encoding='utf-8')
-    monkeypatch.setattr(f.board,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.anchor if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
+    monkeypatch.setattr(git,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.anchor if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
     def platform(command,cwd,env):
         result=f.platform(command,cwd,env)
         if phase=='platform' or (phase=='before-live' and env['PM_QA_PLATFORM']=='windows'): mutate()
@@ -1762,7 +1762,7 @@ def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, 
         core=dict(f.core)
         if defect=='A-relative': core['conf_anchor']='relative'
         elif defect=='A-missing': core['conf_anchor']=str(f.anchor/'missing')
-        elif defect in ['A-head','L-head']: monkeypatch.setattr(f.board,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.anchor if defect=='A-head' else f.cwd) else f.head)
+        elif defect in ['A-head','L-head']: monkeypatch.setattr(git,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.anchor if defect=='A-head' else f.cwd) else f.head)
         elif defect=='L-missing': f.cwd=f.cwd/'missing'
         elif defect=='A-F': monkeypatch.setattr(f.board,'_resolve_regression_flag',lambda cwd:(f.anchor/'regression.json',f.board._LG_ENGINE_ROOT))
         elif defect=='L-F': monkeypatch.setattr(f.board,'_resolve_livegate_flag',lambda cwd:(f.anchor/'livegate.json',f.board._LG_ENGINE_ROOT))

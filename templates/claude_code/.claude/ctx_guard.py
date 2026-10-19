@@ -38,7 +38,7 @@ from pathlib import Path
 CTX_NUDGE2_MARGIN_PCT = 3
 
 
-# ── local.conf 직접 파싱 (board.local_config 와 동일 포맷·KEY=value) ──────────
+# ── local.conf 직접 파싱 (conf_store.local_config 와 동일 포맷·KEY=value) ──────────
 
 # 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
 #   python3 .project_manager/tools/local_conf.py --render-adapter-block python
@@ -125,7 +125,7 @@ def repo_root(start: Path) -> Path:
 def load_local_config(root: Path) -> dict[str, str]:
     """``.project_manager/local.conf`` 를 KEY=value dict 로. 없으면 {}.
 
-    board.local_config 와 동일 규칙 — `#` 주석·빈 줄 무시. 어댑터는 엔진을
+    conf_store.local_config 와 동일 규칙 — `#` 주석·빈 줄 무시. 어댑터는 엔진을
     import 하지 않으므로 같은 파싱을 작게 재현한다 (ticket §결정: 직접 파싱).
     """
     conf: dict[str, str] = {}
