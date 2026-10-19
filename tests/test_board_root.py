@@ -27,7 +27,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import pm_paths
+from pm_engine.infra import pm_paths, pre_push_hook, python_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -386,8 +386,8 @@ def _resolved_key(path: Path) -> str:
 
 def _git_answers(board, monkeypatch, hooks: Path) -> Path:
     """git 이 그 훅 폴더를 답한 형상 — 해소는 stub 하고 설치 자리 판정만 태운다."""
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     return hooks
 
 
@@ -396,14 +396,14 @@ def test_hook_installs_under_own_git_dir(board, monkeypatch, capsys):
     (board._tmp / ".git").mkdir()
     hooks = _git_answers(board, monkeypatch, board._tmp / ".git" / "hooks")
 
-    assert board.install_pre_push_hook() is True
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
 
     body = (hooks / "pre-push").read_text(encoding="utf-8")
-    assert board._PM_HOOK_SIGNATURE in body
+    assert pre_push_hook._PM_HOOK_SIGNATURE in body
     # 길이는 엔진 본문에서 유도한다 — 값을 복제하면 본문 한 글자에 이 테스트가 거짓 red 다.
     # 그래도 보호훅(22538 바이트)과는 세 자릿수로 갈려 덮어쓰기는 이 대조에 걸린다.
     assert len(body.encode("utf-8")) == len(
-        board.pre_push_hook_body("python3").encode("utf-8"))
+        pre_push_hook.pre_push_hook_body("python3").encode("utf-8"))
     assert capsys.readouterr().err == ""       # 설치했으면 사유를 낼 것이 없다
 
 
@@ -419,7 +419,7 @@ def test_hook_refuses_parent_repo_hooks_dir(board, monkeypatch, capsys):
     monkeypatch.setattr(board, "REPO", child)
     _git_answers(board, monkeypatch, parent_hooks)
 
-    assert board.install_pre_push_hook() is False
+    assert pre_push_hook.install_pre_push_hook(board._home()) is False
 
     assert parent_hook.read_bytes() == before
     assert not (child / ".git").exists()       # 자기 자리를 새로 만들지도 않는다
@@ -437,7 +437,7 @@ def test_hook_refuses_hooks_path_outside_own_git(board, monkeypatch, capsys):
     before = protected.read_bytes()
     _git_answers(board, monkeypatch, outside)
 
-    assert board.install_pre_push_hook() is False
+    assert pre_push_hook.install_pre_push_hook(board._home()) is False
 
     assert protected.read_bytes() == before
     assert not (board._tmp / ".git" / "hooks").exists()   # 다른 자리로 우회 설치하지도 않는다
@@ -451,6 +451,6 @@ def test_hook_installs_when_hooks_path_points_inside_own_git(board, monkeypatch)
     declared = (board._tmp / ".git" / "hooks").resolve()   # git 이 돌려주는 절대경로 선언
     hooks = _git_answers(board, monkeypatch, declared)
 
-    assert board.install_pre_push_hook() is True
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
 
-    assert board._PM_HOOK_SIGNATURE in (hooks / "pre-push").read_text(encoding="utf-8")
+    assert pre_push_hook._PM_HOOK_SIGNATURE in (hooks / "pre-push").read_text(encoding="utf-8")

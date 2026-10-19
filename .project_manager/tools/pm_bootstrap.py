@@ -47,8 +47,9 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, pm_paths, repo_files  # noqa: E402
+from pm_engine.domain import identity_args, pytest_report, ticket_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, pm_paths, pre_push_hook, repo_files  # noqa: E402
+from pm_engine.app import slot_resolution  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -77,10 +78,6 @@ LOG_FILE = _resolve_log_file()
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (`pm_paths.areas_file` 이 board 루트 추종)
-# worktree 리스 장부 — worktree_pool.LEASES_FILE 와 *같은 위치*. _auto_slot 이
-# 단일 슬롯 판정에 stdlib json 으로 직접 read 한다(worktree_pool 미import·touches
-# 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
-LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
 # `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — `refs/heads/<name>`. 이 접두 **정확히**를
 # 제거해야 순수 브랜치명이 된다(동명 태그 존재 시 `heads/<name>` 로 오염되는 `--short` 대신 full
@@ -419,8 +416,7 @@ def _load_worktree_pool():
 
 
 def _load_board():
-    """board 모듈을 동적 로드한다 (fail-soft) — 보호 브랜치 surface(`_repo_protected`)와
-    pytest 요약행 파서 seam(`_pytest_summary_seam`)이 공유하는 로더다.
+    """board 모듈을 동적 로드한다 (fail-soft) — 보호 브랜치 surface(`_repo_protected`)가 쓰는 로더다.
 
     `_load_worktree_pool` 과 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
     *직접 import* 하지 않는 이유(touches 격리·병렬충돌 회피)는 동적 로드로 보존된다. 보호
@@ -445,10 +441,9 @@ def _load_tool(name: str):
 
     `_load_worktree_pool`/`_load_board` 와 동형 — `spec_from_file_location`(스크립트-위치
     앵커). 부트스트랩이 차수 추론(`pm_handoff.infer_next_session_num`)·log 마지막 entry 본문
-    파싱(`pm_log.split_entries`)을 **DRY** 로 재사용하기 위한 역방향 동적 로드
-    `pm_handoff._load_pm_bootstrap` 동형·복붙 금지). 직접 import 하지 않는 이유(touches 격리·
-    순환 회피)는 동적 로드로 보존된다. 차수/인계 dump 는 *소프트*(부재/실패 시 placeholder)라
-    None 이어도 부트스트랩 본체는 깨지지 않는다.
+    파싱(`pm_log.split_entries`)을 **DRY** 로 재사용하기 위한 역방향 동적 로드다(복붙 금지).
+    직접 import 하지 않는 이유(touches 격리·순환 회피)는 동적 로드로 보존된다. 차수/인계 dump 는
+    *소프트*(부재/실패 시 placeholder)라 None 이어도 부트스트랩 본체는 깨지지 않는다.
     """
     tool_path = TOOLS_DIR / f"{name}.py"
     if not tool_path.exists():
@@ -467,81 +462,6 @@ def _load_tool(name: str):
             raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
-
-
-def _registered_repos(areas_file: Path | None = None) -> list[str]:
-    """areas.md 레지스트리에서 등록된 repo 이름 목록 (identity surface '등록영역' 표면용).
-
-    board.py 를 import 하지 않는다(touches 격리·병렬충돌 회피) — areas.md 의 `repo`/`prefix`
-    칼럼을 stdlib 로 가볍게 읽는다. 파일 부재/스키마 불일치 → 빈 목록(fail-soft·무해).
-    `areas_file` 미지정이면 `pm_paths.areas_file`(board 루트 추종)로 *호출 시점* 해소.
-    """
-    if areas_file is None:
-        areas_file = pm_paths.areas_file(pm_paths.home_at(REPO))
-    if not areas_file.exists():
-        return []
-    rows: list[str] = []
-    header: list[str] | None = None
-    sep_pattern = re.compile(r"^\|[\s:|-]+\|?$")
-    for line in fs.read_text_shared(areas_file, encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|") or sep_pattern.match(stripped):
-            continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if header is None:
-            header = [c.lower() for c in cells]
-            continue
-        if not any(cells):
-            continue
-        row = dict(zip(header, cells))
-        name = row.get("repo") or row.get("prefix")
-        if name:
-            rows.append(name)
-    return rows
-
-
-
-def _auto_slot(
-    areas_file: Path | None = None,
-    leases_file: Path = LEASES_FILE,
-) -> tuple[str, int] | None:
-    """단일 self-host 슬롯 판정 — 정확히 1 repo + 그 repo **활성(leased)** 슬롯 정확히 1개면 그 슬롯.
-
-    핸드오프의 회귀 cwd 해소(`pm_handoff._regression_cwd`)가 쓰는 순수 판정이다. 등록 repo 가
-    정확히 1개이고 그 repo 의 leased 슬롯이 정확히 1개면 그 슬롯, 아니면 None(미해소) —
-    repo 0개/≥2개 또는 활성 슬롯 0개/≥2개.
-
-    반환은 `identity_args.SlotIdentity` — 정체성 키(`.key`)와 **장부 행의 경로 값**(`.slot`)을
-    함께 나른다. 호출부는 번호로 `work/<repo>_<N>` 을 재조립하지 않고 `.slot`/`.key` 를 그대로
-    쓴다 — 장부가 다른 경로를 들고 있는 슬롯에서 존재하지 않는 cwd 가 나오던 자리다.
-
-    판정:
-      1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
-      2. **공용 `lease_store.resolve_actor_workspace` 위임** —
-         그 repo 의 **leased** 슬롯이 정확히 1개면 그 세션을, 0개면 None 을 돌려준다. ≥2개(모호)
-         는 그 프리미티브가 `identity_args.SlotResolutionError` 로 raise 하지만, 이 함수는
-         **순수 resolver 계약**(정확히 1 아니면 항상 None·fail-soft)이라 그 예외를 여기서 흡수해
-         호출부가 미해소로 처리하게 한다.
-
-    **idle 필터 영향(codex must-fix)**: 공용 프리미티브가 leased 만 세므로, `{1:idle, 2:leased}`
-    는 이전 None(2개→폴백) 대신 leased={2}→exactly-1→슬롯2 로 해소된다 — incidental(`_regression_cwd`·
-    display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). `{1:leased}`→1 은 불변.
-
-    파일 부재/스키마 불일치/JSON 깨짐 → None(미해소). `areas_file`
-    미지정(None)이면 `_registered_repos` 가 `pm_paths.areas_file`(board 루트 추종)로 해소한다.
-    """
-    repos = _registered_repos(areas_file)
-    if len(repos) != 1:
-        return None
-    repo = repos[0]
-    try:
-        workspace = lease_store.resolve_actor_workspace(repo, leases_file)
-    except identity_args.SlotResolutionError:
-        return None  # ≥2 활성 슬롯(모호) — 순수 resolver 계약상 fail-soft None(raise 아님).
-    if workspace is None:
-        return None
-    # 경로는 행의 `slot` 값, 정체성은 행이 준 키 — 세션에서 번호를 뜯어 경로를 재조립하지 않는다.
-    return lease_store.resolve_slot_identity(workspace.slot, leases_file)
 
 
 # ── 경로 표기 직렬화 (POSIX 단일) ─────────
@@ -727,14 +647,10 @@ _LINT_HOOK_GENERATION_RESULT = "pre-push 훅 세대 차단 (board.py init 재실
 def _hook_generation_notice(lint_output: str) -> str | None:
     """lint gate 출력이 훅 세대 차단이면 그 줄, 아니면 None.
 
-    판정 접두는 **board.py 가 소유**한다(`PM_HOOK_NOTICE_PREFIX`) — 여기 사본을 두면 엔진이
-    문구를 바꿀 때 조용히 어긋난다(pytest 요약행 seam 과 같은 규칙). board 로드 실패·구사본
-    (상수 부재)이면 None 으로 흘려 현행 판정을 그대로 쓴다(fail-soft).
+    판정 접두는 `pre_push_hook.PM_HOOK_NOTICE_PREFIX` 가 소유한다 — 여기 사본을 두면 엔진이
+    문구를 바꿀 때 조용히 어긋난다.
     """
-    board = _load_board()
-    prefix = getattr(board, "PM_HOOK_NOTICE_PREFIX", None) if board is not None else None
-    if not prefix:
-        return None
+    prefix = pre_push_hook.PM_HOOK_NOTICE_PREFIX
     for line in lint_output.splitlines():
         if line.startswith(prefix):
             return line.strip()
@@ -874,47 +790,24 @@ def parse_lint_result(lint_output: str) -> str:
 
 
 # ── pytest 파서 ──────────────────────────────────────────────────────────
-# 요약행 탐색은 board.py 의 공용 seam(`_pytest_summary_line` — 끝에서-탐색)이 소유한다.
+# 요약행 탐색은 `pytest_report._pytest_summary_line`(끝에서-탐색)이 소유한다.
 # 출력 전체를 `re.search` 하면 캡처된 로그의 `3 passed` 를 요약으로 먼저 만나 회귀 수를
 # 오판한다(자기 사본 금지 — 사본이 그 오판을 되살린다).
-
-# 이 도구가 실제로 호출하는 seam 함수 — **전부** 있어야 쓴다. 하나만 확인하고 통과시키면
-# 부분 동기된 혼합 사본에서 나머지 호출이 AttributeError 로 터진다(진단 없는 죽음).
-_PYTEST_SEAM_FUNCTIONS = ("_pytest_summary_line", "_pytest_outcome_count")
-# seam 부재 진단 — 뒤따르는 중단 메시지가 원인을 "출력 파싱 실패" 로 오도하지 않도록 구제책을 낸다.
-_PYTEST_SEAM_MISSING = ("pytest 파서: board.py 사본에 요약행 파서 seam 부재 — "
-                        "pm_update 로 엔진 전체를 재동기하라.")
-
-
-def _pytest_summary_seam():
-    """pytest 요약행 파서 공용 seam(board.py) — 부재/불완전 사본이면 None (fail-soft).
-
-    seam 이 없으면 파싱 실패(None)로 흘려 호출부의 중단 경로가 받게 한다 — 로컬 첫-매칭
-    폴백을 두면 엔진 사본이 불완전할 때만 조용히 오판이 되살아나 진단이 더 어려워진다.
-    대신 중단 **바로 앞줄**에 구제책을 stderr 로 실어 원인을 잘못 읽지 않게 한다.
-    """
-    board = _load_board()
-    if board is not None and all(
-            hasattr(board, name) for name in _PYTEST_SEAM_FUNCTIONS):
-        return board
-    print(_PYTEST_SEAM_MISSING, file=sys.stderr)
-    return None
 
 
 def parse_pytest_counts(pytest_output: str) -> tuple[int, int] | None:
     """pytest -q 출력에서 (passed, total) 을 파싱한다.
 
     반환: (passed, total) — total = passed + failed.
-    파싱 실패 시 None (요약행 부재·파서 seam 부재 포함).
+    파싱 실패 시 None (요약행 부재 포함).
     """
-    seam = _pytest_summary_seam()
-    line = seam._pytest_summary_line(pytest_output) if seam is not None else None
+    line = pytest_report._pytest_summary_line(pytest_output)
     if line is None:
         return None
-    passed = seam._pytest_outcome_count(line, "passed")
+    passed = pytest_report._pytest_outcome_count(line, "passed")
     if passed is None:
         return None
-    failed = seam._pytest_outcome_count(line, "failed") or 0
+    failed = pytest_report._pytest_outcome_count(line, "failed") or 0
     return passed, passed + failed
 
 
@@ -3155,7 +3048,8 @@ class PmBootstrap:
             # should-fix) — CLI 의 빠른 거부(main)와 이중화. 명 검증(traversal/절대경로/빈 이름·
             # must-fix)은 registered_repos 무관하게 엔진에서 항상 돈다.
             record, action = wp.bind_task(
-                task, session=session, registered_repos=_registered_repos(self._areas_file)
+                task, session=session,
+                registered_repos=slot_resolution._registered_repos(pm_paths.home_at(REPO), self._areas_file),
             )
         except wp.NoTaskSessionClaim as exc:
             print(f"[중단] {exc}", file=sys.stderr)
@@ -3990,7 +3884,8 @@ def _main(argv: list[str] | None = None) -> int:
     # task 명 검증 — 등록 repo 집합을 넘겨 `<등록 repo>_<N>` 예약 패턴까지 한 곳에서 거부한다
     # (엔진 validator 와 동형·부작용 이전).
     try:
-        identity_args.validate_task_name(args.task, _registered_repos())
+        identity_args.validate_task_name(
+            args.task, slot_resolution._registered_repos(pm_paths.home_at(REPO)))
     except identity_args.InvalidTaskName as exc:
         build_parser().error(str(exc))
     bootstrap = PmBootstrap()

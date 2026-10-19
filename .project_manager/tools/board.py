@@ -29,7 +29,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Iterator, Sequence
@@ -41,10 +40,10 @@ import yaml
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.app import hooks  # noqa: E402
-from pm_engine.cli import task_args  # noqa: E402
-from pm_engine.domain import areas_rules, conf_schema, git_policy, identity_args, shell_policy, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, conf_store, console, fs, git, lease_store, manifest_store, pm_paths, process, python_env, repo_coordinates, repo_files, ticket_store  # noqa: E402
+from pm_engine.app import hooks, regression, release  # noqa: E402
+from pm_engine.cli import regression_cmd, task_args  # noqa: E402
+from pm_engine.domain import areas_rules, conf_schema, git_policy, identity_args, pytest_report, shell_policy, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, clock, conf_store, console, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, python_env, regression_store, repo_coordinates, repo_files, review_rounds, ticket_store  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -100,8 +99,6 @@ AREAS_FILE = REPO / ".project_manager" / "areas.md"    # shared registry (commit
 PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"          # per-clone (git-ignored)
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"  # tracked skeleton
 LOCAL_DIR = REPO / ".project_manager" / ".local"            # per-clone scratch (git-ignored)
-REGRESSION_FLAG = LOCAL_DIR / "regression.json"             # last regression result, keyed by HEAD
-LIVEGATE_FLAG = LOCAL_DIR / "livegate.json"                 # last release live-gate result, keyed by worktree HEAD (per-clone)
 BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — board write serialization
 # worktree_pool 의 LEASES_FILE 와 *같은 위치*(그 관례 — `.local/worktree-leases.json`). board 는
 # worktree_pool 을 import 하지 않으므로 경로를 자체 해소해 파일을
@@ -965,8 +962,6 @@ _READ_PM_PATH_RELS: dict[str, str] = {
     "PM_STATE_FILE": "wiki/pm_state.md",
     "PM_STATE_TEMPLATE": "wiki/pm_state.template.md",
     "LOCAL_DIR": ".local",
-    "REGRESSION_FLAG": ".local/regression.json",
-    "LIVEGATE_FLAG": ".local/livegate.json",
     "BOARD_LOCK": ".local/board.lock",
     "LEASES_FILE": ".local/worktree-leases.json",
     "DOMAIN_PY": "tools/domain.py",
@@ -1077,37 +1072,6 @@ def _guard_worktree_misanchor(action: str) -> bool:
 
 
 # ── utilities ──────────────────────────────────────────────────────────
-
-def _expanduser_path(path: Path) -> Path:
-    """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
-    return path.expanduser()
-
-
-def _expanded_user_path(value: str) -> Path:
-    """`~`/`~user` 를 확장한다 — **없는 사용자는 플랫폼과 무관하게 해소 실패**(RuntimeError).
-
-    POSIX 의 `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만, Windows 는 존재하지
-    않는 사용자도 `C:\\Users\\<name>` 으로 조립해 준다. 그래서 같은 입력이 한쪽에서만 해소되고
-    뒤 단계가 다른 분기를 탄다 — 소유 repo 해소는 "해소 실패"에서 멈춰야 하는데 Windows 에서는
-    phantom 홈 경로로 내려가 "경로 부재/이동" 같은 **다른 사유**로 갈렸다. `~user` 형태는 **그
-    사용자 홈의 실재**를 판정에 넣어 두 플랫폼이 같은 결론에 도달하게 한다.
-
-    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 축(HOME/USERPROFILE)으로 확장하므로 분기가
-    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 형상까지 막지 않게).
-
-    **같은 규칙의 사본이 `pm_config._expanded_user_path` 에 있다**(보호 훅 설치 경로). board 는
-    pm_config 를 로드하지 않아(의존 방향 반대) 호출로 합칠 수 없으므로, 두 사본이 갈라지지 않게
-    `tests/test_user_home_expansion_parity.py` 가 같은 케이스 표로 두 구현을 대조한다.
-    """
-    path = Path(value)
-    expanded = _expanduser_path(path)
-    first = path.parts[0] if path.parts else ""
-    if first.startswith("~") and len(first) > 1:
-        home = _expanduser_path(Path(first))
-        if not home.is_dir():
-            raise RuntimeError(
-                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
-    return expanded
 
 
 def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
@@ -2366,475 +2330,6 @@ def board_lock() -> Iterator[None]:
     """
     with fs.exclusive_file_lock(BOARD_LOCK):
         yield
-
-
-# ── 회귀 게이트 ──────────────────────────────────────────────────────
-# 회귀 단위 ≡ **코드 repo** push 단위 · green 인 것만 push. 회귀 게이트가 붙는 자리는 `tests/` 가
-# 있는 트리뿐이다 — 코드가 worktree 슬롯에 사는 분리 형상의 PM 홈(dev-state·board·wiki)에는 돌릴
-# 스위트가 없어 회귀를 요구하지 않는다. 그 판정은 훅 본문이 push 시점에 직접 한다
-# (`pre_push_hook_body` 의 `[ -d tests ]` 자기 가림 · lint 게이트는 두 형상 모두 항상).
-# `regression run` 이 측정·기록(per-clone 로컬 플래그), pre-push 훅이 `regression check` 로 HEAD
-# green 을 검증. 비차단 pre-warm 은 PM 이 `run_in_background` 로 `regression run` 을 돌리는
-# 워크플로(하니스 background).
-
-
-def _git_head() -> str:
-    return git._git_head_at(str(REPO))
-
-
-def _hooks_dir_resolution() -> tuple[Path | None, str | None]:
-    """git 이 해소한 훅 디렉토리와 **판정 불능 사유** — 훅 위치 질의의 단일 git 호출 지점.
-
-    반환은 세 형상뿐이고, 사유 유무가 곧 호출부의 방향을 가른다:
-      · `(Path, None)`  — 해소 성공.
-      · `(None, 사유)`  — **git 은 있는데 답을 못 했다**(rc≠0). 이 저장소의 훅 위치를 확정할 수
-        없다는 뜻이라 판정 불능이다. 실측 클래스: global config 에 Windows 경로가 이스케이프
-        없이 적혀(`hooksPath = C:\\Users\\…`) git 이 파싱에 실패하는 형상 — 그 repo 의 **모든**
-        git 호출이 rc=128 이 되고, 종전 침묵 None 은 이 형상에서 훅 세대 판정을 통째로 no-op 으로
-        만들었다(가드가 없는 것과 같다).
-      · `(None, None)` — **git 을 부르지 못했다**(바이너리 부재·spawn 실패). 이 트리에서는 훅
-        자체가 실행되지 않으므로 판정 대상이 없다(종전 '위치 해소 불가 = 무영향'과 같은 결론).
-    """
-    # encoding 명시 — git path 출력(Korean 경로 가능)을 cp949 로 디코딩하지 않도록 utf-8 고정.
-    try:
-        r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--git-path", "hooks"],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
-    except OSError:
-        return None, None                      # git 부재·spawn 실패 — 훅 실행도 없는 환경.
-    if r.returncode != 0:
-        detail = (r.stderr or r.stdout or "").strip().splitlines()
-        first = detail[0] if detail else "사유 출력 없음"
-        return None, f"git rev-parse --git-path hooks rc={r.returncode}: {first}"
-    d = Path(r.stdout.strip())
-    return (d if d.is_absolute() else REPO / d), None
-
-
-def _hooks_dir() -> Path | None:
-    """훅 디렉토리 (해소 실패는 None) — 설치 경로(`install_pre_push_hook`)가 쓰는 얇은 표면.
-
-    사유가 필요한 판정 경로는 `_hooks_dir_resolution` 을 직접 쓴다.
-    """
-    return _hooks_dir_resolution()[0]
-
-
-# 엔진이 설치한 훅임을 알아보는 서명 — 세대 판정이 남의 pre-push 훅까지 막지 않게 한다.
-_PM_HOOK_SIGNATURE = "pm pre-push gate"
-# 본문 세대 스탬프 — "이 훅이 어느 세대인가"를 파일 자신이 말하게 한다. 게이트 명령을 바꿀 때
-# 이 값을 올리면, 이미 깔린 옛 훅이 스스로 구세대임을 드러낸다.
-PM_HOOK_REV = 3
-_PM_HOOK_REV_PREFIX = "# pm-hook-rev: "
-# 설치된 훅에서 인터프리터를 되읽는 규칙 — 채택자의 런처 선택(`py -3.12` 등)이 세대 판정을
-# 뒤집지 않게 한다(본문 대조를 그 인터프리터로 조립한다).
-# (회귀 줄은 `[ -d tests ]` 블록 안이라 들여쓰기가 붙는다 — 앞 공백을 캡처 밖에서 흘린다.)
-_PM_HOOK_INTERPRETER_RE = re.compile(
-    r"^[ \t]*(?P<py>\S.*?) \.project_manager/tools/board\.py regression check", re.M,
-)
-
-
-def pre_push_hook_body(py: str | None = None) -> str:
-    """pre-push 훅 본문 **단일 진실** — 설치·세대 대조가 같은 문자열을 본다.
-
-    두 표면이 각자 본문을 알면 "설치된 훅이 현행인가"를 물을 수 없다(그게 구버전 훅이 조용히
-    사는 채널이었다). `py` 미지정이면 호출 시점 인터프리터를 탐지한다.
-
-    본문은 **게이트 둘**을 싣고 앞의 것만 트리를 보고 스스로 가린다:
-      1. **회귀 게이트** — `[ -d tests ]` 인 트리에서만 돈다. 훅은 push 되는 트리의 루트에서 실행
-         되므로(git) 이 판정의 대상이 곧 push 단위 그 자체다. `tests/` 가 없는 트리(분리 형상의
-         PM 홈)는 돌릴 스위트가 없으니 회귀를 요구하지 않는다 — 종전엔 그 자리에서 회귀 cwd 를
-         활성 슬롯으로 우회해 **코드가 한 줄도 안 바뀐 board/wiki push 가 슬롯 스위트 전량**을
-         요구했다(채택자 제보).
-      2. **lint 게이트** — 대상이 그 트리 자신의 board/wiki 라 코드 유무와 무관하다. **항상** 돈다
-         (차단을 강제하는 상시 호출자는 이 훅 하나뿐이다)."""
-    interpreter = py if py is not None else _detect_py()
-    return (
-        "#!/bin/sh\n"
-        "# pm pre-push gate — 회귀 게이트(tests/ 있는 트리만) AND lint 게이트(항상). "
-        "board.py init 이 설치.\n"
-        f"{_PM_HOOK_REV_PREFIX}{PM_HOOK_REV}\n"
-        "if [ -d tests ]; then\n"
-        f"  {interpreter} .project_manager/tools/board.py regression check || \\\n"
-        f"    {interpreter} .project_manager/tools/board.py regression run --final || exit 1\n"
-        "else\n"
-        '  echo "pre-push: 회귀 게이트 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 게이트만"\n'
-        "fi\n"
-        f"{interpreter} .project_manager/tools/board.py lint --gate || exit 1\n"
-    )
-
-
-def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
-    """**알려진 구세대 본문** 전수 (rev 미표기·rev 2 두 세대) — 정확일치 registry.
-
-    차단 여부는 이 registry 가 아니라 "현행 본문인가" 하나로 갈린다(비-현행은 전부 차단). registry
-    가 가르는 것은 안내의 사유 낱말뿐이다 — 아는 세대면 "구버전", 모르는 본문이면 "엔진이 모르는
-    본문"이라고 말해 채택자가 자기 훅에 무슨 일이 있었는지 구분할 수 있게 한다.
-    """
-    return (
-        # rev 미표기 세대 — 회귀 게이트가 `--final` 없이 FULL 을 요구하던 본문. 활성 리뷰 사이클
-        # 중에는 강등 실행의 rc0 을 push 허가로 읽어 게이트가 열린다(차단의 직접 대상).
-        "#!/bin/sh\n"
-        "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
-        f"{py} .project_manager/tools/board.py regression check || \\\n"
-        f"  {py} .project_manager/tools/board.py regression run || exit 1\n"
-        f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
-        # rev 2 — 회귀 게이트가 트리를 보지 않고 **항상** 돌던 본문. 코드가 없는 분리 형상 PM 홈
-        # 에서도 회귀를 요구해, 슬롯 스위트 전량이 board/wiki push 의 조건이 됐다(채택자 제보).
-        # 이 훅이 남아 있으면 push 가 막히고 처방은 `board.py init` 재실행 1회다.
-        "#!/bin/sh\n"
-        "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
-        f"{_PM_HOOK_REV_PREFIX}2\n"
-        f"{py} .project_manager/tools/board.py regression check || \\\n"
-        f"  {py} .project_manager/tools/board.py regression run --final || exit 1\n"
-        f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
-    )
-
-
-def install_pre_push_hook() -> bool:
-    """Install the pre-push gate (회귀 + lint). Idempotent. 자기 저장소의 훅 폴더에만 쓴다.
-
-    두 단계를 AND 로 묶는다:
-      1. 회귀 게이트 — green 회귀만 push (`regression check` 실패 시 `regression run --final`).
-         `--final` 은 활성 리뷰 사이클 중의 targeted 강등을 건너뛴다 — push 게이트는 언제나
-         FULL 이어야 한다(강등된 결과는 게이트 플래그를 쓰지 않아 훅이 통과할 수 없다).
-         **`tests/` 가 있는 트리에서만** 돈다 — 판정은 훅 본문이 push 시점에 한다.
-      2. lint 게이트 — `lint --gate` 차단 카테고리(dangling/unstable-ref/
-         dependency/thin) 발견 시 push 실패. status drift 자문성은 차단 안 함. 두 형상 모두 돈다.
-
-    **쓰는 자리는 `REPO/.git` 아래 하나다.** git 은 훅 위치를 물으면 트리를 걸어올라가 답하므로
-    (비-git 폴더에서 물으면 상위 저장소의 훅 폴더를, `core.hooksPath` 가 선언돼 있으면 그 폴더를
-    돌려준다), 그 답을 그대로 쓰면 남의 저장소 pre-push 를 덮는다(실측: `pm_import --into <남의
-    저장소의 비-git 하위>` 가 그 저장소의 훅을 교체 · 원본 소실). 판정 입력은 자기 `.git`
-    디렉터리와 git 이 해소한 훅 폴더 두 값뿐이고, 셋 중 어느 관문에서 멈추든 사유가 stderr 에
-    1줄 남는다(침묵 False 없음). `board.py init` 가 (재)설치하므로 멱등·재설치 안전.
-    """
-    # 자기 `.git` 이 디렉터리인 트리만 plain 훅의 대상이다 — 비-git 폴더·linked worktree
-    # (`.git` 이 gitfile)는 여기서 멈춘다(슬롯의 보호훅은 worktree_pool 이 설치한다).
-    own = REPO / ".git"
-    if not own.is_dir():
-        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — 자기 `.git` 디렉터리가 없습니다 "
-              f"({own}) · 훅은 자기 저장소의 `.git/hooks` 에만 씁니다.", file=sys.stderr)
-        return False
-    hooks = _hooks_dir()
-    if hooks is None:
-        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — git 이 훅 디렉토리를 해소하지 못해 "
-              "설치할 자리를 확정할 수 없습니다.", file=sys.stderr)
-        return False
-    # 대소문자·심볼릭 링크·`..` 를 걷어낸 뒤 비교한다(`Path.is_relative_to` 는 문자열 비교라
-    # 정규화 전 경로로는 같은 자리를 다른 자리로 읽는다 · `pm_log._wip_probe_targets` 동형 관용구).
-    own_resolved = Path(os.path.normcase(str(own.resolve(strict=False))))
-    hooks_resolved = Path(os.path.normcase(str(hooks.resolve(strict=False))))
-    if not hooks_resolved.is_relative_to(own_resolved):
-        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — 해소된 훅 폴더가 자기 `.git` 밖입니다 "
-              f"(훅 폴더 {hooks_resolved} · 자기 .git {own_resolved}).", file=sys.stderr)
-        return False
-    hooks.mkdir(parents=True, exist_ok=True)
-    _write_hook_atomic(hooks / "pre-push", pre_push_hook_body())
-    return True
-
-
-def _write_hook_atomic(hook: Path, body: str) -> None:
-    """훅 파일을 temp + `fs.atomic_replace` 로 **원자 교체**한다 (`_write_json_atomic` 동형).
-
-    같은 inode 에 truncate-rewrite 하면 **실행 중인 훅을 자기 자신이 덮을 수 있다** — shell 은
-    스크립트를 실행하며 읽으므로 파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라
-    fail-open 방향도 나온다). 새 inode 로 갈아끼우면 실행 중인 shell 은 옛 fd 를 그대로 읽어
-    끝까지 온전하다.
-    실행 권한은 **교체 전 tmp 에** 준다 — 교체 뒤에 chmod 하면 그 사이 훅이 실행 불가다.
-    **어느 단계가 실패하든 tmp 를 지운다** — 쓰기·chmod·교체 세 단계가 모두 정리 범위다(교체만
-    감싸면 앞 단계 실패에서 잔재가 남아 서술과 어긋난다). `pre-push.<pid>.tmp` 는 git 이 실행하지
-    않는 이름이라 무해했지만, 실패마다 훅 디렉토리에 잔재가 쌓인다. 실패 자체는 그대로
-    올린다(호출부가 판정)."""
-    tmp = hook.with_name(f"{hook.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(body, encoding="utf-8", newline="\n")
-        tmp.chmod(0o755)
-        fs.atomic_replace(tmp, hook)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
-
-
-# ── 구형 서명 훅 감지 (fail-closed) ─────────────────────────────────────────
-# 훅 본문은 **설치 시점에 박제**되므로 엔진이 게이트 명령을 바꿔도 이미 설치된 훅은 옛 명령을
-# 계속 돈다. 실측 클래스: 강등(`--final` 부재) 훅이 targeted 결과 rc0 을 push 허가로 해석해
-# FULL 플래그 없이 push 가 열린다. 그래서 회귀 게이트가 진입할 때 세대를 대조하고, 현행이 아니면
-# **차단**한다(고치지 않는다).
-#
-# 자동 교체(치유)를 두지 않는 이유: 교체는 *다음* 실행부터 유효한데 지금 돌고 있는 것은 교체 전
-# 본문이라, 그 실행의 강등 rc0 을 옛 훅이 push 허가로 읽는다. 그 창을 닫으려면 "방금 고쳤다"를
-# 별 프로세스(훅 `check || run` 2단계)에 전달해야 하고, 그건 공유 상태이며 공유 상태는 경합·TTL·
-# 표식 탈취를 낳는다(4라운드 실증). 차단은 상태가 필요 없다 — 판정 한 번이 곧 결론이다.
-
-
-# git config 순수 파서 — `core.hooksPath` 값 하나만 읽는다(subprocess 0). git 은 섹션·키 이름을
-# **대소문자 무관**으로 다루므로 매칭도 그렇게 한다(`[CORE] HooksPath` 도 같은 키다).
-_GIT_CONFIG_SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]\s]+)(?:\s+\"(?P<sub>[^\"]*)\")?\]")
-_GIT_CONFIG_ENTRY_RE = re.compile(r"^\s*(?P<key>[A-Za-z][A-Za-z0-9-]*)\s*=\s*(?P<value>.*)$")
-# 이 섹션이 있으면 값 해석을 포기한다 — 포함 파일의 선언이 최종 값을 뒤집을 수 있는데, 그 파일까지
-# 따라가는 것은 git config 해소를 다시 구현하는 일이다(fail-open 이 안전한 방향).
-_GIT_CONFIG_INCLUDE_SECTIONS = frozenset({"include", "includeif"})
-_HOOKS_PATH_KEY = "hookspath"
-_HOOKS_PATH_SECTION = "core"
-# "선언은 있는데 git 없이 확정 불가" 를 "선언 없음"과 구분하는 표식.
-_HOOKS_PATH_UNRESOLVED = object()
-
-
-def _git_config_value(raw: str) -> str:
-    """git config 값 한 줄에서 실제 값만 남긴다 — 인용 해제 + 인용 밖 주석(`#`/`;`) 절단.
-
-    손편집 config 에 `hooksPath = .githooks  # 사내 표준` 같은 줄이 있으면 주석까지 경로로 읽는다
-    (git 은 인용 밖 `#`/`;` 부터를 주석으로 본다)."""
-    text = raw.strip()
-    if text.startswith('"'):
-        end = text.find('"', 1)
-        return text[1:end] if end != -1 else text[1:]
-    for comment in ("#", ";"):
-        cut = text.find(comment)
-        if cut != -1:
-            text = text[:cut]
-    return text.strip()
-
-
-def _config_hooks_path(text: str) -> object | None:
-    """git config 원문에서 `core.hooksPath` 선언 값을 순수 파싱한다.
-
-    반환은 셋 중 하나다:
-      · `str` — 선언된 값(마지막 선언이 이긴다 · git 의 last-wins 와 같다).
-      · `None` — 선언 없음(훅은 기본 위치).
-      · `_HOOKS_PATH_UNRESOLVED` — include/includeIf 가 있거나 값이 비어 git 없이 확정 불가.
-    """
-    section = ""
-    value: object | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped[0] in "#;":
-            continue
-        header = _GIT_CONFIG_SECTION_RE.match(line)
-        if header is not None:
-            section = header.group("name").lower()
-            if section in _GIT_CONFIG_INCLUDE_SECTIONS:
-                return _HOOKS_PATH_UNRESOLVED
-            continue
-        if section != _HOOKS_PATH_SECTION:
-            continue
-        entry = _GIT_CONFIG_ENTRY_RE.match(line)
-        if entry is None or entry.group("key").lower() != _HOOKS_PATH_KEY:
-            continue
-        resolved = _git_config_value(entry.group("value"))
-        if not resolved:
-            return _HOOKS_PATH_UNRESOLVED
-        value = resolved
-    return value
-
-
-def _repo_git_dir() -> Path | None:
-    """REPO 의 **공용 git 디렉토리** (`.git` 부재·해소 불가면 None = 비-repo 형상).
-
-    규칙:
-      · `REPO/.git` 디렉토리 → 그 경로.
-      · `REPO/.git` 파일(linked worktree·`gitdir: <경로>`) → 그 gitdir 의 `commondir` 을 따라
-        **공용 git 디렉토리**로 올라간다 (훅은 worktree 간 공유다).
-
-    반환 None 은 "이 트리는 판정 대상이 아니다"라는 뜻이다 — 훅 세대 판정도 그 자리에서 끝내고
-    git 조회조차 하지 않는다(REPO 가 repo 루트가 아닌 트리에서 조상 repo 의 훅을 끌어오지
-    않는다·종전 무영향 형상 보존).
-    """
-    try:
-        git_path = REPO / ".git"
-        if git_path.is_dir():
-            git_dir = git_path
-        elif git_path.is_file():
-            pointer = fs.read_text_shared(git_path, encoding="utf-8").strip()
-            if not pointer.startswith("gitdir:"):
-                return None
-            target = Path(pointer[len("gitdir:"):].strip())
-            git_dir = target if target.is_absolute() else (REPO / target)
-        else:
-            return None
-        common = git_dir / "commondir"
-        if common.is_file():
-            relative = fs.read_text_shared(common, encoding="utf-8").strip()
-            if relative:
-                shared = Path(relative)
-                git_dir = shared if shared.is_absolute() else (git_dir / shared)
-        return git_dir
-    except (OSError, UnicodeError, ValueError):
-        return None
-
-
-def _pure_hooks_dir() -> Path | None:
-    """훅 디렉토리를 **git 호출 없이** 해소한다 (해소 불가면 None).
-
-    회귀 게이트 진입은 hot path 라 여기에 subprocess 를 더하지 않는다 — `_hooks_dir()`(git
-    `rev-parse --git-path`)는 설치 경로가 계속 쓰고, 세대 판정은 이 순수 해소를 먼저 쓴다
-    (권위 해소는 이 자리에서 훅을 못 찾았을 때만·`_stale_pre_push_hook_refusal`). 규칙:
-      · `REPO/.git`(디렉토리·linked worktree 파일) → 공용 git 디렉토리 아래 `hooks/`.
-      · repo config 에 `core.hooksPath` 선언이 있으면 **그 값을 파싱해** 훅 위치로 쓴다. 상대
-        경로는 git 과 같이 worktree 루트(`REPO`) 기준이고 `~` 는 확장한다(확장 규칙은
-        `_expanded_user_path` — 없는 `~user` 는 플랫폼 무관 해소 실패). 존재-only 로 보고
-        포기하면 *기본 위치를 가리키는 선언*까지 세대 관리 밖에 남는다.
-      · include/includeIf 가 있거나 값이 비면 **None** — 포함 파일의 선언이 최종 값을 뒤집을 수
-        있어 git 없이 확정할 수 없다(그 형상은 권위 해소가 받는다).
-      · `~user` 미확장도 **None** — 이 순수 해소로는 위치를 확정할 수 없다는 뜻이라 권위 해소가
-        그 자리를 받는다(POSIX 만 RuntimeError 로 터지던 비대칭 제거).
-    """
-    git_dir = _repo_git_dir()
-    if git_dir is None:
-        return None
-    try:
-        config = git_dir / "config"
-        if config.is_file():
-            declared = _config_hooks_path(fs.read_text_shared(config, encoding="utf-8"))
-            if declared is _HOOKS_PATH_UNRESOLVED:
-                return None
-            if isinstance(declared, str):
-                hooks = _expanded_user_path(declared)
-                # 상대 `core.hooksPath` 는 git 이 worktree 루트 기준으로 해소한다(프로세스 cwd 아님).
-                return (hooks if hooks.is_absolute() else (REPO / hooks)).resolve()
-        return (git_dir / "hooks").resolve()
-    except (OSError, UnicodeError, ValueError, RuntimeError):
-        return None
-
-
-def _has_pre_push(hooks: Path) -> bool:
-    """그 훅 디렉토리에 `pre-push` 파일이 실재하는가 (읽기 실패는 False·fail-soft)."""
-    try:
-        return (hooks / "pre-push").is_file()
-    except OSError:
-        return False
-
-
-def _authoritative_hooks_resolution() -> tuple[Path | None, str | None]:
-    """git 권위 해소 `(훅 디렉토리, 판정 불능 사유)` — `_hooks_dir_resolution` 의 판정용 표면.
-
-    저장소 config 직접 파싱(`_pure_hooks_dir`)은 **repo config 의 선언만** 본다. `core.hooksPath`
-    는 global(`~/.gitconfig`)·system·명령행(`-c`)·worktree 범위에서도 선언되고, 훅을 실행하는
-    git 과 훅을 설치하는 엔진(`install_pre_push_hook` → `_hooks_dir`)은 그 해소를 따른다 —
-    세대 판정만 `.git/hooks` 를 보면 사내 표준 hooksPath 형상에서 **구세대 훅이 계속 실행되는데
-    차단은 서지 않는다**(우회). 이 함수가 그 자리를 메운다.
-
-    subprocess 1회를 쓴다 — 회귀 진입은 hot path 지만 이 축은 push 게이트 차단이라 "위치를 잘못
-    봐서 안 막는 것"이 비용보다 크다. 그래서 **언제 묻는지**는 호출부가 정한다
-    (`_stale_pre_push_hook_refusal` — 순수 해소가 훅을 못 찾았을 때만).
-
-    사유 유무가 호출부의 방향이다(`_hooks_dir_resolution` 서술과 같은 규칙): 사유가 있으면
-    **git 이 답을 못 한 판정 불능**이라 차단 방향이고, 사유 없는 None(git 부재·대역 subprocess의
-    예외)은 종전대로 순수 해소 결과를 그대로 쓴다.
-    """
-    try:
-        return _hooks_dir_resolution()
-    except Exception:  # noqa: BLE001 — 대역 subprocess/스텁 예외는 순수 해소로 폴백.
-        return None, None
-
-
-def _installed_hook_interpreter(body: str) -> str | None:
-    """설치된 훅이 쓰는 인터프리터 (게이트 줄이 없으면 None)."""
-    match = _PM_HOOK_INTERPRETER_RE.search(body)
-    return match.group("py") if match else None
-
-
-# 훅 세대 안내의 **호출 경로 중립 접두** — 이 판정은 `regression`(스위트 있는 트리)과
-# `lint --gate`(두 형상 모두) 두 진입에서 나온다. 접두가 한 채널 이름(`regression:`)이면 다른
-# 채널의 소비자가 그 출력을 자기 채널 산출로 읽다가 파싱에 실패한다(pm_bootstrap 의 lint dump
-# 가 `gate error (unparsed)` 로 저하되던 자리). 접두를 여기서 소유해 소비자가 사본 없이 짚는다.
-PM_HOOK_NOTICE_PREFIX = "pre-push 훅: "
-# 차단 안내 — 처방은 `init` 재실행 하나뿐이라 두 사유(구세대·미상 본문)가 같은 문장을 쓴다.
-# 인터프리터 표기는 채택자 문서와 같은 규칙이다(Linux/macOS `python3` · Windows 런처 `py -3`).
-_STALE_HOOK_REFUSAL = (
-    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅이 {{kind}}입니다 ({{hook}}) — "
-    "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도"
-    "(Windows 는 py -3)."
-)
-_UNREADABLE_HOOK_REFUSAL = (
-    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 "
-    "({hook}: {error}) — `python3 .project_manager/tools/board.py init` 재실행 후 "
-    "다시 시도(Windows 는 py -3)."
-)
-# git 이 훅 위치 자체를 답하지 못한 경우 — **사유를 실어 알린다**(침묵 no-op 금지). 차단이
-# 아니라 경고인 이유는 이 rc≠0 이 두 형상을 합치기 때문이다: (1) config 파싱 실패(실측 원인 —
-# git config 는 값의 백슬래시를 이스케이프로 읽으므로 `C:\path\to\hooks` 는 파싱 실패고
-# `C:/path/to/hooks` 또는 `\\` 이스케이프로 적어야 한다), (2) git 이 보기엔 저장소가 아닌 트리·dubious ownership
-# 등 **환경적 판정불가**. 둘은 rc·문구(로케일 의존)로 갈리지 않는데, 후자를 차단하면 훅을 쓰지
-# 않는 정상 형상의 `regression run` 까지 멈춘다. 두 형상 모두 그 git 으로는 push 자체가 서지
-# 않으므로 push 게이트가 이 침묵으로 우회되지도 않는다 — 잃던 것은 **관측성**이었다(판정이 돌아
-# 통과한 것인지 아예 안 돈 것인지 구분 불가). 그 관측성만 되돌린다.
-# (`_sha_anchor_status` 의 rc≥2 fatal = 환경적 판정불가 규약과 같은 방향이다.)
-_UNRESOLVED_HOOKS_NOTICE = (
-    f"{PM_HOOK_NOTICE_PREFIX}훅 디렉토리를 해소하지 못해 세대 판정을 생략합니다 ({{reason}}) — "
-    "훅을 쓰는 형상이면 git 설정(core.hooksPath 등)을 확인하십시오"
-    "(Windows 경로는 `C:/path/to/hooks` 표기 또는 백슬래시 이스케이프)."
-)
-
-
-def _stale_pre_push_hook_refusal() -> str | None:
-    """설치된 pre-push 훅이 **현행 세대가 아니면** 차단 안내 1줄, 아니면 None.
-
-    차단 대상은 **pm 서명을 가진 비-현행 훅** 하나다(구세대 registry 일치 · 엔진이 모르는 본문
-    둘 다). 아는 세대만 골라 다루던 옛 경계는 자동 교체가 있을 때의 것이었다 — 덮어쓰지 않는
-    지금은 커스터마이즈 본문도 "이 게이트가 무엇을 강제하는지 확정할 수 없는 훅"이라 같은 결론이다.
-    registry 는 남아서 안내의 사유 낱말만 가른다(구버전인지, 엔진이 모르는 본문인지).
-
-    **무영향으로 두는 형상 셋**: 훅 미설치 · 서명 없는 남의 훅 · 훅 위치 해소 불가. 셋 다
-    "이 트리에 엔진 push 게이트가 없다"는 뜻이라, 차단하면 훅을 안 쓰는 정상 형상까지 막는다.
-    다만 셋째는 **조용히 두지 않는다** — git 이 훅 위치를 답하지 못하면(rc≠0) 사유를 stderr 에
-    남기고 판정을 생략한다(`_UNRESOLVED_HOOKS_NOTICE`). 침묵하면 "판정이 돌아서 통과"와 "판정이
-    아예 안 돎"이 호출부에서 같은 값(None)이라, 가드가 통째로 no-op 인 형상이 green 으로 보인다
-    (Windows 실측: global config 의 `hooksPath = C:\\Users\\…` 미이스케이프 → 그 repo 의 모든
-    git 호출 rc=128 → 세대 판정 전면 no-op).
-
-    나머지 판정 실패는 **차단 방향**이다: 훅 파일이 있는데 읽지 못하면 세대를 확정할 수 없고,
-    확정 못 한 훅을 통과시키는 것이 곧 옛 게이트가 조용히 사는 채널이다(git 도 읽지 못하는 훅은
-    실행하지 못한다).
-
-    인터프리터는 **설치된 훅의 것**으로 대조한다 — 채택자의 런처 선택(`py -3.12`)이 세대 판정을
-    뒤집지 않게.
-
-    위치 해소는 두 단계다:
-      1. 순수 해소(`_pure_hooks_dir`)가 찾은 자리에 `pre-push` 가 **실재하면** 그 파일로 판정한다
-         — 이미 판정 대상을 손에 쥐었으므로 git 을 부를 이유가 없다(회귀 진입에 subprocess 0).
-      2. 그 자리에 훅이 없거나 순수 해소가 확정에 실패하면 **git 의 권위 해소**
-         (`_authoritative_hooks_resolution`)를 묻는다. repo config 밖(global/system/worktree)에서
-         `core.hooksPath` 가 선언된 형상이 정확히 이 경우다 — 훅은 그 경로에 설치돼 실행되는데
-         순수 해소는 `.git/hooks` 를 보고 "미설치"로 읽어 세대 차단이 우회됐다. git 이 **답을
-         못 하면 사유를 stderr 에 남기고**, 부르지 못하면(부재·대역) 조용히 — 어느 쪽이든 현행
-         순수 해소 결과를 그대로 쓴다(기존 판정 유지).
-
-    `REPO` 가 repo 루트가 아닌 트리(`.git` 부재)는 그 앞에서 끝낸다 — 조상 repo 의 훅을 이 트리의
-    판정으로 끌어오지 않는다(종전 '위치 해소 불가 = 무영향'과 같은 결론·git 호출 0).
-
-    남는 사각은 하나다: repo config 밖 `hooksPath` 형상에서 `.git/hooks/pre-push` 잔재가 남아
-    있으면 1단계가 그 잔재를 판정한다(git 이 실행하지 않는 파일). 잔재가 구세대 엔진 훅이면
-    차단(안전 방향)이고, 남의 훅/현행 본문이면 권위 경로를 못 본다 — 잔재 파일이 있어야 성립하는
-    좁은 형상이라, 회귀 진입 비용(모든 실행에 git 1회)과 바꾸지 않는다."""
-    if _repo_git_dir() is None:
-        return None                                   # 비-repo 트리 — 판정 대상 밖(git 호출 0).
-    hooks = _pure_hooks_dir()
-    if hooks is None or not _has_pre_push(hooks):
-        authoritative, unresolved_reason = _authoritative_hooks_resolution()
-        if unresolved_reason is not None:
-            # git 이 훅 위치를 답하지 못했다 — 판정을 생략하되 **사유를 남긴다**. 침묵하면
-            # "판정이 돌아서 통과"와 "판정이 아예 안 돎"이 같은 결과로 보인다(Windows 실측에서
-            # 가드가 통째로 no-op 이었는데도 green 이던 자리).
-            print(_UNRESOLVED_HOOKS_NOTICE.format(reason=unresolved_reason), file=sys.stderr)
-        hooks = authoritative or hooks
-    if hooks is None:
-        return None                                   # 위치 해소 불가 — 비-훅 형상 차단 금지.
-    hook = hooks / "pre-push"
-    try:
-        if not hook.is_file():
-            return None                               # 미설치 — 무영향.
-        current = fs.read_text_shared(hook, encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return _UNREADABLE_HOOK_REFUSAL.format(hook=hook, error=exc)
-    if _PM_HOOK_SIGNATURE not in current:
-        return None                                   # 남의 훅 — 대상 아님.
-    interpreter = _installed_hook_interpreter(current) or _detect_py()
-    if current == pre_push_hook_body(interpreter):
-        return None                                   # 현행 세대 — 무소음 통과.
-    kind = ("구버전" if current in _legacy_pre_push_hook_bodies(interpreter)
-            else "엔진이 모르는 본문")
-    return _STALE_HOOK_REFUSAL.format(kind=kind, hook=hook)
 
 
 def _configure_board_submodule() -> bool:
@@ -4917,491 +4412,17 @@ def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
     return False
 
 
-def _active_slot_test_cmd(session: str | None = None) -> str | None:
-    """활성 worktree 슬롯(lease)에 바인딩된 test_cmd (없으면 None).
-
-    같은 repo 의 슬롯들이 서로 다른 빌드 타깃(HIL config 1/2/3·full vs a-only 등)을
-    지속적으로 가질 수 있게 — `_test_cmd` 가 이를 repo areas *위* 레이어로 끼운다.
-
-    **board 는 worktree_pool 을 import 하지 않는다**.
-    대신 리스 장부 *파일*(`LEASES_FILE` = `.local/worktree-leases.json`·worktree_pool 과
-    같은 위치)을 stdlib json 으로 직접 read 한다 — areas.md 를 읽듯 데이터-결합만(모듈 결합
-    아님). 리스는 worktree_pool 이 원자 교체(`fs.atomic_replace`)로 쓰므로 **락 없는
-    point-read 가 일관 스냅샷**을 본다(쓰기 경합과 분리 — 부분쓰기 장부를 못 본다).
-
-    활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
-    첫 행 — `session` 명시는 M>1 슬롯 순회가 슬롯별 test_cmd
-    를 뽑을 때 쓴다(무명시는 현행대로 `session_name()` 해소). 그 행의 test_cmd 가 비어 있지 않으면
-    반환. 장부 부재/파싱실패/매칭없음/빈 test_cmd → None
-    (침묵 폴백 — 슬롯 레이어는 *추가 우선*이지 강제 아님·호출부가 다음 레이어로 폴백).
-    파싱 실패를 에러로 죽이지 않는다(fail-soft — 장부 손상이 회귀해소를 깨면 안 된다).
-    """
-    if not LEASES_FILE.exists():
-        return None
-    try:
-        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    # 장부 손상 = fail-soft (위 docstring): 유효 JSON 이라도 dict/list 가 아니면
-    # `.get`/순회가 크래시 — 회귀해소를 깨지 않게 None 폴백(다음 레이어).
-    if not isinstance(data, dict):
-        return None
-    leases = data.get("leases", [])
-    if not isinstance(leases, list):
-        return None
-    sess = session if session is not None else lease_store.session_name(_home())
-    for row in leases:
-        if not isinstance(row, dict):
-            continue
-        # `and sess` 방어가드: sess 가 None(모호 M>1·미바인딩)일 때 손상 행(`session: null`·
-        # `state: "leased"`)에 None==None 으로 false-match 하지 않게 한다.
-        if sess and row.get("session") == sess and row.get("state") == "leased":
-            cmd = row.get("test_cmd")
-            return cmd or None   # 빈/None → None (이 활성 슬롯엔 바인딩 없음·다음 레이어로)
-    return None
-
-
-def _active_slot_path(session: str | None = None) -> str | None:
-    """활성 worktree 슬롯(lease)의 절대 경로 (없으면 None).
-
-    분리된 PM 홈(코드 없음)+worktree 모델에서 **PM 홈이 실행하는 코드 트리 작업**(leased ≥2 회귀
-    순회·릴리즈 라이브 게이트)은 활성 repo 의 worktree cwd 에서 돌아야 한다 — 이 함수가 그 경로를
-    lease 장부에서 해소한다. (push 게이트 회귀는 push 되는 트리 자신이 돈다 — `_regression_cwd`.)
-
-    `_active_slot_test_cmd` 와 *동형* 데이터-결합: **worktree_pool 을 import 하지 않고**
-    리스 장부 파일(`LEASES_FILE`)을 stdlib json 으로 직접 read 한다.
-    slot 식별자는 `work/` 접두를 이미 포함(`work/<repo>_<N>`)하므로 worktree_pool 의
-    `slot_path()`(= `REPO / slot`)와 동일하게 board 가 import 없이 `REPO / lease["slot"]` 로 직접 구성한다.
-    리스는 worktree_pool 이 atomic-replace 로 쓰므로 락 없는 point-read 가 일관 스냅샷을 본다.
-
-    활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
-    첫 행 — `session` 명시는 M>1 슬롯 순회가 슬롯별 cwd 를 뽑을 때 쓴다. 그 행의
-    `slot` 을 `REPO / slot` 절대경로로 반환. 장부 부재/파싱실패/매칭없음/빈 slot → None
-    (fail-soft — 호출부가 다음 레이어[REPO]로 폴백).
-    """
-    if not LEASES_FILE.exists():
-        return None
-    try:
-        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    # 장부 손상 = fail-soft (_active_slot_test_cmd 와 동일 가드): 유효 JSON 이라도
-    # dict/list 가 아니면 None 폴백(회귀해소를 깨지 않게).
-    if not isinstance(data, dict):
-        return None
-    leases = data.get("leases", [])
-    if not isinstance(leases, list):
-        return None
-    sess = session if session is not None else lease_store.session_name(_home())
-    for row in leases:
-        if not isinstance(row, dict):
-            continue
-        # `and sess` 방어가드 — sess None 시 손상 행 false-match 방지.
-        if sess and row.get("session") == sess and row.get("state") == "leased":
-            slot = row.get("slot")
-            if not slot:
-                return None  # 빈/None slot → None (다음 레이어[REPO]로)
-            return str(REPO / slot)
-    return None
-
-
-def _test_cmd(override: str | None, session: str | None = None) -> str:
-    """회귀에 쓸 테스트 명령을 해소한다 (per-repo + per-slot).
-
-    우선순위:
-      1. `override` (CLI `--cmd`).
-      2. **활성 슬롯(lease)의 test_cmd** — worktree 리스 장부에서 이 세션의 leased 슬롯에
-         바인딩된 명령(`_active_slot_test_cmd(session)`). 같은 repo 슬롯별 빌드변형을 수용한다
-         `session` 명시는 M>1 슬롯 순회가 슬롯별로
-         호출할 때 쓴다(무명시는 `session_name()` 해소). 장부 부재/매칭없음/빈 값이면 다음
-         레이어로 폴백.
-      3. **등록 repo 1개의 areas.md test_cmd** — 멀티-PM 모드(areas.md 존재)에서
-         `id_prefix(None)`(등록 prefix 가 정확히 1개일 때만)의 레지스트리 행에 비어 있지 않은
-         `test_cmd` 가 있으면 그것. 세션 이름에서 repo 를 떼어 행을 고르지 않는다 — 슬롯별
-         명령은 2층(대여 행 test_cmd)이 준다.
-      4. **최종 폴백** — 위 전부 미스면 현 단일 `local.conf test.cmd`.
-         없으면 실행 가능한 Python으로 `pytest tests/ -q`를 만들고 pytest-xdist를 import할 수
-         있는 환경에서는 `-n auto`를 붙인다.
-    """
-    if override:
-        return override
-    slot_cmd = _active_slot_test_cmd(session)
-    if slot_cmd:
-        return slot_cmd
-    prefix = areas_store.id_prefix(_home(), None)
-    if prefix:
-        row = areas_store._areas_row_for_prefix(_home(), prefix)
-        if row and row.get("test_cmd"):
-            return row["test_cmd"]
-    return conf_store.local_config(_home()).get("test.cmd") or python_env.default_pytest_cmd()
-
-
-def _regression_cwd(override: str | None = None) -> str:
-    """회귀를 실행할 작업 디렉토리 — 명시 `--cwd` 가 있으면 그것, 없으면 **이 트리**(`REPO`).
-
-    회귀 단위는 push 되는 코드 트리 자신이다. 종전엔 여기서 활성 슬롯 worktree 로 우회했는데,
-    그것은 "PM 홈엔 `tests/` 가 없다"는 증상을 cwd 로 땜질한 것이라 코드가 한 줄도 안 바뀐 PM 홈
-    push 가 슬롯 스위트 전량을 요구했다(채택자 제보). 그 판정은 이제 훅 본문이 push 시점에
-    직접 한다(`pre_push_hook_body` 의 `[ -d tests ]`) — 스위트가 없는 트리는 회귀를 아예 요구하지
-    않으므로 우회할 대상이 없다.
-
-    슬롯 트리를 겨냥해야 하는 형상은 각자 자기 자리에서 해소한다: leased ≥2 순회는
-    `_regression_multi_run`/`_regression_multi_check` 가 `_active_slot_path` 로, 릴리즈 라이브
-    게이트는 `_livegate_cwd` 로, 다른 트리를 지목하는 실행은 `--cwd` 로 명시한다.
-    """
-    return override or str(REPO)
-
-
-def _minimum_python() -> tuple[int, int]:
-    """engine_rev.py 에 선언된 엔진 Python 하한을 경로 기반으로 읽는다.
-
-    board.py 는 패키지 import 와 직접 실행 양쪽을 지원하므로 평범한 sibling import 대신
-    기존 엔진 로더 관례대로 파일 위치를 앵커로 삼는다. 탐지 때만 지연 로드해 board 의
-    다른 명령과 최소 격리 테스트에는 새 선행 의존을 만들지 않는다.
-    """
-    # _detect_py 의 Windows 분기는 _probe_os_name() seam 주입으로 테스트한다(전역 os.name 은
-    # 더 이상 안 바뀐다). 그래도 pathlib 은 실행 시점 os.name 을 참조해 WindowsPath/PosixPath 를
-    # 고르므로, 이 함수는 그 선택 자체에 기대지 않도록 import 시 고정된 os.path 를 계속 쓴다.
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_rev.py")
-    mod = _load_module_from_path(
-        type(REPO)(path), "engine_rev.py", allow_unverified=True,
-    )
-    return tuple(mod.MIN_PYTHON)
-
-
-def _python_floor_probe_path() -> str:
-    """엔진 진입점과 같은 shebang을 가진 2.7-파싱 안전 하한 probe 경로."""
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "python_floor.py"
-    )
-
-
-def _interp_runs(cmd: str) -> bool:
-    """후보 인터프리터가 실행되고 엔진 Python 하한을 충족하는지 검증한다.
-
-    존재하지만 죽은 shim (Windows 의 비기능 `python3` WindowsApps 별칭 등) 을
-    `--version` rc 로 먼저 거른 뒤, 엔진과 같은 shebang의 2.7-파싱 안전 probe를
-    ``cmd <probe.py>``로 실행한다. 특히 Windows ``py``의 ``-c`` 기본 버전과 실제
-    스크립트 shebang 디스패치가 갈리는 창을 닫는다. 단, 부분/수동 복사본에 probe가
-    없으면 ``-c`` 인라인 검사로 degrade해 하한 자체는 계속 강제한다
-    시나리오). 짧은 timeout·예외 전부 흡수해 탐지가 절대 실패하지 않게 한다(fail-soft).
-    """
-    try:
-        r = subprocess.run([cmd, "--version"], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=5)
-        if r.returncode != 0:
-            return False
-        probe = _python_floor_probe_path()
-        if os.path.isfile(probe):
-            argv = [cmd, probe]
-        else:
-            major, minor = _minimum_python()
-            argv = [
-                cmd,
-                "-c",
-                "import sys; sys.exit(0 if sys.version_info >= "
-                f"({major}, {minor}) else 1)",
-            ]
-        r = subprocess.run(
-            argv,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-        )
-        return r.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _interp_version_label(cmd: str) -> str | None:
-    """실 스크립트 디스패치 버전을 loud 진단용 ``cmd=X.Y`` 형태로 읽는다."""
-    try:
-        probe = _python_floor_probe_path()
-        # probe가 없는 부분 사본은 _interp_runs와 같은 -c 디스패치에서 버전을 읽는다.
-        argv = [cmd, probe] if os.path.isfile(probe) else [
-            cmd, "-c", "import sys; print('Python %d.%d' % sys.version_info[:2])",
-        ]
-        r = subprocess.run(argv, capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=5)
-        output = f"{r.stdout}\n{r.stderr}"
-        match = re.search(r"\bPython\s+(\d+)\.(\d+)", output)
-        if match:
-            return f"{cmd}={match.group(1)}.{match.group(2)}"
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return None
-
-
-@functools.lru_cache(maxsize=1)
-def _detect_py() -> str:
-    """init 의 local.conf runtime.py= 기본값으로 쓸 bare 인터프리터 명령을 탐지한다.
-
-    Windows(`os.name == "nt"`) 는 `python` 을 1순위로 둔다 — **직접 인터프리터라 스크립트
-    shebang 을 무시**한다. 반면 `py` 런처는 `py board.py` 에서 `#!/usr/bin/env python3`
-    shebang 을 읽어 *엉뚱한* 버전으로 디스패치하므로(다중 버전 머신에서 deps 없는 Store
-    Python 으로 빠질 수 있음) `py -m pytest`(기본 버전)와 `py board.py`(shebang)가 갈린다.
-    `python <script>`·`python -m pytest` 는 같은 인터프리터로 일관된다. `py` 는 차선(런처),
-    `python3` 은 최후(흔히 비기능 WindowsApps 별칭·sh 훅서 Permission denied). POSIX 는
-    현행대로 `python3` 우선.
-
-    후보 순서: Windows = (python, py, python3), POSIX = (python3, python). 각 후보는
-    `shutil.which` 존재 **및** `_interp_runs` 실행검증을 모두 통과해야 채택된다 —
-    존재하지만 죽은 shim·Python 하한 미달을 건너뛴다. 아무 것도 통과 못 하면 loud 진단을
-    stderr 에 한 줄 남기고 `"python3"` 리터럴로 폴백한다(기존 fail-soft 계약 유지).
-    **bare 명령**을 반환한다(which 의 절대경로가 아니라) —
-    subprocess 가 PATH 해석하고, CLAUDE.md `{{PY}}` 표시에도 가독하다.
-    탐지는 후보마다 subprocess를 최대 세 번 실행하므로 프로세스 수명 동안 결과를 캐시한다.
-    """
-    candidates = ("python", "py", "python3") if process._probe_os_name() == "nt" else ("python3", "python")
-    probe_missing = not os.path.isfile(_python_floor_probe_path())
-    found: list[str] = []
-    for cand in candidates:
-        if not shutil.which(cand):
-            continue
-        if _interp_runs(cand):
-            return cand
-        label = _interp_version_label(cand)
-        if label:
-            found.append(label)
-    discovered = ", ".join(found) if found else "없음"
-    try:
-        major, minor = _minimum_python()
-        if probe_missing:
-            message = (
-                f"Python 하한 probe 부재 — 인라인 검사상 {major}.{minor}+ 필요, "
-                f"발견: {discovered}"
-            )
-        else:
-            message = f"Python {major}.{minor}+ 필요, 발견: {discovered}"
-    except Exception:
-        # 불완전/구형 사본에서 engine_rev 자체를 못 읽어도 탐지는 절대 크래시하지 않는다.
-        # 정상 배포에서는 단일 진실의 정확한 하한을 위 분기로 표시한다.
-        message = f"Python 지원 하한 확인 불가(engine_rev.py), 발견: {discovered}"
-    print(message, file=sys.stderr)
-    return "python3"
-
-
 # conf 예시 시드는 없다 — 키 목록·설명은 레지스트리 한 곳이 소유한다(`local_conf.py --keys`).
 # 파일이 자기 규칙("여기엔 실값만 둔다")을 스스로 어기지 않게, 엔진은 conf 에 주석 스키마를
 # 배달하지 않는다. 모르는 키는 `board.py lint` advisory 로 드러나므로 배달 경로가 필요 없다.
 
 
-def _ticket_touches(tid: str) -> list[str] | None:
-    """회귀 스코프용 티켓 touches — **canonical ID 정확 일치**만 · 확정 실패면 None.
-
-    조회 규칙은 강등 판정(`_gate_ticket`)과 같은 한 지점이다 — 판정은 정확 일치로 하고 스코프는
-    glob 첫 매칭으로 읽으면 두 표면이 서로 다른 티켓을 볼 수 있다(무관 touches 로 좁혀진 '가짜
-    green'). 티켓을 못 찾으면 빈 목록이고, 호출부는 그때 FULL 로 남긴다(좁히는 방향으로는 안
-    틀린다).
-
-    반환 None 은 **스코프를 확정하지 못했다**는 뜻이다 — 손상/비-매핑 frontmatter
-    (`load_ticket_soft` 규약으로 skip)와 형식 불명 touches(`_normalized_touches`)가 같은 축이고,
-    호출부는 둘 다 FULL 로 남긴다."""
-    found = _gate_ticket(tid)
-    if found is None:
-        return []
-    loaded = ticket_store.load_ticket_soft(_home(), found[1])
-    if loaded is None:
-        return None
-    return ticket_rules._normalized_touches(loaded[0].get("touches"))
-
-
-def _scope_args(touches: list[str]) -> str:
-    """touches → pytest -k 선택식 (파일 stem 기반). 비면 '' (스코프 없음 = full)."""
-    stems = sorted({Path(t).stem for t in touches
-                    if t.strip() and Path(t).stem not in ("", "__init__")})
-    return f'-k "{" or ".join(stems)}"' if stems else ""
-
-
-# ── 회귀 스테이징 (활성 리뷰 사이클 중 full → targeted 강등) ──────────────────
-# 리뷰 라운드마다 FULL 회귀를 도는 것이 라운드 비용의 세 번째 축이었다(실측: 라운드당 full).
-# 리뷰가 아직 닫히지 않은 티켓의 FULL 요청은 그 티켓 touches 로 강등한다 — 라운드 중에 필요한
-# 신호는 "내가 건드린 것이 깨졌나"고, 스위트 전체 green 은 **수렴 후 한 번**이면 된다.
-#
-# 판정 입력은 additional_reviewer 의 라운드 장부(`.local/review_rounds.json`)뿐이다. 스키마 소유는
-# additional_reviewer 이고 여기서는 **읽기만** 한다 — deep-import 하지 않는 이유는 방향이다:
-# additional_reviewer 가 board 를 로드하므로(`_load_board`) 역방향 로드는 순환이 된다.
-REVIEW_ROUNDS_LEDGER_NAME = "review_rounds.json"
-_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additional_reviewer WAVE_SECTION_KEY)
-
-
-def _review_rounds_ledger() -> Path:
-    """추가 리뷰 라운드 장부 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종)."""
-    return LOCAL_DIR / REVIEW_ROUNDS_LEDGER_NAME
-
-
-def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
-    """라운드 산출의 **예약 순번** 정렬 키 — 이 판정의 공용 seam (사본 금지).
-
-    append 순서는 *완료* 순서라 라운드 번호가 아니다(동시 라운드가 역순으로 끝나면 뒤바뀐다).
-    그래서 나열은 예약 순번(`sequence`)을 따른다.
-
-    **순번이 없는 구세대 기록은 신기록보다 앞(오래된 쪽)이다.** 뒤에 두면 업그레이드 후 새 통과가
-    쌓여도 옛 반려가 영원히 '최신'이 되어, 이미 닫힌 게이트가 계속 활성으로 읽히고(회귀 강등)
-    확인 전용 라운드 자격도 영구히 열린다. 구기록은 정의상 순번 도입 *이전* 이라 앞이 맞다 —
-    같은 축의 안정 정렬로 구기록끼리는 append 순서를 보존한다.
-
-    이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어의 조회 표·수렴 추이·확인 전용 라운드
-    자격) 공용 seam 으로 둔다 — 사본을 만들면 그 사본이 다시 뒤집힌 '최신'을 답한다.
-    """
-    sequence = outcome.get("sequence")
-    valid = isinstance(sequence, int) and not isinstance(sequence, bool)
-    return (valid, sequence if valid else 0)
-
-
-def gate_last_round(entry: dict) -> dict | None:
-    """게이트의 **마지막 라운드 산출** — 기록이 없으면 None (공용 seam·사본 금지).
-
-    "마지막이 어느 라운드인가"를 이 한 곳이 정한다 — append 순서가 아니라 예약 순번이다
-    (`round_outcome_order_key`). 이 판정을 세 표면이 쓴다: 회귀 강등의 최신 판정, 릴리즈 게이트의
-    잔여 must-fix, 처분 선언의 근거 게이트 통과 여부. 사본을 두면 그 사본이 서로 다른 라운드를
-    '최신'이라고 답한다. `rounds` 가 리스트가 아닌 손상 항목은 None 이다 — 이 seam 은 판정을
-    돌려줄 뿐이라 손상의 **처분**은 호출부가 정한다(회귀 강등은 fail-open·릴리즈는 fail-closed·
-    `gate_entry_corruption`)."""
-    rounds = entry.get("rounds")
-    if not isinstance(rounds, list):
-        return None
-    rounds = [row for row in rounds if isinstance(row, dict)]
-    if not rounds:
-        return None
-    return sorted(rounds, key=round_outcome_order_key)[-1]
-
-
-def _last_round_verdict(entry: dict) -> int | None:
-    """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
-
-    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `gate_last_round` —
-    additional_reviewer 조회 표와 같은 한 규칙)."""
-    outcome = gate_last_round(entry)
-    verdict = outcome.get("verdict") if outcome is not None else None
-    return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
-
-
-def gate_residual_must_fix(entry: dict) -> int | None:
-    """마지막 라운드가 남긴 must-fix 잔여 — 3-상태 (공용 seam).
-
-    반환은 `0`(잔여 없음) · `N>0`(N 건) · **`None`(미상)** 이다. 미상은 "호출은 됐는데 판정이
-    무효했다"(타임아웃·오염·섹션 부재로 셀 근거가 없던 라운드)이고, 그건 "잔여가 없다"가 아니라
-    **확인하지 못했다**이다 — 0 으로 접으면 판정 무효 라운드로 끝난 게이트에서 릴리즈 차단이
-    조용히 풀린다(실장부 실례). 형제 seam(additional_reviewer 의 수렴 판정)도 '미상'을 해소로 세지
-    않는 같은 규칙이다.
-
-    다만 **통과(rc 0)로 끝난 라운드의 미상은 비대상(0)** 이다 — 그쪽은 판정이 났고 must-fix 섹션이
-    없었을 뿐이라 반려 사실이 없다. suggestion 은 어느 경우에도 이 축에 들어오지 않는다(이월 허용).
-    """
-    outcome = gate_last_round(entry)
-    if outcome is None:
-        return 0
-    value = outcome.get("must_fix")
-    if isinstance(value, int) and not isinstance(value, bool):
-        return max(0, value)
-    return 0 if _last_round_verdict(entry) == 0 else None
-
-
-def gate_has_residual(entry: dict) -> bool:
-    """처분이 필요한 잔여가 있는가 — N>0 **또는 미상** (공용 seam).
-
-    릴리즈 차단과 처분 선언(`--resolve-gate`)이 이 한 술어를 공유한다. 두 표면이 갈리면 차단은
-    되는데 선언은 거부되는 데드락이 난다(미상 게이트가 정확히 그 형상이다)."""
-    residual = gate_residual_must_fix(entry)
-    return residual is None or residual > 0
-
-
-def gate_residual_label(entry: dict) -> str:
-    """잔여 표기 — `N건` / `미상(판정 무효 라운드)` (차단 사유·선언 응답 공용)."""
-    residual = gate_residual_must_fix(entry)
-    return "미상(판정 무효 라운드)" if residual is None else f"{residual}건"
-
-
-# ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
-# 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는가**를 장부에 남기는 절이다.
-# 쓰는 쪽은 additional_reviewer(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
-# 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다. 로드 방향이
-# additional_reviewer → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
-# 기계 확인 증거로 여는 게이트 처분 — 장부마다 `allow_pm_verified` 명시 시에만 인정된다(추가
-# 리뷰어 release 축이 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
-GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
 # `pm-verified` 재검증이 스코프하는 **리뷰 채널** — 게이트가 실린 장부가 곧 채널이다. 그 채널만
 # 본다(다른 채널의 accepted 잔여·기계 확인은 이 게이트의 증거가 아니다 — 채널 격리). role
 # 문자열의 단일 진실은 pm_delegate 라 사본을 두지 않고 재검증 시점에 해소한다
 # (`_pm_verified_channel_role`). code-reviewer 잔여는 장부가 아니라 리뷰 라운드 파일에서 판정한다
 # (`_review_completion_problem`).
 GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
-# 처분 표기 어휘 — 선언 응답(additional_reviewer)과 차단 사유(여기)가 같은 말을 쓰게.
-GATE_RESOLUTION_LABELS: dict[str, str] = {
-    GATE_RESOLUTION_PM_VERIFIED: "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)",
-}
-# 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
-_GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
-_MISSING_BINDING = object()   # `round_sequence` 키 부재와 명시 null(정상 값)을 구분하는 표식.
-
-
-def gate_entry_corruption(entry: object) -> str | None:
-    """게이트 항목이 **해석 가능한 형상**인지 — 아니면 사유 (정상이면 None·공용 seam).
-
-    "존재하는데 읽을 수 없음"은 "잔여 없음"이 아니다. 손상 형상마다 조용한 통과 조각이 생기는 것이
-    이 축의 실패 모드였다 — 비-dict 항목은 순회에서 건너뛰고, 문자열 `rounds` 는 '기록 없음'으로,
-    정수 `rounds` 는 예외로 갈렸다(각각 통과·통과·중단). 셋을 한 술어로 모아 호출부가 **한 처분**
-    (릴리즈 차단)으로 수렴시킨다."""
-    if not isinstance(entry, dict):
-        return f"게이트 항목 형식 오류({type(entry).__name__}) — 해석 불가"
-    rounds = entry.get("rounds")
-    if rounds is not None and not isinstance(rounds, list):
-        return f"`rounds` 형식 오류({type(rounds).__name__}) — 라운드 이력 해석 불가"
-    if isinstance(rounds, list) and any(not isinstance(row, dict) for row in rounds):
-        return "`rounds` 에 매핑이 아닌 원소 — 라운드 이력 해석 불가"
-    resolution = entry.get("resolution")
-    if resolution is not None and not isinstance(resolution, dict):
-        return f"`resolution` 형식 오류({type(resolution).__name__}) — 처분 선언 해석 불가"
-    return None
-
-
-def gate_round_binding(entry: dict) -> dict:
-    """게이트의 **현재 라운드 좌표** — `{round_sequence, rounds}` (선언·검증 공용 seam).
-
-    처분은 "그때 그 잔여"에 대한 선언이다. 좌표 없이 게이트 단위로만 남기면 처분 뒤에 새 반려
-    라운드가 와도 옛 선언이 잔여를 계속 지운다(처분의 무기한 유효화). 좌표는 둘을 함께 본다 —
-    마지막 라운드의 예약 순번(정렬 좌표)과 산출 수. 순번 없는 구세대 산출만 있는 장부에서도
-    산출 수가 증가를 잡는다."""
-    rounds = entry.get("rounds")
-    rounds = [row for row in rounds if isinstance(row, dict)] if isinstance(rounds, list) else []
-    last = gate_last_round(entry)
-    sequence = last.get("sequence") if last is not None else None
-    if isinstance(sequence, bool) or not isinstance(sequence, int):
-        sequence = None
-    return {"round_sequence": sequence, "rounds": len(rounds)}
-
-
-def gate_resolution(entry: dict) -> dict | None:
-    """게이트 처분 선언의 해석 — 미선언·형식 불명이면 None(=미처분·공용 seam).
-
-    읽을 수 없는 값은 처분이 아니다(fail-closed) — 손상된 한 줄이 릴리즈 차단을 **여는** 방향으로
-    작동하면 그 게이트는 기계가 아니다. 라운드 좌표(`round_sequence`·`rounds`)도 같은 축이다:
-    좌표 없는 선언은 어느 잔여를 처분했는지 확인할 수 없으므로 처분으로 인정하지 않는다.
-    반환은 정규화된 `{kind, round_sequence, rounds, ts?}` 사본이다. 폐지 kind는 None으로
-    읽혀 잔여 게이트를 그대로 차단한다.
-    """
-    raw = entry.get("resolution")
-    if not isinstance(raw, dict):
-        return None
-    kind = raw.get("kind")
-    if kind != GATE_RESOLUTION_PM_VERIFIED:
-        return None
-    sequence = raw.get("round_sequence", _MISSING_BINDING)
-    count = raw.get("rounds")
-    if sequence is _MISSING_BINDING:
-        return None                      # 좌표 없는 선언 — 어느 잔여를 처분했는지 확인 불가.
-    if sequence is not None and (isinstance(sequence, bool) or not isinstance(sequence, int)):
-        return None
-    if isinstance(count, bool) or not isinstance(count, int):
-        return None
-    declared = {
-        "kind": kind,
-        "round_sequence": sequence,
-        "rounds": count,
-    }
-    ts = raw.get("ts")
-    if isinstance(ts, str) and ts.strip():
-        declared["ts"] = ts.strip()
-    return declared
 
 
 _UTC_ISO_RE = re.compile(
@@ -5426,1457 +4447,6 @@ def _parse_utc_iso(value: object) -> datetime.datetime | None:
     return parsed if parsed.utcoffset() == datetime.timedelta(0) else None
 
 
-def gate_resolution_is_stale(entry: dict, declared: dict) -> bool:
-    """처분이 결속한 라운드 좌표가 **지금 장부와 다른가** (다르면 미처분 취급·공용 seam).
-
-    선언 이후 새 라운드가 기록됐다면 그 잔여는 처분되지 않은 새 사실이다. 좌표가 뒤로 간 경우
-    (장부 손편집)도 같은 처분이다 — 어느 쪽이든 선언이 가리키던 상태가 아니다."""
-    current = gate_round_binding(entry)
-    return any(current[key] != declared.get(key) for key in _GATE_RESOLUTION_BINDING_KEYS)
-
-
-def _gate_ticket(gate: str) -> tuple[str, Path] | None:
-    """게이트 이름이 가리키는 티켓의 (status, path) — **canonical ID 정확 일치**만 (아니면 None).
-
-    게이트 이름은 자유 문자열이 실사용이다(장부 실측 `wave4-b1`). 그 문자열을 그대로 조회에
-    넘기면 두 가지가 샌다:
-
-      (a) `{이름}-*.md` **prefix glob 의 첫 매칭**은 legacy ID(`T-NNNN`)를 같은 번호로 시작하는
-         prefixed 티켓(`T-NNNN-001-<slug>.md`)에 오인 매칭시킨다 — 무관한 티켓의 touches 로 FULL
-         회귀가 targeted 강등되면 그 실행은 '가짜 green'이다. 그래서 조회는 공용 정확-일치
-         seam(`find_ticket_exact`)만 쓴다(폴백 없음 — 여긴 못 찾으면 FULL 이 안전한 축이다).
-      (b) 애초에 티켓 ID 문법(`_is_valid_ticket_id`)이 아닌 라벨은 조회 자체를 생략한다 — glob
-         메타(`*`·`?`·`[`)가 든 이름이 보드를 훑는 것도, 없는 티켓을 매번 찾는 것도 뜻이 없다.
-    """
-    if not ticket_rules._is_valid_ticket_id(gate):
-        return None
-    try:
-        return ticket_store.find_ticket_exact(_home(), gate)
-    except OSError:
-        return None
-
-
-def _gate_ticket_is_claimed(gate: str) -> bool:
-    """그 게이트 이름이 **현재 claimed 인 티켓**인가 (아니면·못 찾으면 False).
-
-    라운드 장부는 append-only 라 자체 마감 이벤트가 없다 — 반려로 끝난 라운드는 티켓이 done 이
-    된 뒤에도 장부에 그대로 남는다(실측: 마감된 티켓 10건이 '활성'). 마감 신호를 장부에 새로
-    쓰는 대신 **이미 있는 데이터**(보드 티켓 status)를 대조한다: 리뷰 사이클은 그 티켓이 작업 중
-    (claimed)일 때만 살아 있고, done/open/blocked/draft 는 정의상 라운드를 더 돌지 않는다.
-    """
-    found = _gate_ticket(gate)
-    return found is not None and found[0] == "claimed"
-
-
-def _active_review_gates() -> list[str]:
-    """리뷰 사이클이 아직 안 닫힌 게이트 이름 (장부 부재/손상이면 빈 목록·fail-soft).
-
-    **미마감 = (그 티켓이 현재 claimed) ∧ (마지막 라운드가 통과 rc 0 이 아님).** 두 조건을 함께
-    쓰는 이유는 각자 못 잡는 게 있어서다: 장부만 보면 done 티켓의 옛 반려가 영원히 강등을 유발하고
-    (마감 이벤트 부재), status 만 보면 이미 수렴한 claimed 티켓까지 좁힌다. 장부를 못 읽거나 티켓을
-    못 찾으면 강등하지 않는다 — 이 축의 실패가 회귀 게이트를 좁히면 안 된다(fail-open 이 안전한
-    방향이다)."""
-    try:
-        data = json.loads(fs.read_text_shared(_review_rounds_ledger(), encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeError):
-        return []
-    if not isinstance(data, dict):
-        return []
-    active: list[str] = []
-    for gate, entry in sorted(data.items()):
-        if gate == _REVIEW_LEDGER_WAVE_KEY or not isinstance(entry, dict):
-            continue
-        verdict = _last_round_verdict(entry)
-        if verdict is not None and verdict != 0 and _gate_ticket_is_claimed(gate):
-            active.append(gate)
-    return active
-
-
-def _downgrade_cancelled(gate: str, reason: str) -> tuple[list[str], list[str]]:
-    """강등 전체 취소 — 미해소 게이트를 식별하는 사유 1줄 + 빈 결과(호출부가 FULL 로 남긴다)."""
-    print(f"regression: 게이트 {gate} 의 {reason} — 활성 리뷰 사이클 강등을 취소하고 FULL 로 "
-          "실행합니다 (부분 강등은 미해소 게이트 범위를 한 번도 돌지 않는 '가짜 green').",
-          file=sys.stderr)
-    return [], []
-
-
-def _review_cycle_downgrade() -> tuple[list[str], list[str]]:
-    """활성 리뷰 사이클의 (게이트 목록, 그 티켓들의 touches 합집합).
-
-    touches 를 못 얻으면(자유 문자열 게이트·ticket 부재) 강등하지 않는다 — 스코프를 모르는 채
-    좁히면 아무 테스트도 안 도는 '가짜 green'이 된다.
-
-    **확정은 전-게이트 단위다** — 활성 게이트 중 하나라도 스코프를 확정하지 못하면 나머지
-    touches 로 부분 강등하지 않고 강등 자체를 취소한다. 부분 강등은 미해소 게이트가 건드린
-    범위를 한 번도 돌지 않은 실행에 rc0 을 주는데, 그 green 은 활성 게이트 **전부**에 대한
-    통과로 읽힌다(false-green). 확정 실패는 세 가지고 전부 같은 취급이다: 읽기/파싱 실패(손상
-    frontmatter)·빈 touches(선언 없음)·티켓 미해소(`_ticket_touches` 가 빈 목록).
-    손상 티켓 한 건이 `regression run` 을 크래시시키지는 않는다 — 사유 1줄을 내고 FULL 로
-    진행한다(넓히는 방향이라 안전하다)."""
-    gates: list[str] = []
-    touches: list[str] = []
-    for gate in _active_review_gates():
-        try:
-            gate_touches = _ticket_touches(gate)
-        except Exception as exc:  # noqa: BLE001 — 손상 티켓 1건이 회귀 실행을 막지 않는다.
-            return _downgrade_cancelled(
-                gate, f"touches 를 읽지 못했습니다 ({type(exc).__name__}: {exc})")
-        if gate_touches is None:
-            return _downgrade_cancelled(
-                gate, "touches 형식을 확정하지 못했습니다 (리스트[str] 아님·손상 frontmatter)")
-        if not gate_touches:
-            return _downgrade_cancelled(
-                gate, "touches 를 확정하지 못했습니다 (빈 선언·티켓 미해소)")
-        gates.append(gate)
-        for touch in gate_touches:
-            if touch not in touches:
-                touches.append(touch)
-    return (gates, touches) if touches else ([], [])
-
-
-def _quarantine_args() -> str:
-    """quarantine.txt(있으면)의 test node id 를 --deselect 로. flaky 격리 (full 게이트 보호)."""
-    q = REPO / ".project_manager" / "quarantine.txt"
-    if not q.exists():
-        return ""
-    ids = [ln.strip() for ln in fs.read_text_shared(q, encoding="utf-8").splitlines()
-           if ln.strip() and not ln.startswith("#")]
-    return " ".join(f"--deselect {i}" for i in ids)
-
-
-# ── FULL 게이트 수집 증감 (직전 기록 대비 · 막지 않는다) ─────────────────
-# 채택자가 선언하던 수집 하한은 폐지했다 — 스위트 규모의 함수라 선언값이
-# 실측의 절반에 머물러 스위트 절반이 사라져도 통과했다(느슨한 안심). 대신 직전 회귀 기록의
-# 수집수와 이번 수집수의 증감을 회귀 줄에 함께 낸다. 변화율이 `COLLECTION_DELTA_ALERT_PCT`
-# 이상이면 눈에 띄게 표시하되 **rc 는 바꾸지 않는다** — 적절한 변경인지는 사람이 판단한다.
-# rc5(수집 0)는 그대로 red 다(하한이 아니라 "테스트가 한 개도 안 돌았다"는 별개 사실).
-COLLECTION_DELTA_ALERT_PCT = 0.01          # 이 비율 이상이면 증감 문장에 경고 표기를 단다.
-# 선언 platform aggregate 는 "수집수는 정수" 라는 저장 계약을 갖는다 — 그 검증 불가는 여전히
-# 전용 라벨의 fail 이다(하한과 무관한 축이라 증감 전환 뒤에도 남는다).
-REGRESSION_RC_UNVERIFIED_COLLECTION = "unverified-collection"  # 수집수를 못 읽어 검증 불가
-
-
-# ── pytest 요약행 파서 (엔진 공용 seam) ────────────────────────────────────
-# 요약행은 **끝에서부터** 줄 단위로 찾는다. 캡처된 pytest 출력에는 테스트 자신이 찍은
-# `3 passed` 류 로그가 섞이고, 출력 전체를 `re.search` 하면 그 로그를 요약으로 오판한다.
-# 도구마다 복제돼 있던 첫-매칭 파서를 여기로 승격했다 — 수집 증감 표시·릴리즈 라이브 게이트
-# (이 파일)·부트스트랩 회귀 dump·ticket 마감 회귀 판정·핸드오프 회귀 1줄이 모두 이 seam 을
-# 쓴다. 다른 도구는 각자 이미 가진 board 형제 로더로 읽는다 — **로컬 사본 금지**(사본은
-# 첫-매칭 오판을 그대로 되살린다).
-#
-# 오염은 **양방향**이다: 요약 *앞* 로그는 끝에서-탐색이, 요약 *뒤* 로그(소비처 넷은 stdout+
-# stderr 를 병합해 먹인다 — 자식 하네스의 stderr 한 줄이 꼬리에 붙는다)는 요약행 문법 완전
-# 일치가 막는다. 두 축 모두 이 seam 안에 있어 소비처가 자동 상속한다.
-
-# pytest 요약행 outcome 종류 — 실행 수 = 이 값들의 합. `deselected`(quarantine `--deselect`·
-# 마커 필터)는 *돌지 않은* 수라 세지 않는다. `xfailed`/`xpassed` 는 패턴이 `<수> <종류>` 라
-# `failed`/`passed` 에 겹쳐 잡히지 않는다(각자 독립 카운트).
-_PYTEST_OUTCOME_KINDS = ("passed", "failed", "errors?", "skipped", "xfailed", "xpassed")
-
-
-def _pytest_outcome_match(line: str, kind: str) -> re.Match[str] | None:
-    """요약행에서 outcome 한 종류(`N passed`)의 정규식 매치 — 없으면 None.
-
-    `kind` 는 pytest 표기 그대로의 패턴 조각이라 단/복수 겸용(`errors?`)도 그대로 받는다.
-    이 한 지점이 outcome 표기의 단일 정의다(카운트·요약 문자열 절단이 함께 쓴다).
-    """
-    return re.search(rf"(\d+) {kind}\b", line or "")
-
-
-def _pytest_outcome_count(line: str, kind: str) -> int | None:
-    """요약행에서 outcome 한 종류의 수 — 그 종류가 없으면 None(수 0 과 구분)."""
-    match = _pytest_outcome_match(line, kind)
-    return int(match.group(1)) if match else None
-
-
-def _pytest_outcome_counts(line: str,
-                           kinds: tuple[str, ...] = _PYTEST_OUTCOME_KINDS) -> list[int]:
-    """한 줄에서 pytest outcome 카운트를 뽑는다 (`7577 passed, 12 skipped …` → [7577, 12]).
-
-    `kinds` 로 셀 종류를 좁힌다 — 소비처마다 *무엇을 실행으로 보는지* 가 다르다(수집 증감 표시는
-    6종 전부·릴리즈 라이브 게이트는 마커 안에서 돈 3종).
-    """
-    counts: list[int] = []
-    for kind in kinds:
-        count = _pytest_outcome_count(line, kind)
-        if count is not None:
-            counts.append(count)
-    return counts
-
-
-# 요약행 **전체 문법** — outcome 목록 + `in <소요시간>` 종결. 끝에서-탐색만으로는 부족하다:
-# 실제 요약 *뒤에* wrapper/자식 하네스가 `child harness: 5 passed in 1.00s` 류를 찍으면(소비처는
-# stdout+stderr 병합 출력을 먹인다) 그게 마지막 카운트 줄이라 요약으로 뽑혀 증감·릴리즈 pin 이
-# 우회된다. 실측된 그 오염 줄은 `in X.XXs` 종결까지 갖췄으므로 **줄머리 앵커가 필수**다 — 판정을
-# "카운트를 포함한다"가 아니라 "요약행 문법에 완전히 일치한다"로 세운다. 허용 형태: 구분선
-# 장식(`==== … ====`)·긴 실행의 `(0:06:28)` 꼬리·구 pytest 의 `in 0.30 seconds`.
-_PYTEST_SUMMARY_ITEM = r"\d+ [a-z]+"
-_PYTEST_SUMMARY_RE = re.compile(
-    r"^=*\s*"                                                       # 선택적 구분선
-    rf"{_PYTEST_SUMMARY_ITEM}(?:\s*,\s*{_PYTEST_SUMMARY_ITEM})*"    # `N kind`(, `N kind`)*
-    r"\s+in\s+\d+(?:\.\d+)?\s*(?:s|seconds?)"                       # 소요시간 종결 앵커
-    r"(?:\s*\(\d+:\d{2}:\d{2}\))?"                                  # 긴 실행 `(0:06:28)`
-    r"\s*=*\s*$"
-)
-# 색 출력(`--color=yes`·`PY_COLORS=1`)은 요약행에 ANSI 를 섞는다 — 문법 판정 전에 걷어낸다
-# (안 걷으면 정상 요약이 문법 불일치로 떨어져 `unverified-collection` false-RED 가 된다).
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-
-
-def _is_pytest_summary_line(line: str) -> bool:
-    """그 줄이 pytest 요약행 문법에 **완전히** 일치하나 (카운트 포함 여부가 아니다)."""
-    return bool(_PYTEST_SUMMARY_RE.match(_ANSI_ESCAPE_RE.sub("", line or "").strip()))
-
-
-def _pytest_summary_line(output: str) -> str | None:
-    """pytest 출력의 요약행 — **끝에서부터** 첫 *요약행 문법* 줄 (없으면 None).
-
-    두 겹으로 거른다:
-      1. **끝에서-탐색** — 캡처 출력에는 테스트/자식 러너가 찍은 `3 passed` 류 로그가 섞이고,
-         앞에서부터 찾으면 그 로그를 요약으로 오판한다.
-      2. **문법 완전 일치**(`_is_pytest_summary_line`) — 실제 요약 *뒤에* 오는 wrapper 로그
-         (`[post] 8000 passed in 900s`)까지 끝에서-탐색이 집어삼키는 구멍을 닫는다. 카운트
-         나열 + `in <초>s` 종결이라는 요약행 고유 형태를 만족해야 한다.
-    """
-    for line in reversed((output or "").splitlines()):
-        if _is_pytest_summary_line(line) and _pytest_outcome_counts(line):
-            return line.strip()
-    return None
-
-
-def _collected_count(output: str) -> int | None:
-    """pytest 요약행에서 *실제 실행된* 테스트 수를 센다 (파싱 실패 시 None).
-
-    N = passed + failed + error(s) + skipped + xfailed + xpassed. 요약행이 없으면
-    (수집 0 "no tests ran"·비-pytest test_cmd) None — 그때는 증감 문장이 비고 판정은
-    현행 rc 신호에 맡긴다(fail-soft).
-    """
-    line = _pytest_summary_line(output)
-    if line is None:
-        return None
-    return sum(_pytest_outcome_counts(line))
-
-
-def _pytest_summary_tail(output: str) -> str | None:
-    """요약행의 `N passed` 부터 줄 끝까지 (요약행/그 표기가 없으면 None).
-
-    사람이 읽는 회귀 1줄 표기(인계 프롬프트·log entry)가 소비한다 — 줄 전체가 아니라 카운트
-    지점부터 잘라 쓰던 표기를 보존하되, 자를 대상 줄은 끝에서-탐색으로 고른다.
-    """
-    line = _pytest_summary_line(output)
-    if line is None:
-        return None
-    match = _pytest_outcome_match(line, "passed")
-    return line[match.start():].strip() if match else None
-
-
-def collection_delta_text(collected: int | None, previous: int | None) -> str:
-    """직전 회귀 기록 대비 수집수 증감 문장 — ` (직전 N · +D[ · P% ⚠])` (비교 불가면 빈 문자열).
-
-    막는 판정이 아니라 표시다. 스위트가 갑자기 줄었는지(수집 경로 파손·대량 skip) 늘었는지를
-    회귀 줄에서 바로 보고 사람이 판단한다 — 어떤 증감도 rc 를 바꾸지 않는다.
-
-    둘 중 하나라도 정수가 아니면(첫 실행·기록 손상·수집수 파싱 실패) 빈 문자열이다. 증감을
-    지어내지 않는다. 직전이 0 이면 비율을 내지 않고 차이만 낸다(0 나눗셈 금지). 변화율이
-    `COLLECTION_DELTA_ALERT_PCT` 이상이면 비율과 경고 표기를 덧붙인다.
-    """
-    if not isinstance(collected, int) or isinstance(collected, bool):
-        return ""
-    if not isinstance(previous, int) or isinstance(previous, bool):
-        return ""
-    diff = collected - previous
-    body = f" (직전 {previous} · {diff:+d}"
-    if previous and abs(diff) / previous >= COLLECTION_DELTA_ALERT_PCT:
-        return body + f" · {abs(diff) / previous * 100:.1f}% ⚠)"
-    return body + ")"
-
-
-def _write_regression_flag(flag: Path, record: dict) -> None:
-    """회귀 기록의 **단일 쓰기 지점** — 직전 수집수를 이어 붙이고 원자로 교체한다.
-
-    run 경로(단일-슬롯·M>1 슬롯·platform 유무·실패 조기반환)마다 dict 리터럴을 따로 쓰던 아홉
-    자리를 여기로 모았다. 승계 규칙이 한 자리에만 있어야 경로마다 기준점이 갈리지 않는다.
-
-    승계는 직전 기록의 `collected`(정수일 때)이고, 직전이 정수를 못 담았으면(실패 기록·파싱
-    실패) 그 기록의 `previous_collected` 를 그대로 잇는다 — 안 그러면 실패 한 번에 기준점이
-    영구히 사라진다. 어느 쪽도 없으면 None 이다(0 으로 지어내지 않는다).
-
-    `previous_collected` 는 **항상** 실린다(값이 None 이어도 키는 있다) — platform aggregate 의
-    스키마 완전일치 검사가 키 집합을 그대로 대조한다. `record` 는 제자리에서 갱신되므로
-    호출부가 승계값을 그대로 읽어 증감 문장에 쓴다.
-    """
-    record["previous_collected"] = _previous_collected(flag)
-    flag.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(flag, record)
-
-
-def _previous_collected(flag: Path) -> int | None:
-    """덮어쓰기 전 기록에서 이어받을 수집수 (없거나 손상이면 None)."""
-    try:
-        data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    carried = _flag_collected(data)
-    if carried is not None:
-        return carried
-    inherited = data.get("previous_collected")
-    return inherited if isinstance(inherited, int) and not isinstance(inherited, bool) else None
-
-
-def _flag_conf_anchor(data: dict, fallback: str | None) -> str | None:
-    """플래그에 기록된 **conf 앵커**(실행 당시 cwd) — 미기록/손상이면 `fallback`.
-
-    선언(test_cmd·platform 목록)은 *실행 트리* 의 것이다. `run --cwd <tree>` 로 핀해 돈 결과를
-    pre-push 훅이 `check`(훅은 `--cwd` 를 못 넘긴다)로 검증할 때 check 가 **자기** cwd 로
-    선언을 재해소하면 실행 때와 다른 local.conf 를 읽는다(false-green/false-RED). 그래서 run 이
-    앵커를 기록하고 check 는 그 앵커로 해소한다. 미기록(옛 플래그)은 호출부 해소값으로 폴백.
-    """
-    anchor = data.get("conf_anchor")
-    return anchor if isinstance(anchor, str) and anchor else fallback
-
-
-def _flag_collected(data: dict) -> int | None:
-    """플래그의 `collected` 를 정수로 정규화 — 손상값(문자열·리스트·bool)은 None.
-
-    None 은 "수집수 모름" 이다 — 증감 문장이 비고(지어내지 않는다) 선언 platform aggregate
-    에서는 검증 불가로 fail 이 된다. 정규화 없이 손상값이 산술에 들어가면 TypeError 로
-    **게이트 자체가 죽는다** — 장부 손상이 회귀 해소를 깨면 안 된다는 fail-soft 규율과 같은 축이다.
-    """
-    value = data.get("collected")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _flag_blocks_push(data: dict) -> bool:
-    """이 기록이 push 를 막는 상태인가 — fail 기록(RED).
-
-    `check` 의 차단 갈래와 **같은 판정 프리미티브**를 쓴다(판정 두 벌 금지). HEAD 불일치는
-    여기 없다 — 그건 커밋마다 생기는 정상 재실행 사유다.
-    """
-    return data.get("status") != "pass"
-
-
-def _inherit_flag_anchor(default_cwd: str, flag: Path | None = None) -> str:
-    """차단 기록이 있으면 그 기록의 conf 앵커를 이어받는다 — 없으면 `default_cwd`.
-
-    pre-push 훅은 `check || run` 이고 `--cwd` 를 못 넘긴다. 앵커 A(핀된 트리)의 기록으로
-    check 가 RED/stale 을 냈는데 이어지는 재실행이 기본 트리 B 에서 돌면, **B 의 green 이 A 의
-    차단 기록을 덮어** 그대로 push 된다(게이트 우회). 그래서 차단 기록의 재실행은 그 기록이
-    가리키는 트리에서 돈다.
-
-    **HEAD-stale 은 이어받지 않는다** — 커밋마다 생기는 정상 재실행이라 여기서 이어받으면
-    릴리즈 때 한 번 쓴 `--cwd <readonly>` 핀이 이후 모든 훅 재실행에 눌러붙는다(그 트리는
-    현 작업 커밋이 아니다). 앵커 디렉토리가 사라졌으면(worktree 정리) 기본 해소로 돌아간다.
-    """
-    flag = flag or REGRESSION_FLAG
-    if not flag.exists():
-        return default_cwd
-    try:
-        data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return default_cwd
-    if not isinstance(data, dict):
-        return default_cwd
-    anchor = _flag_conf_anchor(data, None)
-    if not anchor or os.path.abspath(anchor) == default_cwd:
-        return default_cwd
-    if not _flag_blocks_push(data):
-        return default_cwd
-    if not Path(anchor).is_dir():
-        print(f"regression: 직전 차단 기록의 앵커({anchor})가 없어 기본 트리에서 재실행 — "
-              "그 기록은 이 실행 결과로 덮인다.", file=sys.stderr)
-        return default_cwd
-    print(f"regression: 직전 차단 기록의 앵커를 이어받아 실행 → {anchor} "
-          "(다른 트리 green 으로 덮이는 게이트 우회 차단)")
-    return os.path.abspath(anchor)
-
-
-def _require_collected_count(rc: int, status: str, collected: int | None, *,
-                             require_collected: bool = False,
-                             ) -> tuple[str, int | str, str]:
-    """선언 platform aggregate 의 "수집수는 정수" 저장 계약 — `(status, 기록 rc, 진단 note)`.
-
-    선언 platform 은 cell 마다 수집수를 대조하므로 core 수집수를 못 읽으면 그 대조가 통째로
-    성립하지 않는다. 그래서 rc0 이라도 파싱 실패면 `fail`(`unverified-collection`)로 기록한다 —
-    경고만 내고 pass 로 기록하면 검증하지 못한 결과가 push 를 통과한다. 비-pytest `test_cmd`
-    (요약행 규약 밖)로 platform 을 쓰려면 요약행 호환 러너가 필요하다(remedy 를 메시지에 싣는다).
-
-    platform 미선언이면 no-op 이다 — 수집수는 증감 표시에만 쓰이고 아무것도 막지 않는다.
-    """
-    if rc != 0 or not require_collected or collected is not None:
-        return status, rc, ""
-    return ("fail", REGRESSION_RC_UNVERIFIED_COLLECTION,
-            " · 수집수 파싱 실패 — 선언 platform aggregate 검증 불가"
-            "(요약행 호환 test_cmd 필요)")
-
-
-def _tee_stream(stream, echo: Callable[[str], None]) -> str:
-    """자식 스트림을 줄 단위로 **실시간 echo 하면서 동시에** 전체를 모아 돌려준다.
-
-    수집 증감 표시는 pytest 요약행을 읽어야 해서 출력을 버퍼에 담아야 하는데, 캡처만 하면
-    `git push` 회귀(pre-push 훅)가 수 분 동안 **완전 무출력**으로 멈춰 있는 것처럼 보인다
-    (실측 367s). tee 로 진행을 그대로 흘리면서 파싱용 버퍼를 유지해 둘 다 만족한다.
-    스트림 미개방(None)은 빈 문자열.
-    """
-    if stream is None:
-        return ""
-    chunks: list[str] = []
-    for line in stream:
-        chunks.append(line)
-        echo(line)
-    return "".join(chunks)
-
-
-def _run_regression_cmd(cmd: str, cwd: str,
-                        env: dict[str, str]) -> tuple[int, str, str]:
-    """회귀 test_cmd 를 실행하고 `(rc, stdout, stderr)` 를 돌려준다 — run 두 경로 공용 단일 지점.
-
-    출력을 버퍼에 담는 이유는 수집 증감 표시가 pytest 요약행을 읽어야 하기 때문이다(별도
-    `--co -q` 재실행 대신 *이미 돈* 실행의 요약을 쓴다·자식 1회). 동시에 `_tee_stream` 으로
-    실시간 echo 해 캡처 이전의 가시성을 그대로 유지한다(무출력 대기 근절).
-
-    **두 스트림을 분리해 돌려준다** — 요약행 파싱은 **stdout 단독**이어야 한다. pytest 요약은
-    stdout 에만 나오므로, stderr 에 섞인 로그(`3 passed …`)를 합치면 그게 "마지막 요약행"으로
-    뽑혀 수집수가 오염된다(false-green/false-RED 양방향). 재출력·진단은 두 스트림 모두 쓴다.
-    스트림 읽기는 스레드 2개로 동시에 — 한쪽만 읽으면 파이프가 차서 자식이 멈춘다(교착).
-    """
-    proc = subprocess.Popen(cmd, shell=True, cwd=cwd, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace")
-    captured: dict[str, str] = {}
-
-    def _pump(name: str, stream, echo: Callable[[str], None]) -> None:
-        captured[name] = _tee_stream(stream, echo)
-
-    pumps = [
-        threading.Thread(target=_pump, daemon=True, args=(
-            "stdout", proc.stdout, lambda line: print(line, end="", flush=True))),
-        threading.Thread(target=_pump, daemon=True, args=(
-            "stderr", proc.stderr, lambda line: print(line, end="", flush=True,
-                                                      file=sys.stderr))),
-    ]
-    for pump in pumps:
-        pump.start()
-    rc = proc.wait()
-    for pump in pumps:
-        pump.join()
-    return rc, captured.get("stdout", ""), captured.get("stderr", "")
-
-
-PM_QA_RESULT_PREFIX = "PM_QA_RESULT_V1="
-_PLATFORM_CELL_KEYS = {
-    "name", "command", "head", "status", "rc", "collected", "ts",
-}
-_PLATFORM_REGRESSION_KEYS = {
-    "head", "status", "rc", "scope", "collected", "previous_collected",
-    "conf_anchor", "ts", "platforms",
-}
-_PLATFORM_LIVEGATE_KEYS = {
-    "head", "status", "n", "rc", "scope", "collected", "previous_collected",
-    "conf_anchor", "ts", "platforms",
-}
-
-
-class PlatformConfigError(RuntimeError):
-    """platform local.conf를 판독·검증할 수 없음 — CLI 경계에서 한 줄 fail-closed로 번역."""
-
-
-def _platform_test_commands(cwd: str) -> tuple[tuple[str, str], ...]:
-    """그 실행 트리의 선언 platform command를 공용 local.conf seam으로 해소한다."""
-    try:
-        values = conf_store.local_config(_home(), Path(cwd))
-        return conf_schema.platform_test_commands(values)
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise PlatformConfigError(str(exc)) from exc
-    except RuntimeError as exc:
-        # 구표기 키는 공용 로더의 RuntimeError 서브클래스다. 엔진 rev skew 등 다른
-        # RuntimeError까지 사용자 설정 오류로 축약하면 복구 진단을 잃으므로 정확한 클래스만 번역한다.
-        if _is_engine_rev_skew(exc):
-            raise
-        if type(exc).__name__ != "LegacyConfKeyError":
-            raise
-        raise PlatformConfigError(str(exc)) from exc
-
-
-def _platform_marker(stdout: str) -> tuple[dict | None, str | None]:
-    """stdout의 exact versioned marker 하나를 파싱한다. 없거나 복수/손상이면 사유를 돌린다."""
-    markers = [line for line in (stdout or "").splitlines()
-               if line.startswith(PM_QA_RESULT_PREFIX)]
-    if len(markers) != 1:
-        return None, f"marker count={len(markers)} (exactly 1 required)"
-    def reject_duplicate_members(pairs):
-        payload = {}
-        for key, value in pairs:
-            if key in payload:
-                raise ValueError(f"duplicate member: {key}")
-            payload[key] = value
-        return payload
-
-    try:
-        payload = json.loads(
-            markers[0][len(PM_QA_RESULT_PREFIX):],
-            object_pairs_hook=reject_duplicate_members,
-        )
-    except (json.JSONDecodeError, ValueError) as exc:
-        message = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
-        return None, f"marker JSON invalid: {message}"
-    if not isinstance(payload, dict):
-        return None, "marker payload is not an object"
-    expected = {"platform", "head", "status", "collected"}
-    if set(payload) != expected:
-        return None, f"marker key set mismatch: {sorted(payload)}"
-    return payload, None
-
-
-def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
-                        expected_head: str,
-                        env: dict[str, str], *, core_passed: bool,
-                        head_after_core: str) -> tuple[list[dict], bool, int | str]:
-    """선언 platform을 순서대로 실행하고 ordered record cell과 aggregate 판정을 돌린다."""
-    cells: list[dict] = []
-    aggregate_pass = core_passed and bool(expected_head) and head_after_core == expected_head
-    aggregate_rc: int | str = 0
-    if not aggregate_pass:
-        reason = "core-red" if not core_passed else "head-drift"
-        for name, command in commands:
-            cells.append({
-                "name": name, "command": command, "head": expected_head,
-                "status": "not-run", "rc": reason, "collected": None,
-                "ts": now_utc(),
-            })
-            print(f"regression platform[{name}]: not-run (rc={reason})")
-        return cells, False, reason
-
-    for index, (name, command) in enumerate(commands):
-        print(f"regression platform[{name}]: $ {command}  (cwd={cwd})")
-        cell_env = {
-            **env,
-            "PM_QA_PLATFORM": name,
-            "PM_QA_EXPECTED_HEAD": expected_head,
-        }
-        rc, stdout, _stderr = _run_regression_cmd(command, cwd, cell_env)
-        payload, marker_problem = _platform_marker(stdout)
-        host_head = git._git_head_at(cwd)
-        collected = payload.get("collected") if payload is not None else None
-        valid_collected = (
-            isinstance(collected, int) and not isinstance(collected, bool)
-            and collected > 0
-        )
-        passed = (
-            aggregate_pass and rc == 0 and marker_problem is None
-            and payload.get("platform") == name
-            and payload.get("head") == expected_head
-            and payload.get("status") == "pass"
-            and valid_collected
-            and host_head == expected_head
-        )
-        if passed:
-            recorded_rc: int | str = 0
-            status = "pass"
-            note = ""
-        else:
-            status = "fail"
-            if rc != 0:
-                recorded_rc = rc
-                note = f"command rc={rc}"
-            elif host_head != expected_head:
-                recorded_rc = "head-drift"
-                note = f"host HEAD {host_head[:8] or '?'} != {expected_head[:8]}"
-            elif marker_problem is not None:
-                recorded_rc = "invalid-result"
-                note = marker_problem
-            elif payload.get("platform") != name:
-                recorded_rc = "platform-mismatch"
-                note = f"marker platform={payload.get('platform')!r}"
-            elif payload.get("head") != expected_head:
-                recorded_rc = "head-mismatch"
-                note = f"marker head={payload.get('head')!r}"
-            elif payload.get("status") != "pass":
-                recorded_rc = "status-not-pass"
-                note = f"marker status={payload.get('status')!r}"
-            else:
-                recorded_rc = "collection-invalid"
-                note = f"marker collected={collected!r}"
-            aggregate_pass = False
-            aggregate_rc = recorded_rc
-        cells.append({
-            "name": name, "command": command,
-            "head": payload.get("head") if payload is not None else "",
-            "status": status, "rc": recorded_rc, "collected": collected,
-            "ts": now_utc(),
-        })
-        if passed:
-            print(f"regression platform[{name}]: pass · collected {collected} "
-                  f"· HEAD {expected_head[:8]} (rc=0)")
-        else:
-            print(f"regression platform[{name}]: {status} (rc={recorded_rc})"
-                  + (f" — {note}" if note else ""))
-        if not passed:
-            for pending_name, pending_command in commands[index + 1:]:
-                cells.append({
-                    "name": pending_name, "command": pending_command,
-                    "head": expected_head, "status": "not-run",
-                    "rc": "previous-platform-red", "collected": None,
-                    "ts": now_utc(),
-                })
-                print(f"regression platform[{pending_name}]: not-run "
-                      "(rc=previous-platform-red)")
-            break
-    return cells, aggregate_pass, aggregate_rc
-
-
-def _platform_record_problem(data: dict, cwd: str, expected_head: str,
-                             commands: tuple[tuple[str, str], ...], *,
-                             session: str | None = None,
-                             livegate: bool = False,
-                             allow_unknown_collection: bool = False) -> str | None:
-    """현재 선언과 저장된 FULL core/platform aggregate의 exact 정합을 검증한다."""
-    expected_keys = set(_PLATFORM_LIVEGATE_KEYS if livegate else _PLATFORM_REGRESSION_KEYS)
-    if session is not None or (livegate and "session" in data):
-        expected_keys.add("session")
-    if set(data) != expected_keys:
-        return "aggregate schema mismatch"
-    if data.get("status") != "pass":
-        return "aggregate status mismatch"
-    if data.get("head") != expected_head:
-        return "aggregate head mismatch"
-    if (not isinstance(data.get("rc"), int) or isinstance(data.get("rc"), bool)
-            or data.get("rc") != 0):
-        return "aggregate rc mismatch"
-    if data.get("scope") != "full":
-        return "aggregate scope mismatch"
-    collected = data.get("collected")
-    if not (allow_unknown_collection and collected is None) and (
-            not isinstance(collected, int) or isinstance(collected, bool) or collected < 0):
-        return "aggregate collected mismatch"
-    previous = data.get("previous_collected")
-    if previous is not None and (not isinstance(previous, int)
-                                 or isinstance(previous, bool)):
-        return "aggregate previous_collected mismatch"
-    if not isinstance(data.get("ts"), str) or not data.get("ts"):
-        return "aggregate timestamp missing"
-    if session is not None and data.get("session") != session:
-        return "aggregate session mismatch"
-    if livegate and "session" in data and (
-            not isinstance(data.get("session"), str) or not data.get("session")):
-        return "aggregate session mismatch"
-    if livegate and (
-            not isinstance(data.get("n"), int) or isinstance(data.get("n"), bool)
-            or data.get("n") != LIVEGATE_RELEASE_PIN):
-        return "livegate collection mismatch"
-    if data.get("conf_anchor") != os.path.abspath(cwd):
-        return "conf_anchor mismatch"
-    cells = data.get("platforms")
-    if not isinstance(cells, list) or len(cells) != len(commands):
-        return "platform list missing/count mismatch"
-    for cell, (name, command) in zip(cells, commands):
-        if not isinstance(cell, dict) or set(cell) != _PLATFORM_CELL_KEYS:
-            return f"platform[{name}] schema mismatch"
-        collected = cell.get("collected")
-        if (
-            cell.get("name") != name or cell.get("command") != command
-            or cell.get("head") != expected_head or cell.get("status") != "pass"
-            or not isinstance(cell.get("rc"), int) or isinstance(cell.get("rc"), bool)
-            or cell.get("rc") != 0
-            or not isinstance(collected, int) or isinstance(collected, bool)
-            or collected <= 0
-            or not isinstance(cell.get("ts"), str) or not cell.get("ts")
-        ):
-            return f"platform[{name}] evidence mismatch/red"
-    return None
-
-
-def _core_command_at(anchor: str, session: str | None = None, *,
-                     local_dir: Path | None = None) -> str:
-    """기록 좌표의 장부에서 실제 앵커 행을 선택하고 기존 명령 우선순위를 적용한다."""
-    local_dir = local_dir or LOCAL_DIR
-    home = local_dir.parent.parent
-    leases = local_dir / "worktree-leases.json"
-    matches = []
-    if leases.exists():
-        try:
-            data = json.loads(fs.read_text_shared(leases, encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return ""
-        rows = data.get("leases", []) if isinstance(data, dict) else []
-        for row in rows if isinstance(rows, list) else []:
-            if (isinstance(row, dict) and row.get("state") == "leased"
-                    and isinstance(row.get("slot"), str)
-                    and os.path.abspath(home / row["slot"]) == anchor):
-                matches.append(row)
-    if len(matches) > 1:
-        return ""
-    if matches:
-        row = matches[0]
-        if session is not None and row.get("session") != session:
-            return ""
-        command = row.get("test_cmd")
-        if not command:
-            _header, rows = areas_store._parse_areas(_home(), home / ".project_manager" / "areas.md")
-            matching = [r for r in rows if r.get("repo") == row.get("repo")]
-            if len(matching) > 1:
-                return ""
-            # 실제 task 등록 행만 선택 repo 층을 사용한다. 세션 인자 부재는 task가 아니다.
-            command = (matching[0].get("test_cmd") if matching and (
-                row.get("session") in lease_store.task_names(leases)
-                or matching[0].get("prefix")) else None)
-        command = command or conf_store.local_config(_home(), home).get("test.cmd")
-        return " ".join(p for p in (command or python_env.default_pytest_cmd(),
-                                    _quarantine_args()) if p)
-    command = (conf_store.local_config(_home(), Path(anchor)).get("test.cmd") if anchor != str(REPO)
-               else None)
-    return " ".join(p for p in (command or _test_cmd(None, session=session),
-                                _quarantine_args()) if p)
-
-
-def _core_record_problem(data: dict, anchor: str, head: str, *,
-                         session: str | None = None, local_dir: Path | None = None,
-                         release: bool = False) -> str | None:
-    """신규 flat core를 기존 exact schema 판정에 연결한다. 옛 aggregate는 재측정한다."""
-    if "platforms" in data:
-        return "old aggregate requires core rerun"
-    if "command" not in data:
-        if release:
-            return "core command evidence missing"
-        return None if data.get("status") == "pass" and data.get("head") == head else "core red/stale"
-    command = data.get("command")
-    if not isinstance(command, str) or not command:
-        return "core command missing"
-    if session is None and "session" in data:
-        session = data["session"]
-        if not isinstance(session, str) or not session:
-            return "core session mismatch"
-    if release:
-        status, rc, _note = _require_collected_count(
-            data.get("rc"), data.get("status"), data.get("collected"), require_collected=True)
-        if status == "fail" and rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
-            return REGRESSION_RC_UNVERIFIED_COLLECTION
-    normalized = {k: v for k, v in data.items() if k != "command"}
-    normalized["platforms"] = []
-    problem = _platform_record_problem(
-        normalized, anchor, head, (), session=session,
-        allow_unknown_collection=not release,
-    )
-    if problem is not None:
-        return problem
-    if release and (not isinstance(data["collected"], int)
-                    or isinstance(data["collected"], bool) or data["collected"] <= 0):
-        return "core collection invalid"
-    if git._git_head_at(anchor) != head:
-        return "core anchor head mismatch"
-    if command != _core_command_at(anchor, session, local_dir=local_dir):
-        return "core command changed"
-    return None
-
-
-def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
-    """rc5(pytest 수집 0 · "no tests ran") 진단 힌트를 만든다 (rc≠5 면 '').
-
-    "no tests ran"(exit 5)은 pass 로 기록하지 않는다 — 수집 0 은 테스트 루트/cwd 가 어긋났다는
-    신호지 green 이 아니다. 나아가 그 트리에 `tests/` 자체가 없으면 **트리 사실**을 실어 처방까지
-    준다: 회귀는 이 트리에서 돌고(회귀 단위 = push 되는 트리) 다른 트리는 명시로만 지목한다.
-    (종전엔 여기서 '활성 slot lease 미매칭 — 세션 설정 확인'이라 말했다. 회귀 cwd 가 lease/세션을
-    해소하던 시절의 문장이라, 우회가 삭제된 지금은 정상 바인딩된 세션에게도 거짓 처방이 된다.)
-    `override`(명시 `--cwd`/`--task`)면 채택자가 트리를 확정한 것이라 힌트를 붙이지 않는다.
-    """
-    if rc != 5:
-        return ""
-    note = " · 수집 0 — 테스트 루트/cwd 확인"
-    if not override and not (Path(cwd) / "tests").is_dir():
-        note += (f" · 이 트리에 `tests/` 가 없다({cwd} · 분리 형상 PM 홈) — 코드 트리에서 "
-                 "실행하거나 `--cwd <코드 트리 절대경로>`/`--task <task>` 으로 지목하라")
-    return note
-
-
-# ── 스위트 없는 트리의 회귀 요청 = 실행 전 거부 ────────────────────────────
-# 판정 축은 훅 본문과 같다(그 트리에 `tests/` 가 있는가). 훅이 push 를 가리는 것과 대칭으로,
-# 사람이 직접 부른 `regression run` 도 스위트가 없는 트리에서는 돌지 않는다 — 돌려봐야 홈 루트
-# 재귀 수집(슬롯 스위트 오수집)이나 rc4/rc5 이고, 그 결과가 소비자 없는 홈 플래그에 red 로 남는다.
-_SUITELESS_TREE_REFUSAL = (
-    "regression: 이 트리엔 회귀 스위트가 없다 — {cwd} 에 `tests/` 가 없는데 test_cmd "
-    "`{cmd}` 는 이 트리를 대상으로 삼는다({why}). 코드 트리에서 실행하거나 "
-    "`--cwd <코드 트리 절대경로>` / `--task <task>` 으로 지목하라 (측정·기록 안 함)."
-)
-_SUITELESS_WHY_TARGETS_TESTS = "`tests/` 지목"
-_SUITELESS_WHY_NO_PATH = "수집 경로 미지정 → cwd 재귀 수집"
-# pytest 인자 중 **경로로 볼 수 있는 토큰**의 모양 — 옵션 값(`-n 8`·`-k expr`)을 경로로
-# 오인하지 않으려고 세 신호만 본다: 경로 구분자 · `.py` · nodeid(`::`). 이 셋 다 아니면 실재
-# 여부로 한 번 더 본다(`pytest pkg` 같은 디렉토리 인자).
-_PYTEST_PATHLIKE_RE = re.compile(r"[/\\]|\.py$|::")
-
-
-def _pytest_collect_paths(args: Sequence[str], cwd: str) -> bool:
-    """pytest argv 가 **수집 경로를 하나라도 지정**하는지 (아니면 cwd 재귀 수집이다).
-
-    옵션(`-` 로 시작)은 건너뛰고, 남은 토큰 중 경로 모양(`_PYTEST_PATHLIKE_RE`)이거나 그 트리에
-    실재하는 것이 하나라도 있으면 True. 옵션 **값**(`-n 8` 의 `8`·`-k expr` 의 `expr`)은 셋 다
-    아니라 걸러진다 — 값을 경로로 세면 "경로 미지정" 판정이 조용히 무력화된다.
-    """
-    for raw in args:
-        if not raw or raw.startswith("-"):
-            continue
-        if _PYTEST_PATHLIKE_RE.search(raw) or (Path(cwd) / raw).exists():
-            return True
-    return False
-
-
-def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | None:
-    """스위트가 없는 트리의 회귀 요청이면 거부 안내 1줄, 아니면 None (판정만·부작용 0).
-
-    거부는 **세 조건이 모두** 참일 때다:
-      1. 명시 `--cwd`/`--task` 가 **없다** — 명시면 채택자가 트리를 확정한 것이라 존중한다.
-      2. test_cmd 가 pytest 호출이고(`_engine_invocation_details` — git-anchor 가드와 같은
-         정규화) **이 트리를 대상으로 삼는다**. 둘 중 하나면 그렇다:
-           · 상대 `tests/` 지목(`_pytest_targets_tests` — 같은 가드가 쓰는 판정), 또는
-           · 수집 경로 미지정(`_pytest_collect_paths` False) — pytest 가 cwd 를 재귀 수집한다.
-             엔진 기본 폴백 test_cmd(`pytest -q`)가 이 갈래다. 스위트 없는 홈에서 이 형상은
-             슬롯 worktree 의 `work/<repo>_<N>/tests/**` 를 잘못된 rootdir 로 긁어 **FULL green
-             기록**을 남겼다(리뷰 실측).
-      3. 그 트리에 `tests/` 가 없다.
-    스위트가 `tests/` 밖이면서 경로를 명시하는 커스텀 test_cmd(`pytest src -q` 등)와 비-pytest
-    test_cmd 는 판정 대상이 아니다(무영향). 판정 불능(따옴표 불균형·pytest 아님)도 거부하지
-    않는다 — 이 게이트는 fail-open 이다(실행을 막는 쪽이 아니라 헛도는 실행을 줄이는 쪽).
-    """
-    if override:
-        return None
-    try:
-        argv = shlex.split(cmd)
-    except ValueError:
-        return None
-    details = shell_policy._engine_invocation_details(cwd, argv)
-    if details is None or details.kind != "pytest":
-        return None
-    if shell_policy._pytest_targets_tests(details.args):
-        why = _SUITELESS_WHY_TARGETS_TESTS
-    elif not _pytest_collect_paths(details.args, cwd):
-        why = _SUITELESS_WHY_NO_PATH
-    else:
-        return None
-    if (Path(cwd) / "tests").is_dir():
-        return None
-    return _SUITELESS_TREE_REFUSAL.format(cmd=cmd, cwd=cwd, why=why)
-
-
-# ── M>1 회귀 슬롯 해소 ────────────────────────────────────
-# 훅은 `--task` 를 못 넘긴다(pre-push 훅 스크립트 무변경·check||run 체인). 명시/env/단일-lease
-# 는 그 슬롯(현행 결과 동일)이지만, 활성 슬롯이 여럿(leased ≥2·무명시)이면 **어느 세션이 push 하든**
-# 전 leased 슬롯이 green 이어야 한다 — check-first(저비용·기록 baseline)로 이미 green 인 슬롯의
-# pytest 재실행을 억제하고 stale/red 만 run, 하나라도 red 면 push 차단
-# nothing 철학과 동형). 슬롯별 회귀 플래그를 분리해(같은 `.local/` 공유) 결과가 서로 덮이지 않게 한다.
-
-def _regression_flag_for(session: str | None, *, local_dir: Path | None = None) -> Path:
-    """세션(슬롯)별 회귀 플래그 경로 — M>1 all-or-nothing 순회용.
-
-    `session` None(단일-lease·현행 단일-슬롯) → 공유 `REGRESSION_FLAG`(무변경·후방호환).
-    지정(M>1 슬롯 순회) → `regression-<slug>.json` 로 슬롯별 분리 — 여러 slot 이 같은 `.local/`
-    을 공유하므로 세션명 슬러그를 파일명에 담아 슬롯 결과가 서로 덮이지 않게 한다.
-    """
-    if local_dir is None and not session:
-        return REGRESSION_FLAG
-    base = local_dir or LOCAL_DIR
-    if not session:
-        return base / "regression.json"
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", session)
-    return base / f"regression-{slug}.json"
-
-
-class _SlotRegressionState(NamedTuple):
-    """슬롯 회귀 상태 판정 결과 — 상태 + 진단에 쓰는 기록값(rc·수집수)."""
-    state: str                    # green | stale | red | missing
-    rc: int | str | None
-    collected: int | None
-
-
-def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
-    """슬롯별 회귀 플래그를 읽어 상태를 판정 — (`'green'|'stale'|'red'|'missing'`, rc, 수집수).
-
-    all-or-nothing check-first 의 저비용 판정 (pytest 미실행): per-slot 플래그
-    (`_regression_flag_for(session)`)를 읽고 그 슬롯 worktree HEAD(`_git_head_at(cwd)`·각 슬롯은
-    독립 worktree·독립 commit)와 대조한다. green(HEAD 일치·pass)이면 재실행 skip, 그 외
-    (stale=HEAD 불일치·red=fail·missing=기록없음/손상)는 run 대상. 손상 플래그는 missing 강등
-    (fail-soft — 장부 손상이 회귀해소를 깨면 안 된다·`_regression_slot_state` 는 재실행을 유도).
-
-    rc 는 기록값 그대로다 — 강등이면 전용 라벨(`unverified-collection`·정수 아님)이라 기록된
-    수집수와 함께 라벨에 사유를 실을 수 있다.
-    """
-    base, mode = _resolve_regression_flag(cwd)
-    if mode == _LG_BROKEN:
-        return _SlotRegressionState("red", "broken-sidecar", None)
-    flag = _regression_flag_for(session, local_dir=base.parent)
-    if not flag.exists():
-        return _SlotRegressionState("missing", None, None)
-    try:
-        data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return _SlotRegressionState("missing", None, None)
-    if not isinstance(data, dict):
-        return _SlotRegressionState("missing", None, None)
-    collected = _flag_collected(data)
-    current_head = git._git_head_at(cwd)
-    if not current_head or data.get("head") != current_head:
-        return _SlotRegressionState("stale", data.get("rc"), collected)
-    if data.get("status") != "pass":
-        return _SlotRegressionState("red", data.get("rc"), collected)
-    if _core_record_problem(data, os.path.abspath(cwd), current_head,
-                            session=session, local_dir=base.parent) is not None:
-        return _SlotRegressionState("stale", data.get("rc"), collected)
-    return _SlotRegressionState("green", data.get("rc"), collected)
-
-
-def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> int:
-    """한 슬롯의 회귀를 pytest 로 측정·기록(슬롯별 플래그) — rc 반환.
-
-    단일-슬롯 run 본체와 동형(같은 env·shell·인코딩·rc0 만 pass·rc5 vacuous 근절·수집 증감
-    표시)이되, cwd/test_cmd/플래그/HEAD 를 슬롯별로 해소한다. 스코프(touches)는 훅 M>1 경로엔
-    없으므로 full 만(플래그는 push 게이트 대상). 플래그 키는 그 슬롯 worktree HEAD 다
-    (`_git_head_at`).
-
-    conf 앵커 이어받기(`_inherit_flag_anchor`)는 여기 없다 — 슬롯 실행 위치는 리스 장부에서
-    구조적으로 나오고(플래그도 그 세션 키), 장부가 슬롯을 옮겼다면 새 위치가 맞다.
-    """
-    cwd = os.path.abspath(cwd)
-    base, mode = _resolve_regression_flag(cwd)
-    if mode == _LG_BROKEN:
-        print(f"regression[{session}]: 보호훅 sidecar 무효", file=sys.stderr)
-        return 1
-    flag = _regression_flag_for(session, local_dir=base.parent)
-    cmd = " ".join(p for p in (_test_cmd(args.cmd, session=session), _quarantine_args()) if p)
-    expected_head = git._git_head_at(cwd)
-    if not expected_head:
-        _write_regression_flag(flag, {
-            "head": "", "status": "fail", "rc": "head-drift", "scope": "full",
-            "collected": None, "conf_anchor": cwd, "command": cmd,
-            "session": session, "ts": now_utc(),
-        })
-        return 1
-    print(f"regression[{session}]: $ {cmd}  (cwd={cwd})")
-    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    rc, out, _err = _run_regression_cmd(cmd, cwd, env)
-    collected = _collected_count(out)
-    status = "pass" if rc == 0 else "fail"
-    recorded_rc = rc
-    if git._git_head_at(cwd) != expected_head:
-        status, recorded_rc = "fail", "head-drift"
-    record = {
-        "head": expected_head, "status": status, "rc": recorded_rc, "scope": "full",
-        "collected": collected, "conf_anchor": cwd, "command": cmd,
-        "session": session, "ts": now_utc(),
-    }
-    _write_regression_flag(flag, record)
-    note = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
-    print(f"regression[{session}]: {status} (rc={recorded_rc}{note})"
-          f"{collection_delta_text(collected, record['previous_collected'])} "
-          f"@ {expected_head[:8]}")
-    return 0 if status == "pass" else (rc or 1)
-
-
-def _slot_state_label(session: str, state: str, rc: int | str | None) -> str:
-    """미검증 슬롯 라벨 — `<session>=<state>(rc=N·수집0)` (rc None 이면 상태만·codex sug).
-
-    check 실패 메시지에 슬롯별 rc 를 실어 단일-슬롯 진단과 균질화한다 — 특히 rc5(수집 0)는
-    테스트 루트/cwd 결함 신호이므로 힌트를 붙인다(`_regression_slot_state` 가 이미 rc 반환·저비용).
-    선언 platform 의 수집수 검증 불가(`unverified-collection`)도 같은 자리에 사유를 붙인다.
-    """
-    if rc is None:
-        return f"{session}={state}"
-    if rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
-        hint = "·수집수 미확인"
-    else:
-        hint = "·수집0" if rc == 5 else ""
-    return f"{session}={state}(rc={rc}{hint})"
-
-
-def _regression_multi_check(sessions: list[str]) -> int:
-    """M>1 check — 전 leased 슬롯이 green(HEAD 일치·pass)이어야 rc0 (all-or-nothing).
-
-    미검증(stale/red/missing) 슬롯이 하나라도 있으면 rc1 로 push 를 차단하고 *어느 슬롯이
-    어떤 상태(+rc)*인지 명시한다(디버깅 동선). pytest 는 안 돌린다(check = 저비용 baseline 검증).
-    """
-    not_green: list[str] = []
-    for session in sessions:
-        cwd = _active_slot_path(session) or str(REPO)
-        slot_state = _regression_slot_state(session, cwd)
-        if slot_state.state != "green":
-            not_green.append(
-                _slot_state_label(session, slot_state.state, slot_state.rc))
-    if not_green:
-        print(f"regression(M={len(sessions)}): 미검증 슬롯 [{', '.join(not_green)}] "
-              "— `regression run` 필요 (push 차단).", file=sys.stderr)
-        return 1
-    print(f"regression(M={len(sessions)}): 전 슬롯 green ✓ [{', '.join(sessions)}]")
-    return 0
-
-
-def _regression_multi_run(args: argparse.Namespace, sessions: list[str]) -> int:
-    """M>1 run — 슬롯별 check-first(green skip)·stale/red 만 pytest·하나라도 red 면 rc1.
-
-    all-or-nothing: 어느 세션이 push 하든 전
-    leased 슬롯이 green 이어야 통과. check-first 로 이미 green(기록 baseline·HEAD 일치)인 슬롯의
-    pytest 재실행을 억제(비용 억제)하고, 실패 슬롯(red)을 종합 메시지에 명시한다(디버깅 동선).
-    """
-    skipped: list[str] = []
-    ran: list[str] = []
-    red: list[str] = []
-    for session in sessions:
-        cwd = _active_slot_path(session) or str(REPO)
-        if _regression_slot_state(session, cwd).state == "green":
-            skipped.append(session)
-            continue
-        # stale/red/missing → 이 슬롯 pytest 실행·슬롯별 플래그 갱신.
-        ran.append(session)
-        if _regression_run_slot(args, session, cwd) != 0:
-            red.append(session)
-    summary = (f"regression(M={len(sessions)}): "
-               f"skip(green) {len(skipped)} · run {len(ran)}")
-    if red:
-        print(f"{summary} · RED [{', '.join(red)}] — push 차단.", file=sys.stderr)
-        return 1
-    print(f"{summary} · 전 슬롯 green ✓")
-    return 0
-
-
-def cmd_regression(args: argparse.Namespace) -> int:
-    """run = 측정+기록(HEAD 키), check = HEAD 가 green 인지 (pre-push 훅이 호출).
-
-    M>1(leased ≥2) 홈은 전 leased 슬롯 all-or-nothing 으로 해소한다: 훅은
-    --task 를 못 넘기므로 활성 슬롯이 여럿이면 슬롯별 check-first(저비용) 후 stale/red 만
-    run 하며 하나라도 red 면 push 를 차단한다.
-
-    **보호 게이트는 ambient env(PM_SESSION_NAME/CLAUDE_SESSION_NAME)로 좁혀지면 안 된다**
-    (codex): 훅 프로세스가 env 세션을 상속하면 "어느 세션이 push 하든 전 leased 슬롯 green"이
-    조용히 자기 슬롯 단일 경로로 우회된다. 그래서 M>1 디스패치 판정은 **CLI `--task` 명시**
-    (문서화된 의도적 조작, 폴더는 위치 인자로 고름)만 단일-슬롯으로 좁히고 env 는 이 판정에서
-    제외한다 — 단일-lease/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로
-    유효.) `--task` 없는 `--repo`/`--slot` 은 run·check 모두 실행 명령 판정 함수가 거부한다.
-    """
-    # 구형 서명 훅 = 차단 — run/check 두 진입 모두에서 대조한다. 옛 세대 본문은 트리를 가리지
-    # 않고 **항상** 회귀를 불렀으므로, 여기서 막으면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅으로는
-    # push 가 성립하지 않는다 — `tests/` 없는 PM 홈도 마찬가지다(처방은 `init` 재실행 1회).
-    # 판정은 **어떤 부작용보다 앞**이다 — 회귀를 돌리고 기록까지 남긴 뒤 막으면, 그 기록이 다음
-    # 실행의 green 재사용 입력이 된다.
-    stale_hook = _stale_pre_push_hook_refusal()
-    if stale_hook is not None:
-        print(stale_hook, file=sys.stderr)
-        return 1
-    # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd
-    # 로 고정하고 슬롯 test_cmd 를 실어 잘못된 형제-슬롯 유도를 피한다. 절대경로를
-    # surface 해 dev/git 짐작 여지를 없앤다(cwd 비참여). run 만 실행 위치가 필요하다.
-    if args.action == "run" and getattr(args, "task", None):
-        task_cwd, task_test_cmd = task_args._resolve_task_workspace_cwd(_home(), args, require_test_cmd=True)
-        if getattr(args, "cwd", None) is None:
-            args.cwd = task_cwd
-        if getattr(args, "cmd", None) is None:
-            # 슬롯을 **확정**했으므로 그 슬롯 test_cmd 를 직접 싣는다 — session 유도
-            # (`_active_slot_test_cmd(<task>)`)는 같은 task 의 **형제 슬롯 첫-매칭**을 반환해 오매칭
-            # 여지가 있다. 해소 함수가 해당 행과 선택 repo/local 기본값만 판독한다.
-            args.cmd = task_test_cmd
-        print(f"regression: 작업공간(task {args.task}) → {task_cwd}")
-    # 디스패치 판정은 CLI --task(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
-    # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
-    # 명시 `--cwd`(run)면 실행 위치가 그 경로로 핀돼(단일 위치) M>1 순회를 건너뛴다.
-    _run_cwd_pinned = args.action == "run" and getattr(args, "cwd", None)
-    explicit_override = task_args._execution_actor_session_override(_home(), args)
-    if not _run_cwd_pinned and explicit_override is None:
-        leased = lease_store.leased_sessions(LEASES_FILE)
-        if len(leased) >= 2:
-            slots = sorted(set(leased))
-            return (_regression_multi_run(args, slots) if args.action == "run"
-                    else _regression_multi_check(slots))
-    # 단일-슬롯 (명시 --task·단일-lease·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
-    # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄).
-    sess = lease_store.session_name(_home(), explicit_override)
-    if args.action == "run":
-        # `--ticket` 스코프도 확정 실패(None·형식 불명·손상)는 빈 목록 = FULL 이다 — 확정 못 한
-        # 선언으로 좁히면 그 실행의 rc0 이 아무 것도 검증하지 않은 '가짜 green' 이 된다.
-        touches = ((_ticket_touches(args.ticket) or []) if getattr(args, "ticket", None)
-                   else (args.touches.split(",") if getattr(args, "touches", None) else []))
-        explicit_cwd = getattr(args, "cwd", None)
-        cwd = os.path.abspath(_regression_cwd(explicit_cwd))
-        implicit_full = not touches and not getattr(args, "final", False)
-        if implicit_full:
-            gates, cycle_touches = _review_cycle_downgrade()
-            if cycle_touches:
-                touches = cycle_touches
-                print(f"regression: 활성 리뷰 사이클 [{', '.join(gates)}] — FULL 요청을 "
-                      "touches targeted 로 강등합니다 (수렴 후 FULL 은 `regression run --final`).")
-        scoped = bool(touches)
-        if not scoped:
-            regression_flag, mode = _resolve_regression_flag(cwd)
-            if mode == _LG_BROKEN:
-                print("regression: 보호훅 engine-root sidecar 무효", file=sys.stderr)
-                return 1
-            if not explicit_cwd:
-                cwd = _inherit_flag_anchor(cwd, regression_flag)
-                regression_flag, mode = _resolve_regression_flag(cwd)
-                if mode == _LG_BROKEN:
-                    print("regression: 보호훅 engine-root sidecar 무효", file=sys.stderr)
-                    return 1
-        parts = [_test_cmd(args.cmd, session=sess)]
-        if scoped:
-            parts.append(_scope_args(touches))
-        parts.append(_quarantine_args())
-        cmd = " ".join(p for p in parts if p)
-        # shell=True 로 띄운 pytest 자식은 별도 프로세스 — 부모 콘솔 reconfigure 보호를
-        # 못 받는다. 자식의 인코딩을 도구가 코드로 명시(env 워크어라운드 아님): 한국어
-        # Windows(cp949 콘솔)에서도 자식 stdout/stderr·파일 IO 를 UTF-8 로 강제.
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        # cwd seam — 회귀는 이 트리(REPO)에서 돈다(슬롯 자동해소 없음·회귀 단위 = push 되는 트리).
-        # `--cwd`/`--task` 주입 시 그 경로, 미주입이면 REPO. **절대경로로 정규화**해
-        # 실행·기록·이후 conf 해소가 프로세스 cwd 에 흔들리지 않게 한다(상대 `--cwd` 방어).
-        # 스위트 없는 트리 = 실행 전 거부. 판정은 **최종 cwd** 기준이고(앵커 승계 뒤), pytest 를
-        # 띄우지도 플래그를 쓰지도 않는다 — 헛돈 결과가 게이트 기록으로 남으면 안 된다.
-        suiteless = _suiteless_tree_refusal(cmd, cwd, explicit_cwd)
-        if suiteless is not None:
-            print(suiteless, file=sys.stderr)
-            return 1
-        # 실행 안내는 **거부 판정 뒤**다 — 돌지 않은 명령을 `$ …` 로 남기면 로그·핸드오프
-        # 인용에서 실행한 것처럼 읽힌다(거부 문구가 스스로 '측정·기록 안 함'을 말하는 것과 같은 축).
-        expected_head = git._git_head_at(cwd) if not scoped else ""
-        if not scoped and not expected_head:
-            _write_regression_flag(regression_flag, {
-                "head": "", "status": "fail", "rc": "head-drift", "scope": "full",
-                "collected": None, "conf_anchor": cwd, "command": cmd, "ts": now_utc(),
-            })
-            print("regression: FULL 시작 HEAD 해소 실패", file=sys.stderr)
-            return 1
-        print(f"regression: $ {cmd}")
-        rc, out, _err = _run_regression_cmd(cmd, cwd, env)
-        # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
-        # 아니라 테스트 루트/cwd 결함이다.
-        # 미해소 시 상시 vacuous green 이었다.
-        status = "pass" if rc == 0 else "fail"
-        collected = _collected_count(out)     # 파싱은 stdout 단독(stderr 로그 오염 차단).
-        rc5_note = _regression_rc5_note(rc, cwd, getattr(args, "cwd", None))
-        if scoped:
-            # 스코프 실행 = dev 빠른 피드백 (advisory). full 만 push 게이트 → 게이트 플래그 안 씀.
-            # 수집 증감도 FULL 게이트 기록의 축이다 — 스코프는 touches 매칭분만 도는 게
-            # 정상이라 FULL 기록과 견주면 상시 가짜 증감이 된다(기록을 쓰지도 읽지도 않는다).
-            print(f"regression(scoped, {len(touches)} touches): {status} (rc={rc}{rc5_note}) "
-                  "— dev 피드백 · push 게이트 아님")
-            return 0 if status == "pass" else 1
-        recorded_rc = rc
-        if git._git_head_at(cwd) != expected_head:
-            status, recorded_rc = "fail", "head-drift"
-        record = {"head": expected_head, "status": status, "rc": recorded_rc, "scope": "full",
-                  "collected": collected, "conf_anchor": cwd, "command": cmd, "ts": now_utc()}
-        _write_regression_flag(regression_flag, record)
-        print(f"regression: {status} (rc={recorded_rc}{rc5_note})"
-              f"{collection_delta_text(collected, record['previous_collected'])} "
-              f"@ {expected_head[:8]}")
-        return 0 if status == "pass" else 1
-    # action == "check" — pre-push 게이트
-    check_cwd = getattr(args, "cwd", None) or str(REPO)
-    regression_flag, regression_flag_mode = _resolve_regression_flag(check_cwd)
-    if regression_flag_mode == _LG_BROKEN:
-        print("regression: platform 증거 좌표 해소 실패 — 보호훅 engine-root sidecar가 "
-              "무효다 (push 차단).", file=sys.stderr)
-        return 1
-    if not regression_flag.exists():
-        print("regression: 기록 없음 — `board.py regression run` 필요 (push 차단).",
-              file=sys.stderr)
-        return 1
-    try:
-        data = json.loads(fs.read_text_shared(regression_flag, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        print("regression: stale (회귀 기록 판독 실패) — core 재실행 필요.", file=sys.stderr)
-        return 1
-    if not isinstance(data, dict):
-        print("regression: stale (회귀 기록 object 손상) — core 재실행 필요.", file=sys.stderr)
-        return 1
-    if "conf_anchor" not in data:
-        # key 자체가 없던 legacy 기록만 board REPO 좌표로 폴백한다.
-        anchor = str(REPO)
-        head = _git_head()
-        if not head:
-            print(f"regression: stale (legacy REPO {anchor}의 Git HEAD 해소 실패) "
-                  "— 재실행 필요.", file=sys.stderr)
-            return 1
-    else:
-        anchor = data.get("conf_anchor")
-        if (
-            not isinstance(anchor, str) or not anchor
-            or not os.path.isabs(anchor) or not Path(anchor).is_dir()
-        ):
-            print("regression: stale (기록 conf_anchor가 유효한 절대 디렉토리가 아님) "
-                  "— 재실행 필요.", file=sys.stderr)
-            return 1
-        head = git._git_head_at(anchor)
-        if not head:
-            print(f"regression: stale (기록 conf_anchor {anchor}의 Git HEAD 해소 실패) "
-                  "— 재실행 필요.", file=sys.stderr)
-            return 1
-    if data.get("head") != head:
-        print(f"regression: stale (기록 {str(data.get('head'))[:8]} ≠ HEAD {head[:8]}) "
-              "— 재실행 필요.", file=sys.stderr)
-        return 1
-    if data.get("status") != "pass":
-        rc = data.get("rc")
-        extra = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
-        print(f"regression: RED @ {head[:8]} (rc={rc}){extra} — push 차단.", file=sys.stderr)
-        return 1
-    # 신규 core 기록은 명시 선택과 같은 작업공간에서 측정돼야 한다.
-    # 인자 없는 훅과 명령 증거가 없던 legacy 기록의 기존 앵커 소비는 유지한다.
-    if "command" in data:
-        selected_cwd = getattr(args, "cwd", None)
-        selected_slot = None
-        if getattr(args, "task", None):
-            selected_slot, _cmd = task_args._resolve_task_workspace_cwd(_home(), args, require_test_cmd=False)
-        if (selected_slot is not None and os.path.abspath(REPO / selected_slot) != anchor
-                or selected_cwd is not None and os.path.abspath(selected_cwd) != anchor):
-            print("regression: stale (선택 작업공간과 core 기록 좌표 불일치) "
-                  "— core 재실행 필요.", file=sys.stderr)
-            return 1
-    problem = _core_record_problem(data, anchor, head, local_dir=regression_flag.parent)
-    if problem is not None:
-        print(f"regression: stale ({problem}) — core 재실행 필요.", file=sys.stderr)
-        return 1
-    # green 줄에도 그 기록이 담은 직전 대비 증감을 붙인다 — 막지 않는 표시다(기록을 읽는
-    # 자리이므로 같은 축의 수집수끼리 견준다).
-    delta = collection_delta_text(_flag_collected(data), data.get("previous_collected"))
-    print(f"regression: green @ {head[:8]}{delta} ✓")
-    return 0
-
-
-# ── 릴리즈 라이브 게이트 ────────────────────────────────────────
-# 라이브 LLM 검증(실 하네스 smoke)을 릴리즈(main 머지) 단일 지점으로 모은 게이트.
-# `livegate record` 가 `pytest -m release` 를 슬롯 cwd 해소(`_livegate_cwd`)로 실행·측정하고
-# (실행=기록·손기록 없음), 보호훅이 `livegate check --rev <sha>` 로 push HEAD 가 green 인지
-# 소비한다. false-green 방어를 위해 rc0 만으로는 부족하고 수집 N==pin 을 함께 요구한다
-# (수집 pin·rc5 vacuous-pass 근절의 원칙을 라이브 채널로 확장).
-LIVEGATE_RELEASE_PIN = 22  # `pytest -m release` 로 돌아야 하는 라이브/사이클 케이스 수.
-                           # tests/test_release_wave.py `_EXPECTED_RELEASE_TESTS` 와 값 공유.
-LIVEGATE_TEST_CMD = "pytest -m release -q"   # 라이브 릴리즈 wave selection.
-
-
-# 라이브 게이트의 "실행 수" 로 세는 outcome 종류 — 마커 안에서 *돈* 케이스만.
-# `deselected`(release 마커 밖)·`skipped` 는 실행분이 아니라 제외한다.
-_LIVEGATE_RAN_KINDS = ("passed", "failed", "errors?")
-
-
-def _livegate_ran_count(output: str) -> int:
-    """`pytest -m release -q` 요약행에서 *실제 실행된* release 테스트 수(수집 N)를 센다.
-
-    N = passed + failed + error(s). deselected 는 release 마커 밖이라 세지 않는다. "no tests
-    ran"(exit5)처럼 요약에 카운트가 없으면 0. 이 수집 N 을 pin 과 대조해 마커 소실·wrong-cwd
-    로 인한 false-green(수집 위장)을 차단한다 — rc0 만으로는 "0개 수집됐지만 red 아님"을
-    green 으로 삼킬 수 있다. 대상 줄은 공용 seam 이 **끝에서** 찾는다(라이브 wave 가 캡처
-    출력에 찍는 `N passed` 로그를 요약으로 오판하면 pin 대조가 통째로 어긋난다).
-    """
-    line = _pytest_summary_line(output)
-    if line is None:
-        return 0
-    return sum(_pytest_outcome_counts(line, _LIVEGATE_RAN_KINDS))
-
-
-def _write_json_atomic(path: Path, data: dict) -> None:
-    """dict → JSON 을 temp + `fs.atomic_replace` 로 원자 교체한다 (crash 시 잔재/부분기록 방지).
-
-    `dump_ticket_atomic` 과 동형 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
-    """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8", newline="\n")
-    fs.atomic_replace(tmp, path)
-
-
-# ── livegate 기록 위치 = 훅 read 위치 정렬 (two-git 단일 소스) ─────────────
-# `livegate record` 는 push 보호훅이 읽는 **바로 그** livegate.json 에 기록해야 한다. 훅은 repo 의
-# git `core.hooksPath` 에 설치돼(worktree_pool.install_protected_hook), 같은 디렉토리의 sidecar
-# `engine-root`(PM 홈 REPO 절대경로 1줄)로 `<engine-root>/.project_manager/tools/board.py` 를 해소하고
-# 그 사본의 `.local/livegate.json` 을 `livegate check` 로 읽는다(worktree_pool `_PROTECTED_PRE_PUSH_HOOK`).
-# two-git 토폴로지(PM 홈+worktree)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면,
-# worktree board.py 로 record 할 때 훅이 안 읽는 worktree `.local` 에 조용히 기록→pass 위장→push
-# 순간에야 불일치로 드러난다. 그래서 record 도 훅과 **동일한 engine-root
-# sidecar 해소**를 공유해 같은 파일에 기록한다(단일 소스). livegate 훅이 없는 홈이면 현행
-# `REPO/.local` 폴백이라 채택자 무변경.
-_LG_ENGINE_ROOT = "engine-root"  # 프레임워크 push 보호훅 활성 → PM 홈 .local (단일 소스).
-_LG_NO_HOOK = "no-hook"          # livegate 훅 없음 → 호출된 사본 REPO/.local (현행 폴백 무변경).
-_LG_BROKEN = "broken"            # 훅 sidecar 존재하나 engine-root 무효 → fail-loud(false-green 차단).
-
-
-def _git_config_get(cwd: str, key: str) -> str | None:
-    """`git -C <cwd> config --get <key>` 값 (미설정/비-repo/빈값이면 None).
-
-    인코딩 명시(git path 출력이 cp949 로 디코딩되지 않도록 utf-8·`_hooks_dir` 동형).
-    """
-    r = subprocess.run(["git", "-C", cwd, "config", "--get", key],
-                       capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
-    val = r.stdout.strip() if r.returncode == 0 else ""
-    return val or None
-
-
-def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
-    """record 가 기록할 livegate.json 경로 = **push 보호훅이 읽는 파일**로 정렬한다.
-
-    보호훅(`_PROTECTED_PRE_PUSH_HOOK`)과 동일 해소를 공유한다 — repo(`cwd`)의 git
-    `core.hooksPath` 옆 sidecar `engine-root`(PM 홈 REPO 절대경로 1줄)를 읽어, 그 root 에
-    board.py 가 실재하면(훅의 `[ -f "$engine_root/.../board.py" ]` fail-closed 게이트와 동일
-    검증) `<engine-root>/.project_manager/.local/livegate.json` 을 돌려준다. 반환:
-      - (PM 홈 .local livegate.json, `_LG_ENGINE_ROOT`) — 훅 활성·단일 소스.
-      - (`LIVEGATE_FLAG`, `_LG_NO_HOOK`) — livegate 훅 없음(현행 폴백 무변경).
-      - (`LIVEGATE_FLAG`, `_LG_BROKEN`) — 훅 sidecar 는 있으나 engine-root 무효(빈값/board.py
-        부재). 이땐 훅 read 위치와 기록 위치가 갈릴 수 있어 호출부가 fail-loud 로 거부한다.
-    """
-    hooks_path = _git_config_get(cwd, "core.hooksPath")
-    if not hooks_path:
-        return LIVEGATE_FLAG, _LG_NO_HOOK
-    # 상대 `core.hooksPath` 는 git 이 worktree root(=`cwd`) 기준으로 해소한다(프로세스 cwd 아님).
-    # 프레임워크 설치는 절대경로라 평시 무영향이나, 수동/상대 설정 방어로 git 시맨틱을 미러.
-    hp = Path(hooks_path)
-    if not hp.is_absolute():
-        hp = Path(cwd) / hp
-    sidecar = hp / "engine-root"
-    if not sidecar.is_file():
-        # `core.hooksPath` 는 있으나 engine-root sidecar 부재 = livegate 보호훅 아님(예: PM 홈
-        # 자신의 회귀 훅·채택자 custom 훅) → 훅 부재 폴백(오탐 fail-loud 방지).
-        return LIVEGATE_FLAG, _LG_NO_HOOK
-    lines = fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
-    engine_root = lines[0].strip() if lines else ""
-    if not engine_root:
-        return LIVEGATE_FLAG, _LG_BROKEN
-    root = Path(engine_root)
-    if not (root / ".project_manager" / "tools" / "board.py").is_file():
-        return LIVEGATE_FLAG, _LG_BROKEN
-    return root / ".project_manager" / ".local" / "livegate.json", _LG_ENGINE_ROOT
-
-
-def _resolve_regression_flag(cwd: str) -> tuple[Path, str]:
-    """regression 증거를 livegate와 같은 engine-root `.local` 좌표로 해소한다.
-
-    보호훅 two-git 형상에서는 regression과 livegate가 서로 다른 clone-local 파일을 읽으면
-    platform 증거가 있어도 release가 legacy no-platform으로 통과할 수 있다. 훅이 없는 솔로
-    형상은 기존 `LOCAL_DIR`을 그대로 쓴다. broken sidecar 판정도 livegate와 공유한다.
-    """
-    # 단위/채택 트리 중 `.git` 자체가 없는 경로는 hooksPath도 가질 수 없다. git subprocess를
-    # 불필요하게 늘리지 않고 기존 clone-local 좌표를 그대로 쓴다.
-    if not (Path(cwd) / ".git").exists():
-        return _regression_flag_for(None), _LG_NO_HOOK
-    livegate_flag, mode = _resolve_livegate_flag(cwd)
-    local_dir = livegate_flag.parent if mode == _LG_ENGINE_ROOT else LOCAL_DIR
-    return _regression_flag_for(None, local_dir=local_dir), mode
-
-
-# ── 릴리즈 must-fix 잔여 차단 (릴리즈 절차의 첫 기계 관문) ────────────────
-# "must-fix 잔여가 있으면 릴리즈하지 않는다"를 PM 규율이 아니라 기계 게이트로 박는다. 라운드
-# 상한으로 종결된 게이트의 잔여 must-fix가 현재 티켓 fix에서 닫히지 않은 채 릴리즈 절차가
-# 진행되던 것이 근절 대상이다.
-#
-# 판정 입력은 **장부의 기록 사실**뿐이다 — 최종 라운드의 must_fix 수(`gate_residual_must_fix`),
-# 처분 선언(`gate_resolution`)과 기계 확인 증거다. PM 자의 판정("사소함·엣지")이 들어갈
-# 자리를 만들지 않는다. 우회 플래그도 없다.
-#
-# 검사 지점이 `livegate record` 인 이유는 그것이 릴리즈 절차의 첫 기계 관문이고 push 보호훅이 그
-# green 을 소비하기 때문이다 — 여기서 막으면 하류 전체가 막힌다. 그래서 차단은 **fail 기록까지**
-# 남긴다(같은 HEAD 의 옛 green 이 살아남아 훅을 통과하는 창을 닫는다).
-_LIVEGATE_MUST_FIX_REASON = "unresolved-must-fix"   # fail 기록의 사유 표식(훅 메시지와 별개 감사면).
-_RELEASE_MUST_FIX_MARKER_NAME = "release-must-fix"
-_RELEASE_MUST_FIX_CLEAR = "clear"
-_RELEASE_MUST_FIX_BLOCKED = "blocked"
-
-_MUST_FIX_BLOCK_GUIDANCE = (
-    "livegate: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
-    "{items}\n"
-    "  처방 — 현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언하세요:\n"
-    "    python3 .project_manager/tools/additional_reviewer.py "
-    "--resolve-gate <게이트> --pm-verified\n"
-    "  라운드 장부: {ledger}"
-)
-
-# ── 릴리즈 엔진 사본 drift 차단 (릴리즈 절차의 두 번째 기계 관문 · must-fix 거부 직후) ──
-# 실행 엔진 사본(PM 홈 `.project_manager/tools/`)이 upstream 과 drift 한 상태에서 라이브 wave 를
-# 돌리면 게이트 판정이 false 가 된다(빈 diff false-green · stale-pin false-block). must-fix 와
-# 같은 이유로 값비싼 라이브 wave **전에** 막고, fail 을 기록까지 한다(같은 HEAD 의 옛 green 잔존 0).
-_LIVEGATE_ENGINE_DRIFT_REASON = "engine-drift"   # fail 기록의 사유 표식(must-fix 축과 구분).
-
-_ENGINE_DRIFT_BLOCK_GUIDANCE = (
-    "livegate: fail — 실행 엔진 사본이 upstream 과 drift 상태 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
-    "{items}\n"
-    "  처방: python3 .project_manager/tools/pm_update.py 로 엔진 사본을 동기한 뒤 재실행하세요."
-)
-
-
-def _release_rounds_ledger(flag: Path) -> Path:
-    """릴리즈 검사가 읽을 라운드 장부 — livegate.json 과 **같은 `.local`**.
-
-    기록 위치 정렬(`_resolve_livegate_flag`)을 그대로 물려받는다 — 어느 board.py 사본/cwd 로
-    record 하든 additional_reviewer 가 실제로 쓴 그 장부(소유 PM 홈 `.local/review_rounds.json`)를
-    본다. 사본별로 다른 장부를 읽으면 잔여가 있는데 "무대상"으로 통과하는 false-green 이 난다.
-
-    정렬이 성립하는 범위는 **engine-root 모드**(보호훅 활성)다 — 훅 부재 폴백(`_LG_NO_HOOK`)에서는 호출된
-    사본의 `.local` 이 곧 장부 위치라 같은 식이 그대로 맞는다(단일-repo 형상)."""
-    return flag.parent / REVIEW_ROUNDS_LEDGER_NAME
-
-
-def _release_must_fix_marker(flag: Path) -> Path:
-    """보호훅이 shell 단독으로 읽는 현행 잔여 표식 — livegate/장부와 같은 `.local`."""
-    return flag.parent / _RELEASE_MUST_FIX_MARKER_NAME
-
-
-def _release_rounds_lock(ledger: Path) -> Path:
-    """additional_reviewer writer 와 livegate record/check 가 공유하는 장부 락 경로."""
-    return ledger.with_name("review_rounds.lock")
-
-
-def _write_release_must_fix_marker(flag: Path, problems: Sequence[str]) -> Path:
-    """현행 잔여를 `clear|blocked` 정확 한 줄로 원자 교체한다.
-
-    훅은 JSON/Python 없이 이 파일만 읽는다. 미해소 상태는 **장부보다 먼저**, 해소 상태는 **장부보다
-    나중**에 쓰는 순서를 writer 가 지키면 두 파일을 한 rename 으로 묶을 수 없는 crash 창도 항상
-    차단 쪽으로만 기운다. 이 함수는 한 파일의 atomic replace 를 소유하고, 호출 순서는 writer 가
-    소유한다. 호출자는 review_rounds.lock 을 보유해야 한다."""
-    marker = _release_must_fix_marker(flag)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    state = _RELEASE_MUST_FIX_BLOCKED if problems else _RELEASE_MUST_FIX_CLEAR
-    tmp = marker.with_name(
-        f"{marker.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    try:
-        tmp.write_text(state + "\n", encoding="ascii", newline="\n")
-        fs.atomic_replace(tmp, marker)
-    finally:
-        with contextlib.suppress(OSError):
-            if tmp.exists():
-                tmp.unlink()
-    return marker
-
-
-def _gate_disposition_problem(
-    gate: str,
-    entry: object,
-    *,
-    allow_pm_verified: bool = False,
-    pm_verified_problem: Callable[[], str | None] | None = None,
-) -> str | None:
-    """게이트 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
-
-    순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
-    비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
-    → `pm-verified` 발동 증거의 라이브 재검증. 폐지 kind는 `gate_resolution=None`이라
-    미처분으로 fail-loud 한다."""
-    corruption = gate_entry_corruption(entry)
-    if corruption is not None:
-        return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
-    if not gate_has_residual(entry):
-        return None
-    prefix = f"  · {gate}: 최종 라운드 must_fix {gate_residual_label(entry)}"
-    declared = gate_resolution(entry)
-    if declared is None:
-        return f"{prefix} · 처분 선언 없음"
-    label = f"{GATE_RESOLUTION_LABELS[declared['kind']]} 선언"
-    if gate_resolution_is_stale(entry, declared):
-        current = gate_round_binding(entry)
-        return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
-                f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
-                f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
-    if not allow_pm_verified:
-        return f"{prefix} · {label} — 이 장부에서는 pm-verified 처분을 허용하지 않습니다"
-    if pm_verified_problem is None:
-        return f"{prefix} · {label} — 발동 조건을 재검증할 수 없습니다(호출부 설정 누락)"
-    problem = pm_verified_problem()
-    return None if problem is None else f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
-
-
 def _unresolved_must_fix_data(data: object, ledger: Path) -> list[str]:
     """파싱된 라운드 장부의 미해소 must-fix 차단 사유 (writer/reader 공용)."""
     if not isinstance(data, dict):
@@ -6884,12 +4454,12 @@ def _unresolved_must_fix_data(data: object, ledger: Path) -> list[str]:
                 "없어 차단합니다"]
     problems: list[str] = []
     for gate, entry in sorted(data.items()):
-        if gate == _REVIEW_LEDGER_WAVE_KEY:
+        if gate == review_rounds._REVIEW_LEDGER_WAVE_KEY:
             continue                     # 예약 키(wave 예산 절)는 게이트가 아니다.
         # 추가 리뷰어(release) 축은 pm-verified 처분을 허용한다 — PM rejected/기계 확인 증거로
         # 채널 폐지 뒤에도 재호출 없이 잔여를 종결할 수 있어야 한다(콜백은 그 게이트의
         # 잔여 must-fix 건수로 스코프한 채널 격리 재검증).
-        problem = _gate_disposition_problem(
+        problem = review_rounds._gate_disposition_problem(
             gate, entry,
             allow_pm_verified=True,
             pm_verified_problem=_gate_pm_verified_problem(
@@ -6924,32 +4494,11 @@ def _sync_release_must_fix_marker(flag: Path) -> list[str]:
 
     livegate record/check 경로다. additional_reviewer 는 이미 같은 락을 보유한 `_save_round_ledger` 안에서
     `_unresolved_must_fix_data` + `_write_release_must_fix_marker` 를 직접 호출해 재진입을 피한다."""
-    ledger = _release_rounds_ledger(flag)
-    with fs.exclusive_file_lock(_release_rounds_lock(ledger)):
+    ledger = release._release_rounds_ledger(flag)
+    with fs.exclusive_file_lock(release._release_rounds_lock(ledger)):
         problems = _unresolved_must_fix_gates(ledger)
-        _write_release_must_fix_marker(flag, problems)
+        release._write_release_must_fix_marker(flag, problems)
     return problems
-
-
-def _refuse_release_for_must_fix(flag: Path, cwd: str, problems: list[str]) -> int:
-    """미해소 must-fix 잔여로 릴리즈를 거부한다 — fail 기록 + 목록·처방 + rc1.
-
-    fail 을 **기록까지** 하는 이유는 훅이 `livegate check` 로 소비하는 그 파일이 판정의 하류이기
-    때문이다 — 거부만 하고 파일을 그대로 두면 같은 HEAD 에 남은 옛 green 이 push 를 통과시킨다
-    (이 게이트가 막으려는 바로 그 형상). 실행 전 거부라 수집 N 은 0 이고 rc 는 미실행(None)이다.
-    """
-    flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (pass 기록과 같은 규칙)
-    _write_json_atomic(flag, {
-        "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
-        "ts": now_utc(), "reason": _LIVEGATE_MUST_FIX_REASON,
-    })
-    print(_MUST_FIX_BLOCK_GUIDANCE.format(
-        count=len(problems), items="\n".join(problems),
-        ledger=_release_rounds_ledger(flag)), file=sys.stderr)
-    return 1
-
-
-_ENGINE_DRIFT_LISTED_MAX = 20   # stderr 목록 상한(넘으면 "외 N건"으로 접는다) — must-fix 목록과 별개 상수.
 
 
 def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
@@ -6982,9 +4531,9 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
             # 원자 fail 기록(must-fix 축과 같은 기록 함수) 뒤 표준 skew 진단 경계로 넘긴다 —
             # 사전 pass 기록이 남아 있어도 이 fail 로 교체한다(false-green 잔존 0).
             flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
-            _write_json_atomic(flag, {
+            regression_store._write_json_atomic(flag, {
                 "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
-                "ts": now_utc(), "reason": _LIVEGATE_ENGINE_DRIFT_REASON,
+                "ts": clock.now_utc(), "reason": release._LIVEGATE_ENGINE_DRIFT_REASON,
             })
             return _report_engine_rev_skew_at_terminal(exc)
         raise   # 마킹 안 된 RuntimeError(예 EmptyShippingInventoryError)는 종전대로 전파.
@@ -6997,124 +4546,17 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
     if not changes:
         return 0
     flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
-    _write_json_atomic(flag, {
+    regression_store._write_json_atomic(flag, {
         "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
-        "ts": now_utc(), "reason": _LIVEGATE_ENGINE_DRIFT_REASON,
+        "ts": clock.now_utc(), "reason": release._LIVEGATE_ENGINE_DRIFT_REASON,
     })
-    shown = changes[:_ENGINE_DRIFT_LISTED_MAX]
+    shown = changes[:release._ENGINE_DRIFT_LISTED_MAX]
     items = "\n".join(f"  · {rel}" for rel in shown)
     remainder = len(changes) - len(shown)
     if remainder > 0:
         items += f"\n  … 외 {remainder}건"
-    print(_ENGINE_DRIFT_BLOCK_GUIDANCE.format(count=len(changes), items=items), file=sys.stderr)
+    print(release._ENGINE_DRIFT_BLOCK_GUIDANCE.format(count=len(changes), items=items), file=sys.stderr)
     return 1
-
-
-def _livegate_cwd(override: str | None = None, session: str | None = None) -> str:
-    """라이브 wave(`pytest -m release`)를 돌릴 작업 디렉토리를 해소한다.
-
-    회귀 cwd(`_regression_cwd`)와 갈리는 이유는 실행 주체가 다르기 때문이다 — 회귀는 push 되는
-    트리 자신이 자기 스위트를 돌지만, 릴리즈 라이브 게이트는 **PM 홈에서 실행돼 코드가 사는 슬롯
-    트리를 겨냥**한다. 그래서 슬롯 해소는 여기 남는다.
-
-    해소 순서:
-      - `override`(CLI `--cwd` — 릴리즈 readonly 슬롯 핀)가 있으면 그것,
-      - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
-        슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 지목용),
-      - 활성 슬롯이 미해소면 **fail-loud**(`sys.exit`) — `--task <task>`/`--cwd <path>`
-        명시를 안내한다.
-
-    슬롯 하나만 쓰는 홈도 그 홈 자신이 슬롯 행이라 첫 층에서 해소된다(행의 `slot` 이 홈을
-    가리킨다). 그래서 "행이 없으니 이 트리겠지"라는 `REPO` 침묵 폴백을 두지 않는다 — 그
-    폴백은 코드가 없는 PM 홈을 라이브 wave 대상으로 만들어 broken slot 수집·false fail 을
-    내던 자리다(livegate `--cwd` 우회의 근원). 모호(leased ≥2)와 미등록(행 0)은 같은 이유로
-    같은 중단을 탄다.
-    """
-    if override:
-        return override
-    slot = _active_slot_path(session)
-    if slot:
-        return slot
-    sys.exit(
-        "[중단] livegate cwd 미해소 — 이 세션의 활성 슬롯을 특정할 수 없다(활성 슬롯이 "
-        "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 침묵 폴백하면 "
-        "tests 없는 트리에서 broken slot 을 수집해 false fail 이 되므로 거부한다. "
-        "`--task <task>`(폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)로 실행하거나 "
-        f"`--cwd <worktree 절대경로>` 로 직접 지정하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
-    )
-
-
-def _release_platform_commands(cwd: str) -> tuple[tuple[str, str], ...]:
-    """실제 선언 파일이 없는 legacy만 loader 없이 처리한다. 존재/손상은 기존 판독자에 맡긴다."""
-    try:
-        (Path(cwd) / ".project_manager" / "local.conf").lstat()
-    except FileNotFoundError:
-        return ()
-    return _platform_test_commands(cwd)
-
-
-def _release_core_context(flag: Path, cwd: str, session: str | None = None):
-    """같은 F의 core 앵커에서 선언을 해소한다. readonly L은 선언 앵커를 대체하지 않는다."""
-    core_flag = _regression_flag_for(session, local_dir=flag.parent)
-    core = None
-    if core_flag.exists():
-        try:
-            core = json.loads(fs.read_text_shared(core_flag, encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None, cwd, (), "core record unreadable"
-        if not isinstance(core, dict):
-            return None, cwd, (), "core record is not an object"
-    copied_flag = _regression_flag_for(session, local_dir=LOCAL_DIR)
-    if core is None and copied_flag != core_flag and copied_flag.exists():
-        try:
-            copied = json.loads(fs.read_text_shared(copied_flag, encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            copied = None
-        if isinstance(copied, dict) and ("command" in copied or "platforms" in copied):
-            return None, cwd, (), "core 증거가 호출 사본에만 있어 engine-root 좌표와 불일치"
-    anchor = core.get("conf_anchor", cwd) if core is not None else cwd
-    if core is not None and ("command" in core or "platforms" in core) and (
-            not isinstance(anchor, str) or not os.path.isabs(anchor) or not Path(anchor).is_dir()):
-        return core, cwd, (), "core conf_anchor invalid"
-    try:
-        commands = _release_platform_commands(anchor)
-        if core is None and not commands:
-            anchor = str(flag.parent.parent.parent)
-            commands = _release_platform_commands(anchor)
-        if core is not None and "platforms" in core:
-            return core, anchor, commands, "old aggregate requires core rerun"
-    except (PlatformConfigError, OSError) as exc:
-        return core, anchor, (), f"platform 설정 오류: {exc}"
-    return core, anchor, commands, None
-
-
-def _release_evidence_problem(data: dict, flag: Path, rev: str) -> str | None:
-    """저장 snapshot과 현재 A/L/F·core·선언·명령을 재검증한다. 자식은 실행하지 않는다."""
-    anchor, cwd = data.get("conf_anchor"), data.get("cwd")
-    for path in (anchor, cwd):
-        if not isinstance(path, str) or not os.path.isabs(path) or not Path(path).is_dir():
-            return "release coordinates invalid"
-        if git._git_head_at(path) != rev:
-            return "release head drift"
-    resolved, mode = _resolve_livegate_flag(cwd)
-    core_resolved, core_mode = _resolve_regression_flag(anchor)
-    if (mode == _LG_BROKEN or core_mode == _LG_BROKEN
-            or resolved != flag or core_resolved.parent != flag.parent):
-        return "release evidence coordinates mismatch"
-    core, current_anchor, commands, problem = _release_core_context(flag, cwd, data.get("session"))
-    if problem is not None:
-        return problem
-    if current_anchor != anchor or not commands or core is None:
-        return "release declaration/core missing"
-    problem = _core_record_problem(core, anchor, rev, session=data.get("session"),
-                                   local_dir=flag.parent, release=True)
-    if problem is not None:
-        return problem
-    for key in ("scope", "collected", "previous_collected", "command", "conf_anchor", "session"):
-        if data.get(key) != core.get(key):
-            return f"core snapshot {key} mismatch"
-    normalized = {k: v for k, v in data.items() if k not in {"command", "cwd"}}
-    return _platform_record_problem(normalized, anchor, rev, commands, livegate=True)
 
 
 def _livegate_record(args: argparse.Namespace) -> int:
@@ -7144,13 +4586,13 @@ def _livegate_record(args: argparse.Namespace) -> int:
     _explicit_cwd = getattr(args, "cwd", None)
     live_session = (None if _explicit_cwd
                     else lease_store.session_name(_home(), task_args._execution_actor_session_override(_home(), args)))
-    cwd = _livegate_cwd(_explicit_cwd, session=live_session)
+    cwd = regression_cmd._livegate_cwd(_home(), _explicit_cwd, session=live_session)
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
     # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
     # release`(라이브 wave)를 헛돌리기 전에 fail-loud 로 조기 거부한다.
-    flag, mode = _resolve_livegate_flag(cwd)
-    if mode == _LG_BROKEN:
+    flag, mode = regression_store._resolve_livegate_flag(_home(), cwd)
+    if mode == regression_store._LG_BROKEN:
         # 보호훅은 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소)
         # → 기록 위치와 훅 read 위치가 갈릴 수 있어 pass 위장을 찍지 않고 fail-loud 거부한다
         # (false-green 백스톱). engine-root sidecar 수리 또는 `pm-config repo add` 재실행.
@@ -7161,8 +4603,8 @@ def _livegate_record(args: argparse.Namespace) -> int:
         return 1
     cwd = os.path.abspath(cwd)
     flag.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(flag, {"head": "", "status": "fail",
-                              "n": 0, "rc": "pending", "ts": now_utc()})
+    regression_store._write_json_atomic(flag, {"head": "", "status": "fail",
+                              "n": 0, "rc": "pending", "ts": clock.now_utc()})
     # 미해소 must-fix 잔여 — 값비싼 라이브 wave 를 돌리기 **전에** 본다(BROKEN 조기 거부와 같은
     # 축). 장부가 없는 형상(추가 리뷰어 비활성 채택자)은 무대상이라 그대로 지나간다.
     try:
@@ -7175,7 +4617,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     if problems:
-        return _refuse_release_for_must_fix(flag, cwd, problems)
+        return release._refuse_release_for_must_fix(flag, cwd, problems)
     # 실행 엔진 사본 drift — must-fix 거부 직후·라이브 wave **전**(같은 축: 값비싼 wave 를 헛돌리기
     # 전에 조기 거부). stale 사본이면 이 판정 자체가 false 가 되므로 wave 보다 앞에 둔다.
     drift_rc = _refuse_release_for_engine_drift(flag, cwd)
@@ -7186,8 +4628,8 @@ def _livegate_record(args: argparse.Namespace) -> int:
         if live_session and len(lease_store.leased_sessions(LEASES_FILE)) >= 2
         else None
     )
-    regression_data, platform_anchor, platform_commands, problem = _release_core_context(
-        flag, cwd, regression_session,
+    regression_data, platform_anchor, platform_commands, problem = release._release_core_context(
+        _home(), flag, cwd, regression_session,
     )
     start_head = git._git_head_at(cwd) if platform_commands else ""
     snapshot = {}
@@ -7198,12 +4640,12 @@ def _livegate_record(args: argparse.Namespace) -> int:
         if not start_head or regression_data is None:
             problem = "core evidence missing"
         else:
-            problem = _core_record_problem(
-                regression_data, platform_anchor, start_head, session=regression_session,
+            problem = regression._core_record_problem(
+                _home(), regression_data, platform_anchor, start_head, session=regression_session,
                 local_dir=flag.parent, release=True,
             )
-            core_flag, core_mode = _resolve_regression_flag(platform_anchor)
-            if core_mode == _LG_BROKEN or core_flag.parent != flag.parent:
+            core_flag, core_mode = regression_store._resolve_regression_flag(_home(), platform_anchor)
+            if core_mode == regression_store._LG_BROKEN or core_flag.parent != flag.parent:
                 problem = "core evidence coordinates mismatch"
         if problem is None and not Path(cwd).is_dir():
             problem = "release cwd missing"
@@ -7212,66 +4654,66 @@ def _livegate_record(args: argparse.Namespace) -> int:
                         for key in ("scope", "collected", "previous_collected", "command", "conf_anchor")}
             if "session" in regression_data:
                 snapshot["session"] = regression_data["session"]
-            cells, platforms_passed, platform_rc = _run_platform_cells(
+            cells, platforms_passed, platform_rc = regression._run_platform_cells(
                 platform_commands, cwd, start_head, env,
                 core_passed=True, head_after_core=start_head,
             )
-            provisional = {"head": start_head, "status": "pass", "n": LIVEGATE_RELEASE_PIN,
-                           "rc": 0, "ts": now_utc(), "cwd": cwd,
+            provisional = {"head": start_head, "status": "pass", "n": regression.LIVEGATE_RELEASE_PIN,
+                           "rc": 0, "ts": clock.now_utc(), "cwd": cwd,
                            "platforms": cells, **snapshot}
             if not platforms_passed:
                 provisional.update(status="fail", n=0, rc=platform_rc)
-                _write_json_atomic(flag, provisional)
+                regression_store._write_json_atomic(flag, provisional)
                 problem = f"platform red: {platform_rc}"
             else:
-                problem = _release_evidence_problem(provisional, flag, start_head)
+                problem = release._release_evidence_problem(_home(), provisional, flag, start_head)
     if problem is not None:
         if provisional is None:
-            _write_json_atomic(flag, {"head": start_head, "status": "fail", "n": 0,
-                                      "rc": problem, "ts": now_utc()})
+            regression_store._write_json_atomic(flag, {"head": start_head, "status": "fail", "n": 0,
+                                      "rc": problem, "ts": clock.now_utc()})
         elif provisional["status"] == "pass":
             provisional.update(status="fail", n=0, rc="evidence-drift")
-            _write_json_atomic(flag, provisional)
+            regression_store._write_json_atomic(flag, provisional)
         print(f"livegate: fail — {problem}. 릴리즈 차단.", file=sys.stderr)
         return 1
-    print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
+    print(f"livegate: $ {release.LIVEGATE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    result = subprocess.run(LIVEGATE_TEST_CMD, shell=True, cwd=cwd, env=env,
+    result = subprocess.run(release.LIVEGATE_TEST_CMD, shell=True, cwd=cwd, env=env,
                             capture_output=True, text=True,
                             encoding="utf-8", errors="replace")
     rc = result.returncode
     output = (result.stdout or "") + (result.stderr or "")
     if output.strip():
         print(output if output.endswith("\n") else output + "\n", end="")
-    n = _livegate_ran_count(output)
+    n = pytest_report._livegate_ran_count(output)
     head = git._git_head_at(cwd)
-    passed = (rc == 0 and n == LIVEGATE_RELEASE_PIN
+    passed = (rc == 0 and n == regression.LIVEGATE_RELEASE_PIN
               and (not platform_commands or (bool(start_head) and head == start_head)))
     status = "pass" if passed else "fail"
     flag.parent.mkdir(parents=True, exist_ok=True)
-    record = {"head": head, "status": status, "n": n, "rc": rc, "ts": now_utc()}
+    record = {"head": head, "status": status, "n": n, "rc": rc, "ts": clock.now_utc()}
     if platform_commands:
         record.update(snapshot)
         record.update(head=start_head, cwd=cwd, platforms=cells)
         if passed:
-            problem = _release_evidence_problem(record, flag, start_head)
+            problem = release._release_evidence_problem(_home(), record, flag, start_head)
             if problem is not None:
                 record.update(status="fail", rc="evidence-drift")
                 passed = False
         elif head != start_head:
             record["rc"] = "head-drift"
-    _write_json_atomic(flag, record)
+    regression_store._write_json_atomic(flag, record)
     if passed:
         print(f"livegate: pass @ {head[:8] or '?'} "
-              f"(release {n}/{LIVEGATE_RELEASE_PIN} green) ✓")
+              f"(release {n}/{regression.LIVEGATE_RELEASE_PIN} green) ✓")
         return 0
     if platform_commands and head != start_head:
         reason = f"HEAD drift ({start_head[:8]} → {head[:8] or '?'})"
     elif rc != 0:
         reason = f"release red (rc={rc})"
     else:
-        reason = (f"수집 {n} ≠ pin {LIVEGATE_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
+        reason = (f"수집 {n} ≠ pin {regression.LIVEGATE_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
                   " (수집 위장 차단)")
     print(f"livegate: fail @ {head[:8] or '?'} — {reason}. 릴리즈 차단.", file=sys.stderr)
     return 1
@@ -7284,7 +4726,7 @@ def _livegate_check(args: argparse.Namespace) -> int:
     rev 불일치 — 각각 다른 메시지로 훅이 그대로 surface). fail-soft 아님(명확 rc).
 
     읽을 livegate.json 은 record 와 **동일 해소**(`_resolve_livegate_flag` — engine-root sidecar)
-    를 거친다(단일 소스). 모듈상수 `LIVEGATE_FLAG` 직독이 아니라, 어느 board.py 사본/cwd 로
+    를 거친다(단일 소스). 기본 위치(`pm_paths.livegate_flag`) 직독이 아니라, 어느 board.py 사본/cwd 로
     check 하든 push 보호훅이 기록한 **바로 그** 파일을 읽어 stale/wrong-copy 오독(false-green/
     false-red)을 원천 차단한다 — record(`_livegate_record`)의 기록-위치 정렬과 대칭이다.
     `cwd` = `--cwd`(record 와 대칭·미지정 시 이 board.py 사본의 `REPO` — 그 repo 의 `core.hooksPath`
@@ -7296,10 +4738,10 @@ def _livegate_check(args: argparse.Namespace) -> int:
         return 1
     # 읽을 위치를 push 보호훅 read 위치와 정렬(record 와 대칭·단일 소스). 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 사본으로 check 해도
-    # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/훅 부재면 현행 LIVEGATE_FLAG(REPO/.local) 폴백 무변경.
+    # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/훅 부재면 현행 `pm_paths.livegate_flag`(REPO/.local) 폴백 무변경.
     cwd = getattr(args, "cwd", None) or str(REPO)
-    flag, mode = _resolve_livegate_flag(cwd)
-    if mode == _LG_BROKEN:
+    flag, mode = regression_store._resolve_livegate_flag(_home(), cwd)
+    if mode == regression_store._LG_BROKEN:
         # 보호훅 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소) →
         # 기록 위치와 훅 read 위치가 갈릴 수 있어 pass/fail 판정을 신뢰 못 한다. 조용한 통과 대신
         # record 와 동형 fail-loud 거부(false-green/false-red 백스톱). engine-root
@@ -7323,9 +4765,9 @@ def _livegate_check(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     if problems:
-        print(_MUST_FIX_BLOCK_GUIDANCE.format(
+        print(release._MUST_FIX_BLOCK_GUIDANCE.format(
             count=len(problems), items="\n".join(problems),
-            ledger=_release_rounds_ledger(flag)), file=sys.stderr)
+            ledger=release._release_rounds_ledger(flag)), file=sys.stderr)
         return 1
     if not flag.exists():
         print("livegate: 기록 없음 — `board.py livegate record` 필요 (릴리즈 차단).",
@@ -7343,12 +4785,12 @@ def _livegate_check(args: argparse.Namespace) -> int:
               "— `livegate record` 재실행 필요 (릴리즈 차단).", file=sys.stderr)
         return 1
     if "platforms" in data:
-        problem = _release_evidence_problem(data, flag, rev)
+        problem = release._release_evidence_problem(_home(), data, flag, rev)
         if problem is not None:
             print(f"livegate: platform snapshot 불일치({problem}) — 릴리즈 차단.", file=sys.stderr)
             return 1
     else:
-        _core, _anchor, commands, problem = _release_core_context(flag, os.path.abspath(cwd))
+        _core, _anchor, commands, problem = release._release_core_context(_home(), flag, os.path.abspath(cwd))
         if commands or problem is not None:
             print(f"livegate: platform snapshot 누락({problem or '현재 선언 플랫폼 존재'}) — "
                   "livegate record 재실행 필요. 릴리즈 차단.", file=sys.stderr)
@@ -7362,10 +4804,6 @@ def cmd_livegate(args: argparse.Namespace) -> int:
     if args.action == "record":
         return _livegate_record(args)
     return _livegate_check(args)
-
-
-def now_utc() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
 def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
@@ -8370,7 +5808,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
         new_path = move_ticket(path, "claimed")
         fm["status"] = "claimed"
         fm["claimed_by"] = assignee
-        fm["claimed_at"] = now_utc()
+        fm["claimed_at"] = clock.now_utc()
         fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
         dump_ticket(new_path, fm, body)
     except FileNotFoundError:
@@ -8437,7 +5875,7 @@ def _pm_verified_delegate_problem(
     return checker(
         spec_text, rounds,
         reviewer_role=reviewer_role,
-        surface_floor=gate_residual_must_fix(entry),
+        surface_floor=review_rounds.gate_residual_must_fix(entry),
     )
 
 
@@ -8629,7 +6067,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
 
         new_path = move_ticket(path, "done")
         fm["status"] = "done"
-        fm["completed_at"] = now_utc()
+        fm["completed_at"] = clock.now_utc()
         dump_ticket(new_path, fm, body)
     refresh_board()
     # 스코프 = 이 mutation 이 만진 두 경로만 — 공유 board 의 무관한 미커밋 작업이
@@ -8723,7 +6161,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
         # claimed_rev 도 함께 비운다 — 소유가 풀린 티켓에 옛 claim 앵커를 남기지 않는다.
         fm.pop("claimed_rev", None)
         if takeover:
-            body = body + (f"\n## Takeover\n{reason} — {now_utc()} "
+            body = body + (f"\n## Takeover\n{reason} — {clock.now_utc()} "
                            f"(소유 `{previous_owner}` 해제 · 실행 task "
                            f"`{takeover_task}`)\n")
         dump_ticket(new_path, fm, body)
@@ -8903,7 +6341,7 @@ def cmd_discard(args: argparse.Namespace) -> int:
         # 되돌아갈 목적지를 이 값으로 판정한다(부재 = 비-draft 출처 · 기존 discarded 자산과
         # 하위호환).
         fm["discarded_from"] = status
-        note = (f"\n## Discarded\n{args.disposition} — {reason} — {now_utc()}\n")
+        note = (f"\n## Discarded\n{args.disposition} — {reason} — {clock.now_utc()}\n")
         dump_ticket(new_path, fm, body + note)
     refresh_board()
     ready = _board_git_sync_best_effort(
@@ -8967,7 +6405,7 @@ def cmd_reopen(args: argparse.Namespace) -> int:
                 fm["cluster"] = of_record
             else:
                 fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
-        note = f"\n## Reopened\n{reason} — {now_utc()} (이전 상태 {status}/)\n"
+        note = f"\n## Reopened\n{reason} — {clock.now_utc()} (이전 상태 {status}/)\n"
         dump_ticket(new_path, fm, body + note)
     refresh_board()
     touched = ((path, new_path) if cluster_ledger is None
@@ -9023,7 +6461,7 @@ def _write_init_local_conf() -> None:
     """
     # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
     # (임계 구간을 프로브 시간만큼 늘리지 않는다).
-    detected_py = _detect_py()
+    detected_py = python_env._detect_py()
     detected_test_cmd = python_env.default_pytest_cmd(detected_py)
     with _local_conf_write_lock(LOCAL_CONF):
         if not LOCAL_CONF.exists():
@@ -9336,7 +6774,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         PM_STATE_FILE.write_text(seed, encoding="utf-8", newline="\n")
         print(f"✓ pm_state.md 생성 ({pm_paths._rel_to_repo(_home(), PM_STATE_TEMPLATE)} 에서)")
     # 미설치면 사유를 `install_pre_push_hook` 이 stderr 에 남긴다 — 여기서는 설치한 자리를 밝힌다.
-    if install_pre_push_hook():
+    if pre_push_hook.install_pre_push_hook(_home()):
         print("✓ pre-push 게이트 훅 설치 — 자기 저장소의 .git/hooks "
               "(lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
     # board submodule 이 분리된 형상이면 ignore=all 자동 설정 — design(코드) git 이
@@ -12735,8 +10173,8 @@ def status_snapshot() -> dict:
         "counts": counts,
         "open": open_rows,
         "lint": lint,
-        "regression": _sidecar_document(_resolve_regression_flag(str(REPO))[0]),
-        "livegate": _sidecar_document(_resolve_livegate_flag(str(REPO))[0]),
+        "regression": _sidecar_document(regression_store._resolve_regression_flag(_home(), str(REPO))[0]),
+        "livegate": _sidecar_document(regression_store._resolve_livegate_flag(_home(), str(REPO))[0]),
     }
 
 
@@ -12756,7 +10194,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
     """
     gate = getattr(args, "gate", False)
     if gate:
-        stale_hook = _stale_pre_push_hook_refusal()
+        stale_hook = pre_push_hook._stale_pre_push_hook_refusal(_home())
         if stale_hook is not None:
             print(stale_hook, file=sys.stderr)
             return 1
@@ -15026,7 +12464,7 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
         # `~`/`~user` 확장은 `_expanded_user_path` 단일 규칙 — 없는 `~user` 는 플랫폼 무관하게
         # 여기서 해소 실패로 끝난다. 종전 `Path.expanduser()` 는 POSIX 만 RuntimeError 였고
         # Windows 는 phantom `C:\\Users\\<name>` 을 조립해 아래 "경로 부재/이동" 으로 갈렸다.
-        candidate = _expanded_user_path(upstream)
+        candidate = pm_paths._expanded_user_path(upstream)
         if not candidate.is_absolute():
             candidate = REPO / candidate
         candidate = candidate.resolve()
@@ -16351,7 +13789,7 @@ def _refresh_board_locked() -> None:
         "---",
         "title: Ticket Board",
         "type: dashboard",
-        f"updated: {now_utc()}",
+        f"updated: {clock.now_utc()}",
         "---",
         "",
         "# Ticket Board",
@@ -16668,7 +14106,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--final", action="store_true",
                    help="수렴 후 FULL 게이트 — 활성 리뷰 사이클 중에도 강등하지 않는다 "
                         "(pre-push 훅·핸드오프가 쓰는 경로)")
-    p.set_defaults(fn=cmd_regression)
+    p.set_defaults(fn=lambda args: regression_cmd.cmd_regression(_home(), args))
 
     p = sub.add_parser("livegate",
                        help="릴리즈 라이브 게이트 — record=`pytest -m release` "

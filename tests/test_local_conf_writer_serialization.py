@@ -397,7 +397,7 @@ class _Barrier:
 def _init_merge(board, monkeypatch, conf):
     """board init 의 비파괴 병합(read→merge→write)을 대상 conf 에 태우는 클로저."""
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     return board._write_init_local_conf
 
 
@@ -743,7 +743,7 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     taken: list[str] = []
     _spy_lock(board.fs, monkeypatch, taken)
 
@@ -796,7 +796,7 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
     conf = _conf_at(tmp_path, existing)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     board._write_init_local_conf()
     pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
 

@@ -41,6 +41,7 @@ from _textio import normalize_newlines, utf8_child_env
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
 from pm_engine.infra.harness import contract, watchdog
+from pm_engine.infra import pre_push_hook, python_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1963,9 +1964,9 @@ def board(tmp_path, monkeypatch):
                       "PM_STATE_FILE": pm / "wiki" / "pm_state.md",
                       "PM_STATE_TEMPLATE": pm / "wiki" / "pm_state.template.md"}.items():
         monkeypatch.setattr(mod, name, val)
-    monkeypatch.setattr(mod, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
-    monkeypatch.setattr(mod, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod

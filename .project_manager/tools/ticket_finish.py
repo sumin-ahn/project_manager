@@ -47,8 +47,9 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
+from pm_engine.domain import identity_args, pytest_report, ticket_rules  # noqa: E402
 from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, raw_output, repo_coordinates, repo_files, ticket_store  # noqa: E402
+from pm_engine.app import regression, slot_resolution  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -129,34 +130,6 @@ def _load_pm_log():
     )
 
 
-# ── 회귀 cwd 자동해소 (pm_handoff `_regression_cwd` 재사용·DRY) ────
-# 분리된 PM 홈엔 `tests/` 가 없으므로, 홈 cwd 에서 ticket_finish 를 돌리면
-# 회귀가 활성 worktree 슬롯(tests/ 보유)에서 돌아야 한다. pm_handoff 가 이미 이 판정을
-# 모듈-레벨 `_regression_cwd(worktree_slot, areas_file, leases_file)` 로 해결했고(
-# pm_bootstrap `_auto_slot` 동적로드 재사용·self-host 해소 검증됨), board.py·pm_bootstrap 과
-# *같은 위치*에 산다 — 복붙 대신 동적 로드해 그 함수를 그대로 위임한다(`_auto_slot` 복제 0).
-
-def _load_pm_handoff():
-    """pm_handoff 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
-
-    `_load_board_module`·`_load_domain_module` 과 동형 — `spec_from_file_location`
-    (스크립트-위치 앵커). 부재/실패는 None 이고 호출부가 `str(REPO)` 로 폴백하므로 무해.
-    """
-
-    hp_path = TOOLS_DIR / "pm_handoff.py"
-    if not hp_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            hp_path, "pm_handoff.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # pm_handoff 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
 def _load_additional_reviewer():
     """additional_reviewer 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
 
@@ -212,53 +185,39 @@ def _load_private_refs():
 
 
 def _regression_cwd(worktree_slot: str | None = None) -> str:
-    """회귀를 실행할 작업 디렉토리를 해소한다 (pm_handoff `_regression_cwd` 위임).
+    """회귀를 실행할 작업 디렉토리를 해소한다 (`slot_resolution._regression_cwd` 위임).
 
-    해소 순서(pm_handoff 와 동형):
+    해소 순서:
       - `worktree_slot`(multi-PM 명시) 가 있으면 `REPO / worktree_slot`,
-      - 없으면 pm_handoff `_regression_cwd` 가 bootstrap `_auto_slot` 으로 단일 self-host
-        슬롯을 자동해소(`work/<repo>_<N>`),
-      - 그것도 없으면(판정 불능 — 모호·엔진 사본 부재) **현 `REPO`**. 등록된 홈은 홈 자신이
-        슬롯 행이라 위 층에서 해소된다.
+      - 없으면 `slot_resolution._auto_slot` 으로 단일 self-host 슬롯을 자동해소(`work/<repo>_<N>`),
+      - 그것도 없으면(판정 불능 — 모호) **현 `REPO`**. 등록된 홈은 홈 자신이 슬롯 행이라 위 층에서
+        해소된다.
 
-    pm_handoff 를 동적 로드해 그 함수에 위임하되(DRY — `_auto_slot` 복제 0) **앵커는 이 도구의
-    `REPO` 를 넘긴다**(`repo_root=`). 그 인자를 생략하면 해소가 pm_handoff 모듈의 `REPO` 를 따라
-    가는데, 두 값이 갈리는 형상(호출자가 앵커를 재지정한 경우)에서는 해소된 코드 트리가 이 도구의
-    PM 홈과 무관한 트리를 가리켜 stage/측정이 엉뚱한 repo 로 간다. pm_handoff 부재/로드 실패는
-    `str(REPO)` 폴백(현행 100% 보존·additive).
+    앵커는 이 도구의 `REPO` 로 만든 Home 이다(호출자가 앵커를 재지정하면 해소도 그 트리를 따른다).
+    해소 실패는 `str(REPO)` 폴백(현행 보존).
     """
-    hp = _load_pm_handoff()
-    if hp is not None:
-        try:
-            return hp._regression_cwd(worktree_slot, repo_root=REPO)
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 REPO 폴백.
-            if _is_engine_rev_skew(exc):
-                raise
-            pass
+    try:
+        return slot_resolution._regression_cwd(pm_paths.home_at(REPO), worktree_slot)
+    except Exception:  # noqa: BLE001 — fail-soft: 위임 실패는 REPO 폴백.
+        pass
     return str(REPO)
 
 
 # ── 복구 문의 `--repo/--slot` 제품 트리 (pm_handoff 미러) ──
 # `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`)에서만 받고, 그 슬롯이 복구할 제품
 # 트리다(정체성 아님). 정상 종결의 정체성은 `--task`(필수)이고
-# 작업 트리는 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`). 판정은 pm_handoff
-# `_resolve_explicit_identity_slot`(대여 기록 조인 검증)을 동적 로드해 재사용한다(복제 0).
+# 작업 트리는 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`). 판정은
+# `slot_resolution._resolve_explicit_identity_slot`(대여 기록 조인 검증)이 한다(복제 0).
 
 def _resolve_finish_slot(repo: str, slot: int) -> tuple[str | None, str | None]:
     """복구 문의 `--repo`/`--slot` 에서 슬롯 키를 해소한다 — `(worktree_slot, error_msg)`.
 
-      - `(work/<repo>_<N>, None)` — pm_handoff `_resolve_explicit_identity_slot` 의 대여 기록
-        조인 검증을 통과한 슬롯 키.
-      - `(None, error_msg)` — 대여 기록과 조인 불일치(또는 장부 모순), 또는 pm_handoff 사본이
-        없음 → 호출부 fail-loud. 대여 기록을 읽지 못하면 pm_handoff 규칙대로 canonical 경로
-        `work/<repo>_<N>` 을 돌려준다.
+      - `(work/<repo>_<N>, None)` — `slot_resolution._resolve_explicit_identity_slot` 의 대여
+        기록 조인 검증을 통과한 슬롯 키.
+      - `(None, error_msg)` — 대여 기록과 조인 불일치(또는 장부 모순) → 호출부 fail-loud.
+        대여 기록을 읽지 못하면 canonical 경로 `work/<repo>_<N>` 을 돌려준다.
     """
-    hp = _load_pm_handoff()
-    if hp is None:
-        return None, (
-            f"pm_handoff.py 사본이 없어 work/{repo}_{slot} 을 대여 기록과 대조할 수 없다 — "
-            "엔진 사본을 `pm_update` 로 복구한 뒤 다시 실행하라.")
-    return hp._resolve_explicit_identity_slot(repo, slot)
+    return slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(REPO), repo, slot)
 
 
 def _probe_os_name() -> str:
@@ -298,7 +257,7 @@ def local_config() -> dict[str, str]:
 #
 # 활성 repo 가 비-Python(Go 등)이거나 `tests/` 자체가 없을 수 있어 `pytest tests/ -q` 가
 # 틀린다 — 회귀는 그 repo 의 `test_cmd`(areas.md 레지스트리 prefix 행/repo 행 > local.conf)를
-# 써야 한다. 해소 체인의 단일 사본은 pm_handoff `_resolve_gate_cmd` 이고 이 도구는 자기 트리의
+# 써야 한다. 해소 체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 이 도구는 자기 트리의
 # `Home` 을 넘겨 위임한다(아래 `_resolve_per_repo_test_cmd`).
 #
 # **프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
@@ -308,8 +267,8 @@ def local_config() -> dict[str, str]:
 def _load_board_module():
     """board.py 를 경로 import 해 모듈로 반환한다 (실패 시 None).
 
-    별도 함수로 둔 건 테스트가 모듈을 주입할 수 있게 하는 seam 이다.
-    PM-홈 오실행 detector·pytest 요약행 파서 seam 이 공유한다.
+    별도 함수로 둔 건 테스트가 board 를 hermetic 하게 가로채는 seam — 경로 전역을 tmp 로
+    재바인딩한 모듈을 주입할 수 있게 한다. PM-홈 오실행 detector 가 쓴다.
     """
     try:
         mod = _load_module_from_path(
@@ -370,24 +329,17 @@ def _resolve_per_repo_test_cmd() -> str | None:
       3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
       4. `python_env.default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
 
-    **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
-    위임한다(`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff
-    엔 없던 미러 이탈이 무prefix 채택자 결함의 절반이었다: 사본 둘을 만들면 다음 갱신에서
-    다시 갈린다. 해소 기준은 이 도구 앵커(`REPO`)의 `Home` 이다.
+    **체인 자체는 `regression._resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 위임한다
+    (`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff 엔 없던
+    미러 이탈이 무prefix 채택자 결함의 절반이었다: 사본 둘을 만들면 다음 갱신에서 다시 갈린다.
 
-    pm_handoff 부재/로드 실패는 None(기본 폴백·fail-soft·현행 보존)이고, 형제 사본 skew 는
-    fail-loud 로 올린다(`_regression_cwd` 와 동형).
+    해소 실패는 None(기본 폴백·fail-soft·현행 보존)이다.
     """
-    hp = _load_pm_handoff()
-    if hp is None:
-        return None
     try:
-        return hp._resolve_gate_cmd(pm_paths.home_at(REPO))
+        return regression._resolve_gate_cmd(pm_paths.home_at(REPO))
     except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 기본 폴백.
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         if getattr(exc, "_legacy_conf_key", False):
-            raise  # 구표기 conf 잔존도 같은 규칙 — pm_handoff 동형.
+            raise  # 구표기 conf 잔존은 삼키지 않는다(`regression._resolve_gate_cmd` 와 같은 규칙).
         return None
 
 
@@ -403,8 +355,8 @@ def _resolve_per_repo_test_cmd() -> str | None:
 # **fail-soft 가 아니다** — 비-pytest 게이트도 rc != 0 이면 그대로 중단한다(red 무시 없음).
 #
 # 이 세 wrapper 는 pm_handoff 와 **동형 미러**다(해소 체인과 달리 위임하지 않는다) — 각 도구가
-# 자기 `is_pytest_green`(요약행 seam 을 자기 board 로드에 묶는 기존 미러)을 판정에 쓰기
-# 때문이다. 두 미러가 갈리면 `tests/test_regression_gate_resolution.py` 파리티 가드가 red 다.
+# 자기 `is_pytest_green` 을 판정에 쓰기 때문이다. 두 미러가 갈리면
+# `tests/test_regression_gate_resolution.py` 파리티 가드가 red 다.
 _PYTEST_GATE_TOKEN = "pytest"
 
 # 해소 실패 시 실제로 실행하는 기본 argv 의 표시용 라벨 (dry-run 안내 문구).
@@ -436,37 +388,15 @@ def _regression_is_green(output: str, returncode: int, gate_cmd: str | None) -> 
 
 
 # ── pytest 출력 파서 ────────────────────────────────────────────────────
-# 요약행 탐색은 board.py 의 공용 seam(`_pytest_summary_line` — 끝에서-탐색)이 소유한다.
+# 요약행 탐색은 `pytest_report._pytest_summary_line`(끝에서-탐색)이 소유한다.
 # 출력 전체를 `re.search` 하면 캡처된 로그의 `3 passed`/`1 failed` 를 요약으로 먼저 만나
 # 마감 판정을 뒤집는다(false-green·false-RED 양방향·자기 사본 금지).
-
-# 이 도구가 실제로 호출하는 seam 함수 — **전부** 있어야 쓴다. 하나만 확인하고 통과시키면
-# 부분 동기된 혼합 사본에서 나머지 호출이 AttributeError 로 터진다(진단 없는 죽음).
-_PYTEST_SEAM_FUNCTIONS = ("_pytest_summary_line", "_pytest_outcome_count")
-# seam 부재 진단 — 뒤따르는 "회귀 red" 중단이 원인을 테스트 실패로 오도하지 않도록 구제책을 낸다.
-_PYTEST_SEAM_MISSING = ("pytest 파서: board.py 사본에 요약행 파서 seam 부재 — "
-                        "pm_update 로 엔진 전체를 재동기하라.")
-
-
-def _pytest_summary_seam():
-    """pytest 요약행 파서 공용 seam(board.py) — 부재/불완전 사본이면 None (fail-soft).
-
-    seam 이 없으면 파싱 실패(None)·red 판정으로 흘린다 — 로컬 첫-매칭 폴백을 두면 엔진
-    사본이 불완전할 때만 조용히 오판이 되살아나 진단이 더 어려워진다(마감은 fail-closed).
-    대신 중단 **바로 앞줄**에 구제책을 stderr 로 실어 red 사유를 잘못 읽지 않게 한다.
-    """
-    board = _load_board_module()
-    if board is not None and all(
-            hasattr(board, name) for name in _PYTEST_SEAM_FUNCTIONS):
-        return board
-    print(_PYTEST_SEAM_MISSING, file=sys.stderr)
-    return None
 
 
 def parse_pytest_output(output: str) -> tuple[int, int] | None:
     """pytest -q 출력에서 (passed, deselected) 를 파싱한다.
 
-    반환: (passed, deselected) — 파싱 실패 시 None (요약행 부재·파서 seam 부재 포함).
+    반환: (passed, deselected) — 파싱 실패 시 None (요약행 부재 포함).
 
     pytest -q 요약 라인 형식 예:
       "1472 passed, 24 deselected in 12.34s"
@@ -476,14 +406,13 @@ def parse_pytest_output(output: str) -> tuple[int, int] | None:
     red (failed > 0) 여부 판단은 호출 측이 한다 (failed 수 포함 파싱은 하지 않음).
     반환값 (passed, deselected) 만 추출한다.
     """
-    seam = _pytest_summary_seam()
-    line = seam._pytest_summary_line(output) if seam is not None else None
+    line = pytest_report._pytest_summary_line(output)
     if line is None:
         return None
-    passed = seam._pytest_outcome_count(line, "passed")
+    passed = pytest_report._pytest_outcome_count(line, "passed")
     if passed is None:
         return None
-    deselected = seam._pytest_outcome_count(line, "deselected") or 0
+    deselected = pytest_report._pytest_outcome_count(line, "deselected") or 0
     return passed, deselected
 
 
@@ -496,13 +425,12 @@ def is_pytest_green(output: str, returncode: int = 0) -> bool:
     """
     if returncode != 0:
         return False
-    seam = _pytest_summary_seam()
-    line = seam._pytest_summary_line(output) if seam is not None else None
+    line = pytest_report._pytest_summary_line(output)
     if line is None:
         return False
-    if seam._pytest_outcome_count(line, "failed") is not None:
+    if pytest_report._pytest_outcome_count(line, "failed") is not None:
         return False
-    return seam._pytest_outcome_count(line, "passed") is not None
+    return pytest_report._pytest_outcome_count(line, "passed") is not None
 
 
 # ── board.py 연동 ───────────────────────────────────────────────────────
@@ -1685,7 +1613,7 @@ class TicketFinisher:
         # worktree 슬롯(tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
         # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점의 REPO
         # 박제 대신 _default_run_pytest 가 런타임에 _regression_cwd() 로 self-host 슬롯을
-        # 자동해소한다(pm_handoff `_regression_cwd` 재사용·판정 불능은 REPO 폴백).
+        # 자동해소한다(`slot_resolution._regression_cwd` 재사용·판정 불능은 REPO 폴백).
         self._regression_cwd = str(regression_cwd) if regression_cwd else None
         self._task_workspace = Path(task_workspace) if task_workspace else None
 

@@ -46,6 +46,7 @@ from test_fresh_adopter_runtime_smoke import (
     _tickets_in,
 )
 from pm_engine.infra.harness import watchdog
+from pm_engine.app import regression
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
@@ -2389,8 +2390,8 @@ _RELEASE_TEST_FILES = (
 #     Codex→Claude ticket growth 3·T-0685).
 # ⚠ 커플드-pin: 이 값을 올리면 touches 밖의 전역 pin 도 함께 정합돼야 `livegate record`(수집
 #   N==pin)가 통과한다(orchestrator 가 갱신·test_command_card_usability.py 주석 참조):
-#   board.LIVEGATE_RELEASE_PIN · tests/test_board_livegate.py(하드코딩 fake/assert) ·
-#   tests/test_worktree_pool.py(_LIVEGATE_RELEASE_PIN 미러) · templates/*/board.py(pm_update 전파).
+#   regression.LIVEGATE_RELEASE_PIN · tests/test_board_livegate.py(하드코딩 fake/assert) ·
+#   tests/test_worktree_pool.py(_LIVEGATE_RELEASE_PIN 미러) · templates/*/pm_engine/app/regression.py(pm_update 전파).
 _EXPECTED_RELEASE_TESTS = 22
 
 
@@ -2425,14 +2426,10 @@ def _count_marked_tests(path: Path, marker: str) -> int:
 
 def test_release_pin_matches_board_livegate_pin():
     """pin 단일진실 교차 단언 (T-0221/T-0222 접점·PM 배선) — release 케이스 수가 바뀌면
-    board.LIVEGATE_RELEASE_PIN(livegate record 의 수집 게이트)도 함께 바뀌어야 한다.
+    regression.LIVEGATE_RELEASE_PIN(livegate record 의 수집 게이트)도 함께 바뀌어야 한다.
     한쪽만 갱신하면 여기서 red — livegate 가 구 pin 으로 신규/삭제 케이스를 위장 통과시키는
     드리프트를 차단한다."""
-    board_py = Path(__file__).resolve().parents[1] / ".project_manager" / "tools" / "board.py"
-    spec = importlib.util.spec_from_file_location("_board_pin_check", board_py)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert mod.LIVEGATE_RELEASE_PIN == _EXPECTED_RELEASE_TESTS
+    assert regression.LIVEGATE_RELEASE_PIN == _EXPECTED_RELEASE_TESTS
 
 
 def test_release_marker_count_is_pinned():

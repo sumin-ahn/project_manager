@@ -34,7 +34,7 @@ import pytest
 from _textio import utf8_child_env
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema, ticket_rules
-from pm_engine.infra import conf_store
+from pm_engine.infra import conf_store, pre_push_hook, python_env
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -111,7 +111,7 @@ def test_board_does_not_duplicate_the_known_key_registry():
 
 
 def test_board_platform_resolution_does_not_duplicate_the_local_conf_parser():
-    source = BOARD_PY.read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine" / "app" / "regression.py").read_text(encoding="utf-8")
     start = source.index("def _platform_test_commands(")
     end = source.index("\ndef _platform_marker(", start)
     resolver = source[start:end]
@@ -312,7 +312,7 @@ def test_fresh_init_conf_has_zero_unknown_keys(board, monkeypatch, tmp_path):
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 
@@ -335,7 +335,7 @@ def test_init_merge_path_surfaces_the_same_findings_pre_existing_unknown_key(boa
     conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 
@@ -407,10 +407,10 @@ def _wired_init_board(monkeypatch, tmp_path, alias: str):
         "PM_STATE_TEMPLATE": pm_dir / "wiki" / "pm_state.template.md",
     }.items():
         monkeypatch.setattr(module, name, value)
-    monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
-    monkeypatch.setattr(module, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return module

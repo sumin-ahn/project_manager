@@ -87,6 +87,7 @@ from typing import Callable, NamedTuple, NoReturn
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+import pm_engine  # noqa: E402
 from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
 from pm_engine.infra import conf_store, console, fs, manifest_store, python_env, raw_output, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
@@ -128,26 +129,10 @@ def _is_engine_rev_skew(exc):
     return getattr(exc, "_engine_rev_skew", False)
 
 
-def _load_min_python() -> tuple[int, int] | None:
-    """engine_rev.py 의 하한을 읽되 불완전/구형 사본이면 확인을 건너뛴다."""
-    try:
-        path = Path(__file__).resolve().with_name("engine_rev.py")
-        mod = _load_module_from_path(
-            path, "engine_rev.py", allow_unverified=True,
-        )
-        return tuple(mod.MIN_PYTHON)
-    except Exception:
-        # 부분/구형 사본에서 새 선행검사가 import 자체를 깨지 않게 한다. 정상 배포에서는
-        # engine_rev.MIN_PYTHON을 읽고 아래 명시 오류를 유지한다(board._detect_py 동형 fail-soft).
-        return None
-
-
 def _require_python(version_info=None) -> None:
     """tomllib import 전에 현재 인터프리터 하한을 명시적으로 검증한다."""
     current = sys.version_info if version_info is None else version_info
-    minimum = _load_min_python()
-    if minimum is None:
-        return
+    minimum = tuple(pm_engine.MIN_PYTHON)
     if tuple(current[:2]) < minimum:
         major, minor = minimum
         raise SystemExit(
@@ -815,30 +800,20 @@ _UPSTREAM_GIT_CONFIG_KV = (
     ("http.followRedirects", "false"),  # redirect 추적 차단(잔여 SSRF 표면).
 )
 
-# 인터프리터 탐지는 board.py 의 _detect_py() 가 단일 진실. pm_import 가 자체
-# 탐지를 신설하지 않고 board.py 를 재사용한다 — 플랫폼별 python3/python 해석을 한 곳에 둔다.
-# board.py import 가 실패하면(예: yaml 부재) 리눅스 현행과 동치인 "python3" 로 폴백.
+# 인터프리터 탐지는 `python_env._detect_py()` 가 단일 진실. pm_import 가 자체 탐지를 신설하지
+# 않는다 — 플랫폼별 python3/python 해석을 한 곳에 둔다. 탐지가 실패하면 리눅스 현행과 동치인
+# "python3" 로 폴백.
 _DEFAULT_PY_FALLBACK = "python3"
 
 
 def _detected_py() -> str:
-    """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 board.py 에서 탐지한다.
+    """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 탐지한다.
 
-    board.py 의 _detect_py() 를 import 해 재사용(단일 진실). board.py 와 같은 디렉토리에
-    있으므로 spec_from_file_location 으로 직접 로드 — sys.path 오염 없이 호출 가능.
-    어떤 이유로든 로드/호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
+    `python_env._detect_py()` 를 재사용(단일 진실). 호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
     """
-    # 같은 canonical tools 디렉토리의 board.py라도 부분/수동 복사로 rev가 어긋날 수 있으므로
-    # 로드 직후 verify한다. 일반 로드 실패는 폴백하되 marked skew만 아래에서 재-raise한다.
-    board_py = Path(__file__).resolve().parent / "board.py"
     try:
-        board_mod = _load_module_from_path(
-            board_py, "board.py", verifier=_verify_engine_rev,
-        )
-        return board_mod._detect_py()
-    except Exception as exc:  # noqa: BLE001 — 탐지 실패는 폴백, skew만 fail-loud.
-        if _is_engine_rev_skew(exc):
-            raise
+        return python_env._detect_py()
+    except Exception:  # noqa: BLE001 — 탐지 실패는 폴백.
         return _DEFAULT_PY_FALLBACK
 
 
@@ -846,7 +821,7 @@ def _default_test_cmd() -> str:
     """기본 test_cmd — `python_env.default_pytest_cmd` 의 xdist 가용성 판정과 같은 명령을 사용한다.
 
     상수 하드코딩(`python3 -m pytest`)은 Windows 에서 깨진다(`python3`=비기능 shim 또는
-    엉뚱한 Store Python). `_detected_py()` 를 경유해 board.py `_detect_py()` 의 실행검증된
+    엉뚱한 Store Python). `_detected_py()` 를 경유해 `python_env._detect_py()` 의 실행검증된
     인터프리터를 쓴다 — local.conf `runtime.py=` 와 동일 소스라 일관.
     """
     return python_env.default_pytest_cmd(_detected_py())

@@ -41,7 +41,7 @@ from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from _hook_commands import inline_script_payloads, powershell_native_arguments
 from pm_engine.domain import conf_schema
-from pm_engine.infra import conf_store
+from pm_engine.infra import conf_store, pre_push_hook
 
 REPO = Path(__file__).resolve().parents[1]
 CODEX = REPO / "templates" / "codex" / ".codex"
@@ -632,7 +632,7 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
-    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"

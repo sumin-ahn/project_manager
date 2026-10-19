@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from pm_engine.domain import areas_rules
 from pm_engine.infra import areas_store, lease_store, python_env
+from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -632,14 +633,14 @@ def test_test_cmd_override_wins(board):
     """--cmd override 가 최우선 — areas/local.conf 무시."""
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
     board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")
-    assert board._test_cmd("custom -x") == "custom -x"
+    assert regression._test_cmd(board._home(), "custom -x") == "custom -x"
 
 
 def test_test_cmd_solo_no_registry_falls_back_to_local_conf(board):
     """솔로(areas.md 부재) → local.conf test_cmd 폴백 (100% 하위호환)."""
     assert not board.AREAS_FILE.exists()
     board.LOCAL_CONF.write_text("test.cmd=pytest -q --strict\n", encoding="utf-8")
-    assert board._test_cmd(None) == "pytest -q --strict"
+    assert regression._test_cmd(board._home(), None) == "pytest -q --strict"
 
 
 def test_test_cmd_solo_no_local_conf_defaults_to_parallel_pytest_when_xdist_available(
@@ -647,7 +648,7 @@ def test_test_cmd_solo_no_local_conf_defaults_to_parallel_pytest_when_xdist_avai
 ):
     """솔로 + local.conf 부재 + xdist 가용 → 병렬 전체 회귀가 기계 기본."""
     monkeypatch.setattr(python_env, "_pytest_xdist_available", lambda _py: True)
-    assert board._test_cmd(None) == (
+    assert regression._test_cmd(board._home(), None) == (
         f"{board.sys.executable} -m pytest tests/ -q -n auto"
     )
 
@@ -661,7 +662,7 @@ def test_test_cmd_no_prefix_in_multi_mode_falls_back(board):
     """areas.md 존재하나 활성 prefix 미해소(local.conf prefix 없음) → 솔로 폴백."""
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
     board.LOCAL_CONF.write_text("test.cmd=fallback-cmd\n", encoding="utf-8")  # prefix 없음
-    assert board._test_cmd(None) == "fallback-cmd"
+    assert regression._test_cmd(board._home(), None) == "fallback-cmd"
 
 
 def test_test_cmd_empty_areas_test_cmd_falls_back(board):
@@ -671,7 +672,7 @@ def test_test_cmd_empty_areas_test_cmd_falls_back(board):
     """
     board.AREAS_FILE.write_text(_OLD_SCHEMA, encoding="utf-8")  # test_cmd 칼럼 없음
     board.LOCAL_CONF.write_text("prefix=PAY\ntest.cmd=legacy-cmd\n", encoding="utf-8")
-    assert board._test_cmd(None) == "legacy-cmd"
+    assert regression._test_cmd(board._home(), None) == "legacy-cmd"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -700,20 +701,20 @@ def test_active_slot_test_cmd_matches_session_leased(board, monkeypatch):
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
                                     test_cmd="ctest -R hil1"))
-    assert board._active_slot_test_cmd() == "ctest -R hil1"
+    assert regression._active_slot_test_cmd(board._home()) == "ctest -R hil1"
 
 
 def test_active_slot_test_cmd_absent_ledger_returns_none(board):
     """리스 장부 부재 → None (솔로/multi-PM-미배선 무영향·다음 레이어 폴백)."""
     assert not board.LEASES_FILE.exists()
-    assert board._active_slot_test_cmd() is None
+    assert regression._active_slot_test_cmd(board._home()) is None
 
 
 def test_active_slot_test_cmd_parse_failure_returns_none(board, monkeypatch):
     """장부 파싱 실패(손상 JSON) → None (fail-soft·에러로 죽지 않음)."""
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text("{ not json", encoding="utf-8")
-    assert board._active_slot_test_cmd() is None
+    assert regression._active_slot_test_cmd(board._home()) is None
 
 
 def test_test_cmd_slot_layer_wins_over_areas(board, monkeypatch):
@@ -727,7 +728,7 @@ def test_test_cmd_slot_layer_wins_over_areas(board, monkeypatch):
     board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")  # areas → pytest -q
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
                                     test_cmd="make hil2"))
-    assert board._test_cmd(None) == "make hil2"
+    assert regression._test_cmd(board._home(), None) == "make hil2"
 
 
 def test_test_cmd_slot_layer_session_mismatch_ignored(board, monkeypatch):
@@ -740,7 +741,7 @@ def test_test_cmd_slot_layer_session_mismatch_ignored(board, monkeypatch):
     board.AREAS_FILE.write_text(_SERVICE_A_ONLY, encoding="utf-8")
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="other",
                                     test_cmd="make hil2"))  # 다른 세션
-    assert board._test_cmd(None) == "pytest -q"  # areas 폴백(슬롯 무시)
+    assert regression._test_cmd(board._home(), None) == "pytest -q"  # areas 폴백(슬롯 무시)
 
 
 def test_test_cmd_slot_layer_non_leased_ignored(board, monkeypatch):
@@ -750,7 +751,7 @@ def test_test_cmd_slot_layer_non_leased_ignored(board, monkeypatch):
     _write_ledger(board, _lease_row(slot="work/service-a_1", repo="service-a",
                                     session="me", state="idle",
                                     test_cmd="make hil2"))
-    assert board._test_cmd(None) == "pytest -q"  # idle 슬롯 무시 → areas(service-a/PAY)
+    assert regression._test_cmd(board._home(), None) == "pytest -q"  # idle 슬롯 무시 → areas(service-a/PAY)
 
 
 def test_test_cmd_slot_layer_empty_test_cmd_falls_back_to_areas(board, monkeypatch):
@@ -759,7 +760,7 @@ def test_test_cmd_slot_layer_empty_test_cmd_falls_back_to_areas(board, monkeypat
     board.AREAS_FILE.write_text(_SERVICE_A_ONLY, encoding="utf-8")
     _write_ledger(board, _lease_row(slot="work/service-a_1", repo="service-a",
                                     session="me", test_cmd=None))  # 바인딩 없음
-    assert board._test_cmd(None) == "pytest -q"  # areas 폴백(service-a/PAY)
+    assert regression._test_cmd(board._home(), None) == "pytest -q"  # areas 폴백(service-a/PAY)
 
 
 def test_test_cmd_slot_layer_absent_ledger_falls_back_to_areas(board, monkeypatch):
@@ -767,7 +768,7 @@ def test_test_cmd_slot_layer_absent_ledger_falls_back_to_areas(board, monkeypatc
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     board.AREAS_FILE.write_text(_SERVICE_B_ONLY, encoding="utf-8")  # service-b/ACC → go test ./...
     assert not board.LEASES_FILE.exists()
-    assert board._test_cmd(None) == "go test ./..."
+    assert regression._test_cmd(board._home(), None) == "go test ./..."
 
 
 def test_test_cmd_override_wins_over_slot(board, monkeypatch):
@@ -775,14 +776,14 @@ def test_test_cmd_override_wins_over_slot(board, monkeypatch):
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
                                     test_cmd="make hil2"))
-    assert board._test_cmd("custom -x") == "custom -x"
+    assert regression._test_cmd(board._home(), "custom -x") == "custom -x"
 
 
 def test_test_cmd_solo_no_ledger_unaffected(board):
     """솔로(장부 없음·areas 없음) → local.conf 폴백 — 슬롯 레이어 추가가 솔로 무영향."""
     assert not board.LEASES_FILE.exists()
     board.LOCAL_CONF.write_text("test.cmd=pytest -q --strict\n", encoding="utf-8")
-    assert board._test_cmd(None) == "pytest -q --strict"
+    assert regression._test_cmd(board._home(), None) == "pytest -q --strict"
 
 
 def test_test_cmd_slot_layer_distinct_slots_same_repo(board, monkeypatch):
@@ -797,7 +798,7 @@ def test_test_cmd_slot_layer_distinct_slots_same_repo(board, monkeypatch):
         _lease_row(slot="work/A_1", repo="A", session="peer", test_cmd="make hil1"),
         _lease_row(slot="work/A_2", repo="A", session="me", test_cmd="make hil2"),
     )
-    assert board._test_cmd(None) == "make hil2"
+    assert regression._test_cmd(board._home(), None) == "make hil2"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -826,7 +827,7 @@ def _load_wp_for_board(board):
     """board 와 *같은 tmp 장부/local.conf* 를 공유하도록 worktree_pool 을 바인딩한다.
 
     board fixture 가 배선한 LEASES_FILE/LOCAL_CONF/REPO 를 그대로 worktree_pool 전역에
-    꽂아, create_slot(저장측)이 쓴 장부를 board._active_slot_test_cmd(매칭측)가 읽게 한다 —
+    꽂아, create_slot(저장측)이 쓴 장부를 regression._active_slot_test_cmd(매칭측)가 읽게 한다 —
     end-to-end 로 두 모듈의 세션 해소 정합을 친다. board 는 worktree_pool 을 import 하지
     않으므로(ADR-0013) 테스트가 파일 경로로만 둘을 잇는다.
     """
@@ -848,7 +849,7 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
     """END-TO-END must-fix 핀 — env 바인딩(`PM_SESSION_NAME=foo`):
 
     worktree_pool.create_slot + alloc(owner_task=foo) → lease.session=foo 로 저장 →
-    board._active_slot_test_cmd()(session_name→foo 매칭) 가 그 슬롯 test_cmd 반환.
+    regression._active_slot_test_cmd()(session_name→foo 매칭) 가 그 슬롯 test_cmd 반환.
     두 모듈의 해소 층이 어긋나면(한쪽만 다른 값으로 해소) 매칭이 깨져 None 이 된다.
     """
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -881,8 +882,8 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
     wp.alloc("A", owner_task="foo", git_runner=git)
     # 매칭측: lease_store.session_name() 도 env → foo 로 해소돼야 슬롯이 매칭된다.
     assert lease_store.session_name(board._home()) == "foo"
-    assert board._active_slot_test_cmd() == "make hil2"
-    assert board._test_cmd(None) == "make hil2"
+    assert regression._active_slot_test_cmd(board._home()) == "make hil2"
+    assert regression._test_cmd(board._home(), None) == "make hil2"
 
 
 def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeypatch):
@@ -902,7 +903,7 @@ def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeyp
                                     session=host_pid, test_cmd="make hil2"))
     board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")  # 잔존 구키 — 읽는 층 없음
     assert lease_store.session_name(board._home()) == host_pid              # 단일-lease 유도(local.conf foo 아님)
-    assert board._active_slot_test_cmd() == "make hil2"  # 매칭 성립 → 슬롯 test_cmd
+    assert regression._active_slot_test_cmd(board._home()) == "make hil2"  # 매칭 성립 → 슬롯 test_cmd
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -916,7 +917,7 @@ def test_active_slot_test_cmd_non_dict_json_returns_none(board, monkeypatch):
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
-    assert board._active_slot_test_cmd() is None
+    assert regression._active_slot_test_cmd(board._home()) is None
 
 
 def test_active_slot_test_cmd_scalar_json_returns_none(board, monkeypatch):
@@ -925,7 +926,7 @@ def test_active_slot_test_cmd_scalar_json_returns_none(board, monkeypatch):
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps(42), encoding="utf-8")
-    assert board._active_slot_test_cmd() is None
+    assert regression._active_slot_test_cmd(board._home()) is None
 
 
 def test_active_slot_test_cmd_non_list_leases_returns_none(board, monkeypatch):
@@ -934,7 +935,7 @@ def test_active_slot_test_cmd_non_list_leases_returns_none(board, monkeypatch):
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps({"leases": {"bad": "shape"}}), encoding="utf-8")
-    assert board._active_slot_test_cmd() is None
+    assert regression._active_slot_test_cmd(board._home()) is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -946,41 +947,41 @@ def test_active_slot_path_matches_session_leased(board, monkeypatch):
     """활성 슬롯(session 매칭·state=leased)의 slot 을 REPO/slot 절대경로로 돌려준다."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me"))
-    assert board._active_slot_path() == str(board.REPO / "work/A_1")
+    assert regression._active_slot_path(board._home()) == str(board.REPO / "work/A_1")
 
 
 def test_active_slot_path_absent_ledger_returns_none(board):
     """리스 장부 부재 → None (솔로 무영향·호출부가 REPO 폴백)."""
     assert not board.LEASES_FILE.exists()
-    assert board._active_slot_path() is None
+    assert regression._active_slot_path(board._home()) is None
 
 
 def test_active_slot_path_parse_failure_returns_none(board):
     """장부 파싱 실패(손상 JSON) → None (fail-soft·에러로 죽지 않음)."""
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text("{ not json", encoding="utf-8")
-    assert board._active_slot_path() is None
+    assert regression._active_slot_path(board._home()) is None
 
 
 def test_active_slot_path_session_mismatch_returns_none(board, monkeypatch):
     """다른 session 의 leased 슬롯은 무시 → None (session 매칭 정확성)."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="other"))
-    assert board._active_slot_path() is None
+    assert regression._active_slot_path(board._home()) is None
 
 
 def test_active_slot_path_non_leased_returns_none(board, monkeypatch):
     """idle 슬롯(state!=leased)은 무시 → None."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me", state="idle"))
-    assert board._active_slot_path() is None
+    assert regression._active_slot_path(board._home()) is None
 
 
 def test_active_slot_path_empty_slot_returns_none(board, monkeypatch):
     """매칭 행의 slot 이 비어 있으면 None (다음 레이어[REPO] 폴백)."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     _write_ledger(board, _lease_row(slot=None, repo="A", session="me"))
-    assert board._active_slot_path() is None
+    assert regression._active_slot_path(board._home()) is None
 
 
 def test_active_slot_path_first_match_wins(board, monkeypatch):
@@ -989,7 +990,7 @@ def test_active_slot_path_first_match_wins(board, monkeypatch):
     _write_ledger(board,
                   _lease_row(slot="work/A_1", repo="A", session="me"),
                   _lease_row(slot="work/A_2", repo="A", session="me"))
-    assert board._active_slot_path() == str(board.REPO / "work/A_1")
+    assert regression._active_slot_path(board._home()) == str(board.REPO / "work/A_1")
 
 
 def test_active_slot_path_non_dict_json_returns_none(board, monkeypatch):
@@ -998,7 +999,7 @@ def test_active_slot_path_non_dict_json_returns_none(board, monkeypatch):
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
-    assert board._active_slot_path() is None
+    assert regression._active_slot_path(board._home()) is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1008,19 +1009,19 @@ def test_active_slot_path_non_dict_json_returns_none(board, monkeypatch):
 def test_regression_cwd_default_is_repo(board):
     """미주입+슬롯없음(솔로/multi-PM-미배선) → REPO 기본 (additive·솔로 무변경)."""
     assert not board.LEASES_FILE.exists()
-    assert board._regression_cwd() == str(board.REPO)
-    assert board._regression_cwd(None) == str(board.REPO)
+    assert regression._regression_cwd(board._home()) == str(board.REPO)
+    assert regression._regression_cwd(board._home(), None) == str(board.REPO)
 
 
 def test_regression_cwd_injected_path_wins(board):
     """주입(CLI --cwd·worktree 경로) 시 그 경로를 쓴다."""
     worktree = str(board._tmp / "work" / "service-a_1")
-    assert board._regression_cwd(worktree) == worktree
+    assert regression._regression_cwd(board._home(), worktree) == worktree
 
 
 def test_regression_cwd_empty_string_falls_back_to_repo(board):
     """빈 문자열 주입은 falsy → REPO 폴백 (seam 의 방어적 기본)."""
-    assert board._regression_cwd("") == str(board.REPO)
+    assert regression._regression_cwd(board._home(), "") == str(board.REPO)
 
 
 # ════════════════════════════════════════════════════════════════════════

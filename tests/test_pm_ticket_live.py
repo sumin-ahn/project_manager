@@ -15,7 +15,7 @@
   그대로 두거나 무관 내용으로 채우면 fail).
 
 on-demand — 사용자가 `PM_ORCH_LIVE=1` 로 트리거(비용·flaky 감수). `release` 마커는 **달지 않는다**
-— 릴리즈 게이트 커플드-pin(board.LIVEGATE_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
+— 릴리즈 게이트 커플드-pin(regression.LIVEGATE_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
 orchestrator 소유라, 이 스킬을 릴리즈 tier 로 승격할지는 PM 결정에 맡긴다(승격 시 `@pytest.mark.
 release` 부착 + pin 14→N 갱신). 기본 skip(env 미설정·바이너리 부재·CI green 불변).
 

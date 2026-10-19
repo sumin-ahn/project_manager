@@ -1838,10 +1838,6 @@ _LOADER_CASES = (
         "_load_additional_reviewer",
     ),
     (
-        "pm_import", "board", lambda mod, _tools: mod._detected_py(),
-        "_detected_py",
-    ),
-    (
         "pm_import", "pm_render", lambda mod, _tools: mod._load_pm_render_module(),
         "_load_pm_render_module",
     ),
@@ -2009,10 +2005,6 @@ def test_pm_bootstrap_failsoft_consumers_reraise_marked_skew(
 @pytest.mark.parametrize(
     ("loader_name", "target_name", "call", "function_name"),
     (
-        (
-            "pm_import", "board", lambda mod: mod._detected_py(),
-            "_detected_py",
-        ),
         (
             "pm_import", "pm_render", lambda mod: mod._load_pm_render_module(),
             "_load_pm_render_module",

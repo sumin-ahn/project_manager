@@ -17,7 +17,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import conf_store
+from pm_engine.infra import conf_store, pre_push_hook, python_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -48,9 +48,9 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     # 실 git hook 설치·stdin opt-in 프롬프트·board submodule 조작을 무해 stub 으로 차단
     # (init 의 local.conf 효과만 검증).
-    monkeypatch.setattr(mod, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
-    monkeypatch.setattr(mod, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod

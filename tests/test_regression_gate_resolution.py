@@ -13,7 +13,7 @@
 red** 로 오판된다. 판정도 게이트 종류로 가른다 — pytest 게이트는 기존 요약행(불변), 비-pytest
 게이트는 exit code 0 만 green 이고 rc != 0 은 그대로 중단이다(fail-soft 아님).
 
-체인의 단일 사본은 `pm_handoff._resolve_gate_cmd` 이고 `ticket_finish` 는 자기 트리의
+체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 두 도구는 자기 트리의
 `Home` 을 넘겨 위임한다. 그래도 두 도구는 **자기 이름의 표면**을 각각 노출하므로, 층별 케이스를
 양쪽에 걸고(파라미터화) 결과 동일성까지 단언해 미러가 갈리면 red 가 되게 한다.
 
@@ -231,21 +231,6 @@ def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
         repos={"heru"},
     )
     assert _resolve(mod, stub, monkeypatch) == NON_PYTEST_CMD
-
-
-def test_ticket_finish_resolution_is_delegated_single_copy(tf, monkeypatch):
-    """해소 체인의 사본은 하나다 — ticket_finish 는 pm_handoff seam 에 위임한다.
-
-    pm_handoff 를 못 얻으면(부재/로드 실패) 해소 가능한 board 를 줘도 None(솔로 폴백)이다.
-    체인을 ticket_finish 안에 다시 복제하면 이 단언이 깨진다 — 미러 이탈 재발 차단.
-    """
-    stub = _StubBoard(
-        rows=[{"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
-        repos={"heru"},
-    )
-    _install_stub(stub, monkeypatch)
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
-    assert tf._resolve_per_repo_test_cmd() is None
 
 
 # ── 게이트 종류 판정 ─────────────────────────────────────────────────────

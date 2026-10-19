@@ -1,7 +1,8 @@
 """PM 홈 경로 해소 (층: infra).
 
-`Home` 을 만드는 곳은 `home_at` 하나다. board 루트 graceful 규칙·areas.md 위치 규칙·대여 장부 위치와
-작업 폴더의 소유 PM 홈 유도(`owning_pm_home`)를 소유한다. 설치 깊이는 고정이고 상향 탐색을 하지 않는다.
+`Home` 을 만드는 곳은 `home_at` 하나다. board 루트 graceful 규칙·areas.md 위치 규칙·대여 장부와 회귀·라이브 게이트
+기록 위치·`~` 확장 규칙과 작업 폴더의 소유 PM 홈 유도(`owning_pm_home`)를 소유한다. 설치 깊이는 고정이고 상향 탐색을
+하지 않는다.
 """
 from __future__ import annotations
 
@@ -37,6 +38,16 @@ def home_at(root: Path, pm_home: Path | None = None, board_root: Path | None = N
 def leases_file(home) -> Path:
     """worktree 대여 장부 경로 (`worktree_pool` 의 LEASES_FILE 과 같은 위치)."""
     return home.local_dir / "worktree-leases.json"
+
+
+def regression_flag(home) -> Path:
+    """회귀 기록 경로 (단일-lease 공유 기록)."""
+    return home.local_dir / "regression.json"
+
+
+def livegate_flag(home) -> Path:
+    """라이브 게이트 기록 경로 (보호 훅이 없는 형상의 기록 위치)."""
+    return home.local_dir / "livegate.json"
 
 
 def tickets_dir(home) -> Path:
@@ -187,3 +198,33 @@ def owning_pm_home(anchor: Path) -> Path:
             f"{pm_home} 에 .project_manager 가 없습니다."
         )
     return pm_home
+
+
+def _expanduser_path(path: Path) -> Path:
+    """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
+    return path.expanduser()
+
+
+def _expanded_user_path(value: str) -> Path:
+    """`~`/`~user` 를 확장한다 — **없는 사용자는 플랫폼과 무관하게 해소 실패**(RuntimeError).
+
+    POSIX 의 `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만, Windows 는 존재하지
+    않는 사용자도 `C:\\Users\\<name>` 으로 조립해 준다. 그래서 같은 입력이 한쪽에서만 해소되고
+    뒤 단계가 다른 분기를 탄다 — 소유 repo 해소는 "해소 실패"에서 멈춰야 하는데 Windows 에서는
+    phantom 홈 경로로 내려가 "경로 부재/이동" 같은 **다른 사유**로 갈렸다(보호 훅 설치도 같은
+    자리에서 phantom 홈 경로로 raw installer 까지 갔다). `~user` 형태는 **그 사용자 홈의 실재**를
+    판정에 넣어 두 플랫폼이 같은 결론에 도달하게 한다.
+
+    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 축(HOME/USERPROFILE)으로 확장하므로 분기가
+    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 형상까지 막지 않게).
+    소유 repo 해소(board)·`core.hooksPath` 확장(pre_push_hook)·보호 훅 설치(pm_config)가 이 함수를 쓴다.
+    """
+    path = Path(value)
+    expanded = _expanduser_path(path)
+    first = path.parts[0] if path.parts else ""
+    if first.startswith("~") and len(first) > 1:
+        home = _expanduser_path(Path(first))
+        if not home.is_dir():
+            raise RuntimeError(
+                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
+    return expanded

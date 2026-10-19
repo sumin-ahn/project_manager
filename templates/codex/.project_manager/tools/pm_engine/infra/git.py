@@ -1,6 +1,6 @@
 """git 저장소 조회 (층: infra).
 
-`git rev-parse`·alias·명령 목록·미커밋 여부 조회. 판정 규칙은 `pm_engine.domain.git_policy` 가 소유한다.
+`git rev-parse`·설정값·alias·명령 목록·미커밋 여부 조회. 판정 규칙은 `pm_engine.domain.git_policy` 가 소유한다.
 """
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ def _is_linked_worktree(anchor: Path, *, runner: Any = subprocess.run) -> bool:
 def _git_head_at(cwd: str) -> str:
     """주어진 작업 디렉토리의 git HEAD sha 를 반환한다 (실패/비-repo 면 '').
 
-    `_git_head` 는 board 프로세스의 `REPO` 기준이지만, livegate 기록은 테스트가 실제로
+    `_git_head` 는 Home 루트(board 프로세스의 `REPO`) 기준이지만, livegate 기록은 테스트가 실제로
     돈 **활성 slot worktree**(=`_livegate_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
     push 하는 sha(=worktree HEAD)와 대조되기 때문. 이 함수가 그 cwd-매개 HEAD 를 낸다.
     """
@@ -178,3 +178,19 @@ def _git_run(argv: list[str], *, runner=None, repo: Path) -> tuple[int, str] | N
     except Exception:  # noqa: BLE001 — 주입 runner raise 도 None.
         return None
     return rc, out
+
+
+def _git_head(home) -> str:
+    return _git_head_at(str(home.root))
+
+
+def _git_config_get(cwd: str, key: str) -> str | None:
+    """`git -C <cwd> config --get <key>` 값 (미설정/비-repo/빈값이면 None).
+
+    인코딩 명시(git path 출력이 cp949 로 디코딩되지 않도록 utf-8·`_hooks_dir` 동형).
+    """
+    r = subprocess.run(["git", "-C", cwd, "config", "--get", key],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    val = r.stdout.strip() if r.returncode == 0 else ""
+    return val or None

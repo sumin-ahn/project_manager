@@ -2037,7 +2037,7 @@ def test_install_protected_hook_rejects_phantom_user_home_from_windows_expanduse
     """없는 사용자를 조립해 주는 확장 동작에서도 해소 실패 판정이 서고 설치로 못 넘어간다."""
     upstream = "~pm_user_that_cannot_exist_0524/repo"
     monkeypatch.setattr(pc, "REPO", _adopter_home_with_upstream(tmp_path, upstream))
-    monkeypatch.setattr(pc, "_expanduser_path",
+    monkeypatch.setattr(pm_paths, "_expanduser_path",
                         _windows_style_expanduser(tmp_path / "Users"))
 
     class _MustNotInstall:
@@ -2058,7 +2058,7 @@ def test_install_protected_hook_keeps_existing_user_home_resolving(
     users = tmp_path / "Users"
     (users / "pm_user").mkdir(parents=True)
     monkeypatch.setattr(pc, "REPO", _adopter_home_with_upstream(tmp_path, "~pm_user/repo"))
-    monkeypatch.setattr(pc, "_expanduser_path", _windows_style_expanduser(users))
+    monkeypatch.setattr(pm_paths, "_expanduser_path", _windows_style_expanduser(users))
     installer = _RecordingInstaller()
 
     assert pc._install_protected_hook(
@@ -2082,7 +2082,7 @@ def test_gate_resolution_failure_names_the_input_whatever_the_platform_text(
     def _windows_null_character_failure(_path):
         raise ValueError("stat: embedded null character in path")
 
-    monkeypatch.setattr(pc, "_expanduser_path", _windows_null_character_failure)
+    monkeypatch.setattr(pm_paths, "_expanduser_path", _windows_null_character_failure)
 
     class _MustNotInstall:
         def install_protected_hook(self, *args, **kwargs):
@@ -2098,10 +2098,10 @@ def test_gate_resolution_failure_names_the_input_whatever_the_platform_text(
 
 def test_expanded_user_path_does_not_gate_the_current_user_home(pc, tmp_path, monkeypatch):
     """`~`(현재 사용자)는 실재 검사 축이 아니다 — 분기는 `~user` 자리에만 둔다."""
-    monkeypatch.setattr(pc, "_expanduser_path",
+    monkeypatch.setattr(pm_paths, "_expanduser_path",
                         _windows_style_expanduser(tmp_path / "Users"))
 
-    assert pc._expanded_user_path("~/work/repo") == (
+    assert pm_paths._expanded_user_path("~/work/repo") == (
         tmp_path / "Users" / "current" / "work" / "repo")
 
 

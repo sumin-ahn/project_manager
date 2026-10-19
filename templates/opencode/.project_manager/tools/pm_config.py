@@ -382,7 +382,7 @@ def _local_conf_test_cmd() -> str | None:
 
     `_local_conf_user` 와 동형 — board.py 를 import 하지 않으므로
     touches 격리) `conf_store.local_config(home).get("test.cmd")` 와 *동일 의미*를 stdlib 로 자체
-    구현한다. worktree add 빌드명령 프롬프트의 기본값(`board._test_cmd` 최종 폴백 레이어와
+    구현한다. worktree add 빌드명령 프롬프트의 기본값(`regression._test_cmd` 최종 폴백 레이어와
     동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
     """
     return _local_conf_value("test.cmd")
@@ -477,34 +477,6 @@ def _repo_registry_git(repo: str, *, board=None) -> str | None:
     return None
 
 
-def _expanduser_path(path: Path) -> Path:
-    """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
-    return path.expanduser()
-
-
-def _expanded_user_path(value: str) -> Path:
-    """`~`/`~user` 를 확장한다 — **없는 사용자는 플랫폼과 무관하게 해소 실패**(RuntimeError).
-
-    POSIX 의 `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만, Windows 는 존재하지
-    않는 사용자도 `C:\\Users\\<name>` 으로 조립해 준다. 그래서 같은 입력이 한쪽에서만 해소되고
-    뒤 단계가 다른 분기를 탄다 — 보호 훅 설치는 "해소 실패"에서 멈춰야 하는데 Windows 에서는
-    phantom 홈 경로로 raw installer 까지 갔다(안전 경계가 열린다). `~user` 형태는 **그 사용자
-    홈의 실재**를 판정에 넣어 두 플랫폼이 같은 결론에 도달하게 한다.
-
-    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 축(HOME/USERPROFILE)으로 확장하므로 분기가
-    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 형상까지 막지 않게).
-    """
-    path = Path(value)
-    expanded = _expanduser_path(path)
-    first = path.parts[0] if path.parts else ""
-    if first.startswith("~") and len(first) > 1:
-        home = _expanduser_path(Path(first))
-        if not home.is_dir():
-            raise RuntimeError(
-                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
-    return expanded
-
-
 def _protected_push_gate_config(
     repo: str, *, board=None, report_downgrade: bool = True,
 ) -> tuple[str, str]:
@@ -549,7 +521,7 @@ def _protected_push_gate_config(
     # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
     # Windows "stat: embedded null character in path") 입력을 안 실으면 진단이 남지 않는다.
     try:
-        candidate = _expanded_user_path(upstream)
+        candidate = pm_paths._expanded_user_path(upstream)
         if not candidate.is_absolute():
             candidate = REPO / candidate
         candidate = candidate.resolve()
@@ -568,7 +540,7 @@ def _protected_push_gate_config(
 def _default_test_cmd() -> str:
     """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 `python_env` 기본.
 
-    board._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
+    regression._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
     동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
     프롬프트 표시값 resolve 의 폴백.
     """
@@ -581,7 +553,7 @@ def _default_test_cmd() -> str:
 def _resolve_repo_test_cmd(repo: str) -> str:
     """프롬프트 `[기본: <X>]` 의 X — 그 repo 가 Enter 시 실제로 폴백할 test_cmd.
 
-    board._test_cmd 의 해소 체인을 *그 repo 한정으로* 재현한다 (areas 파서
+    regression._test_cmd 의 해소 체인을 *그 repo 한정으로* 재현한다 (areas 파서
     `areas_store._parse_areas`/`_areas_row_for_prefix` 재사용):
       1. **활성 repo 의 areas.md test_cmd** — 그 repo(=prefix)의 레지스트리 행에 비어
          있지 않은 `test_cmd` 가 있으면 그것(per-repo 스택·`go test ./...` 등).
@@ -2007,7 +1979,7 @@ def cmd_worktree_add(
         프롬프트 `[Enter=repo 기본값 유지: …]` 표시값은 그 repo 의 *실제 폴백*(areas test_cmd
         → local.conf → pytest -q·`_resolve_repo_test_cmd`)이라 Enter 가 무엇을 적용하는지 투명.
       - `--test` 미지정 + 비-tty(CI/파이프) → 프롬프트 생략·None(현행·repo areas/local.conf 로 해소).
-    board._test_cmd 가 활성 슬롯의 이 값을 areas 위 레이어로 읽으므로, 빈입력에 기본값을 박으면
+    regression._test_cmd 가 활성 슬롯의 이 값을 areas 위 레이어로 읽으므로, 빈입력에 기본값을 박으면
     areas per-repo test_cmd 를 잘못 덮는다 → 빈입력은 반드시 None(슬롯 미바인딩)이어야 한다.
 
     **성공 출력 다음 단계**: task 없이 만든 슬롯은 idle 이다. 출력은 그 슬롯을 쓰는 순서

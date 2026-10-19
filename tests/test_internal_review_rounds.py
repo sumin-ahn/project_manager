@@ -13,6 +13,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import review_rounds
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -203,8 +204,8 @@ def test_legacy_unfingerprinted_fixed_resolution_is_unrecognized(pd):
             "rounds": 1,
         },
     }
-    assert board.gate_resolution(gate) is None
-    problem = board._gate_disposition_problem("T-LEGACY-BLOCK", gate)
+    assert review_rounds.gate_resolution(gate) is None
+    problem = review_rounds._gate_disposition_problem("T-LEGACY-BLOCK", gate)
     assert problem is not None and "처분 선언 없음" in problem
 
 

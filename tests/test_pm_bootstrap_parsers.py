@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 from pm_engine.domain import ticket_rules
+from pm_engine.infra import pre_push_hook
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1554,9 +1555,9 @@ def test_collect_board_names_the_hook_generation_block_instead_of_unparsed():
     mod = _load_module()
     board_mod = mod._load_board()
     assert board_mod is not None, "board.py 사본을 로드하지 못했다"
-    hook_block = board_mod._STALE_HOOK_REFUSAL.format(
+    hook_block = pre_push_hook._STALE_HOOK_REFUSAL.format(
         kind="구버전", hook="/tmp/home/.git/hooks/pre-push") + "\n"
-    assert hook_block.startswith(board_mod.PM_HOOK_NOTICE_PREFIX)
+    assert hook_block.startswith(pre_push_hook.PM_HOOK_NOTICE_PREFIX)
 
     def board_fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":

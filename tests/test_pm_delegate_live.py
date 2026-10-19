@@ -21,7 +21,7 @@ per-clone local.conf(worktree) 의존을 없애 fresh clone/CI/livegate 어디�
 
 **release tier 편입**: codex 방향 1건을 `@pytest.mark.release` + `PM_ORCH_LIVE_RELEASE` 게이트로
 릴리즈 라이브 tier 에 편입한다(codex 라이브 = load-bearing 게이트·test_pm_relay_codex 선례). ⚠
-**커플드 전역 pin**(board.LIVEGATE_RELEASE_PIN · test_release_wave `_RELEASE_TEST_FILES`/
+**커플드 전역 pin**(regression.LIVEGATE_RELEASE_PIN · test_release_wave `_RELEASE_TEST_FILES`/
 `_EXPECTED_RELEASE_TESTS` · test_board_livegate · test_worktree_pool 미러 · templates/*/board.py)에
 이 파일을 **+1 등재**하는 갱신은 **orchestrator 가 wave 종료 시 1회 수행**한다(touches 밖 공유 상수·
 병렬 wave clobber 회피·test_pm_release_live 동형). 이 파일은 **file-local 마커 pin** 만 둔다.
@@ -740,7 +740,7 @@ def test_release_markers_pinned():
 
     `pytest -m release` 는 마커로 라이브 서브셋을 고른다. 데코레이터 삭제/개명 시 조용히 빠지는 것을
     file-local 로 잡는다(test_pm_release_live 동형). ⚠ 이 파일을 test_release_wave `_RELEASE_TEST_FILES`
-    합산 + 전역 pin(board.LIVEGATE_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 wave
+    합산 + 전역 pin(regression.LIVEGATE_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 wave
     종료 시 수행(touches 밖 공유 상수). 라이브를 의도적으로 늘리면 `_EXPECTED_RELEASE_TESTS` 를 함께 갱신."""
     import ast
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))

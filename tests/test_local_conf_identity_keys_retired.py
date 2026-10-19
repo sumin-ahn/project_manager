@@ -26,7 +26,7 @@ import pytest
 
 from conftest import ensure_product_slot
 from _engine_tree import engine_python_files
-from pm_engine.infra import areas_store, lease_store, pm_paths
+from pm_engine.infra import areas_store, lease_store, pm_paths, pre_push_hook, python_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -378,10 +378,10 @@ def board(tmp_path, monkeypatch):
         "PM_STATE_TEMPLATE": pm_dir / "wiki" / "pm_state.template.md",
     }.items():
         monkeypatch.setattr(module, name, value)
-    monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
-    monkeypatch.setattr(module, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return module

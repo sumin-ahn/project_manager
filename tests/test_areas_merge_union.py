@@ -31,6 +31,7 @@ import pytest
 
 from conftest import anchor_board_module, ensure_product_slot
 from pm_engine.domain import ticket_rules
+from pm_engine.infra import pre_push_hook
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -580,7 +581,7 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
     monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / "local.conf")
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
-    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
 
     assert board.cmd_init(argparse.Namespace(
         prefix=None, area=None, owner=None, repo=None, task="pm")) == 0

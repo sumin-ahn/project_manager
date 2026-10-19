@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 from _slot_seed import SLOT, seed_areas, seed_slot
+from pm_engine.app import slot_resolution
+from pm_engine.infra import pm_paths
 
 TASK = "alpha"
 
@@ -192,7 +194,7 @@ def _bare_handoff_capturing_cwd(handoff, tmp_path: Path):
 
     def _capture_pytest():
         # 회귀 단계에서 실제 cwd 해소 경로(_regression_cwd)를 그대로 호출해 캡처(green 반환).
-        captured["cwd"] = handoff._regression_cwd(inst._worktree_slot)
+        captured["cwd"] = slot_resolution._regression_cwd(pm_paths.home_at(handoff.REPO), inst._worktree_slot)
         return 0, "1 passed in 0.01s"
 
     inst = handoff.PmHandoff(

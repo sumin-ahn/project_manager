@@ -1,6 +1,6 @@
 """테스트 픽스처용 canonical pytest 요약행 — 엔진 파서 문법의 단일 출처.
 
-엔진 파서(`board._pytest_summary_line`)는 요약행을 **문법 완전 일치**로 고른다: 줄머리에서
+엔진 파서(`pytest_report._pytest_summary_line`)는 요약행을 **문법 완전 일치**로 고른다: 줄머리에서
 outcome 목록이 시작하고 `in <초>s` 로 끝나야 한다. 그 종결 앵커가 있어야 실제 요약 *뒤에* 붙는
 자식 하네스 로그(`child harness: 5 passed in 1.00s`)를 요약으로 오인하지 않는다.
 

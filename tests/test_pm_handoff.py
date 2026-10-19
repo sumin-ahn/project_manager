@@ -31,6 +31,7 @@ import pytest
 from _pytest_summary import pytest_summary
 from pm_engine.domain import identity_args
 from pm_engine.infra import areas_store, conf_store, pm_paths
+from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1167,7 +1168,7 @@ def test_session_window_entry_no_double_cha(hf, raw):
 
 # ── _regression_cwd — 회귀 cwd worktree 자동해소 (T-0124) ─────────────────────
 # `_regression_cwd(worktree_slot=, areas_file=, leases_file=)` 는 파일 seam 을 인자로
-# 노출하므로 실 장부/areas 를 안 건드린다(hermetic·pm_bootstrap._auto_slot 재사용). REPO 는
+# 노출하므로 실 장부/areas 를 안 건드린다(hermetic·slot_resolution._auto_slot 재사용). REPO 는
 # 절대경로 비교 대신 반환 문자열의 suffix(슬롯 식별자)로 검증한다 — REPO monkeypatch 불요.
 
 import json as _rcwd_json  # noqa: E402 — T-0124 테스트 전용 로컬 import
@@ -1201,8 +1202,9 @@ def test_regression_cwd_single_self_host_resolves_slot(hf, tmp_path):
          "session": "project_manager_1", "state": "leased"},
     ])
     (tmp_path / "work" / "project_manager_1").mkdir(parents=True)
-    result = hf._regression_cwd(
-        areas_file=areas, leases_file=leases, repo_root=tmp_path)
+    result = slot_resolution._regression_cwd(
+        pm_paths.home_at(hf.REPO), areas_file=areas, leases_file=leases, repo_root=tmp_path
+    )
     assert result.replace(os.sep, "/").endswith("work/project_manager_1")
 
 
@@ -1217,8 +1219,8 @@ def test_regression_cwd_explicit_slot_overrides_auto(hf, tmp_path):
          "session": "project_manager_1", "state": "leased"},
     ])
     (tmp_path / "work" / "foo_2").mkdir(parents=True)
-    result = hf._regression_cwd(
-        "work/foo_2", areas_file=areas, leases_file=leases, repo_root=tmp_path
+    result = slot_resolution._regression_cwd(
+        pm_paths.home_at(hf.REPO), "work/foo_2", areas_file=areas, leases_file=leases, repo_root=tmp_path
     )
     assert result.replace(os.sep, "/").endswith("work/foo_2")
 
@@ -1231,7 +1233,7 @@ def test_regression_cwd_zero_repos_falls_back_to_repo(hf, tmp_path):
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
 def test_regression_cwd_two_repos_falls_back_to_repo(hf, tmp_path):
@@ -1242,7 +1244,7 @@ def test_regression_cwd_two_repos_falls_back_to_repo(hf, tmp_path):
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
     ])
-    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
 def test_regression_cwd_two_slots_ambiguous_falls_back(hf, tmp_path):
@@ -1256,7 +1258,7 @@ def test_regression_cwd_two_slots_ambiguous_falls_back(hf, tmp_path):
         {"slot": "work/project_manager_2", "repo": "project_manager",
          "session": "project_manager_2", "state": "leased"},
     ])
-    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
 # ── lease 상대경로 직렬화 = POSIX 표기 단일 (T-0712 축 A) ─────────────────────
@@ -1309,7 +1311,7 @@ def test_regression_cwd_missing_leases_falls_back(hf, tmp_path):
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"  # 미생성 → 부재
     _write_areas(areas, ["project_manager"])
-    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
 def test_regression_cwd_corrupt_leases_falls_back(hf, tmp_path):
@@ -1318,20 +1320,7 @@ def test_regression_cwd_corrupt_leases_falls_back(hf, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     leases.write_text("{not valid json", encoding="utf-8")
-    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
-
-
-def test_regression_cwd_bootstrap_absent_falls_back(hf, tmp_path, monkeypatch):
-    # pm_bootstrap 동적로드 실패(None) → str(REPO) 폴백 (자동해소 없이 안전).
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, ["project_manager"])
-    _write_leases(leases, [
-        {"slot": "work/project_manager_1", "repo": "project_manager",
-         "session": "project_manager_1", "state": "leased"},
-    ])
-    monkeypatch.setattr(hf, "_load_pm_bootstrap", lambda: None)
-    assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
 # ── 세션 정체성 ingress: `--task` 하나 ─────────────────────────────────────────
@@ -1416,7 +1405,7 @@ def test_archived_task_refuses_handoff_before_side_effects(hf, tmp_path, capsys)
 
 def test_resolve_explicit_identity_slot_missing_ledger_trusts_explicit(hf, tmp_path):
     # 장부 부재(판정불가) → fail-soft: repo/slot 명시를 그대로 신뢰해 조립.
-    result = hf._resolve_explicit_identity_slot("myrepo", 5, tmp_path / "absent.json")
+    result = slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "myrepo", 5, tmp_path / "absent.json")
     assert result == ("work/myrepo_5", None)
 
 
@@ -1425,7 +1414,7 @@ def test_resolve_explicit_identity_slot_m3_matches_active_lease(hf, tmp_path):
     _write_leases(leases, [
         {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
     ])
-    assert hf._resolve_explicit_identity_slot("myrepo", 1, leases) == ("work/myrepo_1", None)
+    assert slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "myrepo", 1, leases) == ("work/myrepo_1", None)
 
 
 def test_resolve_explicit_identity_slot_m3_rejects_mismatch(hf, tmp_path):
@@ -1433,7 +1422,7 @@ def test_resolve_explicit_identity_slot_m3_rejects_mismatch(hf, tmp_path):
     _write_leases(leases, [
         {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
     ])
-    slot, err = hf._resolve_explicit_identity_slot("myrepo", 99, leases)
+    slot, err = slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "myrepo", 99, leases)
     assert slot is None
     assert err is not None and "조인" in err and "M3" in err
 
@@ -1441,7 +1430,7 @@ def test_resolve_explicit_identity_slot_m3_rejects_mismatch(hf, tmp_path):
 def test_resolve_explicit_identity_slot_repo_alone_zero_active(hf, tmp_path):
     leases = tmp_path / "leases.json"
     _write_leases(leases, [])
-    slot, err = hf._resolve_explicit_identity_slot("myrepo", None, leases)
+    slot, err = slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "myrepo", None, leases)
     assert slot is None
     assert err is not None and "M3" in err
 
@@ -1452,7 +1441,7 @@ def test_resolve_explicit_identity_slot_repo_alone_ambiguous(hf, tmp_path):
         {"slot": "work/myrepo_1", "repo": "myrepo", "session": "myrepo_1", "state": "leased"},
         {"slot": "work/myrepo_2", "repo": "myrepo", "session": "myrepo_2", "state": "leased"},
     ])
-    slot, err = hf._resolve_explicit_identity_slot("myrepo", None, leases)
+    slot, err = slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "myrepo", None, leases)
     assert slot is None
     assert err is not None and "--slot" in err
 
@@ -1462,7 +1451,7 @@ def test_resolve_explicit_identity_slot_repo_alone_ambiguous(hf, tmp_path):
 def test_regression_cwd_explicit_slot_stale_falls_back_to_repo(hf, tmp_path, capsys):
     # 명시 worktree_slot 이 장부 해소는 통과했더라도 디스크에 실제 디렉토리가 없으면
     # (장부-파일시스템 out-of-sync) FileNotFoundError 로 죽는 대신 REPO 로 soft 폴백·경고 1줄.
-    result = hf._regression_cwd("work/foo_2", repo_root=tmp_path)
+    result = slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), "work/foo_2", repo_root=tmp_path)
     assert result == str(tmp_path)
     err = capsys.readouterr().err
     assert "work/foo_2" in err and "REPO 로 폴백" in err
@@ -1471,7 +1460,7 @@ def test_regression_cwd_explicit_slot_stale_falls_back_to_repo(hf, tmp_path, cap
 def test_regression_cwd_explicit_slot_existing_dir_not_stale(hf, tmp_path):
     # 경계 반대편 — 디렉토리가 실제 존재하면 그대로(stale 아님·폴백 미발동).
     (tmp_path / "work" / "foo_2").mkdir(parents=True)
-    result = hf._regression_cwd("work/foo_2", repo_root=tmp_path)
+    result = slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), "work/foo_2", repo_root=tmp_path)
     assert result == str(tmp_path / "work" / "foo_2")
 
 
@@ -1490,8 +1479,9 @@ def test_regression_cwd_auto_slot_stale_falls_back_like_the_explicit_branch(
          "session": "project_manager_1", "state": "leased"},
     ])   # 장부는 슬롯을 알지만 디스크엔 그 디렉토리가 없다.
 
-    result = hf._regression_cwd(
-        areas_file=areas, leases_file=leases, repo_root=tmp_path)
+    result = slot_resolution._regression_cwd(
+        pm_paths.home_at(hf.REPO), areas_file=areas, leases_file=leases, repo_root=tmp_path
+    )
 
     assert result == str(tmp_path)
     err = capsys.readouterr().err
@@ -2696,7 +2686,7 @@ _ADOPTER_GATE_CMD = "env PYTHONPATH=src .venv/bin/python -m viewer bind"
 def _install_adopter_areas(monkeypatch, areas_path, test_cmd):
     """무prefix 채택자 areas/local.conf 표면 대역 — 해소 체인이 읽는 패키지 함수 자리에 꽂는다.
 
-    pytest 요약행 파서 seam(`_pytest_summary_line` 등)은 실 board 것을 그대로 쓴다 — 이 케이스가
+    pytest 요약행 판독(`pytest_report._pytest_summary_line` 등)은 실 패키지 것을 그대로 쓴다 — 이 케이스가
     바꾸는 것은 **게이트 종류**뿐이고 pytest 경로 판정은 무회귀여야 하기 때문이다.
     """
     monkeypatch.setattr(pm_paths, "areas_file", lambda _home: areas_path)

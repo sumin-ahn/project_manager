@@ -11,7 +11,8 @@ from test_board_regression import (
     _run_args as regression_run_args,
     board as regression_board,
 )
-from pm_engine.infra import git
+from pm_engine.infra import git, pm_paths, process
+from pm_engine.cli import regression_cmd
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -103,11 +104,11 @@ def test_t0936_project_full_commands_follow_phase_ownership(
         assert command == full_test_cmd
         return 0, "3 passed in 0.01s\n", ""
 
-    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    monkeypatch.setattr(process, "_run_regression_cmd", run)
     # HEAD 조회(`git._git_head_at`)는 두 board 가 공유하는 모듈이라 t0936 대역 값을 여기서 덮는다.
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: expected_head)
 
-    assert board.cmd_regression(regression_run_args(final=True)) == 0
+    assert regression_cmd.cmd_regression(board._home(), regression_run_args(final=True)) == 0
     assert [command for command, _cwd, _env in calls] == [full_test_cmd]
     assert "PM_QA_PLATFORM" not in calls[0][2]
     release = t0936_release
@@ -115,9 +116,9 @@ def test_t0936_project_full_commands_follow_phase_ownership(
     release.head = expected_head
     release.board._home().local_conf.write_text(
         board.LOCAL_CONF.read_text(encoding="utf-8"), encoding="utf-8")
-    core = json.loads(board.REGRESSION_FLAG.read_text(encoding="utf-8"))
-    release.board.REGRESSION_FLAG.write_text(json.dumps(core), encoding="utf-8")
-    monkeypatch.setattr(release.board, "_run_regression_cmd", run)
+    core = json.loads(pm_paths.regression_flag(board._home()).read_text(encoding="utf-8"))
+    pm_paths.regression_flag(release.board._home()).write_text(json.dumps(core), encoding="utf-8")
+    monkeypatch.setattr(process, "_run_regression_cmd", run)
     from test_board_livegate import _t0936_record, _t0936_check
     assert _t0936_record(release) == 0 and _t0936_check(release) == 0
     assert [command for command, _cwd, _env in calls] == [full_test_cmd, platform_cmd]

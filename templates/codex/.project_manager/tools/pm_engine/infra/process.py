@@ -1,11 +1,15 @@
 """실행 플랫폼 규칙 (층: infra).
 
-OS 계열 조회(`_probe_os_name`)와 명령 문자열의 플랫폼별 argv 분해(`split_command_argv`).
+OS 계열 조회(`_probe_os_name`)와 명령 문자열의 플랫폼별 argv 분해(`split_command_argv`), 회귀 명령 실행과
+출력 중계(`_run_regression_cmd`·`_tee_stream`).
 """
 from __future__ import annotations
 
 import os
 import shlex
+import subprocess
+import sys
+import threading
 
 from pm_engine.domain import shell_policy
 
@@ -48,3 +52,56 @@ def split_command_argv(command: str, *, windows: bool | None = None) -> list[str
         shell_policy.restore_shell_windows_path_separators(token)
         for token in shlex.split(shell_policy._protect_shell_windows_path_separators(command))
     ]
+
+
+def _tee_stream(stream, echo: Callable[[str], None]) -> str:
+    """자식 스트림을 줄 단위로 **실시간 echo 하면서 동시에** 전체를 모아 돌려준다.
+
+    수집 증감 표시는 pytest 요약행을 읽어야 해서 출력을 버퍼에 담아야 하는데, 캡처만 하면
+    `git push` 회귀(pre-push 훅)가 수 분 동안 **완전 무출력**으로 멈춰 있는 것처럼 보인다
+    (실측 367s). tee 로 진행을 그대로 흘리면서 파싱용 버퍼를 유지해 둘 다 만족한다.
+    스트림 미개방(None)은 빈 문자열.
+    """
+    if stream is None:
+        return ""
+    chunks: list[str] = []
+    for line in stream:
+        chunks.append(line)
+        echo(line)
+    return "".join(chunks)
+
+
+def _run_regression_cmd(cmd: str, cwd: str,
+                        env: dict[str, str]) -> tuple[int, str, str]:
+    """회귀 test_cmd 를 실행하고 `(rc, stdout, stderr)` 를 돌려준다 — run 두 경로 공용 단일 지점.
+
+    출력을 버퍼에 담는 이유는 수집 증감 표시가 pytest 요약행을 읽어야 하기 때문이다(별도
+    `--co -q` 재실행 대신 *이미 돈* 실행의 요약을 쓴다·자식 1회). 동시에 `_tee_stream` 으로
+    실시간 echo 해 캡처 이전의 가시성을 그대로 유지한다(무출력 대기 근절).
+
+    **두 스트림을 분리해 돌려준다** — 요약행 파싱은 **stdout 단독**이어야 한다. pytest 요약은
+    stdout 에만 나오므로, stderr 에 섞인 로그(`3 passed …`)를 합치면 그게 "마지막 요약행"으로
+    뽑혀 수집수가 오염된다(false-green/false-RED 양방향). 재출력·진단은 두 스트림 모두 쓴다.
+    스트림 읽기는 스레드 2개로 동시에 — 한쪽만 읽으면 파이프가 차서 자식이 멈춘다(교착).
+    """
+    proc = subprocess.Popen(cmd, shell=True, cwd=cwd, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+    captured: dict[str, str] = {}
+
+    def _pump(name: str, stream, echo: Callable[[str], None]) -> None:
+        captured[name] = _tee_stream(stream, echo)
+
+    pumps = [
+        threading.Thread(target=_pump, daemon=True, args=(
+            "stdout", proc.stdout, lambda line: print(line, end="", flush=True))),
+        threading.Thread(target=_pump, daemon=True, args=(
+            "stderr", proc.stderr, lambda line: print(line, end="", flush=True,
+                                                      file=sys.stderr))),
+    ]
+    for pump in pumps:
+        pump.start()
+    rc = proc.wait()
+    for pump in pumps:
+        pump.join()
+    return rc, captured.get("stdout", ""), captured.get("stderr", "")

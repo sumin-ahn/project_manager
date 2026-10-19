@@ -3333,7 +3333,7 @@ def create_slot(
 
     `test_cmd` 가 주어지면 그 슬롯 리스에 회귀/빌드명령을 바인딩한다(
     amend) — 같은 repo 의 슬롯들이 서로 다른 빌드 타깃(HIL config 등)을 가질 수 있게.
-    board._test_cmd 가 활성 슬롯의 이 필드를 areas 위 레이어로 읽는다(미지정=None·현행).
+    regression._test_cmd 가 활성 슬롯의 이 필드를 areas 위 레이어로 읽는다(미지정=None·현행).
 
     `git worktree add` 는 fs 행위라 사용자 게이트(NeedsCreate) 통과 후에만 불린다 —
     pm-config worktree add 사용자 승인이 호출부. 다음을 한다:
@@ -3985,7 +3985,7 @@ def set_test_cmd(slot: str, cmd: str | None) -> Lease:
 
     `pm-config` 콘솔의 `[b]`(슬롯 빌드명령 설정/변경)·worktree add 후의 "나중에 변경"
     경로가 부르는 setter — 슬롯에 바인딩된 회귀/빌드명령(HIL config 등)을 사후에 바꾼다
-    (board._test_cmd 가 활성 슬롯의 이 필드를 areas 위 레이어로 읽는다). 별도
+    (regression._test_cmd 가 활성 슬롯의 이 필드를 areas 위 레이어로 읽는다). 별도
     CLI 서브커맨드는 만들지 않는다(콘솔 `[b]` + worktree add 프롬프트로 충분·결정 §setter 단순화).
 
     create_slot 의 lease test_cmd 바인딩과 *같은* flock + atomic write 패턴을 재사용한다
@@ -6424,7 +6424,7 @@ def _slot_from_cwd() -> str | None:
     """cwd 가 `<WORK_DIR>/<repo>_<N>[/...]` 안이면 그 슬롯 식별자(`work/<repo>_<N>`), 아니면 None.
 
     슬롯 worktree(또는 그 하위 submodule) cwd 에서 커맨드를 부르면 정체성 인자 없이도 그 슬롯을
-    타깃하게 한다(pm_bootstrap `_worktree_cwd`/`_auto_slot` 의 cwd-유입 정신과 정합). WORK_DIR 밖
+    타깃하게 한다(pm_bootstrap `_worktree_cwd`·`slot_resolution._auto_slot` 의 cwd-유입 정신과 정합). WORK_DIR 밖
     (예: multi-PM 루트)이면 None(→ session 해소로 폴백). 경로 해석 실패는 None(fail-soft).
     """
     try:

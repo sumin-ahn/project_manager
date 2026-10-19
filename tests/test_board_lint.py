@@ -28,7 +28,7 @@ import pytest
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
 from pm_engine.domain import conf_schema, ticket_rules
-from pm_engine.infra import conf_store, manifest_store, pm_paths, ticket_store
+from pm_engine.infra import conf_store, manifest_store, pm_paths, pre_push_hook, python_env, ticket_store
 from conftest import ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
@@ -709,14 +709,14 @@ def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
     monkeypatch.setattr(board, "REPO", root)
     (root / ".git").mkdir(exist_ok=True)
     hooks = root / ".git" / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
     return hooks
 
 
 def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
-    assert board.install_pre_push_hook() is True
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
     text = (hooks / "pre-push").read_text(encoding="utf-8")
     assert "board.py lint --gate" in text
     # 회귀 단계도 여전히 있어야 한다 (AND).
@@ -727,10 +727,10 @@ def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
 def test_pre_push_hook_idempotent(board, monkeypatch, tmp_path):
     """재설치 안전 — 두 번 설치해도 동일 본문 (board.py init 가 재설치)."""
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
-    board.install_pre_push_hook()
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
+    pre_push_hook.install_pre_push_hook(board._home())
     first = (hooks / "pre-push").read_text(encoding="utf-8")
-    board.install_pre_push_hook()
+    pre_push_hook.install_pre_push_hook(board._home())
     second = (hooks / "pre-push").read_text(encoding="utf-8")
     assert first == second
     assert second.count("board.py lint --gate") == 1
@@ -3729,7 +3729,7 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 
@@ -3851,8 +3851,6 @@ def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, t
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "LOCAL_DIR", local)
-    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
-    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
     # sidecar 좌표 해소는 git(`core.hooksPath`)에 묻는다 — tmp 트리가 자기 저장소라고 선언하지
     # 않으면 이 저장소의 답을 받아 실 PM 홈 기록을 읽는다(tests/_git_fixture 규약).
     init_git_repo(tmp_path)
@@ -3876,8 +3874,6 @@ def test_status_snapshot_carries_lint_findings_without_failing(board, monkeypatc
     _wire_repo(board, monkeypatch, tmp_path)
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
-    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
     init_git_repo(tmp_path)
     _ticket(board, "open", "T-0001",
             "---\nid: T-0001\ntitle: 의존 깨짐\nstatus: open\ndepends_on: [T-9999]\n---\n"

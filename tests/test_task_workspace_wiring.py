@@ -22,7 +22,9 @@ from pathlib import Path
 
 import pytest
 from _pytest_summary import pytest_summary
-from pm_engine.infra import areas_store, git, lease_store, pm_paths
+from pm_engine.infra import areas_store, git, lease_store, pm_paths, regression_store
+from pm_engine.app import regression
+from pm_engine.cli import regression_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -55,9 +57,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
-    monkeypatch.setattr(mod, "REGRESSION_FLAG", local / "regression.json")
-    monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
-    monkeypatch.setattr(mod, "_git_head", lambda: "deadbeefdeadbeef")
+    monkeypatch.setattr(git, "_git_head", lambda _home: "deadbeefdeadbeef")
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: "deadbeefdeadbeef")
     monkeypatch.setattr(git, "_cluster_current_branch", lambda tree: "task/main")
     mod._proj = proj
@@ -94,7 +94,7 @@ class _FakeRun:
 def _install_fake(board, monkeypatch, fake):
     """회귀(Popen tee)·livegate(run 캡처) 두 seam 을 같은 대역으로 덮는다 (실 자식 0)."""
     # 실행 child 대역에 metadata 조회가 섞이지 않게 가짜 Git fixture를 격리한다.
-    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
+    monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(board.subprocess, "run", fake)
     monkeypatch.setattr(board.subprocess, "Popen", fake)
     return fake
@@ -115,7 +115,7 @@ def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatc
     (target / ".git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(10))
     _install_fake(board, monkeypatch, fake)
-    rc = board.cmd_regression(_reg_args(task="job1"))
+    rc = regression_cmd.cmd_regression(board._home(), _reg_args(task="job1"))
     assert rc == 0
     expected_cwd = str(board.REPO / "work" / "A_1")
     assert fake.calls, "regression subprocess 미기동"
@@ -132,7 +132,7 @@ def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
     ])
     _install_fake(board, monkeypatch, _FakeRun(0, "ok"))
     with pytest.raises(SystemExit):
-        board.cmd_regression(_reg_args(task="job2"))
+        regression_cmd.cmd_regression(board._home(), _reg_args(task="job2"))
 
 
 def test_regression_run_task_repo_selects_unique_owned_workspace(board, monkeypatch):
@@ -144,7 +144,7 @@ def test_regression_run_task_repo_selects_unique_owned_workspace(board, monkeypa
     (board.REPO / "work/A_1/.git").mkdir(parents=True)
     (board.REPO / "work/A_1/tests").mkdir()
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
-    assert board.cmd_regression(_reg_args(task="job3", repo="A")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _reg_args(task="job3", repo="A")) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO / "work/A_1")
 
 
@@ -154,7 +154,7 @@ def test_regression_run_rejects_task_cwd_before_subprocess(board, monkeypatch, t
     _install_fake(board, monkeypatch, fake)
 
     with pytest.raises(SystemExit) as exc:
-        board.cmd_regression(_reg_args(task="job3", cwd=str(tmp_path / "outside")))
+        regression_cmd.cmd_regression(board._home(), _reg_args(task="job3", cwd=str(tmp_path / "outside")))
 
     assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
@@ -168,7 +168,7 @@ def test_regression_run_non_task_cwd_remains_override(board, monkeypatch, tmp_pa
     fake = _FakeRun(0, pytest_summary())
     _install_fake(board, monkeypatch, fake)
 
-    assert board.cmd_regression(_reg_args(cwd=str(target), cmd="pytest -q")) == 0
+    assert regression_cmd.cmd_regression(board._home(), _reg_args(cwd=str(target), cmd="pytest -q")) == 0
 
     assert fake.calls[0]["kwargs"]["cwd"] == str(target)
 
@@ -215,19 +215,19 @@ def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, 
     assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
     assert fake.calls == []
-    assert not board.LIVEGATE_FLAG.exists()
+    assert not pm_paths.livegate_flag(board._home()).exists()
 
 
 def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_path):
     """비-task livegate record의 명시 --cwd는 기존처럼 실행·기록 기준 경로로 유지된다."""
     target = tmp_path / "readonly"
     target.mkdir()
-    fake = _FakeRun(0, pytest_summary(board.LIVEGATE_RELEASE_PIN))
+    fake = _FakeRun(0, pytest_summary(regression.LIVEGATE_RELEASE_PIN))
     _install_fake(board, monkeypatch, fake)
     monkeypatch.setattr(
-        board,
+        regression_store,
         "_resolve_livegate_flag",
-        lambda cwd: (board.LIVEGATE_FLAG, board._LG_NO_HOOK),
+        lambda home, cwd: (pm_paths.livegate_flag(home), regression_store._LG_NO_HOOK),
     )
 
     assert board.cmd_livegate(_lg_args(cwd=str(target))) == 0
@@ -544,7 +544,7 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
-    call = board.cmd_regression if consumer == 'regression' else board.cmd_livegate
+    call = (lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else board.cmd_livegate
     assert call(args) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
     assert lease_store.session_name(board._home(), 'main') == 'main'
@@ -559,10 +559,10 @@ def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
     with pytest.raises(SystemExit, match='readonly'):
-        (board.cmd_regression if consumer == 'regression' else board.cmd_livegate)(args)
+        ((lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else board.cmd_livegate)(args)
     assert fake.calls == []
-    assert not board.REGRESSION_FLAG.exists()
-    assert not board.LIVEGATE_FLAG.exists()
+    assert not pm_paths.regression_flag(board._home()).exists()
+    assert not pm_paths.livegate_flag(board._home()).exists()
 
 
 @pytest.mark.parametrize('command', ['init', 'reid', 'migrate-identity'])

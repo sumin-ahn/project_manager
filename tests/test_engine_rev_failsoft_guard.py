@@ -1245,7 +1245,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `pm_import._default_test_cmd`, `pm_log` 2(`_registered_repos`·`_status_dirs`), `ticket_finish` 6
     #   (`ClusterCloser` 의 `_board_git_paths`·`_reconcile_ticket_frontmatter`·`_ticket_status`,
     #   `_home_state_prefixes` 한 곳, `_ticket_frontmatter_snapshot`, `count_board_done`).
-    assert len(report.boundaries) == 187, "propagation sweep boundary ratchet changed"
+    # 179 = 187 − T-0972 가 지운 8 경계. 회귀 해소·pytest 판독이 패키지(`regression`·`slot_resolution`·
+    #   `python_env`)로 옮겨져 형제 로더와 그 재전파 줄이 없어졌다: 로더 정의 3(`pm_handoff._load_board`·
+    #   `_load_pm_bootstrap`, `ticket_finish._load_pm_handoff`), try 본문이 패키지 호출만 남은 5
+    #   (`board._platform_test_commands`·`pm_handoff._regression_cwd` 는 옮기며, `pm_import._detected_py`·
+    #   `ticket_finish._regression_cwd`·`_resolve_per_repo_test_cmd` 는 제자리에서).
+    assert len(report.boundaries) == 179, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1344,7 +1349,6 @@ def _blank_recovery_reason(source: str) -> str:
 @pytest.mark.parametrize(
     ("label", "source_name", "function", "occurrence"),
     [
-        ("S3", "pm_handoff.py", "_regression_cwd", 0),
         ("S4", "pm_config.py", "cmd_repo_protected", 0),
         ("S5", "pm_bootstrap.py", "main", 0),
     ],
@@ -1696,8 +1700,6 @@ def _raiser(exc):
 @pytest.mark.parametrize(
     "case",
     [
-        "handoff_auto_slot",
-        "finish_regression_cwd",
         "board_domain_pages",
         "board_domain_lint",
     ],
@@ -1706,30 +1708,15 @@ def test_runtime_loaded_sibling_and_same_method_boundaries_rethrow_marked_skew(
     case, monkeypatch,
 ):
     skew = _marked_skew()
-    if case == "handoff_auto_slot":
-        module = _runtime_tool("pm_handoff.py")
-        monkeypatch.setattr(
-            module, "_load_pm_bootstrap",
-            lambda: SimpleNamespace(_auto_slot=_raiser(skew)),
-        )
-        invoke = lambda: module._regression_cwd()
-    elif case == "finish_regression_cwd":
-        module = _runtime_tool("ticket_finish.py")
-        monkeypatch.setattr(
-            module, "_load_pm_handoff",
-            lambda: SimpleNamespace(_regression_cwd=_raiser(skew)),
-        )
-        invoke = lambda: module._regression_cwd()
-    else:
-        module = _runtime_tool("board.py")
-        domain = SimpleNamespace(DOMAIN_DIR=Path("domain"), load_pages=_raiser(skew))
-        if case == "board_domain_lint":
-            domain.lint_pages = _raiser(skew)
-        monkeypatch.setattr(module, "_load_domain_module", lambda: domain)
-        invoke = (
-            (lambda: module.lint_domain_freshness())
-            if case == "board_domain_pages" else (lambda: module.lint_domain())
-        )
+    module = _runtime_tool("board.py")
+    domain = SimpleNamespace(DOMAIN_DIR=Path("domain"), load_pages=_raiser(skew))
+    if case == "board_domain_lint":
+        domain.lint_pages = _raiser(skew)
+    monkeypatch.setattr(module, "_load_domain_module", lambda: domain)
+    invoke = (
+        (lambda: module.lint_domain_freshness())
+        if case == "board_domain_pages" else (lambda: module.lint_domain())
+    )
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew

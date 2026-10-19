@@ -36,6 +36,7 @@ from _engine_tree import engine_python_files
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store, pm_paths, python_env
+from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -227,11 +228,10 @@ def test_gate_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp_
     # 실 파일을 읽는 Home 으로 두 도구의 동형 경로를 돌린다(주입 dict 아님).
     with pytest.raises(RuntimeError) as caught:
         if name == "pm_handoff":
-            handoff._resolve_gate_cmd(pm_paths.home_at(tmp_path))
+            regression._resolve_gate_cmd(pm_paths.home_at(tmp_path))
         else:
             finish = _load("ticket_finish", "gate_ticket_finish")
             finish.REPO = tmp_path
-            finish._load_pm_handoff = lambda: handoff
             finish._resolve_per_repo_test_cmd()
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
@@ -627,7 +627,7 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     board._write_init_local_conf()
 

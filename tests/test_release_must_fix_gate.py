@@ -12,7 +12,8 @@ import types
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import git
+from pm_engine.infra import git, review_rounds
+from pm_engine.app import regression
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -96,22 +97,22 @@ def test_legacy_resolution_kinds_are_not_current_board_resolutions():
         entry = _rejected_entry(resolution={
             "kind": kind, "round_sequence": 1, "rounds": 1,
         })
-        assert board.gate_resolution(entry) is None
-        problem = board._gate_disposition_problem("T-0610", entry)
+        assert review_rounds.gate_resolution(entry) is None
+        problem = review_rounds._gate_disposition_problem("T-0610", entry)
         assert problem is not None and "처분 선언 없음" in problem
 
 
 def test_pm_verified_is_the_only_current_resolution_and_revalidates_callback():
     board = _load("board", "release_gate_board_pm_verified")
     entry = _rejected_entry(resolution={
-        "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+        "kind": review_rounds.RESOLUTION_PM_VERIFIED,
         "round_sequence": 1, "rounds": 1,
     })
-    assert board.gate_resolution(entry)["kind"] == "pm-verified"
-    assert board._gate_disposition_problem(
+    assert review_rounds.gate_resolution(entry)["kind"] == "pm-verified"
+    assert review_rounds._gate_disposition_problem(
         "T-0610", entry, allow_pm_verified=True, pm_verified_problem=lambda: None,
     ) is None
-    problem = board._gate_disposition_problem(
+    problem = review_rounds._gate_disposition_problem(
         "T-0610", entry, allow_pm_verified=True,
         pm_verified_problem=lambda: "accepted 잔여 F-001",
     )
@@ -139,11 +140,10 @@ def release(tmp_path, monkeypatch):
     local = root / ".project_manager" / ".local"
     monkeypatch.setattr(board, "REPO", root)
     monkeypatch.setattr(board, "LOCAL_DIR", local)
-    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(board, "LEASES_FILE", local / "worktree-leases.json")
-    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
+    monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: "f" * 40)
-    runner = _Run(board.LIVEGATE_RELEASE_PIN)
+    runner = _Run(regression.LIVEGATE_RELEASE_PIN)
     monkeypatch.setattr(board.subprocess, "run", runner)
     args = argparse.Namespace(
         action="record", rev=None, cwd=str(root), repo=None, slot=None, task=None,
@@ -193,7 +193,7 @@ def test_pm_verified_resolution_is_bound_to_the_latest_round():
         "kind": "pm-verified", "round_sequence": 1, "rounds": 1,
     })
     entry["rounds"].append({"sequence": 2, "verdict": 1, "must_fix": 1})
-    problem = board._gate_disposition_problem(
+    problem = review_rounds._gate_disposition_problem(
         "T-0610", entry, allow_pm_verified=True, pm_verified_problem=lambda: None,
     )
     assert problem is not None and "새 라운드" in problem

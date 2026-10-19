@@ -176,8 +176,6 @@ _WRITE_TARGET_CONSTS: dict[str, str] = {
     "PM_STATE_FILE": "wiki/pm_state.md",
     "PM_STATE_TEMPLATE": "wiki/pm_state.template.md",
     "LOCAL_DIR": ".local",
-    "REGRESSION_FLAG": ".local/regression.json",
-    "LIVEGATE_FLAG": ".local/livegate.json",
     "BOARD_LOCK": ".local/board.lock",
     "LEASES_FILE": ".local/worktree-leases.json",
     "DOMAIN_PY": "tools/domain.py",
@@ -855,7 +853,7 @@ def test_pm_owned_path_inventory_is_complete():
         "IDEAS_DIR", "DECISIONS_DIR", "SPECS_DIR", "ARCHITECTURE_FILE", "HOOKS_DIR",
         "BOARD_FILE", "LOG_FILE", "STATUS_FILE", "LOCAL_CONF", "TICKETS_DIR",
         "TEMPLATE_FILE", "AREAS_FILE", "PM_STATE_FILE", "PM_STATE_TEMPLATE", "LOCAL_DIR",
-        "REGRESSION_FLAG", "LIVEGATE_FLAG", "BOARD_LOCK", "LEASES_FILE", "DOMAIN_PY",
+        "BOARD_LOCK", "LEASES_FILE", "DOMAIN_PY",
         "PM_DELEGATE_PY", "DELEGATE_CHANNEL_GUARD_PY", "CODEX_DELEGATE_OBSERVATIONS",
     }
     assert set(b._READ_PM_PATH_RELS) == expected

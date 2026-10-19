@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from _test_exec import python_shell_command
+from pm_engine.infra import review_rounds
 
 REPO = Path(__file__).resolve().parents[1]
 PM_DELEGATE = REPO / ".project_manager" / "tools" / "pm_delegate.py"
@@ -820,38 +821,38 @@ def test_legacy_disposition_blocks_still_parse_with_verify_confirmation_support_
 def test_board_gate_resolution_recognizes_pm_verified_kind(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 2, "rounds": 2, "ts": "2026-08-21T00:00:00+00:00",
         },
         "rounds": [{"sequence": 2}, {"sequence": 1}],
     }
-    declared = board.gate_resolution(entry)
+    declared = review_rounds.gate_resolution(entry)
     assert declared is not None
-    assert declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED
+    assert declared["kind"] == review_rounds.RESOLUTION_PM_VERIFIED
     assert declared["round_sequence"] == 2 and declared["rounds"] == 2
 
 
 def test_gate_disposition_problem_rejects_pm_verified_when_not_allowed(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 1, "rounds": 1,
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = board._gate_disposition_problem("T-0786", entry)
+    problem = review_rounds._gate_disposition_problem("T-0786", entry)
     assert problem is not None and "허용하지 않습니다" in problem
 
 
 def test_gate_disposition_problem_accepts_pm_verified_when_evidence_clears(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 1, "rounds": 1,
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = board._gate_disposition_problem(
+    problem = review_rounds._gate_disposition_problem(
         "T-0786", entry,
         allow_pm_verified=True, pm_verified_problem=lambda: None,
     )
@@ -861,12 +862,12 @@ def test_gate_disposition_problem_accepts_pm_verified_when_evidence_clears(board
 def test_gate_disposition_problem_surfaces_pm_verified_evidence_failure(board):
     entry = {
         "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "round_sequence": 1, "rounds": 1,
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = board._gate_disposition_problem(
+    problem = review_rounds._gate_disposition_problem(
         "T-0786", entry,
         allow_pm_verified=True,
         pm_verified_problem=lambda: "PM 판정 accepted 잔여가 있습니다: F-001",

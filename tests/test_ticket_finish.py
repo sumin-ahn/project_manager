@@ -28,6 +28,7 @@ import pytest
 from _git_fixture import init_git_repo
 from conftest import write_cluster_ledger
 from pm_engine.infra import areas_store, conf_store, pm_paths, python_env, repo_coordinates, ticket_store
+from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -128,7 +129,7 @@ def test_is_pytest_green_no_passed_is_false(tf):
 #
 # 활성 repo 가 비-Python 이거나 `tests/` 가 없으면 `pytest tests/ -q` 가 틀린다 — 회귀는 그
 # repo 의 test_cmd 를 써야 한다. 해소는 4층이다(prefix 행 > repo 행 > local.conf > 솔로 폴백·
-# 체인 본체는 pm_handoff `_resolve_gate_cmd` 단일 사본이고 이 도구는 자기 board seam 만 얹어
+# 체인 본체는 `regression._resolve_gate_cmd` 단일 사본이고 이 도구는 자기 트리의 `Home` 을 넘겨
 # 위임한다). 단 **솔로/프레임워크 자기 회귀(어느 층도 미해소)는 현행 `pytest tests/ -q` venv
 # 실행을 반드시 보존**(도그푸딩 불변). 층별 우선순위·두 도구 파리티·무prefix 채택자 e2e 는
 # `test_regression_gate_resolution.py` 가 소유하고, 여기서는 이 도구 표면의 계약을 본다.
@@ -913,13 +914,11 @@ def test_affected_domain_titles_legacy_board_does_not_absorb_upstream(
 # 분리된 PM 홈(②·ADR-0027)엔 tests/ 가 없으므로, ② 홈 cwd 에서 ticket_finish 를 돌리면
 # 회귀가 활성 worktree 슬롯(①·tests/)에서 돌아야 한다. `__init__` 즉시-REPO-고정 버그를
 # 제거하고 `_default_run_pytest` 가 런타임에 `_regression_cwd()` 로 해소한다. ticket_finish
-# `_regression_cwd` wrapper 는 pm_handoff `_regression_cwd`(T-0124·bootstrap `_auto_slot`
-# 동적로드 재사용)에 위임한다.
+# `_regression_cwd` wrapper 는 `slot_resolution._regression_cwd`(T-0124·`_auto_slot`
+# 재사용)에 위임한다.
 #
-# seam 주입 주의: pm_handoff `_regression_cwd`·pm_bootstrap `_auto_slot` 의 `areas_file`/
-# `leases_file` 은 **def-time 바운드 기본 인자**(실 worktree 경로)다 — 모듈 전역(`AREAS_FILE`)을
-# setattr 로 rebind 해도 이미 캡처된 기본값을 못 바꾼다(가짜 seam). 그래서 `hp._regression_cwd`
-# 를 areas/leases 를 *명시 인자로* 넘기는 lambda 로 감싸 주입한다(전역 rebind 대신). 또 REPO
+# seam 주입: `slot_resolution._regression_cwd` 를 areas/leases 를 *명시 인자로* 넘기는 lambda 로
+# 감싸 주입한다(실 장부·areas 미접촉). 또 REPO
 # 자체가 `.../work/project_manager_1`(① worktree 에서 pytest 실행)이라 그 suffix 로 self-host
 # 를 단언하면 REPO 폴백과 우연 일치한다 — 슬롯명을 `work/myrepo_7` 로 둬 구조적으로 구별한다.
 
@@ -943,27 +942,20 @@ def _write_selfhost_leases(path: Path, entries: list[dict]) -> None:
 
 
 def _bind_pm_handoff_seams(tf, monkeypatch, areas: Path, leases: Path, repo_root: Path | None = None):
-    """pm_handoff 를 로드하고 `_regression_cwd` 를 areas/leases(+repo_root) 명시 인자 lambda 로 감싸 주입.
+    """`slot_resolution._regression_cwd` 를 areas/leases(+repo_root) 명시 인자 lambda 로 감싸 주입.
 
-    pm_handoff `_regression_cwd`(과 그 하부 `_auto_slot`)의 areas/leases 는 def-time 바운드
-    기본 인자라 모듈 전역 setattr rebind 가 무효다(가짜 seam). 그래서 원본 `_regression_cwd`
-    를 닫아 `worktree_slot` 만 받고 areas/leases/repo_root 를 *명시 인자로* 넘기는 lambda 로
-    교체한다 — 이게 실 장부/areas/REPO 미접촉 hermetic 해소의 유효한 seam 이다. ticket_finish
-    wrapper 는 `hp._regression_cwd(slot, repo_root=<자기 REPO>)` 로 호출하므로 lambda 도 그
-    kwarg 를 받는다 — 테스트가 고정한 repo_root 가 있으면 그것이 우선이고(hermetic 앵커),
-    없으면 wrapper 가 넘긴 앵커를 그대로 쓴다.
+    원본 `_regression_cwd` 를 닫아 Home 과 `worktree_slot` 만 받고 areas/leases/repo_root 를
+    *명시 인자로* 넘기는 lambda 로 교체한다 — 실 장부/areas/REPO 미접촉 hermetic 해소의 seam 이다.
+    테스트가 고정한 repo_root 가 있으면 그것이 우선이고(hermetic 앵커), 없으면 ticket_finish
+    wrapper 가 넘긴 Home 의 root(자기 REPO)를 쓴다.
     """
-    hp = tf._load_pm_handoff()
-    assert hp is not None  # 동적 로드 성공 전제 (없으면 폴백 테스트로 분리)
-    real = hp._regression_cwd
+    real = slot_resolution._regression_cwd
     monkeypatch.setattr(
-        hp, "_regression_cwd",
-        lambda worktree_slot=None, *, repo_root=None, _pinned=repo_root: real(
-            worktree_slot, areas, leases,
+        slot_resolution, "_regression_cwd",
+        lambda _home, worktree_slot=None, *, repo_root=None, _pinned=repo_root: real(
+            _home, worktree_slot, areas, leases,
             repo_root=_pinned if _pinned is not None else repo_root),
     )
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: hp)
-    return hp
 
 
 def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypatch):
@@ -1017,12 +1009,6 @@ def test_regression_cwd_solo_falls_back_to_repo(tf, tmp_path, monkeypatch):
          "session": "myrepo_7", "state": "leased"},
     ])
     _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
-    assert tf._regression_cwd() == str(tf.REPO)
-
-
-def test_regression_cwd_pm_handoff_absent_falls_back_to_repo(tf, monkeypatch):
-    """pm_handoff 동적로드 실패(None) → str(REPO) 폴백 (자동해소 없이 안전·fail-soft)."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
     assert tf._regression_cwd() == str(tf.REPO)
 
 
@@ -1109,52 +1095,20 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
 # (라이브 발견·PM 59차). `--repo`/`--slot`(ADR-0057 decomposed) 은 그 슬롯을 disambiguate 하고,
 # `--no-pytest` 는 **회귀 실행만** skip 한다(코드 트리 해소는 그대로 — 사설 참조 측정·stage 가
 # 같은 트리를 쓴다). 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신 fail-loud 로 중단한다.
-# pm_handoff `_resolve_explicit_identity_slot`(M3 조인검증) 재사용(DRY).
+# `slot_resolution._resolve_explicit_identity_slot`(M3 조인검증) 재사용(DRY).
 
 
 def _bind_pm_handoff_repo(tf, monkeypatch, repo_root: Path):
-    """pm_handoff 를 로드해 `REPO` 를 `repo_root` 로 monkeypatch 하고 그 인스턴스를 고정
-    반환하도록 `tf._load_pm_handoff` 를 교체한다 — `_resolve_explicit_identity_slot`(M3 리스
-    조인검증)·`_regression_cwd`(L1) 의 leases_file/repo_root 기본 해소가 이 tmp_path 를 보게
-    만드는 hermetic seam(실 장부·실 REPO 미접촉). ticket_finish 의 `REPO` 도 같이 옮긴다 —
-    해소 앵커를 wrapper 가 `repo_root=REPO` 로 forward 하므로, 한쪽만 옮기면 두 앵커가 갈린다."""
-    hp = tf._load_pm_handoff()
-    assert hp is not None
-    monkeypatch.setattr(hp, "REPO", repo_root)
+    """ticket_finish 의 `REPO` 를 `repo_root` 로 monkeypatch 한다 — wrapper 가 이 앵커로 만든 Home 을
+    넘기므로 `_resolve_explicit_identity_slot`(M3 리스 조인검증)·`_regression_cwd`(L1) 의
+    leases_file/repo_root 해소가 이 tmp_path 를 본다(hermetic·실 장부·실 REPO 미접촉)."""
     monkeypatch.setattr(tf, "REPO", repo_root)
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: hp)
-    return hp
-
-
-class _FakeHandoff:
-    """pm_handoff 대역 — ticket_finish glue(_resolve_finish_slot·main forward)를 hermetic 격리.
-
-    `_resolve_explicit_identity_slot`/`_regression_cwd` 만 흉내낸다(실 pm_bootstrap·areas/leases
-    장부 미접촉). `explicit_result` 미지정이면 `_resolve_explicit_identity_slot`(repo,slot)이 리스
-    검증 없이 단순 조립(`work/<repo>_<slot>`)한다. 무인자 진입은 이 대역을 타지 않는다 —
-    정체성은 pm_log 체인이 task 로 해소한다.
-    """
-
-    def __init__(self, explicit_result=None):
-        self._explicit_result = explicit_result
-
-    def _resolve_explicit_identity_slot(self, repo, slot):
-        if self._explicit_result is not None:
-            return self._explicit_result
-        return f"work/{repo}_{slot}", None
-
-    @staticmethod
-    def _regression_cwd(worktree_slot=None, *, repo_root=None):
-        # 실 wrapper 가 앵커(`repo_root=`)를 forward 한다 — 대역이 그 kwarg 를 안 받으면
-        # TypeError 가 fail-soft 폴백으로 삼켜져 해소 자체가 검증되지 않는다.
-        base = str(repo_root) if repo_root is not None else "/fake-repo"
-        return f"{base}/{worktree_slot}" if worktree_slot else base
 
 
 def test_repo_slot_resolves_explicit_worktree_slot(tf, tmp_path, monkeypatch):
     """(a) --repo/--slot → explicit worktree 슬롯 `work/<repo>_<N>` 결정론적 해소.
 
-    실 pm_handoff 를 쓰되 리스 장부 부재(`_bind_pm_handoff_repo` 의 tmp_path repo_root)라
+    실 `slot_resolution` 을 쓰되 리스 장부 부재(`_bind_pm_handoff_repo` 의 tmp_path repo_root)라
     **M3**(세션↔repo 조인검증)는 검증불가·fail-soft(신뢰) — 결정론적. 회귀 cwd =
     REPO/<slot>(main 이 `_regression_cwd` forward) — L1(stale→REPO 폴백)이 발동하지 않게
     그 디렉토리를 실제로 만든다.
@@ -1174,13 +1128,14 @@ def test_repo_alone_bypasses_ambiguity(tf, monkeypatch):
     이게 분해형 `--repo`/`--slot` 의 존재 이유 — 다중슬롯 모호를 사용자가 직접 disambiguate 한다.
     무인자 경로의 해소 결과와 무관하게 explicit 경로가 short-circuit 한다.
     """
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
+    monkeypatch.setattr(slot_resolution, "_resolve_explicit_identity_slot",
+                        lambda _home, repo, slot, leases_file=None: (f"work/{repo}_{slot}", None))
     slot, err = tf._resolve_finish_slot("project_manager", 2)
     assert err is None            # 명시했으므로 모호 아님(short-circuit)
     assert slot == "work/project_manager_2"
 
 
-# ── M3(라이더) — 세션↔repo 조인 불일치 fail-loud (pm_handoff `_resolve_explicit_identity_slot` 위임) ──
+# ── M3(라이더) — 세션↔repo 조인 불일치 fail-loud (`slot_resolution._resolve_explicit_identity_slot` 위임) ──
 
 def test_resolve_finish_slot_m3_rejects_repo_join_mismatch(tf, tmp_path, monkeypatch):
     """명시 --repo/--slot 이 실제 활성 리스와 조인 불일치 → fail-loud(조용히 안 넘김·ADR-0057 M3)."""
@@ -1343,17 +1298,6 @@ def test_main_slot_without_repo_rejected(tf, capsys):
     with pytest.raises(SystemExit):
         tf.main(["T-1234", "--slot", "4"])
     assert "--repo" in capsys.readouterr().err
-
-
-def test_resolve_finish_slot_pm_handoff_absent_is_an_error(tf, monkeypatch):
-    """pm_handoff 부재(None) → 복구 문의 제품 트리를 대여 기록과 대조할 수 없어 오류다(T-0962).
-
-    검증 없이 `work/<repo>_<N>` 을 조립해 신뢰하던 대체 동작은 없다 — `(None, 오류문)` 이고
-    호출부가 rc 1 로 멈춘다."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
-    path, problem = tf._resolve_finish_slot("myrepo", 2)
-    assert path is None
-    assert problem is not None and "pm_handoff" in problem and "work/myrepo_2" in problem
 
 
 # ── engine_written_paths — rounds/T-NNNN/ stage 후보 (T-0753·ADR-0090 R5) ───────

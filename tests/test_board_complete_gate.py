@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.domain import ticket_rules
-from pm_engine.infra import pm_paths
+from pm_engine.infra import pm_paths, review_rounds
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -99,7 +99,7 @@ def test_legacy_pm_fixed_resolution_is_unrecognized(board):
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
         "resolution": {"kind": "pm-fixed", "round_sequence": 1, "rounds": 1},
     }
-    assert board.gate_resolution(entry) is None
+    assert review_rounds.gate_resolution(entry) is None
 
 
 # ── T-0786(D1) — `pm-verified` 완료 게이트(기계 확인 증거) ────────────────
@@ -1060,8 +1060,8 @@ def test_internal_legacy_fixed_resolution_is_unrecognized(board):
         ts="2026-08-12T00:01:00+00:00", target_rev="a" * 40,
     )]}
     entry["resolution"] = {"kind": "fixed", "evidence_gate": "T-9302",
-                           **board.gate_round_binding(entry)}
-    assert board.gate_resolution(entry) is None
+                           **review_rounds.gate_round_binding(entry)}
+    assert review_rounds.gate_resolution(entry) is None
 
 
 def test_done_tickets_are_not_retroactively_checked(live_board):

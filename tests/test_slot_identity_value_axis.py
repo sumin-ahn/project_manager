@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 from pm_engine.domain import identity_args
-from pm_engine.infra import lease_store
+from pm_engine.infra import lease_store, pm_paths
+from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -164,9 +165,9 @@ def test_single_slot_shape_resolves_to_ledger_row(home):
     home.write_areas(["A"])
     home.mkslot("work/A_1")
 
-    resolved = home.bp._auto_slot(home.areas, home.ledger)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(home.bp.REPO), home.areas, home.ledger)
     assert (resolved.key, resolved.slot) == ("A_1", "work/A_1")
-    assert home.hf._regression_cwd(None, home.areas, home.ledger) == \
+    assert slot_resolution._regression_cwd(pm_paths.home_at(home.hf.REPO), None, home.areas, home.ledger) == \
         str(home.root / "work/A_1")
 
 
@@ -187,7 +188,7 @@ def test_actor_resolution_returns_ledger_session_verbatim(home):
     _mismatch_shape(home)
     assert lease_store.resolve_actor_workspace("A", home.ledger).session == "B_7"
     # 경로 축은 행의 slot 값 — 세션에서 `work/B_7` 을 만들지 않는다.
-    assert home.hf._resolve_explicit_identity_slot("A", 1, home.ledger) == \
+    assert slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(home.hf.REPO), "A", 1, home.ledger) == \
         ("work/A_1", None)
     assert home.wp._resolve_actor_slot_for_repo("A") == "work/A_1"
 
@@ -227,10 +228,10 @@ def test_home_row_number_axis_and_paths_are_ledger_derived(home):
     assert sorted(wp._existing_slot_numbers("adopter", wp.list_leases())) == [1]
     assert lease_store.slot_path_resolution("adopter", 1, home.ledger).path == "."
     assert lease_store.resolve_actor_workspace("adopter", home.ledger).session == key
-    assert hf._resolve_explicit_identity_slot("adopter", 1, home.ledger) == (".", None)
-    resolved = home.bp._auto_slot(home.areas, home.ledger)
+    assert slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "adopter", 1, home.ledger) == (".", None)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(home.bp.REPO), home.areas, home.ledger)
     assert (resolved.key, resolved.slot) == (key, ".")
-    assert hf._regression_cwd(None, home.areas, home.ledger) == str(home.root)
+    assert slot_resolution._regression_cwd(pm_paths.home_at(hf.REPO), None, home.areas, home.ledger) == str(home.root)
 
 
 def test_pool_slot_without_worktree_is_still_stale(home):

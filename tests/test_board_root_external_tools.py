@@ -23,7 +23,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import areas_store, python_env
+from pm_engine.infra import areas_store, pm_paths, python_env
+from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -54,7 +55,7 @@ def _make_wiki_tickets(root: Path) -> Path:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# pm_handoff — _tickets_dir(board 루트 추종) · _regression_cwd(pm_paths.areas_file 추종)
+# pm_handoff — _tickets_dir(board 루트 추종)
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def test_handoff_tickets_dir_present_is_board_tickets(handoff):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# pm_bootstrap — _registered_repos / _auto_slot / Bootstrapper._areas_file (pm_paths.areas_file 추종)
+# slot_resolution — _registered_repos / _auto_slot · pm_bootstrap — Bootstrapper._areas_file (pm_paths.areas_file 추종)
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -107,7 +108,7 @@ def test_bootstrap_registered_repos_reads_board_not_stale_wiki(bootstrap):
     _make_board_dir(bootstrap._tmp)
     _write_areas(bootstrap._tmp / ".project_manager" / "board" / "areas.md")
     # legacy 위치(.project_manager/areas.md)는 *비어 있음* — stale 위치를 보면 빈 목록이 된다.
-    repos = bootstrap._registered_repos()
+    repos = slot_resolution._registered_repos(pm_paths.home_at(bootstrap.REPO))
     assert repos == ["project_manager"], \
         f"_registered_repos 가 board/areas.md(진실)를 안 읽음 — stale legacy 봄: {repos}"
 
@@ -115,7 +116,7 @@ def test_bootstrap_registered_repos_reads_board_not_stale_wiki(bootstrap):
 def test_bootstrap_registered_repos_legacy_reads_project_manager_areas(bootstrap):
     """legacy(board/ 부재) → _registered_repos() 가 .project_manager/areas.md 를 읽는다(현행)."""
     _write_areas(bootstrap._tmp / ".project_manager" / "areas.md")
-    assert bootstrap._registered_repos() == ["project_manager"]
+    assert slot_resolution._registered_repos(pm_paths.home_at(bootstrap.REPO)) == ["project_manager"]
 
 
 def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap):
@@ -130,7 +131,7 @@ def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap):
         '{"leases": [{"repo": "project_manager", "slot": "work/project_manager_1"}]}',
         encoding="utf-8")
     # leases_file 만 명시(board_root 추종 areas 는 _registered_repos 가 자동해소).
-    resolved = bootstrap._auto_slot(leases_file=leases)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), leases_file=leases)
     assert (resolved.key, resolved.slot) == ("project_manager_1", "work/project_manager_1")
 
 

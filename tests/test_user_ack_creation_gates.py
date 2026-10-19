@@ -18,7 +18,7 @@ import pytest
 
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
-from pm_engine.infra import git, ticket_store
+from pm_engine.infra import git, pre_push_hook, ticket_store
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -70,7 +70,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
-    monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(module, "_board_git_enabled", lambda: False)
     module.invalidate_known_prefixes_cache()
     module._project = project

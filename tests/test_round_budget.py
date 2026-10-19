@@ -26,6 +26,7 @@ import pytest
 from _test_exec import python_argv_command
 from conftest import anchor_board_module
 from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.app import regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -518,14 +519,12 @@ def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
         def resolve_pm_home_for_repo(_repo):
             return pm_home
 
-    class _Board:
-        @staticmethod
-        def _test_cmd(_override, *, session):
-            assert session is None
-            return "python3 -m pytest tests/ -q -n 8"
+    def _test_cmd(home, _override, *, session):
+        assert session is None
+        return "python3 -m pytest tests/ -q -n 8" if home.root == pm_home.resolve() else None
 
     monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ER)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda root: _Board if root == pm_home else None)
+    monkeypatch.setattr(regression, "_test_cmd", _test_cmd)
     assert pd._full_regression_command(candidate) == "python3 -m pytest tests/ -q -n 8"
 
 

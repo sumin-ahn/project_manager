@@ -26,7 +26,9 @@ import pytest
 from _git_fixture import init_git_repo
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
-from pm_engine.infra import areas_store, git, lease_store, ticket_store
+from pm_engine.infra import areas_store, git, lease_store, pm_paths, pre_push_hook, regression_store, ticket_store
+from pm_engine.app import regression
+from pm_engine.cli import regression_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -536,7 +538,7 @@ def init_board(board, monkeypatch):
     install_pre_push_hook 은 실 REPO 의 git hooks 를 건드린다. cmd_init 의 areas/local.conf
     효과만 검증하려고 stub. PM_STATE_TEMPLATE 부재로 pm_state 생성은 자연히 skip 된다.
     """
-    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     return board
 
 
@@ -1521,7 +1523,7 @@ class _FakeRun:
 def reg_board(board, monkeypatch):
     """회귀 run 을 hermetic 하게 만든 board — 플래그/장부/HEAD 를 tmp·fake 로 격리.
 
-    board 픽스처는 REGRESSION_FLAG·LOCAL_DIR·LEASES_FILE 을 monkeypatch 하지 않아 실 repo 를
+    board 픽스처는 LOCAL_DIR·LEASES_FILE 을 monkeypatch 하지 않아 실 repo 를
     가리킨다 — 여기서 tmp 로 재지정한다. LEASES_FILE 은 부재(→`_active_slot_path` None →
     cwd=REPO 폴백)다. 트리는 **스위트가 있는 코드 트리**가 기본이다(`tests/` 실재) — 회귀 측정
     케이스의 전제다. 스위트 없는 트리를 요구하는 케이스는 `_without_suite(board)` 로 지운다.
@@ -1529,9 +1531,8 @@ def reg_board(board, monkeypatch):
     (board._proj / "tests").mkdir(parents=True, exist_ok=True)
     local = board._proj / ".project_manager" / ".local"
     monkeypatch.setattr(board, "LOCAL_DIR", local)
-    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
     monkeypatch.setattr(board, "LEASES_FILE", local / "worktree-leases.json")  # 부재
-    monkeypatch.setattr(board, "_git_head", lambda: "deadbeef01234567")
+    monkeypatch.setattr(git, "_git_head", lambda _home: "deadbeef01234567")
     monkeypatch.setattr(git, "_git_head_at", lambda _cwd: "deadbeef01234567")
     return board
 
@@ -1554,9 +1555,9 @@ def test_regression_run_rc5_records_fail(reg_board, monkeypatch, capsys):
     이전엔 `rc in (0, 5)` 로 rc5 를 pass 로 삼켰다 — 그 회귀를 복원하면 이 단언이 깨진다.
     """
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
-    rc = reg_board.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(reg_board._home(), _run_args())
     assert rc == 1, "rc5 는 fail — cmd_regression 이 0(pass)을 반환하면 안 된다"
-    data = json.loads(reg_board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    data = json.loads(pm_paths.regression_flag(reg_board._home()).read_text(encoding="utf-8"))
     assert data["status"] == "fail", f"rc5 가 pass 로 기록됨: {data!r}"
     assert data["rc"] == 5
     out = capsys.readouterr().out
@@ -1570,9 +1571,9 @@ def test_regression_run_rc0_records_pass_unchanged(reg_board, monkeypatch, capsy
     pass = rc0 한정으로 좁혔어도 정상 green 경로는 그대로여야 한다.
     """
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(0))
-    rc = reg_board.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(reg_board._home(), _run_args())
     assert rc == 0
-    data = json.loads(reg_board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    data = json.loads(pm_paths.regression_flag(reg_board._home()).read_text(encoding="utf-8"))
     assert data["status"] == "pass"
     assert data["rc"] == 0
     out = capsys.readouterr().out
@@ -1583,9 +1584,9 @@ def test_regression_run_rc0_records_pass_unchanged(reg_board, monkeypatch, capsy
 def test_regression_run_rc1_records_fail(reg_board, monkeypatch):
     """rc1(실 실패) full run → status='fail' (일반 실패는 회귀 무변경)."""
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(1))
-    rc = reg_board.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(reg_board._home(), _run_args())
     assert rc == 1
-    data = json.loads(reg_board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    data = json.loads(pm_paths.regression_flag(reg_board._home()).read_text(encoding="utf-8"))
     assert data["status"] == "fail"
     assert data["rc"] == 1
 
@@ -1604,7 +1605,7 @@ def test_regression_run_rc5_surfaces_the_missing_suite_hint(
     # 스위트 없는 트리라도 이 test_cmd 는 자기 경로를 명시하므로 실행 전 거부에 걸리지 않는다
     # (거부는 '이 트리를 대상으로 삼는' 형상만 — 여기선 rc5 진단 문구가 판정 대상이다).
     (reg_board.REPO / "src").mkdir(parents=True, exist_ok=True)
-    reg_board.cmd_regression(_run_args(cmd="pytest src -q"))
+    regression_cmd.cmd_regression(reg_board._home(), _run_args(cmd="pytest src -q"))
     out = capsys.readouterr().out
     assert "`tests/` 가 없다" in out
     assert "--cwd" in out and "--task" in out
@@ -1619,7 +1620,7 @@ def test_regression_run_rc5_explicit_cwd_gets_no_tree_hint(
     """
     monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
-    reg_board.cmd_regression(_run_args(cwd=str(reg_board._proj / "elsewhere")))
+    regression_cmd.cmd_regression(reg_board._home(), _run_args(cwd=str(reg_board._proj / "elsewhere")))
     out = capsys.readouterr().out
     assert "수집 0" in out               # rc5=fail 노트는 유지.
     assert "`tests/` 가 없다" not in out  # 명시 트리 → 처방 없음.
@@ -1631,7 +1632,7 @@ def test_regression_run_rc5_scoped_returns_fail(reg_board, monkeypatch, capsys):
     scoped 는 플래그를 안 쓰지만 반환값/메시지는 full 과 같은 판정을 따른다.
     """
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
-    rc = reg_board.cmd_regression(_run_args(touches="tests/test_board_multipm.py"))
+    rc = regression_cmd.cmd_regression(reg_board._home(), _run_args(touches="tests/test_board_multipm.py"))
     assert rc == 1
     out = capsys.readouterr().out
     assert "fail (rc=5" in out
@@ -1645,10 +1646,10 @@ def test_regression_check_rc5_recorded_blocks_push(reg_board, monkeypatch, capsy
     RED 메시지가 rc=5·수집 0 사유를 드러낸다.
     """
     reg_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    reg_board.REGRESSION_FLAG.write_text(json.dumps(
+    pm_paths.regression_flag(reg_board._home()).write_text(json.dumps(
         {"head": "deadbeef01234567", "status": "fail", "rc": 5,
          "scope": "full", "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
-    rc = reg_board.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(reg_board._home(), argparse.Namespace(action="check"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "RED" in err
@@ -1660,7 +1661,7 @@ def test_regression_check_rc5_recorded_blocks_push(reg_board, monkeypatch, capsy
 # M>1 회귀 슬롯 all-or-nothing (ADR-0040 D2·b-1) — leased ≥2·무명시면 전 leased
 # 슬롯 순회: 슬롯별 check-first(저비용·기록 baseline) 후 stale/red 만 run,
 # 하나라도 red 면 push 차단. 단일 lease(M1)·솔로(M0)는 현행 단일-슬롯 경로
-# (공유 REGRESSION_FLAG) 무변경. 훅은 --session 을 못 넘겨 이 경로로 해소된다.
+# (공유 회귀 기록 `regression.json`) 무변경. 훅은 --session 을 못 넘겨 이 경로로 해소된다.
 # ════════════════════════════════════════════════════════════════════════
 
 class _FakeRunByCwd:
@@ -1690,7 +1691,7 @@ def _slot_cwd(board, session: str) -> str:
 def _seed_slot_flag(board, session: str, head: str,
                     status: str = "pass", rc: int = 0) -> None:
     """슬롯별 회귀 플래그를 직접 심는다 (check-first 의 baseline 상태 주입)."""
-    flag = board._regression_flag_for(session)
+    flag = regression_store._regression_flag_for(board._home(), session)
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text(json.dumps(
         {"head": head, "status": status, "rc": rc, "scope": "full",
@@ -1717,7 +1718,7 @@ def multi_reg_board(reg_board, monkeypatch):
 
 def test_regression_run_single_lease_uses_shared_flag_and_repo_cwd(
         reg_board, monkeypatch):
-    """M1(단일 lease)·무명시 → 단일-슬롯 경로 유지: 공유 REGRESSION_FLAG 기록 + 이 트리(REPO) cwd.
+    """M1(단일 lease)·무명시 → 단일-슬롯 경로 유지: 공유 회귀 기록(`regression.json`) + 이 트리(REPO) cwd.
 
     leased 1개면 all-or-nothing 순회로 안 빠진다(현행 결과 동일). 회귀 cwd 는 리스가 있어도
     push 되는 트리 자신이다 — 슬롯 우회는 삭제됐다(T-0733·`--cwd` 명시만 다른 트리를 지목).
@@ -1727,10 +1728,10 @@ def test_regression_run_single_lease_uses_shared_flag_and_repo_cwd(
     _write_ledger(reg_board, {"session": "solo_1"})   # leased 정확히 1개
     fake = _FakeRun(0)
     monkeypatch.setattr(reg_board.subprocess, "Popen", fake)
-    rc = reg_board.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(reg_board._home(), _run_args())
     assert rc == 0
     # 공유 플래그에 기록 (슬롯 순회 아님 — per-slot 플래그 부재).
-    assert reg_board.REGRESSION_FLAG.exists()
+    assert pm_paths.regression_flag(reg_board._home()).exists()
     assert not (reg_board.LOCAL_DIR / "regression-solo_1.json").exists()
     # cwd = 이 트리(REPO) — 리스가 있어도 슬롯으로 우회하지 않는다.
     assert fake.calls[0]["kwargs"]["cwd"] == str(reg_board.REPO)
@@ -1751,8 +1752,8 @@ def test_active_slot_none_session_ignores_corrupt_null_row(board, monkeypatch):
         {"leases": [{"session": None, "state": "leased", "slot": "work/x",
                      "test_cmd": "SHOULD_NOT_MATCH"}]}), encoding="utf-8")
     assert lease_store.session_name(board._home()) is None           # 손상 행은 count 대상 아님 → 미바인딩.
-    assert board._active_slot_test_cmd() is None   # 가드 없으면 SHOULD_NOT_MATCH 오매칭.
-    assert board._active_slot_path() is None
+    assert regression._active_slot_test_cmd(board._home()) is None   # 가드 없으면 SHOULD_NOT_MATCH 오매칭.
+    assert regression._active_slot_path(board._home()) is None
 
 
 # ── M2+ run: 전 green 통과 · 1 red 차단 · stale만 run (check-first) ─────────────
@@ -1763,14 +1764,14 @@ def test_regression_multi_run_all_missing_runs_all_green(
     b = multi_reg_board
     fake = _FakeRunByCwd({}, default=0)   # 모든 슬롯 rc0
     monkeypatch.setattr(b.subprocess, "Popen", fake)
-    rc = b.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(b._home(), _run_args())
     assert rc == 0
     # skip 없음·2 슬롯 모두 run (각 슬롯 cwd 로).
     assert set(fake.cwds) == {_slot_cwd(b, "A_1"), _slot_cwd(b, "B_1")}
     assert len(fake.cwds) == 2
     # 슬롯별 플래그가 각 슬롯 HEAD 로 pass 기록.
     for s in ("A_1", "B_1"):
-        data = json.loads(b._regression_flag_for(s).read_text(encoding="utf-8"))
+        data = json.loads(regression_store._regression_flag_for(b._home(), s).read_text(encoding="utf-8"))
         assert data["status"] == "pass"
         assert data["head"] == b._heads[_slot_cwd(b, s)]
     out = capsys.readouterr().out
@@ -1784,7 +1785,7 @@ def test_regression_multi_run_one_red_blocks_push(
     b = multi_reg_board
     fake = _FakeRunByCwd({_slot_cwd(b, "B_1"): 1}, default=0)  # B_1 만 red
     monkeypatch.setattr(b.subprocess, "Popen", fake)
-    rc = b.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(b._home(), _run_args())
     assert rc == 1
     err = capsys.readouterr().err
     assert "RED" in err
@@ -1799,7 +1800,7 @@ def test_regression_multi_run_check_first_skips_green_runs_missing(
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")  # green → skip
     fake = _FakeRunByCwd({}, default=0)
     monkeypatch.setattr(b.subprocess, "Popen", fake)
-    rc = b.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(b._home(), _run_args())
     assert rc == 0
     # A_1(green) 재실행 안 함 — B_1 만 pytest.
     assert fake.cwds == [_slot_cwd(b, "B_1")]
@@ -1814,7 +1815,7 @@ def test_regression_multi_run_stale_head_reruns(
     _seed_slot_flag(b, "B_1", head="HEAD_B", status="pass")    # green → skip
     fake = _FakeRunByCwd({}, default=0)
     monkeypatch.setattr(b.subprocess, "Popen", fake)
-    rc = b.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(b._home(), _run_args())
     assert rc == 0
     assert fake.cwds == [_slot_cwd(b, "A_1")]   # stale 만 run
     assert "skip(green) 1 · run 1" in capsys.readouterr().out
@@ -1827,7 +1828,7 @@ def test_regression_multi_check_all_green_passes(multi_reg_board, capsys):
     b = multi_reg_board
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
     _seed_slot_flag(b, "B_1", head="HEAD_B", status="pass")
-    rc = b.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 0
     assert "전 슬롯 green" in capsys.readouterr().out
 
@@ -1837,7 +1838,7 @@ def test_regression_multi_check_one_stale_blocks_and_names(multi_reg_board, caps
     b = multi_reg_board
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
     _seed_slot_flag(b, "B_1", head="OLD", status="pass")   # stale
-    rc = b.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "B_1=stale" in err
@@ -1849,7 +1850,7 @@ def test_regression_multi_check_missing_flag_blocks(multi_reg_board, capsys):
     b = multi_reg_board
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
     # B_1 플래그 없음 → missing.
-    rc = b.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     assert "B_1=missing" in capsys.readouterr().err
 
@@ -1859,7 +1860,7 @@ def test_regression_multi_check_red_flag_blocks(multi_reg_board, capsys):
     b = multi_reg_board
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
     _seed_slot_flag(b, "B_1", head="HEAD_B", status="fail", rc=1)
-    rc = b.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     assert "B_1=red" in capsys.readouterr().err
 
@@ -1875,14 +1876,14 @@ def test_regression_multi_run_recovers_after_fix(
     # 1) B_1 red 로 run → 차단.
     monkeypatch.setattr(b.subprocess, "Popen",
                         _FakeRunByCwd({_slot_cwd(b, "B_1"): 1}))
-    assert b.cmd_regression(_run_args()) == 1
+    assert regression_cmd.cmd_regression(b._home(), _run_args()) == 1
     capsys.readouterr()
     # 2) 고쳐서 전 슬롯 green 으로 재run → 통과.
     monkeypatch.setattr(b.subprocess, "Popen", _FakeRunByCwd({}, default=0))
-    assert b.cmd_regression(_run_args()) == 0
+    assert regression_cmd.cmd_regression(b._home(), _run_args()) == 0
     capsys.readouterr()
     # 3) check 가 두 슬롯 green baseline 을 신뢰 → rc0.
-    assert b.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check")) == 0
     assert "전 슬롯 green" in capsys.readouterr().out
 
 
@@ -1900,7 +1901,7 @@ def test_regression_multi_check_ignores_env_session(
     monkeypatch.setenv("PM_SESSION_NAME", "A_1")   # ambient env — 디스패치 판정서 무시돼야 함
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
     # B_1 플래그 없음 → missing.
-    rc = b.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     assert "B_1=missing" in capsys.readouterr().err
 
@@ -1911,7 +1912,7 @@ def test_regression_multi_check_ignores_claude_env_alias(
     b = multi_reg_board
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "A_1")
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
-    rc = b.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     assert "B_1=missing" in capsys.readouterr().err
 
@@ -1923,7 +1924,7 @@ def test_regression_multi_run_ignores_env_session(
     monkeypatch.setenv("PM_SESSION_NAME", "B_1")   # 자기 슬롯으로 좁히려는 env — 무시.
     fake = _FakeRunByCwd({_slot_cwd(b, "B_1"): 1}, default=0)  # B_1 red·A_1 green
     monkeypatch.setattr(b.subprocess, "Popen", fake)
-    rc = b.cmd_regression(_run_args())
+    rc = regression_cmd.cmd_regression(b._home(), _run_args())
     assert rc == 1
     # 전-슬롯 순회 — A_1·B_1 둘 다 run 대상(둘 다 missing).
     assert set(fake.cwds) == {_slot_cwd(b, "A_1"), _slot_cwd(b, "B_1")}
@@ -1953,7 +1954,7 @@ def test_regression_run_explicit_session_narrows_in_multi(
         return fake(*args, **kwargs)
 
     monkeypatch.setattr(b.subprocess, "Popen", popen)
-    rc = b.cmd_regression(_run_args(task="narrow"))
+    rc = regression_cmd.cmd_regression(b._home(), _run_args(task="narrow"))
     assert rc == 0
     # 단일 경로 — 실행 1회(슬롯 순회 아님)·cwd 는 task 폴더·타 슬롯 플래그 없음.
     assert len(fake.calls) == 1
@@ -1967,7 +1968,7 @@ def test_regression_multi_check_message_carries_rc5_hint(
     b = multi_reg_board
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
     _seed_slot_flag(b, "B_1", head="HEAD_B", status="fail", rc=5)  # red·수집 0
-    rc = b.cmd_regression(argparse.Namespace(action="check"))
+    rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "B_1=red(rc=5·수집0)" in err
@@ -1978,17 +1979,17 @@ def test_regression_run_explicit_cwd_skips_multi_dispatch(
     """--cwd 핀은 leased ≥2 라도 M>1 all-or-nothing 순회를 건너뛴다(명시 cwd=단일 위치).
 
     무명시면 전-슬롯 순회(2 subprocess)지만, --cwd 명시면 그 한 경로에서 단일 실행 +
-    공유 REGRESSION_FLAG 기록(per-slot 플래그 안 만듦).
+    공유 회귀 기록(`regression.json`, per-slot 플래그 안 만듦).
     """
     b = multi_reg_board
     override = str(b._proj / "pinned")
     fake = _FakeRun(0)
     monkeypatch.setattr(b.subprocess, "Popen", fake)
-    rc = b.cmd_regression(_run_args(cwd=override))
+    rc = regression_cmd.cmd_regression(b._home(), _run_args(cwd=override))
     assert rc == 0
     assert len(fake.calls) == 1
     assert fake.calls[0]["kwargs"]["cwd"] == override
-    assert b.REGRESSION_FLAG.exists()
+    assert pm_paths.regression_flag(b._home()).exists()
     assert not (b.LOCAL_DIR / "regression-A_1.json").exists()
 
 
@@ -2515,5 +2516,5 @@ def test_t0962_session_token_is_not_parsed_as_slot(board, monkeypatch):
     monkeypatch.setenv("PM_SESSION_NAME", "alpha_1")
     assert areas_store.registered_prefixes(board._home()) == {"al", "be"}
     assert areas_store.id_prefix(board._home(), None) is None
-    assert board._test_cmd(None) == "pytest -q"
+    assert regression._test_cmd(board._home(), None) == "pytest -q"
     assert board._created_by_session("alpha_1") is None

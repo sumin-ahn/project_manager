@@ -102,6 +102,7 @@ if _TOOLS_DIR not in sys.path:
 from pm_engine.domain import conf_schema, ticket_rules  # noqa: E402
 from pm_engine.infra import conf_store, console, fs, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
+from pm_engine.app import release  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -1409,7 +1410,7 @@ def _review_rounds_max(conf: dict[str, str]) -> int:
 #     있고, 수렴-형상 게이트(`_convergence_refusal`)의 판정 입력이기도 하다. 게이트 종결 시점의
 #     **처분 선언**(`resolution` — `--resolve-gate`)도 같은 항목에 실린다. 처분 선언은 릴리즈
 #     차단(`board.py livegate record`)이 읽는 절이고,
-#     그 값의 해석은 board 의 공용 seam(`gate_resolution`)이 소유한다(여기선 구조만 보존).
+#     그 값의 해석은 `review_rounds.gate_resolution` 이 소유한다(여기선 구조만 보존).
 #   · wave 축 — 예약 키 `wave`(`WAVE_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
 #     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
 #     dict 를 공유하므로 **예약 키를 게이트 이름으로 쓰는 것은 기계로 막는다**(`_reserved_gate_error`
@@ -1499,10 +1500,10 @@ def _save_round_ledger(ledger: dict) -> None:
     problems = board._unresolved_must_fix_data(ledger, path)
     livegate_flag = path.with_name("livegate.json")
     if problems:
-        board._write_release_must_fix_marker(livegate_flag, problems)
+        release._write_release_must_fix_marker(livegate_flag, problems)
     review_rounds.write_ledger(path, ledger)
     if not problems:
-        board._write_release_must_fix_marker(livegate_flag, problems)
+        release._write_release_must_fix_marker(livegate_flag, problems)
 
 
 def _restrict_to_owner(path: Path) -> None:
@@ -1935,9 +1936,7 @@ def _recorded_must_fix_series(entry: dict) -> tuple[int | None, ...]:
 
     나열 순서는 조회 표와 **같은 정렬**(`_ordered_round_outcomes`)이다 — append 순서는 완료
     순서라 동시 실행이 역순으로 끝나면 추이가 뒤바뀐다."""
-    return review_rounds.recorded_must_fix_series(
-        entry, order_key=_load_board().round_outcome_order_key,
-    )
+    return review_rounds.recorded_must_fix_series(entry)
 
 
 def _format_must_fix_series(series: Sequence[int | None]) -> str:
@@ -1950,10 +1949,7 @@ def _convergence_round_usage(
     entry: dict, *, wall_timeout_sec: int | None = None,
 ) -> tuple[int, int]:
     """(완료 산출 수, 미마감 예약 수) — 상한 판정과 차단 안내가 **같은 수**를 쓴다."""
-    return review_rounds.convergence_round_usage(
-        entry, wall_timeout_sec=wall_timeout_sec,
-        order_key=_load_board().round_outcome_order_key,
-    )
+    return review_rounds.convergence_round_usage(entry, wall_timeout_sec=wall_timeout_sec)
 
 
 def _convergence_refusal(
@@ -1967,10 +1963,7 @@ def _convergence_refusal(
           마지막 must_fix 가 0 이 아니면(미해소·'미상' 포함) 사유를 나눠 표기한다. 미상을 해소로
           접지 않는 건 보수 방향이다 — 셀 수 없던 라운드를 '0건'으로 읽으면 발산 형상이 통과한다.
     """
-    return review_rounds.convergence_refusal(
-        entry, limit, wall_timeout_sec=wall_timeout_sec,
-        order_key=_load_board().round_outcome_order_key,
-    )
+    return review_rounds.convergence_refusal(entry, limit, wall_timeout_sec=wall_timeout_sec)
 
 
 # 승인 고지 — 같은 승인이라도 **재개된 실행**과 **남은 축이 막아 거부된 실행**의 문구가 달라야
@@ -2414,22 +2407,21 @@ def _ordered_round_outcomes(rounds: list) -> list[dict]:
     순서를 뒤집는다. 순번이 없는 구세대/미연결 산출은 **앞**(오래된 쪽)에 원래 순서대로 남긴다
     (안정 정렬) — 뒤에 두면 업그레이드 후 새 통과가 쌓여도 옛 반려가 영원히 '최신'이 된다.
 
-    정렬 규칙은 board 의 공용 seam(`round_outcome_order_key`)이 소유한다 — 같은 장부를 읽는
-    board 의 강등 판정(`_last_round_verdict`)과 사본으로 갈리면 두 표면이 서로 다른 라운드를
-    '최신'이라고 답한다. 방향은 이 파일이 board 를 로드하는 쪽이다(역방향은 순환)."""
-    return sorted(rounds, key=_load_board().round_outcome_order_key)
+    정렬 규칙은 `review_rounds.round_outcome_order_key` 가 소유한다 — 같은 장부를 읽는 강등
+    판정(`review_rounds._last_round_verdict`)과 사본으로 갈리면 두 표면이 서로 다른 라운드를
+    '최신'이라고 답한다."""
+    return sorted(rounds, key=review_rounds.round_outcome_order_key)
 
 
 def _format_gate_resolution(entry: dict) -> str:
     """게이트 처분 열 — `미처분` / `pm-verified` / `무대상`.
 
-    판정은 board 의 공용 seam(`gate_resolution`·`gate_residual_must_fix`)이 소유한다 — 릴리즈
-    차단이 보는 것과 **같은 사실**을 그대로 보여야 이 표로 차단을 미리 예측할 수 있다.
+    판정은 `review_rounds` 의 게이트 판정(`gate_resolution`·`gate_residual_must_fix`)이 소유한다 —
+    릴리즈 차단이 보는 것과 **같은 사실**을 그대로 보여야 이 표로 차단을 미리 예측할 수 있다.
     `무대상` 은 잔여 must-fix 가 없어 처분이 필요 없는 게이트다(통과·suggestion 만 남은 게이트)."""
-    board = _load_board()
-    declared = board.gate_resolution(entry)
+    declared = review_rounds.gate_resolution(entry)
     if declared is None:
-        return "미처분" if board.gate_has_residual(entry) else "무대상"
+        return "미처분" if review_rounds.gate_has_residual(entry) else "무대상"
     return _describe_resolution(declared)
 
 
@@ -2587,13 +2579,13 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
                 gate=gate, ledger=_round_ledger_path()), file=sys.stderr)
             return 1
         entry = _gate_entry(ledger, gate)
-        if not board.gate_has_residual(entry):
+        if not review_rounds.gate_has_residual(entry):
             # 잔여 없음만 거부한다 — **미상**(판정 무효 라운드)은 릴리즈가 차단하는 축이라
             # 선언도 받아야 한다(둘이 갈리면 차단은 되는데 처분은 못 하는 데드락).
             print(_RESOLVE_GATE_NO_RESIDUAL_GUIDANCE.format(
-                gate=gate, residual=board.gate_residual_label(entry)), file=sys.stderr)
+                gate=gate, residual=review_rounds.gate_residual_label(entry)), file=sys.stderr)
             return 1
-        residual = board.gate_residual_must_fix(entry)
+        residual = review_rounds.gate_residual_must_fix(entry)
         # 추가 리뷰어 채널로 스코프해 판정한다 — board 는 채널과 그 게이트의 장부 항목을
         # 받아 다른 채널의 accepted 잔여·기계 확인은 보지 않는다.
         detail = board._pm_verified_evidence_problem(
@@ -2603,13 +2595,13 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
             print(_RESOLVE_GATE_PM_VERIFIED_GUIDANCE.format(
                 gate=gate, detail=detail), file=sys.stderr)
             return 1
-        residual_label = board.gate_residual_label(entry)
-        previous = board.gate_resolution(entry)
+        residual_label = review_rounds.gate_residual_label(entry)
+        previous = review_rounds.gate_resolution(entry)
         declared = {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "ts": _utc_now_iso(),
             "must_fix": residual,
-            **board.gate_round_binding(entry),
+            **review_rounds.gate_round_binding(entry),
         }
         entry["resolution"] = declared
         _save_round_ledger(ledger)

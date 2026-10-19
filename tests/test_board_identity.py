@@ -33,7 +33,8 @@ import pytest
 
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
-from pm_engine.infra import ticket_store
+from pm_engine.infra import pm_paths, process, ticket_store
+from pm_engine.app import regression, release
 
 # 귀속 쓰기 정체성 — 픽스처가 이 task 의 제품 폴더를 준비한다(T-0962).
 _TASK = "pm-1"
@@ -441,18 +442,16 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
         "leases": [{"slot": "work/proj_1", "repo": "proj", "session": "mytask",
                     "state": "leased", "role": "work"}],
         "tasks": [{"name": "mytask"}]}), encoding="utf-8")
-    monkeypatch.setattr(board, "REGRESSION_FLAG", board.LOCAL_DIR / "regression.json")
-    monkeypatch.setattr(board, "LIVEGATE_FLAG", board.LOCAL_DIR / "livegate.json")
     _seed_open(board)
     runner_calls: list = []
-    monkeypatch.setattr(board, "_run_regression_cmd",
+    monkeypatch.setattr(process, "_run_regression_cmd",
                         lambda *a, **k: runner_calls.append(a) or (0, "", ""))
-    monkeypatch.setattr(board, "_run_platform_cells",
+    monkeypatch.setattr(regression, "_run_platform_cells",
                         lambda *a, **k: runner_calls.append(a) or ([], [], 0))
     real_run = board.subprocess.run
 
     def guarded_run(cmd, *args, **kwargs):
-        if cmd == board.LIVEGATE_TEST_CMD:
+        if cmd == release.LIVEGATE_TEST_CMD:
             runner_calls.append(cmd)
         return real_run(cmd, *args, **kwargs)
 
@@ -464,7 +463,7 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
                    board.clusters_dir())
         files = {path.relative_to(tickets).as_posix(): path.read_bytes()
                  for folder in folders for path in folder.glob("*") if path.is_file()}
-        for flag in (board.REGRESSION_FLAG, board.LIVEGATE_FLAG):
+        for flag in (pm_paths.regression_flag(board._home()), pm_paths.livegate_flag(board._home())):
             files[flag.name] = flag.read_bytes() if flag.exists() else None
         return files
 

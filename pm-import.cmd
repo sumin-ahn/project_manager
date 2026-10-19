@@ -11,7 +11,7 @@ rem         (--from is auto-defaulted to the manager root by pm_import, so it ca
 setlocal
 
 rem Interpreter preference python -> py -> python3 (matches _detect_py Windows order).
-rem Each candidate must run and satisfy Python 3.11+ (mirror of engine_rev.MIN_PYTHON).
+rem Each candidate must run and satisfy Python 3.11+ (mirror of pm_engine.MIN_PYTHON).
 set "PY="
 where python >nul 2>nul && python --version >nul 2>nul && python "%~dp0.project_manager\tools\python_floor.py" >nul 2>nul && (set "PY=python" & goto :run)
 where py >nul 2>nul && py --version >nul 2>nul && py "%~dp0.project_manager\tools\python_floor.py" >nul 2>nul && (set "PY=py" & goto :run)

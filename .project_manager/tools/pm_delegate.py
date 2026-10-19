@@ -64,7 +64,7 @@ from typing import Callable, Iterator, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.app import hooks  # noqa: E402
+from pm_engine.app import hooks, regression  # noqa: E402
 from pm_engine.cli import task_args  # noqa: E402
 from pm_engine.domain import conf_schema, identity_args, ticket_rules  # noqa: E402
 from pm_engine.infra import console, fs, git, pm_paths, raw_output, repo_coordinates, repo_files, ticket_store  # noqa: E402
@@ -2641,8 +2641,7 @@ def _full_regression_command(cwd: Path) -> str:
     repo = Path(cwd).resolve()
     er = _load_additional_reviewer()
     config_root = Path(er.resolve_pm_home_for_repo(repo)).resolve()
-    board = _load_board_for_repo(config_root)
-    command = str(board._test_cmd(None, session=None)).strip()
+    command = str(regression._test_cmd(pm_paths.home_at(config_root), None, session=None)).strip()
     if not command:
         raise DelegateError("developer 단계 종료 전체 회귀 test_cmd를 해소하지 못했습니다")
     return command

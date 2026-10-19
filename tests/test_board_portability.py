@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from pm_engine.domain import conf_schema
-from pm_engine.infra import areas_store, conf_store, python_env, ticket_store
+from pm_engine.infra import areas_store, conf_store, pre_push_hook, python_env, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -39,9 +39,9 @@ def board():
 
 @pytest.fixture(autouse=True)
 def _clear_detect_py_cache(board):
-    board._detect_py.cache_clear()
+    python_env._detect_py.cache_clear()
     yield
-    board._detect_py.cache_clear()
+    python_env._detect_py.cache_clear()
 
 
 # ── C1: load_ticket / dump_ticket round-trip (em-dash + 이모지) ──────────────
@@ -122,7 +122,7 @@ def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
     monkeypatch.setattr(board, "REPO", root)
     (root / ".git").mkdir(exist_ok=True)
     hooks = root / ".git" / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
     return hooks
 
 
@@ -136,14 +136,14 @@ def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
 
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     # python3 부재·python 존재 → _detect_py() == 'python'.
     monkeypatch.setattr(
         board.shutil, "which",
         lambda cmd: r"C:\Python\python.exe" if cmd == "python" else None,
     )
 
-    assert board.install_pre_push_hook() is True
+    assert pre_push_hook.install_pre_push_hook(board._home()) is True
 
     body = (hooks / "pre-push").read_text(encoding="utf-8")
     assert "python .project_manager/tools/board.py regression" in body
@@ -159,7 +159,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     """
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
-    monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
+    monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(board.shutil, "which", lambda cmd: "/usr/bin/python3" if cmd == "python3" else None)
 
     captured: dict = {}
@@ -171,7 +171,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
         return orig(self, data, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", spy)
-    board.install_pre_push_hook()
+    pre_push_hook.install_pre_push_hook(board._home())
     assert captured.get("encoding") == "utf-8"
     assert (hooks / "pre-push").is_file()      # 교체가 실제로 최종 경로에 착지했다
 
@@ -200,7 +200,7 @@ def _init_isolated(board, monkeypatch, tmp_path):
                         proj / ".project_manager" / ".local" / "worktree-leases.json")
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
-    monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     return conf_path
 
 
@@ -333,7 +333,7 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 lease 장부·areas.md.
     assert "session=" not in conf_text and "prefix=" not in conf_text
     assert "runtime.py=" in conf_text
-    assert f"test.cmd={python_env.default_pytest_cmd(board._detect_py())}" in conf_text
+    assert f"test.cmd={python_env.default_pytest_cmd(python_env._detect_py())}" in conf_text
     assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" in conf_text
     assert "ctx.checkpoint_at_pct=" in conf_text and "ctx.precompact_at_pct=" in conf_text
 
