@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.infra import round_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -642,14 +643,14 @@ def test_cli_reid_dispatches_to_cmd_reid(board):
 # 티켓이 되고 옛 ID 자리엔 티켓 없는 라운드가 남는다.
 
 def _seed_round(board, tid: str, name: str, text: str) -> Path:
-    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
+    path = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="")
     return path
 
 
 def _rounds_dir(board, tid: str) -> Path:
-    return board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
+    return round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
 
 
 def test_reid_moves_the_rounds_directory_with_the_ticket(board):

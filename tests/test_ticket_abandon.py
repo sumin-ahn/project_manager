@@ -33,6 +33,9 @@ import pytest
 from _git_fixture import remove_git_tree
 from conftest import write_cluster_ledger
 from pm_engine.infra import raw_output
+from pm_engine.domain import delegate_errors, review_form
+from pm_engine.infra import delegate_ledger
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -186,7 +189,7 @@ def _prepare(pd, env: Env, ticket: str, role: str = "architect", **kwargs):
 def _fill_architect(pd, plan) -> None:
     """architect 사본의 계약 placeholder 를 harvest 가능한 실값으로 채운다."""
     text = plan.path.read_text(encoding="utf-8")
-    opening = f"```{pd.ARCHITECT_TEST_BLOCK}\n"
+    opening = f"```{review_form.ARCHITECT_TEST_BLOCK}\n"
     start = text.index(opening) + len(opening)
     end = text.index("\n```", start)
     contract = json.dumps({
@@ -247,9 +250,8 @@ def _write_output(path: Path, marker: str = LIVE_OUTPUT_MARKER) -> None:
 
 
 def _problem_codes(pd, env: Env, ticket: str) -> list[str]:
-    rounds_module = pd._load_ticket_rounds()
     tickets_root = env.pm_home / ".project_manager" / "wiki" / "tickets"
-    return [item.code for item in rounds_module.verify_rounds(tickets_root, ticket)]
+    return [item.code for item in round_seed.verify_rounds(tickets_root, ticket)]
 
 
 def _assets(plan, env: Env) -> tuple[bool, bytes | None, bool, dict]:
@@ -313,7 +315,7 @@ def test_abandon_closes_all_three_kill_residue_assets(pd, env):
     assert not plan.board_path.exists()
     row = _ledger_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["harvested_at"] is None
-    assert pd.ticket_copy_records(env.pm_home, ticket="T-8001", unharvested=True) == []
+    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8001", unharvested=True) == []
     assert env.sync_calls[-1][1] == [plan.board_path]
 
 
@@ -340,7 +342,7 @@ def test_abandon_leaves_other_live_runs_untouched(pd, env):
     assert alive.run_dir.exists() and alive.board_path.exists()
     alive_row = [row for row in _ledger_rows(env) if row["ticket"] == "T-8004"][-1]
     assert alive_row["harvested_at"] is None and "abandoned_at" not in alive_row
-    assert pd.ticket_copy_records(env.pm_home, ticket="T-8004", unharvested=True)[0][
+    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8004", unharvested=True)[0][
         "copy"
     ] == str(alive.path)
 
@@ -354,7 +356,7 @@ def test_abandon_refuses_a_round_with_real_output(pd, env):
 
     before_sync = list(env.sync_calls)
 
-    with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="산출이 있어 포기할 수 없습니다"):
         _abandon(pd, env, plan)
 
     assert plan.board_path.read_bytes() == before
@@ -370,7 +372,7 @@ def test_abandon_refuses_an_unprepared_path(pd, env):
     smuggled = plan.run_dir / "02-developer.md"
     smuggled.write_text("## 리뷰\n밀반입\n", encoding="utf-8", newline="\n")
 
-    with pytest.raises(pd.DelegateError, match="준비 기록 없음"):
+    with pytest.raises(delegate_errors.DelegateError, match="준비 기록 없음"):
         pd.abandon_ticket_copy(
             copy_path=smuggled, cwd=env.slot, pm_home=env.pm_home, assume_dead=True,
         )
@@ -394,7 +396,7 @@ def test_abandon_without_evidence_is_refused_and_leaves_all_three_assets(pd, env
 
     before_sync = list(env.sync_calls)
 
-    with pytest.raises(pd.DelegateError, match="종료 증거가 없습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="종료 증거가 없습니다") as caught:
         _abandon(pd, env, plan, assume_dead=False)
 
     assert pd.ABANDON_ASSUME_DEAD_FLAG in str(caught.value)
@@ -408,7 +410,7 @@ def test_evidence_refusal_message_carries_the_reservation_coordinates(pd, env):
     plan = _prepare(pd, env, "T-8021")
     prepared_at = _ledger_rows(env)[-1]["prepared_at"]
 
-    with pytest.raises(pd.DelegateError) as caught:
+    with pytest.raises(delegate_errors.DelegateError) as caught:
         _abandon(pd, env, plan, assume_dead=False)
 
     message = str(caught.value)
@@ -428,7 +430,7 @@ def test_unfinished_raw_record_is_a_hint_and_not_a_decision_input(pd, env):
         "finished_at": None, "ticket": "T-8022",
     }]}), encoding="utf-8", newline="\n")
 
-    with pytest.raises(pd.DelegateError) as caught:
+    with pytest.raises(delegate_errors.DelegateError) as caught:
         _abandon(pd, env, plan, assume_dead=False)
 
     message = str(caught.value)
@@ -448,7 +450,7 @@ def test_live_owner_pid_refusal_leaves_the_three_assets_unchanged(pd, env, monke
 
     before_sync = list(env.sync_calls)
 
-    with pytest.raises(pd.DelegateError, match="실행 중이라 포기하지 않습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="실행 중이라 포기하지 않습니다") as caught:
         _abandon(pd, env, plan, assume_dead=False)
 
     assert "pid=4242" in str(caught.value) and "ps -p 4242" in str(caught.value)
@@ -514,7 +516,7 @@ def test_output_landing_before_the_removal_preserves_bytes_and_run_dir(
         pd, monkeypatch, call_index=call_index, path=plan.path, before=before,
     )
 
-    with pytest.raises(pd.DelegateError, match="시드와 달라져") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="시드와 달라져") as caught:
         _abandon(pd, env, plan)
 
     assert plan.run_dir.is_dir()
@@ -556,11 +558,11 @@ def test_ledger_append_failure_converges_on_the_next_call(pd, env, monkeypatch):
 
     def _boom(pm_home, row):
         if "abandoned_at" in row:
-            raise pd.DelegateError("장부 append 실패 주입")
+            raise delegate_errors.DelegateError("장부 append 실패 주입")
         return real_append(pm_home, row)
 
     monkeypatch.setattr(pd, "_append_delegate_rounds_ledger", _boom)
-    with pytest.raises(pd.DelegateError, match="장부 append 실패 주입"):
+    with pytest.raises(delegate_errors.DelegateError, match="장부 append 실패 주입"):
         _abandon(pd, env, plan)
     assert plan.board_path.exists() and plan.run_dir.exists()
     assert "abandoned_at" not in _ledger_rows(env)[-1]
@@ -586,7 +588,7 @@ def test_run_dir_removal_failure_converges_on_the_next_call(pd, env, monkeypatch
             raise OSError("run-dir 삭제 실패 주입")
 
     monkeypatch.setattr(pd, "fs", _FileLock())
-    with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
+    with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         _abandon(pd, env, plan)
     assert not plan.board_path.exists() and plan.run_dir.exists()
     assert _ledger_rows(env)[-1]["abandoned_at"] is not None
@@ -668,7 +670,7 @@ def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
 
     _abandon(pd, env, first)
 
-    unharvested = pd.ticket_copy_records(
+    unharvested = delegate_ledger.ticket_copy_records(
         env.pm_home, ticket="T-8061", unharvested=True,
     )
     assert [row["ordinal"] for row in unharvested] == [3]
@@ -716,13 +718,13 @@ def test_discard_moves_the_output_into_the_board_round_and_marks_it(pd, env):
     # 산출은 버려지지 않는다 — board 라운드 파일이 사본 bytes + 표식 한 줄이다.
     marker = pd.pm_review_refused_line("architect")
     assert plan.board_path.read_bytes() == (produced + marker + "\n").encode("utf-8")
-    assert pd.pm_review_refused_marker_present(
+    assert review_form.pm_review_refused_marker_present(
         plan.board_path.read_text(encoding="utf-8"))
     assert not plan.run_dir.exists()
     row = _ledger_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
     assert "superseded_by_ordinal" not in row
-    assert pd.ticket_copy_records(env.pm_home, ticket="T-8080", unharvested=True) == []
+    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8080", unharvested=True) == []
     assert env.sync_calls[-1] == (
         "ticket-abandon T-8080 architect", [plan.board_path],
     )
@@ -771,7 +773,7 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
     # 선언이 없으면 종전대로 거부다 — 자산 부재가 처분의 근거가 되지는 않는다.
     before_sync = list(env.sync_calls)
 
-    with pytest.raises(pd.DelegateError, match="지울 자산이 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="지울 자산이 없습니다"):
         _abandon(pd, env, plan)
     assert "abandoned_at" not in _ledger_rows(env)[-1]
 
@@ -781,7 +783,7 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
     assert (result.board_removed, result.run_dir_removed) == (True, True)
     row = _ledger_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
-    assert pd.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
+    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
     assert env.sync_calls == before_sync     # 지운 자산이 없어 커밋할 board 변경도 없다
 
     # 멱등 — 남은 정리가 없는 행의 재호출도 rc 0 이다(선언 인자는 다시 주지 않아도 된다).
@@ -798,7 +800,7 @@ def test_discard_without_any_declaration_is_still_refused(pd, env):
 
     before_sync = list(env.sync_calls)
 
-    with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="산출이 있어 포기할 수 없습니다") as caught:
         _abandon(pd, env, plan)
 
     # 거부 문구가 두 선언을 모두 가리킨다 — 사람이 다음 수를 문구에서 읽는다.
@@ -818,7 +820,7 @@ def test_the_two_disposal_declarations_are_mutually_exclusive(pd, env):
     before = _assets(plan, env)
     sync_before = list(env.sync_calls)
 
-    with pytest.raises(pd.DelegateError, match="처분 선언은 하나여야 합니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="처분 선언은 하나여야 합니다"):
         _abandon(
             pd, env, plan,
             superseded_by_ordinal=architect.ordinal, discard_reason=_DISCARD_REASON,
@@ -836,7 +838,7 @@ def test_discard_reason_must_be_one_non_empty_line(pd, env, bad):
     _write_output(plan.path)
     before = _assets(plan, env)
 
-    with pytest.raises(pd.DelegateError, match="폐기 사유는"):
+    with pytest.raises(delegate_errors.DelegateError, match="폐기 사유는"):
         _abandon(pd, env, plan, discard_reason=bad)
 
     assert _assets(plan, env) == before
@@ -849,7 +851,7 @@ def test_abandon_refuses_an_already_harvested_run(pd, env):
     plan = _prepare(pd, env, "T-8070")
     _land_architect(pd, env, plan)
 
-    with pytest.raises(pd.DelegateError, match="이미 회수된 준비는 포기할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="이미 회수된 준비는 포기할 수 없습니다"):
         _abandon(pd, env, plan)
 
 
@@ -859,7 +861,7 @@ def test_harvest_refuses_an_abandoned_reservation(pd, env):
     plan = _prepare(pd, env, "T-8071")
     _abandon(pd, env, plan)
 
-    with pytest.raises(pd.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
         pd.harvest_ticket_copy(
             copy_path=plan.path, cwd=env.slot, pm_home=env.pm_home,
         )
@@ -878,7 +880,7 @@ def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
     dead_copy.parent.mkdir(parents=True, exist_ok=True)
     dead_copy.write_text(dead_text + "\n옛 run 산출\n", encoding="utf-8", newline="")
 
-    with pytest.raises(pd.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
         pd.harvest_ticket_copy(
             copy_path=dead_copy, cwd=env.slot, pm_home=env.pm_home,
         )
@@ -900,12 +902,12 @@ def _base_row(**overrides) -> dict:
 
 
 def test_ledger_row_accepts_legacy_eight_key_rows(pd):
-    row = pd._delegate_rounds_ledger_row(_base_row(), line_number=1)
+    row = delegate_ledger._delegate_rounds_ledger_row(_base_row(), line_number=1)
     assert "abandoned_at" not in row and "owner_pid" not in row
 
 
 def test_ledger_row_accepts_the_two_optional_keys(pd):
-    row = pd._delegate_rounds_ledger_row(
+    row = delegate_ledger._delegate_rounds_ledger_row(
         _base_row(abandoned_at="2026-08-22T01:00:00+00:00", owner_pid=4242),
         line_number=1,
     )
@@ -914,7 +916,7 @@ def test_ledger_row_accepts_the_two_optional_keys(pd):
 
 
 def test_ledger_row_accepts_a_discard_reason(pd):
-    row = pd._delegate_rounds_ledger_row(
+    row = delegate_ledger._delegate_rounds_ledger_row(
         _base_row(abandoned_at="2026-09-02T01:00:00+00:00",
                   discard_reason="티켓 폐기"),
         line_number=1,
@@ -925,33 +927,33 @@ def test_ledger_row_accepts_a_discard_reason(pd):
 @pytest.mark.parametrize("bad", [None, "", "   ", "첫 줄\n둘째 줄", 5])
 def test_ledger_row_rejects_discard_reasons_without_a_readable_value(pd, bad):
     """사유가 그 처분의 유일한 기록이라 읽을 값이 없는 행은 장부 경계에서 막는다."""
-    with pytest.raises(pd.DelegateError, match="값 형식 불일치"):
-        pd._delegate_rounds_ledger_row(_base_row(discard_reason=bad), line_number=1)
+    with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
+        delegate_ledger._delegate_rounds_ledger_row(_base_row(discard_reason=bad), line_number=1)
 
 
 @pytest.mark.parametrize("bad", [None, ""])
 def test_ledger_row_rejects_null_or_empty_abandoned_at(pd, bad):
-    with pytest.raises(pd.DelegateError, match="값 형식 불일치"):
-        pd._delegate_rounds_ledger_row(_base_row(abandoned_at=bad), line_number=1)
+    with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
+        delegate_ledger._delegate_rounds_ledger_row(_base_row(abandoned_at=bad), line_number=1)
 
 
 @pytest.mark.parametrize("bad", [0, -1, True, "4242", None])
 def test_ledger_row_rejects_owner_pid_values_that_query_as_absent(pd, bad):
     """생존 조회 seam 이 부재로 정규화하는 값은 장부 경계에서 막는다(조용한 퇴화 금지)."""
-    with pytest.raises(pd.DelegateError, match="값 형식 불일치"):
-        pd._delegate_rounds_ledger_row(_base_row(owner_pid=bad), line_number=1)
+    with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
+        delegate_ledger._delegate_rounds_ledger_row(_base_row(owner_pid=bad), line_number=1)
 
 
 def test_ledger_row_still_rejects_unknown_keys(pd):
-    with pytest.raises(pd.DelegateError, match="schema 불일치"):
-        pd._delegate_rounds_ledger_row(_base_row(mystery="x"), line_number=1)
+    with pytest.raises(delegate_errors.DelegateError, match="schema 불일치"):
+        delegate_ledger._delegate_rounds_ledger_row(_base_row(mystery="x"), line_number=1)
 
 
 def test_ledger_row_still_rejects_missing_required_keys(pd):
     row = _base_row()
     del row["harvested_at"]
-    with pytest.raises(pd.DelegateError, match="schema 불일치"):
-        pd._delegate_rounds_ledger_row(row, line_number=1)
+    with pytest.raises(delegate_errors.DelegateError, match="schema 불일치"):
+        delegate_ledger._delegate_rounds_ledger_row(row, line_number=1)
 
 
 def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys):
@@ -966,7 +968,7 @@ def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys
     _fill_architect(pd, owned)
 
     capsys.readouterr()
-    rows = pd.ticket_copy_records(env.pm_home)
+    rows = delegate_ledger.ticket_copy_records(env.pm_home)
     warning = capsys.readouterr().err
     harvested = pd.harvest_ticket_copy(
         copy_path=owned.path, cwd=env.slot, pm_home=env.pm_home,

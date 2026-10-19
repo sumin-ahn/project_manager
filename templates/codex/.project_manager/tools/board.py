@@ -40,10 +40,10 @@ import yaml
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.app import hooks, regression, release  # noqa: E402
+from pm_engine.app import hooks, regression, release, round_seed  # noqa: E402
 from pm_engine.cli import regression_cmd, task_args  # noqa: E402
-from pm_engine.domain import areas_rules, conf_schema, git_policy, identity_args, pytest_report, shell_policy, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, clock, conf_store, console, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, python_env, regression_store, repo_coordinates, repo_files, review_rounds, ticket_store  # noqa: E402
+from pm_engine.domain import areas_rules, conf_schema, design_rules, git_policy, identity_args, markdown_text, model_lint, pytest_report, review_form, review_state, round_rules, shell_policy, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, clock, conf_store, console, delegate_ledger, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, python_env, regression_store, repo_coordinates, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -105,7 +105,6 @@ BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — b
 # 직접 read 한다(슬롯 test_cmd 레이어·아래 _active_slot_test_cmd). areas.md 읽듯 데이터-결합만.
 LEASES_FILE = LOCAL_DIR / "worktree-leases.json"            # worktree 리스 장부 (read-only here)
 DOMAIN_PY = REPO / ".project_manager" / "tools" / "domain.py"  # domain lint deep-import (순환 회피·아래 lint_domain)
-PM_DELEGATE_PY = REPO / ".project_manager" / "tools" / "pm_delegate.py"  # delegate lint deep-import (아래 lint_delegate)
 WORKTREE_POOL_PY = REPO / ".project_manager" / "tools" / "worktree_pool.py"  # 묶음 브랜치 부모 기록(_cluster_ensure_branch)
 DELEGATE_CHANNEL_GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 CODEX_DELEGATE_OBSERVATIONS = (
@@ -965,7 +964,6 @@ _READ_PM_PATH_RELS: dict[str, str] = {
     "BOARD_LOCK": ".local/board.lock",
     "LEASES_FILE": ".local/worktree-leases.json",
     "DOMAIN_PY": "tools/domain.py",
-    "PM_DELEGATE_PY": "tools/pm_delegate.py",
     "DELEGATE_CHANNEL_GUARD_PY": "tools/delegate_channel_guard.py",
     "CODEX_DELEGATE_OBSERVATIONS": ".local/delegate-channel/codex-observations.jsonl",
 }
@@ -1137,25 +1135,6 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
-def _require_engine_sibling(path: Path, filename: str) -> None:
-    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
-
-    부재는 `spec_from_file_location`+exec 단계에서 raw `FileNotFoundError` 로 터져 복구 방법
-    (pm-update 재동기)을 알려주지 않는다 — 부분/수동 복사라는 원인은 stale 사본과 같으므로
-    같은 marked skew 로 표출한다(`_engine_rev_skew`: fail-soft 로더가 조용히 None 으로
-    삼키지 않고 재-raise 한다).
-    """
-    if path.exists():
-        return
-    err = RuntimeError(
-        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
-        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
-        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-    )
-    err._engine_rev_skew = True
-    raise err
-
-
 def _report_engine_rev_skew_at_terminal(exc) -> int:
     """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
     print(
@@ -1173,27 +1152,6 @@ def _conf_default_int(key: str) -> int:
     않는다(하네스별 표가 정본인 키는 그 표를 읽는 자리가 따로 있다).
     """
     return int(conf_schema.default_for(key))
-
-
-# 라운드 seam 의 실제 사본 경로 — 로더와 argparse 선택지 해소가 같은 파일을 본다(스크립트
-# 위치 앵커라 REPO monkeypatch 와 무관하게 자기 tools/ 를 가리킨다).
-TICKET_ROUNDS_PY = Path(__file__).resolve().parent / "ticket_rounds.py"
-
-
-def _load_ticket_rounds():
-    """라운드 사이드카 공용 seam(`ticket_rounds.py`)을 같은 tools/ 에서 지연 로드한다.
-
-    경로 규약·순번 예약·적재·판정·역할 라벨의 단일 진실이 그쪽에 있고 board 는 소비만 한다 —
-    라벨표·디렉터리 이름·판정 규칙을 이 파일에 복제하지 않는다(복제하면 한쪽만 바뀐 채 남는다).
-    시드 렌더가 다시 `pm_delegate` 를 부르므로 로드는 캐시한다(사본 하나 · 예외 클래스 하나).
-
-    board 의 라운드 소비 지점(show·section-add·complete 게이트·lint·reid)은 이 형제가 있어야
-    성립하므로 부재·skew 는 조용히 넘기지 않고 재동기 안내로 fail-loud 한다.
-    """
-    _require_engine_sibling(TICKET_ROUNDS_PY, "ticket_rounds.py")
-    return _load_module_from_path(
-        TICKET_ROUNDS_PY, "ticket_rounds.py", verifier=_verify_engine_rev, cache=True,
-    )
 
 
 def _write_machine_line(text: str) -> None:
@@ -2652,8 +2610,7 @@ def _board_text_attr_targets() -> tuple[str, ...]:
     상태 경로만 재던 판정은 그 자리를 못 본다. 디렉터리 이름과 파일명 문법은 사이드카 seam 이
     소유하므로 여기서 표기를 복제하지 않고 그 표에서 프로브 경로를 만든다.
     """
-    rounds = _load_ticket_rounds()
-    probe = f"tickets/{rounds.ROUNDS_DIRNAME}/T-0/{rounds.round_filename(1, 'developer')}"
+    probe = f"tickets/{round_store.ROUNDS_DIRNAME}/T-0/{round_rules.round_filename(1, 'developer')}"
     return (*_BOARD_TEXT_ATTR_TARGETS, probe)
 
 
@@ -4419,7 +4376,7 @@ def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
 
 # `pm-verified` 재검증이 스코프하는 **리뷰 채널** — 게이트가 실린 장부가 곧 채널이다. 그 채널만
 # 본다(다른 채널의 accepted 잔여·기계 확인은 이 게이트의 증거가 아니다 — 채널 격리). role
-# 문자열의 단일 진실은 pm_delegate 라 사본을 두지 않고 재검증 시점에 해소한다
+# 문자열의 단일 진실은 review_form 이라 사본을 두지 않고 재검증 시점에 해소한다
 # (`_pm_verified_channel_role`). code-reviewer 잔여는 장부가 아니라 리뷰 라운드 파일에서 판정한다
 # (`_review_completion_problem`).
 GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
@@ -5018,15 +4975,8 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
 TICKET_TIERS: frozenset[str] = frozenset({"pm-direct", "normal", "hard"})
 
 
-def _round_role_choices() -> tuple[str, ...] | None:
-    """`--role` argparse 선택지 — 형제가 있으면 그 표에서, 없으면 선택지 없음(None).
-
-    파서는 **모든 명령 앞에서** 조립된다 — 여기서 형제 부재를 fail-loud 로 올리면 라운드와
-    무관한 명령(게이트·조회)까지 부분 동기 트리에서 죽는다. 역할 검증 자체는 예약 seam 이
-    하므로(허용 밖 역할은 rc=1) 선택지 부재는 UX 만 좁아진다. 대체 표를 두지 않는다.
-    """
-    if not TICKET_ROUNDS_PY.exists():
-        return None
+def _round_role_choices() -> tuple[str, ...]:
+    """`--role` argparse 선택지 — 라운드 역할 표(`round_rules.ROLE_LABELS`)에서 파생한다."""
     return tuple(ticket_round_role_labels())
 
 
@@ -5035,7 +4985,7 @@ def ticket_round_role_labels() -> dict[str, str]:
 
     argparse 선택지와 절명 기본값이 같은 표를 읽어야 한 쪽만 넓어지는 drift 가 생기지 않는다.
     """
-    return dict(_load_ticket_rounds().ROLE_LABELS)
+    return dict(round_rules.ROLE_LABELS)
 
 
 class TierSignals(NamedTuple):
@@ -5390,7 +5340,6 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         print("cannot section-add: --label 은 비어 있거나 개행을 포함할 수 없다", file=sys.stderr)
         return 1
     today = datetime.date.today().isoformat()
-    rounds = _load_ticket_rounds()
     with board_lock():
         rc, path = _active_ticket_path(args.id, "section-add", role=role)
         if path is None:
@@ -5401,20 +5350,20 @@ def cmd_section_add(args: argparse.Namespace) -> int:
             spec_text = handle.read()
 
     try:
-        existing = rounds.load_rounds(pm_paths.tickets_dir(_home()), args.id, ticket_text=spec_text)
-        seed = rounds.render_round_seed(
+        existing = round_seed.load_rounds(pm_paths.tickets_dir(_home()), args.id, ticket_text=spec_text)
+        seed = round_seed.render_round_seed(
             role, spec_text, today=today,
-            previous_round=rounds.previous_round_of_role(existing, role),
+            previous_round=round_rules.previous_round_of_role(existing, role),
             # developer 골격의 verify 프리필 입력 — 이미 손에 든 `existing` 을 그대로
             # 넘긴다(신규 로드 0).
             rounds=existing,
         )
-        round_path = rounds.reserve_round(
+        round_path = round_store.reserve_round(
             pm_paths.tickets_dir(_home()), args.id, role,
             content=_round_seed_header_override(seed, label, role, today),
             lock=board_lock(),
         )
-    except rounds.RoundsError as exc:
+    except round_rules.RoundsError as exc:
         print(f"cannot section-add: {exc}", file=sys.stderr)
         return 1
 
@@ -5794,7 +5743,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
         # (이동 *전*·board_lock 안)라 티켓은 open/ 에 그대로 남는다.
         # `n/a`·필드 부재(구세대 티켓)는 무영향 — 판정은 `_design_issues` 단일
         # 깔때기(lint advisory·promote 게이트와 같은 규칙).
-        design_verdict = _design_issues(args.id, body, fm.get("design"))
+        design_verdict = design_rules._design_issues(args.id, body, fm.get("design"))
         if design_verdict:
             print(f"cannot claim {args.id}: 설계 단계 미완 — "
                   f"{design_verdict[0][2]}", file=sys.stderr)
@@ -5833,22 +5782,22 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
     return 0
 
 
-def _pm_verified_channel_role(delegate, channel: str) -> str | None:
-    """게이트 채널 → pm_delegate 의 reviewer role 문자열 (모르는 채널이면 None → fail-closed).
+def _pm_verified_channel_role(channel: str) -> str | None:
+    """게이트 채널 → review_form 의 reviewer role 문자열 (모르는 채널이면 None → fail-closed).
 
-    role 문자열은 pm_delegate 가 단일 진실이라 board 에 사본을 두지 않는다."""
+    role 문자열은 review_form 이 단일 진실이라 board 에 사본을 두지 않는다."""
     return {
-        GATE_CHANNEL_ADDITIONAL: delegate.ADDITIONAL_REVIEWER_ROLE,
+        GATE_CHANNEL_ADDITIONAL: review_form.ADDITIONAL_REVIEWER_ROLE,
     }.get(channel)
 
 
 def _pm_verified_delegate_problem(
     tid: str, *, channel: str, entry: dict, checker_name: str,
 ) -> str | None:
-    """티켓/채널 입력을 해소해 pm_delegate의 지정 pm-verified checker를 호출한다.
+    """티켓/채널 입력을 해소해 review_state 의 지정 pm-verified checker를 호출한다.
 
     preflight와 post-resolution evidence가 티켓/채널/표면 하한 해소를 복제하지 않게 하는 공용
-    배선이다. 실제 판정은 checker_name이 가리키는 pm_delegate 함수만 소유한다.
+    배선이다. 실제 판정은 checker_name이 가리키는 review_state 함수만 소유한다.
 
     추가 리뷰어 release 게이트는 `GATE_CHANNEL_ADDITIONAL` 로 호출하고, 판정 표면 하한은 **그
     채널 장부 entry 의 잔여 must-fix 건수**다. 채널 스코프 없이 티켓 전역을 보면 다른 채널의
@@ -5861,17 +5810,11 @@ def _pm_verified_delegate_problem(
         spec_text = fs.read_text_shared(path, encoding="utf-8", newline="")
     except (OSError, UnicodeError) as exc:
         return f"티켓 명세를 읽을 수 없습니다: {exc}"
-    delegate = _load_pm_delegate_module()
-    if delegate is None:
-        return "pm_delegate.py 를 불러올 수 없어 증거를 재검증할 수 없습니다"
-    reviewer_role = _pm_verified_channel_role(delegate, channel)
+    reviewer_role = _pm_verified_channel_role(channel)
     if reviewer_role is None:
         return f"pm-verified 재검증 채널을 확정할 수 없습니다: {channel!r}"
-    rounds_module = _load_ticket_rounds()
-    rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
-    checker = getattr(delegate, checker_name, None)
-    if checker is None:
-        return f"pm_delegate.py 에 {checker_name} seam이 없어 판정할 수 없습니다"
+    rounds = round_seed.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
+    checker = getattr(review_state, checker_name)
     return checker(
         spec_text, rounds,
         reviewer_role=reviewer_role,
@@ -5899,10 +5842,10 @@ def _gate_pm_verified_problem(
 
 
 def _review_problem(tid: str, checker_name: str, spec_text: str | None) -> str | None:
-    """리뷰 잔여 판정 배선 — 명세와 리뷰 라운드 파일을 읽어 pm_delegate 판정 함수에 넘긴다.
+    """리뷰 잔여 판정 배선 — 명세와 리뷰 라운드 파일을 읽어 review_state 판정 함수에 넘긴다.
 
-    판정 입력은 board 라운드 파일과 명세 PM 영역뿐이다. 판정 불능(티켓·명세·pm_delegate·
-    판정 seam 부재)은 통과가 아니라 차단 사유다.
+    판정 입력은 board 라운드 파일과 명세 PM 영역뿐이다. 판정 불능(티켓·명세·라운드 파일을
+    읽지 못함)은 통과가 아니라 차단 사유다.
     """
     if spec_text is None:
         found = ticket_store.find_ticket_exact(_home(), tid)
@@ -5912,16 +5855,10 @@ def _review_problem(tid: str, checker_name: str, spec_text: str | None) -> str |
             spec_text = fs.read_text_shared(found[1], encoding="utf-8", newline="")
         except (OSError, UnicodeError) as exc:
             return f"티켓 명세를 읽을 수 없어 리뷰 잔여를 판정할 수 없습니다: {exc}"
-    delegate = _load_pm_delegate_module()
-    if delegate is None:
-        return "pm_delegate.py 를 불러올 수 없어 리뷰 잔여를 판정할 수 없습니다"
-    checker = getattr(delegate, checker_name, None)
-    if checker is None:
-        return f"pm_delegate.py 에 {checker_name} seam 이 없어 리뷰 잔여를 판정할 수 없습니다"
-    rounds_module = _load_ticket_rounds()
+    checker = getattr(review_state, checker_name)
     try:
-        rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
-    except rounds_module.RoundsError as exc:
+        rounds = round_seed.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
+    except round_rules.RoundsError as exc:
         return f"리뷰 라운드를 읽지 못해 리뷰 잔여를 판정할 수 없습니다: {exc}"
     return checker(spec_text, rounds)
 
@@ -5946,9 +5883,8 @@ def _round_completion_problems(tid: str, spec_text: str) -> list[str]:
     완료 증거가 성립하지 않는다. 이름 문법 위반과 산출 없는 라운드(시드 그대로)는 정보로만
     낸다 — 미회수는 게이트가 아니라는 결정이고, 판정 코드의 단일 진실은 사이드카 seam 이다.
     """
-    rounds = _load_ticket_rounds()
-    problems = rounds.verify_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
-    blocking_codes = (rounds.PROBLEM_GAP, rounds.PROBLEM_DUPLICATE)
+    problems = round_seed.verify_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=spec_text)
+    blocking_codes = (round_rules.PROBLEM_GAP, round_rules.PROBLEM_DUPLICATE)
     blocking: list[str] = []
     for item in problems:
         if item.code in blocking_codes:
@@ -6225,34 +6161,26 @@ _ROUND_PENDING_UNHARVESTED_QUERY = (
 )
 
 
-def _round_pending_ledger_owner(delegate) -> Path:
+def _round_pending_ledger_owner() -> Path:
     """미회수 라운드 장부의 PM 홈 — board 자신의 `REPO`(테스트·slot 재앵커 존중)로 해소한다.
 
     `pm_delegate._activate_internal_rounds_cli_owner()` 는 그 모듈 **자신의** 고정 `REPO`(자기
     파일 경로에서 계산)를 써서 board 의 `REPO` 재앵커(테스트·등록 슬롯)를 못 본다 — 그래서 같은
-    해소 함수(`additional_reviewer.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
+    해소 함수(`pm_paths.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
     해소는 답이 하나이거나 예외다 — 실패를 삼켜 안내 결손으로 낮추지 않는다.
     """
-    additional_reviewer = delegate._load_additional_reviewer()
-    return Path(additional_reviewer.resolve_pm_home_for_repo(REPO)).resolve()
+    return Path(pm_paths.resolve_pm_home_for_repo(REPO)).resolve()
 
 
-def _round_pending_abandon_command(
-    tid: str, ordinal: int, role: str, rounds_module,
-) -> str | None:
+def _round_pending_abandon_command(tid: str, ordinal: int, role: str) -> str | None:
     """미회수 장부에서 이 pending 라운드의 실 `--copy`/`--cwd` 를 해소해 완성 abandon 커맨드를 낸다.
 
     장부 부재·PM 홈 미확정·이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 전부 해소
     불능으로 `None`(호출부가 `ticket copies --unharvested` 조회 처방으로 대체한다)."""
-    delegate = _load_pm_delegate_module()
-    if delegate is None:
-        return None
-    owner = _round_pending_ledger_owner(delegate)
+    owner = _round_pending_ledger_owner()
     try:
-        rows = delegate.ticket_copy_records(owner, ticket=tid, unharvested=True)
-    except Exception as exc:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
-        if _is_engine_rev_skew(exc):
-            raise  # 형제 사본 skew 는 장부 손상과 다르다(fail-loud · 재동기 안내).
+        rows = delegate_ledger.ticket_copy_records(owner, ticket=tid, unharvested=True)
+    except Exception:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
         return None
     match = next(
         (row for row in rows if row.get("ordinal") == ordinal and row.get("role") == role),
@@ -6265,8 +6193,8 @@ def _round_pending_abandon_command(
     # 걷어내 역산한다(준비가 실제로 그 규약대로 쓴 경로라는 전제 — 불일치면 해소 불능으로
     # 판정). 규약 조립은 준비측 단일 소유자(`_row_ticket_relative_dir`)를 그대로 부른다 —
     # 여기서 다시 쓰면 묶음 키 세대와 옛 세대의 규칙이 board 쪽에서 갈린다.
-    relative = delegate._row_ticket_relative_dir(match) / \
-        rounds_module.round_filename(match["ordinal"], match["role"])
+    relative = delegate_ledger._row_ticket_relative_dir(match) / \
+        round_rules.round_filename(match["ordinal"], match["role"])
     rel_parts = relative.parts
     if copy_path.parts[-len(rel_parts):] != rel_parts:
         return None
@@ -6286,14 +6214,13 @@ def _discard_round_pending_notice(tid: str) -> None:
     round-dup·round-name 은 완료 게이트가 이미 다루는 축이라 여기서 재확인하지 않는다(discard
     는 그 축을 차단하지 않는다).
     """
-    rounds_module = _load_ticket_rounds()
     pending = [
-        item for item in rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid) if item.pending
+        item for item in round_seed.load_rounds(pm_paths.tickets_dir(_home()), tid) if item.pending
     ]
     if not pending:
         return
     first = pending[0]
-    resolved = _round_pending_abandon_command(tid, first.ordinal, first.role, rounds_module)
+    resolved = _round_pending_abandon_command(tid, first.ordinal, first.role)
     prescription = resolved if resolved is not None else _ROUND_PENDING_UNHARVESTED_QUERY
     print(
         f"ⓘ  round-pending {len(pending)}건({first.path.name}) — "
@@ -7447,7 +7374,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         # draft 의 라운드도 promote 가 출하한다 — draft 명세는 board-git ignore 지만
         # `tickets/<라운드 디렉터리>/<티켓>/` 은 ignore 밖이라, 승격 커밋에 함께 싣지 않으면
         # 준비된 라운드가 미커밋으로 눌러앉는다(스코프 전개는 디렉터리를 파일로 펼친다).
-        round_dir = _load_ticket_rounds().rounds_dir_for_ticket(args.id, pm_paths.tickets_dir(_home()))
+        round_dir = round_store.rounds_dir_for_ticket(args.id, pm_paths.tickets_dir(_home()))
         if round_dir.is_dir():
             touched.append(round_dir)
     if moved:
@@ -7482,7 +7409,7 @@ _LIST_ACTIVE_STATUSES: tuple[str, ...] = ticket_rules.ACTIVE_STATUS_DIRS
 # ── 발행 시점 touches 겹침 재료 (판단 지점에 판단 재료가 있어야 한다) ──────────
 # `new`/`promote` 판단 지점에 다른 활성·draft 티켓과의 touches 겹침 + 가용(idle) 슬롯 수를
 # stderr 재료로 낸다. **절대 차단하지 않는다** — 재료를 놓을 뿐 판정은 PM 이 한다. 좌표
-# 정규화는 `repo_coordinates` 단일 소유자, 비교 규칙(`_touch_paths_overlap`)은 `pm_delegate`
+# 정규화는 `repo_coordinates` 단일 소유자, 비교 규칙(`_touch_paths_overlap`)은 `ticket_rules`
 # 단일 소유자를 재사용한다(board 는 이 축에 자체 문자열 비교를 만들지 않는다 — 접두
 # `work/<repo>_<N>/` 선언이 활성 티켓 상당수라 순진한 비교는 조용히 0이 된다).
 _PUBLISH_OVERLAP_HEADER = "=== ⚠ 발행 touches 겹침 (다른 활성/draft 티켓) ==="
@@ -7528,7 +7455,7 @@ def _publish_overlap_candidates(
     return candidates
 
 
-def _fold_publish_touches(items: list[str], coordinates: Any, delegate: Any) -> tuple[str, ...]:
+def _fold_publish_touches(items: list[str], coordinates: Any) -> tuple[str, ...]:
     """touches 선언을 발행 시점(`workspace` 없음) 좌표로 접는다 — 검증 실패 항목은 드롭.
 
     `pm_delegate._folded_touch_pairs` 와 같은 정규화 순서(`normalize_repo_path` →
@@ -7543,7 +7470,7 @@ def _fold_publish_touches(items: list[str], coordinates: Any, delegate: Any) -> 
             normalized = coordinates.normalize_repo_path(str(item), pm_root=REPO)
         except coordinates.RepoCoordinateError:
             continue
-        value = delegate._touch_notation(
+        value = ticket_rules._touch_notation(
             coordinates.canonicalize_path_notation(str(normalized)))
         if value and value != ".":
             folded.append(value)
@@ -7616,17 +7543,14 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
     `repo` 는 슬롯 재료(`_publish_idle_slot_count`)가 lease 장부를 조회할 canonical 정체성 —
     호출부가 이미 해소한 값을 그대로 받는다(이 함수 안에서 유도하지 않는다).
 
-    비교 소유자(`pm_delegate`) 부재·로드 실패나 touches 형식 불명은
+    touches 형식 불명은
     이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
     동기 사본에서 이 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
     """
     own_items = ticket_rules._normalized_touches(touches)
     if not own_items:
         return []
-    delegate = _load_pm_delegate_module()
-    if delegate is None:
-        return []
-    own_folded = _fold_publish_touches(own_items, repo_coordinates, delegate)
+    own_folded = _fold_publish_touches(own_items, repo_coordinates)
     if not own_folded:
         return []
     candidates = _publish_overlap_candidates((tid,))
@@ -7635,11 +7559,11 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
         other_items = ticket_rules._normalized_touches(other_fm.get("touches"))
         if not other_items:
             continue
-        other_folded = _fold_publish_touches(other_items, repo_coordinates, delegate)
+        other_folded = _fold_publish_touches(other_items, repo_coordinates)
         if not other_folded:
             continue
         for own_path in own_folded:
-            if any(delegate._touch_paths_overlap(own_path, other_path)
+            if any(ticket_rules._touch_paths_overlap(own_path, other_path)
                    for other_path in other_folded):
                 per_path[own_path].add(other_id)
     nonzero = {path: ids for path, ids in per_path.items() if ids}
@@ -8125,16 +8049,13 @@ def _cluster_overlap_material(
 
     후보에서 멤버 전부를 뺀다 — 멤버끼리의 겹침은 묶음을 반대할 근거가 아니라 묶음의 근거라
     별도 줄로 표기한다(침묵시키면 재료가 준다). 좌표 정규화·비교 규칙 소유자는 발행 재료와
-    같다(`repo_coordinates`·`pm_delegate` · 사본 0). 판정불능(소유자 로드 실패·형식 불명)은
+    같다(`repo_coordinates`·`ticket_rules` · 사본 0). 판정불능(형식 불명)은
     이 축 전체를 침묵으로 접는다 — 차단하지 않되 통과로 위장하지도 않는다(재료 축 그대로).
     """
-    delegate = _load_pm_delegate_module()
-    if delegate is None:
-        return []
     folded: dict[str, tuple[str, ...]] = {}
     for tid, touches in members:
         items = ticket_rules._normalized_touches(touches)
-        folded[tid] = _fold_publish_touches(items, repo_coordinates, delegate) if items else ()
+        folded[tid] = _fold_publish_touches(items, repo_coordinates) if items else ()
     own_paths = tuple(dict.fromkeys(
         path for paths in folded.values() for path in paths))
     if not own_paths:
@@ -8144,11 +8065,11 @@ def _cluster_overlap_material(
         other_items = ticket_rules._normalized_touches(other_fm.get("touches"))
         if not other_items:
             continue
-        other_folded = _fold_publish_touches(other_items, repo_coordinates, delegate)
+        other_folded = _fold_publish_touches(other_items, repo_coordinates)
         if not other_folded:
             continue
         for own_path in own_paths:
-            if any(delegate._touch_paths_overlap(own_path, other_path)
+            if any(ticket_rules._touch_paths_overlap(own_path, other_path)
                    for other_path in other_folded):
                 per_path[own_path].add(other_id)
     lines = _format_publish_overlap_material(
@@ -8158,7 +8079,7 @@ def _cluster_overlap_material(
     internal: dict[str, list[str]] = {}
     for path in own_paths:
         sharing = sorted(tid for tid, paths in folded.items()
-                         if any(delegate._touch_paths_overlap(path, item)
+                         if any(ticket_rules._touch_paths_overlap(path, item)
                                 for item in paths))
         if len(sharing) > 1:
             internal[path] = sharing
@@ -9288,16 +9209,15 @@ def _plan_rounds_dir_renames(
     티켓 없는 라운드가 남는다 — 그 상태에서 순번 연속성 판정은 아무 것도 못 본다.
     """
     plans: list[tuple[Path, Path]] = []
-    rounds = _load_ticket_rounds()
     for src, dst in renames:
         old_id = ticket_rules._ticket_id_from_filename(src.name)
         new_id = ticket_rules._ticket_id_from_filename(dst.name)
         if not old_id or not new_id or old_id == new_id:
             continue
-        src_dir = rounds.rounds_dir_for_ticket(old_id, pm_paths.tickets_dir(_home()))
+        src_dir = round_store.rounds_dir_for_ticket(old_id, pm_paths.tickets_dir(_home()))
         if src_dir.is_dir():
             plans.append(
-                (src_dir, rounds.rounds_dir_for_ticket(new_id, pm_paths.tickets_dir(_home())))
+                (src_dir, round_store.rounds_dir_for_ticket(new_id, pm_paths.tickets_dir(_home())))
             )
     return plans
 
@@ -9910,24 +9830,19 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(f"-- {args.id} ({status}/) --\n")
     body = fs.read_text_shared(path, encoding="utf-8")
     print(body)
-    rounds_module = _load_ticket_rounds()
     try:
-        rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), args.id, ticket_text=body)
-    except rounds_module.RoundsError as exc:
+        rounds = round_seed.load_rounds(pm_paths.tickets_dir(_home()), args.id, ticket_text=body)
+    except round_rules.RoundsError as exc:
         # 표시면은 조회를 막지 않는다 — 사유는 그 자리에 loud 하게 남기고 판정은 lint·
         # 완료 게이트(같은 seam)가 한다.
         print(f"⚠ 라운드 조회 실패: {exc}", file=sys.stderr)
         return 0
     if rounds:
         print(f"-- 라운드 {len(rounds)}건 --\n")
-        print(rounds_module.render_rounds_for_show(rounds))
-        # 엔진 사본이 없으면 라운드 본문까지만 낸다(표시면은 조회를 막지 않는다). 사본이 있으면
-        # rev 검증을 통과한 것이라 이 함수가 없을 수 없다 — 있는지 더듬지 않는다.
-        delegate = _load_pm_delegate_module()
-        if delegate is not None:
-            summary = delegate.render_pm_review_summary(body, rounds)
-            if summary:
-                print(summary)
+        print(round_rules.render_rounds_for_show(rounds))
+        summary = review_state.render_pm_review_summary(body, rounds)
+        if summary:
+            print(summary)
         pending = [item for item in rounds if item.pending]
         if pending:
             print(f"-- 미회수 {len(pending)}건: "
@@ -10424,52 +10339,6 @@ _DOD_DEFERRED_REASON_RE = re.compile(r"\(이월:\s*\S[^)]*\)")
 _DOD_VALUE_FORMS = "`- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`"
 
 
-def _section_text(body: str, heading: str, *, exact: bool = False) -> str | None:
-    """`<heading>` 절 본문(다음 `## ` 헤딩 직전까지) — 절이 없으면 None.
-
-    **헤딩 탐색 전에** fenced 코드블록을 먼저 제거한다. 펜스를 무시하면 판정이 양방향으로
-    틀어진다 — 코드블록 안에 인용된 `## 완료 조건` 이 절 시작으로 잡혀 실제 DoD 를 못 보거나,
-    코드블록 안 `## …` 한 줄이 절 끝으로 잡혀 뒤쪽 미체크 항목이 통째로 빠진다. 제거 후 남는
-    예시 체크박스도 함께 사라진다.
-
-    DoD 판정과 설계 절 판정이 같은 슬라이서를 쓴다 — 절 경계 규칙이 두 벌이면 한쪽만 펜스를
-    보거나 한쪽만 본문 전체를 스캔하는 절반 배선이 생긴다.
-
-    `exact` 면 헤딩 줄이 그 이름 자체이거나 **괄호 부제만** 뒤에 붙어야 절 시작이다
-    (`## 설계` · `## 설계 (DRAFT — 초안)`). 자유 접두 일치는 `## 설계` 같은 짧은 이름에서 다른
-    절(`## 설계 검토 이력`)을 그 절로 오인해, 산문 한 줄만으로 "절이 있다"가 성립하는 우회를
-    남긴다. 괄호 부제를 허용하는 이유는 그게 실재 표기이고(같은 절에 상태를 병기), 괄호 없이
-    이어지는 말은 다른 절 제목이기 때문이다. 이름 뒤에 자유 부제가 붙는 절
-    (`## 완료 조건 (Definition of Done)`)은 접두 일치가 정상이라 기본값은 종전(False)이다.
-    """
-    sections = _section_texts(body, heading, exact=exact)
-    return sections[0] if sections else None
-
-
-def _section_texts(body: str, heading: str, *, exact: bool = False) -> list[str]:
-    """그 이름의 **모든** 절 본문 (없으면 빈 목록) — `_section_text` 의 전-절 형태.
-
-    같은 이름의 절이 두 번 나오는 본문에서 첫 절만 보면, 앞에 빈(또는 전부 체크된) 절을 하나 두고
-    뒤 절에 미체크 항목을 남기는 우회가 성립한다. 판정이 '있는 항목 전부'여야 하는 소비자
-    (DoD 마감 검사)는 이 함수로 **합산**한다. 절 경계·펜스 제거 규칙은 `_section_text` 와 같은
-    한 지점이다(두 벌이면 한쪽만 펜스를 보는 절반 배선이 생긴다).
-    """
-    lines = _FENCED_CODE_RE.sub("", body).splitlines()
-    if exact:
-        heading_re = re.compile(rf"{re.escape(heading)}(?:\s*\(.*\))?\s*$")
-        matches: Callable[[str], bool] = lambda line: heading_re.match(line) is not None
-    else:
-        matches = lambda line: line.startswith(heading)  # noqa: E731
-    sections: list[str] = []
-    for start, line in enumerate(lines):
-        if not matches(line):
-            continue
-        end = next((i for i in range(start + 1, len(lines))
-                    if lines[i].startswith("## ")), len(lines))
-        sections.append("\n".join(lines[start + 1:end]))
-    return sections
-
-
 def _dod_section_texts(body: str) -> list[str]:
     """`## 완료 조건` 절 본문 **전부** — 공용 슬라이서(`_section_texts`)의 DoD 이름(정확 일치).
 
@@ -10482,7 +10351,7 @@ def _dod_section_texts(body: str) -> list[str]:
     (절 부재·체크박스 0개는 무영향)이므로, 새 형식 거부를 만드는 것보다 판정 대상을 전 절로
     넓히는 쪽이 그 구조와 같은 축이다 — 우회(앞 빈 절로 뒤 절 가리기)는 그대로 닫히고 레거시
     본문에는 새 차단 사유가 생기지 않는다."""
-    return _section_texts(body, _DOD_SECTION, exact=True)
+    return markdown_text._section_texts(body, _DOD_SECTION, exact=True)
 
 
 def _dod_heading_mismatch(body: str) -> str | None:
@@ -10492,9 +10361,9 @@ def _dod_heading_mismatch(body: str) -> str | None:
     처럼 괄호 밖 부제가 붙은 헤딩은 어느 절로도 안 잡혀 DoD 가 통째로 안 보인다(미체크 항목이
     있어도 통과 — 닫으려던 그 형상 그대로). 그래서 "정확 일치 실패 + 접두는 일치"를 조용한 통과가
     아니라 차단 사유로 표면화한다. 펜스 안 인용 헤딩은 슬라이서와 같은 규칙으로 먼저 걷는다."""
-    if _section_text(body, _DOD_SECTION, exact=True) is not None:
+    if markdown_text._section_text(body, _DOD_SECTION, exact=True) is not None:
         return None
-    lines = _FENCED_CODE_RE.sub("", body).splitlines()
+    lines = markdown_text._FENCED_CODE_RE.sub("", body).splitlines()
     return next((line.strip() for line in lines if line.startswith(_DOD_SECTION)), None)
 
 
@@ -10564,223 +10433,24 @@ def _dod_open_items(body: str) -> list[str]:
     return problems
 
 
-# ── 티켓 설계 단계 (design 필드 · 설계 절 · claim 게이트 — T-0594) ──────────────
-#
-# 설계 결함이 코드 리뷰 라운드로 전가되는 클래스를 라이프사이클 *앞단*에서 차단한다(근거 T-0587 —
-# 티켓 인터페이스가 명세한 입력 가정이 실환경과 어긋난 채 구현으로 전진해 리뷰 12라운드로도 미수렴).
-# 판정은 **frontmatter 명시값 기준**(기계)이고 설계 *내용* 의 옳고 그름은 사람/리뷰어가 본다 —
-# 엔진은 필드값과 설계 절 충전 여부만 본다.
-# **전 티켓 강제가 아니다**: 자동 `required` 는 estimate=large 뿐이고 나머지는 `n/a` 기본이라
-# 설계 오버헤드가 새 비용이 되지 않는다(touches 패턴 자동 required 는 운용 후 판단).
-DESIGN_REQUIRED = "required"   # 설계 절 완성 + done 승격 전에는 claim 차단
-DESIGN_DONE = "done"           # 설계 절 완성 + 설계 검토 끝 (PM 수동 기입)
-DESIGN_NA = "n/a"              # 설계 단계 비대상. **필드 부재 = 이 값**(구세대 티켓 하위호환)
-DESIGN_INVALID = "invalid"     # 위 3형식 어디에도 안 맞는 값(오타로 게이트가 조용히 꺼지는 것 방지)
 # 자동 `required` 판정의 유일한 입력 — estimate=large. 그 외는 `n/a`.
 DESIGN_REQUIRED_ESTIMATE = "large"
-# 사람 표면(--design help·거부 메시지)의 값 형식 — 한 곳에서 렌더한다. **면제 경로는 없다**:
-# 설계 단계를 건너뛰는 값을 두면 그 티켓만 라운드 순번이 어긋나고(설계 라운드가 빠진다) 면제가
-# 곧 우회 플래그가 된다. 설계가 몇 줄이면 몇 줄로 쓰고 `done` 으로 올린다.
-DESIGN_VALUE_FORMS = "required | done | n/a"
-
-_DESIGN_SECTION = "## 설계"
-# `_template.md` 설계 절 하위 항목의 뼈대 문장 — 채우면 사라지는 리터럴이라 오탐 0(`_PLACEHOLDERS`
-# 동형). **별도 집합인 이유**: 설계 절은 `design: required|done` 티켓만 채운다 — `n/a` 티켓이
-# 뼈대를 그대로 둔 건 정상이라(`## 메모` 와 같은 부류) 전 티켓 공통 집합에 넣으면 안 된다.
-_DESIGN_PLACEHOLDERS: tuple[str, ...] = (
-    "무엇으로 실측했는지",                              # 경계 실측 미충전
-    "지켜야 하는 성질을 문장으로",                       # 불변식 미충전
-    "무한 표면이면 설계를 기각하고 범위를 좁힌다",         # 표면 상한 미충전
-    "불변식을 고정할 케이스 (경계값·실패 경로)",          # 테스트 전략 미충전
-)
-# 미충전 항목 이름 — 경고 1줄에 "무엇이 비었나" 를 싣는다(`_DESIGN_PLACEHOLDERS` 와 같은 순서).
-_DESIGN_PLACEHOLDER_LABELS: tuple[str, ...] = (
-    "경계 실측", "불변식", "표면 상한", "테스트 전략")
-
-
-def _design_state(design: Any) -> str:
-    """frontmatter `design:` 값 → 정규화 상태 (required/done/n/a/invalid).
-
-    필드 부재·빈값은 `n/a` — 구세대 티켓(설계 절도 필드도 없음)은 마이그레이션 없이 무영향이다.
-    형식에 안 맞는 값은 `n/a` 로 삼키지 않고 `invalid` 로 세운다 — 오타 하나로 게이트가 조용히
-    꺼지지 않게(fail-loud). 폐지된 면제 값도 이 축으로 떨어져 `board.py design` 이 거부하고
-    lint 가 잔존을 보인다.
-    """
-    if design is None:
-        return DESIGN_NA
-    text = str(design).strip()
-    if not text:
-        return DESIGN_NA
-    lowered = text.lower()
-    if lowered in (DESIGN_REQUIRED, DESIGN_DONE, DESIGN_NA):
-        return lowered
-    return DESIGN_INVALID
 
 
 def _resolve_design(explicit: str | None, estimate: str | None) -> str:
     """발행 시 `design:` 해소 — 명시값 우선, 무명시는 estimate=large → required · 그 외 n/a."""
     if explicit and str(explicit).strip():
         return str(explicit).strip()
-    return (DESIGN_REQUIRED if (estimate or "") == DESIGN_REQUIRED_ESTIMATE
-            else DESIGN_NA)
+    return (design_rules.DESIGN_REQUIRED if (estimate or "") == DESIGN_REQUIRED_ESTIMATE
+            else design_rules.DESIGN_NA)
 
 
 def _validate_design(design: str) -> str | None:
     """`--design` 입력 sanity — 문제면 사유 문자열, 정상이면 None (`_validate_prefix` 동형)."""
-    if _design_state(design) == DESIGN_INVALID:
-        return (f"design 값 인식 불가: {str(design)!r} — {DESIGN_VALUE_FORMS} 중 하나"
+    if design_rules._design_state(design) == design_rules.DESIGN_INVALID:
+        return (f"design 값 인식 불가: {str(design)!r} — {design_rules.DESIGN_VALUE_FORMS} 중 하나"
                 "(면제 경로는 없다 — 설계 절을 채우고 done 으로 올린다)")
     return None
-
-
-def _design_item_values(section: str) -> dict[str, str]:
-    """설계 절 → {항목 이름: 그 항목의 값 텍스트} (선언 안 된 항목은 키 자체가 없다).
-
-    항목 줄은 `- **경계 실측**: <값>` 형태이고, 값은 그 줄의 나머지 + **다음 항목 줄 직전까지**의
-    이어지는 줄이다 — 값을 하위 불릿으로 적는 실 표기(`- **테스트 전략**:` 다음 줄부터 케이스
-    나열)를 '빈 값'으로 오판하지 않게 한다. 항목 이름은 `_DESIGN_PLACEHOLDER_LABELS` 단일
-    진실이라 라벨이 바뀌면 판정도 같이 바뀐다(사본 0)."""
-    label_res = [
-        (label, re.compile(rf"^\s*[-*+]\s*\**\s*{re.escape(label)}\s*\**\s*[:：](?P<value>.*)$"))
-        for label in _DESIGN_PLACEHOLDER_LABELS
-    ]
-    values: dict[str, list[str]] = {}
-    current: list[str] | None = None
-    for line in section.splitlines():
-        matched = next(
-            ((label, m) for label, pattern in label_res
-             if (m := pattern.match(line)) is not None), None)
-        if matched is not None:
-            label, match = matched
-            current = values.setdefault(label, [])
-            current.append(match.group("value"))
-            continue
-        if current is not None:
-            current.append(line)
-    return {label: "\n".join(lines).strip() for label, lines in values.items()}
-
-
-def _design_section_gaps(body: str) -> list[str]:
-    """`## 설계` 절의 미충전 지점 이름 — 절 부재는 절 이름, 충전 완료는 빈 리스트.
-
-    항목마다 **한 판정**을 낸다(우선순위: 항목 부재 > 값 없음 > 뼈대 잔존):
-
-      - **항목 부재**·**값 없음** — placeholder 부재만 보면 뼈대를 *지우는 것*만으로 게이트가
-        열린다(빈 `## 설계` 절이나 산문 한 줄짜리 절이 `design: done` 을 통과했다). 4항목
-        (`_DESIGN_PLACEHOLDER_LABELS`)의 존재와 비어 있지 않은 값을 함께 본다.
-      - **뼈대 잔존** — 토큰 스캔 범위는 **설계 절 슬라이스**다(본문 전체가 아니다). 전체 스캔은
-        설계 단계를 다루는 후속 티켓이 다른 절에서 뼈대 문장을 인용하기만 해도 "미충전"으로
-        읽는다. 토큰은 항목 값이 아니라 절 전체에서 찾는다 — 라벨을 지우고 뼈대 문장만 남긴
-        형상도 그 항목의 미충전으로 잡힌다.
-
-    절 슬라이싱은 DoD 판정과 같은 공용 슬라이서를 쓰므로 펜스 안에 인용된 헤딩도 절 시작으로
-    오인하지 않는다. **존재 축도 같은 규율이다**: 절 시작은 `## 설계` 헤딩 줄(괄호 부제 허용)
-    이어야 한다(`exact`). 자유 접두 일치면 `## 설계 검토 이력` 같은 다른 절이 설계 절로 잡혀,
-    산문 한 줄만으로 `design: done` 이 통과한다.
-    """
-    section = _section_text(body, _DESIGN_SECTION, exact=True)
-    if section is None:
-        return [f"{_DESIGN_SECTION} 절 부재"]
-    prose = _strip_code(section)
-    values = _design_item_values(prose)
-    gaps: list[str] = []
-    for token, label in zip(_DESIGN_PLACEHOLDERS, _DESIGN_PLACEHOLDER_LABELS):
-        value = values.get(label)
-        if value is None:
-            gaps.append(f"{label} 항목 부재")
-        elif not value:
-            gaps.append(f"{label} 값 없음")
-        elif token in prose:
-            gaps.append(label)
-    return gaps
-
-
-def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str]]:
-    """설계 단계 판정 — `design:` 값 + `## 설계` 절 충전 상태를 **1줄**로 요약한다.
-
-    claim 게이트 · authoring 게이트(new/promote) · 전역 lint advisory 가 공유하는 단일 깔때기다.
-    반환은 0 또는 1건(kind=`design-pending`) — 전역 lint 는 "경고 1줄", 게이트는 그 1줄을 차단
-    사유로 쓴다. `n/a`(필드 부재 포함)는 항상 0건이라 설계 단계가 무영향이다.
-
-    `required` 는 설계 절이 다 채워져 있어도 1건을 낸다 — `done` 승격(설계 검토를 사람이 끝냈다는
-    선언)이 남아 있기 때문이다. 반대로 `done` 인데 설계 절이 비었으면 필드값과 절 내용이 어긋난
-    상태라 역시 1건이다(엔진이 보는 건 필드값과 절 존재뿐).
-    """
-    state = _design_state(design)
-    if state == DESIGN_INVALID:
-        return [(tid, "design-pending",
-                 f"design 값 인식 불가: {str(design)!r} — {DESIGN_VALUE_FORMS} 중 하나")]
-    if state not in (DESIGN_REQUIRED, DESIGN_DONE):
-        return []
-    gaps = _design_section_gaps(body)
-    if state == DESIGN_DONE:
-        if not gaps:
-            return []
-        return [(tid, "design-pending",
-                 f"design: {DESIGN_DONE} 인데 설계 절 미충전({' · '.join(gaps)}) — "
-                 f"필드값과 절 내용이 어긋남")]
-    unfilled = f"설계 절 미충전({' · '.join(gaps)}) · " if gaps else ""
-    return [(tid, "design-pending",
-             f"design: {DESIGN_REQUIRED} — {unfilled}설계 절 완성 후 "
-             f"`design: {DESIGN_DONE}` 으로 승격")]
-
-
-# developer 라운드 준비 게이트의 해소 안내 2종. 문구는 여기 한 곳뿐이라(재작성 0)
-# `_DESIGN_SECTION`·`_DESIGN_PLACEHOLDER_LABELS`·`DESIGN_DONE` 을 그대로 인용한다.
-# `T-NNNN`(괄호 없음)은 그대로 둔다 — pm_delegate 쪽 `<T-NNNN>` 치환 문자열과 다른 표기라야,
-# 실 ticket id 를 아는 진입점(치환됨)과 모르는 진입점(치환 안 됨)의 사유 문자열이 우연히
-# 갈리지 않는다(세 진입점 파리티 단언의 전제). **면제 항목은 없다** — 설계 단계를 건너뛰는
-# 길이 있으면 그 티켓만 라운드 순번이 어긋난다.
-_DESIGN_EVIDENCE_REMEDY = (
-    "해소: (1) architect 라운드를 회수(시드 그대로면 근거 아님) · "
-    f"(2) `design: {DESIGN_DONE}` + `{_DESIGN_SECTION}` 절 4항목"
-    f"({'·'.join(_DESIGN_PLACEHOLDER_LABELS)}) 충전"
-)
-
-
-def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str | None:
-    """developer 라운드 준비 직전 설계 근거 판정 — 통과면 None, 아니면 거부 사유 1줄.
-
-    "PM 초안 → architect 점검 → PM 비준" 3단 규율이 산문에만 있어 위임 준비 시점에 아무것도
-    막지 않던 자리를 여기서 잠근다. 통과 근거는 둘 중 하나다: (1) `rounds` 에 `pending=False`
-    (시드 그대로가 아닌 실 산출)인 architect 라운드가 1건 이상(시드 그대로는 근거가 아니다) ·
-    (2) `design: done` 且 `## 설계` 절 4항목 충전(`_design_issues` 0건). 둘 다 없으면 "기록 없는
-    건너뜀"이라 거부한다 — 면제 경로는 없다.
-
-    `ticket_text` 파싱 실패·`design` 값 인식 불가는 판정불능이라 통과로 삼키지 않고 거부한다
-    (fail-loud) — architect 실산출이 있어도 마찬가지다. 그래서 파싱·`design` 값 유효성 검사를
-    architect shortcut 보다 **먼저** 수행한다: 손상된 명세 위에서는 architect 실산출 근거가 있어도
-    판정 자체가 불능이라 통과로 삼킬 수 없다. `rounds` 는 호출자가 이미 로드해 손에 든 것을
-    그대로 받는다(재로드 0) — 시드 seam(`render_ticket_growth_section_seed`)의 developer 분기가
-    예약 직전 라운드 전체를 이미 들고 있다. 파싱 소스 식별자에 실 tid 를 싣지 않는 이유는
-    `_DESIGN_EVIDENCE_REMEDY` 와 같다 — 이 함수를 부르는 시드 seam 은 실 ticket id 를 모른다.
-    """
-    try:
-        fm, body = ticket_rules._parse_ticket_text(ticket_text, "<티켓 명세>")
-    except (ValueError, yaml.YAMLError) as exc:
-        # ValueError = frontmatter 구획 자체가 없거나 안 닫힘(`_parse_ticket_text`),
-        # yaml.YAMLError = 구획은 있는데 스칼라 문법 위반(예: 콜론 포함 값을 인용 없이 쓴
-        # `title: a: b`) — 둘 다 판정불능이라 같은 취급이다.
-        return (
-            f"developer 라운드 준비 거부 — 명세 파싱 실패로 설계 근거를 판정할 수 없음: "
-            f"{exc} — {_DESIGN_EVIDENCE_REMEDY}"
-        )
-    design = fm.get("design")
-    state = _design_state(design)
-    if state == DESIGN_INVALID:
-        return (
-            f"developer 라운드 준비 거부 — design 값 인식 불가: {str(design)!r} — "
-            f"{_DESIGN_EVIDENCE_REMEDY}"
-        )
-    if any(item.role == "architect" and not item.pending for item in rounds):
-        return None
-    if state == DESIGN_DONE:
-        issues = _design_issues(tid, body, design)
-        if not issues:
-            return None
-        return f"developer 라운드 준비 거부 — {issues[0][2]} — {_DESIGN_EVIDENCE_REMEDY}"
-    missing = f"architect 라운드 선행도 design 완료 선언도 없음(design: {state})"
-    return f"developer 라운드 준비 거부 — {missing} — {_DESIGN_EVIDENCE_REMEDY}"
 
 
 def _design_estimate_advisory(
@@ -10798,11 +10468,11 @@ def _design_estimate_advisory(
     """
     if str(estimate or "").strip().lower() != DESIGN_REQUIRED_ESTIMATE:
         return []
-    if _design_state(design) != DESIGN_NA:
+    if design_rules._design_state(design) != design_rules.DESIGN_NA:
         return []
     return [(tid, "design-estimate", (
-        f"estimate={DESIGN_REQUIRED_ESTIMATE} 인데 design: {DESIGN_NA} — 발행 후 estimate 를 "
-        f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {DESIGN_REQUIRED}` 로 "
+        f"estimate={DESIGN_REQUIRED_ESTIMATE} 인데 design: {design_rules.DESIGN_NA} — 발행 후 estimate 를 "
+        f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {design_rules.DESIGN_REQUIRED}` 로 "
         "판정을 남겨라"))]
 
 
@@ -11049,18 +10719,17 @@ def _architect_round_issues(
     가 매기는 시드 잔존)를 그대로 쓴다 — 여기서 규칙을 다시 만들지 않는다. `n/a`
     (필드 부재 포함)는 설계 단계 비대상이라 무판정이다.
     """
-    state = _design_state(design)
-    if state not in (DESIGN_REQUIRED, DESIGN_DONE):
+    state = design_rules._design_state(design)
+    if state not in (design_rules.DESIGN_REQUIRED, design_rules.DESIGN_DONE):
         return []
-    rounds_module = _load_ticket_rounds()
-    rounds = rounds_module.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=body)
+    rounds = round_seed.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=body)
     architect_rounds = [item for item in rounds if item.role == _ARCHITECT_ROLE]
     if not architect_rounds:
         return [(tid, _ARCHITECT_ROUND_KIND,
                  f"design: {state} 인데 {_ARCHITECT_ROLE} 점검 라운드가 없다 — 초안을 "
                  f"실측 대조(인용·touches·다른 열린 티켓과의 충돌·최소 수단)로 점검받고 "
                  f"본문에 반영한 뒤 승격하라")]
-    if all(rounds_module.round_is_pending(item, ticket_text=body)
+    if all(round_seed.round_is_pending(item, ticket_text=body)
            for item in architect_rounds):
         return [(tid, _ARCHITECT_ROUND_KIND,
                  f"{_ARCHITECT_ROLE} 점검 라운드가 시드 그대로다(산출 없음) — 회수 전에는 "
@@ -11075,7 +10744,7 @@ def _content_fact_issues(
     roots = _content_search_roots()
     # 인용 자체가 코드 span 표기라 `_strip_code`(span 까지 제거)를 쓰면 판정 대상이 사라진다 —
     # 펜스만 지운다(펜스 안 예시 블록의 경로는 본문 인용이 아니다).
-    prose = _FENCED_CODE_RE.sub(" ", body)
+    prose = markdown_text._FENCED_CODE_RE.sub(" ", body)
     issues: list[tuple[str, str, str]] = []
     issues.extend(_architect_round_issues(tid, body, design))
     citation_issues, citation_unverifiable = _citation_issues(tid, prose, roots)
@@ -11123,7 +10792,7 @@ def _body_lint_issues(tid: str, body: str, *,
     없다. 형식 판정(placeholder·thin·design)은 이 플래그와 무관하게 그대로다.
     """
     issues: list[tuple[str, str, str]] = []
-    prose = _strip_code(body)
+    prose = markdown_text._strip_code(body)
     for placeholder in _PLACEHOLDERS:
         if placeholder in prose:
             issues.append((tid, "placeholder",
@@ -11133,7 +10802,7 @@ def _body_lint_issues(tid: str, body: str, *,
         if section not in body:
             issues.append((tid, "thin",
                            f"missing standard section: {section}"))
-    issues.extend(_design_issues(tid, body, design))
+    issues.extend(design_rules._design_issues(tid, body, design))
     if content_facts:
         issues.extend(_content_fact_issues(tid, body, touches=touches, design=design))
     return issues
@@ -11489,7 +11158,7 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
         except OSError:
             continue
         src = pm_paths._rel_to_repo(_home(), path)
-        text = _strip_code(text)
+        text = markdown_text._strip_code(text)
         for raw in _WIKILINK_RE.findall(text):
             name = raw.strip()
             m_adr = re.fullmatch(r"ADR-(\d+)", name)
@@ -11895,17 +11564,6 @@ _STRUCT_PATH_RE = re.compile(
 # alias `|표시명` 은 `_WIKILINK_RE` 동작과 동일하게 흡수(codex suggestion).
 _NUM_LEAD_WIKILINK_RE = re.compile(r"\[\[(\d+)(?:-[^\]|]+)?(?:\|[^\]]+)?\]\]")
 
-# 코드 span/fence 안의 *예시* 링크·wikilink 는 실제 참조가 아니므로 스캔 전 제거(오탐 0).
-# 문서가 "나쁜 예시"로 `[x](decisions/9999-ghost.md)` 를 코드로 보여줘도 게이트를 막지 않게 한다.
-# fenced(``` … ``` · ~~~ … ~~~) 를 먼저(여러 줄·비-greedy), 그 다음 inline(`…`·한 줄) 을 지운다.
-_FENCED_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
-
-
-def _strip_code(text: str) -> str:
-    """markdown 코드 span/fence 를 공백으로 치환 — 그 안의 예시 링크가 lint 에 안 걸리게."""
-    return _INLINE_CODE_RE.sub(" ", _FENCED_CODE_RE.sub(" ", text))
-
 
 def lint_unstable_refs() -> list[tuple[str, str, str]]:
     """파일명/슬러그-의존 구조 참조를 포착한다 (kind=`unstable-ref`/`unstable-ref-advice`).
@@ -11948,7 +11606,7 @@ def lint_unstable_refs() -> list[tuple[str, str, str]]:
             continue
         src = pm_paths._rel_to_repo(_home(), path)
         # 코드 span/fence 안의 예시 링크·wikilink 는 실제 참조 아님 → 제거 후 스캔(오탐 0).
-        text = _strip_code(text)
+        text = markdown_text._strip_code(text)
 
         # (1) markdown 링크 — target 추출 → fragment/query 제거·외부 URL 제외 → 구조화 경로 분류.
         for raw_target in _MD_LINK_TARGET_RE.findall(text):
@@ -13190,26 +12848,6 @@ def lint_domain() -> list[tuple[str, str, str]]:
     return [(label, kind, detail) for kind, label, detail in findings]
 
 
-def _load_pm_delegate_module():
-    """pm_delegate.py 를 경로 import 해 모듈로 반환한다 (부재/실패 시 None).
-
-    **순환 회피 deep-import seam** — pm_delegate 의 `lint_same_model` 은 순수 함수(board 를
-    import 하지 않는다)라 board 가 이 헬퍼로 지연 로드해 호출한다(`_load_pm_update_module` 동형·
-    stamped sibling 검증 포함). pm_delegate.py 부재(구버전 clone)·일반 로드 실패 → None (호출부
-    graceful skip), 사본 skew 만은 재-raise 해 부분 동기를 숨기지 않는다."""
-    if not PM_DELEGATE_PY.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            PM_DELEGATE_PY, "pm_delegate.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — 일반 로드 실패만 None, 중첩 skew는 fail-loud.
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-    return mod
-
-
 # 실 `local.conf` 관측 kind — 채택자 conf 는 git-ignored 라 pytest 시야 밖이다. 엔진이 만드는
 # 생성 문자열은 테스트가 정적으로 단언하고, 이미 디스크에 있는 파일은 이 조회면이 본다.
 _LOCAL_CONF_LINT_KIND = "local-conf"
@@ -13376,20 +13014,14 @@ def lint_local_conf_required() -> list[tuple[str, str, str]]:
 def lint_delegate() -> list[tuple[str, str, str]]:
     """delegate 동일-모델 dev/reviewer 경고를 board lint finding 으로 표면화 (advisory·never-block).
 
-    pm_delegate.lint_same_model(conf) 의 `(label, detail)` 를 board 관례 `(label, kind, detail)` 로
+    model_lint.lint_same_model(conf) 의 `(label, detail)` 를 board 관례 `(label, kind, detail)` 로
     감싼다. kind=`delegate-same-model`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드에 *절대*
-    기여하지 않는다·visibility>enforcement — 사용자가 동일-모델 조합을 선택할 자유 유지). pm_delegate.py
-    부재·일반 로드 실패·설정 미매핑 → [] (delegate 미사용 프로젝트 무영향). 사본 skew 는
-    로더와 이 소비 지점 양쪽에서 재-raise 하고, 그 밖의 예외만 [] 로 흡수한다. board 의
+    기여하지 않는다·visibility>enforcement — 사용자가 동일-모델 조합을 선택할 자유 유지). 설정
+    읽기 실패·설정 미매핑 → [] (delegate 미사용 프로젝트 무영향). board 의
     local.conf(local_config)로 판정한다."""
     try:
-        mod = _load_pm_delegate_module()
-        if mod is None:
-            return []
-        findings = mod.lint_same_model(conf_store.local_config(_home()))
-    except Exception as exc:  # noqa: BLE001 — 일반 실패만 빈 결과, skew는 fail-loud.
-        if _is_engine_rev_skew(exc):
-            raise
+        findings = model_lint.lint_same_model(conf_store.local_config(_home()))
+    except Exception:  # noqa: BLE001 — 설정 읽기 실패는 빈 결과(advisory).
         return []
     return [(label, "delegate-same-model", detail) for label, detail in findings]
 
@@ -13426,16 +13058,12 @@ def lint_rounds() -> list[tuple[str, str, str]]:
     잔여·엔진의 원자 교체 중간 파일이다 — 둘 다 seam 판정 밖이라 여기서 표면화한다.
     """
     try:
-        rounds = _load_ticket_rounds()
-        root = rounds.rounds_dir(pm_paths.tickets_dir(_home()))
+        root = round_store.rounds_dir(pm_paths.tickets_dir(_home()))
         entries = sorted(root.iterdir()) if root.is_dir() else []
-    # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다. 형제
-    # 로드 실패나 디렉터리 판독 실패가 무관한 board 조회를 죽이지 않게 축을 생략하되, 엔진 rev
-    # skew 만은 부분 동기를 숨기지 않고 그대로 재전파한다. 차단 소비자(완료 게이트)는 반대로
-    # fail-closed 다 — 이 비대칭은 의도된 것이다.
-    except Exception as exc:  # noqa: BLE001 — 위 등록 사유의 advisory fail-soft 경계.
-        if _is_engine_rev_skew(exc):
-            raise
+    # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다.
+    # 디렉터리 판독 실패가 무관한 board 조회를 죽이지 않게 축을 생략한다. 차단 소비자(완료
+    # 게이트)는 반대로 fail-closed 다 — 이 비대칭은 의도된 것이다.
+    except Exception:  # noqa: BLE001 — 위 등록 사유의 advisory fail-soft 경계.
         return []
 
     findings: list[tuple[str, str, str]] = []
@@ -13449,15 +13077,13 @@ def lint_rounds() -> list[tuple[str, str, str]]:
             continue
         ticket = entry.name
         try:
-            for problem in rounds.verify_rounds(pm_paths.tickets_dir(_home()), ticket):
+            for problem in round_seed.verify_rounds(pm_paths.tickets_dir(_home()), ticket):
                 findings.append((ticket, problem.code, problem.detail))
             leftovers = sorted(
                 item.name for item in entry.iterdir()
-                if item.name.startswith(rounds.ROUND_TEMPORARY_PREFIX)
+                if item.name.startswith(round_store.ROUND_TEMPORARY_PREFIX)
             )
         except Exception as exc:  # noqa: BLE001 — 티켓 단위 advisory fail-soft 경계.
-            if _is_engine_rev_skew(exc):
-                raise
             findings.append((
                 ticket, _ROUND_UNREADABLE_LINT_KIND,
                 f"라운드 판정 실패(이 티켓만 건너뛴다): {exc}",
@@ -13986,9 +13612,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--estimate", choices=["small", "medium", "large"],
                    default="small")
     p.add_argument("--design", metavar="값",
-                   help=f"설계 단계 상태 ({DESIGN_VALUE_FORMS}). 생략 시 "
-                        f"estimate={DESIGN_REQUIRED_ESTIMATE} → {DESIGN_REQUIRED}, "
-                        f"그 외 {DESIGN_NA}. required 면 설계 절 완성 + `{DESIGN_DONE}` 승격 "
+                   help=f"설계 단계 상태 ({design_rules.DESIGN_VALUE_FORMS}). 생략 시 "
+                        f"estimate={DESIGN_REQUIRED_ESTIMATE} → {design_rules.DESIGN_REQUIRED}, "
+                        f"그 외 {design_rules.DESIGN_NA}. required 면 설계 절 완성 + `{design_rules.DESIGN_DONE}` 승격 "
                         f"전까지 claim 이 차단된다.")
     p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). 생략 시 task 설정 "
                    "prefix → 등록 prefix 가 정확히 1개면 그것 / 그래도 미해소면 "
@@ -14053,7 +13679,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="T-NNNN")
     # choices를 쓰면 argparse가 rc=2로 선점한다. 계약의 인식 불가 값 rc=1을 cmd_design이 직접
     # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다(`_validate_design`).
-    p.add_argument("value", metavar=DESIGN_VALUE_FORMS)
+    p.add_argument("value", metavar=design_rules.DESIGN_VALUE_FORMS)
     p.set_defaults(fn=cmd_design)
 
     p = sub.add_parser(

@@ -27,6 +27,9 @@ from _test_exec import python_argv_command
 from conftest import anchor_board_module
 from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.app import regression
+from pm_engine.domain import delegate_errors, review_form, review_state
+from pm_engine.infra import delegate_ledger, round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -220,12 +223,12 @@ def _write_round_output(
         path.write_text(text, encoding="utf-8", newline="")
         return
     payload = json.dumps(
-        {"version": pd.PM_REVIEW_VERSION, "findings": [], "confirmations": []},
+        {"version": review_form.PM_REVIEW_VERSION, "findings": [], "confirmations": []},
         ensure_ascii=False, separators=(",", ":"),
     )
     path.write_text(
         f"{header}\n\n## must-fix\n- 없음\n\n## 판정\n판정: 통과 · finding 0건\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n{payload}\n```\n",
+        f"```{review_form.PM_REVIEW_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="")
 
 
@@ -256,7 +259,7 @@ def _advance(pd, cluster: str, role: str, *, pm_home: Path, slot: Path):
 def _record_finding_zero(pd, pm_home: Path, ticket: str, ordinal: int) -> None:
     """PM 판정 — finding 0 리뷰 라운드의 수용 선언(다음 fix 라운드 시드의 선행 조건)."""
     payload = json.dumps({
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION,
         "reviewer_role": "code-reviewer",
         "reviewer_ordinal": ordinal,
         "finding_zero": "accepted",
@@ -264,7 +267,7 @@ def _record_finding_zero(pd, pm_home: Path, ticket: str, ordinal: int) -> None:
     spec = pm_home / ".project_manager" / "wiki" / "tickets" / "claimed" / f"{ticket}-budget.md"
     spec.write_text(
         spec.read_text(encoding="utf-8")
-        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n{payload}\n```\n",
+        + f"\n```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="")
 
 
@@ -272,7 +275,7 @@ def _record_accepted_finding(
     pd, pm_home: Path, ticket: str, ordinal: int, finding_id: str,
 ) -> None:
     payload = json.dumps({
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION,
         "reviewer_role": "code-reviewer", "reviewer_ordinal": ordinal,
         "dispositions": [{
             "id": finding_id, "decision": "accepted", "reason": "fix에서 해소",
@@ -282,7 +285,7 @@ def _record_accepted_finding(
     spec = pm_home / ".project_manager" / "wiki" / "tickets" / "claimed" / f"{ticket}-budget.md"
     spec.write_text(
         spec.read_text(encoding="utf-8")
-        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n{payload}\n```\n",
+        + f"\n```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="",
     )
 
@@ -293,7 +296,7 @@ def _rounds_dir(pm_home: Path, ticket: str) -> Path:
 
 def _open_runs(pd, slot: Path, cluster: str) -> list[str]:
     """아직 열려 있는 run-dir 이름 — 회수로 닫힌 run 은 여기 없다."""
-    root = slot / pd.TICKET_COPY_REL_ROOT / cluster
+    root = slot / delegate_ledger.TICKET_COPY_REL_ROOT / cluster
     return sorted(item.name for item in root.iterdir()) if root.is_dir() else []
 
 
@@ -307,7 +310,7 @@ def _architect_output(
 ) -> str:
     command = command or python_argv_command("--version")
     payload = json.dumps({
-        "version": pd.ARCHITECT_TEST_VERSION,
+        "version": review_form.ARCHITECT_TEST_VERSION,
         "tests": [{
             "id": "AT-001", "target": "tests/test_round_budget.py",
             "command": command, "expected": expected,
@@ -317,7 +320,7 @@ def _architect_output(
     return (
         "## 경계 실측\n- 고정 수열\n\n## 불변식\n- 단계당 1회\n\n"
         "## 표면 상한\n- 추가 라운드 없음\n\n## 테스트 전략\n- 정상·실패\n\n"
-        f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n\n검토 판정: 설계 통과\n"
+        f"```{review_form.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n\n검토 판정: 설계 통과\n"
     )
 
 
@@ -349,12 +352,12 @@ def _prepare_accepted_review(
         "design_change": False,
     }
     payload = json.dumps({
-        "version": pd.PM_REVIEW_VERSION, "findings": [finding], "confirmations": [],
+        "version": review_form.PM_REVIEW_VERSION, "findings": [finding], "confirmations": [],
     }, ensure_ascii=False, separators=(",", ":"))
     header = review.rounds[0].path.read_text(encoding="utf-8").partition("\n")[0]
     review.rounds[0].path.write_text(
         f"{header}\n\n## must-fix\n- F-001\n\n## 판정\n판정: 반려\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n{payload}\n```\n",
+        f"```{review_form.PM_REVIEW_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="",
     )
     outcomes = pd.harvest_cluster_copy(
@@ -373,7 +376,7 @@ def test_budget_values_expand_into_the_role_sequence(pd):
     assert sequence == _CYCLE
     # 값을 늘이거나 줄여 가변 루프/단계 생략으로 바꾸는 장부는 손상이다.
     for key, value in (("developer_per_ticket", 2), ("architect", 0), ("fix", -1)):
-        with pytest.raises(pd.DelegateError, match=rf"{key}=1"):
+        with pytest.raises(delegate_errors.DelegateError, match=rf"{key}=1"):
             pd.cluster_round_sequence(
                 {**board.CLUSTER_BUDGET_DEFAULT, key: value}, cluster="C-cycle",
             )
@@ -387,7 +390,7 @@ def test_budget_values_expand_into_the_role_sequence(pd):
 ])
 def test_an_undeclared_budget_value_stops_the_judgment(pd, budget, missing):
     """선언되지 않은 값은 기본값으로 지어내지 않는다 — 그 장부는 판정 입력이 아니다."""
-    with pytest.raises(pd.DelegateError) as caught:
+    with pytest.raises(delegate_errors.DelegateError) as caught:
         pd.cluster_round_sequence(budget, cluster="C-broken")
 
     message = str(caught.value)
@@ -399,12 +402,12 @@ def test_developer_prepare_requires_the_architect_test_contract(pd, budget_env):
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-contract", ["T-7000"])
     board = _fixture_board(pd, pm_home)
-    pd._load_ticket_rounds().reserve_round(
+    round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), "T-7000", "architect",
         content="## 설계\n- 테스트 계약 누락\n", lock=contextlib.nullcontext(),
     )
 
-    with pytest.raises(pd.DelegateError, match="pm-architect-tests-v1"):
+    with pytest.raises(delegate_errors.DelegateError, match="pm-architect-tests-v1"):
         pd.prepare_cluster_copy(
             cluster="C-contract", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -423,12 +426,12 @@ def test_architect_contract_rejects_placeholder_in_every_string_field(pd, field)
     }
     row[field] = "prefix <placeholder>"
     payload = json.dumps({
-        "version": pd.ARCHITECT_TEST_VERSION, "tests": [row],
+        "version": review_form.ARCHITECT_TEST_VERSION, "tests": [row],
     }, ensure_ascii=False, separators=(",", ":"))
 
-    with pytest.raises(pd.DelegateError, match="placeholder"):
+    with pytest.raises(delegate_errors.DelegateError, match="placeholder"):
         pd.parse_architect_tests(
-            f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
+            f"```{review_form.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
         )
 
 
@@ -438,7 +441,7 @@ def test_initial_developer_harvest_requires_the_architect_target_in_its_diff(
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-arch-target", ["T-7006"])
     board = _fixture_board(pd, pm_home)
-    pd._load_ticket_rounds().reserve_round(
+    round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), "T-7006", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
@@ -461,7 +464,7 @@ def test_developer_harvest_requires_an_exact_green_full_regression_record(
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-stage-record", ["T-7009"])
     board = _fixture_board(pd, pm_home)
-    pd._load_ticket_rounds().reserve_round(
+    round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), "T-7009", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
@@ -495,7 +498,7 @@ def test_developer_regression_record_rejects_wrong_command_and_red_result(pd):
         f"## 회귀\n- 커맨드: `{expected}`\n"
         "- 결과: rc=1 · 1 failed\n"
     )
-    with pytest.raises(pd.DelegateError, match="green이 아닙니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="green이 아닙니다"):
         pd.parse_developer_regression_record(red)
 
 
@@ -511,19 +514,11 @@ def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
     )
     pm_home.mkdir()
 
-    class _ER:
-        class AnchorResolutionError(RuntimeError):
-            pass
-
-        @staticmethod
-        def resolve_pm_home_for_repo(_repo):
-            return pm_home
-
     def _test_cmd(home, _override, *, session):
         assert session is None
         return "python3 -m pytest tests/ -q -n 8" if home.root == pm_home.resolve() else None
 
-    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ER)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
     monkeypatch.setattr(regression, "_test_cmd", _test_cmd)
     assert pd._full_regression_command(candidate) == "python3 -m pytest tests/ -q -n 8"
 
@@ -550,15 +545,7 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
     monkeypatch.setenv("PM_SESSION_NAME", "stage-exit")
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
 
-    class _ER:
-        class AnchorResolutionError(RuntimeError):
-            pass
-
-        @staticmethod
-        def resolve_pm_home_for_repo(_repo):
-            return pm_home
-
-    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ER)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
 
     board = pd._load_board_for_repo(pm_home)
     home = pm_home.resolve()
@@ -592,7 +579,7 @@ def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-arch-red", ["T-7003"])
     board = _fixture_board(pd, pm_home)
-    pd._load_ticket_rounds().reserve_round(
+    round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), "T-7003", "architect",
         content=_architect_output(
             pd, command=python_argv_command("-m", "module_that_does_not_exist_t0871"), expected="green",
@@ -787,7 +774,7 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     assert len(pd.parse_architect_tests(
         board_round.read_text(encoding="utf-8"))) == 1
 
-    rounds_after = pd._load_ticket_rounds().load_rounds(
+    rounds_after = round_seed.load_rounds(
         pm_paths.tickets_dir(board._home()), "T-7100")
     assert pd._cluster_cycle_roles(rounds_after, frozenset(_CYCLE)) == ("architect",)
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
@@ -868,14 +855,14 @@ def _write_review_output(pd, path: Path, finding_ids: list[str], *, ticket: str)
         for finding_id in finding_ids
     ]
     payload = json.dumps(
-        {"version": pd.PM_REVIEW_VERSION, "findings": findings, "confirmations": []},
+        {"version": review_form.PM_REVIEW_VERSION, "findings": findings, "confirmations": []},
         ensure_ascii=False, separators=(",", ":"),
     )
     header = path.read_text(encoding="utf-8").partition("\n")[0]
     path.write_text(
         f"{header}\n\n## must-fix\n"
         + "".join(f"- {finding_id}\n" for finding_id in finding_ids)
-        + f"\n## 판정\n판정: 반려\n\n```{pd.PM_REVIEW_BLOCK}\n{payload}\n```\n",
+        + f"\n## 판정\n판정: 반려\n\n```{review_form.PM_REVIEW_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="",
     )
 
@@ -950,12 +937,12 @@ def test_reopening_a_missing_or_mismatched_ordinal_leaves_no_residue(pd, budget_
     _seed(pm_home, tickets, "C-reopen-miss", ["T-7101"])
     _advance(pd, "C-reopen-miss", "architect", pm_home=pm_home, slot=slot)
 
-    with pytest.raises(pd.DelegateError, match="재개방할 라운드가 없다"):
+    with pytest.raises(delegate_errors.DelegateError, match="재개방할 라운드가 없다"):
         pd.prepare_cluster_copy(
             cluster="C-reopen-miss", role="architect", cwd=slot, pm_home=pm_home,
             reopen_ordinal=2,
         )
-    with pytest.raises(pd.DelegateError, match="역할이 다르다"):
+    with pytest.raises(delegate_errors.DelegateError, match="역할이 다르다"):
         pd.prepare_ticket_copy(
             ticket="T-7101", role="developer", cwd=slot, pm_home=pm_home,
             reopen_ordinal=1,
@@ -1077,12 +1064,12 @@ def test_fix_harvest_runs_the_reviewer_required_regression(pd, budget_env):
         "design_change": False,
     }
     payload = json.dumps({
-        "version": pd.PM_REVIEW_VERSION, "findings": [finding], "confirmations": [],
+        "version": review_form.PM_REVIEW_VERSION, "findings": [finding], "confirmations": [],
     }, ensure_ascii=False, separators=(",", ":"))
     header = review.rounds[0].path.read_text(encoding="utf-8").partition("\n")[0]
     review.rounds[0].path.write_text(
         f"{header}\n\n## must-fix\n- F-001\n\n## 판정\n판정: 반려\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n{payload}\n```\n",
+        f"```{review_form.PM_REVIEW_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="",
     )
     outcomes = pd.harvest_cluster_copy(
@@ -1266,7 +1253,7 @@ def test_cli_prepare_reopens_the_named_ordinal_and_refuses_a_zero(
     capsys.readouterr()
 
     rc = pd.main(["ticket", "prepare", "--ticket", "T-7102", "--role", "architect",
-                  pd.PREPARE_REOPEN_ORDINAL_FLAG, "1", "--cwd", str(slot)])
+                  review_state.PREPARE_REOPEN_ORDINAL_FLAG, "1", "--cwd", str(slot)])
 
     assert rc == 0
     machine = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -1275,7 +1262,7 @@ def test_cli_prepare_reopens_the_named_ordinal_and_refuses_a_zero(
 
     with pytest.raises(SystemExit) as caught:
         pd.main(["ticket", "prepare", "--ticket", "T-7102", "--role", "architect",
-                 pd.PREPARE_REOPEN_ORDINAL_FLAG, "0", "--cwd", str(slot)])
+                 review_state.PREPARE_REOPEN_ORDINAL_FLAG, "0", "--cwd", str(slot)])
     assert caught.value.code == 2
     assert "1 이상" in capsys.readouterr().err
 
@@ -1292,7 +1279,6 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
         _advance(pd, "C-race", role, pm_home=pm_home, slot=slot)
 
     board = _fixture_board(pd, pm_home)
-    rounds_module = pd._load_ticket_rounds()
     real_lock = board.board_lock
     entries: list[int] = []
 
@@ -1300,7 +1286,7 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
         entries.append(len(entries) + 1)
         if len(entries) == 2:
             # 사전판정과 이 임계구역 사이에 다른 준비가 마지막 fix 자리를 가져갔다.
-            rounds_module.reserve_round(
+            round_store.reserve_round(
                 pm_paths.tickets_dir(board._home()), "T-7050", "developer", content="## 경쟁 예약\n",
                 lock=contextlib.nullcontext(),
             )
@@ -1328,7 +1314,7 @@ _ALL_ZERO_BUDGET = {
 
 def test_an_all_zero_budget_is_invalid(pd):
     """0은 단계 생략 경로가 아니라 손상된 고정 수열 선언이다."""
-    with pytest.raises(pd.DelegateError, match="architect=1"):
+    with pytest.raises(delegate_errors.DelegateError, match="architect=1"):
         pd.cluster_round_sequence(_ALL_ZERO_BUDGET, cluster="C-zero")
 
 
@@ -1338,7 +1324,7 @@ def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
     _seed(pm_home, tickets, "C-zero", ["T-7100"], budget=_ALL_ZERO_BUDGET)
 
     for role in _CYCLE:
-        with pytest.raises(pd.DelegateError) as caught:
+        with pytest.raises(delegate_errors.DelegateError) as caught:
             pd.prepare_cluster_copy(
                 cluster="C-zero", role=role, cwd=slot, pm_home=pm_home,
             )
@@ -1383,7 +1369,7 @@ def test_the_lock_recheck_sees_a_budget_that_became_invalid(
             pm_home, "C-shrink", ["T-7110"], budget=_ALL_ZERO_BUDGET),
     )
 
-    with pytest.raises(pd.DelegateError) as caught:
+    with pytest.raises(delegate_errors.DelegateError) as caught:
         pd.prepare_cluster_copy(
             cluster="C-shrink", role="architect", cwd=slot, pm_home=pm_home,
         )
@@ -1398,7 +1384,7 @@ def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatc
     ledger = _seed(pm_home, tickets, "C-vanish", ["T-7120"])
     _refuse_at_the_lock(pd, pm_home, monkeypatch, ledger.unlink)
 
-    with pytest.raises(pd.DelegateError, match="묶음 장부가 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="묶음 장부가 없습니다"):
         pd.prepare_cluster_copy(
             cluster="C-vanish", role="architect", cwd=slot, pm_home=pm_home,
         )
@@ -1419,7 +1405,7 @@ def test_a_ticket_without_a_ledger_stops_the_preparation(pd, budget_env):
 
     assert pd._load_board_for_repo(pm_home).cluster_members("C-T-7130") == ()
 
-    with pytest.raises(pd.DelegateError) as caught:
+    with pytest.raises(delegate_errors.DelegateError) as caught:
         pd.prepare_cluster_copy(
             cluster="C-T-7130", role="architect", cwd=slot, pm_home=pm_home,
         )
@@ -1474,7 +1460,7 @@ def test_the_ticket_surface_without_a_ledger_stops_too(pd, budget_env):
         _spec_text("T-7090", "C-T-7090").replace("cluster: C-T-7090\n", ""),
         encoding="utf-8", newline="\n")
 
-    with pytest.raises(pd.DelegateError) as caught:
+    with pytest.raises(delegate_errors.DelegateError) as caught:
         pd.prepare_ticket_copy(
             ticket="T-7090", role="architect", cwd=slot, pm_home=pm_home,
         )

@@ -278,63 +278,6 @@ def test_delegate_scope_unregistered_stale_board_name_fails_loud(tmp_path):
     assert "AttributeError" not in msg
 
 
-def test_board_pm_delegate_loader_stale_sibling_fails_loud(tmp_path):
-    """board의 fail-soft pm_delegate 로더도 직접 revision skew만은 None으로 삼키지 않는다."""
-    tools = _build_tools(tmp_path, {
-        "board.py": None,
-        "local_conf.py": None,
-        "pm_delegate.py": _stale_source("pm_delegate"),
-    })
-    board = _load(tools, "board")
-
-    with pytest.raises(RuntimeError) as exc:
-        board._load_pm_delegate_module()
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    msg = str(exc.value)
-    assert "board.py" in msg
-    assert "pm_delegate.py" in msg
-    assert "v0.0.0-stale" in msg
-
-
-def test_board_pm_delegate_loader_reraises_nested_skew(tmp_path):
-    """pm_delegate exec 중 발생한 marker도 board 로더의 except가 None으로 흡수하지 않는다."""
-    nested = (
-        "err = RuntimeError('pm_delegate nested skew')\n"
-        "err._engine_rev_skew = True\n"
-        "raise err\n"
-    )
-    tools = _build_tools(tmp_path, {
-        "board.py": None,
-        "local_conf.py": None,
-        "pm_delegate.py": nested,
-    })
-    board = _load(tools, "board")
-
-    with pytest.raises(RuntimeError, match="pm_delegate nested skew") as exc:
-        board._load_pm_delegate_module()
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-
-
-def test_board_lint_delegate_reraises_marked_skew(tmp_path, monkeypatch):
-    """lint_delegate 자체의 fail-soft catch도 소비 중 발생한 marked skew를 []로 강등하지 않는다."""
-    tools = _build_tools(tmp_path, {
-        "board.py": None,
-        "local_conf.py": None,
-    })
-    board = _load(tools, "board")
-
-    class SkewingDelegate:
-        @staticmethod
-        def lint_same_model(_conf):
-            raise _marked_skew("lint consumer skew")
-
-    monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: SkewingDelegate)
-    with pytest.raises(RuntimeError, match="lint consumer skew") as exc:
-        board.lint_delegate()
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-
-
 def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch):
     """stale pm_delegate가 있어도 비소비 read/mutation 경로인 list·claim은 정상 dispatch된다."""
     tools = _build_tools(tmp_path, {

@@ -28,6 +28,7 @@ import pytest
 from _git_fixture import init_git_repo
 from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract
+from pm_engine.domain import delegate_errors
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1232,7 +1233,7 @@ def test_unsupported_harness_stays_fresh_and_loud(pd, monkeypatch, tmp_path, cap
 
 def test_execute_attempt_refuses_resume_id_on_unsupported_harness(pd, tmp_path):
     """호출층이 잘못 넘겨도 미지원 축엔 재개 id 가 실리지 않는다(방어선 2중)."""
-    with pytest.raises(pd.DelegateError, match="세션 재사용 미지원"):
+    with pytest.raises(delegate_errors.DelegateError, match="세션 재사용 미지원"):
         pd._execute_attempt(
             harness="opencode", model="prov/m", reasoning=None, role="code-reviewer",
             cwd=tmp_path, prompt="p", timeout=60, output_dir=tmp_path / "raw",

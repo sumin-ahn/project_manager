@@ -30,6 +30,8 @@ import pytest
 
 from _test_exec import python_argv_command
 from pm_engine.infra import pm_paths
+from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
+from pm_engine.infra import delegate_ledger, round_store
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -227,7 +229,7 @@ def test_review_input_refuses_a_ledger_without_branch_coordinates(pd, review_env
         encoding="utf-8", newline="\n")
     board = _fixture_board(pd, home)
 
-    with pytest.raises(pd.DelegateError, match="통합 브랜치 좌표가 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="통합 브랜치 좌표가 없습니다"):
         pd.cluster_review_input(board, _CLUSTER, repo=home)
 
 
@@ -238,7 +240,7 @@ def test_review_input_refuses_an_empty_span(pd, review_env):
     assert _git(home, "reset", "-q", "--hard", _BASE_BRANCH).returncode == 0
     board = _fixture_board(pd, home)
 
-    with pytest.raises(pd.DelegateError, match="리뷰할 diff 가 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="리뷰할 diff 가 없습니다"):
         pd.cluster_review_input(board, _CLUSTER, repo=home)
 
 
@@ -318,7 +320,7 @@ def test_review_prepare_refuses_a_dirty_slot(pd, review_env, monkeypatch, capsys
         err = capsys.readouterr().err
         assert rc == 1, err
         assert "커밋되지 않은 변경" in err and expected in err
-        assert pd.ticket_copy_records(home) == []
+        assert delegate_ledger.ticket_copy_records(home) == []
         for ticket in _MEMBERS:
             assert not _board_review_round(home, ticket).exists()
 
@@ -404,7 +406,7 @@ def test_developer_round_harvest_without_the_architect_test_leaves_head_alone(
         plan.path.read_text(encoding="utf-8") + "\n## 산출\n- 실측 값\n",
         encoding="utf-8", newline="")
 
-    with pytest.raises(pd.DelegateError, match="architect 필수 테스트 .* 추가·수정되지"):
+    with pytest.raises(delegate_errors.DelegateError, match="architect 필수 테스트 .* 추가·수정되지"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=home)
 
     assert _head_count(slot) == before
@@ -462,7 +464,7 @@ def test_developer_changed_paths_reports_unknown_base_revision(pd, tmp_path):
     repo.mkdir()
     assert _git(repo, "init", "-q").returncode == 0
 
-    with pytest.raises(pd.DelegateError, match=r"git diff .* 실패"):
+    with pytest.raises(delegate_errors.DelegateError, match=r"git diff .* 실패"):
         pd._developer_round_changed_paths(repo, base_rev="not-a-real-revision")
 
 
@@ -484,7 +486,7 @@ def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
 
     assert rc == 1
     assert "묶음 브랜치가 아닙니다" in capsys.readouterr().err
-    assert pd.ticket_copy_records(home) == []
+    assert delegate_ledger.ticket_copy_records(home) == []
     assert _git(home, "worktree", "list").stdout == worktrees_before
 
 
@@ -549,14 +551,14 @@ def _codex_reply(text: str = "DONE") -> str:
 
 def _reviewer_block(pd, findings: list) -> str:
     payload = json.dumps(
-        {"version": pd.PM_REVIEW_VERSION, "findings": findings, "confirmations": []},
+        {"version": review_form.PM_REVIEW_VERSION, "findings": findings, "confirmations": []},
         ensure_ascii=False, separators=(",", ":"),
     )
     mustfix = "\n".join(f"- {item['id']}" for item in findings) or "- 없음"
     verdict = "반려" if findings else "통과"
     return (
         f"\n## must-fix\n{mustfix}\n\n## 판정\n판정: {verdict} · finding {len(findings)}건\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n{payload}\n```\n"
+        f"```{review_form.PM_REVIEW_BLOCK}\n{payload}\n```\n"
     )
 
 
@@ -568,12 +570,11 @@ def _reserve_prior_rounds(pd, home: Path, roles: tuple[str, ...]) -> None:
     """예산 수열의 선행 단계를 board 라운드로 깔아 둔다(리뷰가 그 다음 자리가 되게)."""
     import contextlib as _contextlib
     board = _fixture_board(pd, home)
-    rounds_module = pd._load_ticket_rounds()
     for ticket in _MEMBERS:
         for role in roles:
             if role == "architect":
                 test_payload = json.dumps({
-                    "version": pd.ARCHITECT_TEST_VERSION,
+                    "version": review_form.ARCHITECT_TEST_VERSION,
                     "tests": [{
                         "id": "AT-001", "target": "tests/test_cluster_review_round.py",
                         "command": python_argv_command("--version"), "expected": "Python",
@@ -583,11 +584,11 @@ def _reserve_prior_rounds(pd, home: Path, roles: tuple[str, ...]) -> None:
                 content = (
                     "## 경계 실측\n- 묶음 리뷰\n\n## 불변식\n- 고정 수열\n\n"
                     "## 표면 상한\n- 추가 라운드 없음\n\n## 테스트 전략\n- 정상·실패\n\n"
-                    f"```{pd.ARCHITECT_TEST_BLOCK}\n{test_payload}\n```\n"
+                    f"```{review_form.ARCHITECT_TEST_BLOCK}\n{test_payload}\n```\n"
                 )
             else:
                 content = f"## {role} 산출\n- {ticket} 실측\n"
-            rounds_module.reserve_round(
+            round_store.reserve_round(
                 pm_paths.tickets_dir(board._home()), ticket, role,
                 content=content,
                 lock=_contextlib.nullcontext(),
@@ -646,13 +647,13 @@ def test_cross_review_runs_in_the_slot_and_harvests(pd, review_env, monkeypatch,
     assert seen["prompt"].count("finding ID: 이번 라운드의 새 finding 은 `F-001` 부터") == len(
         _MEMBERS)
     for ticket in _MEMBERS:
-        assert pd.PM_REVIEW_BLOCK in _board_review_round(home, ticket).read_text(
+        assert review_form.PM_REVIEW_BLOCK in _board_review_round(home, ticket).read_text(
             encoding="utf-8")
     assert _slot_seats(home) == []
     local = home / ".project_manager" / ".local"
     assert not (local / "internal_review_rounds.json").exists()
     assert not (local / "cluster-review-runs.jsonl").exists()
-    rows = pd.ticket_copy_records(home)
+    rows = delegate_ledger.ticket_copy_records(home)
     head = _git(home, "rev-parse", "HEAD").stdout.strip()
     assert {row["ticket"] for row in rows if row["harvested_at"]} == set(_MEMBERS)
     assert all(row.get("base_rev") == head for row in rows)
@@ -788,7 +789,7 @@ def test_ticket_prepare_code_reviewer_writes_engine_prompt(
     assert "t-8001.py" in prompt and "t-8002.py" in prompt
     assert "```diff" in prompt
     assert "격리 스냅샷" not in prompt
-    rows = pd.ticket_copy_records(home)
+    rows = delegate_ledger.ticket_copy_records(home)
     assert len(rows) == len(_MEMBERS)
     assert all(row["role"] == "code-reviewer" and row.get("base_rev") == head for row in rows)
     assert all("owner_pid" not in row for row in rows)
@@ -810,7 +811,7 @@ def test_ticket_prepare_review_takes_the_cluster_only(
         pd._cmd_ticket(["prepare", *extra, "--cwd", str(home)])
 
     assert caught.value.code == 2
-    assert pd.ticket_copy_records(home) == []
+    assert delegate_ledger.ticket_copy_records(home) == []
 
 
 @pytest.mark.parametrize("change", ["tracked", "untracked", "commit"])
@@ -852,7 +853,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
     for ticket in _MEMBERS:
         assert _board_review_round(home, ticket).read_bytes() == seeds[ticket]
     assert run_dir.is_dir()
-    assert all(row["harvested_at"] is None for row in pd.ticket_copy_records(home))
+    assert all(row["harvested_at"] is None for row in delegate_ledger.ticket_copy_records(home))
 
 
 @requires_git
@@ -875,9 +876,9 @@ def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypat
 
     assert rc == 0, capsys.readouterr().err
     for ticket in _MEMBERS:
-        assert pd.PM_REVIEW_BLOCK in _board_review_round(home, ticket).read_text(
+        assert review_form.PM_REVIEW_BLOCK in _board_review_round(home, ticket).read_text(
             encoding="utf-8")
-    assert all(row["harvested_at"] for row in pd.ticket_copy_records(home))
+    assert all(row["harvested_at"] for row in delegate_ledger.ticket_copy_records(home))
 
 
 @requires_git
@@ -932,7 +933,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
 
     assert {line["ordinal"] for line in reopened} == {3}
     latest = [
-        row for row in pd.ticket_copy_records(home)
+        row for row in delegate_ledger.ticket_copy_records(home)
         if row["run_id"] == Path(reopened[0]["run_dir"]).name
     ]
     assert latest and all(row.get("base_rev") == new_head for row in latest)
@@ -940,7 +941,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
         seat = Path(line["copy"])
         kept = [
             item for item in seat.read_text(encoding="utf-8").splitlines(keepends=True)
-            if pd.PM_REVIEW_REFUSED_MARKER not in item
+            if review_form.PM_REVIEW_REFUSED_MARKER not in item
         ]
         seat.write_text("".join(kept), encoding="utf-8", newline="")
     capsys.readouterr()
@@ -990,10 +991,9 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
 
 
 def _round(pd, ordinal: int, role: str, text: str):
-    rounds_module = pd._load_ticket_rounds()
-    return rounds_module.Round(
+    return round_rules.Round(
         ordinal=ordinal, role=role,
-        path=Path(rounds_module.round_filename(ordinal, role)),
+        path=Path(round_rules.round_filename(ordinal, role)),
         text=text, pending=False,
     )
 
@@ -1026,20 +1026,20 @@ def _reviewer_round_text(pd, findings: list) -> str:
 
 def _disposition_block(pd, ordinal: int, rows: list) -> str:
     payload = json.dumps({
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION,
         "reviewer_role": "code-reviewer",
         "reviewer_ordinal": ordinal,
         "dispositions": rows,
     }, ensure_ascii=False, separators=(",", ":"))
-    return f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n{payload}\n```\n"
+    return f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n{payload}\n```\n"
 
 
 def _verify_block(pd, rows: list) -> str:
     payload = json.dumps(
-        {"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
+        {"version": review_form.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
         ensure_ascii=False, separators=(",", ":"),
     )
-    return f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n{payload}\n```\n"
+    return f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n{payload}\n```\n"
 
 
 def _verify_row(fid: str, *, command: str, expected: str, before: str = "옛 값",
@@ -1129,7 +1129,7 @@ def _partially_confirmed_pm_owned_ticket(pd):
         ),
     ]))
     partial = pd.render_pm_review_confirmation_section((
-        (2, pd.PMReviewMachineConfirmation(
+        (2, review_form.PMReviewMachineConfirmation(
             "F-001", "resolved", "echo hi", "rc=0\nhi", 2,
         )),
     ))
@@ -1143,7 +1143,6 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
     board = _fixture_board(pd, home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
-    rounds_module = pd._load_ticket_rounds()
     import contextlib
     for ticket in _MEMBERS:
         spec, rounds = _accepted_ticket(pd)  # noqa: PLW2901 — 티켓마다 같은 형상
@@ -1151,7 +1150,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
         path.write_text(path.read_text(encoding="utf-8") + "\n" + spec,
                         encoding="utf-8", newline="")
         for item in rounds:
-            rounds_module.reserve_round(
+            round_store.reserve_round(
                 pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
@@ -1179,7 +1178,7 @@ def _stub_run(returncode: int = 0, stdout: str = "", stderr: str = ""):
 
 def test_confirmation_runs_the_command_and_records_the_observed_value(pd, tmp_path):
     spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert [source for source, _row in template.machine_rows] == [2]
 
     rows = pd.run_pm_review_confirmations(
@@ -1196,7 +1195,7 @@ def test_confirmation_runs_the_command_and_records_the_observed_value(pd, tmp_pa
 def test_confirmation_is_unresolved_when_expected_is_absent_or_rc_is_nonzero(
         pd, tmp_path):
     spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
 
     mismatch = pd.run_pm_review_confirmations(
         template, cwd=tmp_path, run_fn=_stub_run(0, "bye\n"))[0][1]
@@ -1213,7 +1212,7 @@ def test_confirmation_refuses_a_command_outside_the_safety_boundary(pd, tmp_path
     def _never(argv, **kwargs):
         pytest.fail("금지 토큰 커맨드가 실행되면 안 됨")
 
-    with pytest.raises(pd.PMReviewError, match="금지 토큰"):
+    with pytest.raises(review_form.PMReviewError, match="금지 토큰"):
         pd.run_pm_review_confirmation_command(
             "pytest -q | tee out.txt", cwd=tmp_path, expected="passed",
             run_fn=_never,
@@ -1240,7 +1239,7 @@ def test_observed_excerpt_keeps_the_expected_value_visible(pd):
 def test_written_confirmation_section_round_trips_through_the_parser(pd, tmp_path):
     """엔진이 기입한 확인 절이 파서를 통과하고 accepted 잔여를 닫는다."""
     spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     rows = pd.run_pm_review_confirmations(
         template, cwd=tmp_path, run_fn=_stub_run(0, "hi\n"))
 
@@ -1248,9 +1247,9 @@ def test_written_confirmation_section_round_trips_through_the_parser(pd, tmp_pat
 
     assert section.startswith(pd.PM_REVIEW_CONFIRMATION_SECTION)
     assert "<관측값>" not in section and "<resolved|" not in section
-    delta = pd.parse_pm_review_delta(spec + "\n" + section, rounds)
+    delta = review_state.parse_pm_review_delta(spec + "\n" + section, rounds)
     assert delta.accepted == ()
-    assert pd.pm_verified_evidence_problem(
+    assert review_state.pm_verified_evidence_problem(
         spec + "\n" + section, rounds,
         reviewer_role="code-reviewer", surface_floor=1,
     ) is None
@@ -1260,10 +1259,10 @@ def test_pm_owned_terminal_confirmation_is_generated_without_running_a_command(
     pd, tmp_path,
 ):
     spec, rounds = _pm_owned_ticket(pd)
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert template.machine_rows == ()
     assert [(source, row.id) for source, row in template.pm_owned_rows] == [(2, "F-003")]
-    assert pd.pm_verified_resolution_input_problem(
+    assert review_state.pm_verified_resolution_input_problem(
         spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
     ) is None
 
@@ -1273,12 +1272,12 @@ def test_pm_owned_terminal_confirmation_is_generated_without_running_a_command(
     )
     source, row = rows[0]
     assert (source, row.id, row.status) == (2, "F-003", "resolved")
-    assert row.command == pd.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND
+    assert row.command == review_form.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND
     assert row.observed == "PM audit 완료 실값"
 
     confirmed = spec + "\n" + pd.render_pm_review_confirmation_section(rows)
-    assert pd.parse_pm_review_delta(confirmed, rounds).accepted == ()
-    assert pd.pm_verified_evidence_problem(
+    assert review_state.parse_pm_review_delta(confirmed, rounds).accepted == ()
+    assert review_state.pm_verified_evidence_problem(
         confirmed, rounds, reviewer_role="code-reviewer", surface_floor=1,
     ) is None
 
@@ -1291,24 +1290,24 @@ def test_pm_owned_terminal_confirmation_rejects_scope_verify_spoof(
     pd, scope, reason,
 ):
     spec, rounds = _pm_owned_ticket(pd, scope=scope, reason=reason)
-    problem = pd.pm_verified_resolution_input_problem(
+    problem = review_state.pm_verified_resolution_input_problem(
         spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
     )
     assert problem is not None and (
         "PM-owned" in problem or "machine_verifiable=false" in problem
     )
     forged = json.dumps({
-        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
+        "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
         "round": 2,
         "confirmations": [{
             "id": "F-003", "status": "resolved",
-            "command": pd.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND,
+            "command": review_form.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND,
             "observed": "PM audit 완료 실값",
         }],
     }, ensure_ascii=False, separators=(",", ":"))
-    with pytest.raises(pd.PMReviewError, match="strict pm-owned|PM-owned"):
-        pd.parse_pm_review_delta(
-            spec + f"\n```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n{forged}\n```\n",
+    with pytest.raises(review_form.PMReviewError, match="strict pm-owned|PM-owned"):
+        review_state.parse_pm_review_delta(
+            spec + f"\n```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n{forged}\n```\n",
             rounds,
         )
 
@@ -1317,10 +1316,10 @@ def test_arbitrary_false_verify_remains_reviewer_required_at_terminal_preflight(
     spec, rounds = _pm_owned_ticket(
         pd, scope="F-003 developer 범위", reason="design-judgment",
     )
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert template.pm_owned_rows == ()
     assert [row[0] for row in template.reviewer_required] == ["F-003"]
-    problem = pd.pm_verified_resolution_input_problem(
+    problem = review_state.pm_verified_resolution_input_problem(
         spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
     )
     assert problem is not None and "machine_verifiable=false" in problem
@@ -1334,7 +1333,7 @@ def test_confirmation_is_appended_to_the_pm_area_of_the_spec(pd, review_env):
     path = tickets / f"{ticket}-review.md"
     path.write_text(path.read_text(encoding="utf-8") + "\n" + spec,
                     encoding="utf-8", newline="")
-    template = pd.pm_review_verify_template(path.read_text(encoding="utf-8"), rounds)
+    template = review_state.pm_review_verify_template(path.read_text(encoding="utf-8"), rounds)
     rows = pd.run_pm_review_confirmations(
         template, cwd=home, run_fn=_stub_run(0, "hi\n"))
 
@@ -1346,7 +1345,7 @@ def test_confirmation_is_appended_to_the_pm_area_of_the_spec(pd, review_env):
     assert pd.PM_REVIEW_CONFIRMATION_SECTION in text
     # 기입은 명세 PM 영역이다 — frontmatter 는 그대로다.
     assert text.startswith("---\n")
-    assert pd.parse_pm_review_delta(text, rounds).accepted == ()
+    assert review_state.parse_pm_review_delta(text, rounds).accepted == ()
 
 
 @requires_git
@@ -1362,7 +1361,7 @@ def test_confirmation_append_merges_missing_pm_owned_row_into_existing_round_ide
         path.read_text(encoding="utf-8") + "\n" + spec,
         encoding="utf-8", newline="",
     )
-    template = pd.pm_review_verify_template(path.read_text(encoding="utf-8"), rounds)
+    template = review_state.pm_review_verify_template(path.read_text(encoding="utf-8"), rounds)
     rows = pd.run_pm_review_confirmations(
         template, cwd=home,
         run_fn=lambda *_a, **_k: pytest.fail("남은 행은 PM-owned라 command 실행이 없어야 한다"),
@@ -1376,14 +1375,14 @@ def test_confirmation_append_merges_missing_pm_owned_row_into_existing_round_ide
     assert path.read_bytes() == first
     text = path.read_text(encoding="utf-8")
     blocks = [
-        block for block in pd._pm_review_json_blocks(text)
-        if block.kind == pd.PM_REVIEW_CONFIRMATION_BLOCK
+        block for block in review_form._pm_review_json_blocks(text)
+        if block.kind == review_form.PM_REVIEW_CONFIRMATION_BLOCK
     ]
     assert len(blocks) == 1 and blocks[0].value["round"] == 2
     assert [row["id"] for row in blocks[0].value["confirmations"]] == [
         "F-001", "F-003",
     ]
-    assert pd.parse_pm_review_delta(text, rounds).accepted == ()
+    assert review_state.parse_pm_review_delta(text, rounds).accepted == ()
 
 
 @pytest.mark.parametrize(("row", "message"), (
@@ -1410,10 +1409,10 @@ def test_confirmation_same_round_merge_rejects_conflict_and_spoof_atomically(
     )
     before = path.read_bytes()
     incoming = pd.render_pm_review_confirmation_section((
-        (2, pd.PMReviewMachineConfirmation(*row, 2)),
+        (2, review_form.PMReviewMachineConfirmation(*row, 2)),
     ))
 
-    with pytest.raises(pd.PMReviewError, match=message):
+    with pytest.raises(review_form.PMReviewError, match=message):
         pd.append_pm_review_confirmation(home, ticket, incoming, rounds=rounds)
 
     assert path.read_bytes() == before
@@ -1425,18 +1424,18 @@ def test_confirmation_same_round_merge_rejects_conflict_and_spoof_atomically(
 
 def test_design_axis_uses_the_reviewer_machine_test_contract(pd):
     spec, rounds = _accepted_ticket(pd, design_change=True)
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
 
     assert [(source, row.id) for source, row in template.machine_rows] == [(2, "F-001")]
     assert template.reviewer_required == ()
 
     confirmation = json.dumps({
-        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
+        "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
         "confirmations": [{"id": "F-001", "status": "resolved",
                            "command": "echo hi", "observed": "hi"}],
     }, ensure_ascii=False, separators=(",", ":"))
-    delta = pd.parse_pm_review_delta(
-        spec + f"\n```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
+    delta = review_state.parse_pm_review_delta(
+        spec + f"\n```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
         rounds,
     )
     assert delta.accepted == ()
@@ -1445,15 +1444,15 @@ def test_design_axis_uses_the_reviewer_machine_test_contract(pd):
 def test_design_axis_residual_closes_after_the_fix_test_confirmation(pd):
     spec, rounds = _accepted_ticket(pd, design_change=True)
 
-    before = pd.pm_verified_evidence_problem(
+    before = review_state.pm_verified_evidence_problem(
         spec, rounds, reviewer_role="code-reviewer", surface_floor=1)
     confirmation = json.dumps({
-        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
+        "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
         "confirmations": [{"id": "F-001", "status": "resolved",
                            "command": "echo hi", "observed": "hi"}],
     }, ensure_ascii=False, separators=(",", ":"))
-    after = pd.pm_verified_evidence_problem(
-        spec + f"\n```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
+    after = review_state.pm_verified_evidence_problem(
+        spec + f"\n```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
         rounds, reviewer_role="code-reviewer", surface_floor=1)
 
     assert before is not None and "F-001" in before
@@ -1474,7 +1473,7 @@ def test_confirmation_tree_must_be_the_cluster_branch(pd, review_env):
     assert pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home)) == home
 
     assert _git(home, "checkout", "-q", _BASE_BRANCH).returncode == 0
-    with pytest.raises(pd.DelegateError, match="통합 브랜치가 아닙니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="통합 브랜치가 아닙니다"):
         pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home))
 
 
@@ -1487,7 +1486,7 @@ def test_focus_file_is_read_as_prompt_source_and_missing_paths_fail_loud(
     inside.write_text("경계 판정을 중점으로 본다.\n", encoding="utf-8", newline="\n")
 
     assert "경계 판정" in pd._cluster_review_focus(inside, cwd=home, pm_home=home)
-    with pytest.raises(pd.DelegateError, match="--focus 파일이 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="--focus 파일이 없습니다"):
         pd._cluster_review_focus(home / "없다.md", cwd=home, pm_home=home)
 
 
@@ -1517,7 +1516,6 @@ def test_resolve_cluster_completes_without_internal_ledger(
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
-    rounds_module = pd._load_ticket_rounds()
     import contextlib
     for ticket in _MEMBERS:
         spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
@@ -1525,7 +1523,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
         path.write_text(path.read_text(encoding="utf-8") + "\n" + spec,
                         encoding="utf-8", newline="")
         for item in rounds:
-            rounds_module.reserve_round(
+            round_store.reserve_round(
                 pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
@@ -1564,7 +1562,6 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
-    rounds_module = pd._load_ticket_rounds()
     import contextlib
     for ticket in _MEMBERS:
         spec, rounds = _pm_owned_ticket(pd)
@@ -1574,7 +1571,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
             encoding="utf-8", newline="",
         )
         for item in rounds:
-            rounds_module.reserve_round(
+            round_store.reserve_round(
                 pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
@@ -1591,10 +1588,10 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     assert rc == 0, captured
     for ticket in _MEMBERS:
         text = (tickets / f"{ticket}-review.md").read_text(encoding="utf-8")
-        assert f'"command":"{pd.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND}"' in text
+        assert f'"command":"{review_form.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND}"' in text
         spec_text, rounds = pd._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
-        assert pd.parse_pm_review_delta(spec_text, rounds).accepted == ()
-        assert pd.review_completion_problem(spec_text, rounds) is None
+        assert review_state.parse_pm_review_delta(spec_text, rounds).accepted == ()
+        assert review_state.review_completion_problem(spec_text, rounds) is None
     assert "PM-owned terminal 확인 1건 기입" in captured.out
 
 
@@ -1614,7 +1611,6 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
-    rounds_module = pd._load_ticket_rounds()
     import contextlib
     for ticket in _MEMBERS:
         spec, rounds = _partially_confirmed_pm_owned_ticket(pd)
@@ -1624,7 +1620,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
             encoding="utf-8", newline="",
         )
         for item in rounds:
-            rounds_module.reserve_round(
+            round_store.reserve_round(
                 pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
@@ -1644,14 +1640,14 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     for ticket in _MEMBERS:
         spec_text, rounds = pd._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
         blocks = [
-            block for block in pd._pm_review_json_blocks(spec_text)
-            if block.kind == pd.PM_REVIEW_CONFIRMATION_BLOCK
+            block for block in review_form._pm_review_json_blocks(spec_text)
+            if block.kind == review_form.PM_REVIEW_CONFIRMATION_BLOCK
         ]
         assert len(blocks) == 1 and blocks[0].value["round"] == 2
         assert [row["id"] for row in blocks[0].value["confirmations"]] == [
             "F-001", "F-003",
         ]
-        assert pd.parse_pm_review_delta(spec_text, rounds).accepted == ()
+        assert review_state.parse_pm_review_delta(spec_text, rounds).accepted == ()
 
 
 @requires_git
@@ -1713,7 +1709,7 @@ def test_dry_run_previews_the_cluster_without_side_effects(pd, review_env, capsy
     for ticket in _MEMBERS:
         assert f"### 게이트 티켓 본문 ({ticket})" in out
     assert _git(home, "worktree", "list").stdout == before
-    assert pd.ticket_copy_records(home) == []
+    assert delegate_ledger.ticket_copy_records(home) == []
 
 
 @requires_git
@@ -1748,7 +1744,7 @@ def test_a_refused_seat_harvest_does_not_pass_as_success(pd, review_env, capsys)
         home / ".project_manager" / "wiki" / "tickets" / "rounds" / _MEMBERS[0]
         / "03-code-reviewer.md"
     )
-    assert pd.PM_REVIEW_BLOCK in first.read_text(encoding="utf-8")
+    assert review_form.PM_REVIEW_BLOCK in first.read_text(encoding="utf-8")
 
 
 @requires_git
@@ -1762,7 +1758,6 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
-    rounds_module = pd._load_ticket_rounds()
     import contextlib
     rejected, passed = _MEMBERS
     spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
@@ -1770,11 +1765,11 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     path.write_text(path.read_text(encoding="utf-8") + "\n" + spec,
                     encoding="utf-8", newline="")
     for item in rounds:
-        rounds_module.reserve_round(
+        round_store.reserve_round(
             pm_paths.tickets_dir(board._home()), rejected, item.role, content=item.text,
             lock=contextlib.nullcontext(),
         )
-    rounds_module.reserve_round(
+    round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), passed, "code-reviewer",
         content=_reviewer_round_text(pd, []), lock=contextlib.nullcontext(),
     )
@@ -1834,13 +1829,12 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     monkeypatch.setattr(pd, '_activate_internal_rounds_cli_owner', lambda: home)
     monkeypatch.setattr(pd, '_load_board', lambda: board)
     monkeypatch.setattr(pd, '_load_board_for_repo', lambda owner: board)
-    rounds_module = pd._load_ticket_rounds()
     for ticket in _MEMBERS:
         spec, rounds = _accepted_ticket(pd, command='echo hi', expected='hi')
         path = tickets / f'{ticket}-review.md'
         path.write_text(path.read_text(encoding='utf-8') + '\n' + spec, encoding='utf-8')
         for item in rounds:
-            rounds_module.reserve_round(pm_paths.tickets_dir(board._home()), ticket, item.role,
+            round_store.reserve_round(pm_paths.tickets_dir(board._home()), ticket, item.role,
                                         content=item.text, lock=contextlib.nullcontext())
     command_calls = []
     runner = _stub_run(0, 'hi\n')
@@ -1867,7 +1861,7 @@ def test_t0929_finish_confirmation_explicit_wrong_branch_refused(pd, review_env)
     slot = home / 'work/proj_1'
     assert _git(home, 'worktree', 'add', '-q', str(slot), _BASE_BRANCH).returncode == 0
     board.LEASES_FILE.write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
-    with pytest.raises(pd.DelegateError, match='브랜치'):
+    with pytest.raises(delegate_errors.DelegateError, match='브랜치'):
         pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home), identity=argparse.Namespace(task='main', repo='proj', slot=1))
 
 
@@ -1888,7 +1882,7 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
     before = (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
               tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md"))))
     identity = argparse.Namespace(task="main", repo=None if task_only else "proj", slot=None if task_only else 1)
-    with pytest.raises(pd.DelegateError, match="cluster new"):
+    with pytest.raises(delegate_errors.DelegateError, match="cluster new"):
         pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home), identity=identity)
     assert (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
             tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md")))) == before

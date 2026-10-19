@@ -48,6 +48,8 @@ from conftest import (
     write_cluster_ledger,
 )
 from pm_engine.infra import raw_output
+from pm_engine.domain import review_form, review_state
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -222,7 +224,7 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
 def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
     """PM 역할을 fixture에서 수행해 zero/finding reviewer 산출을 04 입력으로 닫는다."""
     ticket_text = source.read_text(encoding="utf-8")
-    rounds = pd._load_ticket_rounds().load_rounds(
+    rounds = round_seed.load_rounds(
         source.parent.parent, ticket, ticket_text=ticket_text,
     )
     rendered = pd.render_pm_review_disposition_template(ticket_text, rounds)
@@ -236,17 +238,17 @@ def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
             "prerequisite": "없음",
         })
     block = (
-        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
     source.write_text(ticket_text + "\n" + block, encoding="utf-8", newline="")
     updated = source.read_text(encoding="utf-8")
-    updated_rounds = pd._load_ticket_rounds().load_rounds(
+    updated_rounds = round_seed.load_rounds(
         source.parent.parent, ticket, ticket_text=updated,
     )
     return pd.render_pm_review_delta(
-        ticket, pd.parse_pm_review_delta(updated, updated_rounds),
+        ticket, review_state.parse_pm_review_delta(updated, updated_rounds),
     )
 
 def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
@@ -268,7 +270,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         prompt = repo / f"growth-{target}-{stage:02d}-{role}.md"
         if role == "architect":
             payload = json.dumps({
-                "version": pd.ARCHITECT_TEST_VERSION,
+                "version": review_form.ARCHITECT_TEST_VERSION,
                 "tests": [{
                     "id": "AT-001",
                     "target": _CROSS_TEST_FILE,
@@ -282,7 +284,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 "## 불변식\n- architect then developer then code-reviewer then final developer\n\n"
                 "## 표면 상한\n- one stable module and one stable regression test\n\n"
                 "## 테스트 전략\n- positive sequence and missing-final-developer negative\n\n"
-                f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n\n"
+                f"```{review_form.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n\n"
                 "검토 판정: 설계 통과\n"
                 f"{sentinel}\n"
             )
@@ -291,7 +293,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 "byte from line 2 through EOF equal the exact body between BEGIN/END below.\n"
                 f"BEGIN EXACT ARCHITECT BODY\n{architect_body}END EXACT ARCHITECT BODY\n"
                 "Mandatory self-check before replying: reopen the file and verify the exact body equality, "
-                f"exactly one ```{pd.ARCHITECT_TEST_BLOCK} block, exactly one `{sentinel}`, and zero `<...>` "
+                f"exactly one ```{review_form.ARCHITECT_TEST_BLOCK} block, exactly one `{sentinel}`, and zero `<...>` "
                 "placeholder tokens. If the old skeleton follows the sentinel or any check fails, rewrite "
                 "from line 2 through EOF and reread it again. Do not reply before every check passes. "
             )
@@ -299,7 +301,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         elif role == "code-reviewer":
             # 리뷰 입력은 developer 돌려받기가 묶음 브랜치에 커밋한 변경이다(작업 트리 변경 0).
             zero_payload = json.dumps(
-                {"version": pd.PM_REVIEW_VERSION, "findings": [], "confirmations": []},
+                {"version": review_form.PM_REVIEW_VERSION, "findings": [], "confirmations": []},
                 ensure_ascii=False, separators=(",", ":"),
             )
             edit_contract = (
@@ -307,7 +309,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 f"command `{_CROSS_TEST_COMMAND}`. Do not invent a finding. If the stable four-role "
                 "contract is correct, replace everything after the first header with `## must-fix`, "
                 "`- 없음`, `## 판정`, `판정: 통과 · finding 0건(must-fix 0건)`, then the exact "
-                f"```{pd.PM_REVIEW_BLOCK} block payload `{zero_payload}`, and finally `{sentinel}`. "
+                f"```{review_form.PM_REVIEW_BLOCK} block payload `{zero_payload}`, and finally `{sentinel}`. "
                 "If a real defect exists instead, fill the seeded F-001 v3 schema without adding keys: "
                 "include code evidence and every fix_contract field; fix_contract.test must name "
                 f"{_CROSS_TEST_FILE}, command must be `{_CROSS_TEST_COMMAND}`, expected must be `passed`. "
@@ -386,7 +388,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
             assert "Falling back to default agent" not in err + reply, (
                 "OpenCode custom 역할이 default agent로 강등됨" + tail
             )
-        # 회수 대상은 `NN-<역할>.md` 하나다 — 이름 문법의 단일 진실은 엔진(ticket_rounds)이고
+        # 회수 대상은 `NN-<역할>.md` 하나다 — 이름 문법의 단일 진실은 엔진(`round_rules`)이고
         # 여기서는 그 형식으로 찾아 내용만 단언한다.
         role_rounds = sorted(rounds_dir.glob(f"*-{role}.md"))
         assert role_rounds, (

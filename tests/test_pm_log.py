@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, write_lf
-from pm_engine.infra import areas_store, pm_paths, raw_output
+from pm_engine.infra import areas_store, delegate_ledger, pm_paths, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1058,10 +1058,10 @@ def test_inflight_section_absorbs_module_load_failure_as_one_line(tmp_path, monk
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
-    def _boom():
+    def _boom(*_args, **_kwargs):
         raise FileNotFoundError("pm_delegate.py 형제 부재(시뮬레이션)")
 
-    monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
+    monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
     text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
@@ -1075,12 +1075,12 @@ def test_inflight_section_absorbs_engine_rev_skew_and_labels_it(tmp_path, monkey
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
-    def _boom():
+    def _boom(*_args, **_kwargs):
         err = RuntimeError("엔진 사본 버전 불일치(시뮬레이션)")
         err._engine_rev_skew = True
         raise err
 
-    monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
+    monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
     text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
@@ -1280,10 +1280,10 @@ def test_inflight_section_multiline_exception_does_not_forge_headings(tmp_path, 
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
-    def _boom():
+    def _boom(*_args, **_kwargs):
         raise RuntimeError("bad ledger\n## forged-exc-1\n## forged-exc-2")
 
-    monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
+    monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
     text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None

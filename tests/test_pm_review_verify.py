@@ -18,6 +18,9 @@ import pytest
 
 from _test_exec import python_shell_command
 from pm_engine.infra import review_rounds
+from pm_engine.domain import review_form, review_state, round_rules
+from pm_engine.infra import round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 PM_DELEGATE = REPO / ".project_manager" / "tools" / "pm_delegate.py"
@@ -63,10 +66,9 @@ def _with_design_waiver(ticket_text: str) -> str:
 
 
 def _round(pd, ordinal: int, role: str, text: str):
-    rounds_module = pd._load_ticket_rounds()
-    return rounds_module.Round(
+    return round_rules.Round(
         ordinal=ordinal, role=role,
-        path=Path(rounds_module.round_filename(ordinal, role)),
+        path=Path(round_rules.round_filename(ordinal, role)),
         text=text, pending=False,
     )
 
@@ -90,7 +92,7 @@ def _finding(
 
 def _reviewer_round_text(pd, findings: list, confirmations: list | None = None) -> str:
     payload = {
-        "version": pd.PM_REVIEW_VERSION, "findings": findings,
+        "version": review_form.PM_REVIEW_VERSION, "findings": findings,
         "confirmations": confirmations or [],
     }
     mustfix = "\n".join(f"- {item['id']}" for item in findings) or "- 없음"
@@ -99,7 +101,7 @@ def _reviewer_round_text(pd, findings: list, confirmations: list | None = None) 
         "## 리뷰 (code-reviewer · 2026-08-21)\n\n"
         f"## must-fix\n{mustfix}\n\n"
         f"## 판정\n판정: {verdict}\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
@@ -117,11 +119,11 @@ def _decision(fid: str, decision: str, *, prerequisite: str = "") -> dict:
 
 def _disposition_block(pd, ordinal: int, rows: list) -> str:
     payload = {
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": ordinal,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": ordinal,
         "dispositions": rows,
     }
     return (
-        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
@@ -145,18 +147,18 @@ def _verify_block(pd, rows: list) -> str:
     `machine_verifiable` 자리는 따옴표 없는 raw placeholder 이므로 json.dumps 가 씌운 따옴표를
     그 자리에 한해 다시 벗긴다. 실제 boolean 값(`true`/`false`)은 이 치환 대상이 아니다.
     """
-    payload = {"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": rows}
+    payload = {"version": review_form.PM_REVIEW_VERIFY_VERSION, "verifications": rows}
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     quoted_placeholder = (
-        f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
-        + json.dumps(pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER, ensure_ascii=False)
+        f'"{review_form._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
+        + json.dumps(review_form._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER, ensure_ascii=False)
     )
     raw_placeholder = (
-        f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
-        + pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
+        f'"{review_form._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
+        + review_form._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
     )
     return (
-        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n"
         + text.replace(quoted_placeholder, raw_placeholder)
         + "\n```\n"
     )
@@ -169,10 +171,10 @@ def _skeleton_row(pd, fid: str = "F-001") -> dict:
     아니다(그게 골격의 계약이다). 여기서는 값을 읽기 위해 엔진의 구조-스캔 전처리와 같은
     재-인용을 거친 뒤 파싱한다 — 자리표시자 문안 자체는 여전히 렌더가 소유한다.
     """
-    block = pd._pm_review_requote_verify_placeholder(
-        pd.render_pm_review_verify_skeleton([(fid, None)]))
+    block = review_form._pm_review_requote_verify_placeholder(
+        review_form.render_pm_review_verify_skeleton([(fid, None)]))
     payload = json.loads(
-        block.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
+        block.split(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
     )
     return payload["verifications"][0]
 
@@ -181,7 +183,7 @@ def _gap_row(pd, fid: str = "F-001", summary: str = "처방이 정하지 않은 
     """빈틈 보고 선언 행 — 구현하지 않았음을 기계로 선언한다(태만과 구별되는 유일한 신호)."""
     return _verify_row(
         fid, machine_verifiable=False, command="", before="", expected=summary,
-        reason=pd.PM_REVIEW_VERIFY_GAP_REASON,
+        reason=review_form.PM_REVIEW_VERIFY_GAP_REASON,
     )
 def _fill_verify_field(text: str, key: str, raw_json: str, *, count: int = 1) -> str:
     """verify 행 `key` 필드의 렌더된 값(따옴표 문자열이든 T-0808 raw placeholder 든)을
@@ -234,11 +236,11 @@ def _confirmation_row(
 
 def _confirmation_block(pd, round_ordinal: int, rows: list) -> str:
     payload = {
-        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
+        "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
         "round": round_ordinal, "confirmations": rows,
     }
     return (
-        f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
@@ -264,11 +266,11 @@ def test_seed_prefills_a_verify_row_per_accepted_finding(pd):
     spec = _disposition_block(pd, 1, [
         _decision("F-001", "accepted"), _decision("F-002", "accepted"),
     ])
-    body = pd.render_ticket_growth_section_seed(
+    body = round_seed.render_ticket_growth_section_seed(
         "developer", _with_design_waiver(spec), rounds=[r1],
     )
-    assert pd.PM_REVIEW_VERIFY_BLOCK in body
-    fence = body.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
+    assert review_form.PM_REVIEW_VERIFY_BLOCK in body
+    fence = body.split(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
     # 골격의 `machine_verifiable` 자리는 T-0808 이후 따옴표 없는 raw placeholder라 손대지
     # 않은 골격 그대로는 유효 JSON이 아니다(자리표시자를 실값으로 갈아 끼운 뒤에만 파싱된다 —
     # 왕복 계약은 별도 테스트가 단언한다). 여기서는 id 목록/key 집합만 보면 되므로 그 한
@@ -276,19 +278,19 @@ def test_seed_prefills_a_verify_row_per_accepted_finding(pd):
     fence = _fill_verify_field(fence, "machine_verifiable", "true", count=0)
     payload = json.loads(fence)
     assert [row["id"] for row in payload["verifications"]] == ["F-001", "F-002"]
-    assert set(payload["verifications"][0]) == set(pd.PM_REVIEW_VERIFY_ROW_KEYS)
+    assert set(payload["verifications"][0]) == set(review_form.PM_REVIEW_VERIFY_ROW_KEYS)
 
 
 def test_seed_has_no_fence_when_accepted_is_empty(pd):
     """accepted 0 건이면 fence 자체가 없다 — 최초 구현 라운드 골격은 bytes 그대로다."""
-    body_no_rounds = pd.render_ticket_growth_section_seed(
+    body_no_rounds = round_seed.render_ticket_growth_section_seed(
         "developer", _with_design_waiver(""),
     )
-    body_with_empty_rounds = pd.render_ticket_growth_section_seed(
+    body_with_empty_rounds = round_seed.render_ticket_growth_section_seed(
         "developer", _with_design_waiver(""), rounds=(),
     )
     assert body_no_rounds == body_with_empty_rounds
-    assert pd.PM_REVIEW_VERIFY_BLOCK not in body_no_rounds
+    assert review_form.PM_REVIEW_VERIFY_BLOCK not in body_no_rounds
     assert body_no_rounds == (
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
@@ -309,12 +311,12 @@ def test_seed_degrades_without_fence_when_review_output_is_malformed(pd, capsys)
     """
     r1 = _round(
         pd, 1, "code-reviewer",
-        f"## 리뷰 (code-reviewer · 2026-08-22)\n\n```{pd.PM_REVIEW_BLOCK}\nnot json\n```\n",
+        f"## 리뷰 (code-reviewer · 2026-08-22)\n\n```{review_form.PM_REVIEW_BLOCK}\nnot json\n```\n",
     )
-    body = pd.render_ticket_growth_section_seed(
+    body = round_seed.render_ticket_growth_section_seed(
         "developer", _with_design_waiver(""), rounds=[r1],
     )
-    assert pd.PM_REVIEW_VERIFY_BLOCK not in body
+    assert review_form.PM_REVIEW_VERIFY_BLOCK not in body
     assert "accepted delta 를 해소할 수 없어" in capsys.readouterr().err
 
 
@@ -322,11 +324,11 @@ def test_seed_degrades_without_fence_when_review_output_is_malformed(pd, capsys)
 
 def test_pending_judgment_reads_only_the_round_body(pd):
     spec, rounds = _basic_ticket(pd)
-    seed = pd._load_ticket_rounds().render_round_seed(
+    seed = round_seed.render_round_seed(
         "developer", _with_design_waiver(spec), today="2026-08-21", rounds=[rounds[0]],
     )
     body = seed.partition("\n\n")[2]
-    assert pd.ticket_round_body_is_pending("developer", body) is True
+    assert round_seed.ticket_round_body_is_pending("developer", body) is True
 
     filled = body
     for key, raw_json in (
@@ -338,12 +340,12 @@ def test_pending_judgment_reads_only_the_round_body(pd):
     ):
         filled = _fill_verify_field(filled, key, raw_json)
     assert filled != body
-    assert "<" not in filled.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")[2]
-    assert pd.ticket_round_body_is_pending("developer", filled) is False
+    assert "<" not in filled.partition(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}")[2]
+    assert round_seed.ticket_round_body_is_pending("developer", filled) is False
 
     # 같은 골격을 다른 명세로 다시 지어도(다른 accepted 계산 입력) 판정은 그 본문 하나로 같다.
-    assert pd.ticket_round_body_is_pending(
-        "developer", pd._render_developer_round_seed_body([("F-001", None)]),
+    assert round_seed.ticket_round_body_is_pending(
+        "developer", round_seed._render_developer_round_seed_body([("F-001", None)]),
     ) is True
 
 
@@ -352,15 +354,15 @@ def test_pending_placeholder_verify_block_is_not_a_valid_edit(pd):
     broken = (
         "## 변경 파일\n- `x`: y\n\n## 신규 테스트\n- 1\n\n## 회귀\n- 커맨드: `x`\n- 결과: ok\n\n"
         "## DoD evidence\n- x\n\n## 민감도\n- x\n\n"
-        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\nnot json\n```\n"
+        f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\nnot json\n```\n"
     )
-    assert pd.ticket_round_body_is_pending("developer", broken) is False
+    assert round_seed.ticket_round_body_is_pending("developer", broken) is False
 
 
 # ── 파서 실패 클래스 (전수) ──────────────────────────────────────────────
 
 def _verify_delta(pd, spec, rounds):
-    return pd.parse_pm_review_delta(spec, rounds)
+    return review_state.parse_pm_review_delta(spec, rounds)
 
 
 @pytest.mark.parametrize(
@@ -394,7 +396,7 @@ def test_verify_row_schema_failures(pd, mutate, pattern):
     spec = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
     dev2 = _round(pd, 2, "developer", _developer_round_text(pd, [row]))
     spec_confirmed = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001")])
-    with pytest.raises(pd.PMReviewError, match=pattern) as caught:
+    with pytest.raises(review_form.PMReviewError, match=pattern) as caught:
         _verify_delta(pd, spec_confirmed, [r1, dev2])
     assert caught.value.code == "malformed"
 
@@ -420,7 +422,7 @@ def test_verify_payload_duplicate_member_at_top_level(pd):
         '"version":1,', '"version":0,"version":1,', 1,
     )
     dev2 = _round(pd, 2, "developer", "## 구현 보충 (developer · 2026-08-21)\n\n" + block)
-    with pytest.raises(pd.PMReviewError, match="duplicate JSON member") as caught:
+    with pytest.raises(review_form.PMReviewError, match="duplicate JSON member") as caught:
         _verify_delta(pd, spec, [r1, dev2])
     assert caught.value.code == "malformed"
 
@@ -432,7 +434,7 @@ def test_verify_row_duplicate_member_at_row_level(pd):
         '"id":"F-001",', '"id":"F-000","id":"F-001",', 1,
     )
     dev2 = _round(pd, 2, "developer", "## 구현 보충 (developer · 2026-08-21)\n\n" + block)
-    with pytest.raises(pd.PMReviewError, match="duplicate JSON member") as caught:
+    with pytest.raises(review_form.PMReviewError, match="duplicate JSON member") as caught:
         _verify_delta(pd, spec, [r1, dev2])
     assert caught.value.code == "malformed"
 
@@ -443,7 +445,7 @@ def test_unregistered_fence_name_is_malformed(pd):
     dev2 = _round(pd, 2, "developer", (
         "## 구현 보충 (developer · 2026-08-21)\n\n```pm-review-verify-v2\n{}\n```\n"
     ))
-    with pytest.raises(pd.PMReviewError, match="지원하지 않거나 손상된") as caught:
+    with pytest.raises(review_form.PMReviewError, match="지원하지 않거나 손상된") as caught:
         _verify_delta(pd, spec, [r1, dev2])
     assert caught.value.code == "malformed"
 
@@ -451,7 +453,7 @@ def test_unregistered_fence_name_is_malformed(pd):
 def test_placement_violation_verify_in_spec(pd):
     spec, rounds = _basic_ticket(pd)
     spec_bad = spec + _verify_block(pd, [_verify_row("F-001")])
-    with pytest.raises(pd.PMReviewError, match="developer 라운드 파일 안에만") as caught:
+    with pytest.raises(review_form.PMReviewError, match="developer 라운드 파일 안에만") as caught:
         _verify_delta(pd, spec_bad, rounds)
     assert caught.value.code == "malformed"
 
@@ -464,7 +466,7 @@ def test_placement_violation_confirmation_in_round_file(pd):
         _developer_round_text(pd, [_verify_row("F-001")])
         + _confirmation_block(pd, 2, [_confirmation_row("F-001")]),
     )
-    with pytest.raises(pd.PMReviewError, match="명세의 PM 영역에 있어야") as caught:
+    with pytest.raises(review_form.PMReviewError, match="명세의 PM 영역에 있어야") as caught:
         _verify_delta(pd, spec, [r1, dev2])
     assert caught.value.code == "malformed"
 
@@ -475,7 +477,7 @@ def test_placement_violation_verify_in_non_developer_round(pd):
         + _verify_block(pd, [_verify_row("F-001")])
     ))
     spec = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
-    with pytest.raises(pd.PMReviewError, match="developer 라운드 파일 안에만") as caught:
+    with pytest.raises(review_form.PMReviewError, match="developer 라운드 파일 안에만") as caught:
         _verify_delta(pd, spec, [r1])
     assert caught.value.code == "malformed"
 
@@ -485,7 +487,7 @@ def test_placement_violation_verify_in_non_developer_round(pd):
 def test_confirmation_round_must_reference_a_developer_round(pd):
     spec, rounds = _basic_ticket(pd)
     spec_bad = spec + _confirmation_block(pd, 99, [_confirmation_row("F-001")])
-    with pytest.raises(pd.PMReviewError, match="developer 라운드가 아닙니다") as caught:
+    with pytest.raises(review_form.PMReviewError, match="developer 라운드가 아닙니다") as caught:
         _verify_delta(pd, spec_bad, rounds)
     assert caught.value.code == "malformed"
 
@@ -495,7 +497,7 @@ def test_confirmation_command_must_match_the_verify_row(pd):
     spec_bad = spec + _confirmation_block(
         pd, 2, [_confirmation_row("F-001", command="echo different")],
     )
-    with pytest.raises(pd.PMReviewError, match="verify 행과 결속되지 않습니다") as caught:
+    with pytest.raises(review_form.PMReviewError, match="verify 행과 결속되지 않습니다") as caught:
         _verify_delta(pd, spec_bad, rounds)
     assert caught.value.code == "malformed"
 
@@ -508,7 +510,7 @@ def test_machine_confirmation_rejected_for_non_machine_verifiable_finding(pd):
     spec_bad = spec + _confirmation_block(pd, 2, [
         _confirmation_row("F-001", command="echo hi", observed="hi"),
     ])
-    with pytest.raises(pd.PMReviewError, match="reviewer 확인 전용") as caught:
+    with pytest.raises(review_form.PMReviewError, match="reviewer 확인 전용") as caught:
         _verify_delta(pd, spec_bad, rounds)
     assert caught.value.code == "malformed"
 
@@ -518,7 +520,7 @@ def test_resolved_confirmation_requires_expected_substring_in_observed(pd):
     spec_bad = spec + _confirmation_block(pd, 2, [
         _confirmation_row("F-001", "resolved", observed="여전히 bye"),
     ])
-    with pytest.raises(pd.PMReviewError, match="expected가") as caught:
+    with pytest.raises(review_form.PMReviewError, match="expected가") as caught:
         _verify_delta(pd, spec_bad, rounds)
     assert caught.value.code == "malformed"
 
@@ -544,7 +546,7 @@ def test_rejected_finding_id_reappearing_in_machine_confirmation_is_malformed(pd
         pd, [_verify_row("F-001")],
     ))
     spec_bad = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
-    with pytest.raises(pd.PMReviewError, match="rejected finding ID") as caught:
+    with pytest.raises(review_form.PMReviewError, match="rejected finding ID") as caught:
         _verify_delta(pd, spec_bad, [r1, dev2])
     assert caught.value.code == "malformed"
 
@@ -554,7 +556,7 @@ def test_rejected_finding_id_reappearing_in_machine_confirmation_is_malformed(pd
 def test_resolved_machine_confirmation_drops_finding_from_accepted(pd):
     spec, rounds = _basic_ticket(pd)
     spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
-    delta = pd.parse_pm_review_delta(spec_ok, rounds)
+    delta = review_state.parse_pm_review_delta(spec_ok, rounds)
     assert delta.accepted == ()
 
 
@@ -570,8 +572,8 @@ def test_mixed_reviewer_and_machine_unresolved_history_hits_repeated_unresolved(
     spec_bad = spec + _confirmation_block(
         pd, 4, [_confirmation_row("F-001", "unresolved", observed="bye")],
     )
-    with pytest.raises(pd.PMReviewError) as caught:
-        pd.parse_pm_review_delta(spec_bad, rounds)
+    with pytest.raises(review_form.PMReviewError) as caught:
+        review_state.parse_pm_review_delta(spec_bad, rounds)
     assert caught.value.code == "repeated-unresolved"
 
 
@@ -580,7 +582,7 @@ def test_unresolved_machine_confirmation_keeps_finding_accepted(pd):
     spec_still = spec + _confirmation_block(
         pd, 2, [_confirmation_row("F-001", "unresolved", observed="bye")],
     )
-    delta = pd.parse_pm_review_delta(spec_still, rounds)
+    delta = review_state.parse_pm_review_delta(spec_still, rounds)
     assert [finding.id for finding, _disposition in delta.accepted] == ["F-001"]
 
 
@@ -602,7 +604,7 @@ def test_verify_template_uses_reviewer_test_contract_even_for_design_axis(pd):
             expected="사람 판단 필요", reason="design-judgment",
         ),
     ]))
-    template = pd.pm_review_verify_template(spec, [r1, dev2])
+    template = review_state.pm_review_verify_template(spec, [r1, dev2])
     assert [(source, row.id) for source, row in template.machine_rows] == [(2, "F-001")]
     assert template.missing == ()
     reasons = {
@@ -616,16 +618,16 @@ def test_verify_template_reports_missing_verify_rows(pd):
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
     spec = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
     dev2 = _round(pd, 2, "developer", _developer_round_text(pd, []))
-    template = pd.pm_review_verify_template(spec, [r1, dev2])
+    template = review_state.pm_review_verify_template(spec, [r1, dev2])
     assert template.missing == ("F-001",)
     assert pd.render_pm_review_verify_template(template) == ""
 
 
 def test_verify_template_output_reparses_through_the_confirmation_parser(pd):
     spec, rounds = _basic_ticket(pd)
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     rendered = pd.render_pm_review_verify_template(template)
-    fence_body = rendered.split(f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n", 1)[1].split(
+    fence_body = rendered.split(f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n", 1)[1].split(
         "\n```", 1,
     )[0]
     payload = json.loads(fence_body)
@@ -634,8 +636,8 @@ def test_verify_template_output_reparses_through_the_confirmation_parser(pd):
     filled = fence_body.replace(
         '"status":"<resolved|unresolved|regressed>"', '"status":"resolved"',
     ).replace('"observed":"<관측값>"', '"observed":"hi"')
-    spec_ok = spec + f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n" + filled + "\n```\n"
-    delta = pd.parse_pm_review_delta(spec_ok, rounds)
+    spec_ok = spec + f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n" + filled + "\n```\n"
+    delta = review_state.parse_pm_review_delta(spec_ok, rounds)
     assert delta.accepted == ()
 
 
@@ -656,14 +658,13 @@ def _home_tickets_dir(tmp_path: Path) -> Path:
 
 
 def _materialize(pd, spec: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:
-    rounds_module = pd._load_ticket_rounds()
     spec_path = tickets_dir / "claimed" / f"{ticket_id}-review.md"
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(spec, encoding="utf-8", newline="")
-    rounds_dir = rounds_module.rounds_dir_for_ticket(ticket_id, tickets_dir)
+    rounds_dir = round_store.rounds_dir_for_ticket(ticket_id, tickets_dir)
     rounds_dir.mkdir(parents=True, exist_ok=True)
     for item in rounds:
-        (rounds_dir / rounds_module.round_filename(item.ordinal, item.role)).write_text(
+        (rounds_dir / round_rules.round_filename(item.ordinal, item.role)).write_text(
             item.text, encoding="utf-8", newline="",
         )
     return spec_path
@@ -681,7 +682,7 @@ def test_verify_template_cli_rc0_on_full_coverage_and_rc1_on_missing(
     )
     assert pd.main(["review", "verify-template", "--ticket", "T-0786"]) == 0
     out = capsys.readouterr().out
-    assert pd.PM_REVIEW_CONFIRMATION_BLOCK in out and '"round":2' in out
+    assert review_form.PM_REVIEW_CONFIRMATION_BLOCK in out and '"round":2' in out
 
     r1 = rounds[0]
     dev2_empty = _round(pd, 2, "developer", _developer_round_text(pd, []))
@@ -719,22 +720,22 @@ def test_pm_verified_evidence_problem_requires_empty_accepted_and_a_machine_conf
     (`_basic_ticket` = code-reviewer 채널 F-001 1건 → 표면 하한 1)."""
     spec, rounds = _basic_ticket(pd)
     # accepted 잔여가 있으면 거부.
-    assert "accepted 잔여" in pd.pm_verified_evidence_problem(
-        spec, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    assert "accepted 잔여" in review_state.pm_verified_evidence_problem(
+        spec, rounds, reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=1,
     )
     # resolve 됐지만 기계 확인이 없으면(가상: 리뷰 confirmation 만으로 해소) — 대조군은
     # accepted==() 이 되도록 기계 확인을 넣은 경우만 통과해야 한다.
     spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
-    assert pd.pm_verified_evidence_problem(
-        spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    assert review_state.pm_verified_evidence_problem(
+        spec_ok, rounds, reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=1,
     ) is None
 
 
 def test_pm_verified_evidence_problem_rejects_when_delta_cannot_parse(pd):
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
     # PM 미판정(pending) — delta 파싱 실패. 채널을 줘도 파싱이 먼저 막는다.
-    problem = pd.pm_verified_evidence_problem(
-        "", [r1], reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    problem = review_state.pm_verified_evidence_problem(
+        "", [r1], reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=1,
     )
     assert problem is not None and "delta 파싱 실패" in problem
 
@@ -748,30 +749,30 @@ def test_pm_verified_evidence_problem_fails_loud_when_the_channel_is_not_given(p
     spec, rounds = _basic_ticket(pd)
     spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
     # 대조군 — 채널·하한을 주면 같은 형상은 통과한다(과차단 아님).
-    assert pd.pm_verified_evidence_problem(
-        spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    assert review_state.pm_verified_evidence_problem(
+        spec_ok, rounds, reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=1,
     ) is None
 
     with pytest.raises(TypeError) as channel_omitted:
-        pd.pm_verified_evidence_problem(spec_ok, rounds, surface_floor=1)
+        review_state.pm_verified_evidence_problem(spec_ok, rounds, surface_floor=1)
     assert "reviewer_role" in str(channel_omitted.value)
 
     with pytest.raises(TypeError) as floor_omitted:
-        pd.pm_verified_evidence_problem(
-            spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE,
+        review_state.pm_verified_evidence_problem(
+            spec_ok, rounds, reviewer_role=review_form.INTERNAL_REVIEW_ROLE,
         )
     assert "surface_floor" in str(floor_omitted.value)
 
     for bad_channel in (None, "developer", ""):
-        with pytest.raises(pd.PMReviewError) as rejected:
-            pd.pm_verified_evidence_problem(
+        with pytest.raises(review_form.PMReviewError) as rejected:
+            review_state.pm_verified_evidence_problem(
                 spec_ok, rounds, reviewer_role=bad_channel, surface_floor=1,
             )
         assert "review 채널이 아닙니다" in str(rejected.value)
 
     # 같은 클래스 — 채널 무시 전역 카운트 경로도 남아 있지 않다.
     with pytest.raises(TypeError):
-        pd._pm_review_machine_confirmation_count(spec_ok)
+        review_state._pm_review_machine_confirmation_count(spec_ok)
 
 
 # ── 시드 골격 bytes 불변(accepted 0) ─────────────────────────────────────
@@ -788,7 +789,7 @@ def test_accepted_zero_developer_seed_bytes_are_unchanged_from_pre_t0786(pd):
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
         "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
     )
-    assert pd.render_ticket_growth_section_seed(
+    assert round_seed.render_ticket_growth_section_seed(
         "developer", _with_design_waiver(""),
     ) == pre_t0786_constant
 
@@ -802,8 +803,8 @@ def test_legacy_disposition_blocks_still_parse_with_verify_confirmation_support_
         '"dispositions":[{"id":"F-001","decision":"accepted","reason":"ok",'
         '"scope":"범위","prerequisite":""}]}'
     )
-    spec_with_role = f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n{with_role}\n```\n"
-    delta = pd.parse_pm_review_delta(spec_with_role, [r1])
+    spec_with_role = f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n{with_role}\n```\n"
+    delta = review_state.parse_pm_review_delta(spec_with_role, [r1])
     assert [finding.id for finding, _d in delta.accepted] == ["F-001"]
 
     without_role = (
@@ -811,8 +812,8 @@ def test_legacy_disposition_blocks_still_parse_with_verify_confirmation_support_
         '"dispositions":[{"id":"F-001","decision":"accepted","reason":"ok",'
         '"scope":"범위","prerequisite":""}]}'
     )
-    spec_without_role = f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n{without_role}\n```\n"
-    delta2 = pd.parse_pm_review_delta(spec_without_role, [r1])
+    spec_without_role = f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n{without_role}\n```\n"
+    delta2 = review_state.parse_pm_review_delta(spec_without_role, [r1])
     assert [finding.id for finding, _d in delta2.accepted] == ["F-001"]
 
 
@@ -880,18 +881,18 @@ def test_gate_disposition_problem_surfaces_pm_verified_evidence_failure(board):
 def test_native_confirmation_round_seed_embeds_scope_rule_as_html_comment(pd):
     """native 경로 — 프리필된 실 ID가 있는 확인 라운드는 첫 줄(헤더) 아래에 같은 상수를 심는다."""
     previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    body = pd.render_ticket_growth_section_seed(
+    body = round_seed.render_ticket_growth_section_seed(
         "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
     )
-    assert body.startswith(f"<!-- {pd.CONFIRM_ROUND_SCOPE_RULE} -->\n\n")
+    assert body.startswith(f"<!-- {review_form.CONFIRM_ROUND_SCOPE_RULE} -->\n\n")
 
 
 def test_native_initial_review_round_seed_has_no_scope_rule_comment(pd):
     """최초 리뷰 라운드는 확인 scope 주석 없이 공통 구체값 계약만 받는다."""
-    body = pd.render_ticket_growth_section_seed("code-reviewer", "")
-    assert pd.CONFIRM_ROUND_SCOPE_RULE not in body
-    assert not body.startswith(f"<!-- {pd.CONFIRM_ROUND_SCOPE_RULE} -->")
-    assert f"<!-- {pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE} -->" in body
+    body = round_seed.render_ticket_growth_section_seed("code-reviewer", "")
+    assert review_form.CONFIRM_ROUND_SCOPE_RULE not in body
+    assert not body.startswith(f"<!-- {review_form.CONFIRM_ROUND_SCOPE_RULE} -->")
+    assert f"<!-- {review_form.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE} -->" in body
 
 
 def test_scope_rule_states_where_existing_finding_ids_belong(pd):
@@ -899,10 +900,10 @@ def test_scope_rule_states_where_existing_finding_ids_belong(pd):
 
     상수 하나가 시드와 회수 사유의 단일 진실이라 문장을 고치면 두 자리가 함께 받는다.
     """
-    rule = pd.CONFIRM_ROUND_SCOPE_RULE
+    rule = review_form.CONFIRM_ROUND_SCOPE_RULE
     assert "`confirmations` 로만 참조" in rule and "`findings` 에는 신규 ID 만" in rule
     previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    body = pd.render_ticket_growth_section_seed(          # 라운드 시드
+    body = round_seed.render_ticket_growth_section_seed(          # 라운드 시드
         "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
     )
     assert rule in body
@@ -920,14 +921,13 @@ def test_scope_rule_states_where_existing_finding_ids_belong(pd):
 def test_confirmation_round_seed_scope_comment_survives_pending_round_trip(pd):
     """스코프 주석이 붙어도 시드 그대로(pending) 판정은 같은 렌더 함수 대조로 그대로 선다."""
     previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    rounds_module = pd._load_ticket_rounds()
-    seed = rounds_module.render_round_seed(
+    seed = round_seed.render_round_seed(
         "code-reviewer", "", today="2026-08-22",
         previous_round=(previous.ordinal, previous.text),
     )
     body = seed.partition("\n\n")[2]
-    assert body.startswith(f"<!-- {pd.CONFIRM_ROUND_SCOPE_RULE} -->\n\n")
-    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+    assert body.startswith(f"<!-- {review_form.CONFIRM_ROUND_SCOPE_RULE} -->\n\n")
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", body) is True
 
 
 def test_pre_change_scope_comment_seed_is_still_judged_unedited(pd):
@@ -938,23 +938,22 @@ def test_pre_change_scope_comment_seed_is_still_judged_unedited(pd):
     본문은 옛 문구에서도 새 문구에서도 pending 이 아니다.
     """
     previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    rounds_module = pd._load_ticket_rounds()
-    seed = rounds_module.render_round_seed(
+    seed = round_seed.render_round_seed(
         "code-reviewer", "", today="2026-08-22",
         previous_round=(previous.ordinal, previous.text),
     )
     body = seed.partition("\n\n")[2]
     legacy_body = body.replace(
-        pd.CONFIRM_ROUND_SCOPE_RULE, pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
+        review_form.CONFIRM_ROUND_SCOPE_RULE, review_form.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
     )
-    assert legacy_body != body and pd.CONFIRM_ROUND_SCOPE_RULE not in legacy_body
+    assert legacy_body != body and review_form.CONFIRM_ROUND_SCOPE_RULE not in legacy_body
 
-    assert pd.ticket_round_body_is_pending("code-reviewer", legacy_body) is True
-    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
-    assert pd.ticket_round_body_is_pending(
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", legacy_body) is True
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", body) is True
+    assert round_seed.ticket_round_body_is_pending(
         "code-reviewer", legacy_body.replace("<통과|반려>", "반려"),
     ) is False
-    assert pd.ticket_round_body_is_pending(
+    assert round_seed.ticket_round_body_is_pending(
         "code-reviewer", body.replace("<통과|반려>", "반려"),
     ) is False
 
@@ -962,19 +961,19 @@ def test_pre_change_scope_comment_seed_is_still_judged_unedited(pd):
 def test_pending_compatibility_crosses_legacy_scope_and_contract_axes(pd, monkeypatch):
     """예약 시드의 scope·구체값 계약 문구가 함께 구세대여도 무편집 상태를 보존한다."""
     previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    body = pd.render_ticket_growth_section_seed(
+    body = round_seed.render_ticket_growth_section_seed(
         "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
     )
     legacy_contract = "모든 finding의 fix_contract는 이전 구체값 규약을 따른다."
     monkeypatch.setattr(
-        pd, "LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES", (legacy_contract,),
+        review_form, "LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES", (legacy_contract,),
     )
     legacy_body = body.replace(
-        pd.CONFIRM_ROUND_SCOPE_RULE, pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
-    ).replace(pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE, legacy_contract)
+        review_form.CONFIRM_ROUND_SCOPE_RULE, review_form.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
+    ).replace(review_form.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE, legacy_contract)
 
     assert legacy_body != body
-    assert pd.ticket_round_body_is_pending("code-reviewer", legacy_body) is True
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", legacy_body) is True
 
 
 # ── R4 리뷰 fix — F-002 confirmation.round 결속(전역 고유+단조·causal floor) ──────────────
@@ -985,8 +984,8 @@ def test_pre_declared_verify_round_cannot_confirm_a_later_finding(pd):
     r2 = _round(pd, 2, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
     spec = _disposition_block(pd, 2, [_decision("F-001", "accepted")])
     spec_bad = spec + _confirmation_block(pd, 1, [_confirmation_row("F-001", "resolved")])
-    with pytest.raises(pd.PMReviewError, match="뒤가 아닙니다") as caught:
-        pd.parse_pm_review_delta(spec_bad, [dev1, r2])
+    with pytest.raises(review_form.PMReviewError, match="뒤가 아닙니다") as caught:
+        review_state.parse_pm_review_delta(spec_bad, [dev1, r2])
     assert caught.value.code == "malformed"
 
 
@@ -1003,8 +1002,8 @@ def test_late_appended_stale_round_confirmation_cannot_reorder_a_newer_reviewer_
     spec_bad = spec + _confirmation_block(
         pd, 2, [_confirmation_row("F-001", "unresolved", observed="bye")],
     )
-    with pytest.raises(pd.PMReviewError, match="뒤가 아닙니다") as caught:
-        pd.parse_pm_review_delta(spec_bad, rounds)
+    with pytest.raises(review_form.PMReviewError, match="뒤가 아닙니다") as caught:
+        review_state.parse_pm_review_delta(spec_bad, rounds)
     assert caught.value.code == "malformed"
 
 
@@ -1016,8 +1015,8 @@ def test_duplicate_round_confirmation_blocks_for_the_same_round_are_rejected(pd)
         + _confirmation_block(pd, 2, [_confirmation_row("F-001", "unresolved", observed="bye")])
         + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
     )
-    with pytest.raises(pd.PMReviewError, match="단조") as caught:
-        pd.parse_pm_review_delta(spec_bad, rounds)
+    with pytest.raises(review_form.PMReviewError, match="단조") as caught:
+        review_state.parse_pm_review_delta(spec_bad, rounds)
     assert caught.value.code == "malformed"
 
 
@@ -1033,7 +1032,7 @@ def test_two_increasing_round_confirmations_for_the_same_finding_are_accepted(pd
         + _confirmation_block(pd, 2, [_confirmation_row("F-001", "unresolved", observed="bye")])
         + _confirmation_block(pd, 3, [_confirmation_row("F-001", "resolved")])
     )
-    delta = pd.parse_pm_review_delta(spec_ok, rounds)
+    delta = review_state.parse_pm_review_delta(spec_ok, rounds)
     assert delta.accepted == ()
 
 
@@ -1054,7 +1053,7 @@ def _confirmation_payloads(pd, rendered: str) -> list[dict]:
     """렌더된 확인 골격의 블록 payload — 블록 수·`round` 값·대상 ID 를 값으로 읽는다."""
     return [
         json.loads(chunk.split("\n```", 1)[0])
-        for chunk in rendered.split(f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n")[1:]
+        for chunk in rendered.split(f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n")[1:]
     ]
 
 
@@ -1065,7 +1064,7 @@ def _fill_confirmations(pd, rendered: str, template) -> str:
     "expected 가 observed 안에 있는가" 뿐이라 행마다 다른 관측값을 손으로 짜 넣을 필요가 없다.
     """
     observed = " · ".join(row.expected for _source, row in template.machine_rows)
-    status_placeholder = "<" + "|".join(pd.PM_REVIEW_CONFIRMATION_STATES) + ">"
+    status_placeholder = "<" + "|".join(review_form.PM_REVIEW_CONFIRMATION_STATES) + ">"
     return (
         rendered
         .replace(f'"status":"{status_placeholder}"', '"status":"resolved"')
@@ -1074,7 +1073,7 @@ def _fill_confirmations(pd, rendered: str, template) -> str:
 
 
 def _accepted_ids(pd, spec: str, rounds) -> list[str]:
-    return [finding.id for finding, _d in pd.parse_pm_review_delta(spec, rounds).accepted]
+    return [finding.id for finding, _d in review_state.parse_pm_review_delta(spec, rounds).accepted]
 
 
 def _round_trip_clears(pd, spec: str, rounds, template) -> list[str]:
@@ -1100,22 +1099,22 @@ def _shape_two_findings(pd, dev_rows_by_round: dict[int, list], *, spec_tail: st
 
 def test_gap_reason_is_a_member_of_the_closed_reason_vocabulary(pd):
     """축 1 어휘 — false 사유는 닫힌 enum이고 새 key·블록·version은 없다."""
-    assert pd.PM_REVIEW_VERIFY_GAP_REASON == "prescription-gap"
-    assert pd.PM_REVIEW_VERIFY_GAP_REASON in pd.PM_REVIEW_VERIFY_REASONS
-    assert pd.PM_REVIEW_VERIFY_PM_OWNED_REASON == "pm-owned"
-    assert pd.PM_REVIEW_VERIFY_PM_OWNED_REASON in pd.PM_REVIEW_VERIFY_REASONS
-    assert pd.PM_REVIEW_PM_OWNED_SCOPE_PREFIX == "pm-owned:"
-    assert set(pd.PM_REVIEW_VERIFY_ROW_KEYS) == {
+    assert review_form.PM_REVIEW_VERIFY_GAP_REASON == "prescription-gap"
+    assert review_form.PM_REVIEW_VERIFY_GAP_REASON in review_form.PM_REVIEW_VERIFY_REASONS
+    assert review_form.PM_REVIEW_VERIFY_PM_OWNED_REASON == "pm-owned"
+    assert review_form.PM_REVIEW_VERIFY_PM_OWNED_REASON in review_form.PM_REVIEW_VERIFY_REASONS
+    assert review_form.PM_REVIEW_PM_OWNED_SCOPE_PREFIX == "pm-owned:"
+    assert set(review_form.PM_REVIEW_VERIFY_ROW_KEYS) == {
         "id", "machine_verifiable", "command", "expected", "before", "reason",
     }
-    assert pd.PM_REVIEW_VERIFY_VERSION == 1
+    assert review_form.PM_REVIEW_VERIFY_VERSION == 1
 
 
 def test_fix_scope_notice_derives_its_machine_declaration_line_from_the_enum(pd):
     """계약 정합 — 빈틈 보고 요구 문언이 verify 상수에서 파생된다(문언 drift 0)."""
     notice = pd.PM_REVIEW_FIX_SCOPE_NOTICE
-    assert pd.PM_REVIEW_VERIFY_GAP_REASON in notice
-    assert pd.PM_REVIEW_VERIFY_BLOCK in notice
+    assert review_form.PM_REVIEW_VERIFY_GAP_REASON in notice
+    assert review_form.PM_REVIEW_VERIFY_BLOCK in notice
     assert "지우지 말고" in notice
 
 
@@ -1131,7 +1130,7 @@ def test_shape1_all_resolved_renders_one_block_for_every_accepted_id(
     payloads = _confirmation_payloads(pd, capsys.readouterr().out)
     assert [item["round"] for item in payloads] == [2]
     assert {row["id"] for row in payloads[0]["confirmations"]} == {"F-001", "F-002"}
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert _round_trip_clears(pd, spec, rounds, template) == []
 
 
@@ -1149,15 +1148,15 @@ def test_shape2_gap_report_does_not_block_the_resolved_finding(
     assert [item["round"] for item in payloads] == [2]
     assert [row["id"] for row in payloads[0]["confirmations"]] == ["F-002"]
     assert "F-001" in captured.err and "선언 round=2" in captured.err
-    assert pd.PM_REVIEW_VERIFY_GAP_REASON in captured.err
+    assert review_form.PM_REVIEW_VERIFY_GAP_REASON in captured.err
     assert "처방이 판정 순서를 정하지 않음" in captured.err
 
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert [item[0] for item in template.gap] == ["F-001"]
     assert template.missing == () and template.stale == ()
     # I6 추적 유실 0 — 빈틈 보고 ID 는 accepted 에 남고 다음 fix delta 에 그대로 실린다.
     assert _round_trip_clears(pd, spec, rounds, template) == ["F-001"]
-    delta = pd.parse_pm_review_delta(spec, rounds)
+    delta = review_state.parse_pm_review_delta(spec, rounds)
     assert "### F-001" in pd.render_pm_review_delta("T-0805", delta)
 
 
@@ -1172,8 +1171,8 @@ def test_shape3_all_gap_reports_render_nothing_and_still_succeed(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "F-001" in captured.err and "F-002" in captured.err
-    assert captured.err.count(pd.PM_REVIEW_VERIFY_GAP_REASON) == 2
-    template = pd.pm_review_verify_template(spec, rounds)
+    assert captured.err.count(review_form.PM_REVIEW_VERIFY_GAP_REASON) == 2
+    template = review_state.pm_review_verify_template(spec, rounds)
     # 빈틈은 reviewer 확인 대기와 다른 상태다 — 한 버킷으로 접으면 PM 이 "사람이 확인하면
     # 끝나는 것"과 "처방을 다시 내야 하는 것"을 구별할 수 없다.
     assert [item[0] for item in template.gap] == ["F-001", "F-002"]
@@ -1217,8 +1216,8 @@ def test_machine_confirmation_cannot_bind_to_an_unfilled_placeholder_row(pd):
     """역방향 확인 (a) — 자리표시자 행을 근거로 한 기계 확인은 결속에서 막힌다."""
     spec, rounds = _shape_two_findings(pd, {2: [_skeleton_row(pd, "F-001")]})
     spec_bad = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001")])
-    with pytest.raises(pd.PMReviewError, match="결속되지 않습니다") as caught:
-        pd.parse_pm_review_delta(spec_bad, rounds)
+    with pytest.raises(review_form.PMReviewError, match="결속되지 않습니다") as caught:
+        review_state.parse_pm_review_delta(spec_bad, rounds)
     assert caught.value.code == "malformed"
 
 
@@ -1238,7 +1237,7 @@ def test_shape5_split_rounds_render_one_block_per_source_round_ascending(
     assert [row["id"] for item in payloads for row in item["confirmations"]] == [
         "F-002", "F-001",
     ]
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert _round_trip_clears(pd, spec, rounds, template) == []
 
 
@@ -1264,17 +1263,17 @@ def test_shape6_confirmed_ids_leave_both_the_render_and_the_seed_alone(
     assert [item["round"] for item in payloads] == [3]
     assert [row["id"] for row in payloads[0]["confirmations"]] == ["F-001"]
 
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     # 닫힌 F-002 는 없고, 열린 F-001 은 라운드 3 선언 값 그대로 실린다.
     assert template.seed_prefill_rows() == (
         ("F-001", {"command": "echo hi", "expected": "hi", "before": "bye", "reason": ""}),
     )
-    seed = pd.render_ticket_growth_section_seed(
+    seed = round_seed.render_ticket_growth_section_seed(
         "developer", _with_design_waiver(spec), rounds=rounds,
     )
     assert '"id":"F-002"' not in seed              # 확인으로 닫힌 항목은 다시 열지 않는다
     assert '"id":"F-001","machine_verifiable":<true|false>,"command":"echo hi"' in seed
-    assert pd.ticket_round_body_is_pending("developer", seed) is True
+    assert round_seed.ticket_round_body_is_pending("developer", seed) is True
     assert _round_trip_clears(pd, spec, rounds, template) == []
 
 
@@ -1287,7 +1286,7 @@ def test_shape7_reviewer_only_row_carries_forward_into_a_later_round(pd):
         )],
         3: [_verify_row("F-002", command="echo hey", expected="hey")],
     })
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert template.missing == () and template.stale == ()
     assert [(item[0], item[1]) for item in template.reviewer_required] == [("F-001", 2)]
     assert [source for source, _row in template.machine_rows] == [3]
@@ -1305,7 +1304,7 @@ def test_shape8_gap_row_carries_forward_when_the_next_round_is_silent(
     assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 0
     captured = capsys.readouterr()
     assert "F-001" in captured.err and "선언 round=2" in captured.err
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert [(item[0], item[1]) for item in template.gap] == [("F-001", 2)]
     assert [source for source, _row in template.machine_rows] == [3]   # 뒤 행이 앞 행을 이긴다
 
@@ -1328,7 +1327,7 @@ def test_unfilled_seed_row_in_a_later_round_buries_the_earlier_gap_row(
     captured = capsys.readouterr()
     assert "verify 행이 없는 accepted finding" in captured.err
     assert "빈틈 보고" not in captured.err          # 앞 라운드 선언은 더 이상 최신값이 아니다
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert template.missing == ("F-001",) and template.gap == ()
     # 같은 라운드에서 채워진 ID 의 확인은 그대로 살아 있다(부분 확인 인질 금지).
     assert [source for source, _row in template.machine_rows] == [3]
@@ -1349,7 +1348,7 @@ def test_filled_row_wins_over_a_leftover_placeholder_in_the_same_round(pd):
             _verify_row("F-002", command="echo hey", expected="hey")],
         3: [_skeleton_row(pd, "F-001"), _verify_row("F-001")],
     })
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert template.missing == () and template.gap == ()
     assert [source for source, _row in template.machine_rows] == [2, 3]
 
@@ -1364,13 +1363,13 @@ def test_pristine_pending_round_does_not_bury_an_earlier_gap_row(pd):
         2: [_gap_row(pd, "F-001", "처방 빈틈 그대로"),
             _verify_row("F-002", command="echo hey", expected="hey")],
     })
-    seeded = pd._load_ticket_rounds().Round(
+    seeded = round_rules.Round(
         ordinal=3, role="developer", path=Path("03-developer.md"),
         text="## 구현 보충 (developer · 2026-08-22)\n\n"
-             + pd._render_developer_round_seed_body([("F-001", None)]),
+             + round_seed._render_developer_round_seed_body([("F-001", None)]),
         pending=True,
     )
-    template = pd.pm_review_verify_template(spec, [*rounds, seeded])
+    template = review_state.pm_review_verify_template(spec, [*rounds, seeded])
     assert [(item[0], item[1]) for item in template.gap] == [("F-001", 2)]
     assert template.missing == ()
     assert [source for source, _row in template.machine_rows] == [2]
@@ -1392,7 +1391,7 @@ def test_shape9_row_past_the_confirmation_cursor_is_stale_and_rc1(
     assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 1
     captured = capsys.readouterr()
     assert "확인 창을 지난 verify 행" in captured.err and "F-001" in captured.err
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     assert [(item[0], item[1], item[2]) for item in template.stale] == [("F-001", 2, 2)]
     assert template.missing == ()      # rc=1 의 사유는 stale 하나다(태만과 갈린다)
     # 다른 ID 골격은 그대로 렌더되고, 그 골격은 붙이면 수용된다(왕복 유지).
@@ -1413,10 +1412,10 @@ def test_explicit_round_option_replays_the_cumulative_view_at_that_ordinal(pd):
         2: [_verify_row("F-002", command="echo hey", expected="hey")],
         3: [_verify_row("F-001")],
     })
-    at_two = pd.pm_review_verify_template(spec, rounds, round_ordinal=2)
+    at_two = review_state.pm_review_verify_template(spec, rounds, round_ordinal=2)
     assert at_two.missing == ("F-001",)
     assert [source for source, _row in at_two.machine_rows] == [2]
-    at_three = pd.pm_review_verify_template(spec, rounds, round_ordinal=3)
+    at_three = review_state.pm_review_verify_template(spec, rounds, round_ordinal=3)
     assert at_three.missing == ()
 
 
@@ -1425,13 +1424,13 @@ def test_pending_developer_round_is_not_part_of_the_cumulative_view(pd):
     spec, rounds = _shape_two_findings(pd, {2: [
         _verify_row("F-001"), _verify_row("F-002", command="echo hey", expected="hey"),
     ]})
-    seeded = pd._load_ticket_rounds().Round(
+    seeded = round_rules.Round(
         ordinal=3, role="developer", path=Path("03-developer.md"),
         text="## 구현 보충 (developer · 2026-08-22)\n\n"
-             + pd._render_developer_round_seed_body([("F-001", None), ("F-002", None)]),
+             + round_seed._render_developer_round_seed_body([("F-001", None), ("F-002", None)]),
         pending=True,
     )
-    template = pd.pm_review_verify_template(spec, [*rounds, seeded])
+    template = review_state.pm_review_verify_template(spec, [*rounds, seeded])
     assert template.missing == () and template.stale == ()
     assert [source for source, _row in template.machine_rows] == [2, 2]
 
@@ -1455,7 +1454,7 @@ def test_pre_change_verify_and_confirmation_bytes_still_parse(pd):
         '{"version":1,"round":2,"confirmations":[{"id":"F-001","status":"resolved",'
         '"command":"pytest tests/test_x.py -q","observed":"2 passed, 218 deselected"}]}\n```\n'
     )
-    assert pd.parse_pm_review_delta(spec, [r1, dev2]).accepted == ()
+    assert review_state.parse_pm_review_delta(spec, [r1, dev2]).accepted == ()
 # ── T-0808: 골격 자리표시자가 계약을 어기는 값을 유도하지 않는다(왕복 단언) ──────────────
 
 def _naive_placeholder_edit(text: str, token: str, replacement: str) -> str:
@@ -1469,14 +1468,14 @@ def _naive_placeholder_edit(text: str, token: str, replacement: str) -> str:
 def _verify_fence_text(pd, finding_ids=("F-001",)) -> str:
     """`render_pm_review_verify_skeleton` 이 실제로 낸 골격의 fence 본문만 뽑는다(조립 문자열이
     아니라 엔진 산출 그대로 — T-0808 검증 근거 요구)."""
-    rendered = pd.render_pm_review_verify_skeleton([(fid, None) for fid in finding_ids])
-    return rendered.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
+    rendered = review_form.render_pm_review_verify_skeleton([(fid, None) for fid in finding_ids])
+    return rendered.split(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
 
 
 def _verify_notice_text(pd, rows=(("F-001", None),)) -> str:
     """골격 fence **앞**의 규칙 주석 — 프리필이 덮는 값 자리 밖에 있는 문구다."""
-    rendered = pd.render_pm_review_verify_skeleton(list(rows))
-    return rendered.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}", 1)[0]
+    rendered = review_form.render_pm_review_verify_skeleton(list(rows))
+    return rendered.split(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}", 1)[0]
 
 
 # ── 축 1 — machine_verifiable 자리는 따옴표 없는 raw placeholder ────────────────────
@@ -1505,7 +1504,7 @@ def test_sensitivity_requoted_placeholder_reproduces_the_original_defect(pd, mon
     로 되돌려 raw placeholder 특례만 잃게 한다 — 다른 문자열 필드까지 깨는 monkeypatch는
     퇴행을 정확히 재현하지 못한다.)"""
     monkeypatch.setattr(
-        pd, "_pm_review_render_json",
+        review_form, "_pm_review_render_json",
         lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":")),
     )
     fence = _verify_fence_text(pd)
@@ -1513,8 +1512,8 @@ def test_sensitivity_requoted_placeholder_reproduces_the_original_defect(pd, mon
     naive_edit = _naive_placeholder_edit(fence, "<true|false>", "true")
     payload = json.loads(naive_edit)   # 구조는 여전히 유효 JSON이지만 값은 문자열이다.
     assert payload["verifications"][0]["machine_verifiable"] == "true"
-    with pytest.raises(pd.PMReviewError, match="boolean이어야 합니다") as caught:
-        pd._pm_review_parse_verify_row(payload["verifications"][0])
+    with pytest.raises(review_form.PMReviewError, match="boolean이어야 합니다") as caught:
+        review_form._pm_review_parse_verify_row(payload["verifications"][0])
     assert caught.value.code == "malformed"
 
 
@@ -1524,8 +1523,8 @@ def test_string_true_is_still_rejected_no_parser_leniency(pd):
         "id": "F-001", "machine_verifiable": "true", "command": "echo hi",
         "expected": "hi", "before": "bye", "reason": "",
     }
-    with pytest.raises(pd.PMReviewError, match="boolean이어야 합니다") as caught:
-        pd._pm_review_parse_verify_row(row)
+    with pytest.raises(review_form.PMReviewError, match="boolean이어야 합니다") as caught:
+        review_form._pm_review_parse_verify_row(row)
     assert caught.value.code == "malformed"
 
 
@@ -1535,7 +1534,7 @@ def test_command_placeholder_derives_from_the_parser_command_shape_hint(pd):
     """축 2 파리티 — command 골격 문구가 파서의 재현 커맨드 안전 경계 문구를 그대로 담는다
     (두 곳 서술 금지). `cd X &&` 대신 절대경로 처방도 실값으로 실린다."""
     fence = _verify_fence_text(pd)
-    assert pd._pm_review_command_shape_hint() in fence
+    assert review_form._pm_review_command_shape_hint() in fence
     assert "절대경로" in fence
     assert "cd X &&" in fence
 
@@ -1543,20 +1542,20 @@ def test_command_placeholder_derives_from_the_parser_command_shape_hint(pd):
 def test_command_placeholder_labels_match_the_single_forbidden_token_constant(pd):
     """축 2 파리티(전수) — 골격에 나열된 금지 토큰 표기가 검사 상수 하나에서만 나온다."""
     fence = _verify_fence_text(pd)
-    for _token, label in pd._PM_REVIEW_COMMAND_FORBIDDEN_TOKENS:
+    for _token, label in review_form._PM_REVIEW_COMMAND_FORBIDDEN_TOKENS:
         assert label in fence
 
 
 def _parse_row_with_command(pd, command: str):
     """command 만 바꾼 유효 verify 행을 실제 행 파서에 태운다 — 허용 경계 관측 지점."""
-    return pd._pm_review_parse_verify_row(_verify_row("F-001", command=command))
+    return review_form._pm_review_parse_verify_row(_verify_row("F-001", command=command))
 
 
 def _assert_command_rejected(pd, command: str) -> None:
-    with pytest.raises(pd.PMReviewError) as caught:
+    with pytest.raises(review_form.PMReviewError) as caught:
         _parse_row_with_command(pd, command)
     assert caught.value.code == "malformed"
-    assert pd._pm_review_command_shape_hint() in str(caught.value)
+    assert review_form._pm_review_command_shape_hint() in str(caught.value)
 
 
 def test_sensitivity_forbidden_token_constant_flips_parser_and_render_together(
@@ -1565,7 +1564,7 @@ def test_sensitivity_forbidden_token_constant_flips_parser_and_render_together(
     """민감도(축 2 본체) — 금지 토큰 상수 하나에 토큰을 넣고 빼면 **파서의 통과/거부**와
     **골격 문구**가 같은 방향으로 함께 뒤집힌다. 검사용 상수와 표시용 상수가 두 벌이면
     한쪽만 뒤집히고 여기서 red 다(허용 경계는 파서로, 문구는 렌더 산출로 각각 관측한다)."""
-    baseline = pd._PM_REVIEW_COMMAND_FORBIDDEN_TOKENS
+    baseline = review_form._PM_REVIEW_COMMAND_FORBIDDEN_TOKENS
     added, dropped = "echo:hi", "echo hi;"
 
     # 기준선 — `:` 은 허용·문구에 없음 / `;` 은 거부·문구에 있음.
@@ -1576,14 +1575,14 @@ def test_sensitivity_forbidden_token_constant_flips_parser_and_render_together(
 
     # 토큰 추가 → 파서가 거부하고 골격 문구에도 그 토큰이 나타난다.
     monkeypatch.setattr(
-        pd, "_PM_REVIEW_COMMAND_FORBIDDEN_TOKENS", baseline + ((":", "`:`"),),
+        review_form, "_PM_REVIEW_COMMAND_FORBIDDEN_TOKENS", baseline + ((":", "`:`"),),
     )
     _assert_command_rejected(pd, added)
     assert "`:`" in _verify_fence_text(pd)
 
     # 토큰 제거 → 파서가 통과시키고 골격 문구에서도 그 토큰이 사라진다.
     monkeypatch.setattr(
-        pd, "_PM_REVIEW_COMMAND_FORBIDDEN_TOKENS",
+        review_form, "_PM_REVIEW_COMMAND_FORBIDDEN_TOKENS",
         tuple(pair for pair in baseline if pair[0] != ";"),
     )
     assert _parse_row_with_command(pd, dropped).command == dropped
@@ -1593,16 +1592,16 @@ def test_sensitivity_forbidden_token_constant_flips_parser_and_render_together(
 def test_cd_and_shell_join_command_is_still_rejected_absolute_path_form_still_passes(pd):
     """역방향 확인 — `cd X && ...` 는 여전히 거부, 절대경로 단일 커맨드는 여전히 통과(실증
     라운드 T-0782/T-0796/T-0777 이 유도됐던 형태를 재확인)."""
-    with pytest.raises(pd.PMReviewError, match="금지 토큰"):
-        pd._pm_review_assert_verify_command_shape(
+    with pytest.raises(review_form.PMReviewError, match="금지 토큰"):
+        review_form._pm_review_assert_verify_command_shape(
             "cd /abs/path && pytest -q", "verify F-001.command",
         )
-    pd._pm_review_assert_verify_command_shape(
+    review_form._pm_review_assert_verify_command_shape(
         "pytest /abs/path/tests/test_x.py -q", "verify F-001.command",
     )
-    with pytest.raises(pd.PMReviewError, match="금지 토큰"):
+    with pytest.raises(review_form.PMReviewError, match="금지 토큰"):
         # T-0777 실측 — `python3 -c "...;..."` 는 `cd &&` 를 없애도 `-c` 본문의 `;` 로 거부된다.
-        pd._pm_review_assert_verify_command_shape(
+        review_form._pm_review_assert_verify_command_shape(
             'python3 -c "a=1;b=2"', "verify F-001.command",
         )
 
@@ -1630,15 +1629,15 @@ def test_verify_skeleton_keeps_the_value_rules_when_rows_are_prefilled(pd):
         "command": "python3 -m pytest tests/test_pm_review_verify.py -q",
         "expected": "1 passed", "before": "1 failed", "reason": "",
     }
-    rendered = pd.render_pm_review_verify_skeleton([("F-001", prefill), ("F-002", None)])
-    notice, marker, fence = rendered.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")
+    rendered = review_form.render_pm_review_verify_skeleton([("F-001", prefill), ("F-002", None)])
+    notice, marker, fence = rendered.partition(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}")
     assert marker, rendered
 
     # 프리필 행은 선언값 그대로, 미프리필 행은 자리표시자 그대로 — 두 형상이 한 블록에 있다.
     for value in prefill.values():
         if value:
             assert json.dumps(value, ensure_ascii=False) in fence
-    assert pd._CONTRACT_PLACEHOLDER_RE.search(fence), fence
+    assert review_form._CONTRACT_PLACEHOLDER_RE.search(fence), fence
 
     # 세 규칙(reason 선언 조건 · expected 부분 문자열 계약 · 확인 커맨드 rc 규약)은 주석에만.
     for rule in (
@@ -1666,7 +1665,7 @@ def test_expected_short_literal_round_trips_through_a_real_command_into_the_conf
     fence = _fill_verify_field(fence, "reason", json.dumps(""))
     payload = json.loads(fence)
     row_dict = payload["verifications"][0]
-    row = pd._pm_review_parse_verify_row(row_dict)
+    row = review_form._pm_review_parse_verify_row(row_dict)
 
     proc = subprocess.run(
         row.command, shell=True, capture_output=True, text=True, timeout=10,
@@ -1681,7 +1680,7 @@ def test_expected_short_literal_round_trips_through_a_real_command_into_the_conf
         "id": "F-001", "status": "resolved", "command": row.command, "observed": observed,
     }
     spec_confirmed = spec + _confirmation_block(pd, 2, [confirmation_row])
-    delta = pd.parse_pm_review_delta(spec_confirmed, [r1, dev2])   # malformed 없이 성립.
+    delta = review_state.parse_pm_review_delta(spec_confirmed, [r1, dev2])   # malformed 없이 성립.
     assert delta.accepted == ()   # resolved 확인이 반영돼 accepted 잔여가 빠진다.
 
 
@@ -1700,8 +1699,8 @@ def test_non_string_field_placeholders_are_zero_across_every_seeded_skeleton(pd)
 
     # finding: design_change 는 처음부터 실값(False)이라 골격 자체가 이미 유효 JSON 이고
     # 파싱된 타입이 bool 이다(문자열 "false" 로 위장하지 않았다).
-    review_rendered = pd.render_pm_review_block_skeleton("code-reviewer", ["F-NNN"])
-    review_fence = review_rendered.split(f"```{pd.PM_REVIEW_BLOCK}\n", 1)[1].split(
+    review_rendered = review_form.render_pm_review_block_skeleton("code-reviewer", ["F-NNN"])
+    review_fence = review_rendered.split(f"```{review_form.PM_REVIEW_BLOCK}\n", 1)[1].split(
         "\n```", 1,
     )[0]
     review_payload = json.loads(review_fence)
@@ -1713,7 +1712,7 @@ def test_non_string_field_placeholders_are_zero_across_every_seeded_skeleton(pd)
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
     disposition_rendered = pd.render_pm_review_disposition_template("", [r1])
     disposition_fence = disposition_rendered.split(
-        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n", 1,
+        f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n", 1,
     )[1].split("\n```", 1)[0]
     disposition_payload = json.loads(disposition_fence)   # 예외 없이 통과.
     assert isinstance(disposition_payload["reviewer_ordinal"], int)
@@ -1723,10 +1722,10 @@ def test_non_string_field_placeholders_are_zero_across_every_seeded_skeleton(pd)
     # payload 의 round/version 은 렌더 시점 실값이지 placeholder 가 아니다.
     spec_accepted = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
     dev2 = _round(pd, 2, "developer", _developer_round_text(pd, [_verify_row("F-001")]))
-    template = pd.pm_review_verify_template(spec_accepted, [r1, dev2])
+    template = review_state.pm_review_verify_template(spec_accepted, [r1, dev2])
     confirmation_rendered = pd.render_pm_review_verify_template(template)
     confirmation_fence = confirmation_rendered.split(
-        f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n", 1,
+        f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n", 1,
     )[1].split("\n```", 1)[0]
     confirmation_payload = json.loads(confirmation_fence)   # 예외 없이 통과.
     assert isinstance(confirmation_payload["round"], int)
@@ -1744,10 +1743,10 @@ def test_placeholder_token_in_another_string_field_passes_delta_scan_and_row_par
     delta 구조 스캔과 실제 행 파서를 **둘 다** 통과한다. 전역 치환이면 재-인용이 문자열 안에
     따옴표를 밀어 넣어 `pm-review-verify-v1 JSON 파싱 실패` malformed 로 delta 가 죽는다."""
     spec, rounds = _basic_ticket(pd, expected=_TOKEN_IN_STRING_FIELD)
-    delta = pd.parse_pm_review_delta(spec, rounds)          # 구조 스캔 — malformed 없이 성립.
+    delta = review_state.parse_pm_review_delta(spec, rounds)          # 구조 스캔 — malformed 없이 성립.
     assert [finding.id for finding, _disposition in delta.accepted] == ["F-001"]
 
-    row = pd._pm_review_parse_verify_row(                   # 실제 행 파서 — 값 그대로 통과.
+    row = review_form._pm_review_parse_verify_row(                   # 실제 행 파서 — 값 그대로 통과.
         _verify_row("F-001", expected=_TOKEN_IN_STRING_FIELD),
     )
     assert row.expected == _TOKEN_IN_STRING_FIELD
@@ -1758,13 +1757,13 @@ def test_requote_touches_only_the_machine_verifiable_slot_inside_the_verify_fenc
     손대지 않은 골격에서는 boolean 값 자리만 임시 재-인용되고 다른 필드는 원문 그대로다."""
     filled = _developer_round_text(pd, [_verify_row("F-001", expected=_TOKEN_IN_STRING_FIELD)])
     filled += '\n산문에도 같은 토큰이 있다: "machine_verifiable":<true|false>\n'
-    assert pd._pm_review_requote_verify_placeholder(filled) == filled
+    assert review_form._pm_review_requote_verify_placeholder(filled) == filled
 
     fence = _fill_verify_field(
         _verify_fence_text(pd), "expected", json.dumps(_TOKEN_IN_STRING_FIELD),
     )
-    seed = f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n{fence}\n```\n"
-    requoted = pd._pm_review_requote_verify_placeholder(seed)
+    seed = f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n{fence}\n```\n"
+    requoted = review_form._pm_review_requote_verify_placeholder(seed)
     payload = json.loads(requoted.split("\n", 1)[1].rsplit("```", 1)[0])
     row = payload["verifications"][0]
     assert row["machine_verifiable"] == "<true|false>"   # 구조 스캔용 임시 재-인용.
@@ -1787,7 +1786,6 @@ def _cross_invariant_shape(pd, tmp_path):
       엔진이 실제로 렌더한 골격이라 F-001·F-002 자리표시자를 **둘 다** 싣는다. 이 라운드를
       관측으로 세면 F-002 의 살아 있는 선언까지 지워진다([[T-0813]] 배제가 이겨야 한다).
     """
-    rounds_module = pd._load_ticket_rounds()
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(
         pd, [_finding("F-001"), _finding("F-002")],
     ))
@@ -1800,12 +1798,12 @@ def _cross_invariant_shape(pd, tmp_path):
     r3 = _round(pd, 3, "developer", _developer_round_text(pd, [
         _skeleton_row(pd, "F-001"), _gap_row(pd, "F-002", CROSS_ROUND3_GAP_SUMMARY),
     ]))
-    r4 = _round(pd, 4, "developer", rounds_module.render_round_seed(
+    r4 = _round(pd, 4, "developer", round_seed.render_round_seed(
         "developer", _with_design_waiver(spec), today="2026-08-22", rounds=[r1, r2, r3],
     ))
     tickets_dir = tmp_path / "tickets"
     _materialize(pd, spec, [r1, r2, r3, r4], tickets_dir, "T-0822")
-    return spec, rounds_module.load_rounds(tickets_dir, "T-0822", ticket_text=spec)
+    return spec, round_seed.load_rounds(tickets_dir, "T-0822", ticket_text=spec)
 
 
 def _latest_rows(pd, rounds) -> dict[str, tuple[int, str]]:
@@ -1813,7 +1811,7 @@ def _latest_rows(pd, rounds) -> dict[str, tuple[int, str]]:
     return {
         finding_id: (source_round, row.reason)
         for finding_id, (source_round, row) in
-        pd._pm_review_latest_verify_rows(rounds).items()
+        review_state._pm_review_latest_verify_rows(rounds).items()
     }
 
 
@@ -1829,23 +1827,23 @@ def test_pending_seed_round_and_a_harvested_placeholder_hold_both_invariants(pd,
     # 시드 라운드는 두 ID 의 행을 다 싣는다 — 관측으로 세면 F-002 선언이 지워진다.
     assert [
         finding_id
-        for finding_id, _values in pd._dev_round_seed_verify_rows(rounds[3].text)
+        for finding_id, _values in round_seed._dev_round_seed_verify_rows(rounds[3].text)
     ] == ["F-001", "F-002"]
 
-    template = pd.pm_review_verify_template(spec, rounds)
+    template = review_state.pm_review_verify_template(spec, rounds)
     # (a) 회수된 라운드의 미충전 자리표시자 = tombstone — 앞 라운드의 빈틈 보고를 덮는다.
     assert template.missing == ("F-001",)
     # (b) 회수 전 시드 라운드 = 관측 아님 — 라운드 3 의 빈틈 보고가 최신 선언으로 남는다.
     assert template.gap == (("F-002", 3, CROSS_ROUND3_GAP_SUMMARY),)
     assert template.machine_rows == () and template.stale == ()
     # (c) 시드 라운드의 유무가 판정 산출을 한 글자도 바꾸지 않는다 — 누적 시야·확인 커서 양쪽.
-    assert template == pd.pm_review_verify_template(spec, rounds[:3])
+    assert template == review_state.pm_review_verify_template(spec, rounds[:3])
     assert _latest_rows(pd, rounds) == _latest_rows(pd, rounds[:3]) == {
-        "F-002": (3, pd.PM_REVIEW_VERIFY_GAP_REASON),
+        "F-002": (3, review_form.PM_REVIEW_VERIFY_GAP_REASON),
     }
-    delta = pd.parse_pm_review_delta(spec, rounds)
+    delta = review_state.parse_pm_review_delta(spec, rounds)
     assert delta.confirmation_cursor == (("F-001", 1), ("F-002", 1))
-    assert delta == pd.parse_pm_review_delta(spec, rounds[:3])
+    assert delta == review_state.parse_pm_review_delta(spec, rounds[:3])
 
 
 def test_machine_confirmation_cannot_bind_to_a_pending_developer_round(pd, tmp_path):
@@ -1855,6 +1853,6 @@ def test_machine_confirmation_cannot_bind_to_a_pending_developer_round(pd, tmp_p
     """
     spec, rounds = _cross_invariant_shape(pd, tmp_path)
     spec_bad = spec + _confirmation_block(pd, 4, [_confirmation_row("F-002")])
-    with pytest.raises(pd.PMReviewError, match="아직 회수되지 않은 developer 라운드") as caught:
-        pd.parse_pm_review_delta(spec_bad, rounds)
+    with pytest.raises(review_form.PMReviewError, match="아직 회수되지 않은 developer 라운드") as caught:
+        review_state.parse_pm_review_delta(spec_bad, rounds)
     assert caught.value.code == "malformed"

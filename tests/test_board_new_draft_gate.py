@@ -28,6 +28,8 @@ import pytest
 
 from conftest import anchor_board_module, ensure_product_slot
 from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.infra import round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -548,10 +550,9 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
 
     board.cmd_new(_new_args("라운드 딸린 draft"))
     tid, draft_path = _draft_id_and_path(board_dir)
-    rounds = board._load_ticket_rounds()
-    round_dir = rounds.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
+    round_dir = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
     round_dir.mkdir(parents=True, exist_ok=True)
-    seed_text = rounds.render_round_seed(
+    seed_text = round_seed.render_round_seed(
         "architect", draft_path.read_text(encoding="utf-8"),
         today=datetime.date.today().isoformat())
     round_path = round_dir / "01-architect.md"

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import review_rounds
+from pm_engine.domain import review_form, review_state, review_verdict, round_rules
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -58,35 +59,34 @@ def _round_text(path: Path) -> str:
 
 def _review_round(pd, text: str):
     """판정 입력 라운드 하나 — 리뷰 라운드 파일 bytes 를 그대로 싣는다."""
-    rounds_module = pd._load_ticket_rounds()
-    return rounds_module.Round(
+    return round_rules.Round(
         ordinal=1,
-        role=pd.INTERNAL_REVIEW_ROLE,
-        path=Path(rounds_module.round_filename(1, pd.INTERNAL_REVIEW_ROLE)),
+        role=review_form.INTERNAL_REVIEW_ROLE,
+        path=Path(round_rules.round_filename(1, review_form.INTERNAL_REVIEW_ROLE)),
         text=text,
         pending=False,
     )
 
 
 def test_real_reviewer_reply_fixtures_drive_verdict_and_must_fix(pd):
-    rejected = pd._internal_reply_outcome(_reply(REJECT_REPLY))
-    passed = pd._internal_reply_outcome(_reply(PASS_REPLY))
+    rejected = review_verdict._internal_reply_outcome(_reply(REJECT_REPLY))
+    passed = review_verdict._internal_reply_outcome(_reply(PASS_REPLY))
 
     assert rejected.verdict == 1
     assert len(rejected.must_fix_items) == 1
     assert rejected.must_fix_items[0].startswith("실제 손편집 manifest")
-    assert passed == pd.InternalReplyOutcome(0, [])
+    assert passed == review_verdict.InternalReplyOutcome(0, [])
 
 
 def test_t0658_real_reply_fixtures_keep_prose_none_unknown_and_reject_list_counted(pd):
     """T-0656 실물은 계속 unknown이고, T-0651 실 반려 목록은 정상 계수한다."""
     prose_none = _reply(T0656_PROSE_NONE_REPLY)
-    rejected = pd._internal_reply_assessment(_reply(NESTED_ROUND1_REPLY))
-    passed = pd._internal_reply_assessment(prose_none)
+    rejected = review_verdict._internal_reply_assessment(_reply(NESTED_ROUND1_REPLY))
+    passed = review_verdict._internal_reply_assessment(prose_none)
 
-    assert pd._extract_internal_must_fix_items(prose_none) is None
-    assert passed.outcome == pd.InternalReplyOutcome(None, None)
-    assert passed.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO
+    assert review_verdict._extract_internal_must_fix_items(prose_none) is None
+    assert passed.outcome == review_verdict.InternalReplyOutcome(None, None)
+    assert passed.diagnostic.code == review_verdict.INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO
     assert "must-fix 0건 절 부재" in passed.diagnostic.message
     assert rejected.outcome.verdict == 1
     assert len(rejected.outcome.must_fix_items) == 6
@@ -98,9 +98,9 @@ def test_t0658_fix1_real_structured_pass_reply_is_zero_verdict_and_must_fix(pd):
     reply = _reply(T0657_ROUND2_STRUCTURED_PASS_REPLY)
     external = pd._load_additional_reviewer()
 
-    assert external.verdict_words(reply) == ("통과",)
-    assert pd._extract_internal_must_fix_items(reply) == []
-    assert pd._internal_reply_outcome(reply) == pd.InternalReplyOutcome(0, [])
+    assert review_verdict.verdict_words(reply) == ("통과",)
+    assert review_verdict._extract_internal_must_fix_items(reply) == []
+    assert review_verdict._internal_reply_outcome(reply) == review_verdict.InternalReplyOutcome(0, [])
 
 
 @pytest.mark.parametrize(
@@ -142,8 +142,8 @@ def test_t0658_four_diagnostics_reach_the_completion_judgement(pd, reply, code, 
     """4종 실패 각각 리뷰 라운드 완료 판정 사유에 원인과 재리뷰 처방을 보존한다."""
     actual_reply = _reply(T0656_PROSE_NONE_REPLY) if reply is None else reply
 
-    assert pd._internal_round_verdict(actual_reply).diagnostic.code == code
-    problem = pd.review_completion_problem(
+    assert review_verdict._internal_round_verdict(actual_reply).diagnostic.code == code
+    problem = review_state.review_completion_problem(
         "---\nid: T-DIAG\n---\n# T-DIAG\n", [_review_round(pd, actual_reply)])
 
     assert problem is not None
@@ -154,13 +154,13 @@ def test_t0658_four_diagnostics_reach_the_completion_judgement(pd, reply, code, 
 @pytest.mark.parametrize("absence", ["- 없음", "- 해당 없음"])
 def test_list_shaped_explicit_absence_is_zero_must_fix(pd, absence):
     reply = f"판정: 통과\n\n## must-fix\n{absence}\n"
-    assert pd._internal_reply_outcome(reply) == pd.InternalReplyOutcome(0, [])
+    assert review_verdict._internal_reply_outcome(reply) == review_verdict.InternalReplyOutcome(0, [])
 
 
 def test_real_nested_reviewer_rounds_count_top_level_six_to_two(pd):
     """실 T-0651 1R/2R reply의 하위 probe를 세지 않아 정상 수렴 6→2를 보존한다."""
-    first = pd._internal_reply_outcome(_reply(NESTED_ROUND1_REPLY))
-    second = pd._internal_reply_outcome(_reply(NESTED_ROUND2_REPLY))
+    first = review_verdict._internal_reply_outcome(_reply(NESTED_ROUND1_REPLY))
+    second = review_verdict._internal_reply_outcome(_reply(NESTED_ROUND2_REPLY))
 
     assert first.verdict == second.verdict == 1
     assert len(first.must_fix_items) == 6
@@ -169,19 +169,18 @@ def test_real_nested_reviewer_rounds_count_top_level_six_to_two(pd):
 
 def test_pm_verified_still_refuses_the_finding_zero_review_round(pd):
     """복구된 통과 라운드도 `--pm-verified` 는 그대로 거부한다(그 거부는 무변경이다)."""
-    rounds_module = pd._load_ticket_rounds()
-    recovered = rounds_module.Round(
+    recovered = round_rules.Round(
         ordinal=2,
-        role=pd.INTERNAL_REVIEW_ROLE,
-        path=Path(rounds_module.round_filename(2, pd.INTERNAL_REVIEW_ROLE)),
+        role=review_form.INTERNAL_REVIEW_ROLE,
+        path=Path(round_rules.round_filename(2, review_form.INTERNAL_REVIEW_ROLE)),
         text=_round_text(T0817_ROUND_FILE),
         pending=False,
     )
 
-    problem = pd.pm_verified_evidence_problem(
+    problem = review_state.pm_verified_evidence_problem(
         "---\nid: T-0817\n---\n# T-0817\n",
         [recovered],
-        reviewer_role=pd.INTERNAL_REVIEW_ROLE,
+        reviewer_role=review_form.INTERNAL_REVIEW_ROLE,
         surface_floor=0,
     )
 
@@ -247,7 +246,7 @@ def test_rounds_cli_has_no_destructive_or_direct_value_surface(pd, argv):
     ],
 )
 def test_must_fix_counting_boundaries(pd, reply, expected):
-    assert pd._extract_internal_must_fix_items(reply) == expected
+    assert review_verdict._extract_internal_must_fix_items(reply) == expected
 
 
 @pytest.mark.parametrize(
@@ -294,14 +293,14 @@ def test_must_fix_counting_boundaries(pd, reply, expected):
 def test_t0658_fix1_must_fix_section_end_matrix(pd, boundary, reply, expected):
     """절 종료만 교정하고 표/fence/문서끝 및 최소 들여쓰기 계수 단위는 보존한다."""
     assert boundary
-    assert pd._extract_internal_must_fix_items(reply) == expected
+    assert review_verdict._extract_internal_must_fix_items(reply) == expected
 
 
 def test_t0658_fix1_canonical_markdown_format_judges_pass_and_reject(pd):
     """preamble 표준 `## must-fix` 형식의 통과·반려가 각각 0/1로 판정된다."""
-    passed = pd._internal_reply_outcome(
+    passed = review_verdict._internal_reply_outcome(
         "판정: 통과\n\n## must-fix\n\n- 없음\n\n## 확인 결과\n- 통과 근거\n")
-    rejected = pd._internal_reply_outcome(
+    rejected = review_verdict._internal_reply_outcome(
         "판정: 반려\n\n## must-fix\n\n1. 실제 수정 항목\n\n## 확인 결과\n- 반려 근거\n")
 
     assert (passed.verdict, len(passed.must_fix_items)) == (0, 0)
@@ -318,7 +317,7 @@ def test_t0658_fix1_canonical_markdown_format_judges_pass_and_reject(pd):
     ],
 )
 def test_terminal_judgement_failure_is_unknown_not_zero(pd, reply):
-    assert pd._internal_reply_outcome(reply) == pd.InternalReplyOutcome(None, None)
+    assert review_verdict._internal_reply_outcome(reply) == review_verdict.InternalReplyOutcome(None, None)
 
 
 def test_resolve_offers_only_pm_verified(pd, capsys):

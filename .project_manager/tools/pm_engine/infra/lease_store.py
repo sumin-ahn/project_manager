@@ -474,3 +474,25 @@ def session_name(home, override: str | None = None) -> str | None:
         return leased[0]
     # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 폴백 없음.
     return None
+
+
+def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
+    """PM 홈의 실재 worktree 후보를 lease 장부에서 파생한다(하네스 목록/슬롯 추측 없음)."""
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    try:
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise pm_paths.AnchorResolutionError(f"worktree lease 장부 읽기 실패: {ledger} ({exc})") from exc
+    rows = data.get("leases") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise pm_paths.AnchorResolutionError(f"worktree lease 장부 형식 오류: {ledger}")
+    found: set[Path] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or not isinstance(row.get("slot"), str):
+            raise pm_paths.AnchorResolutionError(f"worktree lease 장부 leases[{index}] 형식 오류: {ledger}")
+        candidate = (pm_home / row["slot"]).resolve()
+        if candidate.is_dir() and (candidate / ".git").exists():
+            found.add(candidate)
+    return tuple(sorted(found))

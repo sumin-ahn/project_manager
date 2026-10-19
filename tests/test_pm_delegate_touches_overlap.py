@@ -17,6 +17,7 @@ from _test_exec import python_argv_command
 from conftest import write_cluster_ledger
 from pm_engine.infra import repo_coordinates
 from pm_engine.domain import ticket_rules
+from pm_engine.domain import delegate_errors
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -63,7 +64,7 @@ def pd():
     def _overlap_architect_tests(rounds, *, required=True):
         try:
             return real_architect_tests(rounds, required=required)
-        except module.DelegateError as exc:
+        except delegate_errors.DelegateError as exc:
             if required and "architect 테스트 계약이 없습니다" in str(exc):
                 return (transport_test,)
             raise
@@ -479,7 +480,7 @@ def test_overlap_calculation_failure_is_loud_but_nonblocking(
     )
 
     def _boom(*a, **k):
-        raise pd.DelegateError("board 조회 불능")
+        raise delegate_errors.DelegateError("board 조회 불능")
 
     monkeypatch.setattr(pd, "claimed_touch_overlaps", _boom)
     fake = _WritingRun(workspace)
@@ -703,8 +704,8 @@ def test_scalar_touches_frontmatter_is_format_unknown(pd, tmp_path):
 
 def test_touch_path_overlap_is_prefix_aware_on_segment_boundaries(pd):
     """접두 판정은 세그먼트 경계다 — `tests` 는 `tests_extra` 를 덮지 않는다."""
-    assert pd._touch_paths_overlap("tests", "tests/x.py")
-    assert pd._touch_paths_overlap("tests/x.py", "tests")
-    assert pd._touch_paths_overlap("tests/x.py", "tests/x.py")
-    assert not pd._touch_paths_overlap("tests", "tests_extra/x.py")
-    assert not pd._touch_paths_overlap("tests/x.py", "tests/y.py")
+    assert ticket_rules._touch_paths_overlap("tests", "tests/x.py")
+    assert ticket_rules._touch_paths_overlap("tests/x.py", "tests")
+    assert ticket_rules._touch_paths_overlap("tests/x.py", "tests/x.py")
+    assert not ticket_rules._touch_paths_overlap("tests", "tests_extra/x.py")
+    assert not ticket_rules._touch_paths_overlap("tests/x.py", "tests/y.py")

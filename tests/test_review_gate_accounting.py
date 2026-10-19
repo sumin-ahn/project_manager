@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -109,7 +110,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
         lambda repo=None: dict(conf) if conf is not None
         else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path)
+        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path)
     monkeypatch.setattr(external, "parse_ticket_touches", lambda ticket, **kwargs: ["x.py"])
     monkeypatch.setattr(
         external, "extract_diff",

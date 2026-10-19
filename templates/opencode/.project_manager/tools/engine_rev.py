@@ -58,7 +58,6 @@ STAMPED_MODULES = (
     "delegate_scope.py",
     "delegate_channel_guard.py",
     "additional_reviewer.py",
-    "ticket_rounds.py",
     "pm_render.py",
     "pm_import.py",
     "pm_log.py",

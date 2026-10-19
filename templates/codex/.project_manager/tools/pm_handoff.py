@@ -148,28 +148,6 @@ def _load_worktree_pool():
     return mod
 
 
-def _load_pm_delegate():
-    """pm_delegate 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
-
-    미마감 raw sweep([6b/7])이 **사본 장부 병기**에만 쓴다 — "이 조회가 안 보는 장부가 어디
-    있는가"는 위임 조회면(`pm_delegate.py raw`)이 이미 판정하므로(`_peer_engine_ledgers`) 그
-    규칙을 재사용한다(같은 판정이 두 곳이면 반드시 갈라진다). 비차단 surface 라 부재/실패는
-    병기만 건너뛴다(핸드오프 불변).
-    """
-    delegate_path = TOOLS_DIR / "pm_delegate.py"
-    if not delegate_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            delegate_path, "pm_delegate.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 병기만 끈다.
-        if _is_engine_rev_skew(exc):
-            raise  # pm_delegate 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
 # ── 미마감 raw sweep ([6b/7] · 비차단 경고 — T-0596) ──────────────────────────
 #
 # 위임/추가 리뷰는 자식 프로세스 실행 **전**에 raw 장부에 미마감 레코드를 예약하고 종료 시 같은
@@ -1972,7 +1950,7 @@ class PmHandoff:
         # sweep 시점에 raw_output 의 기본 위치(`.project_manager/.local/raw_outputs.json`)로 해소한다.
         self._raw_ledger_file = raw_ledger_file
         # 사본 장부 병기 seam — 명시(hermetic 테스트)면 그 목록(`()` = 사본 없음), None(프로덕션)
-        # 이면 sweep 시점에 위임 조회면 판정(`pm_delegate._peer_engine_ledgers`)으로 해소한다.
+        # 이면 sweep 시점에 위임 조회면 판정(`raw_output._peer_engine_ledgers`)으로 해소한다.
         self._peer_raw_ledger_files = peer_raw_ledger_files
         # slot 대시보드 seam — 자기 섹션 overwrite 대상. 명시(hermetic 테스트)면
         # 그 경로, None(프로덕션)이면 write 시 `_dashboard_file()`(호출 시점 REPO 추종)로 해소한다.
@@ -2709,13 +2687,8 @@ class PmHandoff:
             if self._peer_raw_ledger_files is not None:
                 peers: tuple[Path, ...] = tuple(self._peer_raw_ledger_files)
             else:
-                delegate = _load_pm_delegate()
-                if delegate is None:
-                    return ()
-                peers = tuple(delegate._peer_engine_ledgers())
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 병기 실패가 핸드오프를 막지 않는다.
-            if _is_engine_rev_skew(exc):
-                raise  # 사본 skew 는 삼키지 않는다(`_load_pm_delegate` 와 같은 규칙).
+                peers = tuple(raw_output._peer_engine_ledgers(pm_paths.home_at(REPO), None))
+        except Exception:  # noqa: BLE001 — fail-soft: 병기 실패가 핸드오프를 막지 않는다.
             return ()
         return tuple(peer for peer in peers if peer != resolved_primary)
 

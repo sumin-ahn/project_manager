@@ -228,3 +228,27 @@ def _expanded_user_path(value: str) -> Path:
             raise RuntimeError(
                 f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
     return expanded
+
+
+class AnchorResolutionError(RuntimeError):
+    """명시 입력에서 diff/board/config 앵커를 유일하게 해소하지 못한 오류."""
+
+
+def resolve_pm_home_for_repo(anchor: Path) -> Path:
+    """repo/worktree가 소속된 PM 홈을 anchor 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
+
+    판정 입력은 `pm_paths.owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
+    저장소가 소유 PM 홈을 지목하고, 그 홈에 `.project_manager` 가 실재하는지만 확인한다.
+    `.git` 이 없거나 디렉터리인 트리(PM 홈 main checkout·일반 clone)는 자기 자신이라는
+    확정된 답이다. 미지 commondir·`.project_manager` 부재는 `AnchorResolutionError` 다 —
+    자기 앵커로 강등해 계속 진행하지 않는다.
+
+    앵커가 실 board 를 갖는지는 판정 입력이 아니다. 사본 안에 실 ticket 이 있다는 이유로
+    조기 반환하면, 소유자를 확정하지 못한 트리가 휘발 장부에 라운드를 기록할 수 있다.
+    """
+    anchor = anchor.resolve()
+    try:
+        pm_home = owning_pm_home(anchor)
+    except PmHomeResolutionError as exc:
+        raise AnchorResolutionError(str(exc)) from exc
+    return pm_home

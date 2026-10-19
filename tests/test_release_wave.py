@@ -47,6 +47,7 @@ from test_fresh_adopter_runtime_smoke import (
 )
 from pm_engine.infra.harness import watchdog
 from pm_engine.app import regression
+from pm_engine.domain import review_form
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
@@ -134,8 +135,8 @@ def _pm_delegate_contract() -> tuple[str, int, str, int]:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return (
-        mod.PM_REVIEW_BLOCK, mod.PM_REVIEW_VERSION,
-        mod.ARCHITECT_TEST_BLOCK, mod.ARCHITECT_TEST_VERSION,
+        review_form.PM_REVIEW_BLOCK, review_form.PM_REVIEW_VERSION,
+        review_form.ARCHITECT_TEST_BLOCK, review_form.ARCHITECT_TEST_VERSION,
     )
 
 
@@ -633,7 +634,7 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
             f"실 {harness} {path.name}({role})에 harvest sentinel 부재.\n" + tail
         )
         # 첫 줄 헤더(라벨·역할·날짜)는 엔진이 시드하지만 사람 참고용이라 엔진이 재작성을
-        # 강제하지 않는다(ticket_rounds 단일 진실은 파일명의 순번·역할) — 라이브 tier 판정 축은
+        # 강제하지 않는다(`round_rules` 단일 진실은 파일명의 순번·역할) — 라이브 tier 판정 축은
         # 엔진이 실제로 강제하는 성질(sentinel·아래 pm-review-v1 블록)로 좁힌다.
         if role == _REVIEWER_SUBAGENT:
             # 리뷰 라운드는 엔진이 시드한 판정 블록을 담은 채 회수돼야 delta 단계가 선다.

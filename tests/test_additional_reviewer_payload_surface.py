@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import delegate_errors
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -73,7 +75,7 @@ def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(external, "local_config", lambda repo=None: dict(config))
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path,
+        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path,
     )
     monkeypatch.setattr(external, "_resolve_diff_root", lambda *args, **kwargs: tmp_path)
     monkeypatch.setattr(external, "parse_ticket_touches", lambda *args, **kwargs: ["src/"])
@@ -177,11 +179,11 @@ def test_opencode_post_create_containment_failure_cleans_transport(
         seen.append(Path(prompt_file))
         real_assert(cwd, prompt_file)
         if len(seen) == 2:
-            raise delegate.DelegateError("containment 재검사 거부")
+            raise delegate_errors.DelegateError("containment 재검사 거부")
 
     monkeypatch.setattr(delegate, "_assert_opencode_transport_path", _assert)
 
-    with pytest.raises(delegate.DelegateError, match="containment 재검사 거부"):
+    with pytest.raises(delegate_errors.DelegateError, match="containment 재검사 거부"):
         with external._structured_transport(target, "검토 diff", tmp_path):
             pytest.fail("containment 실패 뒤 yield하면 안 된다")
 

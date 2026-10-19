@@ -42,6 +42,8 @@ import pytest
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.domain import design_rules, round_rules
+from pm_engine.infra import round_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -88,7 +90,7 @@ def _template_section(body: str, heading: str) -> str:
 
 _TEMPLATE_FM, _TEMPLATE_BODY = ticket_store.load_ticket(TEMPLATE)
 # 미충전 설계 절 = 출하 템플릿의 그 절 자체(뼈대 문장 4개 포함).
-_DESIGN_SKELETON = _template_section(_TEMPLATE_BODY, board_mod._DESIGN_SECTION)
+_DESIGN_SKELETON = _template_section(_TEMPLATE_BODY, design_rules._DESIGN_SECTION)
 
 # 설계 절을 실값으로 채운 판 — 뼈대 문장 0(하위 항목 이름은 유지).
 _DESIGN_FILLED = (
@@ -117,21 +119,21 @@ def _body(design_section: str = _DESIGN_FILLED) -> str:
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize("value, expected", [
-    ("required", board_mod.DESIGN_REQUIRED),
-    ("done", board_mod.DESIGN_DONE),
-    ("n/a", board_mod.DESIGN_NA),
-    ("  Required  ", board_mod.DESIGN_REQUIRED),   # 공백·대소문자 관대
-    ("N/A", board_mod.DESIGN_NA),
+    ("required", design_rules.DESIGN_REQUIRED),
+    ("done", design_rules.DESIGN_DONE),
+    ("n/a", design_rules.DESIGN_NA),
+    ("  Required  ", design_rules.DESIGN_REQUIRED),   # 공백·대소문자 관대
+    ("N/A", design_rules.DESIGN_NA),
 ])
 def test_design_state_normalizes_three_forms(value, expected):
     """3형식(required/done/n/a)이 정규화 상태로 접힌다."""
-    assert board_mod._design_state(value) == expected
+    assert design_rules._design_state(value) == expected
 
 
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_design_state_missing_field_is_na(value):
     """필드 부재·빈값 = `n/a` — 구세대 티켓(설계 절도 필드도 없음) 하위호환(마이그레이션 불요)."""
-    assert board_mod._design_state(value) == board_mod.DESIGN_NA
+    assert design_rules._design_state(value) == design_rules.DESIGN_NA
 
 
 @pytest.mark.parametrize(
@@ -142,14 +144,14 @@ def test_design_state_rejects_unrecognized_value(value):
     """형식 위반은 `n/a` 로 삼키지 않고 invalid — 오타 하나로 게이트가 조용히 꺼지지 않는다.
 
     폐지된 면제 값(사유가 있든 없든)도 같은 축이다 — 잔존이 조용히 통과하지 않는다."""
-    assert board_mod._design_state(value) == board_mod.DESIGN_INVALID
+    assert design_rules._design_state(value) == design_rules.DESIGN_INVALID
 
 
 @pytest.mark.parametrize("estimate, expected", [
-    ("large", board_mod.DESIGN_REQUIRED),
-    ("medium", board_mod.DESIGN_NA),
-    ("small", board_mod.DESIGN_NA),
-    (None, board_mod.DESIGN_NA),
+    ("large", design_rules.DESIGN_REQUIRED),
+    ("medium", design_rules.DESIGN_NA),
+    ("small", design_rules.DESIGN_NA),
+    (None, design_rules.DESIGN_NA),
 ])
 def test_resolve_design_defaults_by_estimate(estimate, expected):
     """발행 기본값: estimate=large → required · 그 외 n/a (전 티켓 강제 아님)."""
@@ -184,22 +186,22 @@ def test_design_placeholder_tokens_live_in_shipped_template():
     """탐지 토큰이 실제 `_template.md` 설계 절에 리터럴로 존재한다 (setup-rot·drift 가드).
 
     템플릿 문장만 고치고 토큰을 안 고치면 뼈대가 영영 안 잡혀 게이트가 dead 가 된다."""
-    for token in board_mod._DESIGN_PLACEHOLDERS:
+    for token in design_rules._DESIGN_PLACEHOLDERS:
         assert token in _DESIGN_SKELETON, (
             f"설계 뼈대 토큰 {token!r} 이 출하 템플릿에 없음 — 탐지 dead-token.")
-    assert len(board_mod._DESIGN_PLACEHOLDERS) == len(board_mod._DESIGN_PLACEHOLDER_LABELS), \
+    assert len(design_rules._DESIGN_PLACEHOLDERS) == len(design_rules._DESIGN_PLACEHOLDER_LABELS), \
         "토큰과 항목 이름의 개수가 어긋남 — 경고 메시지가 항목을 잘못 지목한다."
 
 
-@pytest.mark.parametrize("token", board_mod._DESIGN_PLACEHOLDERS)
+@pytest.mark.parametrize("token", design_rules._DESIGN_PLACEHOLDERS)
 def test_each_design_placeholder_is_detected(token):
     """뼈대 토큰 하나만 **설계 절에** 남아도 개별 탐지된다 (sensitivity — 검사 누락 방지)."""
     body = _body(_DESIGN_FILLED + f"- 잔존 뼈대: {token}\n\n")
-    issues = board_mod._design_issues("T-0001", body, board_mod.DESIGN_DONE)
+    issues = design_rules._design_issues("T-0001", body, design_rules.DESIGN_DONE)
     assert issues, f"설계 뼈대 토큰 {token!r} 이 탐지되지 않음 — sensitivity 갭."
 
 
-@pytest.mark.parametrize("token", board_mod._DESIGN_PLACEHOLDERS)
+@pytest.mark.parametrize("token", design_rules._DESIGN_PLACEHOLDERS)
 def test_placeholder_quoted_outside_the_design_section_is_not_a_gap(token):
     """설계 절 **밖**(메모·인터페이스)의 뼈대 문장 인용은 미충전이 아니다 — 오탐 0 (T-0600).
 
@@ -207,30 +209,30 @@ def test_placeholder_quoted_outside_the_design_section_is_not_a_gap(token):
     그 인용만으로 "설계 절 미충전" 경고가 뜨고, 채운 티켓이 영영 green 이 되지 않는다.
     """
     body = _body() + f"\n메모: 뼈대 문장 '{token}' 을 인용해 설명한다.\n"
-    assert board_mod._design_issues("T-0001", body, board_mod.DESIGN_DONE) == []
+    assert design_rules._design_issues("T-0001", body, design_rules.DESIGN_DONE) == []
 
 
 def test_required_with_unfilled_section_is_flagged():
     """`design: required` + 뼈대 잔존 → 미충전 항목을 지목한 1건."""
-    issues = board_mod._design_issues("T-0001", _body(_DESIGN_SKELETON),
-                                      board_mod.DESIGN_REQUIRED)
+    issues = design_rules._design_issues("T-0001", _body(_DESIGN_SKELETON),
+                                      design_rules.DESIGN_REQUIRED)
     assert len(issues) == 1
     _tid, kind, detail = issues[0]
     assert kind == "design-pending"
-    for label in board_mod._DESIGN_PLACEHOLDER_LABELS:
+    for label in design_rules._DESIGN_PLACEHOLDER_LABELS:
         assert label in detail, f"미충전 항목 {label!r} 이 경고에 안 실림."
 
 
 def test_required_with_filled_section_still_needs_promotion():
     """설계 절을 다 채워도 `required` 인 한 1건 — `done` 승격(사람 판정)이 남았다."""
-    issues = board_mod._design_issues("T-0001", _body(), board_mod.DESIGN_REQUIRED)
+    issues = design_rules._design_issues("T-0001", _body(), design_rules.DESIGN_REQUIRED)
     assert len(issues) == 1
-    assert board_mod.DESIGN_DONE in issues[0][2], "승격 안내가 경고에 없음."
+    assert design_rules.DESIGN_DONE in issues[0][2], "승격 안내가 경고에 없음."
 
 
 def test_done_with_filled_section_is_clean():
     """설계 절 완성 + `done` → 0건(게이트 통과)."""
-    assert board_mod._design_issues("T-0001", _body(), board_mod.DESIGN_DONE) == []
+    assert design_rules._design_issues("T-0001", _body(), design_rules.DESIGN_DONE) == []
 
 
 def test_done_with_missing_section_is_flagged():
@@ -238,21 +240,21 @@ def test_done_with_missing_section_is_flagged():
 
     엔진이 보는 건 필드값과 절 존재뿐이므로, 절 없는 `done` 은 자기모순으로 잡는다."""
     body = _body("")
-    assert board_mod._DESIGN_SECTION not in body
-    issues = board_mod._design_issues("T-0001", body, board_mod.DESIGN_DONE)
+    assert design_rules._DESIGN_SECTION not in body
+    issues = design_rules._design_issues("T-0001", body, design_rules.DESIGN_DONE)
     assert len(issues) == 1
-    assert board_mod._DESIGN_SECTION in issues[0][2]
+    assert design_rules._DESIGN_SECTION in issues[0][2]
 
 
 @pytest.mark.parametrize("design", [None, "n/a"])
 def test_na_ignores_design_section(design):
     """`n/a`·필드 부재는 설계 절이 뼈대여도 0건 — 설계 오버헤드 역류 차단."""
-    assert board_mod._design_issues("T-0001", _body(_DESIGN_SKELETON), design) == []
+    assert design_rules._design_issues("T-0001", _body(_DESIGN_SKELETON), design) == []
 
 
 def test_invalid_value_is_flagged_once():
     """형식 위반 값은 설계 절과 무관하게 1건(값 자체를 고치라는 안내)."""
-    issues = board_mod._design_issues("T-0001", _body(), "requried")
+    issues = design_rules._design_issues("T-0001", _body(), "requried")
     assert len(issues) == 1 and "requried" in issues[0][2]
 
 
@@ -260,7 +262,7 @@ def test_design_issue_is_single_line_at_most():
     """어떤 조합에서도 최대 1건 — 전역 lint 의 '경고 1줄' 보장."""
     for design in (None, "n/a", "waived: x", "required", "done", "bogus"):  # noqa: E501 — 폐지 값 포함
         for section in (_DESIGN_SKELETON, _DESIGN_FILLED, ""):
-            assert len(board_mod._design_issues("T-0001", _body(section), design)) <= 1
+            assert len(design_rules._design_issues("T-0001", _body(section), design)) <= 1
 
 
 # ── `_body_lint_issues` 편입 (기존 seam 재사용·레거시 호출 무변경) ────────────────
@@ -274,7 +276,7 @@ def test_body_lint_issues_folds_design_verdict():
     """설계 판정이 같은 깔때기(`_body_lint_issues`)로 흘러 authoring 게이트가 재사용한다."""
     issues = board_mod._body_lint_issues("T-0001", _body(_DESIGN_SKELETON),
                                          strict_sections=True,
-                                         design=board_mod.DESIGN_REQUIRED)
+                                         design=design_rules.DESIGN_REQUIRED)
     assert [k for _t, k, _d in issues] == ["design-pending"]
 
 
@@ -359,7 +361,7 @@ def test_cmd_new_large_ticket_defaults_to_design_required(board):
     """estimate=large 발행은 `design: required` 로 박힌다(자동 추론은 이 축 하나뿐)."""
     assert board.cmd_new(_new_args(estimate="large")) == 0
     fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
-    assert fm["design"] == board.DESIGN_REQUIRED
+    assert fm["design"] == design_rules.DESIGN_REQUIRED
 
 
 @pytest.mark.parametrize("estimate", ["small", "medium"])
@@ -367,14 +369,14 @@ def test_cmd_new_small_medium_default_to_na(board, estimate):
     """small/medium 은 `n/a` — 설계 오버헤드가 전 티켓 비용이 되지 않는다."""
     assert board.cmd_new(_new_args(estimate=estimate)) == 0
     fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
-    assert fm["design"] == board.DESIGN_NA
+    assert fm["design"] == design_rules.DESIGN_NA
 
 
 def test_cmd_new_honors_explicit_design(board):
     """`--design required` 명시가 estimate 유도를 덮는다."""
     assert board.cmd_new(_new_args(estimate="small", design="required")) == 0
     fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
-    assert fm["design"] == board.DESIGN_REQUIRED
+    assert fm["design"] == design_rules.DESIGN_REQUIRED
 
 
 def test_cmd_new_rejects_invalid_design_before_writing(board, capsys):
@@ -389,7 +391,7 @@ def test_cmd_new_body_includes_design_section(board):
     assert board.cmd_new(_new_args()) == 0
     _fm, body = ticket_store.load_ticket(
         list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
-    assert board._DESIGN_SECTION in body
+    assert design_rules._DESIGN_SECTION in body
 
 
 # ── claim 게이트 4경로 + 하위호환 ────────────────────────────────────────
@@ -568,22 +570,22 @@ def test_prose_heading_prefix_is_not_the_design_section():
 
     잡히면 그 절 안에 뼈대 문장이 없다는 이유로 `design: done` 이 그냥 통과한다."""
     body = _body("## 설계 검토 이력\n- 2026-08-09 PM 이 구두로 확인했다.\n\n")
-    assert board_mod._design_section_gaps(body) == [
-        f"{board_mod._DESIGN_SECTION} 절 부재"]
-    assert len(board_mod._design_issues("T-0601", body, board_mod.DESIGN_DONE)) == 1
+    assert design_rules._design_section_gaps(body) == [
+        f"{design_rules._DESIGN_SECTION} 절 부재"]
+    assert len(design_rules._design_issues("T-0601", body, design_rules.DESIGN_DONE)) == 1
 
 
 def test_fenced_design_heading_is_not_the_design_section():
     """펜스 안에 인용된 `## 설계` 도 절이 아니다 (선-strip 규율이 존재 축에도 적용)."""
     body = _body("## 참고 인용\n```md\n## 설계\n- **불변식**: 예시다.\n```\n\n")
-    assert board_mod._design_section_gaps(body) == [
-        f"{board_mod._DESIGN_SECTION} 절 부재"]
+    assert design_rules._design_section_gaps(body) == [
+        f"{design_rules._DESIGN_SECTION} 절 부재"]
 
 
 def test_exact_heading_line_is_the_design_section():
     """줄 전체가 `## 설계`(후행 공백 허용)면 그 절이다 — 정상 티켓 무영향."""
-    assert board_mod._design_section_gaps(_body()) == []
-    assert board_mod._design_section_gaps(
+    assert design_rules._design_section_gaps(_body()) == []
+    assert design_rules._design_section_gaps(
         _body(_DESIGN_FILLED.replace("## 설계\n", "## 설계   \n", 1))) == []
 
 
@@ -596,7 +598,7 @@ def test_parenthesized_subtitle_is_still_the_design_section(heading):
     """괄호 부제가 붙은 헤딩은 그 절이다 — 존재 축 강화가 실 사용례를 오차단하면 안 된다.
 
     괄호 없이 이어지는 말(`## 설계 검토 이력`)은 다른 절 제목이라 여전히 차단된다."""
-    assert board_mod._design_section_gaps(
+    assert design_rules._design_section_gaps(
         _body(_DESIGN_FILLED.replace("## 설계\n", f"{heading}\n", 1))) == []
 
 
@@ -616,7 +618,7 @@ def test_subtitled_headings_are_sliced_by_the_same_rule():
 # 절도 `design: done` 을 통과했다 — 뼈대를 지우는 것만으로 claim 게이트가 열린다. 항목 이름은
 # `_DESIGN_PLACEHOLDER_LABELS` 단일 진실을 재사용하고, 값이 실제로 있는지까지 본다.
 
-_DESIGN_LABELS = board_mod._DESIGN_PLACEHOLDER_LABELS
+_DESIGN_LABELS = design_rules._DESIGN_PLACEHOLDER_LABELS
 
 
 @pytest.mark.parametrize("section, reason", [
@@ -626,11 +628,11 @@ _DESIGN_LABELS = board_mod._DESIGN_PLACEHOLDER_LABELS
 ])
 def test_emptied_design_section_no_longer_passes(section, reason):
     """재현: 뼈대를 **삭제한** 설계 절 — placeholder 0 이지만 4항목 전부 미충전으로 잡힌다."""
-    gaps = board_mod._design_section_gaps(_body(section))
+    gaps = design_rules._design_section_gaps(_body(section))
 
     assert gaps == [f"{label} 항목 부재" for label in _DESIGN_LABELS], (
         f"{reason} 절이 통과함(뼈대 삭제 우회): {gaps}")
-    issues = board_mod._design_issues("T-0602", _body(section), board_mod.DESIGN_DONE)
+    issues = design_rules._design_issues("T-0602", _body(section), design_rules.DESIGN_DONE)
     assert len(issues) == 1 and "미충전" in issues[0][2]
 
 
@@ -644,7 +646,7 @@ def test_declared_item_without_a_value_is_a_gap():
         "- **테스트 전략**:   \n\n"
     )
 
-    assert board_mod._design_section_gaps(_body(section)) == [
+    assert design_rules._design_section_gaps(_body(section)) == [
         "불변식 값 없음", "테스트 전략 값 없음"]
 
 
@@ -660,7 +662,7 @@ def test_value_written_as_sub_bullets_is_not_an_empty_value():
         "  - 경계값 3종 · 실패 경로 1종.\n\n"
     )
 
-    assert board_mod._design_section_gaps(_body(section)) == []
+    assert design_rules._design_section_gaps(_body(section)) == []
 
 
 def test_missing_one_item_names_exactly_that_item():
@@ -668,20 +670,20 @@ def test_missing_one_item_names_exactly_that_item():
     section = _DESIGN_FILLED.replace(
         "- **표면 상한**: 입력은 frontmatter 문자열 하나 — 상태 5종으로 유한.\n", "")
 
-    assert board_mod._design_section_gaps(_body(section)) == ["표면 상한 항목 부재"]
+    assert design_rules._design_section_gaps(_body(section)) == ["표면 상한 항목 부재"]
 
 
 def test_skeleton_still_reports_one_gap_per_item():
     """뼈대 잔존 축은 종전대로다 — 항목마다 판정 1건(부재/값 없음과 중복 보고하지 않는다)."""
-    gaps = board_mod._design_section_gaps(_body(_DESIGN_SKELETON))
+    gaps = design_rules._design_section_gaps(_body(_DESIGN_SKELETON))
 
     assert gaps == list(_DESIGN_LABELS), f"뼈대 절 판정이 항목당 1건이 아니다: {gaps}"
 
 
 def test_filled_section_stays_clean_and_claimable():
     """정상 경로 무변경 — 4항목을 실값으로 채운 절은 `design: done` 으로 0건이다."""
-    assert board_mod._design_section_gaps(_body()) == []
-    assert board_mod._design_issues("T-0602", _body(), board_mod.DESIGN_DONE) == []
+    assert design_rules._design_section_gaps(_body()) == []
+    assert design_rules._design_issues("T-0602", _body(), design_rules.DESIGN_DONE) == []
 
 
 @pytest.mark.parametrize("bullet", ["-", "*", "+"])
@@ -690,12 +692,12 @@ def test_item_detection_accepts_all_bullet_markers(bullet):
     lines = "\n".join(
         f"{bullet} {label}: 실값 {index}." for index, label in enumerate(_DESIGN_LABELS, 1))
 
-    assert board_mod._design_section_gaps(_body(f"## 설계\n{lines}\n\n")) == []
+    assert design_rules._design_section_gaps(_body(f"## 설계\n{lines}\n\n")) == []
 
 
 def test_claim_blocked_when_done_but_design_section_is_emptied(board, capsys):
     """claim 게이트 e2e — 뼈대를 지운 빈 설계 절 + `design: done` 은 여전히 차단된다 (DoD)."""
-    _seed_open(board, design=board_mod.DESIGN_DONE, body=_body("## 설계\n\n"))
+    _seed_open(board, design=design_rules.DESIGN_DONE, body=_body("## 설계\n\n"))
 
     assert board.cmd_claim(_claim_args()) == 1
     err = capsys.readouterr().err
@@ -752,7 +754,7 @@ def test_promote_rejects_design_required_with_unfilled_section(board_git, capsys
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
-    assert fm["design"] == board_git.DESIGN_REQUIRED
+    assert fm["design"] == design_rules.DESIGN_REQUIRED
     board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))   # 5절은 채우고 설계만 뼈대
 
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 1
@@ -774,13 +776,13 @@ def test_promote_rejects_design_required_even_when_section_is_filled(board_git, 
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
-    assert fm["design"] == board_git.DESIGN_REQUIRED
+    assert fm["design"] == design_rules.DESIGN_REQUIRED
     board_git.dump_ticket(draft, fm, _body())      # 설계 절까지 전부 충전·필드만 required
 
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 1
     err = capsys.readouterr().err
     assert "design-pending" in err
-    assert board_git.DESIGN_DONE in err, "승격 처방(design: done)이 안내에 없다."
+    assert design_rules.DESIGN_DONE in err, "승격 처방(design: done)이 안내에 없다."
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
     assert not list((board_dir / "tickets" / "open").glob("T-*-*.md"))
@@ -805,7 +807,7 @@ def test_promote_accepts_filled_design_section_with_done(board_git):
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
-    fm["design"] = board_git.DESIGN_DONE
+    fm["design"] = design_rules.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, fm["id"])
 
@@ -822,7 +824,7 @@ def test_promote_unaffected_for_na_ticket_with_skeleton_design(board_git):
     assert board_git.cmd_new(_new_args(estimate="small")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
-    assert fm["design"] == board_git.DESIGN_NA
+    assert fm["design"] == design_rules.DESIGN_NA
     board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
 
     bind_product_cluster(board_git, fm["id"], task=_TASK)
@@ -836,8 +838,8 @@ def test_promote_unaffected_for_na_ticket_with_skeleton_design(board_git):
 
 def test_root_template_declares_design_field_and_section():
     """루트 `_template.md` 가 `design:` 필드(기본 n/a)와 `## 설계` 절을 갖는다."""
-    assert _TEMPLATE_FM.get("design") == board_mod.DESIGN_NA
-    assert board_mod._DESIGN_SECTION in _TEMPLATE_BODY
+    assert _TEMPLATE_FM.get("design") == design_rules.DESIGN_NA
+    assert design_rules._DESIGN_SECTION in _TEMPLATE_BODY
 
 
 @pytest.mark.parametrize("shipped", _SHIPPED_TICKET_TEMPLATES,
@@ -897,12 +899,11 @@ def _seed_harvested_architect_round(board, tid: str) -> None:
 
     헤더 렌더는 라운드 사이드카 seam 을 그대로 쓴다 — 형식 사본을 테스트가 다시 쓰지 않는다.
     """
-    rounds_module = board._load_ticket_rounds()
-    directory = rounds_module.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
+    directory = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
     directory.mkdir(parents=True, exist_ok=True)
-    header = rounds_module.render_round_header(
+    header = round_rules.render_round_header(
         "architect", today=datetime.date.today().isoformat())
-    (directory / rounds_module.round_filename(1, "architect")).write_text(
+    (directory / round_rules.round_filename(1, "architect")).write_text(
         header + "\n## 경계 실측\n- 실측 대조 근거\n",
         encoding="utf-8", newline="\n")
 
@@ -917,7 +918,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
-    assert fm["design"] == board_git.DESIGN_REQUIRED
+    assert fm["design"] == design_rules.DESIGN_REQUIRED
     board_git.dump_ticket(draft, fm, _body())   # 5절 + 설계 절 전부 충전 · 필드만 required
 
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1
@@ -925,11 +926,11 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     assert list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md")), \
         "1차 거부 후 draft 가 .drafts/ 에 남아야 한다."
 
-    assert board_git.main(["design", tid, board_git.DESIGN_DONE]) == 0
+    assert board_git.main(["design", tid, design_rules.DESIGN_DONE]) == 0
     assert "local draft; promote가 출하 소유" in capsys.readouterr().out
     fm, _ = ticket_store.load_ticket(draft)   # 재파싱 성공 = YAML 손상 모드가 닫혔다.
-    assert fm["design"] == board_git.DESIGN_DONE
-    assert board_git._design_state(fm["design"]) == board_git.DESIGN_DONE
+    assert fm["design"] == design_rules.DESIGN_DONE
+    assert design_rules._design_state(fm["design"]) == design_rules.DESIGN_DONE
     # `done` 은 architect 점검 라운드도 함께 요구한다(면제 경로가 없어진 자리) — 실산출 1건.
     _seed_harvested_architect_round(board_git, tid)
 
@@ -955,7 +956,7 @@ def test_design_setter_refuses_the_abolished_exemption_value(board_git, capsys):
     assert board_git.main(["design", tid, "waived: 리뷰 상한 초과"]) == 1
 
     assert "design 값 인식 불가" in capsys.readouterr().err
-    assert ticket_store.load_ticket(draft)[0]["design"] == board_git.DESIGN_REQUIRED
+    assert ticket_store.load_ticket(draft)[0]["design"] == design_rules.DESIGN_REQUIRED
 
 
 @requires_git
@@ -966,7 +967,7 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
-    fm["design"] = board_git.DESIGN_DONE
+    fm["design"] = design_rules.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, tid)
     bind_product_cluster(board_git, tid, task=_TASK)

@@ -44,6 +44,8 @@ from _win_skip import posix_bash_supported
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store, fs, raw_output
 from pm_engine.infra.harness import contract, watchdog
+from pm_engine.domain import delegate_errors
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -172,7 +174,7 @@ def _wire_main(external, monkeypatch, repo: Path, reviewer: _FakeReviewer | None
     """main() 을 tmp repo 로 배선한다 — 앵커·diff 만 스텁하고 그 아래는 실 경로."""
     monkeypatch.setattr(external, "REPO", repo)
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: repo)
+        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: repo)
     monkeypatch.setattr(external, "_resolve_diff_root", lambda *a, **k: repo)
     monkeypatch.setattr(
         external, "extract_diff",
@@ -2041,7 +2043,7 @@ def test_delegate_and_reviewer_reject_the_same_misconfiguration_wording():
     """두 표면의 오설정 진단은 문구까지 같은 소유자에게서 나온다."""
     delegate = _load("pm_delegate")
     external = _load("additional_reviewer")
-    with pytest.raises(delegate.DelegateError) as delegate_error:
+    with pytest.raises(delegate_errors.DelegateError) as delegate_error:
         delegate._validate_reasoning("claude", "minimal", model="m", cwd=REPO)
     target = external.resolve_reviewer_target(
         {"additional_reviewer.harness": "claude",

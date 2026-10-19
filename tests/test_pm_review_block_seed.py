@@ -10,6 +10,9 @@ import re
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
+from pm_engine.infra import delegate_ledger, round_store
+from pm_engine.app import round_seed
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -41,15 +44,15 @@ def _load(path: Path, name: str):
 def _schema_literal_findings(pd, text: str) -> list[tuple[str, int]]:
     """parser 상수에서 파생한 schema family가 한 문단에 복제됐는지 찾는다."""
     families = {
-        "finding-keys": pd.PM_REVIEW_FINDING_KEYS,
-        "confirmation-keys": pd.PM_REVIEW_CONFIRMATION_KEYS,
-        "disposition-keys": pd.PM_REVIEW_DISPOSITION_KEYS,
-        "classes": pd.PM_REVIEW_CLASSES,
-        "confirmation-states": pd.PM_REVIEW_CONFIRMATION_STATES,
+        "finding-keys": review_form.PM_REVIEW_FINDING_KEYS,
+        "confirmation-keys": review_form.PM_REVIEW_CONFIRMATION_KEYS,
+        "disposition-keys": review_form.PM_REVIEW_DISPOSITION_KEYS,
+        "classes": review_form.PM_REVIEW_CLASSES,
+        "confirmation-states": review_form.PM_REVIEW_CONFIRMATION_STATES,
         # T-0786 — dev 재현 커맨드(verify) / PM 기계 확인(machine confirmation) 블록.
-        "verify-keys": pd.PM_REVIEW_VERIFY_ROW_KEYS,
-        "verify-reasons": pd.PM_REVIEW_VERIFY_REASONS,
-        "machine-confirmation-keys": pd.PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS,
+        "verify-keys": review_form.PM_REVIEW_VERIFY_ROW_KEYS,
+        "verify-reasons": review_form.PM_REVIEW_VERIFY_REASONS,
+        "machine-confirmation-keys": review_form.PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS,
     }
     findings: list[tuple[str, int]] = []
     offset = 0
@@ -126,10 +129,9 @@ def _disposition_block(rows: list[dict], *, ordinal: int = 1) -> str:
 
 def _round(pd, ordinal: int, text: str, role: str = "code-reviewer"):
     """라운드 파일 하나 — 순번·역할은 파일 이름이 단일 진실이다([[T-0749]])."""
-    rounds_module = pd._load_ticket_rounds()
-    return rounds_module.Round(
+    return round_rules.Round(
         ordinal=ordinal, role=role,
-        path=Path(rounds_module.round_filename(ordinal, role)),
+        path=Path(round_rules.round_filename(ordinal, role)),
         text=text, pending=False,
     )
 
@@ -141,7 +143,7 @@ def _reviewer_round_text(pd, payload: dict) -> str:
         "## should-fix\n- 없음\n\n"
         "## suggestion\n- 없음\n\n"
         "## 판정\n판정: 반려\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
@@ -163,14 +165,13 @@ _DESIGN_DONE_PREFIX = (
 
 
 def _seeded_round_text(pd, role: str, ticket_text: str = "", previous=None) -> str:
-    rounds_module = pd._load_ticket_rounds()
     if role == "developer" and not ticket_text.startswith("---\n"):
         # T-0815 설계 근거 게이트 관심사 밖 — 이 파일의 축은 골격 렌더러 단일 진실이지
         # 설계 근거가 아니다. 빈 문자열 기본값은 frontmatter 가 없어 그 게이트가 판정불능으로
         # 거부한다 — `done` + 설계 절로 미리 해소한다(명시 ticket_text 를 준 호출은 건드리지
         # 않는다).
         ticket_text = _DESIGN_DONE_PREFIX + ticket_text
-    return rounds_module.render_round_seed(
+    return round_seed.render_round_seed(
         role, ticket_text, today="2026-08-17", previous_round=previous,
     )
 
@@ -186,14 +187,13 @@ def _legacy_reviewer_round(pd, ordinal: int):
 
 def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
     """모든 역할의 라운드 시드는 한 렌더러에서 나온다 — 역할 집합의 권위도 하나다."""
-    rounds_module = pd._load_ticket_rounds()
     # 라운드 역할 집합의 단일 권위는 seam 이고 board 는 사람용 절명만 소유한다.
-    assert set(board.ticket_round_role_labels()) == set(pd.TICKET_COPY_ROLES)
-    assert set(rounds_module.ROLES) == set(pd.TICKET_COPY_ROLES)
-    assert board.ticket_round_role_labels() == rounds_module.ROLE_LABELS
+    assert set(board.ticket_round_role_labels()) == set(delegate_ledger.TICKET_COPY_ROLES)
+    assert set(round_rules.ROLES) == set(delegate_ledger.TICKET_COPY_ROLES)
+    assert board.ticket_round_role_labels() == round_rules.ROLE_LABELS
 
     text = "".join(
-        _seeded_round_text(pd, role) for role in sorted(pd.TICKET_COPY_ROLES)
+        _seeded_round_text(pd, role) for role in sorted(delegate_ledger.TICKET_COPY_ROLES)
     )
     assert "검토 판정: <설계 통과|수정 후 통과|반려>" in text
     assert all(term in text for term in (
@@ -208,7 +208,7 @@ def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
     # 두 리뷰 채널이 각자 접두의 골격을 받는다(판정 표면은 하나·ID 네임스페이스는 분리).
     # 골격 **기본 인자**는 자리표시자 bytes 그대로다 — 추가 리뷰어 프롬프트가 그 골격을 쓴다.
     for role, prefix in (("code-reviewer", "F"), ("additional-reviewer", "X")):
-        default_skeleton = pd.render_pm_review_block_skeleton(role).replace(" ", "")
+        default_skeleton = review_form.render_pm_review_block_skeleton(role).replace(" ", "")
         assert f'"id":"{prefix}-NNN"' in default_skeleton
     # 시드는 다음 finding ID 실값을 싣는다(ID 가 하나도 없는 티켓이면 첫 번호).
     compact = text.replace(" ", "")
@@ -220,32 +220,32 @@ def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
 
 def test_review_seed_follows_parser_class_status_and_key_constants(pd, monkeypatch):
     monkeypatch.setattr(
-        pd, "PM_REVIEW_CLASSES", (*pd.PM_REVIEW_CLASSES, "security-regression"),
+        review_form, "PM_REVIEW_CLASSES", (*review_form.PM_REVIEW_CLASSES, "security-regression"),
     )
     monkeypatch.setattr(
-        pd, "PM_REVIEW_CONFIRMATION_STATES",
-        (*pd.PM_REVIEW_CONFIRMATION_STATES, "not-retested"),
+        review_form, "PM_REVIEW_CONFIRMATION_STATES",
+        (*review_form.PM_REVIEW_CONFIRMATION_STATES, "not-retested"),
     )
     monkeypatch.setattr(
-        pd, "PM_REVIEW_FINDING_KEYS", (*pd.PM_REVIEW_FINDING_KEYS, "impact"),
+        review_form, "PM_REVIEW_FINDING_KEYS", (*review_form.PM_REVIEW_FINDING_KEYS, "impact"),
     )
     monkeypatch.setattr(
-        pd, "PM_REVIEW_CONFIRMATION_KEYS",
-        (*pd.PM_REVIEW_CONFIRMATION_KEYS, "environment"),
+        review_form, "PM_REVIEW_CONFIRMATION_KEYS",
+        (*review_form.PM_REVIEW_CONFIRMATION_KEYS, "environment"),
     )
-    rendered = pd.render_ticket_growth_section_seed("code-reviewer", "")
+    rendered = round_seed.render_ticket_growth_section_seed("code-reviewer", "")
     payload = json.loads(rendered.split("```pm-review-v1\n", 1)[1].split("\n```", 1)[0])
     finding = payload["findings"][0]
     confirmation = payload["confirmations"][0]
     assert "security-regression" in finding["class"]
     assert "not-retested" in confirmation["status"]
-    assert set(finding) == set(pd.PM_REVIEW_FINDING_KEYS) and finding["impact"] == ""
-    assert set(confirmation) == set(pd.PM_REVIEW_CONFIRMATION_KEYS)
+    assert set(finding) == set(review_form.PM_REVIEW_FINDING_KEYS) and finding["impact"] == ""
+    assert set(confirmation) == set(review_form.PM_REVIEW_CONFIRMATION_KEYS)
     assert confirmation["environment"] == ""
 
 
 def test_review_seed_pins_current_parser_schema_contract(pd):
-    rendered = pd.render_ticket_growth_section_seed("code-reviewer", "")
+    rendered = round_seed.render_ticket_growth_section_seed("code-reviewer", "")
     payload = json.loads(rendered.split("```pm-review-v1\n", 1)[1].split("\n```", 1)[0])
     assert payload["findings"][0]["class"] == (
         "<implementation-defect|spec-violation|design-proposal>"
@@ -275,7 +275,7 @@ def _seed_payload(rendered: str) -> dict:
 def test_confirmation_round_prefills_every_id_from_previous_round_file(pd):
     """확인 대상 프리필의 입력은 같은 역할의 **직전 라운드 파일**이다([[T-0749]] F-007)."""
     previous = _reviewer_round(pd, _review_payload("F-003", "F-001"))
-    rendered = pd.render_ticket_growth_section_seed(
+    rendered = round_seed.render_ticket_growth_section_seed(
         "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
     )
     payload = _seed_payload(rendered)
@@ -291,7 +291,7 @@ def test_confirmation_seed_excludes_previous_rejected_findings(pd):
         _decision("F-001", "accepted"),
         _decision("F-002", "rejected"),
     ], ordinal=previous.ordinal)
-    rendered = pd.render_ticket_growth_section_seed(
+    rendered = round_seed.render_ticket_growth_section_seed(
         "code-reviewer", spec, previous_round=(previous.ordinal, previous.text),
     )
     payload = _seed_payload(rendered)
@@ -299,7 +299,7 @@ def test_confirmation_seed_excludes_previous_rejected_findings(pd):
 
 
 def test_first_round_seed_has_no_previous_input(pd):
-    rendered = pd.render_ticket_growth_section_seed("code-reviewer", "")
+    rendered = round_seed.render_ticket_growth_section_seed("code-reviewer", "")
     payload = _seed_payload(rendered)
     assert [row["id"] for row in payload["confirmations"]] == ["F-NNN"]
 
@@ -307,66 +307,65 @@ def test_first_round_seed_has_no_previous_input(pd):
 def test_unedited_seed_is_malformed_review_output(pd):
     """시드 그대로인 라운드는 판정 표면에 올라도 malformed 다(산출이 없다)."""
     seed = _seeded_round_text(pd, "code-reviewer")
-    with pytest.raises(pd.PMReviewError) as caught:
-        pd.parse_pm_review_delta("", [_round(pd, 1, seed)])
+    with pytest.raises(review_form.PMReviewError) as caught:
+        review_state.parse_pm_review_delta("", [_round(pd, 1, seed)])
     assert caught.value.code == "malformed"
 
 
 def test_seed_round_is_judged_pending_by_the_rounds_seam(pd):
     """'산출 없음' 판정은 라운드 seam 이 소유한다 — 회수는 그 판정만 본다."""
-    rounds_module = pd._load_ticket_rounds()
     for role in ("developer", "code-reviewer", "additional-reviewer"):
         seed = _seeded_round_text(pd, role)
-        item = rounds_module.Round(
+        item = round_rules.Round(
             ordinal=1, role=role,
-            path=Path(rounds_module.round_filename(1, role)),
+            path=Path(round_rules.round_filename(1, role)),
             text=seed, pending=False,
         )
-        assert rounds_module.round_is_pending(item) is True
-        edited = rounds_module.Round(*item[:3], item.text + "\n실산출\n", False)
-        assert rounds_module.round_is_pending(edited) is False
+        assert round_seed.round_is_pending(item) is True
+        edited = round_rules.Round(*item[:3], item.text + "\n실산출\n", False)
+        assert round_seed.round_is_pending(edited) is False
 
 
 def test_review_seed_renders_parser_owned_concrete_contract_rule(pd):
     """native reviewer도 external prompt와 같은 parser 금지어 원천을 시드에서 받는다."""
-    body = pd.render_ticket_growth_section_seed("code-reviewer", "")
+    body = round_seed.render_ticket_growth_section_seed("code-reviewer", "")
     rule = body.split("<!-- ", 1)[1].split(" -->", 1)[0]
-    assert rule == pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE
-    for word in pd.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS:
+    assert rule == review_form.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE
+    for word in review_form.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS:
         assert word in rule
-    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", body) is True
 
 
 def test_review_seed_without_concrete_contract_notice_remains_legacy_pending(pd):
     """업그레이드 전에 예약된 무편집 seed는 새 안내 추가만으로 산출 있음이 되지 않는다."""
-    legacy = pd._render_review_round_seed_body(
+    legacy = round_seed._render_review_round_seed_body(
         "code-reviewer", ["F-NNN"], "F-001", contract_rule=None,
     )
-    assert pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE not in legacy
-    assert pd.ticket_round_body_is_pending("code-reviewer", legacy) is True
+    assert review_form.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE not in legacy
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", legacy) is True
 
 
 def test_legacy_scope_with_current_contract_notice_remains_pending(pd):
     """스코프 문구 세대와 계약 안내 세대는 독립 축이라 모든 무편집 조합을 읽는다."""
-    body = pd._render_review_round_seed_body(
+    body = round_seed._render_review_round_seed_body(
         "code-reviewer", ["F-001"], "F-002",
-        scope_rule=pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
+        scope_rule=review_form.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
     )
-    assert pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE in body
-    assert pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0] in body
-    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+    assert review_form.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE in body
+    assert review_form.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0] in body
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", body) is True
 
 
 def test_legacy_contract_notice_remains_pending(pd, monkeypatch):
     """계약 안내 문구 교체 전 예약된 무편집 seed도 세대 목록으로 계속 pending이다."""
     legacy_rule = "옛 구체값 계약 문구"
     monkeypatch.setattr(
-        pd, "LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES", (legacy_rule,),
+        review_form, "LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES", (legacy_rule,),
     )
-    body = pd._render_review_round_seed_body(
+    body = round_seed._render_review_round_seed_body(
         "code-reviewer", ["F-001"], "F-002", contract_rule=legacy_rule,
     )
-    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+    assert round_seed.ticket_round_body_is_pending("code-reviewer", body) is True
 
 
 def test_pending_judgment_reads_only_the_round_body(pd):
@@ -378,23 +377,23 @@ def test_pending_judgment_reads_only_the_round_body(pd):
     assert '"id":"F-003"' in prefilled.replace(" ", "")
 
     # 같은 골격을 서로 다른 날짜·명세로 지어도 판정은 같다(자리표시자 = 산출 없음).
-    assert pd.ticket_round_body_is_pending(
+    assert round_seed.ticket_round_body_is_pending(
         "code-reviewer", prefilled.partition("\n")[2].lstrip("\n"),
     ) is True
     for text in (prefilled, _seeded_round_text(pd, "code-reviewer")):
-        assert pd._load_ticket_rounds().round_is_pending(
+        assert round_seed.round_is_pending(
             _round(pd, 2, text),
         ) is True
 
     # 자리표시자를 실값으로 바꾸면 산출이다(ID 만 자유롭다).
     filled = prefilled.replace("<resolved|unresolved|regressed>", "resolved")
-    assert pd._load_ticket_rounds().round_is_pending(_round(pd, 2, filled)) is False
+    assert round_seed.round_is_pending(_round(pd, 2, filled)) is False
 
 
 def test_legacy_previous_round_prefill_degrades_to_placeholder(pd, capsys):
     """직전 라운드가 versioned block 이전 산출이면 자리표시자로 강등하고 loud 하게 알린다."""
     previous = _legacy_reviewer_round(pd, 1)
-    rendered = pd.render_ticket_growth_section_seed(
+    rendered = round_seed.render_ticket_growth_section_seed(
         "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
     )
     payload = _seed_payload(rendered)
@@ -409,7 +408,7 @@ def test_refused_previous_round_is_not_a_prefill_source(pd):
         + pd.ADDITIONAL_REVIEWER_REFUSED_LINE + "\n\n"
         + _reviewer_round_text(pd, _review_payload("X-001")).partition("\n")[2]
     )
-    rendered = pd.render_ticket_growth_section_seed(
+    rendered = round_seed.render_ticket_growth_section_seed(
         "additional-reviewer", "", previous_round=(1, refused_text),
     )
     payload = _seed_payload(rendered)
@@ -418,17 +417,17 @@ def test_refused_previous_round_is_not_a_prefill_source(pd):
 
 def test_the_refused_marker_line_is_read_back_for_every_round_role(pd):
     """표식 발행 문법과 판독이 갈리지 않는다 — 역할 전수로 왕복을 고정한다."""
-    for role in sorted(pd.TICKET_COPY_ROLES):
+    for role in sorted(delegate_ledger.TICKET_COPY_ROLES):
         line = pd.pm_review_refused_line(role)
-        assert pd.pm_review_refused_marker_present(line) is True, role
-        assert pd.pm_review_refused_marker_present(f"머리\n{line}\n꼬리\n") is True, role
+        assert review_form.pm_review_refused_marker_present(line) is True, role
+        assert review_form.pm_review_refused_marker_present(f"머리\n{line}\n꼬리\n") is True, role
     # 옛 산출에 이미 박혀 있는 줄은 새 문법의 인스턴스다(마이그레이션 없음).
     assert pd.ADDITIONAL_REVIEWER_REFUSED_LINE == pd.pm_review_refused_line(
-        pd.ADDITIONAL_REVIEWER_ROLE,
+        review_form.ADDITIONAL_REVIEWER_ROLE,
     )
-    assert pd.pm_review_refused_marker_present(pd.ADDITIONAL_REVIEWER_REFUSED_LINE) is True
+    assert review_form.pm_review_refused_marker_present(pd.ADDITIONAL_REVIEWER_REFUSED_LINE) is True
     # 표식이 없는 본문은 판독 0 이다(존재가 아니라 문법을 본다).
-    assert pd.pm_review_refused_marker_present(
+    assert review_form.pm_review_refused_marker_present(
         "<!-- pm-review-refused -->\n<!-- pm-review-refused role= -->\n",
     ) is False
 
@@ -447,18 +446,18 @@ def test_a_marked_round_leaves_the_surface_whatever_its_role(pd, capsys):
     marked = _round(pd, 2, marked_text)
 
     rounds = [landed, marked]
-    assert pd._pm_review_refused_rounds(rounds) == {("code-reviewer", 2)}
-    assert [item.ordinal for item in pd._pm_review_surface_rounds(rounds)] == [1]
+    assert review_state._pm_review_refused_rounds(rounds) == {("code-reviewer", 2)}
+    assert [item.ordinal for item in review_state._pm_review_surface_rounds(rounds)] == [1]
     assert "F-001" in pd.render_pm_review_disposition_template("", rounds)
     # `review delta` 도 그 라운드를 읽지 않는다 — 남는 사유는 PM 미판정(정상 상태)이지
     # 자리표시 블록의 malformed 가 아니다(표식이 없으면 그쪽이 티켓 전체를 막는다).
-    with pytest.raises(pd.PMReviewError) as caught:
-        pd.parse_pm_review_delta("", rounds)
+    with pytest.raises(review_form.PMReviewError) as caught:
+        review_state.parse_pm_review_delta("", rounds)
     assert "F-001" in str(caught.value) and "finding.class" not in str(caught.value)
 
     # 표식 라운드를 직전 라운드로 준 시드는 자리표시자 골격으로 남는다(강등 경고 없이).
     capsys.readouterr()
-    payload = _seed_payload(pd.render_ticket_growth_section_seed(
+    payload = _seed_payload(round_seed.render_ticket_growth_section_seed(
         "code-reviewer", "", previous_round=(2, marked_text),
     ))
     assert [row["id"] for row in payload["confirmations"]] == ["F-NNN"]
@@ -467,14 +466,13 @@ def test_a_marked_round_leaves_the_surface_whatever_its_role(pd, capsys):
 
 def _materialize(pd, spec: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:
     """명세 파일 하나 + `rounds/<id>/NN-<role>.md` 를 실제로 깐다(CLI 경로 입력)."""
-    rounds_module = pd._load_ticket_rounds()
     spec_path = tickets_dir / "claimed" / f"{ticket_id}-review.md"
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(spec, encoding="utf-8", newline="")
-    rounds_dir = rounds_module.rounds_dir_for_ticket(ticket_id, tickets_dir)
+    rounds_dir = round_store.rounds_dir_for_ticket(ticket_id, tickets_dir)
     rounds_dir.mkdir(parents=True, exist_ok=True)
     for item in rounds:
-        (rounds_dir / rounds_module.round_filename(item.ordinal, item.role)).write_text(
+        (rounds_dir / round_rules.round_filename(item.ordinal, item.role)).write_text(
             item.text, encoding="utf-8", newline="",
         )
     return spec_path
@@ -499,7 +497,7 @@ def test_disposition_template_prefills_all_pending_ids_and_filled_block_passes(p
     )
     assert payload["reviewer_ordinal"] == 1
     assert [row["id"] for row in payload["dispositions"]] == ["F-002", "F-001"]
-    assert all(set(row) == set(pd.PM_REVIEW_DISPOSITION_KEYS)
+    assert all(set(row) == set(review_form.PM_REVIEW_DISPOSITION_KEYS)
                for row in payload["dispositions"])
 
     for row in payload["dispositions"]:
@@ -509,7 +507,7 @@ def test_disposition_template_prefills_all_pending_ids_and_filled_block_passes(p
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
-    delta = pd.parse_pm_review_delta(filled, [reviewer])
+    delta = review_state.parse_pm_review_delta(filled, [reviewer])
     assert [finding.id for finding, _decision in delta.accepted] == ["F-002", "F-001"]
 
 
@@ -538,7 +536,7 @@ def test_disposition_template_preserves_existing_rows_and_replaces_partial_block
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
-    delta = pd.parse_pm_review_delta(replacement, [reviewer])
+    delta = review_state.parse_pm_review_delta(replacement, [reviewer])
     assert [finding.id for finding, _row in delta.accepted] == ["F-002"]
 
 
@@ -553,7 +551,7 @@ def test_disposition_template_rejects_confirmation_only_round(
             "id": "F-001", "status": "resolved", "evidence": "회귀 통과",
         }],
     }, ordinal=2)
-    with pytest.raises(pd.DelegateError, match="confirmation-only.*신규 finding이 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="confirmation-only.*신규 finding이 없습니다"):
         pd.render_pm_review_disposition_template("", [first, second], 2)
 
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
@@ -604,9 +602,9 @@ def test_disposition_template_cli_and_pending_error_prescribe_same_command(
 
 def test_schema_literal_guard_derives_tokens_from_parser_constants(pd, monkeypatch):
     monkeypatch.setattr(
-        pd, "PM_REVIEW_FINDING_KEYS", (*pd.PM_REVIEW_FINDING_KEYS, "impact-probe"),
+        review_form, "PM_REVIEW_FINDING_KEYS", (*review_form.PM_REVIEW_FINDING_KEYS, "impact-probe"),
     )
-    sample = "schema: " + ",".join(pd.PM_REVIEW_FINDING_KEYS)
+    sample = "schema: " + ",".join(review_form.PM_REVIEW_FINDING_KEYS)
     assert ("finding-keys", 1) in _schema_literal_findings(pd, sample)
     assert _schema_literal_findings(pd, sample.replace("impact-probe", "other")) == []
 

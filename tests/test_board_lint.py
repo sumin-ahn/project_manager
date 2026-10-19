@@ -30,6 +30,9 @@ from _win_skip import _can_symlink
 from pm_engine.domain import conf_schema, ticket_rules
 from pm_engine.infra import conf_store, manifest_store, pm_paths, pre_push_hook, python_env, ticket_store
 from conftest import ensure_product_slot
+from pm_engine.domain import round_rules
+from pm_engine.infra import round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -3269,7 +3272,7 @@ ROUND_DATE = "2026-01-02"
 
 
 def _lint_round(board, tid: str, name: str, text: str) -> Path:
-    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
+    path = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="")
     return path
@@ -3277,9 +3280,8 @@ def _lint_round(board, tid: str, name: str, text: str) -> Path:
 
 def test_round_problem_kinds_are_the_seam_codes_and_never_block(board):
     """lint kind = seam 판정 코드 그대로 · 전부 advisory (차단은 완료 게이트 하나)."""
-    rounds = board._load_ticket_rounds()
-    for code in (rounds.PROBLEM_NAME, rounds.PROBLEM_GAP,
-                 rounds.PROBLEM_DUPLICATE, rounds.PROBLEM_PENDING):
+    for code in (round_rules.PROBLEM_NAME, round_rules.PROBLEM_GAP,
+                 round_rules.PROBLEM_DUPLICATE, round_rules.PROBLEM_PENDING):
         assert code in board._ADVISORY_LINT_KINDS, code
     for kind in (board._ROUND_TEMPORARY_LINT_KIND, board._ROUND_STRAY_LINT_KIND,
                  board._ROUND_UNREADABLE_LINT_KIND):
@@ -3289,19 +3291,18 @@ def test_round_problem_kinds_are_the_seam_codes_and_never_block(board):
 def test_lint_rounds_surfaces_gap_and_pending(board, monkeypatch, tmp_path):
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3001")
-    rounds = board._load_ticket_rounds()
     _lint_round(board, "T-3001", "01-developer.md",
                 "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
     _lint_round(board, "T-3001", "03-code-reviewer.md",
-                rounds.render_round_seed(
+                round_seed.render_round_seed(
                     "code-reviewer", path.read_text(encoding="utf-8"), today="2026-01-02"))
 
     issues = board.lint_rounds()
 
     kinds = {kind for _name, kind, _detail in issues}
-    assert kinds == {rounds.PROBLEM_GAP, rounds.PROBLEM_PENDING}, issues
+    assert kinds == {round_rules.PROBLEM_GAP, round_rules.PROBLEM_PENDING}, issues
     assert all(name == "T-3001" for name, _kind, _detail in issues)
-    assert any("02" in detail for _n, kind, detail in issues if kind == rounds.PROBLEM_GAP)
+    assert any("02" in detail for _n, kind, detail in issues if kind == round_rules.PROBLEM_GAP)
 
 
 def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
@@ -3313,10 +3314,11 @@ def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
     """
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3020")
-    rounds = board._load_ticket_rounds()
-    seed = rounds.render_round_seed(
+    seed = round_seed.render_round_seed(
         "code-reviewer", path.read_text(encoding="utf-8"), today=ROUND_DATE)
-    marker = rounds._load_pm_delegate().pm_review_refused_line("code-reviewer")
+    marker = _load_module(
+        "pm_delegate_lint", BOARD_PY.with_name("pm_delegate.py"),
+    ).pm_review_refused_line("code-reviewer")
     _lint_round(board, "T-3020", "01-developer.md",
                 f"## 구현 보충 (developer · {ROUND_DATE})\n\n실제 산출.\n")
     _lint_round(board, "T-3020", "02-code-reviewer.md", seed)
@@ -3325,7 +3327,7 @@ def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
     issues = board.lint_rounds()
 
     assert [(name, kind) for name, kind, _detail in issues] == [
-        ("T-3020", rounds.PROBLEM_PENDING)]
+        ("T-3020", round_rules.PROBLEM_PENDING)]
     assert "02-code-reviewer.md" in issues[0][2]
 
 
@@ -3333,11 +3335,10 @@ def test_lint_rounds_reports_engine_temporary_leftovers(board, monkeypatch, tmp_
     """점-접두 잔여(교체 중 크래시)는 라운드가 아니므로 seam 판정 밖이다 — 여기서 보이게 한다."""
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "claimed", "T-3002")
-    rounds = board._load_ticket_rounds()
     _lint_round(board, "T-3002", "01-developer.md",
                 "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
-    leftover = (f"{rounds.ROUND_TEMPORARY_PREFIX}01-developer.md.1234.deadbeef"
-                f"{rounds.ROUND_TEMPORARY_SUFFIX}")
+    leftover = (f"{round_store.ROUND_TEMPORARY_PREFIX}01-developer.md.1234.deadbeef"
+                f"{round_store.ROUND_TEMPORARY_SUFFIX}")
     _lint_round(board, "T-3002", leftover, "부분 쓰기\n")
 
     issues = board.lint_rounds()
@@ -3370,7 +3371,6 @@ def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_land
     """같은 역할 병렬 2라운드 — 01 회수가 02 의 미회수 판정을 지우지 않는다."""
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3011")
-    rounds = board._load_ticket_rounds()
     spec_text = path.read_text(encoding="utf-8")
     block = json.dumps({
         "version": 2,
@@ -3389,13 +3389,13 @@ def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_land
     )
     _lint_round(
         board, "T-3011", "02-code-reviewer.md",
-        rounds.render_round_seed("code-reviewer", spec_text, today="2026-01-02"),
+        round_seed.render_round_seed("code-reviewer", spec_text, today="2026-01-02"),
     )
 
     issues = board.lint_rounds()
 
     assert [(name, kind) for name, kind, _detail in issues] == [
-        ("T-3011", rounds.PROBLEM_PENDING)]
+        ("T-3011", round_rules.PROBLEM_PENDING)]
     assert "02-code-reviewer.md" in issues[0][2]
 
 
@@ -3407,7 +3407,7 @@ def test_lint_rounds_surfaces_a_file_sitting_where_a_ticket_directory_belongs(
     _lint_ticket(board, "claimed", "T-3012")
     _lint_round(board, "T-3012", "01-developer.md",
                 "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
-    stray = board._load_ticket_rounds().rounds_dir(pm_paths.tickets_dir(board._home())) / "NOTES.md"
+    stray = round_store.rounds_dir(pm_paths.tickets_dir(board._home())) / "NOTES.md"
     stray.write_text("라운드 디렉터리가 아니다\n", encoding="utf-8")
 
     issues = board.lint_rounds()
@@ -3421,19 +3421,18 @@ def test_lint_rounds_fail_soft_boundary_is_one_ticket(board, monkeypatch, tmp_pa
     """한 티켓의 판정 실패가 다른 티켓의 판정을 통째로 버리지 않는다."""
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3013")
-    rounds = board._load_ticket_rounds()
     _lint_round(board, "T-3013", "01-developer.md",
-                rounds.render_round_seed(
+                round_seed.render_round_seed(
                     "developer", path.read_text(encoding="utf-8"), today="2026-01-02"))
     # 판정 자체가 불가능한 이름(플랫폼 예약 장치명) — seam 이 loud 하게 거부한다.
-    unreadable = rounds.rounds_dir(pm_paths.tickets_dir(board._home())) / "CON"
+    unreadable = round_store.rounds_dir(pm_paths.tickets_dir(board._home())) / "CON"
     unreadable.mkdir(parents=True, exist_ok=True)
 
     issues = board.lint_rounds()
 
     assert sorted((name, kind) for name, kind, _detail in issues) == [
         ("CON", board._ROUND_UNREADABLE_LINT_KIND),
-        ("T-3013", rounds.PROBLEM_PENDING),
+        ("T-3013", round_rules.PROBLEM_PENDING),
     ]
 
 

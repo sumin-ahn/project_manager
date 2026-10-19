@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import review_verdict
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / ".project_manager" / "tools"
@@ -83,7 +84,7 @@ def test_detector_sees_every_verdict_line_the_parser_can_pick(external):
     파서는 선언 목록의 **첫 줄**을 판정으로 쓰고 검출기는 **전량**을 본다(= 검출기 ⊇ 파서).
     """
     output = "판정: 반려\n\n**must-fix**:\n- 옛 지적\n\n판정: 통과\n"
-    words = external.verdict_words(output)
+    words = review_verdict.verdict_words(output)
     assert words == ("반려", "통과")
     assert external.parse_verdict(output)["has_must_fix"] is True  # 파서는 첫 줄(반려)을 집는다.
     contamination = external.detect_output_contamination(output)
@@ -100,7 +101,7 @@ def test_prose_verdict_inside_a_sentence_is_not_a_declaration(external):
         "참고: 이전 라운드에서는 판정: 반려 였다.\n\n"
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     )
-    assert external.verdict_words(output) == ("통과",)
+    assert review_verdict.verdict_words(output) == ("통과",)
     assert external.detect_output_contamination(output).verdict_conflict is False
     assert external.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
 
@@ -113,7 +114,7 @@ def test_prose_verdict_inside_a_sentence_is_not_a_declaration(external):
 ))
 def test_format_noncompliant_prose_verdict_is_never_a_pass(external, tmp_path, prose):
     """형식 미준수 출력은 통과로 접지 않는다 — 앵커 판정선 0개면 '판정 불명확'(exit 1)."""
-    assert external.verdict_words(prose) == ()
+    assert review_verdict.verdict_words(prose) == ()
     assert external.parse_verdict(prose)["has_pass"] is False
     result = external.run_review(
         "p", target=_direct_target(external), output_dir=tmp_path,
@@ -135,7 +136,7 @@ def test_prose_fallback_stays_off_when_a_declaration_exists(external):
 @pytest.mark.parametrize("word", ("[통과", "비통과", "PASS/REJECT", "통과|반려", "미정"))
 def test_only_exact_verdict_tokens_count_as_a_verdict(external, word):
     """부분 문자열이면 템플릿 echo·부정형·선택지 나열이 전부 '통과'로 읽힌다(false-green 실측)."""
-    assert external.verdict_kind(word) == external.VERDICT_UNKNOWN
+    assert review_verdict.verdict_kind(word) == review_verdict.VERDICT_UNKNOWN
 
 
 @pytest.mark.parametrize("word,kind", (
@@ -144,7 +145,7 @@ def test_only_exact_verdict_tokens_count_as_a_verdict(external, word):
 ))
 def test_exact_tokens_survive_emphasis_and_sentence_punctuation(external, word, kind):
     """강조/문장부호만 벗긴다 — 정상 형식이 정확일치 때문에 불명확이 되면 안 된다."""
-    assert external.verdict_kind(word) == kind
+    assert review_verdict.verdict_kind(word) == kind
 
 
 def test_prompt_template_echo_is_not_a_pass(external, tmp_path):
@@ -153,7 +154,7 @@ def test_prompt_template_echo_is_not_a_pass(external, tmp_path):
         "판정: [통과 | 반려]\n\n**must-fix** (반드시 수정):\n- 없음\n\n"
         "**suggestion** (권장):\n- 없음\n"
     )
-    assert external.verdict_words(echoed) == ("[통과",)
+    assert review_verdict.verdict_words(echoed) == ("[통과",)
     assert external.parse_verdict(echoed)["has_pass"] is False
     result = external.run_review(
         "p", target=_direct_target(external), output_dir=tmp_path,
@@ -310,7 +311,7 @@ def test_quoted_and_fenced_verdicts_count_for_neither_parser_nor_detector(extern
     좁히는 규칙을 한쪽에만 걸면 오탐이 남거나 "검출기 ⊇ 파서" 성질이 깨진다.
     """
     output = wrapped + "\n판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
-    assert external.verdict_words(output) == ("통과",)
+    assert review_verdict.verdict_words(output) == ("통과",)
     assert external.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
     assert external.detect_output_contamination(output).verdict_conflict is False
 

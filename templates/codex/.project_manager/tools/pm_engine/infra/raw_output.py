@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Iterable, Iterator, NamedTuple
 
-from pm_engine.infra import fs
+from pm_engine.infra import fs, lease_store, pm_paths
 
 
 # 위임/추가 리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래
@@ -428,3 +428,39 @@ def scan_orphan_raw_files(
     return OrphanRawSummary(
         count=len(orphans), total_bytes=total_bytes, paths=tuple(orphans),
     )
+
+
+def _peer_engine_ledgers(home, config_repo_override: Path | None) -> tuple[Path, ...]:
+    """현재 엔진과 같은 PM 홈 계열의 다른 사본이 소유한 기본 장부를 찾는다.
+
+    PM 홈의 실 board + ``work/*`` 관례는 기존 재앵커 판정과 같은 물리 증거다. 후보는 실제
+    ``pm_delegate.py`` 사본과 기본 장부 파일을 모두 가져야 한다. 장부 내용은 읽지 않으며,
+    조회 대상을 다른 사본으로 바꾸지도 않는다.
+    """
+    try:
+        current = home.root.resolve()
+        pm_home = (config_repo_override or
+                   pm_paths.resolve_pm_home_for_repo(current)).resolve()
+        candidates = [pm_home, *lease_store._registered_worktrees(pm_home)]
+        ledgers: set[Path] = set()
+        for repo in candidates:
+            resolved_repo = repo.resolve()
+            if resolved_repo == current:
+                continue
+            engine = (
+                resolved_repo
+                / ".project_manager"
+                / "tools"
+                / "pm_delegate.py"
+            )
+            ledger = (
+                resolved_repo
+                / ".project_manager"
+                / ".local"
+                / "raw_outputs.json"
+            )
+            if engine.is_file() and ledger.is_file():
+                ledgers.add(ledger.resolve())
+        return tuple(sorted(ledgers))
+    except (OSError, RuntimeError, AttributeError, ImportError):
+        return ()

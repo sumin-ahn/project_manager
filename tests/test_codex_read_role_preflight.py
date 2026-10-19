@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import raw_output
+from pm_engine.domain import delegate_errors
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -109,7 +110,7 @@ def test_non_repo_cwd_blocks_before_spawn(pd, tmp_path, monkeypatch):
 
     monkeypatch.setattr(pd.subprocess, "run", run)
 
-    with pytest.raises(pd.DelegateError, match="git 저장소가 아님"):
+    with pytest.raises(delegate_errors.DelegateError, match="git 저장소가 아님"):
         _run_attempt(
             pd, harness="codex", role="code-reviewer", cwd=cwd, tmp_path=tmp_path,
             run_fn=_fail_if_called,
@@ -128,7 +129,7 @@ def test_subdirectory_cwd_toplevel_mismatch_blocks(pd, tmp_path):
     cwd = repo / "sub"
     cwd.mkdir()
 
-    with pytest.raises(pd.DelegateError, match="실행 root 불일치"):
+    with pytest.raises(delegate_errors.DelegateError, match="실행 root 불일치"):
         _run_attempt(
             pd, harness="codex", role="code-reviewer", cwd=cwd, tmp_path=tmp_path,
             run_fn=_fail_if_called,

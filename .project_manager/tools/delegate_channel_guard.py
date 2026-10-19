@@ -28,6 +28,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.app.session import relay  # noqa: E402
+from pm_engine.domain import delegate_errors  # noqa: E402
 from pm_engine.infra import console, fs, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
@@ -312,7 +313,7 @@ def _resolved_mapping(
         harness, model, _reasoning = pm_delegate.resolve_delegate(
             dict(conf), role, tier, None, None, None
         )
-    except pm_delegate.DelegateError as exc:
+    except delegate_errors.DelegateError as exc:
         return "", "", str(exc)
     return harness, model, ""
 

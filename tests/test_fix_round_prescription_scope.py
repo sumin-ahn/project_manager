@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import review_form, review_state, round_rules
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -79,7 +80,7 @@ def pd():
 
 
 def _finding(pd_module, finding_id: str = "F-001") -> "pd_module.PMReviewFinding":
-    return pd_module.PMReviewFinding(
+    return review_form.PMReviewFinding(
         id=finding_id,
         classification="implementation-defect",
         authority="사양 §허용 범위",
@@ -93,7 +94,7 @@ def _finding(pd_module, finding_id: str = "F-001") -> "pd_module.PMReviewFinding
 
 
 def _disposition(pd_module, finding_id: str = "F-001") -> "pd_module.PMReviewDisposition":
-    return pd_module.PMReviewDisposition(
+    return review_form.PMReviewDisposition(
         id=finding_id,
         decision="accepted",
         reason=f"PM {finding_id} 승인 근거",
@@ -105,7 +106,7 @@ def _disposition(pd_module, finding_id: str = "F-001") -> "pd_module.PMReviewDis
 
 
 def _delta(pd_module, pairs, *, finding_zero: bool = False):
-    return pd_module.PMReviewDelta(accepted=tuple(pairs), finding_zero=finding_zero)
+    return review_form.PMReviewDelta(accepted=tuple(pairs), finding_zero=finding_zero)
 
 
 # --- 1. 부착 픽스처 단언 -----------------------------------------------------
@@ -158,16 +159,15 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
     이 경로는 렌더러 자체가 아니라 delta 계산(`parse_pm_review_delta`)에서 결정되므로,
     렌더 축과 별개로 실 파서 파이프라인을 태워야 "블록을 무조건 붙이는" 회귀를 못 본다.
     """
-    rounds_module = pd._load_ticket_rounds()
 
     def round_(ordinal: int, text: str):
-        return rounds_module.Round(
+        return round_rules.Round(
             ordinal=ordinal, role="code-reviewer",
-            path=Path(rounds_module.round_filename(ordinal, "code-reviewer")),
+            path=Path(round_rules.round_filename(ordinal, "code-reviewer")),
             text=text, pending=False,
         )
 
-    def review_round(ordinal: int, payload: dict) -> "rounds_module.Round":
+    def review_round(ordinal: int, payload: dict) -> round_rules.Round:
         body = (
             "## 리뷰 (code-reviewer · 2026-08-21)\n\n판정: 반려\n\n## must-fix\n"
             "- 구조화 finding 참조\n\n```pm-review-v1\n"
@@ -176,7 +176,7 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
         return round_(ordinal, body)
 
     first = review_round(1, {
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [{
             "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
             "authority": "사양 §허용 범위", "evidence": "F-001 probe rc=1",
@@ -194,14 +194,14 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
         "confirmations": [],
     })
     resolved = review_round(2, {
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [],
         "confirmations": [
             {"id": "F-001", "status": "resolved", "evidence": "F-001 probe rc=0"},
         ],
     })
     spec = "\n```pm-review-disposition-v1\n" + json.dumps({
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION,
         "reviewer_ordinal": 1,
         "dispositions": [{
             "id": "F-001", "decision": "accepted", "reason": "PM F-001 승인 근거",
@@ -209,7 +209,7 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
         }],
     }, ensure_ascii=False, indent=2) + "\n```\n"
 
-    delta = pd.parse_pm_review_delta(spec, [first, resolved])
+    delta = review_state.parse_pm_review_delta(spec, [first, resolved])
 
     assert delta.accepted == ()
     assert pd.render_pm_review_delta("T-TEST", delta) == ""
