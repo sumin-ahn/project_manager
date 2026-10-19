@@ -528,6 +528,64 @@ def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
     assert pd._full_regression_command(candidate) == "python3 -m pytest tests/ -q -n 8"
 
 
+def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
+    pd, tmp_path, monkeypatch,
+):
+    """다른 트리 board 는 코드가 실행 엔진 형제이고 데이터 경로 6개와 회귀 명령은 PM 홈을 따른다."""
+    pm_home = tmp_path / "pm-home"
+    pm_tools = pm_home / ".project_manager" / "tools"
+    pm_tools.mkdir(parents=True)
+    for source in TOOLS.glob("*.py"):
+        shutil.copy2(source, pm_tools / source.name)
+    pm_local = pm_home / ".project_manager" / ".local"
+    pm_local.mkdir()
+    (pm_home / ".project_manager" / "local.conf").write_text(
+        "test.cmd=PM-HOME-CONF-CMD\n", encoding="utf-8", newline="\n",
+    )
+    candidate = tmp_path / "candidate"
+    (candidate / ".project_manager").mkdir(parents=True)
+    (candidate / ".project_manager" / "local.conf").write_text(
+        "test.cmd=CANDIDATE-CONF-CMD\n", encoding="utf-8", newline="\n",
+    )
+    monkeypatch.setenv("PM_SESSION_NAME", "stage-exit")
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+
+    class _ER:
+        class AnchorResolutionError(RuntimeError):
+            pass
+
+        @staticmethod
+        def resolve_pm_home_for_repo(_repo):
+            return pm_home
+
+    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ER)
+
+    board = pd._load_board_for_repo(pm_home)
+    home = pm_home.resolve()
+    assert Path(board.__file__) == PM_DELEGATE.resolve().with_name("board.py")
+    assert (
+        board.REPO, board.LOCAL_DIR, board.BOARD_LOCK,
+        board.BOARD_FILE, board.LEASES_FILE, board.LOCAL_CONF,
+    ) == (
+        home,
+        home / ".project_manager" / ".local",
+        home / ".project_manager" / ".local" / "board.lock",
+        home / ".project_manager" / "wiki" / "board.md",
+        home / ".project_manager" / ".local" / "worktree-leases.json",
+        home / ".project_manager" / "local.conf",
+    )
+    assert pd._full_regression_command(candidate) == "PM-HOME-CONF-CMD"
+
+    (pm_local / "worktree-leases.json").write_text(
+        json.dumps({"leases": [{
+            "slot": "work/app_1", "session": "stage-exit", "state": "leased",
+            "test_cmd": "PM-HOME-LEASE-CMD", "repo": "app",
+        }]}),
+        encoding="utf-8", newline="\n",
+    )
+    assert pd._full_regression_command(candidate) == "PM-HOME-LEASE-CMD"
+
+
 def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
     pd, budget_env,
 ):

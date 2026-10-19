@@ -1501,29 +1501,31 @@ def _assert_ticket_copy_root_ignored(
 
 
 def anchor_board_to_repo(board, repo: Path):
-    """board 모듈의 경로 앵커를 명시 repo 좌표로 고정한다(코드 권위와 데이터 권위 분리).
+    """실행 엔진 board 모듈의 데이터 경로 전역을 repo 기준으로 고정한다(코드는 실행 엔진, 데이터는 repo).
 
-    동적 import의 REPO는 파일 깊이로 파생되지만 hermetic fixture처럼 tools만 옮긴 형상도 명시된
-    PM 홈 좌표가 권위다. board의 기존 함수는 모두 module REPO에서 경로를 해소한다. **자기 형제
-    board 를 로드해 PM 홈 데이터에 쓰는 호출자**(additional_reviewer 회수)도 같은 규칙을 쓰도록
-    공용으로 둔다 — 앵커 규칙이 두 군데면 규칙이 둘이 된다."""
+    형제 board 를 적재하면 모듈 전역이 실행 엔진 트리를 가리킨다. 다른 트리의 board 데이터를 다루는
+    두 호출자(`_load_board_for_repo` 와 additional_reviewer 회수)가 이 함수로 `REPO`·`LOCAL_DIR`·
+    `BOARD_LOCK`·`BOARD_FILE`·`LEASES_FILE`·`LOCAL_CONF` 6개를 repo 로 맞춘다. 함수형 경로
+    (`board_root()`·`tickets_dir()`·`areas_file()`)는 REPO 를 따라간다. 이 6개 밖의 경로 상수는
+    실행 엔진 트리에 남고, 두 호출자가 쓰는 board 함수는 그 상수를 읽지 않는다. 앵커 규칙이 두
+    군데면 규칙이 둘이 되므로 여기 하나로 둔다."""
     board.REPO = Path(repo).resolve()
     board.LOCAL_DIR = board.REPO / ".project_manager" / ".local"
     board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
     board.BOARD_FILE = board.REPO / ".project_manager" / "wiki" / "board.md"
+    board.LEASES_FILE = board.LOCAL_DIR / "worktree-leases.json"
+    board.LOCAL_CONF = board.REPO / ".project_manager" / "local.conf"
     return board
 
 
 def _load_board_for_repo(repo: Path):
-    repo = repo.resolve()
-    path = repo / ".project_manager" / "tools" / "board.py"
-    if not path.is_file():
-        # 등록 worktree fixture/채택자처럼 PM 홈은 board 데이터만 소유하고 실행 엔진은 별도
-        # checkout에 있는 형상을 지원한다. 코드 권위는 현재 stamped engine, 데이터 권위는 repo다.
-        path = Path(__file__).resolve().with_name("board.py")
-    if not path.is_file():
-        raise DelegateError(f"실행 가능한 board.py가 없습니다: {path}")
-    board = _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
+    """repo 의 board 데이터를 다루는 board 모듈(코드는 실행 엔진의 형제 board.py, 데이터는 repo).
+
+    캐시하지 않고 호출마다 새 모듈을 적재한다. 앵커 덮어쓰기가 `_load_board()` 공유 모듈에 번지지
+    않게 하기 위해서다."""
+    board = _load_module_from_path(
+        Path(__file__).resolve().with_name("board.py"), "board.py", verifier=_verify_engine_rev,
+    )
     return anchor_board_to_repo(board, repo)
 
 
