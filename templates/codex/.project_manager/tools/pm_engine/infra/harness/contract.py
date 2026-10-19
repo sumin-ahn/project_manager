@@ -597,8 +597,7 @@ OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그�
 # 편집 대상 경로를 좁히지 못한다(규율은 역할 카드 문구와 위임 전후 git/touches 감사가 든다).
 # 경로를 기계로 좁히는 것은 다른 두 축이다 — codex 는 read-only sandbox + `--add-dir <copy dir>`,
 # opencode 는 역할 agent 의 permission. code-reviewer 도 같은 사본 절을 쓰지만 수단이 다르다:
-# `--tools` 에 Edit 가 없고 Bash 로 쓴다. 조사 역할의 도구 축소 근거는 [[T-0086]] 카드 가드다
-# (ADR-0018 은 이 PM 홈에서 domain 지식 레이어라 read-only 근거가 아니다).
+# `--tools` 에 Edit 가 없고 Bash 로 쓴다. 조사 역할의 도구 축소 근거는 역할 카드의 도구 가드다.
 CLAUDE_TOOLS_WRITE = "Read,Glob,Grep,Bash,Write,Edit"
 CLAUDE_TOOLS_RESEARCHER = "Read,Glob,Grep,Edit"
 CLAUDE_TOOLS_REVIEWER = "Read,Glob,Grep,Bash"

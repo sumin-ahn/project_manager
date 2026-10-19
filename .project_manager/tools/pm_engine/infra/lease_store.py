@@ -2,7 +2,7 @@
 
 장부 행 판정 규칙과 결과 형식은 `pm_engine.domain.identity_args` 가 소유하고, 이 모듈은 장부를 공유 읽기로
 읽어 그 규칙을 적용한다. 장부는 `worktree_pool` 이 원자 교체하는 파일이라 판독도
-`fs.read_text_shared` 를 지난다([[T-0729]]).
+`fs.read_text_shared` 를 지난다.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _runtime_skill_entry(skill: str) -> str:
 # 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
 
 
-# ── 공유 읽기 (원자 교체 대상 장부·[[T-0729]]) ────────────────────────────
+# ── 공유 읽기 (원자 교체 대상 장부) ──────────────────────────────────────
 # 이 모듈이 읽는 리스 장부(`worktree-leases.json`)는 `worktree_pool` 이 **원자 교체**하는
 # 파일이다. 일반 `open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로,
 # 판독도 공용 seam 의 공유 읽기(`fs.read_text_shared`)를 지난다.
