@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 from pm_engine.domain import ticket_rules
+from pm_engine.domain import round_rules
+from pm_engine.infra import pm_paths
+from pm_engine.app import round_seed
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -36,11 +39,6 @@ def _load():
 @pytest.fixture
 def external():
     return _load()
-
-
-@pytest.fixture
-def rounds_seam(external):
-    return external._load_ticket_rounds()
 
 
 def _ticket(path: Path, *, body: str) -> Path:
@@ -296,7 +294,7 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
     monkeypatch.setattr(external, "REPO", engine_home)
     monkeypatch.setattr(external, "local_config", lambda repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo",
+        pm_paths, "resolve_pm_home_for_repo",
         lambda anchor, **kwargs: (
             engine_home if Path(anchor).resolve() == engine_home.resolve() else selected_home
         ),
@@ -324,9 +322,9 @@ def test_unterminated_frontmatter_fails_loud_for_body_and_touches(
         external, "_find_ticket_file", lambda ticket_id, pm_home=None: broken,
     )
 
-    with pytest.raises(external.AnchorResolutionError, match="frontmatter가 닫히지"):
+    with pytest.raises(pm_paths.AnchorResolutionError, match="frontmatter가 닫히지"):
         external._load_ticket_text_and_body(broken)
-    with pytest.raises(external.AnchorResolutionError, match="frontmatter가 닫히지"):
+    with pytest.raises(pm_paths.AnchorResolutionError, match="frontmatter가 닫히지"):
         external._parse_touches_from_file(broken)
 
 
@@ -413,14 +411,14 @@ def test_ticket_body_selection_keeps_only_the_last_round_per_role(
 
 
 def test_ticket_body_selection_skips_rounds_without_output(
-    external, monkeypatch, rounds_seam, tmp_path, capsys,
+    external, monkeypatch, tmp_path, capsys,
 ):
     """(c) 시드 그대로인(산출 없음) 라운드는 리뷰 입력에 싣지 않는다."""
     ticket = _board_ticket(tmp_path, body=SPEC_BODY)
     _round(tmp_path, 1, "developer", _round_text("developer", "1라운드 실산출"))
     _round(
         tmp_path, 2, "developer",
-        rounds_seam.render_round_seed(
+        round_seed.render_round_seed(
             "developer", ticket.read_text(encoding="utf-8"), today="2026-08-18",
         ),
     )
@@ -451,13 +449,13 @@ def test_ticket_body_selection_without_rounds_is_byte_identical(
 
 
 def test_select_ticket_body_for_review_is_pure_and_deterministic(
-    external, rounds_seam,
+    external,
 ):
     """selection 함수 단위 — 순수 함수로 같은 입력에 같은 결과(부수효과 없음)."""
     rounds = [
-        rounds_seam.Round(
+        round_rules.Round(
             ordinal=ordinal, role="code-reviewer",
-            path=Path(rounds_seam.round_filename(ordinal, "code-reviewer")),
+            path=Path(round_rules.round_filename(ordinal, "code-reviewer")),
             text=_round_text("code-reviewer", f"라운드{ordinal} 본문"), pending=False,
         )
         for ordinal in (1, 2)

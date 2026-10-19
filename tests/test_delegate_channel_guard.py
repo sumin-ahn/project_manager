@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from pm_engine.infra.harness import contract
+from pm_engine.domain import delegate_errors
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -212,7 +213,7 @@ def test_mapping_resolution_matches_real_engine_full_boundary_matrix(
             conf, "developer", tier, None, None, None
         )
         expected = (harness, model, "")
-    except pm_delegate.DelegateError as exc:
+    except delegate_errors.DelegateError as exc:
         expected = ("", "", str(exc))
 
     assert guard._resolved_mapping("developer", tier, conf) == expected

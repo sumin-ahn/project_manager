@@ -41,6 +41,9 @@ from conftest import bind_product_cluster
 
 from conftest import write_cluster_ledger
 from pm_engine.infra import pm_paths, raw_output, ticket_store
+from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
+from pm_engine.infra import delegate_ledger, round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -181,8 +184,8 @@ def _ledger_rows(pm_home: Path) -> list[dict]:
 def _finding_values(pd, finding_id: str) -> dict:
     return {
         "id": finding_id,
-        "class": pd.PM_REVIEW_CLASSES[0],
-        "severity": pd.PM_REVIEW_SEVERITIES[0],
+        "class": review_form.PM_REVIEW_CLASSES[0],
+        "severity": review_form.PM_REVIEW_SEVERITIES[0],
         "authority": "[[ADR-0090]] §경계",
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
@@ -200,8 +203,8 @@ def _finding_values(pd, finding_id: str) -> dict:
 
 def _review_body(pd, role: str, finding_ids: list[str]) -> str:
     """리뷰 라운드 본문 — 블록 key·fence 는 엔진 골격 렌더가 소유하고 값만 채운다."""
-    skeleton = pd.render_pm_review_block_skeleton(role, [])
-    payload = pd._pm_review_json_blocks(skeleton)[0].value
+    skeleton = review_form.render_pm_review_block_skeleton(role, [])
+    payload = review_form._pm_review_json_blocks(skeleton)[0].value
     finding_shape = payload["findings"][0]
     payload["findings"] = [
         dict(finding_shape, **_finding_values(pd, finding_id))
@@ -213,7 +216,7 @@ def _review_body(pd, role: str, finding_ids: list[str]) -> str:
         f"## must-fix\n{listed}\n\n"
         f"## 판정\n판정: 반려 · finding {len(finding_ids)}건"
         f"(must-fix {len(finding_ids)}건)\n\n"
-        + pd._pm_review_block_text(payload)
+        + review_form._pm_review_block_text(payload)
     )
 
 
@@ -229,10 +232,9 @@ def _tickets_root(pm_home: Path) -> Path:
 
 
 def _problem_codes(pd, pm_home: Path, ticket: str) -> list[str]:
-    rounds_module = pd._load_ticket_rounds()
     return [
         item.code
-        for item in rounds_module.verify_rounds(_tickets_root(pm_home), ticket)
+        for item in round_seed.verify_rounds(_tickets_root(pm_home), ticket)
     ]
 
 
@@ -255,7 +257,7 @@ def test_abandon_without_superseded_by_still_refuses_mismatched_output(pd, env):
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="산출이 있어 포기할 수 없습니다"):
         pd.abandon_ticket_copy(
             copy_path=plan.path, cwd=slot, pm_home=pm_home, assume_dead=True,
         )
@@ -297,8 +299,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     plan = pd.prepare_ticket_copy(ticket="T-9202", role="architect", cwd=slot, pm_home=pm_home)
     active = []
     original_lock = board.board_lock
-    module = pd._load_ticket_rounds()
-    original_replace = module.replace_round
+    original_replace = round_store.replace_round
 
     @contextmanager
     def lock():
@@ -314,7 +315,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
         return original_replace(*args)
 
     monkeypatch.setattr(board, "board_lock", lock)
-    monkeypatch.setattr(module, "replace_round", replace)
+    monkeypatch.setattr(round_store, "replace_round", replace)
     _fill(plan.path, "## 실측\n- 설계 완료")
     result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
     assert result.changed
@@ -353,7 +354,7 @@ def test_superseded_by_self_reference_is_rejected(pd, env):
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=plan.path, cwd=slot, pm_home=pm_home, assume_dead=True,
             superseded_by_ordinal=plan.ordinal,
@@ -382,7 +383,7 @@ def test_superseded_by_without_evidence_still_requires_assume_dead(pd, env):
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="종료 증거가 없습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="종료 증거가 없습니다") as caught:
         pd.abandon_ticket_copy(
             copy_path=dead.path, cwd=slot, pm_home=pm_home,
             superseded_by_ordinal=live.ordinal,
@@ -411,7 +412,7 @@ def test_superseded_by_does_not_override_a_live_owner_pid(pd, env, monkeypatch):
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="실행 중이라 포기하지 않습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="실행 중이라 포기하지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=dead.path, cwd=slot, pm_home=pm_home,
             superseded_by_ordinal=live.ordinal,
@@ -456,13 +457,13 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     assert harvested.changed is True
 
     # 라운드 1 은 이제 harvest·abandon 양쪽에 막힌다(실측 순환).
-    with pytest.raises(pd.DelegateError, match="finding ID 재선언: F-001"):
+    with pytest.raises(delegate_errors.DelegateError, match="finding ID 재선언: F-001"):
         pd.harvest_ticket_copy(copy_path=round1.path, cwd=slot, pm_home=pm_home)
-    with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="산출이 있어 포기할 수 없습니다"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
         )
-    stuck = pd.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
+    stuck = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
     assert str(round1.path) in [row["copy"] for row in stuck]
 
     capsys.readouterr()
@@ -486,20 +487,19 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     assert "대체-확인" in loud and f"ordinal={round2.ordinal}" in loud
 
     # 표식이 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
-    rounds_module = pd._load_ticket_rounds()
-    loaded = rounds_module.load_rounds(_tickets_root(pm_home), "T-9005")
+    loaded = round_seed.load_rounds(_tickets_root(pm_home), "T-9005")
     assert [(item.ordinal, item.pending) for item in loaded] == [
         (round1.ordinal, False), (round2.ordinal, False)]
-    assert pd._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
-    assert [item.ordinal for item in pd._pm_review_surface_rounds(loaded)] == [round2.ordinal]
-    assert rounds_module.latest_round_of_role(
+    assert review_state._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
+    assert [item.ordinal for item in review_state._pm_review_surface_rounds(loaded)] == [round2.ordinal]
+    assert round_rules.latest_round_of_role(
         loaded, "code-reviewer",
     ).ordinal == round2.ordinal
     spec_text = (tickets / "T-9005-supersede.md").read_text(encoding="utf-8")
     assert "F-001" in pd.render_pm_review_disposition_template(spec_text, loaded)
 
     # 값으로 사라짐 — 미회수 목록에 더는 라운드 1 사본이 없다.
-    unharvested = pd.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
+    unharvested = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
     assert str(round1.path) not in [row["copy"] for row in unharvested]
     assert unharvested == []          # 라운드 2 는 harvested, 라운드 1 은 abandoned.
 
@@ -532,7 +532,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
 
     monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
 
-    with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
+    with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
             superseded_by_ordinal=round2.ordinal,
@@ -547,7 +547,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
 
     assert result.converged is True
     assert not round1.run_dir.exists()
-    unharvested = pd.ticket_copy_records(pm_home, ticket="T-9006", unharvested=True)
+    unharvested = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9006", unharvested=True)
     assert unharvested == []
 
 
@@ -586,10 +586,9 @@ def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
         "ticket-abandon T-9020 code-reviewer", [round1.board_path],
     )
     assert _problem_codes(pd, pm_home, "T-9020") == []
-    rounds_module = pd._load_ticket_rounds()
-    loaded = rounds_module.load_rounds(_tickets_root(pm_home), "T-9020")
-    assert pd._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
-    assert rounds_module.latest_round_of_role(
+    loaded = round_seed.load_rounds(_tickets_root(pm_home), "T-9020")
+    assert review_state._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
+    assert round_rules.latest_round_of_role(
         loaded, "code-reviewer",
     ).ordinal == round2.ordinal
 
@@ -609,8 +608,7 @@ def test_max_ordinal_abandon_still_deletes_the_board_round_without_a_marker(pd, 
     assert (result.board_removed, result.run_dir_removed) == (True, True)
     assert not only.board_path.exists()
     assert _problem_codes(pd, pm_home, "T-9021") == []
-    rounds_module = pd._load_ticket_rounds()
-    assert rounds_module.load_rounds(_tickets_root(pm_home), "T-9021") == []
+    assert round_seed.load_rounds(_tickets_root(pm_home), "T-9021") == []
 
 
 def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
@@ -644,7 +642,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
 
     monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
 
-    with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
+    with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
         )
@@ -688,7 +686,7 @@ def test_self_reference_is_rejected_even_when_seed_is_intact(pd, env):
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
             superseded_by_ordinal=round1.ordinal,
@@ -736,7 +734,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
 
     monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
 
-    with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
+    with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
         )
@@ -749,7 +747,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
 
     capsys.readouterr()
     with pytest.raises(
-        pd.DelegateError, match="슬롯 라운드 파일이 시드와 달라져 run-dir 을 지우지 않았습니다",
+        delegate_errors.DelegateError, match="슬롯 라운드 파일이 시드와 달라져 run-dir 을 지우지 않았습니다",
     ):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
@@ -772,7 +770,7 @@ def test_superseded_by_value_below_one_is_rejected_before_ledger_write(pd, env):
         ticket="T-9010", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
 
-    with pytest.raises(pd.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
             superseded_by_ordinal=0,
@@ -791,7 +789,7 @@ def test_superseded_by_nonexistent_ordinal_is_rejected(pd, env):
     )
     _write_round_output(round1.path, _review_body(pd, "code-reviewer", ["F-941"]))
 
-    with pytest.raises(pd.DelegateError, match="대체 라운드가 존재하지 않습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="대체 라운드가 존재하지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
             superseded_by_ordinal=99,
@@ -816,7 +814,7 @@ def test_loud_does_not_print_when_the_liveness_gate_still_rejects(pd, env, monke
     _use_relay_pid(pd, monkeypatch, alive=True)
 
     capsys.readouterr()
-    with pytest.raises(pd.DelegateError, match="실행 중이라 포기하지 않습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="실행 중이라 포기하지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=dead.path, cwd=slot, pm_home=pm_home,
             superseded_by_ordinal=live.ordinal,
@@ -855,5 +853,5 @@ def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
 
     assert rc == 0
     assert not round1.run_dir.exists()
-    unharvested = pd.ticket_copy_records(pm_home, ticket="T-9007", unharvested=True)
+    unharvested = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9007", unharvested=True)
     assert unharvested == []

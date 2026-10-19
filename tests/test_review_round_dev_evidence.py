@@ -17,7 +17,7 @@
 `03-code-reviewer`(준비), 그리고 `01-developer`(시드) → `02-code-reviewer`(준비).
 
 [[T-0812]] 가 스폰면(`additional_reviewer.py` 의 `prepare_ticket_body`)에 같은 축을 배선한다 —
-판정 함수는 이 파일이 소유하는 `pd.unharvested_developer_round` 그대로이고, 축이 둘로 갈리지
+판정 함수는 `round_seed.unharvested_developer_round` 그대로이고, 축이 둘로 갈리지
 않게 두 표면 형상표(A0/A1/B/C/D/E)를 이 파일 하나에서 고정한다(§스폰면).
 """
 from __future__ import annotations
@@ -31,6 +31,9 @@ from pathlib import Path
 import pytest
 
 from conftest import write_cluster_ledger
+from pm_engine.domain import delegate_errors
+from pm_engine.infra import pm_paths
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -220,9 +223,8 @@ def _land(pd, pm_home: Path, slot: Path, plan) -> None:
 
 
 def _loaded_rounds(pd, pm_home: Path, ticket: str):
-    rounds_module = pd._load_ticket_rounds()
     tickets_root = pm_home / ".project_manager" / "wiki" / "tickets"
-    return rounds_module.load_rounds(tickets_root, ticket)
+    return round_seed.load_rounds(tickets_root, ticket)
 
 
 # ── (1) 시드 그대로인 직전 developer 라운드 위 ─────────────────────────────
@@ -291,7 +293,7 @@ def test_review_prepare_without_any_developer_round_is_silent(pd, rounds_env, ca
     _write_spec(tickets, "T-7804", rounds=("code-reviewer",))
     capsys.readouterr()
 
-    with pytest.raises(pd.DelegateError, match="다음 라운드는 architect"):
+    with pytest.raises(delegate_errors.DelegateError, match="다음 라운드는 architect"):
         _prepare(pd, pm_home, slot, "T-7804", "code-reviewer")
 
     assert WARNING_MARK not in capsys.readouterr().err
@@ -304,7 +306,7 @@ def test_developer_round_preparation_is_never_judged(pd, rounds_env, capsys):
     _prepare(pd, pm_home, slot, "T-7805", "developer")
     capsys.readouterr()
 
-    with pytest.raises(pd.DelegateError, match="다음 라운드는 code-reviewer"):
+    with pytest.raises(delegate_errors.DelegateError, match="다음 라운드는 code-reviewer"):
         _prepare(pd, pm_home, slot, "T-7805", "developer")
 
     assert WARNING_MARK not in capsys.readouterr().err
@@ -326,7 +328,7 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
     _land(pd, pm_home, slot, _prepare(pd, pm_home, slot, "T-7806", "developer"))  # 04 산출
     capsys.readouterr()
 
-    pd._warn_unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7806"))
+    round_seed._warn_unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7806"))
 
     assert capsys.readouterr().err == "", "마지막 dev 라운드가 산출이면 조용해야 한다"
 
@@ -338,7 +340,7 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
     _prepare(pd, pm_home, slot, "T-7817", "developer")            # 04 시드로 남긴다
     capsys.readouterr()
 
-    pd._warn_unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7817"))
+    round_seed._warn_unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7817"))
 
     error = capsys.readouterr().err
     assert WARNING_MARK in error and "04-developer.md" in error
@@ -399,7 +401,7 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
 
     external = pd._load_additional_reviewer()
     monkeypatch.setattr(external, "repo_root_from_cwd", lambda _cwd: slot)
-    monkeypatch.setattr(external, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
     monkeypatch.setattr(external, "_owns_real_board", lambda _path: False)
     monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: external)
     monkeypatch.setattr(pd, "local_config", lambda: {pd.DELEGATE_ENABLED_KEY: "true"})
@@ -511,12 +513,12 @@ def test_seed_judgment_consumes_the_harvest_seed_comparison(pd, rounds_env, caps
     )
     assert unchanged.changed is False
     # 준비면: 같은 라운드를 시드로 지목한다.
-    stale = pd.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
+    stale = round_seed.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
     assert stale is not None and stale.ordinal == developer.ordinal
 
     # 반대편도 같이 뒤집힌다 — 회수가 board 를 바꾸면 준비면도 더는 지목하지 않는다.
     _land(pd, pm_home, slot, developer)
-    landed = pd.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
+    landed = round_seed.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
     assert landed is None
     capsys.readouterr()
 
@@ -529,9 +531,9 @@ def test_seed_judgment_reads_the_round_pending_flag(pd, rounds_env):
     rounds = _loaded_rounds(pd, pm_home, "T-7812")
 
     assert [item.pending for item in rounds] == [False, True]
-    assert pd.unharvested_developer_round(rounds) is rounds[1]
+    assert round_seed.unharvested_developer_round(rounds) is rounds[1]
     # 같은 목록에서 pending 만 뒤집으면 판정도 뒤집힌다 — 다른 입력을 보지 않는다는 값 단언.
-    assert pd.unharvested_developer_round(
+    assert round_seed.unharvested_developer_round(
         [item._replace(pending=False) for item in rounds]
     ) is None
     assert developer.board_path.exists()
@@ -553,7 +555,7 @@ def test_crlf_seed_round_is_still_judged_as_seed(pd, rounds_env, capsys):
 
 # ── 스폰면([[T-0812]]) — additional_reviewer.py 의 `prepare_ticket_body` seam ──────────────
 #
-# 준비면과 축은 같되(`pd.unharvested_developer_round` 를 그대로 부른다) 문구는 다르다 — 형상 B
+# 준비면과 축은 같되(`round_seed.unharvested_developer_round` 를 그대로 부른다) 문구는 다르다 — 형상 B
 # 에서 "실리지 않습니다"라고 단정하지 않고, 이번 프롬프트에 실제로 실리는 developer 산출 라운드
 # 이름(없으면 "없음")을 값으로 말한다. 라운드 01-architect 설계의 형상표 6행(A0/A1/B/C/D/E)을
 # 여기서 고정한다.
@@ -580,8 +582,8 @@ def external():
 def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     """스폰면 배선 — REPO 를 `rounds_env` 의 pm_home 에 고정하고 diff 추출만 대체한다.
 
-    `_load_pm_delegate()`·`_load_ticket_rounds()` 는 실 로더 그대로 둔다 — 이 표면이 실제로
-    같은 판정 함수(`pd.unharvested_developer_round`)를 부르는지가 검증 대상이다. touches 는
+    `_load_pm_delegate()` 는 실 로더 그대로 둔다 — 이 표면이 실제로
+    같은 판정 함수(`round_seed.unharvested_developer_round`)를 부르는지가 검증 대상이다. touches 는
     `rounds_env` 픽스처 티켓이 `touches: []` 로 시드되므로(§인터페이스 밖) `parse_ticket_touches`
     만 테스트 seam 으로 고정한다(기존 `test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam`
     과 같은 축).
@@ -635,7 +637,7 @@ def test_spawn_face_shape_a0_no_developer_round_is_silent(
     assert SPAWN_WARNING_MARK not in captured.err
     assert "--- 01-architect ---" in captured.out
     assert "developer ---" not in captured.out
-    assert pd.unharvested_developer_round(_loaded_rounds(pd, pm_home, ticket)) is None
+    assert round_seed.unharvested_developer_round(_loaded_rounds(pd, pm_home, ticket)) is None
 
 
 def test_spawn_face_shape_a1_seed_only_developer_round_warns(
@@ -812,18 +814,18 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
         capsys.readouterr()
         external._warn_seed_developer_round(rounds, ticket=name)
         warned = SPAWN_WARNING_MARK in capsys.readouterr().err
-        judged = pd.unharvested_developer_round(rounds) is not None
+        judged = round_seed.unharvested_developer_round(rounds) is not None
         assert warned == judged, name
 
     # pending 반전 — 축은 같은 목록의 `pending` 만 본다(다른 입력을 보지 않는다는 값 단언).
     seed_rounds = shapes["A1"]
-    assert pd.unharvested_developer_round(seed_rounds) is not None
+    assert round_seed.unharvested_developer_round(seed_rounds) is not None
     capsys.readouterr()
     external._warn_seed_developer_round(seed_rounds, ticket="T-7831")
     assert SPAWN_WARNING_MARK in capsys.readouterr().err
 
     flipped = [item._replace(pending=False) for item in seed_rounds]
-    assert pd.unharvested_developer_round(flipped) is None
+    assert round_seed.unharvested_developer_round(flipped) is None
     capsys.readouterr()
     external._warn_seed_developer_round(flipped, ticket="T-7831")
     assert SPAWN_WARNING_MARK not in capsys.readouterr().err

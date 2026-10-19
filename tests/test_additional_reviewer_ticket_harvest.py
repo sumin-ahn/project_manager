@@ -22,6 +22,9 @@ from pathlib import Path
 import pytest
 
 from pm_engine.domain import conf_schema
+from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
+from pm_engine.infra import round_store
+from pm_engine.app import round_seed
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -51,9 +54,9 @@ def _load(name: str):
 
 # 세대·값 enum 은 엔진 상수에서 읽는다 — 테스트가 리터럴로 적으면 승격 때 조용히 갈린다.
 PD = _load("pm_delegate")
-BLOCK_VERSION = PD.PM_REVIEW_VERSION
-LEGACY_BLOCK_VERSION = PD.PM_REVIEW_LEGACY_VERSION
-DISPOSITION_VERSION = PD.PM_REVIEW_DISPOSITION_VERSION
+BLOCK_VERSION = review_form.PM_REVIEW_VERSION
+LEGACY_BLOCK_VERSION = review_form.PM_REVIEW_LEGACY_VERSION
+DISPOSITION_VERSION = review_form.PM_REVIEW_DISPOSITION_VERSION
 
 
 @pytest.fixture
@@ -64,11 +67,6 @@ def external():
 @pytest.fixture
 def pd():
     return _load("pm_delegate")
-
-
-@pytest.fixture
-def rounds_seam(pd):
-    return pd._load_ticket_rounds()
 
 
 # ── 픽스처: tmp PM 홈 board + 리뷰어 산출 ──────────────────────────────────
@@ -127,21 +125,20 @@ def _write_round(pm_home: Path, ordinal: int, role: str, text: str) -> Path:
 
 def _rounds(pd, pm_home: Path, *, status: str = "claimed") -> list:
     spec = _ticket_path(pm_home, status).read_text(encoding="utf-8")
-    return pd._load_ticket_rounds().load_rounds(
+    return round_seed.load_rounds(
         _tickets_dir(pm_home), TICKET, ticket_text=spec,
     )
 
 
 def _delta(pd, pm_home: Path, extra_spec: str = "", *, status: str = "claimed"):
     spec = _ticket_path(pm_home, status).read_text(encoding="utf-8") + extra_spec
-    return pd.parse_pm_review_delta(spec, _rounds(pd, pm_home, status=status))
+    return review_state.parse_pm_review_delta(spec, _rounds(pd, pm_home, status=status))
 
 
 def _round_view(pd, ordinal: int, text: str, role: str = ROLE):
-    rounds_module = pd._load_ticket_rounds()
-    return rounds_module.Round(
+    return round_rules.Round(
         ordinal=ordinal, role=role,
-        path=Path(rounds_module.round_filename(ordinal, role)),
+        path=Path(round_rules.round_filename(ordinal, role)),
         text=text, pending=False,
     )
 
@@ -255,9 +252,8 @@ def _append_spec(pm_home: Path, text: str, *, status: str = "claimed") -> None:
 def _external_round_text(pd, payload: dict, *, today: str = "2026-08-18",
                          raw_block: str | None = None, head: str = "") -> str:
     """회수된 라운드 파일과 같은 모양의 본문(헤더 + 산문 + 블록)."""
-    rounds_module = pd._load_ticket_rounds()
     return (
-        rounds_module.render_round_header(ROLE, today=today) + "\n\n"
+        round_rules.render_round_header(ROLE, today=today) + "\n\n"
         + head
         + _prose("- 구조화 finding 참조")
         + (raw_block if raw_block is not None else _block(payload))
@@ -327,7 +323,7 @@ def test_rejected_round_lands_as_a_round_file_and_delta_finding(
     assert ticket_path.read_text(encoding="utf-8") == spec_before
     assert f"{ROLE}[1]" in capsys.readouterr().err
 
-    with pytest.raises(pd.PMReviewError) as caught:
+    with pytest.raises(review_form.PMReviewError) as caught:
         _delta(pd, tmp_path)
     assert caught.value.code == "pending"  # PM 판정 전에는 loud
     assert f"대상 채널=['{ROLE}[1]']" in str(caught.value)
@@ -351,7 +347,7 @@ def test_second_round_takes_the_next_ordinal(external, pd, monkeypatch, tmp_path
     assert [path.name for path in _round_paths(tmp_path)] == [
         f"01-{ROLE}.md", f"02-{ROLE}.md",
     ]
-    assert pd._load_ticket_rounds().verify_rounds(
+    assert round_seed.verify_rounds(
         _tickets_dir(tmp_path), TICKET,
         ticket_text=_ticket_path(tmp_path).read_text(encoding="utf-8"),
     ) == []
@@ -360,19 +356,16 @@ def test_second_round_takes_the_next_ordinal(external, pd, monkeypatch, tmp_path
 def test_harvest_reserves_through_the_rounds_seam(
     external, pd, monkeypatch, tmp_path,
 ):
-    """회수 예약은 준비와 **같은 seam**(`ticket_rounds.reserve_round`)을 지난다."""
+    """회수 예약은 준비와 **같은 seam**(`round_store.reserve_round`)을 지난다."""
     _seed_board(tmp_path)
-    rounds_module = pd._load_ticket_rounds()
     seen: dict = {}
-    real_reserve = rounds_module.reserve_round
+    real_reserve = round_store.reserve_round
 
     def _reserve(tickets_dir, ticket_id, role, *, content, lock):
         seen.update(ticket=ticket_id, role=role, content=content, locked=lock is not None)
         return real_reserve(tickets_dir, ticket_id, role, content=content, lock=lock)
 
-    monkeypatch.setattr(rounds_module, "reserve_round", _reserve)
-    monkeypatch.setattr(external, "_load_ticket_rounds", lambda: rounds_module)
-    monkeypatch.setattr(pd, "_load_ticket_rounds", lambda: rounds_module)
+    monkeypatch.setattr(round_store, "reserve_round", _reserve)
     monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
@@ -486,7 +479,7 @@ def test_reply_cannot_declare_the_engine_refusal_marker(
     )
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
-    assert "회수 문제" in err and pd.PM_REVIEW_REFUSED_MARKER in err
+    assert "회수 문제" in err and review_form.PM_REVIEW_REFUSED_MARKER in err
     assert _round_paths(tmp_path) == []
 
 
@@ -619,17 +612,17 @@ def test_done_ticket_write_is_refused_loudly(external, monkeypatch, tmp_path, ca
 # ── (f) 불변식 ─────────────────────────────────────────────────────────
 
 
-def test_every_process_role_is_a_round_role(pd, rounds_seam):
+def test_every_process_role_is_a_round_role(pd):
     """(f) PM 프로세스 참여 역할 ⊆ 라운드 역할 — 채널이 늘면 여기서 걸린다."""
-    assert set(conf_schema.ROLE_CHOICES) <= set(rounds_seam.ROLES)
-    assert ROLE in rounds_seam.ROLES
-    assert "researcher" in rounds_seam.ROLES
-    assert set(pd.REVIEW_ROLES) <= set(rounds_seam.ROLES)
-    assert set(pd.PM_REVIEW_FINDING_ID_PREFIXES) == set(pd.REVIEW_ROLES)
-    assert len(set(pd.PM_REVIEW_FINDING_ID_PREFIXES.values())) == len(pd.REVIEW_ROLES)
+    assert set(conf_schema.ROLE_CHOICES) <= set(round_rules.ROLES)
+    assert ROLE in round_rules.ROLES
+    assert "researcher" in round_rules.ROLES
+    assert set(review_form.REVIEW_ROLES) <= set(round_rules.ROLES)
+    assert set(review_form.PM_REVIEW_FINDING_ID_PREFIXES) == set(review_form.REVIEW_ROLES)
+    assert len(set(review_form.PM_REVIEW_FINDING_ID_PREFIXES.values())) == len(review_form.REVIEW_ROLES)
     # 추가 리뷰어 라운드는 슬롯 왕복이 아니라 엔진이 쓴다 — 준비 대상이 아니다.
     # researcher 는 라운드 역할이지만 묶음 수열의 단계가 아니라 티켓 라운드를 준비하지 않는다.
-    assert set(pd.TICKET_COPY_PREPARE_ROLES) == set(rounds_seam.ROLES) - {ROLE, "researcher"}
+    assert set(pd.TICKET_COPY_PREPARE_ROLES) == set(round_rules.ROLES) - {ROLE, "researcher"}
 
 
 def test_deleted_single_file_devices_are_absent(pd, external):
@@ -665,12 +658,12 @@ def test_disposition_without_reviewer_role_is_read_as_internal_channel(pd):
             "scope": "F-001 허용 범위", "prerequisite": "",
         }],
     }, ensure_ascii=False, separators=(",", ":"))
-    delta = pd.parse_pm_review_delta(
+    delta = review_state.parse_pm_review_delta(
         "\n```pm-review-disposition-v1\n" + legacy + "\n```\n",
         [_round_view(pd, 1, round_text, role="code-reviewer")],
     )
     finding, _row = delta.accepted[0]
-    assert finding.id == "F-001" and finding.reviewer_role == pd.INTERNAL_REVIEW_ROLE
+    assert finding.id == "F-001" and finding.reviewer_role == review_form.INTERNAL_REVIEW_ROLE
 
 
 # ── (k)(l) 산문 축소 · 0건 라운드 ───────────────────────────────────────
@@ -730,11 +723,11 @@ def test_prompt_requires_the_versioned_block_rendered_from_parser_constants(
 
     prompt = calls["prompt"]
     # 첫 라운드는 확인할 finding 이 없다 — 골격의 confirmations 도 실값(빈 목록)이다.
-    assert pd.render_pm_review_block_skeleton(ROLE, []) in prompt
+    assert review_form.render_pm_review_block_skeleton(ROLE, []) in prompt
     assert "X-001" in prompt and "severity" in prompt
 
     monkeypatch.setattr(
-        pd, "PM_REVIEW_SEVERITIES", (*pd.PM_REVIEW_SEVERITIES, "blocker-probe"),
+        review_form, "PM_REVIEW_SEVERITIES", (*review_form.PM_REVIEW_SEVERITIES, "blocker-probe"),
     )
     monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
     assert "blocker-probe" in external._versioned_block_requirement()
@@ -753,7 +746,7 @@ def test_prompt_requires_concrete_fix_contract_values(external, pd):
     assert "JSON 문자열 값에는 `<` 또는 `>` 문자를 아예 쓰지 마라" in requirement
     assert requirement.index("parser 금지어(") < requirement.index("```pm-review-v1")
     forbidden_words = requirement.split("parser 금지어(", 1)[1].split(")", 1)[0]
-    for word in pd.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS:
+    for word in review_form.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS:
         assert word in forbidden_words
 
     good_example = requirement.split("- 유효한 구체값 예:", 1)[1].split(
@@ -766,10 +759,10 @@ def test_prompt_requires_concrete_fix_contract_values(external, pd):
         r"(location|failure|design|test|command|expected)=`([^`]*)`",
         good_example,
     ))
-    assert tuple(values) == pd.PM_REVIEW_FIX_CONTRACT_KEYS
+    assert tuple(values) == review_form.PM_REVIEW_FIX_CONTRACT_KEYS
     for key, value in values.items():
-        assert pd._pm_review_contract_string(value, f"example.{key}") == value
-    pd._pm_review_assert_verify_command_shape(values["command"], "example.command")
+        assert review_form._pm_review_contract_string(value, f"example.{key}") == value
+    review_form._pm_review_assert_verify_command_shape(values["command"], "example.command")
     assert requirement.endswith("\n\n")
 
 
@@ -847,17 +840,17 @@ def test_legacy_v1_blocks_from_the_live_board_stay_readable(pd, entry):
         for finding in section["payload"]["findings"]
     )
 
-    delta = pd.parse_pm_review_delta(spec, rounds)   # malformed 면 fix 루프가 막힌다.
+    delta = review_state.parse_pm_review_delta(spec, rounds)   # malformed 면 fix 루프가 막힌다.
     rendered = pd.render_pm_review_delta(entry["ticket"], delta)
     if delta.accepted:
-        assert f"- 심각도: {pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
+        assert f"- 심각도: {review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
     summary_rows = [
-        row for row in pd.render_pm_review_summary(spec, rounds).splitlines()
+        row for row in review_state.render_pm_review_summary(spec, rounds).splitlines()
         if "severity=" in row
     ]
     assert summary_rows, "구 블록 티켓의 요약이 통째로 접혔다"
     assert all(
-        f"severity={pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in row
+        f"severity={review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in row
         for row in summary_rows
     )
 
@@ -865,22 +858,22 @@ def test_legacy_v1_blocks_from_the_live_board_stay_readable(pd, entry):
 def test_current_generation_block_still_requires_severity(pd):
     """세대 경계는 블록 payload 의 `version` 이다 — 현행 세대는 부재를 계속 거부한다."""
     round_text = _external_round_text(pd, _payload([_finding(severity=None)]))
-    with pytest.raises(pd.PMReviewError, match=r"missing=\['severity'\]") as caught:
-        pd.parse_pm_review_delta("", [_round_view(pd, 1, round_text)])
+    with pytest.raises(review_form.PMReviewError, match=r"missing=\['severity'\]") as caught:
+        review_state.parse_pm_review_delta("", [_round_view(pd, 1, round_text)])
     assert caught.value.code == "malformed"
 
 
 def test_engine_written_skeleton_and_prompt_use_the_current_generation(pd):
     """엔진이 새로 시드·요구하는 블록은 현행 세대다(구 세대는 읽기 전용 수용)."""
-    for role in pd.REVIEW_ROLES:
+    for role in review_form.REVIEW_ROLES:
         skeleton = json.loads(
-            pd.render_pm_review_block_skeleton(role)
+            review_form.render_pm_review_block_skeleton(role)
             .split("```pm-review-v1\n", 1)[1].split("\n```", 1)[0]
         )
         assert skeleton["version"] == BLOCK_VERSION
         assert "severity" in skeleton["findings"][0]
     assert LEGACY_BLOCK_VERSION < BLOCK_VERSION
-    assert set(pd.PM_REVIEW_SUPPORTED_VERSIONS) == set(
+    assert set(review_form.PM_REVIEW_SUPPORTED_VERSIONS) == set(
         range(LEGACY_BLOCK_VERSION, BLOCK_VERSION + 1)
     )
 
@@ -902,10 +895,10 @@ def test_summary_folds_only_the_broken_round_of_a_mixed_ticket(pd):
             pd, _payload([_finding("X-003", classification="style")]),
         )),
     ]
-    summary = pd.render_pm_review_summary("", rounds)
+    summary = review_state.render_pm_review_summary("", rounds)
 
     joined = "\n".join(summary.splitlines())
-    assert f"{ROLE}[1] X-001 severity={pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in joined
+    assert f"{ROLE}[1] X-001 severity={review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in joined
     assert f"{ROLE}[2] X-002 severity=should-fix" in joined
     folded = [row for row in summary.splitlines() if "요약 불가" in row]
     assert len(folded) == 1 and f"{ROLE}[3]" in folded[0]
@@ -923,7 +916,7 @@ def test_summary_folds_a_broken_json_block_into_its_own_round_row(pd):
             pd, {}, raw_block='```pm-review-v1\n{"version":2,"findings":[\n```\n',
         )),
     ]
-    summary = pd.render_pm_review_summary(_disposition("X-001"), rounds)
+    summary = review_state.render_pm_review_summary(_disposition("X-001"), rounds)
 
     rows = summary.splitlines()
     assert any(
@@ -1005,8 +998,8 @@ def test_prompt_carries_the_next_finding_id_from_the_round_files(
     }), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 0
     assert "`X-003` 부터" in calls["prompt"]
-    assert pd.next_review_finding_id("본문에 X-007 과 X-002 가 있다", ROLE) == "X-008"
-    assert pd.next_review_finding_id("빈 티켓", ROLE) == "X-001"
+    assert review_state.next_review_finding_id("본문에 X-007 과 X-002 가 있다", ROLE) == "X-008"
+    assert review_state.next_review_finding_id("빈 티켓", ROLE) == "X-001"
 
 
 def test_next_finding_id_sees_the_round_files_not_only_the_spec(pd, tmp_path):
@@ -1015,7 +1008,7 @@ def test_next_finding_id_sees_the_round_files_not_only_the_spec(pd, tmp_path):
         _round_view(pd, 1, _external_round_text(pd, _payload([_finding("X-001")]))),
         _round_view(pd, 2, _external_round_text(pd, _payload([_finding("X-004")]))),
     ]
-    assert pd.next_review_finding_id("명세에는 ID 가 없다", ROLE, rounds) == "X-005"
+    assert review_state.next_review_finding_id("명세에는 ID 가 없다", ROLE, rounds) == "X-005"
 
 
 def _prompt_next_id(prompt: str) -> str:
@@ -1190,11 +1183,11 @@ def test_declarations_count_only_the_surface_rounds(pd):
     ))
     spec = "\n산문에서 X-050 을 인용한다.\n"
 
-    assert pd.collect_review_finding_declarations(spec, ROLE, [normal, refused]) == {
+    assert review_state.collect_review_finding_declarations(spec, ROLE, [normal, refused]) == {
         "X-001",
     }
     # 재사용 방지 스캔은 거부 라운드·산문까지 넓게 본다 — 두 시야는 의도적으로 다르다.
-    assert pd.next_review_finding_id(spec, ROLE, [normal, refused]) == "X-051"
+    assert review_state.next_review_finding_id(spec, ROLE, [normal, refused]) == "X-051"
 
 
 def test_removed_confirm_fix_is_rejected_before_ticket_harvest(
@@ -1225,23 +1218,23 @@ def test_prompt_skeleton_does_not_prefill_previous_round_confirmations(
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-001")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
+    assert review_form.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-002")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
+    assert review_form.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-003")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
+    assert review_form.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
     _append_spec(tmp_path, _disposition("X-003", ordinal=3, decision="rejected"))
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-004")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
+    assert review_form.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
 
 def test_prompt_skeleton_ignores_a_reserved_round_without_output(
@@ -1253,10 +1246,9 @@ def test_prompt_skeleton_ignores_a_reserved_round_without_output(
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
 
-    rounds_module = pd._load_ticket_rounds()
     reserved = _write_round(
         tmp_path, 2, ROLE,
-        rounds_module.render_round_seed(
+        round_seed.render_round_seed(
             ROLE, spec.read_text(encoding="utf-8"), today="2026-08-18",
         ),
     )
@@ -1265,7 +1257,7 @@ def test_prompt_skeleton_ignores_a_reserved_round_without_output(
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-002")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
+    assert review_form.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
     assert reserved.exists()
 
 
@@ -1308,7 +1300,7 @@ def test_prompt_does_not_resolve_confirmable_ids(
     calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-002")))
 
     def _raise(*_args, **_kwargs):
-        raise pd.DelegateError("확인 목록 해소 실패 probe")
+        raise delegate_errors.DelegateError("확인 목록 해소 실패 probe")
 
     monkeypatch.setattr(pd, "collect_confirmable_finding_ids", _raise)
     monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
@@ -1316,7 +1308,7 @@ def test_prompt_does_not_resolve_confirmable_ids(
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     err = capsys.readouterr().err
     assert "확인 목록 해소 실패 probe" not in err
-    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
+    assert review_form.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
 
 # ── F-005 개행: 회신 bytes 를 그대로 보존한다 ────────────────────────────
@@ -1405,14 +1397,11 @@ def test_rounds_seam_error_becomes_a_harvest_problem_not_a_traceback(
     """라운드 규약 위반(`RoundsError`)은 회수 실패 처방으로 접힌다 — 사본 skew 절이 먼저 받으면
     같은 오류가 traceback 으로 나간다(`RoundsError` 는 `RuntimeError` 하위형이다)."""
     _seed_board(tmp_path)
-    rounds_module = pd._load_ticket_rounds()
 
     def _raise(*_args, **_kwargs):
-        raise rounds_module.RoundsError("라운드 예약 충돌 probe")
+        raise round_rules.RoundsError("라운드 예약 충돌 probe")
 
-    monkeypatch.setattr(rounds_module, "reserve_round", _raise)
-    monkeypatch.setattr(external, "_load_ticket_rounds", lambda: rounds_module)
-    monkeypatch.setattr(pd, "_load_ticket_rounds", lambda: rounds_module)
+    monkeypatch.setattr(round_store, "reserve_round", _raise)
     monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
@@ -1445,10 +1434,10 @@ def test_prompt_rules_ban_requoting_and_derive_severity_from_constants(
 
     prompt = calls["prompt"]
     assert "재인용하지 마라" in prompt
-    assert pd.PM_REVIEW_SEVERITIES[0] in prompt
+    assert review_form.PM_REVIEW_SEVERITIES[0] in prompt
 
     monkeypatch.setattr(
-        pd, "PM_REVIEW_SEVERITIES", ("blocker-probe", *pd.PM_REVIEW_SEVERITIES),
+        review_form, "PM_REVIEW_SEVERITIES", ("blocker-probe", *review_form.PM_REVIEW_SEVERITIES),
     )
     monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
     assert "blocker-probe" in external._versioned_block_requirement()

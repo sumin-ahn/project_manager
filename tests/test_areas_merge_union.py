@@ -32,6 +32,8 @@ import pytest
 from conftest import anchor_board_module, ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pre_push_hook
+from pm_engine.domain import round_rules
+from pm_engine.infra import round_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -222,9 +224,8 @@ def _status_and_root_only_declaration(board) -> str:
 
 def test_text_lf_judgment_covers_the_nested_rounds_path(board):
     """라운드 파일은 `tickets/rounds/<티켓>/` 아래 산다 — 상태 경로만 덮은 선언은 미배포다."""
-    rounds = board._load_ticket_rounds()
     probe = (
-        f"tickets/{rounds.ROUNDS_DIRNAME}/T-0/{rounds.round_filename(1, 'developer')}"
+        f"tickets/{round_store.ROUNDS_DIRNAME}/T-0/{round_rules.round_filename(1, 'developer')}"
     )
     # 프로브 경로의 값은 사이드카 seam 에서 파생한다(리터럴 복제 0).
     assert probe in board._board_text_attr_targets()
@@ -238,16 +239,15 @@ def test_text_lf_judgment_covers_the_nested_rounds_path(board):
     assert board._target_lf_declared(partial, probe) is False
     assert board._board_text_lf_declared(partial) is False
     assert board._board_text_lf_declared(
-        partial + f"tickets/{rounds.ROUNDS_DIRNAME}/**/*.md text eol=lf\n",
+        partial + f"tickets/{round_store.ROUNDS_DIRNAME}/**/*.md text eol=lf\n",
     ) is True
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 부재")
 def test_git_agrees_the_rounds_path_is_not_covered_by_status_patterns(board, tmp_path):
     """독립 대조 — 같은 선언에서 git 자신이 라운드 경로를 미지정으로 읽는다."""
-    rounds = board._load_ticket_rounds()
     probe = (
-        f"tickets/{rounds.ROUNDS_DIRNAME}/T-0/{rounds.round_filename(1, 'developer')}"
+        f"tickets/{round_store.ROUNDS_DIRNAME}/T-0/{round_rules.round_filename(1, 'developer')}"
     )
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     (board_dir / ".gitattributes").write_text(

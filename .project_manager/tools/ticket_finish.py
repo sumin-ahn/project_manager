@@ -47,8 +47,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import identity_args, pytest_report, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, raw_output, repo_coordinates, repo_files, ticket_store  # noqa: E402
+from pm_engine.domain import identity_args, pytest_report, round_rules, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
 from pm_engine.app import regression, slot_resolution  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -724,13 +724,10 @@ def _fallback_ticket_frontmatter(
     if len(candidates) != 1:
         return {}
     path, text = candidates[0]
-    parser_error = getattr(external, "AnchorResolutionError", None)
-    parser_errors = (AttributeError, OSError, UnicodeError)
-    if isinstance(parser_error, type) and issubclass(parser_error, Exception):
-        # additional_reviewer의 원문 frontmatter parser는 손상된 opener를 이 타입으로
-        # 알린다. 이 fallback은 측정 가드용 입력 복구라 그 경우에도 가드 off로
-        # 접어 완료 기록을 막지 않는다. 다른 예외는 삼키지 않는다.
-        parser_errors += (parser_error,)
+    # additional_reviewer의 원문 frontmatter parser는 손상된 opener를 `AnchorResolutionError`
+    # 로 알린다. 이 fallback은 측정 가드용 입력 복구라 그 경우에도 가드 off로 접어 완료 기록을
+    # 막지 않는다. 다른 예외는 삼키지 않는다.
+    parser_errors = (AttributeError, OSError, UnicodeError, pm_paths.AnchorResolutionError)
     try:
         touches = external._parse_touches_from_file(path)
     except parser_errors:
@@ -928,20 +925,7 @@ def _has_worktree_touch_prefix(path: str) -> bool:
     return _WORKTREE_TOUCH_PREFIX.match(norm) is not None
 
 
-def _load_ticket_rounds():
-    """라운드 사이드카 경로·임시 파일 규약의 단일 진실(`ticket_rounds.py`)을 경로 로드한다.
-
-    부재만 None 이다 — round stage 후보만 생략하고 티켓 파일 stage 는 그대로 진행한다. 파일이 있는데
-    적재가 실패하면 그대로 올린다: 값 없음으로 접으면 라운드 산출이 홈 커밋에서 조용히 빠진다.
-    """
-    path = TOOLS_DIR / "ticket_rounds.py"
-    if not path.exists():
-        return None
-    return _load_module_from_path(path, "ticket_rounds.py", verifier=_verify_engine_rev)
-
-
-def _round_stage_candidates(
-        rounds_module, tickets_dir: Path, ticket_id: str) -> list[Path]:
+def _round_stage_candidates(tickets_dir: Path, ticket_id: str) -> list[Path]:
     """티켓 라운드 디렉터리에 **실존하는 라운드 파일만** stage 후보로 낸다 (디렉터리 자체는
     넣지 않는다 — untracked 신규 라운드도 실 파일 목록이라야 `git_scope_stage_pathspec` 이
     add 한다).
@@ -952,13 +936,13 @@ def _round_stage_candidates(
     통과해야 하는데 4건이 통과). 점-접두 임시 잔여(원자 교체 중간 산출)도 이 문법을 벗어나
     자연히 걸러지므로 별도 조건이 필요 없다.
     """
-    directory = rounds_module.rounds_dir_for_ticket(ticket_id, tickets_dir)
+    directory = round_store.rounds_dir_for_ticket(ticket_id, tickets_dir)
     if not directory.is_dir():
         return []
     return sorted(
         entry for entry in directory.iterdir()
         if entry.is_file()
-        and rounds_module.parse_round_filename(entry.name) is not None
+        and round_rules.parse_round_filename(entry.name) is not None
     )
 
 
@@ -969,7 +953,7 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
         항상 포함한다.
       - 티켓 파일의 옛/새 경로 · 라운드 사이드카(`tickets/rounds/<id>/*.md`) — 3단계
         `board.py complete` 가 티켓을 `claimed/`→`done/` 로 옮기고, 라운드는
-        `ticket_rounds.rounds_dir_for_ticket` 가 정하는 고정 위치라 상태 이동을 따라가지
+        `round_store.rounds_dir_for_ticket` 가 정하는 고정 위치라 상태 이동을 따라가지
         않지만 그 실행이 새로 쓴 파일이라 함께 stage 대상이다. **board-git 분리 형상에선
         티켓과 함께 라운드도 제외** 한다: 티켓이 서브모듈(`.project_manager/board/`) 안이라
         상위 repo 의 `git add` 가 `fatal: … is in submodule`(rc=128)로 죽고, 그 이동은
@@ -991,8 +975,6 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
         return paths
     if board._board_git_enabled():
         return paths
-    # 분리 형상이면 여기 도달하지 않는다 — round 형제 로드도 그때만 한다(불필요한 로드 skip).
-    rounds = _load_ticket_rounds()
     try:
         _status, ticket_path = board.find_ticket(ticket_id)
     except FileNotFoundError:
@@ -1001,9 +983,7 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     tickets_dir = pm_paths.tickets_dir(pm_paths.home_at(REPO))
     paths.extend(tickets_dir / status / ticket_path.name
                  for status in ticket_rules.STATUS_DIRS)
-    if rounds is not None:
-        paths.extend(
-            _round_stage_candidates(rounds, tickets_dir, ticket_id))
+    paths.extend(_round_stage_candidates(tickets_dir, ticket_id))
     # 묶음 장부 — 종결이 status 를 쓰는 소속 장부와, 발행이 만들고 묶음 선언이 흡수(삭제)한 크기 1
     # 장부. 실존·추적 판정은 `git_scope_stageable` 이 한다(흡수 장부는 추적 중일 때만 삭제로 남는다).
     frontmatter, _body = ticket_store.load_ticket(ticket_path)

@@ -39,7 +39,7 @@ CONVERGENCE_CAP_REACHED = "cap-reached"
 RETIRED_ACK_FIELD = "acked_through"
 
 # 기계 확인(pm-review-confirmation-v1) 증거로 여는 게이트 처분. 상한·쿼터 대신
-# 증거를 요구한다(`pm_delegate.pm_verified_evidence_problem` 이
+# 증거를 요구한다(`review_state.pm_verified_evidence_problem` 이
 # 선언·완료 재검증 공용으로 판정한다). 이 모듈은 표기 문구만 소유한다.
 RESOLUTION_PM_VERIFIED = "pm-verified"
 

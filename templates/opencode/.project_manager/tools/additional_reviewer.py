@@ -99,10 +99,10 @@ from typing import Callable, Iterator, NamedTuple, Sequence
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema, ticket_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, ticket_store  # noqa: E402
+from pm_engine.domain import conf_schema, delegate_errors, review_form, review_state, review_verdict, round_rules, ticket_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
-from pm_engine.app import release  # noqa: E402
+from pm_engine.app import release, round_seed  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -159,8 +159,7 @@ def _require_engine_sibling(path: Path, filename: str) -> None:
     """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
 
     부재는 raw `FileNotFoundError` 로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
-    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다
-    (board.py `_require_engine_sibling` 동형·self-contained 복제)."""
+    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다."""
     if path.exists():
         return
     err = RuntimeError(
@@ -200,56 +199,10 @@ REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # �
 _PM_HOME_OVERRIDE: Path | None = None
 
 
-class AnchorResolutionError(RuntimeError):
-    """명시 입력에서 diff/board/config 앵커를 유일하게 해소하지 못한 오류."""
-
-
 def _load_board():
     """형제 board 엔진을 위치로 로드해 worktree lease 재앵커 판정을 승계한다."""
     path = Path(__file__).resolve().with_name("board.py")
     return _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
-
-
-def resolve_pm_home_for_repo(anchor: Path) -> Path:
-    """repo/worktree가 소속된 PM 홈을 anchor 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
-
-    판정 입력은 `pm_paths.owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
-    저장소가 소유 PM 홈을 지목하고, 그 홈에 `.project_manager` 가 실재하는지만 확인한다.
-    `.git` 이 없거나 디렉터리인 트리(PM 홈 main checkout·일반 clone)는 자기 자신이라는
-    확정된 답이다. 미지 commondir·`.project_manager` 부재는 `AnchorResolutionError` 다 —
-    자기 앵커로 강등해 계속 진행하지 않는다.
-
-    앵커가 실 board 를 갖는지는 판정 입력이 아니다. 사본 안에 실 ticket 이 있다는 이유로
-    조기 반환하면, 소유자를 확정하지 못한 트리가 휘발 장부에 라운드를 기록할 수 있다.
-    """
-    anchor = anchor.resolve()
-    try:
-        pm_home = pm_paths.owning_pm_home(anchor)
-    except pm_paths.PmHomeResolutionError as exc:
-        raise AnchorResolutionError(str(exc)) from exc
-    return pm_home
-
-
-def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
-    """PM 홈의 실재 worktree 후보를 lease 장부에서 파생한다(하네스 목록/슬롯 추측 없음)."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    try:
-        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
-    except FileNotFoundError:
-        return ()
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise AnchorResolutionError(f"worktree lease 장부 읽기 실패: {ledger} ({exc})") from exc
-    rows = data.get("leases") if isinstance(data, dict) else None
-    if not isinstance(rows, list):
-        raise AnchorResolutionError(f"worktree lease 장부 형식 오류: {ledger}")
-    found: set[Path] = set()
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict) or not isinstance(row.get("slot"), str):
-            raise AnchorResolutionError(f"worktree lease 장부 leases[{index}] 형식 오류: {ledger}")
-        candidate = (pm_home / row["slot"]).resolve()
-        if candidate.is_dir() and (candidate / ".git").exists():
-            found.add(candidate)
-    return tuple(sorted(found))
 
 
 def _path_repo_root(path: Path) -> Path | None:
@@ -314,7 +267,7 @@ def _resolve_diff_root(
         and (root := _path_repo_root(Path(raw).resolve())) is not None
     }
     if len(absolute_roots) > 1:
-        raise AnchorResolutionError(
+        raise pm_paths.AnchorResolutionError(
             "--paths가 여러 git repo를 가리킵니다 — 추가 리뷰 1회는 diff 앵커 하나만 허용합니다."
         )
     if absolute_roots:
@@ -323,20 +276,20 @@ def _resolve_diff_root(
         # lease 장부 때문에 자기잠김하지 않도록 장부를 읽기 전에 반환한다.
         if not ticket_selected:
             return selected_root
-        candidates = _registered_worktrees(pm_home)
+        candidates = lease_store._registered_worktrees(pm_home)
         if (
             ticket_selected
             and engine_repo.resolve() != pm_home.resolve()
             and selected_root in candidates
             and selected_root != engine_repo.resolve()
         ):
-            raise AnchorResolutionError(
+            raise pm_paths.AnchorResolutionError(
                 "ticket touches가 실행 엔진 worktree와 다른 등록 worktree를 가리킵니다: "
                 f"engine={engine_repo.resolve()} touches={selected_root}"
             )
         return selected_root
 
-    candidates = _registered_worktrees(pm_home)
+    candidates = lease_store._registered_worktrees(pm_home)
 
     if ticket_selected and candidates:
         selected = _ticket_worktree_candidates(pm_home, paths, candidates)
@@ -345,13 +298,13 @@ def _resolve_diff_root(
                 engine_repo.resolve() != pm_home.resolve()
                 and selected[0] != engine_repo.resolve()
             ):
-                raise AnchorResolutionError(
+                raise pm_paths.AnchorResolutionError(
                     "ticket touches가 실행 엔진 worktree와 다른 등록 worktree를 가리킵니다: "
                     f"engine={engine_repo.resolve()} touches={selected[0]}"
                 )
             return selected[0]
         if len(selected) > 1:
-            raise AnchorResolutionError(
+            raise pm_paths.AnchorResolutionError(
                 "ticket touches가 여러 등록 worktree를 가리킵니다 — diff 앵커가 모호합니다."
             )
 
@@ -378,7 +331,7 @@ def _resolve_diff_root(
     if len(candidates) == 1:
         return candidates[0]
     detail = ", ".join(str(path) for path in (changed or candidates)) or "(후보 0)"
-    raise AnchorResolutionError(
+    raise pm_paths.AnchorResolutionError(
         "명시 경로에서 diff worktree를 하나로 해소할 수 없습니다. "
         f"ticket touches에 등록 슬롯 경로를 포함하거나 절대 --paths를 사용하세요: {detail}\n"
         "  · 변경을 이미 커밋했다면 `--base <공통 base ref>`로 앵커를 명시하세요 — 직전 커밋 한 "
@@ -399,7 +352,7 @@ def _normalize_review_paths(
             try:
                 value = absolute.relative_to(diff_root).as_posix()
             except ValueError as exc:
-                raise AnchorResolutionError(
+                raise pm_paths.AnchorResolutionError(
                     f"검토 경로가 해소된 diff worktree 밖입니다: {raw} (diff={diff_root})"
                 ) from exc
         elif ticket_selected:
@@ -414,7 +367,7 @@ def _normalize_review_paths(
         if value:
             normalized.append(value)
     if not normalized:
-        raise AnchorResolutionError("검토 경로가 0개로 해소됐습니다.")
+        raise pm_paths.AnchorResolutionError("검토 경로가 0개로 해소됐습니다.")
     return tuple(dict.fromkeys(normalized))
 
 
@@ -605,66 +558,6 @@ _MACHINE_MIRROR_RE = re.compile(
 # 예산 거부)이라 같은 rc 를 쓴다 — 호출부가 "예산 때문에 안 나갔다"를 한 코드로 판별한다.
 EXIT_ROUND_LIMIT_EXCEEDED = 4
 
-# must-fix / 반려 판정 토큰 (보수적: 하나라도 감지 → 비-통과)
-_REJECT_TOKENS: tuple[str, ...] = (
-    "must-fix", "must fix", "MUST-FIX", "MUST FIX", "반려", "REJECT", "reject",
-)
-_PASS_TOKENS: tuple[str, ...] = (
-    "통과", "PASS", "pass", "승인", "APPROVE", "approve", "lgtm", "LGTM",
-)
-# 판정 라인 자체의 인식 규칙 — 판정 파서와 echo 오염 검출이 **같은 함수**를 봐야 "검출기 ⊇ 파서"가
-# 성립한다(파서가 집어 든 라인을 검출기가 못 보면 오염된 판정이 조용히 통과한다).
-_VERDICT_LINE_RE = re.compile(r"^[ \t]*[*_#\s-]*판정[ \t]*:[ \t]*(\S+)")
-_CODE_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
-_QUOTE_LINE_RE = re.compile(r"^\s*>")
-
-# 판정값 허용 토큰 — **정확일치**다(부분 문자열 금지). 부분 문자열이면 프롬프트 템플릿 echo
-# `판정: [통과 | 반려]`·부정형 `판정: 비통과`·선택지 나열 `판정: PASS/REJECT` 가 전부 '통과'로 읽혀
-# false-green 이 난다(실측). 허용 목록에 없는 판정값은 통과도 반려도 아닌 **불명확**이다 —
-# 리뷰어가 무엇을 말했는지 기계가 모르면 통과로 접지 않는다.
-_PASS_VERDICT_TOKENS = frozenset({
-    "통과", "PASS", "pass", "승인", "APPROVE", "approve", "LGTM", "lgtm",
-})
-_REJECT_VERDICT_TOKENS = frozenset({"반려", "REJECT", "reject"})
-# 정확일치 전에 벗겨내는 것은 **강조/문장부호뿐**이다(`**통과**`·`통과.`). 괄호·슬래시는 남긴다 —
-# 그게 템플릿 echo(`[통과`)와 선택지 나열(`PASS/REJECT`)을 불명확으로 세우는 신호다.
-_VERDICT_WORD_TRIM = "*_`.,!;:"
-
-VERDICT_PASS = "pass"
-VERDICT_REJECT = "reject"
-VERDICT_UNKNOWN = "unknown"
-
-
-def verdict_kind(word: str) -> str:
-    """판정값 낱말 → `pass`/`reject`/`unknown` (정확일치·파서와 검출기 공용)."""
-    normalized = word.strip().strip(_VERDICT_WORD_TRIM)
-    if normalized in _PASS_VERDICT_TOKENS:
-        return VERDICT_PASS
-    if normalized in _REJECT_VERDICT_TOKENS:
-        return VERDICT_REJECT
-    return VERDICT_UNKNOWN
-
-
-def verdict_words(text: str) -> tuple[str, ...]:
-    """판정 라인이 선언한 낱말들 — **행 선두 선언만**, 코드펜스 안·인용행은 제외한다.
-
-    좁히는 규칙을 검출기에만 걸면 파서가 보는 라인을 검출기가 못 보게 되어 오염 판정이 새므로,
-    파서와 검출기가 이 함수 하나를 공유한다. 인용/코드펜스 안의 판정 문구는 리뷰어 자신의 선언이
-    아니라 인용물이라 어느 쪽에서도 판정으로 세지 않는다(리뷰 대상 diff에 든 판정 문안이 이 축의
-    상시 오탐 원천이다).
-    """
-    words: list[str] = []
-    in_fence = False
-    for line in text.splitlines():
-        if _CODE_FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence or _QUOTE_LINE_RE.match(line):
-            continue
-        match = _VERDICT_LINE_RE.match(line)
-        if match:
-            words.append(match.group(1).strip())
-    return tuple(words)
 
 # 프롬프트 형식에서 must-fix 섹션 헤더를 인식하는 정규식
 _MUST_FIX_SECTION_RE = re.compile(
@@ -745,24 +638,23 @@ def _versioned_block_requirement(
     **다음 ID 실값**(`_next_external_finding_id`)을 골격에 싣는다. 실값이 없으면(회수 대상 없는
     실행) 첫 ID·placeholder 로 돌려준다.
     """
-    delegate = _load_pm_delegate()
-    role = delegate.ADDITIONAL_REVIEWER_ROLE
-    next_id = next_finding_id or delegate.next_review_finding_id("", role)
+    role = review_form.ADDITIONAL_REVIEWER_ROLE
+    next_id = next_finding_id or review_state.next_review_finding_id("", role)
     rules = _VERSIONED_BLOCK_RULES.format(
-        prefix=delegate.PM_REVIEW_FINDING_ID_PREFIXES[role],
+        prefix=review_form.PM_REVIEW_FINDING_ID_PREFIXES[role],
             # 표기는 호출부가 정할 수 있다 — 대상이 티켓 하나면 ID 실값 하나이고, 묶음이면
             # 그 값이 티켓마다 다르다(그 실값은 각 라운드 파일 시드가 이미 들고 있다).
         next_id=f"`{next_id}`",
-        top_severity=delegate.PM_REVIEW_SEVERITIES[0],
+        top_severity=review_form.PM_REVIEW_SEVERITIES[0],
         placeholder_words="·".join(
-            delegate.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS
+            review_form.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS
         ),
     )
     return (
         _VERSIONED_BLOCK_HEADER
         + rules
         + "\n"
-        + delegate.render_pm_review_block_skeleton(role, confirmation_ids)
+        + review_form.render_pm_review_block_skeleton(role, confirmation_ids)
         + "\n"
     )
 
@@ -1527,19 +1419,6 @@ def _load_pm_delegate():
     _require_engine_sibling(path, "pm_delegate.py")
     return _load_module_from_path(
         path, "pm_delegate.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
-def _load_ticket_rounds():
-    """티켓 라운드 사이드카 공용 seam(`ticket_rounds.py`)을 지연 로드한다.
-
-    라운드 파일의 경로 규약·이름 문법·순번 예약·판독·렌더는 그 모듈이 소유한다 — 회수 쓰기와
-    리뷰 입력 조립이 각자 규약을 다시 적으면 두 표면이 갈린다.
-    """
-    path = Path(__file__).resolve().parent / "ticket_rounds.py"
-    _require_engine_sibling(path, "ticket_rounds.py")
-    return _load_module_from_path(
-        path, "ticket_rounds.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -2499,7 +2378,7 @@ def _print_rounds_report(
     뒤 자기 앵커 폴백이다."""
     global _PM_HOME_OVERRIDE
     _PM_HOME_OVERRIDE = (
-        anchor if resolved else resolve_pm_home_for_repo(anchor)
+        anchor if resolved else pm_paths.resolve_pm_home_for_repo(anchor)
     )
     try:
         wave_budget = _wave_budget(_local_config_for_repo(_PM_HOME_OVERRIDE))
@@ -2570,7 +2449,7 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
     if ignored:
         print(f"경고: --resolve-gate 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
               file=sys.stderr)
-    _PM_HOME_OVERRIDE = resolve_pm_home_for_repo(engine_repo)
+    _PM_HOME_OVERRIDE = pm_paths.resolve_pm_home_for_repo(engine_repo)
     board = _load_board()
     with _round_ledger_lock():
         ledger = _load_round_ledger()
@@ -3174,7 +3053,7 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
     충돌이 불가능한 정확 이름이라 seam 이 비면 그 폴백을 그대로 본다(종전 동작).
     """
     if not ticket_id or re.search(r"[\\/*?\[\]]", ticket_id):
-        raise AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
+        raise pm_paths.AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
     tickets_dir = _tickets_dir_for(pm_home)
     status_dirs = tuple(ticket_rules.STATUS_DIRS)
     found = ticket_store.find_ticket_exact(
@@ -3187,7 +3066,7 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
         exact = tickets_dir / status_dir / f"{ticket_id}.md"
         if exact.exists():
             return exact
-    raise AnchorResolutionError(
+    raise pm_paths.AnchorResolutionError(
         f"ticket {ticket_id} 을 해소된 board에서 찾지 못했습니다: {tickets_dir}"
     )
 
@@ -3227,7 +3106,7 @@ def _split_ticket_frontmatter(text: str, *, source: Path) -> tuple[str | None, s
     after_open = text[4:]
     end = after_open.find("\n---\n")
     if end == -1:
-        raise AnchorResolutionError(f"ticket frontmatter가 닫히지 않았습니다: {source}")
+        raise pm_paths.AnchorResolutionError(f"ticket frontmatter가 닫히지 않았습니다: {source}")
     return after_open[:end], after_open[end + 5:]
 
 
@@ -3252,13 +3131,12 @@ def _load_ticket_rounds_for(
     라운드 디렉터리 규약 위반은 조용히 건너뛰지 않고 본문 조립 실패와 **같은 깔때기**로 올린다
     — 리뷰 입력이 반쪽이 된 채로 나가면 안 된다(호출부가 loud 하게 멈춘다).
     """
-    rounds_module = _load_ticket_rounds()
     try:
-        return rounds_module.load_rounds(
+        return round_seed.load_rounds(
             _tickets_dir_for(pm_home), ticket_id, ticket_text=ticket_text,
         )
-    except rounds_module.RoundsError as exc:
-        raise AnchorResolutionError(
+    except round_rules.RoundsError as exc:
+        raise pm_paths.AnchorResolutionError(
             f"티켓 라운드 사이드카가 손상돼 리뷰 입력을 조립할 수 없습니다: {exc}"
         ) from exc
 
@@ -3281,7 +3159,7 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
 
     명세(`body`)는 권위 절과 PM 판정 블록을 그대로 담은 파일이라 전량 싣는다. 라운드는 파일
     하나가 산출 하나라 선별이 파일 선택으로 끝난다 — 역할마다 마지막 것만 싣고, 시드 그대로인
-    라운드(산출 없음)는 세지도 싣지도 않는다. 이어 붙이는 표기는 `ticket_rounds.render_rounds_for_show`
+    라운드(산출 없음)는 세지도 싣지도 않는다. 이어 붙이는 표기는 `round_rules.render_rounds_for_show`
     가 소유한다(사람이 `board.py show` 에서 읽는 그 구분선과 같은 규칙 하나).
 
     라운드가 없으면 명세 원문을 **바이트 그대로** 돌려준다 — 라운드 없는 티켓의 입력이 이 선별
@@ -3305,11 +3183,11 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
     if omitted:
         parts.append("\n" + _TICKET_BODY_OMISSION_LINE.format(n=omitted) + "\n")
     if selected:
-        parts.append("\n" + _load_ticket_rounds().render_rounds_for_show(selected))
+        parts.append("\n" + round_rules.render_rounds_for_show(selected))
     return TicketBodySelection("".join(parts), omitted)
 
 
-# 스폰면 경고 문구 — 준비면(`pm_delegate._warn_unharvested_developer_round`)과 같은 축을
+# 스폰면 경고 문구 — 준비면(`round_seed._warn_unharvested_developer_round`)과 같은 축을
 # 쓰되, 문구는 다르다. 형상 B(앞선 산출 라운드가 있고 최신만 시드)에서 준비면 문구를 그대로
 # 복제하면 "리뷰어 입력에 실리지 않습니다"가 거짓이 된다 — 이 표면은 그렇게 단정하지 않고, 이번
 # 프롬프트에 실제로 실리는 developer 산출 라운드 이름(없으면 "없음")을 값으로 말한다.
@@ -3322,20 +3200,18 @@ _SPAWN_SEED_DEVELOPER_ROUND_WARNING = (
 def _warn_seed_developer_round(rounds: Sequence, *, ticket: str) -> None:
     """추가 리뷰어 스폰면의 loud 경고 — 경고이지 거부가 아니다(rc 는 바꾸지 않는다).
 
-    판정은 준비면(`pm_delegate._warn_unharvested_developer_round`)이 쓰는 공개 함수
-    `pm_delegate.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 표면이
+    판정은 준비면(`round_seed._warn_unharvested_developer_round`)이 쓰는 공개 함수
+    `round_seed.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 표면이
     어긋난다. `prepare_ticket_body` 한 seam 이 미리보기(`--dry-run`)와 실 스폰을 모두
     지나므로 이 호출 하나가 두 채널을 함께 덮는다.
     """
-    delegate = _load_pm_delegate()
-    stale = delegate.unharvested_developer_round(rounds)
+    stale = round_seed.unharvested_developer_round(rounds)
     if stale is None:
         return
-    ticket_rounds = _load_ticket_rounds()
-    name = ticket_rounds.round_filename(stale.ordinal, stale.role)
-    latest = ticket_rounds.latest_round_of_role(rounds, delegate.REVIEW_SUBJECT_ROLE)
+    name = round_rules.round_filename(stale.ordinal, stale.role)
+    latest = round_rules.latest_round_of_role(rounds, round_seed.REVIEW_SUBJECT_ROLE)
     latest_name = (
-        ticket_rounds.round_filename(latest.ordinal, latest.role)
+        round_rules.round_filename(latest.ordinal, latest.role)
         if latest is not None else "없음"
     )
     print(
@@ -4052,15 +3928,15 @@ def parse_verdict(output: str) -> dict[str, bool]:
     elif section_found and must_fix_items:
         has_must_fix = True
     else:
-        has_must_fix = any(token in output for token in _REJECT_TOKENS)
+        has_must_fix = any(token in output for token in review_verdict._REJECT_TOKENS)
 
-    declared_verdicts = verdict_words(output)
-    kind = verdict_kind(declared_verdicts[0]) if declared_verdicts else VERDICT_UNKNOWN
-    has_pass = kind == VERDICT_PASS
+    declared_verdicts = review_verdict.verdict_words(output)
+    kind = review_verdict.verdict_kind(declared_verdicts[0]) if declared_verdicts else review_verdict.VERDICT_UNKNOWN
+    has_pass = kind == review_verdict.VERDICT_PASS
     if has_pass:
         if not must_fix_items or _is_none_items(must_fix_items):
             has_must_fix = False
-    elif kind == VERDICT_REJECT:
+    elif kind == review_verdict.VERDICT_REJECT:
         has_must_fix = True
 
     return {"has_must_fix": has_must_fix, "has_pass": has_pass}
@@ -4113,7 +3989,7 @@ class OutputContamination(NamedTuple):
         허용 토큰이 아닌 판정선(`[통과`·`PASS/REJECT` 같은 템플릿/선택지 echo)은 `unknown` 이라
         고유한 종류로 센다 — 그런 줄이 진짜 판정선과 섞여 있으면 어느 게 이번 판정인지 모른다.
         """
-        return {verdict_kind(word) for word in self.verdicts}
+        return {review_verdict.verdict_kind(word) for word in self.verdicts}
 
     @property
     def contaminated(self) -> bool:
@@ -4158,7 +4034,7 @@ def detect_output_contamination(output: str) -> OutputContamination:
     echo 라인이 검출을 빠져나간다.
     """
     return OutputContamination(
-        verdicts=verdict_words(output),
+        verdicts=review_verdict.verdict_words(output),
         raw_artifacts=_unique(_RAW_ARTIFACT_RE.findall(output)),
         transcripts=_unique(_SESSION_TRANSCRIPT_RE.findall(output)),
     )
@@ -4992,7 +4868,7 @@ def _main(argv: list[str] | None = None) -> int:
     # 실 ticket 파일은 제공하지 않은 형상을 명시적으로 식별하는 테스트 전용 호환 축이다.
     ticket_scope_fixture_injected = False
     try:
-        engine_pm_home = resolve_pm_home_for_repo(engine_repo)
+        engine_pm_home = pm_paths.resolve_pm_home_for_repo(engine_repo)
         scope_from_initial_pm_home = _scope_from_initial_pm_home(
             ticket_selected=ticket_selected, explicit_paths=explicit_paths,
         )
@@ -5010,7 +4886,7 @@ def _main(argv: list[str] | None = None) -> int:
             ticket_scope_fixture_injected = ticket_body_source is None
             raw_paths = tuple(parsed_touches)
             if not raw_paths:
-                raise AnchorResolutionError(
+                raise pm_paths.AnchorResolutionError(
                     f"board anchor {engine_pm_home}: ticket {args.ticket} 의 touches가 비어 있어 "
                     "검토 범위를 확정할 수 없습니다."
                 )
@@ -5030,15 +4906,15 @@ def _main(argv: list[str] | None = None) -> int:
         pm_home = (
             engine_pm_home
             if diff_root.resolve() == engine_repo
-            else resolve_pm_home_for_repo(diff_root)
+            else pm_paths.resolve_pm_home_for_repo(diff_root)
         )
         if ticket_selected and pm_home != engine_pm_home:
-            raise AnchorResolutionError(
+            raise pm_paths.AnchorResolutionError(
                 "ticket board 소유 PM 홈과 diff worktree의 lease 소유 PM 홈이 다릅니다: "
                 f"board={engine_pm_home} diff-owner={pm_home}"
             )
         if scope_from_initial_pm_home and pm_home != engine_pm_home:
-            raise AnchorResolutionError(
+            raise pm_paths.AnchorResolutionError(
                 "인자 없는 실행의 검토 범위(local.conf additional_reviewer.paths 또는 엔진 고정 기본 경로)를 "
                 "최초 PM 홈에서 파생해 diff_root를 선택했지만, 해소된 diff 소유 PM 홈이 다릅니다. "
                 "config provenance와 실제 호출 범위를 일치시킬 수 없어 호출 전에 중단합니다: "
@@ -5055,7 +4931,7 @@ def _main(argv: list[str] | None = None) -> int:
             pm_home=pm_home,
             ticket_selected=ticket_selected,
         )
-    except (AnchorResolutionError, OSError, UnicodeError) as exc:
+    except (pm_paths.AnchorResolutionError, OSError, UnicodeError) as exc:
         print(f"오류: 추가 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
         return 1
 
@@ -5087,7 +4963,7 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        except AnchorResolutionError as exc:
+        except pm_paths.AnchorResolutionError as exc:
             print(f"오류: 추가 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
             return 1
     # 시간 예산은 **해소된 대상의 하네스 프로필**을 따른다 — 대상 command 를 먼저 해소해야
@@ -5221,7 +5097,7 @@ def _main(argv: list[str] | None = None) -> int:
                 args.ticket, pm_home=pm_home, ticket_text=raw_text,
             )
             # 시드 그대로인 developer 라운드 위에서 스폰되는지 loud 표시 — 준비면
-            # (`pm_delegate._warn_unharvested_developer_round`)과 같은 축(이 seam 은
+            # (`round_seed._warn_unharvested_developer_round`)과 같은 축(이 seam 은
             # dry-run·실 스폰 두 호출을 모두 지난다).
             _warn_seed_developer_round(rounds, ticket=args.ticket)
             # 입력 선별 — 명세는 전량, 라운드는 역할별 마지막 산출만(파일 선택).
@@ -5232,7 +5108,7 @@ def _main(argv: list[str] | None = None) -> int:
             else:
                 # 생략된 라운드가 없으면 요약 헤더 없이 원문 그대로 — 회귀 불변(DoD (e)).
                 composed_body = selection.text
-        except (AnchorResolutionError, OSError, UnicodeError) as exc:
+        except (pm_paths.AnchorResolutionError, OSError, UnicodeError) as exc:
             if args.paths:
                 print(
                     "경고: 명시 --paths가 검토 범위를 소유해 "
@@ -5352,7 +5228,7 @@ def _harvest_target_ticket(
         return None, None                     # 자유 문자열 게이트 — 회수 대상 아님(조용).
     try:
         _find_ticket_file(gate, pm_home=pm_home)
-    except AnchorResolutionError as exc:
+    except pm_paths.AnchorResolutionError as exc:
         return None, f"게이트 {gate} 를 보드에서 찾지 못해 회수하지 않았습니다: {exc}"
     return gate, None
 
@@ -5389,7 +5265,7 @@ def _harvest_target_ticket_state(
                 ticket, pm_home=pm_home, ticket_text=ticket_text,
             ),
         )
-    except (AnchorResolutionError, OSError, UnicodeError) as exc:
+    except (pm_paths.AnchorResolutionError, OSError, UnicodeError) as exc:
         print(
             f"경고: {ticket} 본문을 읽지 못했습니다({exc}) — {degraded}",
             file=sys.stderr,
@@ -5410,9 +5286,8 @@ def _next_external_finding_id(args, *, pm_home: Path | None) -> str | None:
     )
     if state is None:
         return None
-    delegate = _load_pm_delegate()
-    return delegate.next_review_finding_id(
-        state.text, delegate.ADDITIONAL_REVIEWER_ROLE, state.rounds,
+    return review_state.next_review_finding_id(
+        state.text, review_form.ADDITIONAL_REVIEWER_ROLE, state.rounds,
     )
 
 
@@ -5427,7 +5302,7 @@ def _harvest_additional_reviewer_section(
     rc 로 표면화하고 산출 원문은 raw 에 남는다) — 라운드가 파일 하나라 "거부 표식을 얹어 절에
     남기고 판정 표면에서 빼는" 보정이 필요 없다.
 
-    채번+생성은 준비(`pm_delegate.prepare_ticket_copy`)와 **같은 seam**(`ticket_rounds`)을
+    채번+생성은 준비(`pm_delegate.prepare_ticket_copy`)와 **같은 seam**(`round_store.reserve_round`)을
     지난다 — 인자가 시드냐 실내용이냐만 다르다.
 
     쓰기 엔진은 **이 실행의 형제 사본**이고 데이터 좌표만 PM 홈이다 — PM 홈의 import 사본을
@@ -5439,7 +5314,6 @@ def _harvest_additional_reviewer_section(
     home = pm_home or REPO
     try:
         delegate = _load_pm_delegate()
-        rounds_module = _load_ticket_rounds()
         board = delegate.anchor_board_to_repo(_load_board(), home)
     except RuntimeError as exc:
         if not _absorb_engine_rev_skew_for_recovery(exc, "ticket_harvest"):
@@ -5447,12 +5321,12 @@ def _harvest_additional_reviewer_section(
         return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
     try:
         return _reserve_additional_reviewer_round(
-            ticket, reply, delegate=delegate, rounds_module=rounds_module, board=board,
+            ticket, reply, delegate=delegate, board=board,
             board_home=pm_paths.home_at(Path(home).resolve()),
         )
     # 라운드 규약 위반은 `RuntimeError` 하위형이라 **사본 skew 절보다 먼저** 받는다 — 순서를
     # 뒤집으면 예약 충돌·이름 문법 위반이 skew 판정을 지나 traceback 으로 나간다.
-    except (delegate.DelegateError, rounds_module.RoundsError,
+    except (delegate_errors.DelegateError, round_rules.RoundsError,
             OSError, UnicodeError) as exc:
         return f"티켓 라운드 기록 실패: {exc}"
     except RuntimeError as exc:
@@ -5462,20 +5336,20 @@ def _harvest_additional_reviewer_section(
 
 
 def _reserve_additional_reviewer_round(
-    ticket: str, reply: str, *, delegate, rounds_module, board, board_home,
+    ticket: str, reply: str, *, delegate, board, board_home,
 ) -> str | None:
     """내용 검증 → 통과 시 라운드 예약 + board 부분 커밋 (위반 사유 또는 None).
 
     검증 입력(명세 + 라운드)은 예약 **직전**에 읽는다 — finding ID 재선언·confirmation 대상
     판정이 실제로 쓰이는 상태와 같은 스냅샷을 봐야 한다.
     """
-    role = delegate.ADDITIONAL_REVIEWER_ROLE
+    role = review_form.ADDITIONAL_REVIEWER_ROLE
     found = ticket_store.find_ticket_exact(board_home, ticket)
     if found is None:
-        raise delegate.DelegateError(f"ticket not found: {ticket}")
+        raise delegate_errors.DelegateError(f"ticket not found: {ticket}")
     status, ticket_path = found
     if status not in ("open", "claimed"):
-        raise delegate.DelegateError(
+        raise delegate_errors.DelegateError(
             f"additional-reviewer 라운드 기록은 open/claimed 티켓만 허용: "
             f"{ticket} in {status}/"
         )
@@ -5484,7 +5358,7 @@ def _reserve_additional_reviewer_round(
     ) as handle:
         ticket_text = handle.read()
     tickets_dir = pm_paths.tickets_dir(board_home)
-    rounds = rounds_module.load_rounds(
+    rounds = round_seed.load_rounds(
         tickets_dir, ticket, ticket_text=ticket_text,
     )
     problem = delegate.review_harvest_problem(
@@ -5495,15 +5369,15 @@ def _reserve_additional_reviewer_round(
 
     # 회신 bytes 는 그대로 둔다(개행 표기 포함) — 라운드 파일은 산출 하나의 원문이다.
     content = (
-        rounds_module.render_round_header(
+        round_rules.render_round_header(
             role, today=datetime.date.today().isoformat(),
         )
         + "\n\n" + (reply if reply.endswith("\n") else reply + "\n")
     )
-    round_path = rounds_module.reserve_round(
+    round_path = round_store.reserve_round(
         tickets_dir, ticket, role, content=content, lock=board.board_lock(),
     )
-    ordinal, _role = rounds_module.parse_round_filename(round_path.name)
+    ordinal, _role = round_rules.parse_round_filename(round_path.name)
     message = f"additional-reviewer {ticket} {role}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 그 이름이 갈렸을 때 라운드
     # 파일만 만들어지고 board 커밋은 조용히 빠진 rc0 이 된다(AttributeError 로 죽는 편이 낫다).

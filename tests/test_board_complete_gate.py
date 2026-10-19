@@ -32,6 +32,9 @@ from pathlib import Path
 import pytest
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, review_rounds
+from pm_engine.domain import review_form, round_rules
+from pm_engine.infra import round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -124,11 +127,10 @@ def _write_ticket_with_rounds(board, tid: str, spec_body: str, rounds: list[tupl
         ),
         encoding="utf-8", newline="",
     )
-    rounds_module = board._load_ticket_rounds()
-    rounds_dir = rounds_module.rounds_dir_for_ticket(tid, tickets_dir)
+    rounds_dir = round_store.rounds_dir_for_ticket(tid, tickets_dir)
     rounds_dir.mkdir(parents=True, exist_ok=True)
     for ordinal, role, text in rounds:
-        (rounds_dir / rounds_module.round_filename(ordinal, role)).write_text(
+        (rounds_dir / round_rules.round_filename(ordinal, role)).write_text(
             text, encoding="utf-8", newline="",
         )
     return spec_path
@@ -136,7 +138,7 @@ def _write_ticket_with_rounds(board, tid: str, spec_body: str, rounds: list[tupl
 
 def _reviewer_round_text(pd, finding_id: str) -> str:
     payload = {
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [{
             "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[T-0786]]", "evidence": "probe", "recommendation": "fix",
@@ -151,14 +153,14 @@ def _reviewer_round_text(pd, finding_id: str) -> str:
     }
     return (
         "## 리뷰 (code-reviewer · 2026-08-21)\n\n## must-fix\n- "
-        f"{finding_id}\n\n## 판정\n판정: 반려\n\n```{pd.PM_REVIEW_BLOCK}\n"
+        f"{finding_id}\n\n## 판정\n판정: 반려\n\n```{review_form.PM_REVIEW_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
     )
 
 
 def _developer_round_text(pd, finding_id: str, *, resolved_command: str = "echo hi") -> str:
     payload = {
-        "version": pd.PM_REVIEW_VERIFY_VERSION,
+        "version": review_form.PM_REVIEW_VERIFY_VERSION,
         "verifications": [{
             "id": finding_id, "machine_verifiable": True, "command": resolved_command,
             "expected": "hi", "before": "bye", "reason": "",
@@ -166,32 +168,32 @@ def _developer_round_text(pd, finding_id: str, *, resolved_command: str = "echo 
     }
     return (
         "## 구현 보충 (developer · 2026-08-21)\n\n## 변경 파일\n- x\n\n"
-        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
     )
 
 
 def _pm_body(pd, finding_id: str, *, machine_confirmed: bool) -> str:
     disposition = {
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
         "dispositions": [{
             "id": finding_id, "decision": "accepted", "reason": "PM 수락",
             "scope": f"{finding_id} 범위", "prerequisite": "",
         }],
     }
     body = (
-        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n"
         + json.dumps(disposition, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
     )
     if machine_confirmed:
         confirmation = {
-            "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
+            "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
             "confirmations": [{
                 "id": finding_id, "status": "resolved", "command": "echo hi", "observed": "hi",
             }],
         }
         body += (
-            f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n"
+            f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n"
             + json.dumps(confirmation, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
         )
     return body
@@ -207,11 +209,11 @@ def _pm_delegate_module():
 
 
 def _passed_review_round_text(pd) -> str:
-    payload = {"version": pd.PM_REVIEW_VERSION, "findings": [], "confirmations": []}
+    payload = {"version": review_form.PM_REVIEW_VERSION, "findings": [], "confirmations": []}
     return (
         "## 리뷰 (code-reviewer · 2026-08-21)\n\n## must-fix\n- 없음\n\n"
         "## 판정\n판정: 통과\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
     )
 
@@ -1038,7 +1040,7 @@ def test_cmd_complete_blocks_an_undisposed_review_must_fix(live_board, capsys):
     assert "code-reviewer 리뷰 라운드 01" in capsys.readouterr().err
 
     rejected = {
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
         "dispositions": [{
             "id": "F-001", "decision": "rejected", "reason": "PM 기각 근거",
             "scope": "", "prerequisite": "",
@@ -1046,7 +1048,7 @@ def test_cmd_complete_blocks_an_undisposed_review_must_fix(live_board, capsys):
     }
     claimed.write_text(
         claimed.read_text(encoding="utf-8")
-        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + f"\n```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n"
         + json.dumps(rejected, ensure_ascii=False, separators=(",", ":")) + "\n```\n",
         encoding="utf-8",
     )
@@ -1161,7 +1163,7 @@ def test_cmd_complete_blocks_on_a_hidden_second_dod_section(live_board, capsys):
 
 
 def _write_round(board, tid: str, name: str, text: str) -> Path:
-    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
+    path = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="")
     return path
@@ -1173,8 +1175,7 @@ def _harvested_round_text(role: str) -> str:
 
 def _seeded_round_text(board, tid: str, role: str, path: Path) -> str:
     """예약 직후와 **같은 bytes** — 무편집(산출 없음) 판정의 유일한 통과 형상."""
-    rounds = board._load_ticket_rounds()
-    return rounds.render_round_seed(
+    return round_seed.render_round_seed(
         role, path.read_text(encoding="utf-8"), today="2026-01-02")
 
 

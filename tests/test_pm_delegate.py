@@ -42,6 +42,8 @@ from pm_engine.domain import conf_schema
 from conftest import write_cluster_ledger
 from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract, watchdog
+from pm_engine.domain import delegate_errors, model_lint, review_form, review_state, review_verdict, round_rules
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -214,26 +216,26 @@ def test_resolve_hard_tier_read_wholesale(pd):
 def test_resolve_hard_missing_fail_loud(pd):
     """hard 세트 미설정 → fail-loud(normal 강등 금지·§3.2)."""
     conf = _conf(**{"delegate.developer.harness": "codex", "delegate.developer.model": "normal-m"})
-    with pytest.raises(pd.DelegateError, match="hard"):
+    with pytest.raises(delegate_errors.DelegateError, match="hard"):
         pd.resolve_delegate(conf, "developer", "hard", None, None, None)
 
 
 def test_resolve_hard_incomplete_fail_loud(pd):
     """hard 세트 불완전(model 없음) → fail-loud(부분 채움 금지)."""
     conf = _conf(**{"delegate.developer.hard.harness": "codex"})
-    with pytest.raises(pd.DelegateError):
+    with pytest.raises(delegate_errors.DelegateError):
         pd.resolve_delegate(conf, "developer", "hard", None, None, None)
 
 
 def test_resolve_unmapped_fail_loud(pd):
     """역할 매핑 미설정 → fail-loud(조용한 claude 폴백 금지·ADR-0070 D5)."""
-    with pytest.raises(pd.DelegateError, match="매핑 미설정"):
+    with pytest.raises(delegate_errors.DelegateError, match="매핑 미설정"):
         pd.resolve_delegate(_conf(), "researcher", "normal", None, None, None)
 
 
 def test_resolve_cli_partial_override_rejected(pd):
     """CLI 부분 override(--harness 만) → DelegateError(방어적·usage error 는 _validate_args)."""
-    with pytest.raises(pd.DelegateError, match="동반 필수"):
+    with pytest.raises(delegate_errors.DelegateError, match="동반 필수"):
         pd.resolve_delegate(_conf(), "developer", "normal", "codex", None, None)
 
 
@@ -247,7 +249,7 @@ def test_resolve_colon_model_id_whole(pd):
 
 def test_resolve_bad_harness_fail_loud(pd):
     conf = _conf(**{"delegate.developer.harness": "gemini", "delegate.developer.model": "m"})
-    with pytest.raises(pd.DelegateError, match="미지원 harness"):
+    with pytest.raises(delegate_errors.DelegateError, match="미지원 harness"):
         pd.resolve_delegate(conf, "developer", "normal", None, None, None)
 
 
@@ -258,7 +260,7 @@ def test_reasoning_codex_accepts_xhigh(pd, tmp_path):
 
 
 def test_reasoning_codex_out_of_set_fail_loud(pd, tmp_path):
-    with pytest.raises(pd.DelegateError, match="허용집합"):
+    with pytest.raises(delegate_errors.DelegateError, match="허용집합"):
         pd._validate_reasoning("codex", "ultra", model="gpt-x", cwd=tmp_path)
 
 
@@ -269,7 +271,7 @@ def test_reasoning_claude_measured_set(pd, tmp_path):
     밖(오타)만 fail-loud 함을 못박는다. 정적 허용값이라 모델 목록을 조회하지 않는다."""
     for r in ("low", "medium", "high", "xhigh", "max"):
         assert pd._validate_reasoning("claude", r, model="opus", cwd=tmp_path) == r
-    with pytest.raises(pd.DelegateError, match="허용집합"):
+    with pytest.raises(delegate_errors.DelegateError, match="허용집합"):
         pd._validate_reasoning("claude", "ultra", model="opus", cwd=tmp_path)
     assert pd._validate_reasoning("codex", "max", model="gpt-x", cwd=tmp_path) == "max"
 
@@ -374,7 +376,7 @@ def test_dry_run_outputs_argv_and_prompt(pd, monkeypatch, tmp_path, capsys):
 def test_t0658_code_reviewer_role_preamble_contains_parser_derived_contract(pd):
     """code-reviewer 역할 머리말(두 리뷰 경로가 프롬프트 앞에 싣는다)이 판정 선언·목록 0건·허용
     토큰 계약을 모두 싣는다."""
-    out = pd._role_preamble(pd.INTERNAL_REVIEW_ROLE)
+    out = pd._role_preamble(review_form.INTERNAL_REVIEW_ROLE)
     external = pd._load_additional_reviewer()
 
     assert "행 선두" in out and "인용문·코드펜스" in out
@@ -383,9 +385,9 @@ def test_t0658_code_reviewer_role_preamble_contains_parser_derived_contract(pd):
     assert "목록으로 쓴다" in out and "`- 없음` 한 항목" in out
     assert "산문 `must-fix 없습니다`는 0건으로 읽히지 않는다" in out
     assert "판정 낱말은 파서 허용 토큰 중 하나만" in out
-    for token in external._PASS_VERDICT_TOKENS | external._REJECT_VERDICT_TOKENS:
+    for token in review_verdict._PASS_VERDICT_TOKENS | review_verdict._REJECT_VERDICT_TOKENS:
         assert f"`판정: {token}`" in out
-    for token in pd._INTERNAL_NONE_ITEM_TOKENS:
+    for token in review_verdict._INTERNAL_NONE_ITEM_TOKENS:
         assert f"`- {token}`" in out
 
 
@@ -393,17 +395,14 @@ def test_t0658_review_contract_tracks_parser_token_sources_without_literal_copy(
     pd, monkeypatch,
 ):
     """허용 토큰 원천을 바꾸면 preamble도 즉시 따라가며 0건 regex와 안내도 한 tuple을 읽는다."""
-    class _ContractProbe:
-        _PASS_VERDICT_TOKENS = frozenset({"PROBE_PASS"})
-        _REJECT_VERDICT_TOKENS = frozenset({"PROBE_REJECT"})
-
-    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ContractProbe)
+    monkeypatch.setattr(review_verdict, "_PASS_VERDICT_TOKENS", frozenset({"PROBE_PASS"}))
+    monkeypatch.setattr(review_verdict, "_REJECT_VERDICT_TOKENS", frozenset({"PROBE_REJECT"}))
     preamble = pd._internal_review_format_preamble()
 
     assert "`판정: PROBE_PASS`" in preamble
     assert "`판정: PROBE_REJECT`" in preamble
-    for token in pd._INTERNAL_NONE_ITEM_TOKENS:
-        assert pd._INTERNAL_NONE_ITEM_RE.fullmatch(token)
+    for token in review_verdict._INTERNAL_NONE_ITEM_TOKENS:
+        assert review_verdict._INTERNAL_NONE_ITEM_RE.fullmatch(token)
         assert f"`- {token}`" in preamble
 
 
@@ -812,7 +811,7 @@ def test_opencode_send_rejects_symlink_parent(pd, tmp_path):
         "opencode", "prov/m", None, "developer", transport.sandbox, transport,
     )
     try:
-        with pytest.raises(pd.DelegateError, match="전달 부모.*symlink"):
+        with pytest.raises(delegate_errors.DelegateError, match="전달 부모.*symlink"):
             pd._opencode_transport_launch_target(transport, argv)
     finally:
         transport.path.parent.unlink()
@@ -856,7 +855,7 @@ def test_opencode_transport_directory_creation_oserror_is_delegate_error(
 
     monkeypatch.setattr(pd.Path, "mkdir", _fail_local)
 
-    with pytest.raises(pd.DelegateError, match="전달 디렉터리 생성 실패.*injected"):
+    with pytest.raises(delegate_errors.DelegateError, match="전달 디렉터리 생성 실패.*injected"):
         pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
 
 
@@ -897,7 +896,7 @@ def test_opencode_transport_save_is_wired_to_containment_guard(
 
     monkeypatch.setattr(contract, "assert_opencode_prompt_in_cwd", assert_opencode_prompt_in_cwd)
 
-    with pytest.raises(pd.DelegateError, match="배선 가드 거부"):
+    with pytest.raises(delegate_errors.DelegateError, match="배선 가드 거부"):
         pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
 
     assert len(calls) == 1
@@ -1008,7 +1007,7 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
 
     monkeypatch.setattr(pd, "_reserve_raw_output", _reserve_then_swap)
     try:
-        with pytest.raises(pd.DelegateError, match="전달 부모.*symlink"):
+        with pytest.raises(delegate_errors.DelegateError, match="전달 부모.*symlink"):
             pd._execute_attempt(
                 harness="opencode",
                 model="prov/m",
@@ -1551,7 +1550,7 @@ def test_build_env_absent_required_key_is_loud_with_reason(pd):
     """부모 env 에 필수 키가 없으면 빈 값으로 스폰하지 않고 사유와 함께 멈춘다."""
     source = _windows_env_sample()
     source.pop("SystemRoot")
-    with pytest.raises(pd.DelegateError) as ei:
+    with pytest.raises(delegate_errors.DelegateError) as ei:
         pd.build_env("claude", windows=True, source=source)
     message = str(ei.value)
     assert "SystemRoot" in message and "부모 env 없음" in message
@@ -1560,7 +1559,7 @@ def test_build_env_absent_required_key_is_loud_with_reason(pd):
 def test_build_env_dropped_required_key_names_the_sanitizer(pd, monkeypatch):
     """부모엔 있는데 정제가 떨군 경우는 사유가 원인을 가른다(환경 문제와 구분)."""
     monkeypatch.setattr(pd, "_ENV_ALLOWLIST_WINDOWS", ("TEMP", "TMP", "ComSpec"))
-    with pytest.raises(pd.DelegateError, match="정제가 떨굼"):
+    with pytest.raises(delegate_errors.DelegateError, match="정제가 떨굼"):
         pd.build_env("codex", windows=True, source=_windows_env_sample())
 
 
@@ -2010,7 +2009,7 @@ def test_unresolved_write_target_is_loud_not_read_only_degrade(
     missing = tmp_path / "gone"
     read_tmp = pd._ReadRoleTemp(
         missing, parent_fd=None, identity=(0, 0), owned_fds=[])
-    with pytest.raises(pd.DelegateError, match="강등하지 않고"):
+    with pytest.raises(delegate_errors.DelegateError, match="강등하지 않고"):
         pd._apply_read_tmp_argv(argv_fn(pd), harness, "code-reviewer", read_tmp)
 
 
@@ -2021,7 +2020,7 @@ def test_unresolved_ticket_copy_write_target_is_loud(pd, tmp_path):
     read_tmp = pd._ReadRoleTemp(
         attempt, parent_fd=None, identity=(0, 0), owned_fds=[])
     copy = tmp_path / "gone" / "ticket-T-1.md"
-    with pytest.raises(pd.DelegateError, match="ticket 사본 쓰기 대상"):
+    with pytest.raises(delegate_errors.DelegateError, match="ticket 사본 쓰기 대상"):
         pd._apply_read_tmp_argv(
             pd.build_codex_argv("m", None, "code-reviewer", "/w"),
             "codex", "code-reviewer", read_tmp, copy)
@@ -2032,9 +2031,8 @@ def test_write_probe_name_stays_within_engine_artifact_budget(pd):
 
     Windows 실측: 사본 디렉터리 199자에 61자 프로브가 붙어 MAX_PATH(259)를 프로브만 넘겼다
     (같은 자리 `NN-<role>.md`·`spec.md` 는 모두 들어간다)."""
-    rounds_module = pd._load_ticket_rounds()
     budget = max(
-        len(rounds_module.round_filename(1, "code-reviewer")),
+        len(round_rules.round_filename(1, "code-reviewer")),
         len(pd.TICKET_COPY_SPEC_NAME),
     )
     first, second = pd._write_probe_name(), pd._write_probe_name()
@@ -2064,7 +2062,7 @@ def test_write_probe_fits_wherever_engine_artifacts_fit(pd, tmp_path):
     Windows 의 MAX_PATH(259) 실패와 **같은 클래스**를 Linux 의 PATH_MAX 예산으로 태운다:
     `metadata.json` 은 딱 들어가고 그보다 긴 이름은 못 들어가는 디렉터리를 만든다."""
     # run-dir 안 최장 엔진 산출물 = 라운드 파일 이름(`NN-code-reviewer.md`).
-    artifact = pd._load_ticket_rounds().round_filename(1, "code-reviewer")
+    artifact = round_rules.round_filename(1, "code-reviewer")
     budget = len(artifact)
     deep = _deep_directory_with_remaining_budget(tmp_path, budget + 1)
     (deep / artifact).write_text("{}", encoding="utf-8")
@@ -2085,7 +2083,7 @@ def test_write_target_probe_measures_actual_write_not_existence(pd, tmp_path):
     target = tmp_path / "read-only-dir"
     target.mkdir(mode=0o500)
     try:
-        with pytest.raises(pd.DelegateError, match="쓰기 대상 실측 실패"):
+        with pytest.raises(delegate_errors.DelegateError, match="쓰기 대상 실측 실패"):
             pd._probe_writable_target(target, label="read 역할 임시")
     finally:
         target.chmod(0o700)
@@ -2152,7 +2150,7 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
     def _never_called(*_args, **_kwargs):
         raise AssertionError("env 해소 실패 뒤에는 스폰하지 않는다")
 
-    with pytest.raises(pd.DelegateError, match=_NEVER_SET_ENV_KEY):
+    with pytest.raises(delegate_errors.DelegateError, match=_NEVER_SET_ENV_KEY):
         pd._execute_attempt(
             harness="opencode", model="prov/m", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
@@ -2445,7 +2443,7 @@ def test_read_role_temp_survives_a_cwd_that_owns_the_temp_root(
     tracked_root = pm_home / "scratch"
     tracked_root.mkdir()
     monkeypatch.setattr(pd, "_read_tmp_root", lambda: tracked_root)
-    with pytest.raises(pd.DelegateError, match="검토 표면 안으로 해소되어 거부"):
+    with pytest.raises(delegate_errors.DelegateError, match="검토 표면 안으로 해소되어 거부"):
         pd._create_read_role_temp("claude", pm_home)
     assert list(tracked_root.iterdir()) == []                 # 거부 뒤 잔여 0
 
@@ -3714,7 +3712,7 @@ def _reviewer_conf(dev_model: str, reviewer_model: str, **extra) -> dict:
 
 def test_lint_same_model_warns(pd):
     """dev 와 code-reviewer 모델 문자열 동일 → 경고 1건(하네스 무관 비교)."""
-    findings = pd.lint_same_model(_reviewer_conf("gpt-x", "gpt-x"))
+    findings = model_lint.lint_same_model(_reviewer_conf("gpt-x", "gpt-x"))
     assert len(findings) == 1
     label, detail = findings[0]
     assert "developer/code-reviewer" in label
@@ -3723,21 +3721,21 @@ def test_lint_same_model_warns(pd):
 
 def test_lint_different_model_no_warn(pd):
     """dev 와 reviewer 모델이 다르면 무경고."""
-    assert pd.lint_same_model(_reviewer_conf("gpt-x", "opus")) == []
+    assert model_lint.lint_same_model(_reviewer_conf("gpt-x", "opus")) == []
 
 
 def test_lint_harness_agnostic_same_model(pd):
     """같은 .model 문자열이면 하네스가 달라도 경고(harness:model 완전일치 폐기·§3.7)."""
     conf = _reviewer_conf("shared-m", "shared-m")
     conf["delegate.code-reviewer.harness"] = "opencode"  # dev=codex·reviewer=opencode·모델 동일
-    assert len(pd.lint_same_model(conf)) == 1
+    assert len(model_lint.lint_same_model(conf)) == 1
 
 
 def test_lint_alias_maps_same(pd):
     """서로 다른 표기가 같은 alias 에 속하면 경고(alias 경유·정규화 테이블)."""
     conf = _reviewer_conf("gpt-5.6-terra", "ollama/glm")
     conf["delegate.model_alias.base"] = "gpt-5.6-terra, ollama/glm"
-    findings = pd.lint_same_model(conf)
+    findings = model_lint.lint_same_model(conf)
     assert len(findings) == 1
     assert "alias 경유" in findings[0][1]
 
@@ -3747,7 +3745,7 @@ def test_lint_alias_distinct_no_warn(pd):
     conf = _reviewer_conf("gpt-5.6-terra", "opus")
     conf["delegate.model_alias.a"] = "gpt-5.6-terra"
     conf["delegate.model_alias.b"] = "opus"
-    assert pd.lint_same_model(conf) == []
+    assert model_lint.lint_same_model(conf) == []
 
 
 def test_lint_alias_multi_membership_warns(pd):
@@ -3758,7 +3756,7 @@ def test_lint_alias_multi_membership_warns(pd):
     conf = _reviewer_conf("model-M", "model-N")
     conf["delegate.model_alias.a"] = "model-M, other-X"
     conf["delegate.model_alias.b"] = "model-M, model-N"        # M·N 공유 alias b
-    findings = pd.lint_same_model(conf)
+    findings = model_lint.lint_same_model(conf)
     assert len(findings) == 1
     assert "alias 경유" in findings[0][1]
 
@@ -3769,17 +3767,17 @@ def test_lint_alias_multi_membership_disjoint_no_warn(pd):
     conf["delegate.model_alias.a"] = "model-M, other-X"
     conf["delegate.model_alias.b"] = "model-M, other-Y"        # M 은 a·b, N 은 어디에도 없음
     conf["delegate.model_alias.c"] = "model-N"                 # N 은 c 단독 — M 과 공유 0
-    assert pd.lint_same_model(conf) == []
+    assert model_lint.lint_same_model(conf) == []
 
 
 def test_lint_unset_reviewer_skips(pd):
     """code-reviewer 매핑 미설정 → skip(경고 대상 아님·조용히 넘어감·lint 는 강제 아님)."""
-    assert pd.lint_same_model({"delegate.developer.model": "gpt-x"}) == []
+    assert model_lint.lint_same_model({"delegate.developer.model": "gpt-x"}) == []
 
 
 def test_lint_unset_developer_skips(pd):
     """developer 매핑 미설정 → skip(reviewer 만 있어도 비교 대상 없음)."""
-    assert pd.lint_same_model({"delegate.code-reviewer.model": "opus"}) == []
+    assert model_lint.lint_same_model({"delegate.code-reviewer.model": "opus"}) == []
 
 
 def test_lint_hard_tier_same_as_reviewer_warns(pd):
@@ -3787,14 +3785,14 @@ def test_lint_hard_tier_same_as_reviewer_warns(pd):
     conf = _reviewer_conf("normal-m", "hard-m")
     conf["delegate.developer.hard.harness"] = "codex"
     conf["delegate.developer.hard.model"] = "hard-m"
-    findings = pd.lint_same_model(conf)
+    findings = model_lint.lint_same_model(conf)
     assert len(findings) == 1
     assert "developer.hard/code-reviewer" in findings[0][0]
 
 
 def test_lint_empty_conf_no_warn(pd):
     """delegate 미설정(빈 conf) → 경고 없음·크래시 없음."""
-    assert pd.lint_same_model({}) == []
+    assert model_lint.lint_same_model({}) == []
 
 
 def test_cmd_lint_subcommand_never_blocks(pd, monkeypatch, capsys):
@@ -4045,7 +4043,7 @@ def test_resolve_fallback_role_tier_atomic_and_no_default(pd):
         "delegate.developer.hard.fallback.reasoning": "max",
     }
     assert pd.resolve_fallback(hard, "developer", "hard") == ("opencode", "prov/hard", "max")
-    with pytest.raises(pd.DelegateError, match="불완전"):
+    with pytest.raises(delegate_errors.DelegateError, match="불완전"):
         pd.resolve_fallback(
             {"delegate.developer.fallback.harness": "claude"},
             "developer",
@@ -4987,7 +4985,7 @@ def _scope_workspace(
     if preceding:
         rounds_dir.mkdir(parents=True)
     architect_contract = _json.dumps({
-        "version": pd.ARCHITECT_TEST_VERSION,
+        "version": review_form.ARCHITECT_TEST_VERSION,
         "tests": [{
             "id": "AT-001",
             "target": "tests/test_pm_delegate.py",
@@ -4999,7 +4997,7 @@ def _scope_workspace(
     for ordinal, prior_role in enumerate(preceding, start=1):
         output = "## 산출\n- 고정 수열 픽스처\n"
         if prior_role == "architect":
-            output += f"\n```{pd.ARCHITECT_TEST_BLOCK}\n{architect_contract}\n```\n"
+            output += f"\n```{review_form.ARCHITECT_TEST_BLOCK}\n{architect_contract}\n```\n"
         (rounds_dir / f"{ordinal:02d}-{prior_role}.md").write_text(
             f"## {prior_role} 라운드\n\n{output}", encoding="utf-8", newline="\n",
         )
@@ -5866,7 +5864,7 @@ def test_native_advisory_applies_to_the_review_role(pd, monkeypatch):
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
 
-    for role in (pd.INTERNAL_REVIEW_ROLE, "developer", "architect", "researcher"):
+    for role in (review_form.INTERNAL_REVIEW_ROLE, "developer", "architect", "researcher"):
         advisory = pd.native_advisory("claude", role)
         assert advisory is not None, role
         assert "설계·구현·리뷰·조사는 native 위임이 규칙" in advisory, role
@@ -6401,7 +6399,7 @@ def _rewrite_lines(text: str, replacements: dict[str, str]) -> str:
 
 
 def _drop_review_block(pd, text: str) -> str:
-    head, _fence, _rest = text.partition("```" + pd.PM_REVIEW_BLOCK)
+    head, _fence, _rest = text.partition("```" + review_form.PM_REVIEW_BLOCK)
     return head
 
 
@@ -6411,13 +6409,12 @@ def _corrupt_review_block(text: str) -> str:
 
 def _review_completion(pd, text: str) -> str | None:
     """그 라운드 bytes 하나가 마지막 리뷰 라운드인 티켓의 완료 판정 사유(처분 없음)."""
-    rounds_module = pd._load_ticket_rounds()
-    review = rounds_module.Round(
-        ordinal=3, role=pd.INTERNAL_REVIEW_ROLE,
-        path=Path(rounds_module.round_filename(3, pd.INTERNAL_REVIEW_ROLE)),
+    review = round_rules.Round(
+        ordinal=3, role=review_form.INTERNAL_REVIEW_ROLE,
+        path=Path(round_rules.round_filename(3, review_form.INTERNAL_REVIEW_ROLE)),
         text=text, pending=False,
     )
-    return pd.review_completion_problem("---\nid: T-0804\n---\n# T-0804\n", [review])
+    return review_state.review_completion_problem("---\nid: T-0804\n---\n# T-0804\n", [review])
 
 
 # 실측(2026-08-22 · PM 홈 board 라운드 파일 → 당시 장부 기록값). 판정 규칙이 이 값을
@@ -6432,37 +6429,37 @@ _T0804_RECORDED_LEDGER_ROWS = [
 
 def test_t0804_round_file_block_stands_without_a_prose_free_reply(pd):
     """T-0783 실측 형상: 권위 블록이 판정을 세운다(진단 없음)."""
-    verdict = pd._internal_round_verdict(_round_fixture(INTERNAL_ROUND_REJECT_BOTH))
+    verdict = review_verdict._internal_round_verdict(_round_fixture(INTERNAL_ROUND_REJECT_BOTH))
 
     assert verdict.outcome.verdict == 1
     assert len(verdict.outcome.must_fix_items) == 1
-    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert verdict.source == review_verdict.INTERNAL_VERDICT_SOURCE_BLOCK
     assert verdict.diagnostic is None
 
 
 def test_t0804_reject_is_recognised_from_block_alone(pd):
     """산문 판정 선언이 아예 없어도 블록 반려는 단독으로 인정한다."""
     text = _drop_prose_verdict(_round_fixture(INTERNAL_ROUND_REJECT_BOTH))
-    assert pd._internal_reply_assessment(text).outcome.verdict is None
+    assert review_verdict._internal_reply_assessment(text).outcome.verdict is None
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
 
     assert (verdict.outcome.verdict, len(verdict.outcome.must_fix_items)) == (1, 1)
-    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert verdict.source == review_verdict.INTERNAL_VERDICT_SOURCE_BLOCK
     assert verdict.diagnostic is None
 
 
 def test_t0804_pass_needs_both_axes_and_block_only_pass_stays_unknown(pd):
     """블록 단독 통과는 판정하지 않는다 — 실 corpus 의 블록 단독 판정은 전부 통과 방향이다."""
     text = _round_fixture(INTERNAL_ROUND_BLOCK_ONLY_PASS)
-    assert pd._internal_block_assessment(text).outcome == pd.InternalReplyOutcome(0, [])
-    assert pd._internal_reply_assessment(text).outcome.verdict is None
+    assert review_verdict._internal_block_assessment(text).outcome == review_verdict.InternalReplyOutcome(0, [])
+    assert review_verdict._internal_reply_assessment(text).outcome.verdict is None
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
 
-    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.outcome == review_verdict.InternalReplyOutcome(None, None)
     assert verdict.source is None
-    assert verdict.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO
+    assert verdict.diagnostic.code == review_verdict.INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO
     assert "기계 블록은 판정: 통과(must-fix 0건)" in verdict.diagnostic.reason
     # 처방은 재리뷰가 아니라 산출/직접 판정이다.
     assert "재리뷰 시" not in verdict.diagnostic.repair
@@ -6473,15 +6470,15 @@ def test_t0804_pass_needs_both_axes_and_block_only_pass_stays_unknown(pd):
 def test_t0804_confirmation_only_round_counts_unresolved_confirmations(pd):
     """`findings: []` + 퇴행 확인은 반려 1건이다 — findings 만 세면 통과로 뒤집힌다."""
     text = _round_fixture(INTERNAL_ROUND_CONFIRMATION_REGRESSED)
-    block = pd._internal_block_assessment(text).outcome
+    block = review_verdict._internal_block_assessment(text).outcome
 
     assert block.verdict == 1
     assert len(block.must_fix_items) == 1
     assert block.must_fix_items[0].startswith("F-007(")
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
     assert (verdict.outcome.verdict, len(verdict.outcome.must_fix_items)) == (1, 1)
-    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert verdict.source == review_verdict.INTERNAL_VERDICT_SOURCE_BLOCK
 
 
 def test_t0804_severity_unspecified_block_is_unusable_not_zero_pass(pd):
@@ -6491,19 +6488,19 @@ def test_t0804_severity_unspecified_block_is_unusable_not_zero_pass(pd):
     판정이 열린다. 통과는 두 축 합의로만 인정하므로 결합은 미상이다.
     """
     text = _round_fixture(INTERNAL_ROUND_SEVERITY_UNSPECIFIED)
-    block = pd._internal_block_assessment(text)
+    block = review_verdict._internal_block_assessment(text)
 
-    assert block.outcome == pd.InternalReplyOutcome(None, None)
-    assert block.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
-    assert pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL in block.diagnostic.reason
-    assert pd._internal_reply_assessment(text).outcome == pd.InternalReplyOutcome(0, [])
+    assert block.outcome == review_verdict.InternalReplyOutcome(None, None)
+    assert block.diagnostic.code == review_verdict.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
+    assert review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL in block.diagnostic.reason
+    assert review_verdict._internal_reply_assessment(text).outcome == review_verdict.InternalReplyOutcome(0, [])
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
 
     # 산문만 통과인 값을 판정하지 않는다 — 미상으로 남기고 사유를 진단에 싣는다.
-    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.outcome == review_verdict.InternalReplyOutcome(None, None)
     assert verdict.source is None
-    assert verdict.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
+    assert verdict.diagnostic.code == review_verdict.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
     assert _review_completion(pd, text) is not None
 
 
@@ -6529,21 +6526,21 @@ def test_t0804_prose_only_pass_does_not_open_the_gate(pd, mutate, block_reason_f
     열어 두면 severity 미기재·블록 손상 라운드가 처분 선언 없이 완료 판정을 연다.
     """
     text = mutate(pd, _round_fixture(INTERNAL_ROUND_PASS_BOTH))
-    assert pd._internal_block_assessment(text).outcome.verdict is None
-    assert pd._internal_reply_assessment(text).outcome == pd.InternalReplyOutcome(0, [])
+    assert review_verdict._internal_block_assessment(text).outcome.verdict is None
+    assert review_verdict._internal_reply_assessment(text).outcome == review_verdict.InternalReplyOutcome(0, [])
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
     diagnostic = verdict.diagnostic
 
-    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.outcome == review_verdict.InternalReplyOutcome(None, None)
     assert verdict.source is None
     assert _review_completion(pd, text) is not None
     # 진단은 두 축이 각각 무엇을 말했는지 함께 적는다(판정 불능을 한쪽 채택으로 위장하지 않는다).
-    assert diagnostic.code == pd.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
+    assert diagnostic.code == review_verdict.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
     assert block_reason_fragment in diagnostic.reason
     assert "산문은 판정: 통과(must-fix 0건)" in diagnostic.reason
     # 처방은 없던 증거(기계 블록)를 지목하고 유료 재리뷰를 기본 행동으로 세우지 않는다.
-    assert pd.PM_REVIEW_BLOCK in diagnostic.repair
+    assert review_form.PM_REVIEW_BLOCK in diagnostic.repair
     assert "재리뷰 시" not in diagnostic.repair
     assert "재리뷰(유료 호출)는 필요 없습니다" in diagnostic.repair
 
@@ -6574,21 +6571,21 @@ def test_t0804_pass_tightening_preserves_the_other_verdict_shapes(
     라운드 파일의 통과 블록이 통과로 판정되는 경로다.
     """
     text = _round_fixture(fixture)
-    judged = pd._internal_round_verdict(text)
+    judged = review_verdict._internal_round_verdict(text)
 
     assert (judged.outcome.verdict, len(judged.outcome.must_fix_items)) == (verdict, must_fix)
-    assert judged.source == getattr(pd, source_const)
+    assert judged.source == getattr(review_verdict, source_const)
     assert judged.diagnostic is None
     assert (_review_completion(pd, text) is None) is passed
 
 
 def test_t0804_prose_only_round_names_the_block_gap(pd):
     """블록이 없는 라운드는 산문 값으로 판정하고 블록 부재 사유를 note 에 적는다."""
-    verdict = pd._internal_round_verdict(_round_fixture(INTERNAL_ROUND_PROSE_ONLY))
+    verdict = review_verdict._internal_round_verdict(_round_fixture(INTERNAL_ROUND_PROSE_ONLY))
 
     assert (verdict.outcome.verdict, len(verdict.outcome.must_fix_items)) == (1, 2)
-    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_REPLY
-    assert f"{pd.PM_REVIEW_BLOCK} block이 정확히 하나여야 합니다(발견 0건)" in verdict.note
+    assert verdict.source == review_verdict.INTERNAL_VERDICT_SOURCE_REPLY
+    assert f"{review_form.PM_REVIEW_BLOCK} block이 정확히 하나여야 합니다(발견 0건)" in verdict.note
     assert verdict.diagnostic is None
 
 
@@ -6623,14 +6620,14 @@ def test_t0804_axis_conflict_judges_neither_and_names_both_sources(
     """두 축이 다른 값을 세우면 어느 쪽도 판정하지 않고 두 값을 모두 말한다."""
     text = _rewrite_lines(_round_fixture(fixture), replacements)
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
 
-    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.outcome == review_verdict.InternalReplyOutcome(None, None)
     assert verdict.source is None
-    assert verdict.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT
+    assert verdict.diagnostic.code == review_verdict.INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT
     assert verdict.conflict == {
-        pd.INTERNAL_VERDICT_SOURCE_BLOCK: block_label,
-        pd.INTERNAL_VERDICT_SOURCE_REPLY: reply_label,
+        review_verdict.INTERNAL_VERDICT_SOURCE_BLOCK: block_label,
+        review_verdict.INTERNAL_VERDICT_SOURCE_REPLY: reply_label,
     }
     assert block_label in verdict.diagnostic.reason
     assert reply_label in verdict.diagnostic.reason
@@ -6657,12 +6654,12 @@ def test_t0804_both_axes_unusable_offers_rereview_last(pd, mutate, block_reason)
     """판정 불능은 통과가 아니다 — 재리뷰는 대안 뒤 마지막 선택지다."""
     text = mutate(pd, _round_fixture(INTERNAL_ROUND_REJECT_BOTH))
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
     diagnostic = verdict.diagnostic
 
     assert verdict.outcome.verdict is None
     assert verdict.source is None
-    assert diagnostic.code == pd.INTERNAL_DIAGNOSTIC_MISSING_VERDICT
+    assert diagnostic.code == review_verdict.INTERNAL_DIAGNOSTIC_MISSING_VERDICT
     assert block_reason in diagnostic.reason
     # 재리뷰는 유료 호출 표기와 대안 뒤에만 나온다.
     assert diagnostic.repair.index("유료 호출") < diagnostic.repair.index("재리뷰 시")
@@ -6673,12 +6670,12 @@ def test_t0804_both_axes_unusable_offers_rereview_last(pd, mutate, block_reason)
 
 def test_t0804_seed_only_round_output_stays_unknown(pd):
     """리뷰어가 시드를 그대로 남긴 라운드는 두 축 모두 불능이라 미상이다."""
-    seed = pd._load_ticket_rounds().render_round_seed(
-        pd.INTERNAL_REVIEW_ROLE, "---\nid: T-0804\n---\n\n# T-0804 — x\n",
+    seed = round_seed.render_round_seed(
+        review_form.INTERNAL_REVIEW_ROLE, "---\nid: T-0804\n---\n\n# T-0804 — x\n",
         today="2026-01-02",
     )
 
-    verdict = pd._internal_round_verdict(seed)
+    verdict = review_verdict._internal_round_verdict(seed)
 
     assert verdict.outcome.verdict is None
     assert verdict.source is None
@@ -6687,18 +6684,18 @@ def test_t0804_seed_only_round_output_stays_unknown(pd):
 @pytest.mark.parametrize(("fixture", "verdict", "must_fix"), _T0804_RECORDED_LEDGER_ROWS)
 def test_t0804_existing_round_files_do_not_flip_under_the_rule(pd, fixture, verdict, must_fix):
     """이미 판정이 선 라운드 파일은 verdict·must_fix 수까지 그대로다(flips 0 · count_diffs 0)."""
-    judged = pd._internal_round_verdict(_round_fixture(fixture))
+    judged = review_verdict._internal_round_verdict(_round_fixture(fixture))
 
     assert (judged.outcome.verdict, len(judged.outcome.must_fix_items)) == (verdict, must_fix)
 
 
 def test_t0804_block_axis_values_derive_from_the_parser_enums(pd):
     """심각도·확인 상태 값은 파서 enum 에서만 파생한다(손 재기재 0)."""
-    assert pd.PM_REVIEW_SEVERITY_MUST_FIX == "must-fix"
-    assert pd.PM_REVIEW_SEVERITY_MUST_FIX in pd.PM_REVIEW_SEVERITIES
-    assert pd.PM_REVIEW_CONFIRMATION_RESOLVED == "resolved"
-    assert pd.PM_REVIEW_CONFIRMATION_RESOLVED in pd.PM_REVIEW_CONFIRMATION_STATES
-    source = (TOOLS / "pm_delegate.py").read_text(encoding="utf-8")
+    assert review_form.PM_REVIEW_SEVERITY_MUST_FIX == "must-fix"
+    assert review_form.PM_REVIEW_SEVERITY_MUST_FIX in review_form.PM_REVIEW_SEVERITIES
+    assert review_form.PM_REVIEW_CONFIRMATION_RESOLVED == "resolved"
+    assert review_form.PM_REVIEW_CONFIRMATION_RESOLVED in review_form.PM_REVIEW_CONFIRMATION_STATES
+    source = (TOOLS / "pm_engine" / "domain" / "review_form.py").read_text(encoding="utf-8")
     # 판정 로직이 enum 값을 다시 타이핑하지 않는지 — 정의 지점 tuple 하나만 남아야 한다.
     assert source.count('"must-fix", "should-fix", "suggestion"') == 1
     assert source.count('"resolved", "unresolved", "regressed"') == 1
@@ -6717,12 +6714,12 @@ def test_t0804_count_and_items_come_from_the_axis_that_stood(pd):
         collapsed.append(line)
     text = "\n".join(collapsed) + "\n"
 
-    assert len(pd._internal_reply_assessment(text).outcome.must_fix_items) == 1
-    assert len(pd._internal_block_assessment(text).outcome.must_fix_items) == 4
+    assert len(review_verdict._internal_reply_assessment(text).outcome.must_fix_items) == 1
+    assert len(review_verdict._internal_block_assessment(text).outcome.must_fix_items) == 4
 
-    verdict = pd._internal_round_verdict(text)
+    verdict = review_verdict._internal_round_verdict(text)
 
-    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert verdict.source == review_verdict.INTERNAL_VERDICT_SOURCE_BLOCK
     assert [item.split(" — ")[0] for item in verdict.outcome.must_fix_items] == [
         "F-001", "F-002", "F-003", "F-004",
     ]

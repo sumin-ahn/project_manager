@@ -1394,41 +1394,11 @@ def test_engine_written_paths_excludes_non_round_and_temporary_files_by_grammar(
         assert round_dir / name not in paths
 
 
-def test_ticket_rounds_load_failure_is_not_folded_into_no_candidates(tf, tmp_path, monkeypatch):
-    """[[T-0959]] F-003 — `ticket_rounds.py` 가 있는데 적재가 실패하면 그 예외가 그대로 오른다.
-
-    값 없음으로 접으면 라운드 파일 후보가 빠져 홈 커밋에서 라운드 산출이 조용히 빠지고, 종결 뒤 홈에 미커밋
-    라운드가 남아 첫 핸드오프가 멈춘다. 파일 부재만 값 없음이다.
-    """
-    real_load = tf._load_module_from_path
-    failure = RuntimeError("합성 적재 실패")
-
-    def load(path, name, **kwargs):
-        if name == "ticket_rounds.py":
-            raise failure
-        return real_load(path, name, **kwargs)
-
-    monkeypatch.setattr(tf, "_load_module_from_path", load)
-    tickets_dir = tmp_path / "tickets"
-    round_dir = tickets_dir / "rounds" / "T-0753"
-    round_dir.mkdir(parents=True)
-    (round_dir / "01-developer.md").write_text("dev\n", encoding="utf-8")
-    board = _FakeRoundsBoard(tickets_dir, tickets_dir / "claimed" / "T-0753.md")
-
-    with pytest.raises(RuntimeError) as raised:
-        tf._load_ticket_rounds()
-    assert raised.value is failure
-    with pytest.raises(RuntimeError) as raised:
-        tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
-    assert raised.value is failure
-
-
 def test_round_stage_candidates_uses_round_filename_grammar_not_ad_hoc_suffix(
         tf, tmp_path):
     """`_round_stage_candidates` 는 자체 접미/접두 조합이 아니라 `parse_round_filename` 문법
     단일 소유자에만 위임한다 (리뷰 F-001 — reviewer 실측: 9개 이름 배치 중 자체 조합은 4건을
     후보에 실렸는데 진짜 라운드는 2건뿐이었다)."""
-    rounds_module = tf._load_ticket_rounds()
     tickets_dir = tmp_path / "tickets"
     round_dir = tickets_dir / "rounds" / "T-0753"
     round_dir.mkdir(parents=True)
@@ -1446,7 +1416,7 @@ def test_round_stage_candidates_uses_round_filename_grammar_not_ad_hoc_suffix(
     for name in names:
         (round_dir / name).write_text("x\n", encoding="utf-8")
 
-    candidates = tf._round_stage_candidates(rounds_module, tickets_dir, "T-0753")
+    candidates = tf._round_stage_candidates(tickets_dir, "T-0753")
 
     assert candidates == [
         round_dir / "01-developer.md", round_dir / "02-code-reviewer.md",
@@ -1877,7 +1847,7 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
     )
     external = tf._load_additional_reviewer()
     assert external is not None
-    assert hasattr(external, "AnchorResolutionError")
+    assert hasattr(pm_paths, "AnchorResolutionError")
     monkeypatch.setattr(
         tf, "_ticket_frontmatter_snapshot",
         lambda _board, _ticket: tf.TicketFrontmatterSnapshot(

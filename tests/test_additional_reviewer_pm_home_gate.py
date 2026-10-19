@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -168,7 +169,7 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
     monkeypatch.setattr(external, "REPO", anchor)
     monkeypatch.setattr(external, "local_config", lambda repo=None: conf)
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo", lambda target, **kwargs: anchor,
+        pm_paths, "resolve_pm_home_for_repo", lambda target, **kwargs: anchor,
     )
     # extract_diff 는 diff 원문 하나만 돌려준다 — 스텁도 문자열이다.
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: "diff --git a/x b/x\n+y\n")
@@ -230,7 +231,7 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     monkeypatch.setattr(external, "REPO", engine_home)
     monkeypatch.setattr(external, "local_config", lambda repo=None: configs[repo.resolve()])
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo",
+        pm_paths, "resolve_pm_home_for_repo",
         lambda anchor, **kwargs: owner_home if anchor.resolve() == slot_two else engine_home,
     )
     monkeypatch.setattr(

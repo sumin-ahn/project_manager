@@ -146,3 +146,18 @@ def _ticket_id_from_filename(filename: str) -> str | None:
     # backtrack을 허용한다.
     m = re.match(rf"({_TICKET_ID_BODY})(?=-|\.md\Z)", filename)
     return m.group(1) if m else None
+
+
+def _touch_notation(item: str) -> str | None:
+    """접힌 경로를 접두 비교용 표기로 마무리한다(빈 항목은 None)."""
+    value = str(item).strip().rstrip("/")
+    return value or None
+
+
+def _touch_paths_overlap(left: str, right: str) -> bool:
+    """디렉토리 접두를 **양방향**으로 본다 — `tests/` 는 `tests/x.py` 를 덮고 그 역도 겹침이다."""
+    return (
+        left == right
+        or left.startswith(right + "/")
+        or right.startswith(left + "/")
+    )

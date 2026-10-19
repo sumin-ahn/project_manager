@@ -11,6 +11,7 @@ from test_gate_anchor_resolution import (
     _managed_worktree,
     _unregistered_worktree,
 )
+from pm_engine.infra import pm_paths
 
 
 def test_shape_a_pm_home_and_registered_worktree_keep_existing_owner(tmp_path):
@@ -18,8 +19,8 @@ def test_shape_a_pm_home_and_registered_worktree_keep_existing_owner(tmp_path):
     home, worktree, _ticket = _managed_worktree(tmp_path)
     external = _load("additional_reviewer_shape_a_registered_owner")
 
-    assert external.resolve_pm_home_for_repo(home) == home.resolve()
-    assert external.resolve_pm_home_for_repo(worktree) == home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(home) == home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(worktree) == home.resolve()
 
 
 def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
@@ -41,7 +42,7 @@ def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
     prompt.write_text("investigate the linked worktree", encoding="utf-8")
 
     external = _load("additional_reviewer_shape_b_linked_owner")
-    assert external.resolve_pm_home_for_repo(linked) == home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(linked) == home.resolve()
 
     delegate = _load("pm_delegate_shape_b_linked_owner")
     monkeypatch.setattr(delegate, "REPO", worktree)
@@ -90,7 +91,7 @@ def test_shape_b_bare_common_dir_uses_registered_checkout_owner(tmp_path):
     _git(canonical, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
     external = _load("additional_reviewer_shape_b_bare_gate_owner")
-    assert external.resolve_pm_home_for_repo(snapshot) == home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(snapshot) == home.resolve()
 
 
 def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
@@ -109,8 +110,8 @@ def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
     _git(unrelated, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
     external = _load("additional_reviewer_shape_c_unrelated")
-    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
-        external.resolve_pm_home_for_repo(snapshot)
+    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        pm_paths.resolve_pm_home_for_repo(snapshot)
 
 
 def test_code_reviewer_cluster_and_ticket_share_required_owner_failure(

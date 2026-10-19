@@ -961,7 +961,7 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     plan = json.loads(prepared.stdout.strip().splitlines()[-1])
     round_file = Path(plan["copy"])
     run_dir = Path(plan["run_dir"])
-    # 순번 zero-pad 폭의 이름 문법은 엔진(ticket_rounds)이 단일 진실 — 여기서 재타이핑하지
+    # 순번 zero-pad 폭의 이름 문법은 엔진(`round_rules`)이 단일 진실 — 여기서 재타이핑하지
     # 않고 glob 으로 찾아 응답 `copy` 와 일치하는지만 대조한다.
     role_rounds = sorted(run_dir.glob("*-developer.md"))
     assert role_rounds == [round_file], (

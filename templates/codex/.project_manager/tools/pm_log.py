@@ -54,7 +54,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, console, fs, pm_paths, raw_output, repo_files  # noqa: E402
+from pm_engine.infra import areas_store, console, delegate_ledger, fs, pm_paths, raw_output, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -729,17 +729,6 @@ def _hearsay_section() -> str:
     return SNAPSHOT_HEARSAY_WARNING
 
 
-def _load_pm_delegate():
-    """pm_delegate 모듈을 in-process 로드 — 미회수 라운드 준비 조회(``ticket_copy_records``) 전용.
-
-    부재/로드 실패/사본 skew 는 모두 예외로 전파한다. 호출부(``_inflight_section``)가 절 단위
-    fail-soft 로 접고, skew 만 등록 경계(``inflight_ledger_query``)에서 흡수해 표출한다
-    (``pm_handoff._load_pm_delegate`` 동형 seam — CLI subprocess 왕복 대신 같은 프로세스 호출).
-    """
-    path = Path(__file__).resolve().parent / "pm_delegate.py"
-    return _load_module_from_path(path, "pm_delegate.py", verifier=_verify_engine_rev)
-
-
 def _load_worktree_pool(pm_home: Path):
     """그 PM 홈의 worktree_pool 을 in-process 로드 — 열린 todo 조회·표시 전용.
 
@@ -786,7 +775,7 @@ def _inflight_capped_line(*, prefix: str, content: str, suffix: str) -> str:
 
 
 def _unharvested_copies_line(rows: list[dict]) -> str:
-    """``pm_delegate.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
+    """``delegate_ledger.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
     prefix = "- 미회수 라운드 준비 "
     suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested`"
     if not rows:
@@ -943,7 +932,7 @@ def _inflight_section(
 ) -> str:
     """미회수 라운드 준비·미마감 raw·claimed 티켓·슬롯 WIP 을 in-process 조회로 편입한다.
 
-    장부 조회는 subprocess 0(``pm_delegate.ticket_copy_records``·``raw_output.raw_records``
+    장부 조회는 subprocess 0(``delegate_ledger.ticket_copy_records``·``raw_output.raw_records``
     in-process 호출) — WIP git 프로브(``_wip_slot_line``)만 유일한 예외(자체 상한·전 예외 흡수).
     네 조회 중 하나라도 예외를 올리면 절 전체를 1줄로 접는다(다른 절은 온전 — 절 단위 fail-soft).
     각 불릿은 ``_inflight_safe_text``/``_inflight_capped_line`` 으로 이미 단일 줄이지만, 물리
@@ -951,8 +940,7 @@ def _inflight_section(
     되고 조립에서 미강제였던 결함).
     """
     try:
-        delegate = _load_pm_delegate()
-        unharvested_rows = delegate.ticket_copy_records(pm_home, unharvested=True)
+        unharvested_rows = delegate_ledger.ticket_copy_records(pm_home, unharvested=True)
         _raw_dir, raw_ledger = raw_output.raw_storage_paths(pm_home, "delegate")
         unfinished_raw_rows = raw_output.unfinished_raw_records(raw_ledger, lock=False)
         tickets_dir, _counts = _ticket_counts(pm_home)

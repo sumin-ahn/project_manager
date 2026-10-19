@@ -1250,7 +1250,13 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `_load_pm_bootstrap`, `ticket_finish._load_pm_handoff`), try 본문이 패키지 호출만 남은 5
     #   (`board._platform_test_commands`·`pm_handoff._regression_cwd` 는 옮기며, `pm_import._detected_py`·
     #   `ticket_finish._regression_cwd`·`_resolve_per_repo_test_cmd` 는 제자리에서).
-    assert len(report.boundaries) == 179, "propagation sweep boundary ratchet changed"
+    # 170 = 179 − T-0973 이 지운 9 경계. 라운드 파일·리뷰 양식·위임 장부 이름이 패키지(`round_rules`·
+    #   `round_store`·`round_seed`·`review_state`·`delegate_ledger`·`model_lint`·`raw_output`)로 옮겨져
+    #   형제 로더와 그 재전파 줄이 없어졌다: 로더 정의 2(`board._load_pm_delegate_module`,
+    #   `pm_handoff._load_pm_delegate`), try 본문이 패키지 호출만 남은 7(`board` 의
+    #   `_round_pending_abandon_command`·`lint_delegate`·`lint_rounds` 두 곳, `pm_delegate` 의
+    #   `prepare_cluster_copy`·`_peer_engine_ledgers`(옮기며), `pm_handoff.PmHandoff._peer_raw_ledgers`).
+    assert len(report.boundaries) == 170, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1861,7 +1867,7 @@ def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
 @pytest.mark.parametrize(
     ("filename", "arguments", "witness"),
     [
-        ("board.py", ["list"], "ticket_rounds.py"),
+        ("board.py", ["lint"], "domain.py"),
         ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"], "board.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
         ("pm_bootstrap.py", ["--task", "probe"], "board.py"),

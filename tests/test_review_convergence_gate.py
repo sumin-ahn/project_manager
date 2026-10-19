@@ -28,6 +28,8 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import review_rounds, ticket_store
 from pm_engine.app import regression
+from pm_engine.domain import review_form
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -535,7 +537,7 @@ def test_reviewer_call_has_no_change_size_cap(external, monkeypatch, tmp_path, c
     _wire(external, monkeypatch, tmp_path, series=[0])
     monkeypatch.setattr(external, "extract_diff", real_extract_diff)
     # 실 티켓 게이트라 라운드 파일 회수가 구조화 블록을 요구한다 — 통과 회신에 빈 블록을 싣는다.
-    block = json.dumps({"version": _load("pm_delegate").PM_REVIEW_VERSION, "findings": [],
+    block = json.dumps({"version": review_form.PM_REVIEW_VERSION, "findings": [],
                         "confirmations": []}, separators=(",", ":"))
     reviewer = _Reviewer([0])
     answer = _answer(0) + f"\n```pm-review-v1\n{block}\n```\n"
@@ -904,7 +906,7 @@ def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
 
     assert regression._ticket_touches(board._home(), "T-0036-002") == []              # 스코프 없음 = FULL
     assert finish.get_ticket_touches(shim, "T-0036-002") == []
-    with pytest.raises(external.AnchorResolutionError):           # touches 는 fail-loud 유지
+    with pytest.raises(pm_paths.AnchorResolutionError):           # touches 는 fail-loud 유지
         external.parse_ticket_touches("T-0036-002", pm_home=tmp_path)
 
 

@@ -179,7 +179,6 @@ _WRITE_TARGET_CONSTS: dict[str, str] = {
     "BOARD_LOCK": ".local/board.lock",
     "LEASES_FILE": ".local/worktree-leases.json",
     "DOMAIN_PY": "tools/domain.py",
-    "PM_DELEGATE_PY": "tools/pm_delegate.py",
 }
 
 
@@ -347,7 +346,7 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
                 b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()), b.DECISIONS_DIR,
                 b.IDEAS_DIR, b.SPECS_DIR, b.ARCHITECTURE_FILE, b.STATUS_FILE,
                 b.HOOKS_DIR, b.LOCAL_CONF, b.LEASES_FILE, b.DOMAIN_PY,
-                b.PM_DELEGATE_PY, *b._SCOPE_AWARE_DIRS,
+                *b._SCOPE_AWARE_DIRS,
             )
         )
         or 0,
@@ -368,7 +367,7 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
             owner_pm / "wiki" / "specs", owner_pm / "wiki" / "architecture.md",
             owner_pm / "wiki" / "status.md", owner_pm / "hooks",
             owner_pm / "local.conf", owner_pm / ".local" / "worktree-leases.json",
-            owner_pm / "tools" / "domain.py", owner_pm / "tools" / "pm_delegate.py",
+            owner_pm / "tools" / "domain.py",
             owner_pm / "wiki" / "decisions", owner_pm / "wiki" / "specs",
         )
     ]
@@ -854,7 +853,7 @@ def test_pm_owned_path_inventory_is_complete():
         "BOARD_FILE", "LOG_FILE", "STATUS_FILE", "LOCAL_CONF", "TICKETS_DIR",
         "TEMPLATE_FILE", "AREAS_FILE", "PM_STATE_FILE", "PM_STATE_TEMPLATE", "LOCAL_DIR",
         "BOARD_LOCK", "LEASES_FILE", "DOMAIN_PY",
-        "PM_DELEGATE_PY", "DELEGATE_CHANNEL_GUARD_PY", "CODEX_DELEGATE_OBSERVATIONS",
+        "DELEGATE_CHANNEL_GUARD_PY", "CODEX_DELEGATE_OBSERVATIONS",
     }
     assert set(b._READ_PM_PATH_RELS) == expected
 

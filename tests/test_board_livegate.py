@@ -25,6 +25,7 @@ from _slot_seed import SLOT, seed_slot
 from pm_engine.domain import manifest_rules, pytest_report
 from pm_engine.infra import conf_store, git, pm_paths, regression_store, review_rounds, ticket_store
 from pm_engine.app import regression, release
+from pm_engine.domain import review_form, review_state, round_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1061,10 +1062,10 @@ def _pm_verified_pd():
 
 
 _PVPD = _pm_verified_pd()
-_PV_BLOCK_VERSION = _PVPD.PM_REVIEW_VERSION
-_PV_DISPOSITION_VERSION = _PVPD.PM_REVIEW_DISPOSITION_VERSION
-_PV_ADDITIONAL_ROLE = _PVPD.ADDITIONAL_REVIEWER_ROLE
-_PV_INTERNAL_ROLE = _PVPD.INTERNAL_REVIEW_ROLE
+_PV_BLOCK_VERSION = review_form.PM_REVIEW_VERSION
+_PV_DISPOSITION_VERSION = review_form.PM_REVIEW_DISPOSITION_VERSION
+_PV_ADDITIONAL_ROLE = review_form.ADDITIONAL_REVIEWER_ROLE
+_PV_INTERNAL_ROLE = review_form.INTERNAL_REVIEW_ROLE
 # 장부 채널 어휘는 board 상수가 단일 진실이다(사본 금지) — 빌더·테스트가 같은 값을 쓴다. 리뷰
 # 라운드 채널(code-reviewer)은 장부가 없어 판정 role 이 그 어휘다.
 _PV_BOARD = _load_board()
@@ -1169,7 +1170,7 @@ def _pv_seed_v178_shape(proj: Path, tid: str) -> dict:
 def _pv_developer_round_block(finding_ids: list) -> str:
     """dev 라운드 verify 블록 — 기계 확인이 참조할 finding 을 machine_verifiable 로 선언."""
     payload = {
-        "version": _PVPD.PM_REVIEW_VERIFY_VERSION,
+        "version": review_form.PM_REVIEW_VERIFY_VERSION,
         "verifications": [
             {"id": finding_id, "machine_verifiable": True, "command": "echo hi",
              "expected": "hi", "before": "bye", "reason": ""}
@@ -1177,7 +1178,7 @@ def _pv_developer_round_block(finding_ids: list) -> str:
         ],
     }
     return (
-        f"```{_PVPD.PM_REVIEW_VERIFY_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n"
         f"{json.dumps(payload, ensure_ascii=False)}\n```\n"
     )
 
@@ -1185,7 +1186,7 @@ def _pv_developer_round_block(finding_ids: list) -> str:
 def _pv_machine_confirmation_block(round_ordinal: int, finding_ids: list) -> str:
     """PM 기계 확인 블록 — 그 채널 finding 을 실제 명령 출력으로 확인했다는 기록."""
     payload = {
-        "version": _PVPD.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
+        "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
         "round": round_ordinal,
         "confirmations": [
             {"id": finding_id, "status": "resolved", "command": "echo hi", "observed": "hi"}
@@ -1193,7 +1194,7 @@ def _pv_machine_confirmation_block(round_ordinal: int, finding_ids: list) -> str
         ],
     }
     return (
-        f"```{_PVPD.PM_REVIEW_CONFIRMATION_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n"
         f"{json.dumps(payload, ensure_ascii=False)}\n```\n"
     )
 
@@ -1254,10 +1255,9 @@ def _pv_pm_fixed_resolution(round_sequence: int, count: int) -> dict:
 
 
 def _pv_round_tuple(ordinal: int, role: str, text: str):
-    rounds_module = _PVPD._load_ticket_rounds()
-    return rounds_module.Round(
+    return round_rules.Round(
         ordinal=ordinal, role=role,
-        path=Path(rounds_module.round_filename(ordinal, role)),
+        path=Path(round_rules.round_filename(ordinal, role)),
         text=text, pending=False,
     )
 
@@ -1303,7 +1303,6 @@ def pm_verified_release(tmp_path, monkeypatch):
     pd = _pm_verified_pd()
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", proj)
     monkeypatch.setattr(pd, "_load_board", lambda: mod)
-    monkeypatch.setattr(mod, "_load_pm_delegate_module", lambda: pd)
 
     ledger_path = local / "review_rounds.json"
 
@@ -1572,11 +1571,11 @@ def test_sensitivity_surface_floor_check_removed_lets_a_short_surface_pass():
     rows = [_pv_decision(f"X-00{i}", "rejected") for i in (1, 2, 3)]
     spec = _pv_disposition_block(1, rows, reviewer_role=_PV_ADDITIONAL_ROLE)
     rounds = [_pv_round_tuple(1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))]
-    correct = _PVPD.pm_verified_evidence_problem(
+    correct = review_state.pm_verified_evidence_problem(
         spec, rounds, reviewer_role=_PV_ADDITIONAL_ROLE, surface_floor=5,   # 장부 잔여 5(실제 배선값)
     )
     assert correct is not None and "5건" in correct
-    removed = _PVPD.pm_verified_evidence_problem(
+    removed = review_state.pm_verified_evidence_problem(
         spec, rounds, reviewer_role=_PV_ADDITIONAL_ROLE, surface_floor=0,   # 대조 제거를 흉내
     )
     assert removed is None, "건수 대조가 제거되면 표면 미달이 잘못 통과한다"

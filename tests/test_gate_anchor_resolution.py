@@ -8,6 +8,8 @@ import typing
 from pathlib import Path
 
 import pytest
+from pm_engine.domain import delegate_errors
+from pm_engine.infra import pm_paths
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -234,8 +236,8 @@ def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shap
     else:
         _source, anchor = _unregistered_worktree(tmp_path)
 
-    with pytest.raises(external.AnchorResolutionError) as caught:
-        external.resolve_pm_home_for_repo(anchor)
+    with pytest.raises(pm_paths.AnchorResolutionError) as caught:
+        pm_paths.resolve_pm_home_for_repo(anchor)
     message = str(caught.value)
     assert "PM 홈을 찾지 못했습니다" in message
     assert "PM 홈 해소 실패" not in message
@@ -243,7 +245,7 @@ def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shap
 
     # `required=` 는 사라진 인터페이스다 — 남겨 두면 호출 자체가 TypeError 다.
     with pytest.raises(TypeError):
-        external.resolve_pm_home_for_repo(anchor, required=True)
+        pm_paths.resolve_pm_home_for_repo(anchor, required=True)
 
 
 def test_ledger_without_the_anchor_row_still_resolves_by_git_declaration(tmp_path):
@@ -280,8 +282,8 @@ def test_ledger_without_the_anchor_row_still_resolves_by_git_declaration(tmp_pat
     )
 
     external = _load("additional_reviewer_unregistered_row")
-    assert external.resolve_pm_home_for_repo(registered) == pm_home.resolve()
-    assert external.resolve_pm_home_for_repo(unregistered) == pm_home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(registered) == pm_home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(unregistered) == pm_home.resolve()
 
 
 def test_pool_less_adopter_worktree_resolves_to_its_main_checkout(tmp_path):
@@ -311,11 +313,11 @@ def test_pool_less_adopter_worktree_resolves_to_its_main_checkout(tmp_path):
          str(snapshot), "HEAD")
 
     external = _load("additional_reviewer_pool_less_adopter")
-    assert external.resolve_pm_home_for_repo(worktree) == adopter.resolve()
-    assert external.resolve_pm_home_for_repo(snapshot) == adopter.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(worktree) == adopter.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(snapshot) == adopter.resolve()
 
-    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
-        external.resolve_pm_home_for_repo(_foreign_commondir_worktree(tmp_path))
+    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        pm_paths.resolve_pm_home_for_repo(_foreign_commondir_worktree(tmp_path))
 
 
 def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
@@ -363,7 +365,7 @@ def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
     external = _load("additional_reviewer_markerless_app_root")
 
     assert external.repo_root_from_cwd(nested) == slot.resolve()
-    assert external.resolve_pm_home_for_repo(slot) == pm_home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(slot) == pm_home.resolve()
 
 
 def test_delegate_config_anchor_follows_registered_worktree_from_both_shell_dirs(
@@ -398,7 +400,7 @@ def test_delegate_anchor_oracle_is_sensitive_to_engine_repo_fallback(
     monkeypatch.setattr(delegate, "REPO", worktree)
     delegate._CONFIG_REPO_OVERRIDE = worktree
     old_conf = delegate.local_config()
-    with pytest.raises(delegate.DelegateError):
+    with pytest.raises(delegate_errors.DelegateError):
         delegate.resolve_delegate(old_conf, "developer", "normal", None, None, None)
 
 
@@ -502,8 +504,8 @@ def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
     external = _load("additional_reviewer_unregistered_ticket_round_block")
     monkeypatch.setattr(external, "REPO", snapshot)
 
-    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
-        external.resolve_pm_home_for_repo(snapshot)
+    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        pm_paths.resolve_pm_home_for_repo(snapshot)
 
     side_effects = []
 
@@ -567,7 +569,7 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
     external = _load("additional_reviewer_resolver_guard_seam")
     monkeypatch.setattr(external, "REPO", snapshot)
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: snapshot.resolve(),
+        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: snapshot.resolve(),
     )
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
@@ -664,7 +666,7 @@ def test_slot_own_ticket_does_not_change_the_owning_pm_home(
     monkeypatch.setattr(external, "REPO", worktree)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
-    assert external.resolve_pm_home_for_repo(worktree) == home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(worktree) == home.resolve()
 
     gate = "T-0634-registered-ticket"
     assert external.main([
@@ -744,9 +746,9 @@ def test_boardless_review_oracle_is_sensitive_to_unconditional_anchor_error(
     monkeypatch.setattr(external, "REPO", worktree)
 
     def _old_half_fix(anchor, **kwargs):
-        raise external.AnchorResolutionError("unconditional anchor error")
+        raise pm_paths.AnchorResolutionError("unconditional anchor error")
 
-    monkeypatch.setattr(external, "resolve_pm_home_for_repo", _old_half_fix)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", _old_half_fix)
     assert external.main(["--paths", "seed.txt", "--dry-run"]) == 1
     assert "unconditional anchor error" in capsys.readouterr().err
 
@@ -890,12 +892,12 @@ def test_delegate_anchor_handles_symlink_standalone_and_missing_inputs(
     monkeypatch.setattr(delegate, "REPO", worktree)
     link = tmp_path / "worktree-link"
     link.symlink_to(worktree, target_is_directory=True)
-    assert delegate._load_additional_reviewer().resolve_pm_home_for_repo(link) == home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(link) == home.resolve()
 
     standalone = tmp_path / "standalone"
     standalone.mkdir()
     _git(standalone, "init", "-q")
-    assert delegate._load_additional_reviewer().resolve_pm_home_for_repo(standalone) == standalone
+    assert pm_paths.resolve_pm_home_for_repo(standalone) == standalone
 
     prompt = worktree / "prompt.md"
     prompt.write_text("safe task", encoding="utf-8")
@@ -937,7 +939,7 @@ def test_duplicate_pm_home_registration_does_not_create_ambiguity(tmp_path):
 
     external = _load("additional_reviewer_duplicate_owner")
     # 두 홈이 같은 슬롯을 등재해도 후보는 하나다 — 공용 저장소를 둔 홈이 소유자다.
-    assert external.resolve_pm_home_for_repo(worktree) == inner.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(worktree) == inner.resolve()
 
 
 def test_registered_worktree_owner_does_not_require_existing_ticket(tmp_path):
@@ -947,7 +949,7 @@ def test_registered_worktree_owner_does_not_require_existing_ticket(tmp_path):
         ticket_file.unlink()
 
     external = _load("additional_reviewer_empty_board_owner")
-    assert external.resolve_pm_home_for_repo(worktree) == home.resolve()
+    assert pm_paths.resolve_pm_home_for_repo(worktree) == home.resolve()
 
 
 def test_ledger_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
@@ -982,8 +984,8 @@ def test_ledger_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
     )
 
     external = _load("additional_reviewer_ledger_row_alone")
-    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
-        external.resolve_pm_home_for_repo(worktree)
+    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        pm_paths.resolve_pm_home_for_repo(worktree)
 
 
 def test_external_main_restores_selector_globals_between_calls(
@@ -1132,7 +1134,7 @@ def test_ticket_touching_other_registered_slot_names_anchor_mismatch(tmp_path):
     external = _load("additional_reviewer_other_slot")
 
     with pytest.raises(
-        external.AnchorResolutionError,
+        pm_paths.AnchorResolutionError,
         match="ticket touches가 실행 엔진 worktree와 다른 등록 worktree",
     ):
         external._resolve_diff_root(

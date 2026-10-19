@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from _slot_seed import seed_slot
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1916,7 +1917,7 @@ def test_close_preflight_refuses_a_member_without_a_harvested_review(
         board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
         spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
         review.write_text(
-            board._load_ticket_rounds().render_round_seed(
+            round_seed.render_round_seed(
                 "code-reviewer", spec.read_text(encoding="utf-8"), today="2026-01-02"),
             encoding="utf-8")
         expected = "돌려받지 않았습니다"

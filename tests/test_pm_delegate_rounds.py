@@ -31,6 +31,9 @@ from _test_exec import python_argv_command
 from _win_skip import _can_symlink as can_symlink, posix_mode_supported
 from pm_engine.infra import conf_store, pm_paths, raw_output, ticket_store
 from conftest import write_cluster_ledger
+from pm_engine.domain import delegate_errors, design_rules, review_form, review_state, round_rules
+from pm_engine.infra import delegate_ledger, round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -120,7 +123,7 @@ def pd():
     def _transport_parse_architect_tests(text):
         try:
             return real_parse_architect_tests(text)
-        except module.DelegateError as exc:
+        except delegate_errors.DelegateError as exc:
             if (
                 "block 정확히 1개" in str(exc)
                 or "placeholder" in str(exc)
@@ -134,7 +137,7 @@ def pd():
     def _transport_architect_tests(rounds, *, required=True):
         try:
             return real_architect_tests_from_rounds(rounds, required=required)
-        except module.DelegateError as exc:
+        except delegate_errors.DelegateError as exc:
             if required and (
                 "architect 테스트 계약이 없습니다" in str(exc)
                 or "placeholder" in str(exc)
@@ -340,7 +343,7 @@ def _copy_root(pd, tree: Path, ticket: str) -> Path:
     준비 단위가 묶음이라 run-dir 은 묶음 키로 갈리고 그 안에서 티켓별 자리를 갖는다. 티켓
     하나짜리 준비도 같은 규약을 쓴다(특례 없음).
     """
-    return tree / pd.TICKET_COPY_REL_ROOT / f"C-{ticket}"
+    return tree / delegate_ledger.TICKET_COPY_REL_ROOT / f"C-{ticket}"
 
 
 def _rounds_dir(pm_home: Path, ticket: str) -> Path:
@@ -423,7 +426,7 @@ def test_closed_run_cannot_be_harvested_again(pd, rounds_env):
     pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
     # run-dir 이 없다 = run 이 닫혔다. 별도 "이미 회수됨" 판정 없이 경로에서 자연 실패한다.
-    with pytest.raises(pd.DelegateError, match="경로 검사 실패|읽기 실패"):
+    with pytest.raises(delegate_errors.DelegateError, match="경로 검사 실패|읽기 실패"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
 
@@ -436,7 +439,7 @@ def test_unprepared_path_is_refused_before_any_read(pd, rounds_env):
     smuggled = plan.run_dir / "02-developer.md"
     smuggled.write_text("## 리뷰\n밀반입\n", encoding="utf-8", newline="\n")
 
-    with pytest.raises(pd.DelegateError, match="준비 기록 없음"):
+    with pytest.raises(delegate_errors.DelegateError, match="준비 기록 없음"):
         pd.harvest_ticket_copy(copy_path=smuggled, cwd=slot, pm_home=pm_home)
 
 
@@ -452,12 +455,12 @@ def test_symlinked_copy_root_is_refused(pd, rounds_env, tmp_path):
         plan.path.read_text(encoding="utf-8") + "\n산출\n",
         encoding="utf-8", newline="",
     )
-    root = slot / pd.TICKET_COPY_REL_ROOT
+    root = slot / delegate_ledger.TICKET_COPY_REL_ROOT
     decoy = tmp_path / "decoy"
     shutil.move(str(root), str(decoy))
     os.symlink(decoy, root, target_is_directory=True)
 
-    with pytest.raises(pd.DelegateError, match="symlink/비-directory 거부"):
+    with pytest.raises(delegate_errors.DelegateError, match="symlink/비-directory 거부"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
 
@@ -475,7 +478,7 @@ def test_symlink_round_file_is_refused(pd, rounds_env, tmp_path):
 
     if not hasattr(os, "O_NOFOLLOW"):
         pytest.skip("O_NOFOLLOW 없는 플랫폼 — 이식 경계 seam 축이 다름")
-    with pytest.raises(pd.DelegateError, match="읽기 실패"):
+    with pytest.raises(delegate_errors.DelegateError, match="읽기 실패"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
 
@@ -583,7 +586,7 @@ def test_done_ticket_is_refused_for_prepare(pd, rounds_env):
     path = done / "T-7011-rounds.md"
     path.write_text(_spec_text("T-7011", status="done"), encoding="utf-8", newline="\n")
 
-    with pytest.raises(pd.DelegateError, match="open/claimed 또는 draft×architect"):
+    with pytest.raises(delegate_errors.DelegateError, match="open/claimed 또는 draft×architect"):
         pd.prepare_ticket_copy(
             ticket="T-7011", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -598,7 +601,7 @@ def test_draft_ticket_allows_architect_only(pd, rounds_env):
     )
     _declare_rounds(tickets, "T-7012", ("architect",))
 
-    with pytest.raises(pd.DelegateError, match="draft×architect"):
+    with pytest.raises(delegate_errors.DelegateError, match="draft×architect"):
         pd.prepare_ticket_copy(
             ticket="T-7012", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -614,7 +617,7 @@ def test_slot_without_tracked_ignore_rule_is_refused(pd, rounds_env):
     _write_spec(tickets, "T-7013")
     assert _git(slot, "rm", "-q", "--cached", ".project_manager/.gitignore").returncode == 0
 
-    with pytest.raises(pd.DelegateError, match="untracked"):
+    with pytest.raises(delegate_errors.DelegateError, match="untracked"):
         pd.prepare_ticket_copy(
             ticket="T-7013", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -655,7 +658,7 @@ def test_prepare_refuses_a_pool_slot_whose_bare_exclude_lacks_the_rule(pd, pool_
     pm_home, slot, tickets, exclude = pool_env
     _write_spec(tickets, "T-7921")
 
-    with pytest.raises(pd.DelegateError) as absent:
+    with pytest.raises(delegate_errors.DelegateError) as absent:
         pd.prepare_ticket_copy(
             ticket="T-7921", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -665,7 +668,7 @@ def test_prepare_refuses_a_pool_slot_whose_bare_exclude_lacks_the_rule(pd, pool_
     # 손으로 넣은 옛 규칙(더 좁은 문자열 · adopter#0 bare 실측)도 정본이 아니다 — 형상마다
     # 정본이 정확히 하나이고, 문자열이 다르면 통과하지 않는다.
     _add_bare_exclude_rule(exclude, "/.project_manager/.local/delegate-ticket-copies/")
-    with pytest.raises(pd.DelegateError) as narrow:
+    with pytest.raises(delegate_errors.DelegateError) as narrow:
         pd.prepare_ticket_copy(
             ticket="T-7921", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -688,7 +691,7 @@ def test_pool_slot_judgment_ignores_a_tracked_nested_gitignore(pd, pool_env):
     observed = _git(slot, "check-ignore", "-v", ".project_manager/.local/probe")
     assert observed.stdout.startswith(".project_manager/.gitignore:")
 
-    with pytest.raises(pd.DelegateError) as refused:
+    with pytest.raises(delegate_errors.DelegateError) as refused:
         pd.prepare_ticket_copy(
             ticket="T-7922", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -721,7 +724,7 @@ def test_prepare_refuses_a_pool_slot_whose_copy_root_is_not_actually_ignored(pd,
     probe = ".project_manager/.local/delegate-ticket-copies/probe/run/T-7924/spec.md"
     assert _git(slot, "check-ignore", "-v", probe).returncode == 1
 
-    with pytest.raises(pd.DelegateError) as refused:
+    with pytest.raises(delegate_errors.DelegateError) as refused:
         pd.prepare_ticket_copy(
             ticket="T-7924", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -751,7 +754,7 @@ def test_embed_shape_ignore_canon_and_message_are_unchanged(pd, rounds_env):
 
     # (2) 규칙이 아예 없는 거부 문구.
     assert _git(slot, "rm", "-q", "-f", ".project_manager/.gitignore").returncode == 0
-    with pytest.raises(pd.DelegateError) as missing:
+    with pytest.raises(delegate_errors.DelegateError) as missing:
         pd.prepare_ticket_copy(
             ticket="T-7923", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -765,7 +768,7 @@ def test_embed_shape_ignore_canon_and_message_are_unchanged(pd, rounds_env):
         ".project_manager/.local/\n", encoding="utf-8", newline="\n",
     )
     assert _git(slot, "add", ".gitignore").returncode == 0
-    with pytest.raises(pd.DelegateError) as elsewhere:
+    with pytest.raises(delegate_errors.DelegateError) as elsewhere:
         pd.prepare_ticket_copy(
             ticket="T-7923", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -787,7 +790,7 @@ def test_review_seed_prefills_confirmations_from_previous_round_file(pd, rounds_
         ticket="T-7014", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
     block = json.dumps({
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [{
             "id": "F-042", "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[ADR-0090]] §경계", "evidence": "probe rc=1",
@@ -799,7 +802,7 @@ def test_review_seed_prefills_confirmations_from_previous_round_file(pd, rounds_
     first.path.write_text(
         first.path.read_text(encoding="utf-8").partition("\n")[0]
         + "\n\n## must-fix\n- F-042\n\n## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
-        + f"```{pd.PM_REVIEW_BLOCK}\n{block}\n```\n",
+        + f"```{review_form.PM_REVIEW_BLOCK}\n{block}\n```\n",
         encoding="utf-8", newline="",
     )
     pd.harvest_ticket_copy(copy_path=first.path, cwd=slot, pm_home=pm_home)
@@ -808,7 +811,7 @@ def test_review_seed_prefills_confirmations_from_previous_round_file(pd, rounds_
         ticket="T-7014", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
     seed = second.path.read_text(encoding="utf-8")
-    block_text = seed.partition(f"```{pd.PM_REVIEW_BLOCK}")[2].replace(" ", "")
+    block_text = seed.partition(f"```{review_form.PM_REVIEW_BLOCK}")[2].replace(" ", "")
     # 확인 대상은 직전 라운드 파일의 실 ID 이고 자리표시자로 강등되지 않는다.
     assert '{"id":"F-042","status":"<' in block_text
     assert '"confirmations":[{"id":"F-NNN"' not in block_text
@@ -831,7 +834,7 @@ def test_review_seed_prefill_ignores_other_role_rounds(pd, rounds_env):
     )
     # 직전 **같은 역할** 라운드가 없으므로 자리표시자 골격이다.
     block_text = reviewer.path.read_text(encoding="utf-8").partition(
-        f"```{pd.PM_REVIEW_BLOCK}"
+        f"```{review_form.PM_REVIEW_BLOCK}"
     )[2].replace(" ", "")
     assert '"confirmations":[{"id":"F-NNN"' in block_text
 
@@ -881,11 +884,10 @@ def test_review_seed_and_preamble_hold_the_next_finding_id_after_a_prose_citatio
     assert reviewer.board_path.read_text(encoding="utf-8") == seed
 
     # 실 ID 를 실은 새 시드도 산출이 없다(판정 입력은 그 파일 자신이다).
-    rounds_module = pd._load_ticket_rounds()
-    loaded = rounds_module.load_rounds(_tickets_root(pm_home), "T-7030")
+    loaded = round_seed.load_rounds(_tickets_root(pm_home), "T-7030")
     assert [(item.ordinal, item.pending) for item in loaded] == [(1, False), (2, True)]
-    problems = rounds_module.verify_rounds(_tickets_root(pm_home), "T-7030")
-    assert [item.code for item in problems] == [rounds_module.PROBLEM_PENDING]
+    problems = round_seed.verify_rounds(_tickets_root(pm_home), "T-7030")
+    assert [item.code for item in problems] == [round_rules.PROBLEM_PENDING]
 
 
 def test_a_reply_that_uses_the_seeded_finding_id_is_harvested(pd, rounds_env):
@@ -952,7 +954,7 @@ def test_an_abandoned_seed_gives_its_finding_id_back_to_the_next_round(pd, round
     pd.abandon_ticket_copy(
         copy_path=abandoned.path, cwd=slot, pm_home=pm_home, assume_dead=True,
     )
-    assert pd.pm_review_refused_marker_present(
+    assert review_form.pm_review_refused_marker_present(
         abandoned.board_path.read_text(encoding="utf-8")
     ), "표식이 발행되지 않았다(전제 붕괴)"
 
@@ -981,12 +983,12 @@ def test_seed_value_inputs_have_no_default_that_folds_a_missing_value(pd, tmp_pa
     with pytest.raises(TypeError):
         pd.TicketCopyPlan(
             tmp_path / "01-code-reviewer.md", tmp_path, "T-7042",
-            pd.INTERNAL_REVIEW_ROLE, 1, tmp_path / "board.md", "e" * 32,
+            review_form.INTERNAL_REVIEW_ROLE, 1, tmp_path / "board.md", "e" * 32,
         )
     with pytest.raises(TypeError):
-        pd._render_review_round_seed_body(pd.INTERNAL_REVIEW_ROLE, ["F-001"])
+        round_seed._render_review_round_seed_body(review_form.INTERNAL_REVIEW_ROLE, ["F-001"])
     with pytest.raises(TypeError):
-        pd.PMReviewVerifyTemplate((), (), (), (), ())
+        review_state.PMReviewVerifyTemplate((), (), (), (), ())
 
 
 # ── 회수 게이트: 판정 불능 verify 블록 · 자리표시자 행 ──────────────────
@@ -1006,7 +1008,7 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
         ticket="T-7020", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
     review_payload = {
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [{
             "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[T-0786]]", "evidence": "probe", "recommendation": "fix",
@@ -1018,13 +1020,13 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
     reviewer.path.write_text(
         reviewer.path.read_text(encoding="utf-8").partition("\n")[0]
         + "\n\n## must-fix\n- F-001\n\n## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
-        + f"```{pd.PM_REVIEW_BLOCK}\n" + json.dumps(review_payload) + "\n```\n",
+        + f"```{review_form.PM_REVIEW_BLOCK}\n" + json.dumps(review_payload) + "\n```\n",
         encoding="utf-8", newline="",
     )
     pd.harvest_ticket_copy(copy_path=reviewer.path, cwd=slot, pm_home=pm_home)
 
     disposition_payload = {
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
         "dispositions": [{
             "id": "F-001", "decision": "accepted", "reason": "PM 수락",
             "scope": "F-001 범위", "prerequisite": "",
@@ -1032,7 +1034,7 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
     }
     spec_path.write_text(
         spec_path.read_text(encoding="utf-8")
-        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + f"\n```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n"
         + json.dumps(disposition_payload) + "\n```\n",
         encoding="utf-8", newline="",
     )
@@ -1041,7 +1043,7 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
         ticket="T-7020", role="developer", cwd=slot, pm_home=pm_home,
     )
     seed = dev.path.read_text(encoding="utf-8")
-    assert '"id":"F-001"' in seed.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")[2]
+    assert '"id":"F-001"' in seed.partition(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}")[2]
 
     reserved_before = dev.board_path.read_bytes()
 
@@ -1050,7 +1052,7 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
         seed.replace('"verifications"', '"verifications') + "\n실산출\n",
         encoding="utf-8", newline="",
     )
-    with pytest.raises(pd.DelegateError, match="블록을 읽지 못했습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="블록을 읽지 못했습니다"):
         pd.harvest_ticket_copy(copy_path=dev.path, cwd=slot, pm_home=pm_home)
 
     assert dev.board_path.read_bytes() == reserved_before
@@ -1089,7 +1091,7 @@ def _harvest_review_round(
         ticket=ticket, role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
     payload = {
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [
             _finding_payload(
                 pd, fid, design_change=fid in design_change_ids,
@@ -1104,7 +1106,7 @@ def _harvest_review_round(
         reviewer.path.read_text(encoding="utf-8").partition("\n")[0]
         + f"\n\n## must-fix\n{mustfix}\n\n## 판정\n판정: 반려 · finding "
         f"{len(finding_ids)}건(must-fix {len(finding_ids)}건)\n\n"
-        + f"```{pd.PM_REVIEW_BLOCK}\n" + json.dumps(payload, ensure_ascii=False) + "\n```\n",
+        + f"```{review_form.PM_REVIEW_BLOCK}\n" + json.dumps(payload, ensure_ascii=False) + "\n```\n",
         encoding="utf-8", newline="",
     )
     pd.harvest_ticket_copy(copy_path=reviewer.path, cwd=slot, pm_home=pm_home)
@@ -1113,12 +1115,12 @@ def _harvest_review_round(
 
 def _append_disposition(pd, spec_path: Path, rows: list, *, ordinal: int = 1) -> None:
     payload = {
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": ordinal,
+        "version": review_form.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": ordinal,
         "dispositions": rows,
     }
     spec_path.write_text(
         spec_path.read_text(encoding="utf-8")
-        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + f"\n```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False) + "\n```\n",
         encoding="utf-8", newline="",
     )
@@ -1130,8 +1132,8 @@ def _verify_rows_in(pd, text: str) -> list[dict]:
     골격의 `machine_verifiable` 자리는 따옴표 없는 raw 자리표시자라 그대로는 유효 JSON 이 아니다
     — 엔진의 구조-스캔 전처리와 같은 재-인용을 거친 뒤 파싱한다(자리표시자 문안은 렌더 소유).
     """
-    body = pd._pm_review_requote_verify_placeholder(text).partition(
-        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")[2]
+    body = review_form._pm_review_requote_verify_placeholder(text).partition(
+        f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n")[2]
     if not body:
         return []
     return json.loads(body.split("\n```", 1)[0])["verifications"]
@@ -1145,8 +1147,8 @@ def _verify_ids_in(pd, text: str) -> list[str]:
 def _verify_fence(pd, rows: list) -> str:
     """dev 가 채운 verify 행들을 fence 로 직렬화한다(자리표시자 흉내 금지 — 실 선언 전용)."""
     return (
-        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
-        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
+        f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": review_form.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
                      ensure_ascii=False)
         + "\n```\n"
     )
@@ -1169,15 +1171,15 @@ def _fill_machine_verifiable(pd, text: str, index: int, value: str = "true") -> 
     시드가 쓴 그대로 남아 그 행이 값 재입력 없이 재선언된다.
     """
     token = (
-        f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
-        + pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
+        f'"{review_form._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
+        + review_form._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
     )
     position = -1
     for _ in range(index + 1):
         position = text.index(token, position + 1)
     return (
         text[:position]
-        + f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":{value}'
+        + f'"{review_form._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":{value}'
         + text[position + len(token):]
     )
 
@@ -1205,7 +1207,7 @@ def test_prepare_refuses_a_developer_round_until_the_pm_judgment_is_written(
     rounds_before = sorted(item.name for item in _rounds_dir(pm_home, ticket).iterdir())
     ledger_before = len(_ledger_rows(pm_home))
 
-    with pytest.raises(pd.DelegateError, match="시드할 수 없습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="시드할 수 없습니다") as caught:
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -1240,7 +1242,7 @@ def test_pending_prepare_guidance_names_the_real_ordinal_and_channel(pd, rounds_
         "scope": "", "prerequisite": "",
     }], ordinal=2)
 
-    with pytest.raises(pd.DelegateError, match="시드할 수 없습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="시드할 수 없습니다") as caught:
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -1255,7 +1257,7 @@ def test_pending_prepare_guidance_names_the_real_ordinal_and_channel(pd, rounds_
     # 실측 재현 — 옛 기본값(그 채널의 최신 ordinal=2)으로 실행하면 PM 이 실제로 막혔던
     # 오류가 그대로 재현된다.
     _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, ticket)
-    with pytest.raises(pd.PMReviewError, match="미판정 finding이 없습니다"):
+    with pytest.raises(review_form.PMReviewError, match="미판정 finding이 없습니다"):
         pd.render_pm_review_disposition_template(
             spec_text, rounds, 2, reviewer_role="code-reviewer",
         )
@@ -1279,7 +1281,7 @@ def test_prepare_seeds_the_first_developer_round_without_fence_or_warning(
         ticket="T-7032", role="developer", cwd=slot, pm_home=pm_home,
     )
 
-    assert pd.PM_REVIEW_VERIFY_BLOCK not in plan.path.read_text(encoding="utf-8")
+    assert review_form.PM_REVIEW_VERIFY_BLOCK not in plan.path.read_text(encoding="utf-8")
     assert "경고" not in capsys.readouterr().err
 
 
@@ -1322,8 +1324,8 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     ]
     first.path.write_text(
         seed.partition("\n")[0] + "\n\n## 변경 파일\n- 실산출\n\n"
-        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
-        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
+        + f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": review_form.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
                      ensure_ascii=False)
         + "\n```\n",
         encoding="utf-8", newline="",
@@ -1337,7 +1339,7 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
         ticket="T-7033", role="developer", cwd=slot, pm_home=pm_home,
     )
     seed_two = second.path.read_text(encoding="utf-8")
-    placeholder = pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
+    placeholder = review_form._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
     assert _verify_rows_in(pd, seed_two) == [
         {"id": "F-001", "machine_verifiable": placeholder,
          "command": python_argv_command("--version"), "expected": "Python",
@@ -1350,20 +1352,20 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     # 판정 입력은 그 파일 하나이고 주입 값은 본문 자신에서 되읽는다.
     assert _board_round_is_pending(pd, pm_home, "T-7033", second.ordinal) is True
     # 그 한 자리를 채우는 것이 곧 선언이다 — 채우면 판정이 뒤집힌다.
-    assert pd.ticket_round_body_is_pending(
+    assert round_seed.ticket_round_body_is_pending(
         "developer", _fill_machine_verifiable(pd, seed_two, 0).partition("\n\n")[2],
     ) is False
 
 
 def _verify_block_bytes(pd, text: str) -> str:
     """그 라운드 파일이 담고 있는 검증 골격 블록 원문(없으면 빈 문자열)."""
-    _head, fence, rest = text.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")
+    _head, fence, rest = text.partition(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n")
     return fence + rest.split("\n```", 1)[0] + "\n```" if fence else ""
 
 
 def _without_verify_block(pd, text: str) -> str:
     """검증 골격 블록을 통째로 걷어낸 본문 — 그 ID 의 행 자체가 없는 라운드를 만든다."""
-    head, fence, rest = text.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")
+    head, fence, rest = text.partition(f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n")
     if not fence:
         return text
     return (head + rest.split("\n```\n", 1)[1]).rstrip("\n") + "\n"
@@ -1374,17 +1376,17 @@ def _verify_template_of(pd, pm_home: Path, ticket: str):
     board = pd._load_board_for_repo(pm_home)
     _status, spec_path = ticket_store.find_ticket_exact(board._home(), ticket)
     spec_text = spec_path.read_text(encoding="utf-8")
-    rounds = pd._load_ticket_rounds().load_rounds(
+    rounds = round_seed.load_rounds(
         pm_paths.tickets_dir(board._home()), ticket, ticket_text=spec_text,
     )
-    return pd.pm_review_verify_template(spec_text, rounds)
+    return review_state.pm_review_verify_template(spec_text, rounds)
 
 
 def _board_round_is_pending(pd, pm_home: Path, ticket: str, ordinal: int) -> bool:
     """board 에 착지한 그 라운드가 '산출 없음' 인가 — 실제 소비 경로(`load_rounds`)로 읽는다."""
     board = pd._load_board_for_repo(pm_home)
     _status, spec_path = ticket_store.find_ticket_exact(board._home(), ticket)
-    rounds = pd._load_ticket_rounds().load_rounds(
+    rounds = round_seed.load_rounds(
         pm_paths.tickets_dir(board._home()), ticket,
         ticket_text=spec_path.read_text(encoding="utf-8"),
     )
@@ -1419,14 +1421,14 @@ def _gap_round_then_prepare_next(pd, pm_home: Path, slot: Path, tickets: Path, t
     declared = [
         {"id": "F-001", "machine_verifiable": False, "command": "",
          "expected": "처방이 정하지 않은 지점", "before": "",
-         "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
+         "reason": review_form.PM_REVIEW_VERIFY_GAP_REASON},
         {"id": "F-002", "machine_verifiable": True, "command": _report_command("2 passed"),
          "expected": "2 passed", "before": "1 failed", "reason": ""},
     ]
     second.path.write_text(
         _without_verify_block(pd, seed_two) + "\n"
-        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
-        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": declared},
+        + f"```{review_form.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": review_form.PM_REVIEW_VERIFY_VERSION, "verifications": declared},
                      ensure_ascii=False)
         + "\n```\n",
         encoding="utf-8", newline="",
@@ -1489,7 +1491,7 @@ def test_harvest_refuses_a_round_that_deleted_a_seeded_verify_row(pd, rounds_env
     produced = _without_verify_block(pd, seed_three) + "\n## 메모\n- 산문만 정리했다\n"
     third.path.write_text(produced, encoding="utf-8", newline="")
 
-    with pytest.raises(pd.DelegateError, match="verify 행을 지웠습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="verify 행을 지웠습니다"):
         pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
 
     assert third.board_path.read_bytes() == reserved_before
@@ -1533,7 +1535,7 @@ def test_harvest_runs_the_declared_command_and_refuses_a_stale_expected_value(
         encoding="utf-8", newline="",
     )
 
-    with pytest.raises(pd.DelegateError, match="관측이 기대와 다릅니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="관측이 기대와 다릅니다") as caught:
         pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
 
     # 거부 사유가 관측값을 그대로 싣는다(라운드 파일에는 기입하지 않는다).
@@ -1653,7 +1655,7 @@ def test_pm_owned_absolute_audit_contract_skips_developer_target_and_command(
     row = {
         "id": "F-003", "machine_verifiable": False, "command": "",
         "expected": "legacy resolution 합계 0과 current-truth 정렬을 PM이 기록한다",
-        "before": "", "reason": pd.PM_REVIEW_VERIFY_PM_OWNED_REASON,
+        "before": "", "reason": review_form.PM_REVIEW_VERIFY_PM_OWNED_REASON,
     }
     plan = _prepare_single_finding_fix(
         pd, pm_home, slot, tickets, ticket="T-7041", finding_id="F-003",
@@ -1807,7 +1809,7 @@ def test_contract_naming_no_repo_path_at_all_is_refused(pd, rounds_env):
 
 def test_architect_test_target_still_requires_a_tests_path(pd):
     """reviewer fix 축의 완화가 architect 축까지 풀지 않는다."""
-    with pytest.raises(pd.DelegateError, match="repo-relative 테스트 대상"):
+    with pytest.raises(delegate_errors.DelegateError, match="repo-relative 테스트 대상"):
         pd._contract_test_targets(
             _NO_TEST_TARGET_PROSE, "architect 필수 테스트 AT-001.target",
         )
@@ -1816,16 +1818,16 @@ def test_architect_test_target_still_requires_a_tests_path(pd):
     ) == ()
 
     payload = json.dumps({
-        "version": pd.ARCHITECT_TEST_VERSION,
+        "version": review_form.ARCHITECT_TEST_VERSION,
         "tests": [{
             "id": "AT-001", "target": _NO_TEST_TARGET_PROSE,
             "command": python_argv_command("--version"), "expected": "Python",
             "negative": "계약 대상 누락을 거부",
         }],
     }, ensure_ascii=False)
-    with pytest.raises(pd.DelegateError, match="repo-relative 테스트 대상"):
+    with pytest.raises(delegate_errors.DelegateError, match="repo-relative 테스트 대상"):
         pd.parse_architect_tests(
-            f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
+            f"```{review_form.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
         )
 
 
@@ -1878,7 +1880,7 @@ def test_harvest_refuses_a_verify_command_outside_the_safety_boundary(pd, rounds
         encoding="utf-8", newline="",
     )
 
-    with pytest.raises(pd.DelegateError, match="금지 토큰"):
+    with pytest.raises(delegate_errors.DelegateError, match="금지 토큰"):
         pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
 
     assert third.run_dir.exists()
@@ -1903,7 +1905,7 @@ def test_harvest_of_a_round_without_verify_rows_is_unchanged(pd, rounds_env):
     first = pd.prepare_ticket_copy(
         ticket="T-7040", role="developer", cwd=slot, pm_home=pm_home,
     )
-    assert pd.PM_REVIEW_VERIFY_BLOCK not in first.path.read_text(encoding="utf-8")
+    assert review_form.PM_REVIEW_VERIFY_BLOCK not in first.path.read_text(encoding="utf-8")
     first.path.write_text(
         first.path.read_text(encoding="utf-8") + "\n## 메모\n- 실산출\n",
         encoding="utf-8", newline="",
@@ -1954,7 +1956,7 @@ def test_run_dir_path_has_no_role_segment_and_fits_budget(pd):
     assert len(text) <= 120
     # 이전 레이아웃(`<ticket>/<role>/<run>/ticket-<ticket>.md`)보다 짧다.
     legacy = (
-        pd.TICKET_COPY_REL_ROOT / "T-2001" / "code-reviewer" / ("a" * 32)
+        delegate_ledger.TICKET_COPY_REL_ROOT / "T-2001" / "code-reviewer" / ("a" * 32)
         / "ticket-T-2001.md"
     ).as_posix()
     assert len(text) < len(legacy)
@@ -1962,11 +1964,11 @@ def test_run_dir_path_has_no_role_segment_and_fits_budget(pd):
 
 def _round_write_scope_of(pd, round_plan):
     """그 라운드 실행이 여는 쓰기 자리 — 엔진 seam 을 그대로 쓴다(좌표 재조립 금지)."""
-    return pd._round_write_scope(round_plan, pd.INTERNAL_REVIEW_ROLE)
+    return pd._round_write_scope(round_plan, review_form.INTERNAL_REVIEW_ROLE)
 
 
 def _plan_for(pd, tmp_path: Path, ticket: str, run_hex: str):
-    run_dir = tmp_path / "worktree" / pd.TICKET_COPY_REL_ROOT / ticket / run_hex
+    run_dir = tmp_path / "worktree" / delegate_ledger.TICKET_COPY_REL_ROOT / ticket / run_hex
     run_dir.mkdir(parents=True)
     copy = run_dir / "01-code-reviewer.md"
     copy.write_text("## 리뷰 (code-reviewer · 2026-08-18)\n", encoding="utf-8", newline="\n")
@@ -2036,15 +2038,15 @@ def test_a_plan_without_the_run_dir_coordinate_is_loud(pd, tmp_path):
     """좌표 없는 계획으로 리뷰 실행에 들어가면 쓰기 자리를 조용히 좁히지 않고 멈춘다."""
     plan = pd.TicketCopyPlan(
         tmp_path / "slot" / "01-code-reviewer.md", tmp_path / "slot", "T-7103",
-        pd.INTERNAL_REVIEW_ROLE, 1, tmp_path / "board" / "01-code-reviewer.md",
+        review_form.INTERNAL_REVIEW_ROLE, 1, tmp_path / "board" / "01-code-reviewer.md",
         "d" * 32, "F-001",
     )
 
-    with pytest.raises(pd.DelegateError, match="묶음 run-dir 좌표"):
-        pd._round_write_scope(plan, pd.INTERNAL_REVIEW_ROLE)
+    with pytest.raises(delegate_errors.DelegateError, match="묶음 run-dir 좌표"):
+        pd._round_write_scope(plan, review_form.INTERNAL_REVIEW_ROLE)
     # 라운드 준비가 없거나 리뷰 실행이 아니면 열 자리 자체가 없다(종전 형상).
     assert pd._round_write_scope(plan, "developer") is None
-    assert pd._round_write_scope(None, pd.INTERNAL_REVIEW_ROLE) is None
+    assert pd._round_write_scope(None, review_form.INTERNAL_REVIEW_ROLE) is None
 
 
 @pytest.mark.parametrize("harness,model", [("claude", "sonnet"), ("opencode", "prov/m")])
@@ -2104,9 +2106,9 @@ def test_removed_cli_surface_is_gone(pd):
 
 
 def test_ledger_relocated_to_delegate_rounds(pd, tmp_path):
-    assert pd.DELEGATE_ROUNDS_LEDGER_REL_PATH.name == "delegate-rounds.jsonl"
-    assert pd._delegate_rounds_ledger_path(tmp_path) == (
-        tmp_path.resolve() / pd.DELEGATE_ROUNDS_LEDGER_REL_PATH
+    assert delegate_ledger.DELEGATE_ROUNDS_LEDGER_REL_PATH.name == "delegate-rounds.jsonl"
+    assert delegate_ledger._delegate_rounds_ledger_path(tmp_path) == (
+        tmp_path.resolve() / delegate_ledger.DELEGATE_ROUNDS_LEDGER_REL_PATH
     )
 
 
@@ -2125,9 +2127,8 @@ def test_load_board_is_cached_across_calls_for_ledger_row_validation(pd):
 
 def test_role_sets_match_the_rounds_seam(pd):
     """역할 집합의 단일 진실은 seam 이다 — 라벨 사본은 두지 않는다([[ADR-0090]] R4 에서 삭제)."""
-    rounds_module = pd._load_ticket_rounds()
     assert not hasattr(pd, "EXTERNAL_REVIEW_SECTION_LABEL")
-    assert set(pd.TICKET_COPY_ROLES) == set(rounds_module.ROLES)
+    assert set(delegate_ledger.TICKET_COPY_ROLES) == set(round_rules.ROLES)
 
 
 # ── 거부된 준비는 board 를 건드리지 않는다 ([[T-0750]] 리뷰 F-001) ─────────
@@ -2148,7 +2149,7 @@ def test_ignore_rejection_leaves_no_board_round_or_ledger_row(pd, rounds_env):
     _write_spec(tickets, "T-7200")
     assert _git(slot, "rm", "-q", "--cached", ".project_manager/.gitignore").returncode == 0
 
-    with pytest.raises(pd.DelegateError, match="untracked"):
+    with pytest.raises(delegate_errors.DelegateError, match="untracked"):
         pd.prepare_ticket_copy(
             ticket="T-7200", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -2169,7 +2170,7 @@ def test_pre_reservation_rejections_have_no_board_side_effect(
         pd, rounds_env, ticket, role, pattern):
     pm_home, slot, tickets, sync_log = rounds_env
     _write_spec(tickets, "T-7201")
-    with pytest.raises(pd.DelegateError, match=pattern):
+    with pytest.raises(delegate_errors.DelegateError, match=pattern):
         pd.prepare_ticket_copy(
             ticket=ticket, role=role, cwd=slot, pm_home=pm_home,
         )
@@ -2184,7 +2185,7 @@ def test_done_ticket_rejection_has_no_board_side_effect(pd, rounds_env):
     (done / "T-7202-rounds.md").write_text(
         _spec_text("T-7202", status="done"), encoding="utf-8", newline="\n",
     )
-    with pytest.raises(pd.DelegateError, match="open/claimed 또는 draft×architect"):
+    with pytest.raises(delegate_errors.DelegateError, match="open/claimed 또는 draft×architect"):
         pd.prepare_ticket_copy(
             ticket="T-7202", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -2196,7 +2197,7 @@ def test_done_ticket_rejection_has_no_board_side_effect(pd, rounds_env):
 
 def _reviewer_output(pd, seed_text: str, finding_id: str) -> str:
     block = json.dumps({
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [{
             "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[ADR-0090]] §경계", "evidence": "probe rc=1",
@@ -2208,7 +2209,7 @@ def _reviewer_output(pd, seed_text: str, finding_id: str) -> str:
     return (
         seed_text.partition("\n")[0]
         + f"\n\n## must-fix\n- {finding_id}\n\n## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
-        + f"```{pd.PM_REVIEW_BLOCK}\n{block}\n```\n"
+        + f"```{review_form.PM_REVIEW_BLOCK}\n{block}\n```\n"
     )
 
 
@@ -2265,7 +2266,7 @@ def test_slot_write_failure_after_the_reservation_names_the_leftover_round(
         raise OSError("디스크 가득")
 
     monkeypatch.setattr(pd, "_write_exclusive_file", _boom)
-    with pytest.raises(pd.DelegateError) as caught:
+    with pytest.raises(delegate_errors.DelegateError) as caught:
         pd.prepare_ticket_copy(
             ticket="T-7216", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -2333,7 +2334,7 @@ def test_pending_previous_round_is_not_a_prefill_source(pd, rounds_env, capsys):
     warning = capsys.readouterr().err
     assert "강등" not in warning
     block_text = second.path.read_text(encoding="utf-8").partition(
-        f"```{pd.PM_REVIEW_BLOCK}"
+        f"```{review_form.PM_REVIEW_BLOCK}"
     )[2].replace(" ", "")
     assert '"confirmations":[{"id":"F-NNN"' in block_text
 
@@ -2374,7 +2375,7 @@ def test_harvest_refuses_a_row_whose_binding_does_not_match_the_path(pd, rounds_
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
+    with pytest.raises(delegate_errors.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
     assert plan.run_dir.exists() and plan.path.exists()
     assert sync_log == before_sync
@@ -2397,7 +2398,7 @@ def test_harvest_refuses_a_row_pointing_outside_or_above_the_run_dir(pd, rounds_
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
+    with pytest.raises(delegate_errors.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
         pd.harvest_ticket_copy(copy_path=above, cwd=slot, pm_home=pm_home)
     # 형제 run 과 상위 디렉터리 어느 쪽도 사라지지 않는다.
     assert sibling.run_dir.exists() and plan.run_dir.exists() and above.exists()
@@ -2424,7 +2425,7 @@ def test_harvest_refuses_when_the_authorising_row_is_value_corrupt(pd, rounds_en
 
     before_sync = list(sync_log)
 
-    with pytest.raises(pd.DelegateError, match="준비 기록 없음"):
+    with pytest.raises(delegate_errors.DelegateError, match="준비 기록 없음"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
     assert plan.run_dir.exists() and plan.board_path.exists()
     assert sync_log == before_sync
@@ -2471,8 +2472,8 @@ def test_ledger_is_owner_only(pd, rounds_env):
 def _finding_values(pd, finding_id: str) -> dict:
     return {
         "id": finding_id,
-        "class": pd.PM_REVIEW_CLASSES[0],
-        "severity": pd.PM_REVIEW_SEVERITIES[0],
+        "class": review_form.PM_REVIEW_CLASSES[0],
+        "severity": review_form.PM_REVIEW_SEVERITIES[0],
         "authority": "[[ADR-0090]] §경계",
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
@@ -2484,7 +2485,7 @@ def _finding_values(pd, finding_id: str) -> dict:
 def _confirmation_values(pd, finding_id: str) -> dict:
     return {
         "id": finding_id,
-        "status": pd.PM_REVIEW_CONFIRMATION_STATES[0],
+        "status": review_form.PM_REVIEW_CONFIRMATION_STATES[0],
         "evidence": f"{finding_id} 회귀 rc=0",
     }
 
@@ -2492,12 +2493,12 @@ def _confirmation_values(pd, finding_id: str) -> dict:
 def _review_body(pd, role: str, finding_ids, confirmation_ids=()) -> str:
     """리뷰 라운드 본문 — 블록 key·fence 는 엔진 골격 렌더가 소유하고 값만 채운다."""
     confirmation_ids = list(confirmation_ids)
-    skeleton = pd.render_pm_review_block_skeleton(role, confirmation_ids)
-    payload = pd._pm_review_json_blocks(skeleton)[0].value
+    skeleton = review_form.render_pm_review_block_skeleton(role, confirmation_ids)
+    payload = review_form._pm_review_json_blocks(skeleton)[0].value
     finding_shape = payload["findings"][0]
     confirmation_shape = (
         payload["confirmations"][0] if payload["confirmations"]
-        else {key: "" for key in pd.PM_REVIEW_CONFIRMATION_KEYS}
+        else {key: "" for key in review_form.PM_REVIEW_CONFIRMATION_KEYS}
     )
     payload["findings"] = [
         dict(finding_shape, **_finding_values(pd, finding_id))
@@ -2513,7 +2514,7 @@ def _review_body(pd, role: str, finding_ids, confirmation_ids=()) -> str:
         f"## must-fix\n{listed}\n\n"
         f"## 판정\n판정: {verdict} · finding {len(finding_ids)}건"
         f"(must-fix {len(finding_ids)}건)\n\n"
-        + pd._pm_review_block_text(payload)
+        + review_form._pm_review_block_text(payload)
     )
 
 
@@ -2542,7 +2543,7 @@ def _land_round_bypassing_the_gate(
     plan = pd.prepare_ticket_copy(
         ticket=ticket, role=role, cwd=slot, pm_home=pm_home,
     )
-    pd._load_ticket_rounds().replace_round(
+    round_store.replace_round(
         plan.board_path,
         plan.board_path.read_text(encoding="utf-8").partition("\n")[0] + "\n\n" + body,
     )
@@ -2553,32 +2554,31 @@ def _template_ids(pd, rendered: str) -> list[str]:
     """골격이 프리필한 판정 대상 ID — 블록은 엔진 파서로 읽는다."""
     return [
         row["id"]
-        for row in pd._pm_review_json_blocks(rendered)[0].value["dispositions"]
+        for row in review_form._pm_review_json_blocks(rendered)[0].value["dispositions"]
     ]
 
 
 def _fill_disposition_template(pd, rendered: str) -> str:
     """골격을 **그대로** 채운다 — key·순서·fence 는 엔진 렌더 그대로 두고 값만 채운다."""
-    payload = pd._pm_review_json_blocks(rendered)[0].value
-    assert "accepted" in pd.PM_REVIEW_DECISIONS
+    payload = review_form._pm_review_json_blocks(rendered)[0].value
+    assert "accepted" in review_form.PM_REVIEW_DECISIONS
     for row in payload["dispositions"]:
         assert row["decision"] == "<accepted|rejected>"
         row["decision"] = "accepted"
         row["reason"] = f"PM {row['id']} 수락"
         row["scope"] = f"{row['id']} 허용 범위"
     return (
-        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
 
 
 def _spec_and_rounds(pd, pm_home: Path, tickets: Path, ticket: str):
-    rounds_module = pd._load_ticket_rounds()
     spec_path = tickets / f"{ticket}-rounds.md"
     spec_text = spec_path.read_text(encoding="utf-8")
     tickets_root = pm_home / ".project_manager" / "wiki" / "tickets"
-    return spec_path, spec_text, rounds_module.load_rounds(
+    return spec_path, spec_text, round_seed.load_rounds(
         tickets_root, ticket, ticket_text=spec_text,
     )
 
@@ -2690,8 +2690,8 @@ def test_the_two_refused_shapes_map_to_distinct_delta_branches(pd, rounds_env):
         _review_body(pd, "code-reviewer", ["F-007"], ["F-007"]),
     )
     _spec, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7232")
-    with pytest.raises(pd.PMReviewError) as redeclared:
-        pd.parse_pm_review_delta(spec_text, rounds)
+    with pytest.raises(review_form.PMReviewError) as redeclared:
+        review_state.parse_pm_review_delta(spec_text, rounds)
     assert "티켓 안 finding ID 재선언: F-007" in str(redeclared.value)
     assert first.board_path.exists()
 
@@ -2701,8 +2701,8 @@ def test_the_two_refused_shapes_map_to_distinct_delta_branches(pd, rounds_env):
         _review_body(pd, "code-reviewer", ["F-001"], ["F-001"]),
     )
     _spec2, spec_text2, rounds2 = _spec_and_rounds(pd, pm_home, tickets, "T-7233")
-    with pytest.raises(pd.PMReviewError) as self_confirmed:
-        pd.parse_pm_review_delta(spec_text2, rounds2)
+    with pytest.raises(review_form.PMReviewError) as self_confirmed:
+        review_state.parse_pm_review_delta(spec_text2, rounds2)
     assert "confirmation이 선행 finding ID를 참조하지 않음: F-001" in str(
         self_confirmed.value
     )
@@ -2777,7 +2777,6 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
         "additional_reviewer.py", verifier=pd._verify_engine_rev,
     )
     board = _fixture_board(pd, pm_home, sync_log)
-    rounds_module = pd._load_ticket_rounds()
 
     _write_spec(tickets, "T-7235", rounds=("code-reviewer", "code-reviewer"))
     _land_review_round(
@@ -2788,12 +2787,12 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     )
     # 추가 리뷰어 채널의 선행 라운드도 같은 board 트리에 세운다(접두만 다른 같은 형상).
     # 그 채널은 슬롯 왕복이 아니라 additional_reviewer 엔진이 직접 예약한다.
-    external_first = rounds_module.reserve_round(
+    external_first = round_store.reserve_round(
         _rounds_dir(pm_home, "T-7235").parent.parent, "T-7235",
-        pd.ADDITIONAL_REVIEWER_ROLE,
-        content=rounds_module.render_round_header(
-            pd.ADDITIONAL_REVIEWER_ROLE, today="2026-08-22",
-        ) + "\n\n" + _review_body(pd, pd.ADDITIONAL_REVIEWER_ROLE, ["X-007"]),
+        review_form.ADDITIONAL_REVIEWER_ROLE,
+        content=round_rules.render_round_header(
+            review_form.ADDITIONAL_REVIEWER_ROLE, today="2026-08-22",
+        ) + "\n\n" + _review_body(pd, review_form.ADDITIONAL_REVIEWER_ROLE, ["X-007"]),
         lock=board.board_lock(),
     )
     assert external_first.exists()
@@ -2802,13 +2801,13 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     _write_round_output(
         internal_round.path, _review_body(pd, "code-reviewer", ["F-007"], ["F-007"]),
     )
-    external_reply = _review_body(pd, pd.ADDITIONAL_REVIEWER_ROLE, ["X-007"], ["X-007"])
+    external_reply = _review_body(pd, review_form.ADDITIONAL_REVIEWER_ROLE, ["X-007"], ["X-007"])
     capsys.readouterr()
 
     internal_rc = _harvest_rc(pd, monkeypatch, pm_home, slot, internal_round.path)
     internal_error = capsys.readouterr().err
     external_problem = external._reserve_additional_reviewer_round(
-        "T-7235", external_reply, delegate=pd, rounds_module=rounds_module, board=board,
+        "T-7235", external_reply, delegate=pd, board=board,
         board_home=pm_paths.home_at(pm_home.resolve()),
     )
 
@@ -2816,7 +2815,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     _spec, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7235")
     internal_problem = pd.review_harvest_problem(
         internal_round.path.read_text(encoding="utf-8"),
-        ticket_text=spec_text, rounds=rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE,
+        ticket_text=spec_text, rounds=rounds, reviewer_role=review_form.INTERNAL_REVIEW_ROLE,
     )
     assert external_problem is not None and internal_problem is not None
     assert internal_problem.replace("F-007", "<ID>") == external_problem.replace(
@@ -2827,7 +2826,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     assert internal_problem in internal_error
     assert internal_round.board_path.read_bytes() == reserved
     assert internal_round.run_dir.exists()
-    assert _round_names(pm_home, "T-7235", pd.ADDITIONAL_REVIEWER_ROLE) == [
+    assert _round_names(pm_home, "T-7235", review_form.ADDITIONAL_REVIEWER_ROLE) == [
         external_first.name,
     ]
 
@@ -2862,7 +2861,7 @@ def test_disposition_template_skeleton_is_accepted_by_review_delta(pd, rounds_en
     )
     _path, filled_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7236")
 
-    delta = pd.parse_pm_review_delta(filled_text, rounds)
+    delta = review_state.parse_pm_review_delta(filled_text, rounds)
 
     assert [finding.id for finding, _row in delta.accepted] == prefilled
 
@@ -2887,7 +2886,7 @@ def test_disposition_template_emits_no_skeleton_for_a_redeclaring_round(
     _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7237")
     capsys.readouterr()
 
-    with pytest.raises(pd.PMReviewError) as refused:
+    with pytest.raises(review_form.PMReviewError) as refused:
         pd.render_pm_review_disposition_template(spec_text, rounds, 2)
 
     assert refused.value.code == "malformed"
@@ -2896,8 +2895,8 @@ def test_disposition_template_emits_no_skeleton_for_a_redeclaring_round(
     assert "F-002" not in str(refused.value)
     assert "제외한 finding" not in capsys.readouterr().err
     # 판정 표면도 같은 라운드를 막는다 — template 과 delta 가 같은 상태에 같은 판정을 낸다.
-    with pytest.raises(pd.PMReviewError) as surface:
-        pd.parse_pm_review_delta(spec_text, rounds)
+    with pytest.raises(review_form.PMReviewError) as surface:
+        review_state.parse_pm_review_delta(spec_text, rounds)
     assert surface.value.code == "malformed"
     assert "티켓 안 finding ID 재선언: F-001" in str(surface.value)
 
@@ -2918,7 +2917,7 @@ def test_disposition_template_emits_no_skeleton_when_every_finding_is_refused(
     _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7238")
     capsys.readouterr()
 
-    with pytest.raises(pd.PMReviewError) as refused:
+    with pytest.raises(review_form.PMReviewError) as refused:
         pd.render_pm_review_disposition_template(spec_text, rounds, 2)
 
     assert refused.value.code == "malformed"
@@ -2939,15 +2938,15 @@ def test_disposition_template_emits_no_skeleton_for_a_self_confirming_round(
     _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7239")
     capsys.readouterr()
 
-    with pytest.raises(pd.PMReviewError) as refused:
+    with pytest.raises(review_form.PMReviewError) as refused:
         pd.render_pm_review_disposition_template(spec_text, rounds, 1)
 
     assert refused.value.code == "malformed"
     assert "판정 골격을 내지 않습니다: F-001(같은 라운드 자기-확인)" in str(refused.value)
     assert "F-002" not in str(refused.value)
     assert "제외한 finding" not in capsys.readouterr().err
-    with pytest.raises(pd.PMReviewError) as surface:
-        pd.parse_pm_review_delta(spec_text, rounds)
+    with pytest.raises(review_form.PMReviewError) as surface:
+        review_state.parse_pm_review_delta(spec_text, rounds)
     assert surface.value.code == "malformed"
     assert "confirmation이 선행 finding ID를 참조하지 않음: F-001" in str(surface.value)
 
@@ -2983,7 +2982,7 @@ def test_clean_confirmation_round_skeleton_is_still_accepted_by_review_delta(
     )
     _path, filled_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7240")
 
-    delta = pd.parse_pm_review_delta(filled_text, rounds)
+    delta = review_state.parse_pm_review_delta(filled_text, rounds)
 
     assert [finding.id for finding, _row in delta.accepted] == ["F-002"]
 
@@ -3014,10 +3013,10 @@ def test_pre_change_confirmation_seed_stays_pending_through_an_unchanged_harvest
     )
     seeded = plan.board_path.read_text(encoding="utf-8")
     legacy = seeded.replace(
-        pd.CONFIRM_ROUND_SCOPE_RULE, pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
+        review_form.CONFIRM_ROUND_SCOPE_RULE, review_form.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
     )
-    assert legacy != seeded and pd.CONFIRM_ROUND_SCOPE_RULE not in legacy
-    pd._load_ticket_rounds().replace_round(plan.board_path, legacy)
+    assert legacy != seeded and review_form.CONFIRM_ROUND_SCOPE_RULE not in legacy
+    round_store.replace_round(plan.board_path, legacy)
     plan.path.write_text(legacy, encoding="utf-8", newline="")
     capsys.readouterr()
 
@@ -3030,7 +3029,7 @@ def test_pre_change_confirmation_seed_stays_pending_through_an_unchanged_harvest
     landed = next(item for item in rounds if item.ordinal == plan.ordinal)
     assert landed.pending is True
 
-    delta = pd.parse_pm_review_delta(filled_text, rounds)
+    delta = review_state.parse_pm_review_delta(filled_text, rounds)
 
     assert [finding.id for finding, _row in delta.accepted] == ["F-001"]
 
@@ -3140,7 +3139,7 @@ def test_researcher_round_prepare_is_refused(pd, rounds_env):
     """researcher 는 묶음 수열의 단계가 아니라 티켓 라운드를 준비하지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-8005")
-    with pytest.raises(pd.DelegateError):
+    with pytest.raises(delegate_errors.DelegateError):
         pd.prepare_ticket_copy(
             ticket="T-8005", role="researcher", cwd=slot, pm_home=pm_home,
         )
@@ -3213,8 +3212,7 @@ def test_concurrent_prepares_at_the_budget_boundary_admit_exactly_one(
     assert len(results) == 1, f"동시 성공 {len(results)}건(정확히 1이어야 함) — errors={errors}"
     assert len(errors) == 1
 
-    rounds_module = pd._load_ticket_rounds()
-    final = rounds_module.load_rounds(pm_home / ".project_manager" / "wiki" / "tickets", "T-9001")
+    final = round_seed.load_rounds(pm_home / ".project_manager" / "wiki" / "tickets", "T-9001")
     assert sum(1 for item in final if item.role == "developer") == declared
 
 
@@ -3447,7 +3445,7 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
     assert len({row["run_id"] for row in all_round_rows}) == 2
 
     # 예약의 정체성은 행이 아니라 copy 로 접은 최신 스냅샷이다.
-    round_rows = pd.ticket_copy_records(home, ticket=ticket)
+    round_rows = delegate_ledger.ticket_copy_records(home, ticket=ticket)
     assert len(round_rows) == 2
     assert {row["ordinal"] for row in round_rows} == {1, 2}
     assert round_rows[0]["run_id"] != round_rows[1]["run_id"]
@@ -3490,7 +3488,7 @@ def test_propagated_exception_before_handoff_refunds_the_reserved_ticket_copy(
     _write_spec(tickets, ticket)
 
     def _raise():
-        raise pd.DelegateError("probe: adapter directories 조회 실패")
+        raise delegate_errors.DelegateError("probe: adapter directories 조회 실패")
 
     monkeypatch.setattr(pd, "_resolved_adapter_directories", _raise)
 
@@ -3503,7 +3501,7 @@ def test_propagated_exception_before_handoff_refunds_the_reserved_ticket_copy(
 
     prompt = home / "task.md"
     prompt.write_text("문서를 정리하라", encoding="utf-8")
-    with pytest.raises(pd.DelegateError, match="probe"):
+    with pytest.raises(delegate_errors.DelegateError, match="probe"):
         pd.main(
             ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
              "--ticket", ticket, "--output-dir", str(home / "raw")],
@@ -3880,7 +3878,7 @@ def test_board_relative_path_failure_after_reserve_preserves_original_exception(
     _write_spec(tickets, "T-9306")
 
     def _raise(*_a, **_k):
-        raise pd.DelegateError("probe: board 라운드 경로가 PM 홈 밖으로 해소됨")
+        raise delegate_errors.DelegateError("probe: board 라운드 경로가 PM 홈 밖으로 해소됨")
 
     monkeypatch.setattr(pd, "_board_relative_path", _raise)
 
@@ -3899,7 +3897,7 @@ def test_board_relative_path_failure_after_reserve_preserves_original_exception(
     before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
     assert before == (0, 0, 0)
 
-    with pytest.raises(pd.DelegateError, match="probe: board 라운드 경로"):
+    with pytest.raises(delegate_errors.DelegateError, match="probe: board 라운드 경로"):
         pd.prepare_ticket_copy(
             ticket="T-9306", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -3928,17 +3926,16 @@ def test_parse_round_filename_returning_none_does_not_crash_prepare(
     pm_home, slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-9307")
 
-    rounds_module = pd._load_ticket_rounds()
-    real_parse = rounds_module.parse_round_filename
+    real_parse = round_rules.parse_round_filename
 
     def _parse_none_for_target(name):
         if name == "01-developer.md":
             return None
         return real_parse(name)
 
-    monkeypatch.setattr(rounds_module, "parse_round_filename", _parse_none_for_target)
+    monkeypatch.setattr(round_rules, "parse_round_filename", _parse_none_for_target)
 
-    with pytest.raises(pd.DelegateError, match="순번 0") as excinfo:
+    with pytest.raises(delegate_errors.DelegateError, match="순번 0") as excinfo:
         pd.prepare_ticket_copy(
             ticket="T-9307", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4057,7 +4054,7 @@ def test_design_gate_rejects_the_abolished_exemption_value(pd, rounds_env):
     ticket = "T-8102"
     _write_design_spec(tickets, ticket, design="waived: 검증 스코프 밖")
 
-    with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
+    with pytest.raises(delegate_errors.DelegateError, match="design 값 인식 불가"):
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4076,7 +4073,7 @@ def test_design_gate_rejects_a_seed_only_architect_round_then_passes_after_harve
         ticket=ticket, role="architect", cwd=slot, pm_home=pm_home,
     )
 
-    with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="developer 라운드 준비 거부") as caught:
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4119,7 +4116,7 @@ def test_design_gate_rejects_when_no_evidence_is_on_record(
     copy_root = _copy_root(pd, slot, ticket)
     slot_before = set(copy_root.iterdir()) if copy_root.exists() else set()
 
-    with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="developer 라운드 준비 거부") as caught:
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4149,9 +4146,9 @@ def test_design_gate_rejects_the_abolished_exemption_value_in_both_shapes(
     pm_home, slot, tickets, _sync = rounds_env
     _write_design_spec(tickets, ticket, design=design)
     board = pd._load_board()
-    assert board._design_state(design) == board.DESIGN_INVALID
+    assert design_rules._design_state(design) == design_rules.DESIGN_INVALID
 
-    with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
+    with pytest.raises(delegate_errors.DelegateError, match="design 값 인식 불가"):
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4167,7 +4164,7 @@ def test_design_gate_rejects_unparseable_design_scalar_without_crashing(pd, roun
         raw_design_line="design: waived: 인용 없는 콜론 스칼라\n",
     )
 
-    with pytest.raises(pd.DelegateError, match="명세 파싱 실패") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="명세 파싱 실패") as caught:
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4190,7 +4187,7 @@ def test_design_gate_rejects_malformed_frontmatter_even_with_a_harvested_archite
         raw_design_line="design: waived: 인용 없는 콜론 스칼라\n",
     )
 
-    with pytest.raises(pd.DelegateError, match="명세 파싱 실패") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="명세 파싱 실패") as caught:
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4210,7 +4207,7 @@ def test_design_gate_rejects_invalid_design_even_with_a_harvested_architect_roun
     _write_design_spec(
         tickets, ticket, rounds=("architect", "developer"), design="waived")
 
-    with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
+    with pytest.raises(delegate_errors.DelegateError, match="design 값 인식 불가"):
         pd.prepare_ticket_copy(
             ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4241,7 +4238,7 @@ def test_all_three_entry_points_report_the_identical_rejection_reason(
     home, tickets = refund_env
     _write_design_spec(tickets, "T-8140", design="n/a")
 
-    with pytest.raises(pd.DelegateError) as caught1:
+    with pytest.raises(delegate_errors.DelegateError) as caught1:
         pd.prepare_ticket_copy(
             ticket="T-8140", role="developer", cwd=home, pm_home=home,
         )
@@ -4280,15 +4277,9 @@ def test_disabling_the_design_gate_turns_every_rejection_shape_green(
     entry 3(별도 board 사본)는 그 사본의 delegate 체인에서 **같은 자리**를 무력화한다."""
     pm_home, slot, tickets, sync_log = rounds_env
     monkeypatch.setattr(
-        pd._load_board(), "design_evidence_problem", lambda *a, **k: None,
+        design_rules, "design_evidence_problem", lambda *a, **k: None,
     )
     board_fixture = _fixture_board(pd, pm_home, sync_log)
-    board_via_delegate = (
-        board_fixture._load_ticket_rounds()._load_pm_delegate()._load_board()
-    )
-    monkeypatch.setattr(
-        board_via_delegate, "design_evidence_problem", lambda *a, **k: None,
-    )
 
     _write_design_spec(tickets, "T-8130", design="n/a")
     plan = pd.prepare_ticket_copy(
@@ -4309,15 +4300,11 @@ def test_forcing_the_design_gate_turns_every_pass_shape_red(pd, rounds_env, monk
     def _always_block(*_args, **_kwargs):
         return "test: 강제 거부"
 
-    monkeypatch.setattr(pd._load_board(), "design_evidence_problem", _always_block)
+    monkeypatch.setattr(design_rules, "design_evidence_problem", _always_block)
     board_fixture = _fixture_board(pd, pm_home, sync_log)
-    board_via_delegate = (
-        board_fixture._load_ticket_rounds()._load_pm_delegate()._load_board()
-    )
-    monkeypatch.setattr(board_via_delegate, "design_evidence_problem", _always_block)
 
     _write_spec(tickets, "T-8132")
-    with pytest.raises(pd.DelegateError, match="강제 거부"):
+    with pytest.raises(delegate_errors.DelegateError, match="강제 거부"):
         pd.prepare_ticket_copy(
             ticket="T-8132", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -4797,7 +4784,7 @@ def test_developer_harvest_refuses_a_pool_operating_pm_home_as_cwd(pd, pool_env)
         _head_count(pm_home), plan.board_path.read_bytes(), _ledger_rows(pm_home),
     )
 
-    with pytest.raises(pd.DelegateError) as refused:
+    with pytest.raises(delegate_errors.DelegateError) as refused:
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=pm_home, pm_home=pm_home)
 
     # 사유(장부 루트)와 처방(그 풀의 코드 트리 절대경로)이 함께 나온다.
@@ -4809,7 +4796,7 @@ def test_developer_harvest_refuses_a_pool_operating_pm_home_as_cwd(pd, pool_env)
     assert plan.path.is_file() and plan.run_dir.is_dir()
     assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
     # 같은 회수를 다시 불러도 같은 거부다(자리가 닫히지 않았다).
-    with pytest.raises(pd.DelegateError) as again:
+    with pytest.raises(delegate_errors.DelegateError) as again:
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=pm_home, pm_home=pm_home)
     assert str(again.value) == str(refused.value)
 
@@ -4878,7 +4865,7 @@ def test_pool_operating_pm_home_refusal_names_a_prescription_when_no_slot_exists
         _head_count(pm_home), plan.board_path.read_bytes(), _ledger_rows(pm_home),
     )
 
-    with pytest.raises(pd.DelegateError) as refused:
+    with pytest.raises(delegate_errors.DelegateError) as refused:
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=pm_home, pm_home=pm_home)
 
     message = str(refused.value)
@@ -4903,8 +4890,8 @@ def test_developer_seed_states_the_two_line_regression_rule():
     운송 픽스처(`pd`)는 이 파서를 상수 기록으로 갈아 끼우므로 여기서는 원 모듈을 직접 쓴다.
     """
     pd = _load_pd()
-    body = pd._render_developer_round_seed_body([])
-    notice = f"<!-- {pd.DEVELOPER_REGRESSION_RULE} -->"
+    body = round_seed._render_developer_round_seed_body([])
+    notice = f"<!-- {round_seed.DEVELOPER_REGRESSION_RULE} -->"
     lines = body.splitlines()
     assert notice in lines, body
     assert lines[lines.index(pd._DEVELOPER_REGRESSION_HEADING) - 1] == notice
@@ -4922,5 +4909,5 @@ def test_developer_seed_states_the_two_line_regression_rule():
         f"{pd._DEVELOPER_REGRESSION_HEADING}\n{notice}\n",
     )
     assert inside != filled
-    with pytest.raises(pd.DelegateError, match="커맨드·결과 두 행"):
+    with pytest.raises(delegate_errors.DelegateError, match="커맨드·결과 두 행"):
         pd.parse_developer_regression_record(inside)

@@ -37,6 +37,9 @@ from _git_fixture import init_git_repo
 
 from conftest import anchor_board_module, bind_product_cluster
 from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.domain import round_rules
+from pm_engine.infra import round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -354,11 +357,10 @@ def test_pm_ticket_card_states_the_citation_syntax(anchored, tmp_path):
 def _seed_round(mod, tid: str, role: str, *, harvested: bool,
                 ticket_text: str = "") -> Path:
     """라운드 파일을 시드하고(엔진 골격) 필요하면 산출로 덮어쓴다."""
-    rounds = mod._load_ticket_rounds()
-    directory = rounds.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(mod._home()))
+    directory = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(mod._home()))
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / rounds.round_filename(1, role)
-    seed = rounds.render_round_seed(role, ticket_text or _body(), today="2026-01-01")
+    path = directory / round_rules.round_filename(1, role)
+    seed = round_seed.render_round_seed(role, ticket_text or _body(), today="2026-01-01")
     path.write_text(seed, encoding="utf-8")
     if harvested:
         header = seed.splitlines()[0]

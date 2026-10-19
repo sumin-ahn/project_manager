@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from _engine_tree import engine_python_files
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -112,7 +113,7 @@ def _wire_external(external, monkeypatch, engine: Path, target: Path,
     monkeypatch.setattr(external, "REPO", engine)
     monkeypatch.setattr(external, "local_config", lambda repo=None: dict(engine_conf))
     monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: engine,
+        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: engine,
     )
     monkeypatch.setattr(
         external, "_resolve_diff_root", lambda *args, **kwargs: target,

@@ -30,7 +30,7 @@ from pathlib import Path, PureWindowsPath
 import pytest
 from _pytest_summary import pytest_summary
 from pm_engine.domain import identity_args
-from pm_engine.infra import areas_store, conf_store, pm_paths
+from pm_engine.infra import areas_store, conf_store, pm_paths, raw_output
 from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1891,7 +1891,7 @@ def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=No
     `raw_ledger_file` 미지정이면 tmp 의 **없는** 경로를 준다 — [6b/7] 미마감 raw sweep 이
     실 PM 홈 장부를 읽지 않게 하는 격리다(sweep 자체 검증은 명시 주입 케이스가 한다).
     `peer_raw_ledger_files` 기본 `()` 도 같은 격리다 — 사본 장부 병기가 실 트리 탐색
-    (`pm_delegate._peer_engine_ledgers`)으로 새지 않게 한다.
+    (`raw_output._peer_engine_ledgers`)으로 새지 않게 한다.
     """
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
@@ -3371,21 +3371,11 @@ def test_peer_ledger_discovery_reuses_the_delegate_query_rule(hf, tmp_path, monk
     primary.parent.mkdir()
     primary.write_text("{}", encoding="utf-8")
     peer = tmp_path / "peer" / "raw_outputs.json"
-    stub = types.SimpleNamespace(
-        _peer_engine_ledgers=lambda: (primary.resolve(), peer))
-    monkeypatch.setattr(hf, "_load_pm_delegate", lambda: stub)
+    monkeypatch.setattr(
+        raw_output, "_peer_engine_ledgers", lambda home, override: (primary.resolve(), peer))
     handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), peer_raw_ledger_files=None)
 
     assert handoff._peer_raw_ledgers(primary) == (peer,)
-
-
-def test_peer_ledger_discovery_is_failsoft_without_the_delegate_engine(
-        hf, tmp_path, monkeypatch):
-    """pm_delegate 부재/로드 실패면 병기를 조용히 건너뛴다(핸드오프 불변)."""
-    monkeypatch.setattr(hf, "_load_pm_delegate", lambda: None)
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), peer_raw_ledger_files=None)
-
-    assert handoff._peer_raw_ledgers(tmp_path / "raw_outputs.json") == ()
 
 
 def test_handoff_checklist_includes_push_step_after_commit(hf, tmp_path, capsys):

@@ -23,6 +23,9 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.domain import delegate_errors, round_rules
+from pm_engine.infra import delegate_ledger, round_store
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -236,15 +239,14 @@ def test_cluster_prepare_lays_one_run_dir_with_a_seat_per_ticket(pd, cluster_env
 
 
 def _t0928_prior_roles(pd, pm_home, tickets, members, role):
-    module = pd._load_ticket_rounds()
     for ticket in members:
         spec = (tickets / f"{ticket}-cluster.md").read_text(encoding="utf-8")
         for previous_role in ("architect", "developer")[:
                 (0 if role == "architect" else 1 if role == "developer" else 2)]:
-            previous = module.load_rounds(tickets.parent, ticket, ticket_text=spec)
-            seed = pd._ticket_round_seed(module, previous_role, spec, None,
+            previous = round_seed.load_rounds(tickets.parent, ticket, ticket_text=spec)
+            seed = pd._ticket_round_seed(previous_role, spec, None,
                                         today="2026-10-02", rounds=previous)
-            path = module.reserve_round(tickets.parent, ticket, previous_role, content=seed,
+            path = round_store.reserve_round(tickets.parent, ticket, previous_role, content=seed,
                                         lock=_fixture_board(pd, pm_home).board_lock())
             _fill(path, "## 실측\n- 이전 단계 완료")
 
@@ -391,9 +393,9 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
     monkeypatch.setattr(board, "_rounds_mutation_sync_paths", sync)
     if failure == "before-reserve":
         monkeypatch.setattr(pd, "_ticket_round_seed",
-                            lambda *a, **k: (_ for _ in ()).throw(pd.DelegateError("예약 전 오류")))
+                            lambda *a, **k: (_ for _ in ()).throw(delegate_errors.DelegateError("예약 전 오류")))
     elif failure == "after-reserve":
-        monkeypatch.setattr(pd._load_ticket_rounds(), "parse_round_filename",
+        monkeypatch.setattr(round_rules, "parse_round_filename",
                             lambda *a: (_ for _ in ()).throw(OSError("예약 후 오류")))
     elif failure == "laydown":
         original = pd._write_exclusive_file
@@ -411,15 +413,15 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
         def append(home, row):
             count.append(row)
             if len(count) == (1 if failure == "ledger-first" else 2):
-                raise pd.DelegateError("장부 오류")
+                raise delegate_errors.DelegateError("장부 오류")
             return original(home, row)
 
         monkeypatch.setattr(pd, "_append_delegate_rounds_ledger", append)
-    with pytest.raises((pd.DelegateError, OSError)) as caught:
+    with pytest.raises((delegate_errors.DelegateError, OSError)) as caught:
         pd.prepare_cluster_copy(cluster="C-failure", role="architect",
                                 cwd=slot, pm_home=pm_home)
     seeds = list((tickets.parent / "rounds").glob("*/*.md"))
-    run_root = slot / pd.TICKET_COPY_REL_ROOT / "C-failure"
+    run_root = slot / delegate_ledger.TICKET_COPY_REL_ROOT / "C-failure"
     if failure == "before-reserve":
         assert seeds == []
         assert not list(run_root.glob("*"))
@@ -444,14 +446,14 @@ def test_cluster_prepare_reserves_nothing_when_one_member_fails_the_judgment(
     (tickets / "T-6004-cluster.md").rename(blocked / "T-6004-cluster.md")
     _write_cluster(pm_home, "C-part", ["T-6003", "T-6004"])
 
-    with pytest.raises(pd.DelegateError, match="open/claimed 또는 draft×architect만 허용"):
+    with pytest.raises(delegate_errors.DelegateError, match="open/claimed 또는 draft×architect만 허용"):
         pd.prepare_cluster_copy(
             cluster="C-part", role="architect", cwd=slot, pm_home=pm_home,
         )
 
     assert not _rounds_dir(pm_home, "T-6003").exists()
     assert _ledger_rows(pm_home) == []
-    assert not (slot / pd.TICKET_COPY_REL_ROOT / "C-part").exists()
+    assert not (slot / delegate_ledger.TICKET_COPY_REL_ROOT / "C-part").exists()
 
 
 def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env):
@@ -470,7 +472,7 @@ def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env)
 
     assert plan.cluster == "C-T-6005"
     assert plan.run_dir == (
-        slot / pd.TICKET_COPY_REL_ROOT / "C-T-6005" / plan.run_id / "T-6005")
+        slot / delegate_ledger.TICKET_COPY_REL_ROOT / "C-T-6005" / plan.run_id / "T-6005")
     # board 라운드 자리는 종전과 같다(라운드 파일 위치 불변).
     assert plan.board_path == _rounds_dir(pm_home, "T-6005") / "01-architect.md"
     row = _ledger_rows(pm_home)[-1]
@@ -598,7 +600,7 @@ def test_run_dir_harvest_refuses_a_seat_the_ledger_does_not_authorize(
 
     assert [item.ticket for item in outcomes] == ["T-6014"]   # 장부 행만 회수 대상이다.
     assert not _rounds_dir(pm_home, "T-9999").exists()
-    with pytest.raises(pd.DelegateError, match="준비 기록 없음"):
+    with pytest.raises(delegate_errors.DelegateError, match="준비 기록 없음"):
         pd.harvest_ticket_copy(copy_path=smuggled, cwd=slot, pm_home=pm_home)
 
 
@@ -611,7 +613,7 @@ def test_run_dir_harvest_refuses_when_no_unharvested_row_matches(pd, cluster_env
     _fill(plan.rounds[0].path, "## 경계 실측\n- 실측")
     pd.harvest_cluster_copy(run_dir=plan.run_dir, cwd=slot, pm_home=pm_home)
 
-    with pytest.raises(pd.DelegateError, match="미회수 준비가 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="미회수 준비가 없습니다"):
         pd.harvest_cluster_copy(run_dir=plan.run_dir, cwd=slot, pm_home=pm_home)
 
 
@@ -620,15 +622,14 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
     pm_home, slot, tickets = cluster_env
     _write_spec(tickets, "T-6016")
     board = _fixture_board(pd, pm_home)
-    rounds_module = pd._load_ticket_rounds()
-    seed = rounds_module.render_round_seed(
+    seed = round_seed.render_round_seed(
         "architect", (tickets / "T-6016-cluster.md").read_text(encoding="utf-8"),
         today="2026-01-01")
-    board_path = rounds_module.reserve_round(
+    board_path = round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), "T-6016", "architect", content=seed,
         lock=board.board_lock(),
     )
-    legacy_dir = slot / pd.TICKET_COPY_REL_ROOT / "T-6016" / ("b" * 32)
+    legacy_dir = slot / delegate_ledger.TICKET_COPY_REL_ROOT / "T-6016" / ("b" * 32)
     legacy_dir.mkdir(parents=True)
     copy_path = legacy_dir / "01-architect.md"
     copy_path.write_text(seed, encoding="utf-8", newline="")
@@ -667,7 +668,7 @@ def test_cluster_architect_round_satisfies_the_per_ticket_design_gate(pd, cluste
     )
 
     # 예약만 되고 회수 전인 시드 라운드는 근거가 아니다 — 이번엔 설계 근거 축이 거부한다.
-    with pytest.raises(pd.DelegateError, match="developer 착수 전 architect 테스트 계약"):
+    with pytest.raises(delegate_errors.DelegateError, match="developer 착수 전 architect 테스트 계약"):
         pd.prepare_ticket_copy(
             ticket="T-6020", role="developer", cwd=slot, pm_home=pm_home,
         )

@@ -21,6 +21,8 @@ from _git import commit_env
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.domain import design_rules, review_form
+from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -235,17 +237,16 @@ def test_section_add_seed_is_the_shared_seam_render(board_env):
     """시드 bytes 의 단일 진실은 사이드카 seam 이다 (board 가 자기 골격을 따로 렌더하지 않는다)."""
     board, board_dir, _bare = board_env
     path = _seed_ticket(board_dir, "T-1014", "open")
-    rounds = board._load_ticket_rounds()
 
     assert board.main(["section-add", "T-1014", "--role", "developer"]) == 0
 
     spec_text = path.read_text(encoding="utf-8")
-    expected = rounds.render_round_seed(
+    expected = round_seed.render_round_seed(
         "developer", spec_text, today=datetime.date.today().isoformat())
     written = (_rounds_dir(board_dir, "T-1014") / "01-developer.md").read_text(
         encoding="utf-8")
     assert written == expected
-    loaded = rounds.load_rounds(pm_paths.tickets_dir(board._home()), "T-1014", ticket_text=spec_text)
+    loaded = round_seed.load_rounds(pm_paths.tickets_dir(board._home()), "T-1014", ticket_text=spec_text)
     assert [item.pending for item in loaded] == [True], "예약 직후 라운드는 산출 없음이어야 한다"
 
 
@@ -260,10 +261,12 @@ def test_section_add_refuses_a_developer_round_until_the_pm_judgment_is_written(
     """
     board, board_dir, _bare = board_env
     _seed_ticket(board_dir, "T-1020", "claimed")
-    rounds = board._load_ticket_rounds()
-    pd = rounds._load_pm_delegate()
+    spec = importlib.util.spec_from_file_location(
+        "pm_delegate_ticket_growth", BOARD_PY.with_name("pm_delegate.py"))
+    pd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pd)
     review_payload = {
-        "version": pd.PM_REVIEW_VERSION,
+        "version": review_form.PM_REVIEW_VERSION,
         "findings": [{
             "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[T-0805]]", "evidence": "probe", "recommendation": "fix",
@@ -284,7 +287,7 @@ def test_section_add_refuses_a_developer_round_until_the_pm_judgment_is_written(
     review_round.write_text(
         "## 리뷰 (code-reviewer · 2026-08-22)\n\n## must-fix\n- F-001\n\n"
         "## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
-        f"```{pd.PM_REVIEW_BLOCK}\n" + json.dumps(review_payload, ensure_ascii=False)
+        f"```{review_form.PM_REVIEW_BLOCK}\n" + json.dumps(review_payload, ensure_ascii=False)
         + "\n```\n",
         encoding="utf-8",
     )
@@ -1125,7 +1128,7 @@ def test_design_cli_records_updates_and_preserves_unrelated_frontmatter(board_en
     assert board.main(["design", "T-1019", "done"]) == 0
     fm, _body = ticket_store.load_ticket(path)
     assert fm["design"] == "done"
-    assert board._design_state(fm["design"]) == board.DESIGN_DONE
+    assert design_rules._design_state(fm["design"]) == design_rules.DESIGN_DONE
     assert fm["custom"] == {"nested": ["keep"]}
     assert int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout) == before_count + 2
     remote = _remote_text(bare, "tickets/claimed/T-1019-growth.md")
@@ -1200,7 +1203,7 @@ def test_design_unrecognized_value_is_rc1_before_lookup_or_write(board_env, caps
 
     assert board.main(["design", "T-9999", "bogus"]) == 1
 
-    assert board.DESIGN_VALUE_FORMS in capsys.readouterr().err
+    assert design_rules.DESIGN_VALUE_FORMS in capsys.readouterr().err
 
 
 @requires_git
@@ -1214,7 +1217,7 @@ def test_design_rejects_the_abolished_exemption_value(board_env, capsys, value):
     assert board.main(["design", "T-1023", value]) == 1
 
     assert path.read_text(encoding="utf-8") == before_text
-    assert board.DESIGN_VALUE_FORMS in capsys.readouterr().err
+    assert design_rules.DESIGN_VALUE_FORMS in capsys.readouterr().err
 
 
 @requires_git

@@ -33,6 +33,7 @@ from _git_fixture import remove_git_tree
 from conftest import (anchor_board_module, bind_product_cluster, ensure_product_slot,
                       write_cluster_ledger)
 from pm_engine.infra import ticket_store
+from pm_engine.infra import delegate_ledger
 
 _TASK = "binding-task"
 
@@ -173,7 +174,7 @@ def test_t0928_prepare_sync_preserves_scope_and_reports_local_vs_remote(
         monkeypatch.setattr(board, "git_scope_stage_and_commit", lambda *a, **k: None)
     plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
     assert plan.path.is_file() and plan.board_path.is_file()
-    assert len(pd.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
+    assert len(delegate_ledger.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
     out = capsys.readouterr()
     diagnostic = out.out + out.err
     if mode == "commit":
@@ -232,7 +233,7 @@ def test_t0928_prepare_sync_marks_malformed_touches_and_preserves_source(
     assert ticket_store.load_ticket(spec)[0]["touches"] == malformed
     assert spec.read_bytes() == original
     assert (plan.run_dir / "spec.md").read_bytes() == original
-    assert len(pd.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
+    assert len(delegate_ledger.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
     assert board._board_git_head() != head
     assert _git(["show", "--format=", "--name-only", "HEAD"], board_dir).stdout.splitlines() == [
         "tickets/rounds/T-0001/01-architect.md"]

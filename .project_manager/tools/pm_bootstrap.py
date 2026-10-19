@@ -48,7 +48,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, pytest_report, ticket_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, pm_paths, pre_push_hook, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, delegate_ledger, fs, lease_store, pm_paths, pre_push_hook, repo_files  # noqa: E402
 from pm_engine.app import slot_resolution  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -341,7 +341,6 @@ ENGINE_REV = "v1.8.1"
 # 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
 _STAMPED_SIBLINGS = frozenset({
     "pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py",
-    "pm_delegate.py",
 })
 
 
@@ -2916,15 +2915,14 @@ class PmBootstrap:
 
         준비 사본은 **그 세션이 잡고 있던 작업 폴더 안**에 생긴다(위임의 cwd 가 슬롯이다) —
         PM 홈 아래가 아니다. 그래서 뿌리는 `slots`(보유 작업 폴더 목록)이 준다. 상대 루트는
-        준비 사본을 만드는 쪽(`pm_delegate.TICKET_COPY_REL_ROOT`)이 소유한다.
+        준비 사본을 만드는 쪽(`delegate_ledger.TICKET_COPY_REL_ROOT`)이 소유한다.
         """
         wp = self._worktree_pool or _load_worktree_pool()
-        delegate = _load_tool("pm_delegate")
-        if wp is None or delegate is None:
+        if wp is None:
             return []
         rows: list[str] = []
         for slot in slots:
-            root = wp.slot_path(slot) / delegate.TICKET_COPY_REL_ROOT
+            root = wp.slot_path(slot) / delegate_ledger.TICKET_COPY_REL_ROOT
             if not root.is_dir():
                 continue
             for ticket_dir in sorted(root.glob("*/*/*")):
