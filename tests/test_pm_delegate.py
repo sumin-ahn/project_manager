@@ -120,7 +120,9 @@ def _write_prompt(tmp_path: Path, text: str = "티켓 본문: 구현하라.") ->
 def test_codex_argv_global_options_before_exec(pd):
     """codex `-a never -s <mode>` 는 exec **앞** 전역 옵션(exec 뒤는 rc=2·0.145.0 실측)."""
     argv = pd.build_codex_argv("gpt-x", None, "developer", "/w/t")
-    assert argv[:6] == ["codex", "-a", "never", "-s", "workspace-write", "exec"]
+    assert argv[:5] == ["codex", "-a", "never", "-s", "workspace-write"]
+    exec_index = argv.index("exec")
+    assert argv[5:exec_index] == ["-c", "sandbox_workspace_write.network_access=true"]
     assert "--json" in argv and "--skip-git-repo-check" in argv
     assert argv[argv.index("-C") + 1] == "/w/t"
     assert argv[argv.index("-m") + 1] == "gpt-x"
@@ -136,8 +138,34 @@ def test_codex_argv_read_role_sandbox(pd):
 def test_codex_argv_reasoning_flag(pd):
     """codex reasoning = `-c model_reasoning_effort=<r>`(§6)."""
     argv = pd.build_codex_argv("m", "xhigh", "developer", "/w")
-    assert "-c" in argv
-    assert argv[argv.index("-c") + 1] == "model_reasoning_effort=xhigh"
+    config_values = [argv[index + 1] for index, token in enumerate(argv) if token == "-c"]
+    assert config_values.count("model_reasoning_effort=xhigh") == 1
+    assert config_values.count("sandbox_workspace_write.network_access=true") == 1
+    assert len(config_values) == 2
+
+
+_CODEX_NETWORK_OVERRIDE = ["-c", "sandbox_workspace_write.network_access=true"]
+
+
+@pytest.mark.parametrize("role", ["developer", "architect", "researcher", "code-reviewer"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_codex_argv_network_override_once_before_exec(pd, role, resume):
+    """네 역할·신규/재개 모두 네트워크 true override 가 exec 앞에 정확히 한 번 실린다."""
+    session_id = "0199a9c4-3f7e-7c12-9a3b-2b4c5d6e7f80" if resume else None
+    argv = pd.build_codex_argv("m", "high", role, "/w", session_id)
+    exec_index = argv.index("exec")
+    pairs = [argv[index:index + 2] for index, token in enumerate(argv) if token == "-c"]
+    assert pairs.count(_CODEX_NETWORK_OVERRIDE) == 1
+    network_index = next(
+        index for index in range(len(argv)) if argv[index:index + 2] == _CODEX_NETWORK_OVERRIDE
+    )
+    assert network_index < exec_index
+    assert ["-c", "model_reasoning_effort=high"] in pairs
+    assert argv[argv.index("-s") + 1] == (
+        "workspace-write" if role in ("developer", "architect") else "read-only"
+    )
+    if resume:
+        assert argv[-2:] == [session_id, "-"]
 
 
 def test_claude_argv_tools_by_role(pd):

@@ -34,6 +34,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from pm_engine.infra.harness import contract
 
 # transport 규칙 문장의 단일 진실은 문구 검사 모듈 하나다(사본을 두지 않는다).
 from test_delegate_transport_rule import TRANSPORT_RULE
@@ -244,10 +245,26 @@ def test_default_permissions_allow_routine_work_and_auto_review_escalations():
     assert config["approvals_reviewer"] == "auto_review"
     assert config["sandbox_workspace_write"]["network_access"] is False
     config_text = CONFIG.read_text(encoding="utf-8")
-    # 이 경계는 codex 자신의 sandbox 설정이다 — 엔진이 하네스별로 판정하는 축이 아니다.
-    assert "전역 true 로 완화하지 않는다" in config_text
-    assert "codex 의 명령 승인 절차로 건별 승격한다" in config_text
-    assert "엔진이 이 축을 대신 판정하지 않는다" in config_text
+    # false 는 대화형 기본값이고, 승인 없는 위임 실행은 실행별 override 로 연다(적용 범위 명시).
+    assert "대화형 PM의 기본값이다. on-request 승인 정책에서 네트워크 명령의 승격을 요청한다." in config_text
+    assert "pm_delegate의 승인 없는 CLI 실행은 건별 승격을 요청할 수 없으므로 실행별 override로" in config_text
+
+
+@pytest.mark.parametrize("role", ["developer", "architect", "researcher", "code-reviewer"])
+def test_t0976_interactive_default_false_coexists_with_delegate_network_override(role):
+    """대화형 기본값(false·on-request·auto_review)은 그대로 두고, 승인 없는 위임 실행은 실행별
+    override 로 네트워크를 연다. 위임 argv 는 프로젝트 config 를 읽지 않는 실행에서도 그 값을 싣는다."""
+    with open(CONFIG, "rb") as fh:
+        config = tomllib.load(fh)
+    assert config["sandbox_workspace_write"]["network_access"] is False
+    assert config["approval_policy"] == "on-request"
+    assert config["approvals_reviewer"] == "auto_review"
+    argv = contract.build_codex_argv("m", None, role, "/w")
+    assert argv[1:3] == ["-a", "never"]
+    override = list(contract.CODEX_WORKSPACE_EXEC_OPTIONS)
+    assert override == ["-c", "sandbox_workspace_write.network_access=true"]
+    starts = [index for index in range(len(argv)) if argv[index:index + 2] == override]
+    assert len(starts) == 1 and starts[0] < argv.index("exec")
 
 
 def test_command_rules_allow_local_checkpoints_and_guard_dangerous_commands():

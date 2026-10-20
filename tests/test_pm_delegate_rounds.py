@@ -1987,11 +1987,23 @@ def test_codex_reviewer_opens_the_legacy_row_run_dir(pd, monkeypatch, tmp_path):
     )
     try:
         assert argv[argv.index("-s") + 1] == "workspace-write"
-        assert argv[argv.index("--add-dir") + 1] == str(copy.parent)
+        assert _codex_global_added_dirs(argv) == [str(copy.parent)]
+        assert _CODEX_NETWORK_OVERRIDE_VALUE in argv[:argv.index("exec")]
         assert argv[argv.index("-C") + 1] == str(read_tmp.path)
         assert temp_root in read_tmp.path.parents      # 주입한 임시 루트에 붙었다
     finally:
         pd._cleanup_attempt_transport(prompt_path, read_tmp)
+
+
+_CODEX_NETWORK_OVERRIDE_VALUE = "sandbox_workspace_write.network_access=true"
+
+
+def _codex_global_added_dirs(argv: list[str]) -> list[str]:
+    """argv 의 모든 `--add-dir` 값 — 하나라도 exec 뒤에 있으면 실패한다(전역 옵션)."""
+    exec_index = argv.index("exec")
+    positions = [index for index, token in enumerate(argv) if token == "--add-dir"]
+    assert all(index < exec_index for index in positions), argv
+    return [argv[index + 1] for index in positions]
 
 
 def test_codex_reviewer_opens_the_whole_cluster_run_dir(
@@ -2020,8 +2032,11 @@ def test_codex_reviewer_opens_the_whole_cluster_run_dir(
     )
 
     try:
-        opened = argv[argv.index("--add-dir") + 1]
-        assert opened == str(plan.run_dir)
+        # 추가 루트는 묶음 run-dir 하나뿐이다 — 원 작업 트리·원 git 메타데이터는 열리지 않는다.
+        assert _codex_global_added_dirs(argv) == [str(plan.run_dir)]
+        opened = str(plan.run_dir)
+        assert str(slot) not in _codex_global_added_dirs(argv)
+        assert _CODEX_NETWORK_OVERRIDE_VALUE in argv[:argv.index("exec")]
         assert temp_root in read_tmp.path.parents      # 주입한 임시 루트에 붙었다
         # 자리 하나가 아니라 run 전체다 — 두 티켓 자리가 그 아래 산다.
         assert sorted(item.name for item in Path(opened).iterdir()) == [
