@@ -418,7 +418,8 @@ def test_resolution_failure_precedes_every_side_effect(
 
 @pytest.mark.parametrize("harness,model,reasoning,expected", [
     ("codex", "gpt-5.6-sol", "max", [
-        "codex", "-a", "never", "-s", "read-only", "exec", "--json",
+        "codex", "-a", "never", "-s", "read-only",
+        "-c", "sandbox_workspace_write.network_access=true", "exec", "--json",
         "--skip-git-repo-check", "-m", "gpt-5.6-sol",
         "-c", "model_reasoning_effort=max",
     ]),

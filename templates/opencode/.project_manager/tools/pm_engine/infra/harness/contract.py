@@ -12,7 +12,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 from pm_engine.domain import conf_schema
 
@@ -490,6 +490,17 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
 # 실행이 필요한 리뷰는 workspace-write 상향 필요). `-a never` 하 `git push` 는 승인 deadlock 없이
 # git 레벨에서 실패한다 — push 방어선은 sandbox 가 아니라 role prompt 다.
 CODEX_SANDBOX: dict[str, str] = {"write": "workspace-write", "read": "read-only"}
+# 승인 없는 위임(`-a never`)은 네트워크 명령의 건별 승격을 요청할 수 없다. 그래서 workspace-write
+# 실행의 명령 네트워크를 실행 단위 override 로 연다(프로젝트 config 의 대화형 기본값보다 우선하고,
+# 읽기 역할의 tmp 재앵커처럼 원 프로젝트 config 를 읽지 않는 실행에도 같게 실린다). 설정 노브가
+# 아니라 CLI 형식 선언이며 모든 역할·신규/재개 실행에 exec 앞 전역 위치로 정확히 한 번 들어간다.
+CODEX_WORKSPACE_EXEC_OPTIONS: tuple[str, ...] = (
+    "-c", "sandbox_workspace_write.network_access=true",
+)
+# exec 앞 전역 위치에 오는 값-동반 옵션 — `with_codex_workspace_dirs` 가 이 집합으로만 전역 구간을
+# 판독한다(모르는 토큰을 만나면 손상 argv 로 멈춘다).
+_CODEX_GLOBAL_VALUE_OPTIONS: frozenset[str] = frozenset({"-a", "-s", "-c", "-C", "--add-dir"})
+_CODEX_EXEC_SUBCOMMAND = "exec"
 # opencode 역할 agent — 네이티브 task와 cross `run --agent`가 같은 custom 정의를 쓴다.
 # 네 역할 카드는 `mode: all`이라 subagent/primary 양쪽에서 유효하다. build/plan으로 축약하면
 # 역할 prompt·모델·권한을 잃고(특히 reviewer가 Plan Mode로 사본을 못 씀) default agent로 오동작한다.
@@ -710,7 +721,7 @@ def build_codex_argv(
     프롬프트는 stdin 주입(argv positional 아님). `cwd` 를 주면 `-C` 로 핀하고, 생략하면 프로세스
     cwd 를 그대로 쓴다(추가 리뷰어는 격리 거울을 subprocess cwd 로 이미 고정한다)."""
     mode = CODEX_SANDBOX[perm_axis(role)]
-    argv = ["codex", "-a", "never", "-s", mode]
+    argv = ["codex", "-a", "never", "-s", mode, *CODEX_WORKSPACE_EXEC_OPTIONS]
     if resume_session_id is None:
         argv += ["exec", "--json", "--skip-git-repo-check"]
         if cwd is not None:
@@ -738,6 +749,31 @@ def build_codex_argv(
     if resume_session_id is not None:
         argv += [resume_session_id, "-"]
     return argv
+
+
+def with_codex_workspace_dirs(argv: list[str], roots: Sequence[str]) -> list[str]:
+    """codex argv 의 exec 앞 전역 위치에 경로마다 `--add-dir <경로>` 를 넣은 새 argv.
+
+    `--add-dir` 는 전역 옵션이다 — `codex exec resume` 뒤에 붙으면 CLI 가 rc=2 로 거부한다
+    (`unexpected argument '--add-dir'`·0.163.0 실측). 그래서 신규·재개 모두 exec 앞에 둔다.
+    실행 파일 토큰 뒤 전역 구간은 값-동반 옵션 쌍으로만 이뤄져야 하며, 그 구조가 아니거나
+    exec 가 없거나 경로가 비면 멈춘다."""
+    index = 1
+    while index < len(argv) and argv[index] != _CODEX_EXEC_SUBCOMMAND:
+        if argv[index] not in _CODEX_GLOBAL_VALUE_OPTIONS or index + 1 >= len(argv):
+            raise HarnessContractError(
+                f"codex argv 의 exec 앞 전역 구간이 손상됨(위치 {index}: {argv[index]!r}) — "
+                "--add-dir 를 넣지 않는다"
+            )
+        index += 2
+    if index >= len(argv):
+        raise HarnessContractError("codex argv 에 exec 하위 명령이 없어 --add-dir 를 넣지 않는다")
+    inserted: list[str] = []
+    for root in roots:
+        if not root:
+            raise HarnessContractError("codex --add-dir 경로가 비었다")
+        inserted += ["--add-dir", str(root)]
+    return [*argv[:index], *inserted, *argv[index:]]
 
 
 def build_claude_argv(model: str, reasoning: str | None, role: str,

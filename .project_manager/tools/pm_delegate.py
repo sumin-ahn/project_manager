@@ -7057,7 +7057,7 @@ def _apply_read_tmp_argv(
         # 옮긴다. 라운드 준비가 있었으면 공개 CLI의 --add-dir로 그 묶음 run-dir 하나만 더 연다.
         adjusted[cwd_index + 1] = str(read_tmp.path)
         if cluster_run_dir is not None:
-            adjusted += ["--add-dir", str(cluster_run_dir)]
+            adjusted = _codex_workspace_dirs(adjusted, (cluster_run_dir,))
     elif mode == "add-dir":
         adjusted += ["--add-dir", str(read_tmp.path)]
     elif mode == "role-agent":
@@ -7075,6 +7075,125 @@ def _apply_read_tmp_argv(
     # opencode는 추가-dir 기능이 없어 custom 역할 agent를 그대로 쓰고, ticket-copy reviewer의
     # repo 쓰기 표면은 위 경고와 실행 전후 감사로 loud하게 관리한다.
     return adjusted
+
+
+def _codex_workspace_dirs(argv: list[str], roots: Sequence[Path]) -> list[str]:
+    """공용 전역 `--add-dir` formatter 의 계약 예외를 위임 표면 예외로 옮긴다."""
+    try:
+        return contract.with_codex_workspace_dirs(argv, [str(root) for root in roots])
+    except contract.HarnessContractError as exc:
+        raise delegate_errors.DelegateError(str(exc)) from exc
+
+
+# 원 작업공간을 쓰는 codex 실행에서 git 이 실제로 쓰는 메타데이터 위치. workspace-write 는 `-C`
+# 안의 `.git` 과 포인터가 가리키는 git 디렉터리를 읽기 전용으로 보호하므로, 명시적 추가 루트로
+# 열지 않으면 `git add` 가 index·objects 쓰기에서 막힌다. linked worktree 만이 아니라 일반 clone·
+# submodule 도 같은 조회로 처리한다(형상 판별 대신 git 이 답한 위치를 쓴다).
+_GIT_METADATA_QUERY: tuple[str, ...] = (
+    "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir",
+)
+_GIT_METADATA_LINE_COUNT = 2
+
+
+def _git_metadata_write_roots(
+    cwd: Path, *, git_run_fn: Callable | None = None,
+) -> tuple[Path, ...]:
+    """`cwd` 저장소의 common_dir·git_dir 를 실경로로 해소한 최소 쓰기 루트 집합.
+
+    한 경로가 다른 경로를 포함하면(같은 경로 포함) 바깥 하나만, 서로 독립이면 둘 다 반환한다.
+    부모 경로를 합쳐 범위를 넓히지 않는다. 조회 실패·손상 출력·실재하지 않는 경로는 원인을 담은
+    `DelegateError` 로 멈춘다 — 빈 루트로 바꿔 실행을 이어가지 않는다."""
+    runner = git_run_fn or subprocess.run
+    command = ["git", "-C", str(cwd), *_GIT_METADATA_QUERY]
+    shown = " ".join(command)
+    try:
+        result = runner(
+            command, capture_output=True, text=True, encoding="utf-8", errors="strict",
+            check=False,
+        )
+    except (OSError, UnicodeDecodeError, subprocess.SubprocessError) as exc:
+        raise delegate_errors.DelegateError(
+            f"git 메타데이터 위치 조회 실패(호출 전 중단): {shown}: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "원인 미상"
+        raise delegate_errors.DelegateError(
+            f"git 메타데이터 위치 조회 실패 rc={result.returncode}(호출 전 중단): "
+            f"{shown}: {detail}"
+        )
+    lines = (result.stdout or "").splitlines()
+    if len(lines) != _GIT_METADATA_LINE_COUNT or not all(line.strip() for line in lines):
+        raise delegate_errors.DelegateError(
+            f"git 메타데이터 위치 조회 출력이 두 경로가 아님(호출 전 중단): {shown}: {lines!r}"
+        )
+    resolved: list[Path] = []
+    for line in lines:
+        candidate = Path(line)
+        if not candidate.is_absolute():
+            raise delegate_errors.DelegateError(
+                f"git 메타데이터 위치가 절대경로가 아님(호출 전 중단): {shown}: {line!r}"
+            )
+        try:
+            real = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise delegate_errors.DelegateError(
+                f"git 메타데이터 위치 해소 실패(호출 전 중단): {line}: {exc}"
+            ) from exc
+        if not real.is_dir():
+            raise delegate_errors.DelegateError(
+                f"git 메타데이터 위치가 디렉터리가 아님(호출 전 중단): {real}"
+            )
+        resolved.append(real)
+    common_dir, git_dir = resolved
+    if git_dir.is_relative_to(common_dir):
+        return (common_dir,)
+    if common_dir.is_relative_to(git_dir):
+        return (git_dir,)
+    return (common_dir, git_dir)
+
+
+def _codex_global_option_value(argv: list[str], option: str) -> str | None:
+    """codex argv 의 exec 앞 전역 구간에서 `option` 값(없으면 None·전역 구간이 손상이면 멈춤)."""
+    value: str | None = None
+    index = 1
+    while index < len(argv) and argv[index] != "exec":
+        if index + 1 >= len(argv):
+            raise delegate_errors.DelegateError(
+                f"codex argv 의 전역 옵션 {argv[index]!r} 에 값이 없음"
+            )
+        if argv[index] == option:
+            value = argv[index + 1]
+        index += 2
+    if index >= len(argv):
+        raise delegate_errors.DelegateError("codex argv 에 exec 하위 명령이 없음")
+    return value
+
+
+def _apply_workspace_git_dirs(argv: list[str], mode: str, source_cwd: Path) -> list[str]:
+    """최종 argv 가 원 작업공간을 workspace-write 로 열면 그 git 메타데이터 루트를 더한다.
+
+    판정 입력은 역할 이름이 아니라 최종 sandbox 와 `-C` 실경로다. 읽기 역할의 tmp 재앵커처럼
+    실행 좌표가 원 작업공간과 다르거나 read-only 가 남은 실행은 원 git 을 조회하지 않고 그대로
+    둔다. 전역 `--add-dir` 형식(`workspace-add-dir`)이 아닌 하네스 argv 는 그대로 반환한다."""
+    if mode != "workspace-add-dir":
+        return argv
+    sandbox = _codex_global_option_value(argv, "-s")
+    if sandbox not in contract.CODEX_SANDBOX.values():
+        raise delegate_errors.DelegateError(
+            f"codex argv 의 sandbox 값이 선언 밖: {sandbox!r}"
+        )
+    if sandbox != contract.CODEX_SANDBOX["write"]:
+        return argv
+    # `-C` 는 신규 실행에선 exec 뒤, 재개 실행에선 exec 앞에 온다(재개 하위 명령에 -C 가 없다).
+    try:
+        cwd_index = argv.index("-C")
+    except ValueError as exc:
+        raise delegate_errors.DelegateError("codex argv 에 -C 실행 root 가 없음") from exc
+    if cwd_index + 1 >= len(argv):
+        raise delegate_errors.DelegateError("codex argv 의 -C 실행 root 값이 없음")
+    if os.path.realpath(argv[cwd_index + 1]) != os.path.realpath(source_cwd):
+        return argv
+    return _codex_workspace_dirs(argv, _git_metadata_write_roots(source_cwd))
 
 
 # 재앵커된 read 실행(현재 codex만·_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS)의 3-절대경로
@@ -7254,6 +7373,7 @@ def _prepare_attempt_transport(
             file=sys.stderr,
         )
     prompt_path: _OpenCodeTransportPrompt | None = None
+    argv_mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
     outgoing_prompt = (
         _read_tmp_prompt_note(harness, cwd, read_tmp) + "\n\n" + prompt
         if read_role else prompt
@@ -7267,17 +7387,17 @@ def _prepare_attempt_transport(
             # lexical 경로와 부모/파일 entry의 symlink 여부를 한 번 더 확인한다.
             _assert_opencode_transport_path(prompt_path.sandbox, prompt_path)
             return (
-                _apply_read_tmp_argv(_build_target_argv(
+                _apply_workspace_git_dirs(_apply_read_tmp_argv(_build_target_argv(
                     harness, model, reasoning, role, prompt_path.sandbox, prompt_path,
-                ), harness, role, read_tmp, cluster_run_dir),
+                ), harness, role, read_tmp, cluster_run_dir), argv_mode, cwd),
                 None,
                 prompt_path,
                 read_tmp,
             )
         return (
-            _apply_read_tmp_argv(_build_target_argv(
+            _apply_workspace_git_dirs(_apply_read_tmp_argv(_build_target_argv(
                 harness, model, reasoning, role, cwd, Path(), resume_session_id,
-            ), harness, role, read_tmp, cluster_run_dir),
+            ), harness, role, read_tmp, cluster_run_dir), argv_mode, cwd),
             outgoing_prompt,
             None,
             read_tmp,
@@ -10160,6 +10280,9 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                     f"진단·raw 박제 여유 {_HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
                 )
             print(f"cwd: {cwd}")
+            argv_display = _apply_workspace_git_dirs(
+                argv_display, _READ_TMP_ARGV_MODE_BY_HARNESS[harness], cwd,
+            )
             print(f"argv: {' '.join(argv_display)}")
             _budget_note, transport_note = _dry_run_harness_annotations(harness)
             if transport_note is not None:
