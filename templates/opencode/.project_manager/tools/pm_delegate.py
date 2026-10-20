@@ -7098,10 +7098,11 @@ _GIT_METADATA_LINE_COUNT = 2
 def _git_metadata_write_roots(
     cwd: Path, *, git_run_fn: Callable | None = None,
 ) -> tuple[Path, ...]:
-    """`cwd` 저장소의 common_dir·git_dir 를 실경로로 해소한 최소 쓰기 루트 집합.
+    """`cwd` 저장소의 common_dir·git_dir 를 실경로로 해소한 쓰기 루트 집합.
 
-    한 경로가 다른 경로를 포함하면(같은 경로 포함) 바깥 하나만, 서로 독립이면 둘 다 반환한다.
-    부모 경로를 합쳐 범위를 넓히지 않는다. 조회 실패·손상 출력·실재하지 않는 경로는 원인을 담은
+    두 경로가 같으면 하나, 다르면 포함 관계여도 둘 다 반환한다. codex 는 `-C` 의 `.git` 포인터가
+    가리키는 git_dir 를 바깥 쓰기 루트 안에서도 따로 잠그므로, linked worktree 에서 common_dir 만
+    열면 index 쓰기가 막힌다. 부모 경로를 합쳐 범위를 넓히지 않는다. 조회 실패·손상 출력·실재하지 않는 경로는 원인을 담은
     `DelegateError` 로 멈춘다 — 빈 루트로 바꿔 실행을 이어가지 않는다."""
     runner = git_run_fn or subprocess.run
     command = ["git", "-C", str(cwd), *_GIT_METADATA_QUERY]
@@ -7145,10 +7146,8 @@ def _git_metadata_write_roots(
             )
         resolved.append(real)
     common_dir, git_dir = resolved
-    if git_dir.is_relative_to(common_dir):
+    if git_dir == common_dir:
         return (common_dir,)
-    if common_dir.is_relative_to(git_dir):
-        return (git_dir,)
     return (common_dir, git_dir)
 
 

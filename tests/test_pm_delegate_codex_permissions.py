@@ -1,7 +1,7 @@
 """codex 위임 권한 보정 — git 메타데이터 쓰기 루트·실행별 네트워크 override·전역 --add-dir 배치.
 
-원 작업공간을 workspace-write 로 여는 codex 실행은 git 이 답한 common_dir·git_dir 를 최소 쓰기
-루트로 더한다(worktree·일반 clone·submodule 공통). 읽기 역할의 tmp 재앵커 실행은 원 트리·원 git
+원 작업공간을 workspace-write 로 여는 codex 실행은 git 이 답한 common_dir·git_dir 를 쓰기
+루트로 더한다(같은 경로면 하나·worktree·일반 clone·submodule 공통). 읽기 역할의 tmp 재앵커 실행은 원 트리·원 git
 메타데이터를 열지 않는다. 모든 `--add-dir` 는 exec 앞 전역 위치에 둔다(재개 하위 명령 뒤는 CLI 가
 거부한다). 조회 실패는 빈 루트로 바꾸지 않고 호출 전에 멈춘다.
 
@@ -112,13 +112,17 @@ def _runner_returning(result=None, exception: BaseException | None = None):
 
 # ── metadata ─────────────────────────────────────────────────────────────
 
-def test_metadata_worktree_opens_common_dir_once(pd, tmp_path):
-    """linked worktree 의 git_dir 는 common_dir 아래라 common_dir 하나만 연다(공백·한글 경로)."""
+def test_metadata_worktree_opens_common_and_worktree_dirs(pd, tmp_path):
+    """linked worktree 는 common_dir 와 그 아래 자기 git_dir 를 둘 다 연다(공백·한글 경로).
+
+    codex 는 `-C` 의 `.git` 포인터가 가리키는 git_dir 를 바깥 쓰기 루트 안에서도 따로 잠근다.
+    common_dir 만 열면 index 쓰기가 읽기 전용으로 막힌다(codex-cli 0.163.0 실측)."""
     main = _committed_repo(tmp_path / "주 저장소 공백")
     worktree = tmp_path / "작업 슬롯 1"
     _git("-C", str(main), "worktree", "add", "-q", "-b", "slot-branch", str(worktree))
+    (worktree_git_dir,) = (main / ".git" / "worktrees").iterdir()
     roots = pd._git_metadata_write_roots(worktree)
-    assert roots == (_real(main / ".git"),)
+    assert roots == (_real(main / ".git"), _real(worktree_git_dir))
     assert _real(tmp_path) not in roots
 
 
@@ -159,12 +163,12 @@ def test_metadata_relative_gitdir_pointer(pd, tmp_path):
 
 @pytest.mark.parametrize("shape,expected", [
     ("same", ("common",)),
-    ("git_inside_common", ("common",)),
-    ("common_inside_git", ("git",)),
+    ("git_inside_common", ("common", "git")),
+    ("common_inside_git", ("common", "git")),
     ("independent", ("common", "git")),
 ])
 def test_metadata_minimal_root_set(pd, tmp_path, shape, expected):
-    """중복·포함 관계면 바깥 하나, 서로 독립이면 둘 — 부모 경로를 합치지 않는다."""
+    """같은 경로면 하나, 다르면 포함 관계여도 둘 — 부모 경로를 합치지 않는다."""
     common = tmp_path / "common"
     git_dir = {
         "same": common,
@@ -197,7 +201,8 @@ def test_metadata_write_argv_adds_global_root_and_network(pd, tmp_path, role):
     argv = pd._apply_workspace_git_dirs(
         pd.build_codex_argv("gpt-x", None, role, str(worktree)), "workspace-add-dir", worktree,
     )
-    assert _global_added_dirs(argv) == [str(_real(main / ".git"))]
+    (worktree_git_dir,) = (main / ".git" / "worktrees").iterdir()
+    assert _global_added_dirs(argv) == [str(_real(main / ".git")), str(_real(worktree_git_dir))]
     assert _network_override_count(argv) == 1
     assert argv[argv.index("-C") + 1] == str(worktree)
 
