@@ -7152,23 +7152,6 @@ def _git_metadata_write_roots(
     return (common_dir, git_dir)
 
 
-def _codex_global_option_value(argv: list[str], option: str) -> str | None:
-    """codex argv 의 exec 앞 전역 구간에서 `option` 값(없으면 None·전역 구간이 손상이면 멈춤)."""
-    value: str | None = None
-    index = 1
-    while index < len(argv) and argv[index] != "exec":
-        if index + 1 >= len(argv):
-            raise delegate_errors.DelegateError(
-                f"codex argv 의 전역 옵션 {argv[index]!r} 에 값이 없음"
-            )
-        if argv[index] == option:
-            value = argv[index + 1]
-        index += 2
-    if index >= len(argv):
-        raise delegate_errors.DelegateError("codex argv 에 exec 하위 명령이 없음")
-    return value
-
-
 def _apply_workspace_git_dirs(argv: list[str], mode: str, source_cwd: Path) -> list[str]:
     """최종 argv 가 원 작업공간을 workspace-write 로 열면 그 git 메타데이터 루트를 더한다.
 
@@ -7177,7 +7160,11 @@ def _apply_workspace_git_dirs(argv: list[str], mode: str, source_cwd: Path) -> l
     둔다. 전역 `--add-dir` 형식(`workspace-add-dir`)이 아닌 하네스 argv 는 그대로 반환한다."""
     if mode != "workspace-add-dir":
         return argv
-    sandbox = _codex_global_option_value(argv, "-s")
+    try:
+        _exec_index, global_options = contract.read_codex_global_section(argv)
+    except contract.HarnessContractError as exc:
+        raise delegate_errors.DelegateError(str(exc)) from exc
+    sandbox = dict(global_options).get("-s")
     if sandbox not in contract.CODEX_SANDBOX.values():
         raise delegate_errors.DelegateError(
             f"codex argv 의 sandbox 값이 선언 밖: {sandbox!r}"

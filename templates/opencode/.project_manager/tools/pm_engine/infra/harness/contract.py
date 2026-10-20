@@ -487,8 +487,8 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
 
 # codex sandbox 모드 — write=workspace-write·read=read-only.
 # **실측(0.145.0)**: read-only 는 worktree 밖 `/tmp` 쓰기까지 차단해 pytest 기동이 막힌다(테스트
-# 실행이 필요한 리뷰는 workspace-write 상향 필요). `-a never` 하 `git push` 는 승인 deadlock 없이
-# git 레벨에서 실패한다 — push 방어선은 sandbox 가 아니라 role prompt 다.
+# 실행이 필요한 리뷰는 workspace-write 상향 필요). push 방어선은 sandbox 가 아니라 역할 프롬프트와
+# 금지 명령 규칙이다.
 CODEX_SANDBOX: dict[str, str] = {"write": "workspace-write", "read": "read-only"}
 # 승인 없는 위임(`-a never`)은 네트워크 명령의 건별 승격을 요청할 수 없다. 그래서 workspace-write
 # 실행의 명령 네트워크를 실행 단위 override 로 연다(프로젝트 config 의 대화형 기본값보다 우선하고,
@@ -497,7 +497,7 @@ CODEX_SANDBOX: dict[str, str] = {"write": "workspace-write", "read": "read-only"
 CODEX_WORKSPACE_EXEC_OPTIONS: tuple[str, ...] = (
     "-c", "sandbox_workspace_write.network_access=true",
 )
-# exec 앞 전역 위치에 오는 값-동반 옵션 — `with_codex_workspace_dirs` 가 이 집합으로만 전역 구간을
+# exec 앞 전역 위치에 오는 값-동반 옵션 — `read_codex_global_section` 이 이 집합으로만 전역 구간을
 # 판독한다(모르는 토큰을 만나면 손상 argv 로 멈춘다).
 _CODEX_GLOBAL_VALUE_OPTIONS: frozenset[str] = frozenset({"-a", "-s", "-c", "-C", "--add-dir"})
 _CODEX_EXEC_SUBCOMMAND = "exec"
@@ -751,23 +751,34 @@ def build_codex_argv(
     return argv
 
 
+def read_codex_global_section(argv: list[str]) -> tuple[int, tuple[tuple[str, str], ...]]:
+    """codex argv 의 exec 위치와 그 앞 전역 구간의 (옵션, 값) 쌍들.
+
+    실행 파일 토큰 뒤 전역 구간은 `_CODEX_GLOBAL_VALUE_OPTIONS` 의 값-동반 옵션 쌍으로만 이뤄져야
+    한다. 모르는 토큰·값 없는 옵션·exec 부재는 손상 argv 로 멈춘다."""
+    pairs: list[tuple[str, str]] = []
+    index = 1
+    while index < len(argv) and argv[index] != _CODEX_EXEC_SUBCOMMAND:
+        if argv[index] not in _CODEX_GLOBAL_VALUE_OPTIONS:
+            raise HarnessContractError(
+                f"codex argv 의 exec 앞 전역 구간이 손상됨(위치 {index}: {argv[index]!r})"
+            )
+        if index + 1 >= len(argv):
+            raise HarnessContractError(f"codex argv 의 전역 옵션 {argv[index]!r} 에 값이 없음")
+        pairs.append((argv[index], argv[index + 1]))
+        index += 2
+    if index >= len(argv):
+        raise HarnessContractError("codex argv 에 exec 하위 명령이 없음")
+    return index, tuple(pairs)
+
+
 def with_codex_workspace_dirs(argv: list[str], roots: Sequence[str]) -> list[str]:
     """codex argv 의 exec 앞 전역 위치에 경로마다 `--add-dir <경로>` 를 넣은 새 argv.
 
     `--add-dir` 는 전역 옵션이다 — `codex exec resume` 뒤에 붙으면 CLI 가 rc=2 로 거부한다
     (`unexpected argument '--add-dir'`·0.163.0 실측). 그래서 신규·재개 모두 exec 앞에 둔다.
-    실행 파일 토큰 뒤 전역 구간은 값-동반 옵션 쌍으로만 이뤄져야 하며, 그 구조가 아니거나
-    exec 가 없거나 경로가 비면 멈춘다."""
-    index = 1
-    while index < len(argv) and argv[index] != _CODEX_EXEC_SUBCOMMAND:
-        if argv[index] not in _CODEX_GLOBAL_VALUE_OPTIONS or index + 1 >= len(argv):
-            raise HarnessContractError(
-                f"codex argv 의 exec 앞 전역 구간이 손상됨(위치 {index}: {argv[index]!r}) — "
-                "--add-dir 를 넣지 않는다"
-            )
-        index += 2
-    if index >= len(argv):
-        raise HarnessContractError("codex argv 에 exec 하위 명령이 없어 --add-dir 를 넣지 않는다")
+    전역 구간이 손상이거나 경로가 비면 멈춘다."""
+    index, _global_options = read_codex_global_section(argv)
     inserted: list[str] = []
     for root in roots:
         if not root:

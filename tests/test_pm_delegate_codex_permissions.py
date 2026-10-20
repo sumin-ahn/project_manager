@@ -324,6 +324,7 @@ def test_failure_not_a_directory(pd, tmp_path):
     (["codex", "-a", "never", "-s", "workspace-write", "exec", "--json"], "-C 실행 root"),
     (["codex", "-a", "never", "-s", "workspace-write", "-C", "/w"], "exec"),
     (["codex", "-a", "never", "-s"], "값이 없음"),
+    (["codex", "--json", "x", "-s", "read-only", "exec", "-C", "/w"], "손상"),
 ])
 def test_failure_corrupt_argv(pd, tmp_path, argv, match):
     with pytest.raises(delegate_errors.DelegateError, match=match):
@@ -503,7 +504,7 @@ def test_cli_formats_new_functions_add_no_harness_or_role_branch():
         ("pm_delegate.py", "_git_metadata_write_roots"),
         ("pm_delegate.py", "_apply_workspace_git_dirs"),
         ("pm_delegate.py", "_codex_workspace_dirs"),
-        ("pm_delegate.py", "_codex_global_option_value"),
+        ("contract.py", "read_codex_global_section"),
         ("contract.py", "with_codex_workspace_dirs"),
     }
     offenders = [key for key in measured if key[:2] in new_functions]
@@ -515,11 +516,13 @@ def test_cli_formats_new_functions_add_no_harness_or_role_branch():
     assert REGISTERED_SITE_OCCURRENCES <= parity_guard.LEDGER_CEILING
 
 
-def test_cli_formats_no_legacy_mode_knob(pd):
-    """옛 동작을 고르는 설정·플래그가 없다 — 네트워크 override 는 고정 선언 하나다."""
-    source = (TOOLS / "pm_delegate.py").read_text(encoding="utf-8")
-    assert "network_access" not in source
-    assert contract.CODEX_WORKSPACE_EXEC_OPTIONS == tuple(NETWORK_OVERRIDE)
-    contract_source = (TOOLS / "pm_engine" / "infra" / "harness" / "contract.py").read_text(
-        encoding="utf-8")
-    assert contract_source.count("sandbox_workspace_write.network_access=true") == 1
+def test_cli_formats_no_legacy_mode_knob(pd, tmp_path, monkeypatch):
+    """옛 동작을 고르는 설정이 없다 — 네트워크 키를 설정에 넣어도 override 는 그대로 한 번 실린다."""
+    repo = _committed_repo(tmp_path / "repo")
+    conf = {**_codex_conf("developer"), "delegate.codex.network": "false"}
+    monkeypatch.setattr(pd, "local_config", lambda: conf)
+    argv, _stdin, _prompt_path, read_tmp = pd._prepare_attempt_transport(
+        "codex", "gpt-x", None, "developer", repo, "task",
+    )
+    assert read_tmp is None
+    assert _network_override_count(argv) == 1
