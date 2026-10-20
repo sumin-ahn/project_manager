@@ -1,7 +1,7 @@
 """PM 홈 경로 해소 (층: infra).
 
 `Home` 을 만드는 곳은 `home_at` 하나다. board 루트 graceful 규칙·areas.md 위치 규칙·대여 장부와 회귀·라이브 게이트
-기록 위치·`~` 확장 규칙과 작업 폴더의 소유 PM 홈 유도(`owning_pm_home`)를 소유한다. 설치 깊이는 고정이고 상향 탐색을
+기록 위치·wiki 문서와 채택자 훅 위치·`~` 확장 규칙과 작업 폴더의 소유 PM 홈 유도(`owning_pm_home`)를 소유한다. 설치 깊이는 고정이고 상향 탐색을
 하지 않는다.
 """
 from __future__ import annotations
@@ -88,6 +88,41 @@ def areas_file(home) -> Path:
     if root.name == "board" and (root / "tickets").is_dir():
         return root / "areas.md"
     return root.parent / "areas.md"
+
+
+def wiki_dir(home) -> Path:
+    """PM 운영 wiki 루트 — `local_dir` 와 같은 `.project_manager` 아래(read 폴백이면 소유 PM 홈의 것)."""
+    return home.local_dir.parent / "wiki"
+
+
+def decisions_dir(home) -> Path:
+    """ADR 디렉토리 — wiki/decisions."""
+    return wiki_dir(home) / "decisions"
+
+
+def specs_dir(home) -> Path:
+    """spec 디렉토리 — wiki/specs."""
+    return wiki_dir(home) / "specs"
+
+
+def ideas_dir(home) -> Path:
+    """idea 디렉토리 — wiki/ideas."""
+    return wiki_dir(home) / "ideas"
+
+
+def status_file(home) -> Path:
+    """모듈 구현 상태 문서 — wiki/status.md."""
+    return wiki_dir(home) / "status.md"
+
+
+def architecture_file(home) -> Path:
+    """현재-아키텍처 문서 — wiki/architecture.md."""
+    return wiki_dir(home) / "architecture.md"
+
+
+def hooks_dir(home) -> Path:
+    """채택자 lint 훅 디렉토리 — `.project_manager/hooks`(wiki 와 같은 PM 홈)."""
+    return home.local_dir.parent / "hooks"
 
 
 def _rel_to_repo(home, path: Path) -> str:

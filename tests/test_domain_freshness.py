@@ -29,6 +29,7 @@ import pytest
 from _textio import write_lf
 from _win_skip import PROJECT_TEMP_ROOT, posix_filenames_supported
 from pm_engine.infra import git, ticket_store
+from pm_engine.app import body_lint, conf_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
 
 # 리터럴 `?`/`[]` 파일명은 Windows 에서 불법이라 실 git 이스케이프 테스트는 POSIX 전용 (codex R7).
 _posix_only = pytest.mark.skipif(not posix_filenames_supported(),
@@ -436,12 +437,23 @@ def test_unverifiable_in_advisory_kinds(board):
 
 
 def test_unverifiable_never_blocks_gate(board, monkeypatch):
-    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-               "lint_wikilinks", "lint_unstable_refs", "lint_scopes", "lint_domain",
-               "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_status_freshness", "lint_adapter_drift", "lint_render_leak",
-               "_run_lint_hooks"):
-        monkeypatch.setattr(board, fn, lambda: [])
+    for module, fn, stub in (
+        (ticket_lint, "lint_dependencies", lambda home: []),
+        (body_lint, "lint_bodies", lambda home: []),
+        (body_lint, "lint_ideas", lambda home: []),
+        (wiki_lint, "lint_status", lambda home: []),
+        (wikilink_lint, "lint_wikilinks", lambda home: []),
+        (wikilink_lint, "lint_unstable_refs", lambda home: []),
+        (wiki_lint, "lint_scopes", lambda home: []),
+        (board, "lint_domain", lambda: []),
+        (wiki_lint, "lint_adr_lifecycle", lambda home: []),
+        (freshness_lint, "lint_architecture_freshness", lambda home: []),
+        (freshness_lint, "lint_status_freshness", lambda home: []),
+        (conf_lint, "lint_adapter_drift", lambda home: []),
+        (board, "lint_render_leak", lambda: []),
+        (lint_hooks, "_run_lint_hooks", lambda home: []),
+    ):
+        monkeypatch.setattr(module, fn, stub)
     monkeypatch.setattr(board, "lint_domain_freshness", lambda: [
         ("codex 어댑터", "domain-unverifiable", "이 저장소에서 freshness 검증 불가")])
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
@@ -623,13 +635,13 @@ def test_two_repo_owner_change_closes_unsynced_copy_window(
     monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
 
     # 종전 PM-home 시계는 import 사본 경로 변경이 없어 clean이었다(조용한 오답 창의 대조군).
-    assert board._git_commits_between(
+    assert freshness_lint._git_commits_between(board._home(),
         pin, [".project_manager/tools"], repo=pm_home) is False
     assert [kind for _label, kind, _detail in board.lint_domain_freshness()] == [
         "domain-stale"]
-    assert [kind for _label, kind, _detail in board.lint_architecture_freshness()] == [
+    assert [kind for _label, kind, _detail in freshness_lint.lint_architecture_freshness(board._home())] == [
         "architecture-stale"]
-    assert [kind for _label, kind, _detail in board.lint_status_freshness()] == [
+    assert [kind for _label, kind, _detail in freshness_lint.lint_status_freshness(board._home())] == [
         "status-stale"]
 
 
@@ -697,8 +709,8 @@ def test_date_freshness_lint_uses_owner_repo_runner(
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
     monkeypatch.setattr(
-        board, "_freshness_owner_repo",
-        lambda owner: (owner_repo, None) if owner == "upstream" else (self_repo, None))
+        freshness_lint, "_freshness_owner_repo",
+        lambda home, owner: (owner_repo, None) if owner == "upstream" else (self_repo, None))
 
     dates = {
         self_repo: "2026-06-20T00:00:00Z\n",   # 잘못된 self 시계면 false stale
@@ -1901,10 +1913,10 @@ def test_covers_pathspecs_git_error_skips_pathspec(domain, tmp_path):
 # ── 유닛: board._is_hex_sha / _sha_anchor_status (형식·해소·선조 3조건) ───────
 
 def test_is_hex_sha_accepts_and_rejects(board):
-    assert board._is_hex_sha("fa1c398") and board._is_hex_sha(
-        "3cf0f731b11b3a0adc739116cd767cd6fee14558") and board._is_hex_sha("DEADBEEF")
+    assert freshness_lint._is_hex_sha("fa1c398") and freshness_lint._is_hex_sha(
+        "3cf0f731b11b3a0adc739116cd767cd6fee14558") and freshness_lint._is_hex_sha("DEADBEEF")
     for ref in ("HEAD", "main", "master", "v1.4.2", "origin/main", "abc", ""):
-        assert not board._is_hex_sha(ref), ref
+        assert not freshness_lint._is_hex_sha(ref), ref
 
 
 # 실 git 2.43 실측 ambiguous stderr 형태 (codex R22·`_rev_parse_ambiguous` 소문자 부분일치 대상).
@@ -1931,59 +1943,59 @@ def _anchor_git(rev=0, mb=0, oid=None, ambig=False):
 
 # `_sha_anchor_status` 는 `(verdict, full_oid)` 반환 — full_oid 는 OK 일 때만(codex R16).
 def test_sha_anchor_status_ok_returns_full_oid(board):
-    verdict, full_oid = board._sha_anchor_status("cafe0001", runner=_anchor_git(0, 0))
-    assert verdict == board._ANCHOR_OK
+    verdict, full_oid = freshness_lint._sha_anchor_status(board._home(), "cafe0001", runner=_anchor_git(0, 0))
+    assert verdict == freshness_lint._ANCHOR_OK
     assert full_oid == "cafe0001".ljust(40, "0")   # rev-parse 해소 canonical full OID
 
 
 def test_sha_anchor_status_unresolved(board):
-    assert board._sha_anchor_status("deadbeef", runner=_anchor_git(1, 0)) == \
-        (board._ANCHOR_UNRESOLVED, None)
+    assert freshness_lint._sha_anchor_status(board._home(), "deadbeef", runner=_anchor_git(1, 0)) == \
+        (freshness_lint._ANCHOR_UNRESOLVED, None)
 
 
 def test_sha_anchor_status_non_ancestor(board):
-    assert board._sha_anchor_status("beef0042", runner=_anchor_git(0, 1)) == \
-        (board._ANCHOR_NON_ANCESTOR, None)
+    assert freshness_lint._sha_anchor_status(board._home(), "beef0042", runner=_anchor_git(0, 1)) == \
+        (freshness_lint._ANCHOR_NON_ANCESTOR, None)
 
 
 def test_sha_anchor_status_non_sha(board):
-    assert board._sha_anchor_status("HEAD", runner=_anchor_git(0, 0)) == \
-        (board._ANCHOR_NON_SHA, None)
+    assert freshness_lint._sha_anchor_status(board._home(), "HEAD", runner=_anchor_git(0, 0)) == \
+        (freshness_lint._ANCHOR_NON_SHA, None)
 
 
 def test_sha_anchor_status_hex_named_ref_is_non_sha(board):
     # codex R5: rev-parse 해소(rc0)하나 OID 가 입력 prefix 아님(ref 로 해소) → non-sha.
     ref_oid = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
-    assert board._sha_anchor_status(
-        "deadbeef", runner=_anchor_git(0, 0, oid=ref_oid))[0] == board._ANCHOR_NON_SHA
-    assert board._sha_anchor_status(
-        "deadbeef", runner=_anchor_git(0, 0, oid="deadbeef" + "0" * 32))[0] == board._ANCHOR_OK
+    assert freshness_lint._sha_anchor_status(board._home(),
+        "deadbeef", runner=_anchor_git(0, 0, oid=ref_oid))[0] == freshness_lint._ANCHOR_NON_SHA
+    assert freshness_lint._sha_anchor_status(board._home(),
+        "deadbeef", runner=_anchor_git(0, 0, oid="deadbeef" + "0" * 32))[0] == freshness_lint._ANCHOR_OK
 
 
 def test_sha_anchor_status_unknown_env_error(board):
-    assert board._sha_anchor_status("deadbeef", runner=_anchor_git(128, 0))[0] == board._ANCHOR_UNKNOWN
-    assert board._sha_anchor_status("deadbeef", runner=_anchor_git(0, 128))[0] == board._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(board._home(), "deadbeef", runner=_anchor_git(128, 0))[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(board._home(), "deadbeef", runner=_anchor_git(0, 128))[0] == freshness_lint._ANCHOR_UNKNOWN
 
 
 def test_sha_anchor_status_ambiguous(board):
     # codex R22: --quiet rev-parse 실패(rc1·stderr 억제) + non-quiet 진단이 모호 stderr → ambiguous
     # (env/unresolved 아님). rc≥2 로 억제되는 git 버전도 진단이 잡게(양쪽 rev 확인).
     for rev in (1, 128):
-        assert board._sha_anchor_status(
-            "25b0abc", runner=_anchor_git(rev, 0, ambig=True))[0] == board._ANCHOR_AMBIGUOUS
+        assert freshness_lint._sha_anchor_status(board._home(),
+            "25b0abc", runner=_anchor_git(rev, 0, ambig=True))[0] == freshness_lint._ANCHOR_AMBIGUOUS
 
 
 def test_rev_parse_ambiguous_signal(board):
     # non-quiet stderr 3-tuple 에 모호 신호가 있으면 True, 2-tuple(대역 stderr 없음)·예외는 False.
-    assert board._rev_parse_ambiguous(
+    assert freshness_lint._rev_parse_ambiguous(board._home(),
         "25b0", runner=lambda a: (128, "", _REAL_AMBIGUOUS_STDERR)) is True
-    assert board._rev_parse_ambiguous("25b0", runner=lambda a: (1, "")) is False
-    assert board._rev_parse_ambiguous("25b0", runner=_raising_git) is False
+    assert freshness_lint._rev_parse_ambiguous(board._home(), "25b0", runner=lambda a: (1, "")) is False
+    assert freshness_lint._rev_parse_ambiguous(board._home(), "25b0", runner=_raising_git) is False
 
 
 def test_sha_anchor_status_unknown_empty_or_raise(board):
-    assert board._sha_anchor_status("", runner=_anchor_git())[0] == board._ANCHOR_UNKNOWN
-    assert board._sha_anchor_status("cafe0001", runner=_raising_git)[0] == board._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(board._home(), "", runner=_anchor_git())[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(board._home(), "cafe0001", runner=_raising_git)[0] == freshness_lint._ANCHOR_UNKNOWN
 
 
 # codex R16: 검증 후 하류 명령이 **canonical full OID** 를 쓰는지 argv 로 단언 (원 입력 재해석 제거).

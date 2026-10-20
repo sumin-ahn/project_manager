@@ -1,1 +1,1 @@
-"""앱 층: 도구 호출 판정 보조(hooks)·세션 연속성(session)·회귀 게이트 해소와 판정(regression)·릴리즈 라이브 게이트 판정(release)·회귀 작업 폴더 해소(slot_resolution)·라운드 시드와 산출 없음 판정(round_seed). domain·infra 를 조합한다."""
+"""앱 층: 도구 호출 판정 보조(hooks)·세션 연속성(session)·회귀 게이트 해소와 판정(regression)·릴리즈 라이브 게이트 판정(release)·회귀 작업 폴더 해소(slot_resolution)·라운드 시드와 산출 없음 판정(round_seed)·문서 lint 축별 판정(ticket_lint·body_lint·wikilink_lint·wiki_lint·freshness_lint·conf_lint·areas_lint)·채택자 lint 훅 실행(lint_hooks)·ADR 발행(adr_issue)·결정 개정 잔여 모순 lint(adr_contradiction). domain·infra 를 조합한다."""

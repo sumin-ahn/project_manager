@@ -35,7 +35,7 @@ import pytest
 
 from _win_skip import posix_mode_supported
 from _engine_tree import engine_python_files
-from pm_engine.infra import raw_output
+from pm_engine.infra import log_store, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -699,7 +699,7 @@ def test_pm_log_lock_path_stays_in_project_local(tmp_path):
     """log 락 = `.project_manager/.local/log.lock` (수렴 전 경로 규약 보존)."""
     pm_log = _load(TOOLS / "pm_log.py", "pm_log_file_lock_seam")
     current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-    with pm_log.log_write_lock(current):
+    with log_store.log_write_lock(current):
         pass
     assert (tmp_path / ".project_manager" / ".local" / "log.lock").is_file()
 
@@ -777,7 +777,8 @@ def test_lock_convergence_has_no_pending_duplicates():
 def test_converged_tools_delegate_instead_of_reimplementing():
     """수렴 도구는 락 컨텍스트를 seam 위임으로만 연다 (자체 open+acquire 재구현 0)."""
     for tool in (
-        "board.py", "pm_log.py", "pm_engine/infra/raw_output.py", "pm_handoff.py", "worktree_pool.py",
+        "board.py", "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_handoff.py",
+        "worktree_pool.py",
         "additional_reviewer.py",
     ):
         source = (TOOLS / tool).read_text(encoding="utf-8")
@@ -799,7 +800,7 @@ def test_o_append_write_lives_only_in_the_shared_seam():
 
 def test_converged_tools_delegate_the_append_write():
     """append 소비 도구는 `_append_atomic` 사본을 정의하지 않고 seam 을 부른다."""
-    for tool in ("board.py", "pm_log.py"):
+    for tool in ("board.py", "pm_engine/infra/log_store.py"):
         source = (TOOLS / tool).read_text(encoding="utf-8")
         assert "append_atomic(" in source, tool
         assert not re.search(r"^def _append_atomic\b", source, re.MULTILINE), tool

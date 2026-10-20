@@ -27,6 +27,7 @@ import pytest
 from conftest import ensure_product_slot
 from _engine_tree import engine_python_files
 from pm_engine.infra import areas_store, lease_store, pm_paths, pre_push_hook, python_env
+from pm_engine.app import areas_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -459,17 +460,17 @@ def _new_args(**kv):
 
 def test_init_without_prefix_leaves_no_unregistered_shape(board):
     """무prefix init 1회 → repo 행 등록 + conf 에 정체성 키 0 + 이관 안내 소멸."""
-    assert board.lint_areas_repo_unregistered()          # 등록 전엔 안내가 붙는다
+    assert areas_lint.lint_areas_repo_unregistered(board._home())          # 등록 전엔 안내가 붙는다
     assert board.cmd_init(_init_args()) == 0
     assert areas_store.registered_repos(board._home()) == {board.REPO.name}
     conf = board.LOCAL_CONF.read_text(encoding="utf-8")
     assert "session=" not in conf and "prefix=" not in conf
-    assert board.lint_areas_repo_unregistered() == []    # 등록 후엔 사라진다
+    assert areas_lint.lint_areas_repo_unregistered(board._home()) == []    # 등록 후엔 사라진다
 
 
 def test_unregistered_shape_advisory_names_the_init_rerun(board):
     """등록 0 형상의 이관 안내는 처방(`board.py init` 재실행)을 지목하고 never-block 이다."""
-    findings = board.lint_areas_repo_unregistered()
+    findings = areas_lint.lint_areas_repo_unregistered(board._home())
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("areas.md", "areas-repo-unregistered")

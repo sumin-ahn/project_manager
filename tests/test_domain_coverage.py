@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from pm_engine.infra import manifest_store
+from pm_engine.app import lint_hooks
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -875,7 +876,7 @@ def test_coverage_finding_flows_through_board_and_gate_stays_zero(
     assert any(label == "beta.py" and kind == "coverage"
                for label, kind, _detail in findings)
     monkeypatch.setattr(board, "lint_tickets", lambda: findings)
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
 
     assert "coverage" in board._ADVISORY_LINT_KINDS
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0

@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, write_lf
-from pm_engine.infra import areas_store, delegate_ledger, pm_paths, raw_output
+from pm_engine.infra import areas_store, delegate_ledger, log_store, pm_paths, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -542,7 +542,7 @@ def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch
     )
     current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
 
-    mod.append_log(current, "\nentry")
+    log_store.append_log(current, "\nentry")
 
     assert calls == [(current, "\nentry")]
     assert (tmp_path / ".project_manager" / ".local" / "log.lock").is_file()
@@ -561,10 +561,10 @@ def test_append_log_locked_is_the_lock_free_inner_primitive(tmp_path, monkeypatc
     )
     current = tmp_path / "current.md"
 
-    mod.append_log_locked(current, "entry")
+    log_store.append_log_locked(current, "entry")
 
     assert calls == [(current, "entry")]
-    assert not mod._log_lock_path(current).exists()
+    assert not log_store._log_lock_path(current).exists()
 
 
 def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
@@ -590,7 +590,7 @@ def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(lock_mod.os, "close", lambda fd: calls.append(("close", fd)))
 
-    with mod.log_write_lock(current):
+    with log_store.log_write_lock(current):
         calls.append(("critical",))
 
     assert calls[0][0:2] == (
@@ -609,16 +609,16 @@ def test_all_current_log_writers_use_shared_seam_grep_guard():
     """complete·handoff·decide·archive/checkpoint에 직접 current RMW가 재발하지 않는다."""
     consumer_sources = {
         name: (TOOLS / name).read_text(encoding="utf-8")
-        for name in ("ticket_finish.py", "pm_handoff.py", "pm_adr.py")
+        for name in ("ticket_finish.py", "pm_handoff.py", "pm_engine/app/adr_issue.py")
     }
     for name, source in consumer_sources.items():
-        assert "_load_pm_log(" in source, name
+        assert "log_store." in source, name
         assert ".append_log(" in source or ".append_log_locked(" in source, name
         assert not re.search(r"self\._log_file\.write_text\(", source), name
 
     handoff_source = consumer_sources["pm_handoff.py"]
     if ".append_log_locked(" in handoff_source:
-        assert "with pm_log.log_write_lock(" in handoff_source
+        assert "with log_store.log_write_lock(" in handoff_source
 
     pm_log_source = PM_LOG_PY.read_text(encoding="utf-8")
     archive_source = pm_log_source.split("def cmd_archive", 1)[1].split(
@@ -627,7 +627,7 @@ def test_all_current_log_writers_use_shared_seam_grep_guard():
     checkpoint_source = pm_log_source.split("def cmd_checkpoint", 1)[1].split(
         "# ── 유틸", 1
     )[0]
-    assert "with log_write_lock(CURRENT_FILE):" in archive_source
+    assert "with log_store.log_write_lock(CURRENT_FILE):" in archive_source
     assert "_replace_atomic(CURRENT_FILE, new_current)" in archive_source
     assert "CURRENT_FILE.write_text(" not in archive_source
     assert "append_log(CURRENT_FILE," in checkpoint_source
@@ -1773,7 +1773,7 @@ def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypa
 
     def run_append():
         try:
-            mod.append_log(current, "\n" + appended)
+            log_store.append_log(current, "\n" + appended)
         except BaseException as exc:  # thread 예외를 주 테스트로 전달.
             errors.append(exc)
         finally:

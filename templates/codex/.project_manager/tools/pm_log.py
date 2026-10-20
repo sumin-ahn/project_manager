@@ -47,14 +47,13 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator
 from pathlib import Path
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, console, delegate_ledger, fs, pm_paths, raw_output, repo_files  # noqa: E402
+from pm_engine.infra import areas_store, console, delegate_ledger, fs, log_store, pm_paths, raw_output, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -229,62 +228,6 @@ def next_archive_index(archive_dir: Path) -> int:
 
 # ── 공유 log write seam ───────────────────────────────────────────────────
 
-def _log_lock_path(log_path: Path) -> Path:
-    """current.md가 속한 `.project_manager/.local/log.lock`을 해소한다.
-
-    운영 경로가 아닌 주입형 테스트 경로는 그 파일의 부모 아래 `.local/`로 격리한다.
-    """
-    log_path = Path(log_path)
-    log_dir = log_path.parent
-    if (
-        log_dir.name == "log"
-        and log_dir.parent.name == "wiki"
-        and log_dir.parent.parent.name == ".project_manager"
-    ):
-        local_dir = log_dir.parent.parent / ".local"
-    else:
-        local_dir = log_dir / ".local"
-    return local_dir / "log.lock"
-
-
-@contextlib.contextmanager
-def log_write_lock(log_path: Path) -> Iterator[None]:
-    """모든 `log/current.md` writer를 단일 OS 파일락으로 직렬화한다.
-
-    운영 경로의 잠금 파일은 `.project_manager/.local/log.lock` 하나다. append와
-    archive 재작성 모두 이 seam을 거쳐 서로의 갱신을 덮어쓰지 않는다. 프로세스가
-    종료되면 OS가 락을 회수하므로 stale lock은 남지 않는다. 재진입은 지원하지 않는다.
-
-    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam이 소유하고
-    경로 규약만 이 도구가 정한다.
-    """
-    with fs.exclusive_file_lock(_log_lock_path(Path(log_path))):
-        yield
-
-
-def append_log(path: Path, text: str) -> None:
-    """공유 log append 공개 seam — flock 안에서 O_APPEND 단일 write.
-
-    O_APPEND 원자 추가 자체는 공용 `fs` seam이 소유한다 — pm_log는 락 경로
-    규약과 부모 디렉토리 생성만 정한다.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with log_write_lock(path):
-        append_log_locked(path, text)
-
-
-def append_log_locked(path: Path, text: str) -> None:
-    """이미 ``log_write_lock(path)``를 보유한 호출자의 O_APPEND primitive.
-
-    read→판정→append 전체를 한 임계구역에 묶어야 하는 소비자용이다. 이 함수 자체는 락을
-    잡지 않는다. 공개 기본 경로는 계속 :func:`append_log`이며, 소비자는 반드시 같은
-    ``log_write_lock`` 문맥 안에서만 이 함수를 호출한다.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fs.append_atomic(path, text)
-
 
 def _replace_atomic(path: Path, text: str) -> None:
     """같은 디렉터리의 임시 파일을 쓴 뒤 `fs.atomic_replace`로 원자 교체한다."""
@@ -345,7 +288,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
     # 존재 확인부터 최신 내용 read, archive index 발행, current 원자 교체까지 한 lock
     # 구간이다. append writer도 같은 lock을 쓰므로 archive가 읽은 뒤 들어온 entry가
     # stale `new_current`에 덮여 유실되는 interleave가 없다.
-    with log_write_lock(CURRENT_FILE):
+    with log_store.log_write_lock(CURRENT_FILE):
         if not CURRENT_FILE.exists():
             print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
             return 2
@@ -1363,14 +1306,14 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     # 선행 LF는 기존 파일이 trailing newline 없이 끝나도 새 `##` entry 경계를 보장한다.
     # 이미 LF로 끝난 파일에는 빈 줄 하나가 추가될 뿐이며, 전체 payload는 단일 원자 write다.
     if args.trigger != "compaction":
-        append_log(CURRENT_FILE, payload)
+        log_store.append_log(CURRENT_FILE, payload)
         print(f"✓ checkpoint append: task={identity_name} · trigger={args.trigger}")
         return 0
 
     marker = None
     claimed = None
     # boundary 유도→marker 선점→append를 log lock 하나에 묶어 동시 호출도 같은 log 상태를 본다.
-    with log_write_lock(CURRENT_FILE):
+    with log_store.log_write_lock(CURRENT_FILE):
         current_text = fs.read_text_shared(CURRENT_FILE, encoding="utf-8")
         boundary_id, phase, implicit_state = _resolve_compaction_boundary(
             args, task=identity_name, current_text=current_text,
@@ -1398,7 +1341,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         try:
-            append_log_locked(CURRENT_FILE, payload)
+            log_store.append_log_locked(CURRENT_FILE, payload)
         except Exception:
             # 같은 log lock 안에서만 rollback하므로 후속 선점과 unlink 경쟁이 생기지 않는다.
             if marker is not None and claimed is True:

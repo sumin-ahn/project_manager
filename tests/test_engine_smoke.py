@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pm_engine.app import lint_hooks, wikilink_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -41,8 +42,8 @@ def additional_reviewer():
 # ── import + 핵심 심볼 존재 (R14·R15·R16·R17) ──────────────────────────
 
 def test_board_exposes_lint_seams(board):
-    assert callable(board.lint_wikilinks)        # R14
-    assert callable(board._run_lint_hooks)       # R15
+    assert callable(wikilink_lint.lint_wikilinks)        # R14
+    assert callable(lint_hooks._run_lint_hooks)       # R15
 
 
 def test_ticket_finish_pytest_parser_seams(ticket_finish):

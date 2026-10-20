@@ -44,7 +44,8 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, manifest_store, repo_coordinates, repo_files, ticket_store  # noqa: E402
+from pm_engine.infra import console, fs, manifest_store, pm_paths, repo_coordinates, repo_files, ticket_store  # noqa: E402
+from pm_engine.app import freshness_lint  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
@@ -374,32 +375,17 @@ def _real_git_runner(cwd: Path) -> GitRunner:
 def _page_owner_repo(page: dict) -> tuple[Path | None, str | None]:
     """페이지 ``repo:`` 채널을 소유 checkout 실경로로 해소한다.
 
-    board의 `_freshness_owner_repo`가 `self`/`upstream` 해소의 단일 진실이다. 미지원/빈 repo,
-    upstream 미설정·URL·이동 등은 ``(None, reason)``으로 보존한다. 구 board(리졸버 부재)와
-    board 로드 불가는 키 부재/명시 self만 기존 self checkout으로 자연 퇴화한다.
+    `freshness_lint._freshness_owner_repo`가 `self`/`upstream` 해소의 단일 진실이다. 미지원/빈 repo,
+    upstream 미설정·URL·이동 등은 ``(None, reason)``으로 보존한다.
 
     freshness runner와 normalized touch 매칭이 이 seam을 공유한다. 후자는 반환 checkout과
     ``NormalizedRepoPath.workspace``의 git common-dir 정체성을 대조해 멀티-repo 동명
     상대경로 오매칭을 막되, 같은 repo의 다른 linked-worktree 슬롯은 허용한다.
     """
-    board = _load_board()
-    resolver = getattr(board, "_freshness_owner_repo", None) if board is not None else None
-    if resolver is None:
-        # 구 board/로드 불가에서도 `upstream`을 self로 흡수하지 않는다. 키 부재/명시 self만
-        # legacy self checkout으로 퇴화하고 그 밖의 값은 unknown(None).
-        owner = page.get("repo", "self")
-        if not isinstance(owner, str) or owner.strip() != "self":
-            return (None, "페이지 repo 소유 checkout resolver 부재")
-        try:
-            return (REPO.resolve(), None)
-        except (OSError, RuntimeError) as exc:
-            return (None, f"self 소유 checkout 해소 실패: {exc}")
     try:
         owner = page["repo"] if "repo" in page else "self"
-        owner_repo, owner_error = resolver(owner)
+        owner_repo, owner_error = freshness_lint._freshness_owner_repo(pm_paths.home_at(REPO), owner)
     except Exception as exc:  # noqa: BLE001 — owner 해소 실패는 stale unknown.
-        if _is_engine_rev_skew(exc):
-            raise      # 형제 사본 불일치는 unknown 한 줄로 삼키지 않는다(fail-loud 보존).
         return (None, f"페이지 repo 소유 checkout 해소 예외: {exc}")
     if owner_repo is None:
         return (None, owner_error or "페이지 repo 소유 checkout 미해소")
@@ -964,7 +950,7 @@ def pages_for_path(
     covers 페이지(코드-무관 개념)는 어떤 경로도 매치하지 않는다. 실재 디렉토리는 gap과
     같은 전개기로 파일 목록을 얻고 파일별 covers 결과를 페이지 단위로 합친다. normalized touch는
     owner 채널뿐 아니라 검증된 workspace의 **저장소 정체성**도 소비한다. 페이지 ``repo:``
-    채널을 ``board._freshness_owner_repo``로 해소한 checkout과 workspace가 같은 git
+    채널을 ``freshness_lint._freshness_owner_repo``로 해소한 checkout과 workspace가 같은 git
     common-dir를 공유할 때만 매치한다. 소유 checkout/정체성 미해소·별개 저장소와 self 채널
     탈락은 advisory를 낸다.
     """

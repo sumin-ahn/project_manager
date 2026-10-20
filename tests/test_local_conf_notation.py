@@ -36,7 +36,7 @@ from _engine_tree import engine_python_files
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store, pm_paths, python_env
-from pm_engine.app import regression
+from pm_engine.app import conf_lint, regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -721,7 +721,7 @@ def test_board_lint_surfaces_legacy_keys_and_restated_comments(tmp_path, monkeyp
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
-    findings = board.lint_local_conf()
+    findings = conf_lint.lint_local_conf(board._home())
     details = "\n".join(detail for _where, _kind, detail in findings)
 
     assert findings, "실 conf 의 구표기가 조회면에 뜨지 않는다"
@@ -739,7 +739,7 @@ def test_board_lint_is_quiet_on_a_clean_conf(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
-    assert board.lint_local_conf() == []
+    assert conf_lint.lint_local_conf(board._home()) == []
 
 
 # ── ⑩ 어댑터 파서·셸 훅 (엔진을 import 하지 않는 독립 해소 경로) ───────────

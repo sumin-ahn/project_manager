@@ -40,6 +40,7 @@ from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
 # codex 라이브 공용 헬퍼 (격리 CODEX_HOME + auth + codex exec·conftest 소유·ADR-0070 T-0407).
 from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
 from pm_engine.infra import ticket_store
+from pm_engine.app import body_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -142,7 +143,7 @@ def _assert_self_contained_ticket(dest: Path, proc: subprocess.CompletedProcess,
         assert path.parent.name in ("open", "claimed"), (
             f"발행 티켓이 {path.parent.name}/ 에 있음 — 미완 authoring(false-green 가드).\n" + tail)
     # 자족성 — authoring 게이트와 동일 strict(5절 존재 + placeholder 0). 하나라도 남으면 fail.
-    issues = board._body_lint_issues(path.stem, body, strict_sections=True)
+    issues = body_lint._body_lint_issues(board._home(), path.stem, body, strict_sections=True)
     assert not issues, (
         f"발행된 티켓 {path.name} 에 placeholder/thin 잔존 — 스킬 fill 미완(자족성 위반): "
         f"{[(k, d) for _t, k, d in issues]}\n" + tail)
@@ -231,7 +232,7 @@ def test_backbone_fill_gate_tokens_intact():
     board = _load_board()
     for token in ("이 ticket 이 만들거나 바꾸는", "구현 방향에 대한 확정 사항",
                   "[[architecture]] 관련 절", "T-XXXX"):
-        assert token in board._PLACEHOLDERS, (
+        assert token in body_lint._PLACEHOLDERS, (
             f"강화 토큰 {token!r} 이 _PLACEHOLDERS 에서 빠짐 — 절별 자족성 게이트 후퇴.")
     # 목표·DoD 만 채우고 인터페이스·결정을 뼈대로 남긴 본문은 issue 를 내야 한다(게이트 실효 확인).
     half = (
@@ -241,7 +242,7 @@ def test_backbone_fill_gate_tokens_intact():
         "## 완료 조건 (Definition of Done)\n- [ ] 실제 산출물\n\n"
         "## 참고\n- [[ADR-0049]]\n\n## 메모\n"
     )
-    assert board._body_lint_issues("T-0001", half), \
+    assert body_lint._body_lint_issues(board._home(), "T-0001", half), \
         "절반-채운 본문이 게이트를 통과함 — 강화 토큰이 실효하지 않음."
 
 

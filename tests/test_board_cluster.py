@@ -28,7 +28,8 @@ from _git_fixture import remove_git_tree
 from _slot_seed import SLOT, SLOT_REPO, lease_row, seed_slot
 from conftest import anchor_board_module
 from pm_engine.domain import ticket_rules
-from pm_engine.infra import git, pm_paths, ticket_store
+from pm_engine.infra import cluster_store, git, pm_paths, ticket_store
+from pm_engine.app import ticket_lint
 
 # 코드 트리를 보유한 task — claim·new·cluster new 는 `--task` 정체성이 필요하다(T-0962).
 _TASK = "main"
@@ -399,8 +400,8 @@ def test_cluster_new_absorbs_the_auto_size_one_ledgers(env, capsys):
     assert f"tickets/clusters/C-{first}.md" not in tracked, tracked
     assert "tickets/clusters/C-absorb.md" in tracked, tracked
     # 중복 귀속 advisory 가 생기지 않는다(장부는 하나뿐).
-    kinds = [kind for _id, kind, _detail in board.lint_clusters()]
-    assert board._CLUSTER_DUPLICATE_LINT_KIND not in kinds
+    kinds = [kind for _id, kind, _detail in ticket_lint.lint_clusters(board._home())]
+    assert ticket_lint._CLUSTER_DUPLICATE_LINT_KIND not in kinds
 
 
 @requires_git
@@ -429,10 +430,10 @@ def test_cluster_new_is_loud_when_the_absorbed_ledger_cannot_be_removed(
     assert "옛 장부에서" in err and first in err and "중복 귀속" in err
     # 옛 장부는 멤버를 그대로 쥐고 있다 — 그 사실이 rc 와 lint 로 함께 보인다.
     assert auto.is_file()
-    assert board.cluster_tickets(board.load_cluster(f"C-{first}")) == [first]
+    assert cluster_store.cluster_tickets(board.load_cluster(f"C-{first}")) == [first]
     assert board.cluster_members("C-absorbfail") == (first, second)
-    kinds = {kind for _id, kind, _detail in board.lint_clusters()}
-    assert board._CLUSTER_DUPLICATE_LINT_KIND in kinds
+    kinds = {kind for _id, kind, _detail in ticket_lint.lint_clusters(board._home())}
+    assert ticket_lint._CLUSTER_DUPLICATE_LINT_KIND in kinds
 
 
 @requires_git
@@ -487,7 +488,7 @@ def test_cluster_new_rejects_bad_input_before_any_write(
 
     assert rc == 1
     assert fragment in capsys.readouterr().err
-    assert not board.clusters_dir().exists()
+    assert not cluster_store.clusters_dir(board._home()).exists()
 
 
 @requires_git
@@ -635,7 +636,7 @@ def test_cluster_members_without_ledger_is_empty(env, capsys):
     assert board.cluster_members("C-T-0777") == ()
     # 없는 티켓 ID 모양도 같은 빈 값이다(이름 모양은 입력이 아니다).
     assert board.cluster_members("C-T-9999") == ()
-    assert board.lint_clusters() == []      # 장부가 없으니 관측할 것도 없다.
+    assert ticket_lint.lint_clusters(board._home()) == []      # 장부가 없으니 관측할 것도 없다.
 
     # 선언된 묶음만 멤버를 답한다 — 멤버가 흡수된 자동 장부 이름도 빈 값이다.
     first = _issue_ticket(board, "선언된 멤버")
@@ -759,7 +760,7 @@ def test_reopen_to_draft_creates_no_ledger(env, capsys):
 
     assert rc == 0
     assert (board_dir / "tickets" / ".drafts" / "T-0502-legacy.md").exists()
-    assert not board.clusters_dir().exists()
+    assert not cluster_store.clusters_dir(board._home()).exists()
     assert not _ticket_fm(board, "T-0502").get("cluster")
     assert board.cluster_members("C-T-0502") == ()
 
@@ -776,7 +777,7 @@ def test_draft_defers_attribution_until_promote(board, tmp_path, capsys):
     assert board.cmd_new(_new_args("미충전")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*.md"))[0]
     tid = ticket_store._canonical_ticket_id(draft)
-    assert not board.clusters_dir().exists()
+    assert not cluster_store.clusters_dir(board._home()).exists()
     assert not ticket_store.load_ticket(draft)[0].get("cluster")
 
     fm, _body = ticket_store.load_ticket(draft)
@@ -811,17 +812,17 @@ def test_lint_reports_member_and_duplicate_as_advisory(env, capsys):
     # 중복 귀속 — 다른 장부가 같은 티켓을 멤버로 담는다.
     board.dump_cluster(board._new_cluster_fm("C-shadow", [first]))
 
-    findings = board.lint_clusters()
+    findings = ticket_lint.lint_clusters(board._home())
 
     kinds = {kind for _id, kind, _detail in findings}
     assert kinds == {
-        board._CLUSTER_MEMBER_LINT_KIND,
-        board._CLUSTER_DUPLICATE_LINT_KIND,
+        ticket_lint._CLUSTER_MEMBER_LINT_KIND,
+        ticket_lint._CLUSTER_DUPLICATE_LINT_KIND,
     }, findings
     # 두 kind 다 advisory 다 — `lint --gate` 차단 집합에 들지 않는다.
     assert kinds <= board._ADVISORY_LINT_KINDS
     duplicate = [item for item in findings
-                 if item[1] == board._CLUSTER_DUPLICATE_LINT_KIND][0]
+                 if item[1] == ticket_lint._CLUSTER_DUPLICATE_LINT_KIND][0]
     assert duplicate[0] == first and "C-obs" in duplicate[2] and "C-shadow" in duplicate[2]
 
 
@@ -846,10 +847,10 @@ def test_lint_clusters_reads_only_the_ledger(split_env, capsys):
     ledger["tickets"] = [first, "T-9998"]
     board.dump_cluster(ledger)
 
-    findings = board.lint_clusters()
+    findings = ticket_lint.lint_clusters(board._home())
 
     assert {kind for _id, kind, _detail in findings} == {
-        board._CLUSTER_MEMBER_LINT_KIND}, findings
+        ticket_lint._CLUSTER_MEMBER_LINT_KIND}, findings
     assert all("통합 브랜치" not in detail for _id, _kind, detail in findings), findings
     assert not hasattr(board, "_CLUSTER_BRANCH_LINT_KIND")
 
@@ -967,7 +968,7 @@ def test_t0930_publish_binding(split_env, tmp_path, capsys):
     with pytest.raises(SystemExit):
         board.cmd_new(_new_args("무선택"))
     assert _all_ticket_files(board) == []
-    assert board.all_clusters() == []
+    assert cluster_store.all_clusters(board._home()) == []
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == before
     assert board.cmd_new(_new_args("명시 제품", repo=SLOT_REPO, slot=1)) == 0
     path = _all_ticket_files(board)[0]
@@ -996,7 +997,7 @@ def test_t0930_publish_binding_rejects_parent_git(split_env, tmp_path, marker):
     except SystemExit as exc:
         rc = exc.code
     assert rc not in (0, None)
-    assert board.all_clusters() == [] and _all_ticket_files(board) == []
+    assert cluster_store.all_clusters(board._home()) == [] and _all_ticket_files(board) == []
     assert (board.LEASES_FILE.read_bytes(), _git(["rev-parse", "HEAD"], board_dir).stdout,
             _git(["rev-parse", "HEAD"], tmp_path).stdout) == before
 
@@ -1012,7 +1013,7 @@ def test_t0930_publish_binding_linked_worktree(split_env, tmp_path):
     assert (linked / ".git").is_file()
     assert board._cluster_publish_base_branch(_new_args("linked", repo=SLOT_REPO, slot=3)) == (str(linked), "task/linked")
     assert board.cmd_new(_new_args("linked", repo=SLOT_REPO, slot=3)) == 0
-    ledger = board.all_clusters()[0]
+    ledger = cluster_store.all_clusters(board._home())[0]
     assert ledger["base_branch"] == "task/linked" and ledger["branch"] is None
 
 
@@ -1043,7 +1044,7 @@ def test_t0930_publish_revalidation_rejects_final_basis_loss(
         if observed:
             assert len(observed) == 1
             assert writes == []
-            assert _all_ticket_files(board) == [] and board.all_clusters() == []
+            assert _all_ticket_files(board) == [] and cluster_store.all_clusters(board._home()) == []
             assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
             assert board.LEASES_FILE.read_bytes() == leases
             if damage == "detached":
@@ -1063,7 +1064,7 @@ def test_t0930_publish_revalidation_rejects_final_basis_loss(
         board.cmd_new(_new_args("최종 제품 기준 거부", repo=SLOT_REPO, slot=1))
     assert observed == [(str(slot), _BASE_BRANCH)]
     assert writes == []
-    assert _all_ticket_files(board) == [] and board.all_clusters() == []
+    assert _all_ticket_files(board) == [] and cluster_store.all_clusters(board._home()) == []
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
     assert board.LEASES_FILE.read_bytes() == leases
 

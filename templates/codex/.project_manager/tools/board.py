@@ -40,18 +40,15 @@ import yaml
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.app import hooks, regression, release, round_seed  # noqa: E402
+from pm_engine.app import areas_lint, body_lint, conf_lint, freshness_lint, hooks, lint_hooks, regression, release, round_seed, ticket_lint, wiki_lint, wikilink_lint  # noqa: E402
 from pm_engine.cli import regression_cmd, task_args  # noqa: E402
-from pm_engine.domain import areas_rules, conf_schema, design_rules, git_policy, identity_args, markdown_text, model_lint, pytest_report, review_form, review_state, round_rules, shell_policy, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, clock, conf_store, console, delegate_ledger, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, python_env, regression_store, repo_coordinates, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
+from pm_engine.domain import areas_rules, conf_schema, design_rules, git_policy, gitattributes_rules, identity_args, markdown_text, pytest_report, review_form, review_state, round_rules, shell_policy, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, clock, cluster_store, conf_store, console, delegate_ledger, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, python_env, regression_store, repo_coordinates, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
 IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
-DECISIONS_DIR = REPO / ".project_manager" / "wiki" / "decisions"
-SPECS_DIR = REPO / ".project_manager" / "wiki" / "specs"
 ARCHITECTURE_FILE = REPO / ".project_manager" / "wiki" / "architecture.md"  # 현재-아키텍처 단일 진실 (freshness lint 비교 대상)
-HOOKS_DIR = REPO / ".project_manager" / "hooks"  # instance-owned lint hooks
 BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
@@ -942,15 +939,12 @@ class _ReadBoardResolution(NamedTuple):
 
 
 # 등록 worktree read 폴백에서 같은 PM 홈으로 옮겨야 하는 import-time 경로 상수 전수.
-# board_root/tickets/areas는 lazy override가 담당하고, 이 표는 wiki 잔류 상태·instance hook·
+# board_root/tickets/areas는 lazy override가 담당하고, 이 표는 wiki 잔류 상태·
 # PM 로컬 설정·그 상태를 읽는 deep-import 모듈을 담당한다. 상대경로가 단일 진실이라 새
 # PM-owned 입력을 추가할 때 이 표와 `_READ_PM_INPUTS_BY_SUBCOMMAND`를 함께 갱신하게 된다.
 _READ_PM_PATH_RELS: dict[str, str] = {
     "IDEAS_DIR": "wiki/ideas",
-    "DECISIONS_DIR": "wiki/decisions",
-    "SPECS_DIR": "wiki/specs",
     "ARCHITECTURE_FILE": "wiki/architecture.md",
-    "HOOKS_DIR": "hooks",
     "BOARD_FILE": "wiki/board.md",
     "LOG_FILE": "wiki/log/current.md",
     "STATUS_FILE": "wiki/status.md",
@@ -974,26 +968,23 @@ def _read_pm_inputs_at(pm_home: Path, board_root_path: Path) -> Iterator[None]:
     """read dispatch 동안 PM-owned 입력 전부를 `pm_home` 하나로 재앵커한다.
 
     module 상수는 import 시 REPO에 굳으므로 board_root override만으로는 decisions/ideas 등이
-    worktree에 남는다. 이 scope는 그 상수와 파생 tuple을 함께 바꾸고 finally에서 원복한다.
+    worktree에 남는다. 이 scope는 그 상수를 바꾸고 finally에서 원복한다.
     mutation/sidecar는 이 context에 진입하지 않아 쓰기 게이트 의미론은 바뀌지 않는다.
     """
-    global _READ_BOARD_ROOT_OVERRIDE, _READ_PM_HOME_OVERRIDE, _SCOPE_AWARE_DIRS
+    global _READ_BOARD_ROOT_OVERRIDE, _READ_PM_HOME_OVERRIDE
     saved = {name: globals()[name] for name in _READ_PM_PATH_RELS}
-    saved_scope_dirs = _SCOPE_AWARE_DIRS
     saved_board_override = _READ_BOARD_ROOT_OVERRIDE
     saved_home_override = _READ_PM_HOME_OVERRIDE
     pm_dir = pm_home / ".project_manager"
     try:
         for name, rel in _READ_PM_PATH_RELS.items():
             globals()[name] = pm_dir / rel
-        _SCOPE_AWARE_DIRS = (DECISIONS_DIR, SPECS_DIR)
         _READ_BOARD_ROOT_OVERRIDE = board_root_path
         _READ_PM_HOME_OVERRIDE = pm_home
         yield
     finally:
         for name, value in saved.items():
             globals()[name] = value
-        _SCOPE_AWARE_DIRS = saved_scope_dirs
         _READ_BOARD_ROOT_OVERRIDE = saved_board_override
         _READ_PM_HOME_OVERRIDE = saved_home_override
 
@@ -2347,20 +2338,6 @@ def _board_submodule_name() -> str | None:
     return None
 
 
-# ── areas.md union merge 배포 ───────────────────
-# areas.md 의 동시 등록 안전(merge 시 **양쪽 행을 모두 보존**)은 git 내장 `merge=union` 드라이버에
-# 기댄다. 그 선언은 **areas.md 를 담은 git** 의 `.gitattributes` 에 있어야 유효하다:
-#   - inline(legacy) : areas.md = `<REPO>/.project_manager/areas.md` → 루트 `.gitattributes` 의
-#     `.project_manager/areas.md merge=union` 이 그대로 유효(engine.manifest 로 채택자에도 배포).
-#   - board 분리     : areas.md 는 board git(submodule) *안* 이라 루트 선언이 **다른 git** 이라 닿지
-#     않는다 — `git -C .project_manager/board check-attr merge -- areas.md` = unspecified.
-#     그래서 board git 자체에 `.gitattributes` 를 둔다: 신규는 pm_import seed, 기존 board 는
-#     `_ensure_board_gitattributes` backfill. 두 형상 다 union 이 성립한다(루트 선언은 유지).
-# 판정은 전부 **파일 내용**으로 한다 — 런타임 `git check-attr` 호출을 늘리지 않는다(비용·이식성).
-_AREAS_UNION_DRIVER = "union"
-# 형상별 areas.md 경로 표기(그 git 의 `.gitattributes` 기준 상대). 선언 줄의 패턴을 이 표기들에
-# 맞춰본다 — git slash anchoring + `*`·`**` 의미의 보수적 matcher를 공유한다.
-_BOARD_AREAS_ATTR_TARGETS: tuple[str, ...] = ("areas.md", "/areas.md")
 # board git 에 **엔진이 넣는 텍스트 파일**의 확장자. 지금 실재하는 건 티켓·라운드·areas 의 `.md`
 # 뿐이지만 표기 고정을 한 확장자에 매달 이유가 없다 — 엔진이 board 에 넣는 어떤 텍스트도 같은
 # 표기로 체크아웃돼야 회수 bytes 보존과 재작성 byte 판정이 개행으로 갈리지 않는다.
@@ -2372,13 +2349,11 @@ _BOARD_TEXT_ATTR_TARGETS: tuple[str, ...] = tuple(
     for status in (*ticket_rules.STATUS_DIRS, ".drafts")
     for extension in _BOARD_TEXT_ATTR_EXTENSIONS
 ) + tuple(f"board-root-file.{extension}" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
-_INLINE_AREAS_ATTR_TARGETS: tuple[str, ...] = (
-    ".project_manager/areas.md", "/.project_manager/areas.md")
 _BOARD_GITATTRIBUTES_BLOCK = (
     "# areas.md = 멀티-PM prefix 레지스트리 — 동시 등록(행 append)이 merge 에서 충돌하지 않도록\n"
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
-    f"areas.md merge={_AREAS_UNION_DRIVER}\n"
+    f"areas.md merge={gitattributes_rules._AREAS_UNION_DRIVER}\n"
     "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 회수 bytes·\n"
     "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
     + "".join(
@@ -2457,107 +2432,6 @@ def _board_git_root_file_backfill_target(
     return _BoardGitRootFileBackfillTarget(path, text)
 
 
-def _gitattributes_positive_pattern_matches(
-        pattern: str, targets: tuple[str, ...]) -> bool:
-    """부정 없는 git-attributes 패턴을 확실히 해석할 수 있을 때만 match한다."""
-    anchored = pattern.startswith("/")
-    pat = pattern[1:] if anchored else pattern
-    # 디렉토리 패턴·escape·문자 클래스는 이 보수적 부분집합 밖이다. 거짓 정상보다 중복
-    # backfill이 안전하므로 판정 불능은 False다.
-    if not pat or pat.endswith("/") or any(char in pat for char in "\\[]"):
-        return False
-    has_slash = anchored or "/" in pat
-    regex: list[str] = []
-    index = 0
-    while index < len(pat):
-        char = pat[index]
-        if char == "*" and index + 1 < len(pat) and pat[index + 1] == "*":
-            boundary_before = index == 0 or pat[index - 1] == "/"
-            after = index + 2
-            if not boundary_before or (after < len(pat) and pat[after] != "/"):
-                return False
-            if after < len(pat):
-                regex.append("(?:.*/)?")
-                index = after + 1
-            else:
-                regex.append(".*")
-                index = after
-        elif char == "*":
-            regex.append("[^/]*")
-            index += 1
-        elif char == "?":
-            regex.append("[^/]")
-            index += 1
-        else:
-            regex.append(re.escape(char))
-            index += 1
-    compiled = re.compile("".join(regex) + r"\Z")
-    for target in targets:
-        candidate = target.lstrip("/")
-        subject = candidate if has_slash else candidate.rsplit("/", 1)[-1]
-        if compiled.fullmatch(subject):
-            return True
-    return False
-
-
-def _gitattributes_pattern_matches(pattern: str, targets: tuple[str, ...]) -> bool:
-    """`.gitattributes` 패턴이 target을 덮는가 (git slash/`*`/`**` 의미의 보수적 부분집합).
-
-    slash 없는 패턴은 어느 깊이의 basename에도 적용된다. slash가 있으면 파일 기준으로 앵커되고
-    단일 ``*``는 slash를 넘지 않으며 ``**``만 디렉토리 경계를 넘는다. 선행 ``!`` 부정과
-    escape·문자 클래스처럼 이 함수가 확실히 판정하지 않는 표면은 False로 둔다.
-    """
-    if pattern.startswith("!"):
-        return False
-    return _gitattributes_positive_pattern_matches(pattern, targets)
-
-
-def _gitattributes_merge_attr(text: str, targets: tuple[str, ...]) -> str | None:
-    """`.gitattributes` 본문에서 areas.md 경로에 걸린 **마지막** merge 속성 값 (없으면 None).
-
-    git 은 뒤 줄이 앞 줄을 덮으므로(last-match-wins) 전 줄을 훑어 마지막 선언을 취한다 —
-    `areas.md merge=union` 뒤에 `areas.md -merge` 가 오면 union 은 취소된 것으로 읽는다.
-    빈 줄과 `#` 로 *시작하는* 주석 줄은 건너뛴다. `#` 은 줄 끝 주석이 **아니므로**(git 은
-    `areas.md merge=union # 설명` 을 잘못된 속성 이름으로 보고 줄 전체를 무시한다·실측)
-    필드에 `#` 이 섞인 줄은 git 과 동일하게 **무효** 취급한다 — 그렇지 않으면 실제로는
-    unspecified 인 파일을 "선언됨" 으로 읽어 union 상실이 조용히 굳는다(거짓 정상).
-
-    패턴 매칭은 git의 slash anchoring과 `*`·`**` 의미를 처리한다
-    (`_gitattributes_pattern_matches`) — 리터럴 경로, `*.md`·`tickets/**/*.md` 형태가 대상이다.
-    그래서 union 선언 **뒤에 오는 glob unset**
-    (`areas.md merge=union` 다음 줄 `*.md -merge` → git 은 unset·실측)도 잡는다.
-
-    escape·문자 클래스처럼 보수적 부분집합 밖의 패턴은 match로 인정하지 않는다. 그 결과는
-    advisory+중복 backfill인 거짓 경보 방향이며, LF/union 보호가 빠지는 거짓 정상은 만들지 않는다.
-    반환: `"union"`(우리 선언) · 다른 드라이버명 · `""`(unset/`-merge`) · None(선언 없음).
-    """
-    found: str | None = None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split()
-        if any("#" in field for field in fields):
-            continue  # git 이 줄 전체를 무시하는 형태 — 우리도 무효로 본다(거짓 정상 방지).
-        pattern = fields[0]
-        if pattern.startswith("!"):
-            found = None
-            continue
-        if not _gitattributes_pattern_matches(pattern, targets):
-            continue
-        for attr in fields[1:]:
-            if attr.startswith("merge="):
-                found = attr[len("merge="):]
-            elif attr in ("merge", "-merge", "!merge"):
-                found = ""  # 드라이버 미지정 set / unset / unspecified — union 아님.
-    return found
-
-
-def _areas_union_declared(text: str, targets: tuple[str, ...]) -> bool:
-    """이 `.gitattributes` 본문이 areas.md 에 union merge 를 부여하는가 (내용 판정)."""
-    return _gitattributes_merge_attr(text, targets) == _AREAS_UNION_DRIVER
-
-
 def _gitattributes_text_eol_attrs(
         text: str, targets: tuple[str, ...]) -> tuple[str | None, str | None]:
     """대상 경로에 적용되는 마지막 ``text``·``eol`` 속성 값을 반환한다."""
@@ -2575,7 +2449,7 @@ def _gitattributes_text_eol_attrs(
             text_attr = None
             eol_attr = None
             continue
-        if not _gitattributes_pattern_matches(pattern, targets):
+        if not gitattributes_rules._gitattributes_pattern_matches(pattern, targets):
             continue
         for attr in fields[1:]:
             if attr == "text":
@@ -2627,7 +2501,7 @@ def _board_gitattributes_declared(text: str) -> bool:
     보드에서 backfill 이 돌지 않아 나머지가 영구히 미배포로 남는다.
     """
     return (
-        _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS)
+        gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS)
         and _board_text_lf_declared(text)
     )
 
@@ -5383,51 +5257,6 @@ def cmd_section_add(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── 구 역할 절(명세 본문 marker) 탐지 ─────────────────────────────────────
-#
-# 라운드 사이드카 이전의 board 는 역할 산출을 명세 본문 안에 marker 로 감싸 누적했다
-# (`<!-- pm-ticket-section:start role=… -->` … `:end` + 봉인 줄). 변환 명령은 v1.8.1 까지 있었고
-# 이 엔진에는 없다. 남은 marker 는 `legacy-growth-section` lint 가 차단으로 보인다.
-_LEGACY_SECTION_MARKER = "pm-ticket-section"
-_LEGACY_SEAL_MARKER = "pm-ticket-seal"
-
-
-def _fenced_code_line_mask(lines: Sequence[str]) -> list[bool]:
-    """줄마다 ``` 코드 펜스 안인지 (토글 줄 자체도 안쪽으로 센다).
-
-    문법을 문서화한 티켓은 예시 marker 를 펜스로 감싼다 — 그 예시를 데이터로 읽으면 lint 가
-    예시 하나로 영영 red 가 된다. 짝이 맞지 않는 마지막 펜스(파일이 열린 채 끝남)는 안쪽으로
-    접는다 — 더 넓게 안전한 쪽이다. `_has_legacy_growth_markers`(및 그걸 위임하는 lint)의
-    시야다.
-    """
-    mask: list[bool] = []
-    inside = False
-    for line in lines:
-        if line.lstrip().startswith("```"):
-            inside = not inside
-            mask.append(True)
-            continue
-        mask.append(inside)
-    return mask
-
-
-def _has_legacy_growth_markers(body: str) -> bool:
-    """본문에 구 컨테이너 주석 **줄**이 있는가 (lint 판정의 시야).
-
-    후보는 **column 0** 의 주석 줄뿐이다 — 산문이 backtick 이나 인용부호 안에서 같은 표기를
-    설명하는 티켓이 실재한다(구 봉인 문법을 설명한 티켓). 그것을 데이터로 읽으면 lint 가
-    정리 뒤에도 영영 red 로 남는다. 좁힌 시야는 구 엔진의 봉인 후보 판정과 같은 규칙이고,
-    ``` 펜스로 감싼 문법 예시도 산문과 같이 데이터에서 뺀다(`_fenced_code_line_mask`).
-    """
-    lines = body.splitlines()
-    fenced = _fenced_code_line_mask(lines)
-    return any(
-        not fenced[index] and line.startswith(marker)
-        for index, line in enumerate(lines)
-        for marker in _LEGACY_GROWTH_MARKERS
-    )
-
-
 def cmd_tier(args: argparse.Namespace) -> int:
     """선택 frontmatter `tier`를 기록/갱신한다. 허용값 외 입력은 파일 읽기 전 rc=1."""
     if args.tier not in TICKET_TIERS:
@@ -6689,7 +6518,7 @@ def cmd_init(args: argparse.Namespace) -> int:
           "세션=lease 장부 · prefix=areas.md)")
     # 병합 경로가 손대지 않은 기존 키(오타·폐기)도 같은 목록·같은 함수로 표면화한다 —
     # `board.py lint` 를 따로 실행하지 않아도 온보딩 시점에 1줄로 보이게(사본 없음).
-    for _, _, detail in lint_local_conf_keys():
+    for _, _, detail in conf_lint.lint_local_conf_keys(_home()):
         print(f"  ⚠ {detail}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         # `{{DATE}}` 의 소유자는 **생성 시점**이다 — 템플릿은 채택자 디스크에 토큰-form
@@ -7169,7 +6998,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     draft_lint_id = str(tmpl_fm.get("id") or "")
     draft_body = tmpl_body.replace("T-NNNN", draft_lint_id).replace("<제목>", args.title)
     is_draft = _board_git_enabled() and bool(
-        _body_lint_issues(draft_lint_id, draft_body, strict_sections=True, design=design))
+        body_lint._body_lint_issues(_home(), draft_lint_id, draft_body, strict_sections=True, design=design))
     # 코드 없는 task draft는 허용한다. 위치 인자(`--repo`/`--slot`)를 줬으면 draft에서도 검증한다.
     binding_required = (not is_draft
                         or getattr(args, "repo", None) or getattr(args, "slot", None))
@@ -7220,7 +7049,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         # lint 판정은 `tid` 치환과 무관(placeholder/section 검사가 `T-NNNN` 자체를 안 봄) —
         # 발행 전에 판정해 쓰기 경로(open/ vs drafts_dir())를 정한다(open/ 창 노출 0).
         is_draft = _board_git_enabled() and bool(
-            _body_lint_issues(tid, body, strict_sections=True, design=design))
+            body_lint._body_lint_issues(_home(), tid, body, strict_sections=True, design=design))
 
         fm: dict[str, Any] = dict(tmpl_fm)
         fm["id"] = tid
@@ -7334,15 +7163,15 @@ def cmd_promote(args: argparse.Namespace) -> int:
             return 1
         fm, body = ticket_store.load_ticket(path)
         if _board_git_enabled():
-            issues = _body_lint_issues(args.id, body, strict_sections=True,
+            issues = body_lint._body_lint_issues(_home(), args.id, body, strict_sections=True,
                                        design=fm.get("design"),
                                        touches=fm.get("touches"), content_facts=True)
             # 경고 축(`_PROMOTE_ADVISORY_KINDS`)은 승격을 막지 않는다 — 차단 여부와 무관하게
             # 먼저 표면화해, 거부된 경우에도 같은 1줄을 본다.
-            advisories = [i for i in issues if i[1] in _PROMOTE_ADVISORY_KINDS]
+            advisories = [i for i in issues if i[1] in body_lint._PROMOTE_ADVISORY_KINDS]
             for tid, kind, detail in advisories:
                 print(f"  ⚠ [{kind}] {detail}", file=sys.stderr)
-            remaining = [i for i in issues if i[1] not in _PROMOTE_ADVISORY_KINDS]
+            remaining = [i for i in issues if i[1] not in body_lint._PROMOTE_ADVISORY_KINDS]
             if remaining:
                 print(f"promote 거부 — {args.id} 에 아직 미충전 {len(remaining)}건:",
                       file=sys.stderr)
@@ -7570,21 +7399,6 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
     return _format_publish_overlap_material(nonzero, _publish_idle_slot_count(repo))
 
 
-# ── 클러스터 장부 (운영 단위 = 티켓 묶음 · 크기 1 도 클러스터) ─────────────────
-#
-# 설계·리뷰·fix 를 묶음당 1회로 도는 운영 단위를 board 가 소유한다. 장부는
-# `tickets/clusters/<id>.md`(frontmatter 만)이고 STATUS_DIRS 밖 sibling 이라
-# (`tickets/rounds/` 와 같은 형상) 상태 순회·board.md 렌더에 섞이지 않는다. 장부가 담는 것은
-# 멤버십·통합 브랜치·설계 spike·고정 라운드 예산뿐이다 — 라운드 산출 자리는 종전대로
-# `tickets/rounds/<티켓>/` 이고 장부는 그것을 담지 않는다.
-#
-# **특례가 없다** — 티켓 하나짜리 묶음도 크기 1 클러스터다. `new` 는 그 티켓 이름의 크기 1
-# 장부를 함께 만들고 기준 브랜치·예산을 그 자리에서 박는다(빈 값 0 · 판정 표면은 선언된 값만
-# 읽는다). 여러 티켓을 한 묶음으로 묶는 것은 사람 선언(`cluster new`)뿐이다 — 엔진이 고르면
-# 선언한 적 없는 묶음이 생긴다. 장부는 open 진입 세 경로(발행 승격 · `promote` · `reopen`)가
-# 만들고 멤버 조회(`cluster_members`)는 그 선언만 읽는다 — 장부 없는 묶음은 멤버가 없다.
-CLUSTERS_DIRNAME = "clusters"
-CLUSTER_ID_PREFIX = "C-"                  # 장부 파일명·frontmatter `id` 의 접두
 CLUSTER_BRANCH_PREFIX = "task/"           # 통합 브랜치 이름 접두
 CLUSTER_STATUS_OPEN = "open"
 # 장부 status 열거 — 종결(`closed`)만 비활성이고 나머지는 진행 중(자동 귀속 후보)이다.
@@ -7615,26 +7429,18 @@ _CLUSTER_NAME_DOT_SUFFIX = "."
 _CLUSTER_MEMBER_REJECT_STATUSES: tuple[str, ...] = ("done", "discarded")
 # 클러스터 내부 겹침 줄의 경로 표시 상한 — 발행 재료와 같은 규율(줄 수를 예산 안에 둔다).
 _CLUSTER_INTERNAL_OVERLAP_PATH_LIMIT = 3
-# lint 판정 코드 — advisory 등재(`_ADVISORY_LINT_KINDS`)와 같은 문자열을 여기서 소유한다.
-_CLUSTER_MEMBER_LINT_KIND = "cluster-member-missing"
-_CLUSTER_DUPLICATE_LINT_KIND = "cluster-duplicate"
-
-
-def clusters_dir() -> Path:
-    """클러스터 장부 디렉토리 — `tickets_dir()/clusters` (board_root 추종·STATUS_DIRS 밖)."""
-    return pm_paths.tickets_dir(_home()) / CLUSTERS_DIRNAME
 
 
 def cluster_id_for_name(name: str) -> str:
     """사람이 준 이름 → 장부 id. 접두를 이미 쓴 입력은 그대로 둔다(입력 표기 둘 다 수용)."""
     text = str(name or "").strip()
-    return text if text.startswith(CLUSTER_ID_PREFIX) else f"{CLUSTER_ID_PREFIX}{text}"
+    return text if text.startswith(cluster_store.CLUSTER_ID_PREFIX) else f"{cluster_store.CLUSTER_ID_PREFIX}{text}"
 
 
 def cluster_name_of(cluster: str) -> str:
     """장부 id → 이름(접두 제거) — 브랜치 이름과 진단 문구가 쓰는 사람 표기."""
     text = str(cluster or "").strip()
-    return text[len(CLUSTER_ID_PREFIX):] if text.startswith(CLUSTER_ID_PREFIX) else text
+    return text[len(cluster_store.CLUSTER_ID_PREFIX):] if text.startswith(cluster_store.CLUSTER_ID_PREFIX) else text
 
 
 def cluster_branch_name(cluster: str) -> str:
@@ -7644,7 +7450,7 @@ def cluster_branch_name(cluster: str) -> str:
 
 def cluster_ledger_path(cluster: str) -> Path:
     """장부 파일 경로 — 이름/장부 id 어느 표기로 불러도 같은 파일을 가리킨다."""
-    return clusters_dir() / f"{cluster_id_for_name(cluster)}.md"
+    return cluster_store.clusters_dir(_home()) / f"{cluster_id_for_name(cluster)}.md"
 
 
 def is_auto_cluster_id(cluster: str) -> str | None:
@@ -7700,42 +7506,19 @@ def dump_cluster(fm: dict[str, Any]) -> Path:
     return path
 
 
-def cluster_tickets(fm: dict[str, Any]) -> list[str]:
-    """장부의 멤버 목록 — 문자열 하나로 쓴 형상도 1건으로 접는다(형식 관용)."""
-    raw = fm.get("tickets")
-    items = [raw] if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
-    return [str(item).strip() for item in items if str(item).strip()]
-
-
-def all_clusters() -> list[dict[str, Any]]:
-    """장부 전체 — id 순. 손상 파일은 경고 1줄과 함께 빠진다(한 파일이 순회를 죽이지 않는다)."""
-    directory = clusters_dir()
-    if not directory.is_dir():
-        return []
-    out: list[dict[str, Any]] = []
-    for path in sorted(directory.glob(f"{CLUSTER_ID_PREFIX}*.md")):
-        loaded = ticket_store.load_ticket_soft(_home(), path)
-        if loaded is None:
-            continue
-        fm = loaded[0]
-        if str(fm.get("id") or "").strip():
-            out.append(fm)
-    return out
-
-
 def all_clusters_strict() -> tuple[list[dict[str, Any]], str | None]:
     """lifecycle mutation 판정용 장부 전체 — `(장부 목록, 판독 불능 사유)`.
 
-    조회용 `all_clusters()` 는 손상 파일을 경고 뒤 건너뛴다(한 파일이 순회를 죽이지 않는다).
+    조회용 `cluster_store.all_clusters()` 는 손상 파일을 경고 뒤 건너뛴다(한 파일이 순회를 죽이지 않는다).
     귀속 유일성 같은 mutation 판정은 그 관용을 쓸 수 없다 — 빠진 파일이 그 티켓을 담고 있을
     가능성을 배제하지 못한 채 "owner 가 하나"라고 말하게 된다. 판정 불능은 통과가 아니라
     정지라 사유를 값으로 돌려주고, 호출자가 **첫 write 앞에서** 거부한다.
     """
-    directory = clusters_dir()
+    directory = cluster_store.clusters_dir(_home())
     if not directory.is_dir():
         return [], None
     out: list[dict[str, Any]] = []
-    for path in sorted(directory.glob(f"{CLUSTER_ID_PREFIX}*.md")):
+    for path in sorted(directory.glob(f"{cluster_store.CLUSTER_ID_PREFIX}*.md")):
         loaded = ticket_store.load_ticket_soft(_home(), path)
         if loaded is None:
             return [], (f"cluster 장부를 읽지 못했다: {pm_paths._rel_to_repo(_home(), path)} — 귀속 유일성을 "
@@ -7754,7 +7537,7 @@ def ticket_cluster(tid: str, fm: dict[str, Any] | None = None) -> str:
     구세대 티켓(필드도 장부도 없음)을 마이그레이션 없이 같은 코드 경로에 태우는 규칙이다.
     """
     value = str((fm or {}).get("cluster") or "").strip()
-    return value or f"{CLUSTER_ID_PREFIX}{tid}"
+    return value or f"{cluster_store.CLUSTER_ID_PREFIX}{tid}"
 
 
 def ticket_cluster_from_text(tid: str, ticket_text: str) -> str:
@@ -7782,7 +7565,7 @@ def cluster_members(cluster: str) -> tuple[str, ...]:
     튜플은 조회 부재(rc≠0)와 준비 거부의 입력이다.
     """
     fm = load_cluster(cluster)
-    return tuple(cluster_tickets(fm)) if fm is not None else ()
+    return tuple(cluster_store.cluster_tickets(fm)) if fm is not None else ()
 
 
 def cluster_live_members(cluster: str) -> tuple[str, ...]:
@@ -7806,8 +7589,8 @@ def _cluster_of_record(tid: str) -> str | None:
 
     티켓 frontmatter 의 선언과 별개 축이다 — 흡수·중복 귀속 판정은 파일 쪽을 본다.
     """
-    for fm in all_clusters():
-        if tid in cluster_tickets(fm):
+    for fm in cluster_store.all_clusters(_home()):
+        if tid in cluster_store.cluster_tickets(fm):
             return str(fm.get("id") or "").strip() or None
     return None
 
@@ -7828,7 +7611,7 @@ def cluster_complete_binding_problem(
     ledgers, catalog_problem = all_clusters_strict()
     if catalog_problem is not None:
         return catalog_problem
-    owners = [ledger for ledger in ledgers if tid in cluster_tickets(ledger)]
+    owners = [ledger for ledger in ledgers if tid in cluster_store.cluster_tickets(ledger)]
 
     if not owners and declared is None:
         # 이름 해석으로 종결에 들어온 구세대 티켓은 `ClusterCloser` 가 그 id 를 결속으로
@@ -7847,7 +7630,7 @@ def cluster_complete_binding_problem(
     ledger = owners[0]
     owner_raw = str(ledger.get("id") or "").strip()
     owner = cluster_id_for_name(owner_raw) if owner_raw else ""
-    members = cluster_tickets(ledger)
+    members = cluster_store.cluster_tickets(ledger)
     if not owner or len(members) != len(set(members)) or not members:
         return f"{owner or '<id 없음>'} 장부의 멤버 집합이 비었거나 중복됐다"
     if declared != owner:
@@ -7870,7 +7653,7 @@ def cluster_complete_binding_problem(
                     f"{member_cluster or '없음'}")
         member_owners = [
             str(row.get("id") or "") for row in ledgers
-            if member in cluster_tickets(row)
+            if member in cluster_store.cluster_tickets(row)
         ]
         if member_owners != [owner]:
             return f"{member}가 여러 cluster ledger에 귀속됐다: {member_owners}"
@@ -7949,7 +7732,7 @@ def _cluster_auto_attach(
     _tree, base_branch = (_cluster_publish_base_branch(args)
                           if publish_basis is None else publish_basis)
     fm = _new_cluster_fm(
-        f"{CLUSTER_ID_PREFIX}{tid}", [tid], base_branch=base_branch)
+        f"{cluster_store.CLUSTER_ID_PREFIX}{tid}", [tid], base_branch=base_branch)
     return str(fm["id"]), dump_cluster(fm)
 
 
@@ -7985,7 +7768,7 @@ def _cluster_release_member(cluster: str, tid: str) -> Path | None:
     fm = load_cluster(cluster)
     if fm is None:
         return None
-    members = [item for item in cluster_tickets(fm) if item != tid]
+    members = [item for item in cluster_store.cluster_tickets(fm) if item != tid]
     fm["tickets"] = members
     path = cluster_ledger_path(cluster)
     auto_shape = (
@@ -8227,7 +8010,7 @@ def _cmd_cluster_show(args: argparse.Namespace) -> int:
     if fm is None:
         print(f"cluster not found: {cluster}", file=sys.stderr)
         return 2
-    declared = cluster_tickets(fm)
+    declared = cluster_store.cluster_tickets(fm)
     status = str(fm.get("status") or CLUSTER_STATUS_OPEN)
     print(f"-- {cluster} ({status} · 멤버 {len(declared)}) --")
     print(f"  base_branch: {fm.get('base_branch') or '—'}")
@@ -10017,33 +9800,6 @@ def cmd_git_tool_input(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_lint_hooks() -> list[tuple[str, str]]:
-    """Discover & run instance lint hooks — .project_manager/hooks/lint_*.py.
-
-    각 훅 모듈은 `check() -> list[str]`(이슈 detail 문자열)을 노출한다. fail-soft:
-    로드/실행 실패·규격 불충족은 stderr 경고로 보고하고 계속한다(부분 실패가 lint 전체를
-    막지 않음). 인스턴스가 엔진 board.py 를 안 건드리고 자기 검사를 더하는 seam — 프레임워크
-    공통 검사(wikilink 등)는 엔진 내장(lint_wikilinks), 프로젝트 고유 검사는 여기로.
-    """
-    if not HOOKS_DIR.is_dir():
-        return []
-    out: list[tuple[str, str]] = []
-    for hook in sorted(HOOKS_DIR.glob("lint_*.py")):
-        try:
-            mod = _load_module_from_path(
-                hook, hook.name, allow_unverified=True,
-            )
-            check = getattr(mod, "check", None)
-            if not callable(check):
-                print(f"⚠️  lint hook {hook.name}: check() 미정의 — 건너뜀", file=sys.stderr)
-                continue
-            for detail in (check() or []):
-                out.append((hook.stem, str(detail)))
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 한 훅 실패가 lint 를 막지 않음
-            print(f"⚠️  lint hook {hook.name} 로드/실행 실패: {exc}", file=sys.stderr)
-    return out
-
-
 def _sidecar_document(path: Path) -> dict | None:
     """기계 기록 sidecar 한 개를 읽는다 — 부재·손상·비-dict 는 None(판정 없음)."""
     try:
@@ -10067,7 +9823,7 @@ def status_snapshot() -> dict:
     """
     counts = {status: 0 for status in ticket_rules.STATUS_DIRS}
     open_rows: list[dict] = []
-    for status, front_matter in _all_tickets():
+    for status, front_matter in ticket_store._all_tickets(_home()):
         counts[status] = counts.get(status, 0) + 1
         if status == "open":
             open_rows.append({
@@ -10083,7 +9839,7 @@ def status_snapshot() -> dict:
         for subject, kind, detail in lint_tickets()
     ]
     lint.extend({"kind": hook_name, "message": detail}
-                for hook_name, detail in _run_lint_hooks())
+                for hook_name, detail in lint_hooks._run_lint_hooks(_home()))
     return {
         "counts": counts,
         "open": open_rows,
@@ -10114,7 +9870,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
             print(stale_hook, file=sys.stderr)
             return 1
     issues = lint_tickets()
-    hook_issues = _run_lint_hooks()
+    hook_issues = lint_hooks._run_lint_hooks(_home())
     total = len(issues) + len(hook_issues)
     if total == 0:
         print("✓ no lint issues")
@@ -10135,177 +9891,6 @@ def cmd_lint(args: argparse.Namespace) -> int:
     if gate:
         return 1 if block_count > 0 else 0
     return 1
-
-
-# ── lint ───────────────────────────────────────────────────────────────
-
-def _all_tickets() -> list[tuple[str, dict]]:
-    """[(status, frontmatter), ...] for every ticket regardless of dir.
-
-    손상 티켓은 경고 1줄과 함께 빠진다(`load_ticket_soft`) — 한 파일이 lint 전체를 죽이지 않는다.
-    """
-    out: list[tuple[str, dict]] = []
-    for status in ticket_rules.STATUS_DIRS:
-        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
-            loaded = ticket_store.load_ticket_soft(_home(), p)
-            if loaded is None:
-                continue
-            out.append((status, loaded[0]))
-    return out
-
-
-def _find_cycles(graph: dict[str, list[str]]) -> list[list[str]]:
-    """Return circular paths in a directed graph.
-
-    Each cycle is a node list closed on itself, e.g. ['A', 'B', 'A'].
-    Cycles sharing the same node set are reported once.
-    """
-    WHITE, GRAY, BLACK = 0, 1, 2
-    color = {n: WHITE for n in graph}
-    stack: list[str] = []
-    cycles: list[list[str]] = []
-    seen: set[frozenset[str]] = set()
-
-    def dfs(node: str) -> None:
-        color[node] = GRAY
-        stack.append(node)
-        for nxt in graph.get(node, []):
-            if color.get(nxt, WHITE) == GRAY:          # back edge → cycle
-                cyc = stack[stack.index(nxt):] + [nxt]
-                key = frozenset(cyc)
-                if key not in seen:
-                    seen.add(key)
-                    cycles.append(cyc)
-            elif color.get(nxt, WHITE) == WHITE:
-                dfs(nxt)
-        stack.pop()
-        color[node] = BLACK
-
-    for n in graph:
-        if color[n] == WHITE:
-            dfs(n)
-    return cycles
-
-
-def lint_dependencies() -> list[tuple[str, str, str]]:
-    """Return list of (ticket_id, issue_kind, detail).
-
-    Checks:
-      - unknown:        depends_on / blocks references a non-existent ticket
-      - self-reference: ticket lists its own ID in depends_on or blocks
-      - asymmetric:     A.blocks contains B but B.depends_on does not contain A
-      - cycle:          depends_on graph contains a circular path
-    """
-    tickets = {fm["id"]: (status, fm) for status, fm in _all_tickets()}
-    issues: list[tuple[str, str, str]] = []
-
-    for tid, (_status, fm) in tickets.items():
-        deps = list(fm.get("depends_on") or [])
-        blocks = list(fm.get("blocks") or [])
-
-        # self-reference
-        if tid in deps:
-            issues.append((tid, "self-reference",
-                           "depends_on contains itself"))
-        if tid in blocks:
-            issues.append((tid, "self-reference",
-                           "blocks contains itself"))
-
-        # unknown reference
-        for ref in deps:
-            if ref != tid and ref not in tickets:
-                issues.append((tid, "unknown",
-                               f"depends_on references missing {ref}"))
-        for ref in blocks:
-            if ref != tid and ref not in tickets:
-                issues.append((tid, "unknown",
-                               f"blocks references missing {ref}"))
-
-        # asymmetric blocks ↔ depends_on
-        for ref in blocks:
-            if ref == tid or ref not in tickets:
-                continue
-            other_fm = tickets[ref][1]
-            other_deps = list(other_fm.get("depends_on") or [])
-            if tid not in other_deps:
-                issues.append((tid, "asymmetric",
-                               f"blocks {ref} but {ref}.depends_on lacks {tid}"))
-
-    # circular depends_on — self-references are handled above and excluded here
-    graph = {
-        tid: [d for d in (fm.get("depends_on") or [])
-              if d in tickets and d != tid]
-        for tid, (_status, fm) in tickets.items()
-    }
-    for cycle in _find_cycles(graph):
-        issues.append((cycle[0], "cycle",
-                       f"circular depends_on: {' → '.join(cycle)}"))
-
-    return issues
-
-
-def lint_claim_identity() -> list[tuple[str, str, str]]:
-    """open + claimed_by/claimed_at/claimed_rev 잔존 모순 형상 advisory (never-block).
-
-    불변식(`status == "open"` 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null)이
-    깨진 형상을 가시화한다 — **세 필드 중 하나라도** non-null 이면 잡는다(단독 잔존도 포함·
-    F-002). 옛 `cmd_unblock`(정합 수정 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로
-    옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을 오염시킨다.
-    adopter#0 보드 실측에서 대상 0건이라 자동 backfill 은 만들지 않고(대상 없는
-    코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서 잔존
-    필드를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨 상태와 소유를 정합시킨다.
-
-    kind=`open-claimed-contradiction`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·
-    push 미차단). `blocked` + claimed_by 는 모순이 **아니다**(claimed-origin blocked 의 정상
-    형상) — 여기서 잡지 않는다.
-    """
-    issues: list[tuple[str, str, str]] = []
-    for status, fm in _all_tickets():
-        if status != "open":
-            continue
-        # 그 불변식이 지목하는 세 필드 전부를 개별 검사한다 — 하나만 잔존해도 모순(F-002 확장).
-        residue = {field: fm.get(field)
-                   for field in ("claimed_by", "claimed_at", "claimed_rev") if fm.get(field)}
-        if not residue:
-            continue
-        residue_desc = ", ".join(f"{field}={value!r}" for field, value in residue.items())
-        issues.append((
-            fm.get("id", "?"), "open-claimed-contradiction",
-            f"status=open 인데 {residue_desc} 잔존 — 소유 표식과 상태가 모순이다. 진행 중이 "
-            "아니면 잔존 필드를 지우고, 진행 중이면 claimed/ 로 옮겨 정합시켜라."))
-    return issues
-
-
-# Unfilled `_template.md` text — its presence means the ticket is still a stub.
-# The `## 메모` placeholder is intentionally NOT listed: that section is a work
-# journal filled at completion time, so an empty 메모 is normal for a complete,
-# claimable ticket and must not count as "thin".
-#
-# 각 항목은 `_template.md` 의 절별 뼈대 문장 리터럴이라 *채우면 사라진다* — 실 본문엔 안 나타나
-# 오탐 0(placeholder 잔존만 잡는다). promote 게이트가
-# 이 집합을 재사용(`_body_lint_issues` 단일 깔때기)하므로, 뼈대만 채운 절(인터페이스·결정·참고
-# pattern-reference)까지 걸러야 "자족성 = placeholder 0" 이 성립한다. 목표/DoD 뿐 아니라
-# 인터페이스·결정·참고 절의 미충전도 여기서 promote-차단된다.
-_PLACEHOLDERS: tuple[str, ...] = (
-    "무엇을 만들 / 바꿀 / 검증할지",      # ## 목표 절 미충전
-    "이 ticket 이 만들거나 바꾸는",        # ## 인터페이스 절 미충전
-    "구현 방향에 대한 확정 사항",           # ## 결정 절 미충전
-    "핵심 산출물 (파일, 동작)",            # ## 완료 조건(DoD) 미충전
-    "[[architecture]] 관련 절",            # ## 참고 절 미충전
-    "[[xxxxx]]",                           # ## 참고 ADR/spec 미충전
-    "T-XXXX",                              # ## 참고 pattern-reference 미충전
-    "<제목>",                              # 제목 미치환
-)
-_REQUIRED_SECTIONS: tuple[str, ...] = ("## 목표", "## 완료 조건", "## 참고")
-# authoring 게이트(`cmd_new` 발행·`cmd_promote` 승격) 전용 strict 절 집합 — 자족성이
-# 요구하는 5절(목표/인터페이스/결정/DoD/참고) 전부의 *존재*를 강제한다. placeholder 검사는 절을
-# **통째로 삭제한** 회피(뼈대 문장이 없으니 잔존 토큰도 없음)를 못 잡으므로,
-# 절 자체의 부재를 thin 으로 세운다. 전역 lint(`lint_bodies`)는 레거시 blast-radius(인터페이스/결정
-# 절 없는 기존 open/claimed 티켓이 blocking 화) 때문에 3절 불변(`_REQUIRED_SECTIONS`)을 유지하고,
-# 이 strict 집합은 authoring **두 소비 지점**만 `strict_sections=True` 로 opt-in 한다(단일 깔때기·
-# 소비측 파라미터 — 판정 로직은 한 함수).
-_STRICT_REQUIRED_SECTIONS: tuple[str, ...] = (
-    "## 목표", "## 인터페이스", "## 결정", "## 완료 조건", "## 참고")
 
 
 # ── 완료 조건(DoD) 기록 게이트 (complete 차단 — T-0596) ────────────────────────
@@ -10433,15 +10018,11 @@ def _dod_open_items(body: str) -> list[str]:
     return problems
 
 
-# 자동 `required` 판정의 유일한 입력 — estimate=large. 그 외는 `n/a`.
-DESIGN_REQUIRED_ESTIMATE = "large"
-
-
 def _resolve_design(explicit: str | None, estimate: str | None) -> str:
     """발행 시 `design:` 해소 — 명시값 우선, 무명시는 estimate=large → required · 그 외 n/a."""
     if explicit and str(explicit).strip():
         return str(explicit).strip()
-    return (design_rules.DESIGN_REQUIRED if (estimate or "") == DESIGN_REQUIRED_ESTIMATE
+    return (design_rules.DESIGN_REQUIRED if (estimate or "") == design_rules.DESIGN_REQUIRED_ESTIMATE
             else design_rules.DESIGN_NA)
 
 
@@ -10451,443 +10032,6 @@ def _validate_design(design: str) -> str | None:
         return (f"design 값 인식 불가: {str(design)!r} — {design_rules.DESIGN_VALUE_FORMS} 중 하나"
                 "(면제 경로는 없다 — 설계 절을 채우고 done 으로 올린다)")
     return None
-
-
-def _design_estimate_advisory(
-    tid: str, estimate: Any, design: Any,
-) -> list[tuple[str, str, str]]:
-    """`estimate=large` 인데 설계 단계가 비대상(`n/a`·필드 부재)이면 재유도 1줄 (advisory).
-
-    자동 `required` 판정은 **발행 시점 1회**뿐이다(`_resolve_design`). 그래서 medium 으로 발행한
-    뒤 large 로 사후 교정한 티켓에는 설계 게이트가 영영 붙지 않는다 — 이 wave 에서 실제로 두 번
-    지나갔다. 여기서 자동으로 `required` 로 올리지 않는 이유는 그게 사람의 판정이기 때문이고,
-    그래서 kind 는 `_ADVISORY_LINT_KINDS` 에 등재된 never-block 이다.
-
-    `required`/`done`(이미 대상) · `invalid`(그쪽 깔때기가 이미 1줄을 낸다)은 전부 무영향 —
-    여기서 보는 건 "비대상으로 남아 있는가" 하나다.
-    """
-    if str(estimate or "").strip().lower() != DESIGN_REQUIRED_ESTIMATE:
-        return []
-    if design_rules._design_state(design) != design_rules.DESIGN_NA:
-        return []
-    return [(tid, "design-estimate", (
-        f"estimate={DESIGN_REQUIRED_ESTIMATE} 인데 design: {design_rules.DESIGN_NA} — 발행 후 estimate 를 "
-        f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {design_rules.DESIGN_REQUIRED}` 로 "
-        "판정을 남겨라"))]
-
-
-# ── 본문 사실성 판정 (승격 순간만·opt-in) ─────────────────────────────────────
-#
-# 형식 게이트(placeholder·thin·설계 절)는 "뼈대가 남았나"만 본다 — 티켓이 *주장하는 사실*
-# (touches 경로가 실재하나 · 인용한 `파일:줄` 이 맞나)과 "초안을 다른 역할이 점검했나"는 그
-# 판정으로 알 수 없는 종류다. 그 축을 `promote` 승격 순간에만 opt-in(`content_facts=True`)으로
-# 더한다. 전역 lint(`lint_bodies`)는 켜지 않는다 — 이미 open 인 티켓을 소급 판정하지 않고
-# `lint --gate` 차단 집합도 그대로다(push 게이트 무오염).
-#
-#   touches 미해소                                          → 경고 1줄(비차단)
-#   repo-relative 인용의 파일 부재·줄 범위 초과              → 차단
-#   `design: required|done` 의 architect 점검 라운드 미회수  → 차단
-#   판정불능(좌표 미해소·basename 단독 인용)                 → 개수 1줄(통과로 위장하지 않는다)
-#
-# 심볼 실재는 판정하지 않는다 — 활성 본문의 미발견 심볼이 전부 정당(신설 예정·하네스 스키마·
-# 자체 예시)이라 정밀도가 0 이다. touches 겹침 축도 이 게이트의 것이 아니다(never-block 표면화
-# 를 소유하는 쪽이 따로 있다).
-_TOUCHES_MISSING_KIND = "touches-missing"
-_CITATION_KIND = "citation-unresolved"
-_ARCHITECT_ROUND_KIND = "architect-review-pending"
-_UNVERIFIABLE_KIND = "content-unverifiable"
-_ARCHITECT_ROLE = "architect"
-
-# promote 가 **경고 1줄**로만 내는 kind — 그 밖의 판정은 전부 차단이다. 전역 등급
-# (`_ADVISORY_LINT_KINDS`)을 여기 재사용하지 않는다: 그 집합엔 authoring 게이트가 *차단*으로
-# 쓰는 `design-pending` 이 들어 있어(전역 lint 는 never-block·승격은 차단), 재사용하면 설계
-# 게이트가 조용히 경고로 강등된다.
-_PROMOTE_ADVISORY_KINDS: frozenset[str] = frozenset(
-    {_TOUCHES_MISSING_KIND, _UNVERIFIABLE_KIND})
-
-# 본문 인용 표기 — 백틱 코드 span 안의 `<경로>.<확장자>:<줄>`. 코드 span 은 `_strip_code` 가
-# 지우는 대상이라 이 스캔만은 **펜스만** 제거한 텍스트를 본다(펜스 안 예시 블록은 인용이 아니다).
-_CITATION_RE = re.compile(r"`(?P<path>[^`\s]+?\.[A-Za-z0-9]{1,6}):(?P<line>\d+)`")
-# repo 트리 좌표가 아닌 표기 — 판정 대상이 아니다(절대·홈·상위 경로).
-_OFF_TREE_CITATION_PREFIXES: tuple[str, ...] = ("/", "~", "..")
-# 하위 디렉터리 기준 인용을 해소할 때 순회에서 빼는 디렉터리 — 티켓이 인용하는 소스가 아니고
-# (객체 저장소·캐시·의존성 벤더), 순회 비용의 대부분이 여기서 나온다.
-_CITATION_INDEX_PRUNE_DIRS: frozenset[str] = frozenset(
-    {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-     "node_modules", ".venv", "venv"})
-
-
-def _content_search_roots() -> tuple[Path, ...]:
-    """티켓이 인용한 경로를 해소할 트리 — PM 홈 + 등록 worktree 슬롯.
-
-    board 의 touches 는 한 트리에 있지 않다: PM 홈이 소유하는 자산(`wiki/` 문서)과 슬롯
-    worktree 가 소유하는 코드(`tests/`·`templates/`)가 한 목록에 섞인다. 한쪽만 보면 정상
-    경로의 상당수가 "부재" 로 읽힌다. 리스 장부는 `_active_slot_path` 와 같은 데이터-결합으로
-    읽고(worktree_pool 미import·원자 교체 대상이라 락 없는 point-read 가 일관 스냅샷),
-    장부 부재·손상·형식 이상은 PM 홈 단독으로 폴백한다(fail-soft — 슬롯은 *추가* 레이어).
-    장부 경로는 호출 시점 `REPO` 로 해소한다(`Home.board_root` 관례·재앵커 추종).
-    """
-    roots: list[Path] = [REPO]
-    ledger = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    try:
-        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return tuple(roots)
-    rows = data.get("leases") if isinstance(data, dict) else None
-    if not isinstance(rows, list):
-        return tuple(roots)
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        slot = row.get("slot")
-        if not isinstance(slot, str) or not slot:
-            continue
-        path = REPO / slot
-        if path.is_dir() and path not in roots:
-            roots.append(path)
-    return tuple(roots)
-
-
-def _exists_in_roots(relative: str, roots: Sequence[Path]) -> Path | None:
-    """`relative` 를 각 트리에 붙여 처음 실재하는 경로 (어디에도 없으면 None)."""
-    for root in roots:
-        candidate = root / relative
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def _touches_existence_issues(
-    tid: str, touches: Any, roots: Sequence[Path],
-) -> tuple[list[tuple[str, str, str]], int]:
-    """touches 경로 실재 판정 → (경고 0~1줄, 판정불능 개수).
-
-    좌표 정규화는 `repo_coordinates.normalize_repo_path` 단일 소유자를 쓴다 — 슬롯 접두
-    (`work/<repo>_<N>/`)는 리스 장부 대조로 **검증된 것만** 벗겨지고, 검증 못 한 접두는
-    예외로 온다. 그 경로는 판정불능으로 세고 red 로도 green 으로도 쓰지 않는다(장부 없는
-    형상에서 조용히 통과·차단되지 않게).
-
-    부재는 **차단이 아니다**: 신설 예정 파일을 touches 에 먼저 적는 것이 정상 운영이고
-    (활성 티켓 실측에서 부재분의 대부분이 그것) 본문 언급 여부로는 구분되지 않아(부재 경로가
-    전부 본문에 등장한다) 차단하면 정당한 발행을 막는다. 그래서 경고 1줄이다.
-    """
-    entries = [str(item).strip() for item in (touches or []) if str(item).strip()]
-    if not entries:
-        return [], 0
-    missing: list[str] = []
-    unverifiable = 0
-    for entry in entries:
-        try:
-            normalized = repo_coordinates.normalize_repo_path(entry, pm_root=REPO)
-        except repo_coordinates.RepoCoordinateError:
-            unverifiable += 1
-            continue
-        # 접두가 검증된 경로는 그 워크스페이스에서만 찾는다(다른 슬롯의 동명 파일로 해소되면
-        # 좌표 선언이 틀렸다는 사실이 가려진다). 접두 없는 경로는 두 소유 트리를 다 본다.
-        workspace = getattr(normalized, "workspace", None)
-        search = (workspace,) if workspace is not None else roots
-        if _exists_in_roots(str(normalized), search) is None:
-            missing.append(entry)
-    if not missing:
-        return [], unverifiable
-    return [(tid, _TOUCHES_MISSING_KIND,
-             f"touches {len(missing)}건이 어느 소유 트리에도 없다: {' · '.join(missing)} — "
-             f"신설 예정이면 그대로 두고, 오타·옛 경로면 고쳐라 (경고·차단 아님)")], unverifiable
-
-
-def _citation_suffix_index(
-    names: set[str], roots: Sequence[Path],
-) -> dict[str, list[Path]]:
-    """`names` 의 파일명만 모은 basename → 실재 경로 색인 (소유 트리당 열거 1회).
-
-    하위 디렉터리 기준 표기를 해소하려면 "그 경로로 끝나는 파일이 트리에 있나"를 봐야 한다.
-    찾는 파일명이 몇 개뿐이라 순회 1회에 필요한 후보만 모은다(인용마다 다시 걷지 않는다).
-    소유 트리는 서로 포함 관계일 수 있어(PM 홈 ⊃ 슬롯 worktree) 절대경로로 중복을 지운다 —
-    안 지우면 같은 파일이 두 건으로 세어져 유일 해소가 사라진다.
-
-    순회는 `repo_files` 공용 seam(추적분 + 미추적·비무시 파일)에 위임한다 — 직접
-    `os.walk` 를 부르면 새 재귀 tree-walk 호출을 전수 감시하는 가드의 사각이
-    생긴다. git 부재/비-repo 사본은 그 seam 이 filesystem 전수 순회로 강등해 값은 그대로다.
-
-    그 seam 의 Git 성공 경로는 **working-tree 존재를 재검사하지 않는다**(index-only 경로도
-    돌려준다 — symlink·gitlink 를 거짓 탈락시키지 않으려는 그쪽의 의도적 계약). 인용 판정이
-    묻는 것은 "이 경로에 실제로 읽을 파일이 있는가" 이므로, 여기서 `is_file()` 로 한 번 더
-    걸러 종전 `os.walk` 의 물리 존재 의미를 보존한다 — 안 그러면 tracked-but-working-tree
-    -missing 인용이 차단(citation-unresolved) 대신 판정불능으로 강등된다(가드 약화).
-    """
-    index: dict[str, list[Path]] = {name: [] for name in names}
-    seen: set[str] = set()
-    for root in roots:
-        for rel in repo_files.list_repo_owned_files(
-                root, Path("."), mode=repo_files.OWNED):
-            rel_path = Path(rel)
-            if any(part in _CITATION_INDEX_PRUNE_DIRS for part in rel_path.parts):
-                continue
-            name = rel_path.name
-            if name not in index:
-                continue
-            path = root / rel_path
-            key = str(path)
-            if key in seen:
-                continue
-            if not path.is_file():
-                continue
-            seen.add(key)
-            index[name].append(path)
-    return index
-
-
-def _citation_suffix_matches(path: str, index: dict[str, list[Path]]) -> list[Path]:
-    """`path` 로 끝나는 실재 파일 전부 — 하위 디렉터리 기준 표기의 해소 후보."""
-    tail = f"/{path}"
-    return [found for found in index.get(path.rsplit("/", 1)[-1], ())
-            if found.as_posix().endswith(tail)]
-
-
-def _citation_issues(
-    tid: str, prose: str, roots: Sequence[Path],
-) -> tuple[list[tuple[str, str, str]], int]:
-    """본문 `파일:줄` 인용 판정 → (차단 이슈, 판정불능 개수).
-
-    디렉터리 구분자를 가진 인용만 판정한다 — basename 단독(`board.py:11726` 형태)은 출하
-    템플릿·백업 트리에 같은 이름의 사본이 여럿이라 어느 파일인지 확정할 수 없다. 그런 인용은
-    판정불능으로 **세어서** 출력에 싣고 통과로 위장하지 않는다.
-
-    해소는 두 단계다. repo 루트 기준(exact)으로 없으면 하위 디렉터리 기준 표기
-    (`wiki/decisions/x.md` = `.project_manager/wiki/decisions/x.md`)로 보고 소유 트리에서
-    그 경로로 끝나는 파일을 찾는다 — **유일하게** 해소될 때만 그 파일의 줄 범위를 검사하고,
-    사본이 여럿이면 어느 파일의 줄 수인지 확정할 수 없어 판정불능이다. 두 표기 어느 쪽으로도
-    실재 파일이 없으면 **차단**한다: 있지도 않은 파일을 근거로 단 인용이 이 게이트가 막으려는
-    것이라, 표기 편의를 이유로 통과시키면 정탐이 0 이 된다.
-
-    같은 인용이 본문에 여러 번 나오면 한 번만 판정한다(같은 사실을 여러 줄로 내지 않는다).
-    """
-    issues: list[tuple[str, str, str]] = []
-    unverifiable = 0
-    seen: set[str] = set()
-    scanned: list[tuple[str, str, int, Path | None]] = []
-    for match in _CITATION_RE.finditer(prose):
-        citation = f"{match.group('path')}:{match.group('line')}"
-        if citation in seen:
-            continue
-        seen.add(citation)
-        path = match.group("path").replace("\\", "/")
-        if "/" not in path or path.startswith(_OFF_TREE_CITATION_PREFIXES):
-            unverifiable += 1
-            continue
-        scanned.append((citation, path, int(match.group("line")),
-                        _exists_in_roots(path, roots)))
-    # 트리 순회는 exact 로 못 찾은 인용이 있을 때만 — 정상 인용만 있는 티켓은 비용 0.
-    names = {path.rsplit("/", 1)[-1] for _c, path, _l, found in scanned if found is None}
-    index = _citation_suffix_index(names, roots) if names else {}
-    for citation, path, line, found in scanned:
-        if found is None:
-            matches = _citation_suffix_matches(path, index)
-            if len(matches) > 1:
-                unverifiable += 1
-                continue
-            if not matches:
-                issues.append((tid, _CITATION_KIND,
-                               f"인용 `{citation}` 의 파일이 소유 트리에 없다 (repo 루트 "
-                               f"기준·하위 디렉터리 기준 어느 표기로도 해소되지 않는다) — "
-                               f"경로를 실측해 고쳐라"))
-                continue
-            found = matches[0]
-        try:
-            total = len(fs.read_text_shared(
-                found, encoding="utf-8", errors="replace").splitlines())
-        except OSError:
-            unverifiable += 1
-            continue
-        if line < 1 or line > total:
-            issues.append((tid, _CITATION_KIND,
-                           f"인용 `{citation}` 이 줄 범위를 넘는다 (그 파일은 {total}줄) — "
-                           f"실측값으로 고쳐라"))
-    return issues, unverifiable
-
-
-def _architect_round_issues(
-    tid: str, body: str, design: Any,
-) -> list[tuple[str, str, str]]:
-    """`design: required|done` 티켓의 architect 점검 라운드 회수 판정 (차단).
-
-    초안은 PM 이 쓰고 실측 대조·cross-module 검증은 architect 가 한다(generate ≠ evaluate).
-    그 점검이 라운드로 회수되기 전에 승격하면 본문의 사실성을 아무도 안 본 채 공유 보드에
-    올라간다 — 형식 게이트가 통과시키는 결함(틀린 인용·티켓 간 충돌·범위 오판)이 그대로 남는다.
-
-    "산출이 있나" 판정은 라운드 사이드카 소유(`load_rounds` 가 매기는 역할·`round_is_pending`
-    가 매기는 시드 잔존)를 그대로 쓴다 — 여기서 규칙을 다시 만들지 않는다. `n/a`
-    (필드 부재 포함)는 설계 단계 비대상이라 무판정이다.
-    """
-    state = design_rules._design_state(design)
-    if state not in (design_rules.DESIGN_REQUIRED, design_rules.DESIGN_DONE):
-        return []
-    rounds = round_seed.load_rounds(pm_paths.tickets_dir(_home()), tid, ticket_text=body)
-    architect_rounds = [item for item in rounds if item.role == _ARCHITECT_ROLE]
-    if not architect_rounds:
-        return [(tid, _ARCHITECT_ROUND_KIND,
-                 f"design: {state} 인데 {_ARCHITECT_ROLE} 점검 라운드가 없다 — 초안을 "
-                 f"실측 대조(인용·touches·다른 열린 티켓과의 충돌·최소 수단)로 점검받고 "
-                 f"본문에 반영한 뒤 승격하라")]
-    if all(round_seed.round_is_pending(item, ticket_text=body)
-           for item in architect_rounds):
-        return [(tid, _ARCHITECT_ROUND_KIND,
-                 f"{_ARCHITECT_ROLE} 점검 라운드가 시드 그대로다(산출 없음) — 회수 전에는 "
-                 f"승격하지 않는다")]
-    return []
-
-
-def _content_fact_issues(
-    tid: str, body: str, *, touches: Any, design: Any,
-) -> list[tuple[str, str, str]]:
-    """승격 순간의 사실성 판정 묶음 — 형식 게이트와 같은 `(tid, kind, detail)` 모양."""
-    roots = _content_search_roots()
-    # 인용 자체가 코드 span 표기라 `_strip_code`(span 까지 제거)를 쓰면 판정 대상이 사라진다 —
-    # 펜스만 지운다(펜스 안 예시 블록의 경로는 본문 인용이 아니다).
-    prose = markdown_text._FENCED_CODE_RE.sub(" ", body)
-    issues: list[tuple[str, str, str]] = []
-    issues.extend(_architect_round_issues(tid, body, design))
-    citation_issues, citation_unverifiable = _citation_issues(tid, prose, roots)
-    issues.extend(citation_issues)
-    touch_issues, touch_unverifiable = _touches_existence_issues(tid, touches, roots)
-    issues.extend(touch_issues)
-    # 축별로 적는다 — 0 인 축까지 세면 "touches 좌표 0건" 이 판정불능 0 이 아니라 touches
-    # 인식 0 으로 읽힌다(실제로는 전부 해소된 정상 티켓이다).
-    axes = [
-        (touch_unverifiable, f"touches 좌표 {touch_unverifiable}건"),
-        (citation_unverifiable,
-         f"basename 단독/트리 밖 인용 {citation_unverifiable}건"),
-    ]
-    counted = [detail for count, detail in axes if count]
-    if counted:
-        issues.append((tid, _UNVERIFIABLE_KIND,
-                       "판정불능 — " + " · ".join(counted)
-                       + " (게이트 시야 밖 · 통과로 세지 않는다)"))
-    return issues
-
-
-def _body_lint_issues(tid: str, body: str, *,
-                      strict_sections: bool = False,
-                      design: Any = None,
-                      touches: Any = None,
-                      content_facts: bool = False) -> list[tuple[str, str, str]]:
-    """단일 티켓 본문의 self-containment issue — `lint_bodies` 와 authoring 게이트가 공유.
-
-    `lint_bodies` 의 검사 로직(placeholder·thin)을 단일-티켓 단위로 추출한 것 — `board.py new`
-    발행 게이트·`board.py promote` 승격 게이트가 방금/승격 대상 티켓 하나를 즉석 검사할 때 재사용한다.
-
-    `strict_sections`: authoring 게이트(발행·승격)만 True — 5절(목표/인터페이스/결정/DoD/참고) 전부의
-    존재를 강제한다(절 삭제 회피 차단). False(기본·전역 `lint_bodies` 경로)는 3절 불변
-    (`_REQUIRED_SECTIONS`)만 요구 — 인터페이스/결정 절 없는 레거시 티켓의 blast-radius 회피.
-    placeholder 검사는 두 모드 공통(단일 규칙).
-
-    `design`: 그 티켓 frontmatter 의 `design:` 값(None=필드 부재=`n/a`). `required`/`done` 일
-    때만 `## 설계` 절 충전을 함께 판정한다(kind=`design-pending`) — 값을 안 넘기는 호출자는
-    설계 판정 없이 기존 검사만 받는다(레거시 호출 무변경).
-
-    `content_facts`: 승격 게이트(`promote`)만 True — 본문이 *주장하는 사실*(touches 경로 실재·
-    `파일:줄` 인용·architect 점검 라운드 회수)을 함께 판정한다(`_content_fact_issues`).
-    `touches` 는 그 판정의 입력이다(frontmatter 값·None=빈 목록). 전역 lint 와 발행 게이트는
-    켜지 않는다 — 이미 open 인 티켓을 소급 판정하지 않고, 발행 시점 본문은 템플릿이라 인용이
-    없다. 형식 판정(placeholder·thin·design)은 이 플래그와 무관하게 그대로다.
-    """
-    issues: list[tuple[str, str, str]] = []
-    prose = markdown_text._strip_code(body)
-    for placeholder in _PLACEHOLDERS:
-        if placeholder in prose:
-            issues.append((tid, "placeholder",
-                           f"unfilled template text: {placeholder!r}"))
-    required = _STRICT_REQUIRED_SECTIONS if strict_sections else _REQUIRED_SECTIONS
-    for section in required:
-        if section not in body:
-            issues.append((tid, "thin",
-                           f"missing standard section: {section}"))
-    issues.extend(design_rules._design_issues(tid, body, design))
-    if content_facts:
-        issues.extend(_content_fact_issues(tid, body, touches=touches, design=design))
-    return issues
-
-
-def lint_bodies() -> list[tuple[str, str, str]]:
-    """Lint open/claimed ticket bodies for self-containment.
-
-    Checks:
-      - placeholder: unfilled `_template.md` text still present as prose
-      - thin:        a standard section (목표 / 완료 조건 / 참고) is missing
-      - design-pending: 설계 단계(`design: required`) 미완 — 설계 절 미충전/필드 미승격
-        (advisory·never-block. 차단은 그 티켓을 실제로 집는 claim 게이트가 한다.)
-      - design-estimate: `estimate=large` 인데 설계 단계가 비대상(`n/a`) — 발행 후 estimate 를
-        올린 티켓의 설계 게이트 재유도 (advisory·never-block).
-
-    done/blocked tickets are skipped — only live, claimable work is gated.
-    """
-    issues: list[tuple[str, str, str]] = []
-    for status in ("open", "claimed"):
-        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
-            loaded = ticket_store.load_ticket_soft(_home(), p)
-            if loaded is None:
-                continue
-            fm, body = loaded
-            tid = fm.get("id") or p.name
-            issues.extend(_body_lint_issues(tid, body, design=fm.get("design")))
-            issues.extend(_design_estimate_advisory(
-                tid, fm.get("estimate"), fm.get("design")))
-    return issues
-
-
-def lint_ideas() -> list[tuple[str, str, str]]:
-    """Lint ideas for frontmatter `status` ↔ directory agreement.
-
-    The directory is the source of truth; a mismatched frontmatter `status`
-    means a manual `mv` bypassed board.py (drift — see ideas/README.md).
-    """
-    issues: list[tuple[str, str, str]] = []
-    for status in ticket_rules.IDEA_STATUS_DIRS:
-        for p in sorted((IDEAS_DIR / status).glob("[0-9]*.md")):
-            loaded = ticket_store.load_ticket_soft(_home(), p)
-            if loaded is None:
-                continue
-            fm, _ = loaded
-            iid = fm.get("id") or p.name
-            fm_status = fm.get("status")
-            if fm_status != status:
-                issues.append((iid, "idea-status",
-                               f"in {status}/ but frontmatter status={fm_status!r}"))
-    return issues
-
-
-# status.md ✅ 완성 행 누적 임계값 (warn-only — 차단 아님·archive 권고). 활성 매트릭스 = 진행 중만.
-# 남은 가드는 ✅ 누적뿐.
-STATUS_DONE_ROW_WARN = 30
-
-# 모듈 매트릭스 행 중 상태 셀이 ✅ 인 행 (범례 "- ✅ ..." 는 `|` 시작 아니라 제외).
-_STATUS_DONE_ROW_RE = re.compile(r"^\|.*\| ✅ \|", re.MULTILINE)
-
-def lint_status() -> list[tuple[str, str, str]]:
-    """status.md 의 ✅ 완성 행 누적을 경고한다 (warn-only·judgment-only status).
-
-    Checks:
-      - status-done-accum: 활성 매트릭스에 ✅ 완성 행이 누적 — status_done.md 로 archive 권고.
-
-    (status.md 헤더 scalar·테스트 수·합계·소계·회귀 실측은 derivable 이라
-    제거됐다 — 따라서 `status-header-bloat` 가드와 ticket_finish 스칼라 앵커 무결성 검사
-    `lint_status_anchors` 도 같이 제거. status.md = judgment-only.)
-
-    status.md 없으면 빈 리스트. (board.py refresh/lint 끝에서 호출.)
-    """
-    issues: list[tuple[str, str, str]] = []
-    if not STATUS_FILE.exists():
-        return issues
-    text = fs.read_text_shared(STATUS_FILE, encoding="utf-8")
-
-    done_rows = len(_STATUS_DONE_ROW_RE.findall(text))
-    if done_rows > STATUS_DONE_ROW_WARN:
-        issues.append((
-            "status.md", "status-done-accum",
-            f"활성 매트릭스 ✅ 완성 행 {done_rows}개 > {STATUS_DONE_ROW_WARN} — "
-            f"status_done.md 로 archive 권고"))
-
-    return issues
 
 
 # ── family wiki scope 태그 + 승격 ─────────────────────────────
@@ -10901,100 +10045,6 @@ def lint_status() -> list[tuple[str, str, str]]:
 # 분류(`mission`·`internal-process`)로 점유돼 있어, 같은 키에 repo 네임스페이스를 얹으면 기존
 # 의미를 깨고 오탐을 부른다. family wiki scope 는 전용 키 `family_scope:` 로 박제해 두 의미체계를
 # 분리한다 — 키 부재 회귀 0.
-
-FAMILY_SCOPE_DEFAULT = "shared"  # family_scope 부재/빈값 → shared 로 간주.
-# family_scope 가 인지되는 wiki 디렉토리 — ADR(decisions/)·spec(specs/).
-_SCOPE_AWARE_DIRS: tuple[Path, ...] = (DECISIONS_DIR, SPECS_DIR)
-# 유효 family_scope 값 형식 — `shared` 또는 prefix 형(영숫자·`-`·`_`, 등록 prefix 와 동형).
-# 형식만 검사(등록 여부는 advisory 메시지로) — areas.md 부재에서도 동작.
-_FAMILY_SCOPE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def _in_scope_aware_dir(path: Path) -> bool:
-    """path 가 scope-aware 디렉토리(decisions/·specs/) 안에 있는가.
-
-    promote-scope 가 ADR/spec 문서로만 retag 를 제한하기 위한 가드— 임의
-    frontmatter 문서 retag 를 거부한다. 경로 비교 전 resolve 된 절대경로를 받는다.
-    """
-    resolved = path if path.is_absolute() else (REPO / path).resolve()
-    for base in _SCOPE_AWARE_DIRS:
-        try:
-            base_resolved = base.resolve()
-        except OSError:
-            continue
-        if resolved == base_resolved or base_resolved in resolved.parents:
-            return True
-    return False
-
-
-def family_scope(fm: dict[str, Any]) -> str:
-    """frontmatter dict 의 family wiki scope. 부재/빈값 → shared.
-
-    `family_scope:` 값을 strip 해 반환한다. 없거나 빈 문자열이면 `shared` 기본
-    비-문자열(잘못 적힌 list 등)도 shared 로
-    안전 폴백 — 파싱이 절대 예외를 던지지 않게 한다(lint fail-soft).
-    """
-    raw = fm.get("family_scope")
-    if not isinstance(raw, str):
-        return FAMILY_SCOPE_DEFAULT
-    val = raw.strip()
-    return val or FAMILY_SCOPE_DEFAULT
-
-
-def lint_scopes() -> list[tuple[str, str, str]]:
-    """family_scope 태그를 파싱·인지한다 (kind=`scope-advice`·자문성).
-
-    decisions/·specs/ 문서의 `family_scope:` 를 읽어 *인지*한다(부재 → shared 기본).
-    차단은 최소 — 다음만 자문성 권고(never-blocks·`_ADVISORY_LINT_KINDS`):
-      - 비문자열 family_scope (list/dict/number 등 — frontmatter 형식 오류).
-      - 형식이 깨진 scope (공백/특수문자 등 `_FAMILY_SCOPE_RE` 불일치).
-      - shared 도 아니고 areas.md 의 등록 prefix 도 아닌 미지의 repo scope (오타 신호).
-        단 areas.md 부재면 등록 대조를 건너뛴다 — 미등록에서 repo scope 는 미래값일 뿐.
-    scope 자체로 hard-fail 을 만들지 않는다.
-    (family_scope 부재) 에선 항상 빈 리스트 — 회귀 0.
-
-    *원본 값* 을 검사한다(파싱 헬퍼 `family_scope()` 의 fail-soft 폴백과 분리) — 헬퍼는
-    비문자열을 shared 로 안전 폴백하지만, lint 는 그 형식 오류를 조용히 삼키지 않고
-    `scope-advice` 로 권고해야 한다.
-    """
-    issues: list[tuple[str, str, str]] = []
-    known = areas_store.registered_prefixes(_home())  # areas.md 부재면 빈 set → 등록 대조 생략.
-    for base in _SCOPE_AWARE_DIRS:
-        if not base.is_dir():
-            continue
-        for p in sorted(base.glob("*.md")):
-            try:
-                fm, _body = ticket_store.load_ticket(p)
-            except (ValueError, OSError, yaml.YAMLError):
-                # frontmatter 없음(README) 또는 placeholder({{DATE}} 등 비-YAML) — scope 인지
-                # 대상 아님(fail-soft). 한 문서 파싱 실패가 lint 전체를 막지 않게 흡수한다.
-                continue
-            if not isinstance(fm, dict):
-                continue  # frontmatter 가 스칼라/리스트 — scope 인지 대상 아님.
-            if "family_scope" not in fm:
-                continue  # 부재 = shared 기본 — 정상, 보고 없음.
-            raw = fm.get("family_scope")
-            src = pm_paths._rel_to_repo(_home(), p)
-            if not isinstance(raw, str):
-                # list/dict/number 등 — frontmatter 형식 오류. 헬퍼는 shared 폴백하지만
-                # lint 는 조용히 삼키지 않고 권고한다.
-                issues.append((src, "scope-advice",
-                               f"family_scope 가 비문자열({type(raw).__name__}) — "
-                               f"`shared` 또는 repo prefix 문자열이어야 함"))
-                continue
-            if not raw.strip():
-                continue  # 빈값 = shared 기본 — 정상, 보고 없음.
-            scope = raw.strip()
-            if not _FAMILY_SCOPE_RE.match(scope):
-                issues.append((src, "scope-advice",
-                               f"family_scope={scope!r} 형식이 깨짐 — `shared` 또는 "
-                               f"repo prefix 여야 함"))
-            elif scope != FAMILY_SCOPE_DEFAULT and known and scope not in known:
-                issues.append((src, "scope-advice",
-                               f"family_scope={scope!r} 가 등록된 repo prefix 아님 "
-                               f"(areas.md: {sorted(known)}) — 오타 또는 승격 누락 가능 "
-                               f""))
-    return issues
 
 
 # 승격 destination 으로 허용할 약식 (board.py promote-scope <file> --to <scope>).
@@ -11010,7 +10060,7 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
     """
     target = args.file
     new_scope = args.to.strip()
-    if not _FAMILY_SCOPE_RE.match(new_scope):
+    if not wiki_lint._FAMILY_SCOPE_RE.match(new_scope):
         print(f"invalid --to scope {new_scope!r}: `shared` 또는 repo prefix "
               "(영숫자·-·_) 여야 함.", file=sys.stderr)
         return 1
@@ -11019,7 +10069,7 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
         path = (REPO / target).resolve()
     else:
         path = path.resolve()
-    if not _in_scope_aware_dir(path):
+    if not wiki_lint._in_scope_aware_dir(_home(), path):
         print(f"refusing to retag {pm_paths._rel_to_repo(_home(), path)}: scope 승격은 decisions/·specs/ "
               "문서만 대상 (ADR/spec scope 승격 명령).", file=sys.stderr)
         return 1
@@ -11031,7 +10081,7 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"cannot retag {pm_paths._rel_to_repo(_home(), path)}: {exc}", file=sys.stderr)
         return 1
-    old_scope = family_scope(fm)
+    old_scope = wiki_lint.family_scope(fm)
     if old_scope == new_scope and isinstance(fm.get("family_scope"), str):
         print(f"family_scope already {new_scope!r} — no change ({pm_paths._rel_to_repo(_home(), path)})")
         return 0
@@ -11039,163 +10089,6 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
     dump_ticket(path, fm, body)
     print(f"promoted scope {old_scope!r} → {new_scope!r} ({pm_paths._rel_to_repo(_home(), path)})")
     return 0
-
-
-# ── wikilink lint ───────────────────────────────────────────
-# 엔진은 *구조적으로 해석 가능한* 참조만 검증한다: [[ADR-NNNN]]·[[T-NNNN]]/[[T-PFX-NNN]]·
-# [[idea-NNNN]] 가 실제 파일로 resolve 되는지. 자유어휘([[some-memory-slug]] 등)는 프로젝트마다
-# 화이트리스트가 달라 엔진이 판정할 수 없으므로 건드리지 않는다(오탐 0) — 프로젝트 고유 링크 검사는
-# lint 훅(.project_manager/hooks/lint_*.py)으로 분리. placeholder([[T-NNNN]]·[[xxxxx]])는
-# 숫자 패턴이 아니라 자연히 제외된다.
-
-# [[name]] 또는 alias [[name|display]] — name 만 캡처. backtick 안도 포함.
-_WIKILINK_RE = re.compile(r"\[\[([A-Za-z0-9_\s.\-]+?)(?:\|[^\]]+)?\]\]")
-
-# 어댑터 scaffold 경로 — fresh adopter 에 출하되는 harness 어댑터(.claude/.opencode).
-# 채택자(특히 framework ADR 0001~ 이 없는 다운스트림 앱)는 자기 repo 의 scaffold 에서
-# framework ADR/idea 를 [[bracket]] 참조하면 *영구 dangling* 이 된다 — 이는 정상이며
-# push 를 막아선 안 된다("차단은 최소·advisory 우선"). `_collect_wikilink_files`
-# 의 scaffold rel 목록과 동일 — POSIX 경계로 비교(_rel_to_repo 는 `/` 정규화).
-# `.opencode/command/` **legacy-compat 로 유지** — 은퇴 전 import 한
-# 채택자 트리엔 command 파일이 잔존하고(pm_update 는 복사만·은퇴 경로 삭제 안 함), 여기서 빼면 그
-# 파일들의 framework wikilink 가 scaffold-advisory 대신 blocking dangling 으로 오분류된다.
-_SCAFFOLD_PATH_PREFIXES: tuple[str, ...] = (
-    ".claude/agents/", ".claude/skills/", ".opencode/agents/", ".opencode/command/")
-
-
-def _is_scaffold_src(src: str) -> bool:
-    """src(`_rel_to_repo` 결과)가 어댑터 scaffold 경로 하위인지 — `\\`→`/` 정규화 후 prefix 매칭."""
-    norm = src.replace("\\", "/")
-    return norm.startswith(_SCAFFOLD_PATH_PREFIXES)
-
-
-def _collect_wikilink_files() -> list[Path]:
-    """wikilink 검사 대상 .md — wiki/ 전체 + 레포 루트 CLAUDE.md·README.md + 어댑터 scaffold.
-
-    어댑터 scaffold(`.claude/{agents,skills}`·`.opencode/{agents,command}`)도 스캔한다 —
-    fresh adopter 엔 framework ADR/ticket 이 없으므로, 출하 scaffold 의 `[[ADR-NNNN]]` 같은
-    구조참조 wikilink 가 그대로 새 나가면 fresh-clone 에서 dangling 이 된다. 가드가 wiki/ 만
-    보던 동안 이 scaffold dangling 은 *구조적으로* 안 잡혔다(scaffold ref 를 늘림).
-    각 dir 은 harness 별로 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도 마찬가지)
-    `.is_dir()` 가드로 있을 때만 추가한다.
-    """
-    # PM 운영 wiki는 등록 worktree read 폴백에서 소유 PM 홈을 따른다. 루트 README와
-    # adapter scaffold는 아래에서 계속 REPO(현재 제품 worktree)를 읽어 코드 lint 의미를 보존한다.
-    pm_repo = _READ_PM_HOME_OVERRIDE or REPO
-    wiki = pm_repo / ".project_manager" / "wiki"
-    files: list[Path] = list(wiki.rglob("*.md")) if wiki.is_dir() else []
-    # board/ 분리 시 ticket 본문이 wiki/ 밖(board/tickets)으로 빠진다 — 그러면
-    # ticket 의 `[[ADR-NNNN]]` 구조참조가 wiki-only 스캔에선 안 보여 dangling 이 *미검출*된다.
-    # tickets_dir() 를 union 해 두 루트를 모두 본다. legacy(board_root==wiki)면 이 경로는 이미
-    # wiki.rglob 에 포함되므로 set dedup 으로 no-op(중복 0). board/areas.md 등 비-md 는 제외.
-    tk = pm_paths.tickets_dir(_home())
-    if tk.is_dir():
-        files.extend(tk.rglob("*.md"))
-    files = list(dict.fromkeys(files))  # 순서보존 dedup (legacy 중복 제거 + board union 합집합)
-    for name in ("CLAUDE.md", "README.md"):
-        p = REPO / name
-        if p.exists():
-            files.append(p)
-    # `.opencode/command` = 은퇴 경로·legacy-compat 스캔 유지(_SCAFFOLD_PATH_PREFIXES 주석).
-    for rel in (".claude/agents", ".claude/skills", ".opencode/agents", ".opencode/command"):
-        d = REPO / rel
-        if d.is_dir():
-            files.extend(d.rglob("*.md"))
-    return files
-
-
-def _leading_num(filename: str) -> str | None:
-    """파일명 선두 숫자를 0-strip 정규화해 반환 ('0028-foo.md' → '28'). 없으면 None."""
-    m = re.match(r"(\d+)", filename)
-    return (m.group(1).lstrip("0") or "0") if m else None
-
-
-def _resolve_wikilink_targets() -> tuple[set[str], set[str], set[str]]:
-    """(ticket_ids, adr_nums, idea_nums) — 실재하는 구조 참조 대상 집합."""
-    ticket_ids = {fm.get("id") for _s, fm in _all_tickets() if fm.get("id")}
-    adr_nums: set[str] = set()
-    if DECISIONS_DIR.is_dir():
-        for p in DECISIONS_DIR.glob("[0-9]*.md"):
-            n = _leading_num(p.name)
-            if n is not None:
-                adr_nums.add(n)
-    idea_nums: set[str] = set()
-    for status in ticket_rules.IDEA_STATUS_DIRS:
-        for p in (IDEAS_DIR / status).glob("[0-9]*.md"):
-            n = _leading_num(p.name)
-            if n is not None:
-                idea_nums.add(n)
-    return ticket_ids, adr_nums, idea_nums
-
-
-def lint_wikilinks() -> list[tuple[str, str, str]]:
-    """Return dangling [[name]] for *structural* refs (ADR/ticket/idea) only.
-
-    name 으로 dedupe 하고 사용처를 detail 에 모은다. 자유어휘는 검사하지 않는다.
-    코드 span/fence 안의 *예시* wikilink(관례 문서가 backtick 으로 보여주는
-    `[[ADR-NNNN]]`)는 실 참조가 아니므로 `_strip_code` 로 제거 후 스캔한다 —
-    `lint_unstable_refs` 와 동일한 처리(오탐 0).
-
-    kind 분류:
-      - `dangling-wikilink`          = wiki/·root-doc(CLAUDE.md·README) 의 framework ADR/idea
-        dangling, 그리고 **모든 ticket(`[[T-...]]`) dangling** — `lint --gate` 차단(blocking).
-      - `dangling-wikilink-scaffold` = framework ADR/idea dangling 이 *오직* 어댑터 scaffold
-        경로(`.claude/{agents,skills}`·`.opencode/{agents,command}`)에서만 등장 — advisory
-        (`_ADVISORY_LINT_KINDS` 등재·`--gate` 미차단). 채택자(framework ADR 부재 다운스트림)의
-        scaffold bracket-ref 는 영구 dangling 이 정상이라 push 를 막으면 안 된다.
-    같은 ref 가 scaffold + wiki/root-doc 양쪽에서 dangle 하면 blocking 유지(프레임워크 자기
-    문서는 dangle 하면 안 됨). per-occurrence source 경로를 추적해 분기한다(name 별로 ADR/idea
-    여부 + 사용처 전부가 scaffold 인지).
-    """
-    ticket_ids, adr_nums, idea_nums = _resolve_wikilink_targets()
-    # name → (is_ticket, [source rel paths]). is_ticket=True 면 항상 blocking,
-    # False(ADR/idea)면 사용처가 전부 scaffold 일 때만 advisory 강등.
-    dangling: dict[str, tuple[bool, list[str]]] = {}
-
-    for path in _collect_wikilink_files():
-        try:
-            text = fs.read_text_shared(path, encoding="utf-8")
-        except OSError:
-            continue
-        src = pm_paths._rel_to_repo(_home(), path)
-        text = markdown_text._strip_code(text)
-        for raw in _WIKILINK_RE.findall(text):
-            name = raw.strip()
-            m_adr = re.fullmatch(r"ADR-(\d+)", name)
-            m_idea = re.fullmatch(r"idea-(\d+)", name)
-            is_ticket = False
-            if m_adr:
-                ok = (m_adr.group(1).lstrip("0") or "0") in adr_nums
-            elif re.fullmatch(ticket_rules._TICKET_ID_BODY, name):
-                # prefixed(`T-PAY-001`)·legacy(`T-0164`) wikilink 둘 다 ticket 참조로 본다
-                # (multi-repo 보드). grammar 는 `_TICKET_ID_BODY` 공유(자체 regex 금지).
-                ok = name in ticket_ids
-                is_ticket = True
-            elif m_idea:
-                ok = (m_idea.group(1).lstrip("0") or "0") in idea_nums
-            else:
-                continue  # 자유어휘 — 엔진 판정 안 함
-            if ok:
-                continue
-            _t, srcs = dangling.setdefault(name, (is_ticket, []))
-            if src not in srcs:
-                srcs.append(src)
-
-    issues: list[tuple[str, str, str]] = []
-    for name in sorted(dangling):
-        is_ticket, srcs = dangling[name]
-        shown = ", ".join(srcs[:3]) + (f" (외 {len(srcs) - 3}개)" if len(srcs) > 3 else "")
-        # ticket dangling 은 항상 blocking. ADR/idea 는 사용처가 *전부* scaffold 일 때만
-        # advisory 강등 — 하나라도 wiki/root-doc 이면 framework 자기 문서 dangle 이라 blocking.
-        scaffold_only = (not is_ticket) and all(_is_scaffold_src(s) for s in srcs)
-        if scaffold_only:
-            issues.append((name, "dangling-wikilink-scaffold",
-                           f"[[{name}]] 대상 파일 없음 (어댑터 scaffold 참조 · 채택자 "
-                           f"decisions/ 에 framework ADR 부재 = 정상) · 사용처: {shown}"))
-        else:
-            issues.append((name, "dangling-wikilink",
-                           f"[[{name}]] 대상 파일 없음 · 사용처: {shown}"))
-    return issues
 
 
 # ── render-leak (리터럴 `{{...}}` 누출 차단) ──────────────────
@@ -11528,183 +10421,6 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     return issues
 
 
-# ── 파일명-무관 참조 강제  ──────────
-# 엔진은 [[ADR-NNNN]] 를 *번호*로 resolve 하므로 슬러그는 무관하다. 그러나 LLM 이
-# 구조화 디렉토리(decisions/·tickets/·ideas/)를 **생파일명·슬러그**로 가리키면 — markdown 경로
-# 링크 `](…/decisions/<slug>.md)` 나 숫자선두 자유어휘 wikilink `[[NNNN-slug]]` — 슬러그가 바뀌면
-# 부정확 참조가 된다. 이 둘은 *번호로 resolve 가능*
-# resolve 실패 = dangling(차단), 실재하지만 슬러그 의존 = 권고(canonical ID-wikilink 로 전환).
-# 자유어휘 일반([[some-memory]])·산문 언급은 *건드리지 않는다*.
-
-# 구조화 디렉토리를 가리키는 markdown 링크. 견고성을 위해 2단계로 본다
-# suggestion — 정규식만으론 link-form edge 가 새므로):
-#   (a) `_MD_LINK_TARGET_RE` 로 링크 target 을 추출 — 선택적 `<…>` 꺾쇠·트레일링 `"title"` 허용.
-#   (b) target 에서 fragment(`#…`)·query(`?…`)를 떼고, 외부 URL(`scheme://`)이면 건너뛴 뒤
-#       `_STRUCT_PATH_RE` 로 구조화 경로(decisions/·tickets/<state>/·ideas/<state>/<file>.md)를 매칭.
-# 이렇게 `.md)`·`.md#sec)`·`.md "title")`·앞 경로 유무를 다 흡수하고 외부 URL 오탐(오차단)을 막는다.
-# `(?:^|/)` 로 segment 경계를 요구해 `mydecisions/` 류 비-경계 매치를 배제. 매핑: decisions→ADR,
-# tickets/<state>→ticket, ideas/<state>→idea (tickets/ideas 는 상태 디렉토리 필수 — README·_template 제외).
-# title 은 CommonMark 3형 모두 흡수 — `"…"`·`'…'`·`(…)`.
-_MD_LINK_TARGET_RE = re.compile(
-    r"\]\(\s*<?([^)>\s]+)>?(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)")
-# 상태 조각은 **상수에서 유도**한다 — 리터럴로 적으면 상태 디렉토리가 늘어날 때 그 상태의 링크가
-# 조용히 lint 밖으로 빠진다(dangling·슬러그 권고 둘 다 미검사). `re.escape` 는 상태명에 정규식
-# 메타문자가 섞여도 문자 그대로 매칭시킨다.
-_TICKET_STATUS_PATTERN = "|".join(re.escape(status) for status in ticket_rules.STATUS_DIRS)
-_IDEA_STATUS_PATTERN = "|".join(re.escape(status) for status in ticket_rules.IDEA_STATUS_DIRS)
-_STRUCT_PATH_RE = re.compile(
-    r"(?:^|/)(?:"
-    r"decisions/([^/]+\.md)"
-    rf"|tickets/(?:{_TICKET_STATUS_PATTERN})/([^/]+\.md)"
-    rf"|ideas/(?:{_IDEA_STATUS_PATTERN})/([^/]+\.md)"
-    r")$")
-# 숫자선두 자유어휘 wikilink — `[[NNNN-slug]]`·`[[NNNN]]`·alias `[[NNNN-slug|표시명]]`
-# (ADR/idea 를 ID 아닌 형으로 적은 것). slug 부는 `[^\]|]+`(비-ASCII 포함) — `_slugify` 가 한글
-# slug 를 허용하므로 `[[0001-한글아이디어]]` 도 포착.
-# alias `|표시명` 은 `_WIKILINK_RE` 동작과 동일하게 흡수(codex suggestion).
-_NUM_LEAD_WIKILINK_RE = re.compile(r"\[\[(\d+)(?:-[^\]|]+)?(?:\|[^\]]+)?\]\]")
-
-
-def lint_unstable_refs() -> list[tuple[str, str, str]]:
-    """파일명/슬러그-의존 구조 참조를 포착한다 (kind=`unstable-ref`/`unstable-ref-advice`).
-
-    두 형태를 본다 (둘 다 *구조화 디렉토리*를 가리킬 때만):
-      - markdown 경로 링크 `](…/decisions/<slug>.md)`·`](…/tickets/<state>/<slug>.md)`·
-        `](…/ideas/<state>/<slug>.md)` → 대상 파일이 실재 안 하면 dangling(차단), 실재하면 권고.
-        (명시적 구조 경로라 의도가 분명 → 차단 가능.)
-      - 숫자선두 wikilink `[[NNNN-slug]]`·`[[NNNN]]` → 번호가 ADR/idea 로 **resolve 될 때만**
-        canonical `[[ADR-NNNN]]`/`[[idea-NNNN]]` 권고. resolve 안 되면 자유어휘(`[[2026-roadmap]]`
-        등)와 구분 불가 → **불검사**(차단 안 함 · 오탐 0).
-
-    kind 분류:
-      - `unstable-ref`        = markdown 경로 링크가 실재 안 함 (환각) — `lint --gate` 차단.
-      - `unstable-ref-advice` = 실재 파일을 슬러그로 가리킴 / 숫자선두 슬러그형 — 작동은 함,
-        ID-wikilink 권고만(자문성·차단 안 함).
-
-    자유어휘 일반(`[[some-memory]]`)·산문 언급은 건드리지 않는다 (오탐 0). detail 메시지에
-    권장 교체형(`→ [[ADR-NNNN]]`)을 싣는다. (name, dangling) 으로 dedupe 하고 사용처를 모은다.
-    """
-    _ticket_ids, adr_nums, idea_nums = _resolve_wikilink_targets()
-    # (name, dangling) → (detail, [source rel paths]) — name+상태가 dedupe 키.
-    found: dict[tuple[str, bool], tuple[str, list[str]]] = {}
-
-    def _record(name: str, dangling: bool, detail: str, src: str) -> None:
-        # raw/ 스냅샷(sealed 면 immutable)은 슬러그-경로 *권고*(never-blocks)를 면제한다:
-        # 봉인된 스냅샷의 링크는 고칠 수 없고(immutable) 역사적 인용이라 ID-wikilink 권고가 비실행적이다.
-        # dangling(환각·차단)은 유지 — 깨진 구조 링크는 raw 에서도 surface 한다.
-        if not dangling and "/raw/" in ("/" + src.replace("\\", "/")):
-            return
-        detail0, bucket = found.setdefault((name, dangling), (detail, []))
-        del detail0  # 첫 detail 보존 (같은 name 의 메시지는 동일).
-        if src not in bucket:
-            bucket.append(src)
-
-    for path in _collect_wikilink_files():
-        try:
-            text = fs.read_text_shared(path, encoding="utf-8")
-        except OSError:
-            continue
-        src = pm_paths._rel_to_repo(_home(), path)
-        # 코드 span/fence 안의 예시 링크·wikilink 는 실제 참조 아님 → 제거 후 스캔(오탐 0).
-        text = markdown_text._strip_code(text)
-
-        # (1) markdown 링크 — target 추출 → fragment/query 제거·외부 URL 제외 → 구조화 경로 분류.
-        for raw_target in _MD_LINK_TARGET_RE.findall(text):
-            # 외부 URL 제외(오탐·오차단 방지) — scheme `http://` 형 + protocol-relative `//host/…`
-            # Windows `C:/` 는 `://`·`//`
-            # 둘 다 아니라 영향 없음(이식성 고려해 urlsplit scheme-오인 회피).
-            if "://" in raw_target or raw_target.startswith("//"):
-                continue
-            clean = raw_target.split("#", 1)[0].split("?", 1)[0]
-            m = _STRUCT_PATH_RE.search(clean)
-            if not m:
-                continue
-            dec_f, tic_f, idea_f = m.group(1), m.group(2), m.group(3)
-            if dec_f:
-                num = _leading_num(dec_f)
-                if num is None:
-                    continue  # 숫자선두 ADR 파일만 (template 등 비번호 제외).
-                if not (DECISIONS_DIR / dec_f).exists():
-                    _record(dec_f, True,
-                            f"decisions/{dec_f} 실재 안 함 (슬러그 링크 dangling) "
-                            f"→ [[ADR-{num.zfill(4)}]] 로 교체", src)
-                else:
-                    _record(dec_f, False,
-                            f"decisions/{dec_f} 슬러그 경로 링크 (환각 취약) "
-                            f"→ [[ADR-{num.zfill(4)}]] 권고", src)
-            elif tic_f:
-                target = _find_ticket_file(tic_f)
-                tid = ticket_rules._ticket_id_from_filename(tic_f)
-                if target is None:
-                    _record(tic_f, True,
-                            f"tickets/.../{tic_f} 실재 안 함 (슬러그 링크 dangling)"
-                            + (f" → [[{tid}]] 로 교체" if tid else ""), src)
-                else:
-                    _record(tic_f, False,
-                            f"tickets/.../{tic_f} 슬러그 경로 링크 (환각 취약)"
-                            + (f" → [[{tid}]] 권고" if tid else ""), src)
-            elif idea_f:
-                num = _leading_num(idea_f)
-                if num is None:
-                    continue
-                target = _find_idea_file(idea_f)
-                if target is None:
-                    _record(idea_f, True,
-                            f"ideas/.../{idea_f} 실재 안 함 (슬러그 링크 dangling) "
-                            f"→ [[idea-{num.zfill(4)}]] 로 교체", src)
-                else:
-                    _record(idea_f, False,
-                            f"ideas/.../{idea_f} 슬러그 경로 링크 (환각 취약) "
-                            f"→ [[idea-{num.zfill(4)}]] 권고", src)
-
-        # (2) 숫자선두 wikilink — [[NNNN-slug]]/[[NNNN]]. ADR/idea 번호로 *resolve 될 때만* 권고
-        #     (canonical ID-wikilink 로 전환·자문성). resolve 안 되면 자유어휘(`[[2026-roadmap]]`·
-        #     `[[1234-experiment]]` 등 숫자선두 메모리 링크)와 구분 불가 → **건드리지 않는다**
-        #     ("자유어휘 불검사·오탐 0"; 미resolve hard-block 은 자유어휘를
-        #     거짓 차단하는 회귀였음). 차단(dangling)은 명시적 구조 경로를 가진 markdown 링크만(위 (1)).
-        for m in _NUM_LEAD_WIKILINK_RE.finditer(text):
-            # alias(`|표시명`) 제거 후를 dedupe 키·메시지로 — 같은 대상이 alias 만 달라도 1 issue.
-            name = m.group(0)[2:-2].split("|", 1)[0]   # 대괄호·alias 벗긴 raw (NNNN-slug).
-            num = m.group(1).lstrip("0") or "0"
-            if num in adr_nums:
-                _record(name, False,
-                        f"[[{name}]] 숫자선두 슬러그형 → canonical [[ADR-{num.zfill(4)}]] 권고", src)
-            elif num in idea_nums:
-                _record(name, False,
-                        f"[[{name}]] 숫자선두 슬러그형 → canonical [[idea-{num.zfill(4)}]] 권고", src)
-            # else: ADR/idea 로 resolve 안 됨 → 자유어휘로 간주·불검사(오탐 0).
-
-    # dangling = hard block (resolve 실패 = 환각), 실재 슬러그 = 권고(자문성).
-    # kind 로 구분: `unstable-ref`(차단) vs `unstable-ref-advice`(never-blocks · 권장형).
-    issues: list[tuple[str, str, str]] = []
-    for (name, dangling) in sorted(found, key=lambda k: (k[0], k[1])):
-        detail, srcs = found[(name, dangling)]
-        if not srcs:
-            continue
-        shown = ", ".join(srcs[:3]) + (f" (외 {len(srcs) - 3}개)" if len(srcs) > 3 else "")
-        kind = "unstable-ref" if dangling else "unstable-ref-advice"
-        issues.append((name, kind, f"{detail} · 사용처: {shown}"))
-    return issues
-
-
-def _find_ticket_file(filename: str) -> Path | None:
-    """tickets/<state>/<filename> 중 실재하는 첫 경로 (상태 무관 — mv 로 이동했을 수 있음)."""
-    for status in ticket_rules.STATUS_DIRS:
-        p = pm_paths.tickets_dir(_home()) / status / filename
-        if p.exists():
-            return p
-    return None
-
-
-def _find_idea_file(filename: str) -> Path | None:
-    """ideas/<state>/<filename> 중 실재하는 첫 경로 (상태 무관)."""
-    for status in ticket_rules.IDEA_STATUS_DIRS:
-        p = IDEAS_DIR / status / filename
-        if p.exists():
-            return p
-    return None
-
-
 # 차단되지 않는 자문성 lint kind — push 를 막지 않는 권고/드리프트 카테고리.
 # `lint --gate` 는 이 카테고리를 종료코드에서 제외한다 (push 게이트용 엄격 부분집합):
 #   - status-done-accum : status.md ✅ 완성 행 누적 archive 권고 (lint_status "never blocks" 보장).
@@ -11766,126 +10482,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
      "round-stray", "round-unreadable",
      # 클러스터 장부 관측 — 운영 재료지 push 결함이 아니다(never-block · `lint_clusters`).
-     _CLUSTER_MEMBER_LINT_KIND, _CLUSTER_DUPLICATE_LINT_KIND})
-
-
-def _adr_id_from_path(p: Path) -> str:
-    """decisions/ 파일명(`NNNN-slug.md`) → `ADR-NNNN`. `.stem` 으로 확장자 제거(dashless 방어)."""
-    return f"ADR-{p.stem.split('-', 1)[0]}"
-
-
-def _as_id_list(val) -> list[str]:
-    """frontmatter 값(None/str/list)을 ID 문자열 리스트로 정규화한다.
-
-    `amends: [ADR-0002, ADR-0011]`(yaml list) · `amends: ADR-0001`(scalar) ·
-    `refines: ADR-0006, ADR-0008`(comma scalar) 모두 수용 — 쉼표/공백 분리.
-    """
-    if val is None:
-        return []
-    items = val if isinstance(val, list) else re.split(r"[,\s]+", str(val))
-    return [str(s).strip() for s in items if str(s).strip()]
-
-
-def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
-    """ADR lifecycle 정합 advisory (never-block).
-
-    `amends:[Y]`/`supersedes:Y` 인 ADR-X 에 대해 대상 Y(ADR)가 **back-ref**(amended_by/
-    superseded_by 에 X)와 **status**(amended/superseded)를 갖는지 검사한다. + 자가일관:
-    status=amended 면 amended_by 가, superseded 면 superseded_by 가 있어야 한다. 어긋나면
-    권고(kind=`adr-lifecycle`·`_ADVISORY_LINT_KINDS` 등재로 `--gate` 종료코드 비기여).
-    `refines`(추가·대상 불변)는 검사 안 한다. ticket back-ref(`amended_by:[T-NNNN]`)는
-    forward edge 가 없어 cross-check 대상 아님(자가일관만). decisions/ 부재·깨진 frontmatter
-    → graceful skip(신규 clone·ADR 0개 무영향)."""
-    findings: list[tuple[str, str, str]] = []
-    if not DECISIONS_DIR.is_dir():
-        return findings
-    adrs: dict[str, dict] = {}
-    for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
-        try:
-            fm, _ = ticket_store.load_ticket(p)
-        except ticket_store._load_ticket_soft_errors():  # 깨진/frontmatter 없는 파일은 skip(비차단).
-            continue
-        adrs[_adr_id_from_path(p)] = fm or {}
-
-    for adr_id, fm in adrs.items():
-        status = str(fm.get("status") or "").strip()
-        for verb, want_status, back_field in (
-            ("amends", "amended", "amended_by"),
-            ("supersedes", "superseded", "superseded_by"),
-        ):
-            for tgt in _as_id_list(fm.get(verb)):
-                if not tgt.startswith("ADR-"):
-                    continue  # ADR↔ADR 만 cross-check (ticket 등 비-ADR 대상 제외).
-                tfm = adrs.get(tgt)
-                if tfm is None:
-                    findings.append((adr_id, "adr-lifecycle",
-                                     f"{verb}: {tgt} 인데 그 ADR 파일이 없음"))
-                    continue
-                if adr_id not in _as_id_list(tfm.get(back_field)):
-                    findings.append((tgt, "adr-lifecycle",
-                                     f"{adr_id} 이 {verb} 하는데 {back_field} 에 {adr_id} 누락"))
-                tgt_status = str(tfm.get("status") or "").strip()
-                # supersession은 amendment보다 강한 종결 상태다. 이미 superseded 된 ADR에
-                # 후속 ADR이 amendment 역사를 더해도 상태를 amended로 되돌리지 않는다.
-                status_satisfies = (
-                    tgt_status == want_status
-                    or (verb == "amends" and tgt_status == "superseded")
-                )
-                if not status_satisfies:
-                    findings.append((tgt, "adr-lifecycle",
-                                     f"{adr_id} 이 {verb} 하는데 status={tgt_status or '없음'} (기대 {want_status})"))
-        # 자가일관 — status 가 amended/superseded 면 back-ref 가 있어야.
-        if status == "amended" and not _as_id_list(fm.get("amended_by")):
-            findings.append((adr_id, "adr-lifecycle", "status: amended 인데 amended_by 없음"))
-        if status == "superseded" and not _as_id_list(fm.get("superseded_by")):
-            findings.append((adr_id, "adr-lifecycle", "status: superseded 인데 superseded_by 없음"))
-    return findings
-
-
-def _parse_adr_author(val) -> tuple[str, str] | None:
-    """ADR frontmatter `author` 를 `(user, slot)` 으로 파싱한다.
-
-    형식 = `<user>/<pm-slot>` — `created_by`/`claimed_by` identity 토큰과 동일 형태(`identity_tag`).
-    *마지막* `/` 로 분리(`rsplit('/', 1)`)해 slot 을 마지막 토큰으로 잡는다 — user 에 `/` 가
-    있어도(이메일 등엔 없지만 방어) slot 이 흔들리지 않는다. 두 토큰이 모두 non-empty 여야
-    유효(`<user>/<pm-slot>`); `/` 없음·한쪽 빈값(`/slot`·`user/`)은 None(형식 어긋남).
-    빈값/None 은 None(부재) — 호출측이 부재와 형식 어긋남을 구분한다.
-    """
-    s = str(val or "").strip()
-    if "/" not in s:
-        return None
-    user, slot = s.rsplit("/", 1)
-    user, slot = user.strip(), slot.strip()
-    return (user, slot) if user and slot else None
-
-
-def lint_adr_author() -> list[tuple[str, str, str]]:
-    """ADR `author` provenance 권고 advisory.
-
-    각 ADR frontmatter 에 `author: <user>/<pm-slot>`(누가 결정했나·provenance·연속성 아님)가
-    박혀 있는지 권고한다 — board.py 가 ADR 을 *발행*하지 않으므로 발행측 규칙을 강제하는 대신
-    부재/형식어긋남을 visibility 로만 표면화한다. `author` 부재 → "author 권고"; 있으나
-    `<user>/<pm-slot>` 형식이 아니면 → 형식 권고. kind=`adr-author`(`_ADVISORY_LINT_KINDS`
-    등재로 `--gate` 종료코드 비기여). decisions/ 부재·깨진 frontmatter → graceful skip
-    (신규 clone·구 ADR author 부재 정상 무영향)."""
-    findings: list[tuple[str, str, str]] = []
-    if not DECISIONS_DIR.is_dir():
-        return findings
-    for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
-        try:
-            fm, _ = ticket_store.load_ticket(p)
-        except ticket_store._load_ticket_soft_errors():  # 깨진/frontmatter 없는 파일은 skip(비차단).
-            continue
-        fm = fm or {}
-        adr_id = _adr_id_from_path(p)
-        raw = fm.get("author")
-        if not str(raw or "").strip():
-            findings.append((adr_id, "adr-author",
-                             "author 권고 — `author: <user>/<pm-slot>` (누가 결정했나·provenance)"))
-        elif _parse_adr_author(raw) is None:
-            findings.append((adr_id, "adr-author",
-                             f"author 형식 권고 — `{raw}` 이 `<user>/<pm-slot>` 아님"))
-    return findings
+     ticket_lint._CLUSTER_MEMBER_LINT_KIND, ticket_lint._CLUSTER_DUPLICATE_LINT_KIND})
 
 
 # ── 현재-진실 문서 freshness = verified_at sha 판정 (date 비교 대체) ──────────
@@ -11895,319 +10492,6 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
 # status.md 는 엔진 코드 트리를, domain 페이지는 covers→pathspec(domain.py 재사용)을 매핑
 # 경로로 쓴다. 판정은 advisory(`_ADVISORY_LINT_KINDS`·never-block·architect 재검증·PM 점검·
 # 소유 불변).
-
-# architecture.md·status.md 의 verified_at 매핑 경로 = 엔진 코드 트리. 이 문서들이 판정
-# 대상으로 삼는 코드다. 디렉토리 전체를 pathspec 으로 잡아 over-approx(과경고 < 미경고·
-# 리터럴 디렉토리 prefix) — 그 트리 어느 파일이 sha 이후 커밋돼도 "재검증해" 신호.
-_CURRENT_TRUTH_ENGINE_PATHS: tuple[str, ...] = (".project_manager/tools",)
-
-
-def _git_commits_between(sha: str, pathspecs: list[str], *,
-                         runner=None, repo: Path | None = None) -> bool | None:
-    """`<sha>..HEAD` 에 `pathspecs` 경로 커밋이 있으면 True·없으면 False·판정불가 None.
-
-    verified_at 판정의 핵심 — `git log --oneline <sha>..HEAD -- <pathspecs>` 출력이 비지
-    않으면 그 sha 이후 매핑 경로가 바뀐 것(stale). fail-soft(모두 None):
-      - sha 빈값·pathspec 전부 빈 → None (판정 대상 없음).
-      - git 바이너리 부재·미지 sha(rc≠0·`bad revision`)·타임아웃/예외 → None (skip).
-    None 은 "판정불가(unknown)"라 호출부가 finding 을 내지 않는다(현행 freshness fail-soft
-    성격·신규 clone 무탈). `runner` 는 테스트 hermetic seam(argv→(rc, stdout))·미주입
-    시 실 subprocess(`git -C repo`)를 쓴다. `repo` 부재는 REPO(기존 호출·자연 퇴화)."""
-    sha = (sha or "").strip()
-    pathspecs = [p for p in pathspecs if p]
-    if not sha or not pathspecs:
-        return None
-    if runner is None:
-        if shutil.which("git") is None:
-            return None
-        repo = Path(repo) if repo is not None else REPO
-
-        def runner(argv: list[str]) -> tuple[int, str]:
-            try:
-                r = subprocess.run(
-                    ["git", "-C", str(repo), *argv],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
-                return r.returncode, r.stdout or ""
-            except (OSError, subprocess.SubprocessError):  # fail-soft: 타임아웃/예외를 rc≠0 로.
-                return 1, ""
-
-    try:
-        rc, out = runner(["log", "--oneline", f"{sha}..HEAD", "--", *pathspecs])
-    except Exception:  # noqa: BLE001 — 주입 runner raise 도 unknown(None).
-        return None
-    if rc != 0:
-        return None
-    return bool(out.strip())
-
-
-# 고정 16진 commit sha 형식 — abbrev 7자+ ~ full 40(SHA-1)/64(SHA-256). `HEAD`·브랜치·태그
-# 처럼 **움직이는 ref** 를 freshness anchor 로 오인하지 않기 위한 게이트(codex MF2). 이들은
-# rev-parse 를 통과(rc0)하지만 `<ref>..HEAD` 가 (거의) 항상 비어 영구 false-green 이다.
-_HEX_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
-
-
-def _is_hex_sha(value: str) -> bool:
-    """`value` 가 고정 16진 commit sha 형식인가 (freshness anchor 자격·`_sha_anchor_status`/
-    `_canonical_commit_oid` 공유 형식 규칙·사본 금지). `HEAD`·브랜치명·태그·너무 짧은 값은 False —
-    움직이는 ref 는 안정적 검증 기준이 못 된다(codex MF2)."""
-    return bool(_HEX_SHA_RE.fullmatch((value or "").strip()))
-
-
-# freshness anchor 판정 verdict. 사유 문구까지 한 곳에서 구분한다.
-_ANCHOR_OK = "ok"                      # 고정 hex·해소·HEAD 선조 → 유효 backward anchor.
-_ANCHOR_NON_SHA = "non-sha"            # 형식 아님(HEAD/브랜치/태그·움직이는 ref·MF2).
-_ANCHOR_UNRESOLVED = "unresolved"      # hex 이나 이 저장소 commit 아님(rev-parse rc1·타-git SHA·MF1).
-_ANCHOR_NON_ANCESTOR = "non-ancestor"  # 해소되나 HEAD 선조 아님(merge-base rc1·descendant/딴 브랜치).
-_ANCHOR_AMBIGUOUS = "ambiguous"        # 축약 sha 가 다중 매칭(repo 성장) — pin 속성·unverifiable.
-_ANCHOR_UNKNOWN = "unknown"            # 환경적 판정불가(git 부재·rc≥2 fatal) → silent skip.
-
-# ambiguous 축약 sha 의 rev-parse stderr 신호 (실 git 실측·git 2.43: "error: short object ID <p> is
-# ambiguous"). `--quiet` 는 이 stderr 를 억제하므로(실측) 진단은 non-quiet 재질의로 본다. 소문자
-# 부분일치(버전 문구 변동 여유).
-_AMBIGUOUS_STDERR_SIGNALS: tuple[str, ...] = ("ambiguous", "short object id")
-
-
-def _git_rc(argv: list[str], *, runner=None, repo: Path | None = None) -> int | None:
-    """git 명령의 rc 만 반환(stdout 무시)·git 부재/예외 → None (`_git_run` 얇은 래퍼·사본 0)."""
-    res = git._git_run(argv, runner=runner, repo=REPO if repo is None else repo)
-    return res[0] if res is not None else None
-
-
-def _rev_parse_ambiguous(sha: str, *, runner=None,
-                         repo: Path | None = None) -> bool:
-    """축약 `sha` 가 다중 매칭(모호)한가 — **non-quiet** rev-parse stderr 신호로 판정.
-
-    `git rev-parse --verify --quiet <sha>^{commit}` 는 모호 시 stderr 를 **억제**(실측·rc1) 하므로,
-    실패 경로에서 `--quiet` 없이 재질의해 stderr 의 `_AMBIGUOUS_STDERR_SIGNALS`(소문자 부분일치)를
-    본다. 모호는 환경 오류가 아니라 **pin 의 속성**이라 호출부가 `_ANCHOR_AMBIGUOUS`(unverifiable)로
-    표면화한다. git 부재/예외 → False(모호로 단정 안 함·rc 기반 분류로 폴백).
-
-    `runner` 대역: `(rc, stdout)` 또는 `(rc, stdout, stderr)` — 3-tuple 이면 stderr 를 본다(hermetic
-    테스트가 모호 stderr 를 주입)."""
-    argv = ["rev-parse", "--verify", f"{sha}^{{commit}}"]   # non-quiet — stderr 억제 안 함
-    if runner is None:
-        if shutil.which("git") is None:
-            return False
-        repo = Path(repo) if repo is not None else REPO
-        try:
-            r = subprocess.run(
-                ["git", "-C", str(repo), *argv], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
-        except (OSError, subprocess.SubprocessError):  # 진단 실패는 False(rc 기반 분류 유지).
-            return False
-        stderr = r.stderr or ""
-    else:
-        try:
-            result = runner(argv)
-        except Exception:  # noqa: BLE001
-            return False
-        stderr = result[2] if len(result) >= 3 else ""   # 2-tuple 대역 → stderr 없음.
-    low = stderr.lower()
-    return any(sig in low for sig in _AMBIGUOUS_STDERR_SIGNALS)
-
-
-def _sha_anchor_status(sha: str, *, runner=None,
-                       repo: Path | None = None) -> tuple[str, str | None]:
-    """`sha` 가 유효한 **backward freshness anchor** 인가 — `(verdict, full_oid)`.
-
-    유효 anchor(`_ANCHOR_OK`) = (1) 고정 hex 형식 + (2) **고정 SHA 로** 유일 commit 해소(ref 아님) +
-    (3) **HEAD 의 선조**. 셋 다여야 `<oid>..HEAD` range 가 "pin 이후 변경"을 정직히 센다. OK 면
-    `full_oid` = rev-parse 로 얻은 **canonical full OID**(gitrevisions 유일 해소) — 호출부는
-    이후 모든 git 명령(merge-base·`<oid>..HEAD` range·domain pin-이후 질의)을 **이 full OID 로** 돌려
-    원 입력 문자열 재해석(ref/모호 축약 여지)을 없앤다. 비-OK verdict 는 `full_oid=None`. 실패 모드:
-      - `_ANCHOR_NON_SHA`      : 형식 아님(`HEAD`/브랜치/태그·MF2) **또는** hex 이나 hex-이름 ref 로
-        해소됨(`deadbeef` 라는 branch/tag — 해소 OID 가 입력을 prefix 로 안 가짐).
-      - `_ANCHOR_UNRESOLVED`   : hex 이나 이 저장소 commit 아님(rev-parse rc1·타-git SHA·MF1).
-      - `_ANCHOR_NON_ANCESTOR` : 해소되나 HEAD 선조 아님(`merge-base --is-ancestor` rc1).
-      - `_ANCHOR_AMBIGUOUS`    : 축약 sha 가 다중 매칭(repo 성장·`_rev_parse_ambiguous` stderr 신호·
-        ). 모호는 환경이 아니라 pin 속성 → unverifiable(full OID 로 재핀 안내).
-    환경적 판정불가 → `_ANCHOR_UNKNOWN`(silent skip): 빈 sha·git 부재·rev-parse/merge-base **rc≥2**
-    (rc128 non-repo·safe.directory·권한 등 fatal). 환경 오류를 unverifiable 로 오인하지 않는다(MF1).
-    `_canonical_commit_oid`(repin 쓰기 검증)는 verdict==OK 면 full_oid 반환(read/write 대칭).
-    `runner` = 테스트 hermetic seam(argv→(rc, stdout[, stderr]))·미주입 시 실 subprocess
-    (`git -C repo`; 부재=REPO)."""
-    sha = (sha or "").strip()
-    if not sha:
-        return (_ANCHOR_UNKNOWN, None)
-    if not _is_hex_sha(sha):
-        return (_ANCHOR_NON_SHA, None)  # 움직이는 ref — rev-parse 시도 안 함.
-    res = git._git_run(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
-                       runner=runner, repo=REPO if repo is None else repo)
-    if res is None:
-        return (_ANCHOR_UNKNOWN, None)
-    rc, resolved = res
-    if rc != 0:
-        # 실패 — `--quiet` 가 모호 stderr 를 억제하므로 non-quiet 재질의로 모호성 먼저 판정.
-        # 모호(축약 다중 매칭)는 환경이 아니라 pin 속성 → unverifiable. 그 외 rc1=미해소·rc≥2=env.
-        if _rev_parse_ambiguous(sha, runner=runner, repo=repo):
-            return (_ANCHOR_AMBIGUOUS, None)
-        if rc == 1:
-            return (_ANCHOR_UNRESOLVED, None)  # 순수 미해소(repo 정상·sha 부재·타-git SHA).
-        return (_ANCHOR_UNKNOWN, None)  # rc≥2 fatal(non-repo·safe.directory 등) — 환경적.
-    full_oid = resolved.strip()
-    # 해소 OID 가 입력 sha 를 실제 prefix 로 가져야 **고정 SHA** — 아니면 hex-이름 ref.
-    if not full_oid.lower().startswith(sha.lower()):
-        return (_ANCHOR_NON_SHA, None)
-    # 이후 하류 명령은 **canonical full OID** 를 쓴다(원 입력 재해석 제거).
-    rc = _git_rc(["merge-base", "--is-ancestor", full_oid, "HEAD"],
-                 runner=runner, repo=repo)
-    if rc is None:
-        return (_ANCHOR_UNKNOWN, None)
-    if rc == 0:
-        return (_ANCHOR_OK, full_oid)
-    if rc == 1:
-        return (_ANCHOR_NON_ANCESTOR, None)
-    return (_ANCHOR_UNKNOWN, None)  # rc≥2 fatal — 환경적.
-
-
-def _unverifiable_sha_reason(status: str, sha: str) -> str:
-    """anchor verdict → advisory 사유 문구 (`_verified_at_finding`·`lint_domain_freshness` 공유·DRY).
-
-    `_ANCHOR_OK`/`_ANCHOR_UNKNOWN` 은 unverifiable 이 아니라 호출부가 이 함수를 안 부른다."""
-    if status == _ANCHOR_NON_SHA:
-        return f"verified_at({sha}) 이 고정 sha 아님(HEAD/브랜치/태그?)"
-    if status == _ANCHOR_NON_ANCESTOR:
-        return f"verified_at({sha[:12]}) 이 HEAD 선조 아님(딴 브랜치/앞선 checkout?)"
-    if status == _ANCHOR_AMBIGUOUS:
-        return f"verified_at({sha}) 축약 sha 가 모호(repo 성장으로 다중 매칭) — full OID 로 재핀"
-    return f"verified_at({sha[:12]}) 이 이 저장소 commit 으로 해소 안 됨(타 git SHA?)"  # UNRESOLVED
-
-
-_FRESHNESS_REPO_SELF = "self"
-_FRESHNESS_REPO_UPSTREAM = "upstream"
-_SCP_STYLE_UPSTREAM_RE = re.compile(
-    r"^[^/\\:]+@[^/\\:]+:.+$|^[A-Za-z][A-Za-z0-9_.-]*:.+$")
-_WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
-
-
-def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
-    """현재-진실 문서의 `repo:` 채널을 소유 git checkout 으로 해소한다.
-
-    단일 규칙:
-      - `self` → REPO. 키 부재는 파서/호출부가 `self`를 넘겨 자연 퇴화한다.
-      - `upstream` → `local.conf upstream.path=` **경로형** checkout. 상대경로는 REPO 기준.
-
-    URL upstream 은 lint 가 fetch/clone 하지 않는다는 기존 네트워크-0 경계를 지켜 미해소로
-    남긴다. 경로 부재/이동·실 git checkout 검증 실패도 `(None, reason)` — 호출부가
-    `*-unverifiable` advisory 로 표면화해 green 으로 흡수하지 않는다. 알 수 없는 `repo:`
-    값(명시 null/빈 문자열·false·0·컨테이너 포함)도 동일하다.
-    """
-    if owner is None:
-        return (None, "repo(null) 미지원 — 키 부재 또는 self/upstream 이어야 함")
-    elif not isinstance(owner, str):
-        return (None, f"repo({owner!r}) 미지원 — self 또는 upstream 이어야 함")
-    else:
-        value = owner.strip()
-    if value == _FRESHNESS_REPO_SELF:
-        return (REPO, None)
-    if value != _FRESHNESS_REPO_UPSTREAM:
-        shown = value if value else "<empty>"
-        return (None, f"repo({shown}) 미지원 — self 또는 upstream 이어야 함")
-    try:
-        upstream = (conf_store.local_config(_home()).get("upstream.path") or "").strip()
-    except (OSError, UnicodeError, RuntimeError) as exc:
-        if _is_engine_rev_skew(exc):
-            raise      # 형제 사본 불일치는 "미해소" 한 줄로 삼키지 않는다(fail-loud 보존).
-        return (None, "local.conf 읽기 실패로 upstream 소유 repo 미해소")
-    if not upstream:
-        return (None, "local.conf upstream.path 미설정으로 소유 repo 미해소")
-    try:
-        # upstream_rules.classify_upstream 과 같은 self-describing 경계의 필요한 부분만 유지한다.
-        is_windows_path = bool(_WINDOWS_DRIVE_PATH_RE.match(upstream))
-        is_url = (not is_windows_path and
-                  ("://" in upstream or bool(_SCP_STYLE_UPSTREAM_RE.match(upstream))))
-        if is_url:
-            return (None, "local.conf upstream.path 이 URL이라 로컬 소유 repo 미해소")
-        # `~`/`~user` 확장은 `_expanded_user_path` 단일 규칙 — 없는 `~user` 는 플랫폼 무관하게
-        # 여기서 해소 실패로 끝난다. 종전 `Path.expanduser()` 는 POSIX 만 RuntimeError 였고
-        # Windows 는 phantom `C:\\Users\\<name>` 을 조립해 아래 "경로 부재/이동" 으로 갈렸다.
-        candidate = pm_paths._expanded_user_path(upstream)
-        if not candidate.is_absolute():
-            candidate = REPO / candidate
-        candidate = candidate.resolve()
-    except (OSError, RuntimeError, ValueError):
-        return (None, f"upstream 경로 해소 실패({upstream})")
-    if not candidate.is_dir():
-        return (None, f"upstream 경로 부재/이동({candidate})")
-    if not (candidate / ".git").exists():
-        return (None, f"upstream 경로가 git checkout 아님({candidate})")
-    checkout = git._git_run(["rev-parse", "--is-inside-work-tree"], repo=candidate)
-    if checkout is None or checkout[0] != 0 or checkout[1].strip().lower() != "true":
-        return (None, f"upstream 경로 git checkout 검증 실패({candidate})")
-    return (candidate, None)
-
-
-def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
-                         runner=None) -> list[tuple[str, str, str]]:
-    """문서 `verified_at` sha 판정 → 유효 anchor 면 stale/`kind`·아니면 unverifiable advisory.
-
-    fail-soft: 문서 부재·frontmatter 없음/깨짐·`verified_at` 부재·환경적 판정불가(`_ANCHOR_UNKNOWN`)
-    → [](명시 skip — 신규 clone·아직 verified_at 미부여 문서 무영향·false-green 아님).
-
-    **anchor 판정**: `verified_at` 이 유효 backward anchor
-    (고정 hex + 해소 + HEAD 선조·`_sha_anchor_status`)가 아니면 종전엔 `_git_commits_between` 이
-    rc≠0/빈 range 를 조용한 green 으로 흡수했다. 이제 `{kind 접두}-unverifiable` advisory 로
-    표면화한다 — 형식 아님(움직이는 ref·MF2)/미해소(타-git SHA·MF1)/HEAD 선조 아님(descendant·
-    딴 브랜치)를 사유 구분(never-block·억지 판정 금지). anchor OK 일 때만
-    `<sha>..HEAD` stale 검사 → `(label, kind, detail)` 1개. (매핑 경로 `_CURRENT_TRUTH_ENGINE_PATHS`
-    경로-관찰가능성 축은 여기 무해 — 그 축은 domain 전용.)"""
-    if not doc_file.exists():
-        return []
-    try:
-        fm, _ = ticket_store.load_ticket(doc_file)
-    except ticket_store._load_ticket_soft_errors():  # frontmatter 없음/깨짐은 skip(비차단).
-        return []
-    sha = str((fm or {}).get("verified_at") or "").strip()
-    if not sha:
-        return []
-    owner = fm["repo"] if "repo" in fm else _FRESHNESS_REPO_SELF
-    owner_repo, owner_error = _freshness_owner_repo(owner)
-    if owner_repo is None:
-        return [(label, kind.replace("-stale", "-unverifiable"),
-                 f"소유 repo freshness 검증 불가 — {owner_error} · architect 재검증 필요")]
-    status, full_oid = _sha_anchor_status(sha, runner=runner, repo=owner_repo)
-    if status == _ANCHOR_UNKNOWN:
-        return []  # git 부재 등 환경적 판정불가 — 종전 fail-soft silent skip 유지.
-    if status != _ANCHOR_OK:
-        # 형식 아님/미해소/비-선조 — stale kind 와 대칭 "{x}-stale" → "{x}-unverifiable".
-        return [(label, kind.replace("-stale", "-unverifiable"),
-                 _unverifiable_sha_reason(status, sha)
-                 + " — freshness 검증 불가·architect 재검증 필요")]
-    # canonical full OID 로 stale 검사 (원 입력 재해석 제거). 표시는 원 sha(사용자 친화).
-    if _git_commits_between(
-            full_oid, list(pathspecs), runner=runner, repo=owner_repo) is not True:
-        return []
-    return [(label, kind,
-             f"verified_at({sha[:12]}) 이후 매핑 경로에 커밋 있음 — architect 재검증 필요")]
-
-
-def lint_architecture_freshness(*, runner=None) -> list[tuple[str, str, str]]:
-    """architecture.md freshness advisory — `verified_at` sha 판정 (never-block).
-
-    architecture.md frontmatter `verified_at: <sha>` *이후* 엔진 코드 트리
-    (`_CURRENT_TRUTH_ENGINE_PATHS`)에 커밋이 있으면 "architect 재검증 필요" 권고를 낸다 —
-    검증 기준 sha 이후 코드가 바뀌었다는 이진 기계 판정(date "최신이겠지" 해석 구멍 대체·
-    ). kind=`architecture-stale`. verified_at 이 유효 anchor 아니면(타-git SHA·비-선조·
-    움직이는 ref) `architecture-unverifiable` advisory(조용한 green 근절). 둘 다
-    `_ADVISORY_LINT_KINDS` 등재·`--gate` 비기여. fail-soft: 문서 부재·frontmatter 없음·
-    verified_at 부재·git 불가 → [](명시 skip)."""
-    return _verified_at_finding(
-        ARCHITECTURE_FILE, _CURRENT_TRUTH_ENGINE_PATHS,
-        "architecture.md", "architecture-stale", runner=runner)
-
-
-def lint_status_freshness(*, runner=None) -> list[tuple[str, str, str]]:
-    """status.md freshness advisory — `verified_at` sha 판정 (never-block).
-
-    status.md frontmatter `verified_at: <sha>` *이후* 엔진 코드 트리에 커밋이 있으면
-    "모듈 진행 상태 재검증 필요" 권고. lint_architecture_freshness 와 동일 규칙·매핑 경로
-    (status.md 는 엔진 모듈 진행 상태를 기록).
-    kind=`status-stale`·verified_at 이 유효 anchor 아니면 `status-unverifiable`(advisory).
-    fail-soft: 부재/verified_at 부재/git 불가 → []."""
-    return _verified_at_finding(
-        STATUS_FILE, _CURRENT_TRUTH_ENGINE_PATHS,
-        "status.md", "status-stale", runner=runner)
 
 
 def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
@@ -12262,20 +10546,20 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
         if not any(str(g).strip() for g in covers):
             continue
         label = page.get("title") or domain.page_slug(page)
-        owner_repo, owner_error = _freshness_owner_repo(page.get("repo"))
+        owner_repo, owner_error = freshness_lint._freshness_owner_repo(_home(), page.get("repo"))
         if owner_repo is None:
             findings.append((
                 label, "domain-unverifiable",
                 _UNVERIFIABLE_PREFIX + f"소유 repo 미해소({owner_error})"))
             continue
-        status, full_oid = _sha_anchor_status(sha, runner=runner, repo=owner_repo)
-        if status == _ANCHOR_UNKNOWN:
+        status, full_oid = freshness_lint._sha_anchor_status(_home(), sha, runner=runner, repo=owner_repo)
+        if status == freshness_lint._ANCHOR_UNKNOWN:
             continue  # git 부재 등 환경적 판정불가 — 종전 fail-soft silent skip 유지.
-        if status != _ANCHOR_OK:
+        if status != freshness_lint._ANCHOR_OK:
             # sha 자체가 유효 anchor 아님 — `<oid>..HEAD` range 불가라 covers 관찰가능성 판정을
             # 하지 않는다(전제: 미해소 페이지는 pathspec 판정에 안 온다). 사유만 advisory.
             findings.append((label, "domain-unverifiable",
-                             _UNVERIFIABLE_PREFIX + _unverifiable_sha_reason(status, sha)))
+                             _UNVERIFIABLE_PREFIX + freshness_lint._unverifiable_sha_reason(status, sha)))
             continue
         # status OK — **canonical full OID** 를 pin 으로 관찰가능성/stale 판정(원 입력 재해석 제거·
         # :(glob)). covers_pathspecs 의 `<pin>..HEAD` 도 full OID 경유.
@@ -12294,7 +10578,8 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
                              _UNVERIFIABLE_PREFIX + " · ".join(reasons)))
         # present 글롭을 :(glob) magic pathspec 으로 넘겨 full OID 기준 stale 검사(접두사 손실 없이).
         present_specs = [domain.covers_glob_pathspec(g) for g in present]
-        if present_specs and _git_commits_between(
+        if present_specs and freshness_lint._git_commits_between(
+                _home(),
                 full_oid, present_specs, runner=runner, repo=owner_repo) is True:
             findings.append((
                 label, "domain-stale",
@@ -12436,8 +10721,8 @@ def _canonical_commit_oid(sha: str, *, repo: Path | None = None) -> str | None:
     축약은 YAML unquoted 정수 파싱돼 재-lint 서 깨진다. `_sha_anchor_status` 재사용(read/write 대칭·
     사본 0): 고정 hex + 고정 SHA 해소(hex-이름 ref 아님) + HEAD 선조면 `(OK, full_oid)` →
     full_oid 반환·아니면 None. 검증 불가(git 부재·rc≥2 → UNKNOWN)도 None — 기록은 확실할 때만 한다."""
-    verdict, full_oid = _sha_anchor_status(sha, repo=repo)
-    return full_oid if verdict == _ANCHOR_OK else None
+    verdict, full_oid = freshness_lint._sha_anchor_status(_home(), sha, repo=repo)
+    return full_oid if verdict == freshness_lint._ANCHOR_OK else None
 
 
 def _replace_freshness_pin(text: str, sha: str, owner: str) -> str | None:
@@ -12632,7 +10917,7 @@ def repin_verified_at(
 def cmd_verified_at_repin(args: argparse.Namespace) -> int:
     """`verified-at-repin` — 현재-진실 문서를 validate-all-first로 소유 repo full OID에 재핀한다."""
     owner = args.repo
-    owner_repo, owner_error = _freshness_owner_repo(owner)
+    owner_repo, owner_error = freshness_lint._freshness_owner_repo(_home(), owner)
     if owner_repo is None:
         print(f"verified-at-repin: 소유 repo 미해소 — {owner_error}", file=sys.stderr)
         return 1
@@ -12687,104 +10972,6 @@ def cmd_verified_at_repin(args: argparse.Namespace) -> int:
     return 0
 
 
-# adapter-drift baseline 의 두 local.conf 키.
-# 한 키가 baseline 과 현재-관찰을 겸하면 race/자기비교라 *분리*한다:
-#   - upstream.rev      : baseline — 마지막 성공 sync 의 upstream revision (pm_import·pm_update 가 기록).
-#   - upstream.seen_rev : 현재 관찰값 — 형상 무관하게 pm_update.record_upstream_revs 단일 writer 가
-#                         sync 시 baseline 과 *함께* 기록(동기 시점 소스 checkout rev = 관찰값 · URL 은
-#                         그 실행이 clone/fetch 한 캐시 HEAD·경로는 그 checkout HEAD).
-_DRIFT_BASELINE_KEY = "upstream.rev"
-_DRIFT_SEEN_KEY = "upstream.seen_rev"
-
-
-def lint_adapter_drift() -> list[tuple[str, str, str]]:
-    """adapter-layer drift advisory (never-block).
-
-    채택자의 **adapter-layer manifest-제외 파일**(facade·진입문서·settings)이 baseline(마지막 동기)
-    *이후* upstream 에서 변경됐는지 가시화한다. 이 잔여는 전파 채널이 없어(B 전파=채택자
-    customization clobber·비파괴 위배) 소리없이 stale 되므로, *전파 대신* PM 에게 경고만 낸다
-    (kind=`adapter-drift`·`_ADVISORY_LINT_KINDS` 등재로 `--gate` 종료코드 비기여·visibility>enforcement).
-
-    **drift 판정 = baseline B**(codex MUST-FIX 2): "공식판과 다름"(채택자 customization 오탐)이 아니라
-    "마지막 동기 이후 upstream 변경". **lint 는 git network 를 하지 않는다**(codex round-2·3): `local.conf`
-    의 **2개 키**만 비교한다 —
-
-      - `upstream.rev`      (baseline·마지막 성공 sync·pm_import/pm_update 가 기록)
-      - `upstream.seen_rev` (현재 관찰값·형상 무관·pm_update 가 sync 시 baseline 과 함께 기록하는
-        동기 시점 소스 checkout rev)
-
-    둘 다 존재하고 **다르면** drift 1 finding(두 rev 불일치 = adapter-layer 가 낡았을 수 있음). 한 키 2역
-    금지(race/자기비교 회피·codex round-3 NEW-2). **메시지는 방향-중립**— lint 는 git 을 호출하지
-    않으므로(rev 문자열 비교뿐) 두 rev 의 선후를 알 수 없다. 관찰값이 baseline 의 *조상*(구 흡수 잔재)인
-    경우까지 "upstream 이 baseline 이후 변경됨"이라 단정하면 거짓 경보다(정상 흡수 직후 상시
-    발화). 선후를 알려고 런타임 git ancestor 판정을 넣지 않고, 기록 시점 정합
-    (pm_update.record_upstream_revs 가 형상 무관하게 두 키 동시 기록)으로 원천 해소한다.
-
-    scope: 대상 = manifest-제외 adapter-layer(settings.json·루트 doc·
-    facade·진입문서·local.conf — adopter config·전파 채널 없음) / 제외 = instance-state(status·
-    architecture·tickets·log·decisions·README 스캐폴드·lite — 채택자 소유·diverge 정상). **hooks·driver 는
-    engine-mirror 전파 대상**(manifest 등록) — pm-update 가 동기하므로
-    silent-stale 클래스가 "대상 단정 안 함". lint 가 파일 단위 diff 를
-    하지 않으므로(rev 비교만) scope 는 advisory 메시지로 안내한다.
-
-    관측 불가의 세 갈래 (never-block advisory):
-      - `upstream` 미설정(non-adopter·templates/upstream 부재 환경) → [].
-      - baseline(`upstream.rev`) 미기록(아직 revision 추적 전·구 import) → [](관찰 기준점 자체 부재).
-      - baseline 은 있으나 seen(`upstream.seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → **관찰불가
-        advisory 1줄**(never-block). 과거엔 조용한 [](silent skip)였으나, hooks/driver 등 safety-critical
-        잔여가 *관찰 없이* 낡으면 "green 인데 고장"(checkpoint 가드 미발화·회귀 게이트 무력)이라 관찰불가 자체를
-        표면화한다. advisory 라 `--gate` 미차단·1줄이라 flood 아님.
-    """
-    findings: list[tuple[str, str, str]] = []
-    # conf 판독은 lint 조회면의 seam 하나(`_lint_local_conf_read`)로 한다 — 값 소비 계약
-    # (`local_config` → `load_checked_readable`)으로 읽으면 판독 실패가 여기서 traceback 이 되어
-    # lint 전체가 죽는다(그 상태를 말해 줄 `lint_local_conf_readable` 까지 함께 사라진다).
-    # 파일 부재·판독 실패는 빈 목록이고, 못 읽은 사실은 그 한 자리가 1건으로 말한다.
-    try:
-        read = _lint_local_conf_read()
-    except LocalConfUnreadable:
-        return findings
-    if read is None:
-        return findings
-    conf = read.values
-
-    # non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
-    if not (conf.get("upstream.path") or "").strip():
-        return findings
-
-    baseline = (conf.get(_DRIFT_BASELINE_KEY) or "").strip()
-    seen = (conf.get(_DRIFT_SEEN_KEY) or "").strip()
-
-    # baseline 미기록(구 import·revision 추적 전) → graceful [] (관찰 기준점 자체가 아직 없음).
-    if not baseline:
-        return findings
-
-    # baseline 은 있으나 seen(현재 관찰값) 미기록 — drift 를 판정할 수 없다. 과거엔 조용한 []
-    # (silent skip)였으나, hooks/driver·adapter-layer 잔여가 *관찰 없이* 낡으면 "green 인데 고장"
-    # 이라 관찰불가 자체를 advisory 로 표면화한다(never-block·1줄이라 flood 아님).
-    if not seen:
-        findings.append((
-            "adapter-layer", "adapter-drift",
-            f"upstream.seen_rev 미기록 — upstream 관찰값이 없어 baseline({baseline[:12]}) 이후 "
-            f"adapter-layer(settings·루트 doc·facade) drift 를 판정할 수 없음(관찰불가). "
-            f"`pm-update`(upstream fetch)로 관찰값을 기록하면 추적된다 (never-block·hooks/driver 는 전파됨)"))
-        return findings
-
-    # 두 rev 가 같으면 baseline 이후 upstream 변경 없음 → clean.
-    if baseline == seen:
-        return findings
-
-    # 다름 = 두 rev 불일치. 어느 쪽이 앞선지는 알 수 없으므로(git 미호출) **방향-중립**으로
-    # 알리고, adapter-layer(facade·진입문서·settings)가 낡았을 가능성만 PM 에게 안내한다
-    # (전파 아님·never-block). 실제 선후·변경분은 `pm-update --changes` 가 판정한다.
-    findings.append((
-        "adapter-layer", "adapter-drift",
-        f"upstream baseline({baseline[:12]}) 과 관찰({seen[:12]}) 불일치 — "
-        f"adapter-layer(facade·진입문서·settings) 가 낡았을 수 있음. "
-        f"`pm-update` 로 동기 (instance-state·README·lite 는 채택자 소유·제외)"))
-    return findings
-
-
 def _load_domain_module():
     """domain.py 를 경로 import 해 모듈로 반환한다 (부재/실패 시 None).
 
@@ -12831,7 +11018,7 @@ def lint_domain() -> list[tuple[str, str, str]]:
         runners: dict[Path, object] = {}
 
         def git_runner_factory(page):
-            owner_repo, _owner_error = _freshness_owner_repo(page.get("repo"))
+            owner_repo, _owner_error = freshness_lint._freshness_owner_repo(_home(), page.get("repo"))
             if owner_repo is None:
                 return None
             owner_repo = Path(owner_repo)
@@ -12846,316 +11033,6 @@ def lint_domain() -> list[tuple[str, str, str]]:
         return []
     # domain (kind, label, detail) → board (label, kind, detail) 재배열.
     return [(label, kind, detail) for kind, label, detail in findings]
-
-
-# 실 `local.conf` 관측 kind — 채택자 conf 는 git-ignored 라 pytest 시야 밖이다. 엔진이 만드는
-# 생성 문자열은 테스트가 정적으로 단언하고, 이미 디스크에 있는 파일은 이 조회면이 본다.
-_LOCAL_CONF_LINT_KIND = "local-conf"
-
-
-def lint_local_conf() -> list[tuple[str, str, str]]:
-    """실 local.conf 의 구표기 잔존·값 재진술 주석을 advisory 로 표면화(never-block).
-
-    두 관측 모두 **값을 소비하지 않는다** — 그래서 여기서는 fail-loud 하지 않는다. lint 가 멈추면
-    무엇을 고쳐야 하는지 보여 줄 표면 자체가 사라지고, 채택자는 다른 명령의 traceback 만 보게 된다
-    (값 소비 지점의 차단은 그 지점이 이미 한다).
-
-    · 구표기 키: 공용 로더의 전수 매핑표가 판정과 문구를 소유한다(사본 금지).
-    · 값 재진술 주석: 주석이 적어 둔 `키=값` 이 같은 파일의 실값과 다르면 그 줄은 이미 drift 했다.
-      손으로 옮겨 적은 값은 반드시 이렇게 되므로 발견 즉시 지우는 것이 처방이다.
-    """
-    if not LOCAL_CONF.is_file():
-        return []
-    try:
-        result = conf_store.load(LOCAL_CONF)
-        text = fs.read_text_shared(LOCAL_CONF, encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
-        return []
-    where = pm_paths._rel_to_repo(_home(), LOCAL_CONF)
-    findings = [
-        (where, _LOCAL_CONF_LINT_KIND, line.strip())
-        for line in conf_schema.migration_lines(result.legacy)
-    ]
-    findings.extend(
-        (where, _LOCAL_CONF_LINT_KIND,
-         f"주석이 실값과 다른 값을 재진술한다: `{key}={stated}` (실값 `{result.values[key]}`)")
-        for key, stated in _restated_conf_comments(text)
-        if key in result.values and result.values[key] != stated
-    )
-    return findings
-
-
-def _restated_conf_comments(text: str) -> list[tuple[str, str]]:
-    """conf 주석 줄이 적어 둔 `키=값` 쌍 — 실값 대조는 호출부가 한다."""
-    pairs: list[tuple[str, str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("#"):
-            continue
-        body = stripped.lstrip("#").strip()
-        if "=" not in body:
-            continue
-        key, _, value = body.partition("=")
-        stated = value.strip().split()[0] if value.strip() else ""
-        pairs.append((key.strip(), stated))
-    return pairs
-
-
-class LocalConfUnreadable(RuntimeError):
-    """실 local.conf 가 **있는데 읽지 못했다**(인코딩·권한) — "값이 없다" 와 다른 사실이다."""
-
-
-def _lint_local_conf_read():
-    """lint 조회면이 쓰는 실 local.conf 판독 — 세 상태를 구분한다.
-
-    · 파일 없음 → `None`(관측 없음 · conf 없는 트리는 정상 형상).
-    · 판독 실패(`OSError`·`UnicodeError`) → `LocalConfUnreadable` 로 **올린다**. 판독은
-      `conf_store.load_strict` 로 한다 — 삼키는 `load` 를 쓰면 잘못된 UTF-8 이 "키 0개" 가 돼
-      관측 kind 전부가 조용히 0건이 된다(못 읽은 것이 값이 없는 것으로 위장).
-    · 성공 → 판독 결과(`ConfResult`).
-
-    아래 관측 kind 들이 이 **한 경계**를 공유한다 — 같은 규칙을 함수마다 복제하면 규칙이 갈린다.
-    발견을 내는 자리는 `lint_local_conf_readable()` 하나이고 나머지 소비자는 빈 목록이다(같은
-    사실을 여러 번 말하지 않는다). 사본 skew 는 흡수하지 않고 그대로 올린다(다른 형제 로더와 같은
-    관용구).
-    """
-    if not LOCAL_CONF.is_file():
-        return None
-    try:
-        return conf_store.load_strict(LOCAL_CONF)
-    except (OSError, UnicodeError) as exc:
-        raise LocalConfUnreadable(f"{LOCAL_CONF}: {exc}") from exc
-
-
-# 실 local.conf 를 **읽지 못한** 관측 kind — 위 판독 seam 하나가 낸다(값 축과 배타적).
-_LOCAL_CONF_UNREADABLE_LINT_KIND = "local-conf-unreadable"
-
-
-def lint_local_conf_readable() -> list[tuple[str, str, str]]:
-    """실 local.conf 를 읽지 못한 사실을 advisory 로 표면화(never-block · 발견 1건).
-
-    파일이 없으면 발견 0건이다(관측 대상 자체가 없다 — 채택자 대부분의 정상 형상). 있는데 못
-    읽었을 때만 뜬다: 그 상태에서 다른 conf 관측 kind 는 전부 0건이라, 이 줄이 없으면 화면은
-    "설정에 문제 없음" 과 구별되지 않는다.
-    """
-    try:
-        _lint_local_conf_read()
-    except LocalConfUnreadable as exc:
-        return [(pm_paths._rel_to_repo(_home(), LOCAL_CONF), _LOCAL_CONF_UNREADABLE_LINT_KIND,
-                 f"local.conf 를 읽지 못했다: {exc} — 값이 없는 것이 아니라 읽지 못한 것이다"
-                 "(파일 인코딩/권한 확인)")]
-    return []
-
-
-# 실 local.conf 의 **레지스트리 밖 키** 관측 kind — `local-conf`(구표기 잔존)와 배타적 축이다.
-_LOCAL_CONF_UNKNOWN_LINT_KIND = "local-conf-unknown-key"
-# 키 목록·설명·기본값의 정본은 레지스트리(`conf_schema.KEY_REGISTRY`)이고, 사람은 이 명령으로
-# 본다 — 안내 두 줄이 같은 문자열을 쓴다(문서 절 이름을 가리키던 옛 안내는 사라졌다).
-_LOCAL_CONF_KEYS_CMD = "python3 .project_manager/tools/local_conf.py --keys"
-
-
-def lint_local_conf_keys() -> list[tuple[str, str, str]]:
-    """실 local.conf 의 **레지스트리 밖 키**(오타·폐기·손열거 밖 패턴)를 advisory 로 표면화(never-block).
-
-    known-key 판정은 공용 로더(`local_conf.py`)가 소유한다(사본 금지·`ConfResult.unknown`) —
-    이 함수는 그 결과를 lint finding 으로 감쌀 뿐이다. 구표기 잔존은 `lint_local_conf()` 가 이미
-    별도 kind(`local-conf`)로 낸다 — `unknown` 은 구표기 키를 걸러내므로(`is_legacy_key`) 두
-    kind 는 겹치지 않는다.
-
-    키별 특례는 두지 않는다 — 폐기 키(`review_ticket_body_max_bytes` 등)도 오타 키도 이 규칙
-    하나로 걸린다. 여러 키가 한꺼번에 있어도 finding 은 1개(1줄) — `cmd_init` 병합 경로가 같은
-    목록을 같은 형태로 재사용한다(사본 없이 같은 함수 재호출).
-    """
-    try:
-        read = _lint_local_conf_read()
-    except LocalConfUnreadable:
-        return []          # 못 읽은 사실은 `lint_local_conf_readable` 이 한 번 말한다.
-    if read is None:
-        return []
-    unknown = read.unknown
-    if not unknown:
-        return []
-    where = pm_paths._rel_to_repo(_home(), LOCAL_CONF)
-    keys = ", ".join(f"`{key}`" for key in unknown)
-    return [(where, _LOCAL_CONF_UNKNOWN_LINT_KIND,
-             f"엔진이 모르는 local.conf 키: {keys} (오타 또는 폐기 키 — "
-             f"`{_LOCAL_CONF_KEYS_CMD}` 로 이름을 대조하라)")]
-
-
-# 실 local.conf 의 **필수 키 누락** 관측 kind — 위 두 kind(구표기·모르는 키)와 배타적 축이다.
-_LOCAL_CONF_MISSING_LINT_KIND = "local-conf-missing-required"
-
-
-def lint_local_conf_required() -> list[tuple[str, str, str]]:
-    """실 local.conf 에 **필수 키가 선언되지 않은** 것을 advisory 로 표면화(never-block).
-
-    필수 판정은 공용 로더가 소유한다(`local_conf.missing_required` · 사본 금지). 필수는 핵심
-    명령(회귀·init)이 못 도는 두 키뿐이고 `board.py init` 이 둘 다 심으므로, 이 줄이 뜨는 형상은
-    init 을 거치지 않고 손으로 만든 conf 다. 값이 빈 문자열이면 "있음" 으로 본다 — 선언 유무만
-    보는 축이고 값의 내용 판정은 그 값을 소비하는 지점이 한다.
-    """
-    try:
-        read = _lint_local_conf_read()
-    except LocalConfUnreadable:
-        return []          # 못 읽은 사실은 `lint_local_conf_readable` 이 한 번 말한다.
-    if read is None:
-        return []
-    missing = conf_schema.missing_required(read.values)
-    if not missing:
-        return []
-    keys = ", ".join(f"`{key}`" for key in missing)
-    return [(pm_paths._rel_to_repo(_home(), LOCAL_CONF), _LOCAL_CONF_MISSING_LINT_KIND,
-             f"local.conf 필수 키 누락: {keys} (`board.py init` 이 채운다 — 설명·기본값은 "
-             f"`{_LOCAL_CONF_KEYS_CMD}`)")]
-
-
-def lint_delegate() -> list[tuple[str, str, str]]:
-    """delegate 동일-모델 dev/reviewer 경고를 board lint finding 으로 표면화 (advisory·never-block).
-
-    model_lint.lint_same_model(conf) 의 `(label, detail)` 를 board 관례 `(label, kind, detail)` 로
-    감싼다. kind=`delegate-same-model`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드에 *절대*
-    기여하지 않는다·visibility>enforcement — 사용자가 동일-모델 조합을 선택할 자유 유지). 설정
-    읽기 실패·설정 미매핑 → [] (delegate 미사용 프로젝트 무영향). board 의
-    local.conf(local_config)로 판정한다."""
-    try:
-        findings = model_lint.lint_same_model(conf_store.local_config(_home()))
-    except Exception:  # noqa: BLE001 — 설정 읽기 실패는 빈 결과(advisory).
-        return []
-    return [(label, "delegate-same-model", detail) for label, detail in findings]
-
-
-# 라운드가 아닌 잔여를 가리키는 lint 종류. 판정 코드 자체는 사이드카 seam 이 소유하고
-# (`round-name`·`round-gap`·`round-dup`·`round-pending`) board 는 그것을 그대로 lint kind 로
-# 쓴다 — 아래 이름은 그 밖의 board 고유 관측 하나뿐이다.
-_ROUND_TEMPORARY_LINT_KIND = "round-temporary"
-# 라운드 디렉터리 자리(`tickets/rounds/` 직계)에 있는 파일 — 티켓 하나의 라운드 디렉터리만
-# 사는 자리라 파일은 잘못 놓인 잔여다(seam 의 티켓 단위 판정은 그 자리를 보지 않는다).
-_ROUND_STRAY_LINT_KIND = "round-stray"
-# 한 티켓의 라운드 판정이 실패한 자리 — 나머지 티켓 판정은 그대로 내고 이 티켓만 사유로 남긴다.
-_ROUND_UNREADABLE_LINT_KIND = "round-unreadable"
-# 구 단일-파일 컨테이너의 흔적. 본문에 이 주석이 남아 있으면 그 티켓의 역할 산출은 아직
-# 라운드 파일로 옮겨지지 않은 것이다(사람이 정리할 대상 · `legacy-growth-section` 차단).
-_LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
-    f"<!-- {_LEGACY_SECTION_MARKER}:", f"<!-- {_LEGACY_SEAL_MARKER}")
-_LEGACY_GROWTH_LINT_KIND = "legacy-growth-section"
-_LEGACY_GROWTH_MIGRATION_HINT = (
-    "변환 명령은 v1.8.1 까지 있었다(`board.py rounds migrate`). 절 내용을 라운드 파일로 "
-    "옮기거나 marker·봉인 주석 줄을 지워 본문 텍스트로 남겨라"
-)
-
-
-def lint_rounds() -> list[tuple[str, str, str]]:
-    """라운드 디렉터리의 판정(`verify_rounds`)을 board lint 표면으로 올린다 (advisory).
-
-    차단 소비자는 완료 게이트다 — 여기서는 같은 판정을 **보이게만** 한다(never-block).
-
-    fail-soft 경계는 **티켓 하나**다 — 한 티켓의 읽기 실패가 그때까지 모은 판정을 통째로
-    버리지 않고 그 티켓만 사유로 남긴다. 판정 자체를 못 한 자리를 조용히 비우지 않기 위해서다.
-
-    라운드 디렉터리 자리의 파일 항목과 점(`.`) 으로 시작하는 항목은 라운드가 아니라 잘못 놓인
-    잔여·엔진의 원자 교체 중간 파일이다 — 둘 다 seam 판정 밖이라 여기서 표면화한다.
-    """
-    try:
-        root = round_store.rounds_dir(pm_paths.tickets_dir(_home()))
-        entries = sorted(root.iterdir()) if root.is_dir() else []
-    # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다.
-    # 디렉터리 판독 실패가 무관한 board 조회를 죽이지 않게 축을 생략한다. 차단 소비자(완료
-    # 게이트)는 반대로 fail-closed 다 — 이 비대칭은 의도된 것이다.
-    except Exception:  # noqa: BLE001 — 위 등록 사유의 advisory fail-soft 경계.
-        return []
-
-    findings: list[tuple[str, str, str]] = []
-    for entry in entries:
-        if not entry.is_dir():
-            findings.append((
-                entry.name, _ROUND_STRAY_LINT_KIND,
-                f"라운드 디렉터리 자리에 파일이 있다: {pm_paths._rel_to_repo(_home(), entry)} "
-                "(이 자리엔 티켓별 라운드 디렉터리만 산다)",
-            ))
-            continue
-        ticket = entry.name
-        try:
-            for problem in round_seed.verify_rounds(pm_paths.tickets_dir(_home()), ticket):
-                findings.append((ticket, problem.code, problem.detail))
-            leftovers = sorted(
-                item.name for item in entry.iterdir()
-                if item.name.startswith(round_store.ROUND_TEMPORARY_PREFIX)
-            )
-        except Exception as exc:  # noqa: BLE001 — 티켓 단위 advisory fail-soft 경계.
-            findings.append((
-                ticket, _ROUND_UNREADABLE_LINT_KIND,
-                f"라운드 판정 실패(이 티켓만 건너뛴다): {exc}",
-            ))
-            continue
-        if leftovers:
-            findings.append((
-                ticket, _ROUND_TEMPORARY_LINT_KIND,
-                f"엔진 임시 파일 잔여 {len(leftovers)}개(교체 중 크래시 의심): "
-                + ", ".join(leftovers),
-            ))
-    return findings
-
-
-def lint_clusters() -> list[tuple[str, str, str]]:
-    """클러스터 장부 판정 — 멤버 부재·중복 귀속 (advisory·never-block).
-
-    장부는 운영 재료지 push 결함이 아니다 — 보이게만 한다. 판정 입력은 **장부 파일 안에만**
-    있다: 이 표면은 인자를 받지 않고 장부에도 코드 트리·repo 를 적는 자리가 없어
-    (`CLUSTER_LEDGER_KEYS`) 통합 브랜치 실재를 잴 트리를 지목할 방법이 없다. 트리를 추측해서
-    재면 PM 홈(코드 없는 트리)에서 "브랜치 부재"가 상시 참이 된다 — 그래서 브랜치 실재는
-    **트리를 든 표면**(생성 `_cluster_ensure_branch` · 확인 실행 `pm_delegate.
-    _cluster_confirmation_tree` · 완료 기록 `ticket_finish`)만 판정한다.
-    """
-    clusters = all_clusters()
-    if not clusters:
-        return []
-    findings: list[tuple[str, str, str]] = []
-    owners: dict[str, list[str]] = {}
-    for fm in clusters:
-        cluster = str(fm.get("id") or "").strip()
-        for tid in cluster_tickets(fm):
-            owners.setdefault(tid, []).append(cluster)
-            if ticket_store.find_ticket_exact(_home(), tid) is None:
-                findings.append((
-                    cluster, _CLUSTER_MEMBER_LINT_KIND,
-                    f"멤버 티켓 부재: {tid} — 장부가 board 에 없는 티켓을 가리킨다"
-                    "(draft 는 승격 전까지 공유 board 밖이다)",
-                ))
-    for tid, declared in sorted(owners.items()):
-        if len(declared) > 1:
-            findings.append((
-                tid, _CLUSTER_DUPLICATE_LINT_KIND,
-                f"중복 귀속: {', '.join(sorted(declared))} — 티켓은 한 묶음에만 속한다",
-            ))
-    return findings
-
-
-def lint_legacy_growth_sections() -> list[tuple[str, str, str]]:
-    """명세 본문에 남은 구 역할 절(marker/봉인 주석)을 blocking 으로 잡는다.
-
-    라운드 사이드카 전환 뒤에도 절이 본문에 남아 있으면 그 산출은 어떤 라운드 판정에도 잡히지
-    않는다(두 형식이 공존하는 상태). 이 엔진은 변환하지 않으므로 사람이 정리할 때까지 red 다.
-    done 을 포함한 전 상태와 draft 를 본다 — 남은 절이 완료 티켓에 몰려 있다.
-
-    시야는 `_has_legacy_growth_markers`(column 0 주석 줄 · ``` 펜스 밖)다.
-    """
-    findings: list[tuple[str, str, str]] = []
-    for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
-        for path in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
-            loaded = ticket_store.load_ticket_soft(_home(), path)
-            if loaded is None:
-                continue
-            fm, body = loaded
-            if not _has_legacy_growth_markers(body):
-                continue
-            findings.append((
-                str(fm.get("id") or path.name),
-                _LEGACY_GROWTH_LINT_KIND,
-                f"본문에 구 역할 절 주석이 남아 있다 — {_LEGACY_GROWTH_MIGRATION_HINT}",
-            ))
-    return findings
 
 
 def _load_delegate_channel_guard_module():
@@ -13214,111 +11091,6 @@ def lint_codex_delegate_observations() -> list[tuple[str, str, str]]:
     )]
 
 
-# 등록 0 형상(구 clone) 이관 안내 — `board.py init` 이 repo 행을 항상 등록하기 전에 만들어진
-# clone 은 areas.md 에 자기 repo 행이 없다. 그 홈에선 prefix 해소가 레지스트리에서 끝나지 못하고
-# (세션 유도·count-based 둘 다 입력이 없다) per-clone conf 키는 더 이상 읽지 않으므로, 옛 conf
-# `prefix=` 로 네임스페이스를 받던 채택자가 조용히 무prefix(`T-NNNN`)로 바뀐다. 처방은 init
-# 재실행 한 번이라 차단하지 않고 상시 가시화만 한다.
-AREAS_REPO_UNREGISTERED_NOTICE = (
-    "areas.md 에 이 clone 의 repo 행이 없다(등록 0 = 구 형상) — `board.py init` 을 한 번 다시 "
-    "실행하면 repo 행이 등록된다(`--prefix <카테고리> --area <설명>` 을 주면 그 카테고리로, "
-    "안 주면 빈 prefix 칼럼 = 무prefix `T-NNNN` 로). per-clone local.conf 의 `session=`/"
-    "`prefix=` 는 더 이상 읽지 않는다 — 세션은 lease 장부, prefix 는 areas.md 가 단일 진실이다."
-)
-
-
-def lint_areas_repo_unregistered() -> list[tuple[str, str, str]]:
-    """areas.md 에 등록된 repo 행이 하나도 없으면 이관 안내 advisory (never-block).
-
-    `init` 이 repo 행을 항상 등록하므로 "등록 0" 은 그 변경 **이전에** setup 된 clone 뿐이다.
-    그 형상은 깨지지 않지만(무prefix 발행은 1급 형상) 옛 per-clone conf 키에 기대던 prefix
-    네임스페이스가 조용히 사라지므로, 처방(init 재실행)을 상시 보인다.
-
-    kind=`areas-repo-unregistered`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push
-    미차단). areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
-    """
-    try:
-        if areas_store.registered_repos(_home()):
-            return []
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 무발화(advisory 가 lint 를 깨지 않는다).
-        return []
-    # 라벨은 파일명 고정 — `_rel_to_repo` 는 앵커(worktree/PM 홈)에 따라 상대/절대가 갈려
-    # 같은 보드에서 다른 문자열이 나온다(앵커 무관 동일 출력 계약).
-    return [("areas.md", "areas-repo-unregistered", AREAS_REPO_UNREGISTERED_NOTICE)]
-
-
-def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
-    """areas.md 에 같은 repo 행이 2개 이상이면 advisory (never-block).
-
-    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`)가
-    전부 첫 매칭 행에서 return 하므로 중복 행은 **조용히 first-match 로 굳는다** — 사용자가
-    보는 표와 엔진이 읽는 값이 갈린다. legacy inline 형상(`merge=union` 활성)에서 두 clone 이
-    같은 행을 각자 고치면 실제로 생길 수 있다. 자동 병합은 하지 않고(사람 판정) 존재만 보인다.
-    `areas_set_cell`(setter)의 fail-loud 와 짝 — 그쪽은 쓰기를 막고, 이쪽은 상시 가시화한다.
-
-    kind=`areas-duplicate-repo`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push
-    미차단). areas.md 부재/파싱 실패는 빈 결과(무영향).
-    """
-    try:
-        _header, rows = areas_store._parse_areas(_home())
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
-        return []
-    counts: dict[str, int] = {}
-    for row in rows:
-        repo = row.get("repo")
-        if repo:
-            counts[repo] = counts.get(repo, 0) + 1
-    return [
-        (repo, "areas-duplicate-repo",
-         f"areas.md 에 repo 행이 {n}개 — first-match 로 조용히 굳는다(어느 행이 이기는지 "
-         f"merge 순서에 달림). 한 행만 남기고 수동 정리하라 "
-         f"({pm_paths._rel_to_repo(_home(), pm_paths.areas_file(_home()))}). 정리 전엔 `pm-config repo protected {repo} …` "
-         "같은 셀 변경이 거부된다.")
-        for repo, n in sorted(counts.items()) if n > 1
-    ]
-
-
-def lint_areas_merge_union() -> list[tuple[str, str, str]]:
-    """areas.md 의 `merge=union` 이 **그 파일을 담은 git** 에 선언돼 있나 (never-block).
-
-    union 이 빠지면 두 clone 의 동시 등록이 merge 에서 한쪽 행을 잃거나 충돌한다 — 레지스트리
-    설계가 기대는 보장이 조용히 사라지는 상태라 상시 가시화한다. 형상별로 *유효한* 선언 위치가
-    다르므로 그에 맞는 파일만 본다(`_BOARD_AREAS_ATTR_TARGETS` / `_INLINE_AREAS_ATTR_TARGETS`):
-      - board 분리 → `Home.board_root/.gitattributes` 의 `areas.md merge=union`
-      - inline     → 루트 `.gitattributes` 의 `.project_manager/areas.md merge=union`
-    판정은 **파일 내용**만 본다 — `git check-attr` 를 런타임에 부르지 않는다(비용·이식성).
-    그래서 사각이 둘 있다(둘 다 advisory 라 무해·완전 판정은 check-attr 이 필요): in-tree
-    `.gitattributes` 보다 우선하는 `.git/info/attributes`·`core.attributesFile` 은 보이지
-    않는다(거기서 union 을 줬어도 여기선 미배포로 읽힌다) · glob 패턴 한계는
-    `_gitattributes_merge_attr` docstring 참조.
-
-    kind=`areas-merge-union`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push 미차단).
-    areas.md 부재(미등록)·읽기 실패는 빈 결과.
-    """
-    af = pm_paths.areas_file(_home())
-    if not af.exists():
-        return []
-    root = _home().board_root
-    separated = (root / ".git").exists() and af.parent == root
-    if separated:
-        attrs, targets = root / ".gitattributes", _BOARD_AREAS_ATTR_TARGETS
-        fix = (f"`{pm_paths._rel_to_repo(_home(), attrs)}` 에 `areas.md merge=union` 을 추가하라 — 다음 board "
-               "mutation(claim/new/complete 등)이 자동 보강해 그 commit 으로 함께 push 한다.")
-    else:
-        attrs, targets = REPO / ".gitattributes", _INLINE_AREAS_ATTR_TARGETS
-        fix = (f"`{pm_paths._rel_to_repo(_home(), attrs)}` 에 `.project_manager/areas.md merge=union` 을 "
-               "추가하라(inline 형상의 선언 위치).")
-    try:
-        text = fs.read_text_shared(attrs, encoding="utf-8") if attrs.is_file() else ""
-    except (OSError, UnicodeError):  # 읽기 실패·비-UTF8 은 무발화(advisory 가 lint 를 깨지 않는다).
-        return []
-    if _areas_union_declared(text, targets):
-        return []
-    return [(pm_paths._rel_to_repo(_home(), af), "areas-merge-union",
-             f"areas.md 에 merge=union 이 유효하지 않다 — 동시 등록(다른 clone 의 행 append)이 "
-             f"merge 에서 충돌하거나 한쪽 행을 잃는다. {fix}")]
-
-
 def lint_tickets() -> list[tuple[str, str, str]]:
     """All lint issues — ticket dependency graph + body self-containment +
     idea status/directory agreement + status.md ✅ 완성 행 누적 권고(judgment-only) +
@@ -13354,20 +11126,20 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     advisory·never-block) +
     cluster-*(클러스터 장부의 멤버 부재·통합 브랜치 부재·중복 귀속 가시화·advisory·
     never-block)."""
-    return (lint_dependencies() + lint_bodies() + lint_ideas()
-            + lint_status()
-            + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
-            + lint_domain() + lint_adr_lifecycle() + lint_adr_author()
-            + lint_architecture_freshness() + lint_status_freshness()
-            + lint_domain_freshness() + lint_adapter_drift()
+    return (ticket_lint.lint_dependencies(_home()) + body_lint.lint_bodies(_home()) + body_lint.lint_ideas(_home())
+            + wiki_lint.lint_status(_home())
+            + wikilink_lint.lint_wikilinks(_home()) + wikilink_lint.lint_unstable_refs(_home()) + wiki_lint.lint_scopes(_home())
+            + lint_domain() + wiki_lint.lint_adr_lifecycle(_home()) + wiki_lint.lint_adr_author(_home())
+            + freshness_lint.lint_architecture_freshness(_home()) + freshness_lint.lint_status_freshness(_home())
+            + lint_domain_freshness() + conf_lint.lint_adapter_drift(_home())
             + lint_render_leak()
-            + lint_areas_repo_unregistered()
-            + lint_areas_duplicate_repo() + lint_areas_merge_union()
-            + lint_delegate() + lint_local_conf() + lint_local_conf_keys()
-            + lint_local_conf_required() + lint_local_conf_readable()
-            + lint_rounds() + lint_clusters()
-            + lint_legacy_growth_sections()
-            + lint_codex_delegate_observations() + lint_claim_identity())
+            + areas_lint.lint_areas_repo_unregistered(_home())
+            + areas_lint.lint_areas_duplicate_repo(_home()) + areas_lint.lint_areas_merge_union(_home())
+            + conf_lint.lint_delegate(_home()) + conf_lint.lint_local_conf(_home()) + conf_lint.lint_local_conf_keys(_home())
+            + conf_lint.lint_local_conf_required(_home()) + conf_lint.lint_local_conf_readable(_home())
+            + ticket_lint.lint_rounds(_home()) + ticket_lint.lint_clusters(_home())
+            + ticket_lint.lint_legacy_growth_sections(_home())
+            + lint_codex_delegate_observations() + ticket_lint.lint_claim_identity(_home()))
 
 
 # ── board.md regeneration ──────────────────────────────────────────────
@@ -13613,7 +11385,7 @@ def build_parser() -> argparse.ArgumentParser:
                    default="small")
     p.add_argument("--design", metavar="값",
                    help=f"설계 단계 상태 ({design_rules.DESIGN_VALUE_FORMS}). 생략 시 "
-                        f"estimate={DESIGN_REQUIRED_ESTIMATE} → {design_rules.DESIGN_REQUIRED}, "
+                        f"estimate={design_rules.DESIGN_REQUIRED_ESTIMATE} → {design_rules.DESIGN_REQUIRED}, "
                         f"그 외 {design_rules.DESIGN_NA}. required 면 설계 절 완성 + `{design_rules.DESIGN_DONE}` 승격 "
                         f"전까지 claim 이 차단된다.")
     p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). 생략 시 task 설정 "
@@ -13776,7 +11548,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "verified-at-repin",
         help="현재-진실 문서의 repo+verified_at을 소유 저장소 full OID로 일괄 전환")
-    p.add_argument("--repo", choices=[_FRESHNESS_REPO_SELF, _FRESHNESS_REPO_UPSTREAM],
+    p.add_argument("--repo", choices=[freshness_lint._FRESHNESS_REPO_SELF, freshness_lint._FRESHNESS_REPO_UPSTREAM],
                    required=True,
                    help="freshness 소유 시계 — self 또는 local.conf의 경로형 upstream")
     p.add_argument("--sha", help="소유 repo 기준 커밋 sha (미지정 시 그 repo HEAD)")

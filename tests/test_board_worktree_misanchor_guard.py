@@ -27,6 +27,7 @@ import pytest
 
 from conftest import ensure_product_slot
 from pm_engine.infra import git, pm_paths
+from pm_engine.app import wiki_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -162,10 +163,7 @@ def _fake_runner(git_dir: str, common_dir: str):
 # 재바인딩해 어떤 mutation 이 돌더라도 실 트리 오염 0(hermetic).
 _WRITE_TARGET_CONSTS: dict[str, str] = {
     "IDEAS_DIR": "wiki/ideas",
-    "DECISIONS_DIR": "wiki/decisions",
-    "SPECS_DIR": "wiki/specs",
     "ARCHITECTURE_FILE": "wiki/architecture.md",
-    "HOOKS_DIR": "hooks",
     "BOARD_FILE": "wiki/board.md",
     "LOG_FILE": "wiki/log/current.md",
     "STATUS_FILE": "wiki/status.md",
@@ -343,10 +341,11 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
         prefix_cmd=None,
         fn=lambda _args: observed.append(
             (
-                b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()), b.DECISIONS_DIR,
-                b.IDEAS_DIR, b.SPECS_DIR, b.ARCHITECTURE_FILE, b.STATUS_FILE,
-                b.HOOKS_DIR, b.LOCAL_CONF, b.LEASES_FILE, b.DOMAIN_PY,
-                *b._SCOPE_AWARE_DIRS,
+                b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()),
+                pm_paths.decisions_dir(b._home()),
+                b.IDEAS_DIR, pm_paths.specs_dir(b._home()), b.ARCHITECTURE_FILE, b.STATUS_FILE,
+                pm_paths.hooks_dir(b._home()), b.LOCAL_CONF, b.LEASES_FILE, b.DOMAIN_PY,
+                *wiki_lint._scope_aware_dirs(b._home()),
             )
         )
         or 0,
@@ -849,7 +848,7 @@ def test_pm_owned_path_inventory_is_complete():
     """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
     b = _load_board()
     expected = {
-        "IDEAS_DIR", "DECISIONS_DIR", "SPECS_DIR", "ARCHITECTURE_FILE", "HOOKS_DIR",
+        "IDEAS_DIR", "ARCHITECTURE_FILE",
         "BOARD_FILE", "LOG_FILE", "STATUS_FILE", "LOCAL_CONF", "TICKETS_DIR",
         "TEMPLATE_FILE", "AREAS_FILE", "PM_STATE_FILE", "PM_STATE_TEMPLATE", "LOCAL_DIR",
         "BOARD_LOCK", "LEASES_FILE", "DOMAIN_PY",

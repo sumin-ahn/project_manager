@@ -27,8 +27,7 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, ensure_product_slot
-from pm_engine.infra import pm_paths, ticket_store
-from pm_engine.infra import round_store
+from pm_engine.infra import cluster_store, pm_paths, round_store, ticket_store
 from pm_engine.app import round_seed
 
 REPO = Path(__file__).resolve().parents[1]
@@ -467,7 +466,7 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
     assert list((wiki / "tickets" / "open").glob("T-*-*.md")), \
         "비공유 legacy 발행의 로컬 open 작성은 유지한다."
     # 홈 git 보드에서도 발행은 task 폴더의 브랜치를 기준으로 기록한다(T-0962 Q1).
-    assert board.all_clusters()[0]["base_branch"] == "main"
+    assert cluster_store.all_clusters(board._home())[0]["base_branch"] == "main"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -677,7 +676,7 @@ def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
     head = _git(["rev-parse", "HEAD"], board_dir).stdout
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
     assert path.read_bytes() == original
-    assert board.all_clusters() == []
+    assert cluster_store.all_clusters(board._home()) == []
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
     assert "cluster new" in capsys.readouterr().err
     slot = _t0930_bind(board, tmp_path, tid, monkeypatch)
@@ -717,9 +716,9 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
         duplicate = dict(ledger, id="C-duplicate")
         board.dump_cluster(duplicate)
     board.dump_cluster(ledger)
-    before = (path.read_bytes(), tuple(p.read_bytes() for p in sorted(board.clusters_dir().glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout)
+    before = (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(board._home()).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout)
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
-    assert (path.read_bytes(), tuple(p.read_bytes() for p in sorted(board.clusters_dir().glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout) == before
+    assert (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(board._home()).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout) == before
 
 
 @requires_git

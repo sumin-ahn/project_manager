@@ -33,8 +33,8 @@ import pytest
 
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
-from pm_engine.infra import pm_paths, ticket_store
-from pm_engine.app import regression, release
+from pm_engine.infra import cluster_store, pm_paths, ticket_store
+from pm_engine.app import regression, release, ticket_lint
 
 # 귀속 쓰기 정체성 — 픽스처가 이 task 의 제품 폴더를 준비한다(T-0962).
 _TASK = "pm-1"
@@ -384,7 +384,7 @@ def test_no_transition_leaves_open_with_claimed_by_residue(board):
     assert board.cmd_block(_block_args(tid="T-0002")) == 0
     assert board.cmd_unblock(_unblock_args(tid="T-0002")) == 0
 
-    for status, fm in board._all_tickets():
+    for status, fm in ticket_store._all_tickets(board._home()):
         if status == "open":
             assert fm.get("claimed_by") is None, \
                 f"{fm.get('id')} 가 open/ 인데 claimed_by 잔존: {fm.get('claimed_by')!r}"
@@ -460,7 +460,7 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
     def snapshot() -> dict:
         tickets = board.TICKETS_DIR
         folders = (tickets, *(tickets / name for name in (*ticket_rules.STATUS_DIRS, ".drafts")),
-                   board.clusters_dir())
+                   cluster_store.clusters_dir(board._home()))
         files = {path.relative_to(tickets).as_posix(): path.read_bytes()
                  for folder in folders for path in folder.glob("*") if path.is_file()}
         for flag in (pm_paths.regression_flag(board._home()), pm_paths.livegate_flag(board._home())):

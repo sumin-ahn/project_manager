@@ -32,6 +32,7 @@ import pytest
 from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
 # codex 라이브 공용 헬퍼 (격리 CODEX_HOME + auth + codex exec·conftest 소유·ADR-0070 T-0407).
 from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
+from pm_engine.app import adr_issue
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -198,4 +199,4 @@ def test_pm_adr_backbone_shipped_and_loadable():
     spec = importlib.util.spec_from_file_location("pm_adr_live_guard", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert hasattr(mod, "next_adr_number"), "pm_adr.py 에 next_adr_number 부재 — API rot."
+    assert hasattr(adr_issue, "next_adr_number"), "adr_issue 에 next_adr_number 부재 — API rot."

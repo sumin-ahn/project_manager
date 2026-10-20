@@ -81,10 +81,10 @@ EXEMPT_FROM_STAMP = {
 # 호출자/채택자 경로를 받는 loader도 verifier 보유를 AST 가드가 단언한다. 이 예외 축은
 # ``EXEMPT_FROM_STAMP``의 엔진 모듈/복구채널 축과 별개인 *adopter/dest 경로* 축이다. 따라서
 # dest 사본의 리터럴 파일명이 우연히 stamped 형제와 같아도, 여기에 호출 지점과 사유를 등록하면
-# canonical sibling 검증을 잘못 강요하지 않는다. 현재는 인스턴스 lint hook만 해당하며, 예외는
+# canonical sibling 검증을 잘못 강요하지 않는다. 현재는 pm_import 상류 훅 세트 선언 적재만 해당한다
+# (채택자 lint 훅 적재는 pm_engine.app.lint_hooks 에 있고 구조 테스트의 경로 적재 허용 목록이 맡는다). 예외는
 # 코드 소유·빈 사유 금지라 새 미검증 loader가 자동으로 섞이지 않는다.
 EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
-    ("board.py", "_run_lint_hooks"): "채택자 소유 .project_manager/hooks/lint_*.py 확장점",
     ("pm_import.py", "_upstream_hook_set_declarations"):
         "훅 세트 세대 선언을 읽으려 **다른 세대**의 상류 pm_import 를 의도적으로 로드한다 — "
         "rev 대조로 거르면 이 판정의 목적(세대 차 확인) 자체가 불가능해진다. 읽는 것은 선언 "

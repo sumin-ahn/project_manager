@@ -146,7 +146,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*.md'",
     ): WalkException("board/wiki/log 엔진 관리 디렉토리의 ID rewrite 대상만 열거"),
     (
-        ".project_manager/tools/board.py",
+        ".project_manager/tools/pm_engine/app/wikilink_lint.py",
         "_collect_wikilink_files",
         "rglob",
         "'*.md'",

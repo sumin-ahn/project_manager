@@ -9,6 +9,7 @@ import importlib.util
 import pathlib
 import re
 from pm_engine.domain import ticket_rules
+from pm_engine.app import body_lint
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -46,7 +47,7 @@ WAVE_CLAIM_DOCS = (
 
 def test_wave_claim_docs_match_required_sections():
     board = _load_board()
-    sections = board._REQUIRED_SECTIONS
+    sections = body_lint._REQUIRED_SECTIONS
     n = len(sections)
     names = [s.lstrip("# ").strip() for s in sections]
     for rel in WAVE_CLAIM_DOCS:

@@ -27,8 +27,8 @@ import pytest
 
 from _git_fixture import init_git_repo
 from conftest import write_cluster_ledger
-from pm_engine.infra import areas_store, conf_store, pm_paths, python_env, repo_coordinates, ticket_store
-from pm_engine.app import slot_resolution
+from pm_engine.infra import areas_store, cluster_store, conf_store, pm_paths, python_env, repo_coordinates, ticket_store
+from pm_engine.app import freshness_lint, slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -803,11 +803,6 @@ def test_affected_domain_titles_uses_each_page_owner_runner(tf, tmp_path, monkey
     seen_repos = []
     seen_runners = []
 
-    class _FakeBoard:
-        @staticmethod
-        def _freshness_owner_repo(repo):
-            return ((owner if repo == "upstream" else self_repo), None)
-
     class _FakeDomain:
         @staticmethod
         def load_pages():
@@ -832,7 +827,10 @@ def test_affected_domain_titles_uses_each_page_owner_runner(tf, tmp_path, monkey
             return False
 
     monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
-    monkeypatch.setattr(tf, "load_board_module", lambda _path: _FakeBoard())
+    monkeypatch.setattr(
+        freshness_lint, "_freshness_owner_repo",
+        lambda home, repo: ((owner if repo == "upstream" else self_repo), None),
+    )
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     result = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
     assert result == [("외부", False), ("내부", False)]
@@ -844,11 +842,6 @@ def test_affected_domain_titles_unresolved_owner_skips_stale_soft_warning(
         tf, tmp_path, monkeypatch, capsys):
     """미해소 owner는 sentinel으로 stale fallback을 막아 soft 경고도 내지 않는다."""
     sentinel = object()
-
-    class _FakeBoard:
-        @staticmethod
-        def _freshness_owner_repo(_repo):
-            return None, "owner checkout unavailable"
 
     class _FakeDomain:
         _UNRESOLVED_GIT_RUNNER = sentinel
@@ -867,46 +860,16 @@ def test_affected_domain_titles_unresolved_owner_skips_stale_soft_warning(
             return None if git_runner is sentinel else True
 
     monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
-    monkeypatch.setattr(tf, "load_board_module", lambda _path: _FakeBoard())
+    monkeypatch.setattr(
+        freshness_lint, "_freshness_owner_repo",
+        lambda home, _repo: (None, "owner checkout unavailable"),
+    )
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     affected = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
 
     assert affected == [("미해소 외부", None)]
     _make_finisher(tf, tmp_path, affected=affected)._notify_affected_domain("T-0001")
     assert "⚠ 미해소 외부" not in capsys.readouterr().out
-
-
-def test_affected_domain_titles_legacy_board_does_not_absorb_upstream(
-        tf, monkeypatch):
-    """resolver 없는 legacy board에서도 `repo: upstream`을 REPO/self runner로 흡수하지 않는다."""
-    seen = []
-
-    class _LegacyBoard:
-        pass
-
-    class _FakeDomain:
-        @staticmethod
-        def load_pages():
-            return []
-
-        @staticmethod
-        def pages_for_touches(touches, pages):
-            return [{"title": "외부", "repo": "upstream"}]
-
-        @staticmethod
-        def _real_git_runner(repo):
-            raise AssertionError(f"upstream을 legacy self runner로 흡수함: {repo}")
-
-        @staticmethod
-        def page_stale(page, *, git_runner=None):
-            seen.append(git_runner)
-            return None
-
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
-    monkeypatch.setattr(tf, "load_board_module", lambda _path: _LegacyBoard())
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
-    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == [("외부", None)]
-    assert seen == [None]
 
 
 # ── self-host 회귀 cwd 런타임 해소 (T-0149 — ② 홈서 worktree 회귀) ─────────────
@@ -3083,7 +3046,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     ledger = board.cluster_ledger_path("rebound")
     declaration = board.load_cluster("rebound")
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
-    assert board.cluster_tickets(board.load_cluster(_CLUSTER)) == []
+    assert cluster_store.cluster_tickets(board.load_cluster(_CLUSTER)) == []
     # 재결속 장부를 보존하면서 실제 draft 승격과 claim을 이어 실행한다.
     path = ticket_store.find_ticket_exact(board._home(), env.ticket)[1]
     fm, _ = ticket_store.load_ticket(path)

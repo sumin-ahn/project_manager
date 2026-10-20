@@ -30,10 +30,9 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, ensure_product_slot
-from pm_engine.domain import ticket_rules
-from pm_engine.infra import pre_push_hook
-from pm_engine.domain import round_rules
-from pm_engine.infra import round_store
+from pm_engine.domain import gitattributes_rules, round_rules, ticket_rules
+from pm_engine.infra import pre_push_hook, round_store
+from pm_engine.app import areas_lint, body_lint, conf_lint, freshness_lint, ticket_lint, wiki_lint, wikilink_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -124,8 +123,8 @@ def _check_attr_merge(board_dir: Path) -> str:
 # ════════════════════════════════════════════════════════════════════════
 
 def test_union_detected_for_board_pattern(board):
-    assert board._areas_union_declared(
-        "areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(
+        "areas.md merge=union\n", gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 def _lf_declaration(board, pattern: str = "*.{extension}", attrs: str = "text eol=lf") -> str:
@@ -182,7 +181,7 @@ def test_text_lf_requires_every_status_draft_path_and_extension(board):
 def test_gitattributes_pattern_coverage_matches_git_path_semantics(
         board, tmp_path, pattern, target, covered):
     """slash anchoring·segment `*`·cross-directory `**`를 git 의미로 판정한다."""
-    assert board._gitattributes_pattern_matches(pattern, (target,)) is covered
+    assert gitattributes_rules._gitattributes_pattern_matches(pattern, (target,)) is covered
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     (board_dir / ".gitattributes").write_bytes(
         f"{pattern} text eol=lf\n".encode("utf-8")
@@ -277,26 +276,26 @@ def test_text_lf_negative_pattern_forces_conservative_backfill(board):
 
 def test_union_detected_for_rooted_board_pattern(board):
     """선두 `/` 형(`/areas.md`)도 같은 파일을 가리키므로 인정한다."""
-    assert board._areas_union_declared(
-        "/areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(
+        "/areas.md merge=union\n", gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 def test_union_absent_when_no_declaration(board):
     text = "# 주석뿐\n\n*.cmd text eol=crlf\n"
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is False
-    assert board._gitattributes_merge_attr(text, board._BOARD_AREAS_ATTR_TARGETS) is None
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._gitattributes_merge_attr(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is None
 
 
 def test_later_unset_overrides_union(board):
     """git 은 뒤 줄이 앞 줄을 덮는다(last-match-wins) — `-merge` 가 뒤면 union 아님."""
     text = "areas.md merge=union\nareas.md -merge\n"
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is False
-    assert board._gitattributes_merge_attr(text, board._BOARD_AREAS_ATTR_TARGETS) == ""
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._gitattributes_merge_attr(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) == ""
 
 
 def test_commented_declaration_is_not_counted(board):
-    assert board._areas_union_declared(
-        "# areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._areas_union_declared(
+        "# areas.md merge=union\n", gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
 
 
 def test_trailing_hash_invalidates_line_like_git(board):
@@ -306,14 +305,14 @@ def test_trailing_hash_invalidates_line_like_git(board):
     no-op 이 된다(union 상실이 조용히 굳음·reviewer 실측 대조).
     """
     text = "areas.md merge=union # 이건 주석이 아니다\n"
-    assert board._gitattributes_merge_attr(text, board._BOARD_AREAS_ATTR_TARGETS) is None
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._gitattributes_merge_attr(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is None
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
 
 
 def test_hash_invalidated_line_does_not_shadow_valid_declaration(board):
     """무효 줄은 *무시*될 뿐 앞선 유효 선언을 지우지 않는다(git 동형·last-match 는 유효 줄끼리)."""
     text = "areas.md merge=union\nareas.md -merge # 무효 줄\n"
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 @pytest.mark.parametrize("glob_line", ["*.md -merge", "* -merge", "areas.* -merge"])
@@ -324,46 +323,46 @@ def test_trailing_simple_glob_unset_cancels_union(board, glob_line):
     없는데 advisory 가 침묵하는 **거짓 정상**(보호 상실)이 된다.
     """
     text = f"areas.md merge=union\n{glob_line}\n"
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
 
 
 @pytest.mark.parametrize("glob_line", ["*.md merge=union", "* merge=union",
                                        "areas.* merge=union"])
 def test_simple_glob_declaration_is_recognized(board, glob_line):
     """단순 glob 으로 *선언* 한 union 도 인정한다(git 실측 `union`) — 불필요한 중복 append 방지."""
-    assert board._areas_union_declared(
-        glob_line + "\n", board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(
+        glob_line + "\n", gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 def test_simple_glob_matches_inline_target_by_basename(board):
     """슬래시 없는 패턴은 git 처럼 basename 에도 걸린다 (inline 형상 `.project_manager/areas.md`)."""
-    assert board._areas_union_declared(
-        "areas.* merge=union\n", board._INLINE_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(
+        "areas.* merge=union\n", gitattributes_rules._INLINE_AREAS_ATTR_TARGETS) is True
 
 
 def test_unrelated_glob_does_not_match(board):
     """무관한 glob 은 안 걸린다 — 남의 선언을 우리 것으로 오독하지 않는다."""
-    assert board._areas_union_declared(
-        "tickets/*.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is False
-    assert board._areas_union_declared(
+    assert gitattributes_rules._areas_union_declared(
+        "tickets/*.md merge=union\n", gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._areas_union_declared(
         "areas.md merge=union\ntickets/ -merge\n",
-        board._BOARD_AREAS_ATTR_TARGETS) is True   # git 실측도 union 유지.
+        gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True   # git 실측도 union 유지.
 
 
 def test_double_star_pattern_crosses_directories_like_git(board):
     """`**`는 0개 이상의 디렉토리를 넘어 선언·후행 unset 모두에 적용된다."""
-    assert board._areas_union_declared(
+    assert gitattributes_rules._areas_union_declared(
         "areas.md merge=union\n**/areas.md -merge\n",
-        board._BOARD_AREAS_ATTR_TARGETS) is False
-    assert board._areas_union_declared(
-        "**/areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is True
+        gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._areas_union_declared(
+        "**/areas.md merge=union\n", gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 def test_inline_pattern_uses_project_manager_path(board):
     """inline 형상 선언(`.project_manager/areas.md`)은 board 패턴과 섞이지 않는다."""
     text = ".project_manager/areas.md merge=union\n"
-    assert board._areas_union_declared(text, board._INLINE_AREAS_ATTR_TARGETS) is True
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is False
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._INLINE_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
 
 
 def test_root_gitattributes_keeps_inline_union_declaration(board):
@@ -372,7 +371,7 @@ def test_root_gitattributes_keeps_inline_union_declaration(board):
     inline(비-서브모듈) 채택자는 이 선언이 유일한 union 배포처다(engine.manifest 로 배포).
     """
     text = (REPO / ".gitattributes").read_text(encoding="utf-8")
-    assert board._areas_union_declared(text, board._INLINE_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._INLINE_AREAS_ATTR_TARGETS) is True
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -392,7 +391,7 @@ def test_ensure_creates_gitattributes_in_board_git(board, tmp_path):
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     assert board._ensure_board_gitattributes() is True
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
     assert board._board_text_lf_declared(text) is True
 
 
@@ -423,7 +422,7 @@ def test_ensure_preserves_adopter_custom_lines(board, tmp_path):
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert text.startswith(custom), "기존 내용이 앞에 그대로 보존돼야 한다"
     assert "*.md text eol=lf" in text and "tickets/** linguist-generated" in text
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 @requires_git
@@ -438,7 +437,7 @@ def test_ensure_appends_cleanly_when_file_lacks_trailing_newline(board, tmp_path
 
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert "*.md text eol=lf\n" in text
-    assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 def test_ensure_respects_existing_union_and_text_lf_declarations(board, tmp_path):
@@ -648,7 +647,7 @@ def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypa
 
 def test_advisory_fires_when_board_git_lacks_declaration(board, tmp_path):
     _make_board_dir(board, tmp_path)
-    findings = board.lint_areas_merge_union()
+    findings = areas_lint.lint_areas_merge_union(board._home())
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "areas-merge-union"
@@ -663,9 +662,9 @@ def test_advisory_is_never_blocking(board):
 @requires_git
 def test_advisory_resolved_after_backfill(board, tmp_path):
     _make_board_dir(board, tmp_path, real_git=True)
-    assert board.lint_areas_merge_union()
+    assert areas_lint.lint_areas_merge_union(board._home())
     board._ensure_board_gitattributes()
-    assert board.lint_areas_merge_union() == []
+    assert areas_lint.lint_areas_merge_union(board._home()) == []
 
 
 @requires_git
@@ -703,14 +702,14 @@ def test_advisory_silent_for_inline_with_root_declaration(board, tmp_path):
     (tmp_path / ".project_manager" / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     (tmp_path / ".gitattributes").write_text(
         ".project_manager/areas.md merge=union\n", encoding="utf-8")
-    assert board.lint_areas_merge_union() == []
+    assert areas_lint.lint_areas_merge_union(board._home()) == []
 
 
 def test_advisory_fires_for_inline_without_root_declaration(board, tmp_path):
     """inline 형상인데 루트 선언이 없으면(선언 제거·미배포 clone) 표면화한다."""
     (tmp_path / ".project_manager").mkdir(parents=True)
     (tmp_path / ".project_manager" / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
-    findings = board.lint_areas_merge_union()
+    findings = areas_lint.lint_areas_merge_union(board._home())
     assert len(findings) == 1
     assert findings[0][1] == "areas-merge-union"
     assert ".project_manager/areas.md merge=union" in findings[0][2]
@@ -718,20 +717,33 @@ def test_advisory_fires_for_inline_without_root_declaration(board, tmp_path):
 
 def test_advisory_silent_without_areas_file(board, tmp_path):
     """areas.md 부재(솔로 미등록) → 무발화."""
-    assert board.lint_areas_merge_union() == []
+    assert areas_lint.lint_areas_merge_union(board._home()) == []
 
 
 def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
     """`board lint` 집계에 배선돼 실제로 표면화된다(호출 누락 가드)."""
-    monkeypatch.setattr(board, "lint_areas_merge_union",
-                        lambda: [("areas.md", "areas-merge-union", "x")])
-    for name in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-                 "lint_wikilinks", "lint_unstable_refs", "lint_scopes", "lint_domain",
-                 "lint_adr_lifecycle", "lint_adr_author", "lint_architecture_freshness",
-                 "lint_status_freshness", "lint_domain_freshness", "lint_adapter_drift",
-                 "lint_render_leak", "lint_areas_duplicate_repo",
-                 "lint_areas_repo_unregistered"):
-        monkeypatch.setattr(board, name, list)
+    monkeypatch.setattr(areas_lint, "lint_areas_merge_union",
+                        lambda home: [("areas.md", "areas-merge-union", "x")])
+    for module, name, stub in (
+        (ticket_lint, "lint_dependencies", lambda home: []),
+        (body_lint, "lint_bodies", lambda home: []),
+        (body_lint, "lint_ideas", lambda home: []),
+        (wiki_lint, "lint_status", lambda home: []),
+        (wikilink_lint, "lint_wikilinks", lambda home: []),
+        (wikilink_lint, "lint_unstable_refs", lambda home: []),
+        (wiki_lint, "lint_scopes", lambda home: []),
+        (board, "lint_domain", list),
+        (wiki_lint, "lint_adr_lifecycle", lambda home: []),
+        (wiki_lint, "lint_adr_author", lambda home: []),
+        (freshness_lint, "lint_architecture_freshness", lambda home: []),
+        (freshness_lint, "lint_status_freshness", lambda home: []),
+        (board, "lint_domain_freshness", list),
+        (conf_lint, "lint_adapter_drift", lambda home: []),
+        (board, "lint_render_leak", list),
+        (areas_lint, "lint_areas_duplicate_repo", lambda home: []),
+        (areas_lint, "lint_areas_repo_unregistered", lambda home: []),
+    ):
+        monkeypatch.setattr(module, name, stub)
     assert board.lint_tickets() == [("areas.md", "areas-merge-union", "x")]
 
 
@@ -743,8 +755,8 @@ def test_import_scaffold_mirrors_board_block(board):
     """pm_import 미러 상수가 board 의 배포 블록과 동일(문구 drift 가드·둘 다 stdlib-only)."""
     pm_import = _load_mod("pm_import")
     assert pm_import._BOARD_GITATTRIBUTES_SCAFFOLD == board._BOARD_GITATTRIBUTES_BLOCK
-    assert board._areas_union_declared(
-        pm_import._BOARD_GITATTRIBUTES_SCAFFOLD, board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert gitattributes_rules._areas_union_declared(
+        pm_import._BOARD_GITATTRIBUTES_SCAFFOLD, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
     assert board._board_text_lf_declared(
         pm_import._BOARD_GITATTRIBUTES_SCAFFOLD) is True
 
@@ -783,4 +795,4 @@ def test_ensure_fail_soft_on_non_utf8_gitattributes(board, tmp_path):
 
     assert board._ensure_board_gitattributes() is False
     assert board._board_git_stage_and_commit("mutation") is True   # commit 은 정상 진행.
-    assert board.lint_areas_merge_union() == []                    # lint 도 안 깨진다(무발화).
+    assert areas_lint.lint_areas_merge_union(board._home()) == []                    # lint 도 안 깨진다(무발화).

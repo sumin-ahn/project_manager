@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import conf_store, pre_push_hook, python_env
+from pm_engine.app import conf_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -80,7 +81,7 @@ def test_lint_delegate_surfaces_advisory(board, monkeypatch):
         "delegate.code-reviewer.harness": "claude", "delegate.code-reviewer.model": "gpt-x",
     }
     monkeypatch.setattr(conf_store, "local_config", lambda _home: same)
-    findings = board.lint_delegate()
+    findings = conf_lint.lint_delegate(board._home())
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "delegate-same-model"
@@ -92,9 +93,9 @@ def test_lint_delegate_clean_no_finding(board, monkeypatch):
     """모델 상이·미설정이면 lint_delegate 는 finding 0(솔로/미사용 무영향)."""
     monkeypatch.setattr(conf_store, "local_config", lambda _home: {
         "delegate.developer.model": "gpt-x", "delegate.code-reviewer.model": "opus"})
-    assert board.lint_delegate() == []
+    assert conf_lint.lint_delegate(board._home()) == []
     monkeypatch.setattr(conf_store, "local_config", lambda _home: {})
-    assert board.lint_delegate() == []
+    assert conf_lint.lint_delegate(board._home()) == []
 
 
 def _same_model_conf() -> dict:

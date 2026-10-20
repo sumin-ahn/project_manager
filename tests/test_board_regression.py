@@ -31,7 +31,7 @@ from _engine_tree import engine_python_files
 from pm_engine.cli import regression_cmd, task_args
 from pm_engine.domain import pytest_report, ticket_rules
 from pm_engine.infra import areas_store, git, pm_paths, pre_push_hook, python_env, regression_store, review_rounds, ticket_store
-from pm_engine.app import regression
+from pm_engine.app import areas_lint, regression
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
@@ -2811,7 +2811,7 @@ def test_a_previous_generation_hook_also_blocks_the_lint_gate(
     _without_suite(board)                            # 회귀 게이트 비대상 트리
     # 이 tmp 보드는 init 을 안 돌린 등록 0 형상이라 areas 이관 안내(advisory)가 상시 붙는다 —
     # 이 테스트의 판정축(훅 세대)이 아니므로 격리한다.
-    monkeypatch.setattr(board, "lint_areas_repo_unregistered", lambda: [])
+    monkeypatch.setattr(areas_lint, "lint_areas_repo_unregistered", lambda home: [])
 
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
 

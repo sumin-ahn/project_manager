@@ -216,3 +216,30 @@ def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str
         return f"developer 라운드 준비 거부 — {issues[0][2]} — {_DESIGN_EVIDENCE_REMEDY}"
     missing = f"architect 라운드 선행도 design 완료 선언도 없음(design: {state})"
     return f"developer 라운드 준비 거부 — {missing} — {_DESIGN_EVIDENCE_REMEDY}"
+
+
+# 자동 `required` 판정의 유일한 입력 — estimate=large. 그 외는 `n/a`.
+DESIGN_REQUIRED_ESTIMATE = "large"
+
+
+def _design_estimate_advisory(
+    tid: str, estimate: Any, design: Any,
+) -> list[tuple[str, str, str]]:
+    """`estimate=large` 인데 설계 단계가 비대상(`n/a`·필드 부재)이면 재유도 1줄 (advisory).
+
+    자동 `required` 판정은 **발행 시점 1회**뿐이다(`_resolve_design`). 그래서 medium 으로 발행한
+    뒤 large 로 사후 교정한 티켓에는 설계 게이트가 영영 붙지 않는다 — 이 wave 에서 실제로 두 번
+    지나갔다. 여기서 자동으로 `required` 로 올리지 않는 이유는 그게 사람의 판정이기 때문이고,
+    그래서 kind 는 `_ADVISORY_LINT_KINDS` 에 등재된 never-block 이다.
+
+    `required`/`done`(이미 대상) · `invalid`(그쪽 깔때기가 이미 1줄을 낸다)은 전부 무영향 —
+    여기서 보는 건 "비대상으로 남아 있는가" 하나다.
+    """
+    if str(estimate or "").strip().lower() != DESIGN_REQUIRED_ESTIMATE:
+        return []
+    if _design_state(design) != DESIGN_NA:
+        return []
+    return [(tid, "design-estimate", (
+        f"estimate={DESIGN_REQUIRED_ESTIMATE} 인데 design: {DESIGN_NA} — 발행 후 estimate 를 "
+        f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {DESIGN_REQUIRED}` 로 "
+        "판정을 남겨라"))]

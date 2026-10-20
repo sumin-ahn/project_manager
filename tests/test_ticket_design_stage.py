@@ -40,10 +40,9 @@ from pathlib import Path
 import pytest
 
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
-from pm_engine.domain import ticket_rules
-from pm_engine.infra import pm_paths, ticket_store
-from pm_engine.domain import design_rules, round_rules
-from pm_engine.infra import round_store
+from pm_engine.domain import design_rules, round_rules, ticket_rules
+from pm_engine.infra import pm_paths, round_store, ticket_store
+from pm_engine.app import body_lint, lint_hooks
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -269,12 +268,12 @@ def test_design_issue_is_single_line_at_most():
 
 def test_body_lint_issues_without_design_arg_is_legacy_clean():
     """`design` 인자를 안 넘기는 기존 호출은 설계 판정 없이 기존 검사만 받는다(무변경)."""
-    assert board_mod._body_lint_issues("T-0001", _body(_DESIGN_SKELETON)) == []
+    assert body_lint._body_lint_issues(board_mod._home(), "T-0001", _body(_DESIGN_SKELETON)) == []
 
 
 def test_body_lint_issues_folds_design_verdict():
     """설계 판정이 같은 깔때기(`_body_lint_issues`)로 흘러 authoring 게이트가 재사용한다."""
-    issues = board_mod._body_lint_issues("T-0001", _body(_DESIGN_SKELETON),
+    issues = body_lint._body_lint_issues(board_mod._home(), "T-0001", _body(_DESIGN_SKELETON),
                                          strict_sections=True,
                                          design=design_rules.DESIGN_REQUIRED)
     assert [k for _t, k, _d in issues] == ["design-pending"]
@@ -473,14 +472,14 @@ def test_design_pending_is_advisory_kind():
 def test_lint_bodies_emits_single_design_advisory(board):
     """open 티켓이 `design: required` + 뼈대면 경고 1줄(kind=design-pending)."""
     _seed_open(board, design="required", body=_body(_DESIGN_SKELETON))
-    issues = board.lint_bodies()
+    issues = body_lint.lint_bodies(board._home())
     assert [(tid, kind) for tid, kind, _d in issues] == [("T-0001", "design-pending")]
 
 
 def test_lint_bodies_silent_for_na_ticket(board):
     """`n/a` 티켓은 설계 절 뼈대가 남아도 lint 가 조용하다(오탐 0)."""
     _seed_open(board, design="n/a", body=_body(_DESIGN_SKELETON))
-    assert board.lint_bodies() == []
+    assert body_lint.lint_bodies(board._home()) == []
 
 
 def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
@@ -489,7 +488,7 @@ def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
     남의 설계-중 티켓이 내 push 를 막지 않아야 한다 — 차단은 claim 게이트가 한다."""
     monkeypatch.setattr(board, "lint_tickets",
                         lambda: [("T-0001", "design-pending", "설계 절 미충전")])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
     assert board.cmd_lint(argparse.Namespace(gate=False)) == 1
 
@@ -509,7 +508,7 @@ def test_design_estimate_is_advisory_kind():
 
 def test_large_estimate_with_na_design_is_readvised():
     """`estimate=large ∧ design: n/a` → 1줄 (두 값과 두 출구를 모두 안내한다)."""
-    issues = board_mod._design_estimate_advisory("T-0601", "large", "n/a")
+    issues = design_rules._design_estimate_advisory("T-0601", "large", "n/a")
     assert len(issues) == 1
     tid, kind, detail = issues[0]
     assert (tid, kind) == ("T-0601", "design-estimate")
@@ -518,7 +517,7 @@ def test_large_estimate_with_na_design_is_readvised():
 
 def test_missing_design_field_counts_as_na(board_estimate="large"):
     """필드 부재도 `n/a` 다 — 구세대 티켓을 large 로 교정한 형상이 실경로다."""
-    assert len(board_mod._design_estimate_advisory("T-0601", board_estimate, None)) == 1
+    assert len(design_rules._design_estimate_advisory("T-0601", board_estimate, None)) == 1
 
 
 @pytest.mark.parametrize("estimate, design", [
@@ -533,27 +532,27 @@ def test_missing_design_field_counts_as_na(board_estimate="large"):
 ])
 def test_readvisory_stays_silent_outside_its_axis(estimate, design):
     """이 advisory 가 보는 건 '비대상으로 남아 있는가' 하나 — 그 밖은 전부 0건(오탐 0)."""
-    assert board_mod._design_estimate_advisory("T-0601", estimate, design) == []
+    assert design_rules._design_estimate_advisory("T-0601", estimate, design) == []
 
 
 def test_lint_bodies_emits_the_estimate_readvisory(board):
     """사후 교정된 티켓(large + n/a)을 전역 lint 가 1줄로 보고한다."""
     _seed_open(board, design="n/a", estimate="large")
-    assert [(tid, kind) for tid, kind, _d in board.lint_bodies()] == [
+    assert [(tid, kind) for tid, kind, _d in body_lint.lint_bodies(board._home())] == [
         ("T-0001", "design-estimate")]
 
 
 def test_lint_bodies_silent_for_a_large_ticket_already_on_the_design_track(board):
     """large 인데 이미 `done` 이면 재유도가 없다 — 정상 경로 무영향."""
     _seed_open(board, design="done", estimate="large")
-    assert board.lint_bodies() == []
+    assert body_lint.lint_bodies(board._home()) == []
 
 
 def test_cmd_lint_gate_does_not_block_on_design_estimate(board, monkeypatch):
     """`--gate` 는 design-estimate 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1)."""
     monkeypatch.setattr(board, "lint_tickets",
                         lambda: [("T-0001", "design-estimate", "estimate=large 인데 n/a")])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
     assert board.cmd_lint(argparse.Namespace(gate=False)) == 1
 

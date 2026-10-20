@@ -108,13 +108,6 @@
         "kind": "session_stamp"
       }
     ],
-    ".project_manager/tools/pm_adr.py": [
-      {
-        "count": 1,
-        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
-        "kind": "session_stamp"
-      }
-    ],
     ".project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -156,6 +149,13 @@
       {
         "count": 1,
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "kind": "session_stamp"
+      }
+    ],
+    ".project_manager/tools/pm_engine/domain/adr_rules.py": [
+      {
+        "count": 1,
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
         "kind": "session_stamp"
       }
     ],
@@ -508,13 +508,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/claude_code/.project_manager/tools/pm_adr.py": [
-      {
-        "count": 1,
-        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/claude_code/.project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -556,6 +549,13 @@
       {
         "count": 1,
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/domain/adr_rules.py": [
+      {
+        "count": 1,
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
         "kind": "session_stamp"
       }
     ],
@@ -911,13 +911,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/codex/.project_manager/tools/pm_adr.py": [
-      {
-        "count": 1,
-        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/codex/.project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -959,6 +952,13 @@
       {
         "count": 1,
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/domain/adr_rules.py": [
+      {
+        "count": 1,
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
         "kind": "session_stamp"
       }
     ],
@@ -1505,13 +1505,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/opencode/.project_manager/tools/pm_adr.py": [
-      {
-        "count": 1,
-        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/opencode/.project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -1553,6 +1546,13 @@
       {
         "count": 1,
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/domain/adr_rules.py": [
+      {
+        "count": 1,
+        "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
         "kind": "session_stamp"
       }
     ],

@@ -27,6 +27,7 @@ import pytest
 
 from conftest import anchor_board_module, bind_product_cluster
 from pm_engine.infra import ticket_store
+from pm_engine.app import body_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -93,14 +94,14 @@ _FILLED_BODY = (
 # sensitivity — 각 placeholder 리터럴이 개별 탐지된다
 # ════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.parametrize("token", board_mod._PLACEHOLDERS)
+@pytest.mark.parametrize("token", body_lint._PLACEHOLDERS)
 def test_each_placeholder_token_is_detected(token):
     """`_PLACEHOLDERS` 의 각 리터럴이 본문에 남으면 개별적으로 placeholder issue 를 낸다.
 
     자족 본문 뒤에 문제 토큰 하나만 얹어, 그 토큰이 실제로 게이트에 걸리는지 격리 확인한다
     (탐지 집합에 등재만 돼 있고 실효 검사가 빠지는 dead-token 방지)."""
     body = _FILLED_BODY + f"\n간섭 문장: {token}\n"
-    issues = board_mod._body_lint_issues("T-0001", body)
+    issues = body_lint._body_lint_issues(board_mod._home(), "T-0001", body)
     kinds = {(kind, detail) for _tid, kind, detail in issues}
     assert any(kind == "placeholder" and token in detail for kind, detail in kinds), (
         f"placeholder 토큰 {token!r} 이 게이트에 탐지되지 않음 — sensitivity 갭.")
@@ -110,7 +111,7 @@ def test_strengthened_tokens_present():
     """T-0366 로 추가된 절별 토큰이 집합에 존재(회귀 방어) — 인터페이스/결정/참고 미충전 커버."""
     for token in ("이 ticket 이 만들거나 바꾸는", "구현 방향에 대한 확정 사항",
                   "[[architecture]] 관련 절", "T-XXXX"):
-        assert token in board_mod._PLACEHOLDERS, (
+        assert token in body_lint._PLACEHOLDERS, (
             f"강화 토큰 {token!r} 이 _PLACEHOLDERS 에서 빠짐 — 절별 자족성 게이트 후퇴.")
 
 
@@ -120,7 +121,7 @@ def test_strengthened_tokens_present():
 
 def test_full_template_body_blocked():
     """제목만 바뀐 순수 템플릿(5절 뼈대) → 다수 placeholder issue(빈 draft)."""
-    issues = board_mod._body_lint_issues("T-0001", _FULL_TEMPLATE_BODY)
+    issues = body_lint._body_lint_issues(board_mod._home(), "T-0001", _FULL_TEMPLATE_BODY)
     kinds = [k for _t, k, _d in issues]
     assert kinds.count("placeholder") >= 5, (
         f"순수 템플릿이 5절 이상 placeholder 를 내야 하는데 {kinds!r}.")
@@ -131,7 +132,7 @@ def test_half_filled_body_now_blocked():
 
     강화 전 `_PLACEHOLDERS` 는 인터페이스/결정/T-XXXX 를 몰라 이 본문을 통과시켰다. 이제 인터페이스·
     결정·참고 절 미충전이 promote-차단돼야 "자족성 = placeholder 0"(ADR-0049)이 성립한다."""
-    issues = board_mod._body_lint_issues("T-0001", _HALF_FILLED_BODY)
+    issues = body_lint._body_lint_issues(board_mod._home(), "T-0001", _HALF_FILLED_BODY)
     details = " ".join(d for _t, _k, d in issues)
     assert issues, "절반-채운 draft 가 통과함 — 게이트 갭 회귀."
     # 인터페이스·결정·참고 절이 각각 잡혀야 한다(목표·DoD 는 실값이라 안 잡힘).
@@ -144,7 +145,7 @@ def test_half_filled_body_now_blocked():
 
 def test_self_contained_body_passes():
     """5절을 실값으로 채운 self-contained 본문 → issue 0(promotable)."""
-    assert board_mod._body_lint_issues("T-0001", _FILLED_BODY) == [], (
+    assert body_lint._body_lint_issues(board_mod._home(), "T-0001", _FILLED_BODY) == [], (
         "자족 본문이 promote 게이트에 걸림 — 오탐(실값 절을 placeholder 로 오판).")
 
 
@@ -281,10 +282,10 @@ def test_strict_gate_catches_deleted_sections_global_lint_does_not():
     strict 경로만 이 우회를 잡는다. 전역 lint(3절 불변)는 인터페이스/결정을 요구하지 않아 clean —
     레거시 티켓 blast-radius 0 을 동시 단언한다(단일 함수·소비측 파라미터)."""
     # 전역 lint 경로(strict_sections 기본 False) — 3절(목표/완료조건/참고)만 요구 → clean.
-    assert board_mod._body_lint_issues("T-0001", _SECTION_DELETED_BODY) == [], (
+    assert body_lint._body_lint_issues(board_mod._home(), "T-0001", _SECTION_DELETED_BODY) == [], (
         "전역 lint 가 인터페이스/결정 절 부재를 차단함 — 레거시 blast-radius(3절 불변 위반).")
     # authoring 게이트(strict) — 5절 존재 강제 → 인터페이스·결정 절 부재를 thin 으로 차단.
-    strict = board_mod._body_lint_issues("T-0001", _SECTION_DELETED_BODY, strict_sections=True)
+    strict = body_lint._body_lint_issues(board_mod._home(), "T-0001", _SECTION_DELETED_BODY, strict_sections=True)
     details = " ".join(d for _t, _k, d in strict)
     assert any(k == "thin" for _t, k, _d in strict), "strict 게이트가 절 삭제를 못 잡음(우회)."
     assert "## 인터페이스" in details, "인터페이스 절 삭제 미탐지(strict)."
@@ -293,9 +294,9 @@ def test_strict_gate_catches_deleted_sections_global_lint_does_not():
 
 def test_strict_sections_constant_is_five():
     """strict 절 집합 = 5절(목표/인터페이스/결정/DoD/참고)·전역은 3절 유지(회귀 방어)."""
-    assert board_mod._STRICT_REQUIRED_SECTIONS == (
+    assert body_lint._STRICT_REQUIRED_SECTIONS == (
         "## 목표", "## 인터페이스", "## 결정", "## 완료 조건", "## 참고")
-    assert board_mod._REQUIRED_SECTIONS == ("## 목표", "## 완료 조건", "## 참고")
+    assert body_lint._REQUIRED_SECTIONS == ("## 목표", "## 완료 조건", "## 참고")
 
 
 @requires_git

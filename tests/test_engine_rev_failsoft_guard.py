@@ -1256,7 +1256,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `pm_handoff._load_pm_delegate`), try 본문이 패키지 호출만 남은 7(`board` 의
     #   `_round_pending_abandon_command`·`lint_delegate`·`lint_rounds` 두 곳, `pm_delegate` 의
     #   `prepare_cluster_copy`·`_peer_engine_ledgers`(옮기며), `pm_handoff.PmHandoff._peer_raw_ledgers`).
-    assert len(report.boundaries) == 170, "propagation sweep boundary ratchet changed"
+    # 163 = 170 − T-0974 가 지운 7 경계. 문서 lint·ADR 발행·모순 lint 가 패키지(`conf_lint`·`freshness_lint`·
+    #   `adr_contradiction`·`cluster_store`)로 옮겨져 형제 로더와 그 재전파 줄이 없어졌다: 로더 정의 2
+    #   (`contradiction_lint._load_board`, `pm_adr._load_contradiction_lint`), try 본문이 패키지 호출만
+    #   남은 5(`board` 의 `_freshness_owner_repo`·`lint_local_conf`(옮기며), `domain._page_owner_repo`,
+    #   `pm_adr.emit_contradiction_advisory`, `ticket_finish._cluster_member_ids`).
+    assert len(report.boundaries) == 163, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
