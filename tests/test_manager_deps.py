@@ -175,7 +175,10 @@ def test_smoke_stops_when_the_screen_bundle_is_missing(tmp_path, monkeypatch):
 @pytest.mark.skipif(not DIST_INDEX.is_file(), reason="`npm run build` 산출(dist) 없음")
 @pytest.mark.skipif(sys.platform == "linux" and shutil.which("xvfb-run") is None,
                     reason="headless Linux 는 xvfb-run 필요")
-def test_smoke_opens_the_window_and_answers(tmp_path):
+def test_smoke_opens_the_window_and_answers(tmp_path, monkeypatch):
+    # 창을 여는 GTK·mesa·dconf 는 XDG 캐시·데이터 폴더에 쓴다. 실제 홈 대신 시험 폴더를 준다.
+    for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+        monkeypatch.setenv(name, str(tmp_path / name.lower()))
     registry_file = tmp_path / "projects.json"
     launcher = ["xvfb-run", "-a"] if sys.platform == "linux" else []
 

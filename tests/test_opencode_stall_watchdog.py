@@ -553,6 +553,9 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
         # env 로 첫-이벤트 상한을 5초로 낮춰 kill+재시도+fail-loud 를 수십 초 내 검증.
         monkeypatch.setenv("PM_OC_FIRST_EVENT_TIMEOUT", "5")
         monkeypatch.setenv("PM_OC_STALL_RETRIES", "1")
+        # opencode 는 XDG 데이터·캐시·상태 폴더에 로그와 세션을 쓴다. 실제 홈 대신 시험 폴더를 준다.
+        for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+            monkeypatch.setenv(name, str(tmp_path / name.lower()))
         logs: list[str] = []
         started = time.monotonic()
         with pytest.raises(watchdog.StallWatchdogError):
