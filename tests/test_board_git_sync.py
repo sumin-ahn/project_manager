@@ -32,8 +32,8 @@ import pytest
 from _git_fixture import remove_git_tree
 from conftest import (anchor_board_module, bind_product_cluster, ensure_product_slot,
                       write_cluster_ledger)
-from pm_engine.infra import ticket_store
-from pm_engine.infra import delegate_ledger
+from pm_engine.infra import delegate_ledger, ticket_store
+from pm_engine.app import body_lint
 
 _TASK = "binding-task"
 
@@ -732,7 +732,7 @@ def test_promote_reports_board_git_pending_when_local_commit_is_uncommitted(
     draft.write_text(_TICKET_TEXT.format(tid="T-0002").replace("status: open", "status: draft"),
                      encoding="utf-8")
     bind_product_cluster(board, "T-0002")
-    monkeypatch.setattr(board, "_body_lint_issues", lambda *args, **kwargs: [])
+    monkeypatch.setattr(body_lint, "_body_lint_issues", lambda *args, **kwargs: [])
     monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda *args, **kwargs: False)
 
     assert board.cmd_promote(argparse.Namespace(id="T-0002")) == 0

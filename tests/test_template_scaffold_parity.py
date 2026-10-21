@@ -31,8 +31,8 @@ from pathlib import Path
 import pytest
 
 from _harness_matrix import HARNESSES, _PM_IMPORT
-from pm_engine.domain import identity_args
-from pm_engine.infra import lease_store
+from pm_engine.domain import doc_pages, identity_args
+from pm_engine.infra import doc_page_store, lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TEMPLATES = REPO / "templates"
@@ -204,11 +204,11 @@ def test_domain_template_anchors_capture_draft_derivation():
     """
     dm = _load_domain()
     text = (REPO / DOMAIN_TEMPLATE_REL).read_text(encoding="utf-8")
-    assert dm.CURRENT_TRUTH_GUIDE_MARKER in text, (
-        f"domain `_template.md` 에 파생 앵커 '{dm.CURRENT_TRUTH_GUIDE_MARKER}' 부재 — "
+    assert doc_page_store.CURRENT_TRUTH_GUIDE_MARKER in text, (
+        f"domain `_template.md` 에 파생 앵커 '{doc_page_store.CURRENT_TRUTH_GUIDE_MARKER}' 부재 — "
         "capture-draft 산출이 규칙을 조용히 잃는다"
     )
-    assert dm.current_truth_guide_block(REPO / DOMAIN_TEMPLATE_REL.parent), (
+    assert doc_page_store.current_truth_guide_block(REPO / DOMAIN_TEMPLATE_REL.parent), (
         "스캐폴드에서 안내 블록 추출 실패 — 주석 블록 형태가 깨졌다"
     )
 
@@ -221,7 +221,7 @@ def test_domain_template_guidance_is_history_clean():
     """
     dm = _load_domain()
     body = (REPO / DOMAIN_TEMPLATE_REL).read_text(encoding="utf-8").split("---", 2)[2]
-    leadins = dm.history_leadins(body)
+    leadins = doc_pages.history_leadins(body)
     assert leadins == [], (
         f"domain `_template.md` 의 안내가 history lead-in 으로 잡힌다 {leadins} — "
         "예시는 헤딩·인용·굵은 도입부가 아니라 산문/불릿으로 쓴다"

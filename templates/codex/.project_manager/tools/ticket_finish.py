@@ -48,8 +48,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, pytest_report, round_rules, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
-from pm_engine.app import regression, slot_resolution  # noqa: E402
+from pm_engine.infra import areas_store, cluster_store, conf_store, console, doc_page_store, fs, lease_store, log_store, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
+from pm_engine.app import doc_affected, doc_staleness, freshness_lint, regression, slot_resolution  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -737,51 +737,25 @@ def _fallback_ticket_frontmatter(
 
 # ── domain 연동 (soft 알림) ──────────────────────────────────
 #
-# 순환 없음: domain→board / ticket_finish→board,domain / board 는 둘 다 import 안 함.
-# domain.py 부재(신규 clone·구버전)·로드 실패 → None (호출부가 graceful skip).
-
-DOMAIN_PY = REPO / ".project_manager" / "tools" / "domain.py"
-
-
-def _load_domain_module():
-    """domain.py 를 경로 import 해 모듈로 반환한다 (부재/실패 시 None).
-
-    board.py·areas 해소와 동일한 deep-import seam — 테스트가 hermetic 하게 대역을
-    주입하거나 None(부재)을 흉내낼 수 있다.
-    """
-    if not DOMAIN_PY.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            DOMAIN_PY, "domain.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise  # domain 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
+# 페이지 적재·touches 매칭·stale 판정은 패키지(`doc_page_store`·`doc_affected`·`doc_staleness`)를 부른다.
 
 
 def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bool | None]] | None:
     """ticket touches ∩ domain covers 로 영향받는 페이지 (title, stale) 목록을 돌려준다.
 
-    각 원소 = `(title, stale)` — stale 은 `domain.page_stale`(True=낡음·False=fresh·
+    각 원소 = `(title, stale)` — stale 은 `doc_staleness.page_stale`(True=낡음·False=fresh·
     None=판정불가/unknown). soft step 이 stale True 줄 앞에 ⚠ 를 단다(visibility).
-    domain.py 부재·로드 실패 → None (호출부가 조용히 skip — 신규 clone 무영향).
-    touches 부재·영향 0 → [](빈 알림). domain.pages_for_touches 재사용(중복 매칭 0).
+    페이지 적재·매칭 실패 → None (호출부가 조용히 skip).
+    touches 부재·영향 0 → [](빈 알림). `doc_affected.pages_for_touches` 재사용(중복 매칭 0).
 
-    **소유 repo별 git_runner 1회 생성해 공유** — 페이지 `repo:`를 board의 단일 owner
+    **소유 repo별 git_runner 1회 생성해 공유** — 페이지 `repo:`를 `freshness_lint` 의 단일 owner
     resolver로 해소하고 checkout마다 runner를 캐시해 page_stale에 넘긴다.
-    owner를 해소하지 못하면 domain의 sentinel을 넘겨 기본 owner runner fallback을 막고
+    owner를 해소하지 못하면 `doc_staleness` 의 sentinel을 넘겨 기본 owner runner fallback을 막고
     stale 판정을 skip한다.
-    구 board(리졸버 부재)는 키 부재/명시 self만 기존 REPO runner로 퇴화하고,
     upstream/null/미지원 owner는 unverifiable(None)로 남긴다. page_stale 은
     그 자체로 fail-soft(예외/git 부재→None)지만, stale 산출 단계 전체를 한 번 더 try 로
     감싸 어떤 예외도 무표시(None)로 흡수한다 — 비차단·graceful 동작 불변.
     """
-    domain = _load_domain_module()
-    if domain is None:
-        return None
     touches = get_ticket_touches(board_py, ticket_id)
     # touches 가 비면 매칭 0 확정 — load_pages 스캔(깨진 페이지 warning 포함) 자체를 건너뛴다.
     if not touches:
@@ -807,47 +781,35 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
     if not touches:
         return []
 
+    home = pm_paths.home_at(REPO)
     try:
         # 완료 알림도 domain affected와 같은 touches∩covers 계열이다. task stage와 별개로
         # 같은 normalizer를 거쳐
-        pages = domain.pages_for_touches(touches, domain.load_pages())
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise
+        pages = doc_affected.pages_for_touches(
+            home, touches, doc_page_store.load_pages(pm_paths.domain_dir(home)))
+    except Exception:
         return None
-    board = load_board_module(board_py)
-    resolver = getattr(board, "_freshness_owner_repo", None) if board is not None else None
     runners: dict[Path, object] = {}
-    unresolved_runner = getattr(domain, "_UNRESOLVED_GIT_RUNNER", None)
+    unresolved_runner = doc_staleness._UNRESOLVED_GIT_RUNNER
 
     def runner_for_page(page):
         try:
-            if resolver is None:
-                owner = page.get("repo", "self")
-                if not isinstance(owner, str) or owner.strip() != "self":
-                    return None
-                owner_repo = REPO
-            else:
-                owner = page["repo"] if "repo" in page else "self"
-                owner_repo, _owner_error = resolver(owner)
-                if owner_repo is None:
-                    return unresolved_runner
+            owner = page["repo"] if "repo" in page else "self"
+            owner_repo, _owner_error = freshness_lint._freshness_owner_repo(home, owner)
+            if owner_repo is None:
+                return unresolved_runner
             owner_repo = Path(owner_repo)
             if owner_repo not in runners:
-                runners[owner_repo] = domain._real_git_runner(owner_repo)
+                runners[owner_repo] = doc_staleness._real_git_runner(owner_repo)
             return runners[owner_repo]
-        except Exception as exc:  # noqa: BLE001 — 일반 owner/runner 해소 실패는 stale unknown.
-            if _is_engine_rev_skew(exc):
-                raise
+        except Exception:  # noqa: BLE001 — 일반 owner/runner 해소 실패는 stale unknown.
             return None
 
     out: list[tuple[str, bool | None]] = []
     for page in pages:
         try:
-            stale = domain.page_stale(page, git_runner=runner_for_page(page))
-        except Exception as exc:  # noqa: BLE001 — stale 못 구하면 무표시(None)·비차단.
-            if _is_engine_rev_skew(exc):
-                raise
+            stale = doc_staleness.page_stale(home, page, git_runner=runner_for_page(page))
+        except Exception:  # noqa: BLE001 — stale 못 구하면 무표시(None)·비차단.
             stale = None
         out.append((page["title"], stale))
     return out
@@ -879,7 +841,7 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
 
 
 def _load_tool_module(path: Path):
-    """같은 `tools/` 의 형제 모듈을 경로 로드한다 — 부재/실패 → None (`_load_domain_module` 동형).
+    """같은 `tools/` 의 형제 모듈을 경로 로드한다 — 부재/실패 → None.
 
     sys.path 무오염(spec_from_file_location)·rev 스탬프 skew 는 fail-loud. 로드 실패
     자체는 None 으로 돌려 호출부가 **눈에 띄게** 처리하게 한다(조용한 skip 아님 — 아래
@@ -1270,21 +1232,15 @@ def _cluster_integration_branch(board_py: Path, ticket_id: str) -> str | None:
 def _cluster_member_ids(board_py: Path, ticket_id: str) -> tuple[str, ...]:
     """이 티켓이 속한 묶음의 멤버 티켓 ID (장부 부재·조회 실패는 빈 튜플).
 
-    장부 해소는 `ticket_cluster_ledger` 한 벌이고 목록을 읽는 술어는 board 소유
-    (`cluster_tickets`)다 — 이 도구는 그 둘을 잇기만 한다(멤버 규칙 사본 0).
+    장부 해소는 `ticket_cluster_ledger` 한 벌이고 목록을 읽는 술어는 cluster_store 소유
+    (`cluster_store.cluster_tickets`)다 — 이 도구는 그 둘을 잇기만 한다(멤버 규칙 사본 0).
     """
     _cluster, ledger = ticket_cluster_ledger(board_py, ticket_id)
     if not ledger:
         return ()
-    mod = _board_module_at(board_py)
-    tickets_fn = getattr(mod, "cluster_tickets", None) if mod is not None else None
-    if tickets_fn is None:
-        return ()
     try:
-        members = tickets_fn(ledger)
-    except Exception as exc:  # noqa: BLE001 — 목록 조회 실패는 제외 없이(인구 유지) 접는다.
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
+        members = cluster_store.cluster_tickets(ledger)
+    except Exception:  # noqa: BLE001 — 목록 조회 실패는 제외 없이(인구 유지) 접는다.
         return ()
     return tuple(str(member).strip() for member in members if str(member).strip())
 
@@ -1606,8 +1562,8 @@ class TicketFinisher:
         self._board_count_fn = board_count_fn or self._default_board_count
         self._ticket_title_fn = ticket_title_fn or self._default_ticket_title
 
-        # domain soft 알림 DI — 기본값은 실 domain.py import 구현.
-        # None 반환 = domain 부재/로드 실패(조용히 skip). 막지 않음(soft).
+        # domain soft 알림 DI: 기본값은 패키지의 페이지 적재·매칭·stale 판정 구현.
+        # None 반환은 페이지 적재·매칭 실패를 뜻하며 완료를 막지 않는다(soft).
         self._affected_domain_fn = affected_domain_fn or self._default_affected_domain
 
         # git 파싱 전용 러너 — **stdout 만** 돌려준다. `_run_git_fn` 은 진단 메시지를 살리려고
@@ -2693,7 +2649,7 @@ class TicketFinisher:
     def _default_affected_domain(self, ticket_id: str) -> list[tuple[str, bool | None]] | None:
         """ticket touches ∩ domain covers 로 영향받는 페이지 (title, stale) 목록 (soft 알림).
 
-        domain.py 부재/로드 실패 → None (조용히 skip). domain.pages_for_touches 재사용.
+        페이지 적재·매칭 실패 → None (조용히 skip). `doc_affected.pages_for_touches` 재사용.
         """
         return affected_domain_titles(ticket_id, self._board_py)
 
@@ -3026,7 +2982,7 @@ class TicketFinisher:
             print("  [dry-run] log/current.md 에 append 할 스켈레톤:")
             print("  " + skeleton.replace("\n", "\n  "))
         else:
-            _load_pm_log().append_log(self._log_file, "\n" + skeleton)
+            log_store.append_log(self._log_file, "\n" + skeleton)
             print(f"  ✓ log/current.md 스켈레톤 append ({ticket_id})")
 
         # ── 3. board.py complete ──────────────────────────────────────
@@ -3130,7 +3086,7 @@ class TicketFinisher:
 
         # ── soft 알림: 영향받는 domain 페이지 (비차단) ──────
         # 정보일 뿐 게이트가 아니다 — 완료 흐름·rc 를 막지 않는다(예외도 삼킨다).
-        # domain.py 부재(신규 clone) → None → 조용히 skip(무영향).
+        # 페이지 적재·매칭 실패로 None을 반환하면 알림을 건너뛴다.
         self._notify_affected_domain(ticket_id)
 
         if dry_run:
@@ -3201,15 +3157,13 @@ class TicketFinisher:
 
         영향 페이지가 stale(covers 코드가 page updated 후 커밋)이면 그 줄 앞에
         `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 도그푸딩/multi-PM 어디서든 일반 domain
-        부재·예외는 조용히 삼켜 완료를 막지 않되, marked engine skew 는 막는다. 영향 0 이면 한 줄
+        부재·예외는 조용히 삼켜 완료를 막지 않는다. 영향 0 이면 한 줄
         안내만 낸다. dry-run/실행 동일(정보 출력만). 일반 stale 예외/unknown 은 비차단.
         """
         print("\n[domain] 영향받는 domain 페이지 (soft·비차단):")
         try:
             affected = self._affected_domain_fn(ticket_id)
-        except Exception as exc:  # noqa: BLE001 — 일반 soft 알림 실패만 완료를 막지 않는다.
-            if _is_engine_rev_skew(exc):
-                raise
+        except Exception:  # noqa: BLE001 — 일반 soft 알림 실패만 완료를 막지 않는다.
             affected = None
         if affected is None:
             print("  (domain 레이어 없음 — skip)")
@@ -4315,15 +4269,14 @@ class ClusterCloser:
         ledger_id = self._cluster_id(ledger.get("id"))
         if ledger_id != cluster_id:
             return None, None, f"장부 id가 대상과 다르다: {ledger_id!r} != {cluster_id!r}"
-        members_fn = getattr(self._board, "cluster_tickets", None) if self._board else None
         strict_catalog_fn = (
             getattr(self._board, "all_clusters_strict", None) if self._board else None)
-        if members_fn is None or strict_catalog_fn is None:
+        if strict_catalog_fn is None:
             return None, None, "cluster 멤버십 전수 검증 seam이 없다"
         board_root = self._home.board_root
         if not (board_root / ".git").exists():
             return None, None, f"recovery는 분리 board-git이 필요하다: {board_root}"
-        members = tuple(members_fn(ledger))
+        members = tuple(cluster_store.cluster_tickets(ledger))
         if (not members or len(members) != len(set(members))
                 or members != self._declared_tickets):
             return None, None, f"cluster 멤버 집합이 비었거나 중복·drift했다: {members}"
@@ -4361,7 +4314,7 @@ class ClusterCloser:
             declared = self._cluster_id(fm.get("cluster"))
             owners = [
                 self._cluster_id(row.get("id")) for row in ledgers
-                if tid in members_fn(row)
+                if tid in cluster_store.cluster_tickets(row)
             ]
             if declared != cluster_id or owners != [cluster_id]:
                 return None, None, (f"{tid} 양방향 cluster 귀속 불일치 "

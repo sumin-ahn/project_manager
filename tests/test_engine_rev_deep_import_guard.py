@@ -1149,7 +1149,7 @@ def test_mutation_unregistered_unverified_call_is_red(tmp_path):
 
     report = collect_central_guard_report(tools)
     assert any(
-        "board.py" in item and "code-owned exemption" in item
+        "pm_import.py" in item and "code-owned exemption" in item
         for item in report.violations
     )
 
@@ -1797,10 +1797,10 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
         ("delegate_scope.py", "ticket_touches"),
         ("ticket_finish.py", "_load_tool_module"),
     } <= measured
-    assert ("board.py", "_run_lint_hooks") in measured
+    assert ("pm_import.py", "_upstream_hook_set_declarations") in measured
     engine_rev = _load_module(TOOLS, "engine_rev")
     assert engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS[
-        ("board.py", "_run_lint_hooks")
+        ("pm_import.py", "_upstream_hook_set_declarations")
     ].strip()
 
 

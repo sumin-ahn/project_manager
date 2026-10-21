@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import pm_paths, pre_push_hook, python_env
+from pm_engine.app import wikilink_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -203,7 +204,7 @@ def test_collect_wikilink_files_legacy_no_duplicate(board, monkeypatch):
     wiki = _wire_wiki(board, board._tmp)
     tk = wiki / "tickets" / "open" / "T-0001-x.md"
     tk.write_text("# t\n[[ADR-0001]]\n", encoding="utf-8")
-    files = board._collect_wikilink_files()
+    files = wikilink_lint._collect_wikilink_files(board._home())
     # 같은 ticket 파일이 한 번만(중복 없음).
     matches = [p for p in files if p.name == "T-0001-x.md"]
     assert len(matches) == 1, f"legacy 에서 ticket 파일 중복 수집 — dedup 미동작: {matches}"
@@ -218,7 +219,7 @@ def test_collect_wikilink_files_includes_board_tickets_when_separated(board):
     # wiki/ 는 비어 있어도 됨(설계축만) — 여기선 board ticket 만 둔다.
     board_tk = board._tmp / ".project_manager" / "board" / "tickets" / "open" / "T-0009-y.md"
     board_tk.write_text("# t\n[[ADR-9999]]\n", encoding="utf-8")
-    files = board._collect_wikilink_files()
+    files = wikilink_lint._collect_wikilink_files(board._home())
     assert any(p.name == "T-0009-y.md" for p in files), \
         "board/ 분리 시 board ticket 본문이 wikilink 스캔에서 누락 — dangling 미검출 갭."
 
@@ -240,7 +241,7 @@ def test_lint_wikilinks_detects_board_ticket_dangling(board, monkeypatch):
         "---\nid: T-0010\ntitle: z\nstatus: open\n---\n\n"
         "# T-0010 — z\nsee [[ADR-7777]] for detail\n",
         encoding="utf-8")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert any("7777" in name or "ADR-7777" in detail
                for name, _kind, detail in issues), \
         f"board ticket 의 dangling [[ADR-7777]] 미검출 — 두 루트 cross-ref 갭: {issues}"

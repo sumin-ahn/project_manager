@@ -134,7 +134,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("canonical seam의 loud filesystem fallback 구현"),
     (
-        ".project_manager/tools/domain.py",
+        ".project_manager/tools/pm_engine/infra/doc_page_store.py",
         "load_pages",
         "rglob",
         "'*.md'",
@@ -146,7 +146,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*.md'",
     ): WalkException("board/wiki/log 엔진 관리 디렉토리의 ID rewrite 대상만 열거"),
     (
-        ".project_manager/tools/board.py",
+        ".project_manager/tools/pm_engine/app/wikilink_lint.py",
         "_collect_wikilink_files",
         "rglob",
         "'*.md'",

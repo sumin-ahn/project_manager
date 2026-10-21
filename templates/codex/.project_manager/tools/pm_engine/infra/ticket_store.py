@@ -111,3 +111,18 @@ def _canonical_ticket_id(path: Path) -> str | None:
     if isinstance(fid, str) and fid:
         return fid
     return ticket_rules._ticket_id_from_filename(path.name)
+
+
+def _all_tickets(home) -> list[tuple[str, dict]]:
+    """[(status, frontmatter), ...] for every ticket regardless of dir.
+
+    손상 티켓은 경고 1줄과 함께 빠진다(`load_ticket_soft`) — 한 파일이 lint 전체를 죽이지 않는다.
+    """
+    out: list[tuple[str, dict]] = []
+    for status in ticket_rules.STATUS_DIRS:
+        for p in sorted((pm_paths.tickets_dir(home) / status).glob("T-*.md")):
+            loaded = load_ticket_soft(home, p)
+            if loaded is None:
+                continue
+            out.append((status, loaded[0]))
+    return out

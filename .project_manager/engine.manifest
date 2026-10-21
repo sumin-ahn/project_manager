@@ -45,7 +45,13 @@
 #   이름 규약·저장·시드와 산출 없음 판정)·domain/review_form·domain/review_state·domain/review_verdict
 #   (리뷰 블록 양식·리뷰 상태 판정·리뷰어 판정 해석)·domain/delegate_errors(위임 오류 형식)·
 #   infra/delegate_ledger(위임 라운드 장부)·domain/design_rules(설계 단계 판정)·domain/markdown_text
-#   (마크다운 절·코드 판독)·domain/model_lint(위임 모델 설정 점검).
+#   (마크다운 절·코드 판독)·domain/model_lint(위임 모델 설정 점검)·domain/gitattributes_rules
+#   (.gitattributes 판독)·infra/cluster_store(묶음 장부 읽기)·infra/log_store(운영 log 쓰기)·
+#   app/ticket_lint·app/body_lint·app/wikilink_lint·app/wiki_lint·app/freshness_lint·app/conf_lint·
+#   app/areas_lint(문서 lint 축별)·app/lint_hooks(채택자 lint 훅 실행)·domain/adr_rules·app/adr_issue
+#   (ADR 문서 형식·발행)·app/adr_contradiction(결정 개정 잔여 모순 lint)·domain/doc_pages·domain/doc_drafts
+#   (domain 페이지 문서 규칙·초안 양식)·infra/doc_page_store(domain 페이지 읽기·쓰기)·app/doc_staleness·
+#   app/doc_affected·app/doc_coverage·app/doc_lint(domain 페이지 판정)·app/freshness_pin(verified_at 핀 쓰기).
 .project_manager/tools/pm_engine
 # pm-retired-path: .project_manager/tools/file_lock.py -> .project_manager/tools/pm_engine/infra/fs.py
 # pm-retired-path: .project_manager/tools/console_encoding.py -> .project_manager/tools/pm_engine/infra/console.py

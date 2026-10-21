@@ -602,7 +602,7 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
             return callable_sources(expr.value, key)
         return set()
 
-    # Resolve local aliases (``domain = _load_domain_module()``) and class attributes that retain
+    # Resolve local aliases (``board = _load_board()``) and class attributes that retain
     # loaded modules.  A fixed point covers ``wp = self._worktree_pool or _load_worktree_pool()``.
     def propagate_aliases() -> bool:
         any_changed = False
@@ -1256,7 +1256,19 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `pm_handoff._load_pm_delegate`), try 본문이 패키지 호출만 남은 7(`board` 의
     #   `_round_pending_abandon_command`·`lint_delegate`·`lint_rounds` 두 곳, `pm_delegate` 의
     #   `prepare_cluster_copy`·`_peer_engine_ledgers`(옮기며), `pm_handoff.PmHandoff._peer_raw_ledgers`).
-    assert len(report.boundaries) == 170, "propagation sweep boundary ratchet changed"
+    # 163 = 170 − T-0974 가 지운 7 경계. 문서 lint·ADR 발행·모순 lint 가 패키지(`conf_lint`·`freshness_lint`·
+    #   `adr_contradiction`·`cluster_store`)로 옮겨져 형제 로더와 그 재전파 줄이 없어졌다: 로더 정의 2
+    #   (`contradiction_lint._load_board`, `pm_adr._load_contradiction_lint`), try 본문이 패키지 호출만
+    #   남은 5(`board` 의 `_freshness_owner_repo`·`lint_local_conf`(옮기며), `domain._page_owner_repo`,
+    #   `pm_adr.emit_contradiction_advisory`, `ticket_finish._cluster_member_ids`).
+    # 150 = 163 − T-0975 가 지운 13 경계. domain 페이지 판정이 패키지(`doc_page_store`·`doc_staleness`·
+    #   `doc_coverage`·`doc_lint`·`freshness_pin`)로 옮겨져 형제 로더와 그 재전파 줄이 없어졌다: 로더 정의 2
+    #   (`board._load_domain_module`, `ticket_finish._load_domain_module`), try 본문이 패키지 호출만 남은 11
+    #   (`board` 의 `_verified_at_targets`·`lint_domain`·`lint_domain_freshness`·`repin_verified_at`,
+    #   `domain` 의 `_repository_identity`·`coverage_report`·`load_pages`(옮기며), `ticket_finish` 의
+    #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
+    #   `TicketFinisher._notify_affected_domain`).
+    assert len(report.boundaries) == 150, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1412,7 +1424,6 @@ def test_guard_sensitivity_s1b_each_transforming_handler_turns_red(
     ("source_name", "function"),
     [
         ("pm_bootstrap.py", "PmBootstrap._phase0_main_reference_reason"),
-        ("ticket_finish.py", "affected_domain_titles.runner_for_page"),
         ("worktree_pool.py", "_cmd_switch"),
     ],
 )
@@ -1631,7 +1642,6 @@ def caller():
 @pytest.mark.parametrize(
     ("source_name", "function"),
     [
-        ("ticket_finish.py", "TicketFinisher._notify_affected_domain"),
         ("pm_config.py", "cmd_status._slot_git_line"),
     ],
 )
@@ -1664,7 +1674,7 @@ def _remove_marker_statement(source: str, function: str, occurrence: int = 0) ->
 @pytest.mark.parametrize(
     ("source_name", "function"),
     [
-        ("ticket_finish.py", "TicketFinisher._notify_affected_domain"),
+        ("ticket_finish.py", "TicketFinisher._warn_pm_direct_conditions"),
         # pm_bootstrap 행은 뺐다 — 슬롯 모드 삭제로 러너 cwd 해소가 형제 모듈을 읽지 않게
         # 되면서 이 경계까지 스큐가 도달하지 않는다(마커 분기는 방어로 남는다).
     ],
@@ -1703,31 +1713,6 @@ def _raiser(exc):
     return raise_it
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        "board_domain_pages",
-        "board_domain_lint",
-    ],
-)
-def test_runtime_loaded_sibling_and_same_method_boundaries_rethrow_marked_skew(
-    case, monkeypatch,
-):
-    skew = _marked_skew()
-    module = _runtime_tool("board.py")
-    domain = SimpleNamespace(DOMAIN_DIR=Path("domain"), load_pages=_raiser(skew))
-    if case == "board_domain_lint":
-        domain.lint_pages = _raiser(skew)
-    monkeypatch.setattr(module, "_load_domain_module", lambda: domain)
-    invoke = (
-        (lambda: module.lint_domain_freshness())
-        if case == "board_domain_pages" else (lambda: module.lint_domain())
-    )
-    with pytest.raises(RuntimeError) as raised:
-        invoke()
-    assert raised.value is skew
-
-
 def test_runtime_module_argument_boundary_rethrows_marked_skew():
     module = _runtime_tool("pm_bootstrap.py")
     instance = object.__new__(module.PmBootstrap)
@@ -1735,41 +1720,6 @@ def test_runtime_module_argument_boundary_rethrows_marked_skew():
     worktree_pool = SimpleNamespace(current_branch=_raiser(skew))
     with pytest.raises(RuntimeError) as raised:
         instance._phase0_main_reference_reason(worktree_pool, "repo", "work/repo_1")
-    assert raised.value is skew
-
-
-def test_runtime_closure_module_alias_boundary_rethrows_marked_skew(monkeypatch):
-    module = _runtime_tool("ticket_finish.py")
-    skew = _marked_skew()
-    page = {"title": "P1"}
-    domain = SimpleNamespace(
-        load_pages=lambda: [page],
-        pages_for_touches=lambda _touches, pages: pages,
-        page_stale=lambda _page, *, git_runner: git_runner is None,
-        _real_git_runner=_raiser(skew),
-    )
-    monkeypatch.setattr(module, "_load_domain_module", lambda: domain)
-    monkeypatch.setattr(module, "get_ticket_touches", lambda *_args: ["src/file.py"])
-    monkeypatch.setattr(module, "load_board_module", lambda *_args: None)
-    with pytest.raises(RuntimeError) as raised:
-        module.affected_domain_titles("ticket", Path("board.py"))
-    assert raised.value is skew
-
-
-def test_runtime_affected_domain_caller_rethrows_marked_skew(monkeypatch):
-    module = _runtime_tool("ticket_finish.py")
-    skew = _marked_skew()
-    domain = SimpleNamespace(
-        load_pages=_raiser(skew),
-        pages_for_touches=lambda _touches, pages: pages,
-    )
-    monkeypatch.setattr(module, "_load_domain_module", lambda: domain)
-    monkeypatch.setattr(module, "get_ticket_touches", lambda *_args: ["src/file.py"])
-    instance = object.__new__(module.TicketFinisher)
-    instance._board_py = Path("board.py")
-    instance._affected_domain_fn = instance._default_affected_domain
-    with pytest.raises(RuntimeError) as raised:
-        instance._notify_affected_domain("ticket")
     assert raised.value is skew
 
 
@@ -1867,7 +1817,7 @@ def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
 @pytest.mark.parametrize(
     ("filename", "arguments", "witness"),
     [
-        ("board.py", ["lint"], "domain.py"),
+        ("board.py", ["lint"], "delegate_channel_guard.py"),
         ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"], "board.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
         ("pm_bootstrap.py", ["--task", "probe"], "board.py"),

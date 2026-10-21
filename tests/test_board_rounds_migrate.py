@@ -15,6 +15,7 @@ from pathlib import Path
 from conftest import anchor_board_module
 # 티켓 전문 조립은 라운드 예약 테스트의 헬퍼를 그대로 쓴다 — 두 벌 두면 한쪽만 현재화된다.
 from test_board_ticket_growth import _ticket_text
+from pm_engine.app import ticket_lint
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -58,7 +59,7 @@ def test_legacy_markers_inside_a_fenced_code_block_are_not_data():
         "```\n"
     )
 
-    assert board._has_legacy_growth_markers(body) is False
+    assert ticket_lint._has_legacy_growth_markers(body) is False
 
 
 def test_shipped_gitattributes_declarations_no_longer_seed_the_growth_ledger():
@@ -103,6 +104,6 @@ def test_board_lint_skips_quoted_indented_and_fenced_markers(tmp_path, monkeypat
         encoding="utf-8", newline="")
 
     board_findings = sorted(
-        name for name, _kind, _detail in board.lint_legacy_growth_sections())
+        name for name, _kind, _detail in ticket_lint.lint_legacy_growth_sections(board._home()))
 
     assert board_findings == ["T-4201"], "인용/들여쓰기/펜스 marker 가 board lint 에 잡혔다"

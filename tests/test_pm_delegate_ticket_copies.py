@@ -40,10 +40,9 @@ import pytest
 from conftest import bind_product_cluster
 
 from conftest import write_cluster_ledger
-from pm_engine.infra import pm_paths, raw_output, ticket_store
+from pm_engine.infra import delegate_ledger, pm_paths, raw_output, round_store, ticket_store
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
-from pm_engine.infra import delegate_ledger, round_store
-from pm_engine.app import round_seed
+from pm_engine.app import body_lint, round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -331,7 +330,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
 
     bind_product_cluster(board, "T-9202")
     monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
-    monkeypatch.setattr(board, "_body_lint_issues", lambda *a, **k: [])
+    monkeypatch.setattr(body_lint, "_body_lint_issues", lambda *a, **k: [])
     monkeypatch.setattr(board, "_board_git_sync_best_effort", publish)
     import argparse
     assert board.cmd_promote(argparse.Namespace(id="T-9202")) == 0

@@ -7,6 +7,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -39,17 +40,29 @@ def _subagent_start() -> dict[str, object]:
 
 
 def _isolate_codex_lint(board, monkeypatch) -> None:
-    for name in (
-        "lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-        "lint_wikilinks", "lint_unstable_refs", "lint_scopes", "lint_domain",
-        "lint_adr_lifecycle", "lint_adr_author", "lint_architecture_freshness",
-        "lint_status_freshness", "lint_domain_freshness", "lint_adapter_drift",
-        "lint_render_leak",
-        "lint_areas_repo_unregistered", "lint_areas_duplicate_repo",
-        "lint_areas_merge_union", "lint_delegate",
+    for module, name, stub in (
+        (ticket_lint, "lint_dependencies", lambda home: []),
+        (body_lint, "lint_bodies", lambda home: []),
+        (body_lint, "lint_ideas", lambda home: []),
+        (wiki_lint, "lint_status", lambda home: []),
+        (wikilink_lint, "lint_wikilinks", lambda home: []),
+        (wikilink_lint, "lint_unstable_refs", lambda home: []),
+        (wiki_lint, "lint_scopes", lambda home: []),
+        (doc_lint, "lint_domain", lambda home: []),
+        (wiki_lint, "lint_adr_lifecycle", lambda home: []),
+        (wiki_lint, "lint_adr_author", lambda home: []),
+        (freshness_lint, "lint_architecture_freshness", lambda home: []),
+        (freshness_lint, "lint_status_freshness", lambda home: []),
+        (doc_lint, "lint_domain_freshness", lambda home: []),
+        (conf_lint, "lint_adapter_drift", lambda home: []),
+        (board, "lint_render_leak", lambda: []),
+        (areas_lint, "lint_areas_repo_unregistered", lambda home: []),
+        (areas_lint, "lint_areas_duplicate_repo", lambda home: []),
+        (areas_lint, "lint_areas_merge_union", lambda home: []),
+        (conf_lint, "lint_delegate", lambda home: []),
     ):
-        monkeypatch.setattr(board, name, lambda: [])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+        monkeypatch.setattr(module, name, stub)
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
 
 
 def test_unmatched_subagentstart_is_one_never_blocking_lint_advisory(

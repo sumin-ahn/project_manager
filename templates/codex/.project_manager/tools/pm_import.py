@@ -662,7 +662,7 @@ CONSUMPTION_TIME_TOKENS: dict[str, frozenset] = {
     #   (per-clone `wiki/pm_state.md` seed) — 둘 다 생성 시각으로 채운다.
     ".project_manager/wiki/pm_state.template.md": frozenset({"{{DATE}}"}),
     # 소비처: 사람이 스캐폴드를 복사해 domain 페이지를 만드는 시점. 엔진 생성 경로
-    #   (`domain.write_draft_page`)는 스캐폴드 frontmatter 를 복사하지 않고 자체 today 로 쓴다.
+    #   (`doc_page_store.write_draft_page`)는 스캐폴드 frontmatter 를 복사하지 않고 자체 today 로 쓴다.
     ".project_manager/wiki/domain/_template.md": frozenset({"{{DATE}}"}),
 }
 

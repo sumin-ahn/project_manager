@@ -20,7 +20,11 @@ DOMAIN_FORBIDDEN_MODULES = frozenset({"os", "subprocess", "shutil", "tempfile", 
 DOMAIN_FORBIDDEN_CALLS = frozenset({"open", "print"})
 PATH_LOAD_CALLS = frozenset({"spec_from_file_location", "SourceFileLoader", "run_path",
                              "load_module", "_load_module_from_path"})
-LOADER_DEFINITION = ("pm_engine.infra.repo_files", "load_module")
+# 경로 적재 허용 지점: (모듈, 함수, 호출). 엔진 경로 적재 경계 하나와 엔진 밖 채택자 lint 훅 적재 하나.
+PATH_LOAD_ALLOWED = frozenset({
+    ("pm_engine.infra.repo_files", "load_module", "spec_from_file_location"),
+    ("pm_engine.app.lint_hooks", "_run_lint_hooks", "load_module"),
+})
 MAX_LINES = 1500
 
 
@@ -83,7 +87,7 @@ def collect(package: Path) -> dict[str, list[str]]:
                     while scope in parents and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         scope = parents[scope]
                     inside = getattr(scope, "name", None)
-                    if (name, inside) != LOADER_DEFINITION or called != "spec_from_file_location":
+                    if (name, inside, called) not in PATH_LOAD_ALLOWED:
                         violations["R1"].append(f"{name}:{node.lineno}: 경로 적재 {called}()")
                 continue
             else:
@@ -148,6 +152,7 @@ def _write(root: Path, rel: str, text: str) -> None:
     ("R1", "pm_engine/domain/bad.py", "from pm_engine.infra import fs\n"),
     ("R1", "pm_engine/infra/bad.py", "import board\n"),
     ("R1", "pm_engine/infra/bad.py", "import importlib.util\nimportlib.util.spec_from_file_location('x', 'y')\n"),
+    ("R1", "pm_engine/app/lint_hooks.py", "from pm_engine.infra import repo_files\ndef other():\n    repo_files.load_module(1, 'x')\n"),
     ("R2", "pm_engine/domain/bad.py", "import os\n"),
     ("R2", "pm_engine/domain/bad.py", "print('x')\n"),
     ("R3", "pm_engine/infra/bad.py", "from pm_engine.infra import fs\n"),

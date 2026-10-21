@@ -9,10 +9,13 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import ticket_store
+from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.domain import adr_rules
+from pm_engine.app import adr_issue, wiki_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -35,30 +38,30 @@ def adr():
 
 
 def test_adr_id_zero_pads(adr):
-    assert adr.adr_id(65) == "ADR-0065"
-    assert adr.adr_id(1) == "ADR-0001"
+    assert adr_rules.adr_id(65) == "ADR-0065"
+    assert adr_rules.adr_id(1) == "ADR-0001"
 
 
 def test_parse_adr_num_accepts_variants(adr):
-    assert adr.parse_adr_num("ADR-0061") == 61
-    assert adr.parse_adr_num("adr-61") == 61
-    assert adr.parse_adr_num("0043") == 43
-    assert adr.parse_adr_num("7") == 7
+    assert adr_rules.parse_adr_num("ADR-0061") == 61
+    assert adr_rules.parse_adr_num("adr-61") == 61
+    assert adr_rules.parse_adr_num("0043") == 43
+    assert adr_rules.parse_adr_num("7") == 7
     with pytest.raises(ValueError):
-        adr.parse_adr_num("not-an-adr")
+        adr_rules.parse_adr_num("not-an-adr")
 
 
 def test_next_adr_number(adr, tmp_path):
     # 빈/부재 디렉토리 → 1.
-    assert adr.next_adr_number(tmp_path / "nope") == 1
+    assert adr_issue.next_adr_number(tmp_path / "nope") == 1
     d = tmp_path / "decisions"
     d.mkdir()
-    assert adr.next_adr_number(d) == 1
+    assert adr_issue.next_adr_number(d) == 1
     (d / "0001-a.md").write_text("x", encoding="utf-8")
     (d / "0007-b.md").write_text("x", encoding="utf-8")
     (d / "README.md").write_text("x", encoding="utf-8")  # 비-숫자 무시
     (d / "_template.md").write_text("x", encoding="utf-8")
-    assert adr.next_adr_number(d) == 8
+    assert adr_issue.next_adr_number(d) == 8
 
 
 # ── slug 검증 (파일 주입/traversal 방지·T-0355 클래스) ─────────────────────────
@@ -66,7 +69,7 @@ def test_next_adr_number(adr, tmp_path):
 
 @pytest.mark.parametrize("slug", ["ok", "a-b-c", "with_underscore", "adr0049", "x1"])
 def test_validate_slug_accepts_valid(adr, slug):
-    adr.validate_slug(slug)  # 예외 없음
+    adr_rules.validate_slug(slug)  # 예외 없음
 
 
 @pytest.mark.parametrize("slug", [
@@ -76,7 +79,7 @@ def test_validate_slug_accepts_valid(adr, slug):
 ])
 def test_validate_slug_rejects_dangerous(adr, slug):
     with pytest.raises(ValueError):
-        adr.validate_slug(slug)
+        adr_rules.validate_slug(slug)
 
 
 def test_cli_rejects_bad_slug_before_side_effects(adr, capsys, monkeypatch, wiki):
@@ -135,7 +138,7 @@ def test_cli_author_defaults_to_identity_resolution(adr, capsys, monkeypatch, wi
 
 
 def test_build_frontmatter_lifecycle_and_related_merge(adr):
-    fm = adr.build_frontmatter(
+    fm = adr_rules.build_frontmatter(
         title="테스트 결정", scope="internal-process", author="u/pm_1",
         date="2026-07-19", status="accepted",
         amends=[61, 62], supersedes=[], refines=[33],
@@ -171,7 +174,7 @@ def test_build_frontmatter_adversarial_title_roundtrips(adr, title):
     문자열 보간(`title: {title}`)이던 코드가 정상 제목의 `:`/`#`/따옴표에 frontmatter YAML 을 깨서
     lint 가 그 ADR 을 조용히 skip 하던 클래스(codex must-fix)를 닫음을 실측한다."""
     import yaml
-    fm = adr.build_frontmatter(
+    fm = adr_rules.build_frontmatter(
         title=title, scope="internal-process", author="u/pm_1", date="2026-07-19",
         status="accepted", amends=[], supersedes=[], refines=[],
         related=["ADR-0001"], tags=["a", "b"],
@@ -187,7 +190,7 @@ def test_build_frontmatter_adversarial_title_roundtrips(adr, title):
 def test_build_adr_file_adversarial_title_parses_via_board(adr, tmp_path):
     """적대 제목의 전체 ADR 파일이 ticket_store.load_ticket(lint 이 쓰는 파서)로 파싱된다(skip 안 됨)."""
     board = _load("board")
-    text = adr.build_adr_file(
+    text = adr_rules.build_adr_file(
         number=70, title='나쁜: 제목 "따옴표" # 해시', scope="internal-process",
         author="u/pm_1", date="2026-07-19", status="accepted",
         amends=[61], supersedes=[], refines=[], related=[], tags=["x"],
@@ -201,7 +204,7 @@ def test_build_adr_file_adversarial_title_parses_via_board(adr, tmp_path):
 
 
 def test_build_adr_file_has_body_scaffold(adr):
-    text = adr.build_adr_file(
+    text = adr_rules.build_adr_file(
         number=70, title="본문 골격", scope="internal-process", author="u/pm_1",
         date="2026-07-19", status="accepted",
         amends=[], supersedes=[], refines=[], related=[], tags=["x"],
@@ -239,7 +242,7 @@ tags: [x, y]
 
 
 def test_apply_lifecycle_backref_amends_inserts_field(adr):
-    out = adr.apply_lifecycle_backref(_TARGET_ADR, "ADR-0070", "amends")
+    out = adr_rules.apply_lifecycle_backref(_TARGET_ADR, "ADR-0070", "amends")
     assert "status: amended" in out
     assert "status: accepted" not in out
     assert "amended_by: [ADR-0070]" in out
@@ -250,7 +253,7 @@ def test_apply_lifecycle_backref_amends_inserts_field(adr):
 
 
 def test_apply_lifecycle_backref_supersedes(adr):
-    out = adr.apply_lifecycle_backref(_TARGET_ADR, "ADR-0070", "supersedes")
+    out = adr_rules.apply_lifecycle_backref(_TARGET_ADR, "ADR-0070", "supersedes")
     assert "status: superseded" in out
     assert "superseded_by: [ADR-0070]" in out
 
@@ -259,18 +262,18 @@ def test_apply_lifecycle_backref_appends_to_existing_and_idempotent(adr):
     already = _TARGET_ADR.replace(
         "status: accepted\n", "status: amended\namended_by: [ADR-0065]\n"
     )
-    out = adr.apply_lifecycle_backref(already, "ADR-0070", "amends")
+    out = adr_rules.apply_lifecycle_backref(already, "ADR-0070", "amends")
     line = [l for l in out.splitlines() if l.startswith("amended_by:")][0]
     assert "ADR-0065" in line and "ADR-0070" in line
     # 멱등 — 다시 적용해도 중복 안 붙음.
-    out2 = adr.apply_lifecycle_backref(out, "ADR-0070", "amends")
+    out2 = adr_rules.apply_lifecycle_backref(out, "ADR-0070", "amends")
     line2 = [l for l in out2.splitlines() if l.startswith("amended_by:")][0]
     assert line2.count("ADR-0070") == 1
 
 
 def test_apply_lifecycle_backref_malformed_frontmatter_returns_original(adr):
     bad = "no frontmatter here\n"
-    assert adr.apply_lifecycle_backref(bad, "ADR-0070", "amends") == bad
+    assert adr_rules.apply_lifecycle_backref(bad, "ADR-0070", "amends") == bad
 
 
 # ── README 색인 ───────────────────────────────────────────────────────────────
@@ -307,7 +310,7 @@ _README = """\
 
 
 def test_insert_accepted_row_appends(adr):
-    out, w = adr.insert_accepted_row(
+    out, w = adr_rules.insert_accepted_row(
         _README, number=70, slug="new-one", title="새 결정", date="2026-07-19", tags=["p", "q"],
     )
     assert w is None
@@ -319,7 +322,7 @@ def test_insert_accepted_row_appends(adr):
 
 
 def test_insert_accepted_row_no_section_failsoft(adr):
-    out, w = adr.insert_accepted_row(
+    out, w = adr_rules.insert_accepted_row(
         "# no tables\n", number=70, slug="x", title="t", date="2026-07-19", tags=[],
     )
     assert w is not None
@@ -327,7 +330,7 @@ def test_insert_accepted_row_no_section_failsoft(adr):
 
 
 def test_move_row_accepted_to_amended(adr):
-    out, w = adr.move_or_append_backref_row(_README, target_num=61, new_id="ADR-0070", verb="amends")
+    out, w = adr_rules.move_or_append_backref_row(_README, target_num=61, new_id="ADR-0070", verb="amends")
     assert w is None
     # Accepted 에서 0061 제거.
     accepted_block = out.split("## Superseded")[0]
@@ -341,7 +344,7 @@ def test_move_row_accepted_to_amended(adr):
 
 
 def test_supersede_moves_to_superseded_table(adr):
-    out, w = adr.move_or_append_backref_row(_README, target_num=61, new_id="ADR-0070", verb="supersedes")
+    out, w = adr_rules.move_or_append_backref_row(_README, target_num=61, new_id="ADR-0070", verb="supersedes")
     assert w is None
     superseded_block = out.split("## Superseded")[1].split("## Amended")[0]
     assert "[0061](0061-target.md)" in superseded_block
@@ -351,14 +354,14 @@ def test_supersede_moves_to_superseded_table(adr):
 
 def test_move_row_already_in_amended_appends_backref(adr):
     # 대상이 이미 Amended(0002)면 back-ref cell 에 append.
-    out, w = adr.move_or_append_backref_row(_README, target_num=2, new_id="ADR-0070", verb="amends")
+    out, w = adr_rules.move_or_append_backref_row(_README, target_num=2, new_id="ADR-0070", verb="amends")
     assert w is None
     line = [l for l in out.splitlines() if l.startswith("| [0002]")][0]
     assert "[[ADR-0016]]" in line and "[[ADR-0070]]" in line
 
 
 def test_move_row_target_absent_failsoft(adr):
-    out, w = adr.move_or_append_backref_row(_README, target_num=999, new_id="ADR-0070", verb="amends")
+    out, w = adr_rules.move_or_append_backref_row(_README, target_num=999, new_id="ADR-0070", verb="amends")
     assert w is not None
     assert out == _README
 
@@ -367,7 +370,7 @@ def test_move_row_target_absent_failsoft(adr):
 
 
 def test_build_decide_log_entry(adr):
-    entry = adr.build_decide_log_entry(70, "새 결정 제목", "2026-07-19")
+    entry = adr_rules.build_decide_log_entry(70, "새 결정 제목", "2026-07-19")
     assert entry.startswith("## [2026-07-19] decide | [[ADR-0070]] — 새 결정 제목")
     assert "decide | ADR-0070 —" not in entry
     assert "PM:" in entry  # placeholder 본문
@@ -393,7 +396,7 @@ def wiki(tmp_path):
 
 def test_issue_new_adr_amending_target_end_to_end(adr, wiki):
     decisions, log = wiki
-    issuer = adr.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
+    issuer = adr_issue.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
     plan = issuer.plan(
         title="원자화 결정", slug="atomize", scope="internal-process", author="u/pm_1",
         status="accepted", amends=[61], supersedes=[], refines=[],
@@ -431,12 +434,15 @@ def test_issue_is_lint_clean_against_board_adr_lifecycle(adr, wiki, monkeypatch)
     """발행 산출물이 board.lint_adr_lifecycle(ADR-0021) advisory clean (DoD 정합·실측)."""
     decisions, log = wiki
     board = _load("board")
-    monkeypatch.setattr(board, "DECISIONS_DIR", decisions)
+    monkeypatch.setattr(board, "REPO", decisions.parent.parent / "home")
+    home_decisions = pm_paths.decisions_dir(board._home())
+    shutil.copytree(decisions, home_decisions)
+    decisions = home_decisions
 
     # 발행 전: 대상은 accepted·back-ref 없음 → 사전 findings 0(기존은 정합).
-    assert board.lint_adr_lifecycle() == []
+    assert wiki_lint.lint_adr_lifecycle(board._home()) == []
 
-    issuer = adr.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
+    issuer = adr_issue.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
     plan = issuer.plan(
         title="개정", slug="amend-it", scope="internal-process", author="u/pm_1",
         status="accepted", amends=[61], supersedes=[], refines=[],
@@ -445,7 +451,7 @@ def test_issue_is_lint_clean_against_board_adr_lifecycle(adr, wiki, monkeypatch)
     issuer.apply(plan)
 
     # 발행 후: amends 걸었지만 back-ref/status 를 발행 시점에 채웠으므로 여전히 clean.
-    findings = board.lint_adr_lifecycle()
+    findings = wiki_lint.lint_adr_lifecycle(board._home())
     assert findings == [], f"발행 산출이 lint dirty — {findings}"
 
 
@@ -455,7 +461,7 @@ def test_dry_run_writes_nothing(adr, wiki):
     before_target = (decisions / "0061-target.md").read_text(encoding="utf-8")
     before_log = log.read_text(encoding="utf-8")
 
-    issuer = adr.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
+    issuer = adr_issue.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
     plan = issuer.plan(
         title="미적용", slug="noop", scope="internal-process", author="u/pm_1",
         status="accepted", amends=[61], supersedes=[], refines=[], related=[], tags=[],
@@ -471,7 +477,7 @@ def test_apply_partial_failure_reports_done_and_remaining(adr, wiki, monkeypatch
     """apply 중 README 단계 실패 시 RuntimeError 가 수행/미수행 단계를 명시하고, 신규 ADR 파일은
     가장 먼저 기록돼 보존된다 (codex suggestion② — 부분 반영 복구 안내)."""
     decisions, log = wiki
-    issuer = adr.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
+    issuer = adr_issue.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
     plan = issuer.plan(
         title="부분실패", slug="partial", scope="internal-process", author="u/pm_1",
         status="accepted", amends=[61], supersedes=[], refines=[], related=[], tags=[],

@@ -12,6 +12,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pm_engine.infra import pm_paths
+from pm_engine.app import adr_contradiction
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -49,7 +51,7 @@ def test_collect_scope_only_referencing_files(cl, tmp_path):
     refs = _write(tmp_path, "wiki/a.md", "이 문서는 [[ADR-0061]] 을 전제로 한다.\n다른 줄.")
     _write(tmp_path, "wiki/b.md", "무관한 문서 — [[ADR-0099]] 참조.")
     _write(tmp_path, "wiki/c.md", "링크 없음.")
-    hits = cl.collect_reference_scope(["ADR-0061"], [refs.parent / "a.md",
+    hits = adr_contradiction.collect_reference_scope(pm_paths.home_at(cl.REPO), ["ADR-0061"], [refs.parent / "a.md",
                                                      refs.parent / "b.md",
                                                      refs.parent / "c.md"], repo=tmp_path)
     assert len(hits) == 1
@@ -75,14 +77,14 @@ def test_collect_scope_excerpt_spans_separated_sections(cl, tmp_path):
         "- 근거는 [[ADR-0061]] 을 따른다.\n"
     )
     f = _write(tmp_path, "wiki/split.md", doc)
-    hits = cl.collect_reference_scope(["ADR-0061"], [f], repo=tmp_path)
+    hits = adr_contradiction.collect_reference_scope(pm_paths.home_at(cl.REPO), ["ADR-0061"], [f], repo=tmp_path)
     assert len(hits) == 1
     ex = hits[0].excerpt
     # 링크 줄(참고 절)과 모순 서술 줄(결정 절)이 *둘 다* excerpt 에 있어야 한다(분리된 절).
     assert "[[ADR-0061]]" in ex
     assert "모순되는 잔여 서술" in ex
     # 프롬프트에도 두 절이 함께 실려 run_fn 이 대조 근거를 갖는다.
-    prompt = cl.build_prompt("ADR-0062", "새 방향", "이제 비동기 처리한다.", hits)
+    prompt = adr_contradiction.build_prompt("ADR-0062", "새 방향", "이제 비동기 처리한다.", hits)
     assert "모순되는 잔여 서술" in prompt and "[[ADR-0061]]" in prompt
 
 
@@ -93,20 +95,20 @@ def test_collect_scope_large_file_windows_around_reference(cl, tmp_path):
     body = filler_top + "\n" + near + "\n근거 [[ADR-0061]] 준수.\n" + \
         "\n".join(f"bot-{i}" for i in range(300))
     f = _write(tmp_path, "wiki/big.md", body)
-    hits = cl.collect_reference_scope(["ADR-0061"], [f], repo=tmp_path)
+    hits = adr_contradiction.collect_reference_scope(pm_paths.home_at(cl.REPO), ["ADR-0061"], [f], repo=tmp_path)
     assert len(hits) == 1
     ex = hits[0].excerpt
     assert "[[ADR-0061]]" in ex
     assert near in ex                       # 참조 ±윈도 안의 인접 문단
-    assert cl._EXCERPT_GAP in ex            # 생략 마커(전체 아님)
+    assert adr_contradiction._EXCERPT_GAP in ex            # 생략 마커(전체 아님)
     assert "top-0" not in ex                # 멀리 떨어진 줄은 제외(윈도 바깥)
-    assert len(ex.splitlines()) <= cl._MAX_EXCERPT_LINES + 2  # 상한(+gap 마커)
+    assert len(ex.splitlines()) <= adr_contradiction._MAX_EXCERPT_LINES + 2  # 상한(+gap 마커)
 
 
 def test_collect_scope_id_normalization(cl, tmp_path):
     """`[[ADR-61]]`(선행 0 없음)도 target `ADR-0061` 과 매칭(정규화)."""
     f = _write(tmp_path, "wiki/x.md", "옛 결정 [[ADR-61]] 에 따라...")
-    hits = cl.collect_reference_scope(["ADR-0061"], [f], repo=tmp_path)
+    hits = adr_contradiction.collect_reference_scope(pm_paths.home_at(cl.REPO), ["ADR-0061"], [f], repo=tmp_path)
     assert len(hits) == 1
     assert hits[0].matched_ids == ("ADR-0061",)
 
@@ -114,7 +116,7 @@ def test_collect_scope_id_normalization(cl, tmp_path):
 def test_collect_scope_multiple_targets_and_refline_dedup(cl, tmp_path):
     f = _write(tmp_path, "wiki/multi.md",
                "[[ADR-0061]] 와 [[ADR-0062]] 둘 다.\n[[ADR-0061]] 재등장(같은 줄 아님).")
-    hits = cl.collect_reference_scope(["ADR-0061", "ADR-0062"], [f], repo=tmp_path)
+    hits = adr_contradiction.collect_reference_scope(pm_paths.home_at(cl.REPO), ["ADR-0061", "ADR-0062"], [f], repo=tmp_path)
     assert len(hits) == 1
     assert set(hits[0].matched_ids) == {"ADR-0061", "ADR-0062"}
     # ref_lines 는 라인 단위·중복 제거(두 줄 다 잡히되 dedup).
@@ -123,13 +125,13 @@ def test_collect_scope_multiple_targets_and_refline_dedup(cl, tmp_path):
 
 def test_collect_scope_empty_targets_returns_empty(cl, tmp_path):
     f = _write(tmp_path, "wiki/a.md", "[[ADR-0061]]")
-    assert cl.collect_reference_scope([], [f], repo=tmp_path) == []
+    assert adr_contradiction.collect_reference_scope(pm_paths.home_at(cl.REPO), [], [f], repo=tmp_path) == []
 
 
 def test_collect_scope_sorted_by_path(cl, tmp_path):
     fz = _write(tmp_path, "wiki/z.md", "[[ADR-0061]]")
     fa = _write(tmp_path, "wiki/a.md", "[[ADR-0061]]")
-    hits = cl.collect_reference_scope(["ADR-0061"], [fz, fa], repo=tmp_path)
+    hits = adr_contradiction.collect_reference_scope(pm_paths.home_at(cl.REPO), ["ADR-0061"], [fz, fa], repo=tmp_path)
     assert [h.path for h in hits] == ["wiki/a.md", "wiki/z.md"]
 
 
@@ -137,15 +139,15 @@ def test_collect_scope_sorted_by_path(cl, tmp_path):
 
 
 def test_build_prompt_contains_decision_scope_and_contract(cl):
-    scope = [cl.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",),
+    scope = [adr_contradiction.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",),
                          excerpt="옛 결정 [[ADR-0061]] 을 전제로 X 한다.\n다른 문단의 서술.",
                          ref_lines=("옛 결정 [[ADR-0061]] 을 전제로 X 한다.",))]
-    prompt = cl.build_prompt("ADR-0062", "새 방향", "## Decision\n이제 Y 한다.", scope)
+    prompt = adr_contradiction.build_prompt("ADR-0062", "새 방향", "## Decision\n이제 Y 한다.", scope)
     assert "ADR-0062" in prompt and "새 방향" in prompt
     assert "이제 Y 한다." in prompt              # 새 결정 본문
     assert "wiki/a.md" in prompt                 # 스코프 파일
     assert "다른 문단의 서술." in prompt          # excerpt 본문(참조 줄뿐 아니라 다른 문단)
-    assert cl.NO_CONTRADICTIONS in prompt        # 출력 계약
+    assert adr_contradiction.NO_CONTRADICTIONS in prompt        # 출력 계약
     assert "판정은 사람" in prompt
 
 
@@ -154,27 +156,27 @@ def test_parse_candidates_extracts_lines(cl):
            "- [wiki/a.md] 옛 전제 X — 새 결정 Y 와 모순\n"
            "- [wiki/b.md] 또 다른 잔여 — 모순\n"
            "잡담.")
-    cands = cl.parse_candidates(out)
+    cands = adr_contradiction.parse_candidates(out)
     assert len(cands) == 2
     assert cands[0].startswith("- [wiki/a.md]")
 
 
 def test_parse_candidates_no_contradictions(cl):
-    assert cl.parse_candidates("NO_CONTRADICTIONS") == []
-    assert cl.parse_candidates("전부 정합.\nNO_CONTRADICTIONS\n") == []
+    assert adr_contradiction.parse_candidates("NO_CONTRADICTIONS") == []
+    assert adr_contradiction.parse_candidates("전부 정합.\nNO_CONTRADICTIONS\n") == []
 
 
 # ── ContradictionLinter (DI·dry 기본·LLM opt-in) ──────────────────────────────────
 
 
 def _linter_with_files(cl, files, run_fn=None):
-    return cl.ContradictionLinter(files_fn=lambda: files, run_fn=run_fn)
+    return adr_contradiction.ContradictionLinter(pm_paths.home_at(cl.REPO), files_fn=lambda: files, run_fn=run_fn)
 
 
 def test_lint_dry_builds_prompt_no_llm_call(cl, tmp_path):
     """기본(run_fn=None) = dry — 프롬프트만 산출·LLM 미호출·후보 비어있음."""
     f = _write(tmp_path, "wiki/a.md", "[[ADR-0061]] 전제.")
-    linter = cl.ContradictionLinter(files_fn=lambda: [f], repo=tmp_path)
+    linter = adr_contradiction.ContradictionLinter(pm_paths.home_at(cl.REPO), files_fn=lambda: [f], repo=tmp_path)
     res = linter.lint(new_adr_id="ADR-0062", new_adr_title="T",
                       new_adr_text="body", target_ids=["ADR-0061"])
     assert res.called is False
@@ -192,7 +194,7 @@ def test_lint_with_run_fn_calls_and_parses(cl, tmp_path):
         captured["prompt"] = prompt
         return "- [wiki/a.md] 옛 전제 — 모순\nNO_CONTRADICTIONS 아님"
 
-    linter = cl.ContradictionLinter(files_fn=lambda: [f], run_fn=fake_llm, repo=tmp_path)
+    linter = adr_contradiction.ContradictionLinter(pm_paths.home_at(cl.REPO), files_fn=lambda: [f], run_fn=fake_llm, repo=tmp_path)
     res = linter.lint(new_adr_id="ADR-0062", new_adr_title="T",
                       new_adr_text="body", target_ids=["ADR-0061"])
     assert res.called is True
@@ -209,7 +211,7 @@ def test_lint_no_scope_returns_empty_no_call(cl, tmp_path):
         called["n"] += 1
         return "x"
 
-    linter = cl.ContradictionLinter(files_fn=lambda: [f], run_fn=fake_llm, repo=tmp_path)
+    linter = adr_contradiction.ContradictionLinter(pm_paths.home_at(cl.REPO), files_fn=lambda: [f], run_fn=fake_llm, repo=tmp_path)
     res = linter.lint(new_adr_id="ADR-0062", new_adr_title="T",
                       new_adr_text="body", target_ids=["ADR-0061"])
     assert res.scope == [] and res.prompt is None and res.called is False
@@ -220,9 +222,9 @@ def test_lint_no_scope_returns_empty_no_call(cl, tmp_path):
 
 
 def test_format_advisory_dry_lists_scope_and_human_note(cl):
-    scope = [cl.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",), excerpt="e", ref_lines=("s",))]
-    res = cl.LintResult(scope=scope, prompt="p", candidates=[], called=False)
-    text = cl.format_advisory("ADR-0062", ["ADR-0061"], res)
+    scope = [adr_contradiction.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",), excerpt="e", ref_lines=("s",))]
+    res = adr_contradiction.LintResult(scope=scope, prompt="p", candidates=[], called=False)
+    text = adr_contradiction.format_advisory("ADR-0062", ["ADR-0061"], res)
     assert "wiki/a.md" in text
     assert "판정=사람" in text
     assert "차단 아님" in text
@@ -230,9 +232,9 @@ def test_format_advisory_dry_lists_scope_and_human_note(cl):
 
 def test_format_advisory_dry_emits_full_standalone_command(cl):
     """dry note 는 pm_adr 경로에서도 그대로 실행 가능한 standalone 커맨드 전체를 안내한다(codex suggestion)."""
-    scope = [cl.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",), excerpt="e", ref_lines=("s",))]
-    res = cl.LintResult(scope=scope, prompt="p", candidates=[], called=False)
-    text = cl.format_advisory("ADR-0062", ["ADR-0061"], res)
+    scope = [adr_contradiction.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",), excerpt="e", ref_lines=("s",))]
+    res = adr_contradiction.LintResult(scope=scope, prompt="p", candidates=[], called=False)
+    text = adr_contradiction.format_advisory("ADR-0062", ["ADR-0061"], res)
     assert "python3 .project_manager/tools/contradiction_lint.py" in text
     assert "--new-adr ADR-0062" in text
     assert "--amends ADR-0061" in text
@@ -240,17 +242,17 @@ def test_format_advisory_dry_emits_full_standalone_command(cl):
 
 
 def test_format_advisory_with_candidates(cl):
-    scope = [cl.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",), excerpt="e", ref_lines=("s",))]
-    res = cl.LintResult(scope=scope, prompt="p",
+    scope = [adr_contradiction.ScopeHit(path="wiki/a.md", matched_ids=("ADR-0061",), excerpt="e", ref_lines=("s",))]
+    res = adr_contradiction.LintResult(scope=scope, prompt="p",
                         candidates=["- [wiki/a.md] 옛 전제 — 모순"], called=True)
-    text = cl.format_advisory("ADR-0062", ["ADR-0061"], res)
+    text = adr_contradiction.format_advisory("ADR-0062", ["ADR-0061"], res)
     assert "LLM 모순 후보" in text
     assert "- [wiki/a.md] 옛 전제 — 모순" in text
 
 
 def test_format_advisory_empty_scope(cl):
-    res = cl.LintResult(scope=[], prompt=None, candidates=[], called=False)
-    text = cl.format_advisory("ADR-0062", ["ADR-0061"], res)
+    res = adr_contradiction.LintResult(scope=[], prompt=None, candidates=[], called=False)
+    text = adr_contradiction.format_advisory("ADR-0062", ["ADR-0061"], res)
     assert "참조하는 문서가 없음" in text
 
 
@@ -270,7 +272,7 @@ def test_cli_dry_reports_scope(cl, tmp_path, monkeypatch, capsys):
         "---\ntitle: 새 결정\n---\n# ADR-0062\n본문.", encoding="utf-8")
     ref = _write(tmp_path, "wiki/other.md", "옛 [[ADR-0061]] 전제.")
     monkeypatch.setattr(cl, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(cl, "_default_scope_files", lambda: [ref])
+    monkeypatch.setattr(adr_contradiction, "_default_scope_files", lambda home: [ref])
     rc = cl.main(["--new-adr", "ADR-0062", "--amends", "ADR-0061", "--show-prompt"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -308,12 +310,8 @@ def wiki(tmp_path):
 
 
 def _patch_scope(adr, monkeypatch, scope_files):
-    """pm_adr 가 로드하는 contradiction_lint 의 기본 스코프 파일을 주입한다(실 wiki 미접촉)."""
-    cl_mod = adr._load_contradiction_lint()
-    monkeypatch.setattr(cl_mod, "_default_scope_files", lambda: scope_files)
-    # pm_adr 는 매 호출 sibling import 하므로 로더가 같은 인스턴스를 주게 patch.
-    monkeypatch.setattr(adr, "_load_contradiction_lint", lambda: cl_mod)
-    return cl_mod
+    """pm_adr 가 쓰는 모순 lint 의 기본 스코프 파일을 주입한다(실 wiki 미접촉)."""
+    monkeypatch.setattr(adr_contradiction, "_default_scope_files", lambda home: scope_files)
 
 
 def test_pm_adr_amends_triggers_advisory(adr, wiki, tmp_path, monkeypatch, capsys):
@@ -322,8 +320,8 @@ def test_pm_adr_amends_triggers_advisory(adr, wiki, tmp_path, monkeypatch, capsy
     ref = _write(tmp_path, "wiki/ref.md", "이 방침은 [[ADR-0061]] 을 전제로 한다.")
     monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
     monkeypatch.setattr(adr, "LOG_FILE", log)
-    cl_mod = _patch_scope(adr, monkeypatch, [ref])
-    monkeypatch.setattr(cl_mod, "REPO", tmp_path)
+    _patch_scope(adr, monkeypatch, [ref])
+    monkeypatch.setattr(adr, "REPO", tmp_path)
 
     rc = adr.main(["new", "--title", "개정 결정", "--slug", "amend-one",
                    "--amends", "ADR-0061", "--dry-run"])
@@ -362,11 +360,13 @@ def test_pm_adr_refines_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
 
 
 def test_pm_adr_trigger_failsoft(adr, wiki, monkeypatch, capsys):
-    """contradiction_lint 로드/실행이 터져도 발행은 rc 0 (advisory fail-soft·차단 아님)."""
+    """모순 lint 실행이 터져도 발행은 rc 0 (advisory fail-soft·차단 아님)."""
     decisions, log = wiki
     monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
     monkeypatch.setattr(adr, "LOG_FILE", log)
-    monkeypatch.setattr(adr, "_load_contradiction_lint", lambda: None)  # 로드 실패 시뮬
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("모순 lint 실행 실패 시뮬")
+    monkeypatch.setattr(adr_contradiction, "ContradictionLinter", _boom)
 
     rc = adr.main(["new", "--title", "개정", "--slug", "amend-fs",
                    "--amends", "ADR-0061", "--dry-run"])

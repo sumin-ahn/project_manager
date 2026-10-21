@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 from pm_engine.domain import areas_rules
 from pm_engine.infra import areas_store, lease_store, python_env
-from pm_engine.app import regression
+from pm_engine.app import areas_lint, regression
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1292,7 +1292,7 @@ def test_lint_areas_duplicate_repo_reports_duplicates(board):
         "| service-a | PAY | g | pytest -q | alice | develop | develop | alice |\n"
         "| service-b | ACC | g2 | go test | bob |  |  |  |\n",
         encoding="utf-8")
-    issues = board.lint_areas_duplicate_repo()
+    issues = areas_lint.lint_areas_duplicate_repo(board._home())
     assert [(name, kind) for name, kind, _detail in issues] == [
         ("service-a", "areas-duplicate-repo")]
     assert "2개" in issues[0][2]
@@ -1300,9 +1300,9 @@ def test_lint_areas_duplicate_repo_reports_duplicates(board):
 
 def test_lint_areas_duplicate_repo_clean_registry_is_silent(board):
     """중복이 없으면 빈 결과 — areas.md 부재(솔로)도 빈 결과."""
-    assert board.lint_areas_duplicate_repo() == []
+    assert areas_lint.lint_areas_duplicate_repo(board._home()) == []
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
-    assert board.lint_areas_duplicate_repo() == []
+    assert areas_lint.lint_areas_duplicate_repo(board._home()) == []
 
 
 def test_areas_duplicate_repo_is_advisory_never_blocks(board):

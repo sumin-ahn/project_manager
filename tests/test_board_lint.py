@@ -27,12 +27,10 @@ import pytest
 
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
-from pm_engine.domain import conf_schema, ticket_rules
-from pm_engine.infra import conf_store, manifest_store, pm_paths, pre_push_hook, python_env, ticket_store
+from pm_engine.domain import conf_schema, round_rules, ticket_rules
+from pm_engine.infra import conf_store, doc_page_store, manifest_store, pm_paths, pre_push_hook, python_env, round_store, ticket_store
 from conftest import ensure_product_slot
-from pm_engine.domain import round_rules
-from pm_engine.infra import round_store
-from pm_engine.app import round_seed
+from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, doc_staleness, freshness_lint, lint_hooks, round_seed, ticket_lint, wiki_lint, wikilink_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -83,7 +81,6 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
     monkeypatch.setattr(board, "REPO", root)
     monkeypatch.setattr(board, "TICKETS_DIR", tickets)
     monkeypatch.setattr(board, "IDEAS_DIR", ideas)
-    monkeypatch.setattr(board, "DECISIONS_DIR", decisions)
     return wiki
 
 
@@ -114,7 +111,7 @@ def test_md_path_link_to_missing_decision_is_dangling(board, monkeypatch, tmp_pa
     _adr(wiki, "0006", "opencode-adapter-target")
     _doc(wiki, "note.md",
          "see [target](../../decisions/0006-opencode-something-adapter.md) for detail")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     assert any(
         kind == "unstable-ref"
         and "0006-opencode-something-adapter.md" in name
@@ -133,7 +130,7 @@ def test_md_path_link_without_leading_slash_is_caught(board, monkeypatch, tmp_pa
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     # wiki 루트 문서가 앞 `/` 없이 `decisions/...` 로 직접 가리킴 (실재 안 하는 슬러그).
     _doc(wiki, "status.md", "결정은 [link](decisions/0007-ghost-overlay.md) 참고")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     assert any(
         kind == "unstable-ref"
         and name == "0007-ghost-overlay.md"
@@ -151,7 +148,7 @@ def test_md_link_with_fragment_or_title_is_caught(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _doc(wiki, "a.md", "anchor [x](decisions/0007-ghost.md#section) 참고")
     _doc(wiki, "b.md", 'title [y](../../decisions/0007-ghost.md "ADR 7") 참고')
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     dangling = [i for i in issues if i[0] == "0007-ghost.md" and i[1] == "unstable-ref"]
     assert dangling, issues
     # a.md(fragment)·b.md(title) 둘 다 사용처로 잡혀야 한다.
@@ -169,7 +166,7 @@ def test_external_url_decision_path_not_flagged(board, monkeypatch, tmp_path):
     # protocol-relative URL `//host/…` 도 외부 — 오차단 금지 (codex T-0036).
     _doc(wiki, "note2.md",
          "protocol-relative [l](//example.com/wiki/decisions/0008-ghost.md) 참고")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     assert not any("0007-ghost.md" in name for name, _k, _d in issues), issues
     assert not any("0008-ghost.md" in name for name, _k, _d in issues), issues
 
@@ -184,7 +181,7 @@ def test_code_span_and_fence_examples_not_flagged(board, monkeypatch, tmp_path):
          "```\n"
          "fenced 예시: [also bad](decisions/9998-ghost.md)\n"
          "```\n")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     flagged = [n for n, _k, _d in issues if n in ("9999-ghost.md", "9998-ghost.md")]
     assert flagged == [], f"코드 안 예시 링크가 차단됨(오탐): {flagged}"
 
@@ -194,7 +191,7 @@ def test_md_link_single_quote_and_paren_title_is_caught(board, monkeypatch, tmp_
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _doc(wiki, "a.md", "single [x](decisions/9999-ghost.md 'a title') 참고")
     _doc(wiki, "b.md", "paren [y](decisions/9998-ghost.md (a title)) 참고")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     names = {name for name, _k, _d in issues}
     assert "9999-ghost.md" in names and "9998-ghost.md" in names, issues
 
@@ -205,7 +202,7 @@ def test_num_lead_wikilink_alias_deduped_to_base(board, monkeypatch, tmp_path):
     _adr(wiki, "0003", "overlay-seam")
     _doc(wiki, "note.md",
          "alias 둘 [[0003-overlay|첫째]] 그리고 [[0003-overlay|둘째]] 참고")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     match = [i for i in issues if i[0] == "0003-overlay"]
     assert len(match) == 1, issues          # alias 달라도 1건
     assert "|" not in match[0][0]           # 키에 alias 없음
@@ -217,7 +214,7 @@ def test_num_lead_wikilink_resolving_is_advice(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _adr(wiki, "0003", "wikilink-philosophy")
     _doc(wiki, "note.md", "we follow [[0003-wikilink-philosophy]] here")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     match = [i for i in issues if i[0] == "0003-wikilink-philosophy"]
     assert match, issues
     name, kind, detail = match[0]
@@ -233,7 +230,7 @@ def test_num_lead_wikilink_unresolved_is_untouched(board, monkeypatch, tmp_path)
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _doc(wiki, "note.md", "메모 [[9999-ghost-decision]] 및 [[2026-roadmap]] 참고")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     assert not any(i[0] in ("9999-ghost-decision", "2026-roadmap") for i in issues), issues
 
 
@@ -246,7 +243,7 @@ def test_num_lead_wikilink_hangul_slug_is_caught(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _adr(wiki, "0003", "overlay-seam")
     _doc(wiki, "note.md", "참조 [[0003-오버레이-심]] 형으로 적음")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     match = [i for i in issues if i[0] == "0003-오버레이-심"]
     assert match, issues
     name, kind, detail = match[0]
@@ -260,7 +257,7 @@ def test_md_path_link_to_existing_decision_is_advice_not_block(board, monkeypatc
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _adr(wiki, "0007", "overlay-doc")
     _doc(wiki, "note.md", "background: [adr](../../decisions/0007-overlay-doc.md)")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     match = [i for i in issues if i[0] == "0007-overlay-doc.md"]
     assert match, issues
     name, kind, detail = match[0]
@@ -283,7 +280,7 @@ def test_ticket_path_link_in_every_status_dir_is_classified(board, monkeypatch, 
         _doc(wiki, f"note-{status}.md",
              f"실재 [a](tickets/{status}/{real}) · 부재 [b](tickets/{status}/T-0900-ghost.md)")
 
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
 
     by_name = {name: (kind, detail) for name, kind, detail in issues}
     for status in ticket_rules.STATUS_DIRS:
@@ -308,7 +305,7 @@ def test_discarded_ticket_link_existing_is_advice_and_missing_blocks(
     _doc(wiki, "ghost.md",
          "환각 [b](../tickets/discarded/T-0901-never-existed.md) 참고")
 
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
 
     advice = [i for i in issues if i[0] == "T-0101-merged-away.md"]
     dangling = [i for i in issues if i[0] == "T-0901-never-existed.md"]
@@ -325,7 +322,7 @@ def test_struct_path_regex_has_no_hardcoded_status_names(board):
     이 정규식은 STATUS_DIRS 를 순회하지 않는 별도 소비처라 자동 추종에서 홀로 빠져 있었다.
     소스 grep 으로 리터럴 열거의 재유입을 막고, 컴파일된 패턴이 실제로 상수 전량을 담는지 잰다.
     """
-    source = BOARD_PY.read_text(encoding="utf-8")
+    source = Path(wikilink_lint.__file__).read_text(encoding="utf-8")
     known = (*ticket_rules.STATUS_DIRS, *ticket_rules.IDEA_STATUS_DIRS)
 
     fragments = re.findall(r"(?:tickets|ideas)/\(\?:([^)]*)\)", source)
@@ -334,11 +331,11 @@ def test_struct_path_regex_has_no_hardcoded_status_names(board):
     assert fragments, "구조 경로 정규식 조각을 소스에서 못 찾았다 — 가드 시야가 표면과 어긋났다"
     assert literals == [], f"상태명을 리터럴로 박은 구조 경로 정규식 잔존: {literals}"
     for status in ticket_rules.STATUS_DIRS:
-        assert re.escape(status) in board._TICKET_STATUS_PATTERN, status
-        assert board._STRUCT_PATH_RE.search(f"tickets/{status}/T-0001-x.md"), status
+        assert re.escape(status) in wikilink_lint._TICKET_STATUS_PATTERN, status
+        assert wikilink_lint._STRUCT_PATH_RE.search(f"tickets/{status}/T-0001-x.md"), status
     for status in ticket_rules.IDEA_STATUS_DIRS:
-        assert re.escape(status) in board._IDEA_STATUS_PATTERN, status
-        assert board._STRUCT_PATH_RE.search(f"ideas/{status}/0001-x.md"), status
+        assert re.escape(status) in wikilink_lint._IDEA_STATUS_PATTERN, status
+        assert wikilink_lint._STRUCT_PATH_RE.search(f"ideas/{status}/0001-x.md"), status
 
 
 def test_raw_snapshot_slug_link_advice_suppressed(board, monkeypatch, tmp_path):
@@ -352,7 +349,7 @@ def test_raw_snapshot_slug_link_advice_suppressed(board, monkeypatch, tmp_path):
     link = "background: [adr](../../decisions/0008-lean-handoff.md)"
     _doc(wiki, "raw/spikes/snap.md", link)   # raw/ → 면제
     _doc(wiki, "note.md", link)              # 비-raw → 권고 유지
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     advice = [d for n, k, d in issues
               if n == "0008-lean-handoff.md" and k == "unstable-ref-advice"]
     assert advice, issues                    # 비-raw 문서에서는 여전히 권고
@@ -365,7 +362,7 @@ def test_raw_snapshot_dangling_still_blocks(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     # 0009 ADR 미생성 → 슬러그 경로가 실재 안 함 = dangling(차단).
     _doc(wiki, "raw/spikes/snap.md", "ref: [x](../../decisions/0009-missing.md)")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     dang = [(n, k, d) for n, k, d in issues if n == "0009-missing.md"]
     assert dang, issues
     assert dang[0][1] == "unstable-ref"      # 차단 kind (advice 아님·raw 라도 유지)
@@ -381,7 +378,7 @@ def test_wikilink_in_inline_code_span_not_flagged_dangling(board, monkeypatch, t
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     # ADR 트리는 비어 있음 → backtick 밖이면 [[ADR-0006]] 은 dangling 일 것.
     _doc(wiki, "doc.md", "규약 예시: ✅ `[[ADR-0006]]` 처럼 ID-wikilink 를 쓴다.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert not any(name == "ADR-0006" for name, _k, _d in issues), issues
 
 
@@ -391,7 +388,7 @@ def test_wikilink_in_fenced_block_not_flagged_dangling(board, monkeypatch, tmp_p
     _doc(wiki, "doc.md",
          "fenced 예시:\n\n```\n참조는 [[ADR-0006]] · [[T-0099]] 처럼.\n```\n\n"
          "~~~\n또 [[idea-0042]] 도.\n~~~\n")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     flagged = [n for n, _k, _d in issues if n in ("ADR-0006", "T-0099", "idea-0042")]
     assert flagged == [], f"fenced 예시 wikilink 가 dangling 으로 차단됨(오탐): {flagged}"
 
@@ -405,7 +402,7 @@ def test_real_dangling_wikilink_outside_code_still_flagged(board, monkeypatch, t
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _doc(wiki, "doc.md",
          "예시는 `[[ADR-0006]]` 로 보여주되, 본문 산문 참조 [[ADR-0007]] 는 실재해야 한다.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     # 산문 밖의 [[ADR-0007]] 은 dangling 으로 잡혀야 하고,
     assert any(name == "ADR-0007" and kind == "dangling-wikilink"
                for name, kind, _d in issues), issues
@@ -443,7 +440,7 @@ def test_scaffold_dangling_wikilink_is_flagged(board, monkeypatch, tmp_path, rel
     _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음 → ADR-9999 는 부재.
     _scaffold_doc(tmp_path, relpath,
                   "이 에이전트는 [[ADR-9999]] 결정을 따른다.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert any(name == "ADR-9999" and kind == "dangling-wikilink-scaffold"
                for name, kind, _d in issues), (
         f"scaffold {relpath} 의 dangling [[ADR-9999]] 가 안 잡힘 — "
@@ -456,7 +453,7 @@ def test_scaffold_resolving_wikilink_is_clean(board, monkeypatch, tmp_path):
     _adr(wiki, "0018", "domain-pages")
     _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md",
                   "domain 갱신은 [[ADR-0018]] 을 따른다.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert not any(name == "ADR-0018" for name, _k, _d in issues), issues
 
 
@@ -468,12 +465,12 @@ def test_scaffold_absent_harness_dir_skipped(board, monkeypatch, tmp_path):
     """
     _wire_repo(board, monkeypatch, tmp_path)  # 어떤 scaffold dir 도 안 만든다.
     # scaffold 부재 + wiki/ 비어 있음 → dangling 없음, 예외 없이 clean.
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert issues == [], issues
     # 한쪽(.claude)만 두고 dangling → 잡히되 부재한 .opencode 는 무영향.
     # scaffold-only framework ADR dangling → advisory kind (T-0129).
     _scaffold_doc(tmp_path, ".claude/agents/x.md", "참조 [[ADR-9999]].")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert any(name == "ADR-9999" and kind == "dangling-wikilink-scaffold"
                for name, kind, _d in issues), issues
 
@@ -498,14 +495,14 @@ def test_scaffold_dangling_gate_passes(board, monkeypatch, tmp_path):
     _scaffold_doc(tmp_path, ".opencode/agents/orchestrator.md",
                   "이 에이전트는 [[ADR-9999]] 와 [[idea-9999]] 를 따른다.")
     # 다른 lint 표면은 비워 scaffold dangling 만 게이트에 반영.
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     # 분류는 advisory.
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert all(kind == "dangling-wikilink-scaffold"
                for name, kind, _d in issues
                if name in ("ADR-9999", "idea-9999")), issues
@@ -518,13 +515,13 @@ def test_wiki_dangling_still_blocks(board, monkeypatch, tmp_path):
     """wiki/ 의 framework ADR dangling 은 여전히 `dangling-wikilink`·gate 차단."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음.
     _doc(wiki, "note.md", "본문 산문 참조 [[ADR-9999]] 는 실재해야 한다.")
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
-    issues = board.lint_wikilinks()
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert any(name == "ADR-9999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), issues
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 1  # 차단 유지.
@@ -536,7 +533,7 @@ def test_scaffold_resolving_wikilink_clean_no_advisory(board, monkeypatch, tmp_p
     _adr(wiki, "0018", "domain-pages")
     _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md",
                   "domain 갱신은 [[ADR-0018]] 을 따른다.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert not any(name == "ADR-0018" for name, _k, _d in issues), issues
     assert not any(kind == "dangling-wikilink-scaffold"
                    for _n, kind, _d in issues), issues
@@ -547,7 +544,7 @@ def test_scaffold_ticket_dangling_still_blocks(board, monkeypatch, tmp_path):
     _wire_repo(board, monkeypatch, tmp_path)  # ticket 트리 비어 있음 → T-9999 부재.
     _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md",
                   "이전 결정 [[T-9999]] 참조.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert any(name == "T-9999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), (
         f"scaffold 의 ticket dangling 은 항상 blocking 이어야 함:\n{issues}")
@@ -567,7 +564,7 @@ def test_prefixed_ticket_wikilink_resolves(board, monkeypatch, tmp_path):
         p = wiki / "tickets" / "open" / f"{tid}-x.md"
         p.write_text(f"---\nid: {tid}\n---\n# {tid}\n", encoding="utf-8")
     _doc(wiki, "note.md", "참조: [[T-PAY-001]] · [[T-service-a-001]] · [[T-P0-001]].")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert not any(name in ("T-PAY-001", "T-service-a-001", "T-P0-001")
                    for name, _k, _d in issues), (
         f"실재 prefixed ticket wikilink 는 dangling 아님:\n{issues}")
@@ -580,7 +577,7 @@ def test_prefixed_ticket_wikilink_dangling_blocks(board, monkeypatch, tmp_path):
     로 surface 한다 — 인식 못 하면 자유어휘로 새 침묵(T-0164 감사 round-3 클래스 방지)."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)  # ticket 트리 비어 있음.
     _doc(wiki, "note.md", "없는 ticket 참조 [[T-PAY-999]].")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     assert any(name == "T-PAY-999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), (
         f"부재 prefixed ticket wikilink 는 blocking dangling 이어야 함:\n{issues}")
@@ -601,7 +598,7 @@ def test_finance_dev_d4_prefixed_ticket_resolves_and_dangling(board, monkeypatch
     # 실존 링크와 부재 링크를 같은 산문에 둬 정합·검출력을 함께 검증.
     _doc(wiki, "note.md",
          "실존 [[T-finance-011]] · 부재 [[T-nope-999]] 참조.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     # (a) 실존 prefixed → clean (결과에 그 name 이 없음).
     assert not any(name == "T-finance-011" for name, _k, _d in issues), (
         f"실존 prefixed ticket wikilink 는 dangling 아님(오탐):\n{issues}")
@@ -618,7 +615,7 @@ def test_same_ref_in_scaffold_and_wiki_blocks(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음.
     _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md", "scaffold 참조 [[ADR-9999]].")
     _doc(wiki, "note.md", "wiki 산문 참조 [[ADR-9999]] 도 있다.")
-    issues = board.lint_wikilinks()
+    issues = wikilink_lint.lint_wikilinks(board._home())
     # 사용처 하나라도 wiki/root-doc 이면 advisory 강등 불가 → blocking.
     assert any(name == "ADR-9999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), issues
@@ -635,7 +632,7 @@ def test_freeform_non_numeric_wikilink_untouched(board, monkeypatch, tmp_path):
     _doc(wiki, "note.md",
          "free [[some-memory-slug]] and canonical [[ADR-0003]] and prose: "
          "the decisions/ dir holds ADRs.")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     assert issues == [], issues
 
 
@@ -644,7 +641,7 @@ def test_prose_path_mention_not_a_link_untouched(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _doc(wiki, "note.md",
          "edit the file at decisions/0006-opencode-adapter-target.md by hand.")
-    issues = board.lint_unstable_refs()
+    issues = wikilink_lint.lint_unstable_refs(board._home())
     assert issues == [], issues
 
 
@@ -653,15 +650,15 @@ def test_prose_path_mention_not_a_link_untouched(board, monkeypatch, tmp_path):
 def test_gate_zero_on_status_drift_only(board, monkeypatch, tmp_path, capsys):
     """status drift(자문성)만 있으면 --gate 종료코드 0 — never blocks 계약 보존."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [
         ("status.md", "status-done-accum", "활성 매트릭스 ✅ 행 누적"),
     ])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     rc = board.cmd_lint(SimpleNamespace(gate=True))
     assert rc == 0
     # 무인자(full) 는 같은 입력에서 1 (현행 계약 유지).
@@ -672,15 +669,15 @@ def test_gate_zero_on_status_drift_only(board, monkeypatch, tmp_path, capsys):
 def test_gate_one_on_unstable_ref_dangling(board, monkeypatch, tmp_path):
     """dangling unstable-ref 가 있으면 --gate 종료코드 1 (차단)."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [
         ("9999-ghost.md", "unstable-ref", "실재 안 함 → [[ADR-9999]]"),
     ])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     rc = board.cmd_lint(SimpleNamespace(gate=True))
     assert rc == 1
 
@@ -688,15 +685,15 @@ def test_gate_one_on_unstable_ref_dangling(board, monkeypatch, tmp_path):
 def test_gate_zero_on_unstable_ref_advice_only(board, monkeypatch, tmp_path):
     """실재 슬러그 권고(unstable-ref-advice)만 있으면 --gate 0 — 차단은 dangling 만."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [
         ("0007-overlay.md", "unstable-ref-advice", "실재 → [[ADR-0007]] 권고"),
     ])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
 
@@ -746,11 +743,11 @@ def test_lint_tickets_includes_unstable_refs(board, monkeypatch, tmp_path):
     # 명시적 구조 경로 링크(실재 안 함) → dangling unstable-ref (차단 가능 카테고리).
     _doc(wiki, "note.md", "broken [x](decisions/9999-ghost.md) ref")
     # 다른 lint 표면은 비워 unstable-ref 만 본다.
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
     kinds = _kinds(board.lint_tickets())
     assert "unstable-ref" in kinds
 
@@ -774,14 +771,15 @@ def test_lint_status_only_done_accum_now(board, monkeypatch, tmp_path):
 
     임계 초과 ✅ 행을 넣은 tmp status.md 에서 status-done-accum 이 나오고, 그 외 kind 는 없다.
     """
-    status = tmp_path / "status.md"
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    status = pm_paths.status_file(board._home())
+    status.parent.mkdir(parents=True)
     rows = "".join(
         f"| | mod{i} | f{i}.py | ✅ | done |\n"
-        for i in range(board.STATUS_DONE_ROW_WARN + 1)
+        for i in range(wiki_lint.STATUS_DONE_ROW_WARN + 1)
     )
     status.write_text(f"# 현재 진행 상태\n\n{rows}", encoding="utf-8")
-    monkeypatch.setattr(board, "STATUS_FILE", status)
-    issues = board.lint_status()
+    issues = wiki_lint.lint_status(board._home())
     kinds = {k for _n, k, _d in issues}
     assert kinds == {"status-done-accum"}, issues
 
@@ -793,16 +791,14 @@ def test_lint_status_only_done_accum_now(board, monkeypatch, tmp_path):
 # (실 .project_manager/wiki/ 미접촉 — 전부 tmp_path.)
 
 def _wire_scope_repo(board, monkeypatch, root):
-    """`_wire_repo` + SPECS_DIR(tmp) wiring + areas.md 미등록(솔로) 기본.
+    """`_wire_repo` + specs/ 디렉토리 + areas.md 미등록(솔로) 기본.
 
-    반환 = wiki 디렉토리. `lint_scopes`/`registered_prefixes` 가 읽는 SPECS_DIR·AREAS_FILE 을
+    반환 = wiki 디렉토리. `lint_scopes`/`registered_prefixes` 가 읽는 specs/·AREAS_FILE 을
     tmp 로 갈아끼워 hermetic 하게 한다. areas.md 는 만들지 않음(솔로 — 등록 대조 생략).
     """
     wiki = _wire_repo(board, monkeypatch, root)
     specs = wiki / "specs"
     specs.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "SPECS_DIR", specs)
-    monkeypatch.setattr(board, "_SCOPE_AWARE_DIRS", (board.DECISIONS_DIR, specs))
     monkeypatch.setattr(board, "AREAS_FILE", root / ".project_manager" / "areas.md")
     return wiki
 
@@ -818,27 +814,27 @@ def _adr_with_scope(wiki, num, slug, scope_line=""):
 
 def test_family_scope_defaults_to_shared_when_absent(board):
     """family_scope 키 부재 → shared 기본 (ADR-0015 "부재 시 shared 로 간주")."""
-    assert board.family_scope({}) == "shared"
-    assert board.family_scope({"id": "ADR-0001"}) == "shared"
+    assert wiki_lint.family_scope({}) == "shared"
+    assert wiki_lint.family_scope({"id": "ADR-0001"}) == "shared"
 
 
 def test_family_scope_returns_explicit_value(board):
     """명시 family_scope 값을 strip 해 반환."""
-    assert board.family_scope({"family_scope": "payments"}) == "payments"
-    assert board.family_scope({"family_scope": "  shared  "}) == "shared"
+    assert wiki_lint.family_scope({"family_scope": "payments"}) == "payments"
+    assert wiki_lint.family_scope({"family_scope": "  shared  "}) == "shared"
 
 
 def test_family_scope_empty_string_falls_back_to_shared(board):
     """빈/공백 family_scope → shared 기본 (부재와 동일 취급)."""
-    assert board.family_scope({"family_scope": ""}) == "shared"
-    assert board.family_scope({"family_scope": "   "}) == "shared"
+    assert wiki_lint.family_scope({"family_scope": ""}) == "shared"
+    assert wiki_lint.family_scope({"family_scope": "   "}) == "shared"
 
 
 def test_family_scope_non_string_falls_back_to_shared(board):
     """비-문자열(잘못 적힌 list/숫자) → shared 안전 폴백 (파싱 예외 0)."""
-    assert board.family_scope({"family_scope": ["a", "b"]}) == "shared"
-    assert board.family_scope({"family_scope": 42}) == "shared"
-    assert board.family_scope({"family_scope": None}) == "shared"
+    assert wiki_lint.family_scope({"family_scope": ["a", "b"]}) == "shared"
+    assert wiki_lint.family_scope({"family_scope": 42}) == "shared"
+    assert wiki_lint.family_scope({"family_scope": None}) == "shared"
 
 
 # ── lint_scopes() 인지 — 솔로 오탐 0·형식 권고·미등록 권고·shared 무탐 ──────────
@@ -848,21 +844,21 @@ def test_lint_scopes_no_issue_when_scope_absent(board, monkeypatch, tmp_path):
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     _adr_with_scope(wiki, "0001", "alpha")              # scope 라인 없음
     _adr_with_scope(wiki, "0002", "beta", "scope: mission\n")  # 기존 의미 scope: — family 아님
-    assert board.lint_scopes() == []
+    assert wiki_lint.lint_scopes(board._home()) == []
 
 
 def test_lint_scopes_no_issue_on_shared(board, monkeypatch, tmp_path):
     """family_scope: shared (명시) → 정상·이슈 0 (기본값을 명시한 것)."""
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     _adr_with_scope(wiki, "0001", "alpha", "family_scope: shared\n")
-    assert board.lint_scopes() == []
+    assert wiki_lint.lint_scopes(board._home()) == []
 
 
 def test_lint_scopes_advice_on_broken_format(board, monkeypatch, tmp_path):
     """형식이 깨진 family_scope(공백 포함 등) → scope-advice (자문성·차단 아님)."""
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     _adr_with_scope(wiki, "0001", "alpha", "family_scope: 'has space'\n")
-    issues = board.lint_scopes()
+    issues = wiki_lint.lint_scopes(board._home())
     assert any(kind == "scope-advice" and "형식이 깨짐" in detail
                for _name, kind, detail in issues), issues
 
@@ -881,7 +877,7 @@ def test_lint_scopes_advice_on_non_string(board, monkeypatch, tmp_path, scope_ya
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     adr = wiki / "decisions" / "0001-alpha.md"
     adr.write_text(f"---\nid: ADR-0001\n{scope_yaml}---\n# ADR\n", encoding="utf-8")
-    issues = board.lint_scopes()
+    issues = wiki_lint.lint_scopes(board._home())
     assert any(kind == "scope-advice" and "비문자열" in detail
                for _name, kind, detail in issues), issues
 
@@ -892,13 +888,13 @@ def test_lint_scopes_non_string_is_advisory_not_blocking(board, monkeypatch, tmp
     adr = wiki / "decisions" / "0001-alpha.md"
     adr.write_text("---\nid: ADR-0001\nfamily_scope:\n  - a\n---\n# ADR\n",
                    encoding="utf-8")
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     # advice 는 떠야 하고(가드 무력화 시 비게 됨), gate 는 0 유지.
     assert "scope-advice" in _kinds(board.lint_tickets())
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
@@ -914,7 +910,7 @@ def test_lint_scopes_advice_on_unregistered_repo_when_areas_exists(
         "|---|---|---|---|---|\n"
         "| pay | PAY | | pytest | pay-pm |\n", encoding="utf-8")
     _adr_with_scope(wiki, "0001", "alpha", "family_scope: ghost\n")
-    issues = board.lint_scopes()
+    issues = wiki_lint.lint_scopes(board._home())
     assert any(kind == "scope-advice" and "등록된 repo prefix 아님" in detail
                for _name, kind, detail in issues), issues
 
@@ -923,7 +919,7 @@ def test_lint_scopes_no_unregistered_advice_in_solo(board, monkeypatch, tmp_path
     """areas.md 부재(솔로)면 repo scope 미등록 대조를 건너뜀 — 미래값일 뿐 (오탐 0)."""
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)  # areas.md 안 만듦
     _adr_with_scope(wiki, "0001", "alpha", "family_scope: payments\n")
-    assert board.lint_scopes() == []
+    assert wiki_lint.lint_scopes(board._home()) == []
 
 
 def test_lint_scopes_reads_specs_dir(board, monkeypatch, tmp_path):
@@ -931,7 +927,7 @@ def test_lint_scopes_reads_specs_dir(board, monkeypatch, tmp_path):
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     spec = wiki / "specs" / "format.md"
     spec.write_text("---\nfamily_scope: 'bad scope'\n---\n# spec\n", encoding="utf-8")
-    issues = board.lint_scopes()
+    issues = wiki_lint.lint_scopes(board._home())
     assert any(kind == "scope-advice" and "format.md" in name
                for name, kind, _detail in issues), issues
 
@@ -939,16 +935,16 @@ def test_lint_scopes_reads_specs_dir(board, monkeypatch, tmp_path):
 def test_lint_scopes_is_advisory_not_blocking_in_gate(board, monkeypatch, tmp_path):
     """scope-advice 만 있으면 --gate 종료코드 0 (ADR-0015 "차단은 최소·advisory 우선")."""
     _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_scopes", lambda: [
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [
         ("decisions/0001-x.md", "scope-advice", "family_scope='ghost' 미등록"),
     ])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
 
@@ -963,12 +959,12 @@ def test_lint_tickets_includes_scopes(board, monkeypatch, tmp_path):
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     _adr_with_scope(wiki, "0001", "alpha", "family_scope: 'bad scope'\n")
     # 다른 lint 표면은 비워 scope-advice 만 본다.
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
     assert "scope-advice" in _kinds(board.lint_tickets())
 
 
@@ -1050,10 +1046,10 @@ def test_promote_scope_accepts_file_in_specs_dir(board, monkeypatch, tmp_path):
     assert fm["family_scope"] == "shared"
 
 
-# ── domain lint 배선 (T-0094 · advisory·never-block·deep-import seam) ──────────
-# board.lint_domain() 은 domain.py 를 deep-import(순환 회피)해 freshness finding 을 board
-# lint 에 표면화한다. 테스트는 *실 domain.py* 를 로드하되 DOMAIN_DIR 을 tmp 로·git_runner 를
-# 고정 대역으로 갈아끼워 hermetic 하게 stale 을 강제한다(실 .project_manager/wiki/domain 미접촉).
+# ── domain lint 배선 (T-0094 · advisory·never-block) ──────────
+# `doc_lint.lint_domain(home)` 은 Home 의 wiki/domain 페이지 freshness finding 을 board lint 에
+# 표면화한다. 테스트는 board REPO 를 tmp 로·git_runner 를 고정 대역으로 갈아끼워 hermetic 하게
+# stale 을 강제한다(실 .project_manager/wiki/domain 미접촉).
 
 DOMAIN_PY = TOOLS / "domain.py"
 
@@ -1072,20 +1068,17 @@ def _domain_page(domain_dir: Path, name: str, *, frontmatter: str, body: str) ->
 
 def _wire_domain(board, monkeypatch, domain_dir: Path, *,
                  git_runner=None, page_stale=None):
-    """board._load_domain_module 이 *실 domain.py* 를 tmp DOMAIN_DIR 로 묶어 돌려주게 한다.
+    """board REPO 를 `domain_dir`(`<root>/.project_manager/wiki/domain`)의 root 로 묶는다.
 
     git_runner 주입(per-page git 호출 hermetic 대역) 또는 page_stale 직접 대역으로
-    stale 판정을 결정적으로 만든다. board.lint_domain 은 domain._real_git_runner 로 runner 를
-    만들므로, 그것도 주입 runner 를 돌려주게 갈아끼운다(실 git subprocess 미사용).
+    stale 판정을 결정적으로 만든다. `doc_lint.lint_domain` 은 `doc_staleness._real_git_runner` 로
+    runner 를 만들므로, 그것도 주입 runner 를 돌려주게 갈아끼운다(실 git subprocess 미사용).
     """
-    domain = _load_domain()
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "REPO", domain_dir.parents[2])
     if git_runner is not None:
-        monkeypatch.setattr(domain, "_real_git_runner", lambda cwd: git_runner)
+        monkeypatch.setattr(doc_staleness, "_real_git_runner", lambda cwd: git_runner)
     if page_stale is not None:
-        monkeypatch.setattr(domain, "page_stale", page_stale)
-    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
-    return domain
+        monkeypatch.setattr(doc_staleness, "page_stale", page_stale)
 
 
 def _fixed_git(out: str, rc: int = 0):
@@ -1095,7 +1088,7 @@ def _fixed_git(out: str, rc: int = 0):
 
 def test_lint_domain_surfaces_stale_as_advisory(board, monkeypatch, tmp_path):
     """stale 페이지 fixture → board lint_domain 이 advisory finding 으로 표면화."""
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     # 상호 인링크로 orphan 회피 — stale 만 본다.
     _domain_page(
         domain_dir, "stale.md",
@@ -1110,7 +1103,7 @@ def test_lint_domain_surfaces_stale_as_advisory(board, monkeypatch, tmp_path):
     # covers 커밋(2026-06-20) > updated(2026-06-19) → stale.
     _wire_domain(board, monkeypatch, domain_dir,
                  git_runner=_fixed_git("2026-06-20T00:00:00Z\n"))
-    findings = board.lint_domain()
+    findings = doc_lint.lint_domain(board._home())
     # board 관례 순서 (label, kind, detail) — kind 는 domain 의 stale 보존.
     kinds = [kind for _label, kind, _detail in findings]
     assert "stale" in kinds
@@ -1136,7 +1129,7 @@ def test_lint_domain_surfaced_in_full_report(board, monkeypatch, tmp_path):
         body="\nlonely 를 안 가리킨다\n",
     )
     _wire_domain(board, monkeypatch, domain_dir,
-                 page_stale=lambda page, **kw: None)
+                 page_stale=lambda home, page, **kw: None)
     kinds = _kinds(board.lint_tickets())
     assert "orphan" in kinds            # domain finding 이 합류 흐름에 노출
 
@@ -1145,15 +1138,15 @@ def test_gate_excludes_domain_findings(board, monkeypatch, tmp_path):
     """domain finding(stale)만 있으면 --gate 종료코드 0 — advisory/never-block."""
     _wire_repo(board, monkeypatch, tmp_path)
     # 다른 lint 표면은 비우고 domain 만 stale 을 낸다.
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "lint_scopes", lambda: [])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
-    monkeypatch.setattr(board, "lint_domain", lambda: [
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [
         ("낡음", "stale", "covers 코드가 updated(2026-06-19) 후 커밋됨"),
         ("고립", "orphan", "다른 domain 페이지에서 인링크 0 (고립)"),
         ("거대", "oversized", "본문 250줄 > 200"),
@@ -1175,50 +1168,29 @@ def test_domain_lint_kinds_are_registered_advisory(board):
         assert kind in board._ADVISORY_LINT_KINDS
 
 
-def test_lint_domain_graceful_when_domain_absent(board, monkeypatch, tmp_path):
-    """domain.py 부재(deep-import None) → domain finding 0·board lint 정상 진행."""
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    assert board.lint_domain() == []
-    # board lint 자체는 막히지 않는다(solo/domain 미사용 무영향).
-    _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "lint_scopes", lambda: [])
-    # areas 레지스트리 축은 이 테스트의 주제가 아니다 — 등록 0 이관 안내(advisory)를 격리한다.
-    monkeypatch.setattr(board, "lint_areas_repo_unregistered", lambda: [])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
-    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
-    assert board.cmd_lint(SimpleNamespace(gate=False)) == 0
-
-
 def test_lint_domain_graceful_when_dir_missing(board, monkeypatch, tmp_path):
     """domain/ 디렉토리 부재(load_pages → []) → finding 0 (실 domain.py 경유)."""
-    domain_dir = tmp_path / "nope"   # 만들지 않음 → load_pages 가 [] 반환
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"   # 만들지 않음 → load_pages 가 [] 반환
     _wire_domain(board, monkeypatch, domain_dir,
                  git_runner=_fixed_git("2026-06-20T00:00:00Z\n"))
-    assert board.lint_domain() == []
+    assert doc_lint.lint_domain(board._home()) == []
 
 
 def test_lint_domain_absorbs_exceptions(board, monkeypatch, tmp_path):
     """domain 호출이 예외를 던져도 [] 로 흡수 — board lint 정상 진행(비차단 계약)."""
-    class Boom:
-        def load_pages(self):
-            raise RuntimeError("boom")
-    monkeypatch.setattr(board, "_load_domain_module", lambda: Boom())
-    assert board.lint_domain() == []
+    def boom(domain_dir, **kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(doc_page_store, "load_pages", boom)
+    assert doc_lint.lint_domain(board._home()) == []
 
 
 def test_lint_domain_no_circular_import_on_load():
-    """board 와 domain 모듈 로드가 순환 없이 끝난다(deep-import seam 검증)."""
+    """board 와 domain 진입 파일 적재가 순환 없이 끝난다."""
     board_mod = _load_board()
     domain_mod = _load_domain()
-    # domain 은 ticket_store.load_ticket 을 쓰고, board 는 domain 을 최상단 import 하지 않는다.
-    assert callable(board_mod.lint_domain)
-    assert callable(domain_mod.load_pages)
+    # domain lint 구현은 패키지(doc_lint·doc_page_store)에 있고 board 는 domain.py 를 적재하지 않는다.
+    assert callable(doc_lint.lint_domain)
+    assert callable(doc_page_store.load_pages)
 
 
 # ── ADR lifecycle lint (T-0099·ADR-0021·advisory) ────────────────────────────
@@ -1243,9 +1215,9 @@ def _write_adr(decisions_dir, num, *, status="accepted", amends=None, amended_by
 
 @pytest.fixture
 def decisions_dir(board, monkeypatch, tmp_path):
-    d = tmp_path / "decisions"
-    d.mkdir()
-    monkeypatch.setattr(board, "DECISIONS_DIR", d)
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    d = pm_paths.decisions_dir(board._home())
+    d.mkdir(parents=True)
     return d
 
 
@@ -1253,14 +1225,14 @@ def test_adr_lifecycle_consistent_no_findings(board, decisions_dir):
     # 0002 amends 0001 · 0001 amended_by 0002 + status amended → 정합·finding 0.
     _write_adr(decisions_dir, "0001", status="amended", amended_by=["ADR-0002"])
     _write_adr(decisions_dir, "0002", status="accepted", amends=["ADR-0001"])
-    assert board.lint_adr_lifecycle() == []
+    assert wiki_lint.lint_adr_lifecycle(board._home()) == []
 
 
 def test_adr_lifecycle_missing_backref(board, decisions_dir):
     # 0002 amends 0001 인데 0001 에 amended_by 없음 → adr-lifecycle finding.
     _write_adr(decisions_dir, "0001", status="accepted")  # back-ref·status 둘 다 누락
     _write_adr(decisions_dir, "0002", status="accepted", amends=["ADR-0001"])
-    findings = board.lint_adr_lifecycle()
+    findings = wiki_lint.lint_adr_lifecycle(board._home())
     kinds = {k for _l, k, _d in findings}
     assert kinds == {"adr-lifecycle"}
     # back-ref 누락 + status 불일치(accepted≠amended) 둘 다 잡힌다.
@@ -1271,14 +1243,14 @@ def test_adr_lifecycle_missing_backref(board, decisions_dir):
 def test_adr_lifecycle_missing_target(board, decisions_dir):
     # 0002 amends 0099(부재) → finding.
     _write_adr(decisions_dir, "0002", status="accepted", amends=["ADR-0099"])
-    findings = board.lint_adr_lifecycle()
+    findings = wiki_lint.lint_adr_lifecycle(board._home())
     assert any(k == "adr-lifecycle" and "없음" in d for _l, k, d in findings)
 
 
 def test_adr_lifecycle_self_consistency(board, decisions_dir):
     # status: amended 인데 amended_by 없음 → finding (자가일관).
     _write_adr(decisions_dir, "0005", status="amended")
-    findings = board.lint_adr_lifecycle()
+    findings = wiki_lint.lint_adr_lifecycle(board._home())
     assert any(k == "adr-lifecycle" and "amended_by 없음" in d for _l, k, d in findings)
 
 
@@ -1286,10 +1258,10 @@ def test_adr_lifecycle_supersede(board, decisions_dir):
     # supersede 경로: 정합이면 0 · status 누락이면 finding.
     _write_adr(decisions_dir, "0010", status="superseded", superseded_by=["ADR-0021"])
     _write_adr(decisions_dir, "0021", status="accepted", supersedes="ADR-0010")
-    assert board.lint_adr_lifecycle() == []
+    assert wiki_lint.lint_adr_lifecycle(board._home()) == []
     # 대상 status 를 accepted 로 깨면 finding.
     _write_adr(decisions_dir, "0010", status="accepted", superseded_by=["ADR-0021"])
-    assert any(k == "adr-lifecycle" for _l, k, _d in board.lint_adr_lifecycle())
+    assert any(k == "adr-lifecycle" for _l, k, _d in wiki_lint.lint_adr_lifecycle(board._home()))
 
 
 def test_adr_lifecycle_supersession_closes_later_amendment(board, decisions_dir):
@@ -1305,7 +1277,7 @@ def test_adr_lifecycle_supersession_closes_later_amendment(board, decisions_dir)
     _write_adr(decisions_dir, "0080", amends=["ADR-0038"])
     _write_adr(decisions_dir, "0081", supersedes="ADR-0038")
 
-    assert board.lint_adr_lifecycle() == []
+    assert wiki_lint.lint_adr_lifecycle(board._home()) == []
 
 
 def test_adr_lifecycle_refines_not_checked(board, decisions_dir):
@@ -1315,7 +1287,7 @@ def test_adr_lifecycle_refines_not_checked(board, decisions_dir):
         "---\ntitle: t\ntype: decision\nstatus: accepted\nrefines: ADR-0006, ADR-0008\n---\n\n# ADR-0009\n\nbody\n",
         encoding="utf-8",
     )
-    assert board.lint_adr_lifecycle() == []
+    assert wiki_lint.lint_adr_lifecycle(board._home()) == []
 
 
 def test_adr_lifecycle_is_advisory_never_blocks(board):
@@ -1325,8 +1297,8 @@ def test_adr_lifecycle_is_advisory_never_blocks(board):
 
 def test_adr_lifecycle_graceful_no_decisions(board, monkeypatch, tmp_path):
     # decisions/ 부재 → [] (솔로/신규 clone 무영향).
-    monkeypatch.setattr(board, "DECISIONS_DIR", tmp_path / "nope")
-    assert board.lint_adr_lifecycle() == []
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    assert wiki_lint.lint_adr_lifecycle(board._home()) == []
 
 
 # ── ADR author provenance lint (T-0165·ADR-0033 ③·advisory) ──────────────────
@@ -1348,30 +1320,30 @@ def _write_adr_author(decisions_dir, num, *, author=None, title="제목"):
 
 def test_parse_adr_author_valid(board):
     # `<user>/<pm-slot>` → (user, slot) · 마지막 `/` 분리(slot=마지막 토큰).
-    assert board._parse_adr_author("alice/pm-1") == ("alice", "pm-1")
-    assert board._parse_adr_author("  alice/pm-1  ") == ("alice", "pm-1")
+    assert wiki_lint._parse_adr_author("alice/pm-1") == ("alice", "pm-1")
+    assert wiki_lint._parse_adr_author("  alice/pm-1  ") == ("alice", "pm-1")
 
 
 def test_parse_adr_author_invalid_or_absent(board):
     # `/` 없음·한쪽 빈값·None/빈값 → None (형식 어긋남 또는 부재).
-    assert board._parse_adr_author("alice") is None          # `/` 없음 (slot-only)
-    assert board._parse_adr_author("/pm-1") is None           # user 빈값
-    assert board._parse_adr_author("alice/") is None          # slot 빈값
-    assert board._parse_adr_author(None) is None
-    assert board._parse_adr_author("") is None
-    assert board._parse_adr_author("   ") is None
+    assert wiki_lint._parse_adr_author("alice") is None          # `/` 없음 (slot-only)
+    assert wiki_lint._parse_adr_author("/pm-1") is None           # user 빈값
+    assert wiki_lint._parse_adr_author("alice/") is None          # slot 빈값
+    assert wiki_lint._parse_adr_author(None) is None
+    assert wiki_lint._parse_adr_author("") is None
+    assert wiki_lint._parse_adr_author("   ") is None
 
 
 def test_adr_author_present_valid_no_findings(board, decisions_dir):
     # author 가 `<user>/<pm-slot>` 형식이면 finding 0.
     _write_adr_author(decisions_dir, "0001", author="alice/pm-1")
-    assert board.lint_adr_author() == []
+    assert wiki_lint.lint_adr_author(board._home()) == []
 
 
 def test_adr_author_absent_is_advised(board, decisions_dir):
     # author 부재 → adr-author 권고 finding.
     _write_adr_author(decisions_dir, "0001", author=None)
-    findings = board.lint_adr_author()
+    findings = wiki_lint.lint_adr_author(board._home())
     assert len(findings) == 1
     name, kind, detail = findings[0]
     assert name == "ADR-0001"
@@ -1382,14 +1354,14 @@ def test_adr_author_absent_is_advised(board, decisions_dir):
 def test_adr_author_empty_is_advised(board, decisions_dir):
     # author 빈값도 부재로 취급 → 권고.
     _write_adr_author(decisions_dir, "0001", author='""')
-    findings = board.lint_adr_author()
+    findings = wiki_lint.lint_adr_author(board._home())
     assert any(k == "adr-author" and "author 권고" in d for _l, k, d in findings)
 
 
 def test_adr_author_malformed_is_advised(board, decisions_dir):
     # author 있으나 `<user>/<pm-slot>` 아님 → 형식 권고 finding.
     _write_adr_author(decisions_dir, "0001", author="alice")  # `/` 없음 (slot-only)
-    findings = board.lint_adr_author()
+    findings = wiki_lint.lint_adr_author(board._home())
     assert len(findings) == 1
     name, kind, detail = findings[0]
     assert kind == "adr-author"
@@ -1406,7 +1378,7 @@ def test_adr_author_gate_does_not_block(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _write_adr_author(wiki / "decisions", "0001", author=None)
     # adr-author finding 이 실제로 발생함을 먼저 확인.
-    assert any(k == "adr-author" for _l, k, _d in board.lint_adr_author())
+    assert any(k == "adr-author" for _l, k, _d in wiki_lint.lint_adr_author(board._home()))
     # 그럼에도 gate 는 0 (차단 카테고리 0), full 보고는 1 (issue 존재).
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
@@ -1414,8 +1386,8 @@ def test_adr_author_gate_does_not_block(board, monkeypatch, tmp_path):
 
 def test_adr_author_graceful_no_decisions(board, monkeypatch, tmp_path):
     # decisions/ 부재 → [] (솔로/신규 clone·구 ADR author 부재 무영향).
-    monkeypatch.setattr(board, "DECISIONS_DIR", tmp_path / "nope")
-    assert board.lint_adr_author() == []
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    assert wiki_lint.lint_adr_author(board._home()) == []
 
 
 # ── 현재-진실 문서 freshness = verified_at sha 판정 (T-0363·ADR-0063·advisory) ─────
@@ -1502,16 +1474,17 @@ def _write_verified_doc(path, *, verified_at=None, extra="type: architecture"):
 
 @pytest.fixture
 def arch_file(board, monkeypatch, tmp_path):
-    """ARCHITECTURE_FILE 을 tmp 로 monkeypatch 하고 그 경로를 반환한다."""
-    p = tmp_path / "architecture.md"
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", p)
+    """REPO 를 tmp 로 monkeypatch 하고 그 홈의 architecture.md 경로를 반환한다."""
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    p = pm_paths.architecture_file(board._home())
+    p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
 
 # (a) verified_at 이후 매핑 경로 커밋 있으면 architecture-stale 표면 (sensitivity 양성 대조).
 def test_architecture_freshness_flags_when_commits_after_sha(board, arch_file):
     _write_verified_doc(arch_file, verified_at="deadbeef")
-    findings = board.lint_architecture_freshness(runner=_stale_git)
+    findings = freshness_lint.lint_architecture_freshness(board._home(), runner=_stale_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "architecture.md"
@@ -1522,32 +1495,32 @@ def test_architecture_freshness_flags_when_commits_after_sha(board, arch_file):
 # (b) sha 이후 매핑 경로 커밋 없으면 clean.
 def test_architecture_freshness_clean_when_no_commits_after_sha(board, arch_file):
     _write_verified_doc(arch_file, verified_at="deadbeef")
-    assert board.lint_architecture_freshness(runner=_clean_git) == []
+    assert freshness_lint.lint_architecture_freshness(board._home(), runner=_clean_git) == []
 
 
 # (c) sensitivity — verified_at 부재면 stale runner 라도 조용히 skip(false-green 아님).
 def test_architecture_freshness_skip_when_verified_at_absent(board, arch_file):
     _write_verified_doc(arch_file, verified_at=None)   # verified_at 없음
     # 매핑 경로에 커밋이 *있다고* 답하는 runner 여도, verified_at 이 없으면 판정 대상 아님 → [].
-    assert board.lint_architecture_freshness(runner=_stale_git) == []
+    assert freshness_lint.lint_architecture_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_architecture_freshness_skip_when_doc_absent(board, arch_file):
     # 문서 파일 자체가 없음 → graceful [] (솔로/신규 clone·fail-soft).
     assert not arch_file.exists()
-    assert board.lint_architecture_freshness(runner=_stale_git) == []
+    assert freshness_lint.lint_architecture_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_architecture_freshness_skip_when_no_frontmatter(board, arch_file):
     arch_file.write_text("# Architecture\n\nno frontmatter\n", encoding="utf-8")
-    assert board.lint_architecture_freshness(runner=_stale_git) == []
+    assert freshness_lint.lint_architecture_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_architecture_freshness_flags_unverifiable_when_sha_unknown(board, arch_file):
     # 미지/타-git sha(rev-parse rc==1·순수 미해소) → 종전 silent skip 대신 unverifiable advisory
     # (T-0454). 서로 다른 git 의 SHA 를 range 양끝으로 결합하지 않고 판정 불가를 정직히 표면화.
     _write_verified_doc(arch_file, verified_at="deadbeef")
-    findings = board.lint_architecture_freshness(runner=_unknown_sha_git)
+    findings = freshness_lint.lint_architecture_freshness(board._home(), runner=_unknown_sha_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "architecture.md"
@@ -1559,14 +1532,14 @@ def test_architecture_freshness_env_error_is_silent_skip(board, arch_file):
     # codex MF1: rev-parse rc==128(non-repo·권한 등 fatal)=환경 오류 → None → silent skip.
     # 순수 미해소(rc1)와 달리 advisory 로 오인하지 않는다(거짓 신호 방지).
     _write_verified_doc(arch_file, verified_at="deadbeef")
-    assert board.lint_architecture_freshness(runner=_env_error_git) == []
+    assert freshness_lint.lint_architecture_freshness(board._home(), runner=_env_error_git) == []
 
 
 def test_architecture_freshness_moving_ref_is_unverifiable(board, arch_file):
     # codex MF2: verified_at 이 HEAD/브랜치 등 움직이는 ref → 형식 게이트로 unverifiable
     # ("고정 sha 아님"). HEAD 는 rev-parse rc0 이라도 `HEAD..HEAD` 가 항상 비어 false-green.
     _write_verified_doc(arch_file, verified_at="HEAD")
-    findings = board.lint_architecture_freshness(runner=_stale_git)  # runner 무관(게이트 선차단)
+    findings = freshness_lint.lint_architecture_freshness(board._home(), runner=_stale_git)  # runner 무관(게이트 선차단)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "architecture.md"
@@ -1578,7 +1551,7 @@ def test_architecture_freshness_non_ancestor_sha_is_unverifiable(board, arch_fil
     # codex R4-α: verified_at 이 해소되나 HEAD 선조 아님(descendant/딴 브랜치) → unverifiable
     # ("HEAD 선조 아님"). object store 공유 형상서 `<sha>..HEAD` 가 비어 영구 false-clean 이던 축.
     _write_verified_doc(arch_file, verified_at="beef0042")
-    findings = board.lint_architecture_freshness(runner=_descendant_sha_git)
+    findings = freshness_lint.lint_architecture_freshness(board._home(), runner=_descendant_sha_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "architecture.md"
@@ -1590,7 +1563,7 @@ def test_architecture_freshness_hex_named_ref_is_unverifiable(board, arch_file):
     # codex R5: verified_at="deadbeef" 가 hex-이름 branch/tag 라 rev-parse 해소(rc0)하나 OID 가
     # 입력 prefix 아님 → 형식 게이트 통과했어도 non-sha unverifiable("고정 sha 아님").
     _write_verified_doc(arch_file, verified_at="deadbeef")
-    findings = board.lint_architecture_freshness(runner=_hex_named_ref_git)
+    findings = freshness_lint.lint_architecture_freshness(board._home(), runner=_hex_named_ref_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "architecture.md"
@@ -1607,14 +1580,15 @@ def test_architecture_freshness_in_advisory_kinds(board):
 
 @pytest.fixture
 def status_file(board, monkeypatch, tmp_path):
-    p = tmp_path / "status.md"
-    monkeypatch.setattr(board, "STATUS_FILE", p)
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    p = pm_paths.status_file(board._home())
+    p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def test_status_freshness_flags_when_commits_after_sha(board, status_file):
     _write_verified_doc(status_file, verified_at="cafe0001", extra="type: status")
-    findings = board.lint_status_freshness(runner=_stale_git)
+    findings = freshness_lint.lint_status_freshness(board._home(), runner=_stale_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "status.md"
@@ -1624,18 +1598,18 @@ def test_status_freshness_flags_when_commits_after_sha(board, status_file):
 
 def test_status_freshness_clean_when_no_commits(board, status_file):
     _write_verified_doc(status_file, verified_at="cafe0001", extra="type: status")
-    assert board.lint_status_freshness(runner=_clean_git) == []
+    assert freshness_lint.lint_status_freshness(board._home(), runner=_clean_git) == []
 
 
 def test_status_freshness_skip_when_verified_at_absent(board, status_file):
     _write_verified_doc(status_file, verified_at=None, extra="type: status")
-    assert board.lint_status_freshness(runner=_stale_git) == []
+    assert freshness_lint.lint_status_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_status_freshness_flags_unverifiable_when_sha_unknown(board, status_file):
     # status.md 도 동일 축 — 타-git sha 미해소(rc1) → status-unverifiable advisory (T-0454).
     _write_verified_doc(status_file, verified_at="beefcafe", extra="type: status")
-    findings = board.lint_status_freshness(runner=_unknown_sha_git)
+    findings = freshness_lint.lint_status_freshness(board._home(), runner=_unknown_sha_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "status.md"
@@ -1646,7 +1620,7 @@ def test_status_freshness_flags_unverifiable_when_sha_unknown(board, status_file
 def test_status_freshness_moving_ref_is_unverifiable(board, status_file):
     # codex MF2: status.md verified_at 이 브랜치명 → 형식 게이트로 status-unverifiable("고정 sha 아님").
     _write_verified_doc(status_file, verified_at="main", extra="type: status")
-    findings = board.lint_status_freshness(runner=_stale_git)
+    findings = freshness_lint.lint_status_freshness(board._home(), runner=_stale_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "status.md"
@@ -1657,13 +1631,13 @@ def test_status_freshness_moving_ref_is_unverifiable(board, status_file):
 def test_status_freshness_env_error_is_silent_skip(board, status_file):
     # codex MF1: rc128 환경 오류 → None → silent skip(advisory 아님).
     _write_verified_doc(status_file, verified_at="beefcafe", extra="type: status")
-    assert board.lint_status_freshness(runner=_env_error_git) == []
+    assert freshness_lint.lint_status_freshness(board._home(), runner=_env_error_git) == []
 
 
 def test_status_freshness_non_ancestor_sha_is_unverifiable(board, status_file):
     # codex R4-α: 해소되나 HEAD 선조 아님 → status-unverifiable("HEAD 선조 아님").
     _write_verified_doc(status_file, verified_at="beef0042", extra="type: status")
-    findings = board.lint_status_freshness(runner=_descendant_sha_git)
+    findings = freshness_lint.lint_status_freshness(board._home(), runner=_descendant_sha_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "status.md"
@@ -1674,7 +1648,7 @@ def test_status_freshness_non_ancestor_sha_is_unverifiable(board, status_file):
 def test_status_freshness_hex_named_ref_is_unverifiable(board, status_file):
     # codex R5: hex-이름 ref 로 해소되는 verified_at → status-unverifiable("고정 sha 아님").
     _write_verified_doc(status_file, verified_at="deadbeef", extra="type: status")
-    findings = board.lint_status_freshness(runner=_hex_named_ref_git)
+    findings = freshness_lint.lint_status_freshness(board._home(), runner=_hex_named_ref_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "status.md"
@@ -1693,17 +1667,17 @@ def test_gate_zero_on_unverifiable_only(board, monkeypatch, tmp_path):
     멤버십만 봐서, 파생(`kind.replace("-stale","-unverifiable")`)이 미등재 kind 를 내면
     못 잡는다 — 실 finding 을 gate 로 흘려 그 갭을 덮는다."""
     _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [
         ("architecture.md", "architecture-unverifiable", "verified_at 해소 안 됨(타 git SHA?)"),
         ("status.md", "status-unverifiable", "verified_at 해소 안 됨(타 git SHA?)"),
         ("codex-adapter.md", "domain-unverifiable", "covers 부재 + sha 미해소"),
     ])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
     # 파생→등재 불변식 — 현 호출부(architecture/status-stale)의 replace 파생 산출이 전부 등재.
     for stale_kind in ("architecture-stale", "status-stale"):
@@ -1715,7 +1689,7 @@ def test_gate_zero_on_unverifiable_only(board, monkeypatch, tmp_path):
 
 def test_domain_freshness_flags_when_commits_after_sha(board, monkeypatch, tmp_path):
     # verified_at 보유·covers 있는 domain 페이지 + stale runner → domain-stale 1.
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "engine.md",
         frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**\n"
@@ -1723,7 +1697,7 @@ def test_domain_freshness_flags_when_commits_after_sha(board, monkeypatch, tmp_p
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    findings = board.lint_domain_freshness(runner=_stale_git)
+    findings = doc_lint.lint_domain_freshness(board._home(), runner=_stale_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "엔진"
@@ -1732,7 +1706,7 @@ def test_domain_freshness_flags_when_commits_after_sha(board, monkeypatch, tmp_p
 
 
 def test_domain_freshness_clean_when_no_commits(board, monkeypatch, tmp_path):
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "engine.md",
         frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**\n"
@@ -1740,36 +1714,31 @@ def test_domain_freshness_clean_when_no_commits(board, monkeypatch, tmp_path):
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    assert board.lint_domain_freshness(runner=_clean_git) == []
+    assert doc_lint.lint_domain_freshness(board._home(), runner=_clean_git) == []
 
 
 def test_domain_freshness_skip_when_verified_at_absent(board, monkeypatch, tmp_path):
     # sensitivity — covers 는 있으나 verified_at 없는 페이지는 stale runner 라도 skip.
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "engine.md",
         frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**",
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    assert board.lint_domain_freshness(runner=_stale_git) == []
+    assert doc_lint.lint_domain_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_domain_freshness_skip_when_no_covers(board, monkeypatch, tmp_path):
     # covers 없는(코드-무관) 페이지는 verified_at 이 있어도 매핑 경로 0 → skip.
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "concept.md",
         frontmatter="title: 개념\ntype: concept\nverified_at: beef0002",
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    assert board.lint_domain_freshness(runner=_stale_git) == []
-
-
-def test_domain_freshness_graceful_when_domain_absent(board, monkeypatch):
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    assert board.lint_domain_freshness(runner=_stale_git) == []
+    assert doc_lint.lint_domain_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_domain_freshness_in_advisory_kinds(board):
@@ -1780,23 +1749,23 @@ def test_domain_freshness_in_advisory_kinds(board):
 
 def test_freshness_findings_are_advisory_never_block(board, monkeypatch):
     # architecture/status/domain-stale finding 만 있으면 --gate 종료코드 0 (never-block).
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "lint_scopes", lambda: [])
-    monkeypatch.setattr(board, "lint_domain", lambda: [])
-    monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
-    monkeypatch.setattr(board, "lint_adapter_drift", lambda: [])
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [])
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_adr_lifecycle", lambda home: [])
+    monkeypatch.setattr(conf_lint, "lint_adapter_drift", lambda home: [])
     monkeypatch.setattr(board, "lint_render_leak", lambda: [])
-    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
-    monkeypatch.setattr(board, "lint_architecture_freshness", lambda: [
+    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
+    monkeypatch.setattr(freshness_lint, "lint_architecture_freshness", lambda home: [
         ("architecture.md", "architecture-stale", "sha 이후 커밋 있음")])
-    monkeypatch.setattr(board, "lint_status_freshness", lambda: [
+    monkeypatch.setattr(freshness_lint, "lint_status_freshness", lambda home: [
         ("status.md", "status-stale", "sha 이후 커밋 있음")])
-    monkeypatch.setattr(board, "lint_domain_freshness", lambda: [
+    monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [
         ("엔진", "domain-stale", "sha 이후 covers 커밋 있음")])
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0    # 차단 0
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1   # finding 표면화
@@ -1807,18 +1776,18 @@ def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
     arch = ("architecture.md", "architecture-stale", "arch")
     status = ("status.md", "status-stale", "status")
     dom = ("엔진", "domain-stale", "domain")
-    monkeypatch.setattr(board, "lint_dependencies", lambda: [])
-    monkeypatch.setattr(board, "lint_bodies", lambda: [])
-    monkeypatch.setattr(board, "lint_ideas", lambda: [])
-    monkeypatch.setattr(board, "lint_status", lambda: [])
-    monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
-    monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
-    monkeypatch.setattr(board, "lint_scopes", lambda: [])
-    monkeypatch.setattr(board, "lint_domain", lambda: [])
-    monkeypatch.setattr(board, "lint_adr_lifecycle", lambda: [])
-    monkeypatch.setattr(board, "lint_architecture_freshness", lambda: [arch])
-    monkeypatch.setattr(board, "lint_status_freshness", lambda: [status])
-    monkeypatch.setattr(board, "lint_domain_freshness", lambda: [dom])
+    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
+    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
+    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [])
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])
+    monkeypatch.setattr(wiki_lint, "lint_adr_lifecycle", lambda home: [])
+    monkeypatch.setattr(freshness_lint, "lint_architecture_freshness", lambda home: [arch])
+    monkeypatch.setattr(freshness_lint, "lint_status_freshness", lambda home: [status])
+    monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [dom])
     result = board.lint_tickets()
     assert arch in result and status in result and dom in result
 
@@ -2612,6 +2581,7 @@ def _wire_conf(board, monkeypatch, tmp_path, conf: dict) -> None:
     conf_path.write_text(
         "".join(f"{key}={value}\n" for key, value in conf.items()), encoding="utf-8")
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
+    monkeypatch.setattr(board, "REPO", tmp_path)
 
 
 def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch, tmp_path):
@@ -2621,7 +2591,7 @@ def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch,
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
-    findings = board.lint_adapter_drift()
+    findings = conf_lint.lint_adapter_drift(board._home())
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "adapter-layer"
@@ -2638,7 +2608,7 @@ def test_adapter_drift_clean_when_baseline_equals_seen(board, monkeypatch, tmp_p
         "upstream.rev": "cccccccccccc3333",
         "upstream.seen_rev": "cccccccccccc3333",
     })
-    assert board.lint_adapter_drift() == []
+    assert conf_lint.lint_adapter_drift(board._home()) == []
 
 
 def test_adapter_drift_graceful_when_upstream_absent(board, monkeypatch, tmp_path):
@@ -2647,7 +2617,7 @@ def test_adapter_drift_graceful_when_upstream_absent(board, monkeypatch, tmp_pat
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
-    assert board.lint_adapter_drift() == []
+    assert conf_lint.lint_adapter_drift(board._home()) == []
 
 
 def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch, tmp_path):
@@ -2656,7 +2626,7 @@ def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch, tmp
         "upstream.path": "/some/path/project_manager_1",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
-    assert board.lint_adapter_drift() == []
+    assert conf_lint.lint_adapter_drift(board._home()) == []
 
 
 def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkeypatch, tmp_path):
@@ -2667,7 +2637,7 @@ def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkey
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "aaaaaaaaaaaa1111",
     })
-    findings = board.lint_adapter_drift()
+    findings = conf_lint.lint_adapter_drift(board._home())
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "adapter-layer" and kind == "adapter-drift"
@@ -2677,7 +2647,7 @@ def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkey
 def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch, tmp_path):
     # 키 하나 없는 local.conf(솔로/신규 clone) → graceful 0.
     _wire_conf(board, monkeypatch, tmp_path, {})
-    assert board.lint_adapter_drift() == []
+    assert conf_lint.lint_adapter_drift(board._home()) == []
 
 
 def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch, tmp_path):
@@ -2688,7 +2658,7 @@ def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch, tmp_
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "   ",
     })
-    findings = board.lint_adapter_drift()
+    findings = conf_lint.lint_adapter_drift(board._home())
     assert len(findings) == 1 and findings[0][1] == "adapter-drift"
     assert "관찰불가" in findings[0][2]
 
@@ -2701,7 +2671,7 @@ def test_adapter_drift_message_is_direction_neutral(board, monkeypatch, tmp_path
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
-    findings = board.lint_adapter_drift()
+    findings = conf_lint.lint_adapter_drift(board._home())
     assert len(findings) == 1
     detail = findings[0][2]
     assert "불일치" in detail
@@ -2717,7 +2687,7 @@ def test_adapter_drift_neutral_when_seen_is_older_than_baseline(board, monkeypat
         "upstream.rev": "ddf6f4842653",
         "upstream.seen_rev": "0ccc02513a7f",
     })
-    findings = board.lint_adapter_drift()
+    findings = conf_lint.lint_adapter_drift(board._home())
     assert len(findings) == 1 and findings[0][1] == "adapter-drift"
     detail = findings[0][2]
     assert "이후 변경됨" not in detail, f"조상 관찰값에 방향 단정(거짓 주장): {detail!r}"
@@ -2744,24 +2714,25 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
         encoding="utf-8",
     )
     monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
+    monkeypatch.setattr(board, "REPO", dest)
 
     # 어긋난 채로는 advisory 1건(회귀 sensitivity — 이 테스트가 vacuous 하지 않음).
-    assert len(board.lint_adapter_drift()) == 1
+    assert len(conf_lint.lint_adapter_drift(board._home())) == 1
 
     pm_import = pm_update._load_pm_import()
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "converged9999")
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
 
-    assert board.lint_adapter_drift() == [], \
+    assert conf_lint.lint_adapter_drift(board._home()) == [], \
         f"경로 sync 후에도 drift advisory 잔존: {local_conf.read_text(encoding='utf-8')!r}"
 
 
 def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):
     # 한 키 2역 금지(race/자기비교 회피·codex round-3 NEW-2) — baseline 키와 seen 키가 분리돼야.
-    assert board._DRIFT_BASELINE_KEY == "upstream.rev"
-    assert board._DRIFT_SEEN_KEY == "upstream.seen_rev"
-    assert board._DRIFT_BASELINE_KEY != board._DRIFT_SEEN_KEY
+    assert conf_lint._DRIFT_BASELINE_KEY == "upstream.rev"
+    assert conf_lint._DRIFT_SEEN_KEY == "upstream.seen_rev"
+    assert conf_lint._DRIFT_BASELINE_KEY != conf_lint._DRIFT_SEEN_KEY
 
 
 # 두 키의 **소유권 서술**은 판정 코드와 함께 갱신돼야 한다 — T-0908 이 `_upstream_rev_updates` 의
@@ -2771,7 +2742,7 @@ def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):
 # rev 비교 케이스들이 이미 잰다 — 여기서는 그 문장을 값으로 고정한다.
 def test_adapter_drift_key_contract_documents_the_single_writer():
     """drift-lint 두 키의 정의 주석·`lint_adapter_drift` docstring 이 단일 writer 를 서술한다."""
-    source = BOARD_PY.read_text(encoding="utf-8")
+    source = Path(conf_lint.__file__).read_text(encoding="utf-8")
     start = source.index("# adapter-drift baseline 의 두 local.conf 키.")
     end = source.index("findings: list[tuple[str, str, str]] = []", start)
     block = source[start:end]
@@ -2794,17 +2765,27 @@ def test_adapter_drift_kind_is_advisory(board):
 
 def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch, tmp_path):
     # 인위 drift finding 만 있어도 --gate 는 0(미차단)·무인자는 표면화로 1 (sensitivity).
-    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
-               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak", "_run_lint_hooks"):
-        monkeypatch.setattr(board, fn, lambda: [])
+    for module, fn, stub in (
+        (ticket_lint, "lint_dependencies", lambda home: []),
+        (body_lint, "lint_bodies", lambda home: []),
+        (body_lint, "lint_ideas", lambda home: []),
+        (wiki_lint, "lint_status", lambda home: []),
+        (wikilink_lint, "lint_wikilinks", lambda home: []),
+        (wikilink_lint, "lint_unstable_refs", lambda home: []),
+        (wiki_lint, "lint_scopes", lambda home: []),
+        (doc_lint, "lint_domain", lambda home: []),
+        (wiki_lint, "lint_adr_lifecycle", lambda home: []),
+        (freshness_lint, "lint_architecture_freshness", lambda home: []),
+        (board, "lint_render_leak", lambda: []),
+        (lint_hooks, "_run_lint_hooks", lambda home: []),
+    ):
+        monkeypatch.setattr(module, fn, stub)
     _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
-    issues = board.lint_adapter_drift()
+    issues = conf_lint.lint_adapter_drift(board._home())
     assert issues and all(k == "adapter-drift" for _n, k, _d in issues)
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
@@ -2813,12 +2794,21 @@ def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch, tmp_path):
 def test_lint_tickets_includes_adapter_drift(board, monkeypatch):
     # lint_tickets 통합 — adapter-drift finding 이 전체 보고에 포함된다.
     sentinel = [("adapter-layer", "adapter-drift", "sentinel")]
-    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
-               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak"):
-        monkeypatch.setattr(board, fn, lambda: [])
-    monkeypatch.setattr(board, "lint_adapter_drift", lambda: sentinel)
+    for module, fn, stub in (
+        (ticket_lint, "lint_dependencies", lambda home: []),
+        (body_lint, "lint_bodies", lambda home: []),
+        (body_lint, "lint_ideas", lambda home: []),
+        (wiki_lint, "lint_status", lambda home: []),
+        (wikilink_lint, "lint_wikilinks", lambda home: []),
+        (wikilink_lint, "lint_unstable_refs", lambda home: []),
+        (wiki_lint, "lint_scopes", lambda home: []),
+        (doc_lint, "lint_domain", lambda home: []),
+        (wiki_lint, "lint_adr_lifecycle", lambda home: []),
+        (freshness_lint, "lint_architecture_freshness", lambda home: []),
+        (board, "lint_render_leak", lambda: []),
+    ):
+        monkeypatch.setattr(module, fn, stub)
+    monkeypatch.setattr(conf_lint, "lint_adapter_drift", lambda home: sentinel)
     assert sentinel[0] in board.lint_tickets()
 
 
@@ -2842,9 +2832,16 @@ def test_gate_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
     # `areas-merge-union`(T-0418) advisory 가 같이 잡혀 이 테스트의 kind 단언이 흐려진다.
     (tmp_path / ".gitattributes").write_text(
         ".project_manager/areas.md merge=union\n", encoding="utf-8")
-    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-               "lint_wikilinks", "lint_unstable_refs", "_run_lint_hooks"):
-        monkeypatch.setattr(board, fn, lambda: [])
+    for module, fn, stub in (
+        (ticket_lint, "lint_dependencies", lambda home: []),
+        (body_lint, "lint_bodies", lambda home: []),
+        (body_lint, "lint_ideas", lambda home: []),
+        (wiki_lint, "lint_status", lambda home: []),
+        (wikilink_lint, "lint_wikilinks", lambda home: []),
+        (wikilink_lint, "lint_unstable_refs", lambda home: []),
+        (lint_hooks, "_run_lint_hooks", lambda home: []),
+    ):
+        monkeypatch.setattr(module, fn, stub)
     issues = board.lint_tickets()
     assert [k for _n, k, _d in issues] == ["areas-duplicate-repo"]
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
@@ -2854,12 +2851,22 @@ def test_gate_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
 def test_lint_tickets_includes_areas_duplicate_repo(board, monkeypatch):
     """lint_tickets 통합 — areas-duplicate-repo finding 이 전체 보고에 포함된다."""
     sentinel = [("svc", "areas-duplicate-repo", "sentinel")]
-    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
-               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak", "lint_adapter_drift"):
-        monkeypatch.setattr(board, fn, lambda: [])
-    monkeypatch.setattr(board, "lint_areas_duplicate_repo", lambda: sentinel)
+    for module, fn, stub in (
+        (ticket_lint, "lint_dependencies", lambda home: []),
+        (body_lint, "lint_bodies", lambda home: []),
+        (body_lint, "lint_ideas", lambda home: []),
+        (wiki_lint, "lint_status", lambda home: []),
+        (wikilink_lint, "lint_wikilinks", lambda home: []),
+        (wikilink_lint, "lint_unstable_refs", lambda home: []),
+        (wiki_lint, "lint_scopes", lambda home: []),
+        (doc_lint, "lint_domain", lambda home: []),
+        (wiki_lint, "lint_adr_lifecycle", lambda home: []),
+        (freshness_lint, "lint_architecture_freshness", lambda home: []),
+        (board, "lint_render_leak", lambda: []),
+        (conf_lint, "lint_adapter_drift", lambda home: []),
+    ):
+        monkeypatch.setattr(module, fn, stub)
+    monkeypatch.setattr(areas_lint, "lint_areas_duplicate_repo", lambda home: sentinel)
     assert sentinel[0] in board.lint_tickets()
 
 
@@ -2925,8 +2932,8 @@ def test_lint_survives_a_broken_ticket(board, monkeypatch, tmp_path, capsys):
     _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
     _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
 
-    assert board.lint_bodies() == []                    # 정상 티켓은 그대로 판정된다
-    assert board._all_tickets() == [("open", {
+    assert body_lint.lint_bodies(board._home()) == []                    # 정상 티켓은 그대로 판정된다
+    assert ticket_store._all_tickets(board._home()) == [("open", {
         "id": "T-0001", "title": "정상 티켓", "status": "open", "depends_on": []})]
     assert "T-0002" in capsys.readouterr().err
 
@@ -2935,6 +2942,7 @@ def test_list_survives_a_broken_ticket(board, monkeypatch, tmp_path, capsys):
     """`list` 도 손상 1건을 건너뛰고 나머지를 출력한다 (보드 전체 조회 불능 폐쇄)."""
     _wire_repo(board, monkeypatch, tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
+    monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "_git_config_email", lambda: None)
     _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
     _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
@@ -3143,6 +3151,7 @@ def test_default_list_view_survives_a_non_mapping_frontmatter_ticket(
     pm = tmp_path / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
+    monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "AREAS_FILE", pm / "areas.md")
     monkeypatch.setattr(board, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
     (pm / "local.conf").write_text("session=pm_1\nidentity.user=tester\n", encoding="utf-8")
@@ -3283,8 +3292,8 @@ def test_round_problem_kinds_are_the_seam_codes_and_never_block(board):
     for code in (round_rules.PROBLEM_NAME, round_rules.PROBLEM_GAP,
                  round_rules.PROBLEM_DUPLICATE, round_rules.PROBLEM_PENDING):
         assert code in board._ADVISORY_LINT_KINDS, code
-    for kind in (board._ROUND_TEMPORARY_LINT_KIND, board._ROUND_STRAY_LINT_KIND,
-                 board._ROUND_UNREADABLE_LINT_KIND):
+    for kind in (ticket_lint._ROUND_TEMPORARY_LINT_KIND, ticket_lint._ROUND_STRAY_LINT_KIND,
+                 ticket_lint._ROUND_UNREADABLE_LINT_KIND):
         assert kind in board._ADVISORY_LINT_KINDS, kind
 
 
@@ -3297,7 +3306,7 @@ def test_lint_rounds_surfaces_gap_and_pending(board, monkeypatch, tmp_path):
                 round_seed.render_round_seed(
                     "code-reviewer", path.read_text(encoding="utf-8"), today="2026-01-02"))
 
-    issues = board.lint_rounds()
+    issues = ticket_lint.lint_rounds(board._home())
 
     kinds = {kind for _name, kind, _detail in issues}
     assert kinds == {round_rules.PROBLEM_GAP, round_rules.PROBLEM_PENDING}, issues
@@ -3324,7 +3333,7 @@ def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
     _lint_round(board, "T-3020", "02-code-reviewer.md", seed)
     _lint_round(board, "T-3020", "03-code-reviewer.md", seed + marker + "\n")
 
-    issues = board.lint_rounds()
+    issues = ticket_lint.lint_rounds(board._home())
 
     assert [(name, kind) for name, kind, _detail in issues] == [
         ("T-3020", round_rules.PROBLEM_PENDING)]
@@ -3341,10 +3350,10 @@ def test_lint_rounds_reports_engine_temporary_leftovers(board, monkeypatch, tmp_
                 f"{round_store.ROUND_TEMPORARY_SUFFIX}")
     _lint_round(board, "T-3002", leftover, "부분 쓰기\n")
 
-    issues = board.lint_rounds()
+    issues = ticket_lint.lint_rounds(board._home())
 
     assert [(name, kind) for name, kind, _detail in issues] == [
-        ("T-3002", board._ROUND_TEMPORARY_LINT_KIND)]
+        ("T-3002", ticket_lint._ROUND_TEMPORARY_LINT_KIND)]
     assert leftover in issues[0][2]
 
 
@@ -3356,13 +3365,13 @@ def test_lint_rounds_is_clean_for_a_consistent_board(board, monkeypatch, tmp_pat
     _lint_round(board, "T-3003", "02-code-reviewer.md",
                 "## 리뷰 (code-reviewer · 2026-01-02)\n\n실제 리뷰.\n")
 
-    assert board.lint_rounds() == []
+    assert ticket_lint.lint_rounds(board._home()) == []
 
 
 def test_lint_rounds_without_a_rounds_directory_is_empty(board, monkeypatch, tmp_path):
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "open", "T-3004")
-    assert board.lint_rounds() == []
+    assert ticket_lint.lint_rounds(board._home()) == []
 
 
 def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_lands(
@@ -3392,7 +3401,7 @@ def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_land
         round_seed.render_round_seed("code-reviewer", spec_text, today="2026-01-02"),
     )
 
-    issues = board.lint_rounds()
+    issues = ticket_lint.lint_rounds(board._home())
 
     assert [(name, kind) for name, kind, _detail in issues] == [
         ("T-3011", round_rules.PROBLEM_PENDING)]
@@ -3410,10 +3419,10 @@ def test_lint_rounds_surfaces_a_file_sitting_where_a_ticket_directory_belongs(
     stray = round_store.rounds_dir(pm_paths.tickets_dir(board._home())) / "NOTES.md"
     stray.write_text("라운드 디렉터리가 아니다\n", encoding="utf-8")
 
-    issues = board.lint_rounds()
+    issues = ticket_lint.lint_rounds(board._home())
 
     assert [(name, kind) for name, kind, _detail in issues] == [
-        ("NOTES.md", board._ROUND_STRAY_LINT_KIND)]
+        ("NOTES.md", ticket_lint._ROUND_STRAY_LINT_KIND)]
     assert "NOTES.md" in issues[0][2]
 
 
@@ -3428,10 +3437,10 @@ def test_lint_rounds_fail_soft_boundary_is_one_ticket(board, monkeypatch, tmp_pa
     unreadable = round_store.rounds_dir(pm_paths.tickets_dir(board._home())) / "CON"
     unreadable.mkdir(parents=True, exist_ok=True)
 
-    issues = board.lint_rounds()
+    issues = ticket_lint.lint_rounds(board._home())
 
     assert sorted((name, kind) for name, kind, _detail in issues) == [
-        ("CON", board._ROUND_UNREADABLE_LINT_KIND),
+        ("CON", ticket_lint._ROUND_UNREADABLE_LINT_KIND),
         ("T-3013", round_rules.PROBLEM_PENDING),
     ]
 
@@ -3452,11 +3461,11 @@ def test_legacy_growth_section_blocks_and_names_the_migration(board, monkeypatch
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "done", "T-3005", body=_LEGACY_SECTION)
 
-    issues = board.lint_legacy_growth_sections()
+    issues = ticket_lint.lint_legacy_growth_sections(board._home())
 
     assert issues == [(
         "T-3005", "legacy-growth-section",
-        "본문에 구 역할 절 주석이 남아 있다 — " + board._LEGACY_GROWTH_MIGRATION_HINT)]
+        "본문에 구 역할 절 주석이 남아 있다 — " + ticket_lint._LEGACY_GROWTH_MIGRATION_HINT)]
     assert "legacy-growth-section" not in board._ADVISORY_LINT_KINDS, "차단 축이어야 한다"
     assert "v1.8.1" in issues[0][2]
     assert "라운드 파일로 옮기거나" in issues[0][2]
@@ -3470,7 +3479,7 @@ def test_legacy_growth_section_covers_every_status_and_drafts(board, monkeypatch
     _lint_ticket(board, ".drafts", "T-3007", body=_LEGACY_SECTION)
     _lint_ticket(board, "open", "T-3008")
 
-    names = sorted(name for name, _kind, _detail in board.lint_legacy_growth_sections())
+    names = sorted(name for name, _kind, _detail in ticket_lint.lint_legacy_growth_sections(board._home()))
     assert names == ["T-3006", "T-3007"]
 
 
@@ -3480,7 +3489,7 @@ def test_legacy_seal_comment_alone_is_enough_to_flag(board, monkeypatch, tmp_pat
     _lint_ticket(board, "done", "T-3009",
                  body="\n<!-- pm-ticket-seal role=developer ordinal=0 sha256=x by=harvest -->\n")
 
-    assert [kind for _n, kind, _d in board.lint_legacy_growth_sections()] == [
+    assert [kind for _n, kind, _d in ticket_lint.lint_legacy_growth_sections(board._home())] == [
         "legacy-growth-section"]
 
 
@@ -3490,7 +3499,7 @@ def test_legacy_growth_section_ignores_fenced_syntax_examples(board, monkeypatch
     fenced = "\n```\n" + _LEGACY_SECTION.strip("\n") + "\n```\n"
     _lint_ticket(board, "done", "T-3011", body=fenced)
 
-    assert board.lint_legacy_growth_sections() == []
+    assert ticket_lint.lint_legacy_growth_sections(board._home()) == []
 
 
 def test_migrated_board_has_no_legacy_findings(board, monkeypatch, tmp_path):
@@ -3499,8 +3508,8 @@ def test_migrated_board_has_no_legacy_findings(board, monkeypatch, tmp_path):
     _lint_round(board, "T-3010", "01-developer.md",
                 "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
 
-    assert board.lint_legacy_growth_sections() == []
-    assert board.lint_rounds() == []
+    assert ticket_lint.lint_legacy_growth_sections(board._home()) == []
+    assert ticket_lint.lint_rounds(board._home()) == []
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3538,7 +3547,7 @@ def test_lint_claim_identity_flags_open_with_claimed_by(board, monkeypatch, tmp_
     _ticket(board, "open", "T-0001",
             _open_with_claimed_by_text("T-0001", claimed_by="alice/pm-1"))
 
-    issues = board.lint_claim_identity()
+    issues = ticket_lint.lint_claim_identity(board._home())
     assert [(tid, kind) for tid, kind, _detail in issues] == [
         ("T-0001", "open-claimed-contradiction")]
 
@@ -3553,7 +3562,7 @@ def test_lint_claim_identity_no_false_positive_on_healthy_shapes(board, monkeypa
             _blocked_with_claimed_by_text("T-0003", claimed_by="alice/pm-1"))
     _ticket(board, "blocked", "T-0004", _blocked_without_claimed_by_text("T-0004"))
 
-    assert board.lint_claim_identity() == []
+    assert ticket_lint.lint_claim_identity(board._home()) == []
 
 
 def test_lint_tickets_surfaces_claim_identity_contradiction(board, monkeypatch, tmp_path):
@@ -3595,7 +3604,7 @@ def test_lint_claim_identity_flags_claimed_by_alone(board, monkeypatch, tmp_path
     _ticket(board, "open", "T-0001",
             _open_claimed_by_only_text("T-0001", claimed_by="alice/pm-1"))
 
-    issues = board.lint_claim_identity()
+    issues = ticket_lint.lint_claim_identity(board._home())
     assert [(tid, kind) for tid, kind, _detail in issues] == [
         ("T-0001", "open-claimed-contradiction")]
     assert "claimed_by" in issues[0][2]
@@ -3607,7 +3616,7 @@ def test_lint_claim_identity_flags_claimed_at_alone(board, monkeypatch, tmp_path
     _ticket(board, "open", "T-0001",
             _open_claimed_at_only_text("T-0001", claimed_at="2026-08-01T00:00:00+00:00"))
 
-    issues = board.lint_claim_identity()
+    issues = ticket_lint.lint_claim_identity(board._home())
     assert [(tid, kind) for tid, kind, _detail in issues] == [
         ("T-0001", "open-claimed-contradiction")]
     assert "claimed_at" in issues[0][2]
@@ -3619,7 +3628,7 @@ def test_lint_claim_identity_flags_claimed_rev_alone(board, monkeypatch, tmp_pat
     _ticket(board, "open", "T-0001",
             _open_claimed_rev_only_text("T-0001", claimed_rev="abc123"))
 
-    issues = board.lint_claim_identity()
+    issues = ticket_lint.lint_claim_identity(board._home())
     assert [(tid, kind) for tid, kind, _detail in issues] == [
         ("T-0001", "open-claimed-contradiction")]
     assert "claimed_rev" in issues[0][2]
@@ -3653,7 +3662,7 @@ def test_lint_claim_identity_no_false_positive_on_realistic_open_ticket_shape(
     _wire_repo(board, monkeypatch, tmp_path)
     _ticket(board, "open", "T-0001", _realistic_open_ticket_text("T-0001"))
 
-    assert board.lint_claim_identity() == []
+    assert ticket_lint.lint_claim_identity(board._home()) == []
 
 
 def test_lint_claim_identity_still_flags_contradiction_alongside_realistic_healthy_ticket(
@@ -3665,7 +3674,7 @@ def test_lint_claim_identity_still_flags_contradiction_alongside_realistic_healt
     _ticket(board, "open", "T-0002",
             _open_with_claimed_by_text("T-0002", claimed_by="alice/pm-1"))
 
-    issues = board.lint_claim_identity()
+    issues = ticket_lint.lint_claim_identity(board._home())
     assert [(tid, kind) for tid, kind, _detail in issues] == [
         ("T-0002", "open-claimed-contradiction")]
 
@@ -3678,8 +3687,9 @@ def test_missing_required_surfaces_as_an_advisory_finding(board, monkeypatch, tm
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
+    monkeypatch.setattr(board, "REPO", tmp_path)
 
-    findings = board.lint_local_conf_required()
+    findings = conf_lint.lint_local_conf_required(board._home())
 
     assert len(findings) == 1, findings
     where, kind, detail = findings[0]
@@ -3687,14 +3697,22 @@ def test_missing_required_surfaces_as_an_advisory_finding(board, monkeypatch, tm
     assert "test.cmd" in detail and "runtime.py" not in detail
     assert "--keys" in detail
     # 기존 축은 그대로다 — 같은 conf 에서 모르는-키 판정은 여전히 그 키만 낸다.
-    assert _kinds(board.lint_local_conf_keys()) == ["local-conf-unknown-key"]
+    assert _kinds(conf_lint.lint_local_conf_keys(board._home())) == ["local-conf-unknown-key"]
 
 
 _UNRELATED_LINT_FNS = (
-    "lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-    "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
-    "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-    "lint_render_leak", "_run_lint_hooks",
+    (ticket_lint, "lint_dependencies", lambda home: []),
+    (body_lint, "lint_bodies", lambda home: []),
+    (body_lint, "lint_ideas", lambda home: []),
+    (wiki_lint, "lint_status", lambda home: []),
+    (wikilink_lint, "lint_wikilinks", lambda home: []),
+    (wikilink_lint, "lint_unstable_refs", lambda home: []),
+    (wiki_lint, "lint_scopes", lambda home: []),
+    (doc_lint, "lint_domain", lambda home: []),
+    (wiki_lint, "lint_adr_lifecycle", lambda home: []),
+    (freshness_lint, "lint_architecture_freshness", lambda home: []),
+    (None, "lint_render_leak", lambda: []),
+    (lint_hooks, "_run_lint_hooks", lambda home: []),
 )
 
 
@@ -3706,8 +3724,9 @@ def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypat
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("project.name=x\n", encoding="utf-8")
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    for fn in _UNRELATED_LINT_FNS:
-        monkeypatch.setattr(board, fn, lambda: [])
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    for module, fn, stub in _UNRELATED_LINT_FNS:
+        monkeypatch.setattr(board if module is None else module, fn, stub)
 
     kinds = _kinds(board.lint_tickets())
 
@@ -3719,7 +3738,8 @@ def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypat
 def test_no_local_conf_file_reports_no_missing_required(board, monkeypatch, tmp_path):
     """conf 부재는 정상 형상이다 — 없는 파일에 필수 누락을 씌우지 않는다."""
     monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
-    assert board.lint_local_conf_required() == []
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    assert conf_lint.lint_local_conf_required(board._home()) == []
 
 
 def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
@@ -3732,7 +3752,7 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
 
     board._write_init_local_conf()
 
-    assert board.lint_local_conf_required() == []
+    assert conf_lint.lint_local_conf_required(board._home()) == []
     conf_module = conf_schema
     assert conf_module.missing_required(conf_store.load(pm / "local.conf").values) == ()
 
@@ -3753,22 +3773,24 @@ def _unreadable_conf(tmp_path: Path) -> Path:
 def test_unreadable_local_conf_surfaces_one_advisory_finding(board, monkeypatch, tmp_path):
     """읽지 못한 conf 는 1줄 advisory 다 — 값 축 kind 들은 침묵한다(같은 사실 재진술 0)."""
     monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+    monkeypatch.setattr(board, "REPO", tmp_path)
 
-    findings = board.lint_local_conf_readable()
+    findings = conf_lint.lint_local_conf_readable(board._home())
 
     assert len(findings) == 1, findings
     _where, kind, detail = findings[0]
     assert kind == "local-conf-unreadable"
     assert "읽지 못했다" in detail and "인코딩" in detail
-    assert board.lint_local_conf_keys() == []
-    assert board.lint_local_conf_required() == []
+    assert conf_lint.lint_local_conf_keys(board._home()) == []
+    assert conf_lint.lint_local_conf_required(board._home()) == []
 
 
 def test_no_local_conf_file_reports_nothing_unreadable(board, monkeypatch, tmp_path):
     """파일 부재는 관측 없음이다 — 없는 파일을 못 읽었다고 말하지 않는다."""
     monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
+    monkeypatch.setattr(board, "REPO", tmp_path)
 
-    assert board.lint_local_conf_readable() == []
+    assert conf_lint.lint_local_conf_readable(board._home()) == []
 
 
 def test_readable_local_conf_reports_nothing_unreadable(board, monkeypatch, tmp_path):
@@ -3777,8 +3799,9 @@ def test_readable_local_conf_reports_nothing_unreadable(board, monkeypatch, tmp_
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("runtime.py=python3\ntest.cmd=pytest -q\n", encoding="utf-8")
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
+    monkeypatch.setattr(board, "REPO", tmp_path)
 
-    assert board.lint_local_conf_readable() == []
+    assert conf_lint.lint_local_conf_readable(board._home()) == []
 
 
 def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tmp_path):
@@ -3790,10 +3813,11 @@ def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tm
     assert "local-conf-unreadable" in board._ADVISORY_LINT_KINDS
     _wire_repo(board, monkeypatch, tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
-    for fn in _UNRELATED_LINT_FNS:
-        monkeypatch.setattr(board, fn, lambda: [])
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    for module, fn, stub in _UNRELATED_LINT_FNS:
+        monkeypatch.setattr(board if module is None else module, fn, stub)
 
-    assert board.lint_adapter_drift() == []      # 같은 seam — 못 읽었다고 두 번 말하지 않는다
+    assert conf_lint.lint_adapter_drift(board._home()) == []      # 같은 seam — 못 읽었다고 두 번 말하지 않는다
     kinds = _kinds(board.lint_tickets())
 
     assert kinds.count("local-conf-unreadable") == 1, kinds
@@ -3833,9 +3857,10 @@ def test_the_real_lint_command_reaches_the_advisory(tmp_path):
 def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
     """판독 seam 은 `local_conf.load_strict` 를 부른다 — 삼키는 `load` 로 돌아가면 red."""
     monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+    monkeypatch.setattr(board, "REPO", tmp_path)
 
-    with pytest.raises(board.LocalConfUnreadable):
-        board._lint_local_conf_read()
+    with pytest.raises(conf_lint.LocalConfUnreadable):
+        conf_lint._lint_local_conf_read(board._home())
 
 
 # ════════════════════════════════════════════════════════════════════════

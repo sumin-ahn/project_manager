@@ -30,7 +30,7 @@ from pathlib import Path, PureWindowsPath
 import pytest
 from _pytest_summary import pytest_summary
 from pm_engine.domain import identity_args
-from pm_engine.infra import areas_store, conf_store, pm_paths, raw_output
+from pm_engine.infra import areas_store, conf_store, log_store, pm_paths, raw_output
 from pm_engine.app import slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
@@ -2027,7 +2027,7 @@ def test_same_session_dry_run_previews_update_without_writes(hf, tmp_path, capsy
     assert "기계 소유 구획 갱신 미리보기" in out
 
 
-def test_log_plan_and_append_share_one_lock_critical_section(hf, tmp_path):
+def test_log_plan_and_append_share_one_lock_critical_section(hf, tmp_path, monkeypatch):
     """첫 append 판정과 실제 O_APPEND가 같은 shared-lock 구간에 있다(TOCTOU 구조 차단)."""
     current = tmp_path / "current.md"
     events = []
@@ -2058,6 +2058,8 @@ def test_log_plan_and_append_share_one_lock_critical_section(hf, tmp_path):
             Path(path).write_bytes(text.encode("utf-8"))
 
     fake = FakePmLog()
+    monkeypatch.setattr(log_store, "log_write_lock", fake.log_write_lock)
+    monkeypatch.setattr(log_store, "append_log_locked", fake.append_log_locked)
     first = hf._commit_handoff_log_change(
         current, session_num=7, date="2026-08-07", session=None, task=None, pm_log_module=fake,
     )

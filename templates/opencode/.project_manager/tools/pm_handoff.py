@@ -58,7 +58,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, pytest_report  # noqa: E402
-from pm_engine.infra import areas_store, console, fs, lease_store, pm_paths, raw_output, repo_files  # noqa: E402
+from pm_engine.infra import areas_store, console, fs, lease_store, log_store, pm_paths, raw_output, repo_files  # noqa: E402
 from pm_engine.app import regression, slot_resolution  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -785,12 +785,12 @@ def _commit_handoff_log_change(
     """handoff log 판정과 append/replace를 공유 lock 한 구간에서 원자화한다.
 
     반환은 ``(same_session_rerun, preview, warning)``. ``pm_log_module``은 lock 보유 중
-    append가 실행되는지를 결정적으로 검증하는 테스트 DI seam이다.
+    교체 쓰기(`_replace_atomic`)를 대신하는 테스트 DI seam이다.
     """
     pm_log = pm_log_module or _load_pm_log()
     log_file = Path(log_file)
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    with pm_log.log_write_lock(log_file):
+    with log_store.log_write_lock(log_file):
         log_text = _read_log_text_exact(log_file) if log_file.exists() else ""
         same_session_rerun, payload, preview, warning = _prepare_handoff_log_change(
             log_text,
@@ -803,7 +803,7 @@ def _commit_handoff_log_change(
         if same_session_rerun:
             pm_log._replace_atomic(log_file, payload)
         else:
-            pm_log.append_log_locked(log_file, payload)
+            log_store.append_log_locked(log_file, payload)
     return same_session_rerun, preview, warning
 
 

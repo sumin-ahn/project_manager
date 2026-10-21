@@ -36,10 +36,9 @@ import pytest
 from _git_fixture import init_git_repo
 
 from conftest import anchor_board_module, bind_product_cluster
-from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.infra import pm_paths, round_store, ticket_store
 from pm_engine.domain import round_rules
-from pm_engine.infra import round_store
-from pm_engine.app import round_seed
+from pm_engine.app import body_lint, round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -104,7 +103,7 @@ def _body(extra: str = "", *, design_section: str = "") -> str:
 
 def _issues(mod, body, *, touches=None, design=None, tid="T-0001", content_facts=True):
     """새 축만 남긴 판정 목록 — 형식 게이트 kind 는 걸러낸다."""
-    found = mod._body_lint_issues(
+    found = body_lint._body_lint_issues(mod._home(),
         tid, body, design=design, touches=touches, content_facts=content_facts)
     return [(kind, detail) for _tid, kind, detail in found if kind in _NEW_KINDS]
 
@@ -170,7 +169,7 @@ def test_missing_touches_is_one_warning_line_and_never_blocks(anchored, tmp_path
         f"부재 touches 는 경로 수와 무관하게 1줄이어야 한다: {issues!r}")
     detail = issues[0][1]
     assert "tests/test_new.py" in detail and "tools/absent.py" in detail
-    assert "touches-missing" in board_mod._PROMOTE_ADVISORY_KINDS, \
+    assert "touches-missing" in body_lint._PROMOTE_ADVISORY_KINDS, \
         "touches 부재가 차단 축으로 승격됨 — 신설 예정 파일 발행이 막힌다."
 
 
@@ -206,7 +205,7 @@ def test_citation_beyond_line_count_is_blocking(anchored, tmp_path):
     issues = _issues(anchored, body)
     assert _kinds(issues) == ["citation-unresolved"], issues
     assert "3줄" in issues[0][1], "실측 줄 수가 메시지에 없다."
-    assert "citation-unresolved" not in board_mod._PROMOTE_ADVISORY_KINDS
+    assert "citation-unresolved" not in body_lint._PROMOTE_ADVISORY_KINDS
 
 
 def test_citation_missing_file_under_existing_anchor_is_blocking(anchored, tmp_path):
@@ -251,7 +250,7 @@ def test_subdirectory_citation_with_no_file_anywhere_is_blocking(
         _write(tmp_path, stored, "a\n")
     issues = _issues(anchored, _body(f"- 근거 `{cited}:1`\n"))
     assert _kinds(issues) == ["citation-unresolved"], issues
-    assert "citation-unresolved" not in board_mod._PROMOTE_ADVISORY_KINDS
+    assert "citation-unresolved" not in body_lint._PROMOTE_ADVISORY_KINDS
 
 
 def test_subdirectory_citation_with_several_copies_is_counted_not_judged(
@@ -372,7 +371,7 @@ def test_design_done_without_architect_round_is_blocking(anchored):
     """`design: done` 인데 점검 라운드가 없으면 차단 — 아무도 본문을 안 본 승격을 막는다."""
     issues = _issues(anchored, _body(design_section=_DESIGN_FILLED), design="done")
     assert _kinds(issues) == ["architect-review-pending"], issues
-    assert "architect-review-pending" not in board_mod._PROMOTE_ADVISORY_KINDS
+    assert "architect-review-pending" not in body_lint._PROMOTE_ADVISORY_KINDS
 
 
 def test_seed_only_architect_round_is_blocking(anchored):
@@ -442,7 +441,7 @@ def test_global_lint_does_not_surface_the_new_kinds(anchored, tmp_path):
         "id": "T-0002", "title": "x", "status": "open", "design": "done",
         "touches": ["tools/absent.py"], "depends_on": [], "blocks": [], "tags": [],
     }, body)
-    kinds = {kind for _tid, kind, _detail in anchored.lint_bodies()}
+    kinds = {kind for _tid, kind, _detail in body_lint.lint_bodies(anchored._home())}
     assert not (kinds & _NEW_KINDS), f"전역 lint 에 새 kind 가 샜다: {kinds!r}"
 
 
@@ -600,7 +599,7 @@ def test_citation_index_excludes_tracked_but_working_tree_missing_paths(tmp_path
     untracked.write_text("y\n", encoding="utf-8")  # 미추적·비무시.
 
     prose = "인용 `wiki/real.md:2` · 인용 `wiki/evidence.md:1` · 인용 `wiki/fresh.md:1`"
-    issues, unverifiable = mod._citation_issues("T-TEST", prose, (root,))
+    issues, unverifiable = body_lint._citation_issues("T-TEST", prose, (root,))
 
     assert unverifiable == 0, "tracked-but-missing 은 판정불능 강등이 아니라 차단이어야 한다"
     kinds = [(kind, detail) for _tid, kind, detail in issues]
@@ -658,11 +657,11 @@ def test_advisory_classification_is_what_keeps_the_warning_from_blocking(
     board_dir = board_git._board_dir
     tid = _fill_draft(board_git, board_dir, _body(), touches=["tests/test_new.py"])
 
-    monkeypatch.setattr(board_git, "_PROMOTE_ADVISORY_KINDS", frozenset())
+    advisory_kinds = body_lint._PROMOTE_ADVISORY_KINDS
+    monkeypatch.setattr(body_lint, "_PROMOTE_ADVISORY_KINDS", frozenset())
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1, \
         "비차단 집합을 비웠는데도 통과 — 경고가 판정되지 않고 있다(가드 무발화)."
 
-    monkeypatch.setattr(board_git, "_PROMOTE_ADVISORY_KINDS",
-                        board_mod._PROMOTE_ADVISORY_KINDS)
+    monkeypatch.setattr(body_lint, "_PROMOTE_ADVISORY_KINDS", advisory_kinds)
     bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0

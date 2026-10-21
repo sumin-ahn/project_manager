@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import conf_store, pre_push_hook, python_env
+from pm_engine.app import conf_lint, doc_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -80,7 +81,7 @@ def test_lint_delegate_surfaces_advisory(board, monkeypatch):
         "delegate.code-reviewer.harness": "claude", "delegate.code-reviewer.model": "gpt-x",
     }
     monkeypatch.setattr(conf_store, "local_config", lambda _home: same)
-    findings = board.lint_delegate()
+    findings = conf_lint.lint_delegate(board._home())
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "delegate-same-model"
@@ -92,9 +93,9 @@ def test_lint_delegate_clean_no_finding(board, monkeypatch):
     """모델 상이·미설정이면 lint_delegate 는 finding 0(솔로/미사용 무영향)."""
     monkeypatch.setattr(conf_store, "local_config", lambda _home: {
         "delegate.developer.model": "gpt-x", "delegate.code-reviewer.model": "opus"})
-    assert board.lint_delegate() == []
+    assert conf_lint.lint_delegate(board._home()) == []
     monkeypatch.setattr(conf_store, "local_config", lambda _home: {})
-    assert board.lint_delegate() == []
+    assert conf_lint.lint_delegate(board._home()) == []
 
 
 def _same_model_conf() -> dict:
@@ -107,7 +108,8 @@ def _same_model_conf() -> dict:
 def test_lint_tickets_wires_delegate(board, monkeypatch):
     """실제 lint_tickets() 가 delegate 경고를 포함한다(배선 직접 검증·blocking 필터 재구현 아님)."""
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)  # 실 DOMAIN_DIR 스캔 격리.
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # 실 DOMAIN_DIR 스캔 격리.
+    monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
     kinds = {kind for _label, kind, _detail in board.lint_tickets()}
     assert "delegate-same-model" in kinds
 
@@ -115,7 +117,8 @@ def test_lint_tickets_wires_delegate(board, monkeypatch):
 def test_cmd_lint_gate_delegate_is_advisory_exit0(board, monkeypatch, capsys):
     """실제 cmd_lint(--gate) 는 delegate 동일-모델 경고만 있을 때 종료코드 0(advisory·never-block)."""
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)  # advisory 격리(gate 산술만).
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # advisory 격리(gate 산술만).
+    monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
     rc = board.cmd_lint(argparse.Namespace(gate=True))
     assert rc == 0                                          # block_count 0 → gate 통과
     out = capsys.readouterr().out
