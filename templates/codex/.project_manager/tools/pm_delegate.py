@@ -9359,7 +9359,7 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
 
 
 class ClusterReviewInput(NamedTuple):
-    """묶음 리뷰 1회의 입력 좌표 — 브랜치 diff 와 그 범위."""
+    """묶음 리뷰 1회의 브랜치 좌표와 변경 파일 목록."""
 
     cluster: str
     members: tuple[str, ...]
@@ -9367,7 +9367,6 @@ class ClusterReviewInput(NamedTuple):
     branch: str
     merge_base: str
     paths: tuple[str, ...]
-    diff: str
 
 
 class ClusterReviewSources(NamedTuple):
@@ -9450,18 +9449,17 @@ def cluster_review_input(
         )
     span = f"{merge_base}..{branch}"
     paths = tuple(
-        line.strip() for line in _cluster_git(
-            repo, "diff", "--name-only", span, git_run_fn=git_run_fn,
-        ).splitlines() if line.strip()
+        path for path in _cluster_git(
+            repo, "diff", "--name-only", "-z", span, git_run_fn=git_run_fn,
+        ).split("\0") if path
     )
-    diff = _cluster_git(repo, "diff", span, git_run_fn=git_run_fn)
-    if not diff.strip():
+    if not paths:
         raise delegate_errors.DelegateError(
             f"리뷰할 diff 가 없습니다: {span} — 묶음 브랜치에 이 주기의 변경이 없습니다"
             "(dev 라운드 산출이 묶음 브랜치에 올라와 있는지 확인하세요)"
         )
     review = ClusterReviewInput(
-        cluster, members, base_branch, branch, merge_base, paths, diff,
+        cluster, members, base_branch, branch, merge_base, paths,
     )
     assert_cluster_review_tree(review, repo=repo, git_run_fn=git_run_fn)
     return review
@@ -9473,7 +9471,7 @@ def assert_cluster_review_tree(
 ) -> None:
     """리뷰 대상 트리가 묶음 브랜치이고 작업 트리 변경이 0 인지 결속한다(준비 트리 조건 · fail-closed).
 
-    프롬프트가 싣는 diff 는 장부 브랜치의 `merge-base..tip` 이고, 리뷰어가 실제로 읽는 파일은
+    프롬프트의 비교 범위는 장부 브랜치의 `merge-base..tip` 이고, 리뷰어가 실제로 읽는 파일은
     이 트리의 내용이다. 트리가 그 브랜치가 아니거나 커밋되지 않은 변경이 있으면 둘이 서로 다른
     코드가 되어 판정 전체가 헛돈다. 브랜치 대조 seam 은 확인 커맨드 실행 트리와 같은 하나다
     (`git._cluster_current_branch`).
@@ -9520,17 +9518,18 @@ def build_cluster_review_prompt(
     external = _load_additional_reviewer()
     header = (
         f"## 리뷰 단위: {review.cluster} (티켓 {len(review.members)})\n\n"
-        f"- 리뷰 대상 트리: {tree} (브랜치 {review.branch})\n"
-        f"- 명령 실행 위치: git 은 `git -C {tree} ...`, 테스트는 `cd {tree} && ...` 로 "
-        "이 트리에서 실행한다\n"
         "- 준비 뒤 이 트리의 HEAD 나 작업 트리를 바꾸면 돌려받기가 거부된다(라운드 파일만 쓴다 · "
         "임시 수정은 종료 전에 되돌린다)\n"
         f"- 리뷰 입력: {review.base_branch} 와 {review.branch} 의 merge-base "
-        f"({review.merge_base[:12]}) 이후 {review.branch} 변경 전부\n"
-        f"- 변경 파일 {len(review.paths)}건: {', '.join(review.paths)}\n\n"
+        f"({review.merge_base[:12]}) 이후 {review.branch} 변경 전부\n\n"
     )
     return header + external.build_prompt(
-        review.diff,
+        tree=tree, base=review.merge_base, target=f"브랜치 {review.branch}",
+        changed_paths=review.paths,
+        read_commands=[(
+            "git", "-C", str(tree.resolve()), "--no-pager", "diff", "--no-ext-diff",
+            "--no-color", f"{review.merge_base}..{review.branch}", "--",
+        )],
         ticket_bodies=[(ticket, specs[ticket]) for ticket in review.members],
         focus=focus,
         versioned_block=False,

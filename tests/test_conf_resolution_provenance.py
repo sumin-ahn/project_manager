@@ -119,9 +119,14 @@ def _wire_external(external, monkeypatch, engine: Path, target: Path,
         external, "_resolve_diff_root", lambda *args, **kwargs: target,
     )
     monkeypatch.setattr(
-        external,
-        "extract_diff",
-        lambda *args, **kwargs: "diff --git a/x.py b/x.py\n-old\n+new\n",
+        external, "extract_diff",
+        lambda *args, **kwargs: external.ReviewDiff(
+            'diff --git a/x.py b/x.py\n-old\n+new\n',
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
     )
 
 

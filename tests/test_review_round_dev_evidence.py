@@ -597,7 +597,16 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     resolved.update(conf or {})
     monkeypatch.setattr(external, "REPO", pm_home)
     monkeypatch.setattr(external, "local_config", lambda repo=None: dict(resolved))
-    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: DIFF)
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *args, **kwargs: external.ReviewDiff(
+            DIFF,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     monkeypatch.setattr(
         external, "parse_ticket_touches", lambda ticket_id, pm_home=None: ["x.py"],
     )

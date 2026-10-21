@@ -171,8 +171,17 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda target, **kwargs: anchor,
     )
-    # extract_diff 는 diff 원문 하나만 돌려준다 — 스텁도 문자열이다.
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: "diff --git a/x b/x\n+y\n")
+    # 추출 대역도 본문과 필수 좌표를 함께 제공한다.
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *a, **k: external.ReviewDiff(
+            'diff --git a/x b/x\n+y\n',
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     called = {"reviewer": False}
 
     def _fake_run_review(*a, **k):

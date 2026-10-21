@@ -576,7 +576,7 @@ _AUTHORITATIVE_TICKET_CONTEXT = (
 _DEFAULT_CONTEXT_HEADER = f"""\
 ## 리뷰 맥락
 
-아래 diff 를 코드리뷰하라. 프로젝트 고유 맥락(`.project_manager/review_context.local.md`)이
+리뷰 입력 좌표의 명령으로 diff를 직접 읽고 코드리뷰하라. 프로젝트 고유 맥락(`.project_manager/review_context.local.md`)이
 설정돼 있으면 그 기준을 우선한다.
 
 {_AUTHORITATIVE_TICKET_CONTEXT}
@@ -1453,9 +1453,9 @@ def _utc_now_iso() -> str:
 
 
 def _target_rev_fingerprint(diff: str) -> str:
-    """리뷰어에게 실제 넘길 diff의 content revision (`sha256:<hex>`).
+    """선택된 diff 본문의 content revision (`sha256:<hex>`).
 
-    git HEAD 는 working tree의 staged/unstaged/untracked 변경을 식별하지 못한다. 프롬프트에 들어가는
+    git HEAD 는 working tree의 staged/unstaged/untracked 변경을 식별하지 못한다. 내부 측정한
     UTF-8 diff 바이트를 직접 해시하면 같은 미수정 diff의 동시 리뷰는 같은 좌표, 수정 뒤 리뷰는 새
     좌표를 얻는다."""
     return "sha256:" + hashlib.sha256(diff.encode("utf-8")).hexdigest()
@@ -3002,26 +3002,76 @@ def _stage_diff_text(
     return "".join(result.stdout for result in runs if result.returncode == 0)
 
 
+class ReviewDiff(NamedTuple):
+    """선택된 변경의 내부 본문과 리뷰어가 읽을 좌표."""
+
+    text: str
+    base: str
+    target: str
+    paths: tuple[str, ...]
+    read_commands: tuple[tuple[str, ...], ...]
+
+
 def extract_diff(
     base: str,
     paths: list[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-) -> str:
-    """git diff <base> -- <paths> 원문을 그대로 돌려준다.
+) -> ReviewDiff:
+    """기존 비교 단계에서 본문을 측정하고 같은 실행의 읽기 좌표를 반환한다."""
+    runner = run_fn or subprocess.run
 
-    리뷰어가 볼 수 있는 것과 PM 이 볼 수 있는 것을 다르게 두지 않는다 — 경로를 골라내 빼는 필터는
-    없다. 검토 범위는 인자(`--paths`/ticket touches)가 정한다.
+    def run(argv, **kwargs):
+        result = runner(argv, **kwargs)
+        if argv[3] == "ls-files" and result.returncode != 0:
+            raise RuntimeError(
+                f"git ls-files 실패 (rc={result.returncode}): {result.stderr.strip()}"
+            )
+        return result
 
-    폭은 `_diff_bases` 단계 표를 따른다(base 가 'HEAD' 면 스테이징+언스테이징, 비면 HEAD~1..HEAD).
-    run_fn — subprocess.run 대체 주입 (테스트용).
-    """
     for stage_base in _diff_bases(base):
-        raw_diff = _stage_diff_text(
-            REPO, stage_base, paths, run_fn, strict=base != "HEAD",
-        )
-        if raw_diff.strip():
-            return raw_diff
-    return raw_diff
+        runs = _stage_diff_runs(REPO, stage_base, paths, run)
+        raw_diff = "".join(result.stdout for result in runs if result.returncode == 0)
+        for result in runs:
+            if result.returncode != 0 and (
+                base != "HEAD" or stage_base == "HEAD" or raw_diff.strip()
+            ):
+                raise RuntimeError(
+                    f"git diff 실패 (rc={result.returncode}): {result.stderr.strip()}"
+                )
+        if not raw_diff.strip():
+            continue
+        changed_paths: dict[str, None] = {}
+        read_commands: list[tuple[str, ...]] = []
+        for result in runs:
+            argv = list(result.args)
+            diff_index = argv.index("diff")
+            names_argv = argv[:diff_index + 1] + ["--name-only", "-z"] + argv[diff_index + 1:]
+            names = run(names_argv, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+            if names.returncode != 0 and not (
+                "--no-index" in argv and names.returncode == _NO_INDEX_DIFFERENCES_RC
+            ):
+                raise RuntimeError(
+                    f"git diff 파일 목록 조회 실패 (rc={names.returncode}): {names.stderr.strip()}"
+                )
+            entries = tuple(path for path in names.stdout.split("\0") if path)
+            if result.stdout.strip() and not entries:
+                raise RuntimeError("git diff 본문과 변경 파일 목록이 일치하지 않습니다")
+            changed_paths.update(dict.fromkeys(entries))
+            read_commands.append(tuple(
+                argv[:diff_index] + ["--no-pager", "diff", "--no-ext-diff", "--no-color"]
+                + argv[diff_index + 1:]
+            ))
+        if stage_base == "HEAD":
+            target = "INDEX/WORKTREE (untracked 포함)"
+        elif stage_base == _COMMIT_FALLBACK_BASE:
+            target = f"HEAD (커밋 비교 {stage_base})"
+        elif ".." in stage_base:
+            target = f"커밋 비교 범위: {stage_base}"
+        else:
+            target = f"Git 비교식: {stage_base} (index/작업트리 비교 시 untracked 미포함)"
+        return ReviewDiff(raw_diff, stage_base, target, tuple(changed_paths), tuple(read_commands))
+    return ReviewDiff(raw_diff, stage_base, "변경 없음", (), ())
 
 
 # ── ticket touches 파싱 ───────────────────────────────────────────────────
@@ -3319,11 +3369,15 @@ def _load_review_context() -> str:
 
 
 def build_prompt(
-    diff: str,
     ticket_body: str | None = None,
     adr_refs: list[str] | None = None,
     gate: str | None = None,
     *,
+    tree: Path,
+    base: str,
+    target: str,
+    changed_paths: Sequence[str],
+    read_commands: Sequence[Sequence[str]],
     ticket_id: str | None = None,
     next_finding_id: str | None = None,
     confirmation_ids: Sequence[str] | None = None,
@@ -3331,7 +3385,7 @@ def build_prompt(
     focus: str | None = None,
     versioned_block: bool = True,
 ) -> str:
-    """맥락 헤더 + 티켓 본문 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
+    """검토 맥락과 리뷰 입력 좌표로 표준 프롬프트를 생성한다.
 
     `next_finding_id` 는 회수 대상 티켓에서 읽은 이 채널의 다음 ID 실값이고,
     `confirmation_ids` 는 그 티켓에서 확인할 수 있는 ID 실값 목록이다(빈 목록 = 확인 대상 없음).
@@ -3364,13 +3418,22 @@ def build_prompt(
     if focus and focus.strip():
         parts.append("### PM 검토 중점\n")
         parts.append(focus.strip() + "\n\n")
-    parts.append("### 리뷰 대상 diff\n")
-    if diff.strip():
-        parts.append("```diff\n")
-        parts.append(diff)
-        parts.append("```\n")
-    else:
-        parts.append("(변경 diff 없음 — 경로에 해당하는 변경사항이 없거나 base 와 동일)\n")
+    parts.append("### 리뷰 입력 좌표\n")
+    parts.append(f"- 리뷰 대상 트리: {tree.resolve()} ({target})\n")
+    parts.append(f"- 기준: {base}\n")
+    parts.append(f"- 변경 파일 {len(changed_paths)}건: "
+                 + json.dumps(list(changed_paths), ensure_ascii=False) + "\n\n")
+    parts.append("### 리뷰 입력 확인\n")
+    parts.append(
+        "다음 명령으로 대상 트리의 diff를 직접 읽고 변경 파일과 필요한 주변 코드를 검토한다. "
+        "출력이 길면 명령의 pathspec 범위 안에서 파일별로 나누어 읽는다. "
+        "명령 실패나 트리 불일치는 변경 없음으로 처리하지 않고 판정 불가 사유로 보고한다. "
+        "코드와 git 상태를 수정하지 않는다. "
+        "`--no-index` 명령의 rc=1은 차이가 있음을 뜻한다.\n\n"
+    )
+    delegate = _load_delegate_transport()
+    for argv in read_commands:
+        parts.append("```sh\n" + delegate.render_shell_command(argv) + "\n```\n")
     return "".join(parts)
 
 
@@ -4098,8 +4161,8 @@ def _structured_transport(
     """구조화 대상의 (argv, stdin) 을 준비하고 임시 자원을 **모든 종료 경로**에서 정리한다.
 
     codex/claude 는 프롬프트를 stdin 으로 받으므로 준비할 자원이 없다. opencode 만 `--file` 첨부라
-    리뷰 sandbox 하위에 0600 프롬프트 파일을 만들고(프롬프트에는 검토 대상 diff 원문이 들어간다 —
-    다른 사용자에게 읽히면 안 된다) 실행 성공·실패·예외 무관하게 지운다. 생성·containment·
+    리뷰 sandbox 하위에 검토 맥락과 입력 좌표를 담은 0600 프롬프트 파일을 만들고
+    소유자 전용 접근을 적용한 뒤 실행 성공·실패·예외 무관하게 지운다. 생성·containment·
     자기-은닉·정리는 위임 축 `pm_delegate`의 공용 seam을 그대로 쓴다. legacy 대상은 이 경로를
     타지 않는다."""
     if not target.structured:
@@ -4120,7 +4183,7 @@ def _structured_transport(
         # fd로 고정한 실 sandbox를 그대로 써 사용자 입력 cwd symlink 재해소 창을 열지 않는다.
         delegate._assert_opencode_transport_path(prompt_file.sandbox, prompt_file)
         # 생성 seam의 `0600`은 **Windows에서 아무 제한도 걸지 않는다**(실측 `S_IMODE`=0o666).
-        # 이 파일에는 검토 대상 diff 원문이 들어가므로 플랫폼 등가 수단(ACL)으로 소유자 전용
+        # 이 파일에는 검토 맥락이 들어가므로 플랫폼 등가 수단(ACL)으로 소유자 전용
         # 접근을 실제로 건다 — containment 재확인과 같은 자리에서 접근 경계도 재확인한다.
         transport_dir = Path(prompt_file.path).parent
         for artifact in (transport_dir, Path(prompt_file.path),
@@ -4515,7 +4578,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
   # 특정 base 와 경로·게이트 지정
   python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ --gate T-NNNN
 
-  # dry-run (diff·프롬프트만 출력, 호출 안 함 — 비허용이어도 허용)
+  # dry-run (좌표·프롬프트만 출력, 호출 안 함 — 비허용이어도 허용)
   python3 .project_manager/tools/additional_reviewer.py --dry-run
 
   # 라운드 장부 조회 (호출 없음 — 게이트별 라운드 수·라운드별 산출·처분·wave spent)
@@ -4572,7 +4635,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "잔여 must-fix 건수만큼 판정 표면 전건 처분(미판정 0)·이 채널에 "
                              "accepted 가 있었을 때만 기계 확인 1건 이상")
     parser.add_argument("--dry-run", action="store_true",
-                        help="diff·프롬프트만 출력, 리뷰어를 부르지 않음 (빈 diff 면 "
+                        help="좌표·프롬프트만 출력, 리뷰어를 부르지 않음 (빈 diff 면 "
                              "exit 1). --resolve-gate 는 기록 명령이므로 함께 쓰면 exit 1")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="리뷰 원문 저장 디렉토리"
@@ -5062,7 +5125,8 @@ def _main(argv: list[str] | None = None) -> int:
     print(f"base: {args.base}", file=sys.stderr)
 
     try:
-        diff = extract_diff(args.base, paths)
+        review_diff = extract_diff(args.base, paths)
+        diff = review_diff.text
     except RuntimeError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
@@ -5135,7 +5199,9 @@ def _main(argv: list[str] | None = None) -> int:
     def compose_prompt() -> str:
         """이번 실행의 표준 리뷰 프롬프트."""
         return build_prompt(
-            diff=diff, ticket_body=ticket_body, ticket_id=args.ticket,
+            tree=diff_root, base=review_diff.base, target=review_diff.target,
+            changed_paths=review_diff.paths, read_commands=review_diff.read_commands,
+            ticket_body=ticket_body, ticket_id=args.ticket,
             adr_refs=args.adr, gate=args.gate,
             next_finding_id=_next_external_finding_id(args, pm_home=pm_home),
             confirmation_ids=[],
@@ -5147,7 +5213,7 @@ def _main(argv: list[str] | None = None) -> int:
         prompt = compose_prompt()
         # 미리보기는 **부작용 0**이다(호출·raw 예약·라운드 예약·`--output-dir`
         # 생성 모두 없음). 여기까지의 준비는 전부 읽기 전용이고(conf 해소·git diff),
-        # 그 diff 는 아래 프롬프트 미리보기가 **실제 나갈 내용**을 보여주기 위해 필요하다.
+        # 본문은 빈 변경 검사에만 쓰며 미리보기에는 실제 전송할 좌표와 검토 맥락을 표시한다.
         # 해소 대상 표시는 stderr 첫 provenance·raw 헤더와 **같은 문자열**을 쓴다 — 세 표면이 서로
         # 다른 말을 하면 "미리보기로 확인한 대상"과 "실제 나간 대상"을 대조할 수 없다.
         print("=== [dry-run] 추가 리뷰어 대상 (호출 없음) ===")

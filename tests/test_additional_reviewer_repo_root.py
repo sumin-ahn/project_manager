@@ -71,8 +71,17 @@ def _run_main_with_diff(external, monkeypatch, diff: str):
 
     반환: (exit_code, reviewer_called). --paths 로 ticket 파싱을 건너뛰고 --force 로 활성화
     게이트를 우회한다 — 빈-diff 가드가 codex 호출 전에 유일하게 차단함을 격리한다."""
-    # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: diff)
+    # 추출 대역은 본문과 필수 좌표를 함께 제공한다.
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *a, **k: external.ReviewDiff(
+            diff,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     # conf 도 주입한다 — 주입하지 않으면 이 실행이 **개발자 트리의 실 local.conf** 를 읽어,
     # 그 파일의 상태(구표기 잔존 등)가 이 절의 판정을 좌우한다(hermetic 아님).
     monkeypatch.setattr(external, "local_config", lambda repo=None: {

@@ -80,7 +80,16 @@ def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
     monkeypatch.setattr(external, "_resolve_diff_root", lambda *args, **kwargs: tmp_path)
     monkeypatch.setattr(external, "parse_ticket_touches", lambda *args, **kwargs: ["src/"])
     payload = diff if diff is not None else _raw_diff("src/app.py")
-    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *args, **kwargs: external.ReviewDiff(
+            payload,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
 
     calls: list[dict] = []
 
@@ -266,3 +275,47 @@ def test_help_and_shipped_skill_send_examples_choose_gate_accounting(external):
     assert help_commands and skill_commands and real_send
     for command in real_send:
         assert any(flag in command.split() for flag in ("--ticket", "--gate", "--no-gate")), command
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("failure", ["empty", "whitespace", "base", "names", "mismatch", "untracked-list"])
+def test_invalid_review_input_has_no_side_effects(
+        external, monkeypatch, tmp_path, capsys, dry_run, failure):
+    real_extract = external.extract_diff
+    calls = _wire_main(external, monkeypatch, tmp_path)
+    def git(argv, **kwargs):
+        if "ls-files" in argv:
+            return subprocess.CompletedProcess(argv, 128 if failure == "untracked-list" else 0,
+                                               "", "untracked-list failed")
+        if "--name-only" in argv:
+            return subprocess.CompletedProcess(argv, 128 if failure == "names" else 0,
+                                               "" if failure == "mismatch" else "x.py\0", "names failed")
+        if failure == "base":
+            return subprocess.CompletedProcess(argv, 128, "", "base failed")
+        text = "" if failure == "empty" else " \n\t" if failure == "whitespace" else "AUTO_PATCH_SENTINEL"
+        return subprocess.CompletedProcess(argv, 0, text, "")
+    monkeypatch.setattr(external, "extract_diff", lambda base, paths: real_extract(base, paths, git))
+    output = tmp_path / "must-not-exist"
+    argv = ["--paths", "x.py", "--gate", "T-9001", "--output-dir", str(output)]
+    if failure != "untracked-list":
+        argv += ["--base", "missing-ref" if failure == "base" else "base-ref"]
+    if dry_run:
+        argv += ["--dry-run"]
+    assert external.main(argv) == 1
+    assert not calls and not output.exists()
+    assert not (tmp_path / ".project_manager" / ".local").exists()
+    assert "오류" in capsys.readouterr().err
+
+
+def test_raw_preserves_actual_reviewer_git_output(external, monkeypatch, tmp_path):
+    target = external.resolve_reviewer_target(_REVIEWER_TARGET)
+    actual_output = "diff --git a/x.py b/x.py\n+ACTUAL_TOOL_OUTPUT\n"
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, actual_output, "git read succeeded")
+    result = external.run_review(
+        "### 리뷰 입력 좌표\n", target, 5, run_fn=run,
+        cwd=tmp_path, output_dir=tmp_path / "raw",
+    )
+    raw = Path(result["file"]).read_text(encoding="utf-8")
+    assert "ACTUAL_TOOL_OUTPUT" in raw and "git read succeeded" in raw
+    assert "AUTO_PATCH_SENTINEL" not in raw

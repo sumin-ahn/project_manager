@@ -103,7 +103,14 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None):
         else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         external, "extract_diff",
-        lambda *a, **k: "diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n")
+        lambda *a, **k: external.ReviewDiff(
+            'diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n',
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     reviewer = _Reviewer(series)
     monkeypatch.setattr(external, "run_review", reviewer)
     real_main = external.main
@@ -802,7 +809,13 @@ def test_untracked_new_files_appear_in_the_review_diff(external, monkeypatch, tm
 
     diff = external.extract_diff("HEAD", ["new_module.py"])
 
-    assert "new file mode" in diff and "new_module.py" in diff and "+n0" in diff
+    assert "new file mode" in diff.text and "new_module.py" in diff.text and "+n0" in diff.text
+    assert diff.paths == ("new_module.py",)
+    assert any("--no-index" in argv and argv[-1] == "new_module.py" for argv in diff.read_commands)
+    import hashlib
+    assert external._target_rev_fingerprint(diff.text) == (
+        "sha256:" + hashlib.sha256(diff.text.encode("utf-8")).hexdigest()
+    )
 
 
 # ══ ③-b estimate 해석 단일화 (T-0602 ⑥) ═════════════════════════════════════
@@ -1019,3 +1032,144 @@ def test_the_ordering_rule_is_the_shared_board_seam(external):
     rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
     assert external._ordered_round_outcomes(rounds) == sorted(
         rounds, key=review_rounds.round_outcome_order_key)
+
+
+@pytest.mark.parametrize("base", ["HEAD", "HEAD~1", "HEAD~1..HEAD"])
+def test_review_coordinates_replay_the_selected_git_stage(external, monkeypatch, tmp_path, base):
+    root = _git_repo(tmp_path)
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True,
+                              capture_output=True, text=True, encoding="utf-8").stdout
+    (root / "seed.py").write_text("seed\ncommitted\n", encoding="utf-8")
+    git("add", "seed.py")
+    git("commit", "-m", "second")
+    if base != "HEAD":
+        (root / "seed.py").write_text("seed\nworking\n", encoding="utf-8")
+    _untracked(root, "outside.py", 3)
+    monkeypatch.setattr(external, "REPO", root)
+    review = external.extract_diff(base, ["seed.py"])
+    assert review.base == ("HEAD~1..HEAD" if base == "HEAD" else base)
+    assert review.paths == ("seed.py",)
+    assert "outside.py" not in review.text
+    replay = "".join(subprocess.run(argv, check=True, capture_output=True, text=True,
+                                  encoding="utf-8").stdout for argv in review.read_commands)
+    assert replay == review.text
+    assert ("+working" in replay) == (base == "HEAD~1")
+    assert ("+committed" in replay) == (base != "HEAD~1")
+
+
+def test_review_preserves_canceling_staged_and_unstaged_changes(external, monkeypatch, tmp_path):
+    root = _git_repo(tmp_path)
+    (root / "seed.py").write_text("staged\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "seed.py"], check=True, capture_output=True)
+    (root / "seed.py").write_text("seed\n", encoding="utf-8")
+    monkeypatch.setattr(external, "REPO", root)
+    review = external.extract_diff("HEAD", ["seed.py"])
+    assert review.base == "HEAD" and review.paths == ("seed.py",)
+    assert "+staged" in review.text and "-staged" in review.text
+    assert len(review.read_commands) == 2
+    assert "--cached" in review.read_commands[0] and "--cached" not in review.read_commands[1]
+    assert "".join(subprocess.run(argv, check=True, capture_output=True, text=True,
+                                 encoding="utf-8").stdout for argv in review.read_commands) == review.text
+
+
+@pytest.mark.parametrize("unusual", ["한글 공백 '파일'.py", " leading.py", 'quote"file.py', "line\nfile.py"])
+def test_review_paths_preserve_untracked_deleted_renamed_and_binary_files(
+        external, monkeypatch, tmp_path, unusual):
+    import os
+    import shlex
+    if os.name == "nt" and any(char in unusual for char in '\n"'):
+        pytest.skip("Windows 파일명 제한")
+    root = _git_repo(tmp_path)
+    monkeypatch.setattr(external, "REPO", root)
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    (root / "deleted.py").write_text("deleted\n", encoding="utf-8")
+    (root / "binary.bin").write_bytes(b"\x00old\xff")
+    git("add", "-A")
+    git("commit", "-m", "boundary seed")
+    git("mv", "seed.py", "renamed.py")
+    (root / "deleted.py").unlink()
+    (root / "binary.bin").write_bytes(b"\x00new\xfe")
+    (root / unusual).write_text("UNTRACKED_SENTINEL\n", encoding="utf-8")
+    review = external.extract_diff("HEAD", ["."])
+    assert set(review.paths) == {"renamed.py", "deleted.py", "binary.bin", unusual}
+    assert "Binary files" in review.text and "deleted file mode" in review.text
+    assert "UNTRACKED_SENTINEL" in review.text
+    no_index = next(argv for argv in review.read_commands if "--no-index" in argv)
+    result = subprocess.run(no_index, capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 1 and "UNTRACKED_SENTINEL" in result.stdout
+    prompt = external.build_prompt(tree=root, base=review.base, target=review.target,
+                                   changed_paths=review.paths, read_commands=review.read_commands)
+    line = next(line for line in prompt.splitlines() if line.startswith("- 변경 파일"))
+    assert json.loads(line.split(": ", 1)[1]) == list(review.paths)
+    if os.name != "nt":
+        commands = [shlex.split(block.split("\n```", 1)[0]) for block in prompt.split("```sh\n")[1:]]
+        assert commands == [list(argv) for argv in review.read_commands]
+    assert "UNTRACKED_SENTINEL" not in prompt
+
+
+def test_explicit_commit_range_excludes_untracked_review_input(external, monkeypatch, tmp_path):
+    root = _git_repo(tmp_path)
+    (root / "seed.py").write_text("committed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "second"], check=True, capture_output=True)
+    _untracked(root, "outside.py", 3)
+    monkeypatch.setattr(external, "REPO", root)
+    review = external.extract_diff("HEAD~1..HEAD", ["."])
+    assert review.paths == ("seed.py",) and "outside.py" not in review.text
+    assert len(review.read_commands) == 1 and "--no-index" not in review.read_commands[0]
+
+
+def test_review_metadata_queries_fail_closed(external, monkeypatch, tmp_path):
+    root = _git_repo(tmp_path)
+    monkeypatch.setattr(external, "REPO", root)
+    with pytest.raises(RuntimeError, match="git diff 실패"):
+        external.extract_diff("missing-base", ["."])
+    (root / "seed.py").write_text("edited\n", encoding="utf-8")
+    def fail_names(argv, **kwargs):
+        if "--name-only" in argv:
+            return subprocess.CompletedProcess(argv, 128, "", "name query failed")
+        return subprocess.run(argv, **kwargs)
+    with pytest.raises(RuntimeError, match="name query failed"):
+        external.extract_diff("HEAD", ["."], fail_names)
+
+
+@pytest.mark.parametrize("paths", [["."], ["ls-files"]])
+def test_review_untracked_name_matching_git_subcommand(
+        external, monkeypatch, tmp_path, paths):
+    root = _git_repo(tmp_path)
+    (root / "ls-files").write_text("UNTRACKED_LS_FILES_SENTINEL\n", encoding="utf-8")
+    monkeypatch.setattr(external, "REPO", root)
+    no_index_results = []
+
+    def run(argv, **kwargs):
+        result = subprocess.run(argv, **kwargs)
+        if argv[3] == "diff" and "--no-index" in argv:
+            no_index_results.append(result)
+        return result
+
+    review = external.extract_diff("HEAD", paths, run)
+
+    assert review.base == "HEAD" and review.paths == ("ls-files",)
+    assert "+UNTRACKED_LS_FILES_SENTINEL" in review.text
+    assert len(no_index_results) == 2
+    patch, names = no_index_results
+    assert patch.returncode == names.returncode == 1
+    assert patch.stdout == review.text and names.stdout == "ls-files\0"
+    assert "--name-only" not in patch.args and "--name-only" in names.args
+    assert "-z" in names.args
+    assert all(result.args[-2:] == ["/dev/null", "ls-files"] for result in no_index_results)
+    replay = [subprocess.run(argv, capture_output=True, text=True, encoding="utf-8")
+              for argv in review.read_commands]
+    assert [result.returncode for result in replay] == [0, 0, 1]
+    assert "".join(result.stdout for result in replay) == review.text
+    assert review.read_commands[-1][-2:] == ("/dev/null", "ls-files")
+
+    def fail_untracked_query(argv, **kwargs):
+        if argv[3] == "ls-files":
+            return subprocess.CompletedProcess(argv, 128, "", "untracked query failed")
+        return subprocess.run(argv, **kwargs)
+
+    with pytest.raises(RuntimeError, match="git ls-files 실패.*untracked query failed"):
+        external.extract_diff("HEAD", paths, fail_untracked_query)
