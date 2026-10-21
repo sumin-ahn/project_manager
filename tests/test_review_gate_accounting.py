@@ -114,7 +114,14 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     monkeypatch.setattr(external, "parse_ticket_touches", lambda ticket, **kwargs: ["x.py"])
     monkeypatch.setattr(
         external, "extract_diff",
-        lambda *a, **k: "diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n")
+        lambda *a, **k: external.ReviewDiff(
+            'diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n',
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     # 이 파일의 스코프는 회계 축 하나다. 리뷰 뒤 게이트 티켓에 additional-reviewer 절을 기록하는
     # 회수(T-0696)는 실 보드 왕복이 필요한 별도 축이라 여기서는 격리한다 — 그 회귀는
     # tests/test_additional_reviewer_ticket_harvest.py 가 소유한다(run_review stub 과 같은 결).
@@ -385,7 +392,16 @@ def test_empty_diff_does_not_claim_the_derived_gate_was_ledgered(
         external, monkeypatch, tmp_path, capsys):
     """빈 diff 조기 종료는 예약·기록 전이라 자동 유도 고지도 호출 조건형으로만 남는다."""
     reviewer = _wire(external, monkeypatch, tmp_path)
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: "")
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *a, **k: external.ReviewDiff(
+            '',
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
 
     assert external.main(["--ticket", TICKET]) == 1
     assert reviewer.calls == 0

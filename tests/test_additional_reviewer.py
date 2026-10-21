@@ -92,7 +92,8 @@ def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, t
     """게이트 ID 다음·diff 앞에 전체 티켓 본문이 놓이는 프롬프트 형상을 고정한다."""
     monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", tmp_path / "missing-context.md")
     prompt = external.build_prompt(
-        "@@ -1 +1 @@\n-old\n+new\n",
+        tree=tmp_path, base="HEAD", target="INDEX/WORKTREE",
+        changed_paths=["x.py"], read_commands=[("git", "-C", str(tmp_path), "diff", "--")],
         ticket_body="## 결정\n확정 설계\n",
         ticket_id="T-0695",
         adr_refs=["ADR-0088"],
@@ -103,7 +104,7 @@ def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, t
         "게이트 ticket: T-0695",
         "### 게이트 티켓 본문 (T-0695)",
         "## 결정\n확정 설계",
-        "### 리뷰 대상 diff",
+        "### 리뷰 입력 좌표",
     )
     assert all(item in prompt for item in landmarks)
     assert [prompt.index(item) for item in landmarks] == sorted(
@@ -111,16 +112,21 @@ def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, t
     )
 
 
-def test_build_prompt_preserves_legacy_positional_argument_order(
-    external, monkeypatch, tmp_path,
-):
-    """ticket_id 추가가 기존 diff/body/ADR/gate positional 호출을 한 칸씩 밀지 않는다."""
+def test_build_prompt_requires_coordinates_and_rejects_diff(external, monkeypatch, tmp_path):
     monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", tmp_path / "missing-context.md")
-    prompt = external.build_prompt("D", "BODY", ["ADR-1"], "T-1")
+    coords = dict(tree=tmp_path, base="HEAD", target="INDEX/WORKTREE",
+                  changed_paths=["x.py"], read_commands=[("git", "-C", str(tmp_path), "diff", "--")])
+    prompt = external.build_prompt("BODY", ["ADR-1"], "T-1", **coords)
     assert "관련 ADR: ADR-1" in prompt
     assert "게이트 ticket: T-1" in prompt
     assert "### 게이트 티켓 본문 (T-1)\nBODY" in prompt
-    assert "관련 ADR: T, -, 1" not in prompt
+    for key in coords:
+        with pytest.raises(TypeError):
+            external.build_prompt(**{name: value for name, value in coords.items() if name != key})
+    with pytest.raises(TypeError):
+        external.build_prompt(diff="patch", **coords)
+    with pytest.raises(TypeError):
+        external.build_prompt("D", "BODY", ["ADR-1"], "T-1", **coords)
 
 
 # ── PM 하네스 세션 마커 / 호출층 상한 진단 ──────────────────────────────────
@@ -570,7 +576,16 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
     monkeypatch.setattr(
         external, "local_config",
         lambda repo=None: dict(conf) if conf is not None else dict(_ENABLED_CONF))
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: diff)
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *a, **k: external.ReviewDiff(
+            diff,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     real_main = external.main
 
     def _isolated_main(argv=None):
@@ -2166,7 +2181,16 @@ def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
     장부·예약 환불까지 실 경로로 돌려야 하므로 기본 러너 자리만 바꾼다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(external, "local_config", lambda repo=None: dict(conf))
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: diff)
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *a, **k: external.ReviewDiff(
+            diff,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     monkeypatch.setattr(external, "_watchdog_reviewer_run", runner)
 
     def _run(argv):
@@ -2464,3 +2488,48 @@ def test_additional_declaration_is_refused_when_only_the_internal_channel_is_con
     assert f"{_PV_ADDITIONAL_ROLE} 채널의 기계 확인" in err
     assert f"{_PV_INTERNAL_ROLE} 채널의 기계 확인" not in err
     assert "resolution" not in pm_verified_declare.read_ledger()[tid]
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_internal_patch_size_changes_hash_without_changing_prompt(
+        external, monkeypatch, tmp_path, capsys, dry_run):
+    prompts, fingerprints = [], []
+    for index, patch in enumerate(("AUTO_PATCH_SENTINEL", "AUTO_PATCH_SENTINEL" + "x" * 2_682_927)):
+        with monkeypatch.context() as patcher:
+            root = tmp_path / str(index)
+            root.mkdir()
+            calls = _wire(external, patcher, root, diff=patch)
+            real_review = external.run_review
+            real_fingerprint = external._target_rev_fingerprint
+            def review(prompt, *args, **kwargs):
+                prompts.append(prompt)
+                return real_review(prompt, *args, **kwargs)
+            def fingerprint(text):
+                fingerprints.append(real_fingerprint(text))
+                assert text == patch
+                return fingerprints[-1]
+            patcher.setattr(external, "run_review", review)
+            patcher.setattr(external, "_target_rev_fingerprint", fingerprint)
+            # 두 실행은 같은 좌표를 전달하고 내부 본문만 바꾼다.
+            patcher.setattr(
+                external, "extract_diff",
+                lambda *a, **k: external.ReviewDiff(
+                    patch,
+                    'HEAD',
+                    'INDEX/WORKTREE',
+                    ('x.py',),
+                    (('git', '-C', str(tmp_path), 'diff', '--'),),
+                ),
+            )
+            patcher.setattr(external, "_resolve_diff_root", lambda *a, **k: tmp_path)
+            argv = ["--paths", "x.py", "--no-gate"] + (["--dry-run"] if dry_run else [])
+            assert external.main(argv) == 0
+            output = capsys.readouterr().out
+            if dry_run:
+                prompts.append(output.split("프롬프트 미리보기 (호출 없음) ===\n", 1)[1].split(
+                    "=== [dry-run] 리뷰어 호출 생략 ===", 1)[0].rstrip())
+            assert calls["n"] == (0 if dry_run else 1)
+    assert prompts[0] == prompts[1]
+    assert "AUTO_PATCH_SENTINEL" not in prompts[0]
+    if not dry_run:
+        assert len(fingerprints) == 2 and fingerprints[0] != fingerprints[1]

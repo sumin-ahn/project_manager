@@ -87,7 +87,16 @@ def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=N
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(external, "local_config",
                         lambda repo=None: {**_REVIEWER_TARGET, **(conf or {})})
-    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: DIFF)
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *args, **kwargs: external.ReviewDiff(
+            DIFF,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     if ticket is not None:
         monkeypatch.setattr(
             external, "_find_ticket_file", lambda ticket_id, pm_home=None: ticket,
@@ -303,7 +312,16 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
     monkeypatch.setattr(
         external, "_normalize_review_paths", lambda *args, **kwargs: ("x.py",),
     )
-    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: DIFF)
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *args, **kwargs: external.ReviewDiff(
+            DIFF,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
 
     assert external.main([
         "--ticket", "T-9001", "--paths", str(selected_home / "x.py"), "--dry-run",

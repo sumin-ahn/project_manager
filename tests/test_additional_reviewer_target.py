@@ -178,7 +178,14 @@ def _wire_main(external, monkeypatch, repo: Path, reviewer: _FakeReviewer | None
     monkeypatch.setattr(external, "_resolve_diff_root", lambda *a, **k: repo)
     monkeypatch.setattr(
         external, "extract_diff",
-        lambda *a, **k: "diff --git a/x.py b/x.py\n-old\n+new\n")
+        lambda *a, **k: external.ReviewDiff(
+            'diff --git a/x.py b/x.py\n-old\n+new\n',
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
     if reviewer is not None:
         monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
     return reviewer
@@ -542,7 +549,7 @@ def test_ledger_model_is_the_explicit_tuple_value(external):
 @pytest.mark.parametrize("rc", [0, 1])
 def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
         external, monkeypatch, tmp_path, capsys, rc):
-    """`--file` 프롬프트에는 diff 원문이 들어간다 — 소유자 전용으로 만들고 rc 무관 지운다.
+    """`--file` 프롬프트에는 검토 맥락과 입력 좌표가 들어간다 — 소유자 전용으로 만들고 rc 무관 지운다.
 
     "소유자 전용" 의 수단은 플랫폼마다 다르다(POSIX 퍼미션 0600 / Windows ACL) — 판정은
     퍼미션 비트가 아니라 `fs.owner_only_access` 로 OS 에 되묻는다(`_owner_only`).
@@ -560,7 +567,9 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
     call = reviewer.calls[0]
     assert call["prompt_exists"] is True                  # 실행 시점엔 존재
     assert call["prompt_owner_only"] is True               # 다른 사용자에게 읽히지 않는다
-    assert "diff --git a/x.py b/x.py" in call["prompt_text"]
+    assert "### 리뷰 입력 좌표" in call["prompt_text"]
+    assert "```sh" in call["prompt_text"] and str(repo) in call["prompt_text"]
+    assert "diff --git a/x.py b/x.py" not in call["prompt_text"]
     assert call["input"] == ""                            # 지시는 파일에 있다(stdin 아님)
     assert not call["prompt_file"].exists()               # 실행 후 정리(성공·실패 무관)
     assert "프롬프트 파일 정리 실패" not in err             # 정상 정리는 조용하다
@@ -2119,3 +2128,21 @@ def test_reviewer_source_comments_match_structured_target_and_durable_consent():
         "같은 승인을 다시 받아야",
     )
     assert [phrase for phrase in stale if phrase in source] == []
+
+
+def test_coordinate_prompt_keeps_codex_cwd_permissions_and_shared_env(
+        external, monkeypatch, tmp_path):
+    repo = _repo(tmp_path / "repo", _conf(harness="codex", model="gpt-5.6-sol", reasoning=None))
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
+    _wire_main(external, monkeypatch, repo, reviewer)
+    delegate = external._load_pm_delegate()
+    env = {"PATH": os.environ.get("PATH", ""), "REVIEW_ENV_SENTINEL": "same"}
+    harnesses = []
+    monkeypatch.setattr(delegate, "build_env", lambda harness: (harnesses.append(harness), env)[1])
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    call = reviewer.calls[0]
+    assert Path(call["cwd"]) == repo and call["env"] == env and harnesses == ["codex"]
+    assert "-C" not in call["argv"]
+    assert call["argv"][call["argv"].index("-s") + 1] == "read-only"
+    assert str(repo) in call["input"] and "### 리뷰 입력 확인" in call["input"]
+    assert "diff --git a/x.py b/x.py" not in call["input"]

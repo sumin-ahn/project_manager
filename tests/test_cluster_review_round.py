@@ -215,8 +215,14 @@ def test_review_input_spans_the_merge_base_with_the_integration_tip(pd, review_e
         home, "merge-base", _BASE_BRANCH, _CLUSTER_BRANCH).stdout.strip()
     # 이 묶음이 만든 변경만 입력이다 — 통합 브랜치가 흡수한 변경은 조상이라 빠진다.
     assert sorted(review.paths) == ["t-8001.py", "t-8002.py"]
-    assert "integration.txt" not in review.diff
-    assert "T-8001 구현" in review.diff and "T-8002 구현" in review.diff
+    assert not hasattr(review, "diff")
+    prompt = pd.build_cluster_review_prompt(
+        review, dict.fromkeys(review.members, "본문"), tree=home, focus=None,
+    )
+    command = shlex.split(prompt.split("```sh\n", 1)[1].split("\n```", 1)[0])
+    patch = subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8").stdout
+    assert "integration.txt" not in patch
+    assert "T-8001 구현" in patch and "T-8002 구현" in patch
 
 
 @requires_git
@@ -515,7 +521,8 @@ def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, revie
     for path in review.paths:
         assert PurePosixPath(path).as_posix() in prompt
     assert "### PM 검토 중점" in prompt and focus in prompt
-    assert "### 리뷰 대상 diff" in prompt and "```diff" in prompt
+    assert "### 리뷰 입력 좌표" in prompt and "### 리뷰 입력 확인" in prompt
+    assert "```diff" not in prompt and "T-8001 구현" not in prompt
     assert review.merge_base[:12] in prompt
 
 
@@ -533,7 +540,10 @@ def test_prompt_leaves_the_block_requirement_to_the_round_seed(pd, review_env):
     assert "### PM 검토 중점" not in prompt
     # 추가 리뷰어 채널의 기존 조립은 그대로다(요구 블록 포함).
     external = pd._load_additional_reviewer()
-    assert "### 구조화 판정 블록 (필수)" in external.build_prompt("diff", "본문")
+    assert "### 구조화 판정 블록 (필수)" in external.build_prompt(
+        "본문", tree=home, base=review.merge_base, target=review.branch,
+        changed_paths=review.paths, read_commands=[("git", "-C", str(home), "diff", "--")],
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -643,6 +653,8 @@ def test_cross_review_runs_in_the_slot_and_harvests(pd, review_env, monkeypatch,
     assert len(seen["seats"]) == len(_MEMBERS)
     assert f"리뷰 대상 트리: {home.resolve()}" in seen["prompt"]
     assert "격리 스냅샷" not in seen["prompt"]
+    assert seen["prompt"].count("### 리뷰 입력 좌표") == 1
+    assert "```sh" in seen["prompt"] and "T-8001 구현" not in seen["prompt"]
     # 리뷰 세션은 fresh 라 이전 번호를 모른다 — 자리마다 준비가 확정한 다음 finding ID 를 싣는다.
     assert seen["prompt"].count("finding ID: 이번 라운드의 새 finding 은 `F-001` 부터") == len(
         _MEMBERS)
@@ -787,7 +799,8 @@ def test_ticket_prepare_code_reviewer_writes_engine_prompt(
         assert f"- {line['ticket']}: {line['copy']}" in prompt
     assert "### PM 검토 중점" in prompt and "경계 판정의 값 대조" in prompt
     assert "t-8001.py" in prompt and "t-8002.py" in prompt
-    assert "```diff" in prompt
+    assert "### 리뷰 입력 좌표" in prompt and "```sh" in prompt
+    assert "```diff" not in prompt and "T-8001 구현" not in prompt
     assert "격리 스냅샷" not in prompt
     rows = delegate_ledger.ticket_copy_records(home)
     assert len(rows) == len(_MEMBERS)
@@ -1886,3 +1899,51 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
         pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home), identity=identity)
     assert (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
             tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md")))) == before
+
+
+@pytest.mark.parametrize("file_count", [1, 208])
+@requires_git
+def test_cluster_prompt_size_is_independent_of_patch_and_queries_names_only(
+        pd, review_env, file_count):
+    home, _ = review_env
+    board = _fixture_board(pd, home)
+    paths = tuple(f"src/file-{i}.py" for i in range(file_count))
+    prompts = []
+    for patch in ("AUTO_PATCH_SENTINEL", "AUTO_PATCH_SENTINEL" + "x" * 2_682_927):
+        def run(argv, **kwargs):
+            if "diff" in argv:
+                assert "--name-only" in argv and "-z" in argv, patch[:19]
+                return subprocess.CompletedProcess(argv, 0, "\0".join(paths) + "\0", "")
+            return subprocess.run(argv, **kwargs)
+        review = pd.cluster_review_input(board, _CLUSTER, repo=home, git_run_fn=run)
+        prompts.append(pd.build_cluster_review_prompt(
+            review, dict.fromkeys(review.members, "본문"), tree=home, focus="중점",
+        ))
+    assert prompts[0] == prompts[1]
+    assert "AUTO_PATCH_SENTINEL" not in prompts[0]
+    assert prompts[0].count("### 리뷰 입력 좌표") == 1
+    assert prompts[0].count("### 리뷰 입력 확인") == 1
+    line = next(line for line in prompts[0].splitlines() if line.startswith("- 변경 파일"))
+    assert json.loads(line.split(": ", 1)[1]) == list(paths)
+
+
+@requires_git
+def test_cluster_input_preserves_nul_paths_and_rejects_name_query_failure(pd, review_env):
+    home, _ = review_env
+    board = _fixture_board(pd, home)
+    names = (" 한글 '파일'\n.py", "deleted.py")
+    def run(argv, **kwargs):
+        if "diff" in argv:
+            return subprocess.CompletedProcess(argv, 0, "\0".join(names) + "\0", "")
+        return subprocess.run(argv, **kwargs)
+    review = pd.cluster_review_input(board, _CLUSTER, repo=home, git_run_fn=run)
+    assert review.paths == names
+    prompt = pd.build_cluster_review_prompt(review, dict.fromkeys(_MEMBERS, "본문"), tree=home, focus=None)
+    line = next(line for line in prompt.splitlines() if line.startswith("- 변경 파일"))
+    assert json.loads(line.split(": ", 1)[1]) == list(names)
+    def fail(argv, **kwargs):
+        if "diff" in argv:
+            return subprocess.CompletedProcess(argv, 128, "", "name query failed")
+        return subprocess.run(argv, **kwargs)
+    with pytest.raises(delegate_errors.DelegateError, match="name query failed"):
+        pd.cluster_review_input(board, _CLUSTER, repo=home, git_run_fn=fail)

@@ -273,7 +273,16 @@ def _wire(
     monkeypatch.setattr(
         external, "local_config", lambda repo=None: dict(resolved_conf),
     )
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: DIFF)
+    monkeypatch.setattr(
+        external, "extract_diff",
+        lambda *a, **k: external.ReviewDiff(
+            DIFF,
+            'HEAD',
+            'INDEX/WORKTREE (untracked 포함)',
+            ('x.py',),
+            (('git', '-C', str(external.REPO), 'diff', '--', 'x.py'),),
+        ),
+    )
 
     calls: dict = {"n": 0, "prompt": "", "prompts": []}
 

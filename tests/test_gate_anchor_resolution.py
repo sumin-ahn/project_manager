@@ -1638,7 +1638,15 @@ def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
     assert external.main(["--dry-run"]) == 0
     captured = capsys.readouterr()
     assert f"diff_root={tip.resolve()}" in captured.err
-    assert "value = 2" in captured.out  # 아무도 이번에 만들지 않은 base 커밋이 리뷰 대상이 된다
+    assert (
+        "- 기준: HEAD~1..HEAD\n" in captured.out
+        and f"- 리뷰 대상 트리: {tip.resolve()} (HEAD (커밋 비교 HEAD~1..HEAD))\n" in captured.out
+        and external._load_delegate_transport().render_shell_command([
+            "git", "-C", str(tip.resolve()), "--no-pager", "diff", "--no-ext-diff",
+            "--no-color", "HEAD~1..HEAD", "--", "src/module.py",
+        ]) in captured.out
+        and _git_out(tip, "rev-parse", "HEAD") == _git_out(home, "rev-parse", "HEAD")
+    )  # 아무도 이번에 만들지 않은 공유 base의 마지막 커밋 범위를 tip 슬롯에서 읽는다
 
 
 # ── 교차 소유 검출은 additional_reviewer.paths 선언 유무와 무관 ─────────────────────────

@@ -719,7 +719,7 @@ def build_codex_argv(
     """codex argv. `-a never -s <mode>` 는 exec **앞** 전역 옵션(exec 뒤는 rc=2).
 
     프롬프트는 stdin 주입(argv positional 아님). `cwd` 를 주면 `-C` 로 핀하고, 생략하면 프로세스
-    cwd 를 그대로 쓴다(추가 리뷰어는 격리 거울을 subprocess cwd 로 이미 고정한다)."""
+    cwd 를 그대로 쓴다(추가 리뷰어는 검토 대상 저장소를 subprocess cwd로 전달한다)."""
     mode = CODEX_SANDBOX[perm_axis(role)]
     argv = ["codex", "-a", "never", "-s", mode, *CODEX_WORKSPACE_EXEC_OPTIONS]
     if reasoning:
