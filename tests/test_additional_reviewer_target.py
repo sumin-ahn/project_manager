@@ -419,9 +419,9 @@ def test_resolution_failure_precedes_every_side_effect(
 @pytest.mark.parametrize("harness,model,reasoning,expected", [
     ("codex", "gpt-5.6-sol", "max", [
         "codex", "-a", "never", "-s", "read-only",
-        "-c", "sandbox_workspace_write.network_access=true", "exec", "--json",
+        "-c", "sandbox_workspace_write.network_access=true",
+        "-c", "model_reasoning_effort=max", "exec", "--json",
         "--skip-git-repo-check", "-m", "gpt-5.6-sol",
-        "-c", "model_reasoning_effort=max",
     ]),
     ("claude", "claude-opus-5", "high", [
         "claude", "-p", "--output-format", "stream-json", "--verbose",
@@ -485,7 +485,7 @@ def test_codex_max_reasoning_is_available_to_the_reviewer_profile(external):
         {"additional_reviewer.harness": "codex",
          "additional_reviewer.model": "gpt-5.6-sol",
          "additional_reviewer.reasoning": "max"})
-    assert target.command.endswith("-c model_reasoning_effort=max")
+    assert "-c model_reasoning_effort=max exec " in target.command
 
 
 def test_user_config_defaults_cannot_change_argv_or_ledger(

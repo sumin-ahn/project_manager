@@ -722,6 +722,10 @@ def build_codex_argv(
     cwd 를 그대로 쓴다(추가 리뷰어는 격리 거울을 subprocess cwd 로 이미 고정한다)."""
     mode = CODEX_SANDBOX[perm_axis(role)]
     argv = ["codex", "-a", "never", "-s", mode, *CODEX_WORKSPACE_EXEC_OPTIONS]
+    if reasoning:
+        # `-c` 는 전부 exec 앞에 둔다. exec 뒤에 `-c` 가 하나라도 있으면 codex 가 exec 앞의 `-c`
+        # (네트워크 override)를 버린다(codex-cli 0.163.0 실측). reasoning 미지정 시 무영향.
+        argv += ["-c", f"model_reasoning_effort={reasoning}"]
     if resume_session_id is None:
         argv += ["exec", "--json", "--skip-git-repo-check"]
         if cwd is not None:
@@ -742,10 +746,6 @@ def build_codex_argv(
         argv += ["exec", "resume", "--json", "--skip-git-repo-check"]
     if model:
         argv += ["-m", model]
-    if reasoning:
-        # `-c model_reasoning_effort=<r>` 는 `-a`/`-s`(exec 뒤=rc=2)와 달리 exec **앞/뒤 모두
-        # rc=0 수용**된다(실측). reasoning 미지정 시 무영향.
-        argv += ["-c", f"model_reasoning_effort={reasoning}"]
     if resume_session_id is not None:
         argv += [resume_session_id, "-"]
     return argv

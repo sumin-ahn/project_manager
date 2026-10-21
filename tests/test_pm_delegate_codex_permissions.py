@@ -531,3 +531,17 @@ def test_cli_formats_no_legacy_mode_knob(pd, tmp_path, monkeypatch):
     )
     assert read_tmp is None
     assert _network_override_count(argv) == 1
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_cli_formats_all_config_overrides_before_exec(pd, tmp_path, resume):
+    """`-c` 는 전부 exec 앞에 있다 — exec 뒤에 `-c` 가 하나라도 있으면 codex 가 앞의 `-c`(네트워크
+    override)를 버린다(codex-cli 0.163.0 실측: reasoning 을 exec 뒤에 둔 developer-hard 위임에서
+    loopback 소켓이 막혔다)."""
+    argv = pd.build_codex_argv("gpt-x", "xhigh", "developer", str(tmp_path),
+                               SESSION_ID if resume else None)
+    exec_index = argv.index("exec")
+    assert "-c" not in argv[exec_index:], argv
+    assert ["-c", "model_reasoning_effort=xhigh"] in [
+        argv[index:index + 2] for index in range(exec_index)]
+    assert _network_override_count(argv) == 1
