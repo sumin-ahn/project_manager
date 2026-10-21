@@ -120,6 +120,16 @@ def architecture_file(home) -> Path:
     return wiki_dir(home) / "architecture.md"
 
 
+def domain_dir(home) -> Path:
+    """domain 지식 페이지 디렉토리(wiki/domain)."""
+    return wiki_dir(home) / "domain"
+
+
+def engine_manifest(home) -> Path:
+    """엔진 출하 manifest 경로(wiki와 같은 PM 홈)."""
+    return home.local_dir.parent / "engine.manifest"
+
+
 def hooks_dir(home) -> Path:
     """채택자 lint 훅 디렉토리 — `.project_manager/hooks`(wiki 와 같은 PM 홈)."""
     return home.local_dir.parent / "hooks"

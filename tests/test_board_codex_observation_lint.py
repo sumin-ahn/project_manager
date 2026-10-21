@@ -7,7 +7,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from pm_engine.app import areas_lint, body_lint, conf_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
+from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -48,12 +48,12 @@ def _isolate_codex_lint(board, monkeypatch) -> None:
         (wikilink_lint, "lint_wikilinks", lambda home: []),
         (wikilink_lint, "lint_unstable_refs", lambda home: []),
         (wiki_lint, "lint_scopes", lambda home: []),
-        (board, "lint_domain", lambda: []),
+        (doc_lint, "lint_domain", lambda home: []),
         (wiki_lint, "lint_adr_lifecycle", lambda home: []),
         (wiki_lint, "lint_adr_author", lambda home: []),
         (freshness_lint, "lint_architecture_freshness", lambda home: []),
         (freshness_lint, "lint_status_freshness", lambda home: []),
-        (board, "lint_domain_freshness", lambda: []),
+        (doc_lint, "lint_domain_freshness", lambda home: []),
         (conf_lint, "lint_adapter_drift", lambda home: []),
         (board, "lint_render_leak", lambda: []),
         (areas_lint, "lint_areas_repo_unregistered", lambda home: []),

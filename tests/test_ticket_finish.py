@@ -27,8 +27,8 @@ import pytest
 
 from _git_fixture import init_git_repo
 from conftest import write_cluster_ledger
-from pm_engine.infra import areas_store, cluster_store, conf_store, pm_paths, python_env, repo_coordinates, ticket_store
-from pm_engine.app import freshness_lint, slot_resolution
+from pm_engine.infra import areas_store, cluster_store, conf_store, doc_page_store, pm_paths, python_env, repo_coordinates, ticket_store
+from pm_engine.app import doc_affected, doc_staleness, freshness_lint, slot_resolution
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -555,10 +555,20 @@ def test_get_ticket_touches_strips_scalar_string(tf, tmp_path):
     assert tf.get_ticket_touches(_write_fake_board(tmp_path, "'   '"), "T-0001") == []
 
 
-def test_affected_domain_titles_domain_absent_returns_none(tf, tmp_path, monkeypatch):
-    """affected_domain_titles — domain.py 부재(_load_domain_module None) → None(skip)."""
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: None)
-    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) is None
+def _patch_domain(monkeypatch, fake):
+    """affected_domain_titles 가 부르는 패키지 함수를 대역 객체의 같은 이름 메서드로 바꾼다."""
+    monkeypatch.setattr(doc_page_store, "load_pages", lambda _domain_dir: fake.load_pages())
+    monkeypatch.setattr(
+        doc_affected, "pages_for_touches",
+        lambda _home, touches, pages: fake.pages_for_touches(touches, pages))
+    if hasattr(fake, "_real_git_runner"):
+        monkeypatch.setattr(doc_staleness, "_real_git_runner", fake._real_git_runner)
+    if hasattr(fake, "page_stale"):
+        monkeypatch.setattr(
+            doc_staleness, "page_stale",
+            lambda _home, page, *, git_runner=None: fake.page_stale(page, git_runner=git_runner))
+    if hasattr(fake, "_UNRESOLVED_GIT_RUNNER"):
+        monkeypatch.setattr(doc_staleness, "_UNRESOLVED_GIT_RUNNER", fake._UNRESOLVED_GIT_RUNNER)
 
 
 def test_affected_domain_titles_uses_pages_for_touches(tf, tmp_path, monkeypatch):
@@ -580,7 +590,7 @@ def test_affected_domain_titles_uses_pages_for_touches(tf, tmp_path, monkeypatch
         def page_stale(page, *, git_runner=None):
             return False  # fresh — soft step 무표시.
 
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == [("영향페이지", False)]
 
@@ -618,7 +628,7 @@ def test_affected_domain_titles_normalizes_pm_home_worktree_touch(
             return False
 
     monkeypatch.setattr(tf, "REPO", tmp_path)
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(
         tf,
         "get_ticket_touches",
@@ -664,7 +674,7 @@ def test_affected_domain_titles_bad_coordinate_warns_per_path_and_continues(
             return False
 
     monkeypatch.setattr(tf, "REPO", tmp_path)
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(
         tf, "get_ticket_touches",
         lambda bp, tid: ["work/project_manager_2/src/bad.py", "src/valid.py"],
@@ -690,7 +700,7 @@ def test_affected_domain_titles_nonprefixed_touches_skip_coordinate_loader(
         def pages_for_touches(touches, pages):
             return []
 
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     monkeypatch.setattr(
         repo_coordinates, "normalize_repo_path",
@@ -713,7 +723,7 @@ def test_affected_domain_titles_empty_touches_skips_load_pages(tf, monkeypatch):
         def pages_for_touches(touches, pages):  # 호출되면 안 됨
             raise AssertionError("빈 touches 인데 pages_for_touches 호출됨")
 
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: [])
     assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == []
     assert calls["load_pages"] == 0  # load_pages 스캔 자체를 건너뜀
@@ -757,7 +767,7 @@ def test_affected_domain_titles_stale_exception_yields_unknown(tf, tmp_path, mon
         def page_stale(page, *, git_runner=None):
             raise RuntimeError("stale 산출 폭발")
 
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     # 예외를 흡수해 stale=None 으로 surface — crash 0·목록 정상.
     assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == [("폭발 페이지", None)]
@@ -788,7 +798,7 @@ def test_affected_domain_titles_shares_single_git_runner(tf, tmp_path, monkeypat
             calls["runners_seen"].append(git_runner)
             return None
 
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
     result = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
     assert result == [("A", None), ("B", None), ("C", None)]
@@ -826,7 +836,7 @@ def test_affected_domain_titles_uses_each_page_owner_runner(tf, tmp_path, monkey
             seen_runners.append(git_runner)
             return False
 
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(
         freshness_lint, "_freshness_owner_repo",
         lambda home, repo: ((owner if repo == "upstream" else self_repo), None),
@@ -859,7 +869,7 @@ def test_affected_domain_titles_unresolved_owner_skips_stale_soft_warning(
             # None이면 domain.page_stale이 기본 runner로 fallback해 stale 오판하는 재현 조건.
             return None if git_runner is sentinel else True
 
-    monkeypatch.setattr(tf, "_load_domain_module", lambda: _FakeDomain())
+    _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(
         freshness_lint, "_freshness_owner_repo",
         lambda home, _repo: (None, "owner checkout unavailable"),

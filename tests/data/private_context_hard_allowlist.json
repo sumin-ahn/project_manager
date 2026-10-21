@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 416,
+  "count": 408,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 260
+    "python-prose": 252
   },
   "entries": [
     {
@@ -205,22 +205,6 @@
       "match": "T-0720",
       "surface": "python-prose",
       "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "T-0080",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "count": 1
     },
     {
@@ -797,22 +781,6 @@
       "match": "T-0720",
       "surface": "python-prose",
       "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "T-0080",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "count": 1
     },
     {
@@ -1501,22 +1469,6 @@
       "match": "T-0720",
       "surface": "python-prose",
       "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "T-0080",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "count": 1
     },
     {
@@ -2429,22 +2381,6 @@
       "match": "T-0720",
       "surface": "python-prose",
       "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/domain.py",
-      "kind": "work_item",
-      "match": "T-0080",
-      "surface": "python-prose",
-      "hash": "f58693e5ec15910f9b1a9fb73e5f08638f757bdc110e69ed887d7a5fdbabbc81",
       "count": 1
     },
     {

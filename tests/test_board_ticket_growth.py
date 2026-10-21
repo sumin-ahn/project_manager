@@ -22,7 +22,7 @@ from conftest import anchor_board_module, bind_product_cluster, ensure_product_s
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.domain import design_rules, review_form
-from pm_engine.app import round_seed
+from pm_engine.app import freshness_pin, round_seed
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -705,14 +705,14 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
     errors: list[BaseException] = []
 
     if growth == "section-add":
-        original_writer = board._atomic_write_text
+        original_writer = freshness_pin._atomic_write_text
 
         def paused_writer(path, text):
             writer_entered.set()
             assert writer_release.wait(timeout=10), "성장 write 재개 timeout"
             return original_writer(path, text)
 
-        monkeypatch.setattr(board, "_atomic_write_text", paused_writer)
+        monkeypatch.setattr(freshness_pin, "_atomic_write_text", paused_writer)
         growth_argv = ["section-add", "T-1008", "--role", "developer"]
     else:
         original_writer = board.dump_ticket_atomic
@@ -996,7 +996,6 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
         "cmd_idea_new",       # ideas/ 전용, ticket lifecycle 대상 아님.
         "_transition_idea",   # ideas/ open→promoted|killed.
         "cmd_promote_scope",  # decisions/specs frontmatter writer.
-        "repin_verified_at",  # current-truth 문서 freshness writer.
         "dump_cluster",       # 클러스터 장부 writer — 명세 파일이 아니라 묶음 장부를 쓴다.
     }
     discovered_ticket_writers = direct_sink_callers - reviewed_non_ticket_exceptions

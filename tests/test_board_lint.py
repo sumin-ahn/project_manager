@@ -28,9 +28,9 @@ import pytest
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
 from pm_engine.domain import conf_schema, round_rules, ticket_rules
-from pm_engine.infra import conf_store, manifest_store, pm_paths, pre_push_hook, python_env, round_store, ticket_store
+from pm_engine.infra import conf_store, doc_page_store, manifest_store, pm_paths, pre_push_hook, python_env, round_store, ticket_store
 from conftest import ensure_product_slot
-from pm_engine.app import areas_lint, body_lint, conf_lint, freshness_lint, lint_hooks, round_seed, ticket_lint, wiki_lint, wikilink_lint
+from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, doc_staleness, freshness_lint, lint_hooks, round_seed, ticket_lint, wiki_lint, wikilink_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1046,10 +1046,10 @@ def test_promote_scope_accepts_file_in_specs_dir(board, monkeypatch, tmp_path):
     assert fm["family_scope"] == "shared"
 
 
-# ── domain lint 배선 (T-0094 · advisory·never-block·deep-import seam) ──────────
-# board.lint_domain() 은 domain.py 를 deep-import(순환 회피)해 freshness finding 을 board
-# lint 에 표면화한다. 테스트는 *실 domain.py* 를 로드하되 DOMAIN_DIR 을 tmp 로·git_runner 를
-# 고정 대역으로 갈아끼워 hermetic 하게 stale 을 강제한다(실 .project_manager/wiki/domain 미접촉).
+# ── domain lint 배선 (T-0094 · advisory·never-block) ──────────
+# `doc_lint.lint_domain(home)` 은 Home 의 wiki/domain 페이지 freshness finding 을 board lint 에
+# 표면화한다. 테스트는 board REPO 를 tmp 로·git_runner 를 고정 대역으로 갈아끼워 hermetic 하게
+# stale 을 강제한다(실 .project_manager/wiki/domain 미접촉).
 
 DOMAIN_PY = TOOLS / "domain.py"
 
@@ -1068,20 +1068,17 @@ def _domain_page(domain_dir: Path, name: str, *, frontmatter: str, body: str) ->
 
 def _wire_domain(board, monkeypatch, domain_dir: Path, *,
                  git_runner=None, page_stale=None):
-    """board._load_domain_module 이 *실 domain.py* 를 tmp DOMAIN_DIR 로 묶어 돌려주게 한다.
+    """board REPO 를 `domain_dir`(`<root>/.project_manager/wiki/domain`)의 root 로 묶는다.
 
     git_runner 주입(per-page git 호출 hermetic 대역) 또는 page_stale 직접 대역으로
-    stale 판정을 결정적으로 만든다. board.lint_domain 은 domain._real_git_runner 로 runner 를
-    만들므로, 그것도 주입 runner 를 돌려주게 갈아끼운다(실 git subprocess 미사용).
+    stale 판정을 결정적으로 만든다. `doc_lint.lint_domain` 은 `doc_staleness._real_git_runner` 로
+    runner 를 만들므로, 그것도 주입 runner 를 돌려주게 갈아끼운다(실 git subprocess 미사용).
     """
-    domain = _load_domain()
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    monkeypatch.setattr(board, "REPO", domain_dir.parents[2])
     if git_runner is not None:
-        monkeypatch.setattr(domain, "_real_git_runner", lambda cwd: git_runner)
+        monkeypatch.setattr(doc_staleness, "_real_git_runner", lambda cwd: git_runner)
     if page_stale is not None:
-        monkeypatch.setattr(domain, "page_stale", page_stale)
-    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
-    return domain
+        monkeypatch.setattr(doc_staleness, "page_stale", page_stale)
 
 
 def _fixed_git(out: str, rc: int = 0):
@@ -1091,7 +1088,7 @@ def _fixed_git(out: str, rc: int = 0):
 
 def test_lint_domain_surfaces_stale_as_advisory(board, monkeypatch, tmp_path):
     """stale 페이지 fixture → board lint_domain 이 advisory finding 으로 표면화."""
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     # 상호 인링크로 orphan 회피 — stale 만 본다.
     _domain_page(
         domain_dir, "stale.md",
@@ -1106,7 +1103,7 @@ def test_lint_domain_surfaces_stale_as_advisory(board, monkeypatch, tmp_path):
     # covers 커밋(2026-06-20) > updated(2026-06-19) → stale.
     _wire_domain(board, monkeypatch, domain_dir,
                  git_runner=_fixed_git("2026-06-20T00:00:00Z\n"))
-    findings = board.lint_domain()
+    findings = doc_lint.lint_domain(board._home())
     # board 관례 순서 (label, kind, detail) — kind 는 domain 의 stale 보존.
     kinds = [kind for _label, kind, _detail in findings]
     assert "stale" in kinds
@@ -1132,7 +1129,7 @@ def test_lint_domain_surfaced_in_full_report(board, monkeypatch, tmp_path):
         body="\nlonely 를 안 가리킨다\n",
     )
     _wire_domain(board, monkeypatch, domain_dir,
-                 page_stale=lambda page, **kw: None)
+                 page_stale=lambda home, page, **kw: None)
     kinds = _kinds(board.lint_tickets())
     assert "orphan" in kinds            # domain finding 이 합류 흐름에 노출
 
@@ -1149,7 +1146,7 @@ def test_gate_excludes_domain_findings(board, monkeypatch, tmp_path):
     monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
     monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    monkeypatch.setattr(board, "lint_domain", lambda: [
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [
         ("낡음", "stale", "covers 코드가 updated(2026-06-19) 후 커밋됨"),
         ("고립", "orphan", "다른 domain 페이지에서 인링크 0 (고립)"),
         ("거대", "oversized", "본문 250줄 > 200"),
@@ -1171,50 +1168,29 @@ def test_domain_lint_kinds_are_registered_advisory(board):
         assert kind in board._ADVISORY_LINT_KINDS
 
 
-def test_lint_domain_graceful_when_domain_absent(board, monkeypatch, tmp_path):
-    """domain.py 부재(deep-import None) → domain finding 0·board lint 정상 진행."""
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    assert board.lint_domain() == []
-    # board lint 자체는 막히지 않는다(solo/domain 미사용 무영향).
-    _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
-    monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
-    monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
-    monkeypatch.setattr(wiki_lint, "lint_status", lambda home: [])
-    monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
-    monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
-    monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [])
-    # areas 레지스트리 축은 이 테스트의 주제가 아니다 — 등록 0 이관 안내(advisory)를 격리한다.
-    monkeypatch.setattr(areas_lint, "lint_areas_repo_unregistered", lambda home: [])
-    monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
-    assert board.cmd_lint(SimpleNamespace(gate=False)) == 0
-
-
 def test_lint_domain_graceful_when_dir_missing(board, monkeypatch, tmp_path):
     """domain/ 디렉토리 부재(load_pages → []) → finding 0 (실 domain.py 경유)."""
-    domain_dir = tmp_path / "nope"   # 만들지 않음 → load_pages 가 [] 반환
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"   # 만들지 않음 → load_pages 가 [] 반환
     _wire_domain(board, monkeypatch, domain_dir,
                  git_runner=_fixed_git("2026-06-20T00:00:00Z\n"))
-    assert board.lint_domain() == []
+    assert doc_lint.lint_domain(board._home()) == []
 
 
 def test_lint_domain_absorbs_exceptions(board, monkeypatch, tmp_path):
     """domain 호출이 예외를 던져도 [] 로 흡수 — board lint 정상 진행(비차단 계약)."""
-    class Boom:
-        def load_pages(self):
-            raise RuntimeError("boom")
-    monkeypatch.setattr(board, "_load_domain_module", lambda: Boom())
-    assert board.lint_domain() == []
+    def boom(domain_dir, **kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(doc_page_store, "load_pages", boom)
+    assert doc_lint.lint_domain(board._home()) == []
 
 
 def test_lint_domain_no_circular_import_on_load():
-    """board 와 domain 모듈 로드가 순환 없이 끝난다(deep-import seam 검증)."""
+    """board 와 domain 진입 파일 적재가 순환 없이 끝난다."""
     board_mod = _load_board()
     domain_mod = _load_domain()
-    # domain 은 ticket_store.load_ticket 을 쓰고, board 는 domain 을 최상단 import 하지 않는다.
-    assert callable(board_mod.lint_domain)
-    assert callable(domain_mod.load_pages)
+    # domain lint 구현은 패키지(doc_lint·doc_page_store)에 있고 board 는 domain.py 를 적재하지 않는다.
+    assert callable(doc_lint.lint_domain)
+    assert callable(doc_page_store.load_pages)
 
 
 # ── ADR lifecycle lint (T-0099·ADR-0021·advisory) ────────────────────────────
@@ -1713,7 +1689,7 @@ def test_gate_zero_on_unverifiable_only(board, monkeypatch, tmp_path):
 
 def test_domain_freshness_flags_when_commits_after_sha(board, monkeypatch, tmp_path):
     # verified_at 보유·covers 있는 domain 페이지 + stale runner → domain-stale 1.
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "engine.md",
         frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**\n"
@@ -1721,7 +1697,7 @@ def test_domain_freshness_flags_when_commits_after_sha(board, monkeypatch, tmp_p
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    findings = board.lint_domain_freshness(runner=_stale_git)
+    findings = doc_lint.lint_domain_freshness(board._home(), runner=_stale_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "엔진"
@@ -1730,7 +1706,7 @@ def test_domain_freshness_flags_when_commits_after_sha(board, monkeypatch, tmp_p
 
 
 def test_domain_freshness_clean_when_no_commits(board, monkeypatch, tmp_path):
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "engine.md",
         frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**\n"
@@ -1738,36 +1714,31 @@ def test_domain_freshness_clean_when_no_commits(board, monkeypatch, tmp_path):
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    assert board.lint_domain_freshness(runner=_clean_git) == []
+    assert doc_lint.lint_domain_freshness(board._home(), runner=_clean_git) == []
 
 
 def test_domain_freshness_skip_when_verified_at_absent(board, monkeypatch, tmp_path):
     # sensitivity — covers 는 있으나 verified_at 없는 페이지는 stale runner 라도 skip.
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "engine.md",
         frontmatter="title: 엔진\ntype: concept\ncovers:\n  - .project_manager/tools/**",
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    assert board.lint_domain_freshness(runner=_stale_git) == []
+    assert doc_lint.lint_domain_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_domain_freshness_skip_when_no_covers(board, monkeypatch, tmp_path):
     # covers 없는(코드-무관) 페이지는 verified_at 이 있어도 매핑 경로 0 → skip.
-    domain_dir = tmp_path / "domain"
+    domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     _domain_page(
         domain_dir, "concept.md",
         frontmatter="title: 개념\ntype: concept\nverified_at: beef0002",
         body="\nbody\n",
     )
     _wire_domain(board, monkeypatch, domain_dir)
-    assert board.lint_domain_freshness(runner=_stale_git) == []
-
-
-def test_domain_freshness_graceful_when_domain_absent(board, monkeypatch):
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    assert board.lint_domain_freshness(runner=_stale_git) == []
+    assert doc_lint.lint_domain_freshness(board._home(), runner=_stale_git) == []
 
 
 def test_domain_freshness_in_advisory_kinds(board):
@@ -1785,7 +1756,7 @@ def test_freshness_findings_are_advisory_never_block(board, monkeypatch):
     monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
     monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
     monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [])
-    monkeypatch.setattr(board, "lint_domain", lambda: [])
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])
     monkeypatch.setattr(wiki_lint, "lint_adr_lifecycle", lambda home: [])
     monkeypatch.setattr(conf_lint, "lint_adapter_drift", lambda home: [])
     monkeypatch.setattr(board, "lint_render_leak", lambda: [])
@@ -1794,7 +1765,7 @@ def test_freshness_findings_are_advisory_never_block(board, monkeypatch):
         ("architecture.md", "architecture-stale", "sha 이후 커밋 있음")])
     monkeypatch.setattr(freshness_lint, "lint_status_freshness", lambda home: [
         ("status.md", "status-stale", "sha 이후 커밋 있음")])
-    monkeypatch.setattr(board, "lint_domain_freshness", lambda: [
+    monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [
         ("엔진", "domain-stale", "sha 이후 covers 커밋 있음")])
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0    # 차단 0
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 1   # finding 표면화
@@ -1812,11 +1783,11 @@ def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
     monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
     monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
     monkeypatch.setattr(wiki_lint, "lint_scopes", lambda home: [])
-    monkeypatch.setattr(board, "lint_domain", lambda: [])
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])
     monkeypatch.setattr(wiki_lint, "lint_adr_lifecycle", lambda home: [])
     monkeypatch.setattr(freshness_lint, "lint_architecture_freshness", lambda home: [arch])
     monkeypatch.setattr(freshness_lint, "lint_status_freshness", lambda home: [status])
-    monkeypatch.setattr(board, "lint_domain_freshness", lambda: [dom])
+    monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [dom])
     result = board.lint_tickets()
     assert arch in result and status in result and dom in result
 
@@ -2802,7 +2773,7 @@ def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch, tmp_path):
         (wikilink_lint, "lint_wikilinks", lambda home: []),
         (wikilink_lint, "lint_unstable_refs", lambda home: []),
         (wiki_lint, "lint_scopes", lambda home: []),
-        (board, "lint_domain", lambda: []),
+        (doc_lint, "lint_domain", lambda home: []),
         (wiki_lint, "lint_adr_lifecycle", lambda home: []),
         (freshness_lint, "lint_architecture_freshness", lambda home: []),
         (board, "lint_render_leak", lambda: []),
@@ -2831,7 +2802,7 @@ def test_lint_tickets_includes_adapter_drift(board, monkeypatch):
         (wikilink_lint, "lint_wikilinks", lambda home: []),
         (wikilink_lint, "lint_unstable_refs", lambda home: []),
         (wiki_lint, "lint_scopes", lambda home: []),
-        (board, "lint_domain", lambda: []),
+        (doc_lint, "lint_domain", lambda home: []),
         (wiki_lint, "lint_adr_lifecycle", lambda home: []),
         (freshness_lint, "lint_architecture_freshness", lambda home: []),
         (board, "lint_render_leak", lambda: []),
@@ -2888,7 +2859,7 @@ def test_lint_tickets_includes_areas_duplicate_repo(board, monkeypatch):
         (wikilink_lint, "lint_wikilinks", lambda home: []),
         (wikilink_lint, "lint_unstable_refs", lambda home: []),
         (wiki_lint, "lint_scopes", lambda home: []),
-        (board, "lint_domain", lambda: []),
+        (doc_lint, "lint_domain", lambda home: []),
         (wiki_lint, "lint_adr_lifecycle", lambda home: []),
         (freshness_lint, "lint_architecture_freshness", lambda home: []),
         (board, "lint_render_leak", lambda: []),
@@ -3737,7 +3708,7 @@ _UNRELATED_LINT_FNS = (
     (wikilink_lint, "lint_wikilinks", lambda home: []),
     (wikilink_lint, "lint_unstable_refs", lambda home: []),
     (wiki_lint, "lint_scopes", lambda home: []),
-    (None, "lint_domain", lambda: []),
+    (doc_lint, "lint_domain", lambda home: []),
     (wiki_lint, "lint_adr_lifecycle", lambda home: []),
     (freshness_lint, "lint_architecture_freshness", lambda home: []),
     (None, "lint_render_leak", lambda: []),

@@ -21,6 +21,7 @@ import pytest
 
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -50,7 +51,6 @@ def board(tmp_path, monkeypatch):
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
         "BOARD_FILE": wiki / "board.md",
         "LOG_FILE": wiki / "log" / "current.md",
-        "STATUS_FILE": wiki / "status.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
@@ -95,7 +95,8 @@ def _derived_files_snapshot(board) -> dict[str, bytes | None]:
     """board/status/log 파생 파일의 존재·bytes — 거부가 이들을 재생성/변경하지 않는지 대조용."""
     return {
         "board": board.BOARD_FILE.read_bytes() if board.BOARD_FILE.exists() else None,
-        "status": board.STATUS_FILE.read_bytes() if board.STATUS_FILE.exists() else None,
+        "status": (pm_paths.status_file(board._home()).read_bytes()
+                   if pm_paths.status_file(board._home()).exists() else None),
         "log": board.LOG_FILE.read_bytes() if board.LOG_FILE.exists() else None,
     }
 

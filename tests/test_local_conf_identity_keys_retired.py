@@ -369,7 +369,6 @@ def board(tmp_path, monkeypatch):
         "TICKETS_DIR": tickets,
         "BOARD_FILE": pm_dir / "wiki" / "board.md",
         "LOG_FILE": pm_dir / "wiki" / "log" / "current.md",
-        "STATUS_FILE": pm_dir / "wiki" / "status.md",
         "LOCAL_CONF": pm_dir / "local.conf",
         "AREAS_FILE": pm_dir / "areas.md",
         "LOCAL_DIR": pm_dir / ".local",

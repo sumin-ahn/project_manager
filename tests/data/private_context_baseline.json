@@ -91,23 +91,6 @@
         "kind": "session_stamp"
       }
     ],
-    ".project_manager/tools/domain.py": [
-      {
-        "count": 3,
-        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
-        "kind": "session_stamp"
-      }
-    ],
     ".project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -152,10 +135,31 @@
         "kind": "session_stamp"
       }
     ],
+    ".project_manager/tools/pm_engine/app/doc_staleness.py": [
+      {
+        "count": 3,
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "kind": "decision_label"
+      }
+    ],
     ".project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
         "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "kind": "session_stamp"
+      }
+    ],
+    ".project_manager/tools/pm_engine/domain/doc_drafts.py": [
+      {
+        "count": 1,
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "kind": "decision_label"
+      }
+    ],
+    ".project_manager/tools/pm_engine/domain/doc_pages.py": [
+      {
+        "count": 1,
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
         "kind": "session_stamp"
       }
     ],
@@ -491,23 +495,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/claude_code/.project_manager/tools/domain.py": [
-      {
-        "count": 3,
-        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/claude_code/.project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -552,10 +539,31 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/claude_code/.project_manager/tools/pm_engine/app/doc_staleness.py": [
+      {
+        "count": 3,
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "kind": "decision_label"
+      }
+    ],
     "templates/claude_code/.project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
         "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/domain/doc_drafts.py": [
+      {
+        "count": 1,
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "kind": "decision_label"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/domain/doc_pages.py": [
+      {
+        "count": 1,
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
         "kind": "session_stamp"
       }
     ],
@@ -894,23 +902,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/codex/.project_manager/tools/domain.py": [
-      {
-        "count": 3,
-        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/codex/.project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -955,10 +946,31 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/codex/.project_manager/tools/pm_engine/app/doc_staleness.py": [
+      {
+        "count": 3,
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "kind": "decision_label"
+      }
+    ],
     "templates/codex/.project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
         "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/domain/doc_drafts.py": [
+      {
+        "count": 1,
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "kind": "decision_label"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/domain/doc_pages.py": [
+      {
+        "count": 1,
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
         "kind": "session_stamp"
       }
     ],
@@ -1488,23 +1500,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/opencode/.project_manager/tools/domain.py": [
-      {
-        "count": 3,
-        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/opencode/.project_manager/tools/pm_bootstrap.py": [
       {
         "count": 1,
@@ -1549,10 +1544,31 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/app/doc_staleness.py": [
+      {
+        "count": 3,
+        "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
+        "kind": "decision_label"
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
         "hash": "eba3f26f0c58479a6de989b091eed6dbf45a4b80951504009c873919fed0ada7",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/domain/doc_drafts.py": [
+      {
+        "count": 1,
+        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "kind": "decision_label"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/domain/doc_pages.py": [
+      {
+        "count": 1,
+        "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
         "kind": "session_stamp"
       }
     ],

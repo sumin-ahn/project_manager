@@ -163,10 +163,8 @@ def _fake_runner(git_dir: str, common_dir: str):
 # 재바인딩해 어떤 mutation 이 돌더라도 실 트리 오염 0(hermetic).
 _WRITE_TARGET_CONSTS: dict[str, str] = {
     "IDEAS_DIR": "wiki/ideas",
-    "ARCHITECTURE_FILE": "wiki/architecture.md",
     "BOARD_FILE": "wiki/board.md",
     "LOG_FILE": "wiki/log/current.md",
-    "STATUS_FILE": "wiki/status.md",
     "LOCAL_CONF": "local.conf",
     "TICKETS_DIR": "wiki/tickets",
     "TEMPLATE_FILE": "wiki/tickets/_template.md",
@@ -176,7 +174,6 @@ _WRITE_TARGET_CONSTS: dict[str, str] = {
     "LOCAL_DIR": ".local",
     "BOARD_LOCK": ".local/board.lock",
     "LEASES_FILE": ".local/worktree-leases.json",
-    "DOMAIN_PY": "tools/domain.py",
 }
 
 
@@ -343,8 +340,9 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
             (
                 b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()),
                 pm_paths.decisions_dir(b._home()),
-                b.IDEAS_DIR, pm_paths.specs_dir(b._home()), b.ARCHITECTURE_FILE, b.STATUS_FILE,
-                pm_paths.hooks_dir(b._home()), b.LOCAL_CONF, b.LEASES_FILE, b.DOMAIN_PY,
+                b.IDEAS_DIR, pm_paths.specs_dir(b._home()), pm_paths.architecture_file(b._home()),
+                pm_paths.status_file(b._home()),
+                pm_paths.hooks_dir(b._home()), b.LOCAL_CONF, b.LEASES_FILE, pm_paths.domain_dir(b._home()),
                 *wiki_lint._scope_aware_dirs(b._home()),
             )
         )
@@ -366,7 +364,7 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
             owner_pm / "wiki" / "specs", owner_pm / "wiki" / "architecture.md",
             owner_pm / "wiki" / "status.md", owner_pm / "hooks",
             owner_pm / "local.conf", owner_pm / ".local" / "worktree-leases.json",
-            owner_pm / "tools" / "domain.py",
+            owner_pm / "wiki" / "domain",
             owner_pm / "wiki" / "decisions", owner_pm / "wiki" / "specs",
         )
     ]
@@ -848,10 +846,10 @@ def test_pm_owned_path_inventory_is_complete():
     """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
     b = _load_board()
     expected = {
-        "IDEAS_DIR", "ARCHITECTURE_FILE",
-        "BOARD_FILE", "LOG_FILE", "STATUS_FILE", "LOCAL_CONF", "TICKETS_DIR",
+        "IDEAS_DIR",
+        "BOARD_FILE", "LOG_FILE", "LOCAL_CONF", "TICKETS_DIR",
         "TEMPLATE_FILE", "AREAS_FILE", "PM_STATE_FILE", "PM_STATE_TEMPLATE", "LOCAL_DIR",
-        "BOARD_LOCK", "LEASES_FILE", "DOMAIN_PY",
+        "BOARD_LOCK", "LEASES_FILE",
         "DELEGATE_CHANNEL_GUARD_PY", "CODEX_DELEGATE_OBSERVATIONS",
     }
     assert set(b._READ_PM_PATH_RELS) == expected

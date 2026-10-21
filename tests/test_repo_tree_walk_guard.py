@@ -134,7 +134,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("canonical seam의 loud filesystem fallback 구현"),
     (
-        ".project_manager/tools/domain.py",
+        ".project_manager/tools/pm_engine/infra/doc_page_store.py",
         "load_pages",
         "rglob",
         "'*.md'",

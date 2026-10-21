@@ -18,7 +18,7 @@ status-mention 경고와 무관 — 그건 제거됐고 번호만 비었다). �
 `- [x] <원문>`(했다) 또는 `- [>] <원문> (이월: <사유·귀속>)`(안 했고 사유·귀속을 남겼다).
 소급 검사는 없다 — 이미 done 인 티켓은 보지 않는다.
 
-**hermetic**: board.py 모듈 전역(STATUS_FILE·LOG_FILE·REPO 등)은 import 시점에 실 repo
+**hermetic**: board.py 모듈 전역(LOG_FILE·REPO 등)은 import 시점에 실 repo
 절대경로로 굳는다 — tmp 프로젝트로 재지정해 실 루트를 절대 건드리지 않는다
 (test_board_concurrency.py 의 `_load_board_bound` 패턴 동류).
 """
@@ -58,7 +58,6 @@ def _load_board_bound(proj: Path):
     # BOARD_FILE은 import-time 상수라 같은 자리에서 별도로 묶어 refresh 파생 출력도 격리한다.
     mod.REPO = proj
     mod.BOARD_FILE = wiki / "board.md"
-    mod.STATUS_FILE = wiki / "status.md"
     mod.LOG_FILE = wiki / "log" / "current.md"
     mod.LOCAL_DIR = proj / ".project_manager" / ".local"
     return mod
@@ -346,7 +345,7 @@ def test_status_mention_warning_gone_when_status_lacks_ticket(board, capsys):
     이 단언이 fail 한다(제거 회귀 박제).
     """
     # judgment-only status.md — ticket id 를 전혀 담지 않는 모듈 판정 표.
-    _write(board.STATUS_FILE, "# Status\n\n| 모듈 | 판정 |\n|---|---|\n| core | OK |\n")
+    _write(pm_paths.status_file(board._home()), "# Status\n\n| 모듈 | 판정 |\n|---|---|\n| core | OK |\n")
 
     tid = "T-0104"
     problems = board._complete_gate(tid, _gate_args())
@@ -361,7 +360,7 @@ def test_status_mention_warning_gone_when_status_lacks_ticket(board, capsys):
 
 def test_status_mention_warning_gone_even_without_status_file(board, capsys):
     """status.md 가 *아예 없어도* §3 경고가 안 나온다(파일 부재 경로도 제거 확인)."""
-    assert not board.STATUS_FILE.exists()
+    assert not pm_paths.status_file(board._home()).exists()
 
     problems = board._complete_gate("T-0104", _gate_args())
 
@@ -393,7 +392,7 @@ def test_log_mention_gate_passes_when_log_mentions_ticket(board, capsys):
     """§1: log/current.md 가 ticket id 를 담으면 통과(blocking 없음). 옛 경고도 여전히 무발화."""
     _write(board.LOG_FILE, "# Log\n\n- T-0104 완료: 게이트 정합.\n")
     # status.md 는 ticket id 미언급(judgment-only) — 옛 경고가 살아있으면 여기서 발화했을 것.
-    _write(board.STATUS_FILE, "# Status\n\n| 모듈 | 판정 |\n|---|---|\n| core | OK |\n")
+    _write(pm_paths.status_file(board._home()), "# Status\n\n| 모듈 | 판정 |\n|---|---|\n| core | OK |\n")
 
     problems = board._complete_gate(
         "T-0104", _gate_args(allow_missing_log=False))

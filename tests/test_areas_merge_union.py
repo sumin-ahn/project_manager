@@ -32,7 +32,7 @@ import pytest
 from conftest import anchor_board_module, ensure_product_slot
 from pm_engine.domain import gitattributes_rules, round_rules, ticket_rules
 from pm_engine.infra import pre_push_hook, round_store
-from pm_engine.app import areas_lint, body_lint, conf_lint, freshness_lint, ticket_lint, wiki_lint, wikilink_lint
+from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_lint, ticket_lint, wiki_lint, wikilink_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -732,12 +732,12 @@ def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
         (wikilink_lint, "lint_wikilinks", lambda home: []),
         (wikilink_lint, "lint_unstable_refs", lambda home: []),
         (wiki_lint, "lint_scopes", lambda home: []),
-        (board, "lint_domain", list),
+        (doc_lint, "lint_domain", lambda home: []),
         (wiki_lint, "lint_adr_lifecycle", lambda home: []),
         (wiki_lint, "lint_adr_author", lambda home: []),
         (freshness_lint, "lint_architecture_freshness", lambda home: []),
         (freshness_lint, "lint_status_freshness", lambda home: []),
-        (board, "lint_domain_freshness", list),
+        (doc_lint, "lint_domain_freshness", lambda home: []),
         (conf_lint, "lint_adapter_drift", lambda home: []),
         (board, "lint_render_leak", list),
         (areas_lint, "lint_areas_duplicate_repo", lambda home: []),

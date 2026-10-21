@@ -56,7 +56,6 @@ def board(tmp_path, monkeypatch):
         "IDEAS_DIR": wiki / "ideas",
         "BOARD_FILE": wiki / "board.md",
         "LOG_FILE": wiki / "log" / "current.md",
-        "STATUS_FILE": wiki / "status.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",

@@ -7,8 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from pm_engine.infra import manifest_store
-from pm_engine.app import lint_hooks
+from pm_engine.infra import doc_page_store, manifest_store, pm_paths
+from pm_engine.app import doc_coverage, doc_lint, doc_staleness, lint_hooks
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -81,15 +81,15 @@ def _coverage_tree(
 def _readme(domain, readme: Path, claim: str) -> None:
     readme.write_text(
         "# Domain coverage\n\n"
-        f"`{domain.COVERAGE_COMMAND}`\n\n"
+        f"`{doc_coverage.COVERAGE_COMMAND}`\n\n"
         f"<!-- domain-coverage-claim: {claim} -->\n",
         encoding="utf-8",
     )
 
 
 def _findings(domain, domain_dir, manifest, *, exemptions=None):
-    pages = domain.load_pages(domain_dir)
-    return domain.coverage_findings(
+    pages = doc_page_store.load_pages(domain_dir)
+    return doc_coverage.coverage_findings(pm_paths.home_at(domain.REPO),
         pages,
         domain_dir=domain_dir,
         manifest_path=manifest,
@@ -146,7 +146,7 @@ def test_page_zero_shapes_skip_with_visible_reason(
     if shape == "template":
         (domain_dir / "_template.md").write_text("# template\n", encoding="utf-8")
 
-    findings = domain.coverage_findings([], domain_dir=domain_dir)
+    findings = doc_coverage.coverage_findings(pm_paths.home_at(domain.REPO), [], domain_dir=domain_dir, manifest_path=domain.ENGINE_MANIFEST)
 
     assert findings == []
     err = capsys.readouterr().err
@@ -160,10 +160,10 @@ def test_complete_claim_with_zero_pages_is_finding(domain, tmp_path):
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
         [], domain_dir=domain_dir, manifest_path=manifest, exemptions={}
     )
-    findings = domain.lint_pages(
+    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO),
         [], domain_dir=domain_dir, manifest_path=manifest
     )
 
@@ -180,12 +180,12 @@ def test_unclaimed_zero_page_tree_has_no_coverage_finding(domain, tmp_path):
     )
     readme.write_text("# 우리 프로젝트 domain\n", encoding="utf-8")
 
-    report = domain.coverage_report(
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
         [], domain_dir=domain_dir, manifest_path=manifest, exemptions={}
     )
 
     assert report["status"] == "skipped"
-    assert domain.lint_pages(
+    assert doc_lint.lint_pages(pm_paths.home_at(domain.REPO),
         [], domain_dir=domain_dir, manifest_path=manifest
     ) == []
 
@@ -198,7 +198,7 @@ def test_active_claim_turns_any_future_skipped_report_into_finding(
     )
     _readme(domain, readme, "complete")
     monkeypatch.setattr(
-        domain,
+        doc_coverage,
         "coverage_report",
         lambda *args, **kwargs: {
             "status": "skipped",
@@ -252,8 +252,8 @@ def test_invalid_exemption_never_hides_its_gap(domain, tmp_path):
     _readme(domain, readme, "incomplete")
     beta = ".project_manager/tools/beta.py"
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={beta: ""},
@@ -272,8 +272,8 @@ def test_manifest_is_denominator_not_unshipped_tools_directory(domain, tmp_path)
     (tools_dir / "local_only.py").write_text("# adopter local\n", encoding="utf-8")
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -303,8 +303,8 @@ def test_manifest_nested_python_entry_is_not_engine_tool(domain, tmp_path):
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -321,8 +321,8 @@ def test_empty_manifest_denominator_is_error_not_complete(domain, tmp_path):
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -342,8 +342,8 @@ def test_empty_tracked_directory_inventory_is_error_not_complete(domain, tmp_pat
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -362,8 +362,8 @@ def test_manifest_tools_directory_expands_to_python_denominator(domain, tmp_path
     )
     _readme(domain, readme, "incomplete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -397,8 +397,8 @@ def test_manifest_directory_excludes_untracked_and_ignored_python_files(
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -427,8 +427,8 @@ def test_manifest_directory_uses_source_remap_shipping_inventory(domain, tmp_pat
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -444,7 +444,7 @@ def test_flavor_manifest_engine_tool_paths_ignore_unrelated_upstream_sources(
     """채택자 flavor의 upstream-only @source가 도구 분모 해석을 깨지 않는다."""
     manifest = REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
 
-    assert domain.engine_tool_paths(manifest) == domain.engine_tool_paths(
+    assert doc_coverage.engine_tool_paths(manifest) == doc_coverage.engine_tool_paths(
         REPO / ".project_manager" / "engine.manifest"
     )
 
@@ -462,8 +462,8 @@ def test_missing_target_owned_tool_is_not_shipping_denominator(domain, tmp_path)
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -486,8 +486,8 @@ def test_missing_engine_source_makes_denominator_error(domain, tmp_path):
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -511,8 +511,8 @@ def test_manifest_paths_are_parsed_by_canonical_pm_update_reader(domain, tmp_pat
     )
     _readme(domain, readme, "complete")
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -540,8 +540,8 @@ def test_engine_tool_denominator_consumes_manifest_reader_seam(
 
     monkeypatch.setattr(manifest_store, "read_manifest", fake_read_manifest)
 
-    report = domain.coverage_report(
-        domain.load_pages(domain_dir),
+    report = doc_coverage.coverage_report(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_dir),
         domain_dir=domain_dir,
         manifest_path=manifest,
         exemptions={},
@@ -562,9 +562,9 @@ def test_coverage_command_reference_must_appear_once(
     _readme(domain, readme, "complete")
     body = readme.read_text(encoding="utf-8")
     if command_shape == "missing":
-        body = body.replace(f"`{domain.COVERAGE_COMMAND}`\n\n", "")
+        body = body.replace(f"`{doc_coverage.COVERAGE_COMMAND}`\n\n", "")
     else:
-        body += f"\n`{domain.COVERAGE_COMMAND}`\n"
+        body += f"\n`{doc_coverage.COVERAGE_COMMAND}`\n"
     readme.write_text(body, encoding="utf-8")
 
     findings = _findings(domain, domain_dir, manifest)
@@ -582,8 +582,8 @@ def test_windows_and_posix_coverage_commands_may_be_documented_together(
     _readme(domain, readme, "complete")
     with readme.open("a", encoding="utf-8") as fh:
         fh.write(
-            f"\nPOSIX: `{domain.COVERAGE_COMMAND_ALTERNATES[0]}`\n"
-            f"venv: `{domain.COVERAGE_COMMAND_ALTERNATES[1]}`\n"
+            f"\nPOSIX: `{doc_coverage.COVERAGE_COMMAND_ALTERNATES[0]}`\n"
+            f"venv: `{doc_coverage.COVERAGE_COMMAND_ALTERNATES[1]}`\n"
         )
 
     assert _findings(domain, domain_dir, manifest) == []
@@ -659,7 +659,7 @@ def test_marker_and_command_inside_fence_are_examples_not_claim(domain, tmp_path
     readme.write_text(
         "# 예시\n\n"
         "```md\n"
-        f"`{domain.COVERAGE_COMMAND}`\n"
+        f"`{doc_coverage.COVERAGE_COMMAND}`\n"
         "<!-- domain-coverage-claim: complete -->\n"
         "```\n",
         encoding="utf-8",
@@ -667,11 +667,11 @@ def test_marker_and_command_inside_fence_are_examples_not_claim(domain, tmp_path
     monkeypatch.setattr(domain, "REPO", root)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
-    monkeypatch.setattr(domain, "page_stale", lambda _page, **_kwargs: None)
+    monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    pages = domain.load_pages(domain_dir)
-    assert domain.lint_pages(pages) == []
-    explicit = domain.coverage_findings(
+    pages = doc_page_store.load_pages(domain_dir)
+    assert doc_lint.lint_pages(pm_paths.home_at(domain.REPO), pages, domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST) == []
+    explicit = doc_coverage.coverage_findings(pm_paths.home_at(domain.REPO),
         pages, domain_dir=domain_dir, manifest_path=manifest, exemptions={}
     )
     assert any("inline-code로 하나 이상" in detail
@@ -697,9 +697,9 @@ def test_numeric_prose_lint_cannot_be_disabled_by_marker_shape(
     monkeypatch.setattr(domain, "REPO", root)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
-    monkeypatch.setattr(domain, "page_stale", lambda _page, **_kwargs: None)
+    monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    findings = domain.lint_pages(domain.load_pages(domain_dir))
+    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST)
 
     assert findings == [(
         "coverage",
@@ -720,9 +720,9 @@ def test_markerless_adopter_domain_does_not_join_engine_coverage(
     monkeypatch.setattr(domain, "REPO", root)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
-    monkeypatch.setattr(domain, "page_stale", lambda _page, **_kwargs: None)
+    monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    findings = domain.lint_pages(domain.load_pages(domain_dir))
+    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST)
 
     assert not any(kind == "coverage" for kind, _label, _detail in findings)
 
@@ -746,9 +746,9 @@ def test_markerless_adopter_numeric_domain_prose_is_not_coverage_finding(
     monkeypatch.setattr(domain, "REPO", root)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
-    monkeypatch.setattr(domain, "page_stale", lambda _page, **_kwargs: None)
+    monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    findings = domain.lint_pages(domain.load_pages(domain_dir))
+    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST)
 
     assert not any(kind == "coverage" for kind, _label, _detail in findings)
 
@@ -764,8 +764,8 @@ def test_mixed_page_and_manifest_trees_skip_coverage_with_reason(
         tmp_path / "b", domain, shipped=("alpha.py",)
     )
 
-    findings = domain.coverage_findings(
-        domain.load_pages(domain_b),
+    findings = doc_coverage.coverage_findings(pm_paths.home_at(domain.REPO),
+        doc_page_store.load_pages(domain_b),
         domain_dir=domain_a,
         manifest_path=manifest_a,
         exemptions={},
@@ -842,7 +842,7 @@ def test_coverage_command_output_is_machine_derived(domain, tmp_path, monkeypatc
     _root, _tools_dir, domain_dir, manifest, _readme_path = _coverage_tree(tmp_path, domain)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
-    monkeypatch.setattr(domain, "DOMAIN_COVERAGE_EXEMPTIONS", {})
+    monkeypatch.setattr(doc_coverage, "DOMAIN_COVERAGE_EXEMPTIONS", {})
 
     assert domain.main(["coverage"]) == 0
 
@@ -861,18 +861,18 @@ def test_coverage_command_output_is_machine_derived(domain, tmp_path, monkeypatc
 
 def test_coverage_finding_flows_through_board_and_gate_stays_zero(
         domain, tmp_path, monkeypatch):
-    """실 domain fixture finding이 board deep-import seam을 지나도 --gate는 rc 0."""
+    """실 domain fixture finding이 board lint 를 지나도 --gate는 rc 0."""
     root, _tools, domain_dir, manifest, readme = _coverage_tree(tmp_path, domain)
     _readme(domain, readme, "complete")
     monkeypatch.setattr(domain, "REPO", root)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
-    monkeypatch.setattr(domain, "DOMAIN_COVERAGE_EXEMPTIONS", {})
-    monkeypatch.setattr(domain, "page_stale", lambda _page, **_kwargs: None)
+    monkeypatch.setattr(doc_coverage, "DOMAIN_COVERAGE_EXEMPTIONS", {})
+    monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
     board = _load("board_coverage_gate_test", TOOLS / "board.py")
-    monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
-    findings = board.lint_domain()
+    monkeypatch.setattr(board, "REPO", root)
+    findings = doc_lint.lint_domain(board._home())
     assert any(label == "beta.py" and kind == "coverage"
                for label, kind, _detail in findings)
     monkeypatch.setattr(board, "lint_tickets", lambda: findings)

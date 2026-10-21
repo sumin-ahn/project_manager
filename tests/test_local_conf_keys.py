@@ -36,7 +36,7 @@ from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema, ticket_rules
 from pm_engine.infra import conf_store, pre_push_hook, python_env
 from pm_engine.infra.harness import contract
-from pm_engine.app import body_lint, conf_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
+from pm_engine.app import body_lint, conf_lint, doc_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -150,7 +150,7 @@ _UNRELATED_LINT_FNS = (
     (wikilink_lint, "lint_wikilinks", lambda home: []),
     (wikilink_lint, "lint_unstable_refs", lambda home: []),
     (wiki_lint, "lint_scopes", lambda home: []),
-    (None, "lint_domain", lambda: []),
+    (doc_lint, "lint_domain", lambda home: []),
     (wiki_lint, "lint_adr_lifecycle", lambda home: []),
     (freshness_lint, "lint_architecture_freshness", lambda home: []),
     (None, "lint_render_leak", lambda: []),
@@ -413,7 +413,6 @@ def _wired_init_board(monkeypatch, tmp_path, alias: str):
         "TICKETS_DIR": tickets,
         "BOARD_FILE": pm_dir / "wiki" / "board.md",
         "LOG_FILE": pm_dir / "wiki" / "log" / "current.md",
-        "STATUS_FILE": pm_dir / "wiki" / "status.md",
         "LOCAL_CONF": pm_dir / "local.conf",
         "AREAS_FILE": pm_dir / "areas.md",
         "LOCAL_DIR": pm_dir / ".local",
