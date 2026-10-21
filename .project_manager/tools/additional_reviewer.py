@@ -3022,7 +3022,7 @@ def extract_diff(
 
     def run(argv, **kwargs):
         result = runner(argv, **kwargs)
-        if "ls-files" in argv and result.returncode != 0:
+        if argv[3] == "ls-files" and result.returncode != 0:
             raise RuntimeError(
                 f"git ls-files 실패 (rc={result.returncode}): {result.stderr.strip()}"
             )

@@ -1133,3 +1133,43 @@ def test_review_metadata_queries_fail_closed(external, monkeypatch, tmp_path):
         return subprocess.run(argv, **kwargs)
     with pytest.raises(RuntimeError, match="name query failed"):
         external.extract_diff("HEAD", ["."], fail_names)
+
+
+@pytest.mark.parametrize("paths", [["."], ["ls-files"]])
+def test_review_untracked_name_matching_git_subcommand(
+        external, monkeypatch, tmp_path, paths):
+    root = _git_repo(tmp_path)
+    (root / "ls-files").write_text("UNTRACKED_LS_FILES_SENTINEL\n", encoding="utf-8")
+    monkeypatch.setattr(external, "REPO", root)
+    no_index_results = []
+
+    def run(argv, **kwargs):
+        result = subprocess.run(argv, **kwargs)
+        if argv[3] == "diff" and "--no-index" in argv:
+            no_index_results.append(result)
+        return result
+
+    review = external.extract_diff("HEAD", paths, run)
+
+    assert review.base == "HEAD" and review.paths == ("ls-files",)
+    assert "+UNTRACKED_LS_FILES_SENTINEL" in review.text
+    assert len(no_index_results) == 2
+    patch, names = no_index_results
+    assert patch.returncode == names.returncode == 1
+    assert patch.stdout == review.text and names.stdout == "ls-files\0"
+    assert "--name-only" not in patch.args and "--name-only" in names.args
+    assert "-z" in names.args
+    assert all(result.args[-2:] == ["/dev/null", "ls-files"] for result in no_index_results)
+    replay = [subprocess.run(argv, capture_output=True, text=True, encoding="utf-8")
+              for argv in review.read_commands]
+    assert [result.returncode for result in replay] == [0, 0, 1]
+    assert "".join(result.stdout for result in replay) == review.text
+    assert review.read_commands[-1][-2:] == ("/dev/null", "ls-files")
+
+    def fail_untracked_query(argv, **kwargs):
+        if argv[3] == "ls-files":
+            return subprocess.CompletedProcess(argv, 128, "", "untracked query failed")
+        return subprocess.run(argv, **kwargs)
+
+    with pytest.raises(RuntimeError, match="git ls-files 실패.*untracked query failed"):
+        external.extract_diff("HEAD", paths, fail_untracked_query)
