@@ -228,3 +228,66 @@ def test_the_asset_names_the_card_promises_are_the_ones_the_build_makes():
             for system, machine in (("Linux", "x86_64"), ("Windows", "AMD64"),
                                     ("Darwin", "arm64"))}
     assert made == set(ASSET_NAMES)
+
+
+def _pre_push_section(card: Path) -> str:
+    text = card.read_text(encoding="utf-8")
+    start = text.index("### 2. livegate record")
+    return text[start:text.index(SECTION_HEADING, start)]
+
+
+@pytest.mark.parametrize("card", (ROOT_CARD, *SHIPPED_CARDS),
+                         ids=lambda path: path.relative_to(REPO).as_posix())
+def test_release_body_template_contract(card):
+    step = _steps(_release_section(card))[3]
+    blocks = re.findall(r"^   ```text\n(.*?)^   ```", step, re.MULTILINE | re.DOTALL)
+    assert len(blocks) == 2
+    install, update = blocks
+    assert "https://github.com/sumin-ahn/project_manager" in install
+    assert "vX.Y.Z 태그로 clone" in install and "해당 태그의 ADOPT.md" in install
+    assert "첫 커밋까지 수행" in install
+    assert "작업 폴더 생성은 명령만 제시하고 사용자 승인을 받은 뒤 실행" in install
+    assert "대상 vX.Y.Z의 CHANGELOG [X.Y.Z] 절에 있는 업그레이드 노트를 먼저 읽는다" in update
+    assert update.index("업그레이드 노트를 먼저") < update.index("upstream show") < update.index("./pm-update.sh")
+    assert "해당 버전 업그레이드 노트 순서에 따라" in update
+    assert "sync-adapter-config --check의 rc=0" in update
+    assert "적용 전에 차이를 제시" in update
+    assert "적용한 항목과 결과를 보고" in update
+    assert re.search(r"v\d+\.\d+\.\d+", install + update) is None
+    assert "설치 프롬프트 → 업데이트 프롬프트 → CHANGELOG `[X.Y.Z]` 절 순서" in step
+    assert "각각 독립된 `text` 코드 블록" in step
+    assert "해당 버전 절의 제목과 본문은 그대로 포함" in step
+    assert "실제 릴리즈 태그로 채우며" in step and "버전을 일치시킨다" in step
+    assert "과거 릴리즈의 특수 처방" in step and "고정하지 않고" in step
+    assert _fenced_commands(step)[-1] == (
+        "gh release create vX.Y.Z --notes-file <완성한 릴리즈 본문 파일> --verify-tag")
+    assert "<CHANGELOG 해당 절 추출>" not in step
+
+
+@pytest.mark.parametrize("card", (ROOT_CARD, *SHIPPED_CARDS),
+                         ids=lambda path: path.relative_to(REPO).as_posix())
+def test_windows_manual_window_check_contract(card):
+    section = _pre_push_section(card)
+    check = section[section.index("#### Windows 관리자 창 확인 (사람 확인)"):]
+    assert "공개 main push 승인 요청 전에 PM이 실제 Windows 데스크톱" in check
+    assert "같은 릴리즈 커밋의 코드 트리" in check
+    assert "관리자 실행 의존성을 설치" in check
+    assert "해당 커밋에서 `manager/ui/dist`를 빌드" in check
+    assert "코드 트리 루트에서 실행" in check
+    assert "사용자 등록부를 사용하지 않고" in check
+    assert "이번 확인 전용으로 아직 존재하지 않는 임시 `projects.json` 절대경로" in check
+    assert _fenced_commands(check) == [
+        'python -m manager --smoke --registry "<이번 확인 전용 임시 projects.json 절대경로>"']
+    assert "창 표시와 자동 종료를 확인" in check
+    assert "Windows 버전·검증 커밋 SHA·실행 명령·종료 코드 `rc=0`·`smoke ok` 출력을 보고" in check
+    assert "미실행 또는 실패 시 공개 main push 승인 요청을 중단한다" in check
+    assert "수정으로 커밋이 바뀌면 같은 확인을 다시 실행" in check
+    assert "소스 smoke 결과는 livegate 기록에 넣지 않는다" in check
+    assert "공개 후 관리자 실행 파일 3종의 CI 확인도 별도로 수행" in check
+    assert "새 기계 게이트·설정 키·우회 옵션은 추가하지 않는다" in check
+
+
+@pytest.mark.parametrize("card", SHIPPED_CARDS,
+                         ids=lambda path: path.relative_to(REPO).as_posix())
+def test_every_shipped_card_carries_the_same_pre_push_section(card):
+    assert _pre_push_section(card) == _pre_push_section(ROOT_CARD)

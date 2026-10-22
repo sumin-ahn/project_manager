@@ -46,6 +46,21 @@ record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must
 - board 출력 `release N/<pin> green ✓`의 N==pin을 눈으로 확인해 보고한다. 다르면 마커 소실·wrong-cwd이므로 fail로 릴리즈를 막는다.
 - live tier는 **release 단일**이고 **3 하네스 실측**이다 — claude·opencode 는 wave 전 구간(부트스트랩~핸드오프·multi-repo·multi-user), codex 는 위임 완주와 relay 마커 정체성 2건으로 커버 깊이가 얕다. opencode 는 회사 기준 버전·격리 `--dir`·glm-5.2 로 돈다.
 
+#### Windows 관리자 창 확인 (사람 확인)
+
+공개 main push 승인 요청 전에 PM이 실제 Windows 데스크톱에서 같은 릴리즈 커밋의 코드 트리를 확인한다.
+관리자 실행 의존성을 설치하고 해당 커밋에서 `manager/ui/dist`를 빌드한 뒤 코드 트리 루트에서 실행한다.
+사용자 등록부를 사용하지 않고, 이번 확인 전용으로 아직 존재하지 않는 임시 `projects.json` 절대경로를 지정한다.
+
+```powershell
+python -m manager --smoke --registry "<이번 확인 전용 임시 projects.json 절대경로>"
+```
+
+창 표시와 자동 종료를 확인하고, Windows 버전·검증 커밋 SHA·실행 명령·종료 코드 `rc=0`·`smoke ok` 출력을 보고한다.
+미실행 또는 실패 시 공개 main push 승인 요청을 중단한다. 수정으로 커밋이 바뀌면 같은 확인을 다시 실행한다.
+이 소스 smoke 결과는 livegate 기록에 넣지 않는다. 공개 후 관리자 실행 파일 3종의 CI 확인도 별도로 수행한다.
+새 기계 게이트·설정 키·우회 옵션은 추가하지 않는다.
+
 ### 3. CHANGELOG → main push → tag → GitHub Release
 
 먼저 CHANGELOG를 `[Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD`로 확정하고 채택자 관점으로 요약한다. 티켓/내부 세션 용어를 넣지 말고 새 빈 `[Unreleased]`를 만든다.
@@ -66,8 +81,36 @@ record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must
 
 3. **GitHub Release 생성**은 필수다(태그만으로 완료 아님).
 
+   릴리즈 본문 파일은 설치 프롬프트 → 업데이트 프롬프트 → CHANGELOG `[X.Y.Z]` 절 순서로 작성한다.
+   두 프롬프트는 각각 독립된 `text` 코드 블록으로 담고, CHANGELOG 해당 버전 절의 제목과 본문은 그대로 포함한다.
+   예제의 `vX.Y.Z`를 실제 릴리즈 태그로 채우며 두 프롬프트의 태그와 CHANGELOG `[X.Y.Z]` 버전을 일치시킨다.
+   과거 릴리즈의 특수 처방(실행 횟수·설정 정리 항목 등)은 고정하지 않고 해당 버전 업그레이드 노트를 따른다.
+
+   설치 프롬프트:
+
+   ```text
+   project_manager vX.Y.Z로 새 PM 홈을 구성한다.
+   1. https://github.com/sumin-ahn/project_manager 저장소를 vX.Y.Z 태그로 clone한다.
+   2. 해당 태그의 ADOPT.md를 읽고 PM 홈 경로 <경로>에 적용한다.
+   3. ADOPT.md의 첫 커밋까지 수행한다. 이후 작업 폴더 생성은 명령만 제시하고 사용자 승인을 받은 뒤 실행한다.
+   4. 실패하면 우회하지 않고 출력을 그대로 보고한다.
+   ```
+
+   업데이트 프롬프트:
+
+   ```text
+   이 PM 홈의 project_manager 엔진을 vX.Y.Z로 갱신한다.
+   1. 대상 vX.Y.Z의 CHANGELOG [X.Y.Z] 절에 있는 업그레이드 노트를 먼저 읽는다.
+   2. ./pm-config.sh upstream show로 갱신 소스를 조회하고 로컬 경로라면 그 소스를 vX.Y.Z로 맞춘다.
+   3. 해당 버전 업그레이드 노트 순서에 따라 ./pm-update.sh로 갱신한다.
+   4. ./pm-config.sh sync-adapter-config --check의 rc=0을 확인한다. --accept가 필요하면 적용 전에 차이를 제시한다.
+   5. 이 PM 홈에 적용한 항목과 결과를 보고한다. 실패하면 우회하지 않고 출력을 그대로 보고한다.
+   ```
+
+   Windows 프롬프트에서는 `.sh`를 `.cmd`로 바꾼다. 완성한 릴리즈 본문 파일을 `--notes-file`에 전달한다.
+
    ```bash
-   gh release create vX.Y.Z --notes-file <CHANGELOG 해당 절 추출> --verify-tag
+   gh release create vX.Y.Z --notes-file <완성한 릴리즈 본문 파일> --verify-tag
    ```
 
    gh 미인증이면 생략하지 말고 사용자에게 넘기며 **릴리즈 미완료**로 명시한다.
