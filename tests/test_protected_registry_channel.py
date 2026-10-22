@@ -19,6 +19,11 @@ areas.md `protected` 칼럼이 **단일 진실**이고 훅 sidecar(`.local/repo-
 worktree_pool·git runner 는 DI mock — 실 clone/훅 설치/네트워크 0.
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.domain import areas_rules
+from pm_engine.infra import git, protected_hooks, pm_paths, areas_store
+
+from _pool_seams import bind_board, bind_pool
 
 import argparse
 import importlib.util
@@ -85,11 +90,17 @@ def bootstrap():
     return _load("pm_bootstrap")
 
 
-class FakePool:
-    """worktree_pool DI mock — `install_protected_hook` 호출 기록 + 실제 sidecar 파일 갱신.
+@pytest.fixture(autouse=True)
+def _protection_home(tmp_path, monkeypatch, pc, bootstrap):
+    home_root = tmp_path / "home"
+    monkeypatch.setattr(pc, "REPO", home_root)
+    monkeypatch.setattr(bootstrap, "REPO", home_root)
 
-    `REPO_HOOKS_DIR` 는 pm_config/pm_bootstrap 이 sidecar 경로를 해소하는 seam 이다(둘 다
-    getattr·직접 import 금지). `bare_repo_path` 는 `core.hooksPath` 배선 판정 seam.
+
+class FakePool:
+    """패키지 installer mock — `install_protected_hook` 호출 기록 + 실제 sidecar 파일 갱신.
+
+    `REPO_HOOKS_DIR` 는 설치 대역이 쓰는 임시 sidecar 경로다. 경로는 대상 Home과 일치시킨다. `bare_repo_path` 는 `core.hooksPath` 배선 판정 seam.
     `ok=False` 면 설치 실패(bare 부재 등)를 모델링한다.
     """
 
@@ -196,51 +207,55 @@ def _add_args(name="svc", git="git@h:me/svc.git", test=None, owner="me",
 # 1. repo add --protected
 # ════════════════════════════════════════════════════════════════════════
 
-def test_repo_add_protected_flag_lands_in_areas(pc, board, tmp_path):
+def test_repo_add_protected_flag_lands_in_areas(pc, monkeypatch, board, tmp_path):
     """`--protected "main,develop"` 이 areas.md `protected` 칼럼에 기록된다(하드코딩 제거)."""
-    pool = FakePool(tmp_path / "hooks")
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_add(
         _add_args(protected="main,develop"), board=board, clone_runner=GitFake(),
-        repos_dir=tmp_path / ".repos", worktree_pool=pool)
+        repos_dir=tmp_path / ".repos")
     assert rc == 0
-    assert board._repo_protected("svc") == ["main", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "svc") == ["main", "develop"]
 
 
-def test_repo_add_without_protected_keeps_default_fallback(pc, board, tmp_path):
+def test_repo_add_without_protected_keeps_default_fallback(pc, monkeypatch, board, tmp_path):
     """`--protected` 생략 = 빈 칼럼 — `_repo_protected` 가 DEFAULT_PROTECTED 폴백(기존 동작 무변경)."""
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     rc = pc.cmd_repo_add(
         _add_args(), board=board, clone_runner=GitFake(),
-        repos_dir=tmp_path / ".repos", worktree_pool=FakePool(tmp_path / "hooks"))
+        repos_dir=tmp_path / ".repos")
     assert rc == 0
     _header, rows = areas_store._parse_areas(board._home())
     assert rows[0]["protected"] == ""
-    assert board._repo_protected("svc") == list(board.DEFAULT_PROTECTED)
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "svc") == list(areas_rules.DEFAULT_PROTECTED)
 
 
-def test_repo_add_protected_normalizes_spacing(pc, board, tmp_path):
+def test_repo_add_protected_normalizes_spacing(pc, monkeypatch, board, tmp_path):
     """`"main, release"` 처럼 쉼표 뒤 공백은 정규화해 기록한다(셀 corruption 0)."""
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     pc.cmd_repo_add(
         _add_args(protected="main, release"), board=board, clone_runner=GitFake(),
-        repos_dir=tmp_path / ".repos", worktree_pool=FakePool(tmp_path / "hooks"))
+        repos_dir=tmp_path / ".repos")
     _header, rows = areas_store._parse_areas(board._home())
     assert rows[0]["protected"] == "main,release"
 
 
 @pytest.mark.parametrize("bad", ["", "   ", "main,,develop", "main,", "ma in", "a|b"])
-def test_repo_add_bad_protected_rejected_before_side_effects(pc, board, tmp_path, bad, capsys):
+def test_repo_add_bad_protected_rejected_before_side_effects(pc, monkeypatch, board, tmp_path, bad, capsys):
     """형식 위반 `--protected` 는 clone/등록/훅 **이전** 거부 — 부작용 0 (rc 1)."""
     gitr = GitFake()
-    pool = FakePool(tmp_path / "hooks")
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_add(
         _add_args(protected=bad), board=board, clone_runner=gitr,
-        repos_dir=tmp_path / ".repos", worktree_pool=pool)
+        repos_dir=tmp_path / ".repos")
     assert rc == 1
     assert gitr.calls == [] and pool.calls == []
     assert areas_store.registered_repos(board._home()) == set()
     assert "[중단]" in capsys.readouterr().err
 
 
-def test_repo_add_protected_warns_on_branch_absent_from_bare(pc, board, tmp_path, capsys):
+def test_repo_add_protected_warns_on_branch_absent_from_bare(pc, monkeypatch, board, tmp_path, capsys):
     """**must-fix**: 신규 등록 경로도 bare 에 없는 브랜치를 경고한다 (set 경로와 같은 계약).
 
     `--protected mian` 같은 오타가 기본 보호목록(main/master/develop)을 덮으면서 조용히 통과하면
@@ -248,23 +263,25 @@ def test_repo_add_protected_warns_on_branch_absent_from_bare(pc, board, tmp_path
     """
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)          # 기존 bare 재사용(clone skip)
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     rc = pc.cmd_repo_add(
         _add_args(protected="mian,release"), board=board,
         clone_runner=GitFake(existing=("main", "develop")),
-        repos_dir=repos, worktree_pool=FakePool(tmp_path / "hooks"))
+        repos_dir=repos)
     assert rc == 0
     err = capsys.readouterr().err
     assert "없는 브랜치" in err and "mian" in err and "release" in err
-    assert board._repo_protected("svc") == ["mian", "release"]   # 기록은 됨(경고이지 거부 아님)
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "svc") == ["mian", "release"]   # 기록은 됨(경고이지 거부 아님)
 
 
-def test_repo_add_protected_no_warning_when_branches_exist(pc, board, tmp_path, capsys):
+def test_repo_add_protected_no_warning_when_branches_exist(pc, monkeypatch, board, tmp_path, capsys):
     """bare 에 있는 브랜치만 지정하면 경고 없음(잡음 0)."""
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     pc.cmd_repo_add(_add_args(protected="main,develop"), board=board,
                     clone_runner=GitFake(existing=("main", "develop")),
-                    repos_dir=repos, worktree_pool=FakePool(tmp_path / "hooks"))
+                    repos_dir=repos)
     assert "없는 브랜치" not in capsys.readouterr().err
 
 
@@ -274,32 +291,33 @@ def test_repo_add_and_protected_set_share_one_warning_funnel(pc, monkeypatch, bo
     문구 대조가 아니라 *깔때기 동일성*을 못박는다(한쪽만 고치는 회귀를 기계로 잡는다).
     """
     seen: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(pc, "_warn_missing_protected_branches",
-                        lambda repo, branches, **_kw: seen.append((repo, list(branches))) or [])
+    monkeypatch.setattr(repo_protection, "_warn_missing_protected_branches",
+                        lambda _home, repo, branches, **_kw: seen.append((repo, list(branches))) or [])
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     pc.cmd_repo_add(_add_args(protected="main,release"), board=board,
-                    clone_runner=GitFake(), repos_dir=repos,
-                    worktree_pool=FakePool(tmp_path / "hooks"))
+                    clone_runner=GitFake(), repos_dir=repos)
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     pc.cmd_repo_protected(_protected_args("svc", "main,develop"), board=board,
-                          worktree_pool=FakePool(tmp_path / "hooks"),
+
                           clone_runner=GitFake(), repos_dir=repos)
     assert seen == [("svc", ["main", "release"]), ("svc", ["main", "develop"])]
 
 
-def test_repo_add_hook_install_failure_is_loud(pc, board, tmp_path, capsys):
+def test_repo_add_hook_install_failure_is_loud(pc, monkeypatch, board, tmp_path, capsys):
     """훅 설치 실패(False 반환)를 조용히 넘기지 않는다 — 훅 미설치 침묵 = 보호 가드 무력화."""
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks", ok=False))
     cap_rc = pc.cmd_repo_add(
         _add_args(), board=board, clone_runner=GitFake(),
-        repos_dir=tmp_path / ".repos",
-        worktree_pool=FakePool(tmp_path / "hooks", ok=False))
+        repos_dir=tmp_path / ".repos")
     cap = capsys.readouterr()
     assert cap_rc == 0                                   # 등록 자체는 성공(추가 가드라 rc 무영향)
     assert "[경고]" in cap.err and "훅 sidecar" in cap.err
     assert "✓ 보호 브랜치 pre-push 훅" not in cap.out     # 실패인데 성공 알림 금지
 
 
-def test_repo_add_protected_on_already_registered_repo_is_loud(pc, board, tmp_path, capsys):
+def test_repo_add_protected_on_already_registered_repo_is_loud(pc, monkeypatch, board, tmp_path, capsys):
     """이미 등록된 repo 에 `--protected` 를 주면 **반영 안 됨**을 loud 안내 + 대체 커맨드.
 
     등록 줄은 append-only 라 이 경로는 등록을 건너뛴다 — 조용히 삼키면 사용자는 보호목록을
@@ -308,12 +326,12 @@ def test_repo_add_protected_on_already_registered_repo_is_loud(pc, board, tmp_pa
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     repos = tmp_path / ".repos"
     (repos / "service-a.git").mkdir(parents=True)
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     rc = pc.cmd_repo_add(
         _add_args(name="service-a", protected="release"), board=board,
-        clone_runner=GitFake(), repos_dir=repos,
-        worktree_pool=FakePool(tmp_path / "hooks"))
+        clone_runner=GitFake(), repos_dir=repos)
     assert rc == 0
-    assert board._repo_protected("service-a") == ["main"]     # 실제로 반영 안 됨
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main"]     # 실제로 반영 안 됨
     err = capsys.readouterr().err
     assert "반영되지 않았다" in err
     assert "repo protected service-a" in err
@@ -327,9 +345,9 @@ def test_bare_probe_failure_suppresses_branch_warnings(pc, tmp_path, capsys):
     def broken_git(argv):
         return 1, "git 바이너리를 찾을 수 없음 (PATH)."
 
-    assert pc._bare_missing_branches("svc", ["main"], clone_runner=broken_git,
+    assert git._bare_missing_branches(pm_paths.home_at(pc.REPO), "svc", ["main"], clone_runner=broken_git,
                                      repos_dir=repos) == []
-    assert pc._warn_missing_protected_branches(
+    assert repo_protection._warn_missing_protected_branches(pm_paths.home_at(pc.REPO),
         "svc", ["main"], clone_runner=broken_git, repos_dir=repos) == []
     assert capsys.readouterr().err == ""
 
@@ -346,13 +364,14 @@ def test_repo_add_empty_protected_guides_to_default_literal(pc, board, tmp_path,
 # 2. repo protected — 조회 3줄(실효값·출처·sidecar 정합/drift)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_protected_get_explicit_value_with_matching_sidecar(pc, board, tmp_path, capsys):
+def test_protected_get_explicit_value_with_matching_sidecar(pc, monkeypatch, board, tmp_path, capsys):
     """명시값 + sidecar 정합 + 훅 배선 → 실효값·출처(명시)·`✓ 정합` 3줄."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     pool, hooks, _repos = _wired_pool(tmp_path)
     write_sidecar(hooks, "service-a", ["main"])
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_protected(
-        _protected_args("service-a"), board=board, worktree_pool=pool,
+        _protected_args("service-a"), board=board,
         clone_runner=HooksPathGit(configured=str((hooks / "service-a").resolve())))
     out = capsys.readouterr().out.splitlines()
     assert rc == 0
@@ -361,58 +380,59 @@ def test_protected_get_explicit_value_with_matching_sidecar(pc, board, tmp_path,
     assert "✓ 정합" in out[2] and str(hooks / "service-a" / "protected") in out[2]
 
 
-def test_protected_get_empty_column_surfaces_default_fallback(pc, board, tmp_path, capsys):
+def test_protected_get_empty_column_surfaces_default_fallback(pc, monkeypatch, board, tmp_path, capsys):
     """빈 칼럼이면 실효값=기본값 + 출처에 "칼럼 비어 있음" 을 명시한다(핵심 사용자-가치)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
-    write_sidecar(hooks, "service-b", board.DEFAULT_PROTECTED)
-    pc.cmd_repo_protected(_protected_args("service-b"), board=board,
-                          worktree_pool=FakePool(hooks))
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
+    write_sidecar(hooks, "service-b", areas_rules.DEFAULT_PROTECTED)
+    bind_pool(monkeypatch, FakePool(hooks))
+    pc.cmd_repo_protected(_protected_args("service-b"), board=board)
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "service-b · protected = main, master, develop"
     assert "기본값 폴백" in out[1] and "비어 있음" in out[1]
     assert "✓ 목록 정합" in out[2]      # bare 부재라 배선은 "확인 불가"(정직 표기)
 
 
-def test_protected_get_drift_surfaces_old_list_and_remedy(pc, board, tmp_path, capsys):
+def test_protected_get_drift_surfaces_old_list_and_remedy(pc, monkeypatch, board, tmp_path, capsys):
     """sidecar 가 다르면 `⚠ 옛 목록(...)` + "훅은 아직 옛 값으로 동작" + 재실행 안내."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "service-a", ["master"])
-    pc.cmd_repo_protected(_protected_args("service-a"), board=board,
-                          worktree_pool=FakePool(hooks))
+    bind_pool(monkeypatch, FakePool(hooks))
+    pc.cmd_repo_protected(_protected_args("service-a"), board=board)
     out = capsys.readouterr().out
     assert "⚠ 옛 목록(master)" in out
     assert "아직 옛 값으로 동작" in out
     assert "repo protected service-a main" in out
 
 
-def test_protected_get_missing_sidecar_is_surfaced(pc, board, tmp_path, capsys):
+def test_protected_get_missing_sidecar_is_surfaced(pc, monkeypatch, board, tmp_path, capsys):
     """sidecar 미설치도 조용하지 않다 — `(미설치)` + 설치 안내."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pc.cmd_repo_protected(_protected_args("service-a"), board=board,
-                          worktree_pool=FakePool(tmp_path / "hooks"))
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    pc.cmd_repo_protected(_protected_args("service-a"), board=board)
     out = capsys.readouterr().out
     assert "(미설치)" in out and "repo add service-a" in out
 
 
-def test_protected_get_unregistered_repo_says_so(pc, board, tmp_path, capsys):
+def test_protected_get_unregistered_repo_says_so(pc, monkeypatch, board, tmp_path, capsys):
     """미등록 repo 조회도 실효값(기본값)을 내되 출처를 "미등록" 으로 정직하게 밝힌다(rc 0)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    rc = pc.cmd_repo_protected(_protected_args("nope"), board=board,
-                               worktree_pool=FakePool(tmp_path / "hooks"))
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    rc = pc.cmd_repo_protected(_protected_args("nope"), board=board)
     assert rc == 0
     out = capsys.readouterr().out
     assert "nope · protected = main, master, develop" in out
     assert "미등록" in out
 
 
-def test_protected_get_writes_nothing(pc, board, tmp_path):
+def test_protected_get_writes_nothing(pc, monkeypatch, board, tmp_path):
     """조회는 순수 읽기 — areas.md·sidecar 어느 것도 쓰지 않는다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
-    pool = FakePool(hooks)
-    pc.cmd_repo_protected(_protected_args("service-a"), board=board, worktree_pool=pool)
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
+    pool = bind_pool(monkeypatch, FakePool(hooks))
+    bind_pool(monkeypatch, pool)
+    pc.cmd_repo_protected(_protected_args("service-a"), board=board)
     assert pool.calls == []
     assert board.AREAS_FILE.read_text(encoding="utf-8") == _CANONICAL_AREAS
 
@@ -421,42 +441,47 @@ def test_protected_get_writes_nothing(pc, board, tmp_path):
 
 def _wired_pool(tmp_path, repo="service-a"):
     """sidecar 가 실재하고 bare 도 실재하는 풀 — 배선 판정만 git 대역으로 가른다."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     repos = tmp_path / ".repos"
     (repos / f"{repo}.git").mkdir(parents=True, exist_ok=True)
     return FakePool(hooks, repos_dir=repos), hooks, repos
 
 
-def test_protected_hook_wired_true_when_hookspath_matches(pc, tmp_path):
+def test_protected_hook_wired_true_when_hookspath_matches(pc, monkeypatch, tmp_path):
     """`core.hooksPath` 가 우리 훅 디렉토리를 가리키면 True (읽기만·설치 호출 0)."""
     pool, hooks, _repos = _wired_pool(tmp_path)
     git = HooksPathGit(configured=str((hooks / "service-a").resolve()))
-    assert pc.protected_hook_wired("service-a", worktree_pool=pool, git_runner=git) is True
+    bind_pool(monkeypatch, pool)
+    assert protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO), "service-a",  git_runner=git) is True
     assert pool.calls == []          # 읽기 전용 — install_protected_hook 미호출
 
 
-def test_protected_hook_wired_false_when_unset_or_foreign(pc, tmp_path):
+def test_protected_hook_wired_false_when_unset_or_foreign(pc, monkeypatch, tmp_path):
     """hooksPath 가 비었거나 다른 디렉토리면 False (= 훅 미배선)."""
     pool, _hooks, _repos = _wired_pool(tmp_path)
-    assert pc.protected_hook_wired(
-        "service-a", worktree_pool=pool, git_runner=HooksPathGit()) is False
-    assert pc.protected_hook_wired(
-        "service-a", worktree_pool=pool,
+    bind_pool(monkeypatch, pool)
+    assert protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO),
+        "service-a",  git_runner=HooksPathGit()) is False
+    bind_pool(monkeypatch, pool)
+    assert protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO),
+        "service-a",
         git_runner=HooksPathGit(configured="/somewhere/else")) is False
 
 
-def test_protected_hook_wired_none_when_undeterminable(pc, tmp_path):
+def test_protected_hook_wired_none_when_undeterminable(pc, monkeypatch, tmp_path):
     """bare 부재·git 실패는 None("모름") — False 로 단정하지 않는다(오탐 0)."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     no_bare = FakePool(hooks, repos_dir=tmp_path / "absent")
-    assert pc.protected_hook_wired("service-a", worktree_pool=no_bare,
+    bind_pool(monkeypatch, no_bare)
+    assert protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO), "service-a",
                                    git_runner=HooksPathGit()) is None
     pool, _hooks, _repos = _wired_pool(tmp_path)
-    assert pc.protected_hook_wired("service-a", worktree_pool=pool,
+    bind_pool(monkeypatch, pool)
+    assert protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO), "service-a",
                                    git_runner=HooksPathGit(broken=True)) is None
 
 
-def test_protected_get_flags_unwired_hook_despite_fresh_sidecar(pc, board, tmp_path, capsys):
+def test_protected_get_flags_unwired_hook_despite_fresh_sidecar(pc, monkeypatch, board, tmp_path, capsys):
     """**should-fix**: sidecar 는 최신인데 hooksPath 가 안 걸렸으면 `✓ 정합` 이라고 하면 안 된다.
 
     `install_protected_hook` 은 sidecar 기록(2) → hooksPath 배선(3) 순서라 3 만 실패하면
@@ -465,7 +490,8 @@ def test_protected_get_flags_unwired_hook_despite_fresh_sidecar(pc, board, tmp_p
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     pool, hooks, _repos = _wired_pool(tmp_path)
     write_sidecar(hooks, "service-a", ["main"])          # 내용은 실효값과 동일
-    pc.cmd_repo_protected(_protected_args("service-a"), board=board, worktree_pool=pool,
+    bind_pool(monkeypatch, pool)
+    pc.cmd_repo_protected(_protected_args("service-a"), board=board,
                           clone_runner=HooksPathGit())   # hooksPath 미설정
     out = capsys.readouterr().out
     assert "✓ 정합" not in out, "훅이 안 걸렸는데 정합으로 보고했다(거짓 정합)"
@@ -474,41 +500,41 @@ def test_protected_get_flags_unwired_hook_despite_fresh_sidecar(pc, board, tmp_p
     assert "repo protected service-a main" in out       # 재배선 안내
 
 
-def test_protected_get_reports_wired_when_hookspath_set(pc, board, tmp_path, capsys):
+def test_protected_get_reports_wired_when_hookspath_set(pc, monkeypatch, board, tmp_path, capsys):
     """배선까지 확인되면 `✓ 정합 (목록·hooksPath 배선)` — 두 축을 다 봤음을 밝힌다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     pool, hooks, _repos = _wired_pool(tmp_path)
     write_sidecar(hooks, "service-a", ["main"])
+    bind_pool(monkeypatch, pool)
     pc.cmd_repo_protected(
-        _protected_args("service-a"), board=board, worktree_pool=pool,
+        _protected_args("service-a"), board=board,
         clone_runner=HooksPathGit(configured=str((hooks / "service-a").resolve())))
     out = capsys.readouterr().out
     assert "✓ 정합 (목록·hooksPath 배선)" in out
 
 
-def test_protected_get_wiring_unknown_is_honest(pc, board, tmp_path, capsys):
+def test_protected_get_wiring_unknown_is_honest(pc, monkeypatch, board, tmp_path, capsys):
     """배선을 확인할 수 없으면(bare 부재) 그렇게 말한다 — 단정도 침묵도 아님."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "service-a", ["main"])
-    pc.cmd_repo_protected(_protected_args("service-a"), board=board,
-                          worktree_pool=FakePool(hooks, repos_dir=tmp_path / "absent"))
+    bind_pool(monkeypatch, FakePool(hooks, repos_dir=tmp_path / "absent"))
+    pc.cmd_repo_protected(_protected_args("service-a"), board=board)
     out = capsys.readouterr().out
     assert "✓ 목록 정합 (배선 확인 불가" in out
     assert "⚠ 훅 미배선" not in out
 
 
-def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path,
-                                                             monkeypatch, capsys):
+def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path, monkeypatch, capsys):
     """**should-fix**: 내용이 같아도 hooksPath 가 끊겼으면 reconcile 이 침묵하면 안 된다.
 
     내용만 비교하던 조건은 이 상태에서 **영구 침묵**한다(보호가 꺼진 채로). 배선 축을 함께 봐
     재설치하고, 원인을 "목록이 바뀌어" 가 아니라 "배선돼 있지 않아" 로 정확히 보고한다.
     """
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
-    pool = FakePool(hooks)
+    pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: False)
     assert inst._reconcile_protected_sidecar("svc") is True
@@ -517,26 +543,24 @@ def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path
     assert "core.hooksPath` 배선" in err
 
 
-def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path,
-                                                          monkeypatch, capsys):
+def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path, monkeypatch, capsys):
     """두 축 모두 정합이면 여전히 subprocess 0·침묵(정상 상태에서 잡음 0)."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
-    pool = FakePool(hooks)
+    pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: True)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == [] and capsys.readouterr().err == ""
 
 
-def test_bootstrap_wiring_unknown_keeps_current_behaviour(bootstrap, tmp_path,
-                                                          monkeypatch, capsys):
+def test_bootstrap_wiring_unknown_keeps_current_behaviour(bootstrap, tmp_path, monkeypatch, capsys):
     """배선 판정이 None("모름")이면 드리프트로 치지 않는다 — 오탐 0(내용 비교만)."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
-    pool = FakePool(hooks)
+    pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: None)
     assert inst._reconcile_protected_sidecar("svc") is False
@@ -544,30 +568,29 @@ def test_bootstrap_wiring_unknown_keeps_current_behaviour(bootstrap, tmp_path,
 
 
 def test_bootstrap_wiring_judgment_delegates_to_pm_config(bootstrap, pc, tmp_path, monkeypatch):
-    """배선 판정은 `pm_config.protected_hook_wired` 를 **소비**한다(재구현/복붙 아님).
+    """배선 판정은 `protected_hooks.protected_hook_wired` 를 **소비**한다(재구현/복붙 아님).
 
-    부트스트랩이 `_load_tool("pm_config")` 로 실제 그 심볼을 잡는지 + 같은 입력에서 판정이
+    부트스트랩의 실제 패키지 소유자와 같은 Home 입력의 판정이
     **동일**한지를 본다(로직이 갈라지면 값이 갈린다). ADR-0072 의 "두 벌 금지" 원칙 동형.
     """
-    loaded = bootstrap._load_tool("pm_config")
-    assert loaded is not None and hasattr(loaded, "protected_hook_wired"), \
-        "pm_bootstrap 이 소비할 판정 심볼이 pm_config 에 없다(재구현으로 흘렀나?)"
+    assert bootstrap.protected_hooks is protected_hooks
     pool, hooks, _repos = _wired_pool(tmp_path, repo="svc")
     write_sidecar(hooks, "svc", ["main"])
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    assert inst._protected_hook_wired("svc") == pc.protected_hook_wired(
-        "svc", worktree_pool=pool)
+    bind_pool(monkeypatch, pool)
+    assert inst._protected_hook_wired("svc") == protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO),
+        "svc")
 
 
 # ════════════════════════════════════════════════════════════════════════
 # 3. repo protected — 설정(areas → sidecar 순서·default·동기)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_protected_set_updates_areas_then_sidecar(pc, board, tmp_path):
+def test_protected_set_updates_areas_then_sidecar(pc, monkeypatch, board, tmp_path):
     """설정은 **areas → sidecar 순서 고정** — 역순이면 훅이 비준되지 않은 목록을 강제한다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     events: list[str] = []
-    pool = FakePool(tmp_path / "hooks", events=events)
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks", events=events))
     real_set = board.areas_set_cell
 
     def spy_set(repo, column, value):
@@ -576,48 +599,52 @@ def test_protected_set_updates_areas_then_sidecar(pc, board, tmp_path):
 
     board.areas_set_cell = spy_set
     try:
+        bind_pool(monkeypatch, pool)
         rc = pc.cmd_repo_protected(_protected_args("service-a", "main,release"),
-                                   board=board, worktree_pool=pool,
+                                   board=board,
                                    repos_dir=tmp_path / ".repos")
     finally:
         board.areas_set_cell = real_set
     assert rc == 0
     assert events == ["areas", "sidecar"]
-    assert board._repo_protected("service-a") == ["main", "release"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "release"]
     assert pool.calls == [("service-a", ["main", "release"])]
 
 
-def test_protected_set_sidecar_receives_resolved_list(pc, board, tmp_path):
+def test_protected_set_sidecar_receives_resolved_list(pc, monkeypatch, board, tmp_path):
     """sidecar 는 areas 를 다시 읽어 resolve 된 목록을 받는다(파생 캐시·단일 진실 areas)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
-    pool = FakePool(hooks)
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
+    pool = bind_pool(monkeypatch, FakePool(hooks))
+    bind_pool(monkeypatch, pool)
     pc.cmd_repo_protected(_protected_args("service-b", "develop"), board=board,
-                          worktree_pool=pool, repos_dir=tmp_path / ".repos")
+                           repos_dir=tmp_path / ".repos")
     sidecar = (hooks / "service-b" / "protected").read_text(encoding="utf-8")
     assert sidecar.split() == ["develop"]
 
 
-def test_protected_set_default_literal_clears_column(pc, board, tmp_path, capsys):
+def test_protected_set_default_literal_clears_column(pc, monkeypatch, board, tmp_path, capsys):
     """`default`(fold) = 칼럼 비움 → DEFAULT_PROTECTED 폴백 복귀(보호 해제가 아님)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
-    pool = FakePool(hooks)
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
+    pool = bind_pool(monkeypatch, FakePool(hooks))
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_protected(_protected_args("service-a", "DEFAULT"), board=board,
-                               worktree_pool=pool, repos_dir=tmp_path / ".repos")
+                                repos_dir=tmp_path / ".repos")
     assert rc == 0
     _header, rows = areas_store._parse_areas(board._home())
     assert rows[0]["protected"] == ""
-    assert board._repo_protected("service-a") == list(board.DEFAULT_PROTECTED)
-    assert pool.calls == [("service-a", list(board.DEFAULT_PROTECTED))]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == list(areas_rules.DEFAULT_PROTECTED)
+    assert pool.calls == [("service-a", list(areas_rules.DEFAULT_PROTECTED))]
     assert "기본값 폴백" in capsys.readouterr().out
 
 
-def test_protected_set_triggers_board_git_sync(pc, board, tmp_path):
+def test_protected_set_triggers_board_git_sync(pc, monkeypatch, board, tmp_path):
     """설정은 board-git best-effort 동기를 부른다(공유 정책 변경은 즉시 공유돼야)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     pc.cmd_repo_protected(_protected_args("service-a", "release"), board=board,
-                          worktree_pool=FakePool(tmp_path / "hooks"),
+
                           repos_dir=tmp_path / ".repos")
     # ADR-0073/T-0419 — board 전체가 아니라 **areas.md 만** 이 mutation 의 산출물이다.
     # paths 없이 부르면 남의 미커밋 편집까지 "repo protected" 커밋에 쓸려 들어간다.
@@ -628,68 +655,73 @@ def test_protected_set_triggers_board_git_sync(pc, board, tmp_path):
     assert list(paths) == [pm_paths.areas_file(board._home())]
 
 
-def test_protected_set_is_idempotent(pc, board, tmp_path):
+def test_protected_set_is_idempotent(pc, monkeypatch, board, tmp_path):
     """같은 값 재설정은 rc 0 이고 결과가 동일하다(sidecar 재설치는 멱등 자가치유)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pool = FakePool(tmp_path / "hooks")
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     for _ in range(2):
+        bind_pool(monkeypatch, pool)
         assert pc.cmd_repo_protected(_protected_args("service-a", "main"), board=board,
-                                     worktree_pool=pool,
+
                                      repos_dir=tmp_path / ".repos") == 0
-    assert board._repo_protected("service-a") == ["main"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main"]
 
 
-def test_protected_set_upgrades_old_header(pc, board, tmp_path):
+def test_protected_set_upgrades_old_header(pc, monkeypatch, board, tmp_path):
     """구 헤더(칼럼 부재) 레지스트리는 첫 설정에서 canonical 8칼럼으로 업그레이드된다(비파괴)."""
     board.AREAS_FILE.write_text(
         "| repo | prefix | git | test_cmd | owner |\n"
         "|---|---|---|---|---|\n"
         "| service-a | PAY | g | pytest -q | alice |\n",
         encoding="utf-8")
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     rc = pc.cmd_repo_protected(_protected_args("service-a", "main,release"), board=board,
-                               worktree_pool=FakePool(tmp_path / "hooks"),
+
                                repos_dir=tmp_path / ".repos")
     assert rc == 0
     assert board._areas_header_line() in board.AREAS_FILE.read_text(encoding="utf-8")
-    assert board._repo_protected("service-a") == ["main", "release"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "release"]
 
 
-def test_protected_set_warns_on_branch_absent_from_bare(pc, board, tmp_path, capsys):
+def test_protected_set_warns_on_branch_absent_from_bare(pc, monkeypatch, board, tmp_path, capsys):
     """bare 에 없는 브랜치는 **거부하지 않고** 경고 1줄(미래 브랜치 선-보호가 정상)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     repos = tmp_path / ".repos"
     (repos / "service-a.git").mkdir(parents=True)
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     rc = pc.cmd_repo_protected(
         _protected_args("service-a", "main,release"), board=board,
-        worktree_pool=FakePool(tmp_path / "hooks"),
+
         clone_runner=GitFake(existing=("main",)), repos_dir=repos)
     assert rc == 0                                    # 경고이지 거부 아님
     err = capsys.readouterr().err
     assert "release" in err and "없는 브랜치" in err
-    assert board._repo_protected("service-a") == ["main", "release"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "release"]
 
 
-def test_protected_set_no_warning_when_all_branches_exist(pc, board, tmp_path, capsys):
+def test_protected_set_no_warning_when_all_branches_exist(pc, monkeypatch, board, tmp_path, capsys):
     """모든 브랜치가 bare 에 있으면 경고 없음(잡음 0)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     repos = tmp_path / ".repos"
     (repos / "service-a.git").mkdir(parents=True)
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     pc.cmd_repo_protected(_protected_args("service-a", "main,develop"), board=board,
-                          worktree_pool=FakePool(tmp_path / "hooks"),
+
                           clone_runner=GitFake(existing=("main", "develop")),
                           repos_dir=repos)
     assert "없는 브랜치" not in capsys.readouterr().err
 
 
-def test_protected_set_sidecar_failure_is_loud_but_areas_kept(pc, board, tmp_path, capsys):
+def test_protected_set_sidecar_failure_is_loud_but_areas_kept(pc, monkeypatch, board, tmp_path, capsys):
     """sidecar 설치 실패는 loud 경고 + 재실행 안내 — areas 는 이미 비준됐으므로 rc 0."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pool = FakePool(tmp_path / "hooks", ok=False)
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks", ok=False))
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_protected(_protected_args("service-a", "release"), board=board,
-                               worktree_pool=pool, repos_dir=tmp_path / ".repos")
+                                repos_dir=tmp_path / ".repos")
     cap = capsys.readouterr()
     assert rc == 0
-    assert board._repo_protected("service-a") == ["release"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["release"]
     assert "[경고]" in cap.err and "재실행" in cap.err
     # 실패인데 성공(✓) 알림이 나가면 안 된다 — 거짓 정합 보고 금지(must-fix 클래스).
     assert "✓ 보호 브랜치 pre-push 훅 정합화" not in cap.out
@@ -697,7 +729,7 @@ def test_protected_set_sidecar_failure_is_loud_but_areas_kept(pc, board, tmp_pat
 
 # ── fail-loud (부작용 0) ─────────────────────────────────────────────────────
 
-def test_protected_set_duplicate_rows_fail_loud_no_sidecar(pc, board, tmp_path, capsys):
+def test_protected_set_duplicate_rows_fail_loud_no_sidecar(pc, monkeypatch, board, tmp_path, capsys):
     """중복 repo 행 → rc 1 · areas 미변경 · sidecar 미호출(추측해서 한쪽만 고치지 않는다)."""
     dup = (
         "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
@@ -706,9 +738,10 @@ def test_protected_set_duplicate_rows_fail_loud_no_sidecar(pc, board, tmp_path, 
         "| service-a | PAY | g | pytest -q | alice | develop | develop | alice |\n"
     )
     board.AREAS_FILE.write_text(dup, encoding="utf-8")
-    pool = FakePool(tmp_path / "hooks")
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_protected(_protected_args("service-a", "release"), board=board,
-                               worktree_pool=pool, repos_dir=tmp_path / ".repos")
+                                repos_dir=tmp_path / ".repos")
     assert rc == 1
     assert pool.calls == [] and board._sync_calls == []
     assert board.AREAS_FILE.read_text(encoding="utf-8") == dup
@@ -716,44 +749,46 @@ def test_protected_set_duplicate_rows_fail_loud_no_sidecar(pc, board, tmp_path, 
     assert "중복" in err and "areas-duplicate-repo" in err
 
 
-def test_protected_set_unregistered_repo_fail_loud(pc, board, tmp_path, capsys):
+def test_protected_set_unregistered_repo_fail_loud(pc, monkeypatch, board, tmp_path, capsys):
     """미등록 repo 설정 → rc 1 + `repo add` 안내(설정이 등록을 만들지 않는다)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pool = FakePool(tmp_path / "hooks")
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_protected(_protected_args("nope", "main"), board=board,
-                               worktree_pool=pool, repos_dir=tmp_path / ".repos")
+                                repos_dir=tmp_path / ".repos")
     assert rc == 1
     assert pool.calls == []
     assert "repo add nope" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("bad", ["", "  ", "main,,develop", "ma in", "a|b"])
-def test_protected_set_bad_value_rejected_before_write(pc, board, tmp_path, bad, capsys):
+def test_protected_set_bad_value_rejected_before_write(pc, monkeypatch, board, tmp_path, bad, capsys):
     """형식 위반 값은 areas 쓰기 **이전** 거부 — 파일 미변경 · sidecar 미호출."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pool = FakePool(tmp_path / "hooks")
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    bind_pool(monkeypatch, pool)
     rc = pc.cmd_repo_protected(_protected_args("service-a", bad), board=board,
-                               worktree_pool=pool, repos_dir=tmp_path / ".repos")
+                                repos_dir=tmp_path / ".repos")
     assert rc == 1
     assert pool.calls == []
     assert board.AREAS_FILE.read_text(encoding="utf-8") == _CANONICAL_AREAS
     assert "[중단]" in capsys.readouterr().err
 
 
-def test_protected_set_empty_value_guides_to_default(pc, board, tmp_path, capsys):
+def test_protected_set_empty_value_guides_to_default(pc, monkeypatch, board, tmp_path, capsys):
     """빈 값 거부 메시지가 `default` 리터럴을 안내한다("보호 없음" 표현 불가)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pc.cmd_repo_protected(_protected_args("service-a", ""), board=board,
-                          worktree_pool=FakePool(tmp_path / "hooks"))
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    pc.cmd_repo_protected(_protected_args("service-a", ""), board=board)
     err = capsys.readouterr().err
     assert "default" in err and "표현 불가" in err
 
 
-def test_protected_bad_repo_name_rejected(pc, board, tmp_path, capsys):
+def test_protected_bad_repo_name_rejected(pc, monkeypatch, board, tmp_path, capsys):
     """repo 이름 형식 위반은 areas 를 전혀 건드리지 않는다(폴더탈출·줄 corruption 방지)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    rc = pc.cmd_repo_protected(_protected_args("../evil", "main"), board=board,
-                               worktree_pool=FakePool(tmp_path / "hooks"))
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    rc = pc.cmd_repo_protected(_protected_args("../evil", "main"), board=board)
     assert rc == 1
     assert board.AREAS_FILE.read_text(encoding="utf-8") == _CANONICAL_AREAS
     assert "형식 위반" in capsys.readouterr().err
@@ -892,6 +927,7 @@ def _reconciler(bootstrap, tmp_path, monkeypatch, *, board, pool):
 
     pm_config 가 읽는 areas 행(`areas_store._parse_areas`)은 board 대역의 행으로 꽂는다.
     """
+    bind_board(monkeypatch, board)
     if board is not None:
         monkeypatch.setattr(areas_store, "_parse_areas",
                             lambda _home, path=None: board.areas_rows())
@@ -899,13 +935,14 @@ def _reconciler(bootstrap, tmp_path, monkeypatch, *, board, pool):
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
     areas_file.write_text("| repo | prefix |\n|---|---|\n| X | X |\n", encoding="utf-8")
+    bind_pool(monkeypatch, pool)
     return bootstrap.PmBootstrap(
         run_board_fn=lambda args: (0, ""),
         run_pytest_fn=lambda: (0, ""),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=pool,
+
         board=board,
     )
 
@@ -918,9 +955,9 @@ def _marked_skew(message="injected engine rev skew"):
 
 def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys, monkeypatch):
     """sidecar 가 areas 와 다르면 재설치한다 — *다른 clone* 의 변경을 세션 시작에 흡수."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
-    pool = FakePool(hooks)
+    pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is True
@@ -930,27 +967,19 @@ def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys, monk
     assert "정합화" in capsys.readouterr().err
 
 
-def test_bootstrap_reinstall_preserves_resolved_self_test_contract(
-        bootstrap, tmp_path, monkeypatch):
+def test_bootstrap_reinstall_preserves_resolved_self_test_contract(bootstrap, tmp_path, monkeypatch):
     """실 pm_config resolver 경유 재설치가 self-test/go 계약을 release/pytest로 되돌리지 않는다."""
-    home = tmp_path / "adopter-home"
+    home = tmp_path / "home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
         f"upstream.path={tmp_path / 'framework-source'}\ntest.cmd=go test ./...\n",
         encoding="utf-8",
     )
-    pm_config = _load("pm_config")
-    pm_config.REPO = home
-    original_load_tool = bootstrap._load_tool
-    monkeypatch.setattr(
-        bootstrap, "_load_tool",
-        lambda name: pm_config if name == "pm_config" else original_load_tool(name),
-    )
 
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
-    pool = FakePool(hooks)
+    pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(
         bootstrap, tmp_path, monkeypatch,
         board=_ReconcileBoard(["main", "release"], test_cmd="go test ./..."),
@@ -960,25 +989,17 @@ def test_bootstrap_reinstall_preserves_resolved_self_test_contract(
     assert pool.last_gate == ("self-test", "go test ./...")
 
 
-def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(
-        bootstrap, tmp_path, monkeypatch):
+def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(bootstrap, tmp_path, monkeypatch):
     """A1 — 보호목록은 같고 areas test_cmd만 바뀌어도 즉시 훅 계약을 갱신한다."""
     home = tmp_path / "adopter-contract-drift"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(f"upstream.path={tmp_path / 'framework-source'}\n", encoding="utf-8")
-    pm_config = _load("pm_config")
-    pm_config.REPO = home
-    original_load_tool = bootstrap._load_tool
-    monkeypatch.setattr(
-        bootstrap, "_load_tool",
-        lambda name: pm_config if name == "pm_config" else original_load_tool(name),
-    )
 
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
     write_gate_contract(hooks, "svc", "self-test", "old-test-command")
-    pool = FakePool(hooks)
+    pool = bind_pool(monkeypatch, FakePool(hooks))
     board = _ReconcileBoard(["main"], test_cmd="go test ./...")
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=board, pool=pool)
 
@@ -989,8 +1010,7 @@ def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(
         "self-test\ngo test ./...\n")
 
 
-def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
-        bootstrap, tmp_path, capsys, monkeypatch):
+def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(bootstrap, tmp_path, capsys, monkeypatch):
     """**must-fix**: `install_protected_hook` 이 (예외 없이) False 면 성공 알림이 나가면 안 된다.
 
     `install_protected_hook` 은 bare 부재·`core.hooksPath` 설정 실패를 **False 반환**으로 알린다.
@@ -998,9 +1018,9 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
     보고*하는 것 — 사용자가 확인할 이유를 없앤다(원래 문제보다 나쁘다). fail-soft(진입 무차단)는
     유지하되 실패는 loud: "정합화하지 못했습니다" + 옛 목록 + 재실행 커맨드.
     """
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
-    pool = FakePool(hooks, ok=False)
+    pool = bind_pool(monkeypatch, FakePool(hooks, ok=False))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is False
@@ -1016,7 +1036,7 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(
 
 def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, monkeypatch):
     """중앙 설치 깔때기가 raw 예외를 False로 강등해도 실패 안내는 loud하다."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
 
     class _Boom(FakePool):
@@ -1031,24 +1051,16 @@ def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, 
     assert "RuntimeError: hooksPath 설정 실패" in err
 
 
-def test_bootstrap_no_reconcile_when_in_sync(
-        bootstrap, tmp_path, monkeypatch, capsys):
+def test_bootstrap_no_reconcile_when_in_sync(bootstrap, tmp_path, monkeypatch, capsys):
     """정합이면 아무것도 하지 않는다 — subprocess 0(매 부트스트랩이 git config 를 안 때린다)."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main", "release"])
     home = tmp_path / "in-sync-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(f"upstream.path={tmp_path / 'external-framework'}\n", encoding="utf-8")
-    pm_config = _load("pm_config")
-    pm_config.REPO = home
-    original_load_tool = bootstrap._load_tool
-    monkeypatch.setattr(
-        bootstrap, "_load_tool",
-        lambda name: pm_config if name == "pm_config" else original_load_tool(name),
-    )
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
-    pool = FakePool(hooks)
+    pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is False
@@ -1058,31 +1070,19 @@ def test_bootstrap_no_reconcile_when_in_sync(
 
 def test_bootstrap_reconcile_skips_when_sidecar_absent(bootstrap, tmp_path, monkeypatch):
     """훅 미설치(sidecar 부재)면 설치하지 않는다 — 설치는 repo add/worktree add 축."""
-    pool = FakePool(tmp_path / "hooks")
+    pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     assert inst._reconcile_protected_sidecar("svc") is False
     assert pool.calls == []
 
 
-def test_bootstrap_reconcile_failsoft_without_board(bootstrap, tmp_path, monkeypatch):
-    """board 부재는 fail-soft — 판정 생략(세션 진입 무영향)."""
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: None)
-    pool = FakePool(tmp_path / "hooks")
-    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=None, pool=pool)
-    assert inst._reconcile_protected_sidecar("svc") is False
-    assert pool.calls == []
 
 
-def test_bootstrap_reconcile_failsoft_without_pool(bootstrap, tmp_path, monkeypatch):
-    """worktree_pool 부재도 fail-soft — 재설치 seam 이 없으면 조용히 생략."""
-    monkeypatch.setattr(bootstrap, "_load_worktree_pool", lambda: None)
-    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=None)
-    assert inst._reconcile_protected_sidecar("svc") is False
 
 
 def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path, monkeypatch):
     """재설치가 raise 해도 삼킨다(보호 훅은 추가 가드 — 진입을 막지 않는다)."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
 
     class _Boom(FakePool):
@@ -1094,27 +1094,11 @@ def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path, 
     assert inst._reconcile_protected_sidecar("svc") is False
 
 
-def test_bootstrap_reconcile_comparison_rethrows_marked_engine_rev_skew(
-        bootstrap, tmp_path, monkeypatch):
-    """A1 — drift 비교의 넓은 fail-soft는 marked sibling skew를 False로 삼키지 않는다."""
-    hooks = tmp_path / "hooks"
-    write_sidecar(hooks, "svc", ["main"])
-    skew = _marked_skew()
-
-    class _SkewBoard(_ReconcileBoard):
-        def _repo_protected(self, repo):
-            raise skew
-
-    inst = _reconciler(
-        bootstrap, tmp_path, monkeypatch, board=_SkewBoard(["main"]), pool=FakePool(hooks))
-    with pytest.raises(RuntimeError, match="engine rev skew"):
-        inst._reconcile_protected_sidecar("svc")
 
 
-def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(
-        bootstrap, tmp_path, monkeypatch):
+def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(bootstrap, tmp_path, monkeypatch):
     """A1/B4 경계 — 같은 비교 catch의 일반 parser 오류는 여전히 False다."""
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
 
     class _BoomBoard(_ReconcileBoard):
@@ -1126,27 +1110,6 @@ def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(
     assert inst._reconcile_protected_sidecar("svc") is False
 
 
-def test_bootstrap_reconcile_install_rethrows_marked_engine_rev_skew(
-        bootstrap, tmp_path, monkeypatch):
-    """A1 — drift 확정 뒤 중앙 installer의 marked skew도 loud 실패 문구로 강등하지 않는다."""
-    hooks = tmp_path / "hooks"
-    write_sidecar(hooks, "svc", ["main"])
-    pool = FakePool(hooks)
-    skew = _marked_skew()
-
-    fake_pm_config = SimpleNamespace(
-        _protected_push_gate_config=lambda *_args, **_kwargs: ("self-test", "pytest -q"),
-        _install_protected_hook=lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
-        protected_hook_install_failure_reason=lambda _repo: None,
-    )
-    monkeypatch.setattr(
-        bootstrap, "_load_tool",
-        lambda name: fake_pm_config if name == "pm_config" else None,
-    )
-    inst = _reconciler(
-        bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]), pool=pool)
-    with pytest.raises(RuntimeError, match="engine rev skew"):
-        inst._reconcile_protected_sidecar("svc")
 
 
 def _stub_task_run(inst, monkeypatch, tmp_path, leases):
@@ -1188,7 +1151,7 @@ class _Lease:
 def test_task_entry_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch, capsys):
     """task 진입이 보유 슬롯의 repo 마다 reconcile 을 부른다 — 그 세션의 첫 커밋보다 앞."""
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]),
-                       pool=FakePool(tmp_path / "hooks"))
+                       pool=FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     seen: list[str] = []
     monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
                         lambda repo: seen.append(repo) or False)
@@ -1202,7 +1165,7 @@ def test_task_entry_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch, 
 def test_task_without_slots_does_not_reconcile(bootstrap, tmp_path, monkeypatch, capsys):
     """보유 슬롯 0개면 대상 repo 가 없어 reconcile 도 자연 no-op."""
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]),
-                       pool=FakePool(tmp_path / "hooks"))
+                       pool=FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     seen: list[str] = []
     monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
                         lambda repo: seen.append(repo) or False)
@@ -1215,7 +1178,7 @@ def test_task_without_slots_does_not_reconcile(bootstrap, tmp_path, monkeypatch,
 def test_retry_command_uses_default_literal_when_falling_back(pc, board):
     """폴백 상태(빈 칼럼)의 안내는 `default` — 명시 커맨드를 안내하면 출처가 조용히 바뀐다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    cmd = pc.protected_retry_command("service-b")
+    cmd = repo_protection.protected_retry_command(pm_paths.home_at(pc.REPO), "service-b")
     assert cmd.endswith("repo protected service-b default")
     assert "main,master,develop" not in cmd
 
@@ -1223,25 +1186,26 @@ def test_retry_command_uses_default_literal_when_falling_back(pc, board):
 def test_retry_command_uses_current_list_when_explicit(pc, board):
     """명시 설정 상태면 그 목록을 그대로 재적용하는 커맨드(멱등)."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    assert pc.protected_retry_command("service-a").endswith(
+    assert repo_protection.protected_retry_command(pm_paths.home_at(pc.REPO), "service-a").endswith(
         "repo protected service-a main")
 
 
 def test_retry_command_points_to_repo_add_when_unregistered(pc, board):
     """미등록이면 셀을 고칠 대상이 없다 — `repo add` 가 먼저다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    assert pc.protected_retry_command("nope").endswith("repo add nope")
+    assert repo_protection.protected_retry_command(pm_paths.home_at(pc.REPO), "nope").endswith("repo add nope")
 
 
-def test_default_reset_failure_retry_is_not_repo_add(pc, board, tmp_path, capsys):
+def test_default_reset_failure_retry_is_not_repo_add(pc, monkeypatch, board, tmp_path, capsys):
     """`default` 로 되돌린 뒤 sidecar 실패 시 안내가 `repo add` 로 떨어지면 안 된다.
 
     빈 토큰 리스트가 falsy 라 `repo add` 로 새던 경로 — 기본값 복귀는 `repo protected … default`
     로 재실행해야 같은 상태가 복원된다.
     """
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
+    bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks", ok=False))
     rc = pc.cmd_repo_protected(_protected_args("service-a", "default"), board=board,
-                               worktree_pool=FakePool(tmp_path / "hooks", ok=False),
+
                                repos_dir=tmp_path / ".repos")
     assert rc == 0
     err = capsys.readouterr().err
@@ -1249,34 +1213,35 @@ def test_default_reset_failure_retry_is_not_repo_add(pc, board, tmp_path, capsys
     assert "repo add service-a" not in err
 
 
-def test_query_guidance_in_fallback_state_offers_default(pc, board, tmp_path, capsys):
+def test_query_guidance_in_fallback_state_offers_default(pc, monkeypatch, board, tmp_path, capsys):
     """폴백 상태의 drift 안내는 `default` — `main,master,develop` 명시 커맨드가 나오면 안 된다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "service-b", ["master"])        # sidecar drift
-    pc.cmd_repo_protected(_protected_args("service-b"), board=board,
-                          worktree_pool=FakePool(hooks))
+    bind_pool(monkeypatch, FakePool(hooks))
+    pc.cmd_repo_protected(_protected_args("service-b"), board=board)
     out = capsys.readouterr().out
     assert "repo protected service-b default" in out
     assert "repo protected service-b main,master,develop" not in out
 
 
-def test_query_guidance_in_explicit_state_keeps_list(pc, board, tmp_path, capsys):
+def test_query_guidance_in_explicit_state_keeps_list(pc, monkeypatch, board, tmp_path, capsys):
     """명시 상태의 drift 안내는 종전대로 그 목록을 싣는다."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "service-a", ["master"])
-    pc.cmd_repo_protected(_protected_args("service-a"), board=board,
-                          worktree_pool=FakePool(hooks))
+    bind_pool(monkeypatch, FakePool(hooks))
+    pc.cmd_repo_protected(_protected_args("service-a"), board=board)
     assert "repo protected service-a main" in capsys.readouterr().out
 
 
-def test_unwired_guidance_in_fallback_state_offers_default(pc, board, tmp_path, capsys):
+def test_unwired_guidance_in_fallback_state_offers_default(pc, monkeypatch, board, tmp_path, capsys):
     """미배선 안내(배선 축)도 같은 분기를 탄다 — 폴백이면 `default`."""
     board.AREAS_FILE.write_text(_CANONICAL_AREAS, encoding="utf-8")
     pool, hooks, _repos = _wired_pool(tmp_path, repo="service-b")
-    write_sidecar(hooks, "service-b", list(board.DEFAULT_PROTECTED))
-    pc.cmd_repo_protected(_protected_args("service-b"), board=board, worktree_pool=pool,
+    write_sidecar(hooks, "service-b", list(areas_rules.DEFAULT_PROTECTED))
+    bind_pool(monkeypatch, pool)
+    pc.cmd_repo_protected(_protected_args("service-b"), board=board,
                           clone_runner=HooksPathGit())
     out = capsys.readouterr().out
     assert "⚠ 훅 미배선" in out
@@ -1284,14 +1249,13 @@ def test_unwired_guidance_in_fallback_state_offers_default(pc, board, tmp_path, 
     assert "repo protected service-b main,master,develop" not in out
 
 
-def test_bootstrap_failure_guidance_in_fallback_state_offers_default(
-        bootstrap, tmp_path, capsys, monkeypatch):
+def test_bootstrap_failure_guidance_in_fallback_state_offers_default(bootstrap, tmp_path, capsys, monkeypatch):
     """bootstrap reconcile 실패 안내도 폴백 상태면 `default` — 같은 단일 분기를 소비한다.
 
     폴백(빈 칼럼)인데 `main,master,develop` 명시 커맨드를 안내하면, 그걸 실행한 사용자가
     출처를 "명시" 로 바꾸게 된다(안내가 상태를 조용히 바꾼다).
     """
-    hooks = tmp_path / "hooks"
+    hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["master"])
     inst = _reconciler(
         bootstrap, tmp_path, monkeypatch,
@@ -1304,14 +1268,12 @@ def test_bootstrap_failure_guidance_in_fallback_state_offers_default(
 
 
 def test_bootstrap_retry_command_delegates_to_pm_config(bootstrap, pc, tmp_path, monkeypatch):
-    """부트스트랩이 분기를 재구현하지 않고 `pm_config.protected_retry_command` 를 소비한다."""
-    loaded = bootstrap._load_tool("pm_config")
-    assert loaded is not None and hasattr(loaded, "protected_retry_command"), \
-        "부트스트랩이 소비할 안내 분기 심볼이 pm_config 에 없다(재구현으로 흘렀나?)"
+    """부트스트랩이 분기를 재구현하지 않고 `repo_protection.protected_retry_command` 를 소비한다."""
+
     fake_board = _ReconcileBoard(["main"], cell="")
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=fake_board,
-                       pool=FakePool(tmp_path / "hooks"))
-    assert inst._protected_retry_command("svc") == pc.protected_retry_command("svc")
+                       pool=FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
+    assert inst._protected_retry_command("svc") == repo_protection.protected_retry_command(pm_paths.home_at(pc.REPO), "svc")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1320,14 +1282,14 @@ def test_bootstrap_retry_command_delegates_to_pm_config(bootstrap, pc, tmp_path,
 
 def test_install_reporting_funnel_success_and_failure(pc, monkeypatch, capsys):
     """공용 깔때기: 성공은 `✓` 1줄, 실패는 stderr 경고 + 재실행 커맨드(둘 다 조용하지 않다)."""
-    monkeypatch.setattr(pc, "_install_protected_hook", lambda repo, **_kw: True)
-    assert pc._install_protected_hook_reporting("svc", action="설치") is True
+    monkeypatch.setattr(repo_protection, "_install_protected_hook", lambda _home, repo, **_kw: True)
+    assert repo_protection._install_protected_hook_reporting(pm_paths.home_at(pc.REPO), "svc", action="설치") is True
     cap = capsys.readouterr()
     # 설치자는 두 훅(pre-push·T-0076 / pre-commit·T-0415)을 함께 깐다 — 성공 문구도 둘 다 밝힌다.
     assert "✓ 보호 브랜치 pre-push + pre-commit 훅 설치: svc" in cap.out and cap.err == ""
 
-    monkeypatch.setattr(pc, "_install_protected_hook", lambda repo, **_kw: False)
-    assert pc._install_protected_hook_reporting(
+    monkeypatch.setattr(repo_protection, "_install_protected_hook", lambda _home, repo, **_kw: False)
+    assert repo_protection._install_protected_hook_reporting(pm_paths.home_at(pc.REPO),
         "svc", action="정합화", retry="pm-config repo protected svc main,release") is False
     cap = capsys.readouterr()
     assert cap.out == "", "실패인데 성공 알림이 나갔다"
@@ -1342,7 +1304,7 @@ def test_no_raw_install_protected_hook_call_sites_remain(pc):
     (must-fix 1 과 같은 클래스). 새 호출부가 그 패턴으로 다시 들어오는 것을 기계로 막는다 —
     유일한 raw 호출부는 깔때기(`_install_protected_hook_reporting`) 안이어야 한다.
     """
-    source = (TOOLS / "pm_config.py").read_text(encoding="utf-8").splitlines()
+    source = Path(repo_protection.__file__).read_text(encoding="utf-8").splitlines()
     raw = [
         (i + 1, line.strip()) for i, line in enumerate(source)
         if "_install_protected_hook(" in line
@@ -1352,7 +1314,7 @@ def test_no_raw_install_protected_hook_call_sites_remain(pc):
     ]
     # 깔때기 본문의 1회 호출만 허용.
     assert len(raw) == 1, f"보고 깔때기를 우회하는 직접 호출부: {raw}"
-    assert raw[0][1].startswith("if _install_protected_hook(repo, board=board")
+    assert raw[0][1].startswith("if _install_protected_hook(home, repo)")
 
 
 # ════════════════════════════════════════════════════════════════════════

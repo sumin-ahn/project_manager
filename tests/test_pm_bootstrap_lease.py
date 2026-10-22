@@ -13,6 +13,11 @@ work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴
   - sensitivity: 배선 무력화 시 fail.
 """
 from __future__ import annotations
+from pm_engine.app import task_lifecycle
+from pm_engine.domain import worktree_records
+from pm_engine.infra import pool_store
+
+from _pool_seams import bind_pool
 
 import importlib.util
 import json
@@ -32,15 +37,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 홈 사본 엔진으로 task 를 바인딩하는 실 서브프로세스 — 명령이 끝나도 열림 기록은 남는다.
-_BIND_TASK_SOURCE = '''\
-import importlib.util, json, sys
-
-spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
-worktree_pool = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(worktree_pool)
-record, action = worktree_pool.bind_task(sys.argv[2], session="s-test")
-print(json.dumps({"open": record.open, "action": action}))
-'''
+_BIND_TASK_SOURCE = 'import importlib.util, json, sys\n\nspec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])\nworktree_pool = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(worktree_pool)\nfrom pm_engine.infra import pm_paths\nfrom pm_engine.app import task_lifecycle\nrecord, action = task_lifecycle.bind_task(pm_paths.home_at(worktree_pool.REPO), sys.argv[2], session="s-test")\nprint(json.dumps({"open": record.open, "action": action}))\n'
 
 
 def _load(name: str):
@@ -67,6 +64,8 @@ def _hermetic_dashboard(bootstrap, handoff, tmp_path, monkeypatch):
     `_dashboard_file()` 은 모듈 `REPO` 를 따라가므로 재앵커 없이 부트스트랩/핸드오프를 돌리면
     실 작업 트리의 `wiki/log/dashboard.md` 를 갱신한다(tests/conftest.py 의 live board 오염
     가드가 teardown 에서 이를 잡는다)."""
+    for module in (bootstrap, handoff):
+        monkeypatch.setattr(module, "REPO", tmp_path)
     target = tmp_path / "dashboard.md"
     for module in (bootstrap, handoff):
         if hasattr(module, "_dashboard_file"):
@@ -340,6 +339,9 @@ class FakeWorktreePool:
             raise KeyError(slot)
         return _FakeLease(slot, "A", "a5")
 
+    def find_task_strict(self, value):
+        return self.find_task(value)
+
 
 # ── bootstrap fixture: board/git/pytest DI 로 hermetic stub ──────────────────
 
@@ -358,8 +360,7 @@ class _FakeBoard:
         return self._protected.get(repo, ["main", "master", "develop"])
 
 
-def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str | None = None,
-                    board=None, pm_state_text: str | None = None):
+def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str | None=None, board=None, pm_state_text: str | None=None, monkeypatch):
     """격리된 PmBootstrap — board/git/log 는 stub, worktree_pool/board 는 mock 주입.
 
     pm_state 도 hermetic seam 으로 주입한다(T-0179·차수/인계 dump) — 미지정이면 빈 pm_state
@@ -393,13 +394,14 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
             return 0, ""
         return 0, ""
 
+    bind_pool(monkeypatch, worktree_pool)
     inst = bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=worktree_pool,
+
         board=board,
         pm_state_file=pm_state_file,
     )
@@ -455,7 +457,7 @@ _PM_STATE_FIXTURE = """\
 """
 
 
-def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True):
+def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True, monkeypatch):
     log_file = tmp_path / "current.md"
     state_file = tmp_path / "pm_state.md"
     playbook_file = tmp_path / "pm_playbook.md"
@@ -466,13 +468,14 @@ def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True):
         encoding="utf-8",
     )
     pytest_out = "5 passed in 0.1s" if green_pytest else "1 failed, 4 passed"
+    bind_pool(monkeypatch, worktree_pool)
     inst = handoff.PmHandoff(
         run_pytest_fn=lambda: (0 if green_pytest else 1, pytest_out),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_state_file=state_file,
         pm_playbook_file=playbook_file,
-        worktree_pool=worktree_pool,
+
     )
     return inst, log_file, state_file
 
@@ -724,10 +727,10 @@ def test_worktree_cwd_explicit_slot_wins(bootstrap):
 # ── F1 --task 부트스트랩 (신규/resume·prefix surface·㉑ 동시세션 거부·T-0353) ──
 
 
-def test_bootstrap_task_new_surfaces_identity(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_new_surfaces_identity(bootstrap, monkeypatch, tmp_path, capsys):
     """`--task` 신규 — task identity surface(정체성·prefix 없음·상태=신규) dump·rc0."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="created")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="created"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     rc = inst.run(task="payments-refactor")
     assert rc == 0
     assert [c["name"] for c in wp.bind_task_calls] == ["payments-refactor"]
@@ -739,45 +742,45 @@ def test_bootstrap_task_new_surfaces_identity(bootstrap, tmp_path, capsys):
     assert "신규 task" in out
 
 
-def test_bootstrap_task_prefix_surface_default_none(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_prefix_surface_default_none(bootstrap, monkeypatch, tmp_path, capsys):
     """prefix 상태 surface — 기본 없음(①ⓑ) 이면 '(없음)' 표시."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_prefix=None)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_prefix=None))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst.run(task="job1")
     out = capsys.readouterr().out
     assert "prefix 상태 = (없음)" in out
     assert "task prefix" in out   # 변경 명령 pointer(T-0357)
 
 
-def test_bootstrap_task_prefix_surface_shows_value(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_prefix_surface_shows_value(bootstrap, monkeypatch, tmp_path, capsys):
     """지정된 prefix 는 값으로 surface(기본 없음 대비)."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
-                          task_prefix="PAY", task_action="resumed")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_prefix="PAY", task_action="resumed"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst.run(task="job1")
     out = capsys.readouterr().out
     assert "prefix=`PAY`" in out
     assert "재개(resume)" in out
 
 
-def test_bootstrap_task_resume_reads_pm_state_pointer(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_resume_reads_pm_state_pointer(bootstrap, monkeypatch, tmp_path, capsys):
     """resume — 서술 pm_state 포인터 surface(읽기 경로·쓰기는 T-0356).
 
     포인터 줄은 엔진 렌더(`_render_task_pm_state_pointer`)로 대조한다 — 문구/경로 표기를 손으로
     재타이핑하면 렌더가 바뀔 때 테스트만 옛 형식에 남는다."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="resumed")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="resumed"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst.run(task="job1")
     out = capsys.readouterr().out
     assert bootstrap._render_task_pm_state_pointer(
         tmp_path / "tasks" / "job1" / "pm_state.md") in out
 
 
-def test_bootstrap_task_open_record_asks_before_dump(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_open_record_asks_before_dump(bootstrap, monkeypatch, tmp_path, capsys):
     """열린 기록이면 rc1 로 묻고 **부분 dump 도 금지**(⑧ 동형) — 정체·복원·택1 을 싣는다."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
-                          task_open_started="2026-09-09T01:02:03+00:00")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_open_started="2026-09-09T01:02:03+00:00"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     rc = inst.run(task="job1")
     assert rc == 1
     captured = capsys.readouterr()
@@ -789,11 +792,11 @@ def test_bootstrap_task_open_record_asks_before_dump(bootstrap, tmp_path, capsys
     assert "board" not in captured.out.lower() or captured.out.strip() == ""
 
 
-def test_bootstrap_task_force_closes_the_record_and_hands_over(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_force_closes_the_record_and_hands_over(bootstrap, monkeypatch, tmp_path, capsys):
     """`--force` 가 사용자 응답이다 — 기록을 닫고(기존 프리미티브) 인계 표시 뒤 진입한다."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
-                          task_open_started="2026-09-09T01:02:03+00:00")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_open_started="2026-09-09T01:02:03+00:00"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
 
     rc = inst.run(task="job1", force=True)
 
@@ -804,12 +807,12 @@ def test_bootstrap_task_force_closes_the_record_and_hands_over(bootstrap, tmp_pa
     assert "task identity surface" in captured.out
 
 
-def test_bootstrap_task_json_includes_task(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_json_includes_task(bootstrap, monkeypatch, tmp_path, capsys):
     """--json 출력에 task 키(name·prefix·action) 포함."""
     import json as _json
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_prefix="PAY",
-                          task_action="resumed")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_prefix="PAY",
+                          task_action="resumed"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst.run(task="job1", output_json=True)
     data = _json.loads(capsys.readouterr().out)
     assert data["task"]["name"] == "job1"
@@ -817,20 +820,20 @@ def test_bootstrap_task_json_includes_task(bootstrap, tmp_path, capsys):
     assert data["task"]["action"] == "resumed"
 
 
-def test_bootstrap_task_entry_has_no_reclaim_notice(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_entry_has_no_reclaim_notice(bootstrap, monkeypatch, tmp_path, capsys):
     """자동 회수 개념이 사라졌다 — 진입 표면에 회수 문구가 없다(대체 장치 0)."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="created")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="created"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst.run(task="job1")
     out = capsys.readouterr().out
     assert "회수 진입" not in out
 
 
-def test_bootstrap_task_invalid_name_rejected_rc1(bootstrap, tmp_path, capsys):
+def test_bootstrap_task_invalid_name_rejected_rc1(bootstrap, monkeypatch, tmp_path, capsys):
     """엔진 명 검증 거부(InvalidTaskName) → rc1·부분 dump 금지(must-fix)."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
-                          task_invalid_reason="path separator(`/`·`\\`) 불가 — 단일 이름이어야")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_invalid_reason="path separator(`/`·`\\`) 불가 — 단일 이름이어야"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     rc = inst.run(task="../../evil")
     assert rc == 1
     captured = capsys.readouterr()
@@ -866,7 +869,7 @@ def _load_pool(home: Path):
     return module
 
 
-def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path):
+def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path, *, monkeypatch):
     """실 서브프로세스가 연 task 는 그 명령이 끝난 뒤에도 `TaskActiveElsewhere` 로 거부된다.
 
     프로세스 번호를 보던 시절엔 bind 직후 그 번호가 죽어 거부가 사실상 발화하지 못했다.
@@ -876,20 +879,20 @@ def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path):
     binder = tmp_path / "bind_task.py"
     binder.write_text(_BIND_TASK_SOURCE, encoding="utf-8")
     tools = pool_home / ".project_manager" / "tools" / "worktree_pool.py"
-    pool = _load_pool(pool_home)
+    pool = bind_pool(monkeypatch, _load_pool(pool_home))
 
     done = subprocess.run([sys.executable, str(binder), str(tools), "job1"],
                           capture_output=True, text=True, encoding="utf-8")
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == {"open": True, "action": "created"}
-    assert pool.find_task("job1").open is True
+    assert pool_store.find_task(pm_paths.home_at(pool.REPO), "job1").open is True
 
-    with pytest.raises(pool.TaskActiveElsewhere) as refused:
-        pool.bind_task("job1", session="s-other")
-    assert refused.value.started == pool.find_task("job1").started
+    with pytest.raises(worktree_records.TaskActiveElsewhere) as refused:
+        task_lifecycle.bind_task(pm_paths.home_at(pool.REPO), "job1", session="s-other")
+    assert refused.value.started == pool_store.find_task(pm_paths.home_at(pool.REPO), "job1").started
 
-    pool.close_task_session("job1")            # 사용자가 닫는다(`pm-config task close`)
-    record, action = pool.bind_task("job1", session="s-test")
+    task_lifecycle.close_task_session(pm_paths.home_at(pool.REPO), "job1")            # 사용자가 닫는다(`pm-config task close`)
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(pool.REPO), "job1", session="s-test")
 
     assert action == "resumed", "닫힌 기록은 그대로 재개다"
     assert record.open is True
@@ -900,11 +903,11 @@ def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path):
 # 직접 소비하는지 검증한다. slot/solo 불변은 기존 441 테스트(this 파일 + per_slot)가 담보.
 
 
-def _task_read_bootstrap(bootstrap, tmp_path, *, action="resumed", log_text=None):
+def _task_read_bootstrap(bootstrap, tmp_path, *, action='resumed', log_text=None, monkeypatch):
     """task resume-read 부트스트랩 — 주입 pm_state 를 우회(_pm_state_file=None)해 task 서술
     pm_state(`.local/tasks/<이름>/pm_state.md`) 실해소 경로를 태운다(F7). log 는 원하면 주입."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action=action)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action=action))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst._pm_state_file = None  # 주입 우회 → task pm_state 해소 경로 진입(F7·T-0374)
     if log_text is not None:
         inst._log_file.write_text(log_text, encoding="utf-8")
@@ -918,15 +921,15 @@ def _write_task_pm_state(tmp_path, name, text):
     (d / "pm_state.md").write_text(text, encoding="utf-8")
 
 
-def test_bound_session_name_task_returns_tag(bootstrap, tmp_path):
+def test_bound_session_name_task_returns_tag(bootstrap, monkeypatch, tmp_path):
     """`_bound_session_name` = `task:<이름>` — log/pm_state 귀속 태그."""
     inst = _make_bootstrap(bootstrap, tmp_path,
-                           worktree_pool=FakeWorktreePool(task_dir_root=tmp_path / "tasks"))
+                           worktree_pool=bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks")), monkeypatch=monkeypatch)
     inst._task_name = "payments-refactor"
     assert inst._bound_session_name() == "task:payments-refactor"
 
 
-def test_task_resume_dumps_pm_state_body(bootstrap, tmp_path, capsys):
+def test_task_resume_dumps_pm_state_body(bootstrap, monkeypatch, tmp_path, capsys):
     """resume — pm_state 에서 차수를 추론하고 열린 todo 를 dump(포인터가 아닌 소비)."""
     _write_task_pm_state(
         tmp_path, "job1",
@@ -935,7 +938,7 @@ def test_task_resume_dumps_pm_state_body(bootstrap, tmp_path, capsys):
         "  - **3차** job1 세션\n"
         "  - **2차** job1 세션\n",
     )
-    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed")
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed", monkeypatch=monkeypatch)
     rc = inst.run(task="job1")
     assert rc == 0
     out = capsys.readouterr().out
@@ -944,9 +947,9 @@ def test_task_resume_dumps_pm_state_body(bootstrap, tmp_path, capsys):
     assert "### 열린 todo" in out
 
 
-def test_task_first_session_has_state_and_announces_session_one(bootstrap, tmp_path, capsys):
+def test_task_first_session_has_state_and_announces_session_one(bootstrap, monkeypatch, tmp_path, capsys):
     """신규 task는 bind 즉시 state가 생기고 완료 이력 0 marker에서 현재 1차를 추론한다."""
-    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="created")
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="created", monkeypatch=monkeypatch)
     rc = inst.run(task="job1")
     assert rc == 0
     out = capsys.readouterr().out
@@ -956,14 +959,14 @@ def test_task_first_session_has_state_and_announces_session_one(bootstrap, tmp_p
     assert "## PM 1차 부트스트랩" in out
 
 
-def test_task_tag_log_entry_attributed_and_session_inferred(bootstrap, tmp_path, capsys):
+def test_task_tag_log_entry_attributed_and_session_inferred(bootstrap, monkeypatch, tmp_path, capsys):
     """task 태그 handoff entry(`(task:job1)`) 를 자기 것으로 귀속·차수 추론(3차→4차)·본문 dump."""
     log = (
         "# log\n\n"
         "## [2026-07-18] handoff | PM 3차 (task:job1) → 다음 PM 세션\n"
         "- 남은작업: TASK태그-본문-표식\n"
     )
-    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed", log_text=log)
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed", log_text=log, monkeypatch=monkeypatch)
     rc = inst.run(task="job1")  # task pm_state 부재 — 차수는 log 태그 entry 에서만 추론.
     assert rc == 0
     out = capsys.readouterr().out
@@ -972,7 +975,7 @@ def test_task_tag_log_entry_attributed_and_session_inferred(bootstrap, tmp_path,
 
 
 def test_task_bootstrap_uses_log_when_state_lags_after_interrupted_handoff(
-    bootstrap, tmp_path, capsys
+    bootstrap, monkeypatch, tmp_path, capsys
 ):
     """task state가 1차에 머물고 log만 3차면 공통 복구 규칙으로 4차를 announce한다."""
     _write_task_pm_state(
@@ -987,7 +990,7 @@ def test_task_bootstrap_uses_log_when_state_lags_after_interrupted_handoff(
         "## [2026-07-18] handoff | PM 3차 (task:job1) → 다음 PM 세션\n"
         "- 남은작업: log-only 중단 복구\n"
     )
-    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed", log_text=log)
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed", log_text=log, monkeypatch=monkeypatch)
 
     rc = inst.run(task="job1")
 
@@ -997,7 +1000,7 @@ def test_task_bootstrap_uses_log_when_state_lags_after_interrupted_handoff(
     assert "pm_state 는 PM 2차" in out
 
 
-def test_task_ignores_untagged_and_slot_tagged_log(bootstrap, tmp_path, capsys):
+def test_task_ignores_untagged_and_slot_tagged_log(bootstrap, monkeypatch, tmp_path, capsys):
     """task 세션은 무태그(솔로/slot-1)·타 슬롯 태그 handoff 를 자기 것으로 오귀속하지 않는다."""
     log = (
         "# log\n\n"
@@ -1006,7 +1009,7 @@ def test_task_ignores_untagged_and_slot_tagged_log(bootstrap, tmp_path, capsys):
         "## [2026-07-13] handoff | PM 5차 (project_manager_1) → 다음 PM 세션\n"
         "- 남은작업: 슬롯태그-표식\n"
     )
-    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="created", log_text=log)
+    inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="created", log_text=log, monkeypatch=monkeypatch)
     rc = inst.run(task="job1")  # task 태그 entry 0개 → 자기 컨텍스트 없음.
     assert rc == 0
     out = capsys.readouterr().out
@@ -1060,10 +1063,10 @@ def test_display_path_text_serializes_windows_path_as_posix(bootstrap):
     assert bootstrap._display_path_text("weird\\name") == "weird\\name"
 
 
-def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, tmp_path, capsys):
+def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, monkeypatch, tmp_path, capsys):
     """축 A — Windows 표기 경로에서도 pm_state 포인터가 POSIX 단일 표기로 나온다."""
-    wp = _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="resumed")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="resumed"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
 
     rc = inst.run(task="job1")
 
@@ -1074,12 +1077,12 @@ def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, tmp_path, cap
     assert "tasks\\job1" not in out   # 첫-turn 안내 포함 전 surface 가 native 표기로 새지 않는다.
 
 
-def test_task_first_session_pointer_announced_on_windows_path(bootstrap, tmp_path, capsys):
+def test_task_first_session_pointer_announced_on_windows_path(bootstrap, monkeypatch, tmp_path, capsys):
     """축 B — 신규 task 첫 진입 안내(포인터 줄)가 Windows 표기 경로에서도 뜬다.
 
     `_pm_state_file` 주입을 우회해 task 서술 pm_state 해소 경로(F7)를 태운다."""
-    wp = _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="created")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    wp = bind_pool(monkeypatch, _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="created"))
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst._pm_state_file = None
 
     rc = inst.run(task="job1")
@@ -1106,7 +1109,7 @@ def _handover_home(bootstrap, tmp_path, monkeypatch):
     빈다.
     """
     monkeypatch.setattr(bootstrap, "REPO", tmp_path)
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks")
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks"))
     wp._extra_leases = [_FakeLeaseEntry("work/X_7", "X", "job1", state="leased")]
     run_dir = (wp.slot_path("work/X_7") / ".project_manager" / ".local"
                / "delegate-ticket-copies" / "C-wave" / "abc123" / "T-0777")
@@ -1122,7 +1125,7 @@ def _handover_home(bootstrap, tmp_path, monkeypatch):
     wp.live_branch_override["work/X_7"] = "task/x-7"
     wp.task_pm_state_file = lambda name: tmp_path / "tasks" / name / "pm_state.md"
 
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst._log_file.write_text(
         "# log\n\n## [2026-09-09] handoff | PM 12차 (task:job1) → 다음 PM 세션\n\n본문\n",
         encoding="utf-8",
@@ -1148,9 +1151,7 @@ def test_handover_shows_the_six_materials_with_real_values(bootstrap, tmp_path, 
     assert "work/X_7 (갈래: task/x-7)" in text                  # 보유 작업 폴더와 갈래
 
 
-def test_handover_delegate_runs_read_the_held_slot_not_the_pm_home(
-    bootstrap, tmp_path, monkeypatch,
-):
+def test_handover_delegate_runs_read_the_held_slot_not_the_pm_home(bootstrap, tmp_path, monkeypatch):
     """미회수 위임 준비는 **보유 슬롯** 아래를 읽는다 — PM 홈 아래 사본은 그 세션 것이 아니다."""
     inst, run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
     decoy = (tmp_path / ".project_manager" / ".local" / "delegate-ticket-copies"
@@ -1165,9 +1166,7 @@ def test_handover_delegate_runs_read_the_held_slot_not_the_pm_home(
     assert "T-9999" not in text, "PM 홈 아래 사본이 그 세션 것으로 실렸다"
 
 
-def test_handover_claimed_lens_is_the_session_that_held_the_place(
-    bootstrap, tmp_path, monkeypatch,
-):
+def test_handover_claimed_lens_is_the_session_that_held_the_place(bootstrap, tmp_path, monkeypatch):
     """claim 조회 렌즈는 그 자리를 잡고 있던 task 다 — 전역 `--mine` 이 아니다."""
     inst, _run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
     seen: list[list[str]] = []

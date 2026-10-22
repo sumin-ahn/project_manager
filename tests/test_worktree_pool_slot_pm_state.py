@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import importlib.util
 import json
 import shutil
@@ -12,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pm_engine.infra import pm_paths
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,7 +79,7 @@ def wp(project: Path):
 
 
 def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
-    wp, project, capsys
+    wp, monkeypatch, project, capsys
 ):
     """run() 이 인계 컨텍스트 수집 **전에** task 서술 상태를 만들고 그 내용을 dump 한다."""
     bootstrap = _load("pm_bootstrap")
@@ -87,9 +90,10 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     (claims / "mytask.json").write_text(
         json.dumps({"task": "mytask", "session": "S-1"}), encoding="utf-8"
     )
-    state = wp.task_pm_state_file("mytask")
+    state = pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "mytask")
+    bind_pool(monkeypatch, wp)
     instance = bootstrap.PmBootstrap(
-        worktree_pool=wp,
+
         board=SimpleNamespace(_repo_protected=lambda _repo: []),
     )
     instance._phase0_preflight = lambda: 0

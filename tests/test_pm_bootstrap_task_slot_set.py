@@ -10,6 +10,9 @@ worktree_pool 은 **DI mock**(실 장부/git 미접촉·folder 존재는 tmp 실
 bootstrap_phase0.py 의 hermetic DI 패턴 동류.
 """
 from __future__ import annotations
+from pm_engine.domain import home as home_module
+
+from _pool_seams import bind_board, bind_pool
 
 import importlib.util
 import json as _json
@@ -19,6 +22,7 @@ import pytest
 from _pytest_summary import pytest_summary
 from pm_engine.domain import ticket_rules
 from pm_engine.app import slot_resolution
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -222,9 +226,13 @@ class _TaskPool:
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _Lease(f"work/{repo}_1", repo, self._task_name)
 
+    def find_task_strict(self, value):
+        return self.find_task(value)
 
-def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=None, git_fn=None):
+
+def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=None, git_fn=None, monkeypatch):
     """격리 PmBootstrap — board/git/log/areas/pm_state hermetic stub + pool 주입."""
+    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
@@ -247,14 +255,15 @@ def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=Non
             return 1, ""
         return 0, ""
 
+    bind_pool(monkeypatch, pool)
     return bootstrap.PmBootstrap(
         run_board_fn=board_fn or fake_board,
         run_pytest_fn=pytest_fn or (lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨"))),
         run_git_fn=git_fn or fake_git,
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=pool,
-        board=board or _FakeBoard(),
+
+        board=board or bind_board(monkeypatch, _FakeBoard()),
         pm_state_file=pm_state_file,
     )
 
@@ -262,10 +271,10 @@ def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=Non
 # ── 1. 열거 — 0 / 1 / N 슬롯 ─────────────────────────────────────────────────
 
 
-def test_zero_slots_shows_none_and_enters(bootstrap, tmp_path, capsys):
+def test_zero_slots_shows_none_and_enters(bootstrap, monkeypatch, tmp_path, capsys):
     """0개 보유 = "작업공간: (없음)" + generic 안내 + 진입(rc 0·검증 no-op)."""
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
-    inst = _make(bootstrap, tmp_path, pool)
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=()))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 0
     out = capsys.readouterr().out
@@ -274,7 +283,7 @@ def test_zero_slots_shows_none_and_enters(bootstrap, tmp_path, capsys):
     assert "전수 검증" not in out                    # 열거 행렬 헤더 없음
 
 
-def test_task_board_lens_excludes_other_task_claim(bootstrap, tmp_path, capsys):
+def test_task_board_lens_excludes_other_task_claim(bootstrap, monkeypatch, tmp_path, capsys):
     """task bootstrap의 두 board 조회는 현재 task 렌즈라 타 task claim이 dump에 섞이지 않는다."""
     calls: list[list[str]] = []
 
@@ -290,8 +299,8 @@ def test_task_board_lens_excludes_other_task_claim(bootstrap, tmp_path, capsys):
             return 0, "  [claimed] T-9999  other task claim  pm  tag\n"
         raise AssertionError(f"예상하지 못한 board 호출: {args}")
 
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
-    inst = _make(bootstrap, tmp_path, pool, board_fn=board_fn)
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=()))
+    inst = _make(bootstrap, tmp_path, pool, board_fn=board_fn, monkeypatch=monkeypatch)
     assert inst.run(task="mytask") == 0
     out = capsys.readouterr().out
 
@@ -303,7 +312,7 @@ def test_task_board_lens_excludes_other_task_claim(bootstrap, tmp_path, capsys):
     assert "claimed: 1 (task mytask)" in out
 
 
-def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, tmp_path, capsys):
+def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, monkeypatch, tmp_path, capsys):
     """slots_for_task 예외는 0슬롯 진입이 아니라 rc1·부분 dump 없는 fail-loud다."""
 
     class BrokenPool(_TaskPool):
@@ -320,8 +329,8 @@ def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, tmp_pat
         board_calls.append(list(args))
         return 0, ""
 
-    pool = BrokenPool(slot_root=tmp_path / "wt", task_slots=())
-    inst = _make(bootstrap, tmp_path, pool, board_fn=board_fn)
+    pool = bind_pool(monkeypatch, BrokenPool(slot_root=tmp_path / "wt", task_slots=()))
+    inst = _make(bootstrap, tmp_path, pool, board_fn=board_fn, monkeypatch=monkeypatch)
     assert inst.run(task="mytask") == 1
     captured = capsys.readouterr()
     assert "보유 슬롯 장부 조회 실패" in captured.err
@@ -331,9 +340,9 @@ def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, tmp_pat
     assert pool.bind_task_calls == [], "슬롯 장부 해소 실패 뒤 task 장부/state write가 일어났다"
 
 
-def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, tmp_path, capsys):
+def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, monkeypatch, tmp_path, capsys):
     """실 strict 파서가 손상 JSON을 0슬롯으로 오인하지 않고 rc1·장부 무재작성으로 막는다."""
-    wp = _load("worktree_pool")
+    wp = bind_pool(monkeypatch, _load("worktree_pool"))
     local = tmp_path / "real-local"
     ledger = local / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
@@ -345,6 +354,7 @@ def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, tmp_pat
         "WORK_DIR": tmp_path / "real-work",
     }.items():
         setattr(wp, name, value)
+    monkeypatch.setattr(pm_paths, "home_at", lambda root: home_module.Home(Path(root), Path(root) / ".project_manager/wiki", local, Path(root) / ".project_manager/local.conf"))
     before = ledger.read_bytes()
     board_calls: list[list[str]] = []
     inst = _make(
@@ -352,7 +362,7 @@ def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, tmp_pat
         tmp_path,
         wp,
         board_fn=lambda args: board_calls.append(list(args)) or (0, ""),
-    )
+     monkeypatch=monkeypatch)
 
     assert inst.run(task="mytask") == 1
 
@@ -364,14 +374,14 @@ def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, tmp_pat
     assert "PM bootstrap dump" not in captured.out
 
 
-def test_single_slot_enumerated_as_matrix(bootstrap, tmp_path, capsys):
+def test_single_slot_enumerated_as_matrix(bootstrap, monkeypatch, tmp_path, capsys):
     """1개 보유 = 행렬 1행(slot·repo·branch·head·기록↔live·dirty) surface + 진입."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         branches={"work/A_1": "a5"}, heads={"work/A_1": "abcdef1234567890"},
         dirty={"work/A_1": True},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 0
     out = capsys.readouterr().out
@@ -381,14 +391,14 @@ def test_single_slot_enumerated_as_matrix(bootstrap, tmp_path, capsys):
     assert pool.slots_for_task_calls == ["mytask"], "검증 lease 스냅샷 대신 surface가 장부를 재조회했다"
 
 
-def test_multiple_slots_all_enumerated(bootstrap, tmp_path, capsys):
+def test_multiple_slots_all_enumerated(bootstrap, monkeypatch, tmp_path, capsys):
     """N개 보유 = 전 슬롯이 행렬에 열거된다."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1", "work/B_2"),
         branches={"work/A_1": "a5", "work/B_2": "b3"},
         heads={"work/A_1": "aaaaaaaaaaaa", "work/B_2": "bbbbbbbbbbbb"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 0
     out = capsys.readouterr().out
@@ -403,8 +413,8 @@ def test_multiple_slots_all_enumerated(bootstrap, tmp_path, capsys):
 
 def test_task_zero_slots_cwd_stops_at_pm_home(bootstrap, tmp_path, monkeypatch):
     """0개 = PM 홈. 다른 task의 전역 auto-slot을 절대 소비하지 않는다."""
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
-    inst = _make(bootstrap, tmp_path, pool)
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=()))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     inst._task_name = "mytask"
     inst._task_workspace_slots = ()
     monkeypatch.setattr(
@@ -415,33 +425,31 @@ def test_task_zero_slots_cwd_stops_at_pm_home(bootstrap, tmp_path, monkeypatch):
     assert inst._worktree_cwd() == str(bootstrap.REPO)
 
 
-def test_task_only_first_turn_uses_current_task_pm_state_path(
-    bootstrap, tmp_path, monkeypatch, capsys
-):
+def test_task_only_first_turn_uses_current_task_pm_state_path(bootstrap, tmp_path, monkeypatch, capsys):
     """task-only 첫-turn은 전역 auto-slot이 가리키는 타 task 슬롯 대신 현재 task state를 안내한다."""
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
-    inst = _make(bootstrap, tmp_path, pool)
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=()))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     monkeypatch.setattr(slot_resolution, "_auto_slot", lambda *_args: ("other_task_repo", 9))
 
     assert inst.run(task="mytask") == 0
     first_turn = capsys.readouterr().out.split("### 권장 첫 turn", 1)[1]
     # 표기는 엔진 직렬화(POSIX 단일)로 만든다 — `str(Path)` 로 만들면 Windows 에서만 갈린다.
-    task_state = bootstrap._display_path_text(pool.task_dir("mytask") / "pm_state.md")
+    task_state = bootstrap._display_path_text(pm_paths.task_dir(pm_paths.home_at(bootstrap.REPO), "mytask") / "pm_state.md")
 
     assert task_state in first_turn
     assert ".project_manager/.local/slots/other_task_repo_9/pm_state.md" not in first_turn
 
 
 def test_task_single_slot_becomes_git_cwd_before_collection(
-    bootstrap, tmp_path, capsys
+    bootstrap, monkeypatch, tmp_path, capsys
 ):
     """1개 = 그 task 슬롯이 top Git cwd. `_auto_slot`/타 task 슬롯 유입 없음."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt",
         task_slots=("work/A_1",),
         branches={"work/A_1": "a5"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     git_cwds = []
 
     def capture_git(args):
@@ -460,15 +468,15 @@ def test_task_single_slot_becomes_git_cwd_before_collection(
 
 
 def test_task_multiple_slots_use_deterministic_git_and_all_freshness(
-    bootstrap, tmp_path, capsys
+    bootstrap, monkeypatch, tmp_path, capsys
 ):
     """N개 = 정렬 첫 task 슬롯이 대표 Git cwd, freshness는 task 슬롯 전수."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt",
         task_slots=("work/B_2", "work/A_1"),
         branches={"work/A_1": "a5", "work/B_2": "b3"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     git_cwds = []
     fetched_dirs = []
 
@@ -495,15 +503,15 @@ def test_task_multiple_slots_use_deterministic_git_and_all_freshness(
 
 
 def test_task_multiple_slots_with_pytest_runs_all_owned_workspaces(
-    bootstrap, tmp_path, capsys
+    bootstrap, monkeypatch, tmp_path, capsys
 ):
     """--with-pytest = task 보유 슬롯 전수 회귀. 합산 결과와 scope를 surface한다."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt",
         task_slots=("work/B_2", "work/A_1"),
         branches={"work/A_1": "a5", "work/B_2": "b3"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     pytest_cwds = []
 
     def capture_pytest():
@@ -529,15 +537,15 @@ def test_task_multiple_slots_with_pytest_runs_all_owned_workspaces(
     ids=["nonzero-rc", "failed-count"],
 )
 def test_task_pytest_failure_in_any_slot_blocks_immediately(
-    bootstrap, tmp_path, capsys, failed_result
+    bootstrap, monkeypatch, tmp_path, capsys, failed_result
 ):
     """task 전수 회귀는 슬롯 하나의 rc/실패 건수만 비정상이면 합산 dump 전에 즉시 차단한다."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt",
         task_slots=("work/A_1", "work/B_2", "work/C_3"),
         branches={"work/A_1": "a5", "work/B_2": "b3", "work/C_3": "c2"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     pytest_cwds = []
     outcomes = iter([(0, "5 passed in 0.01s\n"), failed_result])
 
@@ -560,15 +568,15 @@ def test_task_pytest_failure_in_any_slot_blocks_immediately(
 
 
 def test_task_multiple_slots_json_surfaces_representative_and_full_pytest_scope(
-    bootstrap, tmp_path, capsys
+    bootstrap, monkeypatch, tmp_path, capsys
 ):
     """JSON도 대표 Git cwd와 전수 pytest scope를 구분해 기계 소비자가 오해하지 않는다."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt",
         task_slots=("work/B_2", "work/A_1"),
         branches={"work/A_1": "a5", "work/B_2": "b3"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     inst._run_pytest_fn = lambda: (0, "1 passed in 0.01s\n")
 
     assert inst.run(task="mytask", with_pytest=True, output_json=True) == 0
@@ -591,11 +599,11 @@ def test_task_multiple_slots_json_surfaces_representative_and_full_pytest_scope(
 
 
 def test_task_zero_slots_with_pytest_fails_without_fallback(
-    bootstrap, tmp_path, capsys
+    bootstrap, monkeypatch, tmp_path, capsys
 ):
     """0개 + --with-pytest = 대상 없음 fail-loud. PM 홈/다른 task에서 vacuous 실행하지 않는다."""
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=())
-    inst = _make(bootstrap, tmp_path, pool)
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=()))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     with pytest.raises(SystemExit) as exc:
         inst.run(task="mytask", with_pytest=True)
     assert exc.value.code == 1
@@ -604,17 +612,17 @@ def test_task_zero_slots_with_pytest_fails_without_fallback(
     assert "전역 auto-slot으로 대체하지 않습니다" in err
 
 
-def test_task_pytest_rechecks_owner_before_execution(bootstrap, tmp_path, capsys):
+def test_task_pytest_rechecks_owner_before_execution(bootstrap, monkeypatch, tmp_path, capsys):
     """초기 슬롯 스냅 뒤 realloc되면 pytest를 새 소유자 worktree에서 실행하지 않고 loud 중단한다."""
     slot = "work/A_1"
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"})
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"}))
     calls = []
 
     def pytest_fn():
         calls.append("pytest")
         return 0, pytest_summary()
 
-    inst = _make(bootstrap, tmp_path, pool, pytest_fn=pytest_fn)
+    inst = _make(bootstrap, tmp_path, pool, pytest_fn=pytest_fn, monkeypatch=monkeypatch)
     # freshness가 끝난 뒤(초기 스냅과 pytest 실행 사이) ownership 변경을 주입한다.
     original_collect = inst._collect_freshness
 
@@ -661,14 +669,14 @@ def _windows_flavour_worktree_cwd(inst):
 
 @pytest.mark.parametrize("path_flavour", ["native", "windows"])
 def test_task_pull_rechecks_owner_before_mutation(
-    bootstrap, tmp_path, capsys, path_flavour
+    bootstrap, monkeypatch, tmp_path, capsys, path_flavour
 ):
     """fetch 뒤 release/realloc되어도 pull은 새 소유자 슬롯에서 실행하지 않고 loud 중단한다.
 
     슬롯 cwd 표기(native·Windows)는 이 판정의 축이 아니다 — 두 표기 모두에서 같은 차단이
     발화해야 다중 창 동시 push 방어가 OS 를 건너 살아 있다(T-0718 축 C)."""
     slot = "work/A_1"
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"})
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"}))
     calls = []
 
     def git_fn(args):
@@ -684,7 +692,7 @@ def test_task_pull_rechecks_owner_before_mutation(
             return 0, "0 1\n"
         return 0, ""
 
-    inst = _make(bootstrap, tmp_path, pool, git_fn=git_fn)
+    inst = _make(bootstrap, tmp_path, pool, git_fn=git_fn, monkeypatch=monkeypatch)
     if path_flavour == "windows":
         inst._worktree_cwd = _windows_flavour_worktree_cwd(inst)
     with pytest.raises(SystemExit) as exc:
@@ -706,14 +714,14 @@ def test_task_pull_rechecks_owner_before_mutation(
 # ── 2. 진입 검증 — fault = 차단(부분 dump 금지·일괄 표시) ─────────────────────
 
 
-def test_stale_slot_blocks_entry_with_prune_stale(bootstrap, tmp_path, capsys):
+def test_stale_slot_blocks_entry_with_prune_stale(bootstrap, monkeypatch, tmp_path, capsys):
     """stale 슬롯(장부 有·폴더 無) = fault → 진입 차단 + prune-stale 해소 안내 + 부분 dump 금지."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         missing_dirs=("work/A_1",),                  # 폴더 부재 → stale
         branches={"work/A_1": "a5"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 1
     cap = capsys.readouterr()
@@ -723,17 +731,17 @@ def test_stale_slot_blocks_entry_with_prune_stale(bootstrap, tmp_path, capsys):
     assert "worktree prune-stale" in cap.err          # 해소 커맨드 실값
 
 
-def test_diverged_slot_blocks_with_reason_and_record_cmd(bootstrap, tmp_path, capsys):
+def test_diverged_slot_blocks_with_reason_and_record_cmd(bootstrap, monkeypatch, tmp_path, capsys):
     """기록↔live diverged = fault → 차단 + 판정 근거(head 관계) + record 해소 커맨드."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         branches={"work/A_1": "a5"},
         compare={"work/A_1": _Compare(
             fail_loud=True, branch_match=False,
             recorded={"branch": "a5", "head": "old"}, live={"branch": "main", "head": "new"},
         )},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 1
     cap = capsys.readouterr()
@@ -743,14 +751,14 @@ def test_diverged_slot_blocks_with_reason_and_record_cmd(bootstrap, tmp_path, ca
     assert "worktree_pool.py record work/A_1" in cap.err
 
 
-def test_creating_slot_blocks_with_worktree_status_cmd(bootstrap, tmp_path, capsys):
+def test_creating_slot_blocks_with_worktree_status_cmd(bootstrap, monkeypatch, tmp_path, capsys):
     """불완전 생성(state=creating·T-0295) = fault → 차단 + worktree status 해소 안내."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         states={"work/A_1": "creating"},             # 생성 중/중단 슬롯
         branches={"work/A_1": "a5"},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 1
     cap = capsys.readouterr()
@@ -759,13 +767,13 @@ def test_creating_slot_blocks_with_worktree_status_cmd(bootstrap, tmp_path, caps
     assert "worktree status" in cap.err               # 해소 커맨드 실값
 
 
-def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, tmp_path, capsys):
+def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, monkeypatch, tmp_path, capsys):
     """main-참조(보호브랜치 직접 checkout) = fault → 차단 + `task branch` 해소 커맨드(엔진 단일 커맨드)."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         branches={"work/A_1": "main"},               # 보호브랜치 직접 checkout
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 1
     cap = capsys.readouterr()
@@ -782,14 +790,14 @@ def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, tmp_path, capsy
     assert "공유 이력이 오염된다." in cap.err
 
 
-def test_all_faults_reported_at_once(bootstrap, tmp_path, capsys):
+def test_all_faults_reported_at_once(bootstrap, monkeypatch, tmp_path, capsys):
     """전 fault 일괄 표시(순차 발견 금지) — 2슬롯 각각 다른 fault 가 **한 번에** 나온다."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1", "work/B_2"),
         missing_dirs=("work/B_2",),                  # B_2 = stale
         branches={"work/A_1": "main", "work/B_2": "b3"},  # A_1 = main-참조
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 1
     err = capsys.readouterr().err
@@ -802,28 +810,28 @@ def test_all_faults_reported_at_once(bootstrap, tmp_path, capsys):
 # ── 3. 전부 정상 = 진입 (record-vs-live ✓) ───────────────────────────────────
 
 
-def test_all_ok_enters_and_marks_record_live_ok(bootstrap, tmp_path, capsys):
+def test_all_ok_enters_and_marks_record_live_ok(bootstrap, monkeypatch, tmp_path, capsys):
     """전부 정상(fault 0) = 진입 + 기록↔live ✓ 표기."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         branches={"work/A_1": "a5"}, heads={"work/A_1": "cafebabe0000"},
         compare={"work/A_1": _Compare()},            # ok
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 0
     out = capsys.readouterr().out
     assert "기록↔live ✓" in out
 
 
-def test_unrecorded_slot_passes_and_marks(bootstrap, tmp_path, capsys):
+def test_unrecorded_slot_passes_and_marks(bootstrap, monkeypatch, tmp_path, capsys):
     """미기록(구 슬롯)은 diverged 아니므로 진입 통과 + '미기록' 표기(차단 아님)."""
-    pool = _TaskPool(
+    pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         branches={"work/A_1": "a5"},
         compare={"work/A_1": _Compare(unrecorded=True)},
-    )
-    inst = _make(bootstrap, tmp_path, pool)
+    ))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 0
     assert "기록↔live 미기록" in capsys.readouterr().out
@@ -839,10 +847,10 @@ def test_sensitivity_stale_detection_flips(bootstrap, tmp_path, capsys, monkeypa
     """폴더 실재 검사(`_phase0_slot_folder_exists`)를 True 로 무력화하면 stale 차단이 사라진다.
 
     검증이 실제로 folder 실재 프리미티브를 **소비**함을 반증(무력화하면 rc1→rc0)."""
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
-                     missing_dirs=("work/A_1",), branches={"work/A_1": "a5"})
-    inst = _make(bootstrap, tmp_path, pool)
+    pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
+                     missing_dirs=("work/A_1",), branches={"work/A_1": "a5"}))
+    inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     # 배선 무력화 — 폴더가 항상 실재한다고 보면 stale fault 가 사라진다.
-    monkeypatch.setattr(inst, "_phase0_slot_folder_exists", lambda wp, slot: True)
+    monkeypatch.setattr(inst, "_phase0_slot_folder_exists", lambda slot: True)
     rc = inst.run(task="mytask")
     assert rc == 0, "폴더 실재 검사를 무력화했는데도 차단됐다(stale 판정이 그 프리미티브 소비가 아님)"

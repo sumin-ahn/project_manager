@@ -1,5 +1,6 @@
 """T-0482 — Python 3.11 런타임 하한 선언·탐지·파사드 미러 가드."""
 from __future__ import annotations
+from pm_engine.infra import protected_hooks
 
 import ast
 import functools
@@ -303,7 +304,7 @@ def test_shell_floor_mirrors_engine_constant():
         "shebang 간접 디스패치가 없으므로" in path.read_text(encoding="utf-8")
         for path in posix_facades
     )
-    hook_source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    hook_source = Path(protected_hooks.__file__).read_text(encoding="utf-8")
     assert '$_cand" "$python_floor"' in hook_source
 
 
@@ -331,7 +332,6 @@ def test_pm_import_precheck_is_310_parseable_and_precedes_tomllib():
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재")
 def test_embedded_hook_skips_old_python_candidate(tmp_path):
-    worktree_pool = _load("worktree_pool")
     hook_dir = tmp_path / "hooks"
     engine_root = tmp_path / "engine"
     bindir = tmp_path / "bin"
@@ -345,7 +345,7 @@ def test_embedded_hook_skips_old_python_candidate(tmp_path):
     (hook_dir / "engine-root").write_text(f"{engine_root}\n", encoding="utf-8")
     (hook_dir / "gate-contract").write_text("release\npytest -q\n", encoding="utf-8")
     hook = hook_dir / "pre-push"
-    hook.write_text(worktree_pool._PROTECTED_PRE_PUSH_HOOK, encoding="utf-8")
+    hook.write_text(protected_hooks._PROTECTED_PRE_PUSH_HOOK, encoding="utf-8")
     hook.chmod(0o755)
 
     _fake_python(bindir / "python3", version="3.9.18", supported=False, selected="python3-old")
@@ -368,7 +368,6 @@ def test_embedded_hook_skips_old_python_candidate(tmp_path):
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재")
 def test_embedded_hook_reports_all_old_python_versions(tmp_path):
-    worktree_pool = _load("worktree_pool")
     hook_dir = tmp_path / "hooks"
     engine_root = tmp_path / "engine"
     bindir = tmp_path / "bin"
@@ -382,7 +381,7 @@ def test_embedded_hook_reports_all_old_python_versions(tmp_path):
     (hook_dir / "engine-root").write_text(f"{engine_root}\n", encoding="utf-8")
     (hook_dir / "gate-contract").write_text("release\npytest -q\n", encoding="utf-8")
     hook = hook_dir / "pre-push"
-    hook.write_text(worktree_pool._PROTECTED_PRE_PUSH_HOOK, encoding="utf-8")
+    hook.write_text(protected_hooks._PROTECTED_PRE_PUSH_HOOK, encoding="utf-8")
     hook.chmod(0o755)
 
     _fake_python(bindir / "python3", version="3.9.18", supported=False, selected="python3-old")

@@ -5,6 +5,8 @@ plan/apply 분리 설계 덕에 임시 디렉토리만으로 외부 의존 없�
 실제로 검증한다(LLM·네트워크 0 = 토큰 0).
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.infra import pm_paths
 
 import argparse
 import datetime
@@ -666,7 +668,7 @@ def test_general_conf_writer_normalizes_every_key_atomically_for_all_readers(
 
     assert pm_import._parse_conf_keys(text)[key] == value
     monkeypatch.setattr(pm_config, "REPO", tmp_path)
-    assert pm_config._local_conf_value(key) == value
+    assert repo_protection._local_conf_value(pm_paths.home_at(pm_config.REPO), key) == value
     assert conf_store.local_config(pm_paths.home_at(tmp_path))[key] == value
 
 

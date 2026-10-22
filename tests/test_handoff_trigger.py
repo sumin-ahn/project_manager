@@ -14,6 +14,8 @@ nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -221,7 +223,7 @@ def test_interactive_main_unresolved_identity_is_rc1(handoff):
     ) == 1
 
 
-def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys):
+def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, monkeypatch, tmp_path, capsys):
     """대화형 run() 불변 — 인계 프롬프트는 [5/7] stdout 로만 나가고 log entry 에 박제하지 않는다.
 
     run() 은 모델이 살아 있어 stdout 가 권위적이다 — log 파일은 인계 프롬프트 헤더를
@@ -233,6 +235,7 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys
     log_file.write_text("# log\n", encoding="utf-8")
     state_file.write_text(_PM_STATE_FIXTURE, encoding="utf-8")
     playbook_file.write_text(_PM_PLAYBOOK_FIXTURE, encoding="utf-8")
+    bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name="alpha", open=False)))
     inst = handoff.PmHandoff(
         run_pytest_fn=lambda: (0, pytest_summary()),
         run_git_fn=lambda args: (0, ""),
@@ -240,7 +243,7 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys
         pm_state_file=state_file,
         pm_playbook_file=playbook_file,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=_TaskLedgerStub(SimpleNamespace(name="alpha", open=False)),
+
     )
     rc = inst.run("alpha", dry_run=False, skip_pytest=True, user_ack="alpha")
     assert rc == 0
@@ -310,32 +313,28 @@ class _TaskLedgerStub:
         return self._record
 
 
-def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, capsys):
+def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, monkeypatch, capsys):
     """task 모드는 그 task 레코드를 닫고(open=False) 성공을 보고한다."""
-    pool = _TaskLedgerStub(SimpleNamespace(name="t1", open=False))
-    tool = handoff.PmHandoff(worktree_pool=pool)
+    pool = bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name="t1", open=False)))
+    bind_pool(monkeypatch, pool)
+    tool = handoff.PmHandoff()
 
     assert tool._close_session_records("t1") is True
     assert pool.calls == ["t1"], "장부 write 는 그 프리미티브 한 번뿐이다"
     assert "닫힘" in capsys.readouterr().out
 
 
-def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, capsys):
+def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, monkeypatch, capsys):
     """장부에 그 task 가 없으면 신호를 못 남긴 것이다 — 성공으로 접지 않는다(log 무접촉)."""
-    pool = _TaskLedgerStub(None)
-    tool = handoff.PmHandoff(worktree_pool=pool)
+    pool = bind_pool(monkeypatch, _TaskLedgerStub(None))
+    bind_pool(monkeypatch, pool)
+    tool = handoff.PmHandoff()
 
     assert tool._close_session_records("t1") is False
     assert pool.calls == ["t1"]
     assert "장부에 없음" in capsys.readouterr().err
 
 
-def test_task_handoff_intent_requires_the_pool_write_primitive(handoff, capsys):
-    """프리미티브가 없는 구버전 사본에서도 조용히 넘어가지 않는다(멱등성 신호 상실 = 중단)."""
-    tool = handoff.PmHandoff(worktree_pool=SimpleNamespace())
-
-    assert tool._close_session_records("t1") is False
-    assert "close_task_session" in capsys.readouterr().err
 
 
 def test_no_stale_handoff_guidance_across_tree():

@@ -58,3 +58,56 @@ def _areas_row_dict(header_cells: list[str], cells: list[str]) -> dict[str, str]
         }
     return {header_cells[i]: (cells[i] if i < len(cells) else "")
             for i in range(len(header_cells))}
+
+
+# 보호 브랜치 default (엔진 상수) — areas.md `protected` 칼럼이 미지정/미등록일 때
+# 폴백. PM 이 자율로 commit/push 못 하는 브랜치(pre-push 훅·bootstrap 경고가 이걸 본다).
+# per-repo override 는 areas.md `protected` 칼럼(쉼표분리·예 `main,develop`).
+DEFAULT_PROTECTED = ("main", "master", "develop")
+
+
+_PROTECTED_DEFAULT_LITERAL = "default"   # 칼럼 비움 = DEFAULT_PROTECTED 폴백(해제 아님).
+
+
+def _validate_protected_tokens(value: str) -> tuple[list[str] | None, str]:
+    """`"main, release"` → `(["main", "release"], "")` · 거부면 `(None, 사유)`.
+
+    **형식만** 본다 — 브랜치 실재는 검증하지 않는다(아직 없는 `release` 를 미리 보호하는 게
+    정상적인 쓰임이다). 거부 대상:
+      - 빈 문자열/공백만 — "보호 없음" 은 표현 불가(`default` 리터럴로 안내).
+      - 빈 토큰(선/후행 쉼표·연속 쉼표) — areas 셀에 빈 자리를 만든다.
+      - 토큰 내부 공백 — areas.md 는 공백-구분 표라 셀/줄이 깨진다.
+      - `|` — markdown 표 구분자(줄 corruption).
+    """
+    if not value.strip():
+        return None, (
+            "빈 보호목록은 지정할 수 없다 — 보호는 안전 기본값이 있어야 한다(\"보호 없음\"은 "
+            f"표현 불가). 기본값(main/master/develop)으로 되돌리려면 `{_PROTECTED_DEFAULT_LITERAL}` "
+            "리터럴을 쓰라."
+        )
+    tokens: list[str] = []
+    for raw in value.split(","):
+        token = raw.strip()
+        if not token:
+            return None, (
+                f"보호목록 {value!r} 에 빈 토큰이 있다(선/후행 쉼표·연속 쉼표) — "
+                "`main,develop` 처럼 쉼표로만 구분하라."
+            )
+        if any(ch.isspace() for ch in token):
+            return None, (
+                f"보호 브랜치 {token!r} 에 공백이 있다 — areas.md 는 공백-구분 표라 줄이 깨진다."
+            )
+        if "|" in token:
+            return None, (
+                f"보호 브랜치 {token!r} 에 `|` 가 있다 — markdown 표 구분자라 areas.md 줄이 깨진다."
+            )
+        tokens.append(token)
+    return tokens, ""
+
+
+# 허용 repo name = prefix = ticket ID 네임스페이스·areas.md 공백구분 칼럼값.
+# 영숫자로 시작(leading `-` = 옵션 오인·빈 문자열 배제), 이후 영숫자/`_`/`-` 만 허용.
+# 경로분리자(`/`)·`.`(`..` 폴더탈출)·공백(areas.md 줄 corruption)을 전부 배제한다.
+# board._FAMILY_SCOPE_RE(`^[A-Za-z0-9_-]+$`)는 leading `-` 를 막지 않아 재사용 부적합 —
+# repo name 은 영숫자 시작을 강제하므로 별도 패턴을 둔다(reuse 확인·중복 정의 회피).
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")

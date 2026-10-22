@@ -60,6 +60,14 @@ if _TOOLS_DIR not in sys.path:
 from pm_engine.domain import identity_args, pytest_report  # noqa: E402
 from pm_engine.infra import areas_store, console, fs, lease_store, log_store, pm_paths, raw_output, repo_files  # noqa: E402
 from pm_engine.app import regression, slot_resolution  # noqa: E402
+from pm_engine.infra import pool_store
+from pm_engine.infra import slot_snapshot
+from pm_engine.infra import submodule_git
+from pm_engine.app import task_lifecycle
+from pm_engine.domain import task_rules
+from pm_engine.infra import task_store
+from pm_engine.domain import worktree_records
+from pm_engine.app import worktree_status
 _load_module_from_path = repo_files.load_module
 
 
@@ -125,27 +133,6 @@ def _tickets_dir() -> Path:
 # ── worktree_pool import seam ───────────────────────────
 # task 장부·슬롯 git 재스냅·세션 종료 기록이 이 모듈을 쓴다. 부재는 각 소비 지점이 자기
 # 관례(fail-soft skip / fail-loud 중단)로 판정한다.
-def _load_worktree_pool():
-    """worktree_pool 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
-
-    pm_bootstrap._load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커.
-    """
-    wp_path = TOOLS_DIR / "worktree_pool.py"
-    if not wp_path.exists():
-        return None
-    try:
-        # `cache=True` — 이 모듈의 예외 클래스(`InvalidTaskName`)를 `except` 에 쓰려면 로드마다
-        # 새 객체가 나오면 안 된다(캐시 키는 해소된 경로라 hermetic 테스트의 다른 tools/ 와 안 섞인다).
-        mod = _load_module_from_path(
-            wp_path, "worktree_pool.py", verifier=_verify_engine_rev, cache=True,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # 중첩 로드에서 검출된 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    # 로드 성공 후 rev skew 는 fail-loud(try 밖이라 fail-soft 로 삼켜지지 않는다).
-    # 부재(파일 없음)는 위에서 이미 None 폴백 — 여기선 "present-but-skewed" 만 표출.
-    return mod
 
 
 # ── 미마감 raw sweep ([6b/7] · 비차단 경고 — T-0596) ──────────────────────────
@@ -181,31 +168,16 @@ def _ahead_commit_count(
 
 
 def validate_task_name_engine(task: str) -> None:
-    """공유 validator(`worktree_pool._validate_task_name`)로 task 명을 fail-loud 검증한다.
+    """task 이름과 등록 repo 예약패턴의 공용 검증.
 
-    **엔진층 단일 choke** — main() CLI 뿐 아니라 `PmHandoff.run()`·`build_handoff_prompt_output()`
-    직접 호출도 task 를 소비(pm_state 경로·log 태그·dashboard 섹션·트리거 삽입)하기 전 이 함수를
-    통과해야 한다. per-surface 이스케이프 대신 단일 validator 로 도메인을 협소화하는
-    (직접 소비도 우회 불가)를 handoff 진입점 전체에 적용한다 — `"my task"`(공백)·`../evil`(traversal)·
-    `<repo>_<N>`(슬롯 예약패턴) 류가 CLI 를 우회해 트리거 파싱 파손·경로 이탈을 내는 갭을 닫는다.
+CLI와 직접 호출 모두 데이터 소비 전에 task_rules 검증을 수행한다.
+등록부 판독 실패 시 예약패턴 검사만 완화하며 경로·문자 검증은 유지한다."""
 
-    registered_repos 는 areas.md 에서 fail-soft 해소(파싱 실패면 None → 예약패턴만 완화하고
-    traversal/whitespace/괄호/빈이름 구문 검증은 유지). worktree_pool 로드 실패는 검증 불가라
-    RuntimeError(fail-loud) — silent skip 이 갭을 재오픈하지 않게 한다.
-
-    raise: `worktree_pool.InvalidTaskName`(부적합 task 명) · `RuntimeError`(worktree_pool 엔진 부재).
-    """
-    wp = _load_worktree_pool()
-    if wp is None:
-        raise RuntimeError(
-            "worktree_pool 엔진을 찾을 수 없다 — --task 이름 검증 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재/로드 실패·multi-PM 셋업/엔진 전파 확인)."
-        )
     try:
         registered = areas_store.registered_repos(pm_paths.home_at(REPO))
     except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴만 완화·traversal 유지).
         registered = None
-    wp._validate_task_name(task, registered)
+    task_rules._validate_task_name(task, registered)
 
 
 # ── task pm_state 경로 (세션 연속성 앵커) ─────────
@@ -213,7 +185,7 @@ def _task_pm_state_file(task: str) -> Path:
     """task 서술 공간 pm_state 경로 (`.local/tasks/<task>/pm_state.md`).
 
     세션 종료(핸드오프)의 연속성 앵커가 slot→task 로 이동한 task 모드에서 pm_state 를 여기
-    기록한다. worktree_pool.task_dir(name)/pm_state.md 의 미러 — 모듈 격리라 cross-import
+    기록한다. pm_paths.task_dir(name)/pm_state.md 의 미러 — 모듈 격리라 cross-import
     대신 REPO 파생으로 동형화한다(monkeypatch(REPO) 추종·hermetic)."""
     return REPO / ".project_manager" / ".local" / "tasks" / task / "pm_state.md"
 
@@ -1619,7 +1591,7 @@ def _submodule_paths_in_tree(
     """등록된 재귀 submodule 경로(superproject 상대)를 반환 — 열거 불가면 None.
 
     `git -C <tree> submodule status --recursive` 하나를 권위로 쓰고, 출력 해석은 동적 로드 seam
-    `_load_worktree_pool` 로 공용 `_parse_submodule_entries`(flag+공백 경로 보존)를 재사용한다.
+    submodule_git의 공용 parser로 flag와 공백 경로를 보존한다.
     flag `-` 는 미초기화라 working tree 가 없으므로 제외한다. 부재 경로에서 `git -C` 를 돌리면
     상위 repo 로 올라가 상위 dirty 목록을 중복 반환할 수 있기 때문이다. 빈 출력은 등록된
     submodule 없음(`[]`)이다. git/파서 로드 실패·해석 불가능한 비어있지 않은 출력은 None 으로
@@ -1632,12 +1604,8 @@ def _submodule_paths_in_tree(
     if rc != 0:
         return None
 
-    wp = _load_worktree_pool()
-    parser = getattr(wp, "_parse_submodule_entries", None) if wp is not None else None
-    if not callable(parser):
-        return None
     try:
-        entries = parser(output)
+        entries = submodule_git._parse_submodule_entries(output)
     except Exception:  # noqa: BLE001 — 공용 파서/동적 모듈 이상도 판정 불가로 강등.
         return None
     if output.strip() and not entries:
@@ -1940,7 +1908,6 @@ class PmHandoff:
         pm_state_file: Path | None = None,
         dashboard_file: Path | None = None,
         venv_python: str | Path = _default_python(),
-        worktree_pool=None,
         raw_ledger_file: Path | None = None,
         peer_raw_ledger_files: tuple[Path, ...] | None = None,
     ) -> None:
@@ -1967,7 +1934,6 @@ class PmHandoff:
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 소비 지점에서
         # 동적 로드한다.
-        self._worktree_pool = worktree_pool
         # 슬롯별 회귀가 도는 동안의 cwd 앵커 — `_run_regression_for_slot` 만 세팅하고 즉시
         # 원복한다. 세션 정체성이 아니다(정체성은 task 하나다).
         self._regression_slot: str | None = None
@@ -1992,7 +1958,7 @@ class PmHandoff:
         남아 0단계가 `diverged` FAIL-LOUD 로 정당한 자기 진행을 외부-개입 오경보로 차단하기
         때문이다.
 
-        write 프리미티브 `worktree_pool.record_git_snapshot(slot)` 만 호출한다 — 브랜치 부모
+        write 프리미티브 `slot_snapshot.record_git_snapshot(slot)` 만 호출한다 — 브랜치 부모
         기록은 git 설정에 있어 건드리지 않는다·판정 로직 재구현 없음. fail-soft: worktree_pool 부재
         (미셋업)·슬롯 미바인딩/장부 부재(record None)·스냅 예외는 무해 skip(핸드오프
         차단 안 함).
@@ -2002,16 +1968,11 @@ class PmHandoff:
         둔다(`_apply_git_snapshot` no-op·silent 손실 방지). 그럴 때 옛 branch/head 를 "✓ 기록"으로
         내면 갱신 안 됐는데 성공처럼 읽힌다 — 재스냅 *전* lease.git(`read_lease`)과 *후* 값을 비교해
         실제 바뀌었을 때만 "재스냅 기록", 무변경이면 "스냅 불가·기존 유지"로 구분 출력한다."""
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            print("  worktree_pool 미배선(미셋업) — git 재스냅 skip(무해).")
-            return True
+
         if task is not None:
             try:
-                owned = bool(wp.lease_owned_by_task_strict(slot, task))
+                owned = bool(pool_store.lease_owned_by_task_strict(pm_paths.home_at(REPO), slot, task))
             except Exception as exc:  # noqa: BLE001
-                if _is_engine_rev_skew(exc):
-                    raise
                 print(f"  [중단·소유권 재검증] task 슬롯 {slot!r} 장부 조회 실패 — {exc}. "
                       "git 재스냅을 실행하지 않습니다.", file=sys.stderr)
                 return False
@@ -2020,12 +1981,10 @@ class PmHandoff:
                       f"state=leased && session={task!r}가 아닙니다 — git 재스냅 중단. "
                       "새 소유자의 lease.git을 덮어쓰지 않습니다.", file=sys.stderr)
                 return False
-        before_git = self._lease_git_before(wp, slot)
+        before_git = self._lease_git_before(slot)
         try:
-            lease = wp.record_git_snapshot(slot)
+            lease = slot_snapshot.record_git_snapshot(pm_paths.home_at(REPO), slot)
         except Exception as exc:  # noqa: BLE001 — fail-soft: 재스냅 실패가 핸드오프를 막지 않는다.
-            if _is_engine_rev_skew(exc):
-                raise
             print(f"  ⚠ git 재스냅 실패 — {exc} (skip·무해).", file=sys.stderr)
             return True
         if lease is None:
@@ -2046,20 +2005,15 @@ class PmHandoff:
             )
         return True
 
-    def _lease_git_before(self, wp, slot: str) -> "dict | None":
+    def _lease_git_before(self, slot: str) -> "dict | None":
         """재스냅 *전* 슬롯 lease.git 을 조회한다 — 실갱신/무변경 판별용 (fail-soft).
 
         worktree_pool `read_lease`(순수 장부 read·`record_git_snapshot` 짝)로 현재 스냅을 읽는다.
         구버전 풀(`read_lease` 부재)·조회 실패·미기록은 None(→ 후 값이 dict 면 실갱신으로 취급·
         보수적: 판별 불가는 '기록'으로 표기해 무변경 오표기보다 정보 손실이 적다)."""
-        reader = getattr(wp, "read_lease", None)
-        if reader is None:
-            return None
         try:
-            lease = reader(slot)
+            lease = pool_store.read_lease(pm_paths.home_at(REPO), slot)
         except Exception as exc:  # noqa: BLE001 — 일반 조회 실패는 None(판별 보수적 폴백).
-            if _is_engine_rev_skew(exc):
-                raise
             return None
         if lease is None:
             return None
@@ -2079,19 +2033,14 @@ class PmHandoff:
         0슬롯이다."""
         if self._task_slots_snapshot is not None and self._task_slots_snapshot[0] == task:
             return list(self._task_slots_snapshot[1])
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            raise RuntimeError("worktree_pool 엔진 부재")
-        # strict API 로 손상·읽기 오류를 실제 0슬롯과 구분한다. 형제 사본은 rev 검증을 통과한
-        # 것만 로드되므로(`_load_worktree_pool`) 이 함수가 없는 사본은 여기 오지 못한다.
+
+        # strict 장부 API로 손상·읽기 오류를 실제 0슬롯과 구분한다.
         try:
-            resolved = wp.slots_for_task_strict(task)
+            resolved = pool_store.slots_for_task_strict(pm_paths.home_at(REPO), task)
             if resolved is None:
                 raise RuntimeError("slots_for_task가 None을 반환")
             leases = list(resolved)
         except Exception as exc:
-            if _is_engine_rev_skew(exc):
-                raise
             raise RuntimeError(f"slots_for_task({task!r}) 조회 실패: {exc}") from exc
         slots: list[str] = []
         for lease in leases:
@@ -2114,27 +2063,20 @@ class PmHandoff:
         판정 프리미티브는 재구현하지 않고 worktree_pool `compare_slot_git`(도착 스냅 vs live)+
         `slot_git_status`(dirty)를 소비한다. fail-soft **보수**: worktree_pool 부재·조회 예외는
         changed(놓치기보다 도는 게 낫다 — 무변경 오판이 회귀 누락으로 이어지는 게 더 위험)."""
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            return True, "worktree_pool 미배선·보수적 변경 취급"
+
         try:
-            cmp = wp.compare_slot_git(slot)
+            cmp = slot_snapshot.compare_slot_git(pm_paths.home_at(REPO), slot)
         except Exception as exc:  # noqa: BLE001 — fail-soft 보수: 판정 불가는 변경 취급(회귀 포함).
-            if _is_engine_rev_skew(exc):
-                raise
             return True, "compare 예외·보수적 변경 취급"
         if getattr(cmp, "unrecorded", False):
             return True, "스냅 미기록·보수적 변경 취급"
-        head_match = getattr(wp, "HEAD_MATCH", "match")
         if not getattr(cmp, "branch_match", False):
             return True, "branch 변경"
-        if getattr(cmp, "head_relation", None) != head_match:
+        if getattr(cmp, "head_relation", None) != worktree_records.HEAD_MATCH:
             return True, f"head {getattr(cmp, 'head_relation', None)}(전진/재설정)"
         try:
-            dirty = bool(wp.slot_git_status(slot).get("dirty", False))
+            dirty = bool(worktree_status.slot_git_status(pm_paths.home_at(REPO), slot).get("dirty", False))
         except Exception as exc:  # noqa: BLE001 — fail-soft 보수: dirty 조회 불가는 변경 취급.
-            if _is_engine_rev_skew(exc):
-                raise
             return True, "dirty 조회 예외·보수적 변경 취급"
         if dirty:
             return True, "dirty(미커밋 변경)"
@@ -2166,7 +2108,7 @@ class PmHandoff:
         핸드오프 기록(log·pm_state) 전에 호출한다. 세션이 끝나는 자리에서 그 세션이 연 기록을
         닫지 않으면 같은 사실이 두 곳에서 다르게 읽힌다 — 다음 진입이 그 자리를 "열려 있음"으로
         보고 매번 강제 확인을 요구한다. 기존 write 프리미티브 하나만 부른다 —
-        `worktree_pool.close_task_session(task)` → 장부 task 행 `session` 비움.
+        `task_lifecycle.close_task_session(task)` → 장부 task 행 `session` 비움.
         **대여는 그대로 둔다** — 슬롯 반납(`pm-config release`)과는 다른 축이다. 닫히는 것은
         "지금 세션이 열려 있다"는 표시뿐이고 작업 폴더는 두고 간다.
 
@@ -2176,22 +2118,10 @@ class PmHandoff:
         같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 기록이 아니다.
         step2 log write **전**에 성공해야 하며, 엔진/primitive/record 부재·예외는 fail-loud(False)다.
         성공 뒤 후속 단계가 중단돼도 종료 기록이 남아 재실행이 같은 차수로 복구된다."""
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            print("  [중단] worktree_pool 미배선 — 세션 종료 기록을 남길 수 없다.",
-                  file=sys.stderr)
-            return False
-        primitive = getattr(wp, "close_task_session", None)
-        if primitive is None:
-            print("  [중단] worktree_pool 구버전(close_task_session 부재) — "
-                  "멱등성 신호를 기록할 수 없다.",
-                  file=sys.stderr)
-            return False
+
         try:
-            task_rec = primitive(task)
+            task_rec = task_lifecycle.close_task_session(pm_paths.home_at(REPO), task)
         except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
-            if _is_engine_rev_skew(exc):
-                raise
             print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
             return False
         if task_rec is None:
@@ -2270,17 +2200,10 @@ class PmHandoff:
         exists()`(엔진 소유 축·`_regression_cwd` 의 `REPO/slot` 과 동형). 판별 불가(worktree_pool 부재·
         구버전 pool·slot_path 부재·예외)는 **False**(=차단 안 함·fail-soft — 기존 `_regression_cwd` 해소에
         위임)."""
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            return False
-        resolver = getattr(wp, "slot_path", None)
-        if resolver is None:
-            return False
+
         try:
-            return not resolver(slot).exists()
+            return not pm_paths.slot_path(pm_paths.home_at(REPO), slot).exists()
         except Exception as exc:  # noqa: BLE001 — fail-soft: 판별 실패는 차단 안 함(기존 해소에 위임).
-            if _is_engine_rev_skew(exc):
-                raise
             return False
 
     def _classify_task_changed_slots(self, task: str) -> list[tuple[str, str]]:
@@ -2717,18 +2640,16 @@ class PmHandoff:
         """task 장부 membership과 실패 원인을 읽기 전용으로 구분해 반환한다."""
         if self._task_record_snapshot is not None and self._task_record_snapshot[0] == task:
             return "registered", None
-        wp = self._worktree_pool or _load_worktree_pool()
+
         # membership도 같은 strict 장부 파서를 우선 사용한다. 그렇지 않으면 손상 JSON을
         # "미등록 task"로 오인해 held-slot strict gate에 도달하기 전에 원인을 숨긴다.
-        if wp is None:
-            return "engine-missing", "worktree_pool.find_task 부재"
         try:
-            registered = wp.find_task_strict(task)
+            registered = pool_store.find_task_strict(pm_paths.home_at(REPO), task)
         except Exception as exc:  # noqa: BLE001 — 호출부가 strict 중단/관측용 강등을 결정한다.
             return "lookup-failed", str(exc)
         if registered is None:
             try:
-                archives = wp.task_archive_candidates(task)
+                archives = task_store.task_archive_candidates(pm_paths.home_at(REPO), task)
             except Exception as exc:  # noqa: BLE001 — archive lookup도 strict 진단으로 승격.
                 return "lookup-failed", str(exc)
             if archives:
@@ -2747,13 +2668,6 @@ class PmHandoff:
         status, detail = self._task_registration_status(task)
         if status == "registered":
             return True
-        if status == "engine-missing":
-            print(
-                "\n[중단] task 장부 membership을 검증할 수 없다 — "
-                "worktree_pool.find_task 부재. task 생성/재개는 bootstrap에서 먼저 수행하라.",
-                file=sys.stderr,
-            )
-            return False
         if status == "lookup-failed":
             print(
                 f"\n[중단] task 장부 membership 조회 실패 — {detail}. "
@@ -2782,23 +2696,15 @@ class PmHandoff:
     def _ensure_task_pm_state(self, task: str) -> bool:
         """task pm_state가 존재함을 보장한다.
 
-        정상 경로에서는 bootstrap의 `worktree_pool.bind_task`가 task 생성/재개 시 이미 state를
+        정상 경로에서는 bootstrap의 `task_lifecycle.bind_task`가 task 생성/재개 시 이미 state를
         만든다. 여기서는 구 엔진에서 state 없이 남은 task를 handoff 직전 호환 backfill한다.
         생성 로직을 복제하지 않고 worktree_pool의 단일 primitive만 소비한다.
         """
         if self._pm_state_file.exists():
             return True
-        wp = self._worktree_pool or _load_worktree_pool()
-        primitive = getattr(wp, "ensure_task_pm_state", None) if wp is not None else None
-        if not callable(primitive):
-            print(
-                "\n[중단] task pm_state가 없고 worktree_pool.ensure_task_pm_state도 사용할 수 없다 — "
-                "task state 없이 handoff하지 않는다.",
-                file=sys.stderr,
-            )
-            return False
+
         try:
-            self._pm_state_file = Path(primitive(task))
+            self._pm_state_file = Path(task_store.ensure_task_pm_state(pm_paths.home_at(REPO), task))
         except Exception as exc:  # noqa: BLE001 — state 생성 실패는 연속성 손실이므로 fail-loud.
             print(
                 f"\n[중단] task pm_state 생성 실패 — {exc}. task state 없이 handoff하지 않는다.",
@@ -2897,12 +2803,10 @@ class PmHandoff:
         # 이전에* 통과시킨다. traversal(`../evil`)·whitespace(`my task`)·슬롯 예약패턴·엔진부재는
         # 부작용 0 로 중단(1).
         # 검증기가 내는 것은 둘뿐이다 — 부적합 이름(`InvalidTaskName`·`.reason`)과 엔진 부재(RuntimeError).
-        wp = self._worktree_pool or _load_worktree_pool()
+
         try:
             validate_task_name_engine(task)
-        except (RuntimeError, getattr(wp, "InvalidTaskName", ())) as exc:
-            if _is_engine_rev_skew(exc):
-                raise
+        except (RuntimeError, worktree_records.InvalidTaskName) as exc:
             print(
                 f"\n[중단] task 이름 {task!r} 이(가) 부적합 — {getattr(exc, 'reason', exc)} "
                 "(log/current.md·pm_state 어떤 것도 건드리지 않는다.)",
@@ -2922,8 +2826,6 @@ class PmHandoff:
             held_slots = self._task_held_slots(task)
         except RuntimeError as exc:
             # `_task_held_slots` 는 모든 해소 실패를 RuntimeError 로 감싼다(해소 실패 ≠ 실제 빈 집합).
-            if _is_engine_rev_skew(exc):
-                raise
             print(
                 f"\n[중단] task {task!r} 보유 슬롯 장부 해소 실패 — {exc}. "
                 "실제 0슬롯으로 간주하지 않습니다. "
@@ -3489,10 +3391,8 @@ def _main(
     try:
         validate_task_name_engine(task)
     except RuntimeError as exc:
-        if _is_engine_rev_skew(exc):
-            raise
         parser.error(str(exc))
-    except getattr(_load_worktree_pool(), "InvalidTaskName", ()) as exc:
+    except worktree_records.InvalidTaskName as exc:
         parser.error(
             f"--task 이름 {task!r} 이(가) 부적합 — "
             f"{getattr(exc, 'reason', exc)}. 안전한 단일 이름(공백·괄호·path 문자·"

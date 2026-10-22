@@ -26,7 +26,7 @@ class Identity:
 
     (평범한 클래스 — `@dataclass` 미사용: 엔진 도구는 `spec_from_file_location` 으로 로드되는데
     `from __future__ import annotations`(문자열 지연평가) 와 결합 시 모듈이 `sys.modules` 에
-    등록 안 돼 있으면 dataclass 처리가 `AttributeError` 로 깨진다 — `worktree_pool.Lease`·
+    등록 안 돼 있으면 dataclass 처리가 `AttributeError` 로 깨진다 — `worktree_records.Lease`·
     `pm_engine.infra.harness.watchdog` 의 동일 회피 관용구를 따른다.)
     """
 
@@ -128,7 +128,7 @@ def is_reserved_task_name(name: str, registered_repos: "list[str] | set[str]") -
 class InvalidTaskName(ValueError):
     """CLI 정체성 깔때기의 task 명 검증 실패 — 공백/괄호/path/선행 `.`/예약패턴 (fail-loud·게이트).
 
-    `worktree_pool._validate_task_name`(엔진 bind 층)과 **동형 규칙·독립 구현**이다 — board 는
+    `task_rules._validate_task_name`(엔진 bind 층)과 **동형 규칙·독립 구현**이다 — board 는
     worktree_pool 을 import 하지 않으므로(격리 관성·`is_reserved_task_name` 이 예약 정규식을
     이미 같은 근거로 mirror) CLI 층 공유 validator 를 여기 둔다. board 의 정체성 깔때기
     (`_actor_session_override`·`cmd_new`)가 이 **하나**를 소비해, 무검증 task 명이 `created_by`/
@@ -143,7 +143,7 @@ class InvalidTaskName(ValueError):
 
 
 def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None" = None) -> None:
-    """CLI 층 task 명 검증 — 위반 시 `InvalidTaskName`(fail-loud) (worktree_pool._validate_task_name 동형).
+    """CLI 층 task 명 검증 — 위반 시 `InvalidTaskName`(fail-loud) (task_rules._validate_task_name 동형).
 
     task 명 영속 지점(`created_by`/`claimed_by`·lease session)이 무검증 값을 저장하지 못하게 board
     정체성 깔때기가 **부작용 이전** 소비하는 공유 validator. 문자 도메인은 하류 구문 표면(CLI 인자
@@ -224,7 +224,7 @@ def path_component_rejection(value: object) -> str | None:
     (드라이브 표기 `C:` 의 콜론 포함) · 제어문자 · `.`/`..`(현재/상위 마디) · 끝의 `.`/공백
     (Windows 가 조용히 잘라 다른 마디가 된다) · 예약 장치 이름(`CON`·`NUL`·`COM1`…).
 
-    슬롯 키 축(`is_slot_key`)과 슬롯 경로 축(`worktree_pool._normalize_slot`)이 이 한 함수를
+    슬롯 키 축(`is_slot_key`)과 슬롯 경로 축(`worktree_paths._normalize_slot`)이 이 한 함수를
     공유한다 — 사유 문자열을 돌려주므로 각 축이 자기 문맥의 에러 메시지에 그대로 실을 수 있다.
     """
     if not isinstance(value, str) or not value:
@@ -286,7 +286,7 @@ def slot_number_for_repo(repo: str, value: object) -> int | None:
     """`<repo>_<N>` 값에서 슬롯 번호 N — 아니면 None (순수 값 술어).
 
     슬롯 **번호** 축(“다음 worktree 를 무슨 이름으로 만드나”)의 단일 규칙이다. `identity_args.
-    repo_slot_numbers`·`worktree_pool._existing_slot_numbers` 가 이 한 함수를 공유해 번호 계상이
+    repo_slot_numbers`·`worktree_records._existing_slot_numbers` 가 이 한 함수를 공유해 번호 계상이
     갈리지 않게 한다.
     """
     m = re.fullmatch(rf"{re.escape(repo)}_(\d+)", str(value or ""))
@@ -505,13 +505,13 @@ _LEASE_ROLE_READONLY = "readonly"   # role="readonly" 공유 슬롯 — 무소�
 class Workspace:
     """작업공간 해소 결과 — 실행 위치(slot·절대경로 surface 소스) + 슬롯 메타.
 
-    `resolve_task_workspace` 가 반환한다. `slot` = "work/<repo>_<N>"(worktree_pool.slot_path 와
+    `resolve_task_workspace` 가 반환한다. `slot` = "work/<repo>_<N>"(pm_paths.slot_path 와
     같은 상대형 — caller 가 `REPO / slot` 으로 **절대경로 surface**). `repo` = 그 repo. `session` =
     그 슬롯 lease.session(task-mode 는 task 이름·readonly 공유 슬롯은 무소유라 None 일 수 있음).
     `test_cmd` = 슬롯 바인딩 회귀명령(None=미바인딩·caller 가 다음 레이어 폴백). `readonly` =
     role="readonly" 공유 자산이라 소유검사를 우회했는지.
 
-    (dataclass 미사용 — `Identity`·`worktree_pool.Lease` 와 동일: `spec_from_file_location` 로드 시
+    (dataclass 미사용 — `Identity`·`worktree_records.Lease` 와 동일: `spec_from_file_location` 로드 시
     `from __future__ import annotations` 결합으로 forward-ref 해소가 깨진다. 평범한 클래스로 회피.)
     """
 

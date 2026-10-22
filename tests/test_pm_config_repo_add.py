@@ -15,6 +15,7 @@ origin/* remote-tracking ref(origin/main 등)가 안 생긴다 → 그 bare 를 
   - fail-soft — refspec set 실패·fetch 실패는 경고 surface 하되 repo add rc 0(등록 진행).
 """
 from __future__ import annotations
+from pm_engine.infra import git, areas_store
 
 import argparse
 import importlib.util
@@ -41,6 +42,11 @@ def _load_pm_config():
 @pytest.fixture(scope="module")
 def pc():
     return _load_pm_config()
+
+
+@pytest.fixture(autouse=True)
+def _repo_home(tmp_path, monkeypatch, pc):
+    monkeypatch.setattr(pc, "REPO", tmp_path)
 
 
 # ── 주입형 fake (DI seam — hermetic·test_pm_config_facade 동형 최소 대역) ───────

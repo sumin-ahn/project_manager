@@ -6,6 +6,10 @@ worktree add 변형을 hermetic하게 검증한다. 기존 downstream 테스트�
 붙이지 않고, 이 파일에서 거부/승인/오결속을 명시적으로 나눈다.
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.infra import git
+
+from _pool_seams import bind_pool
 
 import argparse
 import contextlib
@@ -125,11 +129,12 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
             task=None, repo=None, slot=None,
         ))
     if surface == "task-prefix":
+        bind_pool(monkeypatch, _TaskPool())
         return pm_config.cmd_task_prefix(
             argparse.Namespace(
                 name="job", value=prefix, user_ack=user_ack,
             ),
-            worktree_pool=_TaskPool(),
+
             board=board,
         )
     if surface == "reid":
@@ -166,9 +171,7 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
     ],
     ids=["existing-fold", "new-no-ack", "new-bound-ack", "new-wrong-ack"],
 )
-def test_prefix_surface_matrix_calls_shared_loader(
-    board, pm_config, monkeypatch, capsys, surface, known, target, user_ack, expected,
-):
+def test_prefix_surface_matrix_calls_shared_loader(board, pm_config, monkeypatch, capsys, surface, known, target, user_ack, expected):
     calls = []
 
     def shared_loader(_target=None):
@@ -383,9 +386,7 @@ def test_known_prefixes_unreadable_ticket_fails_loud(board, capsys):
     assert "읽지 못한 티켓" in err and "clobber" in err
 
 
-def test_areas_ticket_cross_case_conflict_scans_all_sources_and_blocks_new(
-    board, monkeypatch, capsys,
-):
+def test_areas_ticket_cross_case_conflict_scans_all_sources_and_blocks_new(board, monkeypatch, capsys):
     """areas fold-match가 있어도 티켓을 읽어 교차 case 오염을 발견하고 쓰기 0으로 막는다."""
     board.areas_append("AAA", "area", "owner")
     _seed_ticket(board, "T-aaa-001")
@@ -431,9 +432,7 @@ def test_areas_mutation_invalidates_known_prefix_cache(board):
     assert board.known_prefixes() == frozenset({"LATER"})
 
 
-def test_case_variant_conflict_is_deterministic_and_lists_every_source(
-    board, monkeypatch, capsys,
-):
+def test_case_variant_conflict_is_deterministic_and_lists_every_source(board, monkeypatch, capsys):
     """areas×티켓 case 변형은 순서 무관으로 전부+출처를 내고 막는다."""
     board.areas_append("AAA", "area", "owner")
     _seed_ticket(board, "T-aaa-001")
@@ -507,11 +506,9 @@ def _seed_ticket_without_cache_invalidation(board, ticket_id: str):
 @pytest.mark.parametrize(
     "surface", ["new", "init", "task-prefix", "rename", "merge", "reid"],
 )
-def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(
-    board, pm_config, monkeypatch, capsys, surface,
-):
+def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, monkeypatch, capsys, surface):
     """선판정 뒤 다른 case가 생기면 cache를 버린 락 안 재판정이 모든 쓰기 표면을 막는다."""
-    pool = _TaskPool()
+    pool = bind_pool(monkeypatch, _TaskPool())
     if surface in {"rename", "merge", "reid"}:
         _seed_ticket(board, "T-old-001")
 
@@ -538,9 +535,10 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(
             task=None, repo=None, slot=None,
         ))
     elif surface == "task-prefix":
+        bind_pool(monkeypatch, pool)
         rc = pm_config.cmd_task_prefix(
             argparse.Namespace(name="job", value="fresh", user_ack="fresh"),
-            worktree_pool=pool,
+
             board=board,
         )
     elif surface == "rename":
@@ -574,9 +572,7 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(
 
 
 @pytest.mark.parametrize("surface", ["rename", "merge", "reid"])
-def test_relabel_dry_run_needs_no_ack_but_reports_execution_requirement(
-    board, monkeypatch, capsys, surface,
-):
+def test_relabel_dry_run_needs_no_ack_but_reports_execution_requirement(board, monkeypatch, capsys, surface):
     _seed_ticket(board, "T-old-001")
 
     @contextlib.contextmanager
@@ -608,9 +604,7 @@ def test_relabel_dry_run_needs_no_ack_but_reports_execution_requirement(
 
 
 @pytest.mark.parametrize("surface", ["rename", "merge"])
-def test_relabel_empty_map_noop_needs_no_ack_or_lock(
-    board, monkeypatch, capsys, surface,
-):
+def test_relabel_empty_map_noop_needs_no_ack_or_lock(board, monkeypatch, capsys, surface):
     @contextlib.contextmanager
     def forbidden_lock():
         raise AssertionError("empty-map no-op must not acquire board_lock")
@@ -679,6 +673,9 @@ class _SlotPool:
     def slot_path(self, slot):
         return Path("/tmp") / slot
 
+    def find_task_strict(self, value):
+        return self.find_task(value)
+
 
 @pytest.mark.parametrize(
     "extra",
@@ -689,18 +686,20 @@ class _SlotPool:
     ],
     ids=["normal", "readonly", "task"],
 )
-def test_worktree_add_variants_reject_without_ack(pm_config, extra, capsys):
-    pool = _SlotPool()
+def test_worktree_add_variants_reject_without_ack(pm_config, monkeypatch, extra, capsys):
+    pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack=None, **extra)
-    assert pm_config.cmd_worktree_add(args, worktree_pool=pool, board=object()) == 1
+    bind_pool(monkeypatch, pool)
+    assert pm_config.cmd_worktree_add(args,  board=object()) == 1
     assert pool.created == []
     assert "1순위: 사용자에게" in capsys.readouterr().err
 
 
-def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, capsys):
-    pool = _SlotPool()
+def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, monkeypatch, capsys):
+    pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack="other")
-    assert pm_config.cmd_worktree_add(args, worktree_pool=pool, board=object()) == 1
+    bind_pool(monkeypatch, pool)
+    assert pm_config.cmd_worktree_add(args,  board=object()) == 1
     assert pool.created == []
     assert "결속되지 않았다" in capsys.readouterr().err
 
@@ -714,11 +713,9 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, capsys):
     ],
     ids=["normal", "readonly-role", "task-leased"],
 )
-def test_worktree_add_bound_ack_preserves_create_slot_semantics(
-    pm_config, monkeypatch, capsys, tmp_path, readonly, task, expected_role, expected_state,
-):
-    pool = _SlotPool(bare_root=tmp_path / ".repos")
-    monkeypatch.setattr(pm_config, "_install_protected_hook_reporting", lambda *a, **k: True)
+def test_worktree_add_bound_ack_preserves_create_slot_semantics(pm_config, monkeypatch, capsys, tmp_path, readonly, task, expected_role, expected_state):
+    pool = bind_pool(monkeypatch, _SlotPool(bare_root=tmp_path / ".repos"))
+    monkeypatch.setattr(repo_protection, "_install_protected_hook_reporting", lambda *a, **k: True)
     monkeypatch.setattr(pm_config, "_render_task_slots", lambda *a, **k: None)
     args = argparse.Namespace(
         repo="svc", test=None, readonly=readonly, task=task, user_ack="svc",
@@ -726,8 +723,9 @@ def test_worktree_add_bound_ack_preserves_create_slot_semantics(
     # 슬롯 생성은 repo 등록 base 를 부모로 기록한다 — 그 base 만 답하는 board.
     board = SimpleNamespace(_repo_base={"svc": "main"}.get)
 
+    bind_pool(monkeypatch, pool)
     assert pm_config.cmd_worktree_add(
-        args, worktree_pool=pool, board=board, is_tty=lambda: False,
+        args,  board=board, is_tty=lambda: False,
     ) == 0
 
     assert len(pool.created) == 1

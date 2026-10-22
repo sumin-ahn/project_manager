@@ -1073,6 +1073,228 @@ def _slice_replace(source: str, start_marker: str, end_marker: str, replacement:
     return source[:start] + replacement + source[end:]
 
 
+# 보호 패키지 이동 역적용. 배달 경계의 역사적 source bytes와 SHA를 그대로 유지한다.
+_PROTECTION_PACKAGE_REVERSALS = (
+    (
+        'from pm_engine.app import repo_protection\n'
+        'from pm_engine.infra import branch_store, protected_hooks\n',
+        '',
+    ),
+    (
+        '# 완료 프로세스에서 실행 트리의 보호 패키지를 import하고 대상 Home의 데이터를 읽는다.\n'
+        '# --target export는 이 완료 경로를 실행하지 않는다.\n',
+        '# 배선은 **기존 계약을 그대로 탄다**(신규 seam 0): dest 의 `pm_config._install_protected_hook_\n'
+        '# reporting` → `_resolve_repo_protected`(areas 권위) →\n'
+        '# `worktree_pool.install_protected_hook`(훅·sidecar·hooksPath). pm_update 는 목록 해소도 훅\n'
+        '# 본문도 재구현하지 않는다.\n'
+        '#\n'
+        '# **dest 의 엔진**을 로드한다(source 아님) — sync 로 방금 갱신된 사본이 새 훅 본문을 들고 있고,\n'
+        '# 등록 repo 레지스트리(areas.md)·훅 디렉토리도 dest(PM 홈) 소유다. `--target`(루트→templates\n'
+        '# 엔진 export)은 비발화 — templates/<name> 은 PM 홈이 아니라 출하 스캐폴드라 등록 repo 가 없다\n'
+        '# (selfheal/skew/진입 doc 마이그레이션과 같은 경계).\n',
+    ),
+    (
+        'def _load_dest_pm_config(dest_root: Path):\n'
+        '    """자기 repo 행 채움에 필요한 대상 pm_config를 적재한다.\n'
+        '\n'
+        '    자기 행 채움의 평면 board 소비가 남아 있어 이 로더를 유지한다.\n'
+        '    보호 훅 재설치는 완료 프로세스의 패키지와 대상 Home을 사용한다.\n'
+        '    부재는 None, 적재 예외는 호출부로 전파한다.\n'
+        '    """\n'
+        '    pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"\n'
+        '    if not pm_config_py.exists():\n'
+        '        return None\n'
+        '    return _load_module_from_path(\n'
+        '        pm_config_py, "pm_config.py", allow_unverified=True,\n'
+        '    )',
+        'def _load_dest_pm_config(dest_root: Path):\n'
+        '    """dest(방금 동기된) `.project_manager/tools/pm_config.py` 를 로드 (_load_pm_import 동형).\n'
+        '\n'
+        '    실행 중인 pm_update 프로세스는 **sync 이전** 코드를 메모리에 들고 있으므로, 재설치는 반드시\n'
+        '    디스크의 *새* 사본을 로드해서 돌려야 신 훅 본문이 배포된다. 부재(구형 dest·엔진 미배치)면\n'
+        '    None — 호출부가 fail-soft 로 보고한다. 로드 예외는 전파(호출부가 잡아 loud 보고)."""\n'
+        '    pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"\n'
+        '    if not pm_config_py.exists():\n'
+        '        return None\n'
+        '    return _load_module_from_path(\n'
+        '        pm_config_py, "pm_config.py", allow_unverified=True,\n'
+        '    )',
+    ),
+    (
+        'def _protected_hook_in_sync(home, repo: str) -> bool:\n'
+        '    try:\n'
+        '        expected = branch_store._resolve_protected(home, repo)\n'
+        '        mode, test_cmd = repo_protection._protected_push_gate_config(home, repo, report_downgrade=False)\n'
+        '        for artifact in protected_hooks.protected_hook_artifacts(\n'
+        '                home, repo, expected, gate_mode=mode, test_cmd=test_cmd):\n'
+        '            if _read_hook_artifact(artifact.path) != artifact.content:\n'
+        '                return False\n'
+        '            if artifact.executable and not _hook_artifact_executable(artifact.path):\n'
+        '                return False\n'
+        '        return protected_hooks.protected_hook_wired(home, repo) is True\n'
+        '    except Exception:\n'
+        '        return False',
+        'def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bool:\n'
+        '    """이 repo 의 설치된 보호 훅이 **현재 엔진과 정합**인가 — drift 판정.\n'
+        '\n'
+        '    정합이면 재설치를 건너뛴다(매 sync 반복 출력 회피). "비교 우선·정합이면 조용" 은\n'
+        '    sidecar reconcile 과 같은 패턴이다.\n'
+        '\n'
+        '    **축을 열거하지 않고 유도한다** — 봐야 할 것은 정의상 "`install_protected_hook` 이 쓰는 것"\n'
+        '    이므로, 그 함수와 **같은 명세**(`worktree_pool.protected_hook_artifacts`)를 읽어 산출물마다\n'
+        '    내용 실행권한(필요한 것만)을 대조하고, 파일이 아닌 bare `core.hooksPath` **배선**은\n'
+        '    `pm_config.protected_hook_wired()`로 본다. 판정이 자체 목록을 들면 설치가\n'
+        '    자랄 때 조용히 갈라진다 — 실제로 그 클래스가 연달아 났다(읽기 실패 축·실행 비트 축).\n'
+        '\n'
+        '    **모르면 재설치 쪽으로 기운다**(fail-safe): 파일 부재·**읽기 실패**(깨진 본문·권한·IO)·\n'
+        '    실행권한 상실·배선 판정 불가(`None`)는 전부 drift 로 수렴한다 —\n'
+        '    재설치는 멱등이라 비용이 낮고, 반대 방향(조용히 stale 유지)은 보호가 꺼진 채 침묵하는\n'
+        '    실패모드다.\n'
+        '\n'
+        '    **일반 판정 예외는 밖으로 내지 않는 게 계약**이다(fail-safe False). 단 엔진 사본\n'
+        '    불일치 marker는 계속 실행할 수 없는 상태라 재전파한다. 호출부의\n'
+        '    `unavailable` 은 "dest 엔진/모듈을 못 불렀다"(=판정 자체가 불가능)를 위한 상태지 "파일이\n'
+        '    깨졌다"가 아니다 — 후자를 unavailable 로 흘리면 재설치가 안 돌아 복구 경로가 사라진다."""\n'
+        '    try:\n'
+        '        # 설치가 받는 것과 **같은 입력**(areas 실효 보호목록)으로 기대 산출물을 유도한다.\n'
+        '        expected_list = list(pm_config._resolve_repo_protected(repo))\n'
+        '        # read-only drift 판정은 steady-state 무출력 계약을 지킨다. 강등 경고는 실제 설치\n'
+        '        # 깔때기에서 1회 loud하게 나가며, 여기서는 같은 resolver 결과만 소비한다.\n'
+        '        gate_mode, test_cmd = pm_config._protected_push_gate_config(\n'
+        '            repo, board=board, report_downgrade=False)\n'
+        '        for artifact in worktree_pool.protected_hook_artifacts(\n'
+        '                repo, expected_list, gate_mode=gate_mode, test_cmd=test_cmd):\n'
+        '            if _read_hook_artifact(artifact.path) != artifact.content:\n'
+        '                return False\n'
+        '            if artifact.executable and not _hook_artifact_executable(artifact.path):\n'
+        '                return False\n'
+        '        # 배선 축 — `False`(hooksPath 가 우리 디렉토리를 안 가리킴)면 훅이 아예 발화하지 않는다.\n'
+        '        # `None`(bare 부재·git 실패)은 판정 불가 → 재설치 시도(install 이 결과를 loud 보고).\n'
+        '        return pm_config.protected_hook_wired(repo, worktree_pool=worktree_pool) is True\n'
+        '    except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 drift로 수렴(단 skew 재전파).\n'
+        '        if _is_engine_rev_skew(exc):\n'
+        '            raise\n'
+        '        return False',
+    ),
+    (
+        'def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:\n'
+        '    result = {"status": "unavailable", "targets": [], "in_sync": [],\n'
+        '              "drifted": [], "failed": [], "no_bare": [], "reason": None}\n'
+        '    home = pm_paths.home_at(Path(dest_root).resolve())\n'
+        '    try:\n'
+        '        repos = sorted(areas_store.registered_repos(home))\n'
+        '        if not repos:\n'
+        '            result["status"] = "no_repos"\n'
+        '            return result\n'
+        '        for repo in repos:\n'
+        '            if not pm_paths.bare_repo_path(home, repo).exists():\n'
+        '                result["no_bare"].append(repo)\n'
+        '                continue\n'
+        '            result["targets"].append(repo)\n'
+        '            if _protected_hook_in_sync(home, repo):\n'
+        '                result["in_sync"].append(repo)\n'
+        '                continue\n'
+        '            result["drifted"].append(repo)\n'
+        '            if write and not repo_protection._install_protected_hook_reporting(\n'
+        '                    home, repo, action="(재)설치"):\n'
+        '                result["failed"].append(repo)\n'
+        '        result["status"] = "done"\n'
+        '        return result\n'
+        '    except Exception as exc:\n'
+        '        result["reason"] = f"{type(exc).__name__}: {exc}"\n'
+        '        return result',
+        'def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:\n'
+        '    """등록 repo 전수 보호 훅 정합 확인 + drift 재설치 — 엔진 업그레이드 배포 트리거.\n'
+        '\n'
+        '    **매 sync 실행마다** 돈다(changes 유무 무관 — 위 모듈 주석의 RUN1/RUN2 실측 참조).\n'
+        '    `write=False`(dry-run)면 판정만 하고 아무것도 쓰지 않는다(migrate_entry_doc 의 write 플래그\n'
+        '    동형). 반환 dict:\n'
+        '      - `status` — "done" / "no_repos"(등록 repo 0) / "unavailable"(엔진/레지스트리 미해소)\n'
+        '      - `targets` — 판정 대상 repo(= bare 미러 보유) · `in_sync` — 정합이라 건너뛴 repo(조용)\n'
+        '      - `drifted` — 재설치가 필요한 repo(⊆ targets) · `failed` — 그중 설치 실패\n'
+        '      - `no_bare` — 등록됐지만 `.repos/<repo>.git` 이 없어 게이트할 대상이 없는 repo\n'
+        '      - `reason` — unavailable 사유(사람이 읽는 1줄)\n'
+        '\n'
+        '    **bare 부재는 실패가 아니다** — 게이트할 미러가 없으면 훅도 무의미하다(install 이 no-op\n'
+        '    False). 매 sync 마다 경고를 울리는 대신 `no_bare` 로 분리해 요약 1줄로만 surface 한다\n'
+        '    (침묵 아님·`_print_protected_hook_reinstall_finding`).\n'
+        '\n'
+        '    **fail-soft** — sync 는 이미 성공했다. 일반 엔진 로드 실패(구형 dest)나 레지스트리\n'
+        '    파싱 실패가 update rc 를 바꾸면 안 된다 → 예외를 "unavailable"+사유로 강등하고 호출부가\n'
+        '    경고로 낸다(훅은 추가 가드·`_install_protected_hook` 의 fail-soft 계약과 동형). stamped\n'
+        '    sibling의 marked rev skew 는 그대로 올린다 — 완료 단계는 같은 세대 사본만 적재하므로 그 skew 는\n'
+        '    동기 대상 트리 자체의 결함이다.\n'
+        '\n'
+        '    ⚠ **"unavailable" 은 판정 자체가 불가능한 경우만**이다 — dest 엔진/레지스트리를 못 불러\n'
+        '    *어느 repo 도* 손댈 수 없는 상태. **개별 repo 의 훅 파일이 깨진 것은 unavailable 이 아니라\n'
+        '    drift** 다(`_protected_hook_in_sync` 가 읽기 실패를 False 로 수렴). 그 구분이 무너지면\n'
+        '    "깨진 훅을 발견했는데 재설치는 안 하는" 경로가 생겨 복구 채널이 사라진다."""\n'
+        '    result: dict = {"status": "unavailable", "targets": [], "in_sync": [],\n'
+        '                    "drifted": [], "failed": [], "no_bare": [], "reason": None}\n'
+        '    try:\n'
+        '        pm_config = _load_dest_pm_config(dest_root)\n'
+        '        if pm_config is None:\n'
+        '            result["reason"] = (\n'
+        '                f"{dest_root}/.project_manager/tools/pm_config.py 부재 — 로드 불가")\n'
+        '            return result\n'
+        '        board = pm_config._load_module("board", "board.py")\n'
+        '        worktree_pool = pm_config._load_module("worktree_pool", "worktree_pool.py")\n'
+        '        if board is None or worktree_pool is None:\n'
+        '            missing = "board.py" if board is None else "worktree_pool.py"\n'
+        '            result["reason"] = f"dest 엔진 {missing} 부재/로드 실패"\n'
+        '            return result\n'
+        '        repos = sorted(areas_store.registered_repos(pm_paths.home_at(Path(dest_root).resolve())))\n'
+        '        if not repos:\n'
+        '            result["status"] = "no_repos"\n'
+        '            return result\n'
+        '        for repo in repos:\n'
+        '            # bare 미러가 있어야 `core.hooksPath` 를 걸 대상이 있다(install 과 같은 가드).\n'
+        '            if not pm_paths.bare_repo_path(pm_paths.home_at(Path(dest_root)), repo).exists():\n'
+        '                result["no_bare"].append(repo)\n'
+        '                continue\n'
+        '            result["targets"].append(repo)\n'
+        '            if _protected_hook_in_sync(repo, pm_config=pm_config,\n'
+        '                                       worktree_pool=worktree_pool, board=board):\n'
+        '                result["in_sync"].append(repo)\n'
+        '                continue\n'
+        '            result["drifted"].append(repo)\n'
+        '            if not write:\n'
+        '                continue\n'
+        '            ok = pm_config._install_protected_hook_reporting(\n'
+        '                repo, board=board, worktree_pool=worktree_pool, action="(재)설치")\n'
+        '            if not ok:\n'
+        '                result["failed"].append(repo)\n'
+        '        result["status"] = "done"\n'
+        '        return result\n'
+        '    except Exception as exc:  # noqa: BLE001 — 재설치 실패가 성공한 sync 를 무효화하면 안 됨(표식 skew 는 올린다).\n'
+        '        if _is_engine_rev_skew(exc):\n'
+        '            raise\n'
+        '        result["status"] = "unavailable"\n'
+        '        result["reason"] = f"{type(exc).__name__}: {exc}"\n'
+        '        return result',
+    ),
+    (
+        'per-repo 성공/실패 줄은 repo_protection 깔때기 소관',
+        'per-repo 성공/실패 줄은 pm_config 깔때기 소관',
+    ),
+)
+
+
+def _reverse_pool_package_move(source: str) -> str:
+    """패키지 이동 전 updater의 경로·잠금·호출 형태를 복원한다."""
+    for current, previous in _PROTECTION_PACKAGE_REVERSALS:
+        assert source.count(current) == 1, current
+        source = source.replace(current, previous, 1)
+    return (source.replace("from pm_engine.infra import pool_store\n", "")
+            .replace("pool_store._lease_lock", "worktree_pool._lease_lock")
+            .replace("with worktree_pool._lease_lock(pm_paths.home_at(Path(effective_dest))):",
+                     'with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):')
+            .replace("pm_paths.bare_repo_path(pm_paths.home_at(Path(dest_root)), repo).exists()",
+                     "worktree_pool.bare_repo_path(repo).exists()")
+            .replace("pm_config._resolve_repo_protected(repo)",
+                     "pm_config._resolve_repo_protected(repo, board=board)"))
+
+
 def _t0585_pm_update_source() -> str:
     """현행 전체 updater에서 T-0591 delta만 역적용해 실제 T-0585 source bytes를 복원한다.
 
@@ -1361,6 +1583,7 @@ def _t0585_pm_update_source() -> str:
     source = _reverse_harness_ctx_apply(source)
     source = _reverse_two_process_update(source)
     source = _reverse_render_eq_dst_raise(source)
+    source = _reverse_pool_package_move(source)
     # 세대 시대착오 부재를 **기계로** 못박는다 — 전제(“codex 판정이 늘 빈 결과”)에 기대지 않는다.
     #   대조 대상은 `_main` 의 **호출 지점**이다(`apply` 시그니처의 기본값 파라미터는 호출하지
     #   않으면 발화하지 않으므로 이 합성본의 동작 축이 아니다).
@@ -1659,6 +1882,7 @@ def _pre_t0876_pm_update_source() -> str:
     source = _reverse_harness_ctx_apply(source)
     source = _reverse_two_process_update(source)
     source = _reverse_render_eq_dst_raise(source)
+    source = _reverse_pool_package_move(source)
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert digest == _PRE_T0876_PM_UPDATE_SHA256, (
         f"pre-T0876 updater fixture drift: {digest}; retirement delta의 exact-marker와 "

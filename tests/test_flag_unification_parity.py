@@ -39,6 +39,7 @@ import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.domain import identity_args
+from pm_engine.app import branch_checkout
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -128,7 +129,7 @@ def test_worktree_pool_accepts_repo_and_slot_homomorphically(wp_mod, monkeypatch
     으로 리스 파일 IO 없이 안전하다(worktree_pool.py 소스 확인·hermetic 불요)."""
     captured: dict[str, str] = {}
     monkeypatch.setattr(
-        wp_mod, "sync", lambda slot, *, git_runner=None: captured.setdefault("slot", slot)
+        branch_checkout, "sync", lambda _home, slot, *, git_runner=None: captured.setdefault("slot", slot)
     )
     rc = wp_mod.main(["sync", "--repo", "proj", "--slot", "3"])
     assert rc == 0
@@ -140,7 +141,7 @@ def test_worktree_pool_bare_slot_fails_loud(wp_mod, monkeypatch, capsys):
     surface(다른 4 도구와 동일 실패 형태 — SystemExit 아닌 rc 반환이라는 관례 차이는 각 CLI
     래핑 스타일일 뿐, 근본 판정은 공용 `parse_identity` 로 동일)."""
     monkeypatch.setattr(
-        wp_mod, "sync", lambda *a, **k: pytest.fail("bare --slot 인데 sync 가 호출됨")
+        branch_checkout, "sync", lambda _home, *a, **k: pytest.fail("bare --slot 인데 sync 가 호출됨")
     )
     rc = wp_mod.main(["sync", "--slot", "3"])
     assert rc == 1

@@ -49,7 +49,15 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, pytest_report, ticket_rules  # noqa: E402
 from pm_engine.infra import conf_store, console, delegate_ledger, fs, lease_store, pm_paths, pre_push_hook, repo_files  # noqa: E402
-from pm_engine.app import slot_resolution  # noqa: E402
+from pm_engine.app import repo_protection, slot_resolution  # noqa: E402
+from pm_engine.infra import areas_store, branch_store, protected_hooks
+from pm_engine.infra import pool_store
+from pm_engine.infra import slot_snapshot
+from pm_engine.app import task_lifecycle
+from pm_engine.infra import task_store
+from pm_engine.infra import worktree_git
+from pm_engine.domain import worktree_records
+from pm_engine.app import worktree_status
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -80,7 +88,7 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"
 
 # `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — `refs/heads/<name>`. 이 접두 **정확히**를
 # 제거해야 순수 브랜치명이 된다(동명 태그 존재 시 `heads/<name>` 로 오염되는 `--short` 대신 full
-# ref 를 읽는 이유·worktree_pool._SYMREF_BRANCH_PREFIX 와 동일 규칙).
+# ref 를 읽는 이유·worktree_git._SYMREF_BRANCH_PREFIX 와 동일 규칙).
 _SYMREF_BRANCH_PREFIX = "refs/heads/"
 
 # 카드 밖 안내/에러 문구가 쓰는 기존 도구 호출 접두 리터럴. **커맨드 카드 렌더만** 아래
@@ -390,33 +398,10 @@ def _write_machine_line(text: str) -> None:
     console.write_machine_line(text)
 
 
-# ── worktree_pool import seam ───────────────────────────
-# task 바인딩·보유 슬롯 조회가 이 모듈을 쓴다. 부재/로드 실패는 fail-soft(None)이고,
-# 호출부(`_resolve_worktree_pool`)가 None 을 **명시 에러**로 세운다(침묵 무력화 금지).
-def _load_worktree_pool():
-    """worktree_pool 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
-
-    REPO/tools 경로 기준 `spec_from_file_location` — board.py·pm_*.py 와 같은
-    스크립트-위치 앵커 관례. None 은 호출부(`_resolve_worktree_pool`)가 명시 에러로 처리한다.
-    """
-    wp_path = TOOLS_DIR / "worktree_pool.py"
-    if not wp_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            wp_path, "worktree_pool.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
 def _load_board():
     """board 모듈을 동적 로드한다 (fail-soft) — 보호 브랜치 surface(`_repo_protected`)가 쓰는 로더다.
 
-    `_load_worktree_pool` 과 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
+    다른 평면 도구 로더와 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
     *직접 import* 하지 않는 이유(touches 격리·병렬충돌 회피)는 동적 로드로 보존된다. 보호
     브랜치 경고는 *소프트*(추가 인지)라 board 부재/로드 실패는 None(경고 생략·정체성 선언
     자체는 깨지 않음).
@@ -437,7 +422,7 @@ def _load_board():
 def _load_tool(name: str):
     """이름의 엔진 도구 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
-    `_load_worktree_pool`/`_load_board` 와 동형 — `spec_from_file_location`(스크립트-위치
+    `_load_board`와 동형 — `spec_from_file_location`(스크립트-위치
     앵커). 부트스트랩이 차수 추론(`pm_handoff.infer_next_session_num`)·log 마지막 entry 본문
     파싱(`pm_log.split_entries`)을 **DRY** 로 재사용하기 위한 역방향 동적 로드다(복붙 금지).
     직접 import 하지 않는 이유(touches 격리·순환 회피)는 동적 로드로 보존된다. 차수/인계 dump 는
@@ -1311,7 +1296,7 @@ def _format_stale_warning(handoff_ctx: dict | None) -> str | None:
 
 # ── 슬롯 상태 surface (upstream·submodule 역할) ─────
 # 부트스트랩이 현재 슬롯의 상태(branch·upstream·submodule pin/dev-ahead/drift)를 1회
-# surface 한다(self-sufficient dump). 판정은 worktree_pool.slot_status(백본
+# surface 한다(self-sufficient dump). 판정은 worktree_status.slot_status(백본
 # 역할 판별 재사용)가 하고, 여기선 그 결과(JSON-safe dict)를 markdown 줄로 렌더한다.
 # **drift(경고) vs dev-ahead(정보) 구별**이 핵심 — dev 작업 중인
 # submodule 을 "문제"로 오표시하면 안 된다.
@@ -1384,7 +1369,6 @@ class PmBootstrap:
         board_py: Path = BOARD_PY,
         areas_file: Path | None = None,
         venv_python: str | Path = _default_python(),
-        worktree_pool=None,
         board=None,
         pm_state_file: Path | None = None,
         board_dir: Path | None = None,
@@ -1408,7 +1392,6 @@ class PmBootstrap:
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 task
         # 바인딩·보유 슬롯 조회 시점에 동적 로드한다.
-        self._worktree_pool = worktree_pool
         # board seam — 보호 브랜치 surface(`_repo_protected`)용. 테스트는 mock 모듈 주입.
         # None 이면 필요 시점에 동적 로드(소프트 경고·board 부재면 경고 생략).
         # board.py *직접 import* 는 안 함(touches 격리).
@@ -1884,10 +1867,9 @@ class PmBootstrap:
     def _require_task_slot_ownership(self, slot: str, action: str) -> None:
         """task 슬롯 변경/검증 직전 strict 장부 소유권 gate (TOCTOU 차단)."""
         task = self._task_name
-        wp = self._worktree_pool or _load_worktree_pool()
-        checker = getattr(wp, "lease_owned_by_task_strict", None) if wp is not None else None
+
         try:
-            owned = bool(checker(slot, task)) if callable(checker) and task is not None else False
+            owned = bool(pool_store.lease_owned_by_task_strict(pm_paths.home_at(REPO), slot, task)) if task is not None else False
         except Exception as exc:  # noqa: BLE001
             print(f"[중단·소유권 재검증] task 슬롯 {slot!r} 장부 조회 실패 — {exc}. "
                   f"{action}을 실행하지 않습니다.", file=sys.stderr)
@@ -1965,8 +1947,8 @@ class PmBootstrap:
         """
         if not self._task_name:
             return []
-        wp = self._worktree_pool or _load_worktree_pool()
-        return list(wp.read_task_todos(self._task_name))
+
+        return list(task_store.read_task_todos(pm_paths.home_at(REPO), self._task_name))
 
     def _collect_handoff_context(self, log_text: str | None = None) -> dict | None:
         """bound slot pm_state 차수(+ log 교차검증) + 이 task 의 열린 todo 를 수집한다.
@@ -2332,10 +2314,9 @@ class PmBootstrap:
         lines.append("### 열린 todo")
         todos = handoff_ctx.get("todos") if handoff_ctx else None
         if todos:
-            wp = self._worktree_pool or _load_worktree_pool()
             lines.append("")
             for todo in todos:
-                lines.append(f"- {wp.format_todo_line(todo)}")
+                lines.append(f"- {task_store.format_todo_line(todo)}")
         else:
             lines.append(
                 f"- 없음 — `pm-config task todo add {self._task_name} <할 일 한 줄>` 로 "
@@ -2503,7 +2484,7 @@ class PmBootstrap:
     ) -> int:
         """부트스트랩 정보를 수집해 출력한다.
 
-        task:        세션 정체성이다. 보유 작업 폴더 집합은 `worktree_pool.slots_for_task` 로
+        task:        세션 정체성이다. 보유 작업 폴더 집합은 `pool_store.slots_for_task` 로
                      자동 수령하고, 슬롯 대여·편입은 pm-config alloc/worktree add 가 한다.
         with_pytest: True 면 pytest 회귀 실행, False (default) 면 skip.
                      default skip 인 이유는 모듈 docstring 참조.
@@ -2681,13 +2662,13 @@ class PmBootstrap:
             return 1
         return 0
 
-    def _phase0_slot_folder_exists(self, wp, slot_id: str) -> bool:
+    def _phase0_slot_folder_exists(self, slot_id: str) -> bool:
         """슬롯 worktree 폴더가 실재하는가 (`slot_path(slot).exists()`).
 
         **없는 것**(False)과 **못 읽는 것**(경로 해소 실패)을 섞지 않는다 — 해소 실패는 판정
         불능이라 그대로 올린다(미실재로 위장하면 생성 안내가 엉뚱한 처방이 된다).
         """
-        return wp.slot_path(slot_id).exists()
+        return pm_paths.slot_path(pm_paths.home_at(REPO), slot_id).exists()
 
     def _phase0_incomplete_create(self, lease) -> bool:
         """그 슬롯이 불완전 생성(`state="creating"`·provisional/중단 마커)인가 — 0단계 차단 대상.
@@ -2700,32 +2681,30 @@ class PmBootstrap:
             return False
         return getattr(lease, "state", None) == "creating"
 
-    def _phase0_main_reference_reason(self, wp, repo: str, slot_id: str) -> str | None:
+    def _phase0_main_reference_reason(self, repo: str, slot_id: str) -> str | None:
         """슬롯이 main-참조 상태인지 판정 — 사유 문구(거부용) or None(통과) (두 축).
 
         두 축(어느 하나라도 해당 시 거부) — `main`+`origin/main` 슬롯이다:
           1. **보호브랜치 직접 checkout** — 슬롯 HEAD 브랜치가 보호목록(main 등)이면. `_protected_warning`
-             재사용(보호목록=`board._repo_protected`).
+             재사용(보호목록=`areas_store._repo_protected`).
           2. **보호브랜치 원격 origin-추적** — `@{upstream}` 이 보호 브랜치 원격(`origin/main` 등)을 가리키면.
              ⚠️ *임의* upstream 이 아니다 — 정상 작업 슬롯은 자기 feature 브랜치(`origin/a5` 등)를 추적하는
              게 정상(미해소=경고)이라 그건 통과시킨다. 보호브랜치 원격을 추적할 때만 main-참조.
         보호브랜치 직접 checkout 이 우선(더 구체적 사유). detached(브랜치 None·upstream 없음·readonly
         등)·조회불가·풀 미지원은 None(fail-soft·오탐 0)."""
         try:
-            branch = wp.current_branch(slot_id)
+            branch = worktree_git.current_branch(pm_paths.home_at(REPO), slot_id)
         except Exception as exc:  # noqa: BLE001 — 일반 조회불가는 판정 생략(오탐 0).
-            if _is_engine_rev_skew(exc):
-                raise
             branch = None
         protected = self._protected_warning(repo, branch)
         if protected is not None:
             return f"보호 브랜치 `{protected}` 를 직접 체크아웃한 상태입니다"
-        upstream = self._phase0_protected_upstream(wp, repo, slot_id)
+        upstream = self._phase0_protected_upstream( repo, slot_id)
         if upstream is not None:
             return f"보호 브랜치 원격(`{upstream}`)을 origin-추적하는 상태입니다"
         return None
 
-    def _phase0_protected_upstream(self, wp, repo: str, slot_id: str) -> str | None:
+    def _phase0_protected_upstream(self, repo: str, slot_id: str) -> str | None:
         """슬롯 `@{upstream}` 이 **보호 브랜치 원격**(`origin/main` 등)을 추적하면 그 upstream 이름, 아니면 None.
 
         판정 로직 재구현 금지 — worktree_pool 의 `slot_status`(`_upstream_status` 흡수)를 호출만
@@ -2733,14 +2712,9 @@ class PmBootstrap:
         (`_protected_warning`)이면 main-참조로 판정한다. **자기 feature 브랜치 추적(`origin/a5`)은 정상
         작업 슬롯이라 제외**(오탐 0 — concern 은 `origin/main` 추적). slot_status 미지원(구 풀)·None·
         미해소 upstream·`/` 없는 이름·예외는 None(fail-soft·보수 판정)."""
-        getter = getattr(wp, "slot_status", None)
-        if getter is None:
-            return None
         try:
-            status = getter(slot_id)
+            status = worktree_status.slot_status(pm_paths.home_at(REPO), slot_id)
         except Exception as exc:  # noqa: BLE001 — 일반 상태 조회 실패는 판정 생략(오탐 0).
-            if _is_engine_rev_skew(exc):
-                raise
             return None
         if status is None or not getattr(status, "upstream_ok", False):
             return None
@@ -2750,13 +2724,13 @@ class PmBootstrap:
         tracked_branch = upstream.split("/", 1)[1]  # origin/main → main · origin/feature/x → feature/x
         return upstream if self._protected_warning(repo, tracked_branch) is not None else None
 
-    def _remedy_branch_name(self, wp, repo: str, slot_id: str, preferred: str) -> str | None:
+    def _remedy_branch_name(self, repo: str, slot_id: str, preferred: str) -> str | None:
         """main-참조 해소 커맨드가 제시할 **안전한 신규 브랜치명** (소비처 2곳 공용).
 
         해소 커맨드가 실제로 실행 가능한 값만 돌려준다 — 세션/task 명을 그대로 보간하면 그 이름이
         보호브랜치이거나 이미 존재하는 브랜치일 때 자기모순 안내가 된다.
         규칙(순서·`_REMEDY_BRANCH_PREFIX`·`_REMEDY_BRANCH_SUFFIX_LIMIT`) — 후보 필터 3종:
-          1. `preferred` 가 보호목록(`board._repo_protected`·`_protected_warning` 축) 밖이고,
+          1. `preferred` 가 보호목록(`areas_store._repo_protected`·`_protected_warning` 축) 밖이고,
              **git 브랜치명으로 유효**(`_remedy_branch_ref_ok` — 실행 쪽 `create_task_branch` 와 같은 판정)하며,
              그 슬롯에 **미존재** 브랜치면 그대로.
           2. 아니면 `task/<preferred>`(세 검사 재적용).
@@ -2778,17 +2752,17 @@ class PmBootstrap:
         for cand in candidates:
             if self._protected_warning(repo, cand) is not None:
                 continue
-            if not self._remedy_branch_ref_ok(wp, slot_id, cand):
+            if not self._remedy_branch_ref_ok(slot_id, cand):
                 continue
-            if self._slot_branch_exists(wp, slot_id, cand):
+            if self._slot_branch_exists(slot_id, cand):
                 continue
             return cand
         return None
 
-    def _remedy_branch_ref_ok(self, wp, slot_id: str, branch: str) -> bool:
+    def _remedy_branch_ref_ok(self, slot_id: str, branch: str) -> bool:
         """후보가 **`create_task_branch` 가 받아들일** 브랜치명인가 — worktree_pool 판정 재사용 (규칙 중복 0).
 
-        제안 쪽(여기)과 실행 쪽(`worktree_pool.create_task_branch`)의 수용 규칙이 갈리면 안내가 곧바로 실행 불가가
+        제안 쪽(여기)과 실행 쪽(`task_lifecycle.create_task_branch`)의 수용 규칙이 갈리면 안내가 곧바로 실행 불가가
         된다(codex 게이트 must-fix — 같은 검사의 절반 적용). 그래서 **판정을 다시 구현하지 않고**
         worktree_pool 의 `_normalize_branch_name`(그 규칙의 단일 진실 — `git check-ref-format --branch`
         + 빈/다중줄/공백 방어 + 고정점 확인)을 **슬롯 worktree 바인딩 러너**로 호출한다. 주입/동적로드된
@@ -2802,9 +2776,8 @@ class PmBootstrap:
         "이름이 무효" 와 "git 이 못 돌았다" 를 가르기 위해 러너가 예외를 표시(`failed`)한다.
         (rc≠0 로 조용히 실패하는 git 은 무효와 구분 불가 — 그 경우 후보가 소진돼 "브랜치명 직접
         지정" 안내로 수렴한다. 여전히 실행 가능한 안내다.)"""
-        normalize = wp._normalize_branch_name
         try:
-            slot_dir = str(wp.slot_path(slot_id))
+            slot_dir = str(pm_paths.slot_path(pm_paths.home_at(REPO), slot_id))
         except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 검사 생략.
             return True
         failed: list[bool] = []
@@ -2818,14 +2791,12 @@ class PmBootstrap:
                 raise
 
         try:
-            ok = normalize(branch, git_runner=runner) == branch
+            ok = branch_store._normalize_branch_name(branch, git_runner=runner) == branch
         except Exception as exc:  # noqa: BLE001 — 일반 판정기 예외는 검사 생략(안내 계속).
-            if _is_engine_rev_skew(exc):
-                raise
             return True
         return True if failed else ok
 
-    def _remedy_branch_command(self, wp, repo: str, slot_id: str, owner: str) -> str:
+    def _remedy_branch_command(self, repo: str, slot_id: str, owner: str) -> str:
         """main-참조 해소 커맨드 문자열 — 엔진이 브랜치를 만들고 부모를 기록하는 단일 커맨드 (소비처 2곳 공용).
 
         raw `git switch -c <b>` 는 부모 기록과 장부 스냅을 남기지 않는다. `pm_config.py task branch` 는
@@ -2838,7 +2809,7 @@ class PmBootstrap:
 
         복합 문자열(`git … && python3 …`)은 쓰지 않는다 — **PowerShell 5.x 가 `&&` 미지원**
         (Windows 채택자에서 깨진다·실측)."""
-        branch = self._remedy_branch_name(wp, repo, slot_id, owner)
+        branch = self._remedy_branch_name( repo, slot_id, owner)
         board_mod = self._board or _load_board()
         base = board_mod._repo_base(repo) if board_mod else None
         cmd = f"{_CARD_TOOL_INVOKE}/pm_config.py task branch {owner} {slot_id}"
@@ -2851,7 +2822,7 @@ class PmBootstrap:
             )
         return f"{cmd} {branch}{tail}"
 
-    def _slot_branch_exists(self, wp, slot_id: str, branch: str) -> bool:
+    def _slot_branch_exists(self, slot_id: str, branch: str) -> bool:
         """그 슬롯 worktree 에 로컬 브랜치 `branch` 가 이미 있는가 (remedy 후보 충돌 검사).
 
         `git -C <slot_dir> show-ref --verify --quiet refs/heads/<branch>`(argv-list·shell 미경유)를
@@ -2859,7 +2830,7 @@ class PmBootstrap:
         **미존재로 간주**한다(fail-soft — 안내는 계속 나가야 하고, 후보 판정 실패로 진입 검증을
         깨뜨리지 않는다)."""
         try:
-            slot_dir = str(wp.slot_path(slot_id))
+            slot_dir = str(pm_paths.slot_path(pm_paths.home_at(REPO), slot_id))
         except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 미존재(안내 계속).
             return False
         try:
@@ -2874,22 +2845,6 @@ class PmBootstrap:
 
     # ── task 바인딩 · 보유 슬롯 surface ────
 
-    def _resolve_worktree_pool(self):
-        """worktree_pool 모듈을 해소한다 — 주입분 우선·없으면 동적 로드.
-
-        주입(테스트 mock)이 있으면 그걸, 없으면 동적 로드한다. 둘 다 None 이면
-        **명시 에러**(SystemExit) — 장부 엔진 없이 task 를 바인딩하지 않는다.
-        """
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            print(
-                "[중단] worktree_pool 엔진을 찾을 수 없다 "
-                f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패). "
-                "PM 홈 셋업(pm-config) 또는 엔진 전파를 확인하라.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        return wp
 
     # 인계 표시에 싣는 항목 상한 — 목록이 길어도 화면이 한 눈에 들어와야 한다.
     _HANDOVER_MAX_ITEMS = 5
@@ -2917,12 +2872,10 @@ class PmBootstrap:
         PM 홈 아래가 아니다. 그래서 뿌리는 `slots`(보유 작업 폴더 목록)이 준다. 상대 루트는
         준비 사본을 만드는 쪽(`delegate_ledger.TICKET_COPY_REL_ROOT`)이 소유한다.
         """
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            return []
+
         rows: list[str] = []
         for slot in slots:
-            root = wp.slot_path(slot) / delegate_ledger.TICKET_COPY_REL_ROOT
+            root = pm_paths.slot_path(pm_paths.home_at(REPO), slot) / delegate_ledger.TICKET_COPY_REL_ROOT
             if not root.is_dir():
                 continue
             for ticket_dir in sorted(root.glob("*/*/*")):
@@ -2940,19 +2893,19 @@ class PmBootstrap:
         반환은 `(슬롯, 표시 문자열)` 쌍이다 — 같은 목록을 위임 준비 뿌리로도 쓴다(조회 축을
         하나 더 열지 않는다).
         """
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None or not task:
+
+        if not task:
             return []
         try:
-            leases = [l for l in wp.list_leases()
-                      if wp.lease_is_open(l) and l.session == task]
+            leases = [l for l in pool_store.list_leases(pm_paths.home_at(REPO))
+                      if worktree_records.lease_is_open(l) and l.session == task]
         except (OSError, KeyError, TypeError):
             # 장부 파일을 못 읽었거나(OSError) 행 모양이 깨졌다(KeyError·TypeError).
             return []
         rows: list[tuple[str, str]] = []
         for lease in leases:
             # `current_branch` 는 자기 계약이 "raise 금지" 다 — 조회 실패도 None 으로 돌려준다.
-            branch = wp.current_branch(lease.slot)
+            branch = worktree_git.current_branch(pm_paths.home_at(REPO), lease.slot)
             rows.append(
                 (lease.slot, f"{lease.slot} (갈래: {branch or '(미상·detached)'})")
             )
@@ -2960,12 +2913,12 @@ class PmBootstrap:
 
     def _handover_pm_state(self, task: str) -> str | None:
         """그 task 의 서술 파일 경로."""
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None or not task:
+
+        if not task:
             return None
         try:
-            return _display_path_text(wp.task_pm_state_file(task))
-        except wp.InvalidTaskName:
+            return _display_path_text(pm_paths.task_pm_state_file(pm_paths.home_at(REPO), task))
+        except worktree_records.InvalidTaskName:
             # 이름이 부적합하면 경로 자체가 없다 — 표시만 비운다.
             return None
 
@@ -3019,19 +2972,19 @@ class PmBootstrap:
     def _bind_task_or_reject(self, task: str, *, force: bool = False) -> dict | None:
         """`--task` 신규/resume 바인딩. 열린 기록이 있고 `--force` 가 없으면 None(거부).
 
-        `worktree_pool.bind_task` 로 신규/resume 을 처리한다 — 열린 기록(종료 기록 없음)은
+        `task_lifecycle.bind_task` 로 신규/resume 을 처리한다 — 열린 기록(종료 기록 없음)은
         `TaskActiveElsewhere` → 여기서 그 기록의 정체와 이전 세션이 하던 것을 찍고 강제 여부를
         **묻는다**(None → caller 가 dump 이전 중단). `force` 면 기록을 먼저 닫고
         (`close_task_session` — 기존 프리미티브) 같은 bind 경로를 그대로 탄다: 강제 전용 분기도,
         자동 승낙 값도 없다. 성공 시 surface 용 dict(name·prefix·action·서술 pm_state 경로/존재)를
         반환한다. task 는 슬롯 축과 직교라 이 바인딩은 `.local/slots/` 를 건드리지 않는다.
         """
-        wp = self._resolve_worktree_pool()
+
         try:
             # 이 부트스트랩을 부른 하네스 세션 ID — 가드 훅이 이 호출을 보고 남긴 기록이다.
-            session = wp.take_task_session_claim(task)
+            session = task_store.take_task_session_claim(pm_paths.home_at(REPO), task)
             if force:
-                record = wp.find_task(task)
+                record = pool_store.find_task(pm_paths.home_at(REPO), task)
                 if record is not None and record.open and record.session != session:
                     print(
                         f"[강제 인계] task {task!r} 의 열린 기록(task 시작: "
@@ -3040,18 +2993,18 @@ class PmBootstrap:
                         f"{self._render_handover(task=task, indent='  ')}",
                         file=sys.stderr,
                     )
-                    wp.close_task_session(task)   # 종료 기록을 남기고 아래 공통 bind 경로로 재개.
+                    task_lifecycle.close_task_session(pm_paths.home_at(REPO), task)   # 종료 기록을 남기고 아래 공통 bind 경로로 재개.
             # 등록 repo 집합을 넘겨 예약명(<repo>_<N>)을 엔진 진입점에서도 방어(primitive 자기완결·
             # should-fix) — CLI 의 빠른 거부(main)와 이중화. 명 검증(traversal/절대경로/빈 이름·
             # must-fix)은 registered_repos 무관하게 엔진에서 항상 돈다.
-            record, action = wp.bind_task(
+            record, action = task_lifecycle.bind_task(pm_paths.home_at(REPO),
                 task, session=session,
                 registered_repos=slot_resolution._registered_repos(pm_paths.home_at(REPO), self._areas_file),
             )
-        except wp.NoTaskSessionClaim as exc:
+        except task_store.NoTaskSessionClaim as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return None
-        except getattr(wp, "TaskArchived", ()) as exc:
+        except worktree_records.TaskArchived as exc:
             archives = ", ".join(path.name for path in exc.archives)
             print(
                 f"[중단] task {task!r} 은(는) 종료 archive로 보관되어 있어 새 task로 만들지 "
@@ -3062,7 +3015,7 @@ class PmBootstrap:
                 file=sys.stderr,
             )
             return None
-        except wp.TaskActiveElsewhere as exc:
+        except worktree_records.TaskActiveElsewhere as exc:
             print(
                 f"[중단] task {task!r} 에 **열린 세션 기록**이 있습니다 "
                 f"(task 시작: {exc.started or '(미상)'}) — 종료 기록이 없습니다. 그 창이 아직 "
@@ -3077,7 +3030,7 @@ class PmBootstrap:
                 file=sys.stderr,
             )
             return None
-        except wp.InvalidTaskName as exc:
+        except worktree_records.InvalidTaskName as exc:
             print(
                 f"[중단] task 명 {task!r} 이(가) 부적합합니다 — {exc.reason}.\n"
                 f"  → task 명은 경로 문자(`/`·`\\`·`..`·선행 `.`) 없는 단일 이름이어야 하고, "
@@ -3086,15 +3039,13 @@ class PmBootstrap:
             )
             return None
         except Exception as exc:  # noqa: BLE001 — state seed/template 실패를 traceback 대신 loud 진단.
-            if _is_engine_rev_skew(exc):
-                raise  # bind_task 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
             print(
                 f"[중단] task {task!r} 생성/재개 중 pm_state 보장에 실패했습니다 — {exc}. "
                 "task 장부만 있는 반쪽 상태로 진행하지 않습니다.",
                 file=sys.stderr,
             )
             return None
-        pm_state = wp.task_dir(task) / "pm_state.md"
+        pm_state = pm_paths.task_dir(pm_paths.home_at(REPO), task) / "pm_state.md"
         if not pm_state.exists():
             print(
                 f"[중단] task {task!r} 바인딩 뒤 pm_state가 생성되지 않았습니다 — {pm_state}. "
@@ -3167,24 +3118,14 @@ class PmBootstrap:
 
         task bind/state write 전에 호출해 실패가 반쪽 영속 기록을 남기지 않게 한다. 실제 빈 집합과
         worktree_pool/primitive 부재·None 반환·예외를 구분하는 단일 choke point다."""
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            print(
-                f"[중단·진입검증] task {task!r} 보유 슬롯 장부를 해소할 수 없습니다 — "
-                "worktree_pool 엔진 부재. 실제 0슬롯으로 간주하지 않고 부분 dump 없이 중단합니다.",
-                file=sys.stderr,
-            )
-            return None
-        # strict API 로 JSON 손상·읽기 오류를 실제 0슬롯과 구분한다. 형제 사본은 rev 검증을
-        # 통과한 것만 로드되므로(`_load_worktree_pool`) 이 함수가 없는 사본은 여기 오지 못한다.
+
+        # strict 장부 API로 손상·읽기 오류를 실제 0슬롯과 구분한다.
         try:
-            resolved = wp.slots_for_task_strict(task)
+            resolved = pool_store.slots_for_task_strict(pm_paths.home_at(REPO), task)
             if resolved is None:
                 raise RuntimeError("slots_for_task가 None을 반환")
             return list(resolved)
         except Exception as exc:  # noqa: BLE001 — 해소 실패 ≠ 실제 빈 집합: fail-loud.
-            if _is_engine_rev_skew(exc):
-                raise
             print(
                 f"[중단·진입검증] task {task!r} 보유 슬롯 장부 조회 실패 — {exc}. "
                 "실제 0슬롯으로 간주하지 않고 부분 dump 없이 중단합니다.",
@@ -3203,7 +3144,7 @@ class PmBootstrap:
         실행 후 재진입). 0개 보유 = no-op(검증 대상 없음·진입). worktree_pool/slots_for_task 부재나
         조회 예외는 실제 빈 집합과 구분해 fail-loud 한다(집합을 모르면 검증을 통과시킬 수 없음).
         반환 0=통과·1=차단(FAIL-LOUD). `leases` 미주입 직접 호출도 같은 해소 choke를 탄다."""
-        wp = self._worktree_pool or _load_worktree_pool()
+
         if leases is None:
             leases = self._resolve_task_slot_leases(task)
         if leases is None:
@@ -3222,7 +3163,7 @@ class PmBootstrap:
         )
         faults: list[tuple[str, tuple[str, str, str]]] = []
         for lease in sorted(leases, key=lambda x: getattr(x, "slot", "")):
-            fault = self._task_slot_fault(wp, lease, task)
+            fault = self._task_slot_fault( lease, task)
             if fault is not None:
                 faults.append((getattr(lease, "slot", "(미상)"), fault))
         if not faults:
@@ -3239,7 +3180,7 @@ class PmBootstrap:
         print("\n".join(lines), file=sys.stderr)
         return 1
 
-    def _task_slot_fault(self, wp, lease, task: str) -> "tuple[str, str, str] | None":
+    def _task_slot_fault(self, lease, task: str) -> "tuple[str, str, str] | None":
         """task 보유 슬롯 1개의 0단계 fault → (label, 근거, 해소커맨드) 또는 None(통과).
 
         기존 0단계 프리미티브를 per-slot 재사용한다(판정 재구현 0) — 각 검사는 **print 없이** 사유+
@@ -3255,7 +3196,7 @@ class PmBootstrap:
             return None
         repo = getattr(lease, "repo", None) or slot_id.rpartition("/")[2].rsplit("_", 1)[0]
         # 1. stale (장부 有·폴더 無).
-        if not self._phase0_slot_folder_exists(wp, slot_id):
+        if not self._phase0_slot_folder_exists(slot_id):
             return (
                 "stale (장부에 lease 존재·worktree 폴더 부재)",
                 "장부엔 이 슬롯의 task 명의 lease 가 있으나 worktree 디렉터리가 없습니다 — "
@@ -3270,19 +3211,17 @@ class PmBootstrap:
                 f"{_CARD_TOOL_INVOKE}/pm_config.py worktree status",
             )
         # 3. main-참조(보호브랜치 직접/원격추적).
-        reason = self._phase0_main_reference_reason(wp, repo, slot_id)
+        reason = self._phase0_main_reference_reason( repo, slot_id)
         if reason is not None:
             return (
                 "main-참조 (보호브랜치 직접 checkout / origin-추적)",
                 f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 공유 이력이 오염된다.",
-                self._remedy_branch_command(wp, repo, slot_id, task),
+                self._remedy_branch_command( repo, slot_id, task),
             )
         # 4. 기록↔live diverged.
         try:
-            result = wp.compare_slot_git(slot_id)
+            result = slot_snapshot.compare_slot_git(pm_paths.home_at(REPO), slot_id)
         except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 fault 아님(통과).
-            if _is_engine_rev_skew(exc):
-                raise
             result = None
         if result is not None and getattr(result, "fail_loud", False):
             return (
@@ -3301,15 +3240,11 @@ class PmBootstrap:
         장부 변경/오류로 surface가 검증 결과와 어긋나는 일을 막는다. 직접 호출 호환 경로만
         slots_for_task를 조회하며, 미제공/실패는 빈 리스트(→ "(없음)" 분기·graceful).
         매 필드 조회는 fail-soft다."""
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            return []
+
         if leases is None:
             try:
-                leases = list(wp.slots_for_task(task) or [])
+                leases = list(pool_store.slots_for_task(pm_paths.home_at(REPO), task) or [])
             except Exception as exc:  # noqa: BLE001 — fail-soft: 직접 호출의 surface 조회 실패.
-                if _is_engine_rev_skew(exc):
-                    raise
                 return []
         else:
             leases = list(leases)
@@ -3318,13 +3253,13 @@ class PmBootstrap:
             slot_id = getattr(lease, "slot", None)
             if not slot_id:
                 continue
-            rows.append(self._task_slot_row(wp, lease, slot_id))
+            rows.append(self._task_slot_row( lease, slot_id))
         return rows
 
-    def _task_slot_row(self, wp, lease, slot_id: str) -> dict:
+    def _task_slot_row(self, lease, slot_id: str) -> dict:
         """슬롯 1개의 열거 행 — branch/head/dirty(`slot_git_status`) + 기록↔live(`compare_slot_git`)."""
         repo = getattr(lease, "repo", None) or slot_id.rpartition("/")[2].rsplit("_", 1)[0]
-        status = self._task_slot_git_status(wp, slot_id)
+        status = self._task_slot_git_status(slot_id)
         head = status.get("head")
         head_disp = head[:12] if isinstance(head, str) and head else "(미상)"
         return {
@@ -3333,25 +3268,21 @@ class PmBootstrap:
             "branch": status.get("branch") or "(detached)",
             "head": head_disp,
             "dirty": bool(status.get("dirty")),
-            "record_live": self._task_slot_record_live(wp, slot_id),
+            "record_live": self._task_slot_record_live(slot_id),
         }
 
-    def _task_slot_git_status(self, wp, slot_id: str) -> dict:
+    def _task_slot_git_status(self, slot_id: str) -> dict:
         """`slot_git_status(slot)`(branch·head·dirty) fail-soft 조회 — 조회 실패는 {}."""
         try:
-            return wp.slot_git_status(slot_id) or {}
+            return worktree_status.slot_git_status(pm_paths.home_at(REPO), slot_id) or {}
         except Exception as exc:  # noqa: BLE001 — 일반 상태 조회 실패는 빈 dict(행 표시 흡수).
-            if _is_engine_rev_skew(exc):
-                raise
             return {}
 
-    def _task_slot_record_live(self, wp, slot_id: str) -> str:
+    def _task_slot_record_live(self, slot_id: str) -> str:
         """기록↔live 상태 문자열 — `compare_slot_git` 소비 (ok|unrecorded|diverged|unknown·fail-soft)."""
         try:
-            result = wp.compare_slot_git(slot_id)
+            result = slot_snapshot.compare_slot_git(pm_paths.home_at(REPO), slot_id)
         except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 unknown(표시만).
-            if _is_engine_rev_skew(exc):
-                raise
             return "unknown"
         if result is None:
             return "unknown"
@@ -3377,23 +3308,14 @@ class PmBootstrap:
             )
 
     def _protected_warning(self, repo: str, branch: str | None) -> str | None:
-        """라이브 브랜치가 그 repo 보호목록(`board._repo_protected`)이면 그 브랜치명 (소프트).
+        """등록부 보호목록에 포함된 live 브랜치의 소프트 경고.
 
-        보호목록이 아니거나 브랜치 조회불가(detached)·board 부재/헬퍼 부재면 None(경고 생략).
-        board 직접 import 금지(touches 격리) — 주입/동적로드된 board 의 `_repo_protected` 를
-        getattr 로 쓴다(DI 보존). 파싱 실패는 fail-soft None(소프트 경고는 깨지지 않는다).
-        """
+areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해소와 일반 판독 실패는 경고를 생략한다."""
         if not branch:
             return None
-        board_mod = self._board or _load_board()
-        repo_protected = getattr(board_mod, "_repo_protected", None) if board_mod else None
-        if repo_protected is None:
-            return None
         try:
-            protected = repo_protected(repo)
+            protected = areas_store._repo_protected(pm_paths.home_at(REPO), repo)
         except Exception as exc:  # noqa: BLE001 — 일반 파싱 실패만 경고 생략(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
             return None
         return branch if branch in protected else None
 
@@ -3407,7 +3329,7 @@ class PmBootstrap:
 
         **비교 우선**: sidecar 를 읽어 resolve 된 목록과 같고 **훅이 배선돼 있으면** 아무것도 하지
         않는다(subprocess 0 — 정합이 정상 상태이므로 매 부트스트랩이 git config 를 때리지 않는다).
-        다를 때만 `pm_config._install_protected_hook(repo, ...)` 깔때기를 부른다. 비교 단계에서도
+        다를 때만 `repo_protection._install_protected_hook(home, repo)` 깔때기를 부른다. 비교 단계에서도
         현재 upstream provenance의 gate mode/test command를 매번 재해소해, 한 원자
         `gate-contract` sidecar 실값과 **둘 다** 대조한다. 이 축이 없으면 areas
         `test_cmd`만 바뀐 뒤 보호목록이 같을 때 stale command가 다음 pm_update까지
@@ -3417,13 +3339,11 @@ class PmBootstrap:
 
         **배선 축을 함께 본다(should-fix)**: `install_protected_hook` 은 sidecar 기록 뒤 bare
         `core.hooksPath` 배선을 하는데, 뒤가 실패하면 **sidecar 는 최신인데 훅은 안 걸린** 상태가
-        된다. 내용만 비교하면 이 상태에서 영구 침묵한다(보호가 꺼진 채). 판정은 `pm_config.
-        protected_hook_wired`(읽기 전용·`_load_tool` DRY 소비 — 복붙 금지)를 쓰고, `None`("모름")은
+        된다. 내용만 비교하면 이 상태에서 영구 침묵한다(보호가 꺼진 채). 판정은 `protected_hooks.protected_hook_wired`(읽기 전용)를 쓰고, `None`("모름")은
         드리프트로 치지 않는다(오탐 0).
 
-        보호목록 해소는 기존 `_protected_warning` 과 **같은 seam**(`board._repo_protected`·getattr
-        DI)을 쓴다. board/worktree_pool 부재·헬퍼 부재는 fail-soft False(진입 무영향·drift 판정 자체를
-        못 하므로 조용히 생략).
+        보호목록은 대상 Home의 areas_store로 읽고 보호 패키지를 직접 호출한다.
+        실제 판독·git 실패는 기존 fail-soft 처리를 유지한다.
 
         **fail-soft 는 조용하지 않다(must-fix)**: drift 를 *발견한 뒤* 재설치가 실패하면
         (`install_protected_hook` 은 bare 부재·`core.hooksPath` 설정 실패 시 **예외 없이 False**),
@@ -3434,20 +3354,11 @@ class PmBootstrap:
 
         True = 재설치를 실제로 수행하고 **성공**함.
         """
-        board_mod = self._board or _load_board()
-        repo_protected = getattr(board_mod, "_repo_protected", None) if board_mod else None
-        if repo_protected is None:
-            return False
-        wp = self._worktree_pool or _load_worktree_pool()
-        pm_config = _load_tool("pm_config")
-        install = getattr(pm_config, "_install_protected_hook", None) if pm_config else None
-        gate_config = getattr(pm_config, "_protected_push_gate_config", None) if pm_config else None
-        hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp else None
-        contract_name = getattr(wp, "PROTECTED_GATE_CONTRACT_NAME", None) if wp else None
-        if install is None or gate_config is None or hooks_dir is None or not contract_name:
-            return False
+        home = pm_paths.home_at(REPO)
+        hooks_dir = pm_paths.repo_hooks_dir(home)
+        contract_name = protected_hooks.PROTECTED_GATE_CONTRACT_NAME
         try:
-            protected = list(repo_protected(repo))
+            protected = list(areas_store._repo_protected(home, repo))
             sidecar = Path(hooks_dir) / repo / "protected"
             if not sidecar.is_file():
                 return False  # 훅 미설치 — 설치는 repo add/worktree add 축(여기선 drift 만).
@@ -3455,8 +3366,8 @@ class PmBootstrap:
                        for line in fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
                        if line.strip()]
             protected_ok = current == protected
-            gate_mode, test_cmd = gate_config(
-                repo, board=board_mod, report_downgrade=False)
+            gate_mode, test_cmd = repo_protection._protected_push_gate_config(
+                home, repo, report_downgrade=False)
             expected_contract = f"{gate_mode}\n{test_cmd}\n"
             contract_sidecar = Path(hooks_dir) / repo / str(contract_name)
             current_contract = (
@@ -3469,8 +3380,6 @@ class PmBootstrap:
             if protected_ok and contract_ok and wired is not False:
                 return False  # 정합 — subprocess 0.
         except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 생략(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
             return False
         # 여기부터는 **drift 확정** — 성공/실패 어느 쪽도 조용히 넘기지 않는다. 원인 2종을
         # 구별해 보고한다: 목록 / 증거 계약 / 배선. 복수 drift는 함께 표시.
@@ -3499,16 +3408,12 @@ class PmBootstrap:
             enforcement_state = (
                 "보호목록은 강제 중이지만 옛/미설치 증거 계약으로 동작합니다")
         try:
-            installed = bool(install(repo, board=board_mod, worktree_pool=wp))
+            installed = bool(repo_protection._install_protected_hook(home, repo))
         except Exception as exc:  # noqa: BLE001 — 실패해도 진입은 막지 않되 반드시 loud.
-            if _is_engine_rev_skew(exc):
-                raise  # 엔진 사본 불일치는 일반 설치 실패로 강등하지 않는다.
             installed = False
             reason = f"{exc.__class__.__name__}: {exc}"
         else:
-            failure_reason = getattr(
-                pm_config, "protected_hook_install_failure_reason", None)
-            reason = (failure_reason(repo) if failure_reason is not None else None)
+            reason = repo_protection.protected_hook_install_failure_reason(home, repo)
             reason = reason or "install_protected_hook이 원인 미해소 실패를 반환"
         if not installed:
             print(
@@ -3527,41 +3432,18 @@ class PmBootstrap:
         return True
 
     def _protected_retry_command(self, repo: str) -> str:
-        """보호목록 재실행 안내 커맨드 — `pm_config.protected_retry_command` 소비.
-
-        안내가 실제 상태를 반영해야 한다(폴백이면 `default`·명시면 그 목록) — 그 분기를 여기서
-        재구현하면 두 벌이 된다(`_protected_hook_wired` 동형·`_load_tool` DRY). pm_config/헬퍼
-        부재면 **구체 값 없는** 안내로 떨어진다 — 상태를 모르는 채 목록을 추측해 안내하면 그걸
-        실행한 사용자가 출처를 바꾸게 되므로, 값을 지어내지 않고 조회부터 안내한다.
-        """
-        pm_config = _load_tool("pm_config")
-        retry_fn = getattr(pm_config, "protected_retry_command", None) if pm_config else None
-        if retry_fn is not None:
-            try:
-                return retry_fn(repo)
-            except Exception as exc:  # noqa: BLE001 — 일반 실패만 아래 일반 안내로 강등.
-                if _is_engine_rev_skew(exc):
-                    raise
-                pass
-        return (f"{_CARD_TOOL_INVOKE}/pm_config.py repo protected {repo}"
-                "   (현재 상태 확인 후 재설정)")
+        """대상 Home의 보호목록 상태에 따른 재실행 명령."""
+        try:
+            return repo_protection.protected_retry_command(pm_paths.home_at(REPO), repo)
+        except Exception:
+            return (f"{_CARD_TOOL_INVOKE}/pm_config.py repo protected {repo}"
+                    "   (현재 상태 확인 후 재설정)")
 
     def _protected_hook_wired(self, repo: str) -> bool | None:
-        """bare `core.hooksPath` 배선 여부 — `pm_config.protected_hook_wired` 소비.
-
-        판정 로직을 재구현하지 않는다(`_load_tool` DRY 관용구 — 복붙 금지
-        원칙 동형). 주입된 worktree_pool 을 그대로 넘겨 hermetic 테스트에서도 같은 대역을 본다.
-        pm_config/헬퍼 부재·예외는 `None`("모름") — 호출부가 현행 동작(내용 비교만)으로 떨어진다.
-        """
-        pm_config = _load_tool("pm_config")
-        wired_fn = getattr(pm_config, "protected_hook_wired", None) if pm_config else None
-        if wired_fn is None:
-            return None
+        """대상 Home의 bare hooksPath를 보호 훅 모듈로 조회한다."""
         try:
-            return wired_fn(repo, worktree_pool=self._worktree_pool or _load_worktree_pool())
-        except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 "모름"(오탐 0).
-            if _is_engine_rev_skew(exc):
-                raise
+            return protected_hooks.protected_hook_wired(pm_paths.home_at(REPO), repo)
+        except Exception:
             return None
 
     def _safe_command_card(self) -> str | None:

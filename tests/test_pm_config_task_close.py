@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import argparse
 import importlib.util
 import json
@@ -19,6 +21,8 @@ from pathlib import Path
 import pytest
 
 from _manager_home import git_required, load_pool, make_pm_home, pm_config
+from pm_engine.infra import pm_paths
+from pm_engine.app import task_lifecycle
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -55,19 +59,19 @@ def _cli(home: Path, *args: str) -> subprocess.CompletedProcess:
         cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
-def _open_task(home: Path, name: str) -> None:
+def _open_task(home: Path, name: str, *, monkeypatch) -> None:
     """세션이 연 채 끝난 상태 — 실 엔진으로 열고 종료 기록을 남기지 않는다."""
-    pool = load_pool(home)
-    pool.bind_task(name, session="s-test")
+    pool = bind_pool(monkeypatch, load_pool(home))
+    task_lifecycle.bind_task(pm_paths.home_at(pool.REPO), name, session="s-test")
 
 
 # ── ① 기록만 닫는다 ─────────────────────────────────────────────────────────
 
 
-def test_close_flips_the_open_record_of_a_real_session(home):
+def test_close_flips_the_open_record_of_a_real_session(home, *, monkeypatch):
     """실 서브프로세스로 닫는다 — 열림에서 닫힘으로, 그 행 하나만."""
     pm_config(home, "task", "new", "sibling")
-    _open_task(home, "job")
+    _open_task(home, "job", monkeypatch=monkeypatch)
     assert [bool(t["session"]) for t in _ledger(home)["tasks"] if t["name"] == "job"] == [True]
 
     done = _cli(home, "task", "close", "job")
@@ -79,9 +83,9 @@ def test_close_flips_the_open_record_of_a_real_session(home):
     assert "복원" not in done.stdout or "복원 없음" in done.stdout
 
 
-def test_close_does_not_report_what_the_session_was_doing(home):
+def test_close_does_not_report_what_the_session_was_doing(home, *, monkeypatch):
     """이 경로는 기록만 닫는다 — claim 티켓·라운드 단계 같은 복원 정보를 함께 내지 않는다."""
-    _open_task(home, "job")
+    _open_task(home, "job", monkeypatch=monkeypatch)
 
     out = _cli(home, "task", "close", "job").stdout
 
@@ -89,10 +93,10 @@ def test_close_does_not_report_what_the_session_was_doing(home):
         assert forbidden not in out, f"닫기가 복원 정보를 냈다: {forbidden}"
 
 
-def test_close_touches_nothing_but_that_row(home):
+def test_close_touches_nothing_but_that_row(home, *, monkeypatch):
     """장부의 그 행 말고는 1바이트도 바꾸지 않는다 — 서술·log·board·슬롯 lease 전부."""
     pm_config(home, "task", "new", "job")
-    _open_task(home, "job")
+    _open_task(home, "job", monkeypatch=monkeypatch)
     watched = [
         home / ".project_manager" / ".local" / "tasks" / "job" / "pm_state.md",
         home / ".project_manager" / "wiki" / "log" / "current.md",
@@ -146,7 +150,11 @@ def test_close_writes_through_the_existing_primitive(pc, monkeypatch, capsys):
             calls.append(name)
             return type("_T", (), {"name": name, "session": "", "open": False})()
 
-    rc = pc.cmd_task_close(argparse.Namespace(name="job"), worktree_pool=_Pool())
+        def find_task_strict(self, value):
+            return self.find_task(value)
+
+    bind_pool(monkeypatch, _Pool())
+    rc = pc.cmd_task_close(argparse.Namespace(name="job"))
 
     assert rc == 0
     assert calls == ["job"], "기존 프리미티브 한 번이 아니다"
@@ -164,9 +172,9 @@ def test_close_takes_no_expiry_or_grace_argument(pc):
     assert parser.parse_args(["task", "close", "job"]).name == "job"
 
 
-def test_the_record_has_only_two_values(home):
+def test_the_record_has_only_two_values(home, *, monkeypatch):
     """세 번째 상태값(closed·stale 같은)을 쓰지 않는다 — 값은 true/false 뿐이다."""
-    _open_task(home, "job")
+    _open_task(home, "job", monkeypatch=monkeypatch)
     _cli(home, "task", "close", "job")
 
     row = _ledger(home)["tasks"][0]

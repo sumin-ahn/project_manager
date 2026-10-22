@@ -23,6 +23,8 @@ worktree_pool/board/git/log 를 DI mock 으로 hermetic 하게 구동한다(실 
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import argparse
 import importlib.util
 import inspect
@@ -300,7 +302,7 @@ class _FakeWorktreePool:
                 "children": [], "stashes": 0, "submodules": [], "dirty": False}
 
 
-def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None):
+def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, monkeypatch):
     """격리된 PmBootstrap — board/git/log/pm_state 는 hermetic stub(실 자산 미접촉)."""
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
@@ -321,13 +323,14 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None):
             return 0, "abc123 commit subject\n"
         return 0, ""
 
+    bind_pool(monkeypatch, worktree_pool)
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=worktree_pool,
+
         pm_state_file=pm_state_file,
     )
 

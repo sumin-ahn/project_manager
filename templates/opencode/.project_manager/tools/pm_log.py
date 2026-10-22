@@ -54,6 +54,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
 from pm_engine.infra import areas_store, console, delegate_ledger, fs, log_store, pm_paths, raw_output, repo_files  # noqa: E402
+from pm_engine.infra import task_store
 _load_module_from_path = repo_files.load_module
 
 
@@ -618,29 +619,11 @@ def _ledger_section(pm_home: Path, task: str) -> str:
 
 
 def _todo_section(pm_home: Path, task: str) -> str:
-    """이 task 의 열린 todo — 매 턴 주입되는 "지금 무엇을 하는 중인가" 의 단일 진실.
+    """대상 Home의 열린 todo 조회와 표시.
 
-    task 별 파일(`.local/tasks/<task>/todo.json`)을 `worktree_pool.read_task_todos` 로 읽고
-    `format_todo_line` 으로 렌더한다(표시 문구 사본 0 — CLI `task todo list`·부트스트랩 dump 와
-    같은 함수). 열린 todo 가 없으면 그 사실과 등록 경로를 적는다: 그 상태에서는 파일을 고칠
-    때마다 쓰기 판정이 경고를 붙인다(막지는 않는다).
-
-    옛 `pm_state 머리` 절을 대체한다 — 그 절은 손으로 쓰는 서술이라 갱신이 밀리면 재주입이
-    조용히 낡은 사실을 실어 날랐다. 이 절의 내용은 기계가 쓰는 자리 하나에서만 온다.
-
-    엔진 사본이 없는 홈에서는 이 절만 1줄로 접는다(진행 중 작업 절과 같은 접기 함수) — 이
-    재주입은 매 압축마다 도는 자리라 절 하나 때문에 payload 전체가 죽으면 안 된다. 없는 파일은
-    예외로 받을 일이 아니라 먼저 보면 되는 조건이다. 사본이 **있는데 낡은** 형상은 그대로
-    올린다 — 같은 `pm-update` 가 함께 깔아 놓는 두 파일이라 시대차는 접어 둘 상태가 아니다.
-    """
-    pool_path = Path(pm_home) / ".project_manager" / "tools" / "worktree_pool.py"
-    if not pool_path.is_file():
-        return _section_query_failure_line(
-            f"엔진 사본 없음 — {pool_path}",
-            heading="## 열린 todo (파일 실측)", label="열린 todo 절",
-        )
-    wp = _load_worktree_pool(pm_home)
-    todos = wp.read_task_todos(task)
+실행 패키지의 task_store로 대상 Home 데이터를 읽는다. 대상 홈의 엔진 파일은 실행하지 않는다.
+없는 todo는 빈 목록으로 표시하고 손상 JSON·스키마 오류는 호출부로 전파한다."""
+    todos = task_store.read_task_todos(pm_paths.home_at(Path(pm_home)), task)
     if not todos:
         return (
             "## 열린 todo (파일 실측)\n"
@@ -648,7 +631,7 @@ def _todo_section(pm_home: Path, task: str) -> str:
             " (등록 전에 파일을 고치면 쓰기 판정이 경고를 붙인다).\n"
         )
     lines = [
-        f"- {wp.format_todo_line(todo)}"
+        f"- {task_store.format_todo_line(todo)}"
         for todo in todos[:_TODO_MAX_SHOWN]
     ]
     hidden = len(todos) - len(lines)
@@ -672,17 +655,6 @@ def _hearsay_section() -> str:
     return SNAPSHOT_HEARSAY_WARNING
 
 
-def _load_worktree_pool(pm_home: Path):
-    """그 PM 홈의 worktree_pool 을 in-process 로드 — 열린 todo 조회·표시 전용.
-
-    **그 홈의 사본**을 부른다(형제 사본이 아니라). 할 일 파일 위치는 모듈이 자기 파일 위치에서
-    푸는 값이라, 이 파일 옆의 사본을 쓰면 다른 홈의 할 일을 읽는다.
-
-    todo 한 줄의 생김새도 저장소 주인 모듈이 소유한다 — CLI(`task todo list`)·부트스트랩 dump·
-    이 재주입이 같은 함수를 부르므로 문구 사본이 없다.
-    """
-    path = Path(pm_home) / ".project_manager" / "tools" / "worktree_pool.py"
-    return _load_module_from_path(path, "worktree_pool.py", verifier=_verify_engine_rev)
 
 
 # raw 장부 필드·예외 메시지처럼 신뢰 경계 밖 값이 CR/LF·제어문자를 실어 절의 물리 줄 수

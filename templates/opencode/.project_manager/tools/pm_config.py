@@ -5,8 +5,8 @@ multi-PM = N 세션 × M repo 한 개념— *수가 1이냐 더냐*. 이 파사�
 repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯 대여·반납(`alloc`·`release`)을
 맡는다(다중-사람 협업 아님). 부트스트랩·핸드오프는 슬롯을 빌리거나 반납하지 않는다.
 
-각 서브커맨드는 엔진(board.py / worktree_pool.py / pm_update.py)을 호출하는 *얇은
-배선*이다 — 자체 로직 0. 디스패처가 엔진 호출의 단일 지점이다.
+각 서브커맨드는 board·pm_update CLI와 pm_engine 패키지를 호출한다.
+보호 정책·훅·git 조회는 repo_protection·protected_hooks·git·areas_store가 소유한다.
 
 사용:
     pm-config init [<board init 인자>]                     # clone 당 1회 셋업 (board.py init 흡수)
@@ -39,21 +39,21 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1 ~ N×M 공용).
   - repo add  → board.areas_append(per-repo 레지스트리 줄) + `git clone --bare`
                 로 `.repos/<name>.git`(worktree 풀 공유 .git 원).
-  - repo protected → (조회) board._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 정합 /
+  - repo protected → (조회) areas_store._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 정합 /
                 (설정) board.areas_set_cell(areas.md 단일 진실·board_lock in-place) →
-                worktree_pool.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
+                repo_protection → protected_hooks.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
   - repo list → areas_store._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
   - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 게이트 뒤
-                worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
+                pm_engine.app.worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
                 `--task <task>` 면 owner_task 로 넘겨 생성 직후 그 슬롯 task 명의 대여(ⓓB).
-  - status|whoami → worktree_pool.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
-  - alloc    → worktree_pool.alloc(repo, owner_task=<task>) — 항상 신규 idle 최소 번호 대여(멱등
+  - status|whoami → pool_store.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
+  - alloc    → pm_engine.app.worktree_pool.alloc(repo, owner_task=<task>) — 항상 신규 idle 최소 번호 대여(멱등
                같은 repo 복수 보유). 풀 소진(NeedsCreate)이면 자동 생성 안 하고
                `worktree add --task` 승인 요청(생성+대여 한 흐름·ⓓB·물리층=사용자).
-  - release → worktree_pool.release(--task 면 owner_task 소유검사·--force 면 force_release) — 수동 반납/강제만.
-  - task prefix → board._validate_prefix(입력 sanity·소비 grammar 단일 진실) → worktree_pool.set_task_prefix
+  - release → pm_engine.app.worktree_pool.release(--task 면 owner_task 소유검사·--force 면 force_release) — 수동 반납/강제만.
+  - task prefix → board._validate_prefix(입력 sanity·소비 grammar 단일 진실) → task_lifecycle.set_task_prefix
                 (장부 flock/스키마 단일 소유·`none`=해제·직접 JSON write 금지).
-  - task end → board.scan_task_tickets(claimed 소진 게이트) → worktree_pool.end_task(dirty 게이트·
+  - task end → board.scan_task_tickets(claimed 소진 게이트) → task_lifecycle.end_task(dirty 게이트·
                일괄 idle 반납·서술 폴더 `_ended/<task>-<날짜>/` 아카이브 이동·삭제 아님).
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
@@ -87,7 +87,6 @@ import datetime
 import inspect
 import json
 import os
-import re
 import shutil
 import shlex
 import subprocess
@@ -101,12 +100,23 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema, upstream_rules  # noqa: E402
-from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, python_env, repo_files  # noqa: E402
+from pm_engine.domain import areas_rules, conf_schema, upstream_rules  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
-from urllib.parse import urlsplit
+from pm_engine.app import branch_checkout, repo_protection
+from pm_engine.infra import branch_store, git, protected_hooks
+from pm_engine.infra import pool_store
+from pm_engine.infra import sparse_checkout
+from pm_engine.app import task_lifecycle
+from pm_engine.domain import task_rules
+from pm_engine.infra import task_store
+from pm_engine.infra import worktree_git
+from pm_engine.infra import worktree_paths
+import pm_engine.app.worktree_pool
+from pm_engine.domain import worktree_records
+from pm_engine.app import worktree_status
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py 와 동일 앵커 관례
 # (어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
@@ -114,7 +124,6 @@ REPO = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 REPOS_DIR = REPO / ".repos"   # worktree 풀이 공유하는 bare .git 원
 
-GIT_TIMEOUT_SECONDS = 600   # clone 은 네트워크 — 부트스트랩/worktree git 보다 넉넉히.
 
 # git argv → (returncode, stdout). DI seam 의 타입 (pm_import.GitRunner·worktree_pool 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
@@ -204,34 +213,6 @@ def _runtime_skill_entry(skill: str) -> str:
     return f"{prefix}{skill}"
 
 
-def _real_clone_runner() -> GitRunner:
-    """`git clone ...` 을 실행하는 GitRunner (fail-soft). argv 는 clone 인자 그대로.
-
-    clone 은 `-C <dir>` 가 아니라 `git clone <url> <dest>` 형태라 별도 runner 로 둔다.
-    git 바이너리 부재(shutil.which)·예외는 (1, stderr-or-"") 로 감싼다 — 호출부가 rc 로
-    판정. 인코딩은 엔진 관례대로 UTF-8(한글 경로·메시지 안전).
-    """
-    git_binary = shutil.which("git")
-
-    def runner(argv: list) -> tuple[int, str]:
-        if git_binary is None:
-            return 1, "git 바이너리를 찾을 수 없음 (PATH)."
-        try:
-            result = subprocess.run(
-                [git_binary, *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=GIT_TIMEOUT_SECONDS,
-            )
-            return result.returncode, (result.stdout or "") + (result.stderr or "")
-        except Exception as exc:  # noqa: BLE001 — fail-soft: rc!=0 로 호출부에 위임.
-            return 1, str(exc)
-
-    return runner
-
-
 def _default_session(*, identity=None) -> str | None:
     """세션 식별자 — `lease_store.session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) > lease 장부
@@ -267,11 +248,11 @@ def _default_session(*, identity=None) -> str | None:
 def _local_conf_user() -> str | None:
     """`.project_manager/local.conf` 의 `identity.user=` (없거나 OSError → None).
 
-    `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`conf_store`)가 하고 이 함수는
+    `repo_protection._local_conf_test_cmd`와 동형 — 해소는 공용 로더(`conf_store`)가 하고 이 함수는
     키 이름과 빈값→None 관례만 소유한다(`conf_store.local_config(home).get("identity.user")` 와 동일 의미).
     부재/읽기실패는 None(폴백)이고, 구표기 키 잔존은 소비 지점 계약대로 fail-loud 다.
     """
-    return _local_conf_value("identity.user") or None
+    return repo_protection._local_conf_value(pm_paths.home_at(REPO), "identity.user") or None
 
 
 def _git_config_email() -> str | None:
@@ -377,208 +358,6 @@ def _distinct_area_owners() -> int:
                 if owner})
 
 
-def _local_conf_test_cmd() -> str | None:
-    """`.project_manager/local.conf` 의 `test.cmd=` (없거나 OSError → None).
-
-    `_local_conf_user` 와 동형 — board.py 를 import 하지 않으므로
-    touches 격리) `conf_store.local_config(home).get("test.cmd")` 와 *동일 의미*를 stdlib 로 자체
-    구현한다. worktree add 빌드명령 프롬프트의 기본값(`regression._test_cmd` 최종 폴백 레이어와
-    동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
-    """
-    return _local_conf_value("test.cmd")
-
-
-_PROTECTED_GATE_RELEASE = "release"
-_PROTECTED_GATE_SELF_TEST = "self-test"
-
-
-def _local_conf_value(key: str) -> str | None:
-    """`local.conf` 한 키의 마지막 값 (부재/OSError → None).
-
-    `conf_store.local_config()`와 같은 **last-wins**다. 중복 키의 마지막 값이
-    비어 있으면 앞의 값을 해제한 것으로 보아 `""`를 반환한다. 동일 파일을
-    `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
-    """
-    conf_file = REPO / ".project_manager" / "local.conf"
-    return conf_store.load_checked(conf_file).get(key)
-
-
-def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
-    """Git remote를 transport class + endpoint/path identity로 정규화한다.
-
-    판정 축(코드·테스트 공통 표):
-
-    ======================  ================================================
-    입력 축                 identity 규칙
-    ======================  ================================================
-    ssh/https/scp           같은 ``network`` class로 정규화
-    file://                 ``file`` class를 보존(network과 절대 동일 아님)
-    user, host case         user 제거, host 소문자화
-    host / port             독립 tuple 필드(IPv6 콜론과 port 경계 보존)
-    default port            ssh:22/https:443은 None; non-default는 int로 보존
-    path                    선행/후행 slash·마지막 ``.git`` 정규화
-    ======================  ================================================
-
-    따라서 ``ssh://host:22/a/b``·``git@host:a/b.git``·``https://host/a/b``는
-    같지만, ``file://host/a/b``는 endpoint 문자열이 같아도 다른 identity다.
-    """
-    raw = value.strip().rstrip("/")
-    # SCP-like IPv6는 `user@[::1]:path`처럼 host의 콜론을 대괄호로 감싼다. 일반
-    # `host:path`와 별도 패턴으로 먼저 분리해야 `::1` 일부가 path로 새지 않는다.
-    scp = None
-    if "://" not in raw:
-        scp = re.match(r"^(?:[^@/]+@)?\[([^\]]+)\]:(.+)$", raw)
-        if scp is None:
-            scp = re.match(r"^(?:[^@/]+@)?([^:/]+):(.+)$", raw)
-    if scp is not None:
-        host, path = scp.groups()
-        normalized_path = path.removesuffix(".git").strip("/")
-        return ("network", host.lower(), None, normalized_path)
-    if "://" in raw:
-        parsed = urlsplit(raw)
-        scheme = parsed.scheme.lower()
-        normalized_path = parsed.path.removesuffix(".git").strip("/")
-        try:
-            host = (parsed.hostname or "").lower()
-            port = parsed.port
-        except ValueError:
-            # 잘못된 authority를 유사 remote로 잘못 합치지 않는 안전 방향 폴백.
-            authority = parsed.netloc.rsplit("@", 1)[-1].lower()
-            return (f"invalid-{scheme}", authority, None, normalized_path)
-        default_port = {"ssh": 22, "https": 443}.get(scheme)
-        normalized_port = None if port is None or port == default_port else port
-        transport = "network" if scheme in {"ssh", "https"} else scheme
-        # host와 port를 tuple의 독립 필드로 둔다. 문자열 `host:port` 결합은 IPv6
-        # host 자체의 콜론과 경계가 사라져 `[::1]:2222`와 `[::1:2222]`를 합친다.
-        return (transport, host, normalized_port, normalized_path)
-    return ("path", "", None, raw.removesuffix(".git"))
-
-
-def _repo_registry_git(repo: str, *, board=None) -> str | None:
-    """areas의 repo git remote 값. helper/파서 부재·실패·빈 값은 None."""
-    board_mod = board or _load_module("board", "board.py")
-    getter = getattr(board_mod, "_areas_git_url", None) if board_mod else None
-    if getter is not None:
-        try:
-            value = getter(repo)
-        except Exception as exc:  # noqa: BLE001 — 아래 parser/None 폴백(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
-            value = None
-        if value:
-            return value
-    try:
-        _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
-    except Exception:  # noqa: BLE001 — provenance 미해소로 수렴.
-        rows = []
-    for row in rows:
-        if row.get("repo") == repo and row.get("git"):
-            return row["git"]
-    return None
-
-
-def _protected_push_gate_config(
-    repo: str, *, board=None, report_downgrade: bool = True,
-) -> tuple[str, str]:
-    """repo 보호 push의 증거 계약 `(mode, self_test_cmd)`를 provenance로 해소한다.
-
-    PM 홈 `local.conf upstream.path=`이 이 홈의 canonical `work/<repo>_<N>` 슬롯 자체거나,
-    URL identity가 areas의 repo remote와 같으면 프레임워크 자기 repo라 기존 release
-    livegate를 유지한다. 다른 repo면 areas `test_cmd`(없으면 local.conf/default)로 자기 검증한다.
-    upstream/registry provenance를 판별할 수 없으면 사용자 통제 밖 조건으로 영구 차단하지
-    않고 adopter `self-test`로 강등한다. 증거 명령 자체는 그대로 fail-closed다.
-    """
-    test_cmd = _resolve_repo_test_cmd(repo)
-    upstream = _local_conf_value("upstream.path")
-    if not upstream:
-        if report_downgrade:
-            print(
-                f"⚠ 보호 push gate 강등({repo}): local.conf upstream.path 축 미해소 — "
-                "release 대신 self-test를 사용한다; upstream을 설정하라.",
-                file=sys.stderr,
-            )
-        return _PROTECTED_GATE_SELF_TEST, test_cmd
-
-    # URL/scp-like upstream 판별은 upstream_rules.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
-    # 따로 들면 `host:path` 같은 지원 형식이 경로로 갈라져 release gate가 빠진다.
-    kind = upstream_rules.classify_upstream(upstream)
-    if kind == "url":
-        repo_git = _repo_registry_git(repo, board=board)
-        if not repo_git:
-            if report_downgrade:
-                print(
-                    f"⚠ 보호 push gate 강등({repo}): areas.md git 축 미해소 — "
-                    "release 대신 self-test를 사용한다; 해당 repo의 git URL을 등록하라.",
-                    file=sys.stderr,
-                )
-            return _PROTECTED_GATE_SELF_TEST, test_cmd
-        mode = (_PROTECTED_GATE_RELEASE
-                if _git_remote_identity(upstream) == _git_remote_identity(repo_git)
-                else _PROTECTED_GATE_SELF_TEST)
-        return mode, test_cmd
-
-    # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 호출부(`_install_protected_hook`)
-    # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
-    # Windows "stat: embedded null character in path") 입력을 안 실으면 진단이 남지 않는다.
-    try:
-        candidate = pm_paths._expanded_user_path(upstream)
-        if not candidate.is_absolute():
-            candidate = REPO / candidate
-        candidate = candidate.resolve()
-    except (OSError, RuntimeError, ValueError) as exc:
-        if _is_engine_rev_skew(exc):
-            raise
-        raise RuntimeError(
-            f"upstream 경로 해소 실패({upstream}) — {type(exc).__name__}: {exc}") from exc
-    work_root = (REPO / "work").resolve()
-    name, sep, slot_no = candidate.name.rpartition("_")
-    if candidate.parent == work_root and sep and name == repo and slot_no.isdigit():
-        return _PROTECTED_GATE_RELEASE, test_cmd
-    return _PROTECTED_GATE_SELF_TEST, test_cmd
-
-
-def _default_test_cmd() -> str:
-    """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 `python_env` 기본.
-
-    regression._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
-    동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
-    프롬프트 표시값 resolve 의 폴백.
-    """
-    configured = _local_conf_test_cmd()
-    if configured:
-        return configured
-    return python_env.default_pytest_cmd()
-
-
-def _resolve_repo_test_cmd(repo: str) -> str:
-    """프롬프트 `[기본: <X>]` 의 X — 그 repo 가 Enter 시 실제로 폴백할 test_cmd.
-
-    regression._test_cmd 의 해소 체인을 *그 repo 한정으로* 재현한다 (areas 파서
-    `areas_store._parse_areas`/`_areas_row_for_prefix` 재사용):
-      1. **활성 repo 의 areas.md test_cmd** — 그 repo(=prefix)의 레지스트리 행에 비어
-         있지 않은 `test_cmd` 가 있으면 그것(per-repo 스택·`go test ./...` 등).
-      2. **최종 폴백** — areas 미등록·빈 값이면 `local.conf test.cmd` 또는 `pytest -q`.
-    (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
-    보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
-    """
-    home = pm_paths.home_at(REPO)
-    try:
-        _header, rows = areas_store._parse_areas(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 아래 폴백.
-        rows = []
-    for row in rows:
-        if row.get("repo") == repo and row.get("test_cmd"):
-            return row["test_cmd"]
-    # 구 3칼럼 registry에는 repo 칼럼이 없으므로 prefix lookup을 하위호환으로 유지한다.
-    try:
-        row = areas_store._areas_row_for_prefix(home, repo)
-    except Exception:  # noqa: BLE001 — areas 실패는 최종 폴백.
-        row = None
-    if row and row.get("test_cmd"):
-        return row["test_cmd"]
-    return _default_test_cmd()
-
-
 def _resolve_repo_base(repo: str, *, board=None) -> str | None:
     """그 repo 의 areas.md `base` 브랜치 — 등록 칸이 비었으면 None.
 
@@ -594,386 +373,11 @@ def _resolve_repo_base(repo: str, *, board=None) -> str | None:
     return board_mod._repo_base(repo)
 
 
-# 보호 브랜치 default — board.DEFAULT_PROTECTED 와 *동형* 폴백. board/헬퍼 부재(구
-# board)·파싱 실패 시 board 를 못 읽으므로 여기서 같은 안전 기본값을 보장한다(보호는 안전
-# 기본값이 있어야 — 미해소여도 main 류를 막는다). board 가 있으면 board._repo_protected 가
-# 권위(areas override 반영)이고, 이 상수는 board 부재 폴백 전용이다.
-_DEFAULT_PROTECTED = ("main", "master", "develop")
-
-# `_install_protected_hook` 는 repo add/worktree add를 깨지 않기 위해 bool fail-soft를
-# 유지한다. 단, 그 과정에서 raw 예외 원인을 잃으면 bootstrap/reporting이 모든
-# 실패를 "bare 부재" 로 오도한다. CLI는 단일 process에서 순차 설치하므로 repo별
-# 최신 실패 원인을 함께 기록하고, 공개 helper로 동일 깔때기의 호출자가 소비한다.
-_PROTECTED_HOOK_FAILURE_REASONS: dict[str, str] = {}
-
-
-def protected_hook_install_failure_reason(repo: str) -> str | None:
-    """최근 보호 훅 중앙 설치 실패 원인(성공/미시도면 None)."""
-    return _PROTECTED_HOOK_FAILURE_REASONS.get(repo)
-
-
-def _resolve_repo_protected(repo: str, *, board=None) -> list[str]:
-    """그 repo 의 보호 브랜치 목록. board 부재/파싱 실패 → `_DEFAULT_PROTECTED`.
-
-    `cmd_repo_add`(sidecar 채움·훅 설치)·`cmd_worktree_add`(재설치)가 `install_protected_hook`
-    에 전달할 목록을 resolve 한다 — areas.md 의 그 repo `protected` 칼럼(`board._repo_protected`)
-    을 읽어 미지정/구 스키마면 default(main/master/develop) 폴백. board 가 권위(areas override
-    반영)이고, board/헬퍼 부재·파싱 실패만 여기 default 로 강등한다(크래시 0).
-
-    board 직접 import 금지 — `_resolve_repo_test_cmd` 와 동형으로
-    `_load_module` DI + board 의 `_repo_protected` 헬퍼를 getattr 로 쓴다.
-    """
-    board_mod = board or _load_module("board", "board.py")
-    repo_protected = getattr(board_mod, "_repo_protected", None) if board_mod else None
-    if repo_protected is None:
-        return list(_DEFAULT_PROTECTED)
-    try:
-        return repo_protected(repo)
-    except Exception as exc:  # noqa: BLE001 — areas 실패는 default 폴백(단 skew 재전파).
-        if _is_engine_rev_skew(exc):
-            raise
-        return list(_DEFAULT_PROTECTED)
-
-
-def _install_protected_hook(repo: str, *, board=None, worktree_pool=None) -> bool:
-    """그 repo 의 보호 브랜치 훅(pre-push·pre-commit)을 (재)설치한다 — repo add·worktree add·
-    `pm_update` sync 후 전수 재설치 공용.
-
-    보호목록과 형상별 증거 계약(`_protected_push_gate_config`)을 해소해
-    `worktree_pool.install_protected_hook(repo, protected, gate_mode=, test_cmd=)` 에 전달한다 —
-    훅+sidecar+bare `core.hooksPath` wiring(멱등·자가치유). **회사 repo 무영향** — 모든 write 는 `.project_manager
-    /.local` + bare config 1줄(client-side).
-
-    **fail-soft·best-effort** — worktree_pool 부재/`install_protected_hook` 미존재(구 엔진)/
-    예외는 False(보호훅은 *추가 가드*이지 repo add/worktree add 의 핵심 부작용이
-    아니다 → 훅 설치 실패가 등록/슬롯 생성을 깨면 안 된다). 단 fail-soft가
-    **원인 소실**은 뜻하지 않으므로 `protected_hook_install_failure_reason`에
-    실제 예외 타입/메시지 또는 installer False 사유를 기록한다. bare 부재 시 install이
-    no-op False. 설치 성공 시 True. board 직접 import 금지— `_load_module` DI.
-    """
-    _PROTECTED_HOOK_FAILURE_REASONS.pop(repo, None)
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    install = getattr(wp, "install_protected_hook", None) if wp else None
-    if install is None:
-        _PROTECTED_HOOK_FAILURE_REASONS[repo] = (
-            "worktree_pool.install_protected_hook 헬퍼 부재(구 엔진 또는 로드 실패)")
-        return False  # 구 엔진(헬퍼 부재)/wp 부재 — fail-soft(보호훅은 추가 가드).
-    try:
-        protected = _resolve_repo_protected(repo, board=board)
-        gate_mode, test_cmd = _protected_push_gate_config(repo, board=board)
-        installed = bool(install(repo, protected, gate_mode=gate_mode, test_cmd=test_cmd))
-        if not installed:
-            _PROTECTED_HOOK_FAILURE_REASONS[repo] = (
-                "install_protected_hook이 False를 반환(bare 미러 부재 또는 "
-                "bare core.hooksPath 설정 실패)")
-        return installed
-    except Exception as exc:  # noqa: BLE001 — 등록/슬롯 생성은 유지하되 원인은 기록.
-        if _is_engine_rev_skew(exc):
-            raise  # 엔진 사본 불일치는 설치 오류가 아니므로 fail-soft 대상이 아니다.
-        _PROTECTED_HOOK_FAILURE_REASONS[repo] = f"{type(exc).__name__}: {exc}"
-        return False
-
-
 # ── 보호목록 설정 채널 ────────────────────────────────────
 # areas.md `protected` 칼럼이 **단일 진실**이고 훅 sidecar(`.local/repo-hooks/<repo>/protected`)는
 # 순수 파생 캐시다. 값 변경은 areas → sidecar **순서 고정**(역순이면 훅이 비준되지 않은 목록을
 # 강제한다). "보호 없음" 은 표현 불가 — 빈 값은 항상 `DEFAULT_PROTECTED` 폴백이므로 빈 문자열
 # 지정은 거부하고 `default` 리터럴(칼럼 비움)로 안내한다.
-
-_PROTECTED_DEFAULT_LITERAL = "default"   # 칼럼 비움 = DEFAULT_PROTECTED 폴백(해제 아님).
-
-
-def _validate_protected_tokens(value: str) -> tuple[list[str] | None, str]:
-    """`"main, release"` → `(["main", "release"], "")` · 거부면 `(None, 사유)`.
-
-    **형식만** 본다 — 브랜치 실재는 검증하지 않는다(아직 없는 `release` 를 미리 보호하는 게
-    정상적인 쓰임이다). 거부 대상:
-      - 빈 문자열/공백만 — "보호 없음" 은 표현 불가(`default` 리터럴로 안내).
-      - 빈 토큰(선/후행 쉼표·연속 쉼표) — areas 셀에 빈 자리를 만든다.
-      - 토큰 내부 공백 — areas.md 는 공백-구분 표라 셀/줄이 깨진다.
-      - `|` — markdown 표 구분자(줄 corruption).
-    """
-    if not value.strip():
-        return None, (
-            "빈 보호목록은 지정할 수 없다 — 보호는 안전 기본값이 있어야 한다(\"보호 없음\"은 "
-            f"표현 불가). 기본값(main/master/develop)으로 되돌리려면 `{_PROTECTED_DEFAULT_LITERAL}` "
-            "리터럴을 쓰라."
-        )
-    tokens: list[str] = []
-    for raw in value.split(","):
-        token = raw.strip()
-        if not token:
-            return None, (
-                f"보호목록 {value!r} 에 빈 토큰이 있다(선/후행 쉼표·연속 쉼표) — "
-                "`main,develop` 처럼 쉼표로만 구분하라."
-            )
-        if any(ch.isspace() for ch in token):
-            return None, (
-                f"보호 브랜치 {token!r} 에 공백이 있다 — areas.md 는 공백-구분 표라 줄이 깨진다."
-            )
-        if "|" in token:
-            return None, (
-                f"보호 브랜치 {token!r} 에 `|` 가 있다 — markdown 표 구분자라 areas.md 줄이 깨진다."
-            )
-        tokens.append(token)
-    return tokens, ""
-
-
-def _protected_sidecar_path(repo: str, *, worktree_pool=None) -> Path | None:
-    """그 repo 의 훅 sidecar 경로 `.local/repo-hooks/<repo>/protected` (미해소 → None).
-
-    훅이 *실제로 읽는* 파일이다(areas.md 가 아니라). worktree_pool 직접 import 금지
-    isolation) — `_load_module` DI + `REPO_HOOKS_DIR` 를 getattr 로 쓴다. worktree_pool/상수
-    부재(구 엔진)는 None(정합 판정 생략·fail-soft).
-    """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp is not None else None
-    if hooks_dir is None:
-        return None
-    return Path(hooks_dir) / repo / "protected"
-
-
-def _read_protected_sidecar(repo: str, *, worktree_pool=None) -> list[str] | None:
-    """훅 sidecar 의 실 보호목록(줄당 1브랜치). 미해소/미설치/읽기실패 → None (fail-soft)."""
-    path = _protected_sidecar_path(repo, worktree_pool=worktree_pool)
-    if path is None or not path.is_file():
-        return None
-    try:
-        text = fs.read_text_shared(path, encoding="utf-8")
-    except OSError:
-        return None
-    return [line.strip() for line in text.splitlines() if line.strip()]
-
-
-def protected_hook_wired(
-    repo: str,
-    *,
-    worktree_pool=None,
-    git_runner: GitRunner | None = None,
-) -> bool | None:
-    """bare `core.hooksPath` 가 이 repo 훅 디렉토리를 가리키는가 — 판정 불가면 None.
-
-    **왜 sidecar 만으로는 부족한가**: `install_protected_hook` 은  훅 본문  sidecar 기록
-    bare `core.hooksPath` 배선 순서다. 이 실패하면 **sidecar 는 최신인데 훅은 아예 안 걸린**
-    상태가 된다 — 그런데 sidecar 내용만 보면 "정합" 이라 조회는 `✓` 를 내고 bootstrap reconcile 은
-    영구 침묵한다. 이 티켓이 닫으려던 "값-연결 끊김을 정합하다고 거짓 보고" 와 같은 클래스라
-    **표시/판정 층에서** 이 축을 함께 본다.
-
-    **읽기 전용** — `git -C <bare> config --get core.hooksPath` 를 읽어 `REPO_HOOKS_DIR/<repo>` 와
-    같은 경로인지 비교만 한다(`install_protected_hook` 은 호출하지 않는다·시그니처/본문 불변).
-    경로 비교는 양쪽 `Path.resolve()` — 설치측이 `hook_dir.resolve()` 를 기록하므로 심링크/상대
-    표기 차이를 흡수한다.
-
-    반환:
-      - `True`  — 배선됨(훅이 실제로 발화한다).
-      - `False` — hooksPath 가 비었거나 **다른 디렉토리**를 가리킨다(= 훅 미배선·보호 꺼짐).
-      - `None`  — 판정 불가(worktree_pool/상수 부재·bare 부재·git 실패). 오탐 금지 — 호출부는
-        None 을 "모름" 으로 표시하고 `False` 로 단정하지 않는다.
-
-    worktree_pool 직접 import 금지— `_load_module` DI + `REPO_HOOKS_DIR`/`bare_repo_path`
-    를 getattr 로 쓴다. **모듈 공개(`_` 없음)** — pm_bootstrap 의 phase-0 reconcile 이 같은 판정을
-    복붙하지 않고 이 함수를 소비한다(두 벌 금지).
-    """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp is not None else None
-    bare_path_fn = getattr(wp, "bare_repo_path", None) if wp is not None else None
-    if hooks_dir is None or bare_path_fn is None:
-        return None
-    try:
-        bare = Path(bare_path_fn(repo))
-        if not bare.exists():
-            return None            # 게이트할 bare 없음 — 배선 여부를 논할 수 없다.
-        runner = git_runner or _real_clone_runner()
-        rc, out = runner(["-C", str(bare), "config", "--get", "core.hooksPath"])
-        if rc != 0:
-            # `--get` 은 키 부재에도 rc≠0(=1) 이다. 키 부재 = 미배선이 맞지만, git 자체가 못
-            # 도는 경우(바이너리 부재 등)와 구별이 안 되므로 bare 프로브로 갈라낸다.
-            probe_rc, _probe = runner(
-                ["-C", str(bare), "rev-parse", "--is-bare-repository"])
-            return False if probe_rc == 0 else None
-        configured = out.strip().splitlines()[0].strip() if out.strip() else ""
-        if not configured:
-            return False
-        return Path(configured).resolve() == (Path(hooks_dir) / repo).resolve()
-    except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 None(단 skew 재전파).
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-
-
-def _areas_protected_cell(repo: str) -> str | None:
-    """areas.md 그 repo 행의 **raw** `protected` 셀 — 행 부재 → None (출처 판정용).
-
-    `_resolve_repo_protected`(폴백 적용된 *실효값*)와 달리 "명시했나 / 비었나 / 행이 없나"를
-    구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. 파싱 실패 → None.
-    """
-    try:
-        _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
-    except Exception:  # noqa: BLE001 — 일반 areas 실패만 None.
-        return None
-    for row in rows:
-        if row.get("repo") == repo:
-            return row.get("protected") or ""
-    return None
-
-
-def _bare_missing_branches(
-    repo: str,
-    branches: list[str],
-    *,
-    clone_runner: GitRunner | None = None,
-    repos_dir: Path | None = None,
-) -> list[str]:
-    """`branches` 중 `.repos/<repo>.git` 에 없는 것들 (경고 1줄용·검증 아님).
-
-    보호목록은 **브랜치 실재를 요구하지 않는다**(아직 없는 `release` 를 미리 보호하는 게 정상).
-    그래서 거부하지 않고 *경고*만 낸다 — 오타(`mian`)를 조용히 흘리지 않기 위한 가시화다.
-    bare 부재(clone 전)·git 실패는 빈 리스트(fail-soft·경고 생략).
-
-    **bare 조회 자체가 실패하면 경고를 통째로 생략한다** — git 바이너리 부재/권한 등으로 모든
-    `show-ref` 가 rc≠0 이 되면 멀쩡한 브랜치까지 "없다"고 오탐한다. 먼저 `rev-parse
-    --is-bare-repository` 로 bare 를 프로브해 rc≠0 이면 빈 리스트(경고의 목적은 오타 포착이지
-    차단이 아니다).
-    """
-    bare = (repos_dir if repos_dir is not None else REPOS_DIR) / f"{repo}.git"
-    if not branches or not bare.exists():
-        return []
-    runner = clone_runner or _real_clone_runner()
-    try:
-        probe_rc, _probe = runner(
-            ["-C", str(bare), "rev-parse", "--is-bare-repository"])
-        if probe_rc != 0:
-            return []   # bare 조회 불가(git 부재/깨진 bare) — 오탐 방지로 경고 생략.
-        missing: list[str] = []
-        for branch in branches:
-            rc, _out = runner(
-                ["-C", str(bare), "show-ref", "--verify", "--quiet",
-                 f"refs/heads/{branch}"])
-            if rc != 0:
-                missing.append(branch)
-    except Exception:  # noqa: BLE001 — fail-soft: 경고는 부가 정보(판정 실패=생략).
-        return []
-    return missing
-
-
-def _warn_missing_protected_branches(
-    repo: str,
-    branches: list[str],
-    *,
-    clone_runner: GitRunner | None = None,
-    repos_dir: Path | None = None,
-) -> list[str]:
-    """bare 에 없는 보호 브랜치를 경고 1줄로 낸다 — **양 경로 공용 깔때기**.
-
-    `repo add --protected` (신규 등록)와 `repo protected <repo> <목록>` (사후 설정)은 **같은**
-    보호목록을 같은 문법으로 받는다 — 한쪽에만 오타 가시화가 있으면 `--protected mian` 이 기본
-    보호목록(main/master/develop)을 덮으면서 조용히 통과해 **보호 가드가 실질적으로 꺼진다**.
-    그래서 두 경로가 이 함수 하나를 탄다(검증 비대칭 클래스 폐쇄).
-
-    거부가 아니라 경고다. 반환 = 없는 브랜치 목록.
-    """
-    missing = _bare_missing_branches(
-        repo, branches, clone_runner=clone_runner, repos_dir=repos_dir)
-    if missing:
-        print(
-            f"[경고] `.repos/{repo}.git` 에 없는 브랜치를 보호목록에 넣었다: "
-            f"{', '.join(missing)} — 아직 없는 브랜치를 미리 보호하는 것은 정상이지만 "
-            "오타가 아닌지 확인하라(검증하지 않음·"
-            f"수정은 `{_FACADE_PROG} repo protected {repo} <목록>`).",
-            file=sys.stderr,
-        )
-    return missing
-
-
-def protected_retry_command(repo: str) -> str:
-    """그 repo 의 보호목록 **재실행 안내 커맨드** — 현재 상태(명시/폴백/미등록) 단일 분기.
-
-    안내는 *실행하면 지금 상태를 그대로 복원*해야 한다. 그런데 상태에 따라 정확한 커맨드가 다르다:
-
-      - **기본값 폴백**(areas `protected` 칼럼이 빈 값) → `repo protected <repo> default`.
-        여기서 `main,master,develop` 을 **명시 커맨드로 안내하면 안 된다** — 사용자가 그대로
-        실행하면 동작은 같아도 raw cell 의 출처가 "기본값 폴백" → "명시 설정" 으로 바뀐다
-        (안내가 상태를 조용히 바꾼다). 이후 DEFAULT_PROTECTED 가 바뀌어도 안 따라간다.
-      - **명시 설정** → `repo protected <repo> <현재 목록>`(그 값 그대로 재적용·멱등).
-      - **미등록**(areas 에 행 없음) → 셀을 고칠 대상이 없으니 `repo add <repo>` 가 먼저다.
-
-    이 분기를 **여기 한 곳**에만 둔다 — 조회의 drift/미배선 줄·설정 실패 경고·bootstrap reconcile
-    실패 경고가 전부 이 함수를 소비한다.
-    pm_bootstrap 은 `_load_tool` 로 이 심볼을 소비한다(모듈 공개·`protected_hook_wired` 동형).
-    """
-    cell = _areas_protected_cell(repo)
-    if cell is None:
-        return f"{_FACADE_PROG} repo add {repo}"
-    if not cell.strip():
-        return f"{_FACADE_PROG} repo protected {repo} {_PROTECTED_DEFAULT_LITERAL}"
-    listed = ",".join(t.strip() for t in cell.split(",") if t.strip())
-    return f"{_FACADE_PROG} repo protected {repo} {listed}"
-
-
-def _install_protected_hook_reporting(
-    repo: str,
-    *,
-    board=None,
-    worktree_pool=None,
-    action: str,
-    retry: str | None = None,
-) -> bool:
-    """훅 sidecar (재)설치 + **결과 보고 단일 깔때기** (성공도 실패도 조용하지 않다).
-
-    `_install_protected_hook` 은 실패를 **예외가 아니라 False** 로 돌려준다(bare 부재·
-    `core.hooksPath` 설정 실패·구 엔진). 호출부마다 `if ...: print(성공)` 만 쓰면 실패가 전부
-    침묵한다 — 훅이 안 걸렸는데 사용자는 걸린 줄 안다(보호 가드 침묵 무력화). 성공은 `✓` 1줄,
-    실패는 **stderr 경고 + 재실행 커맨드**로 낸다.
-
-    `action` = 사람이 읽는 맥락("설치"·"(재)설치"). `retry` = 재실행 안내 커맨드 — 보호목록을
-    *바꾸는* 경로는 `protected_retry_command`(상태 인지 단일 분기)를 넘기고, 등록/슬롯 생성 경로는
-    생략해 방금 친 멱등 커맨드(`repo add <repo>`)를 안내한다. 반환 = 설치 성공 여부(호출부는 rc 를
-    바꾸지 않는다 — 보호 훅은 추가 가드).
-    """
-    if _install_protected_hook(repo, board=board, worktree_pool=worktree_pool):
-        print(f"✓ 보호 브랜치 pre-push + pre-commit 훅 {action}: {repo}.")
-        return True
-    retry = retry or f"{_FACADE_PROG} repo add {repo}"
-    reason = protected_hook_install_failure_reason(repo) or "원인 미해소"
-    print(
-        f"[경고] 보호 브랜치 훅 sidecar 를 {action}하지 못했다: {repo} — {reason}. 이 clone 의 "
-        "pre-push·pre-commit 훅은 보호목록을 강제하지 않거나 옛 목록으로 동작할 수 있다.\n"
-        f"  → 재실행(멱등): {retry}",
-        file=sys.stderr,
-    )
-    return False
-
-
-def _refresh_protected_gate_contracts(*, board=None, worktree_pool=None) -> tuple[list[str], list[str]]:
-    """등록 repo 훅을 현재 upstream 기반 gate 계약으로 재설치한다.
-
-    `upstream set`은 release/self-test provenance 자체를 바꾸므로 설정 파일만 갱신하면 기존
-    sidecar가 다음 일반 설치까지 stale하다. 등록 repo 전수를 중앙 설치 깔때기로 보내
-    보호목록·원자 gate-contract(mode + test command)를 함께 재계산한다. 반환은
-    `(시도 repo, 실패 repo)`이며,
-    보호 훅의 기존 best-effort 계약대로 설정 기록 자체를 롤백하지는 않고 실패를 loud 보고한다.
-    """
-    board_mod = board or _load_module("board", "board.py")
-    if board_mod is None:
-        return [], []
-    # hermetic 호출에서 pm_config.REPO만 임시 루트로 바꿨는데 실 board를 주입하지 않은 경우
-    # 실 PM 홈 레지스트리/훅을 건드리지 않는다. 프로덕션 모듈끼리는 같은 REPO다.
-    board_repo = getattr(board_mod, "REPO", REPO)
-    if Path(board_repo).resolve() != REPO.resolve():
-        return [], []
-    try:
-        repos = sorted(areas_store.registered_repos(pm_paths.home_at(REPO)))
-    except Exception:  # noqa: BLE001 — 설정 보존·일반 refresh 실패만 fail-soft.
-        return [], []
-    attempted: list[str] = []
-    failed: list[str] = []
-    for repo in repos:
-        attempted.append(repo)
-        if not _install_protected_hook_reporting(
-                repo, board=board_mod, worktree_pool=worktree_pool,
-                action="gate 계약으로 (재)설치"):
-            failed.append(repo)
-    return attempted, failed
 
 
 def _stdin_is_tty() -> bool:
@@ -991,13 +395,6 @@ def _stdin_is_tty() -> bool:
 
 # ── repo name 입력 검증 ─────────────────────────────────────────────
 
-# 허용 repo name = prefix = ticket ID 네임스페이스·areas.md 공백구분 칼럼값.
-# 영숫자로 시작(leading `-` = 옵션 오인·빈 문자열 배제), 이후 영숫자/`_`/`-` 만 허용.
-# 경로분리자(`/`)·`.`(`..` 폴더탈출)·공백(areas.md 줄 corruption)을 전부 배제한다.
-# board._FAMILY_SCOPE_RE(`^[A-Za-z0-9_-]+$`)는 leading `-` 를 막지 않아 재사용 부적합 —
-# repo name 은 영숫자 시작을 강제하므로 별도 패턴을 둔다(reuse 확인·중복 정의 회피).
-_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-
 
 def _validate_repo_name(name: str) -> bool:
     """repo name 이 허용 패턴(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)에 맞는가.
@@ -1008,7 +405,7 @@ def _validate_repo_name(name: str) -> bool:
     """
     # fullmatch — `re.match` 의 `$` 는 trailing 개행 직전에도 매칭해 `"billing\n"` 이
     # 가드를 통과(bare 폴더명 개행·areas.md 줄 corruption — 막으려던 결함 클래스)한다.
-    return bool(_REPO_NAME_RE.fullmatch(name))
+    return bool(areas_rules._REPO_NAME_RE.fullmatch(name))
 
 
 # ── base 브랜치 해소 ─────────────────────────────────────────────────
@@ -1020,7 +417,7 @@ _BASE_INVALID = object()
 
 # `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — `refs/heads/<name>`. 이 접두 **정확히**를
 # 제거해야 순수 브랜치명이 된다(동명 태그 존재 시 `heads/<name>` 로 오염되는 `--short` 대신 full
-# ref 를 읽는 이유·worktree_pool._SYMREF_BRANCH_PREFIX 와 동일 규칙).
+# ref 를 읽는 이유·worktree_git._SYMREF_BRANCH_PREFIX 와 동일 규칙).
 _SYMREF_BRANCH_PREFIX = "refs/heads/"
 
 
@@ -1212,7 +609,7 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
         print(
             f"[경고] 사본 루트 ignore 규칙을 설치하지 못했다 — bare 부재: {bare_path}. "
             f"이 풀의 슬롯에서 위임 라운드 준비(`ticket prepare`)가 거부된다 — bare 복구 후 "
-            f"`{_FACADE_PROG} repo add <repo>` 로 재설치하라 (멱등).",
+            f"`{repo_protection._FACADE_PROG} repo add <repo>` 로 재설치하라 (멱등).",
             file=sys.stderr,
         )
         return False
@@ -1235,7 +632,7 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
             f"[경고] 사본 루트 ignore 규칙 설치 실패: {exclude} — {exc}. 이 풀의 슬롯에서 위임 "
             f"라운드 준비(`ticket prepare`)가 거부된다 — 수동으로 그 파일에 "
             f"`{TICKET_COPY_POOL_IGNORE_RULE}` 줄을 넣거나 권한 복구 후 "
-            f"`{_FACADE_PROG} repo add <repo>` 를 재실행하라 (멱등).",
+            f"`{repo_protection._FACADE_PROG} repo add <repo>` 를 재실행하라 (멱등).",
             file=sys.stderr,
         )
         return False
@@ -1244,16 +641,6 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
 
 
 # ── 위임 forward 시 usage prog 정합 ────────────────────────
-
-# `pm-config init`/`update` 는 board.py / pm_update.py 의 main() 으로 verbatim forward
-# 한다(cmd_init·cmd_update). 그 두 main 은 argparse prog 를 파일명으로 하드코딩하고
-# (prog="board.py"/"pm_update.py") main(argv) 에 prog 파라미터가 없어, `--help`·인자 에러
-# 시 usage 줄에 그 파일명이 새어 나온다 — 에이전트가 칠 실제 커맨드(pm-config init/update)와
-# 불일치해 오인을 부른다(facade[pm-config.sh/.cmd]가 진입점이므로
-# usage 도 facade 이름이어야 카드↔실행 표기가 일치). 두 main 을 수정하지 않고
-# (touches 격리·CLI 규격 단일 진실 = board/pm_update 보존) 이 파사드에서 위임 동안만 파서
-# 생성 시점의 top-level prog 를 치환한다.
-_FACADE_PROG = "pm-config"   # facade 이름 — build_parser 의 prog 와 동일.
 
 
 @contextlib.contextmanager
@@ -1289,7 +676,7 @@ def _forwarded_prog(prog_map: "dict[str, str]"):
 # ── 서브커맨드 핸들러 ─────────────────────────────────────────────────────────
 
 
-def _resolve_clone_git_url(name, cli_git, already_registered, board_mod):
+def _resolve_clone_git_url(name, cli_git, already_registered):
     """bare clone 소스 git URL 을 해소한다 (multi-user hydrate). 실패 → None(fail-loud 신호).
 
     `--git` 미제공 시 areas.md `git` 칼럼(레지스트리·git-tracked·공유)에서 URL 을 읽어,
@@ -1307,7 +694,7 @@ def _resolve_clone_git_url(name, cli_git, already_registered, board_mod):
           - `--git` 제공            → 그 값(신규 repo 등록).
           - `--git` 미제공          → fail-loud(신규 repo 는 clone 원 URL 을 areas 에서 해소 불가).
     """
-    areas_url = board_mod._areas_git_url(name) if already_registered else None
+    areas_url = areas_store._areas_git_url(pm_paths.home_at(REPO), name) if already_registered else None
 
     if cli_git:
         if already_registered and areas_url and areas_url != cli_git:
@@ -1350,7 +737,6 @@ def cmd_repo_add(
     board=None,
     clone_runner: GitRunner | None = None,
     repos_dir: Path | None = None,
-    worktree_pool=None,
 ) -> int:
     """`repo add <name> [--git <url>] [--test "<cmd>"] [--base <branch>]` — 패밀리에 repo 등록.
 
@@ -1425,7 +811,7 @@ def cmd_repo_add(
     protected_cell = ""
     protected_tokens: list[str] = []
     if protected_arg is not None:
-        tokens, reason = _validate_protected_tokens(protected_arg)
+        tokens, reason = areas_rules._validate_protected_tokens(protected_arg)
         if tokens is None:
             print(
                 f"[중단] --protected {protected_arg!r} 거부 — {reason} "
@@ -1480,7 +866,7 @@ def cmd_repo_add(
     # 는 repo 칼럼을 직접 세어 중복 append(같은 repo 두 줄)를 막는다. 위 case-only 가드에서 이미
     # 조회한 `registered_names` 를 재사용한다(같은 areas 스냅샷·중복 조회 dedupe).
     already_registered = name in registered_names
-    runner = clone_runner or _real_clone_runner()
+    runner = clone_runner or git._real_clone_runner()
 
     # bare 는 *경로 존재*(exists)만이 아닌 *실 bare git repo* 인지로 판정한다 — 중단된
     # `git clone --bare`(하네스 타임아웃·Ctrl-C)가 남긴 부분/빈/깨진 `.repos/<name>.git` 도
@@ -1489,11 +875,9 @@ def cmd_repo_add(
     # `_is_valid_bare`(rev-parse --is-bare-repository·worktree_pool)로 실 bare 를 판정해 그 통과를
     # fail-loud 로 닫는다. **파괴적 재clone 신중(§결정)**: 깨진 bare 자동삭제는 위험(사용자 데이터
     # 오판)이라 하지 않고, 정확 진단 + 수동 삭제 위임으로 안내한다(삭제는 사용자 위임 원칙). fail-soft:
-    # worktree_pool 로드 실패/헬퍼 부재(구 엔진)면 존재-검증 폴백(구 동작 보존·크래시 0).
-    wp_mod = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    valid_bare_fn = getattr(wp_mod, "_is_valid_bare", None) if wp_mod is not None else None
+
     bare_present = bare_path.exists()
-    if bare_present and valid_bare_fn is not None and not valid_bare_fn(bare_path, runner=runner):
+    if bare_present and (not worktree_git._is_valid_bare(bare_path, runner=runner)):
         print(
             f"[중단] `.repos/{name}.git` 경로는 있으나 유효한 bare git repo 가 아니다 — 부분/깨진 "
             f"bare (중단된 `git clone --bare` 잔존 가능성·하네스 타임아웃/Ctrl-C). 경로 존재만 보면 "
@@ -1518,7 +902,7 @@ def cmd_repo_add(
     # `repo add` 재실행=훅 자가치유 경로 보존·`--git` optional 계약 완결).
     git_url = None
     if (not bare_exists) or (not already_registered):
-        git_url = _resolve_clone_git_url(name, args.git, already_registered, board_mod)
+        git_url = _resolve_clone_git_url(name, args.git, already_registered)
         if git_url is None:
             return 1
 
@@ -1593,11 +977,11 @@ def cmd_repo_add(
             print(
                 f"[경고] `--protected {protected_arg!r}` 는 이미 등록된 repo 라 **반영되지 않았다** "
                 "(등록 줄은 append-only·이 경로는 등록을 건너뛴다). 기존 행의 보호목록을 바꾸려면: "
-                f"`{_FACADE_PROG} repo protected {name} \"{protected_cell}\"`.",
+                f"`{repo_protection._FACADE_PROG} repo protected {name} \"{protected_cell}\"`.",
                 file=sys.stderr,
             )
-        _install_protected_hook_reporting(
-            name, board=board_mod, worktree_pool=worktree_pool, action="(재)설치")
+        repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+            name, action="(재)설치")
         return 0
 
     # 3) base 브랜치 해소 — bare 가 존재하는 지금 시점에 해소·검증한다.
@@ -1636,12 +1020,12 @@ def cmd_repo_add(
     # 5) 보호 브랜치 pre-push 훅 설치 (멱등 자가치유) — 보호목록(areas protected→
     #    default) sidecar + bare core.hooksPath wiring. 회사 repo 무영향(.project_manager/.local).
     #    설치 실패는 조용히 넘기지 않는다(공용 깔때기 — 훅 미설치 침묵 = 보호 가드 무력화).
-    _install_protected_hook_reporting(
-        name, board=board_mod, worktree_pool=worktree_pool, action="설치")
+    repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+        name, action="설치")
     # 6) 브랜치 실재 경고 1줄 — `repo protected` set 경로와 **같은 공용 깔때기**.
     #    거부 아님(미래 브랜치 선-보호가 정상)·오타(`mian`)가 기본 보호목록을 덮으며 조용히
     #    통과하는 것만 막는다. bare 는 방금 clone/재사용돼 존재하므로 조회 가능(불가면 생략).
-    _warn_missing_protected_branches(
+    repo_protection._warn_missing_protected_branches(pm_paths.home_at(REPO),
         name, protected_tokens, clone_runner=runner, repos_dir=repos_dir)
     return 0
 
@@ -1649,8 +1033,6 @@ def cmd_repo_add(
 def _print_protected_status(
     name: str,
     *,
-    board=None,
-    worktree_pool=None,
     clone_runner: GitRunner | None = None,
 ) -> int:
     """`repo protected <name>` 조회 — 실효값 + 출처 + sidecar 정합/drift 3줄.
@@ -1665,10 +1047,10 @@ def _print_protected_status(
     "sidecar 는 최신인데 훅이 아예 안 걸린" 부분성공(`install_protected_hook` 3단계 실패)이
     `✓ 정합` 으로 보인다 — 보호가 꺼져 있는데 정합하다고 거짓 보고하는 것이다.
     """
-    effective = _resolve_repo_protected(name, board=board)
+    effective = branch_store._resolve_protected(pm_paths.home_at(REPO), name)
     print(f"{name} · protected = {', '.join(effective)}")
 
-    cell = _areas_protected_cell(name)
+    cell = repo_protection._areas_protected_cell(pm_paths.home_at(REPO), name)
     if cell is None:
         print("  출처: 미등록 repo (areas.md 에 그 행이 없음) — DEFAULT_PROTECTED 기본값 폴백")
     elif cell.strip():
@@ -1676,22 +1058,19 @@ def _print_protected_status(
     else:
         print("  출처: 기본값 폴백 (areas.md `protected` 칼럼 비어 있음 — DEFAULT_PROTECTED)")
 
-    path = _protected_sidecar_path(name, worktree_pool=worktree_pool)
-    sidecar = _read_protected_sidecar(name, worktree_pool=worktree_pool)
-    if path is None:
-        print("  훅 sidecar: (해소 불가 — worktree_pool 엔진 부재)")
-        return 0
+    path = protected_hooks._protected_sidecar_path(pm_paths.home_at(REPO), name)
+    sidecar = protected_hooks._read_protected_sidecar(pm_paths.home_at(REPO), name)
     if sidecar is None:
         print(f"  훅 sidecar: {path} → (미설치) "
               f"⚠ 이 clone 엔 보호 훅이 아직 없다")
-        print(f"    → 설치:  {_FACADE_PROG} repo add {name}  (멱등·bare 존재 전제)")
+        print(f"    → 설치:  {repo_protection._FACADE_PROG} repo add {name}  (멱등·bare 존재 전제)")
         return 0
-    wired = protected_hook_wired(
-        name, worktree_pool=worktree_pool, git_runner=clone_runner)
+    wired = protected_hooks.protected_hook_wired(pm_paths.home_at(REPO),
+        name, git_runner=clone_runner)
     listed = ", ".join(sidecar) or "(빈 파일)"
     # 재실행 안내는 **현재 상태**(명시/폴백/미등록)에 맞춰야 한다 — 폴백 상태에 명시 커맨드를
     # 안내하면 사용자가 그대로 실행했을 때 출처가 조용히 "명시" 로 바뀐다(단일 분기 헬퍼).
-    retry = protected_retry_command(name)
+    retry = repo_protection.protected_retry_command(pm_paths.home_at(REPO), name)
     if sidecar != effective:
         # 내용 drift 가 지배적 — 배선 여부와 무관하게 재설치가 답이다(재설치가 둘 다 고친다).
         print(f"  훅 sidecar: {path} → {listed}  "
@@ -1718,7 +1097,6 @@ def cmd_repo_protected(
     args: argparse.Namespace,
     *,
     board=None,
-    worktree_pool=None,
     clone_runner: GitRunner | None = None,
     repos_dir: Path | None = None,
 ) -> int:
@@ -1737,7 +1115,7 @@ def cmd_repo_protected(
       4. board-git best-effort 동기(공유 정책 변경은 즉시 공유돼야 값-연결이 산다).
       5. bare 에 없는 브랜치가 있으면 경고 1줄(거부 아님 — 미래 브랜치 선-보호가 정상).
 
-    board / worktree_pool / clone_runner / repos_dir 주입으로 hermetic 테스트.
+    board / clone_runner / repos_dir 주입으로 hermetic 테스트.
     """
     board_mod = board or _load_module("board", "board.py")
     if board_mod is None:
@@ -1760,15 +1138,15 @@ def cmd_repo_protected(
     value = getattr(args, "value", None)
     if value is None:
         return _print_protected_status(
-            name, board=board_mod, worktree_pool=worktree_pool,
+            name,
             clone_runner=clone_runner)
 
     # ── set ──────────────────────────────────────────────────────────────
-    if value.strip().lower() == _PROTECTED_DEFAULT_LITERAL:
+    if value.strip().lower() == areas_rules._PROTECTED_DEFAULT_LITERAL:
         tokens: list[str] = []
         new_cell = ""            # 칼럼 비움 → `_repo_protected` 가 DEFAULT_PROTECTED 폴백.
     else:
-        parsed, reason = _validate_protected_tokens(value)
+        parsed, reason = areas_rules._validate_protected_tokens(value)
         if parsed is None:
             print(f"[중단] 보호목록 거부 (areas.md 미변경) — {reason}", file=sys.stderr)
             return 1
@@ -1794,7 +1172,7 @@ def cmd_repo_protected(
             print(
                 f"[중단] repo {name!r} 이(가) areas.md 에 등록돼 있지 않다 — 보호목록 설정은 *기존* "
                 "행의 셀을 고칠 뿐 등록을 만들지 않는다. 먼저 등록하라: "
-                f"`{_FACADE_PROG} repo add {name} --git <url> --protected \"{value}\"`.",
+                f"`{repo_protection._FACADE_PROG} repo add {name} --git <url> --protected \"{value}\"`.",
                 file=sys.stderr,
             )
             return 1
@@ -1810,9 +1188,9 @@ def cmd_repo_protected(
     # 이 자가치유) — 대신 공용 깔때기가 실패를 loud 하게 낸다(침묵 금지).
     # 재실행 안내는 방금 비준한 상태 기준 — `default` 로 되돌린 경우엔 `default` 를 안내해야
     # 정확하다(`tokens` 가 빈 리스트라 falsy → 옛 코드는 `repo add` 로 잘못 떨어졌다).
-    _install_protected_hook_reporting(
-        name, board=board_mod, worktree_pool=worktree_pool, action="정합화",
-        retry=protected_retry_command(name))
+    repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+        name, action="정합화",
+        retry=repo_protection.protected_retry_command(pm_paths.home_at(REPO), name))
 
     # 4) board-git best-effort 동기 — 공유 정책 변경은 즉시 공유돼야 값-연결이 산다.
     #    **경로 스코프 필수**: paths 없이 부르면 board 전체가 "repo protected"
@@ -1823,13 +1201,11 @@ def cmd_repo_protected(
         try:
             sync("repo protected", (pm_paths.areas_file(pm_paths.home_at(REPO)),))
         except Exception as exc:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
-            if _is_engine_rev_skew(exc):
-                return _report_engine_rev_skew_at_terminal(exc)
             pass
 
     # 5) 브랜치 실재 경고 1줄 — `repo add --protected` 와 **같은 공용 깔때기**(검증 비대칭 방지).
     #    거부 아님(미래 브랜치 선-보호가 정상·오타 가시화용).
-    _warn_missing_protected_branches(
+    repo_protection._warn_missing_protected_branches(pm_paths.home_at(REPO),
         name, tokens, clone_runner=clone_runner, repos_dir=repos_dir)
     return 0
 
@@ -1873,9 +1249,9 @@ def cmd_repo_list(args: argparse.Namespace) -> int:
         return 1
     rows = [row for row in rows if row.get("repo")]
     if not rows:
-        print(f"등록된 repo 없음 — `{_FACADE_PROG} repo add <name> --git <url>` 로 등록하라.")
+        print(f"등록된 repo 없음 — `{repo_protection._FACADE_PROG} repo add <name> --git <url>` 로 등록하라.")
         return 0
-    default_protected = ",".join(_DEFAULT_PROTECTED)
+    default_protected = ",".join(areas_rules.DEFAULT_PROTECTED)
     table: list[list[str]] = [list(_REPO_LIST_COLUMNS)]
     for row in sorted(rows, key=lambda r: r.get("repo", "")):
         cells = []
@@ -1896,7 +1272,7 @@ def cmd_repo_list(args: argparse.Namespace) -> int:
         print("  ".join(_pad_display(c, w) for c, w in zip(cells, widths)).rstrip())
         if i == 0:
             print("  ".join("-" * w for w in widths))
-    print(f"\n보호목록 조회/변경: `{_FACADE_PROG} repo protected <repo> [<목록>|default]`")
+    print(f"\n보호목록 조회/변경: `{repo_protection._FACADE_PROG} repo protected <repo> [<목록>|default]`")
     return 0
 
 
@@ -1951,7 +1327,6 @@ def _require_worktree_add_user_ack(args: argparse.Namespace) -> bool:
 def cmd_worktree_add(
     args: argparse.Namespace,
     *,
-    worktree_pool=None,
     board=None,
     input_fn: Callable[[str], str] = input,
     is_tty: Callable[[], bool] | None = None,
@@ -1963,7 +1338,7 @@ def cmd_worktree_add(
     동형·reclaim/재부착 보호는 tasks 장부 조인). 풀 소진 시 alloc 이 안내하는 "생성+대여 한 흐름" — min-idle 재탐색의
     오슬롯 리스크가 없다. task 명 검증 + 기바인딩은 alloc 과 같은 헬퍼로. `--readonly` 와 상호배타.
 
-    worktree_pool.create_slot(repo, base=) 를 호출한다 — `<repo>_<N>`(브랜치 무관 재사용
+    pm_engine.app.worktree_pool.create_slot(repo, base=) 를 호출한다 — `<repo>_<N>`(브랜치 무관 재사용
     컨테이너) 슬롯을 `git worktree add` 로 만들고 `git submodule update --init` 한다.
     브랜치 무관(슬롯 브랜치는 `task branch`·`worktree_pool.py switch` 가 바꾼다).
 
@@ -1991,21 +1366,13 @@ def cmd_worktree_add(
     없거나 조회에 실패하면 그 rc 로 멈추고 bare 를 만들지 않는다. bare 경로가 있으나 무효면
     `create_slot` 의 BareRepoMissing 안내가 그대로 나간다(자동 삭제 없음).
 
-    worktree_pool/board/input_fn/is_tty/clone_runner 주입으로 hermetic 테스트(실 worktree add·
+    board/input_fn/is_tty/clone_runner 주입으로 hermetic 테스트(실 worktree add·
     라이브 input·실 clone 없이 배선·분기 검증). board 는 base 해소(`_repo_base`)·hydrate 재사용용(콘솔이
     로드한 board 전달). `clone_runner` 는 hydrate 의 `cmd_repo_add` 로 넘기는 파이썬 키워드다(CLI 아님).
     """
     if not _require_worktree_add_user_ack(args):
         return 1
 
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 슬롯 생성 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
 
     # test_cmd 해소: --test 명시면 그 값. 미지정 + tty 면 프롬프트(빌드명령). 비-tty 면 None.
     # 프롬프트 표시 기본값은 그 repo 의 실제 폴백(areas→local.conf→pytest-q)을 resolve 해
@@ -2013,7 +1380,7 @@ def cmd_worktree_add(
     tty_check = is_tty if is_tty is not None else _stdin_is_tty
     test_cmd = getattr(args, "test", None)
     if test_cmd is None and tty_check():
-        display_default = _resolve_repo_test_cmd(args.repo)
+        display_default = repo_protection._resolve_repo_test_cmd(pm_paths.home_at(REPO), args.repo)
         test_cmd = _prompt_test_cmd(input_fn, default=display_default)
 
     # base 해소 — areas.md 의 그 repo base 를 읽어 create_slot(base=) 로 전달한다.
@@ -2050,34 +1417,28 @@ def cmd_worktree_add(
                 file=sys.stderr,
             )
             return 1
-        rc = _validate_prebound_task(wp, task)
+        rc = _validate_prebound_task( task)
         if rc:
             return rc
 
     # bare 부재 = 등록 저장소 hydrate(areas `git` 주소로 clone). 커밋 0개 원본은 그 안에서 거부된다.
-    if not wp.bare_repo_path(args.repo).exists():
+    if not pm_paths.bare_repo_path(pm_paths.home_at(REPO), args.repo).exists():
         hydrated = cmd_repo_add(
             argparse.Namespace(name=args.repo, git=None, test=None, base=None, owner=None,
                                user=None, protected=None),
-            board=board, clone_runner=clone_runner, worktree_pool=wp)
+            board=board, clone_runner=clone_runner)
         if hydrated:
             return hydrated
     try:
-        lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly,
+        lease = pm_engine.app.worktree_pool.create_slot(pm_paths.home_at(REPO), args.repo, base=base, test_cmd=test_cmd, readonly=readonly,
                                owner_task=task, folders=folders)
-    except wp.SlotFoldersRefused as exc:
+    except worktree_records.SlotFoldersRefused as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     except RuntimeError as exc:
-        if _is_engine_rev_skew(exc):
-            # 여기서 rc 로 번역하지 않고 재전파한다 — 이 핸들러는 종료 경계가 아니다. 콘솔
-            # `[w]` 액션(`_console_worktree_add`)은 rc 를 안 읽으므로 rc 번역이 그 surface 에선
-            # 진단만 남기고 메뉴 루프를 계속 돌렸다. `main` 이 같은 문구·같은 rc(1)로 번역하니
-            # CLI 표면은 그대로고(바이트 동일), 콘솔은 루프가 끝난다.
-            raise
         print(f"[중단] worktree 슬롯 생성 실패: {exc}", file=sys.stderr)
         return 1
-    slot_path = wp.slot_path(lease.slot)
+    slot_path = pm_paths.slot_path(pm_paths.home_at(REPO), lease.slot)
     test_line = f"\n  test_cmd 바인딩: {lease.test_cmd!r} (이 슬롯 회귀명령)" if lease.test_cmd else ""
     # 슬롯 번호 N(`lease.slot` = `work/<repo>_<N>`) 파싱. readonly 슬롯 refresh 안내에 쓴다.
     # 이미 보유한 lease 에서만 뽑고, 형식이 다르면 슬롯 식별자를 그대로 쓴다.
@@ -2115,8 +1476,8 @@ def cmd_worktree_add(
             "세션이 이 안내를 읽고 스스로 실행하지 않는다."
         )
     try:
-        actual_folders = wp.slot_folders(lease.slot)
-    except wp.SlotFoldersRefused as exc:
+        actual_folders = sparse_checkout.slot_folders(pm_paths.home_at(REPO), lease.slot)
+    except worktree_records.SlotFoldersRefused as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     print("  폴더: " + (", ".join(actual_folders) if actual_folders is not None else "(제한 없음)"))
@@ -2124,14 +1485,14 @@ def cmd_worktree_add(
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
     # 설치 실패는 조용히 넘기지 않는다 — repo add·repo protected 와 **같은 공용 깔때기**
     # (훅 설치 False 침묵은 보호 가드 무력화를 감춘다).
-    _install_protected_hook_reporting(
-        args.repo, board=board, worktree_pool=wp, action="(재)설치")
+    repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+        args.repo, action="(재)설치")
     # 사본 루트 ignore 규칙 (재)설치 (멱등 자가치유) — 훅과 같은 자리에서 슬롯 op
     # 마다 (재)설치해, 규칙 없이 만들어진 기존 풀도 다음 worktree add 에 규칙을 얻는다.
-    _ensure_bare_ticket_copy_exclude(wp.bare_repo_path(args.repo))
+    _ensure_bare_ticket_copy_exclude(pm_paths.bare_repo_path(pm_paths.home_at(REPO), args.repo))
     # task-명의 생성이면 집합 변경 직후 재열거 — 지금 보유한 슬롯 집합을 surface.
     if task is not None:
-        _render_task_slots(wp, task)
+        _render_task_slots( task)
     return 0
 
 
@@ -2148,7 +1509,7 @@ def _short_sha(sha: "str | None") -> str:
 
 
 def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
-    """슬롯 git 상태 dict(`worktree_pool.slot_git_status`)를 한 줄 요약으로 렌더한다.
+    """슬롯 git 상태 dict(`worktree_status.slot_git_status`)를 한 줄 요약으로 렌더한다.
 
     포맷 = `<branch>@<head 단축> (부모: <parent>@<갈라진 커밋 단축> · 앞 N · 뒤 M)`.
       - 부모 기록이 없으면 `(부모 기록 없음)`, 부모 브랜치가 지워졌으면 앞/뒤 대신 `부모 브랜치 없음`.
@@ -2211,7 +1572,7 @@ def _ahead_behind(git_runner: GitRunner, path: str, ref: str, what: str) -> tupl
     return ahead, behind
 
 
-def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
+def _status_json_remote( leases, git_runner: GitRunner) -> dict[str, dict]:
     """슬롯별 원격 정보 — origin 주소 · 추적 원격 브랜치(이름·끝 커밋·앞/뒤).
 
     `upstream` 은 git 이 슬롯 브랜치에 연결해 둔 원격 브랜치(`@{u}`)다. 브랜치 없이 커밋에 멈춘 슬롯과
@@ -2226,7 +1587,7 @@ def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
     slots: list[tuple] = []
     wanted: dict[tuple[str, str], tuple[str, dict[str, str]]] = {}   # (repo, 원격) → (경로, 원격 ref → 받을 자리)
     for lease in leases:
-        path = str(wp.slot_path(lease.slot))
+        path = str(pm_paths.slot_path(pm_paths.home_at(REPO), lease.slot))
         rc, ref = git_runner(["-C", path, "symbolic-ref", "-q", "HEAD"])
         if rc not in (0, 1):                          # 1 = 브랜치 없이 커밋에 멈춘 슬롯
             raise RemoteCheckError(f"{lease.slot}: 현재 브랜치 조회 실패 (rc={rc}): {ref.strip()[:300]}")
@@ -2269,14 +1630,14 @@ def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
     return rows
 
 
-def _status_json_slots(wp, leases, task_names: set,
+def _status_json_slots( leases, task_names: set,
                        remote: dict[str, dict] | None = None) -> list[dict]:
     """슬롯 축 — 리스 장부 + 슬롯당 git 요약. 판정은 전부 `worktree_pool` 것을 그대로 싣는다.
 
     `remote` 는 `--with-remote` 로 부른 때만 슬롯마다 원격 대조(`_status_json_remote`)이고 그
     밖에는 null 이다(네트워크를 쓰는 절이라 가벼운 조회에 넣지 않는다).
 
-    `alive` 는 `worktree_pool.lease_is_open` 그대로다(판정 재구현 0) — 열림 기록(leased +
+    `alive` 는 `worktree_records.lease_is_open` 그대로다(판정 재구현 0) — 열림 기록(leased +
     session)이 있고 그에 대응하는 종료 기록(release/force_release/end_task 의 idle+session 비움)이
     없으면 참이다. 프로세스 조회는 0회다. `role` 은 장부에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 —
     표시 축이 아니라 판정 축이라 빈 값을 남기지 않는다.
@@ -2284,13 +1645,13 @@ def _status_json_slots(wp, leases, task_names: set,
     rows: list[dict] = []
     repo_reads: dict = {}   # 저장소 공용 git 값(부모 기록·stash·부모 비교 ref)은 조회 1회에 한 번만 읽는다.
     for lease in leases:
-        git = wp.slot_git_status(lease.slot, repo_reads=repo_reads)
+        git = worktree_status.slot_git_status(pm_paths.home_at(REPO), lease.slot, repo_reads=repo_reads)
         rows.append({
             "slot": lease.slot,
             "repo": lease.repo,
             "state": lease.state,
             "session": lease.session or None,
-            "alive": bool(wp.lease_is_open(lease)),
+            "alive": bool(worktree_records.lease_is_open(lease)),
             "role": getattr(lease, "role", "work") or "work",
             "task": lease.session if (lease.session and lease.session in task_names) else None,
             "branch": git.get("branch"),
@@ -2305,7 +1666,7 @@ def _status_json_slots(wp, leases, task_names: set,
     return rows
 
 
-def _status_json_tasks(wp, tasks) -> list[dict]:
+def _status_json_tasks( tasks) -> list[dict]:
     """task 축 — 정체성 + 보유 슬롯(`slots_for_task` · session 축 귀속).
 
     `alive` = 장부 task 행의 열림 기록(`open`) 그대로다 — 프로세스 조회 0회.
@@ -2315,10 +1676,10 @@ def _status_json_tasks(wp, tasks) -> list[dict]:
         "prefix": getattr(task, "prefix", None) or None,
         "alive": bool(task.open),
         "started": getattr(task, "started", "") or None,
-        "slots": [lease.slot for lease in (wp.slots_for_task(task.name) or [])],
+        "slots": [lease.slot for lease in (pool_store.slots_for_task(pm_paths.home_at(REPO), task.name) or [])],
         # 열린 todo — 관리자 화면이 task 줄에 그대로 그린다(가벼운 절이라 5초 주기로 갱신된다).
         # task 별 파일(`.local/tasks/<task>/todo.json`)이 출처다.
-        "todos": [dict(todo) for todo in wp.read_task_todos(task.name)],
+        "todos": [dict(todo) for todo in task_store.read_task_todos(pm_paths.home_at(REPO), task.name)],
     } for task in tasks]
 
 
@@ -2329,7 +1690,7 @@ def _status_json_git(git_runner: GitRunner) -> dict:
     회귀·라이브게이트 기록이 어느 HEAD 에 대한 판정인지 대조하는 기준이다. git checkout 이
     아니면 세 값 모두 None(그 사실이 곧 신호다).
 
-    브랜치는 `worktree_pool.current_branch` 와 **같은 primitive** 하나로 읽는다 —
+    브랜치는 `worktree_git.current_branch` 와 **같은 primitive** 하나로 읽는다 —
     `symbolic-ref HEAD`(full ref·`--short` 없이) rc 0 이면 `refs/heads/` 접두만 정확히 벗겨
     브랜치명, rc≠0 이면 detached 라 None 이다. 두 축이 같은 상태를 같은 값(null)으로 말해야
     읽는 쪽이 판정을 다시 구현하지 않는다. `rev-parse --abbrev-ref HEAD` 를 쓰지 않는 이유는
@@ -2441,22 +1802,22 @@ def _status_json_adapters(pm_import_mod, source_root: Path) -> dict:
     return {"source": str(Path(source_root).resolve()), "files": files}
 
 
-def _status_json_document(args, wp, *, board_mod, pm_import_mod,
+def _status_json_document(args,  *, board_mod, pm_import_mod,
                           source_root: Path | None, git_runner: GitRunner) -> dict:
     """현황 JSON 한 벌 — 절 순서는 계약이 아니고 키가 계약이다(스키마 번호는 상수 하나)."""
-    leases = wp.list_leases()
-    tasks = wp.list_tasks() or []
+    leases = pool_store.list_leases(pm_paths.home_at(REPO))
+    tasks = pool_store.list_tasks(pm_paths.home_at(REPO)) or []
     task_names = {name for name in (getattr(task, "name", None) for task in tasks) if name}
-    remote = (_status_json_remote(wp, leases, git_runner)
+    remote = (_status_json_remote( leases, git_runner)
               if getattr(args, "with_remote", False) else None)
     return {
         "schema": STATUS_JSON_SCHEMA,
         "engine_rev": ENGINE_REV,
         "pm_home": str(REPO.resolve()),
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "slots": _status_json_slots(wp, leases, task_names, remote),
-        "preserved_branches": wp.preserved_branches(),
-        "tasks": _status_json_tasks(wp, tasks),
+        "slots": _status_json_slots( leases, task_names, remote),
+        "preserved_branches": branch_store.preserved_branches(pm_paths.home_at(REPO)),
+        "tasks": _status_json_tasks( tasks),
         "git": _status_json_git(git_runner),
         "repos": _status_json_repos(),
         "harnesses": list(pm_import_mod.installed_harnesses(REPO)),
@@ -2467,7 +1828,7 @@ def _status_json_document(args, wp, *, board_mod, pm_import_mod,
     }
 
 
-def _emit_status_json(args, wp, *, board=None, pm_import=None) -> int:
+def _emit_status_json(args,  *, board=None, pm_import=None) -> int:
     """`status --json` — 문서를 **전부 만든 뒤** 한 번에 낸다(부분 산출 없음).
 
     소스가 필요한 절(`--with-adapters`·`--from`)에서 소스를 못 잡으면 stdout 에 아무것도 쓰지
@@ -2500,15 +1861,15 @@ def _emit_status_json(args, wp, *, board=None, pm_import=None) -> int:
             return 1
     try:
         document = _status_json_document(
-            args, wp, board_mod=board_mod, pm_import_mod=pm_import_mod,
+            args,  board_mod=board_mod, pm_import_mod=pm_import_mod,
             source_root=source_root,
-            git_runner=_real_clone_runner())
+            git_runner=git._real_clone_runner())
     except (FileNotFoundError, pm_import_mod.AdapterConfigChannelUnavailable) as exc:
         # 판정 기준이 없는 상태 둘만 rc 로 번역한다 — 소스에 대조할 파일이 없거나(잘못된 `--from`)
         # 어댑터 판정 채널이 unavailable 인 경우. 그 밖의 실패는 삼키지 않는다(정상 산출로 위장 금지).
         print(f"[중단] 현황 JSON 조회 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    except wp.SlotFoldersRefused as exc:
+    except worktree_records.SlotFoldersRefused as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     except RemoteCheckError as exc:
@@ -2536,7 +1897,7 @@ def _status_json_usage_error(args) -> str | None:
 def cmd_status(
     args: argparse.Namespace,
     *,
-    worktree_pool=None,
+
     board=None,
     pm_import=None,
 ) -> int:
@@ -2549,7 +1910,7 @@ def cmd_status(
         (`<branch>@<head> (base: <b>@<sha> · N behind)`·`slot_git_status`). behind 는 base 기록
         (`git.base`)이 있을 때만·미기록은 `-`+이유(자동 추론 금지).
 
-    브랜치는 `worktree_pool.current_branch(slot)` 로 슬롯 worktree 의 git HEAD 에서 **live**
+    브랜치는 `worktree_git.current_branch(slot)` 로 슬롯 worktree 의 git HEAD 에서 **live**
     조회한다(git=진실). 사용자가 슬롯서 직접 `git
     checkout` 해도 즉시 반영·드리프트 없음. detached/조회불가는 "(detached/조회불가)".
 
@@ -2567,17 +1928,10 @@ def cmd_status(
     if usage_error is not None:
         print(usage_error, file=sys.stderr)
         return 2                              # 인자 오용 — argparse 와 같은 종료코드.
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 리스 상태 조회 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
     if getattr(args, "json", False):
-        return _emit_status_json(args, wp, board=board, pm_import=pm_import)
-    leases = wp.list_leases()
+        return _emit_status_json(args,  board=board, pm_import=pm_import)
+    leases = pool_store.list_leases(pm_paths.home_at(REPO))
     sess = _default_session()
     mine = [l for l in leases if l.state == "leased" and l.session == sess]
 
@@ -2585,7 +1939,7 @@ def cmd_status(
     # git=진실·장부 저장 폐지). 사용자가 슬롯서 직접 `git checkout` 해도 즉시 반영.
     # detached/조회불가는 None → "(detached/조회불가)" 로 surface.
     def _live_branch(slot: str) -> str:
-        return wp.current_branch(slot) or "(detached/조회불가)"
+        return worktree_git.current_branch(pm_paths.home_at(REPO), slot) or "(detached/조회불가)"
 
     print(f"# pm-config {args.command} — 세션: {sess or '(비바인딩)'}")
 
@@ -2631,10 +1985,8 @@ def cmd_status(
     # 없는 사본은 여기 오지 못한다 — 있는지 더듬지 않고 그대로 부른다.
     tasks = []
     try:
-        tasks = wp.list_tasks() or []
+        tasks = pool_store.list_tasks(pm_paths.home_at(REPO)) or []
     except Exception as exc:  # noqa: BLE001 — task 조회 실패가 status 를 막지 않는다(조회 전용·fail-soft).
-        if _is_engine_rev_skew(exc):
-            return _report_engine_rev_skew_at_terminal(exc)
         tasks = []
     # truthy name 만 — 레코드가 name 미보유(None/빈값)면 집합에 넣지 않는다(방어). None 이 섞이면
     # idle lease(session=None/"")가 `보유 task=None` 으로 오귀인될 수 있다(reviewer suggestion).
@@ -2645,10 +1997,8 @@ def cmd_status(
     for t in tasks:
         slots = []
         try:
-            slots = wp.slots_for_task(t.name) or []
+            slots = pool_store.slots_for_task(pm_paths.home_at(REPO), t.name) or []
         except Exception as exc:  # noqa: BLE001 — 슬롯 귀속 실패는 fail-soft(작업공간 미표시).
-            if _is_engine_rev_skew(exc):
-                return _report_engine_rev_skew_at_terminal(exc)
             slots = []
         ws = ", ".join(s.slot for s in slots) or "(보유 작업공간 없음)"
         prefix = getattr(t, "prefix", None) or "없음(기본)"
@@ -2661,12 +2011,10 @@ def cmd_status(
 
     def _slot_git_line(slot: str, *, readonly: bool) -> "str | None":
         try:
-            status = wp.slot_git_status(slot, repo_reads=repo_reads)
-        except wp.SlotFoldersRefused:
+            status = worktree_status.slot_git_status(pm_paths.home_at(REPO), slot, repo_reads=repo_reads)
+        except worktree_records.SlotFoldersRefused:
             raise
         except Exception as exc:  # noqa: BLE001 — 일반 git 조회 실패만 요약 생략.
-            if _is_engine_rev_skew(exc):
-                raise
             return None
         if not isinstance(status, dict):
             return None
@@ -2684,7 +2032,7 @@ def cmd_status(
         print(
             f"  - {l.slot} · repo={l.repo} · branch={_live_branch(l.slot)} · "
             f"state={l.state} · session={l.session or '-'} · "
-            f"{'열림' if wp.lease_is_open(l) else '닫힘'}{role_str}"
+            f"{'열림' if worktree_records.lease_is_open(l) else '닫힘'}{role_str}"
         )
         # 보유 task 귀속(장부 축) — lease.session 이 task 명이면 그 task 가 이 슬롯을 보유(session
         # 축). idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **장부 유래라 항상 출력** —
@@ -2693,14 +2041,14 @@ def cmd_status(
         task_disp = l.session if (l.session and l.session in task_names) else "-"
         try:
             git_line = _slot_git_line(l.slot, readonly=role == "readonly")
-        except wp.SlotFoldersRefused as exc:
+        except worktree_records.SlotFoldersRefused as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
         git_part = git_line if git_line is not None else "(조회 불가)"
         print(f"      ↳ 보유 task={task_disp} · git: {git_part}")
 
     # 슬롯 없는 보존 브랜치 — 슬롯 제거의 삭제 판정이 남긴 브랜치(공용 git 설정 기록). 있을 때만 절을 낸다.
-    preserved = wp.preserved_branches()
+    preserved = branch_store.preserved_branches(pm_paths.home_at(REPO))
     if preserved:
         print("## 슬롯 없는 보존 브랜치 (슬롯 제거 때 삭제 판정이 남긴 브랜치 · 정리는 사용자):")
     for row in preserved:
@@ -2718,10 +2066,8 @@ def cmd_status(
     #   - stale = 장부 등록·worktree 없음(dir 삭제/prune).
     #   - incomplete = provisional("creating") — worktree add 후 확정 전 중단된 create 흔적.
     try:
-        recon = wp.reconcile_worktrees()
+        recon = pm_engine.app.worktree_pool.reconcile_worktrees(pm_paths.home_at(REPO))
     except Exception as exc:  # noqa: BLE001 — reconcile 실패가 status 를 막지 않는다(조회 전용).
-        if _is_engine_rev_skew(exc):
-            return _report_engine_rev_skew_at_terminal(exc)
         recon = None
     if recon is not None and (recon.orphans or recon.stale or recon.incomplete):
         print("## ⚠ worktree × 장부 drift (조회 전용 — 자동삭제 안 함·정리는 사용자):")
@@ -2752,10 +2098,7 @@ def cmd_status(
 
 
 def cmd_worktree_prune_stale(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`worktree prune-stale` — worktree dir 이 사라진 dangling 장부 엔트리를 안전 정리.
 
     status reconcile 이 surface 한 stale/incomplete 중 **worktree 가 물리적으로 부재**한 장부
@@ -2766,15 +2109,8 @@ def cmd_worktree_prune_stale(
 
     worktree_pool 주입으로 hermetic 테스트(실 장부 쓰기 없이 배선 검증).
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — dangling 엔트리 정리 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
-    pruned = wp.prune_stale_leases()
+
+    pruned = pm_engine.app.worktree_pool.prune_stale_leases(pm_paths.home_at(REPO))
     if pruned:
         print(
             f"✓ dangling 장부 엔트리 {len(pruned)}개 정리 (worktree 부재·이미 사라진 기록): "
@@ -2828,13 +2164,10 @@ def _print_branch_deletion(deletion) -> None:
 
 
 def cmd_worktree_remove(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`worktree remove <slot> --user-ack <slot> [--user-ack <브랜치> ...] [--force]` — 슬롯 통째 제거.
 
-    worktree_pool.remove_slot(slot, force=, acked_branches=) 로 리스 확인 → 등록 조회 → 커밋 안 한
+    pm_engine.app.worktree_pool.remove_slot(slot, force=, acked_branches=) 로 리스 확인 → 등록 조회 → 커밋 안 한
     변경 검사 → `git worktree remove` → 브랜치 삭제 판정 → 장부 엔트리 제거를 한 번에 한다.
     footgun 체인(수동 remove → dangling 장부 → `add` 가 번호 skip → 뒤늦은 prune)을 원천
     종결한다 — 장부 엔트리 제거로 `add` 가 빈 번호를 재사용한다.
@@ -2857,19 +2190,11 @@ def cmd_worktree_remove(
     if not _require_worktree_remove_user_ack(args):
         return 1
 
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 슬롯 제거 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
 
     try:
-        result = wp.remove_slot(args.slot, force=args.force,
+        result = pm_engine.app.worktree_pool.remove_slot(pm_paths.home_at(REPO), args.slot, force=args.force,
                                 acked_branches=frozenset(args.user_ack))
-    except wp.RemoveRefused as exc:
+    except worktree_records.RemoveRefused as exc:
         if exc.reason == "active-lease":
             print(
                 f"[중단] 슬롯 {args.slot!r} 이 활성(사용 중·state={exc.state}) — 제거 거부. "
@@ -2892,8 +2217,6 @@ def cmd_worktree_remove(
             )
         return 1
     except RuntimeError as exc:
-        if _is_engine_rev_skew(exc):
-            return _report_engine_rev_skew_at_terminal(exc)
         print(f"[중단] worktree 슬롯 제거 실패: {exc}", file=sys.stderr)
         return 1
 
@@ -2922,7 +2245,7 @@ def cmd_worktree_remove(
         return 0
     _print_branch_deletion(deletion)
     # 보존 브랜치 캐비앗 — 같은 번호 base-경로 재생성이 막힌다(SlotBranchExists 선-검출).
-    if deletion.action == wp.BRANCH_PRESERVED:
+    if deletion.action == worktree_records.BRANCH_PRESERVED:
         print(
             f"  ⚠ 브랜치 {deletion.branch} 보존됨 — 같은 번호 슬롯 재생성은 브랜치 잔존을"
             " 선-검출해 명확히 멈춘다(SlotBranchExists). 그 브랜치 작업을 이어가려면 다른 슬롯에서"
@@ -2933,30 +2256,20 @@ def cmd_worktree_remove(
 
 def cmd_set_test_cmd(
     slot: str,
-    cmd: str | None,
-    *,
-    worktree_pool=None,
-) -> int:
+    cmd: str | None) -> int:
     """슬롯 빌드/테스트 명령 설정·변경 — 콘솔 `[b]`·"나중에 변경".
 
-    worktree_pool.set_test_cmd(slot, cmd) 로 기존 슬롯 리스의 test_cmd 를 갱신한다(flock +
+    pm_engine.app.worktree_pool.set_test_cmd(slot, cmd) 로 기존 슬롯 리스의 test_cmd 를 갱신한다(flock +
     atomic write·worktree_pool 책임). 별도 CLI 서브커맨드는 없다 — 콘솔 `[b]` 와 worktree
     add 프롬프트가 변경 경로를 흡수(결정 §setter 단순화). 장부에 슬롯이 없으면(`KeyError`)
     명시 에러 rc 1(침묵 무력화 금지). `cmd=None`/빈 문자열이면 바인딩 해제(폴백·현행).
 
     worktree_pool 주입으로 hermetic 테스트(실 장부 쓰기 없이 배선 검증).
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 슬롯 빌드명령 변경 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
     normalized = (cmd.strip() or None) if cmd else None
     try:
-        lease = wp.set_test_cmd(slot, normalized)
+        lease = pm_engine.app.worktree_pool.set_test_cmd(pm_paths.home_at(REPO), slot, normalized)
     except KeyError:
         print(
             f"[중단] 슬롯 {slot!r} 에 대한 리스가 없다 — 새 슬롯이 필요하면 먼저 사용자에게 "
@@ -2973,39 +2286,29 @@ def cmd_set_test_cmd(
 
 
 def cmd_release(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`release <slot> [--task <task>] [--force]` — 작업완료 반납 / 수동 강제 백스톱.
 
-    - 기본: worktree_pool.release(slot) — 커밋 안 한 변경이 있으면 ReleaseRefused(엔진은 stash 하지 않는다).
+    - 기본: pm_engine.app.worktree_pool.release(slot) — 커밋 안 한 변경이 있으면 ReleaseRefused(엔진은 stash 하지 않는다).
     - `--task <task>`: 소유검사 — 이 슬롯이 그 task 명의(lease.session)가 아니면 `NotTaskOwner`
       로 거부(다른 task/세션 슬롯을 실수로 idle 화 방지). dirty 판정보다 먼저. `--task` 미지정은
       현행 slot-only 반납(백스톱).
-    - `--force`: worktree_pool.force_release(slot) — 점유(leased)·소유 **무시 강제** idle 화.
+    - `--force`: pm_engine.app.worktree_pool.force_release(slot) — 점유(leased)·소유 **무시 강제** idle 화.
       커밋 안 한 변경은 force 여도 ReleaseRefused. 장부에 슬롯 없으면 무해 종료. force 는 순수
       백스톱이라 `--task` 소유검사도 건너뛴다(override 의도).
 
     부트스트랩·핸드오프는 슬롯을 반납하지 않는다 — 반납은 이 명령이 한다. worktree_pool 주입으로
     hermetic 테스트.
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 슬롯 반납 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
 
     if args.force:
         try:
-            lease = wp.force_release(args.slot)
-        except getattr(wp, "ReadonlySlotNotLeasable", ()) as exc:
+            lease = pm_engine.app.worktree_pool.force_release(pm_paths.home_at(REPO), args.slot)
+        except pool_store.ReadonlySlotNotLeasable as exc:
             print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — 강제 반납도 대상 아님.
             return 1
-        except wp.ReleaseRefused:
+        except worktree_records.ReleaseRefused:
             print(
                 f"[중단] 슬롯 {args.slot!r} 에 커밋 안 한 변경이 있다 — 강제 반납도 거부(엔진은 stash "
                 "하지 않는다). 사용자에게 물어 커밋하거나 사용자가 요청하면 stash 한 뒤 다시 실행하라.",
@@ -3020,14 +2323,14 @@ def cmd_release(
 
     owner_task = getattr(args, "task", None)
     try:
-        wp.release(args.slot, owner_task=owner_task)
+        pm_engine.app.worktree_pool.release(pm_paths.home_at(REPO), args.slot, owner_task=owner_task)
     except KeyError:
         print(f"[중단] 슬롯 {args.slot!r} 에 대한 리스가 없다.", file=sys.stderr)
         return 1
-    except getattr(wp, "ReadonlySlotNotLeasable", ()) as exc:
+    except pool_store.ReadonlySlotNotLeasable as exc:
         print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — 반납 대상 아님.
         return 1
-    except wp.NotTaskOwner as exc:
+    except worktree_records.NotTaskOwner as exc:
         held = f"session {exc.holder!r} 보유 중" if exc.holder else "미점유(idle)"
         print(
             f"[중단] 슬롯 {args.slot!r} 은 task {owner_task!r} 소유가 아니다 — 반납 거부({held}). "
@@ -3035,7 +2338,7 @@ def cmd_release(
             file=sys.stderr,
         )
         return 1
-    except wp.ReleaseRefused:
+    except worktree_records.ReleaseRefused:
         print(
             f"[중단] 슬롯 {args.slot!r} 에 커밋 안 한 변경이 있다 — 반납 거부(작업 유실 방지·엔진은 "
             "stash 하지 않는다). 사용자에게 물어 커밋하거나 사용자가 요청하면 stash 한 뒤 다시 "
@@ -3048,7 +2351,7 @@ def cmd_release(
     # task-명의 반납이면 집합 변경 직후 재열거 — 남은 보유 슬롯 집합을 surface.
     # slot-only 백스톱(owner_task=None)은 대상 task 가 없어 재열거 없음.
     if owner_task:
-        _render_task_slots(wp, owner_task)
+        _render_task_slots( owner_task)
     return 0
 
 
@@ -3067,7 +2370,7 @@ def _registered_repos() -> "set[str] | None":
         return None
 
 
-def _validate_prebound_task(wp, task: str) -> int:
+def _validate_prebound_task(task: str) -> int:
     """task 명 검증(예약패턴·traversal) + 기바인딩 요구 — `alloc`/`worktree add --task` 공용.
 
     task 이름이 lease session 으로 **기록**되는 write-capable 경로의 선검증이자,
@@ -3077,8 +2380,8 @@ def _validate_prebound_task(wp, task: str) -> int:
     """
     registered = _registered_repos()
     try:
-        wp._validate_task_name(task, registered)
-    except wp.InvalidTaskName as exc:
+        task_rules._validate_task_name(task, registered)
+    except worktree_records.InvalidTaskName as exc:
         print(
             f"[중단] 부적합 task 명 {task!r} — {exc.reason}. `--task` 는 안전한 단일 이름이어야 "
             "하고 슬롯 예약패턴(`<repo>_<N>`)은 쓸 수 없다.",
@@ -3086,7 +2389,7 @@ def _validate_prebound_task(wp, task: str) -> int:
         )
         return 1
     # 기바인딩 요구 — 생성은 `task new`·bootstrap 이 하고 여기선 붙이기만 한다. 미바인딩이면 안내 rc1.
-    if wp.find_task(task) is None:
+    if pool_store.find_task(pm_paths.home_at(REPO), task) is None:
         print(
             f"[중단] task {task!r} 이(가) 아직 없다 — alloc/add 는 기존 task 에 슬롯을 붙일 뿐 "
             f"정체성을 생성하지 않는다. 먼저 `pm-config task new {task}`(정체성만) 또는 "
@@ -3098,21 +2401,19 @@ def _validate_prebound_task(wp, task: str) -> int:
     return 0
 
 
-def _slot_live_branch(wp, slot: str) -> str:
+def _slot_live_branch(slot: str) -> str:
     """슬롯 worktree 의 live 브랜치를 fail-soft 조회.
 
     `current_branch(slot)`(git=진실·장부 저장 폐지)를 부른다 — 미해소/조회불가는 표시 문자열로
     흡수(재열거가 침묵/크래시 하지 않게).
     """
     try:
-        return wp.current_branch(slot) or "(detached)"
+        return worktree_git.current_branch(pm_paths.home_at(REPO), slot) or "(detached)"
     except Exception as exc:  # noqa: BLE001 — 일반 조회 실패는 표시 흡수(재열거는 부작용 0).
-        if _is_engine_rev_skew(exc):
-            raise
         return "(조회불가)"
 
 
-def _render_task_slots(wp, task_name: str) -> None:
+def _render_task_slots(task_name: str) -> None:
     """task 보유 슬롯 **집합**을 재열거해 surface 한다.
 
     집합을 바꾸는 연산(alloc·release·task end·`worktree add --task`) **직후** 결과 집합(슬롯·
@@ -3121,10 +2422,8 @@ def _render_task_slots(wp, task_name: str) -> None:
     `slots_for_task`(session==task 명의 leased·장부 진실)에서 파생 — 신설 저장소 0·부작용 0.
     """
     try:
-        slots = list(wp.slots_for_task(task_name) or [])
+        slots = list(pool_store.slots_for_task(pm_paths.home_at(REPO), task_name) or [])
     except Exception as exc:  # noqa: BLE001 — 일반 재열거 실패는 흡수(연산 자체는 이미 성공).
-        if _is_engine_rev_skew(exc):
-            raise
         return
     label = f"작업공간 (task {task_name!r} 보유 {len(slots)})"
     if not slots:
@@ -3132,18 +2431,15 @@ def _render_task_slots(wp, task_name: str) -> None:
         return
     print(f"{label}:")
     for l in sorted(slots, key=lambda x: x.slot):
-        branch = _slot_live_branch(wp, l.slot)
+        branch = _slot_live_branch( l.slot)
         print(f"  - {l.slot} · repo={l.repo} · branch={branch} · {l.state}")
 
 
 def cmd_alloc(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`alloc <repo> --task <task>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여.
 
-    worktree_pool.alloc(repo, owner_task=<task>) 로 idle **최소 번호** 슬롯을 leased 로 전이한다 —
+    pm_engine.app.worktree_pool.alloc(repo, owner_task=<task>) 로 idle **최소 번호** 슬롯을 leased 로 전이한다 —
     session 축에 task 정체성을 실어 이후 `release --task`/`task end` 소유검사가 매칭한다.
     **항상 신규 대여**: 같은 task 가 이미 이 repo 슬롯을 보유해도 그걸 재반환하지 않고
     다른 idle 슬롯을 대여해 **같은 repo 복수 보유**(병렬 dev 격리
@@ -3164,18 +2460,11 @@ def cmd_alloc(
 
     worktree_pool 주입으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 슬롯 대여 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
 
     # 명 검증 + 기바인딩 요구 — 공유 헬퍼(`worktree add --task` 와 동일 규율).
     # InvalidTaskName/미바인딩 → rc1(부작용·alloc 이전·진단은 헬퍼가 출력).
-    rc = _validate_prebound_task(wp, args.task)
+    rc = _validate_prebound_task( args.task)
     if rc:
         return rc
 
@@ -3185,8 +2474,8 @@ def cmd_alloc(
         # 담당한다(bound 아님).
         folders_arg = getattr(args, "folders", None)
         folders = None if folders_arg is None else [item.strip() for item in folders_arg.split(",")]
-        lease = wp.alloc(args.repo, owner_task=args.task, folders=folders)
-    except wp.NeedsCreate:
+        lease = pm_engine.app.worktree_pool.alloc(pm_paths.home_at(REPO), args.repo, owner_task=args.task, folders=folders)
+    except worktree_records.NeedsCreate:
         folders_option = f" --folders {shlex.quote(folders_arg)}" if folders_arg is not None else ""
         print(
             f"[중단] repo {args.repo!r} 에 대여 가능한 idle 슬롯이 없다 — 풀 소진. 새 슬롯은 "
@@ -3198,17 +2487,17 @@ def cmd_alloc(
             file=sys.stderr,
         )
         return 1
-    except wp.SlotFoldersRefused as exc:
+    except worktree_records.SlotFoldersRefused as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
-    except wp.BareRepoMissing as exc:
+    except worktree_records.BareRepoMissing as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
-    except wp.CheckoutFailed as exc:
+    except worktree_records.CheckoutFailed as exc:
         print(f"[중단] 슬롯 체크아웃 실패: {exc}", file=sys.stderr)
         return 1
 
-    slot_path = wp.slot_path(lease.slot)
+    slot_path = pm_paths.slot_path(pm_paths.home_at(REPO), lease.slot)
     print(
         f"✓ 슬롯 대여: {lease.slot} (repo={lease.repo} · task={args.task}) → {slot_path}\n"
         f"  이 슬롯은 task {args.task!r} 명의로 leased — 코드 작업은 이 슬롯 cwd 에서. "
@@ -3216,26 +2505,23 @@ def cmd_alloc(
         f"  반납: `pm-config release {lease.slot} --task {args.task}` (작업완료 시 idle 반납)."
     )
     try:
-        actual_folders = wp.slot_folders(lease.slot)
-    except wp.SlotFoldersRefused as exc:
+        actual_folders = sparse_checkout.slot_folders(pm_paths.home_at(REPO), lease.slot)
+    except worktree_records.SlotFoldersRefused as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     print("  폴더: " + (", ".join(actual_folders) if actual_folders is not None else "(제한 없음)"))
     if folders is not None:
         print("  폴더를 줄이면 빠진 폴더 안의 추적 밖 파일(빌드 결과물 등)은 git 이 지운다")
     # 집합 변경 직후 재열거 — task 가 지금 보유한 슬롯 집합을 surface.
-    _render_task_slots(wp, args.task)
+    _render_task_slots( args.task)
     return 0
 
 
 def cmd_task_new(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`task new <task>` — task 정체성만 생성(세션 묶기 없음·닫힘·슬롯 0).
 
-    `worktree_pool.create_task` 로 장부 `tasks[]` 행(`prefix=None`·닫힘)과 서술 pm_state 를
+    `task_lifecycle.create_task` 로 장부 `tasks[]` 행(`prefix=None`·닫힘)과 서술 pm_state 를
     만든다 — 관리자/사용자가 아이들 상태에서 task 목록을 조정하는 진입이다. 세션에 묶는 것은
     부트스트랩 몫이고, 닫힘은 종료 기록과 같은 값이라 이어지는 `/pm-bootstrap --task <task>` 이
     **resume** 으로 이어받는다(신규 생성 아님).
@@ -3251,29 +2537,22 @@ def cmd_task_new(
     worktree_pool 주입으로 hermetic 테스트. 예약패턴 판별 근거는 `_registered_repos` 가
     해소한다(읽기 실패면 None → traversal 검증만·`cmd_alloc` 과 같은 한 자리).
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task 생성 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
     name = args.name
 
     # 예약패턴(`<repo>_<N>`) 판별 근거 — areas fail-soft 해소(실패면 None·traversal 검증은 유지).
     registered = _registered_repos()
 
     try:
-        task = wp.create_task(name, registered_repos=registered)
-    except wp.InvalidTaskName as exc:
+        task = task_lifecycle.create_task(pm_paths.home_at(REPO), name, registered_repos=registered)
+    except worktree_records.InvalidTaskName as exc:
         print(
             f"[중단] 부적합 task 명 {name!r} — {exc.reason}. task 이름은 안전한 단일 이름이어야 "
             "하고 슬롯 예약패턴(`<repo>_<N>`)은 쓸 수 없다.",
             file=sys.stderr,
         )
         return 1
-    except wp.TaskArchived as exc:
+    except worktree_records.TaskArchived as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         print(
             f"  → `pm-config task reopen {name}` (복수 후보면 `--archive <basename>` 추가) 로 "
@@ -3303,35 +2582,23 @@ def cmd_task_new(
 
 
 def cmd_task_branch(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`task branch <task> <슬롯> <브랜치> --from <부모>` — 슬롯에 새 브랜치를 만들고 부모를 기록한다.
 
     슬롯 안에서 새 브랜치를 만드는 유일한 명령이다(`switch` 는 기존 브랜치 전환만 한다). 브랜치는
     부모 브랜치의 최신 커밋에서 만들고, 부모 이름과 갈라진 커밋을 git 저장소 설정에 적는다
-    (`worktree_pool.create_task_branch`). `<task>` 은 그 슬롯을 쥔 task 다.
+    (`task_lifecycle.create_task_branch`). `<task>` 은 그 슬롯을 쥔 task 다.
     슬롯은 늘 적는다(`release <slot>` 과 같은 위치 인자·암묵 선택 없음). 엔진 거부는 사유 문구 그대로 rc 1 이다.
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 브랜치 생성 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
     try:
-        slot = wp._normalize_slot(args.slot)
-    except wp.SlotResolutionError as exc:
+        slot = worktree_paths._normalize_slot(pm_paths.home_at(REPO), args.slot)
+    except worktree_records.SlotResolutionError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     try:
-        result = wp.create_task_branch(slot, args.branch, parent=args.parent, owner_task=args.name)
-    except (wp.TaskBranchRefused, wp.ReadonlySlotMutation) as exc:
-        if _is_engine_rev_skew(exc):
-            raise
+        result = branch_checkout.create_task_branch(pm_paths.home_at(REPO), slot, args.branch, parent=args.parent, owner_task=args.name)
+    except (worktree_records.TaskBranchRefused, pool_store.ReadonlySlotMutation) as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     print(
@@ -3342,10 +2609,7 @@ def cmd_task_branch(
 
 
 def cmd_task_close(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`task close <task>` — 종료 기록 없이 열린 채 남은 task 세션 기록을 닫는다.
 
     **기록만 닫는다** — 복원(claim 티켓·라운드 단계 등)은 이 경로의 관심사가 아니다(그건
@@ -3353,21 +2617,14 @@ def cmd_task_close(
     다음 부트스트랩이 거부하는데, 그것을 닫는 것은 **사용자 행위**다(엔진 자동 회수·만료 시각
     없음). 작업 폴더 쪽 짝은 기존 `pm-config release <slot> --force` 다 — 새로 만들지 않았다.
 
-    write 는 기존 프리미티브 `worktree_pool.close_task_session` 하나만 부른다(장부 write 재구현 0).
+    write 는 기존 프리미티브 `task_lifecycle.close_task_session` 하나만 부른다(장부 write 재구현 0).
     값은 열림/닫힘 둘뿐이라 세 번째 상태값도, 만료/유예 인자도 없다.
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task close 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
     name = args.name
     try:
-        record = wp.find_task(name)
-    except wp.InvalidTaskName as exc:
+        record = pool_store.find_task(pm_paths.home_at(REPO), name)
+    except worktree_records.InvalidTaskName as exc:
         print(f"[중단] 부적합 task 명 {name!r} — {exc.reason}.", file=sys.stderr)
         return 1
     if record is None:
@@ -3376,7 +2633,7 @@ def cmd_task_close(
     if not record.open:
         print(f"  task {name!r} 은 이미 닫혀 있다 — 바꿀 기록 없음(무해).")
         return 0
-    wp.close_task_session(name)
+    task_lifecycle.close_task_session(pm_paths.home_at(REPO), name)
     print(f"✓ task {name!r} 세션 기록을 닫았다 (열림 → 닫힘) — 복원 없음(기록만).")
     print(
         f"  이어서 진입하려면: `{_runtime_skill_entry('pm-bootstrap')} --task {name}`."
@@ -3387,7 +2644,7 @@ def cmd_task_close(
 def cmd_task_end(
     args: argparse.Namespace,
     *,
-    worktree_pool=None,
+
     board=None,
 ) -> int:
     """`task end <task>` — task 종료: claimed 소진 게이트 → dirty 게이트 → clean 시 일괄 반납 + 아카이브 이동.
@@ -3399,7 +2656,7 @@ def cmd_task_end(
          이라 task end 가 자동 실행하지 않는다(목록+거부까지). task 지정 prefix 의 open 티켓은
          **정보 표시만**(차단 안 함·prefix≠경계).
       2. **dirty 게이트** — 보유 작업공간(session==task)에 미커밋 변경이 있으면 목록 + 거부(사용자
-         정리 후 재시도). worktree_pool.end_task 가 판정(아무 부작용 0).
+         정리 후 재시도). task_lifecycle.end_task 가 판정(아무 부작용 0).
       3. **전부 clean** → 보유 슬롯 일괄 idle 반납(worktree **삭제 안 함**·반납=idle) → 장부 task
          레코드 제거 → 서술 폴더 `.local/tasks/<task>/` 를 `_ended/<task>-<날짜>/` 로 **이동**
          (삭제 아님·이름 재사용 시 옛 pm_state resume 오염 방지).
@@ -3407,34 +2664,24 @@ def cmd_task_end(
     worktree_pool/board 주입으로 hermetic 테스트. board 부재/스캔 실패는 claimed 게이트를
     graceful skip(엔진 dirty/반납은 진행) — board 없는 순수 슬롯 정리도 되게(크래시 0).
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task 종료 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
     name = args.name
 
     # 명 검증 — end_task 가 장부 write·`shutil.move` 하는 write-capable 진입점이라
     # 엔진이 자체 검증(fail-loud)하지만, CLI 도 board 스캔 이전에 선-fail 로 clean 하게 rc1 한다
     # (traversal/절대경로/빈 이름 → 잘못된 스캔·이동 시도 자체를 안 함). InvalidTaskName 이 없는
     # 구 엔진(사본 lag)이면 getattr 로 graceful skip(엔진 검증이 최종 백스톱).
-    _invalid = getattr(wp, "InvalidTaskName", None)
-    _validator = getattr(wp, "_validate_task_name", None)
-    if _validator is not None and _invalid is not None:
-        try:
-            _validator(name)
-        except _invalid as exc:
-            print(
-                f"[중단] 부적합 task 명 {name!r} — {exc.reason}. task 이름은 안전한 단일 이름이어야 한다.",
-                file=sys.stderr,
-            )
-            return 1
+    try:
+        task_rules._validate_task_name(name)
+    except worktree_records.InvalidTaskName as exc:
+        print(
+            f"[중단] 부적합 task 명 {name!r} — {exc.reason}. task 이름은 안전한 단일 이름이어야 한다.",
+            file=sys.stderr,
+        )
+        return 1
 
     # 1) claimed 소진 게이트 — board 스캔. task 레코드 prefix 로 prefix-open 정보도 함께.
-    task_rec = wp.find_task(name)
+    task_rec = pool_store.find_task(pm_paths.home_at(REPO), name)
     prefix = task_rec.prefix if task_rec is not None else None
     board_mod = board or _load_module("board", "board.py")
     scan = None
@@ -3443,8 +2690,6 @@ def cmd_task_end(
         try:
             scan = scanner(_default_user(), name, prefix)
         except Exception as exc:  # noqa: BLE001 — board 스캔 실패는 claimed 게이트 skip.
-            if _is_engine_rev_skew(exc):
-                raise  # 스캔이 판독 seam 까지 들어가므로 형제 skew 만은 삼키지 않는다.
             scan = None
     if scan and scan.get("claimed"):
         print(
@@ -3462,8 +2707,8 @@ def cmd_task_end(
 
     # 2) dirty 게이트 + 3) clean 시 일괄 반납 + 서술 폴더 아카이브 이동 — 엔진 end_task.
     try:
-        result = wp.end_task(name)
-    except wp.TaskEndRefused as exc:
+        result = task_lifecycle.end_task(pm_paths.home_at(REPO), name)
+    except worktree_records.TaskEndRefused as exc:
         print(
             f"[중단] task {name!r} 종료 거부 — {exc.reason}. "
             "task end 는 종료 기록(핸드오프 또는 `task close`) 뒤에만 허용된다.",
@@ -3506,29 +2751,20 @@ def cmd_task_end(
         f"✓ task {name!r} 종료 완료 — 이름 재사용 안전(아카이브 이동으로 옛 pm_state 오염 없음·PM 홈)."
     )
     # 집합 변경(일괄 반납) 직후 재열거 — 종료 후 보유 슬롯 0(전부 idle 반납)을 확인.
-    _render_task_slots(wp, name)
+    _render_task_slots( name)
     return 0
 
 
 def cmd_task_reopen(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`task reopen <task> [--archive <basename>]` — 종료 task identity 복원."""
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task reopen 불가.",
-            file=sys.stderr,
-        )
-        return 1
+
     try:
-        result = wp.reopen_task(args.name, archive=args.archive)
-    except wp.InvalidTaskName as exc:
+        result = task_lifecycle.reopen_task(pm_paths.home_at(REPO), args.name, archive=args.archive)
+    except worktree_records.InvalidTaskName as exc:
         print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
         return 1
-    except wp.TaskReopenRefused as exc:
+    except worktree_records.TaskReopenRefused as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         if exc.archives:
             print(
@@ -3553,18 +2789,6 @@ def cmd_task_reopen(
 _TASK_PREFIX_NONE_LITERAL = "none"
 
 
-def _todo_worktree_pool(worktree_pool, action: str):
-    """todo 명령 셋이 공유하는 엔진 해소 — 부재면 `None`(호출부가 rc1 안내)."""
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            f"[중단] worktree_pool.py 엔진을 찾을 수 없다 — todo {action} 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-    return wp
-
-
 def _todo_missing_task(name: str) -> int:
     """todo 대상 task 가 장부에 없을 때의 단일 안내(세 명령 공용·문구 사본 0)."""
     print(
@@ -3576,30 +2800,25 @@ def _todo_missing_task(name: str) -> int:
     return 1
 
 
-def _print_open_todos(wp, name: str, todos) -> None:
+def _print_open_todos( name: str, todos) -> None:
     """열린 todo 목록 출력 — 세 명령 공용(문구·형식 사본 0)."""
     print(f"task {name} 열린 todo {len(todos)}건:")
     for todo in todos:
-        print(f"  {wp.format_todo_line(todo)}")
+        print(f"  {task_store.format_todo_line(todo)}")
 
 
 def cmd_task_todo_add(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`task todo add <task> <내용>` — 열린 todo 를 하나 더한다.
 
     쓰기 판정이 "열린 todo 가 없으면 경고" 를 이 목록으로 내므로, 이 명령이 작업을 시작하는
     진입이다. 등록 시각(UTC ISO)과 ID 는 엔진이 박고 사용자가 주지 않는다 — 묵은 정도의 근거를
     손으로 적게 하면 그 값이 곧 틀린다.
     """
-    wp = _todo_worktree_pool(worktree_pool, "등록")
-    if wp is None:
-        return 1
+
     try:
-        updated = wp.add_task_todo(args.name, args.text)
-    except wp.InvalidTaskName as exc:
+        updated = task_lifecycle.add_task_todo(pm_paths.home_at(REPO), args.name, args.text)
+    except worktree_records.InvalidTaskName as exc:
         print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
         return 1
     except ValueError as exc:
@@ -3607,51 +2826,41 @@ def cmd_task_todo_add(
         return 1
     if updated is None:
         return _todo_missing_task(args.name)
-    _print_open_todos(wp, args.name, updated)
+    _print_open_todos( args.name, updated)
     return 0
 
 
 def cmd_task_todo_list(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`task todo list <task>` — 열린 todo 를 ID·등록일·묵은 일수와 함께 본다."""
-    wp = _todo_worktree_pool(worktree_pool, "조회")
-    if wp is None:
-        return 1
+
     try:
-        task = wp.find_task(args.name)
-    except wp.InvalidTaskName as exc:
+        task = pool_store.find_task(pm_paths.home_at(REPO), args.name)
+    except worktree_records.InvalidTaskName as exc:
         print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
         return 1
     if task is None:
         return _todo_missing_task(args.name)
-    todos = wp.read_task_todos(task.name)
+    todos = task_store.read_task_todos(pm_paths.home_at(REPO), task.name)
     if not todos:
         print(f"task {task.name} 열린 todo 없음 — `pm-config task todo add {task.name} <내용>`")
         return 0
-    _print_open_todos(wp, task.name, todos)
+    _print_open_todos( task.name, todos)
     return 0
 
 
 def cmd_task_todo_done(
-    args: argparse.Namespace,
-    *,
-    worktree_pool=None,
-) -> int:
+    args: argparse.Namespace) -> int:
     """`task todo done <task> <ID>` — 열린 todo 하나를 완료 처리한다(목록에서 제거).
 
     완료 표시를 남기지 않는다 — 무엇을 했는지의 단일 진실은 log handoff entry 다. ID 는 재사용
     하지 않으므로 목록이 줄어도 남은 줄의 번호가 밀리지 않는다. 없는 ID 면 rc1 로 멈춘다
     (무시하면 지운 줄 알고 넘어간다).
     """
-    wp = _todo_worktree_pool(worktree_pool, "완료")
-    if wp is None:
-        return 1
+
     try:
-        result = wp.close_task_todo(args.name, args.todo_id)
-    except wp.InvalidTaskName as exc:
+        result = task_lifecycle.close_task_todo(pm_paths.home_at(REPO), args.name, args.todo_id)
+    except worktree_records.InvalidTaskName as exc:
         print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
         return 1
     except LookupError as exc:
@@ -3664,14 +2873,14 @@ def cmd_task_todo_done(
     if not updated:
         print(f"task {args.name} 열린 todo 없음 — 이 상태에서는 파일 수정에 경고가 붙는다.")
         return 0
-    _print_open_todos(wp, args.name, updated)
+    _print_open_todos( args.name, updated)
     return 0
 
 
 def cmd_task_prefix(
     args: argparse.Namespace,
     *,
-    worktree_pool=None,
+
     board=None,
 ) -> int:
     """`task prefix <task> <p|none>` — task 의 ticket prefix 지정/변경/해제 (중간 변경 자유).
@@ -3687,7 +2896,7 @@ def cmd_task_prefix(
       2. **prefix 값 해소** — `none`(대소문자 무관)은 **해제 리터럴** → None(무prefix).
          그 외는 board **소비측 grammar 단일 진실**(`_validate_prefix` `[a-z0-9_]` 형식·예약어)로
          선검증 — `board.py new` 가 task prefix 를 재검증 없이 신뢰하므로 여기가 유일 입력 게이트다.
-      3. **저장** — `worktree_pool.set_task_prefix`(장부 flock/스키마 단일 소유·직접 JSON write 금지)로
+      3. **저장** — `task_lifecycle.set_task_prefix`(장부 flock/스키마 단일 소유·직접 JSON write 금지)로
          atomic 갱신. task 부재면 rc1 안내(생성은 `task new`·bootstrap 소관).
 
     worktree_pool/board 주입으로 hermetic 테스트. board 부재/헬퍼 부재는 prefix 형식·
@@ -3695,14 +2904,7 @@ def cmd_task_prefix(
     단, task 예약명 검증에 넘기는 registered_repos 조회만 실패 시 None으로 완화하고
     traversal 검증은 엔진 validator로 계속 강제한다.
     """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    if wp is None:
-        print(
-            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task prefix 설정 불가 "
-            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
+
     name = args.name
     value = args.value
 
@@ -3711,8 +2913,8 @@ def cmd_task_prefix(
     board_mod = board or _load_module("board", "board.py")
     registered = _registered_repos()
     try:
-        wp._validate_task_name(name, registered)
-    except wp.InvalidTaskName as exc:
+        task_rules._validate_task_name(name, registered)
+    except worktree_records.InvalidTaskName as exc:
         print(
             f"[중단] 부적합 task 명 {name!r} — {exc.reason}. task 이름은 안전한 단일 이름이어야 한다.",
             file=sys.stderr,
@@ -3774,10 +2976,10 @@ def cmd_task_prefix(
             )
             if fresh is None:
                 return 1
-            updated = wp.set_task_prefix(name, fresh)
+            updated = task_lifecycle.set_task_prefix(pm_paths.home_at(REPO), name, fresh)
             new_prefix = fresh
     else:
-        updated = wp.set_task_prefix(name, None)
+        updated = task_lifecycle.set_task_prefix(pm_paths.home_at(REPO), name, None)
     if updated is None:
         print(
             f"[중단] task {name!r} 이(가) 아직 없다 — prefix 설정은 기존 task 레코드를 갱신할 뿐 "
@@ -3837,7 +3039,7 @@ def cmd_update(
     # 인자 없음 → 위임 동안만 "pm_update.py"→"pm-config update" 로 치환한다(에이전트가 칠 실
     # 커맨드와 정합·파일명 leak 0). 실 배선 검증 테스트가 mock 을 주입하면 fake.main 은 argparse
     # 를 만들지 않으므로 이 래핑은 무해(패치 후 즉시 원복).
-    with _forwarded_prog({"pm_update.py": f"{_FACADE_PROG} update"}):
+    with _forwarded_prog({"pm_update.py": f"{repo_protection._FACADE_PROG} update"}):
         return pm_update_mod.main(forward_args)
 
 
@@ -3895,8 +3097,6 @@ def cmd_upstream(
     *,
     pm_import=None,
     git_runner: GitRunner | None = None,
-    board=None,
-    worktree_pool=None,
 ) -> int:
     """`upstream show | set <value>` — upstream 값 조회/전환.
 
@@ -3955,8 +3155,6 @@ def cmd_upstream(
     try:
         pm_import_mod._write_conf_keys(local_conf, {"upstream.path": value})
     except RuntimeError as exc:
-        if _is_engine_rev_skew(exc):
-            raise
         print(
             f"[중단] {exc}",
             file=sys.stderr,
@@ -3964,7 +3162,7 @@ def cmd_upstream(
         return 1
     # upstream은 보호 push gate의 provenance 입력이다. 값이 같아도 끊긴/stale sidecar를
     # 자가치유하도록 등록 repo 전수를 중앙 설치 깔때기로 보낸다.
-    _refresh_protected_gate_contracts(board=board, worktree_pool=worktree_pool)
+    repo_protection._refresh_protected_gate_contracts(pm_paths.home_at(REPO))
     kind = upstream_rules.classify_upstream(value)
     print(f"✓ upstream 설정: {value}  ({kind}) — pm_update 가 --from 생략 시 이 값을 쓴다.")
     return 0
@@ -4001,7 +3199,7 @@ def cmd_init(
     # usage prog 정합 — board.main 은 prog="board.py" 하드코딩·prog 인자
     # 없음 → 위임 동안만 "board.py"→"pm-config" 로 치환한다. init 서브파서 usage 는 부모 prog
     # 에서 "pm-config init" 로 자동 파생돼 에이전트가 칠 실 커맨드와 정합(파일명 leak 0).
-    with _forwarded_prog({"board.py": _FACADE_PROG}):
+    with _forwarded_prog({"board.py": repo_protection._FACADE_PROG}):
         rc = board_mod.main(["init", *forward_args])
     return rc
 
@@ -4044,7 +3242,7 @@ def cmd_add_harness(
     # 는 자체 argparse 를 만들지 않고 main-style 로 출력·rc 반환하지만, 위임 경계를 init/update 와
     # 균일하게 감싸 pm_import 가 어떤 argparse usage 를 surface 하더라도 파일명("pm_import.py")이 새지
     # 않게 한다(에이전트가 칠 실 커맨드 pm-config add-harness 와 정합·경계 leak 0). rc 는 그대로 전파.
-    with _forwarded_prog({"pm_import.py": f"{_FACADE_PROG} add-harness"}):
+    with _forwarded_prog({"pm_import.py": f"{repo_protection._FACADE_PROG} add-harness"}):
         return pm_import_mod.add_harness_cli(
             dest, args.harness, dry_run=args.dry_run, source_root=source_root)
 
@@ -4293,7 +3491,7 @@ def _accept_adapter_config_set(pm_import_mod, dest: Path, source_root: Path,
     for item in excluded:
         print(f"→ 세트 수용 제외({_ADAPTER_SET_ACCEPT_EXCLUDED[item.status]}): {item.relpath} · "
               f"{item.harness} · {item.mode} "
-              f"— 받으려면 `{_FACADE_PROG} sync-adapter-config --accept {item.relpath}`")
+              f"— 받으려면 `{repo_protection._FACADE_PROG} sync-adapter-config --accept {item.relpath}`")
     if not targets:
         print("어댑터 config 세트 수용 대상 없음 "
               + ("(편집분 제외 후 남은 대상 없음)." if excluded else "(전부 상류와 동일)."))
@@ -4450,14 +3648,14 @@ def cmd_sync_adapter_config(
                 )
             else:
                 print(
-                    f"    → `{_FACADE_PROG} sync-adapter-config --accept "
+                    f"    → `{repo_protection._FACADE_PROG} sync-adapter-config --accept "
                     f"{judgment.relpath}` (백업 후 상류 값 수용·원장화).",
                     file=sys.stderr,
                 )
         return _finish_sync_adapter_config(1, check=True)
     # 세트 수용도 여기서 병기한다 — 단건만 노출하면 무편집분이 여러 개인 채택자가 세트 커맨드의
     #   존재를 모른 채 한 파일씩 수용한다(발견성). 제외 규칙은 세트 커맨드가 스스로 알린다.
-    print(f"  수용(백업 후 상류 값 채택): {_FACADE_PROG} sync-adapter-config --accept <경로> "
+    print(f"  수용(백업 후 상류 값 채택): {repo_protection._FACADE_PROG} sync-adapter-config --accept <경로> "
           "· 무편집분 일괄은 --accept-all (Windows 는 `.\\pm-config.cmd`)")
     return _finish_sync_adapter_config(0, check=False)
 
@@ -4505,17 +3703,14 @@ def _render_repos() -> None:
         )
 
 
-def _render_slots(wp) -> None:
+def _render_slots() -> None:
     """worktree 풀 리스 장부를 slot·repo·build(test_cmd)·state·session 으로 surface.
 
-    worktree_pool.list_leases() 재사용. wp 가 없으면 안내만(크래시 0). cmd_status 의 풀
+    pool_store.list_leases() 재사용. wp 가 없으면 안내만(크래시 0). cmd_status 의 풀
     surface 와 같은 데이터 — 콘솔은 build(test_cmd) 칼럼을 강조한다(이 콘솔의 1급 관심사).
     """
     print("## slots (worktree 풀 리스):")
-    if wp is None:
-        print("  (worktree_pool.py 엔진 없음 — 슬롯 상태 조회 불가)")
-        return
-    leases = wp.list_leases()
+    leases = pool_store.list_leases(pm_paths.home_at(REPO))
     if not leases:
         print("  (슬롯 없음 — [w] 로 추가하라)")
         return
@@ -4526,12 +3721,12 @@ def _render_slots(wp) -> None:
         )
 
 
-def _render_state(wp) -> None:
+def _render_state() -> None:
     """콘솔 상태 1회 렌더 — repos(areas) + slots(리스). 액션마다 재호출(재렌더)."""
     print()
     print(f"# pm-config 콘솔 — 세션: {_default_session() or '(비바인딩)'}")
     _render_repos()
-    _render_slots(wp)
+    _render_slots()
 
 
 _CONSOLE_MENU = (
@@ -4615,7 +3810,7 @@ def _console_repo_add(input_fn, board_mod):
     return None
 
 
-def _console_worktree_add(input_fn, wp, board_mod=None):
+def _console_worktree_add(input_fn, board_mod=None):
     """`[w]` — repo 를 받아 cmd_worktree_add 위임. 빌드명령은 그 핸들러가 프롬프트(tty 경로).
 
     repo 프롬프트가 EOF/Ctrl-C 면 `_CONSOLE_ABORT` 반환(루프 우아 종료). 빈입력은 취소.
@@ -4649,12 +3844,12 @@ def _console_worktree_add(input_fn, wp, board_mod=None):
     # is_tty=lambda: True 로 강제(콘솔 진입 자체가 tty 보장·main 분기). --test 는 미지정.
     args = argparse.Namespace(repo=repo, test=None, user_ack=repo)
     cmd_worktree_add(
-        args, worktree_pool=wp, board=board_mod, input_fn=input_fn, is_tty=lambda: True
+        args, board=board_mod, input_fn=input_fn, is_tty=lambda: True
     )
     return None
 
 
-def _console_set_test_cmd(input_fn, wp):
+def _console_set_test_cmd(input_fn):
     """`[b]` — slot·새 빌드명령을 받아 cmd_set_test_cmd 위임 (worktree_pool.set_test_cmd).
 
     slot·빌드명령 프롬프트가 EOF/Ctrl-C 면 `_CONSOLE_ABORT` 반환(루프 우아 종료). slot 빈입력은
@@ -4671,7 +3866,7 @@ def _console_set_test_cmd(input_fn, wp):
     if cmd is _CONSOLE_ABORT:
         return _CONSOLE_ABORT
     cmd = cmd.strip()
-    cmd_set_test_cmd(slot, cmd or None, worktree_pool=wp)
+    cmd_set_test_cmd(slot, cmd or None)
     return None
 
 
@@ -4901,7 +4096,6 @@ def run_console(
     *,
     input_fn: Callable[[str], str] = input,
     board=None,
-    worktree_pool=None,
 ) -> int:
     """대화형 콘솔 루프 — 상태 렌더 + 메뉴 + 액션 + 재렌더 (tty 전용).
 
@@ -4919,9 +4113,8 @@ def run_console(
     주입으로 hermetic 테스트(실 clone/worktree·라이브 input 블록 0 — 입력 시퀀스 주입 + 핸들러 mock).
     """
     board_mod = board or _load_module("board", "board.py")
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
 
-    _render_state(wp)
+    _render_state()
     while True:
         print(_CONSOLE_MENU)
         # 메뉴 선택도 액션 프롬프트와 *같은* 공유 헬퍼로 통일 — 중단(EOF/Ctrl-C) → 우아 종료.
@@ -4935,14 +4128,14 @@ def run_console(
             print("콘솔 종료.")
             return 0
         if choice == "s":
-            _render_state(wp)
+            _render_state()
             continue
         if choice == "r":
             result = _console_repo_add(input_fn, board_mod)
         elif choice == "w":
-            result = _console_worktree_add(input_fn, wp, board_mod)
+            result = _console_worktree_add(input_fn, board_mod)
         elif choice == "b":
-            result = _console_set_test_cmd(input_fn, wp)
+            result = _console_set_test_cmd(input_fn)
         elif choice == "m":
             # 위임 모델 안내 — 출력 전용(장부 변경 0). 입력 프롬프트가 없어 중단 축이 없다.
             result = _console_delegate_models()
@@ -4960,7 +4153,7 @@ def run_console(
             print("\n콘솔 종료.")
             return 0
         # 액션 수행 후 바뀐 상태를 재렌더(입력마다 상태 변화 확인).
-        _render_state(wp)
+        _render_state()
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

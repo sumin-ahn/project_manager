@@ -184,7 +184,7 @@ class PmHomeResolutionError(RuntimeError):
 
 
 # 두-git 형상의 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 놓인다 — 슬롯을 만든
-# 도구(`worktree_pool.bare_repo_path` = `pm_config.REPOS_DIR / f"{repo}.git"`)가 써 넣은
+# 도구(`pm_paths.bare_repo_path` = `pm_config.REPOS_DIR / f"{repo}.git"`)가 써 넣은
 # 자리라 조상 추측이 아니라 선언이다.
 _GIT_DIR_NAME = ".git"
 _BARE_REPOS_DIR_NAME = ".repos"
@@ -297,3 +297,73 @@ def resolve_pm_home_for_repo(anchor: Path) -> Path:
     except PmHomeResolutionError as exc:
         raise AnchorResolutionError(str(exc)) from exc
     return pm_home
+
+
+def slot_path(home, slot: str) -> Path:
+    """슬롯 식별자(`work/<repo>_<N>`) → 절대 경로 (REPO 기준)."""
+    return home.root / slot
+
+
+def bare_repo_path(home, repo: str) -> Path:
+    """repo 이름 → 그 repo 의 공유 .git 원 경로 `.repos/<repo>.git` (bare).
+
+    worktree 슬롯이 add/remove 되는 git 컨텍스트. `pm_config.REPOS_DIR / f"{repo}.git"` 와
+    같은 관례 — worktree 풀이 import 격리(board·pm_config 미import)라 자체 해소한다.
+    """
+    return repos_dir(home) / f"{repo}.git"
+
+
+def task_dir(home, name: str) -> Path:
+    """task 서술 공간 `.local/tasks/<name>/` 경로 (pm_state.md·메타). 기계 상태는 장부·서술만 여기."""
+    return tasks_dir(home) / name
+
+
+def task_pm_state_file(home, name: str) -> Path:
+    """task 연속성 단일 앵커 `.local/tasks/<name>/pm_state.md` 경로."""
+    return task_dir(home, name) / "pm_state.md"
+
+
+def task_todo_file(home, name: str) -> Path:
+    """이 task 의 열린 할 일 파일 `.local/tasks/<name>/todo.json` 경로."""
+    return task_dir(home, name) / "todo.json"
+
+
+def _task_todo_lock_file(home, name: str) -> Path:
+    """열린 할 일 파일의 배타 락 — task 폴더 안이라 task 끼리 경합하지 않는다."""
+    return task_dir(home, name) / "todo.lock"
+
+
+def _task_pm_state_template_file(home) -> Path:
+    """task state seed 원천 — 호출 시점 REPO를 따라 hermetic 재배선과 실제 실행을 함께 지원."""
+    return home.root / ".project_manager" / "wiki" / "pm_state.template.md"
+
+
+# 하네스 세션 ID 기록 — 부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없다(codex·opencode 는
+# 도구 프로세스 환경에 없다·실측). 세션 ID 를 받는 가드 훅이 `pm_bootstrap.py --task X` 호출을 보고
+# 여기에 적고, 부트스트랩이 가져가(`take_task_session_claim`) task 기록에 쓴다.
+TASK_SESSION_CLAIMS_DIRNAME = "task-session-claims"
+
+
+def _task_session_claim_path(home, name: str) -> Path:
+    """세션 기록 파일 자리 — `LOCAL_DIR` 을 부를 때마다 읽는다(홈을 바꿔 쓰는 소비자와 같은 자리)."""
+    return home.local_dir / TASK_SESSION_CLAIMS_DIRNAME / f"{name}.json"
+
+
+def leases_lock(home) -> Path:
+    return home.local_dir / "worktree-leases.lock"
+
+
+def tasks_dir(home) -> Path:
+    return home.local_dir / "tasks"
+
+
+def work_dir(home) -> Path:
+    return home.root / "work"
+
+
+def repos_dir(home) -> Path:
+    return home.root / ".repos"
+
+
+def repo_hooks_dir(home) -> Path:
+    return home.local_dir / "repo-hooks"

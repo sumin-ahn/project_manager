@@ -118,3 +118,52 @@ def registered_repos(home) -> set[str]:
     """
     _header, rows = _parse_areas(home)
     return {r for row in rows if (r := row.get("repo"))}
+
+
+def _repo_protected(home, repo: str) -> list[str]:
+    """그 repo 의 보호 브랜치 목록. 미지정/미등록/구 스키마 → `DEFAULT_PROTECTED`.
+
+    areas.md `protected` 칼럼(쉼표분리·예 `main,develop`)을 읽는다. pre-push 훅 설치(sidecar
+    채움)·bootstrap 보호 경고가 이 목록으로 PM 의 보호 브랜치 commit/push 를 막는다.
+
+    **default 폴백 = `DEFAULT_PROTECTED`(main/master/develop)** (`_repo_base` 의 None 폴백과
+    다름 — 보호는 *안전 기본값이 있어야* 한다·미지정 repo 도 main 을 막는다). 다음 모두
+    default 로 떨어진다:
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `protected` 칼럼 자체가 없는 구 레지스트리(헤더에 protected 없음 → 행 dict 에 키 없음).
+      - `protected` 칼럼이 빈 값(부분 등록).
+    명시 지정이면 쉼표분리·strip·빈 토큰 제거 후 그 목록(전부 빈 토큰이면 default 폴백).
+    """
+    _header, rows = _parse_areas(home)
+    for row in rows:
+        if row.get("repo") == repo:
+            raw = row.get("protected") or ""
+            branches = [b.strip() for b in raw.split(",") if b.strip()]
+            return branches if branches else list(areas_rules.DEFAULT_PROTECTED)
+    return list(areas_rules.DEFAULT_PROTECTED)
+
+
+def _areas_git_url(home, repo: str) -> str | None:
+    """그 repo 의 areas.md `git` 칼럼 URL (bare mirror clone 원). 미등록/부재/빈 값 → None.
+
+    multi-user 공유 채택 폴더(= 하나의 git repo 를 여러 사람이 clone)에서 2번째 사용자가
+    `.repos/<repo>.git` bare mirror 를 hydrate 할 때(`pm-config repo add <repo>` — `--git`
+    불요) clone 원 URL 을 여기서 해소한다. areas.md(git-tracked·공유)엔 URL 이 있으나
+    `.repos/`(gitignore·per-clone)엔 mirror 가 없는 상황 — 등록된 URL 을 재제공 없이 재사용한다.
+
+    repo 명은 areas.md `repo` 칼럼과 매칭한다(prefix 칼럼은 비므로 **repo 명 키**).
+    중복 행이면 first-match(`_repo_base`·`_areas_row_for_prefix` 동형·같은 repo=같은 URL 이라
+    결정론적).
+
+    None 폴백(호출자 cmd_repo_add 가 fail-loud 또는 `--git` 명시 요구로 전환):
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `git` 칼럼 자체가 없는 구 레지스트리(헤더에 git 없음 → 행 dict 에 git 키 없음).
+      - `git` 칼럼이 빈 값(부분 등록).
+    """
+    _header, rows = _parse_areas(home)
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("git") or None
+    return None

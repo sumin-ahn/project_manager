@@ -14,6 +14,12 @@
 upstream 미해소 = 경고 · slot_status 미구현 풀 = graceful(절 생략·crash 0).
 """
 from __future__ import annotations
+from pm_engine.infra import branch_store
+from pm_engine.infra import pm_paths
+from pm_engine.domain import worktree_records
+from pm_engine.app import worktree_status
+
+from _pool_seams import bind_board, bind_pool
 
 import importlib.util
 from pathlib import Path
@@ -124,7 +130,7 @@ def test_slot_status_submodule_dev_ahead_vs_drift(wp):
         f"+{_SHA} libs/dev (v3)\n"       # on-branch(아래) → dev-ahead(정보·flag 무관)
     )
     runner = _make_runner(submodule_status=submodule_status, on_branch={"libs/dev"})
-    status = wp.slot_status("work/A_1", git_runner=runner)
+    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner)
 
     by_path = {s.path: s for s in status.submodules}
     assert set(by_path) == {"libs/drift", "libs/pinned", "libs/dev"}
@@ -144,7 +150,7 @@ def test_slot_status_drift_dirty_surfaced(wp):
     runner = _make_runner(
         submodule_status=f"+{_SHA} libs/drift\n", on_branch=set(), dirty={"libs/drift"}
     )
-    status = wp.slot_status("work/A_1", git_runner=runner)
+    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner)
     assert len(status.submodules) == 1
     sub = status.submodules[0]
     assert sub.kind == "drift"
@@ -159,7 +165,7 @@ def test_slot_status_uninitialized_is_warning(wp):
     보고하지만(dirty={"libs/uninit"}) kind 가 uninitialized 면 dirty 계산을 안 타야 한다.
     """
     runner = _make_runner(submodule_status=f"-{_SHA} libs/uninit\n", dirty={"libs/uninit"})
-    status = wp.slot_status("work/A_1", git_runner=runner)
+    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner)
     assert status.submodules[0].kind == "uninitialized"
     assert status.submodules[0].warning is True
     assert status.submodules[0].dirty is False
@@ -179,7 +185,7 @@ def test_slot_status_absorbs_runner_exception(wp):
             return 0, "refs/heads/a5\n"
         raise RuntimeError("git exploded")
 
-    status = wp.slot_status("work/A_1", git_runner=raising)  # raise 하면 이 줄에서 터짐.
+    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=raising)  # raise 하면 이 줄에서 터짐.
     assert status.branch == "a5"          # current_branch 는 정상 조회.
     assert status.upstream is None        # upstream 조회 raise → 미해소로 흡수.
     assert status.upstream_ok is False
@@ -189,14 +195,14 @@ def test_slot_status_absorbs_runner_exception(wp):
 def test_slot_status_no_submodule_empty_list(wp):
     """submodule 없는 슬롯 → `git submodule status` 빈 출력 → submodules 빈 리스트(부트스트랩 줄 생략 근거)."""
     runner = _make_runner(submodule_status="")
-    status = wp.slot_status("work/A_1", git_runner=runner)
+    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner)
     assert status.submodules == []
 
 
 def test_slot_status_upstream_resolved(wp):
     """`@{upstream}` 해소(rc0) → upstream 이름 + upstream_ok True."""
     runner = _make_runner(upstream_rc=0, upstream_out="origin/a5\n")
-    status = wp.slot_status("work/A_1", git_runner=runner)
+    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner)
     assert status.upstream == "origin/a5"
     assert status.upstream_ok is True
 
@@ -211,7 +217,7 @@ def test_slot_status_upstream_unresolved_is_warning(wp):
         upstream_rc=128,
         upstream_out="fatal: no upstream configured for branch 'a5'\n",
     )
-    status = wp.slot_status("work/A_1", git_runner=runner)
+    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner)
     assert status.upstream is None
     assert status.upstream_ok is False
 
@@ -298,13 +304,13 @@ def _slot_status_obj(wp, *, upstream="origin/a5", upstream_ok=True, submodules=N
     """실 worktree_pool.SlotStatus/SubmoduleStatus 로 슬롯 상태 대역을 만든다(duck-typing 정합)."""
     subs = []
     for path, kind, warning, dirty in (submodules or []):
-        subs.append(wp.SubmoduleStatus(path, kind, warning=warning, dirty=dirty))
-    return wp.SlotStatus(
+        subs.append(worktree_records.SubmoduleStatus(path, kind, warning=warning, dirty=dirty))
+    return worktree_records.SlotStatus(
         "work/A_1", branch="a5", upstream=upstream, upstream_ok=upstream_ok, submodules=subs
     )
 
 
-def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None):
+def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None, monkeypatch):
     """격리된 PmBootstrap — board/git/log/pm_state stub, worktree_pool/board mock 주입(lease 테스트 동형).
 
     `board_fn` 미지정이면 무해한 기본 board 러너(open 1건·lint clean)를 쓴다 — 슬롯-스코프 카운트
@@ -335,20 +341,21 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None):
             return 0, ""
         return 0, ""
 
+    bind_pool(monkeypatch, worktree_pool)
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=worktree_pool,
-        board=_FakeBoard(),
+
+        board=bind_board(monkeypatch, _FakeBoard()),
         pm_state_file=pm_state_file,
     )
 
 
 def test_bind_task_rejects_archived_name_with_reopen_prescription(
-    bootstrap, tmp_path, capsys,
+    bootstrap, monkeypatch, tmp_path, capsys,
 ):
     archive = tmp_path / "tasks" / "_ended" / "job-20260827"
 
@@ -372,7 +379,7 @@ def test_bind_task_rejects_archived_name_with_reopen_prescription(
         def bind_task(self, name, session=None, registered_repos=None):
             raise self.TaskArchived()
 
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=ArchivedPool())
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, ArchivedPool()), monkeypatch=monkeypatch)
     assert inst._bind_task_or_reject("job") is None
     err = capsys.readouterr().err
     assert "task reopen job" in err and "job-20260827" in err
@@ -385,7 +392,7 @@ def test_bind_task_rejects_archived_name_with_reopen_prescription(
 # ── T-0284: fresh 슬롯 self-sufficiency (스크램블 낭비 제거) ──────────────────
 
 
-def _make_fresh_bootstrap(bootstrap, wp, tmp_path):
+def _make_fresh_bootstrap(bootstrap, wp, tmp_path, *, monkeypatch):
     """fresh 슬롯 부트스트랩 대역 — pm_state 파일 *부재* + 공유 로그엔 무태그(=타 슬롯) handoff 만.
 
     fresh slot-2 라이브 시나리오 재현: 공유 로그(`pm_log.py tail` 이 보는 것)엔 무태그 handoff 가
@@ -421,15 +428,16 @@ def _make_fresh_bootstrap(bootstrap, wp, tmp_path):
         return 0, ""
 
     ret = _slot_status_obj(wp, upstream="origin/a5", upstream_ok=True, submodules=[])
-    pool = FakePool(slot="work/A_2", slot_status_ret=ret)  # slot-2 시나리오 — 0단계 실재 시드도 A_2.
+    pool = bind_pool(monkeypatch, FakePool(slot="work/A_2", slot_status_ret=ret))  # slot-2 시나리오 — 0단계 실재 시드도 A_2.
+    bind_pool(monkeypatch, pool)
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=pool,
-        board=_FakeBoard(),
+
+        board=bind_board(monkeypatch, _FakeBoard()),
         pm_state_file=pm_state_file,
     )
 
@@ -622,7 +630,7 @@ class _RemedyPool:
 
 def _remedy_pool(wp_mod, slot_dir, *, branch="main"):
     """실 worktree_pool 의 브랜치명 판정을 단 remedy 풀 대역(제안↔실행 규칙 동일성 보장)."""
-    return _RemedyPool(slot_dir, branch=branch, normalize=wp_mod._normalize_branch_name)
+    return _RemedyPool(slot_dir, branch=branch, normalize=branch_store._normalize_branch_name)
 
 
 # git 브랜치명으로 무효한 형태(실측·`git check-ref-format --branch` 거부): `:`·`~`·`^`·공백·`..`·
@@ -664,33 +672,33 @@ def _remedy_inst(bootstrap, *, git_fn, protected=("main", "master", "develop")):
     return bootstrap.PmBootstrap(run_git_fn=git_fn, board=_RemedyBoard(protected))
 
 
-def test_remedy_branch_prefixes_protected_preferred(bootstrap, tmp_path):
+def test_remedy_branch_prefixes_protected_preferred(bootstrap, tmp_path, *, monkeypatch):
     """(a) preferred 가 보호브랜치(`main`)면 그대로 쓰지 않고 `task/main` 을 제안한다."""
     git_fn, _calls = _remedy_git()          # 기존 브랜치 없음 — 보호목록만이 배제 사유.
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    pool = _RemedyPool(tmp_path)
-    assert inst._remedy_branch_name(pool, "X", "work/X_1", "main") == "task/main"
+    pool = bind_pool(monkeypatch, _RemedyPool(tmp_path))
+    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main"
 
 
 def test_remedy_branch_suffixes_when_prefixed_exists(bootstrap, tmp_path):
     """(b) `task/main` 까지 이미 존재하면 `task/main-2` 로 첫 미충돌을 고른다."""
     git_fn, _calls = _remedy_git("task/main")
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "main") == "task/main-2"
+    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main-2"
 
 
 def test_remedy_branch_suffix_skips_existing_numbered(bootstrap, tmp_path):
     """`task/main-2` 도 있으면 `task/main-3` — 첫 미충돌까지 계속 센다(비공허)."""
     git_fn, _calls = _remedy_git("task/main", "task/main-2")
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "main") == "task/main-3"
+    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main-3"
 
 
 def test_remedy_branch_keeps_plain_preferred(bootstrap, tmp_path):
     """(c) 평범한 task 명(`foo`)은 보호목록 밖 + 미존재 → 접두 없이 그대로 (오탐 0)."""
     git_fn, calls = _remedy_git("main")
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "foo") == "foo"
+    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "foo"
     # 존재 확인은 그 슬롯 worktree 에서 argv-list 로 (shell 미경유·`-C <slot_dir>`).
     assert calls[0][:2] == ["-C", str(tmp_path)]
     assert calls[0][2:] == ["show-ref", "--verify", "--quiet", "refs/heads/foo"]
@@ -700,27 +708,27 @@ def test_remedy_branch_prefixes_existing_plain_name(bootstrap, tmp_path):
     """보호목록 밖이라도 **이미 존재하는** 브랜치면 그대로 쓰지 않는다(`switch -c` 실패 방지)."""
     git_fn, _calls = _remedy_git("foo")
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "foo") == "task/foo"
+    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "task/foo"
 
 
 def test_remedy_branch_fail_soft_on_git_error(bootstrap, tmp_path):
     """(e) git 호출 실패는 fail-soft — 미존재로 간주하고 안내는 계속 나간다(크래시 0)."""
     git_fn, _calls = _remedy_git(raises=True)
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "foo") == "foo"
+    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "foo"
     # 보호브랜치 축은 git 무관이라 그대로 살아 있다(fail-soft ≠ 판정 포기).
-    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "main") == "task/main"
+    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main"
 
 
-def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path):
+def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path, *, monkeypatch):
     """task 모드 fault(`_task_slot_fault`)의 해소 커맨드가 헬퍼 결과를 싣는다 — task `main` 실측 케이스."""
     slot_dir = tmp_path / "work" / "X_1"
     slot_dir.mkdir(parents=True)
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    pool = _RemedyPool(slot_dir, branch="main")
+    pool = bind_pool(monkeypatch, _RemedyPool(slot_dir, branch="main"))
     lease = SimpleNamespace(slot="work/X_1", repo="X", session="main", state="leased", role="work")
-    fault = inst._task_slot_fault(pool, lease, "main")
+    fault = inst._task_slot_fault( lease, "main")
     assert fault is not None
     label, _reason, resolve = fault
     assert "main-참조" in label
@@ -739,7 +747,7 @@ def test_remedy_branch_command_is_engine_mediated(bootstrap, tmp_path):
     """해소 커맨드 = 엔진 단일 커맨드(raw git 아님·복합 `&&` 아님 — PowerShell 5.x 미지원)."""
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_branch_command(_RemedyPool(tmp_path), "X", "work/X_1", "main")
+    cmd = inst._remedy_branch_command( "X", "work/X_1", "main")
     assert cmd == ("python3 .project_manager/tools/pm_config.py task branch main work/X_1 task/main "
                    "--from main")
     assert "&&" not in cmd and not cmd.startswith("git ")
@@ -751,11 +759,11 @@ def test_remedy_branch_name_returns_none_when_candidates_exhausted(bootstrap, tm
     exhausted = ["foo", "task/foo"] + [f"task/foo-{n}" for n in range(2, limit + 1)]
     git_fn, _calls = _remedy_git(*exhausted)
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name(_RemedyPool(tmp_path), "X", "work/X_1", "foo") is None
+    assert inst._remedy_branch_name( "X", "work/X_1", "foo") is None
 
 
 @pytest.mark.parametrize("task_name", ["fix:bug", "fix~1"])
-def test_remedy_branch_rejects_ref_format_invalid_candidates(bootstrap, wp, tmp_path, task_name):
+def test_remedy_branch_rejects_ref_format_invalid_candidates(bootstrap, wp, tmp_path, task_name, *, monkeypatch):
     """task 명이 git 브랜치명으로 무효면 후보에서 배제 — 접두/번호형도 여전히 무효면 None.
 
     `identity_args.validate_task_name` 은 `fix:bug`/`fix~1` 을 통과시키지만 `git check-ref-format
@@ -765,7 +773,7 @@ def test_remedy_branch_rejects_ref_format_invalid_candidates(bootstrap, wp, tmp_
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
     pool = _remedy_pool(wp, tmp_path)
-    assert inst._remedy_branch_name(pool, "X", "work/X_1", task_name) is None
+    assert inst._remedy_branch_name( "X", "work/X_1", task_name) is None
 
 
 def test_remedy_branch_skips_invalid_then_takes_valid_variant(bootstrap, wp, tmp_path):
@@ -776,7 +784,7 @@ def test_remedy_branch_skips_invalid_then_takes_valid_variant(bootstrap, wp, tmp
     "직접 지정" 으로 떨어진다(오탐 0 sensitivity)."""
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    got = inst._remedy_branch_name(_remedy_pool(wp, tmp_path), "X", "work/X_1", "a.lock")
+    got = inst._remedy_branch_name( "X", "work/X_1", "a.lock")
     assert got == "task/a.lock-2"
 
 
@@ -784,30 +792,30 @@ def test_remedy_branch_command_invalid_task_name_asks_explicit_branch(bootstrap,
     """무효 task 명은 "브랜치명 직접 지정" 분기로 수렴한다 — 실행 불가 커맨드를 안내하지 않는다."""
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_branch_command(_remedy_pool(wp, tmp_path), "X", "work/X_1", "fix:bug")
+    cmd = inst._remedy_branch_command( "X", "work/X_1", "fix:bug")
     assert "task branch fix:bug work/X_1 <새-브랜치명> --from main" in cmd
     assert "직접 지정" in cmd
     assert "task/fix:bug" not in cmd.split("(")[0]   # 브랜치 인자로는 안 실린다(안내 문구 설명은 별개)
 
 
-def test_remedy_branch_valid_name_unaffected_by_ref_filter(bootstrap, wp, tmp_path):
+def test_remedy_branch_valid_name_unaffected_by_ref_filter(bootstrap, wp, tmp_path, *, monkeypatch):
     """정상 task 명은 종전대로 제안된다 — ref-format 필터가 회귀를 안 만든다(sensitivity)."""
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
     pool = _remedy_pool(wp, tmp_path)
-    assert inst._remedy_branch_name(pool, "X", "work/X_1", "foo") == "foo"
-    assert inst._remedy_branch_name(pool, "X", "work/X_1", "main") == "task/main"
+    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "foo"
+    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main"
 
 
 def test_remedy_branch_skips_candidate_that_expands(bootstrap, wp, tmp_path):
     """정규화가 원문과 다르면(revspec 확장) 후보에서 배제 — 제안 이름이 다른 브랜치로 해소되면 거짓말."""
     git_fn, _calls = _remedy_git(expand={"weird": "other"})
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    got = inst._remedy_branch_name(_remedy_pool(wp, tmp_path), "X", "work/X_1", "weird")
+    got = inst._remedy_branch_name( "X", "work/X_1", "weird")
     assert got == "task/weird"          # 확장되는 원문 후보는 건너뛰고 다음 후보
 
 
-def test_remedy_branch_filter_reuses_worktree_pool_judgment(bootstrap, wp, tmp_path):
+def test_remedy_branch_filter_reuses_worktree_pool_judgment(bootstrap, wp, tmp_path, *, monkeypatch):
     """후보 필터가 **worktree_pool 의 판정**을 그대로 쓴다 — 판정 두 벌 재유입 방지(규칙 중복 0).
 
     ① 대역 풀의 판정기는 실 `worktree_pool._normalize_branch_name`(=`switch` 가 쓰는 그 함수)이고
@@ -816,8 +824,9 @@ def test_remedy_branch_filter_reuses_worktree_pool_judgment(bootstrap, wp, tmp_p
     git_fn, _calls = _remedy_git("foo")
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
     pool = _remedy_pool(wp, tmp_path)
-    assert pool._normalize is wp._normalize_branch_name          # ① 실행 쪽과 같은 판정 함수
-    assert inst._remedy_branch_name(pool, "X", "work/X_1", "foo") == "task/foo"
+    assert pool._normalize is branch_store._normalize_branch_name          # ① 실행 쪽과 같은 판정 함수
+    bind_pool(monkeypatch, pool)
+    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "task/foo"
     assert pool.normalize_calls[:2] == ["foo", "task/foo"]       # ② 후보마다 그 판정을 탄다
     source = (TOOLS / "pm_bootstrap.py").read_text(encoding="utf-8")
     assert '"check-ref-format"' not in source                    # ③ 자체 구현 없음(argv 미생성)
@@ -829,8 +838,16 @@ def test_remedy_branch_command_exhausted_asks_explicit_branch(bootstrap, tmp_pat
     exhausted = ["foo", "task/foo"] + [f"task/foo-{n}" for n in range(2, limit + 1)]
     git_fn, _calls = _remedy_git(*exhausted)
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_branch_command(_RemedyPool(tmp_path), "X", "work/X_1", "foo")
+    cmd = inst._remedy_branch_command( "X", "work/X_1", "foo")
     assert "task branch foo work/X_1 <새-브랜치명> --from main" in cmd
     assert "직접 지정" in cmd
     # 충돌이 확정된 후보(마지막 이름)를 커맨드 인자로 싣지 않는다.
     assert f"task/foo-{limit} --from" not in cmd
+
+
+@pytest.fixture(autouse=True)
+def _remedy_path_seam(request, tmp_path, monkeypatch):
+    if request.node.name.startswith("test_remedy"):
+        monkeypatch.setattr(pm_paths, "slot_path", lambda home, slot: tmp_path)
+        if request.node.name == "test_remedy_branch_keeps_plain_preferred":
+            monkeypatch.setattr(branch_store, "_normalize_branch_name", lambda branch, **kwargs: branch)

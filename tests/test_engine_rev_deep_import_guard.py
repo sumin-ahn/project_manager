@@ -1846,10 +1846,6 @@ _LOADER_CASES = (
         "_load_tool",
     ),
     (
-        "pm_bootstrap", "pm_config", lambda mod, _tools: mod._load_tool("pm_config"),
-        "_load_tool",
-    ),
-    (
         "pm_config", "pm_import", lambda mod, _tools: mod._load_module("pm_import", "pm_import.py"),
         "_load_module",
     ),
@@ -1966,40 +1962,6 @@ def _handler_reraises_marked_skew(handler: ast.ExceptHandler) -> bool:
     return _handler_reraises_verifier_skew(handler)
 
 
-@pytest.mark.parametrize(
-    ("function_name", "loader_name"),
-    (
-        ("_protected_hook_wired", "_load_worktree_pool"),
-    ),
-)
-def test_pm_bootstrap_failsoft_consumers_reraise_marked_skew(
-    function_name, loader_name,
-):
-    tree = ast.parse(
-        (TOOLS / "pm_bootstrap.py").read_text(encoding="utf-8"),
-        filename=str(TOOLS / "pm_bootstrap.py"),
-    )
-    functions = [
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
-    ]
-    assert len(functions) == 1
-    guarded_handlers: list[ast.ExceptHandler] = []
-    for try_node in (
-        node for node in ast.walk(functions[0]) if isinstance(node, ast.Try)
-    ):
-        try_calls = [
-            call
-            for statement in try_node.body
-            for call in ast.walk(statement)
-            if isinstance(call, ast.Call)
-        ]
-        if any(_called_name(call) == loader_name for call in try_calls):
-            guarded_handlers.extend(try_node.handlers)
-
-    assert guarded_handlers, f"{function_name}: {loader_name} consumer try not found"
-    assert all(_handler_reraises_marked_skew(handler) for handler in guarded_handlers)
 
 
 @pytest.mark.parametrize(

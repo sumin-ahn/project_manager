@@ -379,9 +379,9 @@ def test_win32_guard_ignores_the_names_in_comments_and_strings():
 
 def test_win32_guard_counts_a_reintroduced_call_in_another_tool():
     """다른 도구에 Win32 락 호출을 되살리면 가드가 red 로 잡는다 (감도 실증)."""
-    source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine" / "infra" / "pool_store.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        "    with fs.exclusive_file_lock(LEASES_LOCK):\n        yield",
+        "    with fs.exclusive_file_lock(pm_paths.leases_lock(home)):\n        yield",
         "    import ctypes\n"
         "    ctypes.windll.kernel32.LockFileEx(0, 2, 0, 1, 0, None)\n"
         "    yield",

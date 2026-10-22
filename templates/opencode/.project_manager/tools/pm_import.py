@@ -658,7 +658,7 @@ ENGINE_METADATA_RELPATHS = frozenset({
 # (치환 예외 *파일* 목록이 아니다).
 # 신규 bare 등재 파일이 선언 없이 토큰을 담으면 `tests/test_manifest_render_token_guard.py` 가 fail.
 CONSUMPTION_TIME_TOKENS: dict[str, frozenset] = {
-    # 소비처: `worktree_pool.ensure_task_pm_state`(task pm_state 렌더)·`board.cmd_init`
+    # 소비처: `task_store.ensure_task_pm_state`(task pm_state 렌더)·`board.cmd_init`
     #   (per-clone `wiki/pm_state.md` seed) — 둘 다 생성 시각으로 채운다.
     ".project_manager/wiki/pm_state.template.md": frozenset({"{{DATE}}"}),
     # 소비처: 사람이 스캐폴드를 복사해 domain 페이지를 만드는 시점. 엔진 생성 경로

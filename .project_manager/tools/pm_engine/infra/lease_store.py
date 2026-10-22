@@ -455,7 +455,7 @@ def session_name(home, override: str | None = None) -> str | None:
     `--task` 가 없으면 `TASK_REQUIRED` 로 멈춘다. 여기 미해소(None)는 surface(whoami/status/
     list --mine)의 "(비바인딩)" 표시와 소유 대조 거부로 이어진다.
 
-    저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
+    저장측(lease_store._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
     소유권이 미스되므로 세 모듈(lease_store.session_name·worktree_pool._default_
     session·pm_config._default_session)이 같은 우선순위를 공유한다(tail 만 용처별 상이).
 
@@ -496,3 +496,28 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
         if candidate.is_dir() and (candidate / ".git").exists():
             found.add(candidate)
     return tuple(sorted(found))
+
+
+def _default_session(home) -> str:
+    """세션 식별자 기본값 — `lease_store.session_name()` 과 *동형* 우선순위:
+    `$PM_SESSION_NAME` env > `$CLAUDE_SESSION_NAME` env(deprecated alias·silent) >
+    lease 장부 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
+    `<host>-<pid>`.
+
+    `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
+    (둘 다면 PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**
+    (lease_store.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
+
+    lease_store.session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
+    떨어진다. board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌 회피) 리스
+    카운팅은 자체 구현한다. 장부 0행에서 세션 이름을 유도하는 층은 없다.
+    """
+    env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
+    if env:
+        return env
+    leased = leased_sessions(pm_paths.leases_file(home))
+    if len(leased) == 1:
+        return leased[0]
+    # leased 0(미등록) 또는 ≥2(모호) → host-pid.
+    import socket
+    return f"{socket.gethostname()}-{os.getpid()}"

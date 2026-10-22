@@ -10,6 +10,8 @@ PmHandoff DI/주입 패턴 재사용).
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import importlib.util
 from pathlib import Path
 
@@ -227,7 +229,7 @@ _PM_STATE_NO_ANCHOR = (
 )
 
 
-def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str):
+def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str, *, monkeypatch):
     """세션 식별 앵커가 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스.
 
     log 에는 이 task 의 직전 handoff entry 를 깔아 둔다 — 차수는 state 와 log 에서 함께
@@ -244,13 +246,14 @@ def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str):
     )
     playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
     pm_state.write_text(state_text, encoding="utf-8")
+    bind_pool(monkeypatch, _TaskPool())
     inst = handoff.PmHandoff(
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 인데 pytest 호출")),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook_file,
         pm_state_file=pm_state,
-        worktree_pool=_TaskPool(),
+
     )
     return inst, log_file, pm_state
 
@@ -268,9 +271,9 @@ def test_update_session_window_raises_when_anchor_absent(handoff):
         )
 
 
-def test_run_failsoft_skips_step3_when_anchor_absent(handoff, tmp_path, capsys):
+def test_run_failsoft_skips_step3_when_anchor_absent(handoff, monkeypatch, tmp_path, capsys):
     """앵커 부재 pm_state → step3 스킵 경고 + rc 0(완주)·pm_state 무변경 (return 1 아님)."""
-    inst, _, pm_state = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
+    inst, _, pm_state = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR, monkeypatch=monkeypatch)
     before = pm_state.read_text(encoding="utf-8")
 
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
@@ -283,9 +286,9 @@ def test_run_failsoft_skips_step3_when_anchor_absent(handoff, tmp_path, capsys):
     assert pm_state.read_text(encoding="utf-8") == before
 
 
-def test_run_failsoft_continues_remaining_steps_when_anchor_absent(handoff, tmp_path, capsys):
+def test_run_failsoft_continues_remaining_steps_when_anchor_absent(handoff, monkeypatch, tmp_path, capsys):
     """step3 스킵 이후에도 나머지 단계(log entry append·완료 메시지)는 진행한다."""
-    inst, log_file, _ = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
+    inst, log_file, _ = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR, monkeypatch=monkeypatch)
 
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
 

@@ -21,6 +21,9 @@ pm_state 는 tmp 주입, `REPO` 는 monkeypatch. 마지막 절만 **실 git 바�
 의미(gitignored 제외·staged 신규·tracked 수정)와 unborn HEAD 를 실측한다.
 """
 from __future__ import annotations
+from pm_engine.infra import submodule_git
+
+from _pool_seams import bind_pool
 
 import importlib.util
 import shutil
@@ -184,8 +187,7 @@ _TASK_PM_STATE = """# task state
 """
 
 
-def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None,
-                  task_mode: bool = False, task: str = TASK):
+def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None, task_mode: bool=False, task: str=TASK):
     """REPO 를 tmp 로 핀한 hermetic PmHandoff — log/playbook/dashboard 는 tmp 주입.
 
     `REPO` 핀이 load-bearing 이다: 게이트의 판정 앵커(PM 홈 트리)가 곧 `REPO` 라, 실 repo 를
@@ -203,7 +205,7 @@ def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None,
     # task 장부 조회는 worktree_pool seam 이 답한다 — 주입이 없으면 실 엔진이 이 tmp 홈 밖
     # 장부를 보므로 "미등록 task" 로 멈춘다. 슬롯 트리를 보는 축은 각 테스트가 pool 을 준다.
     if pool is None:
-        pool = _TaskPool()
+        pool = bind_pool(monkeypatch, _TaskPool())
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
     log_file.write_text("# log\n", encoding="utf-8")
@@ -220,13 +222,14 @@ def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None,
         explicit_state = tmp_path / "explicit_pm_state.md"
         explicit_state.write_text(_TASK_PM_STATE, encoding="utf-8")
         kwargs["pm_state_file"] = explicit_state
+    bind_pool(monkeypatch, pool)
     inst = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "120 passed in 1.0s\n"),
         run_git_fn=git_runner,
         log_file=log_file,
         pm_playbook_file=playbook_file,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=pool,
+
         **kwargs,
     )
     return inst, log_file
@@ -334,7 +337,7 @@ def test_dirty_rerun_after_block_is_still_first_entry(hf, tmp_path, monkeypatch)
 
 def test_dirty_block_does_not_close_task_session(hf, tmp_path, monkeypatch, capsys):
     """task 모드 차단은 pid=0 기록(첫 장부 mutation) **전**에 멈춘다."""
-    pool = _TaskPool()
+    pool = bind_pool(monkeypatch, _TaskPool())
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
@@ -365,7 +368,7 @@ def test_task_mode_gate_covers_held_slots(hf, tmp_path, monkeypatch, capsys):
     """PM 홈이 clean 이어도 **보유 슬롯**에 커밋 안 한 변경이 있으면 기록 전에 멈추고 사용자에게 묻게 한다."""
     slot_dir = tmp_path / "work" / "app_1"
     slot_dir.mkdir(parents=True)
-    pool = _TaskPool(slots=("work/app_1",))
+    pool = bind_pool(monkeypatch, _TaskPool(slots=("work/app_1",)))
     inst, _log = _make_handoff(
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(slot_dir): (["src/leftover.py"], [])}),
@@ -404,6 +407,9 @@ class _TaskKeepPool(_TaskPool):
     def record_git_snapshot(self, slot, **_kwargs):
         self.snapped.append(slot)
         return type("_L", (), {"git": {"branch": "app_1", "head": "abc123"}})()
+
+    def read_lease_strict(self, value):
+        return self.read_lease(value)
 
 
 def _dirty_slot(tmp_path):
@@ -470,7 +476,7 @@ def test_force_handoff_does_not_pass_pm_home_changes(hf, tmp_path, monkeypatch, 
 def test_task_force_handoff_keeps_held_slot_and_records_note(hf, tmp_path, monkeypatch):
     """task 모드 — 보유 슬롯의 커밋 안 한 변경을 두고 `--force-handoff` 로 기록만 하고 대여를 유지한다."""
     slot_dir = _dirty_slot(tmp_path)
-    pool = _TaskKeepPool(slots=("work/app_1",))
+    pool = bind_pool(monkeypatch, _TaskKeepPool(slots=("work/app_1",)))
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch, pool=pool, task_mode=True,
         git_runner=_git_stub({str(slot_dir): (["src/half.py"], [])}),
@@ -515,8 +521,7 @@ def test_gate_trees_dedup_pm_home_and_stale_slot(hf, tmp_path, monkeypatch):
 
 # ── submodule 경계 확장 (T-0620) ─────────────────────────────────────────────
 
-def test_submodule_discovery_reuses_shared_parser_requests_recursive_and_skips_uninit(
-        hf, monkeypatch):
+def test_submodule_discovery_reuses_shared_parser_requests_recursive_and_skips_uninit(hf, monkeypatch):
     """공용 flag 파서를 호출하고 `--recursive` 전수 열거 중 `-` working tree 만 제외한다."""
     parser_calls: list[str] = []
     git_calls: list[list[str]] = []
@@ -535,7 +540,7 @@ def test_submodule_discovery_reuses_shared_parser_requests_recursive_and_skips_u
         git_calls.append(list(args))
         return 0, "shared-parser-input"
 
-    monkeypatch.setattr(hf, "_load_worktree_pool", lambda: SharedParser)
+    monkeypatch.setattr(submodule_git, "_parse_submodule_entries", SharedParser._parse_submodule_entries)
 
     paths = hf._submodule_paths_in_tree("/super", _runner)
 
@@ -544,8 +549,7 @@ def test_submodule_discovery_reuses_shared_parser_requests_recursive_and_skips_u
     assert git_calls == [["-C", "/super", "submodule", "status", "--recursive"]]
 
 
-def test_submodule_dirty_blocks_and_lists_parent_relative_paths(
-        hf, tmp_path, monkeypatch, capsys):
+def test_submodule_dirty_blocks_and_lists_parent_relative_paths(hf, tmp_path, monkeypatch, capsys):
     """재귀 열거된 모든 submodule 의 내부 잔여를 앵커 상대경로로 합쳐 차단한다."""
     board = tmp_path / ".project_manager" / "board"
     nested = tmp_path / "vendor" / "outer" / "inner"
@@ -569,8 +573,7 @@ def test_submodule_dirty_blocks_and_lists_parent_relative_paths(
     assert "미커밋 잔여 2건" in captured.out
 
 
-def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(
-        hf, tmp_path, monkeypatch, capsys):
+def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(hf, tmp_path, monkeypatch, capsys):
     """상위 pin ≠ submodule HEAD 는 `ignore = all` 모델에서도 tracked 축이 차단한다."""
     calls: list[list[str]] = []
     runner = _git_stub(
@@ -589,8 +592,7 @@ def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(
     assert all("--ignore-submodules=none" in args for args in tracked_calls)
 
 
-def test_parent_and_registered_submodule_clean_pass(
-        hf, tmp_path, monkeypatch, capsys):
+def test_parent_and_registered_submodule_clean_pass(hf, tmp_path, monkeypatch, capsys):
     """앵커와 등록 submodule 모두 clean 이면 기존 핸드오프 흐름을 그대로 통과한다."""
     runner = _git_stub(
         submodules={str(tmp_path): (".project_manager/board",)},
@@ -604,8 +606,7 @@ def test_parent_and_registered_submodule_clean_pass(
     assert "PM 2차" in log_file.read_text(encoding="utf-8")
 
 
-def test_judged_tree_count_excludes_unjudgeable_submodule(
-        hf, tmp_path, monkeypatch, capsys):
+def test_judged_tree_count_excludes_unjudgeable_submodule(hf, tmp_path, monkeypatch, capsys):
     """판정 실패한 submodule 은 clean 요약의 판정 트리 수에 포함하지 않는다."""
     sub_tree = tmp_path / "vendor" / "missing"
     runner = _git_stub(
@@ -622,8 +623,7 @@ def test_judged_tree_count_excludes_unjudgeable_submodule(
     assert str(sub_tree) in captured.err
 
 
-def test_submodule_status_failure_warns_without_blocking(
-        hf, tmp_path, monkeypatch, capsys):
+def test_submodule_status_failure_warns_without_blocking(hf, tmp_path, monkeypatch, capsys):
     """submodule 열거 실패는 판정 불가 stderr 경고만 내고 정상 핸드오프를 유지한다."""
     runner = _git_stub(submodule_status_fail_trees=(str(tmp_path),))
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
@@ -637,8 +637,7 @@ def test_submodule_status_failure_warns_without_blocking(
     assert "PM 2차" in log_file.read_text(encoding="utf-8")
 
 
-def test_ignore_all_override_closes_internal_dirty_and_gitlink_axes(
-        hf, tmp_path, monkeypatch, capsys):
+def test_ignore_all_override_closes_internal_dirty_and_gitlink_axes(hf, tmp_path, monkeypatch, capsys):
     """`ignore = all` 모델에서도 내부 파일·gitlink drift 두 축을 함께 놓치지 않는다."""
     board = tmp_path / ".project_manager" / "board"
     calls: list[list[str]] = []
@@ -783,8 +782,7 @@ def test_cli_flattens_multiline_ack_reason(hf):
 
 # ── 비대화 자동 트리거 (전용 신호 · 차단 아님 · 사유 자동 박제) ──────────────
 
-def test_auto_trigger_warns_and_stamps_instead_of_blocking(
-        hf, tmp_path, monkeypatch, capsys):
+def test_auto_trigger_warns_and_stamps_instead_of_blocking(hf, tmp_path, monkeypatch, capsys):
     """`--auto-trigger` → rc 0 + loud 경고 + 사유 자동 박제.
 
     자동 실행 시점 차단은 세션 상태 전체를 잃으므로 강등한다 — 대신 다음 세션이 log 만 읽고
@@ -820,8 +818,7 @@ def test_auto_trigger_ack_reason_wins_over_default(hf, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("env_value", ["1", "true", "yes", "on"])
-def test_env_noninteractive_does_not_degrade_gate(
-        hf, tmp_path, monkeypatch, env_value, capsys):
+def test_env_noninteractive_does_not_degrade_gate(hf, tmp_path, monkeypatch, env_value, capsys):
     """범용 비대화 env(`PM_NONINTERACTIVE`)는 강등 신호가 **아니다** — 여전히 차단한다.
 
     범용 신호로 강등하면 CI·headless·import 자동화 전반이 게이트를 통째로 우회한다. 강등은

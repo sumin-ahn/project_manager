@@ -25,6 +25,16 @@ from pathlib import Path
 import pytest
 
 from _git import commit_env
+from pm_engine.app import branch_checkout
+from pm_engine.infra import pm_paths
+from pm_engine.infra import pool_store
+from pm_engine.infra import slot_snapshot
+from pm_engine.infra import sparse_checkout
+from pm_engine.infra import submodule_git
+from pm_engine.infra import worktree_git
+from pm_engine.app import worktree_pool
+from pm_engine.domain import worktree_records
+from pm_engine.app import worktree_status
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -142,7 +152,7 @@ def _make_origin_with_submodules(root: Path) -> Path:
 
 def _make_bare(wp, origin: Path) -> Path:
     """`.repos/A.git` bare clone + remote-tracking refspec — 슬롯이 `origin/main` 에서 난다."""
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     _git(origin.parent, "clone", "--bare", "-q", str(origin), str(bare))
     _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
     _git(bare, "fetch", "-q", "origin")
@@ -156,7 +166,7 @@ def _tags(slot_dir: Path) -> dict[str, str]:
 
 
 def _lease_row(wp, slot: str):
-    return next(lease for lease in wp.list_leases() if lease.slot == slot)
+    return next(lease for lease in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if lease.slot == slot)
 
 
 def _worktree_config_files(bare: Path) -> list[Path]:
@@ -215,10 +225,10 @@ def test_create_slot_with_folders_checks_out_only_the_cone(wp, tmp_path):
     """`folders=[a]` 생성 — 최상위 파일과 `a/**` 만 디스크에 있고 나머지는 추적(S)으로 남는다."""
     _make_bare(wp, _make_origin(tmp_path))
 
-    lease = wp.create_slot("A", base="main", init_submodules=False,
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False,
                            folders=["a"])
 
-    slot_dir = wp.slot_path(lease.slot)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     for relative in ("R.md", "a/x", "a/sub/z"):
         assert (slot_dir / relative).is_file(), relative
     for relative in ("b/y", "c/deep/f", "c/top"):
@@ -239,9 +249,9 @@ def test_create_slot_with_folders_never_writes_the_full_tree(wp):
     """호출 순서 — 버전 확인 → 폴더 검증 → `worktree add --no-checkout` → 규칙 → 인자 없는 checkout.
 
     폴더 없는 생성은 현행 argv 그대로이고 폴더 제한 호출이 하나도 없다."""
-    wp.bare_repo_path("A").mkdir(parents=True)
+    pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A").mkdir(parents=True)
     git = _RecordingGit()
-    wp.create_slot("A", base="main", git_runner=git, folders=["a"])
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git, folders=["a"])
 
     order = [
         git.first("version"),
@@ -253,13 +263,13 @@ def test_create_slot_with_folders_never_writes_the_full_tree(wp):
     assert order == sorted(order), git.calls
     add = next(call for call in git.calls if call[:2] == ["worktree", "add"])
     assert add == ["worktree", "add", "--no-checkout", "--no-track", "-b", "A_1",
-                   str(wp.slot_path("work/A_1")), "origin/main"]
+                   str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "origin/main"]
 
     plain = _RecordingGit()
-    wp.create_slot("A", base="main", git_runner=plain)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=plain)
     add = next(call for call in plain.calls if call[:2] == ["worktree", "add"])
     assert add == ["worktree", "add", "--no-track", "-b", "A_2",
-                   str(wp.slot_path("work/A_2")), "origin/main"]
+                   str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_2")), "origin/main"]
     assert not any(call[:1] in (["sparse-checkout"], ["ls-tree"], ["version"])
                    for call in plain.calls), plain.calls
     assert ["checkout", "--no-recurse-submodules"] not in plain.calls
@@ -270,16 +280,16 @@ def test_create_slot_with_folders_never_writes_the_full_tree(wp):
 def test_slots_without_folders_never_touch_the_shared_config(wp, tmp_path):
     """폴더 없는 생성·대여·반납·재대여는 공용 config 바이트를 바꾸지 않는다(제한 없던 슬롯에 disable 없음)."""
     bare = _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     baseline = (bare / "config").read_bytes()
     _assert_shared_config_untouched(bare, baseline)
 
-    leased = wp.alloc("A", owner_task="t")
+    leased = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t")
     assert leased.slot == lease.slot and leased.state == "leased"
     _assert_shared_config_untouched(bare, baseline)
-    wp.release(lease.slot, owner_task="t")
+    worktree_pool.release(pm_paths.home_at(wp.REPO), lease.slot, owner_task="t")
     _assert_shared_config_untouched(bare, baseline)
-    wp.alloc("A", owner_task="t2")
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t2")
     _assert_shared_config_untouched(bare, baseline)
 
 
@@ -288,10 +298,10 @@ def test_folder_limit_stays_in_its_slot(wp, tmp_path):
     """폴더 규칙은 그 슬롯에만 걸린다 — 공용 저장소는 bare 그대로, 옆 슬롯은 전체·깨끗하고 제한을 풀어도
     옆 슬롯은 바뀌지 않는다."""
     bare = _make_bare(wp, _make_origin(tmp_path))
-    limited = wp.create_slot("A", base="main", init_submodules=False,
+    limited = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False,
                              folders=["a"])
-    full = wp.create_slot("A", base="main", init_submodules=False)
-    full_dir = wp.slot_path(full.slot)
+    full = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    full_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), full.slot)
     # 처음 폴더 제한을 걸면 git 이 bare 의 `core.bare` 를 `config.worktree` 로 옮긴다(공용 설정 변화).
     assert bare / "config.worktree" in _worktree_config_files(bare)
 
@@ -304,9 +314,9 @@ def test_folder_limit_stays_in_its_slot(wp, tmp_path):
         assert _git_rc(full_dir, "config", "--get", "core.sparseCheckout") == 1
 
     assert_full_slot_untouched()
-    leased = wp.alloc("A", owner_task="t")          # 최소 번호 = 폴더 제한 슬롯 — 제한을 푼다
+    leased = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t")          # 최소 번호 = 폴더 제한 슬롯 — 제한을 푼다
     assert leased.slot == limited.slot
-    assert (wp.slot_path(limited.slot) / "b" / "y").is_file()
+    assert (pm_paths.slot_path(pm_paths.home_at(wp.REPO), limited.slot) / "b" / "y").is_file()
     assert_full_slot_untouched()
 
 
@@ -319,11 +329,11 @@ def test_folder_limit_stays_in_its_slot(wp, tmp_path):
 def test_alloc_with_folders_restricts_an_idle_full_slot(wp, tmp_path):
     """전체로 만든 idle 슬롯을 `folders=[a]` 로 빌리면 그 cone 만 남는다."""
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     assert (slot_dir / "b" / "y").is_file()
 
-    leased = wp.alloc("A", owner_task="t", folders=["a"])
+    leased = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=["a"])
 
     assert (leased.slot, leased.state, leased.session) == (lease.slot, "leased", "t")
     assert not (slot_dir / "b" / "y").exists()
@@ -335,12 +345,12 @@ def test_alloc_with_folders_restricts_an_idle_full_slot(wp, tmp_path):
 def test_alloc_without_folders_restores_the_full_checkout(wp, tmp_path):
     """폴더 제한으로 만든 idle 슬롯을 폴더 없이 빌리면 전체가 돌아온다 — 앞 제한을 물려받지 않는다."""
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", init_submodules=False,
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False,
                            folders=["a"])
-    slot_dir = wp.slot_path(lease.slot)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     assert not (slot_dir / "b" / "y").exists()
 
-    wp.alloc("A", owner_task="t")
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t")
 
     assert (slot_dir / "b" / "y").is_file() and (slot_dir / "c" / "deep" / "f").is_file()
     assert _git(slot_dir, "config", "--type=bool", "--get", "core.sparseCheckout").strip() == "false"
@@ -358,20 +368,20 @@ def test_invalid_folders_are_refused_before_any_side_effect(wp, tmp_path):
     baseline = (bare / "config").read_bytes()
 
     for bad in [*([value] for value in _INVALID_FOLDERS), []]:
-        with pytest.raises(wp.SlotFoldersRefused):
-            wp.create_slot("A", base="main", init_submodules=False,
+        with pytest.raises(worktree_records.SlotFoldersRefused):
+            worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False,
                            folders=bad)
         assert not (wp.WORK_DIR / "A_1").exists(), bad
-        assert wp.list_leases() == [], bad
+        assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == [], bad
         assert not wp.LEASES_FILE.exists(), bad
         _assert_shared_config_untouched(bare, baseline)
 
-    lease = wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     baseline = (bare / "config").read_bytes()
     for bad in [*([value] for value in _INVALID_FOLDERS), []]:
-        with pytest.raises(wp.SlotFoldersRefused):
-            wp.alloc("A", owner_task="t", folders=bad)
+        with pytest.raises(worktree_records.SlotFoldersRefused):
+            worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=bad)
         row = _lease_row(wp, lease.slot)
         assert (row.state, row.session) == ("idle", ""), bad
         assert (slot_dir / "b" / "y").is_file(), bad
@@ -382,12 +392,12 @@ def test_invalid_folders_are_refused_before_any_side_effect(wp, tmp_path):
 def test_alloc_refuses_to_change_folders_of_a_dirty_slot(wp, tmp_path):
     """커밋 안 한 변경이 있는 idle 슬롯의 폴더는 바꾸지 않는다 — git 은 반쪽 적용하고 rc 0 이다."""
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     (slot_dir / "b" / "y").write_text("edited\n", encoding="utf-8")
 
-    with pytest.raises(wp.SlotFoldersRefused, match="커밋 안 한 변경"):
-        wp.alloc("A", owner_task="t", folders=["a"])
+    with pytest.raises(worktree_records.SlotFoldersRefused, match="커밋 안 한 변경"):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=["a"])
 
     assert _lease_row(wp, lease.slot).state == "idle"
     assert (slot_dir / "b" / "y").read_text(encoding="utf-8") == "edited\n"
@@ -406,17 +416,17 @@ def test_submodules_outside_the_folders_are_neither_initialized_nor_reported(
     _allow_file_submodules(monkeypatch)
     _make_bare(wp, _make_origin_with_submodules(tmp_path))
 
-    lease = wp.create_slot("A", base="main", folders=["a"])
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", folders=["a"])
 
-    slot_dir = wp.slot_path(lease.slot)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     assert (slot_dir / "a" / "subm" / "lib.txt").is_file()
     assert (slot_dir / "rootsub" / "lib.txt").is_file()
     assert not (slot_dir / "c" / "subm").exists()
-    submodules = {entry.path: entry for entry in wp.status(slot=lease.slot)[0]["submodules"]}
+    submodules = {entry.path: entry for entry in worktree_status.status(pm_paths.home_at(wp.REPO), slot=lease.slot)[0]["submodules"]}
     assert set(submodules) == {"a/subm", "rootsub"}
     assert not any(entry.warning for entry in submodules.values())
     capsys.readouterr()
-    wp.sync(lease.slot)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), lease.slot)
     assert "c/subm" not in capsys.readouterr().err
     assert not (slot_dir / "c" / "subm").exists()
 
@@ -428,20 +438,20 @@ def test_submodules_outside_the_folders_are_neither_initialized_nor_reported(
 
 def test_folders_require_git_2_36_or_newer(wp):
     """git 2.36 미만이면 생성은 worktree add 없이, 대여는 폴더 제한 호출 없이 거부 — 대여 기록 그대로."""
-    wp.bare_repo_path("A").mkdir(parents=True)
+    pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A").mkdir(parents=True)
     old = _RecordingGit(version="git version 2.35.8")
-    with pytest.raises(wp.SlotFoldersRefused, match="2.36"):
-        wp.create_slot("A", base="main", git_runner=old, folders=["a"])
+    with pytest.raises(worktree_records.SlotFoldersRefused, match="2.36"):
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=old, folders=["a"])
     assert not any(call[:2] == ["worktree", "add"] for call in old.calls)
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
-    with wp._lease_lock():
-        wp._write_ledger([wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                                    state="idle")])
     before = wp.LEASES_FILE.read_bytes()
     old = _RecordingGit(version="git version 2.35.8")
-    with pytest.raises(wp.SlotFoldersRefused, match="2.36"):
-        wp.alloc("A", owner_task="t", folders=["a"], git_runner=old)
+    with pytest.raises(worktree_records.SlotFoldersRefused, match="2.36"):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=["a"], git_runner=old)
     assert not any(call[:1] == ["sparse-checkout"] for call in old.calls)
     assert wp.LEASES_FILE.read_bytes() == before
 
@@ -450,28 +460,28 @@ def test_folders_require_git_2_36_or_newer(wp):
 def test_slot_git_status_reports_the_folders_git_holds(wp, tmp_path):
     """현황의 폴더 = git 정규화 목록(`a a/sub b` → `a b`) · 전체 슬롯 None · 한글 원문 · cone 아님은 거부."""
     _make_bare(wp, _make_origin(tmp_path))
-    limited = wp.create_slot("A", base="main", init_submodules=False,
+    limited = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False,
                              folders=["a", "a/sub", "b"])
-    full = wp.create_slot("A", base="main", init_submodules=False)
-    korean = wp.create_slot("A", base="main", init_submodules=False,
+    full = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    korean = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False,
                             folders=["한글"])
 
-    assert wp.slot_git_status(limited.slot)["folders"] == ["a", "b"]
-    assert wp.slot_git_status(full.slot)["folders"] is None
-    assert wp.slot_git_status(korean.slot)["folders"] == ["한글"]
+    assert worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), limited.slot)["folders"] == ["a", "b"]
+    assert worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), full.slot)["folders"] is None
+    assert worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), korean.slot)["folders"] == ["한글"]
 
-    _git(wp.slot_path(limited.slot), "sparse-checkout", "set", "--no-cone", "/a/*")
-    with pytest.raises(wp.SlotFoldersRefused, match="cone"):
-        wp.slot_git_status(limited.slot)
+    _git(pm_paths.slot_path(pm_paths.home_at(wp.REPO), limited.slot), "sparse-checkout", "set", "--no-cone", "/a/*")
+    with pytest.raises(worktree_records.SlotFoldersRefused, match="cone"):
+        worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), limited.slot)
 
 
 def test_cli_status_prints_the_folders_line(wp, monkeypatch, capsys):
     """`worktree_pool.py status` 는 폴더 한 줄 — 목록 또는 `(제한 없음)`."""
-    with wp._lease_lock():
-        wp._write_ledger([wp.Lease(slot="work/A_1", repo="A", session="s", started="t",
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="s", started="t",
                                    state="leased")])
     rows = {"work/A_1": ["a", "b"]}
-    monkeypatch.setattr(wp, "slot_git_status", lambda slot, **_: {
+    monkeypatch.setattr(worktree_status, "slot_git_status", lambda _home, slot, **_: {
         "slot": slot, "branch": "A_1", "head": "a1b2c3d4" * 5, "parent": None, "children": [],
         "stashes": 0, "submodules": [], "dirty": False, "folders": rows[slot]})
 
@@ -485,9 +495,9 @@ def test_cli_status_prints_the_folders_line(wp, monkeypatch, capsys):
 def test_readonly_slot_refuses_folders(wp):
     git = _RecordingGit()
     with pytest.raises(ValueError, match="readonly"):
-        wp.create_slot("A", base="main", readonly=True, folders=["a"], git_runner=git)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", readonly=True, folders=["a"], git_runner=git)
     assert git.calls == []
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
     assert list(wp.WORK_DIR.iterdir()) == []
 
 
@@ -495,14 +505,14 @@ def test_readonly_slot_refuses_folders(wp):
 def test_alloc_initializes_submodules_in_the_folders_it_checks_out(wp, tmp_path, monkeypatch):
     _allow_file_submodules(monkeypatch)
     _make_bare(wp, _make_origin_with_submodules(tmp_path))
-    slots = [wp.create_slot("A", base="main", folders=["a"]) for _ in range(3)]
+    slots = [worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", folders=["a"]) for _ in range(3)]
     for slot in slots:
-        _git(wp.slot_path(slot.slot) / "a/subm", "checkout", "-b", "dev-a")
+        _git(pm_paths.slot_path(pm_paths.home_at(wp.REPO), slot.slot) / "a/subm", "checkout", "-b", "dev-a")
     for lease, folders in zip(slots, [None, ["c"], ["a", "b"]]):
-        wp.alloc("A", owner_task="t", folders=folders)
-        path = wp.slot_path(lease.slot)
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=folders)
+        path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
         assert _git(path / "a/subm", "symbolic-ref", "--short", "HEAD").strip() == "dev-a"
-        statuses = {s.path: s for s in wp.status(slot=lease.slot)[0]["submodules"]}
+        statuses = {s.path: s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=lease.slot)[0]["submodules"]}
         if folders == ["a", "b"]:
             assert not (path / "c/subm").exists()
             assert _tags(path)["c/subm"] == "S"
@@ -518,69 +528,69 @@ def test_empty_submodule_directory_is_uninitialized_not_dev(wp, tmp_path, monkey
     _allow_file_submodules(monkeypatch)
     origin = _make_origin_with_submodules(tmp_path)
     _make_bare(wp, origin)
-    slots = [wp.create_slot("A", base="main") for _ in range(2)]
+    slots = [worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main") for _ in range(2)]
     _git(origin, "checkout", "-b", "feat-newsub")
     _git(origin, "submodule", "add", "-q", str(tmp_path / "sub-origin"), "a/newsub")
     _git(origin, "commit", "-qm", "new submodule")
-    _git(wp.bare_repo_path("A"), "fetch", "origin")
-    _git(wp.bare_repo_path("A"), "branch", "--no-track", "feat-newsub", "origin/feat-newsub")
-    wp.switch(slots[0].slot, "feat-newsub", protected=[])
-    assert (wp.slot_path(slots[0].slot) / "a/newsub/lib.txt").is_file()
-    path = wp.slot_path(slots[1].slot)
+    _git(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), "fetch", "origin")
+    _git(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), "branch", "--no-track", "feat-newsub", "origin/feat-newsub")
+    branch_checkout.switch(pm_paths.home_at(wp.REPO), slots[0].slot, "feat-newsub", protected=[])
+    assert (pm_paths.slot_path(pm_paths.home_at(wp.REPO), slots[0].slot) / "a/newsub/lib.txt").is_file()
+    path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), slots[1].slot)
     _git(path, "checkout", "--no-recurse-submodules", "-b", "with-empty", "origin/feat-newsub")
     assert (path / "a/newsub").is_dir()
     assert _git(path / "a/newsub", "rev-parse", "--show-prefix").strip() == "a/newsub/"
     before = _git(path, "symbolic-ref", "HEAD")
-    statuses = {s.path: s for s in wp.status(slot=slots[1].slot)[0]["submodules"]}
+    statuses = {s.path: s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=slots[1].slot)[0]["submodules"]}
     assert (statuses["a/newsub"].kind, statuses["a/newsub"].warning, statuses["a/newsub"].dirty) == (
         "uninitialized", True, False)
-    assert wp.dev(slots[1].slot, "a/newsub", "feat-x")[0] == 1
+    assert branch_checkout.dev(pm_paths.home_at(wp.REPO), slots[1].slot, "a/newsub", "feat-x")[0] == 1
     assert _git(path, "symbolic-ref", "HEAD") == before
-    wp.sync(slots[1].slot)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), slots[1].slot)
     assert (path / "a/newsub/lib.txt").is_file()
-    assert next(s for s in wp.status(slot=slots[1].slot)[0]["submodules"] if s.path == "a/newsub").kind == "pinned"
+    assert next(s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=slots[1].slot)[0]["submodules"] if s.path == "a/newsub").kind == "pinned"
 
 
 @_git_required
 def test_hand_widening_is_judged_like_any_empty_submodule(wp, tmp_path, monkeypatch):
     _allow_file_submodules(monkeypatch)
     _make_bare(wp, _make_origin_with_submodules(tmp_path))
-    lease = wp.create_slot("A", base="main", folders=["a"])
-    path = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", folders=["a"])
+    path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     before = _git(path, "symbolic-ref", "HEAD")
-    assert wp.dev(lease.slot, "c/subm", "feat-x")[0] == 1
+    assert branch_checkout.dev(pm_paths.home_at(wp.REPO), lease.slot, "c/subm", "feat-x")[0] == 1
     _git(path, "sparse-checkout", "add", "c")
-    statuses = {s.path: s for s in wp.status(slot=lease.slot)[0]["submodules"]}
+    statuses = {s.path: s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=lease.slot)[0]["submodules"]}
     assert (statuses["c/subm"].kind, statuses["c/subm"].warning) == ("uninitialized", True)
-    assert wp.dev(lease.slot, "c/subm", "feat-x")[0] == 1
+    assert branch_checkout.dev(pm_paths.home_at(wp.REPO), lease.slot, "c/subm", "feat-x")[0] == 1
     assert _git(path, "symbolic-ref", "HEAD") == before
-    wp.sync(lease.slot)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), lease.slot)
     assert (path / "c/subm/lib.txt").is_file()
-    assert next(s for s in wp.status(slot=lease.slot)[0]["submodules"] if s.path == "c/subm").kind == "pinned"
+    assert next(s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=lease.slot)[0]["submodules"] if s.path == "c/subm").kind == "pinned"
 
 
 @_git_required
 def test_populated_inactive_submodule_keeps_its_dev_work(wp, tmp_path, monkeypatch):
     _allow_file_submodules(monkeypatch)
     _make_bare(wp, _make_origin_with_submodules(tmp_path))
-    first, second = [wp.create_slot("A", base="main") for _ in range(2)]
-    wp.alloc("A", owner_task="t")
-    path = wp.slot_path(second.slot)
+    first, second = [worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main") for _ in range(2)]
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t")
+    path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), second.slot)
     sub = path / "c/subm"
     _git(sub, "checkout", "-b", "dev-c")
     (sub / "lib.txt").write_text("dev-uncommitted\n", encoding="utf-8")
-    _git(wp.slot_path(first.slot), "submodule", "deinit", "-f", "c/subm")
+    _git(pm_paths.slot_path(pm_paths.home_at(wp.REPO), first.slot), "submodule", "deinit", "-f", "c/subm")
     assert any(line.startswith("-") and "c/subm" in line for line in _git(path, "submodule", "status").splitlines())
     assert _git(sub, "rev-parse", "--show-prefix").strip() == ""
-    entry = next(s for s in wp.status(slot=second.slot)[0]["submodules"] if s.path == "c/subm")
+    entry = next(s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=second.slot)[0]["submodules"] if s.path == "c/subm")
     assert (entry.kind, entry.dirty) == ("dev-ahead", True)
-    wp.sync(second.slot)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), second.slot)
     assert _git(sub, "symbolic-ref", "--short", "HEAD").strip() == "dev-c"
     assert (sub / "lib.txt").read_text(encoding="utf-8") == "dev-uncommitted\n"
     (sub / "lib.txt").write_text("lib\n", encoding="utf-8")
-    wp.alloc("A", owner_task="t", folders=["a", "c"])
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=["a", "c"])
     assert _git(sub, "symbolic-ref", "--short", "HEAD").strip() == "dev-c"
-    assert _git_rc(wp.bare_repo_path("A"), "config", "--get", "submodule.c/subm.url") == 1
+    assert _git_rc(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), "config", "--get", "submodule.c/subm.url") == 1
 
 
 def test_classification_failure_refuses_status_and_dev_but_sync_warns(wp, capsys):
@@ -592,21 +602,21 @@ def test_classification_failure_refuses_status_and_dev_but_sync_warns(wp, capsys
         if argv[:1] == ["ls-files"]:
             return 1, "index failed"
         return 0, ""
-    with pytest.raises(wp.SlotFoldersRefused):
-        wp._submodule_statuses(runner, target="slot")
-    with pytest.raises(wp.SlotFoldersRefused):
-        wp.dev("work/A_1", "a/subm", "dev", git_runner=runner)
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=runner)
+    with pytest.raises(worktree_records.SlotFoldersRefused):
+        submodule_git._submodule_statuses(runner, target="slot")
+    with pytest.raises(worktree_records.SlotFoldersRefused):
+        branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "a/subm", "dev", git_runner=runner)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=runner)
     assert "[경고]" in capsys.readouterr().err
     assert not any("checkout" in call or "update" in call for call in calls)
 
 
 def test_alloc_full_slot_adds_only_the_sparse_config_probe(wp, monkeypatch):
-    with wp._lease_lock():
-        wp._write_ledger([wp.Lease(slot="work/A_1", repo="A", session="", started="t", state="idle")])
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t", state="idle")])
     git = _RecordingGit()
-    monkeypatch.setattr(wp, "_apply_git_snapshot", lambda *args, **kwargs: git.calls.append(["snapshot"]))
-    wp.alloc("A", owner_task="t", git_runner=git)
+    monkeypatch.setattr(slot_snapshot, "_apply_git_snapshot", lambda _home, *args, **kwargs: git.calls.append(["snapshot"]))
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", git_runner=git)
     assert git.calls == [["config", "--type=bool", "--get", "core.sparseCheckout"], ["snapshot"]]
 
 
@@ -618,7 +628,7 @@ def test_populated_active_submodules_add_no_classification_probes(wp, monkeypatc
             git.calls.append(argv)
             return 0, " " + "a" * 40 + " a/subm\n"
         return base(argv)
-    wp.status(slot="work/A_1", git_runner=runner)
+    worktree_status.status(pm_paths.home_at(wp.REPO), slot="work/A_1", git_runner=runner)
     assert ["submodule", "status"] in git.calls
     assert not any(call[:1] == ["ls-files"] or "--show-prefix" in call for call in git.calls)
     assert git.calls.count(["config", "--type=bool", "--get", "core.sparseCheckout"]) == 1
@@ -629,59 +639,59 @@ def test_populated_active_submodules_add_no_classification_probes(wp, monkeypatc
 def test_populated_inactive_detached_submodule_is_preserved(wp, tmp_path, monkeypatch, dirty):
     _allow_file_submodules(monkeypatch)
     _make_bare(wp, _make_origin_with_submodules(tmp_path))
-    first, second = [wp.create_slot("A", base="main") for _ in range(2)]
-    wp.alloc("A", owner_task="t")
-    sub = wp.slot_path(second.slot) / "c/subm"
+    first, second = [worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main") for _ in range(2)]
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t")
+    sub = pm_paths.slot_path(pm_paths.home_at(wp.REPO), second.slot) / "c/subm"
     (sub / "lib.txt").write_text("other pin\n", encoding="utf-8")
     _git(sub, "commit", "-qam", "local detached commit")
     before = _git(sub, "rev-parse", "HEAD")
     if dirty:
         (sub / "lib.txt").write_text("uncommitted\n", encoding="utf-8")
-    _git(wp.slot_path(first.slot), "submodule", "deinit", "-f", "c/subm")
-    entry = next(s for s in wp.status(slot=second.slot)[0]["submodules"] if s.path == "c/subm")
+    _git(pm_paths.slot_path(pm_paths.home_at(wp.REPO), first.slot), "submodule", "deinit", "-f", "c/subm")
+    entry = next(s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=second.slot)[0]["submodules"] if s.path == "c/subm")
     assert (entry.kind, entry.warning, entry.dirty) == ("drift", True, dirty)
-    wp.sync(second.slot)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), second.slot)
     assert _git(sub, "rev-parse", "HEAD") == before
     assert (sub / "lib.txt").read_text(encoding="utf-8") == ("uncommitted\n" if dirty else "other pin\n")
     # submodule HEAD drift는 상위 슬롯의 커밋 안 한 변경으로 판정되어 대여가 거부된다.
-    with pytest.raises(wp.SlotFoldersRefused, match="커밋 안 한 변경"):
-        wp.alloc("A", owner_task="t", folders=["a", "c"])
+    with pytest.raises(worktree_records.SlotFoldersRefused, match="커밋 안 한 변경"):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=["a", "c"])
     assert _git(sub, "rev-parse", "HEAD") == before
-    assert _git_rc(wp.bare_repo_path("A"), "config", "--get", "submodule.c/subm.url") == 1
+    assert _git_rc(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), "config", "--get", "submodule.c/subm.url") == 1
 
 
 @_git_required
 def test_deinitialized_empty_directory_is_initialized_by_sync(wp, tmp_path, monkeypatch):
     _allow_file_submodules(monkeypatch)
     _make_bare(wp, _make_origin_with_submodules(tmp_path))
-    lease = wp.create_slot("A", base="main")
-    path = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main")
+    path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     _git(path, "submodule", "deinit", "-f", "c/subm")
     before = _git(path, "symbolic-ref", "HEAD")
-    assert next(s for s in wp.status(slot=lease.slot)[0]["submodules"] if s.path == "c/subm").kind == "uninitialized"
-    assert wp.dev(lease.slot, "c/subm", "dev")[0] == 1
+    assert next(s for s in worktree_status.status(pm_paths.home_at(wp.REPO), slot=lease.slot)[0]["submodules"] if s.path == "c/subm").kind == "uninitialized"
+    assert branch_checkout.dev(pm_paths.home_at(wp.REPO), lease.slot, "c/subm", "dev")[0] == 1
     assert _git(path, "symbolic-ref", "HEAD") == before
-    wp.sync(lease.slot)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), lease.slot)
     assert (path / "c/subm/lib.txt").is_file()
 
 
 @_git_required
 def test_dirty_sparse_slot_refuses_disable_and_preserves_release_folders(wp, tmp_path):
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", folders=["a"], init_submodules=False, owner_task="t")
-    wp.release(lease.slot, owner_task="t")
-    assert wp.slot_folders(lease.slot) == ["a"]
-    (wp.slot_path(lease.slot) / "a/x").write_text("edited\n", encoding="utf-8")
-    with pytest.raises(wp.SlotFoldersRefused, match="커밋 안 한 변경"):
-        wp.alloc("A", owner_task="t")
-    assert wp.slot_folders(lease.slot) == ["a"]
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", folders=["a"], init_submodules=False, owner_task="t")
+    worktree_pool.release(pm_paths.home_at(wp.REPO), lease.slot, owner_task="t")
+    assert sparse_checkout.slot_folders(pm_paths.home_at(wp.REPO), lease.slot) == ["a"]
+    (pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot) / "a/x").write_text("edited\n", encoding="utf-8")
+    with pytest.raises(worktree_records.SlotFoldersRefused, match="커밋 안 한 변경"):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t")
+    assert sparse_checkout.slot_folders(pm_paths.home_at(wp.REPO), lease.slot) == ["a"]
     assert _lease_row(wp, lease.slot).state == "idle"
-    assert (wp.slot_path(lease.slot) / "a/x").read_text(encoding="utf-8") == "edited\n"
+    assert (pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot) / "a/x").read_text(encoding="utf-8") == "edited\n"
 
 
 @pytest.mark.parametrize("stage", ["set", "checkout", "ls-files", "update"])
 def test_sparse_creation_failure_rolls_back_the_lease_and_worktree(wp, stage):
-    wp.bare_repo_path("A").mkdir(parents=True)
+    pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A").mkdir(parents=True)
     git = _RecordingGit()
     def runner(argv):
         if ((stage == "set" and argv[:1] == ["sparse-checkout"])
@@ -695,8 +705,8 @@ def test_sparse_creation_failure_rolls_back_the_lease_and_worktree(wp, stage):
             return 0, f"H 160000 {'a' * 40} 0\ta/subm\0"
         return git(argv)
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", folders=["a"], git_runner=runner)
-    assert wp.list_leases() == []
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", folders=["a"], git_runner=runner)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
     assert any(call[:2] == ["worktree", "remove"] for call in git.calls)
 
 
@@ -713,7 +723,7 @@ def test_slot_folders_round_trips_git_quoted_names(wp, tmp_path):
             return 0, "true\n"
         assert argv == ["-c", "core.quotePath=false", "sparse-checkout", "list"]
         return 0, "\n".join(encoded) + "\n"
-    assert wp.slot_folders("work/A_1", git_runner=runner) == expected
+    assert sparse_checkout.slot_folders(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner) == expected
     assert calls == [["config", "--type=bool", "--get", "core.sparseCheckout"],
                      ["config", "--type=bool", "--get", "core.sparseCheckoutCone"],
                      ["-c", "core.quotePath=false", "sparse-checkout", "list"]]
@@ -741,9 +751,9 @@ def test_slot_folders_round_trips_git_quoted_names(wp, tmp_path):
     created = _run_cli(wp.REPO, "worktree", "add", "A", "--folders", ",".join(names), "--user-ack", "A")
     assert created.returncode == 0, created.stderr
     assert 'a"b' in created.stdout
-    lease = wp.list_leases()[0]
-    assert wp.slot_folders(lease.slot) == sorted(names)
-    assert wp.slot_git_status(lease.slot)["folders"] == sorted(names)
+    lease = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
+    assert sparse_checkout.slot_folders(pm_paths.home_at(wp.REPO), lease.slot) == sorted(names)
+    assert worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), lease.slot)["folders"] == sorted(names)
     (wp.REPO / ".project_manager/wiki").mkdir()
     (wp.REPO / ".project_manager/wiki/pm_state.template.md").write_text(
         "# 상태\n\n## 세션 식별 (현재까지 사용된 이름)\n최근 N 차 (sliding window, 기본 3 차):\n",
@@ -759,8 +769,8 @@ def test_slot_folders_round_trips_git_quoted_names(wp, tmp_path):
 
 def test_alloc_folder_validation_precedes_branch_checkout(wp, tmp_path):
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", init_submodules=False)
-    path = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     _git(path, "branch", "other")
     _git(path, "checkout", "other")
     (path / "only-other").mkdir()
@@ -768,7 +778,7 @@ def test_alloc_folder_validation_precedes_branch_checkout(wp, tmp_path):
     _git(path, "add", "only-other")
     _git(path, "commit", "-qm", "target folders")
     _git(path, "checkout", "A_1")
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     def snapshot():
         configs = {str(p.relative_to(bare)): p.read_bytes()
                    for p in [bare / "config", *_worktree_config_files(bare)]}
@@ -777,7 +787,7 @@ def test_alloc_folder_validation_precedes_branch_checkout(wp, tmp_path):
                  if name and (path / name).is_file()}
         return (_git(path, "symbolic-ref", "HEAD"), _git(path, "rev-parse", "HEAD"),
                 files, configs, wp.LEASES_FILE.read_bytes())
-    real = wp._real_git_runner(path)
+    real = worktree_git._real_git_runner(path)
     for key in ["branch", "resume"]:
         for failure in ["bad-folder", "dirty", "old-git"]:
             if failure == "dirty":
@@ -790,8 +800,8 @@ def test_alloc_folder_validation_precedes_branch_checkout(wp, tmp_path):
                     return 0, "git version 2.35.8\n"
                 return real(argv)
             folders = ["nope"] if failure == "bad-folder" else ["a"]
-            with pytest.raises(wp.SlotFoldersRefused):
-                wp.alloc("A", owner_task="t", folders=folders, git_runner=runner, **{key: "other"})
+            with pytest.raises(worktree_records.SlotFoldersRefused):
+                worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=folders, git_runner=runner, **{key: "other"})
             assert snapshot() == before, (key, failure)
             assert not any(call[:1] in (["checkout"], ["sparse-checkout"]) for call in calls)
             if failure == "dirty":
@@ -800,8 +810,8 @@ def test_alloc_folder_validation_precedes_branch_checkout(wp, tmp_path):
         def recording(argv):
             calls.append(argv)
             return real(argv)
-        result = wp.alloc("A", owner_task="t", folders=["only-other"], git_runner=recording, **{key: "other"})
-        assert result.state == "leased" and wp.current_branch(lease.slot) == "other"
+        result = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", folders=["only-other"], git_runner=recording, **{key: "other"})
+        assert result.state == "leased" and worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "other"
         assert (path / "only-other/file").is_file()
         checkout = next(i for i, call in enumerate(calls) if call[:1] == ["checkout"])
         assert calls.index(["version"]) < checkout
@@ -809,6 +819,6 @@ def test_alloc_folder_validation_precedes_branch_checkout(wp, tmp_path):
         assert next(i for i, call in enumerate(calls) if call[:1] == ["status"]) < checkout
         assert calls.count(["version"]) == 1
         assert calls.count(["ls-tree", "-z", "other", "--", "only-other"]) == 1
-        wp.release(lease.slot, owner_task="t")
+        worktree_pool.release(pm_paths.home_at(wp.REPO), lease.slot, owner_task="t")
         _git(path, "sparse-checkout", "disable")
         _git(path, "checkout", "A_1")

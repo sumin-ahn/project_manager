@@ -512,23 +512,24 @@ def test_console_state_reports_partial_stream_application(console_encoding, monk
     }
 
 
-@pytest.mark.parametrize("owner_name", ["pm_config", "worktree_pool"])
+@pytest.mark.parametrize("owner_name", ["pm_config", "pm_engine.infra.repo_files"])
 def test_actual_cache_false_entry_pattern_preserves_process_state_across_two_loads(
     console_encoding, monkeypatch, owner_name
 ):
     """두 실제 CLI의 loader로 새 모듈을 2회 만들며 최초 CP·코덱·hint를 보존한다."""
     owner_spec = importlib.util.spec_from_file_location(
-        f"{owner_name}_t0690", TOOLS / f"{owner_name}.py"
+        f"{owner_name}_t0690", TOOLS / (owner_name.replace(".", "/") + ".py")
     )
     owner = importlib.util.module_from_spec(owner_spec)
     owner_spec.loader.exec_module(owner)
-    first = owner._load_module_from_path(
+    loader = owner.load_module if owner_name == "pm_engine.infra.repo_files" else owner._load_module_from_path
+    first = loader(
         MODULE_PATH,
         "console.py",
         allow_unverified=True,
         cache=False,
     )
-    second = owner._load_module_from_path(
+    second = loader(
         MODULE_PATH,
         "console.py",
         allow_unverified=True,

@@ -18,6 +18,9 @@ import pytest
 from _manager_home import (
     close_session, git_required, make_bare_with_tags, make_pm_home, pm_config,
 )
+from pm_engine.infra import pm_paths
+from pm_engine.app import task_lifecycle
+from pm_engine.app import worktree_pool
 
 REPO = Path(__file__).resolve().parents[1]
 RULES_FILE = REPO / "manager" / "ui" / "src" / "lib" / "status-dots.json"
@@ -61,10 +64,10 @@ def slots(tmp_path_factory) -> dict[str, dict]:
     pool = importlib.util.module_from_spec(specification)
     sys.modules[specification.name] = pool
     specification.loader.exec_module(pool)
-    pool.alloc("app", owner_task="demo_2")                                           # 주황
-    pool.bind_task("live-task", session="s-test")
+    worktree_pool.alloc(pm_paths.home_at(pool.REPO), "app", owner_task="demo_2")                                           # 주황
+    task_lifecycle.bind_task(pm_paths.home_at(pool.REPO), "live-task", session="s-test")
     # 닫힘 — 종료 기록(반납)이 남은 대여는 idle 로 돌아간다(회색).
-    pool.alloc("app", owner_task="demo_3")
+    worktree_pool.alloc(pm_paths.home_at(pool.REPO), "app", owner_task="demo_3")
     close_session(pool, "demo_3")
 
     completed = subprocess.run(

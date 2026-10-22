@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import argparse
 import importlib.util
 import json
@@ -28,6 +30,9 @@ from pathlib import Path
 import pytest
 from pm_engine.domain import identity_args
 from pm_engine.infra import areas_store
+from pm_engine.infra import pm_paths
+from pm_engine.infra import pool_store
+from pm_engine.app import task_lifecycle
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -99,9 +104,11 @@ def _raise_areas_read(_home):
     raise OSError("areas broken")
 
 
-def _run_new(pc, wp, name):
+def _run_new(pc, wp, name, *, monkeypatch):
     """`task new <이름>` 을 실 엔진(tmp 바인딩)으로 1회 실행 — rc 반환."""
-    return pc.cmd_task_new(argparse.Namespace(name=name), worktree_pool=wp)
+    monkeypatch.setattr(pc, "REPO", wp.REPO)
+    bind_pool(monkeypatch, wp)
+    return pc.cmd_task_new(argparse.Namespace(name=name))
 
 
 def _ledger_rows(wp) -> list[dict]:
@@ -112,9 +119,9 @@ def _ledger_rows(wp) -> list[dict]:
 # ── 생성 성공 ────────────────────────────────────────────────────────────────
 
 
-def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, wp, capsys):
+def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, monkeypatch, wp, capsys):
     """`task new` = 정체성만 — 장부 행 닫힘·`prefix None` + pm_state 즉시 생성 + 슬롯 0."""
-    rc = _run_new(pc, wp, "job")
+    rc = _run_new(pc, wp, "job", monkeypatch=monkeypatch)
     assert rc == 0
 
     rows = _ledger_rows(wp)
@@ -123,10 +130,10 @@ def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, wp, capsys):
     assert rows[0]["prefix"] is None, "`--prefix` 없는 생성인데 prefix 가 붙었다"
     assert rows[0]["started"]
 
-    state = wp.task_pm_state_file("job")
+    state = pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "job")
     assert state.exists(), "task 생성 시 pm_state 즉시 생성 계약 위반"
     assert identity_args.TASK_PM_STATE_EMPTY_MARKER in state.read_text(encoding="utf-8")
-    assert wp.list_leases() == [], "슬롯 대여는 `alloc` 소관 — task new 가 대여했다"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == [], "슬롯 대여는 `alloc` 소관 — task new 가 대여했다"
 
     out = capsys.readouterr().out
     assert "✓ task 생성" in out and "job" in out
@@ -135,30 +142,30 @@ def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, wp, capsys):
     assert "task prefix job" in out, "prefix 지정 경로 안내 없음(`--prefix` 미제공의 짝)"
 
 
-def test_task_new_pm_state_is_byte_identical_to_bind_task_output(pc, tmp_path, capsys):
+def test_task_new_pm_state_is_byte_identical_to_bind_task_output(pc, monkeypatch, tmp_path, capsys):
     """pm_state 는 `bind_task` 신규 생성분과 **바이트 동일** — 같은 `ensure_task_pm_state`."""
     home_new = _make_home(tmp_path / "home_new")
     home_bind = _make_home(tmp_path / "home_bind")
     wp_new = _load_wp_bound(home_new)
     wp_bind = _load_wp_bound(home_bind)
 
-    assert _run_new(pc, wp_new, "twin") == 0
-    record, action = wp_bind.bind_task("twin", session="s-test")
+    assert _run_new(pc, wp_new, "twin", monkeypatch=monkeypatch) == 0
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(wp_bind.REPO), "twin", session="s-test")
     assert action == "created"
 
     assert (
-        wp_new.task_pm_state_file("twin").read_bytes()
-        == wp_bind.task_pm_state_file("twin").read_bytes()
+        pm_paths.task_pm_state_file(pm_paths.home_at(wp_new.REPO), "twin").read_bytes()
+        == pm_paths.task_pm_state_file(pm_paths.home_at(wp_bind.REPO), "twin").read_bytes()
     ), "task new 와 bootstrap 신규 생성의 pm_state 가 갈렸다(템플릿 복제 의심)"
     assert record.prefix is None
 
 
-def test_task_new_then_bind_task_is_clean_resume(pc, wp, capsys):
+def test_task_new_then_bind_task_is_clean_resume(pc, monkeypatch, wp, capsys):
     """생성 뒤 bootstrap 진입(`bind_task`)은 **resumed** — 신규 생성도, 회수 경고도 아니다."""
-    assert _run_new(pc, wp, "job") == 0
+    assert _run_new(pc, wp, "job", monkeypatch=monkeypatch) == 0
     capsys.readouterr()
 
-    record, action = wp.bind_task("job", session="s-test")
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
 
     assert action == "resumed", "닫힌 기록 재개인데 created 로 분류됐다"
     assert record.open is True
@@ -168,13 +175,13 @@ def test_task_new_then_bind_task_is_clean_resume(pc, wp, capsys):
 # ── 거부 (rc≠0 · 장부 불변) ──────────────────────────────────────────────────
 
 
-def test_task_new_duplicate_name_refused_without_ledger_change(pc, wp, capsys):
+def test_task_new_duplicate_name_refused_without_ledger_change(pc, monkeypatch, wp, capsys):
     """같은 이름이 이미 있으면 rc1 — 장부 바이트 불변(재개는 bootstrap 몫)."""
-    assert _run_new(pc, wp, "job") == 0
+    assert _run_new(pc, wp, "job", monkeypatch=monkeypatch) == 0
     capsys.readouterr()
     before = wp.LEASES_FILE.read_bytes()
 
-    rc = _run_new(pc, wp, "job")
+    rc = _run_new(pc, wp, "job", monkeypatch=monkeypatch)
 
     assert rc == 1
     assert wp.LEASES_FILE.read_bytes() == before, "중복 거부인데 장부가 변했다"
@@ -182,28 +189,28 @@ def test_task_new_duplicate_name_refused_without_ledger_change(pc, wp, capsys):
     assert "이미 있다" in err and "pm-bootstrap --task job" in err
 
 
-def test_task_new_open_task_record_is_not_touched_by_duplicate_refusal(pc, wp, capsys):
+def test_task_new_open_task_record_is_not_touched_by_duplicate_refusal(pc, monkeypatch, wp, capsys):
     """열린 기록이 있는 이름도 rc1 이고 그 기록을 만지지 않는다."""
-    wp.bind_task("busy", session="s-test")            # 열림 기록
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "busy", session="s-test")            # 열림 기록
     capsys.readouterr()
     before = wp.LEASES_FILE.read_bytes()
 
-    assert _run_new(pc, wp, "busy") == 1
+    assert _run_new(pc, wp, "busy", monkeypatch=monkeypatch) == 1
     assert wp.LEASES_FILE.read_bytes() == before
-    assert wp.find_task("busy").open is True
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "busy").open is True
 
 
-def test_task_new_archived_name_refused_with_reopen_hint(pc, wp, capsys):
+def test_task_new_archived_name_refused_with_reopen_hint(pc, monkeypatch, wp, capsys):
     """동명 종료 archive → rc1 + 기존 `TaskArchived` 사유 + `task reopen` 안내(새 사유 문구 0)."""
     archive = wp.TASKS_DIR / "_ended" / "job-20260901"
     archive.mkdir(parents=True)
     (archive / "pm_state.md").write_text("old-state", encoding="utf-8")
 
-    rc = _run_new(pc, wp, "job")
+    rc = _run_new(pc, wp, "job", monkeypatch=monkeypatch)
 
     assert rc == 1
     assert not wp.LEASES_FILE.exists(), "거부인데 장부 파일이 생겼다"
-    assert not wp.task_dir("job").exists(), "거부인데 서술 폴더가 생겼다"
+    assert not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists(), "거부인데 서술 폴더가 생겼다"
     assert (archive / "pm_state.md").read_text(encoding="utf-8") == "old-state"
     err = capsys.readouterr().err
     assert "종료 archive로 보관됨" in err          # 기존 TaskArchived 사유 그대로
@@ -211,9 +218,9 @@ def test_task_new_archived_name_refused_with_reopen_hint(pc, wp, capsys):
 
 
 @pytest.mark.parametrize("bad", ["../evil", "a/b", ".hidden", ""])
-def test_task_new_unsafe_name_refused_before_any_write(pc, wp, bad, capsys):
+def test_task_new_unsafe_name_refused_before_any_write(pc, monkeypatch, wp, bad, capsys):
     """부적합 이름 → rc1 · 장부/서술 폴더 무생성(엔진 validator 재사용)."""
-    rc = _run_new(pc, wp, bad)
+    rc = _run_new(pc, wp, bad, monkeypatch=monkeypatch)
 
     assert rc == 1
     assert not wp.LEASES_FILE.exists()
@@ -221,9 +228,9 @@ def test_task_new_unsafe_name_refused_before_any_write(pc, wp, bad, capsys):
     assert "부적합 task 명" in capsys.readouterr().err
 
 
-def test_task_new_reserved_slot_pattern_refused_via_registered_repos(pc, wp, capsys):
+def test_task_new_reserved_slot_pattern_refused_via_registered_repos(pc, monkeypatch, wp, capsys):
     """`<등록 repo>_<N>` 예약패턴 → rc1 (board 에서 해소한 등록 repo 가 판별 근거)."""
-    rc = _run_new(pc, wp, "app_2")
+    rc = _run_new(pc, wp, "app_2", monkeypatch=monkeypatch)
 
     assert rc == 1
     assert not wp.LEASES_FILE.exists()
@@ -234,25 +241,18 @@ def test_task_new_survives_board_absence_with_traversal_still_blocked(pc, wp, mo
     """areas.md 읽기 실패(registered 해소 불가)여도 생성은 되고 traversal 검증은 유지된다(fail-soft)."""
     monkeypatch.setattr(areas_store, "registered_repos", _raise_areas_read)
 
-    assert _run_new(pc, wp, "job") == 0
+    assert _run_new(pc, wp, "job", monkeypatch=monkeypatch) == 0
     assert _ledger_rows(wp)[0]["session"] == ""
     capsys.readouterr()
-    assert _run_new(pc, wp, "../evil") == 1
+    assert _run_new(pc, wp, "../evil", monkeypatch=monkeypatch) == 1
 
 
-def test_task_new_engine_missing_errors(pc, monkeypatch, capsys):
-    """worktree_pool 부재(None) → 명시 에러 rc1(침묵 무력화 금지)."""
-    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
-    rc = pc.cmd_task_new(argparse.Namespace(name="job"), worktree_pool=None)
-    assert rc == 1
-    assert "worktree_pool" in capsys.readouterr().err
 
 
 # ── 예약패턴 해소 규칙 단일화 (판정 사본 0) ──────────────────────────────────
 
 
-def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validation(
-        pc, wp, monkeypatch, capsys):
+def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validation(pc, wp, monkeypatch, capsys):
     """예약패턴 판별 근거의 해소가 `_registered_repos` 한 자리다 — 두 호출부가 같은 값을 본다.
 
     areas.md 읽기 실패는 None(예약패턴만 완화되고 traversal 검증은 유지)이고, 실 레지스트리가
@@ -276,8 +276,8 @@ def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validati
     monkeypatch.setattr(pc, "_registered_repos", _record)
 
     # 생성 경로(기바인딩 미요구)와 기바인딩 요구 경로가 같은 이름을 같은 근거로 거부한다.
-    assert _run_new(pc, wp, "app_2") == 1
-    assert pc._validate_prebound_task(wp, "app_2") == 1
+    assert _run_new(pc, wp, "app_2", monkeypatch=monkeypatch) == 1
+    assert pc._validate_prebound_task( "app_2") == 1
     assert "부적합 task 명" in capsys.readouterr().err
 
     assert calls == [["app"], ["app"]], \
@@ -353,3 +353,8 @@ def test_task_new_real_cli_creates_identity_and_refuses_rerun(tmp_path):
     assert second.returncode == 1
     assert "이미 있다" in second.stderr
     assert ledger.read_bytes() == before, "중복 거부인데 실 장부가 변했다"
+
+
+@pytest.fixture(autouse=True)
+def _cli_home(pc, home, monkeypatch):
+    monkeypatch.setattr(pc, "REPO", home)
