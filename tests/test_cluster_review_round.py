@@ -15,6 +15,9 @@ hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.app import round_maintenance
 from pm_engine.infra import cluster_store
 
@@ -126,7 +129,6 @@ def _fixture_board(pd, home: Path):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = home
-    board.LOCAL_DIR = home / ".project_manager" / ".local"
     round_maintenance._rounds_mutation_sync_paths = lambda _home, _message, _paths: True
     return board
 
@@ -995,12 +997,12 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
     ticket = _MEMBERS[0]
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
 
-    completion = board._review_completion_problem(ticket)
-    resolution = board._review_resolution_input_problem(ticket)
+    completion = board_ticket._review_completion_problem(board._home(), ticket)
+    resolution = board_ticket._review_resolution_input_problem(board._home(), ticket)
     assert completion is not None and "code-reviewer 리뷰 라운드 03" in completion
     assert resolution is not None
-    assert board._review_completion_problem(_MEMBERS[1]) is None
-    assert board._review_resolution_input_problem(_MEMBERS[1]) is None
+    assert board_ticket._review_completion_problem(board._home(), _MEMBERS[1]) is None
+    assert board_ticket._review_resolution_input_problem(board._home(), _MEMBERS[1]) is None
 
     spec = tickets / f"{ticket}-review.md"
     spec.write_text(
@@ -1008,8 +1010,8 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
         + _disposition_block(pd, 3, [_decision("F-001", "rejected")]),
         encoding="utf-8", newline="")
 
-    assert board._review_completion_problem(ticket) is None
-    assert board._review_resolution_input_problem(ticket) is None
+    assert board_ticket._review_completion_problem(board._home(), ticket) is None
+    assert board_ticket._review_resolution_input_problem(board._home(), ticket) is None
 
 
 def _round(pd, ordinal: int, role: str, text: str):
@@ -1521,8 +1523,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
     """
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
-    board.LEASES_FILE.write_text(json.dumps({"leases": [{
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
     tree_identities = []
@@ -1564,7 +1565,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
         assert '"observed":"rc=0' in text and "hi" in text
         assert "기계 확인 1건 기입" in out and ticket in out
         assert f"{ticket}: 리뷰 잔여 확인 완료" in out
-        assert board._review_completion_problem(ticket) is None
+        assert board_ticket._review_completion_problem(board._home(), ticket) is None
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
 
 
@@ -1575,8 +1576,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     home, tickets = review_env
     board = _fixture_board(pd, home)
     # 확인 트리는 `--task` 가 보유한 폴더에서만 해소한다(T-0962 — PM 홈 접기 없음).
-    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
-    board.LEASES_FILE.write_text(json.dumps({"leases": [{
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
@@ -1623,8 +1623,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     home, tickets = review_env
     board = _fixture_board(pd, home)
     # 확인 트리는 `--task` 가 보유한 폴더에서만 해소한다(T-0962 — PM 홈 접기 없음).
-    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
-    board.LEASES_FILE.write_text(json.dumps({"leases": [{
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
@@ -1799,7 +1798,7 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
 
     out = capsys.readouterr().out
     assert rc == 0, out
-    assert board._review_completion_problem(rejected) is None
+    assert board_ticket._review_completion_problem(board._home(), rejected) is None
     assert f"{passed}: 처분할 리뷰 잔여 없음(must-fix 0건) — 무대상" in out
     assert pd.PM_REVIEW_CONFIRMATION_SECTION not in (
         tickets / f"{passed}-review.md").read_text(encoding="utf-8")
@@ -1811,14 +1810,13 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     import argparse
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board.LEASES_FILE = home / '.project_manager/.local/worktree-leases.json'
     # 동일 저장소의 두 작업 트리, 묶음 브랜치를 가진 트리는 두 번째 행이다.
     one, five = home / 'work/proj_1', home / 'work/proj_5'
     assert _git(home, 'checkout', '-q', _BASE_BRANCH).returncode == 0
     assert _git(home, 'worktree', 'add', '-q', '-b', 'task/other', str(one)).returncode == 0
     assert _git(home, 'worktree', 'add', '-q', str(five), _CLUSTER_BRANCH).returncode == 0
     rows = [{'slot': f'work/proj_{n}', 'repo': 'proj', 'session': 'main', 'state': 'leased', 'role': 'work'} for n in (1, 5)]
-    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     tf = _load_tool('ticket_finish', f'ticket_finish_t0929_{explicit}')
     execution_globals = (tf.REPO, tf.LEASES_FILE)
     finisher = tf.TicketFinisher()
@@ -1834,19 +1832,19 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert forwarded == [[
         'rounds', 'resolve', '--cluster', _CLUSTER, '--pm-verified', '--task', 'main']]
     identity = argparse.Namespace(task='main', repo='proj' if explicit else None, slot=5 if explicit else None)
-    before = board.LEASES_FILE.read_bytes()
+    before = pm_paths.leases_file(board._home()).read_bytes()
     assert pd._cluster_confirmation_tree(
         pm_paths.home_at(home), _CLUSTER, identity=identity) == found
-    assert board.LEASES_FILE.read_bytes() == before
+    assert pm_paths.leases_file(board._home()).read_bytes() == before
     assert (tf.REPO, tf.LEASES_FILE) == execution_globals
     # 실행 트리와 다른 데이터 Home의 손상 lease는 첫 기록 전에 거부한다.
-    board.LEASES_FILE.write_text('{broken', encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text('{broken', encoding='utf-8')
     with pytest.raises(tf._CloseObservationFailure):
         closer._resolve_code_tree()
     with pytest.raises(delegate_errors.DelegateError):
         pd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=identity)
     assert (tf.REPO, tf.LEASES_FILE) == execution_globals
-    board.LEASES_FILE.write_bytes(before)
+    pm_paths.leases_file(board._home()).write_bytes(before)
 
     # finish argv에서 실제 내부 확인·기입·처분까지 연결하며 외부 명령만 대역으로 둔다.
     import contextlib
@@ -1871,7 +1869,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert pd._cmd_rounds(argv, run_fn=observe) == 0
     assert len(command_calls) == len(_MEMBERS)
     assert all(Path(call['cwd']) == found for call in command_calls)
-    assert board.LEASES_FILE.read_bytes() == before
+    assert pm_paths.leases_file(board._home()).read_bytes() == before
     for ticket in _MEMBERS:
         assert pd.PM_REVIEW_CONFIRMATION_SECTION in (tickets / f'{ticket}-review.md').read_text(encoding='utf-8')
 
@@ -1881,10 +1879,9 @@ def test_t0929_finish_confirmation_explicit_wrong_branch_refused(pd, review_env)
     import argparse
     home, _ = review_env
     board = _fixture_board(pd, home)
-    board.LEASES_FILE = home / '.project_manager/.local/worktree-leases.json'
     slot = home / 'work/proj_1'
     assert _git(home, 'worktree', 'add', '-q', str(slot), _BASE_BRANCH).returncode == 0
-    board.LEASES_FILE.write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
     with pytest.raises(delegate_errors.DelegateError, match='브랜치'):
         pd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=argparse.Namespace(task='main', repo='proj', slot=1))
 
@@ -1895,20 +1892,19 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
     import argparse
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
     slot = home / "work/proj_1"
     assert _git(home, "worktree", "add", "-q", str(slot), _BASE_BRANCH).returncode == 0
-    board.LEASES_FILE.write_text(json.dumps({"leases": [{"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased", "role": "work"}]}), encoding="utf-8")
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased", "role": "work"}]}), encoding="utf-8")
     ledger_path = cluster_store.cluster_ledger_path(board._home(), _CLUSTER)
     ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
     ledger["branch"] = None
     cluster_store.dump_cluster(board._home(), ledger)
-    before = (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
+    before = (ledger_path.read_bytes(), pm_paths.leases_file(board._home()).read_bytes(),
               tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md"))))
     identity = argparse.Namespace(task="main", repo=None if task_only else "proj", slot=None if task_only else 1)
     with pytest.raises(delegate_errors.DelegateError, match="cluster new"):
         pd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=identity)
-    assert (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
+    assert (ledger_path.read_bytes(), pm_paths.leases_file(board._home()).read_bytes(),
             tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md")))) == before
 
 

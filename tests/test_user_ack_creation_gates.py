@@ -6,6 +6,12 @@ worktree add 변형을 hermetic하게 검증한다. 기존 downstream 테스트�
 붙이지 않고, 이 파일에서 거부/승인/오결속을 명시적으로 나눈다.
 """
 from __future__ import annotations
+
+from pm_engine.cli import board_init
+from pm_engine.cli import board_prefix
+from pm_engine.cli import board_ticket
+from pm_engine.infra import pm_paths
+
 from pm_engine.app import repo_protection
 from pm_engine.infra import git
 
@@ -63,20 +69,7 @@ def board(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     module = _load(f"board_t0636_{id(tmp_path)}", "board.py")
-    overrides = {
-        "REPO": project,
-        "TICKETS_DIR": tickets,
-        "TEMPLATE_FILE": tickets / "_template.md",
-
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": local,
-        "LEASES_FILE": local / "worktree-leases.json",
-
-        "PM_STATE_FILE": wiki / "pm_state.md",
-        "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
-    }
+    overrides = {"REPO": project}
     for name, value in overrides.items():
         monkeypatch.setattr(module, name, value)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
@@ -128,14 +121,14 @@ def _new_args(prefix: str, user_ack: str | None):
 
 def _new(board, prefix: str, user_ack: str | None) -> int:
     ensure_product_slot(board, task=_TASK)
-    return board.cmd_new(_new_args(prefix, user_ack))
+    return board_ticket.cmd_new(board._home(), _new_args(prefix, user_ack))
 
 
 def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypatch):
     if surface == "new":
         return _new(board, prefix, user_ack)
     if surface == "init":
-        return board.cmd_init(argparse.Namespace(
+        return board_init.cmd_init(board._home(), argparse.Namespace(
             prefix=prefix, user_ack=user_ack, area="area", owner="owner", user=None,
             task=None, repo=None, slot=None,
         ))
@@ -149,7 +142,7 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
         )
     if surface == "reid":
         _seed_ticket(board, "T-0036")
-        return board.cmd_reid(argparse.Namespace(
+        return board_prefix.cmd_reid(board._home(), argparse.Namespace(
             old_id="T-0036", new_id=f"T-{prefix}-001", user_ack=user_ack,
             dry_run=False, repo=None, slot=None,
         ))
@@ -157,11 +150,11 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
     # fresh 재검증까지 실 파이프라인으로 탄다(no-op 승인 불요 정책과 혼동하지 않음).
     _seed_ticket(board, "T-old-001")
     if surface == "rename":
-        return board.cmd_prefix_rename(argparse.Namespace(
+        return board_prefix.cmd_prefix_rename(board._home(), argparse.Namespace(
             src="old", dst=prefix, user_ack=user_ack, dry_run=False,
         ))
     if surface == "merge":
-        return board.cmd_prefix_merge(argparse.Namespace(
+        return board_prefix.cmd_prefix_merge(board._home(), argparse.Namespace(
             sources=["old"], into=prefix, user_ack=user_ack,
             reorder_chronological=False, dry_run=False,
         ))
@@ -213,7 +206,7 @@ def test_prefix_surface_matrix_calls_shared_loader(board, pm_config, monkeypatch
 
 
 def _seed_ticket(board, ticket_id: str):
-    path = board.TICKETS_DIR / "open" / f"{ticket_id}-seed.md"
+    path = pm_paths.tickets_dir(board._home()) / "open" / f"{ticket_id}-seed.md"
     ticket_store.dump_ticket(
         path,
         {"id": ticket_id, "title": "seed", "status": "open", "created": "2026-08-11"},
@@ -233,8 +226,8 @@ def test_known_prefixes_ticket_source_alone(board):
 
 
 def test_known_prefixes_task_source_alone(board):
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(
         json.dumps({"leases": [], "tasks": [{"name": "job", "prefix": "TASK"}]}),
         encoding="utf-8",
     )
@@ -247,7 +240,7 @@ def test_known_prefixes_local_conf_prefix_key_is_not_a_source(board):
     해소 체인(`id_prefix`)에서 그 층을 지웠으므로 게이트 합집합에도 없어야 한다 — 남아
     있으면 도달 불가능한 clone-local 라벨을 whitelist 한다.
     """
-    board.LOCAL_CONF.write_text("prefix=SOLO\n", encoding="utf-8")
+    board._home().local_conf.write_text("prefix=SOLO\n", encoding="utf-8")
     assert areas_registry.known_prefixes(board._home()) == frozenset()
 
 
@@ -262,10 +255,10 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
     sources = ("areas", "tickets", "tasks")
 
     def reset_sources():
-        board.AREAS_FILE.unlink(missing_ok=True)
-        board.LEASES_FILE.unlink(missing_ok=True)
+        pm_paths.areas_file(board._home()).unlink(missing_ok=True)
+        pm_paths.leases_file(board._home()).unlink(missing_ok=True)
         for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
-            status_dir = board.TICKETS_DIR / status
+            status_dir = pm_paths.tickets_dir(board._home()) / status
             if status_dir.exists():
                 for path in status_dir.glob("T-*.md"):
                     path.unlink()
@@ -278,8 +271,8 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
             _seed_ticket(board, f"T-{prefix}-001")
         else:
             assert source == "tasks"
-            board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-            board.LEASES_FILE.write_text(
+            board._home().local_dir.mkdir(parents=True, exist_ok=True)
+            pm_paths.leases_file(board._home()).write_text(
                 json.dumps({
                     "leases": [],
                     "tasks": [{"name": "job", "prefix": prefix}],
@@ -332,8 +325,8 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         tree = init_git_repo(board.REPO / "work/svc_1", commit="task prefix fixture")
         assert git._git_head_at(str(tree))
         assert git._cluster_current_branch(str(tree)) == "main"
-        board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-        board.LEASES_FILE.write_text(
+        board._home().local_dir.mkdir(parents=True, exist_ok=True)
+        pm_paths.leases_file(board._home()).write_text(
             json.dumps({
                 "leases": [{"slot": "work/svc_1", "repo": "svc", "session": "job",
                             "state": "leased", "role": "work"}],
@@ -357,7 +350,7 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         task=task, repo=repo, slot=slot, user=None,
     )
 
-    rc = board.cmd_new(args)
+    rc = board_ticket.cmd_new(board._home(), args)
     ids = {row["id"] for row in areas_registry._scan_prefix_tickets(board._home())}
     captured = capsys.readouterr()
 
@@ -376,20 +369,20 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
 
 
 def test_known_prefixes_ignores_local_conf_prefix_when_area_registered(board):
-    board.LOCAL_CONF.write_text("prefix=SOLO\n", encoding="utf-8")
+    board._home().local_conf.write_text("prefix=SOLO\n", encoding="utf-8")
     areas_registry.areas_append(board._home(), "AREA", "area", "owner")
     assert areas_registry.known_prefixes(board._home()) == frozenset({"AREA"})
 
 
 def test_known_prefixes_corrupt_task_ledger_fails_loud(board, capsys):
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text('{"tasks": {}}', encoding="utf-8")
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text('{"tasks": {}}', encoding="utf-8")
     assert areas_registry.require_prefix_user_ack(board._home(), "fresh", "fresh", surface="test") is None
     assert "신뢰할 수 없다" in capsys.readouterr().err
 
 
 def test_known_prefixes_unreadable_ticket_fails_loud(board, capsys):
-    broken = board.TICKETS_DIR / "open" / "T-BROKEN-001-bad.md"
+    broken = pm_paths.tickets_dir(board._home()) / "open" / "T-BROKEN-001-bad.md"
     broken.write_text("---\nid: [unterminated\n---\n", encoding="utf-8")
     assert areas_registry.require_prefix_user_ack(board._home(), "fresh", "fresh", surface="test") is None
     err = capsys.readouterr().err
@@ -484,12 +477,12 @@ def test_cheap_case_conflict_preserves_known_sources_when_ticket_scan_is_broken(
 ):
     """전체 inventory가 손상 티켓으로 실패해도 값싼 출처 진단은 `소스 미상`으로 퇴행하지 않는다."""
     areas_registry.areas_append(board._home(), "AAA", "area", "owner")
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(
         json.dumps({"leases": [], "tasks": [{"name": "job", "prefix": "aaa"}]}),
         encoding="utf-8",
     )
-    broken = board.TICKETS_DIR / "open" / "T-BROKEN-001-bad.md"
+    broken = pm_paths.tickets_dir(board._home()) / "open" / "T-BROKEN-001-bad.md"
     broken.write_text("---\nid: [unterminated\n---\n", encoding="utf-8")
     areas_registry.invalidate_known_prefixes_cache()
 
@@ -505,7 +498,7 @@ def test_cheap_case_conflict_preserves_known_sources_when_ticket_scan_is_broken(
 
 def _seed_ticket_without_cache_invalidation(board, ticket_id: str):
     """다른 프로세스가 현재 프로세스 cache를 모른 채 티켓을 만든 TOCTOU 형상."""
-    path = board.TICKETS_DIR / "open" / f"{ticket_id}-race.md"
+    path = pm_paths.tickets_dir(board._home()) / "open" / f"{ticket_id}-race.md"
     ticket_store.dump_ticket(
         path,
         {"id": ticket_id, "title": "race", "status": "open", "created": "2026-08-11"},
@@ -540,7 +533,7 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
     if surface == "new":
         rc = _new(board, "fresh", "fresh")
     elif surface == "init":
-        rc = board.cmd_init(argparse.Namespace(
+        rc = board_init.cmd_init(board._home(), argparse.Namespace(
             prefix="fresh", user_ack="fresh", area="area", owner="owner", user=None,
             task=None, repo=None, slot=None,
         ))
@@ -551,16 +544,16 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
 
         )
     elif surface == "rename":
-        rc = board.cmd_prefix_rename(argparse.Namespace(
+        rc = board_prefix.cmd_prefix_rename(board._home(), argparse.Namespace(
             src="old", dst="fresh", user_ack="fresh", dry_run=False,
         ))
     elif surface == "merge":
-        rc = board.cmd_prefix_merge(argparse.Namespace(
+        rc = board_prefix.cmd_prefix_merge(board._home(), argparse.Namespace(
             sources=["old"], into="fresh", user_ack="fresh",
             reorder_chronological=False, dry_run=False,
         ))
     else:
-        rc = board.cmd_reid(argparse.Namespace(
+        rc = board_prefix.cmd_reid(board._home(), argparse.Namespace(
             old_id="T-old-001", new_id="T-fresh-001", user_ack="fresh",
             dry_run=False, repo=None, slot=None,
         ))
@@ -573,8 +566,8 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
     }
     assert ids == ({"T-FRESH-001", "T-old-001"}
                    if surface in {"rename", "merge", "reid"} else {"T-FRESH-001"})
-    assert not board.AREAS_FILE.exists()
-    assert not board.LOCAL_CONF.exists()
+    assert not pm_paths.areas_file(board._home()).exists()
+    assert not board._home().local_conf.exists()
     err = capsys.readouterr().err
     assert "선판정 'fresh'" in err and "fresh snapshot 'FRESH'" in err
     assert "쓰기 0" in err
@@ -591,16 +584,16 @@ def test_relabel_dry_run_needs_no_ack_but_reports_execution_requirement(board, m
 
     monkeypatch.setattr(fs, "board_lock", forbidden_lock)
     if surface == "rename":
-        rc = board.cmd_prefix_rename(argparse.Namespace(
+        rc = board_prefix.cmd_prefix_rename(board._home(), argparse.Namespace(
             src="old", dst="fresh", user_ack=None, dry_run=True,
         ))
     elif surface == "merge":
-        rc = board.cmd_prefix_merge(argparse.Namespace(
+        rc = board_prefix.cmd_prefix_merge(board._home(), argparse.Namespace(
             sources=["old"], into="fresh", user_ack=None,
             reorder_chronological=False, dry_run=True,
         ))
     else:
-        rc = board.cmd_reid(argparse.Namespace(
+        rc = board_prefix.cmd_reid(board._home(), argparse.Namespace(
             old_id="T-old-001", new_id="T-fresh-001", user_ack=None,
             dry_run=True, repo=None, slot=None,
         ))
@@ -621,11 +614,11 @@ def test_relabel_empty_map_noop_needs_no_ack_or_lock(board, monkeypatch, capsys,
 
     monkeypatch.setattr(fs, "board_lock", forbidden_lock)
     if surface == "rename":
-        rc = board.cmd_prefix_rename(argparse.Namespace(
+        rc = board_prefix.cmd_prefix_rename(board._home(), argparse.Namespace(
             src="ghost", dst="fresh", user_ack=None, dry_run=False,
         ))
     else:
-        rc = board.cmd_prefix_merge(argparse.Namespace(
+        rc = board_prefix.cmd_prefix_merge(board._home(), argparse.Namespace(
             sources=["ghost"], into="fresh", user_ack=None,
             reorder_chronological=False, dry_run=False,
         ))

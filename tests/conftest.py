@@ -597,7 +597,6 @@ def ensure_product_slot(board, *, repo="binding", number=1, task="binding-task")
         rows.append({"slot": slot, "repo": repo, "session": task,
                      "state": "leased", "role": "work"})
     ledger.write_text(json.dumps(data), encoding="utf-8")
-    board.LEASES_FILE = ledger
     return path
 
 

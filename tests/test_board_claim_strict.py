@@ -21,6 +21,10 @@ monkeypatch). git 부재 환경에선 실 git 케이스를 skip 한다.
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+from pm_engine.infra import pm_paths
+
+
 from pm_engine.infra import cluster_store
 
 
@@ -181,10 +185,6 @@ def board(tmp_path, monkeypatch):
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("identity.user=me\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "LOCAL_CONF", conf)
-    monkeypatch.setattr(
-        mod, "LEASES_FILE",
-        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     ensure_product_slot(mod, task=_TASK)
     return mod
 
@@ -269,7 +269,7 @@ def test_claim_succeeds_with_unrelated_dirty_three_kinds(board, tmp_path):
     board_dir = _make_board_git(tmp_path, remote=bare)
     expected = _seed_dirty_three(board_dir)
 
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 0, "무관 dirty 3종 때문에 claim 이 차단됨 — D1 과차단 재발."
     assert list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
@@ -290,7 +290,7 @@ def test_claim_commit_carries_only_the_ticket_paths(board, tmp_path):
     board_dir = _make_board_git(tmp_path, remote=bare)
     _seed_dirty_three(board_dir)
 
-    assert board.cmd_claim(_claim_args()) == 0
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
 
     assert _head_files(board_dir) == {
         "tickets/open/T-0001-t.md", "tickets/claimed/T-0001-t.md"}, \
@@ -313,7 +313,7 @@ def test_gitattributes_backfill_rides_scoped_claim_commit(board, tmp_path):
     board_dir = _make_board_git(tmp_path, remote=bare, gitattributes=False)
     assert not (board_dir / ".gitattributes").exists()
 
-    assert board.cmd_claim(_claim_args()) == 0
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
 
     assert ".gitattributes" in _head_files(board_dir), \
         "claim 스코프 커밋이 backfill 한 .gitattributes 를 싣지 않음 — T-0418 무력화."
@@ -333,7 +333,7 @@ def test_user_edited_gitattributes_is_not_swept_into_mutation(board, tmp_path):
     attrs = board_dir / ".gitattributes"
     attrs.write_text(attrs.read_text(encoding="utf-8") + "*.md text eol=lf\n", encoding="utf-8")
 
-    assert board.cmd_claim(_claim_args()) == 0
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
 
     assert ".gitattributes" not in _head_files(board_dir), \
         "사용자의 미완성 .gitattributes 편집이 claim 커밋에 실림 — 누출 동형."
@@ -379,7 +379,7 @@ def test_rollback_preserves_unrelated_dirty_three_kinds(board, tmp_path, monkeyp
     monkeypatch.setattr(board_git, "_board_git_push",
                         _racing_push(board, tmp_path, bare, name="rb-other"))
 
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 1, "원격이 앞서 push 가 거부됐는데 claim 이 확정됨 — strict 위반."
     after = _porcelain(board_dir)
@@ -427,7 +427,7 @@ def test_rollback_preserves_claim_target_index_state(board, tmp_path, monkeypatc
     monkeypatch.setattr(board_git, "_board_git_push",
                         _racing_push(board, tmp_path, bare, name=f"idx-{target_state}-other"))
 
-    assert board.cmd_claim(_claim_args(tid)) == 1, "push 경합인데 claim 이 확정됨."
+    assert board_ticket.cmd_claim(board._home(), _claim_args(tid)) == 1, "push 경합인데 claim 이 확정됨."
 
     assert _porcelain(board_dir) == before, (
         f"롤백이 claim 대상 파일의 index 상태를 바꿈({target_state}): "
@@ -459,7 +459,7 @@ def test_rollback_restores_absent_board_root_files(
             raise subprocess.TimeoutExpired(cmd="git push", timeout=30)
         monkeypatch.setattr(board_git, "_board_git_push", _timeout)
 
-    assert board.cmd_claim(_claim_args()) == 1, f"{failure} 실패인데 claim 이 확정됨."
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1, f"{failure} 실패인데 claim 이 확정됨."
 
     assert all(not (board_dir / name).exists() for name in root_names), \
         f"{failure} rollback 뒤 backfill 파일이 워킹트리에 남음."
@@ -494,7 +494,7 @@ def test_rollback_restores_preexisting_clean_gitattributes(
         board_git, "_board_git_push",
         _racing_push(board, tmp_path, bare, name="root-rb-existing-other"))
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
 
     assert attrs.read_bytes() == original, "rollback 뒤 engine append 가 워킹트리에 남음."
     assert ".gitattributes" not in _porcelain(board_dir), \
@@ -582,7 +582,7 @@ def test_rollback_does_not_restore_root_file_without_backfill(
     )
     hook.chmod(0o755)
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
 
     assert hook_line.strip() in attrs.read_text(encoding="utf-8"), \
         "실제 backfill하지 않은 .gitattributes를 rollback이 스냅샷으로 덮어씀."
@@ -609,7 +609,7 @@ def test_rollback_preserves_and_warns_on_post_backfill_root_edit(
     )
     hook.chmod(0o755)
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
 
     text = attrs.read_text(encoding="utf-8")
     assert "areas.md merge=union" in text, "engine backfill 자체가 예상 밖으로 사라짐."
@@ -648,7 +648,7 @@ def test_rollback_warns_when_root_file_snapshot_capture_raises_oserror(
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
 
     assert failed["once"] is True
     assert "캡처하지 못해 정확히 복원하지 못했다" in capsys.readouterr().err
@@ -717,7 +717,7 @@ def test_rollback_warns_when_refresh_pull_fails(board, tmp_path, monkeypatch, ca
 
     monkeypatch.setattr(board_git, "_board_git_push", _winner_pushes_colliding_path)
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     err = capsys.readouterr().err
     assert "로컬 board 뷰 stale" in err, f"refresh pull 실패가 무경고로 묻힘: {err!r}"
     assert "미커밋 파일이 통합을 막음" in err, f"사유가 부정확하다: {err!r}"
@@ -750,7 +750,7 @@ def test_rollback_refreshes_local_view_to_winner(board, tmp_path, monkeypatch, c
     real_push = board_git._board_git_push
     monkeypatch.setattr(board_git, "_board_git_push", _winner_claims_then_push)
 
-    assert board.cmd_claim(_claim_args()) == 1, "push 가 거부됐는데 확정함."
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1, "push 가 거부됐는데 확정함."
 
     # 로컬 뷰가 winner 상태로 갱신돼야 한다(clean tree 라 pull 가능).
     assert list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
@@ -770,7 +770,7 @@ def test_rollback_warns_loudly_when_view_cannot_refresh(board, tmp_path, monkeyp
     monkeypatch.setattr(board_git, "_board_git_push",
                         _racing_push(board, tmp_path, bare, name="refresh2-other"))
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     err = capsys.readouterr().err
     assert "stale" in err and "pull --rebase" in err, \
         f"당길 수 없는데 stale 경고가 안 나옴(조용한 stale): {err!r}"
@@ -795,7 +795,7 @@ def test_behind_plus_tracked_dirty_blocks_with_accurate_reason(board, tmp_path, 
     notes = board_dir / "notes.md"
     notes.write_text("original\nmy edit\n", encoding="utf-8")   # 추적 변경 → rebase 불가.
 
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 1, "behind>0 + 추적 dirty 인데 claim 이 진행됨(통합 실패를 무시)."
     err = capsys.readouterr().err
@@ -820,7 +820,7 @@ def test_dirty_diagnostics_lists_sample_and_total(board, tmp_path, capsys):
     for n in range(7):
         (board_dir / f"scratch-{n}.md").write_text("x\n", encoding="utf-8")
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     err = capsys.readouterr().err
     assert "미커밋 8건" in err, f"총계가 안 나옴: {err!r}"
     assert "외 3건" in err, f"표본 상한(5) + 나머지 표기가 안 나옴: {err!r}"
@@ -853,7 +853,7 @@ def test_untracked_path_conflict_is_dirty_not_offline(board, tmp_path, capsys):
 
     assert result.block == board_git_rules._CLAIM_BLOCK_DIRTY, \
         f"untracked 경로 충돌이 dirty 로 분류되지 않음(offline 오진): {result.block}"
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
     assert rc == 1
     err = capsys.readouterr().err
     assert "offline — board 도달 불가" not in err, f"네트워크 문제로 오진: {err!r}"
@@ -905,7 +905,7 @@ def test_unclassifiable_pull_failure_is_not_called_offline(board, tmp_path, caps
     assert result.block == board_git_rules._CLAIM_BLOCK_INTEGRATION, \
         f"원인 미상 통합 실패가 잘못 분류됨: {result.block}"
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     err = capsys.readouterr().err
     assert "offline — board 도달 불가" not in err, f"거짓 offline 진단: {err!r}"
     assert "네트워크는 정상" in err and "unrelated histories" in err, \
@@ -932,7 +932,7 @@ def test_mid_rebase_is_first_check_and_advises_rebase(board, tmp_path, capsys):
     assert board_git._board_git_rebase_in_progress(board._home()) is True
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 1, "mid-rebase 인데 claim 이 진행됨 — rebase HEAD 위 커밋 위험."
     err = capsys.readouterr().err
@@ -953,7 +953,7 @@ def test_missing_upstream_is_its_own_reason_not_offline(board, tmp_path, capsys)
     assert result.block == board_git_rules._CLAIM_BLOCK_NO_UPSTREAM, \
         f"upstream 미설정인데 사유가 {result.block}"
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     err = capsys.readouterr().err
     assert "upstream" in err and "push -u" in err, f"upstream 처방이 안내되지 않음: {err!r}"
     assert "offline — board 도달 불가" not in err, f"offline 으로 오진: {err!r}"
@@ -981,7 +981,7 @@ def test_remote_preemption_is_race_lost_without_local_change(board, tmp_path, ca
     _git(["push", "-q", "origin", "main"], other)
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 1, "원격 선점인데 claim 이 성공함 — 중복작업 방지 붕괴."
     assert "claim race lost" in capsys.readouterr().err
@@ -1011,7 +1011,7 @@ def test_push_timeout_after_remote_accepted_keeps_ownership(board, tmp_path, mon
 
     monkeypatch.setattr(board_git, "_board_git_push", _push_then_timeout)
 
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 0, "원격이 이미 받은 push 인데 롤백함 — 고아 claim 재발(D6)."
     assert list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
@@ -1039,7 +1039,7 @@ def test_push_timeout_then_unrelated_remote_commit_still_keeps_ownership(
 
     monkeypatch.setattr(board_git, "_board_git_push", _push_then_others_then_timeout)
 
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 0, "원격이 내 claim 커밋을 포함하는데 롤백함 — tip 동일성 술어의 고아 claim."
     assert list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
@@ -1057,7 +1057,7 @@ def test_push_timeout_without_remote_effect_rolls_back(board, tmp_path, monkeypa
 
     monkeypatch.setattr(board_git, "_board_git_push", _push_timeout)
 
-    rc = board.cmd_claim(_claim_args())
+    rc = board_ticket.cmd_claim(board._home(), _claim_args())
 
     assert rc == 1, "원격 미반영 push 예외인데 소유를 확정함 — 거짓 소유."
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
@@ -1087,24 +1087,24 @@ def test_best_effort_transitions_commit_only_their_paths(board, tmp_path, mutati
     tickets = board_dir / "tickets"
 
     if mutation in ("complete", "unclaim"):
-        assert board.cmd_claim(_claim_args()) == 0
+        assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
     elif mutation == "unblock":
-        assert board.cmd_block(argparse.Namespace(id="T-0001", reason="r")) == 0
+        assert board_ticket.cmd_block(board._home(), argparse.Namespace(id="T-0001", reason="r")) == 0
     dirty = _seed_dirty_three(board_dir)
 
     if mutation == "complete":
-        rc = board.cmd_complete(argparse.Namespace(
+        rc = board_ticket.cmd_complete(board._home(), argparse.Namespace(
             id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False,
             task=_TASK))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/done/T-0001-t.md"}
     elif mutation == "block":
-        rc = board.cmd_block(argparse.Namespace(id="T-0001", reason="r"))
+        rc = board_ticket.cmd_block(board._home(), argparse.Namespace(id="T-0001", reason="r"))
         expected = {"tickets/open/T-0001-t.md", "tickets/blocked/T-0001-t.md"}
     elif mutation == "unclaim":
-        rc = board.cmd_unclaim(argparse.Namespace(id="T-0001", task=_TASK))
+        rc = board_ticket.cmd_unclaim(board._home(), argparse.Namespace(id="T-0001", task=_TASK))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/open/T-0001-t.md"}
     else:
-        rc = board.cmd_unblock(argparse.Namespace(id="T-0001"))
+        rc = board_ticket.cmd_unblock(board._home(), argparse.Namespace(id="T-0001"))
         expected = {"tickets/blocked/T-0001-t.md", "tickets/open/T-0001-t.md"}
 
     assert rc == 0, f"{mutation} 이 실패함(best-effort 는 무차단이어야 한다)."
@@ -1130,7 +1130,7 @@ def test_new_commits_only_the_created_ticket(board, tmp_path):
 
     args = _new_args("새 티켓")
     args.task = _TASK
-    assert board.cmd_new(args) == 0
+    assert board_ticket.cmd_new(board._home(), args) == 0
 
     created = _head_files(board_dir)
     assert len(created) == 2, f"new 커밋 스코프가 발행 산출을 넘음: {created}"
@@ -1155,7 +1155,7 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     ledger_before = cluster_store.cluster_ledger_path(board._home(), "bound-t-0009").read_bytes()
     dirty = _seed_dirty_three(board_dir)
 
-    assert board.cmd_promote(argparse.Namespace(id="T-0009")) == 0
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id="T-0009")) == 0
 
     assert _head_files(board_dir) == {
         "tickets/open/T-0009-draft.md",
@@ -1216,6 +1216,8 @@ def test_ticket_mutations_pass_scoped_paths():
     tree = ast.parse((TOOLS / "board.py").read_text(encoding="utf-8"))
     for source in (Path(areas_registry.__file__),
                    TOOLS / "pm_engine/cli/board_cluster.py",
+                   TOOLS / "pm_engine/cli/board_ticket.py",
+                   TOOLS / "pm_engine/cli/board_init.py",
                    TOOLS / "pm_engine/app/round_maintenance.py"):
         moved = ast.parse(source.read_text(encoding="utf-8"))
         # 합친 AST에서도 소유 함수의 위치 범위가 다른 모듈과 겹치지 않는다.
@@ -1318,7 +1320,7 @@ def test_claim_transaction_runs_inside_board_git_lock(board, tmp_path, monkeypat
         return real_prefetch(_home, ticket_id)
 
     monkeypatch.setattr(board_claim, "_board_git_claim_prefetch", _observing_prefetch)
-    assert board.cmd_claim(_claim_args()) == 0
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
     assert seen.get("free_during_prefetch") is False, \
         "prefetch 시점에 board-git 락이 안 잡혀 있음 — 트랜잭션 밖에서 도는 구간 존재."
     assert list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
@@ -1375,16 +1377,15 @@ def _claimed_ticket(root: Path, tid: str) -> Path:
 @requires_git
 def test_claim_anchor_task_shape_stamps_the_slot_worktree_head(board, tmp_path, monkeypatch):
     """`--task` 형상 — 앵커는 그 task 가 보유한 슬롯 worktree HEAD 다(PM 홈 HEAD 가 아니다)."""
-    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
     repo_head = _init_code_git(tmp_path, seed_text="home\n")
     slot_head = _init_code_git(tmp_path / "work" / "proj_1", seed_text="slot\n")
     assert repo_head != slot_head, "fixture 전제: 두 트리의 HEAD 가 달라야 '어느 트리를 쟀나' 를 값으로 가른다."
-    board.LEASES_FILE.write_text(json.dumps({"leases": [
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [
         {"slot": "work/proj_1", "repo": "proj", "session": "mytask", "state": "leased"},
     ]}), encoding="utf-8")
     _seed_open_ticket(tmp_path, "T-9010")
 
-    assert board.cmd_claim(argparse.Namespace(id="T-9010", task="mytask", user="me")) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-9010", task="mytask", user="me")) == 0
 
     fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9010"))
     assert fm["claimed_rev"] == slot_head
@@ -1398,7 +1399,7 @@ def test_claim_stamps_the_claim_time_code_tree_head(board, tmp_path, monkeypatch
     expected = _git(["rev-parse", "HEAD"], tmp_path / "work" / "binding_1").stdout.strip()
     _seed_open_ticket(tmp_path, "T-9013")
 
-    assert board.cmd_claim(argparse.Namespace(id="T-9013", user="me", task=_TASK)) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-9013", user="me", task=_TASK)) == 0
 
     fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9013"))
     assert fm["claimed_rev"] == expected
@@ -1416,11 +1417,11 @@ def test_unclaim_clears_the_claimed_rev_anchor(board, tmp_path, monkeypatch):
     _init_code_git(tmp_path, seed_text="home\n")
     task_head = _git(["rev-parse", "HEAD"], tmp_path / "work" / "binding_1").stdout.strip()
     _seed_open_ticket(tmp_path, "T-9016")
-    assert board.cmd_claim(argparse.Namespace(id="T-9016", user="me", task=_TASK)) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-9016", user="me", task=_TASK)) == 0
     fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9016"))
     assert fm["claimed_rev"] == task_head
 
-    assert board.cmd_unclaim(argparse.Namespace(id="T-9016", task=_TASK)) == 0
+    assert board_ticket.cmd_unclaim(board._home(), argparse.Namespace(id="T-9016", task=_TASK)) == 0
 
     fm, _body = ticket_store.load_ticket(
         tmp_path / ".project_manager" / "board" / "tickets" / "open" / "T-9016-t.md")
@@ -1443,11 +1444,11 @@ def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
     # "이 트리에서 git HEAD 를 읽을 수 없다"가 첫 입력이다 — `_git_head_at` seam 으로 명시한다.
     monkeypatch.setattr(git, "_git_head_at", lambda _cwd: "")
     with pytest.raises(SystemExit):
-        board.cmd_claim(argparse.Namespace(id="T-9017", user="me", task=_TASK))
+        board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-9017", user="me", task=_TASK))
     assert path.read_bytes() == before
 
     monkeypatch.setattr(git, "_git_head_at", real_head_at)
-    assert board.cmd_claim(argparse.Namespace(id="T-9017", user="me", task=_TASK)) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-9017", user="me", task=_TASK)) == 0
 
     fm, _body = ticket_store.load_ticket(_claimed_ticket(tmp_path, "T-9017"))
     assert fm["claimed_rev"] == real_head_at(str(tmp_path / "work" / "binding_1"))
@@ -1456,10 +1457,10 @@ def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
 
 def _t0929_claim_setup(board, root):
     heads = {n: _init_code_git(root / f'work/proj_{n}', seed_text=f'slot {n}\n') for n in (1, 5)}
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
     rows = [{'slot': f'work/proj_{n}', 'repo': 'proj', 'session': 'main',
              'role': 'work', 'state': 'leased'} for n in (1, 5)]
-    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     return heads, rows
 
 
@@ -1467,7 +1468,7 @@ def _t0929_claim_setup(board, root):
 def test_t0929_claim_anchor_selected_head_and_task_actor(board, tmp_path):
     heads, _ = _t0929_claim_setup(board, tmp_path)
     _seed_open_ticket(tmp_path, 'T-9029')
-    assert board.cmd_claim(argparse.Namespace(id='T-9029', task='main', repo='proj', slot=5, user='me')) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id='T-9029', task='main', repo='proj', slot=5, user='me')) == 0
     fm, _ = ticket_store.load_ticket(_claimed_ticket(tmp_path, 'T-9029'))
     assert fm['claimed_rev'] == heads[5] != heads[1]
     assert fm['claimed_by'] == 'me/main'
@@ -1483,7 +1484,7 @@ def test_t0929_claim_anchor_failure_before_mutation(board, tmp_path, monkeypatch
     elif failure in ('foreign', 'idle', 'readonly'):
         key, value = {'foreign': ('session', 'other'), 'idle': ('state', 'idle'), 'readonly': ('role', 'readonly')}[failure]
         rows[-1][key] = value
-        board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+        pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     elif failure in ('missing', 'git'):
         from _git_fixture import remove_git_tree
         target = tmp_path / 'work/proj_5'
@@ -1495,9 +1496,9 @@ def test_t0929_claim_anchor_failure_before_mutation(board, tmp_path, monkeypatch
     source = _seed_open_ticket(tmp_path, 'T-9029')
     before = source.read_bytes()
     calls = []
-    monkeypatch.setattr(board, '_cmd_claim_locked', lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(board_ticket, '_cmd_claim_locked', lambda *a, **k: calls.append((a, k)))
     with pytest.raises(SystemExit):
-        board.cmd_claim(args)
+        board_ticket.cmd_claim(board._home(), args)
     assert calls == []
     assert source.read_bytes() == before
     assert not _claimed_ticket(tmp_path, 'T-9029').exists()
@@ -1511,7 +1512,7 @@ def test_t0962_attribution_writes_require_task(board, tmp_path, monkeypatch):
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "identity.user=alice\n", encoding="utf-8")
     head = _init_code_git(tmp_path / "work" / "proj_1", seed_text="proj\n")
-    board.LEASES_FILE.write_text(json.dumps({
+    pm_paths.leases_file(board._home()).write_text(json.dumps({
         "leases": [{"slot": "work/proj_1", "repo": "proj", "session": "mytask",
                     "state": "leased", "role": "work"}],
         "tasks": [{"name": "mytask"}]}), encoding="utf-8")
@@ -1528,20 +1529,20 @@ def test_t0962_attribution_writes_require_task(board, tmp_path, monkeypatch):
 
     files_before = snapshot()
     with pytest.raises(SystemExit) as exc:
-        board.cmd_claim(argparse.Namespace(id="T-0001", user=None))
+        board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", user=None))
     assert "--task" in str(exc.value.code)
     assert ticket.read_bytes() == before
     assert snapshot() == files_before
 
     with pytest.raises(SystemExit) as exc:
-        board.cmd_new(_new_args("probe"))
+        board_ticket.cmd_new(board._home(), _new_args("probe"))
     assert "--task" in str(exc.value.code)
     assert snapshot() == files_before
 
-    assert board.cmd_claim(argparse.Namespace(id="T-0001", user=None, task="mytask")) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", user=None, task="mytask")) == 0
     fm, _body = ticket_store.load_ticket(tickets / "claimed" / "T-0001-t.md")
     assert fm["claimed_by"] == "alice/mytask"
     assert fm["claimed_rev"] == head
     # claim 앵커는 늘 task 폴더 HEAD 다 — 앵커 생략 계약(기본값 None)은 없다(T-0962 리뷰 F-004).
-    rev_param = inspect.signature(board._cmd_claim_locked).parameters["claimed_rev"]
+    rev_param = inspect.signature(board_ticket._cmd_claim_locked).parameters["claimed_rev"]
     assert rev_param.default is inspect.Parameter.empty

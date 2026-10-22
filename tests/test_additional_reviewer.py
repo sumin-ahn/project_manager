@@ -21,6 +21,8 @@ hermetic: REPO 를 tmp 로 monkeypatch 해 장부가 tmp `.local/` 에 격리되
 """
 from __future__ import annotations
 
+from pm_engine.app import release
+
 import importlib.util
 import json
 import multiprocessing
@@ -1013,9 +1015,7 @@ def test_save_ledger_uses_unique_tmp_names(external, tmp_path, monkeypatch):
     # 두 지점 모두 건다. `_load_board` 는 호출마다 새 모듈을 만들므로 인스턴스를 고정한 뒤 건다
     # (고정하지 않으면 두 번째 저장이 패치 안 된 새 모듈로 쓴다).
     _patch_atomic_replace(monkeypatch, review_rounds, capture)
-    board = external._load_board()
-    monkeypatch.setattr(external, "_load_board", lambda: board)
-    _patch_atomic_replace(monkeypatch, board, capture)
+    _patch_atomic_replace(monkeypatch, release, capture)
     external._save_round_ledger({"a": 1})
     external._save_round_ledger({"b": 2})
     ledger_tmps = [s for s in seen if "review_rounds.json." in s]
@@ -2347,7 +2347,6 @@ def pm_verified_declare(tmp_path, monkeypatch):
     monkeypatch.setattr(board_mod, "REPO", proj)
     external = _load("additional_reviewer")
     monkeypatch.setattr(external, "REPO", proj)
-    monkeypatch.setattr(external, "_load_board", lambda: board_mod)
     monkeypatch.setattr(
         external, "run_review",
         lambda *a, **k: (_ for _ in ()).throw(

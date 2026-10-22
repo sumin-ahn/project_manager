@@ -18,6 +18,9 @@ bare remote + REPO monkeypatch). git 부재 환경에선 실 git 케이스를 sk
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+
+
 import argparse
 import importlib.util
 import os
@@ -153,7 +156,7 @@ def test_show_surfaces_ticket_local_remote_status_mismatch(board, tmp_path, caps
     _advance_other_clone(bare, tmp_path, dest_status="done")
 
     board_dir = tmp_path / ".project_manager" / "board"
-    rc = board.cmd_show(_show_args())
+    rc = board_list.cmd_show(board._home(), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     # 역방향(F-001): upstream 이 있는 정상 형상에서는 전역 freshness 줄도 그대로 나온다.
@@ -174,7 +177,7 @@ def test_show_silent_when_local_matches_remote(board, tmp_path, capsys):
     bare = _bare(tmp_path, "bare-show-match")
     _make_board_git(tmp_path, remote=bare)
     # 원격을 전혀 전진시키지 않음 — 로컬/원격 둘 다 open.
-    rc = board.cmd_show(_show_args())
+    rc = board_list.cmd_show(board._home(), _show_args())
     assert rc == 0
     err = capsys.readouterr().err
     assert "로컬 사본 stale" not in err
@@ -187,7 +190,7 @@ def test_cmd_list_behind_line_first_pinned_on_real_multi_clone(board, tmp_path, 
     _make_board_git(tmp_path, remote=bare)
     _advance_other_clone(bare, tmp_path, dest_status="claimed")
 
-    rc = board.cmd_list(_list_args())
+    rc = board_list.cmd_list(board._home(), _list_args())
     assert rc == 0
     err = capsys.readouterr().err
     assert "board-git:" in err
@@ -207,7 +210,7 @@ def test_show_does_not_mutate_board_working_tree(board, tmp_path, capsys):
     before_head = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     before_porcelain = _git(["status", "--porcelain"], board_dir).stdout
 
-    board.cmd_show(_show_args())
+    board_list.cmd_show(board._home(), _show_args())
     capsys.readouterr()
 
     assert ticket_path.read_bytes() == before_bytes
@@ -223,7 +226,7 @@ def test_show_offline_degrades_without_crash_or_false_currency_claim(board, tmp_
     board_dir = _make_board_git(tmp_path, remote=bare)
     remove_git_tree(bare)   # 원격 도달 불가.
 
-    rc = board.cmd_show(_show_args())
+    rc = board_list.cmd_show(board._home(), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.out == _expected_show_stdout(   # stdout 은 baseline 그대로.
@@ -260,7 +263,7 @@ def test_show_withholds_mismatch_verdict_when_remote_snapshot_unverified(
     os.utime(fetch_head, (stale_ts, stale_ts))
     remove_git_tree(bare)                       # 그런데 원격 도달 불가 → fetch 실패(검증 불가).
 
-    rc = board.cmd_show(_show_args())
+    rc = board_list.cmd_show(board._home(), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.out == _expected_show_stdout(
@@ -282,7 +285,7 @@ def test_show_silent_when_ticket_absent_from_remote_tracking(board, tmp_path, ca
     _git(["add", "-A"], board_dir)
     _git(["commit", "-qm", "local-only T-0001"], board_dir)   # 원격엔 push 하지 않는다.
 
-    rc = board.cmd_show(_show_args("T-0001"))
+    rc = board_list.cmd_show(board._home(), _show_args("T-0001"))
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.out == _expected_show_stdout(
@@ -304,7 +307,7 @@ def _make_legacy_project(tmp_path: Path, tid: str = "T-0001") -> None:
 def test_show_non_git_board_no_freshness_output(board, tmp_path, capsys):
     """board 비-git — stderr 는 존재가 아니라 **값**으로 무출력이고 stdout 은 baseline 이다."""
     _make_legacy_project(tmp_path)
-    rc = board.cmd_show(_show_args())
+    rc = board_list.cmd_show(board._home(), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.err == ""
@@ -331,7 +334,7 @@ def test_show_board_git_without_upstream_is_silent(board, tmp_path, capsys):
     _git(["add", "-A"], board_dir)
     _git(["commit", "-qm", "board init (no remote)"], board_dir)
 
-    rc = board.cmd_show(_show_args())
+    rc = board_list.cmd_show(board._home(), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.err == ""
@@ -359,7 +362,7 @@ def test_show_skips_fetch_when_fetch_head_within_ttl(board, tmp_path, capsys, mo
         return real_board_git(_home, args, check=check, timeout=timeout)
 
     monkeypatch.setattr(git, "_board_git", _counting_board_git)
-    rc = board.cmd_show(_show_args())
+    rc = board_list.cmd_show(board._home(), _show_args())
     assert rc == 0
     err = capsys.readouterr().err
     assert not any(c and c[0] == "fetch" for c in calls), \
@@ -390,7 +393,7 @@ def test_show_runs_fetch_when_fetch_head_stale(board, tmp_path, capsys, monkeypa
         return real_board_git(_home, args, check=check, timeout=timeout)
 
     monkeypatch.setattr(git, "_board_git", _counting_board_git)
-    board.cmd_show(_show_args())
+    board_list.cmd_show(board._home(), _show_args())
     capsys.readouterr()
     assert any(c and c[0] == "fetch" for c in calls), \
         f"TTL 밖인데 show 가 fetch 를 호출하지 않음: {calls}"

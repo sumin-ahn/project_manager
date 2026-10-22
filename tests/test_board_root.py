@@ -20,6 +20,9 @@ monkeypatch 패턴 동류). board_root/areas_file 가 *함수*라 monkeypatch �
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+
+
 import importlib.util
 import os
 import shutil
@@ -253,12 +256,12 @@ def test_lint_wikilinks_detects_board_ticket_dangling(board, monkeypatch):
 
 def test_configure_board_submodule_noop_when_not_separated(board):
     """board/.git 부재(솔로·legacy) → no-op·False (git 미실행·솔로 100% 무영향)."""
-    assert board._configure_board_submodule() is False
+    assert board_init._configure_board_submodule(board._home()) is False
 
 
 def test_board_submodule_name_none_without_gitmodules(board):
     """.gitmodules 부재 → _board_submodule_name() None (fail-soft·_configure no-op)."""
-    assert board._board_submodule_name() is None
+    assert board_init._board_submodule_name(board._home()) is None
 
 
 # ════════════════════════════════════════════════════════════════════════

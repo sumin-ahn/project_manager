@@ -17,6 +17,10 @@ hermetic 패턴은 `test_board_list_scope.py`/`test_board_mine_view.py` 와 동�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.cli import board_ticket
+
+
 import argparse
 import importlib.util
 from pathlib import Path
@@ -58,13 +62,7 @@ def board(tmp_path, monkeypatch):
     wiki = pm / "wiki"
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "IDEAS_DIR": wiki / "ideas",
 
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
 
     }
     for name, val in overrides.items():
@@ -80,7 +78,7 @@ def _seed_ticket(board, tid, status, *, tags, title="t"):
     dump_ticket 은 yaml.safe_dump → 로드 시 int 는 int 로 라운드트립 보존되므로
     비-문자열 태그를 그대로 재현한다.
     """
-    path = board.TICKETS_DIR / status / f"{tid}-seed.md"
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
     ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "claimed_by": None, "depends_on": [], "touches": [],
                              "tags": tags}, "# seed\n")
@@ -88,7 +86,7 @@ def _seed_ticket(board, tid, status, *, tags, title="t"):
 
 
 def _seed_idea(board, iid, status, *, tags, title="t"):
-    path = board.IDEAS_DIR / status / f"{iid}-seed.md"
+    path = pm_paths.ideas_dir(board._home()) / status / f"{iid}-seed.md"
     ticket_store.dump_ticket(path, {"id": iid, "title": title, "status": status,
                              "tags": tags}, "# idea\n")
     return path
@@ -108,7 +106,7 @@ def _list_args(*, tag=None, status=None):
 def test_cmd_list_numeric_tags_no_crash(board, capsys):
     """`tags: [2026, cleanup]` 티켓이 list 를 크래시시키지 않고 `2026,cleanup` 표시."""
     _seed_ticket(board, "T-0001", "open", tags=[2026, "cleanup"])
-    rc = board.cmd_list(_list_args())
+    rc = board_list.cmd_list(board._home(), _list_args())
     assert rc == 0
     assert "2026,cleanup" in capsys.readouterr().out
 
@@ -116,7 +114,7 @@ def test_cmd_list_numeric_tags_no_crash(board, capsys):
 def test_cmd_list_all_numeric_tags_no_crash(board, capsys):
     """전부 숫자인 태그(`[2026, 7]`)도 안전 — 구분자 `,`(공백 없음) 유지."""
     _seed_ticket(board, "T-0002", "open", tags=[2026, 7])
-    rc = board.cmd_list(_list_args())
+    rc = board_list.cmd_list(board._home(), _list_args())
     assert rc == 0
     assert "2026,7" in capsys.readouterr().out
 
@@ -124,7 +122,7 @@ def test_cmd_list_all_numeric_tags_no_crash(board, capsys):
 def test_cmd_list_string_tags_unchanged(board, capsys):
     """문자열 태그 경로는 형식 무변경 (byte 그대로·회귀 없음)."""
     _seed_ticket(board, "T-0003", "open", tags=["bug", "crash"])
-    rc = board.cmd_list(_list_args())
+    rc = board_list.cmd_list(board._home(), _list_args())
     assert rc == 0
     assert "bug,crash" in capsys.readouterr().out
 
@@ -156,7 +154,7 @@ def test_refresh_board_string_tags_unchanged(board):
 
 def test_cmd_idea_list_numeric_tags_no_crash(board, capsys):
     _seed_idea(board, "0001", "open", tags=[2026, "cleanup"])
-    rc = board.cmd_idea_list(argparse.Namespace(status=None, tag=None))
+    rc = board_ticket.cmd_idea_list(board._home(), argparse.Namespace(status=None, tag=None))
     assert rc == 0
     assert "2026,cleanup" in capsys.readouterr().out
 
@@ -169,7 +167,7 @@ def test_cmd_idea_list_numeric_tags_no_crash(board, capsys):
 def test_cmd_list_tag_filter_matches_numeric(board, capsys):
     """`--tag 2026` 이 int 태그 `2026` 을 가진 티켓을 매치한다 (타입세이프 비교)."""
     _seed_ticket(board, "T-0006", "open", tags=[2026, "cleanup"])
-    rc = board.cmd_list(_list_args(tag="2026"))
+    rc = board_list.cmd_list(board._home(), _list_args(tag="2026"))
     assert rc == 0
     assert "T-0006" in capsys.readouterr().out
 
@@ -177,7 +175,7 @@ def test_cmd_list_tag_filter_matches_numeric(board, capsys):
 def test_cmd_list_tag_filter_string_still_matches(board, capsys):
     """문자열 태그 필터는 기존대로 매치 (회귀 없음)."""
     _seed_ticket(board, "T-0007", "open", tags=["bug", 2026])
-    rc = board.cmd_list(_list_args(tag="bug"))
+    rc = board_list.cmd_list(board._home(), _list_args(tag="bug"))
     assert rc == 0
     assert "T-0007" in capsys.readouterr().out
 
@@ -185,6 +183,6 @@ def test_cmd_list_tag_filter_string_still_matches(board, capsys):
 def test_cmd_idea_list_tag_filter_matches_numeric(board, capsys):
     """idea list 의 `--tag` 필터도 int 태그와 타입세이프 비교."""
     _seed_idea(board, "0002", "open", tags=[2026])
-    rc = board.cmd_idea_list(argparse.Namespace(status=None, tag="2026"))
+    rc = board_ticket.cmd_idea_list(board._home(), argparse.Namespace(status=None, tag="2026"))
     assert rc == 0
     assert "0002" in capsys.readouterr().out

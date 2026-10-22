@@ -647,6 +647,7 @@ def test_deleted_single_file_devices_are_absent(pd, external):
         assert not hasattr(pd, symbol), symbol
     assert not hasattr(external, "_harvest_target_ticket_body")
     assert not hasattr(external, "_ticket_body_max_bytes")
+    assert not hasattr(external, "_load_board")
 
 
 # ── (g) 기존 티켓 호환 ─────────────────────────────────────────────────

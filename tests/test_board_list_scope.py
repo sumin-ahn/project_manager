@@ -15,6 +15,10 @@ monkeypatch 하고 git 폴백은 stub 한다. querying identity 는 local.conf `
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import importlib.util
 from pathlib import Path
@@ -51,12 +55,7 @@ def board(tmp_path, monkeypatch):
     wiki = pm / "wiki"
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
 
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
 
     }
     for name, val in overrides.items():
@@ -79,13 +78,13 @@ def _conf_key(name: str) -> str:
 
 def _write_conf(board, **kv) -> None:
     """local.conf 를 쓴다 — querying identity(user=) 명시용 (ADR-0056 user-first)."""
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
-    path = board.TICKETS_DIR / status / f"{tid}-seed.md"
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
     ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "created_by": created_by, "claimed_by": claimed_by,
                              "depends_on": [], "tags": []}, "# seed\n")
@@ -96,7 +95,7 @@ def _list_ids(board, capsys, **flags) -> list[str]:
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
                               all=flags.get("all", False), task=flags.get("task"))
-    rc = board.cmd_list(args)
+    rc = board_list.cmd_list(board._home(), args)
     assert rc == 0
     out = capsys.readouterr().out
     ids = []

@@ -20,6 +20,9 @@ scope 로 새 모듈을 로드해 tmp 로 재지정한다. 실 git 이 필요한
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_prefix
+
+
 from pm_engine.infra import pm_paths
 
 import argparse
@@ -1243,17 +1246,16 @@ def test_relabel_proceeds_with_dirty_home_and_commits_only_touched(tmp_path, mon
     root.mkdir()
     board_dir = _make_board_git_home(root)
     monkeypatch.setattr(board, "REPO", root)
-    monkeypatch.setattr(board, "LOCAL_DIR", root / ".project_manager" / ".local")
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     # 홈 git 은 dirty 하다(남의 미커밋 wiki 편집) — 옛 게이트라면 여기서 abort 했다.
-    monkeypatch.setattr(board, "_home_git_status_porcelain",
-                        lambda: " M .project_manager/wiki/roadmap.md\n")
+    monkeypatch.setattr(board_prefix, "_home_git_status_porcelain",
+                        lambda _home: " M .project_manager/wiki/roadmap.md\n")
     # board 워킹트리에도 무관한 남의 변경을 심는다(추적 수정 + untracked).
     (board_dir / "notes.md").write_text("v2 — 남이 편집 중\n", encoding="utf-8")
     (board_dir / "scratch.md").write_text("남의 임시 파일\n", encoding="utf-8")
 
-    rc = board.cmd_prefix_rename(argparse.Namespace(
+    rc = board_prefix.cmd_prefix_rename(board._home(), argparse.Namespace(
         src="foo", dst="bar", dry_run=False, user_ack="bar"))
     assert rc == 0, capsys.readouterr().err
 

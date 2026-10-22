@@ -13,6 +13,9 @@ ignore 된 슬롯 git 트리 한 쌍을 tmp 에 세운다.
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.app import round_maintenance
 from pm_engine.infra import cluster_store
 
@@ -103,7 +106,6 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
-    board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
 
     def _sync(_home, message, paths):
         if sync_log is not None:
@@ -506,7 +508,7 @@ def test_developer_round_after_reopen_is_prepared(pd, cluster_env):
         _spec_text("T-6020", status="done"), encoding="utf-8", newline="\n")
     board = _fixture_board(pd, pm_home)
 
-    assert board.cmd_reopen(argparse.Namespace(id="T-6020", reason="오처리 복구")) == 0
+    assert board_ticket.cmd_reopen(board._home(), argparse.Namespace(id="T-6020", reason="오처리 복구")) == 0
 
     assert cluster_store.load_cluster(board._home(), "C-T-6020")["tickets"] == ["T-6020"]
     assert not _rounds_dir(pm_home, "T-6020").exists()

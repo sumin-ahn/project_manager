@@ -27,6 +27,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.cli import board_ticket
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import contextlib
 import importlib.util
@@ -95,17 +100,8 @@ def board(tmp_path, monkeypatch):
     local = pm / ".local"
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
 
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": local,
-        "LEASES_FILE": local / "worktree-leases.json",
 
-        "PM_STATE_FILE": wiki / "pm_state.md",
-        "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
@@ -144,7 +140,7 @@ def _conf_key(name: str) -> str:
 
 
 def _write_conf(board, **kv) -> None:
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
@@ -158,7 +154,7 @@ def _new(board, capsys, *, prefix, session, user, title) -> str:
     repo, slot = _split_session(session)
     task = _task_of(session)
     ensure_product_slot(board, repo=repo, number=slot, task=task)
-    rc = board.cmd_new(argparse.Namespace(
+    rc = board_ticket.cmd_new(board._home(), argparse.Namespace(
         prefix=prefix, repo=repo, slot=slot, task=task, user=user, title=title,
         touches=None, depends=None, tag=None, estimate="small"))
     out = capsys.readouterr().out
@@ -184,7 +180,7 @@ def _claim(board, capsys, tid, *, session, user) -> None:
     """실 `cmd_claim` 으로 claim(claimed_by=<user>/<task> 스탬프) — `--task`(+위치 인자)로 호출한다.
     board-git 비활성이라 즉시 확정."""
     repo, slot = _split_session(session)
-    rc = board.cmd_claim(argparse.Namespace(
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(
         id=tid, task=_task_of(session), repo=repo, slot=slot, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim rc={rc}: {out}"
@@ -201,7 +197,7 @@ def _view(board, capsys, **flags) -> list[str]:
     if session is not None:
         os.environ["PM_SESSION_NAME"] = _task_of(session)
     try:
-        rc = board.cmd_list(argparse.Namespace(
+        rc = board_list.cmd_list(board._home(), argparse.Namespace(
             status=flags.get("status"), tag=None, mine=flags.get("mine", False),
             all=flags.get("all", False), task=flags.get("task")))
     finally:
@@ -228,7 +224,7 @@ def _seed_composite(board, capsys, *, areas: bool = True) -> types.SimpleNamespa
     각 정체성 전환은 `cmd_new`/`cmd_claim` 의 `--session`/`--user` override 로만(local.conf 무관).
     """
     if areas:
-        board.AREAS_FILE.write_text(_COMPOSITE_AREAS, encoding="utf-8")
+        pm_paths.areas_file(board._home()).write_text(_COMPOSITE_AREAS, encoding="utf-8")
     al_pfx, be_pfx = ("al", "be") if areas else (None, None)
 
     def slot(pfx, session, user, tag):
@@ -326,13 +322,13 @@ def _claim_task(board, capsys, tid, *, task, user) -> None:
     tree = init_git_repo(board.REPO / slot, commit=f"task fixture {task}")
     head = git._git_head_at(str(tree))
     assert head and git._cluster_current_branch(str(tree)) == "main"
-    leases = (json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))
-              if board.LEASES_FILE.exists() else {"leases": []})
+    leases = (json.loads(pm_paths.leases_file(board._home()).read_text(encoding="utf-8"))
+              if pm_paths.leases_file(board._home()).exists() else {"leases": []})
     leases["leases"].append({
         "slot": slot, "repo": repo, "session": task, "state": "leased", "role": "work",
     })
-    board.LEASES_FILE.write_text(json.dumps(leases), encoding="utf-8")
-    rc = board.cmd_claim(argparse.Namespace(
+    pm_paths.leases_file(board._home()).write_text(json.dumps(leases), encoding="utf-8")
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(
         id=tid, repo=None, slot=None, task=task, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim --task rc={rc}: {out}"
@@ -453,7 +449,7 @@ def _make_board_runner(board):
                                   all="--all" in argv, task=None, repo=None, slot=None)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = board.cmd_list(args)
+            rc = board_list.cmd_list(board._home(), args)
         return rc, buf.getvalue()
     return run
 
@@ -470,7 +466,7 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys):
 
     bs = pm_bootstrap.PmBootstrap(
         run_board_fn=_make_board_runner(board),
-        log_file=board.LOG_FILE, areas_file=board.AREAS_FILE)
+        log_file=(pm_paths.wiki_dir(board._home()) / "log/current.md"), areas_file=pm_paths.areas_file(board._home()))
     result = bs._collect_board()
 
     open_tickets = set(result["open_tickets"])

@@ -230,7 +230,6 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
-    board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
 
     def _sync(_home, message, paths):
         if sync_log is not None:

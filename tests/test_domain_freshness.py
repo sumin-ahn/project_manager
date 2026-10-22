@@ -191,7 +191,6 @@ def _domain_page(domain_dir: Path, name: str, *, covers, verified_at=None,
 
 def _wire(board, domain, monkeypatch, repo: Path):
     monkeypatch.setattr(board, "REPO", repo)
-    monkeypatch.setattr(board, "LOCAL_CONF", repo / ".project_manager" / "local.conf")
     domain_dir = pm_paths.domain_dir(board._home())
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     return domain_dir
@@ -626,7 +625,6 @@ def test_two_repo_owner_change_closes_unsynced_copy_window(
     ) == "VERSION = 1\n"
 
     monkeypatch.setattr(board, "REPO", pm_home)
-    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
 
     # 종전 PM-home 시계는 import 사본 경로 변경이 없어 clean이었다(조용한 오답 창의 대조군).
@@ -1494,7 +1492,6 @@ def test_repin_cli_unexpandable_upstream_user_fails_before_writing(
     local_conf.write_text(
         "upstream.path=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main(["verified-at-repin", "--repo", "upstream"])

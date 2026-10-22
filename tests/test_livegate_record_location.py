@@ -130,10 +130,6 @@ def _make_topology(tmp_path, monkeypatch, *, with_hookspath=True,
 
     local = worktree / ".project_manager" / ".local"
     monkeypatch.setattr(mod, "REPO", worktree)
-    monkeypatch.setattr(mod, "LOCAL_CONF", worktree / ".project_manager/local.conf")
-    monkeypatch.setattr(mod, "AREAS_FILE", worktree / ".project_manager/areas.md")
-    monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")  # 부재
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: _HEAD_SHA)
     return mod, engine, worktree, hooks_dir
 
@@ -253,7 +249,7 @@ def test_platform_evidence_in_called_copy_only_blocks_readonly_record(
     """two-tree 불일치: 구 clone-local 증거를 legacy no-platform green으로 축약하지 않는다."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
     readonly = _readonly_tree(tmp_path, hooks_dir)
-    called_copy_flag = mod.LOCAL_DIR / "regression.json"
+    called_copy_flag = mod._home().local_dir / "regression.json"
     called_copy_flag.parent.mkdir(parents=True, exist_ok=True)
     called_copy_flag.write_text(
         json.dumps(_platform_regression_record(worktree)), encoding="utf-8")
@@ -386,7 +382,6 @@ def test_resolve_livegate_flag_no_hook_when_not_git_repo(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     local = proj / ".project_manager" / ".local"
     monkeypatch.setattr(mod, "REPO", proj)
-    monkeypatch.setattr(mod, "LOCAL_DIR", local)
 
     flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(tmp_path / "nonrepo"))
 
@@ -420,7 +415,6 @@ def test_resolve_relative_hookspath_resolves_against_worktree_root(tmp_path, mon
 
     local = worktree / ".project_manager" / ".local"
     monkeypatch.setattr(mod, "REPO", worktree)
-    monkeypatch.setattr(mod, "LOCAL_DIR", local)
 
     # 프로세스 cwd(=pytest 실행 위치)가 worktree 가 아니어도 worktree root 기준으로 해소돼야 한다.
     flag, mode = regression_store._resolve_livegate_flag(mod._home(), str(worktree))

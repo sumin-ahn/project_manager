@@ -70,13 +70,7 @@ def board(tmp_path, monkeypatch):
     local.mkdir(parents=True, exist_ok=True)
     (proj / "tests").mkdir(parents=True, exist_ok=True)
     mod = _load_board()
-    overrides = {
-        "REPO": proj,
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": local,
-        "LEASES_FILE": local / "worktree-leases.json",
-    }
+    overrides = {'REPO': proj}
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(git, "_git_head", lambda _home: "deadbeef01234567")
@@ -109,13 +103,7 @@ def actual_git_board(tmp_path, monkeypatch):
                    env=git_env, check=True)
 
     mod = _load_board()
-    for name, value in {
-        "REPO": home,
-        "LOCAL_CONF": home / ".project_manager" / "local.conf",
-        "AREAS_FILE": home / ".project_manager" / "areas.md",
-        "LOCAL_DIR": local,
-        "LEASES_FILE": local / "worktree-leases.json",
-    }.items():
+    for name, value in {'REPO': home}.items():
         monkeypatch.setattr(mod, name, value)
     monkeypatch.setattr(pre_push_hook, "_stale_pre_push_hook_refusal", lambda _home: None)
     monkeypatch.setattr(regression, "_review_cycle_downgrade", lambda _home: ([], []))
@@ -193,7 +181,7 @@ def _write_flag(board, *, status: str, rc, collected=None, previous_collected=No
 
     `conf_anchor` 미기록이 기본 — 옛 플래그(후방호환 폴백) 형상을 그대로 태운다.
     """
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
     pm_paths.regression_flag(board._home()).write_text(json.dumps(
         {"head": head, "status": status, "rc": rc, "scope": "full",
          "collected": collected, "previous_collected": previous_collected,
@@ -220,8 +208,8 @@ def _without_suite(board) -> None:
 def _set_platforms(board, declaration="windows", **commands) -> None:
     lines = [f"qa.platforms={declaration}"]
     lines.extend(f"test.{name}.cmd={command}" for name, command in commands.items())
-    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    board.LOCAL_CONF.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    board._home().local_conf.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _marker(platform: str, head: str, collected=3, status="pass") -> str:
@@ -347,8 +335,8 @@ def test_platform_record_validator_owns_top_level_status_check(board):
 
 def test_platform_core_without_summary_is_unverified(
         board, monkeypatch, capsys):
-    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    board._home().local_conf.write_text(
         "qa.platforms=windows\n"
         "test.windows.cmd=run-windows\n",
         encoding="utf-8",
@@ -376,8 +364,8 @@ def test_platform_core_without_summary_is_unverified(
 
 def test_multi_slot_platform_core_without_summary_uses_the_same_unverified_contract(
         board, monkeypatch):
-    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    board._home().local_conf.write_text(
         "qa.platforms=windows\n"
         "test.windows.cmd=run-windows\n",
         encoding="utf-8",
@@ -580,7 +568,7 @@ def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, 
 
     monkeypatch.setattr(regression, "_run_regression_cmd", run)
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
-    board.LOCAL_CONF.write_text("test.cmd=changed-core\nqa.platforms=windows\ntest.windows.cmd=changed-wrapper\n", encoding="utf-8")
+    board._home().local_conf.write_text("test.cmd=changed-core\nqa.platforms=windows\ntest.windows.cmd=changed-wrapper\n", encoding="utf-8")
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
@@ -1071,8 +1059,8 @@ def test_stderr_counts_do_not_pollute_parsing(board, monkeypatch):
 
 def _write_ledger(board, *sessions: str) -> None:
     """리스 장부에 leased 행을 쓴다 (`slot=work/<session>`·worktree_pool 스키마 부분집합)."""
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(json.dumps({"leases": [
+    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [
         {"slot": f"work/{s}", "repo": "r", "session": s, "state": "leased"}
         for s in sessions]}), encoding="utf-8")
 
@@ -1519,7 +1507,7 @@ def test_no_consumer_keeps_local_outcome_regex():
 
 def _write_rounds_ledger(board, gates: dict) -> None:
     """추가 리뷰 라운드 장부를 심는다 — 값은 `{gate: [(sequence, verdict), ...]}`."""
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         gate: {"rounds": [{"sequence": seq, "verdict": verdict, "must_fix": None}
                           for seq, verdict in rounds]}
@@ -1584,7 +1572,7 @@ def test_done_ticket_residue_does_not_downgrade_a_full_run(board, monkeypatch, c
 def test_missing_or_corrupt_ledger_never_downgrades(board):
     """장부 부재·손상은 강등하지 않는다 — 이 축의 실패가 회귀 게이트를 좁히면 안 된다."""
     assert regression._active_review_gates(board._home()) == []
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
     review_rounds._review_rounds_ledger(board._home()).write_text("{ not json", encoding="utf-8")
     assert regression._active_review_gates(board._home()) == []
 
@@ -2446,7 +2434,7 @@ def test_declared_touches_still_scope_the_run(board, monkeypatch, capsys):
 
 def _ledger_with_legacy_round(board, gate: str, rounds: list[dict]) -> None:
     """`sequence` 유무가 섞인 산출을 그대로 심는다 (구기록 정렬 재현용)."""
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
     payload = {gate: {"rounds": rounds}, "wave": {"id": "gen", "started": None, "spent": 0}}
     review_rounds._review_rounds_ledger(board._home()).write_text(json.dumps(payload), encoding="utf-8")
 
@@ -3048,7 +3036,7 @@ def test_t0929_selected_workspace_preflight_precedes_runner(board, monkeypatch, 
     rows = _t0929_mock_workspaces(board, monkeypatch)
     if failure == 'command':
         rows[-1]['test_cmd'] = None
-        board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+        pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
         monkeypatch.setattr(python_env, 'default_pytest_cmd', lambda: None)
     else:
         monkeypatch.setattr(git, '_git_head_at' if failure == 'head' else '_cluster_current_branch', lambda tree: None)
@@ -3063,7 +3051,7 @@ def test_t0929_selected_workspace_missing_command_uses_selected_repo(board, monk
     from test_task_workspace_wiring import _t0929_mock_workspaces
     rows = _t0929_mock_workspaces(board, monkeypatch)
     rows[-1]['test_cmd'] = None
-    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     monkeypatch.setenv('PM_SESSION_NAME', 'main')
     monkeypatch.setattr(areas_store, '_parse_areas', lambda _home: ([], [{'repo': 'A', 'test_cmd': 'pytest -q -k selected_repo'}]))
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
@@ -3076,7 +3064,7 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(board, monkey
     from test_task_workspace_wiring import _t0929_mock_workspaces
     rows = _t0929_mock_workspaces(board, monkeypatch)
     rows[-1].update(role='readonly', session='')
-    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     selected = str(board.REPO / 'work/A_5')
     fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
     assert regression_cmd.cmd_regression(board._home(), _run_args(cwd=selected, cmd='pytest -q')) == 0
@@ -3087,7 +3075,7 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(board, monkey
 # T-0936 개발 core 증거와 실행 단계
 
 def _t0936_core_setup(board, monkeypatch, declaration='windows'):
-    board.LOCAL_CONF.write_text('test.cmd=core-full\n' + (f'qa.platforms={declaration}\n' if declaration else ''), encoding='utf-8')
+    board._home().local_conf.write_text('test.cmd=core-full\n' + (f'qa.platforms={declaration}\n' if declaration else ''), encoding='utf-8')
     monkeypatch.setattr(pre_push_hook, '_stale_pre_push_hook_refusal', lambda _home: None)
     monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_NO_HOOK))
     monkeypatch.setattr(regression, '_platform_test_commands', lambda _home, cwd: pytest.fail('개발 단계에서 플랫폼 선언 해소'))
@@ -3113,7 +3101,7 @@ def test_t0936_development_core_only(board, monkeypatch, declaration):
 def test_t0936_multi_slot_core_only(multi_board, monkeypatch, defect):
     board = multi_board
     calls = _t0936_core_setup(board, monkeypatch)
-    local = board.LOCAL_DIR / 'engine-root'
+    local = board._home().local_dir / 'engine-root'
     local.mkdir()
     monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda _home, cwd: (local / 'regression.json', regression_store._LG_ENGINE_ROOT))
     monkeypatch.setattr(regression, '_test_cmd', lambda _home, override, session=None, workspace=None: override or f'core-{session}')
@@ -3182,15 +3170,15 @@ def test_t0936_core_command_and_selected_workspace(board, monkeypatch):
     _t0936_core_setup(board, monkeypatch)
     selected = board.REPO / 'work/proj_5'; sibling = board.REPO / 'work/proj_1'
     selected.mkdir(parents=True); sibling.mkdir(parents=True)
-    board.LEASES_FILE.write_text(json.dumps({'leases': [
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': [
         {'slot':'work/proj_1','repo':'proj','session':'main','state':'leased','test_cmd':'sibling-core'},
         {'slot':'work/proj_5','repo':'proj','session':'main','state':'leased','test_cmd':'selected-core'}]}), encoding='utf-8')
     monkeypatch.setattr(task_args, '_resolve_task_workspace_cwd', lambda _home, args, **kw: (str(selected), 'selected-core'))
     assert regression_cmd.cmd_regression(board._home(), _run_args(task='main', final=True)) == 0
     assert _flag(board)['command'] == 'selected-core' and _flag(board)['conf_anchor'] == str(selected)
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 0
-    data = json.loads(board.LEASES_FILE.read_text(encoding='utf-8')); data['leases'][1]['test_cmd']='changed-core'
-    board.LEASES_FILE.write_text(json.dumps(data), encoding='utf-8')
+    data = json.loads(pm_paths.leases_file(board._home()).read_text(encoding='utf-8')); data['leases'][1]['test_cmd']='changed-core'
+    pm_paths.leases_file(board._home()).write_text(json.dumps(data), encoding='utf-8')
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check', task='main', repo='proj', slot=5)) == 1
 
 
@@ -3232,14 +3220,14 @@ def test_t0936_core_command_and_selected_workspace_slot_prefix_priority(
         board, monkeypatch, prefix, expected, consumer):
     from pm_engine.domain import identity_args
 
-    board.LOCAL_CONF.write_text("test.cmd=local-core\nqa.platforms=windows\n", encoding="utf-8")
+    board._home().local_conf.write_text("test.cmd=local-core\nqa.platforms=windows\n", encoding="utf-8")
     session = "A_1"
     target = board.REPO / "work/A_1"
     target.mkdir(parents=True)
-    board.LEASES_FILE.write_text(json.dumps({"leases":[{
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases":[{
         "slot":"work/A_1", "repo":"A", "session":session, "state":"leased", "test_cmd":None,
     }]}), encoding="utf-8")
-    board.AREAS_FILE.write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
     calls = []
     monkeypatch.setattr(regression, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
     monkeypatch.setattr(regression, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
@@ -3264,11 +3252,11 @@ def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, t
     target = board.REPO / "work/A_1"
     (target / ".git").mkdir(parents=True)
     (target / "tests").mkdir()
-    board.LOCAL_CONF.write_text("test.cmd=local-core\n" + ("qa.platforms=windows\n" if platform else ""), encoding="utf-8")
-    board.AREAS_FILE.write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
+    board._home().local_conf.write_text("test.cmd=local-core\n" + ("qa.platforms=windows\n" if platform else ""), encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
     row = {"slot":"work/A_1", "repo":"A", "session":"main" if task else "A_1", "state":"leased", "role":"work", "test_cmd":None}
     ledger = {"leases":[row], "tasks":[{"name":"main", "session":"S"}] if task else []}
-    board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    pm_paths.leases_file(board._home()).write_text(json.dumps(ledger), encoding="utf-8")
     monkeypatch.setattr(pre_push_hook, "_stale_pre_push_hook_refusal", lambda _home: None)
     monkeypatch.setattr(regression, "_review_cycle_downgrade", lambda _home: ([], []))
     monkeypatch.setattr(regression_store, "_resolve_regression_flag", lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_NO_HOOK))
@@ -3301,8 +3289,8 @@ def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, mo
     target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A" if layer=="prefix" else "")
     if layer=="lease":
         ledger["leases"][0]["test_cmd"]="lease-core"
-        board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
-    if layer=="default": board.LOCAL_CONF.write_text("", encoding="utf-8")
+        pm_paths.leases_file(board._home()).write_text(json.dumps(ledger), encoding="utf-8")
+    if layer=="default": board._home().local_conf.write_text("", encoding="utf-8")
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_bad\n", encoding="utf-8")
     expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":python_env.default_pytest_cmd()}[layer]
     assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
@@ -3323,7 +3311,7 @@ def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explic
     (sibling / ".git").mkdir(parents=True)
     ledger["leases"][0]["test_cmd"]="core-A"
     ledger["leases"].append({"slot":"work/A_2", "repo":"A", "session":"main", "state":"leased", "role":"work", "test_cmd":"core-B"})
-    board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    pm_paths.leases_file(board._home()).write_text(json.dumps(ledger), encoding="utf-8")
     run=["regression","run","--final"]
     run += ["--task","main","--repo","A","--slot","1"] if task else ["--cwd",str(target)]
     assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(run))==0
@@ -3345,7 +3333,7 @@ def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explic
 def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(board, monkeypatch):
     target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A")
     ledger["leases"][0]["test_cmd"]="core-A"
-    board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    pm_paths.leases_file(board._home()).write_text(json.dumps(ledger), encoding="utf-8")
     other=board.REPO / "other"; other.mkdir()
     assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
     assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
@@ -3363,8 +3351,8 @@ def _t0983_workspaces(board, monkeypatch, owners=('alpha', 'alpha')):
                  role='work', test_cmd=f'core-{i}') for i, owner in enumerate(owners, 1)]
     for row in rows:
         (board.REPO / row['slot']).mkdir(parents=True)
-    board.LEASES_FILE.write_text(json.dumps({'leases': rows,'tasks':[{'name':o} for o in sorted({r['session'] for r in rows if isinstance(r,dict) and isinstance(r.get('session'),str)})]}), encoding='utf-8')
-    board.LOCAL_CONF.write_text('test.cmd=local-core\n', encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows,'tasks':[{'name':o} for o in sorted({r['session'] for r in rows if isinstance(r,dict) and isinstance(r.get('session'),str)})]}), encoding='utf-8')
+    board._home().local_conf.write_text('test.cmd=local-core\n', encoding='utf-8')
     monkeypatch.setattr(pre_push_hook, '_stale_pre_push_hook_refusal', lambda h: None)
     monkeypatch.setattr(regression_store, '_resolve_regression_flag',
                         lambda h, cwd: (h.local_dir / 'regression.json', regression_store._LG_NO_HOOK))
@@ -3377,13 +3365,13 @@ def _t0983_workspaces(board, monkeypatch, owners=('alpha', 'alpha')):
 
 
 def _t0983_save_rows(board, rows):
-    board.LEASES_FILE.write_text(json.dumps({'leases': rows,'tasks':[{'name':o} for o in sorted({r['session'] for r in rows if isinstance(r,dict) and isinstance(r.get('session'),str)})]}), encoding='utf-8')
+    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows,'tasks':[{'name':o} for o in sorted({r['session'] for r in rows if isinstance(r,dict) and isinstance(r.get('session'),str)})]}), encoding='utf-8')
 
 
 def _t0983_flag(board, row):
     import hashlib
     key = hashlib.sha256(row['slot'].encode('utf-8')).hexdigest()
-    return board.LOCAL_DIR / f'regression-workspace-{key}.json'
+    return board._home().local_dir / f'regression-workspace-{key}.json'
 
 
 @pytest.mark.parametrize('owners', [('alpha', 'alpha'), ('alpha', 'alpha', 'beta')])
@@ -3394,7 +3382,7 @@ def test_t0983_all_workspaces_run_with_own_commands_and_records(board, monkeypat
     original_read = regression.fs.read_text_shared
 
     def read(path, *args, **kwargs):
-        if path == board.LEASES_FILE:
+        if path == pm_paths.leases_file(board._home()):
             reads.append(path)
         return original_read(path, *args, **kwargs)
 
@@ -3407,9 +3395,9 @@ def test_t0983_all_workspaces_run_with_own_commands_and_records(board, monkeypat
         assert record['command'] == row['test_cmd']
         assert record['conf_anchor'] == str(board.REPO / row['slot'])
         assert record['head'] == 'same-head' and record['status'] == 'pass'
-    assert not (board.LOCAL_DIR / 'regression-alpha.json').exists()
+    assert not (board._home().local_dir / 'regression-alpha.json').exists()
     assert len(reads) == 1
-    records = {flag: flag.read_bytes() for flag in board.LOCAL_DIR.glob('regression*.json')}
+    records = {flag: flag.read_bytes() for flag in board._home().local_dir.glob('regression*.json')}
     reads.clear()
     calls.clear()
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 0
@@ -3447,7 +3435,7 @@ def test_t0983_command_layers_are_selected_by_workspace(board, monkeypatch, laye
     monkeypatch.setattr(areas_store, '_parse_areas', lambda h, *a: ([], [
         {'repo': 'R', 'prefix': 'R', 'test_cmd': 'repo-R'},
         {'repo': 'S', 'prefix': 'S', 'test_cmd': 'repo-S' if layer == 'repo' else ''}]))
-    if layer == 'default': board.LOCAL_CONF.write_text('', encoding='utf-8')
+    if layer == 'default': board._home().local_conf.write_text('', encoding='utf-8')
     monkeypatch.setattr(python_env, 'default_pytest_cmd', lambda: 'default-core')
     assert regression_cmd.cmd_regression(board._home(), _run_args(cmd='override-core' if layer == 'override' else None)) == 0
     assert [c[0] for c in calls] == (['override-core', 'override-core'] if layer == 'override' else
@@ -3483,9 +3471,9 @@ def test_t0983_idle_and_readonly_are_not_run_targets(board, monkeypatch):
 @pytest.mark.parametrize('damage', ['json', 'root', 'rows', 'row', 'session', 'slot', 'repo', 'role', 'command', 'duplicate', 'traversal', 'alias', 'whitespace-command'])
 def test_t0983_bad_ledger_is_refused_before_execution(board, monkeypatch, damage):
     rows, calls = _t0983_workspaces(board, monkeypatch)
-    if damage == 'json': board.LEASES_FILE.write_text('{broken', encoding='utf-8')
-    elif damage == 'root': board.LEASES_FILE.write_text('[]', encoding='utf-8')
-    elif damage == 'rows': board.LEASES_FILE.write_text('{"leases":{}}', encoding='utf-8')
+    if damage == 'json': pm_paths.leases_file(board._home()).write_text('{broken', encoding='utf-8')
+    elif damage == 'root': pm_paths.leases_file(board._home()).write_text('[]', encoding='utf-8')
+    elif damage == 'rows': pm_paths.leases_file(board._home()).write_text('{"leases":{}}', encoding='utf-8')
     else:
         if damage == 'row': rows.append('broken')
         elif damage == 'session': rows[1]['session'] = None
@@ -3501,7 +3489,7 @@ def test_t0983_bad_ledger_is_refused_before_execution(board, monkeypatch, damage
     with pytest.raises((SystemExit, ValueError, OSError, __import__("pm_engine.domain.identity_args",fromlist=["WorkspaceResolutionError"]).WorkspaceResolutionError)):
         regression_cmd.cmd_regression(board._home(), _run_args())
     assert calls == []
-    assert list(board.LOCAL_DIR.glob('regression*.json')) == []
+    assert list(board._home().local_dir.glob('regression*.json')) == []
 
 
 @pytest.mark.parametrize('failed_rc', [1, 5])
@@ -3519,7 +3507,7 @@ def test_t0983_second_failure_still_runs_third_and_names_workspace(board, monkey
 
 def test_t0983_old_task_record_is_not_shared_workspace_evidence(board, monkeypatch):
     rows, calls = _t0983_workspaces(board, monkeypatch)
-    (board.LOCAL_DIR/'regression-alpha.json').write_text(json.dumps({
+    (board._home().local_dir/'regression-alpha.json').write_text(json.dumps({
         'head':'same-head','status':'pass','rc':0,'scope':'full','session':'alpha'}), encoding='utf-8')
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 1
     assert calls == []
@@ -3534,8 +3522,8 @@ def test_t0983_single_pinned_and_task_selection_contracts(board, monkeypatch):
     assert calls == []
     assert regression_cmd.cmd_regression(board._home(), _run_args(cwd=str(board.REPO/'pinned'),cmd='pinned')) == 0
     assert len(calls) == 1 and calls[0][0] == 'pinned'
-    assert (board.LOCAL_DIR/'regression.json').exists()
-    assert not list(board.LOCAL_DIR.glob('regression-workspace-*.json'))
+    assert (board._home().local_dir/'regression.json').exists()
+    assert not list(board._home().local_dir.glob('regression-workspace-*.json'))
 
 @pytest.mark.parametrize('key', ['command', 'session', 'conf_anchor'])
 def test_t0983_workspace_record_requires_its_coordinates(board, monkeypatch, key):
@@ -3555,12 +3543,12 @@ def test_t0983_io_failure_never_falls_back_to_home(board, monkeypatch, error):
     rows, calls = _t0983_workspaces(board, monkeypatch)
     original = regression.fs.read_text_shared
     def read(path, *a, **kw):
-        if path == board.LEASES_FILE: raise error('test ledger failure')
+        if path == pm_paths.leases_file(board._home()): raise error('test ledger failure')
         return original(path,*a,**kw)
     monkeypatch.setattr(regression.fs, 'read_text_shared', read)
     with pytest.raises((SystemExit,OSError)):
         regression_cmd.cmd_regression(board._home(), _run_args())
-    assert calls == [] and not list(board.LOCAL_DIR.glob('regression*.json'))
+    assert calls == [] and not list(board._home().local_dir.glob('regression*.json'))
 
 
 def test_t0983_row_command_drift_only_reruns_its_workspace(board, monkeypatch):
@@ -3609,7 +3597,7 @@ def test_t0983_broken_sidecar_never_gets_a_pass_record(board, monkeypatch):
     monkeypatch.setattr(regression_store,'_resolve_regression_flag',lambda home,cwd:(home.local_dir/'regression.json',regression_store._LG_BROKEN))
     assert regression_cmd.cmd_regression(board._home(),_run_args())==1
     assert regression_cmd.cmd_regression(board._home(),argparse.Namespace(action='check'))==1
-    assert calls==[] and not list(board.LOCAL_DIR.glob('regression*.json'))
+    assert calls==[] and not list(board._home().local_dir.glob('regression*.json'))
 
 
 def test_t0983_selected_task_workspace_stays_single(board, monkeypatch):
@@ -3619,15 +3607,15 @@ def test_t0983_selected_task_workspace_stays_single(board, monkeypatch):
     assert regression_cmd.cmd_regression(board._home(),_run_args(task='alpha',repo='R',slot=2))==0
     assert [(c[0],c[1]) for c in calls]==[('core-2',str(board.REPO/'work/R_2'))]
     assert regression_cmd.cmd_regression(board._home(),argparse.Namespace(action='check',task='alpha',repo='R',slot=2))==0
-    assert not list(board.LOCAL_DIR.glob('regression-workspace-*.json'))
+    assert not list(board._home().local_dir.glob('regression-workspace-*.json'))
 
 
 def test_t0983_single_lease_keeps_this_tree_path(board, monkeypatch):
     rows,calls=_t0983_workspaces(board,monkeypatch,('alpha',))
     assert regression_cmd.cmd_regression(board._home(),_run_args())==0
     assert calls[0][1]==str(board.REPO)
-    assert (board.LOCAL_DIR/'regression.json').exists()
-    assert not list(board.LOCAL_DIR.glob('regression-workspace-*.json'))
+    assert (board._home().local_dir/'regression.json').exists()
+    assert not list(board._home().local_dir.glob('regression-workspace-*.json'))
 
 
 def test_t0983_unicode_workspace_names_have_distinct_flags(board, monkeypatch):
@@ -3636,7 +3624,7 @@ def test_t0983_unicode_workspace_names_have_distinct_flags(board, monkeypatch):
     rows[1]['slot']='work/Aø_1'
     _t0983_save_rows(board,rows)
     assert regression_cmd.cmd_regression(board._home(),_run_args())==0
-    assert len(list(board.LOCAL_DIR.glob('regression-workspace-*.json')))==2
+    assert len(list(board._home().local_dir.glob('regression-workspace-*.json')))==2
     assert _t0983_flag(board,rows[0])!=_t0983_flag(board,rows[1])
 
 
@@ -3650,7 +3638,7 @@ def test_t0983_separator_normalization_is_consistent(board, monkeypatch):
 
 
 def _t0983_complete_fixture_records(board):
-    for row in json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))["leases"]:
+    for row in json.loads(pm_paths.leases_file(board._home()).read_text(encoding="utf-8"))["leases"]:
         flag = regression_store._regression_flag_for(
             board._home(), row["session"], workspace=row["slot"])
         if not flag.exists():

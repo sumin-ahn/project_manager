@@ -5,6 +5,10 @@ section-add 는 명세 파일을 건드리지 않는다 — 쓰는 것은 `ticke
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_migrate_identity
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.app import round_maintenance
 from pm_engine.cli import board_round
 from pm_engine.domain import board_command_rules
@@ -945,7 +949,7 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
 
     def run_migration():
         try:
-            results["migration"] = board._migrate_tickets_apply(
+            results["migration"] = board_migrate_identity._migrate_tickets_apply(board._home(),
                 "alice", "repo_1", ("open",))
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
@@ -982,7 +986,8 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
 def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
     """sink 호출자를 독립 발견해 writer 누락/lock 순서/재진입을 미래 변경에서 red로 만든다."""
     tree = ast.parse(BOARD_PY.read_text(encoding="utf-8"))
-    for relative in ("infra/cluster_store.py", "cli/board_cluster.py", "cli/board_round.py"):
+    for relative in ("infra/cluster_store.py", "cli/board_cluster.py", "cli/board_round.py",
+                     "cli/board_ticket.py", "cli/board_migrate_identity.py"):
         source = BOARD_PY.parent / "pm_engine" / relative
         moved = ast.parse(source.read_text(encoding="utf-8"))
         ast.increment_lineno(moved, max(node.end_lineno for node in tree.body) + 1)
@@ -1115,9 +1120,9 @@ def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations
     """신규 parser 배선이 기존 claim/promote/complete/lint fn dispatch를 바꾸지 않는다."""
     board = _load_board()
     existing = {
-        ("claim", "T-1"): board.cmd_claim,
-        ("promote", "T-1"): board.cmd_promote,
-        ("complete", "T-1"): board.cmd_complete,
+        ("claim", "T-1"): board_ticket.cmd_claim,
+        ("promote", "T-1"): board_ticket.cmd_promote,
+        ("complete", "T-1"): board_ticket.cmd_complete,
         ("lint",): board.cmd_lint,
     }
     parser = board.build_parser()

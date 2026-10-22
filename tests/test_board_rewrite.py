@@ -9,6 +9,9 @@ dry-run 카운트를 커버한다.
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_prefix
+
+
 import importlib.util
 from pathlib import Path
 
@@ -34,28 +37,28 @@ def board():
 
 def test_boundary_trailing_digit_not_replaced(board):
     """`T-0063`→X 치환이 `T-00631`(뒤 숫자)을 건드리지 않는다."""
-    out, n = board.rewrite_text_token_aware("T-00631", {"T-0063": "T-0900"})
+    out, n = board_prefix.rewrite_text_token_aware("T-00631", {"T-0063": "T-0900"})
     assert out == "T-00631"
     assert n == 0
 
 
 def test_boundary_trailing_hyphen_not_replaced(board):
     """`T-0063`→X 치환이 `T-0063-2`(뒤 하이픈)을 건드리지 않는다."""
-    out, n = board.rewrite_text_token_aware("T-0063-2", {"T-0063": "T-0900"})
+    out, n = board_prefix.rewrite_text_token_aware("T-0063-2", {"T-0063": "T-0900"})
     assert out == "T-0063-2"
     assert n == 0
 
 
 def test_boundary_exact_match_replaced(board):
     """정확 토큰은 치환된다 (경계 char 가 [0-9-] 아님)."""
-    out, n = board.rewrite_text_token_aware("see T-0063.", {"T-0063": "T-0900"})
+    out, n = board_prefix.rewrite_text_token_aware("see T-0063.", {"T-0063": "T-0900"})
     assert out == "see T-0900."
     assert n == 1
 
 
 def test_boundary_end_of_string_replaced(board):
     """문자열 끝(뒤 char 없음)도 유효 경계 — 치환된다."""
-    out, n = board.rewrite_text_token_aware("ref T-0063", {"T-0063": "T-0900"})
+    out, n = board_prefix.rewrite_text_token_aware("ref T-0063", {"T-0063": "T-0900"})
     assert out == "ref T-0900"
     assert n == 1
 
@@ -69,7 +72,7 @@ def test_boundary_end_of_string_replaced(board):
 ])
 def test_boundary_identifier_adjacent_not_replaced(board, text):
     """양옆 식별자 문자(`[A-Za-z0-9_-]`) 인접이면 치환하지 않는다(부분매치 방지)."""
-    out, n = board.rewrite_text_token_aware(text, {"T-0063": "T-0900"})
+    out, n = board_prefix.rewrite_text_token_aware(text, {"T-0063": "T-0900"})
     assert out == text
     assert n == 0
 
@@ -82,7 +85,7 @@ def test_boundary_identifier_adjacent_not_replaced(board, text):
 ])
 def test_boundary_non_identifier_adjacent_replaced(board, text, expected):
     """비-식별자(괄호·공백·한글) 인접은 양쪽 경계이므로 정상 치환된다."""
-    out, n = board.rewrite_text_token_aware(text, {"T-0063": "T-0900"})
+    out, n = board_prefix.rewrite_text_token_aware(text, {"T-0063": "T-0900"})
     assert out == expected
     assert n == 1
 
@@ -96,7 +99,7 @@ def test_boundary_non_identifier_adjacent_replaced(board, text, expected):
     ("**A(T-0063 classify)·B(x)**", "**A(T-0900 classify)·B(x)**"),  # 산문 임베드
 ])
 def test_all_notation_forms_replaced(board, text, expected):
-    out, n = board.rewrite_text_token_aware(text, {"T-0063": "T-0900"})
+    out, n = board_prefix.rewrite_text_token_aware(text, {"T-0063": "T-0900"})
     assert out == expected
     assert n == 1
 
@@ -105,7 +108,7 @@ def test_all_notation_forms_replaced(board, text, expected):
 
 def test_prefix_form_replaced(board):
     """prefix 표기형 `T-finance-011`→`T-0700` 치환 (§1.4 전 표기형·wikilink+frontmatter)."""
-    out, n = board.rewrite_text_token_aware(
+    out, n = board_prefix.rewrite_text_token_aware(
         "[[T-finance-011]] and depends_on: T-finance-011",
         {"T-finance-011": "T-0700"})
     assert out == "[[T-0700]] and depends_on: T-0700"
@@ -114,7 +117,7 @@ def test_prefix_form_replaced(board):
 
 def test_prefix_form_boundary(board):
     """prefix 형도 뒤 char ∉ [0-9-] 경계 — `T-finance-0110`·`T-finance-011-3` 불변."""
-    out, n = board.rewrite_text_token_aware(
+    out, n = board_prefix.rewrite_text_token_aware(
         "T-finance-0110 T-finance-011-3", {"T-finance-011": "T-0700"})
     assert out == "T-finance-0110 T-finance-011-3"
     assert n == 0
@@ -124,21 +127,21 @@ def test_prefix_form_boundary(board):
 
 def test_multiple_ids_and_counts(board):
     id_map = {"T-0063": "T-0900", "T-finance-011": "T-0700"}
-    out, n = board.rewrite_text_token_aware(
+    out, n = board_prefix.rewrite_text_token_aware(
         "T-0063 T-0063 T-finance-011 T-00631", id_map)
     assert out == "T-0900 T-0900 T-0700 T-00631"
     assert n == 3
 
 
 def test_empty_map_noop(board):
-    out, n = board.rewrite_text_token_aware("T-0063", {})
+    out, n = board_prefix.rewrite_text_token_aware("T-0063", {})
     assert out == "T-0063"
     assert n == 0
 
 
 def test_single_pass_no_chained_replacement(board):
     """단일 pass — new 값(`T-0100`)이 map 의 다른 old 키여도 재치환되지 않는다."""
-    out, n = board.rewrite_text_token_aware(
+    out, n = board_prefix.rewrite_text_token_aware(
         "T-0063", {"T-0063": "T-0100", "T-0100": "T-0200"})
     assert out == "T-0100"
     assert n == 1
@@ -167,7 +170,7 @@ def _build_tree(root: Path) -> dict[str, Path]:
 
 def test_collect_targets_covers_three_roots(board, tmp_path):
     files = _build_tree(tmp_path)
-    got = set(board.collect_rewrite_targets(tmp_path))
+    got = set(board_prefix.collect_rewrite_targets(tmp_path))
     assert got == set(files.values())
 
 
@@ -175,12 +178,12 @@ def test_collect_targets_missing_subdirs_ok(board, tmp_path):
     """하위 dir 이 일부만 있어도 예외 없이 부분 목록을 낸다."""
     (tmp_path / "wiki").mkdir()
     (tmp_path / "wiki" / "a.md").write_text("x\n", encoding="utf-8")
-    got = board.collect_rewrite_targets(tmp_path)
+    got = board_prefix.collect_rewrite_targets(tmp_path)
     assert [p.name for p in got] == ["a.md"]
 
 
 def test_collect_targets_empty_root(board, tmp_path):
-    assert board.collect_rewrite_targets(tmp_path) == []
+    assert board_prefix.collect_rewrite_targets(tmp_path) == []
 
 
 # ── rewrite_refs — dry-run 카운트·적용 (DoD d) ────────────────────────────
@@ -188,7 +191,7 @@ def test_collect_targets_empty_root(board, tmp_path):
 def test_rewrite_refs_dry_run_counts(board, tmp_path):
     files = _build_tree(tmp_path)
     before = {p: p.read_text(encoding="utf-8") for p in files.values()}
-    res = board.rewrite_refs(tmp_path, {"T-0063": "T-0900"}, dry_run=True)
+    res = board_prefix.rewrite_refs(tmp_path, {"T-0063": "T-0900"}, dry_run=True)
     # ticket: depends_on + [[T-0063]] = 2 (T-00631 경계 제외),
     # adr: [[T-0063]] + **A(T-0063 x)** = 2, log: 1 → refs 5·files 3(noise 제외)·ids 1.
     assert res == {"ids": 1, "refs": 5, "files": 3}
@@ -198,7 +201,7 @@ def test_rewrite_refs_dry_run_counts(board, tmp_path):
 
 def test_rewrite_refs_applies_and_counts(board, tmp_path):
     files = _build_tree(tmp_path)
-    res = board.rewrite_refs(tmp_path, {"T-0063": "T-0900"}, dry_run=False)
+    res = board_prefix.rewrite_refs(tmp_path, {"T-0063": "T-0900"}, dry_run=False)
     assert res == {"ids": 1, "refs": 5, "files": 3}
     tk = files["ticket"].read_text(encoding="utf-8")
     assert "depends_on: T-0900" in tk
@@ -214,7 +217,7 @@ def test_rewrite_refs_multiple_ids(board, tmp_path):
     tk = tmp_path / "board" / "tickets" / "open" / "T-0001-a.md"
     tk.parent.mkdir(parents=True)
     tk.write_text("[[T-finance-011]] and T-0063 and T-finance-0110\n", encoding="utf-8")
-    res = board.rewrite_refs(
+    res = board_prefix.rewrite_refs(
         tmp_path, {"T-finance-011": "T-0700", "T-0063": "T-0900"}, dry_run=False)
     # T-finance-011→1·T-0063→1·T-finance-0110 경계→0.
     assert res == {"ids": 2, "refs": 2, "files": 1}
@@ -226,7 +229,7 @@ def test_rewrite_refs_unreferenced_id_not_counted(board, tmp_path):
     w = tmp_path / "wiki" / "a.md"
     w.parent.mkdir(parents=True)
     w.write_text("only T-0063 here\n", encoding="utf-8")
-    res = board.rewrite_refs(
+    res = board_prefix.rewrite_refs(
         tmp_path, {"T-0063": "T-0900", "T-9999": "T-8888"}, dry_run=True)
     assert res["ids"] == 1
     assert res["refs"] == 1
@@ -234,13 +237,13 @@ def test_rewrite_refs_unreferenced_id_not_counted(board, tmp_path):
 
 def test_rewrite_refs_empty_map(board, tmp_path):
     _build_tree(tmp_path)
-    res = board.rewrite_refs(tmp_path, {}, dry_run=False)
+    res = board_prefix.rewrite_refs(tmp_path, {}, dry_run=False)
     assert res == {"ids": 0, "refs": 0, "files": 0}
 
 
 def test_boundary_trailing_alpha_not_replaced(board):
     """codex T-0239 R2: 오른쪽 알파벳 인접(`T-0063abc`)은 다른 토큰 — 불변. 한글 인접은 치환."""
-    new, n = board.rewrite_text_token_aware(
+    new, n = board_prefix.rewrite_text_token_aware(
         "T-0063abc 그리고 [[T-0063]]다음", {"T-0063": "T-0900"})
     assert "T-0063abc" in new and "T-0900abc" not in new   # 알파벳 인접 = 다른 토큰·불변.
     assert "[[T-0900]]다음" in new and n == 1               # 비-ASCII(한글) 인접은 정상 치환.

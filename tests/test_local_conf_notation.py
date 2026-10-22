@@ -127,9 +127,8 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
     board = _load("board", "notation_board")
     external = _load("additional_reviewer", "notation_external")
     config = _load("pm_config", "notation_config")
-    board.LOCAL_CONF = tmp_path / ".project_manager" / "local.conf"
     board.REPO = tmp_path
-    external.LOCAL_CONF = board.LOCAL_CONF
+    external.LOCAL_CONF = board._home().local_conf
     external.REPO = tmp_path
     config.REPO = tmp_path
 
@@ -254,7 +253,6 @@ def test_the_exception_text_points_at_adopter_owned_files(tmp_path):
     _write_conf(tmp_path, _LEGACY_CONF)
     board = _load("board", "pointer_board")
     board.REPO = tmp_path
-    board.LOCAL_CONF = tmp_path / ".project_manager" / "local.conf"
 
     with pytest.raises(RuntimeError) as caught:
         conf_store.local_config(board._home())
@@ -630,7 +628,6 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
     pm = tmp_path / ".project_manager"
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
     conf_store._write_init_local_conf(board._home())
@@ -723,7 +720,6 @@ def test_board_lint_surfaces_legacy_keys_and_restated_comments(tmp_path, monkeyp
     board = _load("board", "lint_conf_board")
     conf = _write_conf(tmp_path, _LEGACY_CONF + "# test.cmd=pytest -q\ntest.cmd=make test\n")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
     findings = conf_lint.lint_local_conf(board._home())
     details = "\n".join(detail for _where, _kind, detail in findings)
@@ -741,7 +737,6 @@ def test_board_lint_is_quiet_on_a_clean_conf(tmp_path, monkeypatch):
     board = _load("board", "lint_clean_board")
     conf = _write_conf(tmp_path, "runtime.py=python3\ntest.cmd=pytest -q\n")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
     assert conf_lint.lint_local_conf(board._home()) == []
 

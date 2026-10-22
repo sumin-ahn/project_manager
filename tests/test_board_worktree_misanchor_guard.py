@@ -169,20 +169,7 @@ def _fake_runner(git_dir: str, common_dir: str):
 # 하면 이들은 여전히 실 트리를 가리켜, 게이트가 (회귀로) 미발화하면 실 worktree 를 오염시킨다
 # (바로 이 티켓이 닫는 클래스가 테스트 자신을 물었던 실제 사례). 아래로 전부 fixture 트리로
 # 재바인딩해 어떤 mutation 이 돌더라도 실 트리 오염 0(hermetic).
-_WRITE_TARGET_CONSTS: dict[str, str] = {
-    "IDEAS_DIR": "wiki/ideas",
-
-    "LOG_FILE": "wiki/log/current.md",
-    "LOCAL_CONF": "local.conf",
-    "TICKETS_DIR": "wiki/tickets",
-    "TEMPLATE_FILE": "wiki/tickets/_template.md",
-    "AREAS_FILE": "areas.md",
-    "PM_STATE_FILE": "wiki/pm_state.md",
-    "PM_STATE_TEMPLATE": "wiki/pm_state.template.md",
-    "LOCAL_DIR": ".local",
-
-    "LEASES_FILE": ".local/worktree-leases.json",
-}
+_WRITE_TARGET_CONSTS: dict[str, str] = {}
 
 
 def _isolate_board_module(b, monkeypatch, root: Path) -> None:
@@ -348,9 +335,9 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
             (
                 b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()),
                 pm_paths.decisions_dir(b._home()),
-                b.IDEAS_DIR, pm_paths.specs_dir(b._home()), pm_paths.architecture_file(b._home()),
+                pm_paths.ideas_dir(b._home()), pm_paths.specs_dir(b._home()), pm_paths.architecture_file(b._home()),
                 pm_paths.status_file(b._home()),
-                pm_paths.hooks_dir(b._home()), b.LOCAL_CONF, b.LEASES_FILE, pm_paths.domain_dir(b._home()),
+                pm_paths.hooks_dir(b._home()), b._home().local_conf, pm_paths.leases_file(b._home()), pm_paths.domain_dir(b._home()),
                 *wiki_lint._scope_aware_dirs(b._home()),
             )
         )
@@ -853,7 +840,7 @@ def test_read_input_inventory_covers_every_read_leaf():
 def test_pm_owned_path_inventory_is_complete():
     """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
     b = _load_board()
-    expected = {'IDEAS_DIR', 'LOG_FILE', 'LOCAL_CONF', 'TICKETS_DIR', 'TEMPLATE_FILE', 'AREAS_FILE', 'PM_STATE_FILE', 'PM_STATE_TEMPLATE', 'LOCAL_DIR', 'LEASES_FILE', 'DELEGATE_CHANNEL_GUARD_PY', 'CODEX_DELEGATE_OBSERVATIONS'}
+    expected = {'DELEGATE_CHANNEL_GUARD_PY', 'CODEX_DELEGATE_OBSERVATIONS'}
     assert set(b._READ_PM_PATH_RELS) == expected
 
 

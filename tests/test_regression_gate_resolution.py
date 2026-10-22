@@ -437,15 +437,7 @@ def adopter_board(tmp_path, monkeypatch):
     pm_dir = tmp_path / ".project_manager"
     (pm_dir / ".local").mkdir(parents=True, exist_ok=True)
     board = _load_tool("board")
-    for name, value in {
-        "REPO": tmp_path,
-        "AREAS_FILE": pm_dir / "areas.md",
-        "LOCAL_CONF": pm_dir / "local.conf",
-        "LOCAL_DIR": pm_dir / ".local",
-
-        "LEASES_FILE": pm_dir / ".local" / "worktree-leases.json",
-    }.items():
-        monkeypatch.setattr(board, name, value)
+    monkeypatch.setattr(board, "REPO", tmp_path)
     # 실 PM 세션 env 가 hermetic 해소로 새지 않게 제거(장부/local.conf 만이 세션 소스).
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)

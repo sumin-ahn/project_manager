@@ -18,6 +18,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import importlib.util
 from pathlib import Path
@@ -54,16 +58,7 @@ def board(tmp_path, monkeypatch):
     mod = _load_board()
     pm = proj / ".project_manager"
     wiki = pm / "wiki"
-    overrides = {
-        "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
-
-    }
+    overrides = {'REPO': proj}
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
@@ -84,7 +79,7 @@ def _conf_key(name: str) -> str:
 
 
 def _write_conf(board, **kv) -> None:
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
@@ -100,12 +95,12 @@ _AREAS = (
 
 
 def _write_areas(board) -> None:
-    board.AREAS_FILE.write_text(_AREAS, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(_AREAS, encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, title="t"):
     """status 디렉토리에 최소 frontmatter 티켓을 박는다."""
-    path = board.TICKETS_DIR / status / f"{tid}-seed.md"
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
     ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "claimed_by": claimed_by, "depends_on": [],
                              "tags": []}, "# seed\n")
@@ -118,7 +113,7 @@ def _list_ids(board, capsys, **flags) -> list[str]:
                               mine=flags.get("mine", False),
                               all=flags.get("all", False), task=flags.get("task"),
                               repo=flags.get("repo"), slot=flags.get("slot"))
-    rc = board.cmd_list(args)
+    rc = board_list.cmd_list(board._home(), args)
     assert rc == 0
     out = capsys.readouterr().out
     ids = []
@@ -258,7 +253,7 @@ def test_ticket_area_owner_solo_no_prefix_resolves_sole_area(board):
     수정 전엔 `_ticket_prefix` None → 즉시 None 반환 → migration 으로 area_owner 가 채워진
     솔로 보드의 모든 open 티켓이 `--mine` (a)에서 사라졌다(이 단언이 수정 전 fail).
     """
-    board.AREAS_FILE.write_text(_SOLO_AREAS, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(_SOLO_AREAS, encoding="utf-8")
     assert ticket_access._ticket_area_owner(board._home(), "T-0162") == "sumin"
 
 
@@ -268,7 +263,7 @@ def test_ticket_area_owner_prefix_ticket_not_intercepted_by_sole_area(board):
 
     단일 area(prefix=project_manager·area_owner=sumin)에서 *다른* prefix 티켓(`T-PAY-001`)은
     미등록 prefix → None(sole-area 의 sumin 으로 잘못 매핑되지 않음)."""
-    board.AREAS_FILE.write_text(_SOLO_AREAS, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(_SOLO_AREAS, encoding="utf-8")
     # 등록된 prefix 티켓은 prefix 행에서 직접 읽는다(sole-area 폴백 미경유):
     assert ticket_access._ticket_area_owner(board._home(), "T-project_manager-001") == "sumin"
     # 미등록 prefix 는 sole-area 로 흘러내리지 않고 None(prefix 경로 유지):
@@ -295,7 +290,7 @@ def test_ticket_area_owner_shared_repo_resolves_per_prefix(board):
     재스캔하면 monorepo 의 첫 행(PAY/alice) area_owner 가 ACC 에도 반환됐다. prefix 행에서
     직접 읽으면(line 737 선례 동형) PAY→alice·ACC→bob 으로 각자 맞게 나온다.
     """
-    board.AREAS_FILE.write_text(_SHARED_REPO_AREAS, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(_SHARED_REPO_AREAS, encoding="utf-8")
     assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"
     # 이중홉 시절엔 monorepo 첫 행(alice)을 반환해 fail 했어야 하는 케이스:
     assert ticket_access._ticket_area_owner(board._home(), "T-ACC-001") == "bob"
@@ -308,7 +303,7 @@ def test_mine_shared_repo_filters_by_correct_area_owner(board, capsys):
     ACC 도 alice 로 오인해 bob 의 --mine 에서 빠졌을 것(또는 PAY 가 잘못 포함).
     """
     _write_conf(board, user="bob", session="pm-1")
-    board.AREAS_FILE.write_text(_SHARED_REPO_AREAS, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(_SHARED_REPO_AREAS, encoding="utf-8")
     _seed(board, "T-PAY-001", "open")  # alice area (같은 repo·다른 prefix)
     _seed(board, "T-ACC-001", "open")  # bob area
     ids = _list_ids(board, capsys, mine=True)
@@ -367,7 +362,7 @@ def test_mine_includes_numeric_prefix_area_open(board, capsys):
         "|---|---|---|---|---|---|---|---|\n"
         "| platform0 | P0 | g:p0 | pytest -q | reg | develop | main | alice |\n"
     )
-    board.AREAS_FILE.write_text(areas, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(areas, encoding="utf-8")
     _write_conf(board, user="alice", session="pm-1")
     _seed(board, "T-P0-001", "open")  # 숫자 포함 prefix → alice area
     ids = _list_ids(board, capsys, mine=True)
@@ -391,7 +386,7 @@ def test_mine_includes_numeric_only_prefix_area_open(board, capsys):
         "|---|---|---|---|---|---|---|---|\n"
         "| svc123 | 123 | g:123 | pytest -q | reg | develop | main | alice |\n"
     )
-    board.AREAS_FILE.write_text(areas, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(areas, encoding="utf-8")
     _write_conf(board, user="alice", session="pm-1")
     assert ticket_access._ticket_area_owner(board._home(), "T-123-001") == "alice"  # prefix→area_owner 해소
     _seed(board, "T-123-001", "open")    # 순수 숫자 prefix → alice area
@@ -545,7 +540,7 @@ def test_mine_solo_includes_all_open(board, capsys):
     두 area 모두 alice 소유(내 repo 2개·distinct owner 1)라 진짜 solo → all-open degrade. area_owner
     가 *다른* 2명이면 multi-user 라 strict-exclude 다(→ test_mine_multiowner_all_legacy_no_leak)."""
     _write_conf(board, session="pm-1")
-    board.AREAS_FILE.write_text(_SOLO_TWO_AREA, encoding="utf-8")  # 단일 owner → genuinely solo
+    pm_paths.areas_file(board._home()).write_text(_SOLO_TWO_AREA, encoding="utf-8")  # 단일 owner → genuinely solo
     _seed(board, "T-PAY-001", "open")
     _seed(board, "T-ACC-001", "open")
     ids = _list_ids(board, capsys, mine=True)
@@ -554,11 +549,11 @@ def test_mine_solo_includes_all_open(board, capsys):
 
 def test_distinct_area_owners_counts_multiplicity(board):
     """`_distinct_area_owners` — areas.md 의 non-empty area_owner distinct 수(codex R3 solo 완결 신호)."""
-    board.AREAS_FILE.write_text(_AREAS, encoding="utf-8")            # PAY→alice · ACC→bob
+    pm_paths.areas_file(board._home()).write_text(_AREAS, encoding="utf-8")            # PAY→alice · ACC→bob
     assert ticket_access._distinct_area_owners(board._home()) == 2
-    board.AREAS_FILE.write_text(_SOLO_TWO_AREA, encoding="utf-8")    # 둘 다 alice
+    pm_paths.areas_file(board._home()).write_text(_SOLO_TWO_AREA, encoding="utf-8")    # 둘 다 alice
     assert ticket_access._distinct_area_owners(board._home()) == 1
-    board.AREAS_FILE.unlink()                                        # 부재 → 0(솔로 신호 보존)
+    pm_paths.areas_file(board._home()).unlink()                                        # 부재 → 0(솔로 신호 보존)
     assert ticket_access._distinct_area_owners(board._home()) == 0
 
 
@@ -620,7 +615,7 @@ def test_area_owner_in_use_all_empty(board):
         "| service-a | PAY | g:a | pytest -q | reg | develop | main |  |\n"
         "| service-b | ACC | g:b | pytest -q | reg | develop | main |  |\n"
     )
-    board.AREAS_FILE.write_text(areas, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(areas, encoding="utf-8")
     assert ticket_access._area_owner_in_use(board._home()) is False
 
 
@@ -692,7 +687,7 @@ def test_mine_solo_no_prefix_open_included_when_migrated(monkeypatch, board, cap
     이 단언이 수정 전 fail(=빈 (a))."""
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "sumin")  # type: ignore[assignment]
     _write_conf(board, session="project_manager_1")
-    board.AREAS_FILE.write_text(_SOLO_AREAS, encoding="utf-8")  # 단일 area·area_owner=sumin
+    pm_paths.areas_file(board._home()).write_text(_SOLO_AREAS, encoding="utf-8")  # 단일 area·area_owner=sumin
     _seed(board, "T-0162", "open")  # no-prefix open
     _seed(board, "T-0163", "open")  # no-prefix open
     ids = _list_ids(board, capsys, mine=True)
@@ -713,7 +708,7 @@ def test_mine_all_area_owner_empty_degrades_to_all_open(monkeypatch, board, caps
         "| service-a | PAY | g:a | pytest -q | reg | develop | main |  |\n"
         "| service-b | ACC | g:b | pytest -q | reg | develop | main |  |\n"
     )
-    board.AREAS_FILE.write_text(areas, encoding="utf-8")
+    pm_paths.areas_file(board._home()).write_text(areas, encoding="utf-8")
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "alice")  # type: ignore[assignment]
     _write_conf(board, session="pm-1")
     _seed(board, "T-PAY-001", "open")

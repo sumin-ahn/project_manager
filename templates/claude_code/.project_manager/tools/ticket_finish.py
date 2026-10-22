@@ -57,6 +57,9 @@ from pm_engine.infra import git
 from pm_engine.infra import board_git
 from pm_engine.app import ticket_access
 from pm_engine.app import board_sync
+from pm_engine.app import completion_gate
+from pm_engine.cli import board_ticket
+
 _load_module_from_path = repo_files.load_module
 
 
@@ -578,20 +581,19 @@ def _frontmatter_head(text: str) -> str:
     return text if end == -1 else text[:end]
 
 
-def _done_paths_in_window(board, home, since: str | None) -> list[Path]:
+def _done_paths_in_window(home, since: str | None) -> list[Path]:
     """`done/` 중 `completed_at >= since` 인 티켓 경로 (창 밖·판정 불능은 제외).
 
     판독은 frontmatter **머리**의 스칼라 한 개뿐이다 — `done/` 은 수백 건이라 완료 기록마다
     전문 YAML 파싱을 돌리지 않는다. 부수 효과로 창 **밖** 구 티켓의 손상 frontmatter 가 귀속
     보정을 깨뜨리지 않는다(파싱하지 않으므로).
-    시각 비교는 board 의 writer-형식 파서(`_parse_utc_iso`)를 그대로 부른다(판정 사본 0).
-    그 seam 이 없는 구 사본이거나 `since` 가 형식이 아니면 창을 정할 수 없으므로 `done/` 을 보지
+    시각 비교는 completion_gate의 writer-형식 파서(`_parse_utc_iso`)를 사용한다.
+    `since`가 형식이 아니면 창을 정할 수 없으므로 `done/`을 보지
     않는다 — 제외 근거를 줄이는 쪽(잔여 과다 판정)으로 접는 쪽이 안전하다.
     """
-    parse_utc_iso = getattr(board, "_parse_utc_iso", None)
-    if since is None or parse_utc_iso is None:
+    if since is None:
         return []
-    window_start = parse_utc_iso(since)
+    window_start = completion_gate._parse_utc_iso(since)
     if window_start is None:
         return []
     done_dir = pm_paths.tickets_dir(home) / "done"
@@ -606,7 +608,7 @@ def _done_paths_in_window(board, home, since: str | None) -> list[Path]:
             )
         except OSError:
             continue  # 읽기 실패는 창 밖으로 접는다(제외 근거를 못 쓰니 과다 판정 유지).
-        completed_at = parse_utc_iso(
+        completed_at = completion_gate._parse_utc_iso(
             _fallback_frontmatter_scalar(head, "completed_at")
         )
         if completed_at is not None and completed_at >= window_start:
@@ -631,9 +633,6 @@ def get_in_window_ticket_touches(
     모듈·디렉터리·티켓 읽기/파싱 실패는 error 에 담아 호출부가 loud 하게 보정 skip 을 알린다.
     """
     try:
-        board = _load_module_from_path(
-            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
-        )
         home = _board_home(board_py)
         claimed_dir = pm_paths.tickets_dir(home) / "claimed"
         if not claimed_dir.is_dir():
@@ -641,10 +640,8 @@ def get_in_window_ticket_touches(
         window_paths = [("claimed", path)
                         for path in sorted(claimed_dir.glob("T-*.md"))]
         window_paths += [("done", path)
-                         for path in _done_paths_in_window(board, home, since)]
+                         for path in _done_paths_in_window(home, since)]
     except Exception as exc:  # noqa: BLE001 — 보드 미로드면 타 티켓 제외 없이 과다 판정 쪽 유지.
-        if _is_engine_rev_skew(exc):
-            raise
         detail = " ".join(str(exc).split()) or type(exc).__name__
         return ClaimedTouchesSnapshot({}, f"{board_py}: {detail}")
 
@@ -824,40 +821,8 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
 # board complete 이후 stage 가 통째로 죽고 잔여 loud 보고까지 사라진다.
 
 
-def _load_tool_module(path: Path):
-    """같은 `tools/` 의 형제 모듈을 경로 로드한다 — 부재/실패 → None.
-
-    sys.path 무오염(spec_from_file_location)·rev 스탬프 skew 는 fail-loud. 로드 실패
-    자체는 None 으로 돌려 호출부가 **눈에 띄게** 처리하게 한다(조용한 skip 아님 — 아래
-    `stage_scope` 는 None 을 stage 불능으로 보고 loud 경고를 낸다).
-    """
-
-    path = Path(path)
-    if not path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            path, path.name, verifier=_verify_engine_rev,
-        )
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
 
 
-def load_board_module(board_py: Path):
-    """board.py 를 로드하고 그 모듈의 `REPO` 를 **이 도구의 REPO 로 재-앵커** 해서 돌려준다.
-
-    board 모듈은 자기 파일 위치에서 REPO 를 해소하므로, `_board_git_enabled()` 같은
-    **함수** 판정이 이 도구가 보는 트리를 따라오게 하려면 재-앵커가
-    필요하다(실 형상에선 같은 값이라 항등, REPO 를 치환한 hermetic 테스트에선 tmp 를 따라온다).
-    모듈은 `spec_from_file_location` 으로 뜬 **이 호출 전용 사본**이라 전역 오염이 없다.
-    """
-    board = _load_tool_module(board_py)
-    if board is not None and getattr(board, "REPO", None) is not None:
-        board.REPO = REPO
-    return board
 
 
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
@@ -1143,12 +1108,7 @@ def _board_home(board_py: Path):
 
 
 def _board_module_at(board_py: Path):
-    """board 모듈 — `board_py` **자기 위치**의 트리를 본다 (로드 실패는 None).
-
-    `load_board_module` 과 달리 REPO 를 재앵커하지 않는다(`_ticket_frontmatter_snapshot` 과
-    같은 로드) — 장부·티켓·게이트 조회는 그 board 사본이 보는 트리를 그대로 봐야 하고,
-    재앵커하면 조회가 이 도구의 트리로 끌려가 다른 board 를 읽는다.
-    """
+    """완료 CLI의 build_parser 전용 사본을 적재한다. 데이터 조회는 명시 Home과 패키지가 소유한다."""
     try:
         return _load_module_from_path(
             Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
@@ -2006,28 +1966,22 @@ class TicketFinisher:
     def _default_dod_block(self, ticket_id: str) -> str | None:
         """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과·판정 불가면 None.
 
-        규칙 소유자는 board(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
+        규칙 소유자는 completion_gate(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
         권위 있는 차단은 여전히 [3/5] `board.py complete` 가 하고, 여기서는 **더 앞에서 한 번 더**
         묻는다. 이 preflight 가 없으면 [2/5] 가 log 스켈레톤을 append 한 *뒤에* [3/5] 가 막아,
         차단될 때마다 stray 스켈레톤이 남고 재실행마다 중복 append 된다(실측).
 
-        판정 불가(board 미로드·티켓 부재/손상)는 None 이다 — preflight 는 조기 안내일 뿐이고
+        판정 불가(티켓 부재/손상)는 None 이다 — preflight 는 조기 안내일 뿐이고
         진짜 게이트가 뒤에 있으므로, 여기서 fail-soft 해도 미체크 DoD 가 done 으로 새지 않는다."""
-        board = load_board_module(self._board_py)
-        gate = getattr(board, "_dod_open_items", None) if board else None
-        if gate is None:
-            return None
         try:
             _status, path = ticket_store.find_ticket(_board_home(self._board_py), ticket_id)
             _fm, body = ticket_store.load_ticket(path)
         except Exception as exc:  # noqa: BLE001 — 조회 실패는 뒤 게이트가 소유(preflight fail-soft).
-            if _is_engine_rev_skew(exc):
-                raise
             return None
-        problems = gate(body)
+        problems = completion_gate._dod_open_items(body)
         if not problems:
             return None
-        forms = getattr(board, "_DOD_VALUE_FORMS", "")
+        forms = completion_gate._DOD_VALUE_FORMS
         lines = [f"완료 조건(DoD) 미마감 — {ticket_id} ({len(problems)}건)"]
         lines += [f"  ✗ {problem}" for problem in problems]
         lines.append(f"  · 각 항목을 {forms} 로 마감하라." if forms else "")
@@ -3284,7 +3238,7 @@ class ClusterCloser:
         self._explicit_slot = explicit_slot
         # 리뷰 처분 실행 함수. 묶음 표면 rounds resolve --cluster 를 한 번 부른다.
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
-        self._board = _board_module_at(board_py)
+        self._board_parser_module = _board_module_at(board_py)
         self._home = home if home is not None else _board_home(board_py)
         # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
         # 기록 축(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 축(완료 기록·커밋·
@@ -3339,19 +3293,9 @@ class ClusterCloser:
                 f"{tid} 상태를 관측하지 못했다 — {type(exc).__name__}: {exc}") from exc
         return found[0] if found is not None else None
 
-    def _review_seam(self, name: str) -> Callable[[str], str | None]:
-        """리뷰 잔여 판정 seam — 부재는 판정 불능이라 정지다(잔여가 없다고 접지 않는다)."""
-        seam = getattr(self._board, name, None) if self._board else None
-        if seam is None:
-            raise _CloseObservationFailure(
-                f"리뷰 잔여 판정 seam({name})을 로드하지 못했다 ({self._board_py}) — 처분 "
-                "잔여를 관측할 수 없다. board 사본을 확인하라.")
-        return seam
-
     def _pending_gates(self) -> list[str]:
         """처분·확인이 필요한 멤버 — 리뷰 라운드 파일의 잔여가 아직 완료 판정을 막는 것."""
-        problem_fn = self._review_seam("_review_completion_problem")
-        return [tid for tid in self._tickets if problem_fn(tid) is not None]
+        return [tid for tid in self._tickets if board_ticket._review_completion_problem(self._home, tid) is not None]
 
     def _pending_paths(self, cwd: Path, pathspec: Sequence[str]) -> tuple[str, ...]:
         """그 pathspec 안에 아직 커밋되지 않은 경로 (관측 실패는 정지).
@@ -3560,12 +3504,11 @@ class ClusterCloser:
         리뷰 라운드가 없거나 돌려받지 않았거나 전부 폐기된 멤버는 여기서 막힌다 — 종결은 리뷰를
         돌려받은 멤버만 진행한다. 예외는 tier: pm-direct 이고 리뷰 라운드가 0개인 멤버다(리뷰
         라운드가 있으면 pm-direct 도 같은 판정을 받는다). 처분 여부는 여기 없다(처분은 resolve
-        자신이 하는 일이라 비단조다). 판정은 board 소유(`_review_resolution_input_problem`)다.
+        자신이 하는 일이라 비단조다). 판정은 board_ticket 소유(`_review_resolution_input_problem`)다.
         """
-        problem_fn = self._review_seam("_review_resolution_input_problem")
         problems: list[str] = []
         for tid in self._tickets:
-            problem = problem_fn(tid)
+            problem = board_ticket._review_resolution_input_problem(self._home, tid)
             if problem is None:
                 print(f"  ✓ {tid} 리뷰 판정 입력 complete")
             else:
@@ -3630,11 +3573,8 @@ class ClusterCloser:
         각각 불러 누적한다. Namespace 는 `cmd_complete` 가 받는 것과 **같은 파서**로 만든다 —
         손으로 조립하면 소유 판정이 보는 속성이 조용히 빠진다.
         """
-        board = self._board
-        seams = {
-            name: (getattr(board, name, None) if board else None)
-            for name in ("build_parser", "_round_completion_problems")
-        }
+        parser_module = self._board_parser_module
+        seams = {"build_parser": getattr(parser_module, "build_parser", None) if parser_module else None}
         missing = sorted(name for name, seam in seams.items() if seam is None)
         if missing:
             raise _CloseObservationFailure(
@@ -3659,7 +3599,7 @@ class ClusterCloser:
             problems.append(ticket_rules._ownership_rejection("complete", tid, verdict))
         problems.extend(
             f"{tid}: {problem}"
-            for problem in seams["_round_completion_problems"](tid, spec_text))
+            for problem in board_ticket._round_completion_problems(self._home, tid, spec_text))
         return problems
 
     def _has_pipeline_work(self) -> bool:
@@ -3930,7 +3870,6 @@ class ClusterCloser:
         커밋하면 board 에 없는 내용을 가리키는 포인터가 남는다(원격 push 실패는 `True` 로
         보고되므로 offline 은 여기서 막히지 않는다).
         """
-        board = self._board
         unit, title = self._unit()
         message = _CLOSE_BOARD_MESSAGE.format(unit=unit, title=title)
         if self._dry_run:

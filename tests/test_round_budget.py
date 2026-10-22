@@ -12,6 +12,9 @@ hermetic 패턴은 `test_delegate_cluster_rounds.py`(라운드 예약)와 `test_
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.infra import cluster_store
 
 from pm_engine.app import round_maintenance
@@ -125,7 +128,6 @@ def _fixture_board(pd, pm_home: Path):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
-    board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
     round_maintenance._rounds_mutation_sync_paths = lambda _home, _message, _paths: True
     return board
 
@@ -555,7 +557,7 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
     home = pm_home.resolve()
     assert (
         board.REPO, board._home().local_dir, (board._home().local_dir / "board.lock"),
-        (pm_paths.wiki_dir(board._home()) / "board.md"), board.LEASES_FILE, board._home().local_conf,
+        (pm_paths.wiki_dir(board._home()) / "board.md"), pm_paths.leases_file(board._home()), board._home().local_conf,
     ) == (
         home,
         home / ".project_manager" / ".local",
@@ -1523,7 +1525,7 @@ def _cluster_args(action: str, name: str, **kwargs) -> argparse.Namespace:
 def _issue(board, title: str) -> str:
     directory = pm_paths.tickets_dir(board._home())
     before = {path.name for path in directory.glob("*/T-*.md")}
-    assert board.cmd_new(argparse.Namespace(
+    assert board_ticket.cmd_new(board._home(), argparse.Namespace(
         title=title, touches=None, depends=None, tag=None, estimate="small",
         prefix=None, user=None, session=None, repo=None, slot=None, task=None,
     )) == 0

@@ -106,6 +106,8 @@ from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 from pm_engine.app import release, round_seed  # noqa: E402
 
+from pm_engine.app import completion_gate
+
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -202,10 +204,6 @@ REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # �
 _PM_HOME_OVERRIDE: Path | None = None
 
 
-def _load_board():
-    """형제 board 엔진을 위치로 로드해 worktree lease 재앵커 판정을 승계한다."""
-    path = Path(__file__).resolve().with_name("board.py")
-    return _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
 
 
 def _path_repo_root(path: Path) -> Path | None:
@@ -1392,8 +1390,7 @@ def _save_round_ledger(ledger: dict) -> None:
     record/check 도 같은 락과 board 공용 판정을 써 stale clear overwrite 를 막는다."""
     path = _round_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    board = _load_board()
-    problems = board._unresolved_must_fix_data(ledger, path)
+    problems = completion_gate._unresolved_must_fix_data(pm_paths.home_at(_PM_HOME_OVERRIDE or REPO), ledger, path)
     livegate_flag = path.with_name("livegate.json")
     if problems:
         release._write_release_must_fix_marker(livegate_flag, problems)
@@ -1416,7 +1413,7 @@ def _restrict_to_owner(path: Path) -> None:
 def _load_pm_delegate():
     """리뷰 블록 스키마와 회수 내용 규칙의 단일 진실(`pm_delegate.py`)을 경로 로드한다.
 
-    `_load_board` 와 같은 경로-앵커 로더다. 스키마를 이 모듈이 다시 적으면 파서와
+    실행 파일 위치에 결속된 경로 로더다. 스키마를 이 모듈이 다시 적으면 파서와
     프롬프트가 갈리고, 회수 판정 규칙을 여기서 따로 구현하면 리뷰 채널마다 규칙이 갈린다.
     """
     path = Path(__file__).resolve().parent / "pm_delegate.py"
@@ -2454,7 +2451,6 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         print(f"경고: --resolve-gate 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
               file=sys.stderr)
     _PM_HOME_OVERRIDE = pm_paths.resolve_pm_home_for_repo(engine_repo)
-    board = _load_board()
     with _round_ledger_lock():
         ledger = _load_round_ledger()
         if gate not in ledger:
@@ -2471,8 +2467,8 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         residual = review_rounds.gate_residual_must_fix(entry)
         # 추가 리뷰어 채널로 스코프해 판정한다 — board 는 채널과 그 게이트의 장부 항목을
         # 받아 다른 채널의 accepted 잔여·기계 확인은 보지 않는다.
-        detail = board._pm_verified_evidence_problem(
-            gate, channel=board.GATE_CHANNEL_ADDITIONAL, entry=entry,
+        detail = completion_gate._pm_verified_evidence_problem(
+            pm_paths.home_at(_PM_HOME_OVERRIDE or REPO), gate, channel=completion_gate.GATE_CHANNEL_ADDITIONAL, entry=entry,
         )
         if detail is not None:
             print(_RESOLVE_GATE_PM_VERIFIED_GUIDANCE.format(

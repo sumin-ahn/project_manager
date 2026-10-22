@@ -26,6 +26,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+from pm_engine.infra import pm_paths
+
+
 import importlib.util
 import json
 import os
@@ -1961,13 +1965,10 @@ def board(tmp_path, monkeypatch):
     pm = proj / ".project_manager"
     (pm / "wiki" / "tickets").mkdir(parents=True, exist_ok=True)
     mod = _load("board_harness_seed", TOOLS / "board.py")
-    for name, val in {"REPO": proj, "LOCAL_CONF": pm / "local.conf",
-                      "AREAS_FILE": pm / "areas.md",
-                      "PM_STATE_FILE": pm / "wiki" / "pm_state.md",
-                      "PM_STATE_TEMPLATE": pm / "wiki" / "pm_state.template.md"}.items():
+    for name, val in {'REPO': proj}.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
-    monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
+    monkeypatch.setattr(board_init, "_configure_board_submodule", lambda home: False)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -2001,8 +2002,8 @@ def test_init_conf_holds_values_only_without_a_seed_block(board):
 
     설명 블록을 conf 로 배달하던 경로는 폐지됐다(카탈로그는 출하 문서 한 곳). 예시가 다시 들어오면
     같은 키가 두 곳에서 설명되고, 그 사본이 drift 한다."""
-    assert board.cmd_init(_init_args()) == 0
-    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
+    conf = board._home().local_conf.read_text(encoding="utf-8")
     commented_keys = [line for line in conf.splitlines()
                       if line.strip().startswith("#") and "=" in line]
     assert commented_keys == [], commented_keys
@@ -2011,15 +2012,15 @@ def test_init_conf_holds_values_only_without_a_seed_block(board):
 
 def test_existing_adopter_conf_receives_no_appended_block(board):
     """기존 conf 를 가진 채택자에게도 append 되는 블록이 없다 — 실행할수록 길어지지 않는다."""
-    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    board._home().local_conf.write_text(
         "identity.user=pm@example.com\nruntime.py=python3\ntest.cmd=pytest -q\n",
         encoding="utf-8")
 
-    board.cmd_init(_init_args())
-    once = board.LOCAL_CONF.read_text(encoding="utf-8")
-    board.cmd_init(_init_args())
-    twice = board.LOCAL_CONF.read_text(encoding="utf-8")
+    board_init.cmd_init(board._home(), _init_args())
+    once = board._home().local_conf.read_text(encoding="utf-8")
+    board_init.cmd_init(board._home(), _init_args())
+    twice = board._home().local_conf.read_text(encoding="utf-8")
 
     assert once == twice                                          # 멱등
     assert "identity.user=pm@example.com" in twice                # 비파괴 병합
@@ -2961,8 +2962,8 @@ def test_relay_and_reviewer_share_the_definite_launch_failure_table(external):
 
 
 def _conf_with(board, text: str) -> None:
-    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    board.LOCAL_CONF.write_text(text, encoding="utf-8")
+    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    board._home().local_conf.write_text(text, encoding="utf-8")
 
 
 def test_repeated_init_is_byte_identical(board):
@@ -2973,11 +2974,11 @@ def test_repeated_init_is_byte_identical(board):
     """
     _conf_with(board, "session=pm\nruntime.py=python3\n")
 
-    assert board.cmd_init(_init_args()) == 0
-    once = board.LOCAL_CONF.read_bytes()
-    assert board.cmd_init(_init_args()) == 0
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
+    once = board._home().local_conf.read_bytes()
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
 
-    assert board.LOCAL_CONF.read_bytes() == once
+    assert board._home().local_conf.read_bytes() == once
 
 
 def _conf_with_init_defaults(board, extra: str) -> str:
@@ -3006,7 +3007,7 @@ def test_already_seeded_conf_is_left_untouched(board):
         board, "delegate.developer.harness=codex\n" + legacy_seed)
     _conf_with(board, polluted)
 
-    assert board.cmd_init(_init_args()) == 0
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
 
-    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
+    conf = board._home().local_conf.read_text(encoding="utf-8")
     assert conf == polluted, "채택자 conf 를 엔진이 재작성했다(소급 청소 금지)"

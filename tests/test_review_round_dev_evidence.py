@@ -109,7 +109,6 @@ def _fixture_board(pd, pm_home: Path, sync_log: list, monkeypatch):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
-    board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
 
     def _sync(_home, message, paths):
         sync_log.append((message, [Path(item) for item in paths]))

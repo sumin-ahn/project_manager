@@ -10,6 +10,9 @@ per-repo 회귀 명령 해소(ADR-0014)·domain soft 알림(ADR-0018 #2)·전체
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.domain import ticket_rules
 from pm_engine.app import tier_signals
 
@@ -1636,7 +1639,6 @@ def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, 
         return tf.StageScope(("tests/new.py",), None)
 
     monkeypatch.setattr(tf, "stage_scope", fake_scope)
-    monkeypatch.setattr(tf, "load_board_module", lambda board_py: None)
     finisher = tf.TicketFinisher(
         run_git_at_fn=mutation_runner,
         run_git_stdout_at_fn=stdout_runner,
@@ -2127,30 +2129,12 @@ def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
     assert finisher.run("T-0437", section=None, dry_run=False, skip_pytest=True) == 0
 
 
-def _write_dod_board(tmp_path, body: str, *, with_gate: bool = True) -> Path:
-    """`_dod_open_items` 를 노출하는 board.py 대역 (판정 규칙은 실 board 문법 그대로)."""
+def _write_dod_board(tmp_path, body: str) -> Path:
+    """명시 Home의 티켓을 준비한다. 실행 코드는 패키지가 소유한다."""
     ticket = tmp_path / ".project_manager/wiki/tickets/claimed/T-1234-dod.md"
     ticket.parent.mkdir(parents=True, exist_ok=True)
     ticket.write_text("---\nid: T-1234\n---\n" + body, encoding="utf-8")
-    gate = (
-        "def _dod_open_items(body):\n"
-        "    return [line.strip() for line in body.splitlines()\n"
-        "            if line.strip().startswith('- [ ]')]\n"
-        if with_gate else ""
-    )
-    board_py = tmp_path / ".project_manager/tools/board.py"
-    board_py.parent.mkdir(parents=True, exist_ok=True)
-    board_py.write_text(
-        f"ENGINE_REV = {_real_engine_rev()!r}\n"
-        "REPO = None\n"
-        "_DOD_VALUE_FORMS = '`- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`'\n"
-        "from pathlib import Path as _Path\n"
-        "def find_ticket(ticket_id):\n"
-        f"    return ('claimed', _Path({str(ticket)!r}))\n"
-        + gate,
-        encoding="utf-8",
-    )
-    return board_py
+    return tmp_path / ".project_manager/tools/board.py"
 
 
 def test_default_dod_preflight_consumes_the_board_gate(tf, tmp_path):
@@ -2174,11 +2158,6 @@ def test_default_dod_preflight_passes_a_closed_ticket(tf, tmp_path):
     assert finisher._default_dod_block("T-1234") is None
 
 
-def test_default_dod_preflight_is_off_without_the_board_gate(tf, tmp_path):
-    """구세대 board 사본(게이트 부재)은 preflight 가 조용히 off — 진짜 게이트가 뒤에 있다."""
-    board_py = _write_dod_board(tmp_path, "- [ ] 남은 항목\n", with_gate=False)
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
-    assert finisher._default_dod_block("T-1234") is None
 
 
 # ── PM-direct 완료 재검 (T-0677) ───────────────────────────────────────────────
@@ -2386,13 +2365,13 @@ def _wave_repo(tmp_path: Path, *, git: bool = True,
 def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
     # claim 은 `--task` 와 그 task 가 보유한 폴더가 필요하다(T-0962) — 솔로 형상이라 홈 자신이 그
     # task 의 폴더(장부 행 `slot="."`)다. 다른 축엔 무관심하다.
-    ledger = board.LEASES_FILE
+    ledger = pm_paths.leases_file(board._home())
     if not ledger.exists():
         ledger.parent.mkdir(parents=True, exist_ok=True)
         ledger.write_text(json.dumps({"leases": [
             {"slot": ".", "repo": board.REPO.name, "session": "me",
              "state": "leased", "role": "work"}]}), encoding="utf-8")
-    return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me", task="me"))
+    return board_ticket.cmd_claim(board._home(), argparse.Namespace(id=ticket_id, user="me", task="me"))
 
 
 def test_completion_has_no_change_size_cap(tmp_path, capsys):
@@ -3052,7 +3031,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     from test_cluster_close import _build_close_env, _write_cluster_ledger, _CLUSTER, _CLUSTER_BRANCH, _INTEGRATION_BRANCH, _git, _rev
     env = _build_close_env(_load_module(), tmp_path / "rebound", monkeypatch)
     closer = env.closer()
-    board = closer._board
+    board = closer._board_parser_module
     _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), branch=None)
     board_py = env.home / ".project_manager/tools/board.py"
     assert env.tf._cluster_integration_branch(board_py, env.ticket) is None
@@ -3078,9 +3057,9 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     ticket_store.dump_ticket(draft, fm, body)
     assert board_sync._board_git_sync_best_effort(board._home(), "fixture draft conversion", (path,))
     before = ledger.read_bytes()
-    assert board.cmd_promote(argparse.Namespace(id=env.ticket)) == 0
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id=env.ticket)) == 0
     assert ledger.read_bytes() == before
-    assert board.cmd_claim(argparse.Namespace(id=env.ticket, repo="code", slot=1, task="t")) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id=env.ticket, repo="code", slot=1, task="t")) == 0
     fork = _git(env.slot, "config", f"branch.{declaration['branch']}.pm-fork").stdout.strip()
     assert fork == _rev(env.slot)
     assert _git(env.slot, "config", f"branch.{declaration['branch']}.pm-parent").stdout.strip() == _INTEGRATION_BRANCH

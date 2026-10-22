@@ -11,7 +11,7 @@ manifest 에 **bare**(무 `@render`) 로 등재된 경로는 `pm_update` 가 byt
 
   ① 설치 시 치환 — `pm_import`(기본값)
   ② 소비 시 치환 — 그 템플릿이 산출물을 만드는 시점(`pm_engine.infra.task_store.ensure_task_pm_state`·
-     `board.cmd_init`·사람이 스캐폴드를 복사하는 시점)
+     `pm_engine.cli.board_init.cmd_init`·사람이 스캐폴드를 복사하는 시점)
   ③ 상시 토큰   — 엔진 소유 문서가 토큰을 *설명*으로 담아 아무도 치환하지 않는다
      (엔진 소스 `tools/**`·`engine.manifest`·방법론 문서 pm_role/pm_playbook)
 
@@ -22,12 +22,15 @@ manifest 에 **bare**(무 `@render`) 로 등재된 경로는 `pm_update` 가 byt
   (B) ② 선언 원장(`pm_import.CONSUMPTION_TIME_TOKENS`)과 이 파일의 allow 목록이 정확히 일치하고,
       각 소비처가 **실재**한다(소비처가 사라지면 선언이 dangling → red).
   (C) 신규 설치 직후 템플릿 2종의 `{{DATE}}` 가 토큰으로 남는다(같은 파일의 다른 토큰은 무영향).
-  (D) ② 소비처가 실제로 돈다 — `ensure_task_pm_state`·`board.cmd_init` 산출물의 날짜 = 생성 시각.
+  (D) ② 소비처가 실제로 돈다 — `ensure_task_pm_state`·`pm_engine.cli.board_init.cmd_init` 산출물의 날짜 = 생성 시각.
   (E) e2e — import → `pm_update` 왕복 후 대상 문서 byte 불변(진동 0·샌드박스 재현 시나리오 박제).
 
 기계 테스트 — 라이브 하니스·네트워크 0(`opencode models` 조회 stub·framework 사본은 비-git).
 """
 from __future__ import annotations
+
+from pm_engine.cli import board_init
+
 
 import argparse
 import ast
@@ -61,7 +64,7 @@ SCAFFOLD_COPY = "<scaffold-copy>"
 CONSUMPTION_TIME_OWNERS: dict[str, dict[str, tuple[str, ...]]] = {
     ".project_manager/wiki/pm_state.template.md": {
         # task pm_state 렌더 + per-clone `wiki/pm_state.md` seed — 둘 다 생성 시각으로 채운다.
-        "{{DATE}}": ("pm_engine.infra.task_store.ensure_task_pm_state", "board.cmd_init"),
+        "{{DATE}}": ("pm_engine.infra.task_store.ensure_task_pm_state", "pm_engine.cli.board_init.cmd_init"),
     },
     ".project_manager/wiki/domain/_template.md": {
         # 엔진 생성 경로(`domain.write_draft_page`)는 스캐폴드 frontmatter 를 복사하지 않고 자체
@@ -265,7 +268,7 @@ def _module_functions(module: str) -> dict[str, str] | None:
 def _consumer_source(module: str, symbol: str) -> str | None:
     """선언된 소비처의 소스 + **같은 모듈 직접 호출 1홉** 소스 (심볼 부재면 None).
 
-    치환 한 줄이 진입 함수에 있는 경우(`board.cmd_init`)와 진입 함수가 부르는 렌더 헬퍼에 있는
+    치환 한 줄이 진입 함수에 있는 경우(`pm_engine.cli.board_init.cmd_init`)와 진입 함수가 부르는 렌더 헬퍼에 있는
     경우(`pm_engine.infra.task_store.ensure_task_pm_state` → `_render_initial_task_pm_state`)를 같은 규칙으로
     본다. 1홉으로 좁혀 "모듈 어딘가에 토큰이 있으면 통과" 하는 무른 판정이 되지 않게 한다.
     """
@@ -407,30 +410,26 @@ def test_ensure_task_pm_state_renders_creation_date(tmp_path):
 
 
 def test_board_init_seeds_pm_state_with_creation_date(board, monkeypatch, tmp_path):
-    """`board.cmd_init` 이 만드는 per-clone `pm_state.md` 의 날짜 = 생성 시각.
+    """`pm_engine.cli.board_init.cmd_init` 이 만드는 per-clone `pm_state.md` 의 날짜 = 생성 시각.
 
     템플릿은 채택자 디스크에 토큰-form 으로 남으므로(위 C), 그 템플릿으로 산출물을 만드는 이
     지점이 날짜를 채워야 한다 — 안 채우면 채택자 pm_state.md 에 `created: {{DATE}}` 가 박힌다.
     """
-    state_file = tmp_path / "pm_state.md"
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / "local.conf")
-    monkeypatch.setattr(board, "PM_STATE_FILE", state_file)
-    monkeypatch.setattr(board, "PM_STATE_TEMPLATE",
-                        REPO / ".project_manager" / "wiki" / "pm_state.template.md")
+    state_file = tmp_path / "proj/.project_manager/wiki/pm_state.md"
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
     (_pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
-    monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
-    monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    (state_file.parent / "pm_state.template.md").write_bytes(
+        (REPO / ".project_manager/wiki/pm_state.template.md").read_bytes())
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = board.cmd_init(args)
+        rc = board_init.cmd_init(board._home(), args)
 
     assert rc == 0, buf.getvalue()[-2000:]
     text = state_file.read_text(encoding="utf-8")

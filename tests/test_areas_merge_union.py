@@ -21,6 +21,10 @@ skip 한다(내용 판정 단위 테스트는 항상 실행).
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+from pm_engine.cli import board_ticket
+
+
 import argparse
 import importlib.util
 import shutil
@@ -582,12 +586,9 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
     bare = tmp_path / "bare-init"
     subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(bare)], check=True)
     board_dir = _make_board_dir(board, tmp_path, real_git=True, remote=bare, ticket="T-0001")
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / "local.conf")
-    monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
-    monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
 
-    assert board.cmd_init(argparse.Namespace(
+    assert board_init.cmd_init(board._home(), argparse.Namespace(
         prefix=None, area=None, owner=None, repo=None, task="pm")) == 0
 
     porcelain = _git(["status", "--porcelain"], board_dir).stdout.strip()
@@ -596,7 +597,7 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
     assert board_claim._board_git_claim_prefetch(board._home(), "T-0001").block is None
 
     ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
-    assert board.cmd_claim(argparse.Namespace(
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(
         id="T-0001", task="pm", user="me")) == 0
     assert (board_dir / "tickets" / "claimed" / "T-0001-t.md").exists()
     assert _check_attr_merge(board_dir) == "union", "claim commit 이 backfill 을 싣지 않았다"
@@ -633,7 +634,7 @@ def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypa
     monkeypatch.setattr(board_claim, "_board_git_claim_prefetch", lambda _home, tid: blocked)
 
     ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
-    assert board.cmd_claim(argparse.Namespace(
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(
         id="T-0001", task="pm", user="me")) == 1
 
     err = capsys.readouterr().err

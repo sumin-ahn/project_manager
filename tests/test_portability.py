@@ -9,6 +9,9 @@ monkeypatch 로 흔들어 4조합(_default_python)·3분기(_detect_py)를 검�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+
+
 import importlib.util
 import os
 from pathlib import Path
@@ -152,19 +155,13 @@ def test_detect_py_literal_fallback_when_neither(monkeypatch, board):
 def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     """init 이 local.conf 의 py= 에 _detect_py() 결과를 박는지 (tmp REPO + which monkeypatch)."""
     local_conf = tmp_path / "proj/.project_manager/local.conf"
-    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
     # 부수 파일 생성·훅 설치·추가리뷰 프롬프트는 이 단언과 무관 — 무력화.
-    monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
-    monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "no_such_template.md")
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
     (_pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
-    monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
-    monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
     # python3 가 PATH 에 있는 환경 → _detect_py() 는 bare 'python3' 를 기록한다.
     # (which 가 python3 에만 truthy + _interp_runs stub 으로 머신·OS 무관 결정화 — T-0022.)
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
@@ -175,7 +172,7 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
 
     import argparse
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="tester")
-    rc = board.cmd_init(args)
+    rc = board_init.cmd_init(board._home(), args)
 
     assert rc == 0
     written = local_conf.read_text(encoding="utf-8")

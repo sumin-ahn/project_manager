@@ -17,6 +17,9 @@ hermetic: board.py 의 경로 전역은 import 시점에 실 repo 로 굳으므�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.app import cluster_binding
 
 
@@ -69,8 +72,8 @@ def _git(argv, cwd):
 def _write_ledger(mod, *leases):
     """리스 장부 파일에 엔트리를 직접 쓴다(worktree_pool atomic write 동형 스키마) —
     `tests/test_board_per_repo.py` 의 `_write_ledger`/`_lease_row` 패턴과 동형."""
-    mod.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    mod.LEASES_FILE.write_text(json.dumps({"leases": list(leases)}), encoding="utf-8")
+    pm_paths.leases_file(mod._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(mod._home()).write_text(json.dumps({"leases": list(leases)}), encoding="utf-8")
 
 
 def _lease_row(*, slot, repo, state="leased", session="s"):
@@ -108,8 +111,6 @@ def anchored(tmp_path, monkeypatch):
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
     (tmp_path / ".project_manager" / "board" / "tickets").mkdir(parents=True)
-    monkeypatch.setattr(
-        mod, "LEASES_FILE", tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     return mod
 
 
@@ -296,7 +297,7 @@ def test_creating_state_is_not_counted_as_idle(anchored):
 def test_missing_ledger_omits_slot_line_but_keeps_overlap(anchored):
     """장부 부재 — 슬롯 줄은 생략되지만 겹침 재료 자체는 여전히 나온다(판정불능≠전체 침묵)."""
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    assert not anchored.LEASES_FILE.exists()
+    assert not pm_paths.leases_file(anchored._home()).exists()
     lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
     assert not any("idle" in ln for ln in lines)
@@ -304,8 +305,8 @@ def test_missing_ledger_omits_slot_line_but_keeps_overlap(anchored):
 
 def test_corrupt_ledger_omits_slot_line_without_crash(anchored):
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    anchored.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    anchored.LEASES_FILE.write_text("{ not json", encoding="utf-8")
+    pm_paths.leases_file(anchored._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(anchored._home()).write_text("{ not json", encoding="utf-8")
     lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
     assert not any("idle" in ln for ln in lines)
@@ -319,8 +320,6 @@ def test_corrupt_ledger_omits_slot_line_without_crash(anchored):
 def board_git(tmp_path, monkeypatch):
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        mod, "LEASES_FILE", tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     board = tmp_path / ".project_manager" / "board"
@@ -375,7 +374,7 @@ def test_cmd_new_emits_overlap_material_on_stderr(board_git, capsys):
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
-    rc = board_git.cmd_new(_new_args(touches=".project_manager/tools/board.py"))
+    rc = board_ticket.cmd_new(board_git._home(), _new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
@@ -394,7 +393,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
-    assert board_git.cmd_new(_new_args(
+    assert board_ticket.cmd_new(board_git._home(), _new_args(
         touches=".project_manager/tools/board.py")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
@@ -403,7 +402,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
     capsys.readouterr()
 
     bind_product_cluster(board_git, tid)
-    rc = board_git.cmd_promote(argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
     assert rc == 0, "touches 겹침이 승격을 막았다 — never-block 계약 위반."
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
@@ -414,7 +413,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
 def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     """겹침이 없으면 promote 성공 stderr 에 재료 헤더 자체가 없다(기존 draft/sync 경고와는 별개 축)."""
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(touches="unique/path/only_here.py")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(touches="unique/path/only_here.py")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
@@ -422,7 +421,7 @@ def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     capsys.readouterr()
 
     bind_product_cluster(board_git, tid)
-    rc = board_git.cmd_promote(argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER not in err
@@ -439,7 +438,7 @@ def test_stdout_machine_channel_is_unchanged(board_git, capsys):
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
-    rc = board_git.cmd_new(_new_args(touches=".project_manager/tools/board.py"))
+    rc = board_ticket.cmd_new(board_git._home(), _new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     out = capsys.readouterr().out
     assert re.match(r"created (T-\S+)", out) is not None
@@ -470,7 +469,7 @@ def test_cmd_new_reports_registered_repo_idle_count_not_physical_folder_name(
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
     ensure_product_slot(board_git, repo="canonical", task=_TASK)
-    rc = board_git.cmd_new(_new_args(repo="canonical", slot=1, touches="tools/x.py"))
+    rc = board_ticket.cmd_new(board_git._home(), _new_args(repo="canonical", slot=1, touches="tools/x.py"))
     assert rc == 0
     err = capsys.readouterr().err
     assert "idle) 슬롯 2개" in err, f"REPO.name 을 다시 유도했다면 0개가 나온다: {err!r}"
@@ -491,7 +490,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
     ensure_product_slot(board_git, repo="canonical", task=_TASK)
-    assert board_git.cmd_new(_new_args(
+    assert board_ticket.cmd_new(board_git._home(), _new_args(
         touches="tools/x.py", repo="canonical", slot=1)) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
@@ -507,7 +506,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
     bind_product_cluster(board_git, tid, repo="canonical", task=_TASK)
-    rc = board_git.cmd_promote(argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err
     assert "idle) 슬롯 2개" in err, f"REPO.name 을 다시 유도했다면 0개가 나온다: {err!r}"
@@ -537,7 +536,7 @@ def test_cmd_new_material_total_lines_stay_within_budget_with_slot_and_many_cand
     _write_ledger(board_git, _lease_row(
         slot="work/A_1", repo=board_git.REPO.name, state="idle"))
 
-    rc = board_git.cmd_new(_new_args(touches=",".join(own_touches)))
+    rc = board_ticket.cmd_new(board_git._home(), _new_args(touches=",".join(own_touches)))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
@@ -566,8 +565,6 @@ def test_cmd_new_material_total_lines_stay_within_budget_with_slot_and_many_cand
 def test_legacy_no_board_git_still_emits_material(tmp_path, monkeypatch, capsys):
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        mod, "LEASES_FILE", tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     wiki = tmp_path / ".project_manager" / "wiki"
     for status in ("open", "claimed", "blocked", "done"):
         (wiki / "tickets" / status).mkdir(parents=True, exist_ok=True)
@@ -582,7 +579,7 @@ def test_legacy_no_board_git_still_emits_material(tmp_path, monkeypatch, capsys)
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
     ensure_product_slot(mod, task=_TASK)  # 홈 git board 발행도 task 폴더가 필요하다(T-0962)
-    rc = mod.cmd_new(_new_args(touches=".project_manager/tools/board.py"))
+    rc = board_ticket.cmd_new(mod._home(), _new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err

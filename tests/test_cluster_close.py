@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
 from pm_engine.app import cluster_binding
 
 
@@ -1764,8 +1766,8 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
         ticket_access, "_ticket_ownership",
         lambda home, fm, **kwargs: namespaces.append((home, fm, kwargs)) or ownership(home, fm, **kwargs))
     monkeypatch.setattr(
-        closer._board, "_round_completion_problems",
-        lambda tid, spec_text: calls.append(f"rounds:{tid}") or [])
+        board_ticket, "_round_completion_problems",
+        lambda home, tid, spec_text: calls.append(f"rounds:{tid}") or [])
 
     assert closer._resolve_members() is None
     assert closer.preflight() == []
@@ -1777,7 +1779,7 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
     # 소유 판정이 받는 Namespace 는 `board complete` 가 받는 것과 같은 파서 산출이다 —
     # 손조립하면 이 속성 집합이 조용히 얇아진다(board 가 인자 이름을 바꾸면 여기서 난다).
     assert len(namespaces) == 1
-    board_module = closer._board
+    board_module = closer._board_parser_module
     expected = vars(board_module.build_parser().parse_args(
         ["complete", env.ticket, "--tests-pass"]))
     assert namespaces[0] == (closer._home, ticket_store.load_ticket(
@@ -2065,11 +2067,11 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     dry = env.closer(dry_run=True)
     assert dry._resolve_members() is None
     monkeypatch.setattr(
-        dry._board, "_review_resolution_input_problem",
+        board_ticket, "_review_resolution_input_problem",
         lambda *_a, **_k: dry_events.append("preflight") or None,
     )
     monkeypatch.setattr(
-        dry._board, "_review_completion_problem",
+        board_ticket, "_review_completion_problem",
         lambda *_a, **_k: dry_events.append("pending") or "잔여",
     )
     assert dry._pre_resolve() == []
@@ -2087,11 +2089,11 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     actual = env.closer(run_delegate_fn=resolve)
     assert actual._resolve_members() is None
     monkeypatch.setattr(
-        actual._board, "_review_resolution_input_problem",
+        board_ticket, "_review_resolution_input_problem",
         lambda *_a, **_k: actual_events.append("preflight") or None,
     )
     monkeypatch.setattr(
-        actual._board, "_review_completion_problem", lambda *_a, **_k: "잔여",
+        board_ticket, "_review_completion_problem", lambda *_a, **_k: "잔여",
     )
     assert actual._pre_resolve() == []
     assert actual._step_resolve() is None
@@ -2112,19 +2114,6 @@ def test_close_resolves_the_cluster_once(close_env, monkeypatch):
         assert not hasattr(env.tf.ClusterCloser, removed), removed
 
 
-@requires_git
-def test_close_review_seam_absence_is_an_observation_failure(close_env, monkeypatch):
-    """판정 seam 이 없는 board 사본은 잔여 없음이 아니라 관측 실패로 멈춘다."""
-    env = close_env
-    closer = env.closer()
-    monkeypatch.delattr(closer._board, "_review_completion_problem")
-    monkeypatch.delattr(closer._board, "_review_resolution_input_problem")
-
-    with pytest.raises(env.tf._CloseObservationFailure, match="_review_completion_problem"):
-        closer._pending_gates()
-    with pytest.raises(env.tf._CloseObservationFailure,
-                       match="_review_resolution_input_problem"):
-        closer._pre_resolve()
 
 
 @requires_git

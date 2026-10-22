@@ -11,6 +11,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.cli import board_dispatch
 
 
@@ -248,7 +251,7 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
     assert board.main(["list"]) == 0
     claimed = []
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _command: False)
-    monkeypatch.setattr(board, "cmd_claim", lambda args: claimed.append(args.id) or 0)
+    monkeypatch.setattr(board_ticket, "cmd_claim", lambda _home, args: claimed.append(args.id) or 0)
 
     assert board.main(["claim", "T-0001"]) == 0
     assert claimed == ["T-0001"]

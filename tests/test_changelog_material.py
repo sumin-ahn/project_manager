@@ -98,7 +98,6 @@ def _fixture_board(pd, home: Path):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = home
-    board.LOCAL_DIR = home / ".project_manager" / ".local"
     return board
 
 

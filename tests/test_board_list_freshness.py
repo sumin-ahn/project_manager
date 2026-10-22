@@ -17,6 +17,9 @@ hermetic: board 모듈을 fresh 로드하고 board-git 함수(`_board_git`)를 f
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+
+
 import argparse
 import importlib.util
 import os
@@ -222,17 +225,7 @@ def list_board(tmp_path, monkeypatch):
     mod = _load_board()
     pm = proj / ".project_manager"
     wiki = pm / "wiki"
-    overrides = {
-        "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
-
-        "LEASES_FILE": pm / ".local" / "worktree-leases.json",
-    }
+    overrides = {'REPO': proj}
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
@@ -251,7 +244,7 @@ def _list_args(**over):
 def test_cmd_list_surfaces_freshness_on_stderr(list_board, monkeypatch, capsys):
     """cmd_list(board-git enabled) → freshness 1줄이 **stderr**, stdout 은 목록 포맷 무오염."""
     _wire_board_git(list_board, monkeypatch, fetch_rc=0, ab_out="0\t0")
-    rc = list_board.cmd_list(_list_args())
+    rc = board_list.cmd_list(list_board._home(), _list_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert "board-git: 최신" in cap.err     # freshness = stderr.
@@ -261,7 +254,7 @@ def test_cmd_list_surfaces_freshness_on_stderr(list_board, monkeypatch, capsys):
 def test_cmd_list_solo_no_freshness_line(list_board, capsys):
     """solo/board 비-git → cmd_list 가 freshness 를 내지 않는다(조용히 생략·회귀 0)."""
     # _board_git_enabled() 는 tmp 프로젝트에 board/.git 이 없어 기본 False.
-    rc = list_board.cmd_list(_list_args())
+    rc = board_list.cmd_list(list_board._home(), _list_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert "board-git:" not in cap.err
@@ -271,7 +264,7 @@ def test_cmd_list_solo_no_freshness_line(list_board, capsys):
 def test_cmd_list_freshness_covers_no_tickets_path(list_board, monkeypatch, capsys):
     """freshness 는 "(no tickets)" 경로에서도 표면화된다(양 return 경로 공통 소환)."""
     _wire_board_git(list_board, monkeypatch, fetch_rc=1)   # offline
-    rc = list_board.cmd_list(_list_args())
+    rc = board_list.cmd_list(list_board._home(), _list_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert "(no tickets)" in cap.out

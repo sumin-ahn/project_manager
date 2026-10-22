@@ -27,6 +27,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.app import round_maintenance
 
 
@@ -128,7 +131,6 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
-    board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
 
     def _sync(_home, message, paths):
         if sync_log is not None:
@@ -342,7 +344,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     monkeypatch.setattr(body_lint, "_body_lint_issues", lambda *a, **k: [])
     monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", publish)
     import argparse
-    assert board.cmd_promote(argparse.Namespace(id="T-9202")) == 0
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id="T-9202")) == 0
     assert len(published) == 1
     assert plan.board_path.parent in published[0]
     assert ticket_store.find_ticket_exact(board._home(), "T-9202")[0] == "open"

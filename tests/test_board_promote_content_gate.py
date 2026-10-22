@@ -24,6 +24,9 @@ hermetic: board.py 의 경로 전역은 import 시점에 실 repo 로 굳으므�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 from pm_engine.cli import board_round
 
 
@@ -505,7 +508,7 @@ def _draft(board_dir: Path) -> Path:
 
 def _fill_draft(mod, board_dir: Path, body: str, **frontmatter) -> str:
     """draft 를 발행하고 본문·frontmatter 를 케이스 형상으로 덮는다 → 티켓 ID."""
-    assert mod.cmd_new(_new_args(**frontmatter.pop("new_args", {}))) == 0
+    assert board_ticket.cmd_new(mod._home(), _new_args(**frontmatter.pop("new_args", {}))) == 0
     path = _draft(board_dir)
     fm, _ = ticket_store.load_ticket(path)
     fm.update(frontmatter)
@@ -520,7 +523,7 @@ def test_promote_warns_but_ships_a_ticket_with_missing_touches(board_git, capsys
     tid = _fill_draft(board_git, board_dir, _body(), touches=["tests/test_new.py"])
 
     bind_product_cluster(board_git, tid)
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0
     err = capsys.readouterr().err
     assert "touches-missing" in err and "tests/test_new.py" in err
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md")), \
@@ -535,7 +538,7 @@ def test_promote_rejects_a_citation_beyond_the_file(board_git, tmp_path, capsys)
     body = _body("- 근거 `.project_manager/tools/board.py:88`\n")
     tid = _fill_draft(board_git, board_dir, body)
 
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 1
     assert "citation-unresolved" in capsys.readouterr().err
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
@@ -620,19 +623,19 @@ def test_promote_requires_a_harvested_architect_round_then_accepts(board_git, ca
     tid = _fill_draft(board_git, board_dir, _body(design_section=_DESIGN_FILLED),
                       design="done")
 
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 1
     assert "architect-review-pending" in capsys.readouterr().err
 
     assert board_round.cmd_section_add(
         board_git._home(), argparse.Namespace(id=tid, role="architect", label=None)) == 0
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1, \
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 1, \
         "시드 그대로인 라운드가 회수로 인정됐다."
     round_path = board_dir / "tickets" / "rounds" / tid / "01-architect.md"
     header = round_path.read_text(encoding="utf-8").splitlines()[0]
     round_path.write_text(f"{header}\n\n인용·touches 를 실측 대조했다.\n", encoding="utf-8")
 
     bind_product_cluster(board_git, tid)
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
 
@@ -651,7 +654,7 @@ def test_promote_succeeds_when_touches_overlap_another_active_ticket(board_git, 
                       touches=[".project_manager/tools/board.py"])
 
     bind_product_cluster(board_git, tid)
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0, \
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0, \
         "touches 겹침이 승격을 막았다 — 정당한 병렬 발행이 차단된다."
 
 
@@ -664,9 +667,9 @@ def test_advisory_classification_is_what_keeps_the_warning_from_blocking(
 
     advisory_kinds = body_lint._PROMOTE_ADVISORY_KINDS
     monkeypatch.setattr(body_lint, "_PROMOTE_ADVISORY_KINDS", frozenset())
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1, \
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 1, \
         "비차단 집합을 비웠는데도 통과 — 경고가 판정되지 않고 있다(가드 무발화)."
 
     monkeypatch.setattr(body_lint, "_PROMOTE_ADVISORY_KINDS", advisory_kinds)
     bind_product_cluster(board_git, tid)
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0
