@@ -15,6 +15,8 @@
   - 표면 상한: `--prefix` 는 두지 않는다(새 prefix 신설은 `task prefix --user-ack` 게이트 단일 지점).
 """
 from __future__ import annotations
+from pm_engine.cli import config_slots
+from pm_engine.cli import config_tasks
 
 from _pool_seams import bind_pool
 
@@ -108,7 +110,7 @@ def _run_new(pc, wp, name, *, monkeypatch):
     """`task new <이름>` 을 실 엔진(tmp 바인딩)으로 1회 실행 — rc 반환."""
     monkeypatch.setattr(pc, "REPO", wp.REPO)
     bind_pool(monkeypatch, wp)
-    return pc.cmd_task_new(argparse.Namespace(name=name))
+    return config_tasks.cmd_task_new(pm_paths.home_at(pc.REPO), argparse.Namespace(name=name))
 
 
 def _ledger_rows(wp) -> list[dict]:
@@ -262,22 +264,22 @@ def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validati
     # 실제로 나는 것은 areas.md 읽기 실패다 — 그 밖의 예외는 엔진 결함이라 헬퍼가 올린다.
     with monkeypatch.context() as patched:
         patched.setattr(areas_store, "registered_repos", _raise_areas_read)
-        assert pc._registered_repos() is None
-    assert pc._registered_repos() == ["app"]
+        assert config_slots._registered_repos(pm_paths.home_at(pc.REPO)) is None
+    assert config_slots._registered_repos(pm_paths.home_at(pc.REPO)) == ["app"]
 
     calls: list = []
-    resolve = pc._registered_repos
+    resolve = config_slots._registered_repos
 
-    def _record():
-        resolved = resolve()
+    def _record(_home):
+        resolved = resolve(_home)
         calls.append(resolved)
         return resolved
 
-    monkeypatch.setattr(pc, "_registered_repos", _record)
+    monkeypatch.setattr(config_slots, '_registered_repos', _record)
 
     # 생성 경로(기바인딩 미요구)와 기바인딩 요구 경로가 같은 이름을 같은 근거로 거부한다.
     assert _run_new(pc, wp, "app_2", monkeypatch=monkeypatch) == 1
-    assert pc._validate_prebound_task( "app_2") == 1
+    assert config_slots._validate_prebound_task(pm_paths.home_at(pc.REPO),  "app_2") == 1
     assert "부적합 task 명" in capsys.readouterr().err
 
     assert calls == [["app"], ["app"]], \
@@ -293,7 +295,8 @@ def test_task_new_parser_leaf_is_wired_to_cmd_task_new(pc):
     args = pc.build_parser().parse_args(["task", "new", "job"])
     assert args.command == "task" and args.task_command == "new"
     assert args.name == "job"
-    assert args.func is pc.cmd_task_new
+    assert args.func.func is config_tasks.cmd_task_new
+    assert args.func.args == (pm_paths.home_at(pc.REPO),)
 
 
 def test_task_new_has_no_prefix_flag(pc):

@@ -25,6 +25,7 @@ red** 로 오판된다. 판정도 게이트 종류로 가른다 — pytest 게�
 도구는 패키지가 아니므로 importlib 동적 로드 (test_ticket_finish·test_pm_handoff 관용구).
 """
 from __future__ import annotations
+from pm_engine.cli import config_repo
 
 import argparse
 import importlib.util
@@ -419,7 +420,7 @@ def test_repo_add_registers_blank_prefix_with_test_cmd(tmp_path, monkeypatch):
                               test=NON_PYTEST_CMD, owner="me", base=None)
     monkeypatch.setattr(pm_config, "REPO", tmp_path)
     bind_board(monkeypatch, board)
-    rc = pm_config.cmd_repo_add(args, clone_runner=_GitFakeForRepoAdd(),
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pm_config.REPO), args, clone_runner=_GitFakeForRepoAdd(),
                                 repos_dir=tmp_path / ".repos")
     assert rc == 0
     assert board.append_calls == [

@@ -6,6 +6,7 @@ Windows 콘솔 codepage와 Python 텍스트 스트림을 함께 맞춘다. 모�
 막지 않는다.
 """
 from __future__ import annotations
+import unicodedata
 
 import atexit
 import builtins
@@ -426,3 +427,43 @@ def write_machine_line(text: str, *, stream: Any = None) -> None:
     _flush_quietly(target)
     buffer.write(line.encode("utf-8"))
     buffer.flush()
+
+
+# ── 보호목록 설정 채널 ────────────────────────────────────
+# areas.md `protected` 칼럼이 **단일 진실**이고 훅 sidecar(`.local/repo-hooks/<repo>/protected`)는
+# 순수 파생 캐시다. 값 변경은 areas → sidecar **순서 고정**(역순이면 훅이 비준되지 않은 목록을
+# 강제한다). "보호 없음" 은 표현 불가 — 빈 값은 항상 `DEFAULT_PROTECTED` 폴백이므로 빈 문자열
+# 지정은 거부하고 `default` 리터럴(칼럼 비움)로 안내한다.
+
+
+def _stdin_is_tty() -> bool:
+    """무인자 분기·프롬프트 게이트용 tty 판정 — stdin·stdout 둘 다 tty 일 때만 True.
+
+    파이프/CI(둘 중 하나라도 비-tty)면 False → 콘솔/프롬프트로 안 멈춘다(input() 블록
+    회피·pm_import 비-tty 폴백 패턴 동류). 테스트는 이 헬퍼를 monkeypatch 해 분기를
+    결정적으로 친다(라이브 tty 없이).
+    """
+    return bool(
+        getattr(sys.stdin, "isatty", lambda: False)()
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    )
+
+
+def _display_width(text: str) -> int:
+    """터미널 표시 폭 — 전각(한글·CJK·전각기호) 문자를 2칸으로 센다.
+
+    `len()` 은 코드포인트 수라 한글 셀이 섞이면 표 정렬이 눈에 띄게 깨진다(reviewer 실측). 이
+    프로젝트의 출력은 사실상 전부 한국어라 실사용에서 계속 보이는 문제다. `unicodedata.
+    east_asian_width` 의 W(Wide)·F(Fullwidth)만 2칸으로 세고, 결합문자(Mn·Me)는 0칸으로 뺀다.
+    """
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _pad_display(text: str, width: int) -> str:
+    """`_display_width` 기준으로 오른쪽 공백 패딩 (`str.ljust` 의 전각-인지 버전)."""
+    return text + " " * max(0, width - _display_width(text))

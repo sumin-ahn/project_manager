@@ -10,6 +10,7 @@
   - 엔진 부재: worktree_pool 로드 실패는 rc1(조용한 성공 없음).
 """
 from __future__ import annotations
+from pm_engine.cli import config_tasks
 
 from _pool_seams import bind_pool
 
@@ -92,20 +93,20 @@ def task(wp):
 def _add(pc, wp, name, text, *, monkeypatch):
     monkeypatch.setattr(pc, "REPO", wp.REPO)
     bind_pool(monkeypatch, wp)
-    return pc.cmd_task_todo_add(
+    return config_tasks.cmd_task_todo_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name=name, text=text))
 
 
 def _list(pc, wp, name, *, monkeypatch):
     monkeypatch.setattr(pc, "REPO", wp.REPO)
     bind_pool(monkeypatch, wp)
-    return pc.cmd_task_todo_list(argparse.Namespace(name=name))
+    return config_tasks.cmd_task_todo_list(pm_paths.home_at(pc.REPO), argparse.Namespace(name=name))
 
 
 def _done(pc, wp, name, todo_id, *, monkeypatch):
     monkeypatch.setattr(pc, "REPO", wp.REPO)
     bind_pool(monkeypatch, wp)
-    return pc.cmd_task_todo_done(
+    return config_tasks.cmd_task_todo_done(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name=name, todo_id=todo_id))
 
 
@@ -243,11 +244,14 @@ def test_parser_wires_three_todo_subcommands(pc):
     """`task todo <add|list|done>` 이 각 핸들러로 배선된다(인자 모양 포함)."""
     parser = pc.build_parser()
     add = parser.parse_args(["task", "todo", "add", "job", "할 일"])
-    assert (add.func, add.name, add.text) == (pc.cmd_task_todo_add, "job", "할 일")
+    assert (add.func.func, add.name, add.text) == (config_tasks.cmd_task_todo_add, "job", "할 일")
+    assert add.func.args == (pm_paths.home_at(pc.REPO),)
     listed = parser.parse_args(["task", "todo", "list", "job"])
-    assert (listed.func, listed.name) == (pc.cmd_task_todo_list, "job")
+    assert (listed.func.func, listed.name) == (config_tasks.cmd_task_todo_list, "job")
+    assert listed.func.args == (pm_paths.home_at(pc.REPO),)
     done = parser.parse_args(["task", "todo", "done", "job", "3"])
-    assert (done.func, done.name, done.todo_id) == (pc.cmd_task_todo_done, "job", 3)
+    assert (done.func.func, done.name, done.todo_id) == (config_tasks.cmd_task_todo_done, "job", 3)
+    assert done.func.args == (pm_paths.home_at(pc.REPO),)
 
 
 @pytest.fixture(autouse=True)

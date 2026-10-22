@@ -303,18 +303,12 @@ def trio(home, monkeypatch):
     _rebind(board, home.root)
     _rebind(pm_config, home.root)
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
-    # 두 모듈의 동적 board 로더가 **이 홈에 배선된** board 를 보게 한다(REPO 대조 가드 통과).
-
-    real_load = pm_config._load_module
-    monkeypatch.setattr(
-        pm_config, "_load_module",
-        lambda name, filename: board if name == "board" else real_load(name, filename))
     return board, home.wp, pm_config
 
 
 def _trio_sessions(trio):
     board, wp, pm_config = trio
-    return lease_store.session_name(board._home()), lease_store._default_session(pm_paths.home_at(wp.REPO)), pm_config._default_session()
+    return lease_store.session_name(board._home()), lease_store._default_session(pm_paths.home_at(wp.REPO)), lease_store.session_name(pm_paths.home_at(pm_config.REPO))
 
 
 @pytest.mark.parametrize("env_var", ["PM_SESSION_NAME", "CLAUDE_SESSION_NAME"])
@@ -359,7 +353,7 @@ def test_trio_zero_rows_does_not_derive_from_registration(home, trio):
     board, wp, pm_config = trio
     home.write_areas(["A"])
     home.write_ledger([])
-    assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
+    assert lease_store.session_name(board._home()) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
     assert lease_store._default_session(pm_paths.home_at(wp.REPO)) != "A_1"
 
 
@@ -372,12 +366,12 @@ def test_trio_ambiguous_and_corrupt_share_unresolved_judgment(home, trio):
     board, wp, pm_config = trio
     home.write_areas(["A"])
     home.write_ledger([_pool_row("A", 1, "A_1"), _pool_row("A", 2, "A_2")])
-    assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
+    assert lease_store.session_name(board._home()) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
     ambiguous_tail = lease_store._default_session(pm_paths.home_at(wp.REPO))
     assert ambiguous_tail not in {"A_1", "A_2"}
 
     home.ledger.write_text("{not valid json", encoding="utf-8")
-    assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
+    assert lease_store.session_name(board._home()) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
     assert lease_store._default_session(pm_paths.home_at(wp.REPO)) not in {"A_1", "A_2"}
 
 

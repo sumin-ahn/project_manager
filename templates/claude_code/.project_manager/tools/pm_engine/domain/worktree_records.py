@@ -1,6 +1,7 @@
 """슬롯·task 자료형, 예외와 순수 판정 규칙."""
 from __future__ import annotations
 
+
 from pathlib import Path
 from collections.abc import Callable
 
@@ -1044,3 +1045,15 @@ class SubmoduleNotInSlot(ValueError):
             f"submodule {sub!r} 이 슬롯 {slot} 의 submodule 목록에 없다 "
             f"(등록: {known if known else '(없음/조회 실패)'}) — 슬롯 밖 경로·오타 거부(경계 보호)."
         )
+
+
+# 슬롯 git 요약(cmd_status cockpit)에서 head/base 커밋 sha 를 단축 표기하는 길이.
+# git 관용 short-sha(7)보다 한 자리 넉넉히 잡아 멀티-repo 풀에서 충돌 여지를 줄인다.
+_SLOT_SHA_SHORT = 8
+
+
+def _short_sha(sha: "str | None") -> str:
+    """커밋 sha 를 cockpit 표기용으로 단축한다 — None/빈값은 `?` (fail-soft 표시)."""
+    if not sha:
+        return "?"
+    return sha[:_SLOT_SHA_SHORT]

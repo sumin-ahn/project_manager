@@ -8,6 +8,7 @@
 판정은 실 PM 홈 + 실 서브프로세스로 한다(장부 파일 바이트를 그대로 읽는다).
 """
 from __future__ import annotations
+from pm_engine.cli import config_tasks
 
 from _pool_seams import bind_pool
 
@@ -154,7 +155,7 @@ def test_close_writes_through_the_existing_primitive(pc, monkeypatch, capsys):
             return self.find_task(value)
 
     bind_pool(monkeypatch, _Pool())
-    rc = pc.cmd_task_close(argparse.Namespace(name="job"))
+    rc = config_tasks.cmd_task_close(pm_paths.home_at(pc.REPO), argparse.Namespace(name="job"))
 
     assert rc == 0
     assert calls == ["job"], "기존 프리미티브 한 번이 아니다"

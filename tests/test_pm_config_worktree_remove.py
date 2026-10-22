@@ -21,6 +21,7 @@ hermetic 필수 — worktree_pool 모듈 전역(REPO·LEASES_FILE·WORK_DIR·REP
 import 하지 않는다(보호목록은 `_resolve_protected` 를 monkeypatch 한다).
 """
 from __future__ import annotations
+from pm_engine.cli import config_slots
 
 from _pool_seams import bind_pool
 
@@ -1237,7 +1238,7 @@ def test_cmd_remove_without_user_ack_refuses_before_engine(pc, monkeypatch, engi
     """승인값 없음 → 엔진을 부르지 않고 rc1 + 사용자 승인 요청 처방(세션 자동 부착 금지)."""
     wp = bind_pool(monkeypatch, FakeWP(engine))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_worktree_remove(_ns(user_ack=[]))
+    rc = config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(user_ack=[]))
     assert rc == 1
     assert wp.calls == []
     err = capsys.readouterr().err
@@ -1248,7 +1249,7 @@ def test_cmd_remove_with_other_user_ack_refuses_before_engine(pc, monkeypatch, e
     """승인값이 슬롯과 다름(브랜치 이름만 등) → 엔진을 부르지 않고 rc1 + 제공된 값 표시."""
     wp = bind_pool(monkeypatch, FakeWP(engine))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_worktree_remove(_ns(user_ack=["A_1", "work/A_2"]))
+    rc = config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(user_ack=["A_1", "work/A_2"]))
     assert rc == 1
     assert wp.calls == []
     err = capsys.readouterr().err
@@ -1259,7 +1260,7 @@ def test_cmd_remove_with_slot_user_ack_calls_engine_with_all_ack_values(pc, monk
     """승인값에 슬롯이 있으면 remove_slot(slot, force=, acked_branches=값 전부) 를 부른다."""
     wp = bind_pool(monkeypatch, FakeWP(engine))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_worktree_remove(_ns(user_ack=["work/A_1", "A_1"]))
+    rc = config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(user_ack=["work/A_1", "A_1"]))
     assert rc == 0
     assert wp.calls == [("remove_slot", "work/A_1", False, frozenset({"work/A_1", "A_1"}))]
     assert "[승인 감사] worktree remove" in capsys.readouterr().out
@@ -1269,7 +1270,7 @@ def test_cmd_remove_force_passes_force_true(pc, monkeypatch, engine):
     """`--force` → remove_slot(slot, force=True)."""
     wp = bind_pool(monkeypatch, FakeWP(engine))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns(force=True)) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(force=True)) == 0
     assert wp.calls[0][2] is True
 
 
@@ -1277,7 +1278,7 @@ def test_cmd_remove_dirty_refusal_says_no_stash_and_force_does_not_pass(pc, monk
     """RemoveRefused("dirty") → rc1 · 엔진은 stash 하지 않음 · `--force` 도 넘지 않음을 알린다."""
     wp = bind_pool(monkeypatch, FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "dirty")))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns(force=True)) == 1
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(force=True)) == 1
     err = capsys.readouterr().err
     assert "커밋 안 한 변경" in err and "stash 하지" in err
     assert "`--force` 는 이 거부를 넘지 않는다" in err
@@ -1287,7 +1288,7 @@ def test_cmd_remove_active_lease_refusal_points_to_release_or_force(pc, monkeypa
     """RemoveRefused("active-lease") → rc1 + 사용 중·release 먼저·--force(점유 무시) 안내."""
     wp = bind_pool(monkeypatch, FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "active-lease", state="leased")))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 1
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 1
     err = capsys.readouterr().err
     assert "사용 중" in err and "release" in err and "점유 무시" in err
 
@@ -1297,7 +1298,7 @@ def test_cmd_remove_unregistered_tree_refusal_hands_path_to_user(pc, monkeypatch
     path = Path("/w/work/A_1")
     wp = bind_pool(monkeypatch, FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "unregistered-tree", path=path)))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 1
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 1
     err = capsys.readouterr().err
     assert str(path) in err and "직접 확인·삭제" in err and "prune-stale" in err
 
@@ -1306,7 +1307,7 @@ def test_cmd_remove_absent_ledger_harmless_rc0(pc, monkeypatch, engine, capsys):
     """remove_slot 이 None(장부 없음) → 무해 종료 rc0 + orphan 안내."""
     wp = bind_pool(monkeypatch, FakeWP(engine, result=None))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns("work/gone_9")) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns("work/gone_9")) == 0
     out = capsys.readouterr().out
     assert "이미 정리됨" in out and "git worktree remove" in out
 
@@ -1316,7 +1317,7 @@ def test_cmd_remove_engine_runtime_error_rc1_without_force_advice(pc, monkeypatc
     wp = bind_pool(monkeypatch, FakeWP(engine, raises=RuntimeError(
         "git worktree remove failed for 'work/A_1' (rc=255) — git 등록·장부·브랜치가 그대로다.")))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 1
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 1
     err = capsys.readouterr().err
     assert "제거 실패" in err and "--force" not in err
 
@@ -1327,7 +1328,7 @@ def test_cmd_remove_merged_branch_deleted_line(pc, monkeypatch, engine, capsys):
                          parent="main", parent_ref="origin/main")
     wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=deletion))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
     out = capsys.readouterr().out
     assert "브랜치 A_1 삭제 (부모 origin/main 에 다 합쳐짐)" in out
     assert "SlotBranchExists" not in out
@@ -1340,7 +1341,7 @@ def test_cmd_remove_unmerged_branch_preserved_lists_commits_origin_and_caveat(pc
                          unmerged_commits=["abc1234 second", "def5678 first"])
     wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=deletion))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
     out = capsys.readouterr().out
     assert "브랜치 A_1 보존 (부모 main 에 합쳐지지 않은 커밋 2개 · origin 브랜치에 끝 커밋 없음)" in out
     assert "    abc1234 second\n    def5678 first\n" in out
@@ -1349,14 +1350,14 @@ def test_cmd_remove_unmerged_branch_preserved_lists_commits_origin_and_caveat(pc
 
 def test_cmd_remove_unmerged_commit_list_folds_over_limit(pc, monkeypatch, engine, capsys):
     """커밋 줄은 상한까지만 싣고 나머지는 '외 N개' 로 접는다."""
-    shown = pc._UNMERGED_COMMITS_SHOWN
+    shown = config_slots._UNMERGED_COMMITS_SHOWN
     commits = [f"{index:07x} c{index}" for index in range(shown + 2)]
     deletion = _deletion(engine, action=worktree_records.BRANCH_PRESERVED, reason=worktree_records.BRANCH_REASON_UNMERGED,
                          parent="main", parent_ref="main", origin=worktree_records.ORIGIN_NO_BRANCH,
                          unmerged_commits=commits)
     wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=deletion))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
     out = capsys.readouterr().out
     assert commits[shown - 1] in out and commits[shown] not in out
     assert "… 외 2개" in out
@@ -1384,7 +1385,7 @@ def test_cmd_remove_branch_line_per_reason(pc, monkeypatch, engine, capsys, fiel
                                 if name.startswith("BRANCH_REASON_")}
     wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=_deletion(engine, **fields)))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
     assert expected in capsys.readouterr().out
 
 
@@ -1392,7 +1393,7 @@ def test_cmd_remove_without_branch_prints_no_branch_line(pc, monkeypatch, engine
     """브랜치를 판별하지 못한 제거(detached·트리 부재) — 브랜치 줄 없음·stash 줄 없음."""
     wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=None))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
     out = capsys.readouterr().out
     assert "제거" in out and "브랜치" not in out and "stash" not in out
 
@@ -1401,7 +1402,7 @@ def test_cmd_remove_tree_cleaned_is_announced(pc, monkeypatch, engine, capsys):
     """git 이 등록만 지우고 남긴 디렉터리를 엔진이 마저 지웠으면 그 사실을 1줄로 고지한다."""
     wp = bind_pool(monkeypatch, FakeWP(engine, tree_cleaned=True))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
     assert "디렉터리 잔재" in capsys.readouterr().out
 
 
@@ -1409,13 +1410,13 @@ def test_cmd_remove_forced_state_warns_on_stderr(pc, monkeypatch, engine, capsys
     """forced_state 있으면 '⚠ 활성 강제 회수' 를 stderr 로 · 없으면 경고 없음."""
     wp = bind_pool(monkeypatch, FakeWP(engine, forced_state="leased"))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns(force=True)) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(force=True)) == 0
     err = capsys.readouterr().err
     assert "⚠" in err and "강제 회수" in err and "leased" in err
 
     wp = bind_pool(monkeypatch, FakeWP(engine))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_worktree_remove(_ns()) == 0
+    assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
     assert "강제 회수" not in capsys.readouterr().err
 
 
@@ -1450,7 +1451,8 @@ def test_build_parser_worktree_remove_parses_slot_user_ack_and_force(pc):
     args = parser.parse_args(["worktree", "remove", "work/A_1", "--user-ack", "work/A_1",
                               "--user-ack", "A_1", "--force"])
     assert (args.slot, args.user_ack, args.force) == ("work/A_1", ["work/A_1", "A_1"], True)
-    assert args.func is pc.cmd_worktree_remove
+    assert args.func.func is config_slots.cmd_worktree_remove
+    assert args.func.args == (pm_paths.home_at(pc.REPO),)
     bare_args = parser.parse_args(["worktree", "remove", "work/A_1"])
     assert (bare_args.user_ack, bare_args.force) == ([], False)
 

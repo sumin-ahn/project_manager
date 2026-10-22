@@ -159,3 +159,18 @@ _SELF_COORDINATES_UNKNOWN = (
     "  ⚠ 자기 행의 git·base 를 기록하지 못했다 (이 폴더가 git 저장소 최상위가 아니거나 HEAD 가 "
     "브랜치를 가리키지 않거나 origin 주소에 자격증명이 들어 있다). areas.md 의 그 행 `git`·`base` 칸을 채운 뒤 `pm-config worktree add` 를 "
     "실행하라.")
+
+
+# ── repo name 입력 검증 ─────────────────────────────────────────────
+
+
+def _validate_repo_name(name: str) -> bool:
+    """repo name 이 허용 패턴(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)에 맞는가.
+
+    `cmd_repo_add` 가 **어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서** 부른다 —
+    `../x` 폴더탈출·슬래시/공백/`.` 의 areas.md 줄 corruption·leading `-` 옵션 오인·빈
+    문자열을 입구에서 막는다(fail-closed). 모듈수준 헬퍼라 테스트 가능(주입 불필요).
+    """
+    # fullmatch — `re.match` 의 `$` 는 trailing 개행 직전에도 매칭해 `"billing\n"` 이
+    # 가드를 통과(bare 폴더명 개행·areas.md 줄 corruption — 막으려던 결함 클래스)한다.
+    return bool(_REPO_NAME_RE.fullmatch(name))

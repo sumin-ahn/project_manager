@@ -3179,7 +3179,7 @@ class PmBootstrap:
         """보유 슬롯 전수 열거 행렬을 `lines` 에 추가.
 
         헤더 `작업공간 (task 'X' 보유 N — 전수 검증):` + 슬롯별 `slot · repo · branch · head ·
-        기록↔live <mark> · <dirty>` 행(`_render_task_slots`[pm_config]과 같은 ` · ` bullet
+        기록↔live <mark> · <dirty>` 행(`_render_task_slots`[cli.config_slots]과 같은 ` · ` bullet
         문법)."""
         lines.append(f"- 작업공간 (task {task!r} 보유 {len(slot_set)} — 전수 검증):")
         for row in slot_set:
