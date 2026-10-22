@@ -24,6 +24,11 @@ T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 �
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+from pm_engine.domain import delegate_rounds
+
 from pm_engine.domain import delegate_channel_rules
 
 from pm_engine.infra import pm_paths
@@ -263,12 +268,12 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     pm_delegate = _load("pm_delegate")
     slot = tmp_path / "슬롯 — 사본"
     slot.mkdir()
-    monkeypatch.setattr(pm_delegate, "_ticket_cli_owner", lambda _cwd: tmp_path / "pm")
-    plan = pm_delegate.TicketCopyPlan(
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: tmp_path / "pm")
+    plan = delegate_rounds.TicketCopyPlan(
         slot / "01-developer.md", slot, "T-2000", "developer", 1,
         tmp_path / "pm" / "01-developer.md", "a" * 32, "",
     )
-    monkeypatch.setattr(pm_delegate, "prepare_ticket_copy", lambda **_kwargs: plan)
+    monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", lambda _home, **_kwargs: plan)
     stream = capture_console()
 
     assert pm_delegate._cmd_ticket([
@@ -283,8 +288,8 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
 
     harvest_stream = capture_console()
     monkeypatch.setattr(
-        pm_delegate, "harvest_ticket_copy",
-        lambda **_kwargs: pm_delegate.TicketHarvestResult(False, True),
+        delegate_harvest, "harvest_ticket_copy",
+        lambda _home, **_kwargs: delegate_rounds.TicketHarvestResult(False, True),
     )
 
     assert pm_delegate._cmd_ticket([

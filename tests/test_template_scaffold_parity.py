@@ -21,6 +21,8 @@ stdlib + subprocess. lint 는 warning-only(exit 0)라 종료코드가 아니라 
 """
 from __future__ import annotations
 
+from pm_engine.domain import delegate_rounds
+
 from pm_engine.cli import board_cluster
 from pm_engine.domain import cluster_rules
 
@@ -452,7 +454,7 @@ def _round_ordinal_labels() -> tuple[str, ...]:
     """엔진이 정한 묶음 라운드 순번표 — `NN-<역할>` 표기로 편다."""
     delegate = _load_engine_module("pm_delegate")
     board = _load_engine_module("board")
-    sequence = delegate.cluster_round_sequence(
+    sequence = delegate_rounds.cluster_round_sequence(
         cluster_rules.CLUSTER_BUDGET_DEFAULT, cluster="C-round-labels",
     )
     assert sequence, "엔진 라운드 수열이 비었다 — 파생 입력이 stale"

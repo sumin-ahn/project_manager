@@ -433,7 +433,7 @@ def test_fsync_guard_ignores_mentions_in_comments_and_strings():
 
 def test_reintroduced_readonly_ledger_sync_is_red():
     """장부 append 뒤 읽기 전용 재-open sync 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
-    source = (TOOLS / "pm_delegate.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine/infra/delegate_copy_store.py").read_text(encoding="utf-8")
     ledger_append = source.split("def _append_delegate_rounds_ledger", 1)[1].split(
         "\ndef ", 1
     )[0]
@@ -454,9 +454,9 @@ def test_reintroduced_readonly_ledger_sync_is_red():
     assert mutated != source, "변이 앵커 소실"
     assert all(
         writable is True
-        for _filename, _lineno, writable in _scan_source(source, "pm_delegate.py")
+        for _filename, _lineno, writable in _scan_source(source, "pm_engine/infra/delegate_copy_store.py")
     ), "pm_delegate.py 는 쓰기 fd sync 만 남은 상태여야 한다"
     assert any(
         writable is False
-        for _filename, _lineno, writable in _scan_source(mutated, "pm_delegate.py")
+        for _filename, _lineno, writable in _scan_source(mutated, "pm_engine/infra/delegate_copy_store.py")
     )

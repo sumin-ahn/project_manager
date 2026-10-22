@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pm_engine.app import delegate_scope_audit
+
 from pm_engine.infra.harness import delegate_env
 
 from pm_engine.infra import conf_store
@@ -1294,7 +1296,7 @@ def test_template_scope_expansion_discovers_every_real_harness(tmp_path):
         )
     (tmp_path / "templates" / "not-a-harness").mkdir(parents=True)
 
-    expanded = delegate._with_template_propagation(
+    expanded = delegate_scope_audit._with_template_propagation(
         [".project_manager/tools/pm_delegate.py"], workspace=tmp_path,
     )
     derived = {
@@ -1303,7 +1305,7 @@ def test_template_scope_expansion_discovers_every_real_harness(tmp_path):
     assert derived == expected
     assert "templates/future/.project_manager/tools/pm_delegate.py" in expanded
 
-    template_only = delegate._with_template_propagation(
+    template_only = delegate_scope_audit._with_template_propagation(
         ["templates/alpha/.project_manager/tools/only.py"], workspace=tmp_path,
     )
     assert template_only == ("templates/alpha/.project_manager/tools/only.py",)

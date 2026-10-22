@@ -5,6 +5,11 @@
 하지 않는다(rc 불변) — 판단은 PM 몫이다.
 """
 from __future__ import annotations
+
+from pm_engine.domain import delegate_rounds
+from pm_engine.app import delegate_scope_audit
+from pm_engine.domain import review_contract
+from pm_engine.app import review_evidence
 from pm_engine.infra import delegate_scope_git
 
 from pm_engine.infra import conf_store
@@ -42,8 +47,12 @@ def _load(name: str, path: Path):
     return module
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def pd():
+    originals = [
+        (delegate_rounds, 'cluster_round_sequence', delegate_rounds.cluster_round_sequence),
+        (review_evidence, 'architect_tests_from_rounds', review_evidence.architect_tests_from_rounds),
+    ]
     module = _load("pm_delegate", TOOLS / "pm_delegate.py")
 
     # touches 경고 e2e는 위임 전후 경고만 관측한다. 고정 5단계 수열과
@@ -53,18 +62,18 @@ def pd():
         del cluster
         return tuple(
             role
-            for role, key in module.CLUSTER_BUDGET_ROLE_SEQUENCE
+            for role, key in delegate_rounds.CLUSTER_BUDGET_ROLE_SEQUENCE
             for _ in range(int(budget.get(key, 0)))
         )
 
-    transport_test = module.ArchitectTest(
+    transport_test = review_contract.ArchitectTest(
         id="AT-OVERLAP",
         target="tests/test_pm_delegate_touches_overlap.py",
         command=python_argv_command("--version"),
         expected="Python",
         negative="명령 실패 또는 Python 표식 누락은 거부",
     )
-    real_architect_tests = module.architect_tests_from_rounds
+    real_architect_tests = review_evidence.architect_tests_from_rounds
 
     def _overlap_architect_tests(rounds, *, required=True):
         try:
@@ -74,9 +83,11 @@ def pd():
                 return (transport_test,)
             raise
 
-    module.cluster_round_sequence = _overlap_sequence
-    module.architect_tests_from_rounds = _overlap_architect_tests
-    return module
+    delegate_rounds.cluster_round_sequence = _overlap_sequence
+    review_evidence.architect_tests_from_rounds = _overlap_architect_tests
+    yield module
+    for owner, name, value in originals:
+        setattr(owner, name, value)
 
 
 def _codex_stdout(reply: str = "DONE") -> str:
@@ -486,7 +497,7 @@ def test_overlap_calculation_failure_is_loud_but_nonblocking(
     def _boom(*a, **k):
         raise delegate_errors.DelegateError("board 조회 불능")
 
-    monkeypatch.setattr(pd, "claimed_touch_overlaps", _boom)
+    monkeypatch.setattr(delegate_scope_audit, "claimed_touch_overlaps", _boom)
     fake = _WritingRun(workspace)
     rc = _run_main(pd, monkeypatch, _dev_argv(prompt, workspace, tmp_path),
                    _enabled_conf(), fake)
@@ -577,7 +588,7 @@ def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys
     monkeypatch.setattr(delegate_scope_git, "out_of_scope_changes", seam.out_of_scope_changes)
     monkeypatch.setattr(delegate_scope_rules, "changed_status_paths", seam.changed_status_paths)
     monkeypatch.setattr(delegate_scope_git, "committed_paths", seam.committed_paths)
-    audit = pd.ScopeAudit(
+    audit = delegate_scope_audit.ScopeAudit(
         ("src",),                       # touches 축 살아 있음
         delegate_scope_rules.WorktreeState(()),
         tmp_path,
@@ -586,7 +597,7 @@ def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys
         ("src/shared.py",),             # 교집합 축 입력 — 계산은 터진다
     )
 
-    pd.report_scope_audit(audit, "developer")
+    delegate_scope_audit.report_scope_audit(audit, "developer")
     err = capsys.readouterr().err
 
     assert "=== ⚠ 위임 범위 밖 변경 ===" in err       # 기존 신호 보존
@@ -598,14 +609,14 @@ def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys
 def test_overlap_warning_caps_ticket_and_path_lists(pd):
     """F-004: 목록은 8건까지만 싣고 나머지는 건수로 접는다."""
     overlaps = tuple(
-        pd.TicketTouchOverlap(
+        delegate_scope_audit.TicketTouchOverlap(
             f"T-97{index:02d}", SESSION,
             tuple(f"src/decl_{index}_{n}.py" for n in range(10)),
             tuple(f"src/path_{index}_{n}.py" for n in range(10)),
         )
         for index in range(10)
     )
-    warning = pd.format_touch_overlap_warning(TARGET_TICKET, overlaps)
+    warning = delegate_scope_audit.format_touch_overlap_warning(TARGET_TICKET, overlaps)
 
     assert warning.count("∩") == 8                    # ticket 행 8개
     assert "… 외 2건의 ticket 이 더 겹칩니다" in warning
@@ -616,7 +627,7 @@ def test_overlap_warning_caps_ticket_and_path_lists(pd):
 
 def test_changed_overlap_line_caps_paths(pd):
     """사후 1줄도 같은 상한을 쓴다 — 한 줄이 무한히 자라지 않는다."""
-    line = pd.format_changed_overlap_warning(
+    line = delegate_scope_audit.format_changed_overlap_warning(
         tuple(f"src/f{n}.py" for n in range(12))
     )
     assert line.endswith("… 외 4건")
@@ -688,21 +699,21 @@ def test_slot_only_claimed_by_is_the_same_session(pd, monkeypatch, tmp_path, cap
 def test_overlap_paths_union_is_sorted_and_deduplicated(pd):
     """회수 축 입력은 정렬·중복 제거된 합집합이다(같은 경로 두 티켓에서 1회)."""
     overlaps = (
-        pd.TicketTouchOverlap("T-9702", SESSION, ("tests",), ("tests/b.py",)),
-        pd.TicketTouchOverlap("T-9703", SESSION, ("tests/b.py", "src"),
+        delegate_scope_audit.TicketTouchOverlap("T-9702", SESSION, ("tests",), ("tests/b.py",)),
+        delegate_scope_audit.TicketTouchOverlap("T-9703", SESSION, ("tests/b.py", "src"),
                               ("tests/b.py", "src/a.py")),
     )
-    assert pd.overlap_touch_paths(overlaps) == ("src/a.py", "tests/b.py")
+    assert delegate_scope_audit.overlap_touch_paths(overlaps) == ("src/a.py", "tests/b.py")
 
 
 def test_scalar_touches_frontmatter_is_format_unknown(pd, tmp_path):
     """스칼라 `touches:` 는 board 형식 판정에서 None(판정 보류)이다 — 픽스처 의미 고정."""
     coordinates = repo_coordinates
     assert ticket_rules._normalized_touches("src/pay.py") is None
-    assert pd._touch_notations(
+    assert delegate_scope_audit._touch_notations(
         "src/pay.py", pm_root=tmp_path, workspace=tmp_path,
     ) is None
-    assert pd._touch_notations(
+    assert delegate_scope_audit._touch_notations(
         ["src/pay.py"], pm_root=tmp_path, workspace=tmp_path,
     ) == (("src/pay.py", "src/pay.py"),)
 

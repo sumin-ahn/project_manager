@@ -1,6 +1,8 @@
 """위임 실행과 재개 값 (층: domain)."""
 from __future__ import annotations
 
+import datetime
+
 from typing import NamedTuple
 from pathlib import Path
 from collections.abc import Sequence
@@ -497,3 +499,14 @@ def build_resume_delta_payload(
         lines.append("- must_fix 항목: 장부에 기록 없음")
     lines += ["", "### 이번 라운드 입력 (호출자 원문)", "", task_text]
     return "\n".join(lines)
+
+
+
+def _parse_ledger_timestamp(value: object) -> datetime.datetime | None:
+    """장부 시각 문자열 → datetime(판독 불가는 None · 판정에서 그 조건만 뺀다)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None

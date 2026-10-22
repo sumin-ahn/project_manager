@@ -744,7 +744,8 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
     def _reads_delegate_conf_keys(text: str) -> bool:
         return '"delegate.' in text or "'delegate." in text
 
-    assert _reads_delegate_conf_keys(source["pm_delegate.py"])
+    assert _reads_delegate_conf_keys(
+        (TOOLS / "pm_engine/app/delegate_execute.py").read_text(encoding="utf-8"))
     assert "local.conf" not in source["contradiction_lint.py"]
     # ticket_finish 는 local.conf 를 읽지만 호출 프로필 키/소비자는 없다.
     assert "LOCAL_CONF" in source["ticket_finish.py"]

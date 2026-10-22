@@ -15,6 +15,15 @@ hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)�
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_cluster_review
+from pm_engine.infra import delegate_copy_git
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+from pm_engine.infra import review_command
+from pm_engine.domain import review_contract
+from pm_engine.app import review_evidence
+from pm_engine.app import reviewer_prompt
+
 from pm_engine.infra import conf_store
 
 from pm_engine.cli import board_ticket
@@ -191,7 +200,7 @@ def review_env(tmp_path, pd, monkeypatch):
             _spec_text(ticket), encoding="utf-8", newline="\n")
     _write_cluster_ledger(home)
     _fixture_board(pd, home)
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {
         "delegate_enabled": "true",
         "delegate.code-reviewer.harness": "codex",
         "delegate.code-reviewer.model": "gpt-x",
@@ -220,7 +229,7 @@ def test_review_input_spans_the_merge_base_with_the_integration_tip(pd, review_e
     _integration_advances(home)
     board = _fixture_board(pd, home)
 
-    review = pd.cluster_review_input(board._home(), _CLUSTER, repo=home)
+    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
 
     assert review.members == _MEMBERS
     assert review.branch == _CLUSTER_BRANCH and review.base_branch == _BASE_BRANCH
@@ -229,8 +238,8 @@ def test_review_input_spans_the_merge_base_with_the_integration_tip(pd, review_e
     # 이 묶음이 만든 변경만 입력이다 — 통합 브랜치가 흡수한 변경은 조상이라 빠진다.
     assert sorted(review.paths) == ["t-8001.py", "t-8002.py"]
     assert not hasattr(review, "diff")
-    prompt = pd.build_cluster_review_prompt(
-        review, dict.fromkeys(review.members, "본문"), tree=home, focus=None,
+    prompt = delegate_cluster_review.build_cluster_review_prompt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), review, dict.fromkeys(review.members, "본문"), tree=home, focus=None,
     )
     command = shlex.split(prompt.split("```sh\n", 1)[1].split("\n```", 1)[0])
     patch = subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8").stdout
@@ -249,7 +258,7 @@ def test_review_input_refuses_a_ledger_without_branch_coordinates(pd, review_env
     board = _fixture_board(pd, home)
 
     with pytest.raises(delegate_errors.DelegateError, match="통합 브랜치 좌표가 없습니다"):
-        pd.cluster_review_input(board._home(), _CLUSTER, repo=home)
+        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
 
 
 @requires_git
@@ -260,7 +269,7 @@ def test_review_input_refuses_an_empty_span(pd, review_env):
     board = _fixture_board(pd, home)
 
     with pytest.raises(delegate_errors.DelegateError, match="리뷰할 diff 가 없습니다"):
-        pd.cluster_review_input(board._home(), _CLUSTER, repo=home)
+        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -278,7 +287,7 @@ def _native_review_harness(pd, monkeypatch) -> None:
     for key in _SESSION_MARKER_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("CLAUDECODE", "1")
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {
         "delegate_enabled": "true",
         "delegate.code-reviewer.harness": "claude",
         "delegate.code-reviewer.model": "sonnet",
@@ -351,10 +360,9 @@ def _head_count(home: Path) -> int:
 
 def _developer_round(pd, home: Path, ticket: str):
     """dev 라운드 하나를 준비하고 산출을 채운 좌표를 돌려준다."""
-    plan = pd.prepare_ticket_copy(
-        ticket=ticket, role="developer", cwd=home, pm_home=home,
-    )
-    command = pd._full_regression_command(home)
+    plan = delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(home).resolve()), ticket=ticket, role="developer", cwd=home, )
+    command = delegate_harvest._full_regression_command(home)
     text = plan.path.read_text(encoding="utf-8").replace(
         "- 커맨드: `<실행 커맨드>`", f"- 커맨드: `{command}`",
     ).replace(
@@ -386,7 +394,7 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
         encoding="utf-8", newline="\n",
     )
 
-    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=home, pm_home=home)
+    result = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(home).resolve()), copy_path=plan.path, cwd=home, )
 
     assert result.changed is True
     assert _head_count(home) == before + 1
@@ -394,8 +402,8 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
     assert _git(home, "status", "--porcelain").stdout.strip() == ""
     # 커밋된 산출은 이제 브랜치 tip 이라 리뷰 입력 결속을 그대로 통과한다.
     board = _fixture_board(pd, home)
-    pd.assert_cluster_review_tree(
-        pd.cluster_review_input(board._home(), _CLUSTER, repo=home), repo=home)
+    delegate_cluster_review.assert_cluster_review_tree(
+        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home), repo=home)
 
 
 @requires_git
@@ -418,15 +426,14 @@ def test_developer_round_harvest_without_the_architect_test_leaves_head_alone(
     assert _git(slot, "commit", "-qm", "slot seed").returncode == 0
     before = _head_count(slot)
     _reserve_prior_rounds(pd, home, ("architect",))
-    plan = pd.prepare_ticket_copy(
-        ticket=_MEMBERS[1], role="developer", cwd=slot, pm_home=home,
-    )
+    plan = delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(home).resolve()), ticket=_MEMBERS[1], role="developer", cwd=slot, )
     plan.path.write_text(
         plan.path.read_text(encoding="utf-8") + "\n## 산출\n- 실측 값\n",
         encoding="utf-8", newline="")
 
     with pytest.raises(delegate_errors.DelegateError, match="architect 필수 테스트 .* 추가·수정되지"):
-        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=home)
+        delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(home).resolve()), copy_path=plan.path, cwd=slot, )
 
     assert _head_count(slot) == before
 
@@ -470,7 +477,7 @@ def test_developer_harvest_uses_markerless_linked_app_worktree_diff(
 
     # harvest의 AT 결속 판정이 실제로 연결하는 두 seam을 함께 탄다.
     repo_root = pm_paths._repo_root_for_cwd(slot)
-    changed = pd._developer_round_changed_paths(repo_root, base_rev=base_rev)
+    changed = delegate_copy_git._developer_round_changed_paths(repo_root, base_rev=base_rev)
 
     assert repo_root == slot.resolve()
     assert changed == frozenset({source_file.name, f"tests/{contract_test.name}"})
@@ -484,7 +491,7 @@ def test_developer_changed_paths_reports_unknown_base_revision(pd, tmp_path):
     assert _git(repo, "init", "-q").returncode == 0
 
     with pytest.raises(delegate_errors.DelegateError, match=r"git diff .* 실패"):
-        pd._developer_round_changed_paths(repo, base_rev="not-a-real-revision")
+        delegate_copy_git._developer_round_changed_paths(repo, base_rev="not-a-real-revision")
 
 
 @requires_git
@@ -517,12 +524,12 @@ def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
 def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, review_env):
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    review = pd.cluster_review_input(board._home(), _CLUSTER, repo=home)
-    specs = pd._cluster_member_specs(pm_paths.home_at(home), review.members)
+    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
+    specs = delegate_cluster_review._cluster_member_specs(pm_paths.home_at(home), review.members)
     focus = "이번 라운드는 경계 판정의 값 대조를 중점으로 본다."
 
-    prompt = pd.build_cluster_review_prompt(
-        review, specs, tree=home, focus=focus,
+    prompt = delegate_cluster_review.build_cluster_review_prompt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), review, specs, tree=home, focus=focus,
     )
 
     assert f"리뷰 단위: {_CLUSTER}" in prompt
@@ -544,17 +551,16 @@ def test_prompt_leaves_the_block_requirement_to_the_round_seed(pd, review_env):
     """구조화 블록 요구는 라운드 파일 시드가 소유한다 — 두 벌이면 갈린다."""
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    review = pd.cluster_review_input(board._home(), _CLUSTER, repo=home)
-    specs = pd._cluster_member_specs(pm_paths.home_at(home), review.members)
+    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
+    specs = delegate_cluster_review._cluster_member_specs(pm_paths.home_at(home), review.members)
 
-    prompt = pd.build_cluster_review_prompt(review, specs, tree=home, focus=None)
+    prompt = delegate_cluster_review.build_cluster_review_prompt(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), review, specs, tree=home, focus=None)
 
     assert "### 구조화 판정 블록 (필수)" not in prompt
     assert "### PM 검토 중점" not in prompt
     # 추가 리뷰어 채널의 기존 조립은 그대로다(요구 블록 포함).
-    external = pd._load_additional_reviewer()
-    assert "### 구조화 판정 블록 (필수)" in external.build_prompt(
-        "본문", tree=home, base=review.merge_base, target=review.branch,
+    assert "### 구조화 판정 블록 (필수)" in reviewer_prompt.build_prompt(
+        pm_paths.home_at(home), "본문", tree=home, base=review.merge_base, target=review.branch,
         changed_paths=review.paths, read_commands=[("git", "-C", str(home), "diff", "--")],
     )
 
@@ -622,7 +628,7 @@ def _cross_claude_review(pd, monkeypatch) -> None:
     """다른 하네스 형상 — PM 하네스 표식 없음 · 리뷰 역할 하네스 claude."""
     for key in _SESSION_MARKER_KEYS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {
         "delegate_enabled": "true",
         "delegate.code-reviewer.harness": "claude",
         "delegate.code-reviewer.model": "sonnet",
@@ -912,9 +918,8 @@ def test_review_harvest_refuses_a_row_without_base_rev(pd, review_env, capsys):
     """AT-006 — `base_rev` 없는 code-reviewer 행(옛 CLI 준비)은 HEAD 로 대신하지 않고 거부한다."""
     home, _tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
-    plan = pd.prepare_cluster_copy(
-        cluster=_CLUSTER, role="code-reviewer", cwd=home, pm_home=home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(home).resolve()), cluster=_CLUSTER, role="code-reviewer", cwd=home, )
     ledger = home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
     rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
     for row in rows:
@@ -1154,7 +1159,7 @@ def _partially_confirmed_pm_owned_ticket(pd):
             machine_verifiable=False, reason="pm-owned",
         ),
     ]))
-    partial = pd.render_pm_review_confirmation_section((
+    partial = review_contract.render_pm_review_confirmation_section((
         (2, review_form.PMReviewMachineConfirmation(
             "F-001", "resolved", "echo hi", "rc=0\nhi", 2,
         )),
@@ -1207,7 +1212,7 @@ def test_confirmation_runs_the_command_and_records_the_observed_value(pd, tmp_pa
     template = review_state.pm_review_verify_template(spec, rounds)
     assert [source for source, _row in template.machine_rows] == [2]
 
-    rows = pd.run_pm_review_confirmations(
+    rows = review_command.run_pm_review_confirmations(
         template, cwd=tmp_path, run_fn=_stub_run(0, "hi there\n"),
     )
 
@@ -1223,9 +1228,9 @@ def test_confirmation_is_unresolved_when_expected_is_absent_or_rc_is_nonzero(
     spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
     template = review_state.pm_review_verify_template(spec, rounds)
 
-    mismatch = pd.run_pm_review_confirmations(
+    mismatch = review_command.run_pm_review_confirmations(
         template, cwd=tmp_path, run_fn=_stub_run(0, "bye\n"))[0][1]
-    failed = pd.run_pm_review_confirmations(
+    failed = review_command.run_pm_review_confirmations(
         template, cwd=tmp_path, run_fn=_stub_run(2, "hi\n", "boom"))[0][1]
 
     assert mismatch.status == "unresolved" and "bye" in mismatch.observed
@@ -1239,7 +1244,7 @@ def test_confirmation_refuses_a_command_outside_the_safety_boundary(pd, tmp_path
         pytest.fail("금지 토큰 커맨드가 실행되면 안 됨")
 
     with pytest.raises(review_form.PMReviewError, match="금지 토큰"):
-        pd.run_pm_review_confirmation_command(
+        review_command.run_pm_review_confirmation_command(
             "pytest -q | tee out.txt", cwd=tmp_path, expected="passed",
             run_fn=_never,
         )
@@ -1248,7 +1253,7 @@ def test_confirmation_refuses_a_command_outside_the_safety_boundary(pd, tmp_path
 def test_confirmation_command_runs_a_real_process(pd, tmp_path):
     """DI 없이도 실제로 도는 경로 하나 — 관측값이 실 출력이다."""
     command = f"{shlex.quote(sys.executable)} -c print(1234)"
-    status, observed = pd.run_pm_review_confirmation_command(
+    status, observed = review_command.run_pm_review_confirmation_command(
         command, cwd=tmp_path, expected="1234",
     )
     assert status == "resolved" and "1234" in observed
@@ -1256,9 +1261,9 @@ def test_confirmation_command_runs_a_real_process(pd, tmp_path):
 
 def test_observed_excerpt_keeps_the_expected_value_visible(pd):
     """발췌가 기대값을 잘라내면 엔진이 적은 resolved 를 파서가 거부한다(왕복 정합)."""
-    limit = pd.PM_REVIEW_CONFIRMATION_OBSERVED_LIMIT
+    limit = review_contract.PM_REVIEW_CONFIRMATION_OBSERVED_LIMIT
     noisy = ("x" * limit) + "찾는값" + ("y" * limit)
-    excerpt = pd._pm_review_observed_excerpt(noisy, "찾는값")
+    excerpt = review_contract._pm_review_observed_excerpt(noisy, "찾는값")
     assert "찾는값" in excerpt and len(excerpt) <= limit + 2
 
 
@@ -1266,12 +1271,12 @@ def test_written_confirmation_section_round_trips_through_the_parser(pd, tmp_pat
     """엔진이 기입한 확인 절이 파서를 통과하고 accepted 잔여를 닫는다."""
     spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
     template = review_state.pm_review_verify_template(spec, rounds)
-    rows = pd.run_pm_review_confirmations(
+    rows = review_command.run_pm_review_confirmations(
         template, cwd=tmp_path, run_fn=_stub_run(0, "hi\n"))
 
-    section = pd.render_pm_review_confirmation_section(rows)
+    section = review_contract.render_pm_review_confirmation_section(rows)
 
-    assert section.startswith(pd.PM_REVIEW_CONFIRMATION_SECTION)
+    assert section.startswith(review_contract.PM_REVIEW_CONFIRMATION_SECTION)
     assert "<관측값>" not in section and "<resolved|" not in section
     delta = review_state.parse_pm_review_delta(spec + "\n" + section, rounds)
     assert delta.accepted == ()
@@ -1292,7 +1297,7 @@ def test_pm_owned_terminal_confirmation_is_generated_without_running_a_command(
         spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
     ) is None
 
-    rows = pd.run_pm_review_confirmations(
+    rows = review_command.run_pm_review_confirmations(
         template, cwd=tmp_path,
         run_fn=lambda *_a, **_k: pytest.fail("PM-owned confirmation은 command를 실행하지 않는다"),
     )
@@ -1301,7 +1306,7 @@ def test_pm_owned_terminal_confirmation_is_generated_without_running_a_command(
     assert row.command == review_form.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND
     assert row.observed == "PM audit 완료 실값"
 
-    confirmed = spec + "\n" + pd.render_pm_review_confirmation_section(rows)
+    confirmed = spec + "\n" + review_contract.render_pm_review_confirmation_section(rows)
     assert review_state.parse_pm_review_delta(confirmed, rounds).accepted == ()
     assert review_state.pm_verified_evidence_problem(
         confirmed, rounds, reviewer_role="code-reviewer", surface_floor=1,
@@ -1360,15 +1365,15 @@ def test_confirmation_is_appended_to_the_pm_area_of_the_spec(pd, review_env):
     path.write_text(path.read_text(encoding="utf-8") + "\n" + spec,
                     encoding="utf-8", newline="")
     template = review_state.pm_review_verify_template(path.read_text(encoding="utf-8"), rounds)
-    rows = pd.run_pm_review_confirmations(
+    rows = review_command.run_pm_review_confirmations(
         template, cwd=home, run_fn=_stub_run(0, "hi\n"))
 
-    written = pd.append_pm_review_confirmation(
-        home, ticket, pd.render_pm_review_confirmation_section(rows), rounds=rounds)
+    written = review_evidence.append_pm_review_confirmation(
+        pm_paths.home_at(Path(home).resolve()), ticket, review_contract.render_pm_review_confirmation_section(rows), rounds=rounds)
 
     assert written == path
     text = path.read_text(encoding="utf-8")
-    assert pd.PM_REVIEW_CONFIRMATION_SECTION in text
+    assert review_contract.PM_REVIEW_CONFIRMATION_SECTION in text
     # 기입은 명세 PM 영역이다 — frontmatter 는 그대로다.
     assert text.startswith("---\n")
     assert review_state.parse_pm_review_delta(text, rounds).accepted == ()
@@ -1388,15 +1393,15 @@ def test_confirmation_append_merges_missing_pm_owned_row_into_existing_round_ide
         encoding="utf-8", newline="",
     )
     template = review_state.pm_review_verify_template(path.read_text(encoding="utf-8"), rounds)
-    rows = pd.run_pm_review_confirmations(
+    rows = review_command.run_pm_review_confirmations(
         template, cwd=home,
         run_fn=lambda *_a, **_k: pytest.fail("남은 행은 PM-owned라 command 실행이 없어야 한다"),
     )
-    section = pd.render_pm_review_confirmation_section(rows)
+    section = review_contract.render_pm_review_confirmation_section(rows)
 
-    pd.append_pm_review_confirmation(home, ticket, section, rounds=rounds)
+    review_evidence.append_pm_review_confirmation(pm_paths.home_at(Path(home).resolve()), ticket, section, rounds=rounds)
     first = path.read_bytes()
-    pd.append_pm_review_confirmation(home, ticket, section, rounds=rounds)
+    review_evidence.append_pm_review_confirmation(pm_paths.home_at(Path(home).resolve()), ticket, section, rounds=rounds)
 
     assert path.read_bytes() == first
     text = path.read_text(encoding="utf-8")
@@ -1434,12 +1439,12 @@ def test_confirmation_same_round_merge_rejects_conflict_and_spoof_atomically(
         encoding="utf-8", newline="",
     )
     before = path.read_bytes()
-    incoming = pd.render_pm_review_confirmation_section((
+    incoming = review_contract.render_pm_review_confirmation_section((
         (2, review_form.PMReviewMachineConfirmation(*row, 2)),
     ))
 
     with pytest.raises(review_form.PMReviewError, match=message):
-        pd.append_pm_review_confirmation(home, ticket, incoming, rounds=rounds)
+        review_evidence.append_pm_review_confirmation(pm_paths.home_at(Path(home).resolve()), ticket, incoming, rounds=rounds)
 
     assert path.read_bytes() == before
 
@@ -1494,7 +1499,7 @@ def test_confirmation_tree_must_be_the_cluster_branch(monkeypatch, pd, review_en
     """다른 브랜치에서 잰 관측을 확인으로 적지 않는다."""
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    monkeypatch.setattr(task_args, '_claim_code_tree', lambda _home,  *_a, **_k: str(home))
+    monkeypatch.setattr(task_args, '_claim_code_tree', lambda *_a, **_k: str(home))
 
     assert pd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER) == home
 
@@ -1511,9 +1516,9 @@ def test_focus_file_is_read_as_prompt_source_and_missing_paths_fail_loud(
     inside = home / "focus.md"
     inside.write_text("경계 판정을 중점으로 본다.\n", encoding="utf-8", newline="\n")
 
-    assert "경계 판정" in pd._cluster_review_focus(inside, cwd=home, pm_home=home)
+    assert "경계 판정" in delegate_cluster_review._cluster_review_focus(pm_paths.home_at(Path(home).resolve()), inside, cwd=home, )
     with pytest.raises(delegate_errors.DelegateError, match="--focus 파일이 없습니다"):
-        pd._cluster_review_focus(home / "없다.md", cwd=home, pm_home=home)
+        delegate_cluster_review._cluster_review_focus(pm_paths.home_at(Path(home).resolve()), home / "없다.md", cwd=home, )
 
 
 @requires_git
@@ -1563,7 +1568,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
     assert tree_identities == []  # task 단독은 finish의 묶음 브랜치 탐색을 소비한다.
     for ticket in _MEMBERS:
         text = (tickets / f"{ticket}-review.md").read_text(encoding="utf-8")
-        assert pd.PM_REVIEW_CONFIRMATION_SECTION in text
+        assert review_contract.PM_REVIEW_CONFIRMATION_SECTION in text
         assert '"observed":"rc=0' in text and "hi" in text
         assert "기계 확인 1건 기입" in out and ticket in out
         assert f"{ticket}: 리뷰 잔여 확인 완료" in out
@@ -1772,7 +1777,7 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     """통과(must-fix 0) 멤버는 무대상으로 건너뛰고 반려 멤버만 처분한다 — 묶음은 닫힌다."""
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    monkeypatch.setattr(task_args, '_claim_code_tree', lambda _home,  *_a, **_k: str(home))
+    monkeypatch.setattr(task_args, '_claim_code_tree', lambda *_a, **_k: str(home))
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "REPO", board.REPO)
@@ -1802,7 +1807,7 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     assert rc == 0, out
     assert board_ticket._review_completion_problem(board._home(), rejected) is None
     assert f"{passed}: 처분할 리뷰 잔여 없음(must-fix 0건) — 무대상" in out
-    assert pd.PM_REVIEW_CONFIRMATION_SECTION not in (
+    assert review_contract.PM_REVIEW_CONFIRMATION_SECTION not in (
         tickets / f"{passed}-review.md").read_text(encoding="utf-8")
 
 
@@ -1873,7 +1878,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert all(Path(call['cwd']) == found for call in command_calls)
     assert pm_paths.leases_file(board._home()).read_bytes() == before
     for ticket in _MEMBERS:
-        assert pd.PM_REVIEW_CONFIRMATION_SECTION in (tickets / f'{ticket}-review.md').read_text(encoding='utf-8')
+        assert review_contract.PM_REVIEW_CONFIRMATION_SECTION in (tickets / f'{ticket}-review.md').read_text(encoding='utf-8')
 
 
 @requires_git
@@ -1924,9 +1929,9 @@ def test_cluster_prompt_size_is_independent_of_patch_and_queries_names_only(
                 assert "--name-only" in argv and "-z" in argv, patch[:19]
                 return subprocess.CompletedProcess(argv, 0, "\0".join(paths) + "\0", "")
             return subprocess.run(argv, **kwargs)
-        review = pd.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=run)
-        prompts.append(pd.build_cluster_review_prompt(
-            review, dict.fromkeys(review.members, "본문"), tree=home, focus="중점",
+        review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=run)
+        prompts.append(delegate_cluster_review.build_cluster_review_prompt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), review, dict.fromkeys(review.members, "본문"), tree=home, focus="중점",
         ))
     assert prompts[0] == prompts[1]
     assert "AUTO_PATCH_SENTINEL" not in prompts[0]
@@ -1945,9 +1950,9 @@ def test_cluster_input_preserves_nul_paths_and_rejects_name_query_failure(pd, re
         if "diff" in argv:
             return subprocess.CompletedProcess(argv, 0, "\0".join(names) + "\0", "")
         return subprocess.run(argv, **kwargs)
-    review = pd.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=run)
+    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=run)
     assert review.paths == names
-    prompt = pd.build_cluster_review_prompt(review, dict.fromkeys(_MEMBERS, "본문"), tree=home, focus=None)
+    prompt = delegate_cluster_review.build_cluster_review_prompt(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), review, dict.fromkeys(_MEMBERS, "본문"), tree=home, focus=None)
     line = next(line for line in prompt.splitlines() if line.startswith("- 변경 파일"))
     assert json.loads(line.split(": ", 1)[1]) == list(names)
     def fail(argv, **kwargs):
@@ -1955,4 +1960,4 @@ def test_cluster_input_preserves_nul_paths_and_rejects_name_query_failure(pd, re
             return subprocess.CompletedProcess(argv, 128, "", "name query failed")
         return subprocess.run(argv, **kwargs)
     with pytest.raises(delegate_errors.DelegateError, match="name query failed"):
-        pd.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=fail)
+        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=fail)

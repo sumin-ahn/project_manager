@@ -21,6 +21,8 @@ hermetic: REPO 를 tmp 로 monkeypatch 해 장부가 tmp `.local/` 에 격리되
 """
 from __future__ import annotations
 
+from pm_engine.app import reviewer_prompt
+
 from pm_engine.infra import conf_store
 from pm_engine.infra import pm_paths
 from pm_engine.domain import reviewer_result
@@ -97,9 +99,8 @@ def _patch_atomic_replace(monkeypatch, module, fake):
 
 def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, tmp_path):
     """게이트 ID 다음·diff 앞에 전체 티켓 본문이 놓이는 프롬프트 형상을 고정한다."""
-    monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", tmp_path / "missing-context.md")
-    prompt = external.build_prompt(
-        tree=tmp_path, base="HEAD", target="INDEX/WORKTREE",
+    prompt = reviewer_prompt.build_prompt(
+        pm_paths.home_at(tmp_path), tree=tmp_path, base="HEAD", target="INDEX/WORKTREE",
         changed_paths=["x.py"], read_commands=[("git", "-C", str(tmp_path), "diff", "--")],
         ticket_body="## 결정\n확정 설계\n",
         ticket_id="T-0695",
@@ -120,20 +121,19 @@ def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, t
 
 
 def test_build_prompt_requires_coordinates_and_rejects_diff(external, monkeypatch, tmp_path):
-    monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", tmp_path / "missing-context.md")
     coords = dict(tree=tmp_path, base="HEAD", target="INDEX/WORKTREE",
                   changed_paths=["x.py"], read_commands=[("git", "-C", str(tmp_path), "diff", "--")])
-    prompt = external.build_prompt("BODY", ["ADR-1"], "T-1", **coords)
+    prompt = reviewer_prompt.build_prompt(pm_paths.home_at(tmp_path), "BODY", ["ADR-1"], "T-1", **coords)
     assert "관련 ADR: ADR-1" in prompt
     assert "게이트 ticket: T-1" in prompt
     assert "### 게이트 티켓 본문 (T-1)\nBODY" in prompt
     for key in coords:
         with pytest.raises(TypeError):
-            external.build_prompt(**{name: value for name, value in coords.items() if name != key})
+            reviewer_prompt.build_prompt(pm_paths.home_at(tmp_path), **{name: value for name, value in coords.items() if name != key})
     with pytest.raises(TypeError):
-        external.build_prompt(diff="patch", **coords)
+        reviewer_prompt.build_prompt(pm_paths.home_at(tmp_path), diff="patch", **coords)
     with pytest.raises(TypeError):
-        external.build_prompt("D", "BODY", ["ADR-1"], "T-1", **coords)
+        reviewer_prompt.build_prompt(pm_paths.home_at(tmp_path), "D", "BODY", ["ADR-1"], "T-1", **coords)
 
 
 # ── PM 하네스 세션 마커 / 호출층 상한 진단 ──────────────────────────────────

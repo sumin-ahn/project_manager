@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 from pm_engine.domain import reviewer_result
+from pm_engine.app import reviewer_prompt
 
 from pm_engine.infra import reviewer_target
 
@@ -59,8 +60,9 @@ def test_ticket_finish_pytest_parser_seams(ticket_finish):
 
 
 def test_additional_reviewer_symbols(additional_reviewer):
+    owners = {"parse_verdict": reviewer_result, "build_prompt": reviewer_prompt}
     for sym in ("run_review", "parse_verdict", "extract_diff", "build_prompt"):
-        assert callable(getattr(reviewer_result if sym == "parse_verdict" else additional_reviewer, sym))
+        assert callable(getattr(owners.get(sym, additional_reviewer), sym))
 
 
 # ── 순수 로직 (R16·R17) ─────────────────────────────────────────────────

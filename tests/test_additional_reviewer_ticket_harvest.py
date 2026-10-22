@@ -13,6 +13,10 @@ hermetic: tmp REPO 에 실제 board 디렉터리를 만들고 diff·리뷰어 �
 (호출 0). 라이브 codex 호출은 이 파일 어디에서도 하지 않는다.
 """
 from __future__ import annotations
+from pm_engine.infra import delegate_ledger
+
+from pm_engine.domain import review_contract
+from pm_engine.domain import reviewer_budget
 
 from pm_engine.infra import conf_store
 
@@ -342,7 +346,7 @@ def test_rejected_round_lands_as_a_round_file_and_delta_finding(
     accepted = [finding for finding, _row in delta.accepted]
     assert [item.id for item in accepted] == ["X-001"]
     assert accepted[0].reviewer_role == ROLE
-    rendered = pd.render_pm_review_delta(TICKET, delta)
+    rendered = review_contract.render_pm_review_delta(TICKET, delta)
     assert f"- 채널: {ROLE}" in rendered
     assert "- 심각도: must-fix" in rendered
 
@@ -377,7 +381,6 @@ def test_harvest_reserves_through_the_rounds_seam(
         return real_reserve(tickets_dir, ticket_id, role, content=content, lock=lock)
 
     monkeypatch.setattr(round_store, "reserve_round", _reserve)
-    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -485,7 +488,7 @@ def test_reply_cannot_declare_the_engine_refusal_marker(
     _seed_board(tmp_path)
     _wire(
         external, monkeypatch, tmp_path,
-        _prose("- X-001") + f"{pd.ADDITIONAL_REVIEWER_REFUSED_LINE}\n\n"
+        _prose("- X-001") + f"{review_contract.ADDITIONAL_REVIEWER_REFUSED_LINE}\n\n"
         + _block(_payload([_finding("X-001")])),
     )
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
@@ -582,7 +585,7 @@ def test_confirmation_round_resolves_the_finding_out_of_the_delta(
 
     delta = _delta(pd, tmp_path, _disposition("X-001"))
     assert delta.accepted == ()
-    assert pd.render_pm_review_delta(TICKET, delta) == ""
+    assert review_contract.render_pm_review_delta(TICKET, delta) == ""
 
 
 # ── (d) 회수 대상이 없는 실행 ────────────────────────────────────────────
@@ -633,7 +636,7 @@ def test_every_process_role_is_a_round_role(pd):
     assert len(set(review_form.PM_REVIEW_FINDING_ID_PREFIXES.values())) == len(review_form.REVIEW_ROLES)
     # 추가 리뷰어 라운드는 슬롯 왕복이 아니라 엔진이 쓴다 — 준비 대상이 아니다.
     # researcher 는 라운드 역할이지만 묶음 수열의 단계가 아니라 티켓 라운드를 준비하지 않는다.
-    assert set(pd.TICKET_COPY_PREPARE_ROLES) == set(round_rules.ROLES) - {ROLE, "researcher"}
+    assert set(delegate_ledger.TICKET_COPY_ROLES - {ROLE, "researcher"}) == set(round_rules.ROLES) - {ROLE, "researcher"}
 
 
 def test_deleted_single_file_devices_are_absent(pd, external):
@@ -741,19 +744,18 @@ def test_prompt_requires_the_versioned_block_rendered_from_parser_constants(
     monkeypatch.setattr(
         review_form, "PM_REVIEW_SEVERITIES", (*review_form.PM_REVIEW_SEVERITIES, "blocker-probe"),
     )
-    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
-    assert "blocker-probe" in external._versioned_block_requirement()
+    assert "blocker-probe" in reviewer_budget._versioned_block_requirement()
 
 
 def test_prompt_says_the_round_file_is_the_harvest_target(external):
     """프롬프트는 회수 도착지를 라운드 파일로 말한다(옛 '역할 절' 표현 없음)."""
-    assert "라운드 파일로 회수" in external._VERSIONED_BLOCK_HEADER
-    assert "역할 절" not in external._VERSIONED_BLOCK_HEADER
+    assert "라운드 파일로 회수" in reviewer_budget._VERSIONED_BLOCK_HEADER
+    assert "역할 절" not in reviewer_budget._VERSIONED_BLOCK_HEADER
 
 
 def test_prompt_requires_concrete_fix_contract_values(external, pd):
     """설명용 metavariable도 strict parser에는 placeholder다 — 호출 전에 금지를 명시한다."""
-    requirement = external._versioned_block_requirement()
+    requirement = reviewer_budget._versioned_block_requirement()
     assert "여섯 문자열은 모두 **구체값**" in requirement
     assert "JSON 문자열 값에는 `<` 또는 `>` 문자를 아예 쓰지 마라" in requirement
     assert requirement.index("parser 금지어(") < requirement.index("```pm-review-v1")
@@ -786,7 +788,7 @@ def test_disposition_template_targets_the_external_channel(
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
 
-    rendered = pd.render_pm_review_disposition_template(
+    rendered = review_contract.render_pm_review_disposition_template(
         _ticket_path(tmp_path).read_text(encoding="utf-8"), _rounds(pd, tmp_path),
     )
     payload = json.loads(
@@ -853,7 +855,7 @@ def test_legacy_v1_blocks_from_the_live_board_stay_readable(pd, entry):
     )
 
     delta = review_state.parse_pm_review_delta(spec, rounds)   # malformed 면 fix 루프가 막힌다.
-    rendered = pd.render_pm_review_delta(entry["ticket"], delta)
+    rendered = review_contract.render_pm_review_delta(entry["ticket"], delta)
     if delta.accepted:
         assert f"- 심각도: {review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
     summary_rows = [
@@ -1190,7 +1192,7 @@ def test_declarations_count_only_the_surface_rounds(pd):
     """
     normal = _round_view(pd, 1, _external_round_text(pd, _payload([_finding("X-001")])))
     refused = _round_view(pd, 2, _external_round_text(
-        pd, {}, head=f"{pd.ADDITIONAL_REVIEWER_REFUSED_LINE}\n\n",
+        pd, {}, head=f"{review_contract.ADDITIONAL_REVIEWER_REFUSED_LINE}\n\n",
         raw_block=_block(_payload([_finding("X-002")])),
     ))
     spec = "\n산문에서 X-050 을 인용한다.\n"
@@ -1292,8 +1294,7 @@ def test_prompt_does_not_resolve_confirmable_ids(
     def _raise(*_args, **_kwargs):
         raise delegate_errors.DelegateError("확인 목록 해소 실패 probe")
 
-    monkeypatch.setattr(pd, "collect_confirmable_finding_ids", _raise)
-    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
+    monkeypatch.setattr(review_contract, "collect_confirmable_finding_ids", _raise)
 
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     err = capsys.readouterr().err
@@ -1323,29 +1324,6 @@ def test_crlf_reply_keeps_its_bytes_in_the_round_file(
 # ── F-006 쓰기 엔진: 형제 canonical + 사본 불일치 처방 ──────────────────
 
 
-def _skew_delegate_after_prompt(external, monkeypatch, *, marked: bool) -> None:
-    """프롬프트 조립까지는 정상 로더로 두고 **회수 구간부터** 로더 실패를 주입한다."""
-    real_loader = external._load_pm_delegate
-    state = {"prompt_done": False}
-    real_run_review = external.run_review
-
-    def _run_review(*args, **kwargs):
-        state["prompt_done"] = True
-        return real_run_review(*args, **kwargs)
-
-    def _loader():
-        if not state["prompt_done"]:
-            return real_loader()
-        error = RuntimeError(
-            "엔진 사본 버전 불일치 — 로더 additional_reviewer.py" if marked
-            else "표시 없는 실패"
-        )
-        if marked:
-            error._engine_rev_skew = True
-        raise error
-
-    monkeypatch.setattr(external, "run_review", _run_review)
-    monkeypatch.setattr(external, "_load_pm_delegate", _loader)
 
 
 def test_harvest_writes_with_the_running_engine_not_a_stale_pm_home_copy(
@@ -1367,20 +1345,6 @@ def test_harvest_writes_with_the_running_engine_not_a_stale_pm_home_copy(
     assert len(_round_paths(tmp_path)) == 1
 
 
-def test_engine_copy_skew_becomes_a_harvest_problem_with_a_resync_prescription(
-    external, monkeypatch, tmp_path, capsys,
-):
-    """사본 불일치는 traceback 이 아니라 회수 실패 처방(재동기·rc≠0)으로 접힌다."""
-    _seed_board(tmp_path)
-    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
-
-    _skew_delegate_after_prompt(external, monkeypatch, marked=True)
-    assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    err = capsys.readouterr().err
-    assert "회수 문제" in err and "재동기" in err
-    assert _round_paths(tmp_path) == []
-
-
 def test_rounds_seam_error_becomes_a_harvest_problem_not_a_traceback(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
@@ -1392,7 +1356,6 @@ def test_rounds_seam_error_becomes_a_harvest_problem_not_a_traceback(
         raise round_rules.RoundsError("라운드 예약 충돌 probe")
 
     monkeypatch.setattr(round_store, "reserve_round", _raise)
-    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -1406,7 +1369,10 @@ def test_non_skew_runtime_error_is_not_swallowed(external, monkeypatch, tmp_path
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
-    _skew_delegate_after_prompt(external, monkeypatch, marked=False)
+    def fail_reservation(*args, **kwargs):
+        raise RuntimeError("표시 없는 실패")
+
+    monkeypatch.setattr(round_store, "reserve_round", fail_reservation)
     with pytest.raises(RuntimeError, match="표시 없는 실패"):
         _run(external, tmp_path, "--ticket", TICKET)
 
@@ -1429,5 +1395,4 @@ def test_prompt_rules_ban_requoting_and_derive_severity_from_constants(
     monkeypatch.setattr(
         review_form, "PM_REVIEW_SEVERITIES", ("blocker-probe", *review_form.PM_REVIEW_SEVERITIES),
     )
-    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
-    assert "blocker-probe" in external._versioned_block_requirement()
+    assert "blocker-probe" in reviewer_budget._versioned_block_requirement()

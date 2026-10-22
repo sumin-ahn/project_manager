@@ -1816,10 +1816,6 @@ def test_guard_is_portable_and_needs_no_git_or_wiki(tmp_path):
 
 _LOADER_CASES = (
     (
-        "pm_delegate", "additional_reviewer", lambda mod, _tools: mod._load_additional_reviewer(),
-        "_load_additional_reviewer",
-    ),
-    (
         "pm_import", "pm_render", lambda mod, _tools: mod._load_pm_render_module(),
         "_load_pm_render_module",
     ),

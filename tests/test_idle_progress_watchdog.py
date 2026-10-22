@@ -26,6 +26,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+
 from pm_engine.infra import delegate_config
 from pm_engine.infra.harness import delegate_env
 from pm_engine.infra.harness import delegate_run
@@ -322,7 +324,7 @@ def _unexpected_harness_literal_hits(
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target")
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute")
     }
     unexpected = {}
     for module_name, source in sources.items():
@@ -551,8 +553,8 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
         )
 
     try:
-        rc = pd._execute_and_collect(
-            args=pd.argparse.Namespace(role="developer"),
+        rc = delegate_execute._execute_and_collect(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), args=pd.argparse.Namespace(role="developer"),
             harness="codex", model="test-model", reasoning=None,
             fallback=("claude", "fallback-model", None), fallback_skip=None,
             cwd=tmp_path, prompt="test", timeout=1, fallback_timeout=1,
@@ -1341,7 +1343,7 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target")
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute")
         for qualname in _module_harness_literal_hits(
             module_name, (TOOLS / f"{module_name}.py").read_text(encoding="utf-8"))
     }
@@ -1424,7 +1426,7 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
         ),
         # 내부 리뷰 B: 과거 함수 통째 면제였던 timeout 소유 함수 안의 하네스별 강제값.
         (
-            "pm_delegate",
+            "pm_engine/app/delegate_execute",
             "_execute_attempt",
             "    started = time.monotonic()\n",
             '    if harness == "claude":\n'
@@ -1466,7 +1468,7 @@ def test_structural_guard_rejects_new_timeout_bypass_callers(
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target")
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute")
     }
     sources[module_name] = _apply_mutation_anchor(
         sources[module_name], needle, replacement,
@@ -1796,7 +1798,7 @@ def test_fill_spawn_missing_file_is_binary_diagnostic(pm_import, monkeypatch):
 def test_delegate_routes_every_driver_through_shared_watchdog(pd, monkeypatch, harness):
     """3 드라이버 **전부** 워치독 경유 — codex/claude 도 증분 관측 대상(옛 구조는 벽시계 단독)."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
-    monkeypatch.setattr(pd.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(delegate_run.subprocess, "Popen", _forbidden_popen)
     delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="prompt", cwd="/tmp", env={}, timeout=600,
                        harness=harness)
     assert len(fake.calls) == 1
@@ -2111,8 +2113,8 @@ def test_execute_attempt_writes_silence_into_raw(pd, tmp_path):
         return {"returncode": 1, "stdout": "PART", "stderr": "boom", "timed_out": True,
                 delegate_run_rules.RUN_RESULT_SILENCE_SEC: 902.0, delegate_run_rules.RUN_RESULT_IDLE_KILLED: True}
 
-    attempt = pd._execute_attempt(
-        harness="codex", model="m", reasoning=None, role="developer", cwd=tmp_path,
+    attempt = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="m", reasoning=None, role="developer", cwd=tmp_path,
         prompt="p", timeout=1700, output_dir=tmp_path, run_fn=_run, attempt="primary",
     )
     raw = attempt.raw_path.read_text(encoding="utf-8")
@@ -2263,7 +2265,7 @@ def test_reviewer_idle_timeout_uses_resolved_profile_signal(external, monkeypatc
     """리뷰 표면도 profile.progress_signal 을 소비 — 신호 없는 선언을 평문으로 하드코딩하지 않는다."""
     no_signal = watchdog.HARNESS_PROFILES["codex"]._replace(
         progress_signal=conf_schema.PROGRESS_SIGNAL_NONE)
-    monkeypatch.setattr(reviewer_target, 'reviewer_profile', lambda _home, *_a, **_k: no_signal)
+    monkeypatch.setattr(reviewer_target, 'reviewer_profile', lambda *_a, **_k: no_signal)
     assert external._reviewer_idle_timeout("future-runner", 123) is None
 
 
@@ -2440,7 +2442,7 @@ def test_all_surfaces_load_the_same_relay_judgment_code(pd, external, pm_import)
 
     한쪽만 고쳐진 상태(복붙 구현·자체 판정)면 이 단언이 무너진다 — 편입의 목적이 "거기도 고쳐야
     해서"가 아니라 "규칙이 둘로 갈리는 걸 막기 위해서"이므로 코드 동일성을 직접 잠근다."""
-    delegate_relay = pd.watchdog
+    delegate_relay = delegate_run.watchdog
     review_relay = external.watchdog
     fill_relay = pm_import.watchdog
     canonical = str(TOOLS / "pm_engine/infra/harness/watchdog.py")

@@ -15,6 +15,8 @@ origin/* remote-tracking ref(origin/main 등)가 안 생긴다 → 그 bare 를 
   - fail-soft — refspec set 실패·fetch 실패는 경고 surface 하되 repo add rc 0(등록 진행).
 """
 from __future__ import annotations
+
+from pm_engine.domain import delegate_rounds
 from pm_engine.infra import git, areas_store
 
 import argparse
@@ -962,4 +964,4 @@ def test_ticket_copy_exclude_rule_matches_the_delegate_canon(pc):
     delegate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(delegate)
 
-    assert pc.TICKET_COPY_POOL_IGNORE_RULE == delegate.TICKET_COPY_POOL_IGNORE_RULE
+    assert pc.TICKET_COPY_POOL_IGNORE_RULE == delegate_rounds.TICKET_COPY_POOL_IGNORE_RULE

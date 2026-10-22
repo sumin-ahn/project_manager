@@ -17,6 +17,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_prepare
+from pm_engine.domain import delegate_rounds
+
 from pm_engine.infra import conf_store
 from pm_engine.infra.harness import delegate_env
 from pm_engine.infra.harness import delegate_run
@@ -142,7 +146,7 @@ def _run_main(pd, monkeypatch, argv, run_fn=None, conf=None):
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     # 이 파일은 resume wire/ledger 축을 검증한다. code-reviewer의 실 ticket-copy 왕복은 전용
     # growth 회귀가 소유하므로 여기서는 필수 --ticket을 유지하되 copy transport만 격리한다.
-    monkeypatch.setattr(pd, "prepare_ticket_copy", lambda **_kw: None)
+    monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", lambda _home, **_kw: None)
     return pd.main(list(argv), run_fn=run_fn)
 
 
@@ -483,8 +487,8 @@ def test_resume_resolution_surfaces_the_unusable_reason(pd, tmp_path, capsys):
     ledger_path = out_dir / "raw_outputs.json"
     record_id = _seed_record(ledger_path, start_extra={"ticket": TICKET_ID})
 
-    plan = pd.resolve_resume_plan(
-        record_id, harness="claude", role=_RESUME_ROLE,
+    plan = delegate_execute.resolve_resume_plan(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), record_id, harness="claude", role=_RESUME_ROLE,
         task_text="본문", output_dir=out_dir)
 
     assert plan is None
@@ -520,8 +524,8 @@ def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, tmp_path):
     """세션 id·usage·must_fix·기준 rev·티켓이 **한 행**에 실리고 정리 왕복 후에도 살아남는다."""
     out_dir = tmp_path / "raw"
     ledger_path = out_dir / "raw_outputs.json"
-    attempt = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None, role="code-reviewer",
+    attempt = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None, role="code-reviewer",
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
         run_fn=_FakeRun(_ok(_claude_wire(
             "판정: 반려\n**must-fix**:\n- 세션 id 판정을 rc 로 하지 마라\n- 원장 0 채우기 금지",
@@ -552,8 +556,8 @@ def test_codex_delegate_ledger_row_carries_the_flat_five_field_contract(pd, tmp_
     있다(T-0780) — claude 4필드 축과 이름이 겹쳐도(`input`·`output`) 접지 않는다."""
     out_dir = tmp_path / "raw"
     ledger_path = out_dir / "raw_outputs.json"
-    pd._execute_attempt(
-        harness="codex", model="gpt-x", reasoning=None, role="developer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="developer",
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
         run_fn=_FakeRun(_ok(_codex_wire("완료", usage=_MEASURED_CODEX_USAGE_WIRE))),
         attempt="primary",
@@ -571,8 +575,8 @@ def test_run_id_and_copy_land_on_the_same_row_when_a_round_plan_is_known(pd, tmp
     ledger_path = out_dir / "raw_outputs.json"
     run_id = "a" * 32
     copy_path = str(tmp_path / "slot" / "01-developer.md")
-    attempt = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None, role="developer",
+    attempt = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None, role="developer",
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
         run_fn=_FakeRun(_ok(_claude_wire("완료"))),
         attempt="primary", ticket=TICKET_ID, run_id=run_id,
@@ -591,8 +595,8 @@ def test_run_id_and_copy_are_absent_when_no_round_plan_is_passed(pd, tmp_path):
     모양이라 조회면이 "결속 없음"과 "손상"을 혼동하지 않는다."""
     out_dir = tmp_path / "raw"
     ledger_path = out_dir / "raw_outputs.json"
-    pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None, role="developer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None, role="developer",
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
         run_fn=_FakeRun(_ok(_claude_wire("완료"))),
         attempt="primary", ticket=TICKET_ID,
@@ -607,7 +611,7 @@ def test_resume_mismatch_fresh_rerun_binds_the_ticket_copy_run_id(pd, tmp_path):
     `run_id`/`round_copy_path` 를 결속한다. 이 콜사이트의 두 인자 전달을 지우면 이 attempt 행에
     `run_id`가 없어져 아래 단언이 red 가 된다(primary 콜사이트만 가드하던 빈틈을 닫는다)."""
     out_dir = tmp_path / "raw"
-    plan = pd.TicketCopyPlan(
+    plan = delegate_rounds.TicketCopyPlan(
         tmp_path / "slot" / "01-developer.md", tmp_path / "slot", "T-9201",
         "developer", 1, tmp_path / "board" / "01-developer.md", "b" * 32, "",
     )
@@ -624,8 +628,8 @@ def test_resume_mismatch_fresh_rerun_binds_the_ticket_copy_run_id(pd, tmp_path):
     resume = delegate_run_rules.ResumePlan(
         session_id=SESSION_ID, record_id="rec-1", delta_prompt="지적 해소", ticket=None,
     )
-    rc = pd._execute_and_collect(
-        args=pd.argparse.Namespace(role="developer"),
+    rc = delegate_execute._execute_and_collect(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), args=pd.argparse.Namespace(role="developer"),
         harness="claude", model="opus", reasoning=None,
         fallback=None, fallback_skip=None,
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
@@ -646,7 +650,7 @@ def test_infra_fallback_attempt_binds_the_ticket_copy_run_id(pd, tmp_path):
     를 결속한다. 이 콜사이트의 두 인자 전달을 지우면 폴백 attempt 행에 `run_id`가 없어져 아래
     단언이 red 가 된다(primary 콜사이트만 가드하던 빈틈을 닫는다)."""
     out_dir = tmp_path / "raw"
-    plan = pd.TicketCopyPlan(
+    plan = delegate_rounds.TicketCopyPlan(
         tmp_path / "slot" / "01-developer.md", tmp_path / "slot", "T-9202",
         "developer", 1, tmp_path / "board" / "01-developer.md", "c" * 32, "",
     )
@@ -658,8 +662,8 @@ def test_infra_fallback_attempt_binds_the_ticket_copy_run_id(pd, tmp_path):
             return {"returncode": 1, "stdout": "", "stderr": "", "timed_out": True}
         return _ok(_claude_wire("판정: 통과"))
 
-    rc = pd._execute_and_collect(
-        args=pd.argparse.Namespace(role="developer"),
+    rc = delegate_execute._execute_and_collect(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), args=pd.argparse.Namespace(role="developer"),
         harness="codex", model="gpt-x", reasoning=None,
         fallback=("claude", "opus", None), fallback_skip=None,
         cwd=tmp_path, prompt="p", timeout=1, fallback_timeout=60,
@@ -686,8 +690,8 @@ def test_a_pass_replys_none_marker_is_not_a_must_fix_item(pd, tmp_path):
 
     out_dir = tmp_path / "raw"
     ledger_path = out_dir / "raw_outputs.json"
-    pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None, role="code-reviewer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None, role="code-reviewer",
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
         run_fn=_FakeRun(_ok(_claude_wire(
             "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"))),
@@ -705,8 +709,8 @@ def test_rc_zero_without_a_reply_is_recorded_as_an_invalid_success(pd, tmp_path)
     # init 이벤트만 있는 wire — 세션 id 는 관측되지만 최종 회신(result)이 없다.
     truncated = json.dumps(
         {"type": "system", "subtype": "init", "session_id": SESSION_ID})
-    pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None, role="code-reviewer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None, role="code-reviewer",
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
         run_fn=_FakeRun(_ok(truncated)), attempt="primary", ticket=TICKET_ID,
     )
@@ -884,7 +888,7 @@ def test_explicit_ticket_wins_over_the_inherited_one(pd, monkeypatch, tmp_path):
     other = "T-" + "0888"
     # 이 테스트의 축은 resume record ticket 우선순위다. 성장 transport는 별도 회귀가
     # 소유하므로 prepare seam을 no-copy로 격리해 Claude resume wire를 그대로 관측한다.
-    monkeypatch.setattr(pd, "prepare_ticket_copy", lambda **_kw: None)
+    monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", lambda _home, **_kw: None)
     out_dir, ledger_path, _record_id = _resume_fixture(pd, tmp_path)
     prompt = _write_prompt(tmp_path)
     fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
@@ -1090,8 +1094,8 @@ def test_declared_execution_budget_matches_worst_case_spawn_count(
     prompt = _write_prompt(tmp_path)
     seen: list[int] = []
     monkeypatch.setattr(
-        pd, "harness_cap_advisory",
-        lambda *, execution_budget=None: seen.append(execution_budget))
+        delegate_execute, "harness_cap_advisory",
+        lambda _home, *, execution_budget=None: seen.append(execution_budget))
     primary_budget = delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", 600)
     fallback_budget = delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", 600)
 
@@ -1178,8 +1182,8 @@ def test_absent_ledger_is_reported_before_any_lock_is_taken(pd, tmp_path, capsys
     한 번이 트리에 `.project_manager/.local/` 을 새로 심으면 읽기 전용 경로가 아니다.
     """
     out_dir = tmp_path / "never-created"
-    plan = pd.resolve_resume_plan(
-        TICKET_ID, harness="claude", role="code-reviewer",
+    plan = delegate_execute.resolve_resume_plan(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), TICKET_ID, harness="claude", role="code-reviewer",
         task_text="본문", output_dir=out_dir,
     )
     err = capsys.readouterr().err
@@ -1240,8 +1244,8 @@ def test_unsupported_harness_stays_fresh_and_loud(pd, monkeypatch, tmp_path, cap
 def test_execute_attempt_refuses_resume_id_on_unsupported_harness(pd, tmp_path):
     """호출층이 잘못 넘겨도 미지원 축엔 재개 id 가 실리지 않는다(방어선 2중)."""
     with pytest.raises(delegate_errors.DelegateError, match="세션 재사용 미지원"):
-        pd._execute_attempt(
-            harness="opencode", model="prov/m", reasoning=None, role="code-reviewer",
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="prov/m", reasoning=None, role="code-reviewer",
             cwd=tmp_path, prompt="p", timeout=60, output_dir=tmp_path / "raw",
             run_fn=_FakeRun(_ok("")), attempt="primary",
             resume_session_id=SESSION_ID,

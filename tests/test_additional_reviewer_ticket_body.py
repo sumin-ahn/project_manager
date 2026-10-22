@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import reviewer_budget
+from pm_engine.infra import round_store
+
 from pm_engine.infra import conf_store
 
 import importlib.util
@@ -257,12 +260,13 @@ def test_review_context_always_declares_ticket_decisions_authoritative(
     external, monkeypatch, tmp_path,
 ):
     phrase = "티켓 §결정·§설계·PM 판정 블록은 **권위 있는 확정 사항**"
-    assert phrase in external._DEFAULT_CONTEXT_HEADER
+    assert phrase in reviewer_budget._DEFAULT_CONTEXT_HEADER
 
-    overlay = tmp_path / "review_context.local.md"
+    home = pm_paths.home_at(tmp_path / "code", pm_home=tmp_path / "owner")
+    home.local_dir.parent.mkdir(parents=True)
+    overlay = home.local_dir.parent / "review_context.local.md"
     overlay.write_text("# 프로젝트 전용 맥락\n", encoding="utf-8")
-    monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", overlay)
-    loaded = external._load_review_context()
+    loaded = round_store._load_review_context(home)
     assert "# 프로젝트 전용 맥락" in loaded
     assert phrase in loaded
     assert "design-proposal" in loaded

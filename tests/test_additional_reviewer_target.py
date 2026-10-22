@@ -204,7 +204,6 @@ def _break_env_preparation(external, monkeypatch, failure):
 
     리뷰어 env 는 위임 채널과 같은 seam(`pm_delegate.build_env`)이 조립한다 — 이 자리는 예약
     뒤·스폰 전이라 호출이 확실히 0 인 구간이다."""
-    delegate = external._load_pm_delegate()
     real_build_env = delegate_env.build_env
 
     def _boom(*args, **kwargs):
@@ -1020,7 +1019,6 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
     repo = _repo(tmp_path / "repo", _conf(reasoning=None))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    delegate = external._load_pm_delegate()
 
     def _reset_wave_then_fail(*args, **kwargs):
         with external._round_ledger_lock():          # 다른 실행의 `--ack-wave` 대역
@@ -2132,7 +2130,6 @@ def test_coordinate_prompt_keeps_codex_cwd_permissions_and_shared_env(
     repo = _repo(tmp_path / "repo", _conf(harness="codex", model="gpt-5.6-sol", reasoning=None))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    delegate = external._load_pm_delegate()
     env = {"PATH": os.environ.get("PATH", ""), "REVIEW_ENV_SENTINEL": "same"}
     harnesses = []
     monkeypatch.setattr(delegate_env, 'build_env', lambda harness: (harnesses.append(harness), env)[1])
@@ -2146,12 +2143,9 @@ def test_coordinate_prompt_keeps_codex_cwd_permissions_and_shared_env(
 
 
 def test_additional_reviewer_reuses_only_pm_delegate_transport_seam(external):
-    """리뷰 축은 opencode 전달 사본만 실행 시점에 지연 로드해 복제 구현을 두지 않는다."""
-    assert "pm_delegate.py" in _sibling_loads("additional_reviewer.py")
+    """리뷰 축은 공용 transport의 생성과 정리 seam을 사용한다."""
     assert not hasattr(external, "pm_delegate")
     source = inspect.getsource(external._structured_transport)
     assert "_save_opencode_transport_prompt" in source
     assert "_cleanup_attempt_transport" in source
     assert "mkstemp" not in source
-    # 위임 쪽 반대 방향 deep-import는 지연 함수 안에만 있어 import-time 순환은 생기지 않는다.
-    assert "additional_reviewer.py" in _sibling_loads("pm_delegate.py")

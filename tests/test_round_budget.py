@@ -12,6 +12,13 @@ hermetic 패턴은 `test_delegate_cluster_rounds.py`(라운드 예약)와 `test_
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+from pm_engine.domain import delegate_rounds
+from pm_engine.infra import review_command
+from pm_engine.domain import review_contract
+
 from pm_engine.infra import conf_store
 
 from pm_engine.cli import board_ticket
@@ -220,7 +227,7 @@ def _write_round_output(
         text = path.read_text(encoding="utf-8") + f"\n## 산출\n- {role} 실측\n"
         if role == "developer":
             slot = next(parent for parent in path.parents if (parent / ".git").exists())
-            command = pd._full_regression_command(slot)
+            command = delegate_harvest._full_regression_command(slot)
             text = text.replace(
                 "- 커맨드: `<실행 커맨드>`",
                 f"- 커맨드: `{command}`",
@@ -242,8 +249,8 @@ def _write_round_output(
 
 def _advance(pd, cluster: str, role: str, *, pm_home: Path, slot: Path):
     """한 단계를 실제로 예약하고 산출을 채워 회수한다(다음 단계의 입력이 된다)."""
-    plan = pd.prepare_cluster_copy(
-        cluster=cluster, role=role, cwd=slot, pm_home=pm_home,    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role=role, cwd=slot, )
     for round_plan in plan.rounds:
         _write_round_output(pd, round_plan.path, role)
     if role == "developer":
@@ -254,9 +261,8 @@ def _advance(pd, cluster: str, role: str, *, pm_home: Path, slot: Path):
             if target.exists() else "# developer contract target\n",
             encoding="utf-8", newline="\n",
         )
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
     assert all(item.refusal is None for item in outcomes), outcomes
     if role == "code-reviewer":
         for round_plan in plan.rounds:
@@ -344,9 +350,8 @@ def _prepare_accepted_review(
     command = command or python_argv_command(
         "-m", "pytest", "tests/test_terminal_regression.py", "-q",
     )
-    review = pd.prepare_cluster_copy(
-        cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
-    )
+    review = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="code-reviewer", cwd=slot, )
     finding = {
         "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
         "authority": f"[[{ticket}]] §완료 조건", "evidence": "terminal probe red",
@@ -368,9 +373,8 @@ def _prepare_accepted_review(
         f"```{review_form.PM_REVIEW_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="",
     )
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=review.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=review.run_dir, cwd=slot, )
     assert outcomes[0].refusal is None
     _record_accepted_finding(pd, pm_home, ticket, review.rounds[0].ordinal, "F-001")
     return review
@@ -378,14 +382,14 @@ def _prepare_accepted_review(
 
 def test_budget_values_expand_into_the_role_sequence(pd):
     board = _load_tool("board", "board_budget_sequence")
-    sequence = pd.cluster_round_sequence(
+    sequence = delegate_rounds.cluster_round_sequence(
         cluster_rules.CLUSTER_BUDGET_DEFAULT, cluster="C-cycle",
     )
     assert sequence == _CYCLE
     # 값을 늘이거나 줄여 가변 루프/단계 생략으로 바꾸는 장부는 손상이다.
     for key, value in (("developer_per_ticket", 2), ("architect", 0), ("fix", -1)):
         with pytest.raises(delegate_errors.DelegateError, match=rf"{key}=1"):
-            pd.cluster_round_sequence(
+            delegate_rounds.cluster_round_sequence(
                 {**cluster_rules.CLUSTER_BUDGET_DEFAULT, key: value}, cluster="C-cycle",
             )
 
@@ -399,7 +403,7 @@ def test_budget_values_expand_into_the_role_sequence(pd):
 def test_an_undeclared_budget_value_stops_the_judgment(pd, budget, missing):
     """선언되지 않은 값은 기본값으로 지어내지 않는다 — 그 장부는 판정 입력이 아니다."""
     with pytest.raises(delegate_errors.DelegateError) as caught:
-        pd.cluster_round_sequence(budget, cluster="C-broken")
+        delegate_rounds.cluster_round_sequence(budget, cluster="C-broken")
 
     message = str(caught.value)
     assert "예산이 선언되지 않았습니다" in message and missing in message
@@ -416,9 +420,8 @@ def test_developer_prepare_requires_the_architect_test_contract(pd, budget_env):
     )
 
     with pytest.raises(delegate_errors.DelegateError, match="pm-architect-tests-v1"):
-        pd.prepare_cluster_copy(
-            cluster="C-contract", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-contract", role="developer", cwd=slot, )
     assert _round_names(pm_home, "T-7000") == ["01-architect.md"]
     assert _open_runs(pd, slot, "C-contract") == []
 
@@ -438,7 +441,7 @@ def test_architect_contract_rejects_placeholder_in_every_string_field(pd, field)
     }, ensure_ascii=False, separators=(",", ":"))
 
     with pytest.raises(delegate_errors.DelegateError, match="placeholder"):
-        pd.parse_architect_tests(
+        review_contract.parse_architect_tests(
             f"```{review_form.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
         )
 
@@ -453,14 +456,12 @@ def test_initial_developer_harvest_requires_the_architect_target_in_its_diff(
         pm_paths.tickets_dir(board._home()), "T-7006", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
-    plan = pd.prepare_cluster_copy(
-        cluster="C-arch-target", role="developer", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-arch-target", role="developer", cwd=slot, )
     _write_round_output(pd, plan.rounds[0].path, "developer")
 
-    outcome = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )[0]
     assert outcome.refusal is not None
     assert "architect 필수 테스트 AT-001 대상" in outcome.refusal
     assert "tests/test_round_budget.py" in outcome.refusal
@@ -476,9 +477,8 @@ def test_developer_harvest_requires_an_exact_green_full_regression_record(
         pm_paths.tickets_dir(board._home()), "T-7009", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
-    plan = pd.prepare_cluster_copy(
-        cluster="C-stage-record", role="developer", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-stage-record", role="developer", cwd=slot, )
     target = slot / "tests" / "test_round_budget.py"
     target.parent.mkdir(parents=True)
     target.write_text("# architect contract target\n", encoding="utf-8", newline="\n")
@@ -488,9 +488,8 @@ def test_developer_harvest_requires_an_exact_green_full_regression_record(
         plan.rounds[0].path.read_text(encoding="utf-8") + "\n## 산출\n- 구현 완료\n",
         encoding="utf-8", newline="",
     )
-    outcome = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )[0]
     assert outcome.refusal is not None and "placeholder가 아닌 실값" in outcome.refusal
     assert plan.rounds[0].path.exists()
 
@@ -501,13 +500,13 @@ def test_developer_regression_record_rejects_wrong_command_and_red_result(pd):
         "## 회귀\n- 커맨드: `python3 -m pytest tests/ -q`\n"
         "- 결과: rc=0 · 10 passed\n"
     )
-    assert pd.parse_developer_regression_record(wrong).command != expected
+    assert delegate_rounds.parse_developer_regression_record(wrong).command != expected
     red = (
         f"## 회귀\n- 커맨드: `{expected}`\n"
         "- 결과: rc=1 · 1 failed\n"
     )
     with pytest.raises(delegate_errors.DelegateError, match="green이 아닙니다"):
-        pd.parse_developer_regression_record(red)
+        delegate_rounds.parse_developer_regression_record(red)
 
 
 def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
@@ -528,7 +527,7 @@ def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
     monkeypatch.setattr(regression, "_test_cmd", _test_cmd)
-    assert pd._full_regression_command(candidate) == "python3 -m pytest tests/ -q -n 8"
+    assert delegate_harvest._full_regression_command(candidate) == "python3 -m pytest tests/ -q -n 8"
 
 
 def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
@@ -568,7 +567,7 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
         home / ".project_manager" / ".local" / "worktree-leases.json",
         home / ".project_manager" / "local.conf",
     )
-    assert pd._full_regression_command(candidate) == "PM-HOME-CONF-CMD"
+    assert delegate_harvest._full_regression_command(candidate) == "PM-HOME-CONF-CMD"
 
     (pm_local / "worktree-leases.json").write_text(
         json.dumps({"leases": [{
@@ -577,7 +576,7 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
         }]}),
         encoding="utf-8", newline="\n",
     )
-    assert pd._full_regression_command(candidate) == "PM-HOME-LEASE-CMD"
+    assert delegate_harvest._full_regression_command(candidate) == "PM-HOME-LEASE-CMD"
 
 
 def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
@@ -593,17 +592,15 @@ def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
         ),
         lock=contextlib.nullcontext(),
     )
-    plan = pd.prepare_cluster_copy(
-        cluster="C-arch-red", role="developer", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-arch-red", role="developer", cwd=slot, )
     _write_round_output(pd, plan.rounds[0].path, "developer")
     target = slot / "tests" / "test_round_budget.py"
     target.parent.mkdir(parents=True)
     target.write_text("# architect contract target\n", encoding="utf-8", newline="\n")
 
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
     assert outcomes[0].refusal is not None
     assert "architect 필수 테스트 AT-001" in outcomes[0].refusal
     assert _round_names(pm_home, "T-7003") == ["01-architect.md", "02-developer.md"]
@@ -621,14 +618,12 @@ def test_fix_harvest_requires_each_reviewer_test_target_in_the_fix_diff(
     _prepare_accepted_review(
         pd, pm_home=pm_home, slot=slot, cluster=cluster, ticket=ticket,
     )
-    fix = pd.prepare_cluster_copy(
-        cluster=cluster, role="developer", cwd=slot, pm_home=pm_home,
-    )
+    fix = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="developer", cwd=slot, )
     _write_round_output(pd, fix.rounds[0].path, "developer")
 
-    outcome = pd.harvest_cluster_copy(
-        run_dir=fix.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=fix.run_dir, cwd=slot, )[0]
     assert outcome.refusal is not None
     assert "reviewer 추가 회귀 F-001 대상" in outcome.refusal
     assert "tests/test_terminal_regression.py" in outcome.refusal
@@ -653,14 +648,12 @@ def test_fix_harvest_binds_only_the_first_test_target_token_to_the_fix_diff(
             "tests/test_round_budget.py 는 이번 라운드가 손대지 않는다"
         ),
     )
-    fix = pd.prepare_cluster_copy(
-        cluster=cluster, role="developer", cwd=slot, pm_home=pm_home,
-    )
+    fix = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="developer", cwd=slot, )
     _write_round_output(pd, fix.rounds[0].path, "developer")
 
-    outcome = pd.harvest_cluster_copy(
-        run_dir=fix.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=fix.run_dir, cwd=slot, )[0]
     assert outcome.refusal is not None
     assert (
         "reviewer 추가 회귀 F-001 대상이 이 fix diff에 추가·수정되지 않았습니다: "
@@ -686,9 +679,8 @@ def test_the_declared_cycle_runs_and_the_next_request_is_refused(pd, budget_env)
     ]
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-cycle", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-cycle", role="developer", cwd=slot, )
 
     message = str(caught.value)
     assert "고정 라운드 종료" in message and "T-7001" in message
@@ -710,9 +702,8 @@ def test_the_budget_axis_is_the_only_round_cap(pd, budget_env):
         _advance(pd, "C-onlycap", role, pm_home=pm_home, slot=slot)
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-onlycap", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-onlycap", role="developer", cwd=slot, )
 
     # 예외형이 정확히 예산 축의 그것이다(다른 상한 예외로 갈리지 않는다).
     assert type(caught.value) is delegate_errors.ClusterRoundBudgetExceeded
@@ -752,9 +743,8 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     board_round = _rounds_dir(pm_home, "T-7100") / "01-architect.md"
     harvested = board_round.read_bytes()
 
-    plan = pd.prepare_cluster_copy(
-        cluster="C-reopen", role="architect", cwd=slot, pm_home=pm_home,
-        reopen_ordinal=1,
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-reopen", role="architect", cwd=slot, reopen_ordinal=1,
     )
 
     assert _round_names(pm_home, "T-7100") == ["01-architect.md"]
@@ -763,7 +753,7 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     # 슬롯 시드는 골격이 아니라 board 라운드의 현재 내용이다(이어 시키는 자리).
     assert plan.rounds[0].path.read_bytes() == harvested
     # 그 순번은 쓰기 사본으로 깔린다 — 읽기 전용 이전 라운드로 한 벌 더 깔지 않는다.
-    assert not (plan.rounds[0].run_dir / pd.TICKET_COPY_ROUNDS_DIRNAME
+    assert not (plan.rounds[0].run_dir / delegate_rounds.TICKET_COPY_ROUNDS_DIRNAME
                 / "01-architect.md").exists()
 
     plan.rounds[0].path.write_text(
@@ -771,29 +761,26 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
         + "\n## 이어 시킨 산출\n- 재개방 실측\n",
         encoding="utf-8", newline="",
     )
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
     assert all(item.refusal is None for item in outcomes), outcomes
     assert _round_names(pm_home, "T-7100") == ["01-architect.md"]
     assert "재개방 실측" in board_round.read_text(encoding="utf-8")
-    assert len(pd.parse_architect_tests(
+    assert len(review_contract.parse_architect_tests(
         board_round.read_text(encoding="utf-8"))) == 1
 
     rounds_after = round_seed.load_rounds(
         pm_paths.tickets_dir(board._home()), "T-7100")
-    assert pd._cluster_cycle_roles(rounds_after, frozenset(_CYCLE)) == ("architect",)
+    assert delegate_rounds._cluster_cycle_roles(rounds_after, frozenset(_CYCLE)) == ("architect",)
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-reopen", role="architect", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-reopen", role="architect", cwd=slot, )
     assert "다음 라운드는 developer" in str(caught.value)
     assert _round_names(pm_home, "T-7100") == ["01-architect.md"]
 
-    following = pd.prepare_cluster_copy(
-        cluster="C-reopen", role="developer", cwd=slot, pm_home=pm_home,
-    )
+    following = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-reopen", role="developer", cwd=slot, )
     assert following.rounds[0].ordinal == 2
     assert _round_names(pm_home, "T-7100") == [
         "01-architect.md", "02-developer.md",
@@ -812,9 +799,8 @@ def test_a_reopened_developer_round_harvests_into_the_same_file(pd, budget_env):
     _advance(pd, "C-reopen-dev", "architect", pm_home=pm_home, slot=slot)
     _advance(pd, "C-reopen-dev", "developer", pm_home=pm_home, slot=slot)
 
-    plan = pd.prepare_cluster_copy(
-        cluster="C-reopen-dev", role="developer", cwd=slot, pm_home=pm_home,
-        reopen_ordinal=2,
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-reopen-dev", role="developer", cwd=slot, reopen_ordinal=2,
     )
     plan.rounds[0].path.write_text(
         plan.rounds[0].path.read_text(encoding="utf-8")
@@ -828,9 +814,8 @@ def test_a_reopened_developer_round_harvests_into_the_same_file(pd, budget_env):
         encoding="utf-8", newline="\n",
     )
 
-    outcome = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )[0]
 
     assert outcome.refusal is None, outcome.refusal
     assert _round_names(pm_home, "T-7103") == ["01-architect.md", "02-developer.md"]
@@ -838,9 +823,8 @@ def test_a_reopened_developer_round_harvests_into_the_same_file(pd, budget_env):
         encoding="utf-8")
     assert "재개방 실측" in landed
     # 다음 기대 역할은 그대로 code-reviewer 다 — 재개방이 수열을 소비하지 않았다.
-    review = pd.prepare_cluster_copy(
-        cluster="C-reopen-dev", role="code-reviewer", cwd=slot, pm_home=pm_home,
-    )
+    review = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-reopen-dev", role="code-reviewer", cwd=slot, )
     assert review.rounds[0].ordinal == 3
 
 
@@ -889,25 +873,21 @@ def test_a_reopened_review_round_carries_its_own_findings_and_still_blocks_other
     _seed(pm_home, tickets, cluster, [ticket])
     _advance(pd, cluster, "architect", pm_home=pm_home, slot=slot)
     _advance(pd, cluster, "developer", pm_home=pm_home, slot=slot)
-    review = pd.prepare_cluster_copy(
-        cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
-    )
+    review = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="code-reviewer", cwd=slot, )
     _write_review_output(pd, review.rounds[0].path, ["F-001"], ticket=ticket)
-    assert pd.harvest_cluster_copy(
-        run_dir=review.run_dir, cwd=slot, pm_home=pm_home,
-    )[0].refusal is None
+    assert delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=review.run_dir, cwd=slot, )[0].refusal is None
 
-    reopened = pd.prepare_cluster_copy(
-        cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
-        reopen_ordinal=3,
+    reopened = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="code-reviewer", cwd=slot, reopen_ordinal=3,
     )
     # 시드가 골격이 아니라 F-001 을 실은 직전 산출이다(이 형상이 자기 충돌의 입력이었다).
     assert "F-001" in reopened.rounds[0].path.read_text(encoding="utf-8")
     _write_review_output(pd, reopened.rounds[0].path, ["F-001", "F-002"], ticket=ticket)
 
-    outcome = pd.harvest_cluster_copy(
-        run_dir=reopened.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=reopened.run_dir, cwd=slot, )[0]
 
     assert outcome.refusal is None, outcome.refusal
     landed = (_rounds_dir(pm_home, ticket) / "03-code-reviewer.md").read_text(
@@ -924,15 +904,13 @@ def test_a_reopened_review_round_carries_its_own_findings_and_still_blocks_other
         + "\n- F-003 은 이 구현 단계가 이미 다뤘다\n",
         encoding="utf-8", newline="",
     )
-    again = pd.prepare_cluster_copy(
-        cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
-        reopen_ordinal=3,
+    again = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="code-reviewer", cwd=slot, reopen_ordinal=3,
     )
     _write_review_output(pd, again.rounds[0].path, ["F-001", "F-003"], ticket=ticket)
 
-    refused = pd.harvest_cluster_copy(
-        run_dir=again.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    refused = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=again.run_dir, cwd=slot, )[0]
 
     assert refused.refusal is not None
     assert "finding ID 재선언: F-003" in refused.refusal
@@ -945,14 +923,12 @@ def test_reopening_a_missing_or_mismatched_ordinal_leaves_no_residue(pd, budget_
     _advance(pd, "C-reopen-miss", "architect", pm_home=pm_home, slot=slot)
 
     with pytest.raises(delegate_errors.DelegateError, match="재개방할 라운드가 없다"):
-        pd.prepare_cluster_copy(
-            cluster="C-reopen-miss", role="architect", cwd=slot, pm_home=pm_home,
-            reopen_ordinal=2,
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-reopen-miss", role="architect", cwd=slot, reopen_ordinal=2,
         )
     with pytest.raises(delegate_errors.DelegateError, match="역할이 다르다"):
-        pd.prepare_ticket_copy(
-            ticket="T-7101", role="developer", cwd=slot, pm_home=pm_home,
-            reopen_ordinal=1,
+        delegate_prepare.prepare_ticket_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), ticket="T-7101", role="developer", cwd=slot, reopen_ordinal=1,
         )
 
     assert _round_names(pm_home, "T-7101") == ["01-architect.md"]
@@ -967,9 +943,8 @@ def _prepare_recorded_developer(pd, budget_env, *, phase: str, suffix: str):
     advance = 1 if phase == "initial" else 3
     for role in _CYCLE[:advance]:
         _advance(pd, cluster, role, pm_home=pm_home, slot=slot)
-    plan = pd.prepare_cluster_copy(
-        cluster=cluster, role="developer", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="developer", cwd=slot, )
     _write_round_output(pd, plan.rounds[0].path, "developer")
     if phase == "initial":
         target = slot / "tests" / "test_round_budget.py"
@@ -985,7 +960,7 @@ def test_developer_harvest_accepts_exact_record_without_reexecuting_full(
     pm_home, slot, _ticket, plan = _prepare_recorded_developer(
         pd, budget_env, phase=phase, suffix="7040" if phase == "initial" else "7050",
     )
-    real_run = pd._run_required_test
+    real_run = review_command._run_required_test
     calls = []
 
     def targeted_only(command, expected, *, cwd):
@@ -993,10 +968,9 @@ def test_developer_harvest_accepts_exact_record_without_reexecuting_full(
         assert expected is not None, "harvest가 stage-exit full을 중복 실행했다"
         return real_run(command, expected, cwd=cwd)
 
-    monkeypatch.setattr(pd, "_run_required_test", targeted_only)
-    outcome = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    monkeypatch.setattr(review_command, "_run_required_test", targeted_only)
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )[0]
 
     assert outcome.refusal is None
     assert calls, "architect targeted 계약은 harvest에서 계속 검증해야 한다"
@@ -1023,7 +997,7 @@ def test_developer_harvest_rejects_invalid_record_without_running_full(
         text = text.replace("## 회귀\n", "## 회귀 기록 누락\n", 1)
     elif record_axis == "mismatch":
         text = text.replace(
-            f"- 커맨드: `{pd._full_regression_command(slot)}`",
+            f"- 커맨드: `{delegate_harvest._full_regression_command(slot)}`",
             "- 커맨드: `python3 -m pytest tests/ -q`",
             1,
         )
@@ -1037,11 +1011,10 @@ def test_developer_harvest_rejects_invalid_record_without_running_full(
         assert expected is not None, "거부 경로도 full을 중복 실행하면 안 된다"
         return None
 
-    monkeypatch.setattr(pd, "_run_required_test", targeted_only)
+    monkeypatch.setattr(review_command, "_run_required_test", targeted_only)
 
-    outcome = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )[0]
     assert outcome.refusal is not None and expected_message in outcome.refusal
     assert outcome.terminal is (phase == "fix")
     assert all(expected is not None for _command, expected in calls)
@@ -1054,9 +1027,8 @@ def test_fix_harvest_runs_the_reviewer_required_regression(pd, budget_env):
     for role in _CYCLE[:2]:
         _advance(pd, "C-review-red", role, pm_home=pm_home, slot=slot)
 
-    review = pd.prepare_cluster_copy(
-        cluster="C-review-red", role="code-reviewer", cwd=slot, pm_home=pm_home,
-    )
+    review = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-review-red", role="code-reviewer", cwd=slot, )
     finding = {
         "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
         "authority": f"[[{ticket}]] §완료 조건", "evidence": "red 재현",
@@ -1079,22 +1051,19 @@ def test_fix_harvest_runs_the_reviewer_required_regression(pd, budget_env):
         f"```{review_form.PM_REVIEW_BLOCK}\n{payload}\n```\n",
         encoding="utf-8", newline="",
     )
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=review.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=review.run_dir, cwd=slot, )
     assert outcomes[0].refusal is None
     _record_accepted_finding(pd, pm_home, ticket, review.rounds[0].ordinal, "F-001")
 
-    fix = pd.prepare_cluster_copy(
-        cluster="C-review-red", role="developer", cwd=slot, pm_home=pm_home,
-    )
+    fix = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-review-red", role="developer", cwd=slot, )
     _write_round_output(pd, fix.rounds[0].path, "developer")
     target = slot / "tests" / "test_review_regression.py"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("# reviewer contract target\n", encoding="utf-8", newline="\n")
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=fix.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=fix.run_dir, cwd=slot, )
     assert outcomes[0].refusal is not None
     assert "reviewer 추가 회귀 F-001" in outcomes[0].refusal
 
@@ -1120,9 +1089,8 @@ def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
         f"test.cmd={python_argv_command('-m', 'pytest', 'tests/', '-q', '-n', 'auto')}\n",
         encoding="utf-8", newline="\n",
     )
-    fix = pd.prepare_cluster_copy(
-        cluster=cluster, role="developer", cwd=slot, pm_home=pm_home,
-    )
+    fix = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="developer", cwd=slot, )
     _write_round_output(pd, fix.rounds[0].path, "developer")
     target = slot / "tests" / "test_terminal_regression.py"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1141,10 +1109,9 @@ def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
             return "green이 아닙니다: reviewer axis"
         return None
 
-    monkeypatch.setattr(pd, "_run_required_test", required_test)
-    outcome = pd.harvest_cluster_copy(
-        run_dir=fix.run_dir, cwd=slot, pm_home=pm_home,
-    )[0]
+    monkeypatch.setattr(review_command, "_run_required_test", required_test)
+    outcome = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=fix.run_dir, cwd=slot, )[0]
 
     assert outcome.refusal is not None and outcome.terminal is True
     assert "terminal stop" in outcome.refusal
@@ -1154,8 +1121,8 @@ def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
     assert fix.rounds[0].path.exists()
     assert _round_names(pm_home, ticket)[-1] == "04-developer.md"
 
-    delegated = pd._delegation_harvest_failure_message(
-        pd.TerminalFixHarvestError(outcome.refusal), fix.run_dir,
+    delegated = delegate_execute._delegation_harvest_failure_message(
+        delegate_rounds.TerminalFixHarvestError(outcome.refusal), fix.run_dir,
     )
     assert "terminal stop" in delegated and "사용자에게 보고" in delegated
     for forbidden in ("재회수", "새 prepare", "새 위임", "사본을 고쳐"):
@@ -1169,9 +1136,8 @@ def test_review_without_the_implementation_round_is_refused(pd, budget_env):
     _advance(pd, "C-order", "architect", pm_home=pm_home, slot=slot)
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-order", role="code-reviewer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-order", role="code-reviewer", cwd=slot, )
 
     message = str(caught.value)
     assert "순서 밖 역할" in message and "다음 라운드는 developer" in message
@@ -1187,9 +1153,8 @@ def test_implementation_after_the_fix_round_is_refused(pd, budget_env):
         _advance(pd, "C-tail", role, pm_home=pm_home, slot=slot)
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded):
-        pd.prepare_cluster_copy(
-            cluster="C-tail", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-tail", role="developer", cwd=slot, )
 
 
 def test_the_ticket_surface_gets_the_same_budget_verdict(pd, budget_env):
@@ -1200,9 +1165,8 @@ def test_the_ticket_surface_gets_the_same_budget_verdict(pd, budget_env):
         _advance(pd, "C-surface", role, pm_home=pm_home, slot=slot)
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_ticket_copy(
-            ticket="T-7030", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_ticket_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), ticket="T-7030", role="developer", cwd=slot, )
 
     message = str(caught.value)
     assert "고정 라운드 종료" in message and "T-7030" in message
@@ -1216,9 +1180,8 @@ def test_the_ticket_surface_refuses_an_out_of_order_role_too(pd, budget_env):
     _seed(pm_home, tickets, "C-surfaceorder", ["T-7031"])
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_ticket_copy(
-            ticket="T-7031", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_ticket_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), ticket="T-7031", role="developer", cwd=slot, )
 
     assert "다음 라운드는 architect" in str(caught.value)
     assert _round_names(pm_home, "T-7031") == []
@@ -1231,9 +1194,9 @@ def test_cli_prepare_refuses_over_budget_with_the_stop_prescription(
     _seed(pm_home, tickets, "C-cli", ["T-7040"])
     for role in _CYCLE:
         _advance(pd, "C-cli", role, pm_home=pm_home, slot=slot)
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _repo: pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _repo: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {})
+    monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
     capsys.readouterr()
 
@@ -1253,9 +1216,9 @@ def test_cli_prepare_reopens_the_named_ordinal_and_refuses_a_zero(
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-cli-reopen", ["T-7102"])
     _advance(pd, "C-cli-reopen", "architect", pm_home=pm_home, slot=slot)
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _repo: pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _repo: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {})
+    monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
     capsys.readouterr()
 
@@ -1302,9 +1265,8 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
     monkeypatch.setattr(fs, "board_lock", _racing_lock)
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-race", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-race", role="developer", cwd=slot, )
 
     assert "고정 라운드 종료" in str(caught.value)
     # 경쟁 예약분(04) 하나만 남고 이 호출의 예약은 없다.
@@ -1321,7 +1283,7 @@ _ALL_ZERO_BUDGET = {
 def test_an_all_zero_budget_is_invalid(pd):
     """0은 단계 생략 경로가 아니라 손상된 고정 수열 선언이다."""
     with pytest.raises(delegate_errors.DelegateError, match="architect=1"):
-        pd.cluster_round_sequence(_ALL_ZERO_BUDGET, cluster="C-zero")
+        delegate_rounds.cluster_round_sequence(_ALL_ZERO_BUDGET, cluster="C-zero")
 
 
 def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
@@ -1331,9 +1293,8 @@ def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
 
     for role in _CYCLE:
         with pytest.raises(delegate_errors.DelegateError) as caught:
-            pd.prepare_cluster_copy(
-                cluster="C-zero", role=role, cwd=slot, pm_home=pm_home,
-            )
+            delegate_prepare.prepare_cluster_copy(
+                pm_paths.home_at(Path(pm_home).resolve()), cluster="C-zero", role=role, cwd=slot, )
         message = str(caught.value)
         assert "architect=1" in message
     # 거부는 예약 앞이다 — 라운드도 run-dir 도 만들어지지 않았다.
@@ -1342,9 +1303,8 @@ def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
 
     # 네 값이 모두 1인 canonical 장부에서는 첫 architect 요청이 통과한다.
     _write_cluster(pm_home, "C-zero", ["T-7100"])
-    plan = pd.prepare_cluster_copy(
-        cluster="C-zero", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-zero", role="architect", cwd=slot, )
     assert plan.rounds[0].board_path.name == "01-architect.md"
 
 
@@ -1375,9 +1335,8 @@ def test_the_lock_recheck_sees_a_budget_that_became_invalid(
     )
 
     with pytest.raises(delegate_errors.DelegateError) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-shrink", role="architect", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-shrink", role="architect", cwd=slot, )
 
     assert "architect=1" in str(caught.value)
     assert _round_names(pm_home, "T-7110") == []
@@ -1390,9 +1349,8 @@ def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatc
     _refuse_at_the_lock(pd, pm_home, monkeypatch, ledger.unlink)
 
     with pytest.raises(delegate_errors.DelegateError, match="묶음 장부가 없습니다"):
-        pd.prepare_cluster_copy(
-            cluster="C-vanish", role="architect", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-vanish", role="architect", cwd=slot, )
 
     assert _round_names(pm_home, "T-7120") == []
 
@@ -1411,9 +1369,8 @@ def test_a_ticket_without_a_ledger_stops_the_preparation(pd, budget_env):
     assert cluster_store.cluster_members(pm_paths.home_at(pm_home), "C-T-7130") == ()
 
     with pytest.raises(delegate_errors.DelegateError) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-T-7130", role="architect", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-T-7130", role="architect", cwd=slot, )
 
     assert "클러스터 멤버가 없습니다" in str(caught.value)
     assert _round_names(pm_home, "T-7130") == []
@@ -1433,9 +1390,8 @@ def test_legacy_replan_metadata_does_not_reopen_the_fixed_sequence(pd, budget_en
     ])
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded, match="고정 라운드 종료"):
-        pd.prepare_cluster_copy(
-            cluster="C-closed", role="architect", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-closed", role="architect", cwd=slot, )
     assert len(_round_names(pm_home, "T-7060")) == 4
 
 
@@ -1452,9 +1408,8 @@ def test_size_one_cluster_takes_the_same_path(pd, budget_env):
         assert len(plan.rounds) == 1
 
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
-        pd.prepare_cluster_copy(
-            cluster="C-one", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-one", role="developer", cwd=slot, )
     assert "추가 라운드 없이 정지·보고" in str(caught.value)
 
 
@@ -1466,9 +1421,8 @@ def test_the_ticket_surface_without_a_ledger_stops_too(pd, budget_env):
         encoding="utf-8", newline="\n")
 
     with pytest.raises(delegate_errors.DelegateError) as caught:
-        pd.prepare_ticket_copy(
-            ticket="T-7090", role="architect", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_ticket_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), ticket="T-7090", role="architect", cwd=slot, )
 
     assert "묶음 장부가 없습니다" in str(caught.value)
     assert _round_names(pm_home, "T-7090") == []

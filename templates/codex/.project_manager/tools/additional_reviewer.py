@@ -80,13 +80,13 @@
 from __future__ import annotations
 
 
+
 import argparse
 import contextlib
 import datetime
 import hashlib
 import io
 import inspect
-import json
 import os
 import re
 import shlex
@@ -100,6 +100,8 @@ from typing import Callable, Iterator, NamedTuple, Sequence
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import review_contract
+from pm_engine.app import reviewer_prompt
 from pm_engine.infra import clock
 from pm_engine.infra.harness import delegate_env
 from pm_engine.infra.harness import delegate_temp
@@ -108,30 +110,15 @@ from pm_engine.domain import reviewer_result
 from pm_engine.infra import reviewer_target
 from pm_engine.app import round_maintenance  # noqa: E402
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules, ticket_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, raw_output, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, raw_output, review_rounds, round_store, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 from pm_engine.app import release, round_seed  # noqa: E402
 
 from pm_engine.app import completion_gate
 
-_load_module_from_path = repo_files.load_module
-
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
 ENGINE_REV = "v1.8.1"
-
-
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-        )
-        err._engine_rev_skew = True
-        raise err
 
 
 def _is_engine_rev_skew(exc) -> bool:
@@ -147,11 +134,7 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "갈아타면 이 실행이 왜 죽었는지가 사라지고 라운드 환불 판정의 근거도 함께 사라진다. "
         "불일치는 경고 한 줄로 남기고 중단 사유(주 예외)를 그대로 전파한다"
     ),
-    "ticket_harvest": (
-        "회수는 이미 **끝나고 과금된** 라운드의 기록이다 — 여기서 사본 불일치로 traceback 을 내면 "
-        "리뷰 판정과 요약이 이미 출력된 뒤 실행이 죽어, 채택자에게는 '리뷰가 실패했다'로만 보인다. "
-        "설계된 회수 실패 처방(재동기 안내 + rc≠0 + raw 경로)으로 접고 산출은 raw 에 남긴다"
-    ),
+
 }
 
 
@@ -164,22 +147,6 @@ def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
     if not reason:
         raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
     return _is_engine_rev_skew(exc)
-
-
-def _require_engine_sibling(path: Path, filename: str) -> None:
-    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
-
-    부재는 raw `FileNotFoundError` 로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
-    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다."""
-    if path.exists():
-        return
-    err = RuntimeError(
-        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
-        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
-        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-    )
-    err._engine_rev_skew = True
-    raise err
 
 
 # ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
@@ -416,99 +383,6 @@ _MACHINE_MIRROR_RE = re.compile(
 # 실행 전 거부라 리뷰어는 호출되지 않는다(과금 없음). wave 예산 소진도 같은 축(호출 전
 # 예산 거부)이라 같은 rc 를 쓴다 — 호출부가 "예산 때문에 안 나갔다"를 한 코드로 판별한다.
 EXIT_ROUND_LIMIT_EXCEEDED = 4
-
-# generic 맥락 헤더 (review_context.local.md 부재 시)
-_AUTHORITATIVE_TICKET_CONTEXT = (
-    "티켓 §결정·§설계·PM 판정 블록은 **권위 있는 확정 사항**이다 — 그 결정을 되돌리라는 지적은 "
-    "`design-proposal` 로 분류하고 must-fix 로 내지 마라. must-fix 는 티켓 목표·결정 안에서의 "
-    "결함에 한한다."
-)
-
-_DEFAULT_CONTEXT_HEADER = f"""\
-## 리뷰 맥락
-
-리뷰 입력 좌표의 명령으로 diff를 직접 읽고 코드리뷰하라. 프로젝트 고유 맥락(`.project_manager/review_context.local.md`)이
-설정돼 있으면 그 기준을 우선한다.
-
-{_AUTHORITATIVE_TICKET_CONTEXT}
-"""
-
-# 출력 형식 블록 (parse_verdict 가 의존 — 리뷰어 무관 공통)
-_OUTPUT_FORMAT_BLOCK = """\
-### 출력 형식 (필수)
-아래 형식으로 응답하라:
-
-판정: [통과 | 반려]
-
-**must-fix** (반드시 수정):
-- (없으면 "없음" · 있으면 아래 블록의 finding ID 만 나열한다)
-
-**suggestion** (권장):
-- (없으면 "없음" · 있으면 아래 블록의 finding ID 만 나열한다)
-
-"""
-
-# 구조화 블록 요구 — 스키마는 엔진 파서 상수에서만 파생한다(여기서 다시 적지 않는다).
-_VERSIONED_BLOCK_HEADER = """\
-### 구조화 판정 블록 (필수)
-위 산문 뒤에 아래 스키마의 블록을 **정확히 하나** 출력하라. 엔진이 이 회신 전문을 게이트 티켓의
-`additional-reviewer` 라운드 파일로 회수하고, PM 은 이 블록으로 판정한다 — 증거·권고·심각도는 블록이
-단일 진실이므로 산문에 같은 항목을 다시 서술하지 마라.
-
-"""
-_VERSIONED_BLOCK_RULES = """\
-- `id` 는 이 채널 전용 접두 `{prefix}-` 를 쓰고 **이번 라운드는 {next_id} 부터** 매긴다 —
-  티켓 전역 유일이라 본문에 이미 있는 ID 를 다시 쓰면 이 라운드는 회수되지 않는다.
-- `severity` 가 "반드시 고쳐야 하는가"의 단일 진실이다(가장 높은 값 `{top_severity}` 는 산문
-  must-fix 절과 같은 건수여야 한다).
-- `authority` 는 티켓 §목표/§결정 또는 `[[T-NNNN]]`·`[[ADR-NNNN]]` 같은 권위 근거를 적는다.
-- 직전 라운드 지적의 해소 확인 라운드는 그 `{prefix}-` ID 를 `confirmations` 에 싣는다.
-- `fix_contract`의 여섯 문자열은 모두 **구체값**이어야 한다. angle-bracket metavariable와
-  parser 금지어({placeholder_words})를 쓰지 마라. 경로는 실제 repo-relative 경로를, 명령은
-  그대로 실행 가능한 단일 명령을 적는다.
-- 구조화 블록의 JSON 문자열 값에는 `<` 또는 `>` 문자를 아예 쓰지 마라. metavariable가
-  필요하면 꺾쇠 없이 `ticket ID`처럼 평문으로 적는다.
-- 유효한 구체값 예: location=`.project_manager/tools/additional_reviewer.py:_VERSIONED_BLOCK_RULES` ·
-  failure=`금지어 안내가 parser 목록과 어긋난다` · design=`parser 상수에서 안내를 렌더한다` ·
-  test=`tests/test_additional_reviewer_ticket_harvest.py` ·
-  command=`python3 -m pytest tests/test_additional_reviewer_ticket_harvest.py -q` · expected=`passed`.
-- 위 티켓 본문에 이미 있는 블록(지난 라운드 산출·시드 골격)을 회신에 **재인용하지 마라** —
-  이 회신에는 네가 이번에 낸 블록 하나만 있어야 한다.
-- 블록이 없거나 스키마를 어기면 이 라운드는 회수되지 않는다(라운드 파일 없음 · 종료코드 ≠ 0).
-
-"""
-
-
-def _versioned_block_requirement(
-    next_finding_id: str | None = None,
-    confirmation_ids: Sequence[str] | None = None,
-) -> str:
-    """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두·ID 실값을 엔진에서 렌더한다.
-
-    리뷰어 세션은 라운드마다 fresh 라 이전 라운드의 ID 를 모른다. 회수 대상 티켓에서 읽어 온
-    **다음 ID 실값**(`_next_external_finding_id`)을 골격에 싣는다. 실값이 없으면(회수 대상 없는
-    실행) 첫 ID·placeholder 로 돌려준다.
-    """
-    role = review_form.ADDITIONAL_REVIEWER_ROLE
-    next_id = next_finding_id or review_state.next_review_finding_id("", role)
-    rules = _VERSIONED_BLOCK_RULES.format(
-        prefix=review_form.PM_REVIEW_FINDING_ID_PREFIXES[role],
-            # 표기는 호출부가 정할 수 있다 — 대상이 티켓 하나면 ID 실값 하나이고, 묶음이면
-            # 그 값이 티켓마다 다르다(그 실값은 각 라운드 파일 시드가 이미 들고 있다).
-        next_id=f"`{next_id}`",
-        top_severity=review_form.PM_REVIEW_SEVERITIES[0],
-        placeholder_words="·".join(
-            review_form.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS
-        ),
-    )
-    return (
-        _VERSIONED_BLOCK_HEADER
-        + rules
-        + review_form.PM_REVIEW_FIX_TEST_RULE
-        + "\n\n"
-        + review_form.render_pm_review_block_skeleton(role, confirmation_ids)
-        + "\n"
-    )
 
 
 # 빈-diff fail-loud 안내.
@@ -841,19 +715,6 @@ def _restrict_to_owner(path: Path) -> None:
     수단(퍼미션/ACL)은 `fs` 가 소유하고 여기서는 보장만 요구한다.
     """
     fs.restrict_to_owner(path)
-
-
-def _load_pm_delegate():
-    """리뷰 블록 스키마와 회수 내용 규칙의 단일 진실(`pm_delegate.py`)을 경로 로드한다.
-
-    실행 파일 위치에 결속된 경로 로더다. 스키마를 이 모듈이 다시 적으면 파서와
-    프롬프트가 갈리고, 회수 판정 규칙을 여기서 따로 구현하면 리뷰 채널마다 규칙이 갈린다.
-    """
-    path = Path(__file__).resolve().parent / "pm_delegate.py"
-    _require_engine_sibling(path, "pm_delegate.py")
-    return _load_module_from_path(
-        path, "pm_delegate.py", verifier=_verify_engine_rev, cache=True,
-    )
 
 
 def _round_ledger_lock_path() -> Path:
@@ -2780,90 +2641,6 @@ def _parse_touches_from_file(path: Path) -> list[str]:
     return touches
 
 
-# ── 프롬프트 조립 ─────────────────────────────────────────────────────────
-
-
-def _load_review_context() -> str:
-    """인스턴스 overlay 또는 기본 헤더에 티켓 결정 권위 규약을 빠짐없이 결합한다."""
-    if REVIEW_CONTEXT_FILE.exists():
-        try:
-            context = fs.read_text_shared(REVIEW_CONTEXT_FILE, encoding="utf-8").strip() + "\n"
-            if _AUTHORITATIVE_TICKET_CONTEXT not in context:
-                context += "\n" + _AUTHORITATIVE_TICKET_CONTEXT + "\n"
-            return context
-        except OSError:
-            pass
-    return _DEFAULT_CONTEXT_HEADER
-
-
-def build_prompt(
-    ticket_body: str | None = None,
-    adr_refs: list[str] | None = None,
-    gate: str | None = None,
-    *,
-    tree: Path,
-    base: str,
-    target: str,
-    changed_paths: Sequence[str],
-    read_commands: Sequence[Sequence[str]],
-    ticket_id: str | None = None,
-    next_finding_id: str | None = None,
-    confirmation_ids: Sequence[str] | None = None,
-    ticket_bodies: Sequence[tuple[str, str]] | None = None,
-    focus: str | None = None,
-    versioned_block: bool = True,
-) -> str:
-    """검토 맥락과 리뷰 입력 좌표로 표준 프롬프트를 생성한다.
-
-    `next_finding_id` 는 회수 대상 티켓에서 읽은 이 채널의 다음 ID 실값이고,
-    `confirmation_ids` 는 그 티켓에서 확인할 수 있는 ID 실값 목록이다(빈 목록 = 확인 대상 없음).
-
-    검토 대상은 티켓 하나(`ticket_body`)이거나 **묶음의 티켓 N**(`ticket_bodies`)이다 — 두
-    채널이 이 한 조립기를 쓰고, 본문 절은 같은 표제로 티켓 수만큼 반복된다(크기 1 도 같은 경로).
-    `focus` 는 PM 이 준 검토 중점 한 문단이다(내용은 PM 소유 · 엔진은 자리만 만든다).
-    `versioned_block` 은 구조화 블록 요구를 이 프롬프트가 소유하는가다 — 산출이 라운드 파일이고
-    그 시드가 이미 채널별 골격·다음 ID 를 들고 있는 경로에서는 끈다(요구가 두 벌이면 갈린다)."""
-    parts: list[str] = [
-        _load_review_context().rstrip() + "\n\n",
-        _OUTPUT_FORMAT_BLOCK,
-    ]
-    if versioned_block:
-        parts.append(_versioned_block_requirement(next_finding_id, confirmation_ids))
-    if adr_refs:
-        parts.append(f"관련 ADR: {', '.join(adr_refs)}\n\n")
-    if gate:
-        parts.append(f"게이트 ticket: {gate}\n\n")
-    bodies: list[tuple[str | None, str]] = list(ticket_bodies or ())
-    if not bodies and ticket_body is not None:
-        bodies = [(ticket_id or gate, ticket_body)]
-    for label_value, body in bodies:
-        ticket_label = f" ({label_value})" if label_value else ""
-        parts.append(f"### 게이트 티켓 본문{ticket_label}\n")
-        parts.append(body)
-        if not body.endswith("\n"):
-            parts.append("\n")
-        parts.append("\n")
-    if focus and focus.strip():
-        parts.append("### PM 검토 중점\n")
-        parts.append(focus.strip() + "\n\n")
-    parts.append("### 리뷰 입력 좌표\n")
-    parts.append(f"- 리뷰 대상 트리: {tree.resolve()} ({target})\n")
-    parts.append(f"- 기준: {base}\n")
-    parts.append(f"- 변경 파일 {len(changed_paths)}건: "
-                 + json.dumps(list(changed_paths), ensure_ascii=False) + "\n\n")
-    parts.append("### 리뷰 입력 확인\n")
-    parts.append(
-        "다음 명령으로 대상 트리의 diff를 직접 읽고 변경 파일과 필요한 주변 코드를 검토한다. "
-        "출력이 길면 명령의 pathspec 범위 안에서 파일별로 나누어 읽는다. "
-        "명령 실패나 트리 불일치는 변경 없음으로 처리하지 않고 판정 불가 사유로 보고한다. "
-        "코드와 git 상태를 수정하지 않는다. "
-        "`--no-index` 명령의 rc=1은 차이가 있음을 뜻한다.\n\n"
-    )
-    for argv in read_commands:
-        parts.append("```sh\n" + delegate_env.render_shell_command(argv) + "\n```\n")
-    return "".join(parts)
-
-
 def _reviewer_idle_timeout(reviewer_cmd: str, idle_timeout: float | None) -> float | None:
     """리뷰어 축의 무진행 상한 해소 — 공용 선언 테이블(`idle_timeout_for_signal`)을 그대로 탄다.
 
@@ -4215,8 +3992,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     def compose_prompt() -> str:
         """이번 실행의 표준 리뷰 프롬프트."""
-        return build_prompt(
-            tree=diff_root, base=review_diff.base, target=review_diff.target,
+        return reviewer_prompt.build_prompt(
+            pm_paths.home_at(REPO, pm_home=_PM_HOME_OVERRIDE, board_root=pm_paths._board_root_at(_PM_HOME_OVERRIDE or REPO)), tree=diff_root, base=review_diff.base, target=review_diff.target,
             changed_paths=review_diff.paths, read_commands=review_diff.read_commands,
             ticket_body=ticket_body, ticket_id=args.ticket,
             adr_refs=args.adr, gate=args.gate,
@@ -4285,13 +4062,6 @@ def _main(argv: list[str] | None = None) -> int:
             target=target, reservation=reservation,
             pm_home=pm_home, diff_root=diff_root,
         )
-
-
-# 회수 경계에서 사본 불일치를 접을 때의 단일 문구 — 두 로드/쓰기 지점이 같은 처방을 낸다.
-_HARVEST_ENGINE_SKEW_PROBLEM = (
-    "엔진 사본 불일치로 회수를 중단했습니다 — {detail} "
-    "(`pm-update` 로 재동기한 뒤 같은 티켓으로 라운드를 다시 돌리세요)"
-)
 
 
 def _harvest_target_ticket(
@@ -4380,12 +4150,12 @@ def _harvest_additional_reviewer_section(
     """추가 리뷰어 산출을 게이트 티켓의 새 `additional-reviewer` 라운드 파일로 회수한다.
 
     회수 주체는 **엔진**이다 — 리뷰어에게 티켓/보드 편집 권한을 주지 않는다. 라운드 본문은 첫 줄
-    헤더 + 산문 회신 전문(그 안에 versioned 블록 하나)이고, 내용 검증(`pm_delegate` 소유)을
+    헤더 + 산문 회신 전문(그 안에 versioned 블록 하나)이고, 내용 검증(`review_contract` 소유)을
     통과할 때만 파일이 생긴다. 통과하지 못하면 **파일을 만들지 않고** 사유를 돌려준다(호출부가
     rc 로 표면화하고 산출 원문은 raw 에 남는다) — 라운드가 파일 하나라 "거부 표식을 얹어 절에
     남기고 판정 표면에서 빼는" 보정이 필요 없다.
 
-    채번+생성은 준비(`pm_delegate.prepare_ticket_copy`)와 **같은 seam**(`round_store.reserve_round`)을
+    채번+생성은 준비(`delegate_prepare.prepare_ticket_copy`)와 **같은 seam**(`round_store.reserve_round`)을
     지난다 — 인자가 시드냐 실내용이냐만 다르다.
 
     쓰기 엔진은 **이 실행의 형제 사본**이고 데이터 좌표만 PM 홈이다 — PM 홈의 import 사본을
@@ -4396,29 +4166,18 @@ def _harvest_additional_reviewer_section(
         return "리뷰어 회신이 비어 회수할 산출이 없습니다"
     home = pm_home or REPO
     try:
-        delegate = _load_pm_delegate()
-    except RuntimeError as exc:
-        if not _absorb_engine_rev_skew_for_recovery(exc, "ticket_harvest"):
-            raise
-        return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
-    try:
         return _reserve_additional_reviewer_round(
-            ticket, reply, delegate=delegate,
-            board_home=pm_paths.home_at(Path(home).resolve()),
+            ticket, reply, board_home=pm_paths.home_at(Path(home).resolve()),
         )
     # 라운드 규약 위반은 `RuntimeError` 하위형이라 **사본 skew 절보다 먼저** 받는다 — 순서를
     # 뒤집으면 예약 충돌·이름 문법 위반이 skew 판정을 지나 traceback 으로 나간다.
     except (delegate_errors.DelegateError, round_rules.RoundsError,
             OSError, UnicodeError) as exc:
         return f"티켓 라운드 기록 실패: {exc}"
-    except RuntimeError as exc:
-        if not _absorb_engine_rev_skew_for_recovery(exc, "ticket_harvest"):
-            raise
-        return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
 
 
 def _reserve_additional_reviewer_round(
-    ticket: str, reply: str, *, delegate, board_home,
+    ticket: str, reply: str, *, board_home,
 ) -> str | None:
     """내용 검증 → 통과 시 라운드 예약 + board 부분 커밋 (위반 사유 또는 None).
 
@@ -4443,7 +4202,7 @@ def _reserve_additional_reviewer_round(
     rounds = round_seed.load_rounds(
         tickets_dir, ticket, ticket_text=ticket_text,
     )
-    problem = delegate.review_harvest_problem(
+    problem = review_contract.review_harvest_problem(
         reply, ticket_text=ticket_text, rounds=rounds,
     )
     if problem is not None:

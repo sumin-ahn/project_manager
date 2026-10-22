@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+
 from pm_engine.infra import conf_store
 from pm_engine.domain import delegate_run_rules
 from pm_engine.infra.harness import delegate_temp
@@ -263,7 +265,7 @@ def test_scope_read_without_tmp_stays_read_only_without_git_roots(
         pd, tmp_path, monkeypatch, role):
     """tmp 를 준비하지 못한 실행에 원 git 쓰기를 여는 보상 동작이 없다."""
     source = _committed_repo(tmp_path / "source")
-    monkeypatch.setattr(delegate_temp, '_create_read_role_temp', lambda _home, *_a, **_k: None)
+    monkeypatch.setattr(delegate_temp, '_create_read_role_temp', lambda *_a, **_k: None)
     _forbid_git_metadata_lookup(pd, monkeypatch)
     argv, _stdin, _prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
         pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, role, source, "review",
@@ -360,18 +362,18 @@ def test_failure_formatter_rejects_empty_root():
 def test_failure_git_error_stops_before_child_spawn(pd, tmp_path, monkeypatch):
     """git 조회 실패는 자식 호출 0회로 끝난다 — 빈 루트로 바꿔 실행을 잇지 않는다."""
     repo = _committed_repo(tmp_path / "repo")
-    real_run = pd.subprocess.run
+    real_run = delegate_transport.subprocess.run
 
     def run(argv, **kwargs):
         if "--git-common-dir" in argv:
             return subprocess.CompletedProcess(argv, 128, "", "fatal: boom")
         return real_run(argv, **kwargs)
 
-    monkeypatch.setattr(pd.subprocess, "run", run)
+    monkeypatch.setattr(delegate_transport.subprocess, "run", run)
     spawned: list = []
     with pytest.raises(delegate_errors.DelegateError, match="fatal: boom"):
-        pd._execute_attempt(
-            harness="codex", model="gpt-x", reasoning=None, role="developer", cwd=repo,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="developer", cwd=repo,
             prompt="task", timeout=30, output_dir=tmp_path / "raw",
             run_fn=lambda *a, **k: spawned.append(a), attempt="primary",
         )
@@ -449,7 +451,7 @@ def dry_run_argv(pd, monkeypatch, tmp_path, capsys):
         prompt.write_text("작업 지시", encoding="utf-8")
         monkeypatch.setattr(conf_store, 'local_config', lambda _home: _codex_conf(role))
 
-        def _no_side_effect(_home, *_args, **_kwargs):
+        def _no_side_effect(*_args, **_kwargs):
             pytest.fail("dry-run 이 임시 디렉터리·쓰기 프로브를 만들었다")
 
         monkeypatch.setattr(delegate_temp, '_create_read_role_temp', _no_side_effect)

@@ -19,6 +19,13 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_prepare
+from pm_engine.app import delegate_prompt
+from pm_engine.domain import delegate_rounds
+from pm_engine.app import delegate_scope_audit
+from pm_engine.domain import review_contract
+
 from pm_engine.infra import conf_store
 from pm_engine.infra import delegate_config
 from pm_engine.infra.harness import delegate_env
@@ -417,8 +424,7 @@ def test_dry_run_outputs_argv_and_prompt(pd, monkeypatch, tmp_path, capsys):
 def test_t0658_code_reviewer_role_preamble_contains_parser_derived_contract(pd):
     """code-reviewer 역할 머리말(두 리뷰 경로가 프롬프트 앞에 싣는다)이 판정 선언·목록 0건·허용
     토큰 계약을 모두 싣는다."""
-    out = pd._role_preamble(review_form.INTERNAL_REVIEW_ROLE, pd._resolved_adapter_directories())
-    external = pd._load_additional_reviewer()
+    out = delegate_prompt._role_preamble(review_form.INTERNAL_REVIEW_ROLE, pd._resolved_adapter_directories())
 
     assert "행 선두" in out and "인용문·코드펜스" in out
     assert "`판정: 통과` 또는 `판정: 반려`" in out
@@ -438,7 +444,7 @@ def test_t0658_review_contract_tracks_parser_token_sources_without_literal_copy(
     """허용 토큰 원천을 바꾸면 preamble도 즉시 따라가며 0건 regex와 안내도 한 tuple을 읽는다."""
     monkeypatch.setattr(review_verdict, "_PASS_VERDICT_TOKENS", frozenset({"PROBE_PASS"}))
     monkeypatch.setattr(review_verdict, "_REJECT_VERDICT_TOKENS", frozenset({"PROBE_REJECT"}))
-    preamble = pd._internal_review_format_preamble()
+    preamble = review_contract._internal_review_format_preamble()
 
     assert "`판정: PROBE_PASS`" in preamble
     assert "`판정: PROBE_REJECT`" in preamble
@@ -548,7 +554,7 @@ def test_opencode_transport_copy_non_repo_is_o_excl_0600(pd, monkeypatch, tmp_pa
     cwd = tmp_path / "plain-directory"
     cwd.mkdir()
     fixed_uuid = type("FixedUuid", (), {"hex": "fixed-transport-id"})()
-    monkeypatch.setattr(pd.uuid, "uuid4", lambda: fixed_uuid)
+    monkeypatch.setattr(delegate_temp.uuid, "uuid4", lambda: fixed_uuid)
 
     prompt_path = delegate_temp._save_opencode_transport_prompt(cwd, "합성 프롬프트")
 
@@ -866,7 +872,7 @@ def test_opencode_existing_attempt_directory_fails_loud(
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
     fixed_uuid = type("FixedUuid", (), {"hex": "existing-attempt"})()
-    monkeypatch.setattr(pd.uuid, "uuid4", lambda: fixed_uuid)
+    monkeypatch.setattr(delegate_temp.uuid, "uuid4", lambda: fixed_uuid)
     attempt_dir = (
         cwd / ".project_manager" / ".local" / "delegate"
         / f"pm_delegate_{os.getpid()}_existing-attempt"
@@ -959,8 +965,8 @@ def test_opencode_execute_checks_containment_again_immediately_before_send(
 
     monkeypatch.setattr(delegate_temp, '_assert_opencode_transport_path', _counting_assert)
 
-    pd._execute_attempt(
-        harness="opencode",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1004,14 +1010,14 @@ def test_opencode_raw_reservation_failure_rolls_back_transport(
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
 
-    def _fail_raw_reservation(_home, *args, **kwargs):
+    def _fail_raw_reservation(*args, **kwargs):
         raise OSError("의도한 raw 예약 실패")
 
     monkeypatch.setattr(raw_output, '_reserve_raw_output', _fail_raw_reservation)
 
     with pytest.raises(OSError, match="의도한 raw 예약 실패"):
-        pd._execute_attempt(
-            harness="opencode",
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
             model="prov/m",
             reasoning=None,
             role="developer",
@@ -1049,8 +1055,8 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
     monkeypatch.setattr(raw_output, '_reserve_raw_output', _reserve_then_swap)
     try:
         with pytest.raises(delegate_errors.DelegateError, match="전달 부모.*symlink"):
-            pd._execute_attempt(
-                harness="opencode",
+            delegate_execute._execute_attempt(
+                pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
                 model="prov/m",
                 reasoning=None,
                 role="developer",
@@ -1143,8 +1149,8 @@ def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
             "timed_out": False,
         }
 
-    result = pd._execute_attempt(
-        harness="opencode",
+    result = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1202,8 +1208,8 @@ def test_opencode_non_root_cwd_transport_is_hidden_while_running(pd, tmp_path):
             "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="opencode",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1228,8 +1234,8 @@ def test_opencode_pm_uninstalled_repo_leaves_no_marker_skeleton(pd, tmp_path):
     _init_transport_test_repo(repo)
     assert not (repo / ".project_manager").exists()
 
-    pd._execute_attempt(
-        harness="opencode",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1453,8 +1459,8 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
             "timed_out": False,
         }
 
-    result = pd._execute_attempt(
-        harness="opencode",
+    result = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1629,8 +1635,8 @@ def test_opencode_execution_injects_exact_runtime_role_after_env_sanitizing(
         return {"returncode": 0, "stdout": _opencode_stdout("DONE"),
                 "stderr": "", "timed_out": False}
 
-    pd._execute_attempt(
-        harness="opencode", model="provider/model", reasoning="high",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="provider/model", reasoning="high",
         role="code-reviewer", cwd=tmp_path, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -1697,8 +1703,8 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="codex", model="gpt-x", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1840,8 +1846,8 @@ def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1887,8 +1893,8 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="opencode", model="prov/m", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1932,8 +1938,8 @@ def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
         return {"returncode": 0, "stdout": stdout_fn("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    pd._execute_attempt(
-        harness=harness, model=model, reasoning=None, role="code-reviewer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness=harness, model=model, reasoning=None, role="code-reviewer",
         cwd=cwd, prompt="role preamble + task", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -2029,8 +2035,8 @@ def test_acl_platform_read_tmp_cleanup_on_runner_exception(
         raise RuntimeError("의도한 runner 예외")
 
     with pytest.raises(RuntimeError, match="의도한 runner 예외"):
-        pd._execute_attempt(
-            harness="claude", model="opus", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
             output_dir=tmp_path / "raw", run_fn=_explode, attempt="primary",
         )
@@ -2074,7 +2080,7 @@ def test_write_probe_name_stays_within_engine_artifact_budget(pd):
     (같은 자리 `NN-<role>.md`·`spec.md` 는 모두 들어간다)."""
     budget = max(
         len(round_rules.round_filename(1, "code-reviewer")),
-        len(pd.TICKET_COPY_SPEC_NAME),
+        len(delegate_rounds.TICKET_COPY_SPEC_NAME),
     )
     first, second = delegate_transport._write_probe_name(), delegate_transport._write_probe_name()
     assert len(first) <= budget
@@ -2192,8 +2198,8 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
         raise AssertionError("env 해소 실패 뒤에는 스폰하지 않는다")
 
     with pytest.raises(delegate_errors.DelegateError, match=_NEVER_SET_ENV_KEY):
-        pd._execute_attempt(
-            harness="opencode", model="prov/m", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
             output_dir=tmp_path / "raw", run_fn=_never_called, attempt="primary",
         )
@@ -2296,8 +2302,8 @@ def test_read_tmp_unsupported_platform_preamble_is_explicit(
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="codex", model="gpt-x", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -2323,8 +2329,8 @@ def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
         return {"returncode": 0, "stdout": _codex_stdout("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    pd._execute_attempt(
-        harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
         cwd=cwd, prompt="role preamble + task", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -2347,8 +2353,8 @@ def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
         raise RuntimeError("의도한 runner 예외")
 
     with pytest.raises(RuntimeError, match="의도한 runner 예외"):
-        pd._execute_attempt(
-            harness="claude", model="opus", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review",
             timeout=30, output_dir=tmp_path / "raw", run_fn=_explode,
             attempt="primary",
@@ -2373,8 +2379,8 @@ def test_read_tmp_cleanup_on_timeout_child_kill_result(pd, monkeypatch, tmp_path
             "timed_out": True,
         }
 
-    result = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    result = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review",
         timeout=1, output_dir=tmp_path / "raw", run_fn=_timed_out,
         attempt="primary",
@@ -2394,12 +2400,12 @@ def test_read_tmp_cleanup_on_raw_reservation_failure(
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     monkeypatch.setattr(
         raw_output, '_reserve_raw_output',
-        lambda _home, *args, **kwargs: (_ for _ in ()).throw(OSError("raw reserve failed")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("raw reserve failed")),
     )
 
     with pytest.raises(OSError, match="raw reserve failed"):
-        pd._execute_attempt(
-            harness="claude", model="opus", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review",
             timeout=30, output_dir=tmp_path / "raw",
             run_fn=lambda *args, **kwargs: pytest.fail("runner must not start"),
@@ -2513,8 +2519,8 @@ def test_read_tmp_cleanup_removes_a_read_only_subtree(pd, monkeypatch, tmp_path)
         return {"returncode": 0, "stdout": _claude_stdout("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    attempt = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    attempt = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_leave_read_only_tree,
         attempt="primary",
@@ -2543,8 +2549,8 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
         return {"returncode": 0, "stdout": _claude_stdout("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    attempt = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    attempt = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_succeed, attempt="primary",
     )
@@ -2626,21 +2632,21 @@ def test_write_target_reanchor_engine_code(pd, tmp_path):
     """write 역할 + 엔진 코드(.project_manager/tools/) 타깃 + PM 홈 cwd → 재앵커 대상 반환(§4.6)."""
     home, wt = _fake_pm_home(tmp_path)
     prompt = "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수"
-    assert pd.check_write_target_reanchor("developer", home, prompt) == wt
+    assert delegate_execute.check_write_target_reanchor("developer", home, prompt) == wt
 
 
 def test_write_target_pm_doc_passes(pd, tmp_path):
     """PM-doc(wiki) write 는 PM 홈 cwd 정당 → 재앵커 안 함(§4.6)."""
     home, _wt = _fake_pm_home(tmp_path)
     prompt = "wiki/roadmap.md 를 갱신하라"
-    assert pd.check_write_target_reanchor("architect", home, prompt) is None
+    assert delegate_execute.check_write_target_reanchor("architect", home, prompt) is None
 
 
 def test_read_role_no_reanchor(pd, tmp_path):
     """read 역할은 엔진 코드 언급이 있어도 재앵커 안 함(write 타깃 아님·§4.6)."""
     home, _wt = _fake_pm_home(tmp_path)
     prompt = ".project_manager/tools/board.py 를 조사하라"
-    assert pd.check_write_target_reanchor("researcher", home, prompt) is None
+    assert delegate_execute.check_write_target_reanchor("researcher", home, prompt) is None
 
 
 def test_reanchor_fail_loud_in_main(pd, monkeypatch, tmp_path, capsys):
@@ -3858,7 +3864,7 @@ def test_role_preambles_cover_all_four_roles(pd):
     """ROLE_PREAMBLES = 정확히 4역할(developer/researcher/architect/code-reviewer)·비-빈 텍스트."""
     assert set(delegate_prompt_rules._ROLE_IDENTITIES) == {"developer", "researcher", "architect", "code-reviewer"}
     for role in delegate_prompt_rules._ROLE_IDENTITIES:
-        text = pd._role_preamble(role, pd._resolved_adapter_directories())
+        text = delegate_prompt._role_preamble(role, pd._resolved_adapter_directories())
         assert text.strip(), f"{role} preamble 이 비어 있음"
         assert role.split("-")[0] in text or "서브에이전트" in text  # 역할 정체성 서술
 
@@ -3868,7 +3874,7 @@ def test_role_preambles_include_prohibition_phrases(pd):
     adapter_directories = tuple(pd._resolved_adapter_directories())
     assert adapter_directories, "엔진 등록부에서 파생된 어댑터 디렉토리가 0개"
     for role in delegate_prompt_rules._ROLE_IDENTITIES:
-        text = pd._role_preamble(role, pd._resolved_adapter_directories())
+        text = delegate_prompt._role_preamble(role, pd._resolved_adapter_directories())
         assert "commit" in text and "push" in text, f"{role}: git 비가역 금지 문구 누락"
         assert "board" in text, f"{role}: board 조작 금지 문구 누락"
         assert "엔진 등록 통합 루트 전체" in text, f"{role}: 어댑터 범위 정의 누락"
@@ -3956,7 +3962,7 @@ def test_adapter_registry_notation_changes_do_not_brick_cli(
     """B sensitivity: AnnAssign는 파생하고 비-literal 표기는 일반 문구 degrade·CLI help rc=0."""
     delegate, tools = _isolated_delegate(tmp_path, registry_source)
     assert tuple(delegate._resolved_adapter_directories()) == expected
-    prohibition = delegate._role_preamble("developer", delegate._resolved_adapter_directories())
+    prohibition = delegate_prompt._role_preamble("developer", delegate._resolved_adapter_directories())
     assert "엔진 등록 통합 루트 전체" in prohibition
     for adapter_dir in expected:
         assert adapter_dir in prohibition
@@ -4755,14 +4761,14 @@ def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch
 def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypatch):
     """engine.manifest 밖 기존 adapter 설정이 낮으면 실행 시 조용히 무력화되지 않는다."""
     monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 18220)
-    warning = pd.harness_cap_advisory({
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {
         "CLAUDECODE": "1",
         "BASH_MAX_TIMEOUT_MS": "1800000",
     })
     assert warning is not None
     assert "1800s <" in warning and "부분 산출물 보존 전에" in warning
     assert "18230000ms" in warning
-    assert pd.harness_cap_advisory({
+    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {
         "CLAUDECODE": "1",
         "BASH_MAX_TIMEOUT_MS": "18230000",
     }) is None
@@ -4770,7 +4776,7 @@ def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypat
 
 def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
     monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 18220)
-    warning = pd.harness_cap_advisory({"OPENCODE": "1"})
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {"OPENCODE": "1"})
     assert warning is not None
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
 
@@ -4787,7 +4793,7 @@ def _harness_cap_pairs(pd, env):
     단언을 값으로 대조하기 위한 테스트 지역 조립이다.
     """
     cap_env = watchdog.HARNESS_CAP_ENV
-    return tuple((name, cap_env.get(name)) for name in pd._session_harnesses(env))
+    return tuple((name, cap_env.get(name)) for name in delegate_execute._session_harnesses(env))
 
 
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
@@ -4805,7 +4811,7 @@ def test_runtime_harness_cap_warns_for_all_nested_session_axes(pd, monkeypatch):
         ("claude", "BASH_MAX_TIMEOUT_MS"),
         ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
     )
-    warning = pd.harness_cap_advisory(env)
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), env)
     assert warning is not None
     assert warning.count("[pm-delegate] 경고:") == 2
     assert "BASH_MAX_TIMEOUT_MS" in warning
@@ -4827,7 +4833,7 @@ def test_runtime_harness_cap_unknown_marker_is_never_blocking(pd, monkeypatch):
     env = {"GEMINI_SESSION": "session"}
 
     assert _harness_cap_pairs(pd, env) == (("gemini", None),)
-    assert pd.harness_cap_advisory(env) is None
+    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), env) is None
 
 
 def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
@@ -5254,15 +5260,15 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
         + _DESIGN_SECTION
     )
     ticket_path.write_text(corrupt_text, encoding="utf-8", newline="\n")
-    real_begin = pd.begin_scope_audit
+    real_begin = delegate_scope_audit.begin_scope_audit
 
-    def _coupled_begin(ticket, cwd, *, pm_root=None, adapter_roots=None):
+    def _coupled_begin(_home, ticket, cwd, *, pm_root=None, adapter_roots=None):
         audit = real_begin(
-            ticket, cwd, pm_root=pm_root, adapter_roots=adapter_roots,
+            _home, ticket, cwd, pm_root=pm_root, adapter_roots=adapter_roots,
         )
         return None if audit is not None and audit.touches is None else audit
 
-    monkeypatch.setattr(pd, "begin_scope_audit", _coupled_begin)
+    monkeypatch.setattr(delegate_scope_audit, "begin_scope_audit", _coupled_begin)
     fake = _WritingRun(workspace, ([relative], _ok_result()))
     rc = _run_main(
         pd, monkeypatch,
@@ -5386,7 +5392,7 @@ def test_adapter_root_snapshot_oracle_is_sensitive_to_postrun_registry_reread(
         return (registry_source.read_text(encoding="utf-8"),)
 
     monkeypatch.setattr(pd, "_adapter_directories_from_engine_source", _derive_registry)
-    real_adapter_paths = pd._adapter_edit_paths
+    real_adapter_paths = delegate_scope_audit._adapter_edit_paths
 
     def _lazy_adapter_paths(scope, before, after, *, workspace, roots):
         return real_adapter_paths(
@@ -5394,7 +5400,7 @@ def test_adapter_root_snapshot_oracle_is_sensitive_to_postrun_registry_reread(
             roots=pd._resolved_adapter_directories(),
         )
 
-    monkeypatch.setattr(pd, "_adapter_edit_paths", _lazy_adapter_paths)
+    monkeypatch.setattr(delegate_scope_audit, "_adapter_edit_paths", _lazy_adapter_paths)
     relative = f"{initial_root}/runtime/adapter.py"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{initial_root}",),
@@ -5496,7 +5502,7 @@ def test_adapter_warning_oracle_is_sensitive_when_axis_is_removed(
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{adapter_root}",),
     )
-    monkeypatch.setattr(pd, "_format_adapter_edit_warning", lambda _paths: "")
+    monkeypatch.setattr(delegate_scope_audit, "_format_adapter_edit_warning", lambda _paths: "")
     fake = _WritingRun(workspace, ([relative], _ok_result()))
     rc = _run_main(
         pd, monkeypatch,
@@ -5835,7 +5841,7 @@ def test_native_advisory_accepts_measured_codex_markers(pd, monkeypatch, key):
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "session-marker")
 
-    assert pd.native_advisory("codex", "developer") is not None
+    assert delegate_execute.native_advisory("codex", "developer") is not None
 
 
 def test_native_advisory_claude_survives_opencode_config_dir(pd, monkeypatch):
@@ -5844,8 +5850,8 @@ def test_native_advisory_claude_survives_opencode_config_dir(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "session-marker")
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/user-config/opencode")
 
-    assert pd.native_advisory("claude", "developer") is not None
-    assert pd.native_advisory("opencode", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is not None
+    assert delegate_execute.native_advisory("opencode", "developer") is None
 
 
 @pytest.mark.parametrize("key", ("CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG",
@@ -5855,9 +5861,9 @@ def test_native_advisory_ignores_config_and_unmeasured_keys(pd, monkeypatch, key
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "configured")
 
-    assert pd.native_advisory("codex", "developer") is None
-    assert pd.native_advisory("claude", "developer") is None
-    assert pd.native_advisory("opencode", "developer") is None
+    assert delegate_execute.native_advisory("codex", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is None
+    assert delegate_execute.native_advisory("opencode", "developer") is None
 
 
 @pytest.mark.parametrize("key", ("OPENCODE", "OPENCODE_PID"))
@@ -5866,7 +5872,7 @@ def test_native_advisory_accepts_measured_opencode_markers(pd, monkeypatch, key)
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "opencode-session")
 
-    assert pd.native_advisory("opencode", "developer") is not None
+    assert delegate_execute.native_advisory("opencode", "developer") is not None
 
 
 def test_native_advisory_nested_claude_opencode_is_ambiguous(pd, monkeypatch):
@@ -5875,8 +5881,8 @@ def test_native_advisory_nested_claude_opencode_is_ambiguous(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "claude-parent")
     monkeypatch.setenv("OPENCODE", "opencode-child")
 
-    assert pd.native_advisory("claude", "developer") is None
-    assert pd.native_advisory("opencode", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is None
+    assert delegate_execute.native_advisory("opencode", "developer") is None
 
 
 def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch):
@@ -5885,16 +5891,16 @@ def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch)
     monkeypatch.setenv("CODEX_THREAD_ID", "codex-session")
     monkeypatch.setenv("CLAUDECODE", "claude-session")
 
-    assert pd.native_advisory("codex", "developer") is None
-    assert pd.native_advisory("claude", "developer") is None
+    assert delegate_execute.native_advisory("codex", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is None
 
 
 def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
     """공개 하네스 도메인 밖 값과 미지정 값은 native 안내 대상이 아니다."""
     _clear_native_advisory_env(monkeypatch)
 
-    assert pd.native_advisory("gemini", "developer") is None
-    assert pd.native_advisory(None, "developer") is None
+    assert delegate_execute.native_advisory("gemini", "developer") is None
+    assert delegate_execute.native_advisory(None, "developer") is None
 
 
 def test_native_advisory_applies_to_the_review_role(pd, monkeypatch):
@@ -5903,7 +5909,7 @@ def test_native_advisory_applies_to_the_review_role(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "1")
 
     for role in (review_form.INTERNAL_REVIEW_ROLE, "developer", "architect", "researcher"):
-        advisory = pd.native_advisory("claude", role)
+        advisory = delegate_execute.native_advisory("claude", role)
         assert advisory is not None, role
         assert "설계·구현·리뷰·조사는 native 위임이 규칙" in advisory, role
         assert "엔진" not in advisory and "더 저렴" not in advisory, role
@@ -5917,17 +5923,17 @@ def test_ticket_prepare_rejects_review_role_on_a_ticket(pd, monkeypatch, tmp_pat
     _clear_native_advisory_env(monkeypatch)
     slot = tmp_path / "slot"
     slot.mkdir()
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: tmp_path / "pm")
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: tmp_path / "pm")
     prepared_roles: list[str] = []
 
-    def _prepare(**kwargs):
+    def _prepare(_home, **kwargs):
         prepared_roles.append(kwargs["role"])
-        return pd.TicketCopyPlan(
+        return delegate_rounds.TicketCopyPlan(
             slot / "01-developer.md", slot, "T-7807", kwargs["role"], 1,
             tmp_path / "pm" / "01-developer.md", "a" * 32, "",
         )
 
-    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare)
+    monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", _prepare)
 
     assert pd._cmd_ticket([
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
@@ -6016,8 +6022,8 @@ def _seed_t0650_raw(
 def test_t0650_stage_exit_regression_scope_is_only_in_developer_preamble(pd):
     """stage-exit full은 실행·기록 책임이 있는 developer/fix에만 주입된다."""
     directories = (".claude", ".opencode", ".codex", ".agents")
-    developer = pd._role_preamble("developer", directories)
-    reviewer = pd._role_preamble("code-reviewer", directories)
+    developer = delegate_prompt._role_preamble("developer", directories)
+    reviewer = delegate_prompt._role_preamble("code-reviewer", directories)
     assert delegate_prompt_rules.REGRESSION_SCOPE_PREAMBLE in developer
     assert "targeted tests" in developer
     assert "프로젝트 `test_cmd`" in developer

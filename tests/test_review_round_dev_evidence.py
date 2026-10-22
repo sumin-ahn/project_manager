@@ -22,6 +22,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+from pm_engine.app import delegate_scope_audit
+
 from pm_engine.infra import conf_store
 from pm_engine.domain import delegate_run_rules
 from pm_engine.domain import reviewer_result
@@ -119,7 +124,7 @@ def _fixture_board(pd, pm_home: Path, sync_log: list, monkeypatch):
         return True
 
     round_maintenance._rounds_mutation_sync_paths = _sync
-    monkeypatch.setattr(board_dashboard, 'refresh_board', lambda _home,  *args, **kwargs: None)
+    monkeypatch.setattr(board_dashboard, 'refresh_board', lambda *args, **kwargs: None)
     return board
 
 
@@ -218,9 +223,8 @@ def _ledger_rows(pm_home: Path) -> list[dict]:
 
 
 def _prepare(pd, pm_home: Path, slot: Path, ticket: str, role: str):
-    return pd.prepare_ticket_copy(
-        ticket=ticket, role=role, cwd=slot, pm_home=pm_home,
-    )
+    return delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role=role, cwd=slot, )
 
 
 def _land(pd, pm_home: Path, slot: Path, plan) -> None:
@@ -370,7 +374,7 @@ def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
     """
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7807", rounds=("developer", "code-reviewer"))
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
     assert pd._cmd_ticket([
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
     ]) == 0
@@ -410,15 +414,13 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
     (slot / "tracked.txt").write_text("seed\nreview\n", encoding="utf-8", newline="\n")
     assert _git(slot, "commit", "-qam", "review target").returncode == 0
 
-    external = pd._load_additional_reviewer()
     monkeypatch.setattr(pm_paths, 'repo_root_from_cwd', lambda _cwd: slot)
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
     monkeypatch.setattr(pm_paths, '_owns_real_board', lambda _path: False)
-    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: external)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: {delegate_run_rules.DELEGATE_ENABLED_KEY: "true"})
     # 범위 감사는 이 진입점 판정과 독립 축이다(전용 회귀가 소유) — 여기서 죽이면 준비/예약/장부
     # 축만 남는다.
-    monkeypatch.setattr(pd, "begin_scope_audit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(delegate_scope_audit, "begin_scope_audit", lambda *_a, **_kw: None)
 
     class _FakeRun:
         """`run_fn` seam — 실제 하네스는 절대 스폰하지 않는다(로컬 가짜 경계)."""
@@ -519,9 +521,8 @@ def test_seed_judgment_consumes_the_harvest_seed_comparison(pd, rounds_env, caps
     developer = _prepare(pd, pm_home, slot, "T-7811", "developer")
 
     # 회수면: 손대지 않은 산출 → board 미변경(= 시드 그대로).
-    unchanged = pd.harvest_ticket_copy(
-        copy_path=developer.path, cwd=slot, pm_home=pm_home,
-    )
+    unchanged = delegate_harvest.harvest_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), copy_path=developer.path, cwd=slot, )
     assert unchanged.changed is False
     # 준비면: 같은 라운드를 시드로 지목한다.
     stale = round_seed.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
@@ -593,8 +594,7 @@ def external():
 def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     """스폰면 배선 — REPO 를 `rounds_env` 의 pm_home 에 고정하고 diff 추출만 대체한다.
 
-    `_load_pm_delegate()` 는 실 로더 그대로 둔다 — 이 표면이 실제로
-    같은 판정 함수(`round_seed.unharvested_developer_round`)를 부르는지가 검증 대상이다. touches 는
+    실제 판정 함수(`round_seed.unharvested_developer_round`) 호출이 검증 대상이다. touches 는
     `rounds_env` 픽스처 티켓이 `touches: []` 로 시드되므로(§인터페이스 밖) `parse_ticket_touches`
     만 테스트 seam 으로 고정한다(기존 `test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam`
     과 같은 축).

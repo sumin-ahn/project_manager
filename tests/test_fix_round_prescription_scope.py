@@ -1,6 +1,8 @@
 """fix 라운드 delta 꼬리 제약 블록 — 부착·복제 0·전달 지시 파리티 문면 가드."""
 from __future__ import annotations
 
+from pm_engine.domain import review_contract
+
 from pm_engine.domain import delegate_prompt_rules
 
 import importlib.util
@@ -119,7 +121,7 @@ def test_notice_attaches_once_at_tail_for_accepted_delta(pd):
     disposition = _disposition(pd)
     delta = _delta(pd, [(finding, disposition)])
 
-    rendered = pd.render_pm_review_delta("T-TEST", delta)
+    rendered = review_contract.render_pm_review_delta("T-TEST", delta)
 
     assert rendered.startswith("## PM 승인 리뷰 delta — T-TEST")
     assert delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE in rendered
@@ -140,7 +142,7 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
     ]
     delta = _delta(pd, pairs)
 
-    rendered = pd.render_pm_review_delta("T-TEST", delta)
+    rendered = review_contract.render_pm_review_delta("T-TEST", delta)
 
     assert "F-001" in rendered and "F-002" in rendered
     assert rendered.count(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
@@ -152,7 +154,7 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
 @pytest.mark.parametrize("finding_zero", [False, True])
 def test_empty_accepted_delta_stays_empty(pd, finding_zero):
     delta = _delta(pd, [], finding_zero=finding_zero)
-    assert pd.render_pm_review_delta("T-TEST", delta) == ""
+    assert review_contract.render_pm_review_delta("T-TEST", delta) == ""
 
 
 def test_confirmation_resolved_exhaustion_stays_empty(pd):
@@ -214,7 +216,7 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
     delta = review_state.parse_pm_review_delta(spec, [first, resolved])
 
     assert delta.accepted == ()
-    assert pd.render_pm_review_delta("T-TEST", delta) == ""
+    assert review_contract.render_pm_review_delta("T-TEST", delta) == ""
 
 
 # --- 4. 내용 계약(비-vacuous) — 개념 토큰 -------------------------------------

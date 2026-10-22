@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import reviewer_budget
+
 import os
 import uuid
 from pathlib import Path
@@ -189,3 +191,21 @@ def replace_round(path: Path | str, text: str) -> None:
                 temporary.unlink()
         except OSError:
             pass
+
+
+
+# ── 프롬프트 조립 ─────────────────────────────────────────────────────────
+
+
+def _load_review_context(home) -> str:
+    """인스턴스 overlay 또는 기본 헤더에 티켓 결정 권위 규약을 빠짐없이 결합한다."""
+    context_path = home.local_dir.parent / "review_context.local.md"
+    if context_path.exists():
+        try:
+            context = fs.read_text_shared(context_path, encoding="utf-8").strip() + "\n"
+            if reviewer_budget._AUTHORITATIVE_TICKET_CONTEXT not in context:
+                context += "\n" + reviewer_budget._AUTHORITATIVE_TICKET_CONTEXT + "\n"
+            return context
+        except OSError:
+            pass
+    return reviewer_budget._DEFAULT_CONTEXT_HEADER

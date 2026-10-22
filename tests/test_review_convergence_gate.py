@@ -18,6 +18,8 @@ extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어
 """
 from __future__ import annotations
 
+from pm_engine.app import reviewer_prompt
+
 from pm_engine.infra import conf_store
 from pm_engine.infra import reviewer_target
 
@@ -1102,7 +1104,7 @@ def test_review_paths_preserve_untracked_deleted_renamed_and_binary_files(
     no_index = next(argv for argv in review.read_commands if "--no-index" in argv)
     result = subprocess.run(no_index, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 1 and "UNTRACKED_SENTINEL" in result.stdout
-    prompt = external.build_prompt(tree=root, base=review.base, target=review.target,
+    prompt = reviewer_prompt.build_prompt(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE, board_root=pm_paths._board_root_at(external._PM_HOME_OVERRIDE or external.REPO)), tree=root, base=review.base, target=review.target,
                                    changed_paths=review.paths, read_commands=review.read_commands)
     line = next(line for line in prompt.splitlines() if line.startswith("- 변경 파일"))
     assert json.loads(line.split(": ", 1)[1]) == list(review.paths)

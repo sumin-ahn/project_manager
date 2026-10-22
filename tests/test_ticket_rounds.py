@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import review_contract
+
 from pm_engine.domain import round_rules
 
 
@@ -402,7 +404,7 @@ def test_reopen_round_keeps_the_ordinal_and_replaces_the_file(
     assert sorted(item.name for item in first.parent.iterdir()) == before
     text = first.read_text(encoding="utf-8")
     assert "이어 시킨 산출" in text and "1차 산출" not in text
-    assert len(delegate.parse_architect_tests(text)) == 1
+    assert len(review_contract.parse_architect_tests(text)) == 1
     loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [(item.ordinal, item.role) for item in loaded] == [
         (1, "architect"), (2, "developer"),
@@ -492,7 +494,7 @@ def test_a_deleted_round_is_restored_from_the_board_git_record(
     )] == [round_rules.PROBLEM_GAP]
 
     round_store.replace_round(
-        target, recorded + delegate.pm_review_refused_line("developer") + "\n",
+        target, recorded + review_contract.pm_review_refused_line("developer") + "\n",
     )
 
     assert round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
@@ -789,7 +791,7 @@ def test_an_engine_marked_round_is_not_pending_and_not_the_previous_output(
     first = _reserve(tickets_dir, "T-0001", "code-reviewer")
     round_store.replace_round(first, _reviewer_output("F-001"))
     second = _reserve(tickets_dir, "T-0001", "code-reviewer")
-    marker = delegate.pm_review_refused_line("code-reviewer")
+    marker = review_contract.pm_review_refused_line("code-reviewer")
     round_store.replace_round(
         second, second.read_text(encoding="utf-8") + marker + "\n",
     )
@@ -815,7 +817,7 @@ def test_the_engine_marker_is_read_for_every_round_role(tickets_dir, delegate):
         round_store.replace_round(
             marked,
             marked.read_text(encoding="utf-8")
-            + delegate.pm_review_refused_line(role) + "\n",
+            + review_contract.pm_review_refused_line(role) + "\n",
         )
 
         loaded = round_seed.load_rounds(tickets_dir, ticket, ticket_text=TICKET_TEXT)

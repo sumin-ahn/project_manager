@@ -30,6 +30,9 @@ always-run 가드(라이브 없이·매 회귀): backbone 존재·로드 + 실�
 비-에코(false-green 가드가 vacuous 아님) + release 마커 수 pin.
 """
 from __future__ import annotations
+
+from pm_engine.app import delegate_execute
+from pm_engine.domain import review_contract
 from pm_engine.infra.harness import contract
 
 from pm_engine.infra import conf_store
@@ -233,7 +236,7 @@ def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
     rounds = round_seed.load_rounds(
         source.parent.parent, ticket, ticket_text=ticket_text,
     )
-    rendered = pd.render_pm_review_disposition_template(ticket_text, rounds)
+    rendered = review_contract.render_pm_review_disposition_template(ticket_text, rounds)
     lines = rendered.splitlines()
     payload = json.loads("\n".join(lines[1:-1]))
     for row in payload.get("dispositions", []):
@@ -253,7 +256,7 @@ def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
     updated_rounds = round_seed.load_rounds(
         source.parent.parent, ticket, ticket_text=updated,
     )
-    return pd.render_pm_review_delta(
+    return review_contract.render_pm_review_delta(
         ticket, review_state.parse_pm_review_delta(updated, updated_rounds),
     )
 
@@ -263,8 +266,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
     """선택 main→target 한 경로에서 고정 4라운드를 실행하고 canonical 재조회를 단언한다."""
     ticket = {"codex": "T-9101", "opencode": "T-9102", "claude": "T-9103"}[target]
     repo, source = _seed_growth_repo(tmp_path, ticket)
-    er = pd._load_additional_reviewer()
-    monkeypatch.setattr(pd, "check_local_conf_divergence", lambda *_a, **_k: (repo, None, er))
+    monkeypatch.setattr(delegate_execute, "check_local_conf_divergence", lambda *_a, **_k: (repo, None))
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *_a, **_k: True)
     output_dir = tmp_path / "raw"
     rounds_dir = (

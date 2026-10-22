@@ -172,7 +172,6 @@ def test_reviewer_env_comes_from_the_delegate_seam(external, monkeypatch, tmp_pa
         external, monkeypatch, harness="codex",
         diff_root=diff_root, output_dir=tmp_path)
 
-    delegate = external._load_pm_delegate()
     assert seen["env"] == delegate_env.build_env("codex")
 
 
@@ -257,7 +256,6 @@ def test_a_leftover_switch_value_changes_nothing(external, monkeypatch, tmp_path
         external, monkeypatch, harness="codex",
         diff_root=diff_root, output_dir=tmp_path)
 
-    delegate = external._load_pm_delegate()
     assert seen["cwd"] == diff_root
     assert seen["env"] == delegate_env.build_env("codex")
     # 엔진 코드가 그 키를 아예 읽지 않는다 — 값이 무엇이든 읽는 자리가 없다.

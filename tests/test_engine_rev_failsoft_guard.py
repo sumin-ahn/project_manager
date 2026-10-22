@@ -1269,7 +1269,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
     #   `TicketFinisher._notify_affected_domain`).
     # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
-    assert len(report.boundaries) == 63, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 59, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

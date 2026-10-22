@@ -1,6 +1,8 @@
 """T-0684 — versioned reviewer finding/disposition과 accepted-only delta."""
 from __future__ import annotations
 
+from pm_engine.domain import review_contract
+
 
 
 
@@ -165,7 +167,7 @@ def test_classification_disposition_table_3x3(pd, classification, decision):
         assert caught.value.code == "decision-required"
         return
     delta = _delta(pd, ticket)
-    rendered = pd.render_pm_review_delta("T-0684", delta)
+    rendered = review_contract.render_pm_review_delta("T-0684", delta)
     if decision == "accepted":
         assert "F-001" in rendered and classification in rendered
         assert "PM accepted 근거" in rendered and "허용 범위" in rendered
@@ -226,27 +228,27 @@ def test_declared_contract_placeholder_words_are_all_parser_inputs(pd):
 
 def test_contract_test_target_binds_only_the_first_token(pd):
     """첫 토큰만 결속한다 — 뒤따르는 산문의 경로는 대상이 아니다(조사·구두점은 계속 벗긴다)."""
-    assert pd._contract_test_targets(
+    assert review_contract._contract_test_targets(
         "tests/test_pm_review_delta.py에 첫 토큰 회귀를 추가한다. "
         "tests/test_round_budget.py 는 이번 라운드가 손대지 않는다.",
         "reviewer 추가 회귀 F-001.test",
     ) == ("tests/test_pm_review_delta.py",)
-    assert pd._contract_test_targets(
+    assert review_contract._contract_test_targets(
         "tests/test_a.py와 tests/test_b.py과 tests/test_c.py, tests/test_d.py.",
         "reviewer 추가 회귀 F-002.test",
     ) == ("tests/test_a.py",)
-    assert pd._contract_test_targets(
+    assert review_contract._contract_test_targets(
         "tests/test_a.py::test_case 로 좁힌 대상", "reviewer 추가 회귀 F-003.test",
     ) == ("tests/test_a.py",)
 
     # 첫 토큰이 테스트 경로가 아니면 결속 0 — 붙일 테스트가 없는 지적을 허용하는 축은 통과,
     # 대상이 계약인 축은 종전 문구로 거부다.
     prose_first = "회귀는 tests/test_a.py 에 추가한다"
-    assert pd._contract_test_targets(
+    assert review_contract._contract_test_targets(
         prose_first, "reviewer 추가 회귀 F-004.test", required=False,
     ) == ()
     with pytest.raises(delegate_errors.DelegateError, match="repo-relative 테스트 대상"):
-        pd._contract_test_targets(prose_first, "reviewer 추가 회귀 F-004.test")
+        review_contract._contract_test_targets(prose_first, "reviewer 추가 회귀 F-004.test")
 
 
 def test_architect_target_axis_uses_the_same_first_token_rule(pd):
@@ -255,9 +257,9 @@ def test_architect_target_axis_uses_the_same_first_token_rule(pd):
         "tests/test_pm_review_delta.py::test_first (cwd=work/slot_1) · "
         "tests/test_round_budget.py 는 대상이 아니다"
     )
-    assert pd._contract_test_targets(
+    assert review_contract._contract_test_targets(
         multi, "architect 필수 테스트 AT-001.target",
-    ) == pd._contract_test_targets(
+    ) == review_contract._contract_test_targets(
         multi, "reviewer 추가 회귀 F-001.test",
     ) == ("tests/test_pm_review_delta.py",)
 
@@ -269,12 +271,12 @@ def test_architect_target_axis_uses_the_same_first_token_rule(pd):
             "expected": "1 passed", "negative": "첫 토큰 결속이 풀리면 실패",
         }],
     }, ensure_ascii=False)
-    parsed = pd.parse_architect_tests(
+    parsed = review_contract.parse_architect_tests(
         f"```{review_form.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
     )
     assert parsed[0].target == multi
     with pytest.raises(delegate_errors.DelegateError, match="repo-relative 테스트 대상"):
-        pd._contract_test_targets(
+        review_contract._contract_test_targets(
             "회귀는 tests/test_a.py 에 추가한다", "architect 필수 테스트 AT-002.target",
         )
 
@@ -301,12 +303,12 @@ def test_contract_value_hints_state_the_first_token_rule(pd):
         assert review_form._CONTRACT_PLACEHOLDER_RE.search(value)
 
     # 고지한 그대로의 파서 거동 — 첫 토큰만 결속하고, 산문으로 시작하면 결속 0 이다.
-    assert pd._contract_test_targets(
+    assert review_contract._contract_test_targets(
         "tests/test_pm_review_delta.py::test_case 는 결속하고 "
         "뒤따르는 tests/test_round_budget.py 는 대상이 아니다",
         "reviewer 추가 회귀 F-001.test", required=False,
     ) == ("tests/test_pm_review_delta.py",)
-    assert pd._contract_test_targets(
+    assert review_contract._contract_test_targets(
         "기존 tests/test_a.py 에 케이스 추가", "reviewer 추가 회귀 F-002.test",
         required=False,
     ) == ()
@@ -319,7 +321,7 @@ def test_contract_value_hints_state_the_first_token_rule(pd):
 ))
 def test_contract_test_targets_reject_non_test_traversal_and_unknown_suffix(pd, value):
     with pytest.raises(delegate_errors.DelegateError, match="repo-relative"):
-        pd._contract_test_targets(value, "reviewer 추가 회귀 F-003.test")
+        review_contract._contract_test_targets(value, "reviewer 추가 회귀 F-003.test")
 
 
 def _duplicate_member_tickets() -> list[pytest.param]:
@@ -418,7 +420,7 @@ def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted", finding_id="F-001")])
     delta = _delta(pd, legacy)
-    rendered = pd.render_pm_review_delta("T-0696", delta)
+    rendered = review_contract.render_pm_review_delta("T-0696", delta)
     assert f"- 심각도: {review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
 
     current_without_severity = _review_section({
@@ -443,7 +445,7 @@ def test_legacy_block_may_also_include_severity_from_the_transition_window(pd):
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted")])
     delta = _delta(pd, ticket)
-    assert "- 심각도: should-fix" in pd.render_pm_review_delta("T-0696", delta)
+    assert "- 심각도: should-fix" in review_contract.render_pm_review_delta("T-0696", delta)
 
 
 def test_delta_render_exposes_severity_and_channel(pd):
@@ -453,7 +455,7 @@ def test_delta_render_exposes_severity_and_channel(pd):
         "findings": [_finding("implementation-defect", severity="should-fix")],
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted")])
-    rendered = pd.render_pm_review_delta("T-0696", _delta(pd, ticket))
+    rendered = review_contract.render_pm_review_delta("T-0696", _delta(pd, ticket))
     assert "- 심각도: should-fix" in rendered
     assert f"- 채널: {review_form.INTERNAL_REVIEW_ROLE}" in rendered
 
@@ -534,7 +536,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
         "confirmations": [{"id": "F-001", "status": "unresolved", "evidence": "probe rc=1"}],
     })
     delta = _delta(pd, first + disposition + one_unresolved)
-    rendered = pd.render_pm_review_delta("T-0684", delta)
+    rendered = review_contract.render_pm_review_delta("T-0684", delta)
     assert "F-001" in rendered
     assert "F-002" not in rendered and "PM rejected" not in rendered
 
@@ -553,7 +555,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
         "confirmations": [{"id": "F-001", "status": "resolved", "evidence": "probe rc=0"}],
     })
     delta = _delta(pd, first + disposition + one_unresolved + resolved)
-    assert pd.render_pm_review_delta("T-0684", delta) == ""
+    assert review_contract.render_pm_review_delta("T-0684", delta) == ""
 
     rejected_confirmation = _review_section({
         "version": BLOCK_VERSION,
@@ -587,7 +589,7 @@ def test_finding_zero_requires_cross_checked_pass_and_compact_pm_acceptance(pd):
     assert caught.value.code == "pending"
     delta = _delta(pd, zero + _disposition(1, zero=True))
     assert delta.finding_zero is True
-    assert pd.render_pm_review_delta("T-0684", delta) == ""
+    assert review_contract.render_pm_review_delta("T-0684", delta) == ""
 
 
 def test_design_acceptance_without_authority_reference_is_decision_required(pd):
@@ -797,8 +799,8 @@ def test_pending_seed_round_leaves_delta_output_bytes_unchanged(pd):
     with_pending_delta = review_state.parse_pm_review_delta(spec, with_pending)
     assert baseline_delta == with_pending_delta
     assert (
-        pd.render_pm_review_delta("T-TEST", baseline_delta)
-        == pd.render_pm_review_delta("T-TEST", with_pending_delta)
+        review_contract.render_pm_review_delta("T-TEST", baseline_delta)
+        == review_contract.render_pm_review_delta("T-TEST", with_pending_delta)
     )
 
 
@@ -819,12 +821,12 @@ def test_pending_seed_round_leaves_prep_surface_output_bytes_unchanged(pd):
     with_pending = [round1, round2]
 
     assert (
-        pd.render_pm_review_disposition_template(spec, baseline)
-        == pd.render_pm_review_disposition_template(spec, with_pending)
+        review_contract.render_pm_review_disposition_template(spec, baseline)
+        == review_contract.render_pm_review_disposition_template(spec, with_pending)
     )
     assert (
-        pd.collect_confirmable_finding_ids(spec, "code-reviewer", baseline)
-        == pd.collect_confirmable_finding_ids(spec, "code-reviewer", with_pending)
+        review_contract.collect_confirmable_finding_ids(spec, "code-reviewer", baseline)
+        == review_contract.collect_confirmable_finding_ids(spec, "code-reviewer", with_pending)
     )
 
 

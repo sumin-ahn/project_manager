@@ -15,6 +15,8 @@ root·`--add-dir` 는 추가만 한다 — "주 워크스페이스는 read-only�
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+
 from pm_engine.infra.harness import delegate_env
 from pm_engine.domain import delegate_run_rules
 from pm_engine.infra.harness import delegate_temp
@@ -86,8 +88,8 @@ def _fail_if_called(*args, **kwargs):
 
 
 def _run_attempt(pd, *, harness, role, cwd, tmp_path, run_fn):
-    return pd._execute_attempt(
-        harness=harness, model="gpt-x" if harness == "codex" else (
+    return delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness=harness, model="gpt-x" if harness == "codex" else (
             "opus" if harness == "claude" else "prov/m"
         ),
         reasoning=None, role=role, cwd=cwd, prompt="role preamble + task",
@@ -106,7 +108,7 @@ def test_non_repo_cwd_blocks_before_spawn(pd, tmp_path, monkeypatch):
     """
     cwd = tmp_path / "worktree"
     cwd.mkdir()
-    real_run = pd.subprocess.run
+    real_run = delegate_transport.subprocess.run
 
     def run(argv, **kwargs):
         if list(argv[:3]) == ["git", "-C", str(cwd.resolve())] and "--show-toplevel" in argv:
@@ -114,7 +116,7 @@ def test_non_repo_cwd_blocks_before_spawn(pd, tmp_path, monkeypatch):
                 argv, 128, "", "fatal: not a git repository")
         return real_run(argv, **kwargs)
 
-    monkeypatch.setattr(pd.subprocess, "run", run)
+    monkeypatch.setattr(delegate_transport.subprocess, "run", run)
 
     with pytest.raises(delegate_errors.DelegateError, match="git 저장소가 아님"):
         _run_attempt(

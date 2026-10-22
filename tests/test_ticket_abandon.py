@@ -17,6 +17,14 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import delegate_copy_store
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+from pm_engine.domain import delegate_rounds
+from pm_engine.infra import pm_paths
+from pm_engine.domain import review_contract
+
 from pm_engine.app import round_maintenance
 
 
@@ -186,8 +194,8 @@ def _write_spec(env: Env, ticket: str, *, rounds=_FIXED_ROUNDS, **kwargs) -> Pat
 
 
 def _prepare(pd, env: Env, ticket: str, role: str = "architect", **kwargs):
-    return pd.prepare_ticket_copy(
-        ticket=ticket, role=role, cwd=env.slot, pm_home=env.pm_home, **kwargs,
+    return delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(env.pm_home).resolve()), ticket=ticket, role=role, cwd=env.slot, **kwargs,
     )
 
 
@@ -216,16 +224,15 @@ def _fill_architect(pd, plan) -> None:
 def _land_architect(pd, env: Env, plan) -> None:
     """고정 수열의 다음 단계 준비가 가능하도록 architect 계약을 실값으로 회수한다."""
     _fill_architect(pd, plan)
-    result = pd.harvest_ticket_copy(
-        copy_path=plan.path, cwd=env.slot, pm_home=env.pm_home,
-    )
+    result = delegate_harvest.harvest_ticket_copy(
+        pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, )
     assert result.changed is True
 
 
 def _abandon(pd, env: Env, plan, *, assume_dead: bool = True, **declaration):
     """`declaration` 은 처분 선언 인자(`superseded_by_ordinal`·`discard_reason`) 자리다."""
-    return pd.abandon_ticket_copy(
-        copy_path=plan.path, cwd=env.slot, pm_home=env.pm_home, assume_dead=assume_dead,
+    return delegate_prepare.abandon_ticket_copy(
+        pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, assume_dead=assume_dead,
         **declaration,
     )
 
@@ -277,7 +284,7 @@ def _inject_slot_write(pd, monkeypatch, *, call_index: int, path: Path, before: 
     대체가 아니라 wrapper 라 실제 호출 그래프는 그대로 돈다. `before=True` 는 그 판독 **직전**
     (앞 단계가 끝난 뒤)에, False 는 판독 **직후**에 쓴다.
     """
-    real = pd._read_slot_round_text
+    real = delegate_copy_store._read_slot_round_text
     state = {"calls": 0}
 
     def _land():
@@ -295,7 +302,7 @@ def _inject_slot_write(pd, monkeypatch, *, call_index: int, path: Path, before: 
             _land()
         return text
 
-    monkeypatch.setattr(pd, "_read_slot_round_text", _wrapped)
+    monkeypatch.setattr(delegate_copy_store, "_read_slot_round_text", _wrapped)
     return state
 
 
@@ -378,8 +385,8 @@ def test_abandon_refuses_an_unprepared_path(pd, env):
     smuggled.write_text("## 리뷰\n밀반입\n", encoding="utf-8", newline="\n")
 
     with pytest.raises(delegate_errors.DelegateError, match="준비 기록 없음"):
-        pd.abandon_ticket_copy(
-            copy_path=smuggled, cwd=env.slot, pm_home=env.pm_home, assume_dead=True,
+        delegate_prepare.abandon_ticket_copy(
+            pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=smuggled, cwd=env.slot, assume_dead=True,
         )
 
     assert smuggled.exists() and plan.run_dir.exists()
@@ -387,7 +394,7 @@ def test_abandon_refuses_an_unprepared_path(pd, env):
 
 def test_abandon_does_not_touch_review_round_ledgers(pd):
     """비목표(I8) — 리뷰 라운드 예산 환불은 이 처분의 축이 아니다."""
-    source = inspect.getsource(pd.abandon_ticket_copy)
+    source = inspect.getsource(delegate_prepare.abandon_ticket_copy)
     assert "review_rounds" not in source
 
 
@@ -404,7 +411,7 @@ def test_abandon_without_evidence_is_refused_and_leaves_all_three_assets(pd, env
     with pytest.raises(delegate_errors.DelegateError, match="종료 증거가 없습니다") as caught:
         _abandon(pd, env, plan, assume_dead=False)
 
-    assert pd.ABANDON_ASSUME_DEAD_FLAG in str(caught.value)
+    assert delegate_rounds.ABANDON_ASSUME_DEAD_FLAG in str(caught.value)
     assert _assets(plan, env) == before
     assert env.sync_calls == before_sync
 
@@ -492,7 +499,7 @@ def test_owner_pid_is_recorded_only_when_the_caller_owns_the_run(pd, env, monkey
     _write_spec(env, "T-8033")
     _write_spec(env, "T-8034")
     owned = _prepare(pd, env, "T-8033", owner_pid=4242)
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: env.pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: env.pm_home)
 
     rc = pd._cmd_ticket([
         "prepare", "--ticket", "T-8034", "--role", "architect", "--cwd", str(env.slot),
@@ -559,20 +566,20 @@ def test_ledger_append_failure_converges_on_the_next_call(pd, env, monkeypatch):
     """2단계(마감 행 append) 실패는 아무것도 지우기 전이다 — 재호출이 처음부터 다시 한다."""
     _write_spec(env, "T-8051")
     plan = _prepare(pd, env, "T-8051")
-    real_append = pd._append_delegate_rounds_ledger
+    real_append = delegate_copy_store._append_delegate_rounds_ledger
 
     def _boom(pm_home, row):
         if "abandoned_at" in row:
             raise delegate_errors.DelegateError("장부 append 실패 주입")
         return real_append(pm_home, row)
 
-    monkeypatch.setattr(pd, "_append_delegate_rounds_ledger", _boom)
+    monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", _boom)
     with pytest.raises(delegate_errors.DelegateError, match="장부 append 실패 주입"):
         _abandon(pd, env, plan)
     assert plan.board_path.exists() and plan.run_dir.exists()
     assert "abandoned_at" not in _ledger_rows(env)[-1]
 
-    monkeypatch.setattr(pd, "_append_delegate_rounds_ledger", real_append)
+    monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", real_append)
     result = _abandon(pd, env, plan)
 
     assert result.converged is True
@@ -592,13 +599,13 @@ def test_run_dir_removal_failure_converges_on_the_next_call(pd, env, monkeypatch
         def force_rmtree(self, _path):
             raise OSError("run-dir 삭제 실패 주입")
 
-    monkeypatch.setattr(pd, "fs", _FileLock())
+    monkeypatch.setattr(delegate_prepare, "fs", _FileLock())
     with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         _abandon(pd, env, plan)
     assert not plan.board_path.exists() and plan.run_dir.exists()
     assert _ledger_rows(env)[-1]["abandoned_at"] is not None
 
-    monkeypatch.setattr(pd, "fs", real_file_lock)
+    monkeypatch.setattr(delegate_prepare, "fs", real_file_lock)
     result = _abandon(pd, env, plan)
 
     assert result.converged is True
@@ -721,7 +728,7 @@ def test_discard_moves_the_output_into_the_board_round_and_marks_it(pd, env):
     )
     assert result.converged is True and result.sync_ready is True
     # 산출은 버려지지 않는다 — board 라운드 파일이 사본 bytes + 표식 한 줄이다.
-    marker = pd.pm_review_refused_line("architect")
+    marker = review_contract.pm_review_refused_line("architect")
     assert plan.board_path.read_bytes() == (produced + marker + "\n").encode("utf-8")
     assert review_form.pm_review_refused_marker_present(
         plan.board_path.read_text(encoding="utf-8"))
@@ -758,7 +765,7 @@ def test_discard_of_a_middle_ordinal_keeps_the_other_rounds_intact(pd, env):
     result = _abandon(pd, env, target, discard_reason=_DISCARD_REASON)
 
     assert result.converged is True and result.board_removed is False
-    marker = pd.pm_review_refused_line("developer")
+    marker = review_contract.pm_review_refused_line("developer")
     assert target.board_path.read_bytes() == (produced + marker + "\n").encode("utf-8")
     assert architect.board_path.read_bytes() == architect_bytes
     assert reviewer.board_path.read_bytes() == reviewer_bytes
@@ -809,8 +816,8 @@ def test_discard_without_any_declaration_is_still_refused(pd, env):
         _abandon(pd, env, plan)
 
     # 거부 문구가 두 선언을 모두 가리킨다 — 사람이 다음 수를 문구에서 읽는다.
-    assert pd.ABANDON_SUPERSEDED_BY_FLAG in str(caught.value)
-    assert pd.ABANDON_DISCARD_REASON_FLAG in str(caught.value)
+    assert delegate_rounds.ABANDON_SUPERSEDED_BY_FLAG in str(caught.value)
+    assert delegate_rounds.ABANDON_DISCARD_REASON_FLAG in str(caught.value)
     assert _assets(plan, env) == before      # 세 자산 전부 불변
     assert env.sync_calls == before_sync
 
@@ -867,9 +874,8 @@ def test_harvest_refuses_an_abandoned_reservation(pd, env):
     _abandon(pd, env, plan)
 
     with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
-        pd.harvest_ticket_copy(
-            copy_path=plan.path, cwd=env.slot, pm_home=env.pm_home,
-        )
+        delegate_harvest.harvest_ticket_copy(
+            pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, )
 
 
 def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
@@ -886,9 +892,8 @@ def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
     dead_copy.write_text(dead_text + "\n옛 run 산출\n", encoding="utf-8", newline="")
 
     with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
-        pd.harvest_ticket_copy(
-            copy_path=dead_copy, cwd=env.slot, pm_home=env.pm_home,
-        )
+        delegate_harvest.harvest_ticket_copy(
+            pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=dead_copy, cwd=env.slot, )
 
     assert fresh.board_path.read_bytes() == fresh_bytes
 
@@ -975,9 +980,8 @@ def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys
     capsys.readouterr()
     rows = delegate_ledger.ticket_copy_records(env.pm_home)
     warning = capsys.readouterr().err
-    harvested = pd.harvest_ticket_copy(
-        copy_path=owned.path, cwd=env.slot, pm_home=env.pm_home,
-    )
+    harvested = delegate_harvest.harvest_ticket_copy(
+        pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=owned.path, cwd=env.slot, )
 
     assert "손상" not in warning
     assert {row["ticket"] for row in rows} == {"T-8101", "T-8102", "T-8103"}
@@ -996,7 +1000,7 @@ def test_abandon_cli_surface_matches_harvest_argument_shape(pd):
     assert args.assume_dead is False
     assert parser.parse_args([
         "abandon", "--copy", "/abs/copy.md", "--cwd", "/abs/cwd",
-        pd.ABANDON_ASSUME_DEAD_FLAG,
+        delegate_rounds.ABANDON_ASSUME_DEAD_FLAG,
     ]).assume_dead is True
 
 
@@ -1004,12 +1008,12 @@ def test_cli_reports_the_convergence_assertion_as_machine_fields(pd, env, monkey
     """기계 보고는 상태 선언이 아니라 세 자산 재판독 결과다."""
     _write_spec(env, "T-8110")
     plan = _prepare(pd, env, "T-8110")
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: env.pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: env.pm_home)
     capsys.readouterr()
 
     rc = pd._cmd_ticket([
         "abandon", "--copy", str(plan.path), "--cwd", str(env.slot),
-        pd.ABANDON_ASSUME_DEAD_FLAG,
+        delegate_rounds.ABANDON_ASSUME_DEAD_FLAG,
     ])
 
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -1024,12 +1028,12 @@ def test_cli_abandon_wires_the_discard_reason_flag(pd, env, monkeypatch, capsys)
     _write_spec(env, "T-8112")
     plan = _prepare(pd, env, "T-8112")
     _write_output(plan.path)
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: env.pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: env.pm_home)
     capsys.readouterr()
 
     rc = pd._cmd_ticket([
         "abandon", "--copy", str(plan.path), "--cwd", str(env.slot),
-        pd.ABANDON_ASSUME_DEAD_FLAG, pd.ABANDON_DISCARD_REASON_FLAG, _DISCARD_REASON,
+        delegate_rounds.ABANDON_ASSUME_DEAD_FLAG, delegate_rounds.ABANDON_DISCARD_REASON_FLAG, _DISCARD_REASON,
     ])
 
     captured = capsys.readouterr()

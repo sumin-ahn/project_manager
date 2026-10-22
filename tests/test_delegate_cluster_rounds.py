@@ -13,6 +13,11 @@ ignore 된 슬롯 git 트리 한 쌍을 tmp 에 세운다.
 """
 from __future__ import annotations
 
+from pm_engine.infra import delegate_copy_store
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+
 from pm_engine.infra import conf_store
 
 from pm_engine.cli import board_ticket
@@ -225,9 +230,8 @@ def test_cluster_prepare_lays_one_run_dir_with_a_seat_per_ticket(pd, cluster_env
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-wave", ["T-6001", "T-6002"])
 
-    plan = pd.prepare_cluster_copy(
-        cluster="C-wave", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-wave", role="architect", cwd=slot, )
 
     assert plan.cluster == "C-wave" and plan.role == "architect"
     assert len(plan.rounds) == 2
@@ -257,7 +261,7 @@ def _t0928_prior_roles(pd, pm_home, tickets, members, role):
         for previous_role in ("architect", "developer")[:
                 (0 if role == "architect" else 1 if role == "developer" else 2)]:
             previous = round_seed.load_rounds(tickets.parent, ticket, ticket_text=spec)
-            seed = pd._ticket_round_seed(previous_role, spec, None,
+            seed = delegate_prepare._ticket_round_seed(previous_role, spec, None,
                                         today="2026-10-02", rounds=previous)
             path = round_store.reserve_round(tickets.parent, ticket, previous_role, content=seed,
                                         lock=fs.board_lock(_fixture_board(pd, pm_home)._home()))
@@ -310,11 +314,11 @@ def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
     monkeypatch.setattr(fs, "board_lock", lock)
     monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths", sync)
     if size == 1:
-        plans = (pd.prepare_ticket_copy(ticket=members[0], role=role,
-                                        cwd=slot, pm_home=pm_home),)
+        plans = (delegate_prepare.prepare_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), ticket=members[0], role=role,
+                                        cwd=slot, ),)
     else:
-        plans = pd.prepare_cluster_copy(cluster="C-seeds", role=role,
-                                         cwd=slot, pm_home=pm_home).rounds
+        plans = delegate_prepare.prepare_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), cluster="C-seeds", role=role,
+                                         cwd=slot, ).rounds
     assert len(syncs) == 1
     assert set(syncs[0][1]) == {plan.board_path for plan in plans}
 
@@ -323,9 +327,9 @@ def test_t0928_formal_prepare_preserves_single_ticket_machine_stdout(pd, cluster
                                                                    monkeypatch, capsys):
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-machine", ["T-6103"])
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _: pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *a, **k: {})
+    monkeypatch.setattr(conf_store, 'local_config', lambda *a, **k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *a, **k: None)
     assert pd.main(["ticket", "prepare", "--ticket", "T-6103", "--role", "architect",
                     "--cwd", str(slot)]) == 0
@@ -350,7 +354,7 @@ def test_t0928_prepare_boundaries_use_final_reservation_status(pd, cluster_env,
         _t0928_set_status(board, "T-6112", "draft")
     if state == "draft":
         _t0928_set_status(board, "T-6111", "draft")
-    original_seed = pd._ticket_round_seed
+    original_seed = delegate_prepare._ticket_round_seed
 
     def seed(*args, **kwargs):
         result = original_seed(*args, **kwargs)
@@ -358,9 +362,9 @@ def test_t0928_prepare_boundaries_use_final_reservation_status(pd, cluster_env,
             _t0928_set_status(board, "T-6112", "draft" if state == "final-draft" else "open")
         return result
 
-    monkeypatch.setattr(pd, "_ticket_round_seed", seed)
-    plan = pd.prepare_cluster_copy(cluster="C-status", role="architect",
-                                   cwd=slot, pm_home=pm_home)
+    monkeypatch.setattr(delegate_prepare, "_ticket_round_seed", seed)
+    plan = delegate_prepare.prepare_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), cluster="C-status", role="architect",
+                                   cwd=slot, )
     expected = {item.board_path for item in plan.rounds
                 if state != "draft" and (item.ticket == "T-6111" or state == "final-formal")}
     assert syncs == ([tuple(item.board_path for item in plan.rounds
@@ -374,12 +378,12 @@ def test_t0928_prepare_boundaries_reopen_records_nothing(pd, cluster_env, monkey
     syncs = []
     monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
                         lambda _home, message, paths: syncs.append(tuple(paths)) or True)
-    original = pd.prepare_ticket_copy(ticket="T-6121", role="architect",
-                                      cwd=slot, pm_home=pm_home)
+    original = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6121", role="architect",
+                                      cwd=slot, )
     _fill(original.board_path, "## 실측\n- 충전된 입력")
     syncs.clear()
-    reopened = pd.prepare_ticket_copy(ticket="T-6121", role="architect", cwd=slot,
-                                      pm_home=pm_home, reopen_ordinal=original.ordinal)
+    reopened = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6121", role="architect", cwd=slot,
+                                      reopen_ordinal=original.ordinal)
     assert reopened.path.read_bytes() == original.board_path.read_bytes()
     assert syncs == []
 
@@ -401,22 +405,22 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
 
     monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths", sync)
     if failure == "before-reserve":
-        monkeypatch.setattr(pd, "_ticket_round_seed",
+        monkeypatch.setattr(delegate_prepare, "_ticket_round_seed",
                             lambda *a, **k: (_ for _ in ()).throw(delegate_errors.DelegateError("예약 전 오류")))
     elif failure == "after-reserve":
         monkeypatch.setattr(round_rules, "parse_round_filename",
                             lambda *a: (_ for _ in ()).throw(OSError("예약 후 오류")))
     elif failure == "laydown":
-        original = pd._write_exclusive_file
+        original = delegate_copy_store._write_exclusive_file
 
         def write(path, *args, **kwargs):
             if Path(path).name == "spec.md":
                 raise OSError("사본 쓰기 오류")
             return original(path, *args, **kwargs)
 
-        monkeypatch.setattr(pd, "_write_exclusive_file", write)
+        monkeypatch.setattr(delegate_copy_store, "_write_exclusive_file", write)
     elif failure.startswith("ledger-"):
-        original = pd._append_delegate_rounds_ledger
+        original = delegate_copy_store._append_delegate_rounds_ledger
         count = []
 
         def append(home, row):
@@ -425,10 +429,10 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
                 raise delegate_errors.DelegateError("장부 오류")
             return original(home, row)
 
-        monkeypatch.setattr(pd, "_append_delegate_rounds_ledger", append)
+        monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", append)
     with pytest.raises((delegate_errors.DelegateError, OSError)) as caught:
-        pd.prepare_cluster_copy(cluster="C-failure", role="architect",
-                                cwd=slot, pm_home=pm_home)
+        delegate_prepare.prepare_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), cluster="C-failure", role="architect",
+                                cwd=slot, )
     seeds = list((tickets.parent / "rounds").glob("*/*.md"))
     run_root = slot / delegate_ledger.TICKET_COPY_REL_ROOT / "C-failure"
     if failure == "before-reserve":
@@ -456,9 +460,8 @@ def test_cluster_prepare_reserves_nothing_when_one_member_fails_the_judgment(
     _write_cluster(pm_home, "C-part", ["T-6003", "T-6004"])
 
     with pytest.raises(delegate_errors.DelegateError, match="open/claimed 또는 draft×architect만 허용"):
-        pd.prepare_cluster_copy(
-            cluster="C-part", role="architect", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_cluster_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), cluster="C-part", role="architect", cwd=slot, )
 
     assert not _rounds_dir(pm_home, "T-6003").exists()
     assert _ledger_rows(pm_home) == []
@@ -475,9 +478,8 @@ def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env)
     _write_spec(tickets, "T-6005")
     _write_cluster(pm_home, "C-T-6005", ["T-6005"])
 
-    plan = pd.prepare_ticket_copy(
-        ticket="T-6005", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6005", role="architect", cwd=slot, )
 
     assert plan.cluster == "C-T-6005"
     assert plan.run_dir == (
@@ -488,7 +490,7 @@ def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env)
     assert row["cluster"] == "C-T-6005" and row["ticket"] == "T-6005"
 
     _fill(plan.path, "## 경계 실측\n- 실측")
-    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    result = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, )
 
     assert result.changed is True
     # 자리를 닫으면 빈 run-dir 도 함께 걷힌다 — 크기 1 이면 곧 run 닫힘이다.
@@ -514,14 +516,14 @@ def test_developer_round_after_reopen_is_prepared(pd, cluster_env):
 
     assert cluster_store.load_cluster(board._home(), "C-T-6020")["tickets"] == ["T-6020"]
     assert not _rounds_dir(pm_home, "T-6020").exists()
-    architect = pd.prepare_ticket_copy(
-        ticket="T-6020", role="architect", cwd=slot, pm_home=pm_home)
+    architect = delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6020", role="architect", cwd=slot, )
     _fill(architect.path, "## 경계 실측\n- 실측")
-    assert pd.harvest_ticket_copy(
-        copy_path=architect.path, cwd=slot, pm_home=pm_home).changed is True
+    assert delegate_harvest.harvest_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), copy_path=architect.path, cwd=slot, ).changed is True
 
-    plan = pd.prepare_ticket_copy(
-        ticket="T-6020", role="developer", cwd=slot, pm_home=pm_home)
+    plan = delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6020", role="developer", cwd=slot, )
 
     assert plan.cluster == "C-T-6020"
     assert plan.path.name == "02-developer.md"
@@ -537,15 +539,13 @@ def test_run_dir_harvest_replaces_every_filled_round_and_closes_the_run(
         pd, cluster_env):
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-full", ["T-6010", "T-6011"])
-    plan = pd.prepare_cluster_copy(
-        cluster="C-full", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-full", role="architect", cwd=slot, )
     for round_plan in plan.rounds:
         _fill(round_plan.path, f"## 경계 실측\n- {round_plan.ticket} 실측")
 
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
     assert [item.ticket for item in outcomes] == ["T-6010", "T-6011"]
     assert all(item.refusal is None and item.result.changed for item in outcomes)
@@ -564,17 +564,15 @@ def test_run_dir_harvest_warns_per_ticket_when_one_seat_is_still_the_seed(
     """부분 시드 — 그 티켓만 경고·board 무변경이고 나머지는 교체된다(교차 원자성 없음)."""
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-partial", ["T-6012", "T-6013"])
-    plan = pd.prepare_cluster_copy(
-        cluster="C-partial", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-partial", role="architect", cwd=slot, )
     filled, seeded = plan.rounds[0], plan.rounds[1]
     seed_bytes = seeded.board_path.read_bytes()
     _fill(filled.path, "## 경계 실측\n- 채운 산출")
     capsys.readouterr()
 
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
     by_ticket = {item.ticket: item for item in outcomes}
     assert by_ticket[filled.ticket].result.changed is True
@@ -594,36 +592,33 @@ def test_run_dir_harvest_refuses_a_seat_the_ledger_does_not_authorize(
     """디렉터리 인자는 입력 형식일 뿐 — 인가는 장부 행이 한다(위조 자리는 회수되지 않는다)."""
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-forge", ["T-6014"])
-    plan = pd.prepare_cluster_copy(
-        cluster="C-forge", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-forge", role="architect", cwd=slot, )
     smuggled_dir = plan.run_dir / "T-9999"
     smuggled_dir.mkdir()
     smuggled = smuggled_dir / "01-architect.md"
     smuggled.write_text("## 설계\n밀반입\n", encoding="utf-8", newline="\n")
     _fill(plan.rounds[0].path, "## 경계 실측\n- 실측")
 
-    outcomes = pd.harvest_cluster_copy(
-        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
-    )
+    outcomes = delegate_harvest.harvest_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
     assert [item.ticket for item in outcomes] == ["T-6014"]   # 장부 행만 회수 대상이다.
     assert not _rounds_dir(pm_home, "T-9999").exists()
     with pytest.raises(delegate_errors.DelegateError, match="준비 기록 없음"):
-        pd.harvest_ticket_copy(copy_path=smuggled, cwd=slot, pm_home=pm_home)
+        delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=smuggled, cwd=slot, )
 
 
 def test_run_dir_harvest_refuses_when_no_unharvested_row_matches(pd, cluster_env):
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-empty", ["T-6015"])
-    plan = pd.prepare_cluster_copy(
-        cluster="C-empty", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-empty", role="architect", cwd=slot, )
     _fill(plan.rounds[0].path, "## 경계 실측\n- 실측")
-    pd.harvest_cluster_copy(run_dir=plan.run_dir, cwd=slot, pm_home=pm_home)
+    delegate_harvest.harvest_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
     with pytest.raises(delegate_errors.DelegateError, match="미회수 준비가 없습니다"):
-        pd.harvest_cluster_copy(run_dir=plan.run_dir, cwd=slot, pm_home=pm_home)
+        delegate_harvest.harvest_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
 
 def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_env):
@@ -643,14 +638,14 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
     copy_path = legacy_dir / "01-architect.md"
     copy_path.write_text(seed, encoding="utf-8", newline="")
     _fill(copy_path, "## 경계 실측\n- 옛 세대 산출")
-    pd._append_delegate_rounds_ledger(pm_home, {
+    delegate_copy_store._append_delegate_rounds_ledger(pm_paths.home_at(Path(pm_home).resolve()), {
         "ticket": "T-6016", "role": "architect", "ordinal": 1, "run_id": "b" * 32,
         "copy": str(copy_path), "board_rel": str(
             board_path.relative_to(pm_home)).replace("\\", "/"),
         "prepared_at": "2026-01-01T00:00:00+00:00", "harvested_at": None,
     })
 
-    result = pd.harvest_ticket_copy(copy_path=copy_path, cwd=slot, pm_home=pm_home)
+    result = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=copy_path, cwd=slot, )
 
     assert result.changed is True
     assert "옛 세대 산출" in board_path.read_text(encoding="utf-8")
@@ -668,28 +663,24 @@ def test_cluster_architect_round_satisfies_the_per_ticket_design_gate(pd, cluste
     # 설계 단계를 건너뛴 요청 — 순서 축이 먼저 말한다(예약 자체가 없으므로 근거를 볼 것도 없다).
     for ticket in ("T-6020", "T-6021"):
         with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded, match="다음 라운드는 architect"):
-            pd.prepare_ticket_copy(
-                ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
-            )
+            delegate_prepare.prepare_ticket_copy(
+                pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role="developer", cwd=slot, )
 
-    plan = pd.prepare_cluster_copy(
-        cluster="C-gate", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-gate", role="architect", cwd=slot, )
 
     # 예약만 되고 회수 전인 시드 라운드는 근거가 아니다 — 이번엔 설계 근거 축이 거부한다.
     with pytest.raises(delegate_errors.DelegateError, match="developer 착수 전 architect 테스트 계약"):
-        pd.prepare_ticket_copy(
-            ticket="T-6020", role="developer", cwd=slot, pm_home=pm_home,
-        )
+        delegate_prepare.prepare_ticket_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6020", role="developer", cwd=slot, )
 
     for round_plan in plan.rounds:
         _fill(round_plan.path, f"## 경계 실측\n- {round_plan.ticket} 실측")
-    pd.harvest_cluster_copy(run_dir=plan.run_dir, cwd=slot, pm_home=pm_home)
+    delegate_harvest.harvest_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
     for ticket in ("T-6020", "T-6021"):
-        developer = pd.prepare_ticket_copy(
-            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
-        )
+        developer = delegate_prepare.prepare_ticket_copy(
+            pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role="developer", cwd=slot, )
         assert developer.board_path.name == "02-developer.md"
 
 
@@ -710,9 +701,9 @@ def test_cli_prepare_and_harvest_round_trip_over_a_run_dir(
         pd, cluster_env, monkeypatch, capsys):
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-cli", ["T-6030", "T-6031"])
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _repo: pm_home)
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _repo: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {})
+    monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
 
     rc = pd.main(["ticket", "prepare", "--cluster", "C-cli", "--role", "architect",
@@ -760,9 +751,8 @@ def test_cluster_prepare_skips_a_discarded_member(pd, cluster_env):
     _seed_cluster(pm_home, tickets, "C-wave", ["T-6001", "T-6002"])
     _discard_member(tickets, "T-6002")
 
-    plan = pd.prepare_cluster_copy(
-        cluster="C-wave", role="architect", cwd=slot, pm_home=pm_home,
-    )
+    plan = delegate_prepare.prepare_cluster_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-wave", role="architect", cwd=slot, )
 
     assert [round_plan.ticket for round_plan in plan.rounds] == ["T-6001"]
     assert sorted(item.name for item in plan.run_dir.iterdir()) == ["T-6001"]

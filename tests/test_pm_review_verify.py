@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import review_contract
+
 from pm_engine.domain import delegate_prompt_rules
 
 
@@ -625,13 +627,13 @@ def test_verify_template_reports_missing_verify_rows(pd):
     dev2 = _round(pd, 2, "developer", _developer_round_text(pd, []))
     template = review_state.pm_review_verify_template(spec, [r1, dev2])
     assert template.missing == ("F-001",)
-    assert pd.render_pm_review_verify_template(template) == ""
+    assert review_contract.render_pm_review_verify_template(template) == ""
 
 
 def test_verify_template_output_reparses_through_the_confirmation_parser(pd):
     spec, rounds = _basic_ticket(pd)
     template = review_state.pm_review_verify_template(spec, rounds)
-    rendered = pd.render_pm_review_verify_template(template)
+    rendered = review_contract.render_pm_review_verify_template(template)
     fence_body = rendered.split(f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n", 1)[1].split(
         "\n```", 1,
     )[0]
@@ -907,7 +909,7 @@ def test_scope_rule_states_where_existing_finding_ids_belong(pd):
     )
     assert rule in body
     # 회수면 사유도 같은 규칙을 말한다(시드 문구와 거부 사유가 갈리지 않는다).
-    problem = pd.review_harvest_problem(
+    problem = review_contract.review_harvest_problem(
         _reviewer_round_text(
             pd, [_finding("F-001")],
             [{"id": "F-001", "status": "resolved", "evidence": "회귀 rc=0"}],
@@ -1074,7 +1076,7 @@ def _accepted_ids(pd, spec: str, rounds) -> list[str]:
 
 def _round_trip_clears(pd, spec: str, rounds, template) -> list[str]:
     """template 이 낸 골격을 채워 명세에 붙인 뒤 남는 accepted ID(I7 · 붙여서 수용되는가)."""
-    rendered = pd.render_pm_review_verify_template(template)
+    rendered = review_contract.render_pm_review_verify_template(template)
     return _accepted_ids(pd, spec + _fill_confirmations(pd, rendered, template), rounds)
 
 
@@ -1153,7 +1155,7 @@ def test_shape2_gap_report_does_not_block_the_resolved_finding(
     # I6 추적 유실 0 — 빈틈 보고 ID 는 accepted 에 남고 다음 fix delta 에 그대로 실린다.
     assert _round_trip_clears(pd, spec, rounds, template) == ["F-001"]
     delta = review_state.parse_pm_review_delta(spec, rounds)
-    assert "### F-001" in pd.render_pm_review_delta("T-0805", delta)
+    assert "### F-001" in review_contract.render_pm_review_delta("T-0805", delta)
 
 
 def test_shape3_all_gap_reports_render_nothing_and_still_succeed(
@@ -1706,7 +1708,7 @@ def test_non_string_field_placeholders_are_zero_across_every_seeded_skeleton(pd)
     # disposition — 행 필드는 전부 문자열(`PM_REVIEW_DISPOSITION_KEYS`), payload 의
     # reviewer_ordinal/version 은 렌더 시점 실값(정수)이지 placeholder 가 아니다.
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    disposition_rendered = pd.render_pm_review_disposition_template("", [r1])
+    disposition_rendered = review_contract.render_pm_review_disposition_template("", [r1])
     disposition_fence = disposition_rendered.split(
         f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n", 1,
     )[1].split("\n```", 1)[0]
@@ -1719,7 +1721,7 @@ def test_non_string_field_placeholders_are_zero_across_every_seeded_skeleton(pd)
     spec_accepted = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
     dev2 = _round(pd, 2, "developer", _developer_round_text(pd, [_verify_row("F-001")]))
     template = review_state.pm_review_verify_template(spec_accepted, [r1, dev2])
-    confirmation_rendered = pd.render_pm_review_verify_template(template)
+    confirmation_rendered = review_contract.render_pm_review_verify_template(template)
     confirmation_fence = confirmation_rendered.split(
         f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n", 1,
     )[1].split("\n```", 1)[0]

@@ -1,6 +1,8 @@
 """위임·추가리뷰 raw 결정적 장부 회귀 가드."""
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+
 from pm_engine.domain import delegate_run_rules
 from pm_engine.infra import pm_paths
 from pm_engine.infra import reviewer_target
@@ -436,8 +438,8 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
         raise SimulatedHarnessKill()
 
     with pytest.raises(SimulatedHarnessKill):
-        delegate._execute_attempt(
-            harness="codex",
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), harness="codex",
             model="gpt-x",
             reasoning=None,
             role="developer",
@@ -684,7 +686,7 @@ def test_raw_warns_about_peer_engine_ledger_without_reading_it(
 
 def test_delegate_registration_is_structurally_before_runner(delegate):
     """등재 제거와 종료시점 이동을 모두 잡는 비공허 순서 sensitivity."""
-    source = inspect.getsource(delegate._execute_attempt)
+    source = inspect.getsource(delegate_execute._execute_attempt)
     registration = source.index("record_id = raw_output.start_raw_record(")
     execution = source.index("result = run_fn(")
     # 마감은 실행 *뒤* 경로를 앵커로 잡는다 — pre-spawn 거부(스폰 없이 rc=1 마감)가 실행보다
@@ -780,8 +782,8 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
         }),
     ])
 
-    result = delegate._execute_attempt(
-        harness="codex",
+    result = delegate_execute._execute_attempt(
+        pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), harness="codex",
         model="gpt-x",
         reasoning=None,
         role="developer",
