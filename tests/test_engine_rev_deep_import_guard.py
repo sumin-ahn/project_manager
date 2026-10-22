@@ -1537,9 +1537,9 @@ def test_mutation_nonliteral_conditional_verifier_is_red(tmp_path, condition):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
     loader = tools / "pm_delegate.py"
     source = loader.read_text(encoding="utf-8")
-    needle = "path, \"delegate_scope.py\", verifier=_verify_engine_rev,"
+    needle = '"ticket_finish.py",\n            verifier=_verify_engine_rev,'
     assert needle in source
-    loader.write_text(source.replace(needle, "path, \"delegate_scope.py\",", 1), encoding="utf-8")
+    loader.write_text(source.replace(needle, '"ticket_finish.py",', 1), encoding="utf-8")
     report = collect_central_guard_report(tools)
     assert any("exactly one explicit policy" in item for item in report.violations)
 

@@ -79,6 +79,7 @@
 
 from __future__ import annotations
 
+
 import argparse
 import contextlib
 import datetime
@@ -99,9 +100,15 @@ from typing import Callable, Iterator, NamedTuple, Sequence
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import clock
+from pm_engine.infra.harness import delegate_env
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.domain import reviewer_budget
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
 from pm_engine.app import round_maintenance  # noqa: E402
-from pm_engine.domain import conf_schema, delegate_errors, review_form, review_state, review_verdict, round_rules, ticket_rules  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
+from pm_engine.domain import delegate_errors, review_form, review_state, round_rules, ticket_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, raw_output, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 from pm_engine.app import release, round_seed  # noqa: E402
 
@@ -203,23 +210,6 @@ REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # �
 _PM_HOME_OVERRIDE: Path | None = None
 
 
-
-
-def _path_repo_root(path: Path) -> Path | None:
-    """존재 경로(파일이면 부모)에서 가장 가까운 git repo 루트를 반환한다."""
-    start = path if path.is_dir() else path.parent
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-        )
-    except OSError:
-        return None
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    return Path(result.stdout.strip()).resolve()
-
-
 def _ticket_worktree_candidates(
     pm_home: Path, touches: Sequence[str], candidates: Sequence[Path],
 ) -> tuple[Path, ...]:
@@ -264,7 +254,7 @@ def _resolve_diff_root(
         root
         for raw in paths
         if Path(raw).is_absolute()
-        and (root := _path_repo_root(Path(raw).resolve())) is not None
+        and (root := pm_paths._path_repo_root(Path(raw).resolve())) is not None
     }
     if len(absolute_roots) > 1:
         raise pm_paths.AnchorResolutionError(
@@ -371,17 +361,6 @@ def _normalize_review_paths(
     return tuple(dict.fromkeys(normalized))
 
 
-def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) -> bool:
-    """이번 검토 범위가 **최초 PM 홈**에서 파생됐는가 (diff 소유자 대조 대상).
-
-    명시 `--paths` 나 유효 ticket touches 가 범위를 완전 지정하지 않은 실행은 최초 PM 홈 config
-    를 읽어 범위를 얻는다. 그 config 가 `additional_reviewer.paths` 를 선언했든 레지스트리 기본
-    경로로 떨어졌든 **범위의 출처는 최초 PM 홈 하나**라, 표시 conf 와 실제 호출
-    범위가 갈리는 위험은 같다 — 그래서 선언 유무를 판정 입력으로 쓰지 않는다.
-    """
-    return not ticket_selected and not explicit_paths
-
-
 # ── board root 추종 (board/ 분리) ───────────────────────
 # board(tickets)는 `.project_manager/board/`(submodule)로 분리될 수 있다. 그러면
 # ticket touches 해소(`parse_ticket_touches`)가 wiki/ legacy 위치를 보면 *stale*(ticket 미발견
@@ -397,126 +376,6 @@ def _tickets_dir() -> Path:
     if (base / "board" / "tickets").is_dir():
         return base / "board" / "tickets"
     return base / "wiki" / "tickets"
-
-
-# ── PM 홈 앵커 재지정 감지 (adopter#0 false-green 게이트) ────────────────
-# additional_reviewer 의 import 사본은 PM 홈에 있어 REPO 가 PM 홈으로
-# 해소된다 — 실 코드 변경은 canonical worktree에 있으므로 `git diff` 가 비어 codex 가 "변경
-# 없음"을 통과로 판정하는 false-green 이 난다.
-# board.py `_pm_home_worktree_misanchor`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
-# 잡고, 여긴 PM 홈에서 실행된 추가 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
-# 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
-# 명시 인자로 받아 DI seam 이 된다. 판정 *형태*는 board `_has_real_board` 동형이되 상태 집합은
-# 복제하지 않고 단일 진실(`ticket_rules.STATUS_DIRS`)을 승계한다 — 사본은 새 상태에서 갈린다.
-
-def _owns_real_board(pm_dir: Path) -> bool:
-    """`.project_manager` 디렉토리(`pm_dir`)가 실 티켓(`T-*.md`)을 가진 board 를 소유하는가.
-
-    board/ 분리면 `board/tickets`, legacy 면 `wiki/tickets` 상태 디렉토리에 실 티켓이
-    하나라도 있으면 True. 빈 scaffold(README/_template 만 — worktree 출하 형상)는 False (worktree
-    자신을 PM 홈으로 오인해 가드 오탐 내지 않게·board.py `_has_real_board` 동형)."""
-    for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
-        if not base.is_dir():
-            continue
-        for status in ticket_rules.STATUS_DIRS:
-            status_dir = base / status
-            if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
-                return True
-    return False
-
-
-def _canonical_worktree(anchor: Path) -> Path | None:
-    """adopter#0 PM 홈 `anchor` 의 canonical 코드 worktree(재지정 대상) 경로 — 없으면 None.
-
-    `<anchor>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/additional_reviewer.py`)을 가진 첫
-    디렉토리를 반환한다(슬롯 생성 도구가 쓰는 `work/<name>` 경로 관례와 동형). 없으면
-    None(무관 형상·재지정 대상 없음).
-
-    local.conf `upstream.path` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
-    로컬 checkout(`pm_import --from <로컬>`)일 수 있어, 실 board 를
-    소유한 정규 채택자에서 stale/무관 checkout 으로 오안내하며 정상 리뷰를 hard-block 한다(빈-diff
-    백스톱도 실 diff 가 non-empty 면 무력). `work/` 슬롯 스캔만으로 adopter#0재지정을
-    완전 커버하고, upstream 분기는 잉여+오탐만 더한다 — 제거가 동등 커버리지·최소·오탐 0(codex/reviewer
-    이중 게이트 수렴 must-fix)."""
-    work_dir = anchor / "work"
-    if work_dir.is_dir():
-        for sub in sorted(work_dir.iterdir()):
-            if (sub / ".project_manager" / "tools" / "additional_reviewer.py").is_file():
-                return sub
-    return None
-
-
-def _pm_home_reanchor(anchor: Path) -> Path | None:
-    """`anchor`(REPO=도구 자기-앵커)가 adopter#0 PM 홈이면 재지정 대상 worktree 를, 아니면 None.
-
-    2중 conjunction (오탐 0 지향·fail-soft): (1) anchor 가 실 board 소유(PM 홈) — worktree(코드
-    전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
-    코드 worktree(`work/<name>`) 존재. 일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
-    None(무영향)."""
-    # additional_reviewer.main은 명시 selector 기반 diff_root 해소로 전환되어 이 헬퍼를 호출하지 않는다.
-    # pm_delegate.check_write_target_reanchor가 adopter write-target 보호에 계속 사용하므로 유지한다.
-    if not _owns_real_board(anchor / ".project_manager"):
-        return None
-    return _canonical_worktree(anchor)
-
-# 엔진 기본 리뷰어 커맨드는 없다 — 대상은 구조화 tuple(`additional_reviewer.{harness,model}`)
-# 해소 결과뿐이고, 모델을 고정하지 않는 실행 경로를 남기지 않는다.
-
-# 리뷰어 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **해소된 대상의 하네스 프로필**이 소유한다
-# (`watchdog.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 축 값). 이 모듈에
-# 별도 타임아웃 상수를 두지 않는 이유가 이 티켓의 편입 이유와 같다: **값이 두 군데면 규칙이 둘이
-# 된다.** 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
-# 구조였고, 900 으로 올려도 같은 구조였다(실측: **입력·모델이 완전히 동일한 리뷰 2회 중 하나는
-# 900초 초과 kill·다른 하나는 `--timeout 1500` 으로 성공**). 그래서 값을 고르는 게임을 끝내고
-# 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 강등된다.
-# 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
-# `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
-# 게이트·예산 노브 키. 이름은 사람 역할 이름(추가 리뷰어) 축 하나로 수렴한다 — 모듈 파일명·raw
-# 파일 접두는 기존 감사물의 안정 계약이라 기계 식별자로 그대로 남는다. **구키 감지 상수는 없다**:
-# 구표기 잔존 판정은 공용 로더(`local_conf.assert_no_legacy`)가 conf 를 읽는 지점에서 한 번에
-# 하고, 이 모듈이 그 표의 사본을 들지 않는다.
-ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY = (
-    "additional_reviewer.incomplete_rounds_max")
-ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer.wave_budget"
-
-ADDITIONAL_REVIEWER_TIMEOUT_KEY = "additional_reviewer.timeout"
-ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
-ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY = "additional_reviewer.progress_signal"
-
-# 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
-# 분기로 번지지 않는다. attr 값은 `conf_schema` 의 진행 신호 상수명이다.
-_REVIEWER_PROGRESS_CONTRACTS = {
-    "codex": {
-        "default": "PROGRESS_SIGNAL_PLAINTEXT",
-        "flags": {"--json": "PROGRESS_SIGNAL_EVENT_STREAM"},
-        "options": {},
-    },
-    "claude": {
-        "default": "PROGRESS_SIGNAL_NONE",
-        "flags": {},
-        "options": {
-            ("--output-format", "stream-json"): "PROGRESS_SIGNAL_EVENT_STREAM",
-        },
-    },
-    "opencode": {
-        "default": "PROGRESS_SIGNAL_NONE",
-        "flags": {},
-        "options": {
-            ("--format", "json"): "PROGRESS_SIGNAL_EVENT_STREAM",
-        },
-    },
-}
-
-# 미완 라운드 상한 — 판정 없이 끝난 호출(타임아웃·중단·오염 무효화)이 같은 게이트에서 상한
-# 횟수를 채우면 이후 실행을 거부한다. 호출 횟수만 세던 판정 라운드 상한은 같은 범위를 보는 수렴
-# 축과 중복이라 제거됐다(실 장부 53게이트에서 한 번도 발동하지 않았고, 발산은 수렴 축이 더 일찍
-# 잡는다). 상한 값의 정본은 레지스트리다(`local_conf` · 아래 예산 노브 전부 동형).
-
-# 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(local.conf `additional_reviewer.rounds_max`).
-# 이 축은 호출 횟수가 아니라 **장부의 must_fix 추이**로 수렴 여부를
-# 본다: 상한을 넘겼거나(초과), 직전 라운드보다 must_fix 가 늘었으면(발산) 라운드를 더 쓰지 않는다.
-# 실측에서 green 6건 중 5건이 2R 종결이고 관측된 3R 시도 8건은 모두 반려였다.
-REVIEW_ROUNDS_MAX_KEY = "additional_reviewer.rounds_max"
 
 # 수렴 차단 사유 — 안내 문구의 라벨이자 판정 반환값(호출부가 사유별로 갈리지 않게 한 축).
 CONVERGENCE_DIVERGING = "diverging"
@@ -557,14 +416,6 @@ _MACHINE_MIRROR_RE = re.compile(
 # 실행 전 거부라 리뷰어는 호출되지 않는다(과금 없음). wave 예산 소진도 같은 축(호출 전
 # 예산 거부)이라 같은 rc 를 쓴다 — 호출부가 "예산 때문에 안 나갔다"를 한 코드로 판별한다.
 EXIT_ROUND_LIMIT_EXCEEDED = 4
-
-
-# 프롬프트 형식에서 must-fix 섹션 헤더를 인식하는 정규식
-_MUST_FIX_SECTION_RE = re.compile(
-    r"\*{0,2}must[- ]fix\*{0,2}(?:\s*\([^)]*\))?\s*:", re.IGNORECASE,
-)
-# must-fix 섹션 내 "없음/N/A/none" 항목 패턴
-_NONE_ITEM_RE = re.compile(r"^(?:없음|n/?a|none)\s*$", re.IGNORECASE)
 
 # generic 맥락 헤더 (review_context.local.md 부재 시)
 _AUTHORITATIVE_TICKET_CONTEXT = (
@@ -867,423 +718,6 @@ _RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
     "  · 현재 상태는 `--rounds-report --gate {gate}` 로 확인하세요."
 )
 
-# ── 설정 ──────────────────────────────────────────────────────────────────
-
-
-def _conf_default(key: str) -> str | None:
-    """이 conf 키의 엔진 기본값 — 정본은 `conf_schema.KEY_REGISTRY` 다(선언이 없으면 None)."""
-    return conf_schema.default_for(key)
-
-
-def _conf_default_int(key: str) -> int:
-    """정수 기본값 — 선언이 없는 키를 부르면 `TypeError` 로 멈춘다(값을 지어내지 않는다)."""
-    return int(_conf_default(key))
-
-
-def local_config(repo: Path | None = None) -> dict[str, str]:
-    """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
-    path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
-    return conf_store.load_checked_readable(path)
-
-
-def _local_config_for_repo(repo: Path) -> dict[str, str]:
-    """해소된 PM 홈의 config만 읽는 명시적 seam."""
-    return local_config(repo)
-
-
-def knob_value_key(conf: dict[str, str], key: str) -> str | None:
-    """노브 값을 공급하는 키 — **신키뿐**. 공급이 없으면 None.
-
-    빈 값은 종전부터 미설정으로 읽어 기본값으로 fail-soft 했다. 그 의미를 그대로 승계해
-    "비어 있지 않은 값"만 공급으로 본다.
-
-    공급 판정은 값의 **존재**이지 형식이 아니다 — 신키가 깨진 값(비정수)을 공급하면 해소는
-    엔진 기본값으로 간다(구키로 내려가지 않는다).
-    """
-    return key if conf.get(key, "").strip() else None
-
-
-def _knob_raw(conf: dict[str, str], key: str) -> str:
-    """공급 키의 원문 값 — 공급이 없으면 빈 문자열(호출부가 기본값으로 간다)."""
-    supplier = knob_value_key(conf, key)
-    return conf.get(supplier, "").strip() if supplier else ""
-
-
-# ── 추가 리뷰어 대상 해소 (원자 tuple) ──────────────────────────────────────
-#
-# 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어라는 뜻이고,
-# 우리가 띄우는 행위자를 `외부` 로 부르지 않는다 — 설정 키는 대상·상한 `additional_reviewer.*`
-# 뿐이고, raw 파일 접두·모듈 파일 이름 같은 **이미 기록된 산출물에 박힌 기계 식별자만 그대로**
-# 유지한다.
-#
-# 대상은 위임과 동형의 **원자 tuple**(harness+model 동반 필수·reasoning 선택) 하나뿐이다.
-# 모델을 고정하지 않는 자유 문자열 경로는 "어느 모델이 봤는지"를 사후에 알 수 없어 라운드 장부·
-# raw 감사가 거짓말을 하게 되므로 폐지했다 — tuple 이 없으면 호출하지 않고 fail-loud 다.
-ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
-ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
-ADDITIONAL_REVIEWER_MODEL_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.model"
-ADDITIONAL_REVIEWER_REASONING_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.reasoning"
-ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
-    ADDITIONAL_REVIEWER_HARNESS_KEY,
-    ADDITIONAL_REVIEWER_MODEL_KEY,
-    ADDITIONAL_REVIEWER_REASONING_KEY,
-)
-
-REVIEWER_SOURCE_STRUCTURED = "structured"
-# 모델 축의 **예약 sentinel** — 엔진이 "모델이 고정되지 않았다"를 뜻하던 낱말들이다. 구조화
-# 프로필은 정의상 모델을 고정한 tuple 이므로 이 값을 받을 수 없다: 받으면 장부·raw 헤더·stderr 가
-# "고정했다는 선언"과 "미고정"을 같은 글자로 적어 감사가 자기 모순을 기록한다.
-RESERVED_MODEL_VALUES: frozenset[str] = frozenset({"default", "unpinned-model"})
-
-# 추가 리뷰어의 권한축은 **불변**이다 — 읽기 권위(code-reviewer)로 고정하고 설정으로 올릴 수 없다.
-# 리뷰는 저장소를 고치지 않는다(고치는 것은 위임 developer 축의 일이다).
-REVIEWER_ROLE = "code-reviewer"
-
-# 실행 시점에만 정해지는 경로는 세 표면(dry-run·stderr provenance·raw)이 **같은 자리표시자**로
-# 표시한다. 값이 실행마다 달라지는 토큰을 정체 문자열에 넣으면 세 표면이 서로 다른 문자열을
-# 말하게 되고, 그러면 "같은 대상을 말했는가"를 기계가 대조할 수 없다. 실 argv 에는 그 자리에
-# 실제 cwd/프롬프트 파일이 들어간다(opencode 만 해당).
-REVIEWER_CWD_PLACEHOLDER = "<review-cwd>"
-REVIEWER_PROMPT_FILE_PLACEHOLDER = "<prompt-file>"
-
-
-class ReviewerTargetError(RuntimeError):
-    """추가 리뷰어 대상 설정이 원자 tuple 계약을 어김 — 호출 전에 중단해야 함."""
-
-
-class ReviewerTarget(NamedTuple):
-    """이번 실행이 실제로 부를 추가 리뷰어 — 세 표면이 공유하는 단일 해소 결과.
-
-    `command` = 세 표면(dry-run·stderr provenance·raw 헤더)이 **같은 문자열로** 말하는 정체이며
-    구조화 tuple 의 argv 를 그대로 렌더한 값이다(다른 출처는 없다).
-    """
-
-    source: str
-    command: str
-    harness: str | None = None
-    model: str | None = None
-    reasoning: str | None = None
-
-    @property
-    def structured(self) -> bool:
-        """구조화 transport(하네스 argv 조립)를 태울 수 있는가.
-
-        출처 라벨만으로 판정하면 **해소를 지나지 않아 harness 가 None 인** 대상(부분 구성)이
-        구조화로 읽혀 argv 조립 단계에서 `harness=None` 으로 죽는다. 조립에 필요한 축이 실제로
-        해소됐는지를 함께 본다.
-        """
-        return self.source == REVIEWER_SOURCE_STRUCTURED and self.harness is not None
-
-    @property
-    def name(self) -> str:
-        """시간 프로필·진행신호·raw 파일명이 공유하는 정규화 키."""
-        return reviewer_name(self.command)
-
-    @property
-    def ledger_model(self) -> str:
-        """이 실행의 **모델 정체** — 네 표면(dry-run·stderr·raw 헤더·raw 장부)이 공유하는 단일 값.
-
-        **명시 모델 그대로**다. 커맨드 문자열에서 역추론하지 않는다(그러면 명시 모델이 argv 표기
-        규칙에 따라 `default` 로 퇴화할 수 있다)."""
-        return self.model or ""
-
-    @property
-    def profile_tail(self) -> str:
-        """해소 tuple 의 출처/모델 축 — provenance 문자열의 공통 꼬리.
-
-        모델 축은 장부·raw 헤더와 **같은 정체 값**(`ledger_model`)을 쓴다."""
-        return (f"source={self.source}, harness={self.harness}, "
-                f"model={self.model}, reasoning={self.reasoning}")
-
-
-def _structured_reviewer_argv(
-    harness: str, model: str, reasoning: str | None, *,
-    cwd: str, prompt_file: str,
-) -> list[str]:
-    """구조화 대상의 argv — 공용 드라이버 계약(`contract`)만으로 조립한다.
-
-    모델·reasoning 은 **항상 argv 에 명시**되고 권한축은 code-reviewer(읽기)로 고정된다. 사용자
-    config 기본값(모델·effort)이 실제 수신자를 바꿀 수 없는 이유가 이것이다 — 명시 플래그가
-    config 기본값을 이긴다.
-
-    codex/claude 는 프로세스 cwd 를 그대로 쓰므로 실행마다 달라지는 토큰이 argv 에
-    없다. opencode 만 subprocess cwd 를 무시해 `--dir` 이 필요하고 프롬프트도 `--file` 첨부라,
-    그 두 자리는 자리표시자로 렌더한 뒤 실행 시점에 실 경로로 조립한다.
-    """
-    if harness == "codex":
-        return contract.build_codex_argv(model, reasoning, REVIEWER_ROLE)
-    if harness == "claude":
-        return contract.build_claude_argv(model, reasoning, REVIEWER_ROLE)
-    return contract.build_opencode_argv(model, reasoning, REVIEWER_ROLE, cwd, prompt_file)
-
-
-def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
-    """`additional_reviewer.{harness,model,reasoning}` 을 **원자로** 해소한다.
-
-    · 구조화 키가 **하나도 없으면** 대상이 없다 — fail-loud 다(엔진 기본 커맨드로 조용히 나가지
-      않는다·모델 미고정 실행 경로 폐지).
-    · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수 —
-      부분 지정은 fail-loud 다(조용한 폴백·절반만 반영된 대상 금지). 선언 판정을 값의 truthiness
-      로 하면 `additional_reviewer.harness=` 처럼 **비운 채 선언한 부분 tuple** 이 "미설정" 으로
-      읽혀 진단이 엉뚱해진다. 그래서 기준은 **키 존재**다.
-      `reasoning` 만 빈 값이 허용되고(선택 축·플래그 생략), 그것도 harness/model 이 온전할 때다.
-    · model 이 **예약 sentinel**(`RESERVED_MODEL_VALUES` — 엔진이 '모델 미고정'을 뜻하는 낱말)이면
-      거부한다. 값이 비어있지 않다는 것만으로 통과시키면 `additional_reviewer.model=default` 가
-      "고정했다"는 선언과 함께 미고정 라벨을 장부에 박아, 감사가 자기 모순을 기록한다.
-    · harness 값 검증은 공용 드라이버 계약(`contract`)이 소유한다. reasoning 은 정리만 하고, 그 모델이
-      받는 값인지는 실행 직전 `check_reviewer_reasoning` 이 실행 cwd·env 로 확인한다(이 함수는
-      비교용 `reviewer_profile_config` 에서도 불린다 — 거기서 모델 목록을 조회하지 않는다).
-
-    모든 거부는 **호출·라운드 예약·raw 예약 전**에 성립한다 — 호출부가 이 함수를 그 게이트들
-    앞에서 부르고, 이 함수 자체는 부작용이 없다.
-    """
-    present = tuple(key for key in ADDITIONAL_REVIEWER_KEYS if key in conf)
-    declared = {
-        key: (conf.get(key) or "").strip()
-        for key in ADDITIONAL_REVIEWER_KEYS
-    }
-    if not present:
-        raise ReviewerTargetError(
-            "추가 리뷰어 대상이 없습니다 — local.conf 에 "
-            f"`{ADDITIONAL_REVIEWER_HARNESS_KEY}`·`{ADDITIONAL_REVIEWER_MODEL_KEY}` 를 "
-            f"설정하세요(선택: `{ADDITIONAL_REVIEWER_REASONING_KEY}`). 엔진 기본 커맨드로 "
-            "조용히 나가지 않습니다 — 모델을 고정하지 않은 실행은 '어느 모델이 판정했는가'를 "
-            "사후에 확정할 수 없습니다."
-        )
-
-    harness = declared[ADDITIONAL_REVIEWER_HARNESS_KEY]
-    model = declared[ADDITIONAL_REVIEWER_MODEL_KEY]
-    if not harness or not model:
-        missing = ", ".join(
-            key for key in (ADDITIONAL_REVIEWER_HARNESS_KEY, ADDITIONAL_REVIEWER_MODEL_KEY)
-            if not declared[key]
-        )
-        raise ReviewerTargetError(
-            f"추가 리뷰어 프로필이 불완전합니다({missing} 부재/빈 값) — harness/model 은 동반 "
-            "필수인 원자 tuple 입니다. 부분 설정으로 조용한 기본값을 쓰지 않습니다. local.conf 에 "
-            f"`{ADDITIONAL_REVIEWER_HARNESS_KEY}`·`{ADDITIONAL_REVIEWER_MODEL_KEY}` 를 함께 "
-            f"설정하세요(선택: `{ADDITIONAL_REVIEWER_REASONING_KEY}`)."
-        )
-    if model.lower() in RESERVED_MODEL_VALUES:
-        raise ReviewerTargetError(
-            f"`{ADDITIONAL_REVIEWER_MODEL_KEY}={model}` 은 예약 sentinel 입니다 — 엔진이 '모델 "
-            f"미고정'을 표시하는 낱말이라(예약: {', '.join(sorted(RESERVED_MODEL_VALUES))}) "
-            "구조화 프로필의 모델 값이 될 수 없습니다. 구조화 프로필은 정의상 모델을 고정한 "
-            "tuple 인데 이 값을 받으면 raw 장부·raw 헤더·stderr provenance 가 legacy 미고정 실행과 "
-            "구분되지 않아 '어느 모델이 이 판정을 냈는가'를 사후에 확정할 수 없습니다.\n"
-            f"  · 실제 모델 이름을 적으세요(예: `{ADDITIONAL_REVIEWER_MODEL_KEY}=gpt-5.6-sol`).\n"
-            "  · 모델 미고정 실행 경로는 폐지됐습니다 — 실행하려면 모델을 고정해야 합니다."
-        )
-
-    try:
-        harness = contract.validate_harness(harness)
-    except contract.HarnessContractError as exc:
-        raise ReviewerTargetError(
-            f"추가 리뷰어 프로필 값 오류 — {exc}"
-        ) from exc
-    reasoning = contract.normalize_reasoning(declared[ADDITIONAL_REVIEWER_REASONING_KEY])
-
-    command = shlex.join(_structured_reviewer_argv(
-        harness, model, reasoning,
-        cwd=REVIEWER_CWD_PLACEHOLDER, prompt_file=REVIEWER_PROMPT_FILE_PLACEHOLDER,
-    ))
-    return ReviewerTarget(
-        source=REVIEWER_SOURCE_STRUCTURED, command=command,
-        harness=harness, model=model, reasoning=reasoning,
-    )
-
-
-def check_reviewer_reasoning(target: ReviewerTarget, *, cwd: Path) -> None:
-    """실행 직전 확인 — 대상의 reasoning 이 그 하네스·모델의 허용집합 원소인가(밖이면 ReviewerTargetError).
-
-    허용집합은 실행과 같은 cwd·env(`pm_delegate.build_env`)로 해소한다 — opencode 는 그 조건의 모델
-    목록 조회 결과가 정한다. 추론 값이 없으면 조회하지 않는다."""
-    if target.reasoning is None:
-        return
-    try:
-        contract.validate_reasoning(
-            target.harness, target.reasoning, model=target.model, cwd=cwd,
-            env=_load_pm_delegate().build_env(target.harness))
-    except contract.HarnessContractError as exc:
-        raise ReviewerTargetError(f"추가 리뷰어 프로필 값 오류 — {exc}") from exc
-
-
-def _running_on_windows() -> bool:
-    """실행 플랫폼 판정(진입점 인터프리터 표기·argv 분해 규칙) — 주입 가능한 좁은 seam."""
-    return os.name == "nt"
-
-
-def _split_reviewer_argv(reviewer_cmd: str) -> list[str]:
-    """`reviewer_cmd` 를 **실행 플랫폼 규칙**으로 argv 분해한다 (분해 규칙은 `pm_engine.infra.process` 소유).
-
-    `shlex.split` 를 직접 부르면 POSIX 규칙이라 Windows 실행 경로의 ``\\`` 가 escape 로 소비된다 —
-    ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 로 뭉개져 확정 기동 실패로 끝나고, 그
-    실행은 "리뷰어를 찾을 수 없음"으로 흡수돼 교차검증이 조용히 환불된다. 분해 규칙 사본을 여기
-    만들지 않고 `pm_engine.infra.process.split_command_argv` 하나를 쓴다(같은 보호 규칙·같은 복원).
-    """
-    return process.split_command_argv(
-        reviewer_cmd, windows=_running_on_windows(),
-    )
-
-
-def _normalized_reviewer_key(argv: list[str]) -> str:
-    """리뷰어 실행파일을 공유 프로필 키로 정규화한다.
-
-    Windows 실행파일 접미사/대소문자/경로 구분자를 여기서 한 번만 처리한다. 진행신호 계약과 시간
-    프로필이 이 키를 함께 써야 `codex.exe`의 진행은 codex로 보면서 시간만 미지 GPU 축으로 잡는
-    비대칭이 생기지 않는다.
-    """
-    if not argv:
-        return "reviewer"
-    executable = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    for suffix in (".exe", ".cmd", ".bat"):
-        if executable.endswith(suffix):
-            executable = executable[:-len(suffix)]
-            break
-    return re.sub(r"[^a-z0-9_.-]", "_", executable) or "reviewer"
-
-
-def _reviewer_progress_signal(reviewer_cmd: str, conf: dict[str, str]) -> str:
-    """실행 파일 basename과 그 CLI의 **옵션 계약** 또는 명시 설정으로 진행 신호를 판정한다.
-
-    이름만 같거나 스트리밍처럼 보이는 플래그만 있다는 이유로 추론하지 않는다. 알려진 실행 파일의
-    알려진 옵션 조합만 계약으로 인정한다. 미지 CLI/형식은 신호 없음으로 두며, 자유 문자열 커맨드는
-    local.conf 명시 키로만 선언할 수 있다.
-    """
-    explicit = (conf.get(ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY) or "").strip()
-    if explicit:
-        if explicit in conf_schema.PROGRESS_SIGNAL_KINDS:
-            return explicit
-        print(
-            f"경고: local.conf {ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY}={explicit!r} 은 "
-            f"{sorted(conf_schema.PROGRESS_SIGNAL_KINDS)} 중 하나가 아님 — argv 형식 판정 사용.",
-            file=sys.stderr,
-        )
-    try:
-        argv = _split_reviewer_argv(reviewer_cmd)
-    except ValueError:
-        return conf_schema.PROGRESS_SIGNAL_NONE
-    if not argv:
-        return conf_schema.PROGRESS_SIGNAL_NONE
-
-    executable = _normalized_reviewer_key(argv)
-    contract = _REVIEWER_PROGRESS_CONTRACTS.get(executable)
-    if contract is None:
-        return conf_schema.PROGRESS_SIGNAL_NONE
-
-    def option_value(name: str) -> str | None:
-        for index, token in enumerate(argv[1:], start=1):
-            if token == name and index + 1 < len(argv):
-                return argv[index + 1].strip().lower()
-            prefix = name + "="
-            if token.startswith(prefix):
-                return token[len(prefix):].strip().lower()
-        return None
-
-    for flag, signal_attr in contract["flags"].items():
-        if flag in argv[1:]:
-            return getattr(conf_schema, signal_attr)
-    for (option, expected), signal_attr in contract["options"].items():
-        if option_value(option) == expected:
-            return getattr(conf_schema, signal_attr)
-    return getattr(conf_schema, contract["default"])
-
-
-def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
-    """리뷰어 커맨드 → 시간값 프로필 + 출력형식 기반 진행신호 프로필.
-
-    시간값은 실행 파일 축의 공유 테이블을 쓰되, 진행 신호는 전체 argv/명시 설정으로 독립 판정한다.
-    conf 미지정 facade도 local.conf를 읽어 `pm_delegate.harness_profile`과 대칭이다.
-    """
-    if conf is None:
-        try:
-            conf = local_config()
-        except OSError:
-            conf = {}
-    profile = watchdog.resolve_harness_profile(
-        reviewer_name(reviewer_cmd), conf,
-        fallback=watchdog.REVIEWER_FALLBACK_PROFILE,
-        legacy_idle_key=ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY,
-        legacy_wall_key=ADDITIONAL_REVIEWER_TIMEOUT_KEY,
-    )
-    return profile._replace(
-        progress_signal=_reviewer_progress_signal(reviewer_cmd, conf)
-    )
-
-
-def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
-                     reviewer_cmd: str) -> int:
-    """추가 리뷰 **벽시계 백스톱**(초)을 `--timeout` > 리뷰어 프로필 순서로 해소한다.
-
-    CLI 양수값은 argparse 검증을 통과한 명시 override다. 그 아래(legacy flat conf →
-    `harness.<reviewer>.wall_timeout` → 선언 기본)는 `watchdog.resolve_harness_profile` 이 소유한다
-    — 깨진 conf 값은 거기서 stderr 경고 후 fail-soft. pm_delegate._resolve_timeout 과 같은 계약이다.
-    """
-    if args.timeout is not None:
-        return args.timeout
-    return int(reviewer_profile(reviewer_cmd, conf).wall_timeout)
-
-
-
-def _timeout_seconds_arg(raw: str) -> int:
-    """CLI timeout 을 `watchdog` 의 단일 정규화 경계로 파싱한다."""
-    value = watchdog.normalize_timeout_seconds(raw)
-    if value is None:
-        raise argparse.ArgumentTypeError("유한한 정수 초(최소 1)여야 합니다")
-    return value
-
-
-def _configured_paths(conf: dict[str, str]) -> list[str]:
-    """검토 경로 — 선언이 없으면 레지스트리 기본값을 **같은 문법**으로 나눈다(파서 하나)."""
-    raw = conf.get("additional_reviewer.paths", "").strip() or _conf_default(
-        "additional_reviewer.paths")
-    return [p for p in re.split(r"[,\s]+", raw) if p]
-
-
-def _incomplete_round_limit(conf: dict[str, str]) -> int:
-    """판정 없는 호출의 별도 재시도 상한(미설정·손상은 레지스트리 기본값)."""
-    default = _conf_default_int(ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY)
-    raw = _knob_raw(conf, ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY)
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value >= 0 else default
-
-
-def _wave_budget(conf: dict[str, str]) -> int:
-    """wave 총 라운드 예산 (local.conf additional_reviewer.wave_budget·미설정은 레지스트리 기본값).
-
-    비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
-    벽돌로 만들지 않는다)."""
-    default = _conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
-    raw = _knob_raw(conf, ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value >= 0 else default
-
-
-def _review_rounds_max(conf: dict[str, str]) -> int:
-    """수렴-형상 라운드 상한 (local.conf `additional_reviewer.rounds_max`·미설정은 레지스트리 기본값).
-
-    비정수·음수는 기본값으로 fail-soft — 다른 예산 노브와 같은 규칙이다(깨진 노브가 게이트를
-    벽돌로 만들지 않는다)."""
-    default = _conf_default_int(REVIEW_ROUNDS_MAX_KEY)
-    raw = conf.get(REVIEW_ROUNDS_MAX_KEY, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value >= 0 else default
-
 
 # ── 라운드 상한 장부 ─────────────
 # 추가 리뷰어 호출은 유료 호출이라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한
@@ -1445,11 +879,6 @@ def _round_ledger_lock() -> Iterator[None]:
     """
     with fs.exclusive_file_lock(_round_ledger_lock_path()):
         yield
-
-
-def _utc_now_iso() -> str:
-    """장부 시각 표기 단일 소스 — UTC ISO-8601 (예약/마감/산출이 같은 형식을 쓴다)."""
-    return review_rounds.utc_now_iso()
 
 
 def _target_rev_fingerprint(diff: str) -> str:
@@ -1620,7 +1049,7 @@ def _spend_wave_round(state: dict) -> None:
     wave 경계는 명시 리셋(`--ack-wave`)까지 누적한다. 세션 자동 감지는 하지 않는다 — 세션 식별이
     이 도구 밖 개념이라 명시 리셋이 단순하고 예측 가능하다."""
     if not state.get("started"):
-        state["started"] = _utc_now_iso()
+        state["started"] = clock.now_utc()
     state["spent"] = max(0, _as_int(state.get("spent"))) + 1
 
 
@@ -1758,10 +1187,10 @@ def _round_must_fix_items(result: dict) -> list[str] | None:
     answer = result.get("answer")
     if not isinstance(answer, str):
         return None
-    if not _MUST_FIX_SECTION_RE.search(answer):
+    if not reviewer_result._MUST_FIX_SECTION_RE.search(answer):
         return None
-    items = _extract_must_fix_items(answer)
-    return [] if _is_none_items(items) else items
+    items = reviewer_result._extract_must_fix_items(answer)
+    return [] if reviewer_result._is_none_items(items) else items
 
 
 def _must_fix_count(result: dict) -> int | None:
@@ -1785,7 +1214,7 @@ def _round_outcome(result: dict, *, record: dict | None = None) -> dict:
     수 없어, 예약 identity 와 실제 검토 diff를 그대로 실어 라운드↔결과 연결을 잠근다(예약 레코드를
     못 찾은 장부 밖 직접 호출만 null)."""
     return {
-        "ts": _utc_now_iso(),
+        "ts": clock.now_utc(),
         "id": (record or {}).get("id"),
         "sequence": (record or {}).get("sequence"),
         "started_at": (record or {}).get("started_at"),
@@ -1991,9 +1420,9 @@ def _reserve_round_budget(
         print(_UNACCOUNTED_OPT_OUT_NOTICE, file=sys.stderr)
         return RoundBudget()
 
-    incomplete_limit = _incomplete_round_limit(conf)
-    wave_budget = _wave_budget(conf)
-    rounds_max = _review_rounds_max(conf)
+    incomplete_limit = reviewer_target._incomplete_round_limit(conf)
+    wave_budget = reviewer_target._wave_budget(conf)
+    rounds_max = reviewer_target._review_rounds_max(conf)
     try:
         with _round_ledger_lock():
             ledger = _load_round_ledger()
@@ -2054,8 +1483,8 @@ def _reserve_round_budget(
                     rounds=completed + inflight, completed=completed, inflight=inflight,
                     limit=rounds_max,
                     series=_format_must_fix_series(series),
-                    knob=REVIEW_ROUNDS_MAX_KEY,
-                    default=_conf_default_int(REVIEW_ROUNDS_MAX_KEY),
+                    knob=reviewer_budget.REVIEW_ROUNDS_MAX_KEY,
+                    default=reviewer_result._conf_default_int(reviewer_budget.REVIEW_ROUNDS_MAX_KEY),
                     ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
 
@@ -2323,7 +1752,7 @@ def render_rounds_report(
 
     `wave_budget` 미지정은 레지스트리 기본값이다(호출부가 conf 해소를 못 하는 조회 경로용)."""
     if wave_budget is None:
-        wave_budget = _conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
+        wave_budget = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
     snapshot = dict(ledger)                # 사본 정규화 — 조회가 장부를 고치지 않는다
     wave = _wave_state(snapshot)
     lines = [
@@ -2381,16 +1810,16 @@ def _print_rounds_report(
         anchor if resolved else pm_paths.resolve_pm_home_for_repo(anchor)
     )
     try:
-        wave_budget = _wave_budget(_local_config_for_repo(_PM_HOME_OVERRIDE))
+        wave_budget = reviewer_target._wave_budget(conf_store.local_config(pm_paths.home_at(_PM_HOME_OVERRIDE)))
     except (OSError, UnicodeError) as exc:
         # 조회는 호출이 없어 conf 판독 실패로 막을 이유가 없다(호출 경로의 fail-closed 와
         # 다른 축) — 예산 표기만 기본값으로 낮추고 그 사실을 알린다.
         print(
             f"경고: local.conf 읽기 실패 ({type(exc).__name__}: {exc}) — wave 예산 표기를 "
-            f"기본값 {_conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)} 로 대체합니다.",
+            f"기본값 {reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)} 로 대체합니다.",
             file=sys.stderr,
         )
-        wave_budget = _conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
+        wave_budget = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
     print(render_rounds_report(
         _load_round_ledger(),
         ledger_path=_round_ledger_path(),
@@ -2477,7 +1906,7 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         previous = review_rounds.gate_resolution(entry)
         declared = {
             "kind": review_rounds.RESOLUTION_PM_VERIFIED,
-            "ts": _utc_now_iso(),
+            "ts": clock.now_utc(),
             "must_fix": residual,
             **review_rounds.gate_round_binding(entry),
         }
@@ -3430,27 +2859,9 @@ def build_prompt(
         "코드와 git 상태를 수정하지 않는다. "
         "`--no-index` 명령의 rc=1은 차이가 있음을 뜻한다.\n\n"
     )
-    delegate = _load_delegate_transport()
     for argv in read_commands:
-        parts.append("```sh\n" + delegate.render_shell_command(argv) + "\n```\n")
+        parts.append("```sh\n" + delegate_env.render_shell_command(argv) + "\n```\n")
     return "".join(parts)
-
-
-# ── 추가 리뷰어 실행 ──────────────────────────────────────────────────────
-
-
-def _load_delegate_transport():
-    """opencode sandbox 전달 사본 seam을 형제 pm_delegate에서 지연 로드한다.
-
-    위임 축이 확립한 O_EXCL·0600 생성, 자기-은닉 ignore, fd containment와 정리를 리뷰 축에서도
-    그대로 호출한다. pm_delegate가 additional_reviewer의 다른 판정을 지연 로드하는 반대 방향 seam을
-    갖지만, 이 로드는 두 모듈의 import 완료 뒤 opencode 실행 시점에만 일어나 순환 import를 만들지
-    않는다.
-    """
-    path = Path(__file__).resolve().parent / "pm_delegate.py"
-    return _load_module_from_path(
-        path, "pm_delegate.py", verifier=_verify_engine_rev, cache=True,
-    )
 
 
 def _reviewer_idle_timeout(reviewer_cmd: str, idle_timeout: float | None) -> float | None:
@@ -3461,14 +2872,14 @@ def _reviewer_idle_timeout(reviewer_cmd: str, idle_timeout: float | None) -> flo
     stderr 로 촘촘히 흐르고(리뷰 1건 12,233줄) stdout 은 최종 회신뿐이라(498~759 바이트), chunk
     도착 자체를 신호로 보면 파서 없이 같은 판정이 선다. 특례 분기 없이 축 선언만 다르다.
     명시값이 없으면 해소 command가 가리키는 하네스 프로필 값을 쓴다(위임 축과 같은 테이블)."""
-    profile = reviewer_profile(reviewer_cmd)
+    profile = reviewer_target.reviewer_profile(pm_paths.home_at(REPO, pm_home=_PM_HOME_OVERRIDE), reviewer_cmd)
     resolved = idle_timeout if idle_timeout is not None else profile.idle_timeout
     return watchdog.idle_timeout_for_signal(profile.progress_signal, resolved)
 
 
 def _reviewer_watchdog_settings(reviewer_cmd: str):
     """해소된 리뷰어 프로필의 startup 선언을 공용 워치독 인자로 변환한다."""
-    profile = reviewer_profile(reviewer_cmd)
+    profile = reviewer_target.reviewer_profile(pm_paths.home_at(REPO, pm_home=_PM_HOME_OVERRIDE), reviewer_cmd)
     first_event_timeout = (
         watchdog.first_event_timeout_default() if profile.startup_watchdog else None
     )
@@ -3571,7 +2982,7 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
         head = (f"[리뷰어 타임아웃 — 무진행 임계 {threshold:.0f}초 발화"
                 f" · 실측 침묵 {measured_label}] "
                 f"벽시계 상한 {timeout}초는 미도달. 재시도: `--idle-timeout <초>` 또는 local.conf "
-                f"`{ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
+                f"`{reviewer_budget.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
     try:
         return watchdog.format_partial_output(head, exc)
     except Exception as formatter_exc:  # noqa: BLE001 - timeout diagnosis must survive formatter failure.
@@ -3822,12 +3233,12 @@ def _run_reviewer_ex(
         metrics.clear()
         metrics.update({"rc": 1, "silence_sec": None})
     _run = run_fn or _watchdog_reviewer_run
-    argv = list(argv) if argv is not None else _split_reviewer_argv(reviewer_cmd)
+    argv = list(argv) if argv is not None else reviewer_target._split_reviewer_argv(reviewer_cmd)
     if not argv:
         # "설정상 리뷰어 없음" — 실행 파일 해소 실패(`_launch_failure_output`)와 **다른 사건**이다.
         return False, ReviewerOutput(NO_REVIEWER_CONFIGURED_OUTPUT), False
     if timeout is None:  # 미지정 호출(공개 facade) — 리뷰어 프로필의 벽시계 백스톱.
-        timeout = int(reviewer_profile(reviewer_cmd).wall_timeout)
+        timeout = int(reviewer_target.reviewer_profile(pm_paths.home_at(REPO, pm_home=_PM_HOME_OVERRIDE), reviewer_cmd).wall_timeout)
     # 스폰 경계를 실제로 지났는가 — 확실치 않은 실패의 started 판정 입력이다. 경계 전이면 자식이
     # 없으므로 호출 0 이고, 경계 뒤면 프롬프트가 이미 나갔을 수 있다.
     spawn_reached = False
@@ -3928,180 +3339,6 @@ def _run_reviewer_ex(
                 _started_after(exc, spawn_reached))
 
 
-
-def reviewer_name(reviewer_cmd: str) -> str:
-    """reviewer_cmd 의 공유 정규화 키(시간 프로필·진행신호·파일명/요약 공통)."""
-    argv = _split_reviewer_argv(reviewer_cmd)
-    return _normalized_reviewer_key(argv)
-
-
-# ── 결과 파싱 ─────────────────────────────────────────────────────────────
-
-
-def _extract_must_fix_items(output: str) -> list[str]:
-    """must-fix 섹션 헤더 이후의 항목 라인을 추출한다 (표기 편차 처리)."""
-    items: list[str] = []
-    in_section = False
-    for line in output.splitlines():
-        if not in_section:
-            if _MUST_FIX_SECTION_RE.search(line):
-                in_section = True
-                after_header = _MUST_FIX_SECTION_RE.sub("", line, count=1).strip()
-                if after_header:
-                    items.append(after_header)
-        else:
-            stripped = line.strip()
-            if stripped.startswith("**") and stripped.endswith(":"):
-                break
-            if stripped.startswith("**") and "**:" in stripped:
-                break
-            if stripped.startswith("- ") or stripped.startswith("* "):
-                items.append(stripped.lstrip("-* ").strip())
-            elif stripped and not stripped.startswith("#"):
-                items.append(stripped)
-    return items
-
-
-def _is_none_items(items: list[str]) -> bool:
-    """항목 목록이 "없음/N/A/none" 만으로 구성됐는지 확인한다."""
-    if not items:
-        return True
-    return all(_NONE_ITEM_RE.match(item) for item in items if item)
-
-
-def parse_verdict(output: str) -> dict[str, bool]:
-    """모델 출력에서 판정(통과/반려)·must-fix 존재를 파싱한다.
-
-    반환: {"has_must_fix": bool, "has_pass": bool}. 보수적: 판정 라인 없이 must-fix/반려
-    토큰만 있어도 has_must_fix=True. 예외: must-fix 섹션이 "없음/N/A/none" 만이면 False.
-
-    **통과 인정은 `verdict_words` 가 거른 명시 판정선에서만** 나온다. 본문 아무 곳의 '통과' 토큰을
-    통과 근거로 세면 두 가지가 깨진다. (a) 코드펜스에 든 `판정: 통과`(= 검토 대상 diff 나 인용물) +
-    본문 `must-fix: 없음` 조합이 파서만 통과시키고 오염 검출은 그 라인을 안 세는 **비대칭**이 생긴다.
-    (b) 형식을 아예 안 지킨 산문("회귀 통과 확인. 문제 없음.")이 통과로 접힌다 — 실측된 형상이다.
-    판정선이 하나도 없으면 통과가 아니라 '판정 불명확'(보수적 exit 1)이며, 그 성질은 파서 단독
-    회귀가 소유한다(별도 폴백 분기 없음 — 실측상 no-op 이라 두지 않는다).
-    """
-    must_fix_items = _extract_must_fix_items(output)
-    section_found = bool(_MUST_FIX_SECTION_RE.search(output))
-
-    if section_found and _is_none_items(must_fix_items):
-        has_must_fix = False
-    elif section_found and must_fix_items:
-        has_must_fix = True
-    else:
-        has_must_fix = any(token in output for token in review_verdict._REJECT_TOKENS)
-
-    declared_verdicts = review_verdict.verdict_words(output)
-    kind = review_verdict.verdict_kind(declared_verdicts[0]) if declared_verdicts else review_verdict.VERDICT_UNKNOWN
-    has_pass = kind == review_verdict.VERDICT_PASS
-    if has_pass:
-        if not must_fix_items or _is_none_items(must_fix_items):
-            has_must_fix = False
-    elif kind == review_verdict.VERDICT_REJECT:
-        has_must_fix = True
-
-    return {"has_must_fix": has_must_fix, "has_pass": has_pass}
-
-
-# ── 회신 품질 검출 (판정 확정 가능성) ─────────────────────────────────────
-#
-# "이번 판정이 이 리뷰의 것인가"를 회신 본문의 증거로 판정한다: 회신에 옛 리뷰 raw 파일명이나
-# 하네스 세션 전사 경로가 인용돼 있으면 그 판정은 이번 라운드의 산출이 아닐 수 있고, 옛 판정
-# 블록을 통째로 옮겨 오면 판정 라인이 여러 개가 되어 파서가 고른 한 줄이 이번 판정이라는 보장이
-# 사라진다. 이것은 **출력 품질** 검사이지 접근 권한이 아니다 — 입력은 회신 텍스트 하나뿐이고
-# 하네스로 갈리지 않는다.
-# 검사 대상은 **회신 채널만**이다(`ReviewerOutput.answer`) — 진행 로그에는 프롬프트와 diff 원문이
-# 그대로 실려 있어 그것까지 세면 정상 실행이 전부 걸린다(라이브 실측).
-
-# 이 엔진이 만드는 raw 산출물 파일명(`_reserve_output`·pm_delegate 동형). 타임스탬프/pid 자리가
-# 있어 diff 본문에서 우연히 나오지 않는다 — 인용됐다면 로컬 산출물 디렉터리를 읽었다는 증거다.
-# reviewer/harness 이름에는 `_` 가 들어갈 수 있다(`additional_reviewer_<reviewer>_<타임스탬프>_…`) —
-# 이름 문자에서 `_` 를 빼면 그런 배포의 인용을 통째로 놓친다.
-_RAW_ARTIFACT_RE = re.compile(
-    r"\b(?:additional_reviewer|external_review|pm_delegate)_"
-    r"[A-Za-z0-9._-]+_\d{4,}[A-Za-z0-9_.-]*\.txt\b"
-)
-# 하네스 세션 전사 저장소(실측 경로만 선언 — 추정 경로는 넣지 않는다). 구분자는 `/`·`\` 양쪽을
-# 받는다 — Windows 형상(`C:\Users\u\.claude\projects\…`)을 못 보면 그 플랫폼에서 백스톱이 없다.
-_SESSION_TRANSCRIPT_RE = re.compile(
-    r"[\w~.:/\\-]*(?:\.claude[/\\]projects|\.codex[/\\]sessions)[/\\][\w.:@/\\-]*"
-)
-
-
-class OutputContamination(NamedTuple):
-    """리뷰어 출력에 남은 저장소 밖 탐색 흔적."""
-
-    verdicts: tuple[str, ...]
-    raw_artifacts: tuple[str, ...]
-    transcripts: tuple[str, ...]
-
-    @property
-    def verdict_conflict(self) -> bool:
-        """판정 라인이 여러 개면서 서로 다른 판정을 말한다 = 어느 게 이번 판정인지 모른다.
-
-        같은 판정의 재진술은 위험이 없어 잡지 않는다(false-red 억제). 서로 다르면 파서가 고른
-        한 줄이 이번 리뷰의 판정이라는 보장이 사라지므로 보수적으로 '불명확'이어야 한다.
-        """
-        return len(self._verdict_kinds()) > 1
-
-    def _verdict_kinds(self) -> set[str]:
-        """판정 라인 낱말을 파서와 **같은 함수**(`verdict_kind`)로 접는다.
-
-        허용 토큰이 아닌 판정선(`[통과`·`PASS/REJECT` 같은 템플릿/선택지 echo)은 `unknown` 이라
-        고유한 종류로 센다 — 그런 줄이 진짜 판정선과 섞여 있으면 어느 게 이번 판정인지 모른다.
-        """
-        return {review_verdict.verdict_kind(word) for word in self.verdicts}
-
-    @property
-    def contaminated(self) -> bool:
-        """오염 신호가 하나라도 있으면 이 판정은 리뷰어 자신의 것이라는 보장이 없다."""
-        return bool(self.markers)
-
-    @property
-    def markers(self) -> tuple[str, ...]:
-        """PM 이 읽을 오염 진단 — 비어 있으면 오염 신호 없음."""
-        markers: list[str] = []
-        if self.verdict_conflict:
-            markers.append(
-                f"판정 라인 {len(self.verdicts)}개가 서로 다름 "
-                f"({', '.join(self.verdicts)}) — 옛 판정 블록 echo 가능"
-            )
-        if self.raw_artifacts:
-            markers.append(
-                "옛 리뷰/위임 raw 파일명 인용: " + ", ".join(self.raw_artifacts)
-            )
-        if self.transcripts:
-            markers.append(
-                "하네스 세션 전사 경로 인용: " + ", ".join(self.transcripts)
-            )
-        return tuple(markers)
-
-
-def _unique(values: Sequence[str]) -> tuple[str, ...]:
-    """등장 순서를 유지한 중복 제거 + 진단 상한."""
-    seen: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.append(value)
-        if len(seen) >= 5:      # 표시용 상한(종전 기본값)
-            break
-    return tuple(seen)
-
-
-def detect_output_contamination(output: str) -> OutputContamination:
-    """리뷰어 출력에서 저장소 밖 탐색 흔적을 찾는다(판정 무관·순수 함수).
-
-    판정 라인은 파서와 같은 `verdict_words` 로 센다 — 검출 범위가 파서보다 좁으면 파서가 집어 든
-    echo 라인이 검출을 빠져나간다.
-    """
-    return OutputContamination(
-        verdicts=review_verdict.verdict_words(output),
-        raw_artifacts=_unique(_RAW_ARTIFACT_RE.findall(output)),
-        transcripts=_unique(_SESSION_TRANSCRIPT_RE.findall(output)),
-    )
-
-
 # ── 결과 저장 ─────────────────────────────────────────────────────────────
 
 
@@ -4143,10 +3380,10 @@ def _write_reserved_output(
     *,
     local_conf_path: Path | None,
     resolved_profile: str | None,
-    target: ReviewerTarget | None = None,
+    target: reviewer_target.ReviewerTarget | None = None,
 ) -> None:
     with dest.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(_review_raw_content(
+        handle.write(reviewer_target._review_raw_content(
             content, local_conf_path, resolved_profile, target))
 
 
@@ -4155,7 +3392,7 @@ def _write_reserved_output(
 
 @contextlib.contextmanager
 def _structured_transport(
-    target: ReviewerTarget, prompt: str, cwd: Path | str | None,
+    target: reviewer_target.ReviewerTarget, prompt: str, cwd: Path | str | None,
 ) -> Iterator[tuple[list[str] | None, str | None]]:
     """구조화 대상의 (argv, stdin) 을 준비하고 임시 자원을 **모든 종료 경로**에서 정리한다.
 
@@ -4168,34 +3405,33 @@ def _structured_transport(
         yield None, None
         return
     if target.harness != "opencode":
-        yield _structured_reviewer_argv(
+        yield reviewer_target._structured_reviewer_argv(
             target.harness, target.model, target.reasoning,
-            cwd=str(cwd) if cwd is not None else REVIEWER_CWD_PLACEHOLDER,
-            prompt_file=REVIEWER_PROMPT_FILE_PLACEHOLDER,
+            cwd=str(cwd) if cwd is not None else reviewer_result.REVIEWER_CWD_PLACEHOLDER,
+            prompt_file=reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER,
         ), None
         return
     sandbox = Path(cwd) if cwd is not None else Path.cwd()
-    delegate = _load_delegate_transport()
-    prompt_file = delegate._save_opencode_transport_prompt(sandbox, prompt)
+    prompt_file = delegate_temp._save_opencode_transport_prompt(sandbox, prompt)
     try:
         # 생성 뒤 argv 조립 직전에도 위임 축과 같은 containment guard를 다시 건다. 생성 seam이
         # fd로 고정한 실 sandbox를 그대로 써 사용자 입력 cwd symlink 재해소 창을 열지 않는다.
-        delegate._assert_opencode_transport_path(prompt_file.sandbox, prompt_file)
+        delegate_temp._assert_opencode_transport_path(prompt_file.sandbox, prompt_file)
         # 생성 seam의 `0600`은 **Windows에서 아무 제한도 걸지 않는다**(실측 `S_IMODE`=0o666).
         # 이 파일에는 검토 맥락이 들어가므로 플랫폼 등가 수단(ACL)으로 소유자 전용
         # 접근을 실제로 건다 — containment 재확인과 같은 자리에서 접근 경계도 재확인한다.
         transport_dir = Path(prompt_file.path).parent
         for artifact in (transport_dir, Path(prompt_file.path),
-                         transport_dir / delegate._OPENCODE_TRANSPORT_IGNORE):
+                         transport_dir / delegate_temp._OPENCODE_TRANSPORT_IGNORE):
             if artifact.exists():
                 _restrict_to_owner(artifact)
-        yield _structured_reviewer_argv(
+        yield reviewer_target._structured_reviewer_argv(
             target.harness, target.model, target.reasoning,
             cwd=str(prompt_file.sandbox),
             prompt_file=str(prompt_file),
         ), ""
     finally:
-        delegate._cleanup_attempt_transport(prompt_file)
+        delegate_temp._cleanup_attempt_transport(prompt_file)
 
 
 # 스폰 전 중단으로 마감하는 raw 레코드의 rc — 리뷰를 하나도 받지 못한 실행이라 실패 축(1)이다
@@ -4208,7 +3444,7 @@ _PRE_SPAWN_ABORT_RC = 1
 def _abort_pre_spawn_raw(
     ledger_path: Path | None, record_id: str | None, raw_path: Path, *,
     reason: str, elapsed: float, local_conf_path: Path | None,
-    resolved_profile: str | None, target: ReviewerTarget | None,
+    resolved_profile: str | None, target: reviewer_target.ReviewerTarget | None,
 ) -> None:
     """스폰 **전에** 끊긴 실행이 남긴 raw 선점/미마감 레코드를 그 자리에서 정직하게 닫는다.
 
@@ -4265,7 +3501,7 @@ def _abort_pre_spawn_raw(
 
 def run_review(
     prompt: str,
-    target: ReviewerTarget,
+    target: reviewer_target.ReviewerTarget,
     timeout: int | None = None,
     output_dir: Path | None = None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
@@ -4348,7 +3584,7 @@ def run_review(
             surface="additional-reviewer",
             harness=name,
             model=model,
-            role=REVIEWER_ROLE,
+            role=reviewer_result.REVIEWER_ROLE,
             raw_path=raw_path,
             attempt="primary",
             extra={
@@ -4365,7 +3601,7 @@ def run_review(
         if target.structured:
             # 공용 표가 OpenCode 카드 부재의 runtime role을 주입하고 다른 하네스는 env만 복사한다.
             run_env = contract.with_harness_runtime_role(
-                env, target.harness, REVIEWER_ROLE,
+                env, target.harness, reviewer_result.REVIEWER_ROLE,
             )
         with _structured_transport(target, prompt, cwd) as (argv, stdin_text):
             ok, output, started = _run_reviewer_ex(
@@ -4409,8 +3645,8 @@ def run_review(
                 reply_extraction_failed = observed.reply is None
                 answer = observed.reply or ""
                 ok = not reply_extraction_failed
-        verdict = parse_verdict(answer)
-        contamination = detect_output_contamination(answer)
+        verdict = reviewer_result.parse_verdict(answer)
+        contamination = reviewer_result.detect_output_contamination(answer)
         _write_reserved_output(
             raw_path,
             output.combined,
@@ -4641,236 +3877,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              " (기본: .project_manager/.local/review)."
                              " 실제로 리뷰어를 부르는 실행에서만 생성된다"
                              " (미리보기·게이트 거부는 만들지 않음)")
-    parser.add_argument("--timeout", type=_timeout_seconds_arg, default=None,
+    parser.add_argument("--timeout", type=reviewer_target._timeout_seconds_arg, default=None,
                         metavar="SEC",
                         help="리뷰어 실행 벽시계 백스톱(초) — 기본은 해소 대상의 하네스 프로필. "
                              "local.conf harness.<reviewer>.wall_timeout 또는 "
-                             f"{ADDITIONAL_REVIEWER_TIMEOUT_KEY} 로 조정")
-    parser.add_argument("--idle-timeout", type=_timeout_seconds_arg, default=None, metavar="SEC",
+                             f"{reviewer_budget.ADDITIONAL_REVIEWER_TIMEOUT_KEY} 로 조정")
+    parser.add_argument("--idle-timeout", type=reviewer_target._timeout_seconds_arg, default=None, metavar="SEC",
                         help="무진행 상한(초) — 마지막 진행 출력 이후 이 시간 침묵하면 중단(주 판정). "
                              "local.conf harness.<reviewer>.idle_timeout 또는 "
-                             f"{ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY} 로 조정")
+                             f"{reviewer_budget.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY} 로 조정")
     parser.add_argument("--adr", nargs="+", default=None, metavar="ADR-NNNN",
                         help="관련 ADR 목록 (프롬프트에 포함)")
     return parser
-
-
-# ── local.conf 호출 프로필 provenance/divergence ───────────────────────────
-# `_find_repo_root` 보유 도구 기계 inventory: contradiction_lint.py,
-# additional_reviewer.py, pm_delegate.py, ticket_finish.py. 이 중 local.conf 로 호출 대상을 고르는
-# 표면은 additional_reviewer(reviewer_cmd)와 pm_delegate(delegate.*)뿐이다. ticket_finish는 local.conf의
-# 완료/회귀 노브만 읽고, contradiction_lint는 local.conf 자체를 읽지 않아 이번 호출 분기 범위에서
-# 제외한다. tests/test_conf_resolution_provenance.py가 이 전수와 소비 여부를 소스에서 다시 센다.
-
-
-def _local_conf_path(repo: Path | None = None) -> Path:
-    """repo별 local.conf 경로 — 호출 시점 REPO monkeypatch 를 추종하고 절대경로 provenance 입력."""
-    return ((repo if repo is not None else REPO) / ".project_manager" / "local.conf").resolve()
-
-
-def _read_local_config(path: Path) -> dict[str, str]:
-    """존재가 확인된 비교 대상 local.conf를 공용 로더로 읽는다(구표기 잔존은 fail-loud).
-
-    판독 실패는 **삼키지 않는다**(`load_strict`) — 호출부가 그 예외로 fail-closed 하므로, 빈 conf
-    로 강등하면 보호 선언을 확인하지 못한 채 나간다."""
-    result = conf_store.load_strict(path)
-    conf_schema.assert_no_legacy(result)
-    return result.values
-
-
-def _review_raw_content(
-    content: str, local_conf_path: Path | None, resolved_profile: str | None,
-    target: ReviewerTarget | None = None,
-) -> str:
-    """pm_delegate와 같은 `# key: value` 감사 헤더를 additional_reviewer 원문에 붙인다.
-
-    헤더는 **추가만** 한다(기존 두 줄의 위치·표기 불변). 해소 축(출처·harness·model·reasoning·
-    실행 커맨드)을 한 줄씩 더해, raw 하나만 봐도 "무엇이 이 판정을 냈는가"가 닫힌다."""
-    if local_conf_path is None and resolved_profile is None and target is None:
-        return content
-    header = ["# additional_reviewer raw 출력 (감사)"]
-    if local_conf_path is not None:
-        header.append(f"# local_conf: {local_conf_path}")
-    if resolved_profile is not None:
-        header.append(f"# resolved_profile: {resolved_profile}")
-    if target is not None:
-        header.append(f"# reviewer_source: {target.source}")
-        if target.structured:
-            header.extend([
-                f"# harness: {target.harness}",
-                f"# model: {target.model}",
-                f"# reasoning: {target.reasoning}",
-            ])
-        else:
-            # legacy 도 장부와 **같은 정체 값**을 쓴다(표기 없으면 `unpinned-model`).
-            header.append(f"# model: {target.ledger_model}")
-        header.append(f"# command: {target.command}")
-    return "\n".join((*header, "", content))
-
-
-class LocalConfDivergence(NamedTuple):
-    """엔진 conf와 호출 대상 repo conf의 실제 호출 프로필 차이."""
-
-    engine_repo: Path
-    engine_conf_path: Path
-    target_repo: Path
-    target_conf_path: Path
-    differences: tuple[str, ...]
-
-
-class TargetLocalConfReadError(RuntimeError):
-    """존재하는 비교 대상 local.conf를 안전하게 읽지 못해 호출을 중단해야 함."""
-
-    def __init__(self, path: Path, cause: BaseException):
-        self.path = path
-        self.cause = cause
-        super().__init__(
-            f"대상 local.conf 읽기 실패 — 호출 전에 중단합니다: {path} "
-            f"({type(cause).__name__}: {cause})"
-        )
-
-
-def repo_root_from_cwd(cwd: Path | None) -> Path | None:
-    """호출 cwd/`--cwd`에서 가장 가까운 제품 repo 루트를 해소한다.
-
-    Git `rev-parse --show-toplevel`을 써 linked worktree의 `.git` 파일과 일반 checkout의
-    `.git` 디렉토리를 같은 근거로 본다. 제품 repo에 `.project_manager`를 요구하지
-    않는다. PM 홈은 호출부가 `resolve_pm_home_for_repo`로 lease 장부에서 별도
-    해소한다. cwd 미지정/비-repo면 None이며 divergence 가드는 조용히 skip한다.
-    """
-    if cwd is None:
-        return None
-    return _path_repo_root(cwd.resolve())
-
-
-def reviewer_profile_config(conf: dict[str, str]) -> dict[str, str]:
-    """additional_reviewer의 실제 호출 대상 값. 미지정과 명시 default는 같은 값으로 정규화한다.
-
-    비교 대상은 **해소된 대상**이다 — 한쪽이 구조화 tuple 이고 다른 쪽이 legacy 커맨드면 실제
-    수신자가 다르므로 커맨드·출처 축이 모두 갈려 loud 하다. 해소 불가능한 대상 conf 는 값 자리에
-    사유를 실어 조용히 같아 보이지 않게 한다(비교기는 절대 예외를 올리지 않는다)."""
-    try:
-        target = resolve_reviewer_target(conf)
-    except ReviewerTargetError as exc:
-        return {"reviewer_cmd": f"<해소 실패: {exc}>"}
-    values = {"reviewer_cmd": target.command, "reviewer_source": target.source}
-    if target.structured:
-        values.update({
-            "reviewer_harness": str(target.harness),
-            "reviewer_model": str(target.model),
-            "reviewer_reasoning": str(target.reasoning),
-        })
-    return values
-
-
-def _cross_repo_target_conf(
-    engine_repo: Path, target_repo: Path | None,
-) -> tuple[Path, Path, dict[str, str]] | None:
-    """다른 repo conf를 읽되, 진짜 부재만 무소음이고 읽기 실패는 fail-closed로 올린다."""
-    if target_repo is None:
-        return None
-    engine_repo = engine_repo.resolve()
-    target_repo = target_repo.resolve()
-    if target_repo == engine_repo:
-        return None
-    # `_local_conf_path()`는 provenance용으로 symlink까지 resolve한다. 존재 판정은 그보다 앞선
-    # directory entry 자체를 봐야 dangling symlink를 정상 부재로 오인하지 않는다. target_repo는
-    # 위에서 resolve했으므로 이 경로도 절대경로지만 마지막 local.conf symlink는 따라가지 않는다.
-    target_conf_path = target_repo / ".project_manager" / "local.conf"
-    try:
-        # lstat은 dangling symlink도 "존재"로 구분한다. FileNotFoundError만 기존 정상·무소음
-        # 대상 conf 부재 축이고, 그 밖의 stat/read/UTF-8 실패는 보호 선언을 확인할 수 없으므로
-        # 호출 전에 fail-closed 해야 한다.
-        target_conf_path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise TargetLocalConfReadError(target_conf_path, exc) from exc
-    try:
-        target_conf = _read_local_config(target_conf_path)
-    except (OSError, UnicodeError) as exc:
-        raise TargetLocalConfReadError(target_conf_path, exc) from exc
-    return target_repo, target_conf_path, target_conf
-
-
-def local_conf_divergence(
-    *,
-    engine_repo: Path,
-    engine_conf: dict[str, str],
-    target_repo: Path | None,
-    selector: Callable[[dict[str, str]], dict[str, object]],
-    engine_label: str = "engine",
-    target_label: str = "cwd",
-) -> LocalConfDivergence | None:
-    """두 repo가 다르고 대상 conf가 있으며 선택된 실제 값이 다를 때만 차이를 반환한다.
-
-    값 동일·대상 conf 부재·cwd repo 미해소는 None(경고 인플레 금지). 비교는 selector가 허용한
-    호출 프로필 키만 하므로 test_cmd 같은 무관 per-clone 차이는 loud 조건이 아니다.
-    """
-    loaded = _cross_repo_target_conf(engine_repo, target_repo)
-    if loaded is None:
-        return None
-    target_repo, target_conf_path, target_conf = loaded
-    engine_repo = engine_repo.resolve()
-
-    engine_values = selector(engine_conf)
-    target_values = selector(target_conf)
-    # selector는 비교할 **유효 프로필**을 완전한 동일 키 집합으로 정규화한다. 해소 불가능한
-    # 대상 프로필은 빈 dict라 skip되고, 정상 프로필의 생략 기본값(None 포함)은 공통 키로 비교된다.
-    keys = sorted(set(engine_values) & set(target_values))
-    differences = tuple(
-        f"{key}: {engine_label}={engine_values[key]!r}, "
-        f"{target_label}={target_values[key]!r}"
-        for key in keys
-        if engine_values[key] != target_values[key]
-    )
-    if not differences:
-        return None
-    return LocalConfDivergence(
-        engine_repo=engine_repo,
-        engine_conf_path=_local_conf_path(engine_repo),
-        target_repo=target_repo,
-        target_conf_path=target_conf_path,
-        differences=differences,
-    )
-
-
-def format_local_conf_divergence(
-    divergence: LocalConfDivergence, *, surface: str, cwd_label: str,
-    resolution_note: str | None = None, source_label: str = "실행 엔진",
-) -> str:
-    """두 호출 표면 공용 never-block loud 경고 문구."""
-    details = "\n".join(f"  · {item}" for item in divergence.differences)
-    resolution = resolution_note or (
-        f"이번 실행에서는 {source_label} conf가 이깁니다: {divergence.engine_conf_path}\n"
-        f"  차단하지 않고 계속합니다. 같은 프로필을 원하면 {cwd_label} conf의 위 키 값을 "
-        f"{source_label} "
-        "conf와 맞추거나, 의도한 local.conf를 가진 엔진 사본을 실행하세요. 실행 결과 raw 헤더의 "
-        "# local_conf/# resolved_profile에도 승자 provenance를 기록합니다."
-    )
-    return (
-        f"경고: local.conf 프로필 분기 감지 ({surface}) — {cwd_label} repo와 {source_label} "
-        "REPO가 다르고 호출 프로필/내용 값이 실제로 갈립니다.\n"
-        f"  · {source_label} REPO: {divergence.engine_repo}\n"
-        f"  · {source_label} conf: {divergence.engine_conf_path}\n"
-        f"  · {cwd_label} repo: {divergence.target_repo}\n"
-        f"  · {cwd_label} conf: {divergence.target_conf_path}\n"
-        f"{details}\n"
-        f"  {resolution}"
-    )
-
-
-def resolved_reviewer_profile(
-    target: ReviewerTarget, timeout: int | None, idle_timeout: float | None,
-) -> str:
-    """stderr·dry-run·raw 가 **같은 문자열로** 공유하는 추가 리뷰어 해소 tuple.
-
-    앞머리(커맨드·시간 예산)와 뒤의 해소 출처 축(`source=structured` + harness/model/reasoning)이
-    **같은 검증된 대상 하나**에서 나온다(커맨드 문자열을 따로 받지 않는다)."""
-    return (
-        f"(reviewer_cmd={target.command}, wall_timeout_sec={timeout}, "
-        f"idle_timeout_sec={idle_timeout}, {target.profile_tail})"
-    )
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -4931,7 +3949,7 @@ def _main(argv: list[str] | None = None) -> int:
     ticket_scope_fixture_injected = False
     try:
         engine_pm_home = pm_paths.resolve_pm_home_for_repo(engine_repo)
-        scope_from_initial_pm_home = _scope_from_initial_pm_home(
+        scope_from_initial_pm_home = pm_paths._scope_from_initial_pm_home(
             ticket_selected=ticket_selected, explicit_paths=explicit_paths,
         )
         # **명시 앵커(--paths/--ticket) 실행은 선택 전 config를 읽지 않는다.** 이번 범위가 그
@@ -4956,8 +3974,8 @@ def _main(argv: list[str] | None = None) -> int:
             raw_paths = tuple(args.paths)
         else:
             # 인자 없는 실행 — 이 config가 **범위의 원천**이라 파생 전에 읽는다.
-            conf = _local_config_for_repo(engine_pm_home)
-            raw_paths = tuple(_configured_paths(conf))
+            conf = conf_store.local_config(pm_paths.home_at(engine_pm_home))
+            raw_paths = tuple(reviewer_target._configured_paths(conf))
         diff_root = _resolve_diff_root(
             engine_repo,
             pm_home=engine_pm_home,
@@ -5016,9 +4034,9 @@ def _main(argv: list[str] | None = None) -> int:
         # 명시 앵커 실행의 config는 여기서 **처음이자 유일하게** 읽는다. 인자 없는 실행은 범위 파생
         # 지점에서 이미 읽었다.
         try:
-            conf = _local_config_for_repo(pm_home)
+            conf = conf_store.local_config(pm_paths.home_at(pm_home))
         except (OSError, UnicodeError) as exc:
-            conf_path = _local_conf_path(pm_home)
+            conf_path = (pm_home / ".project_manager" / "local.conf").resolve()
             print(
                 "오류: 해소된 local.conf 읽기 실패 — 실행 전에 중단합니다: "
                 f"{conf_path} ({type(exc).__name__}: {exc})",
@@ -5035,19 +4053,19 @@ def _main(argv: list[str] | None = None) -> int:
     # output-dir 생성·라운드 예약·raw 예약·과금 문구 어느 것도 만들기 전에 끊는다.
     # 여기까지의 앵커 해소는 읽기 전용이고, 이 함수 자체도 부작용이 없다.
     try:
-        target = resolve_reviewer_target(conf)
-        check_reviewer_reasoning(target, cwd=diff_root)
-    except ReviewerTargetError as exc:
+        target = reviewer_target.resolve_reviewer_target(conf)
+        reviewer_target.check_reviewer_reasoning(target, cwd=diff_root)
+    except delegate_errors.ReviewerTargetError as exc:
         print(
             f"오류: 추가 리뷰어 대상 해소 실패 — 호출 전에 중단합니다: {exc}\n"
-            f"  · 설정 파일: {_local_conf_path(pm_home)}",
+            f"  · 설정 파일: {(pm_home / ".project_manager" / "local.conf").resolve()}",
             file=sys.stderr,
         )
         return 1
     reviewer_cmd = target.command
     resolution_warnings = io.StringIO()
     with contextlib.redirect_stderr(resolution_warnings):
-        resolved_time_profile = reviewer_profile(reviewer_cmd, conf)
+        resolved_time_profile = reviewer_target.reviewer_profile(pm_paths.home_at(REPO, pm_home=_PM_HOME_OVERRIDE), reviewer_cmd, conf)
     timeout = (
         args.timeout
         if args.timeout is not None
@@ -5058,8 +4076,8 @@ def _main(argv: list[str] | None = None) -> int:
         if args.idle_timeout is not None
         else float(resolved_time_profile.idle_timeout)
     )
-    conf_path = _local_conf_path(pm_home)
-    profile = resolved_reviewer_profile(target, timeout, idle_timeout)
+    conf_path = (pm_home / ".project_manager" / "local.conf").resolve()
+    profile = reviewer_target.resolved_reviewer_profile(target, timeout, idle_timeout)
     target_repo = diff_root
     # 정상 실행·dry-run 공용 첫 provenance. 이후 cap/reanchor/diff 진단이 붙더라도 어느 PM-home conf와
     # reviewer tuple을 해소했는지가 stderr에 남는다.
@@ -5077,20 +4095,20 @@ def _main(argv: list[str] | None = None) -> int:
         print(deferred_warnings, end="", file=sys.stderr)
 
     try:
-        divergence = local_conf_divergence(
+        divergence = reviewer_target.local_conf_divergence(
             engine_repo=pm_home,
             engine_conf=conf,
             target_repo=target_repo,
-            selector=reviewer_profile_config,
+            selector=reviewer_target.reviewer_profile_config,
             engine_label="pm-home",
             target_label="diff-worktree",
         )
-    except TargetLocalConfReadError as exc:
+    except reviewer_result.TargetLocalConfReadError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
     if divergence is not None:
         print(
-            format_local_conf_divergence(
+            reviewer_result.format_local_conf_divergence(
                 divergence,
                 surface="additional_reviewer",
                 cwd_label="diff worktree",
@@ -5487,7 +4505,7 @@ def _run_review_round(
     # 강제력 없이 비용만 받았다: 리뷰어는 절대경로를 그대로 읽을 수 있고, 임시 홈은 세션 재사용을
     # 막아 라운드마다 전체 payload 를 다시 과금했다).
     reviewer_environment = (
-        _load_pm_delegate().build_env(target.harness) if target is not None else None
+        delegate_env.build_env(target.harness) if target is not None else None
     )
     print(
         f"[additional-reviewer] 리뷰어 실행 조건: cwd={diff_root} "
@@ -5559,7 +4577,7 @@ def _run_review_round(
                         None,
                     )
                     if matching is not None:
-                        matching["finished_at"] = _utc_now_iso()
+                        matching["finished_at"] = clock.now_utc()
                         matching["verdict"] = _round_has_verdict(result)
                         if must_fix_items is not None:
                             matching["must_fix_items"] = must_fix_items

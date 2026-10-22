@@ -24,6 +24,8 @@ T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 �
 """
 from __future__ import annotations
 
+from pm_engine.domain import delegate_channel_rules
+
 from pm_engine.infra import pm_paths
 
 
@@ -295,7 +297,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     }
 
 
-def _guard_conf() -> dict[str, str]:
+def _guard_conf(_home) -> dict[str, str]:
     return {
         "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
@@ -389,7 +391,7 @@ def test_delegate_channel_guard_fallback_line_survives_a_missing_seam(
 
     text = _written_bytes(stream).decode("utf-8")
     assert text.count("\n") == 1
-    assert set(json.loads(text)) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
+    assert set(json.loads(text)) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
     # 조용한 강등이 아니다 — 원인(seam 로드 실패)이 fail-open 보고에 남는다.
     assert "simulated missing console_encoding" in stderr.getvalue()
 
@@ -720,12 +722,12 @@ def test_allowed_exceptions_are_reasoned():
         (
             ".project_manager/tools/delegate_channel_guard.py",
             "            _write_machine_line(\n"
-            "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False),\n"
+            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"
             "                console,\n"
             "            )\n",
             "            json.dump(\n"
-            "                _validated_codex_envelope(result), output_stream, ensure_ascii=False\n"
+            "                codex_envelope._validated_codex_envelope(result), output_stream, ensure_ascii=False\n"
             "            )\n"
             "            output_stream.write(\"\\n\")\n",
             STREAM_DUMP_SHAPE,
@@ -734,12 +736,12 @@ def test_allowed_exceptions_are_reasoned():
         (
             ".project_manager/tools/delegate_channel_guard.py",
             "            _write_machine_line(\n"
-            "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False),\n"
+            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"
             "                console,\n"
             "            )\n",
             "            output_stream.write(\n"
-            "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False)\n"
+            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False)\n"
             "                + \"\\n\"\n"
             "            )\n",
             STDOUT_WRITE_SHAPE,

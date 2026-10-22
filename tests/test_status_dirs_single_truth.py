@@ -98,12 +98,12 @@ def test_additional_reviewer_owns_real_board_matches_board_for_every_status(
     for index, status in enumerate(ticket_rules.STATUS_DIRS):
         pm_dir = tmp_path / f"home{index}" / ".project_manager"
         _seed_ticket(pm_dir / "board" / "tickets", status, "T-0001")
-        assert external._owns_real_board(pm_dir) is True
-        assert external._owns_real_board(pm_dir) is pm_paths._has_real_board(pm_dir)
+        assert pm_paths._owns_real_board(pm_dir) is True
+        assert pm_paths._owns_real_board(pm_dir) is pm_paths._has_real_board(pm_dir)
 
     empty = tmp_path / "scaffold" / ".project_manager"
     (empty / "board" / "tickets" / "open").mkdir(parents=True)
-    assert external._owns_real_board(empty) is False
+    assert pm_paths._owns_real_board(empty) is False
 
 
 def test_additional_reviewer_follows_injected_status_without_code_change(
@@ -117,7 +117,7 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
 
     assert external._find_ticket_file("T-9100", pm_home=tmp_path) == (
         tickets / FAKE_STATUS / "T-9100.md")
-    assert external._owns_real_board(tmp_path / ".project_manager") is True
+    assert pm_paths._owns_real_board(tmp_path / ".project_manager") is True
 
 
 # ── (3) pm_log 장부 census ───────────────────────────────────────────────────

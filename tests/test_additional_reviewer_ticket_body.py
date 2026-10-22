@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+
 import importlib.util
 from pathlib import Path
 
@@ -85,8 +87,8 @@ def _round_text(role: str, marker: str) -> str:
 
 def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=None):
     monkeypatch.setattr(external, "REPO", tmp_path)
-    monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {**_REVIEWER_TARGET, **(conf or {})})
+    monkeypatch.setattr(conf_store, 'local_config',
+                        lambda _home, repo=None: {**_REVIEWER_TARGET, **(conf or {})})
     monkeypatch.setattr(
         external, "extract_diff",
         lambda *args, **kwargs: external.ReviewDiff(
@@ -301,7 +303,7 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
         _ticket(tickets / "claimed" / "T-9001-cross.md", body=body)
 
     monkeypatch.setattr(external, "REPO", engine_home)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(_REVIEWER_TARGET))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo",
         lambda anchor, **kwargs: (

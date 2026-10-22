@@ -17,6 +17,12 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+from pm_engine.infra.harness import delegate_env
+from pm_engine.infra.harness import delegate_run
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra import pm_paths
+
 import datetime
 import importlib.util
 import json
@@ -132,8 +138,8 @@ def _write_prompt(directory: Path, text: str = "직전 지적을 해소했다. �
 
 
 def _run_main(pd, monkeypatch, argv, run_fn=None, conf=None):
-    monkeypatch.setattr(pd, "local_config", lambda: dict(conf or {"delegate.enabled": "true"}))
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf or {"delegate.enabled": "true"}))
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     # 이 파일은 resume wire/ledger 축을 검증한다. code-reviewer의 실 ticket-copy 왕복은 전용
     # growth 회귀가 소유하므로 여기서는 필수 --ticket을 유지하되 copy transport만 격리한다.
     monkeypatch.setattr(pd, "prepare_ticket_copy", lambda **_kw: None)
@@ -282,7 +288,7 @@ def test_reply_only_facade_keeps_both_call_sites_intact(pd):
     이관 자체를 값으로 고정한다(T-0780)."""
     assert contract.extract_harness_reply("claude", _claude_wire("답")) == "답"
     assert contract.extract_harness_reply("claude", _claude_wire("   ")) is None
-    assert pd.extract_reply("claude", _claude_wire("답")) == "답"      # 위임 호출부
+    assert delegate_run.extract_reply("claude", _claude_wire("답")) == "답"      # 위임 호출부
     external = _load("additional_reviewer")
     source = Path(external.__file__).read_text(encoding="utf-8")
     assert source.count("contract.extract_harness_reply(") == 0    # 리뷰어 호출부는 usage 관측으로 이관
@@ -342,11 +348,11 @@ def test_candidate_selection_is_deterministic_latest_success(pd):
         _candidate(id="newest", started_at="2026-08-08T11:00:00+00:00"),
         _candidate(id="middle", started_at="2026-08-08T10:30:00+00:00"),
     ]
-    picked = pd.select_resume_record(
+    picked = delegate_run_rules.select_resume_record(
         rows, selector=TICKET_ID, role="code-reviewer", harness="claude")
     assert picked["id"] == "newest"
     # 입력 순서가 달라져도 같은 값을 고른다(정렬 의존 아님).
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         list(reversed(rows)), selector=TICKET_ID, role="code-reviewer",
         harness="claude")["id"] == "newest"
 
@@ -367,14 +373,14 @@ def test_candidate_selection_excludes_other_axes(pd):
         _candidate(id="x", ticket="T-" + "0001", started_at=newest),
     ):
         rows = [_candidate(id="keeper"), excluded]
-        assert pd.select_resume_record(
+        assert delegate_run_rules.select_resume_record(
             rows, selector=TICKET_ID, role="code-reviewer",
             harness="claude")["id"] == "keeper"
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [_candidate(id="x", role="developer")], selector=TICKET_ID,
         role="code-reviewer", harness="claude") is None
     # 같은 티켓·role 에 codex 위임만 있으면 claude 재개 후보는 없다(남의 세션 금지).
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [_candidate(id="x", harness="codex")], selector=TICKET_ID,
         role="code-reviewer", harness="claude") is None
 
@@ -382,10 +388,10 @@ def test_candidate_selection_excludes_other_axes(pd):
 def test_record_id_selector_is_exact_match(pd):
     """티켓 표기가 아닌 지시자는 장부 레코드 id 정확일치."""
     rows = [_candidate(id="rec-a", ticket=None), _candidate(id="rec-b", ticket=None)]
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         rows, selector="rec-b", role="code-reviewer",
         harness="claude")["id"] == "rec-b"
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         rows, selector="rec-zzz", role="code-reviewer", harness="claude") is None
 
 
@@ -406,15 +412,15 @@ def test_candidate_selection_excludes_unusable_records(pd, broken):
     newest = _candidate(id="unusable", started_at="2026-08-08T23:00:00+00:00", **broken)
     keeper = _candidate(id="keeper", started_at="2026-08-08T10:00:00+00:00")
 
-    picked = pd.select_resume_record(
+    picked = delegate_run_rules.select_resume_record(
         [keeper, newest], selector=TICKET_ID, role="code-reviewer", harness="claude")
     assert picked["id"] == "keeper"
     # 입력 순서가 달라도 같은 값 — 결정성은 정밀화 뒤에도 유지된다.
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [newest, keeper], selector=TICKET_ID, role="code-reviewer",
         harness="claude")["id"] == "keeper"
     # 유효 후보가 하나도 없으면 재사용 불가(None) — fresh 로 간다.
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [newest], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
@@ -431,10 +437,10 @@ def test_reply_extraction_failure_is_not_a_success_candidate(pd):
     keeper = _candidate(id="keeper", started_at="2026-08-08T10:00:00+00:00",
                         reply_extracted=True)
 
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [keeper, newest], selector=TICKET_ID, role="code-reviewer",
         harness="claude")["id"] == "keeper"
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [newest], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
@@ -442,7 +448,7 @@ def test_legacy_records_without_the_field_keep_the_rc_rule(pd):
     """필드 자체가 없는 **구레코드**는 종전대로 rc 기준이다 (하위호환 — 정상 재개 무회귀)."""
     legacy = _candidate(id="legacy")
     assert "reply_extracted" not in legacy
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [legacy], selector=TICKET_ID, role="code-reviewer",
         harness="claude")["id"] == "legacy"
 
@@ -458,7 +464,7 @@ def test_unusable_record_gets_its_own_reason_not_retention(pd, broken, needle):
     특히 레코드 id 를 **직접 지목**한 실행에 "보존 창 밖"이라 답하면 방금 눈으로 본 레코드를
     없다고 하는 셈이다."""
     row = _candidate(id="rec-x", **broken)
-    reason = pd.resume_unusable_reason(
+    reason = delegate_run_rules.resume_unusable_reason(
         [row], selector="rec-x", role="code-reviewer", harness="claude")
     assert reason is not None and needle in reason and "rec-x" in reason
     assert "보존 창" not in reason
@@ -466,7 +472,7 @@ def test_unusable_record_gets_its_own_reason_not_retention(pd, broken, needle):
 
 def test_truly_absent_record_keeps_the_retention_reason(pd):
     """맞는 레코드가 아예 없으면 종전 안내(보존 창 밖·아직 없는 라운드) 그대로다."""
-    assert pd.resume_unusable_reason(
+    assert delegate_run_rules.resume_unusable_reason(
         [_candidate(id="rec-x")], selector="rec-zzz", role="code-reviewer",
         harness="claude") is None
 
@@ -490,7 +496,7 @@ def test_matched_resume_records_stay_candidates(pd):
     """`resume_matched=True` 인 재개 라운드는 정상 후보다 — 사슬이 이어진다."""
     row = _candidate(id="chained", resume_matched=True,
                      resume_from_session_id=SESSION_ID)
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [row], selector=TICKET_ID, role="code-reviewer", harness="claude")["id"] == "chained"
 
 
@@ -504,7 +510,7 @@ def test_retention_window_bounds_resume_availability(pd, tmp_path):
     # 다음 기록이 정리 규칙을 태운다(장부는 쓰기 시점에 정리된다).
     _seed_record(ledger_path, started=now, start_extra={"ticket": "T-" + "0002"})
     rows = raw_output.raw_records(ledger_path)
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         rows, selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
@@ -615,7 +621,7 @@ def test_resume_mismatch_fresh_rerun_binds_the_ticket_copy_run_id(pd, tmp_path):
                     "timed_out": False}
         return _ok(_claude_wire("판정: 통과"))
 
-    resume = pd.ResumePlan(
+    resume = delegate_run_rules.ResumePlan(
         session_id=SESSION_ID, record_id="rec-1", delta_prompt="지적 해소", ticket=None,
     )
     rc = pd._execute_and_collect(
@@ -630,7 +636,7 @@ def test_resume_mismatch_fresh_rerun_binds_the_ticket_copy_run_id(pd, tmp_path):
     assert calls == ["claude", "claude"]           # resume 시도 1회 + fresh 재실행 1회
 
     rows = _rows(out_dir / "raw_outputs.json")
-    fresh_row = next(row for row in rows if row["attempt"] == pd.RESUME_FRESH_FALLBACK_ATTEMPT)
+    fresh_row = next(row for row in rows if row["attempt"] == delegate_run_rules.RESUME_FRESH_FALLBACK_ATTEMPT)
     assert fresh_row["run_id"] == plan.run_id
     assert fresh_row["copy"] == str(plan.path)
 
@@ -673,9 +679,9 @@ def test_a_pass_replys_none_marker_is_not_a_must_fix_item(pd, tmp_path):
     """통과 응답의 `- 없음` 은 항목이 아니다 — `["없음"]` 으로 박제되면 다음 라운드 delta 가
     '없음'을 고칠 지적으로 되읽는다. 정규화는 추가 리뷰 경로와 **같은 술어**(`_is_none_items`)를
     쓴다 — 두 축이 각자 판별하면 같은 회신이 축마다 다르게 남는다 (T-0604 ⑤)."""
-    assert pd._observed_must_fix_items(
+    assert delegate_run._observed_must_fix_items(
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n") == []
-    assert pd._observed_must_fix_items(
+    assert delegate_run._observed_must_fix_items(
         "판정: 반려\n\n**must-fix** (반드시 수정):\n- 실 지적\n") == ["실 지적"]
 
     out_dir = tmp_path / "raw"
@@ -707,7 +713,7 @@ def test_rc_zero_without_a_reply_is_recorded_as_an_invalid_success(pd, tmp_path)
     row = _rows(ledger_path)[0]
     assert (row["rc"], row["session_id"]) == (0, SESSION_ID)   # rc 는 성공처럼 보인다
     assert row["reply_extracted"] is False                     # 유효 성공은 아니다
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         [row], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
@@ -792,7 +798,7 @@ def test_resume_round_sends_delta_on_the_reused_session(pd, monkeypatch, tmp_pat
     assert _PREAMBLE_MARKER not in sent                       # 역할 preamble 재호출 없음
     # 이번 실행 레코드가 이어받은 세션과 일치 결과를 남긴다.
     row = max(_rows(ledger_path), key=lambda item: item["started_at"])
-    assert row["attempt"] == pd.RESUME_ATTEMPT
+    assert row["attempt"] == delegate_run_rules.RESUME_ATTEMPT
     assert row["resume_from_session_id"] == SESSION_ID
     assert row["resume_matched"] is True
 
@@ -805,7 +811,7 @@ def test_resume_success_is_session_identity_not_rc(pd, monkeypatch, tmp_path, ca
     분류만 임시로 되돌려 폴백 경로를 본다.
     """
     monkeypatch.setattr(
-        pd, "RESUME_MUTATING_ROLES", pd.RESUME_MUTATING_ROLES - {"researcher"},
+        delegate_run_rules, 'RESUME_MUTATING_ROLES', delegate_run_rules.RESUME_MUTATING_ROLES - {"researcher"},
     )
     out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path, role="researcher")
     prompt = _write_prompt(tmp_path, "해소 주장 본문")
@@ -868,7 +874,7 @@ def test_resume_round_record_inherits_the_ticket(pd, monkeypatch, tmp_path):
     latest = max(_rows(ledger_path), key=lambda row: row["started_at"])
     assert latest["ticket"] == TICKET_ID
     # 그리고 그 레코드가 다음 재개의 후보로 실제 선택된다(사슬 유지의 진짜 관측치).
-    assert pd.select_resume_record(
+    assert delegate_run_rules.select_resume_record(
         _rows(ledger_path), selector=TICKET_ID, role="researcher",
         harness="claude")["id"] == latest["id"]
 
@@ -942,8 +948,8 @@ def test_no_rerun_class_is_pinned_to_the_engine_classification():
     researcher 는 T-0696 에서 편입됐다: 제품 트리에는 read 지만 자기 티켓 사본 절을 기록하므로
     세션 불일치 뒤 fresh 재실행이 같은 절을 두 번 쓸 수 있다(code-reviewer 와 같은 근거).
     """
-    assert set(_NO_RERUN_ROLES) == set(pd_module().RESUME_MUTATING_ROLES)
-    assert set(pd_module().READ_ROLES) <= set(pd_module().RESUME_MUTATING_ROLES)
+    assert set(_NO_RERUN_ROLES) == set(delegate_run_rules.RESUME_MUTATING_ROLES)
+    assert set(delegate_run_rules.READ_ROLES) <= set(delegate_run_rules.RESUME_MUTATING_ROLES)
 
 
 # `--ticket` 단위 CLI 실행으로 관측하는 역할 — code-reviewer 실행은 묶음(`--cluster`) 준비를
@@ -954,7 +960,7 @@ _TICKET_RUN_ROLES = [role for role in _NO_RERUN_ROLES if role != "code-reviewer"
 @pytest.mark.parametrize("role", _TICKET_RUN_ROLES)
 def test_mutating_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys, role):
     """재실행 금지 클래스 불일치 → rc 1 · fresh 재실행 0 · 확인 안내 (중복 기록 차단)."""
-    assert role in pd.RESUME_MUTATING_ROLES
+    assert role in delegate_run_rules.RESUME_MUTATING_ROLES
     out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, role)
     prompt = _write_prompt(tmp_path, "구현했다.")
     fake = _FakeRun(_ok(_claude_wire("다른 세션의 답", session_id=OTHER_SESSION_ID)))
@@ -982,7 +988,7 @@ def test_id_mismatch_rerun_survives_for_the_unclassified_role_axis(
     """
     role = "researcher"
     monkeypatch.setattr(
-        pd, "RESUME_MUTATING_ROLES", pd.RESUME_MUTATING_ROLES - {role},
+        delegate_run_rules, 'RESUME_MUTATING_ROLES', delegate_run_rules.RESUME_MUTATING_ROLES - {role},
     )
     out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, role)
     prompt = _write_prompt(tmp_path, "해소 주장 본문")
@@ -1007,7 +1013,7 @@ def test_write_role_infrastructure_failure_is_not_the_resume_axis(
     prompt = _write_prompt(tmp_path)
     fake = _FakeRun({"returncode": 127, "stdout": "",
                      "stderr": "하네스 claude 실행 불가: not found",
-                     "timed_out": False, pd.RUN_RESULT_LAUNCH_FAILED: True})
+                     "timed_out": False, delegate_run_rules.RUN_RESULT_LAUNCH_FAILED: True})
 
     rc = _run_main(
         pd, monkeypatch,
@@ -1057,7 +1063,7 @@ def test_infrastructure_failure_goes_to_fallback_without_a_fresh_rerun(
     )
     fake = _FakeRun(
         {"returncode": 127, "stdout": "", "stderr": "하네스 claude 실행 불가: not found",
-         "timed_out": False, pd.RUN_RESULT_LAUNCH_FAILED: True},
+         "timed_out": False, delegate_run_rules.RUN_RESULT_LAUNCH_FAILED: True},
         _ok("\n".join([
             json.dumps({"type": "thread.started", "thread_id": "th-1"}),
             json.dumps({"type": "item.completed",
@@ -1086,8 +1092,8 @@ def test_declared_execution_budget_matches_worst_case_spawn_count(
     monkeypatch.setattr(
         pd, "harness_cap_advisory",
         lambda *, execution_budget=None: seen.append(execution_budget))
-    primary_budget = pd._harness_timeout_budget("claude", 600)
-    fallback_budget = pd._harness_timeout_budget("codex", 600)
+    primary_budget = delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", 600)
+    fallback_budget = delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", 600)
 
     _run_main(pd, monkeypatch, _mapped_argv(prompt, tmp_path, out_dir, "--dry-run"),
               _FakeRun(_ok(_claude_wire())), conf=_fallback_conf())
@@ -1247,12 +1253,12 @@ def test_execute_attempt_refuses_resume_id_on_unsupported_harness(pd, tmp_path):
 def test_delta_payload_consumes_only_structured_fields(pd):
     """조립 입력은 장부 필드 + 호출자 원문뿐 — 해소 주장은 파싱하지 않고 그대로 싣는다."""
     claim = "**must-fix:** 이 문장은 엔진이 해석하면 안 된다"
-    payload = pd.build_resume_delta_payload(
+    payload = delegate_run_rules.build_resume_delta_payload(
         must_fix_items=["항목 1", "  ", "항목 2"], base_rev="rev-1", task_text=claim)
     assert "1. 항목 1" in payload and "2. 항목 2" in payload   # 빈 항목은 버린다
     assert payload.endswith(claim)                            # 원문 그대로(불투명)
     assert "rev-1" in payload
-    missing = pd.build_resume_delta_payload(
+    missing = delegate_run_rules.build_resume_delta_payload(
         must_fix_items=(), base_rev=None, task_text="본문")
     assert "장부에 기록 없음" in missing
 
@@ -1388,4 +1394,4 @@ def test_write_role_unclassified_failure_keeps_the_generic_fail_loud(
 ])
 def test_rerun_reason_is_the_single_eligibility_funnel(pd, result, observed, expected):
     """자격 판정은 한 함수가 소유한다 — 호출부가 각자 조건을 조립하면 다시 갈린다."""
-    assert pd.resume_rerun_reason(dict(result), observed, SESSION_ID) == expected
+    assert delegate_run.resume_rerun_reason(dict(result), observed, SESSION_ID) == expected

@@ -1,6 +1,10 @@
 """위임·추가리뷰 raw 결정적 장부 회귀 가드."""
 from __future__ import annotations
 
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra import pm_paths
+from pm_engine.infra import reviewer_target
+
 import datetime
 import importlib.util
 import inspect
@@ -423,7 +427,7 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
         delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    _raw_dir, ledger_path = delegate._raw_storage()
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
 
     def killed_runner(*_args, **_kwargs):
         rows = _ledger(ledger_path)["records"]
@@ -460,7 +464,7 @@ def test_raw_empty_still_prints_resolved_ledger_on_first_line(
         delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    _raw_dir, ledger_path = delegate._raw_storage()
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
 
     assert not ledger_path.exists()
     assert delegate._cmd_raw([]) == 0
@@ -705,7 +709,7 @@ def test_additional_reviewer_kill_leaves_discoverable_unfinished_record_before_r
     with pytest.raises(SimulatedHarnessKill):
         external.run_review(
             "review",
-            target=external.resolve_reviewer_target({
+            target=reviewer_target.resolve_reviewer_target({
                 "additional_reviewer.harness": "codex",
                 "additional_reviewer.model": "gpt-x",
             }),
@@ -725,7 +729,7 @@ def test_review_run_records_usage_for_structured_codex_target_including_nonzero_
         external, tmp_path):
     """리뷰 표면(structured codex)의 레코드에도 usage 가 실린다 — 실패(rc≠0) 실행도 포함해
     관측이 ok/rc 에 걸리지 않는다(T-0780 · 위임 표면과 대칭)."""
-    target = external.resolve_reviewer_target({
+    target = reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "codex",
         "additional_reviewer.model": "gpt-5.6-sol",
     })
@@ -790,7 +794,7 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
             "stdout": stdout,
             "stderr": "",
             "timed_out": False,
-            delegate.RUN_RESULT_SILENCE_SEC: 0.2,
+            delegate_run_rules.RUN_RESULT_SILENCE_SEC: 0.2,
         },
         attempt="primary",
     )
@@ -798,7 +802,7 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
     assert "# rc: 0" in content
     assert "# elapsed_sec:" in content
     assert "# silence_sec: 0.2" in content
-    _raw_dir, ledger_path = delegate._raw_storage()
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
     rows = _ledger(ledger_path)["records"]
     assert len(rows) == 1
     assert rows[0]["rc"] == 0
@@ -910,10 +914,10 @@ def test_delegate_raw_storage_refuses_unresolved_config_owner(
     unresolved = tmp_path / "config-owner-without-pm-home"
     monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", unresolved)
     with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
-        delegate._raw_storage()
+        raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
 
     explicit = tmp_path / "explicit-output"
-    assert delegate._raw_storage(explicit) == (
+    assert raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), explicit) == (
         explicit, explicit / "raw_outputs.json",
     )
 
@@ -1379,7 +1383,7 @@ def test_raw_cmd_surfaces_orphan_warning_and_list_even_when_ledger_is_empty(
     나온다 — 이 티켓이 잡는 역전(요약 소실 후 원문만 남는 상태)의 핵심 재현이다."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, _ledger_path = delegate._raw_storage()
+    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
     orphan = _engine_named_raw(
         delegate_dir, f"pm_delegate_codex_{os.getpid()}_deadbeef.txt", size=42,
     )
@@ -1401,7 +1405,7 @@ def test_raw_cmd_orphan_list_respects_limit_and_notes_omission(
     """`--limit` 을 넘는 고아는 그만큼만 나열되고 생략 건수가 명시된다."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, _ledger_path = delegate._raw_storage()
+    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
     for index in range(3):
         _engine_named_raw(
             delegate_dir, f"pm_delegate_codex_{index}_orphan{index}.txt", size=1,
@@ -1419,7 +1423,7 @@ def test_raw_queries_never_delete_files(delegate, monkeypatch, tmp_path):
     않는다(참조 원문·고아 원문 모두)."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, ledger_path = delegate._raw_storage()
+    delegate_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
 
     referenced = _engine_named_raw(delegate_dir, "pm_delegate_codex_1_ref.txt")
     orphan = _engine_named_raw(delegate_dir, "pm_delegate_codex_2_orphan.txt")

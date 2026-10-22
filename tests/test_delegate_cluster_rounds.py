@@ -13,6 +13,8 @@ ignore 된 슬롯 git 트리 한 쌍을 tmp 에 세운다.
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+
 from pm_engine.cli import board_ticket
 
 
@@ -322,8 +324,8 @@ def test_t0928_formal_prepare_preserves_single_ticket_machine_stdout(pd, cluster
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-machine", ["T-6103"])
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _: pm_home)
-    monkeypatch.setattr(pd, "_repo_root_for_cwd", lambda cwd: Path(cwd))
-    monkeypatch.setattr(pd, "local_config", lambda *a, **k: {})
+    monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *a, **k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *a, **k: None)
     assert pd.main(["ticket", "prepare", "--ticket", "T-6103", "--role", "architect",
                     "--cwd", str(slot)]) == 0
@@ -665,7 +667,7 @@ def test_cluster_architect_round_satisfies_the_per_ticket_design_gate(pd, cluste
 
     # 설계 단계를 건너뛴 요청 — 순서 축이 먼저 말한다(예약 자체가 없으므로 근거를 볼 것도 없다).
     for ticket in ("T-6020", "T-6021"):
-        with pytest.raises(pd.ClusterRoundBudgetExceeded, match="다음 라운드는 architect"):
+        with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded, match="다음 라운드는 architect"):
             pd.prepare_ticket_copy(
                 ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
             )
@@ -709,8 +711,8 @@ def test_cli_prepare_and_harvest_round_trip_over_a_run_dir(
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-cli", ["T-6030", "T-6031"])
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _repo: pm_home)
-    monkeypatch.setattr(pd, "_repo_root_for_cwd", lambda cwd: Path(cwd))
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
 
     rc = pd.main(["ticket", "prepare", "--cluster", "C-cli", "--role", "architect",

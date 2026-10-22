@@ -201,42 +201,6 @@ def test_pm_config_load_module_unstamped_sibling_no_false_positive(tmp_path):
     assert mod is not None and mod.VALUE == 1
 
 
-
-
-# ── 위임 채널 로더 skew ──────────────────────────────────────────────────
-
-
-def test_pm_delegate_stale_delegate_scope_fails_loud(tmp_path):
-    """신 pm_delegate → stale delegate_scope 부분 동기는 속성 접근 전 명시 skew로 실패한다."""
-    tools = _build_tools(tmp_path, {
-        "pm_delegate.py": None,
-        "delegate_scope.py": _stale_source("delegate_scope"),
-    })
-    delegate = _load(tools, "pm_delegate")
-
-    with pytest.raises(RuntimeError) as exc:
-        delegate._load_delegate_scope()
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    msg = str(exc.value)
-    assert "pm_delegate.py" in msg
-    assert "delegate_scope.py" in msg
-    assert "v0.0.0-stale" in msg
-    assert _cur_rev() in msg
-
-
-def test_pm_delegate_delegate_scope_normal_sync_ok(tmp_path):
-    """동기된 pm_delegate → delegate_scope 로드는 기존처럼 정상 모듈을 반환한다."""
-    tools = _build_tools(tmp_path, {
-        "pm_delegate.py": None,
-        "delegate_scope.py": None,
-    })
-    delegate = _load(tools, "pm_delegate")
-
-    scope = delegate._load_delegate_scope()
-    assert scope.ENGINE_REV == delegate.ENGINE_REV == _cur_rev()
-
-
 def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch):
     """stale pm_delegate가 있어도 비소비 read/mutation 경로인 list·claim은 정상 dispatch된다."""
     tools = _build_tools(tmp_path, {
@@ -255,36 +219,6 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
 
     assert board.main(["claim", "T-0001"]) == 0
     assert claimed == ["T-0001"]
-
-
-def test_pm_delegate_begin_scope_audit_reraises_skew(tmp_path):
-    """범위 판정 준비의 fail-soft catch가 stale delegate_scope를 경고+None으로 흡수하지 않는다."""
-    tools = _build_tools(tmp_path, {
-        "pm_delegate.py": None,
-        "delegate_scope.py": _stale_source("delegate_scope"),
-    })
-    delegate = _load(tools, "pm_delegate")
-
-    with pytest.raises(RuntimeError) as exc:
-        delegate.begin_scope_audit(None, tmp_path)
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert "delegate_scope.py" in str(exc.value)
-
-
-def test_pm_delegate_report_scope_audit_reraises_skew(tmp_path):
-    """회수 판정의 fail-soft catch도 marked skew를 경고+return으로 흡수하지 않는다."""
-    tools = _build_tools(tmp_path, {"pm_delegate.py": None})
-    delegate = _load(tools, "pm_delegate")
-
-    class SkewingScope:
-        @staticmethod
-        def capture_worktree_state(_workspace):
-            raise _marked_skew("report consumer skew")
-
-    audit = delegate.ScopeAudit(SkewingScope(), (), object(), tmp_path)
-    with pytest.raises(RuntimeError, match="report consumer skew") as exc:
-        delegate.report_scope_audit(audit, "developer")
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
 
 
 def test_pm_delegate_verify_does_not_skip_unregistered_filename(tmp_path):

@@ -18,6 +18,10 @@ cwd/env 를 보고, 스텁은 sentinel 로 즉시 빠져나와 장부·raw 경�
 """
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_env
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
+
 import argparse
 import importlib.util
 import os
@@ -132,8 +136,8 @@ def _capture_run_conditions(external, monkeypatch, *, harness: str,
         raise _Spawned("capture")
 
     monkeypatch.setattr(external, "run_review", _stub)
-    target = external.ReviewerTarget(
-        external.REVIEWER_SOURCE_STRUCTURED, f"{harness} exec",
+    target = reviewer_target.ReviewerTarget(
+        reviewer_result.REVIEWER_SOURCE_STRUCTURED, f"{harness} exec",
         harness=harness, model="m",
     )
     with pytest.raises(_Spawned):
@@ -169,7 +173,7 @@ def test_reviewer_env_comes_from_the_delegate_seam(external, monkeypatch, tmp_pa
         diff_root=diff_root, output_dir=tmp_path)
 
     delegate = external._load_pm_delegate()
-    assert seen["env"] == delegate.build_env("codex")
+    assert seen["env"] == delegate_env.build_env("codex")
 
 
 def test_reviewer_home_is_the_session_home(external, monkeypatch, tmp_path):
@@ -255,7 +259,7 @@ def test_a_leftover_switch_value_changes_nothing(external, monkeypatch, tmp_path
 
     delegate = external._load_pm_delegate()
     assert seen["cwd"] == diff_root
-    assert seen["env"] == delegate.build_env("codex")
+    assert seen["env"] == delegate_env.build_env("codex")
     # 엔진 코드가 그 키를 아예 읽지 않는다 — 값이 무엇이든 읽는 자리가 없다.
     source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     assert "additional_reviewer.enabled" not in source

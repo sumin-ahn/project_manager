@@ -12,6 +12,8 @@ hermetic 패턴은 `test_delegate_cluster_rounds.py`(라운드 예약)와 `test_
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+
 from pm_engine.cli import board_ticket
 
 
@@ -683,7 +685,7 @@ def test_the_declared_cycle_runs_and_the_next_request_is_refused(pd, budget_env)
         "01-architect.md", "02-developer.md", "03-code-reviewer.md", "04-developer.md",
     ]
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-cycle", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -707,13 +709,13 @@ def test_the_budget_axis_is_the_only_round_cap(pd, budget_env):
     for role in _CYCLE:
         _advance(pd, "C-onlycap", role, pm_home=pm_home, slot=slot)
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-onlycap", role="developer", cwd=slot, pm_home=pm_home,
         )
 
     # 예외형이 정확히 예산 축의 그것이다(다른 상한 예외로 갈리지 않는다).
-    assert type(caught.value) is pd.ClusterRoundBudgetExceeded
+    assert type(caught.value) is delegate_errors.ClusterRoundBudgetExceeded
     message = str(caught.value)
     assert "고정 라운드 종료" in message and "추가 라운드 없이 정지·보고" in message
     # 역할별 상한 판정이 되살아나면 이 이름 중 하나가 다시 생긴다.
@@ -782,7 +784,7 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     rounds_after = round_seed.load_rounds(
         pm_paths.tickets_dir(board._home()), "T-7100")
     assert pd._cluster_cycle_roles(rounds_after, frozenset(_CYCLE)) == ("architect",)
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-reopen", role="architect", cwd=slot, pm_home=pm_home,
         )
@@ -1166,7 +1168,7 @@ def test_review_without_the_implementation_round_is_refused(pd, budget_env):
     _seed(pm_home, tickets, "C-order", ["T-7010"])
     _advance(pd, "C-order", "architect", pm_home=pm_home, slot=slot)
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-order", role="code-reviewer", cwd=slot, pm_home=pm_home,
         )
@@ -1184,7 +1186,7 @@ def test_implementation_after_the_fix_round_is_refused(pd, budget_env):
     for role in _CYCLE:
         _advance(pd, "C-tail", role, pm_home=pm_home, slot=slot)
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded):
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded):
         pd.prepare_cluster_copy(
             cluster="C-tail", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -1197,7 +1199,7 @@ def test_the_ticket_surface_gets_the_same_budget_verdict(pd, budget_env):
     for role in _CYCLE:
         _advance(pd, "C-surface", role, pm_home=pm_home, slot=slot)
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_ticket_copy(
             ticket="T-7030", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -1213,7 +1215,7 @@ def test_the_ticket_surface_refuses_an_out_of_order_role_too(pd, budget_env):
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-surfaceorder", ["T-7031"])
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_ticket_copy(
             ticket="T-7031", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -1230,8 +1232,8 @@ def test_cli_prepare_refuses_over_budget_with_the_stop_prescription(
     for role in _CYCLE:
         _advance(pd, "C-cli", role, pm_home=pm_home, slot=slot)
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _repo: pm_home)
-    monkeypatch.setattr(pd, "_repo_root_for_cwd", lambda cwd: Path(cwd))
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
     capsys.readouterr()
 
@@ -1252,8 +1254,8 @@ def test_cli_prepare_reopens_the_named_ordinal_and_refuses_a_zero(
     _seed(pm_home, tickets, "C-cli-reopen", ["T-7102"])
     _advance(pd, "C-cli-reopen", "architect", pm_home=pm_home, slot=slot)
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _repo: pm_home)
-    monkeypatch.setattr(pd, "_repo_root_for_cwd", lambda cwd: Path(cwd))
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {})
     monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
     capsys.readouterr()
 
@@ -1299,7 +1301,7 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
 
     monkeypatch.setattr(fs, "board_lock", _racing_lock)
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-race", role="developer", cwd=slot, pm_home=pm_home,
         )
@@ -1430,7 +1432,7 @@ def test_legacy_replan_metadata_does_not_reopen_the_fixed_sequence(pd, budget_en
         {"ts": _FIXTURE_STAMP, "reason": "폐지 데이터", "from_ordinal": 4},
     ])
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded, match="고정 라운드 종료"):
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded, match="고정 라운드 종료"):
         pd.prepare_cluster_copy(
             cluster="C-closed", role="architect", cwd=slot, pm_home=pm_home,
         )
@@ -1449,7 +1451,7 @@ def test_size_one_cluster_takes_the_same_path(pd, budget_env):
         plan = _advance(pd, "C-one", role, pm_home=pm_home, slot=slot)
         assert len(plan.rounds) == 1
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-one", role="developer", cwd=slot, pm_home=pm_home,
         )

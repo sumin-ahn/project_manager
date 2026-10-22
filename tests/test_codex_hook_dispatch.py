@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import delegate_channel_rules
+
 import importlib.util
 import json
 import os
@@ -178,7 +180,7 @@ def test_timeout_layers_are_ordered_supervisor_dispatcher_host(dispatcher, guard
     디스패처 예산이 감독자보다 짧으면 감독자가 완전한 엔벨로프를 내기 전에 죽여 사유가 사라지고,
     호스트 timeout 보다 길면 호스트가 먼저 죽여 같은 일이 벌어진다."""
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
-        assert (guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS
+        assert (delegate_channel_rules.CODEX_SUPERVISOR_TIMEOUT_SECONDS
                 < dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC
                 < _entry_handler(event)["timeout"]), event
 
@@ -343,8 +345,8 @@ def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
         "PreToolUse", b"not json", tmp_path,
         features=dispatcher.CODEX_HOOK_FEATURES, runner=runner)
 
-    assert set(envelope) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
+    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
     assert "delegate-channel" in envelope["systemMessage"]
     assert len(runner.calls) == 1, "판별식 있는 기능이 미지 payload 에 발화했다"
 
@@ -374,11 +376,11 @@ def test_undecidable_routing_is_warned_not_silently_skipped(
     envelope = dispatcher.dispatch_hook("PreToolUse", payload_bytes, tmp_path,
                                         runner=runner)
 
-    assert set(envelope) == set(guard.CODEX_WARNING_ENVELOPE_KEYS), label
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
+    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS), label
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
     assert "delegate-channel" in envelope["systemMessage"], label
     assert detail_fragment in envelope["systemMessage"], envelope["systemMessage"]
-    assert envelope["suppressOutput"] is guard.CODEX_WARNING_SUPPRESS_OUTPUT
+    assert envelope["suppressOutput"] is delegate_channel_rules.CODEX_WARNING_SUPPRESS_OUTPUT
     assert "decision" not in envelope and "hookSpecificOutput" not in envelope, \
         "판정 불능이 차단으로 승격됐다"
     assert runner.calls == [], label
@@ -395,8 +397,8 @@ def test_broken_registry_pattern_is_undecidable_not_a_pass(dispatcher, guard,
         "PreToolUse", json.dumps(_spawn_payload()).encode("utf-8"), tmp_path,
         features=(broken,), runner=runner)
 
-    assert set(envelope) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
+    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
     assert "정규식 오류" in envelope["systemMessage"]
     assert runner.calls == []
 
@@ -452,8 +454,8 @@ def test_unknown_entrypoint_event_is_loud_not_silent(dispatcher, guard, tmp_path
     envelope = dispatcher.dispatch_hook("Stop", b"{}", tmp_path,
                                         runner=_RecordingRunner())
 
-    assert set(envelope) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
+    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
 
 
 # ── 합본 규칙 ────────────────────────────────────────────────────────────────
@@ -668,9 +670,9 @@ def test_feature_failure_degrades_to_a_marked_fallback(dispatcher, guard, tmp_pa
         "PreToolUse", json.dumps(_spawn_payload()).encode("utf-8"), tmp_path,
         runner=runner)
 
-    assert set(envelope) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
-    assert envelope["suppressOutput"] is guard.CODEX_WARNING_SUPPRESS_OUTPUT
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
+    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
+    assert envelope["suppressOutput"] is delegate_channel_rules.CODEX_WARNING_SUPPRESS_OUTPUT
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
     assert "delegate-channel" in envelope["systemMessage"]
     assert "fail-open" in envelope["systemMessage"]
 
@@ -757,11 +759,11 @@ def test_shipped_entrypoint_runs_the_registered_guard_for_a_spawn_payload(
     result, elapsed = _run_entrypoint("PreToolUse", root, _spawn_payload())
 
     assert elapsed < _entry_handler("PreToolUse")["timeout"]
-    assert set(result) == set(guard.CODEX_DENY_ENVELOPE_KEYS)
+    assert set(result) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
     assert "pm_delegate.py" in result["reason"]
     rendered = json.dumps(result, ensure_ascii=False)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered
-    assert guard.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in rendered
+    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
@@ -883,8 +885,8 @@ def test_shipped_posix_entrypoint_warns_when_it_cannot_decide(
 
     assert completed.returncode == 0, (label, completed.stderr)
     envelope = json.loads(completed.stdout)
-    assert set(envelope) == set(guard.CODEX_WARNING_ENVELOPE_KEYS), label
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
+    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS), label
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
     assert detail_fragment in envelope["systemMessage"], envelope["systemMessage"]
     assert "decision" not in envelope, "판정 불능이 차단으로 승격됐다"
 
@@ -905,8 +907,8 @@ def test_shipped_windows_entrypoint_warns_when_it_cannot_decide(
 
     assert completed.returncode == 0, (label, completed.stderr)
     envelope = json.loads(completed.stdout)
-    assert set(envelope) == set(guard.CODEX_WARNING_ENVELOPE_KEYS), label
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
+    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS), label
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
     assert detail_fragment in envelope["systemMessage"], envelope["systemMessage"]
     assert "decision" not in envelope, "판정 불능이 차단으로 승격됐다"
 
@@ -930,8 +932,8 @@ def test_shipped_entrypoint_stays_quiet_on_normal_traffic(guard, tmp_path, windo
                                    windows=windows)
     assert matched.returncode == 0, matched.stderr
     envelope = json.loads(matched.stdout)
-    assert set(envelope) == set(guard.CODEX_DENY_ENVELOPE_KEYS)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in json.dumps(envelope,
+    assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in json.dumps(envelope,
                                                                 ensure_ascii=False)
 
 
@@ -950,8 +952,8 @@ def test_stale_dispatcher_generation_falls_back_instead_of_locking_out(
     result, elapsed = _run_entrypoint("PreToolUse", root, _spawn_payload())
 
     assert elapsed < 5
-    assert set(result) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
+    assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
@@ -965,8 +967,8 @@ def test_adopter_without_the_dispatcher_is_warned_not_blocked(guard, tmp_path):
                                       {"hook_event_name": "PostToolUse"})
 
     assert elapsed < 5
-    assert set(result) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
+    assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
 
 
 # 코드로만 얹는 가드 한 건 — "이후 기능은 registry 한 줄" 이라는 이 배선의 주장 그대로다.
@@ -1269,7 +1271,7 @@ def test_post_compact_names_the_unresolved_identity_that_the_old_wiring_hid(
 
     assert legacy_rc == 0 and new_rc == 0
     assert json.loads(legacy_out) == {"suppressOutput": True}, legacy_out
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in new_out, new_out
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in new_out, new_out
     rendered = json.dumps(json.loads(new_out), ensure_ascii=False)
     assert "세션 task 미해소: 이 세션이 연 task 없음 (세션 synthetic-session_id)" in rendered, rendered
 
@@ -1302,13 +1304,13 @@ def test_compaction_normal_traffic_warns_only_where_identity_is_unresolved(
         envelope = json.loads(stdout)
         rendered = json.dumps(envelope, ensure_ascii=False)
         if event == "PostCompact":
-            assert guard.CODEX_ADAPTER_FALLBACK_MARKER in rendered, (trigger, rendered)
+            assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in rendered, (trigger, rendered)
             assert "compaction-snapshot" in rendered, (trigger, rendered)
             # 엔진의 미해소 사유(세션 판정)가 그 경고 안에 있다.
             assert "세션 task 미해소" in rendered, (trigger, rendered)
         else:
-            assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, (trigger, rendered)
-        assert guard.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered, trigger
+            assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, (trigger, rendered)
+        assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered, trigger
         assert "decision" not in envelope and "continue" not in envelope, trigger
 
 
@@ -1567,9 +1569,9 @@ def test_live_compaction_payload_runs_through_the_shipped_entrypoint(
     assert isinstance(envelope, dict) and envelope
     rendered = json.dumps(envelope, ensure_ascii=False)
     if event == "PostCompact":
-        assert guard.CODEX_ADAPTER_FALLBACK_MARKER in rendered, rendered
+        assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in rendered, rendered
     else:
-        assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, rendered
+        assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, rendered
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
@@ -1591,5 +1593,5 @@ def test_unregistered_home_compaction_is_loud_not_silent(guard, tmp_path, hook_i
     assert returncode == 0, stdout                            # fail-open — 압축을 막지 않는다.
     envelope = json.loads(stdout)
     rendered = json.dumps(envelope, ensure_ascii=False)
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in rendered, rendered
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in rendered, rendered
     assert "compaction-snapshot" in rendered, rendered

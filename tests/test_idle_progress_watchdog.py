@@ -26,6 +26,14 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import delegate_config
+from pm_engine.infra.harness import delegate_env
+from pm_engine.infra.harness import delegate_run
+from pm_engine.domain import delegate_run_rules
+from pm_engine.domain import reviewer_budget
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
+
 from pm_engine.cli import board_init
 from pm_engine.infra import pm_paths
 
@@ -227,11 +235,11 @@ _HARNESS_LITERAL_EXEMPTIONS = {
     # 회신 디코더는 면제가 필요 없어졌다 — 하네스별 wire 어댑터가 모듈 레벨 선언표
     # (`HARNESS_REPLY_ADAPTERS`)로 옮겨가 함수 본문에 하네스 리터럴이 남지 않는다(T-0595).
     # 여기 다시 등재해야 한다면 그건 선언표를 되돌렸다는 뜻이다.
-    ("pm_delegate", "_build_target_argv"):
+    ("pm_engine/infra/harness/delegate_run", "_build_target_argv"):
         "세 전용 argv 빌더 중 하나를 고르는 전달 어댑터",
-    ("pm_delegate", "_prepare_attempt_transport"):
+    ("pm_engine/infra/harness/delegate_transport", "_prepare_attempt_transport"):
         "opencode만 요구하는 prompt-file wire transport 전용 어댑터(timeout 비소유)",
-    ("additional_reviewer", "_structured_reviewer_argv"):
+    ("pm_engine/infra/reviewer_target", "_structured_reviewer_argv"):
         "추가 리뷰어 쪽에서 세 전용 argv 빌더 중 하나를 고르는 전달 어댑터"
         "(pm_delegate._build_target_argv 와 같은 역할·timeout 비소유)",
     ("additional_reviewer", "_structured_transport"):
@@ -312,7 +320,9 @@ def _unexpected_harness_literal_hits(
         name: (TOOLS / f"{name}.py").read_text(encoding="utf-8")
         for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_engine/app/session/relay",
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
-                     "pm_engine/infra/raw_output")
+                     "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
+                     "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
+                     "pm_engine/infra/reviewer_target")
     }
     unexpected = {}
     for module_name, source in sources.items():
@@ -332,7 +342,7 @@ def _direct_target(external, command: str = "codex"):
     `run_review` 는 대상을 **필수**로 받고 커맨드 문자열 입구가 없다. 여기서는 하네스 argv 조립을
     태우지 않는 대상 하나로 고정해 판정 파이프라인만 본다 — 엔진 CLI 가 넘기는 대상은 언제나
     `resolve_reviewer_target` 이 harness·model 을 채운 구조화 tuple 이다."""
-    return external.ReviewerTarget(external.REVIEWER_SOURCE_STRUCTURED, command)
+    return reviewer_target.ReviewerTarget(reviewer_result.REVIEWER_SOURCE_STRUCTURED, command)
 
 def test_watched_popen_tracks_last_event_from_stdout():
     """stdout chunk 도착이 마지막 진행 시각을 세운다 + 부분 출력이 즉시 회수 가능."""
@@ -531,8 +541,8 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
         calls.append(kwargs["harness"])
         if len(calls) > 1:
             return {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}
-        return pd._default_run_fn(
-            [sys.executable, "-c", parent_code, str(pid_file)],
+        return delegate_run._default_run_fn(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), [sys.executable, "-c", parent_code, str(pid_file)],
             stdin_text=None,
             cwd=kwargs["cwd"],
             env=kwargs["env"],
@@ -1286,7 +1296,7 @@ def test_profile_table_covers_every_declared_harness(pd):
     assert watchdog.HARNESS_PROFILES["opencode"].startup_watchdog is True
     assert watchdog.HARNESS_PROFILES["codex"].startup_watchdog is False
     assert watchdog.HARNESS_PROFILES["claude"].startup_watchdog is False
-    assert pd.harness_profile("nope", {}).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
+    assert delegate_env.harness_profile(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "nope", {}).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
 
 def test_unknown_defaults_are_derived_from_most_permissive_profile():
@@ -1329,7 +1339,9 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
         (module_name, qualname)
         for module_name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_engine/app/session/relay",
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
-                     "pm_engine/infra/raw_output")
+                     "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
+                     "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
+                     "pm_engine/infra/reviewer_target")
         for qualname in _module_harness_literal_hits(
             module_name, (TOOLS / f"{module_name}.py").read_text(encoding="utf-8"))
     }
@@ -1401,7 +1413,7 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
         ),
         # S(b): 값이 아니라 signal on/off를 쥔 판정 함수 선두에서 특정 CLI만 NONE으로 강등.
         (
-            "additional_reviewer",
+            "pm_engine/infra/reviewer_target",
             "_reviewer_progress_signal",
             "    if not argv:\n"
             "        return conf_schema.PROGRESS_SIGNAL_NONE\n",
@@ -1428,11 +1440,11 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
         (
             "pm_delegate",
             "_run_delegate_cli",
-            "        timeout = _resolve_timeout(args, conf, harness)\n",
+            "        timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n",
             '        if harness == "opencode":\n'
             "            timeout = 60\n"
             "        else:\n"
-            "            timeout = _resolve_timeout(args, conf, harness)\n",
+            "            timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n",
         ),
         # 세 번째 표면: fill runner가 공용 profile을 받은 뒤 특정 하네스만 idle 축을 끄는 우회.
         (
@@ -1452,7 +1464,9 @@ def test_structural_guard_rejects_new_timeout_bypass_callers(
         name: (TOOLS / f"{name}.py").read_text(encoding="utf-8")
         for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_engine/app/session/relay",
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
-                     "pm_engine/infra/raw_output")
+                     "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
+                     "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
+                     "pm_engine/infra/reviewer_target")
     }
     sources[module_name] = _apply_mutation_anchor(
         sources[module_name], needle, replacement,
@@ -1544,7 +1558,7 @@ class _RecordingRelay:
 def _wire_relay(pd, monkeypatch, fake, conf=None):
     """위임 표면을 대역 워치독 + 격리 conf 로 배선(실 local.conf 비의존 hermetic)."""
     fake.install(monkeypatch)
-    monkeypatch.setattr(pd, "local_config", lambda: dict(conf or {}))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf or {}))
     return fake
 
 
@@ -1783,7 +1797,7 @@ def test_delegate_routes_every_driver_through_shared_watchdog(pd, monkeypatch, h
     """3 드라이버 **전부** 워치독 경유 — codex/claude 도 증분 관측 대상(옛 구조는 벽시계 단독)."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
     monkeypatch.setattr(pd.subprocess, "Popen", _forbidden_popen)
-    pd._default_run_fn(["bin"], stdin_text="prompt", cwd="/tmp", env={}, timeout=600,
+    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="prompt", cwd="/tmp", env={}, timeout=600,
                        harness=harness)
     assert len(fake.calls) == 1
     call = fake.calls[0]
@@ -1799,7 +1813,7 @@ def test_delegate_idle_value_differs_by_axis(pd, monkeypatch):
     seen = {}
     for harness in ("codex", "opencode"):
         fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
-        pd._default_run_fn(["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+        delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                            harness=harness)
         seen[harness] = fake.calls[0]["idle_timeout"]
     assert seen["opencode"] > seen["codex"], (
@@ -1812,7 +1826,7 @@ def test_delegate_harness_conf_override_reaches_the_watchdog(pd, monkeypatch):
     """local.conf `harness.<name>.idle_timeout` 이 실제 판정까지 도달한다(배포별 조정 배선)."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay(),
                        conf={"harness.opencode.idle_timeout": "60"})
-    pd._default_run_fn(["opencode", "run"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                        harness="opencode")
     assert fake.calls[0]["idle_timeout"] == 60.0
 
@@ -1826,7 +1840,7 @@ def _forbidden_popen(*a, **k):
 def test_delegate_startup_window_follows_declaration(pd, monkeypatch, harness, startup):
     """첫-이벤트 창/재시도는 **선언** 을 따른다 — 분기 특례가 아니라 테이블."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
-    pd._default_run_fn(["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                        harness=harness)
     call = fake.calls[0]
     if startup:
@@ -1838,12 +1852,12 @@ def test_delegate_startup_window_follows_declaration(pd, monkeypatch, harness, s
 def test_delegate_wall_timeout_resolution_is_per_harness(pd):
     """벽시계 백스톱도 하네스별 — CLI > 하네스 키 > flat legacy > 선언 순으로 해소된다."""
     unset = type("NS", (), {"timeout": None})()
-    assert pd._resolve_timeout(unset, {}, "codex") == int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
-    assert pd._resolve_timeout(unset, {}, "opencode") == int(watchdog.LOCAL_GPU_WALL_TIMEOUT_SEC)
-    assert pd._resolve_timeout(unset, {"harness.opencode.wall_timeout": "20000"},
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), unset, {}, "codex") == int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), unset, {}, "opencode") == int(watchdog.LOCAL_GPU_WALL_TIMEOUT_SEC)
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), unset, {"harness.opencode.wall_timeout": "20000"},
                                "opencode") == 20000
     cli = type("NS", (), {"timeout": 11})()
-    assert pd._resolve_timeout(cli, {"harness.opencode.wall_timeout": "20000"}, "opencode") == 11
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), cli, {"harness.opencode.wall_timeout": "20000"}, "opencode") == 11
 
 
 def test_delegate_timeout_preserves_partial_output_and_silence(pd, monkeypatch):
@@ -1851,16 +1865,16 @@ def test_delegate_timeout_preserves_partial_output_and_silence(pd, monkeypatch):
     exc = subprocess.TimeoutExpired(["bin"], 900.0, output="HALF DONE", stderr="warn")
     exc.idle_seconds = 931.0
     _wire_relay(pd, monkeypatch, _RecordingRelay(exc=exc))
-    res = pd._default_run_fn(["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
                              harness="codex")
     assert res["stdout"] == "HALF DONE", "kill 시점 산출물이 버려졌다(전량 폐기 재발)"
     assert res["timed_out"] is True
-    assert res[pd.RUN_RESULT_SILENCE_SEC] == 931.0
-    assert res[pd.RUN_RESULT_IDLE_KILLED] is True
+    assert res[delegate_run_rules.RUN_RESULT_SILENCE_SEC] == 931.0
+    assert res[delegate_run_rules.RUN_RESULT_IDLE_KILLED] is True
     assert "무진행" in res["stderr"]
     # false-kill 자기-진단 — 올릴 노브를 사유에 박아 채택자가 헤매지 않게 한다.
     assert "harness.codex.idle_timeout" in res["stderr"]
-    assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_TIMEOUT
+    assert delegate_run.classify_infrastructure_failure(res) == delegate_run_rules.FAILURE_CLASS_TIMEOUT
 
 
 def test_delegate_wall_clock_timeout_is_labelled_apart_from_idle(
@@ -1870,15 +1884,15 @@ def test_delegate_wall_clock_timeout_is_labelled_apart_from_idle(
         ["bin"], 3700.0, silence_seconds=12.5, output="PART"
     )
     _wire_relay(pd, monkeypatch, _RecordingRelay(exc=exc))
-    res = pd._default_run_fn(["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
                              harness="codex")
     assert "벽시계 백스톱 3700s" in res["stderr"] and "무진행" not in res["stderr"]
     assert "실측 침묵 12s" in res["stderr"]
     assert "harness.codex.wall_timeout" in res["stderr"]
-    assert pd.RUN_RESULT_IDLE_KILLED not in res
-    assert res[pd.RUN_RESULT_SILENCE_SEC] == 12.5
-    assert res[pd.RUN_RESULT_TIMEOUT_AXIS] == watchdog.TIMEOUT_AXIS_WALL
-    assert res[pd.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 3700.0
+    assert delegate_run_rules.RUN_RESULT_IDLE_KILLED not in res
+    assert res[delegate_run_rules.RUN_RESULT_SILENCE_SEC] == 12.5
+    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_AXIS] == watchdog.TIMEOUT_AXIS_WALL
+    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 3700.0
     assert res["stdout"] == "PART"
 
 
@@ -1886,14 +1900,14 @@ def test_delegate_success_carries_silence_observation(pd, monkeypatch):
     """정상 완주도 관측 침묵 초를 실어 감사 헤더에 남긴다."""
     completed = subprocess.CompletedProcess(["bin"], 0, "out", "")
     _wire_relay(pd, monkeypatch, _RecordingRelay(completed=completed, silence=3.5))
-    res = pd._default_run_fn(["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                              harness="codex")
-    assert res[pd.RUN_RESULT_SILENCE_SEC] == 3.5 and res["timed_out"] is False
+    assert res[delegate_run_rules.RUN_RESULT_SILENCE_SEC] == 3.5 and res["timed_out"] is False
 
 
 def test_delegate_legacy_flat_conf_keys_still_honoured(pd):
     """기존 채택자의 표면-flat 키(`delegate.timeout`·`delegate.idle_timeout`)는 계속 유효하다."""
-    profile = pd.harness_profile("codex", {"delegate.timeout": "1234",
+    profile = delegate_env.harness_profile(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", {"delegate.timeout": "1234",
                                            "delegate.idle_timeout": "88"})
     assert (profile.wall_timeout, profile.idle_timeout) == (1234.0, 88.0)
 
@@ -2052,7 +2066,7 @@ def test_pm_env_cards_match_shipped_bash_cap():
 
 def test_claude_argv_declares_stream_json_with_required_verbose(pd):
     """claude 는 신호 축으로 승격 — `stream-json` + CLI 강제 `--verbose`(미동반 시 즉시 rc≠0)."""
-    argv = pd.build_claude_argv("opus", None, "developer")
+    argv = contract.build_claude_argv("opus", None, "developer")
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in argv
     assert "json" not in argv[argv.index("--output-format") + 1:argv.index("--verbose")][1:]
@@ -2075,19 +2089,19 @@ def test_claude_reply_extraction_identical_across_formats(pd):
     ])
     assert contract.parse_stream_json(single_blob.splitlines()) == ("sess-1", "REPLY-BODY", None)
     assert contract.parse_stream_json(stream.splitlines()) == ("sess-1", "REPLY-BODY", None)
-    assert pd.extract_reply("claude", single_blob) == pd.extract_reply("claude", stream)
+    assert delegate_run.extract_reply("claude", single_blob) == delegate_run.extract_reply("claude", stream)
 
 
 # ── ⑥ 감사 헤더 (침묵 초) ────────────────────────────────────────────────────────
 
 def test_raw_header_records_silence_seconds(pd):
     """감사 헤더에 `# silence_sec:` — 관측 불가는 `n/a`(0 으로 위장 금지)·무진행 kill 은 사유 병기."""
-    meta = pd._format_meta(["codex"], 1, "codex", "m", 12.0, "", "", silence_sec=931.4,
+    meta = delegate_config._format_meta(["codex"], 1, "codex", "m", 12.0, "", "", silence_sec=931.4,
                            idle_killed=True)
     assert "# silence_sec: 931.4 (무진행 판정으로 중단)" in meta
-    plain = pd._format_meta(["codex"], 0, "codex", "m", 12.0, "", "", silence_sec=2.0)
+    plain = delegate_config._format_meta(["codex"], 0, "codex", "m", 12.0, "", "", silence_sec=2.0)
     assert "# silence_sec: 2.0" in plain and "무진행" not in plain
-    blind = pd._format_meta(["codex"], 0, "codex", "m", 12.0, "", "")
+    blind = delegate_config._format_meta(["codex"], 0, "codex", "m", 12.0, "", "")
     assert "# silence_sec: n/a (진행 신호 미관측)" in blind
 
 
@@ -2095,7 +2109,7 @@ def test_execute_attempt_writes_silence_into_raw(pd, tmp_path):
     """`_execute_attempt` 가 RunResult 의 침묵 관측치를 raw 파일에 실제로 박제한다(감사 종단)."""
     def _run(argv, *, stdin_text, cwd, env, timeout, harness):
         return {"returncode": 1, "stdout": "PART", "stderr": "boom", "timed_out": True,
-                pd.RUN_RESULT_SILENCE_SEC: 902.0, pd.RUN_RESULT_IDLE_KILLED: True}
+                delegate_run_rules.RUN_RESULT_SILENCE_SEC: 902.0, delegate_run_rules.RUN_RESULT_IDLE_KILLED: True}
 
     attempt = pd._execute_attempt(
         harness="codex", model="m", reasoning=None, role="developer", cwd=tmp_path,
@@ -2158,7 +2172,7 @@ def test_additional_reviewer_idle_kill_preserves_partial_output(external, monkey
     diagnosis = output.answer
     assert "REVIEW SO FAR" in diagnosis and "progress log" in diagnosis
     assert "무진행 임계 900초" in diagnosis and "실측 침묵 905초" in diagnosis
-    assert "--idle-timeout" in diagnosis and external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY in diagnosis
+    assert "--idle-timeout" in diagnosis and reviewer_budget.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY in diagnosis
 
 
 def test_additional_reviewer_wall_timeout_keeps_actual_diagnostics(
@@ -2219,13 +2233,13 @@ def test_additional_reviewer_cleanup_failure_saves_partial_output(
 def test_additional_reviewer_follows_reviewer_harness_profile(external):
     """리뷰어 커맨드의 **하네스 프로필**을 따른다 — 별도 타임아웃 상수 0(값 출처 단일)."""
     unset = external.argparse.Namespace(timeout=None, idle_timeout=None)
-    assert external._resolve_timeout(unset, {}, "codex exec --sandbox read-only") == \
+    assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), unset, {}, "codex exec --sandbox read-only") == \
         int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
     # 로컬 GPU 리뷰어(opencode)를 물리면 그 축의 값으로 갈린다 — 표면이 아니라 축이 값을 정한다.
-    assert external._resolve_timeout(unset, {}, "opencode run") == \
+    assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), unset, {}, "opencode run") == \
         int(watchdog.LOCAL_GPU_WALL_TIMEOUT_SEC)
     # 테이블에 없는 리뷰어 CLI 는 신호 없음 fallback(모르는 리뷰어를 무진행으로 죽이지 않는다).
-    unknown = external.reviewer_profile("my-reviewer --flag", {})
+    unknown = reviewer_target.reviewer_profile(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "my-reviewer --flag", {})
     assert unknown.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
     assert unknown.wall_timeout == watchdog.DEFAULT_WALL_TIMEOUT_SEC
     # 이 모듈은 자체 타임아웃 상수를 두지 않는다(값이 두 군데면 규칙이 둘).
@@ -2237,8 +2251,8 @@ def test_additional_reviewer_follows_reviewer_harness_profile(external):
 def test_windows_codex_names_share_progress_and_time_profile(
         external, command):
     """Windows 표기도 진행신호·시간값 모두 동일한 정규화 키(codex)를 쓴다."""
-    profile = external.reviewer_profile(command, {})
-    assert external.reviewer_name(command) == "codex"
+    profile = reviewer_target.reviewer_profile(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), command, {})
+    assert reviewer_target.reviewer_name(command) == "codex"
     assert profile.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
     assert profile.idle_timeout == watchdog.HARNESS_PROFILES["codex"].idle_timeout
     assert profile.wall_timeout == watchdog.HARNESS_PROFILES["codex"].wall_timeout
@@ -2249,24 +2263,24 @@ def test_reviewer_idle_timeout_uses_resolved_profile_signal(external, monkeypatc
     """리뷰 표면도 profile.progress_signal 을 소비 — 신호 없는 선언을 평문으로 하드코딩하지 않는다."""
     no_signal = watchdog.HARNESS_PROFILES["codex"]._replace(
         progress_signal=conf_schema.PROGRESS_SIGNAL_NONE)
-    monkeypatch.setattr(external, "reviewer_profile", lambda *_a, **_k: no_signal)
+    monkeypatch.setattr(reviewer_target, 'reviewer_profile', lambda _home, *_a, **_k: no_signal)
     assert external._reviewer_idle_timeout("future-runner", 123) is None
 
 
 def test_reviewer_progress_signal_requires_known_executable_and_option_contract(external):
     """basename+CLI별 옵션 계약 매트릭스: 이름만/플래그만 어느 한쪽으로는 추론하지 않는다."""
-    absolute_codex = external.reviewer_profile("/usr/local/bin/codex exec", {})
+    absolute_codex = reviewer_target.reviewer_profile(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "/usr/local/bin/codex exec", {})
     assert absolute_codex.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
-    assert external.reviewer_profile(
-        "/usr/local/bin/codex exec --json", {}
+    assert reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "/usr/local/bin/codex exec --json", {}
     ).progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
-    assert external.reviewer_profile(
-        "future-reviewer --json", {}
+    assert reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "future-reviewer --json", {}
     ).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
-    single = external.reviewer_profile("claude -p --output-format json", {})
-    stream = external.reviewer_profile(
-        "claude -p --output-format stream-json --verbose", {}
+    single = reviewer_target.reviewer_profile(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "claude -p --output-format json", {})
+    stream = reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "claude -p --output-format stream-json --verbose", {}
     )
     assert single.progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
     assert external._reviewer_idle_timeout(
@@ -2276,28 +2290,28 @@ def test_reviewer_progress_signal_requires_known_executable_and_option_contract(
     assert external._reviewer_idle_timeout(
         "claude -p --output-format stream-json --verbose", 1
     ) == 1.0
-    assert external.reviewer_profile(
-        "codex exec --json", {}
+    assert reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "codex exec --json", {}
     ).progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
-    assert external.reviewer_profile(
-        "opencode run --format json", {}
+    assert reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "opencode run --format json", {}
     ).progress_signal == conf_schema.PROGRESS_SIGNAL_EVENT_STREAM
 
-    configured = external.reviewer_profile(
-        "future-reviewer --json",
-        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT},
+    configured = reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "future-reviewer --json",
+        {reviewer_budget.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT},
     )
     assert configured.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
 
 def test_unknown_reviewer_can_only_opt_into_progress_explicitly(external):
     """미지 기본은 NONE이며 자유 문자열 CLI는 local.conf 명시 선언으로만 idle 축에 들어간다."""
-    assert external.reviewer_profile(
-        "future-reviewer --quiet", {}
+    assert reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "future-reviewer --quiet", {}
     ).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
-    configured = external.reviewer_profile(
-        "future-reviewer --quiet",
-        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT},
+    configured = reviewer_target.reviewer_profile(
+        pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "future-reviewer --quiet",
+        {reviewer_budget.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT},
     )
     assert configured.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
@@ -2305,14 +2319,14 @@ def test_unknown_reviewer_can_only_opt_into_progress_explicitly(external):
 def test_reviewer_profile_facade_reads_local_conf(external, monkeypatch):
     """conf 생략 facade도 local.conf의 값/신호 override를 읽어 위임 축과 대칭이다."""
     monkeypatch.setattr(
-        external,
-        "local_config",
-        lambda: {
+        conf_store,
+        'local_config',
+        lambda _home: {
             "harness.claude.wall_timeout": "4321",
-            external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT,
+            reviewer_budget.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: conf_schema.PROGRESS_SIGNAL_PLAINTEXT,
         },
     )
-    profile = external.reviewer_profile("claude -p --output-format json")
+    profile = reviewer_target.reviewer_profile(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), "claude -p --output-format json")
     assert profile.wall_timeout == 4321.0
     assert profile.progress_signal == conf_schema.PROGRESS_SIGNAL_PLAINTEXT
 
@@ -2362,7 +2376,7 @@ def test_additional_reviewer_wall_clock_is_a_backstop_not_a_primary(external):
     실측: 같은 입력 2회 중 하나는 900초 초과 kill / 다른 하나는 `--timeout 1500` 성공. 900 으로
     되돌리면 그 false-kill 구조가 그대로 복원된다."""
     unset = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(unset, {}, "codex exec") > 1500
+    assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), unset, {}, "codex exec") > 1500
 
 
 def test_additional_reviewer_runtime_harness_cap_advisory(external):
@@ -2405,7 +2419,7 @@ def test_both_surfaces_share_retry_cleanup_budget_formula(external, pd):
     assert watchdog.watchdog_execution_budget(
         14400, first_event_timeout=90, retries=2
     ) == expected
-    assert pd._harness_timeout_budget("opencode", 14400) == expected
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 14400) == expected
     assert external._reviewer_execution_budget(
         "opencode run --format json", 14400
     ) == expected
@@ -2441,7 +2455,7 @@ def test_idle_judgment_is_implemented_once():
     """무진행 판정 구현은 watchdog 단독 — 세 표면에 복붙되면 red(규칙 분기 방지)."""
     relay_src = (TOOLS / "pm_engine/infra/harness/watchdog.py").read_text(encoding="utf-8")
     assert relay_src.count("raise IdleTimeoutExpired(") == 1
-    for tool in ("pm_delegate.py", "additional_reviewer.py", "pm_import.py"):
+    for tool in ("pm_engine/infra/harness/delegate_run.py", "additional_reviewer.py", "pm_import.py"):
         src = (TOOLS / tool).read_text(encoding="utf-8")
         assert "IdleTimeoutExpired(" not in src, (
             f"{tool} 이 무진행 판정을 자체 구현했다 — 공용 seam(watchdog) 재사용이 DoD")

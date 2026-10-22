@@ -18,6 +18,9 @@ extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+from pm_engine.infra import reviewer_target
+
 import datetime
 import importlib.util
 import json
@@ -98,8 +101,8 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None):
     """main() 을 tmp REPO 로 격리 배선하고 라운드별 must_fix 를 주입한다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
-        external, "local_config",
-        lambda repo=None: dict(conf) if conf is not None
+        conf_store, 'local_config',
+        lambda _home, repo=None: dict(conf) if conf is not None
         else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         external, "extract_diff",
@@ -135,14 +138,14 @@ def _ledger(tmp_path) -> dict:
 
 def test_rounds_max_default_and_knob(external):
     """미설정 → 2(출하 기본값) · local.conf `additional_reviewer.rounds_max` 가 상한을 바꾼다."""
-    assert external._review_rounds_max({}) == 2
-    assert external._review_rounds_max({"additional_reviewer.rounds_max": "5"}) == 5
+    assert reviewer_target._review_rounds_max({}) == 2
+    assert reviewer_target._review_rounds_max({"additional_reviewer.rounds_max": "5"}) == 5
 
 
 def test_rounds_max_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (다른 예산 노브와 같은 규칙)."""
-    assert external._review_rounds_max({"additional_reviewer.rounds_max": "x"}) == 2
-    assert external._review_rounds_max({"additional_reviewer.rounds_max": "-2"}) == 2
+    assert reviewer_target._review_rounds_max({"additional_reviewer.rounds_max": "x"}) == 2
+    assert reviewer_target._review_rounds_max({"additional_reviewer.rounds_max": "-2"}) == 2
 
 
 def _entry(external, must_fix_series):

@@ -14,6 +14,8 @@ hermetic: tmp REPO 에 실제 board 디렉터리를 만들고 diff·리뷰어 �
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+
 import importlib.util
 import json
 import re
@@ -271,7 +273,7 @@ def _wire(
     resolved_conf = {**_REVIEWER_TARGET, **(conf or {})}
     monkeypatch.setattr(external, "REPO", pm_home)
     monkeypatch.setattr(
-        external, "local_config", lambda repo=None: dict(resolved_conf),
+        conf_store, 'local_config', lambda _home, repo=None: dict(resolved_conf),
     )
     monkeypatch.setattr(
         external, "extract_diff",

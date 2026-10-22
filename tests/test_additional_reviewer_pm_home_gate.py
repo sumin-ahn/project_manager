@@ -17,6 +17,8 @@ local.conf `upstream` 은 참조하지 않는다 — upstream 은 URL/무관 로
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+
 import importlib.util
 import tempfile
 from pathlib import Path
@@ -78,13 +80,13 @@ def _make_pm_home(tmp_path: Path, *, with_ticket: bool = True,
 def test_owns_real_board_true_with_ticket(external, tmp_path):
     """실 티켓(T-*.md)이 있는 board → True (PM 홈)."""
     home, _ = _make_pm_home(tmp_path)
-    assert external._owns_real_board(home / ".project_manager") is True
+    assert pm_paths._owns_real_board(home / ".project_manager") is True
 
 
 def test_owns_real_board_false_empty_scaffold(external, tmp_path):
     """빈 scaffold(status 디렉토리만·T-*.md 없음) → False (worktree 출하 형상·오탐 방지)."""
     home, _ = _make_pm_home(tmp_path, with_ticket=False)
-    assert external._owns_real_board(home / ".project_manager") is False
+    assert pm_paths._owns_real_board(home / ".project_manager") is False
 
 
 def test_owns_real_board_legacy_wiki_tickets(external, tmp_path):
@@ -92,7 +94,7 @@ def test_owns_real_board_legacy_wiki_tickets(external, tmp_path):
     pm = tmp_path / "legacy" / ".project_manager"
     (pm / "wiki" / "tickets" / "claimed").mkdir(parents=True)
     (pm / "wiki" / "tickets" / "claimed" / "T-0009-y.md").write_text("---\n---\n", encoding="utf-8")
-    assert external._owns_real_board(pm) is True
+    assert pm_paths._owns_real_board(pm) is True
 
 
 # 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없어서, 게이트 축을
@@ -109,13 +111,13 @@ _ENABLED_CONF = {
 def test_canonical_worktree_scans_work_dir(external, tmp_path):
     """`<anchor>/work/*` 스캔 중 엔진 사본 보유 디렉토리를 반환한다 (adopter#0 등록 관례)."""
     home, worktree = _make_pm_home(tmp_path)
-    assert external._canonical_worktree(home) == worktree
+    assert pm_paths._canonical_worktree(home) == worktree
 
 
 def test_canonical_worktree_none_when_no_work_slot(external, tmp_path):
     """work/ 슬롯 부재 → None (재지정 대상 없음)."""
     home, _ = _make_pm_home(tmp_path, with_worktree=False)
-    assert external._canonical_worktree(home) is None
+    assert pm_paths._canonical_worktree(home) is None
 
 
 def test_canonical_worktree_ignores_upstream_foreign_checkout(external, tmp_path):
@@ -130,7 +132,7 @@ def test_canonical_worktree_ignores_upstream_foreign_checkout(external, tmp_path
     (foreign / ".project_manager" / "tools" / "additional_reviewer.py").write_text(
         "# unrelated checkout\n", encoding="utf-8")
     # foreign 이 존재하고 upstream 이 이를 가리켜도 work/ 슬롯 부재라 canonical=None (upstream 미참조).
-    assert external._canonical_worktree(home) is None
+    assert pm_paths._canonical_worktree(home) is None
 
 
 # ── _pm_home_reanchor (2중 conjunction) ────────────────────────────────────
@@ -139,7 +141,7 @@ def test_canonical_worktree_ignores_upstream_foreign_checkout(external, tmp_path
 def test_reanchor_detects_pm_home(external, tmp_path):
     """실 board + canonical worktree(work/ 슬롯) 둘 다 → 재지정 대상 worktree 반환 (게이트 발화)."""
     home, worktree = _make_pm_home(tmp_path)
-    assert external._pm_home_reanchor(home) == worktree
+    assert pm_paths._pm_home_reanchor(home) == worktree
 
 
 def test_reanchor_none_for_worktree_shape(external, tmp_path):
@@ -148,7 +150,7 @@ def test_reanchor_none_for_worktree_shape(external, tmp_path):
     게이트가 실행 위치(worktree)를 PM 홈으로 오인해 정당 실행을 막지 않음을 못박는다."""
     home, worktree = _make_pm_home(tmp_path)
     # worktree 앵커 자신은 실 board 미소유 → conjunction (1) 탈락.
-    assert external._pm_home_reanchor(worktree) is None
+    assert pm_paths._pm_home_reanchor(worktree) is None
 
 
 def test_reanchor_none_when_no_worktree(external, tmp_path):
@@ -156,7 +158,7 @@ def test_reanchor_none_when_no_worktree(external, tmp_path):
 
     conjunction (2) 탈락 — 정규 채택자를 adopter#0 으로 오인해 hard-block 하지 않는다."""
     home, _ = _make_pm_home(tmp_path, with_worktree=False)
-    assert external._pm_home_reanchor(home) is None
+    assert pm_paths._pm_home_reanchor(home) is None
 
 
 # ── main() 게이트 (sensitivity: PM 홈 앵커 + paths 미지정 → 차단) ────────────
@@ -167,7 +169,7 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
 
     반환: (exit_code, reviewer_called). 게이트가 codex 호출 전에 차단함을 격리한다."""
     monkeypatch.setattr(external, "REPO", anchor)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: conf)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: conf)
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda target, **kwargs: anchor,
     )
@@ -238,7 +240,7 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
         },
     }
     monkeypatch.setattr(external, "REPO", engine_home)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: configs[repo.resolve()])
+    monkeypatch.setattr(conf_store, 'local_config', lambda home: configs[home.root.resolve()])
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo",
         lambda anchor, **kwargs: owner_home if anchor.resolve() == slot_two else engine_home,

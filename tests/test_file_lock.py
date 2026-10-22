@@ -158,7 +158,7 @@ _REPLACE_PRIMITIVE = "replace"
 # 판정 대상이 아니라 **위임이 실제로 있는지**를 보는 소비 확인용이다 — 재복제 판정 자체는
 # `tools/*.py` 전수 스캔이라 사람이 목록을 관리하지 않는다.
 _ATOMIC_REPLACE_CONSUMERS = (
-    "board.py", "delegate_channel_guard.py", "pm_handoff.py", "pm_import.py",
+    "board.py", "pm_engine/infra/codex_observation.py", "pm_handoff.py", "pm_import.py",
     "pm_log.py", "pm_engine/infra/raw_output.py", "pm_update.py",
     "pm_engine/infra/review_rounds.py", "pm_engine/infra/pool_store.py",
 )

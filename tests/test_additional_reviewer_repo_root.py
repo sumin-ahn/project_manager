@@ -12,6 +12,8 @@ hermetic seam: `_find_repo_root()` 는 모듈 전역 `__file__` 을 읽으므로
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+
 import importlib.util
 from pathlib import Path
 
@@ -84,7 +86,7 @@ def _run_main_with_diff(external, monkeypatch, diff: str):
     )
     # conf 도 주입한다 — 주입하지 않으면 이 실행이 **개발자 트리의 실 local.conf** 를 읽어,
     # 그 파일의 상태(구표기 잔존 등)가 이 절의 판정을 좌우한다(hermetic 아님).
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: {
         "additional_reviewer.harness": "codex",
         "additional_reviewer.model": "gpt-5.6-sol",
     })

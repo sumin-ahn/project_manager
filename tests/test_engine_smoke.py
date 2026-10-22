@@ -4,6 +4,9 @@
 순수 로직(파싱·필터·status 갱신)만 본다.
 """
 from __future__ import annotations
+from pm_engine.domain import reviewer_result
+
+from pm_engine.infra import reviewer_target
 
 import importlib.util
 import json
@@ -57,7 +60,7 @@ def test_ticket_finish_pytest_parser_seams(ticket_finish):
 
 def test_additional_reviewer_symbols(additional_reviewer):
     for sym in ("run_review", "parse_verdict", "extract_diff", "build_prompt"):
-        assert callable(getattr(additional_reviewer, sym))
+        assert callable(getattr(reviewer_result if sym == "parse_verdict" else additional_reviewer, sym))
 
 
 # ── 순수 로직 (R16·R17) ─────────────────────────────────────────────────
@@ -82,7 +85,7 @@ def test_verdict_and_exit(additional_reviewer, tmp_path):
                           ensure_ascii=False) + "\n"
 
     # 실행 대상은 해소된 구조화 tuple 하나다(모델 미고정 커맨드 직접 실행 경로는 폐지).
-    target = additional_reviewer.resolve_reviewer_target({
+    target = reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "codex",
         "additional_reviewer.model": "gpt-5.6-sol",
     })

@@ -1,6 +1,9 @@
 """T-0641 OpenCode native task delegation-channel adapter tests."""
 
 from __future__ import annotations
+from pm_engine.infra import pm_paths
+
+from pm_engine.infra import pm_paths
 
 import importlib.util
 import json
@@ -345,9 +348,9 @@ for (const result of [
     assert "DELEGATE_CHANNEL_CORE_OK" in result.stdout
 
 
-def test_opencode_non_delegation_agent_record_does_not_toast_or_inject_context():
+def test_opencode_non_delegation_agent_record_does_not_toast_or_inject_context(tmp_path):
     """Unknown built-ins such as general are recorded by Python without alert fatigue."""
-    judgment = _load_guard().decide("general", "normal", {}, "opencode")
+    judgment = _load_guard().decide(pm_paths.home_at(tmp_path), "general", "normal", {}, "opencode")
     assert judgment["verdict"] == "allow"
     assert "delegate-channel/record" in judgment["reason"]
     assert "delegate-channel/warn" not in judgment["reason"]
@@ -559,7 +562,7 @@ assert.strictEqual(
     )
 
 
-def test_opencode_real_python_cli_parity_same_matrix(tmp_path):
+def test_opencode_real_python_cli_parity_same_matrix(guard_home, tmp_path):
     """CJS subprocesses the copied real Python CLI over the Python unit matrix."""
     guard = _load_guard()
     engine_root = tmp_path / "adopter"
@@ -577,7 +580,7 @@ def test_opencode_real_python_cli_parity_same_matrix(tmp_path):
                         "opencode" if mapping == "self" else "claude"
                     )
                     conf[f"delegate.{role}.model"] = "fixture-model"
-                expected = guard.decide(role, "normal", conf, "opencode")["verdict"]
+                expected = guard.decide(guard_home, role, "normal", conf, "opencode")["verdict"]
                 cases.append({"role": role, "conf": conf, "expected": expected})
 
     script = r'''
@@ -705,3 +708,8 @@ const repoWithEngine = process.argv[1];
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "DELEGATE_INSTALL_BLOCK_OK" in result.stdout
+
+
+@pytest.fixture
+def guard_home(tmp_path):
+    return pm_paths.home_at(tmp_path / "rendered")

@@ -27,6 +27,14 @@ hermetic: 자식 프로세스 스폰 0. 실행 경로 테스트는 tmp repo 를 
 """
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_temp
+
+from pm_engine.infra import delegate_config
+from pm_engine.infra.harness import delegate_env
+from pm_engine.infra.harness import delegate_run
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
+
 import ast
 import importlib.util
 import inspect
@@ -197,13 +205,13 @@ def _break_env_preparation(external, monkeypatch, failure):
     리뷰어 env 는 위임 채널과 같은 seam(`pm_delegate.build_env`)이 조립한다 — 이 자리는 예약
     뒤·스폰 전이라 호출이 확실히 0 인 구간이다."""
     delegate = external._load_pm_delegate()
-    real_build_env = delegate.build_env
+    real_build_env = delegate_env.build_env
 
     def _boom(*args, **kwargs):
         raise failure("리뷰어 환경 구성 실패(주입)")
 
-    monkeypatch.setattr(delegate, "build_env", _boom)
-    return lambda: monkeypatch.setattr(delegate, "build_env", real_build_env)
+    monkeypatch.setattr(delegate_env, 'build_env', _boom)
+    return lambda: monkeypatch.setattr(delegate_env, 'build_env', real_build_env)
 
 
 def _round_ledger(repo: Path) -> dict:
@@ -233,14 +241,14 @@ def test_no_structured_key_fails_loud_instead_of_a_default_command(external):
 
     미고정 모델 경로(옛 `reviewer_cmd`)가 폐지됐으므로 "설정이 없으면 기본값" 자리가 사라졌다.
     설정 없는 실행은 외부로 나가기 전에 무엇을 설정해야 하는지 말하고 멈춘다."""
-    with pytest.raises(external.ReviewerTargetError) as caught:
-        external.resolve_reviewer_target({})
+    with pytest.raises(delegate_errors.ReviewerTargetError) as caught:
+        reviewer_target.resolve_reviewer_target({})
     message = str(caught.value)
-    assert external.ADDITIONAL_REVIEWER_HARNESS_KEY in message
-    assert external.ADDITIONAL_REVIEWER_MODEL_KEY in message
+    assert reviewer_result.ADDITIONAL_REVIEWER_HARNESS_KEY in message
+    assert reviewer_result.ADDITIONAL_REVIEWER_MODEL_KEY in message
     # 옛 통짜 커맨드 키는 값을 공급하지 않는다 — 남아 있으면 소비 지점이 fail-loud 다.
-    with pytest.raises(external.ReviewerTargetError):
-        external.resolve_reviewer_target({"reviewer_cmd": "codex exec -m m1"})
+    with pytest.raises(delegate_errors.ReviewerTargetError):
+        reviewer_target.resolve_reviewer_target({"reviewer_cmd": "codex exec -m m1"})
 
 
 @pytest.mark.parametrize("declared", [
@@ -254,8 +262,8 @@ def test_blank_declared_key_never_falls_back_to_legacy(external, declared):
 
     truthiness 로 판정하면 `additional_reviewer.harness=` 가 조용히 기본 커맨드로 나가, 사용자가
     지정한 것과 다른 대상이 코드를 받는다."""
-    with pytest.raises(external.ReviewerTargetError) as caught:
-        external.resolve_reviewer_target(declared)
+    with pytest.raises(delegate_errors.ReviewerTargetError) as caught:
+        reviewer_target.resolve_reviewer_target(declared)
     assert "불완전" in str(caught.value)
 
 
@@ -267,27 +275,27 @@ def test_partial_tuple_names_the_missing_key(external, missing):
     conf = {"additional_reviewer.harness": "codex",
             "additional_reviewer.model": "gpt-5.6-sol"}
     conf[missing] = ""
-    with pytest.raises(external.ReviewerTargetError) as caught:
-        external.resolve_reviewer_target(conf)
+    with pytest.raises(delegate_errors.ReviewerTargetError) as caught:
+        reviewer_target.resolve_reviewer_target(conf)
     message = str(caught.value)
     assert missing in message
-    assert external.ADDITIONAL_REVIEWER_REASONING_KEY in message  # 선택 축 안내
+    assert reviewer_result.ADDITIONAL_REVIEWER_REASONING_KEY in message  # 선택 축 안내
 
 
 def test_reasoning_is_optional_and_validated(external):
     """reasoning 은 선택(생략=플래그 없음)이고 해소는 정리만 한다 — 허용집합 확인은 실행 직전
     `check_reviewer_reasoning` 이 실행 cwd·env 로 한다(해소는 비교 경로에서도 불린다)."""
-    without = external.resolve_reviewer_target(
+    without = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex", "additional_reviewer.model": "m"})
     assert without.reasoning is None
     assert "model_reasoning_effort" not in without.command
 
-    blank = external.resolve_reviewer_target(
+    blank = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex", "additional_reviewer.model": "m",
          "additional_reviewer.reasoning": "  "})
     assert blank.reasoning is None                      # 빈 reasoning 은 축 생략(부분 tuple 아님)
 
-    valid = external.resolve_reviewer_target(
+    valid = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex", "additional_reviewer.model": "m",
          "additional_reviewer.reasoning": "max"})
     assert valid.reasoning == "max"
@@ -307,9 +315,9 @@ def test_unsupported_harness_or_reasoning_is_fail_loud(
     conf = {"additional_reviewer.harness": harness, "additional_reviewer.model": "m"}
     if reasoning is not None:
         conf["additional_reviewer.reasoning"] = reasoning
-    with pytest.raises(external.ReviewerTargetError) as caught:
-        external.check_reviewer_reasoning(
-            external.resolve_reviewer_target(conf), cwd=tmp_path)
+    with pytest.raises(delegate_errors.ReviewerTargetError) as caught:
+        reviewer_target.check_reviewer_reasoning(
+            reviewer_target.resolve_reviewer_target(conf), cwd=tmp_path)
     message = str(caught.value)
     assert fragment in message
     # 같은 오설정이 두 표면에서 다르게 설명되지 않는다 — 계약 모듈 문구를 그대로 감싼다.
@@ -332,14 +340,14 @@ def test_opencode_reviewer_reasoning_checked_before_call(external, tmp_path, mon
         conf = {"additional_reviewer.harness": "opencode", "additional_reviewer.model": model}
         if reasoning is not None:
             conf["additional_reviewer.reasoning"] = reasoning
-        return external.resolve_reviewer_target(conf)
+        return reviewer_target.resolve_reviewer_target(conf)
 
     glm_high = target("ollama/glm-5.2:cloud", "high")  # 해소는 확인하지 않는다(비교 경로 공용)
-    with pytest.raises(external.ReviewerTargetError) as caught:
-        external.check_reviewer_reasoning(glm_high, cwd=tmp_path)
+    with pytest.raises(delegate_errors.ReviewerTargetError) as caught:
+        reviewer_target.check_reviewer_reasoning(glm_high, cwd=tmp_path)
     assert "ollama/glm-5.2:cloud" in str(caught.value) and "허용집합 (없음)" in str(caught.value)
-    external.check_reviewer_reasoning(target("ollama/glm-5.2:cloud", None), cwd=tmp_path)
-    external.check_reviewer_reasoning(target("ollama/ornith1.5:35b-a3b", "high"), cwd=tmp_path)
+    reviewer_target.check_reviewer_reasoning(target("ollama/glm-5.2:cloud", None), cwd=tmp_path)
+    reviewer_target.check_reviewer_reasoning(target("ollama/ornith1.5:35b-a3b", "high"), cwd=tmp_path)
 
 
 @pytest.mark.parametrize("model", [
@@ -351,16 +359,16 @@ def test_reserved_sentinel_model_is_not_a_pinned_model(external, model):
     비어있지 않다는 것만 보면 `additional_reviewer.model=default` 가 통과해, "이 실행은 모델을
     고정했다"는 선언과 함께 미고정 라벨이 장부·raw 헤더·stderr 에 박힌다 — legacy 미고정 실행과
     글자 단위로 구분되지 않아 '어느 모델이 이 판정을 냈는가'가 사후에 닫히지 않는다."""
-    with pytest.raises(external.ReviewerTargetError) as caught:
-        external.resolve_reviewer_target(
+    with pytest.raises(delegate_errors.ReviewerTargetError) as caught:
+        reviewer_target.resolve_reviewer_target(
             {"additional_reviewer.harness": "codex",
              "additional_reviewer.model": model})
     message = str(caught.value)
     assert "예약 sentinel" in message
-    assert external.ADDITIONAL_REVIEWER_MODEL_KEY in message      # 어느 키를 고칠지
+    assert reviewer_result.ADDITIONAL_REVIEWER_MODEL_KEY in message      # 어느 키를 고칠지
     assert "미고정 실행 경로는 폐지" in message                    # 미고정은 갈 곳이 없다
     # 예약 집합 = 폐지된 미고정 경로가 쓰던 낱말들. 그 경로가 사라져도 값으로는 계속 막는다.
-    assert external.RESERVED_MODEL_VALUES == frozenset({"default", "unpinned-model"})
+    assert reviewer_result.RESERVED_MODEL_VALUES == frozenset({"default", "unpinned-model"})
 
 
 @pytest.mark.parametrize("model", [
@@ -369,7 +377,7 @@ def test_reserved_sentinel_model_is_not_a_pinned_model(external, model):
 ])
 def test_legitimate_model_names_are_not_swept_up_by_the_reserved_check(external, model):
     """거부 대상은 예약 낱말 **자체**뿐이다 — 그 문자열을 품은 실제 모델 이름은 그대로 통과한다."""
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex", "additional_reviewer.model": model})
     assert target.model == model
     assert target.ledger_model == model
@@ -446,14 +454,14 @@ def test_structured_argv_pins_model_and_reasoning(
     """세 하네스 모두 모델·reasoning 을 **argv 에 명시**한다(기본값에 맡기지 않는다)."""
     expected = [contract.OPENCODE_ATTACHED_MSG if token == "<msg>" else token
                 for token in expected]
-    argv = external._structured_reviewer_argv(
+    argv = reviewer_target._structured_reviewer_argv(
         harness, model, reasoning,
-        cwd=external.REVIEWER_CWD_PLACEHOLDER,
-        prompt_file=external.REVIEWER_PROMPT_FILE_PLACEHOLDER,
+        cwd=reviewer_result.REVIEWER_CWD_PLACEHOLDER,
+        prompt_file=reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER,
     )
     assert argv == expected
     # 해소 결과의 `command` 는 이 argv 를 그대로 렌더한 문자열이다(세 표면 공통 정체).
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": harness,
          "additional_reviewer.model": model,
          "additional_reviewer.reasoning": reasoning})
@@ -469,12 +477,12 @@ def test_structured_argv_pins_model_and_reasoning(
 def test_reviewer_role_cannot_be_overridden_by_config(
         external, harness, forbidden, required):
     """추가 리뷰어는 code-reviewer 고정 — 설정으로 developer/build/plan에 바꿀 수 없다."""
-    assert external.REVIEWER_ROLE == "code-reviewer"
+    assert reviewer_result.REVIEWER_ROLE == "code-reviewer"
     conf = {"additional_reviewer.harness": harness, "additional_reviewer.model": "m",
             # 역할/권한을 올리려는 설정 시도는 해소에 아무 영향이 없다(축이 코드 상수다).
             "additional_reviewer.role": "developer",
             "additional_reviewer.permission-mode": "acceptEdits"}
-    argv = shlex.split(external.resolve_reviewer_target(conf).command)
+    argv = shlex.split(reviewer_target.resolve_reviewer_target(conf).command)
     for token in forbidden:
         assert token not in argv, token
     for token in required:
@@ -488,7 +496,7 @@ def test_codex_max_reasoning_is_available_to_the_reviewer_profile(external):
     """
     assert conf_schema.REASONING_ALLOWED["codex"] == ("low", "medium", "high", "xhigh", "max")
     assert "max" in conf_schema.REASONING_ALLOWED["codex"]
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex",
          "additional_reviewer.model": "gpt-5.6-sol",
          "additional_reviewer.reasoning": "max"})
@@ -534,13 +542,13 @@ def test_ledger_model_is_the_explicit_tuple_value(external):
 
     커맨드 문자열에서 역추론하던 경로는 폐지됐다 — 그 경로가 있으면 명시 모델이 argv 표기 규칙에
     따라 다른 값으로 퇴화할 수 있었다."""
-    structured = external.resolve_reviewer_target(
+    structured = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex",
          "additional_reviewer.model": "gpt-5.6-sol"})
     assert structured.ledger_model == "gpt-5.6-sol"
     assert "model=gpt-5.6-sol" in structured.profile_tail
     assert ("# model: gpt-5.6-sol"
-            in external._review_raw_content("본문", None, None, structured))
+            in reviewer_target._review_raw_content("본문", None, None, structured))
 
 
 # ══ ③ opencode 프롬프트 파일 (0600 · 전 경로 정리) ══════════════════════════
@@ -577,7 +585,7 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
 
 def _failing_prompt_unlink(external, monkeypatch, reason: str = "정리 거부"):
     """공용 전달 seam의 prompt.md unlink만 실패시킨다(다른 경로 정리는 그대로 둔다)."""
-    delegate = external._load_delegate_transport()
+    delegate = delegate_temp
     original = delegate.os.unlink
 
     def _unlink(path, *args, **kwargs):
@@ -622,7 +630,7 @@ def test_prompt_file_cleanup_failure_is_loud_and_does_not_mask_the_result(
 def test_prompt_file_cleanup_failure_still_propagates_the_primary_exception(
         external, monkeypatch, tmp_path, capsys):
     """정리 실패가 주 예외를 가리지 않는다 — 진단만 더하고 원인은 그대로 올라간다."""
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "opencode",
          "additional_reviewer.model": "zai/glm-4.6"})
     _failing_prompt_unlink(external, monkeypatch)
@@ -640,7 +648,7 @@ def test_prompt_file_cleanup_failure_still_propagates_the_primary_exception(
 
 def test_opencode_prompt_file_is_removed_when_the_run_raises(external, tmp_path):
     """예외로 빠져나가도 프롬프트 파일은 남지 않는다(정리는 finally 소유)."""
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "opencode",
          "additional_reviewer.model": "zai/glm-4.6"})
     seen: dict[str, Path] = {}
@@ -655,7 +663,7 @@ def test_opencode_prompt_file_is_removed_when_the_run_raises(external, tmp_path)
 @pytest.mark.parametrize("harness", ["codex", "claude"])
 def test_stdin_harnesses_prepare_no_prompt_file(external, tmp_path, harness):
     """codex/claude 는 프롬프트를 stdin 으로 받는다 — 준비할 임시 자원이 없다."""
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": harness, "additional_reviewer.model": "m"})
     with external._structured_transport(target, "프롬프트", tmp_path) as (argv, stdin_text):
         assert "--file" not in argv
@@ -669,7 +677,7 @@ def test_stdin_harnesses_prepare_no_prompt_file(external, tmp_path, harness):
 def test_verdict_sees_only_the_final_reply_while_raw_keeps_the_whole_wire(
         external, tmp_path, harness):
     """판정은 추출된 최종 회신만 보고, raw 는 stdout+stderr wire 원문을 그대로 보존한다."""
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": harness, "additional_reviewer.model": "m"})
     wire = _wire(harness)
     result = external.run_review(
@@ -691,7 +699,7 @@ def test_verdict_sees_only_the_final_reply_while_raw_keeps_the_whole_wire(
 def test_reply_extraction_failure_never_feeds_the_wire_to_the_verdict(
         external, tmp_path, harness):
     """회신을 못 뽑으면 wire 를 판정에 흘리지 않는다 — 판정 불명확(보수적)이고 raw 로 진단한다."""
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": harness, "additional_reviewer.model": "m"})
     # 회신 이벤트가 없는 wire. 본문에는 통과 문구가 섞여 있어 wire-as-verdict 면 통과가 나온다.
     wire = _wire(harness, with_reply=False) + json.dumps(
@@ -873,7 +881,7 @@ def test_public_facade_requires_a_resolved_target(external, tmp_path):
 
 def test_the_engine_builds_a_reviewer_target_in_exactly_one_place(external):
     """대상을 만드는 자리가 해소 함수 하나다 — 모델 미고정 대상을 만들 엔진 경로가 없다."""
-    source = Path(external.__file__).read_text(encoding="utf-8")
+    source = Path(reviewer_target.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     builders = {
         node.name
@@ -886,9 +894,9 @@ def test_the_engine_builds_a_reviewer_target_in_exactly_one_place(external):
 
     assert builders == {"resolve_reviewer_target"}
     # 그 자리는 harness·model 을 반드시 채운다(둘 중 하나라도 비면 해소가 거부한다).
-    with pytest.raises(external.ReviewerTargetError):
-        external.resolve_reviewer_target({"additional_reviewer.harness": "codex"})
-    resolved = external.resolve_reviewer_target({
+    with pytest.raises(delegate_errors.ReviewerTargetError):
+        reviewer_target.resolve_reviewer_target({"additional_reviewer.harness": "codex"})
+    resolved = reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "codex", "additional_reviewer.model": "m"})
     assert (resolved.harness, resolved.model) == ("codex", "m")
 
@@ -908,24 +916,24 @@ def test_structured_provenance_is_one_string_across_four_surfaces(
     conf_path = (repo / ".project_manager" / "local.conf").resolve()
     reviewer = _FakeReviewer(stdout=_wire(harness))
     _wire_main(external, monkeypatch, repo, reviewer)
-    target = external.resolve_reviewer_target(external.local_config(repo))
+    target = reviewer_target.resolve_reviewer_target(conf_store.local_config(pm_paths.home_at(repo)))
 
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert f"local_conf: {conf_path}" in preview
     assert f"command: {target.command}" in preview
-    assert f"source={external.REVIEWER_SOURCE_STRUCTURED}" in preview
+    assert f"source={reviewer_result.REVIEWER_SOURCE_STRUCTURED}" in preview
     assert f"harness={harness}, model={model}, reasoning={reasoning}" in preview
 
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     first = capsys.readouterr().err.splitlines()[0]
     assert f"local_conf={conf_path}" in first
-    assert (f"source={external.REVIEWER_SOURCE_STRUCTURED}, harness={harness}, "
+    assert (f"source={reviewer_result.REVIEWER_SOURCE_STRUCTURED}, harness={harness}, "
             f"model={model}, reasoning={reasoning}") in first
 
     raw = _raw_text(repo)
     assert f"# local_conf: {conf_path}" in raw
-    assert f"# reviewer_source: {external.REVIEWER_SOURCE_STRUCTURED}" in raw
+    assert f"# reviewer_source: {reviewer_result.REVIEWER_SOURCE_STRUCTURED}" in raw
     assert f"# harness: {harness}" in raw
     assert f"# model: {model}" in raw
     assert f"# reasoning: {reasoning}" in raw
@@ -939,9 +947,9 @@ def test_structured_provenance_is_one_string_across_four_surfaces(
     assert row["model"] == model                        # 명시 모델(구조화는 `default` 불가)
     assert row["model"] != "default"
     assert row["reasoning"] == reasoning
-    assert row["reviewer_source"] == external.REVIEWER_SOURCE_STRUCTURED
+    assert row["reviewer_source"] == reviewer_result.REVIEWER_SOURCE_STRUCTURED
     assert row["command"] == target.command
-    assert row["role"] == external.REVIEWER_ROLE
+    assert row["role"] == reviewer_result.REVIEWER_ROLE
 
 
 def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders(
@@ -950,9 +958,9 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
     repo = _repo(tmp_path / "repo", _conf("opencode", "zai/glm-4.6", None))
     reviewer = _FakeReviewer(stdout=_wire("opencode"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    target = external.resolve_reviewer_target(external.local_config(repo))
-    assert external.REVIEWER_CWD_PLACEHOLDER in target.command
-    assert external.REVIEWER_PROMPT_FILE_PLACEHOLDER in target.command
+    target = reviewer_target.resolve_reviewer_target(conf_store.local_config(pm_paths.home_at(repo)))
+    assert reviewer_result.REVIEWER_CWD_PLACEHOLDER in target.command
+    assert reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER in target.command
 
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     capsys.readouterr()
@@ -961,8 +969,8 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
     rendered = shlex.split(target.command)
     assert len(argv) == len(rendered)
     for actual, declared in zip(argv, rendered):
-        if declared in (external.REVIEWER_CWD_PLACEHOLDER,
-                        external.REVIEWER_PROMPT_FILE_PLACEHOLDER):
+        if declared in (reviewer_result.REVIEWER_CWD_PLACEHOLDER,
+                        reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER):
             assert Path(actual).is_absolute()
         else:
             assert actual == declared
@@ -974,7 +982,7 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
 def test_round_limit_refusal_creates_no_output_dir(
         external, monkeypatch, tmp_path, capsys):
     """호출 전 거부(수렴 축)도 같은 규율이다 — 산출 디렉토리·스폰·장부 변화 모두 0."""
-    limit = external._review_rounds_max({})         # 호출 횟수 축 제거 후 남는 티켓 축
+    limit = reviewer_target._review_rounds_max({})         # 호출 횟수 축 제거 후 남는 티켓 축
     repo = _repo(tmp_path / "repo", _conf())
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
@@ -1021,7 +1029,7 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
             external._save_round_ledger(ledger)
         raise RuntimeError("리뷰어 환경 구성 실패(주입)")
 
-    monkeypatch.setattr(delegate, "build_env", _reset_wave_then_fail)
+    monkeypatch.setattr(delegate_env, 'build_env', _reset_wave_then_fail)
     with pytest.raises(RuntimeError):
         external.main(["--gate", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
@@ -1134,7 +1142,7 @@ def test_marker_less_anchor_refuses_before_any_spawn_and_refunds(
     anchor.mkdir()
     monkeypatch.setattr(external, "REPO", anchor)
     monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", None)
-    target = external.resolve_reviewer_target(
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex", "additional_reviewer.model": "m"})
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     handed_off: list[int] = []
@@ -1981,35 +1989,24 @@ def test_t0932_relay_conf_path_sensitivity(mutation):
         _assert_relay_conf_isolation(source)
 
 
-def test_additional_reviewer_reuses_only_pm_delegate_transport_seam(external):
-    """리뷰 축은 opencode 전달 사본만 실행 시점에 지연 로드해 복제 구현을 두지 않는다."""
-    assert "pm_delegate.py" in _sibling_loads("additional_reviewer.py")
-    assert not hasattr(external, "pm_delegate")
-    assert Path(external._load_delegate_transport().__file__).name == "pm_delegate.py"
-    source = inspect.getsource(external._structured_transport)
-    assert "_save_opencode_transport_prompt" in source
-    assert "_cleanup_attempt_transport" in source
-    assert "mkstemp" not in source
-    # 위임 쪽 반대 방향 deep-import는 지연 함수 안에만 있어 import-time 순환은 생기지 않는다.
-    assert "additional_reviewer.py" in _sibling_loads("pm_delegate.py")
 
 
 def test_delegate_public_wrappers_still_speak_the_shared_contract():
     """위임 공개 API 는 시그니처·값 모두 공용 계약을 그대로 통과시킨다(T-0592 행동 보존)."""
     delegate = _load("pm_delegate")
     shared = contract
-    assert delegate.build_codex_argv("m", "high", "developer", "/w") == \
+    assert contract.build_codex_argv("m", "high", "developer", "/w") == \
         shared.build_codex_argv("m", "high", "developer", "/w")
-    assert delegate.build_claude_argv("m", "high", "developer") == \
+    assert contract.build_claude_argv("m", "high", "developer") == \
         shared.build_claude_argv("m", "high", "developer")
-    assert delegate.build_opencode_argv("m", "high", "developer", "/w", "/p") == \
+    assert contract.build_opencode_argv("m", "high", "developer", "/w", "/p") == \
         shared.build_opencode_argv("m", "high", "developer", "/w", "/p")
     # codex `max` 는 두 표면에서 같은 판정을 받는다(테이블이 하나라서).
-    assert delegate._validate_reasoning("codex", "max", model="m", cwd=REPO) == "max"
+    assert delegate_config._validate_reasoning("codex", "max", model="m", cwd=REPO) == "max"
     # 회신 파서 계약 — 같은 wire 를 같은 텍스트로 읽는다.
     for harness in ("codex", "claude", "opencode"):
         wire = _wire(harness)
-        assert delegate.extract_reply(harness, wire) == _PASS_REPLY
+        assert delegate_run.extract_reply(harness, wire) == _PASS_REPLY
         assert shared.extract_harness_reply(harness, wire) == _PASS_REPLY
     # 두 표면의 진입점 표기는 서로 다른 스크립트를 가리킨다(처방 커맨드가 자기 표면을 부른다).
     assert shared.entrypoint_command(shared.DELEGATE_ENTRYPOINT)[1] == \
@@ -2020,7 +2017,7 @@ def test_delegate_public_wrappers_still_speak_the_shared_contract():
 def test_structured_opencode_reviewer_receives_shared_runtime_role_config(
         external, tmp_path):
     """추가 리뷰도 카드 없는 adopter에서 default build가 아닌 code-reviewer로 실행한다."""
-    target = external.resolve_reviewer_target({
+    target = reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "opencode",
         "additional_reviewer.model": "provider/model",
     })
@@ -2054,13 +2051,13 @@ def test_delegate_and_reviewer_reject_the_same_misconfiguration_wording():
     delegate = _load("pm_delegate")
     external = _load("additional_reviewer")
     with pytest.raises(delegate_errors.DelegateError) as delegate_error:
-        delegate._validate_reasoning("claude", "minimal", model="m", cwd=REPO)
-    target = external.resolve_reviewer_target(
+        delegate_config._validate_reasoning("claude", "minimal", model="m", cwd=REPO)
+    target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "claude",
          "additional_reviewer.model": "m",
          "additional_reviewer.reasoning": "minimal"})
-    with pytest.raises(external.ReviewerTargetError) as reviewer_error:
-        external.check_reviewer_reasoning(target, cwd=REPO)
+    with pytest.raises(delegate_errors.ReviewerTargetError) as reviewer_error:
+        reviewer_target.check_reviewer_reasoning(target, cwd=REPO)
     assert str(delegate_error.value) in str(reviewer_error.value)
 
 
@@ -2092,7 +2089,7 @@ def test_reviewer_surface_states_the_name_and_keeps_the_transport_axis(external)
     assert "추가 리뷰어" in source
     # 채널 스위치 키는 없어졌고(T-0887) raw/모듈 접두만 기계 식별자로 남는다.
     assert "additional_reviewer.enabled" not in source
-    assert external.ADDITIONAL_REVIEWER_PREFIX == "additional_reviewer"
+    assert reviewer_result.ADDITIONAL_REVIEWER_PREFIX == "additional_reviewer"
     # 신규 진입점만 출하하고 구 물리명은 retire migration이 제거한다. 이력은 docstring 1줄.
     assert (TOOLS / "additional_reviewer.py").is_file()
     assert not (TOOLS / "external_review.py").exists()
@@ -2138,7 +2135,7 @@ def test_coordinate_prompt_keeps_codex_cwd_permissions_and_shared_env(
     delegate = external._load_pm_delegate()
     env = {"PATH": os.environ.get("PATH", ""), "REVIEW_ENV_SENTINEL": "same"}
     harnesses = []
-    monkeypatch.setattr(delegate, "build_env", lambda harness: (harnesses.append(harness), env)[1])
+    monkeypatch.setattr(delegate_env, 'build_env', lambda harness: (harnesses.append(harness), env)[1])
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     call = reviewer.calls[0]
     assert Path(call["cwd"]) == repo and call["env"] == env and harnesses == ["codex"]
@@ -2146,3 +2143,15 @@ def test_coordinate_prompt_keeps_codex_cwd_permissions_and_shared_env(
     assert call["argv"][call["argv"].index("-s") + 1] == "read-only"
     assert str(repo) in call["input"] and "### 리뷰 입력 확인" in call["input"]
     assert "diff --git a/x.py b/x.py" not in call["input"]
+
+
+def test_additional_reviewer_reuses_only_pm_delegate_transport_seam(external):
+    """리뷰 축은 opencode 전달 사본만 실행 시점에 지연 로드해 복제 구현을 두지 않는다."""
+    assert "pm_delegate.py" in _sibling_loads("additional_reviewer.py")
+    assert not hasattr(external, "pm_delegate")
+    source = inspect.getsource(external._structured_transport)
+    assert "_save_opencode_transport_prompt" in source
+    assert "_cleanup_attempt_transport" in source
+    assert "mkstemp" not in source
+    # 위임 쪽 반대 방향 deep-import는 지연 함수 안에만 있어 import-time 순환은 생기지 않는다.
+    assert "additional_reviewer.py" in _sibling_loads("pm_delegate.py")

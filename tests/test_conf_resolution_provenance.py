@@ -5,6 +5,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+from pm_engine.infra.harness import delegate_env
+from pm_engine.infra import reviewer_target
+
 import importlib.util
 import json
 import subprocess
@@ -90,8 +94,8 @@ def _delegate_dry_run(delegate, monkeypatch, engine: Path, target: Path,
     prompt.write_text("구현을 조사하라.", encoding="utf-8")
     monkeypatch.setattr(delegate, "REPO", engine)
     if inject_conf:
-        monkeypatch.setattr(delegate, "local_config", lambda: dict(engine_conf))
-    monkeypatch.setattr(delegate, "_cwd_in_git_repo", lambda *args, **kwargs: True)
+        monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(engine_conf))
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *args, **kwargs: True)
     argv = [
         "--role", role,
         "--prompt-file", str(prompt),
@@ -111,7 +115,7 @@ def _delegate_dry_run(delegate, monkeypatch, engine: Path, target: Path,
 def _wire_external(external, monkeypatch, engine: Path, target: Path,
                    engine_conf: dict[str, str]):
     monkeypatch.setattr(external, "REPO", engine)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(engine_conf))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(engine_conf))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: engine,
     )
@@ -356,8 +360,8 @@ def test_delegate_primary_raw_records_conf_and_profile(
             }
 
     monkeypatch.setattr(delegate, "REPO", engine)
-    monkeypatch.setattr(delegate, "local_config", lambda: dict(conf))
-    monkeypatch.setattr(delegate, "_cwd_in_git_repo", lambda *args, **kwargs: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf))
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *args, **kwargs: True)
     rc = delegate.main([
         "--role", "researcher",
         "--prompt-file", str(prompt),
@@ -403,8 +407,8 @@ def test_delegate_cli_override_raw_records_override_source(
             }
 
     monkeypatch.setattr(delegate, "REPO", engine)
-    monkeypatch.setattr(delegate, "local_config", lambda: dict(conf))
-    monkeypatch.setattr(delegate, "_cwd_in_git_repo", lambda *args, **kwargs: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf))
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *args, **kwargs: True)
     rc = delegate.main([
         "--role", "researcher",
         "--prompt-file", str(prompt),
@@ -469,7 +473,7 @@ def test_additional_reviewer_same_effective_reviewer_is_quiet_with_provenance(
         f"[additional-reviewer] config provenance: "
         f"local_conf={engine / '.project_manager' / 'local.conf'}"
     ) in captured.err
-    resolved = external.resolve_reviewer_target(engine_conf).command
+    resolved = reviewer_target.resolve_reviewer_target(engine_conf).command
     assert f"resolved_profile=(reviewer_cmd={resolved}" in captured.err
 
 
@@ -573,7 +577,7 @@ def test_additional_reviewer_actual_execution_keeps_same_provenance(
     assert err.splitlines()[0].startswith("[additional-reviewer] config provenance:")
     assert seen["local_conf_path"] == engine / ".project_manager" / "local.conf"
     assert seen["resolved_profile"].startswith(
-        f"(reviewer_cmd={external.resolve_reviewer_target(conf).command}")
+        f"(reviewer_cmd={reviewer_target.resolve_reviewer_target(conf).command}")
 
 
 def test_additional_reviewer_invalid_timeout_warning_follows_first_line_provenance(
@@ -604,7 +608,7 @@ def test_delegate_fail_loud_resolution_names_absolute_local_conf(
     prompt = engine / "prompt.md"
     prompt.write_text("구현하라.", encoding="utf-8")
     monkeypatch.setattr(delegate, "REPO", engine)
-    monkeypatch.setattr(delegate, "local_config", lambda: dict(conf))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf))
 
     assert delegate.main([
         "--role", "developer",
@@ -630,7 +634,7 @@ def test_delegate_disabled_names_absolute_local_conf(
     prompt = engine / "prompt.md"
     prompt.write_text("구현하라.", encoding="utf-8")
     monkeypatch.setattr(delegate, "REPO", engine)
-    monkeypatch.setattr(delegate, "local_config", lambda: dict(conf))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf))
 
     assert delegate.main([
         "--role", "developer",
@@ -665,8 +669,8 @@ def test_delegate_subdirectory_cwd_still_triggers_pm_home_reanchor(
         encoding="utf-8",
     )
     monkeypatch.setattr(delegate, "REPO", home)
-    monkeypatch.setattr(delegate, "local_config", lambda: dict(conf))
-    monkeypatch.setattr(delegate, "_cwd_in_git_repo", lambda *args, **kwargs: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf))
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *args, **kwargs: True)
 
     assert delegate.main([
         "--role", "developer",
@@ -683,11 +687,11 @@ def test_divergence_helper_without_cwd_repo_or_with_same_repo_is_quiet(
         external, tmp_path):
     engine = _repo(tmp_path / "engine", {"reviewer_cmd": "codex exec"})
     for target_repo in (None, engine):
-        assert external.local_conf_divergence(
+        assert reviewer_target.local_conf_divergence(
             engine_repo=engine,
             engine_conf={"reviewer_cmd": "codex exec"},
             target_repo=target_repo,
-            selector=external.reviewer_profile_config,
+            selector=reviewer_target.reviewer_profile_config,
         ) is None
 
 
@@ -695,7 +699,7 @@ def test_additional_reviewer_raw_records_conf_and_profile(external, tmp_path):
     conf_path = tmp_path / "engine" / ".project_manager" / "local.conf"
     result = external.run_review(
         "prompt",
-        target=external.resolve_reviewer_target({
+        target=reviewer_target.resolve_reviewer_target({
             "additional_reviewer.harness": "codex",
             "additional_reviewer.model": "gpt-5.6-sol",
         }),

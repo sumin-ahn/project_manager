@@ -21,6 +21,11 @@ hermetic: REPO 를 tmp 로 monkeypatch 해 장부가 tmp `.local/` 에 격리되
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+from pm_engine.infra import pm_paths
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
+
 from pm_engine.app import release
 
 import importlib.util
@@ -239,8 +244,8 @@ def test_the_verdict_round_limit_axis_is_gone(external):
     assert not hasattr(external, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
     assert "판정 상한" not in external._ROUND_LIMIT_GUIDANCE
     # 남은 티켓 축은 둘이다 — 수렴(must_fix 추이)과 미완(판정 없는 호출).
-    assert external._review_rounds_max({}) == 2
-    assert external._incomplete_round_limit({}) == 2
+    assert reviewer_target._review_rounds_max({}) == 2
+    assert reviewer_target._incomplete_round_limit({}) == 2
 
 
 # ── 순수 헬퍼: 추가 리뷰 timeout 해소 (T-0467) ───────────────────────────────
@@ -249,36 +254,36 @@ def test_the_verdict_round_limit_axis_is_gone(external):
 def test_timeout_cli_override_beats_local_conf(external):
     """명시 CLI 양수값은 local.conf 설정보다 우선한다."""
     args = external.argparse.Namespace(timeout=37)
-    assert external._resolve_timeout(args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 37
+    assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 37
 
 
 def test_timeout_uses_local_conf_when_cli_unspecified(external):
     """CLI 미지정(None) 시 clone별 additional_reviewer.timeout 을 사용한다."""
     args = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 71
+    assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 71
 
 
 def _reviewer_cmd(external, conf=None) -> str:
     """이번 실행이 부를 리뷰어 커맨드 — 구조화 키 해소 결과(엔진 기본 커맨드는 없다)."""
-    return external.resolve_reviewer_target(dict(conf or _ENABLED_CONF)).command
+    return reviewer_target.resolve_reviewer_target(dict(conf or _ENABLED_CONF)).command
 
 
 def _declared_wall(external) -> int:
     """해소된 리뷰어(codex 축)의 선언 벽시계 백스톱 — 별도 상수가 아니라 프로필에서 온다."""
-    return int(external.reviewer_profile(_reviewer_cmd(external), {}).wall_timeout)
+    return int(reviewer_target.reviewer_profile(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), _reviewer_cmd(external), {}).wall_timeout)
 
 
 def test_timeout_uses_default_when_not_configured(external):
     """CLI/conf 모두 없으면 리뷰어 하네스 프로필의 유한 백스톱을 쓴다(T-0489 — 상수 폐지)."""
     args = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(args, {}, _reviewer_cmd(external)) == _declared_wall(external)
+    assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), args, {}, _reviewer_cmd(external)) == _declared_wall(external)
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1"])
 def test_timeout_invalid_conf_warns_and_falls_back(external, capsys, raw):
     """비수치/0/음수 conf 는 경고 뒤 선언 기본값으로 fail-soft 한다."""
     args = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(args, {"additional_reviewer.timeout": raw}, _reviewer_cmd(external)) == \
+    assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE), args, {"additional_reviewer.timeout": raw}, _reviewer_cmd(external)) == \
         _declared_wall(external)
     warning = capsys.readouterr().err
     assert "additional_reviewer.timeout" in warning
@@ -434,7 +439,7 @@ def _completed(rc, out="판정: 통과"):
 
 def _resolved_target(external, harness="codex", model="gpt-5.6-sol"):
     """해소된 구조화 대상 — `run_review` 는 이것만 받는다(커맨드 문자열 투입구 없음)."""
-    return external.resolve_reviewer_target({
+    return reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": harness,
         "additional_reviewer.model": model,
     })
@@ -576,8 +581,8 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
     run_review 호출 수(=호출 시도)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
-        external, "local_config",
-        lambda repo=None: dict(conf) if conf is not None else dict(_ENABLED_CONF))
+        conf_store, 'local_config',
+        lambda _home, repo=None: dict(conf) if conf is not None else dict(_ENABLED_CONF))
     monkeypatch.setattr(
         external, "extract_diff",
         lambda *a, **k: external.ReviewDiff(
@@ -717,7 +722,7 @@ def test_real_ledger_shapes_drop_the_retired_field_and_recount(
     assert "acked_through" not in entry
     assert retired_ack == acked
     assert external._round_counts(entry) == (count, count, 0)   # 제거 전: count-acked 기준
-    assert external._round_counts(entry)[2] < external._incomplete_round_limit({})
+    assert external._round_counts(entry)[2] < reviewer_target._incomplete_round_limit({})
     assert capsys.readouterr().err == ""         # 정규화만으로는 저장 여부를 몰라 침묵한다
 
 
@@ -1165,7 +1170,7 @@ def test_output_contamination_reads_old_and_new_raw_prefixes(external):
         "external_review_codex_20260807_1.txt\n"
         "additional_reviewer_codex_20260807_2.txt\n"
     )
-    contamination = external.detect_output_contamination(output)
+    contamination = reviewer_result.detect_output_contamination(output)
     assert contamination.raw_artifacts == (
         "external_review_codex_20260807_1.txt",
         "additional_reviewer_codex_20260807_2.txt",
@@ -1189,19 +1194,19 @@ def _wave_budget_state(external, tmp_path) -> dict:
 
 def test_wave_budget_default(external):
     """미설정 → 레지스트리 기본값(24 = 게이트 상한 4 × 동시 진행 6티켓 어림)."""
-    assert external._wave_budget({}) == 24
+    assert reviewer_target._wave_budget({}) == 24
 
 
 def test_wave_budget_knob_override(external):
     """local.conf additional_reviewer.wave_budget 노브가 예산을 바꾼다 (채택자 조정)."""
-    assert external._wave_budget({"additional_reviewer.wave_budget": "6"}) == 6
-    assert external._wave_budget({"additional_reviewer.wave_budget": "0"}) == 0
+    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "6"}) == 6
+    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "0"}) == 0
 
 
 def test_wave_budget_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (라운드 상한 노브와 같은 규칙)."""
-    assert external._wave_budget({"additional_reviewer.wave_budget": "x"}) == 24
-    assert external._wave_budget({"additional_reviewer.wave_budget": "-3"}) == 24
+    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "x"}) == 24
+    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "-3"}) == 24
 
 
 # ── 순수 헬퍼: 구세대 장부 하위호환 (rounds/wave 절 없음) ────────────────────
@@ -1704,7 +1709,7 @@ def test_negative_wave_spent_does_not_reopen_the_budget(
 def test_ack_wave_does_not_open_the_gate_round_limit(
         external, monkeypatch, tmp_path, capsys):
     """두 예산은 독립 축 — wave 승인이 게이트 미완 라운드 상한을 열지 않는다."""
-    spend = external._incomplete_round_limit({})
+    spend = reviewer_target._incomplete_round_limit({})
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=_ROUNDS_MAX_OFF,
     )
@@ -1748,7 +1753,7 @@ def _exhaust_both_budgets(external, monkeypatch, tmp_path):
     """게이트 미완 상한(2)과 wave 예산(3)을 동시에 소진한 장부를 만든다.
 
     게이트 축은 미완(판정 없이 끝난 호출)이다 — 호출 횟수만 세던 판정 상한은 제거됐다."""
-    spend = external._incomplete_round_limit({})
+    spend = reviewer_target._incomplete_round_limit({})
     conf = {
         **_ROUNDS_MAX_OFF,                      # 수렴 축은 별도 테스트 소유(미완 축만 본다)
         "additional_reviewer.wave_budget": str(spend + 1),
@@ -1766,7 +1771,7 @@ def _exhaust_both_budgets(external, monkeypatch, tmp_path):
 def test_wave_approval_survives_a_round_limit_refusal(
         external, monkeypatch, tmp_path, capsys):
     """게이트가 막아도 `--ack-wave` 리셋은 저장된다 (다음 실행이 그 상태를 이어받는다)."""
-    spent = external._incomplete_round_limit({}) + 1
+    spent = reviewer_target._incomplete_round_limit({}) + 1
     calls = _exhaust_both_budgets(external, monkeypatch, tmp_path)
     capsys.readouterr()
 
@@ -2180,7 +2185,7 @@ def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
     `_wire` 는 run_review 자체를 대역으로 세워 started 매핑을 태우지 않는다. 여기서는 라운드
     장부·예약 환불까지 실 경로로 돌려야 하므로 기본 러너 자리만 바꾼다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(conf))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(conf))
     monkeypatch.setattr(
         external, "extract_diff",
         lambda *a, **k: external.ReviewDiff(

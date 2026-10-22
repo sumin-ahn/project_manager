@@ -30,6 +30,7 @@ if _TOOLS_DIR not in sys.path:
 from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_lint, freshness_pin, hooks, lint_hooks, regression, release, ticket_lint, wiki_lint, wikilink_lint
 from pm_engine.cli import regression_cmd, task_args  # noqa: E402
 from pm_engine.domain import design_rules, git_policy, identity_args, pytest_report, round_rules, shell_policy, ticket_rules
+from pm_engine.infra import codex_observation
 from pm_engine.infra import clock, console, delegate_ledger, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, regression_store, repo_coordinates, repo_files, ticket_store
 from pm_engine.infra import task_store
 from pm_engine.infra import branch_store
@@ -67,7 +68,6 @@ def _home():
     return pm_paths.home_at(REPO, _READ_PM_HOME_OVERRIDE, _READ_BOARD_ROOT_OVERRIDE)
 
 
-DELEGATE_CHANNEL_GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 CODEX_DELEGATE_OBSERVATIONS = (
     REPO / ".project_manager" / ".local" / "delegate-channel" / "codex-observations.jsonl"
 )
@@ -263,7 +263,6 @@ def judge_git_anchor_command(
 # PM 로컬 설정·그 상태를 읽는 deep-import 모듈을 담당한다. 상대경로가 단일 진실이라 새
 # PM-owned 입력을 추가할 때 이 표와 `_READ_PM_INPUTS_BY_SUBCOMMAND`를 함께 갱신하게 된다.
 _READ_PM_PATH_RELS: dict[str, str] = {
-    "DELEGATE_CHANNEL_GUARD_PY": "tools/delegate_channel_guard.py",
     "CODEX_DELEGATE_OBSERVATIONS": ".local/delegate-channel/codex-observations.jsonl",
 }
 
@@ -1352,20 +1351,6 @@ def cmd_verified_at_repin(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_delegate_channel_guard_module():
-    """Load the guard's read-only Codex observation scanner (graceful)."""
-    if not DELEGATE_CHANNEL_GUARD_PY.exists():
-        return None
-    try:
-        return _load_module_from_path(
-            DELEGATE_CHANNEL_GUARD_PY,
-            "delegate_channel_guard.py",
-            verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — advisory loader is fail-soft.
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
 
 
 def lint_codex_delegate_observations() -> list[tuple[str, str, str]]:
@@ -1375,15 +1360,11 @@ def lint_codex_delegate_observations() -> list[tuple[str, str, str]]:
     only aggregates all retained misses into one PM-facing advisory line.
     """
     try:
-        guard = _load_delegate_channel_guard_module()
-        if guard is None:
-            return []
-        misses = guard.scan_codex_observation_misses(
+        misses = codex_observation.scan_codex_observation_misses(
+            pm_paths.home_at(REPO),
             observation_path=CODEX_DELEGATE_OBSERVATIONS
         )
     except Exception as exc:  # noqa: BLE001 — observation visibility never blocks lint.
-        if _is_engine_rev_skew(exc):
-            raise
         return []
     if not misses:
         return []

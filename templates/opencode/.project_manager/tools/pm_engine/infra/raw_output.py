@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+
 import contextlib
 import datetime
 import errno
@@ -464,3 +465,48 @@ def _peer_engine_ledgers(home, config_repo_override: Path | None) -> tuple[Path,
         return tuple(sorted(ledgers))
     except (OSError, RuntimeError, AttributeError, ImportError):
         return ()
+
+
+
+# ── 결과 박제 (O_EXCL·0600·PID/UUID) ─────────────────────────────────────
+
+def _gettempdir() -> str:
+    """OS 임시 디렉터리 — 소비자는 `_with_resolved_child_env` **하나**다(자식 env 의 임시 축).
+
+    엔진이 만드는 임시물의 자리는 `temp_root`(프로젝트 안) 하나다. 이 값은 엔진이
+    만드는 자리가 아니라 **스폰하는 자식에게 넘기는 env 값**이라 남는다. 근거 둘(실측):
+    (1) 받는 쪽이 하네스 CLI 와 그 자식 전부(node·npm·git·pytest)인데 엔진에 그 임시물의 목록도
+    회수 훅도 없다 — 프로젝트 안을 주면 주인 없는 산출이 저장소에 쌓인다(격리 트리 실측
+    205M·243M·197M). (2) codex 정책의 `exclude_tmpdir_env_var` 때문에 `$TMPDIR` 은 workspace-write
+    의 쓰기 루트에 자동으로 들어간다 — 프로젝트 안을 주면 남의 도구의 쓰기 권한이 우리 트리로
+    넓어진다. 새 소비자를 여기 붙이지 마라 — 엔진 자기 임시물이면 `temp_root` 다
+    (회귀가 이 소비자 하나만 통과시킨다: `tests/test_pytest_temp_root.py`).
+    """
+    import tempfile
+    return tempfile.gettempdir()
+
+
+def _raw_storage(home, output_dir: Path | None = None) -> tuple[Path, Path]:
+    """raw/장부 위치를 해소된 PM 홈 소유자에서 정한다(REPO 미해소는 fail-loud)."""
+    return raw_storage_paths(
+        home.local_dir.parent.parent, "delegate", output_dir,
+    )
+
+
+def _reserve_raw_output(home, harness: str, output_dir: Path | None = None) -> Path:
+    """실행 전 장부가 가리킬 0600 raw 파일을 O_EXCL로 선점한다."""
+    base_dir, _ledger_path = _raw_storage(home, output_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    dest = (
+        base_dir
+        / f"pm_delegate_{harness}_{os.getpid()}_{uuid.uuid4().hex}.txt"
+    )
+    fd = os.open(str(dest), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(fd)
+    return dest
+
+
+def _write_reserved_raw(dest: Path, content: str) -> None:
+    """선점한 raw 파일 내용을 교체한다(파일 정체성과 0600 권한 유지)."""
+    with dest.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)

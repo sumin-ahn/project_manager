@@ -12,6 +12,9 @@ hermetic: 실 리뷰어 프로세스를 스폰하지 않는다(호출 0). `run_f
 """
 from __future__ import annotations
 
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
+
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -44,7 +47,7 @@ def test_detects_old_raw_artifact_citation(external):
         "참고: .project_manager/.local/review/"
         "additional_reviewer_codex_20260806_040406_11_ab.txt 의 지적과 동일하다.\n"
     )
-    contamination = external.detect_output_contamination(output)
+    contamination = reviewer_result.detect_output_contamination(output)
     assert contamination.raw_artifacts == (
         "additional_reviewer_codex_20260806_040406_11_ab.txt",
     )
@@ -53,7 +56,7 @@ def test_detects_old_raw_artifact_citation(external):
 
 def test_detects_session_transcript_citation(external):
     output = "판정: 통과\n\n/home/user/.claude/projects/-home-user-repo/9f2.jsonl 를 확인했다.\n"
-    contamination = external.detect_output_contamination(output)
+    contamination = reviewer_result.detect_output_contamination(output)
     assert contamination.transcripts and any(
         "세션 전사" in marker for marker in contamination.markers)
 
@@ -64,7 +67,7 @@ def test_detects_conflicting_verdict_blocks(external):
         "이전 라운드 원문:\n판정: 반려\n\n**must-fix**:\n- 옛 지적\n\n"
         "---\n이번 리뷰:\n판정: 통과\n\n**must-fix**:\n- 없음\n"
     )
-    contamination = external.detect_output_contamination(output)
+    contamination = reviewer_result.detect_output_contamination(output)
     assert contamination.verdicts == ("반려", "통과")
     assert contamination.verdict_conflict is True
 
@@ -72,7 +75,7 @@ def test_detects_conflicting_verdict_blocks(external):
 def test_repeated_same_verdict_is_not_flagged(external):
     """같은 판정의 재진술은 위험이 없다 — false-red 를 만들지 않는다."""
     output = "판정: 통과\n\n**must-fix**:\n- 없음\n\n## 요약\n판정: 통과\n"
-    contamination = external.detect_output_contamination(output)
+    contamination = reviewer_result.detect_output_contamination(output)
     assert len(contamination.verdicts) == 2
     assert contamination.verdict_conflict is False
     assert contamination.markers == ()
@@ -86,8 +89,8 @@ def test_detector_sees_every_verdict_line_the_parser_can_pick(external):
     output = "판정: 반려\n\n**must-fix**:\n- 옛 지적\n\n판정: 통과\n"
     words = review_verdict.verdict_words(output)
     assert words == ("반려", "통과")
-    assert external.parse_verdict(output)["has_must_fix"] is True  # 파서는 첫 줄(반려)을 집는다.
-    contamination = external.detect_output_contamination(output)
+    assert reviewer_result.parse_verdict(output)["has_must_fix"] is True  # 파서는 첫 줄(반려)을 집는다.
+    contamination = reviewer_result.detect_output_contamination(output)
     assert contamination.verdicts == words
     assert contamination.verdict_conflict is True
 
@@ -102,8 +105,8 @@ def test_prose_verdict_inside_a_sentence_is_not_a_declaration(external):
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     )
     assert review_verdict.verdict_words(output) == ("통과",)
-    assert external.detect_output_contamination(output).verdict_conflict is False
-    assert external.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
+    assert reviewer_result.detect_output_contamination(output).verdict_conflict is False
+    assert reviewer_result.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
 
 
 @pytest.mark.parametrize("prose", (
@@ -115,7 +118,7 @@ def test_prose_verdict_inside_a_sentence_is_not_a_declaration(external):
 def test_format_noncompliant_prose_verdict_is_never_a_pass(external, tmp_path, prose):
     """형식 미준수 출력은 통과로 접지 않는다 — 앵커 판정선 0개면 '판정 불명확'(exit 1)."""
     assert review_verdict.verdict_words(prose) == ()
-    assert external.parse_verdict(prose)["has_pass"] is False
+    assert reviewer_result.parse_verdict(prose)["has_pass"] is False
     result = external.run_review(
         "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, prose, ""),
@@ -130,7 +133,7 @@ def test_prose_fallback_stays_off_when_a_declaration_exists(external):
         "덧붙임: 이전 라운드의 판정: 반려 는 해소됐다.\n\n"
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     )
-    assert external.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
+    assert reviewer_result.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
 
 
 @pytest.mark.parametrize("word", ("[통과", "비통과", "PASS/REJECT", "통과|반려", "미정"))
@@ -155,7 +158,7 @@ def test_prompt_template_echo_is_not_a_pass(external, tmp_path):
         "**suggestion** (권장):\n- 없음\n"
     )
     assert review_verdict.verdict_words(echoed) == ("[통과",)
-    assert external.parse_verdict(echoed)["has_pass"] is False
+    assert reviewer_result.parse_verdict(echoed)["has_pass"] is False
     result = external.run_review(
         "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, echoed, ""),
@@ -167,7 +170,7 @@ def test_prompt_template_echo_is_not_a_pass(external, tmp_path):
 def test_negated_verdict_is_not_a_pass(external, tmp_path):
     """`판정: 비통과` 는 부분 문자열로는 통과였다 — 정확일치에서는 불명확이다."""
     output = "판정: 비통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
-    assert external.parse_verdict(output)["has_pass"] is False
+    assert reviewer_result.parse_verdict(output)["has_pass"] is False
     result = external.run_review(
         "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
@@ -178,7 +181,7 @@ def test_negated_verdict_is_not_a_pass(external, tmp_path):
 def test_unknown_verdict_line_beside_a_real_one_is_ambiguous(external):
     """허용 토큰이 아닌 판정선이 진짜 판정선과 섞이면 어느 게 이번 판정인지 모른다."""
     output = "판정: [통과 | 반려]\n\n판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
-    assert external.detect_output_contamination(output).verdict_conflict is True
+    assert reviewer_result.detect_output_contamination(output).verdict_conflict is True
 
 
 def test_raw_artifact_regex_accepts_underscored_reviewer_names(external):
@@ -187,7 +190,7 @@ def test_raw_artifact_regex_accepts_underscored_reviewer_names(external):
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n**suggestion** (권장):\n"
         "- additional_reviewer_my_reviewer_20260806_040406_11_ab.txt 의 지적과 같다.\n"
     )
-    contamination = external.detect_output_contamination(output)
+    contamination = reviewer_result.detect_output_contamination(output)
     assert contamination.raw_artifacts == (
         "additional_reviewer_my_reviewer_20260806_040406_11_ab.txt",
     )
@@ -199,14 +202,14 @@ def test_transcript_regex_detects_windows_paths(external):
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n**suggestion** (권장):\n"
         "- C:\\Users\\u\\.claude\\projects\\-repo\\9f2.jsonl 에서 확인했다.\n"
     )
-    contamination = external.detect_output_contamination(output)
+    contamination = reviewer_result.detect_output_contamination(output)
     assert contamination.transcripts
     assert any("9f2.jsonl" in hit for hit in contamination.transcripts)
     assert any("세션 전사" in marker for marker in contamination.markers)
 
 
 def test_clean_output_has_no_markers(external):
-    contamination = external.detect_output_contamination(
+    contamination = reviewer_result.detect_output_contamination(
         "판정: 통과\n\n**must-fix**:\n- 없음\n\n**suggestion**:\n- 없음\n")
     assert contamination.markers == ()
 
@@ -226,7 +229,7 @@ _ECHOED_OLD_BLOCK_OUTPUT = (
 
 def test_parser_alone_reads_the_echoed_pass_as_a_clean_pass(external):
     """판별력 확인 — 이 입력은 파서 단독으로는 '통과'다(강등 절이 유일한 방어선)."""
-    verdict = external.parse_verdict(_ECHOED_OLD_BLOCK_OUTPUT)
+    verdict = reviewer_result.parse_verdict(_ECHOED_OLD_BLOCK_OUTPUT)
     assert verdict == {"has_must_fix": False, "has_pass": True}
 
 
@@ -237,7 +240,7 @@ def _direct_target(external, command: str = "codex"):
     `run_review` 는 대상을 **필수**로 받고 커맨드 문자열 입구가 없다. 여기서는 하네스 argv 조립을
     태우지 않는 대상 하나로 고정해 판정 파이프라인만 본다 — 엔진 CLI 가 넘기는 대상은 언제나
     `resolve_reviewer_target` 이 harness·model 을 채운 구조화 tuple 이다."""
-    return external.ReviewerTarget(external.REVIEWER_SOURCE_STRUCTURED, command)
+    return reviewer_target.ReviewerTarget(reviewer_result.REVIEWER_SOURCE_STRUCTURED, command)
 
 def _run_kwargs(root: Path) -> dict:
     """실행 조건 DI 헬퍼 — 정상 경로가 넘기는 cwd·env 와 같은 모양이다."""
@@ -312,8 +315,8 @@ def test_quoted_and_fenced_verdicts_count_for_neither_parser_nor_detector(extern
     """
     output = wrapped + "\n판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     assert review_verdict.verdict_words(output) == ("통과",)
-    assert external.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
-    assert external.detect_output_contamination(output).verdict_conflict is False
+    assert reviewer_result.parse_verdict(output) == {"has_must_fix": False, "has_pass": True}
+    assert reviewer_result.detect_output_contamination(output).verdict_conflict is False
 
 
 @pytest.mark.parametrize("citation", (
@@ -346,7 +349,7 @@ def test_reviewer_output_keeps_channels_structurally_separate(external):
     assert output.answer == poisoned_answer          # 잘리지 않는다.
     assert output.log == "workdir: /tmp/ws\n"
     assert output.combined.endswith("workdir: /tmp/ws\n")
-    contamination = external.detect_output_contamination(output.answer)
+    contamination = reviewer_result.detect_output_contamination(output.answer)
     assert contamination.verdict_conflict is True    # 두 판정선이 모두 보인다.
 
 

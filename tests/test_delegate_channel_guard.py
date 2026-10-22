@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from pm_engine.domain import delegate_channel_rules
+from pm_engine.infra import delegate_config
+from pm_engine.infra.harness import delegate_env
+from pm_engine.infra import native_agent_card
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import io
 import json
@@ -25,7 +31,7 @@ CARD_STEMS = ROLES + ("developer-hard",)
 
 
 @pytest.fixture
-def rendered_cards(guard, monkeypatch, tmp_path):
+def rendered_cards(guard_home, guard, monkeypatch, tmp_path):
     """출하 카드는 T-0731 이후 `model: "{{DELEGATE_MODEL_<ROLE>}}"` 토큰 **소스**다 — pm_import/pm_update 가
     conf 해소값으로 렌더한 채택자 트리가 가드의 실 입력이다. 이 픽스처가 그 렌더본을 만들어 `_ENGINE_ROOT`
     를 거기 묶는다. `model` 인자로 렌더값을 정한다.
@@ -42,7 +48,6 @@ def rendered_cards(guard, monkeypatch, tmp_path):
             rendered = model if stem != "developer-hard" else (hard_model or model)
             (cards / f"{stem}.md").write_text(
                 src.replace(f'model: "{token}"', f'model: "{rendered}"'), encoding="utf-8")
-        monkeypatch.setattr(guard, "_ENGINE_ROOT", root)
         return root
     return _render
 
@@ -66,7 +71,7 @@ def _payload(role: str, tool_name: str = "Agent") -> dict[str, object]:
 
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("mapping", ("claude", "other", "absent"))
-def test_four_role_mapping_matrix(guard, rendered_cards, role, mapping):
+def test_four_role_mapping_matrix(guard_home, guard, rendered_cards, role, mapping):
     rendered_cards("opus")  # 채택자 트리(렌더본)를 가드 입력으로 — 소스 트리는 토큰이라 미렌더 경고가 난다.
     conf = {"delegate.enabled": "true"}
     if mapping == "claude":
@@ -82,7 +87,7 @@ def test_four_role_mapping_matrix(guard, rendered_cards, role, mapping):
             f"delegate.{role}.model": "gpt-5.6",
         }
 
-    result = guard.evaluate_hook(_payload(role), config_loader=lambda: conf)
+    result = guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
 
     if mapping == "other":
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -93,7 +98,7 @@ def test_four_role_mapping_matrix(guard, rendered_cards, role, mapping):
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("mapping", ("self", "cross", "absent"))
 @pytest.mark.parametrize("enabled", (True, False))
-def test_neutral_core_decision_table_matrix(guard, role, mapping, enabled):
+def test_neutral_core_decision_table_matrix(guard_home, guard, role, mapping, enabled):
     """4 roles × self/cross/unset × 마스터 스위치 on/off — Row 0.5 + Rows ②~⑤.
 
     스위치가 꺼져 있으면 매핑 해소 **앞에서** deny 다(채널 무관). 켜져 있으면 종전대로 cross 만
@@ -106,7 +111,7 @@ def test_neutral_core_decision_table_matrix(guard, role, mapping, enabled):
         )
         conf[f"delegate.{role}.model"] = "fixture-model"
 
-    result = guard.decide(role, "normal", conf, "opencode")
+    result = guard.decide(guard_home, role, "normal", conf, "opencode")
 
     expected = "deny" if (not enabled or mapping == "cross") else "allow"
     assert result["verdict"] == expected
@@ -116,7 +121,7 @@ def test_neutral_core_decision_table_matrix(guard, role, mapping, enabled):
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("mapping", ("claude", "opencode", "", None))
 @pytest.mark.parametrize("enabled", (True, False))
-def test_claude_hook_is_core_specialization_equivalent(guard, role, mapping, enabled):
+def test_claude_hook_is_core_specialization_equivalent(guard_home, guard, role, mapping, enabled):
     """Claude specializes the core verdict/warning without changing its decision."""
     conf = {"delegate.enabled": "true" if enabled else "false"}
     if mapping is not None:
@@ -125,8 +130,8 @@ def test_claude_hook_is_core_specialization_equivalent(guard, role, mapping, ena
             "opus" if mapping == "claude" else "fixture-model"
         )
 
-    core = guard.decide(role, "normal", conf, "claude")
-    hook = guard.evaluate_hook(_payload(role), config_loader=lambda: conf)
+    core = guard.decide(guard_home, role, "normal", conf, "claude")
+    hook = guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
     if core["verdict"] == "deny":
         assert hook["hookSpecificOutput"]["permissionDecision"] == "deny"
     elif core["reason"].startswith("[delegate-channel/warn]"):
@@ -151,10 +156,10 @@ def test_claude_hook_is_core_specialization_equivalent(guard, role, mapping, ena
 def test_agent_name_role_tier_normalization(
     guard, agent_name, harness, tier, expected
 ):
-    assert guard.normalize_agent_name(agent_name, harness, tier) == expected
+    assert delegate_channel_rules.normalize_agent_name(agent_name, harness, tier) == expected
 
 
-def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard):
+def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard_home, guard):
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
@@ -165,19 +170,19 @@ def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard):
         "delegate.developer.hard.harness": "claude",
         "delegate.developer.hard.model": "hard-model",
     }
-    normal = guard.decide("developer", "normal", conf, "opencode")
+    normal = guard.decide(guard_home, "developer", "normal", conf, "opencode")
     assert normal["verdict"] == "allow"
     assert (normal["harness"], normal["model"]) == (
         "opencode", "normal-model"
     )
 
-    hard = guard.decide("developer", "hard", conf, "opencode")
+    hard = guard.decide(guard_home, "developer", "hard", conf, "opencode")
     assert hard["verdict"] == "deny"
     assert (hard["harness"], hard["model"]) == ("claude", "hard-model")
 
     del conf["delegate.developer.hard.harness"]
     del conf["delegate.developer.hard.model"]
-    missing = guard.decide("developer", "hard", conf, "opencode")
+    missing = guard.decide(guard_home, "developer", "hard", conf, "opencode")
     assert missing["verdict"] == "allow"
     assert (missing["harness"], missing["model"]) == ("", "")
     assert "hard 프로필 미설정" in missing["reason"]
@@ -192,7 +197,7 @@ def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard):
 @pytest.mark.parametrize("nonstandard_normal_keys", (False, True))
 @pytest.mark.parametrize("fallback_configured", (False, True))
 def test_mapping_resolution_matches_real_engine_full_boundary_matrix(
-    guard, tier, configured, nonstandard_normal_keys, fallback_configured
+    guard_home, guard, tier, configured, nonstandard_normal_keys, fallback_configured
 ):
     """tier x 표준 설정 x 비표준 normal 키 x fallback 설정의 16셀을 엔진과 대조한다."""
     conf = {"delegate.enabled": "true"}
@@ -207,18 +212,17 @@ def test_mapping_resolution_matches_real_engine_full_boundary_matrix(
         conf[f"{key}.fallback.harness"] = "claude"
         conf[f"{key}.fallback.model"] = f"{tier}-fallback-must-be-ignored"
 
-    pm_delegate = guard._load_pm_delegate()
     try:
-        harness, model, _reasoning = pm_delegate.resolve_delegate(
+        harness, model, _reasoning = delegate_config.resolve_delegate(
             conf, "developer", tier, None, None, None
         )
         expected = (harness, model, "")
     except delegate_errors.DelegateError as exc:
         expected = ("", "", str(exc))
 
-    assert guard._resolved_mapping("developer", tier, conf) == expected
+    assert delegate_config._resolved_mapping("developer", tier, conf) == expected
 
-    judgment = guard.decide("developer", tier, conf, "opencode")
+    judgment = guard.decide(guard_home, "developer", tier, conf, "opencode")
     assert judgment["verdict"] == "allow"
     assert (judgment["harness"], judgment["model"]) == expected[:2]
     if configured:
@@ -244,22 +248,22 @@ def test_mapping_resolution_calls_pm_delegate_single_truth(guard, monkeypatch):
         DelegateError=FakeDelegateError,
         resolve_delegate=resolve_delegate,
     )
-    monkeypatch.setattr(guard, "_load_pm_delegate", lambda: fake)
+    monkeypatch.setattr(delegate_config, "resolve_delegate", resolve_delegate)
 
     conf = {"delegate.developer.harness": "codex"}
-    assert guard._resolved_mapping("developer", "normal", conf) == (
+    assert delegate_config._resolved_mapping("developer", "normal", conf) == (
         "codex", "fixture-model", ""
     )
     assert calls == [(conf, "developer", "normal", None, None, None)]
 
 
-def test_unknown_self_warns_but_unknown_agent_is_quietly_recorded(guard):
+def test_unknown_self_warns_but_unknown_agent_is_quietly_recorded(guard_home, guard):
     cross = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "claude",
     }
-    unknown_self = guard.decide("developer", "normal", cross, "")
-    unknown_role = guard.decide("not-an-agent", "normal", cross, "opencode")
+    unknown_self = guard.decide(guard_home, "developer", "normal", cross, "")
+    unknown_role = guard.decide(guard_home, "not-an-agent", "normal", cross, "opencode")
     assert unknown_self["verdict"] == unknown_role["verdict"] == "allow"
     assert "self_harness" in unknown_self["reason"] and "warn" in unknown_self["reason"]
     assert "정규화 실패" in unknown_role["reason"]
@@ -274,27 +278,11 @@ def test_unknown_self_warns_but_unknown_agent_is_quietly_recorded(guard):
         _payload("general-purpose"),
     ),
 )
-def test_non_agent_or_non_delegate_role_passes_without_loading_conf(guard, payload):
+def test_non_agent_or_non_delegate_role_passes_without_loading_conf(guard_home, guard, payload):
     def unexpected_loader():
         raise AssertionError("irrelevant tool/role must not read local.conf")
 
-    assert guard.evaluate_hook(payload, config_loader=unexpected_loader) is None
-
-
-def test_config_loader_reuses_pm_delegate_seam(guard, monkeypatch):
-    """중앙 로더로 pm_delegate.py 를 (engine-rev 검증 포함) 로드해 local_config seam 을 재사용한다."""
-    expected = {"delegate.developer.harness": "claude"}
-    calls = []
-
-    def fake_loader(path, expected_filename, **kwargs):
-        calls.append(
-            (Path(path).name, expected_filename, kwargs.get("verifier") is not None)
-        )
-        return SimpleNamespace(local_config=lambda: expected)
-
-    monkeypatch.setattr(guard, "_load_module_from_path", fake_loader)
-    assert guard.load_local_config() is expected
-    assert calls == [("pm_delegate.py", "pm_delegate.py", True)]
+    assert guard.evaluate_hook(guard_home, payload, config_loader=unexpected_loader) is None
 
 
 def test_config_error_is_one_line_fail_open(guard):
@@ -302,7 +290,7 @@ def test_config_error_is_one_line_fail_open(guard):
     stdout = io.StringIO()
     stderr = io.StringIO()
 
-    def broken_config():
+    def broken_config(_home):
         raise OSError("broken\nlocal.conf")
 
     assert guard.main(
@@ -340,16 +328,17 @@ stdout = io.StringIO()
 rc = guard.main(
     ["decide", "--role", "developer", "--harness", "claude"],
     stdout=stdout,
-    config_loader=lambda: conf,
+    config_loader=lambda home: conf,
 )
 decision = json.loads(stdout.getvalue())
 hook = guard.evaluate_hook(
+    guard.pm_paths.home_at(guard.Path(guard_path).resolve().parents[2]),
     {
         "hook_event_name": "PreToolUse",
         "tool_name": "Agent",
         "tool_input": {"subagent_type": "developer"},
     },
-    config_loader=lambda: conf,
+    config_loader=lambda home: conf,
 )
 print(json.dumps({"rc": rc, "decision": decision, "hook": hook}))
 '''
@@ -408,7 +397,7 @@ def test_deny_json_schema_and_remediation(guard):
         stdin=io.StringIO(json.dumps(_payload("researcher"))),
         stdout=stdout,
         stderr=stderr,
-        config_loader=lambda: conf,
+        config_loader=lambda _home: conf,
     ) == 0
     result = json.loads(stdout.getvalue())
     assert result == {
@@ -420,7 +409,7 @@ def test_deny_json_schema_and_remediation(guard):
                 "/pm-dev-delegate 스킬로 위임하라 (실행형 처방: 1) 프롬프트를 "
                 "파일로 저장한 뒤(경로: "
                 "`.project_manager/.local/delegate/manual-researcher-normal-prompt.md`) "
-                f"2) backbone `{guard._prescribed_interpreter()} "
+                f"2) backbone `{delegate_env._guard_prescribed_interpreter()} "
                 ".project_manager/tools/pm_delegate.py --role researcher "
                 "--prompt-file .project_manager/.local/delegate/manual-researcher-normal-prompt.md "
                 "--cwd /fixture/worktree --ticket <T-NNNN>`)"
@@ -430,7 +419,7 @@ def test_deny_json_schema_and_remediation(guard):
     assert stderr.getvalue() == ""
 
 
-def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
+def test_hook_deny_remediation_materializes_payload_cwd(guard_home, guard, tmp_path):
     payload = _payload("developer")
     payload["cwd"] = str(tmp_path)
     conf = {
@@ -438,7 +427,7 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
-    result = guard.evaluate_hook(payload, config_loader=lambda: conf)
+    result = guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)
     reason = result["hookSpecificOutput"]["permissionDecisionReason"]
     assert f"--cwd {tmp_path}" in reason
     assert "프롬프트를 파일로 저장" in reason
@@ -451,7 +440,7 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
     assert "<worktree>" not in reason
 
 
-def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard, tmp_path):
+def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard_home, guard, tmp_path):
     """AT-019 — 리뷰 거부 처방은 묶음 실행 형식(`--cluster`)이다. 프롬프트 파일·`--ticket` 을 싣지 않는다.
 
     리뷰 실 실행은 `--cluster` 만 받는다 — `--ticket`/`--prompt-file` 처방은 그대로 실행하면 rc 2 사용
@@ -466,7 +455,7 @@ def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard, tmp_path):
     }
     review_payload = _payload("code-reviewer")
     review_payload["cwd"] = str(tmp_path)
-    review = guard.evaluate_hook(review_payload, config_loader=lambda: conf)[
+    review = guard.evaluate_hook(guard_home, review_payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"]["permissionDecisionReason"]
     assert (
         f".project_manager/tools/pm_delegate.py --role code-reviewer --cluster C-<ticket-group> --cwd {tmp_path}"
@@ -476,20 +465,20 @@ def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard, tmp_path):
 
     developer_payload = _payload("developer")
     developer_payload["cwd"] = str(tmp_path)
-    developer = guard.evaluate_hook(developer_payload, config_loader=lambda: conf)[
+    developer = guard.evaluate_hook(guard_home, developer_payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"]["permissionDecisionReason"]
     assert "--ticket <T-NNNN>" in developer
     assert "--cluster" not in developer
 
 
 def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
-    guard, monkeypatch
+    guard_home, guard, monkeypatch
 ):
     """T-0714 — 처방은 실행 셸 인용 규칙을 따른다 (Windows 렌더러 직접 주입).
 
     POSIX 단일따옴표를 Windows 셸에 붙여넣으면 `'--cwd'`가 리터럴 인자로 들어가 실행이 깨진다.
     """
-    monkeypatch.setattr(guard, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
@@ -500,10 +489,10 @@ def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
     spaced = _payload("developer")
     spaced["cwd"] = r"C:\Users\ci\work tree\project_manager_1"
 
-    reason = guard.evaluate_hook(payload, config_loader=lambda: conf)[
+    reason = guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
-    spaced_reason = guard.evaluate_hook(spaced, config_loader=lambda: conf)[
+    spaced_reason = guard.evaluate_hook(guard_home, spaced, config_loader=lambda _home: conf)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
 
@@ -514,7 +503,7 @@ def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
 
 
 def test_deny_remediation_interpreter_follows_the_execution_platform(
-    guard, monkeypatch
+    guard_home, guard, monkeypatch
 ):
     """T-0728 — 처방의 인터프리터 표기가 실행 플랫폼을 따른다 (두 표기를 여기서 다 태운다).
 
@@ -528,10 +517,10 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
         "delegate.developer.model": "gpt",
     }
     def _reason(windows: bool, cwd: str) -> str:
-        monkeypatch.setattr(guard, "_running_on_windows", lambda: windows)
+        monkeypatch.setattr(contract, 'running_on_windows', lambda: windows)
         payload = _payload("developer")
         payload["cwd"] = cwd
-        return guard.evaluate_hook(payload, config_loader=lambda: conf)[
+        return guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
             "hookSpecificOutput"
         ]["permissionDecisionReason"]
 
@@ -572,16 +561,19 @@ def test_deny_remediation_survives_interpreter_resolution_failure(
     with pytest.raises(RuntimeError):
         contract.entrypoint_command(contract.DELEGATE_ENTRYPOINT)
 
-    interpreter = guard._prescribed_interpreter()
+    with pytest.raises(RuntimeError, match="사본 불일치 주입"):
+        delegate_env._prescribed_interpreter()
+
+    interpreter = delegate_env._guard_prescribed_interpreter()
     captured = capsys.readouterr()
 
-    assert interpreter == guard._PRESCRIBED_INTERPRETER_FALLBACK
+    assert interpreter == delegate_env._PRESCRIBED_INTERPRETER_FALLBACK
     assert "처방 인터프리터 표기를 해소하지 못해" in captured.err
     assert "사본 불일치 주입" in captured.err
 
 
-def test_deny_remediation_keeps_posix_quoting_off_windows(guard, monkeypatch):
-    monkeypatch.setattr(guard, "_running_on_windows", lambda: False)
+def test_deny_remediation_keeps_posix_quoting_off_windows(guard_home, guard, monkeypatch):
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: False)
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
@@ -590,7 +582,7 @@ def test_deny_remediation_keeps_posix_quoting_off_windows(guard, monkeypatch):
     payload = _payload("developer")
     payload["cwd"] = "/work tree/project_manager_1"
 
-    reason = guard.evaluate_hook(payload, config_loader=lambda: conf)[
+    reason = guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
 
@@ -618,7 +610,7 @@ def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
         argv,
         stdin=UnreadableInput("must-not-be-read"),
         stdout=stdout,
-        config_loader=lambda: {},
+        config_loader=lambda _home: {},
     ) == 0
     assert stdout.getvalue().count("\n") == 1
     payload = json.loads(stdout.getvalue())
@@ -627,7 +619,7 @@ def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
 
 
 def test_decide_cli_internal_error_is_one_line_allow_reason(guard):
-    def broken_config():
+    def broken_config(_home):
         raise RuntimeError("broken\nconfig")
 
     stdout = io.StringIO()
@@ -667,7 +659,7 @@ def test_real_decide_process_usage_errors_are_rc0_one_line_json(argv):
 @pytest.mark.parametrize("switch", ("false", "0", "no", "off"))
 @pytest.mark.parametrize("mapping", ("cross", "self", "absent"))
 def test_switch_off_denies_every_channel_with_the_switch_prescription(
-    guard, switch, mapping
+    guard_home, guard, switch, mapping
 ):
     """마스터 스위치 off 는 채널 무관 deny 이고, 처방은 그 스위치 한 줄이다 (Row 0.5).
 
@@ -680,18 +672,18 @@ def test_switch_off_denies_every_channel_with_the_switch_prescription(
             "claude" if mapping == "self" else "codex")
         conf["delegate.developer.model"] = "fixture-model"
 
-    core = guard.decide("developer", "normal", conf, "claude")
+    core = guard.decide(guard_home, "developer", "normal", conf, "claude")
     assert core["verdict"] == "deny"
     assert "delegate.enabled" in core["reason"]
 
-    hook = guard.evaluate_hook(_payload("developer"), config_loader=lambda: conf)
+    hook = guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
     output = hook["hookSpecificOutput"]
     assert output["permissionDecision"] == "deny"
     assert "delegate.enabled" in output["permissionDecisionReason"]
 
 
 @pytest.mark.parametrize("value", (None, "true", "", "  "))
-def test_switch_default_is_allow_when_unset_or_blank(guard, rendered_cards, value):
+def test_switch_default_is_allow_when_unset_or_blank(guard_home, guard, rendered_cards, value):
     """스위치 미설정·빈값은 **허용**이다 — 기본이 허용이라 켜려고 줄을 적을 필요가 없다.
 
     빈값을 거부로 읽으면 `delegate.enabled=` 한 줄이 위임 전체를 조용히 끈다(파싱 의미상
@@ -703,8 +695,8 @@ def test_switch_default_is_allow_when_unset_or_blank(guard, rendered_cards, valu
     if value is not None:
         conf["delegate.enabled"] = value
 
-    assert guard.decide("developer", "normal", conf, "claude")["verdict"] == "allow"
-    assert guard.evaluate_hook(_payload("developer"), config_loader=lambda: conf) is None
+    assert guard.decide(guard_home, "developer", "normal", conf, "claude")["verdict"] == "allow"
+    assert guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf) is None
 
 
 def _write_agent_card(root: Path, relative: Path, body: bytes) -> None:
@@ -713,18 +705,18 @@ def _write_agent_card(root: Path, relative: Path, body: bytes) -> None:
     target.write_bytes(body)
 
 
-def test_tracked_claude_native_card_map_is_finite_and_nonempty(guard):
+def test_tracked_claude_native_card_map_is_finite_and_nonempty(guard_home, guard):
     """Read the shipped files, not a synthetic list, so the assertion cannot be vacuous."""
-    assert set(guard.CLAUDE_NATIVE_AGENT_CARDS) == {
+    assert set(native_agent_card.CLAUDE_NATIVE_AGENT_CARDS) == {
         (role, "normal") for role in ROLES
     } | {("developer", "hard")}
     for stem in CARD_STEMS:
         role, tier = ("developer", "hard") if stem == "developer-hard" else (stem, "normal")
-        model, relative = guard._read_claude_native_agent_model(role, tier)
+        model, relative = native_agent_card._read_claude_native_agent_model(guard_home, role, tier)
         assert relative == Path(f".claude/agents/{stem}.md")
         # T-0731 — 출하 카드는 렌더 **소스**라 model 이 operational 토큰이다. 리터럴 모델을 여기서
         # 기대하면 채택자가 conf 로 모델을 못 바꾸던 결함이 되살아난다.
-        assert guard._is_unrendered_model_token(model), model
+        assert delegate_channel_rules._is_unrendered_model_token(model), model
         assert model == "{{DELEGATE_MODEL_" + stem.upper().replace("-", "_") + "}}"
         assert (REPO / relative).read_bytes()
 
@@ -736,23 +728,23 @@ def test_agent_name_label_and_card_map_register_atomically(guard):
     없음" 경고를 영구히 내고, 카드 매핑만 있으면 훅이 그 agent 이름을 정규화하지 못해 판정
     자체가 일어나지 않는다. 양방향 등호로 그 두 반쪽을 묶는다.
     """
-    claude_labels = set(guard.AGENT_NAME_PROFILES["claude"].values())
-    assert claude_labels == set(guard.CLAUDE_NATIVE_AGENT_CARDS), (
+    claude_labels = set(delegate_channel_rules.AGENT_NAME_PROFILES["claude"].values())
+    assert claude_labels == set(native_agent_card.CLAUDE_NATIVE_AGENT_CARDS), (
         "claude 이름표와 카드 매핑이 갈렸다 — 반쪽 등재는 영구 warn 또는 판정 누락이다"
     )
     # 하네스별 예외 0 — 세 하네스가 같은 이름표 집합을 갖는다(카드가 세 타깃에 다 있으므로).
-    profiles = guard.AGENT_NAME_PROFILES
+    profiles = delegate_channel_rules.AGENT_NAME_PROFILES
     assert profiles["claude"] == profiles["opencode"] == profiles["codex"], (
         "하네스마다 agent 이름표가 다르다 — 하나의 규칙(하네스별 예외 금지)이 깨졌다"
     )
-    assert guard.normalize_agent_name("developer-hard", "claude") == ("developer", "hard")
-    assert guard.normalize_agent_name("developer-hard", "opencode") == ("developer", "hard")
+    assert delegate_channel_rules.normalize_agent_name("developer-hard", "claude") == ("developer", "hard")
+    assert delegate_channel_rules.normalize_agent_name("developer-hard", "opencode") == ("developer", "hard")
 
 
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("enabled", (True,))
 def test_claude_four_native_cards_match_is_quiet_allow(
-    guard, rendered_cards, role, enabled
+    guard_home, guard, rendered_cards, role, enabled
 ):
     rendered_cards("opus")
     conf = {
@@ -760,16 +752,16 @@ def test_claude_four_native_cards_match_is_quiet_allow(
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "opus",
     }
-    result = guard.decide(role, "normal", conf, "claude")
+    result = guard.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/allow]")
-    assert guard.evaluate_hook(_payload(role), config_loader=lambda: conf) is None
+    assert guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf) is None
 
 
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("enabled", (True,))
 def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
-    guard, rendered_cards, role, enabled
+    guard_home, guard, rendered_cards, role, enabled
 ):
     rendered_cards("opus")
     conf = {
@@ -777,7 +769,7 @@ def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "not-opus",
     }
-    result = guard.decide(role, "normal", conf, "claude")
+    result = guard.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert set(result) == {"verdict", "reason", "harness", "model"}
     for evidence in (
@@ -786,7 +778,7 @@ def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
     ):
         assert evidence in result["reason"]
 
-    hook = guard.evaluate_hook(_payload(role), config_loader=lambda: conf)
+    hook = guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
     output = hook["hookSpecificOutput"]
     assert set(output) == {"hookEventName", "additionalContext"}
     assert "permissionDecision" not in output
@@ -808,10 +800,10 @@ def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
 )
 @pytest.mark.parametrize("enabled", (True,))
 def test_claude_agent_card_failures_allow_with_additional_context(
-    guard, monkeypatch, tmp_path, state, body, evidence, enabled
+    guard_home, guard, monkeypatch, tmp_path, state, body, evidence, enabled
 ):
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     if body is not None:
         _write_agent_card(tmp_path, relative, body)
     conf = {
@@ -820,25 +812,25 @@ def test_claude_agent_card_failures_allow_with_additional_context(
         "delegate.developer.model": "opus",
     }
 
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert "[delegate-channel/warn]" in result["reason"]
     assert evidence in result["reason"]
-    hook = guard.evaluate_hook(_payload("developer"), config_loader=lambda: conf)
+    hook = guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
     assert set(hook["hookSpecificOutput"]) == {
         "hookEventName", "additionalContext",
     }
 
 
-def test_claude_agent_card_quoted_scalar_is_normalized(guard, monkeypatch, tmp_path):
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+def test_claude_agent_card_quoted_scalar_is_normalized(guard_home, guard, monkeypatch, tmp_path):
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(tmp_path, relative, b'---\nmodel: "opus"\n---\n')
     conf = {
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    assert guard.decide("developer", "normal", conf, "claude")["reason"].startswith(
+    assert guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"].startswith(
         "[delegate-channel/allow]"
     )
 
@@ -851,11 +843,11 @@ def test_claude_agent_card_quoted_scalar_is_normalized(guard, monkeypatch, tmp_p
     ),
 )
 def test_claude_agent_card_yaml_inline_comment_is_quiet_allow(
-    guard, monkeypatch, tmp_path, model_line
+    guard_home, guard, monkeypatch, tmp_path, model_line
 ):
     """MF1: valid YAML comments do not become part of the configured model."""
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(
         tmp_path, relative, f"---\n{model_line}\n---\n".encode("utf-8")
     )
@@ -863,16 +855,16 @@ def test_claude_agent_card_yaml_inline_comment_is_quiet_allow(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/allow]")
 
 
 def test_claude_agent_card_hash_inside_quoted_scalar_is_preserved(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(
         tmp_path, relative, b'---\nmodel: "opus#pinned" # comment\n---\n'
     )
@@ -880,19 +872,19 @@ def test_claude_agent_card_hash_inside_quoted_scalar_is_preserved(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus#pinned",
     }
-    assert guard.decide("developer", "normal", conf, "claude")["reason"].startswith(
+    assert guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"].startswith(
         "[delegate-channel/allow]"
     )
 
 
 @pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "directory"))
 def test_claude_agent_card_unsafe_leaf_is_rejected_before_content_read(
-    guard, monkeypatch, tmp_path, unsafe_kind
+    guard_home, guard, monkeypatch, tmp_path, unsafe_kind
 ):
     """MF2: links/non-regular leaves never expose target content in warnings."""
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path / "repo")
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
-    target = guard._ENGINE_ROOT / relative
+    guard_home = pm_paths.home_at(tmp_path / "repo")
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    target = guard_home.root / relative
     target.parent.mkdir(parents=True)
     outside = tmp_path / "outside-card.md"
     outside.write_text("---\nmodel: external-secret\n---\n", encoding="utf-8")
@@ -907,7 +899,7 @@ def test_claude_agent_card_unsafe_leaf_is_rejected_before_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/warn]")
     assert "symlink/reparse/hardlink/비-regular 거부" in result["reason"]
@@ -915,33 +907,33 @@ def test_claude_agent_card_unsafe_leaf_is_rejected_before_content_read(
 
 
 def test_claude_agent_card_parent_symlink_is_rejected_without_external_read(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path / "repo")
-    guard._ENGINE_ROOT.mkdir()
+    guard_home = pm_paths.home_at(tmp_path / "repo")
+    guard_home.root.mkdir()
     outside = tmp_path / "outside"
     (outside / "agents").mkdir(parents=True)
     (outside / "agents/developer.md").write_text(
         "---\nmodel: parent-link-secret\n---\n", encoding="utf-8"
     )
-    (guard._ENGINE_ROOT / ".claude").symlink_to(outside)
+    (guard_home.root / ".claude").symlink_to(outside)
     conf = {
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide("developer", "normal", conf, "claude")["reason"]
+    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert "[delegate-channel/warn]" in reason
     assert "symlink/reparse/비-directory 거부" in reason
     assert "parent-link-secret" not in reason
 
 
 def test_claude_agent_card_mapping_cannot_escape_repo(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path / "repo")
-    guard._ENGINE_ROOT.mkdir()
+    guard_home = pm_paths.home_at(tmp_path / "repo")
+    guard_home.root.mkdir()
     monkeypatch.setitem(
-        guard.CLAUDE_NATIVE_AGENT_CARDS,
+        native_agent_card.CLAUDE_NATIVE_AGENT_CARDS,
         ("developer", "normal"),
         Path("../outside-card.md"),
     )
@@ -952,7 +944,7 @@ def test_claude_agent_card_mapping_cannot_escape_repo(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide("developer", "normal", conf, "claude")["reason"]
+    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert "[delegate-channel/warn]" in reason
     assert "상대경로 거부" in reason
     assert "containment-secret" not in reason
@@ -960,7 +952,7 @@ def test_claude_agent_card_mapping_cannot_escape_repo(
 
 @pytest.mark.parametrize("interpreter", ("native", "no_dir_fd", "windows_like"))
 def test_claude_agent_card_inode_swap_is_rejected_before_read(
-    guard, monkeypatch, tmp_path, interpreter
+    guard_home, guard, monkeypatch, tmp_path, interpreter
 ):
     """The lstat/open identity recheck closes a leaf replacement race on every reader.
 
@@ -975,8 +967,8 @@ def test_claude_agent_card_inode_swap_is_rejected_before_read(
         # Windows CPython 에 없는 POSIX 상수 — 부재 자체가 reader 선택의 입력이다.
         monkeypatch.delattr(guard.os, "O_DIRECTORY", raising=False)
         monkeypatch.delattr(guard.os, "O_NOFOLLOW", raising=False)
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(tmp_path, relative, b"---\nmodel: opus\n---\n")
     target = tmp_path / relative
     replacement = target.with_name("replacement.md")
@@ -1000,7 +992,7 @@ def test_claude_agent_card_inode_swap_is_rejected_before_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide("developer", "normal", conf, "claude")["reason"]
+    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert swapped
     assert "inode 교체" in reason
     assert "race-secret" not in reason
@@ -1019,19 +1011,19 @@ def test_file_identity_rejects_volumes_without_a_file_index(guard, tmp_path):
         real.st_gid, real.st_size, 0, 0, 0,
     ))
 
-    assert guard._file_identity(real, "probe.md") == (real.st_dev, real.st_ino)
+    assert native_agent_card._file_identity(real, "probe.md") == (real.st_dev, real.st_ino)
     with pytest.raises(ValueError) as exc:
-        guard._file_identity(degenerate, "probe.md")
+        native_agent_card._file_identity(degenerate, "probe.md")
     assert "판정 불능" in str(exc.value)
 
 
 def test_zero_file_index_card_read_fails_loud_instead_of_matching(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
     """정체성 미제공 볼륨의 card 는 조용한 일치가 아니라 loud 경고로 나간다 (fail-open 유지)."""
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(tmp_path, relative, b"---\nmodel: opus\n---\n")
     target = tmp_path / relative
     real_lstat = Path.lstat
@@ -1051,7 +1043,7 @@ def test_zero_file_index_card_read_fails_loud_instead_of_matching(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
 
     assert result["verdict"] == "allow"
     assert "[delegate-channel/warn]" in result["reason"]
@@ -1062,7 +1054,7 @@ def test_zero_file_index_card_read_fails_loud_instead_of_matching(
 
 @pytest.mark.parametrize("role", ROLES)
 def test_portable_reader_normal_tracked_cards_are_quiet_match(
-    guard, rendered_cards, monkeypatch, role
+    guard_home, guard, rendered_cards, monkeypatch, role
 ):
     """MF3: Windows/no-dir-fd must not degrade every healthy card to warning."""
     rendered_cards("opus")
@@ -1071,13 +1063,13 @@ def test_portable_reader_normal_tracked_cards_are_quiet_match(
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "opus",
     }
-    result = guard.decide(role, "normal", conf, "claude")
+    result = guard.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/allow]")
 
 
 @pytest.mark.parametrize("role", ROLES)
-def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard, role):
+def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard_home, guard, role):
     """T-0731 — 소스 트리(프레임워크 루트·templates)나 렌더가 실패한 채택자 트리에서 카드 model 이
     `{{DELEGATE_MODEL_*}}` 토큰이면 "불일치(conf 를 고쳐라)" 가 아니라 "미렌더(pm-update 로 다시
     렌더하라)" 로 진단해야 처방이 맞다. 판정은 여전히 fail-open allow.
@@ -1086,7 +1078,7 @@ def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard, r
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "sonnet",
     }
-    result = guard.decide(role, "normal", conf, "claude")
+    result = guard.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert "카드 미렌더" in result["reason"]
     assert "pm-update" in result["reason"]
@@ -1094,12 +1086,12 @@ def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard, r
     assert "{{DELEGATE_MODEL_" in result["reason"]
 
 
-def test_rendered_card_with_wrong_model_is_still_a_mismatch(guard, rendered_cards):
+def test_rendered_card_with_wrong_model_is_still_a_mismatch(guard_home, guard, rendered_cards):
     """렌더된 카드의 리터럴 모델이 conf 와 다르면 종전 '불일치' 진단 그대로 — 미렌더 분기가 그것을
     삼키지 않는다(감도 유지)."""
     rendered_cards("opus")
     conf = {"delegate.developer.harness": "claude", "delegate.developer.model": "sonnet"}
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
     assert "불일치" in result["reason"]
     assert "card_model=opus" in result["reason"]
     assert "미렌더" not in result["reason"]
@@ -1107,14 +1099,14 @@ def test_rendered_card_with_wrong_model_is_still_a_mismatch(guard, rendered_card
 
 def test_secure_reader_capability_uses_os_support_sets(guard, monkeypatch):
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
-    assert guard._secure_dir_fd_supported() is False
+    assert native_agent_card._secure_dir_fd_supported() is False
 
 
 def test_secure_reader_does_not_retry_security_failure_via_portable_path(
-    guard, monkeypatch
+    guard_home, guard, monkeypatch
 ):
     calls = []
-    monkeypatch.setattr(guard, "_secure_dir_fd_supported", lambda: True)
+    monkeypatch.setattr(native_agent_card, '_secure_dir_fd_supported', lambda: True)
 
     def failed_strong(*_args):
         calls.append("strong")
@@ -1124,15 +1116,15 @@ def test_secure_reader_does_not_retry_security_failure_via_portable_path(
         calls.append("portable")
         raise AssertionError("security failure must not trigger a weaker retry")
 
-    monkeypatch.setattr(guard, "_read_known_regular_file_dir_fd", failed_strong)
+    monkeypatch.setattr(native_agent_card, '_read_known_regular_file_dir_fd', failed_strong)
     monkeypatch.setattr(
-        guard, "_read_known_regular_file_portable", forbidden_fallback
+        native_agent_card, '_read_known_regular_file_portable', forbidden_fallback
     )
     conf = {
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide("developer", "normal", conf, "claude")["reason"]
+    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert calls == ["strong"]
     assert "simulated strong-path failure" in reason
 
@@ -1142,7 +1134,7 @@ def test_windows_reparse_metadata_is_linklike(guard):
         st_mode=stat.S_IFREG,
         st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
     )
-    assert guard._metadata_is_linklike(metadata) is True
+    assert native_agent_card._metadata_is_linklike(metadata) is True
 
 
 def _windows_shaped_metadata(observed: object, *, st_ino: int) -> SimpleNamespace:
@@ -1175,19 +1167,19 @@ def test_metadata_without_attribute_value_is_judged_not_type_error(guard):
     assert hasattr(metadata, "st_file_attributes")
     assert metadata.st_file_attributes is None
 
-    assert guard._metadata_is_linklike(metadata) is False
+    assert native_agent_card._metadata_is_linklike(metadata) is False
 
 
 def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
     """Windows 형상(속성 값 없음 + st_ino 0)에서도 사유는 정체성 판정 불능 하나다.
 
     타입 오류가 같은 경고 채널로 새면 코드 결함과 진짜 판정 불능이 한 문구로 덮인다.
     """
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(tmp_path, relative, b"---\nmodel: opus\n---\n")
     target = tmp_path / relative
     real_lstat = Path.lstat
@@ -1208,7 +1200,7 @@ def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
 
     assert result["verdict"] == "allow"
     assert "[delegate-channel/warn]" in result["reason"]
@@ -1218,12 +1210,12 @@ def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
 
 
 def test_portable_reader_symlink_rejects_before_any_content_read(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path / "repo")
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
-    target = guard._ENGINE_ROOT / relative
+    guard_home = pm_paths.home_at(tmp_path / "repo")
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    target = guard_home.root / relative
     target.parent.mkdir(parents=True)
     outside = tmp_path / "outside.md"
     outside.write_text("---\nmodel: windows-symlink-secret\n---\n", encoding="utf-8")
@@ -1239,18 +1231,18 @@ def test_portable_reader_symlink_rejects_before_any_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide("developer", "normal", conf, "claude")["reason"]
+    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert reads == []
     assert "[delegate-channel/warn]" in reason
     assert "windows-symlink-secret" not in reason
 
 
 def test_portable_reader_inode_swap_rejects_before_any_content_read(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(tmp_path)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(tmp_path, relative, b"---\nmodel: opus\n---\n")
     target = tmp_path / relative
     replacement = target.with_name("replacement.md")
@@ -1278,20 +1270,20 @@ def test_portable_reader_inode_swap_rejects_before_any_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide("developer", "normal", conf, "claude")["reason"]
+    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert swapped and reads == []
     assert "inode 교체" in reason
     assert "windows-race-secret" not in reason
 
 
 def test_portable_reader_root_swap_during_resolve_rejects_before_read(
-    guard, monkeypatch, tmp_path
+    guard_home, guard, monkeypatch, tmp_path
 ):
     """NEW-MF5: bind lexical engine-root identity across lstat -> resolve."""
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
     repo = tmp_path / "repo"
-    monkeypatch.setattr(guard, "_ENGINE_ROOT", repo)
-    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    guard_home = pm_paths.home_at(repo)
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(repo, relative, b"---\nmodel: opus\n---\n")
     outside = tmp_path / "outside"
     _write_agent_card(
@@ -1320,7 +1312,7 @@ def test_portable_reader_root_swap_during_resolve_rejects_before_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
     assert swapped and reads == []
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/warn]")
@@ -1329,25 +1321,25 @@ def test_portable_reader_root_swap_during_resolve_rejects_before_read(
 
 
 def test_claude_agent_card_reader_exception_is_nonblocking_warning(
-    guard, monkeypatch
+    guard_home, guard, monkeypatch
 ):
-    def broken_reader(_role, _tier):
+    def broken_reader(_home, _role, _tier):
         raise RuntimeError("reader\nfailed")
 
-    monkeypatch.setattr(guard, "_read_claude_native_agent_model", broken_reader)
+    monkeypatch.setattr(native_agent_card, '_read_claude_native_agent_model', broken_reader)
     conf = {
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide("developer", "normal", conf, "claude")
+    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert "RuntimeError: reader failed" in result["reason"]
-    hook = guard.evaluate_hook(_payload("developer"), config_loader=lambda: conf)
+    hook = guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
     assert "permissionDecision" not in hook["hookSpecificOutput"]
 
 
 def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(
-    guard, rendered_cards
+    guard_home, guard, rendered_cards
 ):
     """hard 티어가 등재됐으므로 판정은 `developer-hard.md` 를 읽고 conf 와 대조한다 (T-0766).
 
@@ -1359,7 +1351,7 @@ def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(
         "delegate.developer.hard.harness": "claude",
         "delegate.developer.hard.model": "opus",
     }
-    result = guard.decide("developer", "hard", conf, "claude")
+    result = guard.decide(guard_home, "developer", "hard", conf, "claude")
     assert result["verdict"] == "allow"
     assert not result["reason"].startswith("[delegate-channel/warn]"), (
         f"카드가 일치하는데 경고가 났다: {result['reason']}"
@@ -1368,7 +1360,7 @@ def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(
 
 
 def test_claude_hard_tier_card_drift_is_loud_and_names_the_hard_card(
-    guard, rendered_cards
+    guard_home, guard, rendered_cards
 ):
     """hard 카드가 normal 모델로 렌더돼 있으면(=티어 강등) 조용히 통과하지 않는다.
 
@@ -1379,7 +1371,7 @@ def test_claude_hard_tier_card_drift_is_loud_and_names_the_hard_card(
         "delegate.developer.hard.harness": "claude",
         "delegate.developer.hard.model": "opus",
     }
-    result = guard.decide("developer", "hard", conf, "claude")
+    result = guard.decide(guard_home, "developer", "hard", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/warn]")
     assert "developer-hard.md" in result["reason"]
@@ -1387,7 +1379,7 @@ def test_claude_hard_tier_card_drift_is_loud_and_names_the_hard_card(
 
 
 def test_codex_hard_and_opencode_native_do_not_read_claude_cards(
-    guard, monkeypatch
+    guard_home, guard, monkeypatch
 ):
     def unexpected(*_args):
         raise AssertionError("non-Claude adapters must not inspect Claude cards")
@@ -1401,19 +1393,19 @@ def test_codex_hard_and_opencode_native_do_not_read_claude_cards(
         "delegate.researcher.harness": "opencode",
         "delegate.researcher.model": "qwen",
     }
-    assert guard.decide("developer", "hard", codex, "codex")["verdict"] == "allow"
-    assert guard.decide("researcher", "normal", opencode, "opencode")["verdict"] == "allow"
+    assert guard.decide(guard_home, "developer", "hard", codex, "codex")["verdict"] == "allow"
+    assert guard.decide(guard_home, "researcher", "normal", opencode, "opencode")["verdict"] == "allow"
 
 
 @pytest.mark.parametrize("enabled", (True,))
-def test_unset_is_quiet_but_partial_tuple_is_loud_fail_open(guard, enabled):
+def test_unset_is_quiet_but_partial_tuple_is_loud_fail_open(guard_home, guard, enabled):
     unset = {"delegate.enabled": str(enabled).lower()}
     partial = {
         "delegate.enabled": str(enabled).lower(),
         "delegate.developer.harness": "claude",
     }
-    quiet = guard.decide("developer", "normal", unset, "claude")
-    warning = guard.decide("developer", "normal", partial, "claude")
+    quiet = guard.decide(guard_home, "developer", "normal", unset, "claude")
+    warning = guard.decide(guard_home, "developer", "normal", partial, "claude")
     assert quiet["verdict"] == warning["verdict"] == "allow"
     assert quiet["reason"].startswith("[delegate-channel/allow]")
     assert warning["reason"].startswith("[delegate-channel/warn]")
@@ -1428,7 +1420,7 @@ def test_decide_cli_surfaces_native_warning_in_stable_four_fields(guard):
     assert guard.main(
         ["decide", "--role", "developer", "--harness", "claude"],
         stdout=stdout,
-        config_loader=lambda: conf,
+        config_loader=lambda _home: conf,
     ) == 0
     result = json.loads(stdout.getvalue())
     assert set(result) == {"verdict", "reason", "harness", "model"}
@@ -1446,3 +1438,14 @@ def test_delegation_docs_distinguish_common_mapping_from_cross_transport():
     assert combined.count("cross transport") >= 3
     assert "cross 위임은 통상 과금이 발생하는 유료 호출이다" in skill
     assert "delegate.enabled" in readme and "delegate.enabled" in playbook
+
+
+@pytest.fixture
+def guard_home(tmp_path):
+    root = tmp_path / "rendered"
+    root.mkdir()
+    for relative in native_agent_card.CLAUDE_NATIVE_AGENT_CARDS.values():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((REPO / relative).read_bytes())
+    return pm_paths.home_at(root)

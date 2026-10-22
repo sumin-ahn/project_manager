@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import delegate_prompt_rules
+
 
 
 
@@ -1106,7 +1108,7 @@ def test_gap_reason_is_a_member_of_the_closed_reason_vocabulary(pd):
 
 def test_fix_scope_notice_derives_its_machine_declaration_line_from_the_enum(pd):
     """계약 정합 — 빈틈 보고 요구 문언이 verify 상수에서 파생된다(문언 drift 0)."""
-    notice = pd.PM_REVIEW_FIX_SCOPE_NOTICE
+    notice = delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE
     assert review_form.PM_REVIEW_VERIFY_GAP_REASON in notice
     assert review_form.PM_REVIEW_VERIFY_BLOCK in notice
     assert "지우지 말고" in notice

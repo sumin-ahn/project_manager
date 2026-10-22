@@ -1,6 +1,10 @@
 """T-0637 — 추가 리뷰 payload 의 sandbox transport·조기 종료 고지."""
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra import reviewer_target
+
 import importlib.util
 import inspect
 import subprocess
@@ -73,7 +77,7 @@ def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
     if conf is not None:
         config.update(conf)
     monkeypatch.setattr(external, "REPO", tmp_path)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(config))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(config))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path,
     )
@@ -121,7 +125,7 @@ def _owner_only(external, path: Path) -> bool:
 
 
 def _opencode_target(external):
-    return external.resolve_reviewer_target({
+    return reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "opencode",
         "additional_reviewer.model": "zai/glm-4.6",
     })
@@ -180,8 +184,7 @@ def test_opencode_transport_restriction_goes_through_the_platform_seam(
 def test_opencode_post_create_containment_failure_cleans_transport(
         external, monkeypatch, tmp_path):
     target = _opencode_target(external)
-    delegate = external._load_delegate_transport()
-    real_assert = delegate._assert_opencode_transport_path
+    real_assert = delegate_temp._assert_opencode_transport_path
     seen: list[Path] = []
 
     def _assert(cwd, prompt_file):
@@ -190,7 +193,7 @@ def test_opencode_post_create_containment_failure_cleans_transport(
         if len(seen) == 2:
             raise delegate_errors.DelegateError("containment 재검사 거부")
 
-    monkeypatch.setattr(delegate, "_assert_opencode_transport_path", _assert)
+    monkeypatch.setattr(delegate_temp, '_assert_opencode_transport_path', _assert)
 
     with pytest.raises(delegate_errors.DelegateError, match="containment 재검사 거부"):
         with external._structured_transport(target, "검토 diff", tmp_path):
@@ -308,7 +311,7 @@ def test_invalid_review_input_has_no_side_effects(
 
 
 def test_raw_preserves_actual_reviewer_git_output(external, monkeypatch, tmp_path):
-    target = external.resolve_reviewer_target(_REVIEWER_TARGET)
+    target = reviewer_target.resolve_reviewer_target(_REVIEWER_TARGET)
     actual_output = "diff --git a/x.py b/x.py\n+ACTUAL_TOOL_OUTPUT\n"
     def run(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 0, actual_output, "git read succeeded")

@@ -13,6 +13,10 @@ critical env(ctx-guard 예산이 아닌 bash timeout 노브·T-0293)와 정본 a
 """
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_env
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import json
 import re
@@ -149,12 +153,12 @@ def test_settings_json_valid(path: Path):
 def test_declared_wall_backstops_stay_under_harness_bash_cap():
     """유효 primary+fallback 최악 예산 + 여유가 claude MAX/opencode 상한 모두 이하."""
     delegate = _load_tool("pm_delegate")
-    margin = delegate._HARNESS_CAP_MARGIN_SEC
-    worst = delegate.max_declared_execution_path_budget()
+    margin = delegate_run_rules._HARNESS_CAP_MARGIN_SEC
+    worst = delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
     assert worst == 29220  # opencode 2시도: 2×(14400 + 2×90 + 3×10 정리)
     # codex→opencode 직접 반려 시나리오: 각 timeout/retry 뒤 wait+drain 10초를 시도마다 산입.
-    assert delegate._harness_timeout_budget("codex", 3600) + \
-        delegate._harness_timeout_budget("opencode", 14400) == 18220
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), "codex", 3600) + \
+        delegate_env._harness_timeout_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), "opencode", 14400) == 18220
     for surface, cap in (
             ("claude settings", _harness_bash_cap_sec()),
             ("opencode instructions", _opencode_bash_cap_sec())):
@@ -169,7 +173,7 @@ def test_claude_default_timeout_is_tight_and_not_a_delegation_budget():
     이 단언은 최악 경로 부등식을 DEFAULT에도 잘못 적용해 다시 8시간으로 올리는 회귀를 막는다.
     """
     default_ms, max_ms = _claude_bash_timeouts_ms()
-    worst_ms = _load_tool("pm_delegate").max_declared_execution_path_budget() * 1000
+    worst_ms = delegate_env.max_declared_execution_path_budget(pm_paths.home_at(_REPO)) * 1000
     assert default_ms < max_ms, (
         f"Claude Bash DEFAULT {default_ms}ms >= MAX {max_ms}ms — 일반 무-파라미터 명령이 "
         "명시 장시간 호출과 같은 수명으로 되돌아감")
@@ -200,7 +204,7 @@ def _execution_command_budget_seconds(card_text: str) -> list[tuple[str, int]]:
     budgets: list[tuple[str, int]] = []
     delegate = _load_tool("pm_delegate")
     command_budgets = {
-        "pm_delegate.py": delegate.max_declared_execution_path_budget(),
+        "pm_delegate.py": delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE)),
         # 추가 리뷰어 대상은 `additional_reviewer.harness`+`.model` 로 해소된다 — 엔진 기본
         # 커맨드가 없으므로 어느 하네스가 설정돼도 담기는 값, 곧 선언 프로필 중 가장 긴 벽시계를
         # 최악 예산으로 본다.
@@ -344,11 +348,11 @@ def test_harness_bash_cap_margin_is_positive():
     delegate = _load_tool("pm_delegate")
     # 부모 wait 5초 + pipe drain 5초는 margin이 아니라 매 시도 실행 예산에 직접 든다.
     assert watchdog.process_cleanup_budget_per_attempt() == 10
-    assert delegate._HARNESS_CAP_KILL_GRACE_BUDGET_SEC == 10
-    measured = delegate._HARNESS_CAP_MEASURED_AUX_BUDGET_SEC
-    assert delegate._HARNESS_CAP_MARGIN_SEC == watchdog.HARNESS_CAP_MARGIN_SEC
-    assert delegate._HARNESS_CAP_MARGIN_SEC == ((measured + 9) // 10) * 10 == 10
-    actual_slack = _harness_bash_cap_sec() - delegate.max_declared_execution_path_budget()
-    assert actual_slack >= 2 * delegate._HARNESS_CAP_MARGIN_SEC, (
+    assert delegate_run_rules._HARNESS_CAP_KILL_GRACE_BUDGET_SEC == 10
+    measured = delegate_run_rules._HARNESS_CAP_MEASURED_AUX_BUDGET_SEC
+    assert delegate_run_rules._HARNESS_CAP_MARGIN_SEC == watchdog.HARNESS_CAP_MARGIN_SEC
+    assert delegate_run_rules._HARNESS_CAP_MARGIN_SEC == ((measured + 9) // 10) * 10 == 10
+    actual_slack = _harness_bash_cap_sec() - delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    assert actual_slack >= 2 * delegate_run_rules._HARNESS_CAP_MARGIN_SEC, (
         f"출하 상한 실여유 {actual_slack:g}s가 측정 기반 margin "
-        f"{delegate._HARNESS_CAP_MARGIN_SEC}s의 2배 미만")
+        f"{delegate_run_rules._HARNESS_CAP_MARGIN_SEC}s의 2배 미만")

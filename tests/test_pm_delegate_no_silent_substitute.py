@@ -14,6 +14,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+from pm_engine.infra.harness import delegate_env
+
 import ast
 import importlib.util
 import json
@@ -102,8 +105,8 @@ def _write_prompt(tmp_path: Path) -> Path:
 
 def _run(pd, monkeypatch, tmp_path, fake, conf=None) -> tuple[int, Path]:
     """mock 위임 1회 실행 — (rc, 장부 경로). raw/장부는 tmp output-dir 로 격리한다."""
-    monkeypatch.setattr(pd, "local_config", lambda: conf if conf is not None else _conf())
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf if conf is not None else _conf())
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     outdir = tmp_path / "raw"
     rc = pd.main(
         ["--role", "developer", "--prompt-file", str(_write_prompt(tmp_path)),

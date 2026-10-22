@@ -17,6 +17,8 @@
 여기서 잡는다.
 """
 from __future__ import annotations
+from pm_engine.domain import reviewer_budget, reviewer_result
+from pm_engine.infra import reviewer_target
 
 import argparse
 import importlib.util
@@ -811,12 +813,12 @@ def test_no_entry_carries_an_optin_prompt_or_force_flag(board, pm_update):
 def test_knob_key_constants_match_the_engine_table():
     """엔진의 노브 키 상수가 글자 단위로 이 표와 같다 (배선 드리프트 가드)."""
     core = _additional_reviewer()
-    assert (core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY
+    assert (reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY
             == "additional_reviewer.incomplete_rounds_max")
-    assert core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY == "additional_reviewer.wave_budget"
+    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY == "additional_reviewer.wave_budget"
     assert set(KNOB_KEYS) == {
-        core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
-        core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY,
+        reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
+        reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY,
     }
     # 판정 상한은 노브도 축도 아니다 — 키 상수·해소 함수·엔진 기본값이 모두 없다(축 제거).
     assert not hasattr(core, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
@@ -838,7 +840,7 @@ def test_knob_resolution_reads_the_configured_key(key, conf_shape, expected):
     resolver_name, engine_default = _KNOB_RESOLVERS[key]
     conf = {"set": {key: "3"}, "none": {}}[conf_shape]
 
-    resolved = getattr(core, resolver_name)(conf)
+    resolved = getattr(reviewer_target, resolver_name)(conf)
     assert resolved == (engine_default if expected is None else expected)
 
 
@@ -847,9 +849,9 @@ def test_empty_knob_value_is_unset():
     core = _additional_reviewer()
     for key in KNOB_KEYS:
         resolver_name, engine_default = _KNOB_RESOLVERS[key]
-        resolve = getattr(core, resolver_name)
+        resolve = getattr(reviewer_target, resolver_name)
         assert resolve({key: "   "}) == engine_default
-        assert core.knob_value_key({key: "   "}, key) is None
+        assert reviewer_result.knob_value_key({key: "   "}, key) is None
 
 
 @pytest.mark.parametrize("broken", ["abc", "-1", "3.5"])
@@ -858,15 +860,15 @@ def test_broken_knob_value_falls_to_the_engine_default(broken):
     core = _additional_reviewer()
     for key in KNOB_KEYS:
         resolver_name, engine_default = _KNOB_RESOLVERS[key]
-        assert getattr(core, resolver_name)({key: broken}) == engine_default
+        assert getattr(reviewer_target, resolver_name)({key: broken}) == engine_default
         # 값을 공급한 키는 여전히 그 키다(형식 오류가 공급 사실을 뒤집지 않는다).
-        assert core.knob_value_key({key: broken}, key) == key
+        assert reviewer_result.knob_value_key({key: broken}, key) == key
 
 
 def test_engine_guidance_names_the_knob_keys():
     """상한/예산 차단 안내가 현재 키를 가르친다 — 안내는 채택자가 값을 고치는 유일한 접점이다."""
     core = _additional_reviewer()
     round_guidance = core._ROUND_LIMIT_GUIDANCE
-    assert core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
+    assert reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
     assert "additional_reviewer.round_limit" not in round_guidance
-    assert core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in core._WAVE_BUDGET_GUIDANCE
+    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in core._WAVE_BUDGET_GUIDANCE

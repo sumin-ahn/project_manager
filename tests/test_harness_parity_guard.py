@@ -66,22 +66,22 @@ class Site:
 
 # ── ① 하네스 이름이 조건식에 나오는 자리 (전부 CLI 형식) ──────────────────
 CONDITION_BRANCHES: dict[LedgerKey, Site] = {
-    ("additional_reviewer.py", "_structured_reviewer_argv", "codex"): Site(
+    ('reviewer_target.py', '_structured_reviewer_argv', 'codex'): Site(
         "argv 조립 — codex 는 `exec --json` 형식이라 contract 의 codex 빌더로 간다"),
-    ("additional_reviewer.py", "_structured_reviewer_argv", "claude"): Site(
+    ('reviewer_target.py', '_structured_reviewer_argv', 'claude'): Site(
         "argv 조립 — claude 는 `-p --output-format stream-json` 형식이라 별도 빌더로 간다"),
     ("additional_reviewer.py", "_structured_transport", "opencode"): Site(
         "CLI 형식 — opencode 만 프롬프트를 stdin 이 아니라 `--file` 첨부로 받는다"),
     ("delegate_channel_guard.py", "decide", "claude"): Site(
         "CLI 형식 — claude 네이티브 Task tool 이 있는 세션에서만 네이티브 경로를 고른다"),
-    ("pm_delegate.py", "_build_target_argv", "codex"): Site(
+    ('delegate_run.py', '_build_target_argv', 'codex'): Site(
         "argv 조립 — codex 빌더 분기(형식 계약은 contract 소유)"),
-    ("pm_delegate.py", "_build_target_argv", "claude"): Site(
+    ('delegate_run.py', '_build_target_argv', 'claude'): Site(
         "argv 조립 — claude 빌더 분기(형식 계약은 contract 소유)"),
     ("pm_delegate.py", "_dry_run_harness_annotations", "opencode"): Site(
         "dry-run 표기 — opencode 만 `--dir`/`--file` 자리표시자를 미리보기에 덧붙인다",
         expected_count=2),
-    ("pm_delegate.py", "_prepare_attempt_transport", "opencode"): Site(
+    ('delegate_transport.py', '_prepare_attempt_transport', 'opencode'): Site(
         "CLI 형식 — opencode 만 프롬프트 파일 sandbox 를 준비한다"),
     ("pm_import.py", "_build_runner_argv", "claude"): Site(
         "어댑터 설치 — 라이브 스모크 러너의 claude CLI argv"),
@@ -107,21 +107,21 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
 # 정당한 비대칭(CLI 형식·어댑터 레이아웃)은 분기가 아니라 **표**로 적는다는 규약의 실물이다.
 # 표 하나가 세 하네스 키를 가지므로 원장 항목도 셋이 된다(값 = (사유, 하네스들)).
 HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
-    ("additional_reviewer.py", "_REVIEWER_PROGRESS_CONTRACTS"): (
+    ('reviewer_budget.py', '_REVIEWER_PROGRESS_CONTRACTS'): (
         "CLI 형식 — 하네스마다 실행 파일과 진행 신호 옵션 계약이 다르다", HARNESS_NAMES),
-    ("pm_delegate.py", "_HARNESS_AUTH_ENV"): (
+    ('delegate_run_rules.py', '_HARNESS_AUTH_ENV'): (
         "CLI 인증 — 하네스마다 자기 CLI 가 읽는 인증 env 이름이 다르다", HARNESS_NAMES),
-    ("pm_delegate.py", "_READ_TMP_ARGV_MODE_BY_HARNESS"): (
+    ('delegate_run_rules.py', '_READ_TMP_ARGV_MODE_BY_HARNESS'): (
         "CLI 형식 — read 역할 임시 쓰기 자리를 여는 공개 플래그가 CLI 마다 다르다", HARNESS_NAMES),
-    ("pm_delegate.py", "_READ_TMP_PARENT_COMPONENT_BY_HARNESS"): (
+    ('delegate_run_rules.py', '_READ_TMP_PARENT_COMPONENT_BY_HARNESS'): (
         "CLI 형식 — CLI 가 허용하는 임시 경로 부모 표기 실측값", HARNESS_NAMES),
-    ("pm_delegate.py", "_READ_TMP_PYTEST_REL_BY_HARNESS"): (
+    ('delegate_run_rules.py', '_READ_TMP_PYTEST_REL_BY_HARNESS'): (
         "CLI 형식 — 회귀 실행 위치 안내에 쓰는 상대 경로 표기", HARNESS_NAMES),
-    ("pm_delegate.py", "_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS"): (
+    ('delegate_run_rules.py', '_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS'): (
         "CLI 형식 — 실행 root 재앵커 플래그(`-C`) 보유 여부 실측값", HARNESS_NAMES),
-    ("pm_delegate.py", "_READ_TMP_TMP_TEMP_USE_WRITABLE_PATH_BY_HARNESS"): (
+    ('delegate_run_rules.py', '_READ_TMP_TMP_TEMP_USE_WRITABLE_PATH_BY_HARNESS'): (
         "CLI 형식 — TMPDIR/TMP/TEMP 표기를 CLI 가 어떻게 읽는지의 실측값", HARNESS_NAMES),
-    ("pm_delegate.py", "_READ_TMP_WRITABLE_COMPONENT_BY_HARNESS"): (
+    ('delegate_run_rules.py', '_READ_TMP_WRITABLE_COMPONENT_BY_HARNESS'): (
         "CLI 형식 — 임시 쓰기 자리 이름 표기 실측값", HARNESS_NAMES),
     ("pm_import.py", "ADAPTER_CONFIG_CHANNEL"): (
         "어댑터 설치 — 하네스마다 config 파일 채널이 다르다", HARNESS_NAMES),
@@ -166,14 +166,13 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
 # (하네스 이름이 없어도) 미등재로 걸린다.
 _ROLE_AXIS_REASON = "역할축 — 하네스와 무관하게 generate≠evaluate 를 강제한다"
 DELEGATION_AUTHORITY_SITES: dict[LedgerKey, Site] = {
-    ("delegate_scope.py", "allowed_paths", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_delegate.py", "RESUME_MUTATING_ROLES", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_delegate.py", "_apply_read_tmp_argv", "READ_ROLES"): Site(_ROLE_AXIS_REASON),
+    ('delegate_scope_git.py', 'allowed_paths', 'WRITE_ROLES'): Site(_ROLE_AXIS_REASON),
+    ('delegate_run_rules.py', 'RESUME_MUTATING_ROLES', 'WRITE_ROLES'): Site(_ROLE_AXIS_REASON),
+    ('delegate_transport.py', '_apply_read_tmp_argv', 'READ_ROLES'): Site(_ROLE_AXIS_REASON),
     ("pm_delegate.py", "_changed_overlap_paths", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("pm_delegate.py", "_execute_and_collect", "RESUME_MUTATING_ROLES"): Site(
         "역할축 — 재실행이 라운드를 하나 더 만드는 역할을 mutating 으로 다룬다"),
-    ("pm_delegate.py", "_perm_axis", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_delegate.py", "_prepare_attempt_transport", "READ_ROLES"): Site(_ROLE_AXIS_REASON),
+    ('delegate_transport.py', '_prepare_attempt_transport', 'READ_ROLES'): Site(_ROLE_AXIS_REASON),
     ("pm_delegate.py", "_run_delegate_cli", "READ_ROLES"): Site(_ROLE_AXIS_REASON),
     ("pm_delegate.py", "_run_delegate_cli", "WRITE_ROLES"): Site(
         _ROLE_AXIS_REASON, expected_count=2),
@@ -182,7 +181,7 @@ DELEGATION_AUTHORITY_SITES: dict[LedgerKey, Site] = {
     ("contract.py", "build_claude_argv", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("contract.py", "claude_tools", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("contract.py", "perm_axis", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_delegate.py", "_apply_read_tmp_argv", SANDBOX_DOWNGRADE_LITERAL): Site(
+    ("delegate_transport.py", "_apply_read_tmp_argv", SANDBOX_DOWNGRADE_LITERAL): Site(
         "역할축 — read 역할 argv 가 들고 온 sandbox 계약을 확인하고 임시 자리만 연다"),
     ("contract.py", "CODEX_SANDBOX", SANDBOX_DOWNGRADE_LITERAL): Site(
         "역할축 — read 축 codex sandbox 값 선언(하네스가 아니라 권한축이 키다)"),
@@ -501,7 +500,7 @@ def test_no_permission_or_env_branch_on_harness_name(tmp_path):
 
     measured = _measured_sites([injected])
 
-    assert measured == Counter({("pm_delegate.py", "build_env", "codex"): 1})
+    assert measured == Counter({('pm_delegate.py', 'build_env', 'codex'): 1})
     assert ("pm_delegate.py", "build_env", "codex") not in ledger()
 
 

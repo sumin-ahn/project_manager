@@ -15,6 +15,12 @@ root·`--add-dir` 는 추가만 한다 — "주 워크스페이스는 read-only�
 """
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_env
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra.harness import delegate_transport
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import json as _json
 import subprocess
@@ -188,7 +194,7 @@ def test_claude_and_opencode_reviewer_not_subject_to_this_class(
         pd, tmp_path, harness, stdout_fn):
     """claude·opencode 는 `_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS` 가 False 라 -C/--dir 을 건드리지
     않는다 — 같은 비-저장소·staged-0 cwd 로도 이 preflight 가 아예 발동하지 않고 정상 스폰된다."""
-    assert pd._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness] is False
+    assert delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness] is False
     cwd = tmp_path / "worktree"   # 의도적으로 git 저장소가 아님 · staged 도 없음
     cwd.mkdir()
     calls = []
@@ -213,23 +219,23 @@ def test_reanchor_preamble_carries_three_absolute_values_and_declaration(pd, tmp
     cwd = tmp_path / "repo"
     exec_root = tmp_path / "isolated-tmp"
     writable = exec_root
-    text = pd._reanchor_exec_root_preamble(cwd, exec_root, writable)
+    text = delegate_transport._reanchor_exec_root_preamble(cwd, exec_root, writable)
 
     assert str(cwd) in text                       # (a) 검토 대상 절대경로
     assert str(exec_root) in text                  # (b) 실행 root 절대경로
     assert "검토 대상이 아니다" in text             # (b) 대상 아님 선언
     assert str(writable) in text                   # (c) 쓰기 가능 임시 경로
-    assert f"git -C {pd.render_shell_token(str(cwd))} diff --cached" in text
-    assert f"git -C {pd.render_shell_token(str(cwd))} rev-parse HEAD" in text
-    assert f"git -C {pd.render_shell_token(str(cwd))} status --short" in text
+    assert f"git -C {delegate_env.render_shell_token(str(cwd))} diff --cached" in text
+    assert f"git -C {delegate_env.render_shell_token(str(cwd))} rev-parse HEAD" in text
+    assert f"git -C {delegate_env.render_shell_token(str(cwd))} status --short" in text
     pytest_line = [line for line in text.splitlines() if "pytest" in line and "-m" in line][0]
     assert str(cwd) in pytest_line  # pytest 예시도 절대 target
 
 
 def test_predict_read_tmp_paths_has_no_side_effects(pd):
     """dry-run 예측 경로는 실제 mkdir을 하지 않는다 — 이름 규칙만 계산."""
-    predicted_path, predicted_writable = pd._predict_read_tmp_paths("codex")
-    assert predicted_path.name.startswith(pd._READ_TMP_PREFIX)
+    predicted_path, predicted_writable = delegate_transport._predict_read_tmp_paths(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex")
+    assert predicted_path.name.startswith(delegate_run_rules._READ_TMP_PREFIX)
     assert not predicted_path.exists()
     assert not predicted_writable.exists()
 
@@ -252,7 +258,7 @@ def test_real_execution_prompt_carries_reanchor_preamble(pd, tmp_path):
     prompt = seen["prompt"]
     assert str(repo) in prompt
     assert "검토 대상이 아니다" in prompt
-    assert f"git -C {pd.render_shell_token(str(repo))} diff --cached" in prompt
+    assert f"git -C {delegate_env.render_shell_token(str(repo))} diff --cached" in prompt
 
 
 def test_dry_run_prompt_carries_three_absolute_values(pd, tmp_path, capsys):
@@ -274,8 +280,8 @@ def test_dry_run_prompt_carries_three_absolute_values(pd, tmp_path, capsys):
     assert "검토 대상이 아니다" in out               # (b) 실행 root·대상 아님 선언
     assert "이 프로세스의 실행 root(-C):" in out
     assert "쓰기 가능 임시 경로:" in out              # (c)
-    assert f"git -C {pd.render_shell_token(str(repo))} diff --cached" in out
-    assert f"git -C {pd.render_shell_token(str(repo))} rev-parse HEAD" in out
+    assert f"git -C {delegate_env.render_shell_token(str(repo))} diff --cached" in out
+    assert f"git -C {delegate_env.render_shell_token(str(repo))} rev-parse HEAD" in out
 
 
 def test_dry_run_developer_role_has_no_reanchor_preamble(pd, tmp_path, capsys):
@@ -304,9 +310,9 @@ def test_dry_run_no_reanchor_when_read_tmp_strategy_unavailable(
     =None` → `_apply_read_tmp_argv` 가 argv 를 그대로 반환) dry-run 도 존재하지 않을 좌표를
     예고하지 않는다 — 존재하지 않을 좌표를 안내하는 건 안내가 없는 것보다 나쁘다(PM 판정).
     dry-run 과 실행의 `-C` 의미(둘 다 `--cwd`)·preamble 유무가 일치함을 한 테스트에서 교차 확인."""
-    monkeypatch.setattr(pd, "_READ_TMP_FD_SUPPORTED", False)
-    monkeypatch.setattr(pd, "_read_tmp_owner_acl_platform", lambda: False)
-    assert pd._read_tmp_strategy() is None
+    monkeypatch.setattr(delegate_temp, '_READ_TMP_FD_SUPPORTED', False)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_owner_acl_platform', lambda: False)
+    assert delegate_temp._read_tmp_strategy() is None
 
     repo = tmp_path / "repo"
     _init_repo(repo, staged=True)

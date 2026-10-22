@@ -12,6 +12,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_env
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra.harness import delegate_transport
+
 from pm_engine.app import round_maintenance
 
 
@@ -1745,7 +1749,7 @@ def test_deleted_paths_count_as_this_round_changes(pd, rounds_env):
     dead_source.unlink()
 
     changed = pd._developer_round_changed_paths(
-        pd._repo_root_for_cwd(slot), base_rev="HEAD",
+        pm_paths._repo_root_for_cwd(slot), base_rev="HEAD",
     )
     assert {"src/dead_axis.py", "tests/test_dead_axis.py"} <= changed
     assert pd.harvest_ticket_copy(
@@ -1850,7 +1854,7 @@ def test_deletion_axis_is_shared_and_the_architect_command_catches_it(pd, rounds
     contract_path.unlink()
 
     changed = pd._developer_round_changed_paths(
-        pd._repo_root_for_cwd(slot), base_rev="HEAD",
+        pm_paths._repo_root_for_cwd(slot), base_rev="HEAD",
     )
     # 대상 검사가 보는 집합에 지운 파일이 들어 있다 — 삭제 축은 하나이고 공유된다.
     assert contract_target in changed
@@ -1983,9 +1987,9 @@ def test_codex_reviewer_opens_the_legacy_row_run_dir(pd, monkeypatch, tmp_path):
     temp_root = tmp_path / "pm-home-temp"
     temp_root.mkdir()
     copy = _plan_for(pd, tmp_path, "T-2001", "a" * 32)
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
-        "codex", "gpt-x", None, "code-reviewer", tmp_path / "worktree", "review",
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
+    argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", tmp_path / "worktree", "review",
         cluster_run_dir=copy.parent,
     )
     try:
@@ -1995,7 +1999,7 @@ def test_codex_reviewer_opens_the_legacy_row_run_dir(pd, monkeypatch, tmp_path):
         assert argv[argv.index("-C") + 1] == str(read_tmp.path)
         assert temp_root in read_tmp.path.parents      # 주입한 임시 루트에 붙었다
     finally:
-        pd._cleanup_attempt_transport(prompt_path, read_tmp)
+        delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
 
 
 _CODEX_NETWORK_OVERRIDE_VALUE = "sandbox_workspace_write.network_access=true"
@@ -2027,10 +2031,10 @@ def test_codex_reviewer_opens_the_whole_cluster_run_dir(
     )
     temp_root = tmp_path / "pm-home-temp"
     temp_root.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
 
-    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
-        "codex", "gpt-x", None, "code-reviewer", slot, "review",
+    argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", slot, "review",
         cluster_run_dir=_round_write_scope_of(pd, plan.rounds[0]),
     )
 
@@ -2049,7 +2053,7 @@ def test_codex_reviewer_opens_the_whole_cluster_run_dir(
         for round_plan in plan.rounds:
             assert round_plan.cluster_run_dir == plan.run_dir
     finally:
-        pd._cleanup_attempt_transport(prompt_path, read_tmp)
+        delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
 
 
 def test_a_plan_without_the_run_dir_coordinate_is_loud(pd, tmp_path):
@@ -2073,9 +2077,9 @@ def test_non_codex_reviewer_warns_and_keeps_selected_target(
     temp_root = tmp_path / "pm-home-temp"
     temp_root.mkdir()
     copy = _plan_for(pd, tmp_path, "T-2002", "b" * 32)
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
-        harness, model, None, "code-reviewer", tmp_path / "worktree", "review",
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
+    argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), harness, model, None, "code-reviewer", tmp_path / "worktree", "review",
         cluster_run_dir=copy.parent,
     )
     try:
@@ -2086,7 +2090,7 @@ def test_non_codex_reviewer_warns_and_keeps_selected_target(
         warning = capsys.readouterr().err
         assert "단일-path write 격리" in warning
     finally:
-        pd._cleanup_attempt_transport(prompt_path, read_tmp)
+        delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
 
 
 def test_all_prompt_wires_get_the_same_round_preamble(pd, tmp_path):
@@ -3044,7 +3048,7 @@ def test_budget_rejection_leaves_no_slot_residue(pd, rounds_env):
     copy_root = _copy_root(pd, slot, "T-8017")
     before = set(copy_root.iterdir()) if copy_root.exists() else set()
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded):
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded):
         pd.prepare_ticket_copy(ticket="T-8017", role="developer", cwd=slot, pm_home=pm_home)
 
     after = set(copy_root.iterdir()) if copy_root.exists() else set()
@@ -3174,7 +3178,7 @@ def test_concurrent_prepares_at_the_budget_boundary_admit_exactly_one(
                 ticket="T-9001", role="developer", cwd=slot, pm_home=pm_home,
             )
             results.append(plan)
-        except pd.ClusterRoundBudgetExceeded as exc:
+        except delegate_errors.ClusterRoundBudgetExceeded as exc:
             errors.append(exc)
 
     with unittest.mock.patch.object(
@@ -3223,11 +3227,11 @@ def refund_env(tmp_path, pd, monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "refund@test.invalid")
     assert _git(home, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
-    monkeypatch.setattr(pd, "local_config", lambda: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: {
         "delegate_enabled": "true",
         "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
     })
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     return home, tickets
 
 
@@ -3584,7 +3588,7 @@ def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
                 ticket="T-9201", role="developer", cwd=slot, pm_home=pm_home,
             )
             results.append(plan)
-        except pd.ClusterRoundBudgetExceeded as exc:
+        except delegate_errors.ClusterRoundBudgetExceeded as exc:
             errors.append(exc)
 
     with unittest.mock.patch.object(
@@ -3751,7 +3755,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
 
     state = {"n": 0}
     # 역방향(F-001 c) — 정리가 정상 동작하면(주입 없음) 여전히 (0,0,0) 델타다.
-    with pytest.raises(pd.ClusterRoundBudgetExceeded):
+    with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded):
         _attempt_rejected_prepare()
     assert (_round_files(), _run_dirs(), _unterminated_ledger_rows()) == baseline
 
@@ -3767,7 +3771,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
 
         monkeypatch.setattr(file_lock, "force_rmtree", _boom)
         capsys.readouterr()
-        with pytest.raises(pd.ClusterRoundBudgetExceeded):
+        with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded):
             _attempt_rejected_prepare()
         err = capsys.readouterr().err
         assert "run-dir 정리 실패" in err and label in err, (
@@ -4547,7 +4551,7 @@ def test_prepare_denies_using_owner_conf_even_when_engine_copy_conf_lacks_mappin
     _write_spec(tickets, "T-7908")
 
     # 선-단언 — REPO(엔진 사본) conf 로 읽으면 매핑이 비어 no-op 이 된다는 전제 자체를 확인한다.
-    assert pd.local_config() == {}
+    assert conf_store.local_config(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE)) == {}
 
     rc = _prepare_cli(pd, slot, "T-7908", "architect")
 
@@ -4571,7 +4575,7 @@ def test_master_switch_denial_follows_owner_conf_not_engine_copy_conf(
     monkeypatch.setenv("CLAUDECODE", "1")
 
     # 선-단언 — REPO(엔진 사본) conf 로 읽으면 스위치 설정이 아예 없다는 전제 자체를 확인한다.
-    assert pd.local_config() == {}
+    assert conf_store.local_config(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE)) == {}
 
     _write_local_conf(pm_home, {
         "delegate.enabled": "false",
@@ -4615,8 +4619,8 @@ def test_cross_role_prepare_denial_survives_a_reworded_deny_reason(
     guard = pd._load_delegate_channel_guard()
     real_decide = guard.decide
 
-    def _reworded_decide(role, tier, conf, self_harness):
-        result = real_decide(role, tier, conf, self_harness)
+    def _reworded_decide(home, role, tier, conf, self_harness):
+        result = real_decide(home, role, tier, conf, self_harness)
         if result.get("verdict") == "deny" and result.get("harness"):
             result = dict(result, reason="문구가 완전히 바뀐 새 사유")
         return result
@@ -4907,7 +4911,7 @@ def t0981_gate(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(module.ticket_store, "find_ticket_exact", lambda *a: ("claimed", spec_path))
     monkeypatch.setattr(module.round_seed, "load_rounds", lambda *a, **kw: ())
-    monkeypatch.setattr(module, "_repo_root_for_cwd", lambda *a: tree)
+    monkeypatch.setattr(pm_paths, "_repo_root_for_cwd", lambda *a: tree)
     monkeypatch.setattr(module, "architect_tests_from_rounds", lambda *a: state.architect)
     monkeypatch.setattr(module, "_fix_round", lambda *a: state.is_fix)
     monkeypatch.setattr(module, "_developer_round_changed_paths", lambda *a, **kw: state.changed)

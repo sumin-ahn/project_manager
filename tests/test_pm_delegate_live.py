@@ -30,6 +30,12 @@ always-run 가드(라이브 없이·매 회귀): backbone 존재·로드 + 실�
 비-에코(false-green 가드가 vacuous 아님) + release 마커 수 pin.
 """
 from __future__ import annotations
+from pm_engine.infra.harness import contract
+
+from pm_engine.infra import conf_store
+from pm_engine.infra import delegate_config
+from pm_engine.infra.harness import delegate_env
+from pm_engine.domain import delegate_run_rules
 
 import importlib.util
 import inspect
@@ -141,7 +147,7 @@ def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path | None, harness:
     `cluster` 를 주면 묶음 리뷰 경로다 — 프롬프트는 엔진이 조립하고 `focus` 파일이 검토 중점으로
     실린다(`--prompt-file` 없음). reply 는 stdout(print)로 나오므로 capsys 로 회수한다.
     rc·reply·stderr 반환."""
-    monkeypatch.setattr(pd, "local_config", lambda: {"delegate.enabled": "true"})
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: {"delegate.enabled": "true"})
     if cluster:
         target = ["--cluster", cluster, "--focus", str(focus)]
     else:
@@ -259,7 +265,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
     repo, source = _seed_growth_repo(tmp_path, ticket)
     er = pd._load_additional_reviewer()
     monkeypatch.setattr(pd, "check_local_conf_divergence", lambda *_a, **_k: (repo, None, er))
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *_a, **_k: True)
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *_a, **_k: True)
     output_dir = tmp_path / "raw"
     rounds_dir = (
         repo / ".project_manager" / "wiki" / "tickets" / "rounds" / ticket
@@ -533,7 +539,7 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
         "파일을 새로 읽지 말고 이미 아는 내용으로만 답하라.",
         encoding="utf-8",
     )
-    monkeypatch.setattr(pd, "local_config", lambda: {"delegate.enabled": "true"})
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: {"delegate.enabled": "true"})
     rc2 = pd.main([
         "--role", "researcher", "--prompt-file", str(followup), "--cwd", str(repo),
         "--harness", "claude", "--model", CLAUDE_MODEL, "--reasoning", "low",
@@ -551,7 +557,7 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
         "resume 회신에 marker 부재 — 이어받은 컨텍스트로 답하지 못했다(파일 재읽기 금지 지시)" + tail)
 
     resumed = [row for row in raw_output.raw_records(ledger)
-               if row.get("attempt") == pd.RESUME_ATTEMPT]
+               if row.get("attempt") == delegate_run_rules.RESUME_ATTEMPT]
     assert len(resumed) == 1, f"재개 attempt 레코드 수 이상: {len(resumed)}" + tail
     assert resumed[0]["resume_matched"] is True, "장부가 세션 불일치를 기록" + tail
     assert resumed[0]["session_id"] == first["session_id"]
@@ -635,7 +641,8 @@ def test_pm_delegate_backbone_shipped_and_loadable():
     pd = _load_pd()
     for attr in ("main", "resolve_delegate", "build_codex_argv", "build_claude_argv",
                  "build_opencode_argv", "_validate_reasoning"):
-        assert hasattr(pd, attr), f"pm_delegate.py 에 {attr} 부재 — API rot."
+        owner = delegate_config if attr in {"resolve_delegate", "_validate_reasoning"} else contract if attr.startswith("build_") else pd
+        assert hasattr(owner, attr), f"위임 소유 모듈에 {attr} 부재 — API rot."
 
 
 def test_reasoning_allowed_measured_sets_pinned():
@@ -651,7 +658,7 @@ def test_reasoning_allowed_measured_sets_pinned():
     allowed = conf_schema.REASONING_ALLOWED
     assert allowed["codex"] == ("low", "medium", "high", "xhigh", "max")
     assert allowed["claude"] == ("low", "medium", "high", "xhigh", "max")
-    assert pd._validate_reasoning("codex", "max", model="gpt-x", cwd=Path.cwd()) == "max"
+    assert delegate_config._validate_reasoning("codex", "max", model="gpt-x", cwd=Path.cwd()) == "max"
 
 
 def test_marker_absent_from_prompt_present_in_readme(tmp_path):

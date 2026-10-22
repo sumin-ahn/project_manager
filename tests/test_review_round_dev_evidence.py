@@ -22,6 +22,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+from pm_engine.domain import delegate_run_rules
+from pm_engine.domain import reviewer_result
+
 from pm_engine.app import round_maintenance
 
 
@@ -407,11 +411,11 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
     assert _git(slot, "commit", "-qam", "review target").returncode == 0
 
     external = pd._load_additional_reviewer()
-    monkeypatch.setattr(external, "repo_root_from_cwd", lambda _cwd: slot)
+    monkeypatch.setattr(pm_paths, 'repo_root_from_cwd', lambda _cwd: slot)
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
-    monkeypatch.setattr(external, "_owns_real_board", lambda _path: False)
+    monkeypatch.setattr(pm_paths, '_owns_real_board', lambda _path: False)
     monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: external)
-    monkeypatch.setattr(pd, "local_config", lambda: {pd.DELEGATE_ENABLED_KEY: "true"})
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: {delegate_run_rules.DELEGATE_ENABLED_KEY: "true"})
     # 범위 감사는 이 진입점 판정과 독립 축이다(전용 회귀가 소유) — 여기서 죽이면 준비/예약/장부
     # 축만 남는다.
     monkeypatch.setattr(pd, "begin_scope_audit", lambda *_a, **_kw: None)
@@ -598,12 +602,12 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     # 추가 리뷰어 대상은 구조화 tuple 이 필수다(미고정 모델 실행 경로가 없다). 이 축은 이 파일의
     # 검증 대상이 아니므로 해소 가능한 최소 tuple 을 기본으로 깔고, 호출자가 준 값이 이긴다.
     resolved = {
-        external.ADDITIONAL_REVIEWER_HARNESS_KEY: "codex",
-        external.ADDITIONAL_REVIEWER_MODEL_KEY: "test-model",
+        reviewer_result.ADDITIONAL_REVIEWER_HARNESS_KEY: "codex",
+        reviewer_result.ADDITIONAL_REVIEWER_MODEL_KEY: "test-model",
     }
     resolved.update(conf or {})
     monkeypatch.setattr(external, "REPO", pm_home)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(resolved))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(resolved))
     monkeypatch.setattr(
         external, "extract_diff",
         lambda *args, **kwargs: external.ReviewDiff(

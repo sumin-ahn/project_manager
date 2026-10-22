@@ -20,6 +20,8 @@ hermetic: 실 `local.conf` **파일**을 tmp 에 만들어 각 도구가 그 파
 (조립한 dict·monkeypatch 상수를 단언하면 파일→값 경로가 통째로 빠진다). 자식 프로세스 스폰 0.
 """
 from __future__ import annotations
+
+from pm_engine.infra import delegate_config
 from pm_engine.app import repo_protection
 from pm_engine.infra import pm_paths
 
@@ -133,17 +135,18 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
     config.REPO = tmp_path
 
     assert conf_store.local_config(board._home())["identity.user"] == "last@example.com"
-    assert external.local_config()["identity.user"] == "last@example.com"
+    assert conf_store.local_config(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE))["identity.user"] == "last@example.com"
     assert repo_protection._local_conf_value(pm_paths.home_at(config.REPO), "identity.user") == "last@example.com"
 
 
-def test_module_level_local_config_seams_are_still_patchable(monkeypatch):
+def test_module_level_local_config_seams_are_still_patchable(monkeypatch, tmp_path):
     """모듈 레벨 `local_config` 이름은 시그니처째 보존된다 — 63지점 테스트 seam."""
     for name in ("additional_reviewer", "ticket_finish", "pm_delegate"):
         module = _load(name, f"seam_{name}")
-        assert callable(module.local_config)
-        monkeypatch.setattr(module, "local_config", lambda *a, **k: {"test.cmd": "x"})
-        assert module.local_config()["test.cmd"] == "x"
+        owner = module if name == "ticket_finish" else conf_store
+        assert callable(owner.local_config)
+        monkeypatch.setattr(owner, "local_config", lambda *a, **k: {"test.cmd": "x"})
+        assert (owner.local_config() if name == "ticket_finish" else owner.local_config(pm_paths.home_at(tmp_path)))["test.cmd"] == "x"
 
 
 # ── ② 구표기 fail-loud (소비는 멈추고 배달은 계속) ─────────────────────────
@@ -172,7 +175,10 @@ def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, 
     # 예외 **종류**는 이름으로 본다 — 도구마다 로더 사본이 따로 로드돼 클래스 identity 가 다르고,
     # 계약은 "구표기 잔존이 이 이름의 예외로 멈춘다" 이지 특정 객체가 아니다.
     with pytest.raises(RuntimeError) as caught:
-        module.local_config()
+        if name == "ticket_finish":
+            module.local_config()
+        else:
+            conf_store.local_config(pm_paths.home_at(tmp_path))
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
     message = str(caught.value)
@@ -580,16 +586,16 @@ def test_ticket_prepare_is_refused_when_delegation_is_off(tmp_path, capsys):
     assert not (repo / ".project_manager" / ".local").exists()   # 부작용 0
 
 
-def test_delegation_switch_defaults_to_allow(tmp_path):
+def test_delegation_switch_defaults_to_allow(guard_home, tmp_path):
     """키가 없으면 허용이다 — 기본을 OFF 로 두면 기존 채택자의 native 위임이 새로 막힌다."""
     delegate = _load("pm_delegate", "default_pm_delegate")
     guard = _load("delegate_channel_guard", "default_guard")
     conf = {"delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"}
 
-    assert delegate._is_enabled(conf) is True
-    assert delegate._is_enabled({**conf, "delegate.enabled": ""}) is True
-    assert delegate._is_enabled({**conf, "delegate.enabled": "false"}) is False
-    assert guard.decide("developer", "normal", {**conf, "delegate.enabled": "false"},
+    assert delegate_config._is_enabled(conf) is True
+    assert delegate_config._is_enabled({**conf, "delegate.enabled": ""}) is True
+    assert delegate_config._is_enabled({**conf, "delegate.enabled": "false"}) is False
+    assert guard.decide(guard_home, "developer", "normal", {**conf, "delegate.enabled": "false"},
                         "claude")["verdict"] == "deny"
 
 
@@ -865,3 +871,8 @@ def test_adapter_blocked_key_block_is_generated_not_hand_copied(conf_module, rel
     style = {".py": "python", ".cjs": "js"}[Path(relpath).suffix]
     assert local_conf_cli.render_adapter_block(style) in (
         REPO / relpath).read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def guard_home(tmp_path):
+    return pm_paths.home_at(tmp_path / "rendered")

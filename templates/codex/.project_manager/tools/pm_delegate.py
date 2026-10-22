@@ -38,17 +38,15 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
 
 from __future__ import annotations
 
+
 import argparse
 import ast
-import base64
 import contextlib
 import datetime
-import errno
 import json
 import os
 import re
 import shlex
-import shutil
 import stat
 import subprocess
 import sys
@@ -57,11 +55,25 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Callable, NamedTuple
+from typing import Any, Callable, NamedTuple
+from functools import partial
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import conf_store
+from pm_engine.infra import delegate_config
+from pm_engine.infra.harness import delegate_env
+from pm_engine.domain import delegate_prompt_rules
+from pm_engine.infra import delegate_raw
+from pm_engine.infra.harness import delegate_run
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra import delegate_scope_git
+from pm_engine.domain import delegate_scope_rules
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra.harness import delegate_transport
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
 from pm_engine.app import cluster_binding, round_maintenance  # noqa: E402
 from pm_engine.infra import cluster_store  # noqa: E402
 from pm_engine.app import ticket_access, hooks, regression, round_seed  # noqa: E402
@@ -104,18 +116,6 @@ def _is_engine_rev_skew(exc) -> bool:
 # 사본 불일치를 **의도적으로 흡수**하는 경계의 등록부 (경계 이름 → 사유). 등록되지 않은 경계는
 # 흡수 자격이 없다 — 기본 규율은 여전히 "marked skew 는 재-raise" 다.
 _ENGINE_REV_SKEW_RECOVERY_REASONS = {
-    "read_role_temp_cleanup": (
-        "read 역할 temp 회수는 **주 결과를 덮지 않는 것**이 계약이다 — 위임이 이미 끝난 뒤의 "
-        "정리이므로 여기서 예외를 올리면 성공한 실행이 정리 실패로 뒤집힌다. 삭제 수단이 형제 "
-        "모듈(`fs.force_rmtree`)이라 사본 불일치가 이 경계에 도달할 수 있는데, 그것도 "
-        "정리 실패의 한 형태로 흡수하되 원인을 문구로 구분해 '잔존 경로'와 '엔진 사본 불일치'가 "
-        "같은 경고로 뭉개지지 않게 한다"
-    ),
-    "read_role_temp_rollback": (
-        "생성 실패 롤백의 정리는 **주 예외를 덮지 않는 것**이 계약이다 — 여기서 갈아타면 temp 를 "
-        "왜 못 만들었는지가 사라진다. 형제 모듈 삭제 수단이 낸 사본 불일치도 같은 이유로 흡수하되, "
-        "경고 한 줄로 남겨 재동기 처방이 함께 사라지지 않게 한다"
-    ),
     "ticket_copy_gate_refund": (
         "F-001 — 단일 정리 경계의 환불(abandon)은 **원 거부/전파 예외를 덮지 않는 것**이 "
         "계약이다 — 여기서 예외를 올리면 이미 확정된 거부 rc·사유나 전파 중인 예외가 정리 실패로 "
@@ -145,20 +145,10 @@ def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
     return _is_engine_rev_skew(exc)
 
 
-def _write_machine_line(text: str) -> None:
-    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
-
-    사람 출력(``print``)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그
-    치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
-    직접 쓴다(콘솔 코덱 전환과 독립).
-    """
-    console.write_machine_line(text)
-
-
 # ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
 # 설치 깊이는 `pm_import` 가 못 박는다 — 도구는 `<root>/.project_manager/tools/` 에만 놓인다.
 # REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch 할 수 있게 한다
-# (각 파일 self-contained — 공유 import 미도입).
+# 구현은 pm_engine의 실제 소유 모듈을 직접 사용하고, 이 앵커는 잔류 CLI 입력만 구성한다.
 
 def _find_repo_root() -> Path:
     """엔진 루트 — 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다.
@@ -173,222 +163,6 @@ def _find_repo_root() -> Path:
 
 REPO = _find_repo_root()
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"
-# ticket frontmatter(touches) 조회용 board 진입점 — 범위 밖 변경 판정 입력.
-BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
-
-
-# ── 도메인 상수 ────────────────────────────────────────────────────────────
-
-TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
-
-
-_ARCHITECT_TEST_ID_RE = re.compile(r"AT-[0-9]{3,}")
-_CONTRACT_TEST_TARGET_RE = re.compile(
-    r"(?<![A-Za-z0-9_./-])(?P<path>tests/[A-Za-z0-9_./-]+\.py)"
-    r"(?=::|(?:(?:에서|에는|에도|에게|으로|에|은|는|이|가|을|를|와|과|의|로))?"
-    r"(?:$|[\s,.;:!?…·，。)\]}>'\"`]))",
-)
-# 같은 경계 규칙의 확장 — 확장자 있는 repo-relative 파일 경로면 트리 어디든 잡는다.
-# 선행 부정 lookbehind 가 절대경로의 꼬리를 잘라 오는 것을 막는다(루트 시작 경로는 미매치).
-_CONTRACT_REPO_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9_./-])(?P<path>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)"
-    r"(?=::|(?:(?:에서|에는|에도|에게|으로|에|은|는|이|가|을|를|와|과|의|로))?"
-    r"(?:$|[\s,.;:!?…·，。)\]}>'\"`]))",
-)
-# fix 라운드 delta 꼬리에 부착하는 수정 범위 제약 문구 단일 진실 — 스킬·카드·playbook은
-# 이 상수를 복제하지 않고 "출력을 그대로 전달"만 지시한다(no-hand-retyping 원칙). 빈틈 보고
-# 형식이 verify 블록·사유 값을 인용하므로 그 상수들 **뒤에** 둔다(문언 drift 0).
-PM_REVIEW_FIX_SCOPE_NOTICE = f"""\
-## 수정 범위 제약 (이 delta 공통)
-
-- 위에 나열한 finding ID 와 각 `허용 수정 범위` 안에서만 고친다. 그 밖의 코드·테스트·문서는
-  더 나은 방법이 보여도 이번 라운드에서 건드리지 않는다.
-- 처방이나 명세에 빈틈이 있으면 스스로 메우지 않는다. 처방대로 따르면 다른 결함이 생기는
-  상호작용도 빈틈이다. 구현을 멈추고 아래 형식으로 라운드 파일에 적은 뒤 종료한다.
-  보강 처방이 필요하면 현재 티켓을 멈추고 사용자에게 보고한다.
-- 빈틈 보고로 끝난 라운드는 정상 산출이고 성공 종료다. 빈 손으로 끝내지 않으려고
-  처방 밖 구현을 얹지 않는다.
-- `허용 수정 범위`가 `{review_form.PM_REVIEW_PM_OWNED_SCOPE_PREFIX}`로 시작하는 finding은 PM 소유다.
-  developer는 구현하지 않고 해당 verify 행을 machine_verifiable=false ·
-  reason={review_form.PM_REVIEW_VERIFY_PM_OWNED_REASON} · expected=<PM 완료 기준 실값>으로 채운다. scope 표식과
-  verify 선언 중 하나만 있으면 회수가 거부된다.
-
-빈틈 보고 형식:
-- 대상: 어느 finding ID 의 어느 처방인가
-- 빈틈: 처방이 정하지 않은 지점은 무엇인가
-- 충돌: 처방대로 하면 무엇이 깨지는가 (재현 커맨드·파일:라인·관측값)
-- 대안: 검토한 선택지와 각각의 영향 (권고까지만 쓰고 적용하지 않는다)
-- 기계 선언: 그 ID 의 {review_form.PM_REVIEW_VERIFY_BLOCK} 행을 **지우지 말고** machine_verifiable=false ·
-  reason={review_form.PM_REVIEW_VERIFY_GAP_REASON} 로 채운다(expected 에 빈틈 요지 한 줄). 이 행이 없으면
-  엔진은 빈틈 보고와 태만을 구별하지 못해 PM 의 기계 확인이 통째로 막힌다.
-"""
-
-
-# 권한 역할축 — write=저장소 파일 쓰기·read=저장소 read-only(+reviewer 는 테스트 실행).
-WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
-READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
-# 하네스의 기본 권한축과 resume 재실행 안전성은 같은 분류가 아니다. read 역할(code-reviewer·
-# researcher)은 제품 worktree에는 read지만 run-dir 의 라운드 파일 `NN-<role>.md` 는 write한다.
-# 세션 불일치 뒤 fresh 재실행하면 새 라운드가 하나 더 생기므로 resume 축에서는 mutating으로 다룬다.
-RESUME_MUTATING_ROLES: frozenset[str] = WRITE_ROLES | frozenset(
-    {"code-reviewer", "researcher"}
-)
-
-# read 역할의 회귀용 임시 쓰기 표면 — 아래 설치본에서 **직접 실측한 값**이다.
-#   · codex-cli 0.147.0 실 CLI: 동적 `default_permissions`/`permissions.<name>` override는
-#     argv에 실려도 `codex exec`의 patch 도구가 read-only로 남아 ticket-copy write를 거부했다.
-#     공개 CLI 계약인 `-s workspace-write` + `--add-dir <ticket-copy-dir>`는 attempt tmp를 `-C`로
-#     재앵커했을 때 tmp와 정확한 copy run-dir만 writable로 만들고 원 worktree는 read-only로 남긴다.
-#     named profile 문자열의 존재가 아니라 실제 모델 edit→harvest를 release live가 단언한다.
-#   · claude 2.1.227: `--help`의 `--add-dir <directories...>`가 추가 tool-access 루트를 받는다.
-#   · opencode 1.18.16: `run --help`에는 추가-dir 플래그가 없다. custom 역할 카드를 `mode: all`로
-#     출하해 native task와 cross `run --agent <role>`가 같은 정의를 쓰며, code-reviewer 카드는
-#     run-dir 라운드 파일 기록을 위해 edit 가능하다. repo 쓰기 표면은 경고와 위임 전후 감사로
-#     관리한다.
-#     researcher 카드의 read-only 권한에는
-#     TMPDIR=/tmp/pm_delegate_probe일 때
-#     `external_directory /tmp/pm_delegate_probe/opencode/* = allow`, `edit * = deny`가 나왔다.
-#     즉 고정 `/tmp/opencode/*`가 아니라 `${TMPDIR}/opencode/*`이므로 attempt의 그 하위만 안내한다.
-# 버전 문자열을 런타임 추측해 분기하지 않는다. 위 값이 바뀌면 이 선언·회귀를 함께 갱신한다.
-_OPENCODE_READ_TMP_PARENT = "opencode"
-_OPENCODE_ALLOWED_TMP_COMPONENT = "opencode"
-_READ_TMP_PREFIX = "pm_delegate_read_"
-# attempt 이름의 16진 꼬리 길이. 유일성은 엔트로피가 아니라 **배타 mkdir**(선점된 이름이면
-# FileExistsError 로 끝난다)이 소유하므로 이름은 짧게 유지한다 — 격리 자리가 프로젝트 안으로
-# 들어오면서 접두가 길어졌고(Windows 실측: `%TEMP%` 33자 → PM 홈 임시 루트 49~62자), 잔존 트리
-# 실측 꼬리 158자 기준으로 32자 이름은 MAX_PATH(259)를 넘겼다. 12자면 그 예산 안에 든다
-# (같은 파일의 `_WRITE_PROBE_SUFFIX_HEX` 와 같은 사유).
-_READ_TMP_SUFFIX_HEX = 12
-# 정리가 끝내 실패해 잔존 트리가 남은 실행의 rc. 하네스 turn 이 성공(rc=0)이어도 그 실행은
-# 실패다. 인프라 실패 분류(폴백 대상)를 타지 않는 엔진 측 실패라 `_midrun_failure_result` 와
-# 같은 1 이다.
-_READ_TMP_RESIDUE_RC = 1
-_READ_TMP_ENV_KEYS: tuple[str, ...] = ("TMPDIR", "TMP", "TEMP")
-# 하네스별 차이는 orchestration 함수 안의 이름 분기가 아니라 이 측정 선언이 소유한다.
-_READ_TMP_PARENT_COMPONENT_BY_HARNESS: dict[str, str | None] = {
-    "codex": None,
-    "claude": None,
-    "opencode": _OPENCODE_READ_TMP_PARENT,
-}
-_READ_TMP_ARGV_MODE_BY_HARNESS: dict[str, str] = {
-    "codex": "workspace-add-dir",
-    "claude": "add-dir",
-    "opencode": "role-agent",
-}
-_READ_TMP_WRITABLE_COMPONENT_BY_HARNESS: dict[str, str | None] = {
-    "codex": None,
-    "claude": None,
-    "opencode": _OPENCODE_ALLOWED_TMP_COMPONENT,
-}
-_READ_TMP_TMP_TEMP_USE_WRITABLE_PATH_BY_HARNESS: dict[str, bool] = {
-    "codex": False,
-    "claude": False,
-    "opencode": True,
-}
-_READ_TMP_PYTEST_REL_BY_HARNESS: dict[str, str] = {
-    "codex": "pytest",
-    "claude": "pytest",
-    "opencode": "opencode/pytest",
-}
-_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS: dict[str, bool] = {
-    "codex": True,
-    "claude": False,
-    "opencode": False,
-}
-_READ_TMP_FD_SUPPORTED = (
-    hasattr(os, "O_NOFOLLOW")
-    and hasattr(os, "O_DIRECTORY")
-    and os.open in getattr(os, "supports_dir_fd", frozenset())
-    and os.mkdir in getattr(os, "supports_dir_fd", frozenset())
-    and os.rmdir in getattr(os, "supports_dir_fd", frozenset())
-    and os.stat in getattr(os, "supports_dir_fd", frozenset())
-    and bool(getattr(shutil.rmtree, "avoids_symlink_attacks", False))
-)
-
-# read tmp 생성/회수 수단 — 위 primitive 가 없다고 **권한을 강등하지 않는다**. ACL 플랫폼
-# (Windows)은 같은 보장을 다른 수단으로 낸다: 예측 불가 이름의 배타 생성(존재하면 실패) +
-# 소유자 전용 ACL(`fs.restrict_to_owner`) + 생성 identity 재검증 + 잔재를 남기지 않는
-# 회수(`fs.force_rmtree`). 두 수단이 **모두** 없는 플랫폼만 회귀-불가 경로로 간다.
-_READ_TMP_STRATEGY_FD = "fd"
-_READ_TMP_STRATEGY_OWNER_ACL = "owner-acl"
-
-READ_REGRESSION_UNAVAILABLE_NOTE = (
-    "이 read 역할 실행은 격리된 쓰기 가능 임시 디렉터리를 안전하게 만들 수 없어 회귀를 "
-    "직접 돌릴 수 없다. 회귀 숫자는 developer 보고값을 인용하고, 직접 실행하지 못했다는 "
-    "사실과 이유를 최종 보고서에 명시하라. 침묵하거나 직접 실행한 것처럼 쓰지 마라."
-)
-
-# 위임 turn 의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **하네스 프로필**이 소유한다
-# (`watchdog.HARNESS_PROFILES` — 클라우드 축 codex/claude 와 로컬 GPU 축 opencode 의 실측 근거가
-# 거기 주석에 있다). 이 모듈에 단일 상수를 두지 않는 이유: 값이 두 군데면 규칙이 둘이 되고,
-# 실제로 초기 구현의 단일 기본값(클라우드 표본 기반)이 3시간짜리 로컬 opencode 위임을 죽였다.
-# 해소 순서: `--timeout`(일회성) > local.conf `harness.<name>.wall_timeout` > `delegate.timeout`
-# (표면-flat legacy) > 프로필 선언. 무진행 축은 `harness.<name>.idle_timeout` >
-# `delegate.idle_timeout` > 프로필 선언.
-# 폴백이 발동하면 primary 소진 후 1회 더 실행한다 — 실행 1회의 최악 소요는 하네스마다 달라서
-# _harness_timeout_budget 이 계산한다(추가 폴백 없음 — 상한은 두 시도 예산의 합으로 닫히고,
-# 세션 재사용 라운드는 미일치 fresh 재실행분 primary 예산 1회가 더 가산된다).
-
-# 위임 벽시계와 하네스 Bash 상한 사이에 남겨 두는 최소 여유(초) — kill·수확·분류·박제의 예산.
-# 부등식은 `max(유효 primary+fallback 실행 경로) + 여유 ≤ 하네스 상한` 이고
-# tests/test_settings_hygiene.py 가 전 표면(claude settings·opencode shell-export 지침)을 기계로
-# 단언한다. 여유가 0이면 엔진이 자기 타임아웃을 분류(인프라 실패 → 폴백)하기 전에 하네스가 먼저
-# 죽여 진단이 통째로 사라진다(원인 불명 kill 8회의 한 축).
-#
-# 이 트리에서 `pytest ... --durations=30`으로 실제 종료 경로를 재었다: git scope audit 0.03s,
-# fallback raw 체인 0.02s, 나머지 분류·prompt 합성은 각 0.01s 미만. 이 보조 7단계는
-# 관측 최댓값을 초 단위로 올려 7s, 플랫폼 편차를 위해 다음 10초 경계로 올린다. 프로세스 정리는
-# 이 margin에 뭉뚱그리지 않는다 — `watchdog` 공용 식이 부모 wait 5s + pipe drain 5s를 **시도마다**
-# 실행 예산에 직접 산입한다(startup 재시도 포함).
-_HARNESS_CAP_KILL_GRACE_BUDGET_SEC = 10  # 호환/감사용: 정리 1회의 연속 wait+drain 최악값.
-_HARNESS_CAP_MEASURED_AUX_BUDGET_SEC = 7
-_HARNESS_CAP_MARGIN_SEC = 10
-
-# 인프라 실패 클래스 라벨(loud 메시지·raw provenance 에 그대로 실리는 안정 문자열).
-FAILURE_CLASS_LAUNCH = "스폰 실패/바이너리 부재"
-FAILURE_CLASS_TIMEOUT = "타임아웃"
-FAILURE_CLASS_STALL = "첫-이벤트 stall(재시도 소진)"
-FAILURE_CLASS_CLEANUP = "프로세스 정리 실패"
-FAILURE_CLASS_QUOTA = "한도/레이트리밋"
-FAILURE_CLASS_AUTH = "인증 실패"
-
-# RunResult 의 **명시 실패 신호** 키(rc 값 추론 금지·codex must-fix). 엔진(_default_run_fn·
-# _execute_attempt)만 세팅한다 — 하네스가 우연히 같은 rc 를 내도 분류되지 않는다.
-RUN_RESULT_LAUNCH_FAILED = "launch_failed"   # 바이너리 부재/PATH/exec 권한 — 프로세스가 뜨지 못함
-RUN_RESULT_STALLED = "stalled"               # opencode 첫-이벤트 stall(유한 재시도 소진·watchdog)
-RUN_RESULT_CLEANUP_FAILED = "cleanup_failed" # kill/drain 실패 — 부분 산출물 보존 + 자동 폴백 금지
-# 관측 침묵 초(마지막 진행 이벤트 이후) — 실패 신호가 아니라 **감사 관측치**다. 감사 헤더에 실려
-# 다음 kill 의 원인(하네스 상한 vs 무진행 vs 기타)을 사후 확정 가능하게 한다.
-RUN_RESULT_SILENCE_SEC = "silence_sec"
-# 무진행 판정으로 죽었는지(벽시계 백스톱과 구분) — 감사 헤더 사유 표기 입력.
-RUN_RESULT_IDLE_KILLED = "idle_killed"
-# 중단 진단은 호출부의 primary/default 값을 재사용하지 않고 워치독이 싣는 실제 발화값을 전달한다.
-RUN_RESULT_TIMEOUT_AXIS = "timeout_axis"
-RUN_RESULT_TIMEOUT_THRESHOLD_SEC = "timeout_threshold_sec"
-
-# opencode 첫-이벤트 stall 을 stderr 에 찍는 엔진 마커(단일 출처) — 분류기의 백스톱 신호로도 쓴다.
-OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
-
-# 위임 마스터 스위치 키(per-clone·**기본 ON**). "PM 이 위임을 해도 되는가" 하나만 판정하며 채널
-# (native/cross)로 갈리지 않는다 — 호출을 별도 동의 축으로 게이트하지 않는다.
-DELEGATE_ENABLED_KEY = "delegate.enabled"
-
-# 표면-flat legacy 시간 노브(하네스 무관·기존 채택자 설정 보존). 하네스별 키
-# `harness.<name>.wall_timeout`/`.idle_timeout` 이 설정돼 있으면 그쪽이 이긴다(더 구체적인 선언).
-DELEGATE_TIMEOUT_KEY = "delegate.timeout"
-DELEGATE_IDLE_TIMEOUT_KEY = "delegate.idle_timeout"
-
-# 위임 채널 실패 안내의 공통 꼬리 — **무음 대체 금지**. 실행 실패는 fail-loud rc 로 끝나고,
-# 이 호출은 명시 설정(`delegate.<role>[.hard].fallback.*` 원자 tuple) 밖의 다른 하네스/모델로
-# 자동 대체하지 않는다. 실사고: 실패 안내가 "네이티브/다른 하네스로 재시도를 검토하라"였고, 그
-# 문구를 읽은 세션의 native 모델이 위임 대상 작업을 조용히 대행했다 — 장부엔 그 대행 기록이
-# 없어 사후에 누가 무엇을 했는지 재구성할 수 없었다. 그래서 안내는 **명시 재호출**만 지시한다
-# (실패 자체는 raw 장부의 그 레코드에 rc 와 함께 남는다).
-NO_SILENT_SUBSTITUTE_NOTE = (
-    "  재위임은 명시 재호출만 — 이 호출은 설정된 폴백 밖의 다른 하네스/모델로 자동 대체하지 "
-    "않습니다. 현 세션의 native 모델이 대신 수행하지 마세요(실패는 raw 장부에 남습니다: "
-    "`pm_delegate.py raw --limit 5`)."
-)
 
 
 def fail_loud(message: str, *, rc: int = 1) -> int:
@@ -398,57 +172,8 @@ def fail_loud(message: str, *, rc: int = 1) -> int:
     지점마다 손으로 이어붙이면 **새 종료 경로가 조용히 안내를 빠뜨린다**. 그래서 `NO_SILENT_SUBSTITUTE_NOTE` 의 소비자는 이 함수 하나뿐이고(테스트가 그 불변을 못박는다),
     실패 경로는 `return fail_loud(...)` 로만 끝난다.
     """
-    print(f"{message}\n{NO_SILENT_SUBSTITUTE_NOTE}", file=sys.stderr)
+    print(f"{message}\n{delegate_run_rules.NO_SILENT_SUBSTITUTE_NOTE}", file=sys.stderr)
     return rc
-
-# 드라이버 계약 테이블(reasoning 허용집합·codex sandbox 모드·opencode agent·claude `--tools`·
-# opencode 첨부 message)은 **`contract` 가 단일 소유**한다 — 같은 세 CLI 를 추가 리뷰어 표면도
-# 스폰하므로 값이 두 군데면 규칙이 둘이 된다. 실측 근거 주석도 그 선언부에 있다. 이 모듈의
-# `_validate_*`/`build_*_argv` 는 그 계약을 부르는 얇은 wrapper 다.
-
-# subprocess env allowlist — PM 세션 환경을 통째 상속시키지 않고 최소 키만 전달(타 크리덴셜
-# 미상속). base + 플랫폼 키 + LC_* 접두 + 하네스별 인증 키. 가능하게 상수로 둔다.
-_ENV_ALLOWLIST_BASE: tuple[str, ...] = (
-    "PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME", "TMPDIR",
-)
-# Windows 에서만 추가로 흘리는 키. base 는 POSIX 이름만 담고 있어서, 이 목록이 없으면 정제 env 가
-# 하네스 실행에 필요한 값을 **통째로 떨군다**(Windows 실측: opencode 자식 env 에 `TMP` 부재).
-#   · TEMP/TMP — Windows 에는 POSIX 의 `/tmp` 같은 규약 기본값이 없다. 없으면 세 하네스와 그
-#     자식(pytest·node)이 임시 파일 위치를 잃는다.
-#   · SystemRoot/SystemDrive/windir/ComSpec/PATHEXT — 프로세스 스폰·시스템 DLL 로딩·실행 확장자
-#     해소의 최소 집합(Node 기반 CLI 가 SystemRoot 없이는 뜨지 않는다).
-#   · USERPROFILE/HOMEDRIVE/HOMEPATH/APPDATA/LOCALAPPDATA/USERNAME — 세 하네스의 **파일 auth**
-#     (POSIX HOME 앵커의 Windows 등가)와 설정/캐시 위치.
-_ENV_ALLOWLIST_WINDOWS: tuple[str, ...] = (
-    "TEMP", "TMP", "SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT",
-    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "USERNAME",
-)
-_ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("LC_",)
-# 정제 env 가 자식에게 **반드시** 넘겨야 하는 키(플랫폼 축). 누락은 조용히 통과시키지 않는다 —
-# 빈 값으로 스폰한 하네스는 원인 불명으로 죽고, 그 실패는 위임 실패로만 보인다.
-_REQUIRED_CHILD_ENV_KEYS_POSIX: tuple[str, ...] = ("PATH",)
-_REQUIRED_CHILD_ENV_KEYS_WINDOWS: tuple[str, ...] = ("PATH", "SystemRoot", "ComSpec")
-# 임시 디렉터리 축은 플랫폼마다 **이름이 다르다**. 이 중 최소 하나가 자식 env 에 있어야 하고,
-# 부모 env 에 하나도 없으면 실측 temp 디렉터리(`_gettempdir`)로 선두 키를 채운다.
-_TEMP_ENV_KEYS_POSIX: tuple[str, ...] = ("TMPDIR",)
-_TEMP_ENV_KEYS_WINDOWS: tuple[str, ...] = ("TEMP", "TMP")
-# read 역할 preamble 이 부르는 임시 디렉터리 **변수 표기** — 셸마다 전개 문법이 다르다.
-# PowerShell 5.x 에서 `$TMPDIR` 은 env 가 아니라 빈 PowerShell 변수라, 그대로 두면 처방된
-# `--basetemp` 가 드라이브 루트로 튄다.
-_TEMP_ENV_REFERENCE_POSIX = "$TMPDIR"
-_TEMP_ENV_REFERENCE_WINDOWS = "$env:TMPDIR"
-# 하네스별 인증/구동 필수 env(하네스-필수 마커만 명시 통과). 실 API key 는 각 하네스
-# config/auth 파일(HOME 앵커 격리 홈)로 흐르므로 여기엔 경로/토글 키 위주로 최소 둔다.
-# 세 하네스 모두 **HOME 기반 파일 auth**(~/.codex·~/.claude·opencode
-# config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
-# base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
-# adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
-# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지 선언은 watchdog.HARNESS_SESSION_MARKERS 가 소유한다.
-_HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
-    "codex": ("CODEX_HOME", "OPENAI_API_KEY"),
-    "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
-    "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"),
-}
 
 # role preamble — 최소 4개(정체성 1줄 + 금지사항 + 결과 보고). identity 는 codex `exec`
 # `--agent` 부재로 prompt 합성해야 하므로 엔진이 harness-중립 최소본을 소유한다. 합성 =
@@ -567,85 +292,13 @@ def _resolved_adapter_directories() -> tuple[str, ...]:
         return ()
 
 
-def _prohibition(adapter_directories: Sequence[str] | None = None) -> str:
-    adapter_directories = (_resolved_adapter_directories() if adapter_directories is None else adapter_directories)
-    adapter_scope = "/".join(adapter_directories)
-    adapter_definition = (
-        f"엔진 등록 통합 루트 전체: {adapter_scope}"
-        if adapter_scope else
-        "엔진 등록 통합 루트 전체"
-    )
-    return (
-        "금지: commit/push/force/reset/rm 등 git 비가역 조작·board 조작·어댑터 디렉토리"
-        f"({adapter_definition}) 수정을 하지 마라(PM 이 결과 회수 후 담당). "
-        "결과는 최종 텍스트로 보고하라."
-    )
-
-
-_ROLE_IDENTITIES: dict[str, str] = {
-    "developer":
-        "너는 이 프로젝트의 developer 서브에이전트다 — 단일 작업을 구현하고 테스트까지 낸다.",
-    "researcher":
-        "너는 이 프로젝트의 researcher 서브에이전트다 — 조사·분석만 하고 코드를 수정하지 않는다.",
-    "architect":
-        "너는 이 프로젝트의 architect 서브에이전트다 — 설계 초안을 낸다(발행은 PM/사용자 게이트).",
-    "code-reviewer":
-        "너는 이 프로젝트의 code-reviewer 서브에이전트다 — 변경을 검토하고 테스트를 실행해 판정한다"
-        "(코드를 수정하지 않는다).",
-}
-
-# 라운드 중 회귀 범위는 호출 프롬프트가 소유한다. stage-exit 전체 회귀를 직접 기록할 책임이
-# 있는 developer 역할에만 기계 주입한다. code-reviewer는 계약을 설계하지만 구현 단계를 종료하지 않는다.
-REGRESSION_SCOPE_PREAMBLE = (
-    "구현 중 inner-loop는 프롬프트가 지정한 targeted tests만 실행하라. "
-    "developer 단계 종료 직전에 해소된 프로젝트 `test_cmd`의 전체 회귀를 직접 정확히 1회 실행하고 "
-    "라운드 파일 `## 회귀`에 정확한 커맨드와 `rc=0` 결과를 기록하라. 전체 회귀가 red면 이미 "
-    "수집한 실패를 공통 원인으로 batch 수정하고 targeted tests를 확인한 뒤 terminal 확인용 전체 "
-    "회귀를 정확히 1회만 다시 실행하라. `-x` full 반복이나 serial fallback은 금지다. 규범은 "
-    "`.project_manager/wiki/pm_principles.md` §티켓과 위임을 따른다."
-)
-REGRESSION_SCOPE_ROLES: frozenset[str] = frozenset({"developer"})
-
-
-def _role_preamble(role: str, adapter_directories: Sequence[str] | None = None) -> str:
-    lines = [_ROLE_IDENTITIES[role], _prohibition(adapter_directories)]
-    if role in REGRESSION_SCOPE_ROLES:
-        lines.append(REGRESSION_SCOPE_PREAMBLE)
+def _role_preamble(role: str, adapter_directories: Sequence[str]) -> str:
+    lines = [delegate_prompt_rules._ROLE_IDENTITIES[role], delegate_prompt_rules._prohibition(adapter_directories)]
+    if role in delegate_prompt_rules.REGRESSION_SCOPE_ROLES:
+        lines.append(delegate_prompt_rules.REGRESSION_SCOPE_PREAMBLE)
     if role == review_form.INTERNAL_REVIEW_ROLE:
         lines.append(_internal_review_format_preamble())
     return "\n".join(lines)
-
-
-class _LazyAdapterDirectories(Sequence[str]):
-    """기존 소비 API를 보존하되 pm_import registry 평가는 실제 접근까지 지연한다."""
-
-    def __getitem__(self, index):
-        return _resolved_adapter_directories()[index]
-
-    def __len__(self) -> int:
-        return len(_resolved_adapter_directories())
-
-    def __iter__(self):
-        return iter(_resolved_adapter_directories())
-
-
-class _LazyRolePreambles(Mapping[str, str]):
-    """직접 조회와 main의 합성 프롬프트가 항상 같은 lazy preamble을 보게 한다."""
-
-    def __getitem__(self, role: str) -> str:
-        if role not in _ROLE_IDENTITIES:
-            raise KeyError(role)
-        return _role_preamble(role)
-
-    def __iter__(self):
-        return iter(_ROLE_IDENTITIES)
-
-    def __len__(self) -> int:
-        return len(_ROLE_IDENTITIES)
-
-
-ADAPTER_DIRECTORIES: Sequence[str] = _LazyAdapterDirectories()
-ROLE_PREAMBLES: Mapping[str, str] = _LazyRolePreambles()
 
 
 class TerminalFixHarvestError(delegate_errors.DelegateError):
@@ -850,7 +503,7 @@ def _secure_machine_dir(
                 os.close(current_fd)
                 current_fd = child_fd
                 current = current / part
-            _assert_attempt_child_path(root, current, label=label)
+            delegate_temp._assert_attempt_child_path(root, current, label=label)
             return current, current_fd
         except BaseException:
             os.close(current_fd)
@@ -873,7 +526,7 @@ def _secure_machine_dir(
         if resolved.parent != current.resolve():
             raise delegate_errors.DelegateError(f"{label} escape/교체 거부: {candidate}")
         current = candidate
-    _assert_attempt_child_path(root, current, label=label)
+    delegate_temp._assert_attempt_child_path(root, current, label=label)
     return current, None
 
 
@@ -937,7 +590,7 @@ def _ignore_source_definitely_untracked(cwd: Path, source: str) -> bool:
     걸러 바로 untracked 로 판정한다.
     """
     resolved_source = (cwd / source).resolve()
-    if not _is_relative_to(resolved_source, cwd.resolve()):
+    if not delegate_env._is_relative_to(resolved_source, cwd.resolve()):
         return True
     return Path(source).parts[:1] == (".git",)
 
@@ -1237,10 +890,6 @@ def _board_relative_path(board_path: Path, pm_home: Path) -> str:
         ) from exc
 
 
-class ClusterRoundBudgetExceeded(delegate_errors.DelegateError):
-    """고정 수열 밖 라운드 요청. fix 뒤에는 사람 라운드를 다시 열지 않는다."""
-
-
 # ── 묶음 고정 예산 ────────────────────────────────────────────────────────
 # 묶음 하나가 도는 라운드는 정해져 있다: 설계(architect) → 구현(developer · 티켓마다 1) →
 # 리뷰(code-reviewer) → fix(developer). 장부 `budget` 의 4키가 그 수열의 **길이**를 값으로
@@ -1513,7 +1162,7 @@ def prepare_cluster_copy(
             existing=existing_rounds[ticket], sequence=budget_sequence,
         )
         if refusal is not None:
-            raise ClusterRoundBudgetExceeded(refusal)
+            raise delegate_errors.ClusterRoundBudgetExceeded(refusal)
 
     # developer 준비의 입력 계약은 실제 prepare 경계에서 검증한다. 순수 시드 renderer는
     # 리뷰/verify 골격 단위 테스트에서도 쓰이므로 architect 라운드에 결합하지 않는다. 고정
@@ -1627,7 +1276,7 @@ def prepare_cluster_copy(
                         existing=fresh_existing, sequence=budget_sequence,
                     )
                     if refusal is not None:
-                        raise ClusterRoundBudgetExceeded(refusal)
+                        raise delegate_errors.ClusterRoundBudgetExceeded(refusal)
                 for ticket in members:
                     # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — 두 seam 자신의
                     # `with lock:` 은 null 컨텍스트로 채워 판정+생성이 같은 임계구역 안에서 돈다.
@@ -2373,7 +2022,7 @@ def _developer_round_harvest_problem(
     except (round_rules.RoundsError, OSError, UnicodeError) as exc:
         return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
 
-    repo_root = _repo_root_for_cwd(cwd)
+    repo_root = pm_paths._repo_root_for_cwd(cwd)
     try:
         architect_tests = architect_tests_from_rounds(rounds)
     except delegate_errors.DelegateError as exc:
@@ -3245,27 +2894,10 @@ def _with_ticket_copy_preamble(
 # ── 형제 모듈 deep-import seam (PYTHONPATH 무의존) ─────
 
 def _load_additional_reviewer():
-    """엔진 additional_reviewer 를 importlib 로 직접 로드 — local_config·PM 홈 재앵커 판정
-    (`_pm_home_reanchor`)을 복붙 없이 재사용(형제 `.project_manager/tools/`)."""
+    """아직 평면 reviewer에 남은 묶음 리뷰 프롬프트 생성기를 읽는다."""
     path = Path(__file__).resolve().parent / "additional_reviewer.py"
     return _load_module_from_path(
         path, "additional_reviewer.py", verifier=_verify_engine_rev,
-    )
-
-
-def _conf_default_int(key: str) -> int:
-    """이 conf 키의 엔진 기본값(정수) — 선언이 없으면 `TypeError` 로 멈춘다.
-
-    이 모듈은 conf **값**은 additional_reviewer 의 해소를 재사용하고, 키 **선언**(기본값)은
-    레지스트리에서 직접 읽는다 — 기본값이 두 군데면 규칙이 둘이 된다."""
-    return int(conf_schema.default_for(key))
-
-
-def _load_delegate_scope():
-    """엔진 delegate_scope 를 직접 로드해 위임 전·후 worktree 상태 비교 판정을 재사용한다."""
-    path = Path(__file__).resolve().parent / "delegate_scope.py"
-    return _load_module_from_path(
-        path, "delegate_scope.py", verifier=_verify_engine_rev,
     )
 
 
@@ -3346,7 +2978,7 @@ def _contract_test_targets(
     붙일 테스트가 없는 지적(죽은 코드 삭제)을 표현할 수 있어야 하므로 끈다.
     """
     head = value.split(maxsplit=1)
-    match = _CONTRACT_TEST_TARGET_RE.match(head[0]) if head else None
+    match = delegate_run_rules._CONTRACT_TEST_TARGET_RE.match(head[0]) if head else None
     if match is not None:
         target = match.group("path")
         path = PurePosixPath(target)
@@ -3383,7 +3015,7 @@ def _contract_repo_paths(value: str, field: str) -> tuple[str, ...]:
     잡히지 않고, 상위 탈출은 loud 거부다.
     """
     paths: list[str] = []
-    for match in _CONTRACT_REPO_PATH_RE.finditer(value):
+    for match in delegate_run_rules._CONTRACT_REPO_PATH_RE.finditer(value):
         target = match.group("path")
         path = PurePosixPath(target)
         if ".." in path.parts:
@@ -3448,7 +3080,7 @@ def parse_architect_tests(text: str) -> tuple[ArchitectTest, ...]:
                 )
             except review_form.PMReviewError as exc:
                 raise delegate_errors.DelegateError(str(exc)) from exc
-        if _ARCHITECT_TEST_ID_RE.fullmatch(values["id"]) is None:
+        if delegate_run_rules._ARCHITECT_TEST_ID_RE.fullmatch(values["id"]) is None:
             raise delegate_errors.DelegateError(f"architect test.id 형식 불일치: {values['id']!r}")
         if values["id"] in seen:
             raise delegate_errors.DelegateError(f"architect test.id 중복: {values['id']}")
@@ -3658,7 +3290,7 @@ def render_pm_review_delta(ticket: str, delta: review_form.PMReviewDelta) -> str
             lines.append(f"- 선행 권위: {disposition.prerequisite}")
         lines.append("")
     body = "\n".join(lines).rstrip()
-    return f"{body}\n\n{PM_REVIEW_FIX_SCOPE_NOTICE}"
+    return f"{body}\n\n{delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE}"
 
 
 # ── verify-template — 기계 확인 대상 분류 + PM 확인 골격 ────────────
@@ -4008,415 +3640,6 @@ def append_pm_review_confirmation(
 _CONFIG_REPO_OVERRIDE: Path | None = None
 
 
-def local_config(repo: Path | None = None) -> dict[str, str]:
-    """per-clone local.conf 를 KEY=value 로 읽는다(additional_reviewer.local_config 재사용).
-
-    독립 주석 라인(`#` 시작)만 처리하고 값 안의 `#` 은 제거하지 않는다 — `delegate.*` 값은 inline
-    주석 금지(독립 주석 라인만). REPO 를 호출 시점 읽어 테스트 monkeypatch 를 추종한다.
-
-    `repo` 는 호출부가 이미 해소한 owner(PM 홈)를 명시할 때만 넘긴다 — 생략 시 기존 provenance
-    (`_CONFIG_REPO_OVERRIDE or REPO`, 즉 실행한 엔진 사본의 repo)를 그대로 쓴다."""
-    er = _load_additional_reviewer()
-    config_repo = repo or _CONFIG_REPO_OVERRIDE or REPO
-    er.REPO = config_repo
-    er.LOCAL_CONF = config_repo / ".project_manager" / "local.conf"
-    return er.local_config()
-
-
-def _is_enabled(conf: dict[str, str]) -> bool:
-    """위임 허용 여부 — **키 부재·빈값은 허용**(기본 ON)이고 명시 거부만 차단한다.
-
-    기본을 OFF 로 두면 기존 채택자의 native 위임이 이 릴리즈에서 새로 막히는 회귀가 된다
-    (현행 native 무게이트 동작 보존이 기준). 명시 `false` 만 위임 전면 비허용이다.
-    빈값은 conf 파싱 의미대로 **미설정**이라 기본값으로 간다(`delegate.enabled=` 한 줄이
-    위임을 조용히 끄지 않는다).
-    """
-    raw = conf.get(DELEGATE_ENABLED_KEY, "").strip().lower()
-    if not raw:
-        return True
-    return raw in conf_schema.DELEGATE_ENABLED_VALUES
-
-
-# ── config 해소 (원자 tuple) ────────────────────────────────────────────
-
-def _validate_harness(harness: str) -> str:
-    """공용 드라이버 계약(`contract`) 검증의 얇은 wrapper — 예외만 이 표면 타입으로 옮긴다."""
-    try:
-        return contract.validate_harness(harness)
-    except contract.HarnessContractError as exc:
-        raise delegate_errors.DelegateError(str(exc)) from exc
-
-
-def _validate_reasoning(
-    harness: str, reasoning: str | None, *, model: str, cwd: Path,
-) -> str | None:
-    """실행 직전 확인 — reasoning 이 그 하네스·모델의 허용집합 원소인가(공용 계약 wrapper).
-
-    허용집합은 실행과 같은 cwd·env(`build_env(harness)`)로 해소한다 — opencode 는 그 조건의 모델
-    목록 조회 결과가 정한다. 밖이거나 확인할 수 없으면 fail-loud(조용한 무시/자동 강등 금지).
-    미지정=None(조회 없음). 해소 함수(`resolve_delegate`·`resolve_fallback`)는 실행하지 않는
-    경로(채널 가드 훅·프로필 비교)에서도 불리므로 이 확인을 하지 않는다."""
-    try:
-        return contract.validate_reasoning(
-            harness, reasoning, model=model, cwd=cwd, env=build_env(harness))
-    except contract.HarnessContractError as exc:
-        raise delegate_errors.DelegateError(str(exc)) from exc
-
-
-def resolve_delegate(
-    conf: dict[str, str],
-    role: str,
-    tier: str,
-    cli_harness: str | None,
-    cli_model: str | None,
-    cli_reasoning: str | None,
-) -> tuple[str, str, str | None]:
-    """(harness, model, reasoning) 원자 tuple 을 해소한다(단일 알고리즘).
-
-    CLI 완전지정(--harness AND --model)이면 설정 미참조(원자 override). 아니면 티어 키 세트를 통째로
-    읽는다(`delegate.<role>[.<tier>].{harness,model,reasoning}` — 혼합 상속 금지). harness/model 부재면
-    fail-loud(hard 미설정=normal 강등 금지·normal 미설정=조용한 claude 폴백 금지). CLI 부분 override
-    (--harness 만/--model 만)는 호출 전 usage error 로 걸러진 전제(여기선 방어적 재검).
-    """
-    if cli_harness or cli_model:
-        if not (cli_harness and cli_model):
-            raise delegate_errors.DelegateError("--harness 와 --model 은 동반 필수(부분 override 금지·원자 tuple).")
-        harness = _validate_harness(cli_harness)
-        return harness, cli_model, contract.normalize_reasoning(cli_reasoning)
-
-    key = f"delegate.{role}" + (".hard" if tier == "hard" else "")
-    harness = (conf.get(f"{key}.harness") or "").strip()
-    model = (conf.get(f"{key}.model") or "").strip()
-    reasoning = conf.get(f"{key}.reasoning")
-
-    if not harness or not model:
-        if tier == "hard":
-            raise delegate_errors.DelegateError(
-                f"hard 프로필 미설정({key}.harness/.model) — normal 강등 금지·명시 설정을 요구한다"
-                ". local.conf 에 hard 티어 세트를 통째로 설정하라."
-            )
-        raise delegate_errors.DelegateError(
-            f"역할 매핑 미설정({key}.harness/.model) — 조용한 폴백 금지. "
-            "local.conf 에 delegate.<role>.harness/.model 을 설정하라."
-        )
-    harness = _validate_harness(harness)
-    return harness, model, contract.normalize_reasoning(reasoning)
-
-
-def resolve_fallback(
-    conf: dict[str, str],
-    role: str,
-    tier: str,
-) -> tuple[str, str, str | None] | None:
-    """명시된 1단 폴백 tuple 을 해소한다.
-
-    기존 역할 매핑과 동형인
-    `delegate.<role>[.hard].fallback.{harness,model,reasoning}` 세트를 통째로 읽는다. 세 키가 모두
-    없으면 폴백 미설정(None)이고, 하나라도 있으면 harness/model 완전 세트를 요구한다. hard 는 normal
-    폴백을 상속하지 않는다 — 티어 혼합 상속은 주 매핑과 똑같이 금지한다. 엔진 기본 폴백은 없으며,
-    미설정은 기존 fail-loud 를 보존한다.
-    """
-    key = f"delegate.{role}" + (".hard" if tier == "hard" else "") + ".fallback"
-    harness = (conf.get(f"{key}.harness") or "").strip()
-    model = (conf.get(f"{key}.model") or "").strip()
-    reasoning_raw = conf.get(f"{key}.reasoning")
-    configured = bool(harness or model or (reasoning_raw and reasoning_raw.strip()))
-    if not configured:
-        return None
-    if not harness or not model:
-        raise delegate_errors.DelegateError(
-            f"폴백 매핑 불완전({key}.harness/.model) — 폴백은 원자 tuple 로 명시해야 한다. "
-            "부분 설정/조용한 기본값은 허용하지 않는다."
-        )
-    harness = _validate_harness(harness)
-    return harness, model, contract.normalize_reasoning(reasoning_raw)
-
-
-# ── 3 드라이버 argv 빌더 (contract 공용 계약의 얇은 wrapper) ──────────────────
-# 조립 규칙과 실측 근거는 `contract` 가 소유한다(추가 리뷰어 표면도 같은 빌더를 쓴다). 여기 함수는
-# 기존 공개 시그니처를 보존하는 호환 seam 이다.
-
-def _perm_axis(role: str) -> str:
-    """역할 → 권한축('write' | 'read')."""
-    return "write" if role in WRITE_ROLES else "read"
-
-
-def build_codex_argv(
-    model: str,
-    reasoning: str | None,
-    role: str,
-    cwd: str,
-    resume_session_id: str | None = None,
-) -> list[str]:
-    """codex argv(공용 계약 wrapper) — cwd 는 `-C` 로 핀하고 프롬프트는 stdin 주입."""
-    return contract.build_codex_argv(
-        model, reasoning, role, str(cwd), resume_session_id,
-    )
-
-
-def build_claude_argv(model: str, reasoning: str | None, role: str,
-                      resume_session_id: str | None = None) -> list[str]:
-    """claude argv(공용 계약 wrapper) — `--tools` 역할 제한 + stream-json 진행 신호.
-
-    `resume_session_id` 는 세션 재사용 turn 에서만 실린다(형식 가드는 공용 계약이 소유)."""
-    return contract.build_claude_argv(
-        model, reasoning, role, resume_session_id)
-
-
-def build_opencode_argv(
-    model: str, reasoning: str | None, role: str, cwd: str, prompt_file: str,
-) -> list[str]:
-    """opencode argv(공용 계약 wrapper) — `--file` 프롬프트·`--dir` cwd 핀·`--agent` 권한축."""
-    return contract.build_opencode_argv(
-        model, reasoning, role, str(cwd), str(prompt_file))
-
-
-# ── 드라이버 관측 능력 선언 (분기 특례가 아니라 테이블) ────────────────────────────
-#
-# 무진행 판정도 startup stall 워치독도 시간 예산도 "드라이버가 무엇을 관측시켜 주느냐 + 어느 축에서
-# 도느냐"에만 의존한다. 하니스별 if 분기를 만들지 않고 **선언 테이블**을 읽는다.
-#   · progress_signal — 실측 형상:
-#       codex    `exec --json`               → 줄 단위 이벤트 스트림.
-#       opencode `run --format json`         → 줄 단위 이벤트(각 이벤트에 timestamp 내장).
-#       claude   `-p --output-format stream-json --verbose` → 줄 단위 이벤트(옛 `json` =
-#                종료 시 단일 덩어리 = 신호 없음이었다).
-#   · startup_watchdog — 첫-stdout-이벤트 창 + 유한 재시도. **opencode 전용**인 이유는
-#     특례가 아니라 근거다: startup network fetch stall(upstream #13841)이 opencode 축에서만
-#     실측됐고, 첫-이벤트 창을 신호 축 전부에 켜면 기동이 느린 실행을 새로 false-kill 한다.
-#   · idle_timeout / wall_timeout — 클라우드 축(codex·claude)과 로컬 GPU 축(opencode)의 값이 다르다
-#     (근거 수치는 `watchdog` 선언부 주석). 값이 갈리는 건 허용, **코드가 갈리면 위반**이다.
-# 테이블은 **`watchdog` 가 단일 소유**한다 — additional_reviewer 도 같은 테이블을 읽어야 리뷰어 축과 위임
-# 축의 규칙이 갈리지 않는다(값이 두 군데면 규칙이 둘).
-
-
-def harness_profile(harness: str, conf: dict[str, str] | None = None):
-    """하네스 → local.conf override 가 해소된 프로필(`watchdog` 단일 테이블 재사용).
-
-    conf 미지정이면 per-clone local.conf 를 읽는다(판독 실패는 빈 conf 로 fail-soft — 설정 파일
-    문제로 위임이 죽지 않는다). 해소 순서는 watchdog.resolve_harness_profile 이 소유한다."""
-    if conf is None:
-        try:
-            conf = local_config()
-        except (OSError, delegate_errors.DelegateError):
-            conf = {}
-    return watchdog.resolve_harness_profile(
-        harness, conf,
-        legacy_idle_key=DELEGATE_IDLE_TIMEOUT_KEY,
-        legacy_wall_key=DELEGATE_TIMEOUT_KEY,
-    )
-
-
-# 처방 커맨드 렌더 규칙. 처방은 사람이 붙여넣어 **실제로 실행**하는 줄이므로 장부
-# 직렬화(POSIX 표기)와 달리 실행 셸의 인용 규칙을 따른다. Windows argv 인용(공백·따옴표)은
-# `subprocess.list2cmdline` 이 그대로 담당하고, 아래 상수는 그 규칙 밖의 셸 축만 다룬다.
-#   · argv 규칙엔 인용이 불필요해도 셸이 먼저 재해석하는 문자 — 큰따옴표로 중화된다
-#     (cmd.exe·PowerShell 공통).
-_WINDOWS_SHELL_METACHARACTERS = frozenset("&|<>^()")
-#   · 어느 인용으로도 cmd.exe와 PowerShell 양쪽에서 동시에 리터럴화할 수 없는 문자.
-#     cmd.exe는 큰따옴표 안에서도 `%VAR%`를 전개하고, PowerShell은 큰따옴표 안에서 `$`/백틱을
-#     전개한다. 이 문자가 있으면 재해석 없는 EncodedCommand 형태로 올린다.
-_WINDOWS_UNQUOTABLE_CHARACTERS = frozenset("%$`'\r\n")
-#   · PowerShell 인자 위치에서 인용 없이 그대로 읽히는 토큰 (그 외는 단일따옴표 리터럴).
-_POWERSHELL_BARE_TOKEN_PATTERN = re.compile(r"\A[A-Za-z0-9_%+=:./\\-]+\Z")
-
-
-def _windows_argv_token(token: str) -> str:
-    """Windows argv 규칙으로 토큰 하나를 렌더한다 — 불필요한 인용은 붙이지 않는다."""
-    rendered = subprocess.list2cmdline([token])
-    if rendered != token:
-        # list2cmdline이 공백/따옴표 규칙으로 이미 인용·이스케이프했다.
-        return rendered
-    if _WINDOWS_SHELL_METACHARACTERS.intersection(token):
-        trailing_backslashes = len(token) - len(token.rstrip("\\"))
-        return '"' + token + "\\" * trailing_backslashes + '"'
-    return token
-
-
-def _powershell_literal(token: str) -> str:
-    """PowerShell 인자 하나 — 인용이 필요한 토큰만 단일따옴표 리터럴로 감싼다."""
-    if _POWERSHELL_BARE_TOKEN_PATTERN.match(token):
-        return token
-    return "'" + token.replace("'", "''") + "'"
-
-
-def _windows_encoded_command(command: Sequence[str]) -> str:
-    """cmd.exe/PowerShell 어느 쪽에서도 메타문자 재해석 없는 Windows 실행 줄을 만든다.
-
-    argv를 PowerShell 인자로 렌더한 뒤 UTF-16LE `-EncodedCommand`로 감싼다. 복사용 줄은
-    인코딩본을 유지하고, 사람이 실제 승인 대상을 확인할 수 있도록 바로 아래에 디코드된 줄도 표시한다."""
-    script = "& " + " ".join(_powershell_literal(token) for token in command)
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    encoded_command = (
-        f"powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}"
-    )
-    return (
-        f"{encoded_command}\n"
-        f"    PowerShell 디코드(검토용·복사는 위 인코딩본): {script}"
-    )
-
-
-def _windows_command_is_paste_safe(tokens: Sequence[str]) -> bool:
-    """평문 한 줄이 cmd.exe와 PowerShell 양쪽에 그대로 붙여넣어지는지 판정한다."""
-    if any(_WINDOWS_UNQUOTABLE_CHARACTERS.intersection(token) for token in tokens):
-        return False
-    # PowerShell은 인용된 첫 토큰을 명령이 아니라 문자열 식으로 읽어 호출 연산자 `&`가 필요하고,
-    # cmd.exe는 그 `&`를 못 받는다. 프로그램 토큰에 인용이 붙는 순간 공통 평문 줄은 없다.
-    return not tokens or _windows_argv_token(tokens[0]) == tokens[0]
-
-
-def render_shell_token(value: str, *, windows: bool | None = None) -> str:
-    """처방 커맨드에 끼워 넣는 인자 하나를 실행 셸의 인용 규칙으로 렌더한다.
-
-    문장 안에 이미 조립된 커맨드의 한 자리(예: 훅 처방의 `--cwd <경로>`)를 채울 때 쓴다.
-    전체 커맨드를 새로 만들 수 있으면 `render_shell_command`를 쓴다 — 그쪽만 재해석 불가
-    토큰을 EncodedCommand로 올릴 수 있다."""
-    if windows is None:
-        windows = _running_on_windows()
-    text = str(value)
-    return _windows_argv_token(text) if windows else shlex.quote(text)
-
-
-def render_shell_command(argv: Sequence[str]) -> str:
-    """처방 커맨드 한 줄을 실행 셸 규칙으로 렌더한다 (붙여넣으면 그대로 실행돼야 한다).
-
-    POSIX는 `shlex.join`, Windows는 `subprocess.list2cmdline` 등가 argv 규칙 + 셸 메타문자
-    인용이다. 두 Windows 셸 공통 평문이 불가능한 입력만 EncodedCommand 한 줄로 올린다
-    (`_windows_command_is_paste_safe`). 어느 경로도 `&&` 체이닝을 만들지 않는다 —
-    PowerShell 5.x가 지원하지 않는다."""
-    windows = _running_on_windows()
-    tokens = [str(token) for token in argv]
-    if not windows:
-        return shlex.join(tokens)
-    if not _windows_command_is_paste_safe(tokens):
-        return _windows_encoded_command(tokens)
-    return " ".join(_windows_argv_token(token) for token in tokens)
-
-
-def _running_on_windows() -> bool:
-    return os.name == "nt"
-
-
-def _prescribed_interpreter() -> str:
-    """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
-
-    Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어 런처가 1순위다. 그 판정은
-    `contract.entrypoint_command` 하나가 소유하고, 여기서는 해소값의 인터프리터 토큰만 꺼내
-    쓴다 — 표기가 두 군데면 규칙이 둘이 된다."""
-    interpreter, _entry = contract.entrypoint_command(
-        contract.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
-    )
-    return interpreter
-
-
-def _temp_env_reference(windows: bool | None = None) -> str:
-    """처방 문구가 임시 디렉터리를 가리킬 때 쓰는 셸 변수 표기."""
-    if windows is None:
-        windows = _running_on_windows()
-    return _TEMP_ENV_REFERENCE_WINDOWS if windows else _TEMP_ENV_REFERENCE_POSIX
-
-
-def _temp_env_keys(windows: bool) -> tuple[str, ...]:
-    """이 플랫폼에서 임시 디렉터리를 해소하는 env 키 이름들(우선순위 순)."""
-    return _TEMP_ENV_KEYS_WINDOWS if windows else _TEMP_ENV_KEYS_POSIX
-
-
-def _required_child_env_keys(windows: bool) -> tuple[str, ...]:
-    """이 플랫폼의 하네스 필수 env 키 집합."""
-    return (
-        _REQUIRED_CHILD_ENV_KEYS_WINDOWS if windows else _REQUIRED_CHILD_ENV_KEYS_POSIX
-    )
-
-
-def _env_source_value(
-    source: Mapping[str, str], key: str, *, windows: bool,
-) -> str | None:
-    """부모 env 에서 키 하나를 읽는다(Windows 는 이름 대소문자를 구분하지 않는다).
-
-    `os.environ` 자체는 Windows 에서 대소문자 무시 매핑이지만, 사본 dict 로 넘어오면 그 성질이
-    사라진다 — 그 자리에서 `SystemRoot` 를 못 찾아 필수 키를 떨구는 일이 없게 여기서 흡수한다.
-    """
-    if key in source:
-        return source[key]
-    if not windows:
-        return None
-    folded = key.casefold()
-    for name, value in source.items():
-        if name.casefold() == folded:
-            return value
-    return None
-
-
-def _with_resolved_child_env(
-    env: dict[str, str], *, harness: str, windows: bool, source: Mapping[str, str],
-) -> dict[str, str]:
-    """정제 env 의 임시 디렉터리 축을 해소하고 필수 키 누락을 fail-loud 로 세운다.
-
-    임시 디렉터리는 **이름이 플랫폼마다 다르다** — 부모 env 에 그 이름이 하나도 없으면 자식을
-    빈 채로 보내지 않고 실측값(`_gettempdir`)으로 채운다. 필수 키가 그래도 없으면 실행하지 않는다:
-    정제가 떨어뜨린 것(부모엔 있었다)인지 환경 자체가 비어 있는 것인지를 사유에 함께 남긴다.
-    """
-    adjusted = dict(env)
-    temp_keys = _temp_env_keys(windows)
-    if not any(key in adjusted for key in temp_keys):
-        measured = _gettempdir()
-        if not measured:
-            raise delegate_errors.DelegateError(
-                f"{harness} 위임의 임시 디렉터리를 해소하지 못했습니다 — 후보 키="
-                f"{', '.join(temp_keys)} · 실측 temp 디렉터리도 비어 있습니다. "
-                "빈 임시 경로로 스폰하지 않습니다."
-            )
-        adjusted[temp_keys[0]] = measured
-    missing = [key for key in _required_child_env_keys(windows) if key not in adjusted]
-    if missing:
-        detail = ", ".join(
-            "{}(부모 env {})".format(
-                key,
-                "있음 — 정제가 떨굼"
-                if _env_source_value(source, key, windows=windows) is not None
-                else "없음",
-            )
-            for key in missing
-        )
-        raise delegate_errors.DelegateError(
-            f"{harness} 위임의 정제 env 에 하네스 필수 키가 없습니다: {detail} · "
-            f"플랫폼={'windows' if windows else 'posix'}. 빈 값으로 스폰하면 하네스가 "
-            "원인 불명으로 죽으므로 여기서 중단합니다."
-        )
-    return adjusted
-
-
-def build_env(
-    harness: str, *, windows: bool | None = None,
-    source: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    """subprocess env 를 allowlist 로 정제한다 — PM 세션 환경 통째 상속 금지(타 크리덴셜 미상속).
-
-    base 키 + 플랫폼 키 + LC_* 접두 + 하네스별 인증 키만 전달한다. 존재하는 키만 담아 새 env dict 를
-    구성한다(os.environ 미상속). 목록은 상수(_ENV_ALLOWLIST_*·_HARNESS_AUTH_ENV)로 조정 가능.
-
-    `windows`/`source` 는 주입 지점이다 — 플랫폼별 키 집합과 필수 키 판정을 실제 실행 플랫폼과
-    무관하게 태울 수 있어야 회귀가 두 축을 모두 검증한다(기본은 실제 플랫폼·실제 os.environ)."""
-    if windows is None:
-        windows = _running_on_windows()
-    src = os.environ if source is None else source
-    allowlist = _ENV_ALLOWLIST_BASE + (_ENV_ALLOWLIST_WINDOWS if windows else ())
-    out: dict[str, str] = {}
-    for key in allowlist:
-        value = _env_source_value(src, key, windows=windows)
-        if value is not None:
-            out[key] = value
-    for key, value in src.items():
-        if any(key.startswith(prefix) for prefix in _ENV_ALLOWLIST_PREFIXES):
-            out[key] = value
-    for key in _HARNESS_AUTH_ENV.get(harness, ()):
-        value = _env_source_value(src, key, windows=windows)
-        if value is not None:
-            out[key] = value
-    return _with_resolved_child_env(
-        out, harness=harness, windows=windows, source=src,
-    )
-
-
 def _delegate_task_env(cwd: Path) -> dict[str, str]:
     """위임 하네스에 실을 슬롯 주인 task — 위임 세션은 세션 ID 가 따로라 슬롯 쓰기 가드가 이 값으로 판정한다.
 
@@ -4432,476 +3655,9 @@ def _delegate_task_env(cwd: Path) -> dict[str, str]:
     return {hooks.SLOT_WRITE_DELEGATE_TASK_ENV: owner}
 
 
-def _is_relative_to(path: Path, base: Path) -> bool:
-    """Path.is_relative_to (3.9 호환 래퍼)."""
-    try:
-        path.relative_to(base)
-        return True
-    except ValueError:
-        return False
-
-
-def _cwd_in_git_repo(cwd: Path, run_fn: Callable | None = None) -> bool:
-    """--cwd 가 git 저장소 루트이거나 그 하위인가(`git rev-parse --show-toplevel` 성공·경계 보강).
-
-    광범위 경로(홈 디렉토리 등 non-repo)를 신뢰 작업공간으로 삼는 것을 차단한다(codex must-fix) —
-    실제 허용 작업공간을 git repo 로 조여 cwd (a) 신뢰 루트가 과도하게 넓어지는 것을 막는다. git 미설치·
-    실행 불가·비-repo 는 False(호출부 fail-loud). run_fn 주입(테스트 mock·additional_reviewer 동형 seam)."""
-    _run = run_fn or subprocess.run
-    try:
-        result = _run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-                      capture_output=True, text=True, encoding="utf-8", errors="replace")
-    except (FileNotFoundError, OSError):
-        return False
-    return getattr(result, "returncode", 1) == 0 and bool((result.stdout or "").strip())
-
-
-# ── 쓰기-타깃 axis 재앵커  ─────────────────────────────────────────────
-
-_ENGINE_PATH_CANDIDATE_RE = re.compile(
-    r"[A-Za-z0-9._/\\-]*\.project_manager[A-Za-z0-9._/\\-]*"
-)
-_PATH_LAYOUT_CHAR_CLASS = r"A-Za-z0-9._/\\-"
-_PATH_LAYOUT_CHAR_RE = re.compile(rf"[{_PATH_LAYOUT_CHAR_CLASS}]")
-_PATH_LAYOUT_GAP_RE = re.compile(
-    r"[ \t]*(?:\\[ \t]*)?(?:\r\n|\r|\n)[ \t]*|[ \t]+"
-)
-_PATH_WRAPPER_RE = r"""[`'"()\[\]{}<>]*"""
-_KOREAN_PATH_PARTICLE_RE = r"(?:은|는|을|를|에|에는|만|만은)?"
-_KOREAN_WRITE_VERBS = (
-    "수정", "편집", "변경", "고치", "고쳐", "건드리", "건드려", "손보", "손봐",
-    "손대", "지우", "지워", "바꾸", "바꿔", "삭제", "추가", "구현",
-    "덮어쓰", "덮어써", "대체", "재작성", "패치", "리팩터",
-)
-_ASCII_WRITE_VERBS = (
-    "modify", "modified", "edit", "edited", "touch", "touched",
-    "change", "changed", "rewrite", "rewritten", "replace", "replaced",
-    "overwrite", "overwritten", "update", "updated", "fix", "fixed",
-    "write", "written", "delete", "deleted", "alter", "altered",
-    "implement", "implemented", "patch", "refactor",
-)
-# 한국어 write stem은 활용어미 앞에서도 잡되, `미수정`·`무변경`·`재수정`처럼 상태/반복을
-# 나타내는 접두 합성어 안의 부분 문자열은 write 지시로 보지 않는다.
-_KOREAN_NON_COMMAND_PREFIX_CHARS = "미무비불재"
-_WRITE_VERB_PATTERN = (
-    rf"(?:(?<![{_KOREAN_NON_COMMAND_PREFIX_CHARS}])(?:"
-    + "|".join(
-        re.escape(verb)
-        for verb in sorted(_KOREAN_WRITE_VERBS, key=len, reverse=True)
-    )
-    + r")|\b(?:"
-    + "|".join(
-        re.escape(verb)
-        for verb in sorted(_ASCII_WRITE_VERBS, key=len, reverse=True)
-    )
-    + r")\b)"
-)
-_KOREAN_DIRECT_NEGATION_AFTER_RE = re.compile(
-    rf"^\s*{_PATH_WRAPPER_RE}\s*{_KOREAN_PATH_PARTICLE_RE}\s*"
-    r"(?:"
-    r"(?:건드리지|손대지|수정하지|편집하지|변경하지)\s*"
-    r"(?:마라|말라|마세요|말\s*것)"
-    r"|수정\s*금지"
-    r")",
-    re.IGNORECASE,
-)
-_ENGLISH_DIRECT_NEGATION_AFTER_RE = re.compile(
-    rf"^\s*{_PATH_WRAPPER_RE}\s*"
-    r"(?:must\s+not|should\s+not|do\s+not|don't|never)\s+"
-    rf"(?:be\s+)?{_WRITE_VERB_PATTERN}",
-    re.IGNORECASE,
-)
-_DIRECT_NEGATION_BEFORE_RE = re.compile(
-    rf"(?:"
-    r"수정\s*금지\s*[:：]?"
-    rf"|(?:do\s+not|don't|must\s+not|should\s+not|never)\s+{_WRITE_VERB_PATTERN}"
-    r")"
-    rf"\s*{_PATH_WRAPPER_RE}\s*$",
-    re.IGNORECASE,
-)
-_POST_NEGATION_CLAUSE_PREFIX = (
-    r"""^\s*[`'")\]}>]*\s*(?:[;；。！？!?.]\s*)?"""
-)
-_NEGATION_IGNORE_MARKER_RE = re.compile(
-    r"(?:는\s*말은\s*)?(?:무시|\b(?:ignore|disregard|override)\b)",
-    re.IGNORECASE,
-)
-_NEGATION_FOLLOWUP_PRONOUN_WRITE_RE = re.compile(
-    _POST_NEGATION_CLAUSE_PREFIX
-    + rf"(?:and|but)\s+"
-    rf"{_WRITE_VERB_PATTERN}\s+(?:it|this|that)\b",
-    re.IGNORECASE,
-)
-_NEGATION_INSTEAD_RE = re.compile(
-    _POST_NEGATION_CLAUSE_PREFIX
-    + r"(?:그\s*)?(?:대신|instead(?:\s+of\s+(?:that|this))?)",
-    re.IGNORECASE,
-)
-_OVERRIDE_CLAUSE_END_RE = re.compile(
-    r"[;；。！？!?\r\n]|\.(?=\s|$)"
-)
-_EXPLICIT_PATH_RE = re.compile(
-    r"(?:\.{0,2}[/\\])?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)+|\bwiki\b",
-    re.IGNORECASE,
-)
-_WRITE_NEAR_READ_ONLY_CALL_RE = re.compile(
-    _WRITE_VERB_PATTERN,
-    re.IGNORECASE,
-)
-_READ_ONLY_CALL_FILE_REFERENCE_WRITE_RE = re.compile(
-    r"(?:"
-    r"(?:위|이)\s*(?:스크립트|파일)(?:을|를|은|는)?"
-    r"[\s\S]{0,40}?"
-    rf"{_WRITE_VERB_PATTERN}"
-    r"|"
-    rf"{_WRITE_VERB_PATTERN}"
-    r"[\s\S]{0,40}?"
-    r"(?:"
-    r"that\s+(?:script|file)(?:\s+above)?"
-    r"|the\s+(?:(?:script|file)\s+above|above\s+(?:script|file))"
-    r")"
-    r")",
-    re.IGNORECASE,
-)
-_SENTENCE_BOUNDARY_RE = re.compile(
-    r"[。！？!?]|\.(?=\s|$)"
-)
-_READ_ONLY_CALL_SHELL_TAIL_RE = re.compile(
-    r"(?:&&|\|\||[|;&])"
-)
-_READ_ONLY_CALL_INVALID_TICKET_ARG_RE = re.compile(
-    r"""^[ \t]*[`'")\]}>.,!?。！？]*[ \t]*T-(?:[A-Za-z0-9_-]+-\d+|\d+)\b""",
-    re.IGNORECASE,
-)
-_PYTHON_LAUNCHER_BEFORE_PATH_RE = re.compile(
-    r"\b(?:python3|python|py(?:[ \t]+-\d+(?:\.\d+)?)?)[ \t]+$",
-    re.IGNORECASE,
-)
-_READ_ONLY_BOARD_CALL_RE = re.compile(
-    r"""
-    [ \t]+(?:
-        show[ \t]+(?:T-NNNN|<T-NNNN>|T-(?:[A-Za-z0-9][A-Za-z0-9_-]*-\d+|\d+))
-        |
-        list(?:
-            [ \t]+(?:
-                --(?:mine|all)
-                |--status[ \t]+(?:open|claimed|blocked|done|all)
-                |--(?:tag|repo|task|user)[ \t]+[^\s`'"()\[\]{}<>|&;]+
-                |--slot[ \t]+\d+
-            )
-        )*
-        |
-        lint(?:[ \t]+--gate)?
-        |
-        idea[ \t]+list
-        |
-        prefix[ \t]+list
-        |
-        regression[ \t]+check
-        |
-        livegate[ \t]+check
-    )
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-
-def _clean_prompt_path_token(raw: str) -> str:
-    """프롬프트의 공백 토큰에서 경로 바깥 인용·구두점만 제거한다."""
-    return raw.strip("\"'`()[]{}<>,;:!?").rstrip(".")
-
-
-def _engine_path_parts(raw: str) -> tuple[str, ...] | None:
-    """토큰이 `.project_manager/tools` 경로면 정규화한 성분을 반환한다."""
-    token = _clean_prompt_path_token(raw)
-    if not token or ".project_manager" not in token:
-        return None
-    parts = PurePosixPath(token.replace("\\", "/")).parts
-    for i in range(len(parts) - 1):
-        if parts[i] == ".project_manager" and parts[i + 1] == "tools":
-            return parts
-    return None
-
-
-def _path_layout_gap_is_internal(text: str, start: int, end: int) -> bool:
-    """layout gap 이 이미 시작된 경로 후보 내부의 접힘 지점인가."""
-    if start == 0 or end >= len(text):
-        return False
-    next_char = text[end]
-    if _PATH_LAYOUT_CHAR_RE.fullmatch(next_char) is None:
-        return False
-    if text[start - 1] in "/\\":
-        return True
-    if next_char not in "/\\":
-        return False
-
-    # separator 앞 gap 은 왼쪽 토큰이 이미 `.project_manager` 경로일 때만 접는다.
-    # 따라서 `Modify\n.project_manager/...` 같은 일반 단어→경로 경계는 보존된다.
-    left_match = re.search(rf"[{_PATH_LAYOUT_CHAR_CLASS}]+$", text[:start])
-    if left_match is None:
-        return False
-    left_parts = PurePosixPath(left_match.group().replace("\\", "/")).parts
-    return ".project_manager" in left_parts
-
-
-def _normalize_prompt_path_layout(prompt: str) -> tuple[str, list[int]]:
-    """긴 경로의 자연 줄바꿈을 제거한 매칭 뷰와 원문 offset map 을 반환한다.
-
-    직전 조각이 separator 로 끝나거나 이미 `.project_manager` 경로이고 다음 조각이 separator 로
-    시작할 때만 개행(plain 또는 shell식 ``\\\n`` 연속)/수평 공백을 접는다. 일반 단어와 경로 시작
-    사이 및 독립된 여러 경로 사이의 layout 은 보존한다.
-    """
-    remove = [False] * len(prompt)
-    for match in _PATH_LAYOUT_GAP_RE.finditer(prompt):
-        remove_start = match.start()
-        if not _path_layout_gap_is_internal(prompt, remove_start, match.end()):
-            # Windows식 경로 separator 자체가 줄끝에 온
-            # `.project_manager\\\ntools\\x.py`에서는 `\`를 보존하고 개행만 접는다.
-            # `/\\\n`의 두 번째 `\`는 shell 연속 문자이므로 기존처럼 gap 전체를 제거한다.
-            backslash = prompt.rfind("\\", match.start(), match.end())
-            if (backslash < 0
-                    or not _path_layout_gap_is_internal(
-                        prompt, backslash + 1, match.end()
-                    )):
-                continue
-            remove_start = backslash + 1
-        remove[remove_start:match.end()] = [True] * (
-            match.end() - remove_start
-        )
-    kept = [i for i, discarded in enumerate(remove) if not discarded]
-    return (
-        "".join(prompt[i] for i in kept),
-        kept,
-    )
-
-
-def _engine_path_occurrences(
-    prompt: str,
-) -> list[tuple[int, int, tuple[str, ...]]]:
-    """엔진 경로 후보를 공백 토큰이 아닌 실제 경로 span 단위로 반환한다.
-
-    한국어 조사·공백 없는 문장부호가 경로 토큰에 붙어도 span 은 경로 끝에서 닫힌다. 따라서
-    바로 뒤의 금지/쓰기 표현을 해당 출현에만 결합할 수 있고, 같은 절의 타 경로로 전파하지 않는다.
-    """
-    occurrences: list[tuple[int, int, tuple[str, ...]]] = []
-    normalized, original_offsets = _normalize_prompt_path_layout(prompt)
-    for match in _ENGINE_PATH_CANDIDATE_RE.finditer(normalized):
-        raw = match.group().rstrip(".")
-        parts = _engine_path_parts(raw)
-        if parts is not None:
-            raw_end = match.start() + len(raw)
-            occurrences.append((
-                original_offsets[match.start()],
-                original_offsets[raw_end - 1] + 1,
-                parts,
-            ))
-    return occurrences
-
-
-def _is_pure_read_only_board_call(
-    prompt: str, start: int, end: int, path_parts: tuple[str, ...],
-) -> bool:
-    """현재 경로 span 이 독립된 read-only board 호출인가(A).
-
-    각 서브커맨드의 실제 read-only 인자만 받고, 명령 뒤 같은 줄의 자연어 tail은 write 동사가
-    없을 때 허용한다. 면제 범위는 이 명령 span 하나뿐이다. shell 연산/후속 명령, 같은 줄의
-    수정 지시, 호출을 목적어로 삼은 앞쪽 write 동사는 모호한 write 로 보아 면제하지 않는다.
-    """
-    if path_parts[-1] != "board.py":
-        return False
-
-    line_start = max(prompt.rfind("\n", 0, start), prompt.rfind("\r", 0, start)) + 1
-    newline_positions = [pos for pos in (prompt.find("\n", end), prompt.find("\r", end))
-                         if pos >= 0]
-    line_end = min(newline_positions) if newline_positions else len(prompt)
-    before_path = prompt[line_start:start]
-    python_match = _PYTHON_LAUNCHER_BEFORE_PATH_RE.search(before_path)
-    if python_match is None:
-        return False
-
-    after_path = prompt[end:line_end]
-    call_match = _READ_ONLY_BOARD_CALL_RE.match(after_path)
-    if call_match is None:
-        return False
-    command_tail = after_path[call_match.end():]
-    if (_READ_ONLY_CALL_SHELL_TAIL_RE.search(command_tail) is not None
-            or _READ_ONLY_CALL_INVALID_TICKET_ARG_RE.match(command_tail) is not None
-            or _WRITE_NEAR_READ_ONLY_CALL_RE.search(command_tail) is not None):
-        return False
-    command_start = line_start + python_match.start()
-    command_end = end + call_match.end()
-
-    # `modify "python3 ... show T-NNNN"`처럼 명령 span 자체가 앞선 write 동사의
-    # 목적어인 경우를 닫는다. 앞쪽 별도 경로를 특정한 write 는 이 출현의 목적어가 아니다.
-    before_command = before_path[:python_match.start()]
-    nearby_prefix = before_command[-120:]
-    if (_WRITE_NEAR_READ_ONLY_CALL_RE.search(nearby_prefix) is not None
-            and not re.search(r"[A-Za-z0-9._/\\-]+\.[A-Za-z0-9_-]+"
-                              r"[\s\S]{0,40}$", nearby_prefix)):
-        return False
-    reference_prefix = prompt[max(0, command_start - 240):command_start]
-    prefix_boundaries = list(_SENTENCE_BOUNDARY_RE.finditer(reference_prefix))
-    if prefix_boundaries:
-        reference_prefix = reference_prefix[prefix_boundaries[-1].end():]
-    reference_suffix = prompt[
-        command_end:min(len(prompt), command_end + 240)
-    ]
-    suffix_boundary = _SENTENCE_BOUNDARY_RE.search(reference_suffix)
-    if suffix_boundary is not None:
-        reference_suffix = reference_suffix[:suffix_boundary.start()]
-    reference_window = (
-        reference_prefix
-        + "\n<READ_ONLY_CALL>\n"
-        + reference_suffix
-    )
-    if _READ_ONLY_CALL_FILE_REFERENCE_WRITE_RE.search(reference_window) is not None:
-        return False
-    return True
-
-
-def _same_engine_path(
-    candidate: str, path_parts: tuple[str, ...],
-) -> bool:
-    """명시 경로가 현재 금지된 엔진 경로와 같은 engine-relative 경로인가."""
-    candidate_parts = _engine_path_parts(candidate)
-    if candidate_parts is None:
-        return False
-    current_idx = path_parts.index(".project_manager")
-    candidate_idx = candidate_parts.index(".project_manager")
-    return (
-        path_parts[current_idx:] == candidate_parts[candidate_idx:]
-    )
-
-
-def _redirect_targets_current_engine_path(
-    redirect: str, path_parts: tuple[str, ...],
-) -> bool:
-    """redirect의 명시 대상이 없거나 현재 엔진 경로를 다시 가리키는가.
-
-    `wiki 문서`처럼 최상위 문서 영역만 적은 형태도 명시 비-엔진 대상으로 본다. 대명사나
-    목적어 생략은 기존처럼 금지 경로를 가리킬 수 있으므로 보수적으로 True다.
-    """
-    explicit_paths = _EXPLICIT_PATH_RE.findall(redirect)
-    if not explicit_paths:
-        return True
-    return any(
-        _same_engine_path(candidate, path_parts)
-        for candidate in explicit_paths
-    )
-
-
-def _negation_is_overridden_for_path(
-    prompt: str, start: int, negation_end: int, path_parts: tuple[str, ...],
-) -> bool:
-    """금지 뒤 write override가 현재 엔진 경로를 다시 대상으로 삼는가.
-
-    ignore/disregard/override 마커는 인용된 금지 앞에도 올 수 있어 pre+post에서 찾되, 실제 write
-    동사는 반드시 금지 뒤에 있어야 한다. ignore 및 `대신`/`instead` 모두 후속 write 절에 명시
-    경로가 없거나 같은 엔진 경로일 때만 현재 금지를 폐기한다. 명시된 비-엔진 경로(예:
-    wiki/roadmap.md)로 redirect하면 현재 엔진 경로의 금지는 유지한다.
-    """
-    post_window = prompt[negation_end:min(len(prompt), negation_end + 240)]
-    if _NEGATION_FOLLOWUP_PRONOUN_WRITE_RE.search(post_window) is not None:
-        return True
-
-    write_match = re.search(_WRITE_VERB_PATTERN, post_window, re.IGNORECASE)
-    marker_window = prompt[
-        max(0, start - 160):min(len(prompt), negation_end + 240)
-    ]
-    if (write_match is not None
-            and _NEGATION_IGNORE_MARKER_RE.search(marker_window) is not None):
-        clause_end = _OVERRIDE_CLAUSE_END_RE.search(
-            post_window, write_match.end(),
-        )
-        redirect = (
-            post_window[:clause_end.start()]
-            if clause_end is not None else post_window
-        )
-        return _redirect_targets_current_engine_path(redirect, path_parts)
-
-    instead = _NEGATION_INSTEAD_RE.search(post_window)
-    if instead is None:
-        return False
-
-    clause_tail = post_window[instead.end():]
-    clause_end = _OVERRIDE_CLAUSE_END_RE.search(clause_tail)
-    if clause_end is not None:
-        clause_tail = clause_tail[:clause_end.start()]
-    redirect = (
-        post_window[instead.start():instead.end()]
-        + clause_tail
-    )
-    if re.search(_WRITE_VERB_PATTERN, redirect, re.IGNORECASE) is None:
-        return False
-    return _redirect_targets_current_engine_path(redirect, path_parts)
-
-
-def _path_has_direct_negative_write_context(
-    prompt: str, start: int, end: int, path_parts: tuple[str, ...],
-) -> bool:
-    """금지 표현이 현재 경로 출현에 직접 결합하며 뒤에서 폐기되지 않았는가(B).
-
-    앞/뒤 1개 결합 패턴만 인정한다. 절 전체 검색을 하지 않으므로 타 경로의 금지 표현은 전파되지
-    않으며, 경로와 금지 사이에 write 동사·타 경로가 끼면 자연스럽게 매치되지 않는다.
-    """
-    before = prompt[max(0, start - 160):start]
-    after = prompt[end:min(len(prompt), end + 320)]
-    after_match = _KOREAN_DIRECT_NEGATION_AFTER_RE.match(after)
-    if after_match is None:
-        after_match = _ENGLISH_DIRECT_NEGATION_AFTER_RE.match(after)
-
-    if after_match is not None:
-        negation_end = end + after_match.end()
-    elif _DIRECT_NEGATION_BEFORE_RE.search(before) is not None:
-        negation_end = end
-    else:
-        return False
-
-    # “금지라는 말은 무시하고 수정하라” / “ignore that and edit it”는 금지가 아니다.
-    return not _negation_is_overridden_for_path(
-        prompt, start, negation_end, path_parts,
-    )
-
-
-def _prompt_targets_engine_code(prompt: str) -> bool:
-    """위임 프롬프트가 엔진 코드 경로(`.project_manager/tools/`)를 write 대상으로 하는가.
-
-    정확 문자열 매칭이 아니라 **경로를 정규화해 성분 시퀀스**로 판정한다(codex must-fix) — 각 토큰을
-    PurePosixPath 로 정규화(`.`/중복 슬래시 접힘)하고 긴 경로의 공백·개행/``\\\n`` 연속을 먼저
-    접어 `.project_manager` 직후 `tools` 성분이 오면 True. 이로써 trailing slash 없음·`./`·자연
-    줄바꿈 우회를 닫는다. 단, 독립된 순수 read-only `board.py show|list|lint` 호출(A)과 경로에 직접
-    결합한 수정 금지(B)의 **그 경로 span만** 제외한다. 절/문서의 금지를 공유하지 않으며, 다른
-    출현이 실제 write 지시면 True를 유지한다.
-
-    위협 모델은 적대 프롬프트 의미 분석이 아니라 PM의 실수 방지다. 따라서 read-only 호출 다음 줄의
-    대명사/일반 지시(예: ``본문대로 구현하라``)만으로 그 경로를 write 대상으로 추론하지 않는다
-    (정당 관용구와 텍스트만으로 구분 불가). 명시 경로 재등장은 계속 차단한다. 잔여 경계는
-    (1) 같은 엔진 경로에 금지와 write를 함께 붙인 자기모순 shape, (2) 경로 separator 없이
-    `.project_manager``와 ``tools``를 개행 분할한 shape, (3) ASCII slash 대신 유니코드 동형
-    slash를 쓴 shape다. 이 잔여 신형/적대 표현은 role preamble 금지
-    변경 감지가 닫는다.
-    write 역할 + PM 홈 cwd 조합에서만 재앵커 게이트로 쓰인다(PM-doc/wiki write 는 PM 홈 정당)."""
-    for start, end, parts in _engine_path_occurrences(prompt):
-        if _is_pure_read_only_board_call(prompt, start, end, parts):
-            continue
-        if _path_has_direct_negative_write_context(
-            prompt, start, end, parts,
-        ):
-            continue
-        return True
-    return False
-
-
 def _local_conf_path(repo: Path | None = None) -> Path:
     """위임 profile을 해소한 엔진 사본 local.conf의 절대경로(provenance 단일 입력)."""
     return ((repo if repo is not None else REPO) / ".project_manager" / "local.conf").resolve()
-
-
-def resolved_delegate_profile(
-    harness: str, model: str, reasoning: str | None,
-) -> str:
-    """stderr/raw가 공유하는 pm_delegate 해소 tuple."""
-    return f"(harness={harness}, model={model}, reasoning={reasoning})"
 
 
 def check_local_conf_divergence(
@@ -4909,8 +3665,7 @@ def check_local_conf_divergence(
     config_repo: Path,
     cli_override: bool = False,
     compare_fallback: bool = False,
-    additional_reviewer_module=None,
-) -> tuple[Path | None, object | None, object]:
+) -> tuple[Path | None, object | None]:
     """기존 `--cwd` repo축으로 이번 role/tier의 **유효 primary/fallback 프로필** 분기를 검사한다.
 
     additional_reviewer의 repo-root/conf 비교 seam을 재사용해 두 표면이 별도 판정 규칙을 갖지 않게 한다.
@@ -4921,21 +3676,19 @@ def check_local_conf_divergence(
     primary 동일 skip을 해소한 뒤 실제 발동 가능한 실행에서만 같은 role/tier를
     비교한다. 또한 양쪽 `resolve_fallback` 결과가 모두 tuple이고 각 후보의 primary와 harness/model이
     다를 때만 값 차이를 판정한다. 한쪽 미설정·primary 동일은 실제 발동 불가능하므로 무소음이며,
-    불완전/잘못된 대상 tuple도 실행 가능한 비교값이 아니어서 skip한다. 호출자가 이미 로드한
-    additional_reviewer 모듈을 넘길 수 있는 것은 그 모듈이 정의한 예외 클래스의 identity를 raise/catch
-    사이에 보존하기 위함이다. 반환 target_repo는 이 skip들과 무관하게 write-target 재앵커에도
+    불완전/잘못된 대상 tuple도 실행 가능한 비교값이 아니어서 skip한다. 반환 target_repo는
+    이 skip들과 무관하게 write-target 재앵커에도
     재사용한다.
     """
-    er = additional_reviewer_module or _load_additional_reviewer()
-    target_repo = er.repo_root_from_cwd(cwd)
+    target_repo = pm_paths.repo_root_from_cwd(cwd)
     if cli_override:
-        return target_repo, None, er
+        return target_repo, None
 
     prefix = f"delegate.{role}" + (".hard" if tier == "hard" else "")
 
     def effective_profile(candidate: dict[str, str]) -> dict[str, object]:
         try:
-            harness, model, reasoning = resolve_delegate(
+            harness, model, reasoning = delegate_config.resolve_delegate(
                 candidate, role, tier, None, None, None,
             )
         except delegate_errors.DelegateError:
@@ -4947,7 +3700,7 @@ def check_local_conf_divergence(
         }
         if compare_fallback:
             try:
-                fallback = resolve_fallback(candidate, role, tier)
+                fallback = delegate_config.resolve_fallback(candidate, role, tier)
             except delegate_errors.DelegateError:
                 return values
             # main의 비발동 규칙과 후보별로 대칭이다. reasoning만 달라도 같은 harness/model 한도를
@@ -4962,7 +3715,7 @@ def check_local_conf_divergence(
                     values[f"{prefix}.fallback.{field}"] = value
         return values
 
-    divergence = er.local_conf_divergence(
+    divergence = reviewer_target.local_conf_divergence(
         engine_repo=config_repo,
         engine_conf=conf,
         target_repo=target_repo,
@@ -4970,7 +3723,7 @@ def check_local_conf_divergence(
         engine_label="pm-home",
         target_label="cwd-worktree",
     )
-    return target_repo, divergence, er
+    return target_repo, divergence
 
 
 def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | None:
@@ -4979,257 +3732,11 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
     재앵커는 cwd 자체가 아니라 **쓰기-타깃 axis** 로 판정 — PM-doc(wiki/ADR/spike) 작업은 PM 홈 cwd
     정당. 판정 = additional_reviewer `_pm_home_reanchor`(실 board 소유 + `work/*` canonical 보유·파일 존재
     휴리스틱 금지) 재사용. read 역할·비-엔진-코드 타깃·PM 홈 아닌 cwd 는 None(통과)."""
-    if role not in WRITE_ROLES:
+    if role not in delegate_run_rules.WRITE_ROLES:
         return None
-    if not _prompt_targets_engine_code(prompt):
+    if not delegate_prompt_rules._prompt_targets_engine_code(prompt):
         return None
-    er = _load_additional_reviewer()
-    return er._pm_home_reanchor(cwd)
-
-
-# ── 결과 박제 (O_EXCL·0600·PID/UUID) ─────────────────────────────────────
-
-def _gettempdir() -> str:
-    """OS 임시 디렉터리 — 소비자는 `_with_resolved_child_env` **하나**다(자식 env 의 임시 축).
-
-    엔진이 만드는 임시물의 자리는 `raw_output.temp_root`(프로젝트 안) 하나다. 이 값은 엔진이
-    만드는 자리가 아니라 **스폰하는 자식에게 넘기는 env 값**이라 남는다. 근거 둘(실측):
-    (1) 받는 쪽이 하네스 CLI 와 그 자식 전부(node·npm·git·pytest)인데 엔진에 그 임시물의 목록도
-    회수 훅도 없다 — 프로젝트 안을 주면 주인 없는 산출이 저장소에 쌓인다(격리 트리 실측
-    205M·243M·197M). (2) codex 정책의 `exclude_tmpdir_env_var` 때문에 `$TMPDIR` 은 workspace-write
-    의 쓰기 루트에 자동으로 들어간다 — 프로젝트 안을 주면 남의 도구의 쓰기 권한이 우리 트리로
-    넓어진다. 새 소비자를 여기 붙이지 마라 — 엔진 자기 임시물이면 `temp_root` 다
-    (회귀가 이 소비자 하나만 통과시킨다: `tests/test_pytest_temp_root.py`).
-    """
-    import tempfile
-    return tempfile.gettempdir()
-
-
-def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
-    """raw/장부 위치를 해소된 PM 홈 소유자에서 정한다(REPO 미해소는 fail-loud)."""
-    return raw_output.raw_storage_paths(
-        _CONFIG_REPO_OVERRIDE or REPO, "delegate", output_dir,
-    )
-
-
-FRESH_REASON_FIELD = "fresh_reason"
-ATTACH_RAW_SECTION_TITLE = "## 직전 검토 보고 원문"
-_DELEGATE_RAW_STDOUT_MARKER = "\n## stdout\n"
-_DELEGATE_RAW_STDERR_MARKER = "\n\n## stderr\n"
-_ADDITIONAL_REVIEWER_STDERR_MARKER = "\n[stderr]\n"
-
-
-class AttachedRaw(NamedTuple):
-    """첨부 대상으로 확정한 마감 레코드와 그 실행의 최종 reply 원문."""
-
-    record_id: str
-    reply: str
-
-
-def cold_reinjection_record(
-    ticket: str,
-    role: str,
-    output_dir: Path | None,
-) -> dict | None:
-    """같은 ticket+role의 최근 **마감** 레코드, 없거나 장부를 못 읽으면 None.
-
-    장부 부재·손상은 비용 가드만 fail-open한다. raw 감사 기록 자체의 쓰기 계약은 별도 안전
-    경계이므로 여기서 장부를 고치거나 초기화하지 않는다.
-    """
-    _raw_dir, ledger_path = _raw_storage(output_dir)
-    if not ledger_path.is_file():
-        print(
-            f"경고: cold 재투입 비용 가드가 raw 장부를 찾지 못해 fail-open 합니다: "
-            f"{ledger_path}",
-            file=sys.stderr,
-        )
-        return None
-    try:
-        rows = raw_output.raw_records(ledger_path)
-    except (OSError, UnicodeError, ValueError) as exc:
-        print(
-            "경고: cold 재투입 비용 가드가 raw 장부를 읽지 못해 fail-open 합니다: "
-            f"{ledger_path} ({type(exc).__name__}: {exc})",
-            file=sys.stderr,
-        )
-        return None
-    matches = [
-        row for row in rows
-        if (
-            isinstance(row, dict)
-            and row.get(RESUME_FIELD_TICKET) == ticket
-            and row.get("role") == role
-            and row.get("finished_at") is not None
-        )
-    ]
-    if not matches:
-        return None
-    return max(matches, key=lambda row: str(row.get("started_at", "")))
-
-
-def cold_reinjection_rejection(
-    ticket: str,
-    role: str,
-    harness: str,
-    record: Mapping[str, object],
-) -> str:
-    """cold 재투입 거부와 하네스 capability에 맞는 재호출 처방."""
-    lines = [
-        f"오류: cold 재투입 거부 — ticket={ticket} · role={role}의 완료 레코드가 "
-        f"이미 있습니다(id={record.get('id')}).",
-    ]
-    if contract.harness_supports_resume(harness):
-        lines.append(f"  · 이어서 재실행: --resume-from {ticket}")
-    lines.append("  · 의도적 fresh 재실행: --fresh <사유>")
-    return "\n".join(lines)
-
-
-def select_attached_raw_record(rows: Sequence[dict], selector: str) -> dict:
-    """`--attach-raw` 지시자의 마감 레코드 1건을 확정한다.
-
-    티켓 표기는 그 티켓의 started_at 최신 **마감** 행, 그 밖은 id 정확일치다. id가 실재하지만
-    미마감이면 '미존재'로 뭉개지 않고 별도 오류를 낸다.
-    """
-    if selector.startswith(RESUME_TICKET_PREFIX):
-        matching = [
-            row for row in rows
-            if isinstance(row, dict) and row.get(RESUME_FIELD_TICKET) == selector
-        ]
-        completed = [row for row in matching if row.get("finished_at") is not None]
-        if not completed:
-            detail = "(해당 티켓 레코드는 모두 미마감)" if matching else "(티켓 기록 미존재)"
-            raise delegate_errors.DelegateError(
-                f"--attach-raw {selector!r}의 완료 레코드가 없음 {detail}"
-            )
-        return max(completed, key=lambda row: str(row.get("started_at", "")))
-
-    matching = [
-        row for row in rows
-        if isinstance(row, dict) and row.get("id") == selector
-    ]
-    if not matching:
-        raise delegate_errors.DelegateError(f"--attach-raw 레코드 미발견: {selector}")
-    record = matching[0]
-    if record.get("finished_at") is None:
-        raise delegate_errors.DelegateError(f"--attach-raw 레코드가 미마감이라 첨부할 수 없음: {selector}")
-    return record
-
-
-def _delegate_raw_stdout(content: str, raw_path: Path) -> str:
-    """pm_delegate 감사 raw에서 stdout 원문을 표시 경계의 **마지막** stderr 절로 분리한다."""
-    _header, marker, remainder = content.partition(_DELEGATE_RAW_STDOUT_MARKER)
-    if not marker:
-        raise delegate_errors.DelegateError(f"첨부 raw의 stdout 절이 없음: {raw_path}")
-    stdout, marker, _stderr = remainder.rpartition(_DELEGATE_RAW_STDERR_MARKER)
-    if not marker:
-        raise delegate_errors.DelegateError(f"첨부 raw의 stderr 경계가 없음: {raw_path}")
-    return stdout
-
-
-def _additional_reviewer_raw_answer(content: str) -> str:
-    """신구 추가 리뷰 감사 헤더와 stderr 꼬리를 떼고 wire 원문만 반환한다."""
-    body = content
-    headers = (
-        "# additional_reviewer raw 출력 (감사)\n",
-        "# external_review raw 출력 (감사)\n",
-    )
-    if content.startswith(headers):
-        lines = content.splitlines(keepends=True)
-        index = 0
-        while index < len(lines) and lines[index].startswith("#"):
-            index += 1
-        if index < len(lines) and not lines[index].strip():
-            index += 1
-        body = "".join(lines[index:])
-    answer, marker, _log = body.rpartition(_ADDITIONAL_REVIEWER_STDERR_MARKER)
-    return answer if marker else body
-
-
-def _attached_record_reply(record: Mapping[str, object], raw_path: Path) -> str:
-    """장부가 가리키는 실제 raw에서 최종 reply를 추출한다(요약·발췌 없음)."""
-    try:
-        content = fs.read_text_shared(raw_path, encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise delegate_errors.DelegateError(
-            f"첨부 raw 읽기 실패: {raw_path} ({type(exc).__name__}: {exc})"
-        ) from exc
-
-    harness = record.get("harness")
-    if _DELEGATE_RAW_STDOUT_MARKER in content:
-        if not isinstance(harness, str):
-            raise delegate_errors.DelegateError(f"첨부 레코드 harness 형식 오류: {record.get('id')}")
-        reply = extract_reply(harness, _delegate_raw_stdout(content, raw_path))
-    else:
-        answer = _additional_reviewer_raw_answer(content)
-        if isinstance(harness, str) and harness in conf_schema.HARNESS_CHOICES:
-            reply = extract_reply(harness, answer)
-        else:
-            # legacy/custom reviewer의 raw 회신 채널은 이미 최종 reply 텍스트다.
-            reply = answer
-    if not isinstance(reply, str) or not reply.strip():
-        raise delegate_errors.DelegateError(
-            f"첨부 raw에서 최종 reply를 추출하지 못함: record={record.get('id')} · raw={raw_path}"
-        )
-    return reply
-
-
-def resolve_attached_raw(
-    selector: str | None,
-    *,
-    output_dir: Path | None,
-) -> AttachedRaw | None:
-    """`--attach-raw`를 실제 마감 장부 행+raw 최종 reply로 해소한다(fail-loud)."""
-    if not selector:
-        return None
-    _raw_dir, ledger_path = _raw_storage(output_dir)
-    if not ledger_path.is_file():
-        raise delegate_errors.DelegateError(f"--attach-raw raw 장부가 없음: {ledger_path}")
-    try:
-        rows = raw_output.raw_records(ledger_path)
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise delegate_errors.DelegateError(
-            f"--attach-raw raw 장부 읽기 실패: {ledger_path} "
-            f"({type(exc).__name__}: {exc})"
-        ) from exc
-    record = select_attached_raw_record(rows, selector)
-    raw_value = record.get("raw_path")
-    if not isinstance(raw_value, str) or not raw_value:
-        raise delegate_errors.DelegateError(f"첨부 레코드 raw_path 형식 오류: {record.get('id')}")
-    raw_path = Path(raw_value)
-    if not raw_path.is_absolute():
-        raise delegate_errors.DelegateError(
-            f"첨부 레코드 raw_path가 절대경로가 아님: {record.get('id')} · {raw_value!r}"
-        )
-    return AttachedRaw(
-        record_id=str(record.get("id")),
-        reply=_attached_record_reply(record, raw_path),
-    )
-
-
-def append_attached_raw(task_text: str, attached: AttachedRaw | None) -> str:
-    """첨부 reply를 합성 프롬프트 말미에 byte-for-byte 붙인다."""
-    if attached is None:
-        return task_text
-    return task_text + "\n\n" + ATTACH_RAW_SECTION_TITLE + "\n\n" + attached.reply
-
-
-def _reserve_raw_output(harness: str, output_dir: Path | None = None) -> Path:
-    """실행 전 장부가 가리킬 0600 raw 파일을 O_EXCL로 선점한다."""
-    base_dir, _ledger_path = _raw_storage(output_dir)
-    base_dir.mkdir(parents=True, exist_ok=True)
-    dest = (
-        base_dir
-        / f"pm_delegate_{harness}_{os.getpid()}_{uuid.uuid4().hex}.txt"
-    )
-    fd = os.open(str(dest), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    os.close(fd)
-    return dest
-
-
-def _write_reserved_raw(dest: Path, content: str) -> None:
-    """선점한 raw 파일 내용을 교체한다(파일 정체성과 0600 권한 유지)."""
-    with dest.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(content)
+    return pm_paths._pm_home_reanchor(cwd)
 
 
 def _cmd_raw_close(argv: list[str]) -> int:
@@ -5253,7 +3760,7 @@ def _cmd_raw_close(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
-    _raw_dir, ledger_path = _raw_storage(output_dir)
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), output_dir)
     resolved_ledger = ledger_path.resolve()
 
     # 중복 id는 한 레코드에 대한 한 번의 마감 요청으로 정규화한다.
@@ -5380,7 +3887,7 @@ def _cmd_raw(argv: list[str]) -> int:
     if args.limit <= 0:
         parser.error("--limit은 양수여야 합니다")
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
-    _raw_dir, ledger_path = _raw_storage(output_dir)
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), output_dir)
     resolved_ledger = ledger_path.resolve()
     print(f"조회 장부: {resolved_ledger}")
     for peer_ledger in raw_output._peer_engine_ledgers(pm_paths.home_at(REPO), _CONFIG_REPO_OVERRIDE):
@@ -5413,185 +3920,6 @@ def _cmd_raw(argv: list[str]) -> int:
     return 0
 
 
-# ── 세션 재사용 (resume 라운드) ───────────────────────────────────────────
-#
-# 재위임/다라운드 재작업이 직전 위임 세션을 이어받으면 그 컨텍스트가 프롬프트 캐시 단가로
-# 재적재되고 도구 재읽기가 사라진다(재적재 비용 0 이 아니라 **단가가 내려간다**). 배선 축은
-# 위임 채널 하나뿐이다 — 추가 리뷰어 축은 라운드마다 임시 홈·전사 없는 환경으로 도는 오염 통제가
-# 목적이라 세션 연속성을 의도적으로 끊으며, 그 정책을 완화하지 않는다.
-#
-# 저장 축도 하나다: 세션 id·usage 분해·직전 must_fix 항목·기준 rev 는 **raw 장부의 그 실행
-# 레코드 행**에 실린다. 리뷰 라운드 장부(수렴 게이트 소유)는 건드리지 않는다 — 두 장부를 조인할
-# 키를 만들지 않으면 어긋날 수도 없다. 그래서 재사용 가용 창의 상한은 raw 장부의 완료 레코드
-# 보존 창(기간·건수)이며, 창 밖 재위임은 후보 부재로 자연히 fresh 다(결함 아님).
-#
-# 회계는 **기록만** 한다 — 위임 라운드에는 새 상한도 거부 rc 도 두지 않는다(리뷰 게이트의 라운드
-# 상한·must_fix 추이·wave 예산과 서로 오염되지 않게 네임스페이스를 분리한다).
-
-# `--resume-from` 후보 지시자 — 티켓 표기면 그 티켓의 최근 위임, 아니면 레코드 id 정확일치.
-RESUME_TICKET_PREFIX = "T-"
-# 위임 축 raw 장부 표면 이름 — 재사용 후보는 이 표면 레코드만이다(리뷰 축 레코드는 후보 아님).
-DELEGATE_RAW_SURFACE = "delegate"
-# opencode wire 사본 좌표 — 같은 행의 ``raw_path``(PM 홈 감사 원본)와 함께 실행을 재구성한다.
-OPENCODE_TRANSPORT_PROMPT_FIELD = "transport_prompt_path"
-# 후보가 만족해야 하는 마감 rc(성공 마감만 이어받는다).
-RESUME_REQUIRED_RC = 0
-# raw 장부 행에 싣는 구조화 필드 이름(조회면/테스트가 같은 이름을 본다).
-RESUME_FIELD_SESSION_ID = "session_id"
-RESUME_FIELD_MUST_FIX = "must_fix_items"
-RESUME_FIELD_BASE_REV = "base_rev"
-RESUME_FIELD_USAGE = "usage"
-RESUME_FIELD_TICKET = "ticket"
-RESUME_FIELD_RESUME_FROM = "resume_from_session_id"
-RESUME_FIELD_RESUME_MATCHED = "resume_matched"
-# cross 실위임 결속 키 — delegate-rounds 장부의 같은 이름 필드와 값이 그대로 같아야 두 장부가
-# 조인된다. native 위임(라운드 준비가 없는 호출)은 이 값이 없어 raw 행에도 실리지 않는다 —
-# 부재는 "결속 대상 없음"이지 손상이 아니다.
-RESUME_FIELD_RUN_ID = "run_id"
-RESUME_FIELD_TICKET_COPY = "copy"
-# 회신 검증까지 통과한 **유효 성공**인가 — rc(자식 종료 코드)만으로는 못 세는 축이다.
-RESUME_FIELD_REPLY_EXTRACTED = "reply_extracted"
-# attempt 라벨 — raw 헤더/장부가 이 실행이 어떤 라운드였는지 그대로 말한다.
-RESUME_ATTEMPT = "resume"
-RESUME_FRESH_FALLBACK_ATTEMPT = "fresh-after-resume-mismatch"
-
-
-class ResumePlan(NamedTuple):
-    """확정된 세션 재사용 1건 — 이어받을 세션 id 와 그 세션에 보낼 delta payload.
-
-    `ticket` 은 이어받은 **레코드가 기록한** 티켓 식별자다(없을 수 있다). 이 라운드의 새 레코드가
-    그 값을 계승해야 다음 재개의 티켓 지시자 선택이 유지된다."""
-
-    session_id: str
-    record_id: str
-    delta_prompt: str
-    ticket: str | None = None
-
-
-def _resume_selector_matches(row: dict, selector: str) -> bool:
-    """지시자와 레코드의 대응 — 티켓 표기면 기록된 ticket, 아니면 레코드 id 정확일치."""
-    if selector.startswith(RESUME_TICKET_PREFIX):
-        return row.get(RESUME_FIELD_TICKET) == selector
-    return row.get("id") == selector
-
-
-def _resume_candidate_is_reusable(row: dict) -> bool:
-    """그 레코드에서 **이어받을 세션**을 얻을 수 있는가 (후보 정밀화 축).
-
-    세 가지를 본다:
-      · 세션 id 가 실제로 남았는가 — 이 필드는 회신 wire 관측으로만 채워진다. rc 0 이어도 회신을
-        못 읽은 라운드는 이어받을 세션을 모른다.
-      · `resume_matched` 가 False 가 아닌가 — False 면 그 라운드는 **다른 세션**이 답한 실행이고,
-        기록된 세션 id 는 그 남의 세션 것이다. 후보로 두면 다음 재개가 맥락 없는 세션을 이어받아
-        fresh 재실행 비용을 다시 지불한다.
-      · `reply_extracted` 가 False 가 아닌가 — 장부의 `rc` 는 **자식 프로세스 종료 코드**라 회신
-        검증보다 먼저 확정된다. 세션 id 만 관측되고 유효 회신이 없던 실행(wire 절단·형상 붕괴)도
-        rc 0 으로 남으므로, 그 축을 안 보면 *실패한 라운드*가 성공 후보로 재개된다. 필드가 아예
-        없는 **구레코드는 종전대로 rc 기준**이다(하위호환 — 이 축이 없던 시절 기록을 일괄 탈락
-        시키면 정상 재개가 회귀한다).
-    이 셋을 선택 *전에* 거르는 이유는 결정 규칙이 "최신 1건"이기 때문이다 — 뒤에서 걸러 봐야
-    최신이 탈락하면 유효한 이전 후보가 있어도 재사용이 통째로 불가로 접힌다.
-    """
-    session_id = row.get(RESUME_FIELD_SESSION_ID)
-    if not isinstance(session_id, str) or not session_id.strip():
-        return False
-    if row.get(RESUME_FIELD_REPLY_EXTRACTED) is False:
-        return False
-    return row.get(RESUME_FIELD_RESUME_MATCHED) is not False
-
-
-def _resume_axis_matches(row: dict, *, selector: str, role: str, harness: str) -> bool:
-    """지시자·role·하네스·성공 마감이 맞는가 (재사용 가능성은 별개 축)."""
-    return (
-        isinstance(row, dict)
-        and row.get("surface") == DELEGATE_RAW_SURFACE
-        and row.get("role") == role
-        and row.get("harness") == harness
-        and row.get("rc") == RESUME_REQUIRED_RC
-        and _resume_selector_matches(row, selector)
-    )
-
-
-def resume_unusable_reason(
-    rows: Sequence[dict], *, selector: str, role: str, harness: str,
-) -> str | None:
-    """지시자에 맞는 레코드는 **있는데** 이어받을 수 없는 사유 (해당 없으면 None).
-
-    후보 0 의 사유가 두 가지인데 안내가 하나면 진단이 사람을 엉뚱한 데로 보낸다: 정말 없는 것
-    (보존 창 밖·아직 없는 라운드)과, 있는데 그 레코드로는 이어받을 수 없는 것(세션 id 미관측·
-    세션 불일치 라운드)은 처방이 다르다. 특히 레코드 id 를 **직접 지목**한 실행에 "보존 창 밖"이라
-    답하면 방금 눈으로 본 레코드를 없다고 하는 셈이다."""
-    unusable = [
-        row for row in rows
-        if _resume_axis_matches(row, selector=selector, role=role, harness=harness)
-        and not _resume_candidate_is_reusable(row)
-    ]
-    if not unusable:
-        return None
-    row = max(unusable, key=lambda item: str(item.get("started_at", "")))
-    if row.get(RESUME_FIELD_RESUME_MATCHED) is False:
-        return (f"레코드 {row.get('id')} 는 세션 불일치로 끝난 라운드다(resume_matched=false) — "
-                "기록된 세션 id 는 남의 세션 것이라 이어받을 수 없음")
-    if row.get(RESUME_FIELD_REPLY_EXTRACTED) is False:
-        return (f"레코드 {row.get('id')} 는 유효 회신이 없던 라운드다(reply_extracted=false) — "
-                "rc 0 은 자식 종료 코드일 뿐이라 성공 후보가 아님")
-    return (f"레코드 {row.get('id')} 에 세션 id 가 관측되지 않았다(회신 wire 미기록) — "
-            "이어받을 세션을 알 수 없음")
-
-
-def select_resume_record(
-    rows: Sequence[dict], *, selector: str, role: str, harness: str,
-) -> dict | None:
-    """재사용 후보 1건 — 같은 지시자·role·하네스의 **성공 마감 레코드 중 started_at 최신**.
-
-    결정적 1줄 규칙이다(후보가 여럿이어도 고르는 값이 하나로 정해진다). 하네스가 선택 키인
-    이유는 세션 id 가 발급 축 안에서만 뜻이 있기 때문이다 — 다른 축의 id 도 형식 가드를 통과할
-    수 있어(codex thread id 가 uuid 표기다) 형식만으로는 남의 세션을 거르지 못하고, 그대로
-    보내면 확정 실패 뒤 fresh 재실행으로 한 라운드를 더 지불한다.
-
-    후보 조건에 "이어받을 세션이 실제로 있는가"(`_resume_candidate_is_reusable`)를 함께 건다 —
-    회신을 못 읽은 라운드와 세션 불일치로 끝난 라운드는 rc 0 이어도 재개의 입력이 아니다.
-    """
-    matches = [
-        row for row in rows
-        if _resume_axis_matches(row, selector=selector, role=role, harness=harness)
-        and _resume_candidate_is_reusable(row)
-    ]
-    if not matches:
-        return None
-    return max(matches, key=lambda row: str(row.get("started_at", "")))
-
-
-def build_resume_delta_payload(
-    *, must_fix_items: Sequence[str], base_rev: str | None, task_text: str,
-) -> str:
-    """이어받는 turn 에 보낼 delta payload.
-
-    입력은 **장부의 구조화 필드**(직전 라운드 must_fix 항목·기준 rev)와 호출자가 넘긴 원문뿐이다.
-    raw 박제 파일을 다시 읽거나 자유 서술을 파싱하지 않으며, 해소 주장은 호출자의 불투명 문자열로
-    그대로 실어 보낸다(엔진이 그 내용을 해석하지 않는다). 역할 preamble 은 붙이지 않는다 — 이어받는
-    세션엔 이미 있다(그래서 재사용이 실패하면 full payload 로 돌아가야 한다).
-    """
-    lines = [
-        "## 이어지는 라운드 (직전 위임 세션 재사용)",
-        "이 세션은 직전 위임 라운드를 이어받는다 — 역할·금지·이미 읽은 파일은 그대로 유효하다.",
-        "아래 '직전 라운드 기록'은 장부에 남은 구조화 값이고, 그 뒤 본문은 호출자가 보낸 원문이다.",
-        "",
-        "### 직전 라운드 기록",
-        f"- 기준 rev: {base_rev}" if base_rev else "- 기준 rev: 장부에 기록 없음",
-    ]
-    items = [str(item) for item in must_fix_items if str(item).strip()]
-    if items:
-        lines.append("- must_fix 항목:")
-        lines.extend(
-            f"  {index}. {item}" for index, item in enumerate(items, start=1)
-        )
-    else:
-        lines.append("- must_fix 항목: 장부에 기록 없음")
-    lines += ["", "### 이번 라운드 입력 (호출자 원문)", "", task_text]
-    return "\n".join(lines)
-
-
 def _resume_unavailable(reason: str) -> None:
     """재사용 불가 사유를 1줄로 알리고 fresh 로 간다(조용한 강등 금지·차단은 아님)."""
     print(
@@ -5607,7 +3935,7 @@ def resolve_resume_plan(
     role: str,
     task_text: str,
     output_dir: Path | None,
-) -> ResumePlan | None:
+) -> delegate_run_rules.ResumePlan | None:
     """`--resume-from` 지시자를 확정된 재사용 1건으로 해소한다(불가하면 None + loud 1줄).
 
     막히는 자리는 넷이고 전부 **비차단**이다: 재개 미지원 하네스, 장부 부재, 후보 부재(보존 창
@@ -5623,7 +3951,7 @@ def resolve_resume_plan(
     if not contract.harness_supports_resume(harness):
         _resume_unavailable(f"{harness} 하네스는 재개 argv 가 미검증(선언표 미지원)")
         return None
-    _raw_dir, ledger_path = _raw_storage(output_dir)
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), output_dir)
     if not ledger_path.is_file():
         _resume_unavailable(f"raw 장부 없음({ledger_path}) — 이 위치에 아직 위임 기록이 없음")
         return None
@@ -5632,31 +3960,31 @@ def resolve_resume_plan(
     except (OSError, ValueError) as exc:
         _resume_unavailable(f"raw 장부를 읽지 못함({exc})")
         return None
-    record = select_resume_record(
+    record = delegate_run_rules.select_resume_record(
         rows, selector=selector, role=role, harness=harness,
     )
     if record is None:
         # 사유를 갈라 낸다 — "정말 없다"와 "있는데 이어받을 수 없다"는 처방이 다르다.
         _resume_unavailable(
-            resume_unusable_reason(rows, selector=selector, role=role, harness=harness)
+            delegate_run_rules.resume_unusable_reason(rows, selector=selector, role=role, harness=harness)
             or (f"{selector!r} 의 성공 마감 위임 레코드(role={role}·harness={harness}) 없음 — "
                 "장부 보존 창 밖이거나 아직 없는 라운드")
         )
         return None
-    session_id = record.get(RESUME_FIELD_SESSION_ID)
+    session_id = record.get(delegate_run_rules.RESUME_FIELD_SESSION_ID)
     if not contract.is_resumable_session_id(session_id):
         _resume_unavailable(
             f"레코드 {record.get('id')} 의 세션 id 형식 불일치({session_id!r})"
         )
         return None
-    must_fix_items = record.get(RESUME_FIELD_MUST_FIX)
-    base_rev = record.get(RESUME_FIELD_BASE_REV)
-    record_ticket = record.get(RESUME_FIELD_TICKET)
-    return ResumePlan(
+    must_fix_items = record.get(delegate_run_rules.RESUME_FIELD_MUST_FIX)
+    base_rev = record.get(delegate_run_rules.RESUME_FIELD_BASE_REV)
+    record_ticket = record.get(delegate_run_rules.RESUME_FIELD_TICKET)
+    return delegate_run_rules.ResumePlan(
         session_id=session_id,
         record_id=str(record.get("id")),
         ticket=record_ticket if isinstance(record_ticket, str) and record_ticket else None,
-        delta_prompt=build_resume_delta_payload(
+        delta_prompt=delegate_run_rules.build_resume_delta_payload(
             must_fix_items=(
                 must_fix_items if isinstance(must_fix_items, list) else ()
             ),
@@ -5664,1716 +3992,6 @@ def resolve_resume_plan(
             task_text=task_text,
         ),
     )
-
-
-def _observed_must_fix_items(reply: str | None) -> list[str]:
-    """회신에서 must_fix 항목을 **생산 시점에** 뽑아 장부에 실을 목록으로 만든다.
-
-    다음 라운드의 delta 는 이 목록만 읽는다 — raw 박제 텍스트를 나중에 다시 파싱하지 않는다.
-    추출기는 추가 리뷰어 축이 이미 쓰는 것을 그대로 재사용한다(파서를 새로 만들지 않는다).
-
-    **통과 응답의 `- 없음` 은 항목이 아니다.** 그 표기를 그대로 실으면 장부에 `["없음"]` 이 남고,
-    다음 라운드 delta 가 "없음"을 고칠 지적으로 되읽는다. 정규화도 추가 리뷰 경로와 **같은
-    술어**(`_is_none_items`)를 쓴다 — 두 축이 각자 판별하면 같은 회신이 축마다 다르게 박제된다.
-    """
-    if not reply or not reply.strip():
-        return []
-    try:
-        external = _load_additional_reviewer()
-        items = external._extract_must_fix_items(reply)
-        items = [item for item in items if item and item.strip()]
-        return [] if external._is_none_items(items) else items
-    except Exception as exc:  # noqa: BLE001 — 원장 보강 실패가 위임 자체를 죽이지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
-        print(
-            f"경고: 장부 must_fix 항목 추출 실패({exc}) — 이 레코드는 항목 없이 남습니다.",
-            file=sys.stderr,
-        )
-        return []
-
-
-def _format_silence(silence_sec: float | None, idle_killed: bool) -> str:
-    """감사 헤더의 침묵 관측치 1줄 값 — 다음 kill 의 원인을 사후 확정하는 입력.
-
-    관측 불가(신호 없는 축·주입 run_fn 등)는 `n/a` 로 남긴다 — 0 으로 위장하지 않는다(관측 없음과
-    "침묵 0초"는 다른 사실이다). 무진행 kill 은 사유를 병기해 하네스 상한/기타 kill 과 구분한다."""
-    if silence_sec is None:
-        return "n/a (진행 신호 미관측)"
-    label = f"{silence_sec:.1f}"
-    return f"{label} (무진행 판정으로 중단)" if idle_killed else label
-
-
-def _format_meta(argv: list[str], rc: int, harness: str, model: str,
-                 elapsed: float, stdout: str, stderr: str, *,
-                 attempt: str = "primary", primary_raw: str | None = None,
-                 reasoning: str | None = None,
-                 local_conf_path: Path | None = None,
-                 profile_source: str = "local-conf",
-                 silence_sec: float | None = None,
-                 idle_killed: bool = False,
-                 transport_sandbox_path: str | None = None,
-                 transport_prompt_path: str | None = None,
-                 transport_binding_mode: str | None = None) -> str:
-    """raw 박제 본문 — 메타(argv·rc·모델·소요·침묵) 헤더 + 원문.
-
-    폴백 attempt 는 `# primary_raw:` 로 앞선 primary raw 경로를 적어 **raw 파일 하나만 봐도** 감사
-    체인(왜 이 하네스로 갔는가)이 닫히게 한다. `# silence_sec:` 은 최종 진행 이벤트 이후 침묵으로,
-    kill 이 났을 때 원인(하네스 상한 vs 무진행 vs 기타)을 사후에 가르는 유일한 관측치다 — 누적 8회
-    kill 이 전부 원인 불명이었던 구멍을 이 줄이 닫는다."""
-    header = [
-        "# pm_delegate raw 출력 (감사)",
-        f"# harness: {harness}",
-        f"# model: {model}",
-        f"# attempt: {attempt}",
-    ]
-    if local_conf_path is not None:
-        header.extend([
-            f"# local_conf: {local_conf_path}",
-            f"# profile_source: {profile_source}",
-            f"# resolved_profile: {resolved_delegate_profile(harness, model, reasoning)}",
-        ])
-    if primary_raw:
-        header.append(f"# primary_raw: {primary_raw}")
-    if transport_sandbox_path is not None:
-        header.append(
-            f"# transport_sandbox_path_lexical: {transport_sandbox_path}"
-        )
-    if transport_prompt_path is not None:
-        header.append(
-            f"# transport_prompt_path_lexical: {transport_prompt_path}"
-        )
-    if transport_binding_mode is not None:
-        header.append(f"# transport_binding_mode: {transport_binding_mode}")
-    header += [
-        f"# argv: {' '.join(argv)}",
-        f"# rc: {rc}",
-        f"# elapsed_sec: {elapsed:.1f}",
-        f"# silence_sec: {_format_silence(silence_sec, idle_killed)}",
-        f"# at: {datetime.datetime.now().isoformat(timespec='seconds')}",
-        "",
-        "## stdout",
-        stdout,
-        "",
-        "## stderr",
-        stderr,
-    ]
-    return "\n".join(header)
-
-
-# ── reply 추출 (contract 3파서 재사용) ────────────────────────────────────
-
-def extract_reply(harness: str, stdout: str) -> str | None:
-    """하네스 stdout 에서 최종 reply 텍스트를 추출한다(공용 추출기 wrapper).
-
-    claude=parse_stream_json → result · codex=parse_codex_json → reply ·
-    opencode=parse_opencode_json → reply. reply 미추출(파싱 실패·빈 출력)은 None(호출자 fail-loud)."""
-    try:
-        return contract.extract_harness_reply(harness, stdout)
-    except contract.HarnessContractError as exc:
-        raise delegate_errors.DelegateError(str(exc)) from exc
-
-
-# ── 실행 seam (run_fn DI) ──────────────────────────────────────────
-
-RunResult = dict  # {"returncode": int, "stdout": str, "stderr": str, "timed_out": bool}
-
-# 폴백 발동용 실패 분류 — **양성 패턴만** 열거한다. 정상 판정(반려/must-fix)이나 임의 rc≠0를
-# "인프라"로 추론하지 않는다. 세 하네스 CLI 관측/공식 upstream 표기:
-#   · 한도: `rate_limit_reached` / `rate_limit_exceeded`, "Rate limit reached …",
-#           "You've hit your usage limit.", `insufficient_quota` (HTTP 429 계열).
-#   · 인증: `unexpected status 401 Unauthorized`, `invalid_api_key`, "not logged in" /
-#           "please run codex login", OAuth `invalid_state`.
-# **커버리지 경계(§help 에도 명시)**: 기존 codex 실근거에 claude 2.1.220 stdout JSONL 실측/
-# 바이너리 enum, opencode 1.18.4 provider responseBody passthrough 실측과 Anthropic API enum을
-# 편입했다. opencode 연결 거부·첫 provider 패키지 fetch stall은 stdout/stderr 무진단 침묵이라
-# 패턴이 아니라 기존 첫-이벤트 stall 축이 커버한다. `Model not found` 같은 카탈로그/config 오류는
-# 한도/인증이 아니므로 의도적으로 미분류해 fail-loud 를 유지한다.
-# 스폰 실패/타임아웃/stall 은 패턴이 아니라 **엔진이 세팅한 명시 신호**(RUN_RESULT_* 키)로만 잡는다.
-# 형제-가지 여집합: `overloaded`/`server_error`(transient지만 한도/인증 아님), `invalid_request`,
-# `oauth_org_not_allowed`(org 정책·실측 없음), `APIError`(5xx도 쓰는 과광범 name), 중복 진단인
-# "API key is invalid"는 추가하지 않는다. 그 밖/오분류 시 보수 방향은 None(폴백 없이 fail-loud)이다.
-_INFRA_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\brate_limit_(?:reached|exceeded)\b", re.IGNORECASE),
-    re.compile(r"\brate limit (?:has been )?(?:reached|exceeded)\b", re.IGNORECASE),
-    re.compile(r"\byou(?:'ve| have) hit your usage limit\b", re.IGNORECASE),
-    re.compile(r"\busage limit (?:has been )?reached\b", re.IGNORECASE),
-    re.compile(r"\binsufficient_quota\b", re.IGNORECASE),
-    re.compile(r"\b429\b[^\n]{0,120}\btoo many requests\b", re.IGNORECASE),
-    re.compile(r"\btoo many requests\b[^\n]{0,120}\b429\b", re.IGNORECASE),
-    # claude **내부 enum** 계열은 **단독 줄 앵커** — _failure_scan_text 가 진단 문자열을 줄로
-    # 연결하므로 독립 JSON 값(`"error":"rate_limit"` 류)은 항상 단독 줄이고, 스캔 대상 비-reply
-    # 필드(예: permission_denials 의 command 에코)에 실린 산문 문장-중간 표기는 구조적으로
-    # 배제된다(짧은 단독 토큰의 오분류=부당 폴백 차단·`\s*` 는 CRLF/공백 보험).
-    # 반면 opencode passthrough 계열(아래 rate_limit_error 등)은 responseBody **JSON 문자열 안에**
-    # 박혀 오므로 앵커 금지 — substring `\b` 를 유지해야 실측 양성이 산다(비대칭은 의도).
-    # claude 2.1.220 바이너리의 429/usage-limit/credits 경로 `_u({error:"rate_limit"})`.
-    re.compile(r"^\s*rate_limit\s*$", re.IGNORECASE | re.MULTILINE),
-    # claude 2.1.220 바이너리의 credit-balance HTTP 400 경로 error enum.
-    re.compile(r"^\s*billing_error\s*$", re.IGNORECASE | re.MULTILINE),
-    # Anthropic 공식 429 enum; opencode는 상류 API enum을 responseBody에 verbatim passthrough한다.
-    re.compile(r"\brate_limit_error\b", re.IGNORECASE),
-    # Anthropic 공식 메시지이자 claude 2.1.220 바이너리 자체 감지 regex와 동형.
-    re.compile(r"\bcredit balance (?:is )?too low\b", re.IGNORECASE),
-)
-_INFRA_AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\b(?:unexpected status\s+)?401 unauthorized\b", re.IGNORECASE),
-    re.compile(r"\binvalid_api_key\b", re.IGNORECASE),
-    re.compile(r"\bnot logged in\b", re.IGNORECASE),
-    re.compile(r"\blogin required\b", re.IGNORECASE),
-    re.compile(r"\bplease run [`'\"]?codex login\b", re.IGNORECASE),
-    re.compile(
-        r"(?:\bauthentication\b[^\n]{0,80}\binvalid_state\b"
-        r"|\binvalid_state\b[^\n]{0,80}\bauthentication\b)",
-        re.IGNORECASE,
-    ),
-    # claude 2.1.220 미로그인 assistant/error 및 무효-key api_retry 이벤트의 error enum —
-    # claude 내부 enum 이라 단독-줄 앵커(사유는 _INFRA_QUOTA_PATTERNS 블록 주석).
-    re.compile(r"^\s*authentication_failed\s*$", re.IGNORECASE | re.MULTILINE),
-    # opencode 1.18.4 responseBody passthrough 실측 + Anthropic 공식 401 error enum.
-    re.compile(r"\bauthentication_error\b", re.IGNORECASE),
-)
-
-
-# reply/프롬프트 본문을 실어 나르는 이벤트 필드 — error 이벤트 안에 있어도 스캔에서 제외한다
-# (claude 는 실패 turn 의 최종 텍스트를 `result` 에, codex agent_message 는 `text` 에 싣는다).
-_REPLY_TEXT_KEYS: frozenset[str] = frozenset({"result", "text", "content", "reply"})
-
-
-def _is_error_event(event: dict) -> bool:
-    """JSONL 이벤트가 하네스의 **진단(error) 이벤트**인지 — reply/echo 이벤트와 구분."""
-    if event.get("is_error") is True:
-        return True
-    if event.get("error"):
-        return True
-    for key in ("type", "subtype"):
-        value = event.get(key)
-        if isinstance(value, str) and "error" in value.lower():
-            return True
-    item = event.get("item")
-    if isinstance(item, dict):
-        item_type = item.get("type")
-        if isinstance(item_type, str) and "error" in item_type.lower():
-            return True
-    return False
-
-
-def _diagnostic_strings(node, key: str | None = None) -> list[str]:
-    """이벤트에서 진단 문자열만 수집(reply 본문 필드는 버림)."""
-    if isinstance(node, str):
-        return [] if key in _REPLY_TEXT_KEYS else [node]
-    if isinstance(node, dict):
-        collected: list[str] = []
-        for child_key, child in node.items():
-            collected.extend(_diagnostic_strings(child, child_key))
-        return collected
-    if isinstance(node, list):
-        collected = []
-        for child in node:
-            collected.extend(_diagnostic_strings(child, key))
-        return collected
-    return []
-
-
-def _failure_scan_text(result: RunResult) -> str:
-    """한도/인증 패턴 스캔 대상 — stderr 전문 + stdout 의 **error 이벤트 진단 필드만**.
-
-    stdout 전문을 스캔하면 **에이전트 reply·프롬프트 에코가 한도 문구를 인용하기만 해도** 폴백이
-    발동한다(실측 재현 2건: codex `agent_message` 본문·user 프롬프트 에코 — 이 규칙 자체를 리뷰
-    위임하면 자기참조로 재현된다). 하네스 stdout 은 JSONL 이벤트 스트림이고 진단은 error 이벤트에만
-    담기므로, 스캔을 그 이벤트의 비-reply 필드로 좁혀 에코 유입을 원천 차단한다. 비-JSON/비-dict
-    라인은 무시한다(`contract` 3파서와 동일 robust 정책).
-    """
-    import json  # 지연 import — 분류 경로에서만 쓴다(`contract` 파서 대칭).
-
-    parts: list[str] = [result.get("stderr", "") or ""]
-    for raw in (result.get("stdout", "") or "").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if isinstance(event, dict) and _is_error_event(event):
-            parts.extend(_diagnostic_strings(event))
-    return "\n".join(parts)
-
-
-# ── 재개 대상 세션 부재 (양성 패턴·재실행 자격) ────────────────────────────────
-# 재개 실패의 **재실행 자격**은 두 가지뿐이다: 깨끗한 완료의 명시적 세션 id 불일치, 그리고 여기
-# 잡히는 "그 세션이 없다"는 확정 오류다. 세션이 없으면 delta 프롬프트는 소비되지 않았으므로
-# (호출 자체가 성립하지 않는다) full payload 재실행은 중복 과금·중복 호출이 아니다.
-# 그 밖의 미분류 rc≠0 은 **호출 후 실패**일 수 있어 재실행하지 않는다(기존 fail-loud).
-# 스캔 범위는 인프라 분류와 같은 `_failure_scan_text` 다 — reply 에코가 자격을 지어내지 못한다.
-_RESUME_SESSION_MISSING_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # claude: `--resume <id>` 대상이 없을 때(다른 cwd·만료·오타) — 실측 문구.
-    re.compile(r"\bno conversation found\b", re.IGNORECASE),
-    # opencode `-s <id>` / 일반 하네스 표기.
-    re.compile(r"\bsession not found\b", re.IGNORECASE),
-    # codex 계열 표기(대화 id 미존재).
-    re.compile(r"\bconversation not found\b", re.IGNORECASE),
-    # codex-cli 0.147.0 실측(2026-08-12):
-    # `Error: ... no rollout found for thread id <uuid> (code -32600)`.
-    # phrase만 비슷한 다른 RPC 실패를 세션 부재로 추정하지 않도록 실측 code까지 함께 요구한다.
-    re.compile(
-        r"\bno rollout found for thread id\b[^\r\n]*\(code\s+-32600\)",
-        re.IGNORECASE,
-    ),
-)
-# 재실행 자격 사유 — loud 안내가 "무엇을 보고 다시 태우는지" 그대로 말한다.
-RESUME_RERUN_ID_MISMATCH = "회신 세션 id 불일치"
-RESUME_RERUN_SESSION_MISSING = "재개 대상 세션 없음"
-
-
-def is_resume_session_missing(result: RunResult) -> bool:
-    """재개 대상 세션이 **없다고 확정된** 실패인가 (양성 패턴 일치·아니면 False).
-
-    rc=0 정상 완료는 대상이 아니다 — 그쪽 판정은 회신 세션 id 일치가 소유한다.
-    """
-    if result.get("returncode", 1) == 0:
-        return False
-    text = _failure_scan_text(result)
-    return any(pattern.search(text) for pattern in _RESUME_SESSION_MISSING_PATTERNS)
-
-
-def resume_rerun_reason(
-    result: RunResult, observed_session_id: str | None, requested_session_id: str,
-) -> str | None:
-    """fresh + full payload 재실행 자격 (없으면 None) — 자격 사유 문자열은 안내에 그대로 쓴다.
-
-    자격은 둘뿐이다:
-      · **깨끗한 완료의 명시적 불일치** — rc=0 으로 끝났는데 회신이 말한 세션 id 가 요청한 id 와
-        다르다. 맥락 없는 세션이 delta 만 받고 답한 라운드라 그대로 두면 수렴 추이가 오염된다.
-      · **확정된 세션 없음** — 재개 대상이 없다는 오류(`is_resume_session_missing`). 세션이 없으니
-        delta 는 소비되지 않았고, 재실행이 중복 호출이 아니다.
-
-    나머지(미분류 `rc≠0`·관측 실패로 세션 id 를 못 읽은 rc=0)는 **재실행하지 않는다**. 호출 후에
-    죽은 실행일 수 있어 full payload 를 다시 태우면 같은 라운드가 두 번 과금·호출된다.
-    """
-    if is_resume_session_missing(result):
-        return RESUME_RERUN_SESSION_MISSING
-    if result.get("returncode", 1) != 0:
-        return None
-    if observed_session_id is None or observed_session_id == requested_session_id:
-        return None
-    return RESUME_RERUN_ID_MISMATCH
-
-
-def classify_infrastructure_failure(result: RunResult) -> str | None:
-    """하네스 결과를 폴백 가능한 인프라 실패 클래스로 보수 분류한다.
-
-    반환값은 loud 메시지/감사 provenance 에 쓰는 안정 문자열이다. 분류 근거는 둘뿐이다 —
-    엔진이 세팅한 명시 신호(launch 실패·timeout·opencode 첫-이벤트 stall), 실패 결과(rc≠0)의
-    한도/인증 **양성 패턴**(스캔 범위는 _failure_scan_text — reply 에코 제외). rc=0 정상 완료는 출력
-    내용과 무관하게 분류하지 않으며(반려/must-fix 판정은 PM 몫), 알려지지 않은 rc≠0 도 None 으로
-    남겨 기존 fail-loud 를 유지한다.
-
-    **rc=0 검사가 맨 앞**이다 — "정상 완료는 절대 폴백 안 함"은 문서 계약이므로 신호 세팅에 버그가
-    나도(rc=0 인데 신호가 붙는 조합) 계약이 먼저 이긴다(codex suggestion·방어적 보장). 실제 엔진은
-    성공 turn 에 신호를 붙이지 않는다(timeout=rc1·launch=rc127·stall=rc1).
-    """
-    rc = result.get("returncode", 1)
-    if rc == 0:
-        return None
-    if result.get(RUN_RESULT_LAUNCH_FAILED):
-        return FAILURE_CLASS_LAUNCH
-    if bool(result.get("timed_out", False)):
-        return FAILURE_CLASS_TIMEOUT
-    # stall 은 엔진 신호가 1순위, stderr 마커는 백스톱(둘 다 엔진이 직접 찍는다 — 오분류 위험 0).
-    if result.get(RUN_RESULT_STALLED) or OPENCODE_STALL_MARKER in (result.get("stderr", "") or ""):
-        return FAILURE_CLASS_STALL
-    output = _failure_scan_text(result)
-    if any(pattern.search(output) for pattern in _INFRA_QUOTA_PATTERNS):
-        return FAILURE_CLASS_QUOTA
-    if any(pattern.search(output) for pattern in _INFRA_AUTH_PATTERNS):
-        return FAILURE_CLASS_AUTH
-    return None
-
-
-def _timeout_failure_result(harness: str, timeout: int,
-                            exc: subprocess.TimeoutExpired) -> RunResult:
-    """타임아웃(무진행/벽시계) 결과 정규화 — **kill 시점까지 받은 출력을 보존**한다.
-
-    워치독이 프로세스 그룹째 kill 한 뒤 부분 산출물을 예외에 실어 올린다. 그걸 버리면 수십 분어치
-    작업이 0바이트가 된다(kill 된 실행의 raw 가 헤더 138바이트뿐이던 실측). 무진행 kill 은 `idle_seconds` 로
-    벽시계 백스톱과 구분해 사유·침묵 초를 감사에 남긴다."""
-    idle_seconds = getattr(exc, "idle_seconds", None)
-    silence_seconds = getattr(exc, "silence_seconds", idle_seconds)
-    timeout_axis = getattr(
-        exc, "timeout_axis", "idle" if idle_seconds is not None else "wall"
-    )
-    threshold = float(getattr(exc, "threshold_seconds", exc.timeout or timeout))
-    if timeout_axis == "idle":
-        measured = idle_seconds if idle_seconds is not None else silence_seconds
-        measured_label = (
-            f"{measured:.0f}s" if measured is not None else "관측 불가"
-        )
-        reason = (f"[{harness} 무진행 임계 {threshold:.0f}s 발화 · 실측 침묵 {measured_label} "
-                  f"— 정상 작업이었다면 local.conf harness.{harness}.idle_timeout=<초> 로 상향]")
-    else:
-        silence_label = (
-            f" · 중단 시 실측 침묵 {silence_seconds:.0f}s"
-            if silence_seconds is not None else " · 중단 시 침묵 관측 불가"
-        )
-        reason = (f"[{harness} 벽시계 백스톱 {threshold:.0f}s 초과{silence_label} "
-                  f"— 늘리려면 local.conf harness.{harness}.wall_timeout=<초>]")
-    result: RunResult = {
-        "returncode": 1,
-        "stdout": exc.output or "",
-        "stderr": f"{reason} {exc.stderr or ''}".rstrip(),
-        "timed_out": True,
-        RUN_RESULT_TIMEOUT_AXIS: timeout_axis,
-        RUN_RESULT_TIMEOUT_THRESHOLD_SEC: threshold,
-    }
-    if silence_seconds is not None:
-        result[RUN_RESULT_SILENCE_SEC] = silence_seconds
-    if timeout_axis == "idle":
-        result[RUN_RESULT_IDLE_KILLED] = True
-    return result
-
-
-def _timeout_result_summary(result: RunResult, *, fallback_timeout: int) -> str:
-    """RunResult의 실제 발화 축·임계를 사용자 안내 한 줄로 만든다.
-
-    주입 runner가 구형 최소 dict만 반환한 경우에만 그 **해당 attempt**의 해소 timeout으로
-    폴백한다. primary 값을 fallback 안내에 재사용하지 않는다."""
-    axis = result.get(RUN_RESULT_TIMEOUT_AXIS, "wall")
-    threshold = result.get(RUN_RESULT_TIMEOUT_THRESHOLD_SEC, fallback_timeout)
-    silence = result.get(RUN_RESULT_SILENCE_SEC)
-    if axis == "idle":
-        base = f"무진행 임계 {float(threshold):g}s"
-    else:
-        base = f"벽시계 백스톱 {float(threshold):g}s"
-    if silence is not None:
-        base += f" · 실측 침묵 {float(silence):g}s"
-    return base
-
-
-def _default_run_fn(
-    argv: list[str], *, stdin_text: str | None, cwd: str, env: dict[str, str],
-    timeout: int, harness: str,
-) -> RunResult:
-    """실 subprocess 실행(테스트는 이 seam 을 mock). timeout 시 **프로세스그룹 종료**(3드라이버 공통·
-    start_new_session + killpg·자식[모델 fetch·pytest 등] 잔존 방지).
-
-    **3 드라이버 전부 `watchdog` 워치독 경로** — codex/claude 도 증분 관측 대상이라야
-    무진행 판정이 선다(옛 구조는 codex/claude 만 `Popen`+`communicate(timeout)` 벽시계 단독이었다).
-    드라이버별로 다른 건 코드 분기가 아니라 **선언**(`watchdog.HARNESS_PROFILES`)이다: 신호 있는 축은
-    무진행 판정, startup stall 이 실측된 축(opencode)만 첫-이벤트 창 + 재시도. 프롬프트는 codex/
-    claude 가 stdin(워치독의 `input_text`), opencode 는 `--file`(stdin 불요).
-
-    **launch 오류 정규화**(codex must-fix): 하네스 바이너리 미설치/실행 불가(FileNotFoundError·
-    PermissionError 등 **스폰 단계** 오류)는 traceback 으로 전파하지 않고 RunResult(rc≠0·진단 stderr)로
-    감싼다 — 3드라이버 공통(additional_reviewer._run_reviewer_ex 의 FileNotFoundError fail-soft 계약 동형).
-
-    **스폰 단계 한정**: 프롬프트를 이미 보낸 뒤의 I/O 오류(communicate 중 EPIPE 등)를 launch
-    실패로 표시하면 폴백이 발동해 **같은 프롬프트가 중복 호출**된다. 그래서 launch 신호는
-    스폰 지점 예외에만 붙이고, 실행-중 OSError 는 미분류 실패(rc=1)로 남겨 기존 fail-loud 를 태운다."""
-    profile = harness_profile(harness)
-    # 워치독이 내부에서 스폰한다 — 바이너리/권한 계열(_LAUNCH_STAGE_ERRORS)만 launch 로 보고
-    # 나머지 OSError 는 실행-중으로 간주한다(호출 후 중복 호출 금지).
-    try:
-        completed = watchdog.run_with_first_event_watchdog(
-            argv,
-            first_event_timeout=(watchdog.first_event_timeout_default()
-                                 if profile.startup_watchdog else None),
-            overall_timeout=timeout,
-            retries=(watchdog.stall_retries_default()
-                     if profile.startup_watchdog else 0),
-            idle_timeout=watchdog.idle_timeout_for_signal(profile.progress_signal,
-                                                       profile.idle_timeout),
-            cwd=str(cwd),
-            env=env,
-            input_text=stdin_text,
-        )
-        result: RunResult = {
-            "returncode": completed.returncode,
-            "stdout": completed.stdout or "",
-            "stderr": completed.stderr or "",
-            "timed_out": False,
-        }
-        silence = getattr(completed, watchdog.SILENCE_SEC_ATTR, None)
-        if silence is not None:
-            result[RUN_RESULT_SILENCE_SEC] = silence
-        return result
-    except watchdog.StallWatchdogError as exc:
-        timeout_axis = getattr(exc, "timeout_axis", None)
-        threshold = getattr(exc, "threshold_seconds", None)
-        silence = getattr(exc, "silence_seconds", None)
-        if timeout_axis == watchdog.TIMEOUT_AXIS_WALL:
-            wall_exc = subprocess.TimeoutExpired(
-                argv, threshold if threshold is not None else timeout,
-                output=getattr(exc, "output", "") or "",
-                stderr=getattr(exc, "stderr", "") or "",
-            )
-            wall_exc.timeout_axis = timeout_axis
-            wall_exc.threshold_seconds = (
-                float(threshold) if threshold is not None else float(timeout)
-            )
-            wall_exc.silence_seconds = silence
-            return _timeout_failure_result(harness, timeout, wall_exc)
-        # first-event 축만 startup stall 인프라 실패다. 구형 sentinel(axis 없음)은 기존 계약을
-        # 보존해 stall로 취급한다.
-        partial_stderr = getattr(exc, "stderr", "") or ""
-        result = {"returncode": 1, "stdout": getattr(exc, "output", "") or "",
-                  "stderr": f"{OPENCODE_STALL_MARKER} {exc}] {partial_stderr}".rstrip(),
-                  "timed_out": False, RUN_RESULT_STALLED: True}
-        if timeout_axis is not None:
-            result[RUN_RESULT_TIMEOUT_AXIS] = timeout_axis
-        if threshold is not None:
-            result[RUN_RESULT_TIMEOUT_THRESHOLD_SEC] = threshold
-        if silence is not None:
-            result[RUN_RESULT_SILENCE_SEC] = silence
-        return result
-    except subprocess.TimeoutExpired as exc:
-        # 워치독이 프로세스그룹째 kill 후 전파(kill 은 워치독 소관). 무진행/벽시계 공통 경로 —
-        # IdleTimeoutExpired 는 TimeoutExpired 하위라 분류(FAILURE_CLASS_TIMEOUT)가 그대로 선다.
-        return _timeout_failure_result(harness, timeout, exc)
-    except _LAUNCH_STAGE_ERRORS as exc:
-        return _launch_failure_result(harness, exc)
-    except OSError as exc:
-        return _midrun_failure_result(harness, exc)
-    except Exception as exc:
-        if getattr(exc, "process_cleanup_failed", False) is True:
-            return _cleanup_failure_result(harness, exc)
-        raise
-
-
-# 스폰 단계로 확신할 수 있는 예외들(바이너리 부재·실행 권한·경로 형상). 그 밖의 OSError 는 실행 중
-# 발생했을 수 있으므로 launch 로 표시하지 않는다.
-_LAUNCH_STAGE_ERRORS = (FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError)
-
-
-def _launch_failure_result(harness: str, exc: BaseException) -> RunResult:
-    """스폰 실패를 명시 신호 + 진단이 붙은 RunResult 로 정규화한다(단일 출처)."""
-    return {
-        "returncode": 127,
-        "stdout": "",
-        "stderr": f"하네스 {harness} 실행 불가: {exc} — 설치/PATH 확인",
-        "timed_out": False,
-        RUN_RESULT_LAUNCH_FAILED: True,
-    }
-
-
-def _midrun_failure_result(harness: str, exc: BaseException) -> RunResult:
-    """호출 후 실행-중 I/O 오류 — **분류 신호 없이** 실패로 남긴다(폴백 금지·중복 호출 차단)."""
-    return {
-        "returncode": 1,
-        "stdout": "",
-        "stderr": (f"하네스 {harness} 실행 중 I/O 오류: {exc} — 프롬프트가 이미 넘어갔을 수 있어 "
-                   "자동 폴백하지 않습니다(중복 호출 차단). 결과를 확인하고 수동 재시도하세요."),
-        "timed_out": False,
-    }
-
-
-def _cleanup_failure_result(harness: str, exc: BaseException) -> RunResult:
-    """kill/drain 실패를 부분 산출물과 **폴백 비대상** 명시 신호가 붙은 결과로 정규화한다."""
-    return {
-        "returncode": 1,
-        "stdout": getattr(exc, "output", "") or "",
-        "stderr": (
-            f"[{harness} 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 폴백 금지, "
-            "사람 확인 필요] "
-            f"{getattr(exc, 'stderr', '') or ''}"
-        ).rstrip(),
-        "timed_out": False,
-        RUN_RESULT_CLEANUP_FAILED: True,
-    }
-
-
-class DelegateAttempt(NamedTuple):
-    """단일 하네스 실행과 감사 raw 결과(폴백 재귀 없이 primary/fallback 각 1회).
-
-    `session_id` = 회신 wire 가 말한 세션 id(관측 실패는 None). 세션 재사용 성공 판정은 이
-    값과 요청 id 의 일치뿐이다."""
-
-    harness: str
-    model: str
-    argv: list[str]
-    result: RunResult
-    raw_path: Path
-    session_id: str | None = None
-
-
-def _build_target_argv(
-    harness: str,
-    model: str,
-    reasoning: str | None,
-    role: str,
-    cwd: Path,
-    prompt_file: Path,
-    resume_session_id: str | None = None,
-) -> list[str]:
-    if harness == "codex":
-        return build_codex_argv(
-            model, reasoning, role, str(cwd), resume_session_id,
-        )
-    if harness == "claude":
-        return build_claude_argv(model, reasoning, role, resume_session_id)
-    return build_opencode_argv(
-        model, reasoning, role, str(cwd), str(prompt_file),
-    )
-
-
-def _assert_opencode_transport_path(cwd: Path, prompt_file: Path) -> None:
-    """공용 ``--file``/``--dir`` containment 계약을 위임 표면 예외로 번역한다."""
-    try:
-        contract.assert_opencode_prompt_in_cwd(cwd, prompt_file)
-    except contract.HarnessContractError as exc:
-        raise delegate_errors.DelegateError(str(exc)) from exc
-    # 공용 하네스 계약(contract.assert_opencode_prompt_in_cwd)을 먼저 호출해 기존 하네스 진단을
-    # 보존한 뒤 attempt 공통 strict-child 불변식도 같은 경로에 적용한다.
-    _assert_attempt_child_path(cwd, prompt_file, label="opencode prompt 전달 사본")
-
-
-_OPENCODE_TRANSPORT_REL_DIR = Path(".project_manager") / ".local" / "delegate"
-_OPENCODE_TRANSPORT_IGNORE = ".gitignore"
-_OPENCODE_TRANSPORT_IGNORE_BODY = "*\n"
-
-
-class _OpenCodeTransportPrompt:
-    """opencode wire 경로와 이번 attempt가 만든 생성물의 소유권 묶음."""
-
-    def __init__(self, path: Path, sandbox: Path):
-        self.path = path
-        self.sandbox = sandbox
-        self.launch_binding_mode: str | None = None
-        self.ignore_created = False
-        self.prompt_created = False
-
-    def __fspath__(self) -> str:
-        return os.fspath(self.path)
-
-    def __str__(self) -> str:
-        return str(self.path)
-
-    def __getattr__(self, name: str):
-        # 내부 테스트/장부 코드가 Path 표면(parent/resolve/read_text 등)을 그대로 쓸 수 있게 한다.
-        return getattr(self.path, name)
-
-
-class _ReadRoleTemp:
-    """read attempt 하나가 소유한 임시 디렉터리.
-
-    `parent_fd` 는 fd 결속 수단(POSIX)에서만 값이 있고, 소유자 ACL 수단(Windows)에서는 None 이다 —
-    회수/재검증이 그 축을 보고 같은 보장을 내는 다른 수단을 고른다.
-    """
-
-    def __init__(
-        self,
-        path: Path,
-        *,
-        parent_fd: int | None,
-        identity: tuple[int, int],
-        owned_fds: list[int],
-        writable_path: Path | None = None,
-        created_parent: tuple[int | None, str, Path, tuple[int, int]] | None = None,
-    ):
-        self.path = path
-        self.writable_path = writable_path or path
-        self.parent_fd = parent_fd
-        self.identity = identity
-        self.owned_fds = owned_fds
-        # opencode 전용 temp 부모를 이번 attempt가 만들었을 때만, 생성 inode가 그대로인 경우에만
-        # 빈 부모까지 회수한다.
-        self.created_parent = created_parent
-
-    def __fspath__(self) -> str:
-        return os.fspath(self.path)
-
-    def __str__(self) -> str:
-        return str(self.path)
-
-
-def _assert_attempt_child_path(root: Path, child: Path, *, label: str) -> None:
-    """실경로 기준 strict-child containment를 전달 사본과 read tmp가 공유한다."""
-    try:
-        resolved_root = root.resolve()
-        resolved_child = child.resolve()
-    except (OSError, RuntimeError) as exc:
-        raise delegate_errors.DelegateError(
-            f"{label} 실경로 해소 실패: root={root} · child={child}: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-    if resolved_child == resolved_root or not _is_relative_to(
-        resolved_child, resolved_root,
-    ):
-        raise delegate_errors.DelegateError(
-            f"{label} containment 위반: {resolved_child} 는 {resolved_root}의 "
-            "strict child가 아님"
-        )
-
-
-def _open_fixed_directory(path: Path, *, label: str) -> int:
-    """stat 뒤 nofollow open한 디렉터리의 identity를 고정한다."""
-    try:
-        expected = path.stat()
-        fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as exc:
-        raise delegate_errors.DelegateError(f"{label}를 안전하게 열 수 없음: {path}: {exc}") from exc
-    opened = os.fstat(fd)
-    if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
-        _close_transport_fd(fd)
-        raise delegate_errors.DelegateError(f"{label}가 검사 뒤 교체됨: {path}")
-    return fd
-
-
-def _read_tmp_root() -> Path:
-    """read 역할 격리 자리의 루트 — PM 홈이 소유한 프로젝트 안 임시 루트 하나다.
-
-    자리 규약을 여기 다시 적지 않고 `raw_output.temp_root` 를 그대로 쓴다(원자 쓰기를 뺀 엔진의
-    모든 임시물이 같은 부모를 쓴다). 앵커는 raw 박제와 같은 소유자다 — 위임 산출과 그 실행의
-    임시물이 다른 clone 으로 흩어지지 않는다. 테스트는 이 함수 하나를 주입해 자리를 옮긴다.
-    """
-    return raw_output.temp_root(_CONFIG_REPO_OVERRIDE or REPO)
-
-
-def _read_tmp_attempt_name() -> str:
-    """attempt 디렉터리 이름 하나 — 접두 + pid + 짧은 16진 꼬리(폭은 `_READ_TMP_SUFFIX_HEX`)."""
-    return f"{_READ_TMP_PREFIX}{os.getpid()}_{uuid.uuid4().hex[:_READ_TMP_SUFFIX_HEX]}"
-
-
-def _read_tmp_parent(harness: str) -> tuple[Path, str | None]:
-    """attempt 생성 부모를 반환한다(opencode는 공유 골격 아래에서 호출별 root를 만든다)."""
-    temp_root = _read_tmp_root().resolve()
-    component = _READ_TMP_PARENT_COMPONENT_BY_HARNESS[harness]
-    return (
-        (temp_root / component, component)
-        if component is not None
-        else (temp_root, None)
-    )
-
-
-# 검토 표면 밖 판정의 접두 — clone-local 런타임 자리. gitignore(`.project_manager/.gitignore` 의
-# `.local/`)·잔여 인구 제외(`ticket_finish._is_local_runtime_path`)·pytest 수집 제외가 **이미** 이
-# 접두에 걸려 있다. 새 접두를 만들면 같은 뜻의 제외를 세 곳에 더 달아야 한다.
-_LOCAL_RUNTIME_PREFIX_PARTS: tuple[str, ...] = (".project_manager", ".local")
-
-
-def _assert_read_tmp_outside_review_surface(attempt_path: Path, cwd: Path) -> None:
-    """격리 자리가 검토 대상의 **추적 표면** 안이면 거부한다.
-
-    판정 주어는 "cwd 트리 밖"이 아니라 "검토 표면 밖"이다. 격리 요건은 리뷰 실행 root 에
-    검토 대상의 source·index·산출이 섞이지 않는 것이고, clone-local 런타임 접두
-    (`.project_manager/.local/`)에는 gitignore·잔여 인구 제외·pytest 수집 제외가 이미 걸려 있어
-    같은 트리 안이어도 검토 표면이 아니다(묶음 run-dir 이 이미 그 접두를 쓰고 codex `--add-dir`
-    로 열린다). 주어를 cwd 트리로 두면 cwd 가 PM 홈이거나 그 하위인 형상(단일 clone 채택자·
-    PM 문서 검토)에서 read 역할 위임이 전부 죽는다.
-    """
-    try:
-        resolved_cwd = cwd.resolve()
-    except (OSError, RuntimeError) as exc:
-        raise delegate_errors.DelegateError(
-            f"read 역할 worktree 실경로 해소 실패: {cwd}: {exc}"
-        ) from exc
-    resolved_attempt = attempt_path.resolve()
-    if not _is_relative_to(resolved_attempt, resolved_cwd):
-        return
-    relative = resolved_attempt.relative_to(resolved_cwd).parts
-    if relative[:len(_LOCAL_RUNTIME_PREFIX_PARTS)] == _LOCAL_RUNTIME_PREFIX_PARTS:
-        return
-    raise delegate_errors.DelegateError(
-        f"read 역할 temp가 검토 표면 안으로 해소되어 거부: {resolved_attempt} "
-        f"(worktree={resolved_cwd})"
-    )
-
-
-def _read_tmp_owner_acl_platform() -> bool:
-    """소유자 전용 ACL 로 fd 결속과 등가인 격리를 낼 수 있는 플랫폼인가(주입 가능 seam)."""
-    return bool(fs.windows_acl_platform())
-
-
-def _read_tmp_strategy() -> str | None:
-    """이 플랫폼에서 read tmp 를 **안전하게** 만들 수단을 고른다(둘 다 없으면 None)."""
-    if _READ_TMP_FD_SUPPORTED:
-        return _READ_TMP_STRATEGY_FD
-    if _read_tmp_owner_acl_platform():
-        return _READ_TMP_STRATEGY_OWNER_ACL
-    return None
-
-
-def _remove_read_tmp_tree(path: Path, *, parent_fd: int | None) -> None:
-    """attempt 트리를 회수한다 — 강제 삭제 seam 하나에 fd 결속을 실어 보낸다.
-
-    맨 `shutil.rmtree` 는 read-only 하위가 하나만 있어도 남긴다(실측: 리뷰어 회귀가 만드는
-    0o500 디렉터리에서 `PermissionError [Errno 13] ... 'inner.txt'`). `fs.force_rmtree` 는
-    속성을 풀고 그 항목만 재시도하되 끝내 남으면 예외를 올리고, `dir_fd` 를 받으면 삭제를 고정
-    부모 fd 에 결속해 symlink 공격 회피도 그대로 유지한다.
-    """
-    fs.force_rmtree(path, dir_fd=parent_fd)
-
-
-def _restrict_read_tmp_to_owner(path: Path) -> None:
-    """생성한 temp 디렉터리를 소유자 전용 접근으로 만든다(ACL 플랫폼은 mode 비트가 무효)."""
-    try:
-        fs.restrict_to_owner(path)
-    except fs.AccessRestrictionError as exc:
-        raise delegate_errors.DelegateError(
-            f"read 역할 temp 소유자 전용 제한 실패: {path}: {exc} — 격리되지 않은 "
-            "디렉터리를 쓰기 대상으로 넘기지 않습니다."
-        ) from exc
-
-
-def _create_read_role_temp_owner_acl(harness: str, cwd: Path) -> _ReadRoleTemp:
-    """dir_fd 가 없는 플랫폼의 등가 경로 — 배타 생성 + 소유자 ACL + identity 재검증.
-
-    fd 결속 대신 (a) 예측 불가 이름의 배타 mkdir(선점된 이름이면 FileExistsError 로 끝난다),
-    (b) 생성 직후 symlink/reparse 아님 확인, (c) 소유자 전용 ACL, (d) 회수 시 생성 identity 재대조로
-    같은 보장을 낸다. 어느 단계든 실패하면 권한을 낮춰 계속하지 않고 loud 로 끝낸다.
-    """
-    temp_parent, optional_parent_name = _read_tmp_parent(harness)
-    temp_root = (
-        temp_parent.parent if optional_parent_name is not None else temp_parent
-    )
-    if not temp_root.is_dir():
-        raise delegate_errors.DelegateError(f"read 역할 임시 루트가 없음: {temp_root}")
-
-    created_parent: tuple[int | None, str, Path, tuple[int, int]] | None = None
-    attempt_created = False
-    attempt_name = _read_tmp_attempt_name()
-    attempt_path = temp_parent / attempt_name
-    try:
-        _assert_path_entry_not_symlink(temp_root, label="read 역할 임시 루트")
-        if optional_parent_name is not None:
-            try:
-                temp_parent.mkdir(mode=0o700)
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise delegate_errors.DelegateError(
-                    f"read 역할 temp 부모 생성 실패: {temp_parent}: {exc}"
-                ) from exc
-            else:
-                _restrict_read_tmp_to_owner(temp_parent)
-                parent_stat = os.stat(temp_parent, follow_symlinks=False)
-                created_parent = (
-                    None,
-                    optional_parent_name,
-                    temp_parent,
-                    (parent_stat.st_dev, parent_stat.st_ino),
-                )
-            _assert_path_entry_not_symlink(temp_parent, label="read 역할 temp 부모")
-
-        try:
-            attempt_path.mkdir(mode=0o700)
-        except OSError as exc:
-            raise delegate_errors.DelegateError(
-                f"read 역할 temp 생성 실패: {attempt_path}: {exc}"
-            ) from exc
-        attempt_created = True
-        _assert_path_entry_not_symlink(attempt_path, label="read 역할 temp")
-        _restrict_read_tmp_to_owner(attempt_path)
-        attempt_stat = os.stat(attempt_path, follow_symlinks=False)
-        attempt_identity = (attempt_stat.st_dev, attempt_stat.st_ino)
-        _assert_attempt_child_path(temp_parent, attempt_path, label="read 역할 temp")
-        _assert_read_tmp_outside_review_surface(attempt_path, cwd)
-        writable_path = attempt_path
-        writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
-        if writable_component is not None:
-            writable_path = attempt_path / writable_component
-            try:
-                writable_path.mkdir(mode=0o700)
-            except OSError as exc:
-                raise delegate_errors.DelegateError(
-                    f"read 역할 쓰기 하위 디렉터리 생성 실패: {writable_path}: {exc}"
-                ) from exc
-            _restrict_read_tmp_to_owner(writable_path)
-        return _ReadRoleTemp(
-            attempt_path,
-            parent_fd=None,
-            identity=attempt_identity,
-            owned_fds=[],
-            writable_path=writable_path,
-            created_parent=created_parent,
-        )
-    except BaseException:
-        if attempt_created:
-            try:
-                _remove_read_tmp_tree(attempt_path, parent_fd=None)
-            except (OSError, RuntimeError) as cleanup_exc:
-                # 롤백 정리 실패는 주 예외를 덮지 않는다(아래 `raise`). 다만 침묵하지도 않는다 —
-                # 삭제 수단이 형제 모듈이라 사본 불일치가 여기 닿을 수 있다.
-                skew = _absorb_engine_rev_skew_for_recovery(
-                    cleanup_exc, "read_role_temp_rollback")
-                _warn_read_tmp_cleanup_failure(
-                    attempt_path, cleanup_exc, engine_rev_skew=skew)
-        if created_parent is not None:
-            _cleanup_owned_read_tmp_parent(created_parent)
-        raise
-
-
-def _create_read_role_temp(harness: str, cwd: Path) -> _ReadRoleTemp | None:
-    """read attempt 전용 0700 tmp를 mkdir(dir_fd)로 만들고 parent fd에 결속한다.
-
-    fd/nofollow/race 규율은 바로 아래 opencode 전달 사본 seam과 동일하다. 그 primitive 가 없는
-    플랫폼은 넓은 경로 기반 삭제로 강등하지 않고 소유자 ACL 등가 경로를 탄다. 두 수단이 모두
-    없을 때만 preamble의 명시적 회귀-불가 경로를 탄다.
-    """
-    strategy = _read_tmp_strategy()
-    if strategy is None:
-        return None
-    if strategy == _READ_TMP_STRATEGY_OWNER_ACL:
-        return _create_read_role_temp_owner_acl(harness, cwd)
-    temp_parent, optional_parent_name = _read_tmp_parent(harness)
-    temp_root = (
-        temp_parent.parent if optional_parent_name is not None else temp_parent
-    )
-    if not temp_root.is_dir():
-        raise delegate_errors.DelegateError(f"read 역할 임시 루트가 없음: {temp_root}")
-
-    owned_fds: list[int] = []
-    created_parent: tuple[int, str, Path, tuple[int, int]] | None = None
-    attempt_created = False
-    attempt_identity: tuple[int, int] | None = None
-    parent_fd: int | None = None
-    attempt_name = _read_tmp_attempt_name()
-    attempt_path = temp_parent / attempt_name
-    try:
-        root_fd = _open_fixed_directory(temp_root, label="read 역할 임시 루트")
-        owned_fds.append(root_fd)
-        parent_fd = root_fd
-        if optional_parent_name is not None:
-            try:
-                child_fd = os.open(
-                    optional_parent_name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=root_fd,
-                )
-            except FileNotFoundError:
-                try:
-                    os.mkdir(optional_parent_name, 0o700, dir_fd=root_fd)
-                    parent_stat = os.stat(
-                        optional_parent_name,
-                        dir_fd=root_fd,
-                        follow_symlinks=False,
-                    )
-                    created_parent = (
-                        root_fd,
-                        optional_parent_name,
-                        temp_parent,
-                        (parent_stat.st_dev, parent_stat.st_ino),
-                    )
-                except FileExistsError:
-                    pass
-                child_fd = os.open(
-                    optional_parent_name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=root_fd,
-                )
-            except OSError as exc:
-                raise delegate_errors.DelegateError(
-                    f"read 역할 temp 부모가 symlink이거나 안전한 디렉터리가 아님: "
-                    f"{temp_parent}: {exc}"
-                ) from exc
-            owned_fds.append(child_fd)
-            if created_parent is not None:
-                opened_parent = os.fstat(child_fd)
-                if (opened_parent.st_dev, opened_parent.st_ino) != created_parent[3]:
-                    raise delegate_errors.DelegateError(
-                        f"read 역할 temp 부모가 생성 뒤 교체됨: {temp_parent}"
-                    )
-            parent_fd = child_fd
-
-        os.mkdir(attempt_name, 0o700, dir_fd=parent_fd)
-        attempt_created = True
-        attempt_stat = os.stat(
-            attempt_name, dir_fd=parent_fd, follow_symlinks=False,
-        )
-        attempt_identity = (attempt_stat.st_dev, attempt_stat.st_ino)
-        _assert_attempt_child_path(temp_parent, attempt_path, label="read 역할 temp")
-        _assert_read_tmp_outside_review_surface(attempt_path, cwd)
-        writable_path = attempt_path
-        writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
-        if writable_component is not None:
-            attempt_fd = os.open(
-                attempt_name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=parent_fd,
-            )
-            owned_fds.append(attempt_fd)
-            opened_attempt = os.fstat(attempt_fd)
-            if (opened_attempt.st_dev, opened_attempt.st_ino) != attempt_identity:
-                raise delegate_errors.DelegateError(f"read 역할 temp가 생성 뒤 교체됨: {attempt_path}")
-            os.mkdir(writable_component, 0o700, dir_fd=attempt_fd)
-            writable_path = attempt_path / writable_component
-        return _ReadRoleTemp(
-            attempt_path,
-            parent_fd=parent_fd,
-            identity=attempt_identity,
-            owned_fds=owned_fds,
-            writable_path=writable_path,
-            created_parent=created_parent,
-        )
-    except BaseException:
-        if attempt_created and parent_fd is not None:
-            try:
-                current = os.stat(
-                    attempt_name, dir_fd=parent_fd, follow_symlinks=False,
-                )
-                if attempt_identity == (current.st_dev, current.st_ino):
-                    _remove_read_tmp_tree(attempt_path, parent_fd=parent_fd)
-            except (OSError, RuntimeError) as cleanup_exc:
-                # 롤백 정리 실패는 주 예외를 덮지 않는다(아래 `raise` 가 원인을 그대로 올린다).
-                # 다만 침묵하지도 않는다 — 삭제 수단이 형제 모듈이라 사본 불일치가 여기 닿을 수
-                # 있고, 그게 조용히 사라지면 재동기 처방이 함께 사라진다.
-                skew = _absorb_engine_rev_skew_for_recovery(
-                    cleanup_exc, "read_role_temp_rollback")
-                _warn_read_tmp_cleanup_failure(
-                    attempt_path, cleanup_exc, engine_rev_skew=skew)
-        if created_parent is not None:
-            _cleanup_owned_read_tmp_parent(created_parent)
-        for fd in reversed(owned_fds):
-            _close_transport_fd(fd)
-        raise
-
-
-def _warn_read_tmp_cleanup_failure(
-    path: Path, exc: OSError | RuntimeError, *, engine_rev_skew: bool = False,
-) -> str:
-    """read tmp 정리 실패를 주 결과를 덮지 않고 loud 하게 남기고, 같은 사유를 돌려준다.
-
-    `engine_rev_skew` 면 원인을 사본 불일치로 명시한다 — 삭제 수단이 형제 모듈이라 이 경계에
-    도달할 수 있는데, 일반 정리 실패와 같은 문구로 뭉개면 재동기 처방이 사라진다.
-
-    반환값은 실행 결과를 실패로 내릴 때 그대로 싣는 사유다(문구를 두 번 쓰지 않는다).
-    """
-    cause = f"엔진 사본 불일치 — {exc}" if engine_rev_skew else f"{exc}"
-    reason = f"read 역할 임시 디렉터리 정리 실패 — 잔존 가능 경로: {path} · 오류: {cause}"
-    print(f"경고: {reason}", file=sys.stderr)
-    return reason
-
-
-def _cleanup_owned_read_tmp_parent(
-    created_parent: tuple[int | None, str, Path, tuple[int, int]],
-) -> None:
-    """생성 때 고정한 inode가 이름 공간에 그대로 있을 때만 공유 temp 부모를 rmdir한다."""
-    ancestor_fd, name, parent_path, expected_identity = created_parent
-    try:
-        try:
-            current = (
-                os.stat(name, dir_fd=ancestor_fd, follow_symlinks=False)
-                if ancestor_fd is not None
-                else os.stat(parent_path, follow_symlinks=False)
-            )
-        except FileNotFoundError:
-            return
-        current_identity = (current.st_dev, current.st_ino)
-        if current_identity != expected_identity:
-            raise RuntimeError(
-                f"temp 부모 생성 identity={expected_identity}, "
-                f"정리 identity={current_identity}"
-            )
-        if ancestor_fd is not None:
-            os.rmdir(name, dir_fd=ancestor_fd)
-        else:
-            os.rmdir(parent_path)
-    except OSError as exc:
-        if exc.errno not in {errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST}:
-            _warn_read_tmp_cleanup_failure(parent_path, exc)
-    except RuntimeError as exc:
-        _warn_read_tmp_cleanup_failure(parent_path, exc)
-
-
-def _cleanup_read_role_temp(read_tmp: _ReadRoleTemp | None) -> str | None:
-    """고정 parent fd와 inode를 재검증한 뒤 attempt 트리만 symlink-safe 회수한다.
-
-    끝내 지우지 못하면 사유를 돌려준다 — 호출부가 그 실행의 결과를 실패로 내린다. 이 자리는
-    `finally` 안에서 불리므로 여기서 raise 하면 주 결과와 전파 중인 예외를 덮는다.
-    """
-    if read_tmp is None:
-        return None
-    residue: str | None = None
-    try:
-        try:
-            current = (
-                os.stat(
-                    read_tmp.path.name,
-                    dir_fd=read_tmp.parent_fd,
-                    follow_symlinks=False,
-                )
-                if read_tmp.parent_fd is not None
-                else os.stat(read_tmp.path, follow_symlinks=False)
-            )
-        except FileNotFoundError:
-            current = None
-        if current is not None:
-            identity = (current.st_dev, current.st_ino)
-            if identity != read_tmp.identity:
-                raise RuntimeError(
-                    f"생성 identity={read_tmp.identity}, 정리 identity={identity}"
-                )
-            _remove_read_tmp_tree(read_tmp.path, parent_fd=read_tmp.parent_fd)
-        if read_tmp.created_parent is not None:
-            _cleanup_owned_read_tmp_parent(read_tmp.created_parent)
-    except (OSError, RuntimeError) as exc:
-        skew = _absorb_engine_rev_skew_for_recovery(exc, "read_role_temp_cleanup")
-        residue = _warn_read_tmp_cleanup_failure(
-            read_tmp.path, exc, engine_rev_skew=skew)
-    finally:
-        for fd in reversed(read_tmp.owned_fds):
-            _close_transport_fd(fd)
-        read_tmp.owned_fds.clear()
-    return residue
-
-
-def _warn_transport_cleanup_failure(
-    cleanup_path: Path,
-    exc: OSError | RuntimeError,
-    *,
-    action: str = "합성 프롬프트 삭제",
-) -> None:
-    """transport 정리 실패를 주 결과를 덮지 않고 대상별 문구로 loud 하게 남긴다."""
-    print(
-        f"경고: opencode {action} 실패 — 잔존 가능 경로: {cleanup_path} · 오류: {exc}",
-        file=sys.stderr,
-    )
-
-
-def _close_transport_fd(fd: int | None) -> None:
-    """보조 fd close 실패가 생성/전달의 주 예외를 덮지 않게 한다."""
-    if fd is None:
-        return
-    try:
-        os.close(fd)
-    except OSError:
-        pass
-
-
-def _cleanup_attempt_transport(
-    prompt: _OpenCodeTransportPrompt | None,
-    read_tmp: _ReadRoleTemp | None = None,
-) -> str | None:
-    """attempt wire 사본·read tmp를 한 소유권 seam에서 되감는다.
-
-    prompt 삭제가 실패하면 자기-은닉 ignore를 보존해 민감 사본이 untracked로 노출되지 않게 한다.
-    정상 삭제 뒤에는 ignore→고유 attempt 디렉터리→delegate/.local/.project_manager를 역순
-    제거한다. 겹친 attempt가 사용하는 공유 골격은 ENOTEMPTY로 자연스럽게 보존된다.
-
-    반환값은 read tmp 잔존 사유다(없으면 None) — 실행 경로가 그 값으로 결과를 실패로 내린다.
-    """
-    # read tmp는 pytest가 만든 임의 하위 트리까지 회수한다. prompt 정리 실패와 서로 독립적으로
-    # 시도해야 둘 중 하나가 다른 하나의 잔여 0 보장을 가리지 않는다.
-    read_tmp_residue = _cleanup_read_role_temp(read_tmp)
-    if prompt is None:
-        return read_tmp_residue
-    prompt_path = prompt.path
-    cleanup_structure = True
-    try:
-        if prompt.prompt_created:
-            os.unlink(prompt_path)
-            prompt.prompt_created = False
-    except OSError as exc:
-        _warn_transport_cleanup_failure(prompt_path, exc)
-        cleanup_structure = False
-
-    if cleanup_structure and prompt.ignore_created:
-        try:
-            os.unlink(prompt_path.parent / _OPENCODE_TRANSPORT_IGNORE)
-            prompt.ignore_created = False
-        except OSError as exc:
-            _warn_transport_cleanup_failure(
-                prompt_path.parent / _OPENCODE_TRANSPORT_IGNORE,
-                exc,
-                action="자기-은닉 ignore 삭제",
-            )
-            cleanup_structure = False
-
-    if cleanup_structure:
-        for cleanup_path in prompt_path.parents:
-            if cleanup_path == prompt.sandbox:
-                break
-            if not cleanup_path.is_relative_to(prompt.sandbox):
-                break
-            try:
-                os.rmdir(cleanup_path)
-            except OSError as exc:
-                if exc.errno not in {errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST}:
-                    _warn_transport_cleanup_failure(
-                        cleanup_path, exc, action="전달 디렉터리 정리",
-                    )
-    return read_tmp_residue
-
-
-def _assert_path_entry_not_symlink(path: Path, *, label: str) -> None:
-    """경로 기반 생성/전달 직전 entry가 symlink가 아닌지 best-effort로 확인한다."""
-    try:
-        entry = os.lstat(path)
-    except OSError as exc:
-        raise delegate_errors.DelegateError(f"{label} 경로 재검증 실패: {path}: {exc}") from exc
-    if stat.S_ISLNK(entry.st_mode):
-        raise delegate_errors.DelegateError(f"{label}가 symlink라 거부: {path}")
-
-
-def _portable_exclusive_write(path: Path, content: str) -> None:
-    """O_EXCL·0600으로 새 파일을 쓰고, 지원 플랫폼에서 O_NOFOLLOW를 더한다.
-
-    `os.open` 의 mode 인자는 **ACL 플랫폼에서 무효**라 0600 만으로는 소유자 전용이 되지 않는다
-    (Windows 는 부모 디렉터리의 상속 ACL 을 그대로 받는다). 쓰기 직후 공용 소유자-제한
-    seam(`fs.restrict_to_owner`)이 두 플랫폼에서 같은 보장을 낸다."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    fd: int | None = None
-    created = False
-    try:
-        fd = os.open(path, flags, 0o600)
-        created = True
-        handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
-        fd = None
-        with handle:
-            handle.write(content)
-        fs.restrict_to_owner(path)
-    except BaseException as write_exc:
-        _close_transport_fd(fd)
-        fd = None
-        if created:
-            try:
-                os.unlink(path)
-            except OSError as unlink_exc:
-                # 원래 쓰기 예외를 롤백 실패로 덮지 않는다 — 아래 bare raise가 그대로 전파한다.
-                # 정리 실패는 관측만 loud 하게 남긴다([[T-0705]]). 잔여 파일 경로는 원 예외에
-                # 실어 둔다 — 호출자가 cleanup 재시도·자기-은닉 ignore 보존 판단에 쓴다([[T-0735]]).
-                # ENOENT 는 잔여가 없다(누가 먼저 지웠다) — 표식을 붙이면 cleanup 이 오탐 경고를 낸다.
-                # 표식은 예외 객체에 붙어 재사용 예외에서도 남을 수 있어, 호출자는 attempt 고유(uuid)
-                # 경로와 등가비교로만 소비한다(무접두 이름 충돌 방지 위해 `_pm_` 접두).
-                if unlink_exc.errno != errno.ENOENT:
-                    write_exc._pm_residual_path = path
-                _warn_transport_cleanup_failure(
-                    path, unlink_exc, action="쓰기 실패 롤백 삭제",
-                )
-        raise
-    finally:
-        _close_transport_fd(fd)
-
-
-def _save_opencode_transport_prompt(
-    cwd: Path, prompt: str,
-) -> _OpenCodeTransportPrompt:
-    """합성 프롬프트의 opencode 전달 사본을 sandbox 안에 O_EXCL·0600으로 쓴다.
-
-    이 파일은 wire 전용이며 PM 홈 감사 저장소를 해소하지 않는다. 코드 worktree가 아닌 기존
-    ``--cwd`` 디렉터리도 같은 위치를 만들 수 있다. ``.project_manager``/``.local`` 중간 경로가
-    sandbox 밖 symlink인 경우에는 mkdir/write 전에 공용 containment 가드로 거부한다.
-    """
-    # argv 문자열은 사용자 cwd의 미해소 절대경로를 보존한다. --dir과 --file이 같은 lexical
-    # prefix를 공유해야 opencode의 문자열 containment가 symlink cwd를 auto-reject하지 않는다.
-    sandbox = Path(os.path.abspath(cwd))
-    try:
-        resolved_sandbox = sandbox.resolve()
-    except (OSError, RuntimeError) as exc:
-        raise delegate_errors.DelegateError(
-            f"opencode --dir 실경로 해소 실패: {sandbox}: {type(exc).__name__}: {exc}"
-        ) from exc
-    if not resolved_sandbox.is_dir():
-        raise delegate_errors.DelegateError(f"opencode --dir 디렉터리가 없음: {sandbox}")
-    attempt_id = f"pm_delegate_{os.getpid()}_{uuid.uuid4().hex}"
-    dest = sandbox / _OPENCODE_TRANSPORT_REL_DIR / attempt_id / "prompt.md"
-    _assert_opencode_transport_path(sandbox, dest)
-    transport = _OpenCodeTransportPrompt(dest, sandbox)
-    # 호출별 UUID 디렉터리는 반드시 새로 만든다. 이미 존재하면 충돌을 숨기거나 재사용하지 않고
-    # FileExistsError를 그대로 올린다.
-    current = sandbox
-    for part in (*_OPENCODE_TRANSPORT_REL_DIR.parts, attempt_id):
-        current /= part
-        try:
-            current.mkdir(mode=0o700)
-        except FileExistsError:
-            if current == dest.parent:
-                raise
-        except OSError as exc:
-            raise delegate_errors.DelegateError(
-                f"opencode prompt 전달 디렉터리 생성 실패: {current}: {exc}"
-            ) from exc
-    ignore_path = dest.parent / _OPENCODE_TRANSPORT_IGNORE
-    try:
-        _assert_path_entry_not_symlink(
-            dest.parent, label="opencode prompt 전달 부모",
-        )
-        _portable_exclusive_write(ignore_path, _OPENCODE_TRANSPORT_IGNORE_BODY)
-        transport.ignore_created = True
-        _portable_exclusive_write(dest, prompt)
-        transport.prompt_created = True
-    except BaseException as exc:
-        # 롤백 unlink까지 실패하면(T-0705 경고) 잔여 파일이 디스크에 남는데도 `*_created`가
-        # False라 cleanup이 그 존재를 몰랐다 — 원 예외의 잔여 경로 표식으로 해당 플래그를 세워
-        # 기존 cleanup 순서(프롬프트 재시도 → 성공 시만 ignore 삭제 → 실패 시 ignore 보존+loud)를
-        # 타게 한다([[T-0735]]).
-        residual_path = getattr(exc, "_pm_residual_path", None)
-        if residual_path == dest:
-            transport.prompt_created = True
-        elif residual_path == ignore_path:
-            transport.ignore_created = True
-        _cleanup_attempt_transport(transport)
-        raise
-    return transport
-
-
-def _opencode_transport_launch_target(
-    transport: _OpenCodeTransportPrompt,
-    argv: list[str],
-) -> tuple[list[str], str]:
-    """runner 직전에 lexical containment와 symlink 아닌 경로 entry를 재검사한다."""
-    _assert_opencode_transport_path(transport.sandbox, transport.path)
-    _assert_path_entry_not_symlink(
-        transport.path.parent, label="opencode prompt 전달 부모",
-    )
-    _assert_path_entry_not_symlink(
-        transport.path, label="opencode prompt 전달 사본",
-    )
-    transport.launch_binding_mode = "lexical"
-    return argv, str(transport.sandbox)
-
-
-
-# 쓰기 대상 실측 프로브. mode 비트는 ACL 플랫폼에서 권한을 말해 주지 않고 `os.access` 도 ACL 을
-# 반영하지 않으므로, 0바이트 파일을 실제로 만들어 본 결과만 근거로 쓴다.
-#
-# 이름은 **짧게** 유지한다 — 프로브가 경로 예산을 엔진 자신의 산출물보다 더 먹으면 안 된다.
-# Windows 실측: ticket 사본 디렉터리 199자 + `pm_delegate_write_probe_<pid>_<32hex>`
-# 61자 = 260자로 MAX_PATH(259) 를 **프로브만** 넘겨 `FileNotFoundError` 가 났다. 같은 디렉터리의
-# 실제 산출물(`metadata.json` 213자·`ticket-T-2001.md` 216자)은 모두 들어간다 — 즉 쓸 수 있는
-# 디렉터리를 "못 쓴다"고 잘못 판정했다. 이름 길이 예산은 회귀가 못박는다.
-_WRITE_PROBE_PREFIX = ".pmw"
-_WRITE_PROBE_SUFFIX_HEX = 8
-# 짧은 이름이라 이론상 충돌 가능 — O_EXCL 실패를 "쓰기 불가"로 오판하지 않게 유한 재시도한다.
-_WRITE_PROBE_NAME_ATTEMPTS = 3
-
-
-def _write_probe_name() -> str:
-    """프로브 파일 이름 하나 — 짧고 고유하다(길이 예산은 `_probe_writable_target` 주석 참조)."""
-    return f"{_WRITE_PROBE_PREFIX}{uuid.uuid4().hex[:_WRITE_PROBE_SUFFIX_HEX]}"
-
-
-def _probe_writable_target(path: Path, *, label: str) -> None:
-    """권한을 올리기 전에 그 경로가 **실제로** 쓰기 가능한지 실측한다.
-
-    실패는 `read-only` 강등이 아니라 사유와 함께 loud 다 — 강등하면 "실행은 됐는데 아무것도
-    못 쓰는" 위임이 되고, 그 실패는 위임 실패로만 보인다([[no-green-by-disabling]]).
-    """
-    if not path.is_dir():
-        raise delegate_errors.DelegateError(
-            f"{label} 쓰기 대상이 디렉터리가 아님: {path} — 권한을 강등하지 않고 중단합니다."
-        )
-    probe: Path | None = None
-    fd: int | None = None
-    last_exists: FileExistsError | None = None
-    for _attempt in range(_WRITE_PROBE_NAME_ATTEMPTS):
-        candidate = path / _write_probe_name()
-        try:
-            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError as exc:
-            last_exists = exc
-            continue
-        except OSError as exc:
-            raise delegate_errors.DelegateError(
-                f"{label} 쓰기 대상 실측 실패: {path}: {type(exc).__name__}: {exc} — "
-                "권한을 read-only 로 강등하지 않고 중단합니다."
-            ) from exc
-        probe = candidate
-        break
-    if probe is None:
-        raise delegate_errors.DelegateError(
-            f"{label} 쓰기 대상 실측 실패: {path}: 프로브 이름이 "
-            f"{_WRITE_PROBE_NAME_ATTEMPTS}회 연속 선점됨: {last_exists} — "
-            "권한을 read-only 로 강등하지 않고 중단합니다."
-        )
-    _close_transport_fd(fd)
-    try:
-        os.unlink(probe)
-    except OSError as exc:
-        # 프로브 잔재는 attempt tmp 회수가 함께 걷어간다 — 주 결과를 덮지 않고 알리기만 한다.
-        _warn_read_tmp_cleanup_failure(probe, exc)
-
-
-def _read_tmp_write_targets(
-    mode: str, read_tmp: _ReadRoleTemp, cluster_run_dir: Path | None,
-) -> tuple[tuple[str, Path], ...]:
-    """이 실행이 실제로 여는 쓰기 대상 — 샌드박스 권한 결정의 근거다.
-
-    라운드 준비가 있었던 실행의 쓰기 자리는 **묶음 run-dir 전체**다(`ClusterCopyPlan.run_dir`) —
-    그 안 티켓 자리 하나가 아니다. 준비가 넘긴 좌표를 그대로 실측하고, 그대로 연다.
-    """
-    targets: list[tuple[str, Path]] = [("read 역할 임시", read_tmp.writable_path)]
-    if mode == "workspace-add-dir" and cluster_run_dir is not None:
-        targets.append(("ticket 사본", cluster_run_dir))
-    return tuple(targets)
-
-
-def _apply_read_tmp_argv(
-    argv: list[str], harness: str, role: str, read_tmp: _ReadRoleTemp | None,
-    cluster_run_dir: Path | None = None,
-) -> list[str]:
-    """하네스 실측 수단으로 read tmp 하나만 실행 권한 표면에 연결한다."""
-    if role not in READ_ROLES or read_tmp is None:
-        return argv
-    adjusted = list(argv)
-    mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
-    for label, target in _read_tmp_write_targets(mode, read_tmp, cluster_run_dir):
-        _probe_writable_target(target, label=label)
-    if cluster_run_dir is not None and mode != "workspace-add-dir":
-        print(
-            f"경고: {harness} {role} ticket 사본은 단일-path write 격리를 "
-            "보장하지 못합니다. 역할 규약과 위임 전후 git/touches 감사로 변경 범위를 "
-            f"표면화하며 선택한 {harness} target으로 계속 실행합니다.",
-            file=sys.stderr,
-        )
-    if mode == "workspace-add-dir":
-        try:
-            sandbox_index = adjusted.index("-s")
-        except ValueError as exc:
-            raise delegate_errors.DelegateError(
-                "codex read 역할 argv에 기대한 -s read-only 계약이 없음"
-            ) from exc
-        if adjusted[sandbox_index + 1:sandbox_index + 2] != ["read-only"]:
-            raise delegate_errors.DelegateError(
-                "codex read 역할 argv의 sandbox가 read-only가 아님 — workspace/add-dir로 "
-                "안전하게 치환하지 않는다"
-            )
-        adjusted[sandbox_index + 1] = "workspace-write"
-        try:
-            cwd_index = adjusted.index("-C")
-        except ValueError as exc:
-            raise delegate_errors.DelegateError("codex read 역할 argv에 -C 실행 root가 없음") from exc
-        if cwd_index + 1 >= len(adjusted):
-            raise delegate_errors.DelegateError("codex read 역할 argv의 -C 실행 root 값이 없음")
-        # workspace-write는 현재 -C를 암묵적 writable root로 추가하므로 실행 root를 attempt tmp로
-        # 옮긴다. 라운드 준비가 있었으면 공개 CLI의 --add-dir로 그 묶음 run-dir 하나만 더 연다.
-        adjusted[cwd_index + 1] = str(read_tmp.path)
-        if cluster_run_dir is not None:
-            adjusted = _codex_workspace_dirs(adjusted, (cluster_run_dir,))
-    elif mode == "add-dir":
-        adjusted += ["--add-dir", str(read_tmp.path)]
-    elif mode == "role-agent":
-        try:
-            agent_index = adjusted.index("--agent")
-        except ValueError as exc:
-            raise delegate_errors.DelegateError(
-                "opencode read 역할 argv에 기대한 --agent <role> 계약이 없음"
-            ) from exc
-        if adjusted[agent_index + 1:agent_index + 2] != [role]:
-            raise delegate_errors.DelegateError(
-                "opencode read 역할 argv가 custom 역할 agent와 불일치함 — default agent로 "
-                "강등하지 않는다"
-            )
-    # opencode는 추가-dir 기능이 없어 custom 역할 agent를 그대로 쓰고, ticket-copy reviewer의
-    # repo 쓰기 표면은 위 경고와 실행 전후 감사로 loud하게 관리한다.
-    return adjusted
-
-
-def _codex_workspace_dirs(argv: list[str], roots: Sequence[Path]) -> list[str]:
-    """공용 전역 `--add-dir` formatter 의 계약 예외를 위임 표면 예외로 옮긴다."""
-    try:
-        return contract.with_codex_workspace_dirs(argv, [str(root) for root in roots])
-    except contract.HarnessContractError as exc:
-        raise delegate_errors.DelegateError(str(exc)) from exc
-
-
-# 원 작업공간을 쓰는 codex 실행에서 git 이 실제로 쓰는 메타데이터 위치. workspace-write 는 `-C`
-# 안의 `.git` 과 포인터가 가리키는 git 디렉터리를 읽기 전용으로 보호하므로, 명시적 추가 루트로
-# 열지 않으면 `git add` 가 index·objects 쓰기에서 막힌다. linked worktree 만이 아니라 일반 clone·
-# submodule 도 같은 조회로 처리한다(형상 판별 대신 git 이 답한 위치를 쓴다).
-_GIT_METADATA_QUERY: tuple[str, ...] = (
-    "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir",
-)
-_GIT_METADATA_LINE_COUNT = 2
-
-
-def _git_metadata_write_roots(
-    cwd: Path, *, git_run_fn: Callable | None = None,
-) -> tuple[Path, ...]:
-    """`cwd` 저장소의 common_dir·git_dir 를 실경로로 해소한 쓰기 루트 집합.
-
-    두 경로가 같으면 하나, 다르면 포함 관계여도 둘 다 반환한다. codex 는 `-C` 의 `.git` 포인터가
-    가리키는 git_dir 를 바깥 쓰기 루트 안에서도 따로 잠그므로, linked worktree 에서 common_dir 만
-    열면 index 쓰기가 막힌다. 부모 경로를 합쳐 범위를 넓히지 않는다. 조회 실패·손상 출력·실재하지 않는 경로는 원인을 담은
-    `DelegateError` 로 멈춘다 — 빈 루트로 바꿔 실행을 이어가지 않는다."""
-    runner = git_run_fn or subprocess.run
-    command = ["git", "-C", str(cwd), *_GIT_METADATA_QUERY]
-    shown = " ".join(command)
-    try:
-        result = runner(
-            command, capture_output=True, text=True, encoding="utf-8", errors="strict",
-            check=False,
-        )
-    except (OSError, UnicodeDecodeError, subprocess.SubprocessError) as exc:
-        raise delegate_errors.DelegateError(
-            f"git 메타데이터 위치 조회 실패(호출 전 중단): {shown}: {exc}"
-        ) from exc
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "원인 미상"
-        raise delegate_errors.DelegateError(
-            f"git 메타데이터 위치 조회 실패 rc={result.returncode}(호출 전 중단): "
-            f"{shown}: {detail}"
-        )
-    lines = (result.stdout or "").splitlines()
-    if len(lines) != _GIT_METADATA_LINE_COUNT or not all(line.strip() for line in lines):
-        raise delegate_errors.DelegateError(
-            f"git 메타데이터 위치 조회 출력이 두 경로가 아님(호출 전 중단): {shown}: {lines!r}"
-        )
-    resolved: list[Path] = []
-    for line in lines:
-        candidate = Path(line)
-        if not candidate.is_absolute():
-            raise delegate_errors.DelegateError(
-                f"git 메타데이터 위치가 절대경로가 아님(호출 전 중단): {shown}: {line!r}"
-            )
-        try:
-            real = candidate.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise delegate_errors.DelegateError(
-                f"git 메타데이터 위치 해소 실패(호출 전 중단): {line}: {exc}"
-            ) from exc
-        if not real.is_dir():
-            raise delegate_errors.DelegateError(
-                f"git 메타데이터 위치가 디렉터리가 아님(호출 전 중단): {real}"
-            )
-        resolved.append(real)
-    common_dir, git_dir = resolved
-    if git_dir == common_dir:
-        return (common_dir,)
-    return (common_dir, git_dir)
-
-
-def _apply_workspace_git_dirs(argv: list[str], mode: str, source_cwd: Path) -> list[str]:
-    """최종 argv 가 원 작업공간을 workspace-write 로 열면 그 git 메타데이터 루트를 더한다.
-
-    판정 입력은 역할 이름이 아니라 최종 sandbox 와 `-C` 실경로다. 읽기 역할의 tmp 재앵커처럼
-    실행 좌표가 원 작업공간과 다르거나 read-only 가 남은 실행은 원 git 을 조회하지 않고 그대로
-    둔다. 전역 `--add-dir` 형식(`workspace-add-dir`)이 아닌 하네스 argv 는 그대로 반환한다."""
-    if mode != "workspace-add-dir":
-        return argv
-    try:
-        _exec_index, global_options = contract.read_codex_global_section(argv)
-    except contract.HarnessContractError as exc:
-        raise delegate_errors.DelegateError(str(exc)) from exc
-    sandbox = dict(global_options).get("-s")
-    if sandbox not in contract.CODEX_SANDBOX.values():
-        raise delegate_errors.DelegateError(
-            f"codex argv 의 sandbox 값이 선언 밖: {sandbox!r}"
-        )
-    if sandbox != contract.CODEX_SANDBOX["write"]:
-        return argv
-    # `-C` 는 신규 실행에선 exec 뒤, 재개 실행에선 exec 앞에 온다(재개 하위 명령에 -C 가 없다).
-    try:
-        cwd_index = argv.index("-C")
-    except ValueError as exc:
-        raise delegate_errors.DelegateError("codex argv 에 -C 실행 root 가 없음") from exc
-    if cwd_index + 1 >= len(argv):
-        raise delegate_errors.DelegateError("codex argv 의 -C 실행 root 값이 없음")
-    if os.path.realpath(argv[cwd_index + 1]) != os.path.realpath(source_cwd):
-        return argv
-    return _codex_workspace_dirs(argv, _git_metadata_write_roots(source_cwd))
-
-
-# 재앵커된 read 실행(현재 codex만·_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS)의 3-절대경로
-# preamble — 반려 근거: `--dry-run` 실측에서 합성 프롬프트에 정체성·
-# 금지사항·회귀 범위·산출 형식은 실렸지만 해소된 `--cwd` 절대경로가 **한 글자도 없었다**. 엔진이
-# `-C`를 빈 tmp로 재앵커해 놓고 실 대상 좌표는 PM 산문에만 맡긴 것은 모델 준수 문제가 아니라
-# 엔진 결함이라는 판정이다 — 좌표는 엔진만 아는 기계 사실이므로 엔진이 합성 preamble에 직접
-# 싣는다([[mechanize-dont-instruct-llm]]). 실측 3건에서 모델의
-# 첫 명령이 `&&`로 묶인 **상대** 명령(`pwd && ls && git rev-parse ...`)이라 격리 root의 빈 pwd에서
-# 곧장 죽었다 — 그래서 예시 명령은 전부 `-C <절대경로>`/명시 target 플래그로 줘서 pwd를 몰라도
-# 그대로 맞게 한다. `_execute_attempt`(실행)와 `main()` dry-run 미리보기가 이 한 함수를 공유한다
-# (값만 다르다 — 실행은 방금 만든 실 read_tmp, dry-run은 부작용 0 인 `_predict_read_tmp_paths`).
-def _reanchor_exec_root_preamble(
-    cwd: Path, exec_root: Path, writable_path: Path,
-) -> str:
-    """실행 root가 재앵커된 read 실행에 검토 대상·실행 root·쓰기 경로 절대값을 박아 준다."""
-    git_status_cmd = render_shell_command(["git", "-C", str(cwd), "status", "--short"])
-    git_diff_cmd = render_shell_command(["git", "-C", str(cwd), "diff", "--cached"])
-    git_head_cmd = render_shell_command(["git", "-C", str(cwd), "rev-parse", "HEAD"])
-    pytest_cmd = render_shell_command([
-        _prescribed_interpreter(), "-m", "pytest", str(cwd),
-        "-p", "no:cacheprovider", "--basetemp", str(writable_path / "pytest"),
-    ])
-    return (
-        "[격리 실행 좌표 — 엔진 값]\n"
-        f"검토 대상(diff·git 상태·회귀 소스) 절대경로: {cwd}\n"
-        f"이 프로세스의 실행 root(-C): {exec_root} — 이 경로는 검토 대상이 아니다"
-        "(격리를 위해 매번 새로 만드는 빈 디렉터리다 — 검토 대상의 source·tests가 없다).\n"
-        "다만 그 자리는 저장소 안의 무시되는 런타임 폴더라 `-C` 없는 git 명령은 검토 대상이 "
-        "아닌 저장소로 해소될 수 있다 — git 은 아래처럼 항상 `-C <절대경로>`로 실행하라.\n"
-        f"쓰기 가능 임시 경로: {writable_path}\n"
-        "pwd를 가정하지 말고 절대경로 플래그로 명령하라 — 예:\n"
-        f"  {git_status_cmd}\n"
-        f"  {git_diff_cmd}\n"
-        f"  {git_head_cmd}\n"
-        f"  {pytest_cmd} ...\n"
-    )
-
-
-def _predict_read_tmp_paths(harness: str) -> tuple[Path, Path]:
-    """dry-run 전용 — `_create_read_role_temp`와 같은 이름 규칙(`_read_tmp_attempt_name`)으로
-    대표 경로만 계산한다(attempt 자리는 만들지 않는다 · 공유 임시 루트는 앵커 seam 이 소유한다).
-    dry-run 은 실행하지 않으므로 이 값이 이후 실행의 read_tmp와 같은 문자열일 필요는 없다 —
-    이번 invocation이 실행됐다면 만들었을 이름 규칙의 진짜 값(placeholder 아님)을 보여주는 게
-    목적이다."""
-    temp_parent, _optional_parent_name = _read_tmp_parent(harness)
-    attempt_path = temp_parent / _read_tmp_attempt_name()
-    writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
-    writable_path = (
-        attempt_path / writable_component
-        if writable_component is not None else attempt_path
-    )
-    return attempt_path, writable_path
-
-
-def _read_tmp_prompt_note(
-    harness: str, cwd: Path, read_tmp: _ReadRoleTemp | None,
-) -> str:
-    """실 경로·회귀 실행법·worktree 금지를 read role이 놓치지 않게 한다."""
-    if read_tmp is None:
-        return READ_REGRESSION_UNAVAILABLE_NOTE
-    pytest_temp = (
-        f'"{_temp_env_reference()}/{_READ_TMP_PYTEST_REL_BY_HARNESS[harness]}"'
-    )
-    env_note = (
-        f"TMPDIR은 권한 glob 기준인 {read_tmp.path}, TMP/TEMP는 실제 쓰기 가능한 "
-        f"{read_tmp.writable_path}를 가리킨다"
-        if _READ_TMP_TMP_TEMP_USE_WRITABLE_PATH_BY_HARNESS[harness]
-        else f"TMPDIR/TMP/TEMP가 모두 {read_tmp.path}를 가리킨다"
-    )
-    codex_note = (
-        f" Codex 실행 root도 {read_tmp.path}로 옮겼으므로 worktree 명령은 절대경로를 쓰거나 "
-        f"`cd {render_shell_token(str(cwd))}` 뒤 실행하라."
-        if _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
-        else ""
-    )
-    reanchor_preamble = (
-        "\n\n" + _reanchor_exec_root_preamble(cwd, read_tmp.path, read_tmp.writable_path)
-        if _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
-        else ""
-    )
-    return (
-        f"read 역할 실행용 격리 임시 디렉터리: {read_tmp.writable_path}. "
-        f"실행 환경의 {env_note}. 회귀 산출물은 이 경로에만 "
-        f"쓰고 worktree({cwd})에는 어떤 파일도 만들거나 수정하지 마라. pytest는 예를 들어 "
-        f"`{_prescribed_interpreter()} -m pytest -p no:cacheprovider "
-        f"--basetemp {pytest_temp} ...`처럼 "
-        "cacheprovider를 끄고 basetemp를 지정하라. PYTHONDONTWRITEBYTECODE=1도 설정되어 있다. "
-        f"하네스 권한 근거: {harness}.{codex_note}"
-        f"{reanchor_preamble}"
-    )
-
-
-# codex read 역할만 `-C`(실행 root)를 격리 tmp로 재앵커한다(_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS
-# — claude·opencode는 -C/--dir을 건드리지 않아 이 클래스가 구조적으로 없다). 재앵커된 tmp는 절대
-# git 저장소가 아니므로(매 attempt 새로 만드는 빈 0700 디렉터리), 모델은 프롬프트 지시
-# (`_read_tmp_prompt_note`의 codex_note)로 `--cwd` 복귀를 기대받는다 — 그 준수를 기계가 보장할
-# 수는 없다: `codex exec --help` 실측상 `-C`는 항상 암묵적 쓰기 가능 root이고 `--add-dir`는
-# 추가만 한다 — "주 워크스페이스는 read-only·별도 root만 write" 조합이 CLI에 없다(실측 —
-# `-c permissions.<name>=` 동적 override 시도도 codex-cli 0.147.0에서 patch 도구가 read-only로
-# 남아 이미 실패한 바 있다·위 주석). 그래서 기계가 보장할 수 있는 건 재앵커 **이전**의 `--cwd`
-# 자신이 리뷰 가능한 형상인가뿐이다 — 재앵커된 tmp에서 다시 rev-parse해 봐야 항상 실패하는
-# 무의미한 검사가 된다. 이 함수는 `--cwd` 를 스폰 전에 검증해 불량 입력을 과금 전에 끊는다
-# (실측 3건 — 세 라운드 모두 `--cwd` 자체는 정상이었다·즉 모델이
-# 격리 tmp에서 `--cwd`로 되짚어가지 못한 것이 근본 원인이고, 이 preflight는 그 모델 준수까지
-# 기계로 보장하진 못한다. 대신 `--cwd` 부실(비-저장소·하위디렉터리 오지정)이라는 인접 실패
-# 클래스를 스폰 전에 닫아, 같은 종류의 무의미한 유료 라운드를 줄인다).
-#
-# 검사는 재앵커를 공유하는 모든 codex read 역할(code-reviewer·researcher)에 같다 — 어떤 역할이든
-# `--cwd` 가 실제 저장소 최상위가 아니면 재앵커·`_read_tmp_prompt_note`의 절대경로 안내 자체가
-# 잘못된 값을 참조하게 되는, 역할 무관 공통 전제다. 리뷰 입력은 미커밋 작업물이 아니라 묶음
-# 브랜치 diff 라(준비 트리 조건이 작업 트리 변경 0 을 요구한다) staged 변경은 요구하지 않는다.
-
-
-def _preflight_codex_read_exec_root(cwd: Path) -> None:
-    """codex read 역할 스폰 **전** `--cwd` 저장소 형상을 기계로 확정한다(호출 없음).
-
-    (a) `--cwd` 가 git 저장소인가 (b) 그 `--show-toplevel` 값이 `--cwd` 자신과 일치하는가
-    (저장소 하위 디렉터리가 잘못 `--cwd` 로 넘어온 경우를 잡는다). 하나라도 어긋나면
-    `DelegateError` 로 중단한다 — 호출부(`_execute_attempt`)는 이 함수를 `run_fn` 호출
-    **이전**에만 부르므로 실패는 과금 없이 끝난다.
-    """
-    resolved_cwd = cwd.resolve()
-    toplevel = subprocess.run(
-        ["git", "-C", str(resolved_cwd), "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-    )
-    if toplevel.returncode != 0:
-        cause = toplevel.stderr.strip() or toplevel.stdout.strip() or "원인 미상"
-        raise delegate_errors.DelegateError(
-            "codex read 역할 preflight 실패 — --cwd 가 git 저장소가 아님(호출 전 중단): "
-            f"cwd={resolved_cwd} · {cause}"
-        )
-    resolved_toplevel = Path(toplevel.stdout.strip()).resolve()
-    if resolved_toplevel != resolved_cwd:
-        raise delegate_errors.DelegateError(
-            "codex read 역할 preflight 실패 — 실행 root 불일치(호출 전 중단): "
-            f"--cwd={resolved_cwd} · git toplevel={resolved_toplevel} "
-            "(--cwd 는 저장소 최상위여야 한다)"
-        )
-
-
-def _apply_read_tmp_env(
-    env: dict[str, str], harness: str, read_tmp: _ReadRoleTemp | None,
-) -> dict[str, str]:
-    """정제된 child env에 회귀 임시 경로만 추가한다."""
-    if read_tmp is None:
-        return env
-    adjusted = dict(env)
-    adjusted["TMPDIR"] = str(read_tmp.path)
-    temp_value = (
-        str(read_tmp.writable_path)
-        if _READ_TMP_TMP_TEMP_USE_WRITABLE_PATH_BY_HARNESS[harness]
-        else str(read_tmp.path)
-    )
-    adjusted["TMP"] = temp_value
-    adjusted["TEMP"] = temp_value
-    adjusted["PYTHONDONTWRITEBYTECODE"] = "1"
-    return adjusted
-
-
-def _prepare_attempt_transport(
-    harness: str, model: str, reasoning: str | None, role: str, cwd: Path,
-    prompt: str, resume_session_id: str | None = None,
-    cluster_run_dir: Path | None = None,
-) -> tuple[
-    list[str], str | None, _OpenCodeTransportPrompt | None, _ReadRoleTemp | None,
-]:
-    """하네스 wire + read tmp를 attempt 단위로 함께 준비한다(timeout/판정은 미소유)."""
-    read_role = role in READ_ROLES
-    read_tmp = _create_read_role_temp(harness, cwd) if read_role else None
-    if read_role and cluster_run_dir is not None and read_tmp is None:
-        print(
-            f"경고: {harness} {role}용 격리 temp를 준비하지 못해 ticket 사본의 "
-            "단일-path write 격리를 보장하지 못합니다. 역할 규약과 위임 전후 git/touches "
-            f"감사로 변경 범위를 표면화하며 선택한 {harness} target으로 계속 실행합니다.",
-            file=sys.stderr,
-        )
-    prompt_path: _OpenCodeTransportPrompt | None = None
-    argv_mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
-    outgoing_prompt = (
-        _read_tmp_prompt_note(harness, cwd, read_tmp) + "\n\n" + prompt
-        if read_role else prompt
-    )
-    try:
-        if harness == "opencode":
-            # PM 홈 감사 raw와 별개로 wire 사본은 opencode ``--dir`` sandbox 안에 둔다.
-            wire_cwd = Path(os.path.abspath(cwd))
-            prompt_path = _save_opencode_transport_prompt(wire_cwd, outgoing_prompt)
-            # 파일 생성 뒤 argv 조립 직전에도 containment를 재검사한다. runner 직전에는 같은
-            # lexical 경로와 부모/파일 entry의 symlink 여부를 한 번 더 확인한다.
-            _assert_opencode_transport_path(prompt_path.sandbox, prompt_path)
-            return (
-                _apply_workspace_git_dirs(_apply_read_tmp_argv(_build_target_argv(
-                    harness, model, reasoning, role, prompt_path.sandbox, prompt_path,
-                ), harness, role, read_tmp, cluster_run_dir), argv_mode, cwd),
-                None,
-                prompt_path,
-                read_tmp,
-            )
-        return (
-            _apply_workspace_git_dirs(_apply_read_tmp_argv(_build_target_argv(
-                harness, model, reasoning, role, cwd, Path(), resume_session_id,
-            ), harness, role, read_tmp, cluster_run_dir), argv_mode, cwd),
-            outgoing_prompt,
-            None,
-            read_tmp,
-        )
-    except BaseException:
-        _cleanup_attempt_transport(prompt_path, read_tmp)
-        raise
 
 
 def _execute_attempt(
@@ -7398,7 +4016,7 @@ def _execute_attempt(
     cluster_run_dir: Path | None = None,
     run_id: str | None = None,
     round_copy_path: str | None = None,
-) -> DelegateAttempt:
+) -> delegate_run.DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
     폴백도 같은 드라이버/권한축/env allowlist/timeout 계약을 탄다(그래서 폴백이 발동한 실행의 최악
@@ -7428,30 +4046,30 @@ def _execute_attempt(
         )
     # 슬롯 주인 task 는 준비 산출물을 만들기 전에 해소한다 — 장부 판독 실패가 되감을 산출물을 남기지 않는다.
     delegate_task_env = _delegate_task_env(cwd)
-    argv, stdin_text, prompt_path, read_tmp = _prepare_attempt_transport(
-        harness, model, reasoning, role, cwd, prompt, resume_session_id,
+    argv, stdin_text, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), harness, model, reasoning, role, cwd, prompt, resume_session_id,
         cluster_run_dir,
     )
     # env 해소도 실패할 수 있다(하네스 필수 키 누락은 fail-loud) — 그 실패가 attempt 사본과
     # read tmp 를 남기지 않도록 준비 산출물과 같은 소유권 seam 에서 되감는다.
     try:
         env = contract.with_harness_runtime_role(
-            _apply_read_tmp_env(build_env(harness), harness, read_tmp), harness, role,
+            delegate_transport._apply_read_tmp_env(delegate_env.build_env(harness), harness, read_tmp), harness, role,
         )
         env.update(delegate_task_env)
     except BaseException:
-        _cleanup_attempt_transport(prompt_path, read_tmp)
+        delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
         raise
 
     # raw 경로와 미마감 장부는 자식 프로세스 실행 전에 확정한다. 이 순서가 하네스 Bash/stdout
     # 유실 시에도 경로를 남기는 핵심 계약이다. 이후 BaseException으로 마감 경로를 건너뛰면
     # 레코드가 의도적으로 미마감 상태로 남아 kill/비정상 종료의 조회 입력이 된다.
     try:
-        raw_path = _reserve_raw_output(harness, output_dir)
-        _raw_dir, ledger_path = _raw_storage(output_dir)
+        raw_path = raw_output._reserve_raw_output(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), harness, output_dir)
+        _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), output_dir)
         record_id = raw_output.start_raw_record(
             ledger_path,
-            surface=DELEGATE_RAW_SURFACE,
+            surface=delegate_run_rules.DELEGATE_RAW_SURFACE,
             harness=harness,
             model=model,
             role=role,
@@ -7462,16 +4080,16 @@ def _execute_attempt(
             # PM 홈 감사 raw와 cwd wire 사본 좌표를 같은 행에 두어 조인 없이 회수한다.
             extra={
                 key: value for key, value in (
-                    (RESUME_FIELD_TICKET, ticket),
-                    (RESUME_FIELD_BASE_REV, base_rev),
-                    (RESUME_FIELD_RESUME_FROM, resume_session_id),
-                    (FRESH_REASON_FIELD, fresh_reason),
+                    (delegate_run_rules.RESUME_FIELD_TICKET, ticket),
+                    (delegate_run_rules.RESUME_FIELD_BASE_REV, base_rev),
+                    (delegate_run_rules.RESUME_FIELD_RESUME_FROM, resume_session_id),
+                    (delegate_run_rules.FRESH_REASON_FIELD, fresh_reason),
                     # cross 라운드 준비가 있었던 실행만 채운다 — delegate-rounds 장부 행과
                     # 값이 같아야 조인이 성립한다.
-                    (RESUME_FIELD_RUN_ID, run_id),
-                    (RESUME_FIELD_TICKET_COPY, round_copy_path),
+                    (delegate_run_rules.RESUME_FIELD_RUN_ID, run_id),
+                    (delegate_run_rules.RESUME_FIELD_TICKET_COPY, round_copy_path),
                     (
-                        OPENCODE_TRANSPORT_PROMPT_FIELD,
+                        delegate_run_rules.OPENCODE_TRANSPORT_PROMPT_FIELD,
                         str(prompt_path) if prompt_path is not None else None,
                     ),
                 ) if value is not None
@@ -7479,7 +4097,7 @@ def _execute_attempt(
         )
     except BaseException:
         # transport 준비 뒤 raw 예약/장부 시작이 실패해도 지시 사본을 남기지 않는다.
-        _cleanup_attempt_transport(prompt_path, read_tmp)
+        delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
         raise
     started = time.monotonic()
 
@@ -7494,9 +4112,9 @@ def _execute_attempt(
         # raw 쓰기 자체가 실패해도 finally에서 장부는 반드시 마감한다. 그래야 0-byte raw가
         # 남더라도 finished_at/rc가 kill 증거와 pre-spawn 거부를 기계적으로 구분한다.
         try:
-            _write_reserved_raw(
+            raw_output._write_reserved_raw(
                 raw_path,
-                _format_meta(
+                delegate_config._format_meta(
                     argv, 1, harness, model, rejection_elapsed, "", rejection_stderr,
                     attempt=attempt,
                     primary_raw=primary_raw,
@@ -7542,19 +4160,19 @@ def _execute_attempt(
                 read_tmp.path
                 if (
                     read_tmp is not None
-                    and _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+                    and delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
                 )
                 else cwd
             )
             if (
                 read_tmp is not None
-                and _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+                and delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
             ):
                 # codex read 역할만 -C를 격리 tmp로 재앵커한다 — 그 tmp는 절대 git 저장소가
                 # 아니므로 여기서 다시 rev-parse해 봐야 무의미하다. 재앵커 **이전**의 --cwd 자신을
                 # 스폰 전에 검증한다(`_preflight_codex_read_exec_root` 선언부 주석 참고).
                 try:
-                    _preflight_codex_read_exec_root(cwd)
+                    delegate_transport._preflight_codex_read_exec_root(cwd)
                 except delegate_errors.DelegateError as exc:
                     _record_pre_spawn_rejection(exc)
                     raise
@@ -7562,7 +4180,7 @@ def _execute_attempt(
                 # raw 예약/장부 시작처럼 준비 뒤 실행 전에 낀 작업까지 포함해 lexical
                 # containment와 symlink 아닌 entry를 다시 확인한다.
                 try:
-                    launch_argv, launch_cwd = _opencode_transport_launch_target(
+                    launch_argv, launch_cwd = delegate_transport._opencode_transport_launch_target(
                         prompt_path, argv,
                     )
                 except delegate_errors.DelegateError as exc:
@@ -7576,16 +4194,16 @@ def _execute_attempt(
                 env=env,
                 timeout=timeout, harness=harness,
             )
-        except _LAUNCH_STAGE_ERRORS as exc:
-            result = _launch_failure_result(harness, exc)
+        except delegate_run._LAUNCH_STAGE_ERRORS as exc:
+            result = delegate_run._launch_failure_result(harness, exc)
         except OSError as exc:
-            result = _midrun_failure_result(harness, exc)
+            result = delegate_run._midrun_failure_result(harness, exc)
     finally:
         elapsed = time.monotonic() - started
         # 이 finally는 runner 예외와 watchdog timeout/child-kill을 모두 회수한다. 다만 OS kill -9,
         # host crash 등 pm_delegate 프로세스 자체가 강제 종료되면 사용자 공간 finally는 실행될 수
         # 없으므로 그 경우의 잔여 0까지 보장하지 않는다.
-        cleanup_residue = _cleanup_attempt_transport(prompt_path, read_tmp)
+        cleanup_residue = delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
 
     rc = result.get("returncode", 1)
     stdout = result.get("stdout", "")
@@ -7595,17 +4213,17 @@ def _execute_attempt(
         # 저장소에 쌓이는 동안 호출부는 정상으로 읽는다. 위 `finally` 안에서 raise 하면 주
         # 결과와 전파 중인 예외를 덮으므로, 여기서 결과 자체를 실패로 내린다(분류 신호는
         # 붙이지 않는다 — 인프라 실패가 아니므로 폴백 대상이 아니다).
-        rc = rc if rc != 0 else _READ_TMP_RESIDUE_RC
+        rc = rc if rc != 0 else delegate_run_rules._READ_TMP_RESIDUE_RC
         stderr = f"{stderr}\n{cleanup_residue}" if stderr else cleanup_residue
         result = {**result, "returncode": rc, "stderr": stderr}
-    _write_reserved_raw(
+    raw_output._write_reserved_raw(
         raw_path,
-        _format_meta(
+        delegate_config._format_meta(
             argv, rc, harness, model, elapsed, stdout, stderr, attempt=attempt,
             primary_raw=primary_raw, reasoning=reasoning, local_conf_path=local_conf_path,
             profile_source=profile_source,
-            silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
-            idle_killed=bool(result.get(RUN_RESULT_IDLE_KILLED, False)),
+            silence_sec=result.get(delegate_run_rules.RUN_RESULT_SILENCE_SEC),
+            idle_killed=bool(result.get(delegate_run_rules.RUN_RESULT_IDLE_KILLED, False)),
             transport_sandbox_path=(
                 str(prompt_path.sandbox) if prompt_path is not None else None
             ),
@@ -7618,70 +4236,24 @@ def _execute_attempt(
             ),
         ),
     )
-    observed = _observe_harness_result(harness, stdout)
+    observed = delegate_run._observe_harness_result(harness, stdout)
     try:
         raw_output.finish_raw_record(
             ledger_path,
             record_id,
             rc=rc,
             elapsed_sec=elapsed,
-            silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
-            extra=_finished_ledger_fields(observed, resume_session_id),
+            silence_sec=result.get(delegate_run_rules.RUN_RESULT_SILENCE_SEC),
+            extra=delegate_run._finished_ledger_fields(observed, resume_session_id),
         )
     except raw_output.RawRecordAlreadyFinished as exc:
         # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 실행 결과는
         # 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
         print(f"경고: 장부 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
               file=sys.stderr)
-    return DelegateAttempt(
+    return delegate_run.DelegateAttempt(
         harness, model, argv, result, raw_path, observed.session_id,
     )
-
-
-def _observe_harness_result(harness: str, stdout: str):
-    """회신 wire 1회 관측(회신·세션 id·usage) — 실패는 관측 없음으로 강등(비차단).
-
-    이 관측은 감사 보강이라 실패해도 위임 자체를 죽이지 않는다. 회수 경로의 fail-loud 는 종전
-    그대로 `extract_reply` 가 소유한다."""
-    if not stdout:
-        return contract.HarnessReply(None, None, None)
-    try:
-        return contract.extract_harness_result(harness, stdout)
-    except Exception as exc:  # noqa: BLE001 — 관측 실패가 실행/마감을 막지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
-        print(
-            f"경고: 회신 구조화 관측 실패({exc}) — 장부에 세션 id/usage 를 남기지 못합니다.",
-            file=sys.stderr,
-        )
-        return contract.HarnessReply(None, None, None)
-
-
-def _finished_ledger_fields(
-    observed, resume_session_id: str | None,
-) -> dict[str, object]:
-    """실행 **후**에야 아는 구조화 필드만 모은다(수집 못 한 값은 필드 자체를 안 만든다).
-
-    `usage` 는 하네스가 분해 관측을 준 축에서만 실린다 — 0 채우기·추정 매핑은 비용 표를
-    false-정밀하게 만든다. `must_fix_items` 는 생산 시점 추출이라 다음 라운드 delta 가 raw 텍스트를
-    재파싱하지 않아도 된다.
-
-    `reply_extracted` 는 **판정이라 항상 싣는다**(True/False 둘 다) — 이 실행이 회신 검증까지
-    통과한 유효 성공인지를 rc 와 분리해 기록하는 유일한 자리다. 부재로 두면 '이 축을 모르는
-    구레코드'와 구분되지 않아 다음 재개가 실패 실행을 성공 후보로 집는다."""
-    fields: dict[str, object] = {RESUME_FIELD_REPLY_EXTRACTED: observed.reply is not None}
-    if observed.session_id is not None:
-        fields[RESUME_FIELD_SESSION_ID] = observed.session_id
-    if observed.usage:
-        fields[RESUME_FIELD_USAGE] = dict(observed.usage)
-    items = _observed_must_fix_items(observed.reply)
-    if items:
-        fields[RESUME_FIELD_MUST_FIX] = items
-    if resume_session_id is not None:
-        fields[RESUME_FIELD_RESUME_MATCHED] = (
-            observed.session_id == resume_session_id
-        )
-    return fields
 
 
 # ── 병렬 위임 touches 교집합 (같은 세션 claimed ticket·never-block) ─────────
@@ -7712,11 +4284,11 @@ class TicketTouchOverlap(NamedTuple):
 
 
 def _folded_touch_pairs(
-    items: Sequence[str], *, pm_root: Path | str, workspace: Path | str, coordinates,
+    items: Sequence[str], *, pm_root: Path | str, workspace: Path | str,
 ) -> tuple[tuple[str, str], ...]:
     """touches 를 `(원 선언, 이 workspace 좌표)` 쌍으로 접는다 — **사전·사후 공용 좌표 규칙**.
 
-    검증된 slot 접두만 벗기는 규칙은 repo_coordinates 단일 진실이다(`delegate_scope.allowed_paths`
+    검증된 slot 접두만 벗기는 규칙은 repo_coordinates 단일 진실이다(`delegate_scope_git.allowed_paths`
     가 쓰는 것과 같은 primitive). 이 workspace 로 해소되지 않는 선언(다른 슬롯·traversal)은 항목
     단위로 드롭한다 — 여기서는 정상 입력이라 기본은 조용하다(선언 축의 드롭은 `_warn_dropped_touch`
     가 이미 알린다). 정규화 예외 타입은 좁게 잡는다: 엔진 사본 skew 등 marked 예외는 이 경계에서
@@ -7725,20 +4297,20 @@ def _folded_touch_pairs(
     pairs: list[tuple[str, str]] = []
     for item in items:
         try:
-            normalized = coordinates.normalize_repo_paths(
+            normalized = repo_coordinates.normalize_repo_paths(
                 [item], pm_root=Path(pm_root), workspace=Path(workspace),
             )
         except (ValueError, OSError) as exc:   # RepoCoordinateError(ValueError) = 타 슬롯/미실재
             continue
         for path in normalized:
-            value = ticket_rules._touch_notation(coordinates.canonicalize_path_notation(str(path)))
+            value = ticket_rules._touch_notation(repo_coordinates.canonicalize_path_notation(str(path)))
             if value is not None and value != ".":
                 pairs.append((item, value))
     return tuple(dict.fromkeys(pairs))
 
 
 def _touch_notations(
-    raw: object, coordinates, *, pm_root: Path | str, workspace: Path | str,
+    raw: object, *, pm_root: Path | str, workspace: Path | str,
 ) -> tuple[tuple[str, str], ...] | None:
     """frontmatter touches → 접힌 `(원 선언, 좌표)` 쌍. **형식 불명이면 None**(판정 보류).
 
@@ -7749,7 +4321,7 @@ def _touch_notations(
     if items is None:
         return None
     return _folded_touch_pairs(
-        items, pm_root=pm_root, workspace=workspace, coordinates=coordinates,
+        items, pm_root=pm_root, workspace=workspace,
     )
 
 
@@ -7782,7 +4354,7 @@ def claimed_touch_overlaps(
     target_fm = target[0]
     claimed_by = str(target_fm.get("claimed_by") or "").strip()
     target_pairs = _touch_notations(
-        target_fm.get("touches"), repo_coordinates,
+        target_fm.get("touches"),
         pm_root=pm_root, workspace=workspace,
     )
     if not claimed_by or not target_pairs:
@@ -7800,7 +4372,7 @@ def claimed_touch_overlaps(
         if str(other_fm.get("claimed_by") or "").strip() != claimed_by:
             continue
         other_pairs = _touch_notations(
-            other_fm.get("touches"), repo_coordinates,
+            other_fm.get("touches"),
             pm_root=pm_root, workspace=workspace,
         )
         if not other_pairs:
@@ -7870,10 +4442,10 @@ def _changed_overlap_paths(
     `ScopeAudit.overlap_paths` 는 사전 축이 이미 이 workspace 좌표로 접어 둔 값이라(같은
     `_folded_touch_pairs` 규칙) 여기서 좌표를 다시 만들지 않는다 — 한 기능에 좌표 규칙 하나.
     """
-    if not audit.overlap_paths or role not in WRITE_ROLES:
+    if not audit.overlap_paths or role not in delegate_run_rules.WRITE_ROLES:
         return ()
-    changed = set(audit.scope.changed_status_paths(audit.before, after))
-    changed.update(audit.scope.committed_paths(
+    changed = set(delegate_scope_rules.changed_status_paths(audit.before, after))
+    changed.update(delegate_scope_git.committed_paths(
         audit.before, after, workspace=audit.workspace,
     ))
     return tuple(sorted(
@@ -7897,11 +4469,10 @@ def format_changed_overlap_warning(paths: Sequence[str]) -> str:
 class ScopeAudit(NamedTuple):
     """위임 **전체 단위**(primary + 폴백 attempt 포함) 범위 판정 입력."""
 
-    scope: object                 # delegate_scope 모듈
     touches: tuple[str, ...] | None  # None이면 generic 축만 강등(ticket 준비 실패)
-    before: object                # delegate_scope.WorktreeState
+    before: delegate_scope_rules.WorktreeState
     workspace: Path               # git toplevel(=--cwd 가 하위 디렉토리여도 판정 기준은 루트)
-    pm_root: Path = REPO          # --cwd lease에서 해소한 board/config 소유 PM 홈
+    pm_root: Path                # --cwd lease에서 해소한 board/config 소유 PM 홈
     adapter_roots: tuple[str, ...] = ()  # preamble과 같은 실행-전 등록부 스냅샷
     overlap_paths: tuple[str, ...] = ()  # 같은 세션 claimed ticket과 겹치는 touches 경로
 
@@ -7964,28 +4535,24 @@ def begin_scope_audit(
     뒤**다 — 아무것도 실행하지 않은 경로에서 판정을 켜면 무의미한 git 호출·오탐만 는다.
     캡처/정규화 기준은 `--cwd` 가 아니라 **git toplevel** 이다 — repo 하위 디렉토리를 --cwd 로 주면
     슬롯 루트와 좌표가 어긋나 판정이 통째로 꺼진다. `--ticket` 이 없으면 `touches=()` 라 허용 경로가
-    0이다(delegate_scope 계약 — 변경이 있으면 전부 경고).
+    0이다(delegate_scope_rules·delegate_scope_git 계약 — 변경이 있으면 전부 경고).
 
     ``ScopeAudit.overlap_paths``는 실행 **전**에 이미 계산해 경고한 병렬 위임 교집합 경로다
     (같은 세션이 claim 중인 다른 ticket 과 겹치는 선언). 이 함수는 그 축을 계산하지 않는다 —
     호출부가 회수 시점 판정용으로 결과에 실어 준다(``_replace``).
 
-    공통 베이스라인(모듈·toplevel·worktree 캡처)이 실패하면 전후 차이를 만들 수 없어 generic과
+    공통 베이스라인(toplevel·worktree 캡처)이 실패하면 전후 차이를 만들 수 없어 generic과
     어댑터 두 축이 모두 죽는다. 반면 board 로드·ticket 부재/손상으로 touches 준비만 실패하면
-    generic 축만 loud 강등하고, 같은 worktree 캡처를 쓰는 어댑터 축은 보존한다. 일반 실패는
-    위임을 막지 않되 엔진 사본 skew는 부분 동기를 숨기지 않도록 재-raise 한다."""
+    generic 축만 loud 강등하고, 같은 worktree 캡처를 쓰는 어댑터 축은 보존한다. 일반 실패는 위임을 막지 않고 경고한다."""
     roots = tuple(
         _resolved_adapter_directories()
         if adapter_roots is None
         else adapter_roots
     )
     try:
-        scope = _load_delegate_scope()
-        workspace = scope.resolve_workspace_root(cwd)
-        before = scope.capture_worktree_state(workspace)
+        workspace = delegate_scope_git.resolve_workspace_root(cwd)
+        before = delegate_scope_git.capture_worktree_state(workspace)
     except Exception as exc:  # noqa: BLE001 — 공통 캡처 실패만 두 축을 함께 끈다.
-        if _is_engine_rev_skew(exc):
-            raise
         print(
             "경고: 위임 범위 판정 준비 실패"
             f"(공통 worktree 캡처: {exc}) — generic·어댑터 두 축 모두 판정 불가, 비차단 진행.",
@@ -7996,10 +4563,8 @@ def begin_scope_audit(
     # 해시 대상이 있는데 지문을 하나도 못 구했으면 이미 dirty 한 파일의 재수정을 못 잡는다 —
     # 강등된 채로 조용히 통과시키지 않는다(축소된 감지력을 PM 이 알아야 한다).
     try:
-        degraded = scope.content_signal_missing(before, workspace)
+        degraded = delegate_scope_git.content_signal_missing(before, workspace)
     except Exception as exc:  # noqa: BLE001 — 보강 신호 진단 실패로 두 판정축을 버리지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
         degraded = False
         print(f"경고: 내용 해시 보강 상태 확인 실패({exc}) — 비차단 진행.", file=sys.stderr)
     if degraded:
@@ -8011,15 +4576,13 @@ def begin_scope_audit(
 
     try:
         resolved_pm_root = pm_root or REPO
-        touches = scope.ticket_touches(
+        touches = delegate_scope_git.ticket_touches(
             pm_paths.home_at(resolved_pm_root), ticket,
         ) if ticket else ()
         touches = _with_template_propagation(
             touches, workspace=workspace, pm_root=resolved_pm_root,
         )
     except Exception as exc:  # noqa: BLE001 — touches의 형제인 어댑터 축은 보존한다.
-        if _is_engine_rev_skew(exc):
-            raise
         touches = None
         print(
             "=== ⚠ 위임 범위 판정 축 강등 ===\n"
@@ -8027,11 +4590,10 @@ def begin_scope_audit(
             "공통 worktree 캡처가 살아 있어 어댑터 편집 축은 계속 판정합니다.",
             file=sys.stderr,
         )
-    return ScopeAudit(scope, touches, before, workspace, pm_root or REPO, roots)
+    return ScopeAudit(touches, before, workspace, pm_root or REPO, roots)
 
 
 def _adapter_edit_paths(
-    scope,
     before,
     after,
     *,
@@ -8052,8 +4614,8 @@ def _adapter_edit_paths(
     roots = tuple(roots)
     if not roots:
         return None
-    changed = set(scope.changed_status_paths(before, after))
-    changed.update(scope.committed_paths(before, after, workspace=workspace))
+    changed = set(delegate_scope_rules.changed_status_paths(before, after))
+    changed.update(delegate_scope_git.committed_paths(before, after, workspace=workspace))
     return tuple(
         path for path in sorted(changed)
         if any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
@@ -8089,7 +4651,7 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
     WRITE_ROLES 를 주입해 단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다).
     raw 박제 기본 `.project_manager/.local/delegate/`는 gitignored라 판정에 안 잡히며,
     `--output-dir`를 repo 안의 비-ignore 경로로 주면 그 산출물도
-    '위임이 만든 변경'으로 잡힌다(의도). 일반 판정 실패는 비차단하되 엔진 사본 skew만은 재-raise 한다.
+    '위임이 만든 변경'으로 잡힌다(의도). 일반 판정 실패는 경고하고 비차단 진행한다.
 
     형제-가지 여집합 결정: 어댑터 축은 ``--ticket``이 있을 때만 돌지 않는다. 생략 실행에서도
     반드시 돌며, 그때 같은 경로가 "허용 0의 범위 밖"과 "역할 공통 금지 위반" 두 블록에 나오는
@@ -8098,8 +4660,8 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
     if audit is None:
         return
     try:
-        after = audit.scope.capture_worktree_state(audit.workspace)
-        if audit.scope.head_moved(audit.before, after):
+        after = delegate_scope_git.capture_worktree_state(audit.workspace)
+        if delegate_scope_rules.head_moved(audit.before, after):
             # 커밋 자체가 역할 계약 위반 신호다(위임 역할은 commit/push 금지) — 범위 안이든 밖이든
             # 별도로 알린다. 커밋된 경로는 아래 판정 입력에 합산된다(worktree 는 clean 이라 무증거).
             print(
@@ -8109,21 +4671,19 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
                 file=sys.stderr,
             )
     except Exception as exc:  # noqa: BLE001 — 공통 캡처 실패면 두 축 모두 판정 불가.
-        if _is_engine_rev_skew(exc):
-            raise
         print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
         return
 
     if audit.touches is not None or audit.overlap_paths:
         try:
             if audit.touches is not None:
-                paths = audit.scope.out_of_scope_changes(
+                paths = delegate_scope_git.out_of_scope_changes(
                     audit.before, after,
                     touches=audit.touches, role=role, pm_root=audit.pm_root,
                     workspace=audit.workspace,
-                    write_roles=WRITE_ROLES, on_drop=_warn_dropped_touch,
+                    write_roles=delegate_run_rules.WRITE_ROLES, on_drop=_warn_dropped_touch,
                 )
-                warning = audit.scope.format_warning(paths)
+                warning = delegate_scope_rules.format_warning(paths)
                 # **계산 직후 즉시** 출력한다 — 뒤따르는 교집합 계산이 실패해도 이미 확정된
                 # 범위-밖 신호가 함께 사라지면 "한 축 실패가 다른 축을 지우지 않는다"가 깨진다.
                 if warning:
@@ -8136,18 +4696,14 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
             if overlap_warning:
                 print(overlap_warning, file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 비차단, 엔진 skew는 fail-loud.
-            if _is_engine_rev_skew(exc):
-                raise
             print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
 
     try:
         adapter_paths = _adapter_edit_paths(
-            audit.scope, audit.before, after, workspace=audit.workspace,
+            audit.before, after, workspace=audit.workspace,
             roots=audit.adapter_roots,
         )
     except Exception as exc:  # noqa: BLE001 — 어댑터 축만 강등, 기존 범위 축은 보존.
-        if _is_engine_rev_skew(exc):
-            raise
         print(f"경고: 어댑터 편집 경고 축 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
         return
     if adapter_paths is None:
@@ -8222,7 +4778,7 @@ def _cmd_lint(argv: list[str]) -> int:
         prog="pm_delegate.py lint",
         description="delegate 설정 정합 점검 — 동일-모델 dev/reviewer 경고(never-block).")
     parser.parse_args(argv)  # 현재 플래그 0(미래 확장 여지·미지원 인자는 usage error).
-    conf = local_config()
+    conf = conf_store.local_config(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE))
     findings = model_lint.lint_same_model(conf)
     if not findings:
         print("delegate lint: 동일-모델 dev/reviewer 경고 없음(설정 정합).")
@@ -8236,32 +4792,18 @@ def _ticket_cli_owner(cwd: Path) -> Path:
     if not cwd.is_absolute():
         raise delegate_errors.DelegateError("--cwd 는 절대경로여야 합니다")
     resolved = cwd.resolve()
-    if resolved == resolved.parent or not _cwd_in_git_repo(resolved):
+    if resolved == resolved.parent or not delegate_env._cwd_in_git_repo(resolved):
         raise delegate_errors.DelegateError(f"--cwd 는 파일시스템 루트가 아닌 git 작업공간이어야 합니다: {resolved}")
-    er = _load_additional_reviewer()
     try:
         owner = Path(pm_paths.resolve_pm_home_for_repo(resolved)).resolve()
     except pm_paths.AnchorResolutionError as exc:
         raise delegate_errors.DelegateError(f"--cwd 소유 PM 홈 해소 실패: {exc}") from exc
-    if er._owns_real_board(REPO / ".project_manager") and REPO.resolve() != owner:
+    if pm_paths._owns_real_board(REPO / ".project_manager") and REPO.resolve() != owner:
         raise delegate_errors.DelegateError(
             "실행 엔진 board와 --cwd 소유 PM 홈이 달라 ticket 사본 좌표를 확정할 수 없습니다: "
             f"engine={REPO.resolve()} · owner={owner}"
         )
     return owner
-
-
-def _repo_root_for_cwd(cwd: Path, er=None) -> Path:
-    """명시 cwd를 prepare/harvest가 공유하는 제품 Git 루트로 정규화한다.
-
-    앱 checkout은 `.project_manager`를 소유하지 않아도 된다. 보드·config의 PM 홈 소유
-    해소는 `_ticket_cli_owner`/lease 경계가 별도로 담당한다.
-    """
-    if not cwd.is_absolute():
-        raise delegate_errors.DelegateError("--cwd 는 절대경로여야 합니다")
-    resolved = cwd.resolve()
-    additional_reviewer = er if er is not None else _load_additional_reviewer()
-    return Path(additional_reviewer.repo_root_from_cwd(resolved) or resolved).resolve()
 
 
 # 묶음 조회의 티켓 구분선 — 세 렌더가 같은 한 줄로 이어 붙는다(PM 이 어느 티켓의 출력인지
@@ -8367,7 +4909,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help="PM 검토 중점 문단 파일(code-reviewer 전용) — 엔진 프롬프트에 그대로 실린다",
     )
     prepare.add_argument(
-        "--tier", default=None, choices=TIER_CHOICES,
+        "--tier", default=None, choices=delegate_run_rules.TIER_CHOICES,
         help="developer 2티어(normal/hard) — 그 외 역할은 항상 normal 로 강제(cross 채널 판정 입력, "
              "flat CLI와 같은 규칙)",
     )
@@ -8460,7 +5002,7 @@ def _reject_cross_role_prepare(role: str, tier: str, conf: dict[str, str]) -> No
     try:
         guard = _load_delegate_channel_guard()
         pm_harness = _session_harness(os.environ) or ""
-        result = guard.decide(role, tier, conf, pm_harness)
+        result = guard.decide(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), role, tier, conf, pm_harness)
     except Exception as exc:
         if _is_engine_rev_skew(exc):
             raise  # 형제 사본 불일치는 다른 형제 로더와 같은 규칙으로 fail-loud (fail-open 아님).
@@ -8526,7 +5068,7 @@ def _prepare_native_review(
     prompt_path = _review_prompt_path(owner, plan.run_id)
     try:
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        _portable_exclusive_write(prompt_path, prompt)
+        delegate_temp._portable_exclusive_write(prompt_path, prompt)
     except OSError as exc:
         raise delegate_errors.DelegateError(
             f"리뷰 프롬프트 파일 쓰기 실패: {prompt_path}: {exc} — 준비한 run-dir 은 "
@@ -8534,7 +5076,7 @@ def _prepare_native_review(
             f"{plan.run_dir}"
         ) from exc
     for round_plan in plan.rounds:
-        _write_machine_line(json.dumps({
+        console.write_machine_line(json.dumps({
             "cluster": plan.cluster,
             "copy": str(round_plan.path),
             "ordinal": round_plan.ordinal,
@@ -8586,7 +5128,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                 )
             return 0
         cwd = Path(args.cwd)
-        cwd_repo = _repo_root_for_cwd(cwd)
+        cwd_repo = pm_paths._repo_root_for_cwd(cwd)
         owner = _ticket_cli_owner(cwd_repo)
         if args.ticket_command == "prepare":
             # 위임 마스터 스위치 — **준비 단계에서** 막는다. native 위임도 이 CLI 로 라운드 파일을
@@ -8596,12 +5138,12 @@ def _cmd_ticket(argv: list[str]) -> int:
             # 막으면 스위치를 끄는 순간 진행 중 라운드가 고아가 된다.
             # owner_conf 를 한 번만 읽어 마스터 스위치와 cross 판정에 함께 넘긴다 — 실행 엔진
             # 사본(REPO) conf 는 판정에 관여하지 않는다(불변식 3: owner 가 provenance 단일 진실).
-            owner_conf = local_config(owner)
-            if not _is_enabled(owner_conf):
+            owner_conf = conf_store.local_config(pm_paths.home_at(owner))
+            if not delegate_config._is_enabled(owner_conf):
                 print(
                     "위임이 꺼져 있습니다 — 채널(native/cross) 무관 "
-                    f"(local.conf: {_local_conf_path(owner)} · {DELEGATE_ENABLED_KEY}=false).\n"
-                    f"켜기: local.conf 에서 `{DELEGATE_ENABLED_KEY}=true` "
+                    f"(local.conf: {_local_conf_path(owner)} · {delegate_run_rules.DELEGATE_ENABLED_KEY}=false).\n"
+                    f"켜기: local.conf 에서 `{delegate_run_rules.DELEGATE_ENABLED_KEY}=true` "
                     "(또는 그 줄을 지우면 기본 허용).",
                     file=sys.stderr,
                 )
@@ -8632,7 +5174,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                     reopen_ordinal=args.reopen_ordinal,
                 )
                 for round_plan in cluster_plan.rounds:
-                    _write_machine_line(json.dumps({
+                    console.write_machine_line(json.dumps({
                         "cluster": cluster_plan.cluster,
                         "copy": str(round_plan.path),
                         "ordinal": round_plan.ordinal,
@@ -8648,7 +5190,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                 ticket=args.ticket, role=args.role, cwd=cwd_repo, pm_home=owner,
                 reopen_ordinal=args.reopen_ordinal,
             )
-            _write_machine_line(json.dumps({
+            console.write_machine_line(json.dumps({
                 "copy": str(plan.path),
                 "ordinal": plan.ordinal,
                 "run_dir": str(plan.run_dir),
@@ -8664,7 +5206,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                 superseded_by_ordinal=args.superseded_by_ordinal,
                 discard_reason=args.discard_reason,
             )
-            _write_machine_line(json.dumps({
+            console.write_machine_line(json.dumps({
                 "copy": str(copy.resolve()),
                 "changed": abandon_result.changed,
                 "sync_ready": abandon_result.sync_ready,
@@ -8691,7 +5233,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                     print(
                         f"오류: ticket harvest 실패: {outcome.refusal}", file=sys.stderr)
                     continue
-                _write_machine_line(json.dumps({
+                console.write_machine_line(json.dumps({
                     "changed": outcome.result.changed,
                     "copy": str(outcome.copy),
                     "sync_ready": outcome.result.sync_ready,
@@ -8712,7 +5254,7 @@ def _cmd_ticket(argv: list[str]) -> int:
         result = harvest_ticket_copy(
             copy_path=copy, cwd=cwd_repo, pm_home=owner,
         )
-        _write_machine_line(json.dumps({
+        console.write_machine_line(json.dumps({
             "copy": str(copy.resolve()),
             "changed": result.changed,
             "sync_ready": result.sync_ready,
@@ -9094,7 +5636,7 @@ def _cmd_changelog(argv: list[str], git_run_fn: Callable | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         owner = _activate_internal_rounds_cli_owner()
-        checkout = changelog_code_checkout(local_config(owner), pm_home=owner)
+        checkout = changelog_code_checkout(conf_store.local_config(pm_paths.home_at(owner)), pm_home=owner)
         since = changelog_since_instant(checkout, args.since, git_run_fn=git_run_fn)
         materials = changelog_material(
             home=pm_paths.home_at(Path(owner).resolve()), since=since,
@@ -9656,7 +6198,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "code-reviewer 묶음 리뷰는 엔진이 프롬프트를 조립하므로 주지 않는다")
     parser.add_argument("--cwd", required=True, metavar="ABSPATH",
                         help="위임 대상 작업공간(절대경로·모든 역할 필수)")
-    parser.add_argument("--tier", default=None, choices=TIER_CHOICES,
+    parser.add_argument("--tier", default=None, choices=delegate_run_rules.TIER_CHOICES,
                         help="developer 2티어(normal/hard·비-개발 역할 지정 시 usage error)")
     parser.add_argument("--harness", default=None, choices=conf_schema.HARNESS_CHOICES,
                         help="CLI override(--model 동반 필수·원자 tuple)")
@@ -9742,60 +6284,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     return resolved_cwd
 
 
-def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str], harness: str) -> int:
-    """위임 turn **벽시계 백스톱**(초)을 양의 정수로 해소한다.
-
-    우선순위: `--timeout`(양수 — _validate_args 가 보장) > 하네스 프로필 해소값. 프로필 해소는
-    `watchdog.resolve_harness_profile`(선언 기본 → `delegate.timeout` legacy → `harness.<name>.
-    wall_timeout`)이 소유하므로 이 함수는 CLI 우선만 얹는다 — 값 규칙이 두 군데로 갈리지 않는다.
-    깨진 conf 값은 그 해소기가 stderr 경고 후 선언 기본으로 fail-soft 한다(usage error 부적합)."""
-    if args.timeout is not None:
-        return args.timeout  # _validate_args 가 >0 보장
-    return int(harness_profile(harness, conf).wall_timeout)
-
-
-def _harness_timeout_budget(harness: str, timeout: int) -> int:
-    """하네스 **1회 실행+정리**의 최악 소요 예산(초).
-
-    첫-이벤트 워치독을 **선언한 축**(프로필 startup_watchdog=True·현재 opencode)만 다르다 —
-    워치독이 **시도마다** overall 예산을 새로 잡으므로 단일 실행이 timeout 을 넘을 수 있다.
-    다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(`now >= first_deadline`
-    분기), 실행 본체는 `timeout + retries×min(첫-이벤트 창, timeout)` 이다. 여기에 부모 wait 5초와
-    pipe drain 5초의 연속 정리를 **모든 시도(retries+1)** 에 더한다. 나머지 축도 timeout 뒤 정리
-    1회를 같은 공용 식으로 센다. watchdog 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를
-    못 읽으면 재시도 0인 공용 식으로 계산한다.
-    (무진행 판정은 벽시계 *안쪽* 에서만 앞당겨 끝내므로 이 상한을 늘리지 않는다.)"""
-    try:
-        startup_watchdog = harness_profile(harness).startup_watchdog
-        retries = max(0, int(watchdog.stall_retries_default())) if startup_watchdog else 0
-        first_event_window = (
-            float(watchdog.first_event_timeout_default()) if startup_watchdog else None
-        )
-    except (OSError, ValueError, TypeError, AttributeError, ImportError):
-        # 프로필/노브를 못 읽는 진단 경로에서도 호출층 상한을 낮게 예고하지 않는다. 공유 기본의
-        # 현재 최대 재시도(2회)가 각자 wall 전부를 쓸 수 있다고 잡고 정리 3회를 더하는 안전 상한.
-        return int(timeout * 3 + 3 * _HARNESS_CAP_KILL_GRACE_BUDGET_SEC)
-    return int(watchdog.watchdog_execution_budget(
-        timeout,
-        first_event_timeout=first_event_window,
-        retries=retries,
-    ))
-
-
-def max_declared_execution_path_budget() -> int:
-    """기본 선언으로 가능한 primary→fallback 경로의 최악 본체 예산(초).
-
-    폴백은 자기 turn 예산을 새로 쓰며, 같은 하네스의 다른 모델로도 유효하다. 따라서 단일 프로필
-    최댓값이 아니라 **모든 선언 축 두 시도의 합**을 본다. 2단 폴백은 없으므로 깊이는 정확히 2다.
-    startup watchdog 재시도 창도 각 시도의 예산에 포함한다.
-    """
-    budgets = [
-        _harness_timeout_budget(harness, int(profile.wall_timeout))
-        for harness, profile in watchdog.HARNESS_PROFILES.items()
-    ]
-    return max(primary + fallback for primary in budgets for fallback in budgets)
-
-
 
 def harness_cap_advisory(env: dict[str, str] | None = None,
                          *, execution_budget: int | None = None) -> str | None:
@@ -9811,7 +6299,7 @@ def harness_cap_advisory(env: dict[str, str] | None = None,
         return None
     session_markers = watchdog.HARNESS_SESSION_MARKERS
     cap_env = watchdog.HARNESS_CAP_ENV
-    required = max_declared_execution_path_budget()
+    required = delegate_env.max_declared_execution_path_budget(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE))
     if execution_budget is not None:
         required = max(required, execution_budget)
     return watchdog.harness_cap_advisory(
@@ -9894,15 +6382,14 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
 
     # --cwd는 실행 타깃뿐 아니라 config/board 소유자를 정하는 명시 입력이다. 먼저 git 루트를
     # 확정한 뒤 worktree lease 장부로 PM 홈을 해소해, 어느 엔진 사본을 호출했는지와 분리한다.
-    if not _cwd_in_git_repo(cwd, git_run_fn):
+    if not delegate_env._cwd_in_git_repo(cwd, git_run_fn):
         print(
             f"오류: --cwd 는 git 저장소 루트이거나 그 하위여야 합니다: {cwd}\n"
             "  광범위 경로(홈 디렉토리 등 non-repo)는 신뢰 작업공간이 아닙니다 — worktree/repo 를 지정하세요.",
             file=sys.stderr,
         )
         return 1
-    er = _load_additional_reviewer()
-    cwd_repo = _repo_root_for_cwd(cwd, er)
+    cwd_repo = pm_paths._repo_root_for_cwd(cwd)
     try:
         config_repo = pm_paths.resolve_pm_home_for_repo(cwd_repo)
     except pm_paths.AnchorResolutionError as exc:
@@ -9912,7 +6399,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
     board_repo = config_repo
     if (
         effective_ticket
-        and er._owns_real_board(REPO / ".project_manager")
+        and pm_paths._owns_real_board(REPO / ".project_manager")
         and REPO.resolve() != config_repo.resolve()
     ):
         print(
@@ -9923,7 +6410,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         return 1
     conf_path = _local_conf_path(config_repo)
     try:
-        conf = local_config()
+        conf = conf_store.local_config(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE))
     except (OSError, UnicodeError) as exc:
         print(
             f"오류: 해소된 local.conf 읽기 실패 — 호출 전에 중단합니다: "
@@ -9935,11 +6422,11 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
     # 위임 마스터 스위치 (비-dry-run·기본 ON·명시 off = rc=3). **매핑 해소보다 앞** — 위임 자체가
     # 비허용인 형상은 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 진단이 정확하다.
     # dry-run 은 항상 미리보기 허용(미호출)이라 이 게이트를 통과시킨다.
-    if not args.dry_run and not _is_enabled(conf):
+    if not args.dry_run and not delegate_config._is_enabled(conf):
         print(
             "위임이 꺼져 있습니다 — 채널(native/cross) 무관 "
-            f"(local.conf: {conf_path} · {DELEGATE_ENABLED_KEY}=false).\n"
-            f"켜기: local.conf 에서 `{DELEGATE_ENABLED_KEY}=true` (또는 그 줄을 지우면 기본 허용). "
+            f"(local.conf: {conf_path} · {delegate_run_rules.DELEGATE_ENABLED_KEY}=false).\n"
+            f"켜기: local.conf 에서 `{delegate_run_rules.DELEGATE_ENABLED_KEY}=true` (또는 그 줄을 지우면 기본 허용). "
             "미리보기는 `--dry-run`.",
             file=sys.stderr,
         )
@@ -9947,13 +6434,13 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
 
     # config 해소 (원자 tuple·fail-loud rc=1). 추론 값 확인은 해소 뒤 실행 cwd·env 로 한다(dry-run 포함).
     try:
-        harness, model, reasoning = resolve_delegate(
+        harness, model, reasoning = delegate_config.resolve_delegate(
             conf, args.role, tier, args.harness, args.model, args.reasoning)
-        fallback = resolve_fallback(conf, args.role, tier)
-        _validate_reasoning(harness, reasoning, model=model, cwd=cwd)
+        fallback = delegate_config.resolve_fallback(conf, args.role, tier)
+        delegate_config._validate_reasoning(harness, reasoning, model=model, cwd=cwd)
         if fallback is not None:
             fallback_harness, fallback_model, fallback_reasoning = fallback
-            _validate_reasoning(
+            delegate_config._validate_reasoning(
                 fallback_harness, fallback_reasoning, model=fallback_model, cwd=cwd)
     except delegate_errors.DelegateError as exc:
         print(f"오류: {exc}\n  · local.conf: {conf_path}", file=sys.stderr)
@@ -9966,14 +6453,14 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
     # 장부 부재·손상은 이 가드만 fail-open하며, 안전 경계인 raw 기록 자체를 복구/초기화하지 않는다.
     if (
         effective_ticket
-        and args.role in WRITE_ROLES
+        and args.role in delegate_run_rules.WRITE_ROLES
         and args.resume_from is None
         and not args.dry_run
         and args.fresh is None
     ):
-        completed = cold_reinjection_record(effective_ticket, args.role, output_dir)
+        completed = delegate_raw.cold_reinjection_record(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), effective_ticket, args.role, output_dir)
         if completed is not None:
-            return fail_loud(cold_reinjection_rejection(
+            return fail_loud(delegate_raw.cold_reinjection_rejection(
                 effective_ticket, args.role, harness, completed,
             ))
 
@@ -10015,11 +6502,11 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
     # [A] 실제 공유 장부와 그 행이 가리키는 raw 파일에서 최종 reply를 읽는다. 첨부는 task 원문
     # 말미에 붙으므로 full payload와 resume delta 어느 쪽에서도 같은 원문 1회가 실제로 넘어간다.
     try:
-        attached_raw = resolve_attached_raw(args.attach_raw, output_dir=output_dir)
+        attached_raw = delegate_raw.resolve_attached_raw(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args.attach_raw, output_dir=output_dir)
     except delegate_errors.DelegateError as exc:
         return fail_loud(f"오류: {exc}")
     if args.cluster is None:
-        task_text = append_attached_raw(task_text, attached_raw)
+        task_text = delegate_raw.append_attached_raw(task_text, attached_raw)
 
     # cross 실위임의 라운드 준비. dry-run은 미호출/무부수효과 계약이라 만들지 않고, 하네스로
     # 위임되는 역할의 실제 실행만 prepare한다(ticket 없는 legacy 호출은 종전 형상 유지).
@@ -10071,11 +6558,11 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         adapter_roots = _resolved_adapter_directories()
         if cluster_sources is not None:
             # native 준비가 프롬프트 파일에 쓰는 것과 같은 조립이다(`cluster_review_prompt`).
-            task_text = append_attached_raw(build_cluster_review_prompt(
+            task_text = delegate_raw.append_attached_raw(build_cluster_review_prompt(
                 cluster_sources.review, cluster_sources.specs,
                 tree=cwd_repo, focus=cluster_sources.focus,
             ), attached_raw)
-            prompt = append_attached_raw(cluster_review_prompt(
+            prompt = delegate_raw.append_attached_raw(cluster_review_prompt(
                 cluster_sources, tree=cwd_repo, plan=cluster_plan,
                 adapter_roots=adapter_roots,
             ), attached_raw)
@@ -10112,7 +6599,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             )
             return 1
 
-        profile = resolved_delegate_profile(harness, model, reasoning)
+        profile = delegate_config.resolved_delegate_profile(harness, model, reasoning)
         print(
             f"[pm-delegate] config provenance: local_conf={conf_path} "
             f"· pm_home={config_repo.resolve()} · source={profile_source} · resolved_profile={profile}",
@@ -10120,24 +6607,24 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         )
         # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 ``--dir`` 아래
         # wire 사본으로 만들어 --file 전달하므로, dry-run argv 는 사용자 prompt-file 경로로만 표시한다.
-        argv_display = _build_target_argv(
+        argv_display = delegate_run._build_target_argv(
             harness, model, reasoning, args.role, cwd, prompt_file,
             None if resume is None else resume.session_id,
         )
 
         # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다. 값이 하네스별이라
         # **시도마다 자기 하네스의 예산**을 쓴다(폴백이 다른 축이면 예산도 그 축의 것).
-        timeout = _resolve_timeout(args, conf, harness)
-        fallback_timeout = (_resolve_timeout(args, conf, fallback[0])
+        timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)
+        fallback_timeout = (delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, fallback[0])
                             if fallback is not None else timeout)
-        execution_budget = _harness_timeout_budget(harness, timeout)
+        execution_budget = delegate_env._harness_timeout_budget(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), harness, timeout)
         if resume is not None:
             # 재사용 라운드는 primary 축을 두 번 쓸 수 있다(재사용 turn → 세션 불일치 시 fresh
             # 재실행). 그 뒤 인프라 폴백까지 겹치면 이 실행의 최악 스폰은 3회다 — 호출층 상한
             # advisory 가 두 시도만 요구하면 하네스가 엔진 진단보다 먼저 kill 한다.
-            execution_budget += _harness_timeout_budget(harness, timeout)
+            execution_budget += delegate_env._harness_timeout_budget(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), harness, timeout)
         if fallback is not None:
-            execution_budget += _harness_timeout_budget(fallback[0], fallback_timeout)
+            execution_budget += delegate_env._harness_timeout_budget(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), fallback[0], fallback_timeout)
         cap_warning = harness_cap_advisory(execution_budget=execution_budget)
         if cap_warning is not None:
             print(cap_warning, file=sys.stderr)
@@ -10146,21 +6633,18 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         # 공용 seam이 비교한다.
         compare_fallback = fallback is not None
         try:
-            _resolved_cwd_repo, divergence, er = check_local_conf_divergence(
+            _resolved_cwd_repo, divergence = check_local_conf_divergence(
                 cwd, conf, args.role, tier,
                 config_repo=config_repo,
                 cli_override=(profile_source == "cli-override"),
                 compare_fallback=compare_fallback,
-                # 이미 cwd 해소에 쓴 같은 모듈 객체를 전달한다. `_load_additional_reviewer()` 재호출은 새
-                # 모듈/예외 클래스를 만들어 TargetLocalConfReadError catch identity를 깨뜨린다.
-                additional_reviewer_module=er,
             )
-        except er.TargetLocalConfReadError as exc:
+        except reviewer_result.TargetLocalConfReadError as exc:
             print(f"오류: {exc}", file=sys.stderr)
             return 1
         if divergence is not None:
             print(
-                er.format_local_conf_divergence(
+                reviewer_result.format_local_conf_divergence(
                     divergence,
                     surface="pm_delegate",
                     cwd_label="--cwd worktree",
@@ -10182,7 +6666,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         # 이 경고는 **정보성**이다 — 차단 게이트(재앵커)와 독립이라 뒤따르는 게이트가
         # 실행을 막아도 출력은 그대로 남는다(rc·상태 불변). 출력 위치는 미리보기 요구가 정한다.
         touch_overlaps: tuple[TicketTouchOverlap, ...] = ()
-        if effective_ticket and args.role in WRITE_ROLES:
+        if effective_ticket and args.role in delegate_run_rules.WRITE_ROLES:
             try:
                 touch_overlaps = claimed_touch_overlaps(
                     effective_ticket, pm_root=board_repo, workspace=cwd_repo,
@@ -10205,7 +6689,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
         if args.dry_run:
             print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
-            print(f"role: {args.role} · tier: {tier} · 권한축: {_perm_axis(args.role)}")
+            print(f"role: {args.role} · tier: {tier} · 권한축: {contract.perm_axis(args.role)}")
             if cluster_sources is not None:
                 review = cluster_sources.review
                 print(
@@ -10225,8 +6709,8 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                 print("폴백: 미설정 (인프라 실패 시 기존 fail-loud)")
             else:
                 fallback_harness, fallback_model, fallback_reasoning = fallback
-                primary_budget = _harness_timeout_budget(harness, timeout)
-                fallback_budget = _harness_timeout_budget(fallback_harness, fallback_timeout)
+                primary_budget = delegate_env._harness_timeout_budget(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), harness, timeout)
+                fallback_budget = delegate_env._harness_timeout_budget(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), fallback_harness, fallback_timeout)
                 note, _transport_note = _dry_run_harness_annotations(
                     harness, fallback_harness
                 )
@@ -10241,11 +6725,11 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                 )
                 print(
                     "  (실행+정리 예산 — 부모 wait/pipe drain을 startup 재시도마다 산입; "
-                    f"진단·raw 박제 여유 {_HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
+                    f"진단·raw 박제 여유 {delegate_run_rules._HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
                 )
             print(f"cwd: {cwd}")
-            argv_display = _apply_workspace_git_dirs(
-                argv_display, _READ_TMP_ARGV_MODE_BY_HARNESS[harness], cwd,
+            argv_display = delegate_transport._apply_workspace_git_dirs(
+                argv_display, delegate_run_rules._READ_TMP_ARGV_MODE_BY_HARNESS[harness], cwd,
             )
             print(f"argv: {' '.join(argv_display)}")
             _budget_note, transport_note = _dry_run_harness_annotations(harness)
@@ -10259,7 +6743,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                     f"세션 재사용: session_id={resume.session_id} "
                     f"· 장부 레코드={resume.record_id} · delta payload 전달 "
                     f"(세션 불일치 시 fresh 재실행 1회 = primary 예산 "
-                    f"{_harness_timeout_budget(harness, timeout)}s 추가)"
+                    f"{delegate_env._harness_timeout_budget(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), harness, timeout)}s 추가)"
                 )
             print("--- 합성 프롬프트 ---")
             dry_run_prompt = prompt if resume is None else resume.delta_prompt
@@ -10276,12 +6760,12 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             # 가 argv 를 그대로 반환 → `-C`는 원 `--cwd`) dry-run 도 존재하지 않을 좌표를 예고하지
             # 않는다(실재하지 않는 좌표를 주는 것은 좌표를 아예 안 주는 것보다 나쁘다 — PM 판정).
             if (
-                args.role in READ_ROLES
-                and _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
-                and _read_tmp_strategy() is not None
+                args.role in delegate_run_rules.READ_ROLES
+                and delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+                and delegate_temp._read_tmp_strategy() is not None
             ):
-                predicted_exec_root, predicted_writable = _predict_read_tmp_paths(harness)
-                dry_run_prompt = dry_run_prompt + "\n\n" + _reanchor_exec_root_preamble(
+                predicted_exec_root, predicted_writable = delegate_transport._predict_read_tmp_paths(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), harness)
+                dry_run_prompt = dry_run_prompt + "\n\n" + delegate_transport._reanchor_exec_root_preamble(
                     cwd, predicted_exec_root, predicted_writable,
                 )
             print(dry_run_prompt)
@@ -10291,7 +6775,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
         # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 폴백 없음). 보안/재앵커 게이트는 이
         # 지점보다 앞이라 폴백 대상이 될 수 없다. (`output_dir` 은 재사용 후보 조회에 먼저 쓰였다.)
-        _run = run_fn or _default_run_fn
+        _run = run_fn or partial(delegate_run._default_run_fn, pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE))
 
         # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
         # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
@@ -10475,7 +6959,7 @@ def _execute_and_collect(
     fallback_timeout: int | None = None,
     local_conf_path: Path | None = None,
     profile_source: str = "local-conf",
-    resume: ResumePlan | None = None,
+    resume: delegate_run_rules.ResumePlan | None = None,
     ticket: str | None = None,
     fresh_reason: str | None = None,
     base_rev: str | None = None,
@@ -10512,7 +6996,7 @@ def _execute_and_collect(
             timeout=timeout,
             output_dir=output_dir,
             run_fn=run_fn,
-            attempt="primary" if resume is None else RESUME_ATTEMPT,
+            attempt="primary" if resume is None else delegate_run_rules.RESUME_ATTEMPT,
             local_conf_path=local_conf_path,
             profile_source=profile_source,
             resume_session_id=None if resume is None else resume.session_id,
@@ -10532,20 +7016,20 @@ def _execute_and_collect(
         # 타임아웃·한도)도 세션 id 를 못 남겨 형식만 보면 "불일치"라, 분류 결과를 함께 본다.
         rerun_reason = (
             None if resume is None
-            else resume_rerun_reason(
+            else delegate_run.resume_rerun_reason(
                 primary.result, primary.session_id, resume.session_id)
         )
         if (
             rerun_reason is not None
-            and classify_infrastructure_failure(primary.result) is None
+            and delegate_run.classify_infrastructure_failure(primary.result) is None
         ):
             # 확정된 세션 부재(rc≠0 양성 오류)는 delta 가 소비되지 않아 모든 역할이 fresh 로
             # 안전하다. rc=0 세션-id 불일치는 turn 이 이미 돌았을 수 있으므로 쓰기 자리가 있는
             # 역할(`RESUME_MUTATING_ROLES`: write 역할은 작업 트리, read 역할은 라운드 파일)은
             # 재실행을 막는다.
             if (
-                args.role in RESUME_MUTATING_ROLES
-                and rerun_reason == RESUME_RERUN_ID_MISMATCH
+                args.role in delegate_run_rules.RESUME_MUTATING_ROLES
+                and rerun_reason == delegate_run.RESUME_RERUN_ID_MISMATCH
             ):
                 return fail_loud(
                     f"오류: 세션 재사용 실패({args.role}·{rerun_reason}) — 요청 "
@@ -10573,7 +7057,7 @@ def _execute_and_collect(
                 timeout=timeout,
                 output_dir=output_dir,
                 run_fn=run_fn,
-                attempt=RESUME_FRESH_FALLBACK_ATTEMPT,
+                attempt=delegate_run_rules.RESUME_FRESH_FALLBACK_ATTEMPT,
                 primary_raw=str(primary.raw_path),
                     local_conf_path=local_conf_path,
                 profile_source=profile_source,
@@ -10596,7 +7080,7 @@ def _execute_and_collect(
     rc = result.get("returncode", 1)
     stdout = result.get("stdout", "")
     timed_out = result.get("timed_out", False)
-    failure_class = classify_infrastructure_failure(result)
+    failure_class = delegate_run.classify_infrastructure_failure(result)
 
     if failure_class is not None and fallback is None and fallback_skip is not None:
         # 설정은 있으나 이번 실행에선 폴백을 끈다 — 조용히 지나가지 않는다(loud skip).
@@ -10653,7 +7137,7 @@ def _execute_and_collect(
         fallback_rc = fallback_result.get("returncode", 1)
         fallback_stdout = fallback_result.get("stdout", "")
         if fallback_result.get("timed_out", False):
-            actual_timeout = _timeout_result_summary(
+            actual_timeout = delegate_run._timeout_result_summary(
                 fallback_result,
                 fallback_timeout=(fallback_timeout if fallback_timeout is not None else timeout),
             )
@@ -10666,7 +7150,7 @@ def _execute_and_collect(
                 f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
         try:
             fallback_reply = (
-                extract_reply(fallback_harness, fallback_stdout) if fallback_stdout else None
+                delegate_run.extract_reply(fallback_harness, fallback_stdout) if fallback_stdout else None
             )
         except (ValueError, UnicodeError, delegate_errors.DelegateError) as exc:
             return fail_loud(
@@ -10694,10 +7178,10 @@ def _execute_and_collect(
     # `fail_loud` 단일 깔때기를 거친다 — 실패 안내가 다른 수신자를 권하면 그 권유가 곧 무기록
     # 대행의 입구이고, 지점마다 손으로 안내를 잇는 방식은 새 경로에서 반드시 빠진다.
     if timed_out:
-        actual_timeout = _timeout_result_summary(result, fallback_timeout=timeout)
+        actual_timeout = delegate_run._timeout_result_summary(result, fallback_timeout=timeout)
         return fail_loud(
             f"오류: 위임 turn 타임아웃({actual_timeout}) — 프로세스그룹 종료. raw: {raw_path}")
-    if result.get(RUN_RESULT_CLEANUP_FAILED):
+    if result.get(delegate_run_rules.RUN_RESULT_CLEANUP_FAILED):
         return fail_loud(
             "오류: 위임 프로세스 정리 실패 — primary가 아직 살아 있을 수 있어 자동 폴백을 "
             f"실행하지 않습니다(중복 실행·과금·worktree 동시 편집 차단). 사람 확인 필요. raw: {raw_path}")
@@ -10705,7 +7189,7 @@ def _execute_and_collect(
         return fail_loud(f"오류: 위임 하네스 실패(rc={rc}). raw: {raw_path}")
 
     try:
-        reply = extract_reply(harness, stdout) if stdout else None
+        reply = delegate_run.extract_reply(harness, stdout) if stdout else None
     except (ValueError, UnicodeError, delegate_errors.DelegateError) as exc:
         return fail_loud(f"오류: reply 추출 실패: {exc}. raw: {raw_path}")
     if not reply or not reply.strip():

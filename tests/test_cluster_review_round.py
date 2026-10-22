@@ -15,6 +15,8 @@ hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)�
 """
 from __future__ import annotations
 
+from pm_engine.infra import conf_store
+
 from pm_engine.cli import board_ticket
 
 
@@ -189,7 +191,7 @@ def review_env(tmp_path, pd, monkeypatch):
             _spec_text(ticket), encoding="utf-8", newline="\n")
     _write_cluster_ledger(home)
     _fixture_board(pd, home)
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
         "delegate_enabled": "true",
         "delegate.code-reviewer.harness": "codex",
         "delegate.code-reviewer.model": "gpt-x",
@@ -276,7 +278,7 @@ def _native_review_harness(pd, monkeypatch) -> None:
     for key in _SESSION_MARKER_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("CLAUDECODE", "1")
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
         "delegate_enabled": "true",
         "delegate.code-reviewer.harness": "claude",
         "delegate.code-reviewer.model": "sonnet",
@@ -467,7 +469,7 @@ def test_developer_harvest_uses_markerless_linked_app_worktree_diff(
     )
 
     # harvest의 AT 결속 판정이 실제로 연결하는 두 seam을 함께 탄다.
-    repo_root = pd._repo_root_for_cwd(slot)
+    repo_root = pm_paths._repo_root_for_cwd(slot)
     changed = pd._developer_round_changed_paths(repo_root, base_rev=base_rev)
 
     assert repo_root == slot.resolve()
@@ -620,7 +622,7 @@ def _cross_claude_review(pd, monkeypatch) -> None:
     """다른 하네스 형상 — PM 하네스 표식 없음 · 리뷰 역할 하네스 claude."""
     for key in _SESSION_MARKER_KEYS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
         "delegate_enabled": "true",
         "delegate.code-reviewer.harness": "claude",
         "delegate.code-reviewer.model": "sonnet",

@@ -18,6 +18,10 @@ hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(형제 `test_a
 """
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_env
+
+from pm_engine.infra import conf_store
+
 import argparse
 import importlib.util
 import json
@@ -106,8 +110,8 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     하나가 되게 한다(앵커 해소 회귀는 `test_gate_anchor_resolution.py` 소유)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
-        external, "local_config",
-        lambda repo=None: dict(conf) if conf is not None
+        conf_store, 'local_config',
+        lambda _home, repo=None: dict(conf) if conf is not None
         else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path)
@@ -518,7 +522,7 @@ def test_pre_spawn_notice_is_conditional_not_a_sent_claim(
     def _fail(*a, **k):
         raise RuntimeError("리뷰어 환경 구성 실패(주입)")
 
-    monkeypatch.setattr(external._load_pm_delegate(), "build_env", _fail)
+    monkeypatch.setattr(delegate_env, "build_env", _fail)
     with pytest.raises(RuntimeError):
         external.main(["--paths", "x.py", "--no-gate"])
     err = capsys.readouterr().err

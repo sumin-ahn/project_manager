@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_env
+
+from pm_engine.infra import conf_store
+from pm_engine.infra import delegate_config
+from pm_engine.infra import raw_output
+
 import ast
 import importlib.util
 import json
@@ -364,7 +370,7 @@ def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
 
     external = _load("additional_reviewer_markerless_app_root")
 
-    assert external.repo_root_from_cwd(nested) == slot.resolve()
+    assert pm_paths.repo_root_from_cwd(nested) == slot.resolve()
     assert pm_paths.resolve_pm_home_for_repo(slot) == pm_home.resolve()
 
 
@@ -399,9 +405,9 @@ def test_delegate_anchor_oracle_is_sensitive_to_engine_repo_fallback(
     delegate = _load("pm_delegate_anchor_sensitivity")
     monkeypatch.setattr(delegate, "REPO", worktree)
     delegate._CONFIG_REPO_OVERRIDE = worktree
-    old_conf = delegate.local_config()
+    old_conf = conf_store.local_config(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
     with pytest.raises(delegate_errors.DelegateError):
-        delegate.resolve_delegate(old_conf, "developer", "normal", None, None, None)
+        delegate_config.resolve_delegate(old_conf, "developer", "normal", None, None, None)
 
 
 def test_unregistered_worktree_fails_loud_for_delegate_and_review(
@@ -879,7 +885,7 @@ def test_delegate_raw_storage_uses_resolved_pm_home_owner(tmp_path, monkeypatch)
     monkeypatch.setattr(delegate, "REPO", worktree)
     delegate._CONFIG_REPO_OVERRIDE = home
 
-    raw_dir, ledger = delegate._raw_storage()
+    raw_dir, ledger = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
     assert raw_dir == home / ".project_manager" / ".local" / "delegate"
     assert ledger == home / ".project_manager" / ".local" / "raw_outputs.json"
 
@@ -1499,14 +1505,17 @@ def test_explicit_anchor_run_has_zero_pre_selection_conf_dependency(
     )
     external = _load("additional_reviewer_no_pre_selection_conf")
     monkeypatch.setattr(external, "REPO", slot_a)
-    real_loader = external._local_config_for_repo
+    real_loader = conf_store.local_config
     loaded: list[Path] = []
 
-    def _tracking_loader(repo):
-        loaded.append(Path(repo).resolve())
-        return real_loader(repo)
+    def _tracking_loader(home):
+        # 명시 owner 조회를 계측한다. 프로필 조회의 code/owner 문맥도 같은 설정 소유자를 요구한다.
+        assert home.local_conf.parent.parent.resolve() == home_b.resolve()
+        if home.root.resolve() == home.local_conf.parent.parent.resolve():
+            loaded.append(home.root.resolve())
+        return real_loader(home)
 
-    monkeypatch.setattr(external, "_local_config_for_repo", _tracking_loader)
+    monkeypatch.setattr(conf_store, 'local_config', _tracking_loader)
 
     assert external.main([
         "--dry-run", "--paths", str(slot_b / "src" / "module.py"),
@@ -1641,7 +1650,7 @@ def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
     assert (
         "- 기준: HEAD~1..HEAD\n" in captured.out
         and f"- 리뷰 대상 트리: {tip.resolve()} (HEAD (커밋 비교 HEAD~1..HEAD))\n" in captured.out
-        and external._load_delegate_transport().render_shell_command([
+        and delegate_env.render_shell_command([
             "git", "-C", str(tip.resolve()), "--no-pager", "diff", "--no-ext-diff",
             "--no-color", "HEAD~1..HEAD", "--", "src/module.py",
         ]) in captured.out
@@ -1697,7 +1706,7 @@ def test_default_paths_cross_owned_oracle_is_sensitive_to_declared_only_guard(
     external = _load("additional_reviewer_declared_only_guard")
     monkeypatch.setattr(external, "REPO", home_a)
     monkeypatch.setattr(
-        external, "_scope_from_initial_pm_home", lambda **kwargs: False,
+        pm_paths, '_scope_from_initial_pm_home', lambda **kwargs: False,
     )
 
     assert external.main(["--dry-run"]) == 0

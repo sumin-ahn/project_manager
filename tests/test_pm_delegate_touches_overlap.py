@@ -5,6 +5,11 @@
 하지 않는다(rc 불변) — 판단은 PM 몫이다.
 """
 from __future__ import annotations
+from pm_engine.infra import delegate_scope_git
+
+from pm_engine.infra import conf_store
+from pm_engine.infra.harness import delegate_env
+from pm_engine.domain import delegate_scope_rules
 
 import importlib.util
 import json as _json
@@ -113,8 +118,8 @@ def _enabled_conf(**extra) -> dict:
 
 
 def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
-    monkeypatch.setattr(pd, "local_config", lambda: conf)
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf)
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     return pd.main(list(argv), run_fn=run_fn)
 
 
@@ -205,7 +210,6 @@ def _overlap_workspace(
         encoding="utf-8",
     )
     monkeypatch.setattr(pd, "REPO", pm_home)
-    monkeypatch.setattr(pd, "BOARD_PY", TOOLS / "board.py")
     prompt = workspace / "prompt.md"
     prompt.write_text("티켓 본문: 구현하라.", encoding="utf-8")
     return workspace, prompt
@@ -546,11 +550,8 @@ def test_other_slot_declaration_is_not_a_false_overlap(pd, monkeypatch, tmp_path
 class _AxisIsolationScope:
     """범위-밖 축은 성공하고 교집합 축만 터지는 판정 모듈 대역(F-002 재현)."""
 
-    def __init__(self, scope_module):
-        self._scope = scope_module
-
     def capture_worktree_state(self, *a, **k):
-        return self._scope.WorktreeState(())
+        return delegate_scope_rules.WorktreeState(())
 
     def head_moved(self, *a, **k):
         return False
@@ -559,7 +560,7 @@ class _AxisIsolationScope:
         return ("stray/out.txt",)
 
     def format_warning(self, paths):
-        return self._scope.format_warning(paths)
+        return delegate_scope_rules.format_warning(paths)
 
     def changed_status_paths(self, *a, **k):
         raise RuntimeError("좌표 해소 실패(교집합 축)")
@@ -568,13 +569,17 @@ class _AxisIsolationScope:
         raise RuntimeError("좌표 해소 실패(교집합 축)")
 
 
-def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys):
+def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys, monkeypatch):
     """F-002: 새 축(교집합)의 예외가 **이미 확정된** 범위-밖 경고를 지우지 않는다."""
-    scope_module = _load("delegate_scope_axis", TOOLS / "delegate_scope.py")
+    seam = _AxisIsolationScope()
+    monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", seam.capture_worktree_state)
+    monkeypatch.setattr(delegate_scope_rules, "head_moved", seam.head_moved)
+    monkeypatch.setattr(delegate_scope_git, "out_of_scope_changes", seam.out_of_scope_changes)
+    monkeypatch.setattr(delegate_scope_rules, "changed_status_paths", seam.changed_status_paths)
+    monkeypatch.setattr(delegate_scope_git, "committed_paths", seam.committed_paths)
     audit = pd.ScopeAudit(
-        _AxisIsolationScope(scope_module),
         ("src",),                       # touches 축 살아 있음
-        scope_module.WorktreeState(()),
+        delegate_scope_rules.WorktreeState(()),
         tmp_path,
         tmp_path,
         (),                             # 어댑터 축은 등록 0(강등 경고만)
@@ -695,10 +700,10 @@ def test_scalar_touches_frontmatter_is_format_unknown(pd, tmp_path):
     coordinates = repo_coordinates
     assert ticket_rules._normalized_touches("src/pay.py") is None
     assert pd._touch_notations(
-        "src/pay.py", coordinates, pm_root=tmp_path, workspace=tmp_path,
+        "src/pay.py", pm_root=tmp_path, workspace=tmp_path,
     ) is None
     assert pd._touch_notations(
-        ["src/pay.py"], coordinates, pm_root=tmp_path, workspace=tmp_path,
+        ["src/pay.py"], pm_root=tmp_path, workspace=tmp_path,
     ) == (("src/pay.py", "src/pay.py"),)
 
 
