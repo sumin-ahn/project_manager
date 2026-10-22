@@ -3227,6 +3227,8 @@ def test_t0936_core_record_integrity_cold_flag_coordinates(board, monkeypatch, s
 @pytest.mark.parametrize("consumer", ["state", "reuse"])
 def test_t0936_core_command_and_selected_workspace_slot_prefix_priority(
         board, monkeypatch, prefix, expected, consumer):
+    from pm_engine.domain import identity_args
+
     board.LOCAL_CONF.write_text("test.cmd=local-core\nqa.platforms=windows\n", encoding="utf-8")
     session = "A_1"
     target = board.REPO / "work/A_1"
@@ -3238,13 +3240,18 @@ def test_t0936_core_command_and_selected_workspace_slot_prefix_priority(
     calls = []
     monkeypatch.setattr(regression, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
     monkeypatch.setattr(regression, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
-    assert regression_cmd._regression_run_slot(board._home(), _run_args(), session, str(target)) == 0
-    flag = regression_store._regression_flag_for(board._home(), session)
+    workspace = (identity_args.Workspace(
+        "work/A_1", "A", session, regression._test_cmd(board._home(), None, session=session))
+        if consumer == "reuse" else None)
+    assert regression_cmd._regression_run_slot(
+        board._home(), _run_args(), session, str(target), workspace=workspace) == 0
+    flag = regression_store._regression_flag_for(
+        board._home(), session, workspace=workspace.slot if workspace is not None else None)
     assert json.loads(flag.read_text(encoding="utf-8"))["command"] == expected
     if consumer == "state":
         assert regression._regression_slot_state(board._home(), session, str(target)).state == "green"
     else:
-        assert regression_cmd._regression_multi_run(board._home(), _run_args(), [session]) == 0
+        assert regression_cmd._regression_multi_run(board._home(), _run_args(), [workspace]) == 0
         assert len(calls) == 1, "같은 HEAD/명령의 green 슬롯은 재실행하지 않는다"
 
 
