@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pm_engine.domain import home, identity_args, worktree_records
+from pm_engine.domain import identity_args, worktree_records
 from pm_engine.infra import lease_store, pm_paths
 
 
