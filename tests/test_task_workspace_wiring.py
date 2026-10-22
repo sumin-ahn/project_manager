@@ -26,6 +26,13 @@ from pm_engine.infra import areas_store, git, lease_store, pm_paths, regression_
 from pm_engine.app import regression
 from pm_engine.cli import regression_cmd
 
+from pm_engine.app import board_dashboard
+from pm_engine.app import board_sync
+from pm_engine.cli import task_args
+from pm_engine.infra import board_git
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -241,7 +248,7 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
 def test_actor_session_override_task_mode_returns_task(board):
     """task 지정 시 귀속 세션 override = task 이름 — claim/new created_by 가 <user>/<task>."""
     ns = argparse.Namespace(task="myjob")
-    assert board._actor_session_override(ns) == "myjob"
+    assert task_args._actor_session_override(board._home(), ns) == "myjob"
     # 비실행 명령은 task+repo/slot 혼합을 조용히 task 우선하지 않는다 — parser 가 `--repo`/`--slot`
     # 자체를 받지 않는다(T-0962).
     with pytest.raises(SystemExit) as exc:
@@ -288,21 +295,21 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         seen["override"] = override
         return override
 
-    def _fake_tag(session_override=None, user_override=None):
+    def _fake_tag(_home, session_override=None, user_override=None):
         seen["created_by"] = f"{user_override or 'u'}/{session_override}"
         return seen["created_by"]
 
     monkeypatch.setattr(areas_store, "id_prefix", _fake_id_prefix)
-    monkeypatch.setattr(board, "identity_tag", _fake_tag)
+    monkeypatch.setattr(lease_store, "identity_tag", _fake_tag)
     monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
-    monkeypatch.setattr(board, "refresh_board", lambda: None)
-    monkeypatch.setattr(board, "_board_git_sync_best_effort",
-                        lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort",
+                        lambda _home, msg, paths=None: None)   # 스코프 인자(ADR-0073)
     # 발행 prefix 는 `_next_id` 인자가 관측점이다 — T-0660 이후 cmd_new 는 명시/task 값을
     # `id_prefix` 로 canonical화하지 않고 4소스 funnel 로 바로 넘긴다(비결정 선택 제거).
-    monkeypatch.setattr(board, "_next_id",
-                        lambda prefix: seen.__setitem__("override", prefix) or "PAY-0001")
+    monkeypatch.setattr(ticket_store, "_next_id",
+                        lambda _home, prefix: seen.__setitem__("override", prefix) or "PAY-0001")
     # 티켓 파일 실쓰기는 tmp 로 격리 (tickets_dir/template_file 은 REPO 파생이라 tmp).
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
@@ -330,15 +337,15 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     seen = {}
     monkeypatch.setattr(areas_store, "id_prefix",
                         lambda _home, override: seen.__setitem__("override", override) or override)
-    monkeypatch.setattr(board, "identity_tag",
-                        lambda session_override=None, user_override=None: "u/x")
+    monkeypatch.setattr(lease_store, "identity_tag",
+                        lambda _home, session_override=None, user_override=None: "u/x")
     monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
-    monkeypatch.setattr(board, "refresh_board", lambda: None)
-    monkeypatch.setattr(board, "_board_git_sync_best_effort",
-                        lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
-    monkeypatch.setattr(board, "_next_id",
-                        lambda prefix: seen.__setitem__("override", prefix)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort",
+                        lambda _home, msg, paths=None: None)   # 스코프 인자(ADR-0073)
+    monkeypatch.setattr(ticket_store, "_next_id",
+                        lambda _home, prefix: seen.__setitem__("override", prefix)
                         or f"{prefix or 'T'}-0001")
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
@@ -466,7 +473,7 @@ def test_actor_override_rejects_unsafe_task_before_side_effect(board, bad):
     """_actor_session_override 깔때기가 불법 task 명을 SystemExit 로 거부(char/traversal 검증)."""
     ns = argparse.Namespace(repo=None, slot=None, task=bad)
     with pytest.raises(SystemExit):
-        board._actor_session_override(ns)
+        task_args._actor_session_override(board._home(), ns)
 
 
 def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
@@ -474,7 +481,7 @@ def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
     monkeypatch.setattr(areas_store, "registered_repos", lambda _home: {"project_manager"})
     ns = argparse.Namespace(repo=None, slot=None, task="project_manager_1")
     with pytest.raises(SystemExit):
-        board._actor_session_override(ns)
+        task_args._actor_session_override(board._home(), ns)
 
 
 def test_actor_override_registered_repos_failsoft(board, monkeypatch):
@@ -483,10 +490,10 @@ def test_actor_override_registered_repos_failsoft(board, monkeypatch):
         raise RuntimeError("areas broken")
     monkeypatch.setattr(areas_store, "registered_repos", _boom)
     # 정상 task 는 통과(예약패턴만 완화·char 검증 유지).
-    assert board._actor_session_override(argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
+    assert task_args._actor_session_override(board._home(), argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
     # 불법 char 는 여전히 거부.
     with pytest.raises(SystemExit):
-        board._actor_session_override(argparse.Namespace(repo=None, slot=None, task="../evil"))
+        task_args._actor_session_override(board._home(), argparse.Namespace(repo=None, slot=None, task="../evil"))
 
 
 def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):

@@ -30,6 +30,12 @@ from pm_engine.infra import areas_store, git, lease_store, pm_paths, pre_push_ho
 from pm_engine.app import regression
 from pm_engine.cli import regression_cmd
 
+from pm_engine.app import areas_registry
+from pm_engine.app import ticket_access
+from pm_engine.domain import areas_rules
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 REAL_AREAS = REPO / ".project_manager" / "areas.md"
@@ -117,7 +123,7 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
@@ -137,7 +143,7 @@ def board(tmp_path, monkeypatch):
     # user-first(ADR-0056): 필터 뷰 my_user 는 `user_name()`(local.conf user= > git email) 로 해소된다.
     # git 폴백을 None 으로 stub 해 실 git config user.email 이 hermetic 테스트로 새지 않게 한다
     # (test_board_mine_view/scoping_isolation 동형·명시 테스트는 local.conf user= 로 덮는다).
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     mod._proj = proj  # 테스트 편의 핸들 (tmp 프로젝트 루트)
     return mod
 
@@ -165,7 +171,7 @@ def _seed_lease(board, session: str, repo: str, *,
 def _seed_ticket(board, tid: str, status: str = "open") -> Path:
     """`{tid}-slug.md` 빈 ticket 을 status 디렉토리에 심는다 (_next_id 카운트 대상)."""
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": "seed", "status": status},
+    ticket_store.dump_ticket(path, {"id": tid, "title": "seed", "status": status},
                       "# seed\n")
     return path
 
@@ -176,7 +182,7 @@ def _issued_ids(board, status: str = "open") -> set[str]:
     파일명 glob 으로 case 를 판정하지 않는다 — Windows·macOS 의 대소문자 무시 파일시스템에서
     `glob("T-aaa-*")` 는 `T-AAA-001-seed.md` 까지 매치해 case-분할 여부를 증명하지 못한다.
     """
-    return {board._issued_ticket_id(p)
+    return {ticket_store._issued_ticket_id(board._home(), p)
             for p in (board.TICKETS_DIR / status).glob("T-*.md")}
 
 
@@ -186,31 +192,31 @@ def _issued_ids(board, status: str = "open") -> set[str]:
 
 def test_next_id_solo_first_is_four_digit(board):
     """빈 보드 solo (prefix=None) → T-0001 (4자리)."""
-    assert board._next_id(None) == "T-0001"
+    assert ticket_store._next_id(board._home(), None) == "T-0001"
 
 
 def test_next_id_prefixed_first_is_three_digit(board):
     """빈 보드 multi (prefix='PAY') → T-PAY-001 (3자리)."""
-    assert board._next_id("PAY") == "T-PAY-001"
+    assert ticket_store._next_id(board._home(), "PAY") == "T-PAY-001"
 
 
 def test_next_id_solo_increments(board):
     """기존 T-0007 존재 시 solo next → T-0008."""
     _seed_ticket(board, "T-0007")
-    assert board._next_id(None) == "T-0008"
+    assert ticket_store._next_id(board._home(), None) == "T-0008"
 
 
 def test_next_id_prefixed_increments(board):
     """기존 T-PAY-005 존재 시 prefixed next → T-PAY-006."""
     _seed_ticket(board, "T-PAY-005")
-    assert board._next_id("PAY") == "T-PAY-006"
+    assert ticket_store._next_id(board._home(), "PAY") == "T-PAY-006"
 
 
 def test_next_id_counts_across_status_dirs(board):
     """카운트는 모든 status 디렉토리를 가로질러 max 를 본다 (claimed/done 포함)."""
     _seed_ticket(board, "T-0003", status="done")
     _seed_ticket(board, "T-0009", status="claimed")
-    assert board._next_id(None) == "T-0010"
+    assert ticket_store._next_id(board._home(), None) == "T-0010"
 
 
 # ── disjoint (핵심) — solo 와 multi 네임스페이스 카운트 간섭 0 ────────────────
@@ -229,16 +235,16 @@ def test_next_id_solo_multi_disjoint(board):
     _seed_ticket(board, "T-PAY-001")
 
     # solo 는 T-PAY-001 을 안 세므로 T-0009 다음인 T-0010.
-    assert board._next_id(None) == "T-0010"
+    assert ticket_store._next_id(board._home(), None) == "T-0010"
     # multi 는 T-0009 를 안 세므로(아니면 T-PAY-010) T-PAY-001 다음인 T-PAY-002.
-    assert board._next_id("PAY") == "T-PAY-002"
+    assert ticket_store._next_id(board._home(), "PAY") == "T-PAY-002"
 
 
 def test_next_id_legacy_regex_ignores_prefixed_files(board):
     """오직 T-PAY-* 만 있을 때 solo next 는 여전히 T-0001 (prefixed 를 안 셈)."""
     _seed_ticket(board, "T-PAY-001")
     _seed_ticket(board, "T-PAY-002")
-    assert board._next_id(None) == "T-0001"
+    assert ticket_store._next_id(board._home(), None) == "T-0001"
 
 
 def test_next_id_distinct_prefixes_disjoint(board):
@@ -246,8 +252,8 @@ def test_next_id_distinct_prefixes_disjoint(board):
     _seed_ticket(board, "T-PAY-001")
     _seed_ticket(board, "T-PAY-002")
     _seed_ticket(board, "T-ACC-001")
-    assert board._next_id("PAY") == "T-PAY-003"
-    assert board._next_id("ACC") == "T-ACC-002"
+    assert ticket_store._next_id(board._home(), "PAY") == "T-PAY-003"
+    assert ticket_store._next_id(board._home(), "ACC") == "T-ACC-002"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -260,7 +266,7 @@ def test_next_id_distinct_prefixes_disjoint(board):
 
 def test_id_prefix_override_wins(board):
     """override 인자가 최우선 — areas 유도가 있어도 무시한다."""
-    board.areas_append("ACC", "정산", "alice", repo="acc")
+    areas_registry.areas_append(board._home(), "ACC", "정산", "alice", repo="acc")
     assert areas_store.id_prefix(board._home(), "PAY") == "PAY"
 
 
@@ -296,14 +302,14 @@ def test_id_prefix_single_registered_repo_count_based(board):
     진실이므로 등록 prefix 가 무시되던 갭을 닫는다(T-0123 Part A 의 '단일 self-host=legacy
     T-NNNN' 를 supersede). areas.md 자체가 없는 진짜 solo 는 layer 5(None)로 무변경.
     """
-    board.areas_append("PAY", "결제", "alice", repo="pay")  # 등록 repo 1개(repo=pay·prefix=PAY)
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice", repo="pay")  # 등록 repo 1개(repo=pay·prefix=PAY)
     assert areas_store.id_prefix(board._home(), None) == "PAY"
 
 
 def test_id_prefix_multi_repo_ambiguous_returns_none(board):
     """등록 repo ≥2 + 세션 무바인딩 → None(모호) — cmd_new fail-loud 을 유발(ADR-0040 D3)."""
-    board.areas_append("PAY", "결제", "alice", repo="pay")
-    board.areas_append("SHIP", "배송", "bob", repo="ship")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice", repo="pay")
+    areas_registry.areas_append(board._home(), "SHIP", "배송", "bob", repo="ship")
     # count-based 는 정확히 1개일 때만 유도. ≥2 는 세션 유도 없으면 모호 → None.
     assert areas_store.id_prefix(board._home(), None) is None
 
@@ -314,8 +320,8 @@ def test_id_prefix_multi_repo_ignores_local_conf_prefix(board):
     ADR-0040 핵심: per-clone `prefix=` 가 multi-repo 에서 남의 prefix 로 오귀속하던 클래스.
     T-0779 가 그 층 자체를 지웠으므로 등록 수와 무관하게 이 키는 소스가 아니다.
     """
-    board.areas_append("PAY", "결제", "alice", repo="pay")
-    board.areas_append("SHIP", "배송", "bob", repo="ship")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice", repo="pay")
+    areas_registry.areas_append(board._home(), "SHIP", "배송", "bob", repo="ship")
     board.LOCAL_CONF.write_text("prefix=PAY\n", encoding="utf-8")
     assert areas_store.id_prefix(board._home(), None) is None
 
@@ -329,7 +335,7 @@ def test_id_prefix_session_derivation_non_slot_form_skips(board):
     끝 마디가 숫자가 아닌 커스텀 세션명은 repo 를 못 파싱하므로 layer 2 를 건너뛴다.
     등록 repo 1개이므로 count-based 로 그 prefix 를 유도한다.
     """
-    board.areas_append("PAY", "결제", "alice", repo="pay")  # 등록 repo 1개
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice", repo="pay")  # 등록 repo 1개
     _seed_lease(board, "pm", repo="pay")   # 커스텀 세션명(끝 마디 숫자 아님) → 파싱 skip
     assert areas_store.id_prefix(board._home(), None) == "PAY"
 
@@ -340,7 +346,7 @@ def test_id_prefix_session_repo_unregistered_falls_through(board):
     세션 `other_1` → repo `other` 인데 areas 엔 pay 만 등록 → layer 2 None →
     count-based(등록 1개) → PAY.
     """
-    board.areas_append("PAY", "결제", "alice", repo="pay")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice", repo="pay")
     _seed_lease(board, "other_1", repo="other")
     assert areas_store.id_prefix(board._home(), None) == "PAY"
 
@@ -387,7 +393,7 @@ def test_areas_append_creates_with_header(board):
     신 스키마 행을 쓴다 (per-repo 레지스트리·하위호환). area 칼럼은 신 스키마에 없어 무시.
     """
     assert not board.AREAS_FILE.exists()
-    board.areas_append("PAY", "결제", "alice")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")
     assert board.AREAS_FILE.exists()
     text = board.AREAS_FILE.read_text(encoding="utf-8")
     assert "| repo | prefix | git | test_cmd | owner |" in text  # 신 스키마 헤더
@@ -397,8 +403,8 @@ def test_areas_append_creates_with_header(board):
 
 def test_areas_append_appends_to_existing(board):
     """기존 areas.md 에 행을 추가한다 (헤더 재생성 없이)."""
-    board.areas_append("PAY", "결제", "alice")
-    board.areas_append("ACC", "정산", "bob")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")
+    areas_registry.areas_append(board._home(), "ACC", "정산", "bob")
     text = board.AREAS_FILE.read_text(encoding="utf-8")
     # 헤더는 한 번만.
     assert text.count("| repo | prefix | git | test_cmd | owner |") == 1
@@ -407,9 +413,9 @@ def test_areas_append_appends_to_existing(board):
 
 def test_areas_append_is_append_only(board):
     """append-only — 같은 prefix 를 두 번 등록해도 기존 행을 지우지 않는다."""
-    board.areas_append("PAY", "결제", "alice")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")
     before = board.AREAS_FILE.read_text(encoding="utf-8")
-    board.areas_append("PAY", "결제-v2", "carol")
+    areas_registry.areas_append(board._home(), "PAY", "결제-v2", "carol")
     after = board.AREAS_FILE.read_text(encoding="utf-8")
     assert before in after          # 기존 내용 보존 (덮어쓰기 아님)
     assert "| PAY | PAY |  |  | alice |" in after
@@ -442,7 +448,7 @@ def test_cmd_new_allows_user_approved_unregistered_prefix(board):
     "등록 제약 없음"). prefix 는 이제 작업 카테고리라 새 카테고리를 즉석에서 붙일 수 있다 —
     입력측 sanity와 사용자 승인을 통과하면 등록 여부와 무관하게 `T-<p>-NNN` 발행.
     """
-    board.areas_append("pay", "결제", "alice")  # pay 만 등록 — 그래도 미등록 acc 허용
+    areas_registry.areas_append(board._home(), "pay", "결제", "alice")  # pay 만 등록 — 그래도 미등록 acc 허용
     rc = _publish(board, _new_args(prefix="acc", user_ack="acc"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-acc-001-*.md"))
@@ -457,8 +463,8 @@ def test_cmd_new_guard_rejects_missing_prefix_in_multi_mode(board, capsys):
     가드 기준이 areas.md *존재* → 등록 repo *개수* 로 바뀌었다(단일 self-host 마찰 해소).
     repo 2개여야 진짜 ID 충돌 가능 → prefix 강제.
     """
-    board.areas_append("PAY", "결제", "alice")
-    board.areas_append("ACC", "정산", "bob")  # 등록 repo 2개 → multi 모드
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")
+    areas_registry.areas_append(board._home(), "ACC", "정산", "bob")  # 등록 repo 2개 → multi 모드
     # override 없음·local.conf prefix 없음 → id_prefix None.
     rc = _publish(board, _new_args(prefix=None))
     assert rc != 0
@@ -471,7 +477,7 @@ def test_cmd_new_guard_rejects_missing_prefix_in_multi_mode(board, capsys):
 
 def test_cmd_new_guard_allows_registered_prefix(board):
     """등록된 prefix → 정상 발행 (T-pay-001)."""
-    board.areas_append("pay", "결제", "alice")
+    areas_registry.areas_append(board._home(), "pay", "결제", "alice")
     rc = _publish(board, _new_args(prefix="pay"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-pay-001-*.md"))
@@ -496,7 +502,7 @@ def test_cmd_new_single_registered_repo_derives_prefix(board):
     자동 유도돼 `T-<prefix>-NNN` 을 발행한다(등록 prefix 가 무시되던 갭을 닫는다). 진짜
     solo(areas.md 자체가 없음)는 여전히 legacy T-NNNN — `test_cmd_new_solo_no_registry_emits_legacy_id`.
     """
-    board.areas_append("PAY", "결제", "alice")  # 등록 repo 1개(repo=prefix=PAY)
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")  # 등록 repo 1개(repo=prefix=PAY)
     rc = _publish(board, _new_args(prefix=None))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-PAY-001-*.md"))
@@ -511,7 +517,7 @@ def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
     가드가 ≤1 에서 off 여도, 사용자가 그 등록 prefix 를 *명시*하면 prefixed `T-PFX-NNN` 을
     발행한다(prefix optional·명시 우선).
     """
-    board.areas_append("pay", "결제", "alice")  # 등록 repo 1개
+    areas_registry.areas_append(board._home(), "pay", "결제", "alice")  # 등록 repo 1개
     rc = _publish(board, _new_args(prefix="pay"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-pay-001-*.md"))
@@ -631,7 +637,7 @@ def test_cmd_init_area_owner_from_explicit_user(init_board, monkeypatch):
     """--user 명시가 area_owner 칼럼에 박힌다 (local.conf user=·git 폴백보다 우선)."""
     # local.conf user= 와 git 폴백이 다른 값을 줘도 --user 가 이긴다.
     init_board.LOCAL_CONF.write_text("identity.user=conf-user\n", encoding="utf-8")
-    monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "git@x.com")
     rc = init_board.cmd_init(_init_args(
         prefix="pay", area="결제", owner="alice", user="carol", user_ack="pay"))
     assert rc == 0
@@ -642,7 +648,7 @@ def test_cmd_init_area_owner_from_explicit_user(init_board, monkeypatch):
 def test_cmd_init_area_owner_falls_back_to_local_conf(init_board, monkeypatch):
     """--user 미지정 → local.conf user= 로 area_owner 해소 (git 폴백보다 우선)."""
     init_board.LOCAL_CONF.write_text("identity.user=conf-user\n", encoding="utf-8")
-    monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "git@x.com")
     rc = init_board.cmd_init(_init_args(
         prefix="acc", area="정산", owner="bob", user_ack="acc"))
     assert rc == 0
@@ -654,7 +660,7 @@ def test_cmd_init_area_owner_falls_back_to_git_email(init_board, monkeypatch):
     # cmd_init 이 local.conf 를 write 하기 전에 user_name() 을 부르므로, user 키 없는
     # local.conf 를 미리 둬 그 경로(부재→git 폴백)를 결정적으로 탄다.
     init_board.LOCAL_CONF.write_text("session=acc-pm\n", encoding="utf-8")
-    monkeypatch.setattr(init_board, "_git_config_email", lambda: "dev@example.com")
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "dev@example.com")
     rc = init_board.cmd_init(_init_args(
         prefix="ord", area="주문", owner="carol", user_ack="ord"))
     assert rc == 0
@@ -680,7 +686,7 @@ def test_cmd_init_area_owner_graceful_when_user_unknown(init_board, monkeypatch)
     `--mine` 풀에 안 잡히지만 등록 자체는 graceful 진행(기존 슬롯-only 동작 보존).
     """
     init_board.LOCAL_CONF.write_text("session=s\n", encoding="utf-8")
-    monkeypatch.setattr(init_board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     rc = init_board.cmd_init(_init_args(
         prefix="inv", area="재고", owner="dave", user_ack="inv"))
     assert rc == 0
@@ -719,9 +725,9 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board, monkeypatch):
     #    거부하는 게 설계 — 공존은 _next_id 네임스페이스 분리로 보장됨).
     _seed_ticket(board, "T-0001")
     # solo 네임스페이스 next 는 T-pay-001 에 간섭받지 않는다.
-    assert board._next_id(None) == "T-0002"
+    assert ticket_store._next_id(board._home(), None) == "T-0002"
     # multi 네임스페이스 next 는 T-0001 에 간섭받지 않는다.
-    assert board._next_id("pay") == "T-pay-002"
+    assert ticket_store._next_id(board._home(), "pay") == "T-pay-002"
 
     # 4. list/claim/complete 1사이클 — 크래시 없이.
     assert board.cmd_list(argparse.Namespace(status=None, tag=None)) == 0
@@ -841,7 +847,7 @@ def test_t0956_self_row_base_ignores_same_named_tag(init_board):
     assert _areas_row(init_board, repo.name)["base"] == branch
 
     _write_areas_rows(init_board, [(repo.name, "", "")])
-    assert init_board.fill_self_repo_row(write=True) == f"repo={repo.name} | git={repo} | base={branch}"
+    assert areas_registry.fill_self_repo_row(init_board._home(), write=True) == f"repo={repo.name} | git={repo} | base={branch}"
     assert _areas_row(init_board, repo.name)["base"] == branch
 
 
@@ -874,7 +880,7 @@ def test_t0956_self_row_skips_origin_with_password(init_board, capsys):
         assert secret not in written.decode("utf-8")
         assert secret not in captured.out and secret not in captured.err
 
-        assert init_board.fill_self_repo_row(write=True) is None
+        assert areas_registry.fill_self_repo_row(init_board._home(), write=True) is None
         assert init_board.AREAS_FILE.read_bytes() == written
         assert secret not in capsys.readouterr().out
 
@@ -891,7 +897,7 @@ def _write_areas_rows(board, rows: list[tuple[str, str, str]]) -> bytes:
     """(repo, git, base) 행들로 areas.md 를 새로 쓰고 그 바이트를 돌려준다."""
     board.AREAS_FILE.unlink(missing_ok=True)
     for repo, git, base in rows:
-        board.areas_append("", "", "me", repo=repo, git=git, base=base)
+        areas_registry.areas_append(board._home(), "", "", "me", repo=repo, git=git, base=base)
     return board.AREAS_FILE.read_bytes()
 
 
@@ -907,31 +913,31 @@ def test_t0956_fill_self_repo_row(board):
     other = ("other-product", "", "")
 
     before = _write_areas_rows(board, [(repo.name, "", ""), other])
-    planned = board.fill_self_repo_row(write=False)
+    planned = areas_registry.fill_self_repo_row(board._home(), write=False)
     assert planned == f"repo={repo.name} | git={repo} | base={branch}"
     assert board.AREAS_FILE.read_bytes() == before
 
-    assert board.fill_self_repo_row(write=True) == planned
+    assert areas_registry.fill_self_repo_row(board._home(), write=True) == planned
     row = _areas_row(board, repo.name)
     assert (row["git"], row["base"]) == (str(repo), branch)
     other_row = _areas_row(board, "other-product")
     assert (other_row["git"], other_row["base"]) == ("", "")
     filled = board.AREAS_FILE.read_bytes()
-    assert board.fill_self_repo_row(write=True) is None
+    assert areas_registry.fill_self_repo_row(board._home(), write=True) is None
     assert board.AREAS_FILE.read_bytes() == filled
 
     for partial in ((repo.name, "git@example.invalid:me/x.git", ""), (repo.name, "", "develop")):
         before = _write_areas_rows(board, [partial, other])
-        assert board.fill_self_repo_row(write=True) is None
+        assert areas_registry.fill_self_repo_row(board._home(), write=True) is None
         assert board.AREAS_FILE.read_bytes() == before
 
     before = _write_areas_rows(board, [other])
-    assert board.fill_self_repo_row(write=True) is None
+    assert areas_registry.fill_self_repo_row(board._home(), write=True) is None
     assert board.AREAS_FILE.read_bytes() == before
 
     before = _write_areas_rows(board, [(repo.name, "", ""), (repo.name, "", "")])
-    with pytest.raises(board.AreasDuplicateRepo):
-        board.fill_self_repo_row(write=True)
+    with pytest.raises(areas_rules.AreasDuplicateRepo):
+        areas_registry.fill_self_repo_row(board._home(), write=True)
     assert board.AREAS_FILE.read_bytes() == before
 
 
@@ -997,17 +1003,17 @@ def test_init_namespaced_registers_and_emits_namespaced_id(init_board):
 
 def test_validate_prefix_helper(board):
     """`_validate_prefix` 단위 — 예약어(case-insensitive)/특수문자 거부·대소문자 통과 (ADR-0055)."""
-    assert board._validate_prefix("none") is not None      # 예약어
-    assert board._validate_prefix("NONE") is not None       # 예약어 (case-insensitive fold·ADR-0055)
-    assert board._validate_prefix("None") is not None       # 예약어 (case-insensitive fold·ADR-0055)
-    assert board._validate_prefix("pay-x") is not None       # 하이픈 (ID 구분자 충돌)
-    assert board._validate_prefix("pay x") is not None       # 공백
-    assert board._validate_prefix("") is not None            # 빈 문자열
-    assert board._validate_prefix("pay") is None             # 정상 소문자
-    assert board._validate_prefix("Foo") is None             # 대문자 허용 (ADR-0055)
-    assert board._validate_prefix("AAA") is None             # 대문자 허용 (ADR-0055)
-    assert board._validate_prefix("bill_ing") is None        # 언더스코어 허용
-    assert board._validate_prefix("p2") is None              # 숫자 허용
+    assert ticket_rules._validate_prefix("none") is not None      # 예약어
+    assert ticket_rules._validate_prefix("NONE") is not None       # 예약어 (case-insensitive fold·ADR-0055)
+    assert ticket_rules._validate_prefix("None") is not None       # 예약어 (case-insensitive fold·ADR-0055)
+    assert ticket_rules._validate_prefix("pay-x") is not None       # 하이픈 (ID 구분자 충돌)
+    assert ticket_rules._validate_prefix("pay x") is not None       # 공백
+    assert ticket_rules._validate_prefix("") is not None            # 빈 문자열
+    assert ticket_rules._validate_prefix("pay") is None             # 정상 소문자
+    assert ticket_rules._validate_prefix("Foo") is None             # 대문자 허용 (ADR-0055)
+    assert ticket_rules._validate_prefix("AAA") is None             # 대문자 허용 (ADR-0055)
+    assert ticket_rules._validate_prefix("bill_ing") is None        # 언더스코어 허용
+    assert ticket_rules._validate_prefix("p2") is None              # 숫자 허용
 
 
 def test_cmd_new_rejects_reserved_prefix_none(board, capsys):
@@ -1069,8 +1075,8 @@ def test_next_id_case_fold_continues_existing_series(board):
     """`--prefix aaa` 는 기존 `T-AAA-*` 시리즈를 이어간다(case-fold 카운트·등록 case 보존·DoD 2)."""
     _seed_ticket(board, "T-AAA-003")
     # 소문자 입력이 대문자 시리즈로 fold → 등록 case `AAA` 로 이어 발행(신규 `T-aaa-*` 안 만듦).
-    assert board._next_id("aaa") == "T-AAA-004"
-    assert board._next_id("AAA") == "T-AAA-004"   # 대문자 입력도 동일
+    assert ticket_store._next_id(board._home(), "aaa") == "T-AAA-004"
+    assert ticket_store._next_id(board._home(), "AAA") == "T-AAA-004"   # 대문자 입력도 동일
 
 
 def test_cmd_new_lowercase_input_continues_uppercase_series(board):
@@ -1092,17 +1098,17 @@ def test_next_prefixed_id_follows_frontmatter_not_the_filename_case(board):
     들어가 파일명(`AAA`)과 내용(`aaa`)이 갈린다. 파일명으로 세면 발행 case 가 "그 파일이 어느
     이름으로 먼저 만들어졌는가"로 결정된다 — Linux 에서 그 형상을 직접 주입해 재현한다."""
     path = board.TICKETS_DIR / "open" / "T-AAA-001-seed.md"      # 파일명 case = AAA
-    board.dump_ticket(path, {"id": "T-aaa-001", "title": "seed", "status": "open"},
+    ticket_store.dump_ticket(path, {"id": "T-aaa-001", "title": "seed", "status": "open"},
                       "# seed\n")                               # 발행 ID case = aaa
-    assert board._next_id("aaa") == "T-aaa-002"
-    assert board._next_id("AAA") == "T-aaa-002"                 # fold 는 같은 시리즈
+    assert ticket_store._next_id(board._home(), "aaa") == "T-aaa-002"
+    assert ticket_store._next_id(board._home(), "AAA") == "T-aaa-002"                 # fold 는 같은 시리즈
 
 
 def test_next_prefixed_id_falls_back_to_the_filename_for_a_broken_id(board):
     """frontmatter `id` 가 ID 문법이 아니면 파일명으로 폴백한다 — 번호 누락은 곧 clobber."""
-    board.dump_ticket(board.TICKETS_DIR / "open" / "T-AAA-007-seed.md",
+    ticket_store.dump_ticket(board.TICKETS_DIR / "open" / "T-AAA-007-seed.md",
                       {"id": "쓰레기값", "title": "seed", "status": "open"}, "# seed\n")
-    assert board._next_id("AAA") == "T-AAA-008"
+    assert ticket_store._next_id(board._home(), "AAA") == "T-AAA-008"
 
 
 def test_next_prefixed_id_is_stable_across_case_split_pollution(board):
@@ -1111,14 +1117,14 @@ def test_next_prefixed_id_is_stable_across_case_split_pollution(board):
     canonical 은 최저 번호 티켓의 case 인데 동률이면 tie-break 가 필요하다 — 파일 순회 순서에
     맡기면 같은 보드가 실행마다 다른 case 를 발행한다(파일시스템 의존)."""
     _seed_ticket(board, "T-AAA-001")
-    board.dump_ticket(board.TICKETS_DIR / "open" / "T-aaa-001-other.md",
+    ticket_store.dump_ticket(board.TICKETS_DIR / "open" / "T-aaa-001-other.md",
                       {"id": "T-aaa-001", "title": "seed", "status": "open"}, "# seed\n")
-    assert board._next_id("aaa") == board._next_id("AAA") == "T-AAA-002"
+    assert ticket_store._next_id(board._home(), "aaa") == ticket_store._next_id(board._home(), "AAA") == "T-AAA-002"
 
 
 def test_id_prefix_override_resolves_registered_canonical_case(board):
     """override `aaa` 가 등록 `AAA` 로 fold-매치되면 등록 case `AAA` 로 해소 (ADR-0055·surface #4)."""
-    board.areas_append("AAA", "결제", "alice")            # 대문자 등록
+    areas_registry.areas_append(board._home(), "AAA", "결제", "alice")            # 대문자 등록
     assert areas_store.id_prefix(board._home(), "aaa") == "AAA"                # 소문자 입력 → 등록 canonical
     assert areas_store.id_prefix(board._home(), "AAA") == "AAA"                # 정확 case 유지
     assert areas_store.id_prefix(board._home(), "zzz") == "zzz"                # 미등록 → 입력 그대로
@@ -1137,27 +1143,27 @@ def test_cmd_init_fold_reuses_registered_canonical_prefix(init_board, capsys):
 def test_next_id_lowercase_and_legacy_unaffected(board):
     """소문자 보드·legacy `T-NNNN` 은 case 변경에 무영향 (회귀 0·DoD 4)."""
     _seed_ticket(board, "T-pay-005")
-    assert board._next_id("pay") == "T-pay-006"           # 소문자 시리즈 그대로 이어감
+    assert ticket_store._next_id(board._home(), "pay") == "T-pay-006"           # 소문자 시리즈 그대로 이어감
     _seed_ticket(board, "T-0009")
-    assert board._next_id(None) == "T-0010"               # legacy 순번 그대로
+    assert ticket_store._next_id(board._home(), None) == "T-0010"               # legacy 순번 그대로
 
 
 def test_next_id_substring_prefix_boundary(board):
     """`AB` vs `ABC` 는 다른 네임스페이스 — `-` 경계 durable 가드(fold 해도 substring 오검출 금지·T-0311)."""
     _seed_ticket(board, "T-ABC-001")
     _seed_ticket(board, "T-ABC-002")
-    assert board._next_id("AB") == "T-AB-001"             # ABC 시리즈에 간섭 안 받음
+    assert ticket_store._next_id(board._home(), "AB") == "T-AB-001"             # ABC 시리즈에 간섭 안 받음
     _seed_ticket(board, "T-AB-005")
-    assert board._next_id("AB") == "T-AB-006"             # AB 만 카운트
-    assert board._next_id("ABC") == "T-ABC-003"           # ABC 만 카운트
+    assert ticket_store._next_id(board._home(), "AB") == "T-AB-006"             # AB 만 카운트
+    assert ticket_store._next_id(board._home(), "ABC") == "T-ABC-003"           # ABC 만 카운트
 
 
 def test_fold_key_helper(board):
     """`_fold_key` — 문자열 소문자 fold·None(무prefix) 보존 (source 매칭·collision 정규화 비교키·ADR-0055)."""
-    assert board._fold_key("AAA") == "aaa"
-    assert board._fold_key("aaa") == "aaa"
-    assert board._fold_key(None) is None                  # legacy 무prefix 는 None 키
-    assert board._fold_key("AB") != board._fold_key("ABC")   # substring 경계 보존
+    assert ticket_rules._fold_key("AAA") == "aaa"
+    assert ticket_rules._fold_key("aaa") == "aaa"
+    assert ticket_rules._fold_key(None) is None                  # legacy 무prefix 는 None 키
+    assert ticket_rules._fold_key("AB") != ticket_rules._fold_key("ABC")   # substring 경계 보존
 
 
 def test_cmd_init_fold_reuses_ticket_prefix_canonical_case(board, capsys):
@@ -1180,7 +1186,7 @@ def test_registered_prefixes_ignores_empty_prefix_rows(board):
 
     repo add 자동시드 폐지 후 형상 — areas 행은 있으나 prefix 칼럼이 빈 값.
     """
-    board.areas_append("", "", "me", repo="svc", git="g")   # 빈 prefix 등록(자동시드 폐지)
+    areas_registry.areas_append(board._home(), "", "", "me", repo="svc", git="g")   # 빈 prefix 등록(자동시드 폐지)
     assert areas_store.registered_prefixes(board._home()) == set()             # prefix 로는 안 셈
     assert areas_store.registered_repos(board._home()) == {"svc"}              # repo 로는 셈
     row = areas_store._parse_areas(board._home())[1][0]
@@ -1194,9 +1200,9 @@ def test_empty_prefix_areas_next_id_stays_legacy(board):
     ②(project_manager_dev)가 areas prefix 를 비우면 count-based 유도가 None 으로 떨어져
     다음 티켓이 `T-project_manager-001` 로 튀지 않고 legacy `T-NNNN` 을 지속한다.
     """
-    board.areas_append("", "", "me", repo="project_manager", git="g")
+    areas_registry.areas_append(board._home(), "", "", "me", repo="project_manager", git="g")
     assert areas_store.id_prefix(board._home()) is None                         # count-based 유도 없음(빈 prefix)
-    assert board._next_id(None) == "T-0001"
+    assert ticket_store._next_id(board._home(), None) == "T-0001"
     # 실 명령 경로로도 확증 — prefix 미명시 new 는 legacy ID 발행.
     assert _publish(board, _new_args(title="t")) == 0
     assert list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
@@ -1393,14 +1399,14 @@ def test_session_name_zero_rows_stays_unresolved_even_with_single_registration(
         board, monkeypatch):
     """등록 repo 1개 + 장부 부재 → 미해소. 유도 층을 되살리면 이 단언이 red."""
     _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    areas_registry.areas_append(board._home(), "SOLO", "단일", "alice", repo="solo")
     assert lease_store.session_name(board._home()) is None
 
 
 def test_session_name_zero_rows_empty_list_stays_unresolved(board, monkeypatch):
     """등록 repo 1개 + `leases` 빈 배열 → 미해소(부재와 같은 판정)."""
     _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    areas_registry.areas_append(board._home(), "SOLO", "단일", "alice", repo="solo")
     _write_ledger(board)
     assert lease_store.session_name(board._home()) is None
 
@@ -1408,7 +1414,7 @@ def test_session_name_zero_rows_empty_list_stays_unresolved(board, monkeypatch):
 def test_session_name_single_lease_layer_resolves(board, monkeypatch):
     """장부에 leased 행이 정확히 1개면 그 값이 세션이다."""
     _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    areas_registry.areas_append(board._home(), "SOLO", "단일", "alice", repo="solo")
     _write_ledger(board, {"session": "other_1"})
     assert lease_store.session_name(board._home()) == "other_1"
 
@@ -1416,15 +1422,15 @@ def test_session_name_single_lease_layer_resolves(board, monkeypatch):
 def test_session_name_two_registrations_stay_unresolved(board, monkeypatch):
     """등록 repo 2개(장부는 부재/0행) → 미해소."""
     _clear_env(monkeypatch)
-    board.areas_append("PAY", "결제", "alice", repo="pay")
-    board.areas_append("SHIP", "배송", "bob", repo="ship")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice", repo="pay")
+    areas_registry.areas_append(board._home(), "SHIP", "배송", "bob", repo="ship")
     assert lease_store.session_name(board._home()) is None
 
 
 def test_session_name_env_beats_ledger_row(board, monkeypatch):
     """장부 행이 있어도 env 가 있으면 env 승(우선순위 불변)."""
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    areas_registry.areas_append(board._home(), "SOLO", "단일", "alice", repo="solo")
     _write_ledger(board, {"slot": ".", "repo": "solo", "session": "solo_1"})
     assert lease_store.session_name(board._home()) == "from-pm-env"
 
@@ -1432,7 +1438,7 @@ def test_session_name_env_beats_ledger_row(board, monkeypatch):
 def test_session_name_override_beats_ledger_row(board, monkeypatch):
     """장부 행이 있어도 override 인자가 있으면 override 승(해소 0층 불변)."""
     _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    areas_registry.areas_append(board._home(), "SOLO", "단일", "alice", repo="solo")
     _write_ledger(board, {"slot": ".", "repo": "solo", "session": "solo_1"})
     assert lease_store.session_name(board._home(), "explicit") == "explicit"
 
@@ -1445,7 +1451,7 @@ def test_session_name_override_beats_ledger_row(board, monkeypatch):
 def test_session_name_corrupt_json_ledger_stays_unresolved(board, monkeypatch):
     """손상 3형 ① JSON 파손 — required=False 는 None(이름을 지어내지 않는다)."""
     _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    areas_registry.areas_append(board._home(), "SOLO", "단일", "alice", repo="solo")
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text("{not valid json", encoding="utf-8")
     assert lease_store.session_name(board._home()) is None
@@ -1997,9 +2003,9 @@ def test_regression_run_explicit_cwd_skips_multi_dispatch(
 def test_validate_prefix_rejects_leading_underscore(board):
     """codex T-0239 R4: `_foo` 는 소비측 grammar(첫 글자 영숫자·_TICKET_PREFIX_BODY)가 못 읽는
     ID(`T-_foo-001`)를 만들므로 입력측에서 거부 — 발행되면 list/relabel/next-id 가 전부 깨진다."""
-    assert board._validate_prefix("_foo") is not None      # 거부.
-    assert board._validate_prefix("foo_bar") is None        # 중간 underscore 는 허용.
-    assert board._validate_prefix("f") is None               # 1글자 영숫자 허용.
+    assert ticket_rules._validate_prefix("_foo") is not None      # 거부.
+    assert ticket_rules._validate_prefix("foo_bar") is None        # 중간 underscore 는 허용.
+    assert ticket_rules._validate_prefix("f") is None               # 1글자 영숫자 허용.
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2028,7 +2034,7 @@ def _seed_full(board, tid, status, *, created_by=None, claimed_by=None,
                title="seed"):
     """created_by/claimed_by 를 포함한 티켓을 심는다 (소유 유도·multi_user 신호 검증용)."""
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": title, "status": status,
+    ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "created_by": created_by, "claimed_by": claimed_by,
                              "depends_on": [], "tags": []}, "# seed\n")
     return path
@@ -2149,43 +2155,43 @@ def test_distinct_ticket_users_counts_created_and_claimed(board):
     _seed_full(board, "T-0003", "open", created_by="alpha_2")    # 슬롯-only bare? → user 로 셈? 아래 주석
     # NB: bare `alpha_2` 는 `_created_by_user` 가 user 로 읽는다(backfill bare-user 살리기) →
     #     3번째 distinct. slot-only 는 claimed_by 경로에서만 제외된다.
-    assert board._distinct_ticket_users() == 3
+    assert ticket_access._distinct_ticket_users(board._home()) == 3
 
 
 def test_distinct_ticket_users_slot_only_claim_excluded(board):
     """claimed_by 슬롯-only(`/` 없음)는 user 미상 → distinct 에 안 든다(솔로 신호 보존)."""
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "claimed", claimed_by="alpha_1")   # 슬롯-only
-    assert board._distinct_ticket_users() == 1
+    assert ticket_access._distinct_ticket_users(board._home()) == 1
 
 
 def test_distinct_ticket_users_empty_board_zero(board):
-    assert board._distinct_ticket_users() == 0
+    assert ticket_access._distinct_ticket_users(board._home()) == 0
 
 
 def test_created_by_user_extraction(board):
-    assert board._created_by_user("alice/alpha_1") == "alice"
-    assert board._created_by_user("alice") == "alice"          # bare = user(backfill)
-    assert board._created_by_user("a/b/slot") == "a/b"          # 마지막 / 분리
-    assert board._created_by_user("") is None
-    assert board._created_by_user(None) is None
+    assert ticket_rules._created_by_user("alice/alpha_1") == "alice"
+    assert ticket_rules._created_by_user("alice") == "alice"          # bare = user(backfill)
+    assert ticket_rules._created_by_user("a/b/slot") == "a/b"          # 마지막 / 분리
+    assert ticket_rules._created_by_user("") is None
+    assert ticket_rules._created_by_user(None) is None
 
 
 def test_ticket_owner_area_owner_first(board):
     """area_owner 운영 중이면 area_owner 1차 — created_by 와 갈려도 area_owner 승."""
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
     fm = {"id": "T-AL-001", "created_by": "bob/beta_1"}   # created_by=bob 이지만 AL area=alice
-    assert board._ticket_owner(fm, area_owner_in_use=True) == "alice"
+    assert ticket_access._ticket_owner(board._home(), fm, area_owner_in_use=True) == "alice"
 
 
 def test_ticket_owner_created_by_fallback(board):
     """area_owner 미운영이면 created_by.user 2차 폴백."""
     fm = {"id": "T-0001", "created_by": "carol/x_1"}
-    assert board._ticket_owner(fm, area_owner_in_use=False) == "carol"
+    assert ticket_access._ticket_owner(board._home(), fm, area_owner_in_use=False) == "carol"
 
 
 def test_ticket_owner_none_when_unresolved(board):
-    assert board._ticket_owner({"id": "T-0001"}, area_owner_in_use=False) is None
+    assert ticket_access._ticket_owner(board._home(), {"id": "T-0001"}, area_owner_in_use=False) is None
 
 
 # NB (ADR-0056·T-0312): `_area_owner_from_session`/`_area_owner_for_single_area`(T-0198/T-0302)는
@@ -2518,7 +2524,7 @@ def test_t0962_session_token_is_not_parsed_as_slot(board, monkeypatch):
     assert areas_store.registered_prefixes(board._home()) == {"al", "be"}
     assert areas_store.id_prefix(board._home(), None) is None
     assert regression._test_cmd(board._home(), None) == "pytest -q"
-    assert board._created_by_session("alpha_1") is None
+    assert ticket_rules._created_by_session("alpha_1") is None
 
 
 def _t0983_complete_fixture_records(board):

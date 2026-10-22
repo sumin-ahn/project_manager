@@ -60,7 +60,6 @@ def test_registry_first_match_and_first_nonempty_are_distinct(tmp_path):
 def test_reinstall_uses_target_data_without_target_flat_modules(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[1]
     m = _tool(root / ".project_manager/tools/pm_update.py", "new_update_probe")
-    monkeypatch.setattr(m, "_load_dest_pm_config", lambda *_: (_ for _ in ()).throw(AssertionError("flat load")))
     home = pm_paths.home_at(tmp_path)
     area = pm_paths.areas_file(home)
     area.parent.mkdir(parents=True)

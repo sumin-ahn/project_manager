@@ -44,8 +44,6 @@ import base64
 import contextlib
 import datetime
 import errno
-import functools
-import hashlib
 import json
 import os
 import re
@@ -59,16 +57,18 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterator, NamedTuple
+from typing import Callable, NamedTuple
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.app import hooks, regression, round_seed  # noqa: E402
+from pm_engine.app import ticket_access, hooks, regression, round_seed  # noqa: E402
 from pm_engine.cli import task_args  # noqa: E402
 from pm_engine.domain import conf_schema, delegate_errors, identity_args, markdown_text, model_lint, review_form, review_state, review_verdict, round_rules, ticket_rules  # noqa: E402
 from pm_engine.infra import console, delegate_ledger, fs, git, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
+
+from pm_engine.infra import board_git
 _load_module_from_path = repo_files.load_module
 
 
@@ -1109,15 +1109,12 @@ def anchor_board_to_repo(board, repo: Path):
     """실행 엔진 board 모듈의 데이터 경로 전역을 repo 기준으로 고정한다(코드는 실행 엔진, 데이터는 repo).
 
     형제 board 를 적재하면 모듈 전역이 실행 엔진 트리를 가리킨다. 다른 트리의 board 데이터를 다루는
-    두 호출자(`_load_board_for_repo` 와 additional_reviewer 회수)가 이 함수로 `REPO`·`BOARD_LOCK`·
-    `BOARD_FILE`·`LEASES_FILE` 4개를 repo 로 맞춘다. 패키지로 옮긴 함수는 전역 대신 Home 을 받으므로
-    호출자가 `pm_paths.home_at(repo)` 를 넘긴다. 이 4개 밖의 경로 상수는 실행 엔진 트리에 남고, 두
+    두 호출자(`_load_board_for_repo` 와 additional_reviewer 회수)가 이 함수로 `REPO`·`LEASES_FILE` 2개를 repo 로 맞춘다. 패키지로 옮긴 함수는 전역 대신 Home 을 받으므로
+    호출자가 `pm_paths.home_at(repo)` 를 넘긴다. 이 2개 밖의 경로 상수는 실행 엔진 트리에 남고, 두
     호출자가 쓰는 board 함수는 그 상수를 읽지 않는다. 앵커 규칙이 두 군데면 규칙이 둘이 되므로
     여기 하나로 둔다."""
     home = pm_paths.home_at(Path(repo).resolve())
     board.REPO = home.root
-    board.BOARD_LOCK = home.local_dir / "board.lock"
-    board.BOARD_FILE = home.root / ".project_manager" / "wiki" / "board.md"
     board.LEASES_FILE = pm_paths.leases_file(home)
     return board
 
@@ -1481,7 +1478,7 @@ def prepare_cluster_copy(
 
     # ── (1) 티켓별 상태 판정 + 명세 판독 (board 무영향) ─────────────────────
     specs: dict[str, str] = {}
-    with board.board_lock():
+    with fs.board_lock(home):
         for ticket in members:
             found = ticket_store.find_ticket_exact(home, ticket)
             if found is None:
@@ -1532,7 +1529,7 @@ def prepare_cluster_copy(
             # 끝내는 자리다.
             _reopen_round_path(
                 tickets_dir, ticket, role,
-                ordinal=reopen_ordinal, lock=board.board_lock(),
+                ordinal=reopen_ordinal, lock=fs.board_lock(home),
             )
             continue
         refusal = _cluster_budget_refusal(
@@ -1623,7 +1620,7 @@ def prepare_cluster_copy(
             # 재확인하는 최신 스캔이 그중 하나만 통과시킨다). 재확인은 **N 티켓 전부**를 먼저
             # 통과시키고 그다음에야 첫 예약을 쓴다(부분 예약 금지).
             board_paths: dict[str, Path] = {}
-            with board.board_lock():
+            with fs.board_lock(home):
                 # 재확인은 최신 스냅샷으로 낸다(스냅샷 1회 · 멤버 전부가 같은 장부 판독을 공유한다).
                 # 그사이 장부가 사라졌으면 같은 판독이 그 자리에서 멈춘다(예약 없음).
                 budget_sequence = _budget_inputs()
@@ -1821,7 +1818,7 @@ def prepare_cluster_copy(
             raise delegate_errors.DelegateError(
                 f"준비 완료 후 보드 기록 실패: {exc}; run-dir={run_dir}{residue}"
             ) from exc
-        if not board._board_git_enabled():
+        if not board_git._board_git_enabled(home):
             print("ticket prepare: 별도 board-git 없음 (기존 no-op 기록)", file=sys.stderr)
         elif ready:
             print("ticket prepare: 신규 시드 로컬 기록 완료 "
@@ -2060,7 +2057,7 @@ def harvest_ticket_copy(
             )
     # promote와 같은 락에서 공개 상태 확인·교체를 마친다. draft 회수는 로컬 산출이며,
     # promote가 명세와 충전된 라운드를 함께 기록한다.
-    with board.board_lock():
+    with fs.board_lock(home):
         found = ticket_store.find_ticket_exact(home, row["ticket"])
         if found is None:
             raise delegate_errors.DelegateError(f"회수할 티켓 명세가 없습니다: {row['ticket']}")
@@ -2850,7 +2847,7 @@ def abandon_ticket_copy(
     board_kept_reason: str | None = None
     reserved_now: str | None = None
     unlinked = False
-    with board.board_lock():
+    with fs.board_lock(home):
         if os.path.lexists(board_path):
             existing = round_seed.load_rounds(pm_paths.tickets_dir(home), row["ticket"])
             max_ordinal = max((item.ordinal for item in existing), default=row["ordinal"])
@@ -3288,14 +3285,6 @@ def _conf_default_int(key: str) -> int:
     이 모듈은 conf **값**은 additional_reviewer 의 해소를 재사용하고, 키 **선언**(기본값)은
     레지스트리에서 직접 읽는다 — 기본값이 두 군데면 규칙이 둘이 된다."""
     return int(conf_schema.default_for(key))
-
-
-def _load_board():
-    """board의 발행 티켓 ID 문법을 단일 진실로 재사용한다."""
-    path = Path(__file__).resolve().parent / "board.py"
-    return _load_module_from_path(
-        path, "board.py", verifier=_verify_engine_rev, cache=True,
-    )
 
 
 def _load_delegate_scope():
@@ -4021,7 +4010,7 @@ def append_pm_review_confirmation(
     board = _load_board_for_repo(Path(pm_home))
     home = pm_paths.home_at(Path(pm_home).resolve())
     changed = False
-    with board.board_lock():
+    with fs.board_lock(home):
         found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
             raise delegate_errors.DelegateError(f"ticket not found: {ticket}")
@@ -4035,7 +4024,7 @@ def append_pm_review_confirmation(
             body, section, rounds=rounds,
         )
         if changed:
-            board.dump_ticket_atomic(path, fm, merged)
+            ticket_store.dump_ticket_atomic(path, fm, merged)
     if changed:
         board._rounds_mutation_sync_paths(f"pm-review confirmation {ticket}", (path,))
     return path
@@ -4460,8 +4449,7 @@ def _delegate_task_env(cwd: Path) -> dict[str, str]:
 
     `cwd` 가 task 가 잡은 슬롯이면 `{PM_DELEGATE_TASK: <task>}` 다. 슬롯 밖이거나 task 가 잡지 않은
     슬롯이면 빈 dict 다 — 그 위임의 슬롯 쓰기는 가드가 거부한다(`board.judge_tool_input`)."""
-    board = _load_board()
-    found = hooks.slot_containing(board.REPO, cwd)
+    found = hooks.slot_containing(REPO, cwd)
     if found is None:
         return {}
     row, tasks = found
@@ -8051,7 +8039,7 @@ def begin_scope_audit(
     try:
         resolved_pm_root = pm_root or REPO
         touches = scope.ticket_touches(
-            BOARD_PY, ticket, pm_root=resolved_pm_root,
+            pm_paths.home_at(resolved_pm_root), ticket,
         ) if ticket else ()
         touches = _with_template_propagation(
             touches, workspace=workspace, pm_root=resolved_pm_root,
@@ -8863,7 +8851,7 @@ def _cmd_review_ticket(args: argparse.Namespace, ticket: str) -> int:
         owner = _activate_internal_rounds_cli_owner()
         owner_board = _load_board_for_repo(owner)
         home = pm_paths.home_at(Path(owner).resolve())
-        with owner_board.board_lock():
+        with fs.board_lock(home):
             found = ticket_store.find_ticket_exact(home, ticket)
             if found is None:
                 raise delegate_errors.DelegateError(f"ticket not found: {ticket}")
@@ -9163,7 +9151,7 @@ def _cluster_confirmation_tree(
                  and getattr(selection, "repo", None) is None
                  and getattr(selection, "slot", None) is None)
     if task_only:
-        task_args._validate_actor_task_or_exit(home, selection.task)
+        ticket_access._validate_actor_task_or_exit(home, selection.task)
         finish = _load_module_from_path(
             Path(__file__).resolve().with_name("ticket_finish.py"), "ticket_finish.py",
             verifier=_verify_engine_rev,
@@ -9181,7 +9169,7 @@ def _cluster_confirmation_tree(
             raise delegate_errors.DelegateError(problem)
     else:
         try:
-            resolved = board._claim_code_tree(selection)
+            resolved = task_args._claim_code_tree(home, selection)
         except SystemExit as exc:
             raise delegate_errors.DelegateError(str(exc)) from exc
     if not resolved:

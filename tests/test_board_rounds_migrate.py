@@ -17,6 +17,8 @@ from conftest import anchor_board_module
 from test_board_ticket_growth import _ticket_text
 from pm_engine.app import ticket_lint
 
+from pm_engine.domain import board_git_rules
+
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 
@@ -69,7 +71,7 @@ def test_shipped_gitattributes_declarations_no_longer_seed_the_growth_ledger():
         REPO / ".project_manager" / "tools" / "pm_import.py"
     ).read_text(encoding="utf-8")
 
-    assert "tickets/.growth" not in board._BOARD_GITATTRIBUTES_BLOCK
+    assert "tickets/.growth" not in board_git_rules._BOARD_GITATTRIBUTES_BLOCK
     assert "tickets/.growth" not in pm_import_source
 
 

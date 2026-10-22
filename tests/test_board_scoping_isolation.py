@@ -41,6 +41,10 @@ import pytest
 from conftest import ensure_product_slot
 from pm_engine.infra import git, ticket_store
 
+from pm_engine.app import ticket_access
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import lease_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 REAL_AREAS = REPO / ".project_manager" / "areas.md"
@@ -93,13 +97,13 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
         "LEASES_FILE": local / "worktree-leases.json",
-        "BOARD_LOCK": local / "board.lock",
+
         "PM_STATE_FILE": wiki / "pm_state.md",
         "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
     }
@@ -109,7 +113,7 @@ def board(tmp_path, monkeypatch):
     # 실 PM 세션 env·git config 가 hermetic 테스트로 새지 않게 격리(장부/local.conf 만이 세션·user 소스).
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
 
@@ -490,18 +494,18 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys):
 def _make_pre_fix_is_mine(board):
     """ADR-0053(T-0302) fix **이전**의 `_ticket_is_mine` 재현 — multi_user 게이트 없이
     `my_user is None ∨ not area_owner_in_use` 면 전체 open=mine 으로 degrade(=유출·spike §1)."""
-    def _is_mine(status, fm, my_user, my_slot, area_owner_in_use, multi_user,
+    def _is_mine(_home, status, fm, my_user, my_slot, area_owner_in_use, multi_user,
                  *, slot_scoped=False):
         cb = fm.get("claimed_by") or ""
         if cb:
-            cb_user = board._claimed_by_user(cb)
+            cb_user = ticket_rules._claimed_by_user(cb)
             if (my_user is not None and cb_user == my_user) or \
-                    board._slot_matches(cb, my_slot):
+                    ticket_rules._slot_matches(cb, my_slot):
                 return True
         if status == "open":
             if my_user is None or not area_owner_in_use:
                 return True   # 옛 degrade — 다중사용자 미claim open 유출
-            return board._ticket_area_owner(fm.get("id") or "") == my_user
+            return ticket_access._ticket_area_owner(board._home(), fm.get("id") or "") == my_user
         return False
     return _is_mine
 
@@ -519,7 +523,7 @@ def test_pre_fix_mine_unmigrated_leaks_red_proof(board, capsys, monkeypatch):
     assert not (comp.bob_open & set(_view(board, capsys, mine=True)))
 
     # RED: pre-fix degrade(area_owner 미운영 → 전체 open=mine)는 bob open 을 alice --mine 에 유출.
-    monkeypatch.setattr(board, "_ticket_is_mine", _make_pre_fix_is_mine(board))
+    monkeypatch.setattr(ticket_access, "_ticket_is_mine", _make_pre_fix_is_mine(board))
     leaked = set(_view(board, capsys, mine=True))
     assert comp.bob_open <= leaked, "pre-fix T2 degrade 가 유출을 재현 못함 — RED-proof 무효"
 

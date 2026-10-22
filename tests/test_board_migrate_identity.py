@@ -23,6 +23,14 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import areas_store, pm_paths, ticket_store
 
+from pm_engine.app import board_dashboard
+from pm_engine.app import ticket_access
+from pm_engine.infra import fs
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -50,17 +58,17 @@ def board(tmp_path, monkeypatch):
     overrides = {
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # migrate 는 귀속 쓰기라 `--task` 가 필수다(T-0962) — `_run` 이 기본 task 를 준다. 환경변수
     # 세션은 쓰지 않으므로 실 PM 세션 env 가 새지 않게 비운다.
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
@@ -91,7 +99,7 @@ def _seed(board, tid, status, *, fm_extra=None, body="# seed\n"):
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
     fm = {"id": tid, "title": "t", "status": status}
     fm.update(fm_extra)
-    board.dump_ticket(path, fm, body)
+    ticket_store.dump_ticket(path, fm, body)
     return path
 
 
@@ -158,9 +166,9 @@ def test_areas_empty_owner_backfilled(board, capsys):
     assert rc == 0
     text = board.AREAS_FILE.read_text(encoding="utf-8")
     # PAY 행 area_owner 채워짐.
-    assert board._ticket_area_owner("T-PAY-001") == "alice"
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"
     # ACC 행은 기존 bob 보존(멱등).
-    assert board._ticket_area_owner("T-ACC-001") == "bob"
+    assert ticket_access._ticket_area_owner(board._home(), "T-ACC-001") == "bob"
     # 주석·헤더 verbatim 보존.
     assert "주석은 보존돼야 한다" in text
     assert text.startswith("# Area Registry\n")
@@ -355,10 +363,10 @@ def test_old_7col_header_upgraded_to_canonical_8col(board, capsys):
     # 헤더가 canonical 8칼럼으로 업그레이드됨.
     assert "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |" in text
     # area_owner 가 채워짐 → `--mine` (a) 풀 입력이 작동.
-    assert board._ticket_area_owner("T-PAY-001") == "alice"
-    assert board._ticket_area_owner("T-ACC-001") == "alice"
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"
+    assert ticket_access._ticket_area_owner(board._home(), "T-ACC-001") == "alice"
     # 전역 플래그가 True 로 전환(수정 전엔 영구 False).
-    assert board._area_owner_in_use() is True
+    assert ticket_access._area_owner_in_use(board._home()) is True
 
 
 def test_old_7col_mine_narrows_after_migrate(board, capsys):
@@ -377,10 +385,10 @@ def test_old_7col_mine_narrows_after_migrate(board, capsys):
     board.AREAS_FILE.write_text(areas, encoding="utf-8")
     _write_conf(board, user="alice")
     # migrate 전: area_owner 운영 안 됨 → in_use False.
-    assert board._area_owner_in_use() is False
+    assert ticket_access._area_owner_in_use(board._home()) is False
     _run(board, capsys)
     # migrate 후: PAY area_owner=alice → in_use True.
-    assert board._area_owner_in_use() is True
+    assert ticket_access._area_owner_in_use(board._home()) is True
     # 이후 ACC 를 bob 소유로 추가(타 user area) — alice `--mine` 에서 빠져야 함.
     board.AREAS_FILE.write_text(
         board.AREAS_FILE.read_text(encoding="utf-8")
@@ -388,12 +396,12 @@ def test_old_7col_mine_narrows_after_migrate(board, capsys):
         encoding="utf-8")
     # multi_user=True (alice·bob 두 area 소유자 = 다중사용자) — 단 my_user·owner 가 area_owner 로
     # 둘 다 해소되므로 strict `owner == my_user` 가 먼저 판정하고 multi_user 게이트는 안 탄다(T-0302).
-    my_pay = board._ticket_is_mine(
-        "open", {"id": "T-PAY-009", "claimed_by": ""}, "alice", "pm-1",
-        board._area_owner_in_use(), True)
-    my_acc = board._ticket_is_mine(
-        "open", {"id": "T-ACC-009", "claimed_by": ""}, "alice", "pm-1",
-        board._area_owner_in_use(), True)
+    my_pay = ticket_access._ticket_is_mine(
+        board._home(), "open", {"id": "T-PAY-009", "claimed_by": ""}, "alice", "pm-1",
+        ticket_access._area_owner_in_use(board._home()), True)
+    my_acc = ticket_access._ticket_is_mine(
+        board._home(), "open", {"id": "T-ACC-009", "claimed_by": ""}, "alice", "pm-1",
+        ticket_access._area_owner_in_use(board._home()), True)
     assert my_pay is True    # 내 area open → 포함.
     assert my_acc is False   # bob area open → 제외(좁혀짐).
 
@@ -406,8 +414,8 @@ def test_old_6col_header_upgraded(board, capsys):
     assert rc == 0
     text = board.AREAS_FILE.read_text(encoding="utf-8")
     assert "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |" in text
-    assert board._ticket_area_owner("T-PAY-001") == "alice"
-    assert board._area_owner_in_use() is True
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"
+    assert ticket_access._area_owner_in_use(board._home()) is True
 
 
 def test_old_5col_header_upgraded(board, capsys):
@@ -418,8 +426,8 @@ def test_old_5col_header_upgraded(board, capsys):
     assert rc == 0
     text = board.AREAS_FILE.read_text(encoding="utf-8")
     assert "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |" in text
-    assert board._ticket_area_owner("T-PAY-001") == "alice"
-    assert board._area_owner_in_use() is True
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"
+    assert ticket_access._area_owner_in_use(board._home()) is True
 
 
 def test_old_header_upgrade_preserves_existing_columns_and_comments(board, capsys):
@@ -499,8 +507,8 @@ def test_mixed_noncanon_header_backfills_both_rows(board, capsys):
     rc, out, _ = _run(board, capsys)
     assert rc == 0
     # 두 행 모두 area_owner=alice 로 backfill — 파서 동형으로 읽어 검증.
-    assert board._ticket_area_owner("T-LEG-001") == "alice"   # 3칼럼 row(degrade append).
-    assert board._ticket_area_owner("T-PAY-001") == "alice"   # 8칼럼 wider row(index 7).
+    assert ticket_access._ticket_area_owner(board._home(), "T-LEG-001") == "alice"   # 3칼럼 row(degrade append).
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"   # 8칼럼 wider row(index 7).
     # 8칼럼 row 의 기존 칼럼 값은 불변(test_cmd 오인 채움이 아님을 확인).
     pay = areas_store._areas_row_for_prefix(board._home(), "PAY")
     assert pay["test_cmd"] == "pytest -q"   # index 3 보존(area_owner 로 오염 안 됨).
@@ -535,7 +543,7 @@ def test_mixed_noncanon_header_preserves_prefilled_wider_row(board, capsys):
     rc, out, _ = _run(board, capsys)
     assert rc == 0
     # index 7 이 이미 bob → 불변(alice 로 안 덮음).
-    assert board._ticket_area_owner("T-PAY-001") == "bob"
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "bob"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -545,7 +553,7 @@ def test_mixed_noncanon_header_preserves_prefilled_wider_row(board, capsys):
 def test_refresh_board_called_on_write(board, capsys, monkeypatch):
     """실제 쓰기가 있으면 끝에 refresh_board() 1회 호출(claimed 표시 갱신 정합)."""
     calls = []
-    monkeypatch.setattr(board, "refresh_board", lambda: calls.append(1))
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: calls.append(1))
     _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     rc, _, _ = _run(board, capsys)
@@ -556,7 +564,7 @@ def test_refresh_board_called_on_write(board, capsys, monkeypatch):
 def test_refresh_board_not_called_on_dry_run(board, capsys, monkeypatch):
     """--dry-run 은 파생물도 안 건드림 — refresh_board 미호출."""
     calls = []
-    monkeypatch.setattr(board, "refresh_board", lambda: calls.append(1))
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: calls.append(1))
     _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     rc, _, _ = _run(board, capsys, dry_run=True)
@@ -567,7 +575,7 @@ def test_refresh_board_not_called_on_dry_run(board, capsys, monkeypatch):
 def test_refresh_board_not_called_when_noop(board, capsys, monkeypatch):
     """backfill 대상 0(이미 마이그레이션됨)이면 쓰기 없음 → refresh_board 미호출."""
     calls = []
-    monkeypatch.setattr(board, "refresh_board", lambda: calls.append(1))
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: calls.append(1))
     _write_conf(board, user="alice")
     # 이미 채워진 티켓(no-op).
     _seed(board, "T-0005", "claimed",
@@ -597,7 +605,7 @@ def _lock_spy(board, monkeypatch):
     락 한 구간 안에서 areas.md 가 바뀌면 그 튜플의 두 값이 달라진다 → write 가 락 안에서
     일어났음을 증명한다. `count` 는 락 진입 횟수.
     """
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     record = {"entries": [], "count": 0}
 
     def _read_areas():
@@ -607,14 +615,14 @@ def _lock_spy(board, monkeypatch):
             return None
 
     @contextlib.contextmanager
-    def _spied():
+    def _spied(_home):
         record["count"] += 1
         before = _read_areas()
-        with real_lock():
+        with real_lock(_home):
             yield
         record["entries"].append((before, _read_areas()))
 
-    monkeypatch.setattr(board, "board_lock", _spied)
+    monkeypatch.setattr(fs, "board_lock", _spied)
     yield record
 
 
@@ -630,7 +638,7 @@ def test_areas_write_happens_inside_board_lock(board, capsys, monkeypatch):
     changed_in_lock = [e for e in rec["entries"] if e[0] != e[1] and e[0] is not None]
     assert changed_in_lock, "areas.md write 가 board_lock 구간 안에서 일어나지 않음"
     # 그리고 실제로 backfill 됨(외부 관찰: alice 로 채워짐).
-    assert board._ticket_area_owner("T-PAY-001") == "alice"
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"
 
 
 def test_areas_dry_run_does_not_acquire_lock(board, capsys, monkeypatch):
@@ -677,19 +685,19 @@ def test_areas_noop_does_not_write_in_lock(board, capsys, monkeypatch):
 
 def test_ticket_backfill_acquires_one_global_lock(board, capsys, monkeypatch):
     """areas 없는 ticket-only migration도 scan→dump 전체에 board_lock을 정확히 1회 잡는다."""
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     count = {"n": 0}
 
     @contextlib.contextmanager
-    def _spied():
+    def _spied(_home):
         count["n"] += 1
-        with real_lock():
+        with real_lock(_home):
             yield
 
-    monkeypatch.setattr(board, "board_lock", _spied)
+    monkeypatch.setattr(fs, "board_lock", _spied)
     # refresh_board 는 끝에 자체 board_lock 을 잡는다(파생물·락 밖) — 티켓 backfill *자체*가
     # 락을 잡는지만 보려고 no-op 으로 둔다(refresh 락밖 1회는 별 테스트가 검증).
-    monkeypatch.setattr(board, "refresh_board", lambda: None)
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
     _write_conf(board, user="alice")
     # areas.md 없음(솔로) — 티켓만 backfill.
     _seed(board, "T-0001", "open")
@@ -715,15 +723,15 @@ def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
     # 다른 세션이 claim 으로 open/→claimed/ 옮긴 상태를 모사 — 재조회가 claimed/ 경로를
     # 반환하게 한다(물리 사본은 안 둠 — skip 은 쓰기 *전* 경로 불일치로 발동하므로 충분).
     moved_path = board.TICKETS_DIR / "claimed" / "T-0001-seed.md"
-    real_find = board.find_ticket_for_mutation
+    real_find = ticket_store.find_ticket_for_mutation
 
-    def _find_moved(tid):
+    def _find_moved(_home, tid):
         # 재조회는 항상 이동된(claimed/) 경로를 반환 → 스캔 경로(open/)와 불일치 → skip.
         if tid == "T-0001":
             return "claimed", moved_path
-        return real_find(tid)
+        return real_find(_home, tid)
 
-    monkeypatch.setattr(board, "find_ticket_for_mutation", _find_moved)
+    monkeypatch.setattr(ticket_store, "find_ticket_for_mutation", _find_moved)
     rc, _, err = _run(board, capsys)
     assert rc == 0
     # skip 경고가 stderr 에 떴고, 스캔 경로(open/)엔 stale 쓰기가 없다(bytes 불변).
@@ -739,14 +747,14 @@ def test_ticket_gone_before_write_is_skipped(board, capsys, monkeypatch):
     _seed(board, "T-0001", "open")
     _seed(board, "T-0002", "open")  # 살아있는 다른 티켓.
 
-    real_find = board.find_ticket_for_mutation
+    real_find = ticket_store.find_ticket_for_mutation
 
-    def _find_gone(tid):
+    def _find_gone(_home, tid):
         if tid == "T-0001":
             raise FileNotFoundError("ticket not found: T-0001")  # 완료/삭제 모사.
-        return real_find(tid)
+        return real_find(_home, tid)
 
-    monkeypatch.setattr(board, "find_ticket_for_mutation", _find_gone)
+    monkeypatch.setattr(ticket_store, "find_ticket_for_mutation", _find_gone)
     rc, _, err = _run(board, capsys)
     assert rc == 0
     assert "skip T-0001" in err and "없음" in err
@@ -762,13 +770,13 @@ def test_surviving_ticket_atomic_write(board, capsys, monkeypatch):
     (`dump_ticket_atomic` 가 정확히 1회 호출되고, 결과 파일이 정상 backfill 됨).
     """
     calls = []
-    real_atomic = board.dump_ticket_atomic
+    real_atomic = ticket_store.dump_ticket_atomic
 
     def _spied_atomic(path, fm, body):
         calls.append(str(path))
         real_atomic(path, fm, body)
 
-    monkeypatch.setattr(board, "dump_ticket_atomic", _spied_atomic)
+    monkeypatch.setattr(ticket_store, "dump_ticket_atomic", _spied_atomic)
     _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")
     rc, _, err = _run(board, capsys)
@@ -781,16 +789,16 @@ def test_surviving_ticket_atomic_write(board, capsys, monkeypatch):
 
 def test_dry_run_acquires_no_lock(board, capsys, monkeypatch):
     """--dry-run 은 read-only — board_lock 을 전혀 잡지 않고 어떤 파일도 안 쓴다."""
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     count = {"n": 0}
 
     @contextlib.contextmanager
-    def _spied():
+    def _spied(_home):
         count["n"] += 1
-        with real_lock():
+        with real_lock(_home):
             yield
 
-    monkeypatch.setattr(board, "board_lock", _spied)
+    monkeypatch.setattr(fs, "board_lock", _spied)
     _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     p = _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
@@ -811,27 +819,27 @@ def test_refresh_board_runs_outside_lock(board, capsys, monkeypatch):
     refresh_board 자체가 board_lock 을 잡는데(non-reentrant), areas 락 구간 *안에서* 부르면
     재진입 데드락이다. board_lock 진입 깊이를 추적해 refresh 호출 시점 깊이가 0 임을 확인한다.
     """
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     depth = {"active": 0}
 
     @contextlib.contextmanager
-    def _spied():
+    def _spied(_home):
         depth["active"] += 1
         try:
-            with real_lock():
+            with real_lock(_home):
                 yield
         finally:
             depth["active"] -= 1
 
-    monkeypatch.setattr(board, "board_lock", _spied)
-    real_refresh = board.refresh_board
+    monkeypatch.setattr(fs, "board_lock", _spied)
+    real_refresh = board_dashboard.refresh_board
     depth_at_refresh = []
 
-    def _spied_refresh():
+    def _spied_refresh(_home):
         depth_at_refresh.append(depth["active"])
-        real_refresh()
+        real_refresh(_home)
 
-    monkeypatch.setattr(board, "refresh_board", _spied_refresh)
+    monkeypatch.setattr(board_dashboard, "refresh_board", _spied_refresh)
     _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
@@ -859,10 +867,10 @@ def test_full_run_completes_without_deadlock(board, capsys):
         board.TICKETS_DIR / "open" / "T-0001-seed.md")[0]["created_by"] == "alice"
     assert ticket_store.load_ticket(
         board.TICKETS_DIR / "claimed" / "T-0005-seed.md")[0]["claimed_by"] == "alice/pm-1"
-    assert board._ticket_area_owner("T-PAY-001") == "alice"
+    assert ticket_access._ticket_area_owner(board._home(), "T-PAY-001") == "alice"
     # 파생 board.md 가 refresh 됨(락 밖 1회 호출·실제 실행).
-    assert board.BOARD_FILE.exists()
-    assert "# Ticket Board" in board.BOARD_FILE.read_text(encoding="utf-8")
+    assert (pm_paths.wiki_dir(board._home()) / "board.md").exists()
+    assert "# Ticket Board" in (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
 
 
 def test_surviving_ticket_still_backfilled(board, capsys):
@@ -899,7 +907,7 @@ def test_t0962_slot_session_tokens_move_to_task(board, capsys):
                fm_extra={"created_by": "alice", "claimed_by": "proj_1"})
     pm_paths.drafts_dir(board._home()).mkdir(parents=True, exist_ok=True)
     t4 = pm_paths.drafts_dir(board._home()) / "T-0004-seed.md"
-    board.dump_ticket(t4, {"id": "T-0004", "title": "t", "status": "draft",
+    ticket_store.dump_ticket(t4, {"id": "T-0004", "title": "t", "status": "draft",
                            "created_by": "alice/proj_1"}, "# seed\n")
     t5 = _seed(board, "T-0005", "done",
                fm_extra={"created_by": "alice/proj_1", "claimed_by": "alice/proj_1"})

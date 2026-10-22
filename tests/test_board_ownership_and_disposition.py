@@ -36,6 +36,13 @@ from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
 
+from pm_engine.app import board_dashboard
+from pm_engine.app import ticket_access
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -86,12 +93,12 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
         "LEASES_FILE": pm / ".local" / "worktree-leases.json",
         "PM_STATE_FILE": wiki / "pm_state.md",
         "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
@@ -100,7 +107,7 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     # user 축은 conf 로, 세션 축은 env 로 명시 바인딩(실 git config·실 clone conf 미접촉).
     (pm / "local.conf").write_text("identity.user=alice\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.setenv("PM_SESSION_NAME", "pm_1")
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     for key, val in _GIT_IDENTITY.items():
@@ -122,7 +129,7 @@ def _seed(board, tid: str = "T-0001", *, status: str = "claimed",
     }
     fm.update(extra)
     path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-t.md"
-    board.dump_ticket(path, fm, f"# {tid} — t\n\n## 목표\nx\n\n{body}")
+    ticket_store.dump_ticket(path, fm, f"# {tid} — t\n\n## 목표\nx\n\n{body}")
     return path
 
 
@@ -425,9 +432,9 @@ def test_board_md_renders_a_discarded_section_without_a_key_error(board):
           disposition="merged", disposition_reason="T-0002 로 병합")
     _seed(board, "T-0003", status="done", claimed_by="alice/pm_1")
 
-    board.refresh_board()
+    board_dashboard.refresh_board(board._home())
 
-    text = board.BOARD_FILE.read_text(encoding="utf-8")
+    text = (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     assert "DISCARDED (1)" in text and "DONE (1)" in text
     assert "T-0002 로 병합" in text
     done_section = text.split("DONE (1)")[1].split("## ")[0]
@@ -439,7 +446,7 @@ def test_task_end_scan_ignores_discarded_tickets(board):
     _seed(board, "T-0001", status="discarded", claimed_by="alice/job1",
           disposition="dropped", disposition_reason="취소")
 
-    assert board.scan_task_tickets("alice", "job1")["claimed"] == []
+    assert ticket_access.scan_task_tickets(board._home(), "alice", "job1")["claimed"] == []
 
 
 def test_reopen_resets_every_terminal_field(board):
@@ -549,7 +556,7 @@ def _make_board_git(board, root: Path, *, remote: Path, tid: str = "T-0001",
         "claimed_at": "2026-08-20T00:00:00+00:00", "completed_at": None,
         "depends_on": [], "blocks": [], "touches": [], "estimate": "small", "tags": [],
     }
-    board.dump_ticket(board_dir / "tickets" / status / f"{tid}-t.md", fm,
+    ticket_store.dump_ticket(board_dir / "tickets" / status / f"{tid}-t.md", fm,
                       f"# {tid} — t\n\n## 목표\nx\n\n{_DOD_DONE}")
     (board_dir / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     _git(["init", "-q", "-b", "main"], board_dir)

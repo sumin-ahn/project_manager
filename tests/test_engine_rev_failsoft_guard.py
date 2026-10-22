@@ -1268,7 +1268,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `domain` 의 `_repository_identity`·`coverage_report`·`load_pages`(옮기며), `ticket_finish` 의
     #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
     #   `TicketFinisher._notify_affected_domain`).
-    assert len(report.boundaries) == 99, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 90, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1398,24 +1398,6 @@ def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
     sources = _canonical_sources()
     sources["pm_log.py"] = _blank_recovery_reason(sources["pm_log.py"])
     assert collect_failsoft_report(sources).violations
-
-
-@pytest.mark.parametrize(
-    ("source_name", "function", "occurrence"),
-    [
-        ("delegate_scope.py", "ticket_touches", 0),
-        ("delegate_scope.py", "ticket_touches", 1),
-    ],
-)
-def test_guard_sensitivity_s1b_each_transforming_handler_turns_red(
-    source_name, function, occurrence,
-):
-    sources = _canonical_sources()
-    sources[source_name] = _remove_marker_branch(
-        sources[source_name], function, occurrence,
-    )
-    report = collect_failsoft_report(sources)
-    assert any(source_name in violation for violation in report.violations)
 
 
 
@@ -1750,7 +1732,6 @@ def test_template_mirror_missing_pm_update_render_capability_is_drift(
     ("filename", "arguments", "witness"),
     [
         ("board.py", ["lint"], "delegate_channel_guard.py"),
-        ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"], "board.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
         ("pm_bootstrap.py", ["--task", "probe"], "board.py"),
         ("pm_handoff.py", [], "pm_log.py"),

@@ -18,6 +18,9 @@ import pytest
 from pm_engine.domain import conf_schema
 from pm_engine.infra import areas_store, conf_store, pre_push_hook, python_env, ticket_store
 
+from pm_engine.infra import conf_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -54,7 +57,7 @@ def test_dump_load_round_trip_em_dash_and_emoji(board, tmp_path):
     fm = {"id": "T-9999", "title": HARD_CONTENT, "status": "open"}
     body = f"# 본문\n{HARD_CONTENT}\n"
 
-    board.dump_ticket(path, fm, body)
+    ticket_store.dump_ticket(path, fm, body)
 
     # 디스크 바이트가 UTF-8 인지 — cp949 로 적혔다면 utf-8 decode 가 깨진다.
     raw = path.read_bytes()
@@ -84,7 +87,7 @@ def test_dump_ticket_passes_utf8_encoding_and_untranslated_newlines(
         return orig(self, mode, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", spy)
-    board.dump_ticket(tmp_path / "T-9999-x.md", {"id": "T-9999"}, "body")
+    ticket_store.dump_ticket(tmp_path / "T-9999-x.md", {"id": "T-9999"}, "body")
     assert captured.get("encoding") == "utf-8"
     assert captured.get("newline") == ""
 
@@ -194,8 +197,6 @@ def _init_isolated(board, monkeypatch, tmp_path):
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "AREAS_FILE", proj / ".project_manager" / "areas.md")
     monkeypatch.setattr(board, "LOCAL_DIR", proj / ".project_manager" / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK",
-                        proj / ".project_manager" / ".local" / "board.lock")
     monkeypatch.setattr(board, "LEASES_FILE",
                         proj / ".project_manager" / ".local" / "worktree-leases.json")
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
@@ -235,7 +236,7 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" in conf_text
+    assert f"ctx.compact_at_pct={conf_store._conf_default_int('ctx.compact_at_pct')}" in conf_text
     # 설명 산문·주석 예시가 conf 에 없다.
     for marker in ("핸드오프 토큰 예산", "물리 window 아님",
                    "harness.claude.ctx_window_tokens",
@@ -243,7 +244,7 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
         assert marker not in conf_text, f"conf 에 설명 블록 잔존: {marker}"
     parsed = conf_store.local_config(board._home())  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
     assert parsed.get("ctx.compact_at_pct") == str(
-        board._conf_default_int("ctx.compact_at_pct"))
+        conf_store._conf_default_int("ctx.compact_at_pct"))
     assert not [key for key in parsed if key.startswith("harness.")]
 
 
@@ -314,7 +315,7 @@ def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_p
 
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "ctx.compact_at_pct=95" in conf_text
-    assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" not in conf_text
+    assert f"ctx.compact_at_pct={conf_store._conf_default_int('ctx.compact_at_pct')}" not in conf_text
     assert "harness.claude.ctx_window_tokens=5000" in conf_text
     # init 이 안 쓰는 키(구 `session=` 포함)는 비파괴 병합으로 byte 보존된다 — 엔진은 채택자
     # conf 를 대신 고쳐 쓰지 않는다(읽지 않을 뿐·T-0779).
@@ -334,7 +335,7 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     assert "session=" not in conf_text and "prefix=" not in conf_text
     assert "runtime.py=" in conf_text
     assert f"test.cmd={python_env.default_pytest_cmd(python_env._detect_py())}" in conf_text
-    assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" in conf_text
+    assert f"ctx.compact_at_pct={conf_store._conf_default_int('ctx.compact_at_pct')}" in conf_text
     assert "ctx.checkpoint_at_pct=" in conf_text and "ctx.precompact_at_pct=" in conf_text
 
 

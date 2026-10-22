@@ -96,7 +96,6 @@ def _fixture_board(pd, home: Path):
     )
     board.REPO = home
     board.LOCAL_DIR = home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
     return board
 
 

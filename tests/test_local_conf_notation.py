@@ -40,6 +40,8 @@ from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store, pm_paths, python_env
 from pm_engine.app import conf_lint, regression
 
+from pm_engine.infra import conf_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -613,7 +615,7 @@ def test_generated_conf_comments_never_restate_a_configured_value():
     반드시 drift 하므로, 주석은 "무엇을 하는 키인지" 만 말한다.
     """
     board = _load("board", "conf_writer_board")
-    source = inspect.getsource(board._write_init_local_conf)
+    source = inspect.getsource(conf_store._write_init_local_conf)
     generated = [line for line in source.splitlines() if '"' in line and "\\n" in line]
     for line in generated:
         stripped = line.strip()
@@ -631,7 +633,7 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(board._home())
 
     conf = (pm / "local.conf").read_text(encoding="utf-8")
     assert [line for line in conf.splitlines()

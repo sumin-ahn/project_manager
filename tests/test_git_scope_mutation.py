@@ -30,6 +30,8 @@ import pytest
 
 from conftest import current_branch
 
+from pm_engine.infra import git
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -99,14 +101,14 @@ def test_scope_pathspec_drops_paths_outside_repo(board, tmp_path):
     repo.mkdir()
     inside = repo / "wiki" / "a.md"
     outside = tmp_path / "elsewhere" / "b.md"
-    assert board.git_scope_pathspec(repo, [inside, outside]) == ("wiki/a.md",)
+    assert git.git_scope_pathspec(repo, [inside, outside]) == ("wiki/a.md",)
 
 
 def test_scope_pathspec_dedups_preserving_order(board, tmp_path):
     repo = tmp_path / "home"
     repo.mkdir()
     a, b = repo / "a.md", repo / "b.md"
-    assert board.git_scope_pathspec(repo, [a, b, a]) == ("a.md", "b.md")
+    assert git.git_scope_pathspec(repo, [a, b, a]) == ("a.md", "b.md")
 
 
 def test_scope_pathspec_excludes_prefixes(board, tmp_path):
@@ -115,7 +117,7 @@ def test_scope_pathspec_excludes_prefixes(board, tmp_path):
     repo.mkdir()
     keep = repo / "tickets" / "open" / "T-0001-x.md"
     drop = repo / "tickets" / ".drafts" / "T-0002-y.md"
-    got = board.git_scope_pathspec(repo, [keep, drop],
+    got = git.git_scope_pathspec(repo, [keep, drop],
                                    exclude_prefixes=("tickets/.drafts/",))
     assert got == ("tickets/open/T-0001-x.md",)
 
@@ -131,7 +133,7 @@ def test_scope_stageable_filters_unknown_paths_and_keeps_deleted_tracked(board, 
     _git_commit_all(repo)
     (repo / "deleted.md").unlink()
 
-    got = board.git_scope_stageable(repo, ("kept.md", "deleted.md", "never/existed.md"))
+    got = git.git_scope_stageable(repo, ("kept.md", "deleted.md", "never/existed.md"))
     assert got == ("kept.md", "deleted.md")
 
 
@@ -153,7 +155,7 @@ def test_scope_stageable_never_returns_a_directory(board, tmp_path):
     (repo / "docs" / "kept.md").write_text("v2\n", encoding="utf-8")     # 변경됨
     (repo / "docs" / "fresh.md").write_text("new\n", encoding="utf-8")   # untracked
 
-    got = board.git_scope_stageable(repo, ("docs",))
+    got = git.git_scope_stageable(repo, ("docs",))
     assert "docs" not in got, f"디렉토리가 pathspec 에 살아남음(누출 채널): {got}"
     assert set(got) == {"docs/kept.md", "docs/fresh.md"}   # 변경분만·파일 단위
     assert "docs/quiet.md" not in got                      # 변경 없는 파일은 대상 아님
@@ -180,7 +182,7 @@ def test_scope_stageable_expands_brand_new_untracked_directory(board, tmp_path):
     (fresh / "deep").mkdir()
     (fresh / "deep" / "nested.md").write_text("n\n", encoding="utf-8")
 
-    got = board.git_scope_stageable(repo, ("newdir",))
+    got = git.git_scope_stageable(repo, ("newdir",))
     assert "newdir" not in got and "newdir/" not in got, \
         f"신규 untracked 디렉토리가 pathspec 에 살아남음(뭉뚱그리기 부활): {got}"
     assert set(got) == {"newdir/mine.md", "newdir/deep/nested.md"}
@@ -206,7 +208,7 @@ def test_scope_stageable_expands_deleted_directory(board, tmp_path):
     shutil.rmtree(repo / "src")                       # 선언 디렉토리 통째로 삭제
     (repo / "others.py").unlink()                     # 선언 밖 남의 삭제
 
-    got = board.git_scope_stageable(repo, ("src",))
+    got = git.git_scope_stageable(repo, ("src",))
     assert set(got) == {"src/a.py", "src/sub/b.py"}, f"삭제 전개 실패: {got}"
     assert "src" not in got and "src/" not in got     # 디렉토리는 여전히 안 남는다
     assert "others.py" not in got                     # 선언 밖 삭제는 안 실린다
@@ -308,7 +310,7 @@ def test_finish_commits_git_mv_rename_inside_declared_directory(tf, tmp_path, mo
 
 
 @requires_git
-def test_scope_stageable_final_gate_drops_directory_even_if_expansion_fails(board, tmp_path):
+def test_scope_stageable_final_gate_drops_directory_even_if_expansion_fails(monkeypatch, board, tmp_path):
     """전개가 **실패해도** 디렉토리는 최종 반환에 못 남는다 — 불변식이 전개에 의존하지 않는다.
 
     전개를 죽인(빈 목록/디렉토리 반환) 러너를 물려 "다음 번 조용한 전개 실패" 를 모사한다.
@@ -321,12 +323,12 @@ def test_scope_stageable_final_gate_drops_directory_even_if_expansion_fails(boar
     (repo / "docs" / "a.md").write_text("a\n", encoding="utf-8")
 
     # 전개가 디렉토리(또는 `dir/` 표기)를 그대로 돌려주는 고장 모드.
-    monkeyed = board._git_scope_expand_dir
+    monkeyed = git._git_scope_expand_dir
     try:
-        board._git_scope_expand_dir = lambda repo_, rel, run: [rel, rel + "/"]
-        got = board.git_scope_stageable(repo, ("docs",))
+        monkeypatch.setattr(git, '_git_scope_expand_dir', lambda repo_, rel, run: [rel, rel + "/"])
+        got = git.git_scope_stageable(repo, ("docs",))
     finally:
-        board._git_scope_expand_dir = monkeyed
+        monkeypatch.setattr(git, '_git_scope_expand_dir', monkeyed)
     assert got == (), f"전개 실패 시 디렉토리가 새어나감: {got}"
 
 
@@ -356,7 +358,7 @@ def test_scope_stageable_drops_paths_inside_nested_git(board, tmp_path):
     assert raw.returncode != 0, "서브모듈 내부 pathspec 이 fatal 이 아님 — 전제 붕괴"
     assert _staged(repo) == set(), "fatal 인데 일부가 stage 됨 — 전제 붕괴"
 
-    got = board.git_scope_stageable(repo, ("code.py", "nested/in.md"))
+    got = git.git_scope_stageable(repo, ("code.py", "nested/in.md"))
     assert got == ("code.py",)
     assert _git(["add", "-A", "--", *got], repo).returncode == 0
     assert _staged(repo) == {"code.py"}
@@ -389,7 +391,7 @@ def test_scope_stageable_drops_gitignored_paths(board, tmp_path):
     assert raw.returncode != 0, "ignored 명시 pathspec 인데 add 가 성공 — 전제 붕괴"
     _git(["reset", "-q"], repo)      # 대조 실측이 남긴 index 를 되돌린다(이 tmp repo 한정)
 
-    got = board.git_scope_stageable(repo, ("normal.md", "local.conf", "board.md"))
+    got = git.git_scope_stageable(repo, ("normal.md", "local.conf", "board.md"))
     assert "local.conf" not in got, f"gitignored 경로가 pathspec 에 남음: {got}"
     assert "normal.md" in got
     assert "board.md" in got, "추적 중인 파일이 ignore 규칙 때문에 빠짐(과잉 제외)"
@@ -443,7 +445,7 @@ def test_scope_stage_pathspec_survives_unmatched_path_in_real_git(board, tmp_pat
     assert raw.returncode != 0, "미매치 pathspec 인데 git 이 살아남음 — 전제 붕괴"
     assert _staged(repo) == set()
 
-    pathspec = board.git_scope_stage_pathspec(
+    pathspec = git.git_scope_stage_pathspec(
         repo, [repo / "kept.md", repo / "never" / "existed.md"])
     assert pathspec == ("kept.md",)
     assert _git(["add", "-A", "--", *pathspec], repo).returncode == 0
@@ -515,14 +517,14 @@ def test_split_dirty_scope_filter_is_a_noop_after_staging(tf):
 def test_parse_porcelain_z_keeps_both_columns_and_rename_target(board):
     """NUL 파서는 XY 두 열을 보존하고 rename 2토큰에서 **신규 경로**를 취한다 (공유 단일 구현)."""
     out = "M  a.md\0 D b.md\0?? c.md\0R  new.md\0old.md\0"
-    assert board.git_parse_porcelain_z(out) == (
+    assert git.git_parse_porcelain_z(out) == (
         ("M ", "a.md"), (" D", "b.md"), ("??", "c.md"), ("R ", "new.md"))
 
 
 def test_parse_porcelain_z_keeps_non_ascii_and_space_paths_verbatim(board):
     """비-ASCII·공백 경로가 **원문 그대로** 나온다 — 인용/8진 이스케이프 0 (판정 입력이므로 필수)."""
     out = "M  wiki/ideas/0001-멀티-pm-티켓.md\0?? docs/a b.md\0"
-    assert board.git_parse_porcelain_z(out) == (
+    assert git.git_parse_porcelain_z(out) == (
         ("M ", "wiki/ideas/0001-멀티-pm-티켓.md"), ("??", "docs/a b.md"))
 
 
@@ -548,7 +550,7 @@ def test_status_entries_reads_non_ascii_paths_as_real_paths(tf, board, tmp_path)
     runner = lambda args: (lambda r: (r.returncode, r.stdout))(   # noqa: E731 — 테스트 러너
         subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
                        text=True, encoding="utf-8", errors="replace", check=False))
-    paths = {path for _code, path in tf.status_entries(runner, board)}
+    paths = {path for _code, path in tf.status_entries(runner)}
     assert korean in paths and spaced in paths, f"실경로로 안 읽힘: {paths}"
 
 
@@ -618,7 +620,7 @@ def test_status_entries_degraded_branch_reports_real_paths(tf, tmp_path):
     runner = lambda args: (lambda r: (r.returncode, r.stdout))(   # noqa: E731 — 테스트 러너
         subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
                        text=True, encoding="utf-8", errors="replace", check=False))
-    paths = {path for _code, path in tf.status_entries(runner, None)}   # board=None → degraded
+    paths = {path for _code, path in tf.status_entries(runner)}   # board=None → degraded
     assert "남의-한글-WIP.py" in paths, f"degraded 갈래가 이스케이프 경로를 냄: {paths}"
 
 
@@ -630,7 +632,7 @@ def test_status_entries_degraded_branch_consumes_rename_tokens(tf):
     빠져 있었다.
     """
     out = "R  new.md\0old.md\0 M kept.md\0"
-    entries = tf.status_entries(lambda args: (0, out), None)
+    entries = tf.status_entries(lambda args: (0, out))
     assert entries == (("R ", "new.md"), (" M", "kept.md"))
 
 
@@ -648,7 +650,7 @@ def test_status_entries_expands_new_untracked_directory(tf, board, tmp_path):
     runner = lambda args: (lambda r: (r.returncode, r.stdout))(   # noqa: E731 — 테스트 러너
         subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
                        text=True, encoding="utf-8", errors="replace", check=False))
-    paths = {path for _code, path in tf.status_entries(runner, board)}
+    paths = {path for _code, path in tf.status_entries(runner)}
     assert "raw/spikes/new.md" in paths, f"디렉토리로 접혀 파일이 안 보임: {paths}"
     assert "raw/" not in paths
 
@@ -1005,8 +1007,11 @@ def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, c
     log_before = log_file.read_text(encoding="utf-8")
     finisher = _make_finisher(
         tf, root, monkeypatch, touches=[_TOUCHED_FILE],
-        board_py=root / "없는-board.py",
         run_board_fn=lambda args: pytest.fail("scope_error 인데 board complete 가 불렸다"))
+
+    def failed_scope(*args, **kwargs):
+        raise OSError("scope IO unavailable")
+    monkeypatch.setattr(git, "git_scope_stage_pathspec", failed_scope)
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 1
     captured = capsys.readouterr()
@@ -1236,10 +1241,7 @@ def test_relabel_proceeds_with_dirty_home_and_commits_only_touched(tmp_path, mon
     root.mkdir()
     board_dir = _make_board_git_home(root)
     monkeypatch.setattr(board, "REPO", root)
-    monkeypatch.setattr(board, "BOARD_FILE", root / ".project_manager" / "wiki" / "board.md")
     monkeypatch.setattr(board, "LOCAL_DIR", root / ".project_manager" / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK",
-                        root / ".project_manager" / ".local" / "board.lock")
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     # 홈 git 은 dirty 하다(남의 미커밋 wiki 편집) — 옛 게이트라면 여기서 abort 했다.

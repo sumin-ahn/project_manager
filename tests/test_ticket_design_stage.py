@@ -44,6 +44,9 @@ from pm_engine.domain import design_rules, round_rules, ticket_rules
 from pm_engine.infra import pm_paths, round_store, ticket_store
 from pm_engine.app import body_lint, lint_hooks
 
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 TEMPLATE = REPO / ".project_manager" / "wiki" / "tickets" / "_template.md"
@@ -304,12 +307,12 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
         "LEASES_FILE": pm / ".local" / "worktree-leases.json",
         "PM_STATE_FILE": wiki / "pm_state.md",
         "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
@@ -317,7 +320,7 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # 귀속 쓰기(new·claim)는 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962) — 실행
     # 환경 세션 값이 새지 않게 env 를 비우고 이 파일의 task 폴더를 준비한다.
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -349,7 +352,7 @@ def _seed_open(board, *, design, body=None, tid="T-0001", estimate=None):
     if estimate is not None:
         fm["estimate"] = estimate
     path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
-    board.dump_ticket(path, fm, body if body is not None else _body())
+    ticket_store.dump_ticket(path, fm, body if body is not None else _body())
     return path
 
 
@@ -456,7 +459,7 @@ def test_claim_gate_runs_after_dependency_gate(board):
     _seed_open(board, design="done", tid="T-0002")
     fm = {"id": "T-0001", "title": "seed", "status": "open", "claimed_by": None,
           "depends_on": ["T-0002"], "design": "required"}
-    board.dump_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md", fm,
+    ticket_store.dump_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md", fm,
                       _body(_DESIGN_SKELETON))
     assert board.cmd_claim(_claim_args()) == 1
 
@@ -753,7 +756,7 @@ def test_promote_rejects_design_required_with_unfilled_section(board_git, capsys
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == design_rules.DESIGN_REQUIRED
-    board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))   # 5절은 채우고 설계만 뼈대
+    ticket_store.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))   # 5절은 채우고 설계만 뼈대
 
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 1
     assert "design-pending" in capsys.readouterr().err
@@ -775,7 +778,7 @@ def test_promote_rejects_design_required_even_when_section_is_filled(board_git, 
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == design_rules.DESIGN_REQUIRED
-    board_git.dump_ticket(draft, fm, _body())      # 설계 절까지 전부 충전·필드만 required
+    ticket_store.dump_ticket(draft, fm, _body())      # 설계 절까지 전부 충전·필드만 required
 
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 1
     err = capsys.readouterr().err
@@ -806,7 +809,7 @@ def test_promote_accepts_filled_design_section_with_done(board_git):
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     fm["design"] = design_rules.DESIGN_DONE
-    board_git.dump_ticket(draft, fm, _body())
+    ticket_store.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, fm["id"])
 
     bind_product_cluster(board_git, fm["id"], task=_TASK)
@@ -823,7 +826,7 @@ def test_promote_unaffected_for_na_ticket_with_skeleton_design(board_git):
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == design_rules.DESIGN_NA
-    board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
+    ticket_store.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
 
     bind_product_cluster(board_git, fm["id"], task=_TASK)
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
@@ -917,7 +920,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     assert fm["design"] == design_rules.DESIGN_REQUIRED
-    board_git.dump_ticket(draft, fm, _body())   # 5절 + 설계 절 전부 충전 · 필드만 required
+    ticket_store.dump_ticket(draft, fm, _body())   # 5절 + 설계 절 전부 충전 · 필드만 required
 
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1
     assert "design-pending" in capsys.readouterr().err
@@ -966,7 +969,7 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     fm["design"] = design_rules.DESIGN_DONE
-    board_git.dump_ticket(draft, fm, _body())
+    ticket_store.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, tid)
     bind_product_cluster(board_git, tid, task=_TASK)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0

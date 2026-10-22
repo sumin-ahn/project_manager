@@ -30,6 +30,12 @@ from conftest import anchor_board_module, ensure_product_slot
 from pm_engine.infra import cluster_store, pm_paths, round_store, ticket_store
 from pm_engine.app import round_seed
 
+from pm_engine.infra import board_git
+from pm_engine.infra import git
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -100,8 +106,8 @@ def _make_board_git(root: Path, *, remote: Path) -> Path:
 def board(tmp_path, monkeypatch):
     mod = _load_tool("board")
     anchor_board_module(mod, tmp_path, monkeypatch)
-    mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    mod.BOARD_FILE.touch()
+    (pm_paths.wiki_dir(mod._home()) / "board.md").parent.mkdir(parents=True, exist_ok=True)
+    (pm_paths.wiki_dir(mod._home()) / "board.md").touch()
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     mod._tmp = tmp_path
@@ -155,7 +161,7 @@ def test_new_placeholder_body_not_committed_to_board_git(board, tmp_path, capsys
 
     # dirty *판정용* 헬퍼(`_board_git_status_porcelain` — claim prefetch 가 쓴다)는 draft 를
     # pathspec exclude 하므로 clean 으로 봐야 한다(무관 claim 이 draft 때문에 막히면 안 됨).
-    assert not board._board_git_status_porcelain().strip(), (
+    assert not board_git._board_git_status_porcelain(board._home()).strip(), (
         "_board_git_status_porcelain 이 draft 를 dirty 로 오판함 — 무관 claim 이 막힐 위험.")
 
     handoff = _load_tool("pm_handoff")
@@ -213,8 +219,8 @@ def test_second_draft_with_deployed_root_rules_never_contacts_remote(
             raise AssertionError(f"두 번째 draft가 원격 {op}를 호출함")
         return _call
 
-    monkeypatch.setattr(board, "_board_git_pull_rebase", _unexpected_remote("pull"))
-    monkeypatch.setattr(board, "_board_git_push", _unexpected_remote("push"))
+    monkeypatch.setattr(board_git, "_board_git_pull_rebase", _unexpected_remote("pull"))
+    monkeypatch.setattr(board_git, "_board_git_push", _unexpected_remote("push"))
 
     assert board.cmd_new(_new_args("두 번째")) == 0
 
@@ -239,14 +245,14 @@ def test_union_only_board_first_draft_backfills_markdown_lf(
     _git(["commit", "-qm", "seed legacy root rules"], board_dir)
     _git(["push", "-q", "origin", "main"], board_dir)
 
-    assert board._board_git_root_files_need_backfill() is True
+    assert board_git._board_git_root_files_need_backfill(board._home()) is True
     assert board.cmd_new(_new_args("LF backfill draft")) == 0
 
     local = _git(["show", "HEAD:.gitattributes"], board_dir).stdout
     remote = _git(["show", "main:.gitattributes"], bare).stdout
     assert "*.md text eol=lf" in local
     assert remote == local
-    assert board._board_git_root_files_need_backfill() is False
+    assert board_git._board_git_root_files_need_backfill(board._home()) is False
 
 
 @requires_git
@@ -293,7 +299,7 @@ def test_promote_commits_when_body_filled(board, tmp_path, monkeypatch):
         "## 참고\n- 실제 참고 사항\n\n"
         "## 메모\n"
     )
-    board.dump_ticket(path, fm, filled_body)
+    ticket_store.dump_ticket(path, fm, filled_body)
 
     _t0930_bind(board, tmp_path, ticket_id, monkeypatch)
     rc = board.cmd_promote(argparse.Namespace(id=ticket_id))
@@ -362,7 +368,7 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path, monkeypatch):
                 "## 완료 조건 (Definition of Done)\n- [ ] 산출물\n\n"
                 "## 참고\n- 참고\n\n## 메모\n"
             )
-            board.dump_ticket(p, fm, filled_body)
+            ticket_store.dump_ticket(p, fm, filled_body)
     assert filled_id, "두 번째 draft 파일을 못 찾음(테스트 셋업 오류)."
 
     _t0930_bind(board, tmp_path, filled_id, monkeypatch)
@@ -417,7 +423,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
                     "## 완료 조건 (Definition of Done)\n- [x] 산출물\n\n"
                     "## 참고\n- 참고\n\n## 메모\n"
                 )
-                board.dump_ticket(p, fm, filled_body)
+                ticket_store.dump_ticket(p, fm, filled_body)
                 _t0930_bind(board, tmp_path, seed_id, monkeypatch)
                 assert board.cmd_promote(argparse.Namespace(id=seed_id)) == 0
     else:
@@ -455,11 +461,11 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
 
     called = {"n": 0}
 
-    def _boom(*a, **k):
+    def _boom(_home, *a, **k):
         called["n"] += 1
         raise AssertionError("legacy 인데 board-git 호출 발생 — 게이트 누출")
 
-    monkeypatch.setattr(board, "_board_git", _boom)
+    monkeypatch.setattr(git, "_board_git", _boom)
     rc = board.cmd_new(_new_args("제목"))
     assert rc == 0
     assert called["n"] == 0
@@ -671,7 +677,7 @@ def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
     tid = fm["id"]
     from test_board_cluster import _TEMPLATE_TEXT as filled
     body = filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "초안")
-    board.dump_ticket(path, fm, body)
+    ticket_store.dump_ticket(path, fm, body)
     original = path.read_bytes()
     head = _git(["rev-parse", "HEAD"], board_dir).stdout
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
@@ -699,7 +705,7 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
     from test_board_cluster import _TEMPLATE_TEXT as filled
-    board.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
+    ticket_store.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
     _t0930_bind(board, tmp_path, tid, monkeypatch)
     ledger = board.load_cluster("declared")
     if damage in ("branch", "base"):
@@ -711,7 +717,7 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     elif damage == "reverse":
         fm, body = ticket_store.load_ticket(path)
         fm["cluster"] = "C-other"
-        board.dump_ticket(path, fm, body)
+        ticket_store.dump_ticket(path, fm, body)
     else:
         duplicate = dict(ledger, id="C-duplicate")
         board.dump_cluster(duplicate)

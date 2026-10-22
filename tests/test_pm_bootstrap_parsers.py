@@ -25,6 +25,10 @@ import pytest
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pre_push_hook
 
+from pm_engine.domain import git_freshness
+
+from pm_engine.infra import lease_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOOTSTRAP_PY = TOOLS / "pm_bootstrap.py"
@@ -196,12 +200,12 @@ def test_parse_open_tickets_grammar_matches_board():
     # `123` = 순수 숫자 prefix(등록 grammar `[A-Za-z0-9][A-Za-z0-9_-]*` 가 허용·round-3 must-fix).
     for prefix in ("PAY", "service-a", "P0", "x_y", "123"):
         tid = f"T-{prefix}-001"
-        assert board._ticket_prefix(tid) == prefix  # board grammar 가 prefix 로 인정
+        assert ticket_rules._ticket_prefix(tid) == prefix  # board grammar 가 prefix 로 인정
         out = f"  [open   ] {tid}  t  -  tag\n"
         assert mod.parse_open_tickets(out) == [tid]
     # legacy(prefix 없음)도 양쪽에서 일관 — board 는 None, 부트스트랩은 open 으로 잡음.
     # legacy 4자리(`T-0164`·하이픈 1개) vs 숫자 prefix(`T-123-001`·하이픈 2개) 구조적 비충돌.
-    assert board._ticket_prefix("T-0164") is None
+    assert ticket_rules._ticket_prefix("T-0164") is None
     assert mod.parse_open_tickets("  [open   ] T-0164  t  -  tag\n") == ["T-0164"]
 
 
@@ -387,20 +391,20 @@ def test_parse_git_status_modified():
 
 def test_parse_git_ahead_behind_happy():
     mod = _load_module()
-    assert mod.parse_git_ahead_behind("2\t1\n") == (2, 1)
+    assert git_freshness.parse_git_ahead_behind("2\t1\n") == (2, 1)
 
 
 def test_parse_git_ahead_behind_zero():
     mod = _load_module()
-    assert mod.parse_git_ahead_behind("0\t0\n") == (0, 0)
+    assert git_freshness.parse_git_ahead_behind("0\t0\n") == (0, 0)
 
 
 def test_parse_git_ahead_behind_malformed_is_none():
     """빈 문자열·형식 불일치(탭 없음·비-숫자) → None(upstream 미설정과 동형 graceful)."""
     mod = _load_module()
-    assert mod.parse_git_ahead_behind("") is None
-    assert mod.parse_git_ahead_behind("no-upstream\n") is None
-    assert mod.parse_git_ahead_behind("a\tb\n") is None
+    assert git_freshness.parse_git_ahead_behind("") is None
+    assert git_freshness.parse_git_ahead_behind("no-upstream\n") is None
+    assert git_freshness.parse_git_ahead_behind("a\tb\n") is None
 
 
 # ── parse_log_last_entry ────────────────────────────────────────────────────
@@ -846,7 +850,7 @@ _LOG_TEXT_48_HANDOFF = (
 
 # ── user 연속성 1줄 (T-0208·ADR-0033 ③·author 일치/불일치/미해소 3분기) ─────────
 
-def _user_continuity_bootstrap(mod, *, author_email, user, log_file=None):
+def _user_continuity_bootstrap(monkeypatch, mod, *, author_email, user, log_file=None):
     """`_collect_user_continuity` 직접 검증용 PmBootstrap — pickaxe git·board.user_name 을 mock.
 
     author_email=None → pickaxe 가 빈 출력(author 미해소). user=None → board.user_name 미해소.
@@ -857,44 +861,42 @@ def _user_continuity_bootstrap(mod, *, author_email, user, log_file=None):
             return (0, f"{author_email}\n") if author_email else (0, "")
         raise AssertionError(f"예상치 못한 git 호출: {args}")
 
-    kwargs = dict(
-        run_git_fn=_git_fn,
-        board=SimpleNamespace(user_name=lambda: user),
-    )
+    monkeypatch.setattr(lease_store, "user_name", lambda _home: user)
+    kwargs = dict(run_git_fn=_git_fn)
     if log_file is not None:
         kwargs["log_file"] = log_file
     return mod.PmBootstrap(**kwargs)
 
 
-def test_collect_user_continuity_match():
+def test_collect_user_continuity_match(monkeypatch):
     """직전 handoff author == 현재 user → `사용자: … (동일 — 연속)`."""
     mod = _load_module()
-    inst = _user_continuity_bootstrap(mod, author_email="alice@x.com", user="alice@x.com")
+    inst = _user_continuity_bootstrap(monkeypatch, mod, author_email="alice@x.com", user="alice@x.com")
     line = inst._collect_user_continuity(_LOG_TEXT_47_HANDOFF)
     assert line == "사용자: alice@x.com (직전 handoff 작성자와 동일 — 연속)"
 
 
-def test_collect_user_continuity_mismatch():
+def test_collect_user_continuity_mismatch(monkeypatch):
     """직전 handoff author != 현재 user → ⚠ 다른 사용자(author) 경고."""
     mod = _load_module()
-    inst = _user_continuity_bootstrap(mod, author_email="bob@x.com", user="alice@x.com")
+    inst = _user_continuity_bootstrap(monkeypatch, mod, author_email="bob@x.com", user="alice@x.com")
     line = inst._collect_user_continuity(_LOG_TEXT_47_HANDOFF)
     assert line == (
         "⚠ 직전 handoff 는 다른 사용자(bob@x.com) — pending intent 는 프로젝트 상태로 취급"
     )
 
 
-def test_collect_user_continuity_unresolved_is_none():
+def test_collect_user_continuity_unresolved_is_none(monkeypatch):
     """author 조회불가·user 미상·handoff 부재 → None(줄 생략·fail-soft)."""
     mod = _load_module()
     # author 미해소(pickaxe 빈 출력).
-    inst_no_author = _user_continuity_bootstrap(mod, author_email=None, user="alice@x.com")
+    inst_no_author = _user_continuity_bootstrap(monkeypatch, mod, author_email=None, user="alice@x.com")
     assert inst_no_author._collect_user_continuity(_LOG_TEXT_47_HANDOFF) is None
     # user 미상(board.user_name None).
-    inst_no_user = _user_continuity_bootstrap(mod, author_email="alice@x.com", user=None)
+    inst_no_user = _user_continuity_bootstrap(monkeypatch, mod, author_email="alice@x.com", user=None)
     assert inst_no_user._collect_user_continuity(_LOG_TEXT_47_HANDOFF) is None
     # handoff entry 부재 → git 호출 자체를 안 함(needle 없음)·None.
-    inst_ok = _user_continuity_bootstrap(mod, author_email="alice@x.com", user="alice@x.com")
+    inst_ok = _user_continuity_bootstrap(monkeypatch, mod, author_email="alice@x.com", user="alice@x.com")
     assert inst_ok._collect_user_continuity(_LOG_TEXT_NO_HANDOFF) is None
 
 
@@ -1151,7 +1153,7 @@ def test_freshness_decision_ahead_unknown_no_pull():
 def test_behind_warning_ahead_unknown_reason():
     """_behind_warning 이 ahead=None 을 'ahead 미확인' 사유로 표면화한다."""
     mod = _load_module()
-    warning = mod._behind_warning(
+    warning = git_freshness._behind_warning(
         {"behind": 2, "fetched": True, "dirty": False, "ahead": None})
     assert "ahead 미확인" in warning
 
@@ -1206,21 +1208,21 @@ def test_freshness_decision_ahead_only_no_pull():
 def test_format_freshness_behind_ahead():
     mod = _load_module()
     scope = {"fetched": True, "detached": False, "behind": 3, "ahead": 0, "note": None}
-    assert mod._format_freshness(scope) == "behind 3 / ahead 0"
+    assert git_freshness._format_freshness(scope) == "behind 3 / ahead 0"
 
 
 def test_format_freshness_latest_with_note():
     mod = _load_module()
     scope = {"fetched": True, "detached": False, "behind": 0, "ahead": 0,
              "note": "ff-pull 동기 완료 (behind 3→0)"}
-    assert mod._format_freshness(scope) == "최신 · ff-pull 동기 완료 (behind 3→0)"
+    assert git_freshness._format_freshness(scope) == "최신 · ff-pull 동기 완료 (behind 3→0)"
 
 
 def test_format_freshness_fetch_failure_prefixed():
     """fetch 실패면 '⚠ fetch 실패' 접두 + stale local 측정 병기(fail-soft 표면화)."""
     mod = _load_module()
     scope = {"fetched": False, "detached": False, "behind": 2, "ahead": 0, "note": None}
-    line = mod._format_freshness(scope)
+    line = git_freshness._format_freshness(scope)
     assert line.startswith("⚠ fetch 실패")
     assert "behind 2 / ahead 0" in line
 
@@ -1228,7 +1230,7 @@ def test_format_freshness_fetch_failure_prefixed():
 def test_format_freshness_detached():
     mod = _load_module()
     scope = {"fetched": True, "detached": True, "behind": None, "ahead": None, "note": None}
-    assert mod._format_freshness(scope) == "detached HEAD"
+    assert git_freshness._format_freshness(scope) == "detached HEAD"
 
 
 

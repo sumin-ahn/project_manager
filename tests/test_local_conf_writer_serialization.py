@@ -40,6 +40,12 @@ import pytest
 from pm_engine.infra import fs, python_env
 from _engine_tree import engine_python_files
 
+from pm_engine.infra import conf_store
+
+from pm_engine.domain import board_git_rules
+
+from pm_engine.infra import pm_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -123,7 +129,7 @@ LOCK_SEAM_CALL = "_local_conf_write_lock("
 
 # 등재된 conf writer 전수. 값 = (처분, 사유). 스캐너가 새 writer 를 잡으면 이 표와 어긋나 red 다.
 LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
-    ("board.py", "_write_init_local_conf"):
+    ("pm_engine/infra/conf_store.py", "_write_init_local_conf"):
         (HOLDS_LOCK, "init 최초 전체 생성 + 비파괴 병합(read→merge→write_text)"),
     ("pm_update.py", "record_upstream_revs"):
         (HOLDS_LOCK, "형상 판정(upstream=)→updates 계획→키 write→검증이 한 구간"),
@@ -338,7 +344,7 @@ def test_every_entry_derives_the_same_lock_path(
     conf = tmp_path / ".project_manager" / "local.conf"
     expected = conf.parent / ".local" / "local-conf.lock"
     assert file_lock.conf_lock_path(conf) == expected
-    assert board._local_conf_lock_path(conf) == expected
+    assert conf_store._local_conf_lock_path(conf) == expected
     assert pm_import._local_conf_lock_path(conf) == expected
 
 
@@ -396,9 +402,10 @@ class _Barrier:
 
 def _init_merge(board, monkeypatch, conf):
     """board init 의 비파괴 병합(read→merge→write)을 대상 conf 에 태우는 클로저."""
+    monkeypatch.setattr(board, "REPO", conf.parents[1])
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
-    return board._write_init_local_conf
+    return lambda: conf_store._write_init_local_conf(pm_paths.home_at(board.REPO))
 
 
 def test_a_concurrent_key_writer_never_loses_the_init_merge(
@@ -454,14 +461,14 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_init_merge(
     conf = _conf_at(tmp_path, "session=pm\n")
     barrier = _Barrier()
     commit = _init_merge(board, monkeypatch, conf)
-    real_set_conf_keys = board._set_conf_keys
+    real_set_conf_keys = conf_store._set_conf_keys
 
     def _blocking_set(text, updates):
         barrier.entered.set()
         assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(board, "_set_conf_keys", _blocking_set)
+    monkeypatch.setattr(conf_store, "_set_conf_keys", _blocking_set)
     merge = barrier.run(commit)
     assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
 
@@ -532,7 +539,7 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
     backup = "runtime.py=oldpy\nmy_custom_key=값\n"
     barrier = _Barrier()
     commit = _init_merge(board, monkeypatch, conf)
-    real_set_conf_keys = board._set_conf_keys
+    real_set_conf_keys = conf_store._set_conf_keys
 
     def _blocking_set(text, updates):
         # init 병합이 락을 쥔 채 **아직 쓰지 않은** 창 — 보존 재병합이 이 창에서 계획을 세우면
@@ -541,7 +548,7 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
         assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(board, "_set_conf_keys", _blocking_set)
+    monkeypatch.setattr(conf_store, "_set_conf_keys", _blocking_set)
     merge = barrier.run(commit)
     assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
 
@@ -767,12 +774,13 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
     """init 의 전체 write(최초 생성)도 공용 락 안이다 — 존재 판정과 생성 사이 창을 닫는다."""
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
+    monkeypatch.setattr(board, "REPO", conf.parents[1])
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     taken: list[str] = []
     _spy_lock(board.fs, monkeypatch, taken)
 
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(pm_paths.home_at(conf.parents[1]))
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
@@ -819,10 +827,11 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
 ):
     """락 도입 뒤에도 주석·미지 키·개행 없는 마지막 줄 계약은 그대로다."""
     conf = _conf_at(tmp_path, existing)
+    monkeypatch.setattr(board, "REPO", conf.parents[1])
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(pm_paths.home_at(conf.parents[1]))
     pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
 
     text = conf.read_text(encoding="utf-8")

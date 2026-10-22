@@ -6256,35 +6256,6 @@ def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tm
     assert cap.out == "" and cap.err == ""
 
 
-
-
-@_git_required
-def test_main_sync_raises_a_post_sync_dest_engine_skew(
-        pm_update, tmp_path, monkeypatch, capsys):
-    """완료 단계의 marked skew 는 흡수되지 않고 그대로 올라간다 — 적용한 파일은 그대로 남는다."""
-    dest = _make_pm_home(tmp_path / "home")
-    source = tmp_path / "upstream"
-    _make_upstream(source)
-    _write_local_conf(dest, f"upstream.path={source}\n")
-    monkeypatch.setattr(pm_update, "REPO", dest)
-    _stub_no_baseline_git(pm_update, monkeypatch)
-    skew = RuntimeError("injected post-sync engine skew")
-    skew._engine_rev_skew = True
-    monkeypatch.setattr(
-        pm_update,
-        "_load_dest_pm_config",
-        lambda _dest: (_ for _ in ()).throw(skew),
-    )
-
-    with pytest.raises(RuntimeError) as raised:
-        pm_update.main([])
-
-    assert raised.value is skew
-    assert (dest / SENTINEL_REL).read_text(encoding="utf-8") == (
-        source / SENTINEL_REL
-    ).read_text(encoding="utf-8")
-
-
 @_git_required
 def test_main_reinstalls_protected_hooks_after_apply(pm_update, tmp_path, monkeypatch, capsys):
     """실 sync(main) — apply 후 등록 repo 전수 훅 재설치가 실제로 돈다 (T-0415 트리거 배선).

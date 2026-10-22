@@ -32,6 +32,8 @@ from _test_exec import python_argv_command
 from pm_engine.infra import pm_paths
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
 from pm_engine.infra import delegate_ledger, round_store
+
+from pm_engine.cli import task_args
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -115,7 +117,6 @@ def _fixture_board(pd, home: Path):
     )
     board.REPO = home
     board.LOCAL_DIR = home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
     board._rounds_mutation_sync_paths = lambda _message, _paths: True
     return board
 
@@ -1155,7 +1156,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
     home, tickets = review_env
     board = _fixture_board(pd, home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
-    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "REPO", board.REPO)
     import contextlib
     for ticket in _MEMBERS:
         spec, rounds = _accepted_ticket(pd)  # noqa: PLW2901 — 티켓마다 같은 형상
@@ -1477,11 +1478,11 @@ def test_design_axis_replan_escape_hatch_is_removed(pd):
 
 
 @requires_git
-def test_confirmation_tree_must_be_the_cluster_branch(pd, review_env):
+def test_confirmation_tree_must_be_the_cluster_branch(monkeypatch, pd, review_env):
     """다른 브랜치에서 잰 관측을 확인으로 적지 않는다."""
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    board._claim_code_tree = lambda *_a, **_k: str(home)
+    monkeypatch.setattr(task_args, '_claim_code_tree', lambda _home,  *_a, **_k: str(home))
 
     assert pd._cluster_confirmation_tree(board, _CLUSTER, home=pm_paths.home_at(home)) == home
 
@@ -1518,16 +1519,16 @@ def test_resolve_cluster_completes_without_internal_ledger(
     }]}), encoding="utf-8")
     tree_identities = []
 
-    def task_tree(identity=None):
+    def task_tree(_home, identity=None):
         tree_identities.append(identity)
         return str(home)
 
-    board._claim_code_tree = task_tree
+    monkeypatch.setattr(task_args, '_claim_code_tree', task_tree)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
-    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "REPO", board.REPO)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     import contextlib
     for ticket in _MEMBERS:
@@ -1573,7 +1574,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
-    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "REPO", board.REPO)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     import contextlib
     for ticket in _MEMBERS:
@@ -1622,7 +1623,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
-    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "REPO", board.REPO)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     import contextlib
     for ticket in _MEMBERS:
@@ -1682,8 +1683,8 @@ def test_resolve_identity_accepts_task_and_repo_slot_execution(pd, review_env, m
     home, _ = review_env
     board = _fixture_board(pd, home)
     seen = []
-    board._claim_code_tree = lambda identity: seen.append(identity) or str(home)
-    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(task_args, '_claim_code_tree', lambda _home, identity: seen.append(identity) or str(home))
+    monkeypatch.setattr(pd, "REPO", board.REPO)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda owner: board)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_resolve_ticket_pm_verified", lambda *a, **k: 0)
@@ -1766,10 +1767,10 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     """통과(must-fix 0) 멤버는 무대상으로 건너뛰고 반려 멤버만 처분한다 — 묶음은 닫힌다."""
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._claim_code_tree = lambda *_a, **_k: str(home)
+    monkeypatch.setattr(task_args, '_claim_code_tree', lambda _home,  *_a, **_k: str(home))
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
-    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "REPO", board.REPO)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     import contextlib
     rejected, passed = _MEMBERS
@@ -1840,7 +1841,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     import contextlib
     monkeypatch.setattr(pd, '_CONFIG_REPO_OVERRIDE', home)
     monkeypatch.setattr(pd, '_activate_internal_rounds_cli_owner', lambda: home)
-    monkeypatch.setattr(pd, '_load_board', lambda: board)
+    monkeypatch.setattr(pd, "REPO", board.REPO)
     monkeypatch.setattr(pd, '_load_board_for_repo', lambda owner: board)
     for ticket in _MEMBERS:
         spec, rounds = _accepted_ticket(pd, command='echo hi', expected='hi')

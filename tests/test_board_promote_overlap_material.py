@@ -30,6 +30,8 @@ import pytest
 from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
 from pm_engine.infra import pm_paths, ticket_store
 
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -87,7 +89,7 @@ def _seed(mod, status: str, tid: str, touches, **extra) -> Path:
     fm = {"id": tid, "title": "x", "status": status, "touches": touches,
           "depends_on": [], "blocks": [], "tags": []}
     fm.update(extra)
-    mod.dump_ticket(path, fm, "# x\n\n## 목표\nx\n")
+    ticket_store.dump_ticket(path, fm, "# x\n\n## 목표\nx\n")
     return path
 
 
@@ -155,7 +157,7 @@ def test_candidate_with_unclear_touches_format_is_dropped_not_crashed(anchored):
     """후보 touches 가 리스트가 아닌 스칼라(형식 불명)면 그 후보만 조용히 빠진다."""
     path = pm_paths.tickets_dir(anchored._home()) / "open" / "T-0002-x.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    anchored.dump_ticket(path, {
+    ticket_store.dump_ticket(path, {
         "id": "T-0002", "title": "x", "status": "open", "touches": "tools/x.py",
         "depends_on": [], "blocks": [], "tags": [],
     }, "# x\n")
@@ -358,7 +360,7 @@ _FILLED_BODY = (
 def test_cmd_new_emits_overlap_material_on_stderr(board_git, capsys):
     board_dir = board_git._board_dir
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"
-    board_git.dump_ticket(existing, {
+    ticket_store.dump_ticket(existing, {
         "id": "T-0002", "title": "x", "status": "open",
         "touches": [".project_manager/tools/board.py"],
         "depends_on": [], "blocks": [], "tags": [],
@@ -377,7 +379,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
     """겹침이 있어도 승격은 성공한다(rc==0) — 재료는 판정 위가 아니라 옆이다."""
     board_dir = board_git._board_dir
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"
-    board_git.dump_ticket(existing, {
+    ticket_store.dump_ticket(existing, {
         "id": "T-0002", "title": "x", "status": "open",
         "touches": [".project_manager/tools/board.py"],
         "depends_on": [], "blocks": [], "tags": [],
@@ -388,7 +390,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
-    board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
+    ticket_store.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
 
     bind_product_cluster(board_git, tid)
@@ -407,7 +409,7 @@ def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
-    board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
+    ticket_store.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
 
     bind_product_cluster(board_git, tid)
@@ -422,7 +424,7 @@ def test_stdout_machine_channel_is_unchanged(board_git, capsys):
     """재료는 stderr 전용 — stdout 의 `created <ID>` 형식은 무변경(기계 채널 불변)."""
     board_dir = board_git._board_dir
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"
-    board_git.dump_ticket(existing, {
+    ticket_store.dump_ticket(existing, {
         "id": "T-0002", "title": "x", "status": "open",
         "touches": [".project_manager/tools/board.py"],
         "depends_on": [], "blocks": [], "tags": [],
@@ -447,7 +449,7 @@ def test_cmd_new_reports_registered_repo_idle_count_not_physical_folder_name(
     assert board_git.REPO.name != "canonical", "REPO.name 이 우연히 canonical 과 같으면 이 테스트가 무의미해진다."
     board_dir = board_git._board_dir
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"
-    board_git.dump_ticket(existing, {
+    ticket_store.dump_ticket(existing, {
         "id": "T-0002", "title": "x", "status": "open",
         "touches": ["tools/x.py"],
         "depends_on": [], "blocks": [], "tags": [],
@@ -473,7 +475,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
     assert board_git.REPO.name != "canonical"
     board_dir = board_git._board_dir
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"
-    board_git.dump_ticket(existing, {
+    ticket_store.dump_ticket(existing, {
         "id": "T-0002", "title": "x", "status": "open",
         "touches": ["tools/x.py"],
         "depends_on": [], "blocks": [], "tags": [],
@@ -486,7 +488,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     assert fm["created_by"].rsplit("/", 1)[-1] == _TASK, fm["created_by"]
-    board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
+    ticket_store.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
 
     _write_ledger(
@@ -517,7 +519,7 @@ def test_cmd_new_material_total_lines_stay_within_budget_with_slot_and_many_cand
             total_candidates += 1
             other_id = f"T-{9000 + total_candidates}"
             other_path = board_dir / "tickets" / "open" / f"{other_id}-x.md"
-            board_git.dump_ticket(other_path, {
+            ticket_store.dump_ticket(other_path, {
                 "id": other_id, "title": "x", "status": "open",
                 "touches": [path],
                 "depends_on": [], "blocks": [], "tags": [],
@@ -564,7 +566,7 @@ def test_legacy_no_board_git_still_emits_material(tmp_path, monkeypatch, capsys)
         (REPO / ".project_manager" / "wiki" / "tickets" / "_template.md")
         .read_text(encoding="utf-8"), encoding="utf-8")
     existing = wiki / "tickets" / "open" / "T-0002-x.md"
-    mod.dump_ticket(existing, {
+    ticket_store.dump_ticket(existing, {
         "id": "T-0002", "title": "x", "status": "open",
         "touches": [".project_manager/tools/board.py"],
         "depends_on": [], "blocks": [], "tags": [],

@@ -27,6 +27,8 @@ from pm_engine.infra import conf_store, git, pm_paths, regression_store, review_
 from pm_engine.app import regression, release
 from pm_engine.domain import review_form, review_state, round_rules
 
+from pm_engine.cli import task_args
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -1298,7 +1300,7 @@ def pm_verified_release(tmp_path, monkeypatch):
     # 테스트에도 넘겨 판정 함수 대역(민감도)이 실제 배선에 닿게 한다.
     pd = _pm_verified_pd()
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", proj)
-    monkeypatch.setattr(pd, "_load_board", lambda: mod)
+    monkeypatch.setattr(pd, "REPO", proj)
 
     ledger_path = local / "review_rounds.json"
 
@@ -1750,7 +1752,7 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
 @pytest.mark.parametrize('defect', [None,'A-relative','A-missing','A-head','L-missing','L-head','A-F','L-F','broken','clone-only'])
 def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, defect):
     f=t0936_release; assert not (f.cwd/'.project_manager/local.conf').exists()
-    monkeypatch.setattr(f.board,'_actor_session_override',lambda *a,**k: pytest.fail('명시 readonly cwd의 actor 해소'))
+    monkeypatch.setattr(task_args,'_actor_session_override',lambda *a,**k: pytest.fail('명시 readonly cwd의 actor 해소'))
     if defect:
         core=dict(f.core)
         if defect=='A-relative': core['conf_anchor']='relative'

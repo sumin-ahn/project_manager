@@ -22,6 +22,11 @@ from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.infra import round_store
 
+from pm_engine.infra import board_git
+from pm_engine.infra import fs
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -53,12 +58,12 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
-        "BOARD_LOCK": local / "board.lock",
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
@@ -67,7 +72,7 @@ def board(tmp_path, monkeypatch):
     # user 축 tmp 바인딩 — 소유 대조(T-0781)는 user ∧ slot 이라 픽스처 claim(`me/proj_1`)의
     # user 를 conf 로 고정해야 한다. git 폴백은 전역 config(실 사용자)를 읽으므로 함께 막는다.
     (pm / "local.conf").write_text("identity.user=me\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # 홈 git 가드 기본 clean — 환경 git 유무와 무관하게 relabel 이 진행되게(가드 자체는 전용 테스트).
     monkeypatch.setattr(mod, "_home_git_status_porcelain", lambda: "")
     return mod
@@ -89,7 +94,7 @@ def _seed_ticket(board, tid: str, *, created: str = "2026-07-01",
         fm["depends_on"] = depends_on
     if blocks is not None:
         fm["blocks"] = blocks
-    board.dump_ticket(path, fm, f"# {tid} — t\n{body}\n")
+    ticket_store.dump_ticket(path, fm, f"# {tid} — t\n{body}\n")
     return path
 
 
@@ -218,7 +223,7 @@ def test_reid_reuses_existing_legacy_hyphen_prefix(board):
 
 def test_reid_preserves_slug_in_filename(board):
     path = board.TICKETS_DIR / "open" / "T-0036-my-detailed-slug.md"
-    board.dump_ticket(path, {"id": "T-0036", "title": "t", "status": "open"},
+    ticket_store.dump_ticket(path, {"id": "T-0036", "title": "t", "status": "open"},
                       "# T-0036 — t\n")
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
     assert rc == 0
@@ -234,7 +239,7 @@ def test_reid_numeric_ending_slug_preserves_slug_on_rename(board):
     불일치) → frontmatter `id:` 1차 진실(`_canonical_ticket_id`)로 해소. 이 fix 전엔 파일명이
     `T-0036-fix-123.md` 로 남아 renamed.exists() 가 False(sensitivity)."""
     path = board.TICKETS_DIR / "open" / "T-0036-fix-123.md"     # legacy T-0036 + 숫자-끝 slug.
-    board.dump_ticket(path, {"id": "T-0036", "title": "t", "status": "open"},
+    ticket_store.dump_ticket(path, {"id": "T-0036", "title": "t", "status": "open"},
                       "# T-0036 — t\nrefs [[T-0036]]\n")
     wiki = _seed_wiki(board, "0001-x.md", "see [[T-0036]]\n")
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
@@ -543,11 +548,11 @@ def test_reid_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
 
 def test_reid_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
     calls = {"commit": []}
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
-    monkeypatch.setattr(board, "_board_git_head", lambda: "deadbeefcafe0000")
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: True)
+    monkeypatch.setattr(board_git, "_board_git_head", lambda _home: "deadbeefcafe0000")
     monkeypatch.setattr(
-        board, "_board_git_stage_and_commit",
-        lambda msg, paths=None: calls["commit"].append((msg, paths)) or True)
+        board_git, "_board_git_stage_and_commit",
+        lambda _home, msg, paths=None: calls["commit"].append((msg, paths)) or True)
     ticket = _seed_ticket(board, "T-0036")
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
     assert rc == 0
@@ -562,7 +567,7 @@ def test_reid_board_git_backup_commit_when_separated(board, monkeypatch, capsys)
 
 
 def test_reid_board_git_legacy_skips_with_guidance(board, monkeypatch, capsys):
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
     _seed_ticket(board, "T-0036")
     rc = board.cmd_reid(_ns("T-0036", "T-0250"))
     assert rc == 0
@@ -576,24 +581,24 @@ def test_reid_board_git_legacy_skips_with_guidance(board, monkeypatch, capsys):
 
 @contextlib.contextmanager
 def _lock_depth_spy(board, monkeypatch):
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     rec = {"count": 0, "depth": 0, "max_depth": 0, "changed_in_lock": False}
 
     @contextlib.contextmanager
-    def _spied():
+    def _spied(_home):
         rec["count"] += 1
         rec["depth"] += 1
         rec["max_depth"] = max(rec["max_depth"], rec["depth"])
         before = _ids_on_disk(board)
         try:
-            with real_lock():
+            with real_lock(_home):
                 yield
         finally:
             if _ids_on_disk(board) != before:
                 rec["changed_in_lock"] = True
             rec["depth"] -= 1
 
-    monkeypatch.setattr(board, "board_lock", _spied)
+    monkeypatch.setattr(fs, "board_lock", _spied)
     yield rec
 
 

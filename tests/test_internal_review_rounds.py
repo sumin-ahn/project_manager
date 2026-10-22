@@ -189,7 +189,6 @@ def test_pm_verified_still_refuses_the_finding_zero_review_round(pd):
 
 
 def test_legacy_unfingerprinted_fixed_resolution_is_unrecognized(pd):
-    board = pd._load_board()
     gate = {
         "rounds": [{
             "sequence": 1, "verdict": 1, "must_fix": 1,

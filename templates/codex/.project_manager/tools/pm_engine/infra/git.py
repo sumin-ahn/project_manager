@@ -15,6 +15,9 @@ import re
 from pm_engine.domain import worktree_records
 from pm_engine.infra import pm_paths
 
+from collections.abc import Callable
+from collections.abc import Sequence
+
 
 def _git_repo_root(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
     root = _git_rev_parse(anchor, "--show-toplevel", runner=runner)
@@ -319,3 +322,258 @@ def _bare_missing_branches(home,
     except Exception:  # noqa: BLE001 — fail-soft: 경고는 부가 정보(판정 실패=생략).
         return []
     return missing
+
+
+def _board_git(home, args: list[str], *, check: bool = False,
+               timeout: float | None = None) -> subprocess.CompletedProcess:
+    """board git working dir(`Home.board_root`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
+
+    엔진 subprocess 관례: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
+    `-C home.board_root` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
+    가 기본 — 호출부가 returncode 로 분기하며, 예외(timeout·바이너리 이상)는 호출부가
+    fail-soft 로 처리한다. `timeout` 미지정은 `_BOARD_GIT_TIMEOUT_SECONDS`(30s) — advisory
+    freshness fetch 처럼 대화형 hang 을 짧게 끊어야 하는 호출부만 override 한다(기존
+    경로 무변경).
+    """
+    return subprocess.run(
+        ["git", "-C", str(home.board_root), *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_BOARD_GIT_TIMEOUT_SECONDS if timeout is None else timeout, check=check)
+
+
+GitRunner = Callable[[list[str]], tuple[int, str]]
+
+
+def _git_scope_run(repo: Path, args: list[str]) -> tuple[int, str]:
+    """`git -C <repo> …` 기본 러너 → (rc, stdout) — 엔진 subprocess 관례(UTF-8·timeout 고정)."""
+    r = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=False)
+    return r.returncode, r.stdout
+
+
+def git_scope_relpath(repo: Path, path: Path) -> str | None:
+    """절대 경로 → `<repo>` 루트 기준 상대 pathspec (그 repo 밖이면 None)."""
+    try:
+        return Path(path).resolve().relative_to(Path(repo).resolve()).as_posix()
+    except (ValueError, OSError):
+        return None
+
+
+def git_scope_pathspec(repo: Path, paths: Sequence[Path], *,
+                       exclude_prefixes: Sequence[str] = ()) -> tuple[str, ...]:
+    """이 mutation 이 만진 경로 → `<repo>` pathspec (**스코프 산출 단일 지점**).
+
+    규칙 셋을 한 곳에서만 적용한다(경로별로 다시 판정하는 두 번째 구현을 만들지 않는다):
+      1. `repo` **밖** 경로는 제외 — 그 git 이 모르는 파일(예: 두-git 형상에서 코드 worktree
+         의 `touches`, board-git 기준의 파생물 `wiki/board.md`).
+      2. `exclude_prefixes` 로 시작하는 경로는 제외 — 호출부가 그 repo 고유의 금지 구역을
+         준다(board-git 의 `tickets/.drafts/` = 미충전 draft).
+      3. 중복 제거(순서 보존).
+    반환이 비면 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
+    """
+    rels: list[str] = []
+    for path in paths:
+        rel = git_scope_relpath(repo, path)
+        if rel is None or rel in rels:
+            continue
+        if any(rel.startswith(prefix) for prefix in exclude_prefixes):
+            continue
+        rels.append(rel)
+    return tuple(rels)
+
+
+def _git_scope_nested_git(repo: Path, rel: str) -> bool:
+    """`rel` 이 **중첩 git(서브모듈) 안쪽** 경로인가 — 상위 repo 의 `add` 를 fatal 로 죽이는 갈래.
+
+    `git add -A -- .project_manager/board/tickets/…` 는 그 경로가 서브모듈 *내부* 면
+    `fatal: Pathspec '…' is in submodule` 로 rc=128 이 되고 **pathspec 전체가 stage 되지
+    않는다**(board 분리 형상에서 `touches` 에 board 경로를 적으면 finish 가 통째로 중단됐다).
+    조상 디렉토리 중 `.git` 을 가진 것이 있으면(=별도 git) 그 아래는 상위 repo 의 pathspec 이
+    아니므로 미리 거른다. 경로 자신은 제외(repo 루트/대상 자체가 git 인 건 정상).
+    """
+    parent = Path(rel).parent
+    while parent != Path("."):
+        if (Path(repo) / parent / ".git").exists():
+            return True
+        parent = parent.parent
+    return False
+
+
+def _git_scope_is_directory(repo: Path, rel: str) -> bool:
+    """`rel` 이 디렉토리(또는 디렉토리 표기)인가 — 최종 관문의 판정.
+
+    worktree 실측(`is_dir()`)에 더해 **끝 슬래시 표기**(`newdir/`)도 디렉토리로 본다: git 의
+    porcelain 이 접어서 낸 untracked 디렉토리가 그 모양이라, 실측만 하면 이미 지워진 경로가
+    빠져나간다. 판정이 애매할 때는 *제외* 가 안전한 방향이다 — 빠지면 잔여 loud 보고에 뜨지만,
+    통과하면 남의 파일이 조용히 실린다.
+    """
+    return rel.endswith("/") or (Path(repo) / rel).is_dir()
+
+
+def _git_scope_ignored(repo: Path, pathspec: Sequence[str],
+                       run: GitRunner) -> set[str]:
+    """`.gitignore` 에 걸리는 경로들 (rc 128 판정 불가면 빈 집합 · 러너 예외는 그대로 올린다).
+
+    **`git add` 는 명시 pathspec 이 ignored 면 rc=1 에러다.** 광역 `add -A` 가 ignored 를 조용히
+    건너뛰는 것과 다르고, `--ignore-errors` 로도 안 없어진다(reviewer 실측). 그래서 `touches` 에
+    gitignored 경로가 하나만 있어도 stage 가 통째로 죽고, 하필 그 순간 잔여 loud 보고까지 함께
+    사라진다(기록은 이미 절반 진행된 상태). 실형상 도달 가능 — 이 보드의 done 티켓 여러 건이
+    `touches: .project_manager/local.conf`(gitignored)를 선언한다.
+
+    판정은 `git check-ignore` 로 한다:
+      - 먼저 **전체를 한 번** 물어(`check-ignore -- <paths>`) rc=1(매치 0)이면 즉시 종료 —
+        평시 비용은 subprocess 1회다.
+      - 매치가 있을 때만 경로별 `-q` 로 어느 것인지 가른다(`-q` 는 경로 1개만 받고 `-z` 는
+        `--stdin` 전용이라, 인용/이스케이프 없는 **rc 판정** 만 쓴다 — 출력 파싱 0).
+    **추적 파일은 check-ignore 가 보고하지 않는다**(실측) — 이미 추적 중인 파일은 ignore 규칙과
+    무관하게 stage 되어야 하므로 이 동작이 정확히 맞다. rc=128(비-git·판정 불가)은 제외 0 이다.
+    """
+    if not pathspec:
+        return set()
+    rc, _out = run(["check-ignore", "--", *pathspec])
+    if rc != 0:            # 1 = 매치 0(정상) · 128 = 비-git/판정 불가 → 제외 0.
+        return set()
+    ignored: set[str] = set()
+    for path in pathspec:
+        rc_one, _ = run(["check-ignore", "-q", "--", path])
+        if rc_one == 0:
+            ignored.add(path)
+    return ignored
+
+
+def git_parse_porcelain_z(out: str) -> tuple[tuple[str, str], ...]:
+    """`git status --porcelain -z` 출력 → `((XY, 경로), …)` — **NUL 파싱 단일 지점**.
+
+    `-z` 가 **판정용으로 필수**다: `-z` 없이는 git 이 비-ASCII 경로를 8진 이스케이프 + 인용으로
+    낸다(`"\\353\\251\\200…"`). 그 문자열을 스코프 비교에 넣으면 *자기가 방금 stage 한 파일* 을
+    "스코프 밖" 으로 오판해 "빼라" 고 지시한다(reviewer 실측 — PM 홈에 실제로 한글 티켓/아이디어
+    경로가 있다). `core.quotepath=false` 도 공백 경로 인용(`"a b.md"`)이 남아 불충분하다.
+    `-z` 는 인용 자체를 하지 않으므로 원문 경로가 그대로 나온다.
+
+    rename/copy(`R`/`C`) 항목은 `<코드> <신규>\\0<원본>\\0` **2토큰**이라 원본 토큰을 소비하고
+    신규 경로를 취한다. 스코프 산출(디렉토리 전개)과 잔여 보고가 **이 함수 하나**를 공유한다.
+    """
+    tokens = out.split("\0")
+    entries: list[tuple[str, str]] = []
+    index = 0
+    while index < len(tokens):
+        entry = tokens[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        if code[0] in ("R", "C"):
+            index += 1          # 원본 경로 토큰 소비 (신규 경로만 취한다)
+        if path:
+            entries.append((code, path))
+    return tuple(entries)
+
+
+def _git_scope_expand_dir(repo: Path, rel: str, run: GitRunner) -> list[str]:
+    """디렉토리 선언 → 그 아래 **변경된 파일** 경로들 (`status --porcelain -z -- <dir>`).
+
+    디렉토리가 **이미 삭제된** 경우도 같은 조회로 덮인다 — git 은 index 를 함께 보므로 삭제된
+    파일이 ` D <경로>` 로 나온다(실측). 그래서 "지워진 디렉토리 선언" 을 위한 두 번째 경로를
+    만들지 않는다.
+
+    디렉토리를 그대로 pathspec 에 넘기면 `git add -A -- <dir>` 가 그 아래 **남의 미완성
+    편집까지 통째로** stage 한다 — 좁힌 척하고 안 좁힌 상태다. 그래서
+    스코프에서 디렉토리는 **살아남지 못한다**: 여기서 변경 파일 목록으로 펼쳐, 호출부가
+    무엇이 실리는지 **파일 단위로 출력·검증**할 수 있게 한다(변경이 없으면 빈 목록 → 소멸).
+
+    `--untracked-files=all` 이 **load-bearing** 이다: 기본값(`normal`)은 새 untracked 디렉토리를
+    `?? newdir/` **한 항목으로 접어서** 낸다 — 그러면 전개 결과가 파일이 아니라 *디렉토리* 라
+    아래 필터를 그대로 통과해 `git add -A -- newdir/` 가 되고, 막으려던 뭉뚱그리기가 이 경로로
+    되살아난다(PM 실 git 재현). `all` 이면 `?? newdir/c.md` 로 파일까지 펼친다.
+
+    `-z` + NUL 파싱은 `git_parse_porcelain_z` 한 곳이 담당한다(비-ASCII/공백 경로 인용 문제·
+    rename 2토큰 처리를 두 벌로 만들지 않는다 — 잔여 보고도 같은 함수를 쓴다).
+    """
+    rc, out = run(["status", "--porcelain", "-z", "--untracked-files=all", "--", rel])
+    if rc != 0:
+        return []
+    return [path for _code, path in git_parse_porcelain_z(out)]
+
+
+def git_scope_stageable(repo: Path, pathspec: Sequence[str], *,
+                        run_git: GitRunner | None = None) -> tuple[str, ...]:
+    """`add`/`commit` 이 매치할 수 있는 **파일** 경로만 남긴다 — 미매치/서브모듈 fatal 방지 +
+    디렉토리 소멸.
+
+    다섯 가지를 한 곳에서 처리한다(호출부가 다시 판정하지 않는다):
+      1. **디렉토리는 파일로 펼친다** — 변경 파일 목록으로(`_git_scope_expand_dir`). 디렉토리
+         stage 는 그 아래 남의 WIP 를 함께 싣는 누출 채널이라 구조적으로 막는다. **이미 삭제된
+         디렉토리도 전개한다**(선언한 삭제가 빠지면 안 된다 — 아래 루프 주석).
+      2. **중첩 git(서브모듈) 내부 경로 제거** — 상위 repo 의 `add` 가 rc=128 fatal 로 죽는다.
+      3. **미존재·미추적 경로 제거** — `git add -A -- <경로>` 는 index·worktree 어디에도 없는
+         경로를 주면 rc=128 fatal 로 죽고 **아무것도 stage 되지 않는다**(→ commit 실패 →
+         claim 롤백). 로컬에서 만들어진 뒤 한 번도 커밋되지 않은 티켓이 이동하면 *옛* 경로가
+         정확히 그 상태고(detached 구간의 보류 commit), 디자인 git 에선 `touches` 가 이 repo 에
+         없는 경로(두-git 형상의 코드 worktree 경로·오타)를 가리키는 경우가 그렇다. 추적 중인
+         *삭제* 경로는 남긴다(삭제도 커밋돼야 이동이 완성된다).
+      4. **gitignored 경로 제거**(`_git_scope_ignored`) — 명시 pathspec 이 ignored 면 `add` 가
+         **rc=1 에러**다(광역 `add -A` 와 다르다). 사람이 손으로 적는 `touches` 에 gitignored
+         경로가 섞여도 stage 가 통째로 죽으면 안 된다(3과 같은 fail-soft 클래스).
+      5. **최종 관문: 디렉토리는 하나도 반환하지 않는다** — 1의 전개가 *조용히 실패* 해도
+         불변식이 유지되게 마지막에 한 번 더 거른다. 실제로 그런 실패가 있었다: `status
+         --porcelain` 기본값(`untracked-files=normal`)이 새 untracked 디렉토리를 `?? newdir/`
+         한 항목으로 접어, 전개 결과가 디렉토리인 채 3의 `exists()` 를 통과했다(PM 실 git
+         재현). **불변식은 전개의 성공에 의존하면 안 된다.**
+    """
+    run = run_git or (lambda args: _git_scope_run(repo, args))
+    expanded: list[str] = []
+    for p in pathspec:
+        # 전개는 **디렉토리이거나 worktree 에 없는** 경로에 시도한다. 후자가 load-bearing 이다:
+        # 선언한 디렉토리가 *통째로 삭제* 되면 `is_dir()` 이 false 라 옛 게이트는 전개를 건너뛰고,
+        # 이어지는 추적 판정도 `ls-files -- src` 가 `src/a.py` 를 내놔 `src` 와 매칭되지 않아
+        # 경로가 통째로 탈락했다 — **선언한 삭제가 커밋에서 조용히 빠졌다**(reviewer 실측).
+        # 존재하는 *파일* 은 전개 결과가 자기 자신이라 시도할 이유가 없다(subprocess 절약).
+        candidate_path = Path(repo) / p
+        expand = candidate_path.is_dir() or not candidate_path.exists()
+        candidates = (_git_scope_expand_dir(repo, p, run) or [p]) if expand else [p]
+        for candidate in candidates:
+            if candidate and candidate not in expanded:
+                expanded.append(candidate)
+    expanded = [p for p in expanded if not _git_scope_nested_git(repo, p)]
+    on_disk = {p for p in expanded if (Path(repo) / p).exists()}
+    unknown = [p for p in expanded if p not in on_disk]
+    tracked: set[str] = set()
+    if unknown:
+        rc, out = run(["ls-files", "-z", "--", *unknown])
+        if rc == 0:
+            tracked = {line for line in out.split("\0") if line}
+    stageable = [p for p in expanded if p in on_disk or p in tracked]
+    ignored = _git_scope_ignored(repo, stageable, run)
+    return tuple(p for p in stageable
+                 if p not in ignored and not _git_scope_is_directory(repo, p))
+
+
+def git_scope_stage_pathspec(repo: Path, paths: Sequence[Path], *,
+                             exclude_prefixes: Sequence[str] = (),
+                             run_git: GitRunner | None = None) -> tuple[str, ...]:
+    """선언 경로 → 그 repo 에서 실제 stage 가능한 pathspec (스코프+동형 필터 단일 진입).
+
+    `git_scope_pathspec`(스코프) → `git_scope_stageable`(미존재/미추적 제거) 순서 고정 —
+    두 단계를 따로 부르는 호출부가 순서를 뒤바꾸거나 한쪽을 빼먹지 않게 한 진입점으로 묶는다.
+    """
+    return git_scope_stageable(
+        repo, git_scope_pathspec(repo, paths, exclude_prefixes=exclude_prefixes),
+        run_git=run_git)
+
+
+def git_scope_stage_and_commit(repo: Path, message: str, pathspec: Sequence[str], *,
+                               run_git: GitRunner | None = None,
+                               after_stage: Callable[[], None] | None = None) -> None:
+    """선언된 pathspec **만** stage+commit 한다 (`add -A --` + `commit -m … --` 쌍).
+
+    `add` 선행은 **필수**다 — `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라
+    `pathspec did not match` 로 실패한다(architect 실측). 커밋이 실제로 생겼는지 판정(HEAD
+    전진)은 호출부 몫이다 — repo 마다 HEAD 조회 seam 이 다르다.
+    """
+    run = run_git or (lambda args: _git_scope_run(repo, args))
+    run(["add", "-A", "--", *pathspec])
+    if after_stage is not None:
+        after_stage()
+    run(["commit", "-m", message, "--", *pathspec])

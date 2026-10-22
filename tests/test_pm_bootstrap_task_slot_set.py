@@ -24,6 +24,8 @@ from pm_engine.domain import ticket_rules
 from pm_engine.app import slot_resolution
 from pm_engine.infra import pm_paths
 
+from pm_engine.infra import areas_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -52,8 +54,6 @@ class _FakeBoard:
     def _pm_home_worktree_misanchor(self, anchor, **_kw):
         return None  # PM 홈(통과) — 앵커 거부 안 함.
 
-    def _repo_base(self, repo):
-        return "main"   # 등록 base — remedy `task branch --from` 이 싣는다.
 
     def _repo_protected(self, repo):
         return self._protected
@@ -232,6 +232,7 @@ class _TaskPool:
 
 def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=None, git_fn=None, monkeypatch):
     """격리 PmBootstrap — board/git/log/areas/pm_state hermetic stub + pool 주입."""
+    monkeypatch.setattr(areas_store, "_repo_base", lambda _home, _repo: "main")
     monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")

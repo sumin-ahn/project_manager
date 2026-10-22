@@ -321,29 +321,9 @@ def _name_the_live_render_polluter():
 
 
 def anchor_board_module(mod, tmp_path, monkeypatch) -> None:
-    """board 모듈의 **import 시점 REPO 파생 상수**를 tmp 로 한꺼번에 재앵커한다.
-
-    `REPO` 만 바꾸면 상수로 굳은 `BOARD_FILE`·`BOARD_LOCK` 이 실 작업 트리를 계속 가리켜
-    렌더가 live `wiki/board.md` 를 갱신한다(이 파일의 live board 오염 가드가 세션 끝에서 잡되,
-    세션 스코프라 어느 테스트가 썼는지는 못 짚는다). 재앵커 목록을 테스트마다 재선언하지 않도록
-    여기 한 곳에 둔다 — 새 파생 상수가 생기면 이 함수만 고친다.
-    """
+    """board의 실행 앵커를 임시 Home에 고정한다."""
     monkeypatch.setattr(mod, "REPO", tmp_path)
-    monkeypatch.setattr(
-        mod, "BOARD_FILE", tmp_path / ".project_manager" / "wiki" / "board.md")
-    if hasattr(mod, "BOARD_LOCK"):
-        monkeypatch.setattr(
-            mod, "BOARD_LOCK",
-            tmp_path / ".project_manager" / ".local" / "board.lock")
-    # 디렉터리는 미리 만들지 않는다 — 호출 테스트가 자기 형상대로 만든다(선-생성은 그쪽
-    # `mkdir(parents=True)` 와 충돌한다). 대신 렌더 시점에 부모가 없으면 만들도록
-    # `refresh_board` 를 감싼다(엔진은 wiki/ 존재를 전제한다).
-    refresh = getattr(mod, "refresh_board", None)
-    if callable(refresh):
-        def _refresh_with_parent(*args, _orig=refresh, _mod=mod, **kwargs):
-            _mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
-            return _orig(*args, **kwargs)
-        monkeypatch.setattr(mod, "refresh_board", _refresh_with_parent)
+
 
 
 # ── 묶음 장부 픽스처 (완료 기록·리뷰 폭 판정의 입력) ──────────────────────────

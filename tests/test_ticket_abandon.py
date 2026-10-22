@@ -119,7 +119,6 @@ def _fixture_board(pd, env: Env):
     )
     board.REPO = env.pm_home
     board.LOCAL_DIR = env.pm_home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
 
     def _sync(message, paths):
         # 단위 속도용 stub 이다 — 실 호출 그래프(교착 회귀)는 CLI subprocess 픽스처가 태운다.

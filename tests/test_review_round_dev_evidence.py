@@ -35,6 +35,8 @@ from pm_engine.domain import delegate_errors
 from pm_engine.infra import pm_paths
 from pm_engine.app import round_seed
 
+from pm_engine.app import board_dashboard
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -92,22 +94,20 @@ def _spec_text(ticket: str) -> str:
     )
 
 
-def _fixture_board(pd, pm_home: Path, sync_log: list):
+def _fixture_board(pd, pm_home: Path, sync_log: list, monkeypatch):
     board = pd._load_module_from_path(
         pm_home / ".project_manager" / "tools" / "board.py",
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
-    board.BOARD_FILE = pm_home / ".project_manager" / "wiki" / "board.md"
 
     def _sync(message, paths):
         sync_log.append((message, [Path(item) for item in paths]))
         return True
 
     board._rounds_mutation_sync_paths = _sync
-    board.refresh_board = lambda *args, **kwargs: None
+    monkeypatch.setattr(board_dashboard, 'refresh_board', lambda _home,  *args, **kwargs: None)
     return board
 
 
@@ -136,7 +136,7 @@ def rounds_env(tmp_path, pd, monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "rounds@test.invalid")
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
-    board = _fixture_board(pd, pm_home, sync_log)
+    board = _fixture_board(pd, pm_home, sync_log, monkeypatch)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     return pm_home, slot, tickets, board
 

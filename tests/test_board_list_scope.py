@@ -21,6 +21,9 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -49,17 +52,17 @@ def board(tmp_path, monkeypatch):
     overrides = {
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
 
@@ -83,7 +86,7 @@ def _write_conf(board, **kv) -> None:
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": title, "status": status,
+    ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "created_by": created_by, "claimed_by": claimed_by,
                              "depends_on": [], "tags": []}, "# seed\n")
     return path

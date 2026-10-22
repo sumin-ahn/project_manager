@@ -37,6 +37,8 @@ from pm_engine.domain import manifest_rules, upstream_rules
 from pm_engine.infra import conf_store, manifest_store, pm_paths
 from pm_engine.infra.harness import contract
 
+from pm_engine.infra import conf_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -459,7 +461,7 @@ def test_local_conf_preserves_board_init_keys(pm_import, tmp_path):
     local_conf = dest / ".project_manager" / "local.conf"
     conf = _parse_conf(local_conf)
     # board.py init 이 쓰는 ctx 예산 키가 살아있어야 한다(clobber 아님 — 키 단위 갱신).
-    assert conf.get("ctx.checkpoint_at_pct") == str(board._conf_default_int("ctx.checkpoint_at_pct")), \
+    assert conf.get("ctx.checkpoint_at_pct") == str(conf_store._conf_default_int("ctx.checkpoint_at_pct")), \
         f"ctx.checkpoint_at_pct 키가 동기화로 손실됨: {conf.get('ctx.checkpoint_at_pct')!r}"
     # session·prefix 는 폐지 키 — init 이 쓰지 않는다(T-0779).
     assert conf.get("session") is None, f"session 키가 폐지됐는데 존재: {conf.get('session')!r}"

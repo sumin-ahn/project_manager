@@ -151,7 +151,7 @@ def test_detect_py_literal_fallback_when_neither(monkeypatch, board):
 
 def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     """init 이 local.conf 의 py= 에 _detect_py() 결과를 박는지 (tmp REPO + which monkeypatch)."""
-    local_conf = tmp_path / "local.conf"
+    local_conf = tmp_path / "proj/.project_manager/local.conf"
     monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
     # 부수 파일 생성·훅 설치·추가리뷰 프롬프트는 이 단언과 무관 — 무력화.
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
@@ -164,7 +164,6 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
     monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
     monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
     monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
     # python3 가 PATH 에 있는 환경 → _detect_py() 는 bare 'python3' 를 기록한다.
     # (which 가 python3 에만 truthy + _interp_runs stub 으로 머신·OS 무관 결정화 — T-0022.)

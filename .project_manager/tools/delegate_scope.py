@@ -24,8 +24,7 @@ from typing import NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import repo_coordinates, repo_files, ticket_store  # noqa: E402
-_load_module_from_path = repo_files.load_module
+from pm_engine.infra import repo_coordinates, ticket_store  # noqa: E402
 
 
 # 쓰기 허용 역할 — **allow-list** 로 둔다(read-only 열거가 아니라). 새 역할이 생기면 자동으로
@@ -40,30 +39,7 @@ HASH_BATCH_SIZE = 100
 # 존재/상태코드로 이미 표면화되고, 그걸 읽는 비용이 판정의 최악 I/O 를 지배한다.
 HASH_MAX_FILE_BYTES = 5 * 1024 * 1024
 
-# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
-# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
-# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다.
-# 릴리즈 bump 는 `engine_rev.py --bump vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄
-# 재작성한다(사람 N곳 편집 0).
 ENGINE_REV = "v1.8.1"
-
-
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제의 baked ENGINE_REV 를 이 사본과 대조한다(skew만 fail-loud)."""
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-        )
-        err._engine_rev_skew = True
-        raise err
-
-
-def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew 유래인지(fail-soft 로더의 재-raise 식별)."""
-    return getattr(exc, "_engine_rev_skew", False)
 
 
 def _ticket_touches_error(ticket_id: str, exc: Exception) -> DelegateScopeError:
@@ -372,15 +348,13 @@ def _signal_differs(before: dict[str, str], after: dict[str, str], path: str) ->
 
 
 def ticket_touches(
-    board_py: Path | str,
+    home,
     ticket_id: str,
-    *,
-    pm_root: Path | str,
 ) -> tuple[str, ...]:
     """board의 ticket frontmatter에서 문자열 ``touches``를 읽는다.
 
     위임 훅이 프롬프트 문장을 재파싱하지 않도록 ticket ID를 구조화 입력으로 받는다. ticket 부재,
-    board 로드 실패, 잘못된 frontmatter는 판정 입력 불능이므로 :class:`DelegateScopeError`다.
+    잘못된 frontmatter는 판정 입력 불능이므로 :class:`DelegateScopeError`다.
 
     board 조회는 ``<id>-*.md`` **glob** 이라 ID에 메타문자가 들어오면 다른 ticket의 ``touches``를
     집어올 수 있다(엉뚱한 허용 범위 = 조용한 오판). 그래서 메타문자/경로 구분자를 먼저 거부하고,
@@ -391,23 +365,10 @@ def ticket_touches(
             f"ticket id 형식 거부(glob 메타/경로 구분자 포함): {ticket_id!r}"
         )
     ticket_id = str(ticket_id).strip()
-    path = Path(board_py)
     try:
-        board = _load_module_from_path(
-            path, path.name, verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — 중첩 skew는 보존, 그 밖의 로드 실패는 계약 오류로 변환.
-        if _is_engine_rev_skew(exc):
-            raise
-        raise _ticket_touches_error(ticket_id, exc) from exc
-    try:
-        if hasattr(board, "REPO"):
-            board.REPO = Path(pm_root)
-        _status, ticket_path = board.find_ticket(ticket_id)
+        _status, ticket_path = ticket_store.find_ticket(home, ticket_id)
         frontmatter, _body = ticket_store.load_ticket(ticket_path)
     except Exception as exc:  # noqa: BLE001 — 잘못된 ticket 입력을 허용 0으로 오인하지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
         raise _ticket_touches_error(ticket_id, exc) from exc
 
     found_id = str(frontmatter.get("id") or "").strip()

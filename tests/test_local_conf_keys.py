@@ -38,6 +38,10 @@ from pm_engine.infra import conf_store, pre_push_hook, python_env
 from pm_engine.infra.harness import contract
 from pm_engine.app import body_lint, conf_lint, doc_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
 
+from pm_engine.infra import conf_store
+
+from pm_engine.infra import lease_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
@@ -329,7 +333,7 @@ def test_fresh_init_conf_has_zero_unknown_keys(board, monkeypatch, tmp_path):
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(board._home())
 
     assert conf_lint.lint_local_conf_keys(board._home()) == []
 
@@ -352,7 +356,7 @@ def test_init_merge_path_surfaces_the_same_findings_pre_existing_unknown_key(boa
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(board._home())
 
     findings = conf_lint.lint_local_conf_keys(board._home())
     assert len(findings) == 1, findings
@@ -411,12 +415,12 @@ def _wired_init_board(monkeypatch, tmp_path, alias: str):
     for name, value in {
         "REPO": project,
         "TICKETS_DIR": tickets,
-        "BOARD_FILE": pm_dir / "wiki" / "board.md",
+
         "LOG_FILE": pm_dir / "wiki" / "log" / "current.md",
         "LOCAL_CONF": pm_dir / "local.conf",
         "AREAS_FILE": pm_dir / "areas.md",
         "LOCAL_DIR": pm_dir / ".local",
-        "BOARD_LOCK": pm_dir / ".local" / "board.lock",
+
         "LEASES_FILE": pm_dir / ".local" / "worktree-leases.json",
         "PM_STATE_FILE": pm_dir / "wiki" / "pm_state.md",
         "PM_STATE_TEMPLATE": pm_dir / "wiki" / "pm_state.template.md",
@@ -424,7 +428,7 @@ def _wired_init_board(monkeypatch, tmp_path, alias: str):
         monkeypatch.setattr(module, name, value)
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
-    monkeypatch.setattr(module, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -611,13 +615,13 @@ def test_required_is_only_what_the_core_commands_cannot_run_without(conf_module)
 
 _MOVED_DEFAULTS = (
     pytest.param("ctx.checkpoint_at_pct", "70",
-                 lambda c: c.board._conf_default_int("ctx.checkpoint_at_pct"), 70,
+                 lambda c: conf_store._conf_default_int("ctx.checkpoint_at_pct"), 70,
                  id="board-ctx-checkpoint-at-pct"),
     pytest.param("ctx.precompact_at_pct", "80",
-                 lambda c: c.board._conf_default_int("ctx.precompact_at_pct"), 80,
+                 lambda c: conf_store._conf_default_int("ctx.precompact_at_pct"), 80,
                  id="board-ctx-precompact-at-pct"),
     pytest.param("ctx.compact_at_pct", "90",
-                 lambda c: c.board._conf_default_int("ctx.compact_at_pct"), 90,
+                 lambda c: conf_store._conf_default_int("ctx.compact_at_pct"), 90,
                  id="board-ctx-compact-at-pct"),
     pytest.param("additional_reviewer.paths", "src/,tests/,scripts/,.project_manager/tools/",
                  lambda c: c.reviewer._configured_paths({}),

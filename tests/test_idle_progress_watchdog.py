@@ -43,6 +43,8 @@ from pm_engine.domain import conf_schema
 from pm_engine.infra.harness import contract, watchdog
 from pm_engine.infra import pre_push_hook, python_env
 
+from pm_engine.infra import conf_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -2986,9 +2988,9 @@ def _conf_with_init_defaults(board, extra: str) -> str:
     """
     return (
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nproject.name=\n"
-        f"ctx.checkpoint_at_pct={board._conf_default_int('ctx.checkpoint_at_pct')}\n"
-        f"ctx.precompact_at_pct={board._conf_default_int('ctx.precompact_at_pct')}\n"
-        f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}\n" + extra)
+        f"ctx.checkpoint_at_pct={conf_store._conf_default_int('ctx.checkpoint_at_pct')}\n"
+        f"ctx.precompact_at_pct={conf_store._conf_default_int('ctx.precompact_at_pct')}\n"
+        f"ctx.compact_at_pct={conf_store._conf_default_int('ctx.compact_at_pct')}\n" + extra)
 
 
 def test_already_seeded_conf_is_left_untouched(board):

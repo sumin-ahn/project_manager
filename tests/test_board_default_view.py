@@ -25,6 +25,9 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -62,17 +65,17 @@ def board(tmp_path, monkeypatch):
     overrides = {
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
         "LEASES_FILE": pm / ".local" / "worktree-leases.json",
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # ambient 세션 env 를 먼저 지우고(실환경 격리) 이 파일의 canonical 세션을 명시 바인딩한다 —
     # per-clone conf `session=` 폴백은 폐지됐다(T-0779). 다른 세션이 필요한 테스트는 자기
     # monkeypatch.setenv 로 덮는다(나중이 이김).
@@ -100,7 +103,7 @@ def _write_conf(board, **kv) -> None:
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": title, "status": status,
+    ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "claimed_by": claimed_by, "created_by": created_by,
                              "depends_on": [], "tags": []}, "# seed\n")
     return path
@@ -349,10 +352,10 @@ def test_all_does_not_resolve_identity(board, capsys, monkeypatch):
     """`--all` 은 정체성 무해소(필터 없음) — user_name 미호출(default_view 와 대비)."""
     _seed(board, "T-0001", "open")
 
-    def _boom(*a, **k):
+    def _boom(_home, *a, **k):
         raise AssertionError("user_name must not be called with --all")
 
-    monkeypatch.setattr(board, "user_name", _boom)
+    monkeypatch.setattr(lease_store, "user_name", _boom)
     out = _run(board, capsys, all=True)
     assert _ids(out) == ["T-0001"]
 

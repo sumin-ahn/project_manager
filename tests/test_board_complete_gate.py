@@ -36,6 +36,10 @@ from pm_engine.domain import review_form, round_rules
 from pm_engine.infra import round_store
 from pm_engine.app import round_seed
 
+from pm_engine.infra import lease_store
+
+from pm_engine.app import board_sync
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -57,7 +61,6 @@ def _load_board_bound(proj: Path):
     # tmp로 묶지 않으면 `board` fixture의 티켓 쓰기가 라이브 worktree scaffold에 착지한다.
     # BOARD_FILE은 import-time 상수라 같은 자리에서 별도로 묶어 refresh 파생 출력도 격리한다.
     mod.REPO = proj
-    mod.BOARD_FILE = wiki / "board.md"
     mod.LOG_FILE = wiki / "log" / "current.md"
     mod.LOCAL_DIR = proj / ".project_manager" / ".local"
     return mod
@@ -773,11 +776,10 @@ def live_board(tmp_path, monkeypatch):
     mod = _load_board_bound(root)
     monkeypatch.setattr(mod, "REPO", root)
     pm = root / ".project_manager"
-    monkeypatch.setattr(mod, "BOARD_LOCK", pm / ".local" / "board.lock")
     monkeypatch.setattr(mod, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(mod, "AREAS_FILE", pm / "areas.md")
     monkeypatch.setattr(mod, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     for status in ticket_rules.STATUS_DIRS:
         (pm / "wiki" / "tickets" / status).mkdir(parents=True, exist_ok=True)
     pm.mkdir(parents=True, exist_ok=True)
@@ -831,8 +833,8 @@ def test_cluster_member_complete_requires_exact_closer_binding(
     ledger = _seed_cluster(live_board, "C-gate", (tid,), status="closing")
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
-        live_board, "_board_git_sync_best_effort",
-        lambda *args: sync_calls.append(args) or True,
+        board_sync, "_board_git_sync_best_effort",
+        lambda _home,  *args: sync_calls.append(args) or True,
     )
     ticket_before = claimed.read_bytes()
     ledger_before = ledger.read_bytes()
@@ -874,8 +876,8 @@ def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monke
     )
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
-        live_board, "_board_git_sync_best_effort",
-        lambda *args: sync_calls.append(args) or True,
+        board_sync, "_board_git_sync_best_effort",
+        lambda _home,  *args: sync_calls.append(args) or True,
     )
     exact = _complete_args(tid)
     exact.cluster_close = "C-gate"
@@ -917,7 +919,7 @@ def test_legacy_ticket_completes_with_its_size_one_binding(live_board, capsys, m
     claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
     assert "cluster:" not in claimed.read_text(encoding="utf-8")
     assert live_board.cluster_members(f"C-{tid}") == ()
-    monkeypatch.setattr(live_board, "_board_git_sync_best_effort", lambda *args: True)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home,  *args: True)
     ticket_before = claimed.read_bytes()
 
     wrong = _complete_args(tid)
@@ -949,8 +951,8 @@ def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, m
     ledger = _seed_cluster(live_board, "C-gate", (tid,), status="closing")   # 종결 파이프라인 안
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
-        live_board, "_board_git_sync_best_effort",
-        lambda *args: sync_calls.append(args) or True,
+        board_sync, "_board_git_sync_best_effort",
+        lambda _home,  *args: sync_calls.append(args) or True,
     )
     ticket_before = claimed.read_bytes()
     ledger_before = ledger.read_bytes()

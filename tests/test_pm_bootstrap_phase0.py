@@ -33,6 +33,8 @@ import pytest
 from pm_engine.infra import pm_paths
 from pm_engine.infra import pool_store
 
+from pm_engine.infra import areas_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -70,8 +72,6 @@ class _FakeBoard:
     def _repo_protected(self, repo):
         return self._protected
 
-    def _repo_base(self, repo):
-        return "main"   # 등록 base. remedy `task branch --from` 이 싣는다.
 
 
 class _RaisingBoard:
@@ -83,8 +83,6 @@ class _RaisingBoard:
     def _repo_protected(self, repo):
         return []
 
-    def _repo_base(self, repo):
-        return "main"
 
 
 class _Lease:
@@ -263,6 +261,8 @@ class _OldPool(_Pool):
 
 def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
     """격리된 PmBootstrap. board/git/log/areas/pm_state 를 hermetic stub 으로 두고 pool 을 주입한다."""
+    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
+    monkeypatch.setattr(areas_store, "_repo_base", lambda _home, _repo: "main")
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"

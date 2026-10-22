@@ -1525,20 +1525,6 @@ def test_same_named_nested_scope_cannot_impersonate_central_loader(
     )
 
 
-def test_literal_gate_is_name_coupled_and_rename_is_red(tmp_path):
-    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    _rename_literal_gate_and_remove_member(
-        tools / "domain.py", "_STAMPED_SIBLINGS", "_STAMPED_KIN", None
-    )
-
-    report = collect_central_guard_report(tools)
-
-    assert len(report.violations) == 1
-    violation = report.violations[0]
-    assert "domain.py" in violation
-    assert "allow_unverified call is not covered" in violation
-
-
 @pytest.mark.parametrize(
     "condition",
     (
@@ -1794,7 +1780,6 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
     report = collect_central_guard_report(TOOLS)
     measured = {(source, function) for source, function, _line in report.loader_calls}
     assert {
-        ("delegate_scope.py", "ticket_touches"),
         ("ticket_finish.py", "_load_tool_module"),
     } <= measured
     assert ("pm_import.py", "_upstream_hook_set_declarations") in measured

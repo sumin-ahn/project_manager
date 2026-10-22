@@ -627,7 +627,7 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     conf 는 이 clone 이 정한 값만 담고, 하네스별 오버라이드 키의 존재는 레지스트리가 가르친다.
     """
     board = _load_board()
-    conf_path = tmp_path / "local.conf"
+    conf_path = tmp_path / "proj/.project_manager/local.conf"
     # hermetic: LOCAL_CONF 만 tmp·pm_state/훅/opt-in 부수효과 차단 (C8 _init_isolated 미러).
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
@@ -640,7 +640,6 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
     monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
     monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
     monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
 
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")

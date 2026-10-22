@@ -9,6 +9,8 @@ from pathlib import Path
 from pm_engine.domain import areas_rules, ticket_rules
 from pm_engine.infra import fs, pm_paths
 
+from pm_engine.infra import git
+
 
 def id_prefix(home, override: str | None = None) -> str | None:
     """Resolve ticket-ID namespace prefix (multi-repo areas·N×M).
@@ -167,3 +169,218 @@ def _areas_git_url(home, repo: str) -> str | None:
         if row.get("repo") == repo:
             return row.get("git") or None
     return None
+
+
+def _areas_header_line() -> str:
+    """canonical areas.md 헤더 행 (`| repo | prefix | … | area_owner |`·줄바꿈 없음).
+
+    `_AREAS_COLUMNS`(단일 진실)에서 파생한다 — `areas_append` 의 신규 파일 헤더와
+    `_migrate_areas_text` 의 구-헤더 업그레이드가 같은 8칼럼 헤더를 쓰도록 한 곳에서 만든다.
+    """
+    return "| " + " | ".join(areas_rules._AREAS_COLUMNS) + " |"
+
+
+def _areas_separator_line() -> str:
+    """canonical areas.md 구분선 (`|---|---|…|`·칼럼 수만큼 `---`·줄바꿈 없음)."""
+    return "|" + "|".join("---" for _ in areas_rules._AREAS_COLUMNS) + "|"
+
+
+def _areas_column_index(header_cells: list[str],
+                        column: str) -> tuple[int, str | None, int]:
+    """헤더에서 `column` 셀 인덱스를 해소한다 — 부재면 구-헤더 업그레이드 계획을 함께 낸다.
+
+    반환 `(idx, new_header_line, sep_cols)`:
+      - 헤더에 그 칼럼이 있으면 `(header_cells.index(column), None, 0)` — 업그레이드 없음(헤더
+        행 verbatim 보존).
+      - 없으면(구 헤더) **업그레이드**한다. 헤더가 canonical prefix(`_AREAS_COLUMNS` 앞 N개와
+        일치하는 per-repo 레지스트리 계열 5/6/7칼럼)면 canonical 8칼럼 헤더(`_areas_header_line`)
+        로 교체하고 idx=canonical 인덱스. 비호환 구 헤더(멀티-clone `prefix|area|owner`[3] 등 —
+        칼럼 의미가 canonical 과 어긋남)면 정렬을 깨지 않게 기존 칼럼 **뒤에 그 칼럼만 append**
+        하고 idx=len(header_cells). `sep_cols` = 업그레이드 후 구분선이 가질 칼럼 수.
+
+    `_migrate_areas_text`(area_owner backfill)와 `areas_set_cell`(범용 셀 변경)이 **공유**한다.
+    """
+    if column in header_cells:
+        return header_cells.index(column), None, 0
+    if tuple(header_cells) == areas_rules._AREAS_COLUMNS[:len(header_cells)]:
+        return (areas_rules._AREAS_COLUMNS.index(column), _areas_header_line(),
+                len(areas_rules._AREAS_COLUMNS))
+    return (len(header_cells),
+            "| " + " | ".join(header_cells + [column]) + " |",
+            len(header_cells) + 1)
+
+
+def _areas_row_cell_index(header_cells: list[str], cells: list[str],
+                          header_idx: int, column: str) -> int:
+    """데이터 행에서 `column` 셀의 인덱스 — wider row 는 canonical 인덱스로 보정한다.
+
+    셀 수가 헤더보다 많은 행은 `_areas_row_dict`(=`_parse_areas`)가 헤더를 무시하고 canonical
+    순서로 매핑하므로, 쓰기측도 **정확히 같은** 인덱스를 잡아야 한다. 그 외는
+    `_areas_column_index` 가 준 헤더 인덱스 그대로.
+    """
+    if len(cells) > len(header_cells) and column in areas_rules._AREAS_COLUMNS:
+        return areas_rules._AREAS_COLUMNS.index(column)
+    return header_idx
+
+
+def _repo_base(home, repo: str) -> str | None:
+    """그 repo 의 areas.md `base` 브랜치. 미지정/미등록/구 스키마 → None.
+
+    `pm-config repo add --base`(또는 clone-time bare HEAD 해소)가 areas.md `base`
+    칼럼에 기록한 값을 읽어, worktree 슬롯 브랜치가 *그 base 에서 파생*되게 한다
+    (`pm-config worktree add` → `create_slot(base=)`). repo 명은 areas.md `repo` 칼럼과
+    매칭한다(repo add 가 `repo=name·prefix=name` 으로 등록하므로 repo==prefix 가 보통).
+
+    None 폴백(worktree add 가 현행 bare HEAD 동작·회귀 0):
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `base` 칼럼 자체가 없는 구 레지스트리(헤더에 base 없음 → 행 dict 에 base 키 없음).
+      - `base` 칼럼이 빈 값(부분 등록).
+    """
+    _header, rows = _parse_areas(home)
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("base") or None
+    return None
+
+
+def _areas_append_locked(
+    home, prefix: str,
+    owner: str,
+    *,
+    repo: str | None = None,
+    git: str | None = None,
+    test_cmd: str | None = None,
+    base: str | None = None,
+    protected: str | None = None,
+    area_owner: str | None = None,
+) -> None:
+    """``board_lock`` 보유 전제의 areas 행 append 변형(cmd_init fresh 판정용)."""
+    _repo = repo if repo is not None else prefix
+    _git = git or ""
+    _test = test_cmd or ""
+    _base = base or ""
+    _protected = protected or ""
+    _area_owner = area_owner or ""
+    af = pm_paths.areas_file(home)
+    if not af.exists():
+        af.write_text(
+            "# Area Registry\n\n"
+            "> per-repo 레지스트리: repo → prefix → git → "
+            "test_cmd → owner → base → protected → area_owner. 멀티-PM ID 네임스페이스 + "
+            "per-repo 테스트 경로 + worktree base 브랜치 + 보호 브랜치 + user 소유의 단일 진실. "
+            "append-only (`merge=union`).\n"
+            "> `board.py init` / `pm-config repo add` 가 등록. "
+            "prefix 유일성 = race-free ID 의 전제.\n\n"
+            + _areas_header_line() + "\n"
+            + _areas_separator_line() + "\n",
+            encoding="utf-8", newline="\n")
+    # O_APPEND atomic append — areas 는 append-only 레지스트리이므로
+    # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
+    fs.append_atomic(
+        af,
+        f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
+        f"| {_protected} | {_area_owner} |\n")
+
+
+def _areas_set_cell_text(text: str, repo: str, column: str,
+                         value: str) -> tuple[str, str]:
+    """areas.md 텍스트에서 `repo` 행의 `column` 셀을 `value` 로 바꾼 (새 텍스트, 옛 값) 반환.
+
+    순수 변환(IO 없음·`_migrate_areas_text` 동형 관용구):
+      - 줄 종결자(LF/CRLF)·주석·빈 줄·표 밖 텍스트·**다른 행**은 verbatim 보존.
+      - 헤더에 그 칼럼이 없으면(구 레지스트리) `_areas_column_index` 계획대로 헤더 + 헤더 직후
+        구분선 1개를 업그레이드한다(canonical 8칼럼 또는 기존 헤더 끝 append·비파괴).
+      - 행 매칭은 `_areas_row_dict`(= `_parse_areas` 와 같은 매핑)의 `repo` 값으로 한다 —
+        읽기측이 보는 행과 쓰기측이 고치는 행이 **항상 같다**.
+      - 대상 셀 인덱스는 `_areas_row_cell_index`(wider-row canonical 보정)로 잡는다.
+      - 셀이 모자라면 빈 칸으로 패딩해 인덱스를 확보한다(비파괴 append).
+
+    매칭 행이 0개면 `AreasRepoNotFound`, 2개 이상이면 `AreasDuplicateRepo` — **호출자가 쓰기
+    전에** 터지므로 부작용 0이다.
+    """
+    lines = text.splitlines(keepends=True)
+    header_cells: list[str] | None = None
+    col_idx: int | None = None
+    upgrade = False
+    sep_cols = 0
+    sep_replaced = False
+    matches = 0
+    old_value = ""
+    out: list[str] = []
+    for line in lines:
+        nl = ""
+        body = line
+        if line.endswith("\r\n"):
+            nl, body = "\r\n", line[:-2]
+        elif line.endswith("\n"):
+            nl, body = "\n", line[:-1]
+        cells = areas_rules._split_areas_row(body)
+        if cells is None:
+            if upgrade and not sep_replaced and areas_rules._AREAS_SEP_RE.match(body.strip()):
+                out.append("|" + "|".join("---" for _ in range(sep_cols)) + "|" + nl)
+                sep_replaced = True
+            else:
+                out.append(line)
+            continue
+        if header_cells is None:
+            header_cells = [c.lower() for c in cells]
+            col_idx, new_header, sep_cols = _areas_column_index(header_cells, column)
+            if new_header is None:
+                out.append(line)
+            else:
+                upgrade = True
+                out.append(new_header + nl)
+            continue
+        if areas_rules._areas_row_dict(header_cells, cells).get("repo") != repo:
+            out.append(line)
+            continue
+        matches += 1
+        idx = _areas_row_cell_index(header_cells, cells, col_idx or 0, column)
+        if matches == 1:
+            old_value = cells[idx] if idx < len(cells) else ""
+        while len(cells) <= idx:
+            cells.append("")
+        cells[idx] = value
+        out.append("| " + " | ".join(cells) + " |" + nl)
+    if matches == 0:
+        raise areas_rules.AreasRepoNotFound(repo)
+    if matches > 1:
+        raise areas_rules.AreasDuplicateRepo(repo, matches)
+    return "".join(out), old_value
+
+
+def _areas_set_cell_locked(home, repo: str, column: str, value: str) -> tuple[str, str]:
+    """``board_lock`` 보유 전제의 셀 교체 변형 — (옛 값, 새 값) 반환.
+
+    검증·원자 write 규칙은 `areas_set_cell` 과 동일하다(그쪽 docstring 이 계약의 단일 진실).
+    캐시 무효화는 호출부 몫이다 — 락 안에서 무효화해도 락을 놓기 전엔 새 값이 안 보인다.
+    """
+    if column not in areas_rules._AREAS_COLUMNS:
+        raise ValueError(
+            f"알 수 없는 areas.md 칼럼 {column!r} — 허용: {', '.join(areas_rules._AREAS_COLUMNS)}")
+    if "|" in value or "\n" in value or "\r" in value:
+        raise ValueError(
+            f"areas.md 셀 값에 `|`/개행을 쓸 수 없다(표 corruption): {value!r}")
+    value = value.strip()
+    af = pm_paths.areas_file(home)
+    # `newline=""`(universal-newline OFF) 로 읽고 쓴다 — CRLF 채택자(Windows)의 파일을
+    # 셀 하나 바꾸려다 LF 로 무단 정규화하지 않게(`rewrite_refs` 와 같은 관용구).
+    text = ""
+    if af.exists():
+        with fs.open_shared(af, binary=False, encoding="utf-8", newline="") as fh:
+            text = fh.read()
+    new_text, old_value = _areas_set_cell_text(text, repo, column, value)
+    if new_text != text:
+        # atomic write — 같은 디렉토리 temp + 원자 교체(부분기록/crash 잔재 방지).
+        # write 실패(디스크풀·권한)로 replace 에 못 가면 `.tmp` 가 남으므로 finally 로 청소한다
+        # (다음 실행이 stale temp 를 만나지 않게·잔재 0).
+        tmp = af.with_suffix(af.suffix + ".tmp")
+        try:
+            with tmp.open("w", encoding="utf-8", newline="") as fh:
+                fh.write(new_text)
+            fs.atomic_replace(tmp, af)
+        finally:
+            # 성공 시 원자 교체로 tmp 는 이미 사라졌다(missing_ok 로 no-op).
+            tmp.unlink(missing_ok=True)
+    return old_value, value

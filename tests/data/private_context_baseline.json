@@ -1,5 +1,5 @@
 {
-  "count": 381,
+  "count": 377,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -25,21 +25,6 @@
     ".project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 2,
-        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
         "kind": "session_stamp"
       },
@@ -50,32 +35,12 @@
       },
       {
         "count": 1,
-        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
         "kind": "session_stamp"
       },
       {
         "count": 1,
         "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -140,6 +105,18 @@
         "count": 3,
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
         "kind": "decision_label"
+      }
+    ],
+    ".project_manager/tools/pm_engine/app/ticket_access.py": [
+      {
+        "count": 1,
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 2,
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "kind": "session_stamp"
       }
     ],
     ".project_manager/tools/pm_engine/app/worktree_pool.py": [
@@ -216,6 +193,28 @@
       {
         "count": 1,
         "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      },
+      {
+        "count": 2,
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "kind": "session_stamp"
+      }
+    ],
+    ".project_manager/tools/pm_engine/infra/board_git.py": [
+      {
+        "count": 1,
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
       }
     ],
@@ -435,21 +434,6 @@
     "templates/claude_code/.project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 2,
-        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
         "kind": "session_stamp"
       },
@@ -460,32 +444,12 @@
       },
       {
         "count": 1,
-        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
         "kind": "session_stamp"
       },
       {
         "count": 1,
         "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -550,6 +514,18 @@
         "count": 3,
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
         "kind": "decision_label"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/app/ticket_access.py": [
+      {
+        "count": 1,
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 2,
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "kind": "session_stamp"
       }
     ],
     "templates/claude_code/.project_manager/tools/pm_engine/app/worktree_pool.py": [
@@ -626,6 +602,28 @@
       {
         "count": 1,
         "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      },
+      {
+        "count": 2,
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/infra/board_git.py": [
+      {
+        "count": 1,
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
       }
     ],
@@ -848,21 +846,6 @@
     "templates/codex/.project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 2,
-        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
         "kind": "session_stamp"
       },
@@ -873,32 +856,12 @@
       },
       {
         "count": 1,
-        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
         "kind": "session_stamp"
       },
       {
         "count": 1,
         "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -963,6 +926,18 @@
         "count": 3,
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
         "kind": "decision_label"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/app/ticket_access.py": [
+      {
+        "count": 1,
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 2,
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "kind": "session_stamp"
       }
     ],
     "templates/codex/.project_manager/tools/pm_engine/app/worktree_pool.py": [
@@ -1039,6 +1014,28 @@
       {
         "count": 1,
         "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      },
+      {
+        "count": 2,
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/infra/board_git.py": [
+      {
+        "count": 1,
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
       }
     ],
@@ -1452,21 +1449,6 @@
     "templates/opencode/.project_manager/tools/board.py": [
       {
         "count": 1,
-        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
-        "kind": "decision_label"
-      },
-      {
-        "count": 2,
-        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "3a199ce4c57d94f841fdad0b00b51ff664c52c21ed5d966303f5c14b76c6679a",
         "kind": "session_stamp"
       },
@@ -1477,32 +1459,12 @@
       },
       {
         "count": 1,
-        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
         "kind": "session_stamp"
       },
       {
         "count": 1,
         "hash": "bbefa072f187fa67e3d4c18092fd219d57158cf50c1817401cc9ca29801483d4",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "ccaf6b4625c0331433ebd61ee65a2aabf02a1538aa50bb6202f4ad6ec258cff6",
         "kind": "session_stamp"
       }
     ],
@@ -1567,6 +1529,18 @@
         "count": 3,
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
         "kind": "decision_label"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/app/ticket_access.py": [
+      {
+        "count": 1,
+        "hash": "65dd84016ff3d88ff19a84fa599cc4e1c3681f282f6d2e13bfb429cc99f3f6ac",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 2,
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "kind": "session_stamp"
       }
     ],
     "templates/opencode/.project_manager/tools/pm_engine/app/worktree_pool.py": [
@@ -1643,6 +1617,28 @@
       {
         "count": 1,
         "hash": "6e4c6d6333e05aa2b05721186482a068ea59c187da76852bd42b929faf1aed9f",
+        "kind": "decision_label"
+      },
+      {
+        "count": 2,
+        "hash": "f973655d0269897965996eb0455d3e887d5d0e01b3c08952e8e047b75a2fb37e",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "64168d574d8fc163c9d910d14b3e6bfb0e2cd87b83c359ac17ad3ec6e0b4d84c",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/infra/board_git.py": [
+      {
+        "count": 1,
+        "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
+        "kind": "decision_label"
+      },
+      {
+        "count": 1,
+        "hash": "f9ec72a720d1d44c1aa7074d9ba4e13499d8178e4069b1d4fe563f9df2ae59ad",
         "kind": "decision_label"
       }
     ],

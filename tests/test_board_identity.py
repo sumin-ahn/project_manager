@@ -36,6 +36,9 @@ from pm_engine.domain import ticket_rules
 from pm_engine.infra import cluster_store, pm_paths, ticket_store
 from pm_engine.app import regression, release, ticket_lint
 
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 # 귀속 쓰기 정체성 — 픽스처가 이 task 의 제품 폴더를 준비한다(T-0962).
 _TASK = "pm-1"
 
@@ -91,12 +94,12 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
         "LEASES_FILE": pm / ".local" / "worktree-leases.json",  # `--repo` 단독 actor 해소용(T-0314)
         "PM_STATE_FILE": wiki / "pm_state.md",
         "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
@@ -105,7 +108,7 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)  # board_lock 의 lock 파일 위치
     # 기본: git 폴백 미설정(None) — 실 git config 누출 차단. 명시 테스트가 덮는다.
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # 조회 세션 바인딩은 env 명시 — per-clone conf `session=` 폴백은 폐지됐다(T-0779). 귀속 쓰기
     # (new·claim)는 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962).
     monkeypatch.setenv("PM_SESSION_NAME", _TASK)
@@ -151,34 +154,34 @@ def test_user_name_local_conf_wins(board, monkeypatch):
     """local.conf user= 가 있으면 그것(git 폴백보다 우선)."""
     _write_conf(board, user="alice")
     # git 폴백이 다른 값을 줘도 local.conf 가 이긴다.
-    monkeypatch.setattr(board, "_git_config_email", lambda: "bob@x.com")
-    assert board.user_name() == "alice"
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "bob@x.com")
+    assert lease_store.user_name(board._home()) == "alice"
 
 
 def test_user_name_override_wins(board):
     """명시 override 가 local.conf 보다도 우선(session_name 패턴 동형)."""
     _write_conf(board, user="alice")
-    assert board.user_name("carol") == "carol"
+    assert lease_store.user_name(board._home(), "carol") == "carol"
 
 
 def test_user_name_falls_back_to_git_email(board, monkeypatch):
     """local.conf user= 부재 → git config user.email 로 폴백."""
     # local.conf 없음(user 키 부재).
-    monkeypatch.setattr(board, "_git_config_email", lambda: "dev@example.com")
-    assert board.user_name() == "dev@example.com"
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "dev@example.com")
+    assert lease_store.user_name(board._home()) == "dev@example.com"
 
 
 def test_user_name_none_when_neither(board):
     """local.conf user= 도 git email 도 없으면 None (graceful·user 미상 허용)."""
     # fixture 가 _git_config_email→None stub·local.conf 부재.
-    assert board.user_name() is None
+    assert lease_store.user_name(board._home()) is None
 
 
 def test_user_name_empty_conf_value_ignored(board, monkeypatch):
     """local.conf user= 가 빈 값이면 미설정 취급 → git 폴백으로 내려간다."""
     _write_conf(board, user="")
-    monkeypatch.setattr(board, "_git_config_email", lambda: "fallback@x.com")
-    assert board.user_name() == "fallback@x.com"
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "fallback@x.com")
+    assert lease_store.user_name(board._home()) == "fallback@x.com"
 
 
 # ── _git_config_email fail-soft (실 git 미주입 — git 부재/실패 graceful) ──────
@@ -192,7 +195,7 @@ def test_git_config_email_fail_soft_when_git_absent(board, monkeypatch):
     fresh = _load_board()
     monkeypatch.setattr(fresh, "REPO", board.REPO)
     monkeypatch.setattr(fresh.shutil, "which", lambda _name: None)
-    assert fresh._git_config_email() is None
+    assert lease_store._git_config_email(fresh._home()) is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -202,18 +205,18 @@ def test_git_config_email_fail_soft_when_git_absent(board, monkeypatch):
 def test_identity_tag_user_slash_slot(board):
     """user 해소되면 `<user>/<pm-slot>`."""
     _write_conf(board, user="alice")
-    assert board.identity_tag() == "alice/pm-1"
+    assert lease_store.identity_tag(board._home()) == "alice/pm-1"
 
 
 def test_identity_tag_slot_only_when_user_unknown(board):
     """user 미상(None)이면 슬롯만 — 기존 슬롯-only 값과 형태 동일(graceful)."""
     _write_conf(board)  # user 키 없음·git 폴백 None(fixture)
-    assert board.identity_tag() == "pm-1"
+    assert lease_store.identity_tag(board._home()) == "pm-1"
 
 
 def test_identity_tag_honors_overrides(board):
     """session/user override 를 둘 다 존중한다."""
-    assert board.identity_tag(session_override="s2", user_override="u2") == "u2/s2"
+    assert lease_store.identity_tag(board._home(), session_override="s2", user_override="u2") == "u2/s2"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -250,7 +253,7 @@ def test_cmd_new_created_by_honors_explicit_user(board):
 
 def _seed_open(board, tid="T-0001"):
     path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
+    ticket_store.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
                              "claimed_by": None, "depends_on": []}, "# seed\n")
     return path
 

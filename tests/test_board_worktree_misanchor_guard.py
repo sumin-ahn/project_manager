@@ -163,7 +163,7 @@ def _fake_runner(git_dir: str, common_dir: str):
 # 재바인딩해 어떤 mutation 이 돌더라도 실 트리 오염 0(hermetic).
 _WRITE_TARGET_CONSTS: dict[str, str] = {
     "IDEAS_DIR": "wiki/ideas",
-    "BOARD_FILE": "wiki/board.md",
+
     "LOG_FILE": "wiki/log/current.md",
     "LOCAL_CONF": "local.conf",
     "TICKETS_DIR": "wiki/tickets",
@@ -172,7 +172,7 @@ _WRITE_TARGET_CONSTS: dict[str, str] = {
     "PM_STATE_FILE": "wiki/pm_state.md",
     "PM_STATE_TEMPLATE": "wiki/pm_state.template.md",
     "LOCAL_DIR": ".local",
-    "BOARD_LOCK": ".local/board.lock",
+
     "LEASES_FILE": ".local/worktree-leases.json",
 }
 
@@ -845,13 +845,7 @@ def test_read_input_inventory_covers_every_read_leaf():
 def test_pm_owned_path_inventory_is_complete():
     """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
     b = _load_board()
-    expected = {
-        "IDEAS_DIR",
-        "BOARD_FILE", "LOG_FILE", "LOCAL_CONF", "TICKETS_DIR",
-        "TEMPLATE_FILE", "AREAS_FILE", "PM_STATE_FILE", "PM_STATE_TEMPLATE", "LOCAL_DIR",
-        "BOARD_LOCK", "LEASES_FILE",
-        "DELEGATE_CHANNEL_GUARD_PY", "CODEX_DELEGATE_OBSERVATIONS",
-    }
+    expected = {'IDEAS_DIR', 'LOG_FILE', 'LOCAL_CONF', 'TICKETS_DIR', 'TEMPLATE_FILE', 'AREAS_FILE', 'PM_STATE_FILE', 'PM_STATE_TEMPLATE', 'LOCAL_DIR', 'LEASES_FILE', 'DELEGATE_CHANNEL_GUARD_PY', 'CODEX_DELEGATE_OBSERVATIONS'}
     assert set(b._READ_PM_PATH_RELS) == expected
 
 

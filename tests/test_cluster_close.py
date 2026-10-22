@@ -35,6 +35,11 @@ import pytest
 from _slot_seed import seed_slot
 from pm_engine.app import round_seed
 
+from pm_engine.app import ticket_access
+from pm_engine.app import board_sync
+
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 # 픽스처 저장소는 엔진 사본을 커밋한다. 원본 트리의 `__pycache__` 가 실행 순서에 따라 일부만 있어
@@ -1748,10 +1753,10 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
     monkeypatch.setattr(
         closer._board, "cluster_complete_binding_problem",
         lambda tid, fm, binding: calls.append(f"binding:{tid}") or None)
-    ownership = closer._board._ticket_ownership
+    ownership = ticket_access._ticket_ownership
     monkeypatch.setattr(
-        closer._board, "_ticket_ownership",
-        lambda fm, args: namespaces.append(args) or ownership(fm, args))
+        ticket_access, "_ticket_ownership",
+        lambda home, fm, **kwargs: namespaces.append((home, fm, kwargs)) or ownership(home, fm, **kwargs))
     monkeypatch.setattr(
         closer._board, "_round_completion_problems",
         lambda tid, spec_text: calls.append(f"rounds:{tid}") or [])
@@ -1769,7 +1774,9 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
     board_module = closer._board
     expected = vars(board_module.build_parser().parse_args(
         ["complete", env.ticket, "--tests-pass"]))
-    assert vars(namespaces[0]) == expected
+    assert namespaces[0] == (closer._home, ticket_store.load_ticket(
+        ticket_store.find_ticket_exact(closer._home, env.ticket)[1])[0],
+        {"task": expected.get("task"), "user": expected.get("user")})
 
 
 @requires_git
@@ -2210,7 +2217,7 @@ def test_size_one_cluster_matches_the_single_ticket_finish(close_env, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
-def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, capsys):
+def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, capsys, monkeypatch):
     """board-git 로컬 커밋이 안 생기면 마지막 단계에서 멈추고 종결 표시도 남기지 않는다.
 
     `False` 는 board 가 "이 경로가 아직 미커밋" 이라고 확정 보고한 값이다 — 경고로 강등하면
@@ -2218,7 +2225,8 @@ def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, caps
     """
     env = close_env
     closer = env.closer()
-    closer._board._board_git_sync_best_effort = lambda message, paths=None: False
+    real_sync = board_sync._board_git_sync_best_effort
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home, message, paths=None: False)
 
     rc = closer.run()
     captured = capsys.readouterr()
@@ -2230,6 +2238,7 @@ def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, caps
     assert env.home_log()[0] == "home seed"              # 포인터 커밋도 없다
 
     # 기록 채널이 돌아오면 재실행이 그 단계부터 이어간다(앞 단계 미반복).
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", real_sync)
     second = env.closer().run()
     out = capsys.readouterr().out
 

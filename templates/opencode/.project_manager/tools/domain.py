@@ -13,8 +13,7 @@ domain 초안(`status: draft`)으로 *scaffold* 한다 — prose 는 verbatim �
 **git 무조작**(add/commit 0)·promote(draft→정식)는 사람 손.
 
 경로 상수(`DOMAIN_DIR`·`ENGINE_MANIFEST`)는 스크립트 위치 기준이고 CLI 가 패키지 함수에 명시로
-넘긴다(테스트는 이 상수를 tmp 경로로 바꿔 hermetic 하게 돈다). ticket touches 읽기는 board 를
-같은 tools/ 에서 `_load_module` 로 적재한다.
+넘긴다(테스트는 이 상수를 tmp 경로로 바꿔 hermetic 하게 돈다). ticket touches는 실행 ticket_store와 명시 Home으로 읽는다.
 """
 
 from __future__ import annotations
@@ -29,9 +28,9 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import doc_drafts  # noqa: E402
-from pm_engine.infra import console, doc_page_store, pm_paths, repo_coordinates, repo_files, ticket_store  # noqa: E402
+from pm_engine.infra import console, doc_page_store, pm_paths, repo_coordinates, ticket_store  # noqa: E402
 from pm_engine.app import doc_affected, doc_coverage, doc_lint, doc_staleness  # noqa: E402
-_load_module_from_path = repo_files.load_module
+
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
 # 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
@@ -53,62 +52,6 @@ DIRECTORY_GAP_DISPLAY_LIMIT = 15
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
 ENGINE_REV = "v1.8.1"
-
-# rev 스탬프를 지닌 형제 파일만 대조 대상. AST deep-import 가드가 실제 target과 정합을 단언한다.
-_STAMPED_SIBLINGS = frozenset({"board.py"})
-
-
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
-
-    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
-    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
-    """
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-        )
-        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
-        raise err
-
-
-def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (fail-soft 로더 재-raise 식별)."""
-    return getattr(exc, "_engine_rev_skew", False)
-
-
-# ── 엔진 모듈 동적 로드 (스크립트-위치 앵커·board.py·pm_config.py 선례) ──────────
-# board.py 는 같은 tools/ 에 있다. spec_from_file_location 으로 로드한다 — 패키지 설치
-# 없이 동작(board.py·pm_*.py 와 같은 로드 관례). 부재/실패는 명시 에러로 보고한다.
-
-
-def _load_module(name: str, filename: str):
-    """tools/<filename> 를 모듈로 로드한다. 부재/실패 → None (호출부가 명시 에러)."""
-    path = TOOLS_DIR / filename
-    if not path.exists():
-        return None
-    try:
-        if filename in _STAMPED_SIBLINGS:
-            mod = _load_module_from_path(
-                path, filename, verifier=_verify_engine_rev,
-            )
-        else:
-            mod = _load_module_from_path(
-                path, filename, allow_unverified=True,
-            )
-    except Exception as exc:  # noqa: BLE001 — 로드 실패는 호출부가 명시 에러로 보고.
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
-def _load_board():
-    """board 모듈을 로드한다. 부재/실패 → None (호출부가 명시 에러)."""
-    return _load_module("board", "board.py")
 
 
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
@@ -177,15 +120,11 @@ def cmd_list(args: argparse.Namespace) -> int:
 def _touches_from_ticket(ticket_id: str) -> list[str]:
     """ticket_store.load_ticket 으로 ticket frontmatter 의 `touches` 를 읽는다(없으면 []).
 
-    board 미로드·ticket 부재/깨짐 → [](graceful·crash 0). frontmatter `touches` 의
+    ticket 부재/깨짐 → [](graceful·crash 0). frontmatter `touches` 의
     문자열 원소만 취한다(비-문자열 오기는 방어적으로 버림 — parse_page covers 동형).
     """
-    board = _load_board()
-    if board is None:
-        print("domain: board.py 로드 실패 — touches 를 읽지 못했다.", file=sys.stderr)
-        return []
     try:
-        _status, path = board.find_ticket(ticket_id)
+        _status, path = ticket_store.find_ticket(pm_paths.home_at(REPO), ticket_id)
         fm, _body = ticket_store.load_ticket(path)
     except Exception as exc:  # noqa: BLE001 — 부재/깨진 ticket 은 graceful(빈 touches).
         print(f"domain: ticket {ticket_id} touches 읽기 skip — {exc}", file=sys.stderr)
@@ -208,8 +147,6 @@ def cmd_affected(args: argparse.Namespace) -> int:
             # 이미 이 CLI의 repo 상대 입력 계약이므로 변환하지 않는다.
             touches = _normalize_ticket_touches(touches)
         except RuntimeError as exc:
-            if _is_engine_rev_skew(exc):
-                raise
             print(
                 f"domain: ticket {args.ticket} touches 좌표 정규화 실패 — {exc}",
                 file=sys.stderr,
@@ -275,8 +212,6 @@ def cmd_capture(args: argparse.Namespace) -> int:
         try:
             touches = _normalize_ticket_touches(touches)
         except RuntimeError as exc:
-            if _is_engine_rev_skew(exc):
-                raise
             print(
                 f"domain: tickets touches 좌표 정규화 실패 — {exc}",
                 file=sys.stderr,

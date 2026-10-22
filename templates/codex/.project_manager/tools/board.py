@@ -19,18 +19,14 @@ import argparse
 import ast
 import contextlib
 import datetime
-import functools
 import json
 import os
 import re
 import shlex
 import shutil
-import stat
 import subprocess
 import sys
-import tempfile
 import time
-import urllib.parse
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -42,17 +38,24 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_lint, freshness_pin, hooks, lint_hooks, regression, release, round_seed, ticket_lint, wiki_lint, wikilink_lint  # noqa: E402
 from pm_engine.cli import regression_cmd, task_args  # noqa: E402
-from pm_engine.domain import areas_rules, conf_schema, design_rules, git_policy, gitattributes_rules, identity_args, markdown_text, pytest_report, review_form, review_state, round_rules, shell_policy, ticket_rules  # noqa: E402
-from pm_engine.infra import areas_store, clock, cluster_store, conf_store, console, delegate_ledger, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, python_env, regression_store, repo_coordinates, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
+from pm_engine.domain import areas_rules, design_rules, git_policy, identity_args, markdown_text, pytest_report, review_form, review_state, round_rules, shell_policy, ticket_rules  # noqa: E402
+from pm_engine.infra import areas_store, clock, cluster_store, conf_store, console, delegate_ledger, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, regression_store, repo_coordinates, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 from pm_engine.infra import task_store
 from pm_engine.infra import branch_store
 from pm_engine.infra import worktree_git
-from pm_engine.domain import worktree_records
+
+from pm_engine.app import areas_registry
+from pm_engine.app import board_claim
+from pm_engine.app import board_dashboard
+from pm_engine.infra import board_git
+from pm_engine.domain import board_git_rules
+from pm_engine.cli import board_list
+from pm_engine.app import board_sync
+from pm_engine.app import ticket_access
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
 IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
-BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): py·test_cmd·ctx_* (세션·prefix 는 여기 없다 — lease 장부·areas.md)
 
@@ -98,7 +101,6 @@ AREAS_FILE = REPO / ".project_manager" / "areas.md"    # shared registry (commit
 PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"          # per-clone (git-ignored)
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"  # tracked skeleton
 LOCAL_DIR = REPO / ".project_manager" / ".local"            # per-clone scratch (git-ignored)
-BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — board write serialization
 # worktree_pool 의 LEASES_FILE 와 *같은 위치*(그 관례 — `.local/worktree-leases.json`). board 는
 # worktree_pool 을 import 하지 않으므로 경로를 자체 해소해 파일을
 # 직접 read 한다(슬롯 test_cmd 레이어·아래 _active_slot_test_cmd). areas.md 읽듯 데이터-결합만.
@@ -932,7 +934,6 @@ class _ReadBoardResolution(NamedTuple):
 # PM-owned 입력을 추가할 때 이 표와 `_READ_PM_INPUTS_BY_SUBCOMMAND`를 함께 갱신하게 된다.
 _READ_PM_PATH_RELS: dict[str, str] = {
     "IDEAS_DIR": "wiki/ideas",
-    "BOARD_FILE": "wiki/board.md",
     "LOG_FILE": "wiki/log/current.md",
     "LOCAL_CONF": "local.conf",
     "TICKETS_DIR": "wiki/tickets",
@@ -941,7 +942,6 @@ _READ_PM_PATH_RELS: dict[str, str] = {
     "PM_STATE_FILE": "wiki/pm_state.md",
     "PM_STATE_TEMPLATE": "wiki/pm_state.template.md",
     "LOCAL_DIR": ".local",
-    "BOARD_LOCK": ".local/board.lock",
     "LEASES_FILE": ".local/worktree-leases.json",
     "DELEGATE_CHANNEL_GUARD_PY": "tools/delegate_channel_guard.py",
     "CODEX_DELEGATE_OBSERVATIONS": ".local/delegate-channel/codex-observations.jsonl",
@@ -1045,38 +1045,6 @@ def _guard_worktree_misanchor(action: str) -> bool:
     return True
 
 
-# ── utilities ──────────────────────────────────────────────────────────
-
-
-def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
-    """local.conf 텍스트에서 지정 키만 set-or-replace. 나머지 줄·주석은 보존.
-
-    있으면 그 자리에서 `key=value` 로 교체(첫 등장만), 없으면 끝에 추가. stdlib only.
-    pm_import._set_conf_keys 와 동형 — board 는 pm_import 를 import 하지 않으므로
-    (의존 방향: pm_import 가 board init 을 subprocess 로 부르는 상위) board-local 사본을
-    둔다(중복 최소·순수 프리미티브). cmd_init 의 비파괴 병합에 쓴다.
-    """
-    remaining = dict(updates)
-    lines = text.splitlines(keepends=True)
-    out: list[str] = []
-    for line in lines:
-        stripped = line.lstrip()
-        if not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in remaining:
-                newline = "\n" if line.endswith("\n") else ""
-                out.append(f"{key}={remaining.pop(key)}{newline}")
-                continue
-        out.append(line)
-    if remaining:
-        if out and not out[-1].endswith("\n"):
-            out[-1] = out[-1] + "\n"
-        for key, value in updates.items():
-            if key in remaining:
-                out.append(f"{key}={value}\n")
-    return "".join(out)
-
-
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
@@ -1121,15 +1089,6 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
     return 1
 
 
-def _conf_default_int(key: str) -> int:
-    """이 conf 키의 엔진 기본값(정수) — 정본은 `conf_schema.KEY_REGISTRY` 다.
-
-    기본값이 선언되지 않은 키를 여기로 부르면 `TypeError` 로 멈춘다 — 엔진이 없는 값을 지어내지
-    않는다(하네스별 표가 정본인 키는 그 표를 읽는 자리가 따로 있다).
-    """
-    return int(conf_schema.default_for(key))
-
-
 def _write_machine_line(text: str) -> None:
     """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
@@ -1138,286 +1097,6 @@ def _write_machine_line(text: str) -> None:
     직접 쓴다(콘솔 코덱 전환과 독립).
     """
     console.write_machine_line(text)
-
-
-# 귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)에 `--task` 가 없을 때의 중단 문구.
-# 정체성은 task 하나라 다른 값(환경변수·단일 대여)으로 대신하지 않는다.
-TASK_REQUIRED = (
-    "[중단] {action}: 귀속 쓰기는 `--task <task>` 가 필요하다 — 정체성은 task 하나다. "
-    "`{command} --task <task>` 로 다시 실행하라(task 의 폴더가 2개 이상이면 "
-    "`--repo <repo> --slot <N>` 을 함께 준다). task 폴더는 "
-    "`pm-config alloc <repo> --task <task>` 로 빌린다."
-)
-
-
-# user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
-# 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 관례·_interp_runs 동류).
-_GIT_USER_TIMEOUT_SECONDS = 5
-
-
-def _git_config_email() -> str | None:
-    """`git config user.email` 을 읽어 반환 — 미설정/git 부재/실패 → None (fail-soft).
-
-    user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf identity.user=` 가 없을 때
-    git 의 commit author email 을 user 식별자로 쓴다. subprocess 는
-    엔진 관례대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
-    (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 강등한다(크래시 0).
-    """
-    git_binary = shutil.which("git")
-    if git_binary is None:
-        return None
-    try:
-        r = subprocess.run(
-            [git_binary, "-C", str(REPO), "config", "user.email"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_GIT_USER_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError):  # fail-soft: git 호출 실패는 None(미상)으로 강등.
-        return None
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip() or None
-
-
-def user_name(override: str | None = None) -> str | None:
-    """user 식별자 해소 — `session_name()` 과 *동형* 우선순위:
-
-        override > local.conf `identity.user=` > `git config user.email` > None
-
-    `pm`(슬롯)이 *어느 PM 컨텍스트*인지(=`session_name()`)와 직교하는 **누가**(사람) 차원이다
-    multi-user 보드 공유에서 `created_by`(provenance)·`claimed_by`(assignee)·
-    areas `area_owner` 의 user 토큰을 푼다. 단일 사용자(M=1)는 보통 `local.conf identity.user=` 미설정 →
-    `git config user.email` 로 폴백(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
-    user 미상 허용·fail-soft·기존 슬롯-only 동작 무변경).
-    """
-    if override:
-        return override
-    conf_user = conf_store.local_config(_home()).get("identity.user")
-    if conf_user:
-        return conf_user
-    return _git_config_email()
-
-
-def identity_tag(session_override: str | None = None,
-                 user_override: str | None = None) -> str | None:
-    """현재 identity 를 `<user>/<pm-slot>` 토큰으로 합성한다.
-
-    `created_by`(provenance)·`claimed_by`(assignee) frontmatter 에 박는 값이다. user 가
-    해소되면 `<user>/<pm>`, 미상(None)이면 슬롯만(`<pm>`) — **기존 슬롯-only 값과 형태가
-    같다**(graceful·하위호환). 읽기측은 `/` 로 split 해 user/slot 을 분리하되, `/` 없는 값
-    (구 ticket·user 미상)은 slot-only 로 읽어야 한다(fail-soft).
-
-    세션 미바인딩(`session_name` None·surface)이면 세션 토큰이 없으므로 user
-    만(있으면) 반환하고 둘 다 없으면 None 이다(graceful). 귀속 쓰기 호출부(new·claim)는
-    `--task` 를 `session_override` 로 넘기므로 pm 이 None 으로 새지 않는다.
-    """
-    pm = lease_store.session_name(_home(), session_override)
-    user = user_name(user_override)
-    if pm is None:
-        return user
-    return f"{user}/{pm}" if user else pm
-
-
-def _actor_session_override(args: argparse.Namespace) -> str | None:
-    """비실행 명령(소유 대조·귀속 쓰기)의 정체성 — 검증한 `--task` 값, 없으면 None.
-
-    이 명령들의 parser 에는 `--repo`/`--slot` 이 없다. 무검증 task 명이 created_by/claimed_by/
-    lease-session 으로 영속되지 않도록 여기서 한 번 검증한다(실행 소비자는
-    `_execution_actor_session_override` 가 같은 검증을 부른다).
-    """
-    task = getattr(args, "task", None)
-    if not task:
-        return None
-    task_args._validate_actor_task_or_exit(_home(), task)
-    return task
-
-
-
-
-def _areas_header_line() -> str:
-    """canonical areas.md 헤더 행 (`| repo | prefix | … | area_owner |`·줄바꿈 없음).
-
-    `_AREAS_COLUMNS`(단일 진실)에서 파생한다 — `areas_append` 의 신규 파일 헤더와
-    `_migrate_areas_text` 의 구-헤더 업그레이드가 같은 8칼럼 헤더를 쓰도록 한 곳에서 만든다.
-    """
-    return "| " + " | ".join(areas_rules._AREAS_COLUMNS) + " |"
-
-
-def _areas_separator_line() -> str:
-    """canonical areas.md 구분선 (`|---|---|…|`·칼럼 수만큼 `---`·줄바꿈 없음)."""
-    return "|" + "|".join("---" for _ in areas_rules._AREAS_COLUMNS) + "|"
-
-
-# ── areas.md 칼럼 인덱스 해소 (공용 헬퍼) ───────────────────────────
-# `_parse_areas`(읽기)·`_migrate_areas_text`(area_owner backfill)·`areas_set_cell`(범용 셀 변경)
-# 세 경로가 **같은** 인덱스 규칙을 써야 한다. 두 벌로 갈라지면 칼럼 오매핑
-# 행 dict 매핑
-# (`_areas_row_dict`) 헤더 인덱스 + 구-헤더 업그레이드 계획(`_areas_column_index`) 데이터
-# 행의 wider-row 보정(`_areas_row_cell_index`) 을 여기 한 곳에 모은다.
-
-
-def _areas_column_index(header_cells: list[str],
-                        column: str) -> tuple[int, str | None, int]:
-    """헤더에서 `column` 셀 인덱스를 해소한다 — 부재면 구-헤더 업그레이드 계획을 함께 낸다.
-
-    반환 `(idx, new_header_line, sep_cols)`:
-      - 헤더에 그 칼럼이 있으면 `(header_cells.index(column), None, 0)` — 업그레이드 없음(헤더
-        행 verbatim 보존).
-      - 없으면(구 헤더) **업그레이드**한다. 헤더가 canonical prefix(`_AREAS_COLUMNS` 앞 N개와
-        일치하는 per-repo 레지스트리 계열 5/6/7칼럼)면 canonical 8칼럼 헤더(`_areas_header_line`)
-        로 교체하고 idx=canonical 인덱스. 비호환 구 헤더(멀티-clone `prefix|area|owner`[3] 등 —
-        칼럼 의미가 canonical 과 어긋남)면 정렬을 깨지 않게 기존 칼럼 **뒤에 그 칼럼만 append**
-        하고 idx=len(header_cells). `sep_cols` = 업그레이드 후 구분선이 가질 칼럼 수.
-
-    `_migrate_areas_text`(area_owner backfill)와 `areas_set_cell`(범용 셀 변경)이 **공유**한다.
-    """
-    if column in header_cells:
-        return header_cells.index(column), None, 0
-    if tuple(header_cells) == areas_rules._AREAS_COLUMNS[:len(header_cells)]:
-        return (areas_rules._AREAS_COLUMNS.index(column), _areas_header_line(),
-                len(areas_rules._AREAS_COLUMNS))
-    return (len(header_cells),
-            "| " + " | ".join(header_cells + [column]) + " |",
-            len(header_cells) + 1)
-
-
-def _areas_row_cell_index(header_cells: list[str], cells: list[str],
-                          header_idx: int, column: str) -> int:
-    """데이터 행에서 `column` 셀의 인덱스 — wider row 는 canonical 인덱스로 보정한다.
-
-    셀 수가 헤더보다 많은 행은 `_areas_row_dict`(=`_parse_areas`)가 헤더를 무시하고 canonical
-    순서로 매핑하므로, 쓰기측도 **정확히 같은** 인덱스를 잡아야 한다. 그 외는
-    `_areas_column_index` 가 준 헤더 인덱스 그대로.
-    """
-    if len(cells) > len(header_cells) and column in areas_rules._AREAS_COLUMNS:
-        return areas_rules._AREAS_COLUMNS.index(column)
-    return header_idx
-
-
-def _repo_base(repo: str) -> str | None:
-    """그 repo 의 areas.md `base` 브랜치. 미지정/미등록/구 스키마 → None.
-
-    `pm-config repo add --base`(또는 clone-time bare HEAD 해소)가 areas.md `base`
-    칼럼에 기록한 값을 읽어, worktree 슬롯 브랜치가 *그 base 에서 파생*되게 한다
-    (`pm-config worktree add` → `create_slot(base=)`). repo 명은 areas.md `repo` 칼럼과
-    매칭한다(repo add 가 `repo=name·prefix=name` 으로 등록하므로 repo==prefix 가 보통).
-
-    None 폴백(worktree add 가 현행 bare HEAD 동작·회귀 0):
-      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
-      - 그 repo 행이 없음(미등록).
-      - `base` 칼럼 자체가 없는 구 레지스트리(헤더에 base 없음 → 행 dict 에 base 키 없음).
-      - `base` 칼럼이 빈 값(부분 등록).
-    """
-    _header, rows = areas_store._parse_areas(_home())
-    for row in rows:
-        if row.get("repo") == repo:
-            return row.get("base") or None
-    return None
-
-
-
-
-
-
-# ── `--mine` 뷰 필터 ─────────
-# 단일 공유 보드 위의 *렌즈*(별도 저장 아님). `board list --mine` 은 두 풀의 합집합:
-#   (a) 내 area 의 open — status=open ∧ 그 티켓 area 의 `area_owner` == 내 user.
-#   (b) 내 claim — `claimed_by` 의 *user* == 내 user (새 형태) ∨ `claimed_by` == 내 슬롯
-#       (legacy 슬롯-only·user 차원 없는 claim). 상태 무관(연속성).
-# graceful degrade(핵심): user 미해소(None)이거나 보드에 area_owner 가 운영 중이지
-# 않으면(미마이그레이션 채택자) (a)=전체 open 으로 떨어진다(빈 보드 금지·plain list 처럼).
-# `cmd_list` 가 `_area_owner_in_use()`(areas.md 전역 1회 스캔)로 (a) 범위를 정한다 — per-user
-# 2축 분기(`_owns_any_area`+`area_filter`)를 전역 플래그 1개로 단순화(동반·사용자 결정
-# 2026-06-26: 데이터 정합은 `board migrate-identity` 가 책임·런타임 폴백은 최소).
-
-_TICKET_PREFIX_RE = re.compile(
-    rf"^T-(?P<prefix>{ticket_rules._TICKET_PREFIX_BODY})-\d+$")
-
-
-def _ticket_prefix(tid: str) -> str | None:
-    """티켓 ID 에서 네임스페이스 prefix 추출. legacy `T-NNNN`(prefix 없음) → None.
-
-    `_next_id` 의 ID 발행 규칙의 역이다: prefixed = `T-<PREFIX>-NNN`, legacy = `T-NNNN`.
-    PREFIX 문법은 등록/검증측(`pm_config._REPO_NAME_RE`·`[A-Za-z0-9][A-Za-z0-9_-]*`)과 정합이라
-    숫자(`P0`)·하이픈(`service-a`)·순수 숫자(`123`)를 포함할 수 있고 그런 ID(`T-P0-001`·
-    `T-service-a-001`·`T-123-001`)도 해소된다. legacy 4자리 숫자 ID는 full-ID regex
-    가 *내부 하이픈*(prefix-NNN)을 요구하는데 하이픈이 1개뿐이라 매칭 안 됨 → None(구조적 구분).
-    """
-    if not tid:
-        return None
-    m = _TICKET_PREFIX_RE.match(tid)
-    return m.group("prefix") if m else None
-
-
-# legacy `T-NNNN` 의 순번 추출 — prefixed(`T-<p>-NNN`)는 마지막 하이픈 뒤 숫자로 뗀다.
-_LEGACY_TICKET_ID_RE = re.compile(r"^T-(\d+)$")
-
-
-def _ticket_id_number(tid: str) -> int | None:
-    """티켓 ID 의 순번(정수). `T-NNNN`→NNNN / `T-<p>-NNN`→NNN. 미매치→None (prefix list 범위용)."""
-    if _TICKET_PREFIX_RE.match(tid):        # prefixed — 순번 = 마지막 `-` 뒤 숫자 마디.
-        return int(tid.rsplit("-", 1)[1])
-    m = _LEGACY_TICKET_ID_RE.match(tid)
-    return int(m.group(1)) if m else None
-
-
-# 명시 `--prefix` 입력측 sanity — 소비측 grammar(`_TICKET_PREFIX_BODY`·
-# 대문자/하이픈 포함·legacy ID 역파싱용)와 **의도적으로 다르다**. 소비측은 기존 발행분(대문자·
-# 하이픈 acronym)을 *해소*해야 하므로 넓지만, *새* 카테고리 prefix 입력은 좁게 권장형식으로 못박아
-# (작업 카테고리 = 짧은 소문자·언더스코어). 유도/등록된 legacy prefix 는 검증
-# 안 한다(cmd_new 는 명시 override 만·cmd_init 은 명시 --prefix 만 검사).
-_PREFIX_RESERVED: frozenset[str] = frozenset({"none"})   # `none`=무prefix(T-NNNN) 1급 인자·실 prefix 예약 (case-insensitive)
-_PREFIX_FORMAT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]*$")    # 형식 sanity (영숫자 시작·이후 영숫자/`_`·대소문자 허용)
-
-
-def _validate_prefix(prefix: str) -> str | None:
-    """명시 `--prefix` 형식 sanity — 위반 사유 메시지 반환, 정상이면 None.
-
-    - 예약어(`none`·대소문자 무관): 무prefix(`T-NNNN`) 네임스페이스의 1급 인자로 예약(rename/
-      merge 의 from/to/into)이라 실 prefix 로 등록/사용 금지. prefix 동일성이
-      case-insensitive fold 이므로 `NONE`/`None` 도 같은 예약어로 fold 돼 거부된다.
-    - 형식 `[A-Za-z0-9][A-Za-z0-9_]*`(첫 글자 영숫자·이후 영숫자/`_`): **대소문자 모두 허용**
-      (prefix 동일성은 case-insensitive fold 이되 canonical case 는 보존). 하이픈·
-      공백·특수문자·빈 문자열은 fail-loud(하이픈은 ID 구분자와 충돌 — 이번 변경 범위 아님).
-    """
-    if prefix.lower() in _PREFIX_RESERVED:
-        return (f"prefix {prefix!r} 은 예약어 — 무prefix(T-NNNN) 네임스페이스의 1급 인자다"
-                "(rename/merge·`none` 은 case-insensitive). 실 prefix 로 쓸 수 없다.")
-    if not _PREFIX_FORMAT_RE.match(prefix):
-        return (f"prefix {prefix!r} 형식 위반 — 작업 카테고리는 "
-                "`[A-Za-z0-9][A-Za-z0-9_]*`(첫 글자 영숫자·이후 영숫자/`_`·대소문자 허용·"
-                "). 하이픈·특수문자·공백·빈 문자열은 금지"
-                "(하이픈은 `T-{prefix}-NNN` ID 구분자와 충돌).")
-    return None
-
-
-def _fold_key(prefix: str | None) -> str | None:
-    """prefix 의 네임스페이스 동일성 키 — 문자열은 소문자 fold, None(무prefix)은 그대로.
-
-    prefix 동일성은 case-insensitive fold 이므로 `AAA`≡`aaa` 는 같은 키(`aaa`)로, legacy 무prefix
-    (None)는 None 과만 같은 키다. rename/merge/delete 의 **source-측 매칭·collision 정규화**가 이
-    키로 비교해 `T-AAA-*` 를 `aaa` source 로 잡고, `T-AAA-001`/`T-aaa-001` 오염 공존을 collision 으로
-    잡는다(canonical case 보존과 별개 — 여긴 *비교* 층이라 소문자 fold 만).
-    """
-    return prefix.lower() if prefix is not None else None
-
-
-# ── 티켓 ID 참조 rewriter 코어 ───────────────────
-# prefix rename/merge가 소비하는 순수·hermetic 프리미티브. old→new ID 맵을 받아
-# 대상 파일(board tickets 본문·wiki/·log/)의 참조를 **토큰단위 정확치환**한다 — frontmatter
-# `depends_on`·`[[wikilink]]`·bare inline·산문 임베드(`**A·B(...)**`)가 전부
-# 리터럴 ID 토큰이라 한 rewriter 로 전부 커버된다.
-#
-# 경계 규칙(부분매치 방지): 매치된 old ID 양옆이 식별자 문자면 치환하지
-# 않는다 — (1) 뒤 char ∈ `[A-Za-z0-9_-]` → `T-0063` 이 `T-00631`(뒤 숫자)·`T-0063-2`(뒤 하이픈)·
-# `T-0063_legacy`(뒤 언더스코어)·`T-0063abc`(뒤 알파벳)에 안 걸림, (2) 앞 char ∈ `[A-Za-z0-9_-]`(lookbehind) →
-# `fooT-0063`·`NOT-0063`(앞 식별자 문자)에 안 걸림. old ID 가 리터럴 `T-` 로 시작하는 것만으론
-# 왼쪽 부분매치(`fooT-0063`)를 못 막으므로 lookbehind 로 왼쪽 경계를 명시한다(codex must-fix).
-# 한글·괄호·공백 등 비-식별자 인접(`[[T-0063]]다음`·`(T-0063)`·`depends_on: T-0063`)은 양옆이
-# 경계라 정상 치환된다. 무prefix `T-NNNN`·prefix `T-<p>-NNN` 두 표기형 모두 map 키를 리터럴
-# escape 해 자연 포섭한다.
-_REWRITE_LEADING_BOUNDARY = r"(?<![A-Za-z0-9_-])"   # old ID 앞 char ∉ [A-Za-z0-9_-] (왼쪽 부분매치 방지)
-_REWRITE_TRAILING_BOUNDARY = r"(?![A-Za-z0-9_-])"   # old ID 뒤 char ∉ [A-Za-z0-9_-] (오른쪽 부분매치 방지·`T-0063abc` 차단)
 
 
 def _rewrite_text_counted(text: str, id_map: dict[str, str]) -> tuple[str, dict[str, int]]:
@@ -1432,9 +1111,9 @@ def _rewrite_text_counted(text: str, id_map: dict[str, str]) -> tuple[str, dict[
         return text, counts
     olds = sorted(id_map, key=len, reverse=True)
     pattern = re.compile(
-        _REWRITE_LEADING_BOUNDARY
+        ticket_rules._REWRITE_LEADING_BOUNDARY
         + "(?:" + "|".join(re.escape(o) for o in olds) + ")"
-        + _REWRITE_TRAILING_BOUNDARY)
+        + ticket_rules._REWRITE_TRAILING_BOUNDARY)
 
     def _sub(m: re.Match[str]) -> str:
         old = m.group(0)
@@ -1516,707 +1195,6 @@ def rewrite_refs(root: str | Path, id_map: dict[str, str], *, dry_run: bool,
     return {"ids": len(referenced), "refs": total_refs, "files": files_changed}
 
 
-def _ticket_area_owner(tid: str) -> str | None:
-    """티켓의 area `area_owner`(user 소유) 해소 — 미상이면 None (`--mine` (a) 입력).
-
-    매핑 경로: ID prefix(`_ticket_prefix`) → areas.md 의 그 prefix 행(`_areas_row_for_prefix`)에서
-    `area_owner` 를 *직접* 읽는다(`_active_test_cmd`/line 737 의 prefix-행 직접-읽기와 동형).
-    미등록 prefix·area_owner 빈값은 None(area 비소유 처리).
-
-    prefix 행에서 직접 읽는 이유(repo 칼럼 경유 재스캔 금지): areas registry 는 prefix-unique 만
-    보장하고 repo-unique 는 아니다 — 두 prefix 가 같은 `repo` 칼럼값을 공유하면 `repo` 로 재스캔할
-    경우 *그 repo 의 첫 행* area_owner 를 돌려줘 잘못된 소유자가 나온다. prefix 로 이미 정확한 행을
-    잡았으니 그 행에서 바로 읽는다(이중 스캔도 제거).
-
-    **no-prefix(단일 self-host) 폴백 (sole-area)**: 단일 self-host(
-    prefix-불요)는 티켓이 `T-NNNN`(prefix 없음)이라 `_ticket_prefix` None 이다. no-prefix 티켓 ⟹
-    단일-repo(id_prefix None) ⟹ areas registry 의 *단일 area* 가 그 티켓의 area 다 — prefix
-    매핑은 multi-repo 메커니즘이므로 단일-repo 엔 sole-area 폴백이 맞다. areas 에 area 가 **정확히 1개**면
-    그 단일 area 의 area_owner 를 돌려준다(migration 이 area_owner 를 채운 단일-repo 보드에서 `--mine`
-    (a) 가 no-prefix open 티켓을 잡게). area 가 여러 개면(multi-repo 인데 no-prefix 티켓 = 모순적/
-    희귀) 모호하므로 None 유지(기존 동작). prefix 가 *있는* 티켓은 이 폴백을 안 타고 기존 prefix
-    경로 그대로(multi-repo 정합·무회귀).
-    """
-    prefix = _ticket_prefix(tid)
-    if not prefix:
-        _header, rows = areas_store._parse_areas(_home())
-        if len(rows) == 1:
-            return rows[0].get("area_owner") or None
-        return None
-    row = areas_store._areas_row_for_prefix(_home(), prefix)
-    if not row:
-        return None
-    return row.get("area_owner") or None
-
-
-def _area_owner_in_use() -> bool:
-    """areas.md 에 non-empty `area_owner` 행이 **하나라도** 있는가.
-
-    `--mine` (a) 풀(내 area 의 open)을 area_owner 로 좁히는 건 *소유권 데이터가 보드에 실제로
-    구성돼 있을 때만* 의미가 있다. 이건 **전역**(per-user 아님) 1회 판정이다 — areas.md 전체를
-    한 번 스캔해 `area_owner` 칼럼이 어디든 채워져 있으면 True. 채워져 있으면 area_owner 파티션이
-    운영 중(마이그레이션됨·multi-user)이라 (a) 를 area_owner==me 로 좁히고, 비어 있으면(미마이그레이션
-    채택자) (a) 를 전체 open 으로 degrade 한다(빈 보드 금지·plain list 처럼).
-
-    이전 per-user `_owns_any_area(my_user)`(내 소유 area ≥1 인가)를 대체한다 — 데이터 정합은
-    마이그레이션 도구(`board migrate-identity`)가 책임지고, 런타임 폴백은 **전역 플래그
-    하나**로 최소화한다. area_owner 가 운영 중인데 *내* area 가 0개면
-    (a) 는 자연히 빈다 — 그건 회귀가 아니라 '내 area 의 open 이 없음'이라는 올바른 결과다.
-
-    areas.md 부재·모든 area_owner 빈 값이면 False. ≥1 채워짐이면 True.
-    """
-    _header, rows = areas_store._parse_areas(_home())
-    return any((row.get("area_owner") or "").strip() for row in rows)
-
-
-def _distinct_area_owners() -> int:
-    """areas.md 의 non-empty `area_owner` 칼럼에서 해소되는 *distinct user* 수.
-
-    `_area_owner_in_use`(채워졌나 bool)와 달리 **다중성**을 센다 — `multi_user` 신호의 두 번째
-    축이다. `_distinct_ticket_users`(티켓 귀속만 셈)는 다중-owner 보드라도 claim 이 전부 legacy
-    슬롯-only(user 토큰 0)면 ≤1 로 떨어져 그 보드를 단일 사용자로 오판한다(→ legacy 슬롯-only 포함 경로가
-    발동해 `--slot N` 이 타 area 의 legacy `<repo>_N` 을 suffix 매칭으로 끌어오는 누출).
-    areas 에 area_owner 가 2명 이상이면 티켓 user 토큰이 비어도 multi-user 보드다 — 그
-    다중성을 여기서 세어 `multi_user = distinct ticket-user >1 OR distinct area_owner >1` 로
-    단일 사용자 정의를 완결한다. areas.md 부재/전부 빈 값이면 0(단일 사용자 신호 보존·회귀 0).
-    """
-    _header, rows = areas_store._parse_areas(_home())
-    return len({owner for row in rows if (owner := (row.get("area_owner") or "").strip())})
-
-
-def _claimed_by_user(claimed_by: str | None) -> str | None:
-    """`claimed_by`(`<user>/<pm-slot>`)에서 *user* 토큰 추출 — 슬롯-only/빈값은 None (codex sug).
-
-    `claimed_by` 는 이제 `<user>/<slot>` 또는 구 슬롯-only(`<slot>`)다.
-    user 추출은 **마지막 `/` 분리** 규칙(`rsplit('/', 1)[0]`) — slot 이 마지막 토큰이므로 user 에
-    `/` 가 들어가도(이메일은 보통 없지만 안전) 정확히 분리한다. `/` 가 없으면(구 슬롯-only·user
-    미상) None 을 반환해 (b) 매칭에서 graceful 제외한다.
-    """
-    if not claimed_by or "/" not in claimed_by:
-        return None
-    return claimed_by.rsplit("/", 1)[0] or None
-
-
-def _created_by_user(created_by: str | None) -> str | None:
-    """`created_by`(`<user>/<pm-slot>`·`<user>`·슬롯-only)에서 *user* 토큰 추출.
-
-    `created_by` 는 `identity_tag` 산출(`<user>/<slot>`·session 미바인딩 시 user-only·user 미상
-    시 슬롯-only) 또는 `migrate-identity` backfill(부재 → *순수 user*·line `_migrate_ticket_fm`)이다.
-    `_ticket_owner` 의 2차 폴백 소유자(area_owner 미해소 시 항상-존재 소유)로 쓴다.
-
-    `_claimed_by_user`(슬롯-only=None)와 갈리는 지점: **`/` 없는 값을 user 로 본다** — backfill 이
-    부재 created_by 를 슬롯 없는 순수 user 로 채우므로(다중사용자 보드 migrate-identity 후 흔함) 그
-    항상-존재 소유자를 살려야 유출을 없앤다.
-    `<user>/<slot>` 은 마지막 `/` 분리로 user 를 뽑고, 빈/None 은 None(미상). 드물게 `/` 없는 슬롯-only
-    created_by(user 미상 생성)를 user 로 오인할 수 있으나 — 그런 보드는 다중사용자 신호가 안 서면
-    단일 사용자 degrade 라 무해하고, 서면 strict-exclude 라 안전하다(회귀 0).
-    """
-    if created_by is None:
-        return None
-    cb = str(created_by).strip()
-    if not cb:
-        return None
-    if "/" in cb:
-        return cb.rsplit("/", 1)[0] or None
-    return cb
-
-
-def _created_by_session(created_by: str | None) -> str | None:
-    """`created_by`(`<user>/<session>`·`<user>`)에서 *session* 토큰 추출.
-
-    session = `created_by` 의 `/` 뒤 마지막 토큰(task 이름). 세션 기본
-    뷰(무인자 `list`)의 "내 스트림 open" 판정에 쓴다 — 현 세션(`session_name`)과
-    이 값이 일치하는 open 이 내 스트림이다. 이전 task-prefix 판정을 대체한다(prefix 는 ID 라벨일
-    뿐 스트림 판정 아님).
-
-    `/` 없는 값은 세션 토큰이 없는 것으로 본다(None) — 이름 모양으로 세션을 추측하지 않는다.
-    옛 슬롯 세션 토큰은 `migrate-identity --task <task>` 로 옮긴다.
-    """
-    if created_by is None:
-        return None
-    cb = str(created_by).strip()
-    if not cb:
-        return None
-    if "/" in cb:
-        return cb.rsplit("/", 1)[-1] or None
-    return None
-
-
-def _slot_matches(claimed_by: str, my_slot: str) -> bool:
-    """`claimed_by`(`<user>/<session>` 또는 legacy 세션-only)의 세션 토큰이 `my_slot` 과 완전 일치하는가."""
-    if not claimed_by:
-        return False
-    slot_token = claimed_by.rsplit("/", 1)[-1]
-    return slot_token == my_slot
-
-
-def _ticket_owner(fm: dict, area_owner_in_use: bool) -> str | None:
-    """open 티켓의 소유 user — `area_owner`(1차) ?? `created_by.user`(2차·항상-존재).
-
-    세션 뷰 (a) "내 소유 open" 판정의 소유자를 완전-데이터로 해소한다:
-      - area_owner 파티션이 운영 중(`area_owner_in_use`)이면 그 티켓 area 의 `area_owner`
-        (`_ticket_area_owner`)를 1차로 쓰고, 미운영/미해소(경계-교차·미등록 area·미마이그 채택자)면
-      - `created_by` 의 user(`_created_by_user`·항상-존재 폴백)로 떨어진다.
-    둘 다 미상이면 None — 호출부(`_ticket_is_mine`)가 단일 사용자=degrade / multi=strict 로 가른다.
-    미해소 read 유출을 없앤다([[prefer-data-migration-over-fallback]]).
-    """
-    tid = fm.get("id") or ""
-    area_owner = _ticket_area_owner(tid) if area_owner_in_use else None
-    return area_owner or _created_by_user(fm.get("created_by"))
-
-
-def _distinct_ticket_users() -> int:
-    """보드 전체 티켓의 `created_by`/`claimed_by` 에서 해소되는 *distinct user* 수.
-
-    **데이터-유도 다중사용자 신호**다(config 플래그 아님) — 세션 뷰 격리(`_ticket_is_mine`)가 소유
-    미해소 open 을 단일 사용자(≤1)면 all-open degrade(회귀 0), 다중(≥2)이면 strict-exclude 로 가르는 게이트다.
-    전 status 디렉토리를 1회 스캔해 `created_by`(→`_created_by_user`)·`claimed_by`(→`_claimed_by_user`)의
-    user 토큰을 집합에 모아 크기를 센다 — 슬롯-only claimed_by·미상은 집합에 안 든다(graceful). 깨진
-    티켓은 신호 산정에서 skip(fail-soft·크래시 0). areas 의 area_owner 가 아니라 *티켓* 귀속만 세는 건
-    정의(소유 데이터가 티켓에 실려야 다중사용자로 본다)다.
-    """
-    users: set[str] = set()
-    for status in ticket_rules.STATUS_DIRS:
-        for p in (pm_paths.tickets_dir(_home()) / status).glob("T-*.md"):
-            # 순회 소비자는 **공용 soft 로더**를 쓴다(사본 금지) — 자체 except 목록은 비-dict
-            # frontmatter(스칼라·리스트: 파싱은 성공)를 걸러내지 못해 바로 아래 `fm.get` 이
-            # AttributeError 로 죽었다. 기본 `list` 가 이 함수를 먼저 부르므로 보드 조회 전체가
-            # 티켓 한 건 때문에 traceback 이 된다.
-            loaded = ticket_store.load_ticket_soft(_home(), p)
-            if loaded is None:
-                continue
-            fm, _ = loaded
-            cb_user = _created_by_user(fm.get("created_by"))
-            if cb_user:
-                users.add(cb_user)
-            claim_user = _claimed_by_user(fm.get("claimed_by"))
-            if claim_user:
-                users.add(claim_user)
-    return len(users)
-
-
-def scan_task_tickets(user: str | None, task: str,
-                      prefix: str | None = None) -> dict[str, list[dict]]:
-    """task end 소진 게이트용 티켓 스캔 (자체 스캔·조회 전용·부작용 0).
-
-    `board list --task` 렌즈(wave 3)가 아직 없으므로 `pm-config task end` 가 이걸로
-    자체 스캔한다. 두 축을 한 번의 status 디렉토리 순회로 모은다:
-
-      - **claimed** — **진행 중(open/claimed/blocked)** 티켓 중 `claimed_by` 의 slot 토큰(마지막 `/`
-        뒤·`_slot_matches`)이 `task` 와 일치하는 것. `task` 세션의 claim 형태 = `<user>/<task>`
-        (identity_tag slot 값 `<repo>_<N>` 예약과 기계 판별·task 명은 자유 포맷). `user` 가 주어지고
-        claimed_by 에 user 토큰이 있으면 그 user 도 일치해야 한다(교차사용자 동명 task 오귀속 방지).
-        slot-only claim(user 토큰 없음)은 graceful 포함. **terminal status(`done`)는 제외한다** —
-        `cmd_complete` 는 done 이동 시 `claimed_by` 를 지우지 않으므로(status/completed_at 만),
-        `<user>/<task>` 로 claim→complete 한 티켓이 done/ 에 claimed_by 를 남긴다. done 을 담으면 그
-        티켓은 `unclaim`(status=="claimed" 요구)도 불가라 **해소 수단이 없어 task end 가 영구 차단**된다
-        ("해소=complete 또는 unclaim"). 완료된 작업은 소진 게이트 대상이 아니다.
-        처분 종결(`discarded`)도 같은 이유로 제외한다 — 종결 status 전수가 대상 밖이다. 이게
-        비어야 task end 가 반납/이동으로 진행한다(거부 게이트).
-      - **prefix_open** — `prefix` 가 주어지면 그 prefix(`_ticket_prefix`)의 `open` 티켓. **정보
-        표시만**(차단 안 함·prefix≠경계) — task 지정 prefix 의 backlog 를 참고로 보여줄 뿐.
-
-    각 row = {"id", "title", "status"}. 깨진 티켓은 skip(fail-soft). board 를 import 하지 않는
-    pm_config 가 `_load_module` 로 로드해 소비한다(isolation·ticket-스캔 단일 진실=board).
-    """
-    claimed: list[dict] = []
-    prefix_open: list[dict] = []
-    for status in ticket_rules.STATUS_DIRS:
-        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
-            # 순회 소비자 공통 규약 — 손상/비-dict frontmatter 는 공용 soft 로더가 경고 1줄과
-            # 함께 걸러낸다(`_distinct_ticket_users` 동형·자체 except 사본 금지).
-            loaded = ticket_store.load_ticket_soft(_home(), p)
-            if loaded is None:
-                continue
-            fm, _ = loaded
-            tid = fm.get("id") or p.stem
-            row = {"id": tid, "title": fm.get("title") or "", "status": status}
-            cb = fm.get("claimed_by") or ""
-            # 종결 status(done·discarded)는 claimed 축에서 제외 — 종결 티켓은 claimed_by 가
-            # 남아 있어도 끝난 작업이고, 담으면 해소 수단이 없어 task end 가 영구 차단된다.
-            if status not in ticket_rules.TERMINAL_STATUS_DIRS and cb and _slot_matches(cb, task):
-                cb_user = _claimed_by_user(cb)
-                if user is None or cb_user is None or cb_user == user:
-                    claimed.append(row)
-            if prefix and status == "open" and _ticket_prefix(tid) == prefix:
-                prefix_open.append(row)
-    return {"claimed": claimed, "prefix_open": prefix_open}
-
-
-def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
-                    my_slot: str, area_owner_in_use: bool, multi_user: bool,
-                    *, slot_scoped: bool = False) -> bool:
-    """이 티켓이 `--mine`/`--task` 뷰에 들어가는지 — (b) 내 claim ∨ (a) 내 소유 open.
-
-    **단일 불변식**(전 surface 수렴·point-patch 금지): 필터 뷰 멤버십 = (내
-    claim) ∪ (내 소유 open). 타 사용자의 claim·미claim open 은 **어떤 필터 뷰에도 안 나온다** —
-    전체는 `list --all` 전용(기존 무필터 무인자 `list` 의 이관). querying identity(`my_user`)는 항상 **현재 사용자**(cmd_list 가
-    `user_name()` 해소)다. degrade("전체 open=mine")는
-    **단일 사용자(distinct user ≤1·`multi_user` False)에서만** 허용한다.
-
-    (b) 내 claim — 상태 무관 연속성 (user-first). `claimed_by` 의 user 토큰 유무로 가른다:
-      - **user-qualified**(`_claimed_by_user(cb)` non-None·`<user>/<session>`): 내 것 iff `cb_user ==
-        my_user`. **task 뷰**(`--task`)면 `_slot_matches` AND 로 *내 것
-        ∩ 그 task*(타 task 의 내 claim 은 task 뷰서 제외·`--mine`
-        엔 나옴). **비제약 뷰**(`--mine`)면 user 만(전 task). 타 사용자 claim(user 불일치)·my_user
-        미해소(귀속 불가)는 제외 — 남의 user-claim 을 slot 번호로 끌어오는 누출 0.
-      - **legacy 슬롯-only**(`cb_user is None`·user 토큰 없음): **진짜 단일 사용자(distinct user ≤1·
-        `not multi_user`)에서만** `_slot_matches`(내 슬롯)로 포함한다. 게이트가 `my_user is None` 이
-        아니라 `not multi_user` 인 건 `user_name()` 이 git email 폴백으로 단일 사용자도 my_user 를
-        해소할 수 있어(흔함) — my_user proxy 면 그 보드의 자기 슬롯 legacy claim 을 잘못 숨긴다.
-        multi_user 면 legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
-    (a) 내 소유 open — status==open 한정. `owner = _ticket_owner(fm, area_owner_in_use)`
-        (area_owner ?? created_by.user):
-      - my_user·owner 둘 다 해소 → strict `owner == my_user`(유출 0·유일 포함 규칙).
-      - 미해소(my_user None ∨ owner None) + `multi_user` → `return False`(strict-exclude).
-      - 미해소 + 단일 사용자(¬multi_user) → `return True`(all-open degrade 보존·빈 보드 금지·회귀 0).
-    open 은 미claim 이라 세션이 없다 — task 뷰에서도 (a) 는 task 무관 backlog(`--mine` 과
-    동일 풀)로 두고 task 로 좁히지 않는다.
-    """
-    cb = fm.get("claimed_by") or ""
-    # (b) 내 claim — user-first. user 토큰 유무로 가른다.
-    if cb:
-        cb_user = _claimed_by_user(cb)
-        if cb_user is not None:
-            # user-qualified claim(`<user>/<slot>`) — 내 것 iff user 일치(+ slot-scoped 면 그 슬롯).
-            # my_user 미해소(None)면 귀속 불가 → 미포함(남의 user-claim 을 slot 번호로 끌어오는 누출 0).
-            if my_user is not None and cb_user == my_user and (
-                    not slot_scoped or _slot_matches(cb, my_slot)):
-                return True
-        elif not multi_user and _slot_matches(cb, my_slot):
-            # legacy 슬롯-only claim(user 토큰 없음) — **진짜 단일 사용자(distinct user ≤1·not multi_user)**
-            # 에서만 slot 매칭으로 포함. 게이트가 `my_user is None` 이 아니라 `not multi_user` 인 건
-            # `user_name()` 이 git email 폴백으로 단일 사용자도 my_user 를 해소할 수 있어(흔함)
-            # my_user proxy 면 그 보드의 자기 슬롯 legacy claim 을 잘못 숨기기 때문이다. multi_user 면
-            # legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
-            return True
-    # (a) 내 소유의 open.
-    if status == "open":
-        owner = _ticket_owner(fm, area_owner_in_use)
-        if my_user and owner:
-            return owner == my_user       # 소유 해소 → strict(유출 0)
-        if multi_user:
-            return False                  # 다중사용자 + 미해소 → strict-exclude
-        return True                       # 단일 사용자 → all-open degrade 보존(회귀 0)
-    return False
-
-
-def _in_default_view(status: str, fm: dict, my_user: str | None,
-                     my_session: str | None, area_owner_in_use: bool,
-                     multi_user: bool) -> bool:
-    """세션 기본 뷰(무인자 `list`) 멤버십 — **내 user ∧ session 스트림**.
-
-    세션의 기본 화면은 그 세션이 **생성한 open + 그 세션 claim** 만 출력한다 — 단,
-    user-qualified 귀속은 **현재 user 도 일치**해야 한다. 동명 task(`alice/main` 대 `bob/main`)와
-    슬롯 재대여 뒤 이전 보유자 티켓이 같은 session 라벨만으로 섞이지 않게 open/claim 양쪽을
-    user ∧ session 복합축으로 판정한다(전체는 명시 `--all`).
-
-      - **바인딩 세션**(`my_session` 해소): 먼저 open 은 `_created_by_session`, claim(비-open)은
-        `_slot_matches` exact 로 session 을 맞춘다. user-qualified 값은 각각 `_created_by_user` /
-        `_claimed_by_user` 로 user 를 해소해 `my_user` 와도 strict 일치해야 한다.
-      - **user 미해소 또는 legacy user 토큰 부재**: 다중사용자(`multi_user`)면 모호한 귀속을
-        strict-exclude하고, 단일 사용자면 session-only 로 degrade한다. claim 분기는 의도적으로
-        `_ticket_is_mine` 보다 관대하다. 단일 사용자에서 `my_user` 만 미해소된 user-qualified claim은
-        기본 뷰에 보이지만 `--mine`에서는 제외된다. 조회 정체성을 잠시 못 구했다는 이유로 자기
-        세션 티켓을 숨기지 않기 위한 보호이며, 다중사용자에서는 이 완화를 허용하지 않는다.
-      - **무바인딩**(`my_session` None): user-단위 폴백 = `--mine`(내 소유 open + 내 claim·
-        전 슬롯). N=1 은 부분집합·특례 아님 — user 스트림=세션 스트림이라 등가다.
-        `_ticket_is_mine`(slot_scoped=False)를 그대로 상속한다.
-    """
-    if not my_session:
-        # 무바인딩 — user-단위 폴백(--mine 동형·전 슬롯). open 소유·claim 판정은 단일
-        # predicate 재사용(point-patch 금지). my_slot="" 은 slot 매칭 미발동(무바인딩=슬롯 없음).
-        return _ticket_is_mine(status, fm, my_user, "", area_owner_in_use,
-                               multi_user, slot_scoped=False)
-    if status == "open":
-        created_by = str(fm.get("created_by") or "").strip()
-        if _created_by_session(created_by) != my_session:
-            return False
-        # 바인딩 세션 스트림은 생성자 축으로 판정한다. area_owner 는 backlog 소유 축이라
-        # 의도적으로 참여시키지 않는다.
-        # `_created_by_user` 는 slash 없는 migrate backfill 값을 user 로도 해석하므로, `/` 유무는
-        # user-qualified 형상인지(legacy session-only인지)만 가른다. 토큰 파싱은 기존 헬퍼가 맡는다.
-        created_user = _created_by_user(created_by) if "/" in created_by else None
-        if my_user is not None and created_user is not None:
-            return created_user == my_user
-        return not multi_user
-    # 비-open(claimed/blocked/done) — claim session AND user. `_claimed_by_user` 가 None 인
-    # legacy 슬롯-only와 my_user 미해소는 multi-user strict-exclude / 단일 사용자 session-only degrade.
-    claimed_by = fm.get("claimed_by") or ""
-    if not _slot_matches(claimed_by, my_session):
-        return False
-    claimed_user = _claimed_by_user(claimed_by)
-    if my_user is not None and claimed_user is not None:
-        return claimed_user == my_user
-    return not multi_user
-
-
-# ── claim 소유 대조 (mutation 게이트) ──────────────────────────────────────
-#
-# `claimed_by` 가 박힌 티켓의 상태 변경(complete·discard·block·unclaim·unblock)은 **그 소유
-# 정체성에서만** 성립한다. 옛 동작은 status 만 봤기 때문에 다른 슬롯이 claim 한 티켓을 아무
-# 세션이나 complete 할 수 있었다(채택자 실사고 — slot 1 이 남의 티켓을 자기 것으로 착각해 완료).
-# 판정 축은 조회 뷰(`_ticket_is_mine`/`_in_default_view`)와 **같은 규칙**이다: 양쪽 user 토큰이
-# 해소되면 user ∧ slot, 레거시 슬롯-only 는 solo 에서만 slot-only 로 degrade. 판정을 두 벌로
-# 두지 않으려고 `cmd_reid` 의 기존 대조도 이 함수를 소비한다.
-
-
-class _OwnershipVerdict(NamedTuple):
-    """소유 대조 결과 — 판정(ok)과 **왜**(owner·session·unresolved)를 함께 나른다.
-
-    `owner` = 티켓 `claimed_by` 원값(소유자 없으면 None) · `session` = 이 실행이 해소한 세션 ·
-    `unresolved` = 세션을 해소하지 못해 소유를 증명할 수 없는 경우(=거부·"검사 skip" 폴백 없음).
-    거부 문구는 호출 surface 마다 다르지만 판정은 이 하나다.
-    """
-
-    ok: bool
-    owner: str | None
-    session: str | None
-    unresolved: bool
-
-
-def _ticket_ownership(fm: dict, args: argparse.Namespace) -> _OwnershipVerdict:
-    """이 실행 정체성이 `fm` 티켓의 claim 소유자인가 (claimed_by 부재면 무대상=통과).
-
-    - `claimed_by` 없음 → 소유자 자체가 없으므로 통과(새 차단 아님·open 티켓의 claim/block 무영향).
-    - 세션 미해소 → 거부. claim 이 `--task` 없이는 멈추는 조건과
-      대칭이다 — 소유를 증명할 수 없는 상태에서 남의 티켓을 옮기는 쪽이 더 나쁘다.
-    - user-qualified `claimed_by`(`<user>/<slot>`) → user 와 slot 이 **둘 다** 일치해야 한다.
-    - 레거시 슬롯-only `claimed_by` → 다중사용자 보드면 귀속이 모호하므로 거부하고, solo
-      (`_distinct_ticket_users` ≤1 ∧ `_distinct_area_owners` ≤1)에서만 slot 일치로 통과한다.
-    """
-    claimed_by = str(fm.get("claimed_by") or "").strip()
-    if not claimed_by:
-        return _OwnershipVerdict(True, None, None, False)
-    session = lease_store.session_name(_home(), _actor_session_override(args))
-    if session is None:
-        return _OwnershipVerdict(False, claimed_by, None, True)
-    owner_user = _claimed_by_user(claimed_by)
-    if owner_user is not None:
-        my_user = user_name(getattr(args, "user", None))
-        ok = (my_user is not None and owner_user == my_user
-              and _slot_matches(claimed_by, session))
-    else:
-        # 슬롯-only 는 user 축이 없다 — 다중사용자 보드에서 슬롯 이름만으로 소유를 인정하면
-        # 동명 슬롯의 타 사용자 claim 을 열어 준다(조회 뷰와 같은 strict-exclude).
-        multi_user = _distinct_ticket_users() > 1 or _distinct_area_owners() > 1
-        ok = (not multi_user) and _slot_matches(claimed_by, session)
-    return _OwnershipVerdict(ok, claimed_by, session, False)
-
-
-def _owner_session_remedy(claimed_by: str) -> str:
-    """소유 task 를 다시 잡는 처방 문장 — 소유 토큰을 `--task` 로 그대로 싣는다(토큰을 분해하지 않는다)."""
-    owner_token = claimed_by.rsplit("/", 1)[-1]
-    return (f"소유 task 에서 `--task {owner_token}` 로 재실행하라(소유 표기가 옛 슬롯 이름이면 "
-            "소유자가 먼저 `board.py migrate-identity --task <task>` 로 옮긴다)")
-
-
-def _ownership_rejection(action: str, tid: str,
-                         verdict: _OwnershipVerdict) -> str:
-    """소유 불일치 거부 문구 — 소유자 · unclaim→claim 이동 경로 · takeover 를 함께 낸다.
-
-    거부만 하고 끝내면 사람은 그 자리에서 할 수 있는 일이 없다(실사고에서 두 세션이 서로
-    막힌 형상). 문구가 (1) 누구 소유인지 (2) 소유 세션이 살아 있을 때의 정상 이전
-    (3) 소유 세션이 없을 때의 단일 우회(`unclaim --takeover`)를 모두 지목한다.
-    """
-    owner = verdict.owner or ""
-    remedy = _owner_session_remedy(owner)
-    head = (f"[중단] {action} {tid}: 세션 미해소 — 이 티켓은 `{owner}` 소유다"
-            if verdict.unresolved else
-            f"[중단] {action} {tid}: 이 티켓은 `{owner}` 소유다"
-            f"(현재 세션 `{verdict.session}`)")
-    lines = [head + "."]
-    if verdict.unresolved:
-        lines.append(f"  → {remedy}.")
-    else:
-        lines.append(f"  → 이동: {remedy} — `board.py unclaim {tid}` 후 이 "
-                     f"세션에서 `board.py claim {tid} --task <task>`.")
-    lines.append(f"  → 소유 세션이 없으면: `board.py unclaim {tid} --takeover "
-                 "--reason <사유> --task <task>` (소유만 해제·사유는 티켓 본문과 board-git 에 남는다).")
-    return "\n".join(lines)
-
-
-def areas_append(prefix: str, area: str, owner: str,
-                 *, repo: str | None = None, git: str | None = None,
-                 test_cmd: str | None = None, base: str | None = None,
-                 protected: str | None = None, area_owner: str | None = None) -> None:
-    """Register a prefix in areas.md (append-only; create with header if missing).
-
-    Append-only + `merge=union` (.gitattributes) → concurrent registrations from
-    different clones never conflict.
-
-    헤더 최초 생성(if-absent) + row append 를 **하나의 `board_lock()`** 구간으로
-    원자화한다. 락이 없으면 동시 최초 등록 2개가 둘 다 "not exists" 를
-    보고 → 둘 다 헤더를 write_text 해 한쪽이 다른쪽 append row 를 클로버한다(row 만
-    O_APPEND 라도 헤더 race 가 남음). 락으로 감싸면 동시 최초 등록에도 헤더 1회·모든
-    row 보존.
-
-    스키마: per-repo 레지스트리
-    `| repo | prefix | git | test_cmd | owner | base | protected | area_owner |`.
-    `owner` = **등록 식별자(registrant)** — 협업 소유자(다중-사람)가 아니라 single user
-    의 등록 출처 표식이다. 기본 = 현 세션. 컬럼/형식은 보존
-    (test_path 바인딩·regression 게이트가 의존) — 의미만 재정의.
-    `repo`/`git`/`test_cmd`/`base`/`protected`/`area_owner` 미지정 시 빈 칼럼으로 채운다
-    (부분 등록 허용·하위호환). `base`는 worktree 슬롯 브랜치가 파생될 base 브랜치
-    — 빈 값/누락이면 `_repo_base` 가 None 폴백(worktree add 가 현행 bare HEAD 동작).
-    `protected`는 PM 이 자율 commit/push 못 하는 보호 브랜치(쉼표분리) — 빈 값/
-    누락이면 `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 폴백.
-    `area_owner`는 그 area 의 *user* 소유(`--mine` 풀 입력) — `owner`
-    (registrant)와 별개 칼럼(overload 금지). 빈 값/누락이면 소비자가 None 으로 읽는다.
-    `area`(구 스키마 칼럼)는 신 스키마에 칼럼이 없어 무시한다 — 호출 시그니처는
-    하위호환을 위해 유지(기존 `cmd_init`·테스트가 positional 로 area 를 넘김).
-
-    **재진입 금지**(board_lock docstring) — board_lock 보유 중에는 부르지 않는다.
-    이미 락을 보유한 `cmd_init` 은 ``_areas_append_locked`` 변형을 직접 쓴다.
-    """
-    with board_lock():
-        _areas_append_locked(
-            prefix, owner, repo=repo, git=git, test_cmd=test_cmd, base=base,
-            protected=protected, area_owner=area_owner,
-        )
-    invalidate_known_prefixes_cache()
-
-
-def _areas_append_locked(
-    prefix: str,
-    owner: str,
-    *,
-    repo: str | None = None,
-    git: str | None = None,
-    test_cmd: str | None = None,
-    base: str | None = None,
-    protected: str | None = None,
-    area_owner: str | None = None,
-) -> None:
-    """``board_lock`` 보유 전제의 areas 행 append 변형(cmd_init fresh 판정용)."""
-    _repo = repo if repo is not None else prefix
-    _git = git or ""
-    _test = test_cmd or ""
-    _base = base or ""
-    _protected = protected or ""
-    _area_owner = area_owner or ""
-    af = pm_paths.areas_file(_home())
-    if not af.exists():
-        af.write_text(
-            "# Area Registry\n\n"
-            "> per-repo 레지스트리: repo → prefix → git → "
-            "test_cmd → owner → base → protected → area_owner. 멀티-PM ID 네임스페이스 + "
-            "per-repo 테스트 경로 + worktree base 브랜치 + 보호 브랜치 + user 소유의 단일 진실. "
-            "append-only (`merge=union`).\n"
-            "> `board.py init` / `pm-config repo add` 가 등록. "
-            "prefix 유일성 = race-free ID 의 전제.\n\n"
-            + _areas_header_line() + "\n"
-            + _areas_separator_line() + "\n",
-            encoding="utf-8", newline="\n")
-    # O_APPEND atomic append — areas 는 append-only 레지스트리이므로
-    # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
-    fs.append_atomic(
-        af,
-        f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
-        f"| {_protected} | {_area_owner} |\n")
-
-
-# ── areas.md 셀 변경 ──────────────────────────────────────────────
-# "append-only" 는 **등록(행 추가)** 의 동시성 불변식이지 불변 파일 규약이 아니다 — *기존 셀
-# 변경* 은 `board_lock()` 하 비파괴 in-place 재기록으로 한다(`_migrate_areas_text` 의 선례와
-# 같은 관용구: 줄 종결자·주석·타 행 보존 + 구 헤더 canonical 업그레이드 + wider-row canonical
-# 인덱스). 중복 repo 행은 조용한 first-match 고착을 낳으므로 **fail-loud**(부작용 0)로 거부하고
-# `board lint` 의 `areas-duplicate-repo` advisory 가 가시화한다.
-
-
-class AreasRepoNotFound(Exception):
-    """areas.md 에 그 repo 행이 없다 — 셀 변경 대상 부재 (부작용 0).
-
-    등록되지 않은 repo(또는 areas.md 부재)의 칼럼을 바꾸려 한 경우다. 등록은 `pm-config repo
-    add`(append) 소관이고 setter 는 *기존 셀만* 고친다 — 없는 행을 만들어내지 않는다.
-    """
-
-    def __init__(self, repo: str):
-        self.repo = repo
-        super().__init__(f"areas.md 에 repo {repo!r} 행이 없다")
-
-
-class AreasDuplicateRepo(Exception):
-    """areas.md 에 같은 repo 행이 2개 이상 — 셀 변경 fail-loud (부작용 0).
-
-    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`)가
-    첫 행에서 return 하므로 어느 행을 고쳐야 하는지 기계가 정할 수 없다. 추측해서 한쪽만 고치면
-    사용자가 바꿨다고 믿는 값과 리졸버가 읽는 값이 갈린다 → **아무것도 쓰지 않고** 수동 정리를
-    안내한다(자동 병합 안 함·사람 판정). `count` = 중복 행 수(진단용).
-    """
-
-    def __init__(self, repo: str, count: int):
-        self.repo = repo
-        self.count = count
-        super().__init__(f"areas.md 에 repo {repo!r} 행이 {count}개 있다(중복)")
-
-
-def _areas_set_cell_text(text: str, repo: str, column: str,
-                         value: str) -> tuple[str, str]:
-    """areas.md 텍스트에서 `repo` 행의 `column` 셀을 `value` 로 바꾼 (새 텍스트, 옛 값) 반환.
-
-    순수 변환(IO 없음·`_migrate_areas_text` 동형 관용구):
-      - 줄 종결자(LF/CRLF)·주석·빈 줄·표 밖 텍스트·**다른 행**은 verbatim 보존.
-      - 헤더에 그 칼럼이 없으면(구 레지스트리) `_areas_column_index` 계획대로 헤더 + 헤더 직후
-        구분선 1개를 업그레이드한다(canonical 8칼럼 또는 기존 헤더 끝 append·비파괴).
-      - 행 매칭은 `_areas_row_dict`(= `_parse_areas` 와 같은 매핑)의 `repo` 값으로 한다 —
-        읽기측이 보는 행과 쓰기측이 고치는 행이 **항상 같다**.
-      - 대상 셀 인덱스는 `_areas_row_cell_index`(wider-row canonical 보정)로 잡는다.
-      - 셀이 모자라면 빈 칸으로 패딩해 인덱스를 확보한다(비파괴 append).
-
-    매칭 행이 0개면 `AreasRepoNotFound`, 2개 이상이면 `AreasDuplicateRepo` — **호출자가 쓰기
-    전에** 터지므로 부작용 0이다.
-    """
-    lines = text.splitlines(keepends=True)
-    header_cells: list[str] | None = None
-    col_idx: int | None = None
-    upgrade = False
-    sep_cols = 0
-    sep_replaced = False
-    matches = 0
-    old_value = ""
-    out: list[str] = []
-    for line in lines:
-        nl = ""
-        body = line
-        if line.endswith("\r\n"):
-            nl, body = "\r\n", line[:-2]
-        elif line.endswith("\n"):
-            nl, body = "\n", line[:-1]
-        cells = areas_rules._split_areas_row(body)
-        if cells is None:
-            if upgrade and not sep_replaced and areas_rules._AREAS_SEP_RE.match(body.strip()):
-                out.append("|" + "|".join("---" for _ in range(sep_cols)) + "|" + nl)
-                sep_replaced = True
-            else:
-                out.append(line)
-            continue
-        if header_cells is None:
-            header_cells = [c.lower() for c in cells]
-            col_idx, new_header, sep_cols = _areas_column_index(header_cells, column)
-            if new_header is None:
-                out.append(line)
-            else:
-                upgrade = True
-                out.append(new_header + nl)
-            continue
-        if areas_rules._areas_row_dict(header_cells, cells).get("repo") != repo:
-            out.append(line)
-            continue
-        matches += 1
-        idx = _areas_row_cell_index(header_cells, cells, col_idx or 0, column)
-        if matches == 1:
-            old_value = cells[idx] if idx < len(cells) else ""
-        while len(cells) <= idx:
-            cells.append("")
-        cells[idx] = value
-        out.append("| " + " | ".join(cells) + " |" + nl)
-    if matches == 0:
-        raise AreasRepoNotFound(repo)
-    if matches > 1:
-        raise AreasDuplicateRepo(repo, matches)
-    return "".join(out), old_value
-
-
-def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
-    """areas.md 의 `repo` 행 `column` 셀을 `value` 로 in-place 교체한다 — (옛 값, 새 값) 반환.
-
-    `board_lock()` 하 read→transform→atomic write(temp + `fs.atomic_replace`) 이다 — `areas_append`
-    (O_APPEND 등록)와 같은 락으로 직렬화해 동시 등록의 lost-update 를 막는다(
-    `_migrate_areas_apply` 동형). 변환이 no-op(값 동일·`_areas_set_cell_text` 결과가 원문과
-    같음)이면 **쓰지 않는다**(멱등).
-
-    `column` 은 `_AREAS_COLUMNS` 의 칼럼명이어야 하고, `value` 는 표를 깨는 `|`·개행을 담을 수
-    없다(둘 다 `ValueError`). 대상 행 부재 → `AreasRepoNotFound`, 중복 행 → `AreasDuplicateRepo`
-    (둘 다 쓰기 이전·부작용 0).
-
-    `value` 는 **strip 해서** 기록한다 — 범용 백엔드라 호출자가 정규화했다고 가정할 수 없고,
-    `"  main , release  "` 를 verbatim 쓰면 셀 앞뒤 공백이 표에 남는다(`_parse_areas` 는 셀을
-    strip 해 읽으므로 읽기값은 같지만 파일이 지저분해진다). 반환 `(old, new)` 의 new 도 그 값이다.
-
-    **재진입 금지**(board_lock docstring) — board_lock 보유 중에는 부르지 않는다.
-    이미 락을 보유한 호출부(`cmd_init` 의 등록 판정)는 ``_areas_set_cell_locked`` 를 직접 쓴다
-    (`areas_append`/`_areas_append_locked` 와 같은 분리).
-    """
-    with board_lock():
-        old_value, value = _areas_set_cell_locked(repo, column, value)
-    if column == "prefix" and old_value != value:
-        invalidate_known_prefixes_cache()
-    return old_value, value
-
-
-def _areas_set_cell_locked(repo: str, column: str, value: str) -> tuple[str, str]:
-    """``board_lock`` 보유 전제의 셀 교체 변형 — (옛 값, 새 값) 반환.
-
-    검증·원자 write 규칙은 `areas_set_cell` 과 동일하다(그쪽 docstring 이 계약의 단일 진실).
-    캐시 무효화는 호출부 몫이다 — 락 안에서 무효화해도 락을 놓기 전엔 새 값이 안 보인다.
-    """
-    if column not in areas_rules._AREAS_COLUMNS:
-        raise ValueError(
-            f"알 수 없는 areas.md 칼럼 {column!r} — 허용: {', '.join(areas_rules._AREAS_COLUMNS)}")
-    if "|" in value or "\n" in value or "\r" in value:
-        raise ValueError(
-            f"areas.md 셀 값에 `|`/개행을 쓸 수 없다(표 corruption): {value!r}")
-    value = value.strip()
-    af = pm_paths.areas_file(_home())
-    # `newline=""`(universal-newline OFF) 로 읽고 쓴다 — CRLF 채택자(Windows)의 파일을
-    # 셀 하나 바꾸려다 LF 로 무단 정규화하지 않게(`rewrite_refs` 와 같은 관용구).
-    text = ""
-    if af.exists():
-        with fs.open_shared(af, binary=False, encoding="utf-8", newline="") as fh:
-            text = fh.read()
-    new_text, old_value = _areas_set_cell_text(text, repo, column, value)
-    if new_text != text:
-        # atomic write — 같은 디렉토리 temp + 원자 교체(부분기록/crash 잔재 방지).
-        # write 실패(디스크풀·권한)로 replace 에 못 가면 `.tmp` 가 남으므로 finally 로 청소한다
-        # (다음 실행이 stale temp 를 만나지 않게·잔재 0).
-        tmp = af.with_suffix(af.suffix + ".tmp")
-        try:
-            with tmp.open("w", encoding="utf-8", newline="") as fh:
-                fh.write(new_text)
-            fs.atomic_replace(tmp, af)
-        finally:
-            # 성공 시 원자 교체로 tmp 는 이미 사라졌다(missing_ok 로 no-op).
-            tmp.unlink(missing_ok=True)
-    return old_value, value
-
-
-# ── 보드 동시성 ────────────────────────────────────────────────
-# 단일 루트 동시 세션이 공유 `.project_manager` 파일을 안전하게 쓰게 한다.
-#   - board_lock: OS 파일락 — ID 발행(new)·공유 단일파일 write(board.md) 직렬화.
-#     프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock 없음).
-#   - fs.append_atomic: O_APPEND — log/areas 같은 append-only 파일의 원자 추가.
-#   - ticket writer(`new/claim/complete/block/unclaim/unblock/promote/section-add/tier` 및
-#     `migrate-identity` ticket backfill)는 lookup→상태검증→load→move/write 전부를
-#     board_lock 으로 직렬화한다. POSIX rename 자체는 원자적이어도
-#     in-place write(tier)가 고정한 옛 path에 뒤늦게 replace하면 상태별 파일이 둘 생기므로
-#     lifecycle과 in-place write가 같은 배타 경계를 공유해야 한다.
-#
-# 크로스플랫폼(stdlib-only — 런타임 의존은 PyYAML 뿐): POSIX=fcntl.flock,
-# Windows=msvcrt.locking. 둘 다 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성).
-# 그 플랫폼 분기도, O_APPEND 원자 추가도 공용 `fs` seam 이 소유한다 —
-# 엔진 도구가 같은 구현을 쓰고(board 는 모듈 상단 `fs` import), board 는 *어느 파일에
-# 언제 거는지·무엇을 붙이는지*(경로 규약·락 순서·행 포맷)만 정한다.
-
-
-@contextlib.contextmanager
-def board_lock() -> Iterator[None]:
-    """공유 보드 write 를 직렬화하는 OS 파일락 컨텍스트매니저.
-
-    `.project_manager/.local/board.lock` 에 배타 OS 락을 건다. **프로세스가 죽으면
-    OS 가 락을 자동 해제**하므로 stale-lock 이 없다(worktree 리스의 pid-회수와 수명이
-    다른 이유). 읽기(list/show)는 락을 잡지 않는다 — *변경* 경로만 직렬화한다.
-
-    **재진입 금지** — 같은 프로세스가 이 컨텍스트를 중첩하면 안 된다(flock 의 재진입
-    동작은 OS 별로 다름). strict claim은 기존 `board_git_lock → board_lock` 순서로 confirm/
-    rollback까지 두 락을 유지하고, 파생 render는 `_refresh_board_locked`로 재진입 없이 끝낸다.
-    나머지 ticket writer는 board_lock 해제 뒤 refresh/best-effort board-git sync를 수행하므로
-    역순 중첩이 없다.
-    """
-    with fs.exclusive_file_lock(BOARD_LOCK):
-        yield
-
-
 def _configure_board_submodule() -> bool:
     """board submodule 의 `ignore = all` 을 자동 설정 (누출 0). 멱등·fail-soft.
 
@@ -2272,1911 +1250,6 @@ def _board_submodule_name() -> str | None:
         if key.startswith("submodule.") and key.endswith(".path"):
             return key[len("submodule."):-len(".path")]
     return None
-
-
-# board git 에 **엔진이 넣는 텍스트 파일**의 확장자. 지금 실재하는 건 티켓·라운드·areas 의 `.md`
-# 뿐이지만 표기 고정을 한 확장자에 매달 이유가 없다 — 엔진이 board 에 넣는 어떤 텍스트도 같은
-# 표기로 체크아웃돼야 회수 bytes 보존과 재작성 byte 판정이 개행으로 갈리지 않는다.
-# 채택자가 board 에 둔 다른 형식은 대상이 아니다(우리 소유 확장자만 선언한다).
-_BOARD_TEXT_ATTR_EXTENSIONS: tuple[str, ...] = ("md", "json", "txt", "jsonl")
-# 커버리지 판정 대상 — 상태 디렉토리 × 확장자(중첩 경로) ∪ board 루트 직계(앵커드 선언 탐지).
-_BOARD_TEXT_ATTR_TARGETS: tuple[str, ...] = tuple(
-    f"tickets/{status}/T-0000-ticket.{extension}"
-    for status in (*ticket_rules.STATUS_DIRS, ".drafts")
-    for extension in _BOARD_TEXT_ATTR_EXTENSIONS
-) + tuple(f"board-root-file.{extension}" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
-_BOARD_GITATTRIBUTES_BLOCK = (
-    "# areas.md = 멀티-PM prefix 레지스트리 — 동시 등록(행 append)이 merge 에서 충돌하지 않도록\n"
-    "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
-    "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
-    f"areas.md merge={gitattributes_rules._AREAS_UNION_DRIVER}\n"
-    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 회수 bytes·\n"
-    "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
-    + "".join(
-        f"*.{extension} text eol=lf\n" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
-)
-# board 루트에 엔진이 배포하는 파일들. ensure/판정/snapshot/pathspec 이 모두 이 seam 을 공유해
-# 한 파일만 WIP 보호에서 빠지는 drift 를 막는다. 순서는 pathspec·복구 안내의 나열 순서다.
-_BOARD_GIT_ROOT_FILES: tuple[str, ...] = (".gitattributes", ".gitignore")
-
-
-class _BoardGitRootFileBackfillTarget(NamedTuple):
-    """루트 파일 backfill 이 안전하다고 판정된 append 대상."""
-    path: Path
-    text: str
-
-
-def _board_git_root_file_backfill_target(
-        name: str, declared: Callable[[str], bool]) -> _BoardGitRootFileBackfillTarget | None:
-    """루트 배포 파일 하나의 regular·tracked·clean 상태를 확인한다.
-
-    파일이 **없어도** index/porcelain 을 조회한다. ``ls-files`` 비매치 + status clean 만 진짜
-    미배포로 보며, index/worktree 어느 쪽이든 삭제가 기록돼 있으면 사용자 WIP 로 보존한다.
-    기존 파일은 regular + tracked + status clean 일 때만 append 가능하다. 반환 ``None`` 은
-    이미 선언됨 또는 안전하게 쓸 수 없음이다.
-    """
-    if name not in _BOARD_GIT_ROOT_FILES:
-        raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
-    path = _home().board_root / name
-    try:
-        try:
-            info = path.lstat()
-        except FileNotFoundError:
-            info = None
-        if info is not None and not stat.S_ISREG(info.st_mode):
-            kind = "symlink" if stat.S_ISLNK(info.st_mode) else "비정규 파일"
-            print(f"  ⚠ board {name} backfill 거부 — {kind} 이므로 안전하게 append 할 수 없다: "
-                  f"{path}", file=sys.stderr)
-            return None
-        text = fs.read_text_shared(path, encoding="utf-8") if info is not None else ""
-        if declared(text):
-            return None
-    except (OSError, UnicodeError):
-        return None
-
-    try:
-        tracked = _board_git(["ls-files", "--error-unmatch", "--", name])
-        dirty = _board_git([
-            "status", "--porcelain", "-z", "-uall", "--", name,
-        ])
-    except Exception as exc:  # noqa: BLE001 — 소유/clean 미확인은 append 거부(안전 방향).
-        print(f"  ⚠ board {name} backfill 보류 — git 소유/clean 상태를 확인하지 못했다({exc}). "
-              "사용자 편집 보존을 위해 쓰지 않는다.", file=sys.stderr)
-        return None
-
-    if tracked.returncode not in (0, 1) or dirty.returncode != 0:
-        print(f"  ⚠ board {name} backfill 보류 — git 상태 확인 실패. 사용자 WIP를 mutation "
-              "커밋에 쓸어 담지 않도록 쓰지 않는다.", file=sys.stderr)
-        return None
-
-    has_status = bool(dirty.stdout)
-    if info is None:
-        # tracked+부재(status 가 clean 인 skip-worktree 포함) 또는 porcelain 삭제 표식은 사용자가
-        # 파일을 없애는 중인 상태다. untracked+부재+status clean 만 신규 배포 대상으로 인정한다.
-        if tracked.returncode == 0 or has_status:
-            print(f"  ⚠ board {name} backfill 보류 — 추적 파일의 삭제 WIP가 감지됐다. 사용자 "
-                  "삭제를 되돌리거나 mutation 커밋에 포함하지 않도록 파일을 만들지 않는다. "
-                  f"{name} 변경을 직접 커밋하면 다음 mutation 이 필요한 규칙을 보강한다.",
-                  file=sys.stderr)
-            return None
-    elif tracked.returncode != 0 or has_status:
-        state = "git 미추적" if tracked.returncode != 0 else "미커밋 변경 있음"
-        print(f"  ⚠ board {name} backfill 보류 — 기존 파일이 {state}. 사용자 WIP를 mutation "
-              f"커밋에 쓸어 담지 않도록 쓰지 않는다. {name} 변경을 직접 커밋하면 다음 mutation "
-              "이 필요한 규칙을 보강한다.", file=sys.stderr)
-        return None
-    return _BoardGitRootFileBackfillTarget(path, text)
-
-
-def _gitattributes_text_eol_attrs(
-        text: str, targets: tuple[str, ...]) -> tuple[str | None, str | None]:
-    """대상 경로에 적용되는 마지막 ``text``·``eol`` 속성 값을 반환한다."""
-    text_attr: str | None = None
-    eol_attr: str | None = None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split()
-        if any("#" in field for field in fields):
-            continue
-        pattern = fields[0]
-        if pattern.startswith("!"):
-            text_attr = None
-            eol_attr = None
-            continue
-        if not gitattributes_rules._gitattributes_pattern_matches(pattern, targets):
-            continue
-        for attr in fields[1:]:
-            if attr == "text":
-                text_attr = "set"
-            elif attr in ("-text", "!text"):
-                text_attr = ""
-            elif attr.startswith("text="):
-                text_attr = attr[len("text="):]
-            elif attr.startswith("eol="):
-                eol_attr = attr[len("eol="):]
-            elif attr in ("-eol", "!eol"):
-                eol_attr = ""
-    return text_attr, eol_attr
-
-
-# `text` 를 켜는 표기 두 가지 — 명시 set(`text`)과 자동 판정(`text=auto`). 후자도 텍스트로
-# 판정된 파일엔 `eol` 이 그대로 적용되므로(git 실측) 이미 배포된 것으로 인정한다. 인정하지
-# 않으면 `* text=auto eol=lf` 를 쓴 채택자 board 에 같은 규칙을 매번 덧붙인다.
-_GITATTRIBUTES_TEXT_ENABLED: frozenset[str] = frozenset({"set", "auto"})
-
-
-def _target_lf_declared(text: str, target: str) -> bool:
-    """한 경로에 ``text``(set·auto)와 ``eol=lf``가 함께 유효한가."""
-    text_attr, eol_attr = _gitattributes_text_eol_attrs(text, (target,))
-    return text_attr in _GITATTRIBUTES_TEXT_ENABLED and eol_attr == "lf"
-
-
-def _board_text_attr_targets() -> tuple[str, ...]:
-    """LF 커버리지 판정 대상 — 상태 경로 × 확장자 + board 루트 직계 + **라운드 중첩 경로**.
-
-    라운드 파일은 상태 디렉토리가 아니라 `tickets/<라운드 디렉터리>/<티켓>/` 아래 산다 —
-    상태 경로만 재던 판정은 그 자리를 못 본다. 디렉터리 이름과 파일명 문법은 사이드카 seam 이
-    소유하므로 여기서 표기를 복제하지 않고 그 표에서 프로브 경로를 만든다.
-    """
-    probe = f"tickets/{round_store.ROUNDS_DIRNAME}/T-0/{round_rules.round_filename(1, 'developer')}"
-    return (*_BOARD_TEXT_ATTR_TARGETS, probe)
-
-
-def _board_text_lf_declared(text: str) -> bool:
-    """모든 상태·라운드 경로 × 엔진-소유 확장자에 ``text``+``eol=lf``가 유효한가."""
-    return all(_target_lf_declared(text, target)
-               for target in _board_text_attr_targets())
-
-
-def _board_gitattributes_declared(text: str) -> bool:
-    """board git에 엔진 소유 areas union·엔진-소유 텍스트 LF 규칙이 모두 배포됐는가.
-
-    술어는 선언들의 **논리곱**이다 — 하나라도 단독 판정으로 두면 그 선언이 이미 있는 기존
-    보드에서 backfill 이 돌지 않아 나머지가 영구히 미배포로 남는다.
-    """
-    return (
-        gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS)
-        and _board_text_lf_declared(text)
-    )
-
-
-def _ensure_board_gitattributes() -> bool:
-    """board git 의 union·엔진-소유 텍스트 LF 규칙을 `.gitattributes` 에 **멱등 보강**.
-
-    board 분리 형상에서 areas.md 는 board submodule 안에 살고 루트 선언이 닿지 않아 union 이
-    조용히 사라진다. 신규 board 는 `pm_import.setup_board_submodule` 의 seed 가 이 파일을
-    만들지만 **이미 만들어진 board 엔 seed 가 다시 돌지 않으므로** board git
-    commit funnel(`_board_git_stage_and_commit`)에서 backfill 한다 — 보강분은 그 commit 에 함께
-    실려 pull/push 로 공유 remote·다른 clone 까지 전파된다.
-
-    **호출처는 그 funnel 하나뿐이다**(단일 채널) — write→stage→commit 이 한 호출에 닫혀야
-    엔진이 만든 파일이 board 에 미커밋으로 눌러앉지 않는다. write 만 하고 commit 하지 않는
-    지점(예: `cmd_init`)에서 부르면 `?? .gitattributes` 가 남는다.
-    claim STRICT 의 dirty 가드에 걸려 claim 을 *막기까지* 했다 — 이 그 전면 차단을
-    걷어냈으므로 지금 남는 건 "엔진 산출물이 미커밋으로 떠돈다" 는 위생 문제다. 단일 채널
-    규칙은 그 이유로 유지된다.) 스코프 커밋의 pathspec 에 `.gitattributes` 를 포함하는 것도
-    같은 이유다 — 빠지면 이 backfill 이 영구 미커밋으로 남아 배포가 죽는다.
-
-    **비파괴**: 파일이 있으면 덮어쓰지 않고, union·텍스트 LF 선언 중 하나라도 *없을 때만*
-    블록을 append 한다(채택자 규칙 보존). 둘 다 선언돼 있으면 no-write(멱등). 기존 파일에 append
-    하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
-    untracked·staged·unstaged·삭제 WIP 면 loud 하게 알리고 쓰지 않는다. append 는
-    `fs.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
-
-    fail-soft: board 미분리(legacy)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
-    반환 True = 이번 호출이 보강했다.
-    """
-    root = _home().board_root
-    if not (root / ".git").exists() or pm_paths.areas_file(_home()).parent != root:
-        return False  # board 미분리(legacy) 또는 areas 가 이 git 밖 — no-op.
-    target = _board_git_root_file_backfill_target(
-        ".gitattributes",
-        _board_gitattributes_declared,
-    )
-    if target is None:
-        return False
-    try:
-        # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
-        separator = "" if not target.text else (
-            "\n" if target.text.endswith("\n") else "\n\n")
-        fs.append_atomic(target.path, separator + _BOARD_GITATTRIBUTES_BLOCK)
-    except (OSError, UnicodeError):
-        # IO 실패·비-UTF8 `.gitattributes` — 보강을 포기한다. 이 함수는 ticket mutation 의
-        # commit funnel 에서 불리므로 어떤 예외도 mutation 을 깨선 안 된다(advisory 가 표면화).
-        return False
-    return True
-
-
-# ── draft 격리 gitignore 배포 ───────────────────
-# `tickets/.drafts/`(미충전 draft)는 **설계상 board-git 미커밋**이다(draft authoring flow 결정 —
-# placeholder 본문이 공유 board 에 올라가는 것을 막는다). mutation 축엔 그 의도가 이미 박혀
-# 있지만(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`), **관측 축**엔 아무 선언도 없어
-# draft 파일이 untracked 로 남는다 — dirty-tree 를 재는 소비자(`pm_handoff` [0/7] 게이트·사람의
-# `git status`)가 그걸 매번 "기록 누락 잔여" 로 오탐해 핸드오프마다 `--ack-dirty` override 를
-# 요구했다(핸드오프 관측 결과). board git 의 `.gitignore` 에 그 디렉토리를 선언해 오탐을 원천에서
-# 없앤다 — 새 판정 규칙이 아니라 이미 있던 의도(미커밋)를 git 에 명시하는 것이다.
-_BOARD_GIT_DRAFT_IGNORE_PATTERN = "tickets/.drafts/"
-# 위 패턴과 **같은 디렉토리**를 가리키는 것으로 인정하는 정규화 표기. 슬래시 없는 `.drafts` 는
-# 비앵커드일 때만 git 규칙상 어느 깊이의 그 디렉토리에도 걸린다.
-_BOARD_DRAFT_IGNORE_FORMS: tuple[str, ...] = (
-    _BOARD_GIT_DRAFT_IGNORE_PATTERN.rstrip("/"),
-    _BOARD_GIT_DRAFT_IGNORE_PATTERN.rstrip("/").rsplit("/", 1)[-1],
-)
-_BOARD_GITIGNORE_BLOCK = (
-    "# tickets/.drafts/ = 미충전 draft 티켓 — 설계상 board-git 미커밋(promote 가 open/ 으로 옮긴다).\n"
-    "# 선언하지 않으면 draft 가 untracked 로 남아 dirty-tree 관측이 매번 미커밋 잔여로 오탐한다.\n"
-    f"{_BOARD_GIT_DRAFT_IGNORE_PATTERN}\n"
-)
-
-
-def _gitignore_pattern_targets_drafts(pattern: str) -> bool:
-    """`.gitignore` 한 줄이 draft 격리 디렉토리를 가리키는가 (부정 `!` 줄 포함).
-
-    선행 `!`(부정)·선행 `**/`·후행 `/`(디렉토리 표기)를 벗겨
-    `_BOARD_DRAFT_IGNORE_FORMS` 와 대조한다. 선행 `/` 는 제거 전에 앵커로 기록한다 — 앵커드
-    `/.drafts` 는 board 루트의 `.drafts` 만 가리켜 실제 `tickets/.drafts/` 에 닿지 않으므로
-    선언으로 세지 않고, `/tickets/.drafts` 만 인정한다. **부정도 '가리킨다' 로 센다** — `!` 는
-    채택자가 draft 를 추적하겠다고 명시한 결정이고, gitignore 는 last-match-wins 라 그 뒤에
-    우리 줄을 붙이면 그 결정을 실제로 뒤집는다(비파괴 원칙).
-
-    판정 불가/불일치는 항상 False = **한 번 더 append** 하는 쪽으로 기운다(`.gitattributes`
-    backfill 과 같은 기울기). 그 방향은 무해하고(같은 디렉토리에 대한 중복 선언·효과 동일),
-    반대 방향(거짓 정상)은 오탐이 그대로 남는다. 복합 glob(`tickets/*`·문자 클래스·
-    이스케이프)은 인식 대상 밖이다.
-    """
-    pat = pattern.strip()
-    if pat.startswith("!"):
-        pat = pat[1:].strip()
-    anchored = pat.startswith("/")
-    if anchored:
-        pat = pat[1:]
-    pat = pat.rstrip("/")
-    if pat.startswith("**/"):
-        pat = pat[len("**/"):]
-    forms = _BOARD_DRAFT_IGNORE_FORMS[:1] if anchored else _BOARD_DRAFT_IGNORE_FORMS
-    return pat in forms
-
-
-def _drafts_ignore_declared(text: str) -> bool:
-    """이 `.gitignore` 본문이 draft 격리 디렉토리를 이미 다루고 있는가 (내용 판정).
-
-    빈 줄과 `#` 로 시작하는 주석 줄은 건너뛴다 — 우리 블록의 설명 주석이 그 자신을
-    "선언됨" 으로 읽게 하지 않는다.
-    """
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if _gitignore_pattern_targets_drafts(line):
-            return True
-    return False
-
-
-def _board_git_root_file_rule_declared(name: str, text: str) -> bool:
-    """루트 배포 파일별 내용 규칙 — `_BOARD_GIT_ROOT_FILES` lockstep dispatcher."""
-    if name == ".gitattributes":
-        return _board_gitattributes_declared(text)
-    if name == ".gitignore":
-        return _drafts_ignore_declared(text)
-    raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
-
-
-def _board_git_root_files_need_backfill() -> bool:
-    """draft-only sync funnel 을 열 루트 backfill 필요 여부 (read-only·fail-open 술어).
-
-    둘 다 이미 정합인 regular file 이면 False 이므로 두 번째 draft 는 commit/pull/push 경로에
-    들어가지 않는다. 부재·비정규·읽기 실패·규칙 누락은 True 로 두어 실제 ensure 가 공용
-    git/WIP 판정을 하고 필요한 write 또는 loud 보류를 수행하게 한다.
-    """
-    root = _home().board_root
-    if not (root / ".git").exists():
-        return False
-    for name in _BOARD_GIT_ROOT_FILES:
-        path = root / name
-        try:
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode):
-                return True
-            text = fs.read_text_shared(path, encoding="utf-8")
-        except (FileNotFoundError, OSError, UnicodeError):
-            return True
-        if not _board_git_root_file_rule_declared(name, text):
-            return True
-    return False
-
-
-def _ensure_board_gitignore() -> bool:
-    """board git 의 `.gitignore` 에 `tickets/.drafts/` 를 **멱등 보강**.
-
-    `_ensure_board_gitattributes` 와 같은 backfill 패턴이다 — 신규 채택자(board scaffold)든 이미
-    만들어진 board(backfill)든 같은 ensure 경로로 수렴하므로 별도 마이그레이션 명령이 없다.
-    호출처도 같은 commit funnel(`_board_git_stage_and_commit`) 하나뿐이다: write→stage→commit 이
-    한 호출에 닫혀야 엔진이 만든 파일이 board 에 미커밋으로 눌러앉지 않는다(그러면 이 함수가
-    없애려는 바로 그 오탐을 스스로 만든다).
-
-    **비파괴**: 파일이 있으면 덮어쓰지 않고, draft 를 다루는 줄이 *없을 때만* 블록을 append
-    한다(채택자 규칙·부정 선언 보존). 이미 다뤄지고 있으면 no-write(멱등). 기존 파일에
-    append 하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
-    untracked·staged·unstaged WIP 면 사유를 loud 하게 알리고 쓰지 않는다. append 는
-    `fs.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
-
-    fail-soft: board 미분리(legacy)·IO 실패면 아무 것도 하지 않고 False.
-    반환 True = 이번 호출이 보강했다.
-    """
-    root = _home().board_root
-    if not (root / ".git").exists():
-        return False  # board 미분리(legacy) — no-op(draft 격리는 board-git 형상 전용).
-    target = _board_git_root_file_backfill_target(
-        ".gitignore", _drafts_ignore_declared)
-    if target is None:
-        return False
-    try:
-        # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
-        separator = "" if not target.text else (
-            "\n" if target.text.endswith("\n") else "\n\n")
-        fs.append_atomic(target.path, separator + _BOARD_GITIGNORE_BLOCK)
-    except (OSError, UnicodeError):
-        # IO 실패·비-UTF8 `.gitignore` — `_ensure_board_gitattributes` 와 같은 fail-soft 규약
-        # (이 축의 실패가 ticket mutation 을 깨선 안 된다).
-        return False
-    return True
-
-
-class _BoardGitRootFileState(NamedTuple):
-    """strict mutation 전 board 루트 파일의 워킹트리 상태."""
-    existed: bool
-    contents: bytes | None
-
-
-class _BoardGitRootFilesSnapshot:
-    """strict claim 의 루트 backfill 전후 소유 경계를 함께 기록한다."""
-
-    def __init__(self, states: dict[str, _BoardGitRootFileState] | None):
-        self.states = states
-        self.backfilled: list[str] = []
-        self.staged_index: dict[str, tuple[str, str]] | None = None
-
-
-def _board_git_root_files_snapshot() -> _BoardGitRootFilesSnapshot:
-    """엔진 backfill 전 루트 파일 상태와 이후 실제 작성 목록을 캡처할 그릇을 만든다.
-
-    strict claim 이 실패하면 index 만 되돌려서는 부족하다. 새 파일은 untracked 로, 기존 파일에
-    append 한 블록은 unstaged 로 남아 다음 ensure 가 no-write 하는 영구 잔여가 된다. 워킹트리
-    바이트도 함께 복원해야 다음 mutation 이 backfill 을 다시 정상 시도할 수 있다. 단, 복원
-    소유권은 이 스냅샷 뒤 `_ensure_board_root_files()` 가 실제로 쓴 파일에만 생긴다.
-    """
-    snapshot: dict[str, _BoardGitRootFileState] = {}
-    for name in _BOARD_GIT_ROOT_FILES:
-        path = _home().board_root / name
-        try:
-            info = path.lstat()
-        except FileNotFoundError:
-            snapshot[name] = _BoardGitRootFileState(False, None)
-            continue
-        except OSError:
-            return _BoardGitRootFilesSnapshot(None)
-        if not stat.S_ISREG(info.st_mode):
-            snapshot[name] = _BoardGitRootFileState(True, None)
-            continue
-        try:
-            snapshot[name] = _BoardGitRootFileState(True, fs.read_bytes_shared(path))
-        except OSError:
-            return _BoardGitRootFilesSnapshot(None)
-    return _BoardGitRootFilesSnapshot(snapshot)
-
-
-def _board_git_expected_backfill_state(
-        name: str, before: _BoardGitRootFileState) -> _BoardGitRootFileState | None:
-    """스냅샷 원본에 엔진 블록 하나를 append 한 정확한 워킹트리 상태."""
-    if before.existed and before.contents is None:
-        return None
-    original = before.contents or b""
-    separator = b"" if not original else (b"\n" if original.endswith(b"\n") else b"\n\n")
-    if name == ".gitattributes":
-        block = _BOARD_GITATTRIBUTES_BLOCK
-    elif name == ".gitignore":
-        block = _BOARD_GITIGNORE_BLOCK
-    else:
-        return None
-    return _BoardGitRootFileState(True, original + separator + block.encode("utf-8"))
-
-
-def _board_git_restore_root_files(
-        snapshot: _BoardGitRootFilesSnapshot | None) -> tuple[str, ...]:
-    """실제 backfill 파일만 원복하되 제3자 변경은 보존한다 (절대 throw 금지)."""
-    if snapshot is None or snapshot.states is None:
-        print("  ⚠ board 루트 파일의 claim 직전 상태를 캡처하지 못해 정확히 복원하지 못했다. "
-              "`git -C .project_manager/board status` 로 확인하라.", file=sys.stderr)
-        return ()
-    restored: list[str] = []
-    for name in snapshot.backfilled:
-        before = snapshot.states.get(name)
-        path = _home().board_root / name
-        expected = _board_git_expected_backfill_state(name, before) if before is not None else None
-        if before is None or expected is None:
-            print(f"  ⚠ board rollback 이 {name} backfill 원본을 확인하지 못해 덮어쓰지 않았다: "
-                  f"{path}", file=sys.stderr)
-            continue
-        try:
-            try:
-                info = path.lstat()
-            except FileNotFoundError:
-                current = _BoardGitRootFileState(False, None)
-            else:
-                if not stat.S_ISREG(info.st_mode):
-                    current = _BoardGitRootFileState(True, None)
-                else:
-                    current = _BoardGitRootFileState(True, fs.read_bytes_shared(path))
-
-            # 이미 원본으로 돌아갔으면 워킹트리는 no-op. 엔진 산출과 원본 어느 쪽도 아니면
-            # hook/동시 편집이 만든 제3의 상태이므로 소유권 밖이다 — bytes를 최우선 보존한다.
-            if current == before:
-                restored.append(name)
-                continue
-            if current != expected:
-                print(f"  ⚠ board rollback 이 스냅샷 이후 제3자 변경을 보존했다: {path} "
-                      "(engine backfill/원본 어느 쪽과도 달라 덮어쓰지 않음).",
-                      file=sys.stderr)
-                continue
-
-            if before.existed:
-                assert before.contents is not None
-                path.write_bytes(before.contents)
-            else:
-                # 맨 `unlink` 는 read-only 속성 파일을 Windows 에서 거부한다 — 공용 seam 이
-                #   속성을 풀고 재시도해 backfill 잔재가 워킹트리에 눌러앉지 않게 한다.
-                fs.force_unlink(path, missing_ok=True)
-            restored.append(name)
-        except OSError as exc:
-            print(f"  ⚠ board rollback 루트 파일 복원 실패: {path} ({exc})", file=sys.stderr)
-    return tuple(restored)
-
-
-def _ensure_board_root_files() -> tuple[str, ...]:
-    """board 루트 엔진 파일들을 멱등 보강하고 **이번 호출이 실제로 쓴** 파일명만 돌려준다."""
-    written: list[str] = []
-    if _ensure_board_gitattributes():
-        written.append(".gitattributes")
-    if _ensure_board_gitignore():
-        written.append(".gitignore")
-    return tuple(written)
-
-
-# ── board git 즉시 sync ────────
-# board(tickets+areas)가 별도 git(submodule·standalone)으로 분리된 형상에서, ticket
-# mutation 마다 board git 에 자동 commit + (필요 시) pull --rebase + push 한다. mutation 별
-# sync 강도가 다르다:
-#
-#   - **claim = STRICT(원자·조율 primitive)**: 선점 감지(읽기 전용 fetch + 원격 트리 직접
-#     조회)로 이미 남이 claim 했으면 작업 시작을 차단(race-lost·로컬 변경 0) → 로컬 claim
-#     commit → push 가 성공해야 *비로소* 소유 확정. non-FF/거부면 로컬 claim 을 rollback
-#     (티켓 open 복귀) + 명시 실패. best-effort 로 "내가 claim" 을 남기면 둘이 같은 일 =
-#     중복작업 방지가 깨지므로 claim 만 strict 다.
-#   - **new/promote/complete/block/unclaim/unblock = best-effort local-first**: 로컬 commit 은
-#     항상 성공(로컬) → (추적 변경이 없으면) pull --rebase ; push 는 best-effort → 실패 시
-#     stale 경고 + 무차단 계속. active retry 루프는 두지 않는다 — 다음 mutation 의
-#     pull-rebase+push 가 밀린 commit 을 자연 catch-up 한다("retry" 의 해석).
-#     이 catch-up 은 **pull 이 매번 fetch 를 포함**해야 성립한다 — 원격-추적 ref 를 읽는
-#     `behind` 로 pull 여부를 가르면 fetch 가 없어 ref 가 영구 stale → 영영 안 따라잡는다.
-#
-# **공통 불변식 = 스코프**: 어떤 mutation 도 *자기가 만진 경로* 밖을 커밋하지 않고,
-# 롤백도 자기가 만든 것만 되돌린다. 공유 board 워킹트리엔 항상 남의 미커밋 작업이 있을 수
-# 있기 때문이다(claim 이 dirty 를 더는 막지 않으므로 더 그렇다). 조율 권위는 로컬 tree 의
-# clean 여부가 아니라 **원격 ref 의 FF push(CAS)** 다.
-#
-# **활성 게이트 = board 가 별도 git 일 때만**(`Home.board_root/.git` 존재). legacy(board 가
-# wiki/ 안·별도 git 아님)면 sync 는 전부 no-op(git 호출 0·현 동작 byte-identical) —
-# `pm_paths._board_root_at` graceful 탐지와 동형이고, 기존 회귀가 green 으로 남는 핵심이다. 모든 git
-# 호출은 fail-soft subprocess(엔진 관례·UTF-8 고정·짧은 timeout) — 거짓 원자성/락 보장을
-# 만들지 않는다(best-effort 는 정직하게 경고, claim 만 명시 실패).
-
-
-# claim 차단 사유 코드 — prefetch 가 claim 을 막을 때의 *원인* 이다. 옛
-# sentinel 문자열(`\0dirty`·`\0detached`)을 대체한다: 사유가 넷(dirty/rebase 충돌/offline/
-# upstream 없음)으로 갈리고 진단에 behind·더러운 파일 목록이 함께 필요해, 반환을 구조체
-# (`_ClaimPrefetch`)로 바꾸면서 사유도 코드로 명시했다. 하나의 원인엔 하나의 안내만 나가야
-# 한다.
-_CLAIM_BLOCK_DETACHED = "detached"          # board HEAD 가 브랜치를 안 가리킴 → checkout 안내
-_CLAIM_BLOCK_REBASE = "rebase"              # rebase 진행 중(충돌 미해소) → abort/continue 안내
-_CLAIM_BLOCK_RACE_LOST = "race-lost"        # 원격에서 이미 claimed/done/blocked → 중복작업 방지
-_CLAIM_BLOCK_DIRTY = "dirty"                # 원격 앞섬 + 미커밋 파일이 통합을 막음(offline 아님)
-_CLAIM_BLOCK_INTEGRATION = "integration"    # 네트워크 정상·미커밋 0 인데 통합 실패(원인 미상)
-_CLAIM_BLOCK_OFFLINE = "offline"            # fetch 도달 불가(네트워크·auth)
-_CLAIM_BLOCK_NO_UPSTREAM = "no-upstream"    # 추적 브랜치 미설정 → 조율할 원격이 없음
-_CLAIM_BLOCK_NO_ANCHOR = "no-anchor"        # HEAD 조회 불가 → rollback anchor 없이 진행 금지
-
-# 잔여 차단 진단에 나열할 더러운 파일 표본 상한 — 전부 쏟으면(수십 건) 안내가 묻히고, 0 이면
-# "무엇 때문에 막혔나" 를 사용자가 다시 찾아야 한다. 총계는 항상 함께 낸다.
-_BOARD_GIT_DIRTY_SAMPLE_MAX = 5
-
-# 진단에 인용할 git 출력 길이 상한 — 원인 미상 통합 실패에서 마지막 stderr 줄을 그대로 보여준다
-# (분류에는 안 쓴다·로케일 무관 — 사람이 읽을 단서로만).
-_BOARD_GIT_DETAIL_MAX = 200
-
-# 사유 코드 → **짧은 라벨**. "무엇 때문인지" 한 마디만 끼워 넣는 자리(롤백 후 stale 경고)용이다
-# — 사유별 *처방* 문장은 `_claim_block_message` 가 소유한다(claim 차단이라는 다른 맥락). 판정
-# 자체는 두 곳 모두 `_classify_pull_failure` 하나를 쓴다.
-_BOARD_GIT_BLOCK_LABELS: dict[str, str] = {
-    _CLAIM_BLOCK_REBASE: "rebase 진행 중·충돌 미해소",
-    _CLAIM_BLOCK_DIRTY: "미커밋 파일이 통합을 막음",
-    _CLAIM_BLOCK_OFFLINE: "원격 도달 불가",
-    _CLAIM_BLOCK_INTEGRATION: "원인 미상·네트워크는 정상",
-}
-
-# board-git pathspec — `tickets/.drafts/`(drafts_dir()) 를 `git add`/`git status` 에서 명시
-# 제외한다. draft 는 STATUS_DIRS 순회 밖이라 이미 안 보이지만, 이 pathspec 은 방어적
-# 이중화다 — draft 경로가 board_root 바로 아래(add -A 의 스캔 범위)에 있는 한, 어떤 향후
-# 변경으로 draft 가 STATUS_DIRS 스캔 함수에 실수로 노출되더라도 git 수준에서 한 번 더 막는다.
-# pathspec 은 `Home.board_root` 기준 상대경로 리터럴이라 위치 이동(legacy↔board 분리) 무관 동작한다.
-_BOARD_GIT_DRAFT_PATHSPEC: tuple[str, ...] = (".", ":!tickets/.drafts")
-
-
-def _board_git_enabled() -> bool:
-    """board 가 별도 git 으로 분리됐고 sync 가능한가 — `Home.board_root/.git` 존재 + git 바이너리.
-
-    True 면 ticket mutation 이 board git 에 commit/pull/push 한다. False 면 sync 전부
-    no-op(legacy·git 부재) — `Home.board_root` 가 wiki/ 를 가리키는 legacy 에선
-    `wiki/.git` 가 없어 자동으로 False(superproject git 은 REPO 루트에 산다). board/ 분리
-    형상에서만 `board/.git`(submodule git 파일/디렉토리)이 존재한다. git 바이너리 부재면
-    분리 형상이라도 no-op(fail-soft·sync 불능).
-    """
-    if shutil.which("git") is None:
-        return False
-    return (_home().board_root / ".git").exists()
-
-
-def _board_git(args: list[str], *, check: bool = False,
-               timeout: float | None = None) -> subprocess.CompletedProcess:
-    """board git working dir(`Home.board_root`)에서 git 명령을 실행한다 (UTF-8·timeout 고정).
-
-    엔진 subprocess 관례: UTF-8 디코딩(한글 ticket/경로 안전)·짧은 timeout·`errors=replace`.
-    `-C home.board_root` 로 작업 디렉토리를 board git 으로 고정한다(cwd 의존 0). `check=False`
-    가 기본 — 호출부가 returncode 로 분기하며, 예외(timeout·바이너리 이상)는 호출부가
-    fail-soft 로 처리한다. `timeout` 미지정은 `_BOARD_GIT_TIMEOUT_SECONDS`(30s) — advisory
-    freshness fetch 처럼 대화형 hang 을 짧게 끊어야 하는 호출부만 override 한다(기존
-    경로 무변경).
-    """
-    return subprocess.run(
-        ["git", "-C", str(_home().board_root), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=git._BOARD_GIT_TIMEOUT_SECONDS if timeout is None else timeout, check=check)
-
-
-def _board_git_lock_file() -> Path:
-    """board-git mutation 직렬화 락 파일 — `<REPO>/.project_manager/.local/board-git.lock`.
-
-    `BOARD_LOCK` 처럼 import-time 상수로 굳히지 않고 **REPO 추종 lazy 해소**로 둔다(`Home.board_root`
-    선례) — hermetic 테스트는 `REPO` 를 monkeypatch 하므로 락 파일이 자동으로 tmp 로 따라간다.
-    별도 상수 seam 을 하나 더 두면 그걸 잊은 새 테스트가 실 루트에 락 파일을 쓴다.
-    """
-    return REPO / ".project_manager" / ".local" / "board-git.lock"
-
-
-@contextlib.contextmanager
-def board_git_lock() -> Iterator[None]:
-    """board-git mutation(commit→push→rollback) 전체를 직렬화하는 OS 파일락.
-
-    `board_lock` 은 *파일* mutation 임계구역(load→rename)만 감싸고 git ops 는 그 밖에 있어서,
-    같은 clone 의 두 슬롯이 commit→push→rollback 을 인터리브할 수 있었다 — 남이 방금 만든
-    claim 커밋을 내 rollback 이 되돌리는 창. 이 락이 그 트랜잭션을 통째로 직렬화한다.
-
-    **락 순서 = board_git_lock → board_lock (전역 고정)**. claim 은 이 락을 잡은 채 board_lock
-    을 잡으므로, 역순 획득이 어디에도 없어야 데드락이 없다: best-effort sync 7 callsite는
-    board_lock을 이미 놓은 뒤 불리고, `_prefix_relabel`도 board_lock **밖**에서 이 락을 먼저 잡는다.
-
-    board-git 비활성(legacy)이면 no-op — 락 파일조차 만들지 않는다(현 동작 무변경).
-    **재진입 금지**(flock 관례·board_lock 과 동일) — 이 구간 안에서 이 컨텍스트를 다시 잡는
-    헬퍼를 부르지 않는다. 프로세스가 죽으면 OS 가 자동 해제한다(stale-lock 없음).
-    """
-    if not _board_git_enabled():
-        yield
-        return
-    with fs.exclusive_file_lock(_board_git_lock_file()):
-        yield
-
-
-def _board_git_head() -> str | None:
-    """board git 의 현재 HEAD SHA (없으면 None) — claim rollback 의 복귀 지점 기록용."""
-    r = _board_git(["rev-parse", "HEAD"])
-    return r.stdout.strip() if r.returncode == 0 else None
-
-
-def _board_git_head_detached() -> bool:
-    """board git 의 HEAD 가 detached 인가.
-
-    `git symbolic-ref -q HEAD` 는 HEAD 가 브랜치를 가리키면(attached) 그 ref 를 출력하며
-    rc=0, HEAD 가 커밋을 직접 가리키면(detached) **rc=1** 이다(`-q` 로 에러 메시지 억제·locale
-    무관). detached HEAD 는 dirty 도 offline 도 아닌 제3의 상태로, prefetch 오진과
-    best-effort orphan 누적의 공통 근원이라 두 경로가 이 판정을 공유한다.
-
-    **rc=1 만 detached** (codex must-fix): gitdir 손상/조회 불능 같은 fatal 오류는 rc=128 로
-    떨어지는데 이를 detached 로 취급하면 "offline 아님·detached" 오진으로 claim 을 잘못
-    차단하고 best-effort commit 도 잘못 skip 한다 — fatal 은 False 로 흘려 기존 실패
-    경로(dirty/offline/정상 분기)가 처리하게 한다.
-
-    **fail-soft**: 예외(timeout·git 소실)·rc==0(attached)·rc==128(fatal) 모두 False — 판정
-    실패는 현행 경로(detached 가드 미발동)로 흘려보낸다. 거짓 detached 판정이 정상
-    sync/claim 을 막는 것보다, 판정 불능 시 현행 동작 유지가 보수적이다(dirty 선체크의
-    fail-soft clean 취급과 동형).
-    """
-    try:
-        r = _board_git(["symbolic-ref", "-q", "HEAD"])
-    except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외(timeout 등)는 현행 경로(False).
-        return False
-    return r.returncode == 1
-
-
-def _board_git_status_porcelain() -> str:
-    """board git working tree 의 uncommitted 변경 요약 (`status --porcelain`·locale 무관).
-
-    `--porcelain` 은 번역되지 않는 안정 포맷이라(cp949·한글 git 메시지 무관) dirty 판정에
-    robust 하다 — non-empty 면 staged/unstaged/untracked 변경이 있다는 뜻. rc≠0(이상)이나
-    예외는 빈 문자열로 fail-soft 처리해 호출부가 dirty 아님(=clean)으로 보게 한다(보수적).
-
-    **dirty 판정의 단일 원천**이다 — 목록/추적여부 분해(`_board_git_dirty_entries`·
-    `_board_git_has_tracked_changes`)는 이 출력을 파싱만 한다. dirty 는 claim 을
-    막는 조건이 아니라 (a) 원격이 앞섰을 때 통합 가능성 판정과 (b) 잔여 차단 진단의 재료다.
-
-    `_BOARD_GIT_DRAFT_PATHSPEC` 으로 `tickets/.drafts/`(미충전 draft)를 제외한다 —
-    draft 는 board-git 관점에서 아예 존재하지 않는 것처럼 보여야 한다(진단 목록에도 안 나온다).
-    """
-    try:
-        r = _board_git(["status", "--porcelain", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
-    except (OSError, subprocess.SubprocessError):  # fail-soft: status 예외(timeout 등)는 clean 취급(보수적).
-        return ""
-    return r.stdout if r.returncode == 0 else ""
-
-
-def _board_git_dirty_entries() -> tuple[tuple[str, str], ...]:
-    """board 의 미커밋 변경 목록 — `(상태코드, 경로)` 튜플 (draft 제외·판정 단일 지점).
-
-    dirty 의 **원천 판정은 `_board_git_status_porcelain()` 하나**다 — 이 함수는 그 출력을 파싱만
-    한다(두 벌 판정 금지). porcelain 포맷은 `XY <path>`(코드 2칸 + 공백 + 경로)이고 rename 은
-    `R  old -> new` 라 화살표 뒤(현재 경로)를 취한다. 공백/한글 경로는 git 이 따옴표로 감싸므로
-    양끝 `"` 만 벗긴다(진단 출력용이라 8진 이스케이프까지 복원하지 않는다).
-    """
-    entries: list[tuple[str, str]] = []
-    for line in _board_git_status_porcelain().splitlines():
-        if len(line) < 4:
-            continue
-        code, path = line[:2], line[3:].strip()
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        path = path.strip().strip('"')
-        if path:
-            entries.append((code, path))
-    return tuple(entries)
-
-
-def _dirty_has_tracked(entries: Sequence[tuple[str, str]]) -> bool:
-    """이 변경 목록에 **추적 파일** 변경이 있는가 (untracked-only 는 False).
-
-    `pull --rebase` 는 **untracked-only dirty 에선 rc=0 으로 성공**한다(architect 실측) — 통합을
-    막는 건 dirty 일반이 아니라 *추적* 변경뿐이다. 옛 prefetch 가 이 구분 없이 board 전체
-    **판정은 여기 한 곳뿐**이다 — 이미 목록을
-    들고 있는 호출부(prefetch 의 pull 실패 분류)는 이 함수를, 목록이 없는 호출부는 아래
-    `_board_git_has_tracked_changes()` 를 쓴다(같은 규칙·git 호출만 다름).
-    """
-    return any(code != "??" for code, _ in entries)
-
-
-def _board_git_has_tracked_changes() -> bool:
-    """board 워킹트리에 추적 파일 변경이 있는가 — 목록을 새로 떠서 `_dirty_has_tracked` 로 판정."""
-    return _dirty_has_tracked(_board_git_dirty_entries())
-
-
-def _board_git_rebase_in_progress() -> bool:
-    """board git 이 rebase 진행 중(충돌 미해소)인가 — `.git/rebase-merge`·`rebase-apply` 존재.
-
-    mid-rebase 는 detached 의 부분집합이지만 **처방이 다르다**(`rebase --abort/--continue` vs
-    `checkout <branch>`)
-    먼저 갈라야 한다. 그리고 이 선체크가 **어떤 board-git mutation 보다도 앞**이어야 한다:
-    mid-rebase 에서 `git commit -- <paths>` 는 rc=0 으로 **detached rebase HEAD 위에** 커밋을
-    만들어 버린다(architect 실측). fail-soft — 판정 예외는 False(현행 경로로 흘림).
-    """
-    for name in ("rebase-merge", "rebase-apply"):
-        try:
-            r = _board_git(["rev-parse", "--git-path", name])
-        except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외는 현행 경로(False).
-            return False
-        if r.returncode != 0:
-            continue
-        raw = r.stdout.strip()
-        # `--git-path` 는 -C(board_root) 기준 상대경로를 낸다 — 절대경로면 `/` 연산이 그대로 채택.
-        if raw and (_home().board_root / raw).exists():
-            return True
-    return False
-
-
-class _BoardGitUpstream(NamedTuple):
-    """board git 이 조율하는 원격 — remote 이름 · 로컬 브랜치 · 원격 브랜치 ref."""
-
-    remote: str        # 예: origin
-    branch: str        # 로컬 브랜치명
-    merge_ref: str     # 예: refs/heads/main (`ls-remote` 조회 키)
-
-    @property
-    def tracking(self) -> str:
-        """원격-추적 ref (`refs/remotes/<remote>/<branch>`) — ls-tree/rev-list 의 revision."""
-        short = self.merge_ref
-        if short.startswith("refs/heads/"):
-            short = short[len("refs/heads/"):]
-        return f"refs/remotes/{self.remote}/{short}"
-
-
-def _board_git_upstream() -> _BoardGitUpstream | None:
-    """현재 브랜치의 upstream 설정 (미설정·판정 불가면 None) — **네트워크 접촉 0**.
-
-    `branch.<b>.remote`/`branch.<b>.merge` 를 직접 읽는다. `@{upstream}` 해소는 원격-추적 ref 가
-    아직 없으면(첫 fetch 전) 실패해서 "upstream 미설정" 과 구별되지 않는데, 그 둘은 claim 진단의
-    서로 다른 사유다(설정 없음 ≠ offline) — 그래서 설정값 자체를 본다.
-    """
-    try:
-        head = _board_git(["rev-parse", "--abbrev-ref", "HEAD"])
-        if head.returncode != 0:
-            return None
-        branch = head.stdout.strip()
-        if not branch or branch == "HEAD":  # detached — 선체크가 이미 걸렀다(방어적).
-            return None
-        remote = _board_git(["config", "--get", f"branch.{branch}.remote"])
-        merge = _board_git(["config", "--get", f"branch.{branch}.merge"])
-    except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외는 upstream 미상(None).
-        return None
-    if remote.returncode != 0 or merge.returncode != 0:
-        return None
-    remote_name, merge_ref = remote.stdout.strip(), merge.stdout.strip()
-    if not remote_name or not merge_ref:
-        return None
-    return _BoardGitUpstream(remote_name, branch, merge_ref)
-
-
-def _board_git_fetch(remote: str) -> bool:
-    """원격 상태를 추적 ref 로 당긴다 — **읽기 전용**(워킹트리·HEAD 미접촉). 성공 True.
-
-    선점 감지를 `pull --rebase` 대신 fetch+ls-tree 로 하는 근거가 이것이다 — dirty 든 behind 든
-    로컬 상태와 무관하게 원격을 볼 수 있고, 실패해도 로컬 변경이 0 이다.
-    """
-    try:
-        return _board_git(["fetch", remote]).returncode == 0
-    except (OSError, subprocess.SubprocessError):  # fail-soft: fetch 예외(timeout)는 도달 불가로 본다.
-        return False
-
-
-# 원격에서 이 티켓이 이미 `open` 을 벗어났으면 선점(claim race-lost)이다. STATUS_DIRS 를
-# 추종해 유도한다 — 신규 상태(예: 처분 종결 `discarded`)가 생겨도 "open 이 아니면 선점" 이라는
-# 판정이 자동으로 그 상태를 덮는다(손-열거하면 새 상태가 조용히 claim 가능해진다).
-_CLAIM_RACE_LOST_STATUSES: tuple[str, ...] = tuple(
-    status for status in ticket_rules.STATUS_DIRS if status != "open")
-
-
-def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None:
-    """원격 트리에서 그 티켓이 놓인 status 디렉토리 (없으면 None) — 읽기 전용 선점 감지.
-
-    `git ls-tree -r --name-only <tracking> -- tickets/` 로 **원격 스냅샷을 직접** 읽는다. 로컬
-    통합(pull) 성공에 의존하지 않으므로 dirty·behind 와 무관하게 판정된다 — 옛 판정(winner 를
-    로컬로 끌어와야 보임)보다 **등가 이상**이다. `-z` 로 NUL 구분 raw 경로를 받는다
-    (한글 파일명이 core.quotepath 8진 이스케이프로 나와 매칭을 놓치는 것을 막는다).
-    """
-    try:
-        r = _board_git(["ls-tree", "-r", "-z", "--name-only", tracking, "--", "tickets/"])
-    except (OSError, subprocess.SubprocessError):  # fail-soft: 조회 예외는 판정 불가(None·차단하지 않음).
-        return None
-    if r.returncode != 0:
-        return None
-    pattern = re.compile(
-        rf"^tickets/({'|'.join(ticket_rules.STATUS_DIRS)})/{re.escape(ticket_id)}(-.*)?\.md$")
-    for entry in r.stdout.split("\0"):
-        m = pattern.match(entry.strip())
-        if m:
-            return m.group(1)
-    return None
-
-
-def _board_git_behind(tracking: str) -> int | None:
-    """원격이 로컬보다 앞선 커밋 수 (`HEAD..<tracking>`) — **계산 불가면 None**(판정불가).
-
-    옛 구현은 예외·rc≠0·비정수를 전부 0 으로 접었다. **차단 판단**에는 그 폴백이 보수적이지만
-    (behind 를 모르면 "원격이 안 앞섬" 으로 보고 차단하지 않는다 — 소유 확정 권위는 어차피
-    push CAS 다), **진단 문구**에서는 계산 불능과 실제 0 이 구별되지 않아 "원격보다 0 커밋
-    뒤처진 상태" 라는 거짓 실측 진술이 나왔다. 그래서 값은 known/unknown 을 보존하고, 차단
-    방향의 보수적 해석은 호출부가 `None = 앞서지 않음` 으로 명시한다 — 판단은 불변이고 문구만
-    정직해진다.
-    """
-    try:
-        r = _board_git(["rev-list", "--count", f"HEAD..{tracking}"])
-    except (OSError, subprocess.SubprocessError):  # fail-soft: 조회 예외는 판정 불가(None).
-        return None
-    if r.returncode != 0:
-        return None
-    try:
-        return int(r.stdout.strip())
-    except ValueError:
-        return None
-
-
-def _board_git_remote_tip(upstream: _BoardGitUpstream) -> str | None:
-    """원격 브랜치 tip SHA (`git ls-remote`) — 네트워크 1왕복·로컬 ref 미의존.
-
-    `_board_git_remote_has_commit` 의 폴백 경로다(fetch 불가 시). tip 동일성만으로는 "내 커밋이
-    원격에 있는가" 를 절반만 답한다 — 그래서 기본 술어가 아니라 폴백이다.
-    """
-    try:
-        r = _board_git(["ls-remote", upstream.remote, upstream.merge_ref])
-    except (OSError, subprocess.SubprocessError):  # fail-soft: 재확인 실패는 "미확정"(None) 으로 흘린다.
-        return None
-    if r.returncode != 0 or not r.stdout.strip():
-        return None
-    return r.stdout.split()[0].strip()
-
-
-def _board_git_remote_has_commit(upstream: _BoardGitUpstream, commit: str) -> bool:
-    """원격 브랜치가 이 커밋을 **포함**하는가 — push 예외 후 성공 여부 재확인.
-
-    push 가 timeout 예외로 끝나도 원격엔 이미 반영됐을 수 있다. 그때 롤백하면 원격 claimed·
-    로컬 open 인 **고아 claim** 이 된다. 술어는 tip 동일성이 아니라 **조상 관계** 여야 한다
-    (reviewer): 내 push 가 수락된 직후 다른 clone 이 무관 커밋을 얹으면 tip 은 이미 내 커밋이
-    아니지만 소유는 확정된 상태다 — 동일성으로 보면 그 경우를 롤백해 고아를 다시 만든다.
-
-    `fetch`(읽기 전용) 후 `merge-base --is-ancestor` 로 판정하고, fetch 가 불가하면
-    `ls-remote` tip 동일성으로 **폴백**한다(정확도는 낮지만 "확정된 것을 롤백" 은 막는다).
-    판정 불가는 False = 롤백(거짓 소유보다 안전한 방향).
-    """
-    try:
-        if _board_git_fetch(upstream.remote):
-            r = _board_git(["merge-base", "--is-ancestor", commit, upstream.tracking])
-            return r.returncode == 0
-        return _board_git_remote_tip(upstream) == commit
-    except (OSError, subprocess.SubprocessError):  # fail-soft: 재확인 실패는 미확정(False·롤백).
-        return False
-
-
-# ── repo-중립 스코프 프리미티브 ─────────────────────────────────
-# **공유 워킹트리 mutation 은 선언된 경로만 건드린다**
-# 스코프 원칙을 repo-중립으로 올린 것이다. 아래 함수들이 그 판정의 **단일 구현**이고,
-# `_board_git_*` 는 `Home.board_root` 를 물린 얇은 wrapper, 디자인 git(PM 홈·wiki)은
-# `ticket_finish` 가 `REPO` 를 물려 같은 함수를 부른다. 판정을 두 벌로 복제하지 않는다 —
-# 복제하면 다음 사람이 한쪽만 고쳐 반대쪽이 조용히 샌다(v1.4.1 실측).
-#
-# `run_git` 은 `(argv) -> (rc, stdout)` 러너 seam 이다 — 호출 repo 마다 git 실행 관용구가
-# 다르기 때문(board-git 은 `-C home.board_root` 인 `_board_git`, ticket_finish 는 cwd=REPO 인
-# 주입형 `_run_git_fn`). 미지정이면 `-C repo` 기본 러너를 쓴다.
-
-GitRunner = Callable[[list[str]], tuple[int, str]]
-
-
-def _git_scope_run(repo: Path, args: list[str]) -> tuple[int, str]:
-    """`git -C <repo> …` 기본 러너 → (rc, stdout) — 엔진 subprocess 관례(UTF-8·timeout 고정)."""
-    r = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=git._BOARD_GIT_TIMEOUT_SECONDS, check=False)
-    return r.returncode, r.stdout
-
-
-def git_scope_relpath(repo: Path, path: Path) -> str | None:
-    """절대 경로 → `<repo>` 루트 기준 상대 pathspec (그 repo 밖이면 None)."""
-    try:
-        return Path(path).resolve().relative_to(Path(repo).resolve()).as_posix()
-    except (ValueError, OSError):
-        return None
-
-
-def git_scope_pathspec(repo: Path, paths: Sequence[Path], *,
-                       exclude_prefixes: Sequence[str] = ()) -> tuple[str, ...]:
-    """이 mutation 이 만진 경로 → `<repo>` pathspec (**스코프 산출 단일 지점**).
-
-    규칙 셋을 한 곳에서만 적용한다(경로별로 다시 판정하는 두 번째 구현을 만들지 않는다):
-      1. `repo` **밖** 경로는 제외 — 그 git 이 모르는 파일(예: 두-git 형상에서 코드 worktree
-         의 `touches`, board-git 기준의 파생물 `wiki/board.md`).
-      2. `exclude_prefixes` 로 시작하는 경로는 제외 — 호출부가 그 repo 고유의 금지 구역을
-         준다(board-git 의 `tickets/.drafts/` = 미충전 draft).
-      3. 중복 제거(순서 보존).
-    반환이 비면 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
-    """
-    rels: list[str] = []
-    for path in paths:
-        rel = git_scope_relpath(repo, path)
-        if rel is None or rel in rels:
-            continue
-        if any(rel.startswith(prefix) for prefix in exclude_prefixes):
-            continue
-        rels.append(rel)
-    return tuple(rels)
-
-
-def _git_scope_nested_git(repo: Path, rel: str) -> bool:
-    """`rel` 이 **중첩 git(서브모듈) 안쪽** 경로인가 — 상위 repo 의 `add` 를 fatal 로 죽이는 갈래.
-
-    `git add -A -- .project_manager/board/tickets/…` 는 그 경로가 서브모듈 *내부* 면
-    `fatal: Pathspec '…' is in submodule` 로 rc=128 이 되고 **pathspec 전체가 stage 되지
-    않는다**(board 분리 형상에서 `touches` 에 board 경로를 적으면 finish 가 통째로 중단됐다).
-    조상 디렉토리 중 `.git` 을 가진 것이 있으면(=별도 git) 그 아래는 상위 repo 의 pathspec 이
-    아니므로 미리 거른다. 경로 자신은 제외(repo 루트/대상 자체가 git 인 건 정상).
-    """
-    parent = Path(rel).parent
-    while parent != Path("."):
-        if (Path(repo) / parent / ".git").exists():
-            return True
-        parent = parent.parent
-    return False
-
-
-def _git_scope_is_directory(repo: Path, rel: str) -> bool:
-    """`rel` 이 디렉토리(또는 디렉토리 표기)인가 — 최종 관문의 판정.
-
-    worktree 실측(`is_dir()`)에 더해 **끝 슬래시 표기**(`newdir/`)도 디렉토리로 본다: git 의
-    porcelain 이 접어서 낸 untracked 디렉토리가 그 모양이라, 실측만 하면 이미 지워진 경로가
-    빠져나간다. 판정이 애매할 때는 *제외* 가 안전한 방향이다 — 빠지면 잔여 loud 보고에 뜨지만,
-    통과하면 남의 파일이 조용히 실린다.
-    """
-    return rel.endswith("/") or (Path(repo) / rel).is_dir()
-
-
-def _git_scope_ignored(repo: Path, pathspec: Sequence[str],
-                       run: GitRunner) -> set[str]:
-    """`.gitignore` 에 걸리는 경로들 (rc 128 판정 불가면 빈 집합 · 러너 예외는 그대로 올린다).
-
-    **`git add` 는 명시 pathspec 이 ignored 면 rc=1 에러다.** 광역 `add -A` 가 ignored 를 조용히
-    건너뛰는 것과 다르고, `--ignore-errors` 로도 안 없어진다(reviewer 실측). 그래서 `touches` 에
-    gitignored 경로가 하나만 있어도 stage 가 통째로 죽고, 하필 그 순간 잔여 loud 보고까지 함께
-    사라진다(기록은 이미 절반 진행된 상태). 실형상 도달 가능 — 이 보드의 done 티켓 여러 건이
-    `touches: .project_manager/local.conf`(gitignored)를 선언한다.
-
-    판정은 `git check-ignore` 로 한다:
-      - 먼저 **전체를 한 번** 물어(`check-ignore -- <paths>`) rc=1(매치 0)이면 즉시 종료 —
-        평시 비용은 subprocess 1회다.
-      - 매치가 있을 때만 경로별 `-q` 로 어느 것인지 가른다(`-q` 는 경로 1개만 받고 `-z` 는
-        `--stdin` 전용이라, 인용/이스케이프 없는 **rc 판정** 만 쓴다 — 출력 파싱 0).
-    **추적 파일은 check-ignore 가 보고하지 않는다**(실측) — 이미 추적 중인 파일은 ignore 규칙과
-    무관하게 stage 되어야 하므로 이 동작이 정확히 맞다. rc=128(비-git·판정 불가)은 제외 0 이다.
-    """
-    if not pathspec:
-        return set()
-    rc, _out = run(["check-ignore", "--", *pathspec])
-    if rc != 0:            # 1 = 매치 0(정상) · 128 = 비-git/판정 불가 → 제외 0.
-        return set()
-    ignored: set[str] = set()
-    for path in pathspec:
-        rc_one, _ = run(["check-ignore", "-q", "--", path])
-        if rc_one == 0:
-            ignored.add(path)
-    return ignored
-
-
-def git_parse_porcelain_z(out: str) -> tuple[tuple[str, str], ...]:
-    """`git status --porcelain -z` 출력 → `((XY, 경로), …)` — **NUL 파싱 단일 지점**.
-
-    `-z` 가 **판정용으로 필수**다: `-z` 없이는 git 이 비-ASCII 경로를 8진 이스케이프 + 인용으로
-    낸다(`"\\353\\251\\200…"`). 그 문자열을 스코프 비교에 넣으면 *자기가 방금 stage 한 파일* 을
-    "스코프 밖" 으로 오판해 "빼라" 고 지시한다(reviewer 실측 — PM 홈에 실제로 한글 티켓/아이디어
-    경로가 있다). `core.quotepath=false` 도 공백 경로 인용(`"a b.md"`)이 남아 불충분하다.
-    `-z` 는 인용 자체를 하지 않으므로 원문 경로가 그대로 나온다.
-
-    rename/copy(`R`/`C`) 항목은 `<코드> <신규>\\0<원본>\\0` **2토큰**이라 원본 토큰을 소비하고
-    신규 경로를 취한다. 스코프 산출(디렉토리 전개)과 잔여 보고가 **이 함수 하나**를 공유한다.
-    """
-    tokens = out.split("\0")
-    entries: list[tuple[str, str]] = []
-    index = 0
-    while index < len(tokens):
-        entry = tokens[index]
-        index += 1
-        if len(entry) < 4:
-            continue
-        code, path = entry[:2], entry[3:]
-        if code[0] in ("R", "C"):
-            index += 1          # 원본 경로 토큰 소비 (신규 경로만 취한다)
-        if path:
-            entries.append((code, path))
-    return tuple(entries)
-
-
-def _git_scope_expand_dir(repo: Path, rel: str, run: GitRunner) -> list[str]:
-    """디렉토리 선언 → 그 아래 **변경된 파일** 경로들 (`status --porcelain -z -- <dir>`).
-
-    디렉토리가 **이미 삭제된** 경우도 같은 조회로 덮인다 — git 은 index 를 함께 보므로 삭제된
-    파일이 ` D <경로>` 로 나온다(실측). 그래서 "지워진 디렉토리 선언" 을 위한 두 번째 경로를
-    만들지 않는다.
-
-    디렉토리를 그대로 pathspec 에 넘기면 `git add -A -- <dir>` 가 그 아래 **남의 미완성
-    편집까지 통째로** stage 한다 — 좁힌 척하고 안 좁힌 상태다. 그래서
-    스코프에서 디렉토리는 **살아남지 못한다**: 여기서 변경 파일 목록으로 펼쳐, 호출부가
-    무엇이 실리는지 **파일 단위로 출력·검증**할 수 있게 한다(변경이 없으면 빈 목록 → 소멸).
-
-    `--untracked-files=all` 이 **load-bearing** 이다: 기본값(`normal`)은 새 untracked 디렉토리를
-    `?? newdir/` **한 항목으로 접어서** 낸다 — 그러면 전개 결과가 파일이 아니라 *디렉토리* 라
-    아래 필터를 그대로 통과해 `git add -A -- newdir/` 가 되고, 막으려던 뭉뚱그리기가 이 경로로
-    되살아난다(PM 실 git 재현). `all` 이면 `?? newdir/c.md` 로 파일까지 펼친다.
-
-    `-z` + NUL 파싱은 `git_parse_porcelain_z` 한 곳이 담당한다(비-ASCII/공백 경로 인용 문제·
-    rename 2토큰 처리를 두 벌로 만들지 않는다 — 잔여 보고도 같은 함수를 쓴다).
-    """
-    rc, out = run(["status", "--porcelain", "-z", "--untracked-files=all", "--", rel])
-    if rc != 0:
-        return []
-    return [path for _code, path in git_parse_porcelain_z(out)]
-
-
-def git_scope_stageable(repo: Path, pathspec: Sequence[str], *,
-                        run_git: GitRunner | None = None) -> tuple[str, ...]:
-    """`add`/`commit` 이 매치할 수 있는 **파일** 경로만 남긴다 — 미매치/서브모듈 fatal 방지 +
-    디렉토리 소멸.
-
-    다섯 가지를 한 곳에서 처리한다(호출부가 다시 판정하지 않는다):
-      1. **디렉토리는 파일로 펼친다** — 변경 파일 목록으로(`_git_scope_expand_dir`). 디렉토리
-         stage 는 그 아래 남의 WIP 를 함께 싣는 누출 채널이라 구조적으로 막는다. **이미 삭제된
-         디렉토리도 전개한다**(선언한 삭제가 빠지면 안 된다 — 아래 루프 주석).
-      2. **중첩 git(서브모듈) 내부 경로 제거** — 상위 repo 의 `add` 가 rc=128 fatal 로 죽는다.
-      3. **미존재·미추적 경로 제거** — `git add -A -- <경로>` 는 index·worktree 어디에도 없는
-         경로를 주면 rc=128 fatal 로 죽고 **아무것도 stage 되지 않는다**(→ commit 실패 →
-         claim 롤백). 로컬에서 만들어진 뒤 한 번도 커밋되지 않은 티켓이 이동하면 *옛* 경로가
-         정확히 그 상태고(detached 구간의 보류 commit), 디자인 git 에선 `touches` 가 이 repo 에
-         없는 경로(두-git 형상의 코드 worktree 경로·오타)를 가리키는 경우가 그렇다. 추적 중인
-         *삭제* 경로는 남긴다(삭제도 커밋돼야 이동이 완성된다).
-      4. **gitignored 경로 제거**(`_git_scope_ignored`) — 명시 pathspec 이 ignored 면 `add` 가
-         **rc=1 에러**다(광역 `add -A` 와 다르다). 사람이 손으로 적는 `touches` 에 gitignored
-         경로가 섞여도 stage 가 통째로 죽으면 안 된다(3과 같은 fail-soft 클래스).
-      5. **최종 관문: 디렉토리는 하나도 반환하지 않는다** — 1의 전개가 *조용히 실패* 해도
-         불변식이 유지되게 마지막에 한 번 더 거른다. 실제로 그런 실패가 있었다: `status
-         --porcelain` 기본값(`untracked-files=normal`)이 새 untracked 디렉토리를 `?? newdir/`
-         한 항목으로 접어, 전개 결과가 디렉토리인 채 3의 `exists()` 를 통과했다(PM 실 git
-         재현). **불변식은 전개의 성공에 의존하면 안 된다.**
-    """
-    run = run_git or (lambda args: _git_scope_run(repo, args))
-    expanded: list[str] = []
-    for p in pathspec:
-        # 전개는 **디렉토리이거나 worktree 에 없는** 경로에 시도한다. 후자가 load-bearing 이다:
-        # 선언한 디렉토리가 *통째로 삭제* 되면 `is_dir()` 이 false 라 옛 게이트는 전개를 건너뛰고,
-        # 이어지는 추적 판정도 `ls-files -- src` 가 `src/a.py` 를 내놔 `src` 와 매칭되지 않아
-        # 경로가 통째로 탈락했다 — **선언한 삭제가 커밋에서 조용히 빠졌다**(reviewer 실측).
-        # 존재하는 *파일* 은 전개 결과가 자기 자신이라 시도할 이유가 없다(subprocess 절약).
-        candidate_path = Path(repo) / p
-        expand = candidate_path.is_dir() or not candidate_path.exists()
-        candidates = (_git_scope_expand_dir(repo, p, run) or [p]) if expand else [p]
-        for candidate in candidates:
-            if candidate and candidate not in expanded:
-                expanded.append(candidate)
-    expanded = [p for p in expanded if not _git_scope_nested_git(repo, p)]
-    on_disk = {p for p in expanded if (Path(repo) / p).exists()}
-    unknown = [p for p in expanded if p not in on_disk]
-    tracked: set[str] = set()
-    if unknown:
-        rc, out = run(["ls-files", "-z", "--", *unknown])
-        if rc == 0:
-            tracked = {line for line in out.split("\0") if line}
-    stageable = [p for p in expanded if p in on_disk or p in tracked]
-    ignored = _git_scope_ignored(repo, stageable, run)
-    return tuple(p for p in stageable
-                 if p not in ignored and not _git_scope_is_directory(repo, p))
-
-
-def git_scope_stage_pathspec(repo: Path, paths: Sequence[Path], *,
-                             exclude_prefixes: Sequence[str] = (),
-                             run_git: GitRunner | None = None) -> tuple[str, ...]:
-    """선언 경로 → 그 repo 에서 실제 stage 가능한 pathspec (스코프+동형 필터 단일 진입).
-
-    `git_scope_pathspec`(스코프) → `git_scope_stageable`(미존재/미추적 제거) 순서 고정 —
-    두 단계를 따로 부르는 호출부가 순서를 뒤바꾸거나 한쪽을 빼먹지 않게 한 진입점으로 묶는다.
-    """
-    return git_scope_stageable(
-        repo, git_scope_pathspec(repo, paths, exclude_prefixes=exclude_prefixes),
-        run_git=run_git)
-
-
-def git_scope_stage_and_commit(repo: Path, message: str, pathspec: Sequence[str], *,
-                               run_git: GitRunner | None = None,
-                               after_stage: Callable[[], None] | None = None) -> None:
-    """선언된 pathspec **만** stage+commit 한다 (`add -A --` + `commit -m … --` 쌍).
-
-    `add` 선행은 **필수**다 — `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라
-    `pathspec did not match` 로 실패한다(architect 실측). 커밋이 실제로 생겼는지 판정(HEAD
-    전진)은 호출부 몫이다 — repo 마다 HEAD 조회 seam 이 다르다.
-    """
-    run = run_git or (lambda args: _git_scope_run(repo, args))
-    run(["add", "-A", "--", *pathspec])
-    if after_stage is not None:
-        after_stage()
-    run(["commit", "-m", message, "--", *pathspec])
-
-
-# 잔여 dirty 보고(under-stage loud)는 **의도적으로 여기 없다** — `ticket_finish` 가
-# 자체 파서로 낸다. 보고 채널이 board 모듈 로드에 의존하면, 로드가 실패한 형상(예: 실행
-# 인터프리터에 PyYAML 부재·엔진 사본 손상)에서 stage 가 0인 채 "잔여 없음"이라는 **거짓 안심**이
-# 나온다(reviewer 실측). 보고는 어떤 경우에도 살아 있어야 하는 마지막 안전망이다.
-
-
-# board-git 고유 금지 구역 — `tickets/.drafts/`(미충전 draft)는 어떤 mutation 도
-# 커밋하지 않는다. promote 의 *옛* 경로가 실제로 draft 라 이 규칙이 매번 발동한다.
-_BOARD_GIT_SCOPE_EXCLUDE: tuple[str, ...] = ("tickets/.drafts/",)
-
-
-def _board_git_rc_out(args: list[str]) -> tuple[int, str]:
-    """`_board_git` 를 스코프 프리미티브 러너 계약((rc, stdout))으로 어댑트한다.
-
-    모듈 속성 `_board_git` 를 **호출 시점에** 조회하므로 기존 테스트의 monkeypatch(가짜
-    board-git)가 그대로 프리미티브 안까지 적용된다.
-    """
-    r = _board_git(args)
-    return r.returncode, r.stdout
-
-
-def _board_git_relpath(path: Path) -> str | None:
-    """절대 경로 → board git 루트 기준 상대 pathspec (board git 밖이면 None)."""
-    return git_scope_relpath(_home().board_root, path)
-
-
-def _board_git_scope_pathspec(paths: Sequence[Path], *,
-                              root_files: Sequence[str] = ()) -> tuple[str, ...]:
-    """이 mutation 이 만진 경로 → board git pathspec (`git_scope_pathspec` 의 board 바인딩).
-
-    스코프 규칙(repo 밖 제외·금지 구역 제외·중복 제거)은 repo-중립 프리미티브
-    `git_scope_pathspec` 이 단일 구현으로 갖고 있고, 여기선 board 고유분만 얹는다:
-      - `Home.board_root` 를 repo 로, `tickets/.drafts/`(`_BOARD_GIT_SCOPE_EXCLUDE`)를 금지 구역으로.
-      - `root_files` 로 준 board 루트 파일(`_BOARD_GIT_ROOT_FILES` 부분집합)만 덧붙인다 —
-        **이번 호출의 backfill 이 실제로 쓴 것**(`_ensure_board_root_files()` 반환)만 온다.
-        무조건 붙이면 사용자가 편집 중인 `.gitattributes`/`.gitignore` 를 아무 티켓 mutation 이
-        대신 커밋해 스코프 커밋이 닫으려는 누출과 **동형** 이 된다(reviewer). 반대로 backfill
-        분을 빼면 그 파일이 영구 미커밋으로 남아 배포(areas union·draft ignore)가 무력화되므로,
-        "썼으면 싣는다" 가 정확한 조건이다. 파일 부재 시엔 붙이지 않는다(`add` rc=128 fatal 방지).
-    반환이 비면 커밋할 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
-    """
-    rels: list[str] = list(git_scope_pathspec(
-        _home().board_root, paths, exclude_prefixes=_BOARD_GIT_SCOPE_EXCLUDE))
-    for name in root_files:
-        rel = _board_git_relpath(_home().board_root / name)
-        if rel and rel not in rels and (_home().board_root / name).is_file():
-            rels.append(rel)
-    return tuple(rels)
-
-
-def _board_git_stageable(pathspec: Sequence[str]) -> tuple[str, ...]:
-    """`add`/`commit` 이 매치할 수 있는 경로만 남긴다 (`git_scope_stageable` 의 board 바인딩).
-
-    판정 본체(존재/추적 필터·fail-soft)는 repo-중립 프리미티브에 있다 — 여기선 `Home.board_root`
-    와 board-git 러너(`_board_git_rc_out`)를 물린다. 미매치 pathspec 이 `add` 를 rc=128 fatal
-    로 죽이는 것을 막는 필터라, 디자인 git 쪽 새 스코프도 같은 구현을 쓴다.
-    """
-    return git_scope_stageable(_home().board_root, pathspec, run_git=_board_git_rc_out)
-
-
-def _board_git_stage_and_commit(
-        message: str, paths: Sequence[Path] | None = None, *,
-        root_files_written: list[str] | None = None,
-        root_files_snapshot: _BoardGitRootFilesSnapshot | None = None,
-) -> bool:
-    """이 mutation 이 만진 **경로만** stage+commit 한다.
-
-    `paths` = 그 mutation 이 만들거나 옮긴 파일들(절대 경로). `git add -A -- <경로>` +
-    `git commit -m … -- <경로>`(부분 커밋)로 닫아, 공유 board 워킹트리에 있는 **무관한 미커밋
-    작업**(다른 슬롯 WIP·남의 staged 편집)이 이 커밋에 실려 push 되는 것을 원천 차단한다(D2 —
-    claim 커밋에 타 슬롯 WIP 가 함께 push 된 것이 실증됐다). `add` 선행은 **필수**다:
-    `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라 `pathspec did not match` 로
-    실패한다(architect 실측).
-
-    `paths=None` = **레거시 광역 스코프**(board 전체·draft 제외). 엔진 호출부는 더 이상 이
-    형태를 쓰지 않는다 — 마지막 소비자였던 `_prefix_relabel` 도 rewrite 가 실제로 쓴 파일 +
-    rename 경로로 스코프됐다. 하위호환(모듈 밖 호출부·테스트)으로만 남긴다.
-    **호출부는 반드시 경로를 준다.**
-
-    새 커밋 생성 판정은 rc 가 아니라 **`HEAD != anchor`** 다 — 부분 커밋은 pathspec 이 아무것도
-    못 잡으면 rc 가 애매한데, claim 은 "커밋을 못 내면 거짓 소유"라 커밋 *사실* 을
-    확인해야 한다. 반환 True = 새 commit 생성.
-
-    stage 직전 board 루트 배포 파일(`areas.md merge=union` 선언 · draft 격리 `.gitignore`)을 멱등
-    보강한다. **이번 호출이 실제로 보강한 파일만** pathspec 에 넣는다 — 무조건 넣으면 사용자가
-    편집 중인 그 파일을 이 mutation 이 대신 커밋한다(스코프 커밋이 닫는 누출과 동형).
-    """
-    wrote_root_files = _ensure_board_root_files()
-    if root_files_written is not None:
-        root_files_written.extend(wrote_root_files)
-    if root_files_snapshot is not None:
-        root_files_snapshot.backfilled.extend(wrote_root_files)
-
-    def _capture_staged_root_index() -> None:
-        if root_files_snapshot is not None:
-            root_files_snapshot.staged_index = _board_git_index_snapshot(
-                (), root_files=wrote_root_files)
-
-    before = _board_git_head()
-    if paths is None:
-        _board_git(["add", "-A", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
-        _capture_staged_root_index()
-        _board_git(["commit", "-m", message])
-    else:
-        pathspec = _board_git_stageable(
-            _board_git_scope_pathspec(paths, root_files=wrote_root_files))
-        if not pathspec:
-            return False  # 커밋할 스코프 없음(전부 board 밖·draft·미존재) — no-op.
-        git_scope_stage_and_commit(_home().board_root, message, pathspec,
-                                   run_git=_board_git_rc_out,
-                                   after_stage=_capture_staged_root_index)
-    return _board_git_head() != before
-
-
-class _BoardGitUncommittedScope(NamedTuple):
-    """local commit 실패 진단에 필요한 실제 상태와 복구 pathspec."""
-    entries: tuple[tuple[str, str], ...] = ()
-    recovery_paths: tuple[str, ...] = ()
-
-
-def _board_git_uncommitted_scope(
-        paths: Sequence[Path] | None, *,
-        root_files: Sequence[str] = (),
-) -> _BoardGitUncommittedScope:
-    """이번 mutation 경로에 남은 board-git 변경만 반환한다.
-
-    best-effort가 local commit을 못 만든 경우, board 전체 dirty를 진단에 쓰면 다른 ticket의
-    WIP를 이번 mutation 실패로 오인하고 그 경로까지 복구 대상으로 노출한다. 따라서 호출자가
-    선언한 경로만 porcelain -z로 조회한다. ``paths=None``인 레거시 호출부에는 소유 경계가
-    없으므로 false-success 판정을 하지 않는다.
-    """
-    if paths is None:
-        return _BoardGitUncommittedScope()
-    pathspec = _board_git_scope_pathspec(paths, root_files=root_files)
-    if not pathspec:
-        return _BoardGitUncommittedScope()
-    try:
-        result = _board_git([
-            "status", "--porcelain", "-z", "--untracked-files=all", "--", *pathspec,
-        ])
-    except (OSError, subprocess.SubprocessError):  # 진단 실패가 best-effort mutation을 막으면 안 된다.
-        return _BoardGitUncommittedScope()
-    if result.returncode != 0:
-        return _BoardGitUncommittedScope()
-    entries = git_parse_porcelain_z(result.stdout)
-    # pathspec 자체를 보존해야 porcelain rename의 새 경로만으로 old 삭제를 잃지 않는다.
-    # root_files 는 이번 commit funnel 이 실제 쓴 이름만 오므로 빈 ticket pathspec인 첫 draft도
-    # 정확히 진단하면서, 이미 정합인 루트 파일/사용자 WIP는 이번 실패 범위에 끌어오지 않는다.
-    return _BoardGitUncommittedScope(entries, tuple(pathspec))
-
-
-def _warn_board_git_local_commit_failed(message: str,
-                                        scope: _BoardGitUncommittedScope,
-                                        exc: Exception | None = None) -> None:
-    """local commit 미생성의 복구 경로를, 이번 mutation 스코프만으로 loud 출력한다."""
-    shown = ", ".join(f"{code} {path}" for code, path in scope.entries[:5])
-    more = f" (+{len(scope.entries) - 5}건)" if len(scope.entries) > 5 else ""
-    quoted_paths = " ".join(shlex.quote(path) for path in scope.recovery_paths)
-    quoted_message = shlex.quote(message)
-    detail = f" ({exc})" if exc is not None else ""
-    print("  ⚠ board local commit 실패 — 이번 mutation 파일이 uncommitted 상태로 남았다. "
-          f"pull/push는 건너뛴다{detail}", file=sys.stderr)
-    print(f"    상태: {shown}{more}", file=sys.stderr)
-    print("    복구: `git -C .project_manager/board add -A -- "
-          f"{quoted_paths}`", file=sys.stderr)
-    print("          `git -C .project_manager/board commit -m "
-          f"{quoted_message} -- {quoted_paths}`", file=sys.stderr)
-
-
-def _board_git_pull_rebase() -> subprocess.CompletedProcess:
-    """board git 을 remote 최신화 (`pull --rebase`) — 선점/원격 변경을 로컬에 반영."""
-    return _board_git(["pull", "--rebase"])
-
-
-def _board_git_push() -> subprocess.CompletedProcess:
-    """board git 을 remote 로 push — claim 소유 확정(strict)·best-effort 동기(나머지)."""
-    return _board_git(["push"])
-
-
-def _board_git_sync_best_effort(message: str,
-                                paths: Sequence[Path] | None = None) -> bool:
-    """best-effort local-first sync (new/promote/complete/block/unclaim/unblock/section-add/tier).
-
-    board 가 별도 git 이 아니면 no-op(legacy). 별도 git 이면: 로컬 commit을 항상
-    시도하고, **새 commit 사실(HEAD 전진)**을 확인한 뒤 → pull --rebase ; push 를 best-effort 로.
-    local commit 실패가 mutation 파일을 uncommitted로 남기면 pull/push를 건너뛰고 False를 반환한다.
-    offline/auth/conflict 등
-    어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
-    retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
-
-    `paths` = 그 mutation 이 만진 경로. claim 뿐 아니라 **ticket mutation 8개
-    (new/promote/complete/block/unclaim/unblock/section-add/tier)도 함께** 스코프화해 출하한다 — claim 차단을
-    풀면 board 가 상시 dirty 가 되므로, best-effort 가 board 전체를 쓸어담는 채로 남으면 누출
-    노출이 오늘보다 커진다(사용자 결정).
-
-    `paths=None` = 레거시 board 전체 스코프(draft 제외). 티켓이 아닌 board 파일을 고치는 외부
-    호출부(`pm_config` 의 areas.md 보호목록 갱신)의 현행 동작을 보존하는 자리다 — ticket
-    mutation 은 **반드시 경로를 준다**(메타가드 `test_ticket_mutations_pass_scoped_paths` 가
-    board.py 호출부를 기계 검사한다·새 호출부가 잊으면 red).
-
-    **단 detached HEAD 는 예외**: commit *전* HEAD 상태를 점검해 detached 면
-    commit/pull/push 를 전부 skip 하고 loud 경고만 낸다. detached 위의 commit 은 orphan 으로
-    쌓이고 catch-up 이 구조적으로 불가하므로(pull --rebase 계속 실패), 침묵 누적 대신 기록을
-    보류하고 복귀를 안내한다(파일 mutation 은 이미 완료라 작업 무차단은 유지).
-
-    git ops 전체를 `board_git_lock` 으로 감싼다 — 같은 clone 의 다른 슬롯이 진행 중인 claim
-    트랜잭션(commit→push→rollback) 사이에 끼어들지 않게(락 순서 board_git_lock →
-    board_lock: 이 함수는 board_lock 을 놓은 뒤 불린다).
-    """
-    if not _board_git_enabled():
-        return True
-    with board_git_lock():
-        return _board_git_sync_best_effort_locked(message, paths)
-
-
-def _board_git_sync_best_effort_locked(message: str,
-                                       paths: Sequence[Path] | None = None) -> bool:
-    """`_board_git_sync_best_effort` 의 본체 (board_git_lock 보유 전제·재진입 금지)."""
-    # detached HEAD 가드: detached 에선 commit 이 orphan 으로 쌓이고 `pull --rebase`
-    # 가 계속 실패해 "다음 mutation 이 catch-up" 약속이 *구조적으로* 성립하지 않는다(attached
-    # 브랜치의 일시 offline/conflict 만 상정한 동작). commit/pull/push 를 모두 skip 하고 loud
-    # 경고만 내 orphan 무한 누적을 원천 차단한다. 파일 mutation(rename·frontmatter)은 이미
-    # 끝난 뒤라 작업은 무차단 — git 기록만 보류한다(best-effort=작업 무차단 원칙 유지). 자동
-    # 복구(checkout/cherry-pick)는 PM 편집/브랜치 의도 침해라 하지 않고 안내만 한다.
-    if _board_git_head_detached():
-        print("  ⚠ board sync 보류 — detached HEAD. board git 기록을 건너뛴다(orphan commit "
-              "누적 방지). `git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 "
-              "복귀하면 다음 mutation 이 일괄 commit·catch-up 한다. detached 에서 이미 쌓인 로컬 "
-              "commit 이 있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.",
-              file=sys.stderr)
-        return False
-    committed = False
-    wrote_root_files: list[str] = []
-    try:
-        committed = _board_git_stage_and_commit(
-            message, paths, root_files_written=wrote_root_files)
-        if not committed:
-            # False 자체는 scope가 없거나 변경이 이미 없는 정상 no-op일 수 있다. 하지만 이번
-            # mutation 경로가 아직 staged/unstaged/untracked면 HEAD 불변은 local commit 실패다.
-            # 이 상태에서 push가 rc=0(up-to-date)을 내도 파일은 remote에 없으므로, "보존·다음
-            # mutation catch-up"이라고 말하거나 pull/push를 계속하면 false-success가 된다.
-            uncommitted = _board_git_uncommitted_scope(
-                paths, root_files=wrote_root_files)
-            if uncommitted.entries:
-                _warn_board_git_local_commit_failed(message, uncommitted)
-                return False
-        # 통합 시도 여부는 **추적 변경 유무**로 가른다 — `behind` 로 가르면 안 된다(reviewer
-        # must-fix): `_board_git_behind` 는 원격-추적 ref 를 읽으므로 **fetch 선행에서만 유효**한데
-        # 이 경로엔 fetch 가 없다 → ref 가 영구 stale → behind 항상 0 → pull 을 영영 안 타 push 가
-        # 계속 non-FF 로 밀린다("다음 mutation 이 catch-up" 약속이 구조적으로 깨진다·실측).
-        # `pull --rebase` 는 자체가 fetch 를 포함하므로 직행이 왕복 수도 옛 코드와 같거나 적다.
-        # 추적 dirty 면 pull 이 어차피 rc≠0 이라 건너뛰고 push 만 시도한다(FF 면 성공·아니면 경고).
-        pull = None if _board_git_has_tracked_changes() else _board_git_pull_rebase()
-        push = _board_git_push() if (pull is None or pull.returncode == 0) else None
-    except Exception as exc:  # noqa: BLE001 — fail-soft: best-effort sync 는 절대 작업을 막지 않는다.
-        uncommitted = _board_git_uncommitted_scope(
-            paths, root_files=wrote_root_files)
-        if uncommitted.entries:
-            _warn_board_git_local_commit_failed(message, uncommitted, exc)
-            return False
-        if committed:
-            print("  ⚠ board sync 보류 — pull/push 예외. 로컬 commit 은 보존되며 다음 mutation 이 "
-                  "catch-up 한다.", file=sys.stderr)
-            return True
-        print(f"  ⚠ board sync 보류(다음 mutation 이 catch-up): {exc}", file=sys.stderr)
-        return False
-    if pull is not None and pull.returncode != 0:
-        print("  ⚠ board sync 보류 — pull --rebase 실패(offline/conflict). 로컬 commit 은 "
-              "보존되며 다음 mutation 이 catch-up 한다.", file=sys.stderr)
-    elif push is not None and push.returncode != 0:
-        print("  ⚠ board sync 보류 — push 실패(offline/auth/non-FF). 로컬 commit 은 보존되며 "
-              "다음 mutation 이 catch-up 한다.", file=sys.stderr)
-    return True
-
-
-def _board_git_mutation_state_suffix(local_commit_ready: bool) -> str:
-    """best-effort caller의 성공 문구가 uncommitted 상태를 성공처럼 숨기지 않게 한다."""
-    return "" if local_commit_ready else " (board-git 기록 보류: local-only/uncommitted)"
-
-
-class _ClaimPrefetch(NamedTuple):
-    """claim 선점 감지 결과 — anchor · 차단 사유 · 진단 재료.
-
-    옛 sentinel 문자열 반환(5분)을 대체한다. 차단 사유가 넷으로 갈리고(dirty / rebase 충돌 /
-    offline / upstream 없음) 진단에 `behind` 와 더러운 파일 목록이 함께 필요해, 값 하나로는
-    표현이 안 된다 — 사유와 재료를 **한 구조체로 묶어** 호출부가 메시지를 한 곳에서 렌더한다.
-    """
-
-    anchor: str | None = None
-    """`<sha>` = 정상 진행(rollback 복귀 지점) · `""` = board-git 비활성(legacy) · None = 차단."""
-    block: str | None = None
-    """`_CLAIM_BLOCK_*` 사유 코드 (None = 진행 가능)."""
-    behind: int | None = 0
-    """원격이 로컬보다 앞선 커밋 수 — 잔여 차단 진단의 핵심 수치. None = 계산 불가(판정불가)."""
-    dirty: tuple[tuple[str, str], ...] = ()
-    """차단 시점의 미커밋 변경 `(코드, 경로)` — 안내에 표본 + 총계로 낸다."""
-    detail: str = ""
-    """사유별 부가 정보 (race-lost 면 원격에서 그 티켓이 놓인 status 등)."""
-
-
-def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
-    """claim STRICT 1단계: **읽기 전용** 선점 감지 + 필요할 때만 통합.
-
-    board 가 별도 git 이 아니면 no-op(`anchor=""` — 검증만 진행·legacy 무변경). 별도 git 이면
-    순서가 곧 진단이다:
-
-      1. **detached / mid-rebase 선체크(1순위·양보 불가)** — mid-rebase 에서
-         `git commit -- <paths>` 는 rc=0 으로 **detached rebase HEAD 위에** 커밋을 만든다
-         (architect 실측). 그래서 어떤 git mutation 보다 앞이고, 둘을 갈라 처방을 정확히 한다
-         (rebase=abort/continue · detached=checkout).
-      2. **upstream 해소** — 미설정이면 조율할 원격이 없다(offline 과 다른 사유).
-      3. **fetch**(읽기 전용) — 실패면 offline. 워킹트리·HEAD 를 건드리지 않으므로 dirty 든
-         behind 든 무관하게 시도할 수 있고, 실패해도 로컬 변경이 0 이다.
-      4. **원격 트리 직접 조회로 race-lost 판정** — `ls-tree` 로 그 티켓이 원격에서 이미
-         claimed/done/blocked 인지 읽는다. **로컬 통합 성공에 의존하지 않는다** — 옛 판정
-         (winner 를 pull 로 끌어와야 보임)의 상위집합이다.
-      5. **behind 계산 → behind>0 일 때만 `pull --rebase`** — 원격이 안 앞섰으면 통합할 게
-         없으므로 dirty 여도 claim 을 막지 않는다. 단일 clone 다중 슬롯은 같은
-         로컬 브랜치를 공유해 behind=0 이라 잔여 차단이 구조적으로 발생하지 않는다.
-         pull 실패의 사유 분류는 `_classify_pull_failure` 가 **구조 판정만으로** 한다
-         (rebase 충돌 / 미커밋 파일 / offline / 원인 미상 — git 메시지 문자열 비의존).
-      6. **anchor 확정** — HEAD 를 못 구하면 rollback 복귀 지점이 없다는 뜻이라 안전 실패한다
-         (anchor 없는 진행 금지·거짓 소유 방지).
-
-    조율 보장은 그대로다 — 소유 확정 권위는 여전히 **원격 ref FF push(CAS)** 이고, 이 단계는
-    "이미 남이 가져갔나" 를 싸게 먼저 확인해 중복작업을 막는 것뿐이다.
-    """
-    if not _board_git_enabled():
-        return _ClaimPrefetch(anchor="")  # sync 비활성 — 검증만 진행(legacy).
-    # 1. detached / mid-rebase — 어떤 mutation 보다 먼저. rebase 를 detached 보다 먼저 가른다
-    #    (mid-rebase 는 detached 의 부분집합인데 처방이 다르다·checkout 안내는 오도).
-    if _board_git_rebase_in_progress():
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_REBASE)
-    if _board_git_head_detached():
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_DETACHED)
-    # 2. upstream — 조율 대상 원격 자체가 없으면 offline 이 아니라 설정 문제다.
-    upstream = _board_git_upstream()
-    if upstream is None:
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_NO_UPSTREAM)
-    # 3. fetch — 읽기 전용(로컬 변경 0). 실패 = 도달 불가.
-    if not _board_git_fetch(upstream.remote):
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_OFFLINE)
-    # 4. 원격 선점 판정 — dirty·behind 무관(원격 트리를 직접 읽는다).
-    remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
-    if remote_status in _CLAIM_RACE_LOST_STATUSES:
-        # behind 도 함께 실어 보낸다 — 차단 문구가 "로컬 사본이 왜 뒤처진 판단을 했는지"
-        # (list/show 의 freshness 와 같은 판정)를 그 자리에서 설명하게 한다.
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status,
-                              behind=_board_git_behind(upstream.tracking))
-    # 5. 원격이 앞섰을 때만 통합. 안 앞섰으면 무관 dirty 가 있어도 claim 은 진행한다.
-    behind = _board_git_behind(upstream.tracking)
-    # behind 판정 불가(None)는 옛 0 폴백과 **같은 방향**으로 흘린다 — 원격이 앞섰다고 볼 근거가
-    # 없으면 통합도 차단도 하지 않는다(차단 판단 불변·진단 문구만 정직하게 한다).
-    if behind is not None and behind > 0:
-        try:
-            pull = _board_git_pull_rebase()
-        except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
-            return _ClaimPrefetch(block=_CLAIM_BLOCK_OFFLINE, behind=behind,
-                                  dirty=_board_git_dirty_entries())
-        if pull.returncode != 0:
-            return _classify_pull_failure(upstream, pull, behind)
-    # 6. anchor — enabled 인데 HEAD 를 못 구하면 rollback 불가라 안전 실패(로컬 변경 0).
-    anchor = _board_git_head()
-    if not anchor:
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_NO_ANCHOR)
-    return _ClaimPrefetch(anchor=anchor, behind=behind)
-
-
-def _classify_pull_failure(upstream: _BoardGitUpstream,
-                           pull: subprocess.CompletedProcess,
-                           behind: int) -> _ClaimPrefetch:
-    """`pull --rebase` 실패의 원인 분류 — **구조 판정만** 쓴다 (문자열 매칭 0·codex must-fix).
-
-    옛 분류는 "추적 변경이 있나" 만 보고 나머지를 전부 offline 으로 흘렸다. 그런데 git 은
-    **원격에서 새로 들어오는 파일과 같은 경로에 로컬 untracked 파일이 있으면** pull 을 거부한다
-    ("untracked working tree files would be overwritten") — 네트워크가 아니라 **로컬 파일 충돌**
-    인데 "offline · 도달 불가" 로 진단하고 네트워크를 확인하라는 틀린 안내를 냈다(D5 잔여).
-
-    판정 축을 git 메시지가 아니라 **관측 가능한 상태** 로 잡는다(로케일·git 버전 무관):
-      1. rebase 진행 중인가(`.git/rebase-merge`) → 충돌 → `--abort/--continue`.
-      2. **원격에 여전히 닿는가**(fetch 재시도·읽기 전용) → 안 닿으면 그때만 offline 이다.
-         이 프로브가 오분류 방향을 안전한 쪽으로 기울인다 — 진짜 offline 은 fetch 도 실패하므로
-         정확히 offline 이 되고, 네트워크가 살아 있는데 pull 만 실패한 경우는 **결코 offline 이라
-         부르지 않는다**(회색지대 = pull 순간만 끊겼다 살아난 경우인데, 그때 안내는 "정리 후
-         재시도" 라 재시도하면 성공한다).
-      3. 닿는데 미커밋 파일이 있다 → **dirty 로 흡수**한다. untracked 충돌과 추적 dirty 는 사용자
-         액션이 같기 때문이다 — *그 파일을 커밋하거나 치워라*(사용자에게 필요한 건 분류 개수가
-         아니라 할 일). 안내는 `??` 항목이 있으면 "옮기거나 지워라" 를 함께 낸다.
-      4. 닿고 미커밋도 없다 → 원인 미상. 이건 위 셋 중 어디에도 정직하게 못 넣으므로(액션이
-         "직접 돌려 원인을 보라" 로 다르다) 별도 사유로 두고 git 출력 마지막 줄을 함께 낸다.
-    """
-    dirty = _board_git_dirty_entries()
-    detail = ""
-    for line in reversed((pull.stderr or "").strip().splitlines()):
-        if line.strip():
-            detail = line.strip()[:_BOARD_GIT_DETAIL_MAX]
-            break
-    if _board_git_rebase_in_progress():
-        block = _CLAIM_BLOCK_REBASE
-    elif not _board_git_fetch(upstream.remote):
-        block = _CLAIM_BLOCK_OFFLINE
-    elif dirty:
-        block = _CLAIM_BLOCK_DIRTY
-    else:
-        block = _CLAIM_BLOCK_INTEGRATION
-    return _ClaimPrefetch(block=block, behind=behind, dirty=dirty, detail=detail)
-
-
-def _board_git_dirty_hint(dirty: Sequence[tuple[str, str]]) -> str:
-    """더러운 파일 표본 + 총계 + **경로 스코프** 커밋 안내 (진단 문구 단일 지점).
-
-    (`add -A -- . ':!tickets/.drafts'`) 공유 board 에서 그 커맨드는 **남의
-    미완성 편집을 내가 커밋**하게 만든다.
-    대신 실제로 막고 있는 파일을 이름으로 보여주고, 자기 것만 골라 커밋하도록 안내한다.
-    """
-    if not dirty:
-        return ""
-    sample = [path for _, path in dirty[:_BOARD_GIT_DIRTY_SAMPLE_MAX]]
-    listed = " ".join(f"'{path}'" for path in sample)
-    more = (f" (외 {len(dirty) - len(sample)}건)" if len(dirty) > len(sample) else "")
-    untracked = [path for code, path in dirty if code == "??"]
-    # 미추적(`??`)은 커밋 외에 **치우기**도 답이다 — 원격에서 같은 경로의 파일이 들어오면 git 이
-    # "untracked working tree files would be overwritten" 로 통합을 거부한다. 이 문장은 `??`
-    # 항목 유무로만 결정한다(git 메시지 문자열에 의존하지 않음·로케일 무관).
-    untracked_note = (
-        f" 미추적 {len(untracked)}건({', '.join(untracked[:_BOARD_GIT_DIRTY_SAMPLE_MAX])})은 "
-        f"커밋하거나 board 밖으로 옮겨라 — 원격에서 같은 경로가 들어오면 git 이 덮어쓰기를 "
-        f"거부한다." if untracked else "")
-    return (f"미커밋 {len(dirty)}건: {', '.join(sample)}{more}. "
-            f"**자기 변경만** 골라 커밋하라 — "
-            f"`git -C .project_manager/board add -- {listed} && "
-            f"git -C .project_manager/board commit`. "
-            f"(`add -A` 로 쓸어담지 마라 — 남의 미완성 편집까지 커밋된다.)"
-            f"{untracked_note}")
-
-
-def _claim_block_message(ticket_id: str, prefetch: _ClaimPrefetch) -> str:
-    """차단 사유 → 사용자 안내 1건 (**렌더 단일 지점**·오판/이중출력 0).
-
-    한 원인엔 한 안내만 나가야 한다는 규약을 사유 코드 분기 한 곳으로 못박는다 —
-    호출부(`cmd_claim`)가 사유별로 문구를 다시 짜면 그 규약이 두 벌이 된다.
-    """
-    behind = prefetch.behind
-    if prefetch.block == _CLAIM_BLOCK_REBASE:
-        return (f"board submodule 이 rebase 진행 중(충돌 미해소) — {ticket_id} claim 불가. "
-                f"`git -C .project_manager/board rebase --abort` 로 되돌리거나, 충돌을 해소하고 "
-                f"`git -C .project_manager/board rebase --continue` 후 재시도 "
-                f"(offline 아님·네트워크 정상).")
-    if prefetch.block == _CLAIM_BLOCK_DETACHED:
-        return (f"board submodule 이 detached HEAD 상태 — {ticket_id} claim 불가(rollback anchor "
-                f"없음). `git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 "
-                f"복귀 후 claim 재시도 (offline 아님·네트워크 정상). detached 에서 이미 쌓인 로컬 "
-                f"commit 이 있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.")
-    if prefetch.block == _CLAIM_BLOCK_NO_UPSTREAM:
-        return (f"board submodule 에 추적 브랜치(upstream)가 없다 — {ticket_id} claim 불가. claim 은 "
-                f"원격 push 로 소유를 확정하므로 조율할 원격이 필요하다(offline 아님). "
-                f"`git -C .project_manager/board push -u origin <branch>` 로 upstream 을 설정하라.")
-    if prefetch.block == _CLAIM_BLOCK_RACE_LOST:
-        where = prefetch.detail or "claimed"
-        # behind 계산 불가(rev-list 실패)면 수치를 지어내지 않는다 — 실측 0 과 판정불가는 다른
-        # 사실이고, 사용자가 읽는 숫자는 실측이어야 한다(F-003).
-        gap = (f"원격보다 {behind} 커밋 뒤처진 상태에서 조회됐다"
-               f"(list/show 의 freshness 와 같은 판정)" if behind is not None else
-               "뒤처진 커밋 수는 판정불가다"
-               "(rev-list 실패·list/show 의 freshness 와 같은 판정)")
-        return (f"claim race lost on {ticket_id} — 원격 board 에서 이미 {where}/ 상태다"
-                f"(다른 세션이 먼저 잡았거나 이미 처리됨·로컬 변경 0). 로컬 사본이 stale 했다 "
-                f"— {gap}. `board.py list --all` 로 현황을 확인하라.")
-    if prefetch.block == _CLAIM_BLOCK_DIRTY:
-        return (f"board 가 원격보다 {behind} 커밋 뒤졌는데 미커밋 파일이 통합(pull --rebase)을 "
-                f"막는다 — {ticket_id} claim 불가 (offline 아님·네트워크 정상: fetch 성공). "
-                f"{_board_git_dirty_hint(prefetch.dirty)}")
-    if prefetch.block == _CLAIM_BLOCK_INTEGRATION:
-        return (f"board 가 원격보다 {behind} 커밋 뒤졌는데 통합(pull --rebase)이 실패했다 — "
-                f"{ticket_id} claim 불가. **네트워크는 정상**(fetch 성공)이고 미커밋 파일도 없다 "
-                f"— 원인 미상이므로 `git -C .project_manager/board pull --rebase` 를 직접 돌려 "
-                f"출력을 확인하라." + (f" (git: {prefetch.detail})" if prefetch.detail else ""))
-    if prefetch.block == _CLAIM_BLOCK_NO_ANCHOR:
-        return (f"board git 의 HEAD 를 확인할 수 없다 — {ticket_id} claim 불가(rollback anchor "
-                f"없이는 거짓 소유를 되돌릴 수 없다). `git -C .project_manager/board status` 로 "
-                f"board git 상태를 확인하라.")
-    hint = _board_git_dirty_hint(prefetch.dirty) if prefetch.dirty else ""
-    return (f"offline — board 도달 불가, {ticket_id} claim 불가"
-            + (f" (원격이 {behind} 커밋 앞섬)" if behind else "")
-            + (f" {hint}" if hint else ""))
-
-
-class _ClaimFiles(NamedTuple):
-    """claim 이 만진 두 경로 + 이동 *전* 원본 바이트 — 스코프 커밋·역이동 복원의 입력."""
-
-    old: Path     # open/ 의 원래 경로 (롤백 복귀 지점)
-    new: Path     # claimed/ 로 옮겨진 경로
-    original: bytes  # 이동 전 파일 바이트(claimed_by/claimed_at 갱신 전)
-
-
-def _board_git_index_pathspec(paths: Sequence[Path], *,
-                              root_files: Sequence[str] = ()) -> tuple[str, ...]:
-    """index snapshot/restore pathspec — 부재한 루트 파일도 이름으로 포함한다.
-
-    일반 commit pathspec 은 실제로 쓴 루트 파일만 받지만, rollback 사전 스냅샷은 아직 생성되지
-    않은 파일의 **부재**도 기억해야 한다. 그래서 존재 여부로 거르는
-    `_board_git_scope_pathspec(..., root_files=...)` 와 별도인 이 작은 경계를 둔다.
-    """
-    rels = list(_board_git_scope_pathspec(paths))
-    for name in root_files:
-        if name not in _BOARD_GIT_ROOT_FILES:
-            continue
-        rel = _board_git_relpath(_home().board_root / name)
-        if rel and rel not in rels:
-            rels.append(rel)
-    return tuple(rels)
-
-
-def _board_git_index_snapshot(
-        paths: Sequence[Path], *, root_files: Sequence[str] = (),
-) -> dict[str, tuple[str, str]] | None:
-    """대상 경로들의 **index 항목** 을 그대로 캡처 — `{경로: (mode, blob sha)}`.
-
-    롤백이 "미커밋 작업을 상태·내용 그대로 보존" 하려면 무관 파일뿐 아니라 **claim 대상 파일
-    자신** 도 보존해야 한다. 옛 롤백은 복원 후 무조건 `add -A` 를 해서, claim 전에 unstaged
-    편집이었거나 untracked 였던 티켓을 **staged 로 바꿔** 놓았다(codex must-fix).
-
-    케이스 분기("unstaged 였으면 stage 하지 마라")로 막지 않는다 — `MM`(staged+unstaged 혼합)·
-    mode 변경 같은 조합에서 또 샌다. 대신 index 항목을 **그대로 떠서 그대로 되돌린다**: 상태
-    조합이 늘어도 로직은 안 는다. index 에 없는 경로(untracked)는 맵에서 빠지고, 그 사실 자체가
-    "index 에서 제거" 라는 복원 지시가 된다.
-
-    **캡처 실패는 None** — 파싱 불가·unmerged(stage≠0) 항목처럼 정확 복원을 보장할 수 없으면
-    조용히 다른 상태로 만들지 말고 호출부가 보수적 현행 동작(+loud 경고)으로 가게 한다.
-    """
-    pathspec = _board_git_index_pathspec(paths, root_files=root_files)
-    if not pathspec:
-        return {}
-    try:
-        r = _board_git(["ls-files", "--stage", "-z", "--", *pathspec])
-    except (OSError, subprocess.SubprocessError):  # 캡처 실패는 None(보수적 폴백).
-        return None
-    if r.returncode != 0:
-        return None
-    snapshot: dict[str, tuple[str, str]] = {}
-    for entry in r.stdout.split("\0"):
-        if not entry:
-            continue
-        meta, tab, path = entry.partition("\t")
-        fields = meta.split()
-        if not tab or not path or len(fields) != 3:
-            return None                      # 예상 밖 포맷 — 정확 복원 보장 불가.
-        mode, blob, stage = fields
-        if stage != "0":
-            return None                      # unmerged 항목 — 3-way index 는 그대로 못 되돌린다.
-        snapshot[path] = (mode, blob)
-    return snapshot
-
-
-def _board_git_restore_index(paths: Sequence[Path],
-                             snapshot: dict[str, tuple[str, str]], *,
-                             root_files: Sequence[str] = ()) -> bool:
-    """캡처한 index 상태로 되돌린다 (`update-index`) — 전부 성공해야 True.
-
-    항목이 있던 경로는 `--cacheinfo <mode>,<sha>,<path>` 로 **그 blob 그대로** 되꽂고(그래서
-    `MM` 처럼 index 와 워킹트리가 다른 상태도 정확히 복원된다), 없던 경로는 `--force-remove` 로
-    index 에서 뺀다(untracked 복원). 워킹트리 내용 복원은 `_board_git_restore_claim_files` 몫이라
-    둘을 합치면 `git status` 출력이 claim 직전과 같아진다.
-    """
-    ok = True
-    for rel in _board_git_index_pathspec(paths, root_files=root_files):
-        entry = snapshot.get(rel)
-        if entry is not None:
-            mode, blob = entry
-            r = _board_git(["update-index", "--add", "--cacheinfo", f"{mode},{blob},{rel}"])
-        else:
-            r = _board_git(["update-index", "--force-remove", "--", rel])
-        ok = ok and r.returncode == 0
-    return ok
-
-
-def _board_git_restore_claim_files(files: _ClaimFiles) -> None:
-    """티켓 파일을 claim **직전** 상태로 되돌린다 — 역이동 + 원본 바이트 복원.
-
-    hard reset 은 board 전체를 되감아 **무관한 미커밋
-    작업을 파괴**한다(실측). 되돌릴 대상은 이 claim 이 만진 두 경로뿐이므로 파일 수준에서
-    정확히 복원한다: `atomic_replace(new, old)`(atomic-rename 모델과 동형 — 중복/소실 창
-    0) 후 원본 바이트를 다시 써 frontmatter 갱신까지 되돌린다.
-    """
-    files.old.parent.mkdir(parents=True, exist_ok=True)
-    if files.new.exists():
-        fs.atomic_replace(files.new, files.old)
-    files.old.write_bytes(files.original)
-
-
-def _board_git_refresh_after_rollback() -> None:
-    """롤백 마무리 — winner 를 로컬에 반영하되, 못 하면 **조용히 넘어가지 않는다**.
-
-    `pull --rebase` 는 추적 파일이 dirty 면 실패한다. 공유 워킹트리에서 그 dirty 는 *남의*
-    작업일 수 있으므로 stash/reset 으로 치우지 않는다(auto-stash 기각) — 대신 로컬
-    board 뷰가 stale 이라는 사실을 loud 하게 알린다. 옛 코드는 이 실패를 suppress 해 winner
-    미반영 사실이 침묵으로 묻혔다.
-
-    **fetch 가 이 판정의 전제다**(reviewer must-fix): 롤백은 push 가 거부된 직후에 불리는데,
-    그 시점의 원격-추적 ref 는 *정의상* stale 이라(우리가 아직 winner 를 안 당겼다) fetch 없이
-    `behind` 를 읽으면 항상 0 → 두 분기(winner 반영·stale 경고) 모두 도달 불가가 된다.
-
-    **생략만이 아니라 실패도 loud** 다(codex must-fix): 사전 감지는 *추적* 변경만 보므로,
-    untracked 경로 충돌처럼 그 관문을 통과하고도 pull 이 rc≠0 인 갈래가 있다. rc 를 확인하고
-    사유는 `_classify_pull_failure`(claim prefetch 와 동일 판정기)로 붙여 안내한다.
-    """
-    with contextlib.suppress(Exception):
-        upstream = _board_git_upstream()
-        if upstream is None:
-            return
-        _board_git_fetch(upstream.remote)   # 추적 ref 갱신 — 아래 behind 판정의 전제.
-        behind = _board_git_behind(upstream.tracking)
-        if behind is None or behind <= 0:
-            return
-        if _board_git_has_tracked_changes():
-            print(f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서지만 미커밋 변경이 있어 "
-                  f"pull --rebase 를 생략했다(남의 작업을 치우지 않는다). 정리 후 "
-                  f"`git -C .project_manager/board pull --rebase` 로 최신화하라.",
-                  file=sys.stderr)
-            return
-        pull = _board_git_pull_rebase()
-        if pull.returncode == 0:
-            return
-        # **실패도 생략과 똑같이 loud** 해야 약속이 반쪽이 아니다 — untracked 경로 충돌처럼
-        # 사전 감지(추적 변경 유무)를 통과하고도 rc≠0 인 갈래가 있다. 사유 판정은 claim prefetch
-        # 와 **같은 판정기**를 재사용한다(새 로직 0·두 벌 금지).
-        failure = _classify_pull_failure(upstream, pull, behind)
-        label = _BOARD_GIT_BLOCK_LABELS.get(failure.block or "", failure.block or "원인 미상")
-        hint = _board_git_dirty_hint(failure.dirty)
-        detail = f" (git: {failure.detail})" if failure.detail and not hint else ""
-        parts = [f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서는데 "
-                 f"pull --rebase 가 실패했다({label}){detail}."]
-        if hint:
-            parts.append(hint)
-        parts.append("해소 후 `git -C .project_manager/board pull --rebase` 로 최신화하라.")
-        print(" ".join(parts), file=sys.stderr)
-
-
-def _board_git_claim_rollback(anchor: str, files: _ClaimFiles,
-                              claim_commit: str | None = None,
-                              index_snapshot: dict[str, tuple[str, str]] | None = None,
-                              root_files_snapshot: _BoardGitRootFilesSnapshot | None = None,
-                              ) -> None:
-    """claim 을 **그 claim 이 만진 것만** 되돌린다 (절대 throw 금지).
-
-    시점별로 하는 일이 다른데, 규칙은 하나다 — *내가 만든 것만* 되돌린다:
-      - **commit 실패(새 커밋 0)**: 이력 무조작(HEAD==anchor) + 파일 역이동·원본 복원 + index
-        스냅샷 복원.
-      - **push 실패(non-FF·거부)**: `HEAD == 내 claim 커밋` 일 때만 `reset --soft <anchor>`
-        (index 는 남기고 이력만 되감음) + 위와 동일. 그 사이 HEAD 가 다른 커밋이 됐다면
-        (직렬화 락이 막지만 방어) 이력을 **건드리지 않는다** — 남의 커밋을 되돌리지 않는다.
-      - **push 예외**: 호출부가 원격이 그 커밋을 포함하는지 먼저 재확인해 확정이면 이 함수를
-        아예 부르지 않는다.
-      - **rebase 충돌**: prefetch 단계라 로컬 mutation 이 0 — 롤백 대상 자체가 없다.
-
-    `index_snapshot` = claim 직전 티켓 + board 루트 파일의 index 항목
-    (`_board_git_index_snapshot`). `root_files_snapshot` 은 같은 루트 파일의 워킹트리 상태다.
-    둘을 함께 되돌려야 새로 만든 파일이 `A ` 또는 `??` 로, 기존 파일의 append 가 ` M` 으로
-    남아 다음 claim 을 막는 영구 잔여가 생기지 않는다. 티켓 경로도 파일 내용뿐 아니라
-    **index 상태까지** 되돌려 "미커밋 작업을 상태 그대로 보존" 한다.
-
-    **어떤 git/IO 호출이 throw 해도 예외를 삼킨다** — confirm 이 "loser 는 깨끗한
-    race-lost rc=1·never traceback" 을 어기지 않도록. 복원이 불완전해도 claim 을 *확정하지
-    않는다*(False)는 사실과 독립이다.
-    """
-    with contextlib.suppress(Exception):
-        head = _board_git_head()
-        if claim_commit and head == claim_commit and head != anchor:
-            _board_git(["reset", "--soft", anchor])
-    with contextlib.suppress(Exception):
-        _board_git_restore_claim_files(files)
-    restored_root_files: tuple[str, ...] = ()
-    with contextlib.suppress(Exception):
-        restored_root_files = _board_git_restore_root_files(root_files_snapshot)
-    safe_root_indexes: tuple[str, ...] = ()
-    with contextlib.suppress(Exception):
-        safe_root_indexes = _board_git_root_indexes_safe_to_restore(
-            index_snapshot, root_files_snapshot, restored_root_files)
-    with contextlib.suppress(Exception):
-        _board_git_restore_claim_index(
-            (files.old, files.new), index_snapshot, root_files=safe_root_indexes)
-    _board_git_refresh_after_rollback()
-
-
-def _board_git_root_indexes_safe_to_restore(
-        before_index: dict[str, tuple[str, str]] | None,
-        root_snapshot: _BoardGitRootFilesSnapshot | None,
-        root_files: Sequence[str],
-) -> tuple[str, ...]:
-    """현재 index가 원본/engine-stage 중 하나인 실제 backfill 파일만 복원 허용한다."""
-    if not root_files:
-        return ()
-    if before_index is None or root_snapshot is None or root_snapshot.staged_index is None:
-        print("  ⚠ board rollback 이 루트 파일 index의 제3자 변경 여부를 확인하지 못해 "
-              "덮어쓰지 않았다. `git -C .project_manager/board status` 로 확인하라.",
-              file=sys.stderr)
-        return ()
-    current = _board_git_index_snapshot((), root_files=root_files)
-    if current is None:
-        print("  ⚠ board rollback 이 현재 루트 파일 index를 읽지 못해 덮어쓰지 않았다. "
-              "`git -C .project_manager/board status` 로 확인하라.", file=sys.stderr)
-        return ()
-    safe: list[str] = []
-    for name in root_files:
-        rel = _board_git_relpath(_home().board_root / name)
-        if rel is None:
-            continue
-        now = current.get(rel)
-        before = before_index.get(rel)
-        staged = root_snapshot.staged_index.get(rel)
-        if now == before or now == staged:
-            safe.append(name)
-            continue
-        print(f"  ⚠ board rollback 이 스냅샷 이후 제3자 index 변경을 보존했다: {rel} "
-              "(engine stage/원본 어느 쪽과도 달라 덮어쓰지 않음).", file=sys.stderr)
-    return tuple(safe)
-
-
-def _board_git_restore_claim_index(paths: Sequence[Path],
-                                   snapshot: dict[str, tuple[str, str]] | None, *,
-                                   root_files: Sequence[str] = ()) -> None:
-    """티켓·루트 파일 index 를 **claim 직전 스냅샷**으로 되돌린다 (실패는 loud).
-
-    스냅샷이 없거나(캡처 실패) 복원이 실패하면 현행 동작(`add -A -- <두 경로>`)으로 폴백해
-    index 를 최소한 워킹트리와 일치시키되, **그 사실을 loud 하게 알린다** — claim 대상 파일이
-    staged 로 바뀔 수 있다는 뜻이라 사용자가 모르면 안 된다(조용히 다른 상태로 만들지 않는다).
-    """
-    if snapshot is not None and _board_git_restore_index(
-            paths, snapshot, root_files=root_files):
-        return
-    print("  ⚠ board index 상태를 claim 직전으로 정확히 되돌리지 못했다 — 티켓/루트 경로가 "
-          "staged 로 남을 수 있다(내용은 보존됨). `git -C .project_manager/board status` 로 "
-          "확인하고 필요하면 `git -C .project_manager/board reset -- <경로>` 로 unstage 하라.",
-          file=sys.stderr)
-    pathspec = _board_git_stageable(_board_git_scope_pathspec(paths))
-    if pathspec:
-        _board_git(["add", "-A", "--", *pathspec])
-
-
-def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
-    """claim STRICT 3·4단계: 로컬 claim 을 **스코프 커밋** 하고 push 가 성공해야 소유 확정.
-
-    board 가 별도 git 이 아니거나 prefetch 가 sync 를 비활성(`""`)으로 판단했으면 True
-    (로컬 atomic-rename 만으로 확정·legacy 무변경). 별도 git 이고 유효 anchor 면:
-      1. commit(**그 티켓 두 경로 + 이번에 보강한 board 루트 파일**) — 로컬 claim 박제. **새 commit 을 못
-         내면**(identity 부재·hook·nothing-to-commit) push 가 "up-to-date" rc=0 을 내 remote
-         미전파인데 확정될 수 있다(거짓 소유) → 즉시 rollback + False.
-      2. push — rc=0 이어야 *비로소* 소유 확정(원격 ref FF = CAS·조율 권위).
-      3. push 가 **예외**(timeout)면 원격이 그 커밋을 포함하는지 재확인한다 — 포함이면 원격엔
-         이미 반영된 것이므로 **롤백하지 않고 확정**한다.
-      4. 그 외 실패는 `_board_git_claim_rollback` 후 False (거짓 소유 0).
-    **어떤 경로에서도 bool 만 반환**한다(rollback 은 절대 throw 안 함) — cmd_claim 이 깨끗한
-    race-lost rc=1 을 내도록(never traceback).
-
-    **여기가 index 스냅샷 지점이다** — 이 함수 진입 시점의 index 는 아직 claim 이 손대기 전
-    상태다(그 앞의 파일 이동·frontmatter 갱신은 워킹트리만 건드린다). 롤백은 그 스냅샷으로
-    되돌려 claim 대상 파일의 staged/unstaged/untracked 상태까지 보존한다.
-    """
-    if not _board_git_enabled() or not anchor:
-        return True  # sync 비활성(legacy·anchor 없음) — 로컬 rename 만으로 확정(무변경).
-    paths = (files.old, files.new)
-    index_snapshot = _board_git_index_snapshot(paths, root_files=_BOARD_GIT_ROOT_FILES)
-    root_files_snapshot = _board_git_root_files_snapshot()
-    try:
-        committed = _board_git_stage_and_commit(
-            "claim", paths, root_files_snapshot=root_files_snapshot)
-    except Exception:  # noqa: BLE001 — fail-soft: 어떤 sync 예외도 거짓 확정을 만들지 않는다.
-        _board_git_claim_rollback(
-            anchor, files, index_snapshot=index_snapshot,
-            root_files_snapshot=root_files_snapshot)
-        return False
-    if not committed:
-        # commit 이 새 commit 을 못 냄 → push rc=0(up-to-date)이 거짓 확정을 낼 수 있다.
-        _board_git_claim_rollback(
-            anchor, files, index_snapshot=index_snapshot,
-            root_files_snapshot=root_files_snapshot)
-        return False
-    claim_commit = _board_git_head()
-    try:
-        push = _board_git_push()
-    except Exception:  # noqa: BLE001 — push 예외(timeout)는 *결과 미상* 이지 실패가 아니다.
-        upstream = _board_git_upstream()
-        confirmed = bool(claim_commit) and upstream is not None and \
-            _board_git_remote_has_commit(upstream, claim_commit)
-        if confirmed:
-            print("  ⚠ board push 응답이 끊겼으나(timeout) 원격 브랜치가 이 claim 커밋을 이미 "
-                  "포함 — 소유 확정(롤백하지 않는다·고아 claim 방지).", file=sys.stderr)
-            return True
-        _board_git_claim_rollback(
-            anchor, files, claim_commit, index_snapshot, root_files_snapshot)
-        return False
-    if push.returncode == 0:
-        return True
-    _board_git_claim_rollback(
-        anchor, files, claim_commit, index_snapshot, root_files_snapshot)
-    return False
 
 
 # conf 예시 시드는 없다 — 키 목록·설명은 레지스트리 한 곳이 소유한다(`local_conf.py --keys`).
@@ -4586,212 +1659,6 @@ def cmd_livegate(args: argparse.Namespace) -> int:
     return _livegate_check(args)
 
 
-def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
-              kind: str = "item") -> tuple[str, Path]:
-    """Return (status_dir, path) for an `{item_id}-*.md` file under base_dir.
-
-    Generic over tickets and ideas — the lookup is identical, only the
-    directory layout and ID shape differ. Raises FileNotFoundError if missing.
-
-    **prefix glob 의 첫 매칭이다.** 티켓 조회는 이 함수를 직접 부르지 말고 `find_ticket`
-    (정확 일치 우선) 또는 `find_ticket_exact`(정확 일치만)를 쓴다 — 티켓 ID 공간은 legacy
-    `T-NNNN` 과 prefixed `T-NNNN-001` 이 공존해 첫 매칭이 남의 티켓을 답한다. idea ID 는
-    `NNNN` 하나뿐이라(`_next_idea_id`) 그 충돌 공간이 없다.
-    """
-    for status in statuses:
-        for p in (base_dir / status).glob(f"{item_id}-*.md"):
-            return status, p
-    raise FileNotFoundError(f"{kind} not found: {item_id}")
-
-
-def find_ticket_for_mutation(tid: str) -> tuple[str, Path]:
-    """상태-변경 명령 전용 조회 — canonical ID **정확 일치만** (없으면 FileNotFoundError).
-
-    claim/complete/block/unclaim/unblock/promote 와 backfill 쓰기는 조회 결과를 **이동·기록**
-    한다. 그 자리에서 옛 glob 첫-매칭 폴백(`find_ticket`)을 쓰면 없는 번호를 입력했을 때 같은
-    번호로 시작하는 **다른 티켓**(legacy `T-NNNN` 부재 · prefixed `T-NNNN-001` 실재)이 이동한다 —
-    경고 한 줄이 나가지만 파일은 이미 옮겨진 뒤다. 되돌리려면 사람이 손으로 상태를 복원해야
-    하므로, 이 축은 경고가 아니라 **차단**이다(불일치 = 미존재).
-
-    조회 범위는 `find_ticket_exact` 와 같다 — STATUS_DIRS(전 상태 디렉토리) →
-    draft 격리 디렉토리(`drafts_dir()`·pseudo-status `"draft"`). draft 를 찾은 mutation 은
-    각자의 status 검사가 즉시 거부한다(예: "cannot claim T-x: currently in draft/").
-
-    안내는 "왜 못 찾았나"를 말한다 — 같은 번호로 시작하는 후보가 실재하면 그 canonical ID 를
-    함께 보여, 오타 입력이 조용한 오이동 대신 정확한 재입력으로 이어지게 한다.
-    """
-    exact = ticket_store.find_ticket_exact(_home(), tid)
-    if exact is not None:
-        return exact
-    near = _near_miss_ticket_ids(tid)
-    hint = (f" — 같은 번호로 시작하는 티켓은 있으나 canonical ID 가 다르다: "
-            f"{', '.join(near)} (정확한 ID 로 다시 호출하라)" if near else "")
-    raise FileNotFoundError(f"ticket not found: {tid}{hint}")
-
-
-def _near_miss_ticket_ids(tid: str) -> list[str]:
-    """`{tid}-*.md` prefix 로 잡히지만 canonical ID 가 다른 티켓들의 ID (없으면 빈 목록).
-
-    차단 안내 전용이다 — 옛 폴백이 *이동시켰을* 티켓을 이름으로 보여줘 "왜 못 찾았나"가
-    미스터리로 남지 않게 한다. 조회 자체에는 관여하지 않는다(fail-soft: 읽기 실패는 무시).
-    """
-    near: list[str] = []
-    with contextlib.suppress(OSError):
-        for _status, directory in ticket_store._ticket_search_dirs(_home()):
-            for path in sorted(Path(directory).glob(f"{tid}-*.md")):
-                canonical = ticket_store._canonical_ticket_id(path)
-                if canonical and canonical != tid and canonical not in near:
-                    near.append(canonical)
-    return near
-
-
-def find_ticket(tid: str) -> tuple[str, Path]:
-    """Return (status_dir, path). Raises FileNotFoundError if missing. **읽기 소비자 전용.**
-
-    **canonical ID 정확 일치가 우선이다**(`find_ticket_exact`) — 그 뒤에야 옛 glob 첫 매칭으로
-    떨어진다. 순서가 이렇게 정해진 이유는 `T-NNNN` 과 `T-NNNN-001` 이 공존할 때 첫 매칭이
-    디렉토리 순서에 좌우되기 때문이다(호출부는 어느 티켓을 받았는지 모른 채 그 frontmatter 를
-    쓴다). 폴백을 남겨 두는 건 frontmatter `id:` 가 없고 파일명 파서가 모호한 legacy 티켓
-    (`T-NNNN-<slug>-123.md`)까지 못 찾게 되면 조회 자체가 회귀하기 때문이다 — 정확 일치 후보가
-    있으면 언제나 그쪽이고, 없을 때만 종전 동작이다.
-
-    **상태를 바꾸는 명령은 이 함수를 쓰지 않는다** — 폴백이 답한 남의 티켓을 그대로 옮기기
-    때문이다(경고를 봤을 땐 이미 이동한 뒤다). 그쪽은 `find_ticket_for_mutation`(정확 일치만)
-    이 소유하고, 여기 남는 소비자는 부작용 없는 조회(`show`)뿐이다.
-
-    STATUS_DIRS(전 상태 디렉토리)에서 못 찾으면 draft 격리 디렉토리
-    (`drafts_dir()`)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show` 가 draft 를
-    조회할 수 있게 한다.
-    """
-    exact = ticket_store.find_ticket_exact(_home(), tid)
-    if exact is not None:
-        return exact
-
-    def _loud_if_mismatch(result: tuple[str, Path]) -> tuple[str, Path]:
-        # 폴백이 남의 티켓을 무음으로 답하는 마지막 표면 가시화 — 차단이 아니라 경고
-        # (legacy `id:` 부재 티켓 조회는 유지·정확 후보가 있으면 여기 도달하지 않는다).
-        canonical = ticket_store._canonical_ticket_id(result[1])
-        if canonical and canonical != tid:
-            print(
-                f"⚠ 정확 일치 티켓 없음 — {result[1].name} (canonical {canonical}) 로 폴백",
-                file=sys.stderr,
-            )
-        return result
-
-    try:
-        return _loud_if_mismatch(find_item(pm_paths.tickets_dir(_home()), ticket_rules.STATUS_DIRS, tid, "ticket"))
-    except FileNotFoundError:
-        for p in pm_paths.drafts_dir(_home()).glob(f"{tid}-*.md"):
-            return _loud_if_mismatch(("draft", p))
-        raise
-
-
-def find_idea(iid: str) -> tuple[str, Path]:
-    """Return (status_dir, path) for idea `iid`. Raises FileNotFoundError."""
-    return find_item(IDEAS_DIR, ticket_rules.IDEA_STATUS_DIRS, iid, "idea")
-
-
-# ── 개행 표기 보존 ───────────────────────────────────────────────────────────
-# 티켓 파일을 **읽어서 다시 쓰는** 경로(lifecycle 이동·frontmatter 갱신)는 본문을
-# LF 로 다루지만, 되쓸 때 표기를 뒤집으면 안 된다. CRLF 체크아웃(Windows `core.autocrlf=true`)
-# 채택자에선 손대지 않은 줄까지 전면 diff 가 되고, 위임 사본 harvest 가 byte 로 재는 "준비 뒤
-# 외부 편집" 판정(pm_delegate)이 내용은 같은데 stale 로 오판해 회수를 거부한다.
-# 진실은 OS 가 아니라 **그 파일의 현재 표기**다 — 플랫폼 분기를 쓰지 않는다.
-DEFAULT_TEXT_NEWLINE = "\n"
-
-
-def _dominant_newline(text: str, default: str = DEFAULT_TEXT_NEWLINE) -> str:
-    """번역 없이 읽은 본문의 지배 개행 — 다수결, 동수면 첫 등장, 개행 0 이면 `default`.
-
-    `pm_import.dominant_newline` 과 같은 규칙이다(두 구현의 일치는 테스트가 못박는다). board 는
-    엔진 모듈을 import 하지 않으므로 이 작은 원시 함수만 각자 둔다."""
-    crlf = text.count("\r\n")
-    lf = text.count("\n") - crlf
-    if crlf == 0 and lf == 0:
-        return default
-    if crlf != lf:
-        return "\r\n" if crlf > lf else "\n"
-    first = text.find("\n")
-    return "\r\n" if first > 0 and text[first - 1] == "\r" else "\n"
-
-
-def ticket_newline(path: Path) -> str:
-    """그 티켓 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `DEFAULT_TEXT_NEWLINE`(신규 발행 = LF)."""
-    try:
-        with fs.open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
-            return _dominant_newline(handle.read(), DEFAULT_TEXT_NEWLINE)
-    except (OSError, UnicodeError):
-        return DEFAULT_TEXT_NEWLINE
-
-
-def _with_newline(text: str, newline: str) -> str:
-    """LF 본문을 주어진 표기로 되돌린다 (삽입 블록도 같은 표기 — 혼재 금지)."""
-    return text if newline == "\n" else text.replace("\n", newline)
-
-
-def _write_text_keeping_newlines(path: Path, text: str) -> None:
-    """줄끝을 **번역하지 않고** 쓴다 — 본문이 담은 표기가 그대로 bytes 가 된다."""
-    with Path(path).open("w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
-
-
-def _issued_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | None:
-    """그 파일이 **발행한 티켓 ID** — frontmatter `id` 가 진실, 미기재/읽기 실패만 파일명 폴백.
-
-    **파일명은 ID 의 진실이 아니다.** 대소문자 무시 파일시스템(Windows·macOS)에서 `T-AAA-001`
-    과 `T-aaa-001` 은 같은 이름이라, 파일명을 진실로 쓰면 발행 ID 의 case 가 그 파일이 어느
-    이름으로 먼저 만들어졌는지(또는 체크아웃 때 어떻게 접혔는지)에 따라 뒤집힌다. frontmatter
-    는 파일 내용이라 어느 파일시스템에서도 접히지 않는다.
-
-    폴백을 남기는 이유는 clobber 안전이다 — 티켓의 ID 를 통째로 버리면 유일성 판정과 번호
-    이어붙이기가 그 ID 를 모른 채 전진해 그 위에 다른 티켓을 덮어쓴다. 그래서 폴백 조건은 둘이다:
-    읽기 실패/`id` 부재 · **ID 문법이 아닌 `id` 값**(파일명은 문법을 만족하는데 frontmatter 만
-    깨진 형상에서 번호가 통째로 사라지지 않게). 값은 문자열로 정규화한다(YAML 이 `id: 123` 을
-    int 로 파싱하는 형상 포함).
-
-    `fm` 을 이미 읽었으면 넘겨서 재파싱을 피한다(`_scan_prefix_tickets` 순회).
-    """
-    if fm is None:
-        loaded = ticket_store.load_ticket_soft(_home(), path)
-        fm = loaded[0] if loaded is not None else None
-    raw = (fm or {}).get("id")
-    tid = str(raw).strip() if raw is not None else ""
-    if tid and _ticket_id_number(tid) is None:
-        tid = ""                       # ID 문법 아님 — 진실로 쓸 수 없다(파일명 폴백).
-    return tid or ticket_rules._ticket_id_from_filename(path.name)
-
-
-def _ticket_document(fm: dict[str, Any], body: str, newline: str) -> str:
-    """티켓 파일 전체 본문 — frontmatter 직렬화 + body 를 그 파일의 표기로 되돌린 결과."""
-    fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
-    return _with_newline(f"---\n{fm_text}\n---\n{body}", newline)
-
-
-def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
-    # A partial fresh-adopter scaffold must not turn a valid lifecycle write
-    # into FileNotFoundError.  The destination directory is part of the write
-    # contract, including `new`'s initial open/ ticket.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # 표기는 **대상 파일의 현재 것**을 유지한다(부재 = 신규 발행이라 LF). 상태 이동 call site 도
-    # `move_ticket`(rename·bytes 무변경) 뒤에 부르므로 대상은 이미 원본 파일이다.
-    _write_text_keeping_newlines(
-        path, _ticket_document(fm, body, ticket_newline(path)))
-
-
-def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
-    """`dump_ticket` 과 같은 바이트를 쓰되 temp 파일 + `fs.atomic_replace` 로 원자 교체한다.
-
-    부분쓰기로 티켓 frontmatter 가 깨지는 것을 막는다(worktree_pool `_write_ledger`
-    동형 — tmp 에 전체를 쓰고 같은 디렉토리 안에서 atomic rename). backfill 처럼
-    *기존* 티켓을 제자리 갱신할 때 쓴다 — 같은 status 디렉토리 안 rename 이라 원자적이다.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    document = _ticket_document(fm, body, ticket_newline(path))
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    _write_text_keeping_newlines(tmp, document)
-    fs.atomic_replace(tmp, path)
-
-
 # ── 티켓 라운드 + 위임 티어 ────────────────────────────────────────
 # 역할 산출 1건 = 라운드 파일 1개이고 그 자리는 명세 파일 밖(`tickets/rounds/<티켓>/`)이다.
 # 역할 집합·사람용 라벨·파일명 문법의 권위는 사이드카 seam 이며 board 는 파생으로만 읽는다.
@@ -5080,7 +1947,7 @@ def _active_ticket_path(
     수열을 지배한다), 장부가 없는 티켓은 이 명령만.
     """
     try:
-        status, path = find_ticket_for_mutation(tid)
+        status, path = ticket_store.find_ticket_for_mutation(_home(), tid)
     except FileNotFoundError as exc:
         print(exc, file=sys.stderr)
         return 2, None
@@ -5124,8 +1991,8 @@ def _rounds_mutation_sync_paths(message: str, paths: Sequence[Path]) -> bool:
     준비·회수·포기가 직접 호출하는 두 인자 시그니처를 유지한다. 인자를 늘리면 부분 동기된
     PM 홈 사본에서 라운드를 반영한 뒤 CLI가 TypeError로 실패할 수 있다.
     """
-    refresh_board()
-    return _board_git_sync_best_effort(message, tuple(paths))
+    board_dashboard.refresh_board(_home())
+    return board_sync._board_git_sync_best_effort(_home(), message, tuple(paths))
 
 
 def _section_label(role: str, override: str | None) -> str | None:
@@ -5163,7 +2030,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         print("cannot section-add: --label 은 비어 있거나 개행을 포함할 수 없다", file=sys.stderr)
         return 1
     today = datetime.date.today().isoformat()
-    with board_lock():
+    with fs.board_lock(_home()):
         rc, path = _active_ticket_path(args.id, "section-add", role=role)
         if path is None:
             return rc
@@ -5184,7 +2051,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         round_path = round_store.reserve_round(
             pm_paths.tickets_dir(_home()), args.id, role,
             content=_round_seed_header_override(seed, label, role, today),
-            lock=board_lock(),
+            lock=fs.board_lock(_home()),
         )
     except round_rules.RoundsError as exc:
         print(f"cannot section-add: {exc}", file=sys.stderr)
@@ -5202,7 +2069,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
             f"section-add {args.id} {role}", (round_path,))
         print(f"section added {args.id}: {label} ({role} · {today}) → "
               f"{pm_paths._rel_to_repo(_home(), round_path)}"
-              f"{_board_git_mutation_state_suffix(ready)}")
+              f"{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -5212,16 +2079,16 @@ def cmd_tier(args: argparse.Namespace) -> int:
         print(f"cannot tier: {args.tier!r} — 허용값: "
               f"{', '.join(sorted(TICKET_TIERS))}", file=sys.stderr)
         return 1
-    with board_lock():
+    with fs.board_lock(_home()):
         rc, path = _active_ticket_path(args.id, "tier")
         if path is None:
             return rc
         fm, body = ticket_store.load_ticket(path)
         fm["tier"] = args.tier
-        dump_ticket_atomic(path, fm, body)
+        ticket_store.dump_ticket_atomic(path, fm, body)
 
     ready = _rounds_mutation_sync_paths(f"tier {args.id} {args.tier}", (path,))
-    print(f"tier set {args.id}: {args.tier}{_board_git_mutation_state_suffix(ready)}")
+    print(f"tier set {args.id}: {args.tier}{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -5239,13 +2106,13 @@ def cmd_design(args: argparse.Namespace) -> int:
     if reason:
         print(reason, file=sys.stderr)
         return 1
-    with board_lock():
+    with fs.board_lock(_home()):
         rc, path = _active_ticket_path(args.id, "design")
         if path is None:
             return rc
         fm, body = ticket_store.load_ticket(path)
         fm["design"] = args.value
-        dump_ticket_atomic(path, fm, body)
+        ticket_store.dump_ticket_atomic(path, fm, body)
         is_draft = path.resolve().parent == pm_paths.drafts_dir(_home()).resolve()
 
     if is_draft:
@@ -5254,7 +2121,7 @@ def cmd_design(args: argparse.Namespace) -> int:
         print(f"design set {args.id}: {args.value} (local draft; promote가 출하 소유)")
         return 0
     ready = _rounds_mutation_sync_paths(f"design {args.id} {args.value}", (path,))
-    print(f"design set {args.id}: {args.value}{_board_git_mutation_state_suffix(ready)}")
+    print(f"design set {args.id}: {args.value}{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -5286,182 +2153,24 @@ def cmd_tier_signals(args: argparse.Namespace) -> int:
     return 0
 
 
-def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
-    """Atomic mv of an item file into a sibling status directory.
-
-    On POSIX rename(2) is atomic and a lost race surfaces as FileNotFoundError
-    (the source is already gone). 이 primitive 자체는 generic ticket/idea 이동이라 lock-free다.
-    티켓 호출자는 lifecycle rename과 in-place write(tier) 사이 lookup→path 고정→replace TOCTOU를
-    막기 위해 전체 read/transform/move/write를 `board_lock`으로 감싼다. idea는 in-place writer
-    대상이 아니므로 별도 lifecycle의 현행 lock-free 호출을 유지한다.
-    """
-    dst_dir = base_dir / dst_status
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / src.name
-    os.rename(src, dst)
-    return dst
-
-
-def move_ticket(src: Path, dst_status: str) -> Path:
-    """Atomic mv into a ticket status directory."""
-    return move_item(pm_paths.tickets_dir(_home()), src, dst_status)
-
-
-def move_idea(src: Path, dst_status: str) -> Path:
-    """Atomic mv into an idea status directory."""
-    return move_item(IDEAS_DIR, src, dst_status)
-
-
-def next_numeric_id(base_dir: Path, statuses: tuple[str, ...],
-                    glob_pat: str, id_re: str) -> int:
-    """Return the next free integer ID across every status directory.
-
-    `glob_pat` selects candidate files; `id_re` extracts the integer from a
-    filename (its first group). Generic over tickets (`T-NNNN`) and ideas
-    (`NNNN`).
-    """
-    max_id = 0
-    pattern = re.compile(id_re)
-    for d in statuses:
-        for p in (base_dir / d).glob(glob_pat):
-            m = pattern.match(p.name)
-            if m:
-                max_id = max(max_id, int(m.group(1)))
-    return max_id + 1
-
-
-# ID 스캔용 status 튜플 — STATUS_DIRS + draft 격리 디렉토리(`.drafts`). draft 도 이미
-# 발행된 ID(파일명에 박제)이므로 스캔에서 빠지면 promote 전 다음 `new` 가 같은 번호를 재사용해
-# 충돌한다. `next_numeric_id` 는 `base_dir / d` 로 순회하므로 디렉토리명 그대로 넣으면 된다.
-_ID_SCAN_STATUSES: tuple[str, ...] = (*ticket_rules.STATUS_DIRS, ".drafts")
-
-
-def _next_prefixed_id(prefix: str) -> str:
-    """Next `T-<canonical>-NNN` for `prefix`, matched **case-insensitively**.
-
-    prefix 동일성은 case-insensitive fold 이되 발행 ID 는 *기존 시리즈* case(canonical)를 이어쓴다
-    — `--prefix aaa` 가 case-분할 `T-aaa-*` 를 새로 파지 않고 기존 `T-AAA-*` 를 잇게 한다. fold
-    일치하는 모든 case 변종의 최대 번호+1 을 세고(case-insensitive 카운트), canonical case 는
-    최저 번호 티켓의 실제 case 다. fold-일치 티켓이 없으면 입력 case 그대로(최초 사용이 canonical
-    case 확립)·번호 1.
-
-    **시리즈 판정의 입력은 파일명이 아니라 발행 ID(frontmatter `id`)** 다(`_issued_ticket_id`).
-    파일명으로 세면 대소문자 무시 파일시스템(Windows·macOS)에서 판정이 무너진다 — `T-aaa-001`
-    로 쓴 티켓이 기존 `T-AAA-001-*.md` 파일에 그대로 얹혀 파일명은 `AAA`, 내용은 `aaa` 로
-    갈리고, 그러면 다음 발행 case 가 *파일이 어느 이름으로 먼저 만들어졌는가*로 결정된다.
-    같은 이유로 최저 번호가 동률이면 ID 문자열 자체로 tie-break 해(`(num, tid)` 최소) 파일
-    순회 순서·파일시스템에 결과가 흔들리지 않게 한다.
-
-    prefix 경계는 `_ticket_prefix`(ID 문법 단일 진실)로 뗀 마디를 fold 비교한다 — 하이픈 포함
-    prefix(`service-a`)도 번호 경계 모호성 0 이고, `AB` 와 `ABC` 는 서로 다른 네임스페이스다.
-    """
-    fold = prefix.lower()
-    max_num = 0
-    anchor: tuple[int, str] | None = None   # (최저 번호, 그 ID) — canonical case 의 결정적 출처.
-    for d in _ID_SCAN_STATUSES:
-        for p in (pm_paths.tickets_dir(_home()) / d).glob("T-*.md"):
-            tid = _issued_ticket_id(p)
-            if not tid:
-                continue
-            tid_prefix = _ticket_prefix(tid)
-            if tid_prefix is None or tid_prefix.lower() != fold:
-                continue
-            num = _ticket_id_number(tid)
-            if num is None:
-                continue
-            max_num = max(max_num, num)
-            if anchor is None or (num, tid) < anchor:
-                anchor = (num, tid)
-    canonical = _ticket_prefix(anchor[1]) if anchor else prefix   # 최초 사용: 입력 case.
-    return f"T-{canonical}-{max_num + 1:03d}"
-
-
-def _next_id(prefix: str | None = None) -> str:
-    """Next ticket ID. Namespaced per prefix so concurrent areas never collide.
-
-    prefix=None → legacy `T-NNNN` (4-digit). prefix="PAY" → `T-PAY-NNN` (3-digit),
-    counted independently. The legacy regex `T-(\\d+)-` never matches a prefixed
-    file, so the two namespaces stay disjoint. prefix 동일성은 case-insensitive fold —
-    `--prefix aaa` 는 기존 `T-AAA-*` 시리즈를 이어간다(`_next_prefixed_id`).
-    legacy 경로(prefix=None)는 무변경(`T-NNNN` 회귀 0).
-    """
-    if prefix:
-        return _next_prefixed_id(prefix)
-    n = next_numeric_id(pm_paths.tickets_dir(_home()), _ID_SCAN_STATUSES, "T-*.md", r"T-(\d+)-")
-    return f"T-{n:04d}"
-
-
-def _next_idea_id() -> str:
-    n = next_numeric_id(IDEAS_DIR, ticket_rules.IDEA_STATUS_DIRS, "[0-9]*.md", r"(\d+)-")
-    return f"{n:04d}"
-
-
-def _slugify(text: str) -> str:
-    s = re.sub(r"[^a-z0-9가-힣-]+", "-", text.lower()).strip("-")
-    return s[:40].rstrip("-") or "ticket"      # slug 최대 길이(종전 기본값)
-
-
-# ── commands ───────────────────────────────────────────────────────────
-
-def _frontmatter_with_claimed_rev(
-    fm: dict[str, Any], claimed_rev: str,
-) -> dict[str, Any]:
-    """`claimed_at` 바로 뒤에 `claimed_rev` 를 둔 frontmatter (앵커 키가 없으면 끝에 붙인다).
-
-    frontmatter 는 삽입 순서대로 직렬화되므로(`sort_keys=False`) 자리를 정하려면 재조립해야
-    한다. claim 3종(주체·시각·rev)이 붙어 있어야 티켓을 연 사람이 한 자리에서 읽는다. 기존
-    값이 있으면 그 자리를 옮겨 덮어써 중복 키가 생기지 않는다."""
-    if "claimed_at" not in fm:
-        return {**fm, "claimed_rev": claimed_rev}
-    rebuilt: dict[str, Any] = {}
-    for key, value in fm.items():
-        if key == "claimed_rev":
-            continue
-        rebuilt[key] = value
-        if key == "claimed_at":
-            rebuilt["claimed_rev"] = claimed_rev
-    return rebuilt
-
-
-def _claim_code_tree(args: argparse.Namespace) -> str | None:
-    """claim·발행·묶음 선언·확인 실행이 읽을 코드 트리 — task 가 보유한 작업공간.
-
-    실행 명령 판정 함수를 먼저 거친다 — `--task` 없는 `--repo`/`--slot` 은 여기서 멈추고, 인자가
-    전무하면 None 이다(호출부가 각자의 문구로 멈춘다). task 입력은 leased work·경로·HEAD·브랜치를
-    선검사하고 실패하면 중단한다.
-    """
-    if task_args._execution_actor_session_override(_home(), args) is None:
-        return None
-    return task_args._resolve_task_workspace_cwd(_home(), args)[0]
-
-
-def _claim_head_rev(args: argparse.Namespace) -> str:
-    """claim 시점 HEAD — task 작업공간의 HEAD(읽지 못하면 중단)."""
-    tree = _claim_code_tree(args)
-    rev = git._git_head_at(tree) if tree else ""
-    if not rev:
-        sys.exit(f"[중단] task claim 앵커 HEAD를 읽지 못했다: {tree}")
-    return rev
-
-
 def cmd_claim(args: argparse.Namespace) -> int:
     # claim = 귀속 쓰기 — `--task` 가 없으면 어떤 쓰기·git 호출보다 먼저 멈춘다. 함께 준
     # `--repo`/`--slot` 은 그 task 가 보유한 폴더(claim 앵커)를 고른다.
     override = task_args._execution_actor_session_override(_home(), args)
     if override is None:
-        sys.exit(TASK_REQUIRED.format(action="claim", command=f"board.py claim {args.id}"))
+        sys.exit(task_args.TASK_REQUIRED.format(action="claim", command=f"board.py claim {args.id}"))
     # claimed_by 는 `<user>/<task>` — user 미상이면 task 만(graceful).
-    assignee = identity_tag(session_override=override,
+    assignee = lease_store.identity_tag(_home(), session_override=override,
                             user_override=getattr(args, "user", None))
     # 코드 트리 HEAD 박제 — 락 밖(읽기 전용 git 조회)이라 board mutation 창을 넓히지 않는다.
-    claimed_rev = _claim_head_rev(args)
+    claimed_rev = task_args._claim_head_rev(_home(), args)
 
     # strict claim 전체(prefetch → local move/dump → commit/push → confirm/rollback)를 두 락으로
     # 감싼다. 순서는 **board_git_lock → board_lock** 고정. board_lock은 network 동안도 유지해
     # rollback이 동시 in-place write를 옛 bytes로 덮는 창을 닫는다(짧은 전역 coordination 비용 수용).
     # `_cmd_claim_locked`는 두 락 보유 전제라 내부에서 어느 락도 재진입하지 않는다.
-    with board_git_lock():
-        with board_lock():
+    with board_git.board_git_lock(_home()):
+        with fs.board_lock(_home()):
             return _cmd_claim_locked(args, assignee, claimed_rev)
 
 
@@ -5471,9 +2180,9 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
     # 직접 조회)이고, `pull --rebase` 는 원격이 앞섰을 때만 시도한다. 차단은 "원격이 앞섰고
     # 통합 불가" 로만 남고, 사유(dirty/rebase 충돌/offline/upstream 없음)와 진단 재료(behind·
     # 더러운 파일)를 구조체로 받아 **한 곳에서** 안내를 렌더한다(오판·이중출력 0).
-    prefetch = _board_git_claim_prefetch(args.id)
+    prefetch = board_claim._board_git_claim_prefetch(_home(), args.id)
     if prefetch.block is not None:
-        print(_claim_block_message(args.id, prefetch), file=sys.stderr)
+        print(board_claim._claim_block_message(args.id, prefetch), file=sys.stderr)
         return 1
     orig_head = prefetch.anchor
 
@@ -5494,7 +2203,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
     # *normal* rejection ("dependency not found"), distinct from a claim race.
     try:
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -5507,7 +2216,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
             try:
                 # 의존성 조회도 정확 일치만 — 이 판정이 claim 이동 여부를 정하므로, 폴백이
                 # 답한 *다른* 티켓의 done 상태로 게이트가 열리면 안 된다(미해소 = 거부).
-                dep_status, _ = find_ticket_for_mutation(dep)
+                dep_status, _ = ticket_store.find_ticket_for_mutation(_home(), dep)
             except FileNotFoundError:
                 print(f"dependency {dep} not found", file=sys.stderr)
                 return 1
@@ -5532,12 +2241,12 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
         # 롤백 복원 기준 = 이동 *전* 원본 바이트
         # frontmatter 갱신(claimed_by/claimed_at)을 되돌릴 원본을 우리가 들고 있어야 한다.
         original_bytes = fs.read_bytes_shared(path)
-        new_path = move_ticket(path, "claimed")
+        new_path = ticket_store.move_ticket(_home(), path, "claimed")
         fm["status"] = "claimed"
         fm["claimed_by"] = assignee
         fm["claimed_at"] = clock.now_utc()
-        fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
-        dump_ticket(new_path, fm, body)
+        fm = task_args._frontmatter_with_claimed_rev(fm, claimed_rev)
+        ticket_store.dump_ticket(new_path, fm, body)
     except FileNotFoundError:
         print(f"claim race lost on {args.id}", file=sys.stderr)
         return 1
@@ -5547,16 +2256,16 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
     # 티켓 파일 역이동·원본 복원으로 **이 claim 이 만진 것만** 되돌리고(공유 트리의 무관한
     # 미커밋 작업은 불변) race-lost 로 명시 실패한다 — 거짓 소유를 남기지 않는다. board 가 별도
     # git 이 아니면 confirm 은 True(로컬 rename 만으로 확정·legacy 무변경).
-    claim_files = _ClaimFiles(old=path, new=new_path, original=original_bytes)
-    if not _board_git_claim_confirm(orig_head, claim_files):
+    claim_files = board_git_rules._ClaimFiles(old=path, new=new_path, original=original_bytes)
+    if not board_claim._board_git_claim_confirm(_home(), orig_head, claim_files):
         print(f"claim race lost on {args.id} (board push 충돌·소유 미확정·롤백됨)",
               file=sys.stderr)
         # board_lock 보유 중 public refresh_board()는 재진입이다. rollback까지 끝난 현재 상태를
         # locked 본체로 render하고 두 락을 함께 해제한 뒤 반환한다.
-        _refresh_board_locked()
+        board_dashboard._refresh_board_locked(_home())
         return 1
     print(f"claimed {args.id} as {assignee}")
-    _refresh_board_locked()
+    board_dashboard._refresh_board_locked(_home())
     return 0
 
 
@@ -5727,9 +2436,9 @@ def _complete_gate(tid: str, args: argparse.Namespace,
 
 
 def cmd_complete(args: argparse.Namespace) -> int:
-    with board_lock():
+    with fs.board_lock(_home()):
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -5765,9 +2474,9 @@ def cmd_complete(args: argparse.Namespace) -> int:
 
         # 소유 대조 — claim 한 정체성만 완료할 수 있다. 이동·기록 **전**이라 거부 시 티켓은
         # claimed/ 에 한 바이트도 안 바뀐 채 남는다.
-        ownership = _ticket_ownership(fm, args)
+        ownership = ticket_access._ticket_ownership(_home(), fm, task=getattr(args, "task", None), user=getattr(args, "user", None))
         if not ownership.ok:
-            print(_ownership_rejection("complete", args.id, ownership), file=sys.stderr)
+            print(ticket_rules._ownership_rejection("complete", args.id, ownership), file=sys.stderr)
             return 1
 
         # Sync gate — refuse to mark done until housekeeping is verified.
@@ -5779,24 +2488,24 @@ def cmd_complete(args: argparse.Namespace) -> int:
                 print(f"  ✗ {msg}", file=sys.stderr)
             return 1
 
-        new_path = move_ticket(path, "done")
+        new_path = ticket_store.move_ticket(_home(), path, "done")
         fm["status"] = "done"
         fm["completed_at"] = clock.now_utc()
-        dump_ticket(new_path, fm, body)
-    refresh_board()
+        ticket_store.dump_ticket(new_path, fm, body)
+    board_dashboard.refresh_board(_home())
     # 스코프 = 이 mutation 이 만진 두 경로만 — 공유 board 의 무관한 미커밋 작업이
     # 이 커밋에 실려 push 되지 않는다. best-effort sync는 기존 lifecycle 6 callsite
     # (new/promote/complete/block/unclaim/unblock) + 공용 helper 1곳(section-add/tier 공유)이
     # 모두 명시 path를 넘긴다(AST 메타가드가 7 callsite를 감사).
-    ready = _board_git_sync_best_effort(f"complete {args.id}", (path, new_path))
-    print(f"completed {args.id}{_board_git_mutation_state_suffix(ready)}")
+    ready = board_sync._board_git_sync_best_effort(_home(), f"complete {args.id}", (path, new_path))
+    print(f"completed {args.id}{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
 def cmd_block(args: argparse.Namespace) -> int:
-    with board_lock():
+    with fs.board_lock(_home()):
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -5806,19 +2515,19 @@ def cmd_block(args: argparse.Namespace) -> int:
         fm, body = ticket_store.load_ticket(path)
         # 소유 대조 — claimed 티켓(=소유자 있음)의 상태 변경은 그 소유 세션만. open 티켓은
         # claimed_by 가 없어 무대상이다(현행 무변경).
-        ownership = _ticket_ownership(fm, args)
+        ownership = ticket_access._ticket_ownership(_home(), fm, task=getattr(args, "task", None), user=getattr(args, "user", None))
         if not ownership.ok:
-            print(_ownership_rejection("block", args.id, ownership), file=sys.stderr)
+            print(ticket_rules._ownership_rejection("block", args.id, ownership), file=sys.stderr)
             return 1
-        new_path = move_ticket(path, "blocked")
+        new_path = ticket_store.move_ticket(_home(), path, "blocked")
         fm["status"] = "blocked"
         # claimed_by/claimed_at 는 무접촉 — block 은 작업 중단이지 소유 포기가 아니다.
         # 소유 해제 문은 unclaim 하나뿐. `unblock` 이 이 값의 유무로 복귀 목적지를 정한다.
         note = f"\n## Blocked\n{args.reason} — {datetime.date.today().isoformat()}\n"
-        dump_ticket(new_path, fm, body + note)
-    refresh_board()
-    ready = _board_git_sync_best_effort(f"block {args.id}", (path, new_path))
-    print(f"blocked {args.id}: {args.reason}{_board_git_mutation_state_suffix(ready)}")
+        ticket_store.dump_ticket(new_path, fm, body + note)
+    board_dashboard.refresh_board(_home())
+    ready = board_sync._board_git_sync_best_effort(_home(), f"block {args.id}", (path, new_path))
+    print(f"blocked {args.id}: {args.reason}{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -5834,9 +2543,9 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
     reason = (getattr(args, "reason", None) or "").strip()
     # `--takeover` 는 귀속 쓰기다(본문 Takeover 절에 이전을 실행한 task 를 남긴다) — `--task` 가
     # 없으면 락·쓰기 전에 거부한다. takeover 없는 unclaim 은 소유 대조라 `--task` 가 선택이다.
-    takeover_task = _actor_session_override(args) if takeover else None
+    takeover_task = task_args._actor_session_override(_home(), args) if takeover else None
     if takeover and takeover_task is None:
-        print(TASK_REQUIRED.format(
+        print(task_args.TASK_REQUIRED.format(
             action=f"unclaim {args.id} --takeover",
             command=f"board.py unclaim {args.id} --takeover --reason <사유>"), file=sys.stderr)
         return 1
@@ -5846,9 +2555,9 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
               "— 소유자 부재 이전의 근거가 티켓 본문과 board-git 에 남아야 한다.",
               file=sys.stderr)
         return 1
-    with board_lock():
+    with fs.board_lock(_home()):
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -5861,13 +2570,13 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
         # 이다(complete/block/unblock 엔 이 인수를 두지 않는다 — 문이 넷이면 소유 규칙이 네 벌이
         # 된다). 이전 사유는 본문 노트와 board-git 커밋 메시지 양쪽에 남긴다(board-git 없는
         # 채택자도 이력이 남아야 한다).
-        ownership = _ticket_ownership(fm, args)
+        ownership = ticket_access._ticket_ownership(_home(), fm, task=getattr(args, "task", None), user=getattr(args, "user", None))
         if not ownership.ok and not takeover:
-            print(_ownership_rejection("unclaim", args.id, ownership), file=sys.stderr)
+            print(ticket_rules._ownership_rejection("unclaim", args.id, ownership), file=sys.stderr)
             return 1
         # blocked 는 상태를 유지한다 — unclaim 은 "소유 해제" 지 "차단 해제" 가 아니다.
         dest_status = "open" if status == "claimed" else status
-        new_path = move_ticket(path, dest_status) if dest_status != status else path
+        new_path = ticket_store.move_ticket(_home(), path, dest_status) if dest_status != status else path
         fm["status"] = dest_status
         previous_owner = fm.get("claimed_by")
         fm["claimed_by"] = None
@@ -5878,22 +2587,22 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
             body = body + (f"\n## Takeover\n{reason} — {clock.now_utc()} "
                            f"(소유 `{previous_owner}` 해제 · 실행 task "
                            f"`{takeover_task}`)\n")
-        dump_ticket(new_path, fm, body)
-    refresh_board()
+        ticket_store.dump_ticket(new_path, fm, body)
+    board_dashboard.refresh_board(_home())
     message = (f"unclaim {args.id} (takeover: {reason})" if takeover
                else f"unclaim {args.id}")
-    ready = _board_git_sync_best_effort(message, (path, new_path))
+    ready = board_sync._board_git_sync_best_effort(_home(), message, (path, new_path))
     detail = f" → {dest_status}/" if dest_status != "open" else ""
     takeover_note = f" (takeover: {reason})" if takeover else ""
     print(f"unclaimed {args.id}{detail}{takeover_note}"
-          f"{_board_git_mutation_state_suffix(ready)}")
+          f"{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
 def cmd_unblock(args: argparse.Namespace) -> int:
-    with board_lock():
+    with fs.board_lock(_home()):
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -5904,20 +2613,20 @@ def cmd_unblock(args: argparse.Namespace) -> int:
         fm, body = ticket_store.load_ticket(path)
         # 소유 대조 — claimed_by 를 보유한 blocked(=claimed 기원)는 그 소유 세션만 되돌린다.
         # 소유자 없는 open-기원 blocked 는 무대상(현행 무변경).
-        ownership = _ticket_ownership(fm, args)
+        ownership = ticket_access._ticket_ownership(_home(), fm, task=getattr(args, "task", None), user=getattr(args, "user", None))
         if not ownership.ok:
-            print(_ownership_rejection("unblock", args.id, ownership), file=sys.stderr)
+            print(ticket_rules._ownership_rejection("unblock", args.id, ownership), file=sys.stderr)
             return 1
         # claimed_by 보유 티켓(claimed-origin blocked)은 claimed/ 로 복귀시켜 소유 표식을
         # 보존한다 — 무조건 open 으로 옮기면 "open + claimed_by 잔존" 모순이 생겼다.
         # open-origin blocked(claimed_by 없음)는 현행대로 open/ 으로 돌아간다(왕복 불변식).
         dest_status = "claimed" if fm.get("claimed_by") else "open"
-        new_path = move_ticket(path, dest_status)
+        new_path = ticket_store.move_ticket(_home(), path, dest_status)
         fm["status"] = dest_status
-        dump_ticket(new_path, fm, body)
-    refresh_board()
-    ready = _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
-    print(f"unblocked {args.id} → {dest_status}/{_board_git_mutation_state_suffix(ready)}")
+        ticket_store.dump_ticket(new_path, fm, body)
+    board_dashboard.refresh_board(_home())
+    ready = board_sync._board_git_sync_best_effort(_home(), f"unblock {args.id}", (path, new_path))
+    print(f"unblocked {args.id} → {dest_status}/{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -6019,9 +2728,9 @@ def cmd_discard(args: argparse.Namespace) -> int:
         print(f"[중단] discard {args.id}: `--reason <사유>` 가 필수다 — 처분 근거 없이 "
               "티켓을 닫지 않는다.", file=sys.stderr)
         return 1
-    with board_lock():
+    with fs.board_lock(_home()):
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -6033,12 +2742,12 @@ def cmd_discard(args: argparse.Namespace) -> int:
         fm, body = ticket_store.load_ticket(path)
         # 소유 대조 — 남이 claim 해 진행 중인 티켓을 다른 세션이 처분으로 닫으면 그 작업이
         # 통째로 사라진다(complete 와 같은 축).
-        ownership = _ticket_ownership(fm, args)
+        ownership = ticket_access._ticket_ownership(_home(), fm, task=getattr(args, "task", None), user=getattr(args, "user", None))
         if not ownership.ok:
-            print(_ownership_rejection("discard", args.id, ownership), file=sys.stderr)
+            print(ticket_rules._ownership_rejection("discard", args.id, ownership), file=sys.stderr)
             return 1
         _discard_round_pending_notice(args.id)
-        new_path = move_ticket(path, "discarded")
+        new_path = ticket_store.move_ticket(_home(), path, "discarded")
         fm["status"] = "discarded"
         fm["disposition"] = args.disposition
         fm["disposition_reason"] = reason
@@ -6047,12 +2756,12 @@ def cmd_discard(args: argparse.Namespace) -> int:
         # 하위호환).
         fm["discarded_from"] = status
         note = (f"\n## Discarded\n{args.disposition} — {reason} — {clock.now_utc()}\n")
-        dump_ticket(new_path, fm, body + note)
-    refresh_board()
-    ready = _board_git_sync_best_effort(
-        f"discard {args.id} ({args.disposition}: {reason})", (path, new_path))
+        ticket_store.dump_ticket(new_path, fm, body + note)
+    board_dashboard.refresh_board(_home())
+    ready = board_sync._board_git_sync_best_effort(
+        _home(), f"discard {args.id} ({args.disposition}: {reason})", (path, new_path))
     print(f"discarded {args.id} as {args.disposition}: {reason}"
-          f"{_board_git_mutation_state_suffix(ready)}")
+          f"{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -6075,9 +2784,9 @@ def cmd_reopen(args: argparse.Namespace) -> int:
         print(f"[중단] reopen {args.id}: `--reason <사유>` 가 필수다 — 종결을 되돌린 근거가 "
               "남아야 한다.", file=sys.stderr)
         return 1
-    with board_lock():
+    with fs.board_lock(_home()):
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -6088,7 +2797,7 @@ def cmd_reopen(args: argparse.Namespace) -> int:
         fm, body = ticket_store.load_ticket(path)
         to_draft = fm.get("discarded_from") == "draft"
         dest_status = "draft" if to_draft else "open"
-        new_path = move_ticket(path, ".drafts" if to_draft else "open")
+        new_path = ticket_store.move_ticket(_home(), path, ".drafts" if to_draft else "open")
         fm["status"] = dest_status
         fm["completed_at"] = None
         fm["claimed_by"] = None
@@ -6111,14 +2820,14 @@ def cmd_reopen(args: argparse.Namespace) -> int:
             else:
                 fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
         note = f"\n## Reopened\n{reason} — {clock.now_utc()} (이전 상태 {status}/)\n"
-        dump_ticket(new_path, fm, body + note)
-    refresh_board()
+        ticket_store.dump_ticket(new_path, fm, body + note)
+    board_dashboard.refresh_board(_home())
     touched = ((path, new_path) if cluster_ledger is None
                else (path, new_path, cluster_ledger))
-    ready = _board_git_sync_best_effort(
-        f"reopen {args.id} (from {status}: {reason})", touched)
+    ready = board_sync._board_git_sync_best_effort(
+        _home(), f"reopen {args.id} (from {status}: {reason})", touched)
     print(f"reopened {args.id} (was {status}/): {reason}"
-          f"{_board_git_mutation_state_suffix(ready)}")
+          f"{board_git._board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -6128,176 +2837,11 @@ INIT_GUIDE = """\
   규칙: 내구 진실은 공유 채널에만 · pm_state 는 버려도 되는 로컬 · 공유 파일 직접 난편집 금지
   ID:   {id_line}
 """
-
-
-def _local_conf_lock_path(conf_path: Path) -> Path:
-    """local.conf writer 직렬화 락 경로 — 공용 seam 이 대상 conf 에서 유도한다(사본 0).
-
-    유도 규칙이 도구마다 복제되면 한 사본만 어긋나도 배타가 조용히 사라지므로
-    `fs.conf_lock_path` 한 곳이 소유한다. 이름은 호출부/테스트 호환으로 남긴 얇은 별칭이다.
-    """
-    return fs.conf_lock_path(conf_path)
-
-
-def _local_conf_write_lock(conf_path: Path):
-    """이 conf 를 쓰는 구간의 배타락 — **전 writer 공용**(전체 write·병합 교체).
-
-    board 의 conf writer 는 둘이다(init 최초 생성 · init 비파괴 병합). 둘이 같은 락을 잡아야
-    "커밋 전에 읽고 나중에 통째 교체하는" writer 가 그사이의 쓰기를 지우지 않는다.
-    재진입 금지 — 이 구간 안에서 다른 conf writer 를 부르지 않는다.
-    """
-    return fs.local_conf_write_lock(conf_path)
-
-
-def _write_init_local_conf() -> None:
-    """init 의 local.conf 쓰기 — 존재 판정·읽기·병합·쓰기를 **한 배타 구간**에 닫는다.
-
-    **세션·prefix 키는 쓰지 않는다.** 둘 다 slot·task 종속 값이라 프로젝트 공용 per-clone
-    conf 의 범위가 아니다 — 세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이고 이
-    함수는 `runtime.py`·`test.cmd`·ctx 비율 같은 per-clone operational 키만 심는다.
-
-    구간을 나누면 두 곳이 새는데 둘 다 남의 결정을 지운다: (a) 존재 판정과 최초 생성 사이에
-    다른 writer 가 만든 conf 를 통째 write 로 덮고, (b) 병합 경로가 읽은 뒤 교체하는 사이에 붙은
-    opt-in append(그 자체는 원자였어도)가 교체본에 없어 사라진다. 그래서 락의 단위는 "쓰기" 가
-    아니라 "읽고 쓰는 구간" 이고, 같은 락을 conf 의 **모든** writer 가 공유한다.
-
-    온보딩 질문(추가 리뷰어 opt-in)은 이 구간 **밖**에서 한다 — 그 커밋이 같은 락을 다시
-    잡으므로 안에서 부르면 재진입(정의되지 않은 동작)이다.
-    """
-    # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
-    # (임계 구간을 프로브 시간만큼 늘리지 않는다).
-    detected_py = python_env._detect_py()
-    detected_test_cmd = python_env.default_pytest_cmd(detected_py)
-    with _local_conf_write_lock(LOCAL_CONF):
-        if not LOCAL_CONF.exists():
-            # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
-            # 주석은 **값을 재진술하지 않는다** — 손으로 옮겨 적은 값은 반드시 drift 한다.
-            # 키가 무엇을 하는지와 전체 카탈로그는 출하 문서 한 곳이 소유한다.
-            conf = (
-                "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
-                "# 여기엔 실값만 둔다 — 키 목록·설명은 `local_conf.py --keys` 참조.\n"
-                f"runtime.py={detected_py}\n"
-                f"test.cmd={detected_test_cmd}\n"
-                "project.name=\n"
-                f"ctx.checkpoint_at_pct={_conf_default_int('ctx.checkpoint_at_pct')}\n"
-                f"ctx.precompact_at_pct={_conf_default_int('ctx.precompact_at_pct')}\n"
-                f"ctx.compact_at_pct={_conf_default_int('ctx.compact_at_pct')}\n"
-            )
-            LOCAL_CONF.write_text(conf, encoding="utf-8", newline="\n")
-            return
-        # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
-        # (additional_reviewer.*·delegate.*·upstream.*·harness.*·identity.user 등)를 절대
-        # 삭제/변경하지 않는다. 통째 write 금지.
-        text = fs.read_text_shared(LOCAL_CONF, encoding="utf-8")
-        existing = conf_store.load_checked_readable(LOCAL_CONF)
-        updates: dict[str, str] = {}
-        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.compact_at_pct` 등)은 보존.
-        defaults = {
-            "runtime.py": detected_py,
-            "test.cmd": detected_test_cmd,
-            "project.name": "",
-            "ctx.checkpoint_at_pct": str(_conf_default_int("ctx.checkpoint_at_pct")),
-            "ctx.precompact_at_pct": str(_conf_default_int("ctx.precompact_at_pct")),
-            "ctx.compact_at_pct": str(_conf_default_int("ctx.compact_at_pct")),
-        }
-        for key, value in defaults.items():
-            if key not in existing:
-                updates[key] = value
-        # session·prefix 는 어느 경로에서도 쓰지 않는다 — 이미 파일에 남아 있는 그 키도 건드리지
-        # 않는다(비파괴 병합·엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다). 읽는 코드가 없으므로
-        # 남아 있어도 동작은 같다.
-        merged = _set_conf_keys(text, updates)
-        # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
-        # 원문을 그대로 반환하면 마지막 줄이 개행 없이 끝날 수 있고, 그 conf 에 뒤이어 붙는
-        # 어떤 append 도 마지막 키에 그대로 이어져 기존 키를 변질시킨다.
-        if merged and not merged.endswith("\n"):
-            merged += "\n"
-        LOCAL_CONF.write_text(merged, encoding="utf-8", newline="\n")
-
-
-# areas.md 셀에 그대로 들어가면 표 자체가 깨지는 문자 — repo 이름은 폴더명에서 유도되므로
-# 이 sanity 를 init 입구에서 한 번 본다(부작용 0 fail-loud·`--repo` 로 우회 가능).
-_AREAS_CELL_BREAKERS = ("|", "\n", "\r")
 # 등록 repo 이름 canonical 형식 (`pm-config repo add` 의 검증과 같은 문법). init 은 이 형식을
 # **차단 기준으로 쓰지 않는다** — 폴더명은 사용자 입력이 아니라 이미 존재하는 사실이고, 점·공백이
 # 든 폴더에서 인자 0 온보딩(`pm_import.run_board_init`)을 rc≠0 으로 만들면 그게 더 큰 회귀다.
 # 표를 깨는 문자만 차단하고, 형식 이탈은 `--repo` 처방과 함께 1줄로 표면화한다.
 _INIT_REPO_NAME_CANONICAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-
-
-# 사용자 정보(`@` 앞)가 비밀일 수 있는 origin 주소 형식 — 이 형식의 사용자 자리에는 비밀번호나 토큰이
-# 들어간다(ssh·scp 형식의 사용자 이름은 비밀이 아니라 그대로 기록한다).
-_ORIGIN_SCHEMES_WITH_SECRET_USERINFO = ("http", "https")
-
-
-# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — 이 접두 **정확히**를 벗겨야 순수 브랜치명이다
-# (`worktree_git.current_branch` 와 같은 규칙 · 같은 이름 태그가 있으면 `--short` 는 `heads/` 를 붙인다).
-_SYMREF_BRANCH_PREFIX = "refs/heads/"
-
-
-def self_repo_coordinates() -> tuple[str, str] | None:
-    """이 clone 자기 행(폴더 이름 행)에 적을 (git, base) — 값은 이 clone 에서만 나온다.
-
-    git = `origin` 주소(없으면 이 clone 의 절대경로), base = 현재 브랜치(`symbolic-ref HEAD` 의 full
-    ref 에서 `refs/heads/` 접두만 벗긴 이름 · 커밋 0개에서도 해소되고 같은 이름 태그와 무관하다).
-    다음이면 None(호출부가 빈 칸 + `_SELF_COORDINATES_UNKNOWN` 한 줄):
-    이 폴더가 자기 git 저장소의 최상위가 아니다(git 저장소가 아니거나 상위 저장소 안) · HEAD 가
-    브랜치를 가리키지 않는다(detached) · origin 이 http·https 주소인데 사용자 정보(`@` 앞)가 있다
-    (자격증명 · areas.md 는 커밋·push 되는 공유 등록부다) · 값에 areas 셀을 깨는 문자(`|`·개행)가 있다.
-    """
-    rc, top = _git_scope_run(REPO, ["rev-parse", "--show-toplevel"])
-    if rc != 0 or Path(top.strip()).resolve() != REPO.resolve():
-        return None
-    rc, ref = _git_scope_run(REPO, ["symbolic-ref", "-q", "HEAD"])
-    ref = ref.strip()
-    if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
-        return None
-    base = ref[len(_SYMREF_BRANCH_PREFIX):]
-    rc, origin = _git_scope_run(REPO, ["remote", "get-url", "origin"])
-    git = origin.strip() if rc == 0 and origin.strip() else str(REPO)
-    origin_address = urllib.parse.urlsplit(git)
-    if origin_address.scheme in _ORIGIN_SCHEMES_WITH_SECRET_USERINFO and "@" in origin_address.netloc:
-        return None
-    if any(ch in value for value in (git, base) for ch in _AREAS_CELL_BREAKERS):
-        return None
-    return git, base
-
-
-_SELF_COORDINATES_UNKNOWN = (
-    "  ⚠ 자기 행의 git·base 를 기록하지 못했다 (이 폴더가 git 저장소 최상위가 아니거나 HEAD 가 "
-    "브랜치를 가리키지 않거나 origin 주소에 자격증명이 들어 있다). areas.md 의 그 행 `git`·`base` 칸을 채운 뒤 `pm-config worktree add` 를 "
-    "실행하라.")
-
-
-def fill_self_repo_row(*, write: bool) -> str | None:
-    """갱신 이관 — 폴더 이름 행의 `git`·`base` 가 **둘 다 비어** 있으면 이 clone 의 값으로 채운다.
-
-    설치(`cmd_init`)가 자기 행에 두 칸을 기록하기 전에 만들어진 채택자의 데이터 이관이다(갱신 완료
-    단계 `pm_update.fill_self_repo_row` 가 부른다). 대상 행이 없거나 어느 한 칸이라도 차 있으면
-    아무것도 하지 않는다(덮어쓰지 않는다·다른 repo 행은 보지 않는다). 같은 이름 행이 둘 이상이면
-    `AreasDuplicateRepo` 를 그대로 올린다(`board.py lint` 의 areas-duplicate-repo 와 같은 처방).
-    값을 정하지 못하면 알림 한 줄 뒤 무동작. `write=False` 는 판정만 한다.
-    반환 = 채운(채울) 값 설명 또는 None.
-    """
-    with board_lock():
-        _header, rows = areas_store._parse_areas(_home())
-        own = [row for row in rows if row.get("repo") == REPO.name]
-        if len(own) > 1:
-            raise AreasDuplicateRepo(REPO.name, len(own))
-        if not own or (own[0].get("git") or "").strip() or (own[0].get("base") or "").strip():
-            return None
-        coordinates = self_repo_coordinates()
-        if coordinates is None:
-            print(_SELF_COORDINATES_UNKNOWN, file=sys.stderr)
-            return None
-        git, base = coordinates
-        if write:
-            _areas_set_cell_locked(REPO.name, "git", git)
-            _areas_set_cell_locked(REPO.name, "base", base)
-    if write:
-        # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock). inline board 는 무동작.
-        _board_git_sync_best_effort("areas 자기 행 git·base", (pm_paths.areas_file(_home()),))
-    return f"repo={REPO.name} | git={git} | base={base}"
 
 
 def _init_repo_name(args: argparse.Namespace) -> str | None:
@@ -6313,7 +2857,7 @@ def _init_repo_name(args: argparse.Namespace) -> str | None:
     벗어난 폴더명은 등록은 하되 1줄로 알린다(폴더 이름 `<repo>_<N>` 가독성·`repo add` 와의 정합).
     """
     name = (getattr(args, "repo", None) or REPO.name or "").strip()
-    if not name or any(ch in name for ch in _AREAS_CELL_BREAKERS):
+    if not name or any(ch in name for ch in areas_rules._AREAS_CELL_BREAKERS):
         print(f"[중단] areas.md 에 등록할 repo 이름을 유도할 수 없다 (후보 {name!r}) — "
               "`--repo <repo>` 으로 명시하라 (등록·conf 어떤 것도 쓰지 않았다).",
               file=sys.stderr)
@@ -6351,12 +2895,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     # 명시 --prefix sanity (예약어 `none`·형식 [a-z0-9_]+) — 위반이면 areas 등록·
     # local.conf write 어떤 부작용보다 앞에서 부작용 0 으로 거부(cmd_init 첫 문장 뒤).
     if prefix:
-        reason = _validate_prefix(prefix)
+        reason = ticket_rules._validate_prefix(prefix)
         if reason:
             print(f"[중단] {reason}", file=sys.stderr)
             return 1
-        canonical = require_prefix_user_ack(
-            prefix,
+        canonical = areas_registry.require_prefix_user_ack(
+            _home(), prefix,
             getattr(args, "user_ack", None),
             surface="board init --prefix",
         )
@@ -6365,7 +2909,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         prefix = canonical
         prefix_precheck = canonical
     # owner 기본값은 `--task` 다(환경변수·단일 대여에서 유도하지 않는다). `--repo` 는 등록명이다.
-    owner_task = _actor_session_override(args)
+    owner_task = task_args._actor_session_override(_home(), args)
     repo_name = _init_repo_name(args)
     if repo_name is None:
         return 1
@@ -6374,10 +2918,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     # areas 등록은 board_lock 안에서 fresh 3소스 판정을 선판정과 대조한 뒤 수행한다. 캐시된
     # 선판정 뒤 다른 세션이 다른 case를 만들었으면 areas/local.conf 모두 쓰기 전에 중단한다
     # (TOCTOU·부분 init 0).
-    with board_lock():
+    with fs.board_lock(_home()):
         if prefix:
-            fresh = revalidate_prefix_user_ack(
-                requested_prefix,
+            fresh = areas_registry.revalidate_prefix_user_ack(
+                _home(), requested_prefix,
                 getattr(args, "user_ack", None),
                 prefix_precheck,
                 surface="board init --prefix",
@@ -6416,14 +2960,14 @@ def cmd_init(args: argparse.Namespace) -> int:
             # owner = areas.md 등록 식별자(registrant) — 협업 소유자가 아니라 등록 출처 표식.
             # `--owner` > `--task` > 빈 칼럼(미상) 순이고 환경변수·단일 대여에서 유도하지 않는다.
             owner = args.owner or owner_task or ""
-            area_owner = user_name(getattr(args, "user", None))
+            area_owner = lease_store.user_name(_home(), getattr(args, "user", None))
             # 자기 행(폴더 이름 등록)이면 git·base 를 함께 싣는다 — 안내 명령(`pm-config worktree
             # add <repo>`)이 base 와 clone 원 주소를 이 행에서 읽는다. `--repo` 로 폴더와 다른 이름을
             # 등록하면 싣지 않는다(PM 홈 주소가 제품 행에 적히는 일 방지).
             self_row = repo_name == REPO.name
-            coordinates = self_repo_coordinates() if self_row else None
+            coordinates = areas_registry.self_repo_coordinates(_home()) if self_row else None
             git, base = coordinates or ("", "")
-            _areas_append_locked(prefix or "", owner, repo=repo_name, area_owner=area_owner,
+            areas_store._areas_append_locked(_home(), prefix or "", owner, repo=repo_name, area_owner=area_owner,
                                  git=git, base=base)
             wrote_areas = True
             ao_surface = (area_owner if area_owner else
@@ -6433,7 +2977,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                             f"owner={owner or '(미상 — --owner·--task 미지정)'} | "
                             f"area_owner={ao_surface} | git={git or '(없음)'} | base={base or '(없음)'}")
             if self_row and coordinates is None:
-                print(_SELF_COORDINATES_UNKNOWN, file=sys.stderr)
+                print(areas_rules._SELF_COORDINATES_UNKNOWN, file=sys.stderr)
         elif not prefix:
             area_message = (f"repo {repo_name!r} 이미 등록됨 (areas.md) — 행 추가 없음 "
                             f"(카테고리 {registered_cell or '(빈 칼럼 · none)'}).")
@@ -6449,19 +2993,19 @@ def cmd_init(args: argparse.Namespace) -> int:
         else:
             # 이 clone 의 행은 있는데 카테고리 칼럼만 비었다(무prefix init 뒤 카테고리 지정) —
             # **행 추가가 아니라 셀 갱신**이다(스키마 불변·이미 board_lock 보유 → locked 변형).
-            _areas_set_cell_locked(repo_name, "prefix", prefix)
+            areas_store._areas_set_cell_locked(_home(), repo_name, "prefix", prefix)
             wrote_areas = True
             area_message = (f"✓ areas.md 카테고리 등록: repo={repo_name} | "
                             f"prefix={prefix} (기존 행의 prefix 칼럼 갱신·행 추가 없음)")
-        _write_init_local_conf()
-    invalidate_known_prefixes_cache()
+        conf_store._write_init_local_conf(_home())
+    areas_registry.invalidate_known_prefixes_cache()
     if wrote_areas:
         # 등록 행은 board git 의 공유 파일이다 — 파일만 쓰고 두면 board 가 dirty 로 남아
         # (`M areas.md`) 온보딩 다음 단계가 그 잔여를 사용자 편집으로 만난다. `pm-config repo
         # add`/`repo protected` 와 **같은 스코프 채널**로 이 mutation 이 만진 경로만 기록한다
         # (board 가 별도 git 이 아니면 no-op·best-effort 라 실패해도 init 을 되돌리지 않는다).
         # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock).
-        _board_git_sync_best_effort("init areas 등록", (pm_paths.areas_file(_home()),))
+        board_sync._board_git_sync_best_effort(_home(), "init areas 등록", (pm_paths.areas_file(_home()),))
     print(area_message)
     print("✓ local.conf: py·test_cmd·ctx 비율 (세션·prefix 는 conf 키가 아니다 — "
           "세션=lease 장부 · prefix=areas.md)")
@@ -6592,7 +3136,7 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
             header_cells = [c.lower() for c in cells]
             # 공용 헬퍼 — 칼럼이 있으면 그 인덱스(헤더 verbatim), 없으면 구-헤더 업그레이드
             # 계획(canonical 8칼럼 교체 또는 기존 헤더 끝 append)을 함께 돌려준다.
-            ao_idx, new_header, sep_cols = _areas_column_index(header_cells, "area_owner")
+            ao_idx, new_header, sep_cols = areas_store._areas_column_index(header_cells, "area_owner")
             if new_header is None:
                 out.append(line)  # 이미 신 스키마 헤더 — verbatim.
             else:
@@ -6605,7 +3149,7 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
         # 헤더(예 멀티-clone `prefix|area|owner`[3]) 아래에 canonical 8칼럼 row 가 append 된
         # 케이스에서 `ao_idx`(=헤더 폭) 로 읽으면 index 3(`test_cmd`)을 area_owner 로 오인해
         # backfill 못 한다(must-fix·_parse_areas 정합).
-        idx = _areas_row_cell_index(
+        idx = areas_store._areas_row_cell_index(
             header_cells, cells,
             ao_idx if ao_idx is not None else canonical_ao, "area_owner")
         prefix = cells[1] if len(cells) > 1 else "?"
@@ -6723,7 +3267,7 @@ def _migrate_areas_apply(user: str) -> tuple[int, bool]:
         return 0, False
     total = 0
     wrote = False
-    with board_lock():
+    with fs.board_lock(_home()):
         text = fs.read_text_shared(af, encoding="utf-8")
         new_text, area_changes = _migrate_areas_text(text, user)
         for c in area_changes:
@@ -6753,7 +3297,7 @@ def _migrate_tickets_apply(
     total = 0
     wrote = False
     registered = areas_store.registered_repos(_home())
-    with board_lock():
+    with fs.board_lock(_home()):
         for status, directory in _migrate_scan_dirs(statuses):
             for p in sorted(directory.glob("T-*.md")):
                 try:
@@ -6768,7 +3312,7 @@ def _migrate_tickets_apply(
                 if not changes:
                     continue
                 try:
-                    cur_status, cur_path = find_ticket_for_mutation(tid)
+                    cur_status, cur_path = ticket_store.find_ticket_for_mutation(_home(), tid)
                 except FileNotFoundError:
                     print(f"  skip {tid}: 재조회 시 없음(수동/구버전 writer 완료/삭제) — "
                           "backfill 안 함", file=sys.stderr)
@@ -6780,7 +3324,7 @@ def _migrate_tickets_apply(
                 total += len(changes)
                 for c in changes:
                     print(f"  {tid} ({status}/): {c}")
-                dump_ticket_atomic(cur_path, fm, body)
+                ticket_store.dump_ticket_atomic(cur_path, fm, body)
                 wrote = True
     return total, wrote
 
@@ -6821,7 +3365,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
     하나의 순서로 관측된다. 두 helper의 lock 구간은 중첩되지 않고 board.md 재생성은 모두 끝난 뒤
     lock 밖에서 1회 한다.
     """
-    user = user_name(getattr(args, "user", None))
+    user = lease_store.user_name(_home(), getattr(args, "user", None))
     if not user:
         print("[중단] user 식별자 미해소 — `--user <id>` 를 주거나 local.conf identity.user= / "
               "git config user.email 를 설정하라(식별자 없이는 backfill 불가).",
@@ -6829,9 +3373,9 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
         return 1
     # 이전 대상 task = 귀속 쓰기(claimed_by·created_by 에 박음) — `--task` 가 없으면 어떤 쓰기보다
     # 먼저 멈춘다(환경변수·단일 대여 값으로 대신하지 않는다).
-    slot = _actor_session_override(args)
+    slot = task_args._actor_session_override(_home(), args)
     if slot is None:
-        sys.exit(TASK_REQUIRED.format(action="migrate-identity",
+        sys.exit(task_args.TASK_REQUIRED.format(action="migrate-identity",
                                       command="board.py migrate-identity"))
     dry_run = bool(getattr(args, "dry_run", False))
     scope = getattr(args, "scope", "all") or "all"
@@ -6860,7 +3404,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
     # claimed_by 를 바꾸면 board.md claimed 표시도 달라진다 — 실제 쓰기가 있었고 dry-run 이
     # 아닐 때만 1회 재생성한다(dry-run 은 파생물도 안 건드림·읽기-only 미리보기 보장).
     if wrote:
-        refresh_board()
+        board_dashboard.refresh_board(_home())
     return 0
 
 
@@ -6870,14 +3414,14 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 함께 준 `--repo`/`--slot` 은 그 task 가 보유한 폴더를 고르는 위치 인자일 뿐이다.
     actor_session = task_args._execution_actor_session_override(_home(), args)
     if actor_session is None:
-        sys.exit(TASK_REQUIRED.format(action="new", command='board.py new "<제목>"'))
+        sys.exit(task_args.TASK_REQUIRED.format(action="new", command='board.py new "<제목>"'))
     # 명시 --prefix sanity (예약어 `none`·형식 [a-z0-9_]+) — 위반이면 ID 스캔·파일
     # 발행 전에 부작용 0 으로 즉시 거부. 유도/count-based 로 해소된 legacy prefix 는 검증하지
     # 않는다(기존 발행분 존중) — 사용자가 *명시*한 override 만 입력측 sanity 대상이다.
     requested_override = getattr(args, "prefix", None)
     override = requested_override
     if override:
-        reason = _validate_prefix(override)
+        reason = ticket_rules._validate_prefix(override)
         if reason:
             print(f"[중단] {reason}", file=sys.stderr)
             return 1
@@ -6898,8 +3442,8 @@ def cmd_new(args: argparse.Namespace) -> int:
         # 통과해야 한다. 여기서 복수 case면 같은 fail-loud 진단으로 막고, 단일 case면 그
         # canonical 표기를 발행값으로 고정한다. 신규 명시값만 user_ack가 실제 의미를 가지며,
         # 유도값은 자신을 제공한 3소스 중 하나에 이미 존재하므로 승인 없이 existing으로 통과한다.
-        canonical = require_prefix_user_ack(
-            prefix,
+        canonical = areas_registry.require_prefix_user_ack(
+            _home(), prefix,
             getattr(args, "user_ack", None),
             surface=prefix_surface,
         )
@@ -6946,7 +3490,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     # ID 발행 전에는 템플릿의 ID로 본문 경로만 판정한다.
     draft_lint_id = str(tmpl_fm.get("id") or "")
     draft_body = tmpl_body.replace("T-NNNN", draft_lint_id).replace("<제목>", args.title)
-    is_draft = _board_git_enabled() and bool(
+    is_draft = board_git._board_git_enabled(_home()) and bool(
         body_lint._body_lint_issues(_home(), draft_lint_id, draft_body, strict_sections=True, design=design))
     # 코드 없는 task draft는 허용한다. 위치 인자(`--repo`/`--slot`)를 줬으면 draft에서도 검증한다.
     binding_required = (not is_draft
@@ -6975,13 +3519,13 @@ def cmd_new(args: argparse.Namespace) -> int:
     # ID 발행(`_next_id` = max+1·동시 발행 race)과 파일 생성을 단일 락으로 직렬화한다
     # 락 안에서 ID 를 *읽고* 곧바로 파일을 만들어, 다른 세션이 같은 ID 를
     # 발행할 틈을 없앤다. board.md 재생성은 락 밖(별도 트랜잭션 — 파생물).
-    with board_lock():
+    with fs.board_lock(_home()):
         if prefix is not None:
             # 모든 non-None 발행 prefix를 ID 발행 락 안에서 cache-free 3소스 snapshot으로
             # 다시 확인한다. 명시/유도 어느 경로든 그사이 다른 case가 생기면 `_next_id`와
             # 파일 write 전에 중단한다.
-            fresh = revalidate_prefix_user_ack(
-                prefix,
+            fresh = areas_registry.revalidate_prefix_user_ack(
+                _home(), prefix,
                 getattr(args, "user_ack", None),
                 prefix_precheck,
                 surface=prefix_surface,
@@ -6989,15 +3533,15 @@ def cmd_new(args: argparse.Namespace) -> int:
             if fresh is None:
                 return 1
             prefix = fresh
-        tid = _next_id(prefix)
-        slug = _slugify(args.title)
+        tid = ticket_store._next_id(_home(), prefix)
+        slug = ticket_rules._slugify(args.title)
         filename = f"{tid}-{slug}.md"
 
         # Replace placeholder tokens in body
         body = tmpl_body.replace("T-NNNN", tid).replace("<제목>", args.title)
         # lint 판정은 `tid` 치환과 무관(placeholder/section 검사가 `T-NNNN` 자체를 안 봄) —
         # 발행 전에 판정해 쓰기 경로(open/ vs drafts_dir())를 정한다(open/ 창 노출 0).
-        is_draft = _board_git_enabled() and bool(
+        is_draft = board_git._board_git_enabled(_home()) and bool(
             body_lint._body_lint_issues(_home(), tid, body, strict_sections=True, design=design))
 
         fm: dict[str, Any] = dict(tmpl_fm)
@@ -7007,7 +3551,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         fm["created"] = datetime.date.today().isoformat()
         # created_by = `<user>/<task>` (provenance·불변·생성 시 set·세션 기본 뷰 스트림 판정 입력).
         # "누가 추가했나" = 중복-작업 방지의 출처 표식. user 미상이면 task 만(graceful).
-        fm["created_by"] = identity_tag(
+        fm["created_by"] = lease_store.identity_tag(_home(),
             session_override=actor_session,
             user_override=getattr(args, "user", None))
         fm["claimed_by"] = None
@@ -7043,8 +3587,8 @@ def cmd_new(args: argparse.Namespace) -> int:
             path = pm_paths.drafts_dir(_home()) / filename
         else:
             path = pm_paths.tickets_dir(_home()) / "open" / filename
-        dump_ticket(path, fm, body)
-    invalidate_known_prefixes_cache()
+        ticket_store.dump_ticket(path, fm, body)
+    areas_registry.invalidate_known_prefixes_cache()
 
     print(f"created {tid} ({pm_paths._rel_to_repo(_home(), path)})")
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint --gate` "
@@ -7065,13 +3609,13 @@ def cmd_new(args: argparse.Namespace) -> int:
               f"`board.py promote {tid}` 로 승격(open/ 이동 + board-git 커밋)하라.",
               file=sys.stderr)
     else:
-        refresh_board()
-    sync_needed = not is_draft or _board_git_root_files_need_backfill()
+        board_dashboard.refresh_board(_home())
+    sync_needed = not is_draft or board_git._board_git_root_files_need_backfill(_home())
     ready = True
     if sync_needed:
         sync_label = f"new {tid} draft isolation" if is_draft else f"new {tid}"
         sync_paths = (path,) if cluster_ledger is None else (path, cluster_ledger)
-        ready = _board_git_sync_best_effort(sync_label, sync_paths)
+        ready = board_sync._board_git_sync_best_effort(_home(), sync_label, sync_paths)
     if not ready:
         label = "draft 격리 기록" if is_draft else "기록"
         print(f"  ⚠ board-git {label} 보류: local-only/uncommitted", file=sys.stderr)
@@ -7100,9 +3644,9 @@ def cmd_promote(args: argparse.Namespace) -> int:
     공유 여부와 관계없이 검증한다.
     """
     moved = False
-    with board_lock():
+    with fs.board_lock(_home()):
         try:
-            status, path = find_ticket_for_mutation(args.id)
+            status, path = ticket_store.find_ticket_for_mutation(_home(), args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
@@ -7111,7 +3655,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
         fm, body = ticket_store.load_ticket(path)
-        if _board_git_enabled():
+        if board_git._board_git_enabled(_home()):
             issues = body_lint._body_lint_issues(_home(), args.id, body, strict_sections=True,
                                        design=fm.get("design"),
                                        touches=fm.get("touches"), content_facts=True)
@@ -7133,7 +3677,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         final_path = path
         # 공유 전에 기존 cluster new의 제품·멤버 결속을 읽기로 검증한다.
         # 선언된 장부와 티켓 cluster 값은 승격이 재작성하지 않는다.
-        if _board_git_enabled():
+        if board_git._board_git_enabled(_home()):
             problem = cluster_binding_problem(ticket_cluster(args.id, fm))
             if problem is None:
                 problem = cluster_complete_binding_problem(args.id, fm, str(fm.get("cluster") or ""))
@@ -7144,8 +3688,8 @@ def cmd_promote(args: argparse.Namespace) -> int:
             # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
             # status dump와 rename도 같은 lock 안이라 claim/tier writer가 중간 형상을 못 본다.
             fm["status"] = "open"
-            dump_ticket(path, fm, body)
-            new_path = move_ticket(path, "open")
+            ticket_store.dump_ticket(path, fm, body)
+            new_path = ticket_store.move_ticket(_home(), path, "open")
             touched.append(new_path)
             final_path = new_path
             moved = True
@@ -7156,9 +3700,9 @@ def cmd_promote(args: argparse.Namespace) -> int:
         if round_dir.is_dir():
             touched.append(round_dir)
     if moved:
-        refresh_board()
-    ready = _board_git_sync_best_effort(f"promote {args.id}", touched)
-    if not _board_git_enabled():
+        board_dashboard.refresh_board(_home())
+    ready = board_sync._board_git_sync_best_effort(_home(), f"promote {args.id}", touched)
+    if not board_git._board_git_enabled(_home()):
         # board 가 홈 git 안이면 board-git 커밋도 공유도 없다 — 실제로 한 일(이동 여부)만 말한다.
         placement = "draft → open/" if moved else "open/ 그대로"
         print(f"promoted {args.id} ({placement} · board 가 홈 git 안이라 커밋 없음)")
@@ -7173,7 +3717,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     # 등록 repo 로 재해소한다(`lease_store.session_coordinates` — 행이 있으면 행의 repo,
     # 없으면 세션명 키 분해로 폴백). 둘 다 기존 seam 재사용 — 새 해소 축 아님.
     promote_repo, _promote_slot_number = lease_store.session_coordinates(
-        _created_by_session(fm.get("created_by")), LEASES_FILE)
+        ticket_rules._created_by_session(fm.get("created_by")), LEASES_FILE)
     for line in _publish_overlap_material(args.id, fm.get("touches"), promote_repo or REPO.name):
         print(line, file=sys.stderr)
     return 0
@@ -7451,7 +3995,7 @@ def dump_cluster(fm: dict[str, Any]) -> Path:
         if key not in ordered:
             ordered[key] = value
     path = cluster_ledger_path(str(ordered.get("id") or ""))
-    dump_ticket(path, ordered, "")
+    ticket_store.dump_ticket(path, ordered, "")
     return path
 
 
@@ -7693,7 +4237,7 @@ def _cluster_publish_base_branch(
     `--task` 가 보유한 폴더만 `_claim_code_tree`로 해소한다. task 가 없으면 제품 결속의 증거가
     없으므로 기준 브랜치를 기록하지 않는다.
     """
-    tree = _claim_code_tree(args)
+    tree = task_args._claim_code_tree(_home(), args)
     if not tree or not (Path(tree) / ".git").exists() or not git._git_head_at(tree):
         return None, None
     top = git._git_run(["rev-parse", "--show-toplevel"], repo=Path(tree))
@@ -7840,7 +4384,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
     if reason:
         print(f"[중단] {reason}", file=sys.stderr)
         return 1
-    if _claim_code_tree(args) is None:
+    if task_args._claim_code_tree(_home(), args) is None:
         print("[중단] cluster new 는 통합 브랜치를 만들 코드 트리를 명시로 받는다 — "
               "`--task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)를 지정하라.",
               file=sys.stderr)
@@ -7867,7 +4411,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
     spike = (getattr(args, "spike", None) or "").strip() or None
     branch = cluster_branch_name(cluster)
     touched: list[Path] = []
-    with board_lock():
+    with fs.board_lock(_home()):
         ledger_path = cluster_ledger_path(cluster)
         if ledger_path.exists():
             print(f"[중단] 이미 있는 클러스터 장부: {pm_paths._rel_to_repo(_home(), ledger_path)} "
@@ -7908,7 +4452,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
         for tid, path, fm, body, owner in resolved:
             if str(fm.get("cluster") or "").strip() != cluster:
                 fm["cluster"] = cluster
-                dump_ticket(path, fm, body)
+                ticket_store.dump_ticket(path, fm, body)
                 touched.append(path)
             if owner is not None and owner != cluster:
                 try:
@@ -7929,7 +4473,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
     print(f"  통합 브랜치 {branch} — {branch_note}")
     if spike:
         print(f"  설계 spike: {spike}")
-    ready = _board_git_sync_best_effort(f"cluster new {cluster}", touched)
+    ready = board_sync._board_git_sync_best_effort(_home(), f"cluster new {cluster}", touched)
     if not ready:
         print("  ⚠ board-git 기록 보류: local-only/uncommitted", file=sys.stderr)
     if drafts:
@@ -7985,197 +4529,6 @@ def cmd_cluster(args: argparse.Namespace) -> int:
     return _cmd_cluster_show(args)
 
 
-def _tag_values(fm: dict[str, Any]) -> list[str]:
-    """frontmatter 의 tags 를 전부 str 로 캐스팅한 리스트.
-
-    YAML 은 `tags: [2026, cleanup]` 의 `2026` 을 int 로 로드한다 — 이를 그대로
-    `str.join` 하면 TypeError 로 크래시하고(cmd_list·마크다운 렌더), 문자열 `--tag`
-    와 `in` 비교하면 조용히 매치 실패한다(필터). tags 를 표시·필터하는 전 호출부가
-    이 str 캐스팅을 단일 지점에서 거치게 해 두 결함을 함께 없앤다. 문자열 태그는
-    str→str 로 무변경(형식·매치 회귀 없음).
-    """
-    return [str(t) for t in (fm.get("tags") or [])]
-
-
-# ── board-git freshness 표면화 (advisory·never-block) ──
-# 세션 중간의 board 읽기(`list`)에도 board submodule 최신도를 1줄 표면화한다 — 부트스트랩
-# 이후 시점의 stale 오독의 잔여
-# 갈래를 닫는다. 판정은 **신규 구현 0** — 부트스트랩이 소비하는 pm_bootstrap 의 순수
-# 판정(`_format_freshness`·`parse_git_ahead_behind`·`_behind_warning`)을 그대로 재사용해 두
-# 소비처(부트스트랩·list)가 같은 하나를 본다(중복 판정 금지). board 비-git(legacy)은
-# freshness 개념이 없어 조용히 생략(오탐 0). list 는 read-only 조회라 pull 하지 않고 표면화만.
-
-
-# advisory freshness fetch 조율 — `list` 는 대화형으로 세션당 수십 회 도는
-# 로컬-only 명령이라, 매 호출 원격 fetch(30s timeout)는 offline/VPN-hang 시 호출당 최대 30s 블록·
-# online 도 매번 round-trip 이 advisory 1줄 대비 과하다. fetch 전 FETCH_HEAD mtime TTL 가드로
-# 직전 fetch 를 cross-process 재사용(별도 캐시 파일 없음)·advisory fetch timeout 을 5s 로 단축.
-_FRESHNESS_FETCH_TTL_SECONDS = 60      # 이 창 안이면 직전 fetch 결과 재사용(fetch 생략).
-_FRESHNESS_FETCH_TIMEOUT_SECONDS = 5   # advisory fetch 상한(대화형 hang 완화·기존 30s 경로 불변).
-
-
-def _board_fetch_head_fresh(ttl: float) -> bool:
-    """board-git FETCH_HEAD mtime 이 `ttl` 초 이내면 True — 직전 fetch 재사용(fetch 생략).
-
-    별도 캐시 파일/상태 신설 없이 git 자신의 FETCH_HEAD mtime 만으로 **cross-process** TTL 판정.
-    경로는 `git rev-parse --git-path FETCH_HEAD`(submodule/worktree gitdir 레이아웃 무관 해소).
-    FETCH_HEAD 부재(한 번도 fetch 안 함)·경로 조회 실패·stat 실패면 False(fetch 진행·보수적).
-    """
-    try:
-        r = _board_git(["rev-parse", "--git-path", "FETCH_HEAD"])
-    except (OSError, subprocess.SubprocessError):  # 경로 조회 예외는 stale 취급(fetch 진행).
-        return False
-    if r.returncode != 0 or not r.stdout.strip():
-        return False
-    p = Path(r.stdout.strip())
-    if not p.is_absolute():
-        p = _home().board_root / p   # rev-parse 는 -C home.board_root 기준 상대 경로를 낼 수 있다.
-    try:
-        return (time.time() - p.stat().st_mtime) < ttl
-    except OSError:
-        return False           # FETCH_HEAD 부재(한 번도 fetch 안 함) → fetch 진행.
-
-
-def _load_pm_bootstrap_module():
-    """pm_bootstrap 모듈을 같은 tools/ 에서 로드 (freshness 순수 판정 재사용).
-
-    `_load_pm_update_module` 동형 seam — board.py 가 형제 모듈의 순수 함수를 재사용할 때 쓴다.
-    실패 시 None → 호출부가 freshness 표면화를 조용히 생략(fail-soft·advisory 라 무발화)."""
-    pmb_py = Path(__file__).resolve().parent / "pm_bootstrap.py"
-    try:
-        mod = _load_module_from_path(
-            pmb_py, "pm_bootstrap.py", verifier=_verify_engine_rev,
-        )
-        return mod
-    except Exception as exc:  # noqa: BLE001 — 로드 실패는 무발화(freshness 생략·advisory).
-        if _is_engine_rev_skew(exc):
-            raise  # pm_bootstrap 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-
-
-class _BoardFreshness(NamedTuple):
-    """freshness 1줄 + 그 줄이 근거로 쓴 원격-추적 스냅샷의 **검증 여부**.
-
-    `verified` 는 "이번 조회가 원격을 실측했나" 다 — TTL 이내 직전 fetch 재사용 또는 이번
-    fetch 성공일 때만 True. False 면 남아 있는 원격-추적 ref 는 **검증되지 않은 캐시**라
-    그것으로 티켓 단위 stale 을 단정할 수 없다(판정 불능을 판정으로 위장하지 않는다).
-    freshness 줄 자체는 그 사실을 "판정불가 — 스냅샷일 수 있음" 으로 이미 말한다.
-    """
-
-    line: str | None
-    verified: bool
-
-
-def _board_git_freshness() -> _BoardFreshness:
-    """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (없으면 line=None).
-
-    board 비-git(legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면
-    `line=None`·`verified=False`(표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
-    detached/dirty/ahead·behind 를 board.py 자체 board-git 함수로 수집해, pm_bootstrap 의
-    `_format_freshness`로 포맷한다 — **판정 단일화**(중복 0). list
-    는 read-only 라 pull 하지 않는다(부트스트랩의 자동 ff-pull 과 달리 표면화만·never-block).
-    offline(fetch 실패)이면 remote-tracking 스냅샷을 "최신"으로 주장하지 않고 "판정불가 —
-    스냅샷일 수 있음"으로 fail-soft.
-    """
-    # board-git 존재 확인을 **먼저** — 비-git 홈은 pm_bootstrap(4천줄) 로드도 fetch 도 안 한다.
-    if not _board_git_enabled():
-        return _BoardFreshness(None, False)
-    pmb = _load_pm_bootstrap_module()
-    if pmb is None:
-        return _BoardFreshness(None, False)
-    # fetch 전 TTL 가드: 직전 fetch 가 TTL 이내면 재사용(원격 실측된 스냅샷이라
-    # fetched=True)·fetch 생략. 아니면 advisory 짧은 timeout(5s)으로 fetch(offline 이면 fail-soft).
-    if _board_fetch_head_fresh(_FRESHNESS_FETCH_TTL_SECONDS):
-        fetched = True
-    else:
-        try:
-            fetched = _board_git(
-                ["fetch", "origin"],
-                timeout=_FRESHNESS_FETCH_TIMEOUT_SECONDS).returncode == 0
-        except (OSError, subprocess.SubprocessError):  # fetch 예외(timeout·offline)는 fail-soft(판정불가).
-            fetched = False
-    detached = _board_git_head_detached()
-    ahead = behind = None
-    try:
-        ab = _board_git(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
-        if ab.returncode == 0:
-            parsed = pmb.parse_git_ahead_behind(ab.stdout)
-            if parsed is not None:
-                ahead, behind = parsed
-    except (OSError, subprocess.SubprocessError):  # rev-list 예외는 upstream 미상(behind None) 취급.
-        pass
-    scope = {"fetched": fetched, "detached": detached, "dirty": None,
-             "ahead": ahead, "behind": behind, "note": None}
-    if behind and behind > 0:
-        # behind>0 에서만 dirty 를 조회(로컬 git status·common 경로 무오버헤드)해 경고 사유를
-        # 정확히 채운다(`_behind_warning` = ⚠ behind N — 수동 동기 필요 (fetch/dirty/diverged)).
-        scope["dirty"] = bool(_board_git_status_porcelain().strip())
-        scope["note"] = pmb._behind_warning(scope)
-    return _BoardFreshness(f"board-git: {pmb._format_freshness(scope)}", fetched)
-
-
-def _print_board_freshness() -> bool:
-    """board freshness 1줄을 **stderr** 로 표면화하고 스냅샷 검증 여부를 돌려준다 (advisory).
-
-    stdout 이 아니라 stderr 인 이유: `board list` stdout 를 파싱하는 소비처(회귀 파서·
-    pm_bootstrap counts·아래 anti-degrade warn 과 동형)를 오염시키지 않는다. board 비-git/
-    로드 실패면 line=None → 무출력(조용히 생략·오탐 0).
-
-    반환값은 **이 줄이 근거로 쓴 원격-추적 스냅샷이 실측 검증됐나**(TTL 이내 재사용 또는 이번
-    fetch 성공)다 — 같은 흐름에서 이어지는 티켓 단위 대조가 검증되지 않은 캐시로 단정하지
-    않게 한다. `list` 는 이 값을 쓰지 않는다(현행 동작 무변경)."""
-    freshness = _board_git_freshness()
-    if freshness.line is not None:
-        print(freshness.line, file=sys.stderr)
-    return freshness.verified
-
-
-def _print_ticket_remote_mismatch(ticket_id: str, local_status: str, *,
-                                  snapshot_verified: bool) -> None:
-    """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr) 표면화한다.
-
-    `show` 전용 추가 표면 — 전역 요약(`_print_board_freshness`)만으로는 "이 티켓" 이 stale
-    한지 알 수 없다(다중 clone 에서 local open 인데 원격은 이미 done 인 사례가 실사고).
-    판정은 claim 이 이미 쓰는 `_board_git_remote_ticket_status`(ls-tree·네트워크 0) 를
-    그대로 재사용한다(새 판정 금지) — **fetch 는 새로 하지 않는다**: 직전
-    `_print_board_freshness()` 호출이 TTL 가드(`_board_fetch_head_fresh`)를 통과했을 때만
-    이미 advisory fetch 를 했으므로, 여기선 그 결과로 갱신된 원격-추적 ref 를 읽기만 한다.
-
-    `snapshot_verified` 가 False 면 **판정 자체를 내지 않는다**(문구만 약하게 하지 않는다):
-    원격-추적 ref 는 남아 있어도 이번 조회에서 검증되지 않은 캐시라, 그것으로 "로컬 사본
-    stale" 을 말하면 판정 불능을 판정으로 위장하게 된다. 그 형상의 강등 진술은 전역
-    freshness 줄("판정불가 — 스냅샷일 수 있음")이 이미 낸다 — 같은 사실을 두 줄로 말하지
-    않는다.
-
-    무출력(오탐 0) 조건: 스냅샷 미검증(fetch 실패·TTL 밖) · board 비-git · upstream 미설정 ·
-    원격 판정 불가(`None`·원격에 그 티켓 없음 포함) · local_status 가 STATUS_DIRS 밖(draft 는
-    board-git 추적 대상이 아님) · 로컬==원격. 이 경우들은 "판정불가/무관"일 뿐 "최신" 을
-    주장하지 않으므로 오탐이 아니다.
-    """
-    if not snapshot_verified:
-        return
-    if local_status not in ticket_rules.STATUS_DIRS:
-        return
-    if not _board_git_enabled():
-        return
-    upstream = _board_git_upstream()
-    if upstream is None:
-        return
-    remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
-    if remote_status is None or remote_status == local_status:
-        return
-    behind = _board_git_behind(upstream.tracking)
-    # behind 계산 불가면 수치를 지어내지 않는다(F-003) — 불일치 사실 자체는 검증된
-    # 스냅샷에서 읽었으므로 그대로 말한다.
-    gap = f"behind {behind}" if behind is not None else "behind 판정불가"
-    print(
-        f"⚠ {ticket_id} 로컬 사본 stale — 로컬 status={local_status} · "
-        f"원격-추적 status={remote_status}({gap}). "
-        f"`board.py list` 로 board-git freshness 를 확인하거나 board pull 후 재조회하라.",
-        file=sys.stderr,
-    )
-
-
 def cmd_list(args: argparse.Namespace) -> int:
     # `--mine` / `--repo`·`--slot`
     # 뷰: 단일 공유 보드의 렌즈 — **현재 사용자**의 area open + claim.
@@ -8204,7 +4557,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         # read 경로도 깔때기 소비 — 미검증이면 `--task alpha_1`(폴더
         # 이름 패턴) 입력이 옛 슬롯 claim 을 task 처럼 매칭한다. 부작용 0 조회지만 소비 지점
         # 폐쇄(전 surface 단일 규칙)에 합류한다.
-        task_args._validate_actor_task_or_exit(_home(), task_lens)
+        ticket_access._validate_actor_task_or_exit(_home(), task_lens)
     if task_lens is not None and explicit_mine:
         sys.exit("[중단] --task 는 --mine 과 함께 쓸 수 없다 — 뷰 스코프는 하나만 지정하라.")
     mine = explicit_mine or task_lens is not None
@@ -8223,14 +4576,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     # task 렌즈는 claim 을 그 task 로 교집합한다(--mine 은 전 task).
     slot_scoped = task_lens is not None
     if task_lens is not None:
-        my_user = user_name()
+        my_user = lease_store.user_name(_home())
         my_slot = task_lens
     else:
         # 무렌즈 경로 — `--mine`(user-wide) 또는 기본 뷰(default_view·세션 스코프). 둘 다
         # 현재 사용자/세션을 해소한다(전체 뷰 `--all` 만 정체성 무해소·additive). 기본 뷰의 my_slot
         # (=현 세션)은 내 세션 claim 매칭과 생성-세션 스트림 판별(created_by 세션 일치)의 입력이다.
         resolve_identity = mine or default_view
-        my_user = user_name() if resolve_identity else None
+        my_user = lease_store.user_name(_home()) if resolve_identity else None
         my_slot = lease_store.session_name(_home()) if resolve_identity else ""
         if mine and my_slot is None:
             # 세션 미바인딩(surface) — claim 필터를 못 좁힌다.
@@ -8250,9 +4603,9 @@ def cmd_list(args: argparse.Namespace) -> int:
     # `_distinct_area_owners`(areas 소유 다중성)를 OR 로 더해 그 클래스를 닫는다.
     # 단일 사용자(둘 다 ≤1)면 미해소 open all-open degrade + legacy 슬롯-only 포함 보존, 다중이면
     # strict-exclude한다.
-    area_owner_in_use = (mine or default_view) and _area_owner_in_use()
+    area_owner_in_use = (mine or default_view) and ticket_access._area_owner_in_use(_home())
     multi_user = (mine or default_view) and (
-        _distinct_ticket_users() > 1 or _distinct_area_owners() > 1)
+        ticket_access._distinct_ticket_users(_home()) > 1 or ticket_access._distinct_area_owners(_home()) > 1)
     # status 뷰 셀렉터: 기본(무-status)=활성만(done 접기) · `--status all`=전체(done 포함)
     # · `--status <특정>`=그 status 만(기존 동작 무변경).
     status_arg = getattr(args, "status", None)
@@ -8274,13 +4627,13 @@ def cmd_list(args: argparse.Namespace) -> int:
             if loaded is None:
                 continue
             fm, _ = loaded
-            if args.tag and args.tag not in _tag_values(fm):
+            if args.tag and args.tag not in ticket_rules._tag_values(fm):
                 continue
             if session_view:
                 # 세션 뷰(무인자 기본) — 그 세션 스트림(생성 open +
                 # 그 세션 claim)만. 타 세션분은 카운트 줄 포함 완전 비노출(전체는 `--all`).
-                in_view = _in_default_view(
-                    status, fm, my_user, my_slot, area_owner_in_use, multi_user)
+                in_view = ticket_access._in_default_view(
+                    _home(), status, fm, my_user, my_slot, area_owner_in_use, multi_user)
                 if in_view:
                     rows.append((status, fm))
                 elif multi_user and not strict_exclude_fired:
@@ -8289,13 +4642,13 @@ def cmd_list(args: argparse.Namespace) -> int:
                     # 세션 후보인지 확인하도록 조회 user만 미해소 상태로 완화한다. 세션 축은
                     # 그대로이므로 타 세션의 정상 제외는 경고 신호가 되지 않는다.
                     strict_exclude_fired = (
-                        _in_default_view(
-                            status, fm, my_user, my_slot, area_owner_in_use, False)
-                        or _in_default_view(
-                            status, fm, None, my_slot, area_owner_in_use, False)
+                        ticket_access._in_default_view(
+                            _home(), status, fm, my_user, my_slot, area_owner_in_use, False)
+                        or ticket_access._in_default_view(
+                            _home(), status, fm, None, my_slot, area_owner_in_use, False)
                     )
                 continue
-            if mine and not _ticket_is_mine(status, fm, my_user, my_slot,
+            if mine and not ticket_access._ticket_is_mine(_home(), status, fm, my_user, my_slot,
                                             area_owner_in_use, multi_user,
                                             slot_scoped=slot_scoped):
                 # 이 제외가 *strict-exclude* 였는지 판정: 같은 predicate 를 multi_user=False 로
@@ -8303,8 +4656,8 @@ def cmd_list(args: argparse.Namespace) -> int:
                 # 것(`_ticket_is_mine` 미해소 분기). 판정을 복제하지 않고 단일 predicate 를 재사용
                 # 해 실 드롭만 신호로 잡는다. 이미 발동했으면 재평가를 생략한다. 소유 해소된 타
                 # 사용자 티켓 제외는 단일 사용자에서도 제외라 무신호다.
-                if multi_user and not strict_exclude_fired and _ticket_is_mine(
-                        status, fm, my_user, my_slot,
+                if multi_user and not strict_exclude_fired and ticket_access._ticket_is_mine(
+                        _home(), status, fm, my_user, my_slot,
                         area_owner_in_use, False,
                         slot_scoped=slot_scoped):
                     strict_exclude_fired = True
@@ -8325,12 +4678,12 @@ def cmd_list(args: argparse.Namespace) -> int:
         )
     # board-git freshness 표면화 (advisory·stderr) — 각 list 변형 공통·양 return 경로
     # ("(no tickets)"·행 있음)를 커버하도록 여기서 한 번 소환. board 비-git 이면 무출력.
-    _print_board_freshness()
+    board_list._print_board_freshness(_home())
     if not rows:
         print("(no tickets)")
         return 0
     for status, fm in rows:
-        tags = ",".join(_tag_values(fm))
+        tags = ",".join(ticket_rules._tag_values(fm))
         claimed = fm.get("claimed_by") or ""
         title = (fm.get("title") or "")[:60]
         print(f"  [{status:7s}] {fm['id']}  {title:60s}  {claimed:18s}  {tags}")
@@ -8358,13 +4711,13 @@ def cmd_prefix_list(args: argparse.Namespace) -> int:
             if loaded is None:
                 continue
             fm, _ = loaded
-            tid = _issued_ticket_id(p, fm)
+            tid = ticket_store._issued_ticket_id(_home(), p, fm)
             if not tid:
                 continue
-            num = _ticket_id_number(tid)
+            num = ticket_rules._ticket_id_number(tid)
             if num is None:
                 continue
-            buckets.setdefault(_ticket_prefix(tid), []).append((num, tid))
+            buckets.setdefault(ticket_rules._ticket_prefix(tid), []).append((num, tid))
     if not buckets:
         print("(no tickets)")
         return 0
@@ -8379,401 +4732,6 @@ def cmd_prefix_list(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── prefix rename/strip/merge/delete 코어  ─────────
-# 카테고리 개명/통합 동사. rewriter(`rewrite_refs`)를 소비해 참조까지 무손실 relabel
-# 한다. 공통 파이프라인(`_prefix_relabel`): old→new 맵 → collision abort → 본문 토큰치환 +
-# slug 파일명 rename → 홈 git clean 가드 → board-git 백업 commit. 티켓 물리삭제 없음.
-
-def _parse_prefix_arg(raw: str) -> str | None:
-    """CLI prefix 인자 → 실 prefix(str) 또는 None(무prefix). 예약어 `none`(대소문자 무관) → None.
-
-    `none` 은 이름 없는(`T-NNNN`) 네임스페이스의 1급 인자라 from/to/into 어디서든
-    `None`(무prefix) 로 해소된다. prefix 동일성이 case-insensitive fold 이므로 `NONE`/`None` 도
-    같은 예약어로 fold 된다. `none` 이 실 prefix 로 등록될 수 없게 예약돼 있어
-    (`_validate_prefix`) 실 카테고리와 충돌하지 않는다.
-    """
-    return None if raw.lower() in _PREFIX_RESERVED else raw
-
-
-def _format_ticket_id(prefix: str | None, num: int) -> str:
-    """prefix(또는 None=무prefix)와 순번으로 canonical ID 생성 (`_next_id` 발행 규칙과 정합).
-
-    None → `T-NNNN`(최소 4자리) · prefix → `T-<p>-NNN`(최소 3자리). zero-pad 는 *최소* 폭이라
-    번호가 커지면 자연 확장된다(`_next_id` 와 동형).
-    """
-    if prefix:
-        return f"T-{prefix}-{num:03d}"
-    return f"T-{num:04d}"
-
-
-def _scan_prefix_tickets(skipped: list[Path] | None = None) -> list[dict[str, Any]]:
-    """STATUS_DIRS 전 티켓을 relabel 용 레코드로 수집한다 (id·num·prefix·status·path·created).
-
-    `created` 는 merge 시간순 정렬 키(문자열 ISO 로 정규화 — yaml date/str 양쪽 흡수). ID 미해소
-    (파일명·frontmatter 둘 다 실패)나 순번 미상 파일은 건너뛴다(`cmd_prefix_list` 버킷팅과 동형).
-
-    `skipped` 를 주면 **읽지 못한 티켓 경로**를 거기 싣는다. 이 스캔은 조회(prefix list)와
-    mutation(rename·merge·reid·delete)이 함께 쓰는데, 못 읽은 티켓의 의미가 두 쪽에서 다르다:
-    조회는 한 줄 빠질 뿐이지만 mutation 은 그 티켓의 **ID 를 못 본 채** 유일성을 판정하므로
-    그 ID 위로 다른 티켓을 덮어쓴다. 그래서 skip 사실을 삼키지 않고 호출부에 돌려준다
-    (`_prefix_scan` 이 mutation 쪽 판정을 소유).
-    """
-    out: list[dict[str, Any]] = []
-    # .drafts 포함 — draft 도 이미 발행된 ID(find_ticket/_next_id 인지).
-    # relabel 이 draft 를 놓치면 old-prefix draft 가 잔존, promote 시 혼재가 보드로 재유입된다.
-    for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
-        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
-            loaded = ticket_store.load_ticket_soft(_home(), p)
-            if loaded is None:
-                if skipped is not None:
-                    skipped.append(p)
-                continue
-            fm, _ = loaded
-            tid = _issued_ticket_id(p, fm)
-            if not tid:
-                continue
-            num = _ticket_id_number(tid)
-            if num is None:
-                continue
-            out.append({
-                "id": tid, "num": num, "prefix": _ticket_prefix(tid),
-                "status": status, "path": p,
-                "created": str(fm.get("created") or ""),
-            })
-    return out
-
-
-# ID 재부여 표면의 손상-티켓 차단 안내 — 조회 표면과 갈리는 지점을 문구가 스스로 밝힌다.
-_UNREADABLE_SCAN_BLOCK = (
-    "[중단] {op}: 읽지 못한 티켓 {count}건이 있어 ID 유일성을 판정할 수 없다 — {sample}\n"
-    "  · 못 본 ID 는 곧 clobber 다 — 유일성 검사와 번호 이어붙이기(`start=max(...)`)가 그 ID 를 "
-    "모른 채 전진해 다른 티켓을 그 위에 덮어쓴다.\n"
-    "  · 위 경고의 frontmatter 오류를 고친 뒤 다시 실행하라. 조회 표면"
-    "(`list`·`prefix list`·`lint`)은 그 티켓만 빼고 계속 동작한다."
-)
-
-
-def _prefix_scan(op: str) -> tuple[list[dict[str, Any]] | None, int]:
-    """ID 재부여 표면용 전수 스캔 — 읽지 못한 티켓이 1건이라도 있으면 `(None, 1)` 로 막는다.
-
-    조회는 손상 1건을 건너뛰고 계속 도는 게 옳지만(보드 전체가 조회 불능이 되면 안 된다),
-    **ID 를 재부여하는 표면은 반대**다: 못 본 ID 는 유일성 판정에서 빠져 그 위로 다른 티켓이
-    덮인다. 같은 스캔을 쓰되 skip 의 의미만 표면별로 가른다.
-    """
-    skipped: list[Path] = []
-    tickets = _scan_prefix_tickets(skipped)
-    if not skipped:
-        return tickets, 0
-    sample = ", ".join(pm_paths._rel_to_repo(_home(), p) for p in skipped[:5])
-    if len(skipped) > 5:
-        sample += " …"
-    print(_UNREADABLE_SCAN_BLOCK.format(op=op, count=len(skipped), sample=sample),
-          file=sys.stderr)
-    return None, 1
-
-
-class PrefixSourcesUnreadable(RuntimeError):
-    """prefix 승인 게이트의 3소스 중 하나를 신뢰할 수 없어 fail-loud 해야 함."""
-
-
-@functools.lru_cache(maxsize=1)
-def _cheap_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """값싼 2소스(areas·task) prefix 재고를 한 번 읽는다.
-
-    3소스 합성의 입력이자 전체 티켓 inventory가 손상됐을 때의 진단 fallback이다.
-    값싼 소스 자체의 fold case 오염은 전부 보존해, 티켓 소스를 끝내 읽지 못해도
-    `_prefix_target_snapshot`이 이미 확인한 case 변형과 출처를 잃지 않게 한다.
-    """
-    try:
-        area_prefixes = set(areas_store.registered_prefixes(_home()))
-
-        task_prefixes: set[str] = set()
-        if LEASES_FILE.exists():
-            try:
-                ledger = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise PrefixSourcesUnreadable(
-                    f"task 장부 {LEASES_FILE}를 읽을 수 없음: {exc}"
-                ) from exc
-            if not isinstance(ledger, dict):
-                raise PrefixSourcesUnreadable("task 장부 최상위 값이 object가 아님")
-            tasks = ledger.get("tasks", [])
-            if not isinstance(tasks, list):
-                raise PrefixSourcesUnreadable("task 장부의 tasks 값이 list가 아님")
-            for index, task in enumerate(tasks):
-                if not isinstance(task, dict) or not task.get("name"):
-                    raise PrefixSourcesUnreadable(
-                        f"task 장부 tasks[{index}]가 유효한 task object가 아님"
-                    )
-                prefix = task.get("prefix")
-                if prefix in (None, ""):
-                    continue
-                if not isinstance(prefix, str):
-                    raise PrefixSourcesUnreadable(
-                        f"task 장부 tasks[{index}].prefix가 문자열/null이 아님"
-                    )
-                reason = _validate_prefix(prefix)
-                if reason:
-                    raise PrefixSourcesUnreadable(
-                        f"task 장부 tasks[{index}].prefix 손상: {reason}"
-                    )
-                task_prefixes.add(prefix)
-
-        by_prefix: dict[str, set[str]] = {}
-        for source, prefixes in (
-            ("areas.md", area_prefixes),
-            ("task 장부", task_prefixes),
-        ):
-            for prefix in prefixes:
-                by_prefix.setdefault(prefix, set()).add(source)
-        return tuple(
-            (prefix, tuple(sorted(sources)))
-            for prefix, sources in sorted(
-                by_prefix.items(), key=lambda item: (item[0].lower(), item[0])
-            )
-        )
-    except PrefixSourcesUnreadable:
-        raise
-    except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
-        raise PrefixSourcesUnreadable(f"prefix 소스를 읽을 수 없음: {exc}") from exc
-
-
-@functools.lru_cache(maxsize=1)
-def _known_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """3소스 prefix와 각 출처를 immutable·결정적 snapshot으로 한 번 읽는다.
-
-    소스는 (1) areas.md prefix, (2) 기발행 티켓 ID prefix, (3) worktree task 장부의
-    모든 ``Task.prefix``다. per-clone ``local.conf`` 는 소스가 아니다 — clone-local 라벨은
-    ``id_prefix`` 해소에도 없으므로 승인 게이트에도 whitelist하지 않는다.
-
-    board는 worktree_pool 엔진을 import하지 않는 기존 격리를 지킨다. worktree_pool이
-    atomic-replace하는 JSON 장부를 strict point-read하고, 손상은 빈 집합으로 완화하지 않는다.
-    case 충돌 판정은 값싼 소스의 fold-match 여부와 무관하게 항상 티켓까지 3소스를
-    확인한다. 첫 전수 스캔 결과는 이 함수의 프로세스 캐시에 보관해 후속 판정 비용을
-    회수하며, 티켓 손상은 빈 집합으로 완화하지 않고 fail-loud한다.
-    동일 문자열이 여러 소스에 있으면 출처를 합치고, case 변형은 서로 다른 항목으로 보존한다.
-    그래야 ``AAA``/``aaa`` 오염을 union 과정에서 숨기지 않고 발견된 변형과 소스를 전부
-    fail-loud할 수 있다. 반환 순서는 ``(lower, exact)``로 고정해 set/hash 순서와 무관하다.
-    """
-    try:
-        skipped: list[Path] = []
-        ticket_rows = _scan_prefix_tickets(skipped)
-        if skipped:
-            sample = ", ".join(pm_paths._rel_to_repo(_home(), path) for path in skipped[:5])
-            if len(skipped) > 5:
-                sample += " …"
-            raise PrefixSourcesUnreadable(
-                f"읽지 못한 티켓 {len(skipped)}건({sample}) 때문에 기발행 prefix를 확정할 수 없음"
-                "(누락 판정은 신규 ID clobber 위험)"
-            )
-        ticket_prefixes = {
-            prefix for row in ticket_rows if (prefix := row.get("prefix"))
-        }
-
-        by_prefix = {
-            prefix: set(sources) for prefix, sources in _cheap_prefix_inventory()
-        }
-        for prefix in ticket_prefixes:
-            by_prefix.setdefault(prefix, set()).add("기발행 티켓")
-        return tuple(
-            (prefix, tuple(sorted(sources)))
-            for prefix, sources in sorted(
-                by_prefix.items(), key=lambda item: (item[0].lower(), item[0])
-            )
-        )
-    except PrefixSourcesUnreadable:
-        raise
-    except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
-        raise PrefixSourcesUnreadable(f"prefix 소스를 읽을 수 없음: {exc}") from exc
-
-
-@functools.lru_cache(maxsize=128)
-def known_prefixes(target: str | None = None) -> frozenset[str]:
-    """신규-prefix 판정의 단일 진실인 3소스 합집합(canonical case 보존).
-
-    ``target``은 기존 호출 호환용이며 판정 범위를 줄이지 않는다. 값싼 소스에
-    fold/exact match가 있어도 다른 case의 기발행 티켓이 있으면 canonical이 충돌하고,
-    `_next_prefixed_id`가 티켓 case를 이어 쓸 수 있으므로 반드시 3소스를 모두 읽는다.
-    전수 스캔은 `_known_prefix_inventory`의 프로세스 1회 캐시로 상쇄한다.
-    """
-    return frozenset(prefix for prefix, _sources in _known_prefix_inventory())
-
-
-def invalidate_known_prefixes_cache() -> None:
-    """이 프로세스가 prefix 소스를 변경한 뒤 1회 캐시를 무효화한다."""
-    known_prefixes.cache_clear()
-    _known_prefix_inventory.cache_clear()
-    _cheap_prefix_inventory.cache_clear()
-
-
-def _prefix_target_snapshot(
-    prefix: str,
-    *,
-    surface: str,
-) -> tuple[str | None, bool]:
-    """현재 snapshot에서 ``(canonical, is_new)``를 반환한다. 판정 불능이면 ``(None, False)``.
-
-    한 fold에 case 변형이 둘 이상이면 어느 항목도 canonical로 임의 선택하지 않는다. 발견된
-    모든 변형과 3소스 출처를 정렬 출력하고, 먼저 한 case로 수렴시키라는 처방과 함께 막는다.
-    """
-    try:
-        known = known_prefixes(prefix)
-    except PrefixSourcesUnreadable as exc:
-        # 전체 티켓 inventory가 손상됐어도 값싼 소스만으로 이미 case 충돌이 확정됐다면
-        # 그 출처를 버리지 않는다. 4번째 소스를 읽지 못한 사실도 함께 밝혀 쓰기는 계속 막는다.
-        try:
-            fallback_inventory = _cheap_prefix_inventory()
-        except PrefixSourcesUnreadable:
-            fallback_inventory = ()
-        fallback_matches = sorted(
-            (
-                candidate for candidate, _sources in fallback_inventory
-                if candidate.lower() == prefix.lower()
-            ),
-            key=lambda value: (value.lower(), value),
-        )
-        if len(fallback_matches) > 1:
-            _print_prefix_case_conflict(
-                prefix,
-                fallback_matches,
-                dict(fallback_inventory),
-                surface=surface,
-                inventory_error=exc,
-            )
-        else:
-            print(
-                f"[중단] {surface}: prefix 3소스 합집합을 신뢰할 수 없다 — {exc}. "
-                "소스 손상을 고친 뒤 다시 실행하라.",
-                file=sys.stderr,
-            )
-        return None, False
-
-    matches = sorted(
-        (candidate for candidate in known if candidate.lower() == prefix.lower()),
-        key=lambda value: (value.lower(), value),
-    )
-    if len(matches) > 1:
-        try:
-            source_map = dict(_known_prefix_inventory())
-            inventory_error = None
-        except PrefixSourcesUnreadable as exc:
-            # known_prefixes가 monkeypatch/동시 변경 등으로 먼저 값을 돌려준 뒤 full source
-            # map만 실패하는 경로에서도 확인된 값싼 출처를 진단 fallback으로 보존한다.
-            try:
-                source_map = dict(_cheap_prefix_inventory())
-            except PrefixSourcesUnreadable:
-                source_map = {}
-            inventory_error = exc
-        _print_prefix_case_conflict(
-            prefix,
-            matches,
-            source_map,
-            surface=surface,
-            inventory_error=inventory_error,
-        )
-        return None, False
-    if matches:
-        return matches[0], False
-    return prefix, True
-
-
-def _print_prefix_case_conflict(
-    prefix: str,
-    matches: list[str],
-    source_map: dict[str, tuple[str, ...]],
-    *,
-    surface: str,
-    inventory_error: PrefixSourcesUnreadable | None = None,
-) -> None:
-    """case 충돌을 출처 보존·결정적 순서로 출력한다."""
-    variants = "; ".join(
-        f"{candidate!r} ← {', '.join(source_map.get(candidate, ('소스 미상',)))}"
-        for candidate in matches
-    )
-    incomplete = (
-        f"\n  진단 보존: 티켓 inventory 오류({inventory_error})로 3소스 출처를 모두 "
-        "확정하지 못했지만, 위 값싼 소스 출처만으로도 case 충돌은 확정적이다."
-        if inventory_error is not None
-        else ""
-    )
-    print(
-        f"[중단] {surface}: prefix {prefix!r}의 case 변형이 2개 이상 존재해 canonical을 "
-        f"결정할 수 없다 — {variants}.{incomplete}\n"
-        "  정리 처방: 하나의 canonical case를 고른 뒤 areas.md·task 장부를 "
-        "그 case로 맞추고, 기발행 티켓은 `board.py prefix rename/merge`로 같은 case에 "
-        "수렴시킨 다음 재실행하라. 임의 변형 선택은 새 ID 네임스페이스를 분할하므로 "
-        "수행하지 않는다.",
-        file=sys.stderr,
-    )
-
-
-def require_prefix_user_ack(
-    prefix: str,
-    user_ack: str | None,
-    *,
-    surface: str,
-) -> str | None:
-    """기존 prefix의 canonical case 또는 승인된 신규 prefix를 반환하고, 거부면 None.
-
-    prefix 동일성은 3소스 합집합에 case-insensitive fold로 대조한다. 신규 라벨은
-    ``--user-ack <prefix>`` 값이 대상과 정확히 결속될 때만 통과한다. 이 토큰은 적대적
-    우회 방지가 아니라 사용자 승인 마찰과 감사 surface이며, 승인 주체가 아닌 세션이
-    자가 부착할 수 있다는 위협 모델은 의도적으로 숨기지 않는다.
-    """
-    canonical, is_new = _prefix_target_snapshot(prefix, surface=surface)
-    if canonical is None:
-        return None
-    if not is_new:
-        return canonical
-    if user_ack == prefix:
-        print(
-            f"[승인 감사] {surface}: 사용자 승인 토큰이 새 prefix {prefix!r}에 값-결속됨."
-        )
-        return prefix
-
-    known = known_prefixes()
-    categories = ", ".join(
-        sorted(known, key=lambda value: (value.lower(), value))
-    ) or "(없음)"
-    mismatch = (
-        f" 제공된 값 {user_ack!r}은 대상에 결속되지 않았다."
-        if user_ack is not None
-        else ""
-    )
-    print(
-        f"[중단] {surface}: 새 prefix {prefix!r} 신설에는 사용자 명시 승인이 필요하다.{mismatch}\n"
-        f"  1순위: 사용자에게 새 카테고리 {prefix!r} 승인을 요청하라.\n"
-        f"  현재 카테고리(areas ∪ 티켓 ∪ task): {categories}\n"
-        "  정상 등록 경로: areas.md prefix 칼럼 또는 `pm-config task prefix`로 먼저 등록한다. "
-        "두 경로도 신규 라벨이면 최초 1회 사용자 승인을 지나야 한다.\n"
-        f"  부차 수단: 승인한 사용자만 원 명령에 `--user-ack {prefix}`를 대상값 그대로 붙여 "
-        "실행하라(세션 자동 부착 금지).",
-        file=sys.stderr,
-    )
-    return None
-
-
-def revalidate_prefix_user_ack(
-    prefix: str,
-    user_ack: str | None,
-    expected: str,
-    *,
-    surface: str,
-) -> str | None:
-    """쓰기 락 안에서 캐시를 버리고 승인 판정을 다시 해 선판정과 같을 때만 반환한다."""
-    invalidate_known_prefixes_cache()
-    fresh = require_prefix_user_ack(prefix, user_ack, surface=f"{surface} (락 안 fresh 재검증)")
-    if fresh == expected:
-        return fresh
-    print(
-        f"[중단] {surface}: prefix canonical 판정이 선판정 {expected!r}에서 "
-        f"fresh snapshot {fresh!r}로 달라졌다 — 동시 세션이 prefix 소스를 변경했을 수 있어 "
-        "쓰기 0으로 중단한다. 현황을 정리·재확인한 뒤 원 명령을 다시 실행하라.",
-        file=sys.stderr,
-    )
-    return None
-
-
 def _rename_map(src: str | None, dst: str | None,
                 tickets: list[dict[str, Any]]) -> dict[str, str]:
     """rename 무충돌 맵 — src 네임스페이스 티켓의 prefix 만 dst 로 교체(번호 유지).
@@ -8783,12 +4741,12 @@ def _rename_map(src: str | None, dst: str | None,
     호출자가 ``require_prefix_user_ack`` 공유 게이트에서 3소스 canonical case로
     해소한 값이므로 그대로 발행 case다(`_validate_dst_prefix`는 형식 sanity만 담당).
     """
-    src_key = _fold_key(src)
+    src_key = ticket_rules._fold_key(src)
     id_map: dict[str, str] = {}
     for t in tickets:
-        if _fold_key(t["prefix"]) != src_key:
+        if ticket_rules._fold_key(t["prefix"]) != src_key:
             continue
-        new_id = _format_ticket_id(dst, t["num"])
+        new_id = areas_registry._format_ticket_id(dst, t["num"])
         if new_id != t["id"]:
             id_map[t["id"]] = new_id
     return id_map
@@ -8808,14 +4766,14 @@ def _merge_append_map(sources: list[str | None], into: str | None,
     ``require_prefix_user_ack``가 into를 canonical case로 해소하므로 case-혼동이 없다
     (source 측만 fold·`_validate_dst_prefix`는 형식 sanity만 담당).
     """
-    src_index = {_fold_key(p): i for i, p in enumerate(sources)}
-    src_tickets = [t for t in tickets if _fold_key(t["prefix"]) in src_index]
+    src_index = {ticket_rules._fold_key(p): i for i, p in enumerate(sources)}
+    src_tickets = [t for t in tickets if ticket_rules._fold_key(t["prefix"]) in src_index]
     start = max((t["num"] for t in tickets if t["prefix"] == into), default=0)
     ordered = sorted(
-        src_tickets, key=lambda t: (t["created"], src_index[_fold_key(t["prefix"])], t["num"]))
+        src_tickets, key=lambda t: (t["created"], src_index[ticket_rules._fold_key(t["prefix"])], t["num"]))
     id_map: dict[str, str] = {}
     for i, t in enumerate(ordered, start=start + 1):
-        new_id = _format_ticket_id(into, i)
+        new_id = areas_registry._format_ticket_id(into, i)
         if new_id != t["id"]:
             id_map[t["id"]] = new_id
     return id_map
@@ -8831,17 +4789,17 @@ def _merge_reorder_map(sources: list[str | None], into: str | None,
     source membership 은 case-insensitive fold(`_fold_key`)·into 그룹은 exact(`== into`·
     호출자의 ``require_prefix_user_ack``가 canonical case 해소) — `_merge_append_map`과 동일 규율.
     """
-    src_index = {_fold_key(p): i for i, p in enumerate(sources)}
+    src_index = {ticket_rules._fold_key(p): i for i, p in enumerate(sources)}
     involved = [t for t in tickets
-                if t["prefix"] == into or _fold_key(t["prefix"]) in src_index]
+                if t["prefix"] == into or ticket_rules._fold_key(t["prefix"]) in src_index]
 
     def _key(t: dict[str, Any]) -> tuple[str, int, int]:
-        group = -1 if t["prefix"] == into else src_index[_fold_key(t["prefix"])]
+        group = -1 if t["prefix"] == into else src_index[ticket_rules._fold_key(t["prefix"])]
         return (t["created"], group, t["num"])
 
     id_map: dict[str, str] = {}
     for i, t in enumerate(sorted(involved, key=_key), start=1):
-        new_id = _format_ticket_id(into, i)
+        new_id = areas_registry._format_ticket_id(into, i)
         if new_id != t["id"]:
             id_map[t["id"]] = new_id
     return id_map
@@ -8857,10 +4815,10 @@ def _collision_key(tid: str) -> tuple[str | None, int] | str:
     collision 으로 잡는다(무손실 abort). 순번 미파싱(malformed)은 리터럴 문자열로 폴백해 자기끼리만
     충돌 판정(오검출 없음).
     """
-    num = _ticket_id_number(tid)
+    num = ticket_rules._ticket_id_number(tid)
     if num is None:
         return tid
-    return (_fold_key(_ticket_prefix(tid)), num)
+    return (ticket_rules._fold_key(ticket_rules._ticket_prefix(tid)), num)
 
 
 def _detect_collisions(id_map: dict[str, str], all_ids: set[str]) -> list[str]:
@@ -9054,7 +5012,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
 
     # board-git 백업 rev — 분리 형상에서 relabel *직전* HEAD(되돌아갈 지점). rewrite 뒤 새 commit
     # 이 relabel 을 board-git 에 기록하므로 이 rev 로 `reset --hard` 하면 원복된다.
-    backup_rev = _board_git_head() if _board_git_enabled() else None
+    backup_rev = board_git._board_git_head(_home()) if board_git._board_git_enabled(_home()) else None
 
     # 전체 mutation 을 단일 board_lock 으로 직렬화 (동시 new/claim 과 상호배제). 파일명
     # rename 계획은 락 보유 하에 fresh scan 으로 세운다(rewrite 와 같은 스냅샷). refresh 는 락-보유
@@ -9062,7 +5020,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     # 백업 commit 이 이 구간 안에 있으므로 **board_git_lock 을 board_lock 보다 먼저** 잡는다
     # (락 순서 고정 — 역순 획득이 하나라도 있으면 claim 과 데드락). board-git 비활성이면
     # board_git_lock 은 no-op 이라 legacy 경로는 무변경.
-    with board_git_lock(), board_lock():
+    with board_git.board_git_lock(_home()), fs.board_lock(_home()):
         if pre_write_check is not None and not pre_write_check():
             return 1
         # 맵 생성+collision 검사도 락 안 fresh snapshot 으로 — 검사↔적용 사이 cmd_new 창 봉합.
@@ -9090,13 +5048,13 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         _apply_file_renames(all_renames)
         for src, dst in all_renames:
             touched.extend((src, dst))
-        _refresh_board_locked()
-        if _board_git_enabled():
-            _board_git_stage_and_commit(f"{op} {label}", touched)
+        board_dashboard._refresh_board_locked(_home())
+        if board_git._board_git_enabled(_home()):
+            board_git._board_git_stage_and_commit(_home(), f"{op} {label}", touched)
 
-    invalidate_known_prefixes_cache()
+    areas_registry.invalidate_known_prefixes_cache()
 
-    if _board_git_enabled():
+    if board_git._board_git_enabled(_home()):
         if backup_rev:
             print(f"  board-git 백업 rev(되돌리려면 "
                   f"`git -C .project_manager/board reset --hard {backup_rev[:12]}`)")
@@ -9118,7 +5076,7 @@ def _validate_dst_prefix(raw: str, parsed: str | None) -> str | None:
     """
     if parsed is None:
         return None
-    reason = _validate_prefix(raw)
+    reason = ticket_rules._validate_prefix(raw)
     if reason:
         return reason
     return None
@@ -9126,8 +5084,8 @@ def _validate_dst_prefix(raw: str, parsed: str | None) -> str | None:
 
 def cmd_prefix_rename(args: argparse.Namespace) -> int:
     """`prefix rename <A|none> <B|none>` — 무충돌=번호유지 교체·충돌=merge 안내."""
-    src = _parse_prefix_arg(args.src)
-    requested_dst = _parse_prefix_arg(args.dst)
+    src = areas_registry._parse_prefix_arg(args.src)
+    requested_dst = areas_registry._parse_prefix_arg(args.dst)
     dst = requested_dst
     dry_run = bool(getattr(args, "dry_run", False))
     if src == dst:
@@ -9140,8 +5098,8 @@ def cmd_prefix_rename(args: argparse.Namespace) -> int:
         return 1
     dst_is_new = False
     if requested_dst is not None:
-        candidate, dst_is_new = _prefix_target_snapshot(
-            requested_dst, surface="board prefix rename dst",
+        candidate, dst_is_new = areas_registry._prefix_target_snapshot(
+            _home(), requested_dst, surface="board prefix rename dst",
         )
         if candidate is None:
             return 1
@@ -9149,7 +5107,7 @@ def cmd_prefix_rename(args: argparse.Namespace) -> int:
 
     def build_map() -> "tuple[dict[str, str] | None, int]":
         # 락 안 fresh snapshot 에서 스캔→맵→collision (TOCTOU 봉합·dry-run 은 락 밖 호출).
-        tickets, scan_rc = _prefix_scan("prefix rename")
+        tickets, scan_rc = areas_registry._prefix_scan(_home(), "prefix rename")
         if tickets is None:
             return None, scan_rc
         id_map = _rename_map(src, dst, tickets)
@@ -9180,16 +5138,16 @@ def cmd_prefix_rename(args: argparse.Namespace) -> int:
         if not planned:
             return rc
         if requested_dst is not None:
-            canonical = require_prefix_user_ack(
-                requested_dst,
+            canonical = areas_registry.require_prefix_user_ack(
+                _home(), requested_dst,
                 getattr(args, "user_ack", None),
                 surface="board prefix rename dst",
             )
             if canonical is None:
                 return 1
             dst = canonical
-            pre_write_check = lambda: revalidate_prefix_user_ack(
-                requested_dst,
+            pre_write_check = lambda: areas_registry.revalidate_prefix_user_ack(
+                _home(), requested_dst,
                 getattr(args, "user_ack", None),
                 canonical,
                 surface="board prefix rename dst",
@@ -9209,8 +5167,8 @@ def cmd_prefix_strip(args: argparse.Namespace) -> int:
 
 def cmd_prefix_merge(args: argparse.Namespace) -> int:
     """`prefix merge <A> [B...] --into <T|none>` — created 순 통합(기본 append)."""
-    sources = [_parse_prefix_arg(s) for s in args.sources]
-    requested_into = _parse_prefix_arg(args.into)
+    sources = [areas_registry._parse_prefix_arg(s) for s in args.sources]
+    requested_into = areas_registry._parse_prefix_arg(args.into)
     into = requested_into
     dry_run = bool(getattr(args, "dry_run", False))
     reason = _validate_dst_prefix(args.into, into)
@@ -9219,13 +5177,13 @@ def cmd_prefix_merge(args: argparse.Namespace) -> int:
         return 1
     into_is_new = False
     if requested_into is not None:
-        candidate, into_is_new = _prefix_target_snapshot(
-            requested_into, surface="board prefix merge --into",
+        candidate, into_is_new = areas_registry._prefix_target_snapshot(
+            _home(), requested_into, surface="board prefix merge --into",
         )
         if candidate is None:
             return 1
         into = candidate
-    if _fold_key(into) in {_fold_key(s) for s in sources}:
+    if ticket_rules._fold_key(into) in {ticket_rules._fold_key(s) for s in sources}:
         # 자기-merge 가드도 case-insensitive — `merge aaa --into AAA` 는 fold-동일
         # 네임스페이스라 자기 자신에 merge 다(source fold-매칭이 노출한 클래스).
         print(f"[중단] --into 대상({args.into})이 source 목록에 있다 — 자기 자신에 merge 불가"
@@ -9235,7 +5193,7 @@ def cmd_prefix_merge(args: argparse.Namespace) -> int:
 
     def build_map() -> "tuple[dict[str, str] | None, int]":
         # 락 안 fresh snapshot — merge 의 append start=max(...) 도 stale 이면 clobber.
-        tickets, scan_rc = _prefix_scan("prefix merge")
+        tickets, scan_rc = areas_registry._prefix_scan(_home(), "prefix merge")
         if tickets is None:
             return None, scan_rc
         id_map = (_merge_reorder_map if reorder else _merge_append_map)(sources, into, tickets)
@@ -9264,16 +5222,16 @@ def cmd_prefix_merge(args: argparse.Namespace) -> int:
         if not planned:
             return rc
         if requested_into is not None:
-            canonical = require_prefix_user_ack(
-                requested_into,
+            canonical = areas_registry.require_prefix_user_ack(
+                _home(), requested_into,
                 getattr(args, "user_ack", None),
                 surface="board prefix merge --into",
             )
             if canonical is None:
                 return 1
             into = canonical
-            pre_write_check = lambda: revalidate_prefix_user_ack(
-                requested_into,
+            pre_write_check = lambda: areas_registry.revalidate_prefix_user_ack(
+                _home(), requested_into,
                 getattr(args, "user_ack", None),
                 canonical,
                 surface="board prefix merge --into",
@@ -9300,7 +5258,7 @@ def _areas_clear_prefix_cell(prefix: str) -> int:
     하고 나머지 줄(헤더·구분선·무관 행·산문)은 원문 그대로 보존한다.
     """
     af = pm_paths.areas_file(_home())
-    with board_lock():
+    with fs.board_lock(_home()):
         if not af.exists():
             return 0
         text = fs.read_text_shared(af, encoding="utf-8")
@@ -9331,7 +5289,7 @@ def _areas_clear_prefix_cell(prefix: str) -> int:
                 "\n".join(out) + ("\n" if ends_nl else ""),
                 encoding="utf-8", newline="\n")
     if cleared:
-        invalidate_known_prefixes_cache()
+        areas_registry.invalidate_known_prefixes_cache()
     return cleared
 
 
@@ -9345,7 +5303,7 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
     티켓이 있으면 물리삭제 없이 rename/merge 로 안내한다(fail-loud). `--dry-run` 은 쓰기 0·규모
     preview(다른 동사와 공통 표기).
     """
-    target = _parse_prefix_arg(args.prefix)
+    target = areas_registry._parse_prefix_arg(args.prefix)
     if target is None:
         print("[중단] none(무prefix) 네임스페이스는 delete 불가 — 기준 네임스페이스다.",
               file=sys.stderr)
@@ -9353,12 +5311,12 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     # 티켓 존재 카운트는 **case-insensitive fold**(`_fold_key`) — `delete AAA` 가 case-변종
     # `T-aaa-*` 도 세어, fold-비지 않은 네임스페이스를 "빈 것"으로 오판해 등록만 지우는 것을 막는다.
-    target_key = _fold_key(target)
+    target_key = ticket_rules._fold_key(target)
     # 손상 티켓이 있으면 "0 티켓" 판정 자체를 믿을 수 없다 — 그 티켓이 이 네임스페이스일 수 있다.
-    tickets, scan_rc = _prefix_scan("prefix delete")
+    tickets, scan_rc = areas_registry._prefix_scan(_home(), "prefix delete")
     if tickets is None:
         return scan_rc
-    count = sum(1 for t in tickets if _fold_key(t["prefix"]) == target_key)
+    count = sum(1 for t in tickets if ticket_rules._fold_key(t["prefix"]) == target_key)
     if count > 0:
         print(f"[중단] prefix {args.prefix} 에 티켓 {count}개 — delete 는 빈(0티켓) prefix 전용"
               f"(무손실·물리삭제 없음). 개명은 `board.py prefix rename {args.prefix} <B|none>`, "
@@ -9417,17 +5375,17 @@ def cmd_reid(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
-    requested_new_prefix = _ticket_prefix(requested_new_id)
+    requested_new_prefix = ticket_rules._ticket_prefix(requested_new_id)
     new_prefix_is_new = False
     canonical_new_prefix: str | None = None
     if requested_new_prefix is not None:
-        canonical_new_prefix, new_prefix_is_new = _prefix_target_snapshot(
-            requested_new_prefix, surface="board reid NEW-ID prefix",
+        canonical_new_prefix, new_prefix_is_new = areas_registry._prefix_target_snapshot(
+            _home(), requested_new_prefix, surface="board reid NEW-ID prefix",
         )
         if canonical_new_prefix is None:
             return 1
         if new_prefix_is_new:
-            reason = _validate_prefix(canonical_new_prefix)
+            reason = ticket_rules._validate_prefix(canonical_new_prefix)
             if reason:
                 print(
                     f"[중단] 신규 prefix {canonical_new_prefix!r} 형식 위반 — {reason}",
@@ -9452,7 +5410,7 @@ def cmd_reid(args: argparse.Namespace) -> int:
         # `_scan_prefix_tickets`(fm.get("id") or 파일명 폴백·전 상태 디렉토리+.drafts)로 전수 스캔해
         # canonical ID 가 정확히 old_id 인 레코드만 고른다. 스냅샷은 **한 번만** 뜬다 — OLD 선택과
         # NEW collision 판정이 같은 스냅샷을 봐야 그 사이의 변화로 판정이 갈리지 않는다.
-        tickets, scan_rc = _prefix_scan("reid")
+        tickets, scan_rc = areas_registry._prefix_scan(_home(), "reid")
         if tickets is None:
             return None, scan_rc
         matches = [t for t in tickets if t["id"] == old_id]
@@ -9474,9 +5432,9 @@ def cmd_reid(args: argparse.Namespace) -> int:
         # 수행한다. 이 선판정은 승인 안내를 위한 preview이며 쓰기 권위가 아니다.
         # 소유 판정은 lifecycle mutation 과 **같은 함수**다(`_ticket_ownership`) — 판정을 두 벌로
         # 두면 한쪽만 user 축을 보는 식으로 갈린다. 문구만 이 surface(단일세션 op)의 것을 쓴다.
-        ownership = _ticket_ownership(fm, args)
+        ownership = ticket_access._ticket_ownership(_home(), fm, task=getattr(args, "task", None), user=getattr(args, "user", None))
         if not ownership.ok:
-            remedy = _owner_session_remedy(ownership.owner or "")
+            remedy = ticket_rules._owner_session_remedy(ownership.owner or "")
             print(f"[중단] {old_id} 은 `{ownership.owner}` 가 claim 중 — reid 는 단일세션 op 다. "
                   f"{remedy}. 또는 먼저 unclaim 하라.",
                   file=sys.stderr)
@@ -9508,15 +5466,15 @@ def cmd_reid(args: argparse.Namespace) -> int:
         if not planned:
             return rc
         if requested_new_prefix is not None:
-            canonical = require_prefix_user_ack(
-                requested_new_prefix,
+            canonical = areas_registry.require_prefix_user_ack(
+                _home(), requested_new_prefix,
                 getattr(args, "user_ack", None),
                 surface="board reid NEW-ID prefix",
             )
             if canonical is None:
                 return 1
-            pre_write_check = lambda: revalidate_prefix_user_ack(
-                requested_new_prefix,
+            pre_write_check = lambda: areas_registry.revalidate_prefix_user_ack(
+                _home(), requested_new_prefix,
                 getattr(args, "user_ack", None),
                 canonical,
                 surface="board reid NEW-ID prefix",
@@ -9541,7 +5499,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     요약은 versioned 블록에서만 파생한다(산문에 같은 항목을 다시 적지 않는다).
     """
     try:
-        status, path = find_ticket(args.id)
+        status, path = ticket_store.find_ticket(_home(), args.id)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -9552,9 +5510,9 @@ def cmd_show(args: argparse.Namespace) -> int:
     # 신선도라는 개념 자체가 없는데 advisory 를 내면 조회 표면에 무의미한 경고가 상주한다
     # (upstream 판별은 네트워크 0 인 기존 `_board_git_upstream` seam 이 한다). `list` 는
     # 현행 동작 그대로 둔다(이 게이트는 show 경로에만 있다).
-    if _board_git_enabled() and _board_git_upstream() is not None:
-        snapshot_verified = _print_board_freshness()
-        _print_ticket_remote_mismatch(args.id, status,
+    if board_git._board_git_enabled(_home()) and board_git._board_git_upstream(_home()) is not None:
+        snapshot_verified = board_list._print_board_freshness(_home())
+        board_list._print_ticket_remote_mismatch(_home(), args.id, status,
                                       snapshot_verified=snapshot_verified)
     print(f"-- {args.id} ({status}/) --\n")
     body = fs.read_text_shared(path, encoding="utf-8")
@@ -9629,14 +5587,14 @@ def cmd_idea_list(args: argparse.Namespace) -> int:
             if loaded is None:
                 continue
             fm, _ = loaded
-            if args.tag and args.tag not in _tag_values(fm):
+            if args.tag and args.tag not in ticket_rules._tag_values(fm):
                 continue
             rows.append((status, fm))
     if not rows:
         print("(no ideas)")
         return 0
     for status, fm in rows:
-        tags = ",".join(_tag_values(fm))
+        tags = ",".join(ticket_rules._tag_values(fm))
         iid = str(fm.get("id") or "")
         title = (fm.get("title") or "")[:60]
         print(f"  [{status:8s}] {iid:6s} {title:60s}  {tags}")
@@ -9644,8 +5602,8 @@ def cmd_idea_list(args: argparse.Namespace) -> int:
 
 
 def cmd_idea_new(args: argparse.Namespace) -> int:
-    iid = _next_idea_id()
-    slug = _slugify(args.title)
+    iid = ticket_store._next_idea_id(_home())
+    slug = ticket_rules._slugify(args.title)
     filename = f"{iid}-{slug}.md"
 
     today = datetime.date.today().isoformat()
@@ -9661,7 +5619,7 @@ def cmd_idea_new(args: argparse.Namespace) -> int:
     body = "\n" + _IDEA_BODY_TEMPLATE.format(iid=iid, title=args.title)
 
     path = IDEAS_DIR / "open" / filename
-    dump_ticket(path, fm, body)
+    ticket_store.dump_ticket(path, fm, body)
     print(f"created idea {iid} ({pm_paths._rel_to_repo(_home(), path)})")
     print("  → fill in 한 줄 요약 / 동기 / 위험 / 다음 행동")
     return 0
@@ -9679,7 +5637,7 @@ def _transition_idea(iid: str, dst_status: str) -> int:
     """
     verb = _IDEA_TRANSITION_VERB[dst_status]
     try:
-        status, path = find_idea(iid)
+        status, path = ticket_store.find_idea(_home(), iid)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -9688,10 +5646,10 @@ def _transition_idea(iid: str, dst_status: str) -> int:
               file=sys.stderr)
         return 1
     fm, body = ticket_store.load_ticket(path)
-    new_path = move_idea(path, dst_status)
+    new_path = ticket_store.move_idea(_home(), path, dst_status)
     fm["status"] = dst_status
     fm["updated"] = datetime.date.today().isoformat()
-    dump_ticket(new_path, fm, body)
+    ticket_store.dump_ticket(new_path, fm, body)
     print(f"{dst_status} idea {iid} ({pm_paths._rel_to_repo(_home(), new_path)})")
     return 0
 
@@ -9705,8 +5663,8 @@ def cmd_idea_kill(args: argparse.Namespace) -> int:
 
 
 def cmd_refresh(_args: argparse.Namespace) -> int:
-    refresh_board()
-    print(f"board refreshed: {pm_paths._rel_to_repo(_home(), BOARD_FILE)}")
+    board_dashboard.refresh_board(_home())
+    print(f"board refreshed: {pm_paths._rel_to_repo(_home(), pm_paths.wiki_dir(_home()) / "board.md")}")
     issues = lint_tickets()
     if issues:
         print(f"⚠️  {len(issues)} lint issue(s) — run `board.py lint` for detail",
@@ -10032,7 +5990,7 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
         print(f"family_scope already {new_scope!r} — no change ({pm_paths._rel_to_repo(_home(), path)})")
         return 0
     fm["family_scope"] = new_scope
-    dump_ticket(path, fm, body)
+    ticket_store.dump_ticket(path, fm, body)
     print(f"promoted scope {old_scope!r} → {new_scope!r} ({pm_paths._rel_to_repo(_home(), path)})")
     return 0
 
@@ -10628,141 +6586,6 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + ticket_lint.lint_rounds(_home()) + ticket_lint.lint_clusters(_home())
             + ticket_lint.lint_legacy_growth_sections(_home())
             + lint_codex_delegate_observations() + ticket_lint.lint_claim_identity(_home()))
-
-
-# ── board.md regeneration ──────────────────────────────────────────────
-
-def _table_cell(value: Any) -> str:
-    """자유 문장을 markdown 표 셀 한 칸으로 안전하게 만든다 (빈 값은 `—`).
-
-    처분 사유는 사람이 쓰는 자유 산문이라 개행·파이프가 들어올 수 있다 — 그대로 넣으면 표가
-    깨져 board.md 렌더가 사람에게 잘못 읽힌다. 개행은 공백으로, 파이프는 이스케이프한다.
-    """
-    text = " ".join(str(value or "").split())
-    return text.replace("|", "\\|") if text else "—"
-
-
-def refresh_board() -> None:
-    """Regenerate .project_manager/wiki/board.md.
-
-    scan(tickets/) + render + write 를 *하나의* `board_lock()` 구간 안에서 한다
-    (공유 단일파일 lost-update 방지). write 만 감싸면, 동시 변경 시
-    A 가 stale 스냅샷을 떠 둔 사이 B 가 scan+write 를 끝내도, A 가 락을 잡아 자기
-    stale 스냅샷으로 board.md 를 덮어써 B 의 갱신을 유실한다. scan 까지 락 안에서
-    하면 *마지막 writer 가 모든 선행 write 이후의 ticket 상태를 scan* 하므로
-    board.md 가 항상 최신을 반영한다.
-
-    **재진입 금지**(board_lock docstring) — board_lock 보유 중에는 부르지 않는다.
-    일반 호출자(cmd_new·complete·block·unclaim·unblock·refresh)는 락 밖에서 부른다.
-    strict claim은 confirm/rollback까지 lock을 유지해야 하므로 public wrapper 대신
-    `_refresh_board_locked()`를 직접 호출한다.
-    """
-    with board_lock():
-        _refresh_board_locked()
-
-
-def _refresh_board_locked() -> None:
-    """board.md 재생성의 scan+render+write 본체. **board_lock 보유 전제**."""
-    by_status: dict[str, list[dict]] = {s: [] for s in ticket_rules.STATUS_DIRS}
-    for status in ticket_rules.STATUS_DIRS:
-        for p in sorted((pm_paths.tickets_dir(_home()) / status).glob("T-*.md")):
-            loaded = ticket_store.load_ticket_soft(_home(), p)
-            if loaded is None:
-                continue        # 손상 1건이 board.md 재생성 전체를 죽이지 않는다(경고는 위에서).
-            by_status[status].append(loaded[0])
-
-    lines: list[str] = [
-        "---",
-        "title: Ticket Board",
-        "type: dashboard",
-        f"updated: {clock.now_utc()}",
-        "---",
-        "",
-        "# Ticket Board",
-        "",
-        "> 자동 생성 파생물 (git-untracked) — `board.py` 변경 명령마다 로컬 갱신 · `board.py refresh` 로 재생성. 단일 진실은 `tickets/`, 라이브 상태는 `board.py list`. 수동 편집 금지.",
-        "> 작업 흐름: [`tickets/README.md`](tickets/README.md).",
-        "",
-    ]
-    totals = " · ".join(f"{s}={len(by_status[s])}" for s in ticket_rules.STATUS_DIRS)
-    lines.append(f"**현황:** {totals}")
-    lines.append("")
-
-    # STATUS_DIRS 자동 추종의 **유일한 예외** — 새 상태를 STATUS_DIRS 에 더하면 여기 한 줄도
-    # 함께 더해야 한다(빠뜨리면 이 렌더가 KeyError 로 죽는다).
-    emoji = {"open": "🟢", "claimed": "🟡", "blocked": "🔴", "done": "✅",
-             "discarded": "🗃️"}
-
-    for status in ticket_rules.STATUS_DIRS:
-        items = by_status[status]
-        # 종결 섹션(done·discarded)은 비면 헤더도 접는다 — 보드가 진행 중 작업에 집중하게.
-        if status in ticket_rules.TERMINAL_STATUS_DIRS and not items:
-            continue
-        lines.append(f"## {emoji[status]} {status.upper()} ({len(items)})")
-        lines.append("")
-        if not items:
-            lines.append("*없음*")
-            lines.append("")
-            continue
-        if status == "open":
-            lines.append("| ID | Title | depends_on | touches | tags |")
-            lines.append("|---|---|---|---|---|")
-            for fm in items:
-                dep = ", ".join(fm.get("depends_on") or []) or "—"
-                touches = fm.get("touches")
-                if touches is None:
-                    tch = "—"
-                elif isinstance(touches, list) and all(isinstance(item, str) for item in touches):
-                    tch = ", ".join(touches[:3]) or "—"
-                else:
-                    # 파생 화면만 오류를 표시한다. 명세 원값과 scope 검증 입력은 보존한다.
-                    tch = "touches 형식 오류"
-                tag = ", ".join(_tag_values(fm))
-                lines.append(
-                    f"| {fm['id']} | {fm.get('title','')} | {dep} | {tch} | {tag} |"
-                )
-        elif status == "claimed":
-            lines.append("| ID | Title | Claimed by | Since (UTC) |")
-            lines.append("|---|---|---|---|")
-            for fm in items:
-                lines.append(
-                    f"| {fm['id']} | {fm.get('title','')} | "
-                    f"`{fm.get('claimed_by','')}` | {(fm.get('claimed_at') or '')[:19]} |"
-                )
-        elif status == "blocked":
-            lines.append("| ID | Title | (reason at the bottom of the file) |")
-            lines.append("|---|---|---|")
-            for fm in items:
-                lines.append(f"| {fm['id']} | {fm.get('title','')} | — |")
-        elif status == "done":
-            # Show most-recent 10
-            lines.append("| ID | Title | Completed (UTC) |")
-            lines.append("|---|---|---|")
-            recent = sorted(items, key=lambda f: f.get("completed_at") or "",
-                            reverse=True)[:10]
-            for fm in recent:
-                lines.append(
-                    f"| {fm['id']} | {fm.get('title','')} | "
-                    f"{(fm.get('completed_at') or '')[:19]} |"
-                )
-        elif status == "discarded":
-            # 처분 종결 — done 과 섞이지 않게 별도 섹션에 처분 종류·사유를 함께 낸다.
-            lines.append("| ID | Title | 처분 | 사유 |")
-            lines.append("|---|---|---|---|")
-            for fm in sorted(items, key=lambda f: f.get("id") or ""):
-                lines.append(
-                    f"| {fm['id']} | {fm.get('title','')} | "
-                    f"{fm.get('disposition') or '—'} | "
-                    f"{_table_cell(fm.get('disposition_reason'))} |"
-                )
-        lines.append("")
-
-    # scan+render+write 가 모두 호출자(refresh_board)의 board_lock 구간 안이다 —
-    # 마지막 writer 가 모든 선행 write 이후 상태를 scan 하므로 stale write 가 없다.
-    # claim은 재진입을 피하려 이 locked 본체를 직접 호출한다. fresh/부분 scaffold에서도 public
-    # wrapper에 기대지 않고 쓸 수 있게 destination parent 생성도 본체의 write 계약에 포함한다.
-    BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BOARD_FILE.write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
 # ── argparse ───────────────────────────────────────────────────────────

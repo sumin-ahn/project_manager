@@ -670,8 +670,8 @@ def test_board_append_uses_the_seam_instead_of_its_own_o_append_write():
     (pm_log 쪽 append 위임은 그 도구 suite 가 대역으로 라우팅까지 본다 —
     `test_pm_log.py::test_append_log_delegates_the_write_to_the_shared_seam`.)
     """
-    board = _load(TOOLS / "board.py", "board_append_seam")
-    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    board = _load(TOOLS / "pm_engine/infra/areas_store.py", "board_append_seam")
+    source = (TOOLS / "pm_engine/infra/areas_store.py").read_text(encoding="utf-8")
     assert "fs.append_atomic(" in source
     assert not hasattr(board, "_append_atomic")
 
@@ -801,7 +801,7 @@ def test_o_append_write_lives_only_in_the_shared_seam():
 
 def test_converged_tools_delegate_the_append_write():
     """append 소비 도구는 `_append_atomic` 사본을 정의하지 않고 seam 을 부른다."""
-    for tool in ("board.py", "pm_engine/infra/log_store.py"):
+    for tool in ("pm_engine/infra/areas_store.py", "pm_engine/infra/log_store.py"):
         source = (TOOLS / tool).read_text(encoding="utf-8")
         assert "append_atomic(" in source, tool
         assert not re.search(r"^def _append_atomic\b", source, re.MULTILINE), tool
@@ -828,7 +828,7 @@ def test_append_guard_counts_aliased_and_from_imported_flags(label, snippet):
 
 def test_mutation_reintroduced_append_write_in_converged_tool_is_red():
     """수렴 도구에 자체 O_APPEND write 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
-    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine/infra/areas_store.py").read_text(encoding="utf-8")
     mutated = source.replace(
         "    fs.append_atomic(\n        af,",
         "    _fd = os.open(str(af), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
@@ -871,7 +871,7 @@ def test_guard_counts_aliased_and_from_imported_lock_calls(label, snippet):
         (
             "module-alias",
             lambda source: source.replace(
-                "    with fs.exclusive_file_lock(BOARD_LOCK):\n        yield",
+                "    with exclusive_file_lock(home.local_dir / \"board.lock\"):\n        yield",
                 "    import fcntl as _lock_mod\n"
                 "    _lock_mod.flock(0, _lock_mod.LOCK_EX)\n"
                 "    yield",
@@ -881,7 +881,7 @@ def test_guard_counts_aliased_and_from_imported_lock_calls(label, snippet):
         (
             "from-import",
             lambda source: source.replace(
-                "    with fs.exclusive_file_lock(BOARD_LOCK):\n        yield",
+                "    with exclusive_file_lock(home.local_dir / \"board.lock\"):\n        yield",
                 "    from fcntl import flock\n"
                 "    flock(0, 2)\n"
                 "    yield",
@@ -892,7 +892,9 @@ def test_guard_counts_aliased_and_from_imported_lock_calls(label, snippet):
 )
 def test_mutation_reintroduced_lock_branch_in_converged_tool_is_red(label, mutate):
     """수렴 도구에 락 분기를 되살리면(우회 형태 포함) 가드가 red 로 잡는다 (감도 실증)."""
-    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    module_source = (TOOLS / "pm_engine/infra/fs.py").read_text(encoding="utf-8")
+    node = next(n for n in ast.parse(module_source).body if getattr(n, "name", None) == "board_lock")
+    source = ast.get_source_segment(module_source, node)
     mutated = mutate(source)
     assert mutated != source, f"변이 앵커 소실: {label}"
     assert _lock_call_count(source) == 0, "board.py 는 수렴 상태여야 한다"

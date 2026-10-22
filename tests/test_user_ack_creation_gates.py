@@ -24,6 +24,15 @@ from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import git, pre_push_hook, ticket_store
 
+from pm_engine.app import areas_registry
+from pm_engine.infra import fs
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import lease_store
+from pm_engine.infra import board_git
+
+from pm_engine.infra import areas_store
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -58,13 +67,13 @@ def board(tmp_path, monkeypatch):
         "REPO": project,
         "TICKETS_DIR": tickets,
         "TEMPLATE_FILE": tickets / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
         "LEASES_FILE": local / "worktree-leases.json",
-        "BOARD_LOCK": local / "board.lock",
+
         "PM_STATE_FILE": wiki / "pm_state.md",
         "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
     }
@@ -72,17 +81,19 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(module, name, value)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(module, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
-    monkeypatch.setattr(module, "_board_git_enabled", lambda: False)
-    module.invalidate_known_prefixes_cache()
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
+    areas_registry.invalidate_known_prefixes_cache()
     module._project = project
     return module
 
 
 @pytest.fixture
-def pm_config():
-    return _load("pm_config_t0636", "pm_config.py")
+def pm_config(board):
+    mod = _load("pm_config_t0636", "pm_config.py")
+    mod.REPO = board.REPO
+    return mod
 
 
 class _TaskPool:
@@ -135,7 +146,6 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
                 name="job", value=prefix, user_ack=user_ack,
             ),
 
-            board=board,
         )
     if surface == "reid":
         _seed_ticket(board, "T-0036")
@@ -174,14 +184,14 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
 def test_prefix_surface_matrix_calls_shared_loader(board, pm_config, monkeypatch, capsys, surface, known, target, user_ack, expected):
     calls = []
 
-    def shared_loader(_target=None):
+    def shared_loader(_home, _target=None):
         calls.append(surface)
         return frozenset(known)
 
-    monkeypatch.setattr(board, "known_prefixes", shared_loader)
+    monkeypatch.setattr(areas_registry, "known_prefixes", shared_loader)
     # surface 성공 mutation이 loader monkeypatch의 cache_clear 속성을 요구하지 않게 하고,
     # 이 테스트는 오직 모든 표면이 같은 loader를 실제 호출하는지를 센다.
-    monkeypatch.setattr(board, "invalidate_known_prefixes_cache", lambda: None)
+    monkeypatch.setattr(areas_registry, "invalidate_known_prefixes_cache", lambda: None)
 
     rc = _invoke_prefix_surface(
         board, pm_config, surface, target, user_ack, monkeypatch,
@@ -204,22 +214,22 @@ def test_prefix_surface_matrix_calls_shared_loader(board, pm_config, monkeypatch
 
 def _seed_ticket(board, ticket_id: str):
     path = board.TICKETS_DIR / "open" / f"{ticket_id}-seed.md"
-    board.dump_ticket(
+    ticket_store.dump_ticket(
         path,
         {"id": ticket_id, "title": "seed", "status": "open", "created": "2026-08-11"},
         f"# {ticket_id} — seed\n",
     )
-    board.invalidate_known_prefixes_cache()
+    areas_registry.invalidate_known_prefixes_cache()
 
 
 def test_known_prefixes_areas_source_alone(board):
-    board.areas_append("AREA", "area", "owner")
-    assert board.known_prefixes() == frozenset({"AREA"})
+    areas_registry.areas_append(board._home(), "AREA", "area", "owner")
+    assert areas_registry.known_prefixes(board._home()) == frozenset({"AREA"})
 
 
 def test_known_prefixes_ticket_source_alone(board):
     _seed_ticket(board, "T-TICKET-001")
-    assert board.known_prefixes() == frozenset({"TICKET"})
+    assert areas_registry.known_prefixes(board._home()) == frozenset({"TICKET"})
 
 
 def test_known_prefixes_task_source_alone(board):
@@ -228,7 +238,7 @@ def test_known_prefixes_task_source_alone(board):
         json.dumps({"leases": [], "tasks": [{"name": "job", "prefix": "TASK"}]}),
         encoding="utf-8",
     )
-    assert board.known_prefixes() == frozenset({"TASK"})
+    assert areas_registry.known_prefixes(board._home()) == frozenset({"TASK"})
 
 
 def test_known_prefixes_local_conf_prefix_key_is_not_a_source(board):
@@ -238,7 +248,7 @@ def test_known_prefixes_local_conf_prefix_key_is_not_a_source(board):
     있으면 도달 불가능한 clone-local 라벨을 whitelist 한다.
     """
     board.LOCAL_CONF.write_text("prefix=SOLO\n", encoding="utf-8")
-    assert board.known_prefixes() == frozenset()
+    assert areas_registry.known_prefixes(board._home()) == frozenset()
 
 
 def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
@@ -259,11 +269,11 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
             if status_dir.exists():
                 for path in status_dir.glob("T-*.md"):
                     path.unlink()
-        board.invalidate_known_prefixes_cache()
+        areas_registry.invalidate_known_prefixes_cache()
 
     def seed_source(source, prefix):
         if source == "areas":
-            board.areas_append(prefix, "area", "owner")
+            areas_registry.areas_append(board._home(), prefix, "area", "owner")
         elif source == "tickets":
             _seed_ticket(board, f"T-{prefix}-001")
         else:
@@ -285,8 +295,8 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
         reset_sources()
         for source in selected:
             seed_source(source, "AAA")
-        board.invalidate_known_prefixes_cache()
-        assert board._prefix_target_snapshot("AaA", surface="matrix") == ("AAA", False)
+        areas_registry.invalidate_known_prefixes_cache()
+        assert areas_registry._prefix_target_snapshot(board._home(), "AaA", surface="matrix") == ("AAA", False)
         single_case_passes += 1
         capsys.readouterr()
 
@@ -296,8 +306,8 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
         seed_source(selected[0], "AAA")
         for source in selected[1:]:
             seed_source(source, "aaa")
-        board.invalidate_known_prefixes_cache()
-        result = board._prefix_target_snapshot("AaA", surface="matrix")
+        areas_registry.invalidate_known_prefixes_cache()
+        result = areas_registry._prefix_target_snapshot(board._home(), "AaA", surface="matrix")
         captured = capsys.readouterr()
 
         # 3소스 전부 활성이므로 다중-source split 은 예외 없이 fail-loud 다.
@@ -334,13 +344,13 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         task = "job"
     else:
         assert derived == "single-area"
-        board.areas_append("AAA", "area", "owner", repo="svc")
+        areas_registry.areas_append(board._home(), "AAA", "area", "owner", repo="svc")
         task = _TASK
         ensure_product_slot(board, task=task)
 
     if split_case:
         _seed_ticket(board, "T-aaa-001")
-    board.invalidate_known_prefixes_cache()
+    areas_registry.invalidate_known_prefixes_cache()
     args = argparse.Namespace(
         title=f"derived-{derived}", prefix=None, user_ack=None,
         touches=None, depends=None, tag=None, estimate="small", design=None,
@@ -348,7 +358,7 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
     )
 
     rc = board.cmd_new(args)
-    ids = {row["id"] for row in board._scan_prefix_tickets()}
+    ids = {row["id"] for row in areas_registry._scan_prefix_tickets(board._home())}
     captured = capsys.readouterr()
 
     if split_case:
@@ -367,41 +377,41 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
 
 def test_known_prefixes_ignores_local_conf_prefix_when_area_registered(board):
     board.LOCAL_CONF.write_text("prefix=SOLO\n", encoding="utf-8")
-    board.areas_append("AREA", "area", "owner")
-    assert board.known_prefixes() == frozenset({"AREA"})
+    areas_registry.areas_append(board._home(), "AREA", "area", "owner")
+    assert areas_registry.known_prefixes(board._home()) == frozenset({"AREA"})
 
 
 def test_known_prefixes_corrupt_task_ledger_fails_loud(board, capsys):
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text('{"tasks": {}}', encoding="utf-8")
-    assert board.require_prefix_user_ack("fresh", "fresh", surface="test") is None
+    assert areas_registry.require_prefix_user_ack(board._home(), "fresh", "fresh", surface="test") is None
     assert "신뢰할 수 없다" in capsys.readouterr().err
 
 
 def test_known_prefixes_unreadable_ticket_fails_loud(board, capsys):
     broken = board.TICKETS_DIR / "open" / "T-BROKEN-001-bad.md"
     broken.write_text("---\nid: [unterminated\n---\n", encoding="utf-8")
-    assert board.require_prefix_user_ack("fresh", "fresh", surface="test") is None
+    assert areas_registry.require_prefix_user_ack(board._home(), "fresh", "fresh", surface="test") is None
     err = capsys.readouterr().err
     assert "읽지 못한 티켓" in err and "clobber" in err
 
 
 def test_areas_ticket_cross_case_conflict_scans_all_sources_and_blocks_new(board, monkeypatch, capsys):
     """areas fold-match가 있어도 티켓을 읽어 교차 case 오염을 발견하고 쓰기 0으로 막는다."""
-    board.areas_append("AAA", "area", "owner")
+    areas_registry.areas_append(board._home(), "AAA", "area", "owner")
     _seed_ticket(board, "T-aaa-001")
-    real_scan = board._scan_prefix_tickets
+    real_scan = areas_registry._scan_prefix_tickets
     calls = {"n": 0}
 
-    def counted_scan(skipped=None):
+    def counted_scan(_home, skipped=None):
         calls["n"] += 1
-        return real_scan(skipped)
+        return real_scan(_home, skipped)
 
-    monkeypatch.setattr(board, "_scan_prefix_tickets", counted_scan)
+    monkeypatch.setattr(areas_registry, "_scan_prefix_tickets", counted_scan)
     assert _new(board, "AaA", "AaA") == 1
     assert calls["n"] == 1
     assert {
-        row["id"] for row in board._scan_prefix_tickets()
+        row["id"] for row in areas_registry._scan_prefix_tickets(board._home())
     } == {"T-aaa-001"}
     err = capsys.readouterr().err
     assert "case 변형이 2개 이상" in err
@@ -411,35 +421,35 @@ def test_areas_ticket_cross_case_conflict_scans_all_sources_and_blocks_new(board
 
 def test_known_prefixes_process_cache_and_explicit_invalidation(board, monkeypatch):
     calls = {"n": 0}
-    real_scan = board._scan_prefix_tickets
+    real_scan = areas_registry._scan_prefix_tickets
 
-    def counted_scan(skipped=None):
+    def counted_scan(_home, skipped=None):
         calls["n"] += 1
-        return real_scan(skipped)
+        return real_scan(_home, skipped)
 
-    monkeypatch.setattr(board, "_scan_prefix_tickets", counted_scan)
-    assert board.known_prefixes() == frozenset()
-    assert board.known_prefixes() == frozenset()
+    monkeypatch.setattr(areas_registry, "_scan_prefix_tickets", counted_scan)
+    assert areas_registry.known_prefixes(board._home()) == frozenset()
+    assert areas_registry.known_prefixes(board._home()) == frozenset()
     assert calls["n"] == 1
-    board.invalidate_known_prefixes_cache()
-    assert board.known_prefixes() == frozenset()
+    areas_registry.invalidate_known_prefixes_cache()
+    assert areas_registry.known_prefixes(board._home()) == frozenset()
     assert calls["n"] == 2
 
 
 def test_areas_mutation_invalidates_known_prefix_cache(board):
-    assert board.known_prefixes() == frozenset()
-    board.areas_append("LATER", "area", "owner")
-    assert board.known_prefixes() == frozenset({"LATER"})
+    assert areas_registry.known_prefixes(board._home()) == frozenset()
+    areas_registry.areas_append(board._home(), "LATER", "area", "owner")
+    assert areas_registry.known_prefixes(board._home()) == frozenset({"LATER"})
 
 
 def test_case_variant_conflict_is_deterministic_and_lists_every_source(board, monkeypatch, capsys):
     """areas×티켓 case 변형은 순서 무관으로 전부+출처를 내고 막는다."""
-    board.areas_append("AAA", "area", "owner")
+    areas_registry.areas_append(board._home(), "AAA", "area", "owner")
     _seed_ticket(board, "T-aaa-001")
     # source map은 실제 4소스 snapshot으로 먼저 고정한다. known_prefixes만 서로 다른 순서의
     # iterable로 흔들어, require가 set 순회의 첫 매치를 canonical로 택하지 않음을 검증한다.
-    board._known_prefix_inventory()
-    real_known_prefixes = board.known_prefixes
+    areas_registry._known_prefix_inventory(board._home())
+    real_known_prefixes = areas_registry.known_prefixes
 
     class ShuffledPool(set):
         def __init__(self, values):
@@ -452,10 +462,10 @@ def test_case_variant_conflict_is_deterministic_and_lists_every_source(board, mo
     outputs = []
     for values in (("AAA", "aaa"), ("aaa", "AAA"), ("AAA", "aaa")):
         monkeypatch.setattr(
-            board, "known_prefixes",
-            lambda _target=None, values=values: ShuffledPool(values),
+            areas_registry, "known_prefixes",
+            lambda _home, _target=None, values=values: ShuffledPool(values),
         )
-        assert board.require_prefix_user_ack("AaA", "AaA", surface="test") is None
+        assert areas_registry.require_prefix_user_ack(board._home(), "AaA", "AaA", surface="test") is None
         outputs.append(capsys.readouterr().err)
 
     assert outputs[0] == outputs[1] == outputs[2]
@@ -464,7 +474,7 @@ def test_case_variant_conflict_is_deterministic_and_lists_every_source(board, mo
     assert "'aaa' ← 기발행 티켓" in err
     assert "정리 처방" in err and "임의 변형 선택" in err
 
-    monkeypatch.setattr(board, "known_prefixes", real_known_prefixes)
+    monkeypatch.setattr(areas_registry, "known_prefixes", real_known_prefixes)
     assert _new(board, "AaA", "AaA") == 1
     assert "case 변형이 2개 이상" in capsys.readouterr().err
 
@@ -473,7 +483,7 @@ def test_cheap_case_conflict_preserves_known_sources_when_ticket_scan_is_broken(
     board, capsys,
 ):
     """전체 inventory가 손상 티켓으로 실패해도 값싼 출처 진단은 `소스 미상`으로 퇴행하지 않는다."""
-    board.areas_append("AAA", "area", "owner")
+    areas_registry.areas_append(board._home(), "AAA", "area", "owner")
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(
         json.dumps({"leases": [], "tasks": [{"name": "job", "prefix": "aaa"}]}),
@@ -481,9 +491,9 @@ def test_cheap_case_conflict_preserves_known_sources_when_ticket_scan_is_broken(
     )
     broken = board.TICKETS_DIR / "open" / "T-BROKEN-001-bad.md"
     broken.write_text("---\nid: [unterminated\n---\n", encoding="utf-8")
-    board.invalidate_known_prefixes_cache()
+    areas_registry.invalidate_known_prefixes_cache()
 
-    assert board.require_prefix_user_ack("AaA", "AaA", surface="test") is None
+    assert areas_registry.require_prefix_user_ack(board._home(), "AaA", "AaA", surface="test") is None
 
     err = capsys.readouterr().err
     assert "case 변형이 2개 이상" in err
@@ -496,7 +506,7 @@ def test_cheap_case_conflict_preserves_known_sources_when_ticket_scan_is_broken(
 def _seed_ticket_without_cache_invalidation(board, ticket_id: str):
     """다른 프로세스가 현재 프로세스 cache를 모른 채 티켓을 만든 TOCTOU 형상."""
     path = board.TICKETS_DIR / "open" / f"{ticket_id}-race.md"
-    board.dump_ticket(
+    ticket_store.dump_ticket(
         path,
         {"id": ticket_id, "title": "race", "status": "open", "created": "2026-08-11"},
         f"# {ticket_id} — race\n",
@@ -512,12 +522,12 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
     if surface in {"rename", "merge", "reid"}:
         _seed_ticket(board, "T-old-001")
 
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     injected = {"done": False}
 
     @contextlib.contextmanager
-    def racing_lock():
-        with real_lock():
+    def racing_lock(_home):
+        with real_lock(_home):
             if not injected["done"]:
                 injected["done"] = True
                 # 선판정은 `fresh`를 신규 canonical로 봤다. 다른 세션이 `FRESH`를 만든 뒤에도
@@ -525,7 +535,7 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
                 _seed_ticket_without_cache_invalidation(board, "T-FRESH-001")
             yield
 
-    monkeypatch.setattr(board, "board_lock", racing_lock)
+    monkeypatch.setattr(fs, "board_lock", racing_lock)
 
     if surface == "new":
         rc = _new(board, "fresh", "fresh")
@@ -539,7 +549,6 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
         rc = pm_config.cmd_task_prefix(
             argparse.Namespace(name="job", value="fresh", user_ack="fresh"),
 
-            board=board,
         )
     elif surface == "rename":
         rc = board.cmd_prefix_rename(argparse.Namespace(
@@ -560,7 +569,7 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
     assert injected["done"]
     assert pool.stored == []
     ids = {
-        row["id"] for row in board._scan_prefix_tickets()
+        row["id"] for row in areas_registry._scan_prefix_tickets(board._home())
     }
     assert ids == ({"T-FRESH-001", "T-old-001"}
                    if surface in {"rename", "merge", "reid"} else {"T-FRESH-001"})
@@ -576,11 +585,11 @@ def test_relabel_dry_run_needs_no_ack_but_reports_execution_requirement(board, m
     _seed_ticket(board, "T-old-001")
 
     @contextlib.contextmanager
-    def forbidden_lock():
+    def forbidden_lock(_home):
         raise AssertionError("dry-run must not acquire board_lock")
         yield
 
-    monkeypatch.setattr(board, "board_lock", forbidden_lock)
+    monkeypatch.setattr(fs, "board_lock", forbidden_lock)
     if surface == "rename":
         rc = board.cmd_prefix_rename(argparse.Namespace(
             src="old", dst="fresh", user_ack=None, dry_run=True,
@@ -597,7 +606,7 @@ def test_relabel_dry_run_needs_no_ack_but_reports_execution_requirement(board, m
         ))
 
     assert rc == 0
-    assert {row["id"] for row in board._scan_prefix_tickets()} == {"T-old-001"}
+    assert {row["id"] for row in areas_registry._scan_prefix_tickets(board._home())} == {"T-old-001"}
     out = capsys.readouterr().out
     assert "[dry-run]" in out and "실행 시 새 prefix 'fresh'" in out
     assert "사용자 승인이 필요" in out
@@ -606,11 +615,11 @@ def test_relabel_dry_run_needs_no_ack_but_reports_execution_requirement(board, m
 @pytest.mark.parametrize("surface", ["rename", "merge"])
 def test_relabel_empty_map_noop_needs_no_ack_or_lock(board, monkeypatch, capsys, surface):
     @contextlib.contextmanager
-    def forbidden_lock():
+    def forbidden_lock(_home):
         raise AssertionError("empty-map no-op must not acquire board_lock")
         yield
 
-    monkeypatch.setattr(board, "board_lock", forbidden_lock)
+    monkeypatch.setattr(fs, "board_lock", forbidden_lock)
     if surface == "rename":
         rc = board.cmd_prefix_rename(argparse.Namespace(
             src="ghost", dst="fresh", user_ack=None, dry_run=False,
@@ -690,7 +699,7 @@ def test_worktree_add_variants_reject_without_ack(pm_config, monkeypatch, extra,
     pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack=None, **extra)
     bind_pool(monkeypatch, pool)
-    assert pm_config.cmd_worktree_add(args,  board=object()) == 1
+    assert pm_config.cmd_worktree_add(args) == 1
     assert pool.created == []
     assert "1순위: 사용자에게" in capsys.readouterr().err
 
@@ -699,7 +708,7 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, monkeypatch, ca
     pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack="other")
     bind_pool(monkeypatch, pool)
-    assert pm_config.cmd_worktree_add(args,  board=object()) == 1
+    assert pm_config.cmd_worktree_add(args) == 1
     assert pool.created == []
     assert "결속되지 않았다" in capsys.readouterr().err
 
@@ -721,11 +730,11 @@ def test_worktree_add_bound_ack_preserves_create_slot_semantics(pm_config, monke
         repo="svc", test=None, readonly=readonly, task=task, user_ack="svc",
     )
     # 슬롯 생성은 repo 등록 base 를 부모로 기록한다 — 그 base 만 답하는 board.
-    board = SimpleNamespace(_repo_base={"svc": "main"}.get)
+    monkeypatch.setattr(areas_store, "_repo_base", lambda _home, repo: {"svc": "main"}.get(repo))
 
     bind_pool(monkeypatch, pool)
     assert pm_config.cmd_worktree_add(
-        args,  board=board, is_tty=lambda: False,
+        args,  is_tty=lambda: False,
     ) == 0
 
     assert len(pool.created) == 1

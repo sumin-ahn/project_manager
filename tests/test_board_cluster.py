@@ -31,6 +31,13 @@ from pm_engine.domain import ticket_rules
 from pm_engine.infra import cluster_store, git, pm_paths, ticket_store
 from pm_engine.app import ticket_lint
 
+from pm_engine.infra import board_git
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
+
+from pm_engine.app import board_sync
+
 # 코드 트리를 보유한 task — claim·new·cluster new 는 `--task` 정체성이 필요하다(T-0962).
 _TASK = "main"
 
@@ -128,8 +135,8 @@ def board(tmp_path, monkeypatch):
         mod, "LEASES_FILE",
         tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     seed_slot(tmp_path, session=_TASK)
-    mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    mod.BOARD_FILE.touch()
+    (pm_paths.wiki_dir(mod._home()) / "board.md").parent.mkdir(parents=True, exist_ok=True)
+    (pm_paths.wiki_dir(mod._home()) / "board.md").touch()
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     return mod
@@ -558,7 +565,7 @@ def test_cluster_new_separates_internal_overlap_from_outside_overlap(env, capsys
         _status, path = ticket_store.find_ticket_exact(board._home(), tid)
         fm, body = ticket_store.load_ticket(path)
         fm["touches"] = [".project_manager/tools/board.py"]
-        board.dump_ticket(path, fm, body)
+        ticket_store.dump_ticket(path, fm, body)
     capsys.readouterr()
 
     assert board.cmd_cluster(_cluster_args(
@@ -781,7 +788,7 @@ def test_draft_defers_attribution_until_promote(board, tmp_path, capsys):
     assert not ticket_store.load_ticket(draft)[0].get("cluster")
 
     fm, _body = ticket_store.load_ticket(draft)
-    board.dump_ticket(draft, fm, _TEMPLATE_TEXT.split("---\n", 2)[2]
+    ticket_store.dump_ticket(draft, fm, _TEMPLATE_TEXT.split("---\n", 2)[2]
                       .replace("T-NNNN", tid).replace("<제목>", "미충전"))
     assert board.cmd_cluster(_cluster_args("new", "draft-bound", tickets=tid)) == 0
     recorded = board.cluster_ledger_path("draft-bound").read_bytes()
@@ -1024,7 +1031,7 @@ def test_t0930_publish_revalidation_rejects_final_basis_loss(
         split_env, monkeypatch, damage, shared):
     board, board_dir, slot = split_env
     if not shared:
-        monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
+        monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
     head = _git(["rev-parse", "HEAD"], board_dir).stdout
     leases = board.LEASES_FILE.read_bytes()
     original = board._cluster_publish_base_branch
@@ -1037,8 +1044,9 @@ def test_t0930_publish_revalidation_rejects_final_basis_loss(
             return fn(*args, **kwargs)
         return call
 
-    for name in ("dump_cluster", "dump_ticket", "_board_git_sync_best_effort"):
-        monkeypatch.setattr(board, name, track(name, getattr(board, name)))
+    for owner, name in ((board, "dump_cluster"), (ticket_store, "dump_ticket"),
+                        (board_sync, "_board_git_sync_best_effort")):
+        monkeypatch.setattr(owner, name, track(name, getattr(owner, name)))
 
     def read_basis(args):
         if observed:
@@ -1115,7 +1123,7 @@ def test_t0930_publish_revalidation_preserves_legacy_local_new(board, tmp_path):
     _make_code_git(tmp_path / SLOT)
     leases = board.LEASES_FILE.read_bytes()
     head = _git(["rev-parse", "HEAD"], tmp_path).stdout
-    assert not board._board_git_enabled()
+    assert not board_git._board_git_enabled(board._home())
     assert board.cmd_new(_new_args("로컬 발행")) == 0
     path = _all_ticket_files(board)[0]
     fm, _ = ticket_store.load_ticket(path)

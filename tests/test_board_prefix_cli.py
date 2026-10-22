@@ -23,6 +23,11 @@ from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import areas_store, ticket_store
 
+from pm_engine.app import areas_registry
+from pm_engine.infra import board_git
+from pm_engine.infra import fs
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -54,13 +59,13 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
         "LEASES_FILE": local / "worktree-leases.json",
-        "BOARD_LOCK": local / "board.lock",
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
@@ -83,7 +88,7 @@ def _seed_ticket(board, tid: str, *, created: str = "2026-07-01",
     오염 형상 자체가 재현되지 않는다(Windows 실측). slug 를 갈라 두 파일로 심는다.
     """
     path = board.TICKETS_DIR / status / f"{tid}-{slug}.md"
-    board.dump_ticket(
+    ticket_store.dump_ticket(
         path,
         {"id": tid, "title": "t", "status": status, "created": created},
         f"# {tid} — t\n{body}\n")
@@ -116,7 +121,7 @@ def _issued_ids(board) -> set[str]:
     out = set()
     for status in ticket_rules.STATUS_DIRS:
         for p in (board.TICKETS_DIR / status).glob("T-*.md"):
-            tid = board._issued_ticket_id(p)
+            tid = ticket_store._issued_ticket_id(board._home(), p)
             if tid:
                 out.add(tid)
     return out
@@ -136,16 +141,16 @@ def _ns(**kw) -> argparse.Namespace:
 # ════════════════════════════════════════════════════════════════════════
 
 def test_format_ticket_id_none_is_four_digit(board):
-    assert board._format_ticket_id(None, 5) == "T-0005"
+    assert areas_registry._format_ticket_id(None, 5) == "T-0005"
 
 
 def test_format_ticket_id_prefix_is_three_digit(board):
-    assert board._format_ticket_id("foo", 5) == "T-foo-005"
+    assert areas_registry._format_ticket_id("foo", 5) == "T-foo-005"
 
 
 def test_parse_prefix_arg_none_reserved(board):
-    assert board._parse_prefix_arg("none") is None
-    assert board._parse_prefix_arg("foo") == "foo"
+    assert areas_registry._parse_prefix_arg("none") is None
+    assert areas_registry._parse_prefix_arg("foo") == "foo"
 
 
 def test_rename_map_preserves_number(board):
@@ -585,7 +590,7 @@ def test_delete_unregistered_prefix_confirm_only(board, capsys):
 
 def test_delete_registered_prefix_clears_areas_cell(board, capsys):
     """0 티켓·areas 등록됨 → 그 행의 prefix 셀을 실제로 비운다(행·repo 등록 보존·promise=do)."""
-    board.areas_append("foo", "area-foo", "reg", repo="foo", git="g:foo",
+    areas_registry.areas_append(board._home(), "foo", "area-foo", "reg", repo="foo", git="g:foo",
                        test_cmd="pytest -q", area_owner="alice")
     assert areas_store._areas_row_for_prefix(board._home(), "foo") is not None
     rc = board.cmd_prefix_delete(_ns(prefix="foo", dry_run=False))
@@ -604,7 +609,7 @@ def test_delete_registered_prefix_clears_areas_cell(board, capsys):
 
 def test_delete_dry_run_registered_no_write(board, capsys):
     """--dry-run 은 등록 셀 비움 예정만 preview·쓰기 0(등록 유지)."""
-    board.areas_append("foo", "area-foo", "reg", repo="foo")
+    areas_registry.areas_append(board._home(), "foo", "area-foo", "reg", repo="foo")
     rc = board.cmd_prefix_delete(_ns(prefix="foo", dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
@@ -613,8 +618,8 @@ def test_delete_dry_run_registered_no_write(board, capsys):
 
 def test_areas_clear_prefix_cell_preserves_other_rows(board):
     """`_areas_clear_prefix_cell` — 대상 prefix 셀만 비우고 무관 행은 원문 그대로 보존한다."""
-    board.areas_append("foo", "af", "reg", repo="foo", test_cmd="pt-foo")
-    board.areas_append("bar", "ab", "reg", repo="bar", test_cmd="pt-bar")
+    areas_registry.areas_append(board._home(), "foo", "af", "reg", repo="foo", test_cmd="pt-foo")
+    areas_registry.areas_append(board._home(), "bar", "ab", "reg", repo="bar", test_cmd="pt-bar")
     cleared = board._areas_clear_prefix_cell("foo")
     assert cleared == 1
     _h, rows = areas_store._parse_areas(board._home())
@@ -687,11 +692,11 @@ def test_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
 
 def test_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
     calls = {"commit": []}
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
-    monkeypatch.setattr(board, "_board_git_head", lambda: "deadbeefcafe0000")
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: True)
+    monkeypatch.setattr(board_git, "_board_git_head", lambda _home: "deadbeefcafe0000")
     monkeypatch.setattr(
-        board, "_board_git_stage_and_commit",
-        lambda msg, paths=None: calls["commit"].append((msg, paths)) or True)
+        board_git, "_board_git_stage_and_commit",
+        lambda _home, msg, paths=None: calls["commit"].append((msg, paths)) or True)
     ticket = _seed_ticket(board, "T-foo-001")
 
     rc = board.cmd_prefix_rename(_ns(
@@ -709,7 +714,7 @@ def test_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
 
 
 def test_board_git_legacy_skips_with_guidance(board, monkeypatch, capsys):
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
     _seed_ticket(board, "T-foo-001")
     rc = board.cmd_prefix_rename(_ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))
@@ -731,24 +736,24 @@ def test_board_git_legacy_skips_with_guidance(board, monkeypatch, capsys):
 @contextlib.contextmanager
 def _lock_depth_spy(board, monkeypatch):
     """board_lock 을 real_lock 으로 감싸 진입 횟수·중첩 depth·구간 내 티켓 변화를 기록하는 spy."""
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     rec = {"count": 0, "depth": 0, "max_depth": 0, "changed_in_lock": False}
 
     @contextlib.contextmanager
-    def _spied():
+    def _spied(_home):
         rec["count"] += 1
         rec["depth"] += 1
         rec["max_depth"] = max(rec["max_depth"], rec["depth"])
         before = _ids_on_disk(board)
         try:
-            with real_lock():
+            with real_lock(_home):
                 yield
         finally:
             if _ids_on_disk(board) != before:
                 rec["changed_in_lock"] = True
             rec["depth"] -= 1
 
-    monkeypatch.setattr(board, "board_lock", _spied)
+    monkeypatch.setattr(fs, "board_lock", _spied)
     yield rec
 
 
@@ -881,7 +886,7 @@ def test_scan_reports_the_skipped_ticket_to_its_caller(board):
     broken = _seed_broken(board)
 
     skipped: list[Path] = []
-    rows = board._scan_prefix_tickets(skipped)
+    rows = areas_registry._scan_prefix_tickets(board._home(), skipped)
 
     assert [t["id"] for t in rows] == ["T-foo-001"]
     assert skipped == [broken]
@@ -973,7 +978,7 @@ def test_prefix_glob_first_match_is_the_reproduced_hazard(board, capsys):
 
     읽기(`show`)는 그 폴백이 legacy 조회를 살리는 자리라 종전대로 두고, 이동은 아래처럼 막는다."""
     path = _seed_prefixed_only(board)
-    status, found = board.find_ticket(_MISSING_LEGACY_ID)
+    status, found = ticket_store.find_ticket(board._home(), _MISSING_LEGACY_ID)
     assert (status, found) == ("open", path)
     assert "정확 일치 티켓 없음" in capsys.readouterr().err
 
@@ -982,7 +987,7 @@ def test_mutation_lookup_refuses_a_prefix_only_match(board):
     """mutation 조회는 canonical 불일치를 **미존재**로 올린다 (안내에 실재 후보를 싣는다)."""
     _seed_prefixed_only(board)
     with pytest.raises(FileNotFoundError) as excinfo:
-        board.find_ticket_for_mutation(_MISSING_LEGACY_ID)
+        ticket_store.find_ticket_for_mutation(board._home(), _MISSING_LEGACY_ID)
     message = str(excinfo.value)
     assert _MISSING_LEGACY_ID in message and _COEXISTING_PREFIXED_ID in message
 

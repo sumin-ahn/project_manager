@@ -23,6 +23,12 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.app import board_dashboard
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -54,17 +60,17 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "IDEAS_DIR": wiki / "ideas",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
 
@@ -75,7 +81,7 @@ def _seed_ticket(board, tid, status, *, tags, title="t"):
     비-문자열 태그를 그대로 재현한다.
     """
     path = board.TICKETS_DIR / status / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": title, "status": status,
+    ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "claimed_by": None, "depends_on": [], "touches": [],
                              "tags": tags}, "# seed\n")
     return path
@@ -83,7 +89,7 @@ def _seed_ticket(board, tid, status, *, tags, title="t"):
 
 def _seed_idea(board, iid, status, *, tags, title="t"):
     path = board.IDEAS_DIR / status / f"{iid}-seed.md"
-    board.dump_ticket(path, {"id": iid, "title": title, "status": status,
+    ticket_store.dump_ticket(path, {"id": iid, "title": title, "status": status,
                              "tags": tags}, "# idea\n")
     return path
 
@@ -130,8 +136,8 @@ def test_cmd_list_string_tags_unchanged(board, capsys):
 def test_refresh_board_numeric_tags_no_crash(board):
     """open 표에 int 태그 티켓이 있어도 board.md 렌더가 크래시 안 함 — `2026, cleanup` 표기."""
     _seed_ticket(board, "T-0004", "open", tags=[2026, "cleanup"])
-    board.refresh_board()
-    text = board.BOARD_FILE.read_text(encoding="utf-8")
+    board_dashboard.refresh_board(board._home())
+    text = (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     # 마크다운 렌더 구분자는 `, `(comma-space) — cmd_list(`,`) 와 다름·둘 다 불변.
     assert "2026, cleanup" in text
 
@@ -139,8 +145,8 @@ def test_refresh_board_numeric_tags_no_crash(board):
 def test_refresh_board_string_tags_unchanged(board):
     """문자열 태그 board.md 렌더 형식 무변경."""
     _seed_ticket(board, "T-0005", "open", tags=["bug", "crash"])
-    board.refresh_board()
-    text = board.BOARD_FILE.read_text(encoding="utf-8")
+    board_dashboard.refresh_board(board._home())
+    text = (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     assert "bug, crash" in text
 
 

@@ -425,7 +425,6 @@ def test_board_init_seeds_pm_state_with_creation_date(board, monkeypatch, tmp_pa
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
     monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
     monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
     monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
 

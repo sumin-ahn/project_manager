@@ -33,6 +33,9 @@ from pm_engine.domain import pytest_report, ticket_rules
 from pm_engine.infra import areas_store, git, pm_paths, pre_push_hook, python_env, regression_store, review_rounds, ticket_store
 from pm_engine.app import areas_lint, regression
 
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
     reason="git 바이너리 부재 — 권위 해소(rev-parse) 케이스 skip.",
@@ -78,7 +81,7 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(git, "_git_head", lambda _home: "deadbeef01234567")
     monkeypatch.setattr(git, "_git_head_at", lambda _cwd: "deadbeef01234567")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     mod._proj = proj
@@ -1680,7 +1683,7 @@ def test_prefixed_ticket_does_not_answer_for_a_legacy_gate_id(board):
     _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
                       touches="src/unrelated.py")
     # glob 은 실제로 오인 매칭한다(차단이 어디서 서는지 못박는다).
-    assert board.find_ticket("T-0036")[1].name.startswith("T-0036-001")
+    assert ticket_store.find_ticket(board._home(), "T-0036")[1].name.startswith("T-0036-001")
 
     assert regression._gate_ticket(board._home(), "T-0036") is None
     assert regression._gate_ticket_is_claimed(board._home(), "T-0036") is False
@@ -1831,7 +1834,7 @@ def test_find_ticket_prefers_the_exact_match_over_the_first_glob_hit(board):
     _seed_ticket_file(board, "T-0036", status="done", slug="본래-티켓")
     _seed_ticket_file(board, "T-0036-001", status="open", slug="다른-티켓")
 
-    status, path = board.find_ticket("T-0036")
+    status, path = ticket_store.find_ticket(board._home(), "T-0036")
     assert (status, path.name.startswith("T-0036-본래")) == ("done", True)
 
 
@@ -1844,7 +1847,7 @@ def test_find_ticket_still_falls_back_when_no_exact_candidate_exists(board):
     path.write_text("---\ntitle: 픽스처\nstatus: open\n---\n\n# 본문\n", encoding="utf-8")
 
     assert ticket_store.find_ticket_exact(board._home(), "T-0038") is None
-    assert board.find_ticket("T-0038")[1] == path
+    assert ticket_store.find_ticket(board._home(), "T-0038")[1] == path
 
 
 def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, capsys):

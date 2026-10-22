@@ -35,6 +35,8 @@ from pm_engine.domain import delegate_errors, design_rules, review_form, review_
 from pm_engine.infra import delegate_ledger, round_store
 from pm_engine.app import round_seed
 
+from pm_engine.infra import fs
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -220,7 +222,6 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     )
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
 
     def _sync(message, paths):
         if sync_log is not None:
@@ -2127,19 +2128,6 @@ def test_ledger_relocated_to_delegate_rounds(pd, tmp_path):
     )
 
 
-def test_load_board_is_cached_across_calls_for_ledger_row_validation(pd):
-    """T-0787 — `_load_board()` cache=True 회귀: 장부 행별 board 재-import 를 막는다.
-
-    이전엔 `cache=True` 를 안 넘겨 `_delegate_rounds_ledger_row`(행별 ID 검증)가 호출될 때마다
-    board.py 를 재실행했다(실측: 79행 장부에서 `_load_board` ncalls 79·cumtime 0.632s). 같은
-    프로세스 안에서 동일 파일을 캐시 없이 반복 로드하면 매번 새 module 객체가 생기므로, 캐시가
-    걸리면 두 호출이 **같은 객체**를 반환해야 한다(시간 단언은 플래키라 identity 로 대신 고정).
-    """
-    first = pd._load_board()
-    second = pd._load_board()
-    assert first is second
-
-
 def test_role_sets_match_the_rounds_seam(pd):
     """역할 집합의 단일 진실은 seam 이다 — 라벨 사본은 두지 않는다([[ADR-0090]] R4 에서 삭제)."""
     assert not hasattr(pd, "EXTERNAL_REVIEW_SECTION_LABEL")
@@ -2808,7 +2796,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
         content=round_rules.render_round_header(
             review_form.ADDITIONAL_REVIEWER_ROLE, today="2026-08-22",
         ) + "\n\n" + _review_body(pd, review_form.ADDITIONAL_REVIEWER_ROLE, ["X-007"]),
-        lock=board.board_lock(),
+        lock=fs.board_lock(board._home()),
     )
     assert external_first.exists()
 
@@ -3833,19 +3821,19 @@ def test_board_lock_exit_failure_after_reserve_preserves_run_dir_and_diagnostics
     _write_spec(tickets, "T-9305")
 
     board = pd._load_board_for_repo(pm_home)
-    real_board_lock = board.board_lock
+    real_board_lock = fs.board_lock
     state = {"n": 0}
 
     @contextlib.contextmanager
-    def _flaky_board_lock():
+    def _flaky_board_lock(_home):
         state["n"] += 1
         call_number = state["n"]
-        with real_board_lock():
+        with real_board_lock(_home):
             yield
             if call_number == 2:
                 raise OSError("probe: board_lock __exit__ 실패")
 
-    monkeypatch.setattr(board, "board_lock", _flaky_board_lock)
+    monkeypatch.setattr(fs, "board_lock", _flaky_board_lock)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
 
     def _round_files() -> int:
@@ -4160,7 +4148,6 @@ def test_design_gate_rejects_the_abolished_exemption_value_in_both_shapes(
     """폐지된 면제 값은 사유 유무와 무관하게 통과가 아니다(`_design_state` 가 invalid 로 거부)."""
     pm_home, slot, tickets, _sync = rounds_env
     _write_design_spec(tickets, ticket, design=design)
-    board = pd._load_board()
     assert design_rules._design_state(design) == design_rules.DESIGN_INVALID
 
     with pytest.raises(delegate_errors.DelegateError, match="design 값 인식 불가"):

@@ -31,6 +31,10 @@ from pm_engine.domain import delegate_errors, review_form, review_state
 from pm_engine.infra import delegate_ledger, round_store
 from pm_engine.app import round_seed
 
+from pm_engine.infra import fs
+
+from pm_engine.infra import pm_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -110,7 +114,6 @@ def _fixture_board(pd, pm_home: Path):
     )
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
     board._rounds_mutation_sync_paths = lambda _message, _paths: True
     return board
 
@@ -551,8 +554,8 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
     home = pm_home.resolve()
     assert Path(board.__file__) == PM_DELEGATE.resolve().with_name("board.py")
     assert (
-        board.REPO, board._home().local_dir, board.BOARD_LOCK,
-        board.BOARD_FILE, board.LEASES_FILE, board._home().local_conf,
+        board.REPO, board._home().local_dir, (board._home().local_dir / "board.lock"),
+        (pm_paths.wiki_dir(board._home()) / "board.md"), board.LEASES_FILE, board._home().local_conf,
     ) == (
         home,
         home / ".project_manager" / ".local",
@@ -1279,10 +1282,10 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
         _advance(pd, "C-race", role, pm_home=pm_home, slot=slot)
 
     board = _fixture_board(pd, pm_home)
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     entries: list[int] = []
 
-    def _racing_lock(*args, **kwargs):
+    def _racing_lock(_home, *args, **kwargs):
         entries.append(len(entries) + 1)
         if len(entries) == 2:
             # 사전판정과 이 임계구역 사이에 다른 준비가 마지막 fix 자리를 가져갔다.
@@ -1290,9 +1293,9 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
                 pm_paths.tickets_dir(board._home()), "T-7050", "developer", content="## 경쟁 예약\n",
                 lock=contextlib.nullcontext(),
             )
-        return real_lock(*args, **kwargs)
+        return real_lock(_home, *args, **kwargs)
 
-    monkeypatch.setattr(board, "board_lock", _racing_lock)
+    monkeypatch.setattr(fs, "board_lock", _racing_lock)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
 
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
@@ -1345,16 +1348,16 @@ def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
 def _refuse_at_the_lock(pd, pm_home: Path, monkeypatch, mutate) -> None:
     """두 판정 지점 사이(사전판정 통과 뒤·락 안 재확인 전)에 장부를 바꾼다."""
     board = _fixture_board(pd, pm_home)
-    real_lock = board.board_lock
+    real_lock = fs.board_lock
     entries: list[int] = []
 
-    def _racing_lock(*args, **kwargs):
+    def _racing_lock(_home, *args, **kwargs):
         entries.append(len(entries) + 1)
         if len(entries) == 2:
             mutate()
-        return real_lock(*args, **kwargs)
+        return real_lock(_home, *args, **kwargs)
 
-    monkeypatch.setattr(board, "board_lock", _racing_lock)
+    monkeypatch.setattr(fs, "board_lock", _racing_lock)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
 
 
@@ -1489,8 +1492,8 @@ def board_env(tmp_path, monkeypatch):
     """실 board git + 코드 git — `cluster replan` 이 쓰는 두 저장소."""
     board = _load_tool("board", "board_replan")
     anchor_board_module(board, tmp_path, monkeypatch)
-    board.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.BOARD_FILE.touch()
+    (pm_paths.wiki_dir(board._home()) / "board.md").parent.mkdir(parents=True, exist_ok=True)
+    (pm_paths.wiki_dir(board._home()) / "board.md").touch()
     for key, value in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
     bare = tmp_path / "bare"

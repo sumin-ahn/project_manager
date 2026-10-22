@@ -111,3 +111,51 @@ def _validate_protected_tokens(value: str) -> tuple[list[str] | None, str]:
 # board._FAMILY_SCOPE_RE(`^[A-Za-z0-9_-]+$`)는 leading `-` 를 막지 않아 재사용 부적합 —
 # repo name 은 영숫자 시작을 강제하므로 별도 패턴을 둔다(reuse 확인·중복 정의 회피).
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+class AreasRepoNotFound(Exception):
+    """areas.md 에 그 repo 행이 없다 — 셀 변경 대상 부재 (부작용 0).
+
+    등록되지 않은 repo(또는 areas.md 부재)의 칼럼을 바꾸려 한 경우다. 등록은 `pm-config repo
+    add`(append) 소관이고 setter 는 *기존 셀만* 고친다 — 없는 행을 만들어내지 않는다.
+    """
+
+    def __init__(self, repo: str):
+        self.repo = repo
+        super().__init__(f"areas.md 에 repo {repo!r} 행이 없다")
+
+
+class AreasDuplicateRepo(Exception):
+    """areas.md 에 같은 repo 행이 2개 이상 — 셀 변경 fail-loud (부작용 0).
+
+    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`)가
+    첫 행에서 return 하므로 어느 행을 고쳐야 하는지 기계가 정할 수 없다. 추측해서 한쪽만 고치면
+    사용자가 바꿨다고 믿는 값과 리졸버가 읽는 값이 갈린다 → **아무것도 쓰지 않고** 수동 정리를
+    안내한다(자동 병합 안 함·사람 판정). `count` = 중복 행 수(진단용).
+    """
+
+    def __init__(self, repo: str, count: int):
+        self.repo = repo
+        self.count = count
+        super().__init__(f"areas.md 에 repo {repo!r} 행이 {count}개 있다(중복)")
+
+
+# areas.md 셀에 그대로 들어가면 표 자체가 깨지는 문자 — repo 이름은 폴더명에서 유도되므로
+# 이 sanity 를 init 입구에서 한 번 본다(부작용 0 fail-loud·`--repo` 로 우회 가능).
+_AREAS_CELL_BREAKERS = ("|", "\n", "\r")
+
+
+# 사용자 정보(`@` 앞)가 비밀일 수 있는 origin 주소 형식 — 이 형식의 사용자 자리에는 비밀번호나 토큰이
+# 들어간다(ssh·scp 형식의 사용자 이름은 비밀이 아니라 그대로 기록한다).
+_ORIGIN_SCHEMES_WITH_SECRET_USERINFO = ("http", "https")
+
+
+# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — 이 접두 **정확히**를 벗겨야 순수 브랜치명이다
+# (`worktree_git.current_branch` 와 같은 규칙 · 같은 이름 태그가 있으면 `--short` 는 `heads/` 를 붙인다).
+_SYMREF_BRANCH_PREFIX = "refs/heads/"
+
+
+_SELF_COORDINATES_UNKNOWN = (
+    "  ⚠ 자기 행의 git·base 를 기록하지 못했다 (이 폴더가 git 저장소 최상위가 아니거나 HEAD 가 "
+    "브랜치를 가리키지 않거나 origin 주소에 자격증명이 들어 있다). areas.md 의 그 행 `git`·`base` 칸을 채운 뒤 `pm-config worktree add` 를 "
+    "실행하라.")

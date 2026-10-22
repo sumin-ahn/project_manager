@@ -325,7 +325,7 @@ def test_denied_bootstrap_command_records_nothing(board, home):
 def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatch):
     pm_delegate = _load("slot_write_guard_pm_delegate", TOOLS / "pm_delegate.py")
     monkeypatch.setattr(board, "REPO", home)
-    monkeypatch.setattr(pm_delegate, "_load_board", lambda: board)
+    monkeypatch.setattr(pm_delegate, "REPO", home)
     assert pm_delegate._delegate_task_env(home / "work" / "app_1") == {"PM_DELEGATE_TASK": "alpha"}
     assert pm_delegate._delegate_task_env(home / "work" / "app_4" / "src") == {"PM_DELEGATE_TASK": "beta"}
     assert pm_delegate._delegate_task_env(home / "work" / "app_2") == {}

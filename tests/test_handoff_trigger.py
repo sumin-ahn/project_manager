@@ -24,6 +24,8 @@ import pytest
 from _pytest_summary import pytest_summary
 from pm_engine.infra import pre_push_hook
 
+from pm_engine.infra import conf_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -160,14 +162,14 @@ def test_board_has_no_ctx_threshold_reader(board):
     board 는 init 이 local.conf 에 쓰는 비율 셋(레지스트리 기본값)만 다룬다."""
     assert not hasattr(board, "ctx_thresholds")
     assert not hasattr(board, "_ctx_pct")
-    assert board._conf_default_int("ctx.checkpoint_at_pct") == 70
-    assert board._conf_default_int("ctx.precompact_at_pct") == 80
-    assert board._conf_default_int("ctx.compact_at_pct") == 90
+    assert conf_store._conf_default_int("ctx.checkpoint_at_pct") == 70
+    assert conf_store._conf_default_int("ctx.precompact_at_pct") == 80
+    assert conf_store._conf_default_int("ctx.compact_at_pct") == 90
 
 
 def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
     """board.py init 가 local.conf 에 쓴 % 비율 셋(70·80·90)을 기록한다 (T-0207·T-0923)."""
-    conf_path = tmp_path / "local.conf"
+    conf_path = tmp_path / "proj/.project_manager/local.conf"
     state_path = tmp_path / "pm_state.md"
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "PM_STATE_FILE", state_path)
@@ -181,7 +183,6 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
     monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
     monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
     monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
 
     import argparse

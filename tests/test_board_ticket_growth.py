@@ -24,6 +24,12 @@ from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.domain import design_rules, review_form
 from pm_engine.app import freshness_pin, round_seed
 
+from pm_engine.app import board_claim
+from pm_engine.app import board_dashboard
+from pm_engine.app import board_sync
+from pm_engine.infra import board_git
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 _CLAIM_TASK = "growth-task"
@@ -693,10 +699,10 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
 
     # 경합 테스트 관심은 파일 트랜잭션이다. board-git/파생 render는 이미 별도 실제 Git 테스트가
     # 검증하며 여기서 섞으면 lock 획득 순서 대신 원격 왕복 타이밍을 재게 된다.
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
     monkeypatch.setattr(board, "_rounds_mutation_sync_paths", lambda _message, _paths: True)
-    monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda _message, _paths: True)
-    monkeypatch.setattr(board, "refresh_board", lambda: None)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home, _message, _paths: True)
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
 
     writer_entered = threading.Event()
     writer_release = threading.Event()
@@ -715,14 +721,14 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
         monkeypatch.setattr(freshness_pin, "_atomic_write_text", paused_writer)
         growth_argv = ["section-add", "T-1008", "--role", "developer"]
     else:
-        original_writer = board.dump_ticket_atomic
+        original_writer = ticket_store.dump_ticket_atomic
 
         def paused_writer(path, fm, body):
             writer_entered.set()
             assert writer_release.wait(timeout=10), "tier write 재개 timeout"
             return original_writer(path, fm, body)
 
-        monkeypatch.setattr(board, "dump_ticket_atomic", paused_writer)
+        monkeypatch.setattr(ticket_store, "dump_ticket_atomic", paused_writer)
         growth_argv = ["tier", "T-1008", "hard"]
 
     lifecycle_argv = (
@@ -789,23 +795,23 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
     results: dict[str, int] = {}
     errors: list[BaseException] = []
 
-    real_push = board._board_git_push
+    real_push = board_git._board_git_push
     push_calls = {"count": 0}
     if push_outcome == "success":
-        def paused_push():
+        def paused_push(_home):
             push_calls["count"] += 1
-            result = real_push()
+            result = real_push(_home)
             if push_calls["count"] == 1:
                 assert result.returncode == 0, result.stderr
                 claim_paused.set()  # 원격 수락 뒤 confirm 반환 전.
                 assert allow_claim_finish.wait(timeout=10), "claim confirm 재개 timeout"
             return result
 
-        monkeypatch.setattr(board, "_board_git_push", paused_push)
+        monkeypatch.setattr(board_git, "_board_git_push", paused_push)
     else:
         root = board_dir.parent.parent
 
-        def rejecting_push():
+        def rejecting_push(_home):
             push_calls["count"] += 1
             if push_calls["count"] == 1:
                 racer = root / "reject-racer"
@@ -814,20 +820,20 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
                 assert _git(["add", "-A"], racer).returncode == 0
                 assert _git(["commit", "-qm", "remote racer"], racer).returncode == 0
                 assert _git(["push", "-q", "origin", "main"], racer).returncode == 0
-            return real_push()  # 첫 호출=non-FF 거부, growth 후속 호출=정상 push.
+            return real_push(_home)  # 첫 호출=non-FF 거부, growth 후속 호출=정상 push.
 
-        real_rollback = board._board_git_claim_rollback
+        real_rollback = board_claim._board_git_claim_rollback
         rollback_calls = {"count": 0}
 
-        def paused_rollback(*args, **kwargs):
+        def paused_rollback(_home, *args, **kwargs):
             rollback_calls["count"] += 1
             if rollback_calls["count"] == 1:
                 claim_paused.set()  # push 거부 판정 뒤 rollback 시작 직전.
                 assert allow_claim_finish.wait(timeout=10), "claim rollback 재개 timeout"
-            return real_rollback(*args, **kwargs)
+            return real_rollback(_home, *args, **kwargs)
 
-        monkeypatch.setattr(board, "_board_git_push", rejecting_push)
-        monkeypatch.setattr(board, "_board_git_claim_rollback", paused_rollback)
+        monkeypatch.setattr(board_git, "_board_git_push", rejecting_push)
+        monkeypatch.setattr(board_claim, "_board_git_claim_rollback", paused_rollback)
 
     growth_argv = (["section-add", "T-1009", "--role", "developer"]
                    if growth == "section-add" else ["tier", "T-1009", "hard"])
@@ -916,7 +922,7 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
     growth_done = threading.Event()
     results: dict[str, object] = {}
     errors: list[BaseException] = []
-    real_atomic = board.dump_ticket_atomic
+    real_atomic = ticket_store.dump_ticket_atomic
     calls = {"count": 0}
 
     def paused_first_atomic(target, fm, body):
@@ -926,7 +932,7 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
             assert allow_migration_dump.wait(timeout=10), "migration dump 재개 timeout"
         return real_atomic(target, fm, body)
 
-    monkeypatch.setattr(board, "dump_ticket_atomic", paused_first_atomic)
+    monkeypatch.setattr(ticket_store, "dump_ticket_atomic", paused_first_atomic)
     growth_argv = (["section-add", "T-1010", "--role", "developer"]
                    if growth == "section-add" else ["tier", "T-1010", "hard"])
 
@@ -974,8 +980,11 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
     }
 
     def call_name(node: ast.AST) -> str | None:
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            return node.func.id
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                return node.func.id
+            if isinstance(node.func, ast.Attribute):
+                return node.func.attr
         return None
 
     def lock_withs(fn: ast.AST, lock_name: str) -> list[ast.With]:

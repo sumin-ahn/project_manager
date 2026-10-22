@@ -37,6 +37,8 @@ from pm_engine.infra import worktree_paths
 from pm_engine.app import worktree_pool
 from pm_engine.domain import worktree_records
 
+from pm_engine.infra import lease_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -71,7 +73,7 @@ def _rebind(mod, root: Path) -> None:
         "LOG_DIR": pm / "wiki" / "log",
         "WIKI_DIR": pm / "wiki",
         "TICKETS_DIR": pm / "wiki" / "tickets",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
         "REPO_HOOKS_DIR": pm / ".local" / "repo-hooks",
     }
     for name, value in mapping.items():
@@ -300,7 +302,7 @@ def trio(home, monkeypatch):
     pm_config = _load("pm_config")
     _rebind(board, home.root)
     _rebind(pm_config, home.root)
-    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # 두 모듈의 동적 board 로더가 **이 홈에 배선된** board 를 보게 한다(REPO 대조 가드 통과).
 
     real_load = pm_config._load_module

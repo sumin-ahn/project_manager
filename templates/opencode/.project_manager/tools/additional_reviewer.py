@@ -103,6 +103,7 @@ from pm_engine.domain import conf_schema, delegate_errors, review_form, review_s
 from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 from pm_engine.app import release, round_seed  # noqa: E402
+
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -5442,7 +5443,7 @@ def _reserve_additional_reviewer_round(
         + "\n\n" + (reply if reply.endswith("\n") else reply + "\n")
     )
     round_path = round_store.reserve_round(
-        tickets_dir, ticket, role, content=content, lock=board.board_lock(),
+        tickets_dir, ticket, role, content=content, lock=fs.board_lock(board_home),
     )
     ordinal, _role = round_rules.parse_round_filename(round_path.name)
     message = f"additional-reviewer {ticket} {role}"

@@ -72,6 +72,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 
+
 # 락 파일 기본 권한. 더 좁은 권한이 필요한 호출자는 `mode=` 로 명시한다(raw_output raw 장부=0o600).
 DEFAULT_LOCK_MODE = 0o644
 
@@ -1191,3 +1192,21 @@ def owner_only_access(
     return bool(principals) and bool(identities) and all(
         any(_same_principal(name, identity) for identity in identities)
         for name in principals)
+
+
+@contextlib.contextmanager
+def board_lock(home) -> Iterator[None]:
+    """공유 보드 write 를 직렬화하는 OS 파일락 컨텍스트매니저.
+
+    `.project_manager/.local/board.lock` 에 배타 OS 락을 건다. **프로세스가 죽으면
+    OS 가 락을 자동 해제**하므로 stale-lock 이 없다(worktree 리스의 pid-회수와 수명이
+    다른 이유). 읽기(list/show)는 락을 잡지 않는다 — *변경* 경로만 직렬화한다.
+
+    **재진입 금지** — 같은 프로세스가 이 컨텍스트를 중첩하면 안 된다(flock 의 재진입
+    동작은 OS 별로 다름). strict claim은 기존 `board_git_lock → board_lock` 순서로 confirm/
+    rollback까지 두 락을 유지하고, 파생 render는 `_refresh_board_locked`로 재진입 없이 끝낸다.
+    나머지 ticket writer는 board_lock 해제 뒤 refresh/best-effort board-git sync를 수행하므로
+    역순 중첩이 없다.
+    """
+    with exclusive_file_lock(home.local_dir / "board.lock"):
+        yield

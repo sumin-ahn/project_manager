@@ -27,6 +27,8 @@ from pm_engine.domain import delegate_errors, round_rules
 from pm_engine.infra import delegate_ledger, round_store
 from pm_engine.app import round_seed
 
+from pm_engine.infra import fs
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -92,7 +94,6 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     )
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
 
     def _sync(message, paths):
         if sync_log is not None:
@@ -247,7 +248,7 @@ def _t0928_prior_roles(pd, pm_home, tickets, members, role):
             seed = pd._ticket_round_seed(previous_role, spec, None,
                                         today="2026-10-02", rounds=previous)
             path = round_store.reserve_round(tickets.parent, ticket, previous_role, content=seed,
-                                        lock=_fixture_board(pd, pm_home).board_lock())
+                                        lock=fs.board_lock(_fixture_board(pd, pm_home)._home()))
             _fill(path, "## 실측\n- 이전 단계 완료")
 
 
@@ -270,13 +271,13 @@ def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
     _t0928_prior_roles(pd, pm_home, tickets, members, role)
     board = _fixture_board(pd, pm_home)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
-    original_lock = board.board_lock
+    original_lock = fs.board_lock
     active = []
     syncs = []
 
     @contextmanager
-    def lock():
-        with original_lock():
+    def lock(_home):
+        with original_lock(_home):
             active.append(True)
             try:
                 yield
@@ -295,7 +296,7 @@ def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
         syncs.append((message, tuple(paths)))
         return True
 
-    monkeypatch.setattr(board, "board_lock", lock)
+    monkeypatch.setattr(fs, "board_lock", lock)
     monkeypatch.setattr(board, "_rounds_mutation_sync_paths", sync)
     if size == 1:
         plans = (pd.prepare_ticket_copy(ticket=members[0], role=role,
@@ -627,7 +628,7 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
         today="2026-01-01")
     board_path = round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), "T-6016", "architect", content=seed,
-        lock=board.board_lock(),
+        lock=fs.board_lock(board._home()),
     )
     legacy_dir = slot / delegate_ledger.TICKET_COPY_REL_ROOT / "T-6016" / ("b" * 32)
     legacy_dir.mkdir(parents=True)

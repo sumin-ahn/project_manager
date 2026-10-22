@@ -229,7 +229,7 @@ def test_promote_rejects_half_filled_draft(board_git):
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _HALF_FILLED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _HALF_FILLED_BODY)
 
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 1, "인터페이스/결정 뼈대가 남은 draft 가 promote 통과함(게이트 갭)."
@@ -248,7 +248,7 @@ def test_promote_accepts_self_contained_draft(board_git):
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _FILLED_BODY)
 
     bind_product_cluster(board_git, tid)
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
@@ -308,7 +308,7 @@ def test_promote_rejects_section_deleted_draft(board_git):
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _SECTION_DELETED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _SECTION_DELETED_BODY)
 
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 1, "인터페이스/결정 절을 삭제한 draft 가 promote 통과함(절-삭제 우회)."
@@ -332,7 +332,7 @@ def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _FILLED_BODY)
 
     rc_section = board_git.cmd_section_add(
         argparse.Namespace(id=tid, role="architect", label=None))

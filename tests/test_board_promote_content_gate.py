@@ -40,6 +40,8 @@ from pm_engine.infra import pm_paths, round_store, ticket_store
 from pm_engine.domain import round_rules
 from pm_engine.app import body_lint, round_seed
 
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -437,7 +439,7 @@ def test_global_lint_does_not_surface_the_new_kinds(anchored, tmp_path):
     ticket.parent.mkdir(parents=True, exist_ok=True)
     body = _body("- 근거 `.project_manager/tools/absent.py:10`\n",
                  design_section=_DESIGN_FILLED)
-    anchored.dump_ticket(ticket, {
+    ticket_store.dump_ticket(ticket, {
         "id": "T-0002", "title": "x", "status": "open", "design": "done",
         "touches": ["tools/absent.py"], "depends_on": [], "blocks": [], "tags": [],
     }, body)
@@ -504,7 +506,7 @@ def _fill_draft(mod, board_dir: Path, body: str, **frontmatter) -> str:
     path = _draft(board_dir)
     fm, _ = ticket_store.load_ticket(path)
     fm.update(frontmatter)
-    mod.dump_ticket(path, fm, body)
+    ticket_store.dump_ticket(path, fm, body)
     return fm["id"]
 
 
@@ -637,7 +639,7 @@ def test_promote_succeeds_when_touches_overlap_another_active_ticket(board_git, 
     board_dir = board_git._board_dir
     _write(tmp_path, ".project_manager/tools/board.py", "a\n")
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"
-    board_git.dump_ticket(existing, {
+    ticket_store.dump_ticket(existing, {
         "id": "T-0002", "title": "x", "status": "open",
         "touches": [".project_manager/tools/board.py"],
         "depends_on": [], "blocks": [], "tags": [],

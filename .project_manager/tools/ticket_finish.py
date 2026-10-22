@@ -31,7 +31,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime
 import json
 import os
@@ -50,6 +49,11 @@ if _TOOLS_DIR not in sys.path:
 from pm_engine.domain import identity_args, pytest_report, round_rules, ticket_rules  # noqa: E402
 from pm_engine.infra import areas_store, cluster_store, conf_store, console, doc_page_store, fs, lease_store, log_store, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
 from pm_engine.app import doc_affected, doc_staleness, freshness_lint, regression, slot_resolution  # noqa: E402
+
+from pm_engine.infra import git
+from pm_engine.infra import board_git
+from pm_engine.app import ticket_access
+from pm_engine.app import board_sync
 _load_module_from_path = repo_files.load_module
 
 
@@ -935,10 +939,10 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     paths: list[Path] = [Path(log_file)]
     if board is None:
         return paths
-    if board._board_git_enabled():
+    if board_git._board_git_enabled(pm_paths.home_at(REPO)):
         return paths
     try:
-        _status, ticket_path = board.find_ticket(ticket_id)
+        _status, ticket_path = ticket_store.find_ticket(pm_paths.home_at(REPO), ticket_id)
     except FileNotFoundError:
         return paths        # 티켓 부재 — 이 실행이 옮긴 티켓이 없다(log 만).
     paths.append(ticket_path)
@@ -1043,16 +1047,14 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     `touches` 를 주면 board 조회 대신 그 목록을 선언원으로 쓴다 — 두-repo 계획이 티켓 touches 를
     repo 별 몫으로 갈라 각 계획에 자기 몫만 넘기는 데 쓴다(주지 않으면 종전대로 board 조회).
 
-    board 모듈을 못 띄우면 **fail-loud** — 빈 pathspec + error 사유를 돌려준다(호출부가 경고 +
-    잔여 전체 보고). 여기서 조용한 fail-soft 는 stage 0 을 정상처럼 보이게 해 위험하다.
+    git scope 공급자의 실제 IO 실패는 빈 pathspec과 error 사유로 반환한다.
+    호출부가 완료 기록 전에 차단하고 잔여 경로를 함께 보고한다.
 
     반환 pathspec 은 **커밋 pathspec** 이다 — add 가 받는 경로에 더해 미리 `git rm` 한 선언 삭제를
     싣는다. [4/5] 의 add 는 그중 작업 트리에 있는 파일만 받는다(add 와 커밋의 pathspec 분리).
     """
     board = load_board_module(board_py)
-    scope_fn = getattr(board, "git_scope_stage_pathspec", None) if board else None
-    if scope_fn is None:
-        return StageScope((), f"board 모듈을 로드하지 못했다 ({board_py})")
+    scope_fn = git.git_scope_stage_pathspec
     repo = Path(repo) if repo is not None else REPO
     declared: list[Path] = []
     if include_touches:
@@ -1082,7 +1084,7 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     # 그런 삭제를 품을 수 없어 조회하지 않는다(디렉터리 선언은 그 아래를 본다). `--no-renames` —
     # 이름 바꿈 감지가 켜지면 `git mv` 의 원래 경로가 `R` 로 짝지어져 삭제 조회에서 빠진다.
     unfiled = [path for path in declared if not path.is_file()]
-    relative = board.git_scope_pathspec(repo, unfiled) if unfiled else ()
+    relative = git.git_scope_pathspec(repo, unfiled) if unfiled else ()
     if relative:
         rc, out = run_git(["diff", "--cached", "--no-renames", "--name-only", "-z", "--diff-filter=D", "--",
                            *relative])
@@ -1331,7 +1333,7 @@ class StatusObservationError(Exception):
 
 
 def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
-                   board=None, *, strict: bool = False) -> tuple[tuple[str, str], ...]:
+                   *, strict: bool = False) -> tuple[tuple[str, str], ...]:
     """현재 워킹트리 상태 `((XY, 경로), …)` — 조회 실패·비-git 은 `()`(비차단).
 
     `strict` 면 조회 실패(예외·rc≠0)를 빈 목록으로 접지 않고 그대로 올린다
@@ -1344,17 +1346,13 @@ def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
         밖 — 빼라" 로 오보한다(reviewer 실측·PM 홈에 한글 경로 실재). 목록도 8진이라 복붙 불가다.
       - `-uall` 없으면 새 untracked 디렉토리가 `?? wiki/raw/` 한 줄로 접혀 **무엇이 빠졌는지
         안 보인다**(legacy 실 구동 실측). 접힌 정보를 주는 loud 채널은 loud 가 아니다.
-    NUL 파싱은 board 의 `git_parse_porcelain_z` 한 벌(디렉토리 전개와 공유)을 쓴다.
+    NUL 파싱은 infra.git의 `git_parse_porcelain_z`를 디렉토리 전개와 공유한다.
 
-    board 미로드(=판정기 사망) 시에도 **`-z` 로 조회** 하고 NUL 을 여기서 직접 자른다 — 공유
-    파서를 못 쓰는 갈래라고 8진 이스케이프 목록을 내면, 방금 닫은 증상(복붙 불가·경로 왜곡)이
-    이 갈래에만 남는다. rename/copy 의 **2토큰**(원본 경로)도 같이 소비한다 — 안 그러면 원본
-    토큰이 코드 없는 **가짜 잔여 항목**으로 보고에 뜬다.
+    rename/copy의 원본 경로 토큰까지 공유 파서에서 소비해 가짜 잔여 항목을 방지한다.
     """
-    parse_z = getattr(board, "git_parse_porcelain_z", None) if board is not None else None
     try:
         rc, out = run_git(["status", "--porcelain", "-z", "--untracked-files=all"])
-    except Exception:  # noqa: BLE001 — 보고는 완료 흐름을 막지 않는다(strict 는 그대로 올린다).
+    except Exception:  # noqa: BLE001 — strict 관측 실패는 그대로 전파한다.
         if strict:
             raise
         return ()
@@ -1362,21 +1360,7 @@ def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
         if strict:
             raise StatusObservationError(f"git status 조회 실패 (rc={rc}): {out.strip()}")
         return ()
-    if parse_z:
-        return parse_z(out)
-    tokens = out.split("\0")
-    entries: list[tuple[str, str]] = []
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        index += 1
-        if len(token) < 4:
-            continue
-        code, path = token[:2], token[3:]
-        if code[0] in ("R", "C"):
-            index += 1          # 원본 경로 토큰 소비 (가짜 항목 방지·주 파서와 동형)
-        entries.append((code, path))
-    return tuple(entries)
+    return git.git_parse_porcelain_z(out)
 
 
 def split_dirty(entries: Sequence[tuple[str, str]],
@@ -2070,7 +2054,7 @@ class TicketFinisher:
         if gate is None:
             return None
         try:
-            _status, path = board.find_ticket(ticket_id)
+            _status, path = ticket_store.find_ticket(_board_home(self._board_py), ticket_id)
             _fm, body = ticket_store.load_ticket(path)
         except Exception as exc:  # noqa: BLE001 — 조회 실패는 뒤 게이트가 소유(preflight fail-soft).
             if _is_engine_rev_skew(exc):
@@ -2750,13 +2734,13 @@ class TicketFinisher:
         조회 실패는 `strict` 로 올린다 — 잔여 판정·보고(`_dirty_split`)와 종결의 선행 조건
         관측(`_dirty_paths`)은 그 실패를 clean 과 구별해 정지한다.
         """
-        return status_entries(self._run_git_stdout_fn, load_board_module(self._board_py),
+        return status_entries(self._run_git_stdout_fn,
                               strict=True)
 
     def _default_status_entries_at(self, cwd: Path) -> tuple[tuple[str, str], ...]:
         """`cwd` 트리의 워킹트리 상태 — 실패 처리는 `_default_status_entries` 와 같다."""
         return status_entries(lambda args: self._run_git_stdout_at_fn(cwd, args),
-                              load_board_module(self._board_py), strict=True)
+                              strict=True)
 
     def _stage_plans(self, ticket_id: str) -> tuple[RepoStagePlan, ...]:
         """실제 stage 와 dry-run 이 공유하는 repo별 계획 단일 진실.
@@ -3440,13 +3424,7 @@ class ClusterCloser:
         if rc != 0:
             raise _CloseObservationFailure(
                 f"남은 변경을 관측하지 못했다 ({cwd} · git status rc={rc}): {out.rstrip()}")
-        parse = (getattr(self._board, "git_parse_porcelain_z", None)
-                 if self._board else None)
-        if parse is not None:
-            entries = parse(out)
-        else:
-            entries = tuple((token[:2], token[3:])
-                            for token in out.split("\0") if len(token) >= 4)
+        entries = git.git_parse_porcelain_z(out)
         return tuple(path for _code, path in entries)
 
     def _is_ancestor(self, cwd: Path, ancestor: str, descendant: str) -> bool:
@@ -3699,8 +3677,7 @@ class ClusterCloser:
         seams = {
             name: (getattr(board, name, None) if board else None)
             for name in ("build_parser",
-                         "cluster_complete_binding_problem", "_ticket_ownership",
-                         "_ownership_rejection", "_round_completion_problems")
+                         "cluster_complete_binding_problem", "_round_completion_problems")
         }
         missing = sorted(name for name, seam in seams.items() if seam is None)
         if missing:
@@ -3721,9 +3698,9 @@ class ClusterCloser:
             problems.append(f"{tid}: {binding}")
         namespace = seams["build_parser"]().parse_args(
             ["complete", tid, "--tests-pass", *self._board_identity_args])
-        verdict = seams["_ticket_ownership"](frontmatter, namespace)
+        verdict = ticket_access._ticket_ownership(self._home, frontmatter, task=getattr(namespace, "task", None), user=getattr(namespace, "user", None))
         if not verdict.ok:
-            problems.append(seams["_ownership_rejection"]("complete", tid, verdict))
+            problems.append(ticket_rules._ownership_rejection("complete", tid, verdict))
         problems.extend(
             f"{tid}: {problem}"
             for problem in seams["_round_completion_problems"](tid, spec_text))
@@ -4000,17 +3977,12 @@ class ClusterCloser:
         보고되므로 offline 은 여기서 막히지 않는다).
         """
         board = self._board
-        sync = getattr(board, "_board_git_sync_best_effort", None) if board else None
-        if sync is None:
-            raise _CloseObservationFailure(
-                f"board-git 기록 seam 을 로드하지 못했다 ({self._board_py}) — 기록 여부를 "
-                "관측할 수 없다. board 사본을 확인하라.")
         unit, title = self._unit()
         message = _CLOSE_BOARD_MESSAGE.format(unit=unit, title=title)
         if self._dry_run:
             print(f"  [dry-run] board-git 기록: {message}")
             return None
-        if not sync(message, list(paths)):
+        if not board_sync._board_git_sync_best_effort(self._home, message, list(paths)):
             return ("board-git 로컬 커밋이 생기지 않았다 — 위 board 진단의 미커밋 경로를 "
                     "해소한 뒤 다시 실행하라(포인터는 아직 커밋하지 않았다).")
         print(f"  ✓ board-git 기록 ({message})")
@@ -4105,7 +4077,7 @@ class ClusterCloser:
         if board is None:
             return
         try:
-            with board.board_lock():
+            with fs.board_lock(self._home):
                 ledger = board.load_cluster(self._cluster)
                 if ledger is None:
                     return
@@ -4218,10 +4190,7 @@ class ClusterCloser:
         )
         if rc != 0:
             raise _CloseObservationFailure(f"작업 트리 상태를 read-only 관측하지 못했다 ({tree})")
-        parse = getattr(self._board, "git_parse_porcelain_z", None) if self._board else None
-        entries = (parse(out) if parse is not None else tuple(
-            (token[:2], token[3:]) for token in out.split("\0") if len(token) >= 4
-        ))
+        entries = git.git_parse_porcelain_z(out)
         return tuple(path for _code, path in entries)
 
     def _reconcile_ticket_frontmatter(self, tid: str) -> tuple[dict | None, str | None]:
@@ -4462,13 +4431,12 @@ class ClusterCloser:
 
         prior: dict | None = None
         if first_status == "open":
-            lock = getattr(self._board, "board_lock", None) if self._board else None
             load = getattr(self._board, "load_cluster", None) if self._board else None
             dump = getattr(self._board, "dump_cluster", None) if self._board else None
             if load is None or dump is None:
                 print("\n[중단] reconcile 장부 persistence seam이 없다", file=sys.stderr)
                 return 1
-            with lock() if callable(lock) else contextlib.nullcontext():
+            with fs.board_lock(self._home):
                 third, third_status, problem = self._validate_reconcile()
                 if problem or third != first or third_status != "open":
                     detail = problem or "최종 write 직전 board/HEAD가 drift했다"
@@ -4500,7 +4468,7 @@ class ClusterCloser:
                 block = f"board-git 기록 관측 실패 — {failure}"
             if block is not None:
                 if prior is not None:
-                    with lock() if callable(lock) else contextlib.nullcontext():
+                    with fs.board_lock(self._home):
                         dump(prior)
                 print(f"\n[중단] {block}", file=sys.stderr)
                 return 1

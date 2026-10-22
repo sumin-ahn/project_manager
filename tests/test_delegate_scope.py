@@ -10,6 +10,8 @@ import pytest
 
 from _win_skip import posix_mode_supported
 
+from pm_engine.infra import pm_paths
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -406,7 +408,7 @@ def test_ticket_id_with_glob_metacharacter_is_rejected(scope, tmp_path):
     board_py = TOOLS / "board.py"
     for bad in ("T-*", "T-04?4", "T-[01]474", "../T-0001", "T-0474/x"):
         with pytest.raises(scope.DelegateScopeError, match="형식 거부"):
-            scope.ticket_touches(board_py, bad, pm_root=tmp_path)
+            scope.ticket_touches(pm_paths.home_at(tmp_path), bad)
 
 
 def test_ticket_id_mismatch_in_frontmatter_is_loud(scope, tmp_path):
@@ -418,7 +420,7 @@ def test_ticket_id_mismatch_in_frontmatter_is_loud(scope, tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(scope.DelegateScopeError, match="id 불일치"):
-        scope.ticket_touches(TOOLS / "board.py", "T-0474", pm_root=tmp_path)
+        scope.ticket_touches(pm_paths.home_at(tmp_path), "T-0474")
 
 
 def test_ticket_touches_exact_match_reads_own_frontmatter(scope, tmp_path):
@@ -430,7 +432,7 @@ def test_ticket_touches_exact_match_reads_own_frontmatter(scope, tmp_path):
             f"---\nid: {tid}\ntitle: t\nstatus: open\ntouches:\n- {touch}\n---\n\n# 본문\n",
             encoding="utf-8",
         )
-    assert scope.ticket_touches(TOOLS / "board.py", "T-0474", pm_root=tmp_path) == ("src/mine",)
+    assert scope.ticket_touches(pm_paths.home_at(tmp_path), "T-0474") == ("src/mine",)
 
 
 def test_large_untracked_file_is_not_hashed(scope, delegated_repo, monkeypatch):

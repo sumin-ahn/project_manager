@@ -23,6 +23,9 @@ from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths
 
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -49,27 +52,27 @@ def board(tmp_path, monkeypatch):
         "REPO": proj,
         "TICKETS_DIR": wiki / "tickets",
         "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
+
         "LOG_FILE": wiki / "log" / "current.md",
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
         "LEASES_FILE": local / "worktree-leases.json",
-        "BOARD_LOCK": local / "board.lock",
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     (pm / "local.conf").write_text("identity.user=me\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
 
 def _seed(board, tid: str, status: str) -> Path:
     """`<status>/<tid>-t.md` 를 심는다 — 손상 0·claimed_by 없음(상태 검사만 겨냥)."""
     path = board.TICKETS_DIR / status / f"{tid}-t.md"
-    board.dump_ticket(
+    ticket_store.dump_ticket(
         path,
         {"id": tid, "title": "t", "status": status, "created": "2026-08-20",
          "claimed_by": None, "claimed_at": None, "completed_at": None,
@@ -94,7 +97,7 @@ def _tickets_tree_snapshot(board) -> dict[str, bytes]:
 def _derived_files_snapshot(board) -> dict[str, bytes | None]:
     """board/status/log 파생 파일의 존재·bytes — 거부가 이들을 재생성/변경하지 않는지 대조용."""
     return {
-        "board": board.BOARD_FILE.read_bytes() if board.BOARD_FILE.exists() else None,
+        "board": (pm_paths.wiki_dir(board._home()) / "board.md").read_bytes() if (pm_paths.wiki_dir(board._home()) / "board.md").exists() else None,
         "status": (pm_paths.status_file(board._home()).read_bytes()
                    if pm_paths.status_file(board._home()).exists() else None),
         "log": board.LOG_FILE.read_bytes() if board.LOG_FILE.exists() else None,

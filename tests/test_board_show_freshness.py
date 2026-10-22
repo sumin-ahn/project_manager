@@ -31,6 +31,11 @@ import pytest
 from _git_fixture import remove_git_tree
 from conftest import anchor_board_module
 
+from pm_engine.app import board_claim
+from pm_engine.domain import board_git_rules
+from pm_engine.infra import board_git
+from pm_engine.infra import git
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -346,14 +351,14 @@ def test_show_skips_fetch_when_fetch_head_within_ttl(board, tmp_path, capsys, mo
     # 실 fetch 한 번 미리 실행 — FETCH_HEAD mtime 이 지금 시각(TTL 60s 이내)이 된다.
     _git(["fetch", "origin"], board_dir)
 
-    real_board_git = board._board_git
+    real_board_git = git._board_git
     calls: list[list[str]] = []
 
-    def _counting_board_git(args, *, check=False, timeout=None):
+    def _counting_board_git(_home, args, *, check=False, timeout=None):
         calls.append(list(args))
-        return real_board_git(args, check=check, timeout=timeout)
+        return real_board_git(_home, args, check=check, timeout=timeout)
 
-    monkeypatch.setattr(board, "_board_git", _counting_board_git)
+    monkeypatch.setattr(git, "_board_git", _counting_board_git)
     rc = board.cmd_show(_show_args())
     assert rc == 0
     err = capsys.readouterr().err
@@ -377,14 +382,14 @@ def test_show_runs_fetch_when_fetch_head_stale(board, tmp_path, capsys, monkeypa
     stale_ts = time.time() - 120   # TTL(60s) 밖.
     os.utime(fetch_head, (stale_ts, stale_ts))
 
-    real_board_git = board._board_git
+    real_board_git = git._board_git
     calls: list[list[str]] = []
 
-    def _counting_board_git(args, *, check=False, timeout=None):
+    def _counting_board_git(_home, args, *, check=False, timeout=None):
         calls.append(list(args))
-        return real_board_git(args, check=check, timeout=timeout)
+        return real_board_git(_home, args, check=check, timeout=timeout)
 
-    monkeypatch.setattr(board, "_board_git", _counting_board_git)
+    monkeypatch.setattr(git, "_board_git", _counting_board_git)
     board.cmd_show(_show_args())
     capsys.readouterr()
     assert any(c and c[0] == "fetch" for c in calls), \
@@ -398,9 +403,9 @@ def test_board_git_behind_returns_real_zero_when_up_to_date(board, tmp_path):
     """원격과 같은 커밋이면 실측 0 을 낸다 — 폴백 0 이 아니라 **계산된** 0(known)."""
     bare = _bare(tmp_path, "bare-behind-zero")
     _make_board_git(tmp_path, remote=bare)
-    upstream = board._board_git_upstream()
+    upstream = board_git._board_git_upstream(board._home())
     assert upstream is not None
-    assert board._board_git_behind(upstream.tracking) == 0
+    assert board_git._board_git_behind(board._home(), upstream.tracking) == 0
 
 
 @requires_git
@@ -410,9 +415,9 @@ def test_board_git_behind_returns_real_count_when_remote_advances(board, tmp_pat
     board_dir = _make_board_git(tmp_path, remote=bare)
     _advance_other_clone(bare, tmp_path, dest_status="done")
     _git(["fetch", "origin"], board_dir)
-    upstream = board._board_git_upstream()
+    upstream = board_git._board_git_upstream(board._home())
     assert upstream is not None
-    assert board._board_git_behind(upstream.tracking) == 1
+    assert board_git._board_git_behind(board._home(), upstream.tracking) == 1
 
 
 @requires_git
@@ -420,16 +425,16 @@ def test_board_git_behind_returns_none_when_rev_list_fails(board, tmp_path):
     """rev-list 가 실패하면(없는 추적 ref) 0 이 아니라 None — 계산 불능은 값이 아니다."""
     bare = _bare(tmp_path, "bare-behind-unknown")
     _make_board_git(tmp_path, remote=bare)
-    assert board._board_git_behind("refs/remotes/origin/no-such-branch") is None
+    assert board_git._board_git_behind(board._home(), "refs/remotes/origin/no-such-branch") is None
 
 
 # ── claim 거부 문구 — 로컬 stale 진술 + 원격 status + behind 3요소 (순수 함수) ──
 
 def test_claim_block_message_race_lost_states_stale_and_behind():
     mod = _load_board()
-    prefetch = mod._ClaimPrefetch(
-        block=mod._CLAIM_BLOCK_RACE_LOST, detail="done", behind=3)
-    msg = mod._claim_block_message("T-0042", prefetch)
+    prefetch = board_git_rules._ClaimPrefetch(
+        block=board_git_rules._CLAIM_BLOCK_RACE_LOST, detail="done", behind=3)
+    msg = board_claim._claim_block_message("T-0042", prefetch)
     assert "claim race lost" in msg
     assert "done/" in msg
     assert "로컬 사본이 stale" in msg
@@ -439,9 +444,9 @@ def test_claim_block_message_race_lost_states_stale_and_behind():
 def test_claim_block_message_race_lost_states_actual_zero():
     """실측 0 은 그대로 0 이라고 말한다 — unknown 처리가 정상 수치를 삼키면 안 된다."""
     mod = _load_board()
-    prefetch = mod._ClaimPrefetch(
-        block=mod._CLAIM_BLOCK_RACE_LOST, detail="done", behind=0)
-    msg = mod._claim_block_message("T-0042", prefetch)
+    prefetch = board_git_rules._ClaimPrefetch(
+        block=board_git_rules._CLAIM_BLOCK_RACE_LOST, detail="done", behind=0)
+    msg = board_claim._claim_block_message("T-0042", prefetch)
     assert "원격보다 0 커밋 뒤처진 상태" in msg
     assert "판정불가" not in msg
 
@@ -449,9 +454,9 @@ def test_claim_block_message_race_lost_states_actual_zero():
 def test_claim_block_message_race_lost_omits_number_when_behind_unknown():
     """behind 계산 불능(None)이면 수치를 단정하지 않고 판정불가로 표시한다."""
     mod = _load_board()
-    prefetch = mod._ClaimPrefetch(
-        block=mod._CLAIM_BLOCK_RACE_LOST, detail="done", behind=None)
-    msg = mod._claim_block_message("T-0042", prefetch)
+    prefetch = board_git_rules._ClaimPrefetch(
+        block=board_git_rules._CLAIM_BLOCK_RACE_LOST, detail="done", behind=None)
+    msg = board_claim._claim_block_message("T-0042", prefetch)
     assert "커밋 뒤처진 상태" not in msg      # 없는 수치를 지어내지 않는다.
     assert "판정불가" in msg
     assert "claim race lost" in msg          # 차단 사유 진술은 그대로.
@@ -467,8 +472,8 @@ def test_claim_prefetch_blocks_race_lost_with_real_behind(board, tmp_path):
     _make_board_git(tmp_path, remote=bare)
     _advance_other_clone(bare, tmp_path, dest_status="done")
 
-    prefetch = board._board_git_claim_prefetch("T-0001")
-    assert prefetch.block == board._CLAIM_BLOCK_RACE_LOST
+    prefetch = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    assert prefetch.block == board_git_rules._CLAIM_BLOCK_RACE_LOST
     assert prefetch.detail == "done"
     assert prefetch.behind == 1
 
@@ -479,15 +484,15 @@ def test_claim_prefetch_block_decision_unchanged_when_behind_unknown(
     """behind 가 계산 불능이어도 차단 판단은 옛 0 폴백과 같다 — 선점만 막고 나머진 통과."""
     bare = _bare(tmp_path, "bare-prefetch-unknown")
     _make_board_git(tmp_path, remote=bare)
-    monkeypatch.setattr(board, "_board_git_behind", lambda tracking: None)
+    monkeypatch.setattr(board_git, "_board_git_behind", lambda _home, tracking: None)
 
     # (1) 선점 없음 → 차단하지 않는다(옛 0 폴백과 동일 방향: 원격이 앞섰다고 보지 않는다).
-    prefetch = board._board_git_claim_prefetch("T-0001")
+    prefetch = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
     assert prefetch.block is None
     assert prefetch.anchor
 
     # (2) 원격 선점 → 여전히 차단한다(수치만 unknown 으로 실린다).
     _advance_other_clone(bare, tmp_path, dest_status="claimed")
-    blocked = board._board_git_claim_prefetch("T-0001")
-    assert blocked.block == board._CLAIM_BLOCK_RACE_LOST
+    blocked = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    assert blocked.block == board_git_rules._CLAIM_BLOCK_RACE_LOST
     assert blocked.behind is None

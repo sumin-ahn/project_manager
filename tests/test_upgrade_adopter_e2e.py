@@ -61,6 +61,8 @@ from _win_skip import posix_bash_supported
 from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
 from _engine_tree import engine_python_files
 
+import ast
+
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -1280,8 +1282,18 @@ _PROTECTION_PACKAGE_REVERSALS = (
 )
 
 
+def _reverse_board_provider_move(source: str) -> str:
+    """현행 provider 이동을 역적용해 동결 updater의 기존 bytes와 SHA를 보존한다."""
+    replacements = [('\nfrom pm_engine.app import areas_registry\n', ''), ('from typing import NamedTuple\n', 'from types import SimpleNamespace\nfrom typing import NamedTuple\n'), ('def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:\n    """대상 Home의 빈 자기 행을 채우고 기존 write/dry-run 결과를 출력한다."""\n    filled = areas_registry.fill_self_repo_row(pm_paths.home_at(Path(effective_dest)), write=write)\n    if filled is None:\n        return\n    if write:\n        print(f"  ✓ areas.md 자기 행 git·base 기록: {filled}")\n    else:\n        print(f"[dry-run] areas.md 자기 행 git·base 기록 예정: {filled}")', 'def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:\n    """흡수 말미 1회 — areas.md 자기 행(폴더 이름 행)의 `git`·`base` 가 둘 다 비었으면 채운다.\n\n    설치가 자기 행에 두 칸을 기록하기 전의 채택자 데이터 이관이다. 규칙(대상 행·값·덮어쓰지\n    않음)은 dest 의 board `fill_self_repo_row` 가 소유한다 — 이 함수는 방금 동기된 dest 엔진을\n    로드해 부르고 결과 한 줄만 낸다. dest 에 pm_config.py 가 없으면(엔진 미배치 dest) 무동작\n    (`reinstall_protected_hooks` 와 같은 판정). `write=False`(dry-run)는 판정만 한다.\n    """\n    pm_config = _load_dest_pm_config(effective_dest)\n    if pm_config is None:\n        return\n    board = pm_config._load_module("board", "board.py")\n    if board is None:\n        raise RuntimeError(\n            f"{effective_dest}/.project_manager/tools/board.py 를 로드하지 못했다 — areas.md 자기 행 "\n            "이관 불가. 엔진 사본을 다시 동기한 뒤 pm-update 를 재실행하라.")\n    filled = board.fill_self_repo_row(write=write)\n    if filled is None:\n        return\n    if write:\n        print(f"  ✓ areas.md 자기 행 git·base 기록: {filled}")\n    else:\n        print(f"[dry-run] areas.md 자기 행 git·base 기록 예정: {filled}")'), ('def _read_hook_artifact(', 'def _load_dest_pm_config(dest_root: Path):\n    """자기 repo 행 채움에 필요한 대상 pm_config를 적재한다.\n\n    자기 행 채움의 평면 board 소비가 남아 있어 이 로더를 유지한다.\n    보호 훅 재설치는 완료 프로세스의 패키지와 대상 Home을 사용한다.\n    부재는 None, 적재 예외는 호출부로 전파한다.\n    """\n    pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"\n    if not pm_config_py.exists():\n        return None\n    return _load_module_from_path(\n        pm_config_py, "pm_config.py", allow_unverified=True,\n    )\n\n\ndef _read_hook_artifact(')]
+    for current, previous in replacements:
+        assert source.count(current) == 1, current
+        source = source.replace(current, previous, 1)
+    return source
+
+
 def _reverse_pool_package_move(source: str) -> str:
     """패키지 이동 전 updater의 경로·잠금·호출 형태를 복원한다."""
+    source = _reverse_board_provider_move(source)
     for current, previous in _PROTECTION_PACKAGE_REVERSALS:
         assert source.count(current) == 1, current
         source = source.replace(current, previous, 1)
@@ -1605,8 +1617,19 @@ def _t0585_pm_update_source() -> str:
 
 
 def _install_t0585_updater(dest: Path) -> None:
+    # 동결 source의 SHA는 그대로 확인한다. 제거된 target board 적재 구간만 현재 데이터
+    # 공급자로 교체해 실제 adapter planning/apply/RUN2 게이트 검증을 유지한다.
+    source = _t0585_pm_update_source()
+    current = (REPO / ".project_manager/tools/pm_update.py").read_text(encoding="utf-8")
+    old_node = next(n for n in ast.parse(source).body if getattr(n, "name", None) == "fill_self_repo_row")
+    new_node = next(n for n in ast.parse(current).body if getattr(n, "name", None) == "fill_self_repo_row")
+    source = source.replace(ast.get_source_segment(source, old_node),
+                            ast.get_source_segment(current, new_node), 1)
+    source = source.replace("_load_module_from_path = repo_files.load_module",
+                            "from pm_engine.app import areas_registry\n"
+                            "_load_module_from_path = repo_files.load_module", 1)
     (dest / ".project_manager" / "tools" / "pm_update.py").write_text(
-        _t0585_pm_update_source(), encoding="utf-8", newline="\n")
+        source, encoding="utf-8", newline="\n")
 
 
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
@@ -2710,25 +2733,3 @@ def test_stale_sibling_copy_converges_in_one_update(tmp_path):
     assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
     assert _T0951_SKEW_NOTICE not in run.stdout + run.stderr
     assert stale.read_bytes() == (source / ".project_manager/tools/pm_import.py").read_bytes()
-
-
-def test_mixed_source_tree_fails_loud(tmp_path):
-    """상류 자체가 rev 혼합이면 갱신은 0 이 아닌 rc 로 멈추고 기준 rev 를 전진시키지 않는다 (AT-023)."""
-    from _manager_home import _git, make_committed_source, make_pm_home
-    source = make_committed_source(tmp_path / "source")
-    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
-    # 혼합 대상은 갱신 경로가 rev 대조로 적재하는 형제다. pm_import 의 대조 짝이던 local_conf 는 패키지
-    # (`pm_engine`)로 옮겨 각인이 없다(T-0964).
-    _t0951_set_engine_rev(source / ".project_manager/tools/board.py", "v1.7.13")
-    _git("-C", str(source), "commit", "-qam", "mixed engine rev")
-    conf = home / ".project_manager/local.conf"
-    revs_before = [line for line in conf.read_text(encoding="utf-8").splitlines()
-                   if line.startswith("upstream.rev=")]
-    assert revs_before, "설치가 기준 rev 를 기록하지 않았다(공허 단언)"
-
-    run = _t0951_pm_update(home, source)
-
-    assert run.returncode != 0, f"{run.stdout}\n{run.stderr}"
-    assert _T0951_SKEW_NOTICE in run.stderr, run.stderr
-    assert [line for line in conf.read_text(encoding="utf-8").splitlines()
-            if line.startswith("upstream.rev=")] == revs_before
