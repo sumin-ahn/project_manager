@@ -1690,11 +1690,13 @@ def _slot_cwd(board, session: str) -> str:
 def _seed_slot_flag(board, session: str, head: str,
                     status: str = "pass", rc: int = 0) -> None:
     """슬롯별 회귀 플래그를 직접 심는다 (check-first 의 baseline 상태 주입)."""
-    flag = regression_store._regression_flag_for(board._home(), session)
+    flag = regression_store._regression_flag_for(board._home(), session, workspace="work/" + session)
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text(json.dumps(
         {"head": head, "status": status, "rc": rc, "scope": "full",
          "session": session, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
+
+    _t0983_complete_fixture_records(board)
 
 
 @pytest.fixture
@@ -1770,7 +1772,7 @@ def test_regression_multi_run_all_missing_runs_all_green(
     assert len(fake.cwds) == 2
     # 슬롯별 플래그가 각 슬롯 HEAD 로 pass 기록.
     for s in ("A_1", "B_1"):
-        data = json.loads(regression_store._regression_flag_for(b._home(), s).read_text(encoding="utf-8"))
+        data = json.loads(regression_store._regression_flag_for(b._home(), s, workspace="work/" + s).read_text(encoding="utf-8"))
         assert data["status"] == "pass"
         assert data["head"] == b._heads[_slot_cwd(b, s)]
     out = capsys.readouterr().out
@@ -1840,7 +1842,7 @@ def test_regression_multi_check_one_stale_blocks_and_names(multi_reg_board, caps
     rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     err = capsys.readouterr().err
-    assert "B_1=stale" in err
+    assert "B_1@work/B_1=stale" in err
     assert "push 차단" in err
 
 
@@ -1851,7 +1853,7 @@ def test_regression_multi_check_missing_flag_blocks(multi_reg_board, capsys):
     # B_1 플래그 없음 → missing.
     rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
-    assert "B_1=missing" in capsys.readouterr().err
+    assert "B_1@work/B_1=missing" in capsys.readouterr().err
 
 
 def test_regression_multi_check_red_flag_blocks(multi_reg_board, capsys):
@@ -1861,7 +1863,7 @@ def test_regression_multi_check_red_flag_blocks(multi_reg_board, capsys):
     _seed_slot_flag(b, "B_1", head="HEAD_B", status="fail", rc=1)
     rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
-    assert "B_1=red" in capsys.readouterr().err
+    assert "B_1@work/B_1=red" in capsys.readouterr().err
 
 
 def test_regression_multi_run_recovers_after_fix(
@@ -1902,7 +1904,7 @@ def test_regression_multi_check_ignores_env_session(
     # B_1 플래그 없음 → missing.
     rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
-    assert "B_1=missing" in capsys.readouterr().err
+    assert "B_1@work/B_1=missing" in capsys.readouterr().err
 
 
 def test_regression_multi_check_ignores_claude_env_alias(
@@ -1913,7 +1915,7 @@ def test_regression_multi_check_ignores_claude_env_alias(
     _seed_slot_flag(b, "A_1", head="HEAD_A", status="pass")
     rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
-    assert "B_1=missing" in capsys.readouterr().err
+    assert "B_1@work/B_1=missing" in capsys.readouterr().err
 
 
 def test_regression_multi_run_ignores_env_session(
@@ -1970,7 +1972,7 @@ def test_regression_multi_check_message_carries_rc5_hint(
     rc = regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check"))
     assert rc == 1
     err = capsys.readouterr().err
-    assert "B_1=red(rc=5·수집0)" in err
+    assert "B_1@work/B_1=red(rc=5·수집0)" in err
 
 
 def test_regression_run_explicit_cwd_skips_multi_dispatch(
@@ -2517,3 +2519,18 @@ def test_t0962_session_token_is_not_parsed_as_slot(board, monkeypatch):
     assert areas_store.id_prefix(board._home(), None) is None
     assert regression._test_cmd(board._home(), None) == "pytest -q"
     assert board._created_by_session("alpha_1") is None
+
+
+def _t0983_complete_fixture_records(board):
+    for row in json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))["leases"]:
+        flag = regression_store._regression_flag_for(
+            board._home(), row["session"], workspace=row["slot"])
+        if not flag.exists():
+            continue
+        record = json.loads(flag.read_text(encoding="utf-8"))
+        cwd = str(board.REPO / row["slot"])
+        record.setdefault("command", regression._core_command_at(board._home(), cwd, row["session"]))
+        record.setdefault("conf_anchor",cwd)
+        record.setdefault("previous_collected",None)
+        record.setdefault("collected",None)
+        flag.write_text(json.dumps(record), encoding="utf-8")

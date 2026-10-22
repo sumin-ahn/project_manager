@@ -2262,7 +2262,7 @@ def test_commands_leaving_the_sandbox_are_detected(tmp_path):
     readonly = tmp_path / "adopter-claude-readonly"
     outside = tmp_path.parent / "outer-pm-home"
     record = ("PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
-              f"--repo adopter-claude --cwd {readonly}")
+              f"--cwd {readonly}")
     clean = [
         "python3 .project_manager/tools/board.py list",       # 홈 안 상대 실행
         record,                                               # 형제 readonly 절대경로 --cwd

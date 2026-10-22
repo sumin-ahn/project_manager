@@ -16,7 +16,7 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from pm_engine.domain import conf_schema, shell_policy, ticket_rules
+from pm_engine.domain import conf_schema, identity_args, shell_policy, ticket_rules
 from pm_engine.infra import areas_store, clock, conf_store, fs, git, lease_store, pm_paths, python_env, regression_store, review_rounds, ticket_store
 
 
@@ -108,7 +108,47 @@ def _active_slot_path(home, session: str | None = None) -> str | None:
     return None
 
 
-def _test_cmd(home, override: str | None, session: str | None = None) -> str:
+def _leased_regression_workspaces(home) -> tuple[identity_args.Workspace, ...]:
+    """대여 장부 스냅샷에서 회귀 대상 작업공간을 검증하고 정렬한다."""
+    leases = pm_paths.leases_file(home)
+    try:
+        data = json.loads(fs.read_text_shared(leases, encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    except json.JSONDecodeError as exc:
+        raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 장부 JSON 손상: {leases}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("leases", []), list):
+        raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 장부 형식 오류: {leases}")
+    found = []
+    seen = set()
+    for row in data.get("leases", []):
+        if not isinstance(row, dict):
+            raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 행 형식 오류: {leases}")
+        if row.get("state") != "leased":
+            continue
+        slot = identity_args.normalize_slot_value(row.get("slot"))
+        if (not isinstance(row.get("slot"), str) or not slot
+                or any(identity_args.path_component_rejection(part) for part in slot.split("/"))):
+            raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 경로 오류: {row}")
+        if slot in seen:
+            raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 중복: {slot}")
+        seen.add(slot)
+        role = row.get("role", "work")
+        if role not in ("work", "readonly"):
+            raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 역할 오류: {row}")
+        if role == "readonly":
+            continue
+        session, repo, command = row.get("session"), row.get("repo"), row.get("test_cmd")
+        if (not isinstance(session, str) or not session or not isinstance(repo, str) or not repo
+                or command is not None and (not isinstance(command, str) or command and not command.strip())):
+            raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 소유·repo·명령 오류: {row}")
+        identity_args.validate_task_name(session)
+        found.append(identity_args.Workspace(slot, repo, session, command))
+    return tuple(sorted(found, key=lambda ws: ws.slot))
+
+
+def _test_cmd(home, override: str | None, session: str | None = None, *,
+              workspace: identity_args.Workspace | None = None) -> str:
     """회귀에 쓸 테스트 명령을 해소한다 (per-repo + per-slot).
 
     우선순위:
@@ -128,9 +168,19 @@ def _test_cmd(home, override: str | None, session: str | None = None) -> str:
     """
     if override:
         return override
-    slot_cmd = _active_slot_test_cmd(home, session)
+    slot_cmd = workspace.test_cmd if workspace is not None else _active_slot_test_cmd(home, session)
     if slot_cmd:
         return slot_cmd
+    if workspace is not None:
+        _header, rows = areas_store._parse_areas(home)
+        matching = [row for row in rows if row.get("repo") == workspace.repo]
+        if len(matching) > 1:
+            raise identity_args.WorkspaceResolutionError(f"회귀 repo 명령 중복: {workspace.repo}")
+        command = matching[0].get("test_cmd") if matching else None
+        command = command or conf_store.local_config(home).get("test.cmd") or python_env.default_pytest_cmd()
+        if not isinstance(command, str) or not command.strip():
+            raise identity_args.WorkspaceResolutionError(f"회귀 명령 해소 실패: {workspace.slot}")
+        return command
     prefix = areas_store.id_prefix(home, None)
     if prefix:
         row = areas_store._areas_row_for_prefix(home, prefix)
@@ -573,8 +623,12 @@ def _platform_record_problem(data: dict, cwd: str, expected_head: str,
 
 
 def _core_command_at(home, anchor: str, session: str | None = None, *,
-                     local_dir: Path | None = None) -> str:
+                     local_dir: Path | None = None,
+                     workspace: identity_args.Workspace | None = None) -> str:
     """기록 좌표의 장부에서 실제 앵커 행을 선택하고 기존 명령 우선순위를 적용한다."""
+    if workspace is not None:
+        return " ".join(p for p in (_test_cmd(home, None, session=workspace.session, workspace=workspace),
+                                    _quarantine_args(home)) if p)
     local_dir = local_dir or home.local_dir
     ledger_home = local_dir.parent.parent
     leases = local_dir / "worktree-leases.json"
@@ -588,7 +642,7 @@ def _core_command_at(home, anchor: str, session: str | None = None, *,
         for row in rows if isinstance(rows, list) else []:
             if (isinstance(row, dict) and row.get("state") == "leased"
                     and isinstance(row.get("slot"), str)
-                    and os.path.abspath(ledger_home / row["slot"]) == anchor):
+                    and os.path.abspath(ledger_home / identity_args.normalize_slot_value(row["slot"])) == anchor):
                 matches.append(row)
     if len(matches) > 1:
         return ""
@@ -641,7 +695,8 @@ def _require_collected_count(rc: int, status: str, collected: int | None, *,
 
 def _core_record_problem(home, data: dict, anchor: str, head: str, *,
                          session: str | None = None, local_dir: Path | None = None,
-                         release: bool = False) -> str | None:
+                         release: bool = False,
+                         workspace: identity_args.Workspace | None = None) -> str | None:
     """신규 flat core를 기존 exact schema 판정에 연결한다. 옛 aggregate는 재측정한다."""
     if "platforms" in data:
         return "old aggregate requires core rerun"
@@ -674,7 +729,7 @@ def _core_record_problem(home, data: dict, anchor: str, head: str, *,
         return "core collection invalid"
     if git._git_head_at(anchor) != head:
         return "core anchor head mismatch"
-    if command != _core_command_at(home, anchor, session, local_dir=local_dir):
+    if command != _core_command_at(home, anchor, session, local_dir=local_dir, workspace=workspace):
         return "core command changed"
     return None
 
@@ -775,7 +830,8 @@ class _SlotRegressionState(NamedTuple):
     collected: int | None
 
 
-def _regression_slot_state(home, session: str, cwd: str) -> _SlotRegressionState:
+def _regression_slot_state(home, session: str, cwd: str, *,
+                           workspace: identity_args.Workspace | None = None) -> _SlotRegressionState:
     """슬롯별 회귀 플래그를 읽어 상태를 판정 — (`'green'|'stale'|'red'|'missing'`, rc, 수집수).
 
     all-or-nothing check-first 의 저비용 판정 (pytest 미실행): per-slot 플래그
@@ -790,7 +846,8 @@ def _regression_slot_state(home, session: str, cwd: str) -> _SlotRegressionState
     base, mode = regression_store._resolve_regression_flag(home, cwd)
     if mode == regression_store._LG_BROKEN:
         return _SlotRegressionState("red", "broken-sidecar", None)
-    flag = regression_store._regression_flag_for(home, session, local_dir=base.parent)
+    flag = regression_store._regression_flag_for(home, session, local_dir=base.parent,
+                                                  workspace=workspace.slot if workspace is not None else None)
     if not flag.exists():
         return _SlotRegressionState("missing", None, None)
     try:
@@ -800,13 +857,16 @@ def _regression_slot_state(home, session: str, cwd: str) -> _SlotRegressionState
     if not isinstance(data, dict):
         return _SlotRegressionState("missing", None, None)
     collected = regression_store._flag_collected(data)
+    if workspace is not None and (not data.get("command") or data.get("session") != session
+            or data.get("conf_anchor") != os.path.abspath(cwd)):
+        return _SlotRegressionState("stale", data.get("rc"), collected)
     current_head = git._git_head_at(cwd)
     if not current_head or data.get("head") != current_head:
         return _SlotRegressionState("stale", data.get("rc"), collected)
     if data.get("status") != "pass":
         return _SlotRegressionState("red", data.get("rc"), collected)
     if _core_record_problem(home, data, os.path.abspath(cwd), current_head,
-                            session=session, local_dir=base.parent) is not None:
+                            session=session, local_dir=base.parent, workspace=workspace) is not None:
         return _SlotRegressionState("stale", data.get("rc"), collected)
     return _SlotRegressionState("green", data.get("rc"), collected)
 

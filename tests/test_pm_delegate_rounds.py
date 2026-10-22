@@ -4926,3 +4926,182 @@ def test_developer_seed_states_the_two_line_regression_rule():
     assert inside != filled
     with pytest.raises(delegate_errors.DelegateError, match="커맨드·결과 두 행"):
         pd.parse_developer_regression_record(inside)
+
+
+# 저장소 IO와 변경 집합만 격리하고 실제 회수 판정과 시험 명령을 실행한다.
+@pytest.fixture
+def t0981_gate(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    module = _load_pd()
+    tree = tmp_path / "code"
+    tree.mkdir()
+    (tree / "tests").mkdir()
+    target = tree / "tests/test_existing.py"
+    target.write_text("def test_existing():\n    assert True\n", encoding="utf-8")
+    (tree / "src").mkdir()
+    (tree / "src/implementation.py").write_text("VALUE = 1\n", encoding="utf-8")
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_text("synthetic spec\n", encoding="utf-8")
+    full = python_argv_command("-m", "pytest", "tests/", "-q")
+    state = SimpleNamespace(
+        module=module, tree=tree, target=target,
+        changed={"src/implementation.py"}, architect=(), is_fix=True, calls=[],
+    )
+    monkeypatch.setattr(module.ticket_store, "find_ticket_exact", lambda *a: ("claimed", spec_path))
+    monkeypatch.setattr(module.round_seed, "load_rounds", lambda *a, **kw: ())
+    monkeypatch.setattr(module, "_repo_root_for_cwd", lambda *a: tree)
+    monkeypatch.setattr(module, "architect_tests_from_rounds", lambda *a: state.architect)
+    monkeypatch.setattr(module, "_fix_round", lambda *a: state.is_fix)
+    monkeypatch.setattr(module, "_developer_round_changed_paths", lambda *a, **kw: state.changed)
+    monkeypatch.setattr(module.round_seed, "_dev_round_seed_verify_rows", lambda *a: ())
+    monkeypatch.setattr(module, "_full_regression_command", lambda *a: full)
+    real_run = module._run_required_test
+
+    def run_required(command, expected, *, cwd):
+        state.calls.append(command)
+        return real_run(command, expected, cwd=cwd)
+
+    monkeypatch.setattr(module, "_run_required_test", run_required)
+    text = "## 회귀\n- 커맨드: `" + full + "`\n- 결과: rc=0 · fixture green\n"
+
+    def check(test, *, location="src/implementation.py:entry", command=None, expected="1 passed"):
+        if command is None:
+            command = python_argv_command(
+                "-B", "-m", "pytest", "tests/test_existing.py", "-q", "-p", "no:cacheprovider",
+            )
+        contract = dict(
+            _fix_contract("F-003"), test=test, location=location,
+            command=command, expected=expected,
+        )
+        finding = SimpleNamespace(id="F-003", fix_contract=contract)
+        delta = SimpleNamespace(accepted=[
+            (finding, SimpleNamespace(scope="F-003 developer 범위")),
+        ])
+        monkeypatch.setattr(module.review_state, "parse_pm_review_delta", lambda *a: delta)
+        return module._developer_round_harvest_problem(
+            text, "reserved", ticket="T-0981", ordinal=4, home=pm_paths.home_at(tmp_path), cwd=tree,
+        )
+
+    state.check = check
+    return state
+
+
+def test_t0981_existing_test_runs_without_changing_the_test_file(t0981_gate):
+    gate = t0981_gate
+    before = gate.target.read_bytes()
+    assert gate.check(
+        "existing: tests/test_existing.py::test_existing 기존 1건, tests/test_missing.py는 설명",
+    ) is None
+    assert len(gate.calls) == 1
+    assert gate.target.read_bytes() == before
+    assert "tests/test_existing.py" not in gate.changed
+
+
+@pytest.mark.parametrize("changed", (set(), {"unrelated.py"}, {"tests/test_existing.py"}))
+def test_t0981_existing_test_keeps_location_diff_binding(t0981_gate, changed):
+    gate = t0981_gate
+    gate.changed = changed
+    assert "fix diff" in gate.check("existing: tests/test_existing.py 기존 1건")
+    assert gate.calls == []
+
+
+def test_t0981_existing_test_requires_a_repo_location(t0981_gate):
+    gate = t0981_gate
+    problem = gate.check("existing: tests/test_existing.py", location="보고 정정")
+    assert problem is not None
+    assert gate.calls == []
+
+
+def test_t0981_existing_test_requires_a_real_file_before_command(t0981_gate):
+    gate = t0981_gate
+    problem = gate.check(
+        "existing: tests/test_missing.py",
+        command=python_argv_command("-c", "print('green')"), expected="green",
+    )
+    assert problem is not None and "tests/test_missing.py" in problem
+    assert gate.calls == []
+
+
+@pytest.mark.parametrize("value", (
+    "existing:", "existing: src/test_wrong.py", "existing: tests/../test_escape.py",
+    "existing: /tmp/test_wrong.py", "existing:tests/test_existing.py",
+    "existing: tests/test_existing.py임의접미사",
+))
+def test_t0981_malformed_existing_marker_is_not_prose(t0981_gate, value):
+    gate = t0981_gate
+    assert gate.check(value) is not None
+    assert gate.calls == []
+
+
+@pytest.mark.parametrize("changed", (False, True))
+def test_t0981_bare_test_path_still_requires_test_diff(t0981_gate, changed):
+    gate = t0981_gate
+    if changed:
+        gate.changed.add("tests/test_existing.py")
+    problem = gate.check("tests/test_existing.py 기존 1건")
+    assert (problem is None) == changed
+    assert len(gate.calls) == int(changed)
+
+
+@pytest.mark.parametrize("defect", ("nonzero", "wrong_expected"))
+def test_t0981_existing_test_must_return_the_expected_result(t0981_gate, defect):
+    gate = t0981_gate
+    options = (
+        {"command": python_argv_command("-c", "raise SystemExit(1)")}
+        if defect == "nonzero" else {"expected": "2 passed"}
+    )
+    assert "green이 아닙니다" in gate.check("existing: tests/test_existing.py", **options)
+    assert len(gate.calls) == 1
+
+
+def test_t0981_existing_test_does_not_skip_architect_commands(t0981_gate):
+    gate = t0981_gate
+    gate.architect = (gate.module.ArchitectTest(
+        "AT-001", "tests/test_existing.py", python_argv_command("-c", "raise SystemExit(1)"),
+        "green", "실패 명령 거부",
+    ),)
+    problem = gate.check("existing: tests/test_existing.py")
+    assert "architect 필수 테스트 AT-001" in problem
+    assert len(gate.calls) == 1
+
+
+def test_t0981_initial_developer_still_requires_architect_target_diff(t0981_gate):
+    gate = t0981_gate
+    gate.is_fix = False
+    gate.architect = (gate.module.ArchitectTest(
+        "AT-001", "tests/test_existing.py", python_argv_command("--version"),
+        "Python", "미변경 시험 거부",
+    ),)
+    assert "architect 필수 테스트 AT-001 대상" in gate.check("existing: tests/test_existing.py")
+    assert gate.calls == []
+
+
+def test_t0981_existing_marker_is_not_an_architect_target(t0981_gate):
+    with pytest.raises(delegate_errors.DelegateError):
+        t0981_gate.module._contract_test_targets(
+            "existing: tests/test_existing.py", "architect test AT-001.target",
+        )
+
+
+def test_t0981_existing_target_inspection_error_is_not_absence(t0981_gate, monkeypatch):
+    gate = t0981_gate
+    real_stat = Path.stat
+
+    def stat_at(path, *args, **kwargs):
+        if path == gate.target:
+            raise PermissionError("target inspection denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_at)
+    with pytest.raises(PermissionError, match="target inspection denied"):
+        gate.check("existing: tests/test_existing.py")
+    assert gate.calls == []
+
+
+def test_t0981_existing_test_rejects_directory_before_command(t0981_gate):
+    gate = t0981_gate
+    (gate.tree / "tests/test_directory.py").mkdir()
+    problem = gate.check("existing: tests/test_directory.py")
+    assert problem is not None and "tests/test_directory.py" in problem
+    assert gate.calls == []
