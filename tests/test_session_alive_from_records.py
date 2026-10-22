@@ -20,6 +20,11 @@ from pathlib import Path
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.infra import pm_paths
+from pm_engine.infra import pool_store
+from pm_engine.app import worktree_pool
+from pm_engine.domain import worktree_records
+from pm_engine.app import worktree_status
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -59,7 +64,7 @@ def wp():
 
 
 def _lease(wp, row: dict):
-    return wp.Lease.from_dict(row)
+    return worktree_records.Lease.from_dict(row)
 
 
 # ── ① 열림 기록 / 종료 기록 두 값 ────────────────────────────────────────────
@@ -70,7 +75,7 @@ def test_an_open_record_without_a_close_record_reads_open(wp):
     lease = _lease(wp, {"slot": "work/proj_1", "repo": "proj",
                         "session": "proj_1", "state": "leased"})
 
-    assert wp.lease_is_open(lease) is True
+    assert worktree_records.lease_is_open(lease) is True
 
 
 def test_a_close_record_reads_closed(wp):
@@ -78,7 +83,7 @@ def test_a_close_record_reads_closed(wp):
     lease = _lease(wp, {"slot": "work/proj_1", "repo": "proj",
                         "session": "", "state": "idle"})
 
-    assert wp.lease_is_open(lease) is False
+    assert worktree_records.lease_is_open(lease) is False
 
 
 def test_a_readonly_row_is_closed_because_it_has_no_session(wp):
@@ -86,23 +91,16 @@ def test_a_readonly_row_is_closed_because_it_has_no_session(wp):
     lease = _lease(wp, {"slot": "work/proj_3", "repo": "proj", "session": None,
                         "state": "leased", "role": "readonly"})
 
-    assert wp.lease_is_open(lease) is False
+    assert worktree_records.lease_is_open(lease) is False
 
 
 def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeypatch):
     """실 장부 왕복 — 대여가 열고 반납이 닫는다(값은 두 개뿐)."""
     monkeypatch.setattr(wp, "REPO", tmp_path)
     local_dir = tmp_path / ".project_manager" / ".local"
-    monkeypatch.setattr(wp, "LOCAL_DIR", local_dir)
-    monkeypatch.setattr(wp, "LEASES_FILE", local_dir / "worktree-leases.json")
-    monkeypatch.setattr(wp, "LEASES_LOCK", local_dir / "worktree-leases.lock")
-    monkeypatch.setattr(wp, "TASKS_DIR", local_dir / "tasks")
-    monkeypatch.setattr(wp, "WORK_DIR", tmp_path / "work")
-    monkeypatch.setattr(wp, "REPOS_DIR", tmp_path / ".repos")
-    monkeypatch.setattr(wp, "REPO_HOOKS_DIR", local_dir / "repo-hooks")
-    assert wp.slot_path("work/proj_1") == tmp_path / "work" / "proj_1"
+    assert pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/proj_1") == tmp_path / "work" / "proj_1"
     expected_lock = tmp_path / ".project_manager" / ".local" / "worktree-leases.lock"
-    real_lock = wp.fs.exclusive_file_lock
+    real_lock = pool_store.fs.exclusive_file_lock
     lock_paths = []
 
     @contextlib.contextmanager
@@ -112,18 +110,18 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
         with real_lock(path, *args, **kwargs):
             yield
 
-    monkeypatch.setattr(wp.fs, "exclusive_file_lock", observed_lock)
-    wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    wp.LEASES_FILE.write_text(json.dumps({"leases": [{
+    monkeypatch.setattr(pool_store.fs, "exclusive_file_lock", observed_lock)
+    pm_paths.leases_file(pm_paths.home_at(wp.REPO)).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(wp.REPO)).write_text(json.dumps({"leases": [{
         "slot": "work/proj_1", "repo": "proj", "session": "", "started": "t",
         "state": "idle", "test_cmd": None,
     }], "tasks": []}), encoding="utf-8")
 
-    leased = wp.alloc("proj", owner_task="proj_1", git_runner=lambda _argv: (0, ""))
-    assert wp.lease_is_open(leased) is True
+    leased = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "proj", owner_task="proj_1", git_runner=lambda _argv: (0, ""))
+    assert worktree_records.lease_is_open(leased) is True
 
-    released = wp.release("work/proj_1", git_runner=lambda _argv: (0, ""))
-    assert wp.lease_is_open(released) is False
+    released = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/proj_1", git_runner=lambda _argv: (0, ""))
+    assert worktree_records.lease_is_open(released) is False
     assert lock_paths == [expected_lock, expected_lock]
     assert expected_lock.is_file()
 
@@ -132,9 +130,9 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
 
 def test_the_task_record_has_only_two_values(wp):
     """task 행의 열림은 연 세션 ID 에서 파생한다 — 옛 `pid`·`open` 은 어느 세션인지 몰라 닫힘으로 읽는다."""
-    migrated = wp.Task.from_dict({"name": "job", "prefix": None,
+    migrated = worktree_records.Task.from_dict({"name": "job", "prefix": None,
                                   "pid": 1613552, "open": True, "started": "t"})
-    bound = wp.Task.from_dict({"name": "job", "prefix": None, "session": "ses-1", "started": "t"})
+    bound = worktree_records.Task.from_dict({"name": "job", "prefix": None, "session": "ses-1", "started": "t"})
 
     assert migrated.open is False and bound.open is True
     assert "pid" not in migrated.to_dict() and "open" not in migrated.to_dict()
@@ -154,15 +152,15 @@ def test_the_status_json_rows_have_no_pid_key(wp, tmp_path, monkeypatch):
     lease = _lease(wp, {"slot": "work/proj_1", "repo": "proj",
                         "session": "proj_1", "state": "leased"})
     # 슬롯 git 조회 대역 — 엔진이 worktree 없는 슬롯에 돌려주는 모양 그대로(부모 기록 없음).
-    monkeypatch.setattr(wp, "slot_git_status", lambda slot, *, repo_reads: {
+    monkeypatch.setattr(worktree_status, "slot_git_status", lambda _home, slot, *, repo_reads: {
         "slot": slot, "branch": None, "head": None, "parent": None, "children": [],
         "stashes": 0, "dirty": False, "folders": None,
     }, raising=False)
-    monkeypatch.setattr(wp, "slots_for_task", lambda _name: [], raising=False)
-    task = wp.Task(name="proj_1", session="s-test", started="t")
+    monkeypatch.setattr(pool_store, "slots_for_task", lambda _home, _name: [], raising=False)
+    task = worktree_records.Task(name="proj_1", session="s-test", started="t")
 
-    slot_rows = pc._status_json_slots(wp, [lease], {"proj_1"})
-    task_rows = pc._status_json_tasks(wp, [task])
+    slot_rows = pc._status_json_slots( [lease], {"proj_1"})
+    task_rows = pc._status_json_tasks( [task])
 
     assert slot_rows[0]["alive"] is True and "pid" not in slot_rows[0]
     assert task_rows[0]["alive"] is True and "pid" not in task_rows[0]

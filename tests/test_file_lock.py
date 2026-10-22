@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
 import ast
 import errno
 import importlib.util
@@ -158,7 +160,7 @@ _REPLACE_PRIMITIVE = "replace"
 _ATOMIC_REPLACE_CONSUMERS = (
     "board.py", "delegate_channel_guard.py", "pm_handoff.py", "pm_import.py",
     "pm_log.py", "pm_engine/infra/raw_output.py", "pm_update.py",
-    "pm_engine/infra/review_rounds.py", "worktree_pool.py",
+    "pm_engine/infra/review_rounds.py", "pm_engine/infra/pool_store.py",
 )
 
 
@@ -737,12 +739,11 @@ def test_worktree_pool_lease_lock_keeps_its_path_and_permission_convention(
     tmp_path, monkeypatch,
 ):
     """리스 장부 락 = `.local/worktree-leases.lock` · 0o644 (수렴 전 규약 보존)."""
-    pool = _load(TOOLS / "worktree_pool.py", "worktree_pool_file_lock_seam")
+    pool = _load(TOOLS / "pm_engine" / "infra" / "pool_store.py", "worktree_pool_file_lock_seam")
     lock_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.lock"
-    monkeypatch.setattr(pool, "LEASES_LOCK", lock_path)
     seen = _record_seam_opens(pool.fs, monkeypatch)
 
-    with pool._lease_lock():
+    with pool._lease_lock(pm_paths.home_at(tmp_path)):
         pass
 
     assert seen == [(lock_path, 0o644)]
@@ -778,7 +779,7 @@ def test_converged_tools_delegate_instead_of_reimplementing():
     """수렴 도구는 락 컨텍스트를 seam 위임으로만 연다 (자체 open+acquire 재구현 0)."""
     for tool in (
         "board.py", "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_handoff.py",
-        "worktree_pool.py",
+        "pm_engine/infra/pool_store.py",
         "additional_reviewer.py",
     ):
         source = (TOOLS / tool).read_text(encoding="utf-8")
@@ -1548,9 +1549,9 @@ def test_a_new_unregistered_exception_is_red():
 
 def test_mutation_reintroduced_os_replace_in_a_converged_tool_is_red():
     """수렴 도구에 직접 호출을 되살리면 가드가 red 로 잡는다 (감도 실증)."""
-    source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine" / "infra" / "pool_store.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        "    fs.atomic_replace(tmp, LEASES_FILE)",
+        "    fs.atomic_replace(tmp, pm_paths.leases_file(home))",
         "    os.replace(str(tmp), str(LEASES_FILE))",
         1,
     )
@@ -2186,17 +2187,17 @@ def test_read_guard_classifies_each_form(label, snippet, expected):
 
 def test_a_new_unregistered_plain_read_is_red():
     """등재 없는 새 종전 읽기는 가드가 red 로 잡는다 (등재부가 곧 상한·감도 실증)."""
-    source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine" / "infra" / "pool_store.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        'fs.read_text_shared(LEASES_FILE, encoding="utf-8")',
-        'LEASES_FILE.read_text(encoding="utf-8")',
+        'fs.read_text_shared(pm_paths.leases_file(home), encoding="utf-8")',
+        'pm_paths.leases_file(home).read_text(encoding="utf-8")',
         1,
     )
     assert mutated != source, "변이 앵커 소실"
     sites = _read_call_sites(mutated)
     assert sites, "변이가 실제로 종전 읽기를 만들지 않았다"
     assert all(
-        ("worktree_pool.py", function) not in SHARED_READ_EXCEPTIONS
+        ("pm_engine/infra/pool_store.py", function) not in SHARED_READ_EXCEPTIONS
         for function, _line in sites
     ), "이 변이 지점이 이미 등재돼 있다 — 감도 실증이 성립하지 않는다"
 

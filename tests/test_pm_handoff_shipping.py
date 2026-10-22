@@ -23,6 +23,8 @@ timeout)는 폐지됐다 — 분류기(`_shipping_paths_in_pending_push`·`SHIPP
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import importlib.util
 import shutil
 import subprocess
@@ -78,6 +80,9 @@ class _TaskPool:
 
     def record_git_snapshot(self, slot, **_kwargs):
         return type("_L", (), {"git": {"branch": "main", "head": "abc123"}})()
+
+    def read_lease_strict(self, value):
+        return self.read_lease(value)
 
 from _repo_owned_inventory import TRACKED_ONLY, repo_owned_paths
 
@@ -386,7 +391,7 @@ def test_shipping_paths_unknown_when_ls_files_fails(hf):
 # ── run() 통합 fixture (hermetic·DI) ──────────────────────────────────────────
 
 
-def _make_handoff(hf, tmp_path: Path, *, git_runner):
+def _make_handoff(hf, tmp_path: Path, *, git_runner, monkeypatch):
     """git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).
 
     회귀(step 1)는 green stub. log/playbook 은 tmp, pm_state 는 부재 경로(3·4 skip).
@@ -400,13 +405,14 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner):
     log_file.write_text("# log\n", encoding="utf-8")
     playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
     pm_state.write_text(_TASK_PM_STATE, encoding="utf-8")
+    bind_pool(monkeypatch, _TaskPool())
     inst = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "120 passed in 1.0s\n"),
         run_git_fn=git_runner,
         log_file=log_file,
         pm_playbook_file=playbook_file,
         pm_state_file=pm_state,
-        worktree_pool=_TaskPool(),
+
     )
     return inst
 
@@ -418,14 +424,14 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner):
 # 릴리즈(① main 머지) 단일 지점(release wave)으로 모았다(ADR-0039).
 
 
-def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
+def test_run_surfaces_shipping_change_nonblocking(hf, monkeypatch, tmp_path, capsys):
     """출하 변경(엔진) → "미검증 출하 변경 N파일 … release wave" 1줄 surface·rc 0(비차단)."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[
             ".project_manager/tools/pm_handoff.py", "tests/test_x.py",
         ]),
-    )
+     monkeypatch=monkeypatch)
     rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0  # 비차단 — 출하 변경이 있어도 핸드오프 진행.
     out = capsys.readouterr().out
@@ -434,9 +440,9 @@ def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
     assert "release wave" in out
 
 
-def test_run_surfaces_ambiguous_nonblocking(hf, tmp_path, capsys):
+def test_run_surfaces_ambiguous_nonblocking(hf, monkeypatch, tmp_path, capsys):
     """baseline 해소불가(분류불명) → "가능성 … 분류 불명 … release wave" surface·rc 0."""
-    inst = _make_handoff(hf, tmp_path, git_runner=_git_stub(baseline_ok=False))
+    inst = _make_handoff(hf, tmp_path, git_runner=_git_stub(baseline_ok=False), monkeypatch=monkeypatch)
     rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
@@ -444,14 +450,14 @@ def test_run_surfaces_ambiguous_nonblocking(hf, tmp_path, capsys):
     assert "release wave" in out
 
 
-def test_run_reports_no_shipping_change(hf, tmp_path, capsys):
+def test_run_reports_no_shipping_change(hf, monkeypatch, tmp_path, capsys):
     """비-출하 변경(spike/ADR/tests) → "출하 변경 없음" skip 사유·rc 0·경고 미출력."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[
             ".project_manager/wiki/raw/spikes/s.md", "tests/test_x.py",
         ]),
-    )
+     monkeypatch=monkeypatch)
     rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
@@ -459,7 +465,7 @@ def test_run_reports_no_shipping_change(hf, tmp_path, capsys):
     assert "미검증 출하 변경" not in out  # 경고 미출력.
 
 
-def test_run_shipping_surface_never_blocks_handoff(hf, tmp_path):
+def test_run_shipping_surface_never_blocks_handoff(hf, monkeypatch, tmp_path):
     """출하 변경이 있어도 [2/7] log skeleton 이 append 된다 — surface 는 절대 중단 안 함(비차단).
 
     구 차단 게이트라면 여기서 return 1 로 log 미접촉이었다. 비차단 확증: 출하 변경 hit 이
@@ -468,18 +474,18 @@ def test_run_shipping_surface_never_blocks_handoff(hf, tmp_path):
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
-    )
+     monkeypatch=monkeypatch)
     rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0
     assert "PM 2차" in (tmp_path / "current.md").read_text(encoding="utf-8")
 
 
-def test_run_dry_run_skips_shipping_surface(hf, tmp_path, capsys):
+def test_run_dry_run_skips_shipping_surface(hf, monkeypatch, tmp_path, capsys):
     """--dry-run → 출하 surface 분류·출력 자체 skip (미리보기·git 비호출)."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-    )
+     monkeypatch=monkeypatch)
     rc = _run_handoff(inst, dry_run=True, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
@@ -487,12 +493,12 @@ def test_run_dry_run_skips_shipping_surface(hf, tmp_path, capsys):
     assert "미검증 출하 변경" not in out  # 분류 자체 안 함.
 
 
-def test_run_skips_shipping_surface_when_machine_regression_red(hf, tmp_path, capsys):
+def test_run_skips_shipping_surface_when_machine_regression_red(hf, monkeypatch, tmp_path, capsys):
     """[1/7] 기계회귀 red → 그 자리에서 중단(rc 1) → 출하 surface 도달 안 함."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
-    )
+     monkeypatch=monkeypatch)
     inst._run_pytest_fn = lambda: (1, "1 failed in 1.0s\n")  # 기계회귀 red.
     rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 1

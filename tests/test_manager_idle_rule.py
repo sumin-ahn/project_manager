@@ -22,6 +22,8 @@ from _repo_owned_inventory import OWNED, repo_owned_paths
 from test_session_alive_from_records import _RETIRED_IDENTIFIERS as RETIRED_IDENTIFIERS
 
 from manager.bridge import Api
+from pm_engine.infra import pm_paths
+from pm_engine.app import worktree_pool
 
 REPO = Path(__file__).resolve().parents[1]
 RULES_FILE = REPO / "manager" / "ui" / "src" / "lib" / "status-dots.json"
@@ -80,7 +82,7 @@ def rows(tmp_path_factory) -> dict[str, dict]:
     # 열린 대여 행 = 종료 기록 없이 남은 대여. 반납한 슬롯 하나를 세션 이름으로 다시 잡는다
     # (장부 IO 는 엔진 것을 그대로 쓴다).
     pool = load_pool(home)
-    pool.alloc(REPO_NAME, owner_task="demo_9")
+    worktree_pool.alloc(pm_paths.home_at(pool.REPO), REPO_NAME, owner_task="demo_9")
 
     document = api.status(str(home))
     slots = document["slots"]

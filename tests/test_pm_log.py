@@ -930,6 +930,7 @@ def _snapshot_home(tmp_path: Path, *, tasks=("main",), lease_session="main"):
     local = pm_home / ".project_manager" / ".local"
     # 열린 할 일은 **그 홈의 엔진 사본**이 읽는다 — 사본 없는 홈은 조회가 성립하지 않는다.
     shutil.copytree(TOOLS, pm_home / ".project_manager" / "tools")
+    (pm_home / ".project_manager" / "tools" / "worktree_pool.py").unlink()
     for task in tasks:
         state = local / "tasks" / task / "pm_state.md"
         state.parent.mkdir(parents=True)

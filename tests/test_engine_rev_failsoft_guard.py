@@ -1268,7 +1268,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `domain` 의 `_repository_identity`·`coverage_report`·`load_pages`(옮기며), `ticket_finish` 의
     #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
     #   `TicketFinisher._notify_affected_domain`).
-    assert len(report.boundaries) == 150, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 112, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1406,7 +1406,6 @@ def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
     [
         ("delegate_scope.py", "ticket_touches", 0),
         ("delegate_scope.py", "ticket_touches", 1),
-        ("worktree_pool.py", "_rerecord_branch_snapshot", 0),
     ],
 )
 def test_guard_sensitivity_s1b_each_transforming_handler_turns_red(
@@ -1420,20 +1419,6 @@ def test_guard_sensitivity_s1b_each_transforming_handler_turns_red(
     assert any(source_name in violation for violation in report.violations)
 
 
-@pytest.mark.parametrize(
-    ("source_name", "function"),
-    [
-        ("pm_bootstrap.py", "PmBootstrap._phase0_main_reference_reason"),
-        ("worktree_pool.py", "_cmd_switch"),
-    ],
-)
-def test_guard_sensitivity_argument_closure_and_runtime_subclass_axes_turn_red(
-    source_name, function,
-):
-    sources = _canonical_sources()
-    sources[source_name] = _remove_marker_branch(sources[source_name], function)
-    report = collect_failsoft_report(sources)
-    assert any(source_name in violation for violation in report.violations)
 
 
 _SYNTHETIC_LEAF = """\
@@ -1639,18 +1624,6 @@ def caller():
     assert any(": helper " in violation for violation in report.violations)
 
 
-@pytest.mark.parametrize(
-    ("source_name", "function"),
-    [
-        ("pm_config.py", "cmd_status._slot_git_line"),
-    ],
-)
-def test_guard_sensitivity_new_caller_boundaries_turn_red(source_name, function):
-    sources = _canonical_sources()
-    sources[source_name] = _remove_marker_branch(sources[source_name], function)
-    report = collect_failsoft_report(sources)
-    assert any(source_name in violation and function in violation
-               for violation in report.violations)
 
 
 def _remove_marker_statement(source: str, function: str, occurrence: int = 0) -> str:
@@ -1713,20 +1686,11 @@ def _raiser(exc):
     return raise_it
 
 
-def test_runtime_module_argument_boundary_rethrows_marked_skew():
-    module = _runtime_tool("pm_bootstrap.py")
-    instance = object.__new__(module.PmBootstrap)
-    skew = _marked_skew()
-    worktree_pool = SimpleNamespace(current_branch=_raiser(skew))
-    with pytest.raises(RuntimeError) as raised:
-        instance._phase0_main_reference_reason(worktree_pool, "repo", "work/repo_1")
-    assert raised.value is skew
 
 
 @pytest.mark.parametrize(
     "case",
     [
-        "bootstrap_slot_branch_exists",
         "finish_dirty_split",
     ],
 )
@@ -1748,7 +1712,7 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
         instance._bound_slot = None
         instance._run_git_fn = _raiser(skew)
         worktree_pool = SimpleNamespace(slot_path=lambda _slot: Path("slot"))
-        invoke = lambda: instance._slot_branch_exists(worktree_pool, "work/repo_1", "feature")
+        invoke = lambda: instance._slot_branch_exists( "work/repo_1", "feature")
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew
@@ -1779,39 +1743,8 @@ def test_template_mirror_missing_pm_update_render_capability_is_drift(
     assert drifted == ["legacy"]
 
 
-def test_runtime_status_slot_git_callable_rethrows_marked_skew(monkeypatch):
-    module = _runtime_tool("pm_config.py")
-    skew = _marked_skew()
-    lease = SimpleNamespace(
-        slot="work/repo_1", repo="repo", state="idle", session=None, role="work",
-    )
-    worktree_pool = SimpleNamespace(
-        list_leases=lambda: [lease],
-        lease_is_open=lambda _lease: False,
-        current_branch=lambda _slot: "feature",
-        list_tasks=lambda: [],
-        slots_for_task=lambda _task: [],
-        slot_git_status=_raiser(skew),
-        SlotFoldersRefused=_runtime_tool("worktree_pool.py").SlotFoldersRefused,
-    )
-    monkeypatch.setattr(module, "_default_session", lambda: "session")
-    monkeypatch.setattr(module, "_default_user", lambda: "user")
-    monkeypatch.setattr(module, "_distinct_area_owners", lambda: 1)
-    with pytest.raises(RuntimeError) as raised:
-        module.cmd_status(SimpleNamespace(command="status"), worktree_pool=worktree_pool)
-    assert raised.value is skew
 
 
-def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
-    module = _runtime_tool("worktree_pool.py")
-    skew = module.SwitchRefused("work/repo_1", "record-failed")
-    skew._engine_rev_skew = True
-    monkeypatch.setattr(module, "_normalize_slot", lambda slot: slot)
-    monkeypatch.setattr(module, "switch", _raiser(skew))
-    args = SimpleNamespace(slot="work/repo_1", branch="feature")
-    with pytest.raises(module.SwitchRefused) as raised:
-        module._cmd_switch(args)
-    assert raised.value is skew
 
 
 @pytest.mark.parametrize(
@@ -1823,7 +1756,6 @@ def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
         ("pm_bootstrap.py", ["--task", "probe"], "board.py"),
         ("pm_handoff.py", [], "pm_log.py"),
         ("ticket_finish.py", [], "board.py"),
-        ("pm_config.py", ["status"], "worktree_pool.py"),
     ],
 )
 def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(

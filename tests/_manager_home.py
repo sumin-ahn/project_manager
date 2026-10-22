@@ -4,6 +4,8 @@
 모르는 실제 스크립트로 갈아 끼우거나 지운다(가짜 runner·monkeypatch 로 rc 를 지어내지 않는다).
 """
 from __future__ import annotations
+from pm_engine.app import worktree_pool
+from pm_engine.infra import pm_paths, pool_store
 
 import hashlib
 import importlib.util
@@ -365,7 +367,7 @@ def close_session(pool, session: str) -> None:
     프로세스 번호로 죽음을 흉내 내던 자리다. 이제 열림/닫힘은 기록 축이라 엔진의 반납
     프리미티브를 그대로 부른다(손으로 JSON 을 쓰지 않는다).
     """
-    held = [lease.slot for lease in pool.list_leases() if lease.session == session]
+    held = [lease.slot for lease in pool_store.list_leases(pm_paths.home_at(pool.REPO)) if lease.session == session]
     assert held, f"세션 {session!r} 이 잡은 행이 장부에 없다"
     for slot in held:
-        pool.force_release(slot)
+        worktree_pool.force_release(pm_paths.home_at(pool.REPO), slot)

@@ -31,6 +31,11 @@ import pytest
 from pm_engine.domain import identity_args
 from pm_engine.infra import lease_store, pm_paths
 from pm_engine.app import slot_resolution
+from pm_engine.app import branch_checkout
+from pm_engine.infra import pool_store
+from pm_engine.infra import worktree_paths
+from pm_engine.app import worktree_pool
+from pm_engine.domain import worktree_records
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -190,7 +195,7 @@ def test_actor_resolution_returns_ledger_session_verbatim(home):
     # 경로 축은 행의 slot 값 — 세션에서 `work/B_7` 을 만들지 않는다.
     assert slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(home.hf.REPO), "A", 1, home.ledger) == \
         ("work/A_1", None)
-    assert home.wp._resolve_actor_slot_for_repo("A") == "work/A_1"
+    assert worktree_paths._resolve_actor_slot_for_repo(pm_paths.home_at(home.wp.REPO), "A") == "work/A_1"
 
 
 def test_actor_resolution_returns_task_name_session(home):
@@ -225,7 +230,7 @@ def test_home_row_number_axis_and_paths_are_ledger_derived(home):
     hf, wp = home.hf, home.wp
 
     assert lease_store.repo_slot_numbers("adopter", home.ledger) == [1]
-    assert sorted(wp._existing_slot_numbers("adopter", wp.list_leases())) == [1]
+    assert sorted(worktree_records._existing_slot_numbers("adopter", pool_store.list_leases(pm_paths.home_at(wp.REPO)))) == [1]
     assert lease_store.slot_path_resolution("adopter", 1, home.ledger).path == "."
     assert lease_store.resolve_actor_workspace("adopter", home.ledger).session == key
     assert slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(hf.REPO), "adopter", 1, home.ledger) == (".", None)
@@ -239,7 +244,7 @@ def test_pool_slot_without_worktree_is_still_stale(home):
     home.write_ledger([_pool_row("A", 1, "A_1"), {"slot": ".", "repo": "A",
                                                   "session": "A_9", "state": "leased"}])
     home.write_areas(["A"])
-    result = home.wp.reconcile_worktrees(git_runner=lambda argv: (0, ""))
+    result = worktree_pool.reconcile_worktrees(pm_paths.home_at(home.wp.REPO), git_runner=lambda argv: (0, ""))
     assert [l.slot for l in result.stale] == ["work/A_1"]
 
 
@@ -297,7 +302,7 @@ def trio(home, monkeypatch):
     _rebind(pm_config, home.root)
     monkeypatch.setattr(board, "_git_config_email", lambda: None)
     # 두 모듈의 동적 board 로더가 **이 홈에 배선된** board 를 보게 한다(REPO 대조 가드 통과).
-    monkeypatch.setattr(home.wp, "_load_board", lambda: board)
+
     real_load = pm_config._load_module
     monkeypatch.setattr(
         pm_config, "_load_module",
@@ -307,7 +312,7 @@ def trio(home, monkeypatch):
 
 def _trio_sessions(trio):
     board, wp, pm_config = trio
-    return lease_store.session_name(board._home()), wp._default_session(), pm_config._default_session()
+    return lease_store.session_name(board._home()), lease_store._default_session(pm_paths.home_at(wp.REPO)), pm_config._default_session()
 
 
 @pytest.mark.parametrize("env_var", ["PM_SESSION_NAME", "CLAUDE_SESSION_NAME"])
@@ -353,7 +358,7 @@ def test_trio_zero_rows_does_not_derive_from_registration(home, trio):
     home.write_areas(["A"])
     home.write_ledger([])
     assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
-    assert wp._default_session() != "A_1"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) != "A_1"
 
 
 def test_trio_ambiguous_and_corrupt_share_unresolved_judgment(home, trio):
@@ -366,12 +371,12 @@ def test_trio_ambiguous_and_corrupt_share_unresolved_judgment(home, trio):
     home.write_areas(["A"])
     home.write_ledger([_pool_row("A", 1, "A_1"), _pool_row("A", 2, "A_2")])
     assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
-    ambiguous_tail = wp._default_session()
+    ambiguous_tail = lease_store._default_session(pm_paths.home_at(wp.REPO))
     assert ambiguous_tail not in {"A_1", "A_2"}
 
     home.ledger.write_text("{not valid json", encoding="utf-8")
     assert lease_store.session_name(board._home()) is None and pm_config._default_session() is None
-    assert wp._default_session() not in {"A_1", "A_2"}
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) not in {"A_1", "A_2"}
 
 
 def test_trio_reads_the_same_ledger_file(home, trio):
@@ -422,8 +427,8 @@ def test_entry_worktree_cli_targets_the_ledger_row(home, monkeypatch):
     """`worktree_pool dev --repo A --slot 1` 진입이 행의 슬롯을 대상으로 잡는다."""
     _home_row_A(home)
     seen: list[str] = []
-    monkeypatch.setattr(home.wp, "dev",
-                        lambda slot, sub, branch: (seen.append(slot), (0, ""))[1])
+    monkeypatch.setattr(branch_checkout, "dev",
+                        lambda _home, slot, sub, branch: (seen.append(slot), (0, ""))[1])
     rc = home.wp.main(["dev", "vendor/sub", "dev-branch", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert seen == ["."]
@@ -444,17 +449,17 @@ def test_unsafe_component_rejected_on_both_axes(home, value):
     """같은 값이 슬롯 키 축과 슬롯 경로 축 **양쪽**에서 거부된다(술어 공유)."""
     assert home.ia.is_slot_key(value) is False
     assert home.ia.path_component_rejection(value) is not None
-    with pytest.raises(home.wp.SlotResolutionError):
-        home.wp._normalize_slot(value)
+    with pytest.raises(worktree_records.SlotResolutionError):
+        worktree_paths._normalize_slot(pm_paths.home_at(home.wp.REPO), value)
 
 
 def test_whitespace_padded_value_is_stripped_not_smuggled(home):
     """앞뒤 공백은 키 축에선 거부, 경로 축에선 **정규화**된다 — 어느 쪽도 공백 마디를 만들지 않는다."""
     assert home.ia.is_slot_key("a_1 ") is False
     assert home.ia.path_component_rejection("a_1 ") is not None
-    assert home.wp._normalize_slot(" a_1 ") == "work/a_1"     # 값 자체의 패딩은 정규화(종전)
-    with pytest.raises(home.wp.SlotResolutionError):
-        home.wp._normalize_slot("work/ a_1")                  # 마디 안의 공백은 거부
+    assert worktree_paths._normalize_slot(pm_paths.home_at(home.wp.REPO), " a_1 ") == "work/a_1"     # 값 자체의 패딩은 정규화(종전)
+    with pytest.raises(worktree_records.SlotResolutionError):
+        worktree_paths._normalize_slot(pm_paths.home_at(home.wp.REPO), "work/ a_1")                  # 마디 안의 공백은 거부
 
 
 def test_drive_marker_session_key_cannot_escape_the_state_root(home):
@@ -478,20 +483,20 @@ def test_real_session_key_shapes_stay_allowed(home):
         assert home.ia.is_slot_key(value) is False
         assert home.ia.path_component_rejection(value) is None
     for slot in ("work/project_manager_5", "work/legacy-dir", ".", "work/a_2_3"):
-        assert home.wp._normalize_slot(slot) == slot
+        assert worktree_paths._normalize_slot(pm_paths.home_at(home.wp.REPO), slot) == slot
 
 
 def test_existing_traversal_and_symlink_defenses_stay_green(home, tmp_path):
     """역방향 — 직전 라운드가 넣은 traversal·symlink 탈출 거부가 그대로 red 를 낸다."""
     for value in ("", "../x", "work/../x", "work/x/../y", "/etc", "work\\A_1",
                   "work/", "work/A_1/sub"):
-        with pytest.raises(home.wp.SlotResolutionError):
-            home.wp._normalize_slot(value)
+        with pytest.raises(worktree_records.SlotResolutionError):
+            worktree_paths._normalize_slot(pm_paths.home_at(home.wp.REPO), value)
     outside = tmp_path / "outside"
     outside.mkdir()
     (home.root / "work" / "escape").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(home.wp.SlotResolutionError):
-        home.wp._normalize_slot("work/escape")
+    with pytest.raises(worktree_records.SlotResolutionError):
+        worktree_paths._normalize_slot(pm_paths.home_at(home.wp.REPO), "work/escape")
 
 
 # ════════════════════════════════════════════════════════════════════════

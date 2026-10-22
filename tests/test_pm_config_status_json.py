@@ -23,6 +23,9 @@
   - 텍스트 경로 바이트 불변(골든) · 기본 호출이 board 를 로드하지 않음 · `whoami --json` 없음.
 """
 from __future__ import annotations
+from pm_engine.domain import worktree_records
+
+from _pool_seams import bind_pool
 
 import datetime
 import hashlib
@@ -54,17 +57,7 @@ _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음
 
 # 홈 사본 엔진으로 task 를 만들고 그 명의로 슬롯을 빌린다(`pm-config alloc` 과 같은 엔진 호출) —
 # 열림 기록을 테스트가 조립하지 않고 엔진이 남긴다.
-_ALLOC_SOURCE = '''\
-import importlib.util, json, sys
-
-spec = importlib.util.spec_from_file_location("worktree_pool_session_alloc", sys.argv[1])
-worktree_pool = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(worktree_pool)
-task, _action = worktree_pool.bind_task("main", session="s-test")
-lease = worktree_pool.alloc("app", owner_task="main")
-print(json.dumps({"task_open": task.open, "lease_open": worktree_pool.lease_is_open(lease),
-                  "slot": lease.slot}))
-'''
+_ALLOC_SOURCE = 'import importlib.util, json, sys\n\nspec = importlib.util.spec_from_file_location("worktree_pool_session_alloc", sys.argv[1])\nworktree_pool = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(worktree_pool)\nfrom pm_engine.infra import pm_paths\nfrom pm_engine.app import task_lifecycle\nimport pm_engine.app.worktree_pool\nfrom pm_engine.domain import worktree_records\ntask, _action = task_lifecycle.bind_task(pm_paths.home_at(worktree_pool.REPO), "main", session="s-test")\nlease = pm_engine.app.worktree_pool.alloc(pm_paths.home_at(worktree_pool.REPO), "app", owner_task="main")\nprint(json.dumps({"task_open": task.open, "lease_open": worktree_records.lease_is_open(lease),\n                  "slot": lease.slot}))\n'
 
 
 # ── 모듈 로드 ────────────────────────────────────────────────────────────────
@@ -341,9 +334,9 @@ def test_status_json_alive_is_the_open_record(home, wp):
     assert rows[slot_readonly]["alive"] is False
     for slot, row in rows.items():
         assert "pid" not in row, slot                 # 옛 필드 제거
-        lease = wp.Lease(slot=slot, repo="app", session=row["session"] or "",
+        lease = worktree_records.Lease(slot=slot, repo="app", session=row["session"] or "",
                          started="s", state=row["state"])
-        assert row["alive"] == wp.lease_is_open(lease), slot   # 판정 재구현 0
+        assert row["alive"] == worktree_records.lease_is_open(lease), slot   # 판정 재구현 0
 
 
 @_git_required
@@ -620,7 +613,8 @@ def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, caps
     monkeypatch.setattr(pc, "_status_json_git",
                         lambda runner: {"branch": None, "head": None, "dirty": None})
     args = pc.build_parser().parse_args(["status", "--json"])
-    assert pc.cmd_status(args, worktree_pool=_Wp()) == 0
+    bind_pool(monkeypatch, _Wp())
+    assert pc.cmd_status(args) == 0
     assert "board" not in loaded, f"기본 호출이 board 를 로드했다: {loaded}"
 
 
@@ -995,17 +989,7 @@ def test_status_json_schema_constant_is_single_source(pc):
 
 
 # 홈 사본 엔진으로 슬롯을 만들고 지운다 — 보존 기록을 테스트가 조립하지 않고 슬롯 제거가 남긴다.
-_SLOT_LIFECYCLE_SOURCE = '''\
-import importlib.util, sys
-
-spec = importlib.util.spec_from_file_location("worktree_pool_preserved", sys.argv[1])
-worktree_pool = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(worktree_pool)
-if sys.argv[2] == "create":
-    print(worktree_pool.create_slot("app", base="trunk", init_submodules=False).slot)
-else:
-    print(worktree_pool.remove_slot(sys.argv[3]).branch_deletion.reason)
-'''
+_SLOT_LIFECYCLE_SOURCE = 'import importlib.util, sys\n\nspec = importlib.util.spec_from_file_location("worktree_pool_preserved", sys.argv[1])\nworktree_pool = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(worktree_pool)\nfrom pm_engine.infra import pm_paths\nimport pm_engine.app.worktree_pool\nif sys.argv[2] == "create":\n    print(pm_engine.app.worktree_pool.create_slot(pm_paths.home_at(worktree_pool.REPO), "app", base="trunk", init_submodules=False).slot)\nelse:\n    print(pm_engine.app.worktree_pool.remove_slot(pm_paths.home_at(worktree_pool.REPO), sys.argv[3]).branch_deletion.reason)\n'
 
 
 def _slot_lifecycle(home: Path, script: Path, *argv: str) -> str:
@@ -1147,14 +1131,7 @@ def test_status_git_calls_per_slot_are_bounded(home, tmp_path, mode, per_slot):
 
 
 # 홈 사본 엔진으로 인자로 받은 저장소의 슬롯을 만든다(`_SLOT_LIFECYCLE_SOURCE` 의 create 와 같은 호출).
-_CREATE_REPO_SLOT_SOURCE = '''\
-import importlib.util, sys
-
-spec = importlib.util.spec_from_file_location("worktree_pool_repo_slot", sys.argv[1])
-worktree_pool = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(worktree_pool)
-print(worktree_pool.create_slot(sys.argv[2], base="trunk", init_submodules=False).slot)
-'''
+_CREATE_REPO_SLOT_SOURCE = 'import importlib.util, sys\n\nspec = importlib.util.spec_from_file_location("worktree_pool_repo_slot", sys.argv[1])\nworktree_pool = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(worktree_pool)\nfrom pm_engine.infra import pm_paths\nimport pm_engine.app.worktree_pool\nprint(pm_engine.app.worktree_pool.create_slot(pm_paths.home_at(worktree_pool.REPO), sys.argv[2], base="trunk", init_submodules=False).slot)\n'
 
 
 @_git_required

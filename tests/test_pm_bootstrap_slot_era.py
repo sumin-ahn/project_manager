@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,7 +120,7 @@ class _EraPool:
                 "children": [], "stashes": 0, "submodules": [], "dirty": False}
 
 
-def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool):
+def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool, monkeypatch):
     """시대차 run() 통합 픽스처 — board/log/pm_state/areas hermetic, git 은 주입 git_fn."""
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
@@ -142,7 +144,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool):
         board_dir=board_dir,
         pm_state_file=pm_state_file,
         board=_EraBoard(),
-        worktree_pool=worktree_pool,
+        worktree_pool=bind_pool(monkeypatch, worktree_pool),
     )
 
 

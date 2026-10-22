@@ -142,6 +142,23 @@
         "kind": "decision_label"
       }
     ],
+    ".project_manager/tools/pm_engine/app/worktree_pool.py": [
+      {
+        "count": 1,
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "kind": "session_stamp"
+      }
+    ],
     ".project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
@@ -160,6 +177,23 @@
       {
         "count": 1,
         "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "kind": "session_stamp"
+      }
+    ],
+    ".project_manager/tools/pm_engine/domain/task_rules.py": [
+      {
+        "count": 1,
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],
@@ -201,6 +235,18 @@
       {
         "count": 1,
         "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "kind": "session_stamp"
+      }
+    ],
+    ".project_manager/tools/pm_engine/infra/worktree_git.py": [
+      {
+        "count": 1,
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
         "kind": "session_stamp"
       }
     ],
@@ -286,47 +332,7 @@
     ".project_manager/tools/worktree_pool.py": [
       {
         "count": 1,
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],
@@ -546,6 +552,23 @@
         "kind": "decision_label"
       }
     ],
+    "templates/claude_code/.project_manager/tools/pm_engine/app/worktree_pool.py": [
+      {
+        "count": 1,
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "kind": "session_stamp"
+      }
+    ],
     "templates/claude_code/.project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
@@ -564,6 +587,23 @@
       {
         "count": 1,
         "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/domain/task_rules.py": [
+      {
+        "count": 1,
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],
@@ -605,6 +645,18 @@
       {
         "count": 1,
         "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/infra/worktree_git.py": [
+      {
+        "count": 1,
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
         "kind": "session_stamp"
       }
     ],
@@ -690,47 +742,7 @@
     "templates/claude_code/.project_manager/tools/worktree_pool.py": [
       {
         "count": 1,
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],
@@ -953,6 +965,23 @@
         "kind": "decision_label"
       }
     ],
+    "templates/codex/.project_manager/tools/pm_engine/app/worktree_pool.py": [
+      {
+        "count": 1,
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "kind": "session_stamp"
+      }
+    ],
     "templates/codex/.project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
@@ -971,6 +1000,23 @@
       {
         "count": 1,
         "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/domain/task_rules.py": [
+      {
+        "count": 1,
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],
@@ -1012,6 +1058,18 @@
       {
         "count": 1,
         "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/infra/worktree_git.py": [
+      {
+        "count": 1,
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
         "kind": "session_stamp"
       }
     ],
@@ -1097,47 +1155,7 @@
     "templates/codex/.project_manager/tools/worktree_pool.py": [
       {
         "count": 1,
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],
@@ -1551,6 +1569,23 @@
         "kind": "decision_label"
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/app/worktree_pool.py": [
+      {
+        "count": 1,
+        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "kind": "session_stamp"
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "count": 1,
@@ -1569,6 +1604,23 @@
       {
         "count": 1,
         "hash": "0095750371a81c882aca3193b0a0918198d700375a04431f57ed4045c02ce644",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/domain/task_rules.py": [
+      {
+        "count": 1,
+        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],
@@ -1610,6 +1662,18 @@
       {
         "count": 1,
         "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
+        "kind": "session_stamp"
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/infra/worktree_git.py": [
+      {
+        "count": 1,
+        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
         "kind": "session_stamp"
       }
     ],
@@ -1695,47 +1759,7 @@
     "templates/opencode/.project_manager/tools/worktree_pool.py": [
       {
         "count": 1,
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "8d691850706df86b0cdf65e910fd57fa8079d55f77fd34e3ec210b15f70fed39",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "d318a8dba3deaf096dc8e1b2ffc8b8ea8ddffdad348c33afee4b135cc9f2462c",
         "kind": "session_stamp"
       }
     ],

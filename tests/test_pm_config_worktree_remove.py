@@ -22,6 +22,8 @@ import 하지 않는다(보호목록은 `_resolve_protected` 를 monkeypatch 한
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import argparse
 import importlib.util
 import os
@@ -33,6 +35,13 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.app import branch_checkout
+from pm_engine.infra import branch_store
+from pm_engine.infra import pm_paths
+from pm_engine.infra import pool_store
+from pm_engine.infra import worktree_git
+from pm_engine.app import worktree_pool
+from pm_engine.domain import worktree_records
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -81,7 +90,7 @@ def proj(tmp_path):
 def wp(proj, monkeypatch):
     """tmp-바인딩 worktree_pool 모듈 — 보호목록은 `main` 하나로 고정(실 areas.md 미접촉)."""
     mod = _load_wp_bound(proj)
-    monkeypatch.setattr(mod, "_resolve_protected", lambda repo: ["main"])
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["main"])
     return mod
 
 
@@ -112,7 +121,7 @@ class RemoveFakeGit:
     def __init__(self, wp, *, slot="work/A_1", registered=True, list_rc=0, dirty=False,
                  head=None, default_branch="main", parents=None, merged=True, delete_rc=0,
                  remove_rc=0, deregisters_on_failure=False):
-        self.slot_dir = wp.slot_path(slot)
+        self.slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), slot)
         self.registered = registered
         self.list_rc = list_rc
         self.dirty = dirty
@@ -204,15 +213,15 @@ def _seed(wp, *leases, tree=True):
     hermetic 케이스도 슬롯 자리를 실물로 둬야 등록 조회 이후 경로를 탄다. `tree=False` 는
     트리가 이미 사라진 형상(dangling 장부)을 재현하는 자리다.
     """
-    with wp._lease_lock():
-        wp._write_ledger(list(leases))
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), list(leases))
     if tree:
         for lease in leases:
-            wp.slot_path(lease.slot).mkdir(parents=True, exist_ok=True)
+            pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot).mkdir(parents=True, exist_ok=True)
 
 
 def _lease(wp, *, slot, repo, session="s1", state="leased"):
-    return wp.Lease(slot=slot, repo=repo, session=session, started="t", state=state)
+    return worktree_records.Lease(slot=slot, repo=repo, session=session, started="t", state=state)
 
 
 def test_remove_slot_clean_idle_slot_removes_worktree_and_deletes_merged_branch(wp):
@@ -222,15 +231,15 @@ def test_remove_slot_clean_idle_slot_removes_worktree_and_deletes_merged_branch(
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, merged=True)
-    result = wp.remove_slot("work/A_1", git_runner=git)
-    assert git.did("worktree", "remove", "--force", str(wp.slot_path("work/A_1")))
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
+    assert git.did("worktree", "remove", "--force", str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")))
     assert git.did("worktree", "prune")
     assert git.did("branch", "-D", "A_1")
     deletion = result.branch_deletion
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_DELETED, wp.BRANCH_REASON_MERGED)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_DELETED, worktree_records.BRANCH_REASON_MERGED)
     assert deletion.parent == "develop" and deletion.parent_ref == "develop"
     assert result.branch == "A_1" and result.tree_cleaned is False
-    assert wp.list_leases() == []            # 빈 번호 재사용 가능(footgun 종결).
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []            # 빈 번호 재사용 가능(footgun 종결).
 
 
 @pytest.mark.parametrize("force", [False, True])
@@ -238,14 +247,14 @@ def test_remove_slot_uncommitted_changes_refused_with_or_without_force(wp, force
     """커밋 안 한 변경 → force 와 무관하게 RemoveRefused("dirty") · stash 없음 · 아무것도 안 지운다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, dirty=True, head="A_1", parents={"A_1": "develop"})
-    with pytest.raises(wp.RemoveRefused) as exc:
-        wp.remove_slot("work/A_1", force=force, git_runner=git)
+    with pytest.raises(worktree_records.RemoveRefused) as exc:
+        worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", force=force, git_runner=git)
     assert exc.value.reason == "dirty"
     assert not git.did("stash")
     assert not git.did("worktree", "remove")
     assert not git.did("branch", "-D")
-    assert wp.list_leases()[0].slot == "work/A_1"
-    assert wp.slot_path("work/A_1").is_dir()
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].slot == "work/A_1"
+    assert pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").is_dir()
 
 
 @pytest.mark.parametrize("state", ["leased", "creating"])
@@ -253,11 +262,11 @@ def test_remove_slot_active_lease_refused_without_force(wp, state):
     """활성 리스(사용 중·in-flight 생성) + force 아님 → RemoveRefused("active-lease")·아무 git op 없음."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state=state))
     git = RemoveFakeGit(wp, head="A_1")
-    with pytest.raises(wp.RemoveRefused) as exc:
-        wp.remove_slot("work/A_1", git_runner=git)
+    with pytest.raises(worktree_records.RemoveRefused) as exc:
+        worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert (exc.value.reason, exc.value.state) == ("active-lease", state)
     assert git.calls == []
-    assert wp.list_leases()[0].state == state
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == state
 
 
 @pytest.mark.parametrize("state", ["leased", "creating"])
@@ -265,43 +274,43 @@ def test_remove_slot_force_overrides_active_lease_and_reports_state(wp, state):
     """--force 는 점유를 무시하고 제거한다 — 원래 state 를 forced_state 에 실어 CLI 가 강제 회수를 경고한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state=state))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"})
-    result = wp.remove_slot("work/A_1", force=True, git_runner=git)
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", force=True, git_runner=git)
     assert result.forced_state == state
     assert git.did("worktree", "remove")
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_remove_slot_idle_removal_forced_state_none(wp):
     """정상(idle) 제거는 forced_state=None (강제 회수 아님·CLI 경고 불요)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"})
-    assert wp.remove_slot("work/A_1", git_runner=git).forced_state is None
+    assert worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git).forced_state is None
 
 
 def test_remove_slot_tree_missing_prunes_and_cleans_ledger(wp):
     """worktree dir 부재 + 장부 잔존 → remove 스킵·prune·장부 정리(dangling)·브랜치 판정 없음."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"), tree=False)
     git = RemoveFakeGit(wp, head="A_1")
-    result = wp.remove_slot("work/A_1", git_runner=git)
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert result.branch is None and result.branch_deletion is None
     assert git.did("worktree", "prune") and not git.did("worktree", "remove")
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_remove_slot_detached_head_no_branch_judgement(wp):
     """detached HEAD — 브랜치 판별 불가 → branch_deletion=None·삭제 시도 안 함·슬롯은 제거."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head=None)
-    result = wp.remove_slot("work/A_1", git_runner=git)
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert result.branch is None and result.branch_deletion is None
     assert not git.did("branch", "-D")
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_remove_slot_absent_ledger_returns_none(wp):
     """장부 없음 무해 종료 — 엔트리 없으면 None·git op 0(orphan 은 git worktree remove)."""
     git = RemoveFakeGit(wp, head="Z_9")
-    assert wp.remove_slot("work/Z_9", git_runner=git) is None
+    assert worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/Z_9", git_runner=git) is None
     assert git.calls == []
 
 
@@ -310,11 +319,11 @@ def test_remove_slot_registration_intact_failure_changes_nothing(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, remove_rc=1)
     with pytest.raises(RuntimeError) as exc:
-        wp.remove_slot("work/A_1", git_runner=git)
+        worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert "--force" not in str(exc.value) and "원자" not in str(exc.value)
-    assert wp.list_leases()[0].slot == "work/A_1"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].slot == "work/A_1"
     assert not git.did("branch", "-D")
-    assert wp.slot_path("work/A_1").is_dir()
+    assert pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").is_dir()
 
 
 def test_remove_slot_finishes_when_git_deregistered_but_tree_remains(wp):
@@ -322,11 +331,11 @@ def test_remove_slot_finishes_when_git_deregistered_but_tree_remains(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, remove_rc=1,
                         deregisters_on_failure=True)
-    result = wp.remove_slot("work/A_1", git_runner=git)
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert result.tree_cleaned is True
-    assert not wp.slot_path("work/A_1").exists(), "디렉터리 잔재가 남았다"
-    assert result.branch_deletion.action == wp.BRANCH_DELETED
-    assert wp.list_leases() == []
+    assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").exists(), "디렉터리 잔재가 남았다"
+    assert result.branch_deletion.action == worktree_records.BRANCH_DELETED
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 @pytest.mark.parametrize("force", [False, True])
@@ -337,16 +346,16 @@ def test_remove_slot_unregistered_tree_refused_with_or_without_force(wp, force):
     사용자 몫이고, 거부 값이 사용자에게 넘길 경로를 싣는다.
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    slot_dir = wp.slot_path("work/A_1")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     leftover = slot_dir / "wip.txt"
     leftover.write_text("미커밋 작업\n", encoding="utf-8")
     git = RemoveFakeGit(wp, registered=False, head="A_1")
-    with pytest.raises(wp.RemoveRefused) as exc:
-        wp.remove_slot("work/A_1", force=force, git_runner=git)
+    with pytest.raises(worktree_records.RemoveRefused) as exc:
+        worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", force=force, git_runner=git)
     assert exc.value.reason == "unregistered-tree"
     assert exc.value.path == slot_dir
     assert leftover.read_text(encoding="utf-8") == "미커밋 작업\n"
-    assert wp.list_leases()[0].slot == "work/A_1"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].slot == "work/A_1"
     assert not git.did("worktree", "prune") and not git.did("worktree", "remove")
 
 
@@ -354,16 +363,16 @@ def test_remove_slot_passes_acked_branches_to_judgement(wp):
     """합쳐지지 않은 브랜치 — 승인값이 없으면 보존, 그 브랜치 이름이 승인값에 있으면 삭제한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, merged=False)
-    kept = wp.remove_slot("work/A_1", acked_branches=frozenset({"work/A_1"}), git_runner=git)
+    kept = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", acked_branches=frozenset({"work/A_1"}), git_runner=git)
     assert (kept.branch_deletion.action, kept.branch_deletion.reason) == (
-        wp.BRANCH_PRESERVED, wp.BRANCH_REASON_UNMERGED)
+        worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_UNMERGED)
     assert not git.did("branch", "-D")
 
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, merged=False)
-    gone = wp.remove_slot("work/A_1", acked_branches=frozenset({"work/A_1", "A_1"}), git_runner=git)
+    gone = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", acked_branches=frozenset({"work/A_1", "A_1"}), git_runner=git)
     assert (gone.branch_deletion.action, gone.branch_deletion.reason) == (
-        wp.BRANCH_DELETED, wp.BRANCH_REASON_ACKED)
+        worktree_records.BRANCH_DELETED, worktree_records.BRANCH_REASON_ACKED)
     assert gone.branch_deletion.unmerged_commits == ["c0ffee0 wip"]
     assert git.did("branch", "-D", "A_1")
 
@@ -372,11 +381,11 @@ def test_remove_slot_branch_lookup_failure_raises_without_deleting(wp):
     """판정 조회 실패(공용 저장소 HEAD 미해소)는 보존으로 접지 않고 raise — 삭제 시도 없음·장부는 정지 지점에 남는다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="task/wip", default_branch=None, parents={"task/wip": "develop"})
-    with pytest.raises(wp.BranchParentError) as exc:
-        wp.remove_slot("work/A_1", git_runner=git)
+    with pytest.raises(branch_store.BranchParentError) as exc:
+        worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert "기본 브랜치" in str(exc.value)
     assert not git.did("branch", "-D")
-    assert wp.list_leases()[0].slot == "work/A_1"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].slot == "work/A_1"
 
 
 def test_judgement_ancestor_query_failure_raises(wp):
@@ -388,8 +397,8 @@ def test_judgement_ancestor_query_failure_raises(wp):
             return (128, "fatal: Not a valid commit name\n")
         return git(argv)
 
-    with pytest.raises(wp.BranchParentError):
-        wp.delete_branch_by_rule("A_1", repo="A", git_runner=runner)
+    with pytest.raises(branch_store.BranchParentError):
+        branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "A_1", repo="A", git_runner=runner)
     assert not git.did("branch", "-D")
 
 
@@ -424,7 +433,7 @@ def _init_repo(path):
 def _mk_real_bare(wp, repo, tmp_path):
     """실 bare repo `.repos/<repo>.git` — `pm-config repo add` 가 만든 것과 동형(ADR-0011 §31)."""
     origin = _init_repo(tmp_path / f"{repo}-origin")
-    bare = wp.bare_repo_path(repo)
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), repo)
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     return bare
@@ -448,18 +457,18 @@ def _branch_exists(repo, branch):
 def family(proj, tmp_path, monkeypatch):
     """실 bare + 슬롯 A_1(base main·부모 main 기록) — (wp, bare, slot_dir, bare_runner)."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["release"])
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["release"])
     bare = _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", init_submodules=False)
-    return wp, bare, wp.slot_path("work/A_1"), wp._real_git_runner(bare)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    return wp, bare, pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), worktree_git._real_git_runner(bare)
 
 
 def _side_branch(wp, bare, runner, name, *, parent="main", commit_message=None):
     """bare 에 브랜치 `name` 을 만들고 부모를 기록한다 — `commit_message` 면 부모 위 커밋 1개를 얹는다."""
     tip = _new_commit(bare, parent, commit_message) if commit_message else _sha(bare, parent)
     _git(bare, "update-ref", f"refs/heads/{name}", tip)
-    wp.record_branch_parent(name, parent, _sha(bare, parent), git_runner=runner)
+    branch_store.record_branch_parent(name, parent, _sha(bare, parent), git_runner=runner)
     return tip
 
 
@@ -468,8 +477,8 @@ def test_real_judge_protected_branch_preserved(family):
     """차례 1 — repo 보호 브랜치는 부모 기록·합쳐짐과 무관하게 보존."""
     wp, bare, _slot_dir, runner = family
     _side_branch(wp, bare, runner, "release")
-    deletion = wp.delete_branch_by_rule("release", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_PROTECTED)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "release", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_PROTECTED)
     assert _branch_exists(bare, "release")
 
 
@@ -477,11 +486,11 @@ def test_real_judge_protected_branch_preserved(family):
 def test_real_judge_shared_default_branch_preserved_even_from_worktree_runner(family, monkeypatch):
     """차례 1 — 공용 저장소 기본 브랜치는 보존. 슬롯 worktree 에 묶인 runner 여도 슬롯 HEAD 가 아니라 공용 HEAD 를 읽는다."""
     wp, bare, slot_dir, runner = family
-    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: [])
-    slot_runner = wp._real_git_runner(slot_dir)
-    assert wp._shared_default_branch(git_runner=slot_runner) == "main"
-    deletion = wp.delete_branch_by_rule("main", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_DEFAULT)
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: [])
+    slot_runner = worktree_git._real_git_runner(slot_dir)
+    assert branch_store._shared_default_branch(git_runner=slot_runner) == "main"
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "main", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_DEFAULT)
     assert _branch_exists(bare, "main")
 
 
@@ -490,8 +499,8 @@ def test_real_judge_branch_with_children_preserved(family):
     """차례 2 — 부모 기록이 이 브랜치를 가리키는 자식이 있으면 보존 + 자식 목록."""
     wp, bare, _slot_dir, runner = family
     _side_branch(wp, bare, runner, "child", parent="A_1")
-    deletion = wp.delete_branch_by_rule("A_1", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_CHILDREN)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "A_1", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_CHILDREN)
     assert deletion.children == ["child"]
     assert _branch_exists(bare, "A_1")
 
@@ -501,8 +510,8 @@ def test_real_judge_branch_without_parent_record_preserved(family):
     """차례 3 — 부모 기록이 없는 브랜치는 합쳐졌어도 보존(부모를 추측하지 않는다)."""
     wp, bare, _slot_dir, runner = family
     _git(bare, "branch", "loose", "main")
-    deletion = wp.delete_branch_by_rule("loose", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_NO_PARENT)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "loose", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_NO_PARENT)
     assert _branch_exists(bare, "loose")
 
 
@@ -511,9 +520,9 @@ def test_real_judge_parent_branch_gone_preserved(family):
     """차례 3 — 부모 브랜치가 지워져 비교 ref 가 없으면 합쳐짐을 잴 수 없어 보존 + 부모 이름."""
     wp, bare, _slot_dir, runner = family
     _git(bare, "branch", "orphaned", "main")
-    wp.record_branch_parent("orphaned", "gone-parent", _sha(bare, "main"), git_runner=runner)
-    deletion = wp.delete_branch_by_rule("orphaned", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_PARENT_GONE)
+    branch_store.record_branch_parent("orphaned", "gone-parent", _sha(bare, "main"), git_runner=runner)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "orphaned", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_PARENT_GONE)
     assert deletion.parent == "gone-parent"
     assert _branch_exists(bare, "orphaned")
 
@@ -523,11 +532,11 @@ def test_real_judge_merged_branch_deleted_with_its_parent_record(family):
     """차례 5 — 부모에 다 합쳐진 브랜치는 `branch -D` 로 지우고 부모 기록 설정도 함께 사라진다."""
     wp, bare, _slot_dir, runner = family
     _side_branch(wp, bare, runner, "done")
-    deletion = wp.delete_branch_by_rule("done", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_DELETED, wp.BRANCH_REASON_MERGED)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "done", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_DELETED, worktree_records.BRANCH_REASON_MERGED)
     assert deletion.parent_ref == "main"
     assert not _branch_exists(bare, "done")
-    assert wp.read_branch_parent("done", git_runner=runner) is None
+    assert branch_store.read_branch_parent("done", git_runner=runner) is None
 
 
 @_git_required
@@ -537,16 +546,16 @@ def test_real_judge_unmerged_without_ack_preserved_with_commits_and_origin_state
     tip = _side_branch(wp, bare, runner, "feat", commit_message="feat work")
     expected_line = _git(bare, "log", "--format=%h %s", "-1", tip).stdout.strip()
 
-    deletion = wp.delete_branch_by_rule("feat", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_UNMERGED)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "feat", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_UNMERGED)
     assert deletion.unmerged_commits == [expected_line]
-    assert deletion.origin == wp.ORIGIN_NO_BRANCH
+    assert deletion.origin == worktree_records.ORIGIN_NO_BRANCH
     assert _branch_exists(bare, "feat")
 
     _git(bare, "update-ref", "refs/remotes/origin/feat", tip)
-    assert wp.delete_branch_by_rule("feat", repo="A", git_runner=runner).origin == wp.ORIGIN_CONTAINS_TIP
+    assert branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "feat", repo="A", git_runner=runner).origin == worktree_records.ORIGIN_CONTAINS_TIP
     _git(bare, "update-ref", "refs/remotes/origin/feat", _sha(bare, "main"))
-    assert wp.delete_branch_by_rule("feat", repo="A", git_runner=runner).origin == wp.ORIGIN_MISSING_TIP
+    assert branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "feat", repo="A", git_runner=runner).origin == worktree_records.ORIGIN_MISSING_TIP
     assert _branch_exists(bare, "feat")
 
 
@@ -555,12 +564,12 @@ def test_real_judge_unmerged_with_branch_ack_deleted(family):
     """차례 5 — 합쳐지지 않았어도 그 브랜치 이름이 승인값에 있으면 삭제(근거 acked·커밋 목록 유지)."""
     wp, bare, _slot_dir, runner = family
     _side_branch(wp, bare, runner, "feat", commit_message="feat work")
-    other_ack = wp.delete_branch_by_rule("feat", repo="A", acked_branches=frozenset({"work/A_1"}),
+    other_ack = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "feat", repo="A", acked_branches=frozenset({"work/A_1"}),
                                          git_runner=runner)
-    assert other_ack.action == wp.BRANCH_PRESERVED          # 다른 이름의 승인값은 이 브랜치를 넘지 않는다.
-    deletion = wp.delete_branch_by_rule("feat", repo="A", acked_branches=frozenset({"feat"}),
+    assert other_ack.action == worktree_records.BRANCH_PRESERVED          # 다른 이름의 승인값은 이 브랜치를 넘지 않는다.
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "feat", repo="A", acked_branches=frozenset({"feat"}),
                                         git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_DELETED, wp.BRANCH_REASON_ACKED)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_DELETED, worktree_records.BRANCH_REASON_ACKED)
     assert len(deletion.unmerged_commits) == 1
     assert not _branch_exists(bare, "feat")
 
@@ -580,8 +589,8 @@ def test_real_judge_tip_moved_after_judgement_preserved(family):
                 _git(bare, "update-ref", "refs/heads/feat", later)
         return runner(argv)
 
-    deletion = wp.delete_branch_by_rule("feat", repo="A", git_runner=racing_runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_TIP_MOVED)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "feat", repo="A", git_runner=racing_runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_TIP_MOVED)
     assert judged_tip in deletion.detail and later in deletion.detail
     assert _sha(bare, "refs/heads/feat") == later
 
@@ -590,49 +599,49 @@ def test_real_judge_tip_moved_after_judgement_preserved(family):
 def test_real_judge_delete_refused_by_git_preserved_with_output(family):
     """차례 5 — `branch -D` rc≠0(슬롯 worktree 가 그 브랜치를 쥠) → 보존 + git 출력."""
     wp, bare, _slot_dir, runner = family
-    deletion = wp.delete_branch_by_rule("A_1", repo="A", git_runner=runner)
-    assert (deletion.action, deletion.reason) == (wp.BRANCH_PRESERVED, wp.BRANCH_REASON_DELETE_REFUSED)
+    deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "A_1", repo="A", git_runner=runner)
+    assert (deletion.action, deletion.reason) == (worktree_records.BRANCH_PRESERVED, worktree_records.BRANCH_REASON_DELETE_REFUSED)
     assert deletion.detail.startswith("rc=") and "A_1" in deletion.detail
     assert _branch_exists(bare, "A_1")
 
 
 @_git_required
-def test_real_git_remove_slot_then_add_reuses_number(proj, tmp_path):
+def test_real_git_remove_slot_then_add_reuses_number(proj, tmp_path, *, monkeypatch):
     """remove_slot 경유 시 다음 add 가 빈 번호를 재사용 — PM 69 footgun 체인 종결.
 
     create A_1·A_2 → remove_slot A_1(worktree remove + 합쳐진 전용 브랜치 삭제 + 장부 엔트리 삭제) →
     다음 create 가 A_3 로 skip 하지 않고 **A_1 재사용**. 장부·전용 브랜치 둘 중 하나라도 남으면 재사용 실패.
     """
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     _mk_real_bare(wp, "A", tmp_path)
 
-    a1 = wp.create_slot("A", base="main", init_submodules=False)
-    a2 = wp.create_slot("A", base="main", init_submodules=False)
+    a1 = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    a2 = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     assert a1.slot == "work/A_1" and a2.slot == "work/A_2"
 
     assert a1.state == "idle"
-    result = wp.remove_slot("work/A_1")
-    assert not wp.slot_path("work/A_1").is_dir(), "worktree 가 실제로 안 지워짐"
-    assert all(l.slot != "work/A_1" for l in wp.list_leases()), "장부 엔트리 미삭제(dangling)"
-    assert result.branch_deletion.action == wp.BRANCH_DELETED, "합쳐진 전용 브랜치 A_1 이 삭제 안 됨"
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
+    assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").is_dir(), "worktree 가 실제로 안 지워짐"
+    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))), "장부 엔트리 미삭제(dangling)"
+    assert result.branch_deletion.action == worktree_records.BRANCH_DELETED, "합쳐진 전용 브랜치 A_1 이 삭제 안 됨"
 
-    a1b = wp.create_slot("A", base="main", init_submodules=False)
+    a1b = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     assert a1b.slot == "work/A_1", f"번호 재사용 실패: {a1b.slot!r} (A_3 skip footgun 재발)"
 
 
 @_git_required
-def test_real_git_manual_worktree_remove_leaves_dangling_ledger_skips_number(proj, tmp_path):
+def test_real_git_manual_worktree_remove_leaves_dangling_ledger_skips_number(proj, tmp_path, *, monkeypatch):
     """대조(footgun 재현) — 수동 `git worktree remove` 는 장부를 남겨 다음 add 가 번호 skip."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", init_submodules=False)   # A_1
-    wp.create_slot("A", base="main", init_submodules=False)   # A_2
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_1
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_2
 
-    _git(wp.bare_repo_path("A"), "worktree", "remove", str(wp.slot_path("work/A_1")), "--force")
+    _git(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), "worktree", "remove", str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "--force")
 
-    a3 = wp.create_slot("A", base="main", init_submodules=False)
+    a3 = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     assert a3.slot == "work/A_3", \
         "수동 remove 후에도 번호가 재사용되면 remove_slot 대조가 무의미(footgun 전제 붕괴)"
 
@@ -643,7 +652,7 @@ def _mk_real_bare_with_submodule(wp, repo, tmp_path):
     origin = _init_repo(tmp_path / f"{repo}-origin")
     _git(origin, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "sub")
     _git(origin, "commit", "-q", "-m", "add sub")
-    bare = wp.bare_repo_path(repo)
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), repo)
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     return bare
@@ -653,11 +662,11 @@ def _mk_real_bare_with_submodule(wp, repo, tmp_path):
 def submodule_slot(proj, tmp_path, monkeypatch):
     """하위 모듈을 초기화한 슬롯 A_1 — (wp, bare, slot_dir)."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["main"])
     bare = _mk_real_bare_with_submodule(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path("work/A_1")
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     _git(slot_dir, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q")
     assert (slot_dir / "sub" / "README.md").is_file()
     return wp, bare, slot_dir
@@ -671,10 +680,10 @@ def test_real_git_remove_clean_slot_with_submodule_succeeds(submodule_slot):
     assert plain.returncode != 0, f"전제 붕괴 — --force 없이도 제거됐다: {plain.stdout}{plain.stderr}"
     assert slot_dir.is_dir()
 
-    result = wp.remove_slot("work/A_1")
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
     assert not slot_dir.exists()
-    assert wp.list_leases() == []
-    assert result.branch_deletion.action == wp.BRANCH_DELETED
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
+    assert result.branch_deletion.action == worktree_records.BRANCH_DELETED
 
 
 @_git_required
@@ -684,50 +693,50 @@ def test_real_git_remove_refuses_untracked_file_inside_submodule(submodule_slot)
     untracked = slot_dir / "sub" / "new.txt"
     untracked.write_text("wip\n", encoding="utf-8")
     for force in (False, True):
-        with pytest.raises(wp.RemoveRefused) as exc:
-            wp.remove_slot("work/A_1", force=force)
+        with pytest.raises(worktree_records.RemoveRefused) as exc:
+            worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", force=force)
         assert exc.value.reason == "dirty"
     assert untracked.read_text(encoding="utf-8") == "wip\n"
-    assert wp.list_leases()[0].slot == "work/A_1"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].slot == "work/A_1"
 
 
 @_git_required
-def test_real_git_remove_slot_preserves_unmerged_branch_and_deletes_it_with_branch_ack(proj, tmp_path):
+def test_real_git_remove_slot_preserves_unmerged_branch_and_deletes_it_with_branch_ack(proj, tmp_path, *, monkeypatch):
     """슬롯 전용 브랜치에 부모 밖 커밋 — 승인값 없으면 보존(슬롯만 제거), 브랜치 승인값이 있으면 삭제."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     bare = _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", init_submodules=False)   # A_1
-    wp.create_slot("A", base="main", init_submodules=False)   # A_2
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_1
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_2
     for slot_name in ("work/A_1", "work/A_2"):
-        slot_dir = wp.slot_path(slot_name)
+        slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), slot_name)
         (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
         _git(slot_dir, "add", "wip.txt")
         _git(slot_dir, "commit", "-q", "-m", "unmerged work")
 
-    kept = wp.remove_slot("work/A_1")
-    assert kept.branch_deletion.reason == wp.BRANCH_REASON_UNMERGED
-    assert not wp.slot_path("work/A_1").is_dir(), "worktree 는 제거돼야 한다(브랜치만 보존)"
+    kept = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
+    assert kept.branch_deletion.reason == worktree_records.BRANCH_REASON_UNMERGED
+    assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").is_dir(), "worktree 는 제거돼야 한다(브랜치만 보존)"
     assert _branch_exists(bare, "A_1"), "합쳐지지 않은 브랜치가 승인 없이 삭제됨(작업 유실)"
 
-    gone = wp.remove_slot("work/A_2", acked_branches=frozenset({"work/A_2", "A_2"}))
+    gone = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_2", acked_branches=frozenset({"work/A_2", "A_2"}))
     assert (gone.branch_deletion.action, gone.branch_deletion.reason) == (
-        wp.BRANCH_DELETED, wp.BRANCH_REASON_ACKED)
+        worktree_records.BRANCH_DELETED, worktree_records.BRANCH_REASON_ACKED)
     assert not _branch_exists(bare, "A_2")
 
 
 @_git_required
-def test_real_git_remove_slot_with_readonly_leftovers_succeeds(proj, tmp_path):
+def test_real_git_remove_slot_with_readonly_leftovers_succeeds(proj, tmp_path, *, monkeypatch):
     """읽기 전용 잔재가 있는 깨끗한 슬롯 — git 이 등록을 지운 뒤 트리 삭제에서 실패해도 잔재를 마저 지운다."""
     init_git_repo(proj, commit="home")
-    wp = _load_wp_bound(proj)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     origin = init_git_repo(tmp_path / "A-origin", commit="seed")
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
 
-    wp.create_slot("A", base="main", init_submodules=False)   # A_1
-    slot_dir = wp.slot_path("work/A_1")
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_1
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     locked = slot_dir / "sub"
     locked.mkdir()
     (locked / "file.txt").write_text("x\n", encoding="utf-8")
@@ -736,99 +745,99 @@ def test_real_git_remove_slot_with_readonly_leftovers_succeeds(proj, tmp_path):
     locked.chmod(0o555)
 
     try:
-        result = wp.remove_slot("work/A_1")
+        result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
     finally:
         if locked.exists():
             locked.chmod(0o755)     # 실패해도 임시 트리가 정리되게 권한을 되돌린다.
 
     assert result.tree_cleaned is True, "잔재 정리를 보고하지 않았다"
     assert not slot_dir.exists(), "디렉터리 잔재가 남았다"
-    assert wp.list_leases() == [], "장부 엔트리가 남았다"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == [], "장부 엔트리가 남았다"
     assert str(slot_dir) not in _git(bare, "worktree", "list", "--porcelain").stdout
 
 
 @_git_required
-def test_real_git_base_recreate_after_preserved_branch_fails_loud(proj, tmp_path):
+def test_real_git_base_recreate_after_preserved_branch_fails_loud(proj, tmp_path, *, monkeypatch):
     """보존된 전용 브랜치가 남으면 같은 번호 base-경로 재생성이 SlotBranchExists 로 fail-loud(provisional 롤백)."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     bare = _mk_real_bare(wp, "A", tmp_path)
 
-    wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path("work/A_1")
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
     _git(slot_dir, "add", "wip.txt")
     _git(slot_dir, "commit", "-q", "-m", "unmerged work")
 
-    wp.release("work/A_1")
-    result = wp.remove_slot("work/A_1")
-    assert result.branch_deletion.reason == wp.BRANCH_REASON_UNMERGED
+    worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1")
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
+    assert result.branch_deletion.reason == worktree_records.BRANCH_REASON_UNMERGED
     assert _branch_exists(bare, "A_1"), "보존 브랜치 A_1 이 bare 에 없음"
 
-    with pytest.raises(wp.SlotBranchExists) as exc:
-        wp.create_slot("A", base="main", init_submodules=False)
+    with pytest.raises(worktree_records.SlotBranchExists) as exc:
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     msg = str(exc.value)
     assert (exc.value.branch, exc.value.slot, exc.value.base) == ("A_1", "work/A_1", "main")
     assert "orphan" not in msg.lower(), f"orphan-worktree 오귀인 잔존: {msg!r}"
     assert "브랜치" in msg and "A_1" in msg
-    assert all(l.slot != "work/A_1" for l in wp.list_leases()), "provisional lease 롤백 실패(장부 dangling)"
-    assert not wp.slot_path("work/A_1").is_dir(), "실패한 재생성이 worktree 를 남김"
+    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))), "provisional lease 롤백 실패(장부 dangling)"
+    assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").is_dir(), "실패한 재생성이 worktree 를 남김"
 
 
 @_git_required
-def test_real_git_branch_resume_preserved_unmerged_no_reset(proj, tmp_path):
+def test_real_git_branch_resume_preserved_unmerged_no_reset(proj, tmp_path, *, monkeypatch):
     """보존 브랜치를 다른 슬롯에서 `switch` 로 재개 → 보존 커밋 잔존(리셋 없음·데이터-유실 클래스)."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     bare = _mk_real_bare(wp, "A", tmp_path)
 
-    wp.create_slot("A", base="main", init_submodules=False)   # A_1 @ main
-    wp.create_slot("A", base="main", init_submodules=False)   # A_2 @ main (재개할 슬롯)
-    slot_dir = wp.slot_path("work/A_1")
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_1 @ main
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_2 @ main (재개할 슬롯)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
     _git(slot_dir, "add", "wip.txt")
     _git(slot_dir, "commit", "-q", "-m", "unmerged work")
     preserved_sha = _sha(slot_dir, "HEAD")
 
-    result = wp.remove_slot("work/A_1")
-    assert result.branch_deletion.reason == wp.BRANCH_REASON_UNMERGED
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
+    assert result.branch_deletion.reason == worktree_records.BRANCH_REASON_UNMERGED
     assert not slot_dir.is_dir()
 
-    switched = wp.switch("work/A_2", "A_1", protected=["main"])
+    switched = branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_2", "A_1", protected=["main"])
     assert switched.branch == "A_1"
-    resumed_dir = wp.slot_path("work/A_2")
+    resumed_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_2")
     assert _sha(resumed_dir, "HEAD") == preserved_sha, "재개 슬롯이 보존 커밋을 잃음(리셋 재발·데이터-유실)"
     assert _sha(bare, "refs/heads/A_1") == preserved_sha, "전환이 보존 브랜치 ref 를 옮겼다"
     assert (resumed_dir / "wip.txt").read_text(encoding="utf-8") == "wip\n", "미머지 작업 파일이 유실됨"
-    assert wp.current_branch("work/A_2") == "A_1"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_2") == "A_1"
 
 
 @_git_required
-def test_real_git_branch_exists_detection_color_safe(proj, tmp_path):
+def test_real_git_branch_exists_detection_color_safe(proj, tmp_path, *, monkeypatch):
     """ambient `color.branch=always` 서도 보존 브랜치 선-검출(SlotBranchExists)과 재개(`switch`)가 정확하다."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     bare = _mk_real_bare(wp, "A", tmp_path)
     _git(bare, "config", "color.branch", "always")
     _git(bare, "config", "color.ui", "always")
 
-    wp.create_slot("A", base="main", init_submodules=False)
-    wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path("work/A_1")
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
     _git(slot_dir, "add", "wip.txt")
     _git(slot_dir, "commit", "-q", "-m", "unmerged work")
     preserved_sha = _sha(slot_dir, "HEAD")
-    assert wp.remove_slot("work/A_1").branch_deletion.reason == wp.BRANCH_REASON_UNMERGED
+    assert worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1").branch_deletion.reason == worktree_records.BRANCH_REASON_UNMERGED
 
-    with pytest.raises(wp.SlotBranchExists):
-        wp.create_slot("A", base="main", init_submodules=False)
-    assert all(l.slot != "work/A_1" for l in wp.list_leases()), "선-검출 실패 시 provisional 잔존"
+    with pytest.raises(worktree_records.SlotBranchExists):
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))), "선-검출 실패 시 provisional 잔존"
 
-    assert wp.switch("work/A_2", "A_1", protected=["main"]).branch == "A_1"
-    assert _sha(wp.slot_path("work/A_2"), "HEAD") == preserved_sha, \
+    assert branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_2", "A_1", protected=["main"]).branch == "A_1"
+    assert _sha(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_2"), "HEAD") == preserved_sha, \
         "color.branch=always 오염에서 재개가 보존 커밋을 잃음(데이터-유실 재발)"
-    assert wp.current_branch("work/A_2") == "A_1"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_2") == "A_1"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -869,22 +878,22 @@ def _commit_in(slot_dir, name):
 def pool(proj, tmp_path, monkeypatch):
     """실 bare + 슬롯 A_1·A_2(base main) — A_1 에 합쳐지지 않은 커밋 1개. (wp, bare)."""
     _init_repo(proj)
-    wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["main"])
     bare = _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", init_submodules=False)   # A_1
-    wp.create_slot("A", base="main", init_submodules=False)   # A_2
-    _commit_in(wp.slot_path("work/A_1"), "wip.txt")
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_1
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_2
+    _commit_in(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), "wip.txt")
     return wp, bare
 
 
-def test_preserved_reason_list_covers_every_non_delete_judgement(proj):
+def test_preserved_reason_list_covers_every_non_delete_judgement(proj, *, monkeypatch):
     """사유 표 둘의 합 = 판정 사유 전부에서 삭제 근거(merged·acked)를 뺀 것 — 보존 사유가 늘면 이 표부터 red."""
-    wp = _load_wp_bound(proj)
-    reasons = {value for name, value in vars(wp).items() if name.startswith("BRANCH_REASON_")}
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
+    reasons = {value for name, value in vars(worktree_records).items() if name.startswith("BRANCH_REASON_")}
     assert set(_RECORDED_REASONS) | set(_UNRECORDED_REASONS) == (
-        reasons - {wp.BRANCH_REASON_MERGED, wp.BRANCH_REASON_ACKED})
-    assert set(_UNRECORDED_REASONS) == wp._UNRECORDED_PRESERVED_REASONS
+        reasons - {worktree_records.BRANCH_REASON_MERGED, worktree_records.BRANCH_REASON_ACKED})
+    assert set(_UNRECORDED_REASONS) == worktree_records._UNRECORDED_PRESERVED_REASONS
 
 
 @_git_required
@@ -896,11 +905,11 @@ def test_real_git_remove_slot_records_slot_time_and_reason_of_preserved_branches
         _git(bare, "config", "--unset", f"branch.A_2.{key}")
     before = datetime.now(timezone.utc).replace(microsecond=0)
 
-    kept = wp.remove_slot("work/A_1")
-    loose = wp.remove_slot("work/A_2")
+    kept = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
+    loose = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_2")
 
-    for result, slot_name, reason in ((kept, "work/A_1", wp.BRANCH_REASON_UNMERGED),
-                                      (loose, "work/A_2", wp.BRANCH_REASON_NO_PARENT)):
+    for result, slot_name, reason in ((kept, "work/A_1", worktree_records.BRANCH_REASON_UNMERGED),
+                                      (loose, "work/A_2", worktree_records.BRANCH_REASON_NO_PARENT)):
         assert result.branch_deletion.reason == reason
         record = _preserved_record(bare, result.branch)
         assert (record["pm-slot"], record["pm-preserved-reason"]) == (slot_name, reason)
@@ -912,10 +921,10 @@ def test_real_git_remove_slot_records_slot_time_and_reason_of_preserved_branches
 def test_real_git_remove_slot_records_every_preserved_reason(pool, monkeypatch, reason):
     """기록하는 보존 사유마다 세 키가 남는다 — 판정 결과를 사유별로 고정하고 기록은 실 git 설정에 쓴다."""
     wp, bare = pool
-    monkeypatch.setattr(wp, "delete_branch_by_rule", lambda branch, **_kwargs: wp.BranchDeletion(
-        branch, action=wp.BRANCH_PRESERVED, reason=reason))
+    monkeypatch.setattr(branch_store, "delete_branch_by_rule", lambda _home, branch, **_kwargs: branch_store.BranchDeletion(
+        branch, action=worktree_records.BRANCH_PRESERVED, reason=reason))
 
-    result = wp.remove_slot("work/A_2")
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_2")
 
     record = _preserved_record(bare, "A_2")
     assert result.branch_deletion.reason == reason
@@ -929,56 +938,56 @@ def test_real_git_remove_slot_records_every_preserved_reason(pool, monkeypatch, 
 def test_real_git_remove_slot_does_not_record_protected_or_default_branch(pool, monkeypatch, reason):
     """보호·기본 브랜치 보존은 기록하지 않는다 — 슬롯 수명과 무관한 브랜치라 조회 목록에도 오르지 않는다."""
     wp, bare = pool
-    monkeypatch.setattr(wp, "delete_branch_by_rule", lambda branch, **_kwargs: wp.BranchDeletion(
-        branch, action=wp.BRANCH_PRESERVED, reason=reason))
+    monkeypatch.setattr(branch_store, "delete_branch_by_rule", lambda _home, branch, **_kwargs: branch_store.BranchDeletion(
+        branch, action=worktree_records.BRANCH_PRESERVED, reason=reason))
 
-    result = wp.remove_slot("work/A_2")
+    result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_2")
 
-    assert (result.branch_deletion.action, result.branch_deletion.reason) == (wp.BRANCH_PRESERVED, reason)
+    assert (result.branch_deletion.action, result.branch_deletion.reason) == (worktree_records.BRANCH_PRESERVED, reason)
     assert _preserved_record(bare, "A_2") == _NO_PRESERVED_RECORD
     assert _branch_exists(bare, "A_2")
-    assert wp.preserved_branches() == []
+    assert branch_store.preserved_branches(pm_paths.home_at(wp.REPO)) == []
 
 
 @_git_required
 def test_real_git_deleted_branch_has_no_preserved_record(pool):
     """삭제 판정이면 기록을 쓰지 않고, 보존됐던 브랜치를 나중에 지우면 git 이 기록도 함께 지운다."""
     wp, bare = pool
-    assert wp.remove_slot("work/A_2").branch_deletion.action == wp.BRANCH_DELETED
+    assert worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_2").branch_deletion.action == worktree_records.BRANCH_DELETED
     assert _preserved_record(bare, "A_2") == _NO_PRESERVED_RECORD
 
-    assert wp.remove_slot("work/A_1").branch_deletion.action == wp.BRANCH_PRESERVED
+    assert worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1").branch_deletion.action == worktree_records.BRANCH_PRESERVED
     assert _preserved_record(bare, "A_1")["pm-slot"] == "work/A_1"
-    later = wp.delete_branch_by_rule("A_1", repo="A", acked_branches=frozenset({"A_1"}),
-                                     git_runner=wp._real_git_runner(bare))
-    assert later.action == wp.BRANCH_DELETED
+    later = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "A_1", repo="A", acked_branches=frozenset({"A_1"}),
+                                     git_runner=worktree_git._real_git_runner(bare))
+    assert later.action == worktree_records.BRANCH_DELETED
     assert _preserved_record(bare, "A_1") == _NO_PRESERVED_RECORD
-    assert wp.preserved_branches() == []
+    assert branch_store.preserved_branches(pm_paths.home_at(wp.REPO)) == []
 
 
 @_git_required
 def test_real_git_switch_back_into_a_slot_clears_the_preserved_record(pool):
     """보존 브랜치를 다른 슬롯에서 `switch` 로 다시 쓰면 보존 기록 세 키가 지워지고 부모 기록은 남는다."""
     wp, bare = pool
-    wp.remove_slot("work/A_1")
-    assert [row["name"] for row in wp.preserved_branches()] == ["A_1"]
+    worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
+    assert [row["name"] for row in branch_store.preserved_branches(pm_paths.home_at(wp.REPO))] == ["A_1"]
 
-    wp.switch("work/A_2", "A_1", protected=["main"])
+    branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_2", "A_1", protected=["main"])
 
     assert _preserved_record(bare, "A_1") == _NO_PRESERVED_RECORD
-    assert wp.read_branch_parent("A_1", git_runner=wp._real_git_runner(bare))["name"] == "main"
-    assert wp.preserved_branches() == []
+    assert branch_store.read_branch_parent("A_1", git_runner=worktree_git._real_git_runner(bare))["name"] == "main"
+    assert branch_store.preserved_branches(pm_paths.home_at(wp.REPO)) == []
 
 
 @_git_required
 def test_real_git_alloc_checkout_of_a_preserved_branch_clears_the_record(pool):
     """`alloc(branch=)` 가 보존 브랜치를 idle 슬롯에 체크아웃해도 같은 체크아웃 프리미티브라 기록이 지워진다."""
     wp, bare = pool
-    wp.remove_slot("work/A_1")
+    worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
 
-    lease = wp.alloc("A", branch="A_1", owner_task="job")
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", branch="A_1", owner_task="job")
 
-    assert lease.slot == "work/A_2" and wp.current_branch("work/A_2") == "A_1"
+    assert lease.slot == "work/A_2" and worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_2") == "A_1"
     assert _preserved_record(bare, "A_1") == _NO_PRESERVED_RECORD
 
 
@@ -992,9 +1001,9 @@ def test_remove_slot_preserved_record_write_failure_raises_and_keeps_ledger_row(
             return (255, "error: could not lock config file\n")
         return git(argv)
 
-    with pytest.raises(wp.BranchParentError, match="보존 기록 쓰기 실패"):
-        wp.remove_slot("work/A_1", git_runner=runner)
-    assert wp.list_leases()[0].slot == "work/A_1"
+    with pytest.raises(branch_store.BranchParentError, match="보존 기록 쓰기 실패"):
+        worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=runner)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].slot == "work/A_1"
 
 
 def test_checkout_clears_preserved_keys_and_raises_on_other_failures(wp):
@@ -1008,7 +1017,7 @@ def test_checkout_clears_preserved_keys_and_raises_on_other_failures(wp):
             return (5, "")
         return git(argv)
 
-    wp._checkout_required("work/A_1", "A_1", git_runner=missing_keys)
+    branch_checkout._checkout_required(pm_paths.home_at(wp.REPO), "work/A_1", "A_1", git_runner=missing_keys)
     assert unset == ["branch.A_1.pm-slot", "branch.A_1.pm-preserved-at", "branch.A_1.pm-preserved-reason"]
 
     def locked(argv):
@@ -1016,8 +1025,8 @@ def test_checkout_clears_preserved_keys_and_raises_on_other_failures(wp):
             return (255, "error: could not lock config file\n")
         return git(argv)
 
-    with pytest.raises(wp.BranchParentError, match="보존 기록 지우기 실패"):
-        wp._checkout_required("work/A_1", "A_1", git_runner=locked)
+    with pytest.raises(branch_store.BranchParentError, match="보존 기록 지우기 실패"):
+        branch_checkout._checkout_required(pm_paths.home_at(wp.REPO), "work/A_1", "A_1", git_runner=locked)
 
 
 @_git_required
@@ -1028,13 +1037,13 @@ def test_real_git_preserved_branches_rows_parent_and_unmerged_count(family):
     _git(bare, "update-ref", "refs/heads/feat", _new_commit(bare, tip, "two"))
     _git(bare, "branch", "loose", "main")
     _git(bare, "branch", "orphaned", "main")
-    wp.record_branch_parent("orphaned", "gone-parent", _sha(bare, "main"), git_runner=runner)
+    branch_store.record_branch_parent("orphaned", "gone-parent", _sha(bare, "main"), git_runner=runner)
     for name, slot_name, reason in (("orphaned", "work/A_9", "parent-gone"),
                                     ("feat", "work/A_7", "unmerged"),
                                     ("loose", "work/A_8", "no-parent")):
-        wp.record_preserved_branch(name, slot=slot_name, reason=reason, git_runner=runner)
+        branch_store.record_preserved_branch(name, slot=slot_name, reason=reason, git_runner=runner)
 
-    rows = wp.preserved_branches()
+    rows = branch_store.preserved_branches(pm_paths.home_at(wp.REPO))
 
     assert [(row["name"], row["slot"], row["reason"], row["parent"], row["unmerged"]) for row in rows] == [
         ("feat", "work/A_7", "unmerged", "main", 2),
@@ -1051,13 +1060,13 @@ def test_real_git_preserved_branches_damaged_record_raises(family):
     wp, bare, _slot_dir, runner = family
     _git(bare, "branch", "half", "main")
     _git(bare, "config", "branch.half.pm-slot", "work/A_3")
-    with pytest.raises(wp.BranchParentError, match="보존 기록 손상"):
-        wp.preserved_branches()
+    with pytest.raises(branch_store.BranchParentError, match="보존 기록 손상"):
+        branch_store.preserved_branches(pm_paths.home_at(wp.REPO))
 
     _git(bare, "config", "--unset", "branch.half.pm-slot")
-    wp.record_preserved_branch("ghost", slot="work/A_4", reason="unmerged", git_runner=runner)
-    with pytest.raises(wp.BranchParentError, match="'ghost' 가 없다"):
-        wp.preserved_branches()
+    branch_store.record_preserved_branch("ghost", slot="work/A_4", reason="unmerged", git_runner=runner)
+    with pytest.raises(branch_store.BranchParentError, match="'ghost' 가 없다"):
+        branch_store.preserved_branches(pm_paths.home_at(wp.REPO))
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1103,27 +1112,27 @@ class _CreateBaseFakeGit:
 
 def _mk_bare_dir(wp, repo):
     """bare 부재 가드(`bare.exists()`) 통과용 placeholder — is-bare 유효성은 injected mock 이 모델."""
-    wp.bare_repo_path(repo).mkdir(parents=True, exist_ok=True)
+    pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), repo).mkdir(parents=True, exist_ok=True)
 
 
 def test_create_slot_base_preexisting_branch_raises_slot_branch_exists(wp):
     """create_slot(base=) 이 파려는 슬롯 전용 브랜치가 이미 존재하면 SlotBranchExists (선-검출·fail-loud)."""
     _mk_bare_dir(wp, "A")
     git = _CreateBaseFakeGit(slot_branch_exists=True)
-    with pytest.raises(wp.SlotBranchExists) as exc:
-        wp.create_slot("A", base="develop", init_submodules=False, git_runner=git)
+    with pytest.raises(worktree_records.SlotBranchExists) as exc:
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False, git_runner=git)
     assert (exc.value.branch, exc.value.base, exc.value.slot) == ("A_1", "develop", "work/A_1")
     assert git.did("branch", "--list", "--format=%(refname:short)", "A_1")
     assert not git.did("worktree", "add")
     assert "orphan" not in str(exc.value).lower()
-    assert all(l.slot != "work/A_1" for l in wp.list_leases())
+    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)))
 
 
 def test_create_slot_base_no_preexisting_branch_proceeds(wp):
     """대조 — 전용 브랜치 미존재면 선-검출 통과 → 정상 worktree add + 부모(base) 기록."""
     _mk_bare_dir(wp, "A")
     git = _CreateBaseFakeGit(slot_branch_exists=False)
-    lease = wp.create_slot("A", base="develop", init_submodules=False, git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False, git_runner=git)
     assert lease.slot == "work/A_1"
     assert git.did("branch", "--list", "--format=%(refname:short)", "A_1")
     assert git.did("worktree", "add", "--no-track", "-b", "A_1")
@@ -1143,7 +1152,7 @@ def test_create_slot_post_hoc_branch_exists_not_misattributed_orphan(wp):
 
     git = _G(slot_branch_exists=False)
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="develop", init_submodules=False, git_runner=git)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False, git_runner=git)
     msg = str(exc.value)
     assert "A_1" in msg and "브랜치" in msg
     assert "orphan" not in msg.lower()
@@ -1197,7 +1206,7 @@ class FakeWP:
 
     def __init__(self, engine, *, result="ok", raises=None, branch_deletion=None,
                  forced_state=None, tree_cleaned=False):
-        self.BRANCH_PRESERVED = engine.BRANCH_PRESERVED
+        self.BRANCH_PRESERVED = worktree_records.BRANCH_PRESERVED
         self.calls: list[tuple] = []
         self._result = result
         self._raises = raises
@@ -1221,121 +1230,133 @@ def _ns(slot="work/A_1", *, force=False, user_ack=None):
 
 
 def _deletion(engine, branch="A_1", **fields):
-    return engine.BranchDeletion(branch, **fields)
+    return branch_store.BranchDeletion(branch, **fields)
 
 
-def test_cmd_remove_without_user_ack_refuses_before_engine(pc, engine, capsys):
+def test_cmd_remove_without_user_ack_refuses_before_engine(pc, monkeypatch, engine, capsys):
     """승인값 없음 → 엔진을 부르지 않고 rc1 + 사용자 승인 요청 처방(세션 자동 부착 금지)."""
-    wp = FakeWP(engine)
-    rc = pc.cmd_worktree_remove(_ns(user_ack=[]), worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWP(engine))
+    bind_pool(monkeypatch, wp)
+    rc = pc.cmd_worktree_remove(_ns(user_ack=[]))
     assert rc == 1
     assert wp.calls == []
     err = capsys.readouterr().err
     assert "사용자 명시 승인" in err and "--user-ack work/A_1" in err
 
 
-def test_cmd_remove_with_other_user_ack_refuses_before_engine(pc, engine, capsys):
+def test_cmd_remove_with_other_user_ack_refuses_before_engine(pc, monkeypatch, engine, capsys):
     """승인값이 슬롯과 다름(브랜치 이름만 등) → 엔진을 부르지 않고 rc1 + 제공된 값 표시."""
-    wp = FakeWP(engine)
-    rc = pc.cmd_worktree_remove(_ns(user_ack=["A_1", "work/A_2"]), worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWP(engine))
+    bind_pool(monkeypatch, wp)
+    rc = pc.cmd_worktree_remove(_ns(user_ack=["A_1", "work/A_2"]))
     assert rc == 1
     assert wp.calls == []
     err = capsys.readouterr().err
     assert "'work/A_2'" in err and "슬롯 'work/A_1'이 없다" in err
 
 
-def test_cmd_remove_with_slot_user_ack_calls_engine_with_all_ack_values(pc, engine, capsys):
+def test_cmd_remove_with_slot_user_ack_calls_engine_with_all_ack_values(pc, monkeypatch, engine, capsys):
     """승인값에 슬롯이 있으면 remove_slot(slot, force=, acked_branches=값 전부) 를 부른다."""
-    wp = FakeWP(engine)
-    rc = pc.cmd_worktree_remove(_ns(user_ack=["work/A_1", "A_1"]), worktree_pool=wp)
+    wp = bind_pool(monkeypatch, FakeWP(engine))
+    bind_pool(monkeypatch, wp)
+    rc = pc.cmd_worktree_remove(_ns(user_ack=["work/A_1", "A_1"]))
     assert rc == 0
     assert wp.calls == [("remove_slot", "work/A_1", False, frozenset({"work/A_1", "A_1"}))]
     assert "[승인 감사] worktree remove" in capsys.readouterr().out
 
 
-def test_cmd_remove_force_passes_force_true(pc, engine):
+def test_cmd_remove_force_passes_force_true(pc, monkeypatch, engine):
     """`--force` → remove_slot(slot, force=True)."""
-    wp = FakeWP(engine)
-    assert pc.cmd_worktree_remove(_ns(force=True), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns(force=True)) == 0
     assert wp.calls[0][2] is True
 
 
-def test_cmd_remove_dirty_refusal_says_no_stash_and_force_does_not_pass(pc, engine, capsys):
+def test_cmd_remove_dirty_refusal_says_no_stash_and_force_does_not_pass(pc, monkeypatch, engine, capsys):
     """RemoveRefused("dirty") → rc1 · 엔진은 stash 하지 않음 · `--force` 도 넘지 않음을 알린다."""
-    wp = FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "dirty"))
-    assert pc.cmd_worktree_remove(_ns(force=True), worktree_pool=wp) == 1
+    wp = bind_pool(monkeypatch, FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "dirty")))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns(force=True)) == 1
     err = capsys.readouterr().err
     assert "커밋 안 한 변경" in err and "stash 하지" in err
     assert "`--force` 는 이 거부를 넘지 않는다" in err
 
 
-def test_cmd_remove_active_lease_refusal_points_to_release_or_force(pc, engine, capsys):
+def test_cmd_remove_active_lease_refusal_points_to_release_or_force(pc, monkeypatch, engine, capsys):
     """RemoveRefused("active-lease") → rc1 + 사용 중·release 먼저·--force(점유 무시) 안내."""
-    wp = FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "active-lease", state="leased"))
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 1
+    wp = bind_pool(monkeypatch, FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "active-lease", state="leased")))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 1
     err = capsys.readouterr().err
     assert "사용 중" in err and "release" in err and "점유 무시" in err
 
 
-def test_cmd_remove_unregistered_tree_refusal_hands_path_to_user(pc, engine, capsys):
+def test_cmd_remove_unregistered_tree_refusal_hands_path_to_user(pc, monkeypatch, engine, capsys):
     """RemoveRefused("unregistered-tree") → rc1 + 그 경로 + 직접 확인·삭제 뒤 prune-stale 안내."""
     path = Path("/w/work/A_1")
-    wp = FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "unregistered-tree", path=path))
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 1
+    wp = bind_pool(monkeypatch, FakeWP(engine, raises=FakeWP.RemoveRefused("work/A_1", "unregistered-tree", path=path)))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 1
     err = capsys.readouterr().err
     assert str(path) in err and "직접 확인·삭제" in err and "prune-stale" in err
 
 
-def test_cmd_remove_absent_ledger_harmless_rc0(pc, engine, capsys):
+def test_cmd_remove_absent_ledger_harmless_rc0(pc, monkeypatch, engine, capsys):
     """remove_slot 이 None(장부 없음) → 무해 종료 rc0 + orphan 안내."""
-    wp = FakeWP(engine, result=None)
-    assert pc.cmd_worktree_remove(_ns("work/gone_9"), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, result=None))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns("work/gone_9")) == 0
     out = capsys.readouterr().out
     assert "이미 정리됨" in out and "git worktree remove" in out
 
 
-def test_cmd_remove_engine_runtime_error_rc1_without_force_advice(pc, engine, capsys):
+def test_cmd_remove_engine_runtime_error_rc1_without_force_advice(pc, monkeypatch, engine, capsys):
     """엔진 RuntimeError(worktree remove 실패·판정 조회 실패) → rc1 + 관측만(도달 불가한 --force 재시도 권하지 않음)."""
-    wp = FakeWP(engine, raises=RuntimeError(
-        "git worktree remove failed for 'work/A_1' (rc=255) — git 등록·장부·브랜치가 그대로다."))
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 1
+    wp = bind_pool(monkeypatch, FakeWP(engine, raises=RuntimeError(
+        "git worktree remove failed for 'work/A_1' (rc=255) — git 등록·장부·브랜치가 그대로다.")))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 1
     err = capsys.readouterr().err
     assert "제거 실패" in err and "--force" not in err
 
 
-def test_cmd_remove_merged_branch_deleted_line(pc, engine, capsys):
+def test_cmd_remove_merged_branch_deleted_line(pc, monkeypatch, engine, capsys):
     """삭제(합쳐짐) — 부모 비교 ref 를 밝힌 한 줄 · 보존 캐비앗 없음."""
-    deletion = _deletion(engine, action=engine.BRANCH_DELETED, reason=engine.BRANCH_REASON_MERGED,
+    deletion = _deletion(engine, action=worktree_records.BRANCH_DELETED, reason=worktree_records.BRANCH_REASON_MERGED,
                          parent="main", parent_ref="origin/main")
-    wp = FakeWP(engine, branch_deletion=deletion)
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=deletion))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 0
     out = capsys.readouterr().out
     assert "브랜치 A_1 삭제 (부모 origin/main 에 다 합쳐짐)" in out
     assert "SlotBranchExists" not in out
 
 
-def test_cmd_remove_unmerged_branch_preserved_lists_commits_origin_and_caveat(pc, engine, capsys):
+def test_cmd_remove_unmerged_branch_preserved_lists_commits_origin_and_caveat(pc, monkeypatch, engine, capsys):
     """보존(합쳐지지 않음) — 커밋 수·origin 반영 여부 한 줄 + 커밋 줄 + 재생성 캐비앗(switch 안내)."""
-    deletion = _deletion(engine, action=engine.BRANCH_PRESERVED, reason=engine.BRANCH_REASON_UNMERGED,
-                         parent="main", parent_ref="main", origin=engine.ORIGIN_MISSING_TIP,
+    deletion = _deletion(engine, action=worktree_records.BRANCH_PRESERVED, reason=worktree_records.BRANCH_REASON_UNMERGED,
+                         parent="main", parent_ref="main", origin=worktree_records.ORIGIN_MISSING_TIP,
                          unmerged_commits=["abc1234 second", "def5678 first"])
-    wp = FakeWP(engine, branch_deletion=deletion)
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=deletion))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 0
     out = capsys.readouterr().out
     assert "브랜치 A_1 보존 (부모 main 에 합쳐지지 않은 커밋 2개 · origin 브랜치에 끝 커밋 없음)" in out
     assert "    abc1234 second\n    def5678 first\n" in out
     assert "SlotBranchExists" in out and "worktree_pool.py switch <슬롯> A_1" in out
 
 
-def test_cmd_remove_unmerged_commit_list_folds_over_limit(pc, engine, capsys):
+def test_cmd_remove_unmerged_commit_list_folds_over_limit(pc, monkeypatch, engine, capsys):
     """커밋 줄은 상한까지만 싣고 나머지는 '외 N개' 로 접는다."""
     shown = pc._UNMERGED_COMMITS_SHOWN
     commits = [f"{index:07x} c{index}" for index in range(shown + 2)]
-    deletion = _deletion(engine, action=engine.BRANCH_PRESERVED, reason=engine.BRANCH_REASON_UNMERGED,
-                         parent="main", parent_ref="main", origin=engine.ORIGIN_NO_BRANCH,
+    deletion = _deletion(engine, action=worktree_records.BRANCH_PRESERVED, reason=worktree_records.BRANCH_REASON_UNMERGED,
+                         parent="main", parent_ref="main", origin=worktree_records.ORIGIN_NO_BRANCH,
                          unmerged_commits=commits)
-    wp = FakeWP(engine, branch_deletion=deletion)
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=deletion))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 0
     out = capsys.readouterr().out
     assert commits[shown - 1] in out and commits[shown] not in out
     assert "… 외 2개" in out
@@ -1356,55 +1377,55 @@ def test_cmd_remove_unmerged_commit_list_folds_over_limit(pc, engine, capsys):
     ({"action": "preserved", "reason": "delete-refused", "detail": "rc=1: error: used by worktree"},
      "브랜치 A_1 보존 (git branch -D 거부 · rc=1: error: used by worktree)"),
 ])
-def test_cmd_remove_branch_line_per_reason(pc, engine, capsys, fields, expected):
+def test_cmd_remove_branch_line_per_reason(pc, monkeypatch, engine, capsys, fields, expected):
     """판정 사유마다 출력 한 줄 — 값 문자열이 엔진 상수와 같다는 것도 함께 고정한다."""
-    assert fields["action"] in (engine.BRANCH_DELETED, engine.BRANCH_PRESERVED)
-    assert fields["reason"] in {value for name, value in vars(engine).items()
+    assert fields["action"] in (worktree_records.BRANCH_DELETED, worktree_records.BRANCH_PRESERVED)
+    assert fields["reason"] in {value for name, value in vars(worktree_records).items()
                                 if name.startswith("BRANCH_REASON_")}
-    wp = FakeWP(engine, branch_deletion=_deletion(engine, **fields))
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=_deletion(engine, **fields)))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 0
     assert expected in capsys.readouterr().out
 
 
-def test_cmd_remove_without_branch_prints_no_branch_line(pc, engine, capsys):
+def test_cmd_remove_without_branch_prints_no_branch_line(pc, monkeypatch, engine, capsys):
     """브랜치를 판별하지 못한 제거(detached·트리 부재) — 브랜치 줄 없음·stash 줄 없음."""
-    wp = FakeWP(engine, branch_deletion=None)
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, branch_deletion=None))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 0
     out = capsys.readouterr().out
     assert "제거" in out and "브랜치" not in out and "stash" not in out
 
 
-def test_cmd_remove_tree_cleaned_is_announced(pc, engine, capsys):
+def test_cmd_remove_tree_cleaned_is_announced(pc, monkeypatch, engine, capsys):
     """git 이 등록만 지우고 남긴 디렉터리를 엔진이 마저 지웠으면 그 사실을 1줄로 고지한다."""
-    wp = FakeWP(engine, tree_cleaned=True)
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, tree_cleaned=True))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 0
     assert "디렉터리 잔재" in capsys.readouterr().out
 
 
-def test_cmd_remove_forced_state_warns_on_stderr(pc, engine, capsys):
+def test_cmd_remove_forced_state_warns_on_stderr(pc, monkeypatch, engine, capsys):
     """forced_state 있으면 '⚠ 활성 강제 회수' 를 stderr 로 · 없으면 경고 없음."""
-    wp = FakeWP(engine, forced_state="leased")
-    assert pc.cmd_worktree_remove(_ns(force=True), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine, forced_state="leased"))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns(force=True)) == 0
     err = capsys.readouterr().err
     assert "⚠" in err and "강제 회수" in err and "leased" in err
 
-    wp = FakeWP(engine)
-    assert pc.cmd_worktree_remove(_ns(), worktree_pool=wp) == 0
+    wp = bind_pool(monkeypatch, FakeWP(engine))
+    bind_pool(monkeypatch, wp)
+    assert pc.cmd_worktree_remove(_ns()) == 0
     assert "강제 회수" not in capsys.readouterr().err
 
 
-def test_cmd_remove_engine_missing_rc1(pc, monkeypatch, capsys):
-    """승인값은 있는데 엔진 로드 실패 → rc1 + 안내(다른 서브커맨드 동형·크래시 0)."""
-    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
-    assert pc.cmd_worktree_remove(_ns()) == 1
-    assert "worktree_pool.py 엔진을 찾을 수 없다" in capsys.readouterr().err
 
 
 def test_main_routes_worktree_remove_with_user_ack_and_force(pc, engine, monkeypatch):
     """main 파싱 e2e — `--user-ack` 반복 값이 모여 엔진에 가고, `--force` 가 전달된다."""
-    wp = FakeWP(engine)
+    wp = bind_pool(monkeypatch, FakeWP(engine))
     monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: wp if name == "worktree_pool" else None)
+                        lambda name, filename: bind_pool(monkeypatch, wp) if name == "worktree_pool" else None)
     assert pc.main(["worktree", "remove", "work/A_1", "--user-ack", "work/A_1",
                     "--user-ack", "A_1"]) == 0
     assert pc.main(["worktree", "remove", "work/A_1", "--user-ack", "work/A_1", "--force"]) == 0
@@ -1416,9 +1437,9 @@ def test_main_routes_worktree_remove_with_user_ack_and_force(pc, engine, monkeyp
 
 def test_main_worktree_remove_without_user_ack_rc1(pc, engine, monkeypatch):
     """main 파싱 e2e — `--user-ack` 없이 부르면 엔진 호출 0·rc1."""
-    wp = FakeWP(engine)
+    wp = bind_pool(monkeypatch, FakeWP(engine))
     monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: wp if name == "worktree_pool" else None)
+                        lambda name, filename: bind_pool(monkeypatch, wp) if name == "worktree_pool" else None)
     assert pc.main(["worktree", "remove", "work/A_1"]) == 1
     assert wp.calls == []
 

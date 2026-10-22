@@ -1,6 +1,8 @@
 """T-0648 pm_handoff 사용자-명시 값-결속 ack 게이트."""
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import importlib.util
 from pathlib import Path
 
@@ -82,9 +84,7 @@ def test_matching_task_ack_reaches_existing_handoff_pipeline(monkeypatch, capsys
 
 
 
-def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(
-    monkeypatch, capsys,
-):
+def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(monkeypatch, capsys):
     handoff = _load_handoff()
     calls = _capture_run(monkeypatch, handoff)
 
@@ -100,8 +100,9 @@ def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(
 
 def test_direct_run_missing_ack_is_rejected_before_pipeline(monkeypatch, tmp_path, capsys):
     handoff = _load_handoff()
+    bind_pool(monkeypatch, _TaskPool())
     runner = handoff.PmHandoff(
-        pm_state_file=tmp_path / "pm_state.md", worktree_pool=_TaskPool(),
+        pm_state_file=tmp_path / "pm_state.md",
     )
     monkeypatch.setattr(
         runner,
@@ -120,8 +121,9 @@ def test_direct_run_missing_ack_is_rejected_before_pipeline(monkeypatch, tmp_pat
 
 def test_direct_run_mismatched_ack_is_value_bound(monkeypatch, tmp_path, capsys):
     handoff = _load_handoff()
+    bind_pool(monkeypatch, _TaskPool())
     runner = handoff.PmHandoff(
-        pm_state_file=tmp_path / "pm_state.md", worktree_pool=_TaskPool(),
+        pm_state_file=tmp_path / "pm_state.md",
     )
     monkeypatch.setattr(
         runner,

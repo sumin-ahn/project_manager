@@ -1073,6 +1073,18 @@ def _slice_replace(source: str, start_marker: str, end_marker: str, replacement:
     return source[:start] + replacement + source[end:]
 
 
+def _reverse_pool_package_move(source: str) -> str:
+    """패키지 이동 전 updater의 경로·잠금·호출 형태를 복원한다."""
+    return (source.replace("from pm_engine.infra import pool_store\n", "")
+            .replace("pool_store._lease_lock", "worktree_pool._lease_lock")
+            .replace("with worktree_pool._lease_lock(pm_paths.home_at(Path(effective_dest))):",
+                     'with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):')
+            .replace("pm_paths.bare_repo_path(pm_paths.home_at(Path(dest_root)), repo).exists()",
+                     "worktree_pool.bare_repo_path(repo).exists()")
+            .replace("pm_config._resolve_repo_protected(repo)",
+                     "pm_config._resolve_repo_protected(repo, board=board)"))
+
+
 def _t0585_pm_update_source() -> str:
     """현행 전체 updater에서 T-0591 delta만 역적용해 실제 T-0585 source bytes를 복원한다.
 
@@ -1361,6 +1373,7 @@ def _t0585_pm_update_source() -> str:
     source = _reverse_harness_ctx_apply(source)
     source = _reverse_two_process_update(source)
     source = _reverse_render_eq_dst_raise(source)
+    source = _reverse_pool_package_move(source)
     # 세대 시대착오 부재를 **기계로** 못박는다 — 전제(“codex 판정이 늘 빈 결과”)에 기대지 않는다.
     #   대조 대상은 `_main` 의 **호출 지점**이다(`apply` 시그니처의 기본값 파라미터는 호출하지
     #   않으면 발화하지 않으므로 이 합성본의 동작 축이 아니다).
@@ -1659,6 +1672,7 @@ def _pre_t0876_pm_update_source() -> str:
     source = _reverse_harness_ctx_apply(source)
     source = _reverse_two_process_update(source)
     source = _reverse_render_eq_dst_raise(source)
+    source = _reverse_pool_package_move(source)
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert digest == _PRE_T0876_PM_UPDATE_SHA256, (
         f"pre-T0876 updater fixture drift: {digest}; retirement delta의 exact-marker와 "

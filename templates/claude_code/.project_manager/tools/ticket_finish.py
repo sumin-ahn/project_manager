@@ -4732,7 +4732,7 @@ def _main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     # task 명 검증(must-fix 게이트) — board 정체성 깔때기와 **동일 공유 validator**
-    # (`identity_args.validate_task_name`·worktree_pool 엔진 validator 와 동형·로직 중복 0)를 소비해,
+    # (`identity_args.validate_task_name`·`task_rules._validate_task_name`과 동형·로직 중복 0)를 소비해,
     # 실행-위치 해소 이전 불법 task 명(traversal/공백/`<repo>_<N>` 예약)을 fail-loud 한다. `--slot`
     # 검증과 동형으로 `--no-pytest` 무관 **항상** 수행(회귀 skip 여도 정체성 검증은 우회 안 됨). 예약패턴
     # 판정용 registered_repos 는 `areas_store.registered_repos` 로 fail-soft 해소(실패 시 char/traversal 검증만).

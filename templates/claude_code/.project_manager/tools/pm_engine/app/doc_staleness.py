@@ -16,7 +16,7 @@ from pm_engine.infra import pm_paths, repo_files
 from pm_engine.app import freshness_lint
 
 
-# git CLI argv → (returncode, stdout). DI seam 타입(worktree_pool.GitRunner 선례).
+# git CLI argv → (returncode, stdout). DI seam 타입(worktree_records.GitRunner 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
 GitRunnerFactory = Callable[[dict], "GitRunner | None"]
 _UNRESOLVED_GIT_RUNNER = object()

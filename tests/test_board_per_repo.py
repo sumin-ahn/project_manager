@@ -14,6 +14,8 @@ ADR-0014 의 실 엔진 개조 — multi-PM 모델에서 회귀가 multi-PM 루�
 areas.md·local.conf 를 절대 읽거나 쓰지 않는다 (test_board_multipm.py 의 패턴 동류).
 """
 from __future__ import annotations
+from pm_engine.app import worktree_pool
+from pm_engine.infra import pm_paths
 
 import importlib.util
 import shutil
@@ -436,36 +438,36 @@ def test_parse_areas_protected_schema_maps_protected_column(board):
 
 def test_default_protected_constant(board):
     """엔진 default 상수 = (main, master, develop) (T-0076)."""
-    assert board.DEFAULT_PROTECTED == ("main", "master", "develop")
+    assert areas_rules.DEFAULT_PROTECTED == ("main", "master", "develop")
 
 
 def test_repo_protected_resolves_explicit_list(board):
     """_repo_protected(repo) → areas.md 그 repo 의 protected 칼럼(쉼표분리·strip) (T-0076)."""
     board.AREAS_FILE.write_text(_PROTECTED_SCHEMA, encoding="utf-8")
-    assert board._repo_protected("service-a") == ["main", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "develop"]
 
 
 def test_repo_protected_empty_column_falls_back_to_default(board):
     """빈 protected 칼럼(부분 등록) → DEFAULT_PROTECTED 폴백 (T-0076·_repo_base 와 다름)."""
     board.AREAS_FILE.write_text(_PROTECTED_SCHEMA, encoding="utf-8")
-    assert board._repo_protected("service-b") == ["main", "master", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-b") == ["main", "master", "develop"]
 
 
 def test_repo_protected_old_schema_falls_back_to_default(board):
     """protected 칼럼 없는 구 레지스트리(base/per-repo) → DEFAULT_PROTECTED 폴백 (하위호환·T-0076)."""
     board.AREAS_FILE.write_text(_BASE_SCHEMA, encoding="utf-8")  # protected 칼럼 없음
-    assert board._repo_protected("service-a") == ["main", "master", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "master", "develop"]
 
 
 def test_repo_protected_absent_repo_falls_back_to_default(board):
     """미등록 repo → DEFAULT_PROTECTED 폴백 (안전 기본값·T-0076)."""
     board.AREAS_FILE.write_text(_PROTECTED_SCHEMA, encoding="utf-8")
-    assert board._repo_protected("nope") == ["main", "master", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "nope") == ["main", "master", "develop"]
 
 
 def test_repo_protected_no_registry_falls_back_to_default(board):
     """areas.md 부재(솔로) → DEFAULT_PROTECTED 폴백 (T-0076)."""
-    assert board._repo_protected("service-a") == ["main", "master", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "master", "develop"]
 
 
 def test_repo_protected_strips_and_drops_empty_tokens(board):
@@ -477,7 +479,7 @@ def test_repo_protected_strips_and_drops_empty_tokens(board):
         "| service-a | PAY | g | pytest -q | alice | develop | main, , develop, |\n"
     )
     board.AREAS_FILE.write_text(schema, encoding="utf-8")
-    assert board._repo_protected("service-a") == ["main", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "develop"]
 
 
 def test_areas_append_writes_protected_column(board):
@@ -489,7 +491,7 @@ def test_areas_append_writes_protected_column(board):
     assert "| repo | prefix | git | test_cmd | owner | base | protected |" in text
     assert ("| service-a | PAY | git@x:a.git | pytest -q | alice | develop "
             "| main,develop |") in text
-    assert board._repo_protected("service-a") == ["main", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "develop"]
 
 
 def test_areas_append_protected_default_empty_falls_back(board):
@@ -497,7 +499,7 @@ def test_areas_append_protected_default_empty_falls_back(board):
     board.areas_append("PAY", "", "alice", repo="service-a", test_cmd="pytest -q")
     row = areas_store._areas_row_for_prefix(board._home(), "PAY")
     assert row["protected"] == ""                # protected 미지정 → 빈 칼럼
-    assert board._repo_protected("service-a") == ["main", "master", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "master", "develop"]
 
 
 def test_areas_append_protected_to_base_header_preserves_protected(board):
@@ -512,9 +514,9 @@ def test_areas_append_protected_to_base_header_preserves_protected(board):
                        repo="service-c", git="git@x:c.git", test_cmd="pytest -q",
                        base="develop", protected="main")
     # 헤더는 6칸 그대로지만 append 된 7칸 row 의 protected 가 canonical 매핑으로 보존된다.
-    assert board._repo_protected("service-c") == ["main"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-c") == ["main"]
     # 기존 구 base row(protected 셀 없음)는 여전히 DEFAULT 폴백(회귀 0).
-    assert board._repo_protected("service-a") == ["main", "master", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "master", "develop"]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -857,9 +859,9 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
     board.LOCAL_CONF.write_text("session=ignored\n", encoding="utf-8")  # 읽는 층 없음
     wp = _load_wp_for_board(board)
     (board._tmp / ".repos").mkdir(parents=True, exist_ok=True)
-    wp.bare_repo_path("A").mkdir(parents=True, exist_ok=True)  # bare 부재 가드 통과
+    pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A").mkdir(parents=True, exist_ok=True)  # bare 부재 가드 통과
     # 대여는 task pm_state 를 만든다 — 그 원천(공용 template)을 tmp 트리에 실물로 둔다.
-    template = wp._task_pm_state_template_file()
+    template = pm_paths._task_pm_state_template_file(pm_paths.home_at(wp.REPO))
     template.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template)
 
@@ -876,10 +878,10 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
             return (0, "")
 
     git = _FakeGit()
-    wp.create_slot("A", base="main", git_runner=git, test_cmd="make hil2")  # 생성 = 무소유 idle pool 슬롯
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git, test_cmd="make hil2")  # 생성 = 무소유 idle pool 슬롯
     # 생성은 풀 확장이고 점유는 대여다(T-0915) — 대여가 그 슬롯을 task foo 명의로 만든다
     # (대여는 owner_task 필수·세션 명의 대여 없음 — T-0962).
-    wp.alloc("A", owner_task="foo", git_runner=git)
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="foo", git_runner=git)
     # 매칭측: lease_store.session_name() 도 env → foo 로 해소돼야 슬롯이 매칭된다.
     assert lease_store.session_name(board._home()) == "foo"
     assert regression._active_slot_test_cmd(board._home()) == "make hil2"
@@ -1058,9 +1060,9 @@ def test_areas_set_cell_replaces_existing_value(board):
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     assert board.areas_set_cell("service-a", "protected", "main,release") == (
         "main", "main,release")
-    assert board._repo_protected("service-a") == ["main", "release"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "release"]
     # 다른 행은 불변(첫 행만 바뀐다).
-    assert board._repo_protected("service-b") == list(board.DEFAULT_PROTECTED)
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-b") == list(areas_rules.DEFAULT_PROTECTED)
 
 
 def test_areas_set_cell_fills_empty_column(board):
@@ -1068,14 +1070,14 @@ def test_areas_set_cell_fills_empty_column(board):
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     assert board.areas_set_cell("service-b", "protected", "main,develop") == (
         "", "main,develop")
-    assert board._repo_protected("service-b") == ["main", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-b") == ["main", "develop"]
 
 
 def test_areas_set_cell_clearing_restores_default_fallback(board):
     """빈 값으로 되돌리면 `_repo_protected` 가 DEFAULT_PROTECTED 폴백으로 복귀한다."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     board.areas_set_cell("service-a", "protected", "")
-    assert board._repo_protected("service-a") == list(board.DEFAULT_PROTECTED)
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == list(areas_rules.DEFAULT_PROTECTED)
 
 
 def test_areas_set_cell_upgrades_5col_header_to_canonical(board):
@@ -1085,12 +1087,12 @@ def test_areas_set_cell_upgrades_5col_header_to_canonical(board):
     text = board.AREAS_FILE.read_text(encoding="utf-8")
     assert board._areas_header_line() in text
     assert board._areas_separator_line() in text
-    assert board._repo_protected("service-a") == ["main", "release"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "release"]
     # 기존 칼럼·타 행·주석 보존.
     row = areas_store._areas_row_for_prefix(board._home(), "PAY")
     assert row["git"] == "git@x:a.git" and row["test_cmd"] == "pytest -q"
     assert "> 주석 줄 (보존 대상)" in text
-    assert board._repo_protected("service-b") == list(board.DEFAULT_PROTECTED)
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-b") == list(areas_rules.DEFAULT_PROTECTED)
 
 
 def test_areas_set_cell_upgrades_6col_header_to_canonical(board):
@@ -1099,7 +1101,7 @@ def test_areas_set_cell_upgrades_6col_header_to_canonical(board):
     board.areas_set_cell("service-a", "protected", "main")
     assert board._areas_header_line() in board.AREAS_FILE.read_text(encoding="utf-8")
     assert board._repo_base("service-a") == "develop"
-    assert board._repo_protected("service-a") == ["main"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main"]
 
 
 def test_areas_set_cell_upgrades_7col_header_for_missing_column(board):
@@ -1108,7 +1110,7 @@ def test_areas_set_cell_upgrades_7col_header_for_missing_column(board):
     assert board.areas_set_cell("service-a", "area_owner", "alice") == ("", "alice")
     assert board._areas_header_line() in board.AREAS_FILE.read_text(encoding="utf-8")
     assert _area_owner(board, "service-a") == "alice"
-    assert board._repo_protected("service-a") == ["main"]   # 기존 칼럼 불변
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main"]   # 기존 칼럼 불변
 
 
 def test_areas_set_cell_7col_header_no_upgrade_needed(board):
@@ -1118,7 +1120,7 @@ def test_areas_set_cell_7col_header_no_upgrade_needed(board):
     text = board.AREAS_FILE.read_text(encoding="utf-8")
     assert "| repo | prefix | git | test_cmd | owner | base | protected |" in text
     assert board._areas_header_line() not in text
-    assert board._repo_protected("service-a") == ["main", "develop"]
+    assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "develop"]
 
 
 def test_areas_set_cell_wider_row_uses_canonical_index(board):

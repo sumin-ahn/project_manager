@@ -10,7 +10,7 @@ manifest 에 **bare**(무 `@render`) 로 등재된 경로는 `pm_update` 가 byt
 단위로 하나만 둔다:
 
   ① 설치 시 치환 — `pm_import`(기본값)
-  ② 소비 시 치환 — 그 템플릿이 산출물을 만드는 시점(`worktree_pool.ensure_task_pm_state`·
+  ② 소비 시 치환 — 그 템플릿이 산출물을 만드는 시점(`pm_engine.infra.task_store.ensure_task_pm_state`·
      `board.cmd_init`·사람이 스캐폴드를 복사하는 시점)
   ③ 상시 토큰   — 엔진 소유 문서가 토큰을 *설명*으로 담아 아무도 치환하지 않는다
      (엔진 소스 `tools/**`·`engine.manifest`·방법론 문서 pm_role/pm_playbook)
@@ -42,6 +42,8 @@ import pytest
 
 from _git_fixture import init_git_repo
 from pm_engine.infra import manifest_store, pre_push_hook
+from pm_engine.infra import pm_paths
+from pm_engine.infra import task_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -59,7 +61,7 @@ SCAFFOLD_COPY = "<scaffold-copy>"
 CONSUMPTION_TIME_OWNERS: dict[str, dict[str, tuple[str, ...]]] = {
     ".project_manager/wiki/pm_state.template.md": {
         # task pm_state 렌더 + per-clone `wiki/pm_state.md` seed — 둘 다 생성 시각으로 채운다.
-        "{{DATE}}": ("worktree_pool.ensure_task_pm_state", "board.cmd_init"),
+        "{{DATE}}": ("pm_engine.infra.task_store.ensure_task_pm_state", "board.cmd_init"),
     },
     ".project_manager/wiki/domain/_template.md": {
         # 엔진 생성 경로(`domain.write_draft_page`)는 스캐폴드 frontmatter 를 복사하지 않고 자체
@@ -249,7 +251,7 @@ def test_engine_declaration_matches_ledger(pm_import):
 
 def _module_functions(module: str) -> dict[str, str] | None:
     """`tools/<module>.py` 의 함수명 → 소스 조각 (모듈 부재면 None)."""
-    path = TOOLS / f"{module}.py"
+    path = TOOLS / (module.replace(".", "/") + ".py")
     if not path.is_file():
         return None
     text = path.read_text(encoding="utf-8")
@@ -264,7 +266,7 @@ def _consumer_source(module: str, symbol: str) -> str | None:
     """선언된 소비처의 소스 + **같은 모듈 직접 호출 1홉** 소스 (심볼 부재면 None).
 
     치환 한 줄이 진입 함수에 있는 경우(`board.cmd_init`)와 진입 함수가 부르는 렌더 헬퍼에 있는
-    경우(`worktree_pool.ensure_task_pm_state` → `_render_initial_task_pm_state`)를 같은 규칙으로
+    경우(`pm_engine.infra.task_store.ensure_task_pm_state` → `_render_initial_task_pm_state`)를 같은 규칙으로
     본다. 1홉으로 좁혀 "모듈 어딘가에 토큰이 있으면 통과" 하는 무른 판정이 되지 않게 한다.
     """
     functions = _module_functions(module)
@@ -276,8 +278,21 @@ def _consumer_source(module: str, symbol: str) -> str | None:
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    return "\n".join([source, *(functions[name] for name in sorted(callees)
-                                if name in functions)])
+    fragments = [source, *(functions[name] for name in sorted(callees) if name in functions)]
+    module_path = TOOLS / (module.replace(".", "/") + ".py")
+    imports = {
+        alias.asname or alias.name: f"{node.module}.{alias.name}"
+        for node in ast.parse(module_path.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("pm_engine.")
+        for alias in node.names
+    }
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id in imports):
+            owner = _module_functions(imports[node.func.value.id])
+            if owner is not None and node.func.attr in owner:
+                fragments.append(owner[node.func.attr])
+    return "\n".join(fragments)
 
 
 @pytest.mark.parametrize("rel,token,consumer", [
@@ -368,7 +383,7 @@ def test_other_tokens_in_same_file_still_substituted(pm_import, tmp_path):
 
 
 def test_ensure_task_pm_state_renders_creation_date(tmp_path):
-    """`worktree_pool.ensure_task_pm_state` 가 만드는 task pm_state 의 날짜 = 생성 시각."""
+    """`pm_engine.infra.task_store.ensure_task_pm_state` 가 만드는 task pm_state 의 날짜 = 생성 시각."""
     proj = tmp_path / "proj"
     wiki = proj / ".project_manager" / "wiki"
     wiki.mkdir(parents=True, exist_ok=True)
@@ -382,7 +397,7 @@ def test_ensure_task_pm_state_renders_creation_date(tmp_path):
     wp.LOCAL_DIR = local
     wp.TASKS_DIR = local / "tasks"
 
-    state = wp.ensure_task_pm_state("tokenjob")
+    state = task_store.ensure_task_pm_state(pm_paths.home_at(wp.REPO), "tokenjob")
     text = state.read_text(encoding="utf-8")
 
     assert "{{DATE}}" not in text, (

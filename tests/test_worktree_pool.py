@@ -39,11 +39,12 @@ from pathlib import Path
 
 import pytest
 
+from _engine_tree import engine_python_files
 from _git import commit_env
 from _textio import write_crlf, write_lf
 from _win_skip import posix_mode_supported
-from pm_engine.domain import identity_args
-from pm_engine.infra import lease_store, raw_output
+from pm_engine.domain import areas_rules, identity_args
+from pm_engine.infra import areas_store, lease_store, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -120,7 +121,7 @@ def _mk_bare_placeholder(wp, repo: str) -> Path:
     `rev-parse --is-bare-repository`→"true" 로 모델링해 통과시킨다. 실 git 통합테스트는
     `git clone --bare` 로 진짜 bare 를 만든다(이 헬퍼 미사용).
     """
-    bare = wp.bare_repo_path(repo)
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), repo)
     bare.mkdir(parents=True, exist_ok=True)
     return bare
 
@@ -259,8 +260,8 @@ class FakeGit:
 
 def _seed(wp, *leases):
     """리스장부에 엔트리를 직접 심는다(테스트 전제 구성)."""
-    with wp._lease_lock():
-        wp._write_ledger(list(leases))
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), list(leases))
 
 
 def _seed_tasks(wp, *names):
@@ -269,14 +270,14 @@ def _seed_tasks(wp, *names):
     `_write_ledger`(형제 `leases`)와 별개 컬렉션(`_write_tasks`·같은 파일·같은 락). `_seed` 로
     leases 를 먼저 심은 뒤 이걸 호출하면 둘 다 보존된다(top-level round-trip). pid 는 판정 무관
     (reclaim 조인은 `session ∈ tasks 이름집합` 만 본다)라 임의(1)."""
-    with wp._lease_lock():
-        wp._write_tasks([wp.Task(name=n, started="t") for n in names])
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task(name=n, started="t") for n in names])
 
 
 def _lease(wp, *, slot, repo, session="s1", pid=None, state="leased"):
     # branch 는 더는 Lease 권위 필드가 아니다(ADR-0013 amend T-0072 — git=진실·장부 저장
     # 폐지). 슬롯의 live 브랜치는 FakeGit(head=...) 으로 모델링한다(current_branch 조회).
-    return wp.Lease(slot=slot, repo=repo, session=session,
+    return worktree_records.Lease(slot=slot, repo=repo, session=session,
                     started="t", state=state)
 
 
@@ -289,13 +290,13 @@ def test_alloc_idle_slot_leases_it(wp):
     """idle 슬롯이 있으면 그걸 leased 로 전이해 리스한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit()
-    lease = wp.alloc("A", owner_task="me", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me", git_runner=git)
     assert lease.slot == "work/A_1"
     assert lease.state == "leased"
     assert lease.session == "me"
-    assert wp.lease_is_open(lease) is True      # 열림 기록
+    assert worktree_records.lease_is_open(lease) is True      # 열림 기록
     # 장부에 반영됐는지.
-    assert wp.list_leases()[0].state == "leased"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == "leased"
 
 
 def test_t0962_alloc_requires_owner_task(wp):
@@ -307,12 +308,12 @@ def test_t0962_alloc_requires_owner_task(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit()
     with pytest.raises(ValueError, match="owner_task"):
-        wp.alloc("A", owner_task="", git_runner=git)
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="", git_runner=git)
     with pytest.raises(TypeError):
-        wp.alloc("A", git_runner=git)
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", git_runner=git)
     with pytest.raises(TypeError):
-        wp.alloc("A", session="me", git_runner=git)
-    [lease] = wp.list_leases()
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", session="me", git_runner=git)
+    [lease] = pool_store.list_leases(pm_paths.home_at(wp.REPO))
     assert (lease.slot, lease.state, lease.session) == ("work/A_1", "idle", "")
 
 
@@ -322,16 +323,16 @@ def test_alloc_pool_exhausted_raises_needscreate(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other",
                      state="leased"))
     git = FakeGit()
-    with pytest.raises(wp.NeedsCreate) as ei:
-        wp.alloc("A", owner_task="me", git_runner=git)
+    with pytest.raises(worktree_records.NeedsCreate) as ei:
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me", git_runner=git)
     assert ei.value.repo == "A"
 
 
 def test_alloc_empty_pool_raises_needscreate(wp):
     """장부가 비어있으면(슬롯 0) 풀 소진 → NeedsCreate."""
     git = FakeGit()
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("B", owner_task="me", git_runner=git)
+    with pytest.raises(worktree_records.NeedsCreate):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "B", owner_task="me", git_runner=git)
 
 
 # ── alloc checkout 실패 negative (codex must-fix 2·ADR-0013) ──────────────────
@@ -372,10 +373,10 @@ def test_alloc_idle_lease_checkout_failure_preserves_idle(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A",
                      session="", state="idle"))
     git = _CheckoutFailGit(head="a1-old")  # 슬롯 live HEAD = a1-old
-    with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", branch="a2-new", owner_task="me", git_runner=git)
+    with pytest.raises(worktree_records.CheckoutFailed):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", branch="a2-new", owner_task="me", git_runner=git)
     # idle 그대로 — 부분 leased 전이 차단.
-    after = wp.list_leases()[0]
+    after = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
     assert after.state == "idle"
     assert after.session == ""
 
@@ -389,11 +390,11 @@ def test_alloc_checkout_success_updates_ledger_sensitivity(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A",
                      session="", state="idle"))
     git = FakeGit(head="a1-old")  # 슬롯 live HEAD = a1-old·checkout rc0
-    lease = wp.alloc("A", branch="a2-new", owner_task="me", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", branch="a2-new", owner_task="me", git_runner=git)
     assert lease.state == "leased"
     assert lease.session == "me"
     # checkout 이 슬롯 live HEAD 를 a2-new 로 전환(장부 저장 아님·ADR-0013 amend T-0072).
-    assert wp.current_branch("work/A_1", git_runner=git) == "a2-new"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "a2-new"
 
 
 class _AllocElsewhereGit:
@@ -437,9 +438,9 @@ def test_alloc_idle_branch_checked_out_elsewhere_raises_checkoutfailed(wp):
     리스 상태/브랜치 ref 불변(불변식1 을 alloc 경로에서 실증)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = _AllocElsewhereGit(head="a1-old", locked_branch="task/main")
-    with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", branch="task/main", owner_task="me", git_runner=git)
-    after = wp.list_leases()[0]
+    with pytest.raises(worktree_records.CheckoutFailed):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", branch="task/main", owner_task="me", git_runner=git)
+    after = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
     assert after.state == "idle"
     assert after.session == ""
     assert not git.did("checkout", "--no-recurse-submodules", "-B", "task/main")
@@ -463,12 +464,12 @@ def test_task_alloc_always_new_lease_two_slots(wp):
           _lease(wp, slot="work/A_1", repo="A", session="", state="idle"),
           _lease(wp, slot="work/A_2", repo="A", session="", state="idle"))
     git = FakeGit()
-    first = wp.alloc("A", owner_task="job", git_runner=git)
-    second = wp.alloc("A", owner_task="job", git_runner=git)
+    first = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="job", git_runner=git)
+    second = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="job", git_runner=git)
     assert {first.slot, second.slot} == {"work/A_1", "work/A_2"}   # 2개 서로 다른 슬롯
     assert first.slot != second.slot                              # silent aliasing 아님
     # 둘 다 task 명의 leased(session=task·⑥) — slots_for_task 가 둘 다 본다.
-    held = {l.slot for l in wp.slots_for_task("job")}
+    held = {l.slot for l in pool_store.slots_for_task(pm_paths.home_at(wp.REPO), "job")}
     assert held == {"work/A_1", "work/A_2"}
 
 
@@ -480,10 +481,10 @@ def test_task_alloc_lease_not_bound_protected_by_tasks_join(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     _seed_tasks(wp, "job")
     git = FakeGit()
-    lease = wp.alloc("A", owner_task="job", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="job", git_runner=git)
     assert lease.session == "job"
     assert lease.bound is False                # bound 축 오염 안 함(사람-bind 전용)
-    assert wp.list_leases()[0].bound is False
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].bound is False
 
 
 def test_task_alloc_ignores_branch_reattach_path(wp):
@@ -496,10 +497,10 @@ def test_task_alloc_ignores_branch_reattach_path(wp):
           _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"),
           _lease(wp, slot="work/A_2", repo="A", session="", state="idle"))
     git = FakeGit(head="a5")   # 모든 슬롯 live HEAD = a5(2경로 재부착 후보 조건 성립)
-    lease = wp.alloc("A", owner_task="job", branch="a5", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="job", branch="a5", git_runner=git)
     assert lease.slot == "work/A_2"          # idle 신규 대여(slot 1 재부착 안 함)
     assert lease.bound is False              # task-명의도 bound 축 오염 안 함(tasks 조인이 보호)
-    s1 = next(l for l in wp.list_leases() if l.slot == "work/A_1")
+    s1 = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1")
     assert s1.session == "other" and s1.state == "leased"   # 타 lease 탈취 안 됨
 
 
@@ -511,10 +512,10 @@ def test_task_alloc_branch_no_idle_raises_needscreate(wp):
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
     git = FakeGit(head="a5")   # slot 1 live HEAD = a5(브랜치-매칭 재부착 후보)
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", owner_task="job", branch="a5", git_runner=git)
+    with pytest.raises(worktree_records.NeedsCreate):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="job", branch="a5", git_runner=git)
     # slot 1(other)은 그대로 — 탈취 안 됨.
-    s1 = wp.list_leases()[0]
+    s1 = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
     assert s1.session == "other" and s1.state == "leased"
 
 
@@ -606,7 +607,7 @@ class _SubmoduleGit:
 def test_resync_detached_submodule_resyncs_to_pin(wp):
     """detached(consume) + clean submodule → superproject pin 으로 재동기(update 호출)."""
     git = _SubmoduleGit({"vendor/sub": ("detached", False)})
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git)
     assert git.resynced() == ["vendor/sub"]
     assert git.did("submodule", "update", "--init", "--recursive", "--force", "--", "vendor/sub")
 
@@ -617,14 +618,14 @@ def test_resync_on_branch_submodule_skipped(wp):
     비공허: skip 로직을 없애면 dev submodule 이 detached pin 으로 낚아채여 이 단언이 red.
     """
     git = _SubmoduleGit({"vendor/sub": ("branch", False)})
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git)
     assert git.resynced() == [], "on-branch(dev) submodule 은 재동기하면 안 됨(작업 파괴)"
 
 
 def test_resync_dirty_detached_submodule_skipped_with_warning(wp, capsys):
     """detached 이나 dirty(미커밋) submodule → skip + 경고(작업 유실 방지)."""
     git = _SubmoduleGit({"vendor/sub": ("detached", True)})
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git)
     assert git.resynced() == [], "dirty submodule 재동기는 미커밋 작업을 날린다"
     err = capsys.readouterr().err
     assert "vendor/sub" in err and "dirty" in err
@@ -633,7 +634,7 @@ def test_resync_dirty_detached_submodule_skipped_with_warning(wp, capsys):
 def test_resync_no_submodules_is_noop(wp):
     """submodule 없는 repo(status rc0·빈 출력) → no-op(update 0회·per-sub 조회 0회·예외 0)."""
     git = _SubmoduleGit({})
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git)
     assert git.resynced() == []
     assert not any(c[:1] == ["-C"] for c in git.calls), "submodule 없는데 per-sub 조회 발생"
 
@@ -641,7 +642,7 @@ def test_resync_no_submodules_is_noop(wp):
 def test_resync_status_query_failure_is_noop(wp):
     """`submodule status` rc≠0(조회 불가) → no-op fail-soft(checkout 은 이미 성공·raise 금지)."""
     git = _SubmoduleGit({"vendor/sub": ("detached", False)}, status_rc=1)
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git)
     assert git.resynced() == []
     assert not any(c[:1] == ["-C"] for c in git.calls)
 
@@ -657,7 +658,7 @@ def test_resync_mixed_selective_only_clean_detached(wp, capsys):
         "libs/dev":       ("branch", False),     # dev → skip
         "vendor/wip":     ("detached", True),    # dirty → skip + 경고
     })
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git)
     assert git.resynced() == ["vendor/consume"]
     assert "vendor/wip" in capsys.readouterr().err
 
@@ -665,7 +666,7 @@ def test_resync_mixed_selective_only_clean_detached(wp, capsys):
 def test_checkout_required_success_triggers_resync(wp):
     """배선 — `_checkout_required` 성공(브랜치 전환) 직후 slot 에 selective 재동기가 실행된다."""
     git = _SubmoduleGit({"vendor/sub": ("detached", False)}, head="old")
-    wp._checkout_required("work/A_1", "feat", git_runner=git)
+    branch_checkout._checkout_required(pm_paths.home_at(wp.REPO), "work/A_1", "feat", git_runner=git)
     assert git.did("checkout", "--no-recurse-submodules", "feat")
     assert git.resynced() == ["vendor/sub"], "checkout 성공 후 재동기 배선 안 됨"
 
@@ -673,8 +674,8 @@ def test_checkout_required_success_triggers_resync(wp):
 def test_checkout_required_failure_skips_resync(wp):
     """배선 negative — checkout 실패면 CheckoutFailed raise·재동기 미실행(성공 후에만·비공허)."""
     git = _CheckoutFailGit(head="old")
-    with pytest.raises(wp.CheckoutFailed):
-        wp._checkout_required("work/A_1", "feat", git_runner=git)
+    with pytest.raises(worktree_records.CheckoutFailed):
+        branch_checkout._checkout_required(pm_paths.home_at(wp.REPO), "work/A_1", "feat", git_runner=git)
     assert not any(c[:1] == ["submodule"] for c in git.calls), \
         "checkout 실패인데 재동기(submodule status/update)를 시도함"
 
@@ -689,7 +690,7 @@ def test_checkout_required_failure_skips_resync(wp):
 def test_dev_makes_submodule_on_branch(wp):
     """dev 가 submodule 을 dev 브랜치로 지정(`-C <sub> checkout -b <branch>`) — on-branch 화."""
     git = _SubmoduleGit({"vendor/sub": ("detached", False)})
-    rc, _out = wp.dev("work/A_1", "vendor/sub", "feat-x", git_runner=git)
+    rc, _out = branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "feat-x", git_runner=git)
     assert rc == 0
     assert git.did("-C", "vendor/sub", "checkout", "-b", "feat-x")
     # submodule 이 on-branch(dev)가 됐다 — 역할이 detached → branch 로 전이(실 git 모델).
@@ -704,15 +705,15 @@ def test_dev_then_selective_resync_skips_it(wp):
     submodule 이 detached 로 남아 재동기 목록에 섞여 이 단언이 red(비공허).
     """
     git = _SubmoduleGit({"vendor/sub": ("detached", False)})
-    wp.dev("work/A_1", "vendor/sub", "feat-x", git_runner=git)
-    wp._resync_submodules_selective(wp.slot_path("work/A_1"), git_runner=git)
+    branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "feat-x", git_runner=git)
+    submodule_git._resync_submodules_selective(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git)
     assert git.resynced() == [], "dev 지정한 submodule 이 selective resync 에 낚아채임(dev 파괴)"
 
 
 def test_dev_existing_branch_falls_back_to_plain_checkout(wp):
     """dev — `-b <branch>` 가 rc≠0(이미 존재)이고 show-ref 로 존재 확인되면 `checkout <branch>` 폴백."""
     git = _SubmoduleGit({"vendor/sub": ("detached", False)}, existing_branches={"dev-old"})
-    rc, _out = wp.dev("work/A_1", "vendor/sub", "dev-old", git_runner=git)
+    rc, _out = branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "dev-old", git_runner=git)
     assert rc == 0
     assert git.did("-C", "vendor/sub", "checkout", "-b", "dev-old"), "먼저 -b 를 시도해야"
     assert git.did("-C", "vendor/sub", "show-ref", "--verify", "--quiet", "refs/heads/dev-old"), \
@@ -728,7 +729,7 @@ def test_dev_checkout_b_hard_failure_propagates_without_fallback(wp):
     무조건 "기존 브랜치"로 간주해 폴백하던 옛 로직이면 checkout 이 한 번 더 불려 red.
     """
     git = _SubmoduleGit({"vendor/sub": ("detached", False)}, checkout_b_hard_fail=True)
-    rc, out = wp.dev("work/A_1", "vendor/sub", "newbranch", git_runner=git)
+    rc, out = branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "newbranch", git_runner=git)
     assert rc != 0, "미존재 브랜치의 -b 실패는 그대로 전파해야(진단 흐림 방지)"
     assert "lock" in out
     assert not git.did("-C", "vendor/sub", "checkout", "newbranch"), \
@@ -744,14 +745,14 @@ def test_dev_rejects_submodule_outside_slot(wp):
     """
     git = _SubmoduleGit({"vendor/sub": ("detached", False)})
     for bad in ("/etc/evil", "../other-repo", "vendor/unknown"):
-        with pytest.raises(wp.SubmoduleNotInSlot):
-            wp.dev("work/A_1", bad, "feat", git_runner=git)
+        with pytest.raises(worktree_records.SubmoduleNotInSlot):
+            branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", bad, "feat", git_runner=git)
     # 거부 케이스는 그 경로에 checkout side-effect 를 내지 않았다(경계 보호·비공허).
     assert not any(c[:2] == ["-C", "/etc/evil"] for c in git.calls)
     assert not any(c[:2] == ["-C", "../other-repo"] for c in git.calls)
     assert not any(c[:2] == ["-C", "vendor/unknown"] for c in git.calls)
     # 정상 submodule 은 통과(대조군) — 검증이 정상 경로를 막지 않음.
-    rc, _ = wp.dev("work/A_1", "vendor/sub", "feat", git_runner=git)
+    rc, _ = branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "feat", git_runner=git)
     assert rc == 0
     assert git.subs["vendor/sub"][0] == "branch"
 
@@ -759,8 +760,8 @@ def test_dev_rejects_submodule_outside_slot(wp):
 def test_dev_rejects_when_status_query_fails(wp):
     """dev — `submodule status` rc≠0(조회 실패)면 빈 목록 → fail-closed 거부(검증 우회 금지·must-fix 1)."""
     git = _SubmoduleGit({"vendor/sub": ("detached", False)}, status_rc=1)
-    with pytest.raises(wp.SubmoduleNotInSlot):
-        wp.dev("work/A_1", "vendor/sub", "feat", git_runner=git)
+    with pytest.raises(worktree_records.SubmoduleNotInSlot):
+        branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "feat", git_runner=git)
     assert not any(c[:1] == ["-C"] and c[2:3] == ["checkout"] for c in git.calls), \
         "status 조회 실패인데 checkout 을 실행함(fail-open)"
 
@@ -768,7 +769,7 @@ def test_dev_rejects_when_status_query_fails(wp):
 def test_sync_detached_submodule_resyncs_to_pin(wp):
     """sync — detached(consume) clean submodule 을 pin 에 수동 재동기(브랜치 전환 없이)."""
     git = _SubmoduleGit({"vendor/sub": ("detached", False)})
-    wp.sync("work/A_1", git_runner=git)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert git.resynced() == ["vendor/sub"]
     # 브랜치 전환(슬롯 checkout) 없이 재동기만 — sync 는 명시 트리거.
     assert not git.did("checkout", "--no-recurse-submodules"), "sync 는 브랜치 전환을 하지 않는다"
@@ -777,14 +778,14 @@ def test_sync_detached_submodule_resyncs_to_pin(wp):
 def test_sync_on_branch_submodule_skipped(wp):
     """sync — on-branch(dev) submodule 은 skip(작업 보호·크럭스 A·비공허)."""
     git = _SubmoduleGit({"vendor/sub": ("branch", False)})
-    wp.sync("work/A_1", git_runner=git)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert git.resynced() == [], "on-branch(dev) submodule 은 sync 로도 재동기하면 안 됨"
 
 
 def test_sync_dirty_detached_submodule_skipped_with_warning(wp, capsys):
     """sync — detached 이나 dirty(미커밋) submodule 은 skip + 경고(작업 유실 방지)."""
     git = _SubmoduleGit({"vendor/sub": ("detached", True)})
-    wp.sync("work/A_1", git_runner=git)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert git.resynced() == []
     err = capsys.readouterr().err
     assert "vendor/sub" in err and "dirty" in err
@@ -798,10 +799,10 @@ def test_sync_delegates_to_resync_backbone(wp, monkeypatch):
         seen["slot_path"] = slot_path_
         seen["git_runner"] = git_runner
 
-    monkeypatch.setattr(wp, "_resync_submodules_selective", spy)
+    monkeypatch.setattr(submodule_git, "_resync_submodules_selective", spy)
     sentinel = FakeGit()
-    wp.sync("work/A_1", git_runner=sentinel)
-    assert seen["slot_path"] == wp.slot_path("work/A_1")
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=sentinel)
+    assert seen["slot_path"] == pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     assert seen["git_runner"] is sentinel
 
 
@@ -812,23 +813,23 @@ def test_sync_delegates_to_resync_backbone(wp, monkeypatch):
 
 def test_resolve_current_slot_explicit_slot_normalized(wp):
     """`--slot` 명시 — `work/` 접두 유무 무관 정규형(`work/<repo>_<N>`) 반환."""
-    assert wp._resolve_current_slot("work/A_1") == "work/A_1"
-    assert wp._resolve_current_slot("A_1") == "work/A_1"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "work/A_1") == "work/A_1"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "A_1") == "work/A_1"
 
 
 def test_resolve_current_slot_from_session_lease(wp, monkeypatch):
     """`--slot` 미지정 — 세션(PM_SESSION_NAME)이 보유한 단일 leased 슬롯으로 해소."""
     monkeypatch.setenv("PM_SESSION_NAME", "me")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
-    assert wp._resolve_current_slot(None) == "work/A_1"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), None) == "work/A_1"
 
 
 def test_resolve_current_slot_no_lease_raises(wp, monkeypatch):
     """`--slot` 미지정·매칭 leased 슬롯 0개 → SlotResolutionError(명시 요구·비공허)."""
     monkeypatch.setenv("PM_SESSION_NAME", "me")
     # cwd 유입 차단 — 실제 cwd 는 tmp WORK_DIR 밖이라 _slot_from_cwd None(기본).
-    with pytest.raises(wp.SlotResolutionError):
-        wp._resolve_current_slot(None)
+    with pytest.raises(worktree_records.SlotResolutionError):
+        slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), None)
 
 
 def test_resolve_current_slot_ambiguous_raises(wp, monkeypatch):
@@ -839,8 +840,8 @@ def test_resolve_current_slot_ambiguous_raises(wp, monkeypatch):
         _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"),
         _lease(wp, slot="work/A_2", repo="A", session="me", state="leased"),
     )
-    with pytest.raises(wp.SlotResolutionError):
-        wp._resolve_current_slot(None)
+    with pytest.raises(worktree_records.SlotResolutionError):
+        slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), None)
 
 
 @pytest.mark.parametrize(
@@ -865,8 +866,8 @@ def test_resolve_current_slot_rejects_out_of_boundary_values(wp, bad):
     가리켜 side-effect 경계가 깨진다. 이름 **모양**은 더 이상 강제하지 않지만(아래 대조군)
     경계는 오히려 넓어졌다 — `..` 마디·드라이브 표기·백슬래시까지 값으로 거부한다.
     """
-    with pytest.raises(wp.SlotResolutionError):
-        wp._resolve_current_slot(bad)
+    with pytest.raises(worktree_records.SlotResolutionError):
+        slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), bad)
 
 
 def test_resolve_current_slot_rejects_symlink_escape(wp, tmp_path):
@@ -879,8 +880,8 @@ def test_resolve_current_slot_rejects_symlink_escape(wp, tmp_path):
         link.symlink_to(outside, target_is_directory=True)
     except (OSError, NotImplementedError):  # pragma: no cover — symlink 미지원 플랫폼
         pytest.skip("symlink 미지원 환경")
-    with pytest.raises(wp.SlotResolutionError):
-        wp._resolve_current_slot("work/A_9")
+    with pytest.raises(worktree_records.SlotResolutionError):
+        slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "work/A_9")
 
 
 def test_resolve_current_slot_accepts_valid_slot_forms(wp):
@@ -889,16 +890,16 @@ def test_resolve_current_slot_accepts_valid_slot_forms(wp):
     `work/legacy-dir`(번호 없는 이름)·`.`(PM 홈 자신)이 통과하는 것이 값-경계 교체의 핵심이다 —
     슬롯 정체성은 장부 값이 주고, 이 층은 **경계**만 본다.
     """
-    assert wp._resolve_current_slot("work/A_1") == "work/A_1"
-    assert wp._resolve_current_slot("A_1") == "work/A_1"
-    assert wp._resolve_current_slot("work/project_manager_2") == "work/project_manager_2"
-    assert wp._resolve_current_slot("project_manager_2") == "work/project_manager_2"
-    assert wp._resolve_current_slot("work/legacy-dir") == "work/legacy-dir"
-    assert wp._resolve_current_slot(".") == "."
-    assert wp._resolve_current_slot("./work/A_1") == "work/A_1"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "work/A_1") == "work/A_1"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "A_1") == "work/A_1"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "work/project_manager_2") == "work/project_manager_2"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "project_manager_2") == "work/project_manager_2"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "work/legacy-dir") == "work/legacy-dir"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), ".") == "."
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "./work/A_1") == "work/A_1"
     # 같은 자리를 가리키는 표기 변형은 한 값으로 정규화한다(문자열 두 개가 한 슬롯을 갈라
     # 부르는 drift 차단) — 경계를 넘지 않으므로 거부 대상이 아니다.
-    assert wp._resolve_current_slot("work/A_1/") == "work/A_1"
+    assert slot_resolution._resolve_current_slot(pm_paths.home_at(wp.REPO), "work/A_1/") == "work/A_1"
 
 
 def test_slot_from_cwd_derives_slot_when_inside_worktree(wp, monkeypatch):
@@ -906,20 +907,20 @@ def test_slot_from_cwd_derives_slot_when_inside_worktree(wp, monkeypatch):
     slot_dir = wp.WORK_DIR / "A_1" / "vendor" / "sub"
     slot_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(slot_dir)
-    assert wp._slot_from_cwd() == "work/A_1"
+    assert worktree_paths._slot_from_cwd(pm_paths.home_at(wp.REPO)) == "work/A_1"
     monkeypatch.chdir(wp.REPO)   # WORK_DIR 밖
-    assert wp._slot_from_cwd() is None
+    assert worktree_paths._slot_from_cwd(pm_paths.home_at(wp.REPO)) is None
 
 
 def test_main_dev_dispatches_to_dev_backbone(wp, monkeypatch, capsys):
     """CLI — `dev <sub> <branch> --repo A --slot 1` 이 dev 백본을 해소된 슬롯/인자로 호출하고 rc 0."""
     seen = {}
 
-    def spy_dev(slot, sub, branch, *, git_runner=None):
+    def spy_dev(_home, slot, sub, branch, *, git_runner=None):
         seen.update(slot=slot, sub=sub, branch=branch)
         return 0, ""
 
-    monkeypatch.setattr(wp, "dev", spy_dev)
+    monkeypatch.setattr(branch_checkout, "dev", spy_dev)
     rc = wp.main(["dev", "vendor/sub", "feat-x", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert seen == {"slot": "work/A_1", "sub": "vendor/sub", "branch": "feat-x"}
@@ -928,7 +929,7 @@ def test_main_dev_dispatches_to_dev_backbone(wp, monkeypatch, capsys):
 
 def test_main_dev_failure_returns_rc1(wp, monkeypatch, capsys):
     """CLI — dev 백본 rc≠0 이면 main 이 rc 1 + stderr 에러 surface(침묵 성공 금지·비공허)."""
-    monkeypatch.setattr(wp, "dev", lambda *a, **k: (1, "boom"))
+    monkeypatch.setattr(branch_checkout, "dev", lambda _home, *a, **k: (1, "boom"))
     rc = wp.main(["dev", "vendor/sub", "feat-x", "--repo", "A", "--slot", "1"])
     assert rc == 1
     assert "boom" in capsys.readouterr().err
@@ -937,7 +938,7 @@ def test_main_dev_failure_returns_rc1(wp, monkeypatch, capsys):
 def test_main_sync_dispatches_to_sync_backbone(wp, monkeypatch, capsys):
     """CLI — `sync --repo A --slot 1` 이 sync 백본을 해소된 슬롯으로 호출하고 rc 0."""
     seen = {}
-    monkeypatch.setattr(wp, "sync", lambda slot, *, git_runner=None: seen.update(slot=slot))
+    monkeypatch.setattr(branch_checkout, "sync", lambda _home, slot, *, git_runner=None: seen.update(slot=slot))
     rc = wp.main(["sync", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert seen == {"slot": "work/A_1"}
@@ -947,7 +948,7 @@ def test_main_sync_dispatches_to_sync_backbone(wp, monkeypatch, capsys):
 def test_main_sync_unresolvable_slot_returns_rc1(wp, monkeypatch, capsys):
     """CLI — 슬롯 자동해소 실패(SlotResolutionError)면 main 이 rc 1 + 안내(오타깃 금지·비공허)."""
     monkeypatch.setenv("PM_SESSION_NAME", "nobody")
-    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("슬롯 미해소인데 sync 를 호출함"))
+    monkeypatch.setattr(branch_checkout, "sync", lambda _home, *a, **k: pytest.fail("슬롯 미해소인데 sync 를 호출함"))
     rc = wp.main(["sync"])   # 인자 전무(kind=none)·매칭 leased 0개
     assert rc == 1
     assert "슬롯" in capsys.readouterr().err
@@ -955,16 +956,16 @@ def test_main_sync_unresolvable_slot_returns_rc1(wp, monkeypatch, capsys):
 
 def test_main_rejects_traversal_repo_returns_rc1(wp, monkeypatch):
     """CLI — `--repo ../x --slot 1`(traversal)는 sync 백본 호출 전에 rc 1 로 거부 (must-fix 2·비공허)."""
-    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("형식 위반 슬롯인데 sync 를 호출함"))
+    monkeypatch.setattr(branch_checkout, "sync", lambda _home, *a, **k: pytest.fail("형식 위반 슬롯인데 sync 를 호출함"))
     rc = wp.main(["sync", "--repo", "../x", "--slot", "1"])
     assert rc == 1
 
 
 def test_main_dev_rejects_out_of_slot_submodule_returns_rc1(wp, monkeypatch, capsys):
     """CLI — dev 가 슬롯 밖 submodule(SubmoduleNotInSlot) 이면 rc 1 + stderr 안내 (must-fix 1)."""
-    def boom(*a, **k):
-        raise wp.SubmoduleNotInSlot("work/A_1", "/etc/evil", ["vendor/sub"])
-    monkeypatch.setattr(wp, "dev", boom)
+    def boom(_home, *a, **k):
+        raise worktree_records.SubmoduleNotInSlot("work/A_1", "/etc/evil", ["vendor/sub"])
+    monkeypatch.setattr(branch_checkout, "dev", boom)
     rc = wp.main(["dev", "/etc/evil", "feat", "--repo", "A", "--slot", "1"])
     assert rc == 1
     assert "/etc/evil" in capsys.readouterr().err
@@ -975,7 +976,7 @@ def test_main_dev_rejects_out_of_slot_submodule_returns_rc1(wp, monkeypatch, cap
 
 def test_main_bare_slot_without_repo_fails_loud(wp, monkeypatch, capsys):
     """CLI — bare `--slot`(--repo 없음)은 parse_identity 가 ValueError → main 이 rc 1(DoD)."""
-    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("bare --slot 인데 sync 를 호출함"))
+    monkeypatch.setattr(branch_checkout, "sync", lambda _home, *a, **k: pytest.fail("bare --slot 인데 sync 를 호출함"))
     rc = wp.main(["sync", "--slot", "1"])
     assert rc == 1
     err = capsys.readouterr().err
@@ -986,7 +987,7 @@ def test_main_repo_alone_resolves_single_active_slot(wp, monkeypatch, capsys):
     """CLI — `--repo A`(슬롯 무) 단독은 actor 해소 — 그 repo 활성 슬롯이 1개면 자동 해소."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="someone-else", state="leased"))
     seen = {}
-    monkeypatch.setattr(wp, "sync", lambda slot, *, git_runner=None: seen.update(slot=slot))
+    monkeypatch.setattr(branch_checkout, "sync", lambda _home, slot, *, git_runner=None: seen.update(slot=slot))
     rc = wp.main(["sync", "--repo", "A"])
     assert rc == 0
     assert seen == {"slot": "work/A_1"}
@@ -999,7 +1000,7 @@ def test_main_repo_alone_ambiguous_active_slots_fails_loud(wp, monkeypatch, caps
         _lease(wp, slot="work/A_1", repo="A", session="s1", state="leased"),
         _lease(wp, slot="work/A_2", repo="A", session="s2", state="leased"),
     )
-    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("모호한데 sync 를 호출함"))
+    monkeypatch.setattr(branch_checkout, "sync", lambda _home, *a, **k: pytest.fail("모호한데 sync 를 호출함"))
     rc = wp.main(["sync", "--repo", "A"])
     assert rc == 1
     assert "--slot" in capsys.readouterr().err
@@ -1007,7 +1008,7 @@ def test_main_repo_alone_ambiguous_active_slots_fails_loud(wp, monkeypatch, caps
 
 def test_main_repo_alone_no_active_slot_fails_loud(wp, monkeypatch, capsys):
     """CLI — `--repo A` 단독인데 그 repo 의 활성 슬롯이 0개면 rc 1(오타깃 금지)."""
-    monkeypatch.setattr(wp, "sync", lambda *a, **k: pytest.fail("활성 슬롯 없는데 sync 를 호출함"))
+    monkeypatch.setattr(branch_checkout, "sync", lambda _home, *a, **k: pytest.fail("활성 슬롯 없는데 sync 를 호출함"))
     rc = wp.main(["sync", "--repo", "A"])
     assert rc == 1
     assert "--slot" in capsys.readouterr().err
@@ -1033,20 +1034,20 @@ def test_resolve_actor_slot_for_repo_translates_identity_args_ambiguous(wp):
         _lease(wp, slot="work/A_1", repo="A", session="s1", state="leased"),
         _lease(wp, slot="work/A_2", repo="A", session="s2", state="leased"),
     )
-    with pytest.raises(wp.SlotResolutionError):
-        wp._resolve_actor_slot_for_repo("A")
+    with pytest.raises(worktree_records.SlotResolutionError):
+        worktree_paths._resolve_actor_slot_for_repo(pm_paths.home_at(wp.REPO), "A")
 
 
 def test_resolve_actor_slot_for_repo_single_active_normalizes(wp):
     """`_resolve_actor_slot_for_repo` — 활성 슬롯 1개면 정규형 `work/<repo>_<N>` 반환."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s1", state="leased"))
-    assert wp._resolve_actor_slot_for_repo("A") == "work/A_1"
+    assert worktree_paths._resolve_actor_slot_for_repo(pm_paths.home_at(wp.REPO), "A") == "work/A_1"
 
 
 def test_resolve_actor_slot_for_repo_none_active_fails_loud(wp):
     """`_resolve_actor_slot_for_repo` — 그 repo 활성 슬롯이 0개면 SlotResolutionError."""
-    with pytest.raises(wp.SlotResolutionError):
-        wp._resolve_actor_slot_for_repo("A")
+    with pytest.raises(worktree_records.SlotResolutionError):
+        worktree_paths._resolve_actor_slot_for_repo(pm_paths.home_at(wp.REPO), "A")
 
 
 # 실 git 백스톱(dev/sync)은 `_git_required`·`_git`·`_init_repo` 헬퍼 정의 이후에 둔다(아래
@@ -1062,10 +1063,10 @@ def test_release_clean_slot_goes_idle(wp):
     """clean 슬롯 release → idle 전이·session 비움(=종료 기록·재사용 컨테이너로 풀 반납)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
     git = FakeGit(dirty=False)
-    lease = wp.release("work/A_1", git_runner=git)
+    lease = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert lease.state == "idle"
     assert lease.session == ""
-    assert wp.lease_is_open(lease) is False      # 종료 기록 — 닫힘
+    assert worktree_records.lease_is_open(lease) is False      # 종료 기록 — 닫힘
 
 
 def test_release_uncommitted_changes_refused_without_stash(wp, proj):
@@ -1073,10 +1074,10 @@ def test_release_uncommitted_changes_refused_without_stash(wp, proj):
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)  # _is_dirty 가 path.exists 봄
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
     git = FakeGit(dirty=True)
-    with pytest.raises(wp.ReleaseRefused):
-        wp.release("work/A_1", git_runner=git)
+    with pytest.raises(worktree_records.ReleaseRefused):
+        worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     # 거부됐으니 여전히 leased·stash 호출 없음.
-    assert wp.list_leases()[0].state == "leased"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == "leased"
     assert not git.did("stash")
 
 
@@ -1084,7 +1085,7 @@ def test_release_unknown_slot_raises(wp):
     """장부에 없는 슬롯 release → KeyError."""
     git = FakeGit()
     with pytest.raises(KeyError):
-        wp.release("work/Z_9", git_runner=git)
+        worktree_pool.release(pm_paths.home_at(wp.REPO), "work/Z_9", git_runner=git)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1159,7 +1160,7 @@ def test_force_release_idles_leased_slot(wp):
     """force_release — leased 슬롯을 강제로 idle 화(수동 백스톱)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="stuck", state="leased"))
     git = FakeGit()
-    lease = wp.force_release("work/A_1", git_runner=git)
+    lease = worktree_pool.force_release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert lease is not None and lease.state == "idle"
 
 
@@ -1168,17 +1169,17 @@ def test_force_release_uncommitted_changes_refused_without_stash(wp, proj):
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="stuck", state="leased"))
     git = FakeGit(dirty=True)
-    with pytest.raises(wp.ReleaseRefused):
-        wp.force_release("work/A_1", git_runner=git)
-    assert wp.list_leases()[0].state == "leased"
-    assert wp.list_leases()[0].session == "stuck"
+    with pytest.raises(worktree_records.ReleaseRefused):
+        worktree_pool.force_release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == "leased"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].session == "stuck"
     assert not git.did("stash")
 
 
 def test_force_release_unknown_slot_returns_none(wp):
     """장부에 없는 슬롯 force_release → None(이미 정리됨·무해)."""
     git = FakeGit()
-    assert wp.force_release("work/Z_9", git_runner=git) is None
+    assert worktree_pool.force_release(pm_paths.home_at(wp.REPO), "work/Z_9", git_runner=git) is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1190,7 +1191,7 @@ def test_create_slot_adds_worktree_and_submodule_init(wp):
     """create_slot — worktree add + submodule init + 장부 idle 등록(번호 자동)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert lease.slot == "work/A_1"
     assert lease.state == "idle"
     # 작업 슬롯은 슬롯 전용 브랜치 `A_1` 을 base 에서 파고 부모를 git config 에 기록한다.
@@ -1198,7 +1199,7 @@ def test_create_slot_adds_worktree_and_submodule_init(wp):
     assert git.did("config", "branch.A_1.pm-parent", "main")
     # `--force`: bare 에서 만든 fresh 슬롯의 worktree+submodule edge 강제 init(T-0067).
     assert git.did("submodule", "update", "--init", "--recursive", "--force")
-    assert wp.list_leases()[0].slot == "work/A_1"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].slot == "work/A_1"
 
 
 def test_create_slot_owner_task_leases_under_task(wp):
@@ -1210,12 +1211,12 @@ def test_create_slot_owner_task_leases_under_task(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="develop", owner_task="job", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", owner_task="job", git_runner=git)
     assert lease.state == "leased"
     assert lease.session == "job"     # task 명의(⑥)
     assert lease.bound is False       # bound 축 오염 안 함(사람-bind 전용·tasks 조인이 보호)
     # slots_for_task 가 생성분을 본다(생성+대여 한 흐름).
-    assert [l.slot for l in wp.slots_for_task("job")] == [lease.slot]
+    assert [l.slot for l in pool_store.slots_for_task(pm_paths.home_at(wp.REPO), "job")] == [lease.slot]
 
 
 def test_create_slot_owner_task_and_readonly_mutually_exclusive(wp):
@@ -1227,8 +1228,8 @@ def test_create_slot_owner_task_and_readonly_mutually_exclusive(wp):
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
     with pytest.raises(ValueError):
-        wp.create_slot("A", base="main", owner_task="job", readonly=True, git_runner=git)
-    assert wp.list_leases() == []   # 부작용 이전 raise(provisional 도 안 남김)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", owner_task="job", readonly=True, git_runner=git)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []   # 부작용 이전 raise(provisional 도 안 남김)
 
 
 def test_create_slot_picks_next_free_number(wp):
@@ -1237,7 +1238,7 @@ def test_create_slot_picks_next_free_number(wp):
           _lease(wp, slot="work/A_2", repo="A", session="y", state="idle"))
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert lease.slot == "work/A_3"
 
 
@@ -1249,7 +1250,7 @@ def test_create_slot_skip_submodule_when_disabled(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="main", init_submodules=False, git_runner=git)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False, git_runner=git)
     assert not git.did("submodule", "update")
 
 
@@ -1265,9 +1266,9 @@ def test_create_slot_worktree_add_failure_raises(wp):
             return (1, "fatal: ...")
         return (0, "")
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", git_runner=failing)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=failing)
     # 실패 시 장부에 슬롯 등록 안 됨.
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_create_slot_submodule_init_failure_raises_before_register(wp):
@@ -1286,9 +1287,9 @@ def test_create_slot_submodule_init_failure_raises_before_register(wp):
             return (1, "fatal: submodule init failed")
         return (0, "")  # worktree add 등은 성공
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", git_runner=failing)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=failing)
     # 등록 전 raise → 장부에 슬롯 0 (불완전 슬롯 미등록).
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_create_slot_submodule_init_success_registers(wp):
@@ -1304,9 +1305,9 @@ def test_create_slot_submodule_init_success_registers(wp):
         if argv[:2] == ["rev-parse", "--verify"] and argv[-1].endswith("^{commit}"):
             return (0, _DEFAULT_HEAD_SHA + "\n")   # 분기 커밋 해소(부모 기록 pm-fork).
         return (0, "")  # worktree add·submodule 모두 성공
-    lease = wp.create_slot("A", base="main", git_runner=succeeding)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=succeeding)
     assert lease.state == "idle"
-    assert len(wp.list_leases()) == 1
+    assert len(pool_store.list_leases(pm_paths.home_at(wp.REPO))) == 1
 
 
 def test_create_slot_submodule_init_uses_force(wp):
@@ -1318,7 +1319,7 @@ def test_create_slot_submodule_init_uses_force(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="main", git_runner=git)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     # git 스냅(T-0350)의 read-only `submodule status` 는 제외하고 *init(update)* 명령만 검사한다.
     sub_calls = [c for c in git.calls if c[:2] == ["submodule", "update"]]
     assert sub_calls == [["submodule", "update", "--init", "--recursive", "--force"]]
@@ -1340,12 +1341,12 @@ def test_create_slot_submodule_init_failure_message_surfaces_rc(wp):
             return (1, "")  # 비0 + 빈 out (Windows 캡처 유실 재현)
         return (0, "")
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="main", git_runner=failing_empty)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=failing_empty)
     msg = str(exc.value)
     assert "rc=1" in msg
     assert "submodule" in msg  # 실행한 argv 가 메시지에 노출
     # 등록 전 raise → 불완전 슬롯 미등록(기존 계약 유지).
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1361,11 +1362,11 @@ def test_create_slot_valid_bare_passes_guard(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(is_bare=True)
-    lease = wp.create_slot("A", base="main", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert lease.slot == "work/A_1"
     assert lease.state == "idle"
     # 가드가 rev-parse 로 실 bare 를 판정했다(경로 존재만이 아님).
-    assert git.did("-C", str(wp.bare_repo_path("A")), "rev-parse", "--is-bare-repository")
+    assert git.did("-C", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), "rev-parse", "--is-bare-repository")
     assert git.did("worktree", "add")   # 유효 → worktree add 까지 도달
 
 
@@ -1378,14 +1379,14 @@ def test_create_slot_broken_bare_fails_loud(wp):
     """
     _mk_bare_placeholder(wp, "A")          # 경로는 존재 (부분 bare 잔존 모사)
     git = FakeGit(is_bare=False)           # rev-parse "false" = 무효 bare
-    with pytest.raises(wp.BareRepoMissing) as exc:
-        wp.create_slot("A", base="main", git_runner=git)
+    with pytest.raises(worktree_records.BareRepoMissing) as exc:
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert exc.value.broken is True
     msg = str(exc.value)
     assert "부분/깨진 bare" in msg          # exists-but-broken 진단(경로부재 메시지와 구별)
     assert "재hydrate" in msg or "repo add" in msg   # 다음 행동 힌트(수동 삭제 후 재생성)
     assert not git.did("worktree", "add"), "무효 bare 인데 worktree add 가 불림(조용한 통과 위험)"
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_create_slot_bare_valid_format_but_no_head_fails_loud(wp):
@@ -1398,13 +1399,13 @@ def test_create_slot_bare_valid_format_but_no_head_fails_loud(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(is_bare=True, head_resolves=False)   # 형식은 bare 지만 HEAD 미해소(빈 bare)
-    with pytest.raises(wp.BareRepoMissing) as exc:
-        wp.create_slot("A", base="main", git_runner=git)
+    with pytest.raises(worktree_records.BareRepoMissing) as exc:
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert exc.value.broken is True
     assert not git.did("worktree", "add"), "HEAD 없는 bare 인데 worktree add 가 불림(조용한 통과)"
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
     # 가드가 HEAD 해소를 실제로 물었다(is-bare 만 아님).
-    assert git.did("-C", str(wp.bare_repo_path("A")), "rev-parse", "--verify", "HEAD")
+    assert git.did("-C", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), "rev-parse", "--verify", "HEAD")
 
 
 def test_create_slot_missing_vs_broken_bare_distinct(wp):
@@ -1415,8 +1416,8 @@ def test_create_slot_missing_vs_broken_bare_distinct(wp):
     """
     # 경로부재: placeholder 안 만듦 → exists()=False → broken=False.
     git = FakeGit(is_bare=True)
-    with pytest.raises(wp.BareRepoMissing) as exc_missing:
-        wp.create_slot("A", base="main", git_runner=git)
+    with pytest.raises(worktree_records.BareRepoMissing) as exc_missing:
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert exc_missing.value.broken is False
     assert "hydrate" in str(exc_missing.value)   # 종전 부재 안내(T-0291)
 
@@ -1430,12 +1431,12 @@ def test_create_slot_bare_validation_uses_injected_runner(wp):
     _mk_bare_placeholder(wp, "A")
     # 유효 mock → 통과.
     ok = FakeGit(is_bare=True)
-    lease = wp.create_slot("A", base="main", git_runner=ok)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=ok)
     assert lease.state == "idle"
     # 같은 placeholder, 무효 mock → fail-loud (판정이 mock 에서 옴·경로는 동일).
     bad = FakeGit(is_bare=False)
-    with pytest.raises(wp.BareRepoMissing):
-        wp.create_slot("A", base="main", git_runner=bad)
+    with pytest.raises(worktree_records.BareRepoMissing):
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=bad)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1452,7 +1453,7 @@ def test_create_slot_base_derives_slot_branch(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()   # fetch_rc=0·origin_has_base=True → origin/develop 해소
-    lease = wp.create_slot("A", base="develop", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", git_runner=git)
     assert lease.slot == "work/A_1"
     # fetch 가 worktree add 전에 불렸다(origin 최신 갱신).
     assert git.did("fetch", "origin")
@@ -1460,14 +1461,14 @@ def test_create_slot_base_derives_slot_branch(wp):
     # `--no-track` = remote-tracking ref 파생 시 git autoSetupMerge 자동 upstream 설정 억제(슬롯=작업스트림).
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls == [["worktree", "add", "--no-track", "-b", "A_1",
-                          str(wp.slot_path("work/A_1")), "origin/develop"]]
+                          str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "origin/develop"]]
 
 
 def test_create_slot_base_fetches_before_worktree_add(wp):
     """base 파생 — `fetch origin` 이 worktree add *보다 먼저* 불린다 (T-0274·origin 최신 선반영)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="develop", git_runner=git)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", git_runner=git)
     fetch_idx = next(i for i, c in enumerate(git.calls) if c[:2] == ["fetch", "origin"])
     add_idx = next(i for i, c in enumerate(git.calls) if c[:2] == ["worktree", "add"])
     assert fetch_idx < add_idx
@@ -1481,11 +1482,11 @@ def test_create_slot_base_fetch_failure_falls_back_to_local(wp, capsys):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(fetch_rc=1)   # fetch 실패
-    lease = wp.create_slot("A", base="develop", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", git_runner=git)
     assert lease.slot == "work/A_1"          # 슬롯 생성은 계속(fail-soft)
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls == [["worktree", "add", "--no-track", "-b", "A_1",
-                          str(wp.slot_path("work/A_1")), "develop"]]   # 로컬 <base> 폴백(origin/develop 아님)
+                          str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "develop"]]   # 로컬 <base> 폴백(origin/develop 아님)
     assert not git.did("show-ref")            # fetch 실패면 origin ref 판정 건너뜀
     assert "fetch origin" in capsys.readouterr().err
 
@@ -1498,12 +1499,12 @@ def test_create_slot_base_origin_ref_unresolvable_falls_back_to_local(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(fetch_rc=0, origin_has_base=False)   # fetch ok·origin ref 미해소
-    wp.create_slot("A", base="develop", git_runner=git)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", git_runner=git)
     assert git.did("fetch", "origin")
     assert git.did("show-ref", "--verify", "--quiet", "refs/remotes/origin/develop")
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls == [["worktree", "add", "--no-track", "-b", "A_1",
-                          str(wp.slot_path("work/A_1")), "develop"]]   # 로컬 폴백
+                          str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "develop"]]   # 로컬 폴백
 
 
 def test_create_slot_base_uses_no_track(wp):
@@ -1517,7 +1518,7 @@ def test_create_slot_base_uses_no_track(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="develop", git_runner=git)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", git_runner=git)
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     assert add_calls and "--no-track" in add_calls[0]      # 자동 upstream 억제(유일 방어선)
     # 명시 tracking config 도 없음 — config 쓰기는 부모 기록 두 키뿐.
@@ -1530,12 +1531,12 @@ def test_create_slot_base_picks_next_free_number_in_branch_name(wp):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="x", state="leased"))
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="develop", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", git_runner=git)
     assert lease.slot == "work/A_2"
     add_calls = [c for c in git.calls if c[:2] == ["worktree", "add"]]
     # 슬롯 번호 2 → 브랜치 이름 `A_2`, 파생 기준=origin/develop(T-0274), `--no-track` 명시.
     assert add_calls == [["worktree", "add", "--no-track", "-b", "A_2",
-                          str(wp.slot_path("work/A_2")), "origin/develop"]]
+                          str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_2")), "origin/develop"]]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1545,19 +1546,19 @@ def test_create_slot_base_picks_next_free_number_in_branch_name(wp):
 
 def test_lease_test_cmd_serialization_round_trip(wp):
     """Lease.test_cmd 가 to_dict/from_dict round-trip 으로 보존된다(장부 직렬화 포함)."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="me",
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="me",
                      started="t", state="leased", test_cmd="ctest -R hil1")
     d = lease.to_dict()
     assert d["test_cmd"] == "ctest -R hil1"
     assert "branch" not in d  # branch 는 장부 직렬화 안 함(ADR-0013 amend T-0072·git=진실)
-    restored = wp.Lease.from_dict(d)
+    restored = worktree_records.Lease.from_dict(d)
     assert restored.test_cmd == "ctest -R hil1"
     assert restored == lease  # __eq__ = to_dict 동등 → test_cmd 포함
 
 
 def test_lease_test_cmd_default_none(wp):
     """test_cmd 미지정 시 None(기존 호출 무영향) · to_dict 에 None 으로 직렬화."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="me",
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="me",
                      started="t", state="leased")
     assert lease.test_cmd is None
     assert lease.to_dict()["test_cmd"] is None
@@ -1567,7 +1568,7 @@ def test_lease_from_dict_legacy_ledger_test_cmd_none(wp):
     """**하위호환** — test_cmd 필드 없는 구 장부 dict 로드 시 None(스키마 진화 graceful)."""
     legacy = {"slot": "work/A_1", "repo": "A", "branch": "a1", "session": "me",
               "started": "t", "state": "leased"}  # test_cmd 키 없음
-    lease = wp.Lease.from_dict(legacy)
+    lease = worktree_records.Lease.from_dict(legacy)
     assert lease.test_cmd is None
 
 
@@ -1580,8 +1581,8 @@ def test_read_ledger_legacy_file_without_test_cmd_loads_none(wp):
     ]}
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(legacy), encoding="utf-8")
-    with wp._lease_lock():
-        leases = wp._read_ledger()
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        leases = pool_store._read_ledger(pm_paths.home_at(wp.REPO))
     assert len(leases) == 1
     assert leases[0].test_cmd is None
 
@@ -1590,10 +1591,10 @@ def test_create_slot_binds_test_cmd_to_lease(wp):
     """create_slot(test_cmd=) → 생성 Lease 에 저장되고 장부에 직렬화된다(T-0066)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", git_runner=git, test_cmd="make hil2")
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git, test_cmd="make hil2")
     assert lease.test_cmd == "make hil2"
     # 장부에 영속화 — list_leases 가 같은 슬롯의 test_cmd 를 돌려준다.
-    persisted = next(l for l in wp.list_leases() if l.slot == lease.slot)
+    persisted = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot)
     assert persisted.test_cmd == "make hil2"
 
 
@@ -1601,7 +1602,7 @@ def test_create_slot_test_cmd_default_none(wp):
     """create_slot 기본 호출(test_cmd 미지정) → None(기존 호출 무영향·하위호환)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert lease.test_cmd is None
 
 
@@ -1609,10 +1610,10 @@ def test_create_slot_round_trips_test_cmd_through_ledger(wp):
     """create_slot(test_cmd=) 후 장부 파일을 다시 read → 같은 test_cmd(직렬화 왕복·하위호환)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.create_slot("A", base="main", git_runner=git, test_cmd="ninja test")
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git, test_cmd="ninja test")
     # 새 _read_ledger 로 파일에서 재로드 — to_dict→파일→from_dict 전 경로 검증.
-    with wp._lease_lock():
-        reloaded = wp._read_ledger()
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        reloaded = pool_store._read_ledger(pm_paths.home_at(wp.REPO))
     assert reloaded[0].test_cmd == "ninja test"
 
 
@@ -1631,12 +1632,12 @@ def test_create_slot_worktree_add_runs_in_bare_context(wp, monkeypatch):
         captured.append(cwd)
         return FakeGit()  # 모든 git 호출 성공 stub(add 성공)
 
-    monkeypatch.setattr(wp, "_real_git_runner_interactive", spy_interactive)
+    monkeypatch.setattr(worktree_git, "_real_git_runner_interactive", spy_interactive)
     # bare 실검증 가드(T-0294)는 captured 러너(`_real_git_runner`)로 rev-parse 한다 — placeholder
     # 는 실 bare 가 아니므로 실 러너면 무효 판정된다. FakeGit(is_bare=True)로 stub 해 가드 통과.
-    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: FakeGit())
-    wp.create_slot("A", base="main", init_submodules=False)
-    assert captured[0] == wp.bare_repo_path("A"), \
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda cwd: FakeGit())
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    assert captured[0] == pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), \
         f"worktree add 컨텍스트가 family bare 가 아님: {captured[0]!r}"
 
 
@@ -1647,10 +1648,10 @@ def test_create_slot_missing_bare_raises_guard(wp):
     먼저 걸려 worktree add 호출 전에 막힌다 → 장부에 슬롯 0(침묵 폴백·불완전 슬롯 0).
     """
     git = FakeGit()
-    with pytest.raises(wp.BareRepoMissing):
-        wp.create_slot("A", base="main", git_runner=git)
+    with pytest.raises(worktree_records.BareRepoMissing):
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert not git.did("worktree", "add"), "가드 전에 worktree add 가 불림(폴백 위험)"
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_bare_repo_missing_message_guides_hydrate(wp):
@@ -1661,7 +1662,7 @@ def test_bare_repo_missing_message_guides_hydrate(wp):
     bare mirror 부재인데 "repo add 먼저"(URL 재제공 강제 오해)만 던지면 안 된다. 메시지 내용을
     단언해 재약화/오해 회귀를 가드한다.
     """
-    exc = wp.BareRepoMissing("svc", Path("/x/.repos/svc.git"))
+    exc = worktree_records.BareRepoMissing("svc", Path("/x/.repos/svc.git"))
     msg = str(exc)
     assert "svc" in msg and ".repos/svc.git" in msg   # 진짜 원인=bare mirror 부재 명시
     assert "hydrate" in msg                            # hydrate 경로 안내(핵심·T-0291)
@@ -1678,14 +1679,14 @@ def test_bare_repo_missing_message_guides_hydrate(wp):
 
 def _lease_tc(wp, *, slot, repo, test_cmd=None, session="s1", state="leased"):
     """test_cmd 를 실은 Lease 시드 헬퍼(_lease 는 test_cmd 미노출)."""
-    return wp.Lease(slot=slot, repo=repo, session=session,
+    return worktree_records.Lease(slot=slot, repo=repo, session=session,
                     started="t", state=state, test_cmd=test_cmd)
 
 
 def test_set_test_cmd_updates_existing_lease(wp):
     """set_test_cmd(slot, cmd) → 그 슬롯 리스의 test_cmd 갱신 + 갱신된 Lease 반환."""
     _seed(wp, _lease_tc(wp, slot="work/A_1", repo="A", test_cmd="pytest -q"))
-    updated = wp.set_test_cmd("work/A_1", "ctest -R hil2")
+    updated = worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/A_1", "ctest -R hil2")
     assert updated.slot == "work/A_1"
     assert updated.test_cmd == "ctest -R hil2"
 
@@ -1697,9 +1698,9 @@ def test_set_test_cmd_persists_atomically_through_ledger(wp):
     `_write_ledger`(tmp→os.replace) 경로를 재사용한다 — 파일에서 재로드해 영속을 확인한다.
     """
     _seed(wp, _lease_tc(wp, slot="work/A_1", repo="A", test_cmd=None))
-    wp.set_test_cmd("work/A_1", "ninja test")
-    with wp._lease_lock():
-        reloaded = wp._read_ledger()
+    worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/A_1", "ninja test")
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        reloaded = pool_store._read_ledger(pm_paths.home_at(wp.REPO))
     assert next(l for l in reloaded if l.slot == "work/A_1").test_cmd == "ninja test"
 
 
@@ -1710,8 +1711,8 @@ def test_set_test_cmd_leaves_other_slots_untouched(wp):
         _lease_tc(wp, slot="work/A_1", repo="A", test_cmd="a-cmd"),
         _lease_tc(wp, slot="work/A_2", repo="A", test_cmd="b-cmd"),
     )
-    wp.set_test_cmd("work/A_1", "new-cmd")
-    by_slot = {l.slot: l.test_cmd for l in wp.list_leases()}
+    worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/A_1", "new-cmd")
+    by_slot = {l.slot: l.test_cmd for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
     assert by_slot["work/A_1"] == "new-cmd"
     assert by_slot["work/A_2"] == "b-cmd"  # 미변경
 
@@ -1719,16 +1720,16 @@ def test_set_test_cmd_leaves_other_slots_untouched(wp):
 def test_set_test_cmd_none_clears_binding(wp):
     """cmd=None → 바인딩 해제(repo areas/local.conf 폴백·현행)."""
     _seed(wp, _lease_tc(wp, slot="work/A_1", repo="A", test_cmd="old"))
-    updated = wp.set_test_cmd("work/A_1", None)
+    updated = worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/A_1", None)
     assert updated.test_cmd is None
-    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").test_cmd is None
+    assert next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").test_cmd is None
 
 
 def test_set_test_cmd_idle_slot_updatable(wp):
     """idle 슬롯(미점유 컨테이너)도 test_cmd 갱신 가능(state 무관)."""
     _seed(wp, _lease_tc(wp, slot="work/A_1", repo="A", test_cmd=None,
                         session="", state="idle"))
-    updated = wp.set_test_cmd("work/A_1", "make hil")
+    updated = worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/A_1", "make hil")
     assert updated.test_cmd == "make hil"
     assert updated.state == "idle"  # state 는 안 건드림
 
@@ -1737,13 +1738,13 @@ def test_set_test_cmd_missing_slot_raises_keyerror(wp):
     """장부에 슬롯이 없으면 KeyError(침묵 무력화 금지 — 호출부가 명시 안내)."""
     _seed(wp, _lease_tc(wp, slot="work/A_1", repo="A"))
     with pytest.raises(KeyError):
-        wp.set_test_cmd("work/Z_9", "whatever")
+        worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/Z_9", "whatever")
 
 
 def test_set_test_cmd_empty_ledger_raises_keyerror(wp):
     """빈 장부(슬롯 0)에서도 KeyError(슬롯 부재)."""
     with pytest.raises(KeyError):
-        wp.set_test_cmd("work/A_1", "cmd")
+        worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/A_1", "cmd")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1764,7 +1765,7 @@ def test_default_session_prefers_pm_env(wp, proj, monkeypatch):
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     _write_local_conf(proj, "session=from-conf\n")
-    assert wp._default_session() == "from-pm-env"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == "from-pm-env"
 
 
 def test_default_session_claude_env_is_alias(wp, proj, monkeypatch):
@@ -1776,14 +1777,14 @@ def test_default_session_claude_env_is_alias(wp, proj, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     _write_local_conf(proj, "session=from-conf\n")
-    assert wp._default_session() == "from-alias"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == "from-alias"
 
 
 def test_default_session_pm_wins_over_claude(wp, proj, monkeypatch):
     """둘 다 설정 시 `PM_SESSION_NAME` 승 (T-0073 마이그레이션 중 명시 우선)."""
     monkeypatch.setenv("PM_SESSION_NAME", "new")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "old")
-    assert wp._default_session() == "new"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == "new"
 
 
 def test_default_session_ignores_local_conf_session(wp, proj, monkeypatch):
@@ -1796,7 +1797,7 @@ def test_default_session_ignores_local_conf_session(wp, proj, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _write_local_conf(proj, "session=foo\n")
-    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == f"{socket.gethostname()}-{os.getpid()}"
 
 
 def test_default_session_single_lease_derives_session(wp, proj, monkeypatch):
@@ -1805,7 +1806,7 @@ def test_default_session_single_lease_derives_session(wp, proj, monkeypatch):
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _seed(wp, _lease(wp, slot="work/project_manager_1", repo="project_manager",
                      session="project_manager_1", state="leased"))
-    assert wp._default_session() == "project_manager_1"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == "project_manager_1"
 
 
 def test_default_session_single_lease_wins_over_local_conf(wp, proj, monkeypatch):
@@ -1814,7 +1815,7 @@ def test_default_session_single_lease_wins_over_local_conf(wp, proj, monkeypatch
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _write_local_conf(proj, "session=stale-conf\n")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="derived-1", state="leased"))
-    assert wp._default_session() == "derived-1"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == "derived-1"
 
 
 def test_default_session_idle_leases_not_counted(wp, proj, monkeypatch):
@@ -1823,7 +1824,7 @@ def test_default_session_idle_leases_not_counted(wp, proj, monkeypatch):
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="live_1", state="leased"),
           _lease(wp, slot="work/A_2", repo="A", session="", state="idle"))
-    assert wp._default_session() == "live_1"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == "live_1"
 
 
 def test_default_session_two_leases_falls_back_host_pid(wp, proj, monkeypatch):
@@ -1838,7 +1839,7 @@ def test_default_session_two_leases_falls_back_host_pid(wp, proj, monkeypatch):
     _write_local_conf(proj, "session=some-conf\n")   # 있어도 무시(읽는 층 없음)
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="a_1", state="leased"),
           _lease(wp, slot="work/B_1", repo="B", session="b_1", state="leased"))
-    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == f"{socket.gethostname()}-{os.getpid()}"
 
 
 def test_default_session_falls_back_to_host_pid(wp, proj, monkeypatch):
@@ -1847,7 +1848,7 @@ def test_default_session_falls_back_to_host_pid(wp, proj, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     # 장부 없음(leased 0)·local.conf 없음.
-    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == f"{socket.gethostname()}-{os.getpid()}"
 
 
 def test_no_local_conf_session_parser_remains(wp):
@@ -1878,25 +1879,25 @@ def test_default_session_no_rows_does_not_derive_from_registration(wp, proj, mon
     import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
-    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == f"{socket.gethostname()}-{os.getpid()}"
 
 
 def test_default_session_single_lease_layer_resolves(wp, proj, monkeypatch):
     """단일-lease 값이 있으면(장부 leased 1행) 그 값이 세션이다(체인 순서 불변)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
+
     _seed(wp, _lease(wp, slot="work/other_1", repo="other", session="other_1", state="leased"))
-    assert wp._default_session() == "other_1"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == "other_1"
 
 
 def test_default_session_two_registered_falls_back_host_pid(wp, proj, monkeypatch):
     import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A", "B"}, repo_path=proj))
-    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == f"{socket.gethostname()}-{os.getpid()}"
 
 
 def test_default_session_pool_row_present_falls_back_host_pid_despite_single_registration(
@@ -1905,9 +1906,9 @@ def test_default_session_pool_row_present_falls_back_host_pid_despite_single_reg
     import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
+
     _seed(wp, _lease(wp, slot="work/A_2", repo="A", session="", state="idle"))
-    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+    assert lease_store._default_session(pm_paths.home_at(wp.REPO)) == f"{socket.gethostname()}-{os.getpid()}"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1936,7 +1937,7 @@ def _worker_create(proj_str, idx, ready, go, out_q):
     ready.put(idx)
     go.wait()
     try:
-        lease = wp.create_slot(f"R{idx}", base="main", git_runner=git)
+        lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), f"R{idx}", base="main", git_runner=git)
         out_q.put(("OK", lease.slot))
     except BaseException as e:  # noqa: BLE001
         import traceback
@@ -1995,7 +1996,7 @@ def test_concurrent_create_slot_no_lost_ledger_writes(proj):
 
     # 모든 워커의 슬롯이 장부에 보존됐는지(lost update 0).
     wp = _load_wp_bound(proj)
-    slots = {l.slot for l in wp.list_leases()}
+    slots = {l.slot for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
     expected = {f"work/R{i}_1" for i in range(n)}
     assert slots == expected, f"lost ledger writes: {expected - slots}"
 
@@ -2028,7 +2029,7 @@ def test_lease_lock_burns_the_windows_branch_through_the_real_consumer(
     monkeypatch.setattr(lock_module, "_windows_lock_api", lambda: api)
 
     _mk_bare_placeholder(wp, "W")
-    lease = wp.create_slot("W", base="main", git_runner=FakeGit())
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "W", base="main", git_runner=FakeGit())
 
     assert acquired, "주입이 no-op — 장부 락이 Windows 분기를 지나지 않았다"
     assert len(acquired) == len(released), "획득/해제 짝이 안 맞는다(락 누수)"
@@ -2040,7 +2041,7 @@ def test_lease_lock_burns_the_windows_branch_through_the_real_consumer(
     }
     assert all(handle >= _FAKE_OS_HANDLE_BASE for handle, _flags, _length in acquired), \
         "fd 를 OS 핸들로 변환하지 않고 원시 호출에 넘겼다"
-    assert lease.slot in {l.slot for l in wp.list_leases()}
+    assert lease.slot in {l.slot for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2105,7 +2106,7 @@ def _mk_real_bare(wp, repo: str, tmp_path: Path, *, marker: str = "FAMILY") -> P
     (origin / "FAMILY_MARKER.txt").write_text(f"{marker}:{repo}\n", encoding="utf-8")
     _git(origin, "add", "FAMILY_MARKER.txt")
     _git(origin, "commit", "-q", "-m", f"family {repo}")
-    bare = wp.bare_repo_path(repo)
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), repo)
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     return bare
@@ -2144,11 +2145,11 @@ def test_real_git_is_valid_bare_requires_head_resolution(wp, tmp_path):
     # (1) 빈 bare — `git init --bare`(커밋/HEAD 없음) → is-bare "true" 지만 HEAD 미해소 → False.
     empty_bare = tmp_path / "empty.git"
     _git(tmp_path, "init", "--bare", "-q", str(empty_bare))
-    assert wp._is_valid_bare(empty_bare, runner=wp._real_git_runner(empty_bare)) is False, \
+    assert worktree_git._is_valid_bare(empty_bare, runner=worktree_git._real_git_runner(empty_bare)) is False, \
         "빈 bare(HEAD 미해소)를 유효로 오판(is-bare 형식만 봄·codex must-fix)"
     # (2) 커밋 있는 real repo → `clone --bare` → is-bare "true" + HEAD rc0 → True.
     valid_bare = _mk_real_bare(wp, "A", tmp_path)
-    assert wp._is_valid_bare(valid_bare, runner=wp._real_git_runner(valid_bare)) is True, \
+    assert worktree_git._is_valid_bare(valid_bare, runner=worktree_git._real_git_runner(valid_bare)) is True, \
         "정상 bare(HEAD 해소)를 broken 오판"
 
 
@@ -2189,7 +2190,7 @@ def test_real_git_dev_and_sync_selective(proj, tmp_path):
     _git(slot, "commit", "-q", "-m", "add submodules")
 
     # (1) dev — libs/dev 를 dev 브랜치로 지정 → on-branch.
-    rc, _out = wp.dev("work/A_1", "libs/dev", "mywork")
+    rc, _out = branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "libs/dev", "mywork")
     assert rc == 0
     dev_head = _git(slot / "libs" / "dev", "symbolic-ref", "--short", "HEAD").stdout.strip()
     assert dev_head == "mywork", f"dev submodule on-branch 아님: {dev_head!r}"
@@ -2199,7 +2200,7 @@ def test_real_git_dev_and_sync_selective(proj, tmp_path):
     assert _git(slot / "vendor" / "consume", "rev-parse", "HEAD").stdout.strip() == consume_c1
 
     # (2) sync — consume(detached)은 pin(v2)으로 재동기·dev(on-branch)는 skip(mywork 유지).
-    wp.sync("work/A_1")
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), "work/A_1")
     consume_after = _git(slot / "vendor" / "consume", "rev-parse", "HEAD").stdout.strip()
     assert consume_after != consume_c1, "detached consume 이 pin 으로 재동기 안 됨(sync 실패)"
     dev_after = _git(slot / "libs" / "dev", "symbolic-ref", "--short", "HEAD").stdout.strip()
@@ -2231,12 +2232,12 @@ def test_real_git_dev_existing_branch_switches(proj, tmp_path):
     _git(slot, "commit", "-q", "-m", "add submodule")
 
     # b1·b2 생성(각각 on-branch 로 전이) → 현재 b2.
-    assert wp.dev("work/A_1", "vendor/sub", "b1")[0] == 0
-    assert wp.dev("work/A_1", "vendor/sub", "b2")[0] == 0
+    assert branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "b1")[0] == 0
+    assert branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "b2")[0] == 0
     assert _git(slot / "vendor" / "sub", "symbolic-ref", "--short", "HEAD").stdout.strip() == "b2"
 
     # b1 은 이미 존재 → `-b` 실패·show-ref 존재확인 후 plain checkout 전환.
-    rc, _out = wp.dev("work/A_1", "vendor/sub", "b1")
+    rc, _out = branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/sub", "b1")
     assert rc == 0, "기존 브랜치 전환 폴백이 실패(rc≠0)"
     head = _git(slot / "vendor" / "sub", "symbolic-ref", "--short", "HEAD").stdout.strip()
     assert head == "b1", f"기존 브랜치로 전환 안 됨: {head!r}"
@@ -2254,9 +2255,9 @@ def test_real_git_create_slot_branch_checkout_and_release(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)  # .repos/A.git bare = worktree base
 
-    lease = wp.create_slot("A", base="main", init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     assert lease.slot == "work/A_1"
-    slot_dir = wp.slot_path("work/A_1")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     assert slot_dir.is_dir(), "worktree 폴더가 실제로 안 생김"
 
     # 그 worktree 의 현재 브랜치가 슬롯 전용 브랜치 `<repo>_<N>`.
@@ -2273,11 +2274,11 @@ def test_real_git_create_slot_branch_checkout_and_release(proj, tmp_path):
 
     # 그 worktree 의 .git 원이 family bare 인지(공유 .git 원 = .repos/A.git·ADR-0011 §31).
     common = _git(slot_dir, "rev-parse", "--git-common-dir").stdout.strip()
-    assert Path(common).resolve() == wp.bare_repo_path("A").resolve(), \
+    assert Path(common).resolve() == pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A").resolve(), \
         f"worktree 공유 .git 원이 family bare 가 아님: {common!r}"
 
     # clean 반납 → idle.
-    released = wp.release("work/A_1")
+    released = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1")
     assert released.state == "idle"
 
 
@@ -2293,11 +2294,11 @@ def test_real_git_list_git_worktrees_and_reconcile(proj, tmp_path):
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
-    lease = wp.create_slot("A", base="main", init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     assert lease.slot == "work/A_1"
 
     # (1) list_git_worktrees — 슬롯 worktree 를 branch 와 함께 열거(bare 원은 slot=None).
-    wts = wp.list_git_worktrees("A")
+    wts = worktree_git.list_git_worktrees(pm_paths.home_at(wp.REPO), "A")
     by_slot = {w.slot: w for w in wts if w.slot}
     assert "work/A_1" in by_slot, f"실 worktree 가 열거 안 됨: {[w.path for w in wts]!r}"
     assert by_slot["work/A_1"].branch == "A_1"
@@ -2306,14 +2307,14 @@ def test_real_git_list_git_worktrees_and_reconcile(proj, tmp_path):
 
     # (2) 장부만 비우면(worktree 는 disk 에 남음) → orphan.
     _seed(wp)   # 빈 장부
-    recon = wp.reconcile_worktrees()
+    recon = worktree_pool.reconcile_worktrees(pm_paths.home_at(wp.REPO))
     assert {w.slot for w in recon.orphans} == {"work/A_1"}, "disk worktree·장부 없음이 orphan 미판정"
     assert recon.stale == []
 
     # (3) worktree 를 실제 remove(disk+등록 정리) 후 장부만 남김 → stale.
-    wp._rollback_worktree("A", wp.slot_path("work/A_1"))   # git worktree remove --force
+    worktree_git._rollback_worktree(pm_paths.home_at(wp.REPO), "A", pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"))   # git worktree remove --force
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    recon2 = wp.reconcile_worktrees()
+    recon2 = worktree_pool.reconcile_worktrees(pm_paths.home_at(wp.REPO))
     assert {l.slot for l in recon2.stale} == {"work/A_1"}, "장부만 남고 worktree 없음이 stale 미판정"
     assert recon2.orphans == []
 
@@ -2335,17 +2336,17 @@ def test_real_git_switch_refuses_branch_checked_out_by_other_worktree(proj, tmp_
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
 
-    holder = wp.create_slot("A", base="main", init_submodules=False)
-    other = wp.create_slot("A", base="main", init_submodules=False)
+    holder = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    other = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     assert holder.slot == "work/A_1" and other.slot == "work/A_2"
 
     # holder 에 커밋 1개를 더해 holder tip 을 caller HEAD 와 다른 커밋으로 만든다(검사 공허화 방지).
-    holder_path = wp.slot_path(holder.slot)
+    holder_path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), holder.slot)
     (holder_path / "advance.txt").write_text("holder advance\n", encoding="utf-8")
     _git(holder_path, "add", "advance.txt")
     _git(holder_path, "commit", "-q", "-m", "holder advance")
 
-    other_path = wp.slot_path(other.slot)
+    other_path = pm_paths.slot_path(pm_paths.home_at(wp.REPO), other.slot)
     before_holder_sha = _git(holder_path, "rev-parse", "A_1").stdout.strip()
     before_caller_sha = _git(other_path, "rev-parse", "HEAD").stdout.strip()
     assert before_holder_sha != before_caller_sha, \
@@ -2400,13 +2401,13 @@ def test_real_git_create_slot_base_derives_slot_branch_from_base(proj, tmp_path)
     _git(origin, "commit", "-q", "-m", "develop-only commit")
     develop_tip = _git(origin, "rev-parse", "develop").stdout.strip()
     _git(origin, "checkout", "-q", "main")   # origin HEAD = main(develop 아님)
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
 
-    lease = wp.create_slot("A", base="develop", init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"
-    slot_dir = wp.slot_path("work/A_1")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
 
     # 슬롯 브랜치 = A_1(슬롯 식별자·base 는 develop 만 바뀜).
     head = _git(slot_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
@@ -2442,7 +2443,7 @@ def test_real_git_create_slot_base_derives_from_origin_when_advanced(proj, tmp_p
     _git(origin, "checkout", "-q", "main")   # origin HEAD = main
 
     # bare = clone --bare + refspec 보정(T-0152 동형) + fetch → origin/develop = D1(로컬도 D1 동결).
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
@@ -2459,9 +2460,9 @@ def test_real_git_create_slot_base_derives_from_origin_when_advanced(proj, tmp_p
     assert local_frozen != develop_tip, "전제 위반 — 로컬 develop 이 이미 origin tip"
 
     # create_slot(base=develop) — fetch 로 origin/develop→D2 갱신 후 거기서 슬롯 파생.
-    lease = wp.create_slot("A", base="develop", init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"
-    slot_dir = wp.slot_path("work/A_1")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
 
     # 슬롯 HEAD == origin develop tip(D2) — 동결 로컬(D1) 이 아니다.
     slot_head = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
@@ -2492,7 +2493,7 @@ def test_real_git_create_slot_base_no_upstream_on_slot_branch(proj, tmp_path):
     _git(origin, "add", "DEV.txt")
     _git(origin, "commit", "-q", "-m", "develop")
     _git(origin, "checkout", "-q", "main")
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
@@ -2500,8 +2501,8 @@ def test_real_git_create_slot_base_no_upstream_on_slot_branch(proj, tmp_path):
     # autoSetupMerge 기본 활성(git 기본값)임을 명시 — --no-track 이 없으면 upstream 이 걸릴 조건.
     _git(bare, "config", "branch.autoSetupMerge", "true")
 
-    lease = wp.create_slot("A", base="develop", init_submodules=False)
-    slot_dir = wp.slot_path("work/A_1")
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     assert lease.slot == "work/A_1"
     # 파생은 origin/develop 에서 됐다(파일 존재).
     assert (slot_dir / "DEV.txt").exists()
@@ -2539,7 +2540,7 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
     _git(origin, "add", "DEV_LOCAL.txt")
     _git(origin, "commit", "-q", "-m", "develop local")
     _git(origin, "checkout", "-q", "main")
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
 
@@ -2548,9 +2549,9 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
     # 엔진 공용 삭제 seam 을 그대로 쓴다(속성 해제 후 재시도·못 지우면 loud).
     wp.fs.force_rmtree(origin)
 
-    lease = wp.create_slot("A", base="develop", init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"           # fetch 실패해도 슬롯 생성 계속(fail-soft)
-    slot_dir = wp.slot_path("work/A_1")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     assert slot_dir.is_dir()
     # 로컬 develop(동결 head)에서 팜 — develop 내용이 보인다.
     assert (slot_dir / "DEV_LOCAL.txt").exists()
@@ -2567,11 +2568,11 @@ def test_real_git_create_slot_missing_bare_raises(proj, tmp_path):
     """
     _init_repo(proj)  # multi-PM은 git repo 지만 .repos/A.git 은 없음
     wp = _load_wp_bound(proj)
-    with pytest.raises(wp.BareRepoMissing):
-        wp.create_slot("A", base="main", init_submodules=False)
+    with pytest.raises(worktree_records.BareRepoMissing):
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     # 가드가 worktree add 전에 막아 슬롯 폴더도·장부도 안 생김(침묵 폴백 0).
-    assert not wp.slot_path("work/A_1").exists()
-    assert wp.list_leases() == []
+    assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").exists()
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 @_git_required
@@ -2585,13 +2586,13 @@ def test_real_git_reattach_resume_preserves_dirty(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
 
-    lease = wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     # dirty 작업 — 미커밋 파일.
     (slot_dir / "wip.txt").write_text("work in progress\n", encoding="utf-8")
 
     # 같은 세션 resume(branch A_1) → 같은 슬롯 재부착(dirty 그대로·checkout 은 같은 브랜치라 무해).
-    reattached = wp.alloc("A", resume="A_1", owner_task="me")
+    reattached = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", resume="A_1", owner_task="me")
     assert reattached.slot == lease.slot
     assert (slot_dir / "wip.txt").exists(), "dirty 작업이 재부착 후 유실됨"
     assert (slot_dir / "wip.txt").read_text(encoding="utf-8") == "work in progress\n"
@@ -2629,12 +2630,12 @@ def test_real_git_submodule_init_in_new_slot(proj, tmp_path, monkeypatch):
     _git(family_origin, "commit", "-q", "-m", "add submodule")
     _init_repo(proj)  # multi-PM도 git repo(전역 일관)지만 worktree base 는 family bare
     wp = _load_wp_bound(proj)
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(family_origin), str(bare))
 
-    lease = wp.create_slot("A", base="main", init_submodules=True)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=True)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
 
     # worktree add 만 했다면 vendor/sub 가 비어있다 — create_slot 의 submodule init(슬롯 cwd)
     # 후엔 그 안에 submodule 파일(lib.txt)이 채워져 있어야 한다(family bare 의 worktree 내부).
@@ -2686,7 +2687,7 @@ def _mk_family_versioned_submodule(wp, tmp_path):
     _git(family, "commit", "-q", "-m", "feature pins sub v2")
     _git(family, "checkout", "-q", "main")
 
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(family), str(bare))
     return sub_origin
@@ -2705,13 +2706,13 @@ def test_real_git_resync_detached_submodule_follows_new_branch_pin(proj, tmp_pat
     wp = _load_wp_bound(proj)
     _mk_family_versioned_submodule(wp, tmp_path)
 
-    lease = wp.create_slot("A", base="main", init_submodules=True)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=True)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     sub_lib = slot_dir / "vendor" / "sub" / "lib.txt"
     assert sub_lib.read_text(encoding="utf-8") == "v1\n", "슬롯 초기 submodule 이 main pin(v1) 아님"
 
     # feature 로 전환(브랜치 전환 경로) → detached submodule 이 feature pin(v2)로 재동기.
-    wp._checkout_required("work/A_1", "feature")
+    branch_checkout._checkout_required(pm_paths.home_at(wp.REPO), "work/A_1", "feature")
     assert sub_lib.read_text(encoding="utf-8") == "v2\n", \
         "detached submodule 이 새 브랜치 pin(v2)로 재동기 안 됨(drift·ADR-0051)"
 
@@ -2729,8 +2730,8 @@ def test_real_git_resync_on_branch_submodule_preserved(proj, tmp_path, monkeypat
     wp = _load_wp_bound(proj)
     _mk_family_versioned_submodule(wp, tmp_path)
 
-    lease = wp.create_slot("A", base="main", init_submodules=True)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=True)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     sub_dir = slot_dir / "vendor" / "sub"
     sub_lib = sub_dir / "lib.txt"
     assert sub_lib.read_text(encoding="utf-8") == "v1\n"
@@ -2739,7 +2740,7 @@ def test_real_git_resync_on_branch_submodule_preserved(proj, tmp_path, monkeypat
     _git(sub_dir, "checkout", "-q", "-b", "devwork")
 
     # feature 로 전환 → on-branch(dev) submodule 은 skip → v1·devwork 유지.
-    wp._checkout_required("work/A_1", "feature")
+    branch_checkout._checkout_required(pm_paths.home_at(wp.REPO), "work/A_1", "feature")
     assert sub_lib.read_text(encoding="utf-8") == "v1\n", \
         "on-branch(dev) submodule 이 재동기돼 작업이 파괴됨(크럭스 A·ADR-0051 위반)"
     head = _git(sub_dir, "symbolic-ref", "--short", "HEAD").stdout.strip()
@@ -2764,8 +2765,8 @@ def test_real_git_resync_on_branch_submodule_preserved_under_recurse_true(proj, 
     wp = _load_wp_bound(proj)
     _mk_family_versioned_submodule(wp, tmp_path)
 
-    lease = wp.create_slot("A", base="main", init_submodules=True)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=True)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     sub_dir = slot_dir / "vendor" / "sub"
     sub_lib = sub_dir / "lib.txt"
     assert sub_lib.read_text(encoding="utf-8") == "v1\n"
@@ -2778,7 +2779,7 @@ def test_real_git_resync_on_branch_submodule_preserved_under_recurse_true(proj, 
 
     # feature 로 전환 → recurse=true 여도 `--no-recurse-submodules` 로 checkout 이 submodule 무건드림,
     # selective resync 는 on-branch=dev 를 skip → v1·devwork 보존(recurse=true 낚아챔 차단).
-    wp._checkout_required("work/A_1", "feature")
+    branch_checkout._checkout_required(pm_paths.home_at(wp.REPO), "work/A_1", "feature")
     assert sub_lib.read_text(encoding="utf-8") == "v1\n", \
         "recurse=true 가 dev submodule 을 detached pin 으로 낚아챔(--no-recurse-submodules 누락·크럭스 A 회귀)"
     head = _git(sub_dir, "symbolic-ref", "--short", "HEAD").stdout.strip()
@@ -2814,15 +2815,15 @@ def test_create_slot_worktree_add_and_submodule_use_interactive_on_real_path(wp,
         capture_cwds.append(cwd)
         return FakeGit()
 
-    monkeypatch.setattr(wp, "_real_git_runner_interactive", spy_interactive)
-    monkeypatch.setattr(wp, "_real_git_runner", spy_capture)
+    monkeypatch.setattr(worktree_git, "_real_git_runner_interactive", spy_interactive)
+    monkeypatch.setattr(worktree_git, "_real_git_runner", spy_capture)
 
-    wp.create_slot("A", base="main")  # git_runner 미주입 = 실경로
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main")  # git_runner 미주입 = 실경로
 
-    bare = wp.bare_repo_path("A")
-    slot_p = wp.slot_path("work/A_1")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
+    slot_p = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     # worktree add(자체) = bare 컨텍스트 + GIT_TIMEOUT_SECONDS (T-0292 console-visible).
-    assert (bare, wp.GIT_TIMEOUT_SECONDS) in interactive_calls, \
+    assert (bare, worktree_git.GIT_TIMEOUT_SECONDS) in interactive_calls, \
         "worktree add 가 console-visible 러너(GIT_TIMEOUT_SECONDS)를 안 탐"
     # submodule = 슬롯 경로 + 기본 timeout(=SUBMODULE_TIMEOUT·미지정) (T-0070 인터랙티브).
     assert (slot_p, None) in interactive_calls, \
@@ -2849,9 +2850,9 @@ def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypa
     def trap(cwd, *, timeout=None):  # 주입 모드에서 인터랙티브가 불리면 안 됨.
         raise AssertionError("git_runner 주입인데 worktree add 가 인터랙티브 러너를 탐(DI seam 깨짐)")
 
-    monkeypatch.setattr(wp, "_real_git_runner_interactive", trap)
+    monkeypatch.setattr(worktree_git, "_real_git_runner_interactive", trap)
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert lease.state == "idle"
     # 주입 runner 가 worktree add·submodule 둘 다 처리(인터랙티브 우회).
     assert git.did("worktree", "add", "--no-track", "-b", "A_1")
@@ -2876,7 +2877,7 @@ def test_create_slot_worktree_add_failure_trip_message(wp):
         return (0, "")
 
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="main", git_runner=failing)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=failing)
     msg = str(exc.value)
     assert "rc=1" in msg                       # rc 기반 진단(빈 out 에도)
     assert "PM_GIT_TIMEOUT" in msg             # env 노브 안내
@@ -2885,7 +2886,7 @@ def test_create_slot_worktree_add_failure_trip_message(wp):
     assert "--user-ack A" in msg and "승인한 사용자만" in msg
     assert "PM_GIT_TIMEOUT=none" in msg        # 무제한 opt-in 안내
     # 실패 시 장부 미등록(기존 동작 유지).
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 # ── T-0292: _resolve_git_timeout env override (PM_GIT_TIMEOUT·_resolve_submodule_timeout 미러) ──
@@ -2894,44 +2895,48 @@ def test_create_slot_worktree_add_failure_trip_message(wp):
 def test_resolve_git_timeout_default_when_unset(wp, monkeypatch):
     """env 미설정 → 기본 1800(30분·유한 관대)."""
     monkeypatch.delenv("PM_GIT_TIMEOUT", raising=False)
-    assert wp._resolve_git_timeout() == 1800
+    assert worktree_git._resolve_git_timeout() == 1800
 
 
 def test_resolve_git_timeout_positive_int(wp, monkeypatch):
     """양의 정수 → 그 초."""
     monkeypatch.setenv("PM_GIT_TIMEOUT", "600")
-    assert wp._resolve_git_timeout() == 600
+    assert worktree_git._resolve_git_timeout() == 600
 
 
 def test_resolve_git_timeout_strips_whitespace_and_case(wp, monkeypatch):
     """앞뒤 공백 strip + 대소문자 무시 후 파싱."""
     monkeypatch.setenv("PM_GIT_TIMEOUT", "  900  ")
-    assert wp._resolve_git_timeout() == 900
+    assert worktree_git._resolve_git_timeout() == 900
     monkeypatch.setenv("PM_GIT_TIMEOUT", "  NONE  ")
-    assert wp._resolve_git_timeout() is None
+    assert worktree_git._resolve_git_timeout() is None
 
 
 def test_resolve_git_timeout_unlimited_sentinels(wp, monkeypatch):
     """`0`/`none`/`unlimited`/빈값 → None(무제한·env opt-in·console-visible 이라 안전)."""
     for raw in ("0", "none", "unlimited", ""):
         monkeypatch.setenv("PM_GIT_TIMEOUT", raw)
-        assert wp._resolve_git_timeout() is None, f"{raw!r} → None 이어야"
+        assert worktree_git._resolve_git_timeout() is None, f"{raw!r} → None 이어야"
 
 
 def test_resolve_git_timeout_non_numeric_falls_back_to_default(wp, monkeypatch):
     """비정상(비숫자) env → 기본 1800 폴백(무해)."""
     monkeypatch.setenv("PM_GIT_TIMEOUT", "soon")
-    assert wp._resolve_git_timeout() == 1800
+    assert worktree_git._resolve_git_timeout() == 1800
 
 
 def test_git_timeout_seconds_reflects_env_at_module_load(proj, monkeypatch):
     """모듈 로드 시 `GIT_TIMEOUT_SECONDS = _resolve_git_timeout()` — env 를 로드시점에 반영(SUBMODULE 동형)."""
+    monkeypatch.setattr(worktree_git, "GIT_TIMEOUT_SECONDS", worktree_git.GIT_TIMEOUT_SECONDS)
     monkeypatch.setenv("PM_GIT_TIMEOUT", "300")
+    import importlib
     mod = _load_wp_bound(proj)
-    assert mod.GIT_TIMEOUT_SECONDS == 300
+    importlib.reload(worktree_git)
+    assert worktree_git.GIT_TIMEOUT_SECONDS == 300
     monkeypatch.setenv("PM_GIT_TIMEOUT", "none")
     mod2 = _load_wp_bound(proj)
-    assert mod2.GIT_TIMEOUT_SECONDS is None
+    importlib.reload(worktree_git)
+    assert worktree_git.GIT_TIMEOUT_SECONDS is None
 
 
 # ── (2) create_slot 원자적 롤백 ─────────────────────────────────────────────
@@ -2972,13 +2977,13 @@ def test_create_slot_submodule_failure_rolls_back_worktree(wp):
     _mk_bare_placeholder(wp, "A")
     git = _SubmoduleFailRollbackGit()
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", git_runner=git)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     # 롤백: `git worktree remove <slot> --force` 가 불렸다(주입 runner 경로).
     assert git.did("worktree", "remove"), "submodule 실패 후 worktree 롤백(remove)이 안 불림(댕글링)"
     remove_calls = [c for c in git.calls if c[:2] == ["worktree", "remove"]]
     assert any("--force" in c for c in remove_calls), "롤백 remove 가 --force 없이 불림"
     # 등록 0 — 불완전 슬롯 미등록(기존 계약 유지).
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_create_slot_rollback_failure_still_raises_original(wp):
@@ -3001,8 +3006,8 @@ def test_create_slot_rollback_failure_still_raises_original(wp):
             return (1, "remove failed")  # 롤백 실패(rc≠0)
         return (0, "")
     with pytest.raises(RuntimeError, match="submodule init failed"):
-        wp.create_slot("A", base="main", git_runner=remove_rc_fail)
-    assert wp.list_leases() == []
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=remove_rc_fail)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
     def remove_raises(argv):
         if "rev-parse" in argv and "--is-bare-repository" in argv:
@@ -3015,8 +3020,8 @@ def test_create_slot_rollback_failure_still_raises_original(wp):
             raise OSError("remove blew up")  # 롤백이 예외
         return (0, "")
     with pytest.raises(RuntimeError, match="submodule init failed"):
-        wp.create_slot("A", base="main", git_runner=remove_raises)
-    assert wp.list_leases() == []
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=remove_raises)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_create_slot_worktree_add_failure_does_not_rollback(wp):
@@ -3038,10 +3043,10 @@ def test_create_slot_worktree_add_failure_does_not_rollback(wp):
             return (1, "fatal: add failed")
         return (0, "")
     with pytest.raises(RuntimeError):
-        wp.create_slot("A", base="main", git_runner=add_fail)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=add_fail)
     assert not any(c[:2] == ["worktree", "remove"] for c in calls), \
         "worktree add 실패인데 롤백 remove 가 불림(지울 worktree 없음)"
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_rollback_worktree_uses_bare_context(wp, monkeypatch):
@@ -3057,9 +3062,9 @@ def test_rollback_worktree_uses_bare_context(wp, monkeypatch):
         captured.append(cwd)
         return FakeGit()
 
-    monkeypatch.setattr(wp, "_real_git_runner", spy)
-    wp._rollback_worktree("A", wp.slot_path("work/A_1"))
-    assert captured and captured[0] == wp.bare_repo_path("A"), \
+    monkeypatch.setattr(worktree_git, "_real_git_runner", spy)
+    worktree_git._rollback_worktree(pm_paths.home_at(wp.REPO), "A", pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"))
+    assert captured and captured[0] == pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), \
         f"롤백 remove 컨텍스트가 family bare 가 아님: {captured!r}"
 
 
@@ -3108,12 +3113,12 @@ def test_list_git_worktrees_parses_porcelain(wp):
     """list_git_worktrees — porcelain 파싱: branch·detached·bare + WORK_DIR 하위 slot 파생 (T-0295)."""
     _mk_bare_placeholder(wp, "A")
     porc = _porcelain(
-        (str(wp.bare_repo_path("A")), None, "bare"),        # bare 원 → slot None
-        (str(wp.slot_path("work/A_1")), "A_1"),             # on-branch
-        (str(wp.slot_path("work/A_2")), None),              # detached
+        (str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), None, "bare"),        # bare 원 → slot None
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "A_1"),             # on-branch
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_2")), None),              # detached
     )
     git = _WorktreeListGit(porc)
-    wts = wp.list_git_worktrees("A", git_runner=git)
+    wts = worktree_git.list_git_worktrees(pm_paths.home_at(wp.REPO), "A", git_runner=git)
     by_slot = {w.slot: w for w in wts}
     assert by_slot["work/A_1"].branch == "A_1"
     assert by_slot["work/A_1"].bare is False and by_slot["work/A_1"].detached is False
@@ -3125,11 +3130,11 @@ def test_list_git_worktrees_parses_porcelain(wp):
 def test_list_git_worktrees_failsoft_on_rc_and_raise(wp):
     """list_git_worktrees fail-soft — rc≠0·runner 예외는 빈 리스트(크래시 0·T-0295)."""
     _mk_bare_placeholder(wp, "A")
-    assert wp.list_git_worktrees("A", git_runner=_WorktreeListGit("", list_rc=1)) == []
+    assert worktree_git.list_git_worktrees(pm_paths.home_at(wp.REPO), "A", git_runner=_WorktreeListGit("", list_rc=1)) == []
 
     def boom(argv):
         raise OSError("git gone")
-    assert wp.list_git_worktrees("A", git_runner=boom) == []
+    assert worktree_git.list_git_worktrees(pm_paths.home_at(wp.REPO), "A", git_runner=boom) == []
 
 
 def test_reconcile_flags_orphan(wp):
@@ -3137,11 +3142,11 @@ def test_reconcile_flags_orphan(wp):
     _mk_bare_placeholder(wp, "A")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="leased"))
     porc = _porcelain(
-        (str(wp.bare_repo_path("A")), None, "bare"),
-        (str(wp.slot_path("work/A_1")), "A_1"),
-        (str(wp.slot_path("work/A_2")), "A_2"),   # orphan(장부 미등록)
+        (str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), None, "bare"),
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "A_1"),
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_2")), "A_2"),   # orphan(장부 미등록)
     )
-    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    recon = worktree_pool.reconcile_worktrees(pm_paths.home_at(wp.REPO), git_runner=_WorktreeListGit(porc))
     assert {w.slot for w in recon.orphans} == {"work/A_2"}
     assert recon.stale == [] and recon.incomplete == []
 
@@ -3153,10 +3158,10 @@ def test_reconcile_flags_stale(wp):
           _lease(wp, slot="work/A_1", repo="A", state="leased"),
           _lease(wp, slot="work/A_2", repo="A", state="idle"))
     porc = _porcelain(
-        (str(wp.bare_repo_path("A")), None, "bare"),
-        (str(wp.slot_path("work/A_1")), "A_1"),   # A_2 는 dir 삭제/prune → 목록에 없음
+        (str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), None, "bare"),
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "A_1"),   # A_2 는 dir 삭제/prune → 목록에 없음
     )
-    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    recon = worktree_pool.reconcile_worktrees(pm_paths.home_at(wp.REPO), git_runner=_WorktreeListGit(porc))
     assert {l.slot for l in recon.stale} == {"work/A_2"}
     assert recon.orphans == [] and recon.incomplete == []
 
@@ -3166,10 +3171,10 @@ def test_reconcile_flags_incomplete_creating(wp):
     _mk_bare_placeholder(wp, "A")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
     porc = _porcelain(
-        (str(wp.bare_repo_path("A")), None, "bare"),
-        (str(wp.slot_path("work/A_1")), "A_1"),   # add 성공 후 확정 전 SIGKILL 재현(worktree 존재)
+        (str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), None, "bare"),
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "A_1"),   # add 성공 후 확정 전 SIGKILL 재현(worktree 존재)
     )
-    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    recon = worktree_pool.reconcile_worktrees(pm_paths.home_at(wp.REPO), git_runner=_WorktreeListGit(porc))
     assert {l.slot for l in recon.incomplete} == {"work/A_1"}
     assert recon.stale == []       # creating 은 stale 로 이중계상 안 함
     assert recon.orphans == []     # 장부에 있으니 orphan 도 아님
@@ -3180,10 +3185,10 @@ def test_reconcile_clean_when_ledger_matches_git(wp):
     _mk_bare_placeholder(wp, "A")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="leased"))
     porc = _porcelain(
-        (str(wp.bare_repo_path("A")), None, "bare"),
-        (str(wp.slot_path("work/A_1")), "A_1"),
+        (str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), None, "bare"),
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "A_1"),
     )
-    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    recon = worktree_pool.reconcile_worktrees(pm_paths.home_at(wp.REPO), git_runner=_WorktreeListGit(porc))
     assert recon.orphans == [] and recon.stale == [] and recon.incomplete == []
 
 
@@ -3195,8 +3200,8 @@ def test_create_slot_avoids_orphan_slot_number(wp):
     """
     _mk_bare_placeholder(wp, "A")
     orphan_porc = _porcelain(
-        (str(wp.bare_repo_path("A")), None, "bare"),
-        (str(wp.slot_path("work/A_1")), "A_1"),   # orphan(장부엔 없음)
+        (str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), None, "bare"),
+        (str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "A_1"),   # orphan(장부엔 없음)
     )
 
     def git(argv):
@@ -3209,7 +3214,7 @@ def test_create_slot_avoids_orphan_slot_number(wp):
         if argv[:3] == ["worktree", "list", "--porcelain"]:
             return (0, orphan_porc)
         return (0, "")   # worktree add·submodule 성공
-    lease = wp.create_slot("A", base="main", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert lease.slot == "work/A_2", "orphan A_1 을 회피해 A_2 를 파야 함(git 병합·audit #4)"
 
 
@@ -3231,14 +3236,14 @@ def test_create_slot_writes_provisional_before_worktree_add(wp):
         if "rev-parse" in argv and "--verify" in argv and argv and argv[-1] == "HEAD":
             return (0, "abc\n")
         if argv[:2] == ["worktree", "add"]:
-            seen["at_add"] = [(l.slot, l.state) for l in wp._read_ledger()]
+            seen["at_add"] = [(l.slot, l.state) for l in pool_store._read_ledger(pm_paths.home_at(wp.REPO))]
             return (0, "")
         return (0, "")
-    lease = wp.create_slot("A", base="main", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert seen["at_add"] == [("work/A_1", "creating")], \
         "provisional('creating')이 worktree add 전에 disk 장부에 없음(SIGKILL 흔적 상실)"
     assert lease.state == "idle"
-    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "idle")]
+    assert [(l.slot, l.state) for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))] == [("work/A_1", "idle")]
 
 
 def test_create_slot_keyboard_interrupt_rolls_back_and_removes_provisional(wp):
@@ -3264,9 +3269,9 @@ def test_create_slot_keyboard_interrupt_rolls_back_and_removes_provisional(wp):
             return (0, "")
         return (0, "")                              # worktree add·list 성공
     with pytest.raises(KeyboardInterrupt):
-        wp.create_slot("A", base="main", git_runner=git)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     assert removed, "KeyboardInterrupt 인데 worktree 롤백(remove)이 안 불림(orphan 잔존)"
-    assert wp.list_leases() == [], "provisional('creating')이 제거 안 됨(Ctrl-C 후 장부 잔존)"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == [], "provisional('creating')이 제거 안 됨(Ctrl-C 후 장부 잔존)"
 
 
 def test_create_slot_already_exists_error_hints_orphan(wp):
@@ -3284,11 +3289,11 @@ def test_create_slot_already_exists_error_hints_orphan(wp):
             return (1, "fatal: '.../work/A_1' already exists")
         return (0, "")
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="main", git_runner=git)
+        worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)
     msg = str(exc.value)
     assert "orphan" in msg
     assert "pm-config status" in msg
-    assert wp.list_leases() == []   # provisional 제거(불완전 슬롯 미등록)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []   # provisional 제거(불완전 슬롯 미등록)
 
 
 # ── T-0295 리뷰: 안전 prune · alloc 위험차단 · resume creating 제외 · 이중계상 가드 ──
@@ -3304,8 +3309,8 @@ def test_reconcile_creating_without_worktree_is_incomplete_not_stale(wp):
     _mk_bare_placeholder(wp, "A")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
     # git worktree 목록에 A_1 없음(add 전 SIGKILL = worktree 미생성).
-    porc = _porcelain((str(wp.bare_repo_path("A")), None, "bare"))
-    recon = wp.reconcile_worktrees(git_runner=_WorktreeListGit(porc))
+    porc = _porcelain((str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), None, "bare"))
+    recon = worktree_pool.reconcile_worktrees(pm_paths.home_at(wp.REPO), git_runner=_WorktreeListGit(porc))
     assert {l.slot for l in recon.incomplete} == {"work/A_1"}
     assert recon.stale == []       # 가드가 stale 이중계상 차단(load-bearing)
     assert recon.orphans == []
@@ -3321,18 +3326,18 @@ def test_prune_stale_leases_removes_absent_worktree_entries(wp):
           _lease(wp, slot="work/A_1", repo="A", state="idle"),        # dir 부재 → 제거
           _lease(wp, slot="work/A_2", repo="A", state="creating"),    # dir 부재 → 제거
           _lease(wp, slot="work/A_3", repo="A", state="leased"))      # dir 존재 → 유지
-    wp.slot_path("work/A_3").mkdir(parents=True, exist_ok=True)
-    pruned = wp.prune_stale_leases()
+    pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_3").mkdir(parents=True, exist_ok=True)
+    pruned = worktree_pool.prune_stale_leases(pm_paths.home_at(wp.REPO))
     assert set(pruned) == {"work/A_1", "work/A_2"}
-    assert {l.slot for l in wp.list_leases()} == {"work/A_3"}
+    assert {l.slot for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))} == {"work/A_3"}
 
 
 def test_prune_stale_leases_keeps_present_worktree(wp):
     """sensitivity — worktree dir 이 존재하면 어떤 state(creating 포함)든 prune 이 안 건드린다 (T-0295)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
-    wp.slot_path("work/A_1").mkdir(parents=True, exist_ok=True)
-    assert wp.prune_stale_leases() == []
-    assert {l.slot for l in wp.list_leases()} == {"work/A_1"}
+    pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").mkdir(parents=True, exist_ok=True)
+    assert worktree_pool.prune_stale_leases(pm_paths.home_at(wp.REPO)) == []
+    assert {l.slot for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))} == {"work/A_1"}
 
 
 def test_alloc_skips_idle_slot_with_missing_worktree(wp):
@@ -3344,17 +3349,17 @@ def test_alloc_skips_idle_slot_with_missing_worktree(wp):
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     # work/A_1 dir 미생성 = worktree 부재.
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", owner_task="me")   # git_runner 미주입 = 실경로 fs 가드
-    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "idle")], \
+    with pytest.raises(worktree_records.NeedsCreate):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me")   # git_runner 미주입 = 실경로 fs 가드
+    assert [(l.slot, l.state) for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))] == [("work/A_1", "idle")], \
         "부재 worktree idle 이 leased 로 승격됨(위험차단 실패)"
 
 
 def test_alloc_reuses_idle_slot_with_present_worktree(wp):
     """sensitivity 대조 — worktree dir 이 존재하는 idle 슬롯은 실경로에서도 정상 재사용 (T-0295)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
-    wp.slot_path("work/A_1").mkdir(parents=True, exist_ok=True)   # worktree 존재 모델
-    lease = wp.alloc("A", owner_task="me")   # 실경로·target_branch 없음 → checkout 불요·git 안 탐
+    pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").mkdir(parents=True, exist_ok=True)   # worktree 존재 모델
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me")   # 실경로·target_branch 없음 → checkout 불요·git 안 탐
     assert lease.slot == "work/A_1" and lease.state == "leased"
 
 
@@ -3368,9 +3373,9 @@ def test_alloc_resume_does_not_reattach_creating_orphan(wp):
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="creating"))
     git = FakeGit(head="a5-pay")   # 슬롯 live HEAD = a5-pay (creating 이지만 브랜치 체크아웃됨)
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", resume="a5-pay", owner_task="new", git_runner=git)
-    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "creating")], \
+    with pytest.raises(worktree_records.NeedsCreate):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", resume="a5-pay", owner_task="new", git_runner=git)
+    assert [(l.slot, l.state) for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))] == [("work/A_1", "creating")], \
         "creating orphan 이 resume 으로 leased 재부착됨(should-fix 실패)"
 
 
@@ -3389,13 +3394,13 @@ def test_real_git_runner_wires_combined_output_shared_policy(wp, monkeypatch):
             captured["kwargs"] = kwargs
             return sentinel
 
-    monkeypatch.setattr(wp, "repo_files", _RepoFiles)
-    monkeypatch.setattr(wp, "GIT_TIMEOUT_SECONDS", None)
+    monkeypatch.setattr(worktree_git, "repo_files", _RepoFiles)
+    monkeypatch.setattr(worktree_git, "GIT_TIMEOUT_SECONDS", None)
 
-    assert wp._real_git_runner(wp.REPO) is sentinel
+    assert worktree_git._real_git_runner(wp.REPO) is sentinel
     assert captured["cwd"] == wp.REPO
     assert captured["kwargs"]["missing_binary_rc"] == 1
-    assert captured["kwargs"]["timeout"] == wp._GIT_TIMEOUT_DEFAULT
+    assert captured["kwargs"]["timeout"] == worktree_git._GIT_TIMEOUT_DEFAULT
     assert captured["kwargs"]["output_mode"] == "stdout_stderr"
 
 
@@ -3410,9 +3415,9 @@ def test_real_git_runner_combines_stdout_and_stderr(wp, monkeypatch):
         stdout = "out-line\n"
         stderr = "warning: detached HEAD\n"
 
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(wp.subprocess, "run", lambda *a, **k: _Result())
-    runner = wp._real_git_runner(wp.REPO)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(worktree_git.subprocess, "run", lambda *a, **k: _Result())
+    runner = worktree_git._real_git_runner(wp.REPO)
     rc, out = runner(["status"])
     assert rc == 0
     assert "out-line" in out and "warning: detached HEAD" in out, \
@@ -3428,9 +3433,9 @@ def test_real_git_runner_exception_surfaces_message(wp, monkeypatch):
     def boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="git submodule", timeout=600)
 
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(wp.subprocess, "run", boom)
-    runner = wp._real_git_runner(wp.REPO)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(worktree_git.subprocess, "run", boom)
+    runner = worktree_git._real_git_runner(wp.REPO)
     rc, out = runner(["submodule", "update"])
     assert rc == 1
     assert out != "", "예외 메시지가 빈 문자열로 삼켜짐(침묵 무력화 회귀)"
@@ -3439,8 +3444,8 @@ def test_real_git_runner_exception_surfaces_message(wp, monkeypatch):
 
 def test_real_git_runner_missing_git_returns_message(wp, monkeypatch):
     """git 바이너리 부재 → (1, 안내 메시지)(빈 문자열 아님·진단 가능·T-0070)."""
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: None)
-    runner = wp._real_git_runner(wp.REPO)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: None)
+    runner = worktree_git._real_git_runner(wp.REPO)
     rc, out = runner(["status"])
     assert rc == 1
     assert out.strip() != "", "git 부재가 빈 out 으로 삼켜짐"
@@ -3458,7 +3463,7 @@ def test_real_git_runner_interactive_runs_short_git(wp, proj):
     stdio 콘솔 상속이라 캡처 문자열은 빈 문자열이다.
     """
     _init_repo(proj)
-    runner = wp._real_git_runner_interactive(proj)
+    runner = worktree_git._real_git_runner_interactive(proj)
     rc, out = runner(["rev-parse", "--git-dir"])
     assert rc == 0
     assert out == "", "인터랙티브 러너는 출력을 콘솔로 보내 캡처 문자열이 빈 문자열이어야 함"
@@ -3469,8 +3474,8 @@ def test_real_git_runner_interactive_runs_short_git(wp, proj):
 
 def test_real_git_runner_interactive_missing_git_failsoft(wp, monkeypatch):
     """git 부재 → (1, 메시지)(fail-soft·실 subprocess 안 탐·T-0070)."""
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: None)
-    runner = wp._real_git_runner_interactive(wp.REPO)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: None)
+    runner = worktree_git._real_git_runner_interactive(wp.REPO)
     rc, out = runner(["submodule", "update"])
     assert rc == 1
     assert out.strip() != ""
@@ -3491,13 +3496,13 @@ def test_real_git_runner_interactive_uses_submodule_timeout(wp, monkeypatch):
         captured["kwargs"] = kwargs
         return _Result()
 
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(wp.subprocess, "run", fake_run)
-    runner = wp._real_git_runner_interactive(wp.REPO)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(worktree_git.subprocess, "run", fake_run)
+    runner = worktree_git._real_git_runner_interactive(wp.REPO)
     rc, out = runner(["submodule", "update", "--init"])
     assert rc == 0
     assert out == ""
-    assert captured["kwargs"].get("timeout") == wp.SUBMODULE_TIMEOUT
+    assert captured["kwargs"].get("timeout") == worktree_git.SUBMODULE_TIMEOUT
     # stdio 상속 = capture_output 미지정(콘솔로 직접).
     assert "capture_output" not in captured["kwargs"], "인터랙티브가 capture 함(stdio 상속 깨짐)"
 
@@ -3518,9 +3523,9 @@ def test_real_git_runner_interactive_forwards_explicit_timeout(wp, monkeypatch):
         captured["kwargs"] = kwargs
         return _Result()
 
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(wp.subprocess, "run", fake_run)
-    runner = wp._real_git_runner_interactive(wp.REPO, timeout=999)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(worktree_git.subprocess, "run", fake_run)
+    runner = worktree_git._real_git_runner_interactive(wp.REPO, timeout=999)
     rc, out = runner(["worktree", "add", "x"])
     assert rc == 0
     assert out == ""
@@ -3543,9 +3548,9 @@ def test_real_git_runner_interactive_none_timeout_forwards_none(wp, monkeypatch)
         captured["kwargs"] = kwargs
         return _Result()
 
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(wp.subprocess, "run", fake_run)
-    runner = wp._real_git_runner_interactive(wp.REPO, timeout=None)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(worktree_git.subprocess, "run", fake_run)
+    runner = worktree_git._real_git_runner_interactive(wp.REPO, timeout=None)
     rc, out = runner(["worktree", "add", "x"])
     assert rc == 0
     assert captured["kwargs"].get("timeout") is None, "console-visible 러너가 None(무제한)을 캡함"
@@ -3572,15 +3577,15 @@ def test_real_git_runner_caps_none_timeout_to_finite(wp, monkeypatch):
         captured["kwargs"] = kwargs
         return _Result()
 
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(wp.subprocess, "run", fake_run)
-    monkeypatch.setattr(wp, "GIT_TIMEOUT_SECONDS", None)  # PM_GIT_TIMEOUT=none 재현
-    runner = wp._real_git_runner(wp.REPO)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(worktree_git.subprocess, "run", fake_run)
+    monkeypatch.setattr(worktree_git, "GIT_TIMEOUT_SECONDS", None)  # PM_GIT_TIMEOUT=none 재현
+    runner = worktree_git._real_git_runner(wp.REPO)
     rc, out = runner(["fetch", "origin"])
     assert rc == 0
     assert captured["kwargs"].get("timeout") is not None, \
         "captured 러너가 None(무제한)으로 감 — silent hang 위험(codex 게이트)"
-    assert captured["kwargs"].get("timeout") == wp._GIT_TIMEOUT_DEFAULT
+    assert captured["kwargs"].get("timeout") == worktree_git._GIT_TIMEOUT_DEFAULT
 
 
 def test_real_git_runner_honors_finite_timeout(wp, monkeypatch):
@@ -3600,10 +3605,10 @@ def test_real_git_runner_honors_finite_timeout(wp, monkeypatch):
         captured["kwargs"] = kwargs
         return _Result()
 
-    monkeypatch.setattr(wp.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(wp.subprocess, "run", fake_run)
-    monkeypatch.setattr(wp, "GIT_TIMEOUT_SECONDS", 300)  # 유한 env 값
-    runner = wp._real_git_runner(wp.REPO)
+    monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(worktree_git.subprocess, "run", fake_run)
+    monkeypatch.setattr(worktree_git, "GIT_TIMEOUT_SECONDS", 300)  # 유한 env 값
+    runner = worktree_git._real_git_runner(wp.REPO)
     rc, out = runner(["status", "--porcelain"])
     assert rc == 0
     assert captured["kwargs"].get("timeout") == 300, "유한 GIT_TIMEOUT_SECONDS 가 존중 안 됨(캡 오작동)"
@@ -3627,7 +3632,7 @@ def test_is_dirty_ignores_stderr_warning_lines(wp):
                            "warning: in the working copy of 'x'\n")
             return (0, "")
     git = _WarnGit()
-    assert wp._is_dirty(wp.slot_path("work/A_1"), git_runner=git) is False, \
+    assert worktree_git._is_dirty(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git) is False, \
         "stderr 경고만 있는데 dirty 오탐(porcelain 라인 필터 안 됨)"
 
 
@@ -3643,7 +3648,7 @@ def test_is_dirty_detects_real_change_amid_stderr_warning(wp):
                 return (0, "warning: CRLF will be replaced by LF\n M file.py\n")
             return (0, "")
     git = _DirtyWithWarnGit()
-    assert wp._is_dirty(wp.slot_path("work/A_1"), git_runner=git) is True, \
+    assert worktree_git._is_dirty(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=git) is True, \
         "경고 필터가 진짜 변경 라인까지 삼킴(false clean·작업 유실 위험)"
 
 
@@ -3654,7 +3659,7 @@ def test_is_dirty_rc_nonzero_is_conservatively_dirty(wp):
             if argv[:2] == ["status", "--porcelain"]:
                 return (1, "fatal: not a git repository")
             return (0, "")
-    assert wp._is_dirty(wp.slot_path("work/A_1"), git_runner=_StatusFailGit()) is True
+    assert worktree_git._is_dirty(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), git_runner=_StatusFailGit()) is True
 
 
 # ── 등록 조회 — 파괴 판단의 입력(T-0902) ──────────────────────────────────────
@@ -3667,21 +3672,21 @@ def test_worktree_registered_matches_by_path_value_and_fails_loud(wp):
     "미등록" 으로 접으면 git 이 아직 쥐고 있는 트리를 날린다. 슬롯 식별자가 아니라 경로 값을
     보므로 bare 엔트리·다른 슬롯은 자기 자신이 아니다.
     """
-    target = wp.slot_path("work/A_1")
+    target = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     listing = (f"worktree /nowhere/A.git\nbare\n\n"
                f"worktree {target}\nHEAD 0123abc\nbranch refs/heads/A_1\n")
 
     def _listed(argv):
         return (0, listing) if argv == ["worktree", "list", "--porcelain"] else (0, "")
 
-    assert wp._worktree_registered(target, git_runner=_listed) is True
-    assert wp._worktree_registered(wp.slot_path("work/A_2"), git_runner=_listed) is False
+    assert worktree_git._worktree_registered(pm_paths.home_at(wp.REPO), target, git_runner=_listed) is True
+    assert worktree_git._worktree_registered(pm_paths.home_at(wp.REPO), pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_2"), git_runner=_listed) is False
 
     def _failing(argv):
         return (128, "fatal: not a git repository\n")
 
     with pytest.raises(RuntimeError) as exc:
-        wp._worktree_registered(target, git_runner=_failing)
+        worktree_git._worktree_registered(pm_paths.home_at(wp.REPO), target, git_runner=_failing)
     assert "worktree list" in str(exc.value)
 
 
@@ -3694,7 +3699,7 @@ def test_porcelain_status_lines_filters_warnings(wp):
         "?? untracked.txt\n"
         "warning: trailing\n"
     )
-    lines = wp._porcelain_status_lines(out)
+    lines = worktree_git._porcelain_status_lines(out)
     assert lines == [" M modified.py", "?? untracked.txt"], \
         f"porcelain 필터가 경고를 안 거름/엔트리를 빠뜨림: {lines!r}"
 
@@ -3751,7 +3756,7 @@ class _SymbolicRefGit:
 def test_current_branch_returns_live_head(wp):
     """정상 — symbolic-ref 가 full ref 를 돌려주면 refs/heads/ 접두를 벗겨 브랜치명 반환(live 조회)."""
     git = _SymbolicRefGit(rc=0, out="refs/heads/a5-pay\n")
-    assert wp.current_branch("work/A_1", git_runner=git) == "a5-pay"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "a5-pay"
     # symbolic-ref HEAD(full ref·`--short` 없이·T-0377)를 실제로 호출했다(live·저장 복사본 아님).
     assert ["symbolic-ref", "HEAD"] in git.calls
 
@@ -3759,13 +3764,13 @@ def test_current_branch_returns_live_head(wp):
 def test_current_branch_detached_head_returns_none(wp):
     """detached HEAD — symbolic-ref 가 rc≠0(symbolic ref 아님)이면 None(브랜치 아님)."""
     git = _SymbolicRefGit(rc=1, out="fatal: ref HEAD is not a symbolic ref\n")
-    assert wp.current_branch("work/A_1", git_runner=git) is None
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) is None
 
 
 def test_current_branch_non_branch_ref_returns_none(wp):
     """`refs/heads/` 로 시작 안 하는 이상 출력(브랜치 아님) → 보수적 None (T-0377)."""
     git = _SymbolicRefGit(rc=0, out="refs/tags/v1.3.0\n")
-    assert wp.current_branch("work/A_1", git_runner=git) is None
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) is None
 
 
 def test_current_branch_unborn_branch_returns_name(wp):
@@ -3776,19 +3781,19 @@ def test_current_branch_unborn_branch_returns_name(wp):
     준다(git=진실·ADR-0013 amend — 이름이 있으면 보여야 한다·`--short` 없어도 unborn 거동 보존).
     """
     git = _SymbolicRefGit(rc=0, out="refs/heads/main\n")
-    assert wp.current_branch("work/A_1", git_runner=git) == "main"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "main"
 
 
 def test_current_branch_rc_nonzero_returns_none(wp):
     """git 호출 실패(rc≠0) → None(fail-soft·예외 raise 금지·손상/락/git부재 흡수)."""
     git = _SymbolicRefGit(rc=128, out="fatal: not a git repository\n")
-    assert wp.current_branch("work/A_1", git_runner=git) is None
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) is None
 
 
 def test_current_branch_empty_output_returns_none(wp):
     """빈 출력(rc0 이지만 브랜치명 없음) → None(보수적·이상 출력 흡수)."""
     git = _SymbolicRefGit(rc=0, out="\n")
-    assert wp.current_branch("work/A_1", git_runner=git) is None
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) is None
 
 
 def test_current_branch_tag_collision_returns_pure_name(wp):
@@ -3800,7 +3805,7 @@ def test_current_branch_tag_collision_returns_pure_name(wp):
     (`refs/heads/<정확한명>` 고정) 태그와 무관하게 순수명이 나온다.
     """
     git = _SymbolicRefGit(rc=0, out="refs/heads/v1.3.0\n")
-    assert wp.current_branch("work/A_1", git_runner=git) == "v1.3.0"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "v1.3.0"
 
 
 def test_current_branch_real_heads_prefixed_branch_preserved(wp):
@@ -3811,7 +3816,7 @@ def test_current_branch_real_heads_prefixed_branch_preserved(wp):
     벗기면 나머지 `heads/v1.3.0` 이 온전히 보존된다.
     """
     git = _SymbolicRefGit(rc=0, out="refs/heads/heads/v1.3.0\n")
-    assert wp.current_branch("work/A_1", git_runner=git) == "heads/v1.3.0"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "heads/v1.3.0"
 
 
 def test_current_branch_missing_slot_path_returns_none_real_path(wp):
@@ -3820,8 +3825,8 @@ def test_current_branch_missing_slot_path_returns_none_real_path(wp):
     git_runner 미주입이라 실경로 가드를 탄다 — tmp proj 에 work/A_9 폴더가 없으므로 git
     호출 전에 None(실 git 미접촉). hermetic — 실 git 안 부른다(폴더 부재로 단락).
     """
-    assert not wp.slot_path("work/A_9").exists()
-    assert wp.current_branch("work/A_9") is None
+    assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_9").exists()
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_9") is None
 
 
 def test_current_branch_never_raises_failsoft(wp):
@@ -3834,12 +3839,12 @@ def test_current_branch_never_raises_failsoft(wp):
     """
     def rc_fail(argv):
         return (1, "boom: timeout")
-    assert wp.current_branch("work/A_1", git_runner=rc_fail) is None
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=rc_fail) is None
 
     def raiser(argv):
         raise RuntimeError("git exploded")
     # 주입 runner 가 raise 해도 current_branch 는 raise 하지 않고 None.
-    assert wp.current_branch("work/A_1", git_runner=raiser) is None
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=raiser) is None
 
 
 @_git_required
@@ -3853,15 +3858,15 @@ def test_current_branch_real_git_reads_checked_out_branch(proj, tmp_path):
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
-    lease = wp.create_slot("A", base="main", init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
 
     # 미주입(실경로) current_branch 가 실 worktree HEAD 를 읽는다.
-    assert wp.current_branch(lease.slot) == "A_1"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "A_1"
 
     # 사용자가 슬롯서 직접 git checkout — current_branch 가 즉시 반영(장부 갱신 없이·드리프트 0).
-    slot_dir = wp.slot_path(lease.slot)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     _git(slot_dir, "checkout", "-q", "-b", "a2-hotfix")
-    assert wp.current_branch(lease.slot) == "a2-hotfix"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "a2-hotfix"
 
 
 @_git_required
@@ -3875,15 +3880,15 @@ def test_current_branch_real_git_tag_collision_returns_pure_name(proj, tmp_path)
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
-    lease = wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
 
     # 슬롯을 `v1.3.0` 브랜치로 옮긴 뒤 동명 태그 생성 — 이 상태에서 `symbolic-ref --short HEAD` 는
     # heads/v1.3.0 을 준다(모호성 회피).
     _git(slot_dir, "checkout", "-q", "-b", "v1.3.0")
     _git(slot_dir, "tag", "v1.3.0")
     # full ref 방식이라 태그와 무관하게 순수 브랜치명(장부 기록과 일치).
-    assert wp.current_branch(lease.slot) == "v1.3.0"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "v1.3.0"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3900,14 +3905,14 @@ def test_alloc_resume_matches_on_live_head_not_stored_field(wp):
     _seed(wp, _lease(wp, slot="work/A_2", repo="A",
                      session="", state="idle"))
     # 장부엔 branch 필드가 없다(직렬화 폐지) — 매칭은 오직 live HEAD.
-    assert "branch" not in wp.list_leases()[0].to_dict()
+    assert "branch" not in pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].to_dict()
     git = FakeGit(head="a5-pay")  # 슬롯 worktree 가 a5-pay 를 체크아웃 중(live)
-    lease = wp.alloc("A", resume="a5-pay", owner_task="new", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", resume="a5-pay", owner_task="new", git_runner=git)
     assert lease.slot == "work/A_2"
     assert lease.state == "leased"
     assert lease.session == "new"
     # live HEAD 가 a5-pay 그대로(같은 브랜치 재부착·checkout 무해).
-    assert wp.current_branch("work/A_2", git_runner=git) == "a5-pay"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_2", git_runner=git) == "a5-pay"
 
 
 def test_alloc_resume_no_live_match_falls_through_to_idle_or_needscreate(wp):
@@ -3919,12 +3924,12 @@ def test_alloc_resume_no_live_match_falls_through_to_idle_or_needscreate(wp):
     _seed(wp, _lease(wp, slot="work/A_2", repo="A",
                      session="", state="idle"))
     git = FakeGit(head="other-branch")  # 슬롯 live HEAD ≠ resume 브랜치
-    lease = wp.alloc("A", resume="a5-pay", owner_task="new", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", resume="a5-pay", owner_task="new", git_runner=git)
     # 분기3(idle 리스) 경로 — 슬롯을 leased 로 잡고 a5-pay 로 재체크아웃(live HEAD 전환).
     assert lease.slot == "work/A_2"
     assert lease.state == "leased"
     assert git.did("checkout", "--no-recurse-submodules", "a5-pay")
-    assert wp.current_branch("work/A_2", git_runner=git) == "a5-pay"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_2", git_runner=git) == "a5-pay"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3937,7 +3942,7 @@ def test_from_dict_ignores_legacy_branch_key(wp):
     """구 장부의 legacy `branch` 키를 관용적으로 무시한다(하위호환·권위 필드 아님)."""
     legacy = {"slot": "work/A_1", "repo": "A", "branch": "stale-copy",
               "session": "me", "started": "t", "state": "leased"}
-    lease = wp.Lease.from_dict(legacy)
+    lease = worktree_records.Lease.from_dict(legacy)
     # 로드는 깨지지 않고(하위호환), branch 는 Lease 권위 상태에 없다.
     assert lease.slot == "work/A_1"
     assert not hasattr(lease, "branch"), "legacy branch 키가 Lease 권위 필드로 들어옴(무시 위반)"
@@ -3954,8 +3959,8 @@ def test_read_ledger_legacy_file_with_branch_key_loads_clean(wp):
     ]}
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(legacy), encoding="utf-8")
-    with wp._lease_lock():
-        leases = wp._read_ledger()
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        leases = pool_store._read_ledger(pm_paths.home_at(wp.REPO))
     assert len(leases) == 1
     assert leases[0].slot == "work/A_1"
     assert "branch" not in leases[0].to_dict()  # 재직렬화에도 legacy branch 안 실림
@@ -5508,8 +5513,8 @@ def _create_slot_on_main(wp):
 
     슬롯 생성은 슬롯 전용 브랜치 `A_<N>` 을 판다 — 보호 브랜치 위 커밋·push 를 재현하려면 슬롯을
     `main` 으로 옮겨야 한다(bare 의 main 은 어느 worktree 도 점유하지 않는다)."""
-    lease = wp.create_slot("A", base="main", init_submodules=False)
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
     _git(slot_dir, "checkout", "-q", "main")
     return lease, slot_dir
 
@@ -5529,14 +5534,14 @@ def test_real_git_protected_push_blocked_via_hookspath(proj, tmp_path):
 
     # push 대상 server bare(별도) — 슬롯이 여기로 push 한다. 무변경 검증 대상.
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
 
     # 보호훅 설치 — bare core.hooksPath 를 훅 디렉토리(절대경로)로 wiring(실 git config).
     assert wp.install_protected_hook("A", ["main"]) is True
     # wiring 단언: bare 의 core.hooksPath 가 훅 디렉토리 절대경로를 가리킨다.
-    hooks_path = _git(wp.bare_repo_path("A"), "config", "core.hooksPath").stdout.strip()
+    hooks_path = _git(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), "config", "core.hooksPath").stdout.strip()
     expected = str((wp.REPO_HOOKS_DIR / "A").resolve())
     assert Path(hooks_path) == Path(expected), \
         f"core.hooksPath wiring 안 됨: {hooks_path!r} != {expected!r}"
@@ -5573,7 +5578,7 @@ def test_real_git_protected_push_blocked_without_dirname_in_path(proj, tmp_path)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
     server = tmp_path / "A-no-dirname-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main"]) is True
@@ -5605,7 +5610,7 @@ def test_real_git_feature_push_allowed_via_hookspath(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main"]) is True
@@ -5642,7 +5647,7 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main"]) is True
@@ -5672,7 +5677,7 @@ def test_real_git_adopter_self_test_unsets_hook_git_environment(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
     server = tmp_path / "A-self-test-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     fixture = tmp_path / "nested-git-fixture"
@@ -5992,7 +5997,7 @@ def test_real_git_livegate_green_allows_protected_push(proj, tmp_path):
     _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
     _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main"]) is True
@@ -6018,7 +6023,7 @@ def test_real_git_livegate_record_absent_blocks_protected_push(proj, tmp_path):
     _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
     _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main"]) is True
@@ -6053,7 +6058,7 @@ def test_real_git_livegate_rev_mismatch_blocks_protected_push(proj, tmp_path):
     _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
     _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main"]) is True
@@ -6090,7 +6095,7 @@ def test_real_git_livegate_non_protected_push_unaffected(proj, tmp_path):
     _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
     _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main"]) is True   # main 만 보호
@@ -6120,7 +6125,7 @@ def test_real_git_livegate_multi_protected_ref_all_or_nothing(proj, tmp_path):
     _install_engine(proj)             # PM 홈 엔진 board.py (슬롯엔 없음·codex r2)
     _mk_real_bare(wp, "A", tmp_path)   # 표준 family bare — 엔진 파일 없음(회사 repo 무영향)
     server = tmp_path / "A-server.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(wp.bare_repo_path("A")), str(server))
+    _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
     assert wp.install_protected_hook("A", ["main", "release"]) is True   # main·release 둘 다 보호
@@ -6176,7 +6181,7 @@ def _seed_git_lease(wp, *, slot="work/A_1", repo="A", branch="a1", head=_OLD_SHA
            "submodules": submodules if submodules is not None else [], "recorded_at": "t"}
     if base is not None:
         git = {"base": base, **git}
-    _seed(wp, wp.Lease(slot=slot, repo=repo, session=session,
+    _seed(wp, worktree_records.Lease(slot=slot, repo=repo, session=session,
                        started="t", state=state, git=git))
 
 
@@ -6195,7 +6200,7 @@ def test_from_dict_preserves_unknown_keys_round_trip(wp):
         "task": "myjob",                    # T-035x 미구현 키(이 엔진 버전이 모름)
         "future_key": {"nested": [1, 2]},   # 향후 additive 키
     }
-    lease = wp.Lease.from_dict(payload)
+    lease = worktree_records.Lease.from_dict(payload)
     # 구 키(canonical)+신규 키(git)+미지 키(task/future) 전부 무손실 재방출.
     assert lease.to_dict() == payload
     assert lease.extra == {"task": "myjob", "future_key": {"nested": [1, 2]}}
@@ -6215,9 +6220,9 @@ def test_read_ledger_preserves_unknown_keys_through_rewrite(wp):
     }]}
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
-    with wp._lease_lock():
-        leases = wp._read_ledger()
-        wp._write_ledger(leases)   # read-modify-write 왕복(모든 op 이 이 형태)
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        leases = pool_store._read_ledger(pm_paths.home_at(wp.REPO))
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), leases)   # read-modify-write 왕복(모든 op 이 이 형태)
         rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     entry = rewritten["leases"][0]
     assert entry["task"] == "myjob"           # 미지 키 생존(구 엔진이 op 해도 안 날아감)
@@ -6227,7 +6232,7 @@ def test_read_ledger_preserves_unknown_keys_through_rewrite(wp):
 def test_from_dict_old_ledger_without_git_round_trips_lossless(wp):
     """하위호환 — git 필드 없는 구 장부(T-0072 이후·7 canonical) 로드·재기록 무손실(`git: null` 미삽입·T-0350)."""
     old = {"slot": "work/A_1", "repo": "A", "session": "me", "started": "t", "state": "leased", "test_cmd": None}
-    lease = wp.Lease.from_dict(old)
+    lease = worktree_records.Lease.from_dict(old)
     assert lease.git is None
     d = lease.to_dict()
     assert "git" not in d      # git=None 이면 키 자체를 안 넣는다(구 장부 왕복 byte-무손실)
@@ -6239,8 +6244,8 @@ def test_read_ledger_old_file_without_git_rewrite_lossless(wp):
     ledger = {"leases": [{"slot": "work/A_1", "repo": "A", "session": "me", "started": "t", "state": "leased", "test_cmd": None}]}
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
-    with wp._lease_lock():
-        wp._write_ledger(wp._read_ledger())
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), pool_store._read_ledger(pm_paths.home_at(wp.REPO)))
         rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert "git" not in rewritten["leases"][0]
 
@@ -6250,9 +6255,9 @@ def test_lease_git_field_round_trip_including_unknown_subkeys(wp):
     git = {"base": {"branch": "main", "commit": "c"}, "branch": "A_1", "head": "h",
            "submodules": [{"path": "v", "pin": "p"}], "recorded_at": "t",
            "future_subkey": 1}     # git 안의 미지 서브키도 blob 으로 살아남는다
-    lease = wp.Lease(slot="work/A_1", repo="A", session="me", started="t",
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="me", started="t",
                      state="leased", git=git)
-    restored = wp.Lease.from_dict(lease.to_dict())
+    restored = worktree_records.Lease.from_dict(lease.to_dict())
     assert restored.git == git
     assert restored == lease       # __eq__(to_dict 동등)이 git 을 포함
 
@@ -6261,7 +6266,7 @@ def test_from_dict_still_drops_legacy_top_level_branch_with_extra_preservation(w
     """extra 보존을 심어도 legacy 최상위 `branch` 는 여전히 드롭한다(T-0072 무시 유지·git 안 branch 서브키와 별개)."""
     payload = {"slot": "work/A_1", "repo": "A", "branch": "stale-copy", "session": "me",
                "started": "t", "state": "leased", "task": "myjob"}
-    lease = wp.Lease.from_dict(payload)
+    lease = worktree_records.Lease.from_dict(payload)
     d = lease.to_dict()
     assert "branch" not in d                 # legacy 최상위 branch = 드롭(extra 로도 안 실림)
     assert "branch" not in lease.extra
@@ -6277,7 +6282,7 @@ def test_snapshot_slot_git_records_branch_head_submodules(wp):
     """_snapshot_slot_git — live branch(symbolic-ref)·head(rev-parse)·submodule pin 을 스냅한다."""
     git = FakeGit(head="a5-pay", head_sha=_NEW_SHA,
                   submodule_status_out=" 47da353aa vendor/lib\n")
-    snap = wp._snapshot_slot_git("work/A_1", git_runner=git)
+    snap = slot_snapshot._snapshot_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert snap["branch"] == "a5-pay"
     assert snap["head"] == _NEW_SHA
     assert snap["submodules"] == [{"path": "vendor/lib", "pin": "47da353aa"}]
@@ -6287,13 +6292,13 @@ def test_snapshot_slot_git_records_branch_head_submodules(wp):
 
 def test_snapshot_slot_git_absent_slot_returns_none(wp):
     """실경로(runner 미주입)에서 슬롯 worktree 부재면 None(스냅 불가·기존 git 유지 위임)."""
-    assert wp._snapshot_slot_git("work/A_404", git_runner=None) is None
+    assert slot_snapshot._snapshot_slot_git(pm_paths.home_at(wp.REPO), "work/A_404", git_runner=None) is None
 
 
 def test_snapshot_submodule_pins_strips_flag(wp):
     """`submodule status` 선두 flag(공백/+/-/U)를 제거하고 sha 만 pin 으로 뽑는다."""
     git = FakeGit(submodule_status_out=" aaa111 vendor/clean\n+bbb222 vendor/drift\n-ccc333 vendor/uninit\n")
-    pins = wp._snapshot_submodule_pins(git)
+    pins = slot_snapshot._snapshot_submodule_pins(git)
     assert pins == [{"path": "vendor/clean", "pin": "aaa111"},
                     {"path": "vendor/drift", "pin": "bbb222"},
                     {"path": "vendor/uninit", "pin": "ccc333"}]
@@ -6303,7 +6308,7 @@ def test_snapshot_submodule_pins_preserves_space_path(wp):
     """공백 경로 submodule 도 전체 경로로 스냅한다 — 경로는 공용 파서 재사용."""
     sha = "47da353aa9d261e231ec9b6bbaf1a1cbc7626d9c"
     git = FakeGit(submodule_status_out=f"+{sha} vendor/my lib (heads/master)\n")
-    pins = wp._snapshot_submodule_pins(git)
+    pins = slot_snapshot._snapshot_submodule_pins(git)
     assert pins == [{"path": "vendor/my lib", "pin": sha}]
 
 
@@ -6316,7 +6321,7 @@ def test_parse_submodule_entries_preserves_flags_and_space_paths(wp):
         f"U{'d' * 40} vendor/conflict (archive)\n"
     )
 
-    entries = wp._parse_submodule_entries(status_out)
+    entries = submodule_git._parse_submodule_entries(status_out)
 
     assert entries == [
         (" ", "vendor/my lib"),
@@ -6324,36 +6329,36 @@ def test_parse_submodule_entries_preserves_flags_and_space_paths(wp):
         ("-", "vendor/uninitialized (archive)"),
         ("U", "vendor/conflict (archive)"),
     ]
-    assert wp._parse_submodule_paths(status_out) == [path for _flag, path in entries]
+    assert submodule_git._parse_submodule_paths(status_out) == [path for _flag, path in entries]
 
 
 def test_record_git_snapshot_writes_to_ledger(wp):
     """record_git_snapshot(standalone·핸드오프) — 슬롯 git 을 기록하고 장부에 영속한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
     git = FakeGit(head="a1", head_sha=_NEW_SHA)
-    lease = wp.record_git_snapshot("work/A_1", git_runner=git)
+    lease = slot_snapshot.record_git_snapshot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert lease.git["branch"] == "a1"
     assert lease.git["head"] == _NEW_SHA
-    assert wp.list_leases()[0].git["head"] == _NEW_SHA     # 장부 영속
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["head"] == _NEW_SHA     # 장부 영속
 
 
 def test_record_git_snapshot_base_branch_sets_base(wp):
     """base_branch 주면 base 를 새로 기록(commit=방금 스냅한 head·readonly 슬롯이 따라가는 브랜치)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="leased", role="readonly"))
     git = FakeGit(head=None, head_sha=_NEW_SHA)
-    lease = wp.record_git_snapshot("work/A_1", base_branch="develop", git_runner=git)
+    lease = slot_snapshot.record_git_snapshot(pm_paths.home_at(wp.REPO), "work/A_1", base_branch="develop", git_runner=git)
     assert lease.git["base"] == {"branch": "develop", "commit": _NEW_SHA}
 
 
 def test_record_git_snapshot_readonly_preserves_existing_base(wp):
     """readonly 슬롯은 base_branch 미지정 재기록에서도 기존 base 를 보존하고 head 만 갱신한다."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="leased", role="readonly",
                        git={"base": {"branch": "main", "commit": _OLD_SHA}, "branch": None,
                             "head": _OLD_SHA, "submodules": [], "recorded_at": "t"}))
     git = FakeGit(head=None, head_sha=_NEW_SHA)
-    lease = wp.record_git_snapshot("work/A_1", git_runner=git)
+    lease = slot_snapshot.record_git_snapshot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert lease.git["base"] == {"branch": "main", "commit": _OLD_SHA}   # base 보존
     assert lease.git["head"] == _NEW_SHA                                 # head 갱신
 
@@ -6362,14 +6367,14 @@ def test_record_git_snapshot_work_slot_drops_ledger_base(wp):
     """작업 슬롯 재기록은 장부 base 를 남기지 않는다 — 작업 브랜치 부모의 단일 진실은 git config."""
     _seed_git_lease(wp, base={"branch": "main", "commit": _OLD_SHA}, head=_OLD_SHA)
     git = FakeGit(head="a1", head_sha=_NEW_SHA)
-    lease = wp.record_git_snapshot("work/A_1", git_runner=git)
+    lease = slot_snapshot.record_git_snapshot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert "base" not in lease.git
     assert lease.git["head"] == _NEW_SHA
 
 
 def test_record_git_snapshot_unknown_slot_returns_none(wp):
     """장부에 없는 슬롯 → None(무해)."""
-    assert wp.record_git_snapshot("work/A_9", git_runner=FakeGit()) is None
+    assert slot_snapshot.record_git_snapshot(pm_paths.home_at(wp.REPO), "work/A_9", git_runner=FakeGit()) is None
 
 
 # ── read_lease + record CLI (0단계 diverged 정당 판단 시 명시 재동기·T-0391) ─────
@@ -6378,9 +6383,9 @@ def test_record_git_snapshot_unknown_slot_returns_none(wp):
 def test_read_lease_returns_matching_lease_or_none(wp):
     """read_lease — 슬롯 lease 조회(순수 장부 read·record_git_snapshot 짝)·미등록은 None (T-0391)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
-    lease = wp.read_lease("work/A_1")
+    lease = pool_store.read_lease(pm_paths.home_at(wp.REPO), "work/A_1")
     assert lease is not None and lease.slot == "work/A_1"
-    assert wp.read_lease("work/A_9") is None
+    assert pool_store.read_lease(pm_paths.home_at(wp.REPO), "work/A_9") is None
 
 
 def test_cmd_record_success_reports_updated_snapshot(wp, monkeypatch, capsys):
@@ -6388,8 +6393,8 @@ def test_cmd_record_success_reports_updated_snapshot(wp, monkeypatch, capsys):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
     before = type("_L", (), {"git": {"branch": "old", "head": "aaaaaaaa"}})()
     after = type("_L", (), {"git": {"branch": "v1.3.3", "head": "bbbbbbbbbbbb"}})()
-    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: before)
-    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: after)
+    monkeypatch.setattr(pool_store, "read_lease_strict", lambda _home, slot: before)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", lambda _home, slot: after)
     rc = wp.main(["record", "A_1"])   # 접두 생략도 _normalize_slot 이 work/ 붙임.
     assert rc == 0
     out = capsys.readouterr().out
@@ -6400,8 +6405,8 @@ def test_cmd_record_cp949_stdout_does_not_crash_on_checkmark(wp, monkeypatch):
     """T-0481: cp949 strict stdout에서도 ``✓`` 성공 출력이 UTF-8 재배선되어 크래시하지 않는다."""
     before = type("_L", (), {"git": {"branch": "old", "head": "aaaaaaaa"}})()
     after = type("_L", (), {"git": {"branch": "v1.4.4", "head": "bbbbbbbbbbbb"}})()
-    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: before)
-    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: after)
+    monkeypatch.setattr(pool_store, "read_lease_strict", lambda _home, slot: before)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", lambda _home, slot: after)
 
     raw = io.BytesIO()
     cp949_stdout = io.TextIOWrapper(raw, encoding="cp949", errors="strict")
@@ -6420,8 +6425,8 @@ def test_cmd_record_cp949_stdout_does_not_crash_on_checkmark(wp, monkeypatch):
 def test_cmd_record_ledger_missing_slot_fails(wp, monkeypatch, capsys):
     """record CLI — 장부 미등록(record None)이면 rc 1 명시 실패(silent 무변경 방지)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
-    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: None)
-    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: None)
+    monkeypatch.setattr(pool_store, "read_lease_strict", lambda _home, slot: None)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", lambda _home, slot: None)
     rc = wp.main(["record", "A_1"])
     assert rc == 1
     assert "리스 장부에 없다" in capsys.readouterr().err
@@ -6431,8 +6436,8 @@ def test_cmd_record_no_change_fails_loud(wp, monkeypatch, capsys):
     """record CLI — 스냅 불가로 before==after(무변경)면 rc 1(성공 위장 금지·기존 git 보존 인지)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
     same = {"branch": "v1.3.3", "head": "bbbbbbbb"}
-    monkeypatch.setattr(wp, "read_lease_strict", lambda slot: type("_L", (), {"git": same})())
-    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot: type("_L", (), {"git": same})())
+    monkeypatch.setattr(pool_store, "read_lease_strict", lambda _home, slot: type("_L", (), {"git": same})())
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", lambda _home, slot: type("_L", (), {"git": same})())
     rc = wp.main(["record", "A_1"])
     assert rc == 1
     assert "스냅할 수 없다" in capsys.readouterr().err
@@ -6552,10 +6557,10 @@ def test_switch_existing_branch_without_dash_c(wp):
     """(b) 기존 브랜치는 `-c` 없이 전환한다(`switch -c` 는 이미 있는 이름에 실패)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["work-x"])
-    wp.switch("work/A_1", "work-x", protected=["main"], git_runner=git)
+    branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "work-x", protected=["main"], git_runner=git)
     assert git.did("checkout", "--no-recurse-submodules", "work-x")
     assert not git.did("checkout", "--no-recurse-submodules", "-b", "work-x")
-    assert wp.list_leases()[0].git["branch"] == "work-x"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "work-x"
 
 
 def test_switch_missing_branch_refused_not_found(wp):
@@ -6564,18 +6569,18 @@ def test_switch_missing_branch_refused_not_found(wp):
     `origin/<b>` 만 있어도 plain checkout DWIM 으로 tracking 브랜치가 생기지 않게 checkout 자체를 안 한다."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, remote_refs=["origin/task/main"])
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "not-found"
     assert "pm-config task branch" in str(ei.value)
     assert not git.did("checkout")                                # 부작용 0
-    assert wp.list_leases()[0].git["branch"] == "main"            # 장부 불변
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "main"            # 장부 불변
 
 
 def test_checkout_plain_only_never_creates(wp):
     """`_checkout` 은 plain checkout 만 — 없는 브랜치는 rc≠0 이고 `-b`·`-B` 로 만들지 않는다(불변식1)."""
     git = _SwitchGit(head="old")
-    rc, _out = wp._checkout(wp.slot_path("work/A_1"), "brand-new", git_runner=git)
+    rc, _out = submodule_git._checkout(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), "brand-new", git_runner=git)
     assert rc != 0
     assert git.did("checkout", "--no-recurse-submodules", "brand-new")
     assert not git.did("checkout", "--no-recurse-submodules", "-b", "brand-new")
@@ -6592,12 +6597,12 @@ def test_switch_self_held_branch_passes_hermetic(wp):
     """(항목1) 자기 슬롯이 이미 보유한 브랜치로의 재-switch 는 통과 — porcelain 에 self 경로만
     보유자로 등장하면 `_branch_checked_out_elsewhere` 가 self 를 제외하고 None(현존 자산 pin)."""
     _switch_lease(wp, branch="task/main", head="task/main")
-    porc = _porcelain((str(wp.slot_path("work/A_1")), "task/main"))
+    porc = _porcelain((str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "task/main"))
     git = _SwitchGit(head="task/main", head_sha=_NEW_SHA, refs=["task/main"],
                      worktree_list_porcelain=porc)
-    result = wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    result = branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert result.branch == "task/main"
-    assert wp.list_leases()[0].git["branch"] == "task/main"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "task/main"
 
 
 def test_switch_branch_checked_out_elsewhere_refused(wp):
@@ -6609,12 +6614,12 @@ def test_switch_branch_checked_out_elsewhere_refused(wp):
     other_path = "/repo/work/A_9"
     porc = _porcelain((other_path, "task/main"))
     git = _SwitchGit(head="dev/x", refs=["task/main"], worktree_list_porcelain=porc)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "checked-out-elsewhere"
     assert other_path in str(ei.value)
     assert not git.did("checkout")                              # 전환 시도 0(부작용 0)
-    assert wp.list_leases()[0].git["branch"] == "dev/x"          # 장부 불변
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "dev/x"          # 장부 불변
 
 
 def test_switch_worktree_list_failure_failopen_but_primitive_blocks_reset(wp):
@@ -6622,51 +6627,51 @@ def test_switch_worktree_list_failure_failopen_but_primitive_blocks_reset(wp):
     `_checkout` 프리미티브(plain checkout 만)가 리셋을 막는다(불변식4 — 두 층 중 하나가 죽어도 유실 0)."""
     _switch_lease(wp, branch="dev/x", head="dev/x")
     git = _SwitchGit(head="dev/x", refs=["task/main"], checkout_rc=1, worktree_list_rc=1)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "git-error"          # 선-검사가 아니라 프리미티브가 잡음(fail-open 실증)
     assert git.did("checkout", "--no-recurse-submodules", "task/main")
     assert not git.did("checkout", "--no-recurse-submodules", "-b", "task/main")
     assert not git.did("checkout", "--no-recurse-submodules", "-B", "task/main")
-    assert wp.list_leases()[0].git["branch"] == "dev/x"          # 장부 불변
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "dev/x"          # 장부 불변
 
 
 def test_switch_protected_branch_refused(wp):
     """(c) 보호목록 브랜치로의 전환은 거부 — 이 커맨드는 main-참조를 *벗어나는* 전환용."""
     _switch_lease(wp, branch="feature-x")
     git = _SwitchGit(head="feature-x")
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "main", protected=["main", "master"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "main", protected=["main", "master"], git_runner=git)
     assert ei.value.reason == "protected"
     assert not git.did("checkout")                       # 부작용 0(전환 시도조차 안 함)
-    assert wp.list_leases()[0].git["branch"] == "feature-x"   # 장부 불변
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "feature-x"   # 장부 불변
 
 
 def test_switch_dirty_slot_refused(wp):
     """(d-1) dirty 슬롯 거부 — 브랜치 전환이 미커밋 WIP 를 흔든다(rebase 선-검사 동형)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", dirty=True)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "dirty"
     assert not git.did("checkout")
 
 
 def test_switch_readonly_slot_refused(wp):
     """(d-2) readonly 공유 슬롯은 mutation 거부(⑬·T-0358 동형 가드)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="leased", role="readonly"))
     git = _SwitchGit(head=None)
-    with pytest.raises(wp.ReadonlySlotMutation):
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(pool_store.ReadonlySlotMutation):
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert not git.did("checkout")
 
 
 def test_switch_unregistered_slot_refused(wp):
     """(d-3) 장부 미등록 슬롯 거부 — 스냅 기록 대상이 아니다(`record` 동형 메시지)."""
     git = _SwitchGit(head="main")
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_9", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_9", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "unregistered"
     assert "리스 장부에 없다" in str(ei.value)
     assert not git.did("checkout")
@@ -6676,9 +6681,9 @@ def test_switch_rebase_in_progress_refused(wp, monkeypatch):
     """rebase 진행 중 슬롯 거부 — `_rebase_one` 선-검사와 **같은 프리미티브**(계약 우회 0)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main")
-    monkeypatch.setattr(wp, "_rebase_in_progress", lambda slot, **kw: True)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    monkeypatch.setattr(branch_checkout, "_rebase_in_progress", lambda _home, slot, **kw: True)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "rebase-in-progress"
     assert "rebase --abort" in str(ei.value)
     assert not git.did("checkout")
@@ -6688,8 +6693,8 @@ def test_switch_invalid_ref_name_refused(wp):
     """(g) git ref 규칙 위반 이름(`fix^2`)은 거부 — 판정은 git 자신(`check-ref-format --branch`)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", bad_refs=["fix^2"])
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "fix^2", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "fix^2", protected=["main"], git_runner=git)
     assert ei.value.reason == "invalid-ref"
     assert not git.did("checkout")
 
@@ -6702,12 +6707,12 @@ def test_switch_revspec_expanding_to_protected_is_refused(wp, capsys):
     장부까지 `main` 으로 기록한다(이 티켓이 막으려던 상태를 remedy 가 생성)."""
     _switch_lease(wp, branch="feature-x")
     git = _SwitchGit(head="feature-x", expand={"@{-1}": "main"})
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "@{-1}", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "@{-1}", protected=["main"], git_runner=git)
     assert ei.value.reason == "protected"
     assert "main" in str(ei.value)                      # 무엇으로 해소됐는지 실값 고지
     assert not git.did("checkout")                        # 전환 없음
-    assert wp.list_leases()[0].git["branch"] == "feature-x"   # 장부 기록 없음
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "feature-x"   # 장부 기록 없음
     assert "해소됨" in capsys.readouterr().err          # 조용한 오전환 방지(loud 고지)
 
 
@@ -6716,12 +6721,12 @@ def test_switch_records_expanded_branch_name(wp, capsys):
     _switch_lease(wp, branch="main")
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["feature"],
                      expand={"@{-1}": "feature"})
-    result = wp.switch("work/A_1", "@{-1}", protected=["main"], git_runner=git)
+    result = branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "@{-1}", protected=["main"], git_runner=git)
     assert result.branch == "feature" and result.requested == "@{-1}" and result.expanded
     assert git.did("checkout", "--no-recurse-submodules", "feature")   # git 인자도 정규화 이름
     # 원문은 정규화 조회(`check-ref-format`)에만 등장하고 **전환 인자로는 안 쓰인다**.
     assert not any(call[:1] == ["checkout"] and "@{-1}" in call for call in git.calls)
-    assert wp.list_leases()[0].git["branch"] == "feature"   # 장부도 실명
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "feature"   # 장부도 실명
     assert "해소됨" in capsys.readouterr().err
 
 
@@ -6729,8 +6734,8 @@ def test_switch_unnormalizable_ref_refused(wp):
     """정규화 불가(빈/이상 출력)는 fail-closed 거부 — 안전검사 못 하는 이름을 통과시키지 않는다."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", emit="")              # rc 0 인데 출력이 빔(예상 밖 형태)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "invalid-ref"
     assert not git.did("checkout")
 
@@ -6739,19 +6744,19 @@ def test_switch_git_error_is_loud(wp):
     """`git switch` 자체 실패(rc≠0)는 loud — 장부는 옛 스냅 그대로(거짓 기록 금지)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", refs=["task/main"], checkout_rc=1)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "git-error"
-    assert wp.list_leases()[0].git["branch"] == "main"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "main"
 
 
 def test_switch_record_failure_is_loud(wp, monkeypatch):
     """스냅 재기록 실패(전환만 성공)는 loud + `record` 안내 — 원자성 깨진 채 성공 보고 금지."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", refs=["task/main"])
-    monkeypatch.setattr(wp, "record_git_snapshot", lambda slot, **kw: None)  # 스냅 불가 모델
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", lambda _home, slot, **kw: None)  # 스냅 불가 모델
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "record-failed"
     assert "record work/A_1" in str(ei.value)
 
@@ -6764,33 +6769,32 @@ def test_switch_record_exception_converges_to_record_failed(wp, monkeypatch):
     _switch_lease(wp)
     git = _SwitchGit(head="main", refs=["task/main"])
 
-    def boom(slot, **kwargs):
+    def boom(_home, slot, **kwargs):
         raise PermissionError("worktree-leases.json.tmp")
 
-    monkeypatch.setattr(wp, "record_git_snapshot", boom)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", boom)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "record-failed"
     assert "record work/A_1" in str(ei.value)          # 해소 커맨드 실값 안내
     assert "worktree-leases.json.tmp" in str(ei.value)  # 원인도 실린다(진단 손실 0)
 
 
-def test_switch_record_exception_preserves_engine_skew_marker(wp, monkeypatch):
+def test_switch_record_exception_preserves_cause(wp, monkeypatch):
     """안내 예외로 변환해도 상위 marker 소비 경계가 사본 불일치를 식별할 수 있다."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", refs=["task/main"])
     skew = RuntimeError("injected marked engine skew")
     skew._engine_rev_skew = True
 
-    def fail_record(*_args, **_kwargs):
+    def fail_record(_home, *_args, **_kwargs):
         raise skew
 
-    monkeypatch.setattr(wp, "record_git_snapshot", fail_record)
-    with pytest.raises(wp.SwitchRefused) as raised:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", fail_record)
+    with pytest.raises(worktree_records.SwitchRefused) as raised:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
 
     assert raised.value.__cause__ is skew
-    assert raised.value._engine_rev_skew is True
 
 
 def test_switch_record_no_change_with_same_branch_is_not_success(wp, monkeypatch):
@@ -6800,13 +6804,13 @@ def test_switch_record_no_change_with_same_branch_is_not_success(wp, monkeypatch
     실패해도 기록 branch 는 target 과 일치해 옛 판정이 성공으로 통과했다(`_cmd_record` 의 before/
     after 비교와 비대칭·내부 리뷰 should-fix)."""
     _switch_lease(wp, branch="task/main", head=_OLD_SHA)
-    before = wp.list_leases()[0].git
+    before = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
     # 스냅 불가 → `_apply_git_snapshot` 이 기존 git 을 보존(무변경)하는 상황 모델.
-    monkeypatch.setattr(wp, "record_git_snapshot",
-                        lambda slot, **kw: type("_L", (), {"git": before})())
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot",
+                        lambda _home, slot, **kw: type("_L", (), {"git": before})())
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "record-failed"
     assert "무변경" in str(ei.value)
 
@@ -6823,12 +6827,12 @@ def test_switch_existing_branch_tracking_protected_remote_refused(wp):
             return super().__call__(argv)
 
     git = _TrackingGit(head="main", refs=["old-work"])
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "old-work", protected=["main"], git_runner=git)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "old-work", protected=["main"], git_runner=git)
     assert ei.value.reason == "protected-upstream"
     assert "origin/main" in str(ei.value)
     assert not git.did("checkout")                        # 부작용 0(전환 없음)
-    assert wp.list_leases()[0].git["branch"] == "main"  # 장부 불변
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "main"  # 장부 불변
 
 
 def test_switch_feature_tracking_branch_still_allowed(wp):
@@ -6843,9 +6847,9 @@ def test_switch_feature_tracking_branch_still_allowed(wp):
             return super().__call__(argv)
 
     git = _TrackingGit(head="main", head_sha=_NEW_SHA, refs=["a5"])
-    result = wp.switch("work/A_1", "a5", protected=["main"], git_runner=git)
+    result = branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "a5", protected=["main"], git_runner=git)
     assert result.branch == "a5"
-    assert wp.list_leases()[0].git["branch"] == "a5"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "a5"
 
 
 def test_switch_record_failed_leaves_diverged_state_with_record_remedy(wp, monkeypatch):
@@ -6859,16 +6863,16 @@ def test_switch_record_failed_leaves_diverged_state_with_record_remedy(wp, monke
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
 
-    def boom(slot, **kwargs):
+    def boom(_home, slot, **kwargs):
         raise OSError("장부 기록 실패(대역)")
 
-    monkeypatch.setattr(wp, "record_git_snapshot", boom)
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    monkeypatch.setattr(slot_snapshot, "record_git_snapshot", boom)
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "record-failed"
     # 전환은 일어났고(live=task/main) 장부는 옛 스냅(main) → 다음 0단계 입력이 diverged.
-    assert wp.current_branch("work/A_1", git_runner=git) == "task/main"
-    result = wp.compare_slot_git("work/A_1", git_runner=git)
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "task/main"
+    result = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert result.fail_loud is True and result.branch_match is False
 
 
@@ -6880,7 +6884,7 @@ def test_switch_preserves_on_branch_dev_submodule(wp):
     + selective resync)을 타야 dev 가 보존된다."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"], subs={"libs/dev": ("branch", False)})
-    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert git.did("checkout", "--no-recurse-submodules", "task/main")  # ambient recurse override
     assert git.resynced() == [], "on-branch(dev) submodule 을 재동기하면 작업이 파괴된다"
 
@@ -6889,7 +6893,7 @@ def test_switch_resyncs_detached_submodule_to_new_pin(wp):
     """detached(consume) submodule 은 새 브랜치 pin 으로 재동기된다(전환 후 drift 방치 금지)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"], subs={"vendor/sub": ("detached", False)})
-    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert git.resynced() == ["vendor/sub"]
 
 
@@ -6897,18 +6901,18 @@ def test_switch_skips_dirty_submodule_with_warning(wp, capsys):
     """dirty detached submodule 은 skip + 경고 — 재동기가 미커밋 작업을 날리지 않는다(fail-soft)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"], subs={"vendor/wip": ("detached", True)})
-    result = wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    result = branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     assert result.branch == "task/main"          # resync 실패/skip 이 전환·기록을 되돌리지 않는다
     assert git.resynced() == []
     assert "vendor/wip" in capsys.readouterr().err
-    assert wp.list_leases()[0].git["branch"] == "task/main"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "task/main"
 
 
 def test_switch_records_snapshot_after_resync(wp):
     """순서 계약 — 전환 → selective resync → 스냅 기록(장부 스냅이 resync 뒤 상태를 담는다)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"], subs={"vendor/sub": ("detached", False)})
-    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
     order = [i for i, c in enumerate(git.calls)
              if c[:2] == ["submodule", "update"] or c == ["submodule", "status"]]
     snap_at = max(i for i, c in enumerate(git.calls) if c == ["submodule", "status"])
@@ -6921,8 +6925,8 @@ def test_switch_then_phase0_compare_is_clean(wp):
     """(e) 전환 직후 0단계 재진입 정합 — `compare_slot_git` 이 diverged 로 막지 않는다(2차 차단 폐쇄)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
-    result = wp.compare_slot_git("work/A_1", git_runner=git)
+    branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
+    result = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert result.fail_loud is False and result.ok is True
     assert result.branch_match is True
 
@@ -6932,57 +6936,45 @@ def test_raw_git_switch_still_diverges(wp):
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA)
     git(["switch", "-c", "task/main"])                 # 사람이 직접 — 장부 스냅 미갱신
-    result = wp.compare_slot_git("work/A_1", git_runner=git)
+    result = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert result.fail_loud is True
     assert result.branch_match is False
 
 
-def test_resolve_protected_uses_board_then_defaults(wp, monkeypatch):
-    """보호목록은 board `_repo_protected`(areas 권위) — board/헬퍼 부재는 default 폴백(T-0076 동형)."""
-    board = type("_B", (), {"_repo_protected": staticmethod(lambda repo: ["trunk"])})()
-    assert wp._resolve_protected("A", board=board) == ["trunk"]
-    monkeypatch.setattr(wp, "_load_board", lambda: None)
-    assert wp._resolve_protected("A") == list(wp._DEFAULT_PROTECTED)
-    ordinary_failure = type(
-        "_BoomBoard", (),
-        {"_repo_protected": staticmethod(
-            lambda _repo: (_ for _ in ()).throw(RuntimeError("ordinary parser failure")))},
-    )()
-    assert wp._resolve_protected("A", board=ordinary_failure) == list(wp._DEFAULT_PROTECTED)
+def test_resolve_protected_uses_registry_then_defaults(wp, monkeypatch):
+    """등록부 판독과 일반 판독 실패의 안전 기본값을 유지한다."""
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: ["trunk"])
+    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == ["trunk"]
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: list(areas_rules.DEFAULT_PROTECTED))
+    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == list(areas_rules.DEFAULT_PROTECTED)
+    def ordinary_failure(home, repo):
+        raise RuntimeError("ordinary parser failure")
+    monkeypatch.setattr(areas_store, "_repo_protected", ordinary_failure)
+    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == list(areas_rules.DEFAULT_PROTECTED)
 
 
-def test_resolve_protected_rethrows_marked_engine_rev_skew(wp):
-    """A1 — 일반 areas 오류는 default지만 stamped sibling skew는 보호 기본값으로 숨기지 않는다."""
-    skew = RuntimeError("injected engine rev skew")
-    skew._engine_rev_skew = True
-    board = type(
-        "_SkewBoard", (),
-        {"_repo_protected": staticmethod(lambda _repo: (_ for _ in ()).throw(skew))},
-    )()
-    with pytest.raises(RuntimeError, match="engine rev skew"):
-        wp._resolve_protected("A", board=board)
 
 
 def test_cmd_switch_success_reports_what_happened(wp, monkeypatch, capsys):
     """switch CLI — 성공 시 전환 형태·재기록 head 를 surface(rc 0·무엇을 했는지 stdout)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    monkeypatch.setattr(wp, "_resolve_protected", lambda repo, **kw: ["main"])
-    monkeypatch.setattr(wp, "_real_git_runner", lambda path: git)
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: git)
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "task/main"])       # 접두 생략도 _normalize_slot 이 work/ 붙임
     assert rc == 0
     out = capsys.readouterr().out
     assert "task/main" in out and "스냅 재기록" in out
-    assert wp.list_leases()[0].git["branch"] == "task/main"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "task/main"
 
 
 def test_cmd_switch_refusal_is_rc1_loud(wp, monkeypatch, capsys):
     """switch CLI — 선-검사 거부는 rc 1 + 사유(보호목록 브랜치로의 전환)."""
     _switch_lease(wp, branch="feature-x")
     git = _SwitchGit(head="feature-x")
-    monkeypatch.setattr(wp, "_resolve_protected", lambda repo, **kw: ["main"])
-    monkeypatch.setattr(wp, "_real_git_runner", lambda path: git)
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: git)
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "main"])
     assert rc == 1
@@ -7001,16 +6993,16 @@ def test_switch_preserved_record_clear_failure_is_record_failed(wp, monkeypatch,
 
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    with pytest.raises(wp.SwitchRefused) as ei:
-        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=locked(git))
+    with pytest.raises(worktree_records.SwitchRefused) as ei:
+        branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=locked(git))
     assert ei.value.reason == "record-failed"
     assert "보존 기록 지우기 실패" in str(ei.value)
-    assert wp.current_branch("work/A_1", git_runner=git) == "task/main"   # 전환은 일어났다
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "task/main"   # 전환은 일어났다
 
     _switch_lease(wp)
     cli_git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    monkeypatch.setattr(wp, "_resolve_protected", lambda repo, **kw: ["main"])
-    monkeypatch.setattr(wp, "_real_git_runner", lambda path: locked(cli_git))
+    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: locked(cli_git))
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "task/main"])
     assert rc == 1
@@ -7029,10 +7021,10 @@ def test_alloc_records_arrival_git_snapshot(wp):
     """alloc(idle 리스 경로) 이 arrival git 스냅을 기록한다(부트스트랩 bind/alloc 시 스냅·interface)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit(head="a1", head_sha=_NEW_SHA)
-    lease = wp.alloc("A", owner_task="new", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="new", git_runner=git)
     assert lease.git is not None
     assert lease.git["branch"] == "a1" and lease.git["head"] == _NEW_SHA
-    assert wp.list_leases()[0].git["head"] == _NEW_SHA
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["head"] == _NEW_SHA
 
 
 def test_create_slot_work_slot_records_parent_not_ledger_base(wp):
@@ -7042,7 +7034,7 @@ def test_create_slot_work_slot_records_parent_not_ledger_base(wp):
     """
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(head="A_1", head_sha=_NEW_SHA)   # 파생 슬롯은 브랜치 A_1 (head 모델)
-    lease = wp.create_slot("A", base="develop", git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", git_runner=git)
     assert "base" not in lease.git
     assert lease.git["head"] == _NEW_SHA
     assert git.config == {"branch.A_1.pm-parent": "develop", "branch.A_1.pm-fork": _NEW_SHA}
@@ -7051,16 +7043,16 @@ def test_create_slot_work_slot_records_parent_not_ledger_base(wp):
 def test_release_clears_git_snapshot(wp):
     """release → idle 전이 시 git 을 정리(None)한다 — idle 슬롯은 활성 git 기대가 없다(interface: release 시 정리)."""
     _seed_git_lease(wp, head=_OLD_SHA)
-    lease = wp.release("work/A_1")   # slot 경로 부재(hermetic) → clean 경로 → idle
+    lease = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1")   # slot 경로 부재(hermetic) → clean 경로 → idle
     assert lease.state == "idle"
     assert lease.git is None
-    assert wp.list_leases()[0].git is None
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git is None
 
 
 def test_force_release_clears_git_snapshot(wp):
     """force_release 백스톱도 git 을 정리(None)한다."""
     _seed_git_lease(wp, head=_OLD_SHA)
-    lease = wp.force_release("work/A_1")
+    lease = worktree_pool.force_release(pm_paths.home_at(wp.REPO), "work/A_1")
     assert lease.state == "idle" and lease.git is None
 
 
@@ -7071,35 +7063,35 @@ def test_force_release_clears_git_snapshot(wp):
 
 def test_is_ancestor_rc0_true_rc1_false(wp):
     """_is_ancestor — `merge-base --is-ancestor` rc0=조상(True)·rc1=아님(False)."""
-    assert wp._is_ancestor(FakeGit(ancestor_ok=True), _OLD_SHA, _NEW_SHA) is True
-    assert wp._is_ancestor(FakeGit(ancestor_ok=False), _OLD_SHA, _NEW_SHA) is False
+    assert slot_snapshot._is_ancestor(FakeGit(ancestor_ok=True), _OLD_SHA, _NEW_SHA) is True
+    assert slot_snapshot._is_ancestor(FakeGit(ancestor_ok=False), _OLD_SHA, _NEW_SHA) is False
 
 
 def test_head_relation_match_same_head(wp):
-    assert wp._head_relation("a1", _OLD_SHA, "a1", _OLD_SHA, git_runner=None) == wp.HEAD_MATCH
+    assert slot_snapshot._head_relation("a1", _OLD_SHA, "a1", _OLD_SHA, git_runner=None) == worktree_records.HEAD_MATCH
 
 
 def test_head_relation_unknown_when_head_missing(wp):
-    assert wp._head_relation("a1", None, "a1", _OLD_SHA, git_runner=None) == wp.HEAD_UNKNOWN
-    assert wp._head_relation("a1", _OLD_SHA, "a1", None, git_runner=None) == wp.HEAD_UNKNOWN
+    assert slot_snapshot._head_relation("a1", None, "a1", _OLD_SHA, git_runner=None) == worktree_records.HEAD_UNKNOWN
+    assert slot_snapshot._head_relation("a1", _OLD_SHA, "a1", None, git_runner=None) == worktree_records.HEAD_UNKNOWN
 
 
 def test_head_relation_branch_change_is_diverged(wp):
     """브랜치 변경 = 사고(FAIL-LOUD) — head 후손 여부 안 봄."""
-    assert wp._head_relation("a1", _OLD_SHA, "a2", _NEW_SHA,
-                             git_runner=FakeGit(ancestor_ok=True)) == wp.HEAD_DIVERGED
+    assert slot_snapshot._head_relation("a1", _OLD_SHA, "a2", _NEW_SHA,
+                             git_runner=FakeGit(ancestor_ok=True)) == worktree_records.HEAD_DIVERGED
 
 
 def test_head_relation_descendant_is_notice(wp):
     """같은 branch·head 다름·live 가 기록 head 의 후손 → descendant(crash 후 재개·통과·㉒)."""
-    assert wp._head_relation("a1", _OLD_SHA, "a1", _NEW_SHA,
-                             git_runner=FakeGit(ancestor_ok=True)) == wp.HEAD_DESCENDANT
+    assert slot_snapshot._head_relation("a1", _OLD_SHA, "a1", _NEW_SHA,
+                             git_runner=FakeGit(ancestor_ok=True)) == worktree_records.HEAD_DESCENDANT
 
 
 def test_head_relation_nonancestor_is_diverged(wp):
     """같은 branch·head 다름·비후손(리셋·되감기·divergent) → diverged(FAIL-LOUD)."""
-    assert wp._head_relation("a1", _OLD_SHA, "a1", _NEW_SHA,
-                             git_runner=FakeGit(ancestor_ok=False)) == wp.HEAD_DIVERGED
+    assert slot_snapshot._head_relation("a1", _OLD_SHA, "a1", _NEW_SHA,
+                             git_runner=FakeGit(ancestor_ok=False)) == worktree_records.HEAD_DIVERGED
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -7110,7 +7102,7 @@ def test_head_relation_nonancestor_is_diverged(wp):
 def test_compare_slot_git_unrecorded_when_no_git_field(wp):
     """git 미기록(구 슬롯) → unrecorded(drift 감지 비활성·ok/fail 아닌 별도 상태·결정 ⑪)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="leased"))   # git=None
-    res = wp.compare_slot_git("work/A_1", git_runner=FakeGit(head="a1"))
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=FakeGit(head="a1"))
     assert res.unrecorded is True
     assert res.ok is False and res.fail_loud is False
 
@@ -7118,24 +7110,24 @@ def test_compare_slot_git_unrecorded_when_no_git_field(wp):
 def test_compare_slot_git_match_passes(wp):
     """기록 branch@head == live → match·통과(ok·not fail)."""
     _seed_git_lease(wp, branch="a1", head=_OLD_SHA)
-    res = wp.compare_slot_git("work/A_1", git_runner=FakeGit(head="a1", head_sha=_OLD_SHA))
-    assert res.branch_match is True and res.head_relation == wp.HEAD_MATCH
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=FakeGit(head="a1", head_sha=_OLD_SHA))
+    assert res.branch_match is True and res.head_relation == worktree_records.HEAD_MATCH
     assert res.ok is True and res.fail_loud is False
 
 
 def test_compare_slot_git_head_descendant_is_notice_not_fail(wp):
     """live 가 기록 head 의 후손(같은 branch) → descendant = 통과(crash 후 재개를 경보로 안 만든다·㉒)."""
     _seed_git_lease(wp, branch="a1", head=_OLD_SHA)
-    res = wp.compare_slot_git(
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO),
         "work/A_1", git_runner=FakeGit(head="a1", head_sha=_NEW_SHA, ancestor_ok=True))
-    assert res.head_relation == wp.HEAD_DESCENDANT
+    assert res.head_relation == worktree_records.HEAD_DESCENDANT
     assert res.fail_loud is False and res.ok is True
 
 
 def test_compare_slot_git_branch_change_is_fail_loud(wp):
     """브랜치 변경 = 사고 → FAIL-LOUD."""
     _seed_git_lease(wp, branch="a1", head=_OLD_SHA)
-    res = wp.compare_slot_git("work/A_1", git_runner=FakeGit(head="a2", head_sha=_OLD_SHA))
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=FakeGit(head="a2", head_sha=_OLD_SHA))
     assert res.branch_match is False
     assert res.fail_loud is True and res.ok is False
 
@@ -7143,9 +7135,9 @@ def test_compare_slot_git_branch_change_is_fail_loud(wp):
 def test_compare_slot_git_head_nonancestor_is_fail_loud(wp):
     """같은 branch·head 비후손(리셋·되감기) → diverged = FAIL-LOUD."""
     _seed_git_lease(wp, branch="a1", head=_OLD_SHA)
-    res = wp.compare_slot_git(
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO),
         "work/A_1", git_runner=FakeGit(head="a1", head_sha=_NEW_SHA, ancestor_ok=False))
-    assert res.head_relation == wp.HEAD_DIVERGED
+    assert res.head_relation == worktree_records.HEAD_DIVERGED
     assert res.fail_loud is True
 
 
@@ -7153,7 +7145,7 @@ def test_compare_slot_git_submodule_drift_is_warning_not_fail(wp):
     """기록 pin ≠ live pin → submodule_drift 목록에 오르되 fail_loud 는 아니다(경고 축·T-0275/0276 대칭)."""
     _seed_git_lease(wp, branch="a1", head=_OLD_SHA,
                     submodules=[{"path": "vendor/lib", "pin": "OLDPIN"}])
-    res = wp.compare_slot_git(
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO),
         "work/A_1",
         git_runner=FakeGit(head="a1", head_sha=_OLD_SHA,
                            submodule_status_out=" NEWPIN vendor/lib\n"))
@@ -7165,7 +7157,7 @@ def test_compare_slot_git_no_submodule_drift_when_pins_match(wp):
     """기록 pin == live pin → drift 없음(sensitivity — drift 판정이 공허하지 않다)."""
     _seed_git_lease(wp, branch="a1", head=_OLD_SHA,
                     submodules=[{"path": "vendor/lib", "pin": "SAMEPIN"}])
-    res = wp.compare_slot_git(
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO),
         "work/A_1",
         git_runner=FakeGit(head="a1", head_sha=_OLD_SHA,
                            submodule_status_out=" SAMEPIN vendor/lib\n"))
@@ -7182,9 +7174,9 @@ def test_compare_slot_git_tag_collision_branch_is_not_fail_loud(wp):
     """
     _seed_git_lease(wp, branch="v1.3.0", head=_OLD_SHA)
     # FakeGit(head="v1.3.0") → symbolic-ref HEAD 가 refs/heads/v1.3.0 → current_branch "v1.3.0".
-    res = wp.compare_slot_git(
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO),
         "work/A_1", git_runner=FakeGit(head="v1.3.0", head_sha=_OLD_SHA))
-    assert res.branch_match is True and res.head_relation == wp.HEAD_MATCH
+    assert res.branch_match is True and res.head_relation == worktree_records.HEAD_MATCH
     assert res.fail_loud is False and res.ok is True
 
 
@@ -7197,7 +7189,7 @@ def test_compare_slot_git_polluted_recorded_heads_prefix_stays_mismatch(wp):
     정정한다([[prefer-data-migration-over-fallback]] — fallback 누적 금지·codex must-fix).
     """
     _seed_git_lease(wp, branch="heads/v1.3.0", head=_OLD_SHA)   # 정규화 전 오염된 recorded.
-    res = wp.compare_slot_git("work/A_1", git_runner=FakeGit(head="v1.3.0", head_sha=_OLD_SHA))
+    res = slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=FakeGit(head="v1.3.0", head_sha=_OLD_SHA))
     assert res.branch_match is False
     assert res.fail_loud is True and res.ok is False
 
@@ -7211,10 +7203,10 @@ def test_apply_git_snapshot_preserves_existing_git_when_snap_fails(wp):
     """_apply_git_snapshot — 스냅 불가(슬롯 부재 → _snapshot None)면 기존 git 을 clobber 안 하고 보존(T-0350·silent 손실 방지)."""
     existing = {"base": {"branch": "main", "commit": _OLD_SHA}, "branch": "a1",
                 "head": _OLD_SHA, "submodules": [], "recorded_at": "t"}
-    lease = wp.Lease(slot="work/A_404", repo="A", session="s", started="t",
+    lease = worktree_records.Lease(slot="work/A_404", repo="A", session="s", started="t",
                      state="leased", git=dict(existing))
     # git_runner 미주입 + 슬롯 worktree 부재 → _snapshot_slot_git None → 기존 git 유지(no-op).
-    wp._apply_git_snapshot(lease, git_runner=None)
+    slot_snapshot._apply_git_snapshot(pm_paths.home_at(wp.REPO), lease, git_runner=None)
     assert lease.git == existing
 
 
@@ -7256,32 +7248,32 @@ class _BaseGit:
 def test_resolve_base_commit_uses_rev_parse_verify(wp):
     """_resolve_base_commit — `rev-parse --verify <ref>^{commit}` 로 브랜치 tip sha 를 해소."""
     git = _BaseGit(tips={"origin/main": _BASE_TIP})
-    assert wp._resolve_base_commit("work/A_1", "origin/main", git_runner=git) == _BASE_TIP
+    assert branch_store._resolve_base_commit(pm_paths.home_at(wp.REPO), "work/A_1", "origin/main", git_runner=git) == _BASE_TIP
     assert git.did("rev-parse", "--verify", "origin/main^{commit}")
 
 
 def test_resolve_base_commit_unresolvable_ref_returns_none(wp):
     """해소 불가 ref(rc≠0)면 None(fail-soft → 상위가 slot HEAD 폴백 또는 `-`)."""
     git = _BaseGit(tips={})
-    assert wp._resolve_base_commit("work/A_1", "nope", git_runner=git) is None
+    assert branch_store._resolve_base_commit(pm_paths.home_at(wp.REPO), "work/A_1", "nope", git_runner=git) is None
 
 
 def test_apply_git_snapshot_base_branch_records_snapshot_head(wp):
     """readonly 생성 경로 — base_branch 를 주면 base.commit 은 방금 스냅한 head(따라가는 브랜치 착지점)."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="", started="t", state="leased",
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t", state="leased",
                      role="readonly")
     git = FakeGit(head=None, head_sha=_NEW_SHA)
-    wp._apply_git_snapshot(lease, base_branch="develop", git_runner=git)
+    slot_snapshot._apply_git_snapshot(pm_paths.home_at(wp.REPO), lease, base_branch="develop", git_runner=git)
     assert lease.git["base"] == {"branch": "develop", "commit": _NEW_SHA}
 
 
 def test_apply_git_snapshot_work_slot_never_records_base(wp):
     """작업 슬롯은 base_branch 를 줘도 base 를 쓰지 않고 옛 base 도 버린다 — 부모는 git 설정 기록이 진실."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="job", started="t", state="leased",
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="job", started="t", state="leased",
                      git={"base": {"branch": "main", "commit": _OLD_SHA}, "branch": "feat",
                           "head": _OLD_SHA, "submodules": [], "recorded_at": "t"})
     git = FakeGit(head="feat", head_sha=_NEW_SHA)
-    wp._apply_git_snapshot(lease, base_branch="develop", git_runner=git)
+    slot_snapshot._apply_git_snapshot(pm_paths.home_at(wp.REPO), lease, base_branch="develop", git_runner=git)
     assert "base" not in lease.git
     assert lease.git["head"] == _NEW_SHA
 
@@ -7291,7 +7283,7 @@ def test_apply_git_snapshot_work_slot_never_records_base(wp):
 
 def _mk_slot_dir(wp, slot="work/A_1"):
     """tmp 슬롯 worktree 디렉토리를 만든다(실경로 CLI 가 slot_path.exists() 로 스냅 진입하도록)."""
-    p = wp.slot_path(slot)
+    p = pm_paths.slot_path(pm_paths.home_at(wp.REPO), slot)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -7316,7 +7308,7 @@ def test_cli_status_renders_parent_children_stashes(wp, monkeypatch, capsys):
     """CLI status — 부모 `<이름>@<fork 12자> · 앞 N · 뒤 M`·자식 목록·stash 수를 렌더한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
     parent = {"name": "main", "fork": _BASE_TIP, "ref": "origin/main", "ahead": 1, "behind": 2}
-    monkeypatch.setattr(wp, "slot_git_status", lambda slot, **k: _status_row(
+    monkeypatch.setattr(worktree_status, "slot_git_status", lambda _home, slot, **k: _status_row(
         slot, parent=parent, children=["feat-a", "feat-b"], stashes=3))
     rc = wp.main(["status", "work/A_1"])
     assert rc == 0
@@ -7330,7 +7322,7 @@ def test_cli_status_parent_branch_deleted(wp, monkeypatch, capsys):
     """CLI status — 부모 브랜치가 지워져 비교 ref 가 없으면 `<이름>@<fork> (부모 브랜치 없음)`."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
     parent = {"name": "gone", "fork": _BASE_TIP, "ref": None, "ahead": None, "behind": None}
-    monkeypatch.setattr(wp, "slot_git_status", lambda slot, **k: _status_row(slot, parent=parent))
+    monkeypatch.setattr(worktree_status, "slot_git_status", lambda _home, slot, **k: _status_row(slot, parent=parent))
     rc = wp.main(["status", "work/A_1"])
     assert rc == 0
     assert f"parent: gone@{_BASE_TIP[:12]} (부모 브랜치 없음)" in capsys.readouterr().out
@@ -7341,8 +7333,8 @@ def test_cli_status_no_arg_resolves_session_slot(wp, monkeypatch, capsys):
 
     위치인자 생략 경로(무인자=내 슬롯)를 직접 커버한다 — 세션 해소를 고정하고 그 슬롯이 조회됨을 확인."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="A_1", state="leased"))
-    monkeypatch.setattr(wp, "_default_session", lambda: "A_1")   # 세션 해소 고정
-    monkeypatch.setattr(wp, "_slot_from_cwd", lambda: None)      # cwd 유입 없음 → 세션 경로
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "A_1")   # 세션 해소 고정
+    monkeypatch.setattr(worktree_paths, "_slot_from_cwd", lambda _home: None)      # cwd 유입 없음 → 세션 경로
     rc = wp.main(["status"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -7356,19 +7348,19 @@ def test_cli_status_no_arg_resolves_session_slot(wp, monkeypatch, capsys):
 
 def test_task_serialization_round_trip(wp):
     """Task 가 to_dict/from_dict 왕복 보존(prefix·open·started + 미지 키 extra·Lease 동형)."""
-    t = wp.Task(name="job1", prefix="PAY", session="s-test", started="t",
+    t = worktree_records.Task(name="job1", prefix="PAY", session="s-test", started="t",
                 extra={"future": {"k": 1}})
     d = t.to_dict()
     assert d["name"] == "job1" and d["prefix"] == "PAY" and d["session"] == "s-test"
     assert "pid" not in d and "open" not in d                   # 옛 필드 잔존 0
     assert d["future"] == {"k": 1}          # 미지 키 재방출
-    restored = wp.Task.from_dict(d)
+    restored = worktree_records.Task.from_dict(d)
     assert restored == t                    # __eq__ = to_dict 동등
 
 
 def test_task_default_prefix_none(wp):
     """prefix 미지정 = None(기본 없음·①ⓑ)."""
-    t = wp.Task(name="job1", started="t")
+    t = worktree_records.Task(name="job1", started="t")
     assert t.prefix is None
     assert t.to_dict()["prefix"] is None
 
@@ -7386,8 +7378,8 @@ def test_write_ledger_preserves_sibling_tasks_collection(wp):
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
     # leases-only 재기록(모든 리스 op 이 이 형태) — tasks·미지 키가 살아남아야.
-    with wp._lease_lock():
-        wp._write_ledger(wp._read_ledger())
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), pool_store._read_ledger(pm_paths.home_at(wp.REPO)))
         rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert rewritten["tasks"][0]["name"] == "job1"
     assert rewritten["tasks"][0]["prefix"] == "PAY"
@@ -7398,8 +7390,8 @@ def test_write_ledger_preserves_sibling_tasks_collection(wp):
 def test_write_tasks_preserves_sibling_leases_collection(wp):
     """대칭 — `_write_tasks` 가 형제 `leases` 를 보존한다(둘은 같은 파일·같은 락·독립 컬렉션)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
-    with wp._lease_lock():
-        wp._write_tasks([wp.Task(name="job1", started="t")])
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task(name="job1", started="t")])
         data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert data["leases"][0]["slot"] == "work/A_1"   # 리스 생존
     assert data["tasks"][0]["name"] == "job1"
@@ -7407,21 +7399,21 @@ def test_write_tasks_preserves_sibling_leases_collection(wp):
 
 def test_bind_task_creates_new_record_with_zero_workspaces(wp):
     """`--task` 신규 — 슬롯 0개여도 task 장부와 pm_state를 함께 즉시 생성한다."""
-    record, action = wp.bind_task("newjob", session="s-test")
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "newjob", session="s-test")
     assert action == "created"
     assert record.name == "newjob" and record.prefix is None
     assert record.open is True
     # 장부에 영속 + task 연속성 state 즉시 생성(첫 handoff까지 지연 금지).
-    assert wp.find_task("newjob").name == "newjob"
-    assert wp.task_dir("newjob").exists()
-    state = wp.task_pm_state_file("newjob")
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "newjob").name == "newjob"
+    assert pm_paths.task_dir(pm_paths.home_at(wp.REPO), "newjob").exists()
+    state = pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "newjob")
     assert state.exists()
     state_text = state.read_text(encoding="utf-8")
     assert identity_args.TASK_PM_STATE_EMPTY_MARKER in state_text
     assert "{{DATE}}" not in state_text
     assert "task 생성/재개 시 자동 생성" in state_text
     # 슬롯 리스는 0개(task 는 슬롯과 직교·⑥).
-    assert wp.list_leases() == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_bind_task_rejects_corrupt_tasks_collection_without_rewrite(wp):
@@ -7430,54 +7422,54 @@ def test_bind_task_rejects_corrupt_tasks_collection_without_rewrite(wp):
     wp.LEASES_FILE.write_text(payload, encoding="utf-8")
 
     # 조회/진단 API는 가용성 계약상 fail-soft지만, 같은 상태에서 mutation은 strict여야 한다.
-    assert wp.list_tasks() == []
-    assert wp.list_leases() == []
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
     with pytest.raises(ValueError, match="'tasks'.*list"):
-        wp.bind_task("newjob", session="s-test")
+        task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "newjob", session="s-test")
 
     assert wp.LEASES_FILE.read_text(encoding="utf-8") == payload
-    assert not wp.task_dir("newjob").exists()
+    assert not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "newjob").exists()
 
 
 def test_bind_task_refuses_archived_identity_without_creating_state(wp):
     archive = wp.TASKS_DIR / "_ended" / "job-20260827"
     archive.mkdir(parents=True)
     (archive / "pm_state.md").write_text("old-state", encoding="utf-8")
-    with pytest.raises(wp.TaskArchived) as exc_info:
-        wp.bind_task("job", session="s-test")
+    with pytest.raises(worktree_records.TaskArchived) as exc_info:
+        task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
     assert exc_info.value.archives == (archive,)
-    assert wp.find_task("job") is None and not wp.task_dir("job").exists()
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is None and not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
     assert (archive / "pm_state.md").read_text(encoding="utf-8") == "old-state"
 
 
 def test_bind_task_open_record_refuses_second_entry(wp):
     """열린 기록이 있으면 같은 창에서 다시 불러도 거부한다 — 세션명·프로세스 번호로 가르지 않는다."""
-    wp.bind_task("job1", session="s-test")                             # created (열림)
-    with _pytest_task.raises(wp.TaskActiveElsewhere):
-        wp.bind_task("job1", session="s-other")
-    assert wp.find_task("job1").open is True         # 거부는 장부를 바꾸지 않는다
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")                             # created (열림)
+    with _pytest_task.raises(worktree_records.TaskActiveElsewhere):
+        task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-other")
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job1").open is True         # 거부는 장부를 바꾸지 않는다
 
 
 def test_bind_task_resume_backfills_missing_task_state(wp):
     """구 엔진 task가 디렉토리만 남긴 경우에도 resume이 pm_state를 즉시 복구한다."""
-    with wp._lease_lock():
-        wp._write_tasks([wp.Task(name="job1", started="t")])
-    wp.task_dir("job1").mkdir(parents=True, exist_ok=True)
-    assert not wp.task_pm_state_file("job1").exists()
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task(name="job1", started="t")])
+    pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job1").mkdir(parents=True, exist_ok=True)
+    assert not pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "job1").exists()
 
-    record, action = wp.bind_task("job1", session="s-test")
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
 
     assert action == "resumed"
     assert record.open is True
-    assert wp.task_pm_state_file("job1").exists()
+    assert pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "job1").exists()
 
 
 def test_bind_task_rejects_open_record(wp):
     """열림 기록(종료 기록 없음)이면 TaskActiveElsewhere — 정체 표시용 시작 시각을 싣는다."""
-    with wp._lease_lock():
-        wp._write_tasks([wp.Task(name="job1", session="s-test", started="2026-09-09T01:02:03+00:00")])
-    with _pytest_task.raises(wp.TaskActiveElsewhere) as exc_info:
-        wp.bind_task("job1", session="s-other")
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task(name="job1", session="s-test", started="2026-09-09T01:02:03+00:00")])
+    with _pytest_task.raises(worktree_records.TaskActiveElsewhere) as exc_info:
+        task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-other")
     assert exc_info.value.started == "2026-09-09T01:02:03+00:00"
 
 
@@ -7486,20 +7478,20 @@ def test_bind_task_does_not_touch_slots_dir(wp):
     slots_dir = wp.LOCAL_DIR / "slots"
     slots_dir.mkdir(parents=True, exist_ok=True)
     (slots_dir / "sentinel").write_text("x", encoding="utf-8")
-    wp.bind_task("job1", session="s-test")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
     assert (slots_dir / "sentinel").read_text(encoding="utf-8") == "x"   # 무변경
     # 신설된 건 tasks 디렉토리뿐.
-    assert wp.task_dir("job1").exists()
+    assert pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job1").exists()
 
 
 def test_list_tasks_and_find_task(wp):
     """list_tasks 전체·find_task 이름 조회(부재 None)."""
-    wp.bind_task("a", session="s-test")
-    wp.bind_task("b", session="s-test")
-    names = {t.name for t in wp.list_tasks()}
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "a", session="s-test")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "b", session="s-test")
+    names = {t.name for t in pool_store.list_tasks(pm_paths.home_at(wp.REPO))}
     assert names == {"a", "b"}
-    assert wp.find_task("a").name == "a"
-    assert wp.find_task("nope") is None
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "a").name == "a"
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "nope") is None
 
 
 # ── set_task_prefix — task prefix 지정/변경/해제 (F5·T-0357·장부 단일 소유·중간 변경 자유) ──
@@ -7510,84 +7502,84 @@ import datetime as _dt_task   # todo 표시(등록일·묵은 일수) 단언 전
 
 def test_add_task_todo_appends_with_created_stamp_and_id(wp):
     """`add_task_todo` 가 열린 할 일을 쌓고 등록 시각·ID 를 엔진이 박는다(사용자 입력 아님)."""
-    wp.bind_task("job1", session="s-test")
-    updated = wp.add_task_todo("job1", "  주입 교체  ", now=lambda: "2026-09-10T03:00:00+00:00")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    updated = task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "  주입 교체  ", now=lambda: "2026-09-10T03:00:00+00:00")
     assert updated == [
         {"id": 1, "text": "주입 교체", "created": "2026-09-10T03:00:00+00:00"}], \
         "앞뒤 공백이 그대로 저장됐거나 ID·등록 시각이 빠졌다"
-    assert wp.read_task_todos("job1") == updated      # 영속(파일 write)
+    assert task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job1") == updated      # 영속(파일 write)
 
 
 def test_task_todo_ids_are_never_reused(wp):
     """지운 ID 는 다시 쓰지 않는다 — 사람이 화면에서 읽은 번호가 다른 일을 가리키면 안 된다."""
-    wp.bind_task("job1", session="s-test")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
     for text in ("첫째", "둘째", "셋째"):
-        wp.add_task_todo("job1", text)
-    wp.close_task_todo("job1", 2)
-    assert [t["id"] for t in wp.read_task_todos("job1")] == [1, 3]
-    assert [t["id"] for t in wp.add_task_todo("job1", "넷째")] == [1, 3, 4]
+        task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", text)
+    task_lifecycle.close_task_todo(pm_paths.home_at(wp.REPO), "job1", 2)
+    assert [t["id"] for t in task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job1")] == [1, 3]
+    assert [t["id"] for t in task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "넷째")] == [1, 3, 4]
 
 
 def test_task_todos_live_in_the_task_file_and_survive_session_close(wp):
     """할 일은 장부가 아니라 task 폴더에 산다 — 세션 종료·재개가 그대로 승계한다."""
-    wp.bind_task("job1", session="s-test")
-    wp.add_task_todo("job1", "남은 일")
-    assert wp.task_todo_file("job1").is_file()
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "남은 일")
+    assert pm_paths.task_todo_file(pm_paths.home_at(wp.REPO), "job1").is_file()
     row = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"][0]
     assert "todos" not in row, "장부에 할 일이 남았다 — 자리가 둘로 갈린다"
-    wp.close_task_session("job1")
-    _resumed, action = wp.bind_task("job1", session="s-next")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job1")
+    _resumed, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-next")
     assert action == "resumed"
-    assert [t["text"] for t in wp.read_task_todos("job1")] == ["남은 일"], \
+    assert [t["text"] for t in task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job1")] == ["남은 일"], \
         "세션이 바뀌며 할 일이 사라졌다"
 
 
 def test_close_task_todo_removes_by_id(wp):
     """완료 = 목록에서 제거. 지목은 `task todo list` 가 보여준 ID 다."""
-    wp.bind_task("job1", session="s-test")
-    wp.add_task_todo("job1", "첫째")
-    wp.add_task_todo("job1", "둘째")
-    updated, removed = wp.close_task_todo("job1", 1)
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "첫째")
+    task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "둘째")
+    updated, removed = task_lifecycle.close_task_todo(pm_paths.home_at(wp.REPO), "job1", 1)
     assert removed["text"] == "첫째"
     assert [t["text"] for t in updated] == ["둘째"]
-    assert [t["text"] for t in wp.read_task_todos("job1")] == ["둘째"]
+    assert [t["text"] for t in task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job1")] == ["둘째"]
 
 
 def test_close_task_todo_unknown_id_raises_without_write(wp):
     """없는 ID 는 LookupError — 조용히 무시하면 지운 줄 알고 넘어간다(파일 불변)."""
-    wp.bind_task("job1", session="s-test")
-    wp.add_task_todo("job1", "하나")
-    before = wp.task_todo_file("job1").read_bytes()
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "하나")
+    before = pm_paths.task_todo_file(pm_paths.home_at(wp.REPO), "job1").read_bytes()
     for bad in (0, 2, -1):
         with _pytest_task.raises(LookupError):
-            wp.close_task_todo("job1", bad)
-    assert wp.task_todo_file("job1").read_bytes() == before
+            task_lifecycle.close_task_todo(pm_paths.home_at(wp.REPO), "job1", bad)
+    assert pm_paths.task_todo_file(pm_paths.home_at(wp.REPO), "job1").read_bytes() == before
 
 
 def test_add_task_todo_empty_text_raises_without_write(wp):
     """빈 내용은 ValueError — 가리키는 일이 없는 할 일 하나로 쓰기 경고가 꺼진다(파일 불변)."""
-    wp.bind_task("job1", session="s-test")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
     with _pytest_task.raises(ValueError):
-        wp.add_task_todo("job1", "   ")
-    assert not wp.task_todo_file("job1").exists()
+        task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "   ")
+    assert not pm_paths.task_todo_file(pm_paths.home_at(wp.REPO), "job1").exists()
 
 
 def test_task_todo_entries_validate_name_before_touching_disk(wp):
     """이름을 받는 세 진입점 — 불법 task 명은 디스크 접근 이전 InvalidTaskName(부작용 0)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.add_task_todo("../evil", "x")
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.close_task_todo("../evil", 1)
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.read_task_todos("../evil")
-    assert wp.list_tasks() == []
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "../evil", "x")
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.close_task_todo(pm_paths.home_at(wp.REPO), "../evil", 1)
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_store.read_task_todos(pm_paths.home_at(wp.REPO), "../evil")
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_task_todo_missing_task_returns_none(wp):
     """부재 task → None(호출부가 rc1 안내) — 할 일이 task 를 만들지 않는다."""
-    assert wp.add_task_todo("absent", "x") is None
-    assert wp.close_task_todo("absent", 1) is None
-    assert wp.list_tasks() == []
+    assert task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "absent", "x") is None
+    assert task_lifecycle.close_task_todo(pm_paths.home_at(wp.REPO), "absent", 1) is None
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_task_todo_write_leaves_the_lease_ledger_untouched(wp):
@@ -7602,88 +7594,88 @@ def test_task_todo_write_leaves_the_lease_ledger_untouched(wp):
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
     before = wp.LEASES_FILE.read_bytes()
-    wp.add_task_todo("job1", "일")
+    task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "일")
     assert wp.LEASES_FILE.read_bytes() == before
-    assert wp.read_task_todos("job2") == [], "다른 task 의 할 일이 섞였다"
+    assert task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job2") == [], "다른 task 의 할 일이 섞였다"
 
 
 def test_read_task_todos_creates_nothing(wp):
     """조회는 파일도 락도 만들지 않는다 — 쓰기 판정이 파일 수정마다 부르는 자리다."""
-    wp.bind_task("job1", session="s-test")
-    assert wp.read_task_todos("job1") == []
-    assert not wp.task_todo_file("job1").exists()
-    assert not (wp.task_dir("job1") / "todo.lock").exists()
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    assert task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job1") == []
+    assert not pm_paths.task_todo_file(pm_paths.home_at(wp.REPO), "job1").exists()
+    assert not (pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job1") / "todo.lock").exists()
     # 장부에 없는 이름도 폴더를 만들지 않는다(빈 목록일 뿐이다).
-    assert wp.read_task_todos("absent") == []
-    assert not wp.task_dir("absent").exists()
+    assert task_store.read_task_todos(pm_paths.home_at(wp.REPO), "absent") == []
+    assert not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "absent").exists()
 
 
 def test_malformed_todo_file_is_raised_not_read_as_empty(wp):
     """어긋난 행을 조용히 버리지 않는다 — 버리면 열린 일이 사라지고 쓰기 경고가 함께 꺼진다."""
-    wp.bind_task("job1", session="s-test")
-    wp.add_task_todo("job1", "일")
-    path = wp.task_todo_file("job1")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    task_lifecycle.add_task_todo(pm_paths.home_at(wp.REPO), "job1", "일")
+    path = pm_paths.task_todo_file(pm_paths.home_at(wp.REPO), "job1")
 
     path.write_text(json.dumps({"next_id": 2, "todos": [{"text": "ID 가 없다"}]}),
                     encoding="utf-8")
     with _pytest_task.raises(ValueError, match=r"todos\[0\]"):
-        wp.read_task_todos("job1")
+        task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job1")
 
     # 이미 내준 ID 보다 낮은 next_id 도 올린다 — 그대로 두면 같은 번호가 다른 일을 가리킨다.
     path.write_text(
         json.dumps({"next_id": 1, "todos": [{"id": 1, "text": "일", "created": ""}]}),
         encoding="utf-8")
     with _pytest_task.raises(ValueError, match="next_id"):
-        wp.read_task_todos("job1")
+        task_store.read_task_todos(pm_paths.home_at(wp.REPO), "job1")
 
 
 def test_format_todo_line_shows_id_date_and_age(wp):
     """표시 단일 진실 — ID·내용·등록일·묵은 일수. 등록일이 없으면 나이를 지어내지 않는다."""
     now = _dt_task.datetime(2026, 9, 17, tzinfo=_dt_task.timezone.utc)
-    line = wp.format_todo_line(
+    line = task_store.format_todo_line(
         {"id": 3, "text": "일", "created": "2026-09-10T03:00:00+00:00"}, now=now)
     assert line == "#3 일 (등록 2026-09-10 · 6일째)"
-    assert wp.format_todo_line({"id": 1, "text": "일", "created": ""}) == "#1 일 (등록일 없음)"
-    assert wp.todo_age_days("") is None and wp.todo_age_days("not-a-date") is None
+    assert task_store.format_todo_line({"id": 1, "text": "일", "created": ""}) == "#1 일 (등록일 없음)"
+    assert task_store.todo_age_days("") is None and task_store.todo_age_days("not-a-date") is None
 
 
 def test_set_task_prefix_sets_and_reads_back(wp):
     """`set_task_prefix` 가 task 레코드 prefix 를 지정하고 find_task 로 되읽힌다 (F5·지정)."""
-    wp.bind_task("job1", session="s-test")                             # created·prefix=None(기본 없음)
-    updated = wp.set_task_prefix("job1", "pay")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")                             # created·prefix=None(기본 없음)
+    updated = task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", "pay")
     assert updated is not None and updated.prefix == "pay"
-    assert wp.find_task("job1").prefix == "pay"      # 영속(장부 write)
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job1").prefix == "pay"      # 영속(장부 write)
 
 
 def test_set_task_prefix_none_clears(wp):
     """prefix=None → 해제(무prefix). 지정 후 해제하면 다시 None (F5·`none` 해제)."""
-    wp.bind_task("job1", session="s-test")
-    wp.set_task_prefix("job1", "pay")
-    updated = wp.set_task_prefix("job1", None)
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", "pay")
+    updated = task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", None)
     assert updated.prefix is None
-    assert wp.find_task("job1").prefix is None
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job1").prefix is None
 
 
 def test_set_task_prefix_mid_change_is_free(wp):
     """중간 변경 자유(①ⓒ) — 진행 중 prefix 를 pay→acc→해제 로 자유롭게 바꾼다(task 종속 없음)."""
-    wp.bind_task("job1", session="s-test")
-    assert wp.set_task_prefix("job1", "pay").prefix == "pay"
-    assert wp.set_task_prefix("job1", "acc").prefix == "acc"   # 변경
-    assert wp.set_task_prefix("job1", None).prefix is None     # 해제
-    assert wp.set_task_prefix("job1", "pay").prefix == "pay"   # 재지정
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    assert task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", "pay").prefix == "pay"
+    assert task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", "acc").prefix == "acc"   # 변경
+    assert task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", None).prefix is None     # 해제
+    assert task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", "pay").prefix == "pay"   # 재지정
 
 
 def test_set_task_prefix_missing_task_returns_none(wp):
     """부재 task → None(호출부가 rc1 안내·생성은 F1 단일 지점) — 새 레코드 만들지 않음."""
-    assert wp.set_task_prefix("absent", "pay") is None
-    assert wp.list_tasks() == []                     # task 생성 안 함(부작용 0)
+    assert task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "absent", "pay") is None
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []                     # task 생성 안 함(부작용 0)
 
 
 def test_set_task_prefix_validates_task_name_before_write(wp):
     """write-capable 엔진 진입점 — 불법 task 명은 장부 write 이전 InvalidTaskName(부작용 0·must-fix)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.set_task_prefix("../evil", "pay")
-    assert wp.list_tasks() == []
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "../evil", "pay")
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_set_task_prefix_preserves_sibling_leases_and_tasks(wp):
@@ -7696,7 +7688,7 @@ def test_set_task_prefix_preserves_sibling_leases_and_tasks(wp):
     }
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
-    wp.set_task_prefix("job1", "pay")
+    task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", "pay")
     data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     by_name = {t["name"]: t for t in data["tasks"]}
     assert by_name["job1"]["prefix"] == "pay"        # 대상만 변경
@@ -7707,10 +7699,10 @@ def test_set_task_prefix_preserves_sibling_leases_and_tasks(wp):
 
 def test_set_task_prefix_read_by_identity_args_task_prefix(wp):
     """소비측 통합 — `set_task_prefix` 가 쓴 값을 `lease_store.task_prefix`(board.py new F5 소비)가 읽는다."""
-    wp.bind_task("job1", session="s-test")
-    wp.set_task_prefix("job1", "pay")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
+    task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", "pay")
     assert lease_store.task_prefix("job1", wp.LEASES_FILE) == "pay"
-    wp.set_task_prefix("job1", None)
+    task_lifecycle.set_task_prefix(pm_paths.home_at(wp.REPO), "job1", None)
     assert lease_store.task_prefix("job1", wp.LEASES_FILE) is None   # 해제도 소비측에 반영
 
 
@@ -7722,9 +7714,9 @@ def test_set_task_prefix_read_by_identity_args_task_prefix(wp):
 
 def test_bind_task_closed_record_resumes(wp):
     """닫힌 기록(종료 기록 있음) 재개 = resumed — 다른 필드는 무접촉."""
-    with wp._lease_lock():
-        wp._write_tasks([wp.Task(name="job1", prefix="PAY", session="", started="t")])
-    record, action = wp.bind_task("job1", session="s-test")
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task(name="job1", prefix="PAY", session="", started="t")])
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
     assert action == "resumed"
     assert record.open is True                  # 다시 열림
     assert record.prefix == "PAY"               # prefix 유지(바인딩 무접촉)
@@ -7732,33 +7724,33 @@ def test_bind_task_closed_record_resumes(wp):
 
 def test_close_task_session_closes_record_and_returns_it(wp):
     """close_task_session 가 task 레코드를 닫고(open=False) 갱신 레코드를 돌려준다(종료 기록)."""
-    wp.bind_task("job1", session="s-test")                         # created (열림)
-    updated = wp.close_task_session("job1")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")                         # created (열림)
+    updated = task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job1")
     assert updated is not None and updated.open is False
-    assert wp.find_task("job1").open is False    # 영속(장부 write)
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job1").open is False    # 영속(장부 write)
 
 
 def test_close_task_session_then_bind_resumes_clean(wp):
     """라운드트립 — 종료 기록 뒤 재개 = resumed(거부 없음). 종료 기록이 다음 진입의 열쇠다."""
-    wp.bind_task("job1", session="s-test")                         # created (열림)
-    released = wp.close_task_session("job1")        # 종료 기록 → 닫힘
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")                         # created (열림)
+    released = task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job1")        # 종료 기록 → 닫힘
     assert released is not None and released.open is False
-    record, action = wp.bind_task("job1", session="s-test")        # 재개
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")        # 재개
     assert action == "resumed"
     assert record.open is True
 
 
 def test_close_task_session_missing_task_returns_none(wp):
     """부재 task → None(fail-soft·무해) — 새 레코드 만들지 않음(부작용 0·솔로/슬롯 모드 무해)."""
-    assert wp.close_task_session("absent") is None
-    assert wp.list_tasks() == []                 # task 생성 안 함
+    assert task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "absent") is None
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []                 # task 생성 안 함
 
 
 def test_close_task_session_validates_task_name_before_write(wp):
     """write-capable 엔진 진입점 — 불법 task 명은 장부 write 이전 InvalidTaskName(부작용 0·must-fix·set_task_prefix 동형)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.close_task_session("../evil")
-    assert wp.list_tasks() == []
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "../evil")
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_close_task_session_preserves_sibling_leases_and_tasks(wp):
@@ -7771,7 +7763,7 @@ def test_close_task_session_preserves_sibling_leases_and_tasks(wp):
     }
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
-    wp.close_task_session("job1")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job1")
     data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     by_name = {t["name"]: t for t in data["tasks"]}
     assert by_name["job1"]["session"] == ""      # 대상만 닫힘
@@ -7787,6 +7779,21 @@ def test_close_task_session_preserves_sibling_leases_and_tasks(wp):
 
 
 import pytest as _pytest_task
+from pm_engine.app import branch_checkout
+from pm_engine.infra import branch_store
+from pm_engine.infra import clock
+from pm_engine.infra import pm_paths
+from pm_engine.infra import pool_store
+from pm_engine.app import slot_resolution
+from pm_engine.infra import slot_snapshot
+from pm_engine.infra import submodule_git
+from pm_engine.app import task_lifecycle
+from pm_engine.infra import task_store
+from pm_engine.infra import worktree_git
+from pm_engine.infra import worktree_paths
+from pm_engine.app import worktree_pool
+from pm_engine.domain import worktree_records
+from pm_engine.app import worktree_status
 
 
 @_pytest_task.mark.parametrize("bad", [
@@ -7805,35 +7812,35 @@ def test_bind_task_rejects_unsafe_name_in_engine(wp, bad):
     (reviewer 실측 `--task ../../evil` → git-tracked). 엔진층 검증이라 CLI 우회(T-0354~0357)도 못 뚫는다.
     문자 도메인은 하류 구문 표면(CLI 인자 경계·log 태그 delimiter)에 맞춰 협소화한다(whitespace·괄호 거부·
     T-0356 codex 2건의 단일 불변식·per-surface 이스케이프 회피)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.bind_task(bad, session="s-test")
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), bad, session="s-test")
     # 부작용 0 — 장부에 tasks 미기록, tasks 디렉토리 미생성.
-    assert wp.list_tasks() == []
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
     assert not (wp.LOCAL_DIR / "tasks").exists() or list((wp.LOCAL_DIR / "tasks").iterdir()) == []
 
 
 def test_bind_task_valid_name_passes(wp):
     """정상 이름은 통과(오탐 0) — 대시·언더스코어·정수-접미·한글 자유 포맷 허용(협소화가 정상 명을 안 막음)."""
     for ok in ("payments-refactor", "job_v2", "hotfix3", "task2", "한글작업"):
-        record, action = wp.bind_task(ok, session="s-test")
+        record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), ok, session="s-test")
         assert record.name == ok and action == "created"
 
 
 def test_bind_task_rejects_reserved_pattern_when_repos_given(wp):
     """예약명 이중화(should-fix) — 엔진 진입점이 registered_repos 로 `<repo>_<N>` 거부(primitive 자기완결)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.bind_task("project_manager_1", registered_repos=["project_manager"], session="s-test")
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "project_manager_1", registered_repos=["project_manager"], session="s-test")
     # 미등록 repo 형태는 자유 포맷 허용(실재 슬롯과만 충돌 방지).
-    record, _ = wp.bind_task("sikdan_2", registered_repos=["project_manager"], session="s-test")
+    record, _ = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "sikdan_2", registered_repos=["project_manager"], session="s-test")
     assert record.name == "sikdan_2"
 
 
 def test_validate_task_name_is_load_bearing_before_writes(wp):
     """검증이 write/mkdir *이전* — 거부 시 장부·디렉토리 흔적 0(부작용 순서 핀)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.bind_task("../escape", session="s-test")
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "../escape", session="s-test")
     assert not (wp.LOCAL_DIR / "tasks").exists()
-    assert wp.list_tasks() == []
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -7847,7 +7854,7 @@ def test_validate_task_name_is_load_bearing_before_writes(wp):
 
 def test_create_task_creates_unoccupied_record_and_state(wp):
     """정체성만 — `pid 0`·`prefix None` 장부 행 + pm_state 즉시 생성 + 슬롯 리스 0."""
-    task = wp.create_task("newjob")
+    task = task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "newjob")
 
     assert task is not None
     assert task.name == "newjob" and task.prefix is None
@@ -7857,10 +7864,10 @@ def test_create_task_creates_unoccupied_record_and_state(wp):
     data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert [row["name"] for row in data["tasks"]] == ["newjob"]
     assert data["tasks"][0]["session"] == "" and data["tasks"][0]["prefix"] is None
-    state = wp.task_pm_state_file("newjob")
+    state = pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "newjob")
     assert state.exists()
     assert identity_args.TASK_PM_STATE_EMPTY_MARKER in state.read_text(encoding="utf-8")
-    assert wp.list_leases() == []          # 슬롯 대여는 alloc 소관(직교)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []          # 슬롯 대여는 alloc 소관(직교)
 
 
 def test_create_task_pm_state_matches_bind_task_output(wp, tmp_path):
@@ -7875,20 +7882,20 @@ def test_create_task_pm_state_matches_bind_task_output(wp, tmp_path):
     )
     wp_bind = _load_wp_bound(other)
 
-    wp.create_task("twin")
-    wp_bind.bind_task("twin", session="s-test")
+    task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "twin")
+    task_lifecycle.bind_task(pm_paths.home_at(wp_bind.REPO), "twin", session="s-test")
 
     assert (
-        wp.task_pm_state_file("twin").read_bytes()
-        == wp_bind.task_pm_state_file("twin").read_bytes()
+        pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "twin").read_bytes()
+        == pm_paths.task_pm_state_file(pm_paths.home_at(wp_bind.REPO), "twin").read_bytes()
     )
 
 
 def test_create_task_then_bind_task_is_clean_resume(wp):
     """생성 뒤 bootstrap 진입은 **resumed** — 신규 생성 아님(생성은 닫힘으로 만든다)."""
-    wp.create_task("job1")
+    task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "job1")
 
-    record, action = wp.bind_task("job1", session="s-test")
+    record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
 
     assert action == "resumed"
     assert record.open is True
@@ -7897,13 +7904,13 @@ def test_create_task_then_bind_task_is_clean_resume(wp):
 
 def test_create_task_duplicate_returns_none_without_ledger_change(wp):
     """이미 있는 이름은 `None` — 장부 바이트 불변(재개는 bootstrap 몫·열림 표시 무접촉)."""
-    wp.bind_task("job1", session="s-test")                       # 열림
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")                       # 열림
     before = wp.LEASES_FILE.read_bytes()
 
-    assert wp.create_task("job1") is None
+    assert task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "job1") is None
 
     assert wp.LEASES_FILE.read_bytes() == before
-    assert wp.find_task("job1").open is True
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job1").open is True
 
 
 def test_create_task_refuses_archived_identity_without_side_effects(wp):
@@ -7912,34 +7919,34 @@ def test_create_task_refuses_archived_identity_without_side_effects(wp):
     archive.mkdir(parents=True)
     (archive / "pm_state.md").write_text("old-state", encoding="utf-8")
 
-    with _pytest_task.raises(wp.TaskArchived) as exc_info:
-        wp.create_task("job")
+    with _pytest_task.raises(worktree_records.TaskArchived) as exc_info:
+        task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "job")
 
     assert exc_info.value.archives == (archive,)
-    assert wp.find_task("job") is None and not wp.task_dir("job").exists()
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is None and not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
     assert (archive / "pm_state.md").read_text(encoding="utf-8") == "old-state"
 
 
 def test_create_task_rejects_unsafe_name_before_writes(wp):
     """부적합 이름은 mkdir·장부 write 이전 fail-loud(`bind_task` 동형 must-fix)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.create_task("../escape")
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "../escape")
     assert not (wp.LOCAL_DIR / "tasks").exists()
-    assert wp.list_tasks() == []
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_create_task_rejects_reserved_pattern_when_repos_given(wp):
     """예약명(`<repo>_<N>`)은 registered_repos 를 받으면 엔진 진입점에서 거부(bind_task 동형)."""
-    with _pytest_task.raises(wp.InvalidTaskName):
-        wp.create_task("project_manager_1", registered_repos=["project_manager"])
-    assert wp.list_tasks() == []
+    with _pytest_task.raises(worktree_records.InvalidTaskName):
+        task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "project_manager_1", registered_repos=["project_manager"])
+    assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
 def test_create_task_preserves_sibling_leases_collection(wp):
     """생성 write 가 형제 `leases` 를 보존한다(둘은 같은 파일·같은 락·독립 컬렉션)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
 
-    wp.create_task("job1")
+    task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "job1")
 
     data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert data["leases"][0]["slot"] == "work/A_1"
@@ -7949,15 +7956,15 @@ def test_create_task_preserves_sibling_leases_collection(wp):
 def _count_lease_lock_entries(wp, monkeypatch) -> list[int]:
     """`_lease_lock` 획득 횟수 카운터를 건다 — 반환 리스트의 len 이 획득 횟수."""
     entries: list[int] = []
-    real_lock = wp._lease_lock
+    real_lock = pool_store._lease_lock
 
     @contextlib.contextmanager
-    def counting_lock():
+    def counting_lock(_home):
         entries.append(1)
-        with real_lock():
+        with real_lock(_home):
             yield
 
-    monkeypatch.setattr(wp, "_lease_lock", counting_lock)
+    monkeypatch.setattr(pool_store, "_lease_lock", counting_lock)
     return entries
 
 
@@ -7965,7 +7972,7 @@ def test_create_task_acquires_lease_lock_once(wp, monkeypatch):
     """한 호출에 락 1회 — 락 안쪽 헬퍼를 쓰므로 재진입이 없다."""
     entries = _count_lease_lock_entries(wp, monkeypatch)
 
-    wp.create_task("job1")
+    task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "job1")
 
     assert len(entries) == 1, f"락 획득 {len(entries)}회 — 재진입(중첩 획득) 의심"
 
@@ -7974,7 +7981,7 @@ def test_bind_task_create_branch_acquires_lease_lock_once(wp, monkeypatch):
     """`bind_task` 신규 가지도 락 1회 — 공개 `create_task` 를 안에서 부르지 않는다."""
     entries = _count_lease_lock_entries(wp, monkeypatch)
 
-    _record, action = wp.bind_task("job1", session="s-test")
+    _record, action = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
 
     assert action == "created"
     assert len(entries) == 1, f"락 획득 {len(entries)}회 — bind_task 안에서 공개 API 재진입 의심"
@@ -7992,14 +7999,14 @@ def test_create_task_blocks_while_lease_lock_is_held(wp):
 
     def run_create():
         try:
-            outcome["task"] = wp.create_task("job1")
+            outcome["task"] = task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "job1")
         except Exception as exc:  # noqa: BLE001 — 스레드 결과를 본 스레드에서 단언.
             outcome["error"] = exc
         finally:
             done.set()
 
     thread = threading.Thread(target=run_create)
-    with wp._lease_lock():
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
         thread.start()
         finished_while_locked = done.wait(0.3)
     thread.join(SYNC_TIMEOUT)
@@ -8008,7 +8015,7 @@ def test_create_task_blocks_while_lease_lock_is_held(wp):
     assert not thread.is_alive()
     assert "error" not in outcome
     assert outcome["task"].open is False
-    assert wp.find_task("job1") is not None
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job1") is not None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -8026,7 +8033,7 @@ def test_alloc_leases_minimal_idle_number(wp):
           _lease(wp, slot="work/A_1", repo="A", session="", state="idle"),
           _lease(wp, slot="work/A_2", repo="A", session="", state="idle"))
     git = FakeGit()
-    lease = wp.alloc("A", owner_task="task-x", git_runner=git)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="task-x", git_runner=git)
     assert lease.slot == "work/A_1"     # 최소 번호
     assert lease.session == "task-x"    # task 정체성이 session 축에 실림(⑥)
 
@@ -8035,8 +8042,8 @@ def test_alloc_task_session_is_release_ownership_key(wp):
     """alloc(session=task) 로 대여한 슬롯은 그 task 의 release 소유검사를 통과한다(왕복·F2↔F3)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
     git = FakeGit(dirty=False)
-    wp.alloc("A", owner_task="job", git_runner=git)
-    lease = wp.release("work/A_1", owner_task="job", git_runner=git)  # 같은 task → 통과
+    worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="job", git_runner=git)
+    lease = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", owner_task="job", git_runner=git)  # 같은 task → 통과
     assert lease.state == "idle"
 
 
@@ -8049,7 +8056,7 @@ def test_release_owner_task_match_releases(wp):
     """release owner_task 일치 → 정상 idle 반납."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
     git = FakeGit(dirty=False)
-    lease = wp.release("work/A_1", owner_task="job", git_runner=git)
+    lease = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", owner_task="job", git_runner=git)
     assert lease.state == "idle"
 
 
@@ -8057,10 +8064,10 @@ def test_release_owner_task_mismatch_raises_not_task_owner(wp):
     """release owner_task 불일치 → NotTaskOwner(다른 task 슬롯 보호·부작용 0)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
     git = FakeGit(dirty=False)
-    with pytest.raises(wp.NotTaskOwner) as ei:
-        wp.release("work/A_1", owner_task="job", git_runner=git)
+    with pytest.raises(worktree_records.NotTaskOwner) as ei:
+        worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", owner_task="job", git_runner=git)
     assert ei.value.holder == "other"
-    assert wp.list_leases()[0].state == "leased"     # 거부 — 여전히 leased
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == "leased"     # 거부 — 여전히 leased
 
 
 def test_release_owner_task_precedes_dirty_check(wp, proj):
@@ -8068,8 +8075,8 @@ def test_release_owner_task_precedes_dirty_check(wp, proj):
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
     git = FakeGit(dirty=True)
-    with pytest.raises(wp.NotTaskOwner):
-        wp.release("work/A_1", owner_task="job", git_runner=git)
+    with pytest.raises(worktree_records.NotTaskOwner):
+        worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", owner_task="job", git_runner=git)
     assert not git.did("stash", "push")      # 소유검사 먼저라 stash 조차 안 함
 
 
@@ -8077,7 +8084,7 @@ def test_release_no_owner_task_skips_ownership_check(wp):
     """owner_task=None(백스톱·현행) → 소유검사 우회(session 무관 slot-only 반납)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="whoever", state="leased"))
     git = FakeGit(dirty=False)
-    lease = wp.release("work/A_1", git_runner=git)   # owner_task 미지정
+    lease = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)   # owner_task 미지정
     assert lease.state == "idle"
 
 
@@ -8092,7 +8099,7 @@ def test_slots_for_task_returns_only_leased_owned(wp):
           _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
           _lease(wp, slot="work/A_2", repo="A", session="job", state="idle"),
           _lease(wp, slot="work/B_1", repo="B", session="other", state="leased"))
-    slots = sorted(l.slot for l in wp.slots_for_task("job"))
+    slots = sorted(l.slot for l in pool_store.slots_for_task(pm_paths.home_at(wp.REPO), "job"))
     assert slots == ["work/A_1"]
 
 
@@ -8123,7 +8130,7 @@ def test_slots_for_task_strict_rejects_noncanonical_slot(wp, slot, repo):
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
 
     with pytest.raises(ValueError, match="슬롯"):
-        wp.slots_for_task_strict("job")
+        pool_store.slots_for_task_strict(pm_paths.home_at(wp.REPO), "job")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -8148,7 +8155,7 @@ def test_task_archive_candidates_only_exact_real_directories(wp):
         (exact.parent / "job-20260829").symlink_to(exact, target_is_directory=True)
     except OSError:
         pass
-    assert [path.name for path in wp.task_archive_candidates("job")] == [
+    assert [path.name for path in task_store.task_archive_candidates(pm_paths.home_at(wp.REPO), "job")] == [
         "job-20260827", "job-20260827-2"
     ]
 
@@ -8161,12 +8168,12 @@ def test_reopen_task_single_archive_preserves_tree_and_ledger_siblings(wp, monke
         "future": {"keep": True},
     }
     wp.LEASES_FILE.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(wp, "_now_utc", lambda: "2026-08-27T14:00:00+00:00")
-    result = wp.reopen_task("job")
-    assert result.moved_from == archive and result.moved_to == wp.task_dir("job")
+    monkeypatch.setattr(clock, "now_utc", lambda: "2026-08-27T14:00:00+00:00")
+    result = task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
+    assert result.moved_from == archive and result.moved_to == pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job")
     assert not archive.exists()
-    assert (wp.task_dir("job") / "pm_state.md").read_bytes() == b"old-state\x00"
-    assert result.task == wp.Task("job", prefix=None, started="2026-08-27T14:00:00+00:00")
+    assert (pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job") / "pm_state.md").read_bytes() == b"old-state\x00"
+    assert result.task == worktree_records.Task("job", prefix=None, started="2026-08-27T14:00:00+00:00")
     rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert rewritten["leases"] == payload["leases"] and rewritten["future"] == payload["future"]
     assert [row["name"] for row in rewritten["tasks"]] == ["other", "job"]
@@ -8174,18 +8181,18 @@ def test_reopen_task_single_archive_preserves_tree_and_ledger_siblings(wp, monke
 
 def test_reopen_task_zero_multiple_and_exact_selection_are_side_effect_free(wp):
     before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
-    with pytest.raises(wp.TaskReopenRefused, match="archive가 없음"):
-        wp.reopen_task("job")
+    with pytest.raises(worktree_records.TaskReopenRefused, match="archive가 없음"):
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
     assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
     first = _archive_task(wp)
     second = _archive_task(wp, "job-20260827-2", b"second")
-    with pytest.raises(wp.TaskReopenRefused) as exc_info:
-        wp.reopen_task("job")
+    with pytest.raises(worktree_records.TaskReopenRefused) as exc_info:
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
     assert exc_info.value.archives == (first, second)
-    assert first.exists() and second.exists() and not wp.task_dir("job").exists()
-    result = wp.reopen_task("job", archive=second.name)
+    assert first.exists() and second.exists() and not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
+    result = task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job", archive=second.name)
     assert result.moved_from == second
-    assert (wp.task_dir("job") / "pm_state.md").read_bytes() == b"second"
+    assert (pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job") / "pm_state.md").read_bytes() == b"second"
     assert first.exists()
 
 
@@ -8196,17 +8203,17 @@ def test_reopen_task_rejects_overlapping_task_name_archive(wp):
     )
     before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
 
-    assert wp.task_archive_candidates("job") == ()
+    assert task_store.task_archive_candidates(pm_paths.home_at(wp.REPO), "job") == ()
     for selected in (None, archive.name):
-        with pytest.raises(wp.TaskReopenRefused):
-            wp.reopen_task("job", archive=selected)
-        assert archive.exists() and not wp.task_dir("job").exists()
+        with pytest.raises(worktree_records.TaskReopenRefused):
+            task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job", archive=selected)
+        assert archive.exists() and not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
         assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
 
-    assert wp.task_archive_candidates(long_name) == (archive,)
-    result = wp.reopen_task(long_name)
+    assert task_store.task_archive_candidates(pm_paths.home_at(wp.REPO), long_name) == (archive,)
+    result = task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), long_name)
     assert result.moved_from == archive
-    assert (wp.task_dir(long_name) / "pm_state.md").read_bytes() == (
+    assert (pm_paths.task_dir(pm_paths.home_at(wp.REPO), long_name) / "pm_state.md").read_bytes() == (
         b"archive for task job-20260827"
     )
 
@@ -8215,34 +8222,34 @@ def test_reopen_task_rejects_overlapping_task_name_archive(wp):
                                       "job\\20260827", ".", "other-20260827"])
 def test_reopen_task_rejects_unsafe_or_nonmember_archive(wp, archive):
     candidate = _archive_task(wp)
-    with pytest.raises(wp.TaskReopenRefused):
-        wp.reopen_task("job", archive=archive)
-    assert candidate.exists() and not wp.task_dir("job").exists()
+    with pytest.raises(worktree_records.TaskReopenRefused):
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job", archive=archive)
+    assert candidate.exists() and not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
 
 
 def test_reopen_task_refuses_active_record_or_folder(wp):
     archive = _archive_task(wp)
-    with wp._lease_lock():
-        wp._write_tasks([wp.Task("job", started="t")])
-    with pytest.raises(wp.TaskReopenRefused, match="장부 레코드"):
-        wp.reopen_task("job")
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task("job", started="t")])
+    with pytest.raises(worktree_records.TaskReopenRefused, match="장부 레코드"):
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
     assert archive.exists()
-    with wp._lease_lock():
-        wp._write_tasks([])
-    wp.task_dir("job").mkdir()
-    with pytest.raises(wp.TaskReopenRefused, match="활성 task 폴더"):
-        wp.reopen_task("job")
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [])
+    pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").mkdir()
+    with pytest.raises(worktree_records.TaskReopenRefused, match="활성 task 폴더"):
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
     assert archive.exists()
 
 
 def test_reopen_task_ledger_failure_compensates_archive_rename(wp, monkeypatch):
     archive = _archive_task(wp)
     before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
-    monkeypatch.setattr(wp, "_write_ledger_raw",
-                        lambda data: (_ for _ in ()).throw(OSError("write")))
-    with pytest.raises(wp.TaskReopenRefused, match="보상 완료"):
-        wp.reopen_task("job")
-    assert archive.exists() and not wp.task_dir("job").exists()
+    monkeypatch.setattr(pool_store, "_write_ledger_raw",
+                        lambda _home, data: (_ for _ in ()).throw(OSError("write")))
+    with pytest.raises(worktree_records.TaskReopenRefused, match="보상 완료"):
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
+    assert archive.exists() and not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
     assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
 
 
@@ -8250,25 +8257,25 @@ def test_reopen_task_initial_rename_failure_keeps_archive_and_ledger(wp, monkeyp
     archive = _archive_task(wp)
     before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
     monkeypatch.setattr(Path, "rename", lambda path, target: (_ for _ in ()).throw(OSError("move")))
-    with pytest.raises(wp.TaskReopenRefused, match="archive rename 실패"):
-        wp.reopen_task("job")
-    assert archive.exists() and not wp.task_dir("job").exists()
+    with pytest.raises(worktree_records.TaskReopenRefused, match="archive rename 실패"):
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
+    assert archive.exists() and not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
     assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
 
 
 def test_reopen_task_rollback_failure_reports_both_paths(wp, monkeypatch):
     archive = _archive_task(wp)
-    active = wp.task_dir("job")
+    active = pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job")
     real_rename = Path.rename
     def rename(path, target):
         if path == active:
             raise OSError("rollback")
         return real_rename(path, target)
     monkeypatch.setattr(Path, "rename", rename)
-    monkeypatch.setattr(wp, "_write_ledger_raw",
-                        lambda data: (_ for _ in ()).throw(OSError("write")))
-    with pytest.raises(wp.TaskReopenRefused) as exc_info:
-        wp.reopen_task("job")
+    monkeypatch.setattr(pool_store, "_write_ledger_raw",
+                        lambda _home, data: (_ for _ in ()).throw(OSError("write")))
+    with pytest.raises(worktree_records.TaskReopenRefused) as exc_info:
+        task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
     assert str(archive) in str(exc_info.value) and str(active) in str(exc_info.value)
     assert active.exists()
 
@@ -8277,39 +8284,39 @@ def test_end_task_clean_releases_all_removes_record_and_archives(wp, proj):
     """전부 clean → 보유 슬롯 일괄 idle 반납(worktree 미삭제) + task 레코드 제거 + 서술 폴더 _ended 이동(②)."""
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     (proj / "work" / "A_2").mkdir(parents=True, exist_ok=True)
-    wp.bind_task("job", session="s-test")                                        # task 레코드 + .local/tasks/job/
-    wp.close_task_session("job")
-    (wp.task_dir("job") / "pm_state.md").write_text("state", encoding="utf-8")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")                                        # task 레코드 + .local/tasks/job/
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job")
+    (pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job") / "pm_state.md").write_text("state", encoding="utf-8")
     _seed(wp,
           _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
           _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
     git = FakeGit(dirty=False)
-    result = wp.end_task("job", git_runner=git)
+    result = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert not result.refused
     assert set(result.released) == {"work/A_1", "work/A_2"}
     # 반납=idle·worktree 폴더는 삭제 안 함(미삭제 확인).
-    states = {l.slot: l.state for l in wp.list_leases()}
+    states = {l.slot: l.state for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
     assert states == {"work/A_1": "idle", "work/A_2": "idle"}
     assert (proj / "work" / "A_1").exists() and (proj / "work" / "A_2").exists()
     # task 레코드 제거.
-    assert wp.find_task("job") is None
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is None
     # 서술 폴더 이동(삭제 아님) — 원본 부재·목적지 존재·내용 보존.
-    assert not wp.task_dir("job").exists()
+    assert not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
     assert result.moved_to is not None and result.moved_to.exists()
     assert (result.moved_to / "pm_state.md").read_text(encoding="utf-8") == "state"
 
 
 def test_end_task_archive_move_serializes_bind_task(wp, monkeypatch):
-    wp.bind_task("job", session="s-test")
-    wp.close_task_session("job")
-    (wp.task_dir("job") / "pm_state.md").write_text("state", encoding="utf-8")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job")
+    (pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job") / "pm_state.md").write_text("state", encoding="utf-8")
 
     move_entered = threading.Event()
     allow_move = threading.Event()
     bind_started = threading.Event()
     bind_done = threading.Event()
     outcomes = {}
-    real_move = wp.shutil.move
+    real_move = task_lifecycle.shutil.move
 
     def blocked_move(src, dest):
         move_entered.set()
@@ -8318,20 +8325,20 @@ def test_end_task_archive_move_serializes_bind_task(wp, monkeypatch):
 
     def run_end():
         try:
-            outcomes["end"] = wp.end_task("job", git_runner=FakeGit(dirty=False))
+            outcomes["end"] = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=FakeGit(dirty=False))
         except Exception as exc:  # noqa: BLE001 — thread outcome를 본 스레드에서 단언.
             outcomes["end_error"] = exc
 
     def run_bind():
         bind_started.set()
         try:
-            outcomes["bind"] = wp.bind_task("job", session="s-test")
+            outcomes["bind"] = task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
         except Exception as exc:  # noqa: BLE001 — 구조화된 TaskArchived를 본 스레드에서 단언.
             outcomes["bind_error"] = exc
         finally:
             bind_done.set()
 
-    monkeypatch.setattr(wp.shutil, "move", blocked_move)
+    monkeypatch.setattr(task_lifecycle.shutil, "move", blocked_move)
     end_thread = threading.Thread(target=run_end)
     bind_thread = threading.Thread(target=run_bind)
     end_thread.start()
@@ -8346,63 +8353,63 @@ def test_end_task_archive_move_serializes_bind_task(wp, monkeypatch):
     assert not end_thread.is_alive() and not bind_thread.is_alive()
     assert not bind_finished_before_move
     assert "end_error" not in outcomes
-    assert isinstance(outcomes.get("bind_error"), wp.TaskArchived)
-    assert wp.find_task("job") is None
-    assert not wp.task_dir("job").exists()
+    assert isinstance(outcomes.get("bind_error"), worktree_records.TaskArchived)
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is None
+    assert not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
     assert outcomes["end"].moved_to.exists()
 
 
 def test_end_task_dirty_refuses_with_no_side_effects(wp, proj):
     """보유 슬롯 dirty → 거부(released/moved 없음·슬롯 leased·task 레코드·서술 폴더 모두 잔존)."""
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
-    wp.bind_task("job", session="s-test")
-    wp.close_task_session("job")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
     git = FakeGit(dirty=True)
-    result = wp.end_task("job", git_runner=git)
+    result = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert result.refused
     assert result.dirty == ["work/A_1"]
     assert result.released == [] and result.moved_to is None
     # 부작용 0.
-    assert wp.list_leases()[0].state == "leased"
-    assert wp.find_task("job") is not None
-    assert wp.task_dir("job").exists()
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == "leased"
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is not None
+    assert pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
 
 
 def test_end_task_no_descriptor_folder_graceful(wp):
     """서술 폴더 부재(장부 task 레코드만) → 이동 없음(moved_to None)·반납/제거는 수행."""
-    with wp._lease_lock():
-        wp._write_tasks([wp.Task(name="job", started="t")])   # 폴더 없이 레코드만
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task(name="job", started="t")])   # 폴더 없이 레코드만
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
     git = FakeGit(dirty=False)
-    result = wp.end_task("job", git_runner=git)
+    result = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert result.moved_to is None
     assert result.released == ["work/A_1"]
-    assert wp.find_task("job") is None
-    assert wp.list_leases()[0].state == "idle"
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is None
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == "idle"
 
 
 def test_end_task_no_owned_slots_still_ends(wp):
     """보유 슬롯 0 이어도 task 레코드 제거 + 서술 폴더 이동은 수행(released 빈 리스트)."""
-    wp.bind_task("job", session="s-test")
-    wp.close_task_session("job")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job")
     git = FakeGit(dirty=False)
-    result = wp.end_task("job", git_runner=git)
+    result = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert result.released == [] and not result.refused
-    assert wp.find_task("job") is None
+    assert pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is None
     assert result.moved_to is not None and result.moved_to.exists()
 
 
 def test_end_task_clears_bound_marker(wp, proj):
     """end_task 일괄 idle 반납은 release 동형 lifecycle — bound 마커도 해제한다(codex suggestion·T-0389)."""
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
-    wp.bind_task("job", session="s-test")
-    wp.close_task_session("job")
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="job", started="t", state="leased", bound=True))   # 사람 bind 슬롯
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job")
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="job", started="t", state="leased", bound=True))   # 사람 bind 슬롯
     git = FakeGit(dirty=False)
-    result = wp.end_task("job", git_runner=git)
+    result = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert result.released == ["work/A_1"]
-    released = wp.list_leases()[0]
+    released = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
     assert released.state == "idle" and released.bound is False   # 반납 시 마커 해제
 
 
@@ -8411,12 +8418,12 @@ def test_end_task_archive_dir_collision_uniquifies(wp):
     import datetime as _dt
     date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
     ended = wp.TASKS_DIR / "_ended"
-    wp.bind_task("job", session="s-test")
-    wp.close_task_session("job")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job")
     (ended / f"job-{date}").mkdir(parents=True, exist_ok=True)      # 선점 목적지
-    (wp.task_dir("job") / "x").write_text("y", encoding="utf-8")
+    (pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job") / "x").write_text("y", encoding="utf-8")
     git = FakeGit(dirty=False)
-    result = wp.end_task("job", git_runner=git)
+    result = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert result.moved_to == ended / f"job-{date}-2"
     assert result.moved_to.exists()
 
@@ -8430,19 +8437,19 @@ def test_end_task_rejects_unsafe_name_before_writes(wp, proj):
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="../evil", state="leased"))
     git = FakeGit(dirty=False)
     for bad in ("../evil", "/abs/x", "a/b", "  "):
-        with pytest.raises(wp.InvalidTaskName):
-            wp.end_task(bad, git_runner=git)
+        with pytest.raises(worktree_records.InvalidTaskName):
+            task_lifecycle.end_task(pm_paths.home_at(wp.REPO), bad, git_runner=git)
     # 부작용 0 — 슬롯 여전히 leased(반납 안 됨).
-    assert wp.list_leases()[0].state == "leased"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].state == "leased"
 
 
 def test_end_task_valid_name_still_ends(wp):
     """정상 이름은 검증 통과 후 종료(검증이 정상 경로를 막지 않음·sensitivity 대조)."""
-    wp.bind_task("job", session="s-test")
-    wp.close_task_session("job")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
+    task_lifecycle.close_task_session(pm_paths.home_at(wp.REPO), "job")
     git = FakeGit(dirty=False)
-    result = wp.end_task("job", git_runner=git)
-    assert not result.refused and wp.find_task("job") is None
+    result = task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
+    assert not result.refused and pool_store.find_task(pm_paths.home_at(wp.REPO), "job") is None
 
 
 def test_end_task_missing_or_without_handoff_intent_has_no_side_effects(wp, proj):
@@ -8450,16 +8457,16 @@ def test_end_task_missing_or_without_handoff_intent_has_no_side_effects(wp, proj
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
     before = wp.LEASES_FILE.read_bytes()
     git = FakeGit(dirty=False)
-    with pytest.raises(wp.TaskEndRefused, match="등록 task"):
-        wp.end_task("job", git_runner=git)
+    with pytest.raises(worktree_records.TaskEndRefused, match="등록 task"):
+        task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert git.calls == [] and wp.LEASES_FILE.read_bytes() == before
 
-    wp.bind_task("job", session="s-test")
+    task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job", session="s-test")
     before = wp.LEASES_FILE.read_bytes()
-    with pytest.raises(wp.TaskEndRefused, match="종료 기록이 없음"):
-        wp.end_task("job", git_runner=git)
+    with pytest.raises(worktree_records.TaskEndRefused, match="종료 기록이 없음"):
+        task_lifecycle.end_task(pm_paths.home_at(wp.REPO), "job", git_runner=git)
     assert git.calls == [] and wp.LEASES_FILE.read_bytes() == before
-    assert wp.task_dir("job").exists()
+    assert pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists()
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -8469,7 +8476,7 @@ def test_end_task_missing_or_without_handoff_intent_has_no_side_effects(wp, proj
 
 def test_lease_role_default_work_omitted_from_dict(wp):
     """role 기본("work")은 to_dict 가 방출하지 않는다 — 구 장부 왕복 byte-무손실(git 필드 동형·T-0358)."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased")
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased")
     assert lease.role == "work"
     d = lease.to_dict()
     assert "role" not in d                    # 기본이면 키 자체를 안 넣는다(하위호환).
@@ -8477,11 +8484,11 @@ def test_lease_role_default_work_omitted_from_dict(wp):
 
 def test_lease_role_readonly_round_trips(wp):
     """role="readonly"는 to_dict 방출·from_dict read — 왕복 보존(T-0358·additive)."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                      state="leased", role="readonly")
     d = lease.to_dict()
     assert d["role"] == "readonly"
-    restored = wp.Lease.from_dict(d)
+    restored = worktree_records.Lease.from_dict(d)
     assert restored.role == "readonly"
     assert restored == lease                  # __eq__(to_dict 동등)이 role 포함
 
@@ -8489,7 +8496,7 @@ def test_lease_role_readonly_round_trips(wp):
 def test_from_dict_missing_role_defaults_work_backcompat(wp):
     """구 장부(role 부재) 로드 → role="work"(하위호환 read)·재기록해도 role 키 안 생김(T-0358·회귀 유지)."""
     old = {"slot": "work/A_1", "repo": "A", "session": "me", "started": "t", "state": "leased", "test_cmd": None}
-    lease = wp.Lease.from_dict(old)
+    lease = worktree_records.Lease.from_dict(old)
     assert lease.role == "work"
     d = lease.to_dict()
     assert "role" not in d                    # role: "work" 를 덧붙이지 않는다(왕복 무손실)
@@ -8500,20 +8507,20 @@ def test_create_slot_readonly_detached_no_session_role_recorded(wp):
     """create_slot(readonly=True) — `worktree add --detach`·role="readonly"·session/pid 없음·base 기록(⑬·§F11)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    lease = wp.create_slot("A", base="main", git_runner=git)  # base 있는 대조 세팅 위해 별도
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=git)  # base 있는 대조 세팅 위해 별도
     # 위는 일반 슬롯(대조) — 아래가 readonly 검증.
-    lease = wp.create_slot("A", base="main", readonly=True, git_runner=git)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", readonly=True, git_runner=git)
     # detached 생성 — `git worktree add --detach <path> [ref]`(슬롯 전용 브랜치 -b 안 씀).
     assert git.did("worktree", "add", "--detach")
     assert not git.did("worktree", "add", "--no-track", "-b", "A_2")   # readonly 는 슬롯 브랜치 안 판다
     # 무소유 확정 — role="readonly"·session 없음(닫힘).
     assert lease.role == "readonly"
-    assert lease.session == "" and wp.lease_is_open(lease) is False
+    assert lease.session == "" and worktree_records.lease_is_open(lease) is False
     assert lease.state == "leased"
     # base(released 기준면)를 스냅에 기록 — 문서 검증 기준(§F9).
     assert isinstance(lease.git, dict) and lease.git.get("base", {}).get("branch") == "main"
     # 장부에도 role="readonly" 로 반영.
-    ro = next(l for l in wp.list_leases() if l.slot == lease.slot)
+    ro = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot)
     assert ro.role == "readonly" and ro.session == ""
 
 
@@ -8521,18 +8528,18 @@ def test_create_slot_readonly_origin_base_fetch(wp):
     """readonly 생성 — fetch origin 후 origin/<base> 해소되면 그 최신에서 detach(작업 슬롯 파생 규율 동형)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit(origin_has_base=True)
-    wp.create_slot("A", base="main", readonly=True, git_runner=git)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", readonly=True, git_runner=git)
     assert git.did("fetch", "origin")
-    assert git.did("worktree", "add", "--detach", str(wp.slot_path("work/A_1")), "origin/main")
+    assert git.did("worktree", "add", "--detach", str(pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")), "origin/main")
 
 
 def test_readonly_slot_excluded_from_alloc(wp):
     """readonly 슬롯은 alloc idle-탐색 대상이 아니다(idle 아님·무소유) → 풀 소진 NeedsCreate(⑬)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="leased", role="readonly"))
     git = FakeGit()
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", owner_task="me", git_runner=git)
+    with pytest.raises(worktree_records.NeedsCreate):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me", git_runner=git)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -8545,18 +8552,18 @@ def test_readonly_slot_excluded_from_alloc(wp):
 
 def test_bound_default_false_omitted_from_dict(wp):
     """bound 기본(False)은 to_dict 가 방출하지 않는다 — 구 장부 왕복 byte-무손실(role 필드 동형·T-0389)."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased")
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased")
     assert lease.bound is False
     assert "bound" not in lease.to_dict()      # 기본이면 키 자체를 안 넣는다(하위호환).
 
 
 def test_bound_true_round_trips(wp):
     """bound=True 는 to_dict 방출·from_dict read — 왕복 보존(T-0389·additive·role 동형)."""
-    lease = wp.Lease(slot="work/A_1", repo="A", session="me", started="t",
+    lease = worktree_records.Lease(slot="work/A_1", repo="A", session="me", started="t",
                      state="leased", bound=True)
     d = lease.to_dict()
     assert d["bound"] is True
-    restored = wp.Lease.from_dict(d)
+    restored = worktree_records.Lease.from_dict(d)
     assert restored.bound is True
     assert restored == lease                   # __eq__(to_dict 동등)이 bound 포함
 
@@ -8564,7 +8571,7 @@ def test_bound_true_round_trips(wp):
 def test_from_dict_missing_bound_defaults_false_backcompat(wp):
     """구 장부(bound 부재) 로드 → bound=False(하위호환 read)·재기록해도 bound 키 안 생김(T-0389)."""
     old = {"slot": "work/A_1", "repo": "A", "session": "me", "started": "t", "state": "leased", "test_cmd": None}
-    lease = wp.Lease.from_dict(old)
+    lease = worktree_records.Lease.from_dict(old)
     assert lease.bound is False
     d = lease.to_dict()
     assert "bound" not in d                     # bound: false 를 덧붙이지 않는다(왕복 무손실)
@@ -8578,14 +8585,14 @@ def test_bound_lease_survives_other_session_alloc_pm78(wp):
     (ephemeral bootstrap pid) 회수되지 않으므로, 그 슬롯은 leased 로 남아 alloc idle-탐색에
     안 걸린다(풀 소진). 실측 결함(타 창 세션 bind slot 이 alloc 에 회수됨)의 회귀 차단.
     """
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", started="t", state="leased", bound=True))   # 타 창 사람 bind(pid 죽음)
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="A_1", started="t", state="leased", bound=True))   # 타 창 사람 bind(pid 죽음)
     git = FakeGit()
     # 타 명의(task main) alloc — 진입 reclaim_stale 이 bound 슬롯을 회수하지 못하고, 유일 슬롯이
     # leased 라 idle 후보가 없다 → NeedsCreate(사용자 게이트).
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", owner_task="main", git_runner=git)
+    with pytest.raises(worktree_records.NeedsCreate):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="main", git_runner=git)
     # bound 슬롯은 유실 없이 그대로(session/state/bound 보존).
-    survived = wp.list_leases()[0]
+    survived = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
     assert survived.session == "A_1" and survived.state == "leased" and survived.bound is True
 
 
@@ -8596,13 +8603,13 @@ def test_alloc_branch_realloc_does_not_hijack_other_session_bound(wp):
     session/pid/bound 를 덮지 않는다(사람 bind 정체성 보호). 유일 슬롯이 bound 라 재부착 후보에서
     제외 → 풀 소진 NeedsCreate. bound 슬롯은 세션/브랜치/마커 그대로 보존.
     """
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", started="t", state="leased", bound=True))
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="A_1", started="t", state="leased", bound=True))
     git = FakeGit(head="a5-pay")   # bound 슬롯 live HEAD = a5-pay(요청 branch 와 매칭)
-    with pytest.raises(wp.NeedsCreate):
-        wp.alloc("A", branch="a5-pay", owner_task="thief", git_runner=git)
-    survived = wp.list_leases()[0]
+    with pytest.raises(worktree_records.NeedsCreate):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", branch="a5-pay", owner_task="thief", git_runner=git)
+    survived = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
     assert survived.session == "A_1" and survived.state == "leased" and survived.bound is True
-    assert wp.current_branch("work/A_1", git_runner=git) == "a5-pay"   # 탈취 재체크아웃 없음
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) == "a5-pay"   # 탈취 재체크아웃 없음
 
 
 def test_alloc_idle_relance_clears_bound_marker(wp, proj):
@@ -8613,30 +8620,30 @@ def test_alloc_idle_relance_clears_bound_marker(wp, proj):
     """
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     # idle 슬롯에 bound 마커가 남아있는 엣지(방어) — alloc 이 재대여하며 해제해야 한다.
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="idle", bound=True))
     git = FakeGit()
-    leased = wp.alloc("A", owner_task="me", git_runner=git)
+    leased = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me", git_runner=git)
     assert leased.slot == "work/A_1" and leased.bound is False   # pool 대여 = 마커 해제
-    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
+    assert next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").bound is False
 
 
 def test_release_clears_bound_marker(wp):
     """명시 release 는 bind 점유를 종료 — bound 마커를 해제한다(git=None 동형 teardown·T-0389)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="A_1", started="t",
                        state="leased", bound=True))   # 옛 bind 기록 행
-    released = wp.release("work/A_1")
+    released = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1")
     assert released.state == "idle" and released.bound is False
-    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
+    assert next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").bound is False
 
 
 def test_force_release_clears_bound_marker(wp):
     """force_release 도 bind 점유를 종료 — bound 마커 해제(release 동형·백스톱·T-0389)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="A_1", started="t",
                        state="leased", bound=True))   # 옛 bind 기록 행
-    released = wp.force_release("work/A_1")
+    released = worktree_pool.force_release(pm_paths.home_at(wp.REPO), "work/A_1")
     assert released.state == "idle" and released.bound is False
-    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
+    assert next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").bound is False
 
 
 # ── mutation 거부 (switch·task branch·dev·sync × readonly = 에러·엔진 경로 한정·결정 ④) ──
@@ -8645,7 +8652,7 @@ def test_force_release_clears_bound_marker(wp):
 def _seed_readonly(wp, slot="work/A_1", repo="A", *, base=True):
     git = {"base": {"branch": "main", "commit": "c0"}, "branch": None, "head": "h0",
            "submodules": [], "recorded_at": "t"} if base else None
-    _seed(wp, wp.Lease(slot=slot, repo=repo, session="", started="t",
+    _seed(wp, worktree_records.Lease(slot=slot, repo=repo, session="", started="t",
                        state="leased", role="readonly", git=git))
 
 
@@ -8653,8 +8660,8 @@ def test_dev_rejected_on_readonly(wp):
     """dev(submodule on-branch checkout) 가 readonly 슬롯이면 ReadonlySlotMutation(T-0358)."""
     _seed_readonly(wp)
     git = FakeGit()
-    with pytest.raises(wp.ReadonlySlotMutation) as ei:
-        wp.dev("work/A_1", "vendor/x", "feat", git_runner=git)
+    with pytest.raises(pool_store.ReadonlySlotMutation) as ei:
+        branch_checkout.dev(pm_paths.home_at(wp.REPO), "work/A_1", "vendor/x", "feat", git_runner=git)
     assert ei.value.op == "dev"
 
 
@@ -8662,8 +8669,8 @@ def test_sync_rejected_on_readonly(wp):
     """sync(submodule pin 재동기) 가 readonly 슬롯이면 ReadonlySlotMutation(fail-soft 보다 우선·T-0358)."""
     _seed_readonly(wp)
     git = FakeGit()
-    with pytest.raises(wp.ReadonlySlotMutation) as ei:
-        wp.sync("work/A_1", git_runner=git)
+    with pytest.raises(pool_store.ReadonlySlotMutation) as ei:
+        branch_checkout.sync(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert ei.value.op == "sync"
 
 
@@ -8671,8 +8678,8 @@ def test_create_task_branch_rejected_on_readonly(wp):
     """create_task_branch 가 readonly 슬롯이면 ReadonlySlotMutation — 브랜치 생성 시도 0."""
     _seed_readonly(wp)
     git = FakeGit()
-    with pytest.raises(wp.ReadonlySlotMutation) as ei:
-        wp.create_task_branch("work/A_1", "task/x", parent="main", owner_task="job", git_runner=git)
+    with pytest.raises(pool_store.ReadonlySlotMutation) as ei:
+        branch_checkout.create_task_branch(pm_paths.home_at(wp.REPO), "work/A_1", "task/x", parent="main", owner_task="job", git_runner=git)
     assert ei.value.op == "task branch"
     assert not git.did("checkout")
 
@@ -8682,8 +8689,8 @@ def test_mutation_allowed_on_work_slot_sensitivity(wp):
     _switch_lease(wp, branch="a1", session="me")   # role="work"
     git = _SwitchGit(head="a1", head_sha=_NEW_SHA, refs=["a2"])
     # switch 가 ReadonlySlotMutation 을 던지지 않는다(정상 전환·기록 경로 — 거부 가드 미발동).
-    result = wp.switch("work/A_1", "a2", protected=["main"], git_runner=git)
-    assert result.branch == "a2" and wp.list_leases()[0].git["branch"] == "a2"
+    result = branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "a2", protected=["main"], git_runner=git)
+    assert result.branch == "a2" and pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "a2"
 
 
 # ── refresh (fetch → detach 이동·dirty=거부+loud·no-base·not-readonly·⑬·§F11) ──
@@ -8730,7 +8737,7 @@ def test_refresh_fast_forwards_detached_head(wp):
     """refresh — clean readonly 슬롯을 fetch 후 origin/<base> 최신 tip 으로 detach 이동(⑬·§F11)."""
     _seed_readonly(wp)
     git = FakeGit(origin_has_base=True)   # clean·fetch rc0·origin/main 해소
-    ref, head = wp.refresh("work/A_1", git_runner=git)
+    ref, head = branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert ref == "origin/main"
     assert head == git.head_sha           # 이동 후 실 HEAD sha 를 함께 반환(T-0569)
     assert git.did("fetch", "origin")
@@ -8745,11 +8752,11 @@ def test_refresh_fetch_failure_warning_names_the_actual_fallback_ref(wp, capsys)
     로컬 브랜치를 갱신해 해소하려 하지만(그 ref 는 안 움직인다) 실제 해소는 fetch 복구뿐이다.
     """
     _seed_readonly(wp)                                   # 기록된 base.branch = main(로컬 브랜치)
-    wp.refresh("work/A_1", git_runner=FakeGit(fetch_rc=1))
+    branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=FakeGit(fetch_rc=1))
     local_err = capsys.readouterr().err
     assert "로컬 `main`(동결 head)" in local_err
 
-    wp.refresh("work/A_1", onto="origin/main", git_runner=FakeGit(fetch_rc=1))
+    branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", onto="origin/main", git_runner=FakeGit(fetch_rc=1))
     remote_err = capsys.readouterr().err
     assert "stale remote-tracking `origin/main`(직전 fetch 시점 동결)" in remote_err
     assert "로컬 `origin/main`" not in remote_err
@@ -8757,11 +8764,11 @@ def test_refresh_fetch_failure_warning_names_the_actual_fallback_ref(wp, capsys)
 
 def test_frozen_fallback_label_is_the_single_source_for_fetch_warnings(wp):
     """폴백 표기는 공용 라벨 하나 — 경고 문구에 하드코딩 '로컬 `{…}`' 재유입 0."""
-    assert wp._frozen_fallback_label("develop") == "로컬 `develop`(동결 head)"
-    assert wp._frozen_fallback_label("origin/develop") == (
+    assert worktree_records._frozen_fallback_label("develop") == "로컬 `develop`(동결 head)"
+    assert worktree_records._frozen_fallback_label("origin/develop") == (
         "stale remote-tracking `origin/develop`(직전 fetch 시점 동결)"
     )
-    source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    source = "\n".join(path.read_text(encoding="utf-8") for path in engine_python_files(TOOLS))
     assert source.count("로컬 `{") == 1, (
         "폴백 표기 f-string 은 헬퍼 정의부 1곳뿐이어야 한다 — 경고 문구에 하드코딩이 되살아났다"
     )
@@ -8775,7 +8782,7 @@ def test_refresh_resyncs_submodules(wp):
     """refresh — checkout 후 submodule 재동기 명시 수행(must-fix ①·gitlink stale/자가잠금 방지·⑬)."""
     _seed_readonly(wp)
     git = FakeGit(origin_has_base=True)
-    wp.refresh("work/A_1", git_runner=git)
+    branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     # `checkout --detach` 뒤 `submodule update --init --recursive --force`(전체 재동기·readonly=dev 없음).
     assert git.did("submodule", "update", "--init", "--recursive", "--force")
 
@@ -8792,8 +8799,8 @@ def test_refresh_submodule_failure_fails_loud(wp):
             return super().__call__(argv)
 
     git = _SubFailGit(origin_has_base=True)
-    with pytest.raises(wp.RefreshRefused) as ei:
-        wp.refresh("work/A_1", git_runner=git)
+    with pytest.raises(worktree_records.RefreshRefused) as ei:
+        branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert ei.value.reason == "git-error"
 
 
@@ -8804,8 +8811,8 @@ def test_refresh_updates_base_commit_when_onto_omitted(wp):
     base.commit 도 새 head(FakeGit head_sha)로 갱신돼야 status "N behind"·기준면 기록 불일치가 안 남는다."""
     _seed_readonly(wp)   # git.base = {branch:"main", commit:"c0"}
     git = FakeGit(origin_has_base=True, head_sha=_NEW_SHA)
-    wp.refresh("work/A_1", git_runner=git)
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git["base"]
     assert recorded["branch"] == "main"        # 논리 branch 보존
     assert recorded["commit"] == _NEW_SHA      # 새 head 로 갱신(옛 "c0" 아님)
 
@@ -8816,10 +8823,10 @@ def test_refresh_onto_overrides_recorded_base(wp):
     T-0569 이후 --onto 는 **준 ref 그대로** 해소한다 — origin/<branch> 파생 없이 `develop` 로 이동한다."""
     _seed_readonly(wp)
     git = FakeGit(origin_has_base=True, head_sha=_NEW_SHA)
-    ref, head = wp.refresh("work/A_1", onto="develop", git_runner=git)
+    ref, head = branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", onto="develop", git_runner=git)
     assert (ref, head) == ("develop", _NEW_SHA)
     assert git.did("checkout", "--detach", "develop")
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git["base"]
     assert recorded == {"branch": "develop", "commit": _NEW_SHA}   # base branch+commit 둘 다 갱신
 
 
@@ -8835,11 +8842,11 @@ def test_refresh_onto_local_branch_takes_local_tip_even_when_origin_differs(wp):
     origin 쪽이 되어 이 단언이 red."""
     _seed_readonly(wp)   # 기록된 base.branch = "main"(무관 — --onto 가 이긴다)
     git = _RefTipGit({"task/main": _LOCAL_ONTO_TIP, "origin/task/main": _ORIGIN_ONTO_TIP})
-    ref, head = wp.refresh("work/A_1", onto="task/main", git_runner=git)
+    ref, head = branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", onto="task/main", git_runner=git)
     assert (ref, head) == ("task/main", _LOCAL_ONTO_TIP)          # 준 ref·로컬 tip 착지
     assert git.did("checkout", "--detach", "task/main")
     assert not git.did("checkout", "--detach", "origin/task/main")  # 조용한 대체 0
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git["base"]
     assert recorded == {"branch": "task/main", "commit": _LOCAL_ONTO_TIP}
 
 
@@ -8847,7 +8854,7 @@ def test_refresh_onto_origin_ref_moves_to_origin_tip(wp):
     """`--onto origin/<branch>` 명시 = 원격 기준 — 그대로 origin tip 으로 이동(불변·T-0569)."""
     _seed_readonly(wp)
     git = _RefTipGit({"task/main": _LOCAL_ONTO_TIP, "origin/task/main": _ORIGIN_ONTO_TIP})
-    ref, head = wp.refresh("work/A_1", onto="origin/task/main", git_runner=git)
+    ref, head = branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", onto="origin/task/main", git_runner=git)
     assert (ref, head) == ("origin/task/main", _ORIGIN_ONTO_TIP)
     assert git.did("checkout", "--detach", "origin/task/main")
 
@@ -8859,9 +8866,9 @@ def test_refresh_without_onto_still_prefers_origin_tip(wp):
     origin/main tip 을 집는다(명시 경로와 대칭 판정: 여기선 origin 쪽 sha 가 정답)."""
     _seed_readonly(wp)   # 기록된 base.branch = "main"
     git = _RefTipGit({"main": _LOCAL_ONTO_TIP, "origin/main": _ORIGIN_ONTO_TIP})
-    ref, head = wp.refresh("work/A_1", git_runner=git)
+    ref, head = branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert (ref, head) == ("origin/main", _ORIGIN_ONTO_TIP)
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git["base"]
     assert recorded == {"branch": "main", "commit": _ORIGIN_ONTO_TIP}   # 논리 branch 는 보존
 
 
@@ -8869,7 +8876,7 @@ def test_refresh_without_onto_falls_back_to_local_when_origin_ref_absent(wp):
     """`--onto` 미지정 + origin/<base> 미해소 → 로컬 <base> 폴백(기본 경로 불변·T-0569)."""
     _seed_readonly(wp)
     git = _RefTipGit({"main": _LOCAL_ONTO_TIP})   # origin/main 없음
-    ref, head = wp.refresh("work/A_1", git_runner=git)
+    ref, head = branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert (ref, head) == ("main", _LOCAL_ONTO_TIP)
     assert git.did("checkout", "--detach", "main")
 
@@ -8881,13 +8888,13 @@ def test_refresh_unresolvable_onto_fails_loud_without_substitution(wp):
     실패한 refresh 는 장부 기준면도 건드리지 않는다."""
     _seed_readonly(wp)
     git = _RefTipGit({"origin/task/main": _ORIGIN_ONTO_TIP})   # 로컬 task/main 부재·origin 만 존재
-    with pytest.raises(wp.RefreshRefused) as ei:
-        wp.refresh("work/A_1", onto="task/main", git_runner=git)
+    with pytest.raises(worktree_records.RefreshRefused) as ei:
+        branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", onto="task/main", git_runner=git)
     assert ei.value.reason == "git-error"
     msg = str(ei.value)
     assert "task/main" in msg and "자동 대체" in msg   # 실제 ref + 대체 안 함을 loud 안내
     assert not git.did("checkout", "--detach", "origin/task/main")   # 대체 시도 0
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git["base"]
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git["base"]
     assert recorded == {"branch": "main", "commit": "c0"}   # 기준면 기록 불변(반쯤 갱신 없음)
 
 
@@ -8895,8 +8902,8 @@ def test_refresh_dirty_refused_loud(wp):
     """refresh — dirty(누군가 씀·신호)면 거부 + loud(조용히 reset 안 함·⑬·§F11·결정)."""
     _seed_readonly(wp)
     git = FakeGit(dirty=True)   # 미커밋 변경 있음
-    with pytest.raises(wp.RefreshRefused) as ei:
-        wp.refresh("work/A_1", git_runner=git)
+    with pytest.raises(worktree_records.RefreshRefused) as ei:
+        branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert ei.value.reason == "dirty"
     # 조용히 reset 안 함 — checkout --detach 를 부르지 않았다.
     assert not git.did("checkout", "--detach", "origin/main")
@@ -8906,28 +8913,28 @@ def test_refresh_no_base_no_onto_refused(wp):
     """refresh — base 미기록 + --onto 없음 → 거부(추론 금지·결정 ⑪ 정신·⑬)."""
     _seed_readonly(wp, base=False)   # base 미기록
     git = FakeGit()
-    with pytest.raises(wp.RefreshRefused) as ei:
-        wp.refresh("work/A_1", git_runner=git)
+    with pytest.raises(worktree_records.RefreshRefused) as ei:
+        branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert ei.value.reason == "no-base"
 
 
 def test_refresh_rejected_on_non_readonly(wp):
     """refresh — 대상이 readonly 가 아니면 거부(작업 슬롯 detach 이동=브랜치 위치 유실·⑬)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="me", started="t",
                        state="leased"))   # role="work"
     git = FakeGit()
-    with pytest.raises(wp.RefreshRefused) as ei:
-        wp.refresh("work/A_1", onto="origin/main", git_runner=git)
+    with pytest.raises(worktree_records.RefreshRefused) as ei:
+        branch_checkout.refresh(pm_paths.home_at(wp.REPO), "work/A_1", onto="origin/main", git_runner=git)
     assert ei.value.reason == "not-readonly"
 
 
 def test_slot_role_helper_defaults_work_for_absent(wp):
     """_slot_role — 미등록 슬롯/구 장부(role 부재)는 "work"(fail-soft·mutation 거부 기본 non-readonly)."""
-    assert wp._slot_role("work/absent_9") == "work"
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased"))
-    assert wp._slot_role("work/A_1") == "work"
+    assert pool_store._slot_role(pm_paths.home_at(wp.REPO), "work/absent_9") == "work"
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased"))
+    assert pool_store._slot_role(pm_paths.home_at(wp.REPO), "work/A_1") == "work"
     _seed_readonly(wp, slot="work/A_1")
-    assert wp._slot_role("work/A_1") == "readonly"
+    assert pool_store._slot_role(pm_paths.home_at(wp.REPO), "work/A_1") == "readonly"
 
 
 # ── lease-lifecycle 거부: release / force_release × readonly (should-fix·⑬) ──
@@ -8937,11 +8944,11 @@ def test_release_rejected_on_readonly(wp):
     """release 가 readonly 슬롯이면 ReadonlySlotNotLeasable(무소유 공유 자산·idle 화→alloc 탈취 방지·T-0358)."""
     _seed_readonly(wp)
     git = FakeGit()
-    with pytest.raises(wp.ReadonlySlotNotLeasable) as ei:
-        wp.release("work/A_1", git_runner=git)
+    with pytest.raises(pool_store.ReadonlySlotNotLeasable) as ei:
+        worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert ei.value.op == "release"
     # 장부 미변경 — 여전히 leased·role readonly(idle 화 안 됨).
-    after = wp.list_leases()[0]
+    after = pool_store.list_leases(pm_paths.home_at(wp.REPO))[0]
     assert after.state == "leased" and after.role == "readonly"
 
 
@@ -8949,17 +8956,17 @@ def test_force_release_rejected_on_readonly(wp):
     """force_release(강제 백스톱)도 readonly 슬롯이면 거부(release 동형·⑬)."""
     _seed_readonly(wp)
     git = FakeGit()
-    with pytest.raises(wp.ReadonlySlotNotLeasable) as ei:
-        wp.force_release("work/A_1", git_runner=git)
+    with pytest.raises(pool_store.ReadonlySlotNotLeasable) as ei:
+        worktree_pool.force_release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert ei.value.op == "force-release"
 
 
 def test_lease_ops_allowed_on_work_slot_sensitivity(wp):
     """sensitivity 대조 — work 슬롯엔 release 거부가 안 걸린다(readonly 만 예외)."""
     # release: work 슬롯 정상 idle 화.
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased"))
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased"))
     git = FakeGit()
-    released = wp.release("work/A_1", git_runner=git)
+    released = worktree_pool.release(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert released.state == "idle"
 
 
@@ -8970,11 +8977,11 @@ def test_main_refresh_dispatches_to_refresh_backbone(wp, monkeypatch, capsys):
     """CLI — `refresh <slot> --onto <b>` 이 refresh 백본을 정규화 슬롯/onto 로 호출하고 rc 0(⑬)."""
     seen = {}
 
-    def spy_refresh(slot, *, onto=None, git_runner=None):
+    def spy_refresh(_home, slot, *, onto=None, git_runner=None):
         seen.update(slot=slot, onto=onto)
         return "origin/main", _NEW_SHA
 
-    monkeypatch.setattr(wp, "refresh", spy_refresh)
+    monkeypatch.setattr(branch_checkout, "refresh", spy_refresh)
     rc = wp.main(["refresh", "A_1", "--onto", "main"])
     assert rc == 0
     assert seen == {"slot": "work/A_1", "onto": "main"}
@@ -8986,8 +8993,8 @@ def test_main_refresh_reports_resolved_ref_and_sha(wp, monkeypatch, capsys):
 
     구 거동은 `--onto` 를 조용히 origin/<branch> 로 바꾼 뒤 그 이름으로 성공 보고해 사용자가 어디로
     갔는지 오인했다 — 보고값을 백본 실측(ref·sha)에 붙인다."""
-    monkeypatch.setattr(wp, "refresh",
-                        lambda slot, *, onto=None, git_runner=None: ("task/main", _LOCAL_ONTO_TIP))
+    monkeypatch.setattr(branch_checkout, "refresh",
+                        lambda _home, slot, *, onto=None, git_runner=None: ("task/main", _LOCAL_ONTO_TIP))
     rc = wp.main(["refresh", "A_1", "--onto", "task/main"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -9001,8 +9008,8 @@ def test_main_refresh_reports_unknown_sha_placeholder(wp, monkeypatch, capsys):
     단언은 sha 자리(`@ ?`)까지 내린다 — 헐거운 `"?" in out` 은 메시지 어디에 물음표가 있어도
     통과해 placeholder 소실을 못 잡는다.
     """
-    monkeypatch.setattr(wp, "refresh",
-                        lambda slot, *, onto=None, git_runner=None: ("origin/main", ""))
+    monkeypatch.setattr(branch_checkout, "refresh",
+                        lambda _home, slot, *, onto=None, git_runner=None: ("origin/main", ""))
     rc = wp.main(["refresh", "A_1"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -9011,9 +9018,9 @@ def test_main_refresh_reports_unknown_sha_placeholder(wp, monkeypatch, capsys):
 
 def test_main_refresh_dirty_refused_returns_rc1(wp, monkeypatch, capsys):
     """CLI — refresh 가 RefreshRefused(dirty) 면 rc 1 + stderr loud(조용히 reset 금지·⑬)."""
-    def boom(*a, **k):
-        raise wp.RefreshRefused("work/A_1", "dirty")
-    monkeypatch.setattr(wp, "refresh", boom)
+    def boom(_home, *a, **k):
+        raise worktree_records.RefreshRefused("work/A_1", "dirty")
+    monkeypatch.setattr(branch_checkout, "refresh", boom)
     rc = wp.main(["refresh", "A_1"])
     assert rc == 1
     assert "미커밋" in capsys.readouterr().err
@@ -9021,9 +9028,9 @@ def test_main_refresh_dirty_refused_returns_rc1(wp, monkeypatch, capsys):
 
 def test_main_status_surfaces_role(wp, monkeypatch, capsys):
     """CLI — status 가 슬롯 role(readonly)을 surface(⑬·T-0358)."""
-    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="", started="t",
+    _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="leased", role="readonly"))
-    monkeypatch.setattr(wp, "slot_git_status", lambda slot, **k: _status_row(
+    monkeypatch.setattr(worktree_status, "slot_git_status", lambda _home, slot, **k: _status_row(
         slot, branch=None, parent={"name": "main", "fork": "c0", "ref": "origin/main",
                                    "ahead": 0, "behind": 0}))
     rc = wp.main(["status", "A_1"])
@@ -9123,12 +9130,12 @@ def test_slot_git_status_runs_no_submodule_query(wp):
     판정은 그것을 그리는 status() 행만 싣는다(T-0961 · Git for Windows 1회 약 2초)."""
     _seed_git_lease(wp)
     git = _RebaseGit(dirty=True, subs="+deadbeef vendor/x\n", sub_detached=True)
-    st = wp.slot_git_status("work/A_1", git_runner=git)
+    st = worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert st["dirty"] is True
     assert "submodules" not in st
     assert not git.did("submodule")
 
-    row = wp.status(slot="work/A_1", git_runner=git)[0]
+    row = worktree_status.status(pm_paths.home_at(wp.REPO), slot="work/A_1", git_runner=git)[0]
     assert len(row["submodules"]) == 1
     sub = row["submodules"][0]
     assert sub.path == "vendor/x" and sub.kind == "drift" and sub.warning is True
@@ -9138,9 +9145,9 @@ def test_slot_git_status_clean_no_submodules(wp):
     """dirty=False·submodule 없음 → dirty False·status 행 submodules []."""
     _seed_git_lease(wp)
     git = _RebaseGit(dirty=False, subs="")
-    st = wp.slot_git_status("work/A_1", git_runner=git)
+    st = worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
     assert st["dirty"] is False
-    assert wp.status(slot="work/A_1", git_runner=git)[0]["submodules"] == []
+    assert worktree_status.status(pm_paths.home_at(wp.REPO), slot="work/A_1", git_runner=git)[0]["submodules"] == []
 
 
 # ── status(단일/일괄/무인자) ─────────────────────────────────────────────────
@@ -9150,7 +9157,7 @@ def test_status_single_slot_returns_one_row(wp):
     """status(slot=…) → 그 슬롯 하나(role 포함)."""
     _seed_git_lease(wp, session="job")
     git = _RebaseGit()
-    rows = wp.status(slot="work/A_1", git_runner=git)
+    rows = worktree_status.status(pm_paths.home_at(wp.REPO), slot="work/A_1", git_runner=git)
     assert len(rows) == 1 and rows[0]["slot"] == "work/A_1" and rows[0]["role"] == "work"
 
 
@@ -9162,7 +9169,7 @@ def test_status_task_batch_returns_all_owned(wp):
           _lease(wp, slot="work/A_3", repo="A", session="job", state="idle"),
           _lease(wp, slot="work/B_1", repo="B", session="other", state="leased"))
     git = _RebaseGit()
-    rows = wp.status(task="job", git_runner=git)
+    rows = worktree_status.status(pm_paths.home_at(wp.REPO), task="job", git_runner=git)
     assert sorted(r["slot"] for r in rows) == ["work/A_1", "work/A_2"]
 
 
@@ -9171,9 +9178,9 @@ def test_status_no_arg_resolves_my_task_slots(wp, monkeypatch):
     _seed(wp,
           _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
           _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit()
-    rows = wp.status(git_runner=git)
+    rows = worktree_status.status(pm_paths.home_at(wp.REPO), git_runner=git)
     assert sorted(r["slot"] for r in rows) == ["work/A_1", "work/A_2"]
 
 
@@ -9183,47 +9190,47 @@ def test_status_no_arg_resolves_my_task_slots(wp, monkeypatch):
 def _seed_rebase_lease(wp, *, slot="work/A_1", repo="A", session="job", role="work"):
     """rebase 전제 leased 엔트리(브랜치 feat 스냅·role 지정 — 부모 기록은 `_RebaseGit.parents`)."""
     git = {"branch": "feat", "head": _OLD_SHA, "submodules": [], "recorded_at": "t"}
-    _seed(wp, wp.Lease(slot=slot, repo=repo, session=session, started="t", state="leased", git=git, role=role))
+    _seed(wp, worktree_records.Lease(slot=slot, repo=repo, session=session, started="t", state="leased", git=git, role=role))
 
 
 def test_rebase_skips_not_owned_slot_loud(wp, monkeypatch):
     """선-검사 — 내 세션 소유(leased) 슬롯이 아니면 스킵(not-owner)·rebase 미시도."""
     _seed_rebase_lease(wp, session="other")
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit()
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason.startswith("not-owner")
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason.startswith("not-owner")
     assert not git.did("rebase")   # rebase 자체를 시도하지 않음
 
 
 def test_rebase_skips_dirty_slot_loud(wp, monkeypatch):
     """선-검사 — dirty(미커밋)면 스킵(dirty·rebase 는 clean 전제)."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit(dirty=True)
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "dirty"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "dirty"
     assert not git.did("rebase")
 
 
 def test_rebase_skips_in_progress_slot_loud(wp, monkeypatch):
     """선-검사 — rebase 진행 중이면 스킵(in-progress·먼저 해소)."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
-    monkeypatch.setattr(wp, "_rebase_in_progress", lambda slot, **k: True)
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
+    monkeypatch.setattr(branch_checkout, "_rebase_in_progress", lambda _home, slot, **k: True)
     git = _RebaseGit()
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "in-progress"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "in-progress"
     assert not git.did("rebase")
 
 
 def test_rebase_skips_readonly_slot(wp, monkeypatch):
     """선-검사 — readonly 공유 슬롯은 mutation 불가(스킵 readonly·refresh 로만)."""
     _seed_rebase_lease(wp, session="", role="readonly")
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit()
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "readonly"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "readonly"
 
 
 # ── rebase — 성공(장부 원자 갱신) / 충돌(그대로 + loud·미갱신) ────────────────
@@ -9232,15 +9239,15 @@ def test_rebase_skips_readonly_slot(wp, monkeypatch):
 def test_rebase_success_records_fork_then_snapshot(wp, monkeypatch):
     """성공 → 부모 기록 fork=대상 tip 갱신 + 장부 스냅(head·recorded_at) 갱신 · 결과 base=부모 이름."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                      head_sha=_REBASED_HEAD)
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_REBASED and r.base == "main"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_REBASED and r.base == "main"
     assert r.new_head == _REBASED_HEAD
     assert git.config["branch.feat.pm-parent"] == "main"
     assert git.config["branch.feat.pm-fork"] == _REBASED_BASE_TIP
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git
     assert recorded["head"] == _REBASED_HEAD and recorded["recorded_at"] != "t"
     assert git.did("fetch", "origin") and git.did("rebase", "origin/main")
 
@@ -9248,15 +9255,15 @@ def test_rebase_success_records_fork_then_snapshot(wp, monkeypatch):
 def test_rebase_conflict_leaves_state_and_does_not_update_records(wp, monkeypatch):
     """충돌 → 그 상태 그대로(엔진 abort 안 함) + 부모 기록·장부 **미갱신**(미완·§F10)."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit(rebase_rc=1, tips={"origin/main": _REBASED_BASE_TIP})
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_CONFLICT and "CONFLICT" in (r.reason or "")
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_CONFLICT and "CONFLICT" in (r.reason or "")
     assert r.base == "main"
     # 엔진이 임의 abort 하지 않았다.
     assert not git.did("rebase", "--abort")
     assert git.config["branch.feat.pm-fork"] == _OLD_SHA
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git
     assert recorded["head"] == _OLD_SHA and recorded["recorded_at"] == "t"
 
 
@@ -9264,25 +9271,25 @@ def test_rebase_onto_conflict_leaves_records_fully_unchanged(wp, monkeypatch):
     """--onto + 충돌 → 부모 기록·장부 **완전 불변** — onto 를 rebase 이전에 기록하지 않는다
     (T-0359 must-fix·no-onto 충돌 경로와 대칭·거짓 부모 주장 차단)."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     # onto=develop 는 해소되나(검증 통과) rebase 는 충돌(rc1) — 부모 기록은 옛 main 그대로여야.
     git = _RebaseGit(rebase_rc=1, origin_has_base=True,
                      tips={"develop": _REBASED_BASE_TIP, "origin/develop": _REBASED_BASE_TIP})
-    [r] = wp.rebase(["work/A_1"], onto="develop", git_runner=git)
-    assert r.outcome == wp.REBASE_CONFLICT
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], onto="develop", git_runner=git)
+    assert r.outcome == worktree_records.REBASE_CONFLICT
     assert not git.did("rebase", "--abort")   # 엔진 abort 안 함
     assert git.config == {"branch.feat.pm-parent": "main", "branch.feat.pm-fork": _OLD_SHA}
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git
     assert recorded["head"] == _OLD_SHA and recorded["recorded_at"] == "t"
 
 
 def test_rebase_onto_replaces_parent_on_success(wp, monkeypatch):
     """--onto 성공 → 준 값 그대로 rebase 하고 부모 이름을 그 값으로 바꾼다(fork=그 tip)."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit(rebase_rc=0, tips={"develop": _REBASED_BASE_TIP})
-    [r] = wp.rebase(["work/A_1"], onto="develop", git_runner=git)
-    assert r.outcome == wp.REBASE_REBASED and r.base == "develop"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], onto="develop", git_runner=git)
+    assert r.outcome == worktree_records.REBASE_REBASED and r.base == "develop"
     assert git.did("rebase", "develop") and not git.did("rebase", "origin/develop")
     assert git.config == {"branch.feat.pm-parent": "develop", "branch.feat.pm-fork": _REBASED_BASE_TIP}
 
@@ -9290,31 +9297,31 @@ def test_rebase_onto_replaces_parent_on_success(wp, monkeypatch):
 def test_rebase_without_parent_record_skips_no_parent(wp, monkeypatch):
     """부모 기록 없음 + --onto 없음 → `no-parent` 스킵 · fetch·rebase 시도 0(추론 금지)."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit(parents={})
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "no-parent"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "no-parent"
     assert not git.did("fetch") and not git.did("rebase")
-    assert "부모" in wp._rebase_skip_reason("no-parent")
+    assert "부모" in branch_checkout._rebase_skip_reason(pm_paths.home_at(wp.REPO), "no-parent")
 
 
 def test_rebase_detached_slot_skips_no_branch(wp, monkeypatch):
     """detached 슬롯 → `no-branch` 스킵(부모 기록 대상 브랜치가 없다)."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit(head=None)
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "no-branch"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "no-branch"
     assert not git.did("rebase")
 
 
 def test_rebase_unresolvable_onto_skips(wp, monkeypatch):
     """--onto ref 해소 실패 → `unresolvable-onto` 스킵 · 부모 기록 불변."""
     _seed_rebase_lease(wp)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     git = _RebaseGit(tips={})
-    [r] = wp.rebase(["work/A_1"], onto="nope", git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "unresolvable-onto"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], onto="nope", git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "unresolvable-onto"
     assert not git.did("rebase")
     assert git.config["branch.feat.pm-parent"] == "main"
 
@@ -9354,7 +9361,7 @@ def _mk_release_family(tmp_path: Path, wp) -> "tuple[Path, Path]":
     _git(origin, "add", "R0.txt")
     _git(origin, "commit", "-q", "-m", "release r0")
     _git(origin, "checkout", "-q", "main")
-    bare = wp.bare_repo_path("A")
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
@@ -9382,22 +9389,22 @@ def test_real_git_rebase_onto_explicit_uses_given_ref_not_stale_origin(proj, tmp
     `["rebase", "origin/release"]` 는 한 번도 없어야 한다."""
     _init_repo(proj)
     wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
     local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")
     # 전제 — origin/release 는 R0 에 동결, 로컬 release 는 R1(local_tip)로 앞섬.
     assert _git(bare, "rev-parse", "refs/remotes/origin/release").stdout.strip() != local_tip
 
-    wp.create_slot("A", base="release", init_submodules=False)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", owner_task="me")
-    slot_dir = wp.slot_path(lease.slot)
-    real_runner = wp._real_git_runner(slot_dir)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
+    real_runner = worktree_git._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
 
-    [r] = wp.rebase([lease.slot], onto="release", git_runner=spy)
-    assert r.outcome == wp.REBASE_REBASED, r.reason
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), [lease.slot], onto="release", git_runner=spy)
+    assert r.outcome == worktree_records.REBASE_REBASED, r.reason
     assert ["rebase", "release"] in calls, f"준 ref 그대로 rebase 안 됨: {calls!r}"
     assert ["rebase", "origin/release"] not in calls, "stale origin/release 로 조용히 대체됐다"
     assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() == local_tip, \
@@ -9409,20 +9416,20 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale(proj, tmp_path,
     """실 git — `--onto` 생략(기록된 base=release)·origin stale → 대체 건너뛰고 로컬 tip 채택 + stderr 고지."""
     _init_repo(proj)
     wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
     local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    wp.create_slot("A", base="release", init_submodules=False)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", owner_task="me")
-    slot_dir = wp.slot_path(lease.slot)
-    real_runner = wp._real_git_runner(slot_dir)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
+    real_runner = worktree_git._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
 
-    [r] = wp.rebase([lease.slot], git_runner=spy)
-    assert r.outcome == wp.REBASE_REBASED, r.reason
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), [lease.slot], git_runner=spy)
+    assert r.outcome == worktree_records.REBASE_REBASED, r.reason
     assert r.base == "release"
     assert ["rebase", "release"] in calls, f"로컬 release 로 rebase 안 됨: {calls!r}"
     assert ["rebase", "origin/release"] not in calls, "stale origin/release 로 조용히 대체됐다"
@@ -9434,20 +9441,20 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale_stderr(proj, tm
     """위 케이스의 stderr 고지 — 대체를 건너뛴 사실이 조용히 넘어가지 않는다."""
     _init_repo(proj)
     wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
     _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    wp.create_slot("A", base="release", init_submodules=False)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", owner_task="me")
-    slot_dir = wp.slot_path(lease.slot)
-    spy, _calls = _spy_runner(wp._real_git_runner(slot_dir))
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
+    spy, _calls = _spy_runner(worktree_git._real_git_runner(slot_dir))
 
     capsys.readouterr()   # create_slot 의 콘솔 출력 소거(신호 격리).
-    [r] = wp.rebase([lease.slot], git_runner=spy)
-    assert r.outcome == wp.REBASE_REBASED, r.reason
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), [lease.slot], git_runner=spy)
+    assert r.outcome == worktree_records.REBASE_REBASED, r.reason
     err = capsys.readouterr().err
     assert "release" in err and "origin/release" in err and lease.slot in err, \
         f"origin 대체를 건너뛴 사실이 stderr 에 없다: {err!r}"
@@ -9462,13 +9469,13 @@ def test_real_git_rebase_no_onto_diverged_prefers_local_and_reports_two_counts(
     호출은 1회뿐이다(spy)."""
     _init_repo(proj)
     wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    wp.create_slot("A", base="release", init_submodules=False)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", owner_task="me")
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
 
     # 로컬(=bare 의 refs/heads/release)을 2 커밋 전진 — origin 은 안 건드림.
     _push_local_only_commit(tmp_path, bare, "release", label="r1")
@@ -9482,12 +9489,12 @@ def test_real_git_rebase_no_onto_diverged_prefers_local_and_reports_two_counts(
     origin_tip = _git(origin, "rev-parse", "release").stdout.strip()
     assert origin_tip != local_tip   # 전제 — 양쪽이 서로 다른 커밋으로 각자 전진했다.
 
-    real_runner = wp._real_git_runner(slot_dir)
+    real_runner = worktree_git._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
 
     capsys.readouterr()   # create_slot·픽스처 준비의 콘솔 출력 소거(신호 격리).
-    [r] = wp.rebase([lease.slot], git_runner=spy)
-    assert r.outcome == wp.REBASE_REBASED, r.reason
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), [lease.slot], git_runner=spy)
+    assert r.outcome == worktree_records.REBASE_REBASED, r.reason
     assert r.base == "release"
     assert ["rebase", "release"] in calls, f"diverged 인데도 로컬 release 를 안 씀: {calls!r}"
     assert ["rebase", "origin/release"] not in calls, "diverged 인데 origin/release 로 대체됐다"
@@ -9507,13 +9514,13 @@ def test_real_git_rebase_no_onto_prefers_origin_when_advanced(proj, tmp_path, mo
     """실 git — `--onto` 생략·origin 이 로컬보다 앞선(정상) 형상 → 종전대로 `origin/<base>` 채택(역방향)."""
     _init_repo(proj)
     wp = _load_wp_bound(proj)
-    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    wp.create_slot("A", base="release", init_submodules=False)
+    worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="release", init_submodules=False)
     # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
-    lease = wp.alloc("A", owner_task="me")
-    slot_dir = wp.slot_path(lease.slot)
+    lease = worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="me")
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
 
     # origin 을 로컬(bare refs/heads/release)보다 앞서게 — origin 은 non-bare 워킹 repo 라 직접 커밋.
     _git(origin, "checkout", "-q", "release")
@@ -9524,14 +9531,14 @@ def test_real_git_rebase_no_onto_prefers_origin_when_advanced(proj, tmp_path, mo
     local_frozen = _git(bare, "rev-parse", "refs/heads/release").stdout.strip()
     assert local_frozen != origin_tip, "전제 위반 — 로컬 release 가 이미 origin tip"
 
-    real_runner = wp._real_git_runner(slot_dir)
+    real_runner = worktree_git._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
-    [r] = wp.rebase([lease.slot], git_runner=spy)   # rebase 자체의 `fetch origin` 이 origin/release 를 갱신.
-    assert r.outcome == wp.REBASE_REBASED, r.reason
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), [lease.slot], git_runner=spy)   # rebase 자체의 `fetch origin` 이 origin/release 를 갱신.
+    assert r.outcome == worktree_records.REBASE_REBASED, r.reason
     assert ["rebase", "origin/release"] in calls, f"origin 이 앞섰는데도 origin/release 를 안 씀: {calls!r}"
     assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() == origin_tip
     # 성공한 rebase 는 분기 커밋을 옮겨 간 부모 끝 커밋으로 다시 기록한다.
-    assert wp.read_branch_parent("A_1", git_runner=real_runner) == {"name": "release", "fork": origin_tip}
+    assert branch_store.read_branch_parent("A_1", git_runner=real_runner) == {"name": "release", "fork": origin_tip}
 
 
 # ── refresh 무인자 — rebase 와 같은 신선도 helper ────────────────────────────
@@ -9549,25 +9556,25 @@ def test_real_git_refresh_no_onto_does_not_rewind_readonly_slot_past_recorded_ba
     wp = _load_wp_bound(proj)
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    lease = wp.create_slot("A", base="release", readonly=True, init_submodules=False)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="release", readonly=True, init_submodules=False)
     origin_r0 = _git(bare, "rev-parse", "refs/remotes/origin/release").stdout.strip()
-    recorded0 = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
+    recorded0 = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot).git["base"]
     assert recorded0 == {"branch": "release", "commit": origin_r0}   # 생성 직후 = origin R0(전제)
 
     local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")  # origin 은 안 건드림.
 
     # 명시 onto(불변 경로) 로 로컬 tip 으로 먼저 이동 — "기록 base 가 이미 로컬 전용 tip" 형상을 만든다.
-    ref1, head1 = wp.refresh(lease.slot, onto="release")
+    ref1, head1 = branch_checkout.refresh(pm_paths.home_at(wp.REPO), lease.slot, onto="release")
     assert (ref1, head1) == ("release", local_tip)
-    recorded1 = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
+    recorded1 = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot).git["base"]
     assert recorded1 == {"branch": "release", "commit": local_tip}
 
     # 무인자 refresh — origin/release 는 여전히 R0(stale). 구 버그: 무조건 origin 선호라 R0 로
     # **뒤로** 되감고 장부도 R0 로 퇴행했다. 수정 후: 로컬이 앞서 있으니 대체를 건너뛴다.
-    ref2, head2 = wp.refresh(lease.slot)
+    ref2, head2 = branch_checkout.refresh(pm_paths.home_at(wp.REPO), lease.slot)
     assert head2 == local_tip, \
         f"기록 base(로컬 tip) 보다 뒤로 감겼다 — head={head2!r} vs local_tip={local_tip!r}"
-    recorded2 = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
+    recorded2 = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot).git["base"]
     assert recorded2 == {"branch": "release", "commit": local_tip}, \
         f"장부 base 가 로컬 tip 보다 뒤로 퇴행했다: {recorded2!r}"
 
@@ -9578,20 +9585,20 @@ def test_real_git_refresh_no_onto_does_not_rewind_readonly_slot_past_recorded_ba
 def test_rebase_batch_independent_one_conflict_does_not_block_rest(wp, monkeypatch):
     """일괄 — 첫 슬롯 충돌이 나머지 rebase 를 막지 않는다(슬롯 독립·§F10)."""
     def _mk(slot):
-        return wp.Lease(slot=slot, repo="A", session="job", started="t", state="leased",
+        return worktree_records.Lease(slot=slot, repo="A", session="job", started="t", state="leased",
                         git={"branch": "feat", "head": _OLD_SHA, "submodules": [],
                              "recorded_at": "t"})
     _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     # 첫 rebase 호출=충돌(rc1)·두번째=성공(rc0) — 슬롯-무관 순서 모델.
     git = _RebaseGit(rebase_seq=[1, 0], tips={"origin/main": _REBASED_BASE_TIP},
                      head_sha=_REBASED_HEAD)
-    results = wp.rebase(["work/A_1", "work/A_2"], git_runner=git)
+    results = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1", "work/A_2"], git_runner=git)
     outcomes = {r.slot: r.outcome for r in results}
-    assert outcomes["work/A_1"] == wp.REBASE_CONFLICT
-    assert outcomes["work/A_2"] == wp.REBASE_REBASED   # 앞 충돌이 안 막음
+    assert outcomes["work/A_1"] == worktree_records.REBASE_CONFLICT
+    assert outcomes["work/A_2"] == worktree_records.REBASE_REBASED   # 앞 충돌이 안 막음
     # A_2 만 장부 스냅 갱신(A_1 은 충돌이라 미갱신).
-    heads = {l.slot: l.git["head"] for l in wp.list_leases()}
+    heads = {l.slot: l.git["head"] for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
     assert heads["work/A_1"] == _OLD_SHA and heads["work/A_2"] == _REBASED_HEAD
 
 
@@ -9600,12 +9607,12 @@ def test_rebase_batch_independent_one_conflict_does_not_block_rest(wp, monkeypat
 
 def test_rebase_in_progress_detects_rebase_merge_dir(wp):
     """.git/rebase-merge 실재 → 진행 중(True)·부재 → False."""
-    p = wp.slot_path("work/A_1")
+    p = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
     (p / ".git").mkdir(parents=True, exist_ok=True)
     git = _RebaseGit()
-    assert wp._rebase_in_progress("work/A_1", git_runner=git) is False
+    assert branch_checkout._rebase_in_progress(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) is False
     (p / ".git" / "rebase-merge").mkdir()
-    assert wp._rebase_in_progress("work/A_1", git_runner=git) is True
+    assert branch_checkout._rebase_in_progress(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git) is True
 
 
 # ── CLI(main) — status 일괄 / rebase ─────────────────────────────────────────
@@ -9616,7 +9623,7 @@ def test_cli_status_task_batch_lists_all(wp, proj, monkeypatch, capsys):
     _seed(wp,
           _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
           _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
-    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: _RebaseGit())
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda cwd: _RebaseGit())
     rc = wp.main(["status", "--task", "job"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -9635,12 +9642,12 @@ def test_cli_rebase_single_success_rc0(wp, proj, monkeypatch, capsys):
     _seed_rebase_lease(wp)
     _mk_slot_dir(wp, "work/A_1")
     git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP}, head_sha=_REBASED_HEAD)
-    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda cwd: git)
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     rc = wp.main(["rebase", "work/A_1"])
     assert rc == 0
     assert "성공" in capsys.readouterr().out
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git
     assert recorded["head"] == _REBASED_HEAD and recorded["recorded_at"] != "t"
 
 
@@ -9649,8 +9656,8 @@ def test_cli_rebase_single_conflict_rc1_loud(wp, proj, monkeypatch, capsys):
     _seed_rebase_lease(wp)
     _mk_slot_dir(wp, "work/A_1")
     git = _RebaseGit(rebase_rc=1, tips={"origin/main": _REBASED_BASE_TIP})
-    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda cwd: git)
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     rc = wp.main(["rebase", "work/A_1"])
     assert rc == 1
     assert "충돌" in capsys.readouterr().err
@@ -9666,16 +9673,16 @@ def test_cli_rebase_no_target_rc1(wp, capsys):
 def test_cli_rebase_batch_summary_rc0(wp, proj, monkeypatch, capsys):
     """CLI `rebase --task <이름>` — 일괄 성공 요약 + rc 0."""
     def _mk(slot):
-        return wp.Lease(slot=slot, repo="A", session="job", started="t", state="leased",
+        return worktree_records.Lease(slot=slot, repo="A", session="job", started="t", state="leased",
                         git={"branch": "feat", "head": _OLD_SHA, "submodules": [],
                              "recorded_at": "t"})
     _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
     _mk_slot_dir(wp, "work/A_1")
     _mk_slot_dir(wp, "work/A_2")
-    monkeypatch.setattr(wp, "_real_git_runner",
+    monkeypatch.setattr(worktree_git, "_real_git_runner",
                         lambda cwd: _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                                                head_sha=_REBASED_HEAD))
-    monkeypatch.setattr(wp, "_default_session", lambda: "job")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "job")
     rc = wp.main(["rebase", "--task", "job"])
     assert rc == 0
     assert "요약" in capsys.readouterr().out
@@ -9709,7 +9716,7 @@ def _task_mode(wp, monkeypatch):
 
     실제로도 task 명의 lease 가 2개 이상이면 `_default_session` 은 모호(leased ≥2)라 host-pid 로
     간다 — 그래서 세션 축만 보던 옛 소유검사는 자기 task 슬롯조차 '내 것' 으로 못 봤다."""
-    monkeypatch.setattr(wp, "_default_session", lambda: _FOREIGN_SESSION)
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: _FOREIGN_SESSION)
 
 
 def test_rebase_task_owner_single_slot_succeeds(wp, monkeypatch):
@@ -9718,23 +9725,23 @@ def test_rebase_task_owner_single_slot_succeeds(wp, monkeypatch):
     _task_mode(wp, monkeypatch)
     git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                      head_sha=_REBASED_HEAD)
-    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
-    assert r.outcome == wp.REBASE_REBASED and r.base == "main"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == worktree_records.REBASE_REBASED and r.base == "main"
     assert git.config["branch.feat.pm-fork"] == _REBASED_BASE_TIP
 
 
 def test_rebase_task_owner_batch_succeeds(wp, monkeypatch):
     """(b) `--task` 일괄 — 그 task 보유 전 슬롯이 소유검사를 통과한다(전면 스킵 회귀 핀)."""
     def _mk(slot):
-        return wp.Lease(slot=slot, repo="A", session=_TASK_OWNER, started="t", state="leased",
+        return worktree_records.Lease(slot=slot, repo="A", session=_TASK_OWNER, started="t", state="leased",
                         git={"branch": "feat", "head": _OLD_SHA, "submodules": [],
                              "recorded_at": "t"})
     _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
     _task_mode(wp, monkeypatch)
     git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                      head_sha=_REBASED_HEAD)
-    results = wp.rebase(["work/A_1", "work/A_2"], owner_task=_TASK_OWNER, git_runner=git)
-    assert [r.outcome for r in results] == [wp.REBASE_REBASED, wp.REBASE_REBASED]
+    results = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1", "work/A_2"], owner_task=_TASK_OWNER, git_runner=git)
+    assert [r.outcome for r in results] == [worktree_records.REBASE_REBASED, worktree_records.REBASE_REBASED]
 
 
 def test_rebase_other_task_slot_still_skipped_loud(wp, monkeypatch):
@@ -9742,32 +9749,32 @@ def test_rebase_other_task_slot_still_skipped_loud(wp, monkeypatch):
     _seed_rebase_lease(wp, session="other-task")
     _task_mode(wp, monkeypatch)
     git = _RebaseGit()
-    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "not-owner:other-task"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "not-owner:other-task"
     assert not git.did("rebase")
 
 
 def test_rebase_slot_session_owner_unchanged_without_task(wp, monkeypatch):
     """(d) `owner_task` 미지정 = 종전 세션 축 그대로 — 슬롯-세션 명의 거동 불변."""
     _seed_rebase_lease(wp, session="A_1")
-    monkeypatch.setattr(wp, "_default_session", lambda: "A_1")
+    monkeypatch.setattr(lease_store, "_default_session", lambda _home: "A_1")
     git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                      head_sha=_REBASED_HEAD)
-    [r] = wp.rebase(["work/A_1"], git_runner=git)
-    assert r.outcome == wp.REBASE_REBASED
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], git_runner=git)
+    assert r.outcome == worktree_records.REBASE_REBASED
 
 
 def test_rebase_task_owner_does_not_fall_back_to_session(wp, monkeypatch):
     """`owner_task` 주어지면 세션 축은 아예 조회하지 않는다 — 명의는 하나(release F3 동형)."""
-    def _boom():
+    def _boom(_home):
         raise AssertionError("owner_task 가 주어지면 _default_session 을 보지 않는다")
 
     _seed_rebase_lease(wp, session=_TASK_OWNER)
-    monkeypatch.setattr(wp, "_default_session", _boom)
+    monkeypatch.setattr(lease_store, "_default_session", _boom)
     git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                      head_sha=_REBASED_HEAD)
-    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
-    assert r.outcome == wp.REBASE_REBASED
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == worktree_records.REBASE_REBASED
 
 
 # ── (e) 선-검사는 소유 통과 후에도 그대로 (readonly·dirty·rebase 진행중) ──────
@@ -9778,8 +9785,8 @@ def test_rebase_task_owner_readonly_still_skipped(wp, monkeypatch):
     _seed_rebase_lease(wp, session="", role="readonly")
     _task_mode(wp, monkeypatch)
     git = _RebaseGit()
-    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "readonly"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "readonly"
 
 
 def test_rebase_task_owner_dirty_still_skipped(wp, monkeypatch):
@@ -9787,8 +9794,8 @@ def test_rebase_task_owner_dirty_still_skipped(wp, monkeypatch):
     _seed_rebase_lease(wp, session=_TASK_OWNER)
     _task_mode(wp, monkeypatch)
     git = _RebaseGit(dirty=True)
-    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "dirty"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "dirty"
     assert not git.did("rebase")
 
 
@@ -9796,10 +9803,10 @@ def test_rebase_task_owner_in_progress_still_skipped(wp, monkeypatch):
     """(e-3) 소유는 통과해도 rebase 진행 중이면 스킵(사용자 continue/abort 먼저)."""
     _seed_rebase_lease(wp, session=_TASK_OWNER)
     _task_mode(wp, monkeypatch)
-    monkeypatch.setattr(wp, "_rebase_in_progress", lambda slot, **k: True)
+    monkeypatch.setattr(branch_checkout, "_rebase_in_progress", lambda _home, slot, **k: True)
     git = _RebaseGit()
-    [r] = wp.rebase(["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "in-progress"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), ["work/A_1"], owner_task=_TASK_OWNER, git_runner=git)
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "in-progress"
     assert not git.did("rebase")
 
 
@@ -9814,51 +9821,51 @@ def test_cli_rebase_slot_with_task_owner_rc0(wp, proj, monkeypatch, capsys):
     _seed_rebase_lease(wp, session=_TASK_OWNER)
     _mk_slot_dir(wp, "work/A_1")
     git = _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP}, head_sha=_REBASED_HEAD)
-    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda cwd: git)
     _task_mode(wp, monkeypatch)
     rc = wp.main(["rebase", "work/A_1", "--task", _TASK_OWNER])
     assert rc == 0
     assert "성공" in capsys.readouterr().out
-    recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == "work/A_1").git
     assert recorded["head"] == _REBASED_HEAD and recorded["recorded_at"] != "t"
 
 
 def test_cli_rebase_slot_with_task_only_targets_that_slot(wp, proj, monkeypatch, capsys):
     """CLI `<slot> --task` = 단일(그 슬롯만) — task 보유 다른 슬롯은 손대지 않는다(선택 축)."""
     def _mk(slot):
-        return wp.Lease(slot=slot, repo="A", session=_TASK_OWNER, started="t", state="leased",
+        return worktree_records.Lease(slot=slot, repo="A", session=_TASK_OWNER, started="t", state="leased",
                         git={"branch": "feat", "head": _OLD_SHA, "submodules": [],
                              "recorded_at": "t"})
     _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
     _mk_slot_dir(wp, "work/A_1")
     _mk_slot_dir(wp, "work/A_2")
-    monkeypatch.setattr(wp, "_real_git_runner",
+    monkeypatch.setattr(worktree_git, "_real_git_runner",
                         lambda cwd: _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                                                head_sha=_REBASED_HEAD))
     _task_mode(wp, monkeypatch)
     rc = wp.main(["rebase", "work/A_1", "--task", _TASK_OWNER])
     assert rc == 0
-    heads = {l.slot: l.git["head"] for l in wp.list_leases()}
+    heads = {l.slot: l.git["head"] for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
     assert heads["work/A_1"] == _REBASED_HEAD and heads["work/A_2"] == _OLD_SHA
 
 
 def test_cli_rebase_task_batch_in_task_mode_rc0(wp, proj, monkeypatch, capsys):
     """CLI `rebase --task <이름>` 일괄 — task 모드(세션≠명의)에서도 전 슬롯 성공(전면 스킵 회귀 핀)."""
     def _mk(slot):
-        return wp.Lease(slot=slot, repo="A", session=_TASK_OWNER, started="t", state="leased",
+        return worktree_records.Lease(slot=slot, repo="A", session=_TASK_OWNER, started="t", state="leased",
                         git={"branch": "feat", "head": _OLD_SHA, "submodules": [],
                              "recorded_at": "t"})
     _seed(wp, _mk("work/A_1"), _mk("work/A_2"))
     _mk_slot_dir(wp, "work/A_1")
     _mk_slot_dir(wp, "work/A_2")
-    monkeypatch.setattr(wp, "_real_git_runner",
+    monkeypatch.setattr(worktree_git, "_real_git_runner",
                         lambda cwd: _RebaseGit(rebase_rc=0, tips={"origin/main": _REBASED_BASE_TIP},
                                                head_sha=_REBASED_HEAD))
     _task_mode(wp, monkeypatch)
     rc = wp.main(["rebase", "--task", _TASK_OWNER])
     assert rc == 0
     assert "스킵 0" in capsys.readouterr().out
-    heads = {l.slot: l.git["head"] for l in wp.list_leases()}
+    heads = {l.slot: l.git["head"] for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
     assert heads == {"work/A_1": _REBASED_HEAD, "work/A_2": _REBASED_HEAD}
 
 
@@ -9867,7 +9874,7 @@ def test_cli_rebase_slot_with_other_task_rc1_loud(wp, proj, monkeypatch, capsys)
     _seed_rebase_lease(wp, session="other-task")
     _mk_slot_dir(wp, "work/A_1")
     git = _RebaseGit()
-    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda cwd: git)
     _task_mode(wp, monkeypatch)
     rc = wp.main(["rebase", "work/A_1", "--task", _TASK_OWNER])
     assert rc == 1
@@ -9884,7 +9891,7 @@ def test_cli_rebase_task_slot_without_task_flag_skips_with_remedy(wp, proj, monk
     _seed_tasks(wp, _TASK_OWNER)
     _mk_slot_dir(wp, "work/A_1")
     git = _RebaseGit()
-    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    monkeypatch.setattr(worktree_git, "_real_git_runner", lambda cwd: git)
     _task_mode(wp, monkeypatch)
     rc = wp.main(["rebase", "work/A_1"])
     assert rc == 1
@@ -9895,7 +9902,7 @@ def test_cli_rebase_task_slot_without_task_flag_skips_with_remedy(wp, proj, monk
 
 def test_rebase_skip_reason_no_task_hint_for_slot_session_holder(wp):
     """보유자가 tasks 장부에 없으면(슬롯 세션 명의) `--task` 안내를 붙이지 않는다(오안내 방지)."""
-    msg = wp._rebase_skip_reason("not-owner:A_2")
+    msg = branch_checkout._rebase_skip_reason(pm_paths.home_at(wp.REPO), "not-owner:A_2")
     assert "내 슬롯 아님" in msg and "--task" not in msg
 
 
@@ -9911,9 +9918,9 @@ def _family_slot(proj, tmp_path, *, base="main", **create_kwargs):
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _origin, bare = _mk_release_family(tmp_path, wp)
-    lease = wp.create_slot("A", base=base, init_submodules=False, **create_kwargs)
-    slot_dir = wp.slot_path(lease.slot)
-    return wp, bare, lease, slot_dir, wp._real_git_runner(slot_dir)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base=base, init_submodules=False, **create_kwargs)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot)
+    return wp, bare, lease, slot_dir, worktree_git._real_git_runner(slot_dir)
 
 
 def _local_branches(cwd: Path) -> "list[str]":
@@ -9931,13 +9938,13 @@ def test_real_git_branch_parent_record_read_children_round_trip(proj, tmp_path):
     fork = _head_sha(slot_dir)
     _git(slot_dir, "branch", "task/child.v2")
 
-    wp.record_branch_parent("task/child.v2", "A_1", fork, git_runner=runner)
+    branch_store.record_branch_parent("task/child.v2", "A_1", fork, git_runner=runner)
 
-    assert wp.read_branch_parent("task/child.v2", git_runner=runner) == {"name": "A_1", "fork": fork}
-    assert wp.branch_children("A_1", git_runner=runner) == ["task/child.v2"]
-    assert wp.branch_children("main", git_runner=runner) == ["A_1"]
-    assert wp.branch_children("release", git_runner=runner) == []
-    assert wp.read_branch_parent("no-such", git_runner=runner) is None
+    assert branch_store.read_branch_parent("task/child.v2", git_runner=runner) == {"name": "A_1", "fork": fork}
+    assert branch_store.branch_children("A_1", git_runner=runner) == ["task/child.v2"]
+    assert branch_store.branch_children("main", git_runner=runner) == ["A_1"]
+    assert branch_store.branch_children("release", git_runner=runner) == []
+    assert branch_store.read_branch_parent("no-such", git_runner=runner) is None
     assert _git(bare, "config", "--get", "branch.task/child.v2.pm-parent").stdout.strip() == "A_1"
 
 
@@ -9946,11 +9953,11 @@ def test_real_git_branch_parent_half_record_raises(proj, tmp_path):
     """부모·분기 커밋 중 하나만 있으면 기록 손상으로 raise(없음으로 접지 않는다)."""
     wp, _bare, _lease, slot_dir, runner = _family_slot(proj, tmp_path)
     _git(slot_dir, "config", "branch.half.pm-parent", "main")
-    with pytest.raises(wp.BranchParentError, match="손상"):
-        wp.read_branch_parent("half", git_runner=runner)
+    with pytest.raises(branch_store.BranchParentError, match="손상"):
+        branch_store.read_branch_parent("half", git_runner=runner)
     _git(slot_dir, "config", "branch.fork-only.pm-fork", _head_sha(slot_dir))
-    with pytest.raises(wp.BranchParentError, match="손상"):
-        wp.read_branch_parent("fork-only", git_runner=runner)
+    with pytest.raises(branch_store.BranchParentError, match="손상"):
+        branch_store.read_branch_parent("fork-only", git_runner=runner)
 
 
 @_git_required
@@ -9959,30 +9966,30 @@ def test_real_git_branch_parent_follows_rename_and_delete(proj, tmp_path):
     wp, _bare, _lease, slot_dir, runner = _family_slot(proj, tmp_path)
     fork = _head_sha(slot_dir)
     _git(slot_dir, "branch", "child")
-    wp.record_branch_parent("child", "A_1", fork, git_runner=runner)
+    branch_store.record_branch_parent("child", "A_1", fork, git_runner=runner)
 
     _git(slot_dir, "branch", "-m", "child", "renamed")
-    assert wp.read_branch_parent("child", git_runner=runner) is None
-    assert wp.read_branch_parent("renamed", git_runner=runner) == {"name": "A_1", "fork": fork}
-    assert wp.branch_children("A_1", git_runner=runner) == ["renamed"]
+    assert branch_store.read_branch_parent("child", git_runner=runner) is None
+    assert branch_store.read_branch_parent("renamed", git_runner=runner) == {"name": "A_1", "fork": fork}
+    assert branch_store.branch_children("A_1", git_runner=runner) == ["renamed"]
 
     _git(slot_dir, "branch", "-d", "renamed")
-    assert wp.read_branch_parent("renamed", git_runner=runner) is None
-    assert wp.branch_children("A_1", git_runner=runner) == []
+    assert branch_store.read_branch_parent("renamed", git_runner=runner) is None
+    assert branch_store.branch_children("A_1", git_runner=runner) == []
 
 
 @_git_required
 def test_real_git_parent_ref_four_cases(proj, tmp_path):
     """비교 ref — 둘 다 없음 None · 로컬만 `<p>` · origin 만 `origin/<p>` · 둘 다면 로컬 전용 커밋이 있을 때만 `<p>`."""
     wp, bare, _lease, slot_dir, runner = _family_slot(proj, tmp_path)
-    assert wp.parent_ref("no-such", git_runner=runner) is None
+    assert branch_store.parent_ref("no-such", git_runner=runner) is None
     _git(slot_dir, "branch", "local-only")
-    assert wp.parent_ref("local-only", git_runner=runner) == "local-only"
+    assert branch_store.parent_ref("local-only", git_runner=runner) == "local-only"
     _git(slot_dir, "update-ref", "refs/remotes/origin/origin-only", "HEAD")
-    assert wp.parent_ref("origin-only", git_runner=runner) == "origin/origin-only"
-    assert wp.parent_ref("release", git_runner=runner) == "origin/release"
+    assert branch_store.parent_ref("origin-only", git_runner=runner) == "origin/origin-only"
+    assert branch_store.parent_ref("release", git_runner=runner) == "origin/release"
     _push_local_only_commit(tmp_path, bare, "release", label="ahead")
-    assert wp.parent_ref("release", git_runner=runner) == "release"
+    assert branch_store.parent_ref("release", git_runner=runner) == "release"
 
 
 def test_parent_ref_rev_list_failure_raises(wp):
@@ -9993,18 +10000,18 @@ def test_parent_ref_rev_list_failure_raises(wp):
         if argv[:3] == ["rev-list", "--left-right", "--count"]:
             return (128, "fatal: bad revision\n")
         return (0, "")
-    with pytest.raises(wp.BranchParentError):
-        wp.parent_ref("main", git_runner=runner)
+    with pytest.raises(branch_store.BranchParentError):
+        branch_store.parent_ref("main", git_runner=runner)
 
 
 def test_read_branch_parent_config_error_raises(wp):
     """부모 기록 읽기(`git config --get-regexp`)가 없음(rc 1) 아닌 오류면 raise — 기록 없음으로 접지 않는다."""
     def regexp_runner(argv):
         return (128, "fatal: bad config file\n") if argv[:2] == ["config", "--get-regexp"] else (0, "")
-    with pytest.raises(wp.BranchParentError):
-        wp.read_branch_parent("feat", git_runner=regexp_runner)
-    with pytest.raises(wp.BranchParentError):
-        wp.branch_children("feat", git_runner=regexp_runner)
+    with pytest.raises(branch_store.BranchParentError):
+        branch_store.read_branch_parent("feat", git_runner=regexp_runner)
+    with pytest.raises(branch_store.BranchParentError):
+        branch_store.branch_children("feat", git_runner=regexp_runner)
 
 
 def test_slot_git_status_failed_shared_read_is_retried_by_the_next_slot(wp):
@@ -10021,12 +10028,12 @@ def test_slot_git_status_failed_shared_read_is_retried_by_the_next_slot(wp):
         if argv[:2] == ["config", "--get-regexp"]:
             return (128, "fatal: bad config file\n")
         return healthy_call(argv)
-    with pytest.raises(wp.BranchParentError):
-        wp.slot_git_status("work/A_1", git_runner=failing, repo_reads=repo_reads)
+    with pytest.raises(branch_store.BranchParentError):
+        worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=failing, repo_reads=repo_reads)
     assert "parents" not in repo_reads["A"]
 
     git = _RebaseGit()
-    st = wp.slot_git_status("work/A_2", git_runner=git, repo_reads=repo_reads)
+    st = worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), "work/A_2", git_runner=git, repo_reads=repo_reads)
     assert st["parent"]["name"] == "main"
     assert git.did("config", "--get-regexp")
     assert git.did("stash", "list")
@@ -10049,27 +10056,27 @@ def test_read_branch_parent_reads_records_once(wp):
             "branch.other.pm-parent Feat.Dot.v1\n"
             "branch.other.pm-fork def456\n")
     runner, calls = counting(both)
-    assert wp.read_branch_parent("Feat.Dot.v1", git_runner=runner) == {"name": "main", "fork": "abc123"}
+    assert branch_store.read_branch_parent("Feat.Dot.v1", git_runner=runner) == {"name": "main", "fork": "abc123"}
     assert calls == [expected_call]
 
     runner, calls = counting("", rc=1)
-    assert wp.read_branch_parent("feat", git_runner=runner) is None
+    assert branch_store.read_branch_parent("feat", git_runner=runner) is None
     assert calls == [expected_call]
 
     runner, calls = counting("branch.feat.pm-parent main\n")
-    with pytest.raises(wp.BranchParentError, match="부모 기록 손상"):
-        wp.read_branch_parent("feat", git_runner=runner)
+    with pytest.raises(branch_store.BranchParentError, match="부모 기록 손상"):
+        branch_store.read_branch_parent("feat", git_runner=runner)
     assert calls == [expected_call]
 
     runner, calls = counting("branch.feat.pm-parent old\n"
                              "branch.feat.pm-fork 111\n"
                              "branch.feat.pm-parent new\n"
                              "branch.feat.pm-fork 222\n")
-    assert wp.read_branch_parent("feat", git_runner=runner) == {"name": "new", "fork": "222"}
+    assert branch_store.read_branch_parent("feat", git_runner=runner) == {"name": "new", "fork": "222"}
     assert calls == [expected_call]
 
     runner, calls = counting(both)
-    assert wp.branch_children("Feat.Dot.v1", git_runner=runner) == ["other"]
+    assert branch_store.branch_children("Feat.Dot.v1", git_runner=runner) == ["other"]
     assert calls == [expected_call]
 
 
@@ -10079,10 +10086,10 @@ def test_real_git_create_slot_records_parent_and_fork(proj, tmp_path):
     wp, bare, lease, slot_dir, _runner = _family_slot(proj, tmp_path, base="release")
     assert lease.slot == "work/A_1"
     origin_release = _head_sha(bare, "refs/remotes/origin/release")
-    bare_runner = wp._real_git_runner(bare)
-    assert wp.read_branch_parent("A_1", git_runner=bare_runner) == {"name": "release", "fork": origin_release}
+    bare_runner = worktree_git._real_git_runner(bare)
+    assert branch_store.read_branch_parent("A_1", git_runner=bare_runner) == {"name": "release", "fork": origin_release}
     assert _head_sha(slot_dir) == origin_release
-    assert "base" not in next(l for l in wp.list_leases() if l.slot == lease.slot).git
+    assert "base" not in next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot).git
 
 
 @_git_required
@@ -10093,11 +10100,11 @@ def test_real_git_create_slot_without_base_raises_before_side_effects(proj, tmp_
     bare = _mk_real_bare(wp, "A", tmp_path)
     for missing in ("", None):
         with pytest.raises(ValueError, match="base"):
-            wp.create_slot("A", base=missing, init_submodules=False)
-    assert wp.list_leases() == []
-    assert not wp.slot_path("work/A_1").exists()
+            worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base=missing, init_submodules=False)
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
+    assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").exists()
     assert _local_branches(bare) == ["main"]
-    assert wp.branch_children("main", git_runner=wp._real_git_runner(bare)) == []
+    assert branch_store.branch_children("main", git_runner=worktree_git._real_git_runner(bare)) == []
 
 
 @_git_required
@@ -10106,14 +10113,14 @@ def test_real_git_create_task_branch_creates_from_parent_and_records(proj, tmp_p
     wp, bare, lease, slot_dir, runner = _family_slot(proj, tmp_path, owner_task="job")
     origin_release = _head_sha(bare, "refs/remotes/origin/release")
 
-    result = wp.create_task_branch(lease.slot, "task/feat", parent="release", owner_task="job",
+    result = branch_checkout.create_task_branch(pm_paths.home_at(wp.REPO), lease.slot, "task/feat", parent="release", owner_task="job",
                                    protected=["main"])
 
     assert result.branch == "task/feat" and result.requested == "task/feat"
-    assert wp.current_branch(lease.slot) == "task/feat"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "task/feat"
     assert _head_sha(slot_dir) == origin_release
-    assert wp.read_branch_parent("task/feat", git_runner=runner) == {"name": "release", "fork": origin_release}
-    recorded = next(l for l in wp.list_leases() if l.slot == lease.slot).git
+    assert branch_store.read_branch_parent("task/feat", git_runner=runner) == {"name": "release", "fork": origin_release}
+    recorded = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot).git
     assert recorded["branch"] == "task/feat" and recorded["head"] == origin_release
     assert result.head == origin_release
 
@@ -10128,13 +10135,13 @@ def test_real_git_create_task_branch_refusals_have_no_side_effects(proj, tmp_pat
     before_ledger = wp.LEASES_FILE.read_bytes()
 
     def refused(branch, *, parent="main", owner_task="job"):
-        with pytest.raises(wp.TaskBranchRefused) as ei:
-            wp.create_task_branch(lease.slot, branch, parent=parent, owner_task=owner_task,
+        with pytest.raises(worktree_records.TaskBranchRefused) as ei:
+            branch_checkout.create_task_branch(pm_paths.home_at(wp.REPO), lease.slot, branch, parent=parent, owner_task=owner_task,
                                   protected=["main"])
         assert _local_branches(slot_dir) == before_branches
         assert _head_sha(slot_dir) == before_head
-        assert wp.current_branch(lease.slot) == "A_1"
-        assert wp.branch_children("main", git_runner=runner) == ["A_1"]
+        assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "A_1"
+        assert branch_store.branch_children("main", git_runner=runner) == ["A_1"]
         assert wp.LEASES_FILE.read_bytes() == before_ledger
         return ei.value.reason
 
@@ -10157,12 +10164,12 @@ def test_real_git_switch_missing_branch_not_found_no_side_effects(proj, tmp_path
     before_branches = _local_branches(slot_dir)
     before_ledger = wp.LEASES_FILE.read_bytes()
     for name in ("remote-only", "no-such"):
-        with pytest.raises(wp.SwitchRefused) as ei:
-            wp.switch(lease.slot, name, protected=["main"])
+        with pytest.raises(worktree_records.SwitchRefused) as ei:
+            branch_checkout.switch(pm_paths.home_at(wp.REPO), lease.slot, name, protected=["main"])
         assert ei.value.reason == "not-found"
         assert "pm-config task branch" in str(ei.value)
     assert _local_branches(slot_dir) == before_branches
-    assert wp.current_branch(lease.slot) == "A_1"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "A_1"
     assert wp.LEASES_FILE.read_bytes() == before_ledger
 
 
@@ -10170,12 +10177,12 @@ def test_real_git_switch_missing_branch_not_found_no_side_effects(proj, tmp_path
 def test_real_git_alloc_missing_branch_does_not_create_it(proj, tmp_path):
     """idle 슬롯 alloc(branch=없는 브랜치) → CheckoutFailed · 브랜치를 만들지 않는다."""
     wp, _bare, lease, slot_dir, _runner = _family_slot(proj, tmp_path)
-    wp.release(lease.slot)
+    worktree_pool.release(pm_paths.home_at(wp.REPO), lease.slot)
     before_branches = _local_branches(slot_dir)
-    with pytest.raises(wp.CheckoutFailed):
-        wp.alloc("A", branch="no-such", owner_task="other")
+    with pytest.raises(worktree_records.CheckoutFailed):
+        worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", branch="no-such", owner_task="other")
     assert _local_branches(slot_dir) == before_branches
-    assert wp.current_branch(lease.slot) == "A_1"
+    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), lease.slot) == "A_1"
 
 
 @_git_required
@@ -10183,10 +10190,10 @@ def test_real_git_rebase_onto_replaces_parent_record(proj, tmp_path):
     """`rebase --onto main` 성공 → 부모 이름이 main 으로 바뀌고 분기 커밋=main 끝 커밋."""
     wp, bare, lease, _slot_dir, runner = _family_slot(proj, tmp_path, base="release",
                                                        owner_task="job")
-    [r] = wp.rebase([lease.slot], onto="main", owner_task="job")
-    assert r.outcome == wp.REBASE_REBASED, r.reason
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), [lease.slot], onto="main", owner_task="job")
+    assert r.outcome == worktree_records.REBASE_REBASED, r.reason
     assert r.base == "main"
-    assert wp.read_branch_parent("A_1", git_runner=runner) == {"name": "main", "fork": _head_sha(bare, "main")}
+    assert branch_store.read_branch_parent("A_1", git_runner=runner) == {"name": "main", "fork": _head_sha(bare, "main")}
 
 
 @_git_required
@@ -10197,10 +10204,10 @@ def test_real_git_rebase_without_parent_record_skips(proj, tmp_path):
     _git(slot_dir, "config", "--unset", "branch.A_1.pm-parent")
     _git(slot_dir, "config", "--unset", "branch.A_1.pm-fork")
     before_head = _head_sha(slot_dir)
-    [r] = wp.rebase([lease.slot], owner_task="job")
-    assert r.outcome == wp.REBASE_SKIPPED and r.reason == "no-parent"
+    [r] = branch_checkout.rebase(pm_paths.home_at(wp.REPO), [lease.slot], owner_task="job")
+    assert r.outcome == worktree_records.REBASE_SKIPPED and r.reason == "no-parent"
     assert _head_sha(slot_dir) == before_head
-    assert wp.read_branch_parent("A_1", git_runner=runner) is None
+    assert branch_store.read_branch_parent("A_1", git_runner=runner) is None
 
 
 @_git_required
@@ -10212,11 +10219,11 @@ def test_real_git_slot_git_status_parent_children_stashes(proj, tmp_path):
     _git(slot_dir, "add", "ahead.txt")
     _git(slot_dir, "commit", "-q", "-m", "slot ahead")
     _git(slot_dir, "branch", "child")
-    wp.record_branch_parent("child", "A_1", _head_sha(slot_dir), git_runner=runner)
+    branch_store.record_branch_parent("child", "A_1", _head_sha(slot_dir), git_runner=runner)
     (slot_dir / "R0.txt").write_text("changed\n", encoding="utf-8")
     _git(slot_dir, "stash", "push", "-q", "-m", "wip")
 
-    st = wp.slot_git_status(lease.slot)
+    st = worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), lease.slot)
 
     assert set(st) == {"slot", "branch", "head", "parent", "children", "stashes", "dirty", "folders"}
     assert st["folders"] is None
@@ -10233,8 +10240,8 @@ def test_real_git_readonly_slot_status_parent_from_lease_base(proj, tmp_path):
     """readonly 슬롯(브랜치 없음) status 부모는 장부 `lease.git.base`(따라가는 브랜치·detach 커밋)."""
     wp, _bare, lease, _slot_dir, _runner = _family_slot(proj, tmp_path, base="release",
                                                          readonly=True)
-    base = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
-    st = wp.slot_git_status(lease.slot)
+    base = next(l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO)) if l.slot == lease.slot).git["base"]
+    st = worktree_status.slot_git_status(pm_paths.home_at(wp.REPO), lease.slot)
     assert st["branch"] is None
     assert st["parent"] == {"name": "release", "fork": base["commit"], "ref": "origin/release",
                             "ahead": 0, "behind": 0}
@@ -10245,8 +10252,8 @@ def test_real_git_readonly_slot_status_parent_from_lease_base(proj, tmp_path):
 def test_real_git_parent_record_survives_release(proj, tmp_path):
     """반납(release)은 부모 기록을 건드리지 않는다 — 기록은 브랜치 수명을 따른다."""
     wp, bare, lease, _slot_dir, _runner = _family_slot(proj, tmp_path)
-    bare_runner = wp._real_git_runner(bare)
-    before = wp.read_branch_parent("A_1", git_runner=bare_runner)
+    bare_runner = worktree_git._real_git_runner(bare)
+    before = branch_store.read_branch_parent("A_1", git_runner=bare_runner)
     assert before is not None and before["name"] == "main"
-    assert wp.release(lease.slot).state == "idle"
-    assert wp.read_branch_parent("A_1", git_runner=bare_runner) == before
+    assert worktree_pool.release(pm_paths.home_at(wp.REPO), lease.slot).state == "idle"
+    assert branch_store.read_branch_parent("A_1", git_runner=bare_runner) == before

@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 408,
+  "count": 404,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 252
+    "python-prose": 248
   },
   "entries": [
     {
@@ -501,14 +501,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/worktree_pool.py",
-      "kind": "private_section",
-      "match": "spike\n         §8-4(d",
-      "surface": "python-prose",
-      "hash": "1f07ac4f41a52176c5edf1f92f1809c5ef0fa71ff60bc7987d2e66848faeb5b8",
       "count": 1
     },
     {
@@ -1077,14 +1069,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/worktree_pool.py",
-      "kind": "private_section",
-      "match": "spike\n         §8-4(d",
-      "surface": "python-prose",
-      "hash": "1f07ac4f41a52176c5edf1f92f1809c5ef0fa71ff60bc7987d2e66848faeb5b8",
       "count": 1
     },
     {
@@ -1765,14 +1749,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/worktree_pool.py",
-      "kind": "private_section",
-      "match": "spike\n         §8-4(d",
-      "surface": "python-prose",
-      "hash": "1f07ac4f41a52176c5edf1f92f1809c5ef0fa71ff60bc7987d2e66848faeb5b8",
       "count": 1
     },
     {
@@ -2677,14 +2653,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "13cd654c4f7ed50430a6435c1264545b758759b89ec6752323f562558a0c7ede",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/worktree_pool.py",
-      "kind": "private_section",
-      "match": "spike\n         §8-4(d",
-      "surface": "python-prose",
-      "hash": "1f07ac4f41a52176c5edf1f92f1809c5ef0fa71ff60bc7987d2e66848faeb5b8",
       "count": 1
     },
     {

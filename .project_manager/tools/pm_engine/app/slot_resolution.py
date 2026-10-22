@@ -10,6 +10,9 @@ from pathlib import Path
 
 from pm_engine.domain import identity_args
 from pm_engine.infra import fs, lease_store, pm_paths
+from pm_engine.domain import worktree_records
+from pm_engine.infra import pool_store
+from pm_engine.infra import worktree_paths
 
 
 def _regression_cwd(
@@ -198,3 +201,52 @@ def _auto_slot(
         return None
     # 경로는 행의 `slot` 값, 정체성은 행이 준 키 — 세션에서 번호를 뜯어 경로를 재조립하지 않는다.
     return lease_store.resolve_slot_identity(workspace.slot, leases_file)
+
+
+def _resolve_current_slot(home, slot_arg: str | None) -> str:
+    """dev/sync 의 대상 슬롯을 해소한다 — 명시 슬롯 문자열 > cwd > 세션 leased.
+
+    `slot_arg` 는 CLI `--repo`/`--slot` 로 정체성이 완전 해소된 경우 `main`(`identity.kind ==
+    "slot"`)이 조립해 넘기는 `<repo>_<N>` 문자열이다 — 이 함수 자체는 어느
+    source 문자열이든 정규화·검증만 한다(`--slot` CLI 인자 자체를 직접 받지 않는다).
+
+    우선순위:
+      1. `slot_arg` 명시(빈 문자열 포함) → `_normalize_slot`(main 의 명시 --repo/--slot 조립·
+         권장 경로).
+      2. cwd 가 슬롯 worktree 안이면 그 슬롯(`_slot_from_cwd`).
+      3. 세션(`_default_session`·env/단일-lease 유입)이 보유한 leased 슬롯 — 정확히 1개면 그것.
+
+    3에서 매칭 leased 슬롯이 0개(무바인딩)이거나 ≥2(모호)면 `SlotResolutionError` raise — CLI
+    main 이 rc 1 + `--repo/--slot` 안내로 surface 한다(침묵 오타깃 금지). 이 해소는 dev/sync
+    mutation의 대상 선택이므로 장부를 strict로 읽고, `_default_session`(lease_store.session_name 동형)을
+    재사용한다(기존 관례). (인자 전무 시
+    이 no-flag 체인은 불변.)
+
+    **값-경계 검증**: `slot_arg` 명시는 `_normalize_slot` 이, 그 외 유입(cwd·장부)도 반환 전
+    같은 `_normalize_slot` 을 재적용해 최종 슬롯의 해소 경로가 **PM 홈 안**임을 강제한다 — 어느
+    source(명시/cwd/session)든 부적격/traversal 값이 `slot_path` 결합으로 슬롯 경계를 벗어나지
+    못하게 하는 단일 불변식(이름 모양 강제가 아니다). `slot_arg` 는 **빈 문자열도 명시로
+    취급**(`is not None`)해 검증에 태운다(빈값 거부).
+    """
+    if slot_arg is not None:
+        return worktree_paths._normalize_slot(home, slot_arg)  # 명시(빈값 포함) → 정규화 + 형식 검증.
+    cwd_slot = worktree_paths._slot_from_cwd(home)
+    if cwd_slot:
+        return worktree_paths._normalize_slot(home, cwd_slot)  # cwd 유입도 최종 형식 검증(단일 불변식).
+    sess = lease_store._default_session(home)
+    with pool_store._lease_lock(home):
+        mine = [
+            lease
+            for lease in pool_store._read_ledger_strict(home)
+            if lease.state == "leased" and lease.session == sess
+        ]
+    if len(mine) == 1:
+        return worktree_paths._normalize_slot(home, mine[0].slot)  # 장부 유입도 최종 형식 검증(단일 불변식).
+    if not mine:
+        raise worktree_records.SlotResolutionError(
+            f"세션 {sess!r} 의 leased 슬롯이 없다 — `--repo <name> --slot <N>` 으로 대상 슬롯을 명시하라."
+        )
+    raise worktree_records.SlotResolutionError(
+        f"세션 {sess!r} 의 leased 슬롯이 {len(mine)}개"
+        f"({', '.join(l.slot for l in mine)}) — `--repo <name> --slot <N>` 으로 어느 슬롯인지 명시하라."
+    )

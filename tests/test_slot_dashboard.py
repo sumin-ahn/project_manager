@@ -18,6 +18,8 @@ hermetic: 파일/REPO 접촉 테스트는 모듈-레벨 REPO 를 tmp 로 monkeyp
 """
 from __future__ import annotations
 
+from _pool_seams import bind_pool
+
 import contextlib
 import importlib.util
 from pathlib import Path
@@ -585,7 +587,7 @@ class _AllocPool:
                 "children": [], "stashes": 0, "submodules": [], "dirty": False}
 
 
-def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str = "# log\n"):
+def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str='# log\n', monkeypatch):
     """DI stub 로 격리된 PmBootstrap(alloc 모드 run 용) — board/git/pytest/log/areas/pm_state 주입."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix |\n|---|---|\n| project_manager | PM |\n", encoding="utf-8")
@@ -612,7 +614,7 @@ def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str = "# log\n"):
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas,
-        worktree_pool=pool,
+        worktree_pool=bind_pool(monkeypatch, pool),
         pm_state_file=pm_state,
     )
 

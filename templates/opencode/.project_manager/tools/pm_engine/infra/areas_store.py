@@ -118,3 +118,27 @@ def registered_repos(home) -> set[str]:
     """
     _header, rows = _parse_areas(home)
     return {r for row in rows if (r := row.get("repo"))}
+
+
+def _repo_protected(home, repo: str) -> list[str]:
+    """그 repo 의 보호 브랜치 목록. 미지정/미등록/구 스키마 → `DEFAULT_PROTECTED`.
+
+    areas.md `protected` 칼럼(쉼표분리·예 `main,develop`)을 읽는다. pre-push 훅 설치(sidecar
+    채움)·bootstrap 보호 경고가 이 목록으로 PM 의 보호 브랜치 commit/push 를 막는다.
+
+    **default 폴백 = `DEFAULT_PROTECTED`(main/master/develop)** (`_repo_base` 의 None 폴백과
+    다름 — 보호는 *안전 기본값이 있어야* 한다·미지정 repo 도 main 을 막는다). 다음 모두
+    default 로 떨어진다:
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `protected` 칼럼 자체가 없는 구 레지스트리(헤더에 protected 없음 → 행 dict 에 키 없음).
+      - `protected` 칼럼이 빈 값(부분 등록).
+    명시 지정이면 쉼표분리·strip·빈 토큰 제거 후 그 목록(전부 빈 토큰이면 default 폴백).
+    """
+    _header, rows = _parse_areas(home)
+    for row in rows:
+        if row.get("repo") == repo:
+            raw = row.get("protected") or ""
+            branches = [b.strip() for b in raw.split(",") if b.strip()]
+            return branches if branches else list(areas_rules.DEFAULT_PROTECTED)
+    return list(areas_rules.DEFAULT_PROTECTED)

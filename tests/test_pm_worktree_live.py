@@ -46,6 +46,9 @@ import pytest
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·claude stream-json Bash 파싱.
 from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
 from test_command_card_usability import _collect_bash_commands
+from pm_engine.app import branch_checkout
+from pm_engine.infra import pm_paths
+from pm_engine.app import worktree_pool
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -185,7 +188,7 @@ def _setup_home_with_submodule_slot(tmp_path: Path, harness: str, monkeypatch) -
 
     # bare(worktree base·ADR-0011 §31) — clone --bare + refspec 보정(T-0152 동형) + fetch(→ origin/develop)
     # + autoSetupMerge=true(--no-track 없으면 upstream 걸릴 조건·assertion 3 을 비공허하게).
-    bare = wp.bare_repo_path(_REPO_NAME)
+    bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), _REPO_NAME)
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(family), str(bare))
     _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
@@ -194,9 +197,9 @@ def _setup_home_with_submodule_slot(tmp_path: Path, harness: str, monkeypatch) -
 
     # create_slot(base=develop) — 슬롯 브랜치 <repo>_1 을 origin/develop 에서 --no-track 로 파고
     # submodule init(둘 다 detached pin). submodule init 은 file:// origin 을 clone(proto env 필요).
-    lease = wp.create_slot(_REPO_NAME, base=_BASE_BRANCH, init_submodules=True)
+    lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), _REPO_NAME, base=_BASE_BRANCH, init_submodules=True)
     assert lease.slot == _SLOT, f"슬롯 식별자={lease.slot!r}(기대 {_SLOT!r})"
-    slot_dir = wp.slot_path(_SLOT)
+    slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), _SLOT)
     assert slot_dir.is_dir(), "슬롯 worktree 폴더 미생성"
 
     # consume 을 pin(v2)과 어긋난 detached(c1=v1)로 → drift(sync 재동기 대상).
@@ -485,9 +488,9 @@ def test_scenario_backbone_produces_expected_final_state(tmp_path, monkeypatch):
     wp = _load_wp_from_home(fx.home)
 
     # 실 LLM 대신 backbone 직접 호출 — dev(libs/dev 를 on-branch 화) → sync(selective 재동기).
-    rc, out = wp.dev(_SLOT, _DEV_SUB, _DEV_BRANCH)
+    rc, out = branch_checkout.dev(pm_paths.home_at(wp.REPO), _SLOT, _DEV_SUB, _DEV_BRANCH)
     assert rc == 0, f"backbone dev 실패(rc={rc}): {out!r}"
-    wp.sync(_SLOT)
+    branch_checkout.sync(pm_paths.home_at(wp.REPO), _SLOT)
 
     # 3 단언 — dev no-clobber·consume 재동기·슬롯 no-track (side-effect 부분·_assert_worktree_git_state 동형).
     assert _sub_branch(fx.slot_dir, _DEV_SUB) == _DEV_BRANCH, "dev submodule 이 on-branch 로 보존 안 됨"

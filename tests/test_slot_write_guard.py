@@ -47,6 +47,7 @@ def home(tmp_path, monkeypatch):
     # 열린 할 일은 **그 홈의 엔진 사본**이 읽는다 — 사본이 없는 홈은 판정 자체를 하지 않으므로
     # 이 픽스처는 실 엔진을 그대로 깐다(할 일 파일 형식을 흉내 내는 대역 금지).
     shutil.copytree(TOOLS, root / ".project_manager" / "tools")
+    (root / ".project_manager" / "tools" / "worktree_pool.py").unlink()
     ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(json.dumps({
@@ -149,8 +150,8 @@ def test_todo_rule_only_applies_to_write_tools(board, home, tmp_path):
     assert judgment["verdict"] == "ok"
 
 
-def test_write_without_an_engine_copy_makes_no_todo_judgment(board, tmp_path):
-    """엔진 사본이 없는 홈은 열린 할 일을 셀 근거가 없다 — 0건으로 몰아 경고하지 않는다."""
+def test_write_without_an_engine_copy_uses_execution_engine(board, tmp_path):
+    """대상 Home에 평면 엔진이 없어도 실행 엔진으로 열린 할 일을 판정한다."""
     root = tmp_path / "no-engine"
     ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
@@ -162,7 +163,7 @@ def test_write_without_an_engine_copy_makes_no_todo_judgment(board, tmp_path):
         root, "S-alpha", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
-    assert judgment["verdict"] == "ok"
+    assert judgment["verdict"] == "warn"
 
 
 def test_delegated_session_inherits_the_owner_task_todos(board, home, tmp_path, monkeypatch):

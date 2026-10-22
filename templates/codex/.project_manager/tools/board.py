@@ -44,6 +44,10 @@ from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_
 from pm_engine.cli import regression_cmd, task_args  # noqa: E402
 from pm_engine.domain import areas_rules, conf_schema, design_rules, git_policy, gitattributes_rules, identity_args, markdown_text, pytest_report, review_form, review_state, round_rules, shell_policy, ticket_rules  # noqa: E402
 from pm_engine.infra import areas_store, clock, cluster_store, conf_store, console, delegate_ledger, fs, git, lease_store, manifest_store, pm_paths, pre_push_hook, python_env, regression_store, repo_coordinates, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
+from pm_engine.infra import task_store
+from pm_engine.infra import branch_store
+from pm_engine.infra import worktree_git
+from pm_engine.domain import worktree_records
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -99,7 +103,6 @@ BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — b
 # worktree_pool 을 import 하지 않으므로 경로를 자체 해소해 파일을
 # 직접 read 한다(슬롯 test_cmd 레이어·아래 _active_slot_test_cmd). areas.md 읽듯 데이터-결합만.
 LEASES_FILE = LOCAL_DIR / "worktree-leases.json"            # worktree 리스 장부 (read-only here)
-WORKTREE_POOL_PY = REPO / ".project_manager" / "tools" / "worktree_pool.py"  # 묶음 브랜치 부모 기록(_cluster_ensure_branch)
 DELEGATE_CHANNEL_GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 CODEX_DELEGATE_OBSERVATIONS = (
     LOCAL_DIR / "delegate-channel" / "codex-observations.jsonl"
@@ -351,22 +354,9 @@ def judge_file_removal(
     return None
 
 
-def _open_todo_count(root: str | os.PathLike[str], task: str) -> "int | None":
-    """그 task 의 열린 할 일 수 — 판정 대상 PM 홈의 엔진으로 `todo.json` 을 읽는다.
-
-    형식을 아는 코드는 `worktree_pool` 한 벌로 둔다 — 여기서 JSON 을 직접 파싱하면 파서가 두 벌이
-    되어 갈린다. 사본은 **판정 대상 홈(`root`)의 것**이다: 이 판정을 부르는 훅이 그 홈에 설치돼
-    있고, 할 일 파일도 그 홈 안에 있다.
-
-    엔진 사본이 없으면 `None` — 셀 근거가 없는 것과 0건은 다르다(호출부가 침묵한다).
-    """
-    pool_path = Path(root) / ".project_manager" / "tools" / "worktree_pool.py"
-    if not pool_path.is_file():
-        return None
-    pool = _load_module_from_path(
-        pool_path, "worktree_pool.py", verifier=_verify_engine_rev, cache=True,
-    )
-    return len(pool.read_task_todos(task))
+def _open_todo_count(root: str | os.PathLike[str], task: str) -> int:
+    """실행 엔진으로 대상 Home의 열린 할 일 수를 판독한다."""
+    return len(task_store.read_task_todos(pm_paths.home_at(Path(root)), task))
 
 
 def _no_open_todo_judgment(
@@ -392,7 +382,7 @@ def _no_open_todo_judgment(
     if task is None:
         return None
     open_todos = _open_todo_count(home, task)
-    if open_todos is None or open_todos > 0:
+    if open_todos > 0:
         return None
     return {
         "verdict": "warn", "cwd_identity": "non-repo",
@@ -811,8 +801,9 @@ def judge_git_anchor_command(
 _RECORD_TASK_SESSION_CLAIM_PROGRAM = (
     "import sys\n"
     "sys.path.insert(0, sys.argv[1])\n"
-    "import worktree_pool\n"
-    "worktree_pool.record_task_session_claim(sys.argv[2], sys.argv[3])\n"
+    "from pathlib import Path\n"
+    "from pm_engine.infra import pm_paths, task_store\n"
+    "task_store.record_task_session_claim(pm_paths.home_at(Path(sys.argv[1]).parents[1]), sys.argv[2], sys.argv[3])\n"
 )
 
 
@@ -820,7 +811,7 @@ def _record_bootstrap_session_claims(session: str, parsed: shell_policy._ShellPa
     """`pm_bootstrap.py --task <task>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
 
     부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없어(codex·opencode 는 도구 프로세스 환경에
-    없다) 이 기록을 가져가 task 에 쓴다(`worktree_pool.take_task_session_claim`). 실행 위치·인자를
+    없다) 이 기록을 가져가 task 에 쓴다(`task_store.take_task_session_claim`). 실행 위치·인자를
     정적으로 못 정한 호출과 세션 ID 없는 훅은 남기지 않는다 — 그러면 부트스트랩이 기록 없음으로 멈춘다.
 
     기록은 그 사본 홈의 엔진이 하위 프로세스로 쓴다. 이 프로세스에는 이 홈의 `pm_engine` 이 이미
@@ -1241,10 +1232,6 @@ def _actor_session_override(args: argparse.Namespace) -> str | None:
     return task
 
 
-# 보호 브랜치 default (엔진 상수) — areas.md `protected` 칼럼이 미지정/미등록일 때
-# 폴백. PM 이 자율로 commit/push 못 하는 브랜치(pre-push 훅·bootstrap 경고가 이걸 본다).
-# per-repo override 는 areas.md `protected` 칼럼(쉼표분리·예 `main,develop`).
-DEFAULT_PROTECTED = ("main", "master", "develop")
 
 
 def _areas_header_line() -> str:
@@ -1353,28 +1340,6 @@ def _areas_git_url(repo: str) -> str | None:
     return None
 
 
-def _repo_protected(repo: str) -> list[str]:
-    """그 repo 의 보호 브랜치 목록. 미지정/미등록/구 스키마 → `DEFAULT_PROTECTED`.
-
-    areas.md `protected` 칼럼(쉼표분리·예 `main,develop`)을 읽는다. pre-push 훅 설치(sidecar
-    채움)·bootstrap 보호 경고가 이 목록으로 PM 의 보호 브랜치 commit/push 를 막는다.
-
-    **default 폴백 = `DEFAULT_PROTECTED`(main/master/develop)** (`_repo_base` 의 None 폴백과
-    다름 — 보호는 *안전 기본값이 있어야* 한다·미지정 repo 도 main 을 막는다). 다음 모두
-    default 로 떨어진다:
-      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
-      - 그 repo 행이 없음(미등록).
-      - `protected` 칼럼 자체가 없는 구 레지스트리(헤더에 protected 없음 → 행 dict 에 키 없음).
-      - `protected` 칼럼이 빈 값(부분 등록).
-    명시 지정이면 쉼표분리·strip·빈 토큰 제거 후 그 목록(전부 빈 토큰이면 default 폴백).
-    """
-    _header, rows = areas_store._parse_areas(_home())
-    for row in rows:
-        if row.get("repo") == repo:
-            raw = row.get("protected") or ""
-            branches = [b.strip() for b in raw.split(",") if b.strip()]
-            return branches if branches else list(DEFAULT_PROTECTED)
-    return list(DEFAULT_PROTECTED)
 
 
 # ── `--mine` 뷰 필터 ─────────
@@ -6289,7 +6254,7 @@ _ORIGIN_SCHEMES_WITH_SECRET_USERINFO = ("http", "https")
 
 
 # `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — 이 접두 **정확히**를 벗겨야 순수 브랜치명이다
-# (`worktree_pool.current_branch` 와 같은 규칙 · 같은 이름 태그가 있으면 `--short` 는 `heads/` 를 붙인다).
+# (`worktree_git.current_branch` 와 같은 규칙 · 같은 이름 태그가 있으면 `--short` 는 `heads/` 를 붙인다).
 _SYMREF_BRANCH_PREFIX = "refs/heads/"
 
 
@@ -6530,7 +6495,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         # `{{DATE}}` 의 소유자는 **생성 시점**이다 — 템플릿은 채택자 디스크에 토큰-form
         #   으로 남아야 pm_update 의 manifest byte-copy 와 진동하지 않는다. 그러니 그 템플릿으로
-        #   산출물을 만드는 이 지점이 오늘 날짜를 채운다(worktree_pool.ensure_task_pm_state 의
+        #   산출물을 만드는 이 지점이 오늘 날짜를 채운다(task_store.ensure_task_pm_state 의
         #   task pm_state 렌더와 같은 규칙·소유 선언은 pm_import.CONSUMPTION_TIME_TOKENS).
         seed = fs.read_text_shared(PM_STATE_TEMPLATE, encoding="utf-8").replace(
             "{{DATE}}", datetime.date.today().isoformat())
@@ -7820,15 +7785,12 @@ def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
         return f"생성 실패(기점 {base} · {tree})"
     # 만든 자리에서 부모를 적는다 — 기점 브랜치가 부모이고 그 끝 커밋이 갈라진 커밋이다.
     # 브랜치는 이미 생겼으므로 기록 실패는 조용히 넘기지 않고 올린다.
-    worktree_pool = _load_module_from_path(
-        WORKTREE_POOL_PY, "worktree_pool.py", verifier=_verify_engine_rev,
-    )
-    runner = worktree_pool._real_git_runner(Path(tree))
+    runner = worktree_git._real_git_runner(Path(tree))
     rc, fork = runner(["rev-parse", "--verify", f"{base}^{{commit}}"])
     if rc != 0:
-        raise worktree_pool.BranchParentError(
+        raise branch_store.BranchParentError(
             f"{branch} 를 만들었지만 기점 {base} 커밋을 읽지 못해 부모를 기록하지 못했다: {fork.strip()}")
-    worktree_pool.record_branch_parent(branch, base, fork.strip(), git_runner=runner)
+    branch_store.record_branch_parent(branch, base, fork.strip(), git_runner=runner)
     return f"생성됨 (기점 {base} · 부모 기록 · {tree})"
 
 

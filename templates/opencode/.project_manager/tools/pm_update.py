@@ -75,6 +75,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
 from pm_engine.infra import areas_store, conf_store, console, fs, manifest_store, pm_paths, repo_files  # noqa: E402
+from pm_engine.infra import pool_store
 from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -4458,14 +4459,14 @@ def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
     `write=False`(dry-run)면 판정만 한다. 반환값은 지운(지울) 행 수다.
 
     읽기·판정·쓰기 전부를 dest 의 `worktree-leases.lock` 배타락 안에서 한다 —
-    엔진(`worktree_pool._lease_lock`)이 선언한 "장부의 모든 read-modify-write 는 이 한
+    엔진(`pool_store._lease_lock`)이 선언한 "장부의 모든 read-modify-write 는 이 한
     구간" 계약과 같은 직렬화 구간이다. 쓰기도 엔진과 같이 tmp → 원자 교체를 지난다.
     """
     ledger = (Path(effective_dest) / ".project_manager" / ".local"
               / "worktree-leases.json")
     if not ledger.is_file():
         return 0
-    with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
+    with pool_store._lease_lock(pm_paths.home_at(Path(effective_dest))):
         data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
         leases = data.get("leases") or []
         kept = [row for row in leases if row.get("slot") != "."]
@@ -4513,7 +4514,7 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
               / "worktree-leases.json")
     if not ledger.is_file():
         return 0
-    with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
+    with pool_store._lease_lock(pm_paths.home_at(Path(effective_dest))):
         data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
         leases = data.get("leases") or []
         moved: list[str] = []
@@ -5345,7 +5346,7 @@ def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bo
     깨졌다"가 아니다 — 후자를 unavailable 로 흘리면 재설치가 안 돌아 복구 경로가 사라진다."""
     try:
         # 설치가 받는 것과 **같은 입력**(areas 실효 보호목록)으로 기대 산출물을 유도한다.
-        expected_list = list(pm_config._resolve_repo_protected(repo, board=board))
+        expected_list = list(pm_config._resolve_repo_protected(repo))
         # read-only drift 판정은 steady-state 무출력 계약을 지킨다. 강등 경고는 실제 설치
         # 깔때기에서 1회 loud하게 나가며, 여기서는 같은 resolver 결과만 소비한다.
         gate_mode, test_cmd = pm_config._protected_push_gate_config(
@@ -5411,7 +5412,7 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
             return result
         for repo in repos:
             # bare 미러가 있어야 `core.hooksPath` 를 걸 대상이 있다(install 과 같은 가드).
-            if not worktree_pool.bare_repo_path(repo).exists():
+            if not pm_paths.bare_repo_path(pm_paths.home_at(Path(dest_root)), repo).exists():
                 result["no_bare"].append(repo)
                 continue
             result["targets"].append(repo)

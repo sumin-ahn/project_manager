@@ -58,3 +58,9 @@ def _areas_row_dict(header_cells: list[str], cells: list[str]) -> dict[str, str]
         }
     return {header_cells[i]: (cells[i] if i < len(cells) else "")
             for i in range(len(header_cells))}
+
+
+# 보호 브랜치 default (엔진 상수) — areas.md `protected` 칼럼이 미지정/미등록일 때
+# 폴백. PM 이 자율로 commit/push 못 하는 브랜치(pre-push 훅·bootstrap 경고가 이걸 본다).
+# per-repo override 는 areas.md `protected` 칼럼(쉼표분리·예 `main,develop`).
+DEFAULT_PROTECTED = ("main", "master", "develop")

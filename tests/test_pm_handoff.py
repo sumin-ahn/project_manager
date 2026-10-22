@@ -15,6 +15,12 @@ T-0041 rename 반영 — `_extract_session_section(pm_state_text)` ·
 도구는 패키지가 아니므로 importlib 동적 로드 (test_handoff_trigger 관용구).
 """
 from __future__ import annotations
+from pm_engine.domain import home as home_module
+from pm_engine.infra import pool_store
+from pm_engine.infra import slot_snapshot
+from pm_engine.domain import worktree_records
+
+from _pool_seams import bind_pool
 
 import importlib.util
 import json
@@ -555,12 +561,13 @@ def test_run_task_mode_emits_task_trigger(hf, tmp_path, capsys, monkeypatch):
         encoding="utf-8",
     )
 
+    bind_pool(monkeypatch, _RegisteredTaskPool())
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook,
-        worktree_pool=_RegisteredTaskPool(),
+
         # pm_state_file 미주입 — task 모드가 per-task pm_state 경로를 자체 해소(task_mode=True).
     )
     rc = handoff.run("mytask", 
@@ -633,7 +640,7 @@ def test_run_rejects_invalid_task_before_side_effects(hf, tmp_path, capsys):
     assert not log_file.exists()
 
 
-def test_run_task_mode_explicit_pm_state_emits_task_trigger(hf, tmp_path, capsys):
+def test_run_task_mode_explicit_pm_state_emits_task_trigger(hf, monkeypatch, tmp_path, capsys):
     """명시 pm_state_file(hermetic) + task 조합에서도 [5/7] 이 task-only 트리거를 emit 한다 (T-0394).
 
     정체성 판정 축은 run() 전체에서 `task is not None` 단일 — 명시 pm_state 주입 경로도 로그
@@ -649,13 +656,14 @@ def test_run_task_mode_explicit_pm_state_emits_task_trigger(hf, tmp_path, capsys
     playbook.write_text(_TRIGGER_PLAYBOOK, encoding="utf-8")
     log_file = tmp_path / "current.md"
 
+    bind_pool(monkeypatch, _RegisteredTaskPool())
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook,
         pm_state_file=pm_state,  # 명시 주입 → _pm_state_file_explicit True (task_mode False)
-        worktree_pool=_RegisteredTaskPool(),
+
     )
     rc = handoff.run("mytask", 
         dry_run=True,
@@ -814,7 +822,7 @@ def _playbook_with_prompt() -> str:
     )
 
 
-def test_run_checklist_includes_domain_capture_reminder(hf, tmp_path, capsys):
+def test_run_checklist_includes_domain_capture_reminder(hf, monkeypatch, tmp_path, capsys):
     """핸드오프 7단계 후 잔여 손작업 checklist 에 domain capture 검토 리마인더가 1줄 있다."""
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
@@ -824,13 +832,14 @@ def test_run_checklist_includes_domain_capture_reminder(hf, tmp_path, capsys):
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
     log_file = tmp_path / "current.md"
 
+    bind_pool(monkeypatch, _SnapPool())
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
-        worktree_pool=_SnapPool(),
+
     )
     rc = handoff.run(
         "mytask", dry_run=True, skip_pytest=False
@@ -1024,9 +1033,7 @@ def test_collect_session_entries_solo_uses_last_untagged_handoff(hf):
     ]
 
 
-def test_identity_source_contract_is_complete_and_fails_on_producer_drift(
-    hf, monkeypatch,
-):
+def test_identity_source_contract_is_complete_and_fails_on_producer_drift(hf, monkeypatch):
     """pm_log 해소 층 추가/역할 누락은 handoff가 조용히 강등하지 않고 red다."""
     pm_log = _load_tool("pm_log")
     roles = hf._handoff_identity_source_contract(pm_log)
@@ -1354,11 +1361,9 @@ def captured_run(hf, monkeypatch):
 
 
 @pytest.mark.parametrize("source", ["cwd→lease", "단일 활성 task"])
-def test_registered_identity_sources_enter_task_mode(
-    hf, captured_run, monkeypatch, source,
-):
+def test_registered_identity_sources_enter_task_mode(hf, captured_run, monkeypatch, source):
     """등록 task를 내놓는 두 pm_log 층만 실행 task 축까지 승격한다."""
-    monkeypatch.setattr(hf, "_load_worktree_pool", lambda: _RegisteredTaskPool())
+    bind_pool(monkeypatch, _RegisteredTaskPool())
     assert hf.main(
         ["--no-pytest"],
         identity_resolver=lambda: ("main", source),
@@ -1366,7 +1371,7 @@ def test_registered_identity_sources_enter_task_mode(
     assert captured_run["task"] == "main"
 
 
-def test_archived_task_refuses_handoff_before_side_effects(hf, tmp_path, capsys):
+def test_archived_task_refuses_handoff_before_side_effects(hf, monkeypatch, tmp_path, capsys):
     """종료 archive 로 보관된 task 는 핸드오프가 되살리지 않는다 — 기록 전에 멈춘다."""
     archive = Path("_ended/main-20260827")
 
@@ -1388,8 +1393,9 @@ def test_archived_task_refuses_handoff_before_side_effects(hf, tmp_path, capsys)
         def _validate_task_name(name, registered_repos=None):
             return None
 
+    bind_pool(monkeypatch, ArchivedPool())
     handoff = hf.PmHandoff(
-        pm_state_file=tmp_path / "pm_state.md", worktree_pool=ArchivedPool(),
+        pm_state_file=tmp_path / "pm_state.md",
     )
 
     rc = handoff.run("main", skip_pytest=True, user_ack="main")
@@ -1581,7 +1587,7 @@ def test_main_task_reserved_slot_name_rejected(hf, captured_run, monkeypatch):
     assert captured_run["task"] == "sikdan_2"
 
 
-def test_run_task_writes_task_tag_and_dashboard_key(hf, tmp_path, capsys):
+def test_run_task_writes_task_tag_and_dashboard_key(hf, monkeypatch, tmp_path, capsys):
     """task 모드 — log 헤더 태그 `(task:<name>)`(sentinel)·dashboard 자기 섹션 `## <name>`(verbatim).
 
     hermetic(명시 pm_state 주입) dry_run 으로 태그/키 생성 배선만 본다. 슬롯 태그(`<repo>_<N>`)와
@@ -1595,13 +1601,14 @@ def test_run_task_writes_task_tag_and_dashboard_key(hf, tmp_path, capsys):
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
     log_file = tmp_path / "current.md"
 
+    bind_pool(monkeypatch, _RegisteredTaskPool())
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
-        worktree_pool=_RegisteredTaskPool(),
+
     )
     rc = handoff.run("mytask", 
         dry_run=True, skip_pytest=False, user_ack="mytask"
@@ -1618,7 +1625,7 @@ def test_run_task_writes_task_tag_and_dashboard_key(hf, tmp_path, capsys):
 
 
 def test_run_task_recovers_log_only_interrupt_as_same_session_and_ignores_999(
-    hf, tmp_path
+    hf, monkeypatch, tmp_path
 ):
     """log append 후 state 전 중단은 같은 log 차수로 window만 복구한다."""
     pm_state = tmp_path / "pm_state.md"
@@ -1635,6 +1642,7 @@ def test_run_task_recovers_log_only_interrupt_as_same_session_and_ignores_999(
     dashboard_file = tmp_path / "dashboard.md"
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    bind_pool(monkeypatch, _RegisteredTaskPool(open=False))
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
@@ -1644,7 +1652,7 @@ def test_run_task_recovers_log_only_interrupt_as_same_session_and_ignores_999(
         dashboard_file=dashboard_file,
         # log-only 반쪽 상태는 log보다 먼저 남는 종료 기록(닫힘)이 반드시 있다.
         # 새 bootstrap 이 다시 연 상태(열림)라면 log 3 다음 4차가 맞다.
-        worktree_pool=_RegisteredTaskPool(open=False),
+
     )
 
     rc = handoff.run("mytask", 
@@ -1664,9 +1672,7 @@ def test_run_task_recovers_log_only_interrupt_as_same_session_and_ignores_999(
     assert "PM 999차" not in log_text + state_text + dashboard_text
 
 
-def test_run_unregistered_task_fails_without_side_effects(
-    hf, tmp_path, monkeypatch, capsys
-):
+def test_run_unregistered_task_fails_without_side_effects(hf, tmp_path, monkeypatch, capsys):
     """handoff는 bootstrap이 만들지 않은 task를 거부하고 state/log/dashboard를 만들지 않는다."""
     monkeypatch.setattr(hf, "REPO", tmp_path)
     log_file = tmp_path / "current.md"
@@ -1688,13 +1694,14 @@ def test_run_unregistered_task_fails_without_side_effects(
             """장부에도 보관본에도 없는 형상 — 실 엔진과 달리 빠지지 않고 빈 결과를 낸다."""
             return ()
 
+    bind_pool(monkeypatch, _MissingTaskPool())
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (pytest_calls.append(True) or (0, pytest_summary())),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=tmp_path / "unused-playbook.md",
         dashboard_file=dashboard_file,
-        worktree_pool=_MissingTaskPool(),
+
     )
 
     rc = handoff.run("not-registered", 
@@ -1712,9 +1719,7 @@ def test_run_unregistered_task_fails_without_side_effects(
     assert "미등록 task" in capsys.readouterr().err
 
 
-def test_run_archived_task_fails_with_reopen_before_any_writes(
-    hf, tmp_path, monkeypatch, capsys,
-):
+def test_run_archived_task_fails_with_reopen_before_any_writes(hf, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hf, "REPO", tmp_path)
     archive = tmp_path / "tasks" / "_ended" / "mytask-20260827"
     pytest_calls = []
@@ -1733,13 +1738,14 @@ def test_run_archived_task_fails_with_reopen_before_any_writes(
         def task_archive_candidates(name):
             return (archive,)
 
+    bind_pool(monkeypatch, ArchivedPool())
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (pytest_calls.append(True) or (0, pytest_summary())),
         run_git_fn=lambda args: (0, ""),
         log_file=tmp_path / "current.md",
         pm_playbook_file=tmp_path / "unused.md",
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=ArchivedPool(),
+
     )
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False,
@@ -1795,13 +1801,14 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
         encoding="utf-8",
     )
 
+    bind_pool(monkeypatch, _NoReleasePool())
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook,
         dashboard_file=dashboard_file,
-        worktree_pool=_NoReleasePool(),
+
     )
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=True, user_ack="mytask"
@@ -1883,9 +1890,11 @@ class _SnapPool:
     def current_branch(self, slot, **kwargs):
         return "v1.3.3"
 
+    def read_lease_strict(self, value):
+        return self.read_lease(value)
 
-def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=None,
-                      peer_raw_ledger_files=()):
+
+def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=None, peer_raw_ledger_files=(), monkeypatch):
     """명시 pm_state/log/dashboard 주입 + mock worktree_pool 로 hermetic PmHandoff 구성.
 
     `raw_ledger_file` 미지정이면 tmp 의 **없는** 경로를 준다 — [6b/7] 미마감 raw sweep 이
@@ -1899,6 +1908,7 @@ def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=No
     )
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    bind_pool(monkeypatch, pool)
     return hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=run_git_fn or (lambda args: (0, "")),
@@ -1906,7 +1916,7 @@ def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=No
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=pool,
+
         raw_ledger_file=raw_ledger_file or (tmp_path / "absent_raw_outputs.json"),
         peer_raw_ledger_files=peer_raw_ledger_files,
     )
@@ -1928,10 +1938,10 @@ def _run_task_handoff(handoff, *, dry_run: bool = False) -> int:
 
 
 def test_same_session_rerun_keeps_one_entry_and_shifts_window_once(
-    hf, tmp_path, capsys
+    hf, monkeypatch, tmp_path, capsys
 ):
     """같은 차수 2회 실실행은 handoff 1개·window shift 1회이고 갱신 모드를 밝힌다."""
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), monkeypatch=monkeypatch)
 
     assert _run_task_handoff(handoff) == 0
     after_first_state = handoff._pm_state_file.read_text(encoding="utf-8")
@@ -1951,10 +1961,10 @@ def test_same_session_rerun_keeps_one_entry_and_shifts_window_once(
 
 
 def test_same_session_rerun_refreshes_entries_added_after_first_handoff(
-    hf, tmp_path, capsys
+    hf, monkeypatch, tmp_path, capsys
 ):
     """조기 handoff 뒤 추가된 complete는 재실행 시 기존 기계 목록에 합쳐진다."""
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), monkeypatch=monkeypatch)
     handoff._log_file.write_text(
         "## [2026-08-07] complete | T-0587 — 첫 박제 (task:mytask)\n",
         encoding="utf-8",
@@ -1980,9 +1990,9 @@ def test_same_session_rerun_refreshes_entries_added_after_first_handoff(
     assert refreshed.count("T-0588 — 조기 handoff 뒤 완료") == 2
 
 
-def test_same_session_rerun_preserves_pm_authored_body(hf, tmp_path):
+def test_same_session_rerun_preserves_pm_authored_body(hf, monkeypatch, tmp_path):
     """PM이 skeleton 본문을 채운 뒤 재실행해도 기계 목록 외 byte는 보존한다."""
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), monkeypatch=monkeypatch)
     assert _run_task_handoff(handoff) == 0
     authored = handoff._log_file.read_text(encoding="utf-8")
     authored = authored.replace(
@@ -2010,9 +2020,9 @@ def test_same_session_rerun_preserves_pm_authored_body(hf, tmp_path):
     )
 
 
-def test_same_session_dry_run_previews_update_without_writes(hf, tmp_path, capsys):
+def test_same_session_dry_run_previews_update_without_writes(hf, monkeypatch, tmp_path, capsys):
     """dry-run도 같은 차수 갱신 모드를 미리 보이되 log/state를 쓰지 않는다."""
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), monkeypatch=monkeypatch)
     assert _run_task_handoff(handoff) == 0
     log_before = handoff._log_file.read_bytes()
     state_before = handoff._pm_state_file.read_bytes()
@@ -2185,7 +2195,8 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
             "import importlib.util, sys\n"
             "spec = importlib.util.spec_from_file_location('wp_claim', sys.argv[1])\n"
             "wp = importlib.util.module_from_spec(spec); spec.loader.exec_module(wp)\n"
-            "wp.record_task_session_claim(sys.argv[2], 's-e2e')\n"
+            "from pm_engine.infra import pm_paths, task_store\n"
+            "task_store.record_task_session_claim(pm_paths.home_at(wp.REPO), sys.argv[2], 's-e2e')\n"
         )
         done = subprocess.run(
             [sys.executable, "-c", source, str(dest / ".project_manager" / "tools" / "worktree_pool.py"), task],
@@ -2248,10 +2259,10 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
 
 
 def test_malformed_last_handoff_number_falls_back_to_append_with_loud_warning(
-    hf, tmp_path, capsys
+    hf, monkeypatch, tmp_path, capsys
 ):
     """마지막 자기 handoff 차수 파싱 실패는 기존 append 동작과 loud 위험 경고를 유지한다."""
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), monkeypatch=monkeypatch)
     handoff._log_file.write_text(
         "## [2026-08-07] handoff | PM seven차 (task:mytask) → 다음 PM 세션\n\n"
         "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\n"
@@ -2269,10 +2280,10 @@ def test_malformed_last_handoff_number_falls_back_to_append_with_loud_warning(
     assert "이중 기록 가능" in err
 
 
-def test_different_session_number_keeps_append_and_window_behavior(hf, tmp_path):
+def test_different_session_number_keeps_append_and_window_behavior(hf, monkeypatch, tmp_path):
     """다른 차수는 기존처럼 새 entry append와 다음 window shift를 수행한다."""
-    pool = _SnapPool()
-    handoff = _hermetic_handoff(hf, tmp_path, pool)
+    pool = bind_pool(monkeypatch, _SnapPool())
+    handoff = _hermetic_handoff(hf, tmp_path, pool, monkeypatch=monkeypatch)
     assert _run_task_handoff(handoff) == 0
     # 다음 세션 = 새 프로세스 + bootstrap 이 다시 연 기록. membership 조회 결과는 프로세스
     # 안에서만 캐시되므로, 새 세션을 모델하려면 그 캐시도 함께 비운다.
@@ -2289,7 +2300,7 @@ def test_different_session_number_keeps_append_and_window_behavior(hf, tmp_path)
     assert "이전 차 (PM 1차~5차)" in state_text
 
 
-def test_run_prints_pathspec_commit_guidance(hf, tmp_path, capsys):
+def test_run_prints_pathspec_commit_guidance(hf, monkeypatch, tmp_path, capsys):
     """[7/7] 커밋 안내가 **경로 명시형**으로 실제 출력된다 (ADR-0074·T-0425).
 
     bare `git commit` 지시는 다른 슬롯이 index 에 올려둔 남의 변경까지 함께 싣는다 — 스킬 문서만
@@ -2297,7 +2308,7 @@ def test_run_prints_pathspec_commit_guidance(hf, tmp_path, capsys):
     **런타임 출력으로 묻는다** — 소스 문자열 assert 는 `print` 를 dead-code 로 만들어도 통과해
     가드가 아니다(reviewer probe 실증).
     """
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), monkeypatch=monkeypatch)
     rc = handoff.run(
         "mytask", dry_run=False, skip_pytest=True,
         user_ack="mytask",
@@ -2373,19 +2384,20 @@ def _task_mode_handoff(hf, tmp_path, monkeypatch, pool):
     )
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    bind_pool(monkeypatch, pool)
     return hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=tmp_path / "current.md",
         pm_playbook_file=playbook,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=pool,
+
     )
 
 
 def test_run_task_mode_records_task_close_before_log_bookkeeping(hf, tmp_path, monkeypatch, capsys):
     """task 종료 기록은 log보다 먼저 남아 이후 중단도 같은 차수로 복구된다."""
-    pool = _TaskPidPool()
+    pool = bind_pool(monkeypatch, _TaskPidPool())
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=True, user_ack="mytask"
@@ -2399,7 +2411,7 @@ def test_run_task_mode_records_task_close_before_log_bookkeeping(hf, tmp_path, m
 
 def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monkeypatch, capsys):
     """dry_run task 모드 — 종료 기록 예고만 출력·write 프리미티브 미호출(미리보기)."""
-    pool = _TaskPidPool()
+    pool = bind_pool(monkeypatch, _TaskPidPool())
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run("mytask", 
         dry_run=True, skip_pytest=True, user_ack="mytask"
@@ -2409,11 +2421,9 @@ def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monk
     assert "[dry-run] 종료 기록 예고: mytask" in capsys.readouterr().out
 
 
-def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(
-    hf, tmp_path, monkeypatch, capsys
-):
+def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(hf, tmp_path, monkeypatch, capsys):
     """close_task_session가 None이면 load-bearing intent 부재로 log write 전 차단한다."""
-    pool = _TaskPidPool(task_pid_none=True)
+    pool = bind_pool(monkeypatch, _TaskPidPool(task_pid_none=True))
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=True, user_ack="mytask"
@@ -2424,25 +2434,10 @@ def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(
     assert not handoff._log_file.exists()
 
 
-def test_run_task_mode_blocks_before_log_when_pool_lacks_intent_primitive(
-    hf, tmp_path, monkeypatch, capsys
-):
-    """구버전 풀은 멱등성 intent를 못 남기므로 log write 전 차단한다."""
-    pool = _TaskPidPool(omit_task_pid=True)
-    handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
-    rc = handoff.run("mytask", 
-        dry_run=False, skip_pytest=True, user_ack="mytask"
-    )
-    assert rc == 1
-    assert pool.task_pid_calls == []
-    assert "구버전" in capsys.readouterr().err
-    assert not handoff._log_file.exists()
 
 
-def test_run_task_mode_blocks_before_log_when_intent_write_raises(
-    hf, tmp_path, monkeypatch, capsys
-):
-    pool = _TaskPidPool(task_pid_error=True)
+def test_run_task_mode_blocks_before_log_when_intent_write_raises(hf, tmp_path, monkeypatch, capsys):
+    pool = bind_pool(monkeypatch, _TaskPidPool(task_pid_error=True))
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=True, user_ack="mytask"
@@ -2496,17 +2491,23 @@ class _TaskSetPool(_SnapPool):
         return {"dirty": self._states.get(slot, {}).get("dirty", False)}
 
 
-def _task_reg_handoff(hf, tmp_path, pool, pytest_fn):
+def _task_reg_handoff(hf, tmp_path, pool, pytest_fn, *, monkeypatch):
     """task 회귀/재스냅 검증용 hermetic PmHandoff — 명시 pm_state(hermetic) + mock pool + 관찰 pytest_fn.
 
     명시 pm_state 주입이라 task_mode(pid 기록)는 진입 안 하지만, task 회귀 모드(task_regression =
     task not None AND 명시 slot 없음)와 보유 전 슬롯 재스냅은 태운다(그 두 축이 이 파일 검증 대상)."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    if not isinstance(pool, type(importlib)):
+        for slot in getattr(pool, "_task_slots", ()):
+            name = slot.slot if hasattr(slot, "slot") else slot
+            (tmp_path / name).mkdir(parents=True, exist_ok=True)
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
         _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
     )
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    bind_pool(monkeypatch, pool)
     return hf.PmHandoff(
         run_pytest_fn=pytest_fn,
         run_git_fn=lambda args: (0, ""),
@@ -2514,7 +2515,7 @@ def _task_reg_handoff(hf, tmp_path, pool, pytest_fn):
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=pool,
+
     )
 
 
@@ -2532,9 +2533,7 @@ def _recording_pytest(handoff_box, result=(0, "1 passed in 0.01s\n")):
     return _run, cwds
 
 
-def test_task_state_ensure_failure_leaves_log_and_dashboard_untouched(
-    hf, tmp_path, monkeypatch, capsys
-):
+def test_task_state_ensure_failure_leaves_log_and_dashboard_untouched(hf, tmp_path, monkeypatch, capsys):
     """회귀 통과 후 task state backfill 실패 시 첫 외부 write 전에 중단한다(MF-b).
 
     기존 log/dashboard bytes를 sentinel로 두고 ensure 실패를 주입해 재시도 중복 원인을 막는다.
@@ -2551,14 +2550,15 @@ def test_task_state_ensure_failure_leaves_log_and_dashboard_untouched(
         def ensure_task_pm_state(self, name):
             raise OSError("injected ensure failure")
 
-    pool = _FailEnsurePool([])
+    pool = bind_pool(monkeypatch, _FailEnsurePool([]))
+    bind_pool(monkeypatch, pool)
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "1 passed in 0.01s\n"),
         run_git_fn=lambda args: (0, ""),
         log_file=log_file,
         pm_playbook_file=playbook,
         dashboard_file=dashboard_file,
-        worktree_pool=pool,
+
     )
 
     rc = handoff.run("mytask", 
@@ -2573,13 +2573,13 @@ def test_task_state_ensure_failure_leaves_log_and_dashboard_untouched(
     assert "task pm_state 생성 실패" in capsys.readouterr().err
 
 
-def test_task_regression_runs_in_held_workspace(hf, tmp_path, capsys):
+def test_task_regression_runs_in_held_workspace(hf, monkeypatch, tmp_path, capsys):
     """task-only 핸드오프가 변경 흔적 있는 보유 슬롯(작업공간)에서 회귀를 돌린다 — F6 해소(T-0393)."""
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)
-    pool = _TaskSetPool(["work/project_manager_1"],
-                        states={"work/project_manager_1": {"dirty": True}})   # dirty=변경.
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/project_manager_1"],
+                        states={"work/project_manager_1": {"dirty": True}}))   # dirty=변경.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2592,16 +2592,16 @@ def test_task_regression_runs_in_held_workspace(hf, tmp_path, capsys):
     assert "dirty" in out
 
 
-def test_task_regression_runs_each_changed_slot(hf, tmp_path, capsys):
+def test_task_regression_runs_each_changed_slot(hf, monkeypatch, tmp_path, capsys):
     """보유 슬롯 2+ — 변경 흔적 있는 슬롯 각각에서 회귀(집합 처리·T-0393·ADR-0068 ⓑB)."""
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)
-    pool = _TaskSetPool(
+    pool = bind_pool(monkeypatch, _TaskSetPool(
         ["work/a_1", "work/b_1"],
         states={"work/a_1": {"dirty": True},
                 "work/b_1": {"head_relation": "descendant"}},   # 커밋 전진.
-    )
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    ))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2610,12 +2610,12 @@ def test_task_regression_runs_each_changed_slot(hf, tmp_path, capsys):
     assert cwds == ["work/a_1", "work/b_1"]   # 두 변경 슬롯 각각에서.
 
 
-def test_task_regression_skips_unchanged_slots(hf, tmp_path, capsys):
+def test_task_regression_skips_unchanged_slots(hf, monkeypatch, tmp_path, capsys):
     """무변경 슬롯(head match·clean·recorded)은 회귀 skip — 변경 0개면 명시 skip·회귀 실행 없음(신호 0)."""
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)
-    pool = _TaskSetPool(["work/a_1"], states={})   # 기본=match·clean·recorded → 무변경.
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1"], states={}))   # 기본=match·clean·recorded → 무변경.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2627,15 +2627,15 @@ def test_task_regression_skips_unchanged_slots(hf, tmp_path, capsys):
     assert "변경 슬롯 없음" in out
 
 
-def test_task_regression_mixed_only_changed_runs(hf, tmp_path, capsys):
+def test_task_regression_mixed_only_changed_runs(hf, monkeypatch, tmp_path, capsys):
     """변경+무변경 혼재 — 변경 슬롯만 회귀·무변경은 skip 사유 출력(T-0393)."""
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)
-    pool = _TaskSetPool(
+    pool = bind_pool(monkeypatch, _TaskSetPool(
         ["work/a_1", "work/b_1"],
         states={"work/a_1": {"dirty": True}},   # b_1 미지정=무변경.
-    )
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    ))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2646,12 +2646,12 @@ def test_task_regression_mixed_only_changed_runs(hf, tmp_path, capsys):
     assert "work/b_1 — 변경 흔적 없음" in out
 
 
-def test_task_regression_unrecorded_slot_conservatively_included(hf, tmp_path):
+def test_task_regression_unrecorded_slot_conservatively_included(hf, monkeypatch, tmp_path):
     """스냅 미기록(unrecorded) 슬롯은 보수적으로 변경 취급 → 회귀 포함(직전 green 근거 없음·T-0393)."""
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)
-    pool = _TaskSetPool(["work/a_1"], states={"work/a_1": {"unrecorded": True}})
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1"], states={"work/a_1": {"unrecorded": True}}))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2660,12 +2660,12 @@ def test_task_regression_unrecorded_slot_conservatively_included(hf, tmp_path):
     assert cwds == ["work/a_1"]
 
 
-def test_task_regression_red_slot_blocks_handoff(hf, tmp_path, capsys):
+def test_task_regression_red_slot_blocks_handoff(hf, monkeypatch, tmp_path, capsys):
     """변경 슬롯 회귀가 red 면 핸드오프 차단(rc 1)·기록 미접촉(T-0393·회귀 게이트 불변)."""
     box = [None]
     pytest_fn, _cwds = _recording_pytest(box, result=(1, "1 failed in 0.01s\n"))
-    pool = _TaskSetPool(["work/a_1"], states={"work/a_1": {"dirty": True}})
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1"], states={"work/a_1": {"dirty": True}}))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2707,8 +2707,8 @@ def _adopter_gate_handoff(hf, tmp_path, monkeypatch, result):
     _install_adopter_areas(monkeypatch, areas, _ADOPTER_GATE_CMD)
     box = [None]
     pytest_fn, cwds = _recording_pytest(box, result=result)
-    pool = _TaskSetPool(["work/heru_1"], states={"work/heru_1": {"dirty": True}})
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/heru_1"], states={"work/heru_1": {"dirty": True}}))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     return handoff, cwds
 
@@ -2743,8 +2743,7 @@ def test_non_pytest_gate_red_blocks_handoff(hf, tmp_path, monkeypatch, capsys):
     assert f"`{_ADOPTER_GATE_CMD}` (exit 1)" in err
 
 
-def test_non_pytest_gate_dry_run_label_shows_resolved_command(hf, tmp_path, monkeypatch,
-                                                              capsys):
+def test_non_pytest_gate_dry_run_label_shows_resolved_command(hf, tmp_path, monkeypatch, capsys):
     """dry-run 슬롯 안내는 실제로 돌 명령을 보여준다(하드코딩 pytest 문구 아님)."""
     handoff, _cwds = _adopter_gate_handoff(
         hf, tmp_path, monkeypatch, result=(0, "✅ 통과\n"))
@@ -2757,12 +2756,12 @@ def test_non_pytest_gate_dry_run_label_shows_resolved_command(hf, tmp_path, monk
     assert "[dry-run] pytest tests/ -q 실행 중" not in out
 
 
-def test_task_regression_zero_held_slots_skips(hf, tmp_path, capsys):
+def test_task_regression_zero_held_slots_skips(hf, monkeypatch, tmp_path, capsys):
     """보유 슬롯 0개 — 회귀 대상 없음 명시 skip(REPO 폴백 red 아님)·핸드오프 완주(T-0393)."""
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)
-    pool = _TaskSetPool([])   # 보유 0개.
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    pool = bind_pool(monkeypatch, _TaskSetPool([]))   # 보유 0개.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2775,7 +2774,7 @@ def test_task_regression_zero_held_slots_skips(hf, tmp_path, capsys):
     assert "`--repo/--slot` 명시" not in out
 
 
-def test_task_slots_resolution_exception_fails_before_persistent_records(hf, tmp_path, capsys):
+def test_task_slots_resolution_exception_fails_before_persistent_records(hf, monkeypatch, tmp_path, capsys):
     """slots_for_task 예외는 실제 0슬롯이 아니다 — rc1이고 log/dashboard/state/snapshot 기록은 0."""
 
     class BrokenTaskSetPool(_TaskSetPool):
@@ -2786,13 +2785,13 @@ def test_task_slots_resolution_exception_fails_before_persistent_records(hf, tmp
             """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
             return self.slots_for_task(name)
 
-    pool = BrokenTaskSetPool([])
+    pool = bind_pool(monkeypatch, BrokenTaskSetPool([]))
     handoff = _task_reg_handoff(
         hf,
         tmp_path,
         pool,
         lambda: (_ for _ in ()).throw(AssertionError("해소 실패 뒤 pytest 호출 금지")),
-    )
+     monkeypatch=monkeypatch)
     state_before = handoff._pm_state_file.read_text(encoding="utf-8")
     assert handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2806,13 +2805,13 @@ def test_task_slots_resolution_exception_fails_before_persistent_records(hf, tmp
     assert pool.snap_calls == []
 
 
-def test_corrupt_real_ledger_blocks_handoff_without_records(hf, tmp_path, capsys):
+def test_corrupt_real_ledger_blocks_handoff_without_records(hf, monkeypatch, tmp_path, capsys):
     """실 strict 파서가 손상 JSON을 task 미등록/0슬롯으로 낮추지 않고 모든 기록 전에 막는다."""
     # worktree_pool은 tmp 장부에 재배선할 독립 모듈로 직접 동적 로드한다.
     spec = importlib.util.spec_from_file_location(
         "wp_handoff_corrupt_real", TOOLS / "worktree_pool.py"
     )
-    wp = importlib.util.module_from_spec(spec)
+    wp = bind_pool(monkeypatch, importlib.util.module_from_spec(spec))
     spec.loader.exec_module(wp)
     local = tmp_path / "real-local"
     ledger = local / "worktree-leases.json"
@@ -2825,13 +2824,14 @@ def test_corrupt_real_ledger_blocks_handoff_without_records(hf, tmp_path, capsys
         "WORK_DIR": tmp_path / "real-work",
     }.items():
         setattr(wp, name, value)
+    monkeypatch.setattr(pm_paths, "home_at", lambda root: home_module.Home(Path(root), Path(root) / ".project_manager/wiki", local, Path(root) / ".project_manager/local.conf"))
     before_ledger = ledger.read_bytes()
     handoff = _task_reg_handoff(
         hf,
         tmp_path,
         wp,
         lambda: (_ for _ in ()).throw(AssertionError("손상 장부 뒤 pytest 호출 금지")),
-    )
+     monkeypatch=monkeypatch)
     before_state = handoff._pm_state_file.read_text(encoding="utf-8")
 
     assert handoff.run("mytask", 
@@ -2846,7 +2846,7 @@ def test_corrupt_real_ledger_blocks_handoff_without_records(hf, tmp_path, capsys
     assert handoff._pm_state_file.read_text(encoding="utf-8") == before_state
 
 
-def test_task_regression_stale_slot_fails_loud_not_repo_green(hf, tmp_path, capsys):
+def test_task_regression_stale_slot_fails_loud_not_repo_green(hf, monkeypatch, tmp_path, capsys):
     """stale 슬롯(장부엔 있으나 worktree dir 부재)이 변경으로 분류돼도 REPO 폴백 green 으로 핸드오프가
     통과하지 않는다 — fail-loud red 차단(vacuous-pass 금지·codex R3·T-0393·T-0220 클래스).
 
@@ -2858,8 +2858,8 @@ def test_task_regression_stale_slot_fails_loud_not_repo_green(hf, tmp_path, caps
         def slot_path(self, slot):
             return tmp_path / "gone" / slot   # 항상 부재(stale worktree).
 
-    pool = _StaleSlotPool(["work/a_1"], states={"work/a_1": {"dirty": True}})   # 변경으로 분류.
-    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    pool = bind_pool(monkeypatch, _StaleSlotPool(["work/a_1"], states={"work/a_1": {"dirty": True}}))   # 변경으로 분류.
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
     box[0] = handoff
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=False, user_ack="mytask"
@@ -2894,14 +2894,15 @@ def test_task_shipping_surface_per_changed_slot(hf, tmp_path, capsys, monkeypatc
 
     box = [None]
     pytest_fn, _cwds = _recording_pytest(box)
-    pool = _TaskSetPool(["work/a_1", "work/b_1"],
-                        states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}})
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1", "work/b_1"],
+                        states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}}))
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
         _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
     )
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    bind_pool(monkeypatch, pool)
     handoff = hf.PmHandoff(
         run_pytest_fn=pytest_fn,
         run_git_fn=_git,
@@ -2909,7 +2910,7 @@ def test_task_shipping_surface_per_changed_slot(hf, tmp_path, capsys, monkeypatc
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=pool,
+
     )
     box[0] = handoff
     rc = handoff.run("mytask", 
@@ -2949,14 +2950,15 @@ def test_task_shipping_surface_per_changed_slot_under_no_pytest(hf, tmp_path, ca
 
     box = [None]
     pytest_fn, cwds = _recording_pytest(box)   # skip_pytest → 회귀 미실행 확인용.
-    pool = _TaskSetPool(["work/a_1", "work/b_1"],
-                        states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}})
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1", "work/b_1"],
+                        states={"work/a_1": {"dirty": True}, "work/b_1": {"dirty": True}}))
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
         _state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding="utf-8"
     )
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    bind_pool(monkeypatch, pool)
     handoff = hf.PmHandoff(
         run_pytest_fn=pytest_fn,
         run_git_fn=_git,
@@ -2964,7 +2966,7 @@ def test_task_shipping_surface_per_changed_slot_under_no_pytest(hf, tmp_path, ca
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=pool,
+
     )
     box[0] = handoff
     rc = handoff.run("mytask", 
@@ -2985,10 +2987,10 @@ def test_task_shipping_surface_per_changed_slot_under_no_pytest(hf, tmp_path, ca
     assert "출하 변경 없음" in out[a_idx:b_idx]
 
 
-def test_task_resnap_records_all_held_slots(hf, tmp_path, capsys):
+def test_task_resnap_records_all_held_slots(hf, monkeypatch, tmp_path, capsys):
     """재스냅 = 보유 전 슬롯 루프(현행 1슬롯 한정 폐지·T-0393·ADR-0068 퇴장)."""
-    pool = _TaskSetPool(["work/a_1", "work/b_1"])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1", "work/b_1"]))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()), monkeypatch=monkeypatch)
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=True, user_ack="mytask"
     )
@@ -2998,14 +3000,14 @@ def test_task_resnap_records_all_held_slots(hf, tmp_path, capsys):
     assert "[재스냅] task 보유 슬롯" in capsys.readouterr().out
 
 
-def test_task_resnap_rechecks_owner_before_snapshot(hf, tmp_path, capsys):
+def test_task_resnap_rechecks_owner_before_snapshot(hf, monkeypatch, tmp_path, capsys):
     """초기 held-slot 스냅 뒤 realloc되면 새 소유자 lease.git을 덮지 않고 loud rc1이다."""
     class ReallocatedPool(_TaskSetPool):
         def lease_owned_by_task_strict(self, slot, task):
             return False
 
-    pool = ReallocatedPool(["work/a_1"])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
+    pool = bind_pool(monkeypatch, ReallocatedPool(["work/a_1"]))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()), monkeypatch=monkeypatch)
     assert handoff.run("mytask", 
         dry_run=False, skip_pytest=True, user_ack="mytask"
     ) == 1
@@ -3015,10 +3017,10 @@ def test_task_resnap_rechecks_owner_before_snapshot(hf, tmp_path, capsys):
     assert "새 소유자의 lease.git" in err
 
 
-def test_task_resnap_zero_held_slots_skips(hf, tmp_path, capsys):
+def test_task_resnap_zero_held_slots_skips(hf, monkeypatch, tmp_path, capsys):
     """task 보유 0개 — 재스냅 대상 없음 명시 skip(무해·T-0393)."""
-    pool = _TaskSetPool([])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
+    pool = bind_pool(monkeypatch, _TaskSetPool([]))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()), monkeypatch=monkeypatch)
     rc = handoff.run("mytask", 
         dry_run=False, skip_pytest=True, user_ack="mytask"
     )
@@ -3027,10 +3029,10 @@ def test_task_resnap_zero_held_slots_skips(hf, tmp_path, capsys):
     assert "재스냅 대상 없음" in capsys.readouterr().out
 
 
-def test_task_resnap_dry_run_previews_all_slots(hf, tmp_path, capsys):
+def test_task_resnap_dry_run_previews_all_slots(hf, monkeypatch, tmp_path, capsys):
     """dry_run task 재스냅 — 보유 슬롯별 예고만·write 프리미티브 미호출(미리보기·T-0393)."""
-    pool = _TaskSetPool(["work/a_1", "work/b_1"])
-    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()))
+    pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1", "work/b_1"]))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()), monkeypatch=monkeypatch)
     rc = handoff.run("mytask", 
         dry_run=True, skip_pytest=True, user_ack="mytask"
     )
@@ -3058,7 +3060,7 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     local.mkdir(parents=True, exist_ok=True)
     (proj / "work").mkdir(parents=True, exist_ok=True)
     spec = _ilu.spec_from_file_location("wp_h393", TOOLS / "worktree_pool.py")
-    wp = _ilu.module_from_spec(spec)
+    wp = bind_pool(monkeypatch, _ilu.module_from_spec(spec))
     spec.loader.exec_module(wp)
     for _name, _val in {
         "REPO": proj, "LOCAL_DIR": local,
@@ -3096,16 +3098,16 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
 
     # 리스 seed(둘 다 session="mytask"·slots_for_task 대상) + arrival 스냅(도착 시점 모사).
     leases = [
-        wp.Lease(slot="work/a_1", repo="a", session="mytask",
+        worktree_records.Lease(slot="work/a_1", repo="a", session="mytask",
                  started="t", state="leased"),
-        wp.Lease(slot="work/b_1", repo="b", session="mytask",
+        worktree_records.Lease(slot="work/b_1", repo="b", session="mytask",
                  started="t", state="leased"),
     ]
-    with wp._lease_lock():
-        wp._write_ledger(leases)
-        wp._write_tasks([wp.Task("mytask", started="t")])
-    wp.record_git_snapshot("work/a_1")
-    wp.record_git_snapshot("work/b_1")
+    with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
+        pool_store._write_ledger(pm_paths.home_at(wp.REPO), leases)
+        pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task("mytask", started="t")])
+    slot_snapshot.record_git_snapshot(pm_paths.home_at(wp.REPO), "work/a_1")
+    slot_snapshot.record_git_snapshot(pm_paths.home_at(wp.REPO), "work/b_1")
     a_head = ga("rev-parse", "HEAD").stdout.strip()   # a_1 은 이후 불변.
 
     # b_1 만 세션 중 커밋 전진(head descendant = 변경 흔적)·a_1 은 arrival 그대로(무변경).
@@ -3115,8 +3117,8 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     b_head2 = gb("rev-parse", "HEAD").stdout.strip()
 
     # 변경 판정 사전 확인(실 엔진) — a_1=match(무변경)·b_1=descendant(변경).
-    assert wp.compare_slot_git("work/a_1").head_relation == wp.HEAD_MATCH
-    assert wp.compare_slot_git("work/b_1").head_relation == wp.HEAD_DESCENDANT
+    assert slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/a_1").head_relation == worktree_records.HEAD_MATCH
+    assert slot_snapshot.compare_slot_git(pm_paths.home_at(wp.REPO), "work/b_1").head_relation == worktree_records.HEAD_DESCENDANT
 
     # 회귀가 돈 슬롯 cwd 관찰(주입 pytest_fn — 실 pytest 대신 슬롯만 기록·green).
     box = [None]
@@ -3127,6 +3129,7 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     )
     playbook = tmp_path / "pm_playbook.md"
     playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    bind_pool(monkeypatch, wp)
     handoff = hf.PmHandoff(
         run_pytest_fn=pytest_fn,
         run_git_fn=lambda args: (0, ""),   # 출하 surface·[6/7] git 은 비관찰(비차단).
@@ -3134,7 +3137,7 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=tmp_path / "dashboard.md",
-        worktree_pool=wp,
+
     )
     box[0] = handoff
     rc = handoff.run("mytask", 
@@ -3146,7 +3149,7 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     assert cwds == ["work/b_1"]
 
     # ② 재스냅 = 보유 전 슬롯 — a_1·b_1 둘 다 lease.git 이 live head 로(실 장부 재열람).
-    updated = {l.slot: l for l in wp.list_leases()}
+    updated = {l.slot: l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
     assert updated["work/a_1"].git["head"] == a_head       # 무변경이라도 재스냅 대상(live=arrival).
     assert updated["work/b_1"].git["head"] == b_head2      # 변경분 live(c2)로 갱신.
     # 작업 슬롯 재스냅은 장부 base 를 두지 않는다(부모는 git 설정 기록).
@@ -3206,16 +3209,16 @@ def _write_ledger(tmp_path, *, unfinished: int = 0, finished: int = 0) -> Path:
     return ledger
 
 
-def _run_handoff_out(hf, tmp_path, capsys, **kwargs) -> str:
+def _run_handoff_out(hf, tmp_path, capsys, *, monkeypatch, **kwargs) -> str:
     """hermetic 핸드오프 1회 실행 후 stdout 반환 (rc=0 단언 포함 — 표면은 비차단)."""
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), **kwargs)
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), **kwargs, monkeypatch=monkeypatch)
     assert _run_task_handoff(handoff) == 0, "비차단 표면이 핸드오프를 막았다"
     return capsys.readouterr().out
 
 
-def test_handoff_warns_on_unpushed_ahead_commits(hf, tmp_path, capsys):
+def test_handoff_warns_on_unpushed_ahead_commits(hf, monkeypatch, tmp_path, capsys):
     """[6/7]: ahead>0 이면 미push commit 수 경고 1줄 + push 단계 지시(비차단)."""
-    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="2"))
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="2"), monkeypatch=monkeypatch)
 
     line = next(l for l in out.splitlines() if "미push commit" in l)
     assert "⚠" in line and "2개" in line, f"ahead 경고가 건수를 안 싣는다: {line!r}"
@@ -3223,9 +3226,9 @@ def test_handoff_warns_on_unpushed_ahead_commits(hf, tmp_path, capsys):
     assert "[7/7]" in line, f"경고가 push 단계로 안내하지 않는다: {line!r}"
 
 
-def test_handoff_reports_clean_when_nothing_to_push(hf, tmp_path, capsys):
+def test_handoff_reports_clean_when_nothing_to_push(hf, monkeypatch, tmp_path, capsys):
     """[6/7]: ahead=0 이면 경고 대신 '미push commit 없음'(무경보를 정확히 말한다)."""
-    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="0"))
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="0"), monkeypatch=monkeypatch)
 
     assert "미push commit 없음" in out
     assert "⚠ 미push commit" not in out
@@ -3249,11 +3252,11 @@ def test_ahead_count_falls_through_to_second_baseline_on_exception(hf, tmp_path)
     assert tried == ["@{upstream}..HEAD", "origin/main..HEAD"]
 
 
-def test_handoff_ahead_count_unresolved_is_failsoft(hf, tmp_path, capsys):
+def test_handoff_ahead_count_unresolved_is_failsoft(hf, monkeypatch, tmp_path, capsys):
     """[6/7]: baseline 해소 실패(upstream 미설정·detached)는 미해소 1줄 — 0 으로 위장하지 않는다."""
     git = _GitStub(ahead=None)
 
-    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=git)
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=git, monkeypatch=monkeypatch)
 
     assert "미push commit 수 미해소" in out
     assert "미push commit 없음" not in out, "미해소를 '없음'(안전)으로 오표기함"
@@ -3262,11 +3265,11 @@ def test_handoff_ahead_count_unresolved_is_failsoft(hf, tmp_path, capsys):
         f"baseline 후보를 순서대로 다 시도하지 않음: {tried}")
 
 
-def test_handoff_surfaces_unfinished_raw_records(hf, tmp_path, capsys):
+def test_handoff_surfaces_unfinished_raw_records(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 미마감 raw 건수 + 최근 레코드 식별자를 표면화하고, 마감분은 안 센다(비차단)."""
     ledger = _write_ledger(tmp_path, unfinished=2, finished=3)
 
-    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger, monkeypatch=monkeypatch)
 
     assert f"이 장부 기준: {ledger}" in out, (
         f"판정 범위(어느 장부를 봤나) 표기 누락 — '0건'이 전 장부 0건으로 읽힌다:\n{out}")
@@ -3276,12 +3279,12 @@ def test_handoff_surfaces_unfinished_raw_records(hf, tmp_path, capsys):
     assert "id=rec100" not in out, "마감된 레코드가 미마감으로 표시됨"
 
 
-def test_handoff_raw_sweep_caps_listing_but_keeps_count(hf, tmp_path, capsys):
+def test_handoff_raw_sweep_caps_listing_but_keeps_count(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 나열은 상한(N건)까지만·나머지는 잔여 건수로 접는다(터미널 폭주 방지·건수는 보존)."""
     limit = hf.UNFINISHED_RAW_DISPLAY_LIMIT
     ledger = _write_ledger(tmp_path, unfinished=limit + 2)
 
-    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger, monkeypatch=monkeypatch)
 
     assert f"⚠ 미마감 raw {limit + 2}건" in out
     listed = [l for l in out.splitlines() if l.strip().startswith("- 2026-")]
@@ -3289,31 +3292,31 @@ def test_handoff_raw_sweep_caps_listing_but_keeps_count(hf, tmp_path, capsys):
     assert "… 외 2건" in out
 
 
-def test_handoff_reports_clean_raw_ledger(hf, tmp_path, capsys):
+def test_handoff_reports_clean_raw_ledger(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 미마감 0건이면 '없음'을 명시한다(무경보도 말한다)."""
     ledger = _write_ledger(tmp_path, finished=2)
 
-    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger, monkeypatch=monkeypatch)
 
     assert "미마감 raw 없음" in out
     assert f"이 장부 기준: {ledger}" in out, "0건 보고에도 판정 범위 표기가 있어야 한다"
     assert "⚠ 미마감 raw" not in out
 
 
-def test_handoff_raw_sweep_is_failsoft_on_corrupt_ledger(hf, tmp_path, capsys):
+def test_handoff_raw_sweep_is_failsoft_on_corrupt_ledger(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 손상 장부는 사유 1줄 후 skip — 핸드오프를 막지 않는다(비차단 계약)."""
     ledger = tmp_path / "raw_outputs.json"
     ledger.write_text("{not json", encoding="utf-8")
 
-    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger)
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger, monkeypatch=monkeypatch)
 
     assert "⚠ 미마감 raw 조회 실패" in out
 
 
-def test_handoff_raw_sweep_reports_missing_ledger(hf, tmp_path, capsys):
+def test_handoff_raw_sweep_reports_missing_ledger(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 장부 파일 부재(위임 이력 0)는 사유를 밝히고 0건으로 넘어간다."""
     out = _run_handoff_out(hf, tmp_path, capsys,
-                           raw_ledger_file=tmp_path / "없는장부.json")
+                           raw_ledger_file=tmp_path / "없는장부.json", monkeypatch=monkeypatch)
 
     assert "raw 장부 없음" in out
 
@@ -3324,7 +3327,7 @@ def _write_named_ledger(directory: Path, *, unfinished: int) -> Path:
     return _write_ledger(directory, unfinished=unfinished)
 
 
-def test_handoff_names_peer_ledgers_with_their_unfinished_count(hf, tmp_path, capsys):
+def test_handoff_names_peer_ledgers_with_their_unfinished_count(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: worktree 사본 장부가 있으면 **경로와 건수**를 1줄 병기한다 (T-0600·가시성만).
 
     결정 공급 장부 하나만 보고 "0건"이라고 말하면 다른 사본에 쌓인 미마감이 통째로 안 보인다.
@@ -3334,7 +3337,7 @@ def test_handoff_names_peer_ledgers_with_their_unfinished_count(hf, tmp_path, ca
     peer = _write_named_ledger(tmp_path / "worktree-copy", unfinished=2)
 
     out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=primary,
-                           peer_raw_ledger_files=(peer,))
+                           peer_raw_ledger_files=(peer,), monkeypatch=monkeypatch)
 
     line = next(l for l in out.splitlines() if "사본 장부" in l)
     assert str(peer) in line, f"사본 장부 경로가 안 실림: {line!r}"
@@ -3343,15 +3346,15 @@ def test_handoff_names_peer_ledgers_with_their_unfinished_count(hf, tmp_path, ca
     assert f"이 장부 기준: {primary}" in out          # 판정 장부 표기는 그대로
 
 
-def test_handoff_stays_silent_about_peers_when_there_are_none(hf, tmp_path, capsys):
+def test_handoff_stays_silent_about_peers_when_there_are_none(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 사본이 없으면(솔로 형상) 병기 줄 자체가 없다 — 새 상시 소음 금지."""
     out = _run_handoff_out(hf, tmp_path, capsys,
-                           raw_ledger_file=_write_ledger(tmp_path, unfinished=1))
+                           raw_ledger_file=_write_ledger(tmp_path, unfinished=1), monkeypatch=monkeypatch)
 
     assert "사본 장부" not in out
 
 
-def test_peer_ledger_line_is_failsoft_on_a_corrupt_copy(hf, tmp_path, capsys):
+def test_peer_ledger_line_is_failsoft_on_a_corrupt_copy(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 손상된 사본 장부는 사유 1줄 후 건너뛴다 — 핸드오프를 막지 않는다."""
     broken = tmp_path / "broken" / "raw_outputs.json"
     broken.parent.mkdir()
@@ -3359,7 +3362,7 @@ def test_peer_ledger_line_is_failsoft_on_a_corrupt_copy(hf, tmp_path, capsys):
 
     out = _run_handoff_out(hf, tmp_path, capsys,
                            raw_ledger_file=_write_ledger(tmp_path, unfinished=1),
-                           peer_raw_ledger_files=(broken,))
+                           peer_raw_ledger_files=(broken,), monkeypatch=monkeypatch)
 
     assert "⚠ 사본 장부 조회 실패" in out
 
@@ -3375,18 +3378,18 @@ def test_peer_ledger_discovery_reuses_the_delegate_query_rule(hf, tmp_path, monk
     peer = tmp_path / "peer" / "raw_outputs.json"
     monkeypatch.setattr(
         raw_output, "_peer_engine_ledgers", lambda home, override: (primary.resolve(), peer))
-    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), peer_raw_ledger_files=None)
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), peer_raw_ledger_files=None, monkeypatch=monkeypatch)
 
     assert handoff._peer_raw_ledgers(primary) == (peer,)
 
 
-def test_handoff_checklist_includes_push_step_after_commit(hf, tmp_path, capsys):
+def test_handoff_checklist_includes_push_step_after_commit(hf, monkeypatch, tmp_path, capsys):
     """[7/7]: 커밋 다음에 **push 단계**가 체크리스트로 실제 출력된다(런타임 출력으로 확인).
 
     소스 문자열 assert 는 `print` 를 dead-code 로 만들어도 통과해 가드가 아니다
     (`test_run_prints_pathspec_commit_guidance` 와 같은 규율).
     """
-    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="2"))
+    out = _run_handoff_out(hf, tmp_path, capsys, run_git_fn=_GitStub(ahead="2"), monkeypatch=monkeypatch)
 
     push_lines = [l for l in out.splitlines() if "[ ]" in l and "push" in l]
     assert push_lines, f"push 단계가 잔여 작업 체크리스트에 없다:\n{out}"
