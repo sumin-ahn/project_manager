@@ -569,7 +569,7 @@ def update_session_window(
 
     if len(existing_entries) == 0:
         # task 생성 시점 state는 완료 세션 0개가 정상이다. worktree_pool이 심은 명시 marker가
-        # 있을 때만 첫 핸드오프를 1차 entry로 초기화한다. marker 없는 임의 변형은 
+        # 있을 때만 첫 핸드오프를 1차 entry로 초기화한다. marker 없는 임의 변형은
         # fail-loud해 추측 편집 금지 경계를 보존한다.
         if identity_args.TASK_PM_STATE_EMPTY_MARKER not in section_text:
             raise ValueError(

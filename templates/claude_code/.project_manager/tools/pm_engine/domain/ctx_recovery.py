@@ -104,7 +104,7 @@ def build_checkpoint_entry(
         date = datetime.date.today().isoformat()
     identity_tag = f" | ({_TASK_TAG_PREFIX}{task})" if task else ""
     return (
-        # Consumer grammar: pm_handoff._collect_session_entries() 의 task 태그 판별과
+        # Consumer grammar: domain.handoff_text._collect_session_entries() 의 task 태그 판별과
         # 동기화한다.
         f"## [{date}] checkpoint{identity_tag} — {trigger}\n\n"
         "- 구간: <직전 박제 경계 이후>\n"
