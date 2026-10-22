@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pm_engine.infra import fs, lease_store
-from pm_engine.app import branch_checkout
+from pm_engine.app import branch_checkout, repo_protection
 from pm_engine.infra import pool_store
 from pm_engine.app import task_lifecycle
 from pm_engine.domain import task_rules
@@ -185,7 +185,10 @@ def cmd_task_end(
     prefix = task_rec.prefix if task_rec is not None else None
     scan = None
     try:
-        scan = ticket_access.scan_task_tickets(home, lease_store.user_name(home), name, prefix)
+        # 설정 판독 실패에도 git 사용자로 claimed 소진 여부를 조회한다.
+        user = (repo_protection._local_conf_value(home, "identity.user")
+                or lease_store._git_config_email(home))
+        scan = ticket_access.scan_task_tickets(home, user, name, prefix)
     except Exception:  # noqa: BLE001 — 실제 스캔 실패는 기존 claimed 게이트 skip 정책 유지.
         scan = None
     if scan and scan.get("claimed"):

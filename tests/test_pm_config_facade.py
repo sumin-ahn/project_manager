@@ -3845,6 +3845,55 @@ def test_task_end_claimed_gate_refuses(pc, monkeypatch, capsys):
     assert not wp.did("end_task")
 
 
+@pytest.mark.parametrize("conf_failure", ["invalid_utf8", "os_error"])
+def test_task_end_conf_read_failure_uses_git_identity(tmp_path, monkeypatch, capsys, conf_failure):
+    """설정 판독 실패에도 git 사용자로 claimed를 조회하고 종료를 거부한다."""
+    import _git_fixture
+    from pm_engine.app import task_lifecycle, ticket_access
+    from pm_engine.infra import fs, pool_store
+
+    root = _git_fixture.init_git_repo(tmp_path / "repo")
+    _git_fixture.git(root, "config", "user.email", "fallback@example.com")
+    home = pm_paths.home_at(root, pm_home=tmp_path / "data")
+    home.local_conf.parent.mkdir(parents=True)
+    if conf_failure == "invalid_utf8":
+        home.local_conf.write_bytes(b"identity.user=\xff\n")
+    else:
+        home.local_conf.write_text("identity.user=from-conf\n", encoding="utf-8")
+        read_text = fs.read_text_shared
+
+        def read_with_conf_error(path, *args, **kwargs):
+            if Path(path) == home.local_conf:
+                raise OSError("injected local.conf read failure")
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(fs, "read_text_shared", read_with_conf_error)
+
+    scan_calls = []
+    end_calls = []
+
+    def scan(actual, user, name, prefix):
+        scan_calls.append((actual, user, name, prefix))
+        return {"claimed": [{"id": "T-0009", "title": "wip", "status": "claimed"}],
+                "prefix_open": []}
+
+    def end_task(actual, name):
+        end_calls.append((actual, name))
+        pytest.fail("claimed 티켓이 남은 task의 종료 함수 호출")
+
+    monkeypatch.setattr(pool_store, "find_task", lambda actual, name: SimpleNamespace(prefix="demo"))
+    monkeypatch.setattr(ticket_access, "scan_task_tickets", scan)
+    monkeypatch.setattr(task_lifecycle, "end_task", end_task)
+
+    rc = config_tasks.cmd_task_end(home, argparse.Namespace(name="job"))
+
+    assert rc == 1
+    assert scan_calls == [(home, "fallback@example.com", "job", "demo")]
+    assert end_calls == []
+    err = capsys.readouterr().err
+    assert "T-0009" in err and "종료 거부" in err
+
+
 def test_task_end_dirty_gate_refuses(pc, monkeypatch, capsys):
     """claimed 없음·보유 슬롯 dirty → end_task refused → rc1 + dirty 목록."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(end_task_result=_end_result(dirty=["work/svc_1"])))
