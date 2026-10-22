@@ -117,7 +117,7 @@ CODEX_DELEGATE_OBSERVATIONS = (
 # 때문이다. 이 silent-misanchor 클래스를 **fail-loud** 로 폐쇄한다 — mutation 명령이
 # 착지 *전에* 실제 PM 홈 경로를 안내하며 중단한다. 자동 재앵커(silent redirect)는 택하지
 # 않았다: 오탐 시 *다른* board 에 조용히 쓰는 더 나쁜 silent 결과가 되고, 두-git 경계를
-# 가로지르는 board-git sync/counter 재해소가 취약하다. fail-loud 는 최소·안전하며 
+# 가로지르는 board-git sync/counter 재해소가 취약하다. fail-loud 는 최소·안전하며
 # (silent 자동화보다 명시)·livegate seam의 동형 규율이다.
 #
 # **게이트 = mutation subcommand 전수·단일 dispatch 지점**(main()). 개별 cmd 배선 대신 아래
@@ -1315,29 +1315,6 @@ def _repo_base(repo: str) -> str | None:
     return None
 
 
-def _areas_git_url(repo: str) -> str | None:
-    """그 repo 의 areas.md `git` 칼럼 URL (bare mirror clone 원). 미등록/부재/빈 값 → None.
-
-    multi-user 공유 채택 폴더(= 하나의 git repo 를 여러 사람이 clone)에서 2번째 사용자가
-    `.repos/<repo>.git` bare mirror 를 hydrate 할 때(`pm-config repo add <repo>` — `--git`
-    불요) clone 원 URL 을 여기서 해소한다. areas.md(git-tracked·공유)엔 URL 이 있으나
-    `.repos/`(gitignore·per-clone)엔 mirror 가 없는 상황 — 등록된 URL 을 재제공 없이 재사용한다.
-
-    repo 명은 areas.md `repo` 칼럼과 매칭한다(prefix 칼럼은 비므로 **repo 명 키**).
-    중복 행이면 first-match(`_repo_base`·`_areas_row_for_prefix` 동형·같은 repo=같은 URL 이라
-    결정론적).
-
-    None 폴백(호출자 cmd_repo_add 가 fail-loud 또는 `--git` 명시 요구로 전환):
-      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
-      - 그 repo 행이 없음(미등록).
-      - `git` 칼럼 자체가 없는 구 레지스트리(헤더에 git 없음 → 행 dict 에 git 키 없음).
-      - `git` 칼럼이 빈 값(부분 등록).
-    """
-    _header, rows = areas_store._parse_areas(_home())
-    for row in rows:
-        if row.get("repo") == repo:
-            return row.get("git") or None
-    return None
 
 
 

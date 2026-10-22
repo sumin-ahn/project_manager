@@ -8,6 +8,8 @@ self-location(--target 생략) 모드는 effective_dest=REPO 이므로 pm_update
 monkeypatch 해 실 REPO 를 건드리지 않고 local.conf upstream 해소를 검증한다.
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.infra import protected_hooks, pm_paths
 
 import hashlib
 import importlib.util
@@ -6244,31 +6246,16 @@ def test_reinstall_protected_hooks_no_registered_repos_is_quiet(pm_update, tmp_p
 
 
 def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tmp_path, capsys):
-    """dest 에 엔진이 없으면 `unavailable` + **stderr 경고**(침묵 무력화 금지·rc 무영향).
-
-    sync 는 이미 성공했으므로 예외를 던져 update 를 깨면 안 되지만, 훅이 옛 본문으로 남았다는
-    사실은 반드시 보여야 한다(재설치 커맨드 포함)."""
+    """대상 flat 엔진과 registry가 모두 없어도 정상 미등록 Home으로 판정한다."""
     dest = tmp_path / "no-engine"
     dest.mkdir()
     result = pm_update.reinstall_protected_hooks(dest, write=True)
-    assert result["status"] == "unavailable" and "pm_config.py" in result["reason"]
+    assert result["status"] == "no_repos" and result["reason"] is None
     pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
-    assert "[경고]" in cap.err and "pm-update" in cap.err and "repo add" in cap.err
+    assert cap.out == "" and cap.err == ""
 
 
-def test_reinstall_protected_hooks_re_raises_a_marked_skew(pm_update, tmp_path, monkeypatch):
-    """목적지 엔진 skew 는 훅 재설치의 unavailable 로 접히지 않고 그대로 올라간다.
-
-    완료 단계는 같은 세대 사본만 적재하므로 그 skew 는 동기 대상 트리 자체의 결함이다."""
-    skew = RuntimeError("injected engine rev skew")
-    skew._engine_rev_skew = True
-    monkeypatch.setattr(pm_update, "_load_dest_pm_config", lambda _dest: (_ for _ in ()).throw(skew))
-
-    with pytest.raises(RuntimeError) as raised:
-        pm_update.reinstall_protected_hooks(tmp_path, write=True)
-
-    assert raised.value is skew
 
 
 @_git_required
@@ -6501,12 +6488,6 @@ def test_reinstall_protected_hooks_unreadable_artifact_is_drift_not_unavailable(
 # 순회해 축을 **유도**한다 — 명세에 산출물이 추가되면 이 테스트가 자동으로 그것까지 검사한다.
 
 
-def _dest_engine(pm_update, dest):
-    """dest 의 pm_config/board/worktree_pool 3종 (판정 함수가 받는 것과 같은 모듈)."""
-    pm_config = pm_update._load_dest_pm_config(dest)
-    return (pm_config,
-            pm_config._load_module("board", "board.py"),
-            pm_config._load_module("worktree_pool", "worktree_pool.py"))
 
 
 @_git_required
@@ -6518,9 +6499,8 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
     그 산출물까지 검사한다 — "다음에 또 축이 샌다" 를 닫는 장치."""
     dest = _make_pm_home(tmp_path / "home")
     pm_update.reinstall_protected_hooks(dest, write=True)
-    _pc, _board, worktree_pool = _dest_engine(pm_update, dest)
-    gate_mode, test_cmd = _pc._protected_push_gate_config("svc", board=_board)
-    spec = worktree_pool.protected_hook_artifacts(
+    gate_mode, test_cmd = repo_protection._protected_push_gate_config(pm_paths.home_at(dest), "svc")
+    spec = protected_hooks.protected_hook_artifacts(pm_paths.home_at(dest),
         "svc", ["main", "release"], gate_mode=gate_mode, test_cmd=test_cmd)
     assert spec, "명세가 비었다(테스트 전제 깨짐)"
 
@@ -6590,24 +6570,10 @@ def test_protected_hook_in_sync_never_raises_on_unreadable(pm_update, tmp_path, 
     pm_update.reinstall_protected_hooks(dest, write=True)
     (_hook_dir(dest, "svc") / artifact).write_bytes(_UNDECODABLE)
 
-    pm_config = pm_update._load_dest_pm_config(dest)
-    board = pm_config._load_module("board", "board.py")
-    worktree_pool = pm_config._load_module("worktree_pool", "worktree_pool.py")
-    assert pm_update._protected_hook_in_sync(
-        "svc", pm_config=pm_config, worktree_pool=worktree_pool, board=board) is False
+    assert pm_update._protected_hook_in_sync(pm_paths.home_at(dest),
+        "svc",  ) is False
 
 
-def test_protected_hook_in_sync_rethrows_marked_engine_rev_skew(pm_update):
-    """A1 — read-only drift 판정도 marked skew를 일반 drift(False)로 흡수하지 않는다."""
-    skew = RuntimeError("injected engine rev skew")
-    skew._engine_rev_skew = True
-    pm_config = SimpleNamespace(
-        _resolve_repo_protected=lambda *_args, **_kwargs: (_ for _ in ()).throw(skew))
-    worktree_pool = SimpleNamespace(protected_hook_artifacts=lambda *_args, **_kwargs: [])
-
-    with pytest.raises(RuntimeError, match="engine rev skew"):
-        pm_update._protected_hook_in_sync(
-            "svc", pm_config=pm_config, worktree_pool=worktree_pool, board=object())
 
 
 # ── `--paths` 경로 스코프 (opt-in 부분 전파) ────────────────────────────────

@@ -135,6 +135,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool, monkeypatch):
             return 0, "✓ no lint issues\n"
         return 0, "  [open   ] T-0001  x  pm  tag\n"
 
+    bind_pool(monkeypatch, worktree_pool)
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
@@ -144,7 +145,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool, monkeypatch):
         board_dir=board_dir,
         pm_state_file=pm_state_file,
         board=_EraBoard(),
-        worktree_pool=bind_pool(monkeypatch, worktree_pool),
+
     )
 
 

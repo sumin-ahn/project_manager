@@ -24,6 +24,7 @@ ADR-0027)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면, 
 경로 전역(`REPO`·`LOCAL_DIR`)은 tmp 로 재지정(test_board_livegate 동류).
 """
 from __future__ import annotations
+from pm_engine.infra import protected_hooks
 
 import argparse
 import importlib.util
@@ -363,15 +364,12 @@ def test_record_broken_engine_root_fails_loud_no_write(tmp_path, monkeypatch, ca
 # ── ④ 공유 규약 가드: 훅 본문 == record 해소가 읽는 engine-root 규약 ──────────
 
 def test_hook_body_shares_engine_root_livegate_convention():
-    """worktree_pool 훅 본문이 record(`_resolve_livegate_flag`)와 같은 engine-root 규약을 읽는다.
+    """protected_hooks 본문이 record(`_resolve_livegate_flag`)와 같은 engine-root 규약을 읽는다.
 
     훅이 sidecar 이름(`engine-root`)·board.py 경로·`livegate check` 소비를 바꾸면 record 해소와
     갈라져 단일 소스가 깨진다 — 그 드리프트를 여기서 못박는다(정렬 계약 회귀).
     """
-    spec = importlib.util.spec_from_file_location("wp_lgloc", TOOLS / "worktree_pool.py")
-    wp = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(wp)
-    body = wp._PROTECTED_PRE_PUSH_HOOK
+    body = protected_hooks._PROTECTED_PRE_PUSH_HOOK
     assert "engine-root" in body, "훅이 engine-root sidecar 를 안 읽으면 record 정렬 근거가 사라짐"
     assert ".project_manager/tools/board.py" in body
     assert "livegate check" in body

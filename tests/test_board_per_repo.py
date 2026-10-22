@@ -14,6 +14,8 @@ ADR-0014 의 실 엔진 개조 — multi-PM 모델에서 회귀가 multi-PM 루�
 areas.md·local.conf 를 절대 읽거나 쓰지 않는다 (test_board_multipm.py 의 패턴 동류).
 """
 from __future__ import annotations
+from pm_engine.domain import areas_rules
+from pm_engine.infra import git, pm_paths, areas_store
 from pm_engine.app import worktree_pool
 from pm_engine.infra import pm_paths
 
@@ -22,7 +24,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-from pm_engine.domain import areas_rules
 from pm_engine.infra import areas_store, lease_store, python_env
 from pm_engine.app import areas_lint, regression
 
@@ -380,19 +381,19 @@ def test_repo_base_no_registry_is_none(board):
 def test_areas_git_url_resolves_from_areas(board):
     """_areas_git_url(repo) → areas.md 그 repo 의 git 칼럼 URL (T-0291·hydrate clone 원)."""
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    assert board._areas_git_url("service-a") == "git@github.com:me/a.git"
-    assert board._areas_git_url("service-b") == "git@github.com:me/b.git"
+    assert areas_store._areas_git_url(pm_paths.home_at(board.REPO), "service-a") == "git@github.com:me/a.git"
+    assert areas_store._areas_git_url(pm_paths.home_at(board.REPO), "service-b") == "git@github.com:me/b.git"
 
 
 def test_areas_git_url_absent_repo_is_none(board):
     """미등록 repo → None (호출자 cmd_repo_add fail-loud·T-0291)."""
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    assert board._areas_git_url("nope") is None
+    assert areas_store._areas_git_url(pm_paths.home_at(board.REPO), "nope") is None
 
 
 def test_areas_git_url_no_registry_is_none(board):
     """areas.md 부재(솔로) → None (T-0291)."""
-    assert board._areas_git_url("service-a") is None
+    assert areas_store._areas_git_url(pm_paths.home_at(board.REPO), "service-a") is None
 
 
 def test_areas_git_url_empty_column_is_none(board):
@@ -404,7 +405,7 @@ def test_areas_git_url_empty_column_is_none(board):
         "| service-a | PAY |  | pytest -q | alice |\n"
     )
     board.AREAS_FILE.write_text(areas, encoding="utf-8")
-    assert board._areas_git_url("service-a") is None
+    assert areas_store._areas_git_url(pm_paths.home_at(board.REPO), "service-a") is None
 
 
 def test_areas_git_url_duplicate_rows_first_match(board):
@@ -420,7 +421,7 @@ def test_areas_git_url_duplicate_rows_first_match(board):
         "| service-a | PAY | git@h:second/a.git | pytest -q | alice |\n"
     )
     board.AREAS_FILE.write_text(areas, encoding="utf-8")
-    assert board._areas_git_url("service-a") == "git@h:first/a.git"
+    assert areas_store._areas_git_url(pm_paths.home_at(board.REPO), "service-a") == "git@h:first/a.git"
 
 
 # ════════════════════════════════════════════════════════════════════════

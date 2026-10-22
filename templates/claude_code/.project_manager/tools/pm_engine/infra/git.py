@@ -7,9 +7,13 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 from pm_engine.domain import git_policy
+import re
+from pm_engine.domain import worktree_records
+from pm_engine.infra import pm_paths
 
 
 def _git_repo_root(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
@@ -194,3 +198,124 @@ def _git_config_get(cwd: str, key: str) -> str | None:
                        encoding="utf-8", errors="replace")
     val = r.stdout.strip() if r.returncode == 0 else ""
     return val or None
+
+
+GIT_TIMEOUT_SECONDS = 600   # clone 은 네트워크 — 부트스트랩/worktree git 보다 넉넉히.
+
+
+def _real_clone_runner() -> worktree_records.GitRunner:
+    """`git clone ...` 을 실행하는 GitRunner (fail-soft). argv 는 clone 인자 그대로.
+
+    clone 은 `-C <dir>` 가 아니라 `git clone <url> <dest>` 형태라 별도 runner 로 둔다.
+    git 바이너리 부재(shutil.which)·예외는 (1, stderr-or-"") 로 감싼다 — 호출부가 rc 로
+    판정. 인코딩은 엔진 관례대로 UTF-8(한글 경로·메시지 안전).
+    """
+    git_binary = shutil.which("git")
+
+    def runner(argv: list) -> tuple[int, str]:
+        if git_binary is None:
+            return 1, "git 바이너리를 찾을 수 없음 (PATH)."
+        try:
+            result = subprocess.run(
+                [git_binary, *argv],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+            return result.returncode, (result.stdout or "") + (result.stderr or "")
+        except Exception as exc:  # noqa: BLE001 — fail-soft: rc!=0 로 호출부에 위임.
+            return 1, str(exc)
+
+    return runner
+
+
+def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
+    """Git remote를 transport class + endpoint/path identity로 정규화한다.
+
+    판정 축(코드·테스트 공통 표):
+
+    ======================  ================================================
+    입력 축                 identity 규칙
+    ======================  ================================================
+    ssh/https/scp           같은 ``network`` class로 정규화
+    file://                 ``file`` class를 보존(network과 절대 동일 아님)
+    user, host case         user 제거, host 소문자화
+    host / port             독립 tuple 필드(IPv6 콜론과 port 경계 보존)
+    default port            ssh:22/https:443은 None; non-default는 int로 보존
+    path                    선행/후행 slash·마지막 ``.git`` 정규화
+    ======================  ================================================
+
+    따라서 ``ssh://host:22/a/b``·``git@host:a/b.git``·``https://host/a/b``는
+    같지만, ``file://host/a/b``는 endpoint 문자열이 같아도 다른 identity다.
+    """
+    raw = value.strip().rstrip("/")
+    # SCP-like IPv6는 `user@[::1]:path`처럼 host의 콜론을 대괄호로 감싼다. 일반
+    # `host:path`와 별도 패턴으로 먼저 분리해야 `::1` 일부가 path로 새지 않는다.
+    scp = None
+    if "://" not in raw:
+        scp = re.match(r"^(?:[^@/]+@)?\[([^\]]+)\]:(.+)$", raw)
+        if scp is None:
+            scp = re.match(r"^(?:[^@/]+@)?([^:/]+):(.+)$", raw)
+    if scp is not None:
+        host, path = scp.groups()
+        normalized_path = path.removesuffix(".git").strip("/")
+        return ("network", host.lower(), None, normalized_path)
+    if "://" in raw:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.lower()
+        normalized_path = parsed.path.removesuffix(".git").strip("/")
+        try:
+            host = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            # 잘못된 authority를 유사 remote로 잘못 합치지 않는 안전 방향 폴백.
+            authority = parsed.netloc.rsplit("@", 1)[-1].lower()
+            return (f"invalid-{scheme}", authority, None, normalized_path)
+        default_port = {"ssh": 22, "https": 443}.get(scheme)
+        normalized_port = None if port is None or port == default_port else port
+        transport = "network" if scheme in {"ssh", "https"} else scheme
+        # host와 port를 tuple의 독립 필드로 둔다. 문자열 `host:port` 결합은 IPv6
+        # host 자체의 콜론과 경계가 사라져 `[::1]:2222`와 `[::1:2222]`를 합친다.
+        return (transport, host, normalized_port, normalized_path)
+    return ("path", "", None, raw.removesuffix(".git"))
+
+
+def _bare_missing_branches(home,
+    repo: str,
+    branches: list[str],
+    *,
+    clone_runner: worktree_records.GitRunner | None = None,
+    repos_dir: Path | None = None,
+) -> list[str]:
+    """`branches` 중 `.repos/<repo>.git` 에 없는 것들 (경고 1줄용·검증 아님).
+
+    보호목록은 **브랜치 실재를 요구하지 않는다**(아직 없는 `release` 를 미리 보호하는 게 정상).
+    그래서 거부하지 않고 *경고*만 낸다 — 오타(`mian`)를 조용히 흘리지 않기 위한 가시화다.
+    bare 부재(clone 전)·git 실패는 빈 리스트(fail-soft·경고 생략).
+
+    **bare 조회 자체가 실패하면 경고를 통째로 생략한다** — git 바이너리 부재/권한 등으로 모든
+    `show-ref` 가 rc≠0 이 되면 멀쩡한 브랜치까지 "없다"고 오탐한다. 먼저 `rev-parse
+    --is-bare-repository` 로 bare 를 프로브해 rc≠0 이면 빈 리스트(경고의 목적은 오타 포착이지
+    차단이 아니다).
+    """
+    bare = (repos_dir if repos_dir is not None else pm_paths.repos_dir(home)) / f"{repo}.git"
+    if not branches or not bare.exists():
+        return []
+    runner = clone_runner or _real_clone_runner()
+    try:
+        probe_rc, _probe = runner(
+            ["-C", str(bare), "rev-parse", "--is-bare-repository"])
+        if probe_rc != 0:
+            return []   # bare 조회 불가(git 부재/깨진 bare) — 오탐 방지로 경고 생략.
+        missing: list[str] = []
+        for branch in branches:
+            rc, _out = runner(
+                ["-C", str(bare), "show-ref", "--verify", "--quiet",
+                 f"refs/heads/{branch}"])
+            if rc != 0:
+                missing.append(branch)
+    except Exception:  # noqa: BLE001 — fail-soft: 경고는 부가 정보(판정 실패=생략).
+        return []
+    return missing

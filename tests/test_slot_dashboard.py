@@ -608,13 +608,14 @@ def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str='# log\n', monkeypatch)
             return 0, "abc commit\n"
         return 0, ""
 
+    bind_pool(monkeypatch, pool)
     return bs.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (0, ""),
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas,
-        worktree_pool=bind_pool(monkeypatch, pool),
+
         pm_state_file=pm_state,
     )
 

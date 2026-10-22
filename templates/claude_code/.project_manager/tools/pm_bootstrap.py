@@ -49,8 +49,8 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args, pytest_report, ticket_rules  # noqa: E402
 from pm_engine.infra import conf_store, console, delegate_ledger, fs, lease_store, pm_paths, pre_push_hook, repo_files  # noqa: E402
-from pm_engine.app import slot_resolution  # noqa: E402
-from pm_engine.infra import areas_store, branch_store
+from pm_engine.app import repo_protection, slot_resolution  # noqa: E402
+from pm_engine.infra import areas_store, branch_store, protected_hooks
 from pm_engine.infra import pool_store
 from pm_engine.infra import slot_snapshot
 from pm_engine.app import task_lifecycle
@@ -398,33 +398,10 @@ def _write_machine_line(text: str) -> None:
     console.write_machine_line(text)
 
 
-# ── worktree_pool import seam ───────────────────────────
-# task 바인딩·보유 슬롯 조회가 이 모듈을 쓴다. 부재/로드 실패는 fail-soft(None)이고,
-# 호출부(`_resolve_worktree_pool`)가 None 을 **명시 에러**로 세운다(침묵 무력화 금지).
-def _load_worktree_pool():
-    """worktree_pool 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
-
-    REPO/tools 경로 기준 `spec_from_file_location` — board.py·pm_*.py 와 같은
-    스크립트-위치 앵커 관례. None 은 호출부(`_resolve_worktree_pool`)가 명시 에러로 처리한다.
-    """
-    wp_path = TOOLS_DIR / "worktree_pool.py"
-    if not wp_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            wp_path, "worktree_pool.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
 def _load_board():
     """board 모듈을 동적 로드한다 (fail-soft) — 보호 브랜치 surface(`_repo_protected`)가 쓰는 로더다.
 
-    `_load_worktree_pool` 과 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
+    다른 평면 도구 로더와 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
     *직접 import* 하지 않는 이유(touches 격리·병렬충돌 회피)는 동적 로드로 보존된다. 보호
     브랜치 경고는 *소프트*(추가 인지)라 board 부재/로드 실패는 None(경고 생략·정체성 선언
     자체는 깨지 않음).
@@ -445,7 +422,7 @@ def _load_board():
 def _load_tool(name: str):
     """이름의 엔진 도구 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
-    `_load_worktree_pool`/`_load_board` 와 동형 — `spec_from_file_location`(스크립트-위치
+    `_load_board`와 동형 — `spec_from_file_location`(스크립트-위치
     앵커). 부트스트랩이 차수 추론(`pm_handoff.infer_next_session_num`)·log 마지막 entry 본문
     파싱(`pm_log.split_entries`)을 **DRY** 로 재사용하기 위한 역방향 동적 로드다(복붙 금지).
     직접 import 하지 않는 이유(touches 격리·순환 회피)는 동적 로드로 보존된다. 차수/인계 dump 는
@@ -1392,7 +1369,6 @@ class PmBootstrap:
         board_py: Path = BOARD_PY,
         areas_file: Path | None = None,
         venv_python: str | Path = _default_python(),
-        worktree_pool=None,
         board=None,
         pm_state_file: Path | None = None,
         board_dir: Path | None = None,
@@ -1416,7 +1392,6 @@ class PmBootstrap:
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 task
         # 바인딩·보유 슬롯 조회 시점에 동적 로드한다.
-        self._worktree_pool = worktree_pool
         # board seam — 보호 브랜치 surface(`_repo_protected`)용. 테스트는 mock 모듈 주입.
         # None 이면 필요 시점에 동적 로드(소프트 경고·board 부재면 경고 생략).
         # board.py *직접 import* 는 안 함(touches 격리).
@@ -3354,7 +3329,7 @@ areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해
 
         **비교 우선**: sidecar 를 읽어 resolve 된 목록과 같고 **훅이 배선돼 있으면** 아무것도 하지
         않는다(subprocess 0 — 정합이 정상 상태이므로 매 부트스트랩이 git config 를 때리지 않는다).
-        다를 때만 `pm_config._install_protected_hook(repo, ...)` 깔때기를 부른다. 비교 단계에서도
+        다를 때만 `repo_protection._install_protected_hook(home, repo)` 깔때기를 부른다. 비교 단계에서도
         현재 upstream provenance의 gate mode/test command를 매번 재해소해, 한 원자
         `gate-contract` sidecar 실값과 **둘 다** 대조한다. 이 축이 없으면 areas
         `test_cmd`만 바뀐 뒤 보호목록이 같을 때 stale command가 다음 pm_update까지
@@ -3364,13 +3339,11 @@ areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해
 
         **배선 축을 함께 본다(should-fix)**: `install_protected_hook` 은 sidecar 기록 뒤 bare
         `core.hooksPath` 배선을 하는데, 뒤가 실패하면 **sidecar 는 최신인데 훅은 안 걸린** 상태가
-        된다. 내용만 비교하면 이 상태에서 영구 침묵한다(보호가 꺼진 채). 판정은 `pm_config.
-        protected_hook_wired`(읽기 전용·`_load_tool` DRY 소비 — 복붙 금지)를 쓰고, `None`("모름")은
+        된다. 내용만 비교하면 이 상태에서 영구 침묵한다(보호가 꺼진 채). 판정은 `protected_hooks.protected_hook_wired`(읽기 전용)를 쓰고, `None`("모름")은
         드리프트로 치지 않는다(오탐 0).
 
-        보호목록 해소는 기존 `_protected_warning` 과 **같은 seam**(`areas_store._repo_protected`·getattr
-        DI)을 쓴다. board/worktree_pool 부재·헬퍼 부재는 fail-soft False(진입 무영향·drift 판정 자체를
-        못 하므로 조용히 생략).
+        보호목록은 대상 Home의 areas_store로 읽고 보호 패키지를 직접 호출한다.
+        실제 판독·git 실패는 기존 fail-soft 처리를 유지한다.
 
         **fail-soft 는 조용하지 않다(must-fix)**: drift 를 *발견한 뒤* 재설치가 실패하면
         (`install_protected_hook` 은 bare 부재·`core.hooksPath` 설정 실패 시 **예외 없이 False**),
@@ -3381,17 +3354,11 @@ areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해
 
         True = 재설치를 실제로 수행하고 **성공**함.
         """
-        board_mod = self._board or _load_board()
-        wp = self._worktree_pool or _load_worktree_pool()
-        pm_config = _load_tool("pm_config")
-        install = getattr(pm_config, "_install_protected_hook", None) if pm_config else None
-        gate_config = getattr(pm_config, "_protected_push_gate_config", None) if pm_config else None
-        hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp else None
-        contract_name = getattr(wp, "PROTECTED_GATE_CONTRACT_NAME", None) if wp else None
-        if install is None or gate_config is None or hooks_dir is None or not contract_name:
-            return False
+        home = pm_paths.home_at(REPO)
+        hooks_dir = pm_paths.repo_hooks_dir(home)
+        contract_name = protected_hooks.PROTECTED_GATE_CONTRACT_NAME
         try:
-            protected = list(areas_store._repo_protected(pm_paths.home_at(REPO), repo))
+            protected = list(areas_store._repo_protected(home, repo))
             sidecar = Path(hooks_dir) / repo / "protected"
             if not sidecar.is_file():
                 return False  # 훅 미설치 — 설치는 repo add/worktree add 축(여기선 drift 만).
@@ -3399,8 +3366,8 @@ areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해
                        for line in fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
                        if line.strip()]
             protected_ok = current == protected
-            gate_mode, test_cmd = gate_config(
-                repo, board=board_mod, report_downgrade=False)
+            gate_mode, test_cmd = repo_protection._protected_push_gate_config(
+                home, repo, report_downgrade=False)
             expected_contract = f"{gate_mode}\n{test_cmd}\n"
             contract_sidecar = Path(hooks_dir) / repo / str(contract_name)
             current_contract = (
@@ -3413,8 +3380,6 @@ areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해
             if protected_ok and contract_ok and wired is not False:
                 return False  # 정합 — subprocess 0.
         except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 생략(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
             return False
         # 여기부터는 **drift 확정** — 성공/실패 어느 쪽도 조용히 넘기지 않는다. 원인 2종을
         # 구별해 보고한다: 목록 / 증거 계약 / 배선. 복수 drift는 함께 표시.
@@ -3443,16 +3408,12 @@ areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해
             enforcement_state = (
                 "보호목록은 강제 중이지만 옛/미설치 증거 계약으로 동작합니다")
         try:
-            installed = bool(install(repo, board=board_mod, worktree_pool=wp))
+            installed = bool(repo_protection._install_protected_hook(home, repo))
         except Exception as exc:  # noqa: BLE001 — 실패해도 진입은 막지 않되 반드시 loud.
-            if _is_engine_rev_skew(exc):
-                raise  # 엔진 사본 불일치는 일반 설치 실패로 강등하지 않는다.
             installed = False
             reason = f"{exc.__class__.__name__}: {exc}"
         else:
-            failure_reason = getattr(
-                pm_config, "protected_hook_install_failure_reason", None)
-            reason = (failure_reason(repo) if failure_reason is not None else None)
+            reason = repo_protection.protected_hook_install_failure_reason(home, repo)
             reason = reason or "install_protected_hook이 원인 미해소 실패를 반환"
         if not installed:
             print(
@@ -3471,41 +3432,18 @@ areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해
         return True
 
     def _protected_retry_command(self, repo: str) -> str:
-        """보호목록 재실행 안내 커맨드 — `pm_config.protected_retry_command` 소비.
-
-        안내가 실제 상태를 반영해야 한다(폴백이면 `default`·명시면 그 목록) — 그 분기를 여기서
-        재구현하면 두 벌이 된다(`_protected_hook_wired` 동형·`_load_tool` DRY). pm_config/헬퍼
-        부재면 **구체 값 없는** 안내로 떨어진다 — 상태를 모르는 채 목록을 추측해 안내하면 그걸
-        실행한 사용자가 출처를 바꾸게 되므로, 값을 지어내지 않고 조회부터 안내한다.
-        """
-        pm_config = _load_tool("pm_config")
-        retry_fn = getattr(pm_config, "protected_retry_command", None) if pm_config else None
-        if retry_fn is not None:
-            try:
-                return retry_fn(repo)
-            except Exception as exc:  # noqa: BLE001 — 일반 실패만 아래 일반 안내로 강등.
-                if _is_engine_rev_skew(exc):
-                    raise
-                pass
-        return (f"{_CARD_TOOL_INVOKE}/pm_config.py repo protected {repo}"
-                "   (현재 상태 확인 후 재설정)")
+        """대상 Home의 보호목록 상태에 따른 재실행 명령."""
+        try:
+            return repo_protection.protected_retry_command(pm_paths.home_at(REPO), repo)
+        except Exception:
+            return (f"{_CARD_TOOL_INVOKE}/pm_config.py repo protected {repo}"
+                    "   (현재 상태 확인 후 재설정)")
 
     def _protected_hook_wired(self, repo: str) -> bool | None:
-        """bare `core.hooksPath` 배선 여부 — `pm_config.protected_hook_wired` 소비.
-
-        판정 로직을 재구현하지 않는다(`_load_tool` DRY 관용구 — 복붙 금지
-        원칙 동형). 주입된 worktree_pool 을 그대로 넘겨 hermetic 테스트에서도 같은 대역을 본다.
-        pm_config/헬퍼 부재·예외는 `None`("모름") — 호출부가 현행 동작(내용 비교만)으로 떨어진다.
-        """
-        pm_config = _load_tool("pm_config")
-        wired_fn = getattr(pm_config, "protected_hook_wired", None) if pm_config else None
-        if wired_fn is None:
-            return None
+        """대상 Home의 bare hooksPath를 보호 훅 모듈로 조회한다."""
         try:
-            return wired_fn(repo, worktree_pool=self._worktree_pool or _load_worktree_pool())
-        except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 "모름"(오탐 0).
-            if _is_engine_rev_skew(exc):
-                raise
+            return protected_hooks.protected_hook_wired(pm_paths.home_at(REPO), repo)
+        except Exception:
             return None
 
     def _safe_command_card(self) -> str | None:

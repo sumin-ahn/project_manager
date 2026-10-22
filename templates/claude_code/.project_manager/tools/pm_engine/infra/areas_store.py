@@ -142,3 +142,28 @@ def _repo_protected(home, repo: str) -> list[str]:
             branches = [b.strip() for b in raw.split(",") if b.strip()]
             return branches if branches else list(areas_rules.DEFAULT_PROTECTED)
     return list(areas_rules.DEFAULT_PROTECTED)
+
+
+def _areas_git_url(home, repo: str) -> str | None:
+    """그 repo 의 areas.md `git` 칼럼 URL (bare mirror clone 원). 미등록/부재/빈 값 → None.
+
+    multi-user 공유 채택 폴더(= 하나의 git repo 를 여러 사람이 clone)에서 2번째 사용자가
+    `.repos/<repo>.git` bare mirror 를 hydrate 할 때(`pm-config repo add <repo>` — `--git`
+    불요) clone 원 URL 을 여기서 해소한다. areas.md(git-tracked·공유)엔 URL 이 있으나
+    `.repos/`(gitignore·per-clone)엔 mirror 가 없는 상황 — 등록된 URL 을 재제공 없이 재사용한다.
+
+    repo 명은 areas.md `repo` 칼럼과 매칭한다(prefix 칼럼은 비므로 **repo 명 키**).
+    중복 행이면 first-match(`_repo_base`·`_areas_row_for_prefix` 동형·같은 repo=같은 URL 이라
+    결정론적).
+
+    None 폴백(호출자 cmd_repo_add 가 fail-loud 또는 `--git` 명시 요구로 전환):
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
+      - 그 repo 행이 없음(미등록).
+      - `git` 칼럼 자체가 없는 구 레지스트리(헤더에 git 없음 → 행 dict 에 git 키 없음).
+      - `git` 칼럼이 빈 값(부분 등록).
+    """
+    _header, rows = _parse_areas(home)
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("git") or None
+    return None

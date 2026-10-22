@@ -17,6 +17,8 @@ DI seam 동류).
     AncestorConflict 를 친화 메시지 + rc 1 로 번역(traceback 0·pm_import.main 동형).
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.infra import pm_paths
 
 import argparse
 import hashlib
@@ -59,11 +61,11 @@ def pim():
 
 def test_slot_default_test_cmd_uses_board_parallel_default(pc, monkeypatch):
     """worktree slot의 Enter 기본도 PM 설정 부재 시 xdist 기본(`python_env`)을 그대로 쓴다."""
-    monkeypatch.setattr(pc, "_local_conf_test_cmd", lambda: None)
+    monkeypatch.setattr(repo_protection, "_local_conf_test_cmd", lambda _home: None)
     monkeypatch.setattr(python_env, "default_pytest_cmd",
                         lambda py=None: "python3 -m pytest tests/ -q -n auto")
-    assert pc._default_test_cmd() == "python3 -m pytest tests/ -q -n auto"
-    assert pc._resolve_repo_test_cmd("fixture") == (
+    assert repo_protection._default_test_cmd(pm_paths.home_at(pc.REPO)) == "python3 -m pytest tests/ -q -n auto"
+    assert repo_protection._resolve_repo_test_cmd(pm_paths.home_at(pc.REPO), "fixture") == (
         "python3 -m pytest tests/ -q -n auto"
     )
 

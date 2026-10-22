@@ -5,7 +5,7 @@ from pm_engine.app import branch_checkout
 from pm_engine.infra import branch_store
 from pm_engine.infra import clock
 from pm_engine.infra import lease_store
-from pm_engine.infra import pm_paths
+from pm_engine.infra import pm_paths, protected_hooks
 from pm_engine.infra import pool_store
 from pm_engine.app import slot_resolution
 from pm_engine.infra import slot_snapshot
@@ -229,6 +229,7 @@ _OWNERS = {
     'add_task_todo': (task_lifecycle, True),
     'alloc': (worktree_pool, True),
     'bare_repo_path': (pm_paths, True),
+    'install_protected_hook': (protected_hooks, True),
     'bind_task': (task_lifecycle, True),
     'branch_children': (branch_store, False),
     'clear_preserved_branch': (branch_store, False),
@@ -309,4 +310,7 @@ def bind_board(monkeypatch, fake):
     if fake is not None and hasattr(fake, "_repo_protected"):
         from pm_engine.infra import areas_store
         monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: fake._repo_protected(repo))
+    if fake is not None and hasattr(fake, "_areas_git_url"):
+        from pm_engine.infra import areas_store
+        monkeypatch.setattr(areas_store, "_areas_git_url", lambda home, repo: fake._areas_git_url(repo))
     return fake

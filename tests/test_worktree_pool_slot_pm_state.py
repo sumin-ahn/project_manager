@@ -91,8 +91,9 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
         json.dumps({"task": "mytask", "session": "S-1"}), encoding="utf-8"
     )
     state = pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "mytask")
+    bind_pool(monkeypatch, wp)
     instance = bootstrap.PmBootstrap(
-        worktree_pool=bind_pool(monkeypatch, wp),
+
         board=SimpleNamespace(_repo_protected=lambda _repo: []),
     )
     instance._phase0_preflight = lambda: 0

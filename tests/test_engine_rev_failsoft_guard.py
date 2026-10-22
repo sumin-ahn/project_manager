@@ -1268,7 +1268,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `domain` 의 `_repository_identity`·`coverage_report`·`load_pages`(옮기며), `ticket_finish` 의
     #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
     #   `TicketFinisher._notify_affected_domain`).
-    assert len(report.boundaries) == 112, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 99, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1367,7 +1367,6 @@ def _blank_recovery_reason(source: str) -> str:
 @pytest.mark.parametrize(
     ("label", "source_name", "function", "occurrence"),
     [
-        ("S4", "pm_config.py", "cmd_repo_protected", 0),
         ("S5", "pm_bootstrap.py", "main", 0),
     ],
 )

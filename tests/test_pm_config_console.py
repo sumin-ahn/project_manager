@@ -40,12 +40,13 @@ def pc():
 
 
 @pytest.fixture(autouse=True)
-def _fake_bare_root(tmp_path, monkeypatch):
+def _fake_bare_root(tmp_path, monkeypatch, pc):
     """`FakeWorktreePool.bare_repo_path` 가 답할 임시 `.repos` 루트를 테스트마다 새로 준다.
 
     `cmd_worktree_add` 는 그 repo 의 bare `info/exclude` 에 사본 루트 규칙을 심는다
     ([[T-0903]]). 대역이 실 `.repos` 를 돌려주면 이 저장소의 bare 를 건드리게 된다.
     """
+    monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.setattr(FakeWorktreePool, "bare_root", tmp_path / ".repos")
 
 
@@ -187,7 +188,8 @@ def test_console_renders_repos_from_areas(pc, monkeypatch, capsys):
     ])
     _set_areas(monkeypatch, board)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
-    rc = pc.run_console(input_fn=_inputs("q"), board=board, worktree_pool=bind_pool(monkeypatch, wp))
+    bind_pool(monkeypatch, wp)
+    rc = pc.run_console(input_fn=_inputs("q"), board=board)
     assert rc == 0
     out = capsys.readouterr().out
     assert "repos" in out
@@ -200,7 +202,8 @@ def test_console_renders_slots_from_leases(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[
         FakeLease("work/svc_1", "svc", test_cmd="ctest -R hil", state="leased"),
     ]))
-    rc = pc.run_console(input_fn=_inputs("q"), board=board, worktree_pool=bind_pool(monkeypatch, wp))
+    bind_pool(monkeypatch, wp)
+    rc = pc.run_console(input_fn=_inputs("q"), board=board)
     assert rc == 0
     out = capsys.readouterr().out
     assert "slots" in out
@@ -210,9 +213,10 @@ def test_console_renders_slots_from_leases(pc, monkeypatch, capsys):
 
 def test_console_empty_state_does_not_crash(pc, monkeypatch, capsys):
     """등록 repo·슬롯 0 이어도 빈 안내로 surface(크래시 0)."""
+    bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     rc = pc.run_console(
         input_fn=_inputs("q"),
-        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool(leases=[])),
+        board=FakeBoardAreas(rows=[]),
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -227,9 +231,10 @@ def test_console_empty_state_does_not_crash(pc, monkeypatch, capsys):
 
 def test_console_q_quits_immediately(pc, monkeypatch, capsys):
     """`q` → 즉시 종료 rc 0 + 종료 메시지(액션 0)."""
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(
         input_fn=_inputs("q"),
-        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()),
+        board=FakeBoardAreas(rows=[]),
     )
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
@@ -243,8 +248,9 @@ def test_console_r_routes_to_repo_add(pc, monkeypatch):
                                                         test=args.test, base=args.base) or 0)
     # 메뉴 'r' → repo 이름/git/test/base 4 입력 → 다음 메뉴 'q'.
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "develop", "q")
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen == {"name": "svc", "git": "git@h:me/svc.git",
                     "test": "pytest -q", "base": "develop"}
@@ -257,8 +263,9 @@ def test_console_r_empty_test_passes_none(pc, monkeypatch):
                         lambda args, **kw: seen.update(test=args.test) or 0)
     # 이름/git/test(빈)/base(빈) → 메뉴 'q'.
     reader = _inputs("r", "svc", "git@h:me/svc.git", "", "", "q")
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen == {"test": None}
 
@@ -269,8 +276,9 @@ def test_console_r_base_passes_through(pc, monkeypatch):
     monkeypatch.setattr(pc, "cmd_repo_add",
                         lambda args, **kw: seen.update(base=args.base) or 0)
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "release/24", "q")
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen == {"base": "release/24"}
 
@@ -281,8 +289,9 @@ def test_console_r_empty_base_passes_none(pc, monkeypatch):
     monkeypatch.setattr(pc, "cmd_repo_add",
                         lambda args, **kw: seen.update(base=args.base) or 0)
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "", "q")
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen == {"base": None}
 
@@ -306,8 +315,9 @@ def test_console_r_empty_name_cancels(pc, monkeypatch):
     """`r` 에서 repo 이름 빈 입력 → cmd_repo_add 미호출(취소·크래시 0)."""
     called = {"n": 0}
     monkeypatch.setattr(pc, "cmd_repo_add", lambda *a, **k: called.update(n=1) or 0)
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("r", "", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert called["n"] == 0
 
@@ -316,7 +326,7 @@ def test_console_w_routes_to_worktree_add(pc, monkeypatch):
     """`w` → _console_worktree_add → cmd_worktree_add(repo·input_fn·is_tty 전달)."""
     seen = {}
 
-    def fake_wt_add(args, *, worktree_pool=None, board=None, input_fn=None, is_tty=None):
+    def fake_wt_add(args, *, board=None, input_fn=None, is_tty=None):
         seen["repo"] = args.repo
         seen["test"] = args.test            # 콘솔은 --test 미지정(프롬프트 경로)
         seen["user_ack"] = args.user_ack    # repo 재입력 확인을 값-결속 ack로 소비
@@ -325,8 +335,9 @@ def test_console_w_routes_to_worktree_add(pc, monkeypatch):
         return 0
 
     monkeypatch.setattr(pc, "cmd_worktree_add", fake_wt_add)
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("w", "svc", "svc", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen["repo"] == "svc"
     assert seen["test"] is None            # 빌드명령은 핸들러가 프롬프트(콘솔 [w] 경로)
@@ -338,8 +349,9 @@ def test_console_w_empty_repo_cancels(pc, monkeypatch):
     """`w` 에서 repo 빈 입력 → cmd_worktree_add 미호출(취소)."""
     called = {"n": 0}
     monkeypatch.setattr(pc, "cmd_worktree_add", lambda *a, **k: called.update(n=1) or 0)
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("w", "", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert called["n"] == 0
 
@@ -365,8 +377,9 @@ def test_console_b_routes_to_set_test_cmd(pc, monkeypatch):
         lambda slot, cmd, **kw: seen.update(slot=slot, cmd=cmd) or 0,
     )
     reader = _inputs("b", "work/svc_1", "ctest -R hil2", "q")
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen == {"slot": "work/svc_1", "cmd": "ctest -R hil2"}
 
@@ -379,8 +392,9 @@ def test_console_b_empty_cmd_passes_none(pc, monkeypatch):
         lambda slot, cmd, **kw: seen.update(slot=slot, cmd=cmd) or 0,
     )
     reader = _inputs("b", "work/svc_1", "", "q")
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen == {"slot": "work/svc_1", "cmd": None}
 
@@ -389,8 +403,9 @@ def test_console_b_empty_slot_cancels(pc, monkeypatch):
     """`b` 에서 슬롯 빈 입력 → cmd_set_test_cmd 미호출(취소)."""
     called = {"n": 0}
     monkeypatch.setattr(pc, "cmd_set_test_cmd", lambda *a, **k: called.update(n=1) or 0)
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("b", "", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert called["n"] == 0
 
@@ -398,8 +413,9 @@ def test_console_b_empty_slot_cancels(pc, monkeypatch):
 def test_console_s_refreshes_state(pc, monkeypatch, capsys):
     """`s` → 상태 재렌더(액션 없이 list_leases 재호출)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
+    bind_pool(monkeypatch, wp)
     rc = pc.run_console(input_fn=_inputs("s", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, wp))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     # 첫 렌더 + s 재렌더 → list_leases 최소 2회.
     assert wp.calls.count(("list_leases",)) >= 2
@@ -415,8 +431,9 @@ def test_console_u_routes_to_cmd_update(pc, monkeypatch):
         pc, "cmd_update",
         lambda forward_args, **kw: seen.update(args=forward_args) or 0,
     )
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("u", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert seen == {"args": []}                      # forward_args = [] (인자 없는 갱신)
 
@@ -425,8 +442,9 @@ def test_console_u_rerenders_after_update(pc, monkeypatch):
     """`u` 후 상태 재렌더 — list_leases 가 첫 렌더 + update후 재렌더로 2회+ 불림."""
     monkeypatch.setattr(pc, "cmd_update", lambda *a, **k: 0)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
+    bind_pool(monkeypatch, wp)
     rc = pc.run_console(input_fn=_inputs("u", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, wp))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert wp.calls.count(("list_leases",)) >= 2     # 첫 렌더 + update후 재렌더
 
@@ -435,8 +453,9 @@ def test_console_u_case_insensitive(pc, monkeypatch):
     """메뉴키 대문자 'U' 도 update 로 라우팅(.lower() 정규화 — 입력 견고성)."""
     called = {"n": 0}
     monkeypatch.setattr(pc, "cmd_update", lambda *a, **k: called.update(n=called["n"] + 1) or 0)
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("U", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert called["n"] == 1
 
@@ -445,16 +464,18 @@ def test_console_u_eof_after_update_quits_gracefully(pc, monkeypatch, capsys):
     """`u` 후 다음 메뉴서 EOF(입력 소진) → 우아 종료 rc 0(abort 정합·크래시 0)."""
     monkeypatch.setattr(pc, "cmd_update", lambda *a, **k: 0)
     # "u" 후 입력 소진 → 다음 메뉴 프롬프트서 EOFError → 우아 종료.
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("u"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
 
 def test_console_menu_surfaces_update_action(pc, monkeypatch, capsys):
     """메뉴 출력에 `[u]`/`update`(엔진 갱신) surface — 사용자 노출."""
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     out = capsys.readouterr().out
     assert "[u]" in out and "갱신" in out
@@ -462,8 +483,9 @@ def test_console_menu_surfaces_update_action(pc, monkeypatch, capsys):
 
 def test_console_unknown_key_help_lists_update(pc, monkeypatch, capsys):
     """오타 메뉴키 안내가 `r/w/b/m/u/s/q`(모델 안내·update 포함)를 surface."""
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("z", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     out = capsys.readouterr().out
     assert "r/w/b/m/u/s/q" in out
@@ -477,16 +499,18 @@ def test_console_blank_input_reprompts(pc, monkeypatch):
     called = {"r": 0}
     monkeypatch.setattr(pc, "cmd_repo_add", lambda *a, **k: called.update(r=1) or 0)
     # "" (빈) → 재프롬프트 → "q" 종료. 빈 입력에 어떤 액션도 안 일어남.
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert called["r"] == 0
 
 
 def test_console_unknown_key_reprompts(pc, monkeypatch, capsys):
     """오타 메뉴키(예: 'z') → 안내 + 재프롬프트(다음 입력으로·크래시 0)."""
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("z", "q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     out = capsys.readouterr().out
     assert "알 수 없는 선택" in out
@@ -497,8 +521,9 @@ def test_console_eof_quits_gracefully(pc, monkeypatch, capsys):
     def reader(prompt=""):
         raise EOFError()
 
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
@@ -508,16 +533,18 @@ def test_console_keyboardinterrupt_quits_gracefully(pc, monkeypatch, capsys):
     def reader(prompt=""):
         raise KeyboardInterrupt()
 
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
 
 def test_console_case_insensitive_menu_key(pc, monkeypatch, capsys):
     """메뉴키 대문자 'Q' 도 종료(.lower() 정규화 — 입력 견고성)."""
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(input_fn=_inputs("Q"),
-                        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()))
+                        board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
@@ -567,9 +594,10 @@ def test_console_action_prompt_abort_graceful(pc, monkeypatch, capsys, lead, exc
     별도 테스트(test_console_build_cmd_prompt_abort_graceful)에서 본다.
     """
     reader = _inputs_then_exc(*lead, exc=exc)
+    bind_pool(monkeypatch, FakeWorktreePool())
     rc = pc.run_console(
         input_fn=reader,
-        board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, FakeWorktreePool()),
+        board=FakeBoardAreas(rows=[]),
     )
     assert rc == 0                                  # traceback 0·우아 종료
     assert "콘솔 종료" in capsys.readouterr().out
@@ -586,8 +614,9 @@ def test_console_build_cmd_prompt_abort_graceful(pc, monkeypatch, capsys, exc):
     # repo 입력 후 빌드명령 프롬프트서 중단 → _prompt_test_cmd 가 None 흡수 → create_slot(None).
     # 그 뒤 메뉴 'q' 로 종료.
     reader = _inputs_then_exc_resume("w", "svc", "svc", build_exc=exc, after=("q",))
+    bind_pool(monkeypatch, wp)
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=_SVC_ROWS), worktree_pool=bind_pool(monkeypatch, wp))
+                        board=FakeBoardAreas(rows=_SVC_ROWS))
     assert rc == 0
     # 빌드명령 중단은 None 폴백(크래시 0) — 슬롯 생성은 진행(create_slot test_cmd=None).
     assert ("create_slot", "svc", None) in wp.calls
@@ -626,7 +655,8 @@ def test_console_rerenders_after_action(pc, monkeypatch):
     monkeypatch.setattr(pc, "cmd_repo_add", lambda *a, **k: 0)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "q")
-    rc = pc.run_console(input_fn=reader, board=FakeBoardAreas(rows=[]), worktree_pool=bind_pool(monkeypatch, wp))
+    bind_pool(monkeypatch, wp)
+    rc = pc.run_console(input_fn=reader, board=FakeBoardAreas(rows=[]))
     assert rc == 0
     assert wp.calls.count(("list_leases",)) >= 2   # 첫 렌더 + 액션후 재렌더
 
@@ -635,21 +665,19 @@ def test_console_rerenders_after_action(pc, monkeypatch):
 
 
 def test_console_autoloads_engines_when_not_injected(pc, monkeypatch, capsys):
-    """board/worktree_pool 미주입 → _load_module 로 자동 로드(주입 seam 폴백)."""
+    """board 미주입은 자동 적재하고 슬롯 조회는 패키지 대역으로 실행한다."""
     board = FakeBoardAreas(rows=[])
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
 
     def fake_load(name, filename):
         if name == "board":
             return board
-        if name == "worktree_pool":
-            return wp
         return None
 
     monkeypatch.setattr(pc, "_load_module", fake_load)
     rc = pc.run_console(input_fn=_inputs("q"))
     assert rc == 0
-    assert wp.calls.count(("list_leases",)) >= 1   # 자동 로드된 wp 가 렌더에 쓰임
+    assert wp.calls.count(("list_leases",)) >= 1   # 패키지에 연결한 슬롯 조회가 렌더에 쓰임
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -956,7 +984,8 @@ def test_console_menu_routes_m_to_model_guidance(pc, monkeypatch, capsys):
     board = FakeBoardAreas(rows=[])
     wp = bind_pool(monkeypatch, FakeWorktreePool())
 
-    rc = pc.run_console(input_fn=_inputs("m", "q"), board=board, worktree_pool=bind_pool(monkeypatch, wp))
+    bind_pool(monkeypatch, wp)
+    rc = pc.run_console(input_fn=_inputs("m", "q"), board=board)
 
     assert rc == 0
     assert calls == [1]

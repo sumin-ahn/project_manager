@@ -5,8 +5,8 @@ multi-PM = N 세션 × M repo 한 개념— *수가 1이냐 더냐*. 이 파사�
 repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯 대여·반납(`alloc`·`release`)을
 맡는다(다중-사람 협업 아님). 부트스트랩·핸드오프는 슬롯을 빌리거나 반납하지 않는다.
 
-각 서브커맨드는 엔진(board.py / worktree_pool.py / pm_update.py)을 호출하는 *얇은
-배선*이다 — 자체 로직 0. 디스패처가 엔진 호출의 단일 지점이다.
+각 서브커맨드는 board·pm_update CLI와 pm_engine 패키지를 호출한다.
+보호 정책·훅·git 조회는 repo_protection·protected_hooks·git·areas_store가 소유한다.
 
 사용:
     pm-config init [<board init 인자>]                     # clone 당 1회 셋업 (board.py init 흡수)
@@ -41,7 +41,7 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
                 로 `.repos/<name>.git`(worktree 풀 공유 .git 원).
   - repo protected → (조회) areas_store._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 정합 /
                 (설정) board.areas_set_cell(areas.md 단일 진실·board_lock in-place) →
-                worktree_pool.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
+                repo_protection → protected_hooks.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
   - repo list → areas_store._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
   - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 게이트 뒤
                 pm_engine.app.worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
@@ -87,7 +87,6 @@ import datetime
 import inspect
 import json
 import os
-import re
 import shutil
 import shlex
 import subprocess
@@ -101,14 +100,13 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema, upstream_rules  # noqa: E402
-from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, python_env, repo_files  # noqa: E402
+from pm_engine.domain import areas_rules, conf_schema, upstream_rules  # noqa: E402
+from pm_engine.infra import areas_store, conf_store, console, fs, lease_store, pm_paths, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
-from urllib.parse import urlsplit
-from pm_engine.app import branch_checkout
-from pm_engine.infra import branch_store
+from pm_engine.app import branch_checkout, repo_protection
+from pm_engine.infra import branch_store, git, protected_hooks
 from pm_engine.infra import pool_store
 from pm_engine.infra import sparse_checkout
 from pm_engine.app import task_lifecycle
@@ -126,7 +124,6 @@ REPO = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 REPOS_DIR = REPO / ".repos"   # worktree 풀이 공유하는 bare .git 원
 
-GIT_TIMEOUT_SECONDS = 600   # clone 은 네트워크 — 부트스트랩/worktree git 보다 넉넉히.
 
 # git argv → (returncode, stdout). DI seam 의 타입 (pm_import.GitRunner·worktree_pool 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
@@ -216,34 +213,6 @@ def _runtime_skill_entry(skill: str) -> str:
     return f"{prefix}{skill}"
 
 
-def _real_clone_runner() -> GitRunner:
-    """`git clone ...` 을 실행하는 GitRunner (fail-soft). argv 는 clone 인자 그대로.
-
-    clone 은 `-C <dir>` 가 아니라 `git clone <url> <dest>` 형태라 별도 runner 로 둔다.
-    git 바이너리 부재(shutil.which)·예외는 (1, stderr-or-"") 로 감싼다 — 호출부가 rc 로
-    판정. 인코딩은 엔진 관례대로 UTF-8(한글 경로·메시지 안전).
-    """
-    git_binary = shutil.which("git")
-
-    def runner(argv: list) -> tuple[int, str]:
-        if git_binary is None:
-            return 1, "git 바이너리를 찾을 수 없음 (PATH)."
-        try:
-            result = subprocess.run(
-                [git_binary, *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=GIT_TIMEOUT_SECONDS,
-            )
-            return result.returncode, (result.stdout or "") + (result.stderr or "")
-        except Exception as exc:  # noqa: BLE001 — fail-soft: rc!=0 로 호출부에 위임.
-            return 1, str(exc)
-
-    return runner
-
-
 def _default_session(*, identity=None) -> str | None:
     """세션 식별자 — `lease_store.session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) > lease 장부
@@ -279,11 +248,11 @@ def _default_session(*, identity=None) -> str | None:
 def _local_conf_user() -> str | None:
     """`.project_manager/local.conf` 의 `identity.user=` (없거나 OSError → None).
 
-    `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`conf_store`)가 하고 이 함수는
+    `repo_protection._local_conf_test_cmd`와 동형 — 해소는 공용 로더(`conf_store`)가 하고 이 함수는
     키 이름과 빈값→None 관례만 소유한다(`conf_store.local_config(home).get("identity.user")` 와 동일 의미).
     부재/읽기실패는 None(폴백)이고, 구표기 키 잔존은 소비 지점 계약대로 fail-loud 다.
     """
-    return _local_conf_value("identity.user") or None
+    return repo_protection._local_conf_value(pm_paths.home_at(REPO), "identity.user") or None
 
 
 def _git_config_email() -> str | None:
@@ -389,208 +358,6 @@ def _distinct_area_owners() -> int:
                 if owner})
 
 
-def _local_conf_test_cmd() -> str | None:
-    """`.project_manager/local.conf` 의 `test.cmd=` (없거나 OSError → None).
-
-    `_local_conf_user` 와 동형 — board.py 를 import 하지 않으므로
-    touches 격리) `conf_store.local_config(home).get("test.cmd")` 와 *동일 의미*를 stdlib 로 자체
-    구현한다. worktree add 빌드명령 프롬프트의 기본값(`regression._test_cmd` 최종 폴백 레이어와
-    동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
-    """
-    return _local_conf_value("test.cmd")
-
-
-_PROTECTED_GATE_RELEASE = "release"
-_PROTECTED_GATE_SELF_TEST = "self-test"
-
-
-def _local_conf_value(key: str) -> str | None:
-    """`local.conf` 한 키의 마지막 값 (부재/OSError → None).
-
-    `conf_store.local_config()`와 같은 **last-wins**다. 중복 키의 마지막 값이
-    비어 있으면 앞의 값을 해제한 것으로 보아 `""`를 반환한다. 동일 파일을
-    `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
-    """
-    conf_file = REPO / ".project_manager" / "local.conf"
-    return conf_store.load_checked(conf_file).get(key)
-
-
-def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
-    """Git remote를 transport class + endpoint/path identity로 정규화한다.
-
-    판정 축(코드·테스트 공통 표):
-
-    ======================  ================================================
-    입력 축                 identity 규칙
-    ======================  ================================================
-    ssh/https/scp           같은 ``network`` class로 정규화
-    file://                 ``file`` class를 보존(network과 절대 동일 아님)
-    user, host case         user 제거, host 소문자화
-    host / port             독립 tuple 필드(IPv6 콜론과 port 경계 보존)
-    default port            ssh:22/https:443은 None; non-default는 int로 보존
-    path                    선행/후행 slash·마지막 ``.git`` 정규화
-    ======================  ================================================
-
-    따라서 ``ssh://host:22/a/b``·``git@host:a/b.git``·``https://host/a/b``는
-    같지만, ``file://host/a/b``는 endpoint 문자열이 같아도 다른 identity다.
-    """
-    raw = value.strip().rstrip("/")
-    # SCP-like IPv6는 `user@[::1]:path`처럼 host의 콜론을 대괄호로 감싼다. 일반
-    # `host:path`와 별도 패턴으로 먼저 분리해야 `::1` 일부가 path로 새지 않는다.
-    scp = None
-    if "://" not in raw:
-        scp = re.match(r"^(?:[^@/]+@)?\[([^\]]+)\]:(.+)$", raw)
-        if scp is None:
-            scp = re.match(r"^(?:[^@/]+@)?([^:/]+):(.+)$", raw)
-    if scp is not None:
-        host, path = scp.groups()
-        normalized_path = path.removesuffix(".git").strip("/")
-        return ("network", host.lower(), None, normalized_path)
-    if "://" in raw:
-        parsed = urlsplit(raw)
-        scheme = parsed.scheme.lower()
-        normalized_path = parsed.path.removesuffix(".git").strip("/")
-        try:
-            host = (parsed.hostname or "").lower()
-            port = parsed.port
-        except ValueError:
-            # 잘못된 authority를 유사 remote로 잘못 합치지 않는 안전 방향 폴백.
-            authority = parsed.netloc.rsplit("@", 1)[-1].lower()
-            return (f"invalid-{scheme}", authority, None, normalized_path)
-        default_port = {"ssh": 22, "https": 443}.get(scheme)
-        normalized_port = None if port is None or port == default_port else port
-        transport = "network" if scheme in {"ssh", "https"} else scheme
-        # host와 port를 tuple의 독립 필드로 둔다. 문자열 `host:port` 결합은 IPv6
-        # host 자체의 콜론과 경계가 사라져 `[::1]:2222`와 `[::1:2222]`를 합친다.
-        return (transport, host, normalized_port, normalized_path)
-    return ("path", "", None, raw.removesuffix(".git"))
-
-
-def _repo_registry_git(repo: str, *, board=None) -> str | None:
-    """areas의 repo git remote 값. helper/파서 부재·실패·빈 값은 None."""
-    board_mod = board or _load_module("board", "board.py")
-    getter = getattr(board_mod, "_areas_git_url", None) if board_mod else None
-    if getter is not None:
-        try:
-            value = getter(repo)
-        except Exception as exc:  # noqa: BLE001 — 아래 parser/None 폴백(단 skew 재전파).
-            if _is_engine_rev_skew(exc):
-                raise
-            value = None
-        if value:
-            return value
-    try:
-        _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
-    except Exception:  # noqa: BLE001 — provenance 미해소로 수렴.
-        rows = []
-    for row in rows:
-        if row.get("repo") == repo and row.get("git"):
-            return row["git"]
-    return None
-
-
-def _protected_push_gate_config(
-    repo: str, *, board=None, report_downgrade: bool = True,
-) -> tuple[str, str]:
-    """repo 보호 push의 증거 계약 `(mode, self_test_cmd)`를 provenance로 해소한다.
-
-    PM 홈 `local.conf upstream.path=`이 이 홈의 canonical `work/<repo>_<N>` 슬롯 자체거나,
-    URL identity가 areas의 repo remote와 같으면 프레임워크 자기 repo라 기존 release
-    livegate를 유지한다. 다른 repo면 areas `test_cmd`(없으면 local.conf/default)로 자기 검증한다.
-    upstream/registry provenance를 판별할 수 없으면 사용자 통제 밖 조건으로 영구 차단하지
-    않고 adopter `self-test`로 강등한다. 증거 명령 자체는 그대로 fail-closed다.
-    """
-    test_cmd = _resolve_repo_test_cmd(repo)
-    upstream = _local_conf_value("upstream.path")
-    if not upstream:
-        if report_downgrade:
-            print(
-                f"⚠ 보호 push gate 강등({repo}): local.conf upstream.path 축 미해소 — "
-                "release 대신 self-test를 사용한다; upstream을 설정하라.",
-                file=sys.stderr,
-            )
-        return _PROTECTED_GATE_SELF_TEST, test_cmd
-
-    # URL/scp-like upstream 판별은 upstream_rules.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
-    # 따로 들면 `host:path` 같은 지원 형식이 경로로 갈라져 release gate가 빠진다.
-    kind = upstream_rules.classify_upstream(upstream)
-    if kind == "url":
-        repo_git = _repo_registry_git(repo, board=board)
-        if not repo_git:
-            if report_downgrade:
-                print(
-                    f"⚠ 보호 push gate 강등({repo}): areas.md git 축 미해소 — "
-                    "release 대신 self-test를 사용한다; 해당 repo의 git URL을 등록하라.",
-                    file=sys.stderr,
-                )
-            return _PROTECTED_GATE_SELF_TEST, test_cmd
-        mode = (_PROTECTED_GATE_RELEASE
-                if _git_remote_identity(upstream) == _git_remote_identity(repo_git)
-                else _PROTECTED_GATE_SELF_TEST)
-        return mode, test_cmd
-
-    # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 호출부(`_install_protected_hook`)
-    # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
-    # Windows "stat: embedded null character in path") 입력을 안 실으면 진단이 남지 않는다.
-    try:
-        candidate = pm_paths._expanded_user_path(upstream)
-        if not candidate.is_absolute():
-            candidate = REPO / candidate
-        candidate = candidate.resolve()
-    except (OSError, RuntimeError, ValueError) as exc:
-        if _is_engine_rev_skew(exc):
-            raise
-        raise RuntimeError(
-            f"upstream 경로 해소 실패({upstream}) — {type(exc).__name__}: {exc}") from exc
-    work_root = (REPO / "work").resolve()
-    name, sep, slot_no = candidate.name.rpartition("_")
-    if candidate.parent == work_root and sep and name == repo and slot_no.isdigit():
-        return _PROTECTED_GATE_RELEASE, test_cmd
-    return _PROTECTED_GATE_SELF_TEST, test_cmd
-
-
-def _default_test_cmd() -> str:
-    """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 `python_env` 기본.
-
-    regression._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
-    동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
-    프롬프트 표시값 resolve 의 폴백.
-    """
-    configured = _local_conf_test_cmd()
-    if configured:
-        return configured
-    return python_env.default_pytest_cmd()
-
-
-def _resolve_repo_test_cmd(repo: str) -> str:
-    """프롬프트 `[기본: <X>]` 의 X — 그 repo 가 Enter 시 실제로 폴백할 test_cmd.
-
-    regression._test_cmd 의 해소 체인을 *그 repo 한정으로* 재현한다 (areas 파서
-    `areas_store._parse_areas`/`_areas_row_for_prefix` 재사용):
-      1. **활성 repo 의 areas.md test_cmd** — 그 repo(=prefix)의 레지스트리 행에 비어
-         있지 않은 `test_cmd` 가 있으면 그것(per-repo 스택·`go test ./...` 등).
-      2. **최종 폴백** — areas 미등록·빈 값이면 `local.conf test.cmd` 또는 `pytest -q`.
-    (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
-    보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
-    """
-    home = pm_paths.home_at(REPO)
-    try:
-        _header, rows = areas_store._parse_areas(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 아래 폴백.
-        rows = []
-    for row in rows:
-        if row.get("repo") == repo and row.get("test_cmd"):
-            return row["test_cmd"]
-    # 구 3칼럼 registry에는 repo 칼럼이 없으므로 prefix lookup을 하위호환으로 유지한다.
-    try:
-        row = areas_store._areas_row_for_prefix(home, repo)
-    except Exception:  # noqa: BLE001 — areas 실패는 최종 폴백.
-        row = None
-    if row and row.get("test_cmd"):
-        return row["test_cmd"]
-    return _default_test_cmd()
-
-
 def _resolve_repo_base(repo: str, *, board=None) -> str | None:
     """그 repo 의 areas.md `base` 브랜치 — 등록 칸이 비었으면 None.
 
@@ -606,370 +373,11 @@ def _resolve_repo_base(repo: str, *, board=None) -> str | None:
     return board_mod._repo_base(repo)
 
 
-# 보호 브랜치 default — board.DEFAULT_PROTECTED 와 *동형* 폴백. board/헬퍼 부재(구
-# board)·파싱 실패 시 board 를 못 읽으므로 여기서 같은 안전 기본값을 보장한다(보호는 안전
-# 기본값이 있어야 — 미해소여도 main 류를 막는다). board 가 있으면 areas_store._repo_protected 가
-# 권위(areas override 반영)이고, 이 상수는 board 부재 폴백 전용이다.
-_DEFAULT_PROTECTED = ("main", "master", "develop")
-
-# `_install_protected_hook` 는 repo add/worktree add를 깨지 않기 위해 bool fail-soft를
-# 유지한다. 단, 그 과정에서 raw 예외 원인을 잃으면 bootstrap/reporting이 모든
-# 실패를 "bare 부재" 로 오도한다. CLI는 단일 process에서 순차 설치하므로 repo별
-# 최신 실패 원인을 함께 기록하고, 공개 helper로 동일 깔때기의 호출자가 소비한다.
-_PROTECTED_HOOK_FAILURE_REASONS: dict[str, str] = {}
-
-
-def protected_hook_install_failure_reason(repo: str) -> str | None:
-    """최근 보호 훅 중앙 설치 실패 원인(성공/미시도면 None)."""
-    return _PROTECTED_HOOK_FAILURE_REASONS.get(repo)
-
-
-def _resolve_repo_protected(repo: str) -> list[str]:
-    """대상 Home의 보호목록 판독. 일반 판독 실패 시 안전 기본값을 적용한다."""
-    try:
-        return areas_store._repo_protected(pm_paths.home_at(REPO), repo)
-    except Exception as exc:  # noqa: BLE001 — areas 실패는 default 폴백(단 skew 재전파).
-        return list(_DEFAULT_PROTECTED)
-
-
-def _install_protected_hook(repo: str, *, board=None, worktree_pool=None) -> bool:
-    """그 repo 의 보호 브랜치 훅(pre-push·pre-commit)을 (재)설치한다 — repo add·worktree add·
-    `pm_update` sync 후 전수 재설치 공용.
-
-    보호목록과 형상별 증거 계약(`_protected_push_gate_config`)을 해소해
-    `worktree_pool.install_protected_hook(repo, protected, gate_mode=, test_cmd=)` 에 전달한다 —
-    훅+sidecar+bare `core.hooksPath` wiring(멱등·자가치유). **회사 repo 무영향** — 모든 write 는 `.project_manager
-    /.local` + bare config 1줄(client-side).
-
-    **fail-soft·best-effort** — worktree_pool 부재/`install_protected_hook` 미존재(구 엔진)/
-    예외는 False(보호훅은 *추가 가드*이지 repo add/worktree add 의 핵심 부작용이
-    아니다 → 훅 설치 실패가 등록/슬롯 생성을 깨면 안 된다). 단 fail-soft가
-    **원인 소실**은 뜻하지 않으므로 `protected_hook_install_failure_reason`에
-    실제 예외 타입/메시지 또는 installer False 사유를 기록한다. bare 부재 시 install이
-    no-op False. 설치 성공 시 True. board 직접 import 금지— `_load_module` DI.
-    """
-    _PROTECTED_HOOK_FAILURE_REASONS.pop(repo, None)
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    install = getattr(wp, "install_protected_hook", None) if wp else None
-    if install is None:
-        _PROTECTED_HOOK_FAILURE_REASONS[repo] = (
-            "worktree_pool.install_protected_hook 헬퍼 부재(구 엔진 또는 로드 실패)")
-        return False  # 구 엔진(헬퍼 부재)/wp 부재 — fail-soft(보호훅은 추가 가드).
-    try:
-        protected = _resolve_repo_protected(repo)
-        gate_mode, test_cmd = _protected_push_gate_config(repo, board=board)
-        installed = bool(install(repo, protected, gate_mode=gate_mode, test_cmd=test_cmd))
-        if not installed:
-            _PROTECTED_HOOK_FAILURE_REASONS[repo] = (
-                "install_protected_hook이 False를 반환(bare 미러 부재 또는 "
-                "bare core.hooksPath 설정 실패)")
-        return installed
-    except Exception as exc:  # noqa: BLE001 — 등록/슬롯 생성은 유지하되 원인은 기록.
-        if _is_engine_rev_skew(exc):
-            raise  # 엔진 사본 불일치는 설치 오류가 아니므로 fail-soft 대상이 아니다.
-        _PROTECTED_HOOK_FAILURE_REASONS[repo] = f"{type(exc).__name__}: {exc}"
-        return False
-
-
 # ── 보호목록 설정 채널 ────────────────────────────────────
 # areas.md `protected` 칼럼이 **단일 진실**이고 훅 sidecar(`.local/repo-hooks/<repo>/protected`)는
 # 순수 파생 캐시다. 값 변경은 areas → sidecar **순서 고정**(역순이면 훅이 비준되지 않은 목록을
 # 강제한다). "보호 없음" 은 표현 불가 — 빈 값은 항상 `DEFAULT_PROTECTED` 폴백이므로 빈 문자열
 # 지정은 거부하고 `default` 리터럴(칼럼 비움)로 안내한다.
-
-_PROTECTED_DEFAULT_LITERAL = "default"   # 칼럼 비움 = DEFAULT_PROTECTED 폴백(해제 아님).
-
-
-def _validate_protected_tokens(value: str) -> tuple[list[str] | None, str]:
-    """`"main, release"` → `(["main", "release"], "")` · 거부면 `(None, 사유)`.
-
-    **형식만** 본다 — 브랜치 실재는 검증하지 않는다(아직 없는 `release` 를 미리 보호하는 게
-    정상적인 쓰임이다). 거부 대상:
-      - 빈 문자열/공백만 — "보호 없음" 은 표현 불가(`default` 리터럴로 안내).
-      - 빈 토큰(선/후행 쉼표·연속 쉼표) — areas 셀에 빈 자리를 만든다.
-      - 토큰 내부 공백 — areas.md 는 공백-구분 표라 셀/줄이 깨진다.
-      - `|` — markdown 표 구분자(줄 corruption).
-    """
-    if not value.strip():
-        return None, (
-            "빈 보호목록은 지정할 수 없다 — 보호는 안전 기본값이 있어야 한다(\"보호 없음\"은 "
-            f"표현 불가). 기본값(main/master/develop)으로 되돌리려면 `{_PROTECTED_DEFAULT_LITERAL}` "
-            "리터럴을 쓰라."
-        )
-    tokens: list[str] = []
-    for raw in value.split(","):
-        token = raw.strip()
-        if not token:
-            return None, (
-                f"보호목록 {value!r} 에 빈 토큰이 있다(선/후행 쉼표·연속 쉼표) — "
-                "`main,develop` 처럼 쉼표로만 구분하라."
-            )
-        if any(ch.isspace() for ch in token):
-            return None, (
-                f"보호 브랜치 {token!r} 에 공백이 있다 — areas.md 는 공백-구분 표라 줄이 깨진다."
-            )
-        if "|" in token:
-            return None, (
-                f"보호 브랜치 {token!r} 에 `|` 가 있다 — markdown 표 구분자라 areas.md 줄이 깨진다."
-            )
-        tokens.append(token)
-    return tokens, ""
-
-
-def _protected_sidecar_path(repo: str, *, worktree_pool=None) -> Path | None:
-    """그 repo 의 훅 sidecar 경로 `.local/repo-hooks/<repo>/protected` (미해소 → None).
-
-    훅이 *실제로 읽는* 파일이다(areas.md 가 아니라). worktree_pool 직접 import 금지
-    isolation) — `_load_module` DI + `REPO_HOOKS_DIR` 를 getattr 로 쓴다. worktree_pool/상수
-    부재(구 엔진)는 None(정합 판정 생략·fail-soft).
-    """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp is not None else None
-    if hooks_dir is None:
-        return None
-    return Path(hooks_dir) / repo / "protected"
-
-
-def _read_protected_sidecar(repo: str, *, worktree_pool=None) -> list[str] | None:
-    """훅 sidecar 의 실 보호목록(줄당 1브랜치). 미해소/미설치/읽기실패 → None (fail-soft)."""
-    path = _protected_sidecar_path(repo, worktree_pool=worktree_pool)
-    if path is None or not path.is_file():
-        return None
-    try:
-        text = fs.read_text_shared(path, encoding="utf-8")
-    except OSError:
-        return None
-    return [line.strip() for line in text.splitlines() if line.strip()]
-
-
-def protected_hook_wired(
-    repo: str,
-    *,
-    worktree_pool=None,
-    git_runner: GitRunner | None = None,
-) -> bool | None:
-    """bare `core.hooksPath` 가 이 repo 훅 디렉토리를 가리키는가 — 판정 불가면 None.
-
-    **왜 sidecar 만으로는 부족한가**: `install_protected_hook` 은  훅 본문  sidecar 기록
-    bare `core.hooksPath` 배선 순서다. 이 실패하면 **sidecar 는 최신인데 훅은 아예 안 걸린**
-    상태가 된다 — 그런데 sidecar 내용만 보면 "정합" 이라 조회는 `✓` 를 내고 bootstrap reconcile 은
-    영구 침묵한다. 이 티켓이 닫으려던 "값-연결 끊김을 정합하다고 거짓 보고" 와 같은 클래스라
-    **표시/판정 층에서** 이 축을 함께 본다.
-
-    **읽기 전용** — `git -C <bare> config --get core.hooksPath` 를 읽어 `REPO_HOOKS_DIR/<repo>` 와
-    같은 경로인지 비교만 한다(`install_protected_hook` 은 호출하지 않는다·시그니처/본문 불변).
-    경로 비교는 양쪽 `Path.resolve()` — 설치측이 `hook_dir.resolve()` 를 기록하므로 심링크/상대
-    표기 차이를 흡수한다.
-
-    반환:
-      - `True`  — 배선됨(훅이 실제로 발화한다).
-      - `False` — hooksPath 가 비었거나 **다른 디렉토리**를 가리킨다(= 훅 미배선·보호 꺼짐).
-      - `None`  — 판정 불가(worktree_pool/상수 부재·bare 부재·git 실패). 오탐 금지 — 호출부는
-        None 을 "모름" 으로 표시하고 `False` 로 단정하지 않는다.
-
-    worktree_pool 직접 import 금지— `_load_module` DI + `REPO_HOOKS_DIR`/`bare_repo_path`
-    를 getattr 로 쓴다. **모듈 공개(`_` 없음)** — pm_bootstrap 의 phase-0 reconcile 이 같은 판정을
-    복붙하지 않고 이 함수를 소비한다(두 벌 금지).
-    """
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
-    hooks_dir = getattr(wp, "REPO_HOOKS_DIR", None) if wp is not None else None
-    if hooks_dir is None:
-        return None
-    try:
-        bare = Path(pm_paths.bare_repo_path(pm_paths.home_at(REPO), repo))
-        if not bare.exists():
-            return None            # 게이트할 bare 없음 — 배선 여부를 논할 수 없다.
-        runner = git_runner or _real_clone_runner()
-        rc, out = runner(["-C", str(bare), "config", "--get", "core.hooksPath"])
-        if rc != 0:
-            # `--get` 은 키 부재에도 rc≠0(=1) 이다. 키 부재 = 미배선이 맞지만, git 자체가 못
-            # 도는 경우(바이너리 부재 등)와 구별이 안 되므로 bare 프로브로 갈라낸다.
-            probe_rc, _probe = runner(
-                ["-C", str(bare), "rev-parse", "--is-bare-repository"])
-            return False if probe_rc == 0 else None
-        configured = out.strip().splitlines()[0].strip() if out.strip() else ""
-        if not configured:
-            return False
-        return Path(configured).resolve() == (Path(hooks_dir) / repo).resolve()
-    except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 None(단 skew 재전파).
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-
-
-def _areas_protected_cell(repo: str) -> str | None:
-    """areas.md 그 repo 행의 **raw** `protected` 셀 — 행 부재 → None (출처 판정용).
-
-    `_resolve_repo_protected`(폴백 적용된 *실효값*)와 달리 "명시했나 / 비었나 / 행이 없나"를
-    구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. 파싱 실패 → None.
-    """
-    try:
-        _header, rows = areas_store._parse_areas(pm_paths.home_at(REPO))
-    except Exception:  # noqa: BLE001 — 일반 areas 실패만 None.
-        return None
-    for row in rows:
-        if row.get("repo") == repo:
-            return row.get("protected") or ""
-    return None
-
-
-def _bare_missing_branches(
-    repo: str,
-    branches: list[str],
-    *,
-    clone_runner: GitRunner | None = None,
-    repos_dir: Path | None = None,
-) -> list[str]:
-    """`branches` 중 `.repos/<repo>.git` 에 없는 것들 (경고 1줄용·검증 아님).
-
-    보호목록은 **브랜치 실재를 요구하지 않는다**(아직 없는 `release` 를 미리 보호하는 게 정상).
-    그래서 거부하지 않고 *경고*만 낸다 — 오타(`mian`)를 조용히 흘리지 않기 위한 가시화다.
-    bare 부재(clone 전)·git 실패는 빈 리스트(fail-soft·경고 생략).
-
-    **bare 조회 자체가 실패하면 경고를 통째로 생략한다** — git 바이너리 부재/권한 등으로 모든
-    `show-ref` 가 rc≠0 이 되면 멀쩡한 브랜치까지 "없다"고 오탐한다. 먼저 `rev-parse
-    --is-bare-repository` 로 bare 를 프로브해 rc≠0 이면 빈 리스트(경고의 목적은 오타 포착이지
-    차단이 아니다).
-    """
-    bare = (repos_dir if repos_dir is not None else REPOS_DIR) / f"{repo}.git"
-    if not branches or not bare.exists():
-        return []
-    runner = clone_runner or _real_clone_runner()
-    try:
-        probe_rc, _probe = runner(
-            ["-C", str(bare), "rev-parse", "--is-bare-repository"])
-        if probe_rc != 0:
-            return []   # bare 조회 불가(git 부재/깨진 bare) — 오탐 방지로 경고 생략.
-        missing: list[str] = []
-        for branch in branches:
-            rc, _out = runner(
-                ["-C", str(bare), "show-ref", "--verify", "--quiet",
-                 f"refs/heads/{branch}"])
-            if rc != 0:
-                missing.append(branch)
-    except Exception:  # noqa: BLE001 — fail-soft: 경고는 부가 정보(판정 실패=생략).
-        return []
-    return missing
-
-
-def _warn_missing_protected_branches(
-    repo: str,
-    branches: list[str],
-    *,
-    clone_runner: GitRunner | None = None,
-    repos_dir: Path | None = None,
-) -> list[str]:
-    """bare 에 없는 보호 브랜치를 경고 1줄로 낸다 — **양 경로 공용 깔때기**.
-
-    `repo add --protected` (신규 등록)와 `repo protected <repo> <목록>` (사후 설정)은 **같은**
-    보호목록을 같은 문법으로 받는다 — 한쪽에만 오타 가시화가 있으면 `--protected mian` 이 기본
-    보호목록(main/master/develop)을 덮으면서 조용히 통과해 **보호 가드가 실질적으로 꺼진다**.
-    그래서 두 경로가 이 함수 하나를 탄다(검증 비대칭 클래스 폐쇄).
-
-    거부가 아니라 경고다. 반환 = 없는 브랜치 목록.
-    """
-    missing = _bare_missing_branches(
-        repo, branches, clone_runner=clone_runner, repos_dir=repos_dir)
-    if missing:
-        print(
-            f"[경고] `.repos/{repo}.git` 에 없는 브랜치를 보호목록에 넣었다: "
-            f"{', '.join(missing)} — 아직 없는 브랜치를 미리 보호하는 것은 정상이지만 "
-            "오타가 아닌지 확인하라(검증하지 않음·"
-            f"수정은 `{_FACADE_PROG} repo protected {repo} <목록>`).",
-            file=sys.stderr,
-        )
-    return missing
-
-
-def protected_retry_command(repo: str) -> str:
-    """그 repo 의 보호목록 **재실행 안내 커맨드** — 현재 상태(명시/폴백/미등록) 단일 분기.
-
-    안내는 *실행하면 지금 상태를 그대로 복원*해야 한다. 그런데 상태에 따라 정확한 커맨드가 다르다:
-
-      - **기본값 폴백**(areas `protected` 칼럼이 빈 값) → `repo protected <repo> default`.
-        여기서 `main,master,develop` 을 **명시 커맨드로 안내하면 안 된다** — 사용자가 그대로
-        실행하면 동작은 같아도 raw cell 의 출처가 "기본값 폴백" → "명시 설정" 으로 바뀐다
-        (안내가 상태를 조용히 바꾼다). 이후 DEFAULT_PROTECTED 가 바뀌어도 안 따라간다.
-      - **명시 설정** → `repo protected <repo> <현재 목록>`(그 값 그대로 재적용·멱등).
-      - **미등록**(areas 에 행 없음) → 셀을 고칠 대상이 없으니 `repo add <repo>` 가 먼저다.
-
-    이 분기를 **여기 한 곳**에만 둔다 — 조회의 drift/미배선 줄·설정 실패 경고·bootstrap reconcile
-    실패 경고가 전부 이 함수를 소비한다.
-    pm_bootstrap 은 `_load_tool` 로 이 심볼을 소비한다(모듈 공개·`protected_hook_wired` 동형).
-    """
-    cell = _areas_protected_cell(repo)
-    if cell is None:
-        return f"{_FACADE_PROG} repo add {repo}"
-    if not cell.strip():
-        return f"{_FACADE_PROG} repo protected {repo} {_PROTECTED_DEFAULT_LITERAL}"
-    listed = ",".join(t.strip() for t in cell.split(",") if t.strip())
-    return f"{_FACADE_PROG} repo protected {repo} {listed}"
-
-
-def _install_protected_hook_reporting(
-    repo: str,
-    *,
-    board=None,
-    worktree_pool=None,
-    action: str,
-    retry: str | None = None,
-) -> bool:
-    """훅 sidecar (재)설치 + **결과 보고 단일 깔때기** (성공도 실패도 조용하지 않다).
-
-    `_install_protected_hook` 은 실패를 **예외가 아니라 False** 로 돌려준다(bare 부재·
-    `core.hooksPath` 설정 실패·구 엔진). 호출부마다 `if ...: print(성공)` 만 쓰면 실패가 전부
-    침묵한다 — 훅이 안 걸렸는데 사용자는 걸린 줄 안다(보호 가드 침묵 무력화). 성공은 `✓` 1줄,
-    실패는 **stderr 경고 + 재실행 커맨드**로 낸다.
-
-    `action` = 사람이 읽는 맥락("설치"·"(재)설치"). `retry` = 재실행 안내 커맨드 — 보호목록을
-    *바꾸는* 경로는 `protected_retry_command`(상태 인지 단일 분기)를 넘기고, 등록/슬롯 생성 경로는
-    생략해 방금 친 멱등 커맨드(`repo add <repo>`)를 안내한다. 반환 = 설치 성공 여부(호출부는 rc 를
-    바꾸지 않는다 — 보호 훅은 추가 가드).
-    """
-    if _install_protected_hook(repo, board=board, worktree_pool=worktree_pool):
-        print(f"✓ 보호 브랜치 pre-push + pre-commit 훅 {action}: {repo}.")
-        return True
-    retry = retry or f"{_FACADE_PROG} repo add {repo}"
-    reason = protected_hook_install_failure_reason(repo) or "원인 미해소"
-    print(
-        f"[경고] 보호 브랜치 훅 sidecar 를 {action}하지 못했다: {repo} — {reason}. 이 clone 의 "
-        "pre-push·pre-commit 훅은 보호목록을 강제하지 않거나 옛 목록으로 동작할 수 있다.\n"
-        f"  → 재실행(멱등): {retry}",
-        file=sys.stderr,
-    )
-    return False
-
-
-def _refresh_protected_gate_contracts(*, board=None, worktree_pool=None) -> tuple[list[str], list[str]]:
-    """등록 repo 훅을 현재 upstream 기반 gate 계약으로 재설치한다.
-
-    `upstream set`은 release/self-test provenance 자체를 바꾸므로 설정 파일만 갱신하면 기존
-    sidecar가 다음 일반 설치까지 stale하다. 등록 repo 전수를 중앙 설치 깔때기로 보내
-    보호목록·원자 gate-contract(mode + test command)를 함께 재계산한다. 반환은
-    `(시도 repo, 실패 repo)`이며,
-    보호 훅의 기존 best-effort 계약대로 설정 기록 자체를 롤백하지는 않고 실패를 loud 보고한다.
-    """
-    board_mod = board or _load_module("board", "board.py")
-    if board_mod is None:
-        return [], []
-    # hermetic 호출에서 pm_config.REPO만 임시 루트로 바꿨는데 실 board를 주입하지 않은 경우
-    # 실 PM 홈 레지스트리/훅을 건드리지 않는다. 프로덕션 모듈끼리는 같은 REPO다.
-    board_repo = getattr(board_mod, "REPO", REPO)
-    if Path(board_repo).resolve() != REPO.resolve():
-        return [], []
-    try:
-        repos = sorted(areas_store.registered_repos(pm_paths.home_at(REPO)))
-    except Exception:  # noqa: BLE001 — 설정 보존·일반 refresh 실패만 fail-soft.
-        return [], []
-    attempted: list[str] = []
-    failed: list[str] = []
-    for repo in repos:
-        attempted.append(repo)
-        if not _install_protected_hook_reporting(
-                repo, board=board_mod, worktree_pool=worktree_pool,
-                action="gate 계약으로 (재)설치"):
-            failed.append(repo)
-    return attempted, failed
 
 
 def _stdin_is_tty() -> bool:
@@ -987,13 +395,6 @@ def _stdin_is_tty() -> bool:
 
 # ── repo name 입력 검증 ─────────────────────────────────────────────
 
-# 허용 repo name = prefix = ticket ID 네임스페이스·areas.md 공백구분 칼럼값.
-# 영숫자로 시작(leading `-` = 옵션 오인·빈 문자열 배제), 이후 영숫자/`_`/`-` 만 허용.
-# 경로분리자(`/`)·`.`(`..` 폴더탈출)·공백(areas.md 줄 corruption)을 전부 배제한다.
-# board._FAMILY_SCOPE_RE(`^[A-Za-z0-9_-]+$`)는 leading `-` 를 막지 않아 재사용 부적합 —
-# repo name 은 영숫자 시작을 강제하므로 별도 패턴을 둔다(reuse 확인·중복 정의 회피).
-_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-
 
 def _validate_repo_name(name: str) -> bool:
     """repo name 이 허용 패턴(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)에 맞는가.
@@ -1004,7 +405,7 @@ def _validate_repo_name(name: str) -> bool:
     """
     # fullmatch — `re.match` 의 `$` 는 trailing 개행 직전에도 매칭해 `"billing\n"` 이
     # 가드를 통과(bare 폴더명 개행·areas.md 줄 corruption — 막으려던 결함 클래스)한다.
-    return bool(_REPO_NAME_RE.fullmatch(name))
+    return bool(areas_rules._REPO_NAME_RE.fullmatch(name))
 
 
 # ── base 브랜치 해소 ─────────────────────────────────────────────────
@@ -1208,7 +609,7 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
         print(
             f"[경고] 사본 루트 ignore 규칙을 설치하지 못했다 — bare 부재: {bare_path}. "
             f"이 풀의 슬롯에서 위임 라운드 준비(`ticket prepare`)가 거부된다 — bare 복구 후 "
-            f"`{_FACADE_PROG} repo add <repo>` 로 재설치하라 (멱등).",
+            f"`{repo_protection._FACADE_PROG} repo add <repo>` 로 재설치하라 (멱등).",
             file=sys.stderr,
         )
         return False
@@ -1231,7 +632,7 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
             f"[경고] 사본 루트 ignore 규칙 설치 실패: {exclude} — {exc}. 이 풀의 슬롯에서 위임 "
             f"라운드 준비(`ticket prepare`)가 거부된다 — 수동으로 그 파일에 "
             f"`{TICKET_COPY_POOL_IGNORE_RULE}` 줄을 넣거나 권한 복구 후 "
-            f"`{_FACADE_PROG} repo add <repo>` 를 재실행하라 (멱등).",
+            f"`{repo_protection._FACADE_PROG} repo add <repo>` 를 재실행하라 (멱등).",
             file=sys.stderr,
         )
         return False
@@ -1240,16 +641,6 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
 
 
 # ── 위임 forward 시 usage prog 정합 ────────────────────────
-
-# `pm-config init`/`update` 는 board.py / pm_update.py 의 main() 으로 verbatim forward
-# 한다(cmd_init·cmd_update). 그 두 main 은 argparse prog 를 파일명으로 하드코딩하고
-# (prog="board.py"/"pm_update.py") main(argv) 에 prog 파라미터가 없어, `--help`·인자 에러
-# 시 usage 줄에 그 파일명이 새어 나온다 — 에이전트가 칠 실제 커맨드(pm-config init/update)와
-# 불일치해 오인을 부른다(facade[pm-config.sh/.cmd]가 진입점이므로
-# usage 도 facade 이름이어야 카드↔실행 표기가 일치). 두 main 을 수정하지 않고
-# (touches 격리·CLI 규격 단일 진실 = board/pm_update 보존) 이 파사드에서 위임 동안만 파서
-# 생성 시점의 top-level prog 를 치환한다.
-_FACADE_PROG = "pm-config"   # facade 이름 — build_parser 의 prog 와 동일.
 
 
 @contextlib.contextmanager
@@ -1285,7 +676,7 @@ def _forwarded_prog(prog_map: "dict[str, str]"):
 # ── 서브커맨드 핸들러 ─────────────────────────────────────────────────────────
 
 
-def _resolve_clone_git_url(name, cli_git, already_registered, board_mod):
+def _resolve_clone_git_url(name, cli_git, already_registered):
     """bare clone 소스 git URL 을 해소한다 (multi-user hydrate). 실패 → None(fail-loud 신호).
 
     `--git` 미제공 시 areas.md `git` 칼럼(레지스트리·git-tracked·공유)에서 URL 을 읽어,
@@ -1303,7 +694,7 @@ def _resolve_clone_git_url(name, cli_git, already_registered, board_mod):
           - `--git` 제공            → 그 값(신규 repo 등록).
           - `--git` 미제공          → fail-loud(신규 repo 는 clone 원 URL 을 areas 에서 해소 불가).
     """
-    areas_url = board_mod._areas_git_url(name) if already_registered else None
+    areas_url = areas_store._areas_git_url(pm_paths.home_at(REPO), name) if already_registered else None
 
     if cli_git:
         if already_registered and areas_url and areas_url != cli_git:
@@ -1346,7 +737,6 @@ def cmd_repo_add(
     board=None,
     clone_runner: GitRunner | None = None,
     repos_dir: Path | None = None,
-    worktree_pool=None,
 ) -> int:
     """`repo add <name> [--git <url>] [--test "<cmd>"] [--base <branch>]` — 패밀리에 repo 등록.
 
@@ -1421,7 +811,7 @@ def cmd_repo_add(
     protected_cell = ""
     protected_tokens: list[str] = []
     if protected_arg is not None:
-        tokens, reason = _validate_protected_tokens(protected_arg)
+        tokens, reason = areas_rules._validate_protected_tokens(protected_arg)
         if tokens is None:
             print(
                 f"[중단] --protected {protected_arg!r} 거부 — {reason} "
@@ -1476,7 +866,7 @@ def cmd_repo_add(
     # 는 repo 칼럼을 직접 세어 중복 append(같은 repo 두 줄)를 막는다. 위 case-only 가드에서 이미
     # 조회한 `registered_names` 를 재사용한다(같은 areas 스냅샷·중복 조회 dedupe).
     already_registered = name in registered_names
-    runner = clone_runner or _real_clone_runner()
+    runner = clone_runner or git._real_clone_runner()
 
     # bare 는 *경로 존재*(exists)만이 아닌 *실 bare git repo* 인지로 판정한다 — 중단된
     # `git clone --bare`(하네스 타임아웃·Ctrl-C)가 남긴 부분/빈/깨진 `.repos/<name>.git` 도
@@ -1485,7 +875,6 @@ def cmd_repo_add(
     # `_is_valid_bare`(rev-parse --is-bare-repository·worktree_pool)로 실 bare 를 판정해 그 통과를
     # fail-loud 로 닫는다. **파괴적 재clone 신중(§결정)**: 깨진 bare 자동삭제는 위험(사용자 데이터
     # 오판)이라 하지 않고, 정확 진단 + 수동 삭제 위임으로 안내한다(삭제는 사용자 위임 원칙). fail-soft:
-    # worktree_pool 로드 실패/헬퍼 부재(구 엔진)면 존재-검증 폴백(구 동작 보존·크래시 0).
 
     bare_present = bare_path.exists()
     if bare_present and (not worktree_git._is_valid_bare(bare_path, runner=runner)):
@@ -1513,7 +902,7 @@ def cmd_repo_add(
     # `repo add` 재실행=훅 자가치유 경로 보존·`--git` optional 계약 완결).
     git_url = None
     if (not bare_exists) or (not already_registered):
-        git_url = _resolve_clone_git_url(name, args.git, already_registered, board_mod)
+        git_url = _resolve_clone_git_url(name, args.git, already_registered)
         if git_url is None:
             return 1
 
@@ -1588,11 +977,11 @@ def cmd_repo_add(
             print(
                 f"[경고] `--protected {protected_arg!r}` 는 이미 등록된 repo 라 **반영되지 않았다** "
                 "(등록 줄은 append-only·이 경로는 등록을 건너뛴다). 기존 행의 보호목록을 바꾸려면: "
-                f"`{_FACADE_PROG} repo protected {name} \"{protected_cell}\"`.",
+                f"`{repo_protection._FACADE_PROG} repo protected {name} \"{protected_cell}\"`.",
                 file=sys.stderr,
             )
-        _install_protected_hook_reporting(
-            name, board=board_mod, worktree_pool=worktree_pool, action="(재)설치")
+        repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+            name, action="(재)설치")
         return 0
 
     # 3) base 브랜치 해소 — bare 가 존재하는 지금 시점에 해소·검증한다.
@@ -1631,12 +1020,12 @@ def cmd_repo_add(
     # 5) 보호 브랜치 pre-push 훅 설치 (멱등 자가치유) — 보호목록(areas protected→
     #    default) sidecar + bare core.hooksPath wiring. 회사 repo 무영향(.project_manager/.local).
     #    설치 실패는 조용히 넘기지 않는다(공용 깔때기 — 훅 미설치 침묵 = 보호 가드 무력화).
-    _install_protected_hook_reporting(
-        name, board=board_mod, worktree_pool=worktree_pool, action="설치")
+    repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+        name, action="설치")
     # 6) 브랜치 실재 경고 1줄 — `repo protected` set 경로와 **같은 공용 깔때기**.
     #    거부 아님(미래 브랜치 선-보호가 정상)·오타(`mian`)가 기본 보호목록을 덮으며 조용히
     #    통과하는 것만 막는다. bare 는 방금 clone/재사용돼 존재하므로 조회 가능(불가면 생략).
-    _warn_missing_protected_branches(
+    repo_protection._warn_missing_protected_branches(pm_paths.home_at(REPO),
         name, protected_tokens, clone_runner=runner, repos_dir=repos_dir)
     return 0
 
@@ -1644,7 +1033,6 @@ def cmd_repo_add(
 def _print_protected_status(
     name: str,
     *,
-    worktree_pool=None,
     clone_runner: GitRunner | None = None,
 ) -> int:
     """`repo protected <name>` 조회 — 실효값 + 출처 + sidecar 정합/drift 3줄.
@@ -1659,10 +1047,10 @@ def _print_protected_status(
     "sidecar 는 최신인데 훅이 아예 안 걸린" 부분성공(`install_protected_hook` 3단계 실패)이
     `✓ 정합` 으로 보인다 — 보호가 꺼져 있는데 정합하다고 거짓 보고하는 것이다.
     """
-    effective = _resolve_repo_protected(name)
+    effective = branch_store._resolve_protected(pm_paths.home_at(REPO), name)
     print(f"{name} · protected = {', '.join(effective)}")
 
-    cell = _areas_protected_cell(name)
+    cell = repo_protection._areas_protected_cell(pm_paths.home_at(REPO), name)
     if cell is None:
         print("  출처: 미등록 repo (areas.md 에 그 행이 없음) — DEFAULT_PROTECTED 기본값 폴백")
     elif cell.strip():
@@ -1670,22 +1058,22 @@ def _print_protected_status(
     else:
         print("  출처: 기본값 폴백 (areas.md `protected` 칼럼 비어 있음 — DEFAULT_PROTECTED)")
 
-    path = _protected_sidecar_path(name, worktree_pool=worktree_pool)
-    sidecar = _read_protected_sidecar(name, worktree_pool=worktree_pool)
+    path = protected_hooks._protected_sidecar_path(pm_paths.home_at(REPO), name)
+    sidecar = protected_hooks._read_protected_sidecar(pm_paths.home_at(REPO), name)
     if path is None:
         print("  훅 sidecar: (해소 불가 — worktree_pool 엔진 부재)")
         return 0
     if sidecar is None:
         print(f"  훅 sidecar: {path} → (미설치) "
               f"⚠ 이 clone 엔 보호 훅이 아직 없다")
-        print(f"    → 설치:  {_FACADE_PROG} repo add {name}  (멱등·bare 존재 전제)")
+        print(f"    → 설치:  {repo_protection._FACADE_PROG} repo add {name}  (멱등·bare 존재 전제)")
         return 0
-    wired = protected_hook_wired(
-        name, worktree_pool=worktree_pool, git_runner=clone_runner)
+    wired = protected_hooks.protected_hook_wired(pm_paths.home_at(REPO),
+        name, git_runner=clone_runner)
     listed = ", ".join(sidecar) or "(빈 파일)"
     # 재실행 안내는 **현재 상태**(명시/폴백/미등록)에 맞춰야 한다 — 폴백 상태에 명시 커맨드를
     # 안내하면 사용자가 그대로 실행했을 때 출처가 조용히 "명시" 로 바뀐다(단일 분기 헬퍼).
-    retry = protected_retry_command(name)
+    retry = repo_protection.protected_retry_command(pm_paths.home_at(REPO), name)
     if sidecar != effective:
         # 내용 drift 가 지배적 — 배선 여부와 무관하게 재설치가 답이다(재설치가 둘 다 고친다).
         print(f"  훅 sidecar: {path} → {listed}  "
@@ -1712,7 +1100,6 @@ def cmd_repo_protected(
     args: argparse.Namespace,
     *,
     board=None,
-    worktree_pool=None,
     clone_runner: GitRunner | None = None,
     repos_dir: Path | None = None,
 ) -> int:
@@ -1731,7 +1118,7 @@ def cmd_repo_protected(
       4. board-git best-effort 동기(공유 정책 변경은 즉시 공유돼야 값-연결이 산다).
       5. bare 에 없는 브랜치가 있으면 경고 1줄(거부 아님 — 미래 브랜치 선-보호가 정상).
 
-    board / worktree_pool / clone_runner / repos_dir 주입으로 hermetic 테스트.
+    board / clone_runner / repos_dir 주입으로 hermetic 테스트.
     """
     board_mod = board or _load_module("board", "board.py")
     if board_mod is None:
@@ -1754,15 +1141,15 @@ def cmd_repo_protected(
     value = getattr(args, "value", None)
     if value is None:
         return _print_protected_status(
-            name, worktree_pool=worktree_pool,
+            name,
             clone_runner=clone_runner)
 
     # ── set ──────────────────────────────────────────────────────────────
-    if value.strip().lower() == _PROTECTED_DEFAULT_LITERAL:
+    if value.strip().lower() == areas_rules._PROTECTED_DEFAULT_LITERAL:
         tokens: list[str] = []
         new_cell = ""            # 칼럼 비움 → `_repo_protected` 가 DEFAULT_PROTECTED 폴백.
     else:
-        parsed, reason = _validate_protected_tokens(value)
+        parsed, reason = areas_rules._validate_protected_tokens(value)
         if parsed is None:
             print(f"[중단] 보호목록 거부 (areas.md 미변경) — {reason}", file=sys.stderr)
             return 1
@@ -1788,7 +1175,7 @@ def cmd_repo_protected(
             print(
                 f"[중단] repo {name!r} 이(가) areas.md 에 등록돼 있지 않다 — 보호목록 설정은 *기존* "
                 "행의 셀을 고칠 뿐 등록을 만들지 않는다. 먼저 등록하라: "
-                f"`{_FACADE_PROG} repo add {name} --git <url> --protected \"{value}\"`.",
+                f"`{repo_protection._FACADE_PROG} repo add {name} --git <url> --protected \"{value}\"`.",
                 file=sys.stderr,
             )
             return 1
@@ -1804,9 +1191,9 @@ def cmd_repo_protected(
     # 이 자가치유) — 대신 공용 깔때기가 실패를 loud 하게 낸다(침묵 금지).
     # 재실행 안내는 방금 비준한 상태 기준 — `default` 로 되돌린 경우엔 `default` 를 안내해야
     # 정확하다(`tokens` 가 빈 리스트라 falsy → 옛 코드는 `repo add` 로 잘못 떨어졌다).
-    _install_protected_hook_reporting(
-        name, board=board_mod, worktree_pool=worktree_pool, action="정합화",
-        retry=protected_retry_command(name))
+    repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+        name, action="정합화",
+        retry=repo_protection.protected_retry_command(pm_paths.home_at(REPO), name))
 
     # 4) board-git best-effort 동기 — 공유 정책 변경은 즉시 공유돼야 값-연결이 산다.
     #    **경로 스코프 필수**: paths 없이 부르면 board 전체가 "repo protected"
@@ -1817,13 +1204,11 @@ def cmd_repo_protected(
         try:
             sync("repo protected", (pm_paths.areas_file(pm_paths.home_at(REPO)),))
         except Exception as exc:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
-            if _is_engine_rev_skew(exc):
-                return _report_engine_rev_skew_at_terminal(exc)
             pass
 
     # 5) 브랜치 실재 경고 1줄 — `repo add --protected` 와 **같은 공용 깔때기**(검증 비대칭 방지).
     #    거부 아님(미래 브랜치 선-보호가 정상·오타 가시화용).
-    _warn_missing_protected_branches(
+    repo_protection._warn_missing_protected_branches(pm_paths.home_at(REPO),
         name, tokens, clone_runner=clone_runner, repos_dir=repos_dir)
     return 0
 
@@ -1867,9 +1252,9 @@ def cmd_repo_list(args: argparse.Namespace) -> int:
         return 1
     rows = [row for row in rows if row.get("repo")]
     if not rows:
-        print(f"등록된 repo 없음 — `{_FACADE_PROG} repo add <name> --git <url>` 로 등록하라.")
+        print(f"등록된 repo 없음 — `{repo_protection._FACADE_PROG} repo add <name> --git <url>` 로 등록하라.")
         return 0
-    default_protected = ",".join(_DEFAULT_PROTECTED)
+    default_protected = ",".join(areas_rules.DEFAULT_PROTECTED)
     table: list[list[str]] = [list(_REPO_LIST_COLUMNS)]
     for row in sorted(rows, key=lambda r: r.get("repo", "")):
         cells = []
@@ -1890,7 +1275,7 @@ def cmd_repo_list(args: argparse.Namespace) -> int:
         print("  ".join(_pad_display(c, w) for c, w in zip(cells, widths)).rstrip())
         if i == 0:
             print("  ".join("-" * w for w in widths))
-    print(f"\n보호목록 조회/변경: `{_FACADE_PROG} repo protected <repo> [<목록>|default]`")
+    print(f"\n보호목록 조회/변경: `{repo_protection._FACADE_PROG} repo protected <repo> [<목록>|default]`")
     return 0
 
 
@@ -1945,7 +1330,6 @@ def _require_worktree_add_user_ack(args: argparse.Namespace) -> bool:
 def cmd_worktree_add(
     args: argparse.Namespace,
     *,
-    worktree_pool=None,
     board=None,
     input_fn: Callable[[str], str] = input,
     is_tty: Callable[[], bool] | None = None,
@@ -1985,7 +1369,7 @@ def cmd_worktree_add(
     없거나 조회에 실패하면 그 rc 로 멈추고 bare 를 만들지 않는다. bare 경로가 있으나 무효면
     `create_slot` 의 BareRepoMissing 안내가 그대로 나간다(자동 삭제 없음).
 
-    worktree_pool/board/input_fn/is_tty/clone_runner 주입으로 hermetic 테스트(실 worktree add·
+    board/input_fn/is_tty/clone_runner 주입으로 hermetic 테스트(실 worktree add·
     라이브 input·실 clone 없이 배선·분기 검증). board 는 base 해소(`_repo_base`)·hydrate 재사용용(콘솔이
     로드한 board 전달). `clone_runner` 는 hydrate 의 `cmd_repo_add` 로 넘기는 파이썬 키워드다(CLI 아님).
     """
@@ -1999,7 +1383,7 @@ def cmd_worktree_add(
     tty_check = is_tty if is_tty is not None else _stdin_is_tty
     test_cmd = getattr(args, "test", None)
     if test_cmd is None and tty_check():
-        display_default = _resolve_repo_test_cmd(args.repo)
+        display_default = repo_protection._resolve_repo_test_cmd(pm_paths.home_at(REPO), args.repo)
         test_cmd = _prompt_test_cmd(input_fn, default=display_default)
 
     # base 해소 — areas.md 의 그 repo base 를 읽어 create_slot(base=) 로 전달한다.
@@ -2045,7 +1429,7 @@ def cmd_worktree_add(
         hydrated = cmd_repo_add(
             argparse.Namespace(name=args.repo, git=None, test=None, base=None, owner=None,
                                user=None, protected=None),
-            board=board, clone_runner=clone_runner, worktree_pool=worktree_pool)
+            board=board, clone_runner=clone_runner)
         if hydrated:
             return hydrated
     try:
@@ -2104,8 +1488,8 @@ def cmd_worktree_add(
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
     # 설치 실패는 조용히 넘기지 않는다 — repo add·repo protected 와 **같은 공용 깔때기**
     # (훅 설치 False 침묵은 보호 가드 무력화를 감춘다).
-    _install_protected_hook_reporting(
-        args.repo, board=board, worktree_pool=worktree_pool, action="(재)설치")
+    repo_protection._install_protected_hook_reporting(pm_paths.home_at(REPO),
+        args.repo, action="(재)설치")
     # 사본 루트 ignore 규칙 (재)설치 (멱등 자가치유) — 훅과 같은 자리에서 슬롯 op
     # 마다 (재)설치해, 규칙 없이 만들어진 기존 풀도 다음 worktree add 에 규칙을 얻는다.
     _ensure_bare_ticket_copy_exclude(pm_paths.bare_repo_path(pm_paths.home_at(REPO), args.repo))
@@ -2482,7 +1866,7 @@ def _emit_status_json(args,  *, board=None, pm_import=None) -> int:
         document = _status_json_document(
             args,  board_mod=board_mod, pm_import_mod=pm_import_mod,
             source_root=source_root,
-            git_runner=_real_clone_runner())
+            git_runner=git._real_clone_runner())
     except (FileNotFoundError, pm_import_mod.AdapterConfigChannelUnavailable) as exc:
         # 판정 기준이 없는 상태 둘만 rc 로 번역한다 — 소스에 대조할 파일이 없거나(잘못된 `--from`)
         # 어댑터 판정 채널이 unavailable 인 경우. 그 밖의 실패는 삼키지 않는다(정상 산출로 위장 금지).
@@ -3408,8 +2792,6 @@ def cmd_task_reopen(
 _TASK_PREFIX_NONE_LITERAL = "none"
 
 
-
-
 def _todo_missing_task(name: str) -> int:
     """todo 대상 task 가 장부에 없을 때의 단일 안내(세 명령 공용·문구 사본 0)."""
     print(
@@ -3660,7 +3042,7 @@ def cmd_update(
     # 인자 없음 → 위임 동안만 "pm_update.py"→"pm-config update" 로 치환한다(에이전트가 칠 실
     # 커맨드와 정합·파일명 leak 0). 실 배선 검증 테스트가 mock 을 주입하면 fake.main 은 argparse
     # 를 만들지 않으므로 이 래핑은 무해(패치 후 즉시 원복).
-    with _forwarded_prog({"pm_update.py": f"{_FACADE_PROG} update"}):
+    with _forwarded_prog({"pm_update.py": f"{repo_protection._FACADE_PROG} update"}):
         return pm_update_mod.main(forward_args)
 
 
@@ -3718,8 +3100,6 @@ def cmd_upstream(
     *,
     pm_import=None,
     git_runner: GitRunner | None = None,
-    board=None,
-    worktree_pool=None,
 ) -> int:
     """`upstream show | set <value>` — upstream 값 조회/전환.
 
@@ -3778,8 +3158,6 @@ def cmd_upstream(
     try:
         pm_import_mod._write_conf_keys(local_conf, {"upstream.path": value})
     except RuntimeError as exc:
-        if _is_engine_rev_skew(exc):
-            raise
         print(
             f"[중단] {exc}",
             file=sys.stderr,
@@ -3787,7 +3165,7 @@ def cmd_upstream(
         return 1
     # upstream은 보호 push gate의 provenance 입력이다. 값이 같아도 끊긴/stale sidecar를
     # 자가치유하도록 등록 repo 전수를 중앙 설치 깔때기로 보낸다.
-    _refresh_protected_gate_contracts(board=board, worktree_pool=worktree_pool)
+    repo_protection._refresh_protected_gate_contracts(pm_paths.home_at(REPO))
     kind = upstream_rules.classify_upstream(value)
     print(f"✓ upstream 설정: {value}  ({kind}) — pm_update 가 --from 생략 시 이 값을 쓴다.")
     return 0
@@ -3824,7 +3202,7 @@ def cmd_init(
     # usage prog 정합 — board.main 은 prog="board.py" 하드코딩·prog 인자
     # 없음 → 위임 동안만 "board.py"→"pm-config" 로 치환한다. init 서브파서 usage 는 부모 prog
     # 에서 "pm-config init" 로 자동 파생돼 에이전트가 칠 실 커맨드와 정합(파일명 leak 0).
-    with _forwarded_prog({"board.py": _FACADE_PROG}):
+    with _forwarded_prog({"board.py": repo_protection._FACADE_PROG}):
         rc = board_mod.main(["init", *forward_args])
     return rc
 
@@ -3867,7 +3245,7 @@ def cmd_add_harness(
     # 는 자체 argparse 를 만들지 않고 main-style 로 출력·rc 반환하지만, 위임 경계를 init/update 와
     # 균일하게 감싸 pm_import 가 어떤 argparse usage 를 surface 하더라도 파일명("pm_import.py")이 새지
     # 않게 한다(에이전트가 칠 실 커맨드 pm-config add-harness 와 정합·경계 leak 0). rc 는 그대로 전파.
-    with _forwarded_prog({"pm_import.py": f"{_FACADE_PROG} add-harness"}):
+    with _forwarded_prog({"pm_import.py": f"{repo_protection._FACADE_PROG} add-harness"}):
         return pm_import_mod.add_harness_cli(
             dest, args.harness, dry_run=args.dry_run, source_root=source_root)
 
@@ -4116,7 +3494,7 @@ def _accept_adapter_config_set(pm_import_mod, dest: Path, source_root: Path,
     for item in excluded:
         print(f"→ 세트 수용 제외({_ADAPTER_SET_ACCEPT_EXCLUDED[item.status]}): {item.relpath} · "
               f"{item.harness} · {item.mode} "
-              f"— 받으려면 `{_FACADE_PROG} sync-adapter-config --accept {item.relpath}`")
+              f"— 받으려면 `{repo_protection._FACADE_PROG} sync-adapter-config --accept {item.relpath}`")
     if not targets:
         print("어댑터 config 세트 수용 대상 없음 "
               + ("(편집분 제외 후 남은 대상 없음)." if excluded else "(전부 상류와 동일)."))
@@ -4273,14 +3651,14 @@ def cmd_sync_adapter_config(
                 )
             else:
                 print(
-                    f"    → `{_FACADE_PROG} sync-adapter-config --accept "
+                    f"    → `{repo_protection._FACADE_PROG} sync-adapter-config --accept "
                     f"{judgment.relpath}` (백업 후 상류 값 수용·원장화).",
                     file=sys.stderr,
                 )
         return _finish_sync_adapter_config(1, check=True)
     # 세트 수용도 여기서 병기한다 — 단건만 노출하면 무편집분이 여러 개인 채택자가 세트 커맨드의
     #   존재를 모른 채 한 파일씩 수용한다(발견성). 제외 규칙은 세트 커맨드가 스스로 알린다.
-    print(f"  수용(백업 후 상류 값 채택): {_FACADE_PROG} sync-adapter-config --accept <경로> "
+    print(f"  수용(백업 후 상류 값 채택): {repo_protection._FACADE_PROG} sync-adapter-config --accept <경로> "
           "· 무편집분 일괄은 --accept-all (Windows 는 `.\\pm-config.cmd`)")
     return _finish_sync_adapter_config(0, check=False)
 
@@ -4435,7 +3813,7 @@ def _console_repo_add(input_fn, board_mod):
     return None
 
 
-def _console_worktree_add(input_fn, wp, board_mod=None):
+def _console_worktree_add(input_fn, board_mod=None):
     """`[w]` — repo 를 받아 cmd_worktree_add 위임. 빌드명령은 그 핸들러가 프롬프트(tty 경로).
 
     repo 프롬프트가 EOF/Ctrl-C 면 `_CONSOLE_ABORT` 반환(루프 우아 종료). 빈입력은 취소.
@@ -4469,7 +3847,7 @@ def _console_worktree_add(input_fn, wp, board_mod=None):
     # is_tty=lambda: True 로 강제(콘솔 진입 자체가 tty 보장·main 분기). --test 는 미지정.
     args = argparse.Namespace(repo=repo, test=None, user_ack=repo)
     cmd_worktree_add(
-        args, worktree_pool=wp, board=board_mod, input_fn=input_fn, is_tty=lambda: True
+        args, board=board_mod, input_fn=input_fn, is_tty=lambda: True
     )
     return None
 
@@ -4719,7 +4097,6 @@ def _console_update() -> None:
 
 def run_console(
     *,
-    worktree_pool=None,
     input_fn: Callable[[str], str] = input,
     board=None,
 ) -> int:
@@ -4739,7 +4116,6 @@ def run_console(
     주입으로 hermetic 테스트(실 clone/worktree·라이브 input 블록 0 — 입력 시퀀스 주입 + 핸들러 mock).
     """
     board_mod = board or _load_module("board", "board.py")
-    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
 
     _render_state()
     while True:
@@ -4760,7 +4136,7 @@ def run_console(
         if choice == "r":
             result = _console_repo_add(input_fn, board_mod)
         elif choice == "w":
-            result = _console_worktree_add(input_fn, wp, board_mod)
+            result = _console_worktree_add(input_fn, board_mod)
         elif choice == "b":
             result = _console_set_test_cmd(input_fn)
         elif choice == "m":

@@ -23,6 +23,7 @@
   - 텍스트 경로 바이트 불변(골든) · 기본 호출이 board 를 로드하지 않음 · `whoami --json` 없음.
 """
 from __future__ import annotations
+from pm_engine.infra import fs
 from pm_engine.domain import worktree_records
 
 from _pool_seams import bind_pool
@@ -307,7 +308,7 @@ def test_status_json_with_remote_stops_without_a_partial_document(home, wp):
     _git(home / ".repos" / "app.git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
     _git(home / slot, "config", "branch.feat/x.remote", "origin")
     _git(home / slot, "config", "branch.feat/x.merge", "refs/heads/feat/x")  # 원격에 물을 대상이 있다
-    wp.fs.force_rmtree(home / ".origin")
+    fs.force_rmtree(home / ".origin")
 
     done = _run_cli(home, "status", "--json", "--with-remote")
 

@@ -18,7 +18,6 @@ from pm_engine.infra import branch_store
 from pm_engine.infra import pm_paths
 from pm_engine.domain import worktree_records
 from pm_engine.app import worktree_status
-from pm_engine.infra import branch_store
 
 from _pool_seams import bind_board, bind_pool
 
@@ -342,13 +341,14 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None, monkey
             return 0, ""
         return 0, ""
 
+    bind_pool(monkeypatch, worktree_pool)
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=bind_pool(monkeypatch, worktree_pool),
+
         board=bind_board(monkeypatch, _FakeBoard()),
         pm_state_file=pm_state_file,
     )
@@ -429,13 +429,14 @@ def _make_fresh_bootstrap(bootstrap, wp, tmp_path, *, monkeypatch):
 
     ret = _slot_status_obj(wp, upstream="origin/a5", upstream_ok=True, submodules=[])
     pool = bind_pool(monkeypatch, FakePool(slot="work/A_2", slot_status_ret=ret))  # slot-2 시나리오 — 0단계 실재 시드도 A_2.
+    bind_pool(monkeypatch, pool)
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
         run_git_fn=fake_git,
         log_file=log_file,
         areas_file=areas_file,
-        worktree_pool=bind_pool(monkeypatch, pool),
+
         board=bind_board(monkeypatch, _FakeBoard()),
         pm_state_file=pm_state_file,
     )

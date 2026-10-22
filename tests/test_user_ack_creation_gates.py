@@ -6,6 +6,8 @@ worktree add 변형을 hermetic하게 검증한다. 기존 downstream 테스트�
 붙이지 않고, 이 파일에서 거부/승인/오결속을 명시적으로 나눈다.
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.infra import git
 
 from _pool_seams import bind_pool
 
@@ -687,7 +689,8 @@ class _SlotPool:
 def test_worktree_add_variants_reject_without_ack(pm_config, monkeypatch, extra, capsys):
     pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack=None, **extra)
-    assert pm_config.cmd_worktree_add(args, worktree_pool=bind_pool(monkeypatch, pool), board=object()) == 1
+    bind_pool(monkeypatch, pool)
+    assert pm_config.cmd_worktree_add(args,  board=object()) == 1
     assert pool.created == []
     assert "1순위: 사용자에게" in capsys.readouterr().err
 
@@ -695,7 +698,8 @@ def test_worktree_add_variants_reject_without_ack(pm_config, monkeypatch, extra,
 def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, monkeypatch, capsys):
     pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack="other")
-    assert pm_config.cmd_worktree_add(args, worktree_pool=bind_pool(monkeypatch, pool), board=object()) == 1
+    bind_pool(monkeypatch, pool)
+    assert pm_config.cmd_worktree_add(args,  board=object()) == 1
     assert pool.created == []
     assert "결속되지 않았다" in capsys.readouterr().err
 
@@ -711,7 +715,7 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, monkeypatch, ca
 )
 def test_worktree_add_bound_ack_preserves_create_slot_semantics(pm_config, monkeypatch, capsys, tmp_path, readonly, task, expected_role, expected_state):
     pool = bind_pool(monkeypatch, _SlotPool(bare_root=tmp_path / ".repos"))
-    monkeypatch.setattr(pm_config, "_install_protected_hook_reporting", lambda *a, **k: True)
+    monkeypatch.setattr(repo_protection, "_install_protected_hook_reporting", lambda *a, **k: True)
     monkeypatch.setattr(pm_config, "_render_task_slots", lambda *a, **k: None)
     args = argparse.Namespace(
         repo="svc", test=None, readonly=readonly, task=task, user_ack="svc",
@@ -719,8 +723,9 @@ def test_worktree_add_bound_ack_preserves_create_slot_semantics(pm_config, monke
     # 슬롯 생성은 repo 등록 base 를 부모로 기록한다 — 그 base 만 답하는 board.
     board = SimpleNamespace(_repo_base={"svc": "main"}.get)
 
+    bind_pool(monkeypatch, pool)
     assert pm_config.cmd_worktree_add(
-        args, worktree_pool=bind_pool(monkeypatch, pool), board=board, is_tty=lambda: False,
+        args,  board=board, is_tty=lambda: False,
     ) == 0
 
     assert len(pool.created) == 1

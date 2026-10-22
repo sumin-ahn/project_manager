@@ -20,6 +20,9 @@ board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피) — �
 공용 seam(`file_lock.py`)을 쓰지만 board 모듈 의존은 없다(seam 은 형제를 로드하지 않는 leaf).
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.domain import areas_rules
+from pm_engine.infra import branch_store, fs, git, protected_hooks, pm_paths, areas_store
 
 import ast
 import contextlib
@@ -84,17 +87,15 @@ def _load_wp_bound(proj: Path):
     }
     for name, val in overrides.items():
         setattr(mod, name, val)
-    # 이 파일의 오래된 직접 설치 테스트는 명시적으로 release 계약을 고르는 test adapter를 탄다.
-    # 프로덕션 API 자체는 gate_mode/test_cmd가 required이며 별도 signature/AST 가드가 고정한다.
-    install = mod.install_protected_hook
-
-    def install_for_test(repo, protected, *, gate_mode="release", test_cmd="pytest -q",
-                         git_runner=None):
-        return install(
-            repo, protected, gate_mode=gate_mode, test_cmd=test_cmd, git_runner=git_runner)
-
-    mod.install_protected_hook = install_for_test
     return mod
+
+
+def _install_for_test(wp, repo, protected, *, gate_mode="release", test_cmd="pytest -q",
+                      git_runner=None):
+    """직접 설치 시험에서 선택한 release 계약."""
+    return protected_hooks.install_protected_hook(
+        pm_paths.home_at(wp.REPO), repo, protected,
+        gate_mode=gate_mode, test_cmd=test_cmd, git_runner=git_runner)
 
 
 @pytest.fixture
@@ -132,16 +133,15 @@ def wp(proj):
     return _load_wp_bound(proj)
 
 
-def _patch_atomic_replace(monkeypatch, module, fake):
+def _patch_atomic_replace(monkeypatch, fake):
     """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
 
     `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
     `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
-    같은 성질이 고정된다. worktree_pool 은 seam 을 import 시점에 전역(`file_lock`)으로 받으므로
-    그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
+    같은 성질이 고정된다. 보호 훅이 직접 호출하는 infra/fs 모듈에 주입한다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
     (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
     """
-    seam = module.fs
+    seam = fs
     monkeypatch.setattr(seam, "atomic_replace", fake)
     return seam
 
@@ -2016,7 +2016,7 @@ def test_lease_lock_burns_the_windows_branch_through_the_real_consumer(
     옳아도 멀티-PM 형상에서 lost update 가 난다. 주입이 no-op 이면 아무것도 시험되지 않으므로
     대역 호출 여부를 먼저 단언한다.
     """
-    lock_module = wp.fs
+    lock_module = fs
     acquired: list[tuple[int, int, int]] = []
     released: list[tuple[int, int]] = []
     api = lock_module.WindowsLockApi(
@@ -2547,7 +2547,7 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
     # origin 삭제 → `git fetch origin` 이 실패한다(오프라인/소실 시뮬).
     # git object·packfile 은 read-only 라 맨 rmtree 는 Windows 에서 `[WinError 5]` 로 실패한다 —
     # 엔진 공용 삭제 seam 을 그대로 쓴다(속성 해제 후 재시도·못 지우면 loud).
-    wp.fs.force_rmtree(origin)
+    fs.force_rmtree(origin)
 
     lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"           # fetch 실패해도 슬롯 생성 계속(fail-soft)
@@ -4061,7 +4061,7 @@ def test_install_protected_hook_writes_hook_sidecar_and_sets_hookspath(wp):
     """install_protected_hook — 훅+sidecar write + bare core.hooksPath set (T-0076)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    ok = wp.install_protected_hook("A", ["main", "develop"], git_runner=git)
+    ok = _install_for_test(wp, "A", ["main", "develop"], git_runner=git)
     assert ok is True
     hook_dir = wp.REPO_HOOKS_DIR / "A"
     hook = hook_dir / "pre-push"
@@ -4081,16 +4081,16 @@ def test_install_protected_hook_writes_hook_sidecar_and_sets_hookspath(wp):
 def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, monkeypatch):
     """A1 — 훅 2종과 sidecar 전수가 같은 디렉터리 완성본에서 원자 교체된다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     old = {
         artifact.path: artifact.path.read_text(encoding="utf-8")
-        for artifact in wp.protected_hook_artifacts(
+        for artifact in protected_hooks.protected_hook_artifacts(pm_paths.home_at(wp.REPO),
             "A", ["main"], gate_mode="release", test_cmd="pytest -q")
     }
-    expected = wp.protected_hook_artifacts(
+    expected = protected_hooks.protected_hook_artifacts(pm_paths.home_at(wp.REPO),
         "A", ["main", "release"], gate_mode="self-test", test_cmd="go test ./...")
     replaced = []
-    real_replace = wp.fs.atomic_replace
+    real_replace = fs.atomic_replace
 
     def inspect_then_replace(src, dst):
         src, dst = Path(src), Path(dst)
@@ -4102,8 +4102,8 @@ def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, m
         replaced.append(dst)
         real_replace(src, dst)
 
-    _patch_atomic_replace(monkeypatch, wp, inspect_then_replace)
-    assert wp.install_protected_hook(
+    _patch_atomic_replace(monkeypatch, inspect_then_replace)
+    assert _install_for_test(wp,
         "A", ["main", "release"], gate_mode="self-test",
         test_cmd="go test ./...", git_runner=FakeGit()) is True
     assert replaced == [artifact.path for artifact in expected]
@@ -4126,11 +4126,11 @@ def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
     실패는 새 release/new-test를 노출한다. 새 mode+옛 command 조합은 없다.
     """
     _mk_bare_placeholder(wp, "A")
-    assert wp.install_protected_hook(
+    assert _install_for_test(wp,
         "A", ["main"], gate_mode="self-test", test_cmd="old-test",
         git_runner=FakeGit()) is True
     contract = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
-    seam = wp.fs
+    seam = fs
     real_replace = seam.atomic_replace
 
     def fail_once(src, dst):
@@ -4139,9 +4139,9 @@ def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
             raise seam.AtomicReplaceError(f"injected failure at {fail_at}")
         real_replace(src, dst)
 
-    _patch_atomic_replace(monkeypatch, wp, fail_once)
+    _patch_atomic_replace(monkeypatch, fail_once)
     with pytest.raises(OSError, match="injected failure"):
-        wp.install_protected_hook(
+        _install_for_test(wp,
             "A", ["main"], gate_mode="release", test_cmd="new-test",
             git_runner=FakeGit())
 
@@ -4153,7 +4153,7 @@ def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
 
 def test_install_protected_hook_gate_contract_is_keyword_required_and_centralized():
     """A1 메타가드 — 기본값 회귀와 resolver 우회 프로덕션 호출부를 소스 구조로 차단한다."""
-    wp_tree = ast.parse((TOOLS / "worktree_pool.py").read_text(encoding="utf-8"))
+    wp_tree = ast.parse(Path(protected_hooks.__file__).read_text(encoding="utf-8"))
     install_def = next(
         node for node in wp_tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -4163,14 +4163,14 @@ def test_install_protected_hook_gate_contract_is_keyword_required_and_centralize
     assert kw_defaults["gate_mode"] is None
     assert kw_defaults["test_cmd"] is None
 
-    pc_tree = ast.parse((TOOLS / "pm_config.py").read_text(encoding="utf-8"))
+    pc_tree = ast.parse(Path(repo_protection.__file__).read_text(encoding="utf-8"))
     funnel = next(
         node for node in pc_tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_install_protected_hook")
     install_calls = [
         node for node in ast.walk(funnel)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        and node.func.id == "install"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "install_protected_hook"
     ]
     assert len(install_calls) == 1
     assert {kw.arg for kw in install_calls[0].keywords} >= {"gate_mode", "test_cmd"}
@@ -4201,8 +4201,8 @@ def test_install_protected_hook_idempotent_updates_sidecar(wp):
     """재설치(목록 변경) → sidecar 갱신·중복 무해 (멱등 자가치유·T-0076)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
-    wp.install_protected_hook("A", ["main"], git_runner=git)
-    wp.install_protected_hook("A", ["main", "release"], git_runner=git)  # 목록 변경 재설치
+    _install_for_test(wp, "A", ["main"], git_runner=git)
+    _install_for_test(wp, "A", ["main", "release"], git_runner=git)  # 목록 변경 재설치
     sidecar = wp.REPO_HOOKS_DIR / "A" / "protected"
     assert sidecar.read_text(encoding="utf-8").splitlines() == ["main", "release"]
     # engine-root 도 재설치마다 갱신(멱등 — stale PM 홈 경로 잔존 방지·T-0223).
@@ -4223,7 +4223,7 @@ def test_install_protected_hook_rejects_invalid_protected_list(wp, protected):
     _mk_bare_placeholder(wp, "A")
 
     with pytest.raises(ValueError, match="보호 브랜치 목록"):
-        wp.install_protected_hook("A", protected, git_runner=FakeGit())
+        _install_for_test(wp, "A", protected, git_runner=FakeGit())
 
     assert not (wp.REPO_HOOKS_DIR / "A" / "protected").exists()
 
@@ -4241,14 +4241,14 @@ def test_install_protected_hook_config_failure_returns_false(wp):
             return (1, "fatal: config write failed")
         return (0, "")
 
-    ok = wp.install_protected_hook("A", ["main"], git_runner=config_fails)
+    ok = _install_for_test(wp, "A", ["main"], git_runner=config_fails)
     assert ok is False, "core.hooksPath config 실패인데 설치 성공(True) 보고"
 
 
 def test_install_protected_hook_bare_absent_is_noop(wp):
     """bare 부재 → no-op·False (게이트 대상 없음·훅/sidecar 미생성·config 미호출·T-0076)."""
     git = FakeGit()  # bare placeholder 안 만듦
-    ok = wp.install_protected_hook("A", ["main"], git_runner=git)
+    ok = _install_for_test(wp, "A", ["main"], git_runner=git)
     assert ok is False
     assert not (wp.REPO_HOOKS_DIR / "A").exists()   # 훅 디렉토리 미생성
     assert git.calls == []                          # core.hooksPath 미호출(회사 repo 무영향)
@@ -4266,7 +4266,7 @@ def test_install_protected_hook_no_company_repo_mutation(wp):
     server_ref.parent.mkdir(parents=True, exist_ok=True)
     server_ref.write_text("deadbeef\n", encoding="utf-8")
     git = FakeGit()
-    wp.install_protected_hook("A", ["main"], git_runner=git)
+    _install_for_test(wp, "A", ["main"], git_runner=git)
     # 서버 ref 무변경 — install 은 .local 훅 + core.hooksPath config 만(ref 안 만짐).
     assert server_ref.read_text(encoding="utf-8") == "deadbeef\n"
     # git 호출은 config core.hooksPath 하나뿐(push/ref 조작 0).
@@ -4277,7 +4277,7 @@ def test_install_protected_hook_no_company_repo_mutation(wp):
 def test_generated_hook_rejects_protected_push(wp):
     """생성 훅 직접 실행 — remote ref 가 보호목록(main)이면 거부(rc≠0) (T-0076)."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main", "develop"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main", "develop"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main")) != 0
 
@@ -4286,7 +4286,7 @@ def test_generated_hook_rejects_protected_push(wp):
 def test_generated_hook_allows_feature_push(wp):
     """생성 훅 직접 실행 — feature 브랜치(보호목록 아님)는 통과(rc 0) (T-0076)."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main", "develop"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main", "develop"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/feat-x")) == 0
 
@@ -4299,7 +4299,7 @@ def test_generated_hook_pm_allow_with_skip_passes_protected(wp):
     skip 은 라이브 check 만 생략하되, 장부 writer가 남긴 must-fix 잔여-없음 표식은 shell로 확인한다.
     """
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     _write_must_fix_marker(wp.REPO)
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main"),
@@ -4316,7 +4316,7 @@ def test_generated_hook_rejects_crlf_must_fix_marker(wp):
     막았다. LF 환경에서도 그 축을 태워, 판정을 개행 관용으로 푸는 변경이나 픽스처 개행 퇴행이
     조용히 통과하지 못하게 한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     marker = wp.REPO / ".project_manager" / ".local" / "release-must-fix"
     marker.parent.mkdir(parents=True, exist_ok=True)
     write_crlf(marker, "clear\n", encoding="ascii")
@@ -4337,7 +4337,7 @@ def test_generated_hook_rejects_when_protected_registry_is_unavailable(
         wp, protected_state):
     """보호목록 부재·빈 파일·부분 기록·형식 손상은 비보호로 오인하지 않고 거부한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     protected_file = wp.REPO_HOOKS_DIR / "A" / "protected"
     if protected_state == "absent":
         protected_file.unlink()
@@ -4373,7 +4373,7 @@ def test_generated_hook_rejects_when_protected_registry_is_unavailable(
 def test_generated_hook_unreadable_protected_registry_fails_closed(wp):
     """보호목록 파일을 열 권한이 없으면 목록 없음으로 통과하지 않고 거부한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     protected_file = wp.REPO_HOOKS_DIR / "A" / "protected"
     protected_file.chmod(0)
     try:
@@ -4392,7 +4392,7 @@ def test_generated_hook_unreadable_protected_registry_fails_closed(wp):
 def test_generated_hook_rejects_after_registry_reader_fails_after_one_line(wp, tmp_path):
     """cat이 첫 줄을 낸 뒤 실패하면 부분 스냅샷을 판정에 쓰지 않고 거부한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["feature"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["feature"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     isolated_bin = _isolated_command_path(tmp_path / "partial-reader-bin", "sh")
     partial_cat = isolated_bin / "cat"
@@ -4419,7 +4419,7 @@ def test_generated_hook_rejects_after_registry_reader_fails_after_one_line(wp, t
 def test_generated_hook_registry_content_comes_from_single_cat_snapshot(wp, tmp_path):
     """rc0 cat이 낸 문자열이 유일한 목록 스냅샷이며 파일을 다시 읽지 않는다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook_dir = wp.REPO_HOOKS_DIR / "A"
     isolated_bin = _isolated_command_path(tmp_path / "altered-reader-bin", "sh")
     altered_cat = isolated_bin / "cat"
@@ -4443,7 +4443,7 @@ def test_generated_hook_registry_content_comes_from_single_cat_snapshot(wp, tmp_
 def test_generated_hook_reads_registry_once_into_snapshot(wp):
     """pre-push는 목록 파일을 cat 한 번으로만 스냅샷화하고 다시 열지 않는다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     body = (wp.REPO_HOOKS_DIR / "A" / "pre-push").read_text(encoding="utf-8")
 
     assert body.count('cat "$protected_file"') == 1
@@ -4461,7 +4461,7 @@ def test_generated_hook_loads_damaged_registry_only_for_branch_refs(
         wp, remote_ref, expected_rc):
     """tag-only push는 손상 목록과 무관하고 branch push는 목록 미해소 시 거부된다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook_dir = wp.REPO_HOOKS_DIR / "A"
     (hook_dir / "protected").write_text("main", encoding="utf-8")
 
@@ -4477,7 +4477,7 @@ def test_generated_hook_does_not_reread_after_cat_snapshot_at_line_boundary(
         wp, tmp_path):
     """rc0 cat 스냅샷 뒤 파일 재읽기가 없어 뒤쪽 행은 판정에 섞이지 않는다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["feature", "main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["feature", "main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     isolated_bin = _isolated_command_path(tmp_path / "short-reader-bin", "sh")
     partial_cat = isolated_bin / "cat"
@@ -4503,7 +4503,7 @@ def test_generated_hook_does_not_reread_after_cat_snapshot_at_line_boundary(
 def test_generated_hook_rejects_multiline_registry_with_partial_last_row(wp):
     """완성 행 뒤 마지막 행의 종료 개행이 없으면 목록 일부로 판정하지 않고 거부한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main", "release"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main", "release"], git_runner=FakeGit())
     hook_dir = wp.REPO_HOOKS_DIR / "A"
     (hook_dir / "protected").write_text("main\nrelease", encoding="utf-8")
 
@@ -4544,7 +4544,7 @@ def test_generated_hook_external_command_absence_fails_closed(
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     isolated_bin = _isolated_command_path(tmp_path / f"bin-{missing}", *available)
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     env = _protection_env(
@@ -4575,7 +4575,7 @@ def test_generated_hook_empty_audit_repo_name_fails_closed(wp, tmp_path):
     isolated_bin = _isolated_command_path(
         tmp_path / "empty-audit-repo-bin", "sh", "cat", "git", "tr", "date")
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     body = hook.read_text(encoding="utf-8")
@@ -4618,7 +4618,7 @@ def test_generated_hook_bypass_audit_command_failure_fails_closed(
     )
     broken.chmod(0o755)
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
 
     result = subprocess.run(
@@ -4643,7 +4643,7 @@ def test_generated_hook_python_launcher_absence_fails_closed(wp, tmp_path):
     (engine_tools / "python_floor.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
     isolated_bin = _isolated_command_path(tmp_path / "no-python-bin", "sh", "cat")
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     env = _protection_env(
         PATH=str(isolated_bin), PM_ALLOW_PROTECTED_PUSH="1")
@@ -4660,7 +4660,7 @@ def test_generated_hook_python_launcher_absence_fails_closed(wp, tmp_path):
 def test_generated_hooks_do_not_depend_on_path_utilities(wp):
     """두 보호훅의 위치·repo 이름 해소는 셸 확장만 사용해 유틸리티 부재에 영향받지 않는다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     for hook_name in ("pre-push", "pre-commit"):
         body = (wp.REPO_HOOKS_DIR / "A" / hook_name).read_text(encoding="utf-8")
         assert "$(dirname " not in body
@@ -4676,7 +4676,7 @@ def test_generated_hook_adopter_self_test_passes_without_release_marker_or_skip(
     assert not (adopter / "tests" / "test_release_wave.py").exists()
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
         test_cmd="test ! -e tests/test_release_wave.py && printf ok > self-test-ran",
     )
@@ -4696,7 +4696,7 @@ def test_generated_hook_adopter_self_test_red_blocks_even_with_live_skip(wp, tmp
     adopter = _init_repo(tmp_path / "adopter-red")
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="exit 23")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
 
@@ -4715,7 +4715,7 @@ def test_generated_hook_adopter_self_test_requires_checkout_at_push_sha(wp, tmp_
     """다른 ref SHA를 push할 때 현재 checkout 검증으로 false-green을 만들지 않고 거부한다."""
     adopter = _init_repo(tmp_path / "adopter-sha-mismatch")
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
         test_cmd="printf bad > should-not-run",
     )
@@ -4737,7 +4737,7 @@ def test_generated_hook_adopter_missing_or_empty_test_cmd_fails_closed(
     adopter = _init_repo(tmp_path / f"adopter-test-cmd-{missing}")
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
     contract_file = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
     if missing:
@@ -4761,7 +4761,7 @@ def test_generated_hook_adopter_dirty_worktree_is_rejected_with_exact_reason(wp,
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     (adopter / "README.md").write_text("dirty masking change\n", encoding="utf-8")
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
 
     result = _run_hook_result(
@@ -4781,7 +4781,7 @@ def test_generated_hook_adopter_multi_ref_same_sha_runs_self_test_once(wp, tmp_p
     count = tmp_path / "self-test-count"
     cmd = f"read ignored || true; printf x >> {shlex.quote(str(count))}"
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main", "release"], git_runner=FakeGit(),
         gate_mode="self-test", test_cmd=cmd)
     stdin = (
@@ -4806,7 +4806,7 @@ def test_generated_hook_adopter_test_cmd_cannot_steal_next_push_ref(wp, tmp_path
     count = tmp_path / "self-test-count"
     cmd = f"read stolen || true; printf x >> {shlex.quote(str(count))}"
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main", "release"], git_runner=FakeGit(),
         gate_mode="self-test", test_cmd=cmd)
     stdin = (
@@ -4830,7 +4830,7 @@ def test_generated_hook_adopter_bypass_requires_approval_reason_and_audits(wp, t
     adopter = _init_repo(tmp_path / "adopter-bypass")
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="exit 23")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     hook_text = hook.read_text(encoding="utf-8")
@@ -4869,7 +4869,7 @@ def test_generated_hook_adopter_bypass_neutralizes_tab_in_reason(wp, tmp_path):
     adopter = _init_repo(tmp_path / "adopter-bypass-tab")
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
 
     result = _run_hook_result(
@@ -4907,7 +4907,7 @@ def test_generated_hook_adopter_bypass_status_failure_is_quiet_unknown(wp, tmp_p
     )
     wrapper.chmod(0o755)
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
 
     result = _run_hook_result(
@@ -4933,7 +4933,7 @@ def test_generated_hook_adopter_bypass_without_git_records_unknown(wp, tmp_path)
     isolated_bin = _isolated_command_path(
         tmp_path / "bypass-no-git-bin", "sh", "cat", "tr", "date")
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
 
@@ -4959,7 +4959,7 @@ def test_generated_hook_adopter_bypass_rejects_symlink_audit_log(wp, tmp_path):
     adopter = _init_repo(tmp_path / "adopter-bypass-symlink")
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
     audit = wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log"
     audit.symlink_to(os.devnull)
@@ -4980,7 +4980,7 @@ def test_generated_hook_adopter_bypass_rejects_unwritable_audit_log(wp, tmp_path
     adopter = _init_repo(tmp_path / "adopter-bypass-unwritable")
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
     audit = wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log"
     audit.write_text("existing audit\n", encoding="utf-8")
@@ -5022,7 +5022,7 @@ def test_generated_hook_derives_and_unsets_git_local_env_for_status_and_test(wp,
         'test -z "${GIT_CONFIG_COUNT-}${GIT_IMPLICIT_WORK_TREE-}" && '
         f"printf ok > {shlex.quote(str(marker))}")
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd=test_cmd)
 
     result = _run_hook_result(
@@ -5061,7 +5061,7 @@ def test_generated_hook_git_local_env_query_failure_uses_legacy_fallback(wp, tmp
     wrapper.chmod(0o755)
     marker = tmp_path / "fallback-test-clean"
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook(
+    _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
         test_cmd=f'test -z "${{GIT_PREFIX-}}" && printf ok > {shlex.quote(str(marker))}')
 
@@ -5082,7 +5082,7 @@ def test_install_protected_hook_rejects_legacy_unresolved_mode(wp):
     """신규 설치는 B1 강등 전의 unresolved sidecar를 더 만들 수 없다."""
     _mk_bare_placeholder(wp, "A")
     with pytest.raises(ValueError, match="알 수 없는 보호 push gate mode"):
-        wp.install_protected_hook(
+        _install_for_test(wp,
             "A", ["main"], git_runner=FakeGit(), gate_mode="unresolved", test_cmd="true")
 
 
@@ -5096,7 +5096,7 @@ def test_generated_hook_pm_allow_engine_absent_fail_closed(wp):
     못 돌려 fail-closed(rc≠0)한다 — 무력화 방지. (board.py 는 슬롯 아닌 PM 홈 소유임을 반영·codex r2.)
     """
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     # engine-root sidecar 는 PM 홈(proj)을 가리키지만 proj 엔 board.py 없음.
     assert (wp.REPO_HOOKS_DIR / "A" / "engine-root").exists()
@@ -5112,7 +5112,7 @@ def test_generated_hook_engine_root_sidecar_absent_fail_closed(wp):
     지워 재현(설치자가 안 썼거나 유실된 경우) — 게이트를 못 돌리면 무력화 방지로 거부한다.
     """
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     (wp.REPO_HOOKS_DIR / "A" / "engine-root").unlink()   # sidecar 제거.
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main"), env_override=True) != 0
@@ -5127,7 +5127,7 @@ def test_generated_hook_skip_alone_without_pm_allow_hard_blocks(wp):
     PM_ALLOW 를 안 주면 하드 차단(rc≠0)을 직접 단언한다.
     """
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main"),
                      env_override=False, skip_live_gate=True) != 0
@@ -5141,7 +5141,7 @@ def test_generated_hook_tag_push_unaffected(wp):
     타지 않고 통과(board.py 미호출·hermetic). tag 시맨틱 회귀 무변경 단언.
     """
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/tags/v1.0"), env_override=True) == 0
 
@@ -5154,7 +5154,7 @@ def test_generated_hook_reads_sidecar_protected_list(wp):
     `release` 만 보호 목록이면 main push 는 통과(목록에 없음)·release push 는 거부.
     """
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["release"], git_runner=FakeGit())  # main 은 목록에 없음
+    _install_for_test(wp, "A", ["release"], git_runner=FakeGit())  # main 은 목록에 없음
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main")) == 0       # 목록에 없으니 통과
     assert _run_hook(hook, _push_line("refs/heads/release")) != 0    # 목록에 있으니 거부
@@ -5164,7 +5164,7 @@ def test_generated_hook_reads_sidecar_protected_list(wp):
 def test_generated_hook_multi_ref_rejects_if_any_protected(wp):
     """생성 훅 직접 실행 — 여러 ref push 중 하나라도 보호목록이면 거부 (T-0076)."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     stdin = _push_line("refs/heads/feat-x") + _push_line("refs/heads/main")
     assert _run_hook(hook, stdin) != 0
@@ -5203,7 +5203,7 @@ def test_install_protected_hook_writes_pre_commit_too(wp):
     엔진 업그레이드 자가치유가 성립하려면 *설치자*가 두 훅을 다 깔아야 한다 — 재설치 트리거
     (repo add·worktree add·pm_update sync)는 이 함수 하나만 부르기 때문이다."""
     _mk_bare_placeholder(wp, "A")
-    assert wp.install_protected_hook("A", ["main"], git_runner=FakeGit()) is True
+    assert _install_for_test(wp, "A", ["main"], git_runner=FakeGit()) is True
     commit_hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     assert commit_hook.exists(), "pre-commit 훅이 설치되지 않음(T-0415 미배포)"
     assert commit_hook.read_text(encoding="utf-8").startswith("#!/bin/sh")
@@ -5217,7 +5217,7 @@ def test_install_protected_hook_writes_pre_commit_too(wp):
 
 def test_install_protected_hook_bare_absent_writes_no_pre_commit(wp):
     """bare 부재 → pre-commit 도 미생성(no-op·회사 repo 무영향 계약 동형·T-0415)."""
-    assert wp.install_protected_hook("A", ["main"], git_runner=FakeGit()) is False
+    assert _install_for_test(wp, "A", ["main"], git_runner=FakeGit()) is False
     assert not (wp.REPO_HOOKS_DIR / "A" / "pre-commit").exists()
 
 
@@ -5233,9 +5233,9 @@ def test_installed_files_match_artifact_spec(wp):
 
     install 이 명세 밖 파일을 하나 더 쓰면(또는 명세에 있는 걸 안 쓰면) 여기서 깨진다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main", "release"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main", "release"], git_runner=FakeGit())
     on_disk = {p.name for p in (wp.REPO_HOOKS_DIR / "A").iterdir()}
-    spec = {a.path.name for a in wp.protected_hook_artifacts("A", ["main", "release"])}
+    spec = {a.path.name for a in protected_hooks.protected_hook_artifacts(pm_paths.home_at(wp.REPO), "A", ["main", "release"])}
     assert on_disk == spec, (
         "install 산출물과 명세(protected_hook_artifacts)가 어긋난다 — 판정(pm_update)이 명세를 "
         f"읽으므로 그 차이는 곧 미검사 축이다: 디스크={sorted(on_disk)} 명세={sorted(spec)}")
@@ -5244,8 +5244,8 @@ def test_installed_files_match_artifact_spec(wp):
 def test_installed_artifact_contents_and_modes_match_spec(wp):
     """**메타가드(실행)** — 각 산출물의 *내용*과 *실행권한*이 명세대로다(판정이 보는 그 값)."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
-    for artifact in wp.protected_hook_artifacts("A", ["main"]):
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
+    for artifact in protected_hooks.protected_hook_artifacts(pm_paths.home_at(wp.REPO), "A", ["main"]):
         assert artifact.path.read_text(encoding="utf-8") == artifact.content, \
             f"{artifact.path.name} 내용이 명세와 다름"
         is_executable = bool(artifact.path.stat().st_mode & 0o111)
@@ -5260,7 +5260,7 @@ def test_install_protected_hook_writes_only_through_artifact_spec():
 
     실행 메타가드는 "결과 집합" 을 보고, 이건 "경로" 를 본다 — 누군가 명세를 우회해 파일을
     직접 쓰면(다음 축 누락의 씨앗) 여기서 잡힌다."""
-    src = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    src = Path(protected_hooks.__file__).read_text(encoding="utf-8")
     body = src.split("def install_protected_hook(", 1)[1].split("\ndef ", 1)[0]
     writes = [line.strip() for line in body.splitlines()
               if ".write_text(" in line or ".chmod(" in line or "os.replace(" in line]
@@ -5278,7 +5278,7 @@ def test_install_protected_hook_writes_only_through_artifact_spec():
 def test_generated_commit_hook_rejects_protected_branch(wp, tmp_path):
     """생성 pre-commit 훅 직접 실행 — 현재 브랜치가 보호목록(main)이면 거부(rc≠0) (T-0415)."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main", "develop"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main", "develop"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc")          # `main` 체크아웃 상태
     assert _run_commit_hook(hook, wc) != 0
@@ -5289,7 +5289,7 @@ def test_generated_commit_hook_rejects_protected_branch(wp, tmp_path):
 def test_generated_commit_hook_rejects_without_dirname_in_path(wp, tmp_path):
     """pre-commit도 경로 유틸리티 없이 훅 옆 보호목록을 찾아 main commit을 거부한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc-no-dirname")
     isolated_bin = _isolated_command_path(tmp_path / "commit-bin", "sh", "git")
@@ -5308,7 +5308,7 @@ def test_generated_commit_hook_rejects_without_dirname_in_path(wp, tmp_path):
 def test_generated_commit_hook_missing_git_fails_closed(wp, tmp_path):
     """git 부재를 detached HEAD로 오인하지 않고 현재 브랜치 판정 불가로 거부한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     isolated_bin = _isolated_command_path(tmp_path / "commit-no-git-bin", "sh")
 
@@ -5325,7 +5325,7 @@ def test_generated_commit_hook_missing_git_fails_closed(wp, tmp_path):
 def test_generated_commit_hook_git_failure_is_not_detached_head(wp, tmp_path):
     """git이 모든 조회를 rc1로 실패해도 정상 detached HEAD로 오인하지 않고 거부한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     isolated_bin = _isolated_command_path(tmp_path / "commit-broken-git-bin", "sh")
     broken_git = isolated_bin / "git"
@@ -5345,7 +5345,7 @@ def test_generated_commit_hook_git_failure_is_not_detached_head(wp, tmp_path):
 def test_generated_commit_hook_empty_branch_name_fails_closed(wp, tmp_path):
     """symbolic-ref가 rc0이지만 빈 이름이면 비보호 브랜치로 흘려보내지 않는다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     isolated_bin = _isolated_command_path(tmp_path / "commit-empty-branch-bin", "sh")
     empty_git = isolated_bin / "git"
@@ -5373,7 +5373,7 @@ def test_generated_commit_hook_real_git_rc128_fails_closed(wp, tmp_path):
     "실제 git 의 rc 규약" 축이 그대로 남는다(PATH 대역·경계 env 를 쓰지 않는다).
     """
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     outside_repo = tmp_path / "not-a-repository"
     outside_repo.mkdir()
@@ -5400,7 +5400,7 @@ def test_generated_commit_hook_real_git_rc128_fails_closed(wp, tmp_path):
 def test_generated_commit_hook_rejects_nonexistent_detached_head_object(wp, tmp_path):
     """완전한 OID 모양의 HEAD라도 commit 객체가 존재하지 않으면 detached로 통과하지 않는다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc-corrupt-detached")
     head_oid = _git(wc, "rev-parse", "HEAD").stdout.strip()
@@ -5425,7 +5425,7 @@ def test_generated_commit_hook_rejects_nonexistent_detached_head_object(wp, tmp_
 def test_generated_commit_hook_allows_feature_branch(wp, tmp_path):
     """생성 pre-commit 훅 직접 실행 — 비보호 브랜치는 통과(rc 0) (T-0415·정상 작업 경로)."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main", "develop"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main", "develop"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc")
     _git(wc, "checkout", "-q", "-b", "work/x")
@@ -5441,7 +5441,7 @@ def test_generated_commit_hook_allows_detached_head(wp, tmp_path):
     carve-out 과 일치시킨다. detached 는 `git symbolic-ref` 가 rc≠0(브랜치 없음)이라, 보호
     브랜치 sha 위에 서 있어도 브랜치 이름이 없으므로 판정 대상이 아니다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc")
     _git(wc, "checkout", "-q", "--detach", "HEAD")   # 보호 브랜치 sha 위 detached
@@ -5457,7 +5457,7 @@ def test_generated_commit_hook_pm_allow_passes_protected(wp, tmp_path):
     쓰지 않는다(pm_role §보호 브랜치 가드). commit 단계엔 검증할 라이브 게이트가 없어 2단
     분리(PM_SKIP_LIVE_GATE 식)는 두지 않는다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc")
     assert _run_commit_hook(hook, wc, allow=True) == 0
@@ -5471,7 +5471,7 @@ def test_generated_commit_hook_reads_sidecar_protected_list(wp, tmp_path):
     같은 훅 본문이라도 sidecar 목록에 따라 거부/통과가 갈린다 → 훅이 목록을 하드코딩하지 않고
     pre-push 와 **같은 sidecar** 를 읽음을 증명(`release` 만 보호면 main 커밋은 통과)."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["release"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["release"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc")
     assert _run_commit_hook(hook, wc) == 0            # main 은 목록에 없음 → 통과
@@ -5488,7 +5488,7 @@ def test_generated_commit_hook_sidecar_absent_passes(wp, tmp_path):
     하드 백스톱인 pre-push는 같은 sidecar 부재를 fail-closed로 거부하므로 이 비대칭이
     commit 단계의 의도적 예외를 안전하게 한정한다."""
     _mk_bare_placeholder(wp, "A")
-    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    _install_for_test(wp, "A", ["main"], git_runner=FakeGit())
     (wp.REPO_HOOKS_DIR / "A" / "protected").unlink()
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     wc = _init_repo(tmp_path / "wc")
@@ -5539,7 +5539,7 @@ def test_real_git_protected_push_blocked_via_hookspath(proj, tmp_path):
     lease, slot_dir = _create_slot_on_main(wp)
 
     # 보호훅 설치 — bare core.hooksPath 를 훅 디렉토리(절대경로)로 wiring(실 git config).
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
     # wiring 단언: bare 의 core.hooksPath 가 훅 디렉토리 절대경로를 가리킨다.
     hooks_path = _git(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A"), "config", "core.hooksPath").stdout.strip()
     expected = str((wp.REPO_HOOKS_DIR / "A").resolve())
@@ -5581,7 +5581,7 @@ def test_real_git_protected_push_blocked_without_dirname_in_path(proj, tmp_path)
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
     _git(slot_dir, "remote", "add", "server", str(server))
     _stage(slot_dir, "no-dirname.txt", "protected change\n")
     assert _commit(slot_dir, "protected change", allow=True).returncode == 0
@@ -5613,7 +5613,7 @@ def test_real_git_feature_push_allowed_via_hookspath(proj, tmp_path):
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     _git(slot_dir, "remote", "add", "server", str(server))
     # 비보호 브랜치 work/x 에서 새 커밋 → push(허용돼야).
@@ -5650,7 +5650,7 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     _git(slot_dir, "remote", "add", "server", str(server))
     (slot_dir / "change.txt").write_text("skip work on main\n", encoding="utf-8")
@@ -5692,7 +5692,7 @@ def test_real_git_adopter_self_test_unsets_hook_git_environment(proj, tmp_path):
         f'test -z "{inherited}" && cd {shlex.quote(str(fixture))} && '
         f'git init -q . && test -d .git && printf ok > {shlex.quote(str(marker))}'
     )
-    assert wp.install_protected_hook(
+    assert _install_for_test(wp,
         "A", ["main"], gate_mode="self-test", test_cmd=test_cmd) is True
 
     _git(slot_dir, "remote", "add", "server", str(server))
@@ -5787,7 +5787,7 @@ def test_real_git_protected_commit_blocked_via_hookspath(proj, tmp_path):
     _mk_real_bare(wp, "A", tmp_path)
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     head_before = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
     _stage(slot_dir, "change.txt", "work on main\n")
@@ -5807,7 +5807,7 @@ def test_real_git_feature_commit_allowed_via_hookspath(proj, tmp_path):
     _mk_real_bare(wp, "A", tmp_path)
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     _git(slot_dir, "checkout", "-q", "-b", "work/x")
     head_before = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
@@ -5824,7 +5824,7 @@ def test_real_git_protected_commit_allowed_with_escape(proj, tmp_path):
     _mk_real_bare(wp, "A", tmp_path)
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     head_before = _git(slot_dir, "rev-parse", "HEAD").stdout.strip()
     _stage(slot_dir, "change.txt", "approved work on main\n")
@@ -5844,7 +5844,7 @@ def test_real_git_protected_commit_no_verify_is_uncovered(proj, tmp_path):
     _mk_real_bare(wp, "A", tmp_path)
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     _stage(slot_dir, "change.txt", "bypass\n")
     assert _commit(slot_dir, "no-verify", "--no-verify").returncode == 0, \
@@ -5863,7 +5863,7 @@ def test_real_git_merge_into_protected_branch_not_gated(proj, tmp_path):
     _mk_real_bare(wp, "A", tmp_path)
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     # 릴리즈 커밋은 비보호 release 브랜치에서(훅 통과).
     _git(slot_dir, "checkout", "-q", "-b", "release")
@@ -5896,7 +5896,7 @@ def test_real_git_sequencer_commands_are_uncovered(proj, tmp_path):
     _mk_real_bare(wp, "A", tmp_path)
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
 
     # 되돌릴/집어올 커밋을 비보호 브랜치에서 만들고 main 에 merge 로 올린다(셋업·훅 통과 경로).
     _git(slot_dir, "checkout", "-q", "-b", "work/x")
@@ -6000,7 +6000,7 @@ def test_real_git_livegate_green_allows_protected_push(proj, tmp_path):
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
     _git(slot_dir, "remote", "add", "server", str(server))
 
     slot_main = _slot_commit_on(slot_dir, "main", "release change\n")
@@ -6026,7 +6026,7 @@ def test_real_git_livegate_record_absent_blocks_protected_push(proj, tmp_path):
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
     _git(slot_dir, "remote", "add", "server", str(server))
 
     slot_main = _slot_commit_on(slot_dir, "main", "unrecorded change\n")
@@ -6061,7 +6061,7 @@ def test_real_git_livegate_rev_mismatch_blocks_protected_push(proj, tmp_path):
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True
+    assert _install_for_test(wp, "A", ["main"]) is True
     _git(slot_dir, "remote", "add", "server", str(server))
 
     slot_main = _slot_commit_on(slot_dir, "main", "new change\n")
@@ -6098,7 +6098,7 @@ def test_real_git_livegate_non_protected_push_unaffected(proj, tmp_path):
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main"]) is True   # main 만 보호
+    assert _install_for_test(wp, "A", ["main"]) is True   # main 만 보호
     _git(slot_dir, "remote", "add", "server", str(server))
 
     # 비보호 브랜치 work/x — 라이브 게이트 기록 없음.
@@ -6128,7 +6128,7 @@ def test_real_git_livegate_multi_protected_ref_all_or_nothing(proj, tmp_path):
     _git(tmp_path, "clone", "--bare", "-q", str(pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), "A")), str(server))
 
     lease, slot_dir = _create_slot_on_main(wp)
-    assert wp.install_protected_hook("A", ["main", "release"]) is True   # main·release 둘 다 보호
+    assert _install_for_test(wp, "A", ["main", "release"]) is True   # main·release 둘 다 보호
     _git(slot_dir, "remote", "add", "server", str(server))
 
     # main 전진(새 커밋) + release 브랜치(main 에서 갈라 별도 커밋 — main sha 와 다른 tip).

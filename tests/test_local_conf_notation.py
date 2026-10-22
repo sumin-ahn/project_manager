@@ -20,6 +20,8 @@ hermetic: 실 `local.conf` **파일**을 tmp 에 만들어 각 도구가 그 파
 (조립한 dict·monkeypatch 상수를 단언하면 파일→값 경로가 통째로 빠진다). 자식 프로세스 스폰 0.
 """
 from __future__ import annotations
+from pm_engine.app import repo_protection
+from pm_engine.infra import pm_paths
 
 import importlib.util
 import inspect
@@ -131,7 +133,7 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
 
     assert conf_store.local_config(board._home())["identity.user"] == "last@example.com"
     assert external.local_config()["identity.user"] == "last@example.com"
-    assert config._local_conf_value("identity.user") == "last@example.com"
+    assert repo_protection._local_conf_value(pm_paths.home_at(config.REPO), "identity.user") == "last@example.com"
 
 
 def test_module_level_local_config_seams_are_still_patchable(monkeypatch):
