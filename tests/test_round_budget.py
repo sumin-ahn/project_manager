@@ -12,6 +12,12 @@ hermetic 패턴은 `test_delegate_cluster_rounds.py`(라운드 예약)와 `test_
 """
 from __future__ import annotations
 
+from pm_engine.infra import cluster_store
+
+from pm_engine.app import round_maintenance
+from pm_engine.domain import cluster_rules
+
+
 import argparse
 import contextlib
 import datetime
@@ -65,6 +71,12 @@ _FILLED_DESIGN_SECTION = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_round_sync(monkeypatch):
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        round_maintenance._rounds_mutation_sync_paths)
+
+
 def _load_tool(name: str, alias: str):
     spec = importlib.util.spec_from_file_location(alias, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
@@ -114,7 +126,7 @@ def _fixture_board(pd, pm_home: Path):
     )
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
-    board._rounds_mutation_sync_paths = lambda _message, _paths: True
+    round_maintenance._rounds_mutation_sync_paths = lambda _home, _message, _paths: True
     return board
 
 
@@ -143,17 +155,6 @@ def budget_env(tmp_path, pd, monkeypatch):
     for key, value in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
-    real_load_board = pd._load_board_for_repo
-
-    def _load_board(repo):
-        resolved = Path(repo).resolve()
-        return (
-            _fixture_board(pd, pm_home)
-            if resolved == pm_home.resolve()
-            else real_load_board(resolved)
-        )
-
-    monkeypatch.setattr(pd, "_load_board_for_repo", _load_board)
     return pm_home, slot, tickets
 
 
@@ -374,14 +375,14 @@ def _prepare_accepted_review(
 def test_budget_values_expand_into_the_role_sequence(pd):
     board = _load_tool("board", "board_budget_sequence")
     sequence = pd.cluster_round_sequence(
-        board.CLUSTER_BUDGET_DEFAULT, cluster="C-cycle",
+        cluster_rules.CLUSTER_BUDGET_DEFAULT, cluster="C-cycle",
     )
     assert sequence == _CYCLE
     # 값을 늘이거나 줄여 가변 루프/단계 생략으로 바꾸는 장부는 손상이다.
     for key, value in (("developer_per_ticket", 2), ("architect", 0), ("fix", -1)):
         with pytest.raises(delegate_errors.DelegateError, match=rf"{key}=1"):
             pd.cluster_round_sequence(
-                {**board.CLUSTER_BUDGET_DEFAULT, key: value}, cluster="C-cycle",
+                {**cluster_rules.CLUSTER_BUDGET_DEFAULT, key: value}, cluster="C-cycle",
             )
 
 
@@ -550,9 +551,8 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
 
-    board = pd._load_board_for_repo(pm_home)
+    board = _fixture_board(pd, pm_home)
     home = pm_home.resolve()
-    assert Path(board.__file__) == PM_DELEGATE.resolve().with_name("board.py")
     assert (
         board.REPO, board._home().local_dir, (board._home().local_dir / "board.lock"),
         (pm_paths.wiki_dir(board._home()) / "board.md"), board.LEASES_FILE, board._home().local_conf,
@@ -1296,7 +1296,6 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
         return real_lock(_home, *args, **kwargs)
 
     monkeypatch.setattr(fs, "board_lock", _racing_lock)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
 
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
@@ -1358,7 +1357,6 @@ def _refuse_at_the_lock(pd, pm_home: Path, monkeypatch, mutate) -> None:
         return real_lock(_home, *args, **kwargs)
 
     monkeypatch.setattr(fs, "board_lock", _racing_lock)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
 
 
 def test_the_lock_recheck_sees_a_budget_that_became_invalid(
@@ -1406,7 +1404,7 @@ def test_a_ticket_without_a_ledger_stops_the_preparation(pd, budget_env):
     (tickets / "T-7130-budget.md").write_text(
         _spec_text("T-7130", ""), encoding="utf-8", newline="\n")
 
-    assert pd._load_board_for_repo(pm_home).cluster_members("C-T-7130") == ()
+    assert cluster_store.cluster_members(pm_paths.home_at(pm_home), "C-T-7130") == ()
 
     with pytest.raises(delegate_errors.DelegateError) as caught:
         pd.prepare_cluster_copy(
@@ -1559,7 +1557,7 @@ def test_replan_helpers_are_removed(board_env):
 
 def test_new_cluster_ledger_has_only_the_fixed_budget(board_env):
     board, _board_dir = board_env
-    fm = board._new_cluster_fm("C-json", ["T-0001"])
-    assert fm["budget"] == board.CLUSTER_BUDGET_DEFAULT
+    fm = cluster_rules._new_cluster_fm("C-json", ["T-0001"])
+    assert fm["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT
     assert "replans" not in fm
     assert set(fm["budget"].values()) == {1}

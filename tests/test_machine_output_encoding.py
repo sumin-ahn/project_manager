@@ -24,6 +24,9 @@ T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 �
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+
 import ast
 import importlib.util
 import io
@@ -133,11 +136,7 @@ def _neutralize_engine_anchor_guard(bootstrap, monkeypatch):
     사본으로 보이면 `[중단·0단계]` 로 dump 전에 끝난다 — 이 테스트의 축은 seam(bytes) 이지 앵커가
     아니다. 실 board 를 로드해 `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가
     그 패치본을 받게 한다."""
-    real_board = bootstrap._load_board()
-    if real_board is not None:
-        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
-                            lambda anchor, **_kw: None, raising=False)
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
 
 
 def _bind_task_stub(inst, monkeypatch, tmp_path):

@@ -286,6 +286,7 @@ def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
         return 0, ""
 
     bind_pool(monkeypatch, worktree_pool)
+    bind_board(monkeypatch, board)
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
@@ -293,7 +294,7 @@ def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
         log_file=log_file,
         areas_file=areas_file,
 
-        board=board,
+
         pm_state_file=pm_state_file,
     )
 
@@ -320,7 +321,7 @@ def test_anchor_consumes_pm_home_guard_with_repo(bootstrap, monkeypatch, tmp_pat
     board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home="/home/x/pm_home"))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
     inst.run(task="mytask")
-    assert board.anchor_calls == [bootstrap.REPO], "앵커 판정을 REPO 로 board 가드에 위임하지 않음"
+    assert board.anchor_calls == [pm_paths.home_at(bootstrap.REPO)], "앵커 판정을 REPO 로 board 가드에 위임하지 않음"
 
 
 def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):
@@ -332,12 +333,6 @@ def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):
     assert capsys.readouterr().out != ""  # 정상 dump.
 
 
-def test_anchor_board_absent_failsoft_passes(bootstrap, tmp_path, monkeypatch, capsys):
-    """board(또는 헬퍼) 부재면 앵커 검사를 생략한다(fail-soft·오탐 0·standalone 무영향)."""
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: None)
-    inst = _make(bootstrap, tmp_path, board=None,   # self._board None → _load_board None → skip.
-                 worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
-    assert inst.run(task="mytask") == 0
 
 
 def test_anchor_guard_internal_raise_failsoft_passes(bootstrap, monkeypatch, tmp_path, capsys):

@@ -27,6 +27,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import round_maintenance
+
+
 import importlib.util
 import inspect
 import json
@@ -51,6 +54,12 @@ from pm_engine.infra import fs
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_round_sync(monkeypatch):
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        round_maintenance._rounds_mutation_sync_paths)
 
 
 def _load_pd():
@@ -121,12 +130,12 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
 
-    def _sync(message, paths):
+    def _sync(_home, message, paths):
         if sync_log is not None:
             sync_log.append((message, [Path(item) for item in paths]))
         return True
 
-    board._rounds_mutation_sync_paths = _sync
+    round_maintenance._rounds_mutation_sync_paths = _sync
     return board
 
 
@@ -155,9 +164,7 @@ def env(tmp_path, pd, monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "supersede@test.invalid")
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, pm_home, sync_log),
-    )
+    _fixture_board(pd, pm_home, sync_log)
     return pm_home, slot, tickets, sync_log
 
 
@@ -297,7 +304,6 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     board = _fixture_board(pd, pm_home, sync_log)
     pm_paths.drafts_dir(board._home()).mkdir(parents=True)
     spec.rename(pm_paths.drafts_dir(board._home()) / spec.name)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
     plan = pd.prepare_ticket_copy(ticket="T-9202", role="architect", cwd=slot, pm_home=pm_home)
     active = []
     original_lock = fs.board_lock

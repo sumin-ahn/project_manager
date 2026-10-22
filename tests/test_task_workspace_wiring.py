@@ -12,6 +12,10 @@ hermetic — board/ticket_finish 의 경로 전역(`REPO`·`LEASES_FILE` 등)이
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_cluster
+from pm_engine.cli import board_dispatch
+
+
 import argparse
 import importlib.util
 import io
@@ -286,8 +290,8 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         "tasks": [{"name": "job5", "prefix": "PAY"}],
     }), encoding="utf-8")
     # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
-    monkeypatch.setattr(board, "_cluster_publish_base_branch",
-                        lambda args: (str(board.REPO / "product"), "task/main")
+    monkeypatch.setattr(board_cluster, "_cluster_publish_base_branch",
+                        lambda _home, args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
     seen = {}
 
@@ -331,8 +335,8 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
     # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
-    monkeypatch.setattr(board, "_cluster_publish_base_branch",
-                        lambda args: (str(board.REPO / "product"), "task/main")
+    monkeypatch.setattr(board_cluster, "_cluster_publish_base_branch",
+                        lambda _home, args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
     seen = {}
     monkeypatch.setattr(areas_store, "id_prefix",
@@ -384,7 +388,7 @@ def tf(tmp_path, monkeypatch):
     mod = _load("ticket_finish")
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LEASES_FILE", proj / ".project_manager" / ".local" / "worktree-leases.json")
-    monkeypatch.setattr(mod, "_guard_worktree_misanchor", lambda: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home: False)
     mod._proj = proj
     return mod
 

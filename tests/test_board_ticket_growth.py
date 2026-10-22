@@ -5,6 +5,13 @@ section-add 는 명세 파일을 건드리지 않는다 — 쓰는 것은 `ticke
 """
 from __future__ import annotations
 
+from pm_engine.app import round_maintenance
+from pm_engine.cli import board_round
+from pm_engine.domain import board_command_rules
+from pm_engine.domain import cluster_rules
+from pm_engine.infra import cluster_store
+
+
 import ast
 import datetime
 import importlib.util
@@ -481,7 +488,7 @@ def test_draft_section_add_allows_only_architect_and_never_syncs(board_env, monk
     before_spec = path.read_bytes()
     sync_calls = []
     monkeypatch.setattr(
-        board, "_rounds_mutation_sync_paths",
+        round_maintenance, "_rounds_mutation_sync_paths",
         lambda *_args: sync_calls.append(_args) or True,
     )
 
@@ -605,14 +612,14 @@ def test_section_add_still_opens_a_ledgerless_draft_architect_round(
     before_head = _head(board_dir)
     sync_calls = []
     monkeypatch.setattr(
-        board, "_rounds_mutation_sync_paths",
+        round_maintenance, "_rounds_mutation_sync_paths",
         lambda *_args: sync_calls.append(_args) or True,
     )
 
     assert board.main(["section-add", "T-1018", "--role", "architect"]) == 0
 
     fm, _body = ticket_store.load_ticket(path)
-    assert board.load_cluster(board.ticket_cluster("T-1018", fm)) is None
+    assert cluster_store.load_cluster(board._home(), cluster_rules.ticket_cluster("T-1018", fm)) is None
     assert _round_names(board_dir, "T-1018") == ["01-architect.md"]
     assert sync_calls == [] and _head(board_dir) == before_head
     assert "local draft; promote가 출하 소유" in capsys.readouterr().out
@@ -700,7 +707,7 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
     # 경합 테스트 관심은 파일 트랜잭션이다. board-git/파생 render는 이미 별도 실제 Git 테스트가
     # 검증하며 여기서 섞으면 lock 획득 순서 대신 원격 왕복 타이밍을 재게 된다.
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
-    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", lambda _message, _paths: True)
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths", lambda _home, _message, _paths: True)
     monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home, _message, _paths: True)
     monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
 
@@ -915,7 +922,7 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
         path.read_text(encoding="utf-8").replace("created_by: test\n", "created_by: null\n"),
         encoding="utf-8",
     )
-    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", lambda _message, _paths: True)
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths", lambda _home, _message, _paths: True)
 
     migration_paused = threading.Event()
     allow_migration_dump = threading.Event()
@@ -975,6 +982,11 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
 def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
     """sink 호출자를 독립 발견해 writer 누락/lock 순서/재진입을 미래 변경에서 red로 만든다."""
     tree = ast.parse(BOARD_PY.read_text(encoding="utf-8"))
+    for relative in ("infra/cluster_store.py", "cli/board_cluster.py", "cli/board_round.py"):
+        source = BOARD_PY.parent / "pm_engine" / relative
+        moved = ast.parse(source.read_text(encoding="utf-8"))
+        ast.increment_lineno(moved, max(node.end_lineno for node in tree.body) + 1)
+        tree.body += moved.body
     functions = {
         node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
@@ -1113,10 +1125,10 @@ def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations
         args = parser.parse_args(list(argv))
         assert args.fn is expected_fn
     assert parser.parse_args(
-        ["section-add", "T-1", "--role", "developer"]).fn is board.cmd_section_add
-    assert parser.parse_args(["tier", "T-1", "hard"]).fn is board.cmd_tier
-    assert parser.parse_args(["design", "T-1", "done"]).fn is board.cmd_design
-    assert {"section-add", "tier", "design"} <= board._MUTATION_SUBCOMMANDS
+        ["section-add", "T-1", "--role", "developer"]).fn is board_round.cmd_section_add
+    assert parser.parse_args(["tier", "T-1", "hard"]).fn is board_round.cmd_tier
+    assert parser.parse_args(["design", "T-1", "done"]).fn is board_round.cmd_design
+    assert {"section-add", "tier", "design"} <= board_command_rules._MUTATION_SUBCOMMANDS
 
 
 # ── design (frontmatter `design:` 값 발행 후 setter — T-0817) ─────────────────
@@ -1191,7 +1203,7 @@ def test_design_draft_never_syncs(board_env, monkeypatch, capsys):
     before_head = _head(board_dir)
     sync_calls = []
     monkeypatch.setattr(
-        board, "_rounds_mutation_sync_paths",
+        round_maintenance, "_rounds_mutation_sync_paths",
         lambda *args: sync_calls.append(args) or True,
     )
 

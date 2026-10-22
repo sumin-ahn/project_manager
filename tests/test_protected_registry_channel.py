@@ -977,6 +977,7 @@ def _reconciler(bootstrap, tmp_path, monkeypatch, *, board, pool):
     areas_file = tmp_path / "areas.md"
     areas_file.write_text("| repo | prefix |\n|---|---|\n| X | X |\n", encoding="utf-8")
     bind_pool(monkeypatch, pool)
+    bind_board(monkeypatch, board)
     return bootstrap.PmBootstrap(
         run_board_fn=lambda args: (0, ""),
         run_pytest_fn=lambda: (0, ""),
@@ -984,7 +985,7 @@ def _reconciler(bootstrap, tmp_path, monkeypatch, *, board, pool):
         log_file=log_file,
         areas_file=areas_file,
 
-        board=board,
+
     )
 
 

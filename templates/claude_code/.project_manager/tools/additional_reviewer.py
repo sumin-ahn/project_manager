@@ -79,6 +79,8 @@
 
 from __future__ import annotations
 
+from pm_engine.app import round_maintenance
+
 import argparse
 import contextlib
 import datetime
@@ -5382,14 +5384,13 @@ def _harvest_additional_reviewer_section(
     home = pm_home or REPO
     try:
         delegate = _load_pm_delegate()
-        board = delegate.anchor_board_to_repo(_load_board(), home)
     except RuntimeError as exc:
         if not _absorb_engine_rev_skew_for_recovery(exc, "ticket_harvest"):
             raise
         return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
     try:
         return _reserve_additional_reviewer_round(
-            ticket, reply, delegate=delegate, board=board,
+            ticket, reply, delegate=delegate,
             board_home=pm_paths.home_at(Path(home).resolve()),
         )
     # 라운드 규약 위반은 `RuntimeError` 하위형이라 **사본 skew 절보다 먼저** 받는다 — 순서를
@@ -5404,7 +5405,7 @@ def _harvest_additional_reviewer_section(
 
 
 def _reserve_additional_reviewer_round(
-    ticket: str, reply: str, *, delegate, board, board_home,
+    ticket: str, reply: str, *, delegate, board_home,
 ) -> str | None:
     """내용 검증 → 통과 시 라운드 예약 + board 부분 커밋 (위반 사유 또는 None).
 
@@ -5449,7 +5450,7 @@ def _reserve_additional_reviewer_round(
     message = f"additional-reviewer {ticket} {role}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 그 이름이 갈렸을 때 라운드
     # 파일만 만들어지고 board 커밋은 조용히 빠진 rc0 이 된다(AttributeError 로 죽는 편이 낫다).
-    sync_ready = bool(board._rounds_mutation_sync_paths(message, [round_path]))
+    sync_ready = bool(round_maintenance._rounds_mutation_sync_paths(board_home, message, [round_path]))
     print(
         f"[additional-reviewer] 티켓 회수: {ticket} {role}[{ordinal}] → {round_path}"
         + ("" if sync_ready else " (board-git 동기 미준비)"),

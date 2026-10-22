@@ -17,6 +17,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_round
+
+
 import argparse
 import importlib.util
 import shutil
@@ -334,8 +337,8 @@ def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     fm, _ = ticket_store.load_ticket(draft_path)
     ticket_store.dump_ticket(draft_path, fm, _FILLED_BODY)
 
-    rc_section = board_git.cmd_section_add(
-        argparse.Namespace(id=tid, role="architect", label=None))
+    rc_section = board_round.cmd_section_add(
+        board_git._home(), argparse.Namespace(id=tid, role="architect", label=None))
     assert rc_section == 0
     round_rel = f"tickets/rounds/{tid}/01-architect.md"
     assert (board_dir / round_rel).is_file()

@@ -15,6 +15,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+
 import ast
 import importlib.util
 from pathlib import Path
@@ -96,7 +99,7 @@ def test_additional_reviewer_owns_real_board_matches_board_for_every_status(
         pm_dir = tmp_path / f"home{index}" / ".project_manager"
         _seed_ticket(pm_dir / "board" / "tickets", status, "T-0001")
         assert external._owns_real_board(pm_dir) is True
-        assert external._owns_real_board(pm_dir) is board._has_real_board(pm_dir)
+        assert external._owns_real_board(pm_dir) is pm_paths._has_real_board(pm_dir)
 
     empty = tmp_path / "scaffold" / ".project_manager"
     (empty / "board" / "tickets" / "open").mkdir(parents=True)

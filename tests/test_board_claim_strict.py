@@ -21,6 +21,9 @@ monkeypatch). git 부재 환경에선 실 git 케이스를 skip 한다.
 """
 from __future__ import annotations
 
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import ast
 import importlib.util
@@ -1149,7 +1152,7 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     draft.write_text(_TEMPLATE_TEXT.replace("T-NNNN", "T-0009").replace(
         "status: open", "status: draft"), encoding="utf-8")
     bind_product_cluster(board, "T-0009")
-    ledger_before = board.cluster_ledger_path("bound-t-0009").read_bytes()
+    ledger_before = cluster_store.cluster_ledger_path(board._home(), "bound-t-0009").read_bytes()
     dirty = _seed_dirty_three(board_dir)
 
     assert board.cmd_promote(argparse.Namespace(id="T-0009")) == 0
@@ -1157,7 +1160,7 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     assert _head_files(board_dir) == {
         "tickets/open/T-0009-draft.md",
     }, f"promote 커밋 스코프가 승격 산출을 넘음: {_head_files(board_dir)}"
-    assert board.cluster_ledger_path("bound-t-0009").read_bytes() == ledger_before
+    assert cluster_store.cluster_ledger_path(board._home(), "bound-t-0009").read_bytes() == ledger_before
     after = _porcelain(board_dir)
     for path, code in dirty.items():
         assert after.get(path) == code, f"promote 가 무관 dirty 를 건드림: {path}"
@@ -1211,7 +1214,13 @@ def test_ticket_mutations_pass_scoped_paths():
     문자열 매칭(`f"` 포함 줄 세기)은 **비-f-string 메시지로 추가된 새 호출부를 못 본다** —
     호출자 이름 기준 AST 감사로 그 사각을 없앤다."""
     tree = ast.parse((TOOLS / "board.py").read_text(encoding="utf-8"))
-    tree.body += ast.parse(Path(areas_registry.__file__).read_text(encoding="utf-8")).body
+    for source in (Path(areas_registry.__file__),
+                   TOOLS / "pm_engine/cli/board_cluster.py",
+                   TOOLS / "pm_engine/app/round_maintenance.py"):
+        moved = ast.parse(source.read_text(encoding="utf-8"))
+        # 합친 AST에서도 소유 함수의 위치 범위가 다른 모듈과 겹치지 않는다.
+        ast.increment_lineno(moved, max(node.end_lineno for node in tree.body) + 1)
+        tree.body += moved.body
     calls = [node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
              and node.func.attr == "_board_git_sync_best_effort"]

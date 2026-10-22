@@ -23,6 +23,9 @@ conf 의 `session=` 폴백은 폐지됐으므로(T-0779) 세션 바인딩에 쓰
 """
 from __future__ import annotations
 
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import importlib.util
 import json
@@ -502,7 +505,7 @@ def test_reopened_ticket_runs_the_normal_cycle_again(board):
           completed_at="2026-08-20T01:00:00+00:00")
 
     assert board.cmd_reopen(argparse.Namespace(id="T-0001", reason="오처리 복구")) == 0
-    assert board.load_cluster("C-T-0001")["tickets"] == ["T-0001"]
+    assert cluster_store.load_cluster(board._home(), "C-T-0001")["tickets"] == ["T-0001"]
     assert board.cmd_claim(_claim_ns(board)) == 0
     fm, _body = ticket_store.load_ticket(_ticket_path(board, "T-0001", "claimed"))
     assert fm["claimed_by"] == "alice/pm_1"
@@ -608,9 +611,9 @@ def _mark_ledger_closing(board, cluster: str) -> None:
     """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
-    ledger = board.load_cluster(cluster)
+    ledger = cluster_store.load_cluster(board._home(), cluster)
     ledger["status"] = "closing"
-    board.dump_cluster(ledger)
+    cluster_store.dump_cluster(board._home(), ledger)
 
 
 def test_t0962_takeover_requires_task_and_records_it(board, monkeypatch, capsys):

@@ -4,6 +4,8 @@ frontmatter `design:` 값 정규화, `## 설계` 절 4항목 충전 판정, deve
 """
 from __future__ import annotations
 
+
+
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -243,3 +245,16 @@ def _design_estimate_advisory(
         f"estimate={DESIGN_REQUIRED_ESTIMATE} 인데 design: {DESIGN_NA} — 발행 후 estimate 를 "
         f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {DESIGN_REQUIRED}` 로 "
         "판정을 남겨라"))]
+
+
+def _resolve_design(explicit: str | None, estimate: str | None) -> str:
+    """발행 시 `design:` 해소 — 명시값 우선, 무명시는 estimate=large → required · 그 외 n/a."""
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    return DESIGN_REQUIRED if (estimate or '') == DESIGN_REQUIRED_ESTIMATE else DESIGN_NA
+
+def _validate_design(design: str) -> str | None:
+    """`--design` 입력 sanity — 문제면 사유 문자열, 정상이면 None (`_validate_prefix` 동형)."""
+    if _design_state(design) == DESIGN_INVALID:
+        return f'design 값 인식 불가: {str(design)!r} — {DESIGN_VALUE_FORMS} 중 하나(면제 경로는 없다 — 설계 절을 채우고 done 으로 올린다)'
+    return None

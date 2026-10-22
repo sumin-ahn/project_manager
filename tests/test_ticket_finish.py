@@ -10,6 +10,14 @@ per-repo 회귀 명령 해소(ADR-0014)·domain soft 알림(ADR-0018 #2)·전체
 """
 from __future__ import annotations
 
+from pm_engine.domain import ticket_rules
+from pm_engine.app import tier_signals
+
+from pm_engine.cli import board_cluster
+from pm_engine.domain import cluster_rules
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import hashlib
 import importlib.util
@@ -1322,7 +1330,7 @@ def test_engine_written_paths_includes_existing_round_files(tf, tmp_path, monkey
     review_round.write_text("review\n", encoding="utf-8")
     board = _FakeRoundsBoard(tickets_dir, ticket_path)
 
-    paths = tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
+    paths = tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
 
     assert dev_round in paths
     assert review_round in paths
@@ -1339,7 +1347,7 @@ def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_p
     (tickets_dir.parent / ".git").mkdir()
     board = _FakeRoundsBoard(tickets_dir, ticket_path)
 
-    paths = tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
+    paths = tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
 
     assert paths == [tmp_path / "log.md"]
 
@@ -1364,7 +1372,7 @@ def test_engine_written_paths_excludes_non_round_and_temporary_files_by_grammar(
         (round_dir / name).write_text("x\n", encoding="utf-8")
     board = _FakeRoundsBoard(tickets_dir, ticket_path)
 
-    paths = tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
+    paths = tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
 
     assert dev_round in paths
     for name in non_round_names:
@@ -2281,13 +2289,10 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
             "tier": "pm-direct", "touches": ["src/"],
         }, None),
     )
-    expansion = tf.load_board_module(tf.BOARD_PY).TouchFileExpansion(
+    expansion = ticket_rules.TouchFileExpansion(
         ("src/a.py", "src/b.py", "src/c.py"), (),
     )
-    fake_board = type("Board", (), {
-        "expand_owned_touch_files": staticmethod(lambda _repo, _touches: expansion),
-    })()
-    monkeypatch.setattr(tf, "load_board_module", lambda _path: fake_board)
+    monkeypatch.setattr(tier_signals, "expand_owned_touch_files", lambda _repo, _touches: expansion)
     finisher = tf.TicketFinisher(
         board_py=tf.BOARD_PY,
         task_workspace=tmp_path,
@@ -3057,12 +3062,12 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     _git(env.code, "checkout", "-b", "user-held")
     _git(env.slot, "checkout", _INTEGRATION_BRANCH)
     _git(env.code, "branch", "-D", _CLUSTER_BRANCH)
-    assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="rebound",
+    assert board_cluster.cmd_cluster(board._home(), argparse.Namespace(cluster_cmd="new", name="rebound",
         tickets=env.ticket, spike=None, repo="code", slot=1, task="t")) == 0
-    ledger = board.cluster_ledger_path("rebound")
-    declaration = board.load_cluster("rebound")
+    ledger = cluster_store.cluster_ledger_path(board._home(), "rebound")
+    declaration = cluster_store.load_cluster(board._home(), "rebound")
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
-    assert cluster_store.cluster_tickets(board.load_cluster(_CLUSTER)) == []
+    assert cluster_store.cluster_tickets(cluster_store.load_cluster(board._home(), _CLUSTER)) == []
     # 재결속 장부를 보존하면서 실제 draft 승격과 claim을 이어 실행한다.
     path = ticket_store.find_ticket_exact(board._home(), env.ticket)[1]
     fm, _ = ticket_store.load_ticket(path)
@@ -3079,13 +3084,13 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     fork = _git(env.slot, "config", f"branch.{declaration['branch']}.pm-fork").stdout.strip()
     assert fork == _rev(env.slot)
     assert _git(env.slot, "config", f"branch.{declaration['branch']}.pm-parent").stdout.strip() == _INTEGRATION_BRANCH
-    _git(env.slot, "checkout", board.cluster_branch_name("rebound"))
+    _git(env.slot, "checkout", cluster_rules.cluster_branch_name("rebound"))
     _git(env.code, "checkout", _INTEGRATION_BRANCH)
     (env.slot / "src/app.py").write_text("seed = 1\nwork = 2\n", encoding="utf-8")
     leases, home = env.lease_bytes(), env.home_log()
     assert env.tf._cluster_integration_branch(board_py, env.ticket) == _INTEGRATION_BRANCH
     assert env.closer(cluster="rebound").run() == 0
-    after = board.load_cluster("rebound")
+    after = cluster_store.load_cluster(board._home(), "rebound")
     assert after["branch"] == declaration["branch"] and after["base_branch"] == declaration["base_branch"]
     assert env.lease_bytes() == leases
     assert env.home_log()[1:] == home

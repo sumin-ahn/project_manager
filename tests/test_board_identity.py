@@ -472,7 +472,10 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
     before = snapshot()
     args = board.build_parser().parse_args(_T0962_COMMANDS[command] + _T0962_FORMS[form])
     with pytest.raises(SystemExit) as exc:
-        args.fn(args)
+        if command == "cluster-new":
+            args.fn(board._home(), args)
+        else:
+            args.fn(args)
     message = str(exc.value.code)
     assert "위치 인자" in message and "--task" in message
     if form == "repo-slot":

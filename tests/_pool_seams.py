@@ -323,11 +323,12 @@ def bind_board(monkeypatch, fake):
         "scan_task_tickets": ticket_access,
         "_board_git_sync_best_effort": board_sync,
         "board_lock": fs,
+        "_pm_home_worktree_misanchor": pm_paths,
     }
     for name, owner in owners.items():
         if fake is None or not hasattr(fake, name):
             continue
-        if name == "invalidate_known_prefixes_cache":
+        if name in {"invalidate_known_prefixes_cache", "_pm_home_worktree_misanchor"}:
             monkeypatch.setattr(owner, name, getattr(fake, name))
         else:
             def invoke(_home, *args, _name=name, **kwargs):

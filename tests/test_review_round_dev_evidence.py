@@ -22,6 +22,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import round_maintenance
+
+
 import importlib.util
 import json
 import shutil
@@ -46,6 +49,12 @@ WARNING_MARK = "산출 없는 developer 라운드 위에서 준비합니다"
 # [[T-0819]] 값 진술 — 준비면 경고가 "실리지 않습니다" 라고 단정하지 않고, 이번 리뷰어 입력에
 # 실제로 실리는 developer 산출 라운드 이름(없으면 `없음`)을 말하는 자리의 고정 머리.
 LANDED_EVIDENCE_MARK = "리뷰어 입력(`rounds/`)에 실리는 developer 산출 라운드:"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_round_sync(monkeypatch):
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        round_maintenance._rounds_mutation_sync_paths)
 
 
 def _load_pd():
@@ -102,11 +111,11 @@ def _fixture_board(pd, pm_home: Path, sync_log: list, monkeypatch):
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
 
-    def _sync(message, paths):
+    def _sync(_home, message, paths):
         sync_log.append((message, [Path(item) for item in paths]))
         return True
 
-    board._rounds_mutation_sync_paths = _sync
+    round_maintenance._rounds_mutation_sync_paths = _sync
     monkeypatch.setattr(board_dashboard, 'refresh_board', lambda _home,  *args, **kwargs: None)
     return board
 
@@ -137,7 +146,6 @@ def rounds_env(tmp_path, pd, monkeypatch):
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
     board = _fixture_board(pd, pm_home, sync_log, monkeypatch)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     return pm_home, slot, tickets, board
 
 

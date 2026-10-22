@@ -52,6 +52,17 @@ from pm_engine.domain import board_git_rules
 from pm_engine.cli import board_list
 from pm_engine.app import board_sync
 from pm_engine.app import ticket_access
+from pm_engine.app import cluster_binding
+from pm_engine.app import engine_guard
+from pm_engine.app import round_maintenance
+from pm_engine.app import tier_signals
+from pm_engine.cli import board_cluster
+from pm_engine.cli import board_dispatch
+from pm_engine.cli import board_round
+from pm_engine.domain import board_command_rules
+from pm_engine.domain import cluster_rules
+from pm_engine.infra import worktree_paths
+
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -114,7 +125,7 @@ CODEX_DELEGATE_OBSERVATIONS = (
 # ── PM-홈 worktree 오실행 가드 (mutation dispatch 게이트) ───────────────
 # board 계열 도구를 PM 홈의 등록 worktree(`work/<repo>_<N>`) cwd 에서 실행하면 도구가 cwd
 # 기준 자기-앵커(REPO)로 그 worktree 트리에 조용히 착지해 stray 산출을 낸다 — `board.py new`
-# 가 잘못된 ID 네임스페이스의 `T-0001` 을, `ticket_finish` 가 stray `wiki/log/current.md` 를
+# 가 잘못된 네임스페이스의 새 티켓 ID를, `ticket_finish` 가 stray `wiki/log/current.md` 를
 # 만든다. worktree는 코드 전용이고 board 는 PM 홈이 소유하기
 # 때문이다. 이 silent-misanchor 클래스를 **fail-loud** 로 폐쇄한다 — mutation 명령이
 # 착지 *전에* 실제 PM 홈 경로를 안내하며 중단한다. 자동 재앵커(silent redirect)는 택하지
@@ -141,258 +152,15 @@ CODEX_DELEGATE_OBSERVATIONS = (
 # verified-at-repin=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(
 # worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드)·
 # design=frontmatter `design:` 값 기록/갱신(tier와 같은 in-place writer).
-_MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
-    "new", "promote", "claim", "complete", "discard", "reopen",
-    "block", "unclaim", "unblock",
-    "section-add", "tier", "design",
-    "init", "migrate-identity", "promote-scope", "reid", "refresh",
-    "verified-at-repin",
-    "idea new", "idea promote", "idea kill",
-    "prefix rename", "prefix strip", "prefix merge", "prefix delete",
-    # cluster new=묶음 장부 생성 + 멤버 명세의 귀속 필드 쓰기(board 상태) ·
-    # cluster new=고정 5단계 장부 쓰기.
-    "cluster new",
-})
 # 조회(read-only·board 상태 미변경) — 게이트 없음.
-_READ_SUBCOMMANDS: frozenset[str] = frozenset({
-    "list", "show", "lint", "tier-signals", "idea list", "prefix list",
-    "cluster show",
-})
 # read leaf별 PM-owned 입력 전수. dispatch 첫 줄이 이 값을 그대로 표시하므로, worktree에서
 # 어느 홈의 무엇을 읽는지 조용히 숨지 않는다. 제품 코드(REPO 루트 문서·adapter/template 및
 # git freshness 대상)는 현재 worktree를 계속 읽는다. PM 운영 상태만 단일 소유 홈으로 묶는다.
-_READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {
-    "list": "board·areas·local.conf·lease",
-    "show": "board",
-    "lint": "board·areas·wiki(decisions·ideas·specs·domain·current-truth)·hooks·local.conf",
-    "tier-signals": "board",
-    "idea list": "ideas",
-    "prefix list": "board",
-    "cluster show": "board",
-}
 # anchor-keyed sidecar — board 상태 아님. regression=`.local/regression.json`, livegate=
 # 공유 engine-root `livegate.json`(둘 다 anchor HEAD 로 키·**worktree cwd 실행이 설계 의도**).
 # 게이트하면 릴리즈/회귀 흐름이 깨진다— 비게이트.
-_SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({
-    "regression", "livegate", "git-anchor", "git-grant", "git-tool-input",
-})
 # 서브그룹 이름 → 그 그룹 leaf 를 담은 argparse dest. 분류 키(`<group> <leaf>` 점표기)를 만드는
 # `_resolved_subcommand` 의 단일 표다 — 파서에 그룹을 더하면 여기에도 등재한다.
-_SUBCOMMAND_GROUP_DESTS: dict[str, str] = {
-    "idea": "idea_cmd", "prefix": "prefix_cmd",
-    "cluster": "cluster_cmd",
-}
-
-
-def _registered_slot_paths(
-    pm_home: Path, *, runner: Any = subprocess.run
-) -> tuple[Path, ...]:
-    """공용 slot naming + 기존 linked-worktree/misanchor seam을 모두 통과한 lease 경로만 반환."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    try:
-        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return ()
-    rows = data.get("leases") if isinstance(data, dict) else None
-    if not isinstance(rows, list):
-        return ()
-    repos = {
-        row.get("repo") for row in rows
-        if isinstance(row, dict) and isinstance(row.get("repo"), str) and row.get("repo")
-    }
-    work_root = (pm_home / "work").resolve()
-    lexical_work_root = pm_home / "work"
-    paths: list[Path] = []
-    for repo in sorted(repos):
-        # lease_store가 소유하는 `work/<repo>_<N>` + leased-state 판정을 재사용한다.
-        numbers = lease_store.repo_slot_numbers(repo, ledger)
-        for number in numbers or []:
-            lexical = lexical_work_root / f"{repo}_{number}"
-            # resolve 전에 lexical identity를 검증한다. 내부 alias도 resolve 후에는 정상 slot과
-            # 같은 inode/path가 되어 장부 repo/name 위조를 숨기므로 work 조상·leaf symlink는 거부.
-            if lexical_work_root.is_symlink() or lexical.is_symlink():
-                continue
-            path = lexical.resolve()
-            try:
-                relative = path.relative_to(work_root)
-            except ValueError:
-                continue
-            # symlink가 work/ 밖을 가리키거나 중첩 경로가 되면 slot이 아니다.
-            if len(relative.parts) != 1 or not path.is_dir():
-                continue
-            if not git._is_linked_worktree(path, runner=runner):
-                continue
-            registered, _error = _ledger_registration(pm_home, path)
-            if not registered:
-                continue
-            if path not in paths:
-                paths.append(path)
-    return tuple(paths)
-
-
-def _git_anchor_identity(
-    anchor: Path, *, runner: Any = subprocess.run, slot_home: Path | None = None,
-) -> tuple[str, Path | None, Path | None]:
-    """(public identity, git root, owning PM home)를 기존 misanchor seam으로 해소한다."""
-    root = git._git_repo_root(anchor, runner=runner)
-    if root is None:
-        shared = git._shared_repository_root(anchor, runner=runner)
-        if shared is not None:
-            return "shared-repo", shared, shared.parent.parent
-        return "non-repo", None, None
-    if _has_real_board(root / ".project_manager"):
-        return "pm-home", root, root
-    if slot_home is not None:
-        containing = hooks.slot_containing(slot_home, root)
-        if containing is not None:
-            parent = slot_home / containing[0]["slot"]
-            # 초기화된 submodule의 포인터는 슬롯 root의 PM 홈 선언 형상이 아니다.
-            # 이미 알려진 홈의 슬롯 하위 Git root만 연결하며 일반 root/symlink 분류는 유지한다.
-            if (root != parent.resolve() and not (slot_home / "work").is_symlink()
-                    and not parent.is_symlink()):
-                return "foreign", root, None
-    pm_home = _pm_home_worktree_misanchor(root)
-    if pm_home is not None:
-        registered_slots = _registered_slot_paths(pm_home, runner=runner)
-        return ("slot" if root in registered_slots else "worktree"), root, pm_home
-    return "foreign", root, None
-
-
-def _dangerous_cross_repo_pathspecs(
-    pm_home: Path, repo_root: Path, path_base: Path, pathspecs: Sequence[str],
-    *, runner: Any = subprocess.run,
-) -> tuple[str, ...]:
-    """PM 홈과 등록 slot 양쪽에 실재하는 좁은 코드-root pathspec만 반환한다.
-
-    존재하지 않는 path는 git 자체가 fail-loud하므로 deny하지 않는다. ``tests``/``templates``만
-    후보인 이유는 PM 홈 기록 commit의 정상 pathspec(``.project_manager/wiki/...`` 등)을 막지 않고,
-    실제 add-harness 오염 모드만 고정하기 위해서다.
-    """
-    slots = _registered_slot_paths(pm_home, runner=runner)
-    if not slots:
-        return ()
-    dangerous: list[str] = []
-    for raw in pathspecs:
-        if not raw or any(ch in raw for ch in "*?["):
-            continue
-        literal = raw
-        top_relative = False
-        if literal.startswith(":(top)"):
-            literal = literal[len(":(top)"):]
-            top_relative = True
-        elif literal.startswith(":/"):
-            literal = literal[2:]
-            top_relative = True
-        elif literal.startswith(":("):
-            # glob/exclude/attr 등 magic은 해석하지 않아 false-deny를 만들지 않는다.
-            continue
-        rel = Path(literal)
-        if rel.is_absolute():
-            try:
-                rel = rel.resolve().relative_to(repo_root)
-            except (OSError, ValueError):
-                continue
-        local = ((repo_root if top_relative else path_base) / rel).resolve()
-        try:
-            normalized = local.relative_to(repo_root)
-        except ValueError:
-            continue
-        parts = normalized.parts
-        if not parts or parts[0] not in git_policy._GIT_ANCHOR_DENY_ROOTS:
-            continue
-        if not local.exists():
-            continue
-        if any((slot / normalized).exists() for slot in slots):
-            dangerous.append(normalized.as_posix())
-    return tuple(dict.fromkeys(dangerous))
-
-
-def judge_file_removal(
-    cwd: str, argv: Sequence[str], *, cwd_certain: bool = True, runner: Any = subprocess.run,
-) -> dict[str, str] | None:
-    """파일 명령이 슬롯·공용 저장소를 지우거나 옮기면 멈춤 거부 판정, 아니면 None.
-
-    보호 경로는 호출 폴더와 대상 경로 각각의 소유 PM 홈에서 모은다(대상이 PM 홈 조상이면 호출
-    폴더 쪽 PM 홈이 잡는다). ``cwd_certain=False`` 는 셸 파서가 실행 위치를 증명 못 한 호출이다.
-    """
-    shape = shell_policy._file_removal_shape(argv)
-    if shape is None:
-        return None
-    anchor = Path(cwd).expanduser().resolve()
-    shown = " ".join(argv)
-    identity, _root, cwd_home = _git_anchor_identity(anchor, runner=runner)
-    homes: set[Path] = {cwd_home} if cwd_home is not None else set()
-    resolved: list[tuple[Path, str]] = []
-    for target in shape.targets:
-        path, contents = hooks._removal_path(anchor, target.token, cwd_certain=cwd_certain)
-        if path is None:
-            if not shape.unresolved_is_destructive:
-                continue
-            return {
-                "verdict": "deny", "cwd_identity": identity, "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
-                "case": git_policy._GIT_GUARD_CASE_FOLDER_UNKNOWN,
-                "reason": (
-                    f"대상 경로를 정적으로 풀 수 없는 파일 {shape.verb} — `{shown}` "
-                    f"(대상 `{target.token}` 이 슬롯·공용 저장소일 수 있음)"
-                ),
-            }
-        scope = "contents" if contents and target.scope == "self" else target.scope
-        resolved.append((path, scope))
-        _identity, _target_root, target_home = _git_anchor_identity(
-            hooks._nearest_existing_directory(path), runner=runner,
-        )
-        if target_home is not None:
-            homes.add(target_home)
-    entries = [entry for home in sorted(homes) for entry in hooks._protected_removal_entries(home)]
-    for path, scope in resolved:
-        kind = shell_policy._protected_removal_kind(path, scope, entries)
-        if kind is None:
-            continue
-        label, case = shell_policy._PROTECTED_KIND_FORMS[kind]
-        return {
-            "verdict": "deny", "cwd_identity": identity, "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
-            "case": case, "reason": f"{label} {shape.verb} — `{shown}` 대상={path}",
-        }
-    return None
-
-
-def _open_todo_count(root: str | os.PathLike[str], task: str) -> int:
-    """실행 엔진으로 대상 Home의 열린 할 일 수를 판독한다."""
-    return len(task_store.read_task_todos(pm_paths.home_at(Path(root)), task))
-
-
-def _no_open_todo_judgment(
-    root: str | os.PathLike[str], session: str,
-) -> dict[str, str] | None:
-    """열린 todo 가 없는 세션의 파일 쓰기 **경고** — 경고할 근거가 없으면 `None`.
-
-    "무엇을 하는 중인지" 가 장부에 없으면 다음 세션도 사용자도 그 일을 못 본다. 그래서 파일 쓰기
-    호출마다 그 사실을 화면에 올린다. **막지는 않는다** — 셸(`sed -i`·리다이렉션)은 이 판정을 타지
-    않아 막아도 우회로가 남고, 나머지 여덟 판정과 달리 이 축은 "명령이 위험한가" 가 아니라 "일을
-    적었나" 라서 1회 허용 기전(명령 argv 에 묶인다)에도 얹히지 않는다.
-
-    task 를 해소할 수 없으면(부트스트랩 전·하네스 밖·PM 홈 아님) 아무 말도 하지 않는다. 그 경우는
-    슬롯 주인 판정(`_slot_write_judgment`)이 이미 거부한다 — 같은 사실을 두 번 말하지 않는다.
-    장부가 **있는데** 형식이 틀리면 `_slot_ledger_rows` 가 올린다(빈 장부로 흘려 통과시키지 않는
-    슬롯 판정과 같은 규율).
-    """
-    home = Path(root)
-    if not (home / ".project_manager" / ".local" / "worktree-leases.json").is_file():
-        return None
-    _leases, tasks = hooks._slot_ledger_rows(home)
-    task = hooks._session_task(session, tasks)
-    if task is None:
-        return None
-    open_todos = _open_todo_count(home, task)
-    if open_todos > 0:
-        return None
-    return {
-        "verdict": "warn", "cwd_identity": "non-repo",
-        "reason": (
-            f"task {task} 에 열린 todo 가 없다 — 지금 하는 일이 장부에 없어서 다음 세션도 "
-            f"사용자도 그 일을 못 본다. {git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_NO_OPEN_TODO]}"
-        ),
-    }
 
 
 def judge_tool_input(
@@ -419,7 +187,7 @@ def judge_tool_input(
             return judgment
     targets = hooks._write_tool_targets(cwd, tool_name, tool_input) if isinstance(tool_input, dict) else []
     # 파일을 바꾸는 호출에만 본다 — 읽기 도구는 대상이 없어 여기 들어오지 않는다.
-    todo_warning = _no_open_todo_judgment(root, session) if targets else None
+    todo_warning = engine_guard._no_open_todo_judgment(pm_paths.home_at(root), session) if targets else None
     denies = [
         judgment for judgment in (hooks._slot_write_judgment(root, session, target) for target in targets)
         if judgment is not None and judgment["verdict"] == "deny"
@@ -460,267 +228,6 @@ def record_git_grants(
     return [shlex.join(record["argv"]) for record in records]
 
 
-def judge_git_anchor(
-    root: str | os.PathLike[str], session: str, cwd: str, argv: list[str], *,
-    runner: Any = subprocess.run, cwd_certain: bool = True,
-) -> dict[str, str]:
-    """raw git 호출의 cwd 안전성을 판정하는 엔진·하네스 중립 seam.
-
-    ``root`` 는 훅이 설치된 PM 홈, ``session`` 은 호출한 하네스 세션 ID 다 — ``root`` 슬롯의 git 쓰기는
-    그 세션 task 가 잡은 슬롯일 때만 통과한다(`_slot_write_judgment`).
-
-    deny 는 둘이다. (1) 슬롯·공용 저장소 대상의 손 git 파괴 형태(브랜치 만들기·지우기·이름 바꾸기,
-    변경 버리기, 슬롯 지우기·옮기기, 원격 덮어쓰기, 저수준 ref 조작) — 브랜치와 슬롯은 엔진만 만들고
-    지운다. 대상을 정적으로 못 정한 호출(``GIT_DIR``·변수 ``-C``·셸 파서가 cwd 를 증명 못 함 =
-    ``cwd_certain=False``)은 슬롯·공용 저장소일 수 있으므로 형태만으로 거부한다. 이 deny 는 거부
-    경우(``case``)와 거부한 호출만 싣고, 멈춤 지시·다음 행동 문구는 `judge_git_anchor_command` 가
-    붙인다. (2) PM 홈에서 등록 slot과 교차 실재하는
-    코드-root pathspec을 mutation으로 건드리는 실사고 패턴. 그 밖은 warn(정체 주입)이며 비-repo/
-    foreign 대상과 판정불가 비파괴 호출은 정상 작업을 막지 않는다. ``cwd_certain`` 은 argv 호출자가
-    ``cwd`` 를 실제 실행 위치로 아는 기본 형태이고, 셸 파서만 증명 못 한 호출에 False 를 넘긴다.
-    """
-    invocation = hooks._git_invocation(cwd, argv)
-    if invocation is None:
-        return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "git 호출이 아님"}
-    identity, repo_root, pm_home = _git_anchor_identity(
-        invocation.cwd, runner=runner, slot_home=Path(root),
-    )
-    target_certain = cwd_certain and invocation.anchor_certain
-    containing = hooks.slot_containing(root, repo_root) if repo_root is not None else None
-    if identity in git_policy._GIT_PROTECTED_IDENTITIES or containing is not None or not target_certain:
-        # alias 는 대상 저장소 설정으로만 풀린다 — 대상을 못 정한 호출은 서브커맨드 이름 그대로 본다.
-        resolved = hooks._git_alias_resolved(invocation, runner=runner) if target_certain else invocation
-        target_certain = target_certain and resolved.anchor_certain
-        form = hooks._git_destructive_form(
-            resolved.subcommand, resolved.args,
-            ref_anchor=invocation.cwd if target_certain else None, runner=runner,
-        )
-        if form is not None:
-            where = (
-                f"대상={repo_root or invocation.cwd} (정체={identity})" if target_certain
-                else "대상을 정적으로 정할 수 없어 슬롯·공용 저장소일 수 있음"
-            )
-            shown = " ".join(("git", resolved.subcommand, *resolved.args))
-            return {
-                "verdict": "deny", "cwd_identity": identity, "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
-                # 대상을 못 정한 호출은 형태와 무관하게 대상부터 적어 다시 실행하게 한다.
-                "case": form.case if target_certain else git_policy._GIT_GUARD_CASE_FOLDER_UNKNOWN,
-                "reason": f"손 git {form.label} — `{shown}` {where}",
-            }
-        if repo_root is not None and target_certain and git_policy._git_writes_slot(resolved.subcommand, resolved.args):
-            owner = hooks._slot_write_judgment(root, session, repo_root)
-            if owner is not None and owner["verdict"] == "deny":
-                return {**owner, "cwd_identity": identity,
-                        "reason": f"git {resolved.subcommand} — {owner['reason']}"}
-    subcommand = invocation.subcommand
-    if subcommand not in git_policy._GIT_MUTATION_SUBCOMMANDS:
-        return {
-            "verdict": "ok", "cwd_identity": identity,
-            "reason": f"git {subcommand or '<missing>'}는 mutation 가드 대상이 아님",
-        }
-    if not invocation.anchor_certain:
-        return {
-            "verdict": "warn", "cwd_identity": identity,
-            "reason": "GIT_DIR/work-tree 지정 또는 변수 -C 로 실제 mutation anchor를 단일 증명할 수 없음",
-        }
-    if identity == "slot":
-        return {
-            "verdict": "ok", "cwd_identity": identity,
-            "reason": f"등록된 활성 linked worktree 앵커={repo_root} — git {subcommand} 허용",
-        }
-    if identity == "pm-home" and repo_root is not None and pm_home is not None:
-        dangerous = _dangerous_cross_repo_pathspecs(
-            pm_home, repo_root, invocation.cwd,
-            git_policy._git_pathspecs(subcommand, invocation.args), runner=runner,
-        )
-        if dangerous:
-            joined = ", ".join(dangerous)
-            return {
-                "verdict": "deny", "cwd_identity": identity,
-                "reason": (
-                    f"PM 홈에서 등록 worktree와 양쪽에 실재하는 코드 경로({joined})를 "
-                    f"git {subcommand} 하려 함 — 대상 worktree cwd에서 다시 실행하라"
-                ),
-            }
-    shown = str(repo_root or invocation.cwd)
-    return {
-        "verdict": "warn", "cwd_identity": identity,
-        "reason": f"git {subcommand} 실행 앵커={shown} (정체={identity}) — 의도한 repo인지 확인",
-    }
-
-
-def _board_mutation_subcommand(args: Sequence[str]) -> str:
-    """기존 board mutation 분류 키와 같은 점표기 subcommand를 argv에서 얻는다."""
-    if not args:
-        return ""
-    command = args[0]
-    if command in {"idea", "prefix"} and len(args) >= 2:
-        command = f"{command} {args[1]}"
-    return command if command in _MUTATION_SUBCOMMANDS else ""
-
-
-def _engine_other_copy(
-    cwd_root: Path | None, script_root: Path, script_identity: str,
-    pm_home: Path | None, relative_script: Path, *, runner: Any,
-) -> tuple[Path, Path, str] | None:
-    """함께 존재하는 반대편(PM import/canonical) 엔진 사본 하나를 찾는다.
-
-    세 번째 값은 그 사본의 **정체 해소 키**다 — ``cwd`` 는 호출 cwd 의 이미 측정된 정체를
-    그대로 쓰라는 뜻이고, ``slot``/``pm-home`` 은 후보를 고를 때 이미 확정된 정체다. 방향
-    판정(어느 사본이 뒤졌는지)이 추가 앵커 조회 없이 두 사본의 정체를 갖게 하는 자리다.
-    """
-    candidates: list[tuple[Path, str]] = []
-    if script_identity == "pm-home" and pm_home is not None:
-        if cwd_root is not None and cwd_root != script_root:
-            candidates.append((cwd_root, "cwd"))
-        candidates.extend(
-            (slot, "slot") for slot in _registered_slot_paths(pm_home, runner=runner)
-        )
-    elif script_identity in {"slot", "worktree"} and pm_home is not None:
-        candidates.append((pm_home, "pm-home"))
-    for root, identity_key in candidates:
-        root = root.resolve()
-        candidate = root / relative_script
-        if root != script_root and candidate.is_file():
-            return root, candidate, identity_key
-    return None
-
-
-def judge_engine_invocation(
-    cwd: str, argv: list[str], *, runner: Any = subprocess.run
-) -> dict[str, str]:
-    """엔진/pytest 호출의 사본·소유 앵커를 판정한다.
-
-    deny는 PM 홈에 대상 ``tests/``가 없는 pytest 호출과 non-PM 엔진 사본의 board
-    mutation 두 축뿐이다. 상대 엔진 경로는 실행 사본의 절대경로와 반대편 사본의
-    도구 파일 sha256 비교를 warn으로 주입한다. sha 가 다를 때만 ``_engine_copy_freshness``
-    가 방향(어느 사본이 뒤졌는지)을 worktree git 상태로 1회 판정하며, 판정이 서지 않으면
-    단정하지 않는다.
-    """
-    cwd_path = Path(cwd).expanduser().resolve()
-    identity, cwd_root, cwd_pm_home = _git_anchor_identity(cwd_path, runner=runner)
-    details = shell_policy._engine_invocation_details(cwd, argv)
-    if details is None:
-        return {
-            "verdict": "ok", "cwd_identity": identity,
-            "reason": "엔진/pytest 호출이 아님",
-        }
-    if details.kind == "pytest":
-        if (
-            identity == "pm-home"
-            and shell_policy._pytest_targets_tests(details.args)
-            and not (cwd_path / "tests").is_dir()
-        ):
-            return {
-                "verdict": "deny", "cwd_identity": identity,
-                "code": "pm-home-relative-pytest-tests-missing",
-                "reason": (
-                    "PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 "
-                    "실재하지 않음 — 대상 worktree의 workdir에서 실행하라"
-                ),
-            }
-        return {
-            "verdict": "ok", "cwd_identity": identity,
-            "reason": "pytest 호출은 PM 홈 tests/ 오앵커 패턴이 아님",
-        }
-
-    assert details.script is not None
-    unexpanded = shell_policy._unexpanded_shell_parameters(details.script)
-    unresolved_reason = (
-        f"엔진 호출 경로의 미확장 토큰={', '.join(unexpanded)} — "
-        "확장 불가 — 실제 사본 미상; 이 사본의 repo 앵커도 미상"
-    ) if unexpanded else ""
-    unresolved_script_name = Path(details.script.replace("\\", "/")).name
-    unresolved_mutation = (
-        _board_mutation_subcommand(details.args)
-        if unresolved_script_name == "board.py" else ""
-    )
-    if unexpanded:
-        if unresolved_mutation and identity in {"slot", "worktree"}:
-            return {
-                "verdict": "deny", "cwd_identity": identity,
-                "reason": (
-                    f"board mutation '{unresolved_mutation}'이 non-PM cwd에서 감지됨 — "
-                    f"{unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라"
-                ),
-            }
-        return {
-            "verdict": "warn", "cwd_identity": identity,
-            "reason": f"{unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라",
-        }
-
-    script_token = Path(details.script).expanduser()
-    relative = not script_token.is_absolute()
-    script_path = (
-        (cwd_path / script_token).resolve() if relative else script_token.resolve()
-    )
-    script_root = script_path.parents[2]
-    script_identity, _resolved_root, script_pm_home = _git_anchor_identity(
-        script_root, runner=runner,
-    )
-    relative_script = Path(".project_manager") / "tools" / script_path.name
-    mutation = (
-        _board_mutation_subcommand(details.args)
-        if script_path.name == "board.py" else ""
-    )
-    if mutation and script_identity in {"slot", "worktree"}:
-        return {
-            "verdict": "deny", "cwd_identity": identity,
-            "reason": (
-                f"board mutation '{mutation}'이 non-PM 엔진 사본 {script_path}를 선택함 — "
-                f"이 사본의 repo 앵커={script_root} ({script_identity}); board mutation은 "
-                "PM 홈 사본 "
-                f"{(script_pm_home / relative_script) if script_pm_home else relative_script} "
-                "로 실행하라"
-            ),
-        }
-    if not relative:
-        return {
-            "verdict": "ok", "cwd_identity": identity,
-            "reason": (
-                f"절대경로 엔진 사본={script_path}; 이 사본의 repo 앵커={script_root} "
-                f"({script_identity})"
-            ),
-        }
-
-    reason = (
-        f"상대경로 엔진 호출의 실행 사본={script_path}; 이 사본의 repo 앵커={script_root} "
-        f"({script_identity}); board mutation은 PM 홈 사본으로 실행하라"
-    )
-    other = _engine_other_copy(
-        cwd_root, script_root, script_identity, script_pm_home or cwd_pm_home,
-        relative_script, runner=runner,
-    )
-    if other is not None:
-        other_root, other_path, other_identity_key = other
-        current_hash = hooks._file_sha256(script_path)
-        other_hash = hooks._file_sha256(other_path)
-        if current_hash is None or other_hash is None:
-            hash_state = "도구 파일 sha256 비교 불가(파일 읽기 실패) — 사본 경로를 직접 확인"
-        elif current_hash == other_hash:
-            # 사본이 같으면 방향을 물을 게 없다 — git 조회 없이 기존 경로로 끝낸다.
-            hash_state = f"도구 파일 sha256 동일({current_hash})"
-        else:
-            if other_identity_key == "cwd":
-                # cwd 사본의 정체와 소유 PM 홈은 이 함수 첫머리에서 이미 측정했다.
-                other_identity, other_pm_home = identity, cwd_pm_home
-            else:
-                # slot 후보는 그 PM 홈이 등록한 slot 이고 pm-home 후보는 그 PM 홈 자신이라,
-                # 후보를 고르는 데 쓴 홈이 곧 소유 홈이다(추가 앵커 조회 없음).
-                other_identity = other_identity_key
-                other_pm_home = script_pm_home or cwd_pm_home
-            hash_state = (
-                f"도구 파일 sha256 다름({current_hash} != {other_hash}) — "
-                + hooks._engine_copy_freshness(
-                    (script_identity, script_root, script_path, script_pm_home),
-                    (other_identity, other_root, other_path, other_pm_home),
-                    relative_script, runner=runner,
-                )
-            )
-        reason += f"; 함께 존재하는 다른 사본={other_path}; {hash_state}"
-    return {"verdict": "warn", "cwd_identity": identity, "reason": reason}
-
-
 def judge_git_anchor_command(
     root: str | os.PathLike[str], session: str, cwd: str, command: str, *, grants: bool = False,
     runner: Any = subprocess.run,
@@ -738,9 +245,7 @@ def judge_git_anchor_command(
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
     for call in invocations:
-        judgment = judge_git_anchor(
-            root, session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain,
-        )
+        judgment = engine_guard.judge_git_anchor(pm_paths.home_at(root), session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain)
         if (
             not call.certain and judgment["verdict"] != "warn"
             and judgment.get("code") != git_policy.GIT_DESTRUCTIVE_DENY_CODE
@@ -752,7 +257,7 @@ def judge_git_anchor_command(
             }
         judgments.append(judgment)
     for call in parsed.engine_invocations:
-        judgment = judge_engine_invocation(call.cwd, list(call.argv), runner=runner)
+        judgment = engine_guard.judge_engine_invocation(call.cwd, list(call.argv), runner=runner)
         if not call.certain and judgment["verdict"] != "warn":
             judgment = {
                 **judgment,
@@ -761,7 +266,7 @@ def judge_git_anchor_command(
             }
         judgments.append(judgment)
     for call in parsed.removal_invocations:
-        removal = judge_file_removal(
+        removal = engine_guard.judge_file_removal(
             call.cwd, call.argv, cwd_certain=call.anchor_certain, runner=runner,
         )
         if removal is not None:
@@ -794,138 +299,12 @@ def judge_git_anchor_command(
         grant_root=root if grants else None, grant_session=session if grants else None,
     )
     if result["verdict"] != "deny":
-        _record_bootstrap_session_claims(session, parsed)
+        engine_guard._record_bootstrap_session_claims(session, parsed)
     return result
 
 
 # 부트스트랩 사본 홈의 `worktree_pool` 로 세션 기록 한 건을 남기는 하위 프로세스 프로그램.
 # argv: tools 경로 · task · 세션 ID.
-_RECORD_TASK_SESSION_CLAIM_PROGRAM = (
-    "import sys\n"
-    "sys.path.insert(0, sys.argv[1])\n"
-    "from pathlib import Path\n"
-    "from pm_engine.infra import pm_paths, task_store\n"
-    "task_store.record_task_session_claim(pm_paths.home_at(Path(sys.argv[1]).parents[1]), sys.argv[2], sys.argv[3])\n"
-)
-
-
-def _record_bootstrap_session_claims(session: str, parsed: shell_policy._ShellParseResult) -> None:
-    """`pm_bootstrap.py --task <task>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
-
-    부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없어(codex·opencode 는 도구 프로세스 환경에
-    없다) 이 기록을 가져가 task 에 쓴다(`task_store.take_task_session_claim`). 실행 위치·인자를
-    정적으로 못 정한 호출과 세션 ID 없는 훅은 남기지 않는다 — 그러면 부트스트랩이 기록 없음으로 멈춘다.
-
-    기록은 그 사본 홈의 엔진이 하위 프로세스로 쓴다. 이 프로세스에는 이 홈의 `pm_engine` 이 이미
-    적재돼 있어, 다른 홈의 `worktree_pool.py` 를 여기서 적재하면 그 파일이 이 홈의 패키지 코드로
-    기록한다. 하위 프로세스가 실패하면 stderr 를 담아 그대로 올린다.
-    """
-    if not session:
-        return
-    for call in parsed.engine_invocations:
-        details = shell_policy._engine_invocation_details(call.cwd, call.argv)
-        if (
-            not call.certain or details is None or details.kind != "engine"
-            or Path(details.script).name != "pm_bootstrap.py"
-        ):
-            continue
-        task = shell_policy._bootstrap_task_argument(details.args)
-        if task is None:
-            continue
-        script = (Path(call.cwd).expanduser() / details.script).resolve()
-        result = subprocess.run(
-            [sys.executable, "-c", _RECORD_TASK_SESSION_CLAIM_PROGRAM,
-             str(script.parent), task, session],
-            capture_output=True, text=True, encoding="utf-8",
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"세션 기록을 남기지 못했다 ({script.with_name('worktree_pool.py')} · "
-                f"rc={result.returncode}): {result.stderr.strip()}")
-
-
-def _resolved_subcommand(args: argparse.Namespace) -> str:
-    """argparse Namespace 에서 실행된 subcommand 를 점표기로 해소한다(서브그룹 포함).
-
-    top-level dest=`cmd`, 서브그룹 dest 는 아래 표 — dispatch 게이트가 mutation 분류를 조회할
-    키를 만든다. (미지정/불명 → "".) 새 서브그룹은 표에만 등재하면 되고, 등재를 잊으면 그
-    그룹의 leaf 가 분류에서 통째로 빠진다 — 메타 가드 테스트가 그 클래스를 잡는다.
-    """
-    cmd = getattr(args, "cmd", None) or ""
-    dest = _SUBCOMMAND_GROUP_DESTS.get(cmd)
-    if dest is None:
-        return cmd
-    return f"{cmd} {getattr(args, dest, '') or ''}".strip()
-
-
-def _print_read_anchor(*, subcommand: str, pm_home: Path | None = None) -> None:
-    """읽기 조회가 실제로 측정하는 repo 앵커와 역할을 stdout 첫 줄에 표시한다.
-
-    앵커는 도구가 이미 사용하는 ``REPO`` 그대로다. 역할은 소유 PM 홈 유도가 다른 홈의
-    worktree라고 확인한 경우만 ``worktree``로, 실 board 소유가 확인된 경우만 ``PM 홈``
-    으로 표기한다. 어느 양성 증거도 없으면 역할을 단언하지 않는다. PM 홈 폴백이면 같은
-    첫 줄에 실제 PM 입력 앵커와 read leaf별 입력 목록을 함께 표시한다.
-
-    해소 실패는 이 줄의 입력이 아니다 — 실패한 실행은 dispatch 에 들어오지 못하고
-    ``main()`` 이 `[중단] …` 으로 번역한다. 실패 사실로 ``worktree`` 라는 양성 역할을
-    단언하지 않는다.
-    """
-    anchor = REPO
-    if pm_home is not None:
-        # read dispatch 가 이미 해소한 사실이다 — 여기서 다시 해소하면 같은 판정이 두 번 돈다.
-        role = "worktree"
-    elif _has_real_board(anchor / ".project_manager"):
-        role = "PM 홈"
-    else:
-        role = "역할 미상"
-    # flush 필수 — stdout 은 파이프/리다이렉션에서 블록 버퍼링되는데 stderr 는 unbuffered 라,
-    # flush 없이는 `board.py <read> 2>&1 | …` 에서 stderr 가 앵커보다 먼저 나와 "첫 줄" 계약이
-    # 깨진다. in-process capsys 테스트는
-    # 버퍼링을 거치지 않아 이 클래스를 구조적으로 못 본다 — subprocess 순서 테스트가 짝이다.
-    line = f"repo 앵커: {anchor} ({role})"
-    if pm_home is not None:
-        inputs = _READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]
-        line += f" → PM 입력 앵커: {pm_home} (PM 홈 폴백: {inputs})"
-    print(line, flush=True)
-
-
-def _has_real_board(pm_dir: Path) -> bool:
-    """`.project_manager` 디렉토리(`pm_dir`)가 *실제* board 를 소유하는가.
-
-    board/ 분리(submodule)면 `board/tickets`, legacy 면 `wiki/tickets` 의 상태
-    디렉토리에 실 티켓(`T-*.md`)이 하나라도 있으면 True. 빈 scaffold(README/_template/
-    `.gitkeep` 만 — worktree 출하 형상)는 False: worktree 자신의 scaffold 를 '실 board' 로
-    오인해 가드를 무력화하지 않게 한다.
-    """
-    for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
-        if not base.is_dir():
-            continue
-        for status in ticket_rules.STATUS_DIRS:
-            status_dir = base / status
-            if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
-                return True
-    return False
-
-
-def _pm_home_worktree_misanchor(anchor: Path) -> Path | None:
-    """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 면 그 PM 홈 경로를,
-    아니면 None.
-
-    소유 판정은 `pm_paths.owning_pm_home` 유도 하나가 낸다 — anchor 자신이 실 board 를 가지면
-    자기 것이고(자체 board 사용 존중), 그 밖에는 anchor 의 `.git` 선언이 답을 정한다. 유도가
-    실패하면 자기 앵커로 강등하지 않고 그대로 올린다(fail-loud).
-    """
-    if _has_real_board(anchor / ".project_manager"):
-        return None
-    pm_home = pm_paths.owning_pm_home(anchor)
-    return None if pm_home == Path(anchor).resolve() else pm_home
-
-
-class _ReadBoardResolution(NamedTuple):
-    """read dispatch의 board 해소 결과. home이 None이면 자기 앵커의 board를 그대로 쓴다."""
-
-    root: Path
-    home: Path | None
 
 
 # 등록 worktree read 폴백에서 같은 PM 홈으로 옮겨야 하는 import-time 경로 상수 전수.
@@ -974,77 +353,6 @@ def _read_pm_inputs_at(pm_home: Path, board_root_path: Path) -> Iterator[None]:
         _READ_PM_HOME_OVERRIDE = saved_home_override
 
 
-def _ledger_registration(
-    pm_home: Path, anchor: Path
-) -> tuple[bool, str | None]:
-    """PM 홈 장부가 `anchor` 슬롯을 등록하는지 strict point-read 한다.
-
-    반환은 (일치, 오류). 부재·손상·스키마 오류는 load-bearing 소유 판정에서 빈 장부로
-    강등하지 않고 오류 문자열로 돌려 호출부가 fail-loud 하게 한다.
-    """
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    if not ledger.is_file():
-        return False, f"{pm_home}: worktree lease 장부 없음"
-    try:
-        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
-        return False, f"{pm_home}: worktree lease 장부를 읽을 수 없음 ({exc})"
-    if not isinstance(data, dict):
-        return False, f"{pm_home}: worktree lease 장부 최상위 값이 object가 아님"
-    rows = data.get("leases")
-    if not isinstance(rows, list):
-        return False, f"{pm_home}: worktree lease 장부의 leases 값이 list가 아님"
-    target = anchor.resolve()
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            return False, f"{pm_home}: worktree lease 장부 leases[{index}]가 object가 아님"
-        slot = row.get("slot")
-        if not isinstance(slot, str) or not slot:
-            return False, f"{pm_home}: worktree lease 장부 leases[{index}]의 slot이 유효하지 않음"
-        if (pm_home / slot).resolve() == target:
-            return True, None
-    return False, None
-
-
-def _resolve_read_board(anchor: Path) -> _ReadBoardResolution:
-    """read-only board를 uniform 규칙으로 해소한다.
-
-    자기 앵커가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `pm_paths.owning_pm_home` 유도가
-    소유 PM 홈을 낸다 — 유도 결과가 앵커 자신이면 legacy/비분리 graceful 경로를 그대로
-    보존하고, 다른 홈이면 그 board를 연다. 유도 실패는 여기서 삼키지 않는다 — 같은 실패가
-    mutation 경로에서는 traceback, read 경로에서는 안내로 갈리지 않도록 번역은 `main()`
-    한 곳이 한다.
-    """
-    if _has_real_board(anchor / ".project_manager"):
-        return _ReadBoardResolution(pm_paths._board_root_at(anchor), anchor)
-    home = pm_paths.owning_pm_home(anchor)
-    if home == Path(anchor).resolve():
-        return _ReadBoardResolution(pm_paths._board_root_at(anchor), None)
-    return _ReadBoardResolution(pm_paths._board_root_at(home), home)
-
-
-def _guard_worktree_misanchor(action: str) -> bool:
-    """쓰기-경로 진입 가드 — `anchor`(호출 시점 module-global `REPO`·hermetic monkeypatch
-    추종)가 PM 홈 등록 worktree 면 fail-loud 후 True(차단), 아니면 False(통과).
-
-    `REPO` 를 default 인자로 굳히지 않고 *호출 시점* 에 읽는다 — import 시점 상수로 캡처하면
-    테스트의 `monkeypatch.setattr(board, "REPO", tmp)` 가 무시되고 실 worktree 앵커가 굳는다
-    (pm_handoff LEASES_FILE 재해소와 동형 규율).
-    """
-    anchor = REPO
-    pm_home = _pm_home_worktree_misanchor(anchor)
-    if pm_home is None:
-        return False
-    print(
-        f"[중단] `{action}` 을(를) worktree(코드 전용) 트리에서 실행했습니다 — board 상태는 "
-        f"PM 홈이 소유합니다. 이대로면 이 worktree 에 stray 티켓/log 를 잘못 만듭니다.\n"
-        f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
-        f"  (현재 앵커: {anchor})",
-        file=sys.stderr,
-    )
-    return True
-
-
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
@@ -1087,16 +395,6 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
         file=sys.stderr,
     )
     return 1
-
-
-def _write_machine_line(text: str) -> None:
-    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
-
-    사람 출력(``print``)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그
-    치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
-    직접 쓴다(콘솔 코덱 전환과 독립).
-    """
-    console.write_machine_line(text)
 
 
 def _rewrite_text_counted(text: str, id_map: dict[str, str]) -> tuple[str, dict[str, int]]:
@@ -1662,495 +960,9 @@ def cmd_livegate(args: argparse.Namespace) -> int:
 # ── 티켓 라운드 + 위임 티어 ────────────────────────────────────────
 # 역할 산출 1건 = 라운드 파일 1개이고 그 자리는 명세 파일 밖(`tickets/rounds/<티켓>/`)이다.
 # 역할 집합·사람용 라벨·파일명 문법의 권위는 사이드카 seam 이며 board 는 파생으로만 읽는다.
-TICKET_TIERS: frozenset[str] = frozenset({"pm-direct", "normal", "hard"})
-
-
-def _round_role_choices() -> tuple[str, ...]:
-    """`--role` argparse 선택지 — 라운드 역할 표(`round_rules.ROLE_LABELS`)에서 파생한다."""
-    return tuple(ticket_round_role_labels())
-
-
-def ticket_round_role_labels() -> dict[str, str]:
-    """라운드 역할 → 사람용 라벨 (권위 = 사이드카 seam · board 는 복제하지 않는다).
-
-    argparse 선택지와 절명 기본값이 같은 표를 읽어야 한 쪽만 넓어지는 drift 가 생기지 않는다.
-    """
-    return dict(round_rules.ROLE_LABELS)
-
-
-class TierSignals(NamedTuple):
-    """touches에서 기계적으로 확정 가능한 tier 보조 신호."""
-
-    tool_modules: tuple[str, ...]
-    shared_code: tuple[str, ...]
-    docs_only: bool
-    unresolved_directories: tuple[str, ...] = ()
-
-    @property
-    def h1(self) -> bool:
-        """2개+ 모듈 또는 파일 수 미해소(상향 기본값)."""
-        return len(self.tool_modules) >= 2 or bool(self.unresolved_directories)
-
-
-class TouchFileExpansion(NamedTuple):
-    """directory touches를 repo 소유 파일로 펼 결과와 미해소 선언."""
-
-    paths: tuple[str, ...]
-    unresolved_directories: tuple[str, ...]
-
-
-def _list_owned_touch_files(repo: Path, subtree: Path, list_owned=None):
-    """repo-owned OWNED 열거 호출 단일 지점(제품/테스트 DI 공유)."""
-    if list_owned is not None:
-        return list_owned(repo, subtree)
-    return repo_files.list_repo_owned_files(repo, subtree, mode=repo_files.OWNED)
-
-
-def _canonical_tier_touch(value: str) -> str:
-    """touches 경로를 repo-relative POSIX 표기로 접는다."""
-    value = value.strip().replace("\\", "/")
-    while value.startswith("./"):
-        value = value[2:]
-    return value.rstrip("/")
-
-
-def _is_tool_test_file(path: str) -> bool:
-    """tools/ 안의 테스트 파일을 모듈 수에서 제외한다."""
-    parts = Path(path).parts
-    name = parts[-1] if parts else ""
-    return "tests" in parts or name.startswith("test_") or name.endswith("_test.py")
-
-
-def expand_owned_touch_files(
-    repo: Path,
-    touches: Sequence[str],
-    *,
-    list_owned=None,
-) -> TouchFileExpansion:
-    """touches directory를 공용 repo-owned 열거로 파일 단위 전개한다.
-
-    디렉터리를 열거할 수 없으면 빈 집합으로 축소하지 않고 미해소로
-    보존한다. 소비자는 tier 상향 기본값/경고에 이 신호를 쓴다.
-    """
-    repo = Path(repo)
-    paths: set[str] = set()
-    unresolved: set[str] = set()
-    for raw in touches:
-        canonical = _canonical_tier_touch(raw)
-        rel = Path(canonical)
-        if (not canonical or rel.is_absolute() or ".." in rel.parts):
-            unresolved.add(canonical or raw)
-            continue
-        target = repo / rel
-        is_directory = raw.rstrip().endswith(("/", "\\")) or target.is_dir()
-        if not is_directory:
-            paths.add(rel.as_posix())
-            continue
-        if not target.is_dir():
-            unresolved.add(rel.as_posix())
-            continue
-        try:
-            owned = _list_owned_touch_files(repo, rel, list_owned)
-        except Exception as exc:  # advisory caller가 미해소를 상향 신호로 쓴다.
-            if _is_engine_rev_skew(exc):
-                raise
-            unresolved.add(rel.as_posix())
-            continue
-        prefix = rel.as_posix().rstrip("/") + "/"
-        for item in owned:
-            candidate = Path(item).as_posix()
-            if candidate.startswith(prefix) and not (repo / candidate).is_dir():
-                paths.add(candidate)
-    return TouchFileExpansion(tuple(sorted(paths)), tuple(sorted(unresolved)))
-
-
-def _tier_tool_module_touches(touches: Sequence[str]) -> tuple[str, ...]:
-    prefix = ".project_manager/tools/"
-    modules = {
-        path for raw in touches
-        if (path := _canonical_tier_touch(raw)).startswith(prefix)
-        and path.endswith(".py")
-        and not _is_tool_test_file(path[len(prefix):])
-    }
-    return tuple(sorted(modules))
 
 
 # 엔진 구현 패키지 이름 — `from pm_engine.<층> import <모듈>` 을 모듈 파일 의존으로 센다.
-_ENGINE_PACKAGE = "pm_engine"
-
-
-def _shared_tool_code(tools_dir: Path, *, list_owned=None) -> tuple[str, ...]:
-    """tools/ import 구문을 AST로 스캔해 2개+ 도구가 import하는 파일을 산출.
-
-    목록은 파일명으로 굳히지 않고 현재 tools 트리와 import/import-from
-    구문만을 입력으로 삼는다. 파싱 불가 파일은 보조 신호에서만 제외한다.
-    """
-    repo = tools_dir.parent.parent
-    subtree = tools_dir.relative_to(repo)
-    prefix = subtree.as_posix().rstrip("/") + "/"
-    python_files = sorted({
-        repo / Path(path) for path in _list_owned_touch_files(repo, subtree, list_owned)
-        if Path(path).as_posix().startswith(prefix)
-        and Path(path).suffix == ".py"
-        and not _is_tool_test_file(Path(path).relative_to(subtree).as_posix())
-    })
-    by_stem: dict[str, list[Path]] = {}
-    for path in python_files:
-        by_stem.setdefault(path.stem, []).append(path)
-
-    importers: dict[Path, set[Path]] = {path: set() for path in python_files}
-    for importer in python_files:
-        try:
-            tree = ast.parse(fs.read_text_shared(importer, encoding="utf-8"), filename=str(importer))
-        except (OSError, UnicodeError, SyntaxError):
-            continue
-        names: set[str] = set()
-        package_targets: set[Path] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                if node.module and node.module.split(".")[0] == _ENGINE_PACKAGE:
-                    # `from pm_engine.<층> import <모듈>` 은 그 모듈 파일 의존이다(경로로 해소).
-                    package_targets.update(
-                        tools_dir.joinpath(*node.module.split("."), f"{alias.name}.py")
-                        for alias in node.names
-                    )
-                elif node.module:
-                    names.add(node.module.rsplit(".", 1)[-1])
-                elif node.level:
-                    names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
-            elif (isinstance(node, ast.Call)
-                  and isinstance(node.func, ast.Name)
-                  and node.func.id == "_load_module_from_path"):
-                # 생산 도구는 package import 대신 경로 로더를 쓴다. 두 번째
-                # expected_filename literal은 import 구문과 동등한 정적 의존성이다.
-                literal = None
-                if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-                    literal = node.args[1].value
-                if literal is None:
-                    for keyword in node.keywords:
-                        if (keyword.arg == "expected_filename"
-                                and isinstance(keyword.value, ast.Constant)):
-                            literal = keyword.value.value
-                            break
-                if isinstance(literal, str) and literal.endswith(".py"):
-                    names.add(Path(literal).stem)
-        for name in names:
-            # 동일 stem이 여러 경로에 있으면 import 구문만으로 대상을
-            # 특정할 수 없다. 근거 없는 shared 과판정을 피해 제외한다.
-            candidates = by_stem.get(name, ())
-            if len(candidates) == 1 and candidates[0] != importer:
-                importers[candidates[0]].add(importer)
-        for target in package_targets:
-            if target in importers and target != importer:
-                importers[target].add(importer)
-
-    prefix = ".project_manager/tools"
-    return tuple(
-        f"{prefix}/{path.relative_to(tools_dir).as_posix()}"
-        for path in python_files if len(importers[path]) >= 2
-    )
-
-
-def _is_tier_document(path: str) -> bool:
-    path = _canonical_tier_touch(path)
-    if not path:
-        return False
-    parts = Path(path).parts
-    name = parts[-1].upper()
-    if name in {"README", "README.MD", "CHANGELOG", "CHANGELOG.MD"}:
-        return True
-    if path == ".project_manager/wiki" or path.startswith(".project_manager/wiki/"):
-        return True
-    if "skills" in parts and parts[-1] == "SKILL.md":
-        return True
-    if name == "AGENTS.MD":
-        return True
-    return "agents" in parts and Path(path).suffix.lower() in {".md", ".toml"}
-
-
-def tier_signals(
-    touches: Sequence[str], tools_dir: Path, *, list_owned=None,
-) -> TierSignals:
-    """PM 판정을 대체하지 않는 h1·h2·문서-전용 기계 신호."""
-    repo = tools_dir.parent.parent
-    # directory touches 전체와 tools AST 스캔이 repo OWNED 스냅샷 한 벌을 공유.
-    subtree = Path(".")
-    try:
-        owned = tuple(_list_owned_touch_files(repo, subtree, list_owned))
-        owned_error = None
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise
-        owned = ()
-        owned_error = exc
-
-    def inventory(_repo, _subtree):
-        if owned_error is not None:
-            raise owned_error
-        return owned
-
-    # h1 directory 전개와 h2 AST 스캔이 OWNED 스냅샷 한 벌을 공유한다.
-    expanded = expand_owned_touch_files(repo, touches, list_owned=inventory)
-    modules = _tier_tool_module_touches(expanded.paths)
-    shared = set(_shared_tool_code(tools_dir, list_owned=inventory)) if owned_error is None else set()
-    canonical_touches = tuple(_canonical_tier_touch(path) for path in touches)
-    touched_shared = tuple(sorted(
-        path for path in shared
-        if any(path == touch or path.startswith(touch + "/")
-               for touch in canonical_touches if touch)
-    ))
-    return TierSignals(
-        modules, touched_shared,
-        bool(expanded.paths) and not expanded.unresolved_directories
-        and all(_is_tier_document(path) for path in expanded.paths),
-        tuple(path for path in expanded.unresolved_directories
-              if path == ".project_manager/tools"
-              or path.startswith(".project_manager/tools/")),
-    )
-
-
-def _section_add_owning_cluster(tid: str, path: Path) -> str | None:
-    """그 티켓의 라운드 수열을 **소유하는 묶음 장부 id**(없으면 None).
-
-    장부가 있으면 그 티켓의 라운드는 고정 예산 수열이 지배한다 — 라운드를 여는 표면은 위임
-    준비(`pm_delegate.py ticket prepare`) 하나뿐이고, 그 판정을 거치지 않는 `section-add` 가
-    같은 자리를 열면 예산이 세는 수열 밖에서 라운드가 늘어난다. 장부가 없는 티켓(발행 전
-    draft)은 예산 판정의 입력 자체가 없어 이 명령이 유일한 예약 표면이다.
-
-    손상 명세는 여기서 판정하지 않는다 — 클러스터 해소는 `ticket_cluster_from_text` 와 같은
-    규칙(필드 부재·파싱 실패는 크기 1)이라 `load_ticket_soft` 로 읽는다. 이 판정이 호출부
-    (`cmd_section_add`)의 `load_ticket` **앞**이므로, 장부를 가진 티켓은 명세 YAML 이 손상돼도
-    loud 판독 대신 아래 묶음 소유 거부 문구를 받는다 — 둘 다 첫 쓰기 앞 rc=1 이라 갈리는 것은
-    진단 문구뿐이다. 장부가 없는 티켓은 종전대로 `load_ticket` 이 손상을 loud 하게 낸다.
-    """
-    loaded = ticket_store.load_ticket_soft(_home(), path)
-    fm = loaded[0] if loaded is not None else {}
-    cluster = ticket_cluster(tid, fm if isinstance(fm, dict) else {})
-    return cluster if load_cluster(cluster) is not None else None
-
-
-def _active_ticket_path(
-    tid: str, action: str, *, role: str | None = None,
-) -> tuple[int, Path | None]:
-    """section-add/tier/design 대상 해소 — open/claimed는 공통, draft는 action별로 다르게 연다.
-
-    tier는 계속 open/claimed로 닫는다. section-add는 draft×architect만 연다(설계 bootstrap).
-    design은 draft 전체를 연다 — `design: required`가 promote를 막으므로 draft 단계에서
-    상태를 `done`으로 올릴 수 없으면 setter가 있어도 실제 막힌 상황을 풀지 못한다.
-    blocked/done 및 위 두 draft 예외 밖(section-add×developer|code-reviewer 등)은 같은 경계에서
-    거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
-
-    section-add 는 그 위에 조건이 하나 더 있다 — **묶음 장부가 없는 티켓**만 연다. 라운드
-    예약 표면은 둘이고 정의역이 겹치지 않는다: 장부가 있는 티켓은 위임 준비만(고정 예산이
-    수열을 지배한다), 장부가 없는 티켓은 이 명령만.
-    """
-    try:
-        status, path = ticket_store.find_ticket_for_mutation(_home(), tid)
-    except FileNotFoundError as exc:
-        print(exc, file=sys.stderr)
-        return 2, None
-    draft_architect = (
-        action == "section-add" and status == "draft" and role == "architect"
-    )
-    draft_design = action == "design" and status == "draft"
-    if status not in ("open", "claimed") and not (draft_architect or draft_design):
-        if action == "section-add":
-            allowed = "open/claimed 티켓 또는 draft×architect"
-        elif action == "design":
-            allowed = "open/claimed/draft 티켓"
-        else:
-            allowed = "open/claimed 티켓"
-        print(f"cannot {action} {tid}: currently in {status}/ "
-              f"({allowed}만 허용)", file=sys.stderr)
-        return 1, None
-    if action == "section-add":
-        cluster = _section_add_owning_cluster(tid, path)
-        if cluster is not None:
-            print(
-                f"cannot section-add {tid}: 묶음 장부 {cluster} 가 이 티켓의 라운드 수열을 "
-                "소유한다 — 라운드는 위임 준비가 연다(고정 예산 판정)\n"
-                "  · python3 .project_manager/tools/pm_delegate.py ticket prepare "
-                f"--ticket {tid} --role {role} --cwd <작업공간 절대경로>\n"
-                "  · 이어 시키는 단계를 같은 순번에 다시 여는 인자는 그 명령의 --help 가 "
-                "말한다.",
-                file=sys.stderr,
-            )
-            return 1, None
-    return 0, path
-
-
-def _rounds_mutation_sync_paths(message: str, paths: Sequence[Path]) -> bool:
-    """라운드/티어 mutation이 만진 경로들을 한 스코프 커밋으로 기록한다.
-
-    호출자는 board_lock 밖에서 공개할 경로만 전달한다. True는 로컬 기록 준비 완료 또는
-    별도 board-git이 없는 no-op이며, 원격 공유 완료를 뜻하지 않는다. 원격 보류는 기존
-    best-effort 출력이 안내하고 draft 라운드의 공개는 promote가 소유한다.
-
-    준비·회수·포기가 직접 호출하는 두 인자 시그니처를 유지한다. 인자를 늘리면 부분 동기된
-    PM 홈 사본에서 라운드를 반영한 뒤 CLI가 TypeError로 실패할 수 있다.
-    """
-    board_dashboard.refresh_board(_home())
-    return board_sync._board_git_sync_best_effort(_home(), message, tuple(paths))
-
-
-def _section_label(role: str, override: str | None) -> str | None:
-    """사람용 절명 해소. 개행/빈 값만 거부해 Markdown heading injection을 막는다."""
-    label = override if override is not None else ticket_round_role_labels()[role]
-    label = label.strip()
-    if not label or "\n" in label or "\r" in label:
-        return None
-    return label
-
-
-def _round_seed_header_override(seed: str, label: str, role: str, today: str) -> str:
-    """시드 첫 줄의 라벨만 사람이 준 절명으로 바꾼다 (본문 골격은 seam 산출 그대로).
-
-    헤더 문법(`## <라벨> (<role> · <날짜>)`)은 seam 이 소유하므로 여기서 다시 조립하지 않고
-    **그 자리의 라벨만** 치환한다 — 기본 라벨일 때는 바이트가 그대로다.
-    """
-    default_header, separator, rest = seed.partition("\n")
-    replacement = f"## {label} ({role} · {today})"
-    if not separator or default_header == replacement:
-        return seed
-    return replacement + separator + rest
-
-
-def cmd_section_add(args: argparse.Namespace) -> int:
-    """다음 라운드를 시드로 예약한다 — 슬롯 없는 준비(PM 이 직접 채우는 자리).
-
-    쓰는 것은 `tickets/rounds/<티켓>/NN-<role>.md` 하나뿐이다. 명세 파일은 건드리지 않으므로
-    lifecycle writer 와 겹치지 않고, 순번 채번+배타 생성만 짧은 board_lock 이 직렬화한다
-    (락 컨텍스트는 seam 이 잡는다 — board_lock 은 재진입이 없어 호출자가 잡은 채 넘기지 않는다).
-    """
-    role = args.role
-    label = _section_label(role, args.label)
-    if label is None:
-        print("cannot section-add: --label 은 비어 있거나 개행을 포함할 수 없다", file=sys.stderr)
-        return 1
-    today = datetime.date.today().isoformat()
-    with fs.board_lock(_home()):
-        rc, path = _active_ticket_path(args.id, "section-add", role=role)
-        if path is None:
-            return rc
-        ticket_store.load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
-        is_draft = path.resolve().parent == pm_paths.drafts_dir(_home()).resolve()
-        with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
-            spec_text = handle.read()
-
-    try:
-        existing = round_seed.load_rounds(pm_paths.tickets_dir(_home()), args.id, ticket_text=spec_text)
-        seed = round_seed.render_round_seed(
-            role, spec_text, today=today,
-            previous_round=round_rules.previous_round_of_role(existing, role),
-            # developer 골격의 verify 프리필 입력 — 이미 손에 든 `existing` 을 그대로
-            # 넘긴다(신규 로드 0).
-            rounds=existing,
-        )
-        round_path = round_store.reserve_round(
-            pm_paths.tickets_dir(_home()), args.id, role,
-            content=_round_seed_header_override(seed, label, role, today),
-            lock=fs.board_lock(_home()),
-        )
-    except round_rules.RoundsError as exc:
-        print(f"cannot section-add: {exc}", file=sys.stderr)
-        return 1
-
-    if is_draft:
-        # draft는 board-git 미커밋 authoring 영역이다. 라운드 파일도 promote 가 승격 시점에
-        # 함께 커밋한다(refresh/pull/commit/push 소유가 promote 라는 기존 규칙).
-        print(
-            f"section added {args.id}: {label} ({role} · {today}) → "
-            f"{pm_paths._rel_to_repo(_home(), round_path)} (local draft; promote가 출하 소유)"
-        )
-    else:
-        ready = _rounds_mutation_sync_paths(
-            f"section-add {args.id} {role}", (round_path,))
-        print(f"section added {args.id}: {label} ({role} · {today}) → "
-              f"{pm_paths._rel_to_repo(_home(), round_path)}"
-              f"{board_git._board_git_mutation_state_suffix(ready)}")
-    return 0
-
-
-def cmd_tier(args: argparse.Namespace) -> int:
-    """선택 frontmatter `tier`를 기록/갱신한다. 허용값 외 입력은 파일 읽기 전 rc=1."""
-    if args.tier not in TICKET_TIERS:
-        print(f"cannot tier: {args.tier!r} — 허용값: "
-              f"{', '.join(sorted(TICKET_TIERS))}", file=sys.stderr)
-        return 1
-    with fs.board_lock(_home()):
-        rc, path = _active_ticket_path(args.id, "tier")
-        if path is None:
-            return rc
-        fm, body = ticket_store.load_ticket(path)
-        fm["tier"] = args.tier
-        ticket_store.dump_ticket_atomic(path, fm, body)
-
-    ready = _rounds_mutation_sync_paths(f"tier {args.id} {args.tier}", (path,))
-    print(f"tier set {args.id}: {args.tier}{board_git._board_git_mutation_state_suffix(ready)}")
-    return 0
-
-
-def cmd_design(args: argparse.Namespace) -> int:
-    """발행 후 frontmatter `design`을 기록/갱신하는 1급 수단(`cmd_tier` 동형).
-
-    `--design`은 `new` 발행 시점 1회뿐이라 이후 상태 갱신은 YAML 손편집이 유일한 경로였다.
-    값 검증은 `_validate_design` 재사용 — 인식 불가 값(폐지된 면제 표기 포함)은 파일을 읽기
-    전에 거부한다(rc=1). 대상은 draft/open/claimed를 허용한다(`_active_ticket_path`의
-    design 축) — `design: required`가 promote를 막으므로 draft에서 상태를 올릴 수 없으면
-    setter가 있어도 실제 막힌 상황을 풀지 못한다. 값은 정규화·소문자화 없이 원문 그대로
-    기록한다(`_design_state`가 이미 대소문자 무시로 판정한다).
-    """
-    reason = _validate_design(args.value)
-    if reason:
-        print(reason, file=sys.stderr)
-        return 1
-    with fs.board_lock(_home()):
-        rc, path = _active_ticket_path(args.id, "design")
-        if path is None:
-            return rc
-        fm, body = ticket_store.load_ticket(path)
-        fm["design"] = args.value
-        ticket_store.dump_ticket_atomic(path, fm, body)
-        is_draft = path.resolve().parent == pm_paths.drafts_dir(_home()).resolve()
-
-    if is_draft:
-        # draft는 board-git 미커밋 authoring 영역이다 — promote가 출하 시점에 함께 커밋한다
-        # (`cmd_section_add`의 draft 분기와 동형).
-        print(f"design set {args.id}: {args.value} (local draft; promote가 출하 소유)")
-        return 0
-    ready = _rounds_mutation_sync_paths(f"design {args.id} {args.value}", (path,))
-    print(f"design set {args.id}: {args.value}{board_git._board_git_mutation_state_suffix(ready)}")
-    return 0
-
-
-def cmd_tier_signals(args: argparse.Namespace) -> int:
-    """touches 기반 h1·h2·문서-전용 신호를 advisory로 표시한다."""
-    found = ticket_store.find_ticket_exact(_home(), args.id)
-    if found is None:
-        print(f"ticket not found: {args.id}", file=sys.stderr)
-        return 1
-    _status, path = found
-    fm, _body = ticket_store.load_ticket(path)
-    touches = fm.get("touches")
-    if not isinstance(touches, list):
-        touches = []
-    clean_touches = [item.strip() for item in touches
-                     if isinstance(item, str) and item.strip()]
-    signals = tier_signals(clean_touches, REPO / ".project_manager" / "tools")
-    modules = ", ".join(signals.tool_modules) or "(none)"
-    shared = ", ".join(signals.shared_code) or "(none)"
-    module_count = ("unknown" if signals.unresolved_directories
-                    else str(len(signals.tool_modules)))
-    unresolved = (f" · unresolved={', '.join(signals.unresolved_directories)}"
-                  if signals.unresolved_directories else "")
-    print(f"tier signals {args.id} (advisory; PM confirms tier)")
-    print(f"  h1 tool modules: {module_count} "
-          f"(2+={'yes' if signals.h1 else 'no'}) — {modules}{unresolved}")
-    print(f"  h2 shared code: {'yes' if signals.shared_code else 'no'} — {shared}")
-    print(f"  docs-only: {'yes' if signals.docs_only else 'no'}")
-    return 0
 
 
 def cmd_claim(args: argparse.Namespace) -> int:
@@ -2457,13 +1269,13 @@ def cmd_complete(args: argparse.Namespace) -> int:
         # 묶음 멤버 lifecycle mutation은 정상 종결 파이프라인에 결속한다. ownership, DoD,
         # move/dump와 board-git sync보다 앞이라 거부 시 ticket/ledger/git write가 0이다.
         binding = getattr(args, "cluster_close", None)
-        binding_problem = cluster_complete_binding_problem(args.id, fm, binding)
+        binding_problem = cluster_binding.cluster_complete_binding_problem(_home(), args.id, fm, binding)
         if binding_problem is None and binding is not None:
             # 결속 완료는 종결 파이프라인이 연 장부(closing)에서만 받는다 — 파이프라인 밖의 직접
             # 호출은 티켓만 done 으로 옮기고 장부·머지를 남긴다(복구 전용 반쪽 상태).
-            ledger = load_cluster(binding)
+            ledger = cluster_store.load_cluster(_home(), binding)
             if ledger is not None and str(ledger.get("status") or "").strip() != "closing":
-                owner = cluster_id_for_name(binding)
+                owner = cluster_rules.cluster_id_for_name(binding)
                 binding_problem = (
                     f"묶음 멤버의 완료는 종결 파이프라인 안에서만 한다 — {owner} 장부가 종결 중"
                     f"(closing)이 아니다(현재 {ledger.get('status')}). "
@@ -2643,79 +1455,6 @@ def cmd_unblock(args: argparse.Namespace) -> int:
 _DISCARD_SOURCE_STATUSES: tuple[str, ...] = (*ticket_rules.ACTIVE_STATUS_DIRS, "draft")
 
 
-_ROUND_PENDING_UNHARVESTED_QUERY = (
-    "python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested"
-)
-
-
-def _round_pending_ledger_owner() -> Path:
-    """미회수 라운드 장부의 PM 홈 — board 자신의 `REPO`(테스트·slot 재앵커 존중)로 해소한다.
-
-    `pm_delegate._activate_internal_rounds_cli_owner()` 는 그 모듈 **자신의** 고정 `REPO`(자기
-    파일 경로에서 계산)를 써서 board 의 `REPO` 재앵커(테스트·등록 슬롯)를 못 본다 — 그래서 같은
-    해소 함수(`pm_paths.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
-    해소는 답이 하나이거나 예외다 — 실패를 삼켜 안내 결손으로 낮추지 않는다.
-    """
-    return Path(pm_paths.resolve_pm_home_for_repo(REPO)).resolve()
-
-
-def _round_pending_abandon_command(tid: str, ordinal: int, role: str) -> str | None:
-    """미회수 장부에서 이 pending 라운드의 실 `--copy`/`--cwd` 를 해소해 완성 abandon 커맨드를 낸다.
-
-    장부 부재·PM 홈 미확정·이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 전부 해소
-    불능으로 `None`(호출부가 `ticket copies --unharvested` 조회 처방으로 대체한다)."""
-    owner = _round_pending_ledger_owner()
-    try:
-        rows = delegate_ledger.ticket_copy_records(owner, ticket=tid, unharvested=True)
-    except Exception:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
-        return None
-    match = next(
-        (row for row in rows if row.get("ordinal") == ordinal and row.get("role") == role),
-        None,
-    )
-    if match is None:
-        return None
-    copy_path = Path(match["copy"])
-    # 장부는 `copy` 절대경로만 싣는다 — `--cwd` 는 그 절대경로에서 준비 규약의 상대 경로를
-    # 걷어내 역산한다(준비가 실제로 그 규약대로 쓴 경로라는 전제 — 불일치면 해소 불능으로
-    # 판정). 규약 조립은 준비측 단일 소유자(`_row_ticket_relative_dir`)를 그대로 부른다 —
-    # 여기서 다시 쓰면 묶음 키 세대와 옛 세대의 규칙이 board 쪽에서 갈린다.
-    relative = delegate_ledger._row_ticket_relative_dir(match) / \
-        round_rules.round_filename(match["ordinal"], match["role"])
-    rel_parts = relative.parts
-    if copy_path.parts[-len(rel_parts):] != rel_parts:
-        return None
-    cwd = Path(*copy_path.parts[:-len(rel_parts)])
-    return (
-        "python3 .project_manager/tools/pm_delegate.py ticket abandon "
-        f"--copy {copy_path} --cwd {cwd} --assume-dead"
-    )
-
-
-def _discard_round_pending_notice(tid: str) -> None:
-    """미회수(round-pending) 라운드가 있어도 discard 를 막지 않고 ⓘ 로 회수 처방만 안내한다.
-
-    완료 게이트(`_round_completion_problems`)와 같은 축(round-pending=비차단·표시용)이다.
-    여러 pending 이 있어도 안내는 **정확히 1줄**(건수 + 첫 pending 의 처방)로 접는다 — pending
-    마다 자리표시자 줄을 찍던 옛 형태는 실행 가능한 값이 아니었다(reviewer). round-gap·
-    round-dup·round-name 은 완료 게이트가 이미 다루는 축이라 여기서 재확인하지 않는다(discard
-    는 그 축을 차단하지 않는다).
-    """
-    pending = [
-        item for item in round_seed.load_rounds(pm_paths.tickets_dir(_home()), tid) if item.pending
-    ]
-    if not pending:
-        return
-    first = pending[0]
-    resolved = _round_pending_abandon_command(tid, first.ordinal, first.role)
-    prescription = resolved if resolved is not None else _ROUND_PENDING_UNHARVESTED_QUERY
-    print(
-        f"ⓘ  round-pending {len(pending)}건({first.path.name}) — "
-        f"회수하려면 `{prescription}`",
-        file=sys.stderr,
-    )
-
-
 def cmd_discard(args: argparse.Namespace) -> int:
     """`discard <T-NNNN> <merged|dropped> --reason <사유>` — 처분 종결(비-완료 종결).
 
@@ -2746,7 +1485,7 @@ def cmd_discard(args: argparse.Namespace) -> int:
         if not ownership.ok:
             print(ticket_rules._ownership_rejection("discard", args.id, ownership), file=sys.stderr)
             return 1
-        _discard_round_pending_notice(args.id)
+        round_maintenance._discard_round_pending_notice(_home(), args.id)
         new_path = ticket_store.move_ticket(_home(), path, "discarded")
         fm["status"] = "discarded"
         fm["disposition"] = args.disposition
@@ -2814,11 +1553,11 @@ def cmd_reopen(args: argparse.Namespace) -> int:
         # base_branch·status·close_step 이 기본값으로 덮인다(실측).
         cluster_ledger: Path | None = None
         if dest_status == "open" and not str(fm.get("cluster") or "").strip():
-            of_record = _cluster_of_record(args.id)
+            of_record = cluster_store._cluster_of_record(_home(), args.id)
             if of_record is not None:
                 fm["cluster"] = of_record
             else:
-                fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
+                fm["cluster"], cluster_ledger = board_cluster._cluster_auto_attach(_home(), args.id, args)
         note = f"\n## Reopened\n{reason} — {clock.now_utc()} (이전 상태 {status}/)\n"
         ticket_store.dump_ticket(new_path, fm, body + note)
     board_dashboard.refresh_board(_home())
@@ -3479,9 +2218,9 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 설계 단계 기본값 — 명시 `--design` 우선, 무명시는 estimate=large → required · 그 외 n/a
     # (T-0594). 값 형식은 발행 시점에 fail-loud 로 검증한다 — 잘못된 값이 티켓에 박히면
     # claim 게이트가 나중에야 걸린다.
-    design = _resolve_design(getattr(args, "design", None),
+    design = design_rules._resolve_design(getattr(args, "design", None),
                              getattr(args, "estimate", None))
-    design_reason = _validate_design(design)
+    design_reason = design_rules._validate_design(design)
     if design_reason:
         print(f"[중단] {design_reason}", file=sys.stderr)
         return 1
@@ -3499,7 +2238,7 @@ def cmd_new(args: argparse.Namespace) -> int:
                        "(`--task <task>`, task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가). "
                        "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 결속하라.")
     if binding_required:
-        tree, base = _cluster_publish_base_branch(args)
+        tree, base = board_cluster._cluster_publish_base_branch(_home(), args)
         if not tree or not base:
             print(binding_message, file=sys.stderr)
             return 1
@@ -3574,13 +2313,12 @@ def cmd_new(args: argparse.Namespace) -> int:
         final_binding_required = (not is_draft
                                   or getattr(args, "repo", None) or getattr(args, "slot", None))
         if not is_draft or final_binding_required:
-            publish_basis = _cluster_publish_base_branch(args)
+            publish_basis = board_cluster._cluster_publish_base_branch(_home(), args)
             if final_binding_required and (not publish_basis[0] or not publish_basis[1]):
                 print(binding_message, file=sys.stderr)
                 return 1
         if not is_draft:
-            fm["cluster"], cluster_ledger = _cluster_auto_attach(
-                tid, args, publish_basis=publish_basis)
+            fm["cluster"], cluster_ledger = board_cluster._cluster_auto_attach(_home(), tid, args, publish_basis=publish_basis)
 
         if is_draft:
             pm_paths.drafts_dir(_home()).mkdir(parents=True, exist_ok=True)
@@ -3623,7 +2361,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 슬롯 재료의 repo 는 이 발행의 위치 인자 `--repo` 다 — REPO.name(물리 폴더명)과 다른
     # 등록명을 공식 지원하므로 그 값을 재사용한다(첫 줄의 실행 명령 판정 함수가 이미 검증한 args).
     new_repo = identity_args.parse_identity(args).repo
-    for line in _publish_overlap_material(tid, fm.get("touches"), new_repo or REPO.name):
+    for line in cluster_binding._publish_overlap_material(_home(), tid, fm.get('touches'), new_repo or REPO.name):
         print(line, file=sys.stderr)
     return 0
 
@@ -3678,9 +2416,9 @@ def cmd_promote(args: argparse.Namespace) -> int:
         # 공유 전에 기존 cluster new의 제품·멤버 결속을 읽기로 검증한다.
         # 선언된 장부와 티켓 cluster 값은 승격이 재작성하지 않는다.
         if board_git._board_git_enabled(_home()):
-            problem = cluster_binding_problem(ticket_cluster(args.id, fm))
+            problem = cluster_binding.cluster_binding_problem(_home(), cluster_rules.ticket_cluster(args.id, fm))
             if problem is None:
-                problem = cluster_complete_binding_problem(args.id, fm, str(fm.get("cluster") or ""))
+                problem = cluster_binding.cluster_complete_binding_problem(_home(), args.id, fm, str(fm.get('cluster') or ''))
             if problem:
                 print(f"[중단] promote 결속 검증: {problem}", file=sys.stderr)
                 return 1
@@ -3718,14 +2456,13 @@ def cmd_promote(args: argparse.Namespace) -> int:
     # 없으면 세션명 키 분해로 폴백). 둘 다 기존 seam 재사용 — 새 해소 축 아님.
     promote_repo, _promote_slot_number = lease_store.session_coordinates(
         ticket_rules._created_by_session(fm.get("created_by")), LEASES_FILE)
-    for line in _publish_overlap_material(args.id, fm.get("touches"), promote_repo or REPO.name):
+    for line in cluster_binding._publish_overlap_material(_home(), args.id, fm.get('touches'), promote_repo or REPO.name):
         print(line, file=sys.stderr)
     return 0
 
 
 # `list` 기본뷰(무-status)의 활성 상태 — 종결(done·discarded)을 접어 범람을 해소한다.
 # `--status all` 이 STATUS_DIRS 전체(종결 포함)를 연다.
-_LIST_ACTIVE_STATUSES: tuple[str, ...] = ticket_rules.ACTIVE_STATUS_DIRS
 
 
 # ── 발행 시점 touches 겹침 재료 (판단 지점에 판단 재료가 있어야 한다) ──────────
@@ -3734,799 +2471,24 @@ _LIST_ACTIVE_STATUSES: tuple[str, ...] = ticket_rules.ACTIVE_STATUS_DIRS
 # 정규화는 `repo_coordinates` 단일 소유자, 비교 규칙(`_touch_paths_overlap`)은 `ticket_rules`
 # 단일 소유자를 재사용한다(board 는 이 축에 자체 문자열 비교를 만들지 않는다 — 접두
 # `work/<repo>_<N>/` 선언이 활성 티켓 상당수라 순진한 비교는 조용히 0이 된다).
-_PUBLISH_OVERLAP_HEADER = "=== ⚠ 발행 touches 겹침 (다른 활성/draft 티켓) ==="
-_PUBLISH_OVERLAP_PATH_LIMIT = 8      # 경로 표시 상한 — 슬롯 줄이 없을 때의 상한(있으면 아래로 줄어든다)
-_PUBLISH_OVERLAP_ID_LIMIT = 6        # 경로당 티켓 ID 최대 6개(잔여는 건수로 접기)
 # 헤더 + 경로/잔여-요약 + 슬롯 줄을 **전부 포함한** 총 상한(리뷰 F-003 — 개별 상한만 지키면
 # 헤더 1 + 경로 8 + 잔여요약 1 + 슬롯 1 = 11줄로 티켓 §결정의 9줄 상한을 넘는다).
-_PUBLISH_OVERLAP_TOTAL_LINE_BUDGET = 9
 
 
-def _publish_overlap_candidates(
-    exclude_ids: Sequence[str],
-) -> list[tuple[str, dict[str, Any]]]:
-    """겹침 판정 후보 집합 — 활성 3상태(open/claimed/blocked) + drafts, 제외 ID 빼고.
-
-    제외 집합이 복수인 이유는 묶음(클러스터) 발행 재료 때문이다 — 멤버끼리의 겹침은 묶음의
-    근거라 후보에서 빼고 별도 줄로 표기한다(호출부가 그 줄을 만든다).
-
-    done 은 후보가 아니다(완료된 과거 작업과의 겹침은 판단 재료가 아니다). draft 는
-    `board.md`·`list`·board-git 어디에도 안 보이면서 좌표를 이미 점유하므로 포함한다(다른
-    draft 가 이미 board.py 같은 엔진 파일을 touch 하고 있는 형상이 실제로 있었다). 손상
-    frontmatter 는 `load_ticket_soft` 가 경고 1줄과 함께 skip(fail-soft·rc 불변).
-    """
-    excluded = frozenset(exclude_ids)   # 문자열 하나가 들어와도 부분문자열 매칭이 되지 않게.
-    paths: list[Path] = []
-    for status in _LIST_ACTIVE_STATUSES:
-        status_dir = pm_paths.tickets_dir(_home()) / status
-        if status_dir.is_dir():
-            paths.extend(sorted(status_dir.glob("*.md")))
-    drafts = pm_paths.drafts_dir(_home())
-    if drafts.is_dir():
-        paths.extend(sorted(drafts.glob("*.md")))
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for path in paths:
-        loaded = ticket_store.load_ticket_soft(_home(), path)
-        if loaded is None:
-            continue
-        fm = loaded[0]
-        tid = str(fm.get("id") or "").strip()
-        if not tid or tid in excluded:
-            continue
-        candidates.append((tid, fm))
-    return candidates
-
-
-def _fold_publish_touches(items: list[str], coordinates: Any) -> tuple[str, ...]:
-    """touches 선언을 발행 시점(`workspace` 없음) 좌표로 접는다 — 검증 실패 항목은 드롭.
-
-    `pm_delegate._folded_touch_pairs` 와 같은 정규화 순서(`normalize_repo_path` →
-    `canonicalize_path_notation` → `_touch_notation`)이되, 그 함수는 `workspace` 를 무조건
-    요구해 발행 시점(claim 이전·workspace 미정)에는 못 쓴다 — `_touches_existence_issues` 와
-    동형으로 `workspace=None`(lease 장부 매핑으로 검증)을 쓴다. 다른 슬롯 선언·미실재 슬롯은
-    항목 단위로 드롭한다(크래시 0).
-    """
-    folded: list[str] = []
-    for item in items:
-        try:
-            normalized = coordinates.normalize_repo_path(str(item), pm_root=REPO)
-        except coordinates.RepoCoordinateError:
-            continue
-        value = ticket_rules._touch_notation(
-            coordinates.canonicalize_path_notation(str(normalized)))
-        if value and value != ".":
-            folded.append(value)
-    return tuple(dict.fromkeys(folded))
-
-
-def _publish_idle_slot_count(repo: str) -> int | None:
-    """`repo`(canonical 등록 repo 정체성 — 물리 폴더명 아님)의 가용(idle) 슬롯 수.
-
-    장부 미해소(부재/손상)면 `None`(재료 줄 생략). 데이터 원천은 lease 장부 하나, 읽기는
-    `lease_store.repo_slot_state_counts` 술어 하나뿐이다(board 안에 새 장부 read 를 만들지
-    않는다). `creating` 은 idle 로 세지 않는다.
-
-    `repo` 는 호출부가 이미 해소한 canonical 값을 받는다 — `new` 는 `--repo`/`--slot` 로 명시된
-    args 정체성(`identity_args.parse_identity`), `promote` 는 티켓 `created_by` provenance 를
-    `lease_store.session_coordinates` 로 재해소한 장부 등록 repo 다. 물리 폴더명(`REPO.name`)은
-    `--repo` 로 다른 등록명을 공식 지원하는 `new` 형상에서 장부 repo 와 어긋날 수 있어(리뷰 실측),
-    이 함수 안에서 다시 유도하지 않는다 — 새 해소 축을 만들지 않고 호출부의 값을 그대로 쓴다.
-    """
-    counts = lease_store.repo_slot_state_counts(repo, LEASES_FILE)
-    if counts is None:
-        return None
-    return counts.get("idle", 0)
-
-
-def _format_publish_overlap_material(
-    per_path: dict[str, set[str]], idle_count: int | None,
-) -> list[str]:
-    """경로별 겹침 집계 → stderr 줄 목록. 겹침 0 이면 슬롯 줄까지 포함해 **전부 침묵**(never-block).
-
-    총 줄 수(헤더 + 경로 표시분 + 잔여-요약 1줄(있으면) + 슬롯 줄(있으면))는
-    `_PUBLISH_OVERLAP_TOTAL_LINE_BUDGET` 을 넘지 않는다 — 슬롯 줄이 붙으면 그만큼 경로 표시
-    예산이 줄어든다. `_PUBLISH_OVERLAP_PATH_LIMIT`(8)은 슬롯 줄이 없을 때 도달 가능한 상한이지
-    항상 보장되는 값이 아니다(리뷰 F-003).
-    """
-    if not per_path:
-        return []
-    ordered = sorted(per_path.items(), key=lambda kv: (len(kv[1]), kv[0]))
-    slot_line: str | None = None
-    if idle_count is not None:
-        slot_line = (
-            f"  가용(idle) 슬롯 {idle_count}개 — 겹침이 곧 직렬 근거는 아니다(슬롯 분리로 병렬 가능)")
-    # 헤더 1줄 + 슬롯 줄(있으면 1줄)을 뺀 나머지가 경로/잔여-요약 몫이다.
-    reserved = 1 + (1 if slot_line is not None else 0)
-    path_budget = min(_PUBLISH_OVERLAP_PATH_LIMIT,
-                      max(0, _PUBLISH_OVERLAP_TOTAL_LINE_BUDGET - reserved))
-    if len(ordered) <= path_budget:
-        shown, hidden = ordered, 0
-    else:
-        # 잔여-요약 1줄이 그 몫을 하나 먹으므로 실제 경로 표시는 path_budget - 1.
-        shown = ordered[:max(0, path_budget - 1)]
-        hidden = len(ordered) - len(shown)
-    lines = [_PUBLISH_OVERLAP_HEADER]
-    for path, ids in shown:
-        id_list = sorted(ids)
-        head = ", ".join(id_list[:_PUBLISH_OVERLAP_ID_LIMIT])
-        remainder = len(id_list) - _PUBLISH_OVERLAP_ID_LIMIT
-        suffix = f" 외 {remainder}건" if remainder > 0 else ""
-        lines.append(f"  {path}: {len(ids)}건 겹침 ({head}{suffix})")
-    if hidden > 0:
-        lines.append(f"  … 외 {hidden}개 경로")
-    if slot_line is not None:
-        lines.append(slot_line)
-    return lines
-
-
-def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]:
-    """`new`/`promote` 공용 진입점 — touches 겹침 + 가용 슬롯 재료를 stderr 줄 목록으로 렌더.
-
-    `repo` 는 슬롯 재료(`_publish_idle_slot_count`)가 lease 장부를 조회할 canonical 정체성 —
-    호출부가 이미 해소한 값을 그대로 받는다(이 함수 안에서 유도하지 않는다).
-
-    touches 형식 불명은
-    이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
-    동기 사본에서 이 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
-    """
-    own_items = ticket_rules._normalized_touches(touches)
-    if not own_items:
-        return []
-    own_folded = _fold_publish_touches(own_items, repo_coordinates)
-    if not own_folded:
-        return []
-    candidates = _publish_overlap_candidates((tid,))
-    per_path: dict[str, set[str]] = {path: set() for path in own_folded}
-    for other_id, other_fm in candidates:
-        other_items = ticket_rules._normalized_touches(other_fm.get("touches"))
-        if not other_items:
-            continue
-        other_folded = _fold_publish_touches(other_items, repo_coordinates)
-        if not other_folded:
-            continue
-        for own_path in own_folded:
-            if any(ticket_rules._touch_paths_overlap(own_path, other_path)
-                   for other_path in other_folded):
-                per_path[own_path].add(other_id)
-    nonzero = {path: ids for path, ids in per_path.items() if ids}
-    return _format_publish_overlap_material(nonzero, _publish_idle_slot_count(repo))
-
-
-CLUSTER_BRANCH_PREFIX = "task/"           # 통합 브랜치 이름 접두
-CLUSTER_STATUS_OPEN = "open"
 # 장부 status 열거 — 종결(`closed`)만 비활성이고 나머지는 진행 중(자동 귀속 후보)이다.
-CLUSTER_STATUSES: tuple[str, ...] = ("open", "review", "fix", "closing", "closed")
 # 라운드 예산 기본값 — 초과 판정(예약 거부)은 라운드 예약 표면이 소유하고, 여기서는 장부에
 # 박는 기본값 한 벌만 정의한다(각 단계 정확히 1회).
-CLUSTER_BUDGET_DEFAULT: dict[str, int] = {
-    "architect": 1, "developer_per_ticket": 1, "code-reviewer": 1, "fix": 1,
-}
 # 장부 frontmatter 키 선언 순서 — 사람이 읽는 자리라 순서를 고정한다(미래 키는 뒤에 붙는다).
-CLUSTER_LEDGER_KEYS: tuple[str, ...] = (
-    "id", "tickets", "base_branch", "branch", "spike", "budget", "status",
-)
 # 이름 문법 — 파일명과 git 브랜치 이름에 그대로 들어가므로 경로 구분자·refname 금칙을 배제한
 # 보수적 집합만 받는다(`_validate_prefix` 와 같은 입력측 sanity 자리).
-_CLUSTER_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-_CLUSTER_NAME_MAX = 40
 # 문자 집합으로는 걸리지 않는 refname 금칙 — 이름은 통합 브랜치의 마지막 마디로 그대로 들어가
 # 므로 `git check-ref-format --branch <브랜치 접두><ticket-group>` 과 같은 판정을 순수 술어로 낸다.
 # 제어문자·공백·`~^:?*[\`·`/`·`@{` 는 위 문자 집합이 이미 배제하고, 남는 셋이 아래다: 이중 점 ·
 # `.lock` 으로 끝나는 마디 · 점으로 끝나는 마디. 이걸 통과시키면 **만들 수 없는 브랜치**를
 # 장부에 선언한 채 명령이 성공하고(브랜치 부재 advisory 만 남는다) 그 묶음은 영구히 통합
 # 브랜치를 못 갖는다.
-_CLUSTER_NAME_DOUBLE_DOT = ".."
-_CLUSTER_NAME_LOCK_SUFFIX = ".lock"
-_CLUSTER_NAME_DOT_SUFFIX = "."
 # 멤버가 될 수 없는 상태 — 종결된 티켓은 운영 단위의 구성원이 아니다.
-_CLUSTER_MEMBER_REJECT_STATUSES: tuple[str, ...] = ("done", "discarded")
 # 클러스터 내부 겹침 줄의 경로 표시 상한 — 발행 재료와 같은 규율(줄 수를 예산 안에 둔다).
-_CLUSTER_INTERNAL_OVERLAP_PATH_LIMIT = 3
-
-
-def cluster_id_for_name(name: str) -> str:
-    """사람이 준 이름 → 장부 id. 접두를 이미 쓴 입력은 그대로 둔다(입력 표기 둘 다 수용)."""
-    text = str(name or "").strip()
-    return text if text.startswith(cluster_store.CLUSTER_ID_PREFIX) else f"{cluster_store.CLUSTER_ID_PREFIX}{text}"
-
-
-def cluster_name_of(cluster: str) -> str:
-    """장부 id → 이름(접두 제거) — 브랜치 이름과 진단 문구가 쓰는 사람 표기."""
-    text = str(cluster or "").strip()
-    return text[len(cluster_store.CLUSTER_ID_PREFIX):] if text.startswith(cluster_store.CLUSTER_ID_PREFIX) else text
-
-
-def cluster_branch_name(cluster: str) -> str:
-    """통합 브랜치 이름 — `task/<ticket-group>`(장부 id 접두는 브랜치에 실리지 않는다)."""
-    return f"{CLUSTER_BRANCH_PREFIX}{cluster_name_of(cluster)}"
-
-
-def cluster_ledger_path(cluster: str) -> Path:
-    """장부 파일 경로 — 이름/장부 id 어느 표기로 불러도 같은 파일을 가리킨다."""
-    return cluster_store.clusters_dir(_home()) / f"{cluster_id_for_name(cluster)}.md"
-
-
-def is_auto_cluster_id(cluster: str) -> str | None:
-    """자동 생성 크기 1 장부인가 — 맞으면 그 티켓 ID, 아니면 None.
-
-    이름 자리가 티켓 ID 인 장부는 발행이 만든 크기 1 묶음이다. 이 모양은 **자동 귀속의 자석이
-    아니다** — 그렇지 않으면 먼저 발행된 티켓의 자동 장부가 뒤따르는 발행을 전부 빨아들여
-    선언하지 않은 묶음이 생긴다. 사람이 선언하는 이름은 이 모양을 쓸 수 없다(아래 sanity).
-    """
-    name = cluster_name_of(cluster)
-    return name if ticket_rules._is_valid_ticket_id(name) else None
-
-
-def _validate_cluster_name(name: str) -> str | None:
-    """`cluster new <ticket-group>` 입력 sanity — 문제면 사유 문자열, 정상이면 None."""
-    text = cluster_name_of(name)
-    if not text:
-        return "클러스터 이름이 비었다"
-    if is_auto_cluster_id(text):
-        return (f"티켓 ID 모양의 이름은 예약이다: {text!r} — 그 모양은 발행이 만드는 크기 1 "
-                "장부의 자리다(사람이 선언하는 묶음은 다른 이름을 쓴다)")
-    if len(text) > _CLUSTER_NAME_MAX:
-        return f"클러스터 이름이 너무 길다({len(text)}자 · 상한 {_CLUSTER_NAME_MAX})"
-    if not _CLUSTER_NAME_RE.match(text):
-        return (f"클러스터 이름 형식 위반: {text!r} — 영숫자로 시작하고 영숫자·`.`·`_`·`-` "
-                "만 쓴다(파일명과 git 브랜치 이름에 그대로 들어간다)")
-    if (_CLUSTER_NAME_DOUBLE_DOT in text
-            or text.endswith(_CLUSTER_NAME_LOCK_SUFFIX)
-            or text.endswith(_CLUSTER_NAME_DOT_SUFFIX)):
-        return (f"git 브랜치 이름 금칙: {text!r} — `{cluster_branch_name(text)}` 는 만들 수 "
-                f"없다(이중 점 · `{_CLUSTER_NAME_LOCK_SUFFIX}` 끝 · 점 끝). 장부만 남고 통합 "
-                "브랜치는 영원히 생기지 않으므로 첫 쓰기 앞에서 거부한다.")
-    return None
-
-
-def load_cluster(cluster: str) -> dict[str, Any] | None:
-    """장부 frontmatter — 부재는 None, 손상은 경고 1줄 뒤 None(`load_ticket_soft` 동형)."""
-    path = cluster_ledger_path(cluster)
-    if not path.is_file():
-        return None
-    loaded = ticket_store.load_ticket_soft(_home(), path)
-    return loaded[0] if loaded is not None else None
-
-
-def dump_cluster(fm: dict[str, Any]) -> Path:
-    """장부를 키 선언 순서로 쓴다 — 본문 없음(라운드 산출은 장부에 담지 않는다)."""
-    ordered: dict[str, Any] = {key: fm.get(key) for key in CLUSTER_LEDGER_KEYS}
-    for key, value in fm.items():
-        if key not in ordered:
-            ordered[key] = value
-    path = cluster_ledger_path(str(ordered.get("id") or ""))
-    ticket_store.dump_ticket(path, ordered, "")
-    return path
-
-
-def all_clusters_strict() -> tuple[list[dict[str, Any]], str | None]:
-    """lifecycle mutation 판정용 장부 전체 — `(장부 목록, 판독 불능 사유)`.
-
-    조회용 `cluster_store.all_clusters()` 는 손상 파일을 경고 뒤 건너뛴다(한 파일이 순회를 죽이지 않는다).
-    귀속 유일성 같은 mutation 판정은 그 관용을 쓸 수 없다 — 빠진 파일이 그 티켓을 담고 있을
-    가능성을 배제하지 못한 채 "owner 가 하나"라고 말하게 된다. 판정 불능은 통과가 아니라
-    정지라 사유를 값으로 돌려주고, 호출자가 **첫 write 앞에서** 거부한다.
-    """
-    directory = cluster_store.clusters_dir(_home())
-    if not directory.is_dir():
-        return [], None
-    out: list[dict[str, Any]] = []
-    for path in sorted(directory.glob(f"{cluster_store.CLUSTER_ID_PREFIX}*.md")):
-        loaded = ticket_store.load_ticket_soft(_home(), path)
-        if loaded is None:
-            return [], (f"cluster 장부를 읽지 못했다: {pm_paths._rel_to_repo(_home(), path)} — 귀속 유일성을 "
-                        "전수 확인할 수 없어 정지한다(장부를 고친 뒤 다시 실행하라)")
-        fm = loaded[0]
-        if not str(fm.get("id") or "").strip():
-            return [], (f"cluster 장부에 id 선언이 없다: {pm_paths._rel_to_repo(_home(), path)} — 귀속 유일성을 "
-                        "전수 확인할 수 없어 정지한다(장부를 고친 뒤 다시 실행하라)")
-        out.append(fm)
-    return out, None
-
-
-def ticket_cluster(tid: str, fm: dict[str, Any] | None = None) -> str:
-    """그 티켓이 속한 클러스터 id — **필드 부재는 크기 1**(`C-` + 티켓 ID)로 읽는다.
-
-    구세대 티켓(필드도 장부도 없음)을 마이그레이션 없이 같은 코드 경로에 태우는 규칙이다.
-    """
-    value = str((fm or {}).get("cluster") or "").strip()
-    return value or f"{cluster_store.CLUSTER_ID_PREFIX}{tid}"
-
-
-def ticket_cluster_from_text(tid: str, ticket_text: str) -> str:
-    """명세 텍스트에서 그 티켓의 클러스터 id — 라운드 준비가 쓰는 읽기 seam.
-
-    파싱 실패·필드 부재는 크기 1 로 접는다(`ticket_cluster` 와 같은 규칙). 준비는 이 값 하나로
-    run-dir 을 가르므로, 손상 명세에서도 좌표가 결정적이어야 한다.
-    """
-    fm: Any = {}
-    try:
-        fm, _body = ticket_rules._parse_ticket_text(ticket_text, "<티켓 명세>")
-    except (ValueError, yaml.YAMLError):
-        fm = {}
-    if not isinstance(fm, dict):
-        fm = {}
-    return ticket_cluster(tid, fm)
-
-
-def cluster_members(cluster: str) -> tuple[str, ...]:
-    """멤버 티켓 ID — **장부가 선언한 목록**(장부가 없으면 빈 튜플).
-
-    멤버를 합성하지 않는다. 이름만 보고 접으면 선언한 적 없는 묶음이 조회·준비 표면에 생기고,
-    장부 삭제가 곧 그 묶음의 판정 우회 수단이 된다. 장부는 open 진입 세 경로(발행 승격·
-    `promote`·`reopen`)가 만들므로 열린 티켓은 언제나 자기 장부를 갖고, 장부 없는 이름의 빈
-    튜플은 조회 부재(rc≠0)와 준비 거부의 입력이다.
-    """
-    fm = load_cluster(cluster)
-    return tuple(cluster_store.cluster_tickets(fm)) if fm is not None else ()
-
-
-def cluster_live_members(cluster: str) -> tuple[str, ...]:
-    """선언 멤버 중 처분 종결(`discarded`)이 아닌 멤버 — 라운드 준비·리뷰·처분의 대상.
-
-    처분된 멤버는 코드 산출이 없어 라운드·리뷰 입력·확인 처분의 대상이 아니다(종결의 "처분 종결
-    멤버"와 같은 규칙). 선언 목록(`cluster_members`)은 장부 그대로 두고, 대상 판정은 이 함수
-    하나가 한다. board 에서 찾지 못한 멤버는 남겨 두어 소비처가 부재를 그대로 드러내게 한다.
-    """
-    live = []
-    for tid in cluster_members(cluster):
-        found = ticket_store.find_ticket_exact(_home(), tid)
-        if found is not None and found[0] == "discarded":
-            continue
-        live.append(tid)
-    return tuple(live)
-
-
-def _cluster_of_record(tid: str) -> str | None:
-    """**장부 파일이** 이 티켓을 멤버로 담고 있는 클러스터 id (없으면 None).
-
-    티켓 frontmatter 의 선언과 별개 축이다 — 흡수·중복 귀속 판정은 파일 쪽을 본다.
-    """
-    for fm in cluster_store.all_clusters(_home()):
-        if tid in cluster_store.cluster_tickets(fm):
-            return str(fm.get("id") or "").strip() or None
-    return None
-
-
-def cluster_complete_binding_problem(
-    tid: str, ticket_fm: dict[str, Any], cluster_close: str | None,
-) -> str | None:
-    """완료 호출이 티켓의 정확한 cluster에 결속되지 않은 이유를 돌려준다.
-
-    ``--cluster-close``는 인증 토큰이 아니라 path-binding이다. 인자·티켓 역참조·유일한
-    ledger owner가 모두 일치하고 장부 전 멤버의 양방향 귀속이 온전할 때만 통과한다.
-    장부도 ``cluster`` 선언도 없는 legacy 티켓은 `ticket_cluster` 의 이름 해석과 **같은
-    규칙**을 쓴다 — 그 티켓의 크기 1 해석 id(`C-` + 티켓 ID)와 정확히 같은 결속만 통과한다.
-    """
-    binding = cluster_id_for_name(cluster_close) if cluster_close else None
-    declared_raw = str(ticket_fm.get("cluster") or "").strip()
-    declared = cluster_id_for_name(declared_raw) if declared_raw else None
-    ledgers, catalog_problem = all_clusters_strict()
-    if catalog_problem is not None:
-        return catalog_problem
-    owners = [ledger for ledger in ledgers if tid in cluster_store.cluster_tickets(ledger)]
-
-    if not owners and declared is None:
-        # 이름 해석으로 종결에 들어온 구세대 티켓은 `ClusterCloser` 가 그 id 를 결속으로
-        # 싣고 온다 — 폴백을 연 규칙과 완료 게이트가 다른 값을 요구하면 그 티켓은 종결도 직접
-        # 완료도 못 하는 막다른 길에 놓인다.
-        legacy_binding = cluster_id_for_name(tid)
-        if binding is not None and binding != legacy_binding:
-            return (f"cluster 결속 {binding}을 검증할 장부가 없다 — 장부 없는 legacy 티켓의 "
-                    f"크기 1 해석은 {legacy_binding}이다")
-        return None
-    if len(owners) != 1:
-        owner_ids = [str(row.get("id") or "<id 없음>") for row in owners]
-        return (f"cluster ledger owner가 정확히 하나가 아니다: {owner_ids or ['없음']} — "
-                "멤버십을 복구한 뒤 묶음 종결을 다시 실행하라")
-
-    ledger = owners[0]
-    owner_raw = str(ledger.get("id") or "").strip()
-    owner = cluster_id_for_name(owner_raw) if owner_raw else ""
-    members = cluster_store.cluster_tickets(ledger)
-    if not owner or len(members) != len(set(members)) or not members:
-        return f"{owner or '<id 없음>'} 장부의 멤버 집합이 비었거나 중복됐다"
-    if declared != owner:
-        return (f"티켓 cluster 역참조({declared or '없음'})와 ledger owner({owner})가 "
-                "일치하지 않는다")
-    if binding != owner:
-        return (f"활성 cluster 멤버는 direct complete할 수 없다 — "
-                f"ticket_finish 묶음 종결의 exact 결속 {owner}가 필요하다")
-    if str(ledger.get("status") or "").strip() == "closed":
-        return f"{owner} 장부는 closed인데 {tid}가 claimed다 — 모순을 complete로 덮지 않는다"
-
-    for member in members:
-        found = ticket_store.find_ticket_exact(_home(), member)
-        if found is None:
-            return f"{owner} 멤버 {member} 티켓을 찾지 못했다"
-        loaded = ticket_store.load_ticket_soft(_home(), found[1])
-        member_cluster = str((loaded[0] if loaded else {}).get("cluster") or "").strip()
-        if not member_cluster or cluster_id_for_name(member_cluster) != owner:
-            return (f"{owner} 멤버 {member}의 cluster 역참조가 일치하지 않는다: "
-                    f"{member_cluster or '없음'}")
-        member_owners = [
-            str(row.get("id") or "") for row in ledgers
-            if member in cluster_store.cluster_tickets(row)
-        ]
-        if member_owners != [owner]:
-            return f"{member}가 여러 cluster ledger에 귀속됐다: {member_owners}"
-    return None
-
-
-def cluster_binding_problem(cluster: str, *, tree: str | None = None) -> str | None:
-    """명시 장부의 제품 branch/base 결속을 읽기로 검증한다 (추정·재작성 없음)."""
-    ledger = load_cluster(cluster)
-    branch = str((ledger or {}).get("branch") or "").strip()
-    base = str((ledger or {}).get("base_branch") or "").strip()
-    if not branch or not base:
-        return (f"{cluster}는 제품 브랜치 미결속 장부다. 기존 "
-                "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
-                "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라")
-    if tree is not None:
-        return None if (_cluster_branch_state(tree, branch) is True
-                        and _cluster_branch_state(tree, base) is True) else (
-            f"{cluster}의 branch {branch} 또는 base_branch {base}를 제품 트리 {tree}에서 확인하지 못했다")
-    status, rows = lease_store._read_lease_rows_status(LEASES_FILE)
-    if status == identity_args.LEDGER_UNREADABLE:
-        return f"{cluster} 제품 결속을 검증할 대여 기록을 읽지 못했다"
-    repositories: set[str] = set()
-    for row in rows:
-        slot = str(row.get("slot") or "").strip()
-        folder = REPO / slot
-        if not slot or not (folder / ".git").exists():
-            continue
-        branch_state = _cluster_branch_state(str(folder), branch)
-        base_state = _cluster_branch_state(str(folder), base)
-        if branch_state is None or base_state is None:
-            return f"{cluster}의 제품 브랜치를 관측하지 못했다: {folder}"
-        if branch_state and base_state:
-            common = git._git_run(["rev-parse", "--git-common-dir"], repo=folder)
-            if common is None or common[0] != 0:
-                return f"{cluster} 제품 저장소 근거를 읽지 못했다: {folder}"
-            repositories.add(str((folder / common[1].strip()).resolve()))
-    if len(repositories) != 1:
-        return (f"{cluster}의 branch {branch}·base_branch {base}를 가진 제품 저장소가 "
-                f"정확히 하나가 아니다 ({len(repositories)}개). 명시 결속을 확인하라")
-    return None
-
-
-def _new_cluster_fm(
-    cluster: str, tickets: Sequence[str], *,
-    base_branch: str | None = None, branch: str | None = None,
-    spike: str | None = None,
-) -> dict[str, Any]:
-    """새 장부 frontmatter — 고정 단계별 1회 예산을 박는다."""
-    return {
-        "id": cluster_id_for_name(cluster),
-        "tickets": list(tickets),
-        "base_branch": base_branch,
-        "branch": branch,
-        "spike": spike,
-        "budget": dict(CLUSTER_BUDGET_DEFAULT),
-        "status": CLUSTER_STATUS_OPEN,
-    }
-
-
-def _cluster_auto_attach(
-    tid: str, args: argparse.Namespace, *,
-    publish_basis: tuple[str | None, str | None] | None = None,
-) -> tuple[str, Path]:
-    """발행 시점 크기 1 장부 생성 — `(클러스터 id, 장부 경로)`.
-
-    새 티켓은 **자기 장부**를 갖는다. 여러 티켓을 한 묶음으로 묶는 것은 사람 선언
-    (`cluster new`)이고 엔진은 고르지 않는다 — 활성 묶음에 새 티켓을 자동으로 끼우면 선언한 적
-    없는 묶음이 생기고, 그 묶음의 예산·기준 브랜치가 끼워진 티켓의 판정을 대신한다.
-
-    명시 제품 기준 브랜치와 예산을 기록한다. branch 선언은 기존 cluster new의 몫이며,
-    실행·종결은 그 명시 결속 전까지 거부한다. 재개방의 무선택 경로는 기준을 추측하지 않는다.
-
-    board_lock 보유 전제다(발행·재개방 임계구역 안에서 부른다).
-    """
-    _tree, base_branch = (_cluster_publish_base_branch(args)
-                          if publish_basis is None else publish_basis)
-    fm = _new_cluster_fm(
-        f"{cluster_store.CLUSTER_ID_PREFIX}{tid}", [tid], base_branch=base_branch)
-    return str(fm["id"]), dump_cluster(fm)
-
-
-def _cluster_publish_base_branch(
-    args: argparse.Namespace,
-) -> tuple[str | None, str | None]:
-    """장부에 박을 `(코드 트리, 기준 브랜치)` — 트리 미해소·브랜치 없는 트리(detached·비-git)는 None.
-
-    `--task` 가 보유한 폴더만 `_claim_code_tree`로 해소한다. task 가 없으면 제품 결속의 증거가
-    없으므로 기준 브랜치를 기록하지 않는다.
-    """
-    tree = task_args._claim_code_tree(_home(), args)
-    if not tree or not (Path(tree) / ".git").exists() or not git._git_head_at(tree):
-        return None, None
-    top = git._git_run(["rev-parse", "--show-toplevel"], repo=Path(tree))
-    if top is None or top[0] != 0 or Path(top[1].strip()).resolve() != Path(tree).resolve():
-        return None, None
-    return tree, (git._cluster_current_branch(tree) if tree else None)
-
-
-def _cluster_release_member(cluster: str, tid: str) -> Path | None:
-    """흡수된 멤버를 옛 장부에서 뺀다 — 갱신/제거한 경로(해소 불가면 None).
-
-    발행이 자동으로 만든 크기 1 장부가 비면 그 파일을 지운다: 엔진이 방금 만들고 엔진이 비운
-    산출물이고, 남겨 두면 멤버 0 인 장부가 lint 잡음으로 상주한다. 사람이 선언한 묶음(이름이
-    티켓 ID 가 아니거나 브랜치가 있는 장부)은 비어도 지우지 않는다.
-
-    삭제 실패에서 관용하는 것은 **부재(`FileNotFoundError`)뿐**이다 — 이미 없으면 이 호출이
-    원하는 상태라 멱등이다. 그 밖의 삭제 실패는 올린다: 삼키면 옛 장부가 멤버를 그대로 쥔 채
-    새 장부와 티켓 명세만 갱신돼 명령이 성공을 선언한 뒤 중복 귀속이 남는다(조용한 모순).
-    삭제 뒤 부재도 확인한다 — 성공 선언의 근거는 반환값이 아니라 파일이 없다는 관측이다.
-    """
-    fm = load_cluster(cluster)
-    if fm is None:
-        return None
-    members = [item for item in cluster_store.cluster_tickets(fm) if item != tid]
-    fm["tickets"] = members
-    path = cluster_ledger_path(cluster)
-    auto_shape = (
-        not members
-        and is_auto_cluster_id(cluster) is not None
-        and not fm.get("branch")
-    )
-    if auto_shape:
-        with contextlib.suppress(FileNotFoundError):
-            path.unlink()
-        if path.exists():
-            raise OSError(f"자동 장부 삭제 뒤에도 파일이 남아 있다: {path}")
-        return path
-    return dump_cluster(fm)
-
-
-def _cluster_branch_state(tree: str, branch: str) -> bool | None:
-    """그 트리에 브랜치가 있는가 — 판정 불능(git 부재·비-git·fatal)은 None."""
-    result = git._git_run(
-        ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], repo=Path(tree))
-    if result is None or result[0] > 1:
-        return None
-    return result[0] == 0
-
-
-def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
-    """통합 브랜치를 만든다(있으면 그대로) — 결과를 사람이 읽는 1줄로 돌려준다.
-
-    브랜치 생성 실패는 장부 생성을 막지 않는다 — 이 1줄이 `cluster new` 출력에 그대로 실리고,
-    그 뒤의 브랜치 부재는 **트리를 든 표면**(확인 실행 `pm_delegate._cluster_confirmation_tree` ·
-    완료 기록 `ticket_finish`)이 자기 자리에서 판정한다(조용한 통과 아님).
-    """
-    state = _cluster_branch_state(tree, branch)
-    if state is None:
-        return f"생성 보류(코드 git 판정 불능: {tree})"
-    if state:
-        return f"이미 있음 ({tree})"
-    if not base:
-        return f"생성 보류(기점 브랜치 미해소: {tree})"
-    result = git._git_run(["branch", branch, base], repo=Path(tree))
-    if result is None or result[0] != 0:
-        return f"생성 실패(기점 {base} · {tree})"
-    # 만든 자리에서 부모를 적는다 — 기점 브랜치가 부모이고 그 끝 커밋이 갈라진 커밋이다.
-    # 브랜치는 이미 생겼으므로 기록 실패는 조용히 넘기지 않고 올린다.
-    runner = worktree_git._real_git_runner(Path(tree))
-    rc, fork = runner(["rev-parse", "--verify", f"{base}^{{commit}}"])
-    if rc != 0:
-        raise branch_store.BranchParentError(
-            f"{branch} 를 만들었지만 기점 {base} 커밋을 읽지 못해 부모를 기록하지 못했다: {fork.strip()}")
-    branch_store.record_branch_parent(branch, base, fork.strip(), git_runner=runner)
-    return f"생성됨 (기점 {base} · 부모 기록 · {tree})"
-
-
-def _cluster_overlap_material(
-    members: Sequence[tuple[str, object]], repo: str,
-) -> list[str]:
-    """`cluster new` 판단 재료 — 묶음 **밖** 겹침 + 가용 슬롯 + 묶음 **안** 겹침 1줄.
-
-    후보에서 멤버 전부를 뺀다 — 멤버끼리의 겹침은 묶음을 반대할 근거가 아니라 묶음의 근거라
-    별도 줄로 표기한다(침묵시키면 재료가 준다). 좌표 정규화·비교 규칙 소유자는 발행 재료와
-    같다(`repo_coordinates`·`ticket_rules` · 사본 0). 판정불능(형식 불명)은
-    이 축 전체를 침묵으로 접는다 — 차단하지 않되 통과로 위장하지도 않는다(재료 축 그대로).
-    """
-    folded: dict[str, tuple[str, ...]] = {}
-    for tid, touches in members:
-        items = ticket_rules._normalized_touches(touches)
-        folded[tid] = _fold_publish_touches(items, repo_coordinates) if items else ()
-    own_paths = tuple(dict.fromkeys(
-        path for paths in folded.values() for path in paths))
-    if not own_paths:
-        return []
-    per_path: dict[str, set[str]] = {path: set() for path in own_paths}
-    for other_id, other_fm in _publish_overlap_candidates(tuple(folded)):
-        other_items = ticket_rules._normalized_touches(other_fm.get("touches"))
-        if not other_items:
-            continue
-        other_folded = _fold_publish_touches(other_items, repo_coordinates)
-        if not other_folded:
-            continue
-        for own_path in own_paths:
-            if any(ticket_rules._touch_paths_overlap(own_path, other_path)
-                   for other_path in other_folded):
-                per_path[own_path].add(other_id)
-    lines = _format_publish_overlap_material(
-        {path: ids for path, ids in per_path.items() if ids},
-        _publish_idle_slot_count(repo),
-    )
-    internal: dict[str, list[str]] = {}
-    for path in own_paths:
-        sharing = sorted(tid for tid, paths in folded.items()
-                         if any(ticket_rules._touch_paths_overlap(path, item)
-                                for item in paths))
-        if len(sharing) > 1:
-            internal[path] = sharing
-    if internal:
-        shown = sorted(internal.items())[:_CLUSTER_INTERNAL_OVERLAP_PATH_LIMIT]
-        detail = " · ".join(f"{path}: {', '.join(ids)}" for path, ids in shown)
-        remainder = len(internal) - len(shown)
-        suffix = f" 외 {remainder}개 경로" if remainder > 0 else ""
-        if not lines:
-            lines.append(_PUBLISH_OVERLAP_HEADER)
-        lines.append(f"  클러스터 내부 겹침 {len(internal)}개 경로 ({detail}{suffix}) — "
-                     "묶음 근거(반대 근거 아님)")
-    return lines
-
-
-def _cmd_cluster_new(args: argparse.Namespace) -> int:
-    """장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료.
-
-    거부 판정은 전부 첫 쓰기 앞에 둔다(부분 생성 없음). 발행이 만든 크기 1 장부는 흡수하고,
-    이미 **여러 티켓의** 묶음에 속한 티켓은 옮기지 않는다 — 소속 이동은 사람 판정이라 엔진이
-    조용히 하지 않는다.
-
-    코드 트리는 **`--task` 가 보유한 폴더로만** 받는다(폴더가 2개 이상이면 `--repo/--slot` 위치
-    인자로 고른다) — 이 명령은 git 브랜치를
-    만들고 그 트리의 현재 브랜치를 기점으로 장부에 박는 쓰기라, 트리를 추측하면 엉뚱한
-    저장소에 브랜치가 생기고 다른 묶음의 브랜치가 기점으로 실린다.
-    """
-    reason = _validate_cluster_name(args.name)
-    if reason:
-        print(f"[중단] {reason}", file=sys.stderr)
-        return 1
-    if task_args._claim_code_tree(_home(), args) is None:
-        print("[중단] cluster new 는 통합 브랜치를 만들 코드 트리를 명시로 받는다 — "
-              "`--task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)를 지정하라.",
-              file=sys.stderr)
-        return 1
-    identity = identity_args.parse_identity(args)   # 위 판정을 통과한 같은 args(ValueError 없음)
-    cluster = cluster_id_for_name(args.name)
-    raw = (getattr(args, "tickets", None) or "").strip()
-    if not raw:
-        print("[중단] cluster new 에는 `--tickets T-...,T-...` 가 필수다 — 묶음 선언은 "
-              "PM 이 한다(엔진은 자동으로 묶지 않는다).", file=sys.stderr)
-        return 1
-    members: list[str] = []
-    for item in raw.split(","):
-        tid = item.strip()
-        if not tid or tid in members:
-            continue
-        if not ticket_rules._is_valid_ticket_id(tid):
-            print(f"[중단] 티켓 ID 형식이 아니다: {tid!r}", file=sys.stderr)
-            return 1
-        members.append(tid)
-    if not members:
-        print("[중단] `--tickets` 에 유효한 티켓 ID 가 없다", file=sys.stderr)
-        return 1
-    spike = (getattr(args, "spike", None) or "").strip() or None
-    branch = cluster_branch_name(cluster)
-    touched: list[Path] = []
-    with fs.board_lock(_home()):
-        ledger_path = cluster_ledger_path(cluster)
-        if ledger_path.exists():
-            print(f"[중단] 이미 있는 클러스터 장부: {pm_paths._rel_to_repo(_home(), ledger_path)} "
-                  "(멤버 조회는 `cluster show`)", file=sys.stderr)
-            return 1
-        resolved: list[tuple[str, Path, dict[str, Any], str, str | None]] = []
-        drafts: list[str] = []
-        for tid in members:
-            found = ticket_store.find_ticket_exact(_home(), tid)
-            if found is None:
-                print(f"[중단] ticket not found: {tid}", file=sys.stderr)
-                return 2
-            status, path = found
-            if status in _CLUSTER_MEMBER_REJECT_STATUSES:
-                print(f"[중단] 종결 티켓은 클러스터 멤버가 아니다: {tid} ({status}/)",
-                      file=sys.stderr)
-                return 1
-            fm, body = ticket_store.load_ticket(path)
-            owner = _cluster_of_record(tid)
-            if owner is not None and owner != cluster and len(cluster_members(owner)) > 1:
-                print(f"[중단] {tid} 는 이미 다른 묶음의 멤버다: {owner}"
-                      f"(멤버 {len(cluster_members(owner))}) — 소속 이동은 엔진이 조용히 "
-                      "하지 않는다(옛 묶음을 먼저 정리하라).", file=sys.stderr)
-                return 1
-            if status == "draft":
-                drafts.append(tid)
-            resolved.append((tid, path, fm, body, owner))
-        tree, base_branch = _cluster_publish_base_branch(args)
-        if tree is None:
-            print(f"[중단] 코드 트리를 해소하지 못했다 — 정체성 "
-                  f"(repo={identity.repo} · slot={identity.slot} · task={identity.task}) "
-                  "이 리스 장부의 활성 슬롯과 조인되지 않는다. `pm_handoff`/`worktree_pool` "
-                  "로 슬롯을 확인한 뒤 다시 실행하라.", file=sys.stderr)
-            return 1
-        branch_note = _cluster_ensure_branch(tree, branch, base_branch)
-        touched.append(dump_cluster(_new_cluster_fm(
-            cluster, members, base_branch=base_branch, branch=branch, spike=spike)))
-        for tid, path, fm, body, owner in resolved:
-            if str(fm.get("cluster") or "").strip() != cluster:
-                fm["cluster"] = cluster
-                ticket_store.dump_ticket(path, fm, body)
-                touched.append(path)
-            if owner is not None and owner != cluster:
-                try:
-                    released = _cluster_release_member(owner, tid)
-                except OSError as exc:
-                    # 옛 장부 정리 실패는 rc 로 말한다 — 이 지점에서 새 장부와 티켓 명세는 이미
-                    # 갱신됐으므로, 조용히 성공하면 두 장부가 같은 티켓을 멤버로 쥔 중복 귀속이
-                    # 남는다(lint `cluster-duplicate` 로만 보이는 모순).
-                    print(f"[중단] 옛 장부에서 {tid} 를 빼지 못했다: "
-                          f"{pm_paths._rel_to_repo(_home(), cluster_ledger_path(owner))}: {exc} — "
-                          f"{cluster} 와 중복 귀속 상태다. 옛 장부를 정리한 뒤 `lint` 로 "
-                          "확인하라(새 장부·티켓 명세는 이미 갱신됐다).", file=sys.stderr)
-                    return 1
-                if released is not None:
-                    touched.append(released)
-    print(f"created {cluster} ({pm_paths._rel_to_repo(_home(), cluster_ledger_path(cluster))}) — "
-          f"멤버 {len(members)}: {', '.join(members)}")
-    print(f"  통합 브랜치 {branch} — {branch_note}")
-    if spike:
-        print(f"  설계 spike: {spike}")
-    ready = board_sync._board_git_sync_best_effort(_home(), f"cluster new {cluster}", touched)
-    if not ready:
-        print("  ⚠ board-git 기록 보류: local-only/uncommitted", file=sys.stderr)
-    if drafts:
-        print(f"  ⚠ draft 멤버 {len(drafts)}건({', '.join(drafts)}) — 장부는 공유 board 에 "
-              "있으나 draft 명세는 승격 전까지 공유되지 않는다(다른 클론에서 멤버 부재 "
-              "advisory). `promote` 로 승격하라.", file=sys.stderr)
-    material = _cluster_overlap_material(
-        [(tid, fm.get("touches")) for tid, _path, fm, _body, _owner in resolved],
-        identity.repo or REPO.name,
-    )
-    for line in material:
-        print(line, file=sys.stderr)
-    return 0
-
-
-def _cmd_cluster_show(args: argparse.Namespace) -> int:
-    """장부 1건 조회 — 선언값 그대로 + 멤버의 현재 status.
-
-    브랜치 실재는 재지 않는다 — 이 표면은 트리를 들지 않고, 장부에도 코드 트리를 적는 자리가
-    없어(`CLUSTER_LEDGER_KEYS`) 어느 저장소에서 찾을지 지목할 수 없다.
-    """
-    cluster = cluster_id_for_name(args.name)
-    fm = load_cluster(cluster)
-    if fm is None:
-        print(f"cluster not found: {cluster}", file=sys.stderr)
-        return 2
-    declared = cluster_store.cluster_tickets(fm)
-    status = str(fm.get("status") or CLUSTER_STATUS_OPEN)
-    print(f"-- {cluster} ({status} · 멤버 {len(declared)}) --")
-    print(f"  base_branch: {fm.get('base_branch') or '—'}")
-    print(f"  branch: {str(fm.get('branch') or '').strip() or '—'}")
-    print(f"  spike: {fm.get('spike') or '—'}")
-    budget = fm.get("budget") if isinstance(fm.get("budget"), dict) else {}
-    print("  budget: " + (" · ".join(f"{key}={value}" for key, value in budget.items())
-                          or "—"))
-    for tid in declared:
-        found = ticket_store.find_ticket_exact(_home(), tid)
-        if found is None:
-            print(f"  {tid}  (부재)")
-            continue
-        member_status, path = found
-        loaded = ticket_store.load_ticket_soft(_home(), path)
-        title = str((loaded[0] if loaded else {}).get("title") or "")
-        print(f"  {tid}  {member_status}  {title}")
-    return 0
-
-
-def cmd_cluster(args: argparse.Namespace) -> int:
-    """`cluster new|show` — 고정 5단계 운영 단위 장부의 생성·조회."""
-    leaf = getattr(args, "cluster_cmd", "")
-    if leaf == "new":
-        return _cmd_cluster_new(args)
-    return _cmd_cluster_show(args)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -4614,7 +2576,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     elif status_arg:
         allowed_statuses = (status_arg,)
     else:
-        allowed_statuses = _LIST_ACTIVE_STATUSES
+        allowed_statuses = cluster_binding._LIST_ACTIVE_STATUSES
     rows: list[tuple[str, dict]] = []
     # 세션격리 strict-exclude 신호: 다중사용자 판정 때문에 귀속 미해소/불일치 티켓을 이 뷰에서
     # 조용히 드롭했는지 잡는다. 단일 사용자면 재평가 자체를 생략해 오버헤드와 오탐을 피한다.
@@ -5681,7 +3643,7 @@ def cmd_git_anchor(args: argparse.Namespace) -> int:
     judgment = judge_git_anchor_command(
         REPO, args.session, args.cwd, args.command, grants=args.grants,
     )
-    _write_machine_line(json.dumps(judgment, ensure_ascii=False))
+    board_dispatch._write_machine_line(json.dumps(judgment, ensure_ascii=False))
     return 0
 
 
@@ -5692,7 +3654,7 @@ def cmd_git_grant(args: argparse.Namespace) -> int:
         granted = record_git_grants(REPO, args.session, args.cwd, prompt)
     except ValueError as exc:
         sys.exit(f"[중단] {exc}")
-    _write_machine_line(json.dumps({"granted": granted}, ensure_ascii=False))
+    board_dispatch._write_machine_line(json.dumps({"granted": granted}, ensure_ascii=False))
     return 0
 
 
@@ -5700,7 +3662,7 @@ def cmd_git_tool_input(args: argparse.Namespace) -> int:
     """하네스 훅용 — stdin JSON 도구 입력의 판정(허용 위조·슬롯 쓰기 주인)을 한 줄 JSON 으로 출력한다."""
     tool_input = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     judgment = judge_tool_input(REPO, args.session, args.cwd, args.tool, tool_input)
-    _write_machine_line(json.dumps(judgment, ensure_ascii=False))
+    board_dispatch._write_machine_line(json.dumps(judgment, ensure_ascii=False))
     return 0
 
 
@@ -5920,22 +3882,6 @@ def _dod_open_items(body: str) -> list[str]:
             f"`board.py discard <ID> {'|'.join(ticket_rules.DISPOSITION_KINDS)} --reason <사유>` 로 "
             "종결하라(부분 이월은 `[x]` 가 하나 이상일 때 통과한다)")
     return problems
-
-
-def _resolve_design(explicit: str | None, estimate: str | None) -> str:
-    """발행 시 `design:` 해소 — 명시값 우선, 무명시는 estimate=large → required · 그 외 n/a."""
-    if explicit and str(explicit).strip():
-        return str(explicit).strip()
-    return (design_rules.DESIGN_REQUIRED if (estimate or "") == design_rules.DESIGN_REQUIRED_ESTIMATE
-            else design_rules.DESIGN_NA)
-
-
-def _validate_design(design: str) -> str | None:
-    """`--design` 입력 sanity — 문제면 사유 문자열, 정상이면 None (`_validate_prefix` 동형)."""
-    if design_rules._design_state(design) == design_rules.DESIGN_INVALID:
-        return (f"design 값 인식 불가: {str(design)!r} — {design_rules.DESIGN_VALUE_FORMS} 중 하나"
-                "(면제 경로는 없다 — 설계 절을 채우고 done 으로 올린다)")
-    return None
 
 
 # ── family wiki scope 태그 + 승격 ─────────────────────────────
@@ -6733,28 +4679,28 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--spike", metavar="경로",
                     help="설계 단일 진실 문서 경로 (선택 · 장부에 기록만 한다)")
     identity_args.add_identity_args(cp)  # 통합 브랜치를 둘 코드 트리 — 명시 필수(claim 과 같은 규칙)
-    cp.set_defaults(fn=cmd_cluster)
+    cp.set_defaults(fn=board_cluster.cmd_cluster)
 
     cp = cluster_sub.add_parser("show", help="장부 1건 조회(선언값 + 멤버 현재 status)")
     cp.add_argument("name", metavar="<ticket-group>")
-    cp.set_defaults(fn=cmd_cluster)
+    cp.set_defaults(fn=board_cluster.cmd_cluster)
 
     p = sub.add_parser(
         "section-add",
         help="묶음 장부가 없는 티켓의 다음 라운드를 빈 시드로 예약(슬롯 없는 준비) — "
              "장부가 있는 티켓의 라운드는 위임 준비(`pm_delegate.py ticket prepare`)가 연다")
     p.add_argument("id", metavar="T-NNNN")
-    p.add_argument("--role", required=True, choices=_round_role_choices(),
+    p.add_argument("--role", required=True, choices=round_rules._round_role_choices(),
                    help="라운드 역할(파일명과 기본 절명을 함께 결정)")
     p.add_argument("--label", help="사람용 절명 오버라이드(예: 재설계)")
-    p.set_defaults(fn=cmd_section_add)
+    p.set_defaults(fn=board_round.cmd_section_add)
 
     p = sub.add_parser("tier", help="open/claimed 티켓의 위임 tier 기록·갱신")
     p.add_argument("id", metavar="T-NNNN")
     # choices를 쓰면 argparse가 rc=2로 선점한다. 계약의 인식 불가 값 rc=1을 cmd_tier가 직접
     # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다.
     p.add_argument("tier", metavar="pm-direct|normal|hard")
-    p.set_defaults(fn=cmd_tier)
+    p.set_defaults(fn=board_round.cmd_tier)
 
     p = sub.add_parser(
         "design",
@@ -6763,14 +4709,14 @@ def build_parser() -> argparse.ArgumentParser:
     # choices를 쓰면 argparse가 rc=2로 선점한다. 계약의 인식 불가 값 rc=1을 cmd_design이 직접
     # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다(`_validate_design`).
     p.add_argument("value", metavar=design_rules.DESIGN_VALUE_FORMS)
-    p.set_defaults(fn=cmd_design)
+    p.set_defaults(fn=board_round.cmd_design)
 
     p = sub.add_parser(
         "tier-signals",
         help="touches의 h1 모듈·h2 공용 코드·문서-전용 신호 표시(advisory)",
     )
     p.add_argument("id", metavar="T-NNNN")
-    p.set_defaults(fn=cmd_tier_signals)
+    p.set_defaults(fn=board_round.cmd_tier_signals)
 
     p = sub.add_parser("init", help="clone 당 1회 setup — areas repo 행 등록·pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="ticket ID 작업 카테고리 (예: PAY). 생략 = 무prefix(T-NNNN·none 카테고리)")
@@ -6815,7 +4761,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--final", action="store_true",
                    help="수렴 후 FULL 게이트 — 활성 리뷰 사이클 중에도 강등하지 않는다 "
                         "(pre-push 훅·핸드오프가 쓰는 경로)")
-    p.set_defaults(fn=lambda args: regression_cmd.cmd_regression(_home(), args))
+    p.set_defaults(fn=lambda args: regression_cmd.cmd_regression(_home(), args),
+                   _board_subcommand="regression")
 
     p = sub.add_parser("livegate",
                        help="릴리즈 라이브 게이트 — record=`pytest -m release` "
@@ -6961,27 +4908,31 @@ def _main(argv: list[str] | None = None) -> int:
     # PM-홈 worktree 오실행 가드 — mutation subcommand 전수·단일 dispatch 지점.
     # board 상태를 쓰는 명령만(read·sidecar 제외) 착지 *전에* fail-loud. 분류는 위 상수·미래
     # 누락은 메타 가드 테스트가 잡는다.
-    subcommand = _resolved_subcommand(args)
-    if subcommand in _MUTATION_SUBCOMMANDS and _guard_worktree_misanchor(f"board.py {subcommand}"):
+    subcommand = board_dispatch._resolved_subcommand(args)
+    if subcommand not in (board_command_rules._MUTATION_SUBCOMMANDS
+                          | board_command_rules._READ_SUBCOMMANDS
+                          | board_command_rules._SIDECAR_SUBCOMMANDS):
+        raise ValueError(f"분류되지 않은 board 명령: {subcommand}")
+    package_handler = args.fn in (board_cluster.cmd_cluster, board_round.cmd_section_add,
+                                  board_round.cmd_tier, board_round.cmd_design,
+                                  board_round.cmd_tier_signals)
+    if subcommand in board_command_rules._MUTATION_SUBCOMMANDS and board_dispatch._guard_worktree_misanchor(_home(), f'board.py {subcommand}'):
         return 1
-    if subcommand in _READ_SUBCOMMANDS:
-        resolution = _resolve_read_board(REPO)
-        _print_read_anchor(
-            subcommand=subcommand,
-            pm_home=resolution.home if resolution.home != REPO else None,
-        )
+    if subcommand in board_command_rules._READ_SUBCOMMANDS:
+        resolution = pm_paths._resolve_read_board(pm_paths.home_at(REPO))
+        board_dispatch._print_read_anchor(_home(), subcommand=subcommand, pm_home=resolution.home if resolution.home != REPO else None)
         local_root = pm_paths._board_root_at(REPO)
         if resolution.home is not None and resolution.home != REPO:
             with _read_pm_inputs_at(resolution.home, resolution.root):
-                return args.fn(args)
+                return (args.fn(_home(), args) if package_handler else args.fn(args))
         # 자기 board/standalone은 import-time REPO 경로 그대로다. 별도 context에 넣지 않아
         # 폴백 문구·경로 재바인딩이 전혀 생기지 않는다.
         if resolution.root == local_root:
-            return args.fn(args)
+            return (args.fn(_home(), args) if package_handler else args.fn(args))
         # 방어적 경계: 현재 resolver 계약상 home 없는 비local root는 나올 수 없다.
         with _read_pm_inputs_at(REPO, resolution.root):
-            return args.fn(args)
-    return args.fn(args)
+            return (args.fn(_home(), args) if package_handler else args.fn(args))
+    return (args.fn(_home(), args) if package_handler else args.fn(args))
 
 
 def main(argv: list[str] | None = None) -> int:

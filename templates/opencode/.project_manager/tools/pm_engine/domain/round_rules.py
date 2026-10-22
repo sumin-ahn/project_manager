@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+
+
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
@@ -209,3 +211,35 @@ def render_rounds_for_show(rounds) -> str:
             f"--- {_round_stem(item.ordinal, item.role)}{marker} ---\n{body}"
         )
     return "\n".join(blocks)
+
+
+def _round_role_choices() -> tuple[str, ...]:
+    """`--role` argparse 선택지 — 라운드 역할 표(`ROLE_LABELS`)에서 파생한다."""
+    return tuple(ticket_round_role_labels())
+
+def ticket_round_role_labels() -> dict[str, str]:
+    """라운드 역할 → 사람용 라벨 (권위 = 사이드카 seam · board 는 복제하지 않는다).
+
+    argparse 선택지와 절명 기본값이 같은 표를 읽어야 한 쪽만 넓어지는 drift 가 생기지 않는다.
+    """
+    return dict(ROLE_LABELS)
+
+def _section_label(role: str, override: str | None) -> str | None:
+    """사람용 절명 해소. 개행/빈 값만 거부해 Markdown heading injection을 막는다."""
+    label = override if override is not None else ticket_round_role_labels()[role]
+    label = label.strip()
+    if not label or '\n' in label or '\r' in label:
+        return None
+    return label
+
+def _round_seed_header_override(seed: str, label: str, role: str, today: str) -> str:
+    """시드 첫 줄의 라벨만 사람이 준 절명으로 바꾼다 (본문 골격은 seam 산출 그대로).
+
+    헤더 문법(`## <라벨> (<role> · <날짜>)`)은 seam 이 소유하므로 여기서 다시 조립하지 않고
+    **그 자리의 라벨만** 치환한다 — 기본 라벨일 때는 바이트가 그대로다.
+    """
+    default_header, separator, rest = seed.partition('\n')
+    replacement = f'## {label} ({role} · {today})'
+    if not separator or default_header == replacement:
+        return seed
+    return replacement + separator + rest

@@ -13,6 +13,9 @@ happy-path + 최소 1 edge(빈 문자열·malformed·한글/로캘).
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+
 import importlib.util
 import re
 import shutil
@@ -77,6 +80,11 @@ It also uses [[0001-foo]] so gate output contains an advisory issue line.
     return anchor, tools / "board.py"
 
 
+@pytest.fixture(autouse=True)
+def _engine_anchor(monkeypatch):
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
+
+
 def _load_module(name: str = "pm_bootstrap"):
     """pm_bootstrap 를 경로 로드한다 (도구는 패키지가 아니므로 importlib).
 
@@ -86,11 +94,6 @@ def _load_module(name: str = "pm_bootstrap"):
     spec = importlib.util.spec_from_file_location(name, BOOTSTRAP_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    if name == "pm_bootstrap":
-        real_board = mod._load_board()
-        if real_board is not None:
-            real_board._pm_home_worktree_misanchor = lambda anchor, **_kw: None
-        mod._load_board = lambda: real_board
     return mod
 
 
@@ -1555,8 +1558,6 @@ def test_collect_board_names_the_hook_generation_block_instead_of_unparsed():
     board.py 가 소유하므로 여기서도 그 상수로 조립한다(사본 금지).
     """
     mod = _load_module()
-    board_mod = mod._load_board()
-    assert board_mod is not None, "board.py 사본을 로드하지 못했다"
     hook_block = pre_push_hook._STALE_HOOK_REFUSAL.format(
         kind="구버전", hook="/tmp/home/.git/hooks/pre-push") + "\n"
     assert hook_block.startswith(pre_push_hook.PM_HOOK_NOTICE_PREFIX)

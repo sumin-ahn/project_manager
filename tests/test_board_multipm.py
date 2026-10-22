@@ -12,6 +12,9 @@ portability 뿐). solo 는 매일 도그푸딩되지만 multi 는 이 repo 에�
 """
 from __future__ import annotations
 
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import importlib.util
 import io
@@ -2486,9 +2489,9 @@ def _mark_ledger_closing(board, cluster: str) -> None:
     """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
-    ledger = board.load_cluster(cluster)
+    ledger = cluster_store.load_cluster(board._home(), cluster)
     ledger["status"] = "closing"
-    board.dump_cluster(ledger)
+    cluster_store.dump_cluster(board._home(), ledger)
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -13,11 +13,14 @@ work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴
   - sensitivity: 배선 무력화 시 fail.
 """
 from __future__ import annotations
+
+from pm_engine.infra import pm_paths
+
 from pm_engine.app import task_lifecycle
 from pm_engine.domain import worktree_records
 from pm_engine.infra import pool_store
 
-from _pool_seams import bind_pool
+from _pool_seams import bind_board, bind_pool
 
 import importlib.util
 import json
@@ -81,11 +84,7 @@ def _hermetic_engine_anchor(bootstrap, monkeypatch):
     거부한다(프로덕션 ②-홈에선 실 board 소유로 통과·`work/`-misuse 만 거부). 실 board 를 로드해
     `_pm_home_worktree_misanchor`→None 으로만 패치(나머지 board 동작=실물 보존)하고, board=None 경로가
     그 패치본을 받게 `_load_board` 를 대체한다 — board 를 명시 주입한 구성은 영향 없음(`self._board` 승)."""
-    real_board = bootstrap._load_board()
-    if real_board is not None:
-        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
-                            lambda anchor, **_kw: None, raising=False)
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
 
 
 # ── worktree_pool DI mock (hermetic — 실 장부/git 미접촉) ─────────────────────
@@ -395,6 +394,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
         return 0, ""
 
     bind_pool(monkeypatch, worktree_pool)
+    bind_board(monkeypatch, board)
     inst = bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
@@ -402,7 +402,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
         log_file=log_file,
         areas_file=areas_file,
 
-        board=board,
+
         pm_state_file=pm_state_file,
     )
     return inst

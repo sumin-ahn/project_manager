@@ -30,6 +30,9 @@
 
 from __future__ import annotations
 
+from pm_engine.app import cluster_binding, tier_signals
+from pm_engine.domain import cluster_rules
+
 import argparse
 import datetime
 import json
@@ -268,42 +271,19 @@ def local_config() -> dict[str, str]:
 # 어느 층도 값을 주지 못하면 None 을 돌려, 호출부가 현행 argv 를 그대로 쓰게 한다(board 의
 # 기본 폴백 `pytest -q` 와 달리 venv 인터프리터·`tests/` 경로를 보존 — 도그푸딩 불변).
 
-def _load_board_module():
-    """board.py 를 경로 import 해 모듈로 반환한다 (실패 시 None).
-
-    별도 함수로 둔 건 테스트가 board 를 hermetic 하게 가로채는 seam — 경로 전역을 tmp 로
-    재바인딩한 모듈을 주입할 수 있게 한다. PM-홈 오실행 detector 가 쓴다.
-    """
-    try:
-        mod = _load_module_from_path(
-            BOARD_PY, "board.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
 
 
 # ── PM-홈 worktree 오실행 가드 (쓰기-경로 전용) ─────────────────────────
 # ticket_finish 를 PM 홈의 등록 worktree cwd 에서 오실행하면 REPO 가 worktree 로 착지해
 # stray `wiki/log/current.md` append(+ board.py complete 오실행)를 낸다. board.py
-# 와 *동일 detector*(`_pm_home_worktree_misanchor`·단일 진실)를 deep-import seam 으로 재사용해
-# main() 진입에서 fail-loud 한다 — 기록의 어떤 단계(회귀/log append/complete/stage)도 착지 전에
-# 중단한다. detector 로드 실패/미해소는 fail-soft(현행 동작·오탐 0).
+# 와 같은 pm_paths detector를 명시 Home으로 호출한다. 실제 판정 오류는 기존 fail-soft를
+# 유지하며 쓰기 단계 전에 등록 worktree 오실행을 거부한다.
 
 def _pm_home_misanchor() -> Path | None:
-    """이 도구 앵커(REPO·*호출 시점* module-global — hermetic monkeypatch 추종)가 PM 홈의
-    등록 worktree 면 그 PM 홈 경로를, 아니면 None. board.py 의 detector 를 재사용(DRY·단일
-    진실)한다 — board 로드 실패면 None(fail-soft)."""
-    mod = _load_board_module()
-    if mod is None or not hasattr(mod, "_pm_home_worktree_misanchor"):
-        return None
+    """실행 시점의 Home으로 등록 worktree를 검사한다. 실제 판정 실패는 None으로 반환한다."""
     try:
-        return mod._pm_home_worktree_misanchor(REPO)
+        return pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(REPO))
     except Exception as exc:  # noqa: BLE001 — 판정 실패는 통과(오탐 0·standalone 무영향).
-        if _is_engine_rev_skew(exc):
-            raise  # 형제 사본 skew 는 앵커 판정 생략으로 접지 않는다(fail-loud · 재동기 안내).
         return None
 
 
@@ -912,7 +892,7 @@ def _round_stage_candidates(tickets_dir: Path, ticket_id: str) -> list[Path]:
     )
 
 
-def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
+def engine_written_paths(home, ticket_id: str, log_file: Path) -> list[Path]:
     """**이 실행이 실제로 쓴** 산출물 경로.
 
       - `log/current.md` — 선작성 entry가 있으면 append하지 않더라도 2단계의 stage 스코프에
@@ -934,27 +914,25 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     옛 경로는 상태 디렉토리를 몰라도 된다 — 후보(모든 STATUS_DIRS/같은 파일명)를 넣어두면
     실존/추적되지 않는 후보는 `git_scope_stageable` 이 거른다(추적 중인 *삭제* 경로만 남아
     이동이 커밋으로 완성된다). 라운드는 디렉터리 통째가 아니라 존재하는 파일만 넣는다(위
-    `_round_stage_candidates`). board 미로드면 log 만.
+    `_round_stage_candidates`). 티켓 부재면 log만 포함한다.
     """
     paths: list[Path] = [Path(log_file)]
-    if board is None:
-        return paths
-    if board_git._board_git_enabled(pm_paths.home_at(REPO)):
+    if board_git._board_git_enabled(home):
         return paths
     try:
-        _status, ticket_path = ticket_store.find_ticket(pm_paths.home_at(REPO), ticket_id)
+        _status, ticket_path = ticket_store.find_ticket(home, ticket_id)
     except FileNotFoundError:
         return paths        # 티켓 부재 — 이 실행이 옮긴 티켓이 없다(log 만).
     paths.append(ticket_path)
-    tickets_dir = pm_paths.tickets_dir(pm_paths.home_at(REPO))
+    tickets_dir = pm_paths.tickets_dir(home)
     paths.extend(tickets_dir / status / ticket_path.name
                  for status in ticket_rules.STATUS_DIRS)
     paths.extend(_round_stage_candidates(tickets_dir, ticket_id))
     # 묶음 장부 — 종결이 status 를 쓰는 소속 장부와, 발행이 만들고 묶음 선언이 흡수(삭제)한 크기 1
     # 장부. 실존·추적 판정은 `git_scope_stageable` 이 한다(흡수 장부는 추적 중일 때만 삭제로 남는다).
     frontmatter, _body = ticket_store.load_ticket(ticket_path)
-    paths.append(board.cluster_ledger_path(board.ticket_cluster(ticket_id, frontmatter)))
-    paths.append(board.cluster_ledger_path(ticket_id))
+    paths.append(cluster_store.cluster_ledger_path(home, cluster_rules.ticket_cluster(ticket_id, frontmatter)))
+    paths.append(cluster_store.cluster_ledger_path(home, ticket_id))
     return paths
 
 
@@ -1053,7 +1031,6 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     반환 pathspec 은 **커밋 pathspec** 이다 — add 가 받는 경로에 더해 미리 `git rm` 한 선언 삭제를
     싣는다. [4/5] 의 add 는 그중 작업 트리에 있는 파일만 받는다(add 와 커밋의 pathspec 분리).
     """
-    board = load_board_module(board_py)
     scope_fn = git.git_scope_stage_pathspec
     repo = Path(repo) if repo is not None else REPO
     declared: list[Path] = []
@@ -1073,7 +1050,7 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
         declared.extend(repo / touch for touch in declared_touches)
     if include_engine_outputs:
         # PM-home 산출물은 ticket code worktree 가 아니라 이 도구의 설계 repo 에만 있다.
-        declared.extend(engine_written_paths(board, ticket_id, log_file))
+        declared.extend(engine_written_paths(pm_paths.home_at(REPO), ticket_id, log_file))
     try:
         pathspec = list(scope_fn(repo, declared, run_git=run_git))
     except Exception as exc:  # noqa: BLE001 — 산출 실패도 조용히 넘기지 않는다(fail-loud).
@@ -1183,40 +1160,27 @@ def _board_module_at(board_py: Path):
 
 
 def ticket_cluster_ledger(board_py: Path, ticket_id: str) -> tuple[str | None, dict | None]:
-    """이 티켓의 `(묶음 id, 묶음 장부 frontmatter)` — 조회 실패는 `(None, None)`.
+    """티켓과 명시 Home의 장부에서 묶음 ID와 frontmatter를 읽는다.
 
-    소유자는 board 다(`ticket_cluster` = 필드 부재면 크기 1 · `load_cluster` = 장부 읽기) —
-    이 도구는 그 두 술어를 **한 번의 board 로드**로 부르고 값을 그대로 돌려준다. 두 소비자가
-    같은 해소를 쓴다: 완료 기록 대상 해소(묶음 id)와 판정 기준 해소(장부 `base_branch`).
-
-    장부 파일이 없으면 `(묶음 id, None)` 이다 — 그 티켓은 board 규칙상 크기 1 묶음이고
-    (마이그레이션 0) 통합·묶음 브랜치 선언만 없는 상태라, 브랜치를 옮기는 단계만 무대상이다.
-    """
-    mod = _board_module_at(board_py)
-    if mod is None:
-        return None, None
+    ticket_cluster 규칙은 cluster_rules, 장부 IO는 cluster_store를 사용한다.
+    조회 실패는 기존 무판정 (None, None)을 유지하며 장부 부재는 (묶음 ID, None)이다."""
+    home = _board_home(board_py)
     try:
-        ticket_cluster_fn = getattr(mod, "ticket_cluster", None)
-        load_cluster_fn = getattr(mod, "load_cluster", None)
-        if ticket_cluster_fn is None or load_cluster_fn is None:
-            return None, None  # 묶음 장부 이전 board 사본 — 묶음 개념이 없다.
         found = ticket_store.find_ticket_exact(_board_home(board_py), ticket_id)
         frontmatter: dict = {}
         if found is not None:
             loaded, _body = ticket_store.load_ticket(found[1])
             frontmatter = loaded if isinstance(loaded, dict) else {}
-        cluster = ticket_cluster_fn(ticket_id, frontmatter)
-        return cluster, load_cluster_fn(cluster)
+        cluster = cluster_rules.ticket_cluster(ticket_id, frontmatter)
+        return cluster, cluster_store.load_cluster(home, cluster)
     except Exception as exc:  # noqa: BLE001 — 조회 실패는 판정 불능(차단 아님).
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None, None
 
 
 def _cluster_integration_branch(board_py: Path, ticket_id: str) -> str | None:
     """이 티켓이 속한 묶음의 **통합 브랜치** 이름 (선언 부재·조회 실패는 None).
 
-    값의 소유자는 board 의 묶음 장부(`base_branch`)다 — 이 도구는 그 선언을 읽기만 한다.
+    값의 소유자는 cluster_store의 묶음 장부(`base_branch`)다 — 이 도구는 그 선언을 읽기만 한다.
     값은 장부를 만들 때 박히므로(발행이 만드는 크기 1 장부 포함) 선언 부재는 판정 입력이
     없다는 사실이고, 이 판독을 쓰는 두 소비자(완료 기록 판정·리뷰 호출 폭)는 그 사실에
     **멈춘다** — 다른 기준으로 접는 갈래가 없다.
@@ -2789,12 +2753,8 @@ class TicketFinisher:
             )
             return
         try:
-            board = load_board_module(self._board_py)
-            expand = getattr(board, "expand_owned_touch_files", None) if board else None
-            if expand is None:
-                raise RuntimeError("board expand_owned_touch_files seam 부재")
             code_tree = self._code_tree()
-            expanded = expand(code_tree, measured_touches)
+            expanded = tier_signals.expand_owned_touch_files(code_tree, measured_touches)
             entries = (self._status_entries_at_fn(code_tree)
                        if self._is_separated_code_tree(code_tree)
                        else self._status_entries_fn())
@@ -2803,8 +2763,6 @@ class TicketFinisher:
                 if any(self._touch_claims_path(touch, path) for touch in measured_touches)
             )
         except Exception as exc:  # noqa: BLE001 — advisory 재검은 never-block.
-            if _is_engine_rev_skew(exc):
-                raise
             detail = " ".join(str(exc).split()) or type(exc).__name__
             print(f"  ⚠ PM-direct 재검 skip — git 변경 경로를 읽지 못했습니다 ({detail}).",
                   file=sys.stderr)
@@ -3297,6 +3255,7 @@ class ClusterCloser:
         cluster: str,
         *,
         finisher: "TicketFinisher",
+        home=None,
         board_py: Path = BOARD_PY,
         slot: str | None = None,
         task: str | None = None,
@@ -3326,7 +3285,7 @@ class ClusterCloser:
         # 리뷰 처분 실행 함수. 묶음 표면 rounds resolve --cluster 를 한 번 부른다.
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
         self._board = _board_module_at(board_py)
-        self._home = _board_home(board_py)
+        self._home = home if home is not None else _board_home(board_py)
         # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
         # 기록 축(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 축(완료 기록·커밋·
         # 재배치·머지)은 살아 있는 멤버를 본다.
@@ -3361,8 +3320,7 @@ class ClusterCloser:
 
     def _ledger(self) -> dict | None:
         """묶음 장부 frontmatter (없으면 None — 크기 1 해석은 멤버 조회가 소유한다)."""
-        load = getattr(self._board, "load_cluster", None) if self._board else None
-        return load(self._cluster) if load is not None else None
+        return cluster_store.load_cluster(self._home, self._cluster)
 
     def _declared_branch(self, key: str) -> str | None:
         """장부가 선언한 브랜치 이름 (`branch`=묶음 브랜치 · `base_branch`=통합 브랜치)."""
@@ -3524,15 +3482,15 @@ class ClusterCloser:
             return None, (f"{self._cluster}는 제품 브랜치 미결속 장부다. 기존 "
                           "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
                           "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라")
-        ledger_status, rows = lease_store._read_lease_rows_status(LEASES_FILE)
+        ledger_status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(self._home))
         if ledger_status == identity_args.LEDGER_UNREADABLE:
             raise _CloseObservationFailure(
-                f"대여 기록을 읽지 못했다 ({LEASES_FILE}) — 작업 트리를 찾을 곳을 정할 수 없다.")
+                f"대여 기록을 읽지 못했다 ({pm_paths.leases_file(self._home)}) — 작업 트리를 찾을 곳을 정할 수 없다.")
         # 작업 폴더(실경로 → 대여 행 경로) — git 작업 트리인 것만, 대여 기록 순서대로.
         folders: dict[Path, Path] = {}
         for row in rows:
             slot = str(row.get("slot") or "").strip()
-            folder = REPO / slot
+            folder = self._home.root / slot
             if slot and (folder / ".git").exists():
                 folders.setdefault(folder.resolve(), folder)
         target = f"refs/heads/{branch}"
@@ -3582,8 +3540,7 @@ class ClusterCloser:
         if len(self._declared_tickets) == 1:
             tid = self._declared_tickets[0]
             return tid, (self._finisher._ticket_title_fn(tid) or tid)
-        name_fn = getattr(self._board, "cluster_name_of", None) if self._board else None
-        name = name_fn(self._cluster) if name_fn is not None else self._cluster
+        name = cluster_rules.cluster_name_of(self._cluster)
         return self._cluster, name
 
     def _plans(self, tid: str) -> tuple[RepoStagePlan | None, RepoStagePlan | None]:
@@ -3676,8 +3633,7 @@ class ClusterCloser:
         board = self._board
         seams = {
             name: (getattr(board, name, None) if board else None)
-            for name in ("build_parser",
-                         "cluster_complete_binding_problem", "_round_completion_problems")
+            for name in ("build_parser", "_round_completion_problems")
         }
         missing = sorted(name for name, seam in seams.items() if seam is None)
         if missing:
@@ -3692,8 +3648,8 @@ class ClusterCloser:
         frontmatter, _body = ticket_store.load_ticket(path)
         spec_text = fs.read_text_shared(path, encoding="utf-8")
         problems: list[str] = []
-        binding = seams["cluster_complete_binding_problem"](
-            tid, frontmatter, self._cluster)
+        binding = cluster_binding.cluster_complete_binding_problem(
+            self._home, tid, frontmatter, self._cluster)
         if binding is not None:
             problems.append(f"{tid}: {binding}")
         namespace = seams["build_parser"]().parse_args(
@@ -3947,11 +3903,9 @@ class ClusterCloser:
         기록 축은 선언이다 — 처분된 멤버도 이 묶음의 멤버라 그 명세가 기록 대상에서 빠지지
         않는다. 여기서 하나라도 못 찾으면 이번 종결이 무엇을 기록해야 하는지 모르는 것이다 —
         빈 목록으로 접으면 아무것도 기록하지 않은 실행이 성공으로 끝난다."""
-        board = self._board
         paths: list[Path] = []
-        ledger_path_fn = getattr(board, "cluster_ledger_path", None) if board else None
-        if ledger_path_fn is not None and self._ledger() is not None:
-            paths.append(ledger_path_fn(self._cluster))
+        if self._ledger() is not None:
+            paths.append(cluster_store.cluster_ledger_path(self._home, self._cluster))
         for tid in self._declared_tickets:
             try:
                 found = ticket_store.find_ticket_exact(self._home, tid)
@@ -4071,28 +4025,21 @@ class ClusterCloser:
         """장부의 진행 기록 두 값을 쓴다 (기록 실패는 비차단 경고 1줄)."""
         if self._dry_run:
             return
-        board = self._board
-        # 사본 부재(`None`)는 실재하는 상태라 그대로 본다. 사본이 있으면 rev 검증을 통과한
-        # 것이라 아래 이름들이 없을 수 없다 — 있는지 더듬지 않는다.
-        if board is None:
-            return
         try:
             with fs.board_lock(self._home):
-                ledger = board.load_cluster(self._cluster)
+                ledger = cluster_store.load_cluster(self._home, self._cluster)
                 if ledger is None:
                     return
                 if step_key is None:
                     ledger.pop(_CLOSE_STEP_KEY, None)
                 else:
                     ledger[_CLOSE_STEP_KEY] = step_key
-                if status is None or status in board.CLUSTER_STATUSES:
-                    # 열거의 소유자는 board 다 — 그 열거 안에 있을 때만 쓴다. None 은 되돌리기
+                if status is None or status in cluster_rules.CLUSTER_STATUSES:
+                    # cluster_rules의 상태 열거에 포함될 때만 쓴다. None은 되돌리기
                     # 전 값이 비어 있던 형상이라 그대로 되돌린다.
                     ledger["status"] = status
-                board.dump_cluster(ledger)
+                cluster_store.dump_cluster(self._home, ledger)
         except Exception as exc:  # noqa: BLE001 — 기록 실패가 종결을 되돌리지 않는다.
-            if _is_engine_rev_skew(exc):
-                raise
             print(f"  ⚠ 장부 진행 기록 실패 — {self._cluster}: {exc}", file=sys.stderr)
 
     # ── 실행 ──────────────────────────────────────────────────────────
@@ -4103,11 +4050,7 @@ class ClusterCloser:
         **선언 멤버 0**(묶음 부재)과 **살아 있는 멤버 0**(선언은 있고 전부 처분됨)은 다른
         상태다 — 전자는 대상 자체가 없어 거부이고, 후자는 코드 단계가 무대상인 정상 종결이다.
         """
-        members_fn = getattr(self._board, "cluster_members", None) if self._board else None
-        if members_fn is None:
-            return (f"묶음 장부 seam 을 로드하지 못했다 ({self._board_py}) — "
-                    "board 사본을 확인하라.")
-        self._declared_tickets = tuple(members_fn(self._cluster))
+        self._declared_tickets = tuple(cluster_store.cluster_members(self._home, self._cluster))
         if not self._declared_tickets:
             return (f"묶음을 찾지 못했다: {self._cluster} — 멤버 조회는 "
                     "`board.py cluster show <ticket-group>` 이다.")
@@ -4164,11 +4107,7 @@ class ClusterCloser:
         text = str(value or "").strip()
         if not text:
             return ""
-        normalize = getattr(self._board, "cluster_id_for_name", None) if self._board else None
-        if normalize is None:
-            raise _CloseObservationFailure(
-                f"cluster id 정규화 seam 을 로드하지 못했다 ({self._board_py})")
-        return str(normalize(text)).strip()
+        return str(cluster_rules.cluster_id_for_name(text)).strip()
 
     def _commit_oid(self, tree: Path, revision: str, *, label: str) -> tuple[str | None, str | None]:
         """명시 hex revision을 선택 제품 git의 full commit OID로 정규화한다."""
@@ -4238,10 +4177,6 @@ class ClusterCloser:
         ledger_id = self._cluster_id(ledger.get("id"))
         if ledger_id != cluster_id:
             return None, None, f"장부 id가 대상과 다르다: {ledger_id!r} != {cluster_id!r}"
-        strict_catalog_fn = (
-            getattr(self._board, "all_clusters_strict", None) if self._board else None)
-        if strict_catalog_fn is None:
-            return None, None, "cluster 멤버십 전수 검증 seam이 없다"
         board_root = self._home.board_root
         if not (board_root / ".git").exists():
             return None, None, f"recovery는 분리 board-git이 필요하다: {board_root}"
@@ -4272,7 +4207,7 @@ class ClusterCloser:
         member_anchors: dict[str, dict[str, str]] = {}
         # 귀속 유일성은 **전 catalog 를 읽었다는 증명** 위에서만 성립한다 — 판독 불능 장부가
         # 하나라도 있으면 그 파일이 중복 귀속일 가능성을 배제하지 못하므로 첫 write 전에 정지한다.
-        ledgers, catalog_problem = strict_catalog_fn()
+        ledgers, catalog_problem = cluster_store.all_clusters_strict(self._home)
         if catalog_problem is not None:
             return None, None, catalog_problem
         for tid in members:
@@ -4398,7 +4333,7 @@ class ClusterCloser:
     def _reconcile_ledger_pending(self) -> bool:
         """Crash 뒤 closed ledger가 board-git에 아직 미기록인지 관측한다."""
         board_root = self._home.board_root
-        ledger_path = Path(getattr(self._board, "cluster_ledger_path")(self._cluster))
+        ledger_path = cluster_store.cluster_ledger_path(self._home, self._cluster)
         try:
             pathspec = ledger_path.relative_to(board_root).as_posix()
         except ValueError as exc:
@@ -4431,23 +4366,18 @@ class ClusterCloser:
 
         prior: dict | None = None
         if first_status == "open":
-            load = getattr(self._board, "load_cluster", None) if self._board else None
-            dump = getattr(self._board, "dump_cluster", None) if self._board else None
-            if load is None or dump is None:
-                print("\n[중단] reconcile 장부 persistence seam이 없다", file=sys.stderr)
-                return 1
             with fs.board_lock(self._home):
                 third, third_status, problem = self._validate_reconcile()
                 if problem or third != first or third_status != "open":
                     detail = problem or "최종 write 직전 board/HEAD가 drift했다"
                     print(f"\n[중단] reconcile final bookend — {detail}", file=sys.stderr)
                     return 1
-                prior = dict(load(self._cluster) or {})
+                prior = dict(cluster_store.load_cluster(self._home, self._cluster) or {})
                 updated = dict(prior)
                 updated["closure"] = first
                 updated["status"] = _CLUSTER_STATUS_CLOSED
                 updated[_CLOSE_STEP_KEY] = self.STEPS[-1][0]
-                dump(updated)
+                cluster_store.dump_cluster(self._home, updated)
             needs_board_sync = True
         else:
             try:
@@ -4461,7 +4391,7 @@ class ClusterCloser:
                 print("  동일 closure evidence가 이미 board-git에 기록됨 — 장부 write 건너뜀")
 
         if needs_board_sync:
-            ledger_path = getattr(self._board, "cluster_ledger_path")(self._cluster)
+            ledger_path = cluster_store.cluster_ledger_path(self._home, self._cluster)
             try:
                 block = self._sync_board_git([ledger_path])
             except _CloseObservationFailure as failure:
@@ -4469,7 +4399,7 @@ class ClusterCloser:
             if block is not None:
                 if prior is not None:
                     with fs.board_lock(self._home):
-                        dump(prior)
+                        cluster_store.dump_cluster(self._home, prior)
                 print(f"\n[중단] {block}", file=sys.stderr)
                 return 1
 

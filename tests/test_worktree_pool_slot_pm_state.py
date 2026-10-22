@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from _pool_seams import bind_pool
+from _pool_seams import bind_board, bind_pool
 
 import importlib.util
 import json
@@ -92,9 +92,10 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     )
     state = pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "mytask")
     bind_pool(monkeypatch, wp)
+    bind_board(monkeypatch, SimpleNamespace(_repo_protected=lambda _repo: []))
     instance = bootstrap.PmBootstrap(
 
-        board=SimpleNamespace(_repo_protected=lambda _repo: []),
+
     )
     instance._phase0_preflight = lambda: 0
     instance._collect_freshness = lambda: []

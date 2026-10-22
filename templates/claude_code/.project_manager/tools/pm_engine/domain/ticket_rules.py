@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import re
 from pathlib import Path
 from typing import Any
@@ -401,3 +403,59 @@ def _table_cell(value: Any) -> str:
     """
     text = " ".join(str(value or "").split())
     return text.replace("|", "\\|") if text else "—"
+
+
+TICKET_TIERS: frozenset[str] = frozenset({'pm-direct', 'normal', 'hard'})
+
+class TierSignals(NamedTuple):
+    """touches에서 기계적으로 확정 가능한 tier 보조 신호."""
+    tool_modules: tuple[str, ...]
+    shared_code: tuple[str, ...]
+    docs_only: bool
+    unresolved_directories: tuple[str, ...] = ()
+
+    @property
+    def h1(self) -> bool:
+        """2개+ 모듈 또는 파일 수 미해소(상향 기본값)."""
+        return len(self.tool_modules) >= 2 or bool(self.unresolved_directories)
+
+class TouchFileExpansion(NamedTuple):
+    """directory touches를 repo 소유 파일로 펼 결과와 미해소 선언."""
+    paths: tuple[str, ...]
+    unresolved_directories: tuple[str, ...]
+
+def _canonical_tier_touch(value: str) -> str:
+    """touches 경로를 repo-relative POSIX 표기로 접는다."""
+    value = value.strip().replace('\\', '/')
+    while value.startswith('./'):
+        value = value[2:]
+    return value.rstrip('/')
+
+def _is_tool_test_file(path: str) -> bool:
+    """tools/ 안의 테스트 파일을 모듈 수에서 제외한다."""
+    parts = Path(path).parts
+    name = parts[-1] if parts else ''
+    return 'tests' in parts or name.startswith('test_') or name.endswith('_test.py')
+
+def _tier_tool_module_touches(touches: Sequence[str]) -> tuple[str, ...]:
+    prefix = '.project_manager/tools/'
+    modules = {path for raw in touches if (path := _canonical_tier_touch(raw)).startswith(prefix) and path.endswith('.py') and (not _is_tool_test_file(path[len(prefix):]))}
+    return tuple(sorted(modules))
+
+_ENGINE_PACKAGE = 'pm_engine'
+
+def _is_tier_document(path: str) -> bool:
+    path = _canonical_tier_touch(path)
+    if not path:
+        return False
+    parts = Path(path).parts
+    name = parts[-1].upper()
+    if name in {'README', 'README.MD', 'CHANGELOG', 'CHANGELOG.MD'}:
+        return True
+    if path == '.project_manager/wiki' or path.startswith('.project_manager/wiki/'):
+        return True
+    if 'skills' in parts and parts[-1] == 'SKILL.md':
+        return True
+    if name == 'AGENTS.MD':
+        return True
+    return 'agents' in parts and Path(path).suffix.lower() in {'.md', '.toml'}

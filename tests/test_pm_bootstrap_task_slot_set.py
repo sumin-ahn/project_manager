@@ -257,6 +257,7 @@ def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=Non
         return 0, ""
 
     bind_pool(monkeypatch, pool)
+    bind_board(monkeypatch, board or bind_board(monkeypatch, _FakeBoard()))
     return bootstrap.PmBootstrap(
         run_board_fn=board_fn or fake_board,
         run_pytest_fn=pytest_fn or (lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨"))),
@@ -264,7 +265,7 @@ def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=Non
         log_file=log_file,
         areas_file=areas_file,
 
-        board=board or bind_board(monkeypatch, _FakeBoard()),
+
         pm_state_file=pm_state_file,
     )
 

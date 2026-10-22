@@ -1,3 +1,7 @@
+
+from pm_engine.app import engine_guard
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import json
 from pathlib import Path
@@ -65,9 +69,9 @@ def test_board_todo_uses_execution_code(tmp_path):
     foreign = tmp_path / ".project_manager/tools/worktree_pool.py"
     foreign.parent.mkdir()
     foreign.write_text("raise AssertionError('foreign code executed')", encoding="utf-8")
-    assert _tool("board")._open_todo_count(tmp_path, "job") == 1
+    assert engine_guard._open_todo_count(pm_paths.home_at(tmp_path), "job") == 1
     foreign.unlink()
-    assert _tool("board")._open_todo_count(tmp_path, "job") == 1
+    assert engine_guard._open_todo_count(pm_paths.home_at(tmp_path), "job") == 1
 
 
 def test_snapshot_todo_uses_target_home_without_flat_engine(tmp_path):

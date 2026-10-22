@@ -401,31 +401,12 @@ def _write_machine_line(text: str) -> None:
     console.write_machine_line(text)
 
 
-def _load_board():
-    """board 모듈을 동적 로드한다 (fail-soft) — 보호 브랜치 surface(`_repo_protected`)가 쓰는 로더다.
-
-    다른 평면 도구 로더와 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
-    *직접 import* 하지 않는 이유(touches 격리·병렬충돌 회피)는 동적 로드로 보존된다. 보호
-    브랜치 경고는 *소프트*(추가 인지)라 board 부재/로드 실패는 None(경고 생략·정체성 선언
-    자체는 깨지 않음).
-    """
-    if not BOARD_PY.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            BOARD_PY, "board.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 보호 경고는 소프트(로드 실패=경고 생략).
-        if _is_engine_rev_skew(exc):
-            raise  # board 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
 
 
 def _load_tool(name: str):
     """이름의 엔진 도구 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
-    `_load_board`와 동형 — `spec_from_file_location`(스크립트-위치
+    형제 도구와 같은 `spec_from_file_location`(스크립트 위치
     앵커). 부트스트랩이 차수 추론(`pm_handoff.infer_next_session_num`)·log 마지막 entry 본문
     파싱(`pm_log.split_entries`)을 **DRY** 로 재사용하기 위한 역방향 동적 로드다(복붙 금지).
     직접 import 하지 않는 이유(touches 격리·순환 회피)는 동적 로드로 보존된다. 차수/인계 dump 는
@@ -1302,7 +1283,6 @@ class PmBootstrap:
         board_py: Path = BOARD_PY,
         areas_file: Path | None = None,
         venv_python: str | Path = _default_python(),
-        board=None,
         pm_state_file: Path | None = None,
         board_dir: Path | None = None,
     ) -> None:
@@ -1323,10 +1303,6 @@ class PmBootstrap:
         # 인자(hermetic 테스트)는 그대로 존중.
         self._areas_file = areas_file if areas_file is not None else pm_paths.areas_file(pm_paths.home_at(REPO))
         self._venv_python = venv_python
-        # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 task
-        # 바인딩·보유 슬롯 조회 시점에 동적 로드한다.
-        # board 주입은 아직 평면에 남은 worktree 오실행 detector에만 사용한다.
-        self._board = board
 
         self._run_board_fn = run_board_fn or self._default_run_board
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
@@ -2544,23 +2520,10 @@ class PmBootstrap:
     # 슬롯마다 같은 프리미티브로 판정한다.
 
     def _reject_worktree_copy_anchor(self) -> bool:
-        """엔진 앵커(REPO=엔진 파일 위치)가 PM 홈이 아니라 worktree 사본이면 거부.
-
-        board mutation 의 PM-홈 강제와 **같은 클래스** — `board._pm_home_worktree_misanchor
-        (REPO)` 를 소비한다(판정 로직 재구현 금지). 부트스트랩은 현행 이 클래스에 무방비였다: worktree
-        (코드 전용) 트리에서 부트스트랩하면 그 트리를 세션 진실로 dump 한다. **cwd 는 판정에 불참**
-        앵커는 REPO 만. board 직접 import 금지(touches 격리)라 주입/동적로드 board 의 헬퍼를
-        `getattr` 로 쓴다(DI 보존·`_protected_warning` 동형) — board/헬퍼 부재·예외는 fail-soft(검사
-        생략·standalone 무영향·오탐 0). True=거부(REPO 가 PM 홈 등록 worktree)."""
-        board_mod = self._board or _load_board()
-        guard = getattr(board_mod, "_pm_home_worktree_misanchor", None) if board_mod else None
-        if guard is None:
-            return False
+        """실행 Home의 등록 worktree 앵커를 검사한다. 판정 실패는 기존 fail-soft를 유지한다."""
         try:
-            pm_home = guard(REPO)
+            pm_home = pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(REPO))
         except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 통과(오탐 0).
-            if _is_engine_rev_skew(exc):
-                raise  # 형제 사본 skew 는 앵커 판정 생략으로 접지 않는다(fail-loud · 재동기 안내).
             return False
         if pm_home is None:
             return False
@@ -2577,7 +2540,7 @@ class PmBootstrap:
         """0단계 — dump 이전 엔진 앵커 검증. 0=통과·1=거부(FAIL-LOUD).
 
         엔진 파일 위치(REPO)가 PM 홈이 아니라 worktree 사본이면 거부한다
-        (`board._pm_home_worktree_misanchor` 소비).
+        (`pm_paths._pm_home_worktree_misanchor`와 명시 Home 사용).
         """
         if self._reject_worktree_copy_anchor():
             return 1

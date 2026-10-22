@@ -24,6 +24,9 @@ status-mention 경고와 무관 — 그건 제거됐고 번호만 비었다). �
 """
 from __future__ import annotations
 
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import importlib.util
 import json
@@ -918,7 +921,7 @@ def test_legacy_ticket_completes_with_its_size_one_binding(live_board, capsys, m
     tid = "T-9884"
     claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
     assert "cluster:" not in claimed.read_text(encoding="utf-8")
-    assert live_board.cluster_members(f"C-{tid}") == ()
+    assert cluster_store.cluster_members(live_board._home(), f"C-{tid}") == ()
     monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home,  *args: True)
     ticket_before = claimed.read_bytes()
 

@@ -169,6 +169,7 @@ def _make_bootstrap(bootstrap_mod, wp, tmp_path, *, monkeypatch):
     pm_state_file = tmp_path / "boot_pm_state.md"
     pm_state_file.write_text("", encoding="utf-8")
     bind_pool(monkeypatch, wp)
+    bind_board(monkeypatch, _FakeBoard())
     return bootstrap_mod.PmBootstrap(
         run_board_fn=_fake_board_fn,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
@@ -176,7 +177,7 @@ def _make_bootstrap(bootstrap_mod, wp, tmp_path, *, monkeypatch):
         log_file=log_file,
         areas_file=areas_file,
 
-        board=bind_board(monkeypatch, _FakeBoard()),
+
         pm_state_file=pm_state_file,
         board_dir=tmp_path / "noboard",   # board submodule 부재(솔로) — freshness graceful skip.
     )

@@ -20,6 +20,8 @@ scope 로 새 모듈을 로드해 tmp 로 재지정한다. 실 git 이 필요한
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
 import argparse
 import importlib.util
 import shutil
@@ -1157,12 +1159,12 @@ def test_finish_dry_run_stages_nothing(tf, tmp_path, monkeypatch, capsys):
 def test_engine_written_paths_are_this_runs_outputs_only(tf, tmp_path, monkeypatch):
     """선언원 ② = **이 실행이 쓴 것** — 다른 도구의 산출물 디렉토리를 열거하지 않는다.
 
-    board 미로드(None)면 log 하나. 여기서 decisions/·domain/·ideas/ 가 나오면 그건 *다른
+    티켓이 없는 명시 Home이면 log 하나. 여기서 decisions/·domain/·ideas/ 가 나오면 그건 *다른
     실행* 의 산출물을 선언분으로 착각한 것이다(ADR-0074 must-fix 의 재발).
     """
     monkeypatch.setattr(tf, "REPO", tmp_path)
     log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-    assert tf.engine_written_paths(None, "T-0001", log_file) == [log_file]
+    assert tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0001", log_file) == [log_file]
     doc = tf.engine_written_paths.__doc__ or ""
     assert "선작성 entry가 있으면 append하지 않더라도" in doc
     assert "항상 append" not in doc

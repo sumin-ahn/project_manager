@@ -41,6 +41,8 @@
 """
 from __future__ import annotations
 
+
+
 import os
 import shutil
 import subprocess
@@ -66,6 +68,9 @@ if _TOOLS_DIR not in sys.path:
 # 한 프로세스의 `pm_engine` 은 하나다. 먼저 이 checkout 의 패키지를 적재해 두어야 tmp 사본 평면 파일을
 # 경로 적재해도 그 사본 트리(통과 뒤 지워지는 tmp_path)의 패키지에 결속되지 않는다.
 import pm_engine.infra  # noqa: E402,F401
+from pm_engine.cli import board_cluster
+from pm_engine.domain import cluster_rules
+
 
 # 테스트가 raw 목적지를 tempdir 로 주면 tempdir에 감사 raw가 영구 누적된다.
 # 세션 기본 tempdir를 pytest 소유 디렉터리로 격리해 다른 checkout/PM 프로세스 출력과 섞지 않는다.
@@ -604,6 +609,6 @@ def bind_product_cluster(board, ticket, *, repo="binding", number=1, task="bindi
     ensure_product_slot(board, repo=repo, number=number, task=task)
     name = f"bound-{ticket.lower()}"
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name=name,
+        assert board_cluster.cmd_cluster(board._home(), argparse.Namespace(cluster_cmd="new", name=name,
             tickets=ticket, spike=None, repo=repo, slot=number, task=task)) == 0
-    return board.cluster_id_for_name(name)
+    return cluster_rules.cluster_id_for_name(name)

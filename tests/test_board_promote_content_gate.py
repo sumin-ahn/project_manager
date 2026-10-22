@@ -24,6 +24,9 @@ hermetic: board.py 의 경로 전역은 import 시점에 실 repo 로 굳으므�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_round
+
+
 import argparse
 import importlib.util
 import json
@@ -620,8 +623,8 @@ def test_promote_requires_a_harvested_architect_round_then_accepts(board_git, ca
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1
     assert "architect-review-pending" in capsys.readouterr().err
 
-    assert board_git.cmd_section_add(
-        argparse.Namespace(id=tid, role="architect", label=None)) == 0
+    assert board_round.cmd_section_add(
+        board_git._home(), argparse.Namespace(id=tid, role="architect", label=None)) == 0
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1, \
         "시드 그대로인 라운드가 회수로 인정됐다."
     round_path = board_dir / "tickets" / "rounds" / tid / "01-architect.md"

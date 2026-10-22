@@ -1,6 +1,12 @@
 """슬롯 값 검증과 worktree 경로 대응."""
 from __future__ import annotations
 
+from typing import Any
+from pm_engine.infra import fs
+from pm_engine.infra import git
+import json
+import subprocess
+
 import os
 from pathlib import Path
 
@@ -162,3 +168,40 @@ def _resolve_actor_slot_for_repo(home, repo: str) -> str:
     # 대상 슬롯 경로는 **행의 slot 값**이다 — 세션에서 `work/<session>` 을 재조립하면 세션이 task
     # 이름이거나 슬롯 경로가 다른 자리일 때 없는 경로를 만든다. 값-경계 검증만 재적용한다.
     return _normalize_slot(home, workspace.slot)
+
+
+def _registered_slot_paths(home, *, runner: Any=subprocess.run) -> tuple[Path, ...]:
+    """공용 slot naming + 기존 linked-worktree/misanchor seam을 모두 통과한 lease 경로만 반환."""
+    ledger = pm_paths.leases_file(home)
+    try:
+        data = json.loads(fs.read_text_shared(ledger, encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ()
+    rows = data.get('leases') if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return ()
+    repos = {row.get('repo') for row in rows if isinstance(row, dict) and isinstance(row.get('repo'), str) and row.get('repo')}
+    work_root = (home.root / 'work').resolve()
+    lexical_work_root = home.root / 'work'
+    paths: list[Path] = []
+    for repo in sorted(repos):
+        numbers = lease_store.repo_slot_numbers(repo, ledger)
+        for number in numbers or []:
+            lexical = lexical_work_root / f'{repo}_{number}'
+            if lexical_work_root.is_symlink() or lexical.is_symlink():
+                continue
+            path = lexical.resolve()
+            try:
+                relative = path.relative_to(work_root)
+            except ValueError:
+                continue
+            if len(relative.parts) != 1 or not path.is_dir():
+                continue
+            if not git._is_linked_worktree(path, runner=runner):
+                continue
+            registered, _error = lease_store._ledger_registration(home, path)
+            if not registered:
+                continue
+            if path not in paths:
+                paths.append(path)
+    return tuple(paths)

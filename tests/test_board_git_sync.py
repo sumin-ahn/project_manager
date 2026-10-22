@@ -20,6 +20,9 @@ monkeypatch 한다(test_board_root 의 함수-scope 새-모듈 로드 + REPO 재
 """
 from __future__ import annotations
 
+
+
+
 import argparse
 import importlib.util
 import os
@@ -151,7 +154,6 @@ def _t0928_prepare_fixture(board, tmp_path, monkeypatch, *, legacy=False):
     ignore.write_text(".local/\n", encoding="utf-8")
     assert _git(["add", ".project_manager/.gitignore"], slot).returncode == 0
     assert _git(["commit", "-qm", "slot setup"], slot).returncode == 0
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
     return pd, slot, board_dir
 
 

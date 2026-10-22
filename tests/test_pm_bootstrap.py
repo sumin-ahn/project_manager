@@ -14,6 +14,9 @@
 upstream 미해소 = 경고 · slot_status 미구현 풀 = graceful(절 생략·crash 0).
 """
 from __future__ import annotations
+
+from pm_engine.infra import pm_paths
+
 from pm_engine.infra import branch_store
 from pm_engine.infra import pm_paths
 from pm_engine.domain import worktree_records
@@ -61,11 +64,7 @@ def _hermetic_engine_anchor(bootstrap, monkeypatch):
     """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
     worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 동형). 실 board 를 로드해
     `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
-    real_board = bootstrap._load_board()
-    if real_board is not None:
-        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
-                            lambda anchor, **_kw: None, raising=False)
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
 
 
 # ── backbone slot_status: mock git_runner 로 역할/upstream/submodule 판별 구동 ────
@@ -342,6 +341,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None, monkey
         return 0, ""
 
     bind_pool(monkeypatch, worktree_pool)
+    bind_board(monkeypatch, _FakeBoard())
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
@@ -349,7 +349,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None, monkey
         log_file=log_file,
         areas_file=areas_file,
 
-        board=bind_board(monkeypatch, _FakeBoard()),
+
         pm_state_file=pm_state_file,
     )
 
@@ -430,6 +430,7 @@ def _make_fresh_bootstrap(bootstrap, wp, tmp_path, *, monkeypatch):
     ret = _slot_status_obj(wp, upstream="origin/a5", upstream_ok=True, submodules=[])
     pool = bind_pool(monkeypatch, FakePool(slot="work/A_2", slot_status_ret=ret))  # slot-2 시나리오 — 0단계 실재 시드도 A_2.
     bind_pool(monkeypatch, pool)
+    bind_board(monkeypatch, _FakeBoard())
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
@@ -437,7 +438,7 @@ def _make_fresh_bootstrap(bootstrap, wp, tmp_path, *, monkeypatch):
         log_file=log_file,
         areas_file=areas_file,
 
-        board=bind_board(monkeypatch, _FakeBoard()),
+
         pm_state_file=pm_state_file,
     )
 
@@ -669,7 +670,8 @@ def _remedy_git(*existing_branches, raises=False, expand=None):
 
 
 def _remedy_inst(monkeypatch, bootstrap, *, git_fn, protected=("main", "master", "develop")):
-    return bootstrap.PmBootstrap(run_git_fn=git_fn, board=bind_board(monkeypatch, _RemedyBoard(protected)))
+    bind_board(monkeypatch, _RemedyBoard(protected))
+    return bootstrap.PmBootstrap(run_git_fn=git_fn, )
 
 
 def test_remedy_branch_prefixes_protected_preferred(bootstrap, tmp_path, *, monkeypatch):

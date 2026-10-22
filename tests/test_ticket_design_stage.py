@@ -30,6 +30,13 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_round
+
+
+from pm_engine.cli import board_round
+from pm_engine.domain import design_rules
+
+
 import argparse
 import datetime
 import importlib.util
@@ -157,26 +164,26 @@ def test_design_state_rejects_unrecognized_value(value):
 ])
 def test_resolve_design_defaults_by_estimate(estimate, expected):
     """발행 기본값: estimate=large → required · 그 외 n/a (전 티켓 강제 아님)."""
-    assert board_mod._resolve_design(None, estimate) == expected
+    assert design_rules._resolve_design(None, estimate) == expected
 
 
 @pytest.mark.parametrize("explicit", ["required", "n/a", "done"])
 def test_resolve_design_honors_explicit_override(explicit):
     """PM 이 발행 시 명시 지정하면 estimate 유도를 덮는다(small 에도 required 지정 가능)."""
-    assert board_mod._resolve_design(explicit, "small") == explicit
+    assert design_rules._resolve_design(explicit, "small") == explicit
 
 
 def test_validate_design_rejects_bad_value_and_accepts_forms():
     """`--design` 입력 sanity — 위반은 사유 문자열, 3형식은 None(`_validate_prefix` 동형)."""
-    assert board_mod._validate_design("bogus")
-    assert "bogus" in board_mod._validate_design("bogus")
+    assert design_rules._validate_design("bogus")
+    assert "bogus" in design_rules._validate_design("bogus")
     for ok in ("required", "done", "n/a"):
-        assert board_mod._validate_design(ok) is None
+        assert design_rules._validate_design(ok) is None
 
 
 def test_validate_design_rejects_the_abolished_exemption_value():
     """폐지된 면제 값은 입력 자리에서 거부된다 — 파일에 박히기 전에 막는다."""
-    reason = board_mod._validate_design("waived: 리뷰 상한 초과")
+    reason = design_rules._validate_design("waived: 리뷰 상한 초과")
     assert reason and "waived" in reason
 
 
@@ -794,8 +801,8 @@ def _harvest_architect_round(board_git, board_dir: Path, tid: str) -> None:
 
     `design: required|done` 티켓은 이 라운드가 회수되기 전 promote 가 거부한다 — 설계 절
     충전 축만 보려는 케이스는 이 전제를 갖춘 뒤 판정한다."""
-    assert board_git.cmd_section_add(
-        argparse.Namespace(id=tid, role="architect", label=None)) == 0
+    assert board_round.cmd_section_add(
+        board_git._home(), argparse.Namespace(id=tid, role="architect", label=None)) == 0
     path = board_dir / "tickets" / "rounds" / tid / "01-architect.md"
     header = path.read_text(encoding="utf-8").splitlines()[0]
     path.write_text(f"{header}\n\n인용·touches 를 실측 대조했다.\n", encoding="utf-8")
@@ -892,7 +899,7 @@ def test_design_subcommand_is_registered_and_shown_in_help():
     sub = next(a for a in parser._actions
               if isinstance(a, argparse._SubParsersAction))
     assert "design" in sub.choices
-    assert sub.choices["design"].get_default("fn") is board_mod.cmd_design
+    assert sub.choices["design"].get_default("fn") is board_round.cmd_design
 
 
 def _seed_harvested_architect_round(board, tid: str) -> None:

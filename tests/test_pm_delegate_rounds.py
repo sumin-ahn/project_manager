@@ -12,6 +12,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import round_maintenance
+
+
 import contextlib
 import importlib.util
 import json
@@ -68,6 +71,12 @@ DELETED_SYMBOLS = (
     "_pm_review_outside_sections_text", "_pm_review_refused_section_keys",
     "_cmd_ticket_seal_backfill", "_seal_backfill_one", "_SEAL_BACKFILL_STATUSES",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_round_sync(monkeypatch):
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        round_maintenance._rounds_mutation_sync_paths)
 
 
 def _load_pd():
@@ -223,12 +232,12 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     board.REPO = pm_home
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
 
-    def _sync(message, paths):
+    def _sync(_home, message, paths):
         if sync_log is not None:
             sync_log.append((message, [Path(item) for item in paths]))
         return True
 
-    board._rounds_mutation_sync_paths = _sync
+    round_maintenance._rounds_mutation_sync_paths = _sync
     return board
 
 
@@ -271,10 +280,7 @@ def rounds_env(tmp_path, pd, monkeypatch):
     _set_git_identity(monkeypatch, "rounds")
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo",
-        lambda _repo: _fixture_board(pd, pm_home, sync_log),
-    )
+    _fixture_board(pd, pm_home, sync_log)
     return pm_home, slot, tickets, sync_log
 
 
@@ -303,10 +309,7 @@ def pool_env(tmp_path, pd, monkeypatch):
     assert _git(bare, "worktree", "add", "-q", "-b", "app_1", str(slot), "HEAD").returncode == 0
     assert not (slot / ".project_manager").exists()
     sync_log: list = []
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo",
-        lambda _repo: _fixture_board(pd, pm_home, sync_log),
-    )
+    _fixture_board(pd, pm_home, sync_log)
     return pm_home, slot, tickets, bare / "info" / "exclude"
 
 
@@ -1374,21 +1377,21 @@ def _without_verify_block(pd, text: str) -> str:
 
 def _verify_template_of(pd, pm_home: Path, ticket: str):
     """board 에 실제로 착지한 명세·라운드 파일로 분류기를 돌린다."""
-    board = pd._load_board_for_repo(pm_home)
-    _status, spec_path = ticket_store.find_ticket_exact(board._home(), ticket)
+    home = pm_paths.home_at(pm_home)
+    _status, spec_path = ticket_store.find_ticket_exact(home, ticket)
     spec_text = spec_path.read_text(encoding="utf-8")
     rounds = round_seed.load_rounds(
-        pm_paths.tickets_dir(board._home()), ticket, ticket_text=spec_text,
+        pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
     )
     return review_state.pm_review_verify_template(spec_text, rounds)
 
 
 def _board_round_is_pending(pd, pm_home: Path, ticket: str, ordinal: int) -> bool:
     """board 에 착지한 그 라운드가 '산출 없음' 인가 — 실제 소비 경로(`load_rounds`)로 읽는다."""
-    board = pd._load_board_for_repo(pm_home)
-    _status, spec_path = ticket_store.find_ticket_exact(board._home(), ticket)
+    home = pm_paths.home_at(pm_home)
+    _status, spec_path = ticket_store.find_ticket_exact(home, ticket)
     rounds = round_seed.load_rounds(
-        pm_paths.tickets_dir(board._home()), ticket,
+        pm_paths.tickets_dir(home), ticket,
         ticket_text=spec_path.read_text(encoding="utf-8"),
     )
     return next(item.pending for item in rounds if item.ordinal == ordinal)
@@ -2288,34 +2291,6 @@ def test_slot_write_failure_after_the_reservation_names_the_leftover_round(
     assert plan.ordinal == 2
 
 
-def test_harvest_calls_the_board_commit_seam_directly_and_is_loud_without_it(
-    pd, rounds_env, monkeypatch,
-):
-    """부분 동기 사본에서 board 커밋만 조용히 빠진 rc0 을 만들지 않는다(이름 폴백 없음)."""
-    source = PM_DELEGATE.read_text(encoding="utf-8")
-    assert "board._rounds_mutation_sync_paths(" in source
-    assert "_growth_mutation_sync_paths" not in source
-    assert 'getattr(board, "_rounds_mutation_sync_paths"' not in source
-
-    pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7217")
-    plan = pd.prepare_ticket_copy(
-        ticket="T-7217", role="developer", cwd=slot, pm_home=pm_home,
-    )
-    plan.path.write_text(
-        plan.path.read_text(encoding="utf-8") + "\n산출\n",
-        encoding="utf-8", newline="",
-    )
-    original = pd._load_board_for_repo
-
-    def _board_without_the_seam(repo):
-        board = original(repo)
-        del board._rounds_mutation_sync_paths      # 이름이 갈린 사본 재현
-        return board
-
-    monkeypatch.setattr(pd, "_load_board_for_repo", _board_without_the_seam)
-    with pytest.raises(AttributeError):
-        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
 
 def test_pending_previous_round_is_not_a_prefill_source(pd, rounds_env, capsys):
@@ -2810,7 +2785,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     internal_rc = _harvest_rc(pd, monkeypatch, pm_home, slot, internal_round.path)
     internal_error = capsys.readouterr().err
     external_problem = external._reserve_additional_reviewer_round(
-        "T-7235", external_reply, delegate=pd, board=board,
+        "T-7235", external_reply, delegate=pd,
         board_home=pm_paths.home_at(pm_home.resolve()),
     )
 
@@ -3249,9 +3224,6 @@ def refund_env(tmp_path, pd, monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "refund@test.invalid")
     assert _git(home, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, home, sync_log),
-    )
     monkeypatch.setattr(pd, "local_config", lambda: {
         "delegate_enabled": "true",
         "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
@@ -3820,7 +3792,7 @@ def test_board_lock_exit_failure_after_reserve_preserves_run_dir_and_diagnostics
     pm_home, slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-9305")
 
-    board = pd._load_board_for_repo(pm_home)
+    board = _fixture_board(pd, pm_home)
     real_board_lock = fs.board_lock
     state = {"n": 0}
 
@@ -3834,7 +3806,6 @@ def test_board_lock_exit_failure_after_reserve_preserves_run_dir_and_diagnostics
                 raise OSError("probe: board_lock __exit__ 실패")
 
     monkeypatch.setattr(fs, "board_lock", _flaky_board_lock)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
 
     def _round_files() -> int:
         rounds_dir = _rounds_dir(pm_home, "T-9305")

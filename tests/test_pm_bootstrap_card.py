@@ -23,6 +23,9 @@ worktree_pool/board/git/log 를 DI mock 으로 hermetic 하게 구동한다(실 
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+
 from _pool_seams import bind_pool
 
 import argparse
@@ -58,11 +61,7 @@ def _hermetic_engine_anchor(bootstrap, monkeypatch):
     """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
     worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 동형). 실 board 를 로드해
     `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
-    real_board = bootstrap._load_board()
-    if real_board is not None:
-        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
-                            lambda anchor, **_kw: None, raising=False)
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
 
 
 @pytest.fixture(autouse=True)

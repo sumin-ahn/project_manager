@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 372,
+  "count": 368,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 216
+    "python-prose": 212
   },
   "entries": [
     {
@@ -61,14 +61,6 @@
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-prose",
-      "hash": "634fddee39a797d736de826a66b926bef746e6c37323dd30cab7311b988cb292",
       "count": 1
     },
     {
@@ -597,14 +589,6 @@
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-prose",
-      "hash": "634fddee39a797d736de826a66b926bef746e6c37323dd30cab7311b988cb292",
       "count": 1
     },
     {
@@ -1245,14 +1229,6 @@
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-prose",
-      "hash": "634fddee39a797d736de826a66b926bef746e6c37323dd30cab7311b988cb292",
       "count": 1
     },
     {
@@ -2117,14 +2093,6 @@
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-prose",
-      "hash": "634fddee39a797d736de826a66b926bef746e6c37323dd30cab7311b988cb292",
       "count": 1
     },
     {

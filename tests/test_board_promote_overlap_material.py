@@ -17,6 +17,15 @@ hermetic: board.py 의 경로 전역은 import 시점에 실 repo 로 굳으므�
 """
 from __future__ import annotations
 
+from pm_engine.app import cluster_binding
+
+
+from pm_engine.app import cluster_binding
+
+
+from pm_engine.app import cluster_binding
+
+
 import argparse
 import importlib.util
 import json
@@ -112,34 +121,34 @@ def test_no_candidates_is_silent_even_with_resolved_ledger(anchored):
     """겹침 0 — 슬롯 줄까지 전부 침묵(다른 티켓이 아예 없어도 헤더가 안 나온다)."""
     _write_ledger(anchored, _lease_row(slot="work/demo_1", repo="demo", state="idle"))
     anchored.REPO = anchored.REPO  # no-op(가독)
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_overlapping_ticket_is_reported_with_id_and_count(anchored):
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
-    assert lines[0] == anchored._PUBLISH_OVERLAP_HEADER
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    assert lines[0] == cluster_binding._PUBLISH_OVERLAP_HEADER
     assert any("tools/x.py" in ln and "T-0002" in ln and "1건" in ln for ln in lines)
 
 
 def test_self_id_is_excluded(anchored):
     """방금 만든 티켓 자신은 후보에서 빠진다(자기 자신과는 항상 겹치므로 제외하지 않으면 오탐)."""
     _seed(anchored, "open", "T-0001", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_done_status_is_not_a_candidate(anchored):
     _seed(anchored, "done", "T-0002", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_draft_status_is_a_candidate(anchored):
     """draft 는 board.md·list·board-git 어디에도 안 보이지만 좌표를 이미 점유한다."""
     _seed(anchored, "draft", "T-0002", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
 
 
@@ -149,7 +158,7 @@ def test_corrupted_candidate_frontmatter_is_skipped_fail_soft(anchored, capsys):
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text("not: [valid yaml\n---\nbody", encoding="utf-8")
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
 
 
@@ -161,25 +170,25 @@ def test_candidate_with_unclear_touches_format_is_dropped_not_crashed(anchored):
         "id": "T-0002", "title": "x", "status": "open", "touches": "tools/x.py",
         "depends_on": [], "blocks": [], "tags": [],
     }, "# x\n")
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_candidate_with_empty_touches_is_dropped_not_crashed(anchored):
     _seed(anchored, "open", "T-0002", [])
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_own_touches_unclear_format_yields_silence(anchored):
     """대상 자신의 touches 가 형식 불명(스칼라)이면 판정불능으로 침묵(크래시 없음)."""
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", "tools/x.py", repo="demo")  # str, not list
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", "tools/x.py", repo="demo")  # str, not list
     assert lines == []
 
 
 def test_own_touches_empty_yields_silence(anchored):
-    lines = anchored._publish_overlap_material("T-0001", [], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", [], repo="demo")
     assert lines == []
 
 
@@ -194,14 +203,14 @@ def test_paths_sorted_ascending_by_overlap_count_and_capped(anchored):
         for j in range(overlap_n):
             counter += 1
             _seed(anchored, "open", f"T-{1000 + counter}", [own_path])
-    lines = anchored._publish_overlap_material("T-0001", own_touches, repo="demo")
-    assert lines[0] == anchored._PUBLISH_OVERLAP_HEADER
-    assert len(lines) <= anchored._PUBLISH_OVERLAP_TOTAL_LINE_BUDGET
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", own_touches, repo="demo")
+    assert lines[0] == cluster_binding._PUBLISH_OVERLAP_HEADER
+    assert len(lines) <= cluster_binding._PUBLISH_OVERLAP_TOTAL_LINE_BUDGET
     body = lines[1:]
     # 슬롯 줄이 없으므로 예산은 헤더 1을 뺀 8 — 경로 10개가 그 예산을 넘으므로 잔여-요약 1줄이
     # 그 예산을 먹어 실제 경로 표시는 7줄이다(8 - 1).
     path_lines = [ln for ln in body if "겹침" in ln]
-    assert len(path_lines) == anchored._PUBLISH_OVERLAP_PATH_LIMIT - 1
+    assert len(path_lines) == cluster_binding._PUBLISH_OVERLAP_PATH_LIMIT - 1
     assert any("외 3개 경로" in ln for ln in body)
     # 오름차순 — 가장 적게 겹치는(f0=1건) 경로가 먼저 온다.
     assert "f0.py: 1건" in path_lines[0]
@@ -211,7 +220,7 @@ def test_paths_sorted_ascending_by_overlap_count_and_capped(anchored):
 def test_id_list_capped_at_six_and_remainder_folded_by_count(anchored):
     for i in range(9):
         _seed(anchored, "open", f"T-{2000 + i}", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     target = next(ln for ln in lines if "tools/x.py" in ln)
     assert "9건 겹침" in target
     assert target.count("T-2") == 6
@@ -224,7 +233,7 @@ def test_directory_and_file_declarations_meet_on_the_same_path_axis(anchored):
     파일 선언 후보(`tools/x.py`)는 내 `tools/x.py` 버킷에 잡힌다."""
     _seed(anchored, "open", "T-0002", ["tests/sub/y.py"])
     _seed(anchored, "open", "T-0003", ["tools/x.py"])
-    lines = anchored._publish_overlap_material("T-0001", ["tests", "tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tests", "tools/x.py"], repo="demo")
     tests_line = next(ln for ln in lines if ln.strip().startswith("tests:"))
     file_line = next(ln for ln in lines if "tools/x.py" in ln)
     assert "T-0002" in tests_line
@@ -239,7 +248,7 @@ def test_prefixed_touch_normalizes_and_overlaps_bare_declaration(anchored, tmp_p
     """`work/<repo>_1/tests` 접두 선언과 무접두 `tests` 선언이 같은 파일로 만난다."""
     _register_slot(tmp_path, slot="work/demo_1", repo="demo")
     _seed(anchored, "open", "T-0002", ["work/demo_1/tests"])
-    lines = anchored._publish_overlap_material("T-0001", ["tests"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tests"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
 
 
@@ -247,7 +256,7 @@ def test_prefixed_touch_without_ledger_row_drops_without_crash(anchored):
     """등록 안 된 슬롯 접두는 항목 단위로 드롭 — 크래시 0·판정 계속."""
     _seed(anchored, "open", "T-0002", ["work/unregistered_9/tests"])
     _seed(anchored, "open", "T-0003", ["tests"])
-    lines = anchored._publish_overlap_material("T-0001", ["tests"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tests"], repo="demo")
     # 미등록 접두(T-0002)는 드롭되어 안 보이고, 정상 무접두(T-0003)는 그대로 겹침으로 잡힌다.
     joined = "\n".join(lines)
     assert "T-0003" in joined
@@ -269,18 +278,18 @@ def test_idle_slot_count_follows_ledger_not_hardcoded(anchored):
                   _lease_row(slot="work/A_2", repo="demo", state="idle"),
                   _lease_row(slot="work/A_3", repo="demo", state="idle"),
                   _lease_row(slot="work/A_4", repo="demo", state="leased"))
-    lines_idle3 = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines_idle3 = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("idle) 슬롯 3개" in ln for ln in lines_idle3)
 
     _write_ledger(anchored, _lease_row(slot="work/A_1", repo="demo", state="leased"))
-    lines_idle0 = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines_idle0 = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("idle) 슬롯 0개" in ln for ln in lines_idle0)
 
 
 def test_creating_state_is_not_counted_as_idle(anchored):
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
     _write_ledger(anchored, _lease_row(slot="work/A_1", repo="demo", state="creating"))
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("idle) 슬롯 0개" in ln for ln in lines)
 
 
@@ -288,7 +297,7 @@ def test_missing_ledger_omits_slot_line_but_keeps_overlap(anchored):
     """장부 부재 — 슬롯 줄은 생략되지만 겹침 재료 자체는 여전히 나온다(판정불능≠전체 침묵)."""
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
     assert not anchored.LEASES_FILE.exists()
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
     assert not any("idle" in ln for ln in lines)
 
@@ -297,7 +306,7 @@ def test_corrupt_ledger_omits_slot_line_without_crash(anchored):
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
     anchored.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     anchored.LEASES_FILE.write_text("{ not json", encoding="utf-8")
-    lines = anchored._publish_overlap_material("T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
     assert not any("idle" in ln for ln in lines)
 
@@ -369,7 +378,7 @@ def test_cmd_new_emits_overlap_material_on_stderr(board_git, capsys):
     rc = board_git.cmd_new(_new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     err = capsys.readouterr().err
-    assert board_git._PUBLISH_OVERLAP_HEADER in err
+    assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
     assert "T-0002" in err
     assert ".project_manager/tools/board.py" in err
 
@@ -397,7 +406,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 0, "touches 겹침이 승격을 막았다 — never-block 계약 위반."
     err = capsys.readouterr().err
-    assert board_git._PUBLISH_OVERLAP_HEADER in err
+    assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
     assert "T-0002" in err
 
 
@@ -416,7 +425,7 @@ def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err
-    assert board_git._PUBLISH_OVERLAP_HEADER not in err
+    assert cluster_binding._PUBLISH_OVERLAP_HEADER not in err
 
 
 @requires_git
@@ -434,7 +443,7 @@ def test_stdout_machine_channel_is_unchanged(board_git, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert re.match(r"created (T-\S+)", out) is not None
-    assert board_git._PUBLISH_OVERLAP_HEADER not in out
+    assert cluster_binding._PUBLISH_OVERLAP_HEADER not in out
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -531,13 +540,13 @@ def test_cmd_new_material_total_lines_stay_within_budget_with_slot_and_many_cand
     rc = board_git.cmd_new(_new_args(touches=",".join(own_touches)))
     assert rc == 0
     err = capsys.readouterr().err
-    assert board_git._PUBLISH_OVERLAP_HEADER in err
+    assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
 
     # 재료 블록만 잘라 잰다 — draft 격리 경고 등 무관 stderr 줄은 이 상한의 대상이 아니다.
     all_lines = [ln for ln in err.splitlines() if ln.strip()]
-    header_at = all_lines.index(board_git._PUBLISH_OVERLAP_HEADER)
+    header_at = all_lines.index(cluster_binding._PUBLISH_OVERLAP_HEADER)
     lines = all_lines[header_at:]
-    assert len(lines) <= board_git._PUBLISH_OVERLAP_TOTAL_LINE_BUDGET, f"{len(lines)}줄: {lines!r}"
+    assert len(lines) <= cluster_binding._PUBLISH_OVERLAP_TOTAL_LINE_BUDGET, f"{len(lines)}줄: {lines!r}"
     assert "idle) 슬롯 1개" in err
 
     path_lines = [ln for ln in lines if "건 겹침" in ln]
@@ -547,7 +556,7 @@ def test_cmd_new_material_total_lines_stay_within_budget_with_slot_and_many_cand
         shown_ids = re.search(r"\((.*)\)$", ln).group(1)
         shown_ids = re.sub(r" 외 \d+건$", "", shown_ids)
         id_count = len([tok for tok in shown_ids.split(", ") if tok])
-        assert id_count <= board_git._PUBLISH_OVERLAP_ID_LIMIT, ln
+        assert id_count <= cluster_binding._PUBLISH_OVERLAP_ID_LIMIT, ln
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -576,5 +585,5 @@ def test_legacy_no_board_git_still_emits_material(tmp_path, monkeypatch, capsys)
     rc = mod.cmd_new(_new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     err = capsys.readouterr().err
-    assert mod._PUBLISH_OVERLAP_HEADER in err
+    assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
     assert "T-0002" in err

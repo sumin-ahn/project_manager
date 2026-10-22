@@ -11,6 +11,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_dispatch
+
+
 import importlib.util
 import shutil
 from pathlib import Path
@@ -195,17 +198,6 @@ def test_pm_config_load_module_unstamped_sibling_no_false_positive(tmp_path):
     assert mod is not None and mod.VALUE == 1
 
 
-def test_pm_bootstrap_load_board_normal_returns_module(tmp_path):
-    """정상 동기 pm_bootstrap._load_board → board 모듈 반환(fail-loud 오탐 없음)."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_bootstrap.py": None,
-        "board.py": None,
-        "local_conf.py": None,
-    })
-    pmb = _load(tools, "pm_bootstrap")
-    board = pmb._load_board()
-    assert board is not None and board.ENGINE_REV == _cur_rev()
 
 
 # ── 위임 채널 로더 skew ──────────────────────────────────────────────────
@@ -255,7 +247,7 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
 
     assert board.main(["list"]) == 0
     claimed = []
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _command: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _command: False)
     monkeypatch.setattr(board, "cmd_claim", lambda args: claimed.append(args.id) or 0)
 
     assert board.main(["claim", "T-0001"]) == 0

@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+
+
 import json
 import os
 from pathlib import Path
@@ -459,8 +461,8 @@ def session_name(home, override: str | None = None) -> str | None:
     `--task` 가 없으면 `TASK_REQUIRED` 로 멈춘다. 여기 미해소(None)는 surface(whoami/status/
     list --mine)의 "(비바인딩)" 표시와 소유 대조 거부로 이어진다.
 
-    저장측(lease_store._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
-    소유권이 미스되므로 세 모듈(lease_store.session_name·worktree_pool._default_
+    저장측(_default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
+    소유권이 미스되므로 세 모듈(session_name·worktree_pool._default_
     session·pm_config._default_session)이 같은 우선순위를 공유한다(tail 만 용처별 상이).
 
     장부에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
@@ -503,16 +505,16 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
 
 
 def _default_session(home) -> str:
-    """세션 식별자 기본값 — `lease_store.session_name()` 과 *동형* 우선순위:
+    """세션 식별자 기본값 — `session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` env > `$CLAUDE_SESSION_NAME` env(deprecated alias·silent) >
     lease 장부 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
     `<host>-<pid>`.
 
     `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
     (둘 다면 PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**
-    (lease_store.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
+    (session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
 
-    lease_store.session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
+    session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
     떨어진다. board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌 회피) 리스
     카운팅은 자체 구현한다. 장부 0행에서 세션 이름을 유도하는 층은 없다.
     """
@@ -593,3 +595,33 @@ def identity_tag(home, session_override: str | None = None,
     if pm is None:
         return user
     return f"{user}/{pm}" if user else pm
+
+
+def _ledger_registration(home, anchor: Path) -> tuple[bool, str | None]:
+    """PM 홈 장부가 `anchor` 슬롯을 등록하는지 strict point-read 한다.
+
+    반환은 (일치, 오류). 부재·손상·스키마 오류는 load-bearing 소유 판정에서 빈 장부로
+    강등하지 않고 오류 문자열로 돌려 호출부가 fail-loud 하게 한다.
+    """
+    ledger = pm_paths.leases_file(home)
+    if not ledger.is_file():
+        return (False, f'{home.root}: worktree lease 장부 없음')
+    try:
+        data = json.loads(fs.read_text_shared(ledger, encoding='utf-8'))
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
+        return (False, f'{home.root}: worktree lease 장부를 읽을 수 없음 ({exc})')
+    if not isinstance(data, dict):
+        return (False, f'{home.root}: worktree lease 장부 최상위 값이 object가 아님')
+    rows = data.get('leases')
+    if not isinstance(rows, list):
+        return (False, f'{home.root}: worktree lease 장부의 leases 값이 list가 아님')
+    target = anchor.resolve()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return (False, f'{home.root}: worktree lease 장부 leases[{index}]가 object가 아님')
+        slot = row.get('slot')
+        if not isinstance(slot, str) or not slot:
+            return (False, f'{home.root}: worktree lease 장부 leases[{index}]의 slot이 유효하지 않음')
+        if (home.root / slot).resolve() == target:
+            return (True, None)
+    return (False, None)

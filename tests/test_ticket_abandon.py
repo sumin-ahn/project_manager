@@ -17,6 +17,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import round_maintenance
+
+
 import importlib.util
 import inspect
 import json
@@ -45,6 +48,12 @@ LIVE_OUTPUT_MARKER = "LIVE OUTPUT"
 CLI_WALL_TIMEOUT_SEC = 60.0
 # 락 경합 픽스처에서 다른 프로세스가 board.lock 을 쥐고 있는 시간.
 BOARD_LOCK_HOLD_SEC = 2.0
+
+
+@pytest.fixture(autouse=True)
+def _isolate_round_sync(monkeypatch):
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        round_maintenance._rounds_mutation_sync_paths)
 
 
 def _load_pd():
@@ -120,14 +129,14 @@ def _fixture_board(pd, env: Env):
     board.REPO = env.pm_home
     board.LOCAL_DIR = env.pm_home / ".project_manager" / ".local"
 
-    def _sync(message, paths):
+    def _sync(_home, message, paths):
         # 단위 속도용 stub 이다 — 실 호출 그래프(교착 회귀)는 CLI subprocess 픽스처가 태운다.
         if env.failures.get("sync"):
             raise RuntimeError("sync 실패 주입")
         env.sync_calls.append((message, [Path(item) for item in paths]))
         return True
 
-    board._rounds_mutation_sync_paths = _sync
+    round_maintenance._rounds_mutation_sync_paths = _sync
     return board
 
 
@@ -155,9 +164,7 @@ def env(tmp_path, pd, monkeypatch) -> Env:
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "abandon@test.invalid")
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
     prepared = Env(pm_home, slot, tickets, [], {})
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, prepared),
-    )
+    _fixture_board(pd, prepared)
     return prepared
 
 

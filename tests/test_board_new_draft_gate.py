@@ -16,6 +16,11 @@ hermetic 패턴은 `test_board_git_sync.py` 와 동형 — 실 board git + bare 
 """
 from __future__ import annotations
 
+from pm_engine.app import cluster_binding
+from pm_engine.cli import board_cluster
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import datetime
 import importlib.util
@@ -659,7 +664,7 @@ def _t0930_bind(board, tmp_path, ticket_id, monkeypatch):
     _git(["commit", "--allow-empty", "-qm", "product seed"], slot)
     seed_slot(tmp_path, session=_TASK)
     monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
-    assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="declared",
+    assert board_cluster.cmd_cluster(board._home(), argparse.Namespace(cluster_cmd="new", name="declared",
         tickets=ticket_id, spike=None, repo=SLOT_REPO, slot=1, task=_TASK)) == 0
     return slot
 
@@ -686,7 +691,7 @@ def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
     assert "cluster new" in capsys.readouterr().err
     slot = _t0930_bind(board, tmp_path, tid, monkeypatch)
-    ledger = board.cluster_ledger_path("declared")
+    ledger = cluster_store.cluster_ledger_path(board._home(), "declared")
     recorded = ledger.read_bytes()
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
     assert ledger.read_bytes() == recorded
@@ -707,7 +712,7 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     from test_board_cluster import _TEMPLATE_TEXT as filled
     ticket_store.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
     _t0930_bind(board, tmp_path, tid, monkeypatch)
-    ledger = board.load_cluster("declared")
+    ledger = cluster_store.load_cluster(board._home(), "declared")
     if damage in ("branch", "base"):
         ledger["branch" if damage == "branch" else "base_branch"] = None
     elif damage == "absent-base":
@@ -720,8 +725,8 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
         ticket_store.dump_ticket(path, fm, body)
     else:
         duplicate = dict(ledger, id="C-duplicate")
-        board.dump_cluster(duplicate)
-    board.dump_cluster(ledger)
+        cluster_store.dump_cluster(board._home(), duplicate)
+    cluster_store.dump_cluster(board._home(), ledger)
     before = (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(board._home()).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout)
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
     assert (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(board._home()).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout) == before
@@ -757,11 +762,11 @@ def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypa
     path = next((wiki / "tickets/open").glob("T-*.md"))
     fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
-    before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
+    before = (path.read_bytes(), cluster_store.cluster_ledger_path(board._home(), fm["cluster"]).read_bytes())
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
-    assert (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes()) == before
-    assert board.load_cluster(fm["cluster"])["base_branch"] == "main"
-    assert "cluster new" in board.cluster_binding_problem(fm["cluster"])
+    assert (path.read_bytes(), cluster_store.cluster_ledger_path(board._home(), fm["cluster"]).read_bytes()) == before
+    assert cluster_store.load_cluster(board._home(), fm["cluster"])["base_branch"] == "main"
+    assert "cluster new" in cluster_binding.cluster_binding_problem(board._home(), fm["cluster"])
     args = _new_args("잘못된 선택")
     args.repo, args.slot = "missing", 1
     with pytest.raises(SystemExit):
@@ -773,6 +778,6 @@ def _mark_ledger_closing(board, cluster: str) -> None:
     """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
-    ledger = board.load_cluster(cluster)
+    ledger = cluster_store.load_cluster(board._home(), cluster)
     ledger["status"] = "closing"
-    board.dump_cluster(ledger)
+    cluster_store.dump_cluster(board._home(), ledger)

@@ -13,6 +13,9 @@ hermetic 패턴은 `test_cluster_review_round.py`(자기-정박 PM 홈 + 실 git
 """
 from __future__ import annotations
 
+
+
+
 import datetime
 import importlib.util
 import shutil
@@ -128,8 +131,7 @@ def material_env(tmp_path, pd, monkeypatch):
         _git(checkout, "log", "-1", "--format=%cI", _TAG).stdout.strip())
 
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, home))
+    _fixture_board(pd, home)
     monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {
         "upstream.path": str(checkout),
     })
