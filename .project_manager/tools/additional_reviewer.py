@@ -79,8 +79,6 @@
 
 from __future__ import annotations
 
-from pm_engine.app import round_maintenance
-
 import argparse
 import contextlib
 import datetime
@@ -101,6 +99,7 @@ from typing import Callable, Iterator, NamedTuple, Sequence
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app import round_maintenance  # noqa: E402
 from pm_engine.domain import conf_schema, delegate_errors, review_form, review_state, review_verdict, round_rules, ticket_rules  # noqa: E402
 from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402

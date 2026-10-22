@@ -30,9 +30,6 @@
 
 from __future__ import annotations
 
-from pm_engine.app import cluster_binding, tier_signals
-from pm_engine.domain import cluster_rules
-
 import argparse
 import datetime
 import json
@@ -49,6 +46,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app import cluster_binding, tier_signals  # noqa: E402
+from pm_engine.domain import cluster_rules  # noqa: E402
 from pm_engine.domain import identity_args, pytest_report, round_rules, ticket_rules  # noqa: E402
 from pm_engine.infra import areas_store, cluster_store, conf_store, console, doc_page_store, fs, lease_store, log_store, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
 from pm_engine.app import doc_affected, doc_staleness, freshness_lint, regression, slot_resolution  # noqa: E402

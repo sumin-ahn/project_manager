@@ -42,6 +42,26 @@ def _load(name: str, path: Path):
     return module
 
 
+@pytest.mark.parametrize("entrypoint", ["write", "git-status"])
+def test_flat_guard_string_and_path_roots_are_equivalent(tmp_path, entrypoint):
+    """평면 어댑터는 문자열과 Path root에서 같은 실제 판정을 반환한다."""
+    board = _load("board_root_input_contract", BOARD_PY)
+
+    def judge(root):
+        if entrypoint == "write":
+            return board.judge_tool_input(
+                root, "session", str(tmp_path), "Write",
+                {"file_path": str(tmp_path / "note.txt"), "content": "note"},
+            )
+        return board.judge_git_anchor_command(
+            root, "session", str(tmp_path), "git status",
+        )
+
+    path_judgment = judge(tmp_path)
+    assert path_judgment["verdict"] == "ok"
+    assert judge(str(tmp_path)) == path_judgment
+
+
 def _git(cwd: Path, *args: str) -> None:
     env = {
         **os.environ,

@@ -14,6 +14,8 @@ from pm_engine.cli import board_init
 
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,44 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 # _default_python() 을 동일 헬퍼로 보유하는 세 도구 — 공통적으로 4조합을 검증.
 DEFAULT_PYTHON_TOOLS = ("pm_bootstrap", "pm_handoff", "ticket_finish")
+
+
+@pytest.mark.parametrize("name", ["pm_delegate", "additional_reviewer", "ticket_finish"])
+def test_flat_tool_path_load_without_preloaded_engine(tmp_path, name):
+    """tools 경로와 패키지가 없는 별도 프로세스에서도 경로 적재가 성공한다."""
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+assert str(target.parent) not in sys.path
+assert not any(name == 'pm_engine' or name.startswith('pm_engine.') for name in sys.modules)
+spec = importlib.util.spec_from_file_location(target.stem, target)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+print('loaded:' + target.stem)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(TOOLS / f"{name}.py")],
+        cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == f"loaded:{name}"
+
+
+@pytest.mark.parametrize("name", ["pm_delegate", "additional_reviewer", "ticket_finish"])
+def test_flat_tool_help_in_isolated_python(tmp_path, name):
+    """격리 모드 CLI가 패키지 적재를 마치고 help 파서에 진입한다."""
+    completed = subprocess.run(
+        [sys.executable, "-I", str(TOOLS / f"{name}.py"), "--help"],
+        cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "--help" in completed.stdout
 
 
 def _load(name: str):

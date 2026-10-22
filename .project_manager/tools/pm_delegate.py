@@ -38,9 +38,6 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
 
 from __future__ import annotations
 
-from pm_engine.app import cluster_binding, round_maintenance
-from pm_engine.infra import cluster_store
-
 import argparse
 import ast
 import base64
@@ -65,6 +62,8 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app import cluster_binding, round_maintenance  # noqa: E402
+from pm_engine.infra import cluster_store  # noqa: E402
 from pm_engine.app import ticket_access, hooks, regression, round_seed  # noqa: E402
 from pm_engine.cli import task_args  # noqa: E402
 from pm_engine.domain import conf_schema, delegate_errors, identity_args, markdown_text, model_lint, review_form, review_state, review_verdict, round_rules, ticket_rules  # noqa: E402

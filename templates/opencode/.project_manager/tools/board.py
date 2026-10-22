@@ -138,7 +138,7 @@ def judge_tool_input(
             return judgment
     targets = hooks._write_tool_targets(cwd, tool_name, tool_input) if isinstance(tool_input, dict) else []
     # 파일을 바꾸는 호출에만 본다 — 읽기 도구는 대상이 없어 여기 들어오지 않는다.
-    todo_warning = engine_guard._no_open_todo_judgment(pm_paths.home_at(root), session) if targets else None
+    todo_warning = engine_guard._no_open_todo_judgment(pm_paths.home_at(Path(root)), session) if targets else None
     denies = [
         judgment for judgment in (hooks._slot_write_judgment(root, session, target) for target in targets)
         if judgment is not None and judgment["verdict"] == "deny"
@@ -196,7 +196,7 @@ def judge_git_anchor_command(
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
     for call in invocations:
-        judgment = engine_guard.judge_git_anchor(pm_paths.home_at(root), session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain)
+        judgment = engine_guard.judge_git_anchor(pm_paths.home_at(Path(root)), session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain)
         if (
             not call.certain and judgment["verdict"] != "warn"
             and judgment.get("code") != git_policy.GIT_DESTRUCTIVE_DENY_CODE
