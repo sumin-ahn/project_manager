@@ -1130,15 +1130,16 @@ def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
         return 0, "3 passed in 0.01s\n", ""
 
     monkeypatch.setattr(regression, "_run_regression_cmd", run)
+    _t0983_complete_fixture_records(board)
     assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
     assert [cmd for cmd, _cwd, _env in calls if cmd.startswith("run-")] == []
     assert len(calls) == 2 and {cwd for _cmd, cwd, _env in calls} == {_slot_cwd(board,"A_1"), _slot_cwd(board,"B_1")}
-    a_record = json.loads(regression_store._regression_flag_for(board._home(), "A_1").read_text(encoding="utf-8"))
-    b_record = json.loads(regression_store._regression_flag_for(board._home(), "B_1").read_text(encoding="utf-8"))
+    a_record = json.loads(regression_store._regression_flag_for(board._home(), "A_1", workspace="work/A_1").read_text(encoding="utf-8"))
+    b_record = json.loads(regression_store._regression_flag_for(board._home(), "B_1", workspace="work/B_1").read_text(encoding="utf-8"))
     assert a_record["status"] == "pass"
     assert b_record["status"] == "pass"
     b_record["status"] = "fail"
-    regression_store._regression_flag_for(board._home(), "B_1").write_text(json.dumps(b_record), encoding="utf-8")
+    regression_store._regression_flag_for(board._home(), "B_1", workspace="work/B_1").write_text(json.dumps(b_record), encoding="utf-8")
     assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action="check")) == 1
 
 
@@ -1185,7 +1186,7 @@ def test_multi_run_records_delta_per_slot_without_blocking(
     """M>1 순회도 슬롯마다 자기 직전 기록과 견준다 — 크게 줄어도 rc0(막지 않는다)."""
     b = multi_board
     for session, head, collected in (("A_1", "HEAD_A", 7577), ("B_1", "HEAD_B", 7000)):
-        flag = regression_store._regression_flag_for(b._home(), session)
+        flag = regression_store._regression_flag_for(b._home(), session, workspace="work/" + session)
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(json.dumps(
             {"head": "OLD_HEAD", "status": "pass", "rc": 0, "scope": "full",
@@ -1195,15 +1196,16 @@ def test_multi_run_records_delta_per_slot_without_blocking(
         _slot_cwd(b, "A_1"): (0, "7577 passed in 140.00s\n"),
         _slot_cwd(b, "B_1"): (0, "12 passed in 0.30s\n"),      # 크게 줄어든 슬롯
     }))
+    _t0983_complete_fixture_records(b)
     assert regression_cmd.cmd_regression(b._home(), _run_args()) == 0, "증감이 M>1 순회의 rc 를 바꿨다"
-    a_flag = json.loads(regression_store._regression_flag_for(b._home(), "A_1").read_text(encoding="utf-8"))
-    b_flag = json.loads(regression_store._regression_flag_for(b._home(), "B_1").read_text(encoding="utf-8"))
+    a_flag = json.loads(regression_store._regression_flag_for(b._home(), "A_1", workspace="work/A_1").read_text(encoding="utf-8"))
+    b_flag = json.loads(regression_store._regression_flag_for(b._home(), "B_1", workspace="work/B_1").read_text(encoding="utf-8"))
     assert a_flag["status"] == "pass" and a_flag["previous_collected"] == 7577
     assert b_flag["status"] == "pass" and b_flag["collected"] == 12
     assert b_flag["previous_collected"] == 7000
     out = capsys.readouterr().out
-    assert "regression[B_1]: pass (rc=0) (직전 7000 · -6988 · 99.8% ⚠)" in out
-    assert "regression[A_1]: pass (rc=0) (직전 7577 · +0)" in out
+    assert "regression[B_1@work/B_1]: pass (rc=0) (직전 7000 · -6988 · 99.8% ⚠)" in out
+    assert "regression[A_1@work/A_1]: pass (rc=0) (직전 7577 · +0)" in out
 
 
 def test_multi_check_label_shows_the_unverified_hint(multi_board, capsys):
@@ -1219,14 +1221,15 @@ def test_multi_check_label_shows_the_unverified_hint(multi_board, capsys):
                                "rc": regression.REGRESSION_RC_UNVERIFIED_COLLECTION,
                                "collected": None}),
     ):
-        flag = regression_store._regression_flag_for(b._home(), session)
+        flag = regression_store._regression_flag_for(b._home(), session, workspace="work/" + session)
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(json.dumps({"head": head, "scope": "full", "session": session,
                                     "ts": "2026-08-07T00:00:00+00:00", **payload}),
                         encoding="utf-8")
+    _t0983_complete_fixture_records(b)
     assert regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
-    assert "B_1=red(rc=unverified-collection·수집수 미확인)" in err
+    assert "B_1@work/B_1=red(rc=unverified-collection·수집수 미확인)" in err
     assert "(?)" not in err
     assert "A_1" not in err          # 수집수가 적어도 green 은 green 이다.
 
@@ -1237,16 +1240,17 @@ def test_multi_check_label_keeps_the_other_rc_branches(multi_board, capsys):
     `unverified-collection` 힌트에서 인자를 뺀 변경이 옆 갈래를 함께 지우지 않았는지 본다.
     """
     b = multi_board
-    flag = regression_store._regression_flag_for(b._home(), "A_1")
+    flag = regression_store._regression_flag_for(b._home(), "A_1", workspace="work/A_1")
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text(json.dumps({"head": "HEAD_A", "status": "fail", "rc": 5,
                                 "scope": "full", "collected": None, "session": "A_1",
                                 "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
     # B_1 = 기록 없음(missing) → rc 를 모르므로 상태만 적는다.
+    _t0983_complete_fixture_records(b)
     assert regression_cmd.cmd_regression(b._home(), argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
-    assert "A_1=red(rc=5·수집0)" in err
-    assert "B_1=missing" in err and "B_1=missing(" not in err
+    assert "A_1@work/A_1=red(rc=5·수집0)" in err
+    assert "B_1@work/B_1=missing" in err and "B_1@work/B_1=missing(" not in err
 
 
 def test_multi_run_skips_green_slots_regardless_of_collection_size(
@@ -1254,13 +1258,14 @@ def test_multi_run_skips_green_slots_regardless_of_collection_size(
     """수집수는 green 재사용을 무효화하지 않는다 — HEAD 일치 green 슬롯은 전부 skip."""
     b = multi_board
     for session, head in (("A_1", "HEAD_A"), ("B_1", "HEAD_B")):
-        flag = regression_store._regression_flag_for(b._home(), session)
+        flag = regression_store._regression_flag_for(b._home(), session, workspace="work/" + session)
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(json.dumps(
             {"head": head, "status": "pass", "rc": 0, "scope": "full",
              "collected": 12, "previous_collected": 7577, "session": session,
              "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
     fake = _install_run(b, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
+    _t0983_complete_fixture_records(b)
     assert regression_cmd.cmd_regression(b._home(), _run_args()) == 0
     assert not fake.calls, "green 슬롯을 수집수 때문에 재실행했다"
     assert "skip(green) 2 · run 0" in capsys.readouterr().out
@@ -3108,21 +3113,22 @@ def test_t0936_multi_slot_core_only(multi_board, monkeypatch, defect):
     local = board.LOCAL_DIR / 'engine-root'
     local.mkdir()
     monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda _home, cwd: (local / 'regression.json', regression_store._LG_ENGINE_ROOT))
-    monkeypatch.setattr(regression, '_test_cmd', lambda _home, override, session=None: override or f'core-{session}')
+    monkeypatch.setattr(regression, '_test_cmd', lambda _home, override, session=None, workspace=None: override or f'core-{session}')
     monkeypatch.setenv('PM_SESSION_NAME', 'A_1')
     for session in ['A_1', 'B_1']:
         tree = Path(_slot_cwd(board, session)); tree.mkdir(parents=True)
+    _t0983_complete_fixture_records(board)
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0
     assert [c[0] for c in calls] == ['core-A_1', 'core-B_1']
     for session in ['A_1', 'B_1']:
-        flag = regression_store._regression_flag_for(board._home(), session, local_dir=local)
+        flag = regression_store._regression_flag_for(board._home(), session, local_dir=local, workspace="work/" + session)
         data = json.loads(flag.read_text(encoding='utf-8'))
         assert data['session'] == session and data['conf_anchor'] == _slot_cwd(board, session)
         assert 'platforms' not in data
     calls.clear()
     assert regression_cmd.cmd_regression(board._home(), _run_args(final=True)) == 0 and calls == []
     if defect:
-        flag = regression_store._regression_flag_for(board._home(), 'B_1', local_dir=local)
+        flag = regression_store._regression_flag_for(board._home(), 'B_1', local_dir=local, workspace="work/" + 'B_1')
         data = json.loads(flag.read_text(encoding='utf-8'))
         if defect == 'missing': flag.unlink()
         else:
@@ -3339,3 +3345,310 @@ def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(boar
     assert "--task" in str(exc.value.code)
     assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check"]))==0
     assert len(calls)==1
+
+# T-0983 다중 작업공간 순회
+
+def _t0983_workspaces(board, monkeypatch, owners=('alpha', 'alpha')):
+    rows = [dict(slot=f'work/R_{i}', repo='R', session=owner, state='leased',
+                 role='work', test_cmd=f'core-{i}') for i, owner in enumerate(owners, 1)]
+    for row in rows:
+        (board.REPO / row['slot']).mkdir(parents=True)
+    board.LEASES_FILE.write_text(json.dumps({'leases': rows,'tasks':[{'name':o} for o in sorted({r['session'] for r in rows if isinstance(r,dict) and isinstance(r.get('session'),str)})]}), encoding='utf-8')
+    board.LOCAL_CONF.write_text('test.cmd=local-core\n', encoding='utf-8')
+    monkeypatch.setattr(pre_push_hook, '_stale_pre_push_hook_refusal', lambda h: None)
+    monkeypatch.setattr(regression_store, '_resolve_regression_flag',
+                        lambda h, cwd: (h.local_dir / 'regression.json', regression_store._LG_NO_HOOK))
+    monkeypatch.setattr(git, '_git_head_at', lambda cwd: 'same-head')
+    monkeypatch.setattr(regression, '_review_cycle_downgrade', lambda h: ([], []))
+    calls = []
+    monkeypatch.setattr(regression, '_run_regression_cmd',
+                        lambda cmd, cwd, env: (calls.append((cmd, cwd, env)) or (0, '3 passed in 0.01s\n', '')))
+    return rows, calls
+
+
+def _t0983_save_rows(board, rows):
+    board.LEASES_FILE.write_text(json.dumps({'leases': rows,'tasks':[{'name':o} for o in sorted({r['session'] for r in rows if isinstance(r,dict) and isinstance(r.get('session'),str)})]}), encoding='utf-8')
+
+
+def _t0983_flag(board, row):
+    import hashlib
+    key = hashlib.sha256(row['slot'].encode('utf-8')).hexdigest()
+    return board.LOCAL_DIR / f'regression-workspace-{key}.json'
+
+
+@pytest.mark.parametrize('owners', [('alpha', 'alpha'), ('alpha', 'alpha', 'beta')])
+def test_t0983_all_workspaces_run_with_own_commands_and_records(board, monkeypatch, owners):
+    rows, calls = _t0983_workspaces(board, monkeypatch, owners)
+    _t0983_save_rows(board, list(reversed(rows)))
+    reads = []
+    original_read = regression.fs.read_text_shared
+
+    def read(path, *args, **kwargs):
+        if path == board.LEASES_FILE:
+            reads.append(path)
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(regression.fs, 'read_text_shared', read)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert [(c[0], c[1]) for c in calls] == [(r['test_cmd'], str(board.REPO / r['slot'])) for r in rows]
+    for row in rows:
+        record = json.loads(_t0983_flag(board, row).read_text(encoding='utf-8'))
+        assert record['session'] == row['session']
+        assert record['command'] == row['test_cmd']
+        assert record['conf_anchor'] == str(board.REPO / row['slot'])
+        assert record['head'] == 'same-head' and record['status'] == 'pass'
+    assert not (board.LOCAL_DIR / 'regression-alpha.json').exists()
+    assert len(reads) == 1
+    records = {flag: flag.read_bytes() for flag in board.LOCAL_DIR.glob('regression*.json')}
+    reads.clear()
+    calls.clear()
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 0
+    assert len(reads) == 1 and calls == []
+    assert {flag: flag.read_bytes() for flag in records} == records
+
+
+@pytest.mark.parametrize('defect', ['none', 'missing', 'red', 'head', 'command', 'anchor'])
+def test_t0983_green_reuse_and_second_workspace_defects(board, monkeypatch, defect):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    calls.clear()
+    flag = _t0983_flag(board, rows[1])
+    if defect == 'missing':
+        flag.unlink()
+    elif defect != 'none':
+        data = json.loads(flag.read_text(encoding='utf-8'))
+        data.update({'status': 'fail'} if defect == 'red' else
+                    {'head': 'old'} if defect == 'head' else
+                    {'command': 'old'} if defect == 'command' else
+                    {'conf_anchor': str(board.REPO / rows[0]['slot'])})
+        flag.write_text(json.dumps(data), encoding='utf-8')
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == (0 if defect == 'none' else 1)
+    assert calls == []
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert [c[1] for c in calls] == ([] if defect == 'none' else [str(board.REPO / rows[1]['slot'])])
+
+
+@pytest.mark.parametrize('layer', ['lease', 'repo', 'local', 'default', 'override'])
+def test_t0983_command_layers_are_selected_by_workspace(board, monkeypatch, layer):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    rows[1]['repo'] = 'S'
+    if layer != 'lease': rows[1]['test_cmd'] = None
+    _t0983_save_rows(board, rows)
+    monkeypatch.setattr(areas_store, '_parse_areas', lambda h, *a: ([], [
+        {'repo': 'R', 'prefix': 'R', 'test_cmd': 'repo-R'},
+        {'repo': 'S', 'prefix': 'S', 'test_cmd': 'repo-S' if layer == 'repo' else ''}]))
+    if layer == 'default': board.LOCAL_CONF.write_text('', encoding='utf-8')
+    monkeypatch.setattr(python_env, 'default_pytest_cmd', lambda: 'default-core')
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cmd='override-core' if layer == 'override' else None)) == 0
+    assert [c[0] for c in calls] == (['override-core', 'override-core'] if layer == 'override' else
+                                      ['core-1', {'lease':'core-2','repo':'repo-S','local':'local-core','default':'default-core'}[layer]])
+    if layer == 'override':
+        calls.clear()
+        assert regression_cmd.cmd_regression(board._home(), _run_args(cmd='override-core')) == 0
+        assert calls == []
+        assert regression_cmd.cmd_regression(board._home(), _run_args(cmd='changed-override')) == 0
+        assert [call[0] for call in calls] == ['changed-override', 'changed-override']
+
+
+@pytest.mark.parametrize('env_key', ['PM_SESSION_NAME', 'CLAUDE_SESSION_NAME'])
+def test_t0983_env_never_narrows_the_workspaces(board, monkeypatch, env_key):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    monkeypatch.setenv(env_key, 'alpha')
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert len(calls) == 2
+    _t0983_flag(board, rows[1]).unlink()
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 1
+    assert len(calls) == 2
+
+
+def test_t0983_idle_and_readonly_are_not_run_targets(board, monkeypatch):
+    rows, calls = _t0983_workspaces(board, monkeypatch, ('alpha','alpha','beta','gamma'))
+    rows[2]['state'] = 'idle'
+    rows[3]['role'] = 'readonly'
+    _t0983_save_rows(board, rows)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert [c[1] for c in calls] == [str(board.REPO/r['slot']) for r in rows[:2]]
+
+
+@pytest.mark.parametrize('damage', ['json', 'root', 'rows', 'row', 'session', 'slot', 'repo', 'role', 'command', 'duplicate', 'traversal', 'alias', 'whitespace-command'])
+def test_t0983_bad_ledger_is_refused_before_execution(board, monkeypatch, damage):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    if damage == 'json': board.LEASES_FILE.write_text('{broken', encoding='utf-8')
+    elif damage == 'root': board.LEASES_FILE.write_text('[]', encoding='utf-8')
+    elif damage == 'rows': board.LEASES_FILE.write_text('{"leases":{}}', encoding='utf-8')
+    else:
+        if damage == 'row': rows.append('broken')
+        elif damage == 'session': rows[1]['session'] = None
+        elif damage == 'slot': rows[1]['slot'] = ''
+        elif damage == 'repo': rows[1]['repo'] = None
+        elif damage == 'role': rows[1]['role'] = 'unknown'
+        elif damage == 'command': rows[1]['test_cmd'] = 42
+        elif damage == 'whitespace-command': rows[1]['test_cmd'] = '   '
+        elif damage == 'duplicate': rows.append(dict(rows[1], session='other'))
+        elif damage == 'traversal': rows[1]['slot'] = '../outside'
+        elif damage == 'alias': rows[1]['slot'] = 'work/./R_1'
+        _t0983_save_rows(board, rows)
+    with pytest.raises((SystemExit, ValueError, OSError, __import__("pm_engine.domain.identity_args",fromlist=["WorkspaceResolutionError"]).WorkspaceResolutionError)):
+        regression_cmd.cmd_regression(board._home(), _run_args())
+    assert calls == []
+    assert list(board.LOCAL_DIR.glob('regression*.json')) == []
+
+
+@pytest.mark.parametrize('failed_rc', [1, 5])
+def test_t0983_second_failure_still_runs_third_and_names_workspace(board, monkeypatch, capsys, failed_rc):
+    rows, calls = _t0983_workspaces(board, monkeypatch, ('alpha','alpha','beta'))
+    def run(cmd,cwd,env):
+        calls.append((cmd,cwd,env))
+        return (failed_rc, 'no tests ran\n', '') if cmd == 'core-2' else (0,'3 passed in 0.01s\n','')
+    monkeypatch.setattr(regression, '_run_regression_cmd', run)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
+    assert len(calls) == 3
+    assert 'alpha@work/R_2' in capsys.readouterr().err
+    assert json.loads(_t0983_flag(board, rows[1]).read_text(encoding='utf-8'))['rc'] == failed_rc
+
+
+def test_t0983_old_task_record_is_not_shared_workspace_evidence(board, monkeypatch):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    (board.LOCAL_DIR/'regression-alpha.json').write_text(json.dumps({
+        'head':'same-head','status':'pass','rc':0,'scope':'full','session':'alpha'}), encoding='utf-8')
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 1
+    assert calls == []
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert len(calls) == 2
+
+
+def test_t0983_single_pinned_and_task_selection_contracts(board, monkeypatch):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    with pytest.raises(SystemExit):
+        regression_cmd.cmd_regression(board._home(), _run_args(task='alpha'))
+    assert calls == []
+    assert regression_cmd.cmd_regression(board._home(), _run_args(cwd=str(board.REPO/'pinned'),cmd='pinned')) == 0
+    assert len(calls) == 1 and calls[0][0] == 'pinned'
+    assert (board.LOCAL_DIR/'regression.json').exists()
+    assert not list(board.LOCAL_DIR.glob('regression-workspace-*.json'))
+
+@pytest.mark.parametrize('key', ['command', 'session', 'conf_anchor'])
+def test_t0983_workspace_record_requires_its_coordinates(board, monkeypatch, key):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    calls.clear()
+    flag = _t0983_flag(board, rows[1])
+    data = json.loads(flag.read_text(encoding='utf-8'))
+    data.pop(key)
+    flag.write_text(json.dumps(data), encoding='utf-8')
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 1
+    assert calls == []
+
+
+@pytest.mark.parametrize('error', [PermissionError, OSError])
+def test_t0983_io_failure_never_falls_back_to_home(board, monkeypatch, error):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    original = regression.fs.read_text_shared
+    def read(path, *a, **kw):
+        if path == board.LEASES_FILE: raise error('test ledger failure')
+        return original(path,*a,**kw)
+    monkeypatch.setattr(regression.fs, 'read_text_shared', read)
+    with pytest.raises((SystemExit,OSError)):
+        regression_cmd.cmd_regression(board._home(), _run_args())
+    assert calls == [] and not list(board.LOCAL_DIR.glob('regression*.json'))
+
+
+def test_t0983_row_command_drift_only_reruns_its_workspace(board, monkeypatch):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    calls.clear()
+    rows[1]['test_cmd'] = 'changed-core'
+    _t0983_save_rows(board, rows)
+    assert regression_cmd.cmd_regression(board._home(), argparse.Namespace(action='check')) == 1
+    assert calls == []
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    assert [c[0] for c in calls] == ['changed-core']
+
+
+def test_t0983_workspace_count_delta_is_independent(board, monkeypatch):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    flag = _t0983_flag(board, rows[1])
+    data = json.loads(flag.read_text(encoding='utf-8'))
+    data.update(head='old',collected=900)
+    flag.write_text(json.dumps(data), encoding='utf-8')
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 0
+    first=json.loads(_t0983_flag(board,rows[0]).read_text(encoding='utf-8'))
+    second=json.loads(flag.read_text(encoding='utf-8'))
+    assert first['previous_collected'] is None
+    assert second['previous_collected'] == 900 and second['collected'] == 3
+
+
+def test_t0983_second_workspace_head_drift_is_red(board, monkeypatch):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    heads = {str(board.REPO/r['slot']):'same-head' for r in rows}
+    monkeypatch.setattr(git,'_git_head_at',lambda cwd:heads[cwd])
+    def run(cmd,cwd,env):
+        calls.append((cmd,cwd,env))
+        if cmd == 'core-2': heads[cwd]='moved-head'
+        return 0,'3 passed in 0.01s\n',''
+    monkeypatch.setattr(regression,'_run_regression_cmd',run)
+    assert regression_cmd.cmd_regression(board._home(), _run_args()) == 1
+    assert len(calls) == 2
+    data=json.loads(_t0983_flag(board,rows[1]).read_text(encoding='utf-8'))
+    assert data['head']=='same-head' and data['rc']=='head-drift' and data['status']=='fail'
+
+
+def test_t0983_broken_sidecar_never_gets_a_pass_record(board, monkeypatch):
+    rows, calls = _t0983_workspaces(board, monkeypatch)
+    monkeypatch.setattr(regression_store,'_resolve_regression_flag',lambda home,cwd:(home.local_dir/'regression.json',regression_store._LG_BROKEN))
+    assert regression_cmd.cmd_regression(board._home(),_run_args())==1
+    assert regression_cmd.cmd_regression(board._home(),argparse.Namespace(action='check'))==1
+    assert calls==[] and not list(board.LOCAL_DIR.glob('regression*.json'))
+
+
+def test_t0983_selected_task_workspace_stays_single(board, monkeypatch):
+    rows,calls=_t0983_workspaces(board,monkeypatch)
+    for row in rows: (board.REPO/row['slot']/'.git').mkdir()
+    monkeypatch.setattr(git,'_cluster_current_branch',lambda cwd:'task/alpha')
+    assert regression_cmd.cmd_regression(board._home(),_run_args(task='alpha',repo='R',slot=2))==0
+    assert [(c[0],c[1]) for c in calls]==[('core-2',str(board.REPO/'work/R_2'))]
+    assert regression_cmd.cmd_regression(board._home(),argparse.Namespace(action='check',task='alpha',repo='R',slot=2))==0
+    assert not list(board.LOCAL_DIR.glob('regression-workspace-*.json'))
+
+
+def test_t0983_single_lease_keeps_this_tree_path(board, monkeypatch):
+    rows,calls=_t0983_workspaces(board,monkeypatch,('alpha',))
+    assert regression_cmd.cmd_regression(board._home(),_run_args())==0
+    assert calls[0][1]==str(board.REPO)
+    assert (board.LOCAL_DIR/'regression.json').exists()
+    assert not list(board.LOCAL_DIR.glob('regression-workspace-*.json'))
+
+
+def test_t0983_unicode_workspace_names_have_distinct_flags(board, monkeypatch):
+    rows,calls=_t0983_workspaces(board,monkeypatch)
+    rows[0]['slot']='work/Aé_1'
+    rows[1]['slot']='work/Aø_1'
+    _t0983_save_rows(board,rows)
+    assert regression_cmd.cmd_regression(board._home(),_run_args())==0
+    assert len(list(board.LOCAL_DIR.glob('regression-workspace-*.json')))==2
+    assert _t0983_flag(board,rows[0])!=_t0983_flag(board,rows[1])
+
+
+def test_t0983_separator_normalization_is_consistent(board, monkeypatch):
+    rows,calls=_t0983_workspaces(board,monkeypatch)
+    rows[1]['slot']='work\\R_2'
+    _t0983_save_rows(board,rows)
+    assert regression_cmd.cmd_regression(board._home(),_run_args())==0
+    assert [c[1] for c in calls]==[str(board.REPO/'work/R_1'),str(board.REPO/'work/R_2')]
+    assert regression_cmd.cmd_regression(board._home(),argparse.Namespace(action='check'))==0
+
+
+def _t0983_complete_fixture_records(board):
+    for row in json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))["leases"]:
+        flag = regression_store._regression_flag_for(
+            board._home(), row["session"], workspace=row["slot"])
+        if not flag.exists():
+            continue
+        record = json.loads(flag.read_text(encoding="utf-8"))
+        cwd = str(board.REPO / row["slot"])
+        record.setdefault("command", regression._core_command_at(board._home(), cwd, row["session"]))
+        record.setdefault("conf_anchor",cwd)
+        record.setdefault("previous_collected",None)
+        record.setdefault("collected",None)
+        flag.write_text(json.dumps(record), encoding="utf-8")

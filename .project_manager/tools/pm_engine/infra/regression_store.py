@@ -4,12 +4,14 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
 from pathlib import Path
 
+from pm_engine.domain import identity_args
 from pm_engine.infra import fs, git, pm_paths
 
 
@@ -114,13 +116,12 @@ def _inherit_flag_anchor(home, default_cwd: str, flag: Path | None = None) -> st
     return os.path.abspath(anchor)
 
 
-def _regression_flag_for(home, session: str | None, *, local_dir: Path | None = None) -> Path:
-    """세션(슬롯)별 회귀 플래그 경로 — M>1 all-or-nothing 순회용.
-
-    `session` None(단일-lease·현행 단일-슬롯) → 공유 `pm_paths.regression_flag`(무변경·후방호환).
-    지정(M>1 슬롯 순회) → `regression-<slug>.json` 로 슬롯별 분리 — 여러 slot 이 같은 `.local/`
-    을 공유하므로 세션명 슬러그를 파일명에 담아 슬롯 결과가 서로 덮이지 않게 한다.
-    """
+def _regression_flag_for(home, session: str | None, *, local_dir: Path | None = None, workspace: str | None = None) -> Path:
+    """작업공간은 정규 slot의 SHA-256, 단일 실행은 기존 기록 좌표를 사용한다."""
+    if workspace is not None:
+        slot = identity_args.normalize_slot_value(workspace)
+        key = hashlib.sha256(slot.encode("utf-8")).hexdigest()
+        return (local_dir or home.local_dir) / f"regression-workspace-{key}.json"
     if local_dir is None and not session:
         return pm_paths.regression_flag(home)
     base = local_dir or home.local_dir

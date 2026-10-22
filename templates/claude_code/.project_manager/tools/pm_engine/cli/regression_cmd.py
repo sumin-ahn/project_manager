@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from pm_engine.domain import identity_args, pytest_report
-from pm_engine.infra import clock, fs, git, lease_store, pm_paths, pre_push_hook, regression_store
+from pm_engine.infra import clock, fs, git, lease_store, pre_push_hook, regression_store
 from pm_engine.app import regression
 from pm_engine.cli import task_args
 
@@ -23,7 +23,7 @@ from pm_engine.cli import task_args
 # pytest 재실행을 억제하고 stale/red 만 run, 하나라도 red 면 push 차단
 # nothing 철학과 동형). 슬롯별 회귀 플래그를 분리해(같은 `.local/` 공유) 결과가 서로 덮이지 않게 한다.
 
-def _regression_run_slot(home, args: argparse.Namespace, session: str, cwd: str) -> int:
+def _regression_run_slot(home, args: argparse.Namespace, session: str, cwd: str, *, workspace: identity_args.Workspace | None = None) -> int:
     """한 슬롯의 회귀를 pytest 로 측정·기록(슬롯별 플래그) — rc 반환.
 
     단일-슬롯 run 본체와 동형(같은 env·shell·인코딩·rc0 만 pass·rc5 vacuous 근절·수집 증감
@@ -34,13 +34,14 @@ def _regression_run_slot(home, args: argparse.Namespace, session: str, cwd: str)
     conf 앵커 이어받기(`_inherit_flag_anchor`)는 여기 없다 — 슬롯 실행 위치는 리스 장부에서
     구조적으로 나오고(플래그도 그 세션 키), 장부가 슬롯을 옮겼다면 새 위치가 맞다.
     """
+    label = f"{session}@{workspace.slot}" if workspace is not None else session
     cwd = os.path.abspath(cwd)
     base, mode = regression_store._resolve_regression_flag(home, cwd)
     if mode == regression_store._LG_BROKEN:
-        print(f"regression[{session}]: 보호훅 sidecar 무효", file=sys.stderr)
+        print(f"regression[{label}]: 보호훅 sidecar 무효", file=sys.stderr)
         return 1
-    flag = regression_store._regression_flag_for(home, session, local_dir=base.parent)
-    cmd = " ".join(p for p in (regression._test_cmd(home, args.cmd, session=session), regression._quarantine_args(home)) if p)
+    flag = regression_store._regression_flag_for(home, session, local_dir=base.parent, workspace=workspace.slot if workspace is not None else None)
+    cmd = " ".join(p for p in (regression._test_cmd(home, args.cmd, session=session, workspace=workspace), regression._quarantine_args(home)) if p)
     expected_head = git._git_head_at(cwd)
     if not expected_head:
         regression_store._write_regression_flag(flag, {
@@ -49,7 +50,7 @@ def _regression_run_slot(home, args: argparse.Namespace, session: str, cwd: str)
             "session": session, "ts": clock.now_utc(),
         })
         return 1
-    print(f"regression[{session}]: $ {cmd}  (cwd={cwd})")
+    print(f"regression[{label}]: $ {cmd}  (cwd={cwd})")
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     rc, out, _err = regression._run_regression_cmd(cmd, cwd, env)
     collected = pytest_report._collected_count(out)
@@ -64,34 +65,35 @@ def _regression_run_slot(home, args: argparse.Namespace, session: str, cwd: str)
     }
     regression_store._write_regression_flag(flag, record)
     note = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
-    print(f"regression[{session}]: {status} (rc={recorded_rc}{note})"
+    print(f"regression[{label}]: {status} (rc={recorded_rc}{note})"
           f"{pytest_report.collection_delta_text(collected, record['previous_collected'])} "
           f"@ {expected_head[:8]}")
     return 0 if status == "pass" else (rc or 1)
 
 
-def _regression_multi_check(home, sessions: list[str]) -> int:
+def _regression_multi_check(home, workspaces: tuple[identity_args.Workspace, ...]) -> int:
     """M>1 check — 전 leased 슬롯이 green(HEAD 일치·pass)이어야 rc0 (all-or-nothing).
 
     미검증(stale/red/missing) 슬롯이 하나라도 있으면 rc1 로 push 를 차단하고 *어느 슬롯이
     어떤 상태(+rc)*인지 명시한다(디버깅 동선). pytest 는 안 돌린다(check = 저비용 baseline 검증).
     """
     not_green: list[str] = []
-    for session in sessions:
-        cwd = regression._active_slot_path(home, session) or str(home.root)
-        slot_state = regression._regression_slot_state(home, session, cwd)
+    for ws in workspaces:
+        session, cwd = ws.session, str(home.root / ws.slot)
+        label = f"{session}@{ws.slot}"
+        slot_state = regression._regression_slot_state(home, session, cwd, workspace=ws)
         if slot_state.state != "green":
             not_green.append(
-                regression._slot_state_label(session, slot_state.state, slot_state.rc))
+                regression._slot_state_label(label, slot_state.state, slot_state.rc))
     if not_green:
-        print(f"regression(M={len(sessions)}): 미검증 슬롯 [{', '.join(not_green)}] "
+        print(f"regression(M={len(workspaces)}): 미검증 슬롯 [{', '.join(not_green)}] "
               "— `regression run` 필요 (push 차단).", file=sys.stderr)
         return 1
-    print(f"regression(M={len(sessions)}): 전 슬롯 green ✓ [{', '.join(sessions)}]")
+    print(f"regression(M={len(workspaces)}): 전 슬롯 green ✓ [{', '.join(f'{ws.session}@{ws.slot}' for ws in workspaces)}]")
     return 0
 
 
-def _regression_multi_run(home, args: argparse.Namespace, sessions: list[str]) -> int:
+def _regression_multi_run(home, args: argparse.Namespace, workspaces: tuple[identity_args.Workspace, ...]) -> int:
     """M>1 run — 슬롯별 check-first(green skip)·stale/red 만 pytest·하나라도 red 면 rc1.
 
     all-or-nothing: 어느 세션이 push 하든 전
@@ -101,16 +103,19 @@ def _regression_multi_run(home, args: argparse.Namespace, sessions: list[str]) -
     skipped: list[str] = []
     ran: list[str] = []
     red: list[str] = []
-    for session in sessions:
-        cwd = regression._active_slot_path(home, session) or str(home.root)
-        if regression._regression_slot_state(home, session, cwd).state == "green":
-            skipped.append(session)
+    for ws in workspaces:
+        if args.cmd:
+            ws = identity_args.Workspace(ws.slot, ws.repo, ws.session, args.cmd)
+        session, cwd = ws.session, str(home.root / ws.slot)
+        label = f"{session}@{ws.slot}"
+        if regression._regression_slot_state(home, session, cwd, workspace=ws).state == "green":
+            skipped.append(label)
             continue
         # stale/red/missing → 이 슬롯 pytest 실행·슬롯별 플래그 갱신.
-        ran.append(session)
-        if _regression_run_slot(home, args, session, cwd) != 0:
-            red.append(session)
-    summary = (f"regression(M={len(sessions)}): "
+        ran.append(label)
+        if _regression_run_slot(home, args, session, cwd, workspace=ws) != 0:
+            red.append(label)
+    summary = (f"regression(M={len(workspaces)}): "
                f"skip(green) {len(skipped)} · run {len(ran)}")
     if red:
         print(f"{summary} · RED [{', '.join(red)}] — push 차단.", file=sys.stderr)
@@ -161,11 +166,13 @@ def cmd_regression(home, args: argparse.Namespace) -> int:
     _run_cwd_pinned = args.action == "run" and getattr(args, "cwd", None)
     explicit_override = task_args._execution_actor_session_override(home, args)
     if not _run_cwd_pinned and explicit_override is None:
-        leased = lease_store.leased_sessions(pm_paths.leases_file(home))
-        if len(leased) >= 2:
-            slots = sorted(set(leased))
-            return (_regression_multi_run(home, args, slots) if args.action == "run"
-                    else _regression_multi_check(home, slots))
+        try:
+            workspaces = regression._leased_regression_workspaces(home)
+        except identity_args.WorkspaceResolutionError as exc:
+            sys.exit(f"[중단] {exc}")
+        if len(workspaces) >= 2:
+            return (_regression_multi_run(home, args, workspaces) if args.action == "run"
+                    else _regression_multi_check(home, workspaces))
     # 단일-슬롯 (명시 --task·단일-lease·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
     # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄).
     sess = lease_store.session_name(home, explicit_override)
