@@ -463,7 +463,7 @@ def session_name(home, override: str | None = None) -> str | None:
 
     저장측(_default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
     소유권이 미스되므로 세 모듈(session_name·worktree_pool._default_
-    session·pm_config._default_session)이 같은 우선순위를 공유한다(tail 만 용처별 상이).
+    session·pm-config 조회)가 같은 우선순위를 공유한다(tail 만 용처별 상이).
 
     장부에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
     떨어진다 — "행이 없다"에서 세션 이름을 유도하지 않는다. 그 유도는 실제로 행을 보유했던

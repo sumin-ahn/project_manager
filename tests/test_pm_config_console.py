@@ -11,6 +11,11 @@ cmd_set_test_cmd)는 monkeypatch 로 가로채 *어떤 핸들러가 어떤 인�
 액션 동작 자체는 facade 테스트가 검증하고, 여기선 라우팅/렌더/견고성만 본다.
 """
 from __future__ import annotations
+from pm_engine.cli import config_console
+from pm_engine.cli import config_repo
+from pm_engine.cli import config_slots
+from pm_engine.infra import lease_store
+from pm_engine.infra import pm_paths
 
 from _pool_seams import bind_pool
 
@@ -249,8 +254,8 @@ def test_console_q_quits_immediately(pc, monkeypatch, capsys):
 def test_console_r_routes_to_repo_add(pc, monkeypatch):
     """`r` → _console_repo_add → cmd_repo_add 핸들러 호출(기존 핸들러 재사용)."""
     seen = {}
-    monkeypatch.setattr(pc, "cmd_repo_add",
-                        lambda args, **kw: seen.update(name=args.name, git=args.git,
+    monkeypatch.setattr(config_repo, 'cmd_repo_add',
+                        lambda _home, args, **kw: seen.update(name=args.name, git=args.git,
                                                         test=args.test, base=args.base) or 0)
     # 메뉴 'r' → repo 이름/git/test/base 4 입력 → 다음 메뉴 'q'.
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "develop", "q")
@@ -265,8 +270,8 @@ def test_console_r_routes_to_repo_add(pc, monkeypatch):
 def test_console_r_empty_test_passes_none(pc, monkeypatch):
     """`r` 에서 test 빈 입력 → cmd_repo_add 에 test=None(미지정·worktree/[b] 에서 설정)."""
     seen = {}
-    monkeypatch.setattr(pc, "cmd_repo_add",
-                        lambda args, **kw: seen.update(test=args.test) or 0)
+    monkeypatch.setattr(config_repo, 'cmd_repo_add',
+                        lambda _home, args, **kw: seen.update(test=args.test) or 0)
     # 이름/git/test(빈)/base(빈) → 메뉴 'q'.
     reader = _inputs("r", "svc", "git@h:me/svc.git", "", "", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
@@ -279,8 +284,8 @@ def test_console_r_empty_test_passes_none(pc, monkeypatch):
 def test_console_r_base_passes_through(pc, monkeypatch):
     """`r` 에서 base 입력 → cmd_repo_add 에 그 브랜치명 전달(CLI --base parity)."""
     seen = {}
-    monkeypatch.setattr(pc, "cmd_repo_add",
-                        lambda args, **kw: seen.update(base=args.base) or 0)
+    monkeypatch.setattr(config_repo, 'cmd_repo_add',
+                        lambda _home, args, **kw: seen.update(base=args.base) or 0)
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "release/24", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
@@ -292,8 +297,8 @@ def test_console_r_base_passes_through(pc, monkeypatch):
 def test_console_r_empty_base_passes_none(pc, monkeypatch):
     """`r` 에서 base 빈 입력 → cmd_repo_add 에 base=None(기본 브랜치 경로·기존 동작 불변)."""
     seen = {}
-    monkeypatch.setattr(pc, "cmd_repo_add",
-                        lambda args, **kw: seen.update(base=args.base) or 0)
+    monkeypatch.setattr(config_repo, 'cmd_repo_add',
+                        lambda _home, args, **kw: seen.update(base=args.base) or 0)
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
@@ -310,17 +315,17 @@ def test_console_r_base_prompt_abort_returns_sentinel(pc, monkeypatch, exc):
     sentinel 을 반환해 run_console 루프가 우아 종료한다(must-fix 2 계약).
     """
     called = {"n": 0}
-    monkeypatch.setattr(pc, "cmd_repo_add", lambda *a, **k: called.update(n=1) or 0)
+    monkeypatch.setattr(config_repo, 'cmd_repo_add', lambda *a, **k: called.update(n=1) or 0)
     reader = _inputs_then_exc("svc", "git@h:me/svc.git", "pytest -q", exc=exc)
-    result = pc._console_repo_add(reader, )
-    assert result is pc._CONSOLE_ABORT
+    result = config_console._console_repo_add(pm_paths.home_at(pc.REPO), reader, )
+    assert result is config_console._CONSOLE_ABORT
     assert called["n"] == 0
 
 
 def test_console_r_empty_name_cancels(pc, monkeypatch):
     """`r` 에서 repo 이름 빈 입력 → cmd_repo_add 미호출(취소·크래시 0)."""
     called = {"n": 0}
-    monkeypatch.setattr(pc, "cmd_repo_add", lambda *a, **k: called.update(n=1) or 0)
+    monkeypatch.setattr(config_repo, 'cmd_repo_add', lambda *a, **k: called.update(n=1) or 0)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
     rc = pc.run_console(input_fn=_inputs("r", "", "q"))
@@ -332,15 +337,14 @@ def test_console_w_routes_to_worktree_add(pc, monkeypatch):
     """`w` → _console_worktree_add → cmd_worktree_add(repo·input_fn·is_tty 전달)."""
     seen = {}
 
-    def fake_wt_add(args, *, board=None, input_fn=None, is_tty=None):
+    def fake_wt_add(_home, args, *, input_fn=None, is_tty=None):
         seen["repo"] = args.repo
         seen["test"] = args.test            # 콘솔은 --test 미지정(프롬프트 경로)
         seen["user_ack"] = args.user_ack    # repo 재입력 확인을 값-결속 ack로 소비
         seen["tty"] = is_tty() if is_tty else None
-        seen["board"] = board               # 콘솔이 로드한 board 전달(areas 표시값 재사용)
         return 0
 
-    monkeypatch.setattr(pc, "cmd_worktree_add", fake_wt_add)
+    monkeypatch.setattr(config_slots, 'cmd_worktree_add', fake_wt_add)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
     rc = pc.run_console(input_fn=_inputs("w", "svc", "svc", "q"))
@@ -354,7 +358,7 @@ def test_console_w_routes_to_worktree_add(pc, monkeypatch):
 def test_console_w_empty_repo_cancels(pc, monkeypatch):
     """`w` 에서 repo 빈 입력 → cmd_worktree_add 미호출(취소)."""
     called = {"n": 0}
-    monkeypatch.setattr(pc, "cmd_worktree_add", lambda *a, **k: called.update(n=1) or 0)
+    monkeypatch.setattr(config_slots, 'cmd_worktree_add', lambda *a, **k: called.update(n=1) or 0)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
     rc = pc.run_console(input_fn=_inputs("w", "", "q"))
@@ -379,8 +383,8 @@ def test_console_b_routes_to_set_test_cmd(pc, monkeypatch):
     """`b` → _console_set_test_cmd → cmd_set_test_cmd(slot, cmd) 호출."""
     seen = {}
     monkeypatch.setattr(
-        pc, "cmd_set_test_cmd",
-        lambda slot, cmd, **kw: seen.update(slot=slot, cmd=cmd) or 0,
+        config_slots, 'cmd_set_test_cmd',
+        lambda _home, slot, cmd, **kw: seen.update(slot=slot, cmd=cmd) or 0,
     )
     reader = _inputs("b", "work/svc_1", "ctest -R hil2", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
@@ -394,8 +398,8 @@ def test_console_b_empty_cmd_passes_none(pc, monkeypatch):
     """`b` 에서 빌드명령 빈 입력 → cmd_set_test_cmd(cmd=None)(바인딩 해제)."""
     seen = {}
     monkeypatch.setattr(
-        pc, "cmd_set_test_cmd",
-        lambda slot, cmd, **kw: seen.update(slot=slot, cmd=cmd) or 0,
+        config_slots, 'cmd_set_test_cmd',
+        lambda _home, slot, cmd, **kw: seen.update(slot=slot, cmd=cmd) or 0,
     )
     reader = _inputs("b", "work/svc_1", "", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
@@ -408,7 +412,7 @@ def test_console_b_empty_cmd_passes_none(pc, monkeypatch):
 def test_console_b_empty_slot_cancels(pc, monkeypatch):
     """`b` 에서 슬롯 빈 입력 → cmd_set_test_cmd 미호출(취소)."""
     called = {"n": 0}
-    monkeypatch.setattr(pc, "cmd_set_test_cmd", lambda *a, **k: called.update(n=1) or 0)
+    monkeypatch.setattr(config_slots, 'cmd_set_test_cmd', lambda *a, **k: called.update(n=1) or 0)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
     rc = pc.run_console(input_fn=_inputs("b", "", "q"))
@@ -503,7 +507,7 @@ def test_console_unknown_key_help_lists_update(pc, monkeypatch, capsys):
 def test_console_blank_input_reprompts(pc, monkeypatch):
     """빈 메뉴 입력(엔터만) → 액션 0·재프롬프트(다음 입력으로 진행·크래시 0)."""
     called = {"r": 0}
-    monkeypatch.setattr(pc, "cmd_repo_add", lambda *a, **k: called.update(r=1) or 0)
+    monkeypatch.setattr(config_repo, 'cmd_repo_add', lambda *a, **k: called.update(r=1) or 0)
     # "" (빈) → 재프롬프트 → "q" 종료. 빈 입력에 어떤 액션도 안 일어남.
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
@@ -660,7 +664,7 @@ def _inputs_then_exc_resume(*lead, build_exc, after):
 
 def test_console_rerenders_after_action(pc, monkeypatch):
     """액션(`r`) 수행 후 상태 재렌더 — list_leases 가 첫 렌더 + 액션후 재렌더로 2회+ 불림."""
-    monkeypatch.setattr(pc, "cmd_repo_add", lambda *a, **k: 0)
+    monkeypatch.setattr(config_repo, 'cmd_repo_add', lambda *a, **k: 0)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "q")
     bind_pool(monkeypatch, wp)
@@ -674,16 +678,9 @@ def test_console_rerenders_after_action(pc, monkeypatch):
 
 
 def test_console_autoloads_engines_when_not_injected(pc, monkeypatch, capsys):
-    """board 미주입은 자동 적재하고 슬롯 조회는 패키지 대역으로 실행한다."""
-    board = FakeBoardAreas(rows=[])
+    """평면 loader 주입 없이 실제 패키지 슬롯 조회로 콘솔을 렌더한다."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
 
-    def fake_load(name, filename):
-        if name == "board":
-            return board
-        return None
-
-    monkeypatch.setattr(pc, "_load_module", fake_load)
     rc = pc.run_console(input_fn=_inputs("q"))
     assert rc == 0
     assert wp.calls.count(("list_leases",)) >= 1   # 패키지에 연결한 슬롯 조회가 렌더에 쓰임
@@ -707,9 +704,9 @@ _CANON_SEP = "|---|---|---|---|---|---|---|---|"
 
 def _status_out(pc, monkeypatch, capsys, *, user, area_owners):
     """cmd_status 를 hermetic 하게 돌려 stdout 을 돌려준다 (두 신호를 직접 주입)."""
-    monkeypatch.setattr(pc, "_default_user", lambda: user)
+    monkeypatch.setattr(lease_store, 'user_name', lambda _home: user)
     monkeypatch.setattr(pc, "_distinct_area_owners", lambda: area_owners)
-    monkeypatch.setattr(pc, "_default_session", lambda: "s1")
+    monkeypatch.setattr(lease_store, 'session_name', lambda _home: "s1")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
     rc = pc.cmd_status(argparse.Namespace(command="status"))
@@ -769,9 +766,9 @@ def test_status_surface_never_loads_board(pc, monkeypatch, capsys):
         return orig(name, filename)
 
     monkeypatch.setattr(pc, "_load_module", spy)
-    monkeypatch.setattr(pc, "_default_user", lambda: None)
+    monkeypatch.setattr(lease_store, 'user_name', lambda _home: None)
     monkeypatch.setattr(pc, "_distinct_area_owners", lambda: 2)
-    monkeypatch.setattr(pc, "_default_session", lambda: "s1")
+    monkeypatch.setattr(lease_store, 'session_name', lambda _home: "s1")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
     rc = pc.cmd_status(argparse.Namespace(command="status"))
