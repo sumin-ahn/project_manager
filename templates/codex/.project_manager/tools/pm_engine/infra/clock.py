@@ -1,5 +1,5 @@
-"""현재 시각 (층: infra).
-"""
+"""현재 시각 (층: infra)."""
+
 from __future__ import annotations
 
 import datetime
@@ -17,3 +17,11 @@ def _now_local() -> str:
     (로컬 offset)로 예시한다. `.astimezone()` 로 tz-aware(offset 포함)라 UTC 와 무손실 상호변환
     가능 — 둘 다 명시 offset ISO8601 이라 모호성 없음(표시 tz 만 다름·비교엔 무관)."""
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+try:
+    from zoneinfo import ZoneInfo
+
+    KST = ZoneInfo("Asia/Seoul")
+except (ImportError, KeyError):
+    KST = datetime.timezone(datetime.timedelta(hours=9))

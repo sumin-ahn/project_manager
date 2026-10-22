@@ -42,6 +42,7 @@
 
 from __future__ import annotations
 
+
 import argparse
 import contextlib
 import datetime
@@ -57,6 +58,7 @@ from typing import Callable, Iterator
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import dashboard, session_history
 from pm_engine.domain import identity_args, pytest_report  # noqa: E402
 from pm_engine.infra import areas_store, console, fs, lease_store, log_store, pm_paths, raw_output, repo_files  # noqa: E402
 from pm_engine.app import regression, slot_resolution  # noqa: E402
@@ -216,7 +218,6 @@ def _default_python() -> str:
     return str(cand) if cand.exists() else sys.executable
 
 # ── 세션 차수 추론 placeholder (infer_next_session_num 사용) ──────────────────
-TRIGGER_SESSION_PLACEHOLDER = "?"            # 세션 차수 추론 불가 시 안전한 placeholder.
 
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 
@@ -226,7 +227,7 @@ PM_STATE_LINE_WARNING_THRESHOLD = 700
 # log/current.md entry 누적 경고 임계값 — 초과 시 pm_log.py archive 권장 (차단 아님).
 LOG_ARCHIVE_SUGGEST_THRESHOLD = 40
 
-# log entry 시작 줄 ("## [YYYY-MM-DD] ...") — 누적 카운트용 (pm_log.split_entries 와 동일 형식).
+# log entry 시작 줄 ("## [YYYY-MM-DD] ...") — 누적 카운트용 (domain.log_entries.split_entries 와 동일 형식).
 _LOG_ENTRY_RE = re.compile(r"^## \[\d{4}-\d{2}-\d{2}\]", re.MULTILINE)
 
 # 슬라이딩 윈도우 크기 — 최근 N 차 만 short inline 유지. 프로젝트별 조정 가능.
@@ -781,86 +782,6 @@ def _commit_handoff_log_change(
 
 # ── pm_state.md sliding window 편집 ──────────────────────────────────────────
 
-# 세션 식별 절 앵커: pm_state.md 의 "## 세션 식별 (현재까지 사용된 이름)" 로 시작하는 h2 절.
-# 매칭은 정확 str.find 이 아니라 정규화 부분일치로 관대화한다 — 채택자 pm_state 의 h2 헤더가
-# 공백/괄호/여백 변형(괄호 내용 다름·2칸 공백·trailing space 등)이어도 매치한다(
-# finance_dev D3: 미세 변형에 ValueError→핸드오프가 9세션 연속 죽던 회귀). 이 상수 문자열
-# 자체는 ValueError 메시지의 canonical 앵커 표기로만 남는다.
-_SESSION_SECTION_ANCHOR = "## 세션 식별 (현재까지 사용된 이름)"
-
-# 앵커 정규화 부분일치 대상: h2 헤더에서 '#'·공백(전각/반각)·괄호(전각/반각)를 제거한
-# 정규화 문자열이 이 값을 포함하면 세션 식별 절로 본다.
-_SESSION_ANCHOR_NORMALIZED = "세션식별"
-
-# 정규화에서 제거하는 비-공백 문자(괄호 전각/반각 + 헤더 마커). 공백류(반각/전각/탭/CR)는
-# str.isspace() 로 함께 제거한다.
-_ANCHOR_STRIP_CHARS = frozenset("#()（）")
-
-# pm 세션 entry 줄: "  - **N차** (..." 형식
-# 각 줄은 반드시 두 칸 들여쓰기 + "- **N차**" 로 시작한다.
-_PM_SESSION_ANCHOR_RE = re.compile(
-    r"^  - \*\*(\d+차)\*\*[^\n]*$",
-    re.MULTILINE,
-)
-
-# "이전 차" 포인터 줄
-_PREV_SESSIONS_POINTER = "  - 이전 차"
-
-def _normalize_h2_header(line: str) -> str:
-    """h2 헤더 줄에서 '#'·공백(전각/반각/탭/CR)·괄호(전각/반각)를 제거한 정규화 문자열."""
-    return "".join(
-        ch for ch in line
-        if not ch.isspace() and ch not in _ANCHOR_STRIP_CHARS
-    )
-
-
-def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
-    """pm_state.md 에서 세션 식별 절 텍스트와 그 시작·끝 위치를 반환한다.
-
-    앵커 탐색은 정확 str.find 이 아니라 정규화 부분일치다 — '##' 로 시작하는 h2 헤더 줄
-    (### 이상 제외)을 라인 스캔해, '#'·공백·괄호를 제거한 정규화 문자열이 '세션식별' 을
-    포함하는 줄을 절 시작 후보로 본다(공백/괄호/여백 변형 흡수). 매치 실패 시 None.
-
-    후보가 여럿이면 **pm 세션 entry(`- **N차**`)를 가진 첫 절을 우선**하고, 전부 없으면
-    첫 후보로 폴백한다 — '## 세션 식별 규칙' 같은 설명-절이 실제 window 절보다 앞에 있을
-    때 빈 절을 오선택해 window 미갱신(fail-soft 스킵)·오염되는 것을 막는다
-    reviewer should-fix).
-
-    반환: (section_text, start_offset, end_offset) 또는 None (앵커 불일치).
-    end_offset 는 다음 ## 또는 ### 헤더 직전 위치 (혹은 파일 끝).
-    """
-    def _section_bounds(m: re.Match) -> tuple[str, int, int]:
-        # 앵커 줄 이후에서 다음 헤더(## 또는 ###)를 찾아 절 경계를 계산한다.
-        after_anchor = pm_state_text[m.end():]
-        next_header = re.search(r"^###? ", after_anchor, re.MULTILINE)
-        end_offset = len(pm_state_text) if next_header is None else m.end() + next_header.start()
-        return pm_state_text[m.start():end_offset], m.start(), end_offset
-
-    candidates = [
-        m for m in re.finditer(r"^##(?!#).*$", pm_state_text, re.MULTILINE)
-        if _SESSION_ANCHOR_NORMALIZED in _normalize_h2_header(m.group(0))
-    ]
-    if not candidates:
-        return None
-    for m in candidates:  # entry 보유 절 우선 — 빈 설명-절 오선택 방지.
-        section = _section_bounds(m)
-        if _PM_SESSION_ANCHOR_RE.search(section[0]):
-            return section
-    return _section_bounds(candidates[0])  # 전부 entry 없음 → 첫 후보(종전 동작 보존).
-
-
-def _find_pm_session_entries(section_text: str) -> list[re.Match]:
-    """세션 식별 절에서 개별 pm 세션 entry 줄 (- **N차** ...) 의 match 목록을 반환한다.
-
-    차수 순으로 정렬해 반환한다.
-    """
-    matches = list(_PM_SESSION_ANCHOR_RE.finditer(section_text))
-    # 차수를 숫자로 변환해 정렬
-    def _session_num(m: re.Match) -> int:
-        return int(m.group(1).replace("차", ""))
-    return sorted(matches, key=_session_num)
-
-
 def _build_new_session_entry(
     session_num: int | str,
     date_str: str,
@@ -889,14 +810,14 @@ def update_session_window(
 
     앵커 불일치 시 ValueError (추측 편집 금지).
     """
-    result = _extract_session_section(pm_state_text)
+    result = session_history._extract_session_section(pm_state_text)
     if result is None:
         raise ValueError(
-            f"앵커 불일치: '{_SESSION_SECTION_ANCHOR}' 가 pm_state.md 에서 발견되지 않았다."
+            f"앵커 불일치: '{session_history._SESSION_SECTION_ANCHOR}' 가 pm_state.md 에서 발견되지 않았다."
         )
     section_text, start_offset, end_offset = result
 
-    existing_entries = _find_pm_session_entries(section_text)
+    existing_entries = session_history._find_pm_session_entries(section_text)
 
     if len(existing_entries) == 0:
         # task 생성 시점 state는 완료 세션 0개가 정상이다. worktree_pool이 심은 명시 marker가
@@ -1037,7 +958,7 @@ def update_session_window(
     new_entry_line = _build_new_session_entry(session_num, date_str, wave_summary)
 
     # 현재 entry 목록 마지막 위치 찾기 (재탐색)
-    updated_entries = list(_PM_SESSION_ANCHOR_RE.finditer(new_section))
+    updated_entries = list(session_history._PM_SESSION_ANCHOR_RE.finditer(new_section))
     if updated_entries:
         last_entry = max(updated_entries, key=lambda m: int(m.group(1).replace("차", "")))
         insert_pos = last_entry.end()
@@ -1070,73 +991,10 @@ def update_session_window(
 
 # ── task 세션 차수 자동 추론 ────────────────────────────────────────
 
-def infer_next_session_num(pm_state_text: str) -> int | str:
-    """pm_state.md 세션 식별 절에서 다음 PM 세션 차수를 추론한다.
-
-    가장 높은 기존 차수 + 1 을 반환. entry 가 없으면 안전한 placeholder.
-    (task 경로에서는 사람 입력 차수 대신 task state를 단일 진실로 쓴다.)
-    """
-    result = _extract_session_section(pm_state_text)
-    if result is None:
-        return TRIGGER_SESSION_PLACEHOLDER
-    section_text, _, _ = result
-    entries = _find_pm_session_entries(section_text)
-    if not entries:
-        if identity_args.TASK_PM_STATE_EMPTY_MARKER in section_text:
-            return 1
-        return TRIGGER_SESSION_PLACEHOLDER
-    highest = max(int(m.group(1).replace("차", "")) for m in entries)
-    return highest + 1
 
 
-_TASK_HANDOFF_HEADER_RE = re.compile(
-    r"^## \[\d{4}-\d{2}-\d{2}\]\s+handoff\s*\|\s*PM\s+(?P<num>\d+)차"
-    r"\s+\(task:(?P<task>[^)]+)\).*$",
-    re.MULTILINE,
-)
 
 
-def infer_next_task_session_num(
-    pm_state_text: str | None,
-    log_text: str | None,
-    task: str,
-    *,
-    task_released: bool = False,
-) -> int | str:
-    """task의 다음 차수를 state와 task-tagged log에서 함께 복구한다.
-
-    state 세션 window의 최고차+1과 `log/current.md`의 동일 `(task:<name>)` handoff를 함께
-    본다. 정상 handoff가 task 장부에 종료 기록(`session` 비움)을 남긴 뒤 bootstrap 없이 재실행된 경우
-    (`task_released=True`)에는 마지막 log 차수를 그대로 반환해 같은 세션 갱신 모드로 들어간다.
-    release가 log보다 먼저 영속되므로 log append 뒤 state 기록 전에 중단된 반쪽 상태도 같은
-    경로로 복구된다. 다음 정상 세션은 bootstrap의 `bind_task`가 기록을 다시 열므로 N+1이다.
-    따라서 `task_released=False`인 bootstrap/read 경로는 state가 뒤처져도 log N을 새 세션
-    N+1로 해석한다. 둘 다 미해소면 state 추론의 placeholder 규격을 보존한다.
-
-    pm_handoff write 경로와 pm_bootstrap read 경로가 함께 쓰는 task 차수 복구 단일 규칙이다.
-    """
-    state_next = (
-        infer_next_session_num(pm_state_text)
-        if pm_state_text is not None
-        else TRIGGER_SESSION_PLACEHOLDER
-    )
-    log_nums = [
-        int(match.group("num"))
-        for match in _TASK_HANDOFF_HEADER_RE.finditer(log_text or "")
-        if match.group("task") == task
-    ]
-    candidates = [value for value in (state_next,) if isinstance(value, int)]
-    if log_nums:
-        log_highest = max(log_nums)
-        # 정상 종료 또는 log 전 종료 기록(`session` 비움) 뒤 bootstrap을 다시 거치지 않은 호출은
-        # 같은 세션 재실행이다. bootstrap/read 경로(task_released=False)는 언제나 log N의
-        # 다음 차수 N+1로 전진해야 한다.
-        if task_released:
-            return log_highest
-        candidates.append(log_highest + 1)
-    if candidates:
-        return max(candidates)
-    return state_next
 
 
 # ── 오형식 차수 정규화 (`**N차차+**` → `**N차**`·멱등·비파괴) ─────────
@@ -1704,7 +1562,6 @@ _DASHBOARD_HEADER = (
 
 # 섹션 헤딩 grammar — `## <key>` (두 해시 + 공백). preamble(`# …`)·하위 헤딩(`### …`)은
 # 두 번째 문자가 공백이 아니라 미매치. write(upsert)·read(parse) 가 같은 경계를 공유한다.
-_DASHBOARD_HEADING_RE = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
 
 # ticket frontmatter 라인 파서 (claimed 티켓 스캔용·YAML 미의존·board 미import·touches 격리).
 _TICKET_FRONT_ID_RE = re.compile(r"^id:\s*(\S+)", re.MULTILINE)
@@ -1871,22 +1728,6 @@ def upsert_dashboard_section(
     return dashboard_text.rstrip("\n") + "\n\n" + core
 
 
-def parse_dashboard_sections(dashboard_text: str) -> list[tuple[str, str]]:
-    """대시보드 텍스트를 `[(session_key, body), ...]` 로 파싱한다 (헤딩 `## <key>` 경계).
-
-    각 섹션 = `## <key>` 헤딩부터 다음 `## ` 헤딩 직전까지. body 는 헤딩 줄 제외 본문에서
-    surrounding 빈 줄을 벗긴 것(read-only surface·부트스트랩 light dump 용). preamble(첫 `## `
-    앞)은 무시한다. write 측(upsert)과 같은 경계 grammar 를 공유해 read/write 대칭을 보장한다.
-    """
-    sections: list[tuple[str, str]] = []
-    matches = list(_DASHBOARD_HEADING_RE.finditer(dashboard_text))
-    for i, mt in enumerate(matches):
-        key = mt.group(1).strip()
-        body_start = mt.end()
-        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(dashboard_text)
-        body = dashboard_text[body_start:body_end].strip("\n").rstrip()
-        sections.append((key, body))
-    return sections
 
 
 # ── PmHandoff 핵심 클래스 ─────────────────────────────────────────────────────
@@ -2923,7 +2764,7 @@ class PmHandoff:
                 file=sys.stderr,
             )
             return 1
-        inferred = infer_next_task_session_num(
+        inferred = session_history.infer_next_task_session_num(
             fs.read_text_shared(self._pm_state_file, encoding="utf-8"),
             _read_log_text_exact(self._log_file) if self._log_file.exists() else "",
             task,

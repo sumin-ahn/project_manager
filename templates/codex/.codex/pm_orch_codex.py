@@ -48,6 +48,12 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+_engine_tools = str(Path(__file__).resolve().parents[1] / ".project_manager" / "tools")
+if _engine_tools not in sys.path:
+    sys.path.insert(0, _engine_tools)
+from pm_engine.app import principle_recall
+from pm_engine.infra import pm_paths, principle_store
+
 CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
 
@@ -747,20 +753,6 @@ _PRINCIPLE_DELEGATE_TOOL_NAME = "collaborationspawn_agent"
 _PRINCIPLE_DELEGATE_ROLE_FIELD = "task_name"
 
 
-def _load_principles(root: Path):
-    """`.project_manager/tools/pm_principles.py` 를 root 기준으로 로드한다(`_load_board` 동형).
-
-    부재·파손은 예외를 삼키고 None — 레지스트리가 없거나 깨져도 훅은 도구 실행을 막지 않는다."""
-    path = Path(root) / ".project_manager" / "tools" / "pm_principles.py"
-    if not path.is_file():
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location("pm_principles", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    except Exception:  # noqa: BLE001 — 레지스트리 로드 실패는 비차단 침묵.
-        return None
 
 
 def _principle_recall_signal(payload: dict) -> tuple[str, str] | None:
@@ -807,20 +799,18 @@ def principle_recall_envelope(payload: dict, root: Path, *,
     if signal is None or hook_is_subagent(payload):
         return {}
     on, text = signal
-    module = _load_principles(root)
-    if module is None:
-        return {}
+    home = pm_paths.home_at(Path(root))
     session_id = _hook_session_id(payload)
     try:
-        seen = module.load_seen_marker(root, session_id)
-        result = module.judge_recall(root, on=on, text=text, seen=seen)
+        seen = principle_store.load_seen_marker(home, session_id)
+        result = principle_recall.judge_recall(home, on=on, text=text, seen=seen)
     except Exception:  # noqa: BLE001 — 판정 실패는 비차단 침묵.
         return {}
     if not result or not result.get("text"):
         return {}
     if result.get("keys"):
         try:
-            module.record_seen_marker(root, session_id, result["keys"])
+            principle_store.record_seen_marker(home, session_id, result["keys"])
         except Exception:  # noqa: BLE001 — marker 기록 실패는 소음(재주입)일 뿐.
             pass
     event = payload.get("hook_event_name") or payload.get("hookEventName")
@@ -834,12 +824,11 @@ def principle_recall_rearm_envelope(payload: dict, root: Path, *,
 
     압축 직후가 규칙이 컨텍스트에서 사라지는 지점이라 재무장 시점이 정확히 그 자리다(§7.5).
     PostCompact 는 이미 배선된 entrypoint 이벤트라 이 항목 추가는 config 변경이 필요 없다."""
-    module = _load_principles(root)
-    if module is not None:
-        try:
-            module.rearm_seen_marker(root, _hook_session_id(payload))
-        except Exception:  # noqa: BLE001 — 재무장 실패는 다음 경계로 넘긴다.
-            pass
+    home = pm_paths.home_at(Path(root))
+    try:
+        principle_store.rearm_seen_marker(home, _hook_session_id(payload))
+    except Exception:  # noqa: BLE001 — 재무장 실패는 다음 경계로 넘긴다.
+        pass
     return {}
 
 
@@ -881,7 +870,7 @@ CODEX_HOOK_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
 #   응답의 `permissionDecision` 류)는 **조용히 버리지 않고** 이 마커로 남긴다.
 CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER = "merge-unhandled-key"
 # claude additionalContext 계약과 같은 값 — 개별 기능은 자기 문안만 상한 안으로 접지만(예:
-#   `pm_principles._MAX_INJECT_CHARS`), 최종 합본(단일 응답 통과·다중 응답 문자열 누적 둘 다) 뒤에는
+#   `principle_rules._MAX_INJECT_CHARS`), 최종 합본(단일 응답 통과·다중 응답 문자열 누적 둘 다) 뒤에는
 #   재검사하지 않았다. `merge_hook_envelopes` 의 모든 반환 경로에서 다시 강제한다.
 CODEX_ADDITIONAL_CONTEXT_MAX_CHARS = 10_000
 

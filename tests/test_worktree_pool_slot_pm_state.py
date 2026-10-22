@@ -4,6 +4,9 @@
 축과 무관한 task 상태·부트스트랩 순서 계약이다.
 """
 from __future__ import annotations
+from pm_engine.cli import bootstrap_card
+
+from pm_engine.cli import bootstrap as bootstrap_cli
 
 from _pool_seams import bind_board, bind_pool
 
@@ -78,12 +81,9 @@ def wp(project: Path):
     return module
 
 
-def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
-    wp, monkeypatch, project, capsys
-):
+def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(wp, monkeypatch, project, capsys, tmp_path):
     """run() 이 인계 컨텍스트 수집 **전에** task 서술 상태를 만들고 그 내용을 dump 한다."""
     bootstrap = _load("pm_bootstrap")
-    bootstrap.REPO = project
     # 가드 훅이 남기는 세션 기록 — 부트스트랩은 이 기록으로만 자기 세션 ID 를 안다.
     claims = project / ".project_manager" / ".local" / "task-session-claims"
     claims.mkdir(parents=True, exist_ok=True)
@@ -93,10 +93,7 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     state = pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), "mytask")
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, SimpleNamespace(_repo_protected=lambda _repo: []))
-    instance = bootstrap.PmBootstrap(
-
-
-    )
+    instance = bootstrap_cli.PmBootstrap(pm_paths.home_at(project))
     instance._phase0_preflight = lambda: 0
     instance._collect_freshness = lambda: []
     instance._collect_board = lambda: {
@@ -115,7 +112,7 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     instance._collect_log_entry = lambda: None
     instance._collect_user_continuity = lambda _log_text: None
     instance._collect_dashboard_others = lambda: None
-    instance._safe_command_card = lambda: None
+    monkeypatch.setattr(bootstrap_card, "_safe_command_card", lambda _home, _task_name, *, environment=None: None)
 
     observed: list[dict] = []
     collect_handoff_context = instance._collect_handoff_context

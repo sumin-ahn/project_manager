@@ -14,6 +14,8 @@ nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 
 """
 from __future__ import annotations
 
+from pm_engine.domain import session_history
+
 from pm_engine.cli import board_init
 
 
@@ -95,11 +97,11 @@ _PM_PLAYBOOK_FIXTURE = """\
 # ── 1. 세션-차수 자동 추론 헬퍼 (대화형 --session-num 대체 seam) ────────────────
 
 def test_infer_next_session_num(handoff):
-    assert handoff.infer_next_session_num(_PM_STATE_FIXTURE) == 5
+    assert session_history.infer_next_session_num(_PM_STATE_FIXTURE) == 5
     # entry 없음 → placeholder.
-    assert handoff.infer_next_session_num(_PM_STATE_NO_ENTRY) == handoff.TRIGGER_SESSION_PLACEHOLDER
+    assert session_history.infer_next_session_num(_PM_STATE_NO_ENTRY) == session_history.TRIGGER_SESSION_PLACEHOLDER
     # 앵커 자체 없음 → placeholder.
-    assert handoff.infer_next_session_num("# no section") == handoff.TRIGGER_SESSION_PLACEHOLDER
+    assert session_history.infer_next_session_num("# no section") == session_history.TRIGGER_SESSION_PLACEHOLDER
 
 
 # ── 2. 대화형 skeleton — 박제 entries 자동 목록 + 신 스키마 ───────────────────

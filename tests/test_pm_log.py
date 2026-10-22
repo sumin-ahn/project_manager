@@ -12,6 +12,9 @@ pm_log.py 는 227줄·직접 테스트 0 이었다. log/current.md 의 entry 분
 """
 from __future__ import annotations
 
+from pm_engine.domain import log_entries
+from pm_engine.infra import pm_paths
+
 import contextlib
 import importlib.util
 import json
@@ -95,7 +98,7 @@ def test_split_entries_zero():
     """entry 가 없으면 (전체 텍스트, []) — preamble 에 전체가 남는다."""
     mod = _load_module()
     text = "# Project Log\n\n> entry 없음\n"
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == text
     assert entries == []
 
@@ -103,7 +106,7 @@ def test_split_entries_zero():
 def test_split_entries_one():
     mod = _load_module()
     text = _HEADER + _ENTRY_A
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == _HEADER
     assert len(entries) == 1
     assert entries[0][0] == "2026-06-10"
@@ -114,7 +117,7 @@ def test_split_entries_many_preserves_preamble_and_order():
     """N entry: preamble 보존·날짜 파싱·경계가 다음 `## [..]` 직전까지."""
     mod = _load_module()
     text = _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == _HEADER
     assert [d for d, _ in entries] == ["2026-06-10", "2026-06-12", "2026-06-14"]
     # 각 entry_text 는 자기 `## [..]` 줄부터 다음 entry 직전까지 — 합치면 원문 복원.
@@ -127,7 +130,7 @@ def test_split_entries_no_preamble():
     """첫 줄이 곧 entry 면 preamble 은 빈 문자열."""
     mod = _load_module()
     text = _ENTRY_A + _ENTRY_B
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == ""
     assert len(entries) == 2
 
@@ -387,7 +390,7 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
     rc = mod.cmd_checkpoint(SimpleNamespace(
         task=None, trigger="manual", session_id="s-foo", breadcrumb=False,
     ))
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    entries = log_entries.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
     assert rc == 0 and len(entries) == 1
     return entries[0][1]
 
@@ -437,7 +440,7 @@ def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatc
     current = log_dir / "current.md"
     current.write_text(_HEADER + _ENTRY_A, encoding="utf-8")
 
-    before_count = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
+    before_count = len(log_entries.split_entries(current.read_text(encoding="utf-8"))[1])
     rc = mod.cmd_checkpoint(
         SimpleNamespace(task="orch-dev-T0547", trigger="compaction")
     )
@@ -448,7 +451,7 @@ def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatc
     assert "checkpoint | (task:orch-dev-T0547) — compaction" in text
     assert "- 구간: <직전 박제 경계 이후>" in text
     assert "- 서사: <PM 손>" in text
-    assert len(mod.split_entries(text)[1]) == before_count + 1
+    assert len(log_entries.split_entries(text)[1]) == before_count + 1
 
 
 def test_cmd_checkpoint_appends_entry_boundary_without_trailing_newline(tmp_path, monkeypatch):
@@ -458,7 +461,7 @@ def test_cmd_checkpoint_appends_entry_boundary_without_trailing_newline(tmp_path
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     current.write_text((_HEADER + _ENTRY_A).rstrip("\n"), encoding="utf-8")
-    before_count = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
+    before_count = len(log_entries.split_entries(current.read_text(encoding="utf-8"))[1])
 
     rc = mod.cmd_checkpoint(
         SimpleNamespace(task="orch-dev-T0547", trigger="manual")
@@ -467,7 +470,7 @@ def test_cmd_checkpoint_appends_entry_boundary_without_trailing_newline(tmp_path
     text = current.read_text(encoding="utf-8")
     assert rc == 0
     assert "본문 A\n## [" in text
-    assert len(mod.split_entries(text)[1]) == before_count + 1
+    assert len(log_entries.split_entries(text)[1]) == before_count + 1
 
 
 def test_cmd_checkpoint_missing_current(tmp_path, monkeypatch, capsys):
@@ -1529,7 +1532,7 @@ def test_cmd_checkpoint_compaction_appends_at_most_one_entry_per_boundary(
     )
     assert mod.cmd_checkpoint(args) == 0
     assert mod.cmd_checkpoint(args) == 0
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    entries = log_entries.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
     assert len(entries) == 1
 
 
@@ -1547,7 +1550,7 @@ def test_cmd_checkpoint_phase_fallback_pairs_pre_post_and_allows_next_boundary(
     assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
     assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
     assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    entries = log_entries.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
     assert len(entries) == 2
 
 
@@ -1572,7 +1575,7 @@ def test_cmd_checkpoint_implicit_boundaries_preserve_two_overlapping_sessions(
     assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
     assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
 
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    entries = log_entries.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
     assert len(entries) == 2
     assert len(list(state_dir.glob("compact-checkpoint.task-main.*"))) == 2
     assert list(state_dir.glob("compact-boundary.task-main.*")) == []
@@ -1600,7 +1603,7 @@ def test_implicit_compaction_boundary_is_not_reused_after_log_archive(
     assert len(first_markers) == 1
 
     assert mod.cmd_archive(SimpleNamespace(before="9999-12-31", keep_last=None, dry_run=False)) == 0
-    assert mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1] == []
+    assert log_entries.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1] == []
     assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
     assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
 
@@ -1610,7 +1613,7 @@ def test_implicit_compaction_boundary_is_not_reused_after_log_archive(
         )
     )
     assert len(markers) == 2 and markers > first_markers
-    assert len(mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]) == 1
+    assert len(log_entries.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]) == 1
     assert not mod._implicit_boundary_state_path("main", "session-archive").exists()
 
 
@@ -1629,7 +1632,7 @@ def test_cmd_checkpoint_dedup_io_failure_warns_but_appends(
     assert mod.cmd_checkpoint(args) == 0
     captured = capsys.readouterr()
     assert "dedup 장부 I/O 실패" in captured.err
-    assert len(mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]) == 1
+    assert len(log_entries.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]) == 1
 
 
 def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_single_object(
@@ -1995,8 +1998,8 @@ def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypa
     remaining = current.read_text(encoding="utf-8")
 
     # 봉인본에서 entry 만 추출 + 잔여 current 의 entry = 원본 entry (순서 보존).
-    _pre_sealed, sealed_entries = mod.split_entries(sealed)
-    remaining_preamble, remaining_entries = mod.split_entries(remaining)
+    _pre_sealed, sealed_entries = log_entries.split_entries(sealed)
+    remaining_preamble, remaining_entries = log_entries.split_entries(remaining)
     recombined = [e for _d, e in sealed_entries] + [e for _d, e in remaining_entries]
     assert recombined == [_ENTRY_A, _ENTRY_B, _ENTRY_C]
     # preamble 은 current 에만 남는다 (봉인본엔 봉인 헤더만).

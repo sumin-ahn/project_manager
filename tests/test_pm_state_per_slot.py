@@ -14,6 +14,10 @@ pm_state 를 *슬롯별*로 분리한다 — multi-PM 연속성(여러 PM 슬롯
 (호출 시점 REPO 추종)라 monkeypatch 된 tmp REPO 를 추종한다.
 """
 from __future__ import annotations
+from pm_engine.app import bootstrap_history
+from pm_engine.domain import bootstrap_rules
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.infra import pm_paths
 
 import importlib.util
 from pathlib import Path
@@ -194,12 +198,11 @@ def test_handoff_init_explicit_pm_state_honored(hf, tmp_path):
 @pytest.fixture
 def bs(tmp_path, monkeypatch):
     mod = _load("pm_bootstrap")
-    monkeypatch.setattr(mod, "REPO", tmp_path)
     mod._tmp = tmp_path
     return mod
 
 
-def test_resolve_pm_state_bound_slot_no_legacy_fallback(bs, monkeypatch):
+def test_resolve_pm_state_bound_slot_no_legacy_fallback(bs, monkeypatch, tmp_path):
     """codex R5: 양성 슬롯 바인딩인데 자기 pm_state 부재 시 legacy 로 폴백하면 안 된다.
 
     `_pm_state_path(migrate=False)` 는 slot 부재 + legacy 존재면 legacy `wiki/pm_state.md`
@@ -211,14 +214,10 @@ def test_resolve_pm_state_bound_slot_no_legacy_fallback(bs, monkeypatch):
     — `_pm_state_file` 주입은 이 가드를 우회하므로 쓰지 않는다(codex 지적)."""
     legacy = bs._tmp / ".project_manager" / "wiki" / "pm_state.md"
 
-    class _StubHandoff:
-        @staticmethod
-        def _pm_state_path(slot, *, migrate=True):
-            return legacy  # slot 부재 + legacy 존재 상황 시뮬(legacy 반환)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("# legacy pm state\n", encoding="utf-8")
 
-    monkeypatch.setattr(bs, "_load_tool", lambda name: _StubHandoff if name == "pm_handoff" else None)
-
-    inst = bs.PmBootstrap()
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     inst._bound_slot = "work/project_manager_2"   # 양성 슬롯 바인딩(fresh slot-2)
     assert inst._resolve_pm_state_file() is None, "bound slot-2 는 legacy 폴백 유입 금지(None)."
 
@@ -347,86 +346,83 @@ _MULTI_SLOT_LOG = (
 
 # ── _session_owns_untagged: 무태그 귀속 판정 (솔로/slot-1 만) ─────────────────
 
-def test_session_owns_untagged_slot1_only(bs):
+def test_session_owns_untagged_slot1_only(bs, *, tmp_path):
     """무태그 entry 는 slot-1(`<repo>_1`) 만 자기 것으로 본다 — 미해소(None)는 소유 없음."""
-    assert bs._session_owns_untagged(None) is False
-    assert bs._session_owns_untagged("project_manager_1") is True
+    assert bootstrap_history._session_owns_untagged(pm_paths.home_at(tmp_path), None) is False
+    assert bootstrap_history._session_owns_untagged(pm_paths.home_at(tmp_path), 'project_manager_1') is True
 
 
-def test_session_owns_untagged_slot2plus_ignores(bs):
+def test_session_owns_untagged_slot2plus_ignores(bs, *, tmp_path):
     """slot-2+ 는 무태그를 자기 것으로 보지 않는다(핵심 회귀 가드·codex 제언)."""
-    assert bs._session_owns_untagged("project_manager_2") is False
-    assert bs._session_owns_untagged("project_manager_11") is False
+    assert bootstrap_history._session_owns_untagged(pm_paths.home_at(tmp_path), 'project_manager_2') is False
+    assert bootstrap_history._session_owns_untagged(pm_paths.home_at(tmp_path), 'project_manager_11') is False
 
 
-def test_session_owns_untagged_task_always_false(bs):
+def test_session_owns_untagged_task_always_false(bs, *, tmp_path):
     """task 세션(`task:<name>`·F7·T-0356)은 무태그 legacy 를 자기 것으로 보지 않는다(항상 False).
 
     무태그 entry = 태그 도입 이전 솔로/slot-1 계보라 task 것이 아니다. sentinel 판별을 trailing
     `_N` 검사보다 앞에 둬, task 명이 우연히 `_1` 로 끝나도(`task:foo_1`) slot-1 오판(True)을 막는다."""
-    assert bs._session_owns_untagged("task:mytask") is False
-    assert bs._session_owns_untagged("task:foo_1") is False   # `_1` trailing 오판 회귀 가드.
-    assert bs._session_owns_untagged("task:한글작업") is False
+    assert bootstrap_history._session_owns_untagged(pm_paths.home_at(tmp_path), 'task:mytask') is False
+    assert bootstrap_history._session_owns_untagged(pm_paths.home_at(tmp_path), 'task:foo_1') is False   # `_1` trailing 오판 회귀 가드.
+    assert bootstrap_history._session_owns_untagged(pm_paths.home_at(tmp_path), 'task:한글작업') is False
 
 
 # ── last_handoff_header_line 슬롯 필터: user 연속성 cross-slot 유입 차단 (codex R3) ──
 
-def test_last_handoff_header_line_slot2_uses_own_not_global(bs):
+def test_last_handoff_header_line_slot2_uses_own_not_global(bs, *, tmp_path):
     """codex R3: slot-2 user 연속성은 전역 마지막(slot-1 3차)이 아니라 **자기 슬롯 마지막**
     (slot-2 2차) handoff 헤더를 pickaxe needle 로 써야 한다 — 타 슬롯 작성자 오판정 차단."""
-    header = bs.last_handoff_header_line(_MULTI_SLOT_LOG, bound_session="project_manager_2")
+    header = bootstrap_history.last_handoff_header_line(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_2')
     assert header is not None
     assert "(project_manager_2)" in header and "PM 2차" in header
     assert "project_manager_1" not in header, "전역 마지막(slot-1 3차) 유입 0."
 
 
-def test_last_handoff_header_line_solo_keeps_global(bs):
+def test_last_handoff_header_line_solo_keeps_global(bs, *, tmp_path):
     """솔로(bound None)는 전역 마지막 handoff 헤더 유지(원 동작·태그 무관 전역 최신)."""
-    header = bs.last_handoff_header_line(_MULTI_SLOT_LOG, bound_session=None)
+    header = bootstrap_history.last_handoff_header_line(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session=None)
     assert header is not None
     assert "PM 3차 (project_manager_1)" in header, "솔로는 전역 마지막 handoff 유지(태그 무관)."
 
 
-def test_last_handoff_header_line_fresh_slot3_no_leak(bs):
+def test_last_handoff_header_line_fresh_slot3_no_leak(bs, *, tmp_path):
     """fresh slot-3(자기 handoff 0)은 None — 타 슬롯 handoff 헤더로 폴백 안 함."""
-    assert bs.last_handoff_header_line(_MULTI_SLOT_LOG, bound_session="project_manager_3") is None
+    assert bootstrap_history.last_handoff_header_line(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_3') is None
 
 
 # ── parse_last_handoff_session_num: 슬롯 필터 max ─────────────────────────────
 
-def test_parse_last_handoff_slot1_max_includes_untagged(bs):
+def test_parse_last_handoff_slot1_max_includes_untagged(bs, *, tmp_path):
     """slot-1 → 무태그(40) + 자기 태그(1·2·3) 중 max=40 (무태그 귀속·연속성 보존)."""
-    assert bs.parse_last_handoff_session_num(
-        _MULTI_SLOT_LOG, bound_session="project_manager_1") == 40
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_1') == 40
 
 
-def test_parse_last_handoff_slot2_ignores_untagged(bs):
+def test_parse_last_handoff_slot2_ignores_untagged(bs, *, tmp_path):
     """slot-2 → 무태그(40) 무시·자기 태그(1·2) 중 max=2 (2슬롯 독립 시퀀스 핵심)."""
-    assert bs.parse_last_handoff_session_num(
-        _MULTI_SLOT_LOG, bound_session="project_manager_2") == 2
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_2') == 2
 
 
-def test_parse_last_handoff_two_slots_independent_sequences(bs):
+def test_parse_last_handoff_two_slots_independent_sequences(bs, *, tmp_path):
     """DoD ①: slot-1(3차)·slot-2(2차)가 같은 log 에서 독립 시퀀스로 유도된다(공존)."""
-    n1 = bs.parse_last_handoff_session_num(_MULTI_SLOT_LOG, bound_session="project_manager_1")
-    n2 = bs.parse_last_handoff_session_num(_MULTI_SLOT_LOG, bound_session="project_manager_2")
+    n1 = bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_1')
+    n2 = bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_2')
     # slot-1 은 무태그 40 을 상속하므로 max=40, slot-2 는 자기 태그만이라 2 — 서로 안 섞인다.
     assert (n1, n2) == (40, 2)
     assert n1 != n2, "두 슬롯이 같은 차수를 주장하지 않는다(사용자 제보 버그 해소)."
 
 
-def test_parse_last_handoff_fresh_slot_returns_none(bs):
+def test_parse_last_handoff_fresh_slot_returns_none(bs, *, tmp_path):
     """DoD: fresh 슬롯(자기 태그 entry 0·무태그 무시) → None(순수 함수·1차 규칙은 context)."""
-    assert bs.parse_last_handoff_session_num(
-        _MULTI_SLOT_LOG, bound_session="project_manager_3") is None
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_3') is None
 
 
-def test_parse_last_handoff_solo_default_global_max(bs):
+def test_parse_last_handoff_solo_default_global_max(bs, *, tmp_path):
     """솔로/미해소(bound None) → 전역 tag-agnostic max — 무태그(40) 포함 최고차. 현행 무회귀."""
-    assert bs.parse_last_handoff_session_num(_MULTI_SLOT_LOG) == 40
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG) == 40
 
 
-def test_parse_last_handoff_unresolved_bound_parses_tagged_global(bs):
+def test_parse_last_handoff_unresolved_bound_parses_tagged_global(bs, *, tmp_path):
     """codex R4 회귀: bound 미해소(None·fresh clone=lease 부재)라도 tracked 로그에 태그된
     handoff 만 있으면 **전역 tag-agnostic 파싱**으로 차수를 복원해야 한다(T-0208 log-derived 보존).
 
@@ -436,21 +432,20 @@ def test_parse_last_handoff_unresolved_bound_parses_tagged_global(bs):
         "## [2026-07-07] handoff | PM 4차 (project_manager_1) → 다음 PM 세션\n- t.\n\n"
         "## [2026-07-08] handoff | PM 5차 (project_manager_1) → 다음 PM 세션\n- t.\n"
     )
-    assert bs.parse_last_handoff_session_num(only_tagged) == 5, (
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), only_tagged) == 5, (
         "미해소 bound=None 은 tagged 로그도 전역 파싱(차수 유실 금지·fresh clone).")
 
 
-def test_parse_last_handoff_positive_slot_still_filters(bs):
+def test_parse_last_handoff_positive_slot_still_filters(bs, *, tmp_path):
     """대칭 확인: 양성 슬롯 해소(project_manager_2)는 여전히 자기 태그만 필터(전역 아님)."""
-    assert bs.parse_last_handoff_session_num(
-        _MULTI_SLOT_LOG, bound_session="project_manager_2") == 2
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_2') == 2
 
 
 # ── extract_slot_handoff_entry: 자기 슬롯 마지막 handoff 본문 (ADR-0047 ③) ─────
 
-def test_extract_slot_handoff_entry_slot1_last_own_handoff(bs):
+def test_extract_slot_handoff_entry_slot1_last_own_handoff(bs, *, tmp_path):
     """slot-1 → 자기 마지막 handoff(3차) 본문·제목. 타 슬롯 본문 유입 없음."""
-    entry = bs.extract_slot_handoff_entry(_MULTI_SLOT_LOG, bound_session="project_manager_1")
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_1')
     assert entry is not None
     assert entry["type"] == "handoff"
     assert "PM 3차 (project_manager_1)" in entry["title"]
@@ -458,36 +453,36 @@ def test_extract_slot_handoff_entry_slot1_last_own_handoff(bs):
     assert "slot2" not in entry["body"], "타 슬롯 본문이 섞이면 안 된다."
 
 
-def test_extract_slot_handoff_entry_slot2_last_own_handoff(bs):
+def test_extract_slot_handoff_entry_slot2_last_own_handoff(bs, *, tmp_path):
     """slot-2 → 자기 마지막 handoff(2차) 본문(전역 마지막=slot-1 3차 아님)."""
-    entry = bs.extract_slot_handoff_entry(_MULTI_SLOT_LOG, bound_session="project_manager_2")
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_2')
     assert entry is not None
     assert "PM 2차 (project_manager_2)" in entry["title"]
     assert "slot2 2차 인계" in entry["body"]
     assert "slot1" not in entry["body"], "전역 마지막(slot-1 3차) 본문이 유입되면 안 된다."
 
 
-def test_extract_slot_handoff_entry_untagged_fallback_for_slot1(bs):
+def test_extract_slot_handoff_entry_untagged_fallback_for_slot1(bs, *, tmp_path):
     """무태그 폴백 — slot-1 은 태그 도입 전 무태그 handoff 도 자기 것으로 본다."""
     log = (
         "## [2026-07-01] handoff | PM 40차 → 다음 PM 세션\n"
         "- 무태그 인계 본문.\n"
     )
-    entry = bs.extract_slot_handoff_entry(log, bound_session="project_manager_1")
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), log, bound_session='project_manager_1')
     assert entry is not None
     assert "무태그 인계 본문" in entry["body"]
 
 
-def test_extract_slot_handoff_entry_slot2_no_own_handoff_is_none(bs):
+def test_extract_slot_handoff_entry_slot2_no_own_handoff_is_none(bs, *, tmp_path):
     """slot-2 가 자기 handoff 0개(무태그만) → None(호출부가 전역 마지막으로 폴백)."""
     log = (
         "## [2026-07-01] handoff | PM 40차 → 다음 PM 세션\n"
         "- 무태그.\n"
     )
-    assert bs.extract_slot_handoff_entry(log, bound_session="project_manager_2") is None
+    assert bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), log, bound_session='project_manager_2') is None
 
 
-def test_extract_slot_handoff_entry_skips_non_handoff_types(bs):
+def test_extract_slot_handoff_entry_skips_non_handoff_types(bs, *, tmp_path):
     """전역 마지막이 note 여도 자기 슬롯 마지막 *handoff* 본문을 고른다(type 필터)."""
     log = (
         "## [2026-07-10] handoff | PM 3차 (project_manager_1) → 다음 PM 세션\n"
@@ -495,7 +490,7 @@ def test_extract_slot_handoff_entry_skips_non_handoff_types(bs):
         "## [2026-07-11] note | 진행 메모\n"
         "- 이건 handoff 아님.\n"
     )
-    entry = bs.extract_slot_handoff_entry(log, bound_session="project_manager_1")
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), log, bound_session='project_manager_1')
     assert entry is not None
     assert entry["type"] == "handoff"
     assert "slot1 3차 인계" in entry["body"]
@@ -504,10 +499,10 @@ def test_extract_slot_handoff_entry_skips_non_handoff_types(bs):
 
 # ── 타-슬롯 자산 유입 = 0 단언 (DoD·자기 슬롯 필터 후) ─────────────────────────
 
-def test_slot2_filter_zero_other_slot_asset_leak(bs):
+def test_slot2_filter_zero_other_slot_asset_leak(bs, *, tmp_path):
     """DoD: slot-2 필터 후 차수·본문 어디에도 타 슬롯(slot-1·무태그) 자산 유입 0."""
-    num = bs.parse_last_handoff_session_num(_MULTI_SLOT_LOG, bound_session="project_manager_2")
-    entry = bs.extract_slot_handoff_entry(_MULTI_SLOT_LOG, bound_session="project_manager_2")
+    num = bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_2')
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_2')
     # 차수: 무태그 40·slot-1 3 어느 것도 아님 — 오직 자기 슬롯 max(2).
     assert num == 2
     # 본문: slot-1·무태그 entry 어느 것도 유입 안 됨.
@@ -530,10 +525,7 @@ def _bootstrap_for_ctx(bs, tmp_path, *, bound_slot, pm_state_text=None):
     else:
         pm_state_file = tmp_path / "pm_state.md"
         pm_state_file.write_text(pm_state_text, encoding="utf-8")
-    inst = bs.PmBootstrap(
-        pm_state_file=pm_state_file,
-        areas_file=tmp_path / "no-areas.md",  # 부재 → 자동해소 None(genuine solo)
-    )
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), pm_state_file=pm_state_file, areas_file=tmp_path / 'no-areas.md')
     inst._bound_slot = bound_slot
     return inst
 
@@ -550,7 +542,7 @@ def _bootstrap_single_self_host(bs, tmp_path, *, pm_state_file=None, log_file=No
         kwargs["pm_state_file"] = pm_state_file
     if log_file is not None:
         kwargs["log_file"] = log_file
-    inst = bs.PmBootstrap(**kwargs)
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), **kwargs)
     inst._bound_slot = None  # 무인자 → 자동해소
     return inst
 
@@ -564,7 +556,7 @@ def test_collect_log_entry_solo_unresolved_keeps_global_fallback(bs, tmp_path):
     log = "## [2026-07-09] note | 진행 메모\n- 전역 note 본문.\n"
     log_file = tmp_path / "current.md"
     log_file.write_text(log, encoding="utf-8")
-    inst = bs.PmBootstrap(log_file=log_file, areas_file=tmp_path / "no-areas.md")
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), log_file=log_file, areas_file=tmp_path / 'no-areas.md')
     inst._bound_slot = None  # genuine solo — 자동해소 None
     entry = inst._collect_log_entry()
     assert entry is not None, "솔로(bound 미해소)는 전역 폴백 유지 — 현행 표시 보존."
@@ -583,7 +575,7 @@ def test_collect_log_entry_solo_note_after_handoff_returns_note(bs, tmp_path):
     )
     log_file = tmp_path / "current.md"
     log_file.write_text(log, encoding="utf-8")
-    inst = bs.PmBootstrap(log_file=log_file, areas_file=tmp_path / "no-areas.md")
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), log_file=log_file, areas_file=tmp_path / 'no-areas.md')
     inst._bound_slot = None  # genuine solo
     entry = inst._collect_log_entry()
     assert entry is not None
@@ -596,28 +588,28 @@ def test_collect_log_entry_solo_note_after_handoff_returns_note(bs, tmp_path):
 
 # ── should-fix: 정규식 태그 캡처를 canonical `<repo>_<N>` 로 제약 (서술형 괄호 오캡처 방지) ──
 
-def test_handoff_regex_ignores_descriptive_parens_when_untagged(bs):
+def test_handoff_regex_ignores_descriptive_parens_when_untagged(bs, *, tmp_path):
     """should-fix: 서술형 괄호(`PM 4차 (아침 대화)`)는 세션 태그로 오인 안 됨(drop 0)."""
     log = "## [2026-07-10] handoff | PM 4차 (아침 대화) → 다음 PM 세션\n- 무태그 본문.\n"
     # bound 미해소 — 서술형 괄호를 태그로 오캡처하면 drop 되어 None 이 됐을 것.
-    assert bs.parse_last_handoff_session_num(log) == 4
-    entry = bs.extract_slot_handoff_entry(log)
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), log) == 4
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), log)
     assert entry is not None and "무태그 본문" in entry["body"]
 
 
-def test_handoff_regex_canonical_tag_still_captured(bs):
+def test_handoff_regex_canonical_tag_still_captured(bs, *, tmp_path):
     """canonical `(<repo>_<N>)` 는 여전히 세션 태그로 캡처(제약이 정상 태그를 막지 않음)."""
     log = "## [2026-07-10] handoff | PM 4차 (project_manager_2) → 다음 PM 세션\n- t.\n"
     # 양성 슬롯(slot-2)은 자기 태그 소유 → 4. 태그 캡처가 정상 동작함을 이 단언이 입증한다.
-    assert bs.parse_last_handoff_session_num(log, bound_session="project_manager_2") == 4
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), log, bound_session='project_manager_2') == 4
     # 미해소(None)는 전역 tag-agnostic 파싱 → 태그된 4 도 차수로 복원(codex R4·차수 유실 금지).
-    assert bs.parse_last_handoff_session_num(log) == 4
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), log) == 4
 
 
-def test_handoff_regex_descriptive_parens_with_number_not_canonical(bs):
+def test_handoff_regex_descriptive_parens_with_number_not_canonical(bs, *, tmp_path):
     """서술형에 숫자가 있어도(`(회의 3)`) 후행 `_N` 없으면 태그 아님 — 무태그로 읽힌다."""
     log = "## [2026-07-10] handoff | PM 5차 (회의 3) → 다음 PM 세션\n- 본문.\n"
-    assert bs.parse_last_handoff_session_num(log) == 5
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), log) == 5
 
 
 # ── task 태그 파서 (F7·T-0356) — sentinel `task:` 캡처·소유·차수/본문 추론·슬롯 회귀 불변 ──
@@ -630,11 +622,11 @@ def test_handoff_regex_captures_task_tag(bs):
     `task:[^)]+` 로 넓게 두되(관용) 캡처 케이스는 유효 명(한글 포함)으로 커버한다."""
     for name in ("mytask", "my-task", "한글작업", "job_v2"):
         line = f"## [2026-07-10] handoff | PM 7차 (task:{name}) → 다음 PM 세션"
-        m = bs._LOG_HANDOFF_HEADER_RE.search(line)
+        m = bootstrap_rules._LOG_HANDOFF_HEADER_RE.search(line)
         assert m is not None and m.group("session") == f"task:{name}", name
 
 
-def test_handoff_task_tag_owned_and_num_inferred(bs):
+def test_handoff_task_tag_owned_and_num_inferred(bs, *, tmp_path):
     """task bound_session(`task:<name>`)이 자기 태그 entry 만 소유 — 차수 추론·본문 추출 성공.
 
     entry 추출/차수 추론(DoD)이 task 태그로 동작함을 못박는다: 태그된 최고차를 차수로 잡고
@@ -645,12 +637,12 @@ def test_handoff_task_tag_owned_and_num_inferred(bs):
         "## [2026-07-11] handoff | PM 4차 (task:mytask) → 다음 PM 세션\n"
         "- mytask 4차 본문.\n"
     )
-    assert bs.parse_last_handoff_session_num(log, bound_session="task:mytask") == 4
-    entry = bs.extract_slot_handoff_entry(log, bound_session="task:mytask")
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), log, bound_session='task:mytask') == 4
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), log, bound_session='task:mytask')
     assert entry is not None and "mytask 4차 본문" in entry["body"]
 
 
-def test_handoff_task_tag_excludes_other_task_and_slot(bs):
+def test_handoff_task_tag_excludes_other_task_and_slot(bs, *, tmp_path):
     """task bound 는 타 task·슬롯 태그 entry 를 자기 것으로 안 본다(cross-anchor 유입 차단)."""
     log = (
         "## [2026-07-10] handoff | PM 9차 (project_manager_2) → 다음 PM 세션\n- 슬롯 본문.\n\n"
@@ -658,13 +650,13 @@ def test_handoff_task_tag_excludes_other_task_and_slot(bs):
         "## [2026-07-12] handoff | PM 5차 (task:mytask) → 다음 PM 세션\n- mytask 본문.\n"
     )
     # mytask 는 자기 태그(5차)만 — 슬롯 9차·other 3차 유입 0.
-    assert bs.parse_last_handoff_session_num(log, bound_session="task:mytask") == 5
-    entry = bs.extract_slot_handoff_entry(log, bound_session="task:mytask")
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), log, bound_session='task:mytask') == 5
+    entry = bootstrap_history.extract_slot_handoff_entry(pm_paths.home_at(tmp_path), log, bound_session='task:mytask')
     assert entry is not None and "mytask 본문" in entry["body"]
     assert "슬롯 본문" not in entry["body"] and "other 본문" not in entry["body"]
 
 
-def test_handoff_slot_bound_ignores_task_tags(bs):
+def test_handoff_slot_bound_ignores_task_tags(bs, *, tmp_path):
     """슬롯 회귀 불변 — 슬롯 bound(`<repo>_<N>`)는 task 태그 entry 를 자기 것으로 안 본다.
 
     task 태그 도입이 슬롯 필터를 오염시키지 않음을 못박는다(양방향 격리)."""
@@ -672,7 +664,7 @@ def test_handoff_slot_bound_ignores_task_tags(bs):
         "## [2026-07-10] handoff | PM 8차 (task:mytask) → 다음 PM 세션\n- task 본문.\n\n"
         "## [2026-07-11] handoff | PM 2차 (project_manager_2) → 다음 PM 세션\n- 슬롯2 본문.\n"
     )
-    assert bs.parse_last_handoff_session_num(log, bound_session="project_manager_2") == 2
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), log, bound_session='project_manager_2') == 2
 
 
 # ── reconcile_session_num: 순수 함수 단위 (DoD·test_pm_state_per_slot 확장) ────
@@ -680,23 +672,23 @@ def test_handoff_slot_bound_ignores_task_tags(bs):
 def test_reconcile_session_num_slot_scoped_log_next(bs):
     """슬롯-스코프 log_next 소비 — pm_state 미해소면 슬롯 log_next 로 폴백(stale 아님)."""
     # slot-2 자기 태그 max=2 → log_next=3. pm_state 미해소(`?`) → 3 폴백.
-    assert bs.reconcile_session_num("?", 3) == (3, False)
+    assert bootstrap_rules.reconcile_session_num("?", 3) == (3, False)
 
 
 def test_reconcile_session_num_state_wins_over_slot_log(bs):
     """pm_state 슬롯 차수가 슬롯 log_next 보다 앞서면 pm_state 우선·stale 아님."""
-    assert bs.reconcile_session_num(4, 3) == (4, False)
+    assert bootstrap_rules.reconcile_session_num(4, 3) == (4, False)
 
 
 def test_reconcile_session_num_slot_log_wins_when_state_stale(bs):
     """슬롯 log_next 가 pm_state 보다 크면 log 우선(max) + stale(머신 간 미동기)."""
-    assert bs.reconcile_session_num(2, 3) == (3, True)
+    assert bootstrap_rules.reconcile_session_num(2, 3) == (3, True)
 
 
 def test_reconcile_session_num_both_unresolved_placeholder(bs):
     """pm_state·슬롯 log 둘 다 미해소 → placeholder 그대로(fresh 규칙은 context 층)."""
-    assert bs.reconcile_session_num("?", None) == ("?", False)
-    assert bs.reconcile_session_num(None, None) == (None, False)
+    assert bootstrap_rules.reconcile_session_num("?", None) == ("?", False)
+    assert bootstrap_rules.reconcile_session_num(None, None) == (None, False)
 
 
 # ══════════════════════════════════════════════════════════════════════════

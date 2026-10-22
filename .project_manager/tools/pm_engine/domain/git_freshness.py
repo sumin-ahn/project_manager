@@ -70,3 +70,37 @@ def _format_freshness(scope: dict) -> str:
     if scope.get("note"):
         parts.append(scope["note"])
     return " · ".join(parts)
+
+
+def freshness_decision(
+    *, fetched: bool, detached: bool, dirty: bool | None, ahead: int | None, behind: int | None
+) -> tuple[str, bool]:
+    """fetch 후 scope 상태 문자열 + ff-pull 수행 여부를 판정한다 (순수 함수·자동 pull 안전 게이트).
+
+    - detached HEAD → ("detached", False) — 재부착은 PM 판단·자동 pull 안 함.
+    - behind None (upstream 미설정/조회불가) → ("upstream 없음", False).
+    - behind 0 · ahead 0 → ("최신", False).
+    - behind 0 · ahead>0 → ("ahead-only", False) — 로컬만 앞섬(push 대기·pull 불요).
+    - behind>0 · **안전조건 전부 충족** → ("동기", True) — 자동 ff-pull.
+    - behind>0 · 안전조건 위반 → ("수동 동기 필요", False) — 표면화만.
+
+    **자동 ff-pull 안전조건**(codex must-fix — 하나라도 어기면 자동 pull 금지):
+      `fetched is True` — freshness 를 *실측*(fetch 성공)한 상태여야 한다. fetch 실패면
+         behind/ahead 는 stale 원격 데이터라 그 위에서 pull 하면 "실측 후 clean·ff" 전제가 거짓.
+      `dirty is False` — working tree 가 *확정 clean*. `git status` 조회 실패(dirty=None·
+         미확인)는 clean 을 증명 못 하므로 자동 pull 불가(경고만).
+      `ahead == 0` — 로컬 커밋 없음 *확정*(ff 가능·diverged 아님). `ahead=None`(미확인)은
+         0 취급하지 않는다 — 증명 없는 pull 금지(codex round-2 must-fix).
+    """
+    if detached:
+        return "detached", False
+    if behind is None:
+        return "upstream 없음", False
+    ahead_n = ahead or 0
+    if behind == 0:
+        return ("ahead-only", False) if ahead_n > 0 else ("최신", False)
+    # behind > 0 — 안전조건 전부 충족(fetch 성공·확정 clean·ff 확정)일 때만 자동 동기.
+    # `ahead == 0` 엄격 비교: None(미확인)은 False — ahead_n 폴백을 여기 쓰면 미확인이 0 으로 위장.
+    if fetched and dirty is False and ahead == 0:
+        return "동기", True
+    return "수동 동기 필요", False

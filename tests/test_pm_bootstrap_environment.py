@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_card
+from pm_engine.cli import bootstrap_report
+from pm_engine.infra import fs
+from pm_engine.infra import pm_paths
+from pm_engine.infra import process
+from pm_engine.infra import python_env
+
 import importlib.util
 import os
 from pathlib import Path
@@ -43,7 +51,7 @@ def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
         conf.write_text("runtime.py=ignored\n", encoding="utf-8")
         # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
         # `Path.read_text` 에 걸면 엔진이 그 호출을 더는 하지 않아 이 케이스가 공허해진다.
-        seam = mod.fs
+        seam = fs
         original = seam.read_text_shared
 
         def _read_text(path, *args, **kwargs):
@@ -56,11 +64,11 @@ def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
         raise AssertionError(state)
 
 
-def _card(mod, environment) -> str:
-    inst = mod.PmBootstrap.__new__(mod.PmBootstrap)
+def _card(mod, environment, *, tmp_path) -> str:
+    inst = bootstrap_cli.PmBootstrap.__new__(bootstrap_cli.PmBootstrap)
     inst._command_environment = environment
     inst._task_name = "env-task"
-    return inst._build_command_card_markdown()
+    return bootstrap_card._build_command_card_markdown(pm_paths.home_at(tmp_path), getattr(inst, '_task_name', None), environment=getattr(inst, '_command_environment', None))
 
 
 def _command_suffixes(card: str) -> list[str]:
@@ -77,8 +85,8 @@ def test_environment_matrix_16(
     mod = _load()
     _configure(tmp_path, monkeypatch, config_state, mod)
     system, os_name, label, default_argv, policy = OS_CASES[os_case]
-    environment = mod._detect_command_environment(
-        tmp_path, system=system, os_name=os_name
+    environment = python_env._detect_command_environment(
+        pm_paths.home_at(tmp_path), system=system, os_name=os_name
     )
     expected_argv = ("custom-python",) if config_state == "valid" else default_argv
 
@@ -90,7 +98,7 @@ def test_environment_matrix_16(
     )
     assert environment.chain_policy == policy
 
-    card = _card(mod, environment)
+    card = _card(mod, environment, tmp_path=tmp_path)
     prefix = f"{' '.join(expected_argv)} .project_manager/tools/"
     # Execution rows begin with the resolved launcher after Markdown indentation
     # is stripped.  Prose pointers may mention the same path mid-line and are not
@@ -102,21 +110,21 @@ def test_environment_matrix_16(
     if label == "windows":
         assert all("&&" not in line for line in command_lines)
 
-    baseline = mod._CommandEnvironment(label, ("baseline-python",), "local-conf", policy)
-    assert _command_suffixes(card) == _command_suffixes(_card(mod, baseline))
+    baseline = python_env._CommandEnvironment(label, ("baseline-python",), "local-conf", policy)
+    assert _command_suffixes(card) == _command_suffixes(_card(mod, baseline, tmp_path=tmp_path))
 
-    inst = mod.PmBootstrap(run_git_fn=lambda _args: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda _args: (0, ''))
     inst._command_environment = environment
     board = {
         "counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
         "open_tickets": [], "lint": "clean",
     }
     git = {"branch": "main", "commits": [], "working_tree": "clean"}
-    markdown = inst._build_markdown(board, None, git, None, "ts")
-    line = mod._render_environment_line(environment)
+    markdown = bootstrap_report._build_markdown(board, None, git, None, 'ts', environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
+    line = bootstrap_card._render_environment_line(environment)
     assert markdown.count("현재 환경:") == 1
     assert markdown.count(line) == 1
-    data = inst._build_json(board, None, git, None, "ts")
+    data = bootstrap_report._build_json(board, None, git, None, 'ts', environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None))
     assert data["environment"] == {
         "os": label,
         "python": " ".join(expected_argv),
@@ -133,9 +141,9 @@ def test_final_nonempty_py_wins_and_final_empty_preserves_fallback(tmp_path):
     conf_dir.mkdir()
     conf = conf_dir / "local.conf"
     conf.write_text("runtime.py=first\nruntime.py=second\n", encoding="utf-8")
-    assert mod._resolve_python_argv(tmp_path, "windows") == (("second",), "local-conf")
+    assert python_env._resolve_python_argv(pm_paths.home_at(tmp_path), "windows") == (("second",), "local-conf")
     conf.write_text("runtime.py=first\nruntime.py=\n", encoding="utf-8")
-    assert mod._resolve_python_argv(tmp_path, "windows") == (("py", "-3"), "os-default")
+    assert python_env._resolve_python_argv(pm_paths.home_at(tmp_path), "windows") == (("py", "-3"), "os-default")
 
 
 def test_configured_launcher_is_one_argv_token_not_shell_parsed(tmp_path):
@@ -143,7 +151,7 @@ def test_configured_launcher_is_one_argv_token_not_shell_parsed(tmp_path):
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
     (conf_dir / "local.conf").write_text("runtime.py=launcher --not-a-shell-flag\n", encoding="utf-8")
-    argv, source = mod._resolve_python_argv(tmp_path, "linux")
+    argv, source = python_env._resolve_python_argv(pm_paths.home_at(tmp_path), "linux")
     assert argv == ("launcher --not-a-shell-flag",)
     assert source == "local-conf"
 
@@ -155,12 +163,12 @@ def test_os_name_probe_seam_is_what_the_label_resolver_reads(monkeypatch):
     "주입이 실제로 판정에 닿는다"의 근거가 된다(두 OS 에서 같은 성질).
     """
     mod = _load()
-    assert mod._probe_os_name() == os.name, "기본 프로브가 인터프리터 값과 다르다"
+    assert process._probe_os_name() == os.name, "기본 프로브가 인터프리터 값과 다르다"
 
-    monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
-    assert mod._command_os_label(system="") == "windows"
-    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
-    assert mod._command_os_label(system="") == "other"
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
+    assert python_env._command_os_label(system="") == "windows"
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
+    assert python_env._command_os_label(system="") == "other"
 
 
 def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
@@ -169,12 +177,12 @@ def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
     def _boom():
         raise RuntimeError("probe failed")
 
-    monkeypatch.setattr(mod.platform, "system", _boom)
+    monkeypatch.setattr(python_env.platform, "system", _boom)
     # 엔진의 os_name 프로브 seam 에 건다 — 전역 `os.name` 을 바꾸면 이 프로세스의 pathlib 이
     # 그 값으로 flavour 를 고르느라 Windows 호스트에서 경로 연산 자체가 무너진다.
-    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
-    environment = mod._detect_command_environment(tmp_path)
-    assert environment == mod._CommandEnvironment(
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
+    environment = python_env._detect_command_environment(pm_paths.home_at(tmp_path))
+    assert environment == python_env._CommandEnvironment(
         "other", ("python3",), "os-default", "separate-lines"
     )
 
@@ -190,10 +198,10 @@ def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
 def test_real_platform_seam_is_mockable(monkeypatch, tmp_path, system, expected):
     """The production no-argument probe consumes stdlib platform, without subprocess."""
     mod = _load()
-    monkeypatch.setattr(mod.platform, "system", lambda: system)
+    monkeypatch.setattr(python_env.platform, "system", lambda: system)
     # 같은 이유로 전역 `os.name` 이 아니라 엔진 seam 을 갈아끼운다(Windows 에서 pathlib 보존).
-    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
-    environment = mod._detect_command_environment(tmp_path)
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
+    environment = python_env._detect_command_environment(pm_paths.home_at(tmp_path))
     assert (
         environment.os_label,
         environment.python_argv,

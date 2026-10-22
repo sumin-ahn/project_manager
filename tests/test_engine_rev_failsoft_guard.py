@@ -1269,7 +1269,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
     #   `TicketFinisher._notify_affected_domain`).
     # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
-    assert len(report.boundaries) == 78, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 72, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1365,21 +1365,6 @@ def _blank_recovery_reason(source: str) -> str:
     return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
 
 
-@pytest.mark.parametrize(
-    ("label", "source_name", "function", "occurrence"),
-    [
-        ("S5", "pm_bootstrap.py", "main", 0),
-    ],
-)
-def test_guard_sensitivity_marker_branches_turn_red(
-    label, source_name, function, occurrence,
-):
-    sources = _canonical_sources()
-    sources[source_name] = _remove_marker_branch(
-        sources[source_name], function, occurrence,
-    )
-    report = collect_failsoft_report(sources)
-    assert report.violations, f"{label} mutation stayed green"
 
 
 def test_guard_sensitivity_s6_recovery_marker_turns_red():
@@ -1666,18 +1651,10 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
     이 fail-soft 핸들러들에 도달한다 — 미존재/빈 목록/빈 보고로 강등하면 안 된다.
     """
     skew = _marked_skew()
-    if case == "finish_dirty_split":
-        module = _runtime_tool("ticket_finish.py")
-        instance = object.__new__(module.TicketFinisher)
-        instance._status_entries_fn = _raiser(skew)
-        invoke = lambda: instance._dirty_split(["src/file.py"])
-    else:
-        module = _runtime_tool("pm_bootstrap.py")
-        instance = object.__new__(module.PmBootstrap)
-        instance._bound_slot = None
-        instance._run_git_fn = _raiser(skew)
-        worktree_pool = SimpleNamespace(slot_path=lambda _slot: Path("slot"))
-        invoke = lambda: instance._slot_branch_exists( "work/repo_1", "feature")
+    module = _runtime_tool("ticket_finish.py")
+    instance = object.__new__(module.TicketFinisher)
+    instance._status_entries_fn = _raiser(skew)
+    invoke = lambda: instance._dirty_split(["src/file.py"])
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew

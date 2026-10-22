@@ -13,6 +13,9 @@ pytest 자식은 절대 실기동하지 않는다 — 회귀 러너 seam(`subpro
 """
 from __future__ import annotations
 
+from pm_engine.domain import bootstrap_rules
+from pm_engine.infra import pm_paths
+
 import argparse
 import importlib.util
 import io
@@ -1361,13 +1364,13 @@ def test_livegate_ran_count_keeps_kind_selection(board):
 def test_bootstrap_counts_use_last_summary_line(bootstrap):
     """(passed, total) 은 끝의 요약행 기준 — 중간 로그를 읽으면 (3, 4) 로 오판한다."""
     out = _FAKE_LOG + "3 failed, 7574 passed in 149.90s\n"
-    assert bootstrap.parse_pytest_counts(out) == (7574, 7577)
+    assert bootstrap_rules.parse_pytest_counts(out) == (7574, 7577)
 
 
 def test_bootstrap_counts_contract_unchanged(bootstrap):
     """반환 계약 불변 — total = passed + failed, 요약행 부재는 None."""
-    assert bootstrap.parse_pytest_counts("279 passed in 6.55s") == (279, 279)
-    assert bootstrap.parse_pytest_counts("ERROR: no tests collected") is None
+    assert bootstrap_rules.parse_pytest_counts("279 passed in 6.55s") == (279, 279)
+    assert bootstrap_rules.parse_pytest_counts("ERROR: no tests collected") is None
 
 
 # ── 소비처 ③ ticket 마감 ─────────────────────────────────────────────────
@@ -1434,8 +1437,8 @@ def test_livegate_ran_count_ignores_trailing_fake(board):
 def test_bootstrap_counts_ignore_trailing_fake(bootstrap):
     """부트스트랩 회귀 dump — 꼬리 오염이면 (5, 5) 로 오판하던 자리(실측)."""
     real = "7577 passed in 145.23s\n"
-    assert bootstrap.parse_pytest_counts(real + _TRAILING_FAKE) == (7577, 7577)
-    assert bootstrap.parse_pytest_counts(real + _TRAILING_FAKE_WRAPPER) == (7577, 7577)
+    assert bootstrap_rules.parse_pytest_counts(real + _TRAILING_FAKE) == (7577, 7577)
+    assert bootstrap_rules.parse_pytest_counts(real + _TRAILING_FAKE_WRAPPER) == (7577, 7577)
 
 
 def test_ticket_finish_ignores_trailing_fake(ticket_finish):

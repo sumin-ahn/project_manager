@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+
 import argparse
 import contextlib
 import datetime
@@ -52,6 +53,7 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import log_entries
 from pm_engine.domain import identity_args, ticket_rules  # noqa: E402
 from pm_engine.infra import areas_store, console, delegate_ledger, fs, log_store, pm_paths, raw_output, repo_files  # noqa: E402
 from pm_engine.infra import task_store
@@ -193,27 +195,10 @@ CURRENT_HEADER = """\
 """
 
 # entry 시작 앵커: "## [YYYY-MM-DD] ..." 줄.
-_ENTRY_RE = re.compile(r"^## \[(\d{4}-\d{2}-\d{2})\]", re.MULTILINE)
 
 
 # ── 순수 헬퍼 ──────────────────────────────────────────────────────────────
 
-def split_entries(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """log 텍스트를 (preamble, [(date, entry_text), ...]) 로 쪼갠다.
-
-    preamble = 첫 entry 이전의 헤더 블록. 각 entry_text 는 `## [..]` 줄부터
-    다음 entry 직전(또는 파일 끝)까지 — 줄바꿈 포함.
-    """
-    matches = list(_ENTRY_RE.finditer(text))
-    if not matches:
-        return text, []
-    preamble = text[: matches[0].start()]
-    entries: list[tuple[str, str]] = []
-    for i, m in enumerate(matches):
-        start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        entries.append((m.group(1), text[start:end]))
-    return preamble, entries
 
 
 def next_archive_index(archive_dir: Path) -> int:
@@ -258,7 +243,7 @@ def cmd_tail(args: argparse.Namespace) -> int:
     if not CURRENT_FILE.exists():
         print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
         return 2
-    _preamble, entries = split_entries(_read_text_exact(CURRENT_FILE))
+    _preamble, entries = log_entries.split_entries(_read_text_exact(CURRENT_FILE))
     if not entries:
         print("(entry 없음)")
         return 0
@@ -295,7 +280,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
             return 2
 
         text = _read_text_exact(CURRENT_FILE)
-        preamble, entries = split_entries(text)
+        preamble, entries = log_entries.split_entries(text)
 
         if cutoff is not None:
             # 날짜 기반: DATE 미만(strict <)만 봉인, DATE 이상은 유지.

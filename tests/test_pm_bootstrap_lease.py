@@ -14,6 +14,9 @@ work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_report
+
 from pm_engine.infra import pm_paths
 
 from pm_engine.app import task_lifecycle
@@ -395,16 +398,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
 
     bind_pool(monkeypatch, worktree_pool)
     bind_board(monkeypatch, board)
-    inst = bootstrap.PmBootstrap(
-        run_board_fn=fake_board,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
-        run_git_fn=fake_git,
-        log_file=log_file,
-        areas_file=areas_file,
-
-
-        pm_state_file=pm_state_file,
-    )
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=fake_git, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file)
     return inst
 
 
@@ -498,36 +492,36 @@ def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True, m
 # ── 9. CLI parser 배선 ────────────────────────────────────────────────────────
 
 
-def test_bootstrap_branch_without_repo_errors(bootstrap):
+def test_bootstrap_branch_without_repo_errors(bootstrap, tmp_path):
     """--branch 를 --repo 없이 주면 거부(오용 신호)."""
     with pytest.raises(SystemExit):
-        bootstrap.main(["--branch", "a5"])
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--branch', 'a5'])
 
 
-def test_bootstrap_slot_without_repo_errors(bootstrap):
+def test_bootstrap_slot_without_repo_errors(bootstrap, tmp_path):
     """--slot 을 --repo 없이 주면 거부(multi-PM 모드 전용·오용 신호)."""
     with pytest.raises(SystemExit):
-        bootstrap.main(["--slot", "2"])
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--slot', '2'])
 
 
-def test_bootstrap_slot_with_branch_rejected(bootstrap):
+def test_bootstrap_slot_with_branch_rejected(bootstrap, tmp_path):
     """--slot(bind) + --branch(alloc) 동시 사용은 거부 — 둘은 배타 경로다."""
     with pytest.raises(SystemExit):
-        bootstrap.main(["--repo", "X", "--slot", "2", "--branch", "b"])
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--repo', 'X', '--slot', '2', '--branch', 'b'])
 
 
-def test_bootstrap_slot_with_resume_rejected(bootstrap):
+def test_bootstrap_slot_with_resume_rejected(bootstrap, tmp_path):
     """--slot(bind) + --resume(alloc) 동시 사용은 거부 — 둘은 배타 경로다."""
     with pytest.raises(SystemExit):
-        bootstrap.main(["--repo", "X", "--slot", "2", "--resume", "b"])
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--repo', 'X', '--slot', '2', '--resume', 'b'])
 
 
-def test_bootstrap_slot_below_one_rejected(bootstrap):
+def test_bootstrap_slot_below_one_rejected(bootstrap, tmp_path):
     """--slot 0/음수는 거부 — 슬롯 번호는 1부터(work/<repo>_<N> 정합·codex 게이트)."""
     with pytest.raises(SystemExit):
-        bootstrap.main(["--repo", "X", "--slot", "0"])
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--repo', 'X', '--slot', '0'])
     with pytest.raises(SystemExit):
-        bootstrap.main(["--repo", "X", "--slot", "-1"])
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--repo', 'X', '--slot', '-1'])
 
 
 
@@ -575,7 +569,7 @@ def test_auto_slot_single_repo_single_slot_returns_identity(bootstrap, tmp_path)
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    resolved = slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases)
     assert (resolved.key, resolved.slot) == ("project_manager_1", "work/project_manager_1")
     assert (resolved.repo, resolved.number) == ("project_manager", 1)
 
@@ -588,7 +582,7 @@ def test_auto_slot_zero_repos_returns_none(bootstrap, tmp_path):
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_two_repos_returns_none(bootstrap, tmp_path):
@@ -599,7 +593,7 @@ def test_auto_slot_two_repos_returns_none(bootstrap, tmp_path):
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
     ])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_two_slots_returns_none(bootstrap, tmp_path):
@@ -613,7 +607,7 @@ def test_auto_slot_two_slots_returns_none(bootstrap, tmp_path):
         {"slot": "work/project_manager_2", "repo": "project_manager",
          "session": "project_manager_2", "state": "leased"},
     ])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_missing_leases_returns_none(bootstrap, tmp_path):
@@ -621,7 +615,7 @@ def test_auto_slot_missing_leases_returns_none(bootstrap, tmp_path):
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"  # 미생성 → 부재
     _write_areas(areas, ["project_manager"])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
@@ -630,7 +624,7 @@ def test_auto_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     leases.write_text("{not valid json", encoding="utf-8")
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_schema_mismatch_returns_none(bootstrap, tmp_path):
@@ -639,7 +633,7 @@ def test_auto_slot_schema_mismatch_returns_none(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     leases.write_text(_auto_json.dumps(["not", "a", "dict"]), encoding="utf-8")
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_slot_for_other_repo_returns_none(bootstrap, tmp_path):
@@ -650,7 +644,7 @@ def test_auto_slot_slot_for_other_repo_returns_none(bootstrap, tmp_path):
     _write_leases(leases, [
         {"slot": "work/other_1", "repo": "other", "session": "other_1", "state": "leased"},
     ])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
@@ -662,7 +656,7 @@ def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
         {"slot": "work/project_manager_3", "repo": "project_manager",
          "session": "project_manager_3", "state": "leased"},
     ])
-    resolved = slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases)
     assert (resolved.key, resolved.slot) == ("project_manager_3", "work/project_manager_3")
 
 
@@ -683,7 +677,7 @@ def test_auto_slot_idle_slot1_resolves_leased_slot2(bootstrap, tmp_path):
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "idle"),
                            _lease("project_manager", 2, "leased")])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases).key == "project_manager_2"
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases).key == "project_manager_2"
 
 
 def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
@@ -692,7 +686,7 @@ def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "leased")])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases).key == "project_manager_1"
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases).key == "project_manager_1"
 
 
 def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
@@ -701,7 +695,7 @@ def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "idle")])
-    assert slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), areas_file=areas, leases_file=leases) is None
+    assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
 # ── 13. _worktree_cwd — git/pytest 러너 worktree cwd 자동해소 (T-0125·T-0124 동형) ─
@@ -710,11 +704,11 @@ def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
 # 자동해소 경로는 _auto_slot 을 monkeypatch 로 결정값 주입(REPO 상수 의존 회피).
 
 
-def test_worktree_cwd_explicit_slot_wins(bootstrap):
+def test_worktree_cwd_explicit_slot_wins(bootstrap, tmp_path):
     """명시 slot(`work/<repo>_<N>`) 이 최우선 — REPO/slot 으로 끝난다 (_auto_slot 무시)."""
-    inst = bootstrap.PmBootstrap()
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     cwd = inst._worktree_cwd("work/foo_2")
-    assert cwd == str(bootstrap.REPO / "work/foo_2")
+    assert cwd == str(tmp_path / "work/foo_2")
     assert cwd.replace(os.sep, "/").endswith("work/foo_2")
 
 
@@ -772,7 +766,7 @@ def test_bootstrap_task_resume_reads_pm_state_pointer(bootstrap, monkeypatch, tm
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst.run(task="job1")
     out = capsys.readouterr().out
-    assert bootstrap._render_task_pm_state_pointer(
+    assert bootstrap_report._render_task_pm_state_pointer(
         tmp_path / "tasks" / "job1" / "pm_state.md") in out
 
 
@@ -953,7 +947,7 @@ def test_task_first_session_has_state_and_announces_session_one(bootstrap, monke
     rc = inst.run(task="job1")
     assert rc == 0
     out = capsys.readouterr().out
-    assert bootstrap._render_task_pm_state_pointer(
+    assert bootstrap_report._render_task_pm_state_pointer(
         tmp_path / "tasks" / "job1" / "pm_state.md") in out
     assert "🆕 첫 바인딩 슬롯" not in out
     assert "## PM 1차 부트스트랩" in out
@@ -1055,12 +1049,12 @@ def _windows_task_pm_state(name: str) -> _WindowsFlavourPath:
 
 def test_display_path_text_serializes_windows_path_as_posix(bootstrap):
     """`_display_path_text` = POSIX 단일 직렬화 — 이미 문자열인 경로는 추측 치환하지 않는다."""
-    assert bootstrap._display_path_text(
+    assert bootstrap_report._display_path_text(
         _windows_task_pm_state("job1")
     ) == f"{_WINDOWS_TASK_ROOT}/job1/pm_state.md"
-    assert bootstrap._display_path_text(Path("/pmhome/tasks/job1")) == "/pmhome/tasks/job1"
+    assert bootstrap_report._display_path_text(Path("/pmhome/tasks/job1")) == "/pmhome/tasks/job1"
     # POSIX 파일명엔 `\` 가 정당하게 들어갈 수 있다 — 문자열 입력을 구분자로 해석하지 않는다.
-    assert bootstrap._display_path_text("weird\\name") == "weird\\name"
+    assert bootstrap_report._display_path_text("weird\\name") == "weird\\name"
 
 
 def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, monkeypatch, tmp_path, capsys):
@@ -1072,7 +1066,7 @@ def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, monkeypatch, 
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert bootstrap._render_task_pm_state_pointer(_windows_task_pm_state("job1")) in out
+    assert bootstrap_report._render_task_pm_state_pointer(_windows_task_pm_state("job1")) in out
     assert "tasks/job1/pm_state.md" in out
     assert "tasks\\job1" not in out   # 첫-turn 안내 포함 전 surface 가 native 표기로 새지 않는다.
 
@@ -1089,8 +1083,8 @@ def test_task_first_session_pointer_announced_on_windows_path(bootstrap, monkeyp
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert bootstrap._TASK_PM_STATE_POINTER_LABEL in out
-    assert bootstrap._render_task_pm_state_pointer(_windows_task_pm_state("job1")) in out
+    assert bootstrap_report._TASK_PM_STATE_POINTER_LABEL in out
+    assert bootstrap_report._render_task_pm_state_pointer(_windows_task_pm_state("job1")) in out
     # 첫-turn 안내(`_pm_state_display_path` 소비 2줄)도 같은 POSIX 표기를 쓴다.
     assert inst._pm_state_display_path() == f"{_WINDOWS_TASK_ROOT}/job1/pm_state.md"
     assert "tasks\\job1" not in out
@@ -1108,7 +1102,6 @@ def _handover_home(bootstrap, tmp_path, monkeypatch):
     PM 홈(`REPO`) 아래에는 준비 사본을 하나도 두지 않는다 — 뿌리를 홈으로 잡으면 이 자리가
     빈다.
     """
-    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks"))
     wp._extra_leases = [_FakeLeaseEntry("work/X_7", "X", "job1", state="leased")]
     run_dir = (wp.slot_path("work/X_7") / ".project_manager" / ".local"

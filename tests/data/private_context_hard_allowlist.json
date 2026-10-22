@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 308,
+  "count": 304,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 152
+    "python-prose": 148
   },
   "entries": [
     {
@@ -141,14 +141,6 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_bootstrap.py",
-      "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
       "count": 1
     },
     {
@@ -581,14 +573,6 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_bootstrap.py",
-      "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
       "count": 1
     },
     {
@@ -1133,14 +1117,6 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_bootstrap.py",
-      "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
       "count": 1
     },
     {
@@ -1909,14 +1885,6 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_bootstrap.py",
-      "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
       "count": 1
     },
     {

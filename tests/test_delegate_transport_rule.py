@@ -133,7 +133,7 @@ def _codex_card_section() -> str:
     """codex 세션 `$pm-bootstrap` 카드 끝에 붙는 절(`pm_bootstrap._CODEX_CARD_SECTION`) — 이 절이 codex 위임
     규약의 유일 전달 채널이다. 모듈 전체를 싣지 않고 그 상수 할당만 평가한다."""
     import ast
-    tree = ast.parse(BOOTSTRAP.read_text(encoding="utf-8"))
+    tree = ast.parse((BOOTSTRAP.parent / "pm_engine/cli/bootstrap_card.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
                 getattr(target, "id", None) == "_CODEX_CARD_SECTION" for target in node.targets):

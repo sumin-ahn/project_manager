@@ -15,6 +15,8 @@ T-0041 rename 반영 — `_extract_session_section(pm_state_text)` ·
 도구는 패키지가 아니므로 importlib 동적 로드 (test_handoff_trigger 관용구).
 """
 from __future__ import annotations
+
+from pm_engine.domain import session_history
 from pm_engine.domain import home as home_module
 from pm_engine.infra import pool_store
 from pm_engine.infra import slot_snapshot
@@ -128,7 +130,7 @@ _POINTER_1_3 = "  - 이전 차 (PM 1차~3차) = `log/current.md` handoff entry �
 def test_extract_session_section_returns_text_and_offsets(hf):
     """앵커 존재 시 (section_text, start, end) 반환 — section_text 가 앵커로 시작."""
     doc = _state(_entry(4), pointer=_POINTER_1_3)
-    result = hf._extract_session_section(doc)
+    result = session_history._extract_session_section(doc)
     assert result is not None
     section_text, start, end = result
     assert section_text.startswith("## 세션 식별 (현재까지 사용된 이름)")
@@ -140,13 +142,13 @@ def test_extract_session_section_returns_text_and_offsets(hf):
 
 def test_extract_session_section_absent_returns_none(hf):
     """앵커가 없으면 None (추측 편집 금지 — 호출 측이 ValueError 로 승격)."""
-    assert hf._extract_session_section("# no session anchor here\n") is None
+    assert session_history._extract_session_section("# no session anchor here\n") is None
 
 
 def test_extract_session_section_stops_at_next_header(hf):
     """절 경계는 다음 ## (또는 ###) 헤더 직전까지 — 후속 헤더 내용은 포함 안 함."""
     doc = _state(_entry(4), pointer=_POINTER_1_3)
-    section_text, _, _ = hf._extract_session_section(doc)
+    section_text, _, _ = session_history._extract_session_section(doc)
     # 다음 헤더(진행 중인 의사결정)는 절에 포함되지 않는다.
     assert "진행 중인 의사결정" not in section_text
     # 세션 entry·포인터는 포함.
@@ -157,7 +159,7 @@ def test_extract_session_section_stops_at_next_header(hf):
 def test_extract_session_section_extends_to_eof_when_no_next_header(hf):
     """다음 헤더가 없으면 절은 파일 끝까지 확장된다 (말미 케이스)."""
     doc = _state(_entry(4), pointer=_POINTER_1_3, trailing_header=False)
-    section_text, _, end = hf._extract_session_section(doc)
+    section_text, _, end = session_history._extract_session_section(doc)
     assert end == len(doc)
     assert "**4차**" in section_text
 
@@ -245,10 +247,10 @@ def test_update_session_window_fills_three_before_evicting_oldest(hf):
             date_str=f"2026-07-2{session_num}",
             wave_summary=f"wave-{session_num}",
         )
-        section, _, _ = hf._extract_session_section(state)
+        section, _, _ = session_history._extract_session_section(state)
         observed.append([
             int(match.group(1).replace("차", ""))
-            for match in hf._find_pm_session_entries(section)
+            for match in session_history._find_pm_session_entries(section)
         ])
 
     assert observed == [[1], [1, 2], [1, 2, 3], [2, 3, 4]]
@@ -268,8 +270,8 @@ def test_update_session_window_legacy_solo_pointer_is_not_left_in_window(hf):
     second = hf.update_session_window(
         legacy, session_num=2, date_str="2026-07-24", wave_summary="2차 handoff"
     )
-    section, _, _ = hf._extract_session_section(second)
-    assert [m.group(1) for m in hf._find_pm_session_entries(section)] == ["1차", "2차"]
+    section, _, _ = session_history._extract_session_section(second)
+    assert [m.group(1) for m in session_history._find_pm_session_entries(section)] == ["1차", "2차"]
     assert "이전 차 (PM" not in section
 
     # B: 3차 충전과 4차 eviction의 기존 sliding-window 동작은 그대로다.
@@ -279,8 +281,8 @@ def test_update_session_window_legacy_solo_pointer_is_not_left_in_window(hf):
     fourth = hf.update_session_window(
         third, session_num=4, date_str="2026-07-26", wave_summary="4차 handoff"
     )
-    section, _, _ = hf._extract_session_section(fourth)
-    assert [m.group(1) for m in hf._find_pm_session_entries(section)] == ["2차", "3차", "4차"]
+    section, _, _ = session_history._extract_session_section(fourth)
+    assert [m.group(1) for m in session_history._find_pm_session_entries(section)] == ["2차", "3차", "4차"]
     assert "이전 차 (PM 1차~1차)" in section
 
 
@@ -323,7 +325,7 @@ def _state_with_anchor(anchor_line: str, *entries: str, pointer: str = "") -> st
 def test_extract_session_section_matches_anchor_variants(hf, anchor_line):
     """공백/괄호/여백 변형 앵커도 정규화 부분일치로 절을 추출한다."""
     doc = _state_with_anchor(anchor_line, _entry(4), pointer=_POINTER_1_3)
-    result = hf._extract_session_section(doc)
+    result = session_history._extract_session_section(doc)
     assert result is not None
     section_text, start, end = result
     # 절은 변형 헤더 줄로 시작하고(offset 정합), 다음 헤더는 포함하지 않는다.
@@ -376,8 +378,8 @@ _FINANCE_DEV_PM_STATE = (
 
 def test_extract_session_section_finance_dev_shape(hf):
     """finance_dev 실 형상(2칸 공백 + 괄호절 다름 h2)에서도 절을 추출한다 (str.find 실패 형상)."""
-    assert hf._SESSION_SECTION_ANCHOR not in _FINANCE_DEV_PM_STATE  # 정확 매칭이면 실패했을 형상.
-    result = hf._extract_session_section(_FINANCE_DEV_PM_STATE)
+    assert session_history._SESSION_SECTION_ANCHOR not in _FINANCE_DEV_PM_STATE  # 정확 매칭이면 실패했을 형상.
+    result = session_history._extract_session_section(_FINANCE_DEV_PM_STATE)
     assert result is not None
     section_text, _, _ = result
     assert "**9차**" in section_text
@@ -411,14 +413,14 @@ def test_extract_session_section_prefers_entry_bearing_among_multiple_matches(hf
         "  - **3차** (2026-07-01 · wave): wave.\n\n"
         "## 다음 절\n\n내용.\n"
     )
-    result = hf._extract_session_section(text)
+    result = session_history._extract_session_section(text)
     assert result is not None
     section_text, _, _ = result
     assert "**3차**" in section_text            # entry 보유 절을 선택.
     assert "설명만 있는 절" not in section_text   # 앞의 빈 설명-절이 아님.
     # 폴백: 전부 entry 없으면 첫 후보(종전 동작) — None 이 아니어야 함.
     text_no_entry = "## 세션 식별 규칙\n\n설명.\n\n## 딴 절\n\n내용.\n"
-    fallback = hf._extract_session_section(text_no_entry)
+    fallback = session_history._extract_session_section(text_no_entry)
     assert fallback is not None and "설명." in fallback[0]
 
 
@@ -2171,8 +2173,8 @@ def test_task_session_inference_advances_after_bootstrap_but_reruns_when_release
         "# log\n\n"
         "## [2026-08-07] handoff | PM 3차 (task:job1) → 다음 PM 세션\n"
     )
-    assert hf.infer_next_task_session_num(state, log, "job1") == 4
-    assert hf.infer_next_task_session_num(
+    assert session_history.infer_next_task_session_num(state, log, "job1") == 4
+    assert session_history.infer_next_task_session_num(
         state, log, "job1", task_released=True
     ) == 3
 

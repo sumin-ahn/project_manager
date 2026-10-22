@@ -18,6 +18,13 @@ hermetic: 파일/REPO 접촉 테스트는 모듈-레벨 REPO 를 tmp 로 monkeyp
 """
 from __future__ import annotations
 
+from pm_engine.app import bootstrap_history
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_report
+from pm_engine.domain import dashboard
+from pm_engine.infra import pm_paths
+from pm_engine.infra import python_env
+
 from _pool_seams import bind_pool
 
 import contextlib
@@ -198,7 +205,7 @@ def test_upsert_append_keeps_existing_sections(hf):
     """신규 슬롯 append 시 기존 섹션들 보존(마지막에 추가)."""
     doc = hf.upsert_dashboard_section("", "project_manager_1", _sec(hf, "project_manager_1", 1, "a"))
     doc2 = hf.upsert_dashboard_section(doc, "finance_2", _sec(hf, "finance_2", 2, "b"))
-    keys = [k for k, _ in hf.parse_dashboard_sections(doc2)]
+    keys = [k for k, _ in dashboard.parse_dashboard_sections(doc2)]
     assert keys == ["project_manager_1", "finance_2"]
 
 
@@ -210,7 +217,7 @@ def test_parse_round_trip_two_sections(hf):
     """upsert 로 만든 2섹션 대시보드를 parse → 키·본문 왕복 일치(write/read 대칭)."""
     doc = hf.upsert_dashboard_section("", "project_manager_1", _sec(hf, "project_manager_1", 1, "waveA"))
     doc = hf.upsert_dashboard_section(doc, "finance_2", _sec(hf, "finance_2", 2, "waveB"))
-    parsed = dict(hf.parse_dashboard_sections(doc))
+    parsed = dict(dashboard.parse_dashboard_sections(doc))
     assert set(parsed) == {"project_manager_1", "finance_2"}
     assert "waveA" in parsed["project_manager_1"]
     assert "waveB" in parsed["finance_2"]
@@ -222,14 +229,14 @@ def test_parse_round_trip_two_sections(hf):
 def test_parse_ignores_preamble(hf):
     """첫 `## ` 앞 preamble(`# 헤더`)은 섹션으로 잡지 않는다."""
     doc = "# slot 대시보드\n\n## project_manager_1\n\n- 차수: PM 1차\n"
-    parsed = hf.parse_dashboard_sections(doc)
+    parsed = dashboard.parse_dashboard_sections(doc)
     assert [k for k, _ in parsed] == ["project_manager_1"]
 
 
 def test_parse_empty_returns_empty(hf):
     """섹션 없는 텍스트 → 빈 목록."""
-    assert hf.parse_dashboard_sections("") == []
-    assert hf.parse_dashboard_sections("# preamble only\n") == []
+    assert dashboard.parse_dashboard_sections("") == []
+    assert dashboard.parse_dashboard_sections("# preamble only\n") == []
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -326,24 +333,9 @@ def test_write_dashboard_section_overwrites_own_keeps_other(hf_repo):
 # PmBootstrap._collect_dashboard_others — 자기 제외 dump·lease 폴백·솔로 None
 # ══════════════════════════════════════════════════════════════════════════
 
-def _make_bs(tmp_path, monkeypatch, *, load_tool_hf=None):
-    """pm_bootstrap — REPO tmp monkeypatch. load_tool_hf 주면 _load_tool 을 실 모듈로 대체.
-
-    `_load_tool` 은 pm_handoff(대시보드 parse·차수)·pm_log(log entry split)을 동적로드하는데,
-    REPO 를 tmp 로 monkeypatch 하면 TOOLS_DIR 이 없어 None 이 된다 — 실 canonical 도구를 이름으로
-    되돌려 log_entry/차수 경로도 hermetic 하게 동작하게 한다.
-    """
-    bs = _load("pm_bootstrap")
-    monkeypatch.setattr(bs, "REPO", tmp_path)
-    if load_tool_hf is not None:
-        def _fake_load_tool(name):
-            if name == "pm_handoff":
-                return load_tool_hf
-            if name == "pm_log":
-                return _load("pm_log")
-            return None
-        monkeypatch.setattr(bs, "_load_tool", _fake_load_tool)
-    return bs
+def _make_bs(tmp_path, monkeypatch):
+    """실행 패키지와 임시 Home을 사용하는 bootstrap 진입점."""
+    return _load("pm_bootstrap")
 
 
 def _write_dashboard(tmp_path, hf, *sections: tuple[str, int, str]) -> Path:
@@ -361,13 +353,13 @@ def _write_dashboard(tmp_path, hf, *sections: tuple[str, int, str]) -> Path:
 def test_collect_dashboard_others_task_mode_excludes_own_task(tmp_path, monkeypatch):
     """task dashboard 키는 task 이름이므로 자기 task를 '다른 활성 PM'으로 다시 표시하지 않는다."""
     hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
+    bs = _make_bs(tmp_path, monkeypatch)
     _write_dashboard(
         tmp_path, hf,
         ("mytask", 3, "mineTaskWave"),
         ("other-task", 2, "otherTaskWave"),
     )
-    inst = bs.PmBootstrap()
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     inst._task_name = "mytask"
     result = inst._collect_dashboard_others()
     assert result is not None and result["mode"] == "dashboard"
@@ -386,7 +378,7 @@ def test_collect_dashboard_others_task_lease_fallback_excludes_own_task(tmp_path
         '{"slot":"work/finance_2","repo":"finance","session":"other-task","state":"leased"}]}',
         encoding="utf-8",
     )
-    inst = bs.PmBootstrap()
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     inst._task_name = "mytask"
     result = inst._collect_dashboard_others()
     assert result["mode"] == "lease"
@@ -401,42 +393,42 @@ _BOARD = {"counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0}, "open_ti
 _GIT = {"branch": "main", "commits": [], "working_tree": "clean"}
 
 
-def test_build_markdown_renders_dashboard_others(hf):
+def test_build_markdown_renders_dashboard_others(hf, tmp_path):
     """dashboard_others(dashboard 모드) → "### 다른 활성 PM" 절에 타 슬롯 섹션 dump."""
     bs = _load("pm_bootstrap")
-    inst = bs.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     others = {"mode": "dashboard", "others": [
         {"session": "finance_2", "body": "- 차수: PM 7차 (2026-07-10)\n- wave: finWave"}]}
-    md = inst._build_markdown(_BOARD, None, _GIT, None, "ts", None, others)
+    md = bootstrap_report._build_markdown(_BOARD, None, _GIT, None, 'ts', None, others, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
     assert "### 다른 활성 PM" in md
     assert "**finance_2**" in md
     assert "finWave" in md
 
 
-def test_build_markdown_omits_section_when_none(hf):
+def test_build_markdown_omits_section_when_none(hf, tmp_path):
     """dashboard_others None(솔로) → "다른 활성 PM" 절 자체 생략(무노이즈)."""
     bs = _load("pm_bootstrap")
-    inst = bs.PmBootstrap(run_git_fn=lambda a: (0, ""))
-    md = inst._build_markdown(_BOARD, None, _GIT, None, "ts", None, None)
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
+    md = bootstrap_report._build_markdown(_BOARD, None, _GIT, None, 'ts', None, None, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
     assert "### 다른 활성 PM" not in md
 
 
-def test_build_markdown_lease_fallback_render(hf):
+def test_build_markdown_lease_fallback_render(hf, tmp_path):
     """dashboard_others(lease 모드) → 세션·슬롯 목록 폴백 렌더."""
     bs = _load("pm_bootstrap")
-    inst = bs.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     others = {"mode": "lease", "others": [{"session": "finance_2", "slot": "work/finance_2"}]}
-    md = inst._build_markdown(_BOARD, None, _GIT, None, "ts", None, others)
+    md = bootstrap_report._build_markdown(_BOARD, None, _GIT, None, 'ts', None, others, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
     assert "### 다른 활성 PM" in md
     assert "`finance_2`" in md and "`work/finance_2`" in md
 
 
-def test_build_json_carries_dashboard_others(hf):
+def test_build_json_carries_dashboard_others(hf, tmp_path):
     """JSON 렌더도 dashboard_others 를 그대로 실어 보낸다(소비자 일관성)."""
     bs = _load("pm_bootstrap")
-    inst = bs.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     others = {"mode": "dashboard", "others": [{"session": "finance_2", "body": "- 차수: PM 7차"}]}
-    data = inst._build_json(_BOARD, None, _GIT, None, "ts", None, others)
+    data = bootstrap_report._build_json(_BOARD, None, _GIT, None, 'ts', None, others, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None))
     assert data["dashboard_others"] == others
 
 
@@ -464,10 +456,10 @@ def _write_leases(tmp_path, *entries: tuple[str, str]) -> Path:
 def test_active_leased_sessions_none_when_ledger_absent(tmp_path, monkeypatch):
     """_active_leased_sessions — 장부 부재 → None(판정불가)·정상 read → leased 세션 집합."""
     bs = _make_bs(tmp_path, monkeypatch)
-    inst = bs.PmBootstrap()
-    assert inst._active_leased_sessions() is None
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
+    assert bootstrap_history._active_leased_sessions(pm_paths.home_at(tmp_path)) is None
     _write_leases(tmp_path, ("project_manager_1", "leased"), ("finance_2", "idle"))
-    assert inst._active_leased_sessions() == {"project_manager_1"}  # idle 제외
+    assert bootstrap_history._active_leased_sessions(pm_paths.home_at(tmp_path)) == {"project_manager_1"}  # idle 제외
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -609,15 +601,7 @@ def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str='# log\n', monkeypatch)
         return 0, ""
 
     bind_pool(monkeypatch, pool)
-    return bs.PmBootstrap(
-        run_board_fn=fake_board,
-        run_pytest_fn=lambda: (0, ""),
-        run_git_fn=fake_git,
-        log_file=log_file,
-        areas_file=areas,
-
-        pm_state_file=pm_state,
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (0, ''), run_git_fn=fake_git, log_file=log_file, areas_file=areas, pm_state_file=pm_state)
 
 
 def test_write_dashboard_section_atomic_no_tmp_left(hf_repo):
@@ -647,7 +631,7 @@ def test_render_section_sanitizes_session_key(hf):
     sec = hf.render_dashboard_section("evil\n## injected", session_num=1, wave_summary="w", date=_DATE)
     assert sec.startswith("## evil injected\n")  # 개행 접힘·`#` 마커 제거된 안전 키
     assert sec.count("\n## ") == 0  # 위조 섹션 경계 없음
-    assert len(hf.parse_dashboard_sections(sec)) == 1  # 단일 섹션
+    assert len(dashboard.parse_dashboard_sections(sec)) == 1  # 단일 섹션
 
 
 def test_upsert_render_sanitize_consistent(hf):

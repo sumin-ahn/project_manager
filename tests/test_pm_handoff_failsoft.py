@@ -10,6 +10,8 @@ PmHandoff DI/주입 패턴 재사용).
 """
 from __future__ import annotations
 
+from pm_engine.domain import session_history
+
 from _pool_seams import bind_pool
 
 import importlib.util
@@ -260,7 +262,7 @@ def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str, *, monkey
 
 def test_extract_session_section_none_when_anchor_absent(handoff):
     """세션 식별 절이 완전 부재하면 _extract_session_section 은 None (추측 편집 금지)."""
-    assert handoff._extract_session_section(_PM_STATE_NO_ANCHOR) is None
+    assert session_history._extract_session_section(_PM_STATE_NO_ANCHOR) is None
 
 
 def test_update_session_window_raises_when_anchor_absent(handoff):

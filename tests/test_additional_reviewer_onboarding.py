@@ -18,6 +18,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_card
+from pm_engine.infra import pm_paths
+
 import argparse
 import importlib.util
 import subprocess
@@ -488,9 +492,7 @@ def test_retired_activity_noun_scan_covers_the_swept_surfaces():
     assert expected <= scanned, f"sweep 대상이 스캔 밖: {sorted(expected - scanned)}"
 
 
-def test_bootstrap_first_turn_card_names_the_additional_reviewer(
-    pm_bootstrap, monkeypatch
-):
+def test_bootstrap_first_turn_card_names_the_additional_reviewer(pm_bootstrap, monkeypatch, tmp_path):
     """부트스트랩 첫 턴 카드의 additional_reviewer 줄이 역할을 '추가 리뷰어'로 부른다.
 
     수신 하네스는 채택자 `local.conf` 설정값이라 카드 문구가 고정하지 않는다 — 반면 실행
@@ -498,9 +500,9 @@ def test_bootstrap_first_turn_card_names_the_additional_reviewer(
     """
     for marker in ("CODEX_THREAD_ID", "CODEX_CI"):
         monkeypatch.delenv(marker, raising=False)  # 하네스 감지 절 append 제거(결정론)
-    inst = pm_bootstrap.PmBootstrap.__new__(pm_bootstrap.PmBootstrap)
+    inst = bootstrap_cli.PmBootstrap.__new__(bootstrap_cli.PmBootstrap)
     inst._task_name = "demo-task"
-    card = inst._build_command_card_markdown()
+    card = bootstrap_card._build_command_card_markdown(pm_paths.home_at(tmp_path), getattr(inst, '_task_name', None), environment=getattr(inst, '_command_environment', None))
 
     review_lines = [ln for ln in card.splitlines() if "additional_reviewer.py" in ln]
     assert len(review_lines) == 1, f"additional_reviewer 줄이 1개가 아님: {review_lines}"

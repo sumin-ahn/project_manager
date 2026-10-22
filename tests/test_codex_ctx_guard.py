@@ -99,6 +99,10 @@ def _feature_tree(tmp_path: Path, pm_log_body: str) -> Path:
     root = tmp_path / "adopter"
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True)
+    shutil.copytree(
+        TOOLS / "pm_engine", tools / "pm_engine",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     (tools / "pm_log.py").write_text(pm_log_body, encoding="utf-8", newline="\n")
     # 엔진 루트 해소 마커(`repo_root`) — 폴백에 기대지 않고 트리 루트를 값으로 고정한다.
     (tools / "pm_handoff.py").write_text("", encoding="utf-8", newline="\n")
@@ -292,12 +296,11 @@ def test_hooks_warning_is_inline_and_only_calls_engine_script():
     engine_tools = {"{tools}/pm_log.py"}
     for feature in _features("PreCompact") + _features("PostCompact"):
         if not feature.argv:
-            # in-process 기능(subprocess 없음)은 handler 가 엔진 모듈(`{tools}/pm_principles.py`)을
-            # 적재해야 한다 — 어댑터 안에 정책 사본이 있으면 안 된다는 같은 관심사.
+            # in-process 재무장은 실행 패키지의 marker 저장소를 직접 사용한다.
             handler = getattr(feature, "handler", None)
             assert handler is not None, f"argv 도 handler 도 없는 기능: {feature}"
             source = inspect.getsource(handler)
-            assert "pm_principles" in source or "_load_principles" in source, (
+            assert "principle_store.rearm_seen_marker" in source, (
                 f"in-process handler 가 엔진 모듈을 적재하지 않음: {feature}")
             continue
         assert feature.argv[0] == "{py}", feature
@@ -1264,6 +1267,11 @@ def _copy_dispatcher_to_layout(tmp_path: Path, label: str) -> tuple[Path, Path]:
         dispatcher_copy = tmp_path / f"{label}-adopter" / ".codex" / "pm_orch_codex.py"
     dispatcher_copy.parent.mkdir(parents=True)
     shutil.copy2(DISPATCHER_PY, dispatcher_copy)
+    engine_tools = dispatcher_copy.resolve().parents[1] / ".project_manager" / "tools"
+    shutil.copytree(
+        TOOLS / "pm_engine", engine_tools / "pm_engine",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     root = dispatcher_copy.parent if label == "flat" else dispatcher_copy.parent.parent
     return dispatcher_copy, root
 
@@ -1288,7 +1296,7 @@ def test_self_child_spawn_succeeds_in_both_layouts_without_adapter_fallback(tmp_
     출하 CLI 를 그대로 태운다(`--hook-dispatch PreToolUse`) — mock runner 는 self 경로가 실재하지
     않아도 통과시키므로 여기서는 진짜 자식 프로세스로 재야 결함이 드러난다."""
     dispatcher_copy, root = _copy_dispatcher_to_layout(tmp_path, label)
-    (root / ".project_manager" / "tools").mkdir(parents=True)
+    (root / ".project_manager" / "tools").mkdir(parents=True, exist_ok=True)
     (root / ".project_manager" / "tools" / "pm_handoff.py").write_text("", encoding="utf-8")
 
     completed = subprocess.run(

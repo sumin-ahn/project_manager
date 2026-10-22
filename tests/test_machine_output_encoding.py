@@ -23,6 +23,9 @@ T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 �
       쓴다(서브프로세스 실측).
 """
 from __future__ import annotations
+from pm_engine.cli import bootstrap_report
+
+from pm_engine.cli import bootstrap as bootstrap_cli
 
 from pm_engine.infra import pm_paths
 
@@ -151,7 +154,7 @@ def _bind_task_stub(inst, monkeypatch, tmp_path):
     )
     monkeypatch.setattr(inst, "_validate_task_slot_set", lambda _name, leases=None: 0)
     monkeypatch.setattr(inst, "_task_slot_set_rows", lambda _name, leases=None: [])
-    monkeypatch.setattr(inst, "_build_task_identity_markdown", lambda _info: "")
+    monkeypatch.setattr(bootstrap_report, "_build_task_identity_markdown", lambda _info: "")
 
 
 def _hermetic_bootstrap(bootstrap, tmp_path, log_text: str):
@@ -172,14 +175,7 @@ def _hermetic_bootstrap(bootstrap, tmp_path, log_text: str):
             return 0, "abc123 subject\n"
         return 0, ""
 
-    return bootstrap.PmBootstrap(
-        run_board_fn=_board_fn,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
-        run_git_fn=_git_fn,
-        log_file=log_file,
-        areas_file=areas_file,
-        pm_state_file=tmp_path / "absent_pm_state.md",
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_board_fn, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 미호출')), run_git_fn=_git_fn, log_file=log_file, areas_file=areas_file, pm_state_file=tmp_path / 'absent_pm_state.md')
 
 
 # 헤더의 `(task:probe)` 태그 — 세션은 자기 task 태그 entry 만 자기 것으로 읽는다.

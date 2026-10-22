@@ -22,6 +22,8 @@ pool.py·test_pm_handoff.py 의 real-git 픽스처 동류). 검증은 실 git wo
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+
 from _pool_seams import bind_board, bind_pool
 
 import importlib.util
@@ -161,7 +163,6 @@ def _fake_git_fn(args):
 
 def _make_bootstrap(bootstrap_mod, wp, tmp_path, *, monkeypatch):
     """실 worktree_pool 을 주입한 격리 PmBootstrap — board/git/log/areas/pm_state 는 hermetic."""
-    monkeypatch.setattr(bootstrap_mod, "REPO", wp.REPO)
     log_file = tmp_path / "boot_current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
@@ -170,17 +171,7 @@ def _make_bootstrap(bootstrap_mod, wp, tmp_path, *, monkeypatch):
     pm_state_file.write_text("", encoding="utf-8")
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, _FakeBoard())
-    return bootstrap_mod.PmBootstrap(
-        run_board_fn=_fake_board_fn,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
-        run_git_fn=_fake_git_fn,
-        log_file=log_file,
-        areas_file=areas_file,
-
-
-        pm_state_file=pm_state_file,
-        board_dir=tmp_path / "noboard",   # board submodule 부재(솔로) — freshness graceful skip.
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(wp.REPO), run_board_fn=_fake_board_fn, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=_fake_git_fn, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file, board_dir=tmp_path / 'noboard')
 
 
 _PROMPT_ANCHOR = "## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
