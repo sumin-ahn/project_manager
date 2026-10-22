@@ -135,16 +135,30 @@ _CONTRACT_PLACEHOLDER_RE = re.compile(
     + r")(?:\b|$)",
     re.IGNORECASE,
 )
-PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE = (
+_PM_REVIEW_CONCRETE_FIX_VALUE_RULE = (
     "모든 finding의 fix_contract 여섯 문자열은 구체값으로 채운다 — angle-bracket "
     "metavariable와 parser 금지어("
     + "·".join(PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS)
     + ")를 쓰지 않는다."
 )
 
+PM_REVIEW_EXISTING_TEST_PREFIX = "existing:"
+PM_REVIEW_FIX_TEST_RULE = (
+    "fix_contract.test는 새 시험 추가·수정이면 tests/파일.py로 시작한다. "
+    f"기존 시험 재실행은 {PM_REVIEW_EXISTING_TEST_PREFIX} 다음 공백 뒤에 tests/파일.py를 적는다. "
+    "경로 뒤 설명의 다른 파일은 결속하지 않는다. 새 시험은 시험 파일 변경을, 기존 시험은 "
+    "실재 시험 파일과 location 수정 경로 변경을 요구하며 command를 실제 실행한다. "
+    "시험 경로가 없는 지적은 location 수정 경로 변경을 요구한다."
+)
+PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE = (
+    _PM_REVIEW_CONCRETE_FIX_VALUE_RULE + " " + PM_REVIEW_FIX_TEST_RULE
+)
+
 # 이 문구를 바꾸기 전에 예약된 review seed도 무편집 상태로 계속 읽어야 한다. 새 항목은
 # 문장을 바꿀 때만 맨 앞에 덧붙인다(CONFIRM scope 문구의 세대 호환과 같은 계약).
-LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES: tuple[str, ...] = ()
+LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES: tuple[str, ...] = (
+    _PM_REVIEW_CONCRETE_FIX_VALUE_RULE,
+)
 PM_REVIEW_VERIFY_PAYLOAD_KEYS: tuple[str, ...] = ("version", "verifications")
 PM_REVIEW_VERIFY_ROW_KEYS: tuple[str, ...] = (
     "id", "machine_verifiable", "command", "expected", "before", "reason",

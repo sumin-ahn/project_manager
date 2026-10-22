@@ -653,7 +653,8 @@ def _versioned_block_requirement(
     return (
         _VERSIONED_BLOCK_HEADER
         + rules
-        + "\n"
+        + review_form.PM_REVIEW_FIX_TEST_RULE
+        + "\n\n"
         + review_form.render_pm_review_block_skeleton(role, confirmation_ids)
         + "\n"
     )

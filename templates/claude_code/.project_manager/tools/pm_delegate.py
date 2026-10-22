@@ -2478,9 +2478,9 @@ def _developer_round_harvest_problem(
             if finding.id in pm_owned_ids:
                 continue
             try:
-                targets = _contract_test_targets(
+                test_kind, targets = _reviewer_fix_test_requirement(
                     finding.fix_contract["test"],
-                    f"reviewer 추가 회귀 {finding.id}.test", required=False,
+                    f"reviewer 추가 회귀 {finding.id}.test",
                 )
                 location_paths = _contract_repo_paths(
                     finding.fix_contract["location"],
@@ -2488,17 +2488,17 @@ def _developer_round_harvest_problem(
                 )
             except delegate_errors.DelegateError as exc:
                 return str(exc)
+            if test_kind == "existing" and not location_paths:
+                return f"reviewer 기존 시험 {finding.id}은 location에 repo-relative 수정 경로가 필요합니다"
             if not targets and not location_paths:
                 return (
                     f"reviewer 수정 계약 {finding.id}이 이 저장소의 경로를 하나도 "
                     "지목하지 않았습니다 — test 의 repo-relative 테스트 대상"
                     "(tests/*.py)이나 location 의 repo-relative 파일 경로가 필요합니다"
                 )
-            # 회귀를 붙이겠다고 적었으면 그 파일이 전부 이번 diff 에 있어야 하고, 붙일
-            # 테스트가 없는 지적(죽은 코드 삭제)은 계약이 적은 고칠 자리 중 하나를 이번
-            # 라운드가 바꿨으면 된다. 어느 쪽이든 판정은 계약이 이미 적은 값과 diff 의
-            # 교집합이라 리뷰어가 새로 선언할 것은 없다.
-            if targets:
+            # 시험 변경 계약은 시험 파일의 변경을 요구한다. 기존 시험 재실행과 시험
+            # 대상이 없는 지적은 location의 수정 경로 중 하나가 이번 diff에 있어야 한다.
+            if test_kind == "changed":
                 missing = [target for target in targets if target not in changed_paths]
             else:
                 missing = (
@@ -2510,6 +2510,14 @@ def _developer_round_harvest_problem(
                     f"reviewer 추가 회귀 {finding.id} 대상이 이 fix diff에 "
                     f"추가·수정되지 않았습니다: {', '.join(missing)}"
                 )
+            if test_kind == "existing":
+                for target in targets:
+                    try:
+                        observed = (repo_root / target).stat()
+                    except FileNotFoundError:
+                        return f"reviewer 기존 시험 {finding.id} 파일이 없습니다: {target}"
+                    if not stat.S_ISREG(observed.st_mode):
+                        return f"reviewer 기존 시험 {finding.id} 정규 파일이 아닙니다: {target}"
             problem = _run_required_test(
                 finding.fix_contract["command"], finding.fix_contract["expected"],
                 cwd=repo_root,
@@ -3387,6 +3395,20 @@ def _contract_test_targets(
             f"{field}에 repo-relative 테스트 대상(tests/*.py)이 없습니다"
         )
     return ()
+
+
+def _reviewer_fix_test_requirement(value: str, field: str) -> tuple[str, tuple[str, ...]]:
+    """reviewer의 기존 시험 재실행 선언과 파일 변경 계약을 구분한다."""
+    parts = value.split(maxsplit=1)
+    prefix = review_form.PM_REVIEW_EXISTING_TEST_PREFIX
+    if parts and parts[0].startswith(prefix):
+        if parts[0] != prefix or len(parts) != 2:
+            raise delegate_errors.DelegateError(
+                f"{field}는 {prefix} 다음에 공백과 테스트 경로가 필요합니다"
+            )
+        return "existing", _contract_test_targets(parts[1], field)
+    targets = _contract_test_targets(value, field, required=False)
+    return ("changed" if targets else "location"), targets
 
 
 def _contract_repo_paths(value: str, field: str) -> tuple[str, ...]:

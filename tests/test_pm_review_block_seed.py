@@ -627,3 +627,33 @@ def test_adapter_skill_and_playbook_surfaces_have_no_review_schema_literals(pd):
             for path, family, line in violations
         )
     )
+
+
+@pytest.mark.parametrize("role", ("code-reviewer", "additional-reviewer"))
+@pytest.mark.parametrize("confirmation", (False, True))
+def test_t0981_test_rule_preserves_reserved_seed_state(role, confirmation):
+    prefix = review_form.PM_REVIEW_FINDING_ID_PREFIXES[role]
+    ids = [f"{prefix}-001"] if confirmation else [f"{prefix}-NNN"]
+    next_id = f"{prefix}-002" if confirmation else f"{prefix}-001"
+    old_rule = next(
+        rule for rule in review_form.LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES
+        if "existing:" not in rule and "여섯 문자열" in rule
+    )
+    for rule in (old_rule, review_form.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE):
+        body = round_seed._render_review_round_seed_body(role, ids, next_id, contract_rule=rule)
+        assert round_seed.ticket_round_body_is_pending(role, body) is True
+        filled = body.replace("판정: <통과|반려>", "판정: 통과", 1)
+        assert round_seed.ticket_round_body_is_pending(role, filled) is False
+    current = round_seed._render_review_round_seed_body(role, ids, next_id)
+    assert review_form.PM_REVIEW_FIX_TEST_RULE in current
+    assert "existing:" in current
+
+
+def test_t0981_external_prompt_uses_the_native_test_rule():
+    external = _load(
+        REPO / ".project_manager/tools/additional_reviewer.py", "t0981_external_notice",
+    )
+    requirement = external._versioned_block_requirement()
+    assert review_form.PM_REVIEW_FIX_TEST_RULE in requirement
+    assert "existing:" in requirement
+    assert requirement.count(review_form.PM_REVIEW_FIX_TEST_RULE) == 1
