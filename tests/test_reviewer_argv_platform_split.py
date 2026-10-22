@@ -19,6 +19,9 @@ r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.infra.harness.reviewer_run
+
 from pm_engine.infra.harness import contract
 from pm_engine.infra import reviewer_target
 
@@ -204,8 +207,8 @@ def test_windows_reviewer_command_reaches_the_runner_as_an_executable_argv(
         seen["argv"] = list(argv)
         return _completed(0)
 
-    ok, _output, started = external._run_reviewer_ex(
-        "prompt", WINDOWS_REVIEWER_CMD, 5, runner)
+    ok, _output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+        pm_paths.home_at(external.REPO), "prompt", WINDOWS_REVIEWER_CMD, 5, runner)
 
     assert (ok, started) == (True, True)
     assert seen["argv"] == [WINDOWS_EXECUTABLE, "-c", "pass"]
@@ -228,7 +231,7 @@ def test_real_subprocess_run_still_works_under_the_windows_rule(external, monkey
     command = shlex.join([sys.executable, "-c", "pass"])
     assert reviewer_target._split_reviewer_argv(command)[0] == sys.executable, (
         "Windows 규칙이 인용된 인터프리터 경로를 단일 토큰으로 복원하지 못했다")
-    ok, _output, started = external._run_reviewer_ex("prompt", command, 5, subprocess.run)
+    ok, _output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", command, 5, subprocess.run)
     assert (ok, started) == (True, True)
 
 
@@ -261,18 +264,18 @@ def test_unresolved_executable_is_loud_and_distinct_from_no_reviewer_configured(
     def missing(argv, **kwargs):
         raise FileNotFoundError(argv[0])
 
-    ok, output, started = external._run_reviewer_ex(
-        "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
+    ok, output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+        pm_paths.home_at(external.REPO), "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
     assert (ok, started) == (False, False)
-    assert external.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
-    assert external.NO_REVIEWER_CONFIGURED_MARKER not in output.answer
+    assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
+    assert pm_engine.infra.harness.reviewer_run.NO_REVIEWER_CONFIGURED_MARKER not in output.answer
     assert "교차검증은 실행되지 않았습니다" in output.answer
     assert WINDOWS_EXECUTABLE in output.answer          # 무엇으로 띄우려 했는지
 
-    ok, output, started = external._run_reviewer_ex("prompt", "   ", 5, missing)
+    ok, output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", "   ", 5, missing)
     assert (ok, started) == (False, False)
-    assert external.NO_REVIEWER_CONFIGURED_MARKER in output.answer
-    assert external.REVIEWER_LAUNCH_FAILURE_MARKER not in output.answer
+    assert pm_engine.infra.harness.reviewer_run.NO_REVIEWER_CONFIGURED_MARKER in output.answer
+    assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER not in output.answer
 
 
 def test_a_mangled_executable_names_the_declared_command(external, monkeypatch):
@@ -285,12 +288,12 @@ def test_a_mangled_executable_names_the_declared_command(external, monkeypatch):
     def missing(argv, **kwargs):
         raise FileNotFoundError(argv[0])
 
-    _ok, output, _started = external._run_reviewer_ex(
-        "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
+    _ok, output, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+        pm_paths.home_at(external.REPO), "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
     assert "해소된 커맨드에 없는 실행 파일로 분해됐습니다" in output.answer
     assert WINDOWS_REVIEWER_CMD in output.answer
 
     # PATH 에 없는 평범한 커맨드는 그 대조를 붙이지 않는다 (선언과 시도가 같다).
-    _ok, output, _started = external._run_reviewer_ex("prompt", "codex --model x", 5, missing)
-    assert external.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
+    _ok, output, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", "codex --model x", 5, missing)
+    assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
     assert "해소된 커맨드에 없는" not in output.answer

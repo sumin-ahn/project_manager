@@ -12,6 +12,8 @@ hermetic 패턴은 `test_delegate_cluster_rounds.py`(라운드 예약)와 `test_
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+
 from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_harvest
 from pm_engine.app import delegate_prepare
@@ -1197,7 +1199,7 @@ def test_cli_prepare_refuses_over_budget_with_the_stop_prescription(
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _repo: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
     monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {})
-    monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
+    monkeypatch.setattr(delegate_cmd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
     capsys.readouterr()
 
     rc = pd.main(["ticket", "prepare", "--cluster", "C-cli", "--role", "developer",
@@ -1219,7 +1221,7 @@ def test_cli_prepare_reopens_the_named_ordinal_and_refuses_a_zero(
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _repo: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
     monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {})
-    monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
+    monkeypatch.setattr(delegate_cmd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
     capsys.readouterr()
 
     rc = pd.main(["ticket", "prepare", "--ticket", "T-7102", "--role", "architect",

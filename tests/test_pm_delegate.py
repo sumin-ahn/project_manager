@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+
 from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_prepare
 from pm_engine.app import delegate_prompt
@@ -1083,7 +1085,7 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
     assert "pre-spawn rejection" in raw_text
 
     capsys.readouterr()
-    assert pd._cmd_raw(["--unfinished", "--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
     assert "미마감 raw 없음" in capsys.readouterr().out
 
 
@@ -1102,7 +1104,7 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     )
 
     capsys.readouterr()
-    assert pd._cmd_raw(["--unfinished", "--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
     out = capsys.readouterr()
     assert "미마감 raw 1건" in out.out
     assert "경고" not in out.err          # 부재를 손상으로 읽지 않는다 — 경고 0
@@ -1121,7 +1123,7 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     assert "run_id" not in finished[0] and "copy" not in finished[0]
 
     capsys.readouterr()
-    assert pd._cmd_raw(["--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--output-dir", str(output_dir)]) == 0
     assert "경고" not in capsys.readouterr().err
 
 
@@ -4515,7 +4517,7 @@ def test_dry_run_displays_configured_fallback_mapping(pd, monkeypatch, tmp_path,
 
 def test_help_documents_opt_in_claude_opus_fallback_example(pd):
     """운용 확정 조합은 채택자 예시로만 노출하고 엔진 런타임 기본값으로 만들지 않는다."""
-    help_text = pd.build_arg_parser().format_help()
+    help_text = delegate_cmd.build_arg_parser().format_help()
     assert "delegate.developer.fallback.harness=claude" in help_text
     assert "delegate.developer.fallback.model=opus" in help_text
     assert delegate_config.resolve_fallback({}, "developer", "normal") is None
@@ -4885,7 +4887,7 @@ def test_dry_run_reports_fallback_skip_reason(pd, monkeypatch, tmp_path, capsys)
 
 def test_help_documents_classification_coverage_boundary(pd):
     """§help가 3축 근거 편입과 opencode 무진단 침묵의 stall 경계를 함께 못박는다."""
-    help_text = pd.build_arg_parser().format_help()
+    help_text = delegate_cmd.build_arg_parser().format_help()
     assert "codex 실근거와 claude 2.1.220 실측/바이너리 enum" in help_text
     assert "opencode 1.18.4 provider passthrough 실측" in help_text
     assert "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축" in help_text
@@ -5800,7 +5802,7 @@ def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
 def test_help_documents_ticket_scope_flag(pd):
     """ticket 범위 판정·생략 의미와 리뷰 역할의 묶음 단위를 §help가 알린다."""
     # argparse 가 줄바꿈하므로 wrap 에 안전한 토큰으로 본다.
-    help_text = " ".join(pd.build_arg_parser().format_help().split())
+    help_text = " ".join(delegate_cmd.build_arg_parser().format_help().split())
     assert "--ticket T-NNNN" in help_text
     assert "범위 밖 변경을 경고 판정" in help_text
     assert "생략 시 허용 경로 0" in help_text
@@ -5935,13 +5937,13 @@ def test_ticket_prepare_rejects_review_role_on_a_ticket(pd, monkeypatch, tmp_pat
 
     monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", _prepare)
 
-    assert pd._cmd_ticket([
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ]) == 0
+    ], adapter_roots = pd._resolved_adapter_directories()) == 0
     with pytest.raises(SystemExit) as exc:
-        pd._cmd_ticket([
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ])
+        ], adapter_roots = pd._resolved_adapter_directories())
     assert exc.value.code == 2
     assert prepared_roles == ["developer"]
 

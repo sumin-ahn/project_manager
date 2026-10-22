@@ -5,6 +5,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.app import reviewer_run
+from pm_engine.app import reviewer_scope
+
 from pm_engine.infra import conf_store
 from pm_engine.infra.harness import delegate_env
 from pm_engine.infra import reviewer_target
@@ -120,11 +124,11 @@ def _wire_external(external, monkeypatch, engine: Path, target: Path,
         pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: engine,
     )
     monkeypatch.setattr(
-        external, "_resolve_diff_root", lambda *args, **kwargs: target,
+        reviewer_scope, "_resolve_diff_root", lambda *args, **kwargs: target,
     )
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *args, **kwargs: review_diff.ReviewDiff(
             'diff --git a/x.py b/x.py\n-old\n+new\n',
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -499,7 +503,7 @@ def test_additional_reviewer_dangling_target_conf_symlink_fails_closed(
     _wire_external(external, monkeypatch, engine, target, engine_conf)
     extracted = []
     monkeypatch.setattr(
-        external, "extract_diff", lambda *args, **kwargs: extracted.append(True),
+        review_diff, "extract_diff", lambda *args, **kwargs: extracted.append(True),
     )
 
     assert external.main(["--paths", "x.py"]) == 1
@@ -525,7 +529,7 @@ def test_additional_reviewer_existing_unreadable_target_conf_fails_closed(
     _wire_external(external, monkeypatch, engine, target, engine_conf)
     extracted = []
     monkeypatch.setattr(
-        external, "extract_diff", lambda *args, **kwargs: extracted.append(True),
+        review_diff, "extract_diff", lambda *args, **kwargs: extracted.append(True),
     )
 
     assert external.main(["--paths", "x.py"]) == 1
@@ -571,7 +575,7 @@ def test_additional_reviewer_actual_execution_keeps_same_provenance(
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "run_review", _run_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _run_review)
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
     assert err.splitlines()[0].startswith("[additional-reviewer] config provenance:")
@@ -697,8 +701,8 @@ def test_divergence_helper_without_cwd_repo_or_with_same_repo_is_quiet(
 
 def test_additional_reviewer_raw_records_conf_and_profile(external, tmp_path):
     conf_path = tmp_path / "engine" / ".project_manager" / "local.conf"
-    result = external.run_review(
-        "prompt",
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "prompt",
         target=reviewer_target.resolve_reviewer_target({
             "additional_reviewer.harness": "codex",
             "additional_reviewer.model": "gpt-5.6-sol",

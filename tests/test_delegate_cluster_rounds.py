@@ -13,6 +13,8 @@ ignore 된 슬롯 git 트리 한 쌍을 tmp 에 세운다.
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+
 from pm_engine.infra import delegate_copy_store
 from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_harvest
@@ -330,7 +332,7 @@ def test_t0928_formal_prepare_preserves_single_ticket_machine_stdout(pd, cluster
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
     monkeypatch.setattr(conf_store, 'local_config', lambda *a, **k: {})
-    monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *a, **k: None)
+    monkeypatch.setattr(delegate_cmd, "_reject_cross_role_prepare", lambda *a, **k: None)
     assert pd.main(["ticket", "prepare", "--ticket", "T-6103", "--role", "architect",
                     "--cwd", str(slot)]) == 0
     captured = capsys.readouterr()
@@ -704,7 +706,7 @@ def test_cli_prepare_and_harvest_round_trip_over_a_run_dir(
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _repo: pm_home)
     monkeypatch.setattr(pm_paths, '_repo_root_for_cwd', lambda cwd: Path(cwd))
     monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {})
-    monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
+    monkeypatch.setattr(delegate_cmd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
 
     rc = pd.main(["ticket", "prepare", "--cluster", "C-cli", "--role", "architect",
                   "--cwd", str(slot)])

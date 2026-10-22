@@ -15,6 +15,8 @@ and string literals are never searched.
 """
 from __future__ import annotations
 
+import pm_engine.infra.harness.reviewer_run
+
 import ast
 import importlib.util
 import shutil
@@ -1191,14 +1193,14 @@ def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
     assignment.value.elts = [
         node
         for node in assignment.value.elts
-        if not (isinstance(node, ast.Constant) and node.value == "additional_reviewer.py")
+        if not (isinstance(node, ast.Constant) and node.value == "ticket_finish.py")
     ]
     ast.fix_missing_locations(tree)
     engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 
     report = collect_central_guard_report(tools)
     assert any(
-        "additional_reviewer.py" in item and "STAMPED_MODULES" in item
+        "ticket_finish.py" in item and "STAMPED_MODULES" in item
         for item in report.violations
     )
 
@@ -1967,52 +1969,3 @@ def test_sensitivity_removing_each_failsoft_reraise_loses_skew(
         call(loader)
     except Exception as exc:
         assert getattr(exc, "_engine_rev_skew", False) is not True
-
-
-def test_additional_reviewer_failsoft_consumer_reraises_only_skew(monkeypatch):
-    additional_reviewer = _load_module(TOOLS, "additional_reviewer")
-    skew = RuntimeError("nested relay skew")
-    skew._engine_rev_skew = True
-
-    def raise_skew(*_args, **_kwargs):
-        raise skew
-
-    monkeypatch.setattr(additional_reviewer, "_reviewer_idle_timeout", raise_skew)
-    with pytest.raises(RuntimeError, match="nested relay skew") as exc:
-        additional_reviewer._run_reviewer_ex(
-            "prompt", "reviewer", 1, lambda *_a, **_kw: None,
-        )
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-
-
-def test_sensitivity_removing_additional_reviewer_reraise_swallows_skew(tmp_path, monkeypatch):
-    # reviewer_cmd argv 분해는 `pm_engine.infra.process.split_command_argv` 를 탄다(T-0965). 복사 목록의
-    # board·identity_args 는 분해가 board 를 지나던 때(T-0722) 정한 것이다 — 이 tmp 트리에서도 실행
-    # 경로가 실제 엔진과 같은 모듈을 지나게 한다.
-    tools = _copy_tools(
-        tmp_path, "additional_reviewer", "board", "identity_args", "file_lock", "engine_rev",
-    )
-    path = tools / "additional_reviewer.py"
-    source = path.read_text(encoding="utf-8")
-    block = (
-        "        if _is_engine_rev_skew(exc):\n"
-        "            raise\n"
-        "        if getattr(exc, \"process_cleanup_failed\", False) is True:\n"
-    )
-    replacement = "        if getattr(exc, \"process_cleanup_failed\", False) is True:\n"
-    assert block in source
-    path.write_text(source.replace(block, replacement, 1), encoding="utf-8")
-    mutant = _load_module(tools, "additional_reviewer")
-    skew = RuntimeError("nested relay skew")
-    skew._engine_rev_skew = True
-
-    def raise_skew(*_args, **_kwargs):
-        raise skew
-
-    monkeypatch.setattr(mutant, "_reviewer_idle_timeout", raise_skew)
-    # 산출물은 두 채널 구조다(T-0563) — 진단 본문은 회신 채널에 실린다. started=False 는 이
-    # 실패 지점이 kwargs 준비(=스폰 경계 앞)라서다(T-0590 R3) — 이 테스트가 보는 것은 skew 가
-    # 일반 실행 오류로 **삼켜졌다**는 사실이고, started 는 그 지점의 사실을 그대로 싣는다.
-    assert mutant._run_reviewer_ex(
-        "prompt", "reviewer", 1, lambda *_a, **_kw: None,
-    ) == (False, mutant.ReviewerOutput("[리뷰어 실행 오류: nested relay skew]", ""), False)

@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import round_store
+
 from pm_engine.infra import pm_paths
 
 
@@ -83,7 +85,7 @@ def test_additional_reviewer_resolves_ticket_in_every_status_dir(external, board
         _seed_ticket(tickets, status, f"T-90{index:02d}")
 
     for index, status in enumerate(ticket_rules.STATUS_DIRS):
-        resolved = external._find_ticket_file(f"T-90{index:02d}", pm_home=tmp_path)
+        resolved = round_store._find_ticket_file(pm_paths.home_at(Path(tmp_path).resolve()), f"T-90{index:02d}", )
         assert resolved == tickets / status / f"T-90{index:02d}.md"
 
 
@@ -115,7 +117,7 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
     tickets = tmp_path / ".project_manager" / "board" / "tickets"
     _seed_ticket(tickets, FAKE_STATUS, "T-9100")
 
-    assert external._find_ticket_file("T-9100", pm_home=tmp_path) == (
+    assert round_store._find_ticket_file(pm_paths.home_at(Path(tmp_path).resolve()), "T-9100", ) == (
         tickets / FAKE_STATUS / "T-9100.md")
     assert pm_paths._owns_real_board(tmp_path / ".project_manager") is True
 

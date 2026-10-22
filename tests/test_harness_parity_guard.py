@@ -70,15 +70,15 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         "argv 조립 — codex 는 `exec --json` 형식이라 contract 의 codex 빌더로 간다"),
     ('reviewer_target.py', '_structured_reviewer_argv', 'claude'): Site(
         "argv 조립 — claude 는 `-p --output-format stream-json` 형식이라 별도 빌더로 간다"),
-    ("additional_reviewer.py", "_structured_transport", "opencode"): Site(
+    ("reviewer_raw.py", "_structured_transport", "opencode"): Site(
         "CLI 형식 — opencode 만 프롬프트를 stdin 이 아니라 `--file` 첨부로 받는다"),
-    ("delegate_channel_guard.py", "decide", "claude"): Site(
+    ("delegate_channel.py", "decide", "claude"): Site(
         "CLI 형식 — claude 네이티브 Task tool 이 있는 세션에서만 네이티브 경로를 고른다"),
     ('delegate_run.py', '_build_target_argv', 'codex'): Site(
         "argv 조립 — codex 빌더 분기(형식 계약은 contract 소유)"),
     ('delegate_run.py', '_build_target_argv', 'claude'): Site(
         "argv 조립 — claude 빌더 분기(형식 계약은 contract 소유)"),
-    ("pm_delegate.py", "_dry_run_harness_annotations", "opencode"): Site(
+    ("delegate_cmd.py", "_dry_run_harness_annotations", "opencode"): Site(
         "dry-run 표기 — opencode 만 `--dir`/`--file` 자리표시자를 미리보기에 덧붙인다",
         expected_count=2),
     ('delegate_transport.py', '_prepare_attempt_transport', 'opencode'): Site(

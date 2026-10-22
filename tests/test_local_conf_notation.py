@@ -21,6 +21,8 @@ hermetic: 실 `local.conf` **파일**을 tmp 에 만들어 각 도구가 그 파
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_channel
+
 from pm_engine.infra import delegate_config
 from pm_engine.app import repo_protection
 from pm_engine.infra import pm_paths
@@ -135,7 +137,7 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
     config.REPO = tmp_path
 
     assert conf_store.local_config(board._home())["identity.user"] == "last@example.com"
-    assert conf_store.local_config(pm_paths.home_at(external.REPO, pm_home=external._PM_HOME_OVERRIDE))["identity.user"] == "last@example.com"
+    assert conf_store.local_config(pm_paths.home_at(external.REPO))["identity.user"] == "last@example.com"
     assert repo_protection._local_conf_value(pm_paths.home_at(config.REPO), "identity.user") == "last@example.com"
 
 
@@ -595,7 +597,7 @@ def test_delegation_switch_defaults_to_allow(guard_home, tmp_path):
     assert delegate_config._is_enabled(conf) is True
     assert delegate_config._is_enabled({**conf, "delegate.enabled": ""}) is True
     assert delegate_config._is_enabled({**conf, "delegate.enabled": "false"}) is False
-    assert guard.decide(guard_home, "developer", "normal", {**conf, "delegate.enabled": "false"},
+    assert delegate_channel.decide(guard_home, "developer", "normal", {**conf, "delegate.enabled": "false"},
                         "claude")["verdict"] == "deny"
 
 

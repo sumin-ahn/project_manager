@@ -12,6 +12,13 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import ticket_store
+from pm_engine.app import round_seed
+
+from pm_engine.app import delegate_channel
+from pm_engine.cli import delegate_cmd
+from pm_engine.app import reviewer_harvest
+
 from pm_engine.infra import delegate_copy_git
 from pm_engine.infra import delegate_copy_store
 from pm_engine.app import delegate_execute
@@ -1372,6 +1379,7 @@ def _board_round_is_pending(pd, pm_home: Path, ticket: str, ordinal: int) -> boo
 
 
 def _verify_template_rc(pd, pm_home: Path, monkeypatch, ticket: str) -> int:
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
     return pd.main(["review", "verify-template", "--ticket", ticket])
 
@@ -2075,7 +2083,7 @@ def test_single_file_container_devices_are_gone(pd, symbol):
 
 
 def test_removed_cli_surface_is_gone(pd):
-    parser = pd.build_subcommand_parser("ticket")
+    parser = delegate_cmd.build_subcommand_parser("ticket")
     text = parser.format_help()
     assert "seal-backfill" not in text
     assert "--transfer-from" not in text
@@ -2504,7 +2512,7 @@ def _spec_and_rounds(pd, pm_home: Path, tickets: Path, ticket: str):
 def _harvest_rc(pd, monkeypatch, pm_home: Path, slot: Path, copy_path: Path) -> int:
     """실 CLI rc — 소유 PM 홈 해소만 픽스처 좌표로 고정한다(판정은 엔진 그대로)."""
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    return pd._cmd_ticket(["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
+    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = pd._resolved_adapter_directories())
 
 
 def test_redeclared_prior_finding_id_is_refused_at_harvest(
@@ -2718,10 +2726,9 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
 
     internal_rc = _harvest_rc(pd, monkeypatch, pm_home, slot, internal_round.path)
     internal_error = capsys.readouterr().err
-    external_problem = external._reserve_additional_reviewer_round(
-        "T-7235", external_reply,
-        board_home=pm_paths.home_at(pm_home.resolve()),
-    )
+    external_problem = reviewer_harvest._reserve_additional_reviewer_round(
+        pm_paths.home_at(pm_home.resolve()), "T-7235", external_reply,
+        )
 
     # 같은 사유 종류 — 채널 ID 접두만 빼면 문장이 bytes 로 같다.
     _spec, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7235")
@@ -3064,10 +3071,11 @@ def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
     produced = plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- x\n"
     plan.path.write_text(produced, encoding="utf-8", newline="")
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    rc = pd._cmd_ticket(["harvest", "--copy", str(plan.path), "--cwd", str(slot)])
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(plan.path), "--cwd", str(slot)], adapter_roots = pd._resolved_adapter_directories())
     assert rc == 0
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
-    rc2 = pd._cmd_ticket(["copies", "--ticket", "T-8006"])
+    rc2 = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["copies", "--ticket", "T-8006"], adapter_roots = pd._resolved_adapter_directories())
     assert rc2 == 0
 
 
@@ -4227,7 +4235,7 @@ def _prepare_cli(pd, slot: Path, ticket: str, role: str, *, tier: str | None = N
     argv = ["prepare", "--ticket", ticket, "--role", role, "--cwd", str(slot)]
     if tier is not None:
         argv += ["--tier", tier]
-    return pd._cmd_ticket(argv)
+    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), argv, adapter_roots = pd._resolved_adapter_directories())
 
 
 def test_cross_role_prepare_is_denied_with_no_board_or_ledger_side_effect(
@@ -4279,7 +4287,7 @@ def test_native_role_prepare_is_unaffected_by_a_cross_mapping_elsewhere(
         copy_path.read_text(encoding="utf-8") + "\n## 산출\n- 값\n", encoding="utf-8", newline="",
     )
 
-    harvest_rc = pd._cmd_ticket(["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
+    harvest_rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = pd._resolved_adapter_directories())
 
     assert harvest_rc == 0
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["changed"] is True
@@ -4521,8 +4529,7 @@ def test_cross_role_prepare_denial_survives_a_reworded_deny_reason(
     monkeypatch.setenv("CLAUDECODE", "1")
     _write_spec(tickets, "T-7912")
 
-    guard = pd._load_delegate_channel_guard()
-    real_decide = guard.decide
+    real_decide = delegate_channel.decide
 
     def _reworded_decide(home, role, tier, conf, self_harness):
         result = real_decide(home, role, tier, conf, self_harness)
@@ -4530,7 +4537,7 @@ def test_cross_role_prepare_denial_survives_a_reworded_deny_reason(
             result = dict(result, reason="문구가 완전히 바뀐 새 사유")
         return result
 
-    monkeypatch.setattr(guard, "decide", _reworded_decide)
+    monkeypatch.setattr(delegate_channel, "decide", _reworded_decide)
 
     rc = _prepare_cli(pd, slot, "T-7912", "architect")
 
@@ -4551,43 +4558,10 @@ def test_reject_cross_role_prepare_does_not_misclassify_a_master_switch_deny_as_
     monkeypatch.setenv("CLAUDECODE", "1")
     conf = {"delegate.enabled": "false"}
 
-    pd._reject_cross_role_prepare("developer", "normal", conf)  # raise 없이 통과해야 한다
+    delegate_cmd._reject_cross_role_prepare(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), "developer", "normal", conf)  # raise 없이 통과해야 한다
 
     captured = capsys.readouterr()
     assert "위임이 꺼져 있습니다" in captured.err
-
-
-def test_fail_open_and_single_stderr_line_when_the_guard_module_fails_to_load(
-        pd, rounds_env, monkeypatch, capsys):
-    """F-004 — 가드 로드 예외(개행 포함)를 직접 주입해도 rc=0·prepare 성공·stderr 침묵 없이
-    가드 경고는 정확히 물리 1행으로 접힌다(예외 텍스트의 CR/LF 를 공백으로 정규화)."""
-    pm_home, slot, tickets, _sync = rounds_env
-    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    _write_local_conf(pm_home, {
-        "delegate.enabled": "true",
-        "delegate.developer.harness": "claude",
-        "delegate.developer.model": "opus",
-    })
-    _isolate_harness_env(monkeypatch)
-    monkeypatch.setenv("CLAUDECODE", "1")
-    _write_spec(tickets, "T-7913")
-
-    def _boom():
-        raise RuntimeError("가드 로드 실패\r\n2행째")
-
-    monkeypatch.setattr(pd, "_load_delegate_channel_guard", _boom)
-
-    rc = _prepare_cli(pd, slot, "T-7913", "developer")
-
-    captured = capsys.readouterr()
-    assert rc == 0
-    warnings = [line for line in captured.err.splitlines(keepends=True)
-                if line.startswith("[pm-delegate/warn] ")]
-    assert len(warnings) == 1
-    assert warnings[0].count("\n") == 1
-    assert "가드 로드 실패 2행째" in warnings[0]
-    plan_json = json.loads(captured.out.strip().splitlines()[-1])
-    assert Path(plan_json["copy"]).exists()
 
 
 def test_fail_open_and_single_stderr_line_when_decide_raises(
@@ -4605,12 +4579,11 @@ def test_fail_open_and_single_stderr_line_when_decide_raises(
     monkeypatch.setenv("CLAUDECODE", "1")
     _write_spec(tickets, "T-7914")
 
-    guard = pd._load_delegate_channel_guard()
 
     def _boom(*_a, **_k):
         raise RuntimeError("decide 실행 실패\r\n2행째")
 
-    monkeypatch.setattr(guard, "decide", _boom)
+    monkeypatch.setattr(delegate_channel, "decide", _boom)
 
     rc = _prepare_cli(pd, slot, "T-7914", "developer")
 
@@ -4810,13 +4783,13 @@ def t0981_gate(tmp_path, monkeypatch):
         module=module, tree=tree, target=target,
         changed={"src/implementation.py"}, architect=(), is_fix=True, calls=[],
     )
-    monkeypatch.setattr(module.ticket_store, "find_ticket_exact", lambda *a: ("claimed", spec_path))
-    monkeypatch.setattr(module.round_seed, "load_rounds", lambda *a, **kw: ())
+    monkeypatch.setattr(ticket_store, "find_ticket_exact", lambda *a: ("claimed", spec_path))
+    monkeypatch.setattr(round_seed, "load_rounds", lambda *a, **kw: ())
     monkeypatch.setattr(pm_paths, "_repo_root_for_cwd", lambda *a: tree)
     monkeypatch.setattr(review_evidence, "architect_tests_from_rounds", lambda *a: state.architect)
     monkeypatch.setattr(delegate_harvest, "_fix_round", lambda *a: state.is_fix)
     monkeypatch.setattr(delegate_copy_git, "_developer_round_changed_paths", lambda *a, **kw: state.changed)
-    monkeypatch.setattr(module.round_seed, "_dev_round_seed_verify_rows", lambda *a: ())
+    monkeypatch.setattr(round_seed, "_dev_round_seed_verify_rows", lambda *a: ())
     monkeypatch.setattr(delegate_harvest, "_full_regression_command", lambda *a: full)
     real_run = review_command._run_required_test
 
@@ -4840,7 +4813,7 @@ def t0981_gate(tmp_path, monkeypatch):
         delta = SimpleNamespace(accepted=[
             (finding, SimpleNamespace(scope="F-003 developer 범위")),
         ])
-        monkeypatch.setattr(module.review_state, "parse_pm_review_delta", lambda *a: delta)
+        monkeypatch.setattr(review_state, "parse_pm_review_delta", lambda *a: delta)
         return delegate_harvest._developer_round_harvest_problem(
             text, "reserved", ticket="T-0981", ordinal=4, home=pm_paths.home_at(tmp_path), cwd=tree,
         )

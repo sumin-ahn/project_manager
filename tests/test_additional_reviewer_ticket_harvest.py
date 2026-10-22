@@ -13,6 +13,11 @@ hermetic: tmp REPO 에 실제 board 디렉터리를 만들고 diff·리뷰어 �
 (호출 0). 라이브 codex 호출은 이 파일 어디에서도 하지 않는다.
 """
 from __future__ import annotations
+
+from pm_engine.infra import pm_paths
+from pm_engine.infra import review_diff
+from pm_engine.infra import review_rounds
+from pm_engine.app import reviewer_run
 from pm_engine.infra import delegate_ledger
 
 from pm_engine.domain import review_contract
@@ -280,8 +285,8 @@ def _wire(
         conf_store, 'local_config', lambda _home, repo=None: dict(resolved_conf),
     )
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *a, **k: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *a, **k: review_diff.ReviewDiff(
             DIFF,
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -292,7 +297,7 @@ def _wire(
 
     calls: dict = {"n": 0, "prompt": "", "prompts": []}
 
-    def _run_review(prompt, *args, **kwargs):
+    def _run_review(_home, prompt, *args, **kwargs):
         calls["n"] += 1
         calls["prompt"] = prompt
         calls["prompts"].append(prompt)
@@ -306,7 +311,7 @@ def _wire(
             "any_must_fix": rejected, "all_pass": not rejected,
         }
 
-    monkeypatch.setattr(external, "run_review", _run_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _run_review)
     return calls
 
 
@@ -976,7 +981,7 @@ def test_reviewer_failure_reports_that_nothing_was_harvested(
     """회신이 없어 회수하지 않은 실행도 사유를 남긴다(조용한 누락 금지)."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, "")
-    monkeypatch.setattr(external, "run_review", lambda *a, **k: {
+    monkeypatch.setattr(reviewer_run, "run_review", lambda *a, **k: {
         "reviewer": "fixture", "ok": False, "output": "", "answer": "",
         "verdict": {"has_must_fix": False, "has_pass": False},
         "file": tmp_path / "raw" / "fixture.md", "failed": True, "started": True,
@@ -1217,7 +1222,7 @@ def test_removed_confirm_fix_is_rejected_before_ticket_harvest(
     assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
     assert calls["n"] == 0
     assert _round_paths(tmp_path) == []
-    assert not external._round_ledger_path().exists()
+    assert not review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).exists()
 
 
 # ── F-021 프롬프트 골격: 확인 가능한 ID 실값(직전 라운드 파일) ─────────────

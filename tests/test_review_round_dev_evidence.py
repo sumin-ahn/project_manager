@@ -22,6 +22,13 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+from pm_engine.infra import review_diff
+from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_prompt
+from pm_engine.app import reviewer_run
+from pm_engine.infra import round_store
+
 from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_harvest
 from pm_engine.app import delegate_prepare
@@ -375,15 +382,15 @@ def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7807", rounds=("developer", "code-reviewer"))
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    assert pd._cmd_ticket([
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ]) == 0
+    ], adapter_roots = pd._resolved_adapter_directories()) == 0
     capsys.readouterr()
 
     with pytest.raises(SystemExit) as exc:
-        pd._cmd_ticket([
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ])
+        ], adapter_roots = pd._resolved_adapter_directories())
 
     assert exc.value.code == 2
     assert sorted(path.name for path in _rounds_dir(pm_home, "T-7807").iterdir()) == [
@@ -609,8 +616,8 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     monkeypatch.setattr(external, "REPO", pm_home)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(resolved))
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *args, **kwargs: review_diff.ReviewDiff(
             DIFF,
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -619,13 +626,13 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
         ),
     )
     monkeypatch.setattr(
-        external, "parse_ticket_touches", lambda ticket_id, pm_home=None: ["x.py"],
+        round_store, "parse_ticket_touches", lambda _home, ticket_id, pm_home=None: ["x.py"],
     )
 
 
 def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]):
     """실 스폰 경계 스텁 — 리뷰 실행·산출 회수(다른 축 소유)를 자른다."""
-    def _run_review(prompt, *args, **kwargs):
+    def _run_review(_home, prompt, *args, **kwargs):
         prompts.append(prompt)
         return {
             "reviewer": "fixture", "ok": True, "output": "판정: 통과",
@@ -634,9 +641,9 @@ def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "run_review", _run_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _run_review)
     monkeypatch.setattr(
-        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_harvest, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 
@@ -832,7 +839,7 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
 
     for name, rounds in shapes.items():
         capsys.readouterr()
-        external._warn_seed_developer_round(rounds, ticket=name)
+        reviewer_prompt._warn_seed_developer_round(rounds, ticket=name)
         warned = SPAWN_WARNING_MARK in capsys.readouterr().err
         judged = round_seed.unharvested_developer_round(rounds) is not None
         assert warned == judged, name
@@ -841,11 +848,11 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
     seed_rounds = shapes["A1"]
     assert round_seed.unharvested_developer_round(seed_rounds) is not None
     capsys.readouterr()
-    external._warn_seed_developer_round(seed_rounds, ticket="T-7831")
+    reviewer_prompt._warn_seed_developer_round(seed_rounds, ticket="T-7831")
     assert SPAWN_WARNING_MARK in capsys.readouterr().err
 
     flipped = [item._replace(pending=False) for item in seed_rounds]
     assert round_seed.unharvested_developer_round(flipped) is None
     capsys.readouterr()
-    external._warn_seed_developer_round(flipped, ticket="T-7831")
+    reviewer_prompt._warn_seed_developer_round(flipped, ticket="T-7831")
     assert SPAWN_WARNING_MARK not in capsys.readouterr().err

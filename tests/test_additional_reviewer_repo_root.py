@@ -12,6 +12,9 @@ hermetic seam: `_find_repo_root()` 는 모듈 전역 `__file__` 을 읽으므로
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.app import reviewer_run
+
 from pm_engine.infra import conf_store
 
 import importlib.util
@@ -75,8 +78,8 @@ def _run_main_with_diff(external, monkeypatch, diff: str):
     게이트를 우회한다 — 빈-diff 가드가 codex 호출 전에 유일하게 차단함을 격리한다."""
     # 추출 대역은 본문과 필수 좌표를 함께 제공한다.
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *a, **k: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *a, **k: review_diff.ReviewDiff(
             diff,
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -100,7 +103,7 @@ def _run_main_with_diff(external, monkeypatch, diff: str):
             "file": None, "failed": False, "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "run_review", _fake_run_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _fake_run_review)
     exit_code = external.main(["--paths", "foo.py", "--no-gate"])
     return exit_code, called["reviewer"]
 

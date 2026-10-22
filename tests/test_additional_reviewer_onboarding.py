@@ -17,6 +17,9 @@
 여기서 잡는다.
 """
 from __future__ import annotations
+
+from pm_engine.cli import delegate_cmd
+from pm_engine.infra import pm_paths
 from pm_engine.domain import reviewer_budget, reviewer_result
 from pm_engine.infra import reviewer_target
 
@@ -466,7 +469,7 @@ def test_engine_cli_help_names_the_activity_as_additional_review(capsys):
     """
     delegate = _load("pm_delegate")
     with pytest.raises(SystemExit):
-        delegate._cmd_raw(["--help"])
+        delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), ["--help"])
     help_text = capsys.readouterr().out
 
     assert "추가 리뷰" in help_text
@@ -562,7 +565,7 @@ def test_codex_cards_keep_dollar_skill_entry_notation():
 # 확장자 하나가 빠지면 그 표면의 잔존은 영영 안 보인다(현행 실잔재는 0 — 그 상태를 못박는다).
 _RETIRED_ACK_SCAN_SUFFIXES = {".md", ".py", ".sh", ".cmd", ".jsonc", ".toml"}
 # 엔진의 폐지 안내·구 장부 해석이 사는 파일 (canonical + 템플릿 미러 4벌 모두 같은 이름).
-_RETIRED_ACK_ENGINE_FILE = "additional_reviewer.py"
+_RETIRED_ACK_ENGINE_FILES = ("additional_reviewer.py", "reviewer_budget.py")
 # 폐지 동작을 단언하느라 플래그 리터럴이 정당하게 남는 테스트 (파일명 명시 — 디렉토리 통째 아님).
 _RETIRED_ACK_TEST_FILES = (
     "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·부재 단언)
@@ -580,7 +583,7 @@ def _retired_ack_scan_targets() -> list[Path]:
         rel = path.relative_to(REPO).as_posix()
         if rel == "CHANGELOG.md" or rel in _RETIRED_ACK_TEST_FILES:
             continue
-        if path.name == _RETIRED_ACK_ENGINE_FILE:
+        if path.name in _RETIRED_ACK_ENGINE_FILES:
             continue
         targets.append(path)
     return targets
@@ -633,9 +636,10 @@ def test_residue_scan_covers_the_execution_and_config_surfaces(rel):
 
 def test_retired_round_ack_allowlist_entries_are_load_bearing():
     """allowlist 는 실제로 그 문자열을 담은 자리만 뺀다 — 빈 예외는 가드를 헐겁게 만든다."""
-    engine = (TOOLS / _RETIRED_ACK_ENGINE_FILE).read_text(encoding="utf-8")
-    assert RETIRED_ROUND_ACK_FLAG in engine      # 거부 안내 + 구 장부 필드 해석 주석
-    assert "폐지" in engine
+    for path in (TOOLS / "additional_reviewer.py", TOOLS / "pm_engine/domain/reviewer_budget.py"):
+        engine = path.read_text(encoding="utf-8")
+        assert RETIRED_ROUND_ACK_FLAG in engine
+        assert "폐지" in engine
     assert RETIRED_ROUND_ACK_FLAG in (REPO / "CHANGELOG.md").read_text(
         encoding="utf-8")                        # 릴리즈 히스토리
     for rel in _RETIRED_ACK_TEST_FILES:          # 목록이 썩으면(잔존 0 파일이 남으면) red
@@ -868,7 +872,7 @@ def test_broken_knob_value_falls_to_the_engine_default(broken):
 def test_engine_guidance_names_the_knob_keys():
     """상한/예산 차단 안내가 현재 키를 가르친다 — 안내는 채택자가 값을 고치는 유일한 접점이다."""
     core = _additional_reviewer()
-    round_guidance = core._ROUND_LIMIT_GUIDANCE
+    round_guidance = reviewer_budget._ROUND_LIMIT_GUIDANCE
     assert reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
     assert "additional_reviewer.round_limit" not in round_guidance
-    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in core._WAVE_BUDGET_GUIDANCE
+    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in reviewer_budget._WAVE_BUDGET_GUIDANCE

@@ -182,7 +182,7 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
         if "_ENGINE_REV_SKEW_RECOVERY_REASONS" in path.read_text(encoding="utf-8")
         )
     assert owners == [
-        "additional_reviewer.py", "delegate_channel_guard.py", "pm_log.py",
+        "pm_log.py",
     ]
 
 

@@ -17,6 +17,12 @@ local.conf `upstream` 은 참조하지 않는다 — upstream 은 URL/무관 로
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_run
+from pm_engine.app import reviewer_scope
+from pm_engine.infra import round_store
+
 from pm_engine.infra import conf_store
 
 import importlib.util
@@ -175,8 +181,8 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
     )
     # 추출 대역도 본문과 필수 좌표를 함께 제공한다.
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *a, **k: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *a, **k: review_diff.ReviewDiff(
             'diff --git a/x b/x\n+y\n',
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -192,11 +198,11 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
                 "verdict": {"has_must_fix": False, "has_pass": True},
                 "file": None, "failed": False, "any_must_fix": False, "all_pass": True}
 
-    monkeypatch.setattr(external, "run_review", _fake_run_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _fake_run_review)
     # 이 파일은 PM 홈/diff 앵커 파생 축을 소유한다. 산출 회수(T-0696)는 별도 축이라
     # tests/test_additional_reviewer_ticket_harvest.py 가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_harvest, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
     return external.main(argv), called["reviewer"]
 
@@ -246,11 +252,11 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
         lambda anchor, **kwargs: owner_home if anchor.resolve() == slot_two else engine_home,
     )
     monkeypatch.setattr(
-        external, "_candidate_has_diff",
+        reviewer_scope, "_candidate_has_diff",
         lambda root, base, paths: root == slot_two and tuple(paths) == ("engine-only-path",),
     )
     monkeypatch.setattr(
-        external, "run_review",
+        reviewer_run, "run_review",
         lambda *args, **kwargs: pytest.fail("fail-loud must happen before external send"),
     )
 
@@ -313,7 +319,7 @@ def test_main_local_upstream_adopter_ticket_not_blocked(external, monkeypatch, t
     home, _ = _make_pm_home(tmp_path, with_worktree=False)  # 실 board 소유·work/ 슬롯 없음
     # ticket touches 해소를 결정론화(실 board 의 T-0001 은 touches 부재라 기본경로 폴백해도 무방).
     monkeypatch.setattr(
-        external, "parse_ticket_touches", lambda t, **kwargs: [".project_manager/tools/"],
+        round_store, "parse_ticket_touches", lambda _home, t, **kwargs: [".project_manager/tools/"],
     )
     conf = {**_ENABLED_CONF, "upstream.path": str(tmp_path / "foreign")}
     exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, ["--ticket", "T-0001"])

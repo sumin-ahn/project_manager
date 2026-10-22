@@ -18,6 +18,10 @@ shutil.which 패치로 강제한다(ambient PYTHONUTF8 가 버그를 가리지 �
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+from pm_engine.infra import review_diff
+import pm_engine.infra.harness.reviewer_run
+
 import argparse
 import ast
 import builtins
@@ -124,7 +128,7 @@ def _assert_utf8(kwargs: dict) -> None:
 
 def test_extract_diff_passes_utf8_encoding(additional_reviewer):
     rec = _Recorder()
-    additional_reviewer.extract_diff("main", ["foo.py"], run_fn=rec)
+    review_diff.extract_diff(pm_paths.home_at(additional_reviewer.REPO), "main", ["foo.py"], run_fn=rec)
     assert rec.calls, "git diff 캡처 호출이 일어나지 않음"
     for kwargs in rec.calls:
         _assert_utf8(kwargs)
@@ -132,7 +136,7 @@ def test_extract_diff_passes_utf8_encoding(additional_reviewer):
 
 def test_extract_diff_head_path_passes_utf8(additional_reviewer):
     rec = _Recorder(stdout="")  # 빈 staged/unstaged → HEAD~1 폴백까지 모두 거침
-    additional_reviewer.extract_diff("HEAD", ["foo.py"], run_fn=rec)
+    review_diff.extract_diff(pm_paths.home_at(additional_reviewer.REPO), "HEAD", ["foo.py"], run_fn=rec)
     assert len(rec.calls) >= 2
     for kwargs in rec.calls:
         _assert_utf8(kwargs)
@@ -140,8 +144,8 @@ def test_extract_diff_head_path_passes_utf8(additional_reviewer):
 
 def test_reviewer_run_passes_utf8_encoding(additional_reviewer):
     rec = _Recorder()
-    _ok, _out, _started = additional_reviewer._run_reviewer_ex(
-        "echo hi", "echo hi", None, rec)
+    _ok, _out, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+        pm_paths.home_at(additional_reviewer.REPO), "echo hi", "echo hi", None, rec)
     assert rec.calls
     _assert_utf8(rec.calls[0])
 

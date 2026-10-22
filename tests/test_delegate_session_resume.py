@@ -17,6 +17,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import reviewer_run
+
+from pm_engine.infra import review_rounds
+
 from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
@@ -294,7 +298,7 @@ def test_reply_only_facade_keeps_both_call_sites_intact(pd):
     assert contract.extract_harness_reply("claude", _claude_wire("   ")) is None
     assert delegate_run.extract_reply("claude", _claude_wire("답")) == "답"      # 위임 호출부
     external = _load("additional_reviewer")
-    source = Path(external.__file__).read_text(encoding="utf-8")
+    source = Path(reviewer_run.__file__).read_text(encoding="utf-8")
     assert source.count("contract.extract_harness_reply(") == 0    # 리뷰어 호출부는 usage 관측으로 이관
     assert source.count("contract.extract_harness_result(") == 1
     with pytest.raises(contract.HarnessContractError, match="미지원 harness"):
@@ -738,7 +742,7 @@ def test_review_round_ledger_is_never_touched(pd, monkeypatch, tmp_path, capsys)
     pm_home = tmp_path / "pm_home"
     (pm_home / ".project_manager" / ".local").mkdir(parents=True)
     monkeypatch.setattr(external, "REPO", pm_home)
-    rounds_ledger = external._round_ledger_path()
+    rounds_ledger = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))
     assert not rounds_ledger.exists()
 
     out_dir = tmp_path / "raw"

@@ -1,6 +1,8 @@
 """T-0684 — versioned reviewer finding/disposition과 accepted-only delta."""
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
 from pm_engine.domain import review_contract
 
 
@@ -636,6 +638,7 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
         def board_lock():
             yield
 
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
     output = capsys.readouterr().out
@@ -706,6 +709,7 @@ def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys)
         def board_lock():
             yield
 
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     assert pd.main(["review", "delta", "--ticket", "T-0685"]) == 1
     error = capsys.readouterr().err
@@ -867,6 +871,7 @@ def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path
         def board_lock():
             yield
 
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
     assert "F-001" in capsys.readouterr().out
@@ -909,6 +914,7 @@ def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch
         def board_lock():
             yield
 
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     assert pd.main(["review", "verify-template", "--ticket", "T-0786"]) == 0
     assert review_form.PM_REVIEW_CONFIRMATION_BLOCK in capsys.readouterr().out

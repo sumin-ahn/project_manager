@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pm_engine.app import delegate_channel
+
 from pm_engine.domain import delegate_channel_rules
 from pm_engine.infra import delegate_config
 from pm_engine.infra.harness import delegate_env
@@ -87,7 +89,7 @@ def test_four_role_mapping_matrix(guard_home, guard, rendered_cards, role, mappi
             f"delegate.{role}.model": "gpt-5.6",
         }
 
-    result = guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
+    result = delegate_channel.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
 
     if mapping == "other":
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -111,7 +113,7 @@ def test_neutral_core_decision_table_matrix(guard_home, guard, role, mapping, en
         )
         conf[f"delegate.{role}.model"] = "fixture-model"
 
-    result = guard.decide(guard_home, role, "normal", conf, "opencode")
+    result = delegate_channel.decide(guard_home, role, "normal", conf, "opencode")
 
     expected = "deny" if (not enabled or mapping == "cross") else "allow"
     assert result["verdict"] == expected
@@ -130,8 +132,8 @@ def test_claude_hook_is_core_specialization_equivalent(guard_home, guard, role, 
             "opus" if mapping == "claude" else "fixture-model"
         )
 
-    core = guard.decide(guard_home, role, "normal", conf, "claude")
-    hook = guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
+    core = delegate_channel.decide(guard_home, role, "normal", conf, "claude")
+    hook = delegate_channel.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
     if core["verdict"] == "deny":
         assert hook["hookSpecificOutput"]["permissionDecision"] == "deny"
     elif core["reason"].startswith("[delegate-channel/warn]"):
@@ -170,19 +172,19 @@ def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard_home
         "delegate.developer.hard.harness": "claude",
         "delegate.developer.hard.model": "hard-model",
     }
-    normal = guard.decide(guard_home, "developer", "normal", conf, "opencode")
+    normal = delegate_channel.decide(guard_home, "developer", "normal", conf, "opencode")
     assert normal["verdict"] == "allow"
     assert (normal["harness"], normal["model"]) == (
         "opencode", "normal-model"
     )
 
-    hard = guard.decide(guard_home, "developer", "hard", conf, "opencode")
+    hard = delegate_channel.decide(guard_home, "developer", "hard", conf, "opencode")
     assert hard["verdict"] == "deny"
     assert (hard["harness"], hard["model"]) == ("claude", "hard-model")
 
     del conf["delegate.developer.hard.harness"]
     del conf["delegate.developer.hard.model"]
-    missing = guard.decide(guard_home, "developer", "hard", conf, "opencode")
+    missing = delegate_channel.decide(guard_home, "developer", "hard", conf, "opencode")
     assert missing["verdict"] == "allow"
     assert (missing["harness"], missing["model"]) == ("", "")
     assert "hard 프로필 미설정" in missing["reason"]
@@ -222,7 +224,7 @@ def test_mapping_resolution_matches_real_engine_full_boundary_matrix(
 
     assert delegate_config._resolved_mapping("developer", tier, conf) == expected
 
-    judgment = guard.decide(guard_home, "developer", tier, conf, "opencode")
+    judgment = delegate_channel.decide(guard_home, "developer", tier, conf, "opencode")
     assert judgment["verdict"] == "allow"
     assert (judgment["harness"], judgment["model"]) == expected[:2]
     if configured:
@@ -262,8 +264,8 @@ def test_unknown_self_warns_but_unknown_agent_is_quietly_recorded(guard_home, gu
         "delegate.enabled": "true",
         "delegate.developer.harness": "claude",
     }
-    unknown_self = guard.decide(guard_home, "developer", "normal", cross, "")
-    unknown_role = guard.decide(guard_home, "not-an-agent", "normal", cross, "opencode")
+    unknown_self = delegate_channel.decide(guard_home, "developer", "normal", cross, "")
+    unknown_role = delegate_channel.decide(guard_home, "not-an-agent", "normal", cross, "opencode")
     assert unknown_self["verdict"] == unknown_role["verdict"] == "allow"
     assert "self_harness" in unknown_self["reason"] and "warn" in unknown_self["reason"]
     assert "정규화 실패" in unknown_role["reason"]
@@ -282,7 +284,7 @@ def test_non_agent_or_non_delegate_role_passes_without_loading_conf(guard_home, 
     def unexpected_loader():
         raise AssertionError("irrelevant tool/role must not read local.conf")
 
-    assert guard.evaluate_hook(guard_home, payload, config_loader=unexpected_loader) is None
+    assert delegate_channel.evaluate_hook(guard_home, payload, config_loader=unexpected_loader) is None
 
 
 def test_config_error_is_one_line_fail_open(guard):
@@ -331,7 +333,7 @@ rc = guard.main(
     config_loader=lambda home: conf,
 )
 decision = json.loads(stdout.getvalue())
-hook = guard.evaluate_hook(
+hook = guard.delegate_channel.evaluate_hook(
     guard.pm_paths.home_at(guard.Path(guard_path).resolve().parents[2]),
     {
         "hook_event_name": "PreToolUse",
@@ -427,7 +429,7 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard_home, guard, tmp_p
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
-    result = guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)
+    result = delegate_channel.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)
     reason = result["hookSpecificOutput"]["permissionDecisionReason"]
     assert f"--cwd {tmp_path}" in reason
     assert "프롬프트를 파일로 저장" in reason
@@ -455,7 +457,7 @@ def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard_home, guard,
     }
     review_payload = _payload("code-reviewer")
     review_payload["cwd"] = str(tmp_path)
-    review = guard.evaluate_hook(guard_home, review_payload, config_loader=lambda _home: conf)[
+    review = delegate_channel.evaluate_hook(guard_home, review_payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"]["permissionDecisionReason"]
     assert (
         f".project_manager/tools/pm_delegate.py --role code-reviewer --cluster C-<ticket-group> --cwd {tmp_path}"
@@ -465,7 +467,7 @@ def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard_home, guard,
 
     developer_payload = _payload("developer")
     developer_payload["cwd"] = str(tmp_path)
-    developer = guard.evaluate_hook(guard_home, developer_payload, config_loader=lambda _home: conf)[
+    developer = delegate_channel.evaluate_hook(guard_home, developer_payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"]["permissionDecisionReason"]
     assert "--ticket <T-NNNN>" in developer
     assert "--cluster" not in developer
@@ -489,10 +491,10 @@ def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
     spaced = _payload("developer")
     spaced["cwd"] = r"C:\Users\ci\work tree\project_manager_1"
 
-    reason = guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
+    reason = delegate_channel.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
-    spaced_reason = guard.evaluate_hook(guard_home, spaced, config_loader=lambda _home: conf)[
+    spaced_reason = delegate_channel.evaluate_hook(guard_home, spaced, config_loader=lambda _home: conf)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
 
@@ -520,7 +522,7 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
         monkeypatch.setattr(contract, 'running_on_windows', lambda: windows)
         payload = _payload("developer")
         payload["cwd"] = cwd
-        return guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
+        return delegate_channel.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
             "hookSpecificOutput"
         ]["permissionDecisionReason"]
 
@@ -582,7 +584,7 @@ def test_deny_remediation_keeps_posix_quoting_off_windows(guard_home, guard, mon
     payload = _payload("developer")
     payload["cwd"] = "/work tree/project_manager_1"
 
-    reason = guard.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
+    reason = delegate_channel.evaluate_hook(guard_home, payload, config_loader=lambda _home: conf)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
 
@@ -599,8 +601,17 @@ def test_deny_remediation_keeps_posix_quoting_off_windows(guard_home, guard, mon
     ),
 )
 def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
-    guard, argv
+    guard, argv, monkeypatch
 ):
+    calls = []
+    real_decide = delegate_channel._decide_agent_input
+
+    def tracked(home, agent_name, self_harness, **kwargs):
+        calls.append((home, agent_name, self_harness, kwargs["tier"], kwargs["cwd"]))
+        return real_decide(home, agent_name, self_harness, **kwargs)
+
+    monkeypatch.setattr(delegate_channel, "_decide_agent_input", tracked)
+
     class UnreadableInput(io.StringIO):
         def read(self, *args, **kwargs):
             raise AssertionError("decide CLI must not read stdin")
@@ -616,6 +627,11 @@ def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
     payload = json.loads(stdout.getvalue())
     assert set(payload) == {"verdict", "reason", "harness", "model"}
     assert payload["verdict"] in {"allow", "deny"}
+
+    if argv == ["decide", "--role", "developer", "--harness", "opencode"]:
+        assert calls == [(pm_paths.home_at(GUARD_PY.resolve().parents[2]), "developer", "opencode", None, None)]
+    else:
+        assert calls == []
 
 
 def test_decide_cli_internal_error_is_one_line_allow_reason(guard):
@@ -672,11 +688,11 @@ def test_switch_off_denies_every_channel_with_the_switch_prescription(
             "claude" if mapping == "self" else "codex")
         conf["delegate.developer.model"] = "fixture-model"
 
-    core = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    core = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert core["verdict"] == "deny"
     assert "delegate.enabled" in core["reason"]
 
-    hook = guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
+    hook = delegate_channel.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
     output = hook["hookSpecificOutput"]
     assert output["permissionDecision"] == "deny"
     assert "delegate.enabled" in output["permissionDecisionReason"]
@@ -695,8 +711,8 @@ def test_switch_default_is_allow_when_unset_or_blank(guard_home, guard, rendered
     if value is not None:
         conf["delegate.enabled"] = value
 
-    assert guard.decide(guard_home, "developer", "normal", conf, "claude")["verdict"] == "allow"
-    assert guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf) is None
+    assert delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["verdict"] == "allow"
+    assert delegate_channel.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf) is None
 
 
 def _write_agent_card(root: Path, relative: Path, body: bytes) -> None:
@@ -752,10 +768,10 @@ def test_claude_four_native_cards_match_is_quiet_allow(
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "opus",
     }
-    result = guard.decide(guard_home, role, "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/allow]")
-    assert guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf) is None
+    assert delegate_channel.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf) is None
 
 
 @pytest.mark.parametrize("role", ROLES)
@@ -769,7 +785,7 @@ def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "not-opus",
     }
-    result = guard.decide(guard_home, role, "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert set(result) == {"verdict", "reason", "harness", "model"}
     for evidence in (
@@ -778,7 +794,7 @@ def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
     ):
         assert evidence in result["reason"]
 
-    hook = guard.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
+    hook = delegate_channel.evaluate_hook(guard_home, _payload(role), config_loader=lambda _home: conf)
     output = hook["hookSpecificOutput"]
     assert set(output) == {"hookEventName", "additionalContext"}
     assert "permissionDecision" not in output
@@ -812,11 +828,11 @@ def test_claude_agent_card_failures_allow_with_additional_context(
         "delegate.developer.model": "opus",
     }
 
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert "[delegate-channel/warn]" in result["reason"]
     assert evidence in result["reason"]
-    hook = guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
+    hook = delegate_channel.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
     assert set(hook["hookSpecificOutput"]) == {
         "hookEventName", "additionalContext",
     }
@@ -830,7 +846,7 @@ def test_claude_agent_card_quoted_scalar_is_normalized(guard_home, guard, monkey
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    assert guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"].startswith(
+    assert delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"].startswith(
         "[delegate-channel/allow]"
     )
 
@@ -855,7 +871,7 @@ def test_claude_agent_card_yaml_inline_comment_is_quiet_allow(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/allow]")
 
@@ -872,7 +888,7 @@ def test_claude_agent_card_hash_inside_quoted_scalar_is_preserved(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus#pinned",
     }
-    assert guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"].startswith(
+    assert delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"].startswith(
         "[delegate-channel/allow]"
     )
 
@@ -899,7 +915,7 @@ def test_claude_agent_card_unsafe_leaf_is_rejected_before_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/warn]")
     assert "symlink/reparse/hardlink/비-regular 거부" in result["reason"]
@@ -921,7 +937,7 @@ def test_claude_agent_card_parent_symlink_is_rejected_without_external_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert "[delegate-channel/warn]" in reason
     assert "symlink/reparse/비-directory 거부" in reason
     assert "parent-link-secret" not in reason
@@ -944,7 +960,7 @@ def test_claude_agent_card_mapping_cannot_escape_repo(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert "[delegate-channel/warn]" in reason
     assert "상대경로 거부" in reason
     assert "containment-secret" not in reason
@@ -992,7 +1008,7 @@ def test_claude_agent_card_inode_swap_is_rejected_before_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert swapped
     assert "inode 교체" in reason
     assert "race-secret" not in reason
@@ -1043,7 +1059,7 @@ def test_zero_file_index_card_read_fails_loud_instead_of_matching(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
 
     assert result["verdict"] == "allow"
     assert "[delegate-channel/warn]" in result["reason"]
@@ -1063,7 +1079,7 @@ def test_portable_reader_normal_tracked_cards_are_quiet_match(
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "opus",
     }
-    result = guard.decide(guard_home, role, "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/allow]")
 
@@ -1078,7 +1094,7 @@ def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard_ho
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "sonnet",
     }
-    result = guard.decide(guard_home, role, "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert "카드 미렌더" in result["reason"]
     assert "pm-update" in result["reason"]
@@ -1091,7 +1107,7 @@ def test_rendered_card_with_wrong_model_is_still_a_mismatch(guard_home, guard, r
     삼키지 않는다(감도 유지)."""
     rendered_cards("opus")
     conf = {"delegate.developer.harness": "claude", "delegate.developer.model": "sonnet"}
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert "불일치" in result["reason"]
     assert "card_model=opus" in result["reason"]
     assert "미렌더" not in result["reason"]
@@ -1124,7 +1140,7 @@ def test_secure_reader_does_not_retry_security_failure_via_portable_path(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert calls == ["strong"]
     assert "simulated strong-path failure" in reason
 
@@ -1200,7 +1216,7 @@ def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
 
     assert result["verdict"] == "allow"
     assert "[delegate-channel/warn]" in result["reason"]
@@ -1231,7 +1247,7 @@ def test_portable_reader_symlink_rejects_before_any_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert reads == []
     assert "[delegate-channel/warn]" in reason
     assert "windows-symlink-secret" not in reason
@@ -1270,7 +1286,7 @@ def test_portable_reader_inode_swap_rejects_before_any_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = guard.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
     assert swapped and reads == []
     assert "inode 교체" in reason
     assert "windows-race-secret" not in reason
@@ -1312,7 +1328,7 @@ def test_portable_reader_root_swap_during_resolve_rejects_before_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert swapped and reads == []
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/warn]")
@@ -1331,10 +1347,10 @@ def test_claude_agent_card_reader_exception_is_nonblocking_warning(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "normal", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert "RuntimeError: reader failed" in result["reason"]
-    hook = guard.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
+    hook = delegate_channel.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
     assert "permissionDecision" not in hook["hookSpecificOutput"]
 
 
@@ -1351,7 +1367,7 @@ def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(
         "delegate.developer.hard.harness": "claude",
         "delegate.developer.hard.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "hard", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "hard", conf, "claude")
     assert result["verdict"] == "allow"
     assert not result["reason"].startswith("[delegate-channel/warn]"), (
         f"카드가 일치하는데 경고가 났다: {result['reason']}"
@@ -1371,7 +1387,7 @@ def test_claude_hard_tier_card_drift_is_loud_and_names_the_hard_card(
         "delegate.developer.hard.harness": "claude",
         "delegate.developer.hard.model": "opus",
     }
-    result = guard.decide(guard_home, "developer", "hard", conf, "claude")
+    result = delegate_channel.decide(guard_home, "developer", "hard", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/warn]")
     assert "developer-hard.md" in result["reason"]
@@ -1384,7 +1400,7 @@ def test_codex_hard_and_opencode_native_do_not_read_claude_cards(
     def unexpected(*_args):
         raise AssertionError("non-Claude adapters must not inspect Claude cards")
 
-    monkeypatch.setattr(guard, "_claude_native_model_warning", unexpected)
+    monkeypatch.setattr(delegate_channel, "_claude_native_model_warning", unexpected)
     codex = {
         "delegate.developer.hard.harness": "codex",
         "delegate.developer.hard.model": "gpt-5.6-sol",
@@ -1393,8 +1409,8 @@ def test_codex_hard_and_opencode_native_do_not_read_claude_cards(
         "delegate.researcher.harness": "opencode",
         "delegate.researcher.model": "qwen",
     }
-    assert guard.decide(guard_home, "developer", "hard", codex, "codex")["verdict"] == "allow"
-    assert guard.decide(guard_home, "researcher", "normal", opencode, "opencode")["verdict"] == "allow"
+    assert delegate_channel.decide(guard_home, "developer", "hard", codex, "codex")["verdict"] == "allow"
+    assert delegate_channel.decide(guard_home, "researcher", "normal", opencode, "opencode")["verdict"] == "allow"
 
 
 @pytest.mark.parametrize("enabled", (True,))
@@ -1404,8 +1420,8 @@ def test_unset_is_quiet_but_partial_tuple_is_loud_fail_open(guard_home, guard, e
         "delegate.enabled": str(enabled).lower(),
         "delegate.developer.harness": "claude",
     }
-    quiet = guard.decide(guard_home, "developer", "normal", unset, "claude")
-    warning = guard.decide(guard_home, "developer", "normal", partial, "claude")
+    quiet = delegate_channel.decide(guard_home, "developer", "normal", unset, "claude")
+    warning = delegate_channel.decide(guard_home, "developer", "normal", partial, "claude")
     assert quiet["verdict"] == warning["verdict"] == "allow"
     assert quiet["reason"].startswith("[delegate-channel/allow]")
     assert warning["reason"].startswith("[delegate-channel/warn]")

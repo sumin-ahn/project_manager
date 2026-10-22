@@ -4,6 +4,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import re
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import ticket_store
+
 from pm_engine.domain import reviewer_budget
 
 import os
@@ -193,7 +198,6 @@ def replace_round(path: Path | str, text: str) -> None:
             pass
 
 
-
 # ── 프롬프트 조립 ─────────────────────────────────────────────────────────
 
 
@@ -209,3 +213,165 @@ def _load_review_context(home) -> str:
         except OSError:
             pass
     return reviewer_budget._DEFAULT_CONTEXT_HEADER
+
+
+def _find_ticket_file(home, ticket_id: str, ) -> Path:
+    """board 에서 ticket 파일 하나를 찾는다 (못 찾으면 fail-loud).
+
+    ticket 디렉토리는 `pm_paths.tickets_dir(home)`으로 해소한다.
+    board/ 분리 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
+
+    조회 판정은 공용 정확-일치 seam(`ticket_store.find_ticket_exact`)이 소유한다 — `{id}-*.md`
+    prefix glob 의 **첫 매칭**을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의
+    touches** 로 검토 범위가 정해진다(조용한 오판). 사본 판정을 두지 않는 이유는
+    같은 클래스가 표면마다 half-fix 로 재발해서다. 슬러그 없는 파일명(`T-NNNN.md`)은 prefix
+    충돌이 불가능한 정확 이름이라 seam 이 비면 그 폴백을 그대로 본다(종전 동작).
+    """
+    if not ticket_id or re.search(r"[\\/*?\[\]]", ticket_id):
+        raise pm_paths.AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
+    tickets_dir = pm_paths.tickets_dir(home)
+    status_dirs = tuple(ticket_rules.STATUS_DIRS)
+    found = ticket_store.find_ticket_exact(
+        home, ticket_id,
+        search_dirs=[(status, tickets_dir / status) for status in status_dirs],
+    )
+    if found is not None:
+        return found[1]
+    for status_dir in status_dirs:
+        exact = tickets_dir / status_dir / f"{ticket_id}.md"
+        if exact.exists():
+            return exact
+    raise pm_paths.AnchorResolutionError(
+        f"ticket {ticket_id} 을 해소된 board에서 찾지 못했습니다: {tickets_dir}"
+    )
+
+
+class _TicketTouches(list[str]):
+    """실 ticket 파일에서 읽은 touches와 그 파일 provenance.
+
+    list 하위형이라 기존 소비자/테스트 seam은 그대로 동작한다. main은 이 provenance가 있을 때
+    빈-diff 게이트를 지난 뒤 같은 파일의 본문을 읽는다. plain list가 주입된 테스트
+    seam은 실제 ticket 파일을 약속하지 않은 fixture라 본문 조회 실패를 hard-fail로 승격하지 않는다.
+    """
+
+    def __init__(self, values: list[str], source: Path):
+        super().__init__(values)
+        self.source = source
+
+
+def parse_ticket_touches(home, ticket_id: str, ) -> list[str]:
+    """board ticket frontmatter 의 touches 필드를 파싱해 경로 목록을 반환한다.
+
+    touches 값 파싱은 이 파일의 YAML 리더가 하고, **어느 파일이 그 티켓인가**는 board 의 정확-일치
+    seam 이 정한다(`_find_ticket_file`). 못 찾으면 fail-loud.
+    """
+    source = _find_ticket_file(home, ticket_id, )
+    return _TicketTouches(_parse_touches_from_file(source), source)
+
+
+def _split_ticket_frontmatter(text: str, *, source: Path) -> tuple[str | None, str]:
+    """frontmatter 원문과 본문을 한 경계에서 분리한다(None이면 frontmatter 없음).
+
+    ticket_store.load_ticket을 재사용하지 않는 이유는 본문을 YAML 재직렬화나 strip 없이 byte-for-byte
+    보존해야 하고, touches의 경량 파서도 YAML 의존 없이 같은 원문을 소비하기 때문이다. opener가
+    있으면 closer도 반드시 있어야 하며 두 소비자 모두 같은 AnchorResolutionError로 fail-loud 한다.
+    """
+    if not text.startswith("---\n"):
+        return None, text
+    after_open = text[4:]
+    end = after_open.find("\n---\n")
+    if end == -1:
+        raise pm_paths.AnchorResolutionError(f"ticket frontmatter가 닫히지 않았습니다: {source}")
+    return after_open[:end], after_open[end + 5:]
+
+
+def _load_ticket_text_and_body(path: Path) -> tuple[str, str]:
+    """ticket 파일의 전문과 frontmatter만 벗긴 본문 (판독 1회).
+
+    전문이 따로 필요한 이유는 라운드 판독이다 — 라운드의 "산출 없음(시드 그대로)" 판정은 준비가
+    시드를 렌더할 때 본 것과 **같은 명세 텍스트**를 입력으로 써야 하고, 준비(`pm_delegate`)는
+    파일 전문을 쓴다.
+    """
+    raw = fs.read_text_shared(path, encoding="utf-8")
+    _frontmatter, body = _split_ticket_frontmatter(raw, source=path)
+    return raw, body
+
+
+def _parse_title_from_file(path: Path) -> str | None:
+    """ticket 파일에서 frontmatter title 스칼라를 추출한다(선별 헤더 요약 전용).
+
+    board 의 YAML frontmatter 로더(`_parse_estimate_from_file` 과 같은 seam)를 재사용한다 —
+    자체 정규식은 estimate 축에서 이미 확인된 결함(YAML 주석 꼬리가 값에 붙는 오독)을 title 에서
+    반복할 뿐이라 두지 않는다."""
+    fm, _body = ticket_store.load_ticket(path)
+    title = fm.get("title") if isinstance(fm, dict) else None
+    return title.strip() or None if isinstance(title, str) else None
+
+
+def _ticket_body_selection_header(path: Path, ticket_id: str) -> str:
+    """선별한 티켓 본문 앞에 붙는 frontmatter 요약.
+
+    estimate 는 board YAML 파서(`_parse_estimate_from_file`)를 그대로 호출한다 — 표시용이라고
+    값이 갈리는 경량 스캐너를 따로 두지 않는다(F-001)."""
+    title = _parse_title_from_file(path)
+    touches = _parse_touches_from_file(path)
+    estimate = _parse_estimate_from_file(path)
+    return (
+        f"id={ticket_id} · title={title or '(미상)'} · "
+        f"touches=[{', '.join(touches)}] · estimate={estimate or '(미상)'}"
+    )
+
+
+def _parse_frontmatter_scalar(path: Path, key: str) -> str | None:
+    """ticket frontmatter 의 문자열 스칼라 (없거나 비-문자열이면 None).
+
+    frontmatter 로더(`ticket_store.load_ticket` = YAML)를 재사용한다. 자체 정규식
+    파싱은 YAML 이 주석으로 읽는 꼬리(`estimate: small # reviewed`)를 값에 붙여 `small` 을
+    모르는 값으로 만들었다 — board 가 읽는 값과 다른 값을 보였다. 같은 값을 두 번 해석하지
+    않는 것이 유일한 해소다.
+
+    비-문자열(리스트·숫자)은 값을 지어내지 않고 None 이다."""
+    fm, _body = ticket_store.load_ticket(path)
+    value = fm.get(key) if isinstance(fm, dict) else None
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _parse_estimate_from_file(path: Path) -> str | None:
+    """ticket 파일의 `estimate` 스칼라 — **board 와 같은 파서**(리뷰 입력 머리 표시)."""
+    return _parse_frontmatter_scalar(path, "estimate")
+
+
+def _parse_touches_from_file(path: Path) -> list[str]:
+    """ticket 파일에서 frontmatter touches 를 추출한다."""
+    fm_text, _body = _split_ticket_frontmatter(
+        fs.read_text_shared(path, encoding="utf-8"), source=path,
+    )
+    if fm_text is None:
+        return []
+    touches: list[str] = []
+    in_touches = False
+    for line in fm_text.splitlines():
+        if re.match(r"^touches\s*:", line):
+            empty_inline = re.match(r"^touches\s*:\s*\[\s*\]\s*$", line)
+            inline_match = re.match(r"^touches\s*:\s*\[(.+)\]", line)
+            if empty_inline:
+                touches = []
+                in_touches = False
+            elif inline_match:
+                items = [s.strip().strip("\"'") for s in inline_match.group(1).split(",")]
+                touches = [i for i in items if i]
+                in_touches = False
+            elif re.match(r"^touches\s*:\s*$", line):
+                in_touches = True
+            else:
+                val = re.sub(r"^touches\s*:\s*", "", line).strip().strip("\"'")
+                if val:
+                    touches = [val]
+                in_touches = False
+        elif in_touches:
+            item_match = re.match(r"^\s*-\s+(.+)$", line)
+            if item_match:
+                touches.append(item_match.group(1).strip().strip("\"'"))
+            elif line and not line[0].isspace():
+                in_touches = False
+    return touches

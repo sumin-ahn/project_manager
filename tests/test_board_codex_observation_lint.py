@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pm_engine.app import codex_hook
+
 import pytest
 
 from pm_engine.domain import codex_envelope
@@ -77,7 +79,7 @@ def test_unmatched_subagentstart_is_one_never_blocking_lint_advisory(
 ):
     guard = _load("delegate_guard_board_lint_miss", TOOLS / "delegate_channel_guard.py")
     board = _load("board_codex_lint_miss", TOOLS / "board.py")
-    guard.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
+    codex_hook.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
     monkeypatch.setattr(board, "CODEX_DELEGATE_OBSERVATIONS", codex_observation._codex_audit_path(guard_home, tmp_path))
 
     findings = board.lint_codex_delegate_observations()
@@ -104,10 +106,10 @@ def test_matching_pretooluse_and_subagentstart_emit_zero_lint_advisories(
     decision = delegate_channel_rules._result("allow", "[delegate-channel/record] fixture")
     result = codex_envelope._codex_decision_envelope(decision)
     # allow envelope 는 `{}` 라 판정을 담지 못한다 — 라이브 훅과 같이 decision 을 함께 넘긴다.
-    guard.observe_codex_pretooluse(
+    codex_hook.observe_codex_pretooluse(
         guard_home, _pretooluse(), result, decision=decision, state_dir=tmp_path
     )
-    guard.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
+    codex_hook.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
     monkeypatch.setattr(board, "CODEX_DELEGATE_OBSERVATIONS", codex_observation._codex_audit_path(guard_home, tmp_path))
 
     assert board.lint_codex_delegate_observations() == []

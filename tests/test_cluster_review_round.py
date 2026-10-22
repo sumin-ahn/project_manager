@@ -15,6 +15,9 @@ hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)�
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_changelog
+from pm_engine.cli import delegate_cmd
+
 from pm_engine.app import delegate_cluster_review
 from pm_engine.infra import delegate_copy_git
 from pm_engine.app import delegate_harvest
@@ -301,10 +304,10 @@ def _machine_lines(out: str) -> list[dict]:
 def _prepare_native_review(pd, home: Path, capsys, *extra: str) -> list[dict]:
     """`ticket prepare --cluster --role code-reviewer` 를 실 CLI 로 부르고 JSON 줄을 낸다."""
     capsys.readouterr()
-    rc = pd._cmd_ticket([
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "prepare", "--cluster", _CLUSTER, "--role", "code-reviewer",
         "--cwd", str(home), *extra,
-    ])
+    ], adapter_roots = pd._resolved_adapter_directories())
     captured = capsys.readouterr()
     assert rc == 0, captured.err
     return _machine_lines(captured.out)
@@ -341,9 +344,9 @@ def test_review_prepare_refuses_a_dirty_slot(pd, review_env, monkeypatch, capsys
             expected = "scratch.txt"
         capsys.readouterr()
 
-        rc = pd._cmd_ticket([
+        rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "prepare", "--cluster", _CLUSTER, "--role", "code-reviewer", "--cwd", str(home),
-        ])
+        ], adapter_roots = pd._resolved_adapter_directories())
 
         err = capsys.readouterr().err
         assert rc == 1, err
@@ -780,7 +783,7 @@ def test_review_cli_has_no_background_or_wait(pd, review_env, capsys):
 
 def test_removed_cluster_subcommand_has_no_parser(pd):
     """지운 `cluster wait` 는 조회 표면(실행 단일 진실 parser)에도 남지 않는다."""
-    assert pd.build_subcommand_parser("cluster") is None
+    assert delegate_cmd.build_subcommand_parser("cluster") is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -840,7 +843,7 @@ def test_ticket_prepare_review_takes_the_cluster_only(
     _native_review_harness(pd, monkeypatch)
 
     with pytest.raises(SystemExit) as caught:
-        pd._cmd_ticket(["prepare", *extra, "--cwd", str(home)])
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["prepare", *extra, "--cwd", str(home)], adapter_roots = pd._resolved_adapter_directories())
 
     assert caught.value.code == 2
     assert delegate_ledger.ticket_copy_records(home) == []
@@ -875,7 +878,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
         evidence = [prepared_head, _git(home, "rev-parse", "HEAD").stdout.strip()]
     capsys.readouterr()
 
-    rc = pd._cmd_ticket(["harvest", "--copy", str(run_dir), "--cwd", str(home)])
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(run_dir), "--cwd", str(home)], adapter_roots = pd._resolved_adapter_directories())
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -902,9 +905,9 @@ def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypat
     scratch.write_text("ignore 대상 산출\n", encoding="utf-8")
     capsys.readouterr()
 
-    rc = pd._cmd_ticket([
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
-    ])
+    ], adapter_roots = pd._resolved_adapter_directories())
 
     assert rc == 0, capsys.readouterr().err
     for ticket in _MEMBERS:
@@ -932,7 +935,7 @@ def test_review_harvest_refuses_a_row_without_base_rev(pd, review_env, capsys):
     seed = seat.board_path.read_bytes()
     capsys.readouterr()
 
-    rc = pd._cmd_ticket(["harvest", "--copy", str(seat.path), "--cwd", str(home)])
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(seat.path), "--cwd", str(home)], adapter_roots = pd._resolved_adapter_directories())
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -952,10 +955,10 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
     first = _prepare_native_review(pd, home, capsys)
     for line in first:
         _write_seat(pd, Path(line["copy"]), [])
-        assert pd._cmd_ticket([
+        assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "abandon", "--copy", line["copy"], "--cwd", str(home), "--assume-dead",
             "--discard-reason", "리뷰 뒤 슬롯이 앞서 감",
-        ]) == 0
+        ], adapter_roots = pd._resolved_adapter_directories()) == 0
     (home / "seed.txt").write_text("fix 뒤\n", encoding="utf-8", newline="\n")
     assert _git(home, "commit", "-qam", "slot moves on").returncode == 0
     new_head = _git(home, "rev-parse", "HEAD").stdout.strip()
@@ -976,9 +979,9 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
         ]
         seat.write_text("".join(kept), encoding="utf-8", newline="")
     capsys.readouterr()
-    rc = pd._cmd_ticket([
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "harvest", "--copy", reopened[0]["run_dir"], "--cwd", str(home),
-    ])
+    ], adapter_roots = pd._resolved_adapter_directories())
     assert rc == 0, capsys.readouterr().err
 
 
@@ -997,9 +1000,9 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
     finding = _finding("F-001")
     for line in lines:
         _write_seat(pd, Path(line["copy"]), [finding] if line["ticket"] == _MEMBERS[0] else [])
-    assert pd._cmd_ticket([
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
-    ]) == 0
+    ], adapter_roots = pd._resolved_adapter_directories()) == 0
     board = _fixture_board(pd, home)
     ticket = _MEMBERS[0]
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
@@ -1172,6 +1175,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
         pd, review_env, monkeypatch, capsys):
     home, tickets = review_env
     board = _fixture_board(pd, home)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "REPO", board.REPO)
     import contextlib
@@ -1543,6 +1547,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "REPO", board.REPO)
     import contextlib
@@ -1587,6 +1592,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "REPO", board.REPO)
     import contextlib
@@ -1616,7 +1622,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     for ticket in _MEMBERS:
         text = (tickets / f"{ticket}-review.md").read_text(encoding="utf-8")
         assert f'"command":"{review_form.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND}"' in text
-        spec_text, rounds = pd._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
+        spec_text, rounds = delegate_changelog._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
         assert review_state.parse_pm_review_delta(spec_text, rounds).accepted == ()
         assert review_state.review_completion_problem(spec_text, rounds) is None
     assert "PM-owned terminal 확인 1건 기입" in captured.out
@@ -1634,6 +1640,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "REPO", board.REPO)
     import contextlib
@@ -1663,7 +1670,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     ) == 0
 
     for ticket in _MEMBERS:
-        spec_text, rounds = pd._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
+        spec_text, rounds = delegate_changelog._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
         blocks = [
             block for block in review_form._pm_review_json_blocks(spec_text)
             if block.kind == review_form.PM_REVIEW_CONFIRMATION_BLOCK
@@ -1696,8 +1703,9 @@ def test_resolve_identity_accepts_task_and_repo_slot_execution(pd, review_env, m
     seen = []
     monkeypatch.setattr(task_args, '_claim_code_tree', lambda _home, identity: seen.append(identity) or str(home))
     monkeypatch.setattr(pd, "REPO", board.REPO)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
-    monkeypatch.setattr(pd, "_resolve_ticket_pm_verified", lambda *a, **k: 0)
+    monkeypatch.setattr(delegate_changelog, "_resolve_ticket_pm_verified", lambda *a, **k: 0)
     assert pd._cmd_rounds([
         "resolve", "--cluster", _CLUSTER, "--pm-verified",
         "--task", "main", "--repo", "proj", "--slot", "5",
@@ -1779,6 +1787,7 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     board = _fixture_board(pd, home)
     monkeypatch.setattr(task_args, '_claim_code_tree', lambda *_a, **_k: str(home))
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "REPO", board.REPO)
     import contextlib

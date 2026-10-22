@@ -27,6 +27,16 @@ hermetic: 자식 프로세스 스폰 0. 실행 경로 테스트는 tmp repo 를 
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.infra import review_rounds
+from pm_engine.domain import reviewer_budget
+from pm_engine.app import reviewer_harvest
+from pm_engine.infra import reviewer_raw
+from pm_engine.app import reviewer_reservation
+from pm_engine.app import reviewer_run
+from pm_engine.app import reviewer_scope
+import pm_engine.infra.harness.reviewer_run
+
 from pm_engine.infra.harness import delegate_temp
 
 from pm_engine.infra import delegate_config
@@ -183,10 +193,10 @@ def _wire_main(external, monkeypatch, repo: Path, reviewer: _FakeReviewer | None
     monkeypatch.setattr(external, "REPO", repo)
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: repo)
-    monkeypatch.setattr(external, "_resolve_diff_root", lambda *a, **k: repo)
+    monkeypatch.setattr(reviewer_scope, "_resolve_diff_root", lambda *a, **k: repo)
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *a, **k: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *a, **k: review_diff.ReviewDiff(
             'diff --git a/x.py b/x.py\n-old\n+new\n',
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -195,7 +205,7 @@ def _wire_main(external, monkeypatch, repo: Path, reviewer: _FakeReviewer | None
         ),
     )
     if reviewer is not None:
-        monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
+        monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
     return reviewer
 
 
@@ -320,11 +330,11 @@ def test_unsupported_harness_or_reasoning_is_fail_loud(
     message = str(caught.value)
     assert fragment in message
     # 같은 오설정이 두 표면에서 다르게 설명되지 않는다 — 계약 모듈 문구를 그대로 감싼다.
-    with pytest.raises(external.contract.HarnessContractError) as contract:
+    with pytest.raises(pm_engine.infra.harness.contract.HarnessContractError) as contract:
         if reasoning is None:
-            external.contract.validate_harness(harness)
+            pm_engine.infra.harness.contract.validate_harness(harness)
         else:
-            external.contract.validate_reasoning(
+            pm_engine.infra.harness.contract.validate_reasoning(
                 harness, reasoning, model="m", cwd=tmp_path, env={})
     assert str(contract.value) in message
 
@@ -636,7 +646,7 @@ def test_prompt_file_cleanup_failure_still_propagates_the_primary_exception(
     seen: dict[str, Path] = {}
 
     with pytest.raises(RuntimeError, match="스폰 중 폭발"):
-        with external._structured_transport(target, "프롬프트 본문", tmp_path) as (argv, _):
+        with reviewer_raw._structured_transport(target, "프롬프트 본문", tmp_path) as (argv, _):
             seen["path"] = Path(argv[argv.index("--file") + 1])
             raise RuntimeError("스폰 중 폭발")
 
@@ -652,7 +662,7 @@ def test_opencode_prompt_file_is_removed_when_the_run_raises(external, tmp_path)
          "additional_reviewer.model": "zai/glm-4.6"})
     seen: dict[str, Path] = {}
     with pytest.raises(RuntimeError, match="스폰 중 폭발"):
-        with external._structured_transport(target, "프롬프트 본문", tmp_path) as (argv, _):
+        with reviewer_raw._structured_transport(target, "프롬프트 본문", tmp_path) as (argv, _):
             seen["path"] = Path(argv[argv.index("--file") + 1])
             assert seen["path"].exists()
             raise RuntimeError("스폰 중 폭발")
@@ -664,7 +674,7 @@ def test_stdin_harnesses_prepare_no_prompt_file(external, tmp_path, harness):
     """codex/claude 는 프롬프트를 stdin 으로 받는다 — 준비할 임시 자원이 없다."""
     target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": harness, "additional_reviewer.model": "m"})
-    with external._structured_transport(target, "프롬프트", tmp_path) as (argv, stdin_text):
+    with reviewer_raw._structured_transport(target, "프롬프트", tmp_path) as (argv, stdin_text):
         assert "--file" not in argv
         assert stdin_text is None          # None = 프롬프트를 그대로 stdin 주입
 
@@ -679,8 +689,8 @@ def test_verdict_sees_only_the_final_reply_while_raw_keeps_the_whole_wire(
     target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": harness, "additional_reviewer.model": "m"})
     wire = _wire(harness)
-    result = external.run_review(
-        "프롬프트", timeout=30, output_dir=tmp_path, target=target,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "프롬프트", timeout=30, output_dir=tmp_path, target=target,
         run_fn=_FakeReviewer(stdout=wire, stderr="진행 로그: " + _DECOY),
         cwd=tmp_path, env={"PATH": os.environ.get("PATH", "")},
     )
@@ -703,8 +713,8 @@ def test_reply_extraction_failure_never_feeds_the_wire_to_the_verdict(
     # 회신 이벤트가 없는 wire. 본문에는 통과 문구가 섞여 있어 wire-as-verdict 면 통과가 나온다.
     wire = _wire(harness, with_reply=False) + json.dumps(
         {"type": "noise", "text": "판정: 통과"}, ensure_ascii=False) + "\n"
-    result = external.run_review(
-        "프롬프트", timeout=30, output_dir=tmp_path, target=target,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "프롬프트", timeout=30, output_dir=tmp_path, target=target,
         run_fn=_FakeReviewer(stdout=wire),
         cwd=tmp_path, env={"PATH": os.environ.get("PATH", "")},
     )
@@ -713,7 +723,7 @@ def test_reply_extraction_failure_never_feeds_the_wire_to_the_verdict(
     assert result["answer"] == ""
     assert result["all_pass"] is False and result["any_must_fix"] is False
     assert result["failed"] is True                          # 회신 없음 = 리뷰 미수신
-    assert external.determine_exit_code(result) == 1         # 보수적 종료코드
+    assert reviewer_budget.determine_exit_code(result) == 1         # 보수적 종료코드
     assert wire in result["file"].read_text(encoding="utf-8")
 
 
@@ -869,13 +879,13 @@ def test_public_facade_requires_a_resolved_target(external, tmp_path):
 
     모델을 고정하지 않는 실행 경로는 폐지됐다(같은 게이트가 그때그때 다른 모델로 돌면 "어느
     모델이 이 판정을 냈는가"를 사후에 확정할 수 없다). 커맨드는 검증된 대상에서만 파생한다."""
-    signature = inspect.signature(external.run_review)
+    signature = inspect.signature(reviewer_run.run_review)
     target_param = signature.parameters["target"]
 
     assert target_param.default is inspect.Parameter.empty      # 기본값 없는 필수 인자
     assert "reviewer_cmd" not in signature.parameters           # 문자열 직접 투입구 0
     with pytest.raises(TypeError):
-        external.run_review("프롬프트 본문", timeout=30, output_dir=tmp_path)
+        reviewer_run.run_review(pm_paths.home_at(external.REPO), "프롬프트 본문", timeout=30, output_dir=tmp_path)
 
 
 def test_the_engine_builds_a_reviewer_target_in_exactly_one_place(external):
@@ -996,7 +1006,7 @@ def test_round_limit_refusal_creates_no_output_dir(
                         "--output-dir", str(second_out)])
     err = capsys.readouterr().err
 
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert first_out.is_dir()                       # 실제로 나간 실행은 산출을 남긴다
     assert not second_out.exists()                  # 거부된 실행은 자리도 만들지 않는다
     assert len(reviewer.calls) == limit             # 스폰은 나간 실행에서만
@@ -1021,10 +1031,10 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
     _wire_main(external, monkeypatch, repo, reviewer)
 
     def _reset_wave_then_fail(*args, **kwargs):
-        with external._round_ledger_lock():          # 다른 실행의 `--ack-wave` 대역
-            ledger = external._load_round_ledger()
-            external._spend_wave_round(external._reset_wave(ledger))
-            external._save_round_ledger(ledger)
+        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):          # 다른 실행의 `--ack-wave` 대역
+            ledger = review_rounds._load_round_ledger(pm_paths.home_at(external.REPO))
+            reviewer_reservation._spend_wave_round(reviewer_budget._reset_wave(ledger))
+            reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), ledger)
         raise RuntimeError("리뷰어 환경 구성 실패(주입)")
 
     monkeypatch.setattr(delegate_env, 'build_env', _reset_wave_then_fail)
@@ -1035,7 +1045,7 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
     ledger = _round_ledger(repo)
     assert reviewer.calls == []
     assert ledger["T-0590"]["count"] == 0                        # 라운드 count 는 환불
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1        # 새 wave 소비는 그대로
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1        # 새 wave 소비는 그대로
     assert "wave 가 이미 리셋" in err                              # 갈린 축을 조용히 두지 않는다
 
 
@@ -1074,7 +1084,7 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
     assert not outdir.exists()                               # raw 예약·디렉토리 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
     assert err.count("라운드 예약 환불") == 1
     assert "추가 리뷰어 실행 중" not in err
 
@@ -1112,7 +1122,7 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
     assert blocker.read_text(encoding="utf-8") == "not a directory\n"  # 남의 파일 불변
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0        # 두 축을 같은 조건으로
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0        # 두 축을 같은 조건으로
     assert err.count("라운드 예약 환불") == 1                      # 조용히도, 두 번도 아니다
     assert _raw_ledger(repo) == []                               # raw 장부에 남긴 것도 없다
 
@@ -1139,7 +1149,6 @@ def test_marker_less_anchor_refuses_before_any_spawn_and_refunds(
     anchor = tmp_path / "outside-pm-home"       # PM 홈이 아닌 저장소(마커 없음)
     anchor.mkdir()
     monkeypatch.setattr(external, "REPO", anchor)
-    monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", None)
     target = reviewer_target.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex", "additional_reviewer.model": "m"})
     reviewer = _FakeReviewer(stdout=_wire("codex"))
@@ -1147,8 +1156,8 @@ def test_marker_less_anchor_refuses_before_any_spawn_and_refunds(
     reclaimed: list[int] = []
 
     with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
-        external.run_review(
-            "프롬프트", timeout=30, target=target, run_fn=reviewer,
+        reviewer_run.run_review(
+            pm_paths.home_at(external.REPO), "프롬프트", timeout=30, target=target, run_fn=reviewer,
             cwd=anchor, env={"PATH": os.environ.get("PATH", "")},
             on_spawn_attempt=lambda: handed_off.append(1),
             on_no_spawn=lambda: reclaimed.append(1),
@@ -1162,8 +1171,8 @@ def test_marker_less_anchor_refuses_before_any_spawn_and_refunds(
 
     # 복구 채널은 자기잠기지 않는다 — 같은 앵커라도 `--output-dir` 을 주면 그대로 전송된다.
     outdir = tmp_path / "explicit-out"
-    result = external.run_review(
-        "프롬프트", timeout=30, output_dir=outdir, target=target, run_fn=reviewer,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "프롬프트", timeout=30, output_dir=outdir, target=target, run_fn=reviewer,
         cwd=anchor, env={"PATH": os.environ.get("PATH", "")},
         on_spawn_attempt=lambda: handed_off.append(1),
     )
@@ -1185,12 +1194,12 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    real_transport = external._structured_transport
+    real_transport = reviewer_raw._structured_transport
 
     def _boom(*args, **kwargs):
         raise failure("구조화 transport 준비 실패(주입)")
 
-    monkeypatch.setattr(external, "_structured_transport", _boom)
+    monkeypatch.setattr(reviewer_raw, "_structured_transport", _boom)
     with pytest.raises(failure):
         external.main(["--gate", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
@@ -1198,7 +1207,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     assert reviewer.calls == []                                  # 스폰 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
     assert ledger["T-0590"]["rounds"] == []
     assert err.count("라운드 예약 환불") == 1
 
@@ -1212,7 +1221,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     assert failure.__name__ in raw                               # 무엇으로 끊겼는지까지
 
     # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 호출된다.
-    monkeypatch.setattr(external, "_structured_transport", real_transport)
+    monkeypatch.setattr(reviewer_raw, "_structured_transport", real_transport)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
@@ -1253,8 +1262,8 @@ def test_failure_after_the_spawn_attempt_keeps_the_reservation(
         # 러너 호출 **안**에서 나가는 BaseException — 호출은 이미 일어났다.
         expected = KeyboardInterrupt
         monkeypatch.setattr(
-            external, "_watchdog_reviewer_run",
-            _runner_that_spawns_then_dies(reviewer, expected))
+            pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run",
+            _home_bound_runner(_runner_that_spawns_then_dies(reviewer, expected)))
     else:
         # 러너가 돌아온 **뒤**의 수합(raw 박제) 실패 — 회신까지 받은 실행이다.
         expected = RuntimeError
@@ -1262,7 +1271,7 @@ def test_failure_after_the_spawn_attempt_keeps_the_reservation(
         def _boom(*args, **kwargs):
             raise expected("raw 박제 실패(주입)")
 
-        monkeypatch.setattr(external, "_write_reserved_output", _boom)
+        monkeypatch.setattr(reviewer_raw, "_write_reserved_output", _boom)
 
     with pytest.raises(expected):
         external.main(["--gate", "T-0590", "--paths", "x.py"])
@@ -1271,7 +1280,7 @@ def test_failure_after_the_spawn_attempt_keeps_the_reservation(
     assert len(reviewer.calls) == 1                           # 스폰은 실제로 일어났다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1                     # 예약은 그대로 소비
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
     assert "라운드 예약 환불" not in err
     assert "스폰 전 중단" not in err                            # 스폰 전 롤백 창은 이미 닫혔다
@@ -1291,17 +1300,17 @@ def test_missing_reviewer_binary_refunds_exactly_once_through_finalization(
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    def _missing(argv, *, input=None, timeout=None, idle_timeout=None,
+    def _missing(_home, argv, *, input=None, timeout=None, idle_timeout=None,
                  cwd=None, env=None, **_ignored):
         raise FileNotFoundError(argv[0])              # 실행 파일 부재 — 호출 0
 
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _missing)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
 
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
     assert "라운드 예약 환불" not in err          # 스폰 전 seam 은 이 환불의 소유자가 아니다
     # raw 는 스폰 전 중단이 아니라 **정상 마감**이다(리뷰어를 부르러 갔다 실패한 실행).
     records = _raw_ledger(repo)
@@ -1399,7 +1408,7 @@ def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
         raise FileNotFoundError(argv[0])             # 2회차: 자식이 뜨지 못했다
 
     monkeypatch.setattr(
-        external, "_watchdog_reviewer_run", _relay_runner(popen, clock, retries=1))
+        pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_relay_runner(popen, clock, retries=1)))
 
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
@@ -1408,7 +1417,7 @@ def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
     assert first.kill_count == 1                     # 1회차 자식은 실제로 떴다가 kill 됐다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1, "이미 호출됐을 수 있는 실행이 환불됐다"
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
     assert "라운드 예약 환불" not in err
     assert "호출은 일어나지 않았습니다" not in err     # 확정 기동 실패 문구를 쓰면 안 된다
 
@@ -1431,13 +1440,13 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
 
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
     raw = _raw_text(repo)
     assert "실행할 수 없음" in raw and "호출은 일어나지 않았습니다" in raw
 
     # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 호출된다.
     reviewer = _FakeReviewer(stdout=_wire("codex"))
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
@@ -1467,8 +1476,8 @@ def test_a_post_spawn_failure_is_never_refunded_whatever_its_type(
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     monkeypatch.setattr(
-        external, "_watchdog_reviewer_run",
-        _runner_that_spawns_then_raises_marked(reviewer, failure))
+        pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run",
+        _home_bound_runner(_runner_that_spawns_then_raises_marked(reviewer, failure)))
 
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
@@ -1476,7 +1485,7 @@ def test_a_post_spawn_failure_is_never_refunded_whatever_its_type(
     assert len(reviewer.calls) == 1                       # 호출은 실제로 일어났다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
     assert "라운드 예약 환불" not in err
 
 
@@ -1521,21 +1530,23 @@ _OWNERSHIP_TRANSITIONS = [
 
 @pytest.mark.parametrize("transitions,refunds", _OWNERSHIP_TRANSITIONS)
 def test_the_reservation_seam_refunds_at_most_once_in_every_order(
-        external, monkeypatch, transitions, refunds):
+        external, monkeypatch, tmp_path, transitions, refunds):
     """소유권 전이가 어떤 순서로 와도 이 seam 의 환불은 0 또는 1 회다.
 
     `reclaim_no_spawn` 은 `hand_off` 의 대칭이라 권리를 되돌려 놓지만, 되돌린 권리도 여전히 한 번만
     쓰인다 — `release` 와 `__exit__` 이 겹쳐 호출돼도(여러 층이 같은 예외를 잡는 형상) 두 번째는
     no-op 이어야 한다."""
+    owner_home = pm_paths.home_at(tmp_path / "code", pm_home=tmp_path / "owner")
+    homes = []
     released: list[str] = []
     monkeypatch.setattr(
-        external, "_release_round_reservation",
-        lambda budget, *, reason: released.append(reason))
-    budget = external.RoundBudget(
+        reviewer_reservation, "_release_round_reservation",
+        lambda _home, budget, *, reason: (homes.append(_home), released.append(reason))[1])
+    budget = reviewer_budget.RoundBudget(
         gate="T-0590", round_id="round-1", sequence=1, wave_id="wave-1")
 
     with pytest.raises(RuntimeError):
-        with external._PreSpawnReservation(budget) as reservation:
+        with reviewer_reservation._PreSpawnReservation(owner_home, budget) as reservation:
             for transition in transitions:
                 getattr(reservation, transition)()
             raise RuntimeError("구간 이탈(주입)")
@@ -1543,28 +1554,35 @@ def test_the_reservation_seam_refunds_at_most_once_in_every_order(
 
     assert len(released) == refunds
 
+    assert all(home is owner_home for home in homes)
+
 
 @pytest.mark.parametrize("machine_refunded", [True, False])
 def test_the_release_seam_reports_whether_it_actually_refunded(
-        external, monkeypatch, machine_refunded):
+        external, monkeypatch, tmp_path, machine_refunded):
     """`release` 는 **이번 호출이 실제로 되돌렸는지**를 돌려준다 (no-op·환불 실패는 False).
 
     예외로 나가는 구간은 이 값을 쓰지 않지만, 정상 return 하는 마감 저장 실패 경로는 안내 문구를
     이 사실에 맞춰야 한다 — 되돌리지 못한 예약을 "되돌렸다"고 말하면 장부와 표면이 갈린다."""
+    owner_home = pm_paths.home_at(tmp_path / "code", pm_home=tmp_path / "owner")
+    homes = []
     reasons: list[str] = []
 
-    def _machine(budget, *, reason: str) -> bool:
+    def _machine(_home, budget, *, reason: str) -> bool:
+        homes.append(_home)
         reasons.append(reason)
         return machine_refunded
 
-    monkeypatch.setattr(external, "_release_round_reservation", _machine)
-    reservation = external._PreSpawnReservation(external.RoundBudget(
+    monkeypatch.setattr(reviewer_reservation, "_release_round_reservation", _machine)
+    reservation = reviewer_reservation._PreSpawnReservation(owner_home, reviewer_budget.RoundBudget(
         gate="T-0590", round_id="round-1", sequence=1, wave_id="wave-1"))
     reservation.reclaim_no_spawn()                   # 자식 없음 판명 — 권리 회복
 
     assert reservation.release(reason="마감 실패") is machine_refunded
     assert reservation.release(reason="두 번째") is False    # 정산 뒤에는 no-op
     assert reasons == ["마감 실패"]                           # 환불 기계는 한 번만 돈다
+
+    assert all(home is owner_home for home in homes)
 
 
 # 판명된 no-spawn 뒤의 수합 구간에서 나갈 수 있는 실패. `BrokenPipeError` 는 실측 축이다 — 닫힌
@@ -1587,13 +1605,13 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
         wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    real_summary = external.print_summary
+    real_summary = reviewer_harvest.print_summary
 
     def _boom(*args, **kwargs):
         raise failure("요약 출력 실패(주입)")
 
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
-    monkeypatch.setattr(external, "print_summary", _boom)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
+    monkeypatch.setattr(reviewer_harvest, "print_summary", _boom)
     with pytest.raises(failure):
         external.main(["--gate", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
@@ -1601,7 +1619,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     assert reviewer.calls == []                                   # 자식 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
     assert ledger["T-0590"]["rounds"] == []                        # 산출도 남기지 않는다
     assert err.count("라운드 예약 환불: 게이트") == 1               # 조용히도, 두 번도 아니다
     # raw 는 `run_review` 가 이미 정직하게 닫았다 — 보상 경로가 닫힌 레코드를 다시 덮지 않는다.
@@ -1611,8 +1629,8 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     assert "스폰 전 중단" not in _raw_text(repo)
 
     # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 호출된다.
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
-    monkeypatch.setattr(external, "print_summary", real_summary)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
+    monkeypatch.setattr(reviewer_harvest, "print_summary", real_summary)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
@@ -1631,12 +1649,12 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
     if seam == "raw-write":
         def _boom(*args, **kwargs):
             raise RuntimeError("raw 박제 실패(주입)")
 
-        monkeypatch.setattr(external, "_write_reserved_output", _boom)
+        monkeypatch.setattr(reviewer_raw, "_write_reserved_output", _boom)
     else:
         _break_raw_finish(external, monkeypatch, RuntimeError)
 
@@ -1647,13 +1665,13 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     assert reviewer.calls == []                                   # 자식 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
     assert err.count("라운드 예약 환불: 게이트") == 1               # 정확히 한 번
     records = _raw_ledger(repo)
     assert len(records) == 1
     if seam == "raw-write":
         # 박제만 실패했다 — 레코드는 실패 축으로 닫고, 빈 파일이 남았다고 말한다.
-        assert records[0]["rc"] == external._PRE_SPAWN_ABORT_RC
+        assert records[0]["rc"] == reviewer_raw._PRE_SPAWN_ABORT_RC
         assert records[0]["finished_at"] is not None
         assert "스폰 전 중단 사유의 raw 박제 실패" in err
     else:
@@ -1671,16 +1689,16 @@ def _flaky_ledger_save(external, monkeypatch, *, fail_from: int, fail_to: int | 
     호출 순서가 곧 구간이다: 1=예약 저장 · 2=마감 저장 · 3=마감 실패 뒤의 보상 환불 저장.
     락 경합(Windows `msvcrt.locking` 재시도 소진)이 실 유입원이라 예외는 `OSError` 다.
     반환 dict 로 실제 호출 횟수를 본다 — 보상 경로가 돌았는지를 문구가 아니라 횟수로 확인한다."""
-    real_save = external._save_round_ledger
+    real_save = reviewer_reservation._save_round_ledger
     saves = {"n": 0}
 
-    def _save(ledger):
+    def _save(_home, ledger):
         saves["n"] += 1
         if saves["n"] >= fail_from and (fail_to is None or saves["n"] <= fail_to):
             raise OSError(11, "resource temporarily unavailable")
-        return real_save(ledger)
+        return real_save(_home, ledger)
 
-    monkeypatch.setattr(external, "_save_round_ledger", _save)
+    monkeypatch.setattr(reviewer_reservation, "_save_round_ledger", _save)
     return saves
 
 
@@ -1697,7 +1715,7 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
         wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
     saves = _flaky_ledger_save(external, monkeypatch, fail_from=2, fail_to=2)
 
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
@@ -1707,14 +1725,14 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     assert saves["n"] == 3                        # 예약 · 마감(실패) · 보상 환불
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
     assert ledger["T-0590"]["rounds"] == []                        # 산출도 남기지 않는다
     assert "라운드 장부 마감 실패" in err                            # 실패는 여전히 loud
     assert err.count("라운드 예약 환불: 게이트") == 1                # 조용히도, 두 번도 아니다
     assert "미완으로 남아" not in err              # 되돌린 라운드를 미완이라고 말하지 않는다
 
     # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 스폰·성공한다.
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1                                # 재시도는 실제로 스폰됐다
@@ -1732,7 +1750,7 @@ def test_a_failing_compensation_after_no_spawn_stays_loud_and_conservative(
     repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
+    monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
     saves = _flaky_ledger_save(external, monkeypatch, fail_from=2)   # 마감·보상 모두 실패
 
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
@@ -1767,7 +1785,7 @@ def test_a_spawned_run_is_not_refunded_when_the_finalization_save_fails(
     assert saves["n"] == 2                                        # 보상 저장은 없다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1                         # 예약은 그대로 소비
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
     assert "라운드 장부 마감 실패" in err and "미완으로 남아" in err
     assert "라운드 예약 환불" not in err
@@ -1787,13 +1805,13 @@ def test_a_spawned_run_is_never_refunded_by_the_same_failures(
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     if runner_kind == "타임아웃":
-        monkeypatch.setattr(external, "_watchdog_reviewer_run",
-                            _runner_that_spawns_then_times_out(reviewer))
+        monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run",
+                            _home_bound_runner(_runner_that_spawns_then_times_out(reviewer)))
     if seam == "summary":
         def _boom(*args, **kwargs):
             raise RuntimeError("요약 출력 실패(주입)")
 
-        monkeypatch.setattr(external, "print_summary", _boom)
+        monkeypatch.setattr(reviewer_harvest, "print_summary", _boom)
     else:
         _break_raw_finish(external, monkeypatch, RuntimeError)
 
@@ -1804,7 +1822,7 @@ def test_a_spawned_run_is_never_refunded_by_the_same_failures(
     assert len(reviewer.calls) == 1                               # 스폰은 실제로 일어났다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1                         # 예약은 그대로 소비
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
     assert "라운드 예약 환불" not in err
     assert "스폰 전 중단" not in err                                # 보상 경로도 타지 않는다
@@ -1821,7 +1839,7 @@ def test_a_failing_refund_never_masks_the_original_pre_spawn_failure(
     repo = _repo(tmp_path / "repo", _conf())
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    real_lock = external._round_ledger_lock
+    real_lock = review_rounds._round_ledger_lock
     lock_broken: list[bool] = []
 
     def _lock(*args, **kwargs):
@@ -1833,8 +1851,8 @@ def test_a_failing_refund_never_masks_the_original_pre_spawn_failure(
         lock_broken.append(True)
         raise failure("구조화 transport 준비 실패(주입)")
 
-    monkeypatch.setattr(external, "_round_ledger_lock", _lock)
-    monkeypatch.setattr(external, "_structured_transport", _boom)
+    monkeypatch.setattr(review_rounds, "_round_ledger_lock", _lock)
+    monkeypatch.setattr(reviewer_raw, "_structured_transport", _boom)
     with pytest.raises(failure):                     # 주 예외가 1순위 그대로
         external.main(["--gate", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
@@ -1864,8 +1882,8 @@ def test_an_unexpected_refund_failure_stays_fatal_and_keeps_the_original_context
     def _boom(*args, **kwargs):
         raise RuntimeError("구조화 transport 준비 실패(주입)")
 
-    monkeypatch.setattr(external, "_refund_reserved_round", _refund_boom)
-    monkeypatch.setattr(external, "_structured_transport", _boom)
+    monkeypatch.setattr(reviewer_reservation, "_refund_reserved_round", _refund_boom)
+    monkeypatch.setattr(reviewer_raw, "_structured_transport", _boom)
     with pytest.raises(ValueError) as caught:
         external.main(["--gate", "T-0590", "--paths", "x.py"])
 
@@ -2033,8 +2051,8 @@ def test_structured_opencode_reviewer_receives_shared_runtime_role_config(
             return subprocess.CompletedProcess(argv, 0, stdout=wire, stderr="")
 
     runner = Capture()
-    result = external.run_review(
-        "review", timeout=30, output_dir=tmp_path / "raw", target=target,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "review", timeout=30, output_dir=tmp_path / "raw", target=target,
         run_fn=runner, cwd=tmp_path, env={"PATH": os.environ.get("PATH", "")},
     )
     assert result["all_pass"] is True
@@ -2095,19 +2113,19 @@ def test_reviewer_surface_states_the_name_and_keeps_the_transport_axis(external)
 
 def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):
     """상한의 성격은 무한 루프 차단이다 — 비용 재승인 요구가 아니고, 라운드 연장은 폐지됐다."""
-    for guidance in (external._ROUND_LIMIT_GUIDANCE, external._CONVERGENCE_GUIDANCE,
-                     external._WAVE_BUDGET_GUIDANCE):
+    for guidance in (reviewer_budget._ROUND_LIMIT_GUIDANCE, reviewer_budget._CONVERGENCE_GUIDANCE,
+                     reviewer_budget._WAVE_BUDGET_GUIDANCE):
         assert "--rounds-report" in guidance                # 먼저 볼 조회면
         assert "대기" not in guidance                        # '사용자 승인 대기' 규율 삭제
         assert "승인 후" not in guidance
     # 라운드 축은 현재 티켓을 terminal stop 하고 사용자에게 근거만 보고한다.
-    for guidance in (external._ROUND_LIMIT_GUIDANCE, external._CONVERGENCE_GUIDANCE):
+    for guidance in (reviewer_budget._ROUND_LIMIT_GUIDANCE, reviewer_budget._CONVERGENCE_GUIDANCE):
         assert "현재 티켓" in guidance and "사용자에게 보고" in guidance
         assert "재설계" not in guidance and "분할" not in guidance
         assert "새 티켓" not in guidance and "후속 티켓" not in guidance
     # wave 축만 승인으로 재개한다 (별개 비용 축).
-    assert "--ack-wave" in external._WAVE_BUDGET_GUIDANCE
-    assert "자율" in external._WAVE_BUDGET_GUIDANCE
+    assert "--ack-wave" in reviewer_budget._WAVE_BUDGET_GUIDANCE
+    assert "자율" in reviewer_budget._WAVE_BUDGET_GUIDANCE
 
 
 def test_reviewer_source_comments_match_structured_target_and_durable_consent():
@@ -2145,7 +2163,22 @@ def test_coordinate_prompt_keeps_codex_cwd_permissions_and_shared_env(
 def test_additional_reviewer_reuses_only_pm_delegate_transport_seam(external):
     """리뷰 축은 공용 transport의 생성과 정리 seam을 사용한다."""
     assert not hasattr(external, "pm_delegate")
-    source = inspect.getsource(external._structured_transport)
+    source = inspect.getsource(reviewer_raw._structured_transport)
     assert "_save_opencode_transport_prompt" in source
     assert "_cleanup_attempt_transport" in source
     assert "mkstemp" not in source
+
+
+def _home_bound_runner(runner):
+    """기존 러너 대역의 ABI를 보존하고 기본 러너의 Home 입력만 받는다."""
+    import inspect
+
+    def with_home(_home, *args, **kwargs):
+        return runner(*args, **kwargs)
+
+    signature = inspect.signature(runner)
+    with_home.__signature__ = signature.replace(parameters=[
+        inspect.Parameter("_home", inspect.Parameter.POSITIONAL_ONLY),
+        *signature.parameters.values(),
+    ])
+    return with_home

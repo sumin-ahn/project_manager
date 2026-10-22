@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+
 from pm_engine.cli import board_ticket
 
 from pm_engine.app import cluster_binding
@@ -455,13 +457,13 @@ def test_width_excludes_what_the_integration_branch_already_had(external, tmp_pa
     """재배치로 흡수한 분량은 이 작업의 폭이 아니다 — 기준점을 claim 시점 rev 와 대조한다."""
     root, seed = _width_repo(tmp_path)
 
-    anchor, note = external.integration_anchor(root, _INTEGRATION_BRANCH)
+    anchor, note = review_diff.integration_anchor(root, _INTEGRATION_BRANCH)
     assert note is None
     assert anchor == _rev(root, _INTEGRATION_BRANCH)
 
-    integration_width = external.measured_diff_text(
+    integration_width = review_diff.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=anchor)
-    claim_width = external.measured_diff_text(
+    claim_width = review_diff.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=seed)
 
     assert integration_width.count(_OWN_MARKER) == _OWN_LINES  # 자기 몫만
@@ -473,16 +475,16 @@ def test_width_excludes_what_the_integration_branch_already_had(external, tmp_pa
 def test_both_width_consumers_see_the_same_stage(external, tmp_path):
     """unified diff 원문이 단계 표(`_measure_stages`)가 정한 폭을 본다(정의 지점 하나)."""
     root, seed = _width_repo(tmp_path)
-    anchor, _note = external.integration_anchor(root, _INTEGRATION_BRANCH)
+    anchor, _note = review_diff.integration_anchor(root, _INTEGRATION_BRANCH)
 
-    assert external._measure_stages("HEAD", anchor) == ((anchor, True),)
+    assert review_diff._measure_stages("HEAD", anchor) == ((anchor, True),)
 
-    diff_text = external.measured_diff_text(
+    diff_text = review_diff.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=anchor)
     assert diff_text.count(_OWN_MARKER) == _OWN_LINES
     assert _ABSORBED_MARKER not in diff_text
 
-    old_diff = external.measured_diff_text(
+    old_diff = review_diff.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=seed)
     assert _ABSORBED_MARKER in old_diff             # 민감도 — 옛 기준에서는 실린다
 
@@ -539,18 +541,18 @@ def _wave_repo(tmp_path: Path) -> tuple[Path, str]:
 
 def test_the_anchor_picks_one_worktree_inclusive_stage(external):
     """앵커가 있으면 단계는 하나다 — 그 기준점과 **현재 작업트리**의 차이(untracked 포함)."""
-    assert external._measure_stages("HEAD", "a" * 40) == (("a" * 40, True),)
+    assert review_diff._measure_stages("HEAD", "a" * 40) == (("a" * 40, True),)
 
 
 def test_absent_anchor_keeps_the_old_stage_table(external):
     """앵커가 없으면 옛 폭 그대로다 — 작업트리 → 비면 직전 커밋 한 칸."""
-    assert external._measure_stages("HEAD", None) == (
+    assert review_diff._measure_stages("HEAD", None) == (
         ("HEAD", True), ("HEAD~1..HEAD", False))
 
 
 def test_explicit_base_owns_the_width_over_the_anchor(external):
     """`--base` 명시는 사용자가 고른 폭이라 앵커가 덮어쓰지 않는다."""
-    assert external._measure_stages("main", "a" * 40) == (("main", False),)
+    assert review_diff._measure_stages("main", "a" * 40) == (("main", False),)
 
 
 @requires_git
@@ -559,7 +561,7 @@ def test_the_anchor_is_the_merge_base_with_the_integration_branch(external, tmp_
     root, _claim_rev = _wave_repo(tmp_path)
     expected = _git(root, "merge-base", _INTEGRATION, "HEAD").stdout.strip()
 
-    assert external.integration_anchor(root, _INTEGRATION) == (expected, None)
+    assert review_diff.integration_anchor(root, _INTEGRATION) == (expected, None)
 
 
 @requires_git
@@ -570,7 +572,7 @@ def test_a_branch_absent_from_this_tree_yields_a_loud_reason(external, tmp_path)
     접는다 — 조용한 0 줄(false-green)이 바로 이 축이 닫는 결함이다."""
     root, _claim_rev = _wave_repo(tmp_path)
 
-    anchor, note = external.integration_anchor(root, "task/absent")
+    anchor, note = review_diff.integration_anchor(root, "task/absent")
 
     assert anchor is None and "해소하지 못했다" in note and "task/absent" in note
 
@@ -578,7 +580,7 @@ def test_a_branch_absent_from_this_tree_yields_a_loud_reason(external, tmp_path)
 @pytest.mark.parametrize("value", ["", "--output=/tmp/x", "zz" * 20])
 def test_an_unresolvable_reference_never_becomes_an_anchor(external, tmp_path, value):
     """빈 값·옵션 모양·존재하지 않는 값은 앵커가 되지 못한다(사유와 함께 멈춘다)."""
-    anchor, note = external.integration_anchor(tmp_path, value)
+    anchor, note = review_diff.integration_anchor(tmp_path, value)
     assert anchor is None and note
 
 

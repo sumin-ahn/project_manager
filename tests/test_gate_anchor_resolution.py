@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.domain import reviewer_budget
+from pm_engine.infra import reviewer_raw
+from pm_engine.app import reviewer_reservation
+from pm_engine.app import reviewer_run
+from pm_engine.app import reviewer_scope
+
 from pm_engine.app import delegate_scope_audit
 
 from pm_engine.infra.harness import delegate_env
@@ -140,7 +147,7 @@ def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "run_review", _review)
+    monkeypatch.setattr(reviewer_run, "run_review", _review)
     return calls
 
 
@@ -475,9 +482,9 @@ def test_unregistered_snapshot_run_fails_before_ledger_raw_or_spawn(
             raise AssertionError(f"{name} must not run")
         return _fail
 
-    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
-    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
+    monkeypatch.setattr(reviewer_reservation, "_reserve_round_budget", _forbidden("round"))
+    monkeypatch.setattr(reviewer_raw, "_reserve_output", _forbidden("raw"))
+    monkeypatch.setattr(reviewer_run, "run_review", _forbidden("spawn"))
     output_dir = tmp_path / "raw"
 
     assert external.main([
@@ -523,9 +530,9 @@ def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
             raise AssertionError(f"{name} must not run")
         return _fail
 
-    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
-    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
+    monkeypatch.setattr(reviewer_reservation, "_reserve_round_budget", _forbidden("round"))
+    monkeypatch.setattr(reviewer_raw, "_reserve_output", _forbidden("raw"))
+    monkeypatch.setattr(reviewer_run, "run_review", _forbidden("spawn"))
     output_dir = tmp_path / "raw-ticket-snapshot"
 
     assert external.main([
@@ -1023,9 +1030,6 @@ def test_external_main_restores_selector_globals_between_calls(
         engine / ".project_manager" / "wiki" / "tickets",
     )
     monkeypatch.setattr(external, "REPO", original[0])
-    monkeypatch.setattr(external, "LOCAL_CONF", original[1])
-    monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", original[2])
-    monkeypatch.setattr(external, "TICKETS_DIR", original[3])
     monkeypatch.chdir(engine)
 
     assert external.main([
@@ -1034,8 +1038,9 @@ def test_external_main_restores_selector_globals_between_calls(
     first = capsys.readouterr().err
     assert f"diff_root={absolute.resolve()}" in first
     assert (
-        external.REPO, external.LOCAL_CONF,
-        external.REVIEW_CONTEXT_FILE, external.TICKETS_DIR,
+        external.REPO, pm_paths.home_at(external.REPO).local_conf,
+        pm_paths.home_at(external.REPO).local_dir.parent / "review_context.local.md",
+        pm_paths.tickets_dir(pm_paths.home_at(external.REPO)),
     ) == original
 
     assert external.main(["--paths", ".", "--dry-run"]) == 0
@@ -1045,7 +1050,7 @@ def test_external_main_restores_selector_globals_between_calls(
 
 def test_external_public_annotations_resolve_at_runtime():
     external = _load("additional_reviewer_type_hints")
-    assert typing.get_type_hints(external._resolve_diff_root)["paths"] == typing.Sequence[str]
+    assert typing.get_type_hints(reviewer_scope._resolve_diff_root)["paths"] == typing.Sequence[str]
 
 
 def test_external_ticket_uses_board_home_and_worktree_diff_from_both_shell_dirs(
@@ -1082,7 +1087,7 @@ def test_ticket_resolution_failure_never_calls_diff(tmp_path, monkeypatch, capsy
     external = _load("additional_reviewer_missing_ticket")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.setattr(
-        external, "extract_diff",
+        review_diff, "extract_diff",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("diff must not run")),
     )
     missing_ticket = "T-" + "9998"
@@ -1101,7 +1106,7 @@ def test_empty_inline_touches_fails_before_diff(tmp_path, monkeypatch, capsys):
     external = _load("additional_reviewer_empty_touches")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.setattr(
-        external, "extract_diff",
+        review_diff, "extract_diff",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("diff must not run")),
     )
 
@@ -1116,14 +1121,14 @@ def test_repository_root_is_a_valid_review_pathspec(tmp_path):
     home, worktree, _ticket = _managed_worktree(tmp_path)
     external = _load("additional_reviewer_root_pathspec")
 
-    assert external._normalize_review_paths(
-        ["."], diff_root=worktree, pm_home=worktree, ticket_selected=False,
+    assert reviewer_scope._normalize_review_paths(
+        pm_paths.home_at(Path(worktree).resolve()), ["."], diff_root=worktree, ticket_selected=False,
     ) == (".",)
-    assert external._normalize_review_paths(
-        [str(worktree)], diff_root=worktree, pm_home=worktree, ticket_selected=False,
+    assert reviewer_scope._normalize_review_paths(
+        pm_paths.home_at(Path(worktree).resolve()), [str(worktree)], diff_root=worktree, ticket_selected=False,
     ) == (".",)
-    assert external._normalize_review_paths(
-        ["work/slot"], diff_root=worktree, pm_home=home, ticket_selected=True,
+    assert reviewer_scope._normalize_review_paths(
+        pm_paths.home_at(Path(home).resolve()), ["work/slot"], diff_root=worktree, ticket_selected=True,
     ) == (".",)
 
 
@@ -1145,9 +1150,8 @@ def test_ticket_touching_other_registered_slot_names_anchor_mismatch(tmp_path):
         pm_paths.AnchorResolutionError,
         match="ticket touches가 실행 엔진 worktree와 다른 등록 worktree",
     ):
-        external._resolve_diff_root(
-            second,
-            pm_home=home,
+        reviewer_scope._resolve_diff_root(
+            pm_paths.home_at(Path(home).resolve()), second,
             paths=["work/slot/src"],
             base="HEAD",
             ticket_selected=True,
@@ -1278,9 +1282,9 @@ def test_comma_guidance_requires_comma_and_missing_element(tmp_path):
     (tmp_path / "valid,name.py").write_text("", encoding="utf-8")
 
     (tmp_path / "second.py").write_text("", encoding="utf-8")
-    suspicious = external._empty_diff_guidance(["exists.py,second.py"], root=tmp_path)
-    ordinary = external._empty_diff_guidance(["missing.py"], root=tmp_path)
-    legitimate = external._empty_diff_guidance(["valid,name.py"], root=tmp_path)
+    suspicious = reviewer_budget._empty_diff_guidance(["exists.py,second.py"], root=tmp_path)
+    ordinary = reviewer_budget._empty_diff_guidance(["missing.py"], root=tmp_path)
+    legitimate = reviewer_budget._empty_diff_guidance(["valid,name.py"], root=tmp_path)
 
     assert "공백 구분" in suspicious
     assert "공백 구분" not in ordinary
@@ -1321,7 +1325,7 @@ def test_unfinished_round_record_is_counted_separately():
             {"number": 3},
         ],
     }
-    assert external._round_counts(entry) == (3, 1, 2)
+    assert reviewer_reservation._round_counts(entry) == (3, 1, 2)
 
 
 def _cross_owned_slot(root, *, declare_review_paths: bool = True):
@@ -1576,12 +1580,12 @@ def _multi_commit_base_home(root: Path) -> tuple[Path, Path, Path]:
 def test_diff_width_table_and_slot_ownership_evidence_are_stated_once():
     """폭 표는 한 곳뿐이고, 슬롯 소유 근거는 그 표에서 **명시 base 만** 남긴 부분집합이다."""
     external = _load("additional_reviewer_diff_width")
-    assert external._diff_bases("HEAD") == ("HEAD", "HEAD~1..HEAD")
-    assert external._diff_bases("main") == ("main",)
+    assert review_diff._diff_bases("HEAD") == ("HEAD", "HEAD~1..HEAD")
+    assert review_diff._diff_bases("main") == ("main",)
     # 암묵 폴백 단계는 소유 근거가 아니다. 사용자가 그 리비전을 직접 지정하면 근거가 된다.
-    assert external._slot_selection_bases("HEAD") == ("HEAD",)
-    assert external._slot_selection_bases("main") == ("main",)
-    assert external._slot_selection_bases("HEAD~1..HEAD") == ("HEAD~1..HEAD",)
+    assert review_diff._slot_selection_bases("HEAD") == ("HEAD",)
+    assert review_diff._slot_selection_bases("main") == ("main",)
+    assert review_diff._slot_selection_bases("HEAD~1..HEAD") == ("HEAD~1..HEAD",)
 
 
 def test_clean_slot_on_multi_commit_base_is_never_selected_as_changed(
@@ -1592,7 +1596,7 @@ def test_clean_slot_on_multi_commit_base_is_never_selected_as_changed(
     external = _load("additional_reviewer_multi_commit_base")
     monkeypatch.setattr(external, "REPO", home)
     monkeypatch.setattr(
-        external, "run_review",
+        reviewer_run, "run_review",
         lambda *args, **kwargs: pytest.fail("호출 전에 차단해야 한다"),
     )
 
@@ -1601,7 +1605,7 @@ def test_clean_slot_on_multi_commit_base_is_never_selected_as_changed(
     assert "diff worktree를 하나로 해소할 수 없습니다" in err
     assert "--base <공통 base ref>" in err
     # 폭 자체는 비어 있지 않다(추출이라면 리뷰했을 내용) — 소유 근거로 쓰지 않을 뿐이다.
-    assert external._candidate_has_diff(tip, "HEAD~1..HEAD", ["src/module.py"]) is True
+    assert reviewer_scope._candidate_has_diff(tip, "HEAD~1..HEAD", ["src/module.py"]) is True
 
 
 def test_commit_only_change_needs_explicit_anchor_in_multi_slot_home(
@@ -1644,7 +1648,7 @@ def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
     home, _old, tip = _multi_commit_base_home(tmp_path / "fallback-evidence")
     external = _load("additional_reviewer_fallback_evidence")
     monkeypatch.setattr(external, "REPO", home)
-    monkeypatch.setattr(external, "_slot_selection_bases", external._diff_bases)
+    monkeypatch.setattr(review_diff, "_slot_selection_bases", review_diff._diff_bases)
 
     assert external.main(["--dry-run"]) == 0
     captured = capsys.readouterr()
@@ -1673,7 +1677,7 @@ def test_default_review_paths_cross_owned_slot_blocks_before_external_send(
     external = _load("additional_reviewer_default_cross_owned")
     monkeypatch.setattr(external, "REPO", home_a)
     monkeypatch.setattr(
-        external, "run_review",
+        reviewer_run, "run_review",
         lambda *args, **kwargs: pytest.fail("호출 전에 차단해야 한다"),
     )
 

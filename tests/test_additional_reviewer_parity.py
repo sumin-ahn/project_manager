@@ -18,6 +18,10 @@ cwd/env 를 보고, 스텁은 sentinel 로 즉시 빠져나와 장부·raw 경�
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_run
+
 from pm_engine.infra.harness import delegate_env
 from pm_engine.domain import reviewer_result
 from pm_engine.infra import reviewer_target
@@ -131,22 +135,22 @@ def _capture_run_conditions(external, monkeypatch, *, harness: str,
     """`_run_review_round` 가 리뷰어에게 넘기는 실행 조건(cwd·env)을 잡아 돌려준다."""
     seen: dict = {}
 
-    def _stub(**kwargs):
+    def _stub(_home, **kwargs):
         seen.update(kwargs)
         raise _Spawned("capture")
 
-    monkeypatch.setattr(external, "run_review", _stub)
+    monkeypatch.setattr(reviewer_run, "run_review", _stub)
     target = reviewer_target.ReviewerTarget(
         reviewer_result.REVIEWER_SOURCE_STRUCTURED, f"{harness} exec",
         harness=harness, model="m",
     )
     with pytest.raises(_Spawned):
-        external._run_review_round(
-            argparse.Namespace(), conf={}, prompt="p",
+        reviewer_harvest._run_review_round(
+            pm_paths.home_at(Path(diff_root).resolve()), argparse.Namespace(), conf={}, prompt="p",
             reviewer_cmd=target.command, timeout=1, idle_timeout=1,
             output_dir=output_dir, conf_path=None, profile=None,
             target=target, reservation=None,
-            pm_home=diff_root, diff_root=diff_root,
+            diff_root=diff_root,
         )
     return seen
 

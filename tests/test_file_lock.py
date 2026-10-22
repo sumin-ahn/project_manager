@@ -780,7 +780,7 @@ def test_converged_tools_delegate_instead_of_reimplementing():
     for tool in (
         "pm_engine/app/completion_gate.py", "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_handoff.py",
         "pm_engine/infra/pool_store.py",
-        "additional_reviewer.py",
+        "pm_engine/infra/review_rounds.py",
     ):
         source = (TOOLS / tool).read_text(encoding="utf-8")
         assert "exclusive_file_lock(" in source, tool

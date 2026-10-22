@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import argparse
 import contextlib
 import hashlib
@@ -26,6 +27,9 @@ import pytest
 
 from conftest import current_branch, write_cluster_ledger
 from _engine_tree import engine_python_files
+from pm_engine.infra import pm_paths
+from pm_engine.infra import review_diff
+from pm_engine.domain import review_diff_rules
 from pm_engine.infra import manifest_store
 
 
@@ -2470,7 +2474,7 @@ def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(pref_t
         encoding="utf-8",
     )
     external = _load_tool_module("additional_reviewer")
-    diff_text = external.measured_diff_text(
+    diff_text = review_diff.measured_diff_text(
         root, "HEAD", [_PREF_RENAME_SOURCE, _PREF_NON_ASCII_TOUCH],
         claimed_rev=claimed_rev,
     )
@@ -2527,7 +2531,7 @@ def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(pref
         if path.relative_to(root).as_posix() == _PREF_TOUCH
     }
     actual = set(
-        finisher._private_ref_surface_paths(root, [_PREF_TOUCH], private_refs, external)
+        finisher._private_ref_surface_paths(pm_paths.home_at(root), root, [_PREF_TOUCH], private_refs)
     )
     assert actual == expected and actual  # 비어 있으면 교집합이 실재하지 않아 무의미한 단언이다
 
@@ -2546,7 +2550,7 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
     })
     assert len(mirrors) == 3
     assert all((REPO / mirror).is_file() for mirror in mirrors)
-    assert all(external.is_machine_mirror_path(mirror) for mirror in mirrors)
+    assert all(review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), mirror) for mirror in mirrors)
     private_refs = pref_tf._load_private_refs()
     finisher = pref_tf.TicketFinisher(
         board_py=REPO / ".project_manager" / "tools" / "board.py",
@@ -2555,7 +2559,7 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
     selected = {
         path.relative_to(REPO).as_posix()
         for path in finisher._private_ref_surface_paths(
-            REPO, [canonical, *mirrors], private_refs, external,
+            pm_paths.home_at(REPO), REPO, [canonical, *mirrors], private_refs,
         )
     }
     assert selected == {canonical}
@@ -2692,7 +2696,7 @@ def test_measured_diff_text_reuses_measure_stages_no_width_copy():
     """`measured_diff_text` 는 `_measure_stages`·`_stage_diff_runs` 를 그대로 호출한다
     (폭 정의 사본 0). 형식만 `--numstat` 대신 0-컨텍스트로 갈린다."""
     external = _load_tool_module("additional_reviewer")
-    names = external.measured_diff_text.__code__.co_names
+    names = review_diff.measured_diff_text.__code__.co_names
     assert "_measure_stages" in names
     assert "_stage_diff_runs" in names
 
@@ -2751,10 +2755,10 @@ def test_real_historical_inflow_agrees_with_the_reinflow_guard(pref_tf, tmp_path
         task_workspace=code_tree,
     )
     added, unresolved = pref_tf._parsed_diff_added_lines(
-        diff_text, external._diff_block_path
+        diff_text
     )
     actionable, raw = finisher._private_ref_diff_offenders(
-        [target], code_tree, diff_text, private_refs, external._diff_block_path,
+        [target], code_tree, diff_text, private_refs,
     )
     hard = sorted(
         (item.line, item.kind, item.match, item.surface)

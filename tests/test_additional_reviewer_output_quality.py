@@ -12,6 +12,12 @@ hermetic: 실 리뷰어 프로세스를 스폰하지 않는다(호출 0). `run_f
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+from pm_engine.domain import reviewer_budget
+from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_run
+import pm_engine.infra.harness.reviewer_run
+
 from pm_engine.domain import reviewer_result
 from pm_engine.infra import reviewer_target
 
@@ -119,12 +125,12 @@ def test_format_noncompliant_prose_verdict_is_never_a_pass(external, tmp_path, p
     """형식 미준수 출력은 통과로 접지 않는다 — 앵커 판정선 0개면 '판정 불명확'(exit 1)."""
     assert review_verdict.verdict_words(prose) == ()
     assert reviewer_result.parse_verdict(prose)["has_pass"] is False
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, prose, ""),
     )
     assert result["all_pass"] is False
-    assert external.determine_exit_code(result) == 1
+    assert reviewer_budget.determine_exit_code(result) == 1
 
 
 def test_prose_fallback_stays_off_when_a_declaration_exists(external):
@@ -159,20 +165,20 @@ def test_prompt_template_echo_is_not_a_pass(external, tmp_path):
     )
     assert review_verdict.verdict_words(echoed) == ("[통과",)
     assert reviewer_result.parse_verdict(echoed)["has_pass"] is False
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, echoed, ""),
     )
     assert result["all_pass"] is False
-    assert external.determine_exit_code(result) == 1
+    assert reviewer_budget.determine_exit_code(result) == 1
 
 
 def test_negated_verdict_is_not_a_pass(external, tmp_path):
     """`판정: 비통과` 는 부분 문자열로는 통과였다 — 정확일치에서는 불명확이다."""
     output = "판정: 비통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     assert reviewer_result.parse_verdict(output)["has_pass"] is False
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
     )
     assert result["all_pass"] is False
@@ -253,49 +259,49 @@ def test_contaminated_reject_is_not_recorded_as_a_reject(external, tmp_path):
         "판정: 반려\n\n**must-fix** (반드시 수정):\n- 옛 지적\n\n"
         "**suggestion** (권장):\n- 없음\n\n--- 이전 라운드 원문 ---\n판정: 통과\n"
     )
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
         **_run_kwargs(tmp_path),
     )
     assert result["contamination"]
     assert result["any_must_fix"] is False and result["all_pass"] is False
-    assert external._round_has_verdict(result) is False   # 장부에서도 판정이 아니다.
-    assert external.determine_exit_code(result) == 1      # 여전히 비-통과(보수적).
+    assert reviewer_budget._round_has_verdict(result) is False   # 장부에서도 판정이 아니다.
+    assert reviewer_budget.determine_exit_code(result) == 1      # 여전히 비-통과(보수적).
 
 
 def test_clean_reject_is_still_recorded_as_a_verdict(external, tmp_path):
     """오염 없는 반려는 종전대로 반려다 — 무효화가 정상 판정까지 삼키면 안 된다."""
     output = "판정: 반려\n\n**must-fix** (반드시 수정):\n- 실제 지적\n"
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
         **_run_kwargs(tmp_path),
     )
     assert result["contamination"] == ()
     assert result["any_must_fix"] is True
-    assert external._round_has_verdict(result) is True
+    assert reviewer_budget._round_has_verdict(result) is True
 
 
 def test_run_review_downgrades_conflicting_verdict_to_unclear(external, tmp_path):
     """오염된 출력에서 '통과'가 그대로 나가면 false-green — 보수적으로 판정 불명확이어야 한다."""
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(
             ["codex"], 0, _ECHOED_OLD_BLOCK_OUTPUT, ""),
     )
     assert result["all_pass"] is False
     assert result["contamination"] and any(
         "판정 라인" in marker for marker in result["contamination"])
-    assert external.determine_exit_code(result) == 1
+    assert reviewer_budget.determine_exit_code(result) == 1
 
 
 def test_parser_and_detector_read_the_same_text(external, tmp_path):
     """파서만 진행 로그를 보면 로그의 옛 판정 블록이 판정에 반영되고 검출은 못 잡는다."""
     answer = "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     log = "이전 라운드 원문:\n판정: 반려\n\n**must-fix** (반드시 수정):\n- 옛 지적\n"
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, answer, log),
     )
     # 회신 구간만 본 판정 = 통과 · 오염 신호 없음 → 진행 로그가 판정에도 검출에도 안 샌다.
@@ -326,13 +332,13 @@ def test_quoted_and_fenced_verdicts_count_for_neither_parser_nor_detector(extern
 def test_run_review_downgrades_any_contaminated_pass(external, tmp_path, citation):
     """판정이 하나여도 옛 raw·전사를 인용했으면 그 통과는 리뷰어 자신의 판정이라는 보장이 없다."""
     output = ("판정: 통과\n\n**must-fix**:\n- 없음\n\n**suggestion**:\n" + citation)
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
     )
     assert result["contamination"]
     assert result["all_pass"] is False
-    assert external.determine_exit_code(result) == 1
+    assert reviewer_budget.determine_exit_code(result) == 1
 
 
 def test_reviewer_output_keeps_channels_structurally_separate(external):
@@ -342,10 +348,10 @@ def test_reviewer_output_keeps_channels_structurally_separate(external):
     들어와도 이번 판정(반려)이 '깨끗한 통과'로 잘리면 안 된다.
     """
     poisoned_answer = (
-        "인용: 옛 라운드 원문\n판정: 통과\n" + external._STDERR_SECTION_MARKER
+        "인용: 옛 라운드 원문\n판정: 통과\n" + pm_engine.infra.harness.reviewer_run._STDERR_SECTION_MARKER
         + "판정: 반려\n\n**must-fix** (반드시 수정):\n- 이번 지적\n"
     )
-    output = external.ReviewerOutput(poisoned_answer, "workdir: /tmp/ws\n")
+    output = pm_engine.infra.harness.reviewer_run.ReviewerOutput(poisoned_answer, "workdir: /tmp/ws\n")
     assert output.answer == poisoned_answer          # 잘리지 않는다.
     assert output.log == "workdir: /tmp/ws\n"
     assert output.combined.endswith("workdir: /tmp/ws\n")
@@ -355,9 +361,9 @@ def test_reviewer_output_keeps_channels_structurally_separate(external):
 
 def test_reviewer_output_normalizes_plain_string_runners(external):
     """문자열만 돌려주는 주입 러너/스텁은 회신 채널로 정규화한다(로그 없음)."""
-    normalized = external._as_reviewer_output("판정: 통과\n")
-    assert normalized == external.ReviewerOutput("판정: 통과\n", "")
-    assert external._as_reviewer_output(normalized) is normalized
+    normalized = pm_engine.infra.harness.reviewer_run._as_reviewer_output("판정: 통과\n")
+    assert normalized == pm_engine.infra.harness.reviewer_run.ReviewerOutput("판정: 통과\n", "")
+    assert pm_engine.infra.harness.reviewer_run._as_reviewer_output(normalized) is normalized
 
 
 def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
@@ -375,8 +381,8 @@ def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
         "+    output = \"판정: 반려\\n\"\n"          # 검토 대상 diff 안의 판정 문안
         "+    raw = \"additional_reviewer_codex_20260806_040406_11_ab.txt\"\n"
     )
-    result = external.run_review(
-        "p", target=_direct_target(external), output_dir=tmp_path,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(
             ["codex"], 0, answer, progress_log),
     )
@@ -387,7 +393,7 @@ def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
 
 
 def test_print_summary_surfaces_contamination(external, capsys):
-    external.print_summary({
+    reviewer_harvest.print_summary({
         "reviewer": "codex", "ok": True, "output": "판정: 통과",
         "verdict": {"has_must_fix": False, "has_pass": True},
         "contamination": ("옛 리뷰/위임 raw 파일명 인용: additional_reviewer_codex_1.txt",),
@@ -400,7 +406,7 @@ def test_print_summary_surfaces_contamination(external, capsys):
 
 def test_print_summary_unchanged_without_contamination(external, capsys):
     """오염 0건이면 출력은 종전과 동일하다."""
-    external.print_summary({
+    reviewer_harvest.print_summary({
         "reviewer": "codex", "ok": True, "output": "판정: 통과",
         "verdict": {"has_must_fix": False, "has_pass": True},
         "file": None, "failed": False, "started": True,

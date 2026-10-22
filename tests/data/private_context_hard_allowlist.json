@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 264,
+  "count": 260,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 108
+    "python-prose": 104
   },
   "entries": [
     {
@@ -45,14 +45,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/additional_reviewer.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
       "count": 1
     },
     {
@@ -397,14 +389,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/additional_reviewer.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
       "count": 1
     },
     {
@@ -861,14 +845,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/additional_reviewer.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
       "count": 1
     },
     {
@@ -1549,14 +1525,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/additional_reviewer.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
       "count": 1
     },
     {

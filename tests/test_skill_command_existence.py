@@ -30,6 +30,8 @@ opencode skill/command 표면 포함)의 ```bash 블록은 채택자·PM 이 그
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+
 import argparse
 import importlib.util
 import re
@@ -140,7 +142,8 @@ def _parser_for_command(
     검사도 같은 표면을 쓴다. 미지원 command/모듈은 종전 root parser로 그대로 퇴화한다.
     """
     if tokens and not _flag_of(tokens[0]):
-        builder = getattr(_load_module(stem), "build_subcommand_parser", None)
+        builder = (delegate_cmd.build_subcommand_parser if stem == "pm_delegate"
+                   else getattr(_load_module(stem), "build_subcommand_parser", None))
         if callable(builder):
             parser = builder(tokens[0])
             if parser is not None:

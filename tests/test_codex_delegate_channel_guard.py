@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pm_engine.app import codex_hook
+from pm_engine.app import delegate_channel
+
 from pm_engine.domain import codex_envelope
 from pm_engine.infra import codex_observation
 from pm_engine.infra.harness import contract
@@ -158,19 +161,14 @@ def test_live_spawn_payload_uses_t0641_decide_cli_seam(guard_home, guard, monkey
 
     cli_calls = []
 
-    def tracked_cli(home, argv, *, stdout, config_loader):
-        cli_calls.append((argv, config_loader(home)))
-        json.dump(
-            delegate_channel_rules._result("allow", "[delegate-channel/allow] fixture"),
-            stdout,
-        )
-        stdout.write("\n")
-        return 0
+    def tracked_decision(home, agent_name, self_harness, *, tier=None, cwd=None, config_loader):
+        cli_calls.append((home, agent_name, self_harness, tier, cwd, config_loader(home)))
+        return delegate_channel_rules._result("allow", "[delegate-channel/allow] fixture")
 
-    monkeypatch.setattr(guard, "_run_decide_cli", tracked_cli)
+    monkeypatch.setattr(delegate_channel, "_decide_agent_input", tracked_decision)
     conf = {"delegate.enabled": "true"}
 
-    result = guard.evaluate_codex_hook(
+    result = delegate_channel.evaluate_codex_hook(
         guard_home, spawn, config_loader=lambda _home: conf
     )
 
@@ -188,11 +186,7 @@ def test_live_spawn_payload_uses_t0641_decide_cli_seam(guard_home, guard, monkey
         "measured 0.147.0 host",
     ):
         assert measured in envelope_evidence
-    assert cli_calls == [
-        ([
-            "decide", "--role", role, "--harness", "codex",
-        ], conf)
-    ]
+    assert cli_calls == [(guard_home, spawn["tool_input"][role_field], "codex", None, None, conf)]
     assert result == {}
 
 
@@ -207,7 +201,7 @@ def test_codex_cross_mapping_denies_with_both_measured_fields_and_real_cwd(
         "delegate.developer.model": "qwen3-coder",
     }
 
-    result = guard.evaluate_codex_hook(
+    result = delegate_channel.evaluate_codex_hook(
         guard_home, _payload("developer", cwd), config_loader=lambda _home: conf
     )
     hook = result["hookSpecificOutput"]
@@ -247,7 +241,7 @@ def _inject_platform(guard, monkeypatch, platform: str) -> None:
     """다른 플랫폼의 경로/인용 규칙을 이 인터프리터에 주입한다 (Linux 에서 Windows 분기 재현)."""
     rule = PureWindowsPath if platform == "windows" else PurePosixPath
     monkeypatch.setattr(
-        guard, "_is_absolute_path", lambda value: rule(value).is_absolute()
+        delegate_channel, "_is_absolute_path", lambda value: rule(value).is_absolute()
     )
     monkeypatch.setattr(contract, 'running_on_windows', lambda: platform == "windows")
 
@@ -270,7 +264,7 @@ def test_native_cwd_notation_yields_the_full_deny_envelope_on_each_platform(
         "delegate.developer.model": "qwen3-coder",
     }
 
-    result = guard.evaluate_codex_hook(
+    result = delegate_channel.evaluate_codex_hook(
         guard_home, _payload("developer", cwd), config_loader=lambda _home: conf
     )
 
@@ -306,8 +300,8 @@ def test_foreign_cwd_notation_takes_the_measured_fail_open_allow_shape(
     }
     payload = _payload("developer", foreign_cwd)
 
-    decision = guard._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
-    envelope = guard.evaluate_codex_hook(guard_home, payload, config_loader=lambda _home: conf)
+    decision = delegate_channel._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
+    envelope = delegate_channel.evaluate_codex_hook(guard_home, payload, config_loader=lambda _home: conf)
 
     assert decision["verdict"] == "allow"
     assert "cwd 절대경로 누락" in decision["reason"]
@@ -324,14 +318,14 @@ def test_windows_rule_observation_failure_keeps_every_deny_key(guard_home, guard
         "delegate.developer.model": "qwen3-coder",
     }
     payload = _payload("developer", r"C:\fixture\worktree")
-    decision = guard._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
+    decision = delegate_channel._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
     envelope = codex_envelope._codex_decision_envelope(decision)
 
     def broken_append(_home, *_args, **_kwargs):
         raise OSError("audit unavailable")
 
     monkeypatch.setattr(codex_observation, '_append_codex_observation', broken_append)
-    result = guard.observe_codex_pretooluse(guard_home, payload, envelope, decision=decision)
+    result = codex_hook.observe_codex_pretooluse(guard_home, payload, envelope, decision=decision)
 
     assert set(result) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
     assert result["reason"] == result["systemMessage"]
@@ -349,7 +343,7 @@ def test_codex_cross_mapping_cli_emits_exact_measured_json_bytes(
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
-    expected = guard.evaluate_codex_hook(guard_home, payload, config_loader=lambda _home: conf)
+    expected = delegate_channel.evaluate_codex_hook(guard_home, payload, config_loader=lambda _home: conf)
     stdout = io.StringIO()
 
     assert guard.main(
@@ -375,7 +369,7 @@ def test_codex_deny_observation_failure_preserves_exact_block_shape(
         "delegate.developer.model": "qwen3-coder",
     }
     payload = _payload("developer")
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, payload, config_loader=lambda _home: conf
     )
     envelope = codex_envelope._codex_decision_envelope(decision)
@@ -384,7 +378,7 @@ def test_codex_deny_observation_failure_preserves_exact_block_shape(
         raise OSError("audit unavailable")
 
     monkeypatch.setattr(codex_observation, '_append_codex_observation', broken_append)
-    result = guard.observe_codex_pretooluse(
+    result = codex_hook.observe_codex_pretooluse(
         guard_home, payload, envelope, decision=decision
     )
 
@@ -411,7 +405,7 @@ def test_deny_envelope_key_sets_come_from_engine_constants(guard_home, guard):
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload("developer"), config_loader=lambda _home: conf
     )
     envelope = codex_envelope._codex_decision_envelope(decision)
@@ -435,7 +429,7 @@ def test_partial_deny_envelope_is_rejected_before_return(guard_home, guard, miss
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload("developer"), config_loader=lambda _home: conf
     )
     partial = dict(codex_envelope._codex_decision_envelope(decision))
@@ -453,7 +447,7 @@ def test_partial_hook_specific_output_is_rejected_before_return(guard_home, guar
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload("developer"), config_loader=lambda _home: conf
     )
     partial = dict(codex_envelope._codex_decision_envelope(decision))
@@ -477,14 +471,14 @@ def test_observation_failure_keeps_every_deny_key_from_the_constant(
         "delegate.developer.model": "qwen3-coder",
     }
     payload = _payload("developer")
-    decision = guard._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
+    decision = delegate_channel._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
     envelope = codex_envelope._codex_decision_envelope(decision)
 
     def broken_append(_home, *_args, **_kwargs):
         raise OSError("audit unavailable")
 
     monkeypatch.setattr(codex_observation, '_append_codex_observation', broken_append)
-    result = guard.observe_codex_pretooluse(guard_home, payload, envelope, decision=decision)
+    result = codex_hook.observe_codex_pretooluse(guard_home, payload, envelope, decision=decision)
 
     assert set(result) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
     assert set(result["hookSpecificOutput"]) == set(
@@ -502,12 +496,12 @@ def test_observation_failure_on_partial_envelope_fails_loud(guard_home, guard, m
         "delegate.developer.model": "qwen3-coder",
     }
     payload = _payload("developer")
-    decision = guard._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
+    decision = delegate_channel._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
     partial = dict(codex_envelope._codex_decision_envelope(decision))
     partial.pop("systemMessage")
 
     with pytest.raises(ValueError):
-        guard._codex_observation_failure(partial, OSError("audit unavailable"))
+        codex_hook._codex_observation_failure(partial, OSError("audit unavailable"))
 
 
 def test_codex_hook_never_writes_a_partial_envelope_to_the_host(
@@ -553,10 +547,10 @@ def test_codex_native_mapping_allows_with_recorded_reason(guard_home, guard):
         "delegate.researcher.harness": "codex",
         "delegate.researcher.model": "gpt-fixture",
     }
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload("researcher"), config_loader=lambda _home: conf
     )
-    result = guard.evaluate_codex_hook(
+    result = delegate_channel.evaluate_codex_hook(
         guard_home, _payload("researcher"), config_loader=lambda _home: conf
     )
 
@@ -571,7 +565,7 @@ def test_codex_unknown_or_missing_agent_is_quiet_allow_without_config_load(
     def unexpected_loader():
         raise AssertionError("non-delegation agent must not load local.conf")
 
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload(agent_type), config_loader=unexpected_loader
     )
 
@@ -586,7 +580,7 @@ def test_codex_hard_profile_missing_allows_without_normal_fallback_or_warning(gu
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "normal-only",
     }
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload("developer-hard"), config_loader=lambda _home: conf
     )
 
@@ -606,7 +600,7 @@ def test_codex_missing_absolute_cwd_fails_open_instead_of_emitting_placeholder_d
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload("developer", "relative/path"), config_loader=lambda _home: conf
     )
 
@@ -777,7 +771,7 @@ def test_live_non_spawn_pretooluse_events_are_not_intercepted(
         raise AssertionError("live non-spawn event must not load config")
 
     assert payload["hook_event_name"] == "PreToolUse"
-    assert guard.evaluate_codex_hook(
+    assert delegate_channel.evaluate_codex_hook(
         guard_home, payload, config_loader=unexpected_loader
     ) is None
 
@@ -786,7 +780,7 @@ def test_append_only_scan_finds_miss_and_is_idempotent_without_consumption(
     guard_home, guard, tmp_path
 ):
     unmatched = _subagent_start()
-    result = guard.observe_codex_subagent_start(
+    result = codex_hook.observe_codex_subagent_start(
         guard_home, unmatched, state_dir=tmp_path
     )
 
@@ -865,11 +859,11 @@ def test_incomplete_config_warning_uses_quiet_jsonl_record_channel(guard_home, g
         "delegate.developer.harness": "opencode",
         # An incomplete atomic profile is a core [warn] allow.
     }
-    decision = guard._evaluate_codex_decision(
+    decision = delegate_channel._evaluate_codex_decision(
         guard_home, _payload("developer"), config_loader=lambda _home: conf
     )
     result = codex_envelope._codex_decision_envelope(decision)
-    recorded = guard.observe_codex_pretooluse(
+    recorded = codex_hook.observe_codex_pretooluse(
         guard_home, _payload("developer"), result, decision=decision, state_dir=tmp_path
     )
 
@@ -1023,7 +1017,7 @@ def test_posix_hook_wrapper_marks_the_fallback_when_the_guard_cannot_answer(
 def test_supervisor_bounds_a_hung_guard_before_the_outer_hook_timeout(guard_home, guard):
     """시간 상한은 엔진 감독자가 소유한다 — 훅 timeout 안에서 완전한 엔벨로프로 끝난다."""
     started = time.monotonic()
-    result = guard.supervise_codex_hook(
+    result = codex_hook.supervise_codex_hook(
         guard_home, "PreToolUse",
         [sys.executable, "-c", "import time; time.sleep(30)"],
         payload_bytes=json.dumps(_payload("developer")).encode("utf-8"),
@@ -1056,7 +1050,7 @@ def test_supervisor_bounds_a_hung_guard_before_the_outer_hook_timeout(guard_home
     ids=("empty-allow", "measured-deny"),
 )
 def test_supervisor_passes_supported_envelopes_through_unchanged(guard_home, guard, candidate):
-    result = guard.supervise_codex_hook(
+    result = codex_hook.supervise_codex_hook(
         guard_home, "PreToolUse",
         [sys.executable, "-c", f"print({candidate!r})"],
         payload_bytes=b"{}",
@@ -1079,7 +1073,7 @@ def test_supervisor_replaces_unusable_output_with_a_marked_fallback(
     guard_home, guard, child_body, marker
 ):
     """부분·손상 엔벨로프는 호스트에 닿지 않고, 폴백이라는 사실이 사유에 남는다."""
-    result = guard.supervise_codex_hook(
+    result = codex_hook.supervise_codex_hook(
         guard_home, "PreToolUse",
         [sys.executable, "-c", child_body],
         payload_bytes=b"{}",
@@ -1094,7 +1088,7 @@ def test_supervisor_replaces_unusable_output_with_a_marked_fallback(
 def test_supervisor_fallback_leaves_a_durable_observation_row(guard_home, guard, tmp_path):
     """폴백은 turn 과 함께 사라지지 않는다 — 장부 행이 남아 lint 스캔이 볼 수 있다."""
     spawn = _payload("developer")
-    result = guard.supervise_codex_hook(
+    result = codex_hook.supervise_codex_hook(
         guard_home, "PreToolUse",
         [sys.executable, "-c", "import sys; sys.exit(3)"],
         payload_bytes=json.dumps(spawn).encode("utf-8"),
@@ -1114,7 +1108,7 @@ def test_supervisor_fallback_leaves_a_durable_observation_row(guard_home, guard,
     assert rows[0]["hook_event_name"] == "PreToolUse"
     assert rows[0]["session_id"] == spawn["session_id"]
     # 판정 없이 통과한 spawn 은 allow 로 세지 않으므로 뒤따르는 start 가 miss 로 보인다.
-    guard.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
+    codex_hook.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
     assert len(codex_observation.scan_codex_observation_misses(guard_home, state_dir=tmp_path)) == 1
 
 

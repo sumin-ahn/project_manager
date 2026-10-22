@@ -1,6 +1,8 @@
 """T-0641 OpenCode native task delegation-channel adapter tests."""
 
 from __future__ import annotations
+
+from pm_engine.app import delegate_channel
 from pm_engine.infra import pm_paths
 
 from pm_engine.infra import pm_paths
@@ -350,7 +352,7 @@ for (const result of [
 
 def test_opencode_non_delegation_agent_record_does_not_toast_or_inject_context(tmp_path):
     """Unknown built-ins such as general are recorded by Python without alert fatigue."""
-    judgment = _load_guard().decide(pm_paths.home_at(tmp_path), "general", "normal", {}, "opencode")
+    judgment = delegate_channel.decide(pm_paths.home_at(tmp_path), "general", "normal", {}, "opencode")
     assert judgment["verdict"] == "allow"
     assert "delegate-channel/record" in judgment["reason"]
     assert "delegate-channel/warn" not in judgment["reason"]
@@ -580,7 +582,7 @@ def test_opencode_real_python_cli_parity_same_matrix(guard_home, tmp_path):
                         "opencode" if mapping == "self" else "claude"
                     )
                     conf[f"delegate.{role}.model"] = "fixture-model"
-                expected = guard.decide(guard_home, role, "normal", conf, "opencode")["verdict"]
+                expected = delegate_channel.decide(guard_home, role, "normal", conf, "opencode")["verdict"]
                 cases.append({"role": role, "conf": conf, "expected": expected})
 
     script = r'''
