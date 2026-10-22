@@ -758,19 +758,15 @@ def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
 
 
 def test_record_explicit_cwd_skips_actor_slot_resolution(live_board, monkeypatch):
-    """명시 `--cwd` + `--repo` 단독 + 활성 슬롯 ≥2 → 모호 fail 미발화·그 cwd 에서 실행 (v1.3.0 릴리즈 실측 결함 회귀).
-
-    readonly 공유 슬롯(T-0358·leased) 추가로 repo 활성 슬롯이 2가 되면, eager session 해소
-    (`_actor_session_override`→`resolve_actor_slot`)가 `--cwd` 핀에도 불구하고 SlotResolutionError 로
-    죽던 결함 — pm-release §2 처방(`record --repo <repo> --cwd <readonly>`)을 막았다. `--cwd` 명시면
-    session 해소 자체를 생략함을 못박는다."""
+    """cwd 단독 지정은 정체성·활성 슬롯 해소 없이 해당 경로에서 실행한다."""
+    from pm_engine.cli import task_args
     override = str(live_board._proj / "readonly_slot")
     def _boom(*a, **k):
         raise AssertionError("--cwd 명시인데 actor session 해소가 호출됨 (eager 해소 재발)")
-    monkeypatch.setattr(live_board, "_actor_session_override", _boom)
+    monkeypatch.setattr(task_args, "_execution_actor_session_override", _boom)
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = live_board.cmd_livegate(_rec_args(cwd=override, repo="proj"))
+    rc = live_board.cmd_livegate(_rec_args(cwd=override))
     assert rc == 0
     pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
     assert pytest_call is not None and pytest_call["kwargs"]["cwd"] == override
@@ -1603,7 +1599,7 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(live_board, m
     fake = _FakeRun(0, pytest_summary(22))
     monkeypatch.setattr(live_board.subprocess, 'run', fake)
     selected = live_board.REPO / 'work/A_5'
-    assert live_board.cmd_livegate(_rec_args(repo='A', cwd=str(selected))) == 0
+    assert live_board.cmd_livegate(_rec_args(cwd=str(selected))) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(selected)
     assert _read_flag(live_board)['head'] == 'head5'
 
@@ -1889,3 +1885,122 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_present_or_da
     assert _t0936_record(f) == 1 and _t0936_check(f) == 1
     assert f.calls == f.live == []
     assert len(calls) == (0 if shape == "stat-denied" else 1)
+
+
+@pytest.fixture
+def t0982_board(tmp_path, monkeypatch):
+    from pm_engine.cli import task_args
+    from pm_engine.infra import lease_store
+    board = _load_board()
+    home = tmp_path / "pm-home"
+    local = home / ".project_manager/.local"
+    local.mkdir(parents=True)
+    for name, value in {
+        "REPO":home, "LOCAL_DIR":local, "LOCAL_CONF":home/".project_manager/local.conf",
+        "AREAS_FILE":home/".project_manager/areas.md", "LEASES_FILE":local/"worktree-leases.json",
+    }.items():
+        monkeypatch.setattr(board,name,value)
+    flag = local / "livegate.json"
+    flag.write_text('{"head":"prior-head","status":"pass"}\n',encoding="utf-8")
+    state = types.SimpleNamespace(board=board, home=home, flag=flag, effects=[], waves=[], tasks=[], actual_execution=task_args._execution_actor_session_override)
+    def unexpected(*args, **kwargs):
+        pytest.fail("명시 cwd가 정체성·슬롯 해소를 호출함")
+    monkeypatch.setattr(task_args,"_execution_actor_session_override",unexpected)
+    monkeypatch.setattr(task_args,"_resolve_task_workspace_cwd",unexpected)
+    monkeypatch.setattr(lease_store,"session_name",unexpected)
+    def resolve_flag(_home,cwd):
+        state.effects.append(("flag",cwd))
+        return flag,regression_store._LG_NO_HOOK
+    monkeypatch.setattr(regression_store,"_resolve_livegate_flag",resolve_flag)
+    monkeypatch.setattr(board,"_sync_release_must_fix_marker",lambda *a: state.effects.append(("marker",None)) or [])
+    monkeypatch.setattr(board,"_refuse_release_for_engine_drift",lambda *a: state.effects.append(("drift",None)) or 0)
+    monkeypatch.setattr(release,"_release_core_context",lambda _home,_flag,cwd,_session: (None,cwd,(),None))
+    monkeypatch.setattr(git,"_git_head_at",lambda cwd: state.effects.append(("head", cwd)) or "f"*40)
+    def wave(*args,**kwargs):
+        assert kwargs.get("shell") is True, "실 Git/다른 subprocess 호출 금지"
+        state.waves.append((args,kwargs))
+        return types.SimpleNamespace(returncode=0,stdout=f"{regression.LIVEGATE_RELEASE_PIN} passed in 0.01s\n",stderr="")
+    monkeypatch.setattr(board.subprocess,"run",wave)
+    return state
+
+
+@pytest.mark.parametrize("selector", (
+    ["--task","main"], ["--repo","A"], ["--slot","1"],
+    ["--task","main","--repo","A"], ["--task","main","--slot","1"],
+    ["--repo","A","--slot","1"], ["--task","main","--repo","A","--slot","1"],
+))
+def test_t0982_cwd_rejects_each_selector_combination_before_effects(t0982_board, selector):
+    state = t0982_board
+    before = state.flag.read_bytes()
+    args = state.board.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
+    with pytest.raises(SystemExit) as caught:
+        state.board.cmd_livegate(args)
+    message = str(caught.value)
+    assert "--cwd" in message and "--task" in message and "--repo" in message and "--slot" in message
+    assert state.effects == [] and state.waves == []
+    assert state.flag.read_bytes() == before
+
+
+@pytest.mark.parametrize("selector", (["--repo",""],["--task",""],["--slot","0"]))
+def test_t0982_supplied_falsey_selectors_are_not_ignored(t0982_board, selector):
+    state = t0982_board
+    before = state.flag.read_bytes()
+    args = state.board.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
+    with pytest.raises(SystemExit):
+        state.board.cmd_livegate(args)
+    assert state.effects == [] and state.waves == []
+    assert state.flag.read_bytes() == before
+
+
+def test_t0982_empty_cwd_is_not_an_implicit_workspace(t0982_board):
+    state = t0982_board
+    before = state.flag.read_bytes()
+    args = state.board.build_parser().parse_args(["livegate","record","--cwd",""])
+    with pytest.raises(SystemExit) as caught:
+        state.board.cmd_livegate(args)
+    assert "--cwd" in str(caught.value) and "비어" in str(caught.value)
+    assert state.effects == [] and state.waves == []
+    assert state.flag.read_bytes() == before
+
+
+@pytest.mark.parametrize("leased", (0,2))
+def test_t0982_cwd_only_preserves_unleased_readonly_pin(t0982_board, leased):
+    state = t0982_board
+    rows=[{"state":"leased","session":"main","repo":"A","slot":f"work/A_{n}"} for n in range(1,leased+1)]
+    state.board.LEASES_FILE.write_text(json.dumps({"leases":rows}),encoding="utf-8")
+    selected = state.home / "read only"
+    selected.mkdir()
+    args = state.board.build_parser().parse_args(["livegate","record","--cwd",str(selected)])
+    assert state.board.cmd_livegate(args) == 0
+    assert len(state.waves) == 1 and state.waves[0][1]["cwd"] == str(selected)
+    assert state.effects[0] == ("flag",str(selected))
+    assert json.loads(state.flag.read_text(encoding="utf-8"))["status"] == "pass"
+
+
+@pytest.mark.parametrize("selector", (["--task","main"],["--task","main","--repo","A","--slot","2"]))
+def test_t0982_task_workspace_injection_is_not_explicit_cwd(t0982_board, monkeypatch, selector):
+    from pm_engine.cli import task_args
+    state = t0982_board
+    selected = state.home / "work/A_2"
+    selected.mkdir(parents=True)
+    def resolve(_home,args,**kwargs):
+        assert args.cwd is None
+        state.tasks.append(args.task)
+        return str(selected),None
+    monkeypatch.setattr(task_args,"_resolve_task_workspace_cwd",resolve)
+    args = state.board.build_parser().parse_args(["livegate","record",*selector])
+    assert state.board.cmd_livegate(args) == 0
+    assert state.tasks == ["main"] and len(state.waves) == 1
+    assert state.waves[0][1]["cwd"] == str(selected)
+
+
+@pytest.mark.parametrize("selector", (["--repo","A"],["--slot","1"],["--repo","A","--slot","1"]))
+def test_t0982_selectors_without_task_keep_existing_rejection(t0982_board, monkeypatch, selector):
+    from pm_engine.cli import task_args
+    state=t0982_board
+    monkeypatch.setattr(task_args,"_execution_actor_session_override",state.actual_execution)
+    before=state.flag.read_bytes()
+    args=state.board.build_parser().parse_args(["livegate","record",*selector])
+    with pytest.raises(SystemExit):
+        state.board.cmd_livegate(args)
+    assert state.effects == [] and state.waves == [] and state.flag.read_bytes() == before

@@ -416,7 +416,7 @@ def _pm_release_prompt(skill_text: str, *, repo: str, home: Path,
     """
     exact_record = (
         "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
-        f"--repo {shlex.quote(repo)} --cwd {shlex.quote(readonly_cwd.as_posix())}"
+        f"--cwd {shlex.quote(readonly_cwd.as_posix())}"
     )
     return (
         "You are the PM for a solo, single-slot project. Below (between <<<SKILL and SKILL>>>) is "
@@ -600,7 +600,7 @@ def test_pm_release_prompt_embeds_skill_and_scenario(tmp_path):
     assert _RELEASE_VERSION in prompt
     assert "git push" in prompt and "gh" in prompt
     assert "livegate" in prompt
-    assert "--repo fixture-repo" in prompt
+    assert "--repo" not in shlex.split(prompt.split("once: `", 1)[1].split("`", 1)[0])
     assert f"--cwd {readonly.as_posix()}" in prompt
     assert "Do not invent or discover either value" in prompt
     # --help 사용 금지 명시(사용성 판정 대상·pm_worktree_live 미러).
@@ -641,7 +641,7 @@ def _run_livegate_record(
         env["PM_ORCH_LIVE_RELEASE"] = "1"
     argv = [sys.executable, str(board_py), "livegate", "record"]
     if release_cwd is not None:
-        argv += ["--repo", home.name, "--cwd", str(release_cwd)]
+        argv += ["--cwd", str(release_cwd)]
     return subprocess.run(
         argv,
         cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
@@ -821,3 +821,52 @@ def test_release_markers_pinned():
         f"이 파일 release 마커 수={count} != 기대 {_EXPECTED_RELEASE_TESTS}(claude+opencode) — 마커 "
         f"소실/개명 의심(게이트 selection 누락 위험). 라이브를 의도적으로 늘렸다면 기대값을 함께 갱신."
     )
+
+
+_T0982_CARDS=(
+    ".claude/skills/pm-release/SKILL.md",
+    "templates/claude_code/.claude/skills/pm-release/SKILL.md",
+    "templates/codex/.agents/skills/pm-release/SKILL.md",
+    "templates/opencode/.claude/skills/pm-release/SKILL.md",
+    "templates/opencode/.opencode/command/pm-release.md",
+)
+
+
+@pytest.mark.parametrize("card",_T0982_CARDS)
+def test_t0982_release_card_uses_only_cwd_for_readonly(card):
+    text=(REPO/card).read_text(encoding="utf-8")
+    commands=[line.strip() for line in text.splitlines() if "board.py livegate record " in line and not line.lstrip().startswith("#")]
+    assert len(commands)==1
+    tokens=shlex.split(commands[0])
+    assert "PM_ORCH_LIVE_RELEASE=1" in tokens and "--cwd" in tokens
+    assert not {"--task","--repo","--slot"}.intersection(tokens)
+    for inline in re.findall(r"`([^`\n]+)`",text):
+        if "--cwd" in inline:
+            assert not any(flag in inline for flag in ("--repo","--slot","--task"))
+
+
+def test_t0982_prompt_uses_cwd_only_with_spaced_path(tmp_path):
+    readonly=tmp_path/"read only"
+    prompt=_pm_release_prompt("skill",repo="fixture-repo",home=tmp_path/"pm home",readonly_cwd=readonly)
+    record=prompt.split("once: `",1)[1].split("`",1)[0]
+    tokens=shlex.split(record)
+    assert tokens[tokens.index("--cwd")+1] == readonly.as_posix()
+    assert not {"--task","--repo","--slot"}.intersection(tokens)
+    assert "PM_ORCH_LIVE_RELEASE=1" in tokens
+    assert "has NOT approved" in prompt
+
+
+def test_t0982_backbone_argv_uses_cwd_only(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    calls=[]
+    def run(argv,**kwargs):
+        calls.append((argv,kwargs))
+        return SimpleNamespace(returncode=0,stdout="",stderr="")
+    monkeypatch.setattr(subprocess,"run",run)
+    home=tmp_path/"pm home"
+    readonly=tmp_path/"read only"
+    assert _run_livegate_record(home,live_env=True,release_cwd=readonly).returncode==0
+    argv,kwargs=calls[0]
+    assert argv[-2:] == ["--cwd",str(readonly)]
+    assert not {"--task","--repo","--slot"}.intersection(argv)
+    assert kwargs["cwd"] == str(home) and kwargs["env"]["PM_ORCH_LIVE_RELEASE"]=="1"

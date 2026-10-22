@@ -9,6 +9,8 @@
 
 ### Changed
 
+- `livegate record`는 직접 `--cwd`와 `--task`·`--repo`·`--slot`의 혼합 및 빈 cwd를 기록 전에 거부한다. readonly 경로는 `--cwd <경로>`만 지정하고, task 작업공간은 cwd 없이 `--task <task> [--repo <repo> --slot <N>]`으로 선택한다.
+
 - **BREAKING — 슬롯 정체성 삭제, 귀속 쓰기의 정체성은 task 하나** — `--repo R --slot N` 만으로 `R_N` 을 세션 이름 삼아 귀속하던 경로를 지웠다. 귀속 쓰기(`new`·`claim`·`migrate-identity`·`unclaim --takeover`·정상 종결 `ticket_finish.py`)는 `--task <task>` 가 필요하고, 없으면 첫 쓰기 전에 멈춘다. `init` 의 owner 칸은 `--owner`, 다음 `--task`, 둘 다 없으면 빈 칸이다(환경변수·단일 대여에서 유도하지 않는다). 종결 log 머리말은 `(task:이름)` 만 쓴다. 다시 칠 명령 예:
   - `board.py claim T-0001 --repo app --slot 1` → `board.py claim T-0001 --task <task>`
   - `board.py new "제목"` → `board.py new "제목" --task <task>`

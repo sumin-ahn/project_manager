@@ -4393,12 +4393,25 @@ def _livegate_record(args: argparse.Namespace) -> int:
     push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
     (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일).
 
+    직접 `--cwd`는 단독으로 지정하며 `--task`/`--repo`/`--slot`과 함께 쓰거나 비울 수 없다.
     `--task`(폴더가 2개 이상이면 `--repo`/`--slot` 위치 인자 추가)가 실행 위치를 고른다(M>1 홈에서
     슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회 불요). `--task` 없는 `--repo`/`--slot` 은 실행
     명령 판정 함수가 거부한다. 무명시 + leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그
     메시지가 안내하는 `--task <task>` 가 실제로 이 subparser 에서 수용돼 dead-end 가 아니다
     (remedy 정직·anti-pattern 회피).
     """
+    # 호출자가 준 cwd를 task 경로 주입 전에 검사한다.
+    requested_cwd = getattr(args, "cwd", None)
+    if requested_cwd is not None:
+        if any(getattr(args, key, None) is not None for key in ("task", "repo", "slot")):
+            sys.exit(
+                "[중단] livegate record의 --cwd는 --task/--repo/--slot과 함께 쓸 수 없다. "
+                "외부 경로 override를 허용하지 않는다. "
+                "경로 핀은 --cwd <경로>만, task 작업공간은 --cwd 없이 "
+                "--task <task> [--repo <repo> --slot <N>]로 실행하라."
+            )
+        if requested_cwd == "":
+            sys.exit("[중단] livegate record의 --cwd 경로가 비어 있다. 검증할 코드 트리 경로를 지정하라.")
     # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd 로
     # 고정하고 surface 한다(cwd 비참여·livegate 는 고정 release cmd 라 test_cmd 는 불요).
     if getattr(args, "task", None):
@@ -11047,7 +11060,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "실행·수집 pin 강제·기록 / check=보호훅이 HEAD-매칭 green 검증")
     p.add_argument("action", choices=["record", "check"])
     p.add_argument("--rev", help="check 대상 sha (보호훅이 push HEAD 를 넘김·record 는 무시)")
-    p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree) / "
+    p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree, 빈 값 및 "
+                                 "--task/--repo/--slot과 혼합 불가, 경로는 --cwd만 지정) / "
                                  "check=livegate.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
                                  "(seam·record↔check 대칭)")
     identity_args.add_identity_args(p)  # record 의 task 폴더(M>1 홈에서 cwd 해소·regression 과 동형·
