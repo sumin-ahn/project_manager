@@ -58,6 +58,9 @@ from pm_engine.infra import task_store
 from pm_engine.infra import worktree_git
 from pm_engine.domain import worktree_records
 from pm_engine.app import worktree_status
+
+from pm_engine.domain import git_freshness
+
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -398,31 +401,12 @@ def _write_machine_line(text: str) -> None:
     console.write_machine_line(text)
 
 
-def _load_board():
-    """board 모듈을 동적 로드한다 (fail-soft) — 보호 브랜치 surface(`_repo_protected`)가 쓰는 로더다.
-
-    다른 평면 도구 로더와 동형 — `spec_from_file_location`(스크립트-위치 앵커). board 를
-    *직접 import* 하지 않는 이유(touches 격리·병렬충돌 회피)는 동적 로드로 보존된다. 보호
-    브랜치 경고는 *소프트*(추가 인지)라 board 부재/로드 실패는 None(경고 생략·정체성 선언
-    자체는 깨지 않음).
-    """
-    if not BOARD_PY.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            BOARD_PY, "board.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 보호 경고는 소프트(로드 실패=경고 생략).
-        if _is_engine_rev_skew(exc):
-            raise  # board 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
 
 
 def _load_tool(name: str):
     """이름의 엔진 도구 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
-    `_load_board`와 동형 — `spec_from_file_location`(스크립트-위치
+    형제 도구와 같은 `spec_from_file_location`(스크립트 위치
     앵커). 부트스트랩이 차수 추론(`pm_handoff.infer_next_session_num`)·log 마지막 entry 본문
     파싱(`pm_log.split_entries`)을 **DRY** 로 재사용하기 위한 역방향 동적 로드다(복붙 금지).
     직접 import 하지 않는 이유(touches 격리·순환 회피)는 동적 로드로 보존된다. 차수/인계 dump 는
@@ -756,7 +740,7 @@ def parse_lint_result(lint_output: str) -> str:
     `--gate` 출력은 헤더 `⚠️  N lint issue(s) (M blocking 차단):` 다음에 각 issue
     줄(`✗`/공백 마크 + `[kind] …`)이 온다. issue 줄만 **양성 매칭**한다. 헤더를
     제외 목록으로 관리하면 새 표시 헤더가 추가될 때마다 같은 off-by-one이 재발한다
-    
+
     """
     # clean 마커도 **줄 단위 양성 매칭**이다 — substring 검사면 앵커 줄에 실린 저장소 경로가
     # 우연히 이 문자열을 포함할 때 실 이슈가 있어도 clean 으로 오판한다
@@ -830,25 +814,6 @@ def parse_git_status(status_output: str) -> str:
     return f"{len(lines)} files modified"
 
 
-def parse_git_ahead_behind(rev_list_output: str) -> tuple[int, int] | None:
-    """`git rev-list --left-right --count HEAD...@{u}` 출력에서 (ahead, behind) 를 파싱한다.
-
-    출력 형식: `"<ahead>\\t<behind>"` (좌=로컬만·ahead, 우=upstream만·behind). 형식
-    불일치(빈 문자열·탭 없음 등) → None(파싱 실패 — 호출부가 upstream 미설정과 동일하게
-    graceful 취급).
-    """
-    stripped = rev_list_output.strip()
-    if not stripped:
-        return None
-    parts = stripped.split()
-    if len(parts) != 2:
-        return None
-    try:
-        return int(parts[0]), int(parts[1])
-    except ValueError:
-        return None
-
-
 # ── git freshness 판정 + 재부착 단서 ────────────────
 # 머신 이동 부트스트랩이 stale 로컬(origin 보다 behind)을 그대로 dump 하던 연속성 사고를
 # 막는다 — fetch 로 freshness 를 실측하고, clean·ff 가능한 안전 형상만 자동 동기(ff-pull)
@@ -886,57 +851,6 @@ def freshness_decision(
     if fetched and dirty is False and ahead == 0:
         return "동기", True
     return "수동 동기 필요", False
-
-
-def _behind_warning(scope: dict) -> str:
-    """behind>0 인데 자동 pull 불가한 scope 의 경고 문자열 + 차단 사유.
-
-    사유: fetch 실패(stale) · status 미확인(clean 미증명) · dirty · diverged(ahead>0).
-    """
-    behind = scope.get("behind")
-    reasons: list[str] = []
-    if not scope.get("fetched"):
-        reasons.append("fetch 실패")
-    if scope.get("dirty") is None:
-        reasons.append("status 미확인")
-    elif scope.get("dirty"):
-        reasons.append("dirty")
-    if scope.get("ahead") is None:
-        reasons.append("ahead 미확인")
-    elif scope["ahead"] > 0:
-        reasons.append(f"ahead {scope['ahead']} diverged")
-    reason = f" ({', '.join(reasons)})" if reasons else ""
-    return f"⚠ behind {behind} — 수동 동기 필요{reason}"
-
-
-def _format_freshness(scope: dict) -> str:
-    """freshness scope 한 줄 표기 — fetch/behind/ahead/상태 + 동기·경고 노트.
-
-    offline(fetch 실패)이면 origin 대비 실측을 못 하므로 remote-tracking 스냅샷을 "최신" 으로
-    주장하지 않는다 — behind 0·upstream 미상은 "판정불가 — 스냅샷일 수 있음" fail-soft
-    stale board 를 "최신" 으로 오신뢰하는 사고 차단. behind>0 은
-    fetch 성공/실패 무관하게 로컬이 이미 아는 뒤처짐이라 그대로 표기(경고 note 는 별도 병기).
-    """
-    parts: list[str] = []
-    fetched = scope.get("fetched")
-    if not fetched:
-        parts.append("⚠ fetch 실패 (`git fetch origin` · 현행 유지)")
-    if scope.get("detached"):
-        parts.append("detached HEAD")
-    else:
-        behind = scope.get("behind")
-        ahead = scope.get("ahead") or 0
-        if behind is None:
-            # upstream 미설정/조회불가 — offline 이면 판정불가로 감싼다(fail-soft).
-            parts.append("판정불가 — 스냅샷일 수 있음" if not fetched else "upstream 없음")
-        elif behind == 0 and ahead == 0:
-            # online 이면 진짜 최신, offline 이면 실측 못 한 stale 스냅샷일 뿐(판정불가).
-            parts.append("판정불가 — 스냅샷일 수 있음" if not fetched else "최신")
-        else:
-            parts.append(f"behind {behind} / ahead {ahead}")
-    if scope.get("note"):
-        parts.append(scope["note"])
-    return " · ".join(parts)
 
 
 
@@ -1369,7 +1283,6 @@ class PmBootstrap:
         board_py: Path = BOARD_PY,
         areas_file: Path | None = None,
         venv_python: str | Path = _default_python(),
-        board=None,
         pm_state_file: Path | None = None,
         board_dir: Path | None = None,
     ) -> None:
@@ -1390,12 +1303,6 @@ class PmBootstrap:
         # 인자(hermetic 테스트)는 그대로 존중.
         self._areas_file = areas_file if areas_file is not None else pm_paths.areas_file(pm_paths.home_at(REPO))
         self._venv_python = venv_python
-        # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 task
-        # 바인딩·보유 슬롯 조회 시점에 동적 로드한다.
-        # board seam — 보호 브랜치 surface(`_repo_protected`)용. 테스트는 mock 모듈 주입.
-        # None 이면 필요 시점에 동적 로드(소프트 경고·board 부재면 경고 생략).
-        # board.py *직접 import* 는 안 함(touches 격리).
-        self._board = board
 
         self._run_board_fn = run_board_fn or self._default_run_board
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
@@ -1734,7 +1641,7 @@ class PmBootstrap:
             ["-C", str(self._board_dir), "rev-list", "--left-right", "--count", "HEAD...@{u}"]
         )
         if ab_rc == 0:
-            parsed = parse_git_ahead_behind(ab_out)
+            parsed = git_freshness.parse_git_ahead_behind(ab_out)
             if parsed is not None:
                 ahead, behind = parsed
 
@@ -1775,7 +1682,7 @@ class PmBootstrap:
             ["-C", d, "rev-list", "--left-right", "--count", "HEAD...@{u}"]
         )
         if ab_rc == 0:
-            parsed = parse_git_ahead_behind(ab_out)
+            parsed = git_freshness.parse_git_ahead_behind(ab_out)
             if parsed is not None:
                 scope["ahead"], scope["behind"] = parsed
         scope["state"], _do_pull = freshness_decision(
@@ -1810,7 +1717,7 @@ class PmBootstrap:
             else:
                 scope["note"] = f"⚠ pull --ff-only 실패 (rc={p_rc}) — 수동 확인"
         elif scope["behind"] and scope["behind"] > 0:
-            scope["note"] = _behind_warning(scope)
+            scope["note"] = git_freshness._behind_warning(scope)
         if is_home:
             scope["board_sync"] = self._sync_board_submodule()
         return scope
@@ -1844,7 +1751,7 @@ class PmBootstrap:
                     f"⚠ board 동기 실패 (checkout rc={co_rc}·pull rc={p_rc}) — 수동 확인"
                 )
         elif scope["behind"] and scope["behind"] > 0:
-            scope["note"] = _behind_warning(scope)
+            scope["note"] = git_freshness._behind_warning(scope)
         return scope
 
     def _collect_freshness(self) -> list[dict]:
@@ -2032,20 +1939,10 @@ class PmBootstrap:
             return None
 
     def _current_user(self) -> str | None:
-        """현재 user 식별자 — `board.user_name()`(local.conf identity.user > git config email).
-
-        board 모듈(주입/동적로드)의 `user_name` 을 getattr 로 쓴다(직접 import 금지·touches 격리·
-        `_protected_warning` 동형·DI 보존). board 부재/헬퍼 부재/예외 → None(fail-soft·줄 생략).
-        """
-        board_mod = self._board or _load_board()
-        user_name = getattr(board_mod, "user_name", None) if board_mod else None
-        if user_name is None:
-            return None
+        """명시 Home의 identity.user, git email 순서로 사용자를 해소한다."""
         try:
-            return user_name()
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 해소 실패는 None(줄 생략).
-            if _is_engine_rev_skew(exc):
-                raise  # 형제 사본 불일치는 줄 생략으로 삼키지 않는다(fail-loud 보존).
+            return lease_store.user_name(pm_paths.home_at(REPO))
+        except Exception:  # noqa: BLE001 — 실제 사용자 해소 실패는 줄 생략.
             return None
 
     def _handoff_commit_author(self, handoff_header: str) -> str | None:
@@ -2275,10 +2172,10 @@ class PmBootstrap:
         # git freshness — 각 scope fetch 후 behind/ahead + clean·ff 자동
         # ff-pull 결과. (is_home)엔 board 서브모듈 rider 를 하위 줄로 붙인다.
         for scope in git.get("freshness", []):
-            lines.append(f"- freshness ({scope['label']}): {_format_freshness(scope)}")
+            lines.append(f"- freshness ({scope['label']}): {git_freshness._format_freshness(scope)}")
             board_sync = scope.get("board_sync")
             if board_sync is not None:
-                lines.append(f"  - {board_sync['label']}: {_format_freshness(board_sync)}")
+                lines.append(f"  - {board_sync['label']}: {git_freshness._format_freshness(board_sync)}")
         # 재부착 단서 — 현 브랜치가 직전 handoff worktree 브랜치와 다르면.
         # board submodule freshness — `ignore=all` 이 부모 `git status` 에서 board
         # git 상태를 숨기므로 별도 1줄로 surface. board 미분리면 생략(graceful skip).
@@ -2623,23 +2520,10 @@ class PmBootstrap:
     # 슬롯마다 같은 프리미티브로 판정한다.
 
     def _reject_worktree_copy_anchor(self) -> bool:
-        """엔진 앵커(REPO=엔진 파일 위치)가 PM 홈이 아니라 worktree 사본이면 거부.
-
-        board mutation 의 PM-홈 강제와 **같은 클래스** — `board._pm_home_worktree_misanchor
-        (REPO)` 를 소비한다(판정 로직 재구현 금지). 부트스트랩은 현행 이 클래스에 무방비였다: worktree
-        (코드 전용) 트리에서 부트스트랩하면 그 트리를 세션 진실로 dump 한다. **cwd 는 판정에 불참**
-        앵커는 REPO 만. board 직접 import 금지(touches 격리)라 주입/동적로드 board 의 헬퍼를
-        `getattr` 로 쓴다(DI 보존·`_protected_warning` 동형) — board/헬퍼 부재·예외는 fail-soft(검사
-        생략·standalone 무영향·오탐 0). True=거부(REPO 가 PM 홈 등록 worktree)."""
-        board_mod = self._board or _load_board()
-        guard = getattr(board_mod, "_pm_home_worktree_misanchor", None) if board_mod else None
-        if guard is None:
-            return False
+        """실행 Home의 등록 worktree 앵커를 검사한다. 판정 실패는 기존 fail-soft를 유지한다."""
         try:
-            pm_home = guard(REPO)
+            pm_home = pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(REPO))
         except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 통과(오탐 0).
-            if _is_engine_rev_skew(exc):
-                raise  # 형제 사본 skew 는 앵커 판정 생략으로 접지 않는다(fail-loud · 재동기 안내).
             return False
         if pm_home is None:
             return False
@@ -2656,7 +2540,7 @@ class PmBootstrap:
         """0단계 — dump 이전 엔진 앵커 검증. 0=통과·1=거부(FAIL-LOUD).
 
         엔진 파일 위치(REPO)가 PM 홈이 아니라 worktree 사본이면 거부한다
-        (`board._pm_home_worktree_misanchor` 소비).
+        (`pm_paths._pm_home_worktree_misanchor`와 명시 Home 사용).
         """
         if self._reject_worktree_copy_anchor():
             return 1
@@ -2810,8 +2694,7 @@ class PmBootstrap:
         복합 문자열(`git … && python3 …`)은 쓰지 않는다 — **PowerShell 5.x 가 `&&` 미지원**
         (Windows 채택자에서 깨진다·실측)."""
         branch = self._remedy_branch_name( repo, slot_id, owner)
-        board_mod = self._board or _load_board()
-        base = board_mod._repo_base(repo) if board_mod else None
+        base = areas_store._repo_base(pm_paths.home_at(REPO), repo)
         cmd = f"{_CARD_TOOL_INVOKE}/pm_config.py task branch {owner} {slot_id}"
         tail = f" --from {base or '<부모-브랜치>'}"
         if branch is None:

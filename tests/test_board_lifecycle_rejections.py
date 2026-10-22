@@ -13,6 +13,9 @@ blocked|cannot block from" tests/` → 0건). 소유 대조(T-0781)·claimed↔b
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
 import argparse
 import importlib.util
 from pathlib import Path
@@ -22,6 +25,9 @@ import pytest
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths
+
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -47,29 +53,22 @@ def board(tmp_path, monkeypatch):
     local.mkdir(parents=True, exist_ok=True)
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": local,
-        "LEASES_FILE": local / "worktree-leases.json",
-        "BOARD_LOCK": local / "board.lock",
+
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     (pm / "local.conf").write_text("identity.user=me\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
 
 def _seed(board, tid: str, status: str) -> Path:
     """`<status>/<tid>-t.md` 를 심는다 — 손상 0·claimed_by 없음(상태 검사만 겨냥)."""
-    path = board.TICKETS_DIR / status / f"{tid}-t.md"
-    board.dump_ticket(
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-t.md"
+    ticket_store.dump_ticket(
         path,
         {"id": tid, "title": "t", "status": status, "created": "2026-08-20",
          "claimed_by": None, "claimed_at": None, "completed_at": None,
@@ -85,19 +84,19 @@ def _tickets_tree_snapshot(board) -> dict[str, bytes]:
     무관 이동을 한 번에 잡는다(F-001 — path 존재·파일명 set 만으로는 이들을 놓친다).
     """
     out: dict[str, bytes] = {}
-    for p in board.TICKETS_DIR.rglob("*"):
+    for p in pm_paths.tickets_dir(board._home()).rglob("*"):
         if p.is_file():
-            out[str(p.relative_to(board.TICKETS_DIR))] = p.read_bytes()
+            out[str(p.relative_to(pm_paths.tickets_dir(board._home())))] = p.read_bytes()
     return out
 
 
 def _derived_files_snapshot(board) -> dict[str, bytes | None]:
     """board/status/log 파생 파일의 존재·bytes — 거부가 이들을 재생성/변경하지 않는지 대조용."""
     return {
-        "board": board.BOARD_FILE.read_bytes() if board.BOARD_FILE.exists() else None,
+        "board": (pm_paths.wiki_dir(board._home()) / "board.md").read_bytes() if (pm_paths.wiki_dir(board._home()) / "board.md").exists() else None,
         "status": (pm_paths.status_file(board._home()).read_bytes()
                    if pm_paths.status_file(board._home()).exists() else None),
-        "log": board.LOG_FILE.read_bytes() if board.LOG_FILE.exists() else None,
+        "log": (pm_paths.wiki_dir(board._home()) / "log/current.md").read_bytes() if (pm_paths.wiki_dir(board._home()) / "log/current.md").exists() else None,
     }
 
 
@@ -110,12 +109,12 @@ def _expected_rejection_text(board, command: str, tid: str, status: str) -> str:
     if command == "block":
         return f"cannot block from {status}/"
     if command == "unclaim":
-        allowed = "/".join(board._UNCLAIM_SOURCE_STATUSES)
+        allowed = "/".join(board_ticket._UNCLAIM_SOURCE_STATUSES)
         return f"cannot unclaim {tid}: in {status}/, must be {allowed}"
     if command == "unblock":
         return f"cannot unblock {tid}: in {status}/, must be blocked"
     if command == "discard":
-        allowed = "/".join(board._DISCARD_SOURCE_STATUSES)
+        allowed = "/".join(board_ticket._DISCARD_SOURCE_STATUSES)
         return f"cannot discard {tid}: in {status}/, must be {allowed}"
     if command == "reopen":
         allowed = "/".join(ticket_rules.TERMINAL_STATUS_DIRS)
@@ -158,9 +157,9 @@ def _valid_statuses(board, command: str) -> frozenset[str]:
         "claim": frozenset({"open"}),
         "complete": frozenset({"claimed"}),
         "block": frozenset({"open", "claimed"}),
-        "unclaim": frozenset(board._UNCLAIM_SOURCE_STATUSES),
+        "unclaim": frozenset(board_ticket._UNCLAIM_SOURCE_STATUSES),
         "unblock": frozenset({"blocked"}),
-        "discard": frozenset(board._DISCARD_SOURCE_STATUSES),
+        "discard": frozenset(board_ticket._DISCARD_SOURCE_STATUSES),
         "reopen": frozenset(ticket_rules.TERMINAL_STATUS_DIRS),
         "promote": frozenset({"open"}),
     }[command]
@@ -210,7 +209,7 @@ def test_wrong_state_rejects_without_moving_the_ticket(board, capsys, command, s
     before_tickets = _tickets_tree_snapshot(board)
     before_derived = _derived_files_snapshot(board)
 
-    rc = getattr(board, f"cmd_{command}")(_args(board, command, tid))
+    rc = getattr(board_ticket, f"cmd_{command}")(board._home(), _args(board, command, tid))
 
     assert rc != 0, f"{command} on {status}/ 가 통과함 — wrong-state 거부 회귀."
     assert _tickets_tree_snapshot(board) == before_tickets, (
@@ -255,6 +254,6 @@ def test_valid_state_still_passes(board, command, status):
     tid = "T-0001"
     _seed(board, tid, status)
 
-    rc = getattr(board, f"cmd_{command}")(_args(board, command, tid))
+    rc = getattr(board_ticket, f"cmd_{command}")(board._home(), _args(board, command, tid))
 
     assert rc == 0, f"{command} on {status}/(유효 상태)가 거부됨 — 회귀."

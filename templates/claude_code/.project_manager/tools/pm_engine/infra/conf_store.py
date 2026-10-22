@@ -16,6 +16,8 @@ from pathlib import Path
 from pm_engine.domain import conf_schema
 from pm_engine.infra import fs
 
+from pm_engine.infra import python_env
+
 
 # 압축 한도 기록 — 적용 경로(pm-config apply·설치·add-harness·pm_update·어댑터 수용)가 조회한 모델 한도 C 와
 # 계산 결과를 한 번 쓰고, 훅·상태줄·구동기·상태 조회는 읽기만 한다. 시간·도구 갱신·환경변수로
@@ -141,3 +143,126 @@ def local_config(home, repo: Path | None = None) -> dict[str, str]:
     """
     path = (repo / ".project_manager" / "local.conf") if repo is not None else home.local_conf
     return load_checked_readable(path)
+
+
+def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
+    """local.conf 텍스트에서 지정 키만 set-or-replace. 나머지 줄·주석은 보존.
+
+    있으면 그 자리에서 `key=value` 로 교체(첫 등장만), 없으면 끝에 추가. stdlib only.
+    pm_import._set_conf_keys 와 동형 — board 는 pm_import 를 import 하지 않으므로
+    (의존 방향: pm_import 가 board init 을 subprocess 로 부르는 상위) board-local 사본을
+    둔다(중복 최소·순수 프리미티브). cmd_init 의 비파괴 병합에 쓴다.
+    """
+    remaining = dict(updates)
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                newline = "\n" if line.endswith("\n") else ""
+                out.append(f"{key}={remaining.pop(key)}{newline}")
+                continue
+        out.append(line)
+    if remaining:
+        if out and not out[-1].endswith("\n"):
+            out[-1] = out[-1] + "\n"
+        for key, value in updates.items():
+            if key in remaining:
+                out.append(f"{key}={value}\n")
+    return "".join(out)
+
+
+def _conf_default_int(key: str) -> int:
+    """이 conf 키의 엔진 기본값(정수) — 정본은 `conf_schema.KEY_REGISTRY` 다.
+
+    기본값이 선언되지 않은 키를 여기로 부르면 `TypeError` 로 멈춘다 — 엔진이 없는 값을 지어내지
+    않는다(하네스별 표가 정본인 키는 그 표를 읽는 자리가 따로 있다).
+    """
+    return int(conf_schema.default_for(key))
+
+
+def _local_conf_lock_path(conf_path: Path) -> Path:
+    """local.conf writer 직렬화 락 경로 — 공용 seam 이 대상 conf 에서 유도한다(사본 0).
+
+    유도 규칙이 도구마다 복제되면 한 사본만 어긋나도 배타가 조용히 사라지므로
+    `fs.conf_lock_path` 한 곳이 소유한다. 이름은 호출부/테스트 호환으로 남긴 얇은 별칭이다.
+    """
+    return fs.conf_lock_path(conf_path)
+
+
+def _local_conf_write_lock(conf_path: Path):
+    """이 conf 를 쓰는 구간의 배타락 — **전 writer 공용**(전체 write·병합 교체).
+
+    board 의 conf writer 는 둘이다(init 최초 생성 · init 비파괴 병합). 둘이 같은 락을 잡아야
+    "커밋 전에 읽고 나중에 통째 교체하는" writer 가 그사이의 쓰기를 지우지 않는다.
+    재진입 금지 — 이 구간 안에서 다른 conf writer 를 부르지 않는다.
+    """
+    return fs.local_conf_write_lock(conf_path)
+
+
+def _write_init_local_conf(home) -> None:
+    """init 의 local.conf 쓰기 — 존재 판정·읽기·병합·쓰기를 **한 배타 구간**에 닫는다.
+
+    **세션·prefix 키는 쓰지 않는다.** 둘 다 slot·task 종속 값이라 프로젝트 공용 per-clone
+    conf 의 범위가 아니다 — 세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이고 이
+    함수는 `runtime.py`·`test.cmd`·ctx 비율 같은 per-clone operational 키만 심는다.
+
+    구간을 나누면 두 곳이 새는데 둘 다 남의 결정을 지운다: (a) 존재 판정과 최초 생성 사이에
+    다른 writer 가 만든 conf 를 통째 write 로 덮고, (b) 병합 경로가 읽은 뒤 교체하는 사이에 붙은
+    opt-in append(그 자체는 원자였어도)가 교체본에 없어 사라진다. 그래서 락의 단위는 "쓰기" 가
+    아니라 "읽고 쓰는 구간" 이고, 같은 락을 conf 의 **모든** writer 가 공유한다.
+
+    온보딩 질문(추가 리뷰어 opt-in)은 이 구간 **밖**에서 한다 — 그 커밋이 같은 락을 다시
+    잡으므로 안에서 부르면 재진입(정의되지 않은 동작)이다.
+    """
+    # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
+    # (임계 구간을 프로브 시간만큼 늘리지 않는다).
+    detected_py = python_env._detect_py()
+    detected_test_cmd = python_env.default_pytest_cmd(detected_py)
+    with _local_conf_write_lock(home.local_conf):
+        if not home.local_conf.exists():
+            # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
+            # 주석은 **값을 재진술하지 않는다** — 손으로 옮겨 적은 값은 반드시 drift 한다.
+            # 키가 무엇을 하는지와 전체 카탈로그는 출하 문서 한 곳이 소유한다.
+            conf = (
+                "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
+                "# 여기엔 실값만 둔다 — 키 목록·설명은 `local_conf.py --keys` 참조.\n"
+                f"runtime.py={detected_py}\n"
+                f"test.cmd={detected_test_cmd}\n"
+                "project.name=\n"
+                f"ctx.checkpoint_at_pct={_conf_default_int('ctx.checkpoint_at_pct')}\n"
+                f"ctx.precompact_at_pct={_conf_default_int('ctx.precompact_at_pct')}\n"
+                f"ctx.compact_at_pct={_conf_default_int('ctx.compact_at_pct')}\n"
+            )
+            home.local_conf.write_text(conf, encoding="utf-8", newline="\n")
+            return
+        # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
+        # (additional_reviewer.*·delegate.*·upstream.*·harness.*·identity.user 등)를 절대
+        # 삭제/변경하지 않는다. 통째 write 금지.
+        text = fs.read_text_shared(home.local_conf, encoding="utf-8")
+        existing = load_checked_readable(home.local_conf)
+        updates: dict[str, str] = {}
+        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.compact_at_pct` 등)은 보존.
+        defaults = {
+            "runtime.py": detected_py,
+            "test.cmd": detected_test_cmd,
+            "project.name": "",
+            "ctx.checkpoint_at_pct": str(_conf_default_int("ctx.checkpoint_at_pct")),
+            "ctx.precompact_at_pct": str(_conf_default_int("ctx.precompact_at_pct")),
+            "ctx.compact_at_pct": str(_conf_default_int("ctx.compact_at_pct")),
+        }
+        for key, value in defaults.items():
+            if key not in existing:
+                updates[key] = value
+        # session·prefix 는 어느 경로에서도 쓰지 않는다 — 이미 파일에 남아 있는 그 키도 건드리지
+        # 않는다(비파괴 병합·엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다). 읽는 코드가 없으므로
+        # 남아 있어도 동작은 같다.
+        merged = _set_conf_keys(text, updates)
+        # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
+        # 원문을 그대로 반환하면 마지막 줄이 개행 없이 끝날 수 있고, 그 conf 에 뒤이어 붙는
+        # 어떤 append 도 마지막 키에 그대로 이어져 기존 키를 변질시킨다.
+        if merged and not merged.endswith("\n"):
+            merged += "\n"
+        home.local_conf.write_text(merged, encoding="utf-8", newline="\n")

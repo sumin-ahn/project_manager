@@ -87,7 +87,7 @@ def test_t0936_project_full_commands_follow_phase_ownership(
     board = regression_board
     full_test_cmd = "python3 -m pytest tests/ -q -n auto"
     platform_cmd = "run-windows-project-full-suite"
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.write_text(
         "\n".join((
             f"test.cmd={full_test_cmd}",
             "qa.platforms=windows",
@@ -116,7 +116,7 @@ def test_t0936_project_full_commands_follow_phase_ownership(
     release.anchor = board.REPO
     release.head = expected_head
     release.board._home().local_conf.write_text(
-        board.LOCAL_CONF.read_text(encoding="utf-8"), encoding="utf-8")
+        board._home().local_conf.read_text(encoding="utf-8"), encoding="utf-8")
     core = json.loads(pm_paths.regression_flag(board._home()).read_text(encoding="utf-8"))
     pm_paths.regression_flag(release.board._home()).write_text(json.dumps(core), encoding="utf-8")
     monkeypatch.setattr(regression, "_run_regression_cmd", run)

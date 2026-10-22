@@ -18,6 +18,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_prefix
+from pm_engine.cli import board_ticket
+
+
 import contextlib
 import importlib.util
 import multiprocessing as mp
@@ -33,6 +37,16 @@ import pytest
 from _textio import utf8_child_env
 from conftest import ensure_product_slot
 from pm_engine.infra import areas_store, git, ticket_store
+
+from pm_engine.app import areas_registry
+from pm_engine.app import board_dashboard
+from pm_engine.infra import board_git
+from pm_engine.infra import fs
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
+
+from pm_engine.domain import board_git_rules
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -68,18 +82,7 @@ def _load_board_bound(proj: Path):
     pm = proj / ".project_manager"
     wiki = pm / "wiki"
     local = pm / ".local"
-    overrides = {
-        "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": local,
-        "LEASES_FILE": local / "worktree-leases.json",
-        "BOARD_LOCK": local / "board.lock",
-    }
+    overrides = {'REPO': proj}
     for name, val in overrides.items():
         setattr(mod, name, val)
     return mod
@@ -157,8 +160,8 @@ def _worker_new(proj_str: str, ready, go, out_q) -> None:
     board = _load_board_bound(proj)
     ready.put(os.getpid())
     go.wait()  # 모든 워커가 동시에 진입하도록 배리어
-    rc = board.cmd_new(_new_args(title="concurrent"))
-    ids = sorted(p.name for p in (board.TICKETS_DIR / "open").glob("T-*.md"))
+    rc = board_ticket.cmd_new(board._home(), _new_args(title="concurrent"))
+    ids = sorted(p.name for p in (pm_paths.tickets_dir(board._home()) / "open").glob("T-*.md"))
     out_q.put((rc, ids))
 
 
@@ -167,30 +170,30 @@ def _worker_prefix_relabel_after_concurrent_case_write(
 ) -> None:
     """선판정 뒤 실제 다른 프로세스 write를 기다렸다가 relabel을 계속한다."""
     board = _load_board_bound(Path(proj_str))
-    board._board_git_enabled = lambda: False
-    real_lock = board.board_lock
+    board_git._board_git_enabled = lambda _home: False
+    real_lock = fs.board_lock
 
     @contextlib.contextmanager
-    def paused_before_lock():
+    def paused_before_lock(_home):
         # cmd_prefix_rename의 cache-backed 선판정/plan이 끝난 뒤, 실제 lock 취득 직전에
         # writer를 풀어 다른 case prefix가 먼저 board_lock 아래 발행되게 한다.
         ready.set()
         if not writer_done.wait(timeout=SYNC_TIMEOUT):
             raise RuntimeError("concurrent prefix writer timeout")
-        with real_lock():
+        with real_lock(_home):
             yield
 
-    board.board_lock = paused_before_lock
+    fs.board_lock = paused_before_lock
     if bypass_fresh_recheck:
         # sensitivity control: 이 seam을 제거하면 번호가 겹치지 않는 case-split이 실제 생겨야
         # 테스트가 유효하다. production 경로(False)는 원 함수를 그대로 쓴다.
-        board.revalidate_prefix_user_ack = (
-            lambda prefix, user_ack, expected, **kwargs: expected
+        areas_registry.revalidate_prefix_user_ack = (
+            lambda _home, prefix, user_ack, expected, **kwargs: expected
         )
-    rc = board.cmd_prefix_rename(_Args(
+    rc = board_prefix.cmd_prefix_rename(board._home(), _Args(
         src="old", dst="fresh", user_ack="fresh", dry_run=False,
     ))
-    ids = sorted(row["id"] for row in board._scan_prefix_tickets())
+    ids = sorted(row["id"] for row in areas_registry._scan_prefix_tickets(board._home()))
     out_q.put((rc, ids))
 
 
@@ -201,9 +204,9 @@ def _worker_write_concurrent_case_prefix(
     board = _load_board_bound(Path(proj_str))
     if not ready.wait(timeout=SYNC_TIMEOUT):
         raise RuntimeError("prefix relabel precheck timeout")
-    with board.board_lock():
-        path = board.TICKETS_DIR / "open" / "T-FRESH-001-race.md"
-        board.dump_ticket(
+    with fs.board_lock(board._home()):
+        path = pm_paths.tickets_dir(board._home()) / "open" / "T-FRESH-001-race.md"
+        ticket_store.dump_ticket(
             path,
             {"id": "T-FRESH-001", "title": "race", "status": "open",
              "created": "2026-08-11"},
@@ -217,28 +220,28 @@ def _worker_new_task_prefix_after_concurrent_area_write(
 ) -> None:
     """task prefix 선해소 뒤 다른 프로세스의 areas case 등록을 기다렸다가 발행한다."""
     board = _load_board_bound(Path(proj_str))
-    board._board_git_enabled = lambda: False
-    real_lock = board.board_lock
+    board_git._board_git_enabled = lambda _home: False
+    real_lock = fs.board_lock
 
     @contextlib.contextmanager
-    def paused_before_lock():
+    def paused_before_lock(_home):
         ready.set()
         if not writer_done.wait(timeout=SYNC_TIMEOUT):
             raise RuntimeError("concurrent areas writer timeout")
-        with real_lock():
+        with real_lock(_home):
             yield
 
-    board.board_lock = paused_before_lock
+    fs.board_lock = paused_before_lock
     if bypass_fresh_recheck:
-        board.revalidate_prefix_user_ack = (
-            lambda prefix, user_ack, expected, **kwargs: expected
+        areas_registry.revalidate_prefix_user_ack = (
+            lambda _home, prefix, user_ack, expected, **kwargs: expected
         )
-    rc = board.cmd_new(_Args(
+    rc = board_ticket.cmd_new(board._home(), _Args(
         title="derived-race", prefix=None, user_ack=None,
         touches=None, depends=None, tag=None, estimate="small", design=None,
         task="job", repo=None, slot=None, user=None,
     ))
-    ids = sorted(row["id"] for row in board._scan_prefix_tickets())
+    ids = sorted(row["id"] for row in areas_registry._scan_prefix_tickets(board._home()))
     out_q.put((rc, ids))
 
 
@@ -249,7 +252,7 @@ def _worker_write_concurrent_area_case(
     board = _load_board_bound(Path(proj_str))
     if not ready.wait(timeout=SYNC_TIMEOUT):
         raise RuntimeError("derived new precheck timeout")
-    board.areas_append("FRESH", "area", "owner", repo="svc")
+    areas_registry.areas_append(board._home(), "FRESH", "area", "owner", repo="svc")
     writer_done.set()
 
 
@@ -282,7 +285,7 @@ def _worker_claim(proj_str: str, tid: str, task: str, ready, go, out_q) -> None:
     err = io.StringIO()
     try:
         with contextlib.redirect_stderr(err):
-            rc = board.cmd_claim(_Args(id=tid, task=task))
+            rc = board_ticket.cmd_claim(board._home(), _Args(id=tid, task=task))
         out_q.put(("WIN" if rc == 0 else "LOSE", err.getvalue()))
     except BaseException as e:  # noqa: BLE001 — 예측 못 한 死 = 부모 행, 무조건 보고
         # FileNotFoundError 도 여기로 — fix 후엔 cmd_claim 이 안 던지므로 *절대* 안 와야 한다.
@@ -304,7 +307,7 @@ def _worker_claim_two_clone(home_str: str, repo_label: str, ready, go, out_q) ->
     board = _load_board_bound(home)
     ready.put(os.getpid())
     go.wait()
-    rc = board.cmd_claim(_Args(id="T-0001", task=repo_label, user=repo_label))
+    rc = board_ticket.cmd_claim(board._home(), _Args(id="T-0001", task=repo_label, user=repo_label))
     board_dir = home / ".project_manager" / "board"
     board_tickets = board_dir / "tickets"
     open_exists = bool(list((board_tickets / "open").glob("T-0001-*.md")))
@@ -332,7 +335,7 @@ def _worker_hold_lock(proj_str: str, acquired) -> None:
     """
     proj = Path(proj_str)
     board = _load_board_bound(proj)
-    cm = board.board_lock()
+    cm = fs.board_lock(board._home())
     cm.__enter__()        # 락 획득 (컨텍스트 종료 없이 보유)
     acquired.set()
     time.sleep(3600)      # 부모가 terminate 할 때까지 락 보유 채로 대기 (해제 안 함)
@@ -456,7 +459,7 @@ def test_concurrent_new_yields_unique_ids(proj):
 
     # 최종 상태: open/ 의 모든 티켓 ID 가 distinct 하고 정확히 n 개여야 한다.
     board = _load_board_bound(proj)
-    files = sorted((board.TICKETS_DIR / "open").glob("T-*.md"))
+    files = sorted((pm_paths.tickets_dir(board._home()) / "open").glob("T-*.md"))
     # 파일명 T-NNNN-slug.md → ID = 두 번째 '-' 전까지(T-NNNN).
     ids = [f.name[: f.name.index("-", 2)] for f in files]
     assert len(files) == n, f"기대 {n}개, 실제 {len(files)}: {[f.name for f in files]}"
@@ -481,8 +484,8 @@ def test_prefix_relabel_rechecks_canonical_after_concurrent_process_write(
     경계에서는 캐시를 버린 lock 안 판정이 rc1·쓰기 0으로 기존 source를 보존해야 한다.
     """
     board = _load_board_bound(proj)
-    board.dump_ticket(
-        board.TICKETS_DIR / "open" / "T-old-003-seed.md",
+    ticket_store.dump_ticket(
+        pm_paths.tickets_dir(board._home()) / "open" / "T-old-003-seed.md",
         {"id": "T-old-003", "title": "seed", "status": "open",
          "created": "2026-08-11"},
         "# T-old-003 — seed\n",
@@ -542,8 +545,8 @@ def test_task_derived_new_rechecks_after_concurrent_area_case_write(
     tree = init_git_repo(proj / "work/svc_1", commit="task prefix race fixture")
     assert git._git_head_at(str(tree))
     assert git._cluster_current_branch(str(tree)) == "main"
-    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(
+    board._home().local_dir.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(
         json.dumps({
             "leases": [{"slot": "work/svc_1", "repo": "svc", "session": "job",
                         "state": "leased", "role": "work"}],
@@ -592,18 +595,18 @@ def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):
     원자로 묶어 충돌을 없앤다. (확률적 spawn race 대신 seam 을 직접 노출 — 빠르고 결정적.)
     """
     # 빈 보드 — 두 '세션'이 파일 생성 전에 _next_id 를 각자 읽으면 둘 다 T-0001.
-    assert board._next_id(None) == "T-0001"
-    assert board._next_id(None) == "T-0001"   # 무락 read-only → 동일 ID (충돌 가능성의 근원)
+    assert ticket_store._next_id(board._home(), None) == "T-0001"
+    assert ticket_store._next_id(board._home(), None) == "T-0001"   # 무락 read-only → 동일 ID (충돌 가능성의 근원)
 
     # board_lock 안에서 ID 발행+파일생성을 원자로 하면 두 번째는 T-0002 를 본다(직렬화 효과).
     a = _Args(title="first", prefix=None, touches=None, depends=None,
               tag=None, estimate="small", task=_TASK)
     b = _Args(title="second", prefix=None, touches=None, depends=None,
               tag=None, estimate="small", task=_TASK)
-    assert board.cmd_new(a) == 0
-    assert board.cmd_new(b) == 0
+    assert board_ticket.cmd_new(board._home(), a) == 0
+    assert board_ticket.cmd_new(board._home(), b) == 0
     ids = sorted(f.name[: f.name.index("-", 2)]
-                 for f in (board.TICKETS_DIR / "open").glob("T-*.md"))
+                 for f in (pm_paths.tickets_dir(board._home()) / "open").glob("T-*.md"))
     assert ids == ["T-0001", "T-0002"], f"직렬 발행이 distinct ID 를 못 줌: {ids}"
 
 
@@ -633,8 +636,8 @@ def test_concurrent_claim_only_one_wins(proj):
     # seed: open/ 에 claim 대상 ticket 하나.
     board = _load_board_bound(proj)
     tid = "T-0001"
-    path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
+    path = pm_paths.tickets_dir(board._home()) / "open" / f"{tid}-seed.md"
+    ticket_store.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
                              "depends_on": []}, "# seed\n")
 
     n = WORKERS
@@ -674,9 +677,9 @@ def test_concurrent_claim_only_one_wins(proj):
     assert "Traceback" not in win_stderr, f"승자 stderr 에 traceback: {win_stderr!r}"
 
     # 최종: ticket 은 claimed/ 에 정확히 1개·open 에 잔존 0 (분열·중복 없음).
-    claimed = list((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
+    claimed = list((pm_paths.tickets_dir(board._home()) / "claimed").glob(f"{tid}-*.md"))
     assert len(claimed) == 1
-    assert not list((board.TICKETS_DIR / "open").glob(f"{tid}-*.md"))
+    assert not list((pm_paths.tickets_dir(board._home()) / "open").glob(f"{tid}-*.md"))
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -728,7 +731,7 @@ def _tc_seed_bare(tmp_path: Path, name: str) -> Path:
     # `_BOARD_GITATTRIBUTES_BLOCK` 은 REPO 와 무관한 리터럴 상수 — 아무 tmp 로 로드해도 값은 같다
     # ("이미 배포된" board 형상을 재현해 첫 mutation 의 backfill 잡음을 없앤다).
     (seed / ".gitattributes").write_text(
-        _load_board_bound(tmp_path)._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8", newline="\n")
+        board_git_rules._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8", newline="\n")
     (seed / ".gitignore").write_text("tickets/.drafts/\n", encoding="utf-8")
     _tc_git(["init", "-q", "-b", "main"], seed)
     _tc_git(["remote", "add", "origin", str(bare)], seed)
@@ -819,7 +822,7 @@ def test_two_clones_claim_race_arbitrated_by_remote_push(tmp_path, monkeypatch):
         "원격 open/ 에 T-0001 이 잔존 — 조율 실패(원격 분열) 의심."
 
 
-def test_claim_load_window_race_lost_cleanly(board, capsys):
+def test_claim_load_window_race_lost_cleanly(monkeypatch, board, capsys):
     """sensitivity(결정적) — 조회→`load_ticket` 사이 window 의 패배를 깨끗이 흡수.
 
     spawn 워커는 부하·타이밍에 따라 `load_ticket` window 가 안 열릴 수 있어(승자가 너무 빨리
@@ -834,31 +837,31 @@ def test_claim_load_window_race_lost_cleanly(board, capsys):
      결정적 sensitivity, 확률적 spawn race 비의존.)
     """
     tid = "T-0001"
-    path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
+    path = pm_paths.tickets_dir(board._home()) / "open" / f"{tid}-seed.md"
+    ticket_store.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
                              "depends_on": []}, "# seed\n")
 
     # mutation 조회 seam 을 래핑해 *반환 직후* open path 를 제거 — 승자가 옮긴(rename out)
     # 효과를 결정적으로 재현한다. 이어지는 load_ticket(path) 가 그 사라진 path 를 읽으려다 진다.
-    orig_find = board.find_ticket_for_mutation
+    orig_find = ticket_store.find_ticket_for_mutation
 
-    def racing_find(t):
-        status, p = orig_find(t)
+    def racing_find(_home, t):
+        status, p = orig_find(_home, t)
         if t == tid:
             p.unlink()  # 승자가 open/ 밖으로 옮긴 효과
         return status, p
 
-    board.find_ticket_for_mutation = racing_find
+    monkeypatch.setattr(ticket_store, 'find_ticket_for_mutation', racing_find)
     try:
-        rc = board.cmd_claim(_Args(id=tid, task=_TASK))  # 미처리 예외면 여기서 죽음(fail)
+        rc = board_ticket.cmd_claim(board._home(), _Args(id=tid, task=_TASK))  # 미처리 예외면 여기서 죽음(fail)
     finally:
-        board.find_ticket_for_mutation = orig_find
+        monkeypatch.setattr(ticket_store, 'find_ticket_for_mutation', orig_find)
 
     err = capsys.readouterr().err
     assert rc == 1, f"load 단계 race 패배 rc 가 1 이 아님: {rc}"
     assert "claim race lost" in err, f"깨끗한 race-lost 메시지 없음: {err!r}"
     # ticket 은 어디로도 안 옮겨졌다(이 세션은 졌고 승자는 시뮬레이션상 별도) — claimed/ 비어야.
-    assert not list((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
+    assert not list((pm_paths.tickets_dir(board._home()) / "claimed").glob(f"{tid}-*.md"))
 
 
 def test_claim_normal_rejections_unaffected(board, capsys):
@@ -867,41 +870,41 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     race-FileNotFoundError 만 `claim race lost` 로 합치고, 정상 거부는 각자 메시지·rc=1 그대로.
     """
     # (1) status != open → "cannot claim ... currently in claimed/" (race-lost 아님).
-    cp = board.TICKETS_DIR / "claimed" / "T-0009-x.md"
-    board.dump_ticket(cp, {"id": "T-0009", "title": "x", "status": "claimed",
+    cp = pm_paths.tickets_dir(board._home()) / "claimed" / "T-0009-x.md"
+    ticket_store.dump_ticket(cp, {"id": "T-0009", "title": "x", "status": "claimed",
                            "depends_on": []}, "# x\n")
-    assert board.cmd_claim(_Args(id="T-0009", task=_TASK)) == 1
+    assert board_ticket.cmd_claim(board._home(), _Args(id="T-0009", task=_TASK)) == 1
     err = capsys.readouterr().err
     assert "currently in claimed/" in err and "claim race lost" not in err, err
 
     # (2) 미충족 depends_on → "dependency ... not done" (race-lost 아님).
-    dep = board.TICKETS_DIR / "open" / "T-0010-dep.md"
-    board.dump_ticket(dep, {"id": "T-0010", "title": "dep", "status": "open",
+    dep = pm_paths.tickets_dir(board._home()) / "open" / "T-0010-dep.md"
+    ticket_store.dump_ticket(dep, {"id": "T-0010", "title": "dep", "status": "open",
                             "depends_on": []}, "# dep\n")
-    tgt = board.TICKETS_DIR / "open" / "T-0011-tgt.md"
-    board.dump_ticket(tgt, {"id": "T-0011", "title": "tgt", "status": "open",
+    tgt = pm_paths.tickets_dir(board._home()) / "open" / "T-0011-tgt.md"
+    ticket_store.dump_ticket(tgt, {"id": "T-0011", "title": "tgt", "status": "open",
                             "depends_on": ["T-0010"]}, "# tgt\n")
-    assert board.cmd_claim(_Args(id="T-0011", task=_TASK)) == 1
+    assert board_ticket.cmd_claim(board._home(), _Args(id="T-0011", task=_TASK)) == 1
     err = capsys.readouterr().err
     assert "is open/, not done" in err and "claim race lost" not in err, err
 
     # (3) 미존재 dependency → "dependency ... not found" (race-lost 아님·바깥 try 에 안 새어나감).
-    tgt2 = board.TICKETS_DIR / "open" / "T-0012-tgt.md"
-    board.dump_ticket(tgt2, {"id": "T-0012", "title": "tgt2", "status": "open",
+    tgt2 = pm_paths.tickets_dir(board._home()) / "open" / "T-0012-tgt.md"
+    ticket_store.dump_ticket(tgt2, {"id": "T-0012", "title": "tgt2", "status": "open",
                              "depends_on": ["T-9999"]}, "# tgt2\n")
-    assert board.cmd_claim(_Args(id="T-0012", task=_TASK)) == 1
+    assert board_ticket.cmd_claim(board._home(), _Args(id="T-0012", task=_TASK)) == 1
     err = capsys.readouterr().err
     assert "dependency T-9999 not found" in err and "claim race lost" not in err, err
 
     # (4) 비경합 정상 claim → rc=0·claimed/ 이동.
-    ok = board.TICKETS_DIR / "open" / "T-0013-ok.md"
-    board.dump_ticket(ok, {"id": "T-0013", "title": "ok", "status": "open",
+    ok = pm_paths.tickets_dir(board._home()) / "open" / "T-0013-ok.md"
+    ticket_store.dump_ticket(ok, {"id": "T-0013", "title": "ok", "status": "open",
                            "depends_on": []}, "# ok\n")
-    assert board.cmd_claim(_Args(id="T-0013", task=_TASK)) == 0
-    assert list((board.TICKETS_DIR / "claimed").glob("T-0013-*.md"))
+    assert board_ticket.cmd_claim(board._home(), _Args(id="T-0013", task=_TASK)) == 0
+    assert list((pm_paths.tickets_dir(board._home()) / "claimed").glob("T-0013-*.md"))
 
 
-def test_claim_critical_section_holds_board_lock(board):
+def test_claim_critical_section_holds_board_lock(monkeypatch, board):
     """sensitivity(결정적·cross-platform) — claim 의 load→rename 임계구역이 board_lock 을 보유한다.
 
     Windows `os.rename` 비배타(ADR-0012 Amendment·T-0213)를 락으로 대체한 것을 결정적으로
@@ -915,20 +918,20 @@ def test_claim_critical_section_holds_board_lock(board):
         pytest.skip("락 프리미티브 없음(폴백 무락) — 임계구역 락 보유 단언 비적용")
 
     tid = "T-0001"
-    path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
+    path = pm_paths.tickets_dir(board._home()) / "open" / f"{tid}-seed.md"
+    ticket_store.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
                              "depends_on": []}, "# seed\n")
 
     observed: dict[str, bool] = {}
     orig_load = ticket_store.load_ticket
-    orig_find = board.find_ticket_for_mutation
+    orig_find = ticket_store.find_ticket_for_mutation
     armed: list[bool] = []
 
-    def arming_find(t):
+    def arming_find(_home, t):
         # 티켓 **조회**(`find_ticket_for_mutation`)는 임계구역 밖이고, 정확 일치 판정 때문에
         # 후보 frontmatter 를 읽는다 — 그 읽기까지 세면 첫 load 가 조회분이라 프로브가 조회
         # 시점(락 밖)을 관측한다. 조회가 끝난 뒤부터 관측을 켜서 '첫 load = 임계구역' 을 유지한다.
-        result = orig_find(t)
+        result = orig_find(_home, t)
         armed.append(True)
         return result
 
@@ -940,23 +943,23 @@ def test_claim_critical_section_holds_board_lock(board):
         # 자기 board_lock 을 쥔 채 load_ticket 을 또 부르므로, 덮어쓰면 그쪽 False 가 임계구역
         # 관측을 가려 락을 걷어내도 통과하는 false-green 이 된다(T-0213 reviewer must-fix).
         if armed:
-            observed.setdefault("lock_free_during_load", _probe_lock_free(board.BOARD_LOCK))
+            observed.setdefault("lock_free_during_load", _probe_lock_free((board._home().local_dir / "board.lock")))
         return orig_load(p)
 
     ticket_store.load_ticket = probing_load
-    board.find_ticket_for_mutation = arming_find
+    monkeypatch.setattr(ticket_store, 'find_ticket_for_mutation', arming_find)
     try:
-        rc = board.cmd_claim(_Args(id=tid, task=_TASK))
+        rc = board_ticket.cmd_claim(board._home(), _Args(id=tid, task=_TASK))
     finally:
         ticket_store.load_ticket = orig_load
-        board.find_ticket_for_mutation = orig_find
+        monkeypatch.setattr(ticket_store, 'find_ticket_for_mutation', orig_find)
 
     assert rc == 0, f"비경합 claim 이 성공해야 함: rc={rc}"
     assert observed.get("lock_free_during_load") is False, (
         "claim 임계구역이 board_lock 을 보유하지 않음 — Windows 비배타 rename 을 직렬화로 "
         "대체하지 못함(with board_lock 제거 시 재현)")
     # claim 성공 — ticket 은 claimed/ 로 이동(임계구역 정상 완주).
-    assert list((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
+    assert list((pm_paths.tickets_dir(board._home()) / "claimed").glob(f"{tid}-*.md"))
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -971,7 +974,7 @@ def test_lock_auto_released_on_holder_crash(proj):
     비차단 프로브로 결정적·빠르게 stale-lock 부재를 박제한다.
     """
     board = _load_board_bound(proj)
-    lock_path = board.BOARD_LOCK
+    lock_path = (board._home().local_dir / "board.lock")
 
     ctx = mp.get_context("spawn")
     acquired = ctx.Event()
@@ -1010,8 +1013,8 @@ def test_lock_auto_released_on_holder_crash(proj):
 
 def _seed_open_ticket(board, tid: str) -> None:
     """open/ 에 ticket 하나 seed (refresh_board 가 board.md 에 렌더하도록)."""
-    p = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
-    board.dump_ticket(p, {"id": tid, "title": f"title-{tid}", "status": "open",
+    p = pm_paths.tickets_dir(board._home()) / "open" / f"{tid}-seed.md"
+    ticket_store.dump_ticket(p, {"id": tid, "title": f"title-{tid}", "status": "open",
                           "depends_on": [], "touches": [], "tags": []}, "# seed\n")
 
 
@@ -1027,7 +1030,7 @@ def _worker_change_then_refresh(proj_str: str, tid: str, ready, go, out_q) -> No
     board = _load_board_bound(proj)
     ready.put(os.getpid())
     go.wait()
-    rc = board.cmd_new(_new_args(title=f"concurrent-{os.getpid()}"))
+    rc = board_ticket.cmd_new(board._home(), _new_args(title=f"concurrent-{os.getpid()}"))
     out_q.put((rc, None))
 
 
@@ -1046,11 +1049,11 @@ def test_concurrent_refresh_board_reflects_latest_state(proj):
     assert all(rc == 0 for rc, _ in results), f"new 실패한 워커: {results}"
 
     board = _load_board_bound(proj)
-    open_files = sorted((board.TICKETS_DIR / "open").glob("T-*.md"))
+    open_files = sorted((pm_paths.tickets_dir(board._home()) / "open").glob("T-*.md"))
     assert len(open_files) == n, f"기대 {n}개 open ticket, 실제 {len(open_files)}"
 
     # board.md 가 *최신* 상태를 반영해야 한다 — 모든 ticket ID + 정확한 OPEN 카운트.
-    text = board.BOARD_FILE.read_text(encoding="utf-8")
+    text = (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     assert f"OPEN ({n})" in text, (
         f"board.md OPEN 카운트가 최신이 아님(stale write 의심):\n{text}")
     for f in open_files:
@@ -1098,7 +1101,7 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
 
     def run_a():
         try:
-            board.refresh_board()  # A: scan(첫 load 에서 pause) → render → write
+            board_dashboard.refresh_board(board._home())  # A: scan(첫 load 에서 pause) → render → write
         except BaseException as e:  # noqa: BLE001
             err["a"] = e
 
@@ -1115,7 +1118,7 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
 
         def run_b():
             try:
-                board.refresh_board()  # B: 2 ticket scan+write (hook 은 통과만)
+                board_dashboard.refresh_board(board._home())  # B: 2 ticket scan+write (hook 은 통과만)
             except BaseException as e:  # noqa: BLE001
                 err["b"] = e
             finally:
@@ -1143,7 +1146,7 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
     # 최종 board.md 는 *최신* 상태(2 ticket)를 반영해야 한다.
     #   - fix: B 가 A 뒤에 락을 잡아 2 ticket 을 scan+write → 최신.
     #   - broken: A 가 마지막에 stale 1-ticket 을 덮어써 OPEN(1) → 이 단언 FAIL(재현).
-    text = board.BOARD_FILE.read_text(encoding="utf-8")
+    text = (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     assert "OPEN (2)" in text, (
         "board.md 가 최신(2 ticket)을 반영하지 않음 — scan 이 락 밖이면 stale write 재현:\n"
         + text)
@@ -1164,9 +1167,9 @@ def test_append_atomic_creates_and_appends(board, tmp_path):
 
 def test_areas_append_uses_atomic_append(board):
     """areas_append 가 O_APPEND 경로를 타고도 기존 계약(생성·append·append-only) 유지."""
-    board.areas_append("PAY", "결제", "alice")
-    board.areas_append("ACC", "정산", "bob")
-    text = board.AREAS_FILE.read_text(encoding="utf-8")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")
+    areas_registry.areas_append(board._home(), "ACC", "정산", "bob")
+    text = pm_paths.areas_file(board._home()).read_text(encoding="utf-8")
     assert text.count("| repo | prefix | git | test_cmd | owner |") == 1   # 헤더 한 번만 (ADR-0014 per-repo 스키마)
     assert "| PAY | PAY |  |  | alice |" in text   # repo 미지정 → prefix·git/test_cmd 빈칸
     assert "| ACC | ACC |  |  | bob |" in text
@@ -1179,7 +1182,7 @@ def _worker_areas(proj_str: str, idx: int, ready, go) -> None:
     board = _load_board_bound(proj)
     ready.put(idx)
     go.wait()
-    board.areas_append(f"P{idx}", f"area-{idx}", f"owner-{idx}")
+    areas_registry.areas_append(board._home(), f"P{idx}", f"area-{idx}", f"owner-{idx}")
 
 
 def test_concurrent_areas_append_no_lost_rows(proj):
@@ -1190,7 +1193,7 @@ def test_concurrent_areas_append_no_lost_rows(proj):
     """
     # 헤더를 먼저 만들어 둔다(생성 race 와 무관하게 append 만 측정).
     board = _load_board_bound(proj)
-    board.areas_append("SEED", "씨앗", "root")
+    areas_registry.areas_append(board._home(), "SEED", "씨앗", "root")
 
     n = WORKERS
     ctx = mp.get_context("spawn")
@@ -1235,7 +1238,7 @@ def test_concurrent_areas_append_from_empty_header_once_all_rows(proj):
     """
     # 헤더 선생성 안 함 — AREAS_FILE 가 아예 없는 상태에서 N 워커가 *동시에* 최초 등록.
     board = _load_board_bound(proj)
-    assert not board.AREAS_FILE.exists(), "테스트 전제: areas.md 부재"
+    assert not pm_paths.areas_file(board._home()).exists(), "테스트 전제: areas.md 부재"
 
     n = WORKERS
     ctx = mp.get_context("spawn")
@@ -1260,7 +1263,7 @@ def test_concurrent_areas_append_from_empty_header_once_all_rows(proj):
     assert all(p.exitcode == 0 for p in procs), (
         f"areas 워커 비정상 종료: exitcodes={[p.exitcode for p in procs]}")
 
-    text = board.AREAS_FILE.read_text(encoding="utf-8")
+    text = pm_paths.areas_file(board._home()).read_text(encoding="utf-8")
     # 헤더는 정확히 한 번(동시 최초 등록에도 중복 생성 0).
     assert text.count("| repo | prefix | git | test_cmd | owner |") == 1, (
         f"헤더가 1회가 아님(최초 생성 race — 헤더 중복):\n{text}")
@@ -1274,4 +1277,4 @@ def test_concurrent_areas_append_from_empty_header_once_all_rows(proj):
 # 참고: hermetic 입증 — 실 루트 .local/board.lock 가 테스트로 안 생기는지.
 def test_real_root_local_dir_untouched_by_tmp(board):
     """tmp-바인딩 board 가 실 루트 .local 을 안 건드리는지 가드(경로 재배선 확인)."""
-    assert board.BOARD_LOCK != REAL_LOCAL_DIR / "board.lock", "BOARD_LOCK 가 tmp 로 재배선 안 됨"
+    assert (board._home().local_dir / "board.lock") != REAL_LOCAL_DIR / "board.lock", "BOARD_LOCK 가 tmp 로 재배선 안 됨"

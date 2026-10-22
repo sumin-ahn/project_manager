@@ -23,6 +23,14 @@ conf 의 `session=` 폴백은 폐지됐으므로(T-0779) 세션 바인딩에 쓰
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.cli import board_prefix
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import importlib.util
 import json
@@ -35,6 +43,13 @@ import pytest
 from conftest import ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
+
+from pm_engine.app import board_dashboard
+from pm_engine.app import ticket_access
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -82,25 +97,12 @@ def board(tmp_path, monkeypatch):
         (wiki / "tickets" / status).mkdir(parents=True, exist_ok=True)
     (wiki / "log").mkdir(parents=True, exist_ok=True)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    overrides = {
-        "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
-        "LEASES_FILE": pm / ".local" / "worktree-leases.json",
-        "PM_STATE_FILE": wiki / "pm_state.md",
-        "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
-    }
+    overrides = {'REPO': proj}
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     # user 축은 conf 로, 세션 축은 env 로 명시 바인딩(실 git config·실 clone conf 미접촉).
     (pm / "local.conf").write_text("identity.user=alice\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.setenv("PM_SESSION_NAME", "pm_1")
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     for key, val in _GIT_IDENTITY.items():
@@ -122,7 +124,7 @@ def _seed(board, tid: str = "T-0001", *, status: str = "claimed",
     }
     fm.update(extra)
     path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-t.md"
-    board.dump_ticket(path, fm, f"# {tid} — t\n\n## 목표\nx\n\n{body}")
+    ticket_store.dump_ticket(path, fm, f"# {tid} — t\n\n## 목표\nx\n\n{body}")
     return path
 
 
@@ -144,8 +146,8 @@ def _ticket_path(board, tid: str, status: str) -> Path:
 def _write_leases(board, *sessions: str) -> None:
     rows = [{"repo": s.rsplit("_", 1)[0], "slot": f"work/{s}", "session": s,
              "state": "leased"} for s in sessions]
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(json.dumps({"leases": rows}), encoding="utf-8")
+    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": rows}), encoding="utf-8")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -169,7 +171,7 @@ _COMMANDS = {
 def _call(board, command: str, tid: str = "T-0001", **identity) -> int:
     _status, kwargs, _dest = _COMMANDS[command]
     args = argparse.Namespace(id=tid, **kwargs, **identity)
-    return getattr(board, f"cmd_{command}")(args)
+    return getattr(board_ticket, f"cmd_{command}")(board._home(), args)
 
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
@@ -270,7 +272,7 @@ def test_open_ticket_block_and_claim_are_unaffected(board):
     """open 티켓의 block 은 소유자 개념이 없어 현행 그대로 통과한다(회귀 보증)."""
     _seed(board, status="open", claimed_by=None)
 
-    assert board.cmd_block(argparse.Namespace(id="T-0001", reason="r")) == 0
+    assert board_ticket.cmd_block(board._home(), argparse.Namespace(id="T-0001", reason="r")) == 0
     assert list((pm_paths.tickets_dir(board._home()) / "blocked").glob("T-0001-*.md"))
 
 
@@ -278,7 +280,7 @@ def test_reid_consumes_the_same_ownership_judgement(board, capsys):
     """`reid` 의 타 세션 claim 가드도 같은 판정 함수를 쓴다 — user 축까지 본다(판정 2벌 금지)."""
     _seed(board, claimed_by="bob/pm_1", created_by="bob/pm_1")
 
-    rc = board.cmd_reid(argparse.Namespace(
+    rc = board_prefix.cmd_reid(board._home(), argparse.Namespace(
         old_id="T-0001", new_id="T-0250", dry_run=False, user_ack=None,
         repo=None, slot=None, task=None))
 
@@ -295,7 +297,7 @@ def test_takeover_releases_a_foreign_claim_and_records_the_reason(board):
     """`--takeover --reason` 은 타 세션 claim 을 해제하고 사유를 **본문에** 남긴다."""
     _seed(board, claimed_by="bob/other_1", created_by="bob/other_1")
 
-    rc = board.cmd_unclaim(argparse.Namespace(
+    rc = board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=True, reason="소유 세션 종료 — PM 43 인계", task=_TASK))
 
     assert rc == 0
@@ -311,7 +313,7 @@ def test_takeover_without_a_reason_is_rejected(board):
     path = _seed(board, claimed_by="bob/other_1", created_by="bob/other_1")
     before = path.read_bytes()
 
-    assert board.cmd_unclaim(argparse.Namespace(
+    assert board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=True, reason=None, task=_TASK)) == 1
     assert path.read_bytes() == before
 
@@ -324,7 +326,7 @@ def test_takeover_accepts_a_blocked_ticket_and_keeps_it_blocked(board):
     """
     _seed(board, status="blocked", claimed_by="bob/other_1", created_by="bob/other_1")
 
-    rc = board.cmd_unclaim(argparse.Namespace(
+    rc = board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=True, reason="소유 슬롯 반납됨", task=_TASK))
 
     assert rc == 0
@@ -338,7 +340,7 @@ def test_owner_unclaim_is_unchanged_by_the_takeover_flag(board):
     """정상 소유자의 unclaim 은 종전 그대로 — takeover 노트도 안 남는다(현행 무변경)."""
     _seed(board, claimed_rev="a" * 40)
 
-    assert board.cmd_unclaim(argparse.Namespace(
+    assert board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=False, reason=None)) == 0
 
     fm, body = ticket_store.load_ticket(_ticket_path(board, "T-0001", "open"))
@@ -351,7 +353,7 @@ def test_blocked_owner_can_unclaim_without_takeover(board):
     """소유자 본인은 takeover 없이도 blocked 티켓의 소유를 놓을 수 있다(상태 유지)."""
     _seed(board, status="blocked")
 
-    assert board.cmd_unclaim(argparse.Namespace(
+    assert board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=False, reason=None)) == 0
     fm, _body = ticket_store.load_ticket(_ticket_path(board, "T-0001", "blocked"))
     assert fm["claimed_by"] is None and fm["status"] == "blocked"
@@ -366,7 +368,7 @@ def test_discard_closes_from_every_active_status(board, source):
     """활성 3상태 전부에서 처분 종결로 닫힌다 — frontmatter 에 종류·사유가 박힌다."""
     _seed(board, status=source, claimed_by=None if source == "open" else "alice/pm_1")
 
-    rc = board.cmd_discard(argparse.Namespace(
+    rc = board_ticket.cmd_discard(board._home(), argparse.Namespace(
         id="T-0001", disposition="merged", reason="T-0002 로 병합 — 2단계 분할"))
 
     assert rc == 0
@@ -381,7 +383,7 @@ def test_discard_rejects_an_already_terminal_ticket(board):
     """이미 종결된 티켓은 처분 대상이 아니다 — 되돌리려면 `reopen` 이 먼저다."""
     _seed(board, status="done", claimed_by="alice/pm_1")
 
-    rc = board.cmd_discard(argparse.Namespace(
+    rc = board_ticket.cmd_discard(board._home(), argparse.Namespace(
         id="T-0001", disposition="dropped", reason="폐기"))
 
     assert rc == 1
@@ -393,7 +395,7 @@ def test_discard_requires_a_reason(board):
     path = _seed(board)
     before = path.read_bytes()
 
-    assert board.cmd_discard(argparse.Namespace(
+    assert board_ticket.cmd_discard(board._home(), argparse.Namespace(
         id="T-0001", disposition="dropped", reason="   ")) == 1
     assert path.read_bytes() == before
 
@@ -404,13 +406,13 @@ def test_discarded_is_hidden_from_the_default_view_and_shown_by_selector(board, 
           disposition="dropped", disposition_reason="취소")
     _seed(board, "T-0002", status="open", claimed_by=None)
 
-    assert board.cmd_list(argparse.Namespace(
+    assert board_list.cmd_list(board._home(), argparse.Namespace(
         status=None, tag=None, mine=False, all=True, task=None, repo=None,
         slot=None)) == 0
     default_out = capsys.readouterr().out
     assert "T-0002" in default_out and "T-0001" not in default_out
 
-    assert board.cmd_list(argparse.Namespace(
+    assert board_list.cmd_list(board._home(), argparse.Namespace(
         status="discarded", tag=None, mine=False, all=True, task=None, repo=None,
         slot=None)) == 0
     assert "T-0001" in capsys.readouterr().out
@@ -425,9 +427,9 @@ def test_board_md_renders_a_discarded_section_without_a_key_error(board):
           disposition="merged", disposition_reason="T-0002 로 병합")
     _seed(board, "T-0003", status="done", claimed_by="alice/pm_1")
 
-    board.refresh_board()
+    board_dashboard.refresh_board(board._home())
 
-    text = board.BOARD_FILE.read_text(encoding="utf-8")
+    text = (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     assert "DISCARDED (1)" in text and "DONE (1)" in text
     assert "T-0002 로 병합" in text
     done_section = text.split("DONE (1)")[1].split("## ")[0]
@@ -439,7 +441,7 @@ def test_task_end_scan_ignores_discarded_tickets(board):
     _seed(board, "T-0001", status="discarded", claimed_by="alice/job1",
           disposition="dropped", disposition_reason="취소")
 
-    assert board.scan_task_tickets("alice", "job1")["claimed"] == []
+    assert ticket_access.scan_task_tickets(board._home(), "alice", "job1")["claimed"] == []
 
 
 def test_reopen_resets_every_terminal_field(board):
@@ -448,7 +450,7 @@ def test_reopen_resets_every_terminal_field(board):
           claimed_rev="b" * 40, completed_at="2026-08-20T01:00:00+00:00",
           disposition="merged", disposition_reason="T-0002 로 병합")
 
-    rc = board.cmd_reopen(argparse.Namespace(id="T-0001", reason="병합 판정 철회"))
+    rc = board_ticket.cmd_reopen(board._home(), argparse.Namespace(id="T-0001", reason="병합 판정 철회"))
 
     assert rc == 0
     fm, body = ticket_store.load_ticket(_ticket_path(board, "T-0001", "open"))
@@ -466,7 +468,7 @@ def test_reopen_without_discarded_from_goes_to_open(board):
                     disposition="dropped", disposition_reason="취소")
     tid = seeded.stem.rsplit("-", 1)[0]
 
-    rc = board.cmd_reopen(argparse.Namespace(id=tid, reason="오판정 철회"))
+    rc = board_ticket.cmd_reopen(board._home(), argparse.Namespace(id=tid, reason="오판정 철회"))
 
     assert rc == 0
     assert list((pm_paths.tickets_dir(board._home()) / "open").glob(f"{tid}-*.md"))
@@ -481,7 +483,7 @@ def test_reopen_rejects_a_non_terminal_ticket(board):
     path = _seed(board, status="claimed")
     before = path.read_bytes()
 
-    assert board.cmd_reopen(argparse.Namespace(id="T-0001", reason="아무거나")) == 1
+    assert board_ticket.cmd_reopen(board._home(), argparse.Namespace(id="T-0001", reason="아무거나")) == 1
     assert path.read_bytes() == before
 
 
@@ -494,9 +496,9 @@ def test_reopened_ticket_runs_the_normal_cycle_again(board):
     _seed(board, status="done", claimed_by="alice/pm_1",
           completed_at="2026-08-20T01:00:00+00:00")
 
-    assert board.cmd_reopen(argparse.Namespace(id="T-0001", reason="오처리 복구")) == 0
-    assert board.load_cluster("C-T-0001")["tickets"] == ["T-0001"]
-    assert board.cmd_claim(_claim_ns(board)) == 0
+    assert board_ticket.cmd_reopen(board._home(), argparse.Namespace(id="T-0001", reason="오처리 복구")) == 0
+    assert cluster_store.load_cluster(board._home(), "C-T-0001")["tickets"] == ["T-0001"]
+    assert board_ticket.cmd_claim(board._home(), _claim_ns(board)) == 0
     fm, _body = ticket_store.load_ticket(_ticket_path(board, "T-0001", "claimed"))
     assert fm["claimed_by"] == "alice/pm_1"
 
@@ -514,17 +516,17 @@ def test_all_deferred_completion_is_refused_but_the_discard_path_works(board, ca
     _seed(board, status="done", claimed_by="alice/pm_1", body=_DOD_ALL_DEFERRED,
           completed_at="2026-08-20T01:00:00+00:00")
 
-    assert board.cmd_reopen(argparse.Namespace(
+    assert board_ticket.cmd_reopen(board._home(), argparse.Namespace(
         id="T-0001", reason="처분 종결로 재분류(T-0781 backfill)")) == 0
     # 되돌린 뒤 다시 claim→complete 를 시도하면 전량 이월이라 막힌다(그 형상이 done 이 아님).
-    assert board.cmd_claim(_claim_ns(board)) == 0
+    assert board_ticket.cmd_claim(board._home(), _claim_ns(board)) == 0
     _mark_ledger_closing(board, "C-T-0001")
     assert _call(board, "complete", cluster_close="C-T-0001") == 1
     assert "discard" in capsys.readouterr().err
 
-    assert board.cmd_unclaim(argparse.Namespace(
+    assert board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=False, reason=None)) == 0
-    assert board.cmd_discard(argparse.Namespace(
+    assert board_ticket.cmd_discard(board._home(), argparse.Namespace(
         id="T-0001", disposition="merged",
         reason="T-0002 로 병합 — 구현분 없음(T-0781 backfill)")) == 0
 
@@ -549,7 +551,7 @@ def _make_board_git(board, root: Path, *, remote: Path, tid: str = "T-0001",
         "claimed_at": "2026-08-20T00:00:00+00:00", "completed_at": None,
         "depends_on": [], "blocks": [], "touches": [], "estimate": "small", "tags": [],
     }
-    board.dump_ticket(board_dir / "tickets" / status / f"{tid}-t.md", fm,
+    ticket_store.dump_ticket(board_dir / "tickets" / status / f"{tid}-t.md", fm,
                       f"# {tid} — t\n\n## 목표\nx\n\n{_DOD_DONE}")
     (board_dir / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     _git(["init", "-q", "-b", "main"], board_dir)
@@ -567,7 +569,7 @@ def test_takeover_reason_lands_in_the_board_git_commit(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(board, board._proj, remote=bare)
 
-    rc = board.cmd_unclaim(argparse.Namespace(
+    rc = board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=True, reason="소유 슬롯 반납 — PM 인계", task=_TASK))
 
     assert rc == 0
@@ -590,7 +592,7 @@ def test_remote_discarded_ticket_makes_a_claim_race_lost(board, tmp_path, capsys
     local = board_dir / "tickets" / "discarded" / "T-0001-t.md"
     local.rename(board_dir / "tickets" / "open" / "T-0001-t.md")
 
-    rc = board.cmd_claim(_claim_ns(board))
+    rc = board_ticket.cmd_claim(board._home(), _claim_ns(board))
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -601,9 +603,9 @@ def _mark_ledger_closing(board, cluster: str) -> None:
     """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
-    ledger = board.load_cluster(cluster)
+    ledger = cluster_store.load_cluster(board._home(), cluster)
     ledger["status"] = "closing"
-    board.dump_cluster(ledger)
+    cluster_store.dump_cluster(board._home(), ledger)
 
 
 def test_t0962_takeover_requires_task_and_records_it(board, monkeypatch, capsys):
@@ -612,12 +614,12 @@ def test_t0962_takeover_requires_task_and_records_it(board, monkeypatch, capsys)
     path = _seed(board, claimed_by="bob/other", created_by="bob/other")
     before = path.read_bytes()
 
-    assert board.cmd_unclaim(argparse.Namespace(
+    assert board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=True, reason="gone")) == 1
     assert "--task" in capsys.readouterr().err
     assert path.read_bytes() == before
 
-    assert board.cmd_unclaim(argparse.Namespace(
+    assert board_ticket.cmd_unclaim(board._home(), argparse.Namespace(
         id="T-0001", takeover=True, reason="gone", task="mytask")) == 0
     _fm, body = ticket_store.load_ticket(_ticket_path(board, "T-0001", "open"))
     takeover = body.split("## Takeover", 1)[1]

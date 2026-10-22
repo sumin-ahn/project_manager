@@ -15,6 +15,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+
 from _pool_seams import bind_pool
 
 import importlib.util
@@ -24,6 +27,8 @@ from types import SimpleNamespace
 import pytest
 
 from _slot_seed import fake_slot_path
+
+from pm_engine.domain import git_freshness
 
 
 def _idle_lease(slot: str):
@@ -53,11 +58,7 @@ def _hermetic_engine_anchor(bootstrap, monkeypatch):
     """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
     worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 동형). 실 board 를 로드해
     `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
-    real_board = bootstrap._load_board()
-    if real_board is not None:
-        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
-                            lambda anchor, **_kw: None, raising=False)
-    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
 
 
 # ── board 대역: 보호 브랜치 경고 끔 ────────────────────────────────────────────
@@ -136,6 +137,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool, monkeypatch):
         return 0, "  [open   ] T-0001  x  pm  tag\n"
 
     bind_pool(monkeypatch, worktree_pool)
+    bind_board(monkeypatch, _EraBoard())
     return bootstrap.PmBootstrap(
         run_board_fn=fake_board,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
@@ -144,7 +146,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool, monkeypatch):
         areas_file=areas_file,
         board_dir=board_dir,
         pm_state_file=pm_state_file,
-        board=_EraBoard(),
+
 
     )
 
@@ -182,7 +184,7 @@ def _era_git_fn(bootstrap, *, fetch_rc=0):
 def test_format_freshness_offline_behind0_is_undetermined_not_latest(bootstrap):
     """offline(fetch 실패)·behind 0 → '최신' 이 아니라 '판정불가 — 스냅샷일 수 있음' (핵심 fix)."""
     scope = {"fetched": False, "detached": False, "behind": 0, "ahead": 0, "note": None}
-    line = bootstrap._format_freshness(scope)
+    line = git_freshness._format_freshness(scope)
     assert "판정불가 — 스냅샷일 수 있음" in line
     assert "최신" not in line          # stale 스냅샷을 최신으로 오신뢰 금지
     # [[T-0960]] AT-009 — 실패 원인을 offline 으로 단정하지 않고 사용자가 다시 돌려 볼 명령을 말한다
@@ -194,7 +196,7 @@ def test_format_freshness_offline_behind0_is_undetermined_not_latest(bootstrap):
 def test_format_freshness_offline_upstream_none_is_undetermined(bootstrap):
     """offline·upstream 미상(behind None) → 판정불가 (upstream 없음 단정도 금지)."""
     scope = {"fetched": False, "detached": False, "behind": None, "ahead": None, "note": None}
-    line = bootstrap._format_freshness(scope)
+    line = git_freshness._format_freshness(scope)
     assert "판정불가 — 스냅샷일 수 있음" in line
 
 
@@ -202,7 +204,7 @@ def test_format_freshness_offline_behind_positive_still_shows_behind(bootstrap):
     """offline 이라도 behind>0 은 로컬이 이미 아는 뒤처짐 — 그대로 표기(정보 손실 없음)."""
     scope = {"fetched": False, "detached": False, "behind": 2, "ahead": 0,
              "note": "⚠ behind 2 — 수동 동기 필요 (fetch 실패)"}
-    line = bootstrap._format_freshness(scope)
+    line = git_freshness._format_freshness(scope)
     assert "behind 2 / ahead 0" in line
     assert line.startswith("⚠ fetch 실패")
 
@@ -210,13 +212,13 @@ def test_format_freshness_offline_behind_positive_still_shows_behind(bootstrap):
 def test_format_freshness_online_latest_still_says_latest(bootstrap):
     """online·behind 0 은 여전히 '최신' — 오탐 0(offline fail-soft 가 online 을 오염 안 함)."""
     scope = {"fetched": True, "detached": False, "behind": 0, "ahead": 0, "note": None}
-    assert bootstrap._format_freshness(scope) == "최신"
+    assert git_freshness._format_freshness(scope) == "최신"
 
 
 def test_format_freshness_online_behind_unchanged(bootstrap):
     """online·behind>0 표기는 기존과 동일(회귀 가드)."""
     scope = {"fetched": True, "detached": False, "behind": 3, "ahead": 0, "note": None}
-    assert bootstrap._format_freshness(scope) == "behind 3 / ahead 0"
+    assert git_freshness._format_freshness(scope) == "behind 3 / ahead 0"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

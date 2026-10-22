@@ -140,7 +140,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*.md'",
     ): WalkException("인스턴스가 관리하는 domain 페이지 디렉토리만 읽는 좁은 페이지 로더"),
     (
-        ".project_manager/tools/board.py",
+        ".project_manager/tools/pm_engine/cli/board_prefix.py",
         "collect_rewrite_targets",
         "rglob",
         "'*.md'",

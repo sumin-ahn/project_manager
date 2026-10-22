@@ -5,6 +5,9 @@
 재드리프트를 기계로 차단한다 — redefine/수리 후 lint·test 로 못박는 확립 패턴(T-0094/0098/0099/0100).
 """
 
+from pm_engine.app import completion_gate
+
+
 import importlib.util
 import pathlib
 import re
@@ -221,7 +224,7 @@ def test_tickets_readme_documents_disposition_and_reopen_commands():
 def test_tickets_readme_states_owner_only_mutations():
     """소유 정체성 계약 서술이 실제 소유-대조 커맨드 집합·유일한 이전 경로와 일치한다."""
     board = _load_board()
-    source = _read(".project_manager/tools/board.py")
+    source = _read(".project_manager/tools/pm_engine/cli/board_ticket.py")
     owner_gated = sorted(set(re.findall(
         r'_ownership_rejection\("(\w+)"', source)))
     assert owner_gated, "board.py 에서 소유 대조 커맨드를 못 찾았다 — 가드 시야가 어긋났다"
@@ -246,8 +249,8 @@ def test_tickets_readme_dod_contract_matches_complete_gate():
     """DoD 축 서술이 게이트 실측과 일치한다 — 산문 DoD 면제 문구가 남아 있으면 실패."""
     board = _load_board()
     for label, body in _DOD_BLOCKED_SHAPES.items():
-        assert board._dod_open_items(body), f"게이트가 {label} 형상을 막지 않는다"
-    assert board._dod_open_items(_DOD_PASSING_SHAPE) == [], "부분 이월이 막힌다"
+        assert completion_gate._dod_open_items(body), f"게이트가 {label} 형상을 막지 않는다"
+    assert completion_gate._dod_open_items(_DOD_PASSING_SHAPE) == [], "부분 이월이 막힌다"
 
     for rel in TICKETS_README_COPIES:
         text = _read(rel)

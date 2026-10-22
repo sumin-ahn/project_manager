@@ -139,8 +139,6 @@ def release(tmp_path, monkeypatch):
     board = _load("board", "release_gate_live")
     local = root / ".project_manager" / ".local"
     monkeypatch.setattr(board, "REPO", root)
-    monkeypatch.setattr(board, "LOCAL_DIR", local)
-    monkeypatch.setattr(board, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: "f" * 40)
     runner = _Run(regression.LIVEGATE_RELEASE_PIN)

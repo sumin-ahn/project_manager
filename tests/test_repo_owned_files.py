@@ -754,18 +754,15 @@ def test_pm_import_dest_walk_excludes_directory_symlink(repo_files, tmp_path):
 def test_repo_owned_loader_cache_preserves_warning_class_identity():
     pm_update = _load("pm_update_repo_files_identity_test", "pm_update.py")
     pm_import = _load("pm_import_repo_files_identity_test", "pm_import.py")
-    domain = _load("domain_repo_files_identity_test", "domain.py")
 
     update_first = pm_update.repo_files
     update_second = pm_update.repo_files
     import_module = pm_import.repo_files
-    domain_module = domain.repo_files
 
-    assert update_first is update_second is import_module is domain_module
+    assert update_first is update_second is import_module
     assert (
         update_first.RepoFilesFallbackWarning
         is import_module.RepoFilesFallbackWarning
-        is domain_module.RepoFilesFallbackWarning
     )
 
 

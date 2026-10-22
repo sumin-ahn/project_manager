@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import round_rules
+
+
 import importlib.util
 import json
 import os
@@ -217,8 +220,8 @@ def test_review_round_seed_carries_the_review_block_skeleton():
 def test_round_seed_labels_are_the_authority_board_reads():
     """권위는 `round_rules.ROLE_LABELS` 이고 board 는 그 표를 파생으로 읽는다(복제 0)."""
     board = _load_tool("board")
-    assert board.ticket_round_role_labels() == round_rules.ROLE_LABELS
-    assert tuple(board.ticket_round_role_labels()) == round_rules.ROLES
+    assert round_rules.ticket_round_role_labels() == round_rules.ROLE_LABELS
+    assert tuple(round_rules.ticket_round_role_labels()) == round_rules.ROLES
 
 
 def test_round_roles_match_the_delegate_round_role_authority():

@@ -99,10 +99,14 @@ from typing import Callable, Iterator, NamedTuple, Sequence
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app import round_maintenance  # noqa: E402
 from pm_engine.domain import conf_schema, delegate_errors, review_form, review_state, review_verdict, round_rules, ticket_rules  # noqa: E402
 from pm_engine.infra import conf_store, console, fs, lease_store, manifest_store, pm_paths, process, raw_output, repo_files, review_rounds, round_store, ticket_store  # noqa: E402
 from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 from pm_engine.app import release, round_seed  # noqa: E402
+
+from pm_engine.app import completion_gate
+
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -199,10 +203,6 @@ REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # �
 _PM_HOME_OVERRIDE: Path | None = None
 
 
-def _load_board():
-    """형제 board 엔진을 위치로 로드해 worktree lease 재앵커 판정을 승계한다."""
-    path = Path(__file__).resolve().with_name("board.py")
-    return _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
 
 
 def _path_repo_root(path: Path) -> Path | None:
@@ -1389,8 +1389,7 @@ def _save_round_ledger(ledger: dict) -> None:
     record/check 도 같은 락과 board 공용 판정을 써 stale clear overwrite 를 막는다."""
     path = _round_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    board = _load_board()
-    problems = board._unresolved_must_fix_data(ledger, path)
+    problems = completion_gate._unresolved_must_fix_data(pm_paths.home_at(_PM_HOME_OVERRIDE or REPO), ledger, path)
     livegate_flag = path.with_name("livegate.json")
     if problems:
         release._write_release_must_fix_marker(livegate_flag, problems)
@@ -1413,7 +1412,7 @@ def _restrict_to_owner(path: Path) -> None:
 def _load_pm_delegate():
     """리뷰 블록 스키마와 회수 내용 규칙의 단일 진실(`pm_delegate.py`)을 경로 로드한다.
 
-    `_load_board` 와 같은 경로-앵커 로더다. 스키마를 이 모듈이 다시 적으면 파서와
+    실행 파일 위치에 결속된 경로 로더다. 스키마를 이 모듈이 다시 적으면 파서와
     프롬프트가 갈리고, 회수 판정 규칙을 여기서 따로 구현하면 리뷰 채널마다 규칙이 갈린다.
     """
     path = Path(__file__).resolve().parent / "pm_delegate.py"
@@ -2451,7 +2450,6 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         print(f"경고: --resolve-gate 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
               file=sys.stderr)
     _PM_HOME_OVERRIDE = pm_paths.resolve_pm_home_for_repo(engine_repo)
-    board = _load_board()
     with _round_ledger_lock():
         ledger = _load_round_ledger()
         if gate not in ledger:
@@ -2468,8 +2466,8 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         residual = review_rounds.gate_residual_must_fix(entry)
         # 추가 리뷰어 채널로 스코프해 판정한다 — board 는 채널과 그 게이트의 장부 항목을
         # 받아 다른 채널의 accepted 잔여·기계 확인은 보지 않는다.
-        detail = board._pm_verified_evidence_problem(
-            gate, channel=board.GATE_CHANNEL_ADDITIONAL, entry=entry,
+        detail = completion_gate._pm_verified_evidence_problem(
+            pm_paths.home_at(_PM_HOME_OVERRIDE or REPO), gate, channel=completion_gate.GATE_CHANNEL_ADDITIONAL, entry=entry,
         )
         if detail is not None:
             print(_RESOLVE_GATE_PM_VERIFIED_GUIDANCE.format(
@@ -5381,14 +5379,13 @@ def _harvest_additional_reviewer_section(
     home = pm_home or REPO
     try:
         delegate = _load_pm_delegate()
-        board = delegate.anchor_board_to_repo(_load_board(), home)
     except RuntimeError as exc:
         if not _absorb_engine_rev_skew_for_recovery(exc, "ticket_harvest"):
             raise
         return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
     try:
         return _reserve_additional_reviewer_round(
-            ticket, reply, delegate=delegate, board=board,
+            ticket, reply, delegate=delegate,
             board_home=pm_paths.home_at(Path(home).resolve()),
         )
     # 라운드 규약 위반은 `RuntimeError` 하위형이라 **사본 skew 절보다 먼저** 받는다 — 순서를
@@ -5403,7 +5400,7 @@ def _harvest_additional_reviewer_section(
 
 
 def _reserve_additional_reviewer_round(
-    ticket: str, reply: str, *, delegate, board, board_home,
+    ticket: str, reply: str, *, delegate, board_home,
 ) -> str | None:
     """내용 검증 → 통과 시 라운드 예약 + board 부분 커밋 (위반 사유 또는 None).
 
@@ -5442,13 +5439,13 @@ def _reserve_additional_reviewer_round(
         + "\n\n" + (reply if reply.endswith("\n") else reply + "\n")
     )
     round_path = round_store.reserve_round(
-        tickets_dir, ticket, role, content=content, lock=board.board_lock(),
+        tickets_dir, ticket, role, content=content, lock=fs.board_lock(board_home),
     )
     ordinal, _role = round_rules.parse_round_filename(round_path.name)
     message = f"additional-reviewer {ticket} {role}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 그 이름이 갈렸을 때 라운드
     # 파일만 만들어지고 board 커밋은 조용히 빠진 rc0 이 된다(AttributeError 로 죽는 편이 낫다).
-    sync_ready = bool(board._rounds_mutation_sync_paths(message, [round_path]))
+    sync_ready = bool(round_maintenance._rounds_mutation_sync_paths(board_home, message, [round_path]))
     print(
         f"[additional-reviewer] 티켓 회수: {ticket} {role}[{ordinal}] → {round_path}"
         + ("" if sync_ready else " (board-git 동기 미준비)"),

@@ -36,6 +36,9 @@ claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0*
 """
 from __future__ import annotations
 
+from pm_engine.domain import cluster_rules
+
+
 import importlib.util
 import json
 import ntpath
@@ -1013,12 +1016,12 @@ def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
     rules.append((skill_rule["example"], skill_rule["reserved"]))
     assert len(set(rules)) == 1, rules
     example, reserved = rules[0]
-    assert board._validate_cluster_name(example) is None
+    assert cluster_rules._validate_cluster_name(example) is None
     # 카드 표기 `T-NNNN` 의 N 은 숫자 자리다 — 숫자로 채운 티켓 ID 모양을 엔진이 예약으로 거부한다.
     assert reserved == "T-NNNN"
     instance = reserved.replace("N", "1")
-    assert board._validate_cluster_name(instance) is not None
-    assert board.is_auto_cluster_id(instance) == instance
+    assert cluster_rules._validate_cluster_name(instance) is not None
+    assert cluster_rules.is_auto_cluster_id(instance) == instance
     for name in ("pm-wave-claim", "pm-wave-finish"):
         text = (_WAVE_SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
         placeholders = _SKILL_REPO_PLACEHOLDER_RE.findall(text)

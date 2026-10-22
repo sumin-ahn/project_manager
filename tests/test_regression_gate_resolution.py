@@ -33,6 +33,10 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import areas_store, conf_store, pm_paths, python_env
 
+from pm_engine.app import areas_registry
+
+from _pool_seams import bind_board
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -403,7 +407,7 @@ class _GitFakeForRepoAdd:
         return 0, ""
 
 
-def test_repo_add_registers_blank_prefix_with_test_cmd(tmp_path):
+def test_repo_add_registers_blank_prefix_with_test_cmd(tmp_path, monkeypatch):
     """`repo add` 는 prefix 를 **빈 값**으로 등록한다 — 이 결함의 전제 형상 못박기.
 
     prefix=작업 카테고리이지 repo 명이 아니라서 자동시드가 폐지됐다. 그 결과 prefix 칼럼만
@@ -413,7 +417,9 @@ def test_repo_add_registers_blank_prefix_with_test_cmd(tmp_path):
     board = _FakeBoardForRepoAdd()
     args = argparse.Namespace(name="heru", git="git@h:me/heru.git",
                               test=NON_PYTEST_CMD, owner="me", base=None)
-    rc = pm_config.cmd_repo_add(args, board=board, clone_runner=_GitFakeForRepoAdd(),
+    monkeypatch.setattr(pm_config, "REPO", tmp_path)
+    bind_board(monkeypatch, board)
+    rc = pm_config.cmd_repo_add(args, clone_runner=_GitFakeForRepoAdd(),
                                 repos_dir=tmp_path / ".repos")
     assert rc == 0
     assert board.append_calls == [
@@ -431,20 +437,12 @@ def adopter_board(tmp_path, monkeypatch):
     pm_dir = tmp_path / ".project_manager"
     (pm_dir / ".local").mkdir(parents=True, exist_ok=True)
     board = _load_tool("board")
-    for name, value in {
-        "REPO": tmp_path,
-        "AREAS_FILE": pm_dir / "areas.md",
-        "LOCAL_CONF": pm_dir / "local.conf",
-        "LOCAL_DIR": pm_dir / ".local",
-        "BOARD_LOCK": pm_dir / ".local" / "board.lock",
-        "LEASES_FILE": pm_dir / ".local" / "worktree-leases.json",
-    }.items():
-        monkeypatch.setattr(board, name, value)
+    monkeypatch.setattr(board, "REPO", tmp_path)
     # 실 PM 세션 env 가 hermetic 해소로 새지 않게 제거(장부/local.conf 만이 세션 소스).
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     # `pm-config repo add` 가 부르는 그 writer 로 등록 — prefix 는 빈 값이다.
-    board.areas_append("", "", "me", repo="heru", git="git@h:me/heru.git",
+    areas_registry.areas_append(board._home(), "", "", "me", repo="heru", git="git@h:me/heru.git",
                        test_cmd=NON_PYTEST_CMD, base="main", protected="",
                        area_owner="me@example.com")
     assert not (tmp_path / "tests").exists()   # 채택자 형상 — pytest 스위트가 없다.

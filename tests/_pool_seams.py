@@ -20,6 +20,10 @@ from pm_engine.app import worktree_pool
 from pm_engine.domain import worktree_records
 from pm_engine.app import worktree_status
 
+from pm_engine.app import areas_registry, ticket_access, board_sync
+from pm_engine.infra import areas_store, fs
+from pm_engine.domain import areas_rules, ticket_rules
+
 _OWNERS = {
     'BRANCH_DELETED': (worktree_records, False),
     'BRANCH_FORK_KEY': (worktree_records, False),
@@ -306,11 +310,28 @@ def bind_pool(monkeypatch, fake):
 
 
 def bind_board(monkeypatch, fake):
-    """보호목록 대역을 등록부의 실제 소유자에 연결한다."""
-    if fake is not None and hasattr(fake, "_repo_protected"):
-        from pm_engine.infra import areas_store
-        monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: fake._repo_protected(repo))
-    if fake is not None and hasattr(fake, "_areas_git_url"):
-        from pm_engine.infra import areas_store
-        monkeypatch.setattr(areas_store, "_areas_git_url", lambda home, repo: fake._areas_git_url(repo))
+    """기존 동작 대역을 실제 패키지 함수에 연결한다. 데이터 호출은 Home을 받는다."""
+    owners = {
+        "_repo_protected": areas_store,
+        "_areas_git_url": areas_store,
+        "_repo_base": areas_store,
+        "areas_append": areas_registry,
+        "areas_set_cell": areas_registry,
+        "require_prefix_user_ack": areas_registry,
+        "revalidate_prefix_user_ack": areas_registry,
+        "invalidate_known_prefixes_cache": areas_registry,
+        "scan_task_tickets": ticket_access,
+        "_board_git_sync_best_effort": board_sync,
+        "board_lock": fs,
+        "_pm_home_worktree_misanchor": pm_paths,
+    }
+    for name, owner in owners.items():
+        if fake is None or not hasattr(fake, name):
+            continue
+        if name in {"invalidate_known_prefixes_cache", "_pm_home_worktree_misanchor"}:
+            monkeypatch.setattr(owner, name, getattr(fake, name))
+        else:
+            def invoke(_home, *args, _name=name, **kwargs):
+                return getattr(fake, _name)(*args, **kwargs)
+            monkeypatch.setattr(owner, name, invoke)
     return fake

@@ -24,6 +24,13 @@ status-mention 경고와 무관 — 그건 제거됐고 번호만 비었다). �
 """
 from __future__ import annotations
 
+from pm_engine.app import completion_gate
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import importlib.util
 import json
@@ -35,6 +42,10 @@ from pm_engine.infra import pm_paths, review_rounds
 from pm_engine.domain import review_form, round_rules
 from pm_engine.infra import round_store
 from pm_engine.app import round_seed
+
+from pm_engine.infra import lease_store
+
+from pm_engine.app import board_sync
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -57,9 +68,6 @@ def _load_board_bound(proj: Path):
     # tmp로 묶지 않으면 `board` fixture의 티켓 쓰기가 라이브 worktree scaffold에 착지한다.
     # BOARD_FILE은 import-time 상수라 같은 자리에서 별도로 묶어 refresh 파생 출력도 격리한다.
     mod.REPO = proj
-    mod.BOARD_FILE = wiki / "board.md"
-    mod.LOG_FILE = wiki / "log" / "current.md"
-    mod.LOCAL_DIR = proj / ".project_manager" / ".local"
     return mod
 
 
@@ -225,7 +233,7 @@ def _gate_spec_and_body(spec_path: Path) -> tuple[str, str]:
 
 def _review_gate_problems(board, tid: str, spec_path: Path) -> list[str]:
     spec_text, body = _gate_spec_and_body(spec_path)
-    return board._complete_gate(tid, _gate_args(), body, spec_text=spec_text)
+    return board_ticket._complete_gate(board._home(), tid, _gate_args(), body, spec_text=spec_text)
 
 
 def test_pm_verified_completion_gate_opens_only_with_machine_confirmation_evidence(board):
@@ -239,7 +247,7 @@ def test_pm_verified_completion_gate_opens_only_with_machine_confirmation_eviden
     ])
 
     assert _review_gate_problems(board, tid, spec_path) == []
-    assert not (board.LOCAL_DIR / "internal_review_rounds.json").exists()
+    assert not (board._home().local_dir / "internal_review_rounds.json").exists()
 
 
 def test_pm_verified_completion_gate_rejects_when_accepted_finding_still_pending(board):
@@ -270,7 +278,7 @@ def test_review_round_must_fix_blocks_completion_without_internal_ledger(board):
     blocked_spec = _write_ticket_with_rounds(board, blocked, "", [
         (1, "code-reviewer", _reviewer_round_text(pd, "F-001")),
     ])
-    assert not (board.LOCAL_DIR / "internal_review_rounds.json").exists()
+    assert not (board._home().local_dir / "internal_review_rounds.json").exists()
 
     problems = _review_gate_problems(board, blocked, blocked_spec)
 
@@ -286,7 +294,7 @@ def test_review_round_must_fix_blocks_completion_without_internal_ledger(board):
         item for item in _review_gate_problems(board, passed, passed_spec)
         if "code-reviewer" in item
     ]
-    assert not (board.LOCAL_DIR / "internal_review_rounds.json").exists()
+    assert not (board._home().local_dir / "internal_review_rounds.json").exists()
 
 
 def test_review_round_unknown_verdict_blocks_completion(board):
@@ -348,7 +356,7 @@ def test_status_mention_warning_gone_when_status_lacks_ticket(board, capsys):
     _write(pm_paths.status_file(board._home()), "# Status\n\n| 모듈 | 판정 |\n|---|---|\n| core | OK |\n")
 
     tid = "T-0104"
-    problems = board._complete_gate(tid, _gate_args())
+    problems = board_ticket._complete_gate(board._home(), tid, _gate_args())
 
     err = capsys.readouterr().err
     for fragment in WARNING_FRAGMENTS:
@@ -362,7 +370,7 @@ def test_status_mention_warning_gone_even_without_status_file(board, capsys):
     """status.md 가 *아예 없어도* §3 경고가 안 나온다(파일 부재 경로도 제거 확인)."""
     assert not pm_paths.status_file(board._home()).exists()
 
-    problems = board._complete_gate("T-0104", _gate_args())
+    problems = board_ticket._complete_gate(board._home(), "T-0104", _gate_args())
 
     err = capsys.readouterr().err
     for fragment in WARNING_FRAGMENTS:
@@ -379,9 +387,9 @@ def test_log_mention_gate_blocks_when_log_lacks_ticket(board):
 
     §3 제거가 §1 을 건드리지 않았음을 박제한다.
     """
-    _write(board.LOG_FILE, "# Log\n\n다른 작업만 기록됨 — 이 ticket 미언급.\n")
+    _write((pm_paths.wiki_dir(board._home()) / "log/current.md"), "# Log\n\n다른 작업만 기록됨 — 이 ticket 미언급.\n")
 
-    problems = board._complete_gate(
+    problems = board_ticket._complete_gate(board._home(),
         "T-0104", _gate_args(allow_missing_log=False))
 
     assert any("T-0104" in p and "log/current.md" in p for p in problems), (
@@ -390,11 +398,11 @@ def test_log_mention_gate_blocks_when_log_lacks_ticket(board):
 
 def test_log_mention_gate_passes_when_log_mentions_ticket(board, capsys):
     """§1: log/current.md 가 ticket id 를 담으면 통과(blocking 없음). 옛 경고도 여전히 무발화."""
-    _write(board.LOG_FILE, "# Log\n\n- T-0104 완료: 게이트 정합.\n")
+    _write((pm_paths.wiki_dir(board._home()) / "log/current.md"), "# Log\n\n- T-0104 완료: 게이트 정합.\n")
     # status.md 는 ticket id 미언급(judgment-only) — 옛 경고가 살아있으면 여기서 발화했을 것.
     _write(pm_paths.status_file(board._home()), "# Status\n\n| 모듈 | 판정 |\n|---|---|\n| core | OK |\n")
 
-    problems = board._complete_gate(
+    problems = board_ticket._complete_gate(board._home(),
         "T-0104", _gate_args(allow_missing_log=False))
 
     assert problems == [], f"log 가 ticket 을 담는데도 blocking: {problems}"
@@ -422,7 +430,7 @@ def test_dod_unchecked_item_blocks(board):
     """미체크 `- [ ]` 잔존 → blocking problem (false-complete 폐쇄)."""
     body = _dod_body("- [x] 코드", "- [ ] 라이브 probe 실측")
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("DoD 미체크" in p and "라이브 probe 실측" in p for p in problems), (
         f"미체크 DoD 가 차단되지 않음: {problems}")
@@ -432,7 +440,7 @@ def test_dod_all_checked_passes(board):
     """전 항목 `- [x]` → 통과(blocking 0)."""
     body = _dod_body("- [x] 코드", "- [X] 테스트", "  - [x] 들여쓴 하위 항목")
 
-    assert board._complete_gate("T-0596", _gate_args(), body) == []
+    assert board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body) == []
 
 
 def test_dod_deferred_with_reason_passes(board):
@@ -442,14 +450,14 @@ def test_dod_deferred_with_reason_passes(board):
         "- [>] 라이브 probe 실측 (이월: 하네스 한도 소진·T-0600 귀속)",
     )
 
-    assert board._complete_gate("T-0596", _gate_args(), body) == []
+    assert board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body) == []
 
 
 def test_dod_deferred_without_reason_blocks(board):
     """사유 없는 `- [>]` → 차단 (이월의 근거가 남지 않으면 이월이 아니다)."""
     body = _dod_body("- [x] 코드", "- [>] 라이브 probe 실측")
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("이월 사유 누락" in p for p in problems), (
         f"사유 없는 이월이 통과함: {problems}")
@@ -459,14 +467,14 @@ def test_dod_deferred_with_empty_reason_blocks(board):
     """`(이월: )` 처럼 사유가 빈 표기도 차단 — 문법만 흉내낸 통과를 막는다."""
     body = _dod_body("- [>] 라이브 probe 실측 (이월: )")
 
-    assert board._complete_gate("T-0596", _gate_args(), body), "빈 사유 이월이 통과함"
+    assert board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body), "빈 사유 이월이 통과함"
 
 
 def test_dod_unknown_mark_blocks(board):
     """`- [~]` 같은 알 수 없는 마커도 차단 — 통과 형식은 `[x]`·`[>]` 둘뿐이다(오타로 게이트가 꺼지지 않게)."""
     body = _dod_body("- [~] 애매한 상태")
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("DoD 미체크" in p for p in problems), f"미지 마커가 통과함: {problems}"
 
@@ -477,7 +485,7 @@ def test_dod_empty_bracket_blocks(board, line):
 
     사람 눈에는 미체크인 줄이라, 조용한 통과는 done 이행에서 그 항목을 증발시킨다(fail-open).
     """
-    problems = board._complete_gate("T-0596", _gate_args(), _dod_body("- [x] 코드", line))
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), _dod_body("- [x] 코드", line))
 
     assert any("DoD 미체크" in p and "빈 브라켓" in p for p in problems), (
         f"빈 브라켓 항목이 통과함: {problems}")
@@ -497,7 +505,7 @@ def test_dod_empty_bracket_blocks(board, line):
 ])
 def test_dod_multichar_mark_is_an_unknown_marker(board, line, mark):
     """다문자 마커는 미지 마커로 **차단**된다 — 단 공백만 걷어 `x` 가 되는 표기는 체크로 본다."""
-    problems = board._complete_gate("T-0602", _gate_args(), _dod_body("- [x] 코드", line))
+    problems = board_ticket._complete_gate(board._home(), "T-0602", _gate_args(), _dod_body("- [x] 코드", line))
 
     if mark == "x":
         assert problems == [], f"사람이 체크한 `[ x]` 표기가 차단됨: {problems}"
@@ -515,7 +523,7 @@ def test_dod_markdown_link_bullet_is_not_a_checkbox(board):
         "- [[architecture]] 절 갱신",
     )
 
-    assert board._complete_gate("T-0602", _gate_args(), body) == []
+    assert board_ticket._complete_gate(board._home(), "T-0602", _gate_args(), body) == []
 
 
 def test_dod_prefix_heading_cannot_hide_the_real_section(board):
@@ -527,7 +535,7 @@ def test_dod_prefix_heading_cannot_hide_the_real_section(board):
         "## 참고\n- 없음\n"
     )
 
-    problems = board._complete_gate("T-0602", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0602", _gate_args(), body)
 
     assert any("진짜 미체크 항목" in p for p in problems), (
         f"접두 헤딩이 실제 DoD 를 가림: {problems}")
@@ -537,7 +545,7 @@ def test_dod_heading_with_a_parenthesized_subtitle_is_the_section(board):
     """괄호 부제(`(Definition of Done)`)는 그 절이다 — 정상 티켓 무영향(정확 일치 규칙)."""
     for heading in ("## 완료 조건", "## 완료 조건 (Definition of Done)", "## 완료 조건 (DoD)"):
         body = _dod_body("- [ ] 미체크 항목", section=heading)
-        problems = board._complete_gate("T-0602", _gate_args(), body)
+        problems = board_ticket._complete_gate(board._home(), "T-0602", _gate_args(), body)
         assert any("미체크 항목" in p for p in problems), f"{heading!r} 절을 못 봤다: {problems}"
 
 
@@ -549,7 +557,7 @@ def test_dod_unidentifiable_heading_blocks_instead_of_passing(board):
     body = _dod_body("- [ ] 미체크 항목",
                      section="## 완료 조건 (Definition of Done) — falsifiable verdict")
 
-    problems = board._complete_gate("T-0602", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0602", _gate_args(), body)
 
     assert any("헤딩 형식" in p for p in problems), f"식별 불가 헤딩이 통과함: {problems}"
 
@@ -558,7 +566,7 @@ def test_dod_gate_ignores_checkboxes_outside_dod_section(board):
     """DoD 절 **밖**(메모·참고)의 미체크 체크박스는 판정 대상이 아니다(오탐 0)."""
     body = _dod_body("- [x] 코드") + "\n## 메모\n- [ ] 다음 세션 후보 아이디어\n"
 
-    assert board._complete_gate("T-0596", _gate_args(), body) == []
+    assert board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body) == []
 
 
 def test_dod_gate_ignores_fenced_code_examples(board):
@@ -571,7 +579,7 @@ def test_dod_gate_ignores_fenced_code_examples(board):
         "```",
     )
 
-    assert board._complete_gate("T-0596", _gate_args(), body) == []
+    assert board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body) == []
 
 
 def test_dod_section_anchor_ignores_fenced_heading_quotes(board):
@@ -586,7 +594,7 @@ def test_dod_section_anchor_ignores_fenced_heading_quotes(board):
         "```markdown\n## 완료 조건 (Definition of Done)\n- [x] 인용된 예시\n```\n\n"
         "## 완료 조건 (Definition of Done)\n- [ ] 진짜 미체크 항목\n\n## 참고\n- 없음\n"
     )
-    problems = board._complete_gate("T-0596", _gate_args(), quoted_before)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), quoted_before)
     assert any("진짜 미체크 항목" in p for p in problems), (
         f"펜스 안 인용 헤딩이 절 앵커를 가로챔 — 실제 미체크를 못 봄: {problems}")
 
@@ -600,7 +608,7 @@ def test_dod_section_anchor_ignores_fenced_heading_quotes(board):
         "",
         "- [ ] 펜스 뒤 미체크 항목",
     )
-    problems = board._complete_gate("T-0596", _gate_args(), quoted_inside)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), quoted_inside)
     assert any("펜스 뒤 미체크 항목" in p for p in problems), (
         f"펜스 안 인용 헤딩이 절 끝으로 오판돼 뒤쪽 항목이 검사에서 빠짐: {problems}")
 
@@ -610,7 +618,7 @@ def test_dod_gate_detects_all_markdown_bullet_markers(board):
     for bullet in ("-", "*", "+"):
         body = _dod_body(f"{bullet} [ ] {bullet} 표기 미체크 항목")
 
-        problems = board._complete_gate("T-0596", _gate_args(), body)
+        problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
         assert any("DoD 미체크" in p for p in problems), (
             f"{bullet!r} 불릿 체크박스가 판정에서 빠짐: {problems}")
@@ -626,8 +634,8 @@ def test_dod_prose_or_missing_section_blocks(board):
     prose = _dod_body("완료 조건을 산문으로만 적은 옛 티켓.")
     no_section = "# T-0001 — 옛 티켓\n\n## 목표\n옛 형식.\n\n## 참고\n- 없음\n"
 
-    prose_problems = board._complete_gate("T-0596", _gate_args(), prose)
-    missing_problems = board._complete_gate("T-0001", _gate_args(), no_section)
+    prose_problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), prose)
+    missing_problems = board_ticket._complete_gate(board._home(), "T-0001", _gate_args(), no_section)
 
     assert any("체크박스 0개" in p for p in prose_problems), prose_problems
     assert any("절 부재" in p for p in missing_problems), missing_problems
@@ -644,7 +652,7 @@ def test_dod_all_deferred_blocks_and_points_at_discard(board):
         "- [>] 테스트 (이월: T-0766 으로 병합·PM 판정)",
     )
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("전량 이월" in p and "discard" in p for p in problems), problems
 
@@ -657,7 +665,7 @@ def test_dod_unchecked_only_is_not_diagnosed_as_all_deferred(board):
     """
     body = _dod_body("- [ ] 아직 안 한 항목")
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("DoD 미체크" in p for p in problems), problems
     assert not any("전량 이월" in p for p in problems), problems
@@ -667,7 +675,7 @@ def test_dod_unknown_marker_only_is_not_diagnosed_as_all_deferred(board):
     """미지 마커만 있는 DoD 도 처분 안내를 받지 않는다 — 통과 형식이 아닐 뿐 이월도 아니다."""
     body = _dod_body("- [?] 통과 형식이 아닌 마커 항목")
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("DoD 미체크" in p for p in problems), problems
     assert not any("전량 이월" in p for p in problems), problems
@@ -680,7 +688,7 @@ def test_dod_deferral_without_reason_only_is_not_diagnosed_as_all_deferred(board
     """
     body = _dod_body("- [>] 사유 없는 이월 항목")
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("이월 사유 누락" in p for p in problems), problems
     assert not any("전량 이월" in p for p in problems), problems
@@ -693,7 +701,7 @@ def test_dod_unchecked_mixed_with_valid_deferral_is_not_all_deferred(board):
         "- [ ] 아직 안 한 항목",
     )
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("DoD 미체크" in p for p in problems), problems
     assert not any("전량 이월" in p for p in problems), problems
@@ -707,7 +715,7 @@ def test_dod_all_deferred_message_counts_valid_deferrals(board):
         "- [>] 문서 (이월: 다른 티켓으로 병합)",
     )
 
-    problems = board._complete_gate("T-0596", _gate_args(), body)
+    problems = board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body)
 
     assert any("사유 있는 이월 3 / 체크박스 3개" in p for p in problems), problems
 
@@ -720,12 +728,12 @@ def test_dod_partial_deferral_still_passes(board):
         "- [>] 문서 (이월: 후속 T-0601 귀속)",
     )
 
-    assert board._complete_gate("T-0596", _gate_args(), body) == []
+    assert board_ticket._complete_gate(board._home(), "T-0596", _gate_args(), body) == []
 
 
 def test_complete_gate_without_body_skips_dod(board):
     """본문 미제공 호출은 DoD 검사를 건너뛴다(기록 축만 묻는 레거시 호출 무영향)."""
-    assert board._complete_gate("T-0596", _gate_args()) == []
+    assert board_ticket._complete_gate(board._home(), "T-0596", _gate_args()) == []
 
 
 # ── cmd_complete 실 경로 — 차단 시 티켓은 claimed/ 에 그대로 남는다 ─────────────
@@ -773,11 +781,7 @@ def live_board(tmp_path, monkeypatch):
     mod = _load_board_bound(root)
     monkeypatch.setattr(mod, "REPO", root)
     pm = root / ".project_manager"
-    monkeypatch.setattr(mod, "BOARD_LOCK", pm / ".local" / "board.lock")
-    monkeypatch.setattr(mod, "LOCAL_CONF", pm / "local.conf")
-    monkeypatch.setattr(mod, "AREAS_FILE", pm / "areas.md")
-    monkeypatch.setattr(mod, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     for status in ticket_rules.STATUS_DIRS:
         (pm / "wiki" / "tickets" / status).mkdir(parents=True, exist_ok=True)
     pm.mkdir(parents=True, exist_ok=True)
@@ -831,13 +835,13 @@ def test_cluster_member_complete_requires_exact_closer_binding(
     ledger = _seed_cluster(live_board, "C-gate", (tid,), status="closing")
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
-        live_board, "_board_git_sync_best_effort",
-        lambda *args: sync_calls.append(args) or True,
+        board_sync, "_board_git_sync_best_effort",
+        lambda _home,  *args: sync_calls.append(args) or True,
     )
     ticket_before = claimed.read_bytes()
     ledger_before = ledger.read_bytes()
 
-    assert live_board.cmd_complete(_complete_args(tid)) == 1
+    assert board_ticket.cmd_complete(live_board._home(), _complete_args(tid)) == 1
     assert claimed.read_bytes() == ticket_before
     assert ledger.read_bytes() == ledger_before
     assert sync_calls == []
@@ -845,13 +849,13 @@ def test_cluster_member_complete_requires_exact_closer_binding(
 
     wrong = _complete_args(tid)
     wrong.cluster_close = "C-other"
-    assert live_board.cmd_complete(wrong) == 1
+    assert board_ticket.cmd_complete(live_board._home(), wrong) == 1
     assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before
     assert sync_calls == []
 
     exact = _complete_args(tid)
     exact.cluster_close = "C-gate"
-    assert live_board.cmd_complete(exact) == 0
+    assert board_ticket.cmd_complete(live_board._home(), exact) == 0
     assert not claimed.exists()
     assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
     assert len(sync_calls) == 1
@@ -874,8 +878,8 @@ def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monke
     )
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
-        live_board, "_board_git_sync_best_effort",
-        lambda *args: sync_calls.append(args) or True,
+        board_sync, "_board_git_sync_best_effort",
+        lambda _home,  *args: sync_calls.append(args) or True,
     )
     exact = _complete_args(tid)
     exact.cluster_close = "C-gate"
@@ -883,7 +887,7 @@ def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monke
     for status in ("open", "review", "fix", "closed"):
         ledger = _seed_cluster(live_board, "C-gate", (tid,), status=status)
         ticket_before, ledger_before = claimed.read_bytes(), ledger.read_bytes()
-        assert live_board.cmd_complete(exact) == 1, status
+        assert board_ticket.cmd_complete(live_board._home(), exact) == 1, status
         err = capsys.readouterr().err
         if status == "closed":
             assert "장부는 closed인데" in err, err
@@ -894,7 +898,7 @@ def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monke
         assert sync_calls == [], status
 
     _seed_cluster(live_board, "C-gate", (tid,), status="closing")
-    assert live_board.cmd_complete(exact) == 0
+    assert board_ticket.cmd_complete(live_board._home(), exact) == 0
     assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
     assert len(sync_calls) == 1
 
@@ -902,7 +906,7 @@ def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monke
     legacy_path = _seed_ticket(live_board, legacy, _dod_body("- [x] 코드"))
     size_one = _complete_args(legacy)
     size_one.cluster_close = f"C-{legacy}"
-    assert live_board.cmd_complete(size_one) == 0
+    assert board_ticket.cmd_complete(live_board._home(), size_one) == 0
     assert not legacy_path.exists()
 
 
@@ -916,19 +920,19 @@ def test_legacy_ticket_completes_with_its_size_one_binding(live_board, capsys, m
     tid = "T-9884"
     claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
     assert "cluster:" not in claimed.read_text(encoding="utf-8")
-    assert live_board.cluster_members(f"C-{tid}") == ()
-    monkeypatch.setattr(live_board, "_board_git_sync_best_effort", lambda *args: True)
+    assert cluster_store.cluster_members(live_board._home(), f"C-{tid}") == ()
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home,  *args: True)
     ticket_before = claimed.read_bytes()
 
     wrong = _complete_args(tid)
     wrong.cluster_close = "C-other"
-    assert live_board.cmd_complete(wrong) == 1
+    assert board_ticket.cmd_complete(live_board._home(), wrong) == 1
     assert claimed.read_bytes() == ticket_before
     assert f"C-{tid}" in capsys.readouterr().err
 
     exact = _complete_args(tid)
     exact.cluster_close = f"C-{tid}"
-    assert live_board.cmd_complete(exact) == 0
+    assert board_ticket.cmd_complete(live_board._home(), exact) == 0
     assert not claimed.exists()
     assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
 
@@ -949,8 +953,8 @@ def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, m
     ledger = _seed_cluster(live_board, "C-gate", (tid,), status="closing")   # 종결 파이프라인 안
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
-        live_board, "_board_git_sync_best_effort",
-        lambda *args: sync_calls.append(args) or True,
+        board_sync, "_board_git_sync_best_effort",
+        lambda _home,  *args: sync_calls.append(args) or True,
     )
     ticket_before = claimed.read_bytes()
     ledger_before = ledger.read_bytes()
@@ -959,21 +963,21 @@ def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, m
 
     broken = pm_paths.tickets_dir(live_board._home()) / "clusters" / "C-broken.md"
     broken.write_text("---\nid: C-broken\ntickets: [T-9885\n---\n", encoding="utf-8")
-    assert live_board.cmd_complete(exact) == 1
+    assert board_ticket.cmd_complete(live_board._home(), exact) == 1
     assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before
     assert sync_calls == []
     assert "전수 확인할 수 없어" in capsys.readouterr().err
 
     # id 를 선언하지 않은 장부도 같은 축이다 — 그 파일이 담은 멤버를 알 수 없다.
     broken.write_text("---\ntickets:\n- T-9885\nstatus: open\n---\n", encoding="utf-8")
-    assert live_board.cmd_complete(exact) == 1
+    assert board_ticket.cmd_complete(live_board._home(), exact) == 1
     assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before
     assert sync_calls == []
     assert "id 선언이 없다" in capsys.readouterr().err
 
     # 손상 장부를 치우면 같은 호출이 그대로 통과한다(가드가 정상 경로를 막지 않는다).
     broken.unlink()
-    assert live_board.cmd_complete(exact) == 0
+    assert board_ticket.cmd_complete(live_board._home(), exact) == 0
     assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
     assert len(sync_calls) == 1
 
@@ -1004,7 +1008,7 @@ def test_cmd_complete_blocks_unchecked_dod_and_keeps_ticket_claimed(
     path = _seed_ticket(live_board, "T-9001",
                         _dod_body("- [x] 코드", "- [ ] 라이브 probe 실측"))
 
-    rc = live_board.cmd_complete(_complete_args("T-9001"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9001"))
 
     err = capsys.readouterr().err
     assert rc == 1, "미체크 DoD 인데 complete 가 통과함"
@@ -1021,7 +1025,7 @@ def test_cmd_complete_passes_with_checked_and_deferred_dod(live_board):
         "- [>] 라이브 probe 실측 (이월: 하네스 한도 소진·T-0600 귀속)",
     ))
 
-    rc = live_board.cmd_complete(_complete_args("T-9002"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9002"))
 
     assert rc == 0
     assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9002*")), "done/ 이동 안 함"
@@ -1034,7 +1038,7 @@ def test_cmd_complete_blocks_an_undisposed_review_must_fix(live_board, capsys):
     claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
     _write_round(live_board, tid, "01-code-reviewer.md", _reviewer_round_text(pd, "F-001"))
 
-    assert live_board.cmd_complete(_complete_args(tid)) == 1
+    assert board_ticket.cmd_complete(live_board._home(), _complete_args(tid)) == 1
     assert claimed.exists()
     assert "code-reviewer 리뷰 라운드 01" in capsys.readouterr().err
 
@@ -1051,7 +1055,7 @@ def test_cmd_complete_blocks_an_undisposed_review_must_fix(live_board, capsys):
         + json.dumps(rejected, ensure_ascii=False, separators=(",", ":")) + "\n```\n",
         encoding="utf-8",
     )
-    assert live_board.cmd_complete(_complete_args(tid)) == 0
+    assert board_ticket.cmd_complete(live_board._home(), _complete_args(tid)) == 0
     assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob(f"{tid}*"))
 
 
@@ -1072,7 +1076,7 @@ def test_done_tickets_are_not_retroactively_checked(live_board):
     before = legacy.read_text(encoding="utf-8")
     _seed_ticket(live_board, "T-9004", _dod_body("- [x] 코드"))
 
-    rc = live_board.cmd_complete(_complete_args("T-9004"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9004"))
 
     assert rc == 0, "done/ 의 옛 미체크 DoD 가 무관한 complete 를 막음(소급 검사 발생)"
     assert legacy.exists() and legacy.read_text(encoding="utf-8") == before, \
@@ -1098,7 +1102,7 @@ _DUPLICATE_DOD_BODY = (
 
 def test_a_second_dod_section_cannot_hide_unchecked_items(board):
     """앞 절이 전부 체크돼 있어도 **뒤 절**의 미체크가 잡힌다 (재현 → 차단·DoD)."""
-    problems = board._complete_gate("T-0605", _gate_args(), _DUPLICATE_DOD_BODY)
+    problems = board_ticket._complete_gate(board._home(), "T-0605", _gate_args(), _DUPLICATE_DOD_BODY)
 
     assert any("뒤 절에 남은 미체크 항목" in p for p in problems), (
         f"앞 빈 절이 뒤 절을 가림: {problems}")
@@ -1113,7 +1117,7 @@ def test_every_dod_section_is_summed_not_just_the_first(board):
         "## 완료 조건 (Definition of Done)\n- [ ] 뒤 절 항목\n\n## 메모\n"
     )
 
-    problems = board._dod_open_items(body)
+    problems = completion_gate._dod_open_items(body)
 
     # 미체크 사유는 절마다 하나씩 = 2 (전항 미체크라 T-0781 의 전량-이월 사유도 함께 올라오므로
     # 전체 길이가 아니라 미체크 축만 센다).
@@ -1132,20 +1136,20 @@ def test_duplicate_sections_fully_checked_still_pass(board):
         "- [>] 뒤 절 항목 (이월: 하네스 한도 소진·다음 wave 귀속)\n\n## 메모\n"
     )
 
-    assert board._complete_gate("T-0605", _gate_args(), body) == []
+    assert board_ticket._complete_gate(board._home(), "T-0605", _gate_args(), body) == []
 
 
 def test_a_single_dod_section_is_unchanged(board):
     """단일 절 본문의 판정은 종전 그대로다 (합산 도입이 정상 티켓을 바꾸지 않는다)."""
-    assert board._dod_open_items(_dod_body("- [x] 코드")) == []
-    assert board._dod_section_texts(_dod_body("- [x] 코드")) == ["- [x] 코드\n"]
+    assert completion_gate._dod_open_items(_dod_body("- [x] 코드")) == []
+    assert completion_gate._dod_section_texts(_dod_body("- [x] 코드")) == ["- [x] 코드\n"]
 
 
 def test_cmd_complete_blocks_on_a_hidden_second_dod_section(live_board, capsys):
     """e2e — 우회 본문으로 부른 complete 는 rc 1 이고 티켓은 claimed/ 에 남는다."""
     path = _seed_ticket(live_board, "T-9005", _DUPLICATE_DOD_BODY)
 
-    rc = live_board.cmd_complete(_complete_args("T-9005"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9005"))
 
     assert rc == 1
     assert path.exists()
@@ -1185,7 +1189,7 @@ def test_round_gap_blocks_completion(live_board, capsys):
     _write_round(live_board, "T-9101", "03-code-reviewer.md",
                  _harvested_round_text("code-reviewer"))
 
-    rc = live_board.cmd_complete(_complete_args("T-9101"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9101"))
 
     err = capsys.readouterr().err
     assert rc == 1 and path.exists()
@@ -1199,7 +1203,7 @@ def test_round_duplicate_blocks_completion(live_board, capsys):
     _write_round(live_board, "T-9102", "01-developer.md", _harvested_round_text("developer"))
     _write_round(live_board, "T-9102", "01-architect.md", _harvested_round_text("architect"))
 
-    rc = live_board.cmd_complete(_complete_args("T-9102"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9102"))
 
     assert rc == 1 and path.exists()
     assert "round-dup" in capsys.readouterr().err
@@ -1211,7 +1215,7 @@ def test_pending_round_does_not_block_completion(live_board, capsys):
     _write_round(live_board, "T-9103", "01-developer.md",
                  _seeded_round_text(live_board, "T-9103", "developer", path))
 
-    rc = live_board.cmd_complete(_complete_args("T-9103"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9103"))
 
     err = capsys.readouterr().err
     assert rc == 0, f"미회수 라운드가 완료를 막음: {err}"
@@ -1234,7 +1238,7 @@ def test_pending_round_survives_a_sibling_harvest_in_the_gate(live_board, capsys
         _seeded_round_text(live_board, "T-9107", "code-reviewer", path),
     )
 
-    rc = live_board.cmd_complete(_complete_args("T-9107"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9107"))
 
     err = capsys.readouterr().err
     assert rc == 0, f"미회수 라운드가 완료를 막음: {err}"
@@ -1250,11 +1254,11 @@ def test_round_name_violation_is_information_only(live_board, capsys):
     path = _seed_ticket(live_board, "T-9104", _dod_body("- [x] 코드"))
     _write_round(live_board, "T-9104", "notes.md", "라운드가 아닌 파일\n")
 
-    assert live_board._round_completion_problems(
+    assert board_ticket._round_completion_problems(live_board._home(),
         "T-9104", path.read_text(encoding="utf-8")) == []
     assert "round-name" in capsys.readouterr().err
 
-    rc = live_board.cmd_complete(_complete_args("T-9104"))
+    rc = board_ticket.cmd_complete(live_board._home(), _complete_args("T-9104"))
 
     assert rc == 1
     assert "리뷰 잔여를 판정할 수 없습니다" in capsys.readouterr().err
@@ -1267,11 +1271,11 @@ def test_harvested_rounds_in_sequence_pass_the_gate(live_board):
     _write_round(live_board, "T-9105", "02-code-reviewer.md",
                  _passed_review_round_text(_pm_delegate_module()))
 
-    assert live_board.cmd_complete(_complete_args("T-9105")) == 0
+    assert board_ticket.cmd_complete(live_board._home(), _complete_args("T-9105")) == 0
     assert list((pm_paths.tickets_dir(live_board._home()) / "done").glob("T-9105*"))
 
 
 def test_gate_without_rounds_directory_is_silent(live_board, capsys):
     """라운드가 없는 티켓(대다수 레거시)은 이 축에서 아무 것도 내지 않는다."""
-    assert live_board._complete_gate("T-9106", _gate_args(), _dod_body("- [x] 코드")) == []
+    assert board_ticket._complete_gate(live_board._home(), "T-9106", _gate_args(), _dod_body("- [x] 코드")) == []
     assert "round-" not in capsys.readouterr().err

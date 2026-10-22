@@ -29,6 +29,10 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import pm_paths
 
+from pm_engine.domain import board_git_rules
+from pm_engine.infra import areas_store
+from pm_engine.infra import board_git
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -62,8 +66,6 @@ def board(tmp_path, monkeypatch):
     """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉·test_areas_merge_union 동형)."""
     mod = _load_mod("board")
     monkeypatch.setattr(mod, "REPO", tmp_path)
-    monkeypatch.setattr(mod, "BOARD_LOCK",
-                        tmp_path / ".project_manager" / ".local" / "board.lock")
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     return mod
@@ -86,8 +88,8 @@ def _make_board_dir(board_mod, root: Path, *, real_git: bool = False,
         (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
     (board_dir / "areas.md").write_text(
         "# Area Registry\n\n"
-        + board_mod._areas_header_line() + "\n"
-        + board_mod._areas_separator_line() + "\n",
+        + areas_store._areas_header_line() + "\n"
+        + areas_store._areas_separator_line() + "\n",
         encoding="utf-8")
     if ticket:
         (board_dir / "tickets" / "open" / f"{ticket}-t.md").write_text(
@@ -135,7 +137,7 @@ def _untracked_unignored(board_dir: Path) -> list[str]:
 ])
 def test_declared_forms_are_recognized(board, line):
     """실제 채택자가 쓸 수 있는 표기는 전부 '이미 다뤄짐' 으로 읽는다(중복 append 0)."""
-    assert board._drafts_ignore_declared(line + "\n") is True
+    assert board_git._drafts_ignore_declared(line + "\n") is True
 
 
 @pytest.mark.parametrize("line", [
@@ -149,12 +151,12 @@ def test_declared_forms_are_recognized(board, line):
 ])
 def test_unrelated_patterns_are_not_recognized(board, line):
     """다른 경로 선언은 draft 선언이 아니다 — 미보강(거짓 정상)으로 새지 않는다."""
-    assert board._drafts_ignore_declared(line + "\n") is False
+    assert board_git._drafts_ignore_declared(line + "\n") is False
 
 
 def test_comment_line_is_not_a_declaration(board):
     """주석 줄은 선언이 아니다 — 우리 블록의 설명 주석이 자기 자신을 '선언됨' 으로 읽지 않게."""
-    assert board._drafts_ignore_declared("# tickets/.drafts/ 는 미커밋\n") is False
+    assert board_git._drafts_ignore_declared("# tickets/.drafts/ 는 미커밋\n") is False
 
 
 def test_negation_counts_as_adopter_declaration(board):
@@ -162,12 +164,12 @@ def test_negation_counts_as_adopter_declaration(board):
 
     gitignore 는 last-match-wins 라 append 가 곧 override 다(비파괴 원칙 위반).
     """
-    assert board._drafts_ignore_declared("!tickets/.drafts/\n") is True
+    assert board_git._drafts_ignore_declared("!tickets/.drafts/\n") is True
 
 
 def test_own_block_is_self_declaring(board):
     """배포 블록 자신은 '선언됨' 으로 읽힌다 — 멱등(2회차 no-write)의 뿌리."""
-    assert board._drafts_ignore_declared(board._BOARD_GITIGNORE_BLOCK) is True
+    assert board_git._drafts_ignore_declared(board_git_rules._BOARD_GITIGNORE_BLOCK) is True
 
 
 def test_ignore_pattern_matches_actual_drafts_location(board, tmp_path):
@@ -179,10 +181,10 @@ def test_ignore_pattern_matches_actual_drafts_location(board, tmp_path):
     board_dir = _make_board_dir(board, tmp_path)
     rel = pm_paths.drafts_dir(board._home()).resolve().relative_to(board_dir.resolve()).as_posix()
 
-    assert board._BOARD_GIT_DRAFT_IGNORE_PATTERN == rel + "/"
-    assert board._BOARD_DRAFT_IGNORE_FORMS == (rel, rel.rsplit("/", 1)[-1])
-    assert board._BOARD_GIT_DRAFT_IGNORE_PATTERN in board._BOARD_GIT_SCOPE_EXCLUDE
-    assert f":!{rel}" in board._BOARD_GIT_DRAFT_PATHSPEC
+    assert board_git_rules._BOARD_GIT_DRAFT_IGNORE_PATTERN == rel + "/"
+    assert board_git_rules._BOARD_DRAFT_IGNORE_FORMS == (rel, rel.rsplit("/", 1)[-1])
+    assert board_git_rules._BOARD_GIT_DRAFT_IGNORE_PATTERN in board_git_rules._BOARD_GIT_SCOPE_EXCLUDE
+    assert f":!{rel}" in board_git_rules._BOARD_GIT_DRAFT_PATHSPEC
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -193,7 +195,7 @@ def test_ensure_noop_on_legacy_inline(board, tmp_path):
     """board 미분리(legacy·솔로) → no-op·파일 생성 0 (100% 무영향)."""
     (tmp_path / ".project_manager" / "wiki").mkdir(parents=True)
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
 
     assert not (tmp_path / ".project_manager" / "wiki" / ".gitignore").exists()
     assert not (tmp_path / ".gitignore").exists()
@@ -204,11 +206,11 @@ def test_ensure_creates_gitignore_in_board_git(board, tmp_path):
     """부재 → 생성."""
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
 
-    assert board._ensure_board_gitignore() is True
+    assert board_git._ensure_board_gitignore(board._home()) is True
 
     text = (board_dir / ".gitignore").read_text(encoding="utf-8")
-    assert board._drafts_ignore_declared(text) is True
-    assert board._BOARD_GIT_DRAFT_IGNORE_PATTERN in text
+    assert board_git._drafts_ignore_declared(text) is True
+    assert board_git_rules._BOARD_GIT_DRAFT_IGNORE_PATTERN in text
 
 
 @requires_git
@@ -221,26 +223,26 @@ def test_ensure_backfills_when_entry_missing(board, tmp_path):
     _git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed ignore"],
          board_dir)
 
-    assert board._ensure_board_gitignore() is True
+    assert board_git._ensure_board_gitignore(board._home()) is True
 
     text = (board_dir / ".gitignore").read_text(encoding="utf-8")
     assert text.startswith(custom), "기존 내용이 앞에 그대로 보존돼야 한다"
     assert "*.local" in text and "scratch/" in text
-    assert board._drafts_ignore_declared(text) is True
+    assert board_git._drafts_ignore_declared(text) is True
 
 
 @requires_git
 def test_ensure_is_idempotent_no_duplicate_line(board, tmp_path):
     """정합 → no-op. 두 번째 호출은 False + 파일 무변경(줄 중복 0)."""
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
-    assert board._ensure_board_gitignore() is True
+    assert board_git._ensure_board_gitignore(board._home()) is True
     first = (board_dir / ".gitignore").read_text(encoding="utf-8")
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
 
     second = (board_dir / ".gitignore").read_text(encoding="utf-8")
     assert second == first
-    assert second.count(board._BOARD_GIT_DRAFT_IGNORE_PATTERN + "\n") == 1
+    assert second.count(board_git_rules._BOARD_GIT_DRAFT_IGNORE_PATTERN + "\n") == 1
 
 
 def test_ensure_respects_existing_custom_form(board, tmp_path):
@@ -249,7 +251,7 @@ def test_ensure_respects_existing_custom_form(board, tmp_path):
     custom = ".drafts/\n"
     (board_dir / ".gitignore").write_text(custom, encoding="utf-8")
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
     assert (board_dir / ".gitignore").read_text(encoding="utf-8") == custom
 
 
@@ -259,7 +261,7 @@ def test_ensure_respects_negated_declaration(board, tmp_path):
     custom = "*.tmp\n!tickets/.drafts/\n"
     (board_dir / ".gitignore").write_text(custom, encoding="utf-8")
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
     assert (board_dir / ".gitignore").read_text(encoding="utf-8") == custom
 
 
@@ -272,11 +274,11 @@ def test_ensure_appends_cleanly_when_file_lacks_trailing_newline(board, tmp_path
     _git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed ignore"],
          board_dir)
 
-    assert board._ensure_board_gitignore() is True
+    assert board_git._ensure_board_gitignore(board._home()) is True
 
     text = (board_dir / ".gitignore").read_text(encoding="utf-8")
     assert "*.local\n" in text
-    assert board._drafts_ignore_declared(text) is True
+    assert board_git._drafts_ignore_declared(text) is True
 
 
 @requires_git
@@ -284,8 +286,8 @@ def test_ensure_root_files_reports_only_what_it_wrote(board, tmp_path):
     """`_ensure_board_root_files` 는 **이번 호출이 실제로 쓴** 파일명만 돌려준다."""
     _make_board_dir(board, tmp_path, real_git=True)
 
-    assert board._ensure_board_root_files() == (".gitattributes", ".gitignore")
-    assert board._ensure_board_root_files() == ()
+    assert board_git._ensure_board_root_files(board._home()) == (".gitattributes", ".gitignore")
+    assert board_git._ensure_board_root_files(board._home()) == ()
 
 
 @requires_git
@@ -302,13 +304,13 @@ def test_missing_rule_in_dirty_gitignore_is_not_appended_or_committed(
     wip = committed + "# 아직 작업 중\n*.wip\n"
     ignore.write_text(wip, encoding="utf-8")
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
     assert ignore.read_text(encoding="utf-8") == wip
     assert "사용자 WIP" in capsys.readouterr().err
 
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
     assert _git(["show", "HEAD:.gitignore"], board_dir).stdout == committed
     assert _git(["status", "--porcelain", "--", ".gitignore"], board_dir).stdout.rstrip() == \
         " M .gitignore"
@@ -322,7 +324,7 @@ def test_staged_gitignore_deletion_is_preserved_without_backfill(
     attrs = board_dir / ".gitattributes"
     ignore = board_dir / ".gitignore"
     custom = "# 채택자 기본 규칙\n*.local\n"
-    attrs.write_text(board._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8")
+    attrs.write_text(board_git_rules._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8")
     ignore.write_text(custom, encoding="utf-8")
     _git(["add", "--", ".gitattributes", ".gitignore"], board_dir)
     _git(["commit", "-qm", "seed root files"], board_dir)
@@ -330,10 +332,10 @@ def test_staged_gitignore_deletion_is_preserved_without_backfill(
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
     assert ignore.read_text(encoding="utf-8") == custom
-    assert board._drafts_ignore_declared(custom) is False
+    assert board_git._drafts_ignore_declared(custom) is False
     assert _git(["show", "HEAD:.gitignore"], board_dir).stdout == custom
     changed = _git(["show", "--name-only", "--format=", "HEAD"], board_dir).stdout.splitlines()
     assert ".gitignore" not in changed, "사용자 staged 삭제가 mutation 커밋에 포함됨."
@@ -348,7 +350,7 @@ def test_worktree_gitignore_deletion_is_preserved_without_backfill(
     attrs = board_dir / ".gitattributes"
     ignore = board_dir / ".gitignore"
     custom = "# 채택자 기본 규칙\n*.local\n"
-    attrs.write_text(board._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8")
+    attrs.write_text(board_git_rules._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8")
     ignore.write_text(custom, encoding="utf-8")
     _git(["add", "--", ".gitattributes", ".gitignore"], board_dir)
     _git(["commit", "-qm", "seed root files"], board_dir)
@@ -356,7 +358,7 @@ def test_worktree_gitignore_deletion_is_preserved_without_backfill(
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
     assert not ignore.exists(), "사용자 워킹트리 삭제가 backfill로 되돌아옴."
     assert _git(["show", "HEAD:.gitignore"], board_dir).stdout == custom
@@ -378,7 +380,7 @@ def test_symlink_gitignore_is_rejected_without_following_target(board, tmp_path,
     except OSError as exc:
         pytest.skip(f"symlink 생성 불가: {exc}")
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
     assert link.is_symlink()
     assert outside.read_text(encoding="utf-8") == original
     assert "symlink" in capsys.readouterr().err
@@ -389,7 +391,7 @@ def test_non_regular_gitignore_is_rejected_loudly(board, tmp_path, capsys):
     board_dir = _make_board_dir(board, tmp_path)
     (board_dir / ".gitignore").mkdir()
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
     assert (board_dir / ".gitignore").is_dir()
     assert "비정규 파일" in capsys.readouterr().err
 
@@ -409,11 +411,11 @@ def test_backfill_rides_scoped_mutation_commit(board, tmp_path):
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
     tracked = _head_files(board_dir)
     assert ".gitignore" in tracked, "backfill 이 스코프 커밋에 실리지 않음 — 영구 미커밋."
-    assert board._drafts_ignore_declared(
+    assert board_git._drafts_ignore_declared(
         _git(["show", "HEAD:.gitignore"], board_dir).stdout) is True
     assert _git(["status", "--porcelain"], board_dir).stdout.strip() == ""
 
@@ -426,16 +428,16 @@ def test_user_edited_gitignore_is_not_swept_into_mutation(board, tmp_path):
     """
     board_dir = _make_board_dir(board, tmp_path, real_git=True, ticket="T-0001")
     ignore = board_dir / ".gitignore"
-    ignore.write_text(board._BOARD_GITIGNORE_BLOCK, encoding="utf-8")
+    ignore.write_text(board_git_rules._BOARD_GITIGNORE_BLOCK, encoding="utf-8")
     _git(["add", "-A"], board_dir)
     _git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed ignore"],
          board_dir)
-    ignore.write_text(board._BOARD_GITIGNORE_BLOCK + "# 작업 중인 내 규칙\n*.wip\n",
+    ignore.write_text(board_git_rules._BOARD_GITIGNORE_BLOCK + "# 작업 중인 내 규칙\n*.wip\n",
                       encoding="utf-8")
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
     assert "*.wip" not in _git(["show", "HEAD:.gitignore"], board_dir).stdout, \
         "사용자의 미완성 .gitignore 편집이 mutation 커밋에 실림 — 누출 동형."
@@ -452,7 +454,7 @@ def test_backfill_commit_excludes_drafts(board, tmp_path):
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
     tracked = _head_files(board_dir)
     assert ".gitignore" in tracked
@@ -467,9 +469,9 @@ def test_ensure_fail_soft_on_non_utf8_gitignore(board, tmp_path):
     raw = b"\xff\xfe tickets/.drafts/\n"
     (board_dir / ".gitignore").write_bytes(raw)
 
-    assert board._ensure_board_gitignore() is False
+    assert board_git._ensure_board_gitignore(board._home()) is False
     assert (board_dir / ".gitignore").read_bytes() == raw
-    assert board._board_git_stage_and_commit("mutation") is True   # commit 은 정상 진행.
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation") is True   # commit 은 정상 진행.
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -487,7 +489,7 @@ def test_draft_disappears_from_untracked_observation(board, tmp_path):
 
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
     assert _untracked_unignored(board_dir) == []
     assert _git(["status", "--porcelain"], board_dir).stdout.strip() == ""
@@ -509,6 +511,6 @@ def test_pm_handoff_dirty_gate_sees_no_draft_residue(board, tmp_path):
 
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
-    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
     assert handoff._dirty_paths_in_tree(str(board_dir), handoff._module_run_git) == []

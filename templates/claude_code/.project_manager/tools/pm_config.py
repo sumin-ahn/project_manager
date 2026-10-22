@@ -37,10 +37,10 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1 ~ N×M 공용).
-  - repo add  → board.areas_append(per-repo 레지스트리 줄) + `git clone --bare`
+  - repo add  → areas_registry.areas_append(per-repo 레지스트리 줄) + `git clone --bare`
                 로 `.repos/<name>.git`(worktree 풀 공유 .git 원).
   - repo protected → (조회) areas_store._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 정합 /
-                (설정) board.areas_set_cell(areas.md 단일 진실·board_lock in-place) →
+                (설정) areas_registry.areas_set_cell(areas.md 단일 진실·board_lock in-place) →
                 repo_protection → protected_hooks.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
   - repo list → areas_store._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
   - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 게이트 뒤
@@ -51,9 +51,9 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
                같은 repo 복수 보유). 풀 소진(NeedsCreate)이면 자동 생성 안 하고
                `worktree add --task` 승인 요청(생성+대여 한 흐름·ⓓB·물리층=사용자).
   - release → pm_engine.app.worktree_pool.release(--task 면 owner_task 소유검사·--force 면 force_release) — 수동 반납/강제만.
-  - task prefix → board._validate_prefix(입력 sanity·소비 grammar 단일 진실) → task_lifecycle.set_task_prefix
+  - task prefix → ticket_rules._validate_prefix(입력 sanity·소비 grammar 단일 진실) → task_lifecycle.set_task_prefix
                 (장부 flock/스키마 단일 소유·`none`=해제·직접 JSON write 금지).
-  - task end → board.scan_task_tickets(claimed 소진 게이트) → task_lifecycle.end_task(dirty 게이트·
+  - task end → ticket_access.scan_task_tickets(claimed 소진 게이트) → task_lifecycle.end_task(dirty 게이트·
                일괄 idle 반납·서술 폴더 `_ended/<task>-<날짜>/` 아카이브 이동·삭제 아님).
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
@@ -91,7 +91,6 @@ import shutil
 import shlex
 import subprocess
 import sys
-import tomllib
 import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,6 +116,11 @@ from pm_engine.infra import worktree_paths
 import pm_engine.app.worktree_pool
 from pm_engine.domain import worktree_records
 from pm_engine.app import worktree_status
+
+from pm_engine.app import areas_registry
+from pm_engine.app import board_sync
+from pm_engine.app import ticket_access
+from pm_engine.domain import ticket_rules
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py 와 동일 앵커 관례
 # (어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
@@ -358,19 +362,9 @@ def _distinct_area_owners() -> int:
                 if owner})
 
 
-def _resolve_repo_base(repo: str, *, board=None) -> str | None:
-    """그 repo 의 areas.md `base` 브랜치 — 등록 칸이 비었으면 None.
-
-    `cmd_worktree_add` 가 `create_slot(base=)` 로 넘기는 값이자 슬롯 브랜치의 부모다. None 이면 부모를
-    적을 수 없어 호출부가 슬롯을 만들지 않는다. board 로드 실패·areas 판독 실패는 그대로 올린다 —
-    "base 없음" 으로 바꾸면 실제 원인이 가려진다. board 직접 import 금지(`_load_module` DI).
-    """
-    board_mod = board or _load_module("board", "board.py")
-    if board_mod is None:
-        raise RuntimeError(
-            f"board.py 를 로드하지 못해 repo {repo!r} 의 base 를 읽을 수 없다 ({TOOLS_DIR / 'board.py'})."
-        )
-    return board_mod._repo_base(repo)
+def _resolve_repo_base(repo: str) -> str | None:
+    """등록부의 base를 읽는다. 실제 데이터 판독 오류는 호출부로 전파한다."""
+    return areas_store._repo_base(pm_paths.home_at(REPO), repo)
 
 
 # ── 보호목록 설정 채널 ────────────────────────────────────
@@ -734,7 +728,6 @@ _LS_REMOTE_NO_MATCHING_REF = 2
 def cmd_repo_add(
     args: argparse.Namespace,
     *,
-    board=None,
     clone_runner: GitRunner | None = None,
     repos_dir: Path | None = None,
 ) -> int:
@@ -745,7 +738,7 @@ def cmd_repo_add(
     없는 2번째 사용자 시나리오·재제공 없이 재사용). 미등록 신규 repo 는 `--git` 필수(부작용 0
     fail-loud). clone 소스 URL 해소는 `_resolve_clone_git_url` 이 담당한다(불일치 시 areas 우선).
 
-    1. areas.md 레지스트리에 per-repo 줄을 기록한다(board.areas_append — repo/prefix/
+    1. areas.md 레지스트리에 per-repo 줄을 기록한다(areas_registry.areas_append — repo/prefix/
        git/test_cmd/owner/base 칼럼). **prefix 는 빈 값으로 등록**한다 —
        prefix=작업 카테고리이지 repo명이 아님.
        카테고리가 필요하면 `board.py new --prefix <cat>` 로 티켓별 명시하거나 `board.py
@@ -773,17 +766,9 @@ def cmd_repo_add(
     재해소하지 않는다(append-only·중복 등록 금지).
     clone 실패해도 등록이 남았지만, 이제 clone 성공 후에만 등록한다(재실행이 둘 다 다시 함).
 
-    board / clone_runner / repos_dir 주입으로 hermetic 테스트(실 등록·clone 없이 배선 검증).
+    clone_runner / repos_dir 주입으로 hermetic 테스트(실 등록·clone 없이 배선 검증).
     base 해소 git 호출(symbolic-ref/show-ref)은 같은 `clone_runner` 를 `-C <bare>` 로 재사용한다.
     """
-    board_mod = board or _load_module("board", "board.py")
-    if board_mod is None:
-        print(
-            "[중단] board.py 엔진을 찾을 수 없다 — areas.md 등록 불가 "
-            f"({TOOLS_DIR / 'board.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
 
     # repos_dir 미주입 시 모듈 전역(REPOS_DIR)을 *호출 시점*에 해소한다 — 함수 default 로
     # 굳히면 테스트의 monkeypatch(REPOS_DIR)가 안 먹는다.
@@ -843,7 +828,7 @@ def cmd_repo_add(
     # owner = areas.md 등록 식별자(registrant) — **사람** 차원이다. 슬롯 세션에서 유도하지
     # 않는다: 등록은 어느 슬롯에서 쳤는지와 무관하고, 작업 폴더가 아직 없는 홈(첫 등록)에서는
     # 세션이 아예 없다. 값의 단일 진실은 `identity.user`(없으면 git user.email)이고 그 선언을
-    # 그대로 쓴다(`_default_user`·`board.user_name` 동형). `--owner` 명시는 종전대로 이긴다.
+    # 그대로 쓴다(`_default_user`·`lease_store.user_name` 동형). `--owner` 명시는 종전대로 이긴다.
     # 미해소면 fail-loud — **어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서** 차단한다
     # (그대로 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에 누출한다).
     owner = args.owner or _default_user()
@@ -1002,8 +987,8 @@ def cmd_repo_add(
     #    으로 튀게 했다. protected 는 `--protected` 인자— 미지정이면 빈 값이라
     #    `_repo_protected` 가 DEFAULT_PROTECTED(main/master/develop) 폴백하고, 사후 변경은
     #    `pm-config repo protected <name> <목록>`(areas → sidecar 정합화)로 한다.
-    board_mod.areas_append(
-        "", "", owner, repo=name, git=git_url, test_cmd=args.test, base=base,
+    areas_registry.areas_append(
+        pm_paths.home_at(REPO), "", "", owner, repo=name, git=git_url, test_cmd=args.test, base=base,
         protected=protected_cell, area_owner=area_owner,
     )
     # --test 미지정(None) 이면 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로
@@ -1096,7 +1081,6 @@ def _print_protected_status(
 def cmd_repo_protected(
     args: argparse.Namespace,
     *,
-    board=None,
     clone_runner: GitRunner | None = None,
     repos_dir: Path | None = None,
 ) -> int:
@@ -1108,23 +1092,15 @@ def cmd_repo_protected(
 
     설정 순서(**areas → sidecar 고정**·역순 금지):
       1. 형식 검증(토큰만·브랜치 실재는 검증 안 함) — 실패면 부작용 0 rc1.
-      2. `board.areas_set_cell(name, "protected", …)` — `board_lock()` 하 비파괴 in-place 재기록.
+      2. `areas_registry.areas_set_cell(name, "protected", …)` — `board_lock()` 하 비파괴 in-place 재기록.
          중복 repo 행이면 fail-loud(부작용 0·수동 정리 안내), 미등록이면 `repo add` 안내.
       3. 훅 sidecar 재설치(`_install_protected_hook` 재사용·멱등). 실패는 loud 경고 + 재실행
          안내 — areas 는 이미 비준됐으므로 rc 0(다음 `repo add`/`/pm-bootstrap` 이 자가치유).
       4. board-git best-effort 동기(공유 정책 변경은 즉시 공유돼야 값-연결이 산다).
       5. bare 에 없는 브랜치가 있으면 경고 1줄(거부 아님 — 미래 브랜치 선-보호가 정상).
 
-    board / clone_runner / repos_dir 주입으로 hermetic 테스트.
+    clone_runner / repos_dir 주입으로 hermetic 테스트.
     """
-    board_mod = board or _load_module("board", "board.py")
-    if board_mod is None:
-        print(
-            "[중단] board.py 엔진을 찾을 수 없다 — 보호목록 조회/설정 불가 "
-            f"({TOOLS_DIR / 'board.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
 
     name = args.name
     if not _validate_repo_name(name):
@@ -1154,10 +1130,10 @@ def cmd_repo_protected(
         new_cell = ",".join(tokens)
 
     # 2) areas.md 셀 변경 — 단일 진실 먼저(역순이면 훅이 비준되지 않은 목록을 강제한다).
-    duplicate_exc = getattr(board_mod, "AreasDuplicateRepo", None)
-    missing_exc = getattr(board_mod, "AreasRepoNotFound", None)
+    duplicate_exc = areas_rules.AreasDuplicateRepo
+    missing_exc = areas_rules.AreasRepoNotFound
     try:
-        old_cell, _new = board_mod.areas_set_cell(name, "protected", new_cell)
+        old_cell, _new = areas_registry.areas_set_cell(pm_paths.home_at(REPO), name, "protected", new_cell)
     except Exception as exc:  # noqa: BLE001 — 종류별 안내로 번역(부작용 0·아래 rc 1).
         if duplicate_exc is not None and isinstance(exc, duplicate_exc):
             print(
@@ -1196,12 +1172,10 @@ def cmd_repo_protected(
     #    **경로 스코프 필수**: paths 없이 부르면 board 전체가 "repo protected"
     #    커밋에 쓸려 들어가 *남의 미커밋 편집*까지 대신 커밋한다. claim 이 dirty 를 안 막게 된
     #    지금은 board 가 상시 dirty 라 그 노출이 더 크다. areas.md 만 이 mutation 의 산출물이다.
-    sync = getattr(board_mod, "_board_git_sync_best_effort", None)
-    if sync is not None:
-        try:
-            sync("repo protected", (pm_paths.areas_file(pm_paths.home_at(REPO)),))
-        except Exception as exc:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
-            pass
+    try:
+        board_sync._board_git_sync_best_effort(pm_paths.home_at(REPO), "repo protected", (pm_paths.areas_file(pm_paths.home_at(REPO)),))
+    except Exception as exc:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
+        pass
 
     # 5) 브랜치 실재 경고 1줄 — `repo add --protected` 와 **같은 공용 깔때기**(검증 비대칭 방지).
     #    거부 아님(미래 브랜치 선-보호가 정상·오타 가시화용).
@@ -1327,7 +1301,6 @@ def _require_worktree_add_user_ack(args: argparse.Namespace) -> bool:
 def cmd_worktree_add(
     args: argparse.Namespace,
     *,
-    board=None,
     input_fn: Callable[[str], str] = input,
     is_tty: Callable[[], bool] | None = None,
     clone_runner: GitRunner | None = None,
@@ -1387,7 +1360,7 @@ def cmd_worktree_add(
     # 슬롯 브랜치 `<repo>_<N>` 가 그 base 에서 파생되고 base 가 그 브랜치의 부모로 기록된다.
     # base 가 없으면 부모를 적을 수 없으므로 만들지 않는다.
     # board 직접 import 금지 — 주입/로드된 board 의 `_repo_base` 만 쓴다.
-    base = _resolve_repo_base(args.repo, board=board)
+    base = _resolve_repo_base(args.repo)
     if base is None:
         print(
             f"[중단] repo {args.repo!r} 등록에 base 브랜치가 없다 — 슬롯 브랜치의 부모를 적을 수 "
@@ -1426,7 +1399,7 @@ def cmd_worktree_add(
         hydrated = cmd_repo_add(
             argparse.Namespace(name=args.repo, git=None, test=None, base=None, owner=None,
                                user=None, protected=None),
-            board=board, clone_runner=clone_runner)
+            clone_runner=clone_runner)
         if hydrated:
             return hydrated
     try:
@@ -2643,9 +2616,6 @@ def cmd_task_close(
 
 def cmd_task_end(
     args: argparse.Namespace,
-    *,
-
-    board=None,
 ) -> int:
     """`task end <task>` — task 종료: claimed 소진 게이트 → dirty 게이트 → clean 시 일괄 반납 + 아카이브 이동.
 
@@ -2661,8 +2631,8 @@ def cmd_task_end(
          레코드 제거 → 서술 폴더 `.local/tasks/<task>/` 를 `_ended/<task>-<날짜>/` 로 **이동**
          (삭제 아님·이름 재사용 시 옛 pm_state resume 오염 방지).
 
-    worktree_pool/board 주입으로 hermetic 테스트. board 부재/스캔 실패는 claimed 게이트를
-    graceful skip(엔진 dirty/반납은 진행) — board 없는 순수 슬롯 정리도 되게(크래시 0).
+    티켓은 ticket_access가 명시 Home에서 스캔한다. 실제 스캔 실패는 기존 정책대로
+    claimed 게이트를 생략하며 dirty 판정과 반납은 계속한다.
     """
 
     name = args.name
@@ -2683,14 +2653,11 @@ def cmd_task_end(
     # 1) claimed 소진 게이트 — board 스캔. task 레코드 prefix 로 prefix-open 정보도 함께.
     task_rec = pool_store.find_task(pm_paths.home_at(REPO), name)
     prefix = task_rec.prefix if task_rec is not None else None
-    board_mod = board or _load_module("board", "board.py")
     scan = None
-    scanner = getattr(board_mod, "scan_task_tickets", None) if board_mod else None
-    if scanner is not None:
-        try:
-            scan = scanner(_default_user(), name, prefix)
-        except Exception as exc:  # noqa: BLE001 — board 스캔 실패는 claimed 게이트 skip.
-            scan = None
+    try:
+        scan = ticket_access.scan_task_tickets(pm_paths.home_at(REPO), _default_user(), name, prefix)
+    except Exception:  # noqa: BLE001 — 실제 스캔 실패는 기존 claimed 게이트 skip 정책 유지.
+        scan = None
     if scan and scan.get("claimed"):
         print(
             f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(소진 게이트):",
@@ -2879,9 +2846,6 @@ def cmd_task_todo_done(
 
 def cmd_task_prefix(
     args: argparse.Namespace,
-    *,
-
-    board=None,
 ) -> int:
     """`task prefix <task> <p|none>` — task 의 ticket prefix 지정/변경/해제 (중간 변경 자유).
 
@@ -2899,8 +2863,7 @@ def cmd_task_prefix(
       3. **저장** — `task_lifecycle.set_task_prefix`(장부 flock/스키마 단일 소유·직접 JSON write 금지)로
          atomic 갱신. task 부재면 rc1 안내(생성은 `task new`·bootstrap 소관).
 
-    worktree_pool/board 주입으로 hermetic 테스트. board 부재/헬퍼 부재는 prefix 형식·
-    신설 승인·락 안 fresh 재검증을 증명할 수 없으므로 저장 없이 fail-closed rc1이다.
+    실행 패키지의 prefix 검증·승인·락 안 fresh 재검증을 통과한 경우에만 저장한다.
     단, task 예약명 검증에 넘기는 registered_repos 조회만 실패 시 None으로 완화하고
     traversal 검증은 엔진 validator로 계속 강제한다.
     """
@@ -2910,7 +2873,6 @@ def cmd_task_prefix(
 
     # 1) task 명 검증(must-fix) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`)
     # 거부용(board fail-soft 해소·부재면 None → traversal 검증만). InvalidTaskName → rc1(부작용 이전).
-    board_mod = board or _load_module("board", "board.py")
     registered = _registered_repos()
     try:
         task_rules._validate_task_name(name, registered)
@@ -2925,24 +2887,12 @@ def cmd_task_prefix(
     if value.lower() == _TASK_PREFIX_NONE_LITERAL:
         new_prefix: str | None = None
     else:
-        validate = getattr(board_mod, "_validate_prefix", None) if board_mod else None
-        if validate is not None:
-            reason = validate(value)
-            if reason:
-                print(f"[중단] {reason}", file=sys.stderr)
-                return 1
-        require_ack = (
-            getattr(board_mod, "require_prefix_user_ack", None) if board_mod else None
-        )
-        if require_ack is None:
-            print(
-                "[중단] board prefix 승인 게이트를 찾을 수 없다 — 엔진 전체를 동기화한 뒤 "
-                "task prefix를 다시 실행하라.",
-                file=sys.stderr,
-            )
+        reason = ticket_rules._validate_prefix(value)
+        if reason:
+            print(f"[중단] {reason}", file=sys.stderr)
             return 1
-        new_prefix = require_ack(
-            value,
+        new_prefix = areas_registry.require_prefix_user_ack(
+            pm_paths.home_at(REPO), value,
             getattr(args, "user_ack", None),
             surface="pm-config task prefix",
         )
@@ -2955,21 +2905,9 @@ def cmd_task_prefix(
     # 소비는 사용자 승인 CLI 표면이 아니므로 이 재검증을 성립시킬 수 없고, 설계대로 CLI 단일
     # 깔때기에서만 강제한다. `none` 해제는 신규 생성 축이 아니어서 종전 경로 그대로다.
     if new_prefix is not None:
-        board_lock_fn = getattr(board_mod, "board_lock", None) if board_mod else None
-        revalidate = (
-            getattr(board_mod, "revalidate_prefix_user_ack", None)
-            if board_mod else None
-        )
-        if board_lock_fn is None or revalidate is None:
-            print(
-                "[중단] board prefix fresh 재검증 경계를 찾을 수 없다 — 엔진 전체를 "
-                "동기화한 뒤 task prefix를 다시 실행하라.",
-                file=sys.stderr,
-            )
-            return 1
-        with board_lock_fn():
-            fresh = revalidate(
-                value,
+        with fs.board_lock(pm_paths.home_at(REPO)):
+            fresh = areas_registry.revalidate_prefix_user_ack(
+                pm_paths.home_at(REPO), value,
                 getattr(args, "user_ack", None),
                 new_prefix,
                 surface="pm-config task prefix",
@@ -2990,12 +2928,7 @@ def cmd_task_prefix(
         )
         return 1
 
-    invalidate = (
-        getattr(board_mod, "invalidate_known_prefixes_cache", None)
-        if board_mod else None
-    )
-    if invalidate is not None:
-        invalidate()
+    areas_registry.invalidate_known_prefixes_cache()
 
     if new_prefix is None:
         print(
@@ -3768,7 +3701,7 @@ def _console_input(input_fn: Callable[[str], str], prompt: str):
         return _CONSOLE_ABORT
 
 
-def _console_repo_add(input_fn, board_mod):
+def _console_repo_add(input_fn):
     """`[r]` — repo 이름/git/test/base 를 프롬프트로 받아 cmd_repo_add 위임 (기존 핸들러 재사용).
 
     각 프롬프트가 `_console_input` 을 거쳐 EOF/Ctrl-C 면 `_CONSOLE_ABORT` 를 받는다 —
@@ -3806,18 +3739,17 @@ def _console_repo_add(input_fn, board_mod):
         name=name, git=git, test=(test or None), owner=None, base=(base or None),
         user=None,  # area_owner 는 cmd_repo_add 가 local.conf identity.user= / git email 로 해소.
     )
-    cmd_repo_add(args, board=board_mod)
+    cmd_repo_add(args)
     return None
 
 
-def _console_worktree_add(input_fn, board_mod=None):
+def _console_worktree_add(input_fn):
     """`[w]` — repo 를 받아 cmd_worktree_add 위임. 빌드명령은 그 핸들러가 프롬프트(tty 경로).
 
     repo 프롬프트가 EOF/Ctrl-C 면 `_CONSOLE_ABORT` 반환(루프 우아 종료). 빈입력은 취소.
     물리 슬롯 생성 전에 repo 이름을 한 번 더 입력하는 사용자-present 확인 프롬프트를
     띄우고, 정확히 일치한 값만 CLI ``--user-ack <repo>``와 동치인 토큰으로 넘긴다.
-    board_mod 를 cmd_worktree_add 에 전달해 빌드명령 프롬프트의 표시 기본값(areas 해소)을
-    콘솔이 이미 로드한 board 로 재사용한다(중복 로드 0). 빌드명령 프롬프트 내부 중단은
+    빌드명령 프롬프트의 표시 기본값은 명시 Home의 areas_store에서 읽는다. 프롬프트 내부 중단은
     cmd_worktree_add → _prompt_test_cmd 가 None 으로 흡수(크래시 0·기존 폴백).
 
     이 액션은 핸들러 rc 를 읽지 않는다(취소/중단 sentinel 만 반환) — 그래서 엔진 사본 불일치
@@ -3844,7 +3776,7 @@ def _console_worktree_add(input_fn, board_mod=None):
     # is_tty=lambda: True 로 강제(콘솔 진입 자체가 tty 보장·main 분기). --test 는 미지정.
     args = argparse.Namespace(repo=repo, test=None, user_ack=repo)
     cmd_worktree_add(
-        args, board=board_mod, input_fn=input_fn, is_tty=lambda: True
+        args, input_fn=input_fn, is_tty=lambda: True
     )
     return None
 
@@ -4095,7 +4027,6 @@ def _console_update() -> None:
 def run_console(
     *,
     input_fn: Callable[[str], str] = input,
-    board=None,
 ) -> int:
     """대화형 콘솔 루프 — 상태 렌더 + 메뉴 + 액션 + 재렌더 (tty 전용).
 
@@ -4112,7 +4043,6 @@ def run_console(
     "우아 종료/크래시 0" 보장·traceback 0·rc 0). 엔진(board·worktree_pool)/입력(input_fn)
     주입으로 hermetic 테스트(실 clone/worktree·라이브 input 블록 0 — 입력 시퀀스 주입 + 핸들러 mock).
     """
-    board_mod = board or _load_module("board", "board.py")
 
     _render_state()
     while True:
@@ -4131,9 +4061,9 @@ def run_console(
             _render_state()
             continue
         if choice == "r":
-            result = _console_repo_add(input_fn, board_mod)
+            result = _console_repo_add(input_fn)
         elif choice == "w":
-            result = _console_worktree_add(input_fn, board_mod)
+            result = _console_worktree_add(input_fn)
         elif choice == "b":
             result = _console_set_test_cmd(input_fn)
         elif choice == "m":

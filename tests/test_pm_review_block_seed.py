@@ -1,6 +1,9 @@
 """T-0700 — parser 상수 기반 리뷰 골격과 disposition-template 계약."""
 from __future__ import annotations
 
+from pm_engine.domain import round_rules
+
+
 import argparse
 import contextlib
 import hashlib
@@ -188,9 +191,9 @@ def _legacy_reviewer_round(pd, ordinal: int):
 def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
     """모든 역할의 라운드 시드는 한 렌더러에서 나온다 — 역할 집합의 권위도 하나다."""
     # 라운드 역할 집합의 단일 권위는 seam 이고 board 는 사람용 절명만 소유한다.
-    assert set(board.ticket_round_role_labels()) == set(delegate_ledger.TICKET_COPY_ROLES)
+    assert set(round_rules.ticket_round_role_labels()) == set(delegate_ledger.TICKET_COPY_ROLES)
     assert set(round_rules.ROLES) == set(delegate_ledger.TICKET_COPY_ROLES)
-    assert board.ticket_round_role_labels() == round_rules.ROLE_LABELS
+    assert round_rules.ticket_round_role_labels() == round_rules.ROLE_LABELS
 
     text = "".join(
         _seeded_round_text(pd, role) for role in sorted(delegate_ledger.TICKET_COPY_ROLES)
@@ -557,10 +560,6 @@ def test_disposition_template_rejects_confirmation_only_round(
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     spec_path = _materialize(pd, "", [first, second], tickets_dir, "T-0700")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo",
-        lambda _owner: _fake_board(spec_path, tickets_dir),
-    )
     assert pd.main([
         "review", "disposition-template", "--ticket", "T-0700", "--ordinal", "2",
     ]) == 1
@@ -586,10 +585,6 @@ def test_disposition_template_cli_and_pending_error_prescribe_same_command(
         pd, "", [_reviewer_round(pd, _review_payload("F-007"))], tickets_dir, "T-0700",
     )
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo",
-        lambda _owner: _fake_board(spec_path, tickets_dir),
-    )
     assert pd.main([
         "review", "disposition-template", "--ticket", "T-0700",
     ]) == 0

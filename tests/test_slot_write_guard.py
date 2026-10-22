@@ -6,6 +6,10 @@ git 쓰기 주인 판정은 실제 linked worktree 가 필요해 `test_git_ancho
 """
 from __future__ import annotations
 
+from pm_engine.app import engine_guard
+from pm_engine.infra import pm_paths
+
+
 import importlib.util
 import json
 import shutil
@@ -325,7 +329,7 @@ def test_denied_bootstrap_command_records_nothing(board, home):
 def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatch):
     pm_delegate = _load("slot_write_guard_pm_delegate", TOOLS / "pm_delegate.py")
     monkeypatch.setattr(board, "REPO", home)
-    monkeypatch.setattr(pm_delegate, "_load_board", lambda: board)
+    monkeypatch.setattr(pm_delegate, "REPO", home)
     assert pm_delegate._delegate_task_env(home / "work" / "app_1") == {"PM_DELEGATE_TASK": "alpha"}
     assert pm_delegate._delegate_task_env(home / "work" / "app_4" / "src") == {"PM_DELEGATE_TASK": "beta"}
     assert pm_delegate._delegate_task_env(home / "work" / "app_2") == {}
@@ -487,13 +491,13 @@ _T0931_GIT_FORMS = [
 @pytest.mark.parametrize('subcommand,args,writes', _T0931_GIT_FORMS)
 def test_t0931_git_forms_read_write_and_owner_matrix(board, home, monkeypatch, subcommand, args, writes):
     """명령 형태별로 자기·타 task·idle·readonly·세션 부재를 같은 판정자로 확인한다."""
-    monkeypatch.setattr(board, '_git_anchor_identity', lambda anchor, **kw: ('slot', Path(anchor), home))
+    monkeypatch.setattr(engine_guard, '_git_anchor_identity', lambda anchor, **kw: ('slot', Path(anchor), home))
     monkeypatch.setattr(hooks, '_git_alias_resolved', lambda invocation, **kw: invocation)
     def no_git_mutation(*a, **k):
         pytest.fail('판정 테스트가 git 변경을 실행했다')
     for number, session in [(1, 'S-alpha'), (2, 'S-alpha'), (3, 'S-alpha'), (4, 'S-alpha'), (1, 'S-missing')]:
         target = home / 'work' / f'app_{number}'
-        result = board.judge_git_anchor(home, session, str(target), ['git', subcommand, *args], runner=no_git_mutation)
+        result = engine_guard.judge_git_anchor(pm_paths.home_at(home), session, str(target), ['git', subcommand, *args], runner=no_git_mutation)
         expected = 'deny' if writes and (number != 1 or session != 'S-alpha') else 'ok'
         assert result['verdict'] == expected, (number, session, result)
     assert git_policy._git_writes_slot(subcommand, args) is writes

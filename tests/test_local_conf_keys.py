@@ -18,6 +18,12 @@ hermetic: 실 `local.conf` 파일을 tmp 에 만들어 board 도구가 그 파�
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+
+from pm_engine.cli import board_init
+
+
 import argparse
 import ast
 import importlib.util
@@ -37,6 +43,10 @@ from pm_engine.domain import conf_schema, ticket_rules
 from pm_engine.infra import conf_store, pre_push_hook, python_env
 from pm_engine.infra.harness import contract
 from pm_engine.app import body_lint, conf_lint, doc_lint, freshness_lint, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
+
+from pm_engine.infra import conf_store
+
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -82,8 +92,6 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
         (ideas / status).mkdir(parents=True, exist_ok=True)
     decisions.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", root)
-    monkeypatch.setattr(board, "TICKETS_DIR", tickets)
-    monkeypatch.setattr(board, "IDEAS_DIR", ideas)
     return wiki
 
 
@@ -92,7 +100,6 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
 
 def test_lint_local_conf_keys_wraps_the_registry_owned_unknown_property(board, monkeypatch, tmp_path):
     conf = _write_conf(tmp_path, "runtime.py=python3\nreview_ticket_body_max_bytes=65536\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     findings = conf_lint.lint_local_conf_keys(board._home())
@@ -130,7 +137,6 @@ def test_readme_legacy_flat_key_example_names_both_reviewer_generations():
 
 
 def test_no_local_conf_file_is_quiet(board, monkeypatch, tmp_path):
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
     monkeypatch.setattr(board, "REPO", tmp_path)
     assert conf_lint.lint_local_conf_keys(board._home()) == []
 
@@ -161,7 +167,6 @@ _UNRELATED_LINT_FNS = (
 def test_lint_tickets_includes_the_unknown_key_finding(board, monkeypatch, tmp_path):
     _wire_repo(board, monkeypatch, tmp_path)
     _write_conf(tmp_path, "runtime.py=python3\nadditional_reviewer.enalbed=true\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
     monkeypatch.setattr(board, "REPO", tmp_path)
     for module, fn, stub in _UNRELATED_LINT_FNS:
         monkeypatch.setattr(board if module is None else module, fn, stub)
@@ -176,7 +181,6 @@ def test_gate_zero_on_unknown_key_only(board, monkeypatch, tmp_path):
     """오타 키가 있어도 `lint --gate` rc 0(never-block) · 무인자 `lint` 는 표면화(rc 1)."""
     _wire_repo(board, monkeypatch, tmp_path)
     _write_conf(tmp_path, "runtime.py=python3\nreview_ticket_body_max_bytes=65536\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
     monkeypatch.setattr(board, "REPO", tmp_path)
     for module, fn, stub in _UNRELATED_LINT_FNS:
         monkeypatch.setattr(board if module is None else module, fn, stub)
@@ -207,7 +211,6 @@ _UNKNOWN_KEY_CLASSES = (
 @pytest.mark.parametrize("conf_line,expected_key", _UNKNOWN_KEY_CLASSES)
 def test_every_unknown_key_class_is_flagged(board, monkeypatch, tmp_path, conf_line, expected_key):
     conf = _write_conf(tmp_path, conf_line)
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     findings = conf_lint.lint_local_conf_keys(board._home())
@@ -226,7 +229,6 @@ def test_multiple_unknown_keys_surface_as_a_single_finding(board, monkeypatch, t
         "review_ticket_body_max_bytes=65536\n"
         "status_total_style=compact\n",
     )
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     findings = conf_lint.lint_local_conf_keys(board._home())
@@ -263,7 +265,6 @@ def test_known_keys_comments_and_blank_lines_produce_no_finding(board, monkeypat
         "upstream.path=/tmp/upstream\n"
     )
     conf = _write_conf(tmp_path, text)
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     assert conf_lint.lint_local_conf_keys(board._home()) == []
@@ -326,10 +327,9 @@ def test_fresh_init_conf_has_zero_unknown_keys(board, monkeypatch, tmp_path):
     pm = tmp_path / ".project_manager"
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(board._home())
 
     assert conf_lint.lint_local_conf_keys(board._home()) == []
 
@@ -349,10 +349,9 @@ def test_init_merge_path_surfaces_the_same_findings_pre_existing_unknown_key(boa
     conf = pm / "local.conf"
     conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(board._home())
 
     findings = conf_lint.lint_local_conf_keys(board._home())
     assert len(findings) == 1, findings
@@ -365,8 +364,8 @@ def test_cmd_init_source_reuses_lint_local_conf_keys_for_the_merge_path(board):
     """`cmd_init` 이 별도 목록/문구를 만들지 않고 `lint_local_conf_keys()` 를 그대로 재호출한다."""
     import inspect
 
-    source = inspect.getsource(board.cmd_init)
-    assert "conf_lint.lint_local_conf_keys(_home())" in source
+    source = inspect.getsource(board_init.cmd_init)
+    assert "conf_lint.lint_local_conf_keys(home)" in source
 
 
 # ── ⑥ 가드 민감도 — 레지스트리에서 키 1개를 빼면 red ────────────────────────
@@ -380,7 +379,6 @@ def test_removing_a_known_key_from_the_registry_turns_its_conf_line_red(board, m
     그 객체를 흔든다. 대조군(줄이기 전)이 green 이라는 것도 같은 conf 로 먼저 확인한다.
     """
     conf = _write_conf(tmp_path, "runtime.py=python3\ntest.cmd=pytest -q\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     assert conf_lint.lint_local_conf_keys(board._home()) == [], "대조군(레지스트리 온전)부터 이미 red"
@@ -408,23 +406,11 @@ def _wired_init_board(monkeypatch, tmp_path, alias: str):
         (tickets / status).mkdir(parents=True, exist_ok=True)
     (pm_dir / ".local").mkdir(parents=True, exist_ok=True)
     module = _load_module(alias, BOARD_PY)
-    for name, value in {
-        "REPO": project,
-        "TICKETS_DIR": tickets,
-        "BOARD_FILE": pm_dir / "wiki" / "board.md",
-        "LOG_FILE": pm_dir / "wiki" / "log" / "current.md",
-        "LOCAL_CONF": pm_dir / "local.conf",
-        "AREAS_FILE": pm_dir / "areas.md",
-        "LOCAL_DIR": pm_dir / ".local",
-        "BOARD_LOCK": pm_dir / ".local" / "board.lock",
-        "LEASES_FILE": pm_dir / ".local" / "worktree-leases.json",
-        "PM_STATE_FILE": pm_dir / "wiki" / "pm_state.md",
-        "PM_STATE_TEMPLATE": pm_dir / "wiki" / "pm_state.template.md",
-    }.items():
+    for name, value in {'REPO': project}.items():
         monkeypatch.setattr(module, name, value)
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
-    monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
-    monkeypatch.setattr(module, "_git_config_email", lambda: None)
+    monkeypatch.setattr(board_init, "_configure_board_submodule", lambda home: False)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -441,11 +427,11 @@ def _init_args(**kv):
 def test_cmd_init_prints_the_unknown_key_line_for_a_pre_existing_conf(monkeypatch, tmp_path, capsys):
     """`board.py init` 을 실제로 구동 — 병합 전부터 있던 오타 키가 stdout 에 1줄로 뜬다."""
     init_board = _wired_init_board(monkeypatch, tmp_path, "board_init_unknown_key")
-    init_board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    init_board.LOCAL_CONF.write_text(
+    init_board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    init_board._home().local_conf.write_text(
         "runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
 
-    rc = init_board.cmd_init(_init_args())
+    rc = board_init.cmd_init(init_board._home(), _init_args())
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -457,7 +443,7 @@ def test_cmd_init_is_quiet_on_a_fresh_home(monkeypatch, tmp_path, capsys):
     """등록 0 인 fresh clone(conf 부재)은 unknown-key 줄을 안 낸다 — 오탐 0."""
     init_board = _wired_init_board(monkeypatch, tmp_path, "board_init_fresh_home")
 
-    rc = init_board.cmd_init(_init_args())
+    rc = board_init.cmd_init(init_board._home(), _init_args())
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -611,13 +597,13 @@ def test_required_is_only_what_the_core_commands_cannot_run_without(conf_module)
 
 _MOVED_DEFAULTS = (
     pytest.param("ctx.checkpoint_at_pct", "70",
-                 lambda c: c.board._conf_default_int("ctx.checkpoint_at_pct"), 70,
+                 lambda c: conf_store._conf_default_int("ctx.checkpoint_at_pct"), 70,
                  id="board-ctx-checkpoint-at-pct"),
     pytest.param("ctx.precompact_at_pct", "80",
-                 lambda c: c.board._conf_default_int("ctx.precompact_at_pct"), 80,
+                 lambda c: conf_store._conf_default_int("ctx.precompact_at_pct"), 80,
                  id="board-ctx-precompact-at-pct"),
     pytest.param("ctx.compact_at_pct", "90",
-                 lambda c: c.board._conf_default_int("ctx.compact_at_pct"), 90,
+                 lambda c: conf_store._conf_default_int("ctx.compact_at_pct"), 90,
                  id="board-ctx-compact-at-pct"),
     pytest.param("additional_reviewer.paths", "src/,tests/,scripts/,.project_manager/tools/",
                  lambda c: c.reviewer._configured_paths({}),
@@ -873,7 +859,6 @@ def test_readme_catalog_retired(board, monkeypatch, tmp_path):
     assert "local_conf.py --keys" in readme
     # 모르는-키 안내도 사라진 문서 절이 아니라 조회 명령을 가리킨다(dangling 참조 0).
     conf = _write_conf(tmp_path, "runtime.py=python3\ntest.cmd=pytest -q\nnope.nope=1\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
     detail = conf_lint.lint_local_conf_keys(board._home())[0][2]
     assert "local_conf.py --keys" in detail and "README" not in detail

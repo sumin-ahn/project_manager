@@ -1,6 +1,14 @@
 """T-0587 — raw git cwd-misanchor 판정 seam + 3하네스 배선."""
 from __future__ import annotations
 
+from pm_engine.app import engine_guard
+from pm_engine.infra import pm_paths
+
+
+from pm_engine.app import engine_guard
+from pm_engine.infra import pm_paths
+
+
 import hashlib
 import importlib.util
 import io
@@ -32,6 +40,26 @@ def _load(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("entrypoint", ["write", "git-status"])
+def test_flat_guard_string_and_path_roots_are_equivalent(tmp_path, entrypoint):
+    """평면 어댑터는 문자열과 Path root에서 같은 실제 판정을 반환한다."""
+    board = _load("board_root_input_contract", BOARD_PY)
+
+    def judge(root):
+        if entrypoint == "write":
+            return board.judge_tool_input(
+                root, "session", str(tmp_path), "Write",
+                {"file_path": str(tmp_path / "note.txt"), "content": "note"},
+            )
+        return board.judge_git_anchor_command(
+            root, "session", str(tmp_path), "git status",
+        )
+
+    path_judgment = judge(tmp_path)
+    assert path_judgment["verdict"] == "ok"
+    assert judge(str(tmp_path)) == path_judgment
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -150,7 +178,7 @@ def topology_without_home_tests(topology):
 def test_cross_existing_pathspec_is_the_only_deny(topology):
     board = _load("git_anchor_board_deny", BOARD_PY)
     home, _slot = topology
-    got = board.judge_git_anchor(home, "S", str(home), ["git", "add", "tests/shared.txt"])
+    got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "add", "tests/shared.txt"])
     assert got["verdict"] == "deny"
     assert got["cwd_identity"] == "pm-home"
     assert "tests/shared.txt" in got["reason"]
@@ -159,14 +187,14 @@ def test_cross_existing_pathspec_is_the_only_deny(topology):
 def test_false_deny_zero_for_normal_home_slot_and_missing_path(topology, tmp_path):
     board = _load("git_anchor_board_normal", BOARD_PY)
     home, slot = topology
-    normal_home = board.judge_git_anchor(home, "S", 
+    normal_home = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "commit", "-m", "done", "--", ".project_manager/wiki/status.md"]
     )
-    normal_slot = board.judge_git_anchor(home, "S", 
+    normal_slot = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(slot), ["git", "commit", "-m", "code", "--", "tests/shared.txt"]
     )
-    missing = board.judge_git_anchor(home, "S", str(home), ["git", "add", "tests/not-there.txt"])
-    reset_cwd = board.judge_git_anchor(home, "S", str(tmp_path / "not-a-repo"), ["git", "commit", "-m", "x"])
+    missing = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "add", "tests/not-there.txt"])
+    reset_cwd = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(tmp_path / "not-a-repo"), ["git", "commit", "-m", "x"])
     assert normal_home["verdict"] == "warn" and normal_home["cwd_identity"] == "pm-home"
     assert normal_slot["verdict"] == "ok" and normal_slot["cwd_identity"] == "slot"
     assert missing["verdict"] == "warn"
@@ -176,8 +204,8 @@ def test_false_deny_zero_for_normal_home_slot_and_missing_path(topology, tmp_pat
 def test_read_git_is_ok_and_git_dash_c_changes_anchor(topology):
     board = _load("git_anchor_board_read", BOARD_PY)
     home, slot = topology
-    assert board.judge_git_anchor(home, "S", str(home), ["git", "status"])["verdict"] == "ok"
-    got = board.judge_git_anchor(home, "S", str(home), ["git", "-C", str(slot), "add", "tests/shared.txt"])
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "status"])["verdict"] == "ok"
+    got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "-C", str(slot), "add", "tests/shared.txt"])
     assert got["verdict"] == "ok" and got["cwd_identity"] == "slot"
 
 
@@ -214,7 +242,7 @@ def test_engine_guard_allows_pm_home_pytest_when_tests_exist(topology, argv):
     """(a) 임베드 채택자의 PM 홈에 tests/가 실재하면 출하 회귀 명령은 ok."""
     board = _load(f"engine_anchor_home_pytest_{len(argv)}", BOARD_PY)
     home, _slot = topology
-    got = board.judge_engine_invocation(str(home), argv)
+    got = engine_guard.judge_engine_invocation(str(home), argv)
     assert got["verdict"] == "ok"
     assert got["cwd_identity"] == "pm-home"
     assert "오앵커 패턴이 아님" in got["reason"]
@@ -233,7 +261,7 @@ def test_engine_guard_denies_pm_home_pytest_when_tests_missing(
     """(a) PM 홈 cwd에 명시 대상 tests/가 없을 때만 기계 확정 deny."""
     board = _load(f"engine_anchor_missing_home_pytest_{len(argv)}", BOARD_PY)
     home, _slot = topology_without_home_tests
-    got = board.judge_engine_invocation(str(home), argv)
+    got = engine_guard.judge_engine_invocation(str(home), argv)
     assert got["verdict"] == "deny"
     assert got["cwd_identity"] == "pm-home"
     assert "cwd의 tests/ 디렉터리가 실재하지 않음" in got["reason"]
@@ -245,7 +273,7 @@ def test_engine_guard_denies_worktree_board_mutation(topology):
     home, slot = topology
     _seed_engine_copy(home, "v-old")
     _seed_engine_copy(slot, "v-new")
-    got = board.judge_engine_invocation(
+    got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/board.py", "complete", "T-0001"],
     )
     assert got["verdict"] == "deny"
@@ -264,12 +292,12 @@ def test_engine_guard_denies_worktree_board_mutation(topology):
 
     # cwd가 아니라 선택한 script 사본이 엔진 repo 앵커를 정한다.
     slot_script = slot / ".project_manager" / "tools" / "board.py"
-    from_home = board.judge_engine_invocation(
+    from_home = engine_guard.judge_engine_invocation(
         str(home), ["python3", str(slot_script), "complete", "T-0001"],
     )
     assert from_home["verdict"] == "deny"
     home_script = home / ".project_manager" / "tools" / "board.py"
-    pm_owned = board.judge_engine_invocation(
+    pm_owned = engine_guard.judge_engine_invocation(
         str(slot), ["python3", str(home_script), "complete", "T-0001"],
     )
     assert pm_owned["verdict"] == "ok"
@@ -294,7 +322,7 @@ def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
         == (slot / ".project_manager" / "tools" / "engine_rev.py").read_bytes()
     )
     assert home_script.read_bytes() != slot_script.read_bytes()
-    got = board.judge_engine_invocation(
+    got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
     )
     assert got == _expected_engine_verdict(
@@ -440,7 +468,7 @@ def test_sha_mismatch_with_dirty_worktree_copy_does_not_claim_stale_import(
     assert home_script.read_bytes() != slot_script.read_bytes()
 
     runner = _GitStatusCountingRunner()
-    got = board.judge_engine_invocation(
+    got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
         runner=runner,
     )
@@ -466,7 +494,7 @@ def test_sha_mismatch_with_clean_worktree_copy_reports_stale_import(topology):
     assert home_script.read_bytes() != slot_script.read_bytes()
 
     runner = _GitStatusCountingRunner()
-    got = board.judge_engine_invocation(
+    got = engine_guard.judge_engine_invocation(
         str(home), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
         runner=runner,
     )
@@ -494,7 +522,7 @@ def test_freshness_git_query_happens_only_when_sha_differs(topology):
     assert home_script.read_bytes() == slot_script.read_bytes()
 
     same = _GitStatusCountingRunner()
-    got_same = board.judge_engine_invocation(
+    got_same = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
         runner=same,
     )
@@ -509,7 +537,7 @@ def test_freshness_git_query_happens_only_when_sha_differs(topology):
         'ENGINE_REV = "v1.7.9"\nIMPORT_COPY = True\n', encoding="utf-8",
     )
     differs = _GitStatusCountingRunner()
-    got_differs = board.judge_engine_invocation(
+    got_differs = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
         runner=differs,
     )
@@ -544,7 +572,7 @@ def test_sha_mismatch_with_unreadable_git_state_does_not_assert_direction(
     else:
         runner = _GitStatusCountingRunner(fail_mode="oserror")
 
-    got = board.judge_engine_invocation(
+    got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
         runner=runner,
     )
@@ -578,7 +606,7 @@ def test_cross_owner_copies_are_undecided_without_git_query(topology, foreign_pm
     relative_call = os.path.relpath(foreign_script, slot)
 
     runner = _GitStatusCountingRunner()
-    got = board.judge_engine_invocation(
+    got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", relative_call, "status"], runner=runner,
     )
     assert got == _expected_engine_verdict(
@@ -653,7 +681,7 @@ def test_relative_engine_copy_hash_read_failure_is_fail_soft(
 
     # 사본 해시 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
     monkeypatch.setattr(board.fs, "read_bytes_shared", unreadable)
-    got = board.judge_engine_invocation(
+    got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
     )
     assert got["verdict"] == "warn"
@@ -683,7 +711,7 @@ def test_absolute_engine_call_is_ok(topology):
     _seed_engine_copy(home, "v1")
     _seed_engine_copy(slot, "v1")
     script = slot / ".project_manager" / "tools" / "pm_delegate.py"
-    got = board.judge_engine_invocation(str(home), ["python3", str(script), "status"])
+    got = engine_guard.judge_engine_invocation(str(home), ["python3", str(script), "status"])
     assert got["verdict"] == "ok"
     assert f"절대경로 엔진 사본={script}" in got["reason"]
     assert f"repo 앵커={slot} (slot)" in got["reason"]
@@ -717,7 +745,7 @@ def test_mixed_git_and_engine_calls_promote_missing_tests_deny(
 def test_adjacent_identical_warns_render_as_one_range(topology):
     board = _load("git_anchor_adjacent_warn_range", BOARD_PY)
     home, _slot = topology
-    warning = board.judge_git_anchor(home, "S", 
+    warning = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "commit", "-m", "repeat"],
     )["reason"]
 
@@ -744,7 +772,7 @@ def test_reason_rendering_does_not_rerun_judgments(monkeypatch, topology):
         judged.append((cwd, tuple(argv)))
         return {"verdict": "warn", "cwd_identity": "pm-home", "reason": "repeat"}
 
-    monkeypatch.setattr(board, "judge_git_anchor", fake_judge)
+    monkeypatch.setattr(engine_guard, "judge_git_anchor", fake_judge)
     got = board.judge_git_anchor_command(home, "S", 
         str(home), "git status && git status && git status && git status",
     )
@@ -767,7 +795,7 @@ def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
         verdict, reason = next(verdicts)
         return {"verdict": verdict, "cwd_identity": "pm-home", "reason": reason}
 
-    monkeypatch.setattr(board, "judge_git_anchor", filtered_judge)
+    monkeypatch.setattr(engine_guard, "judge_git_anchor", filtered_judge)
     filtered = board.judge_git_anchor_command(home, "S", 
         str(home), "git status && git status && git status && git status && git status && git status",
     )
@@ -780,7 +808,7 @@ def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
         verdict, reason = next(gap_verdicts)
         return {"verdict": verdict, "cwd_identity": "pm-home", "reason": reason}
 
-    monkeypatch.setattr(board, "judge_git_anchor", gapped_judge)
+    monkeypatch.setattr(engine_guard, "judge_git_anchor", gapped_judge)
     gapped = board.judge_git_anchor_command(home, "S", 
         str(home), "git status && git status && git status",
     )
@@ -792,10 +820,10 @@ def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
 def test_nonadjacent_or_different_warns_remain_separate(topology):
     board = _load("git_anchor_warn_run_boundaries", BOARD_PY)
     home, _slot = topology
-    commit_warning = board.judge_git_anchor(home, "S", 
+    commit_warning = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "commit", "-m", "repeat"],
     )["reason"]
-    missing_path_warning = board.judge_git_anchor(home, "S", 
+    missing_path_warning = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "add", "tests/not-there.txt"],
     )["reason"]
 
@@ -821,7 +849,7 @@ def test_repeated_special_deny_keeps_code_but_mixed_denies_drop_it(
 ):
     board = _load("git_anchor_deny_range_code", BOARD_PY)
     home, slot = topology_without_home_tests
-    special = board.judge_engine_invocation(
+    special = engine_guard.judge_engine_invocation(
         str(home), ["python3", "-m", "pytest", "tests/"],
     )
 
@@ -898,7 +926,7 @@ def test_existing_git_mutation_deny_is_unchanged(topology):
     """(g) 엔진 합류 뒤에도 기존 PM 홈 cross-pathspec git deny는 불변."""
     board = _load("engine_anchor_git_regression", BOARD_PY)
     home, _slot = topology
-    direct = board.judge_git_anchor(home, "S", str(home), ["git", "add", "tests/shared.txt"])
+    direct = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "add", "tests/shared.txt"])
     shell = board.judge_git_anchor_command(home, "S", str(home), "git add tests/shared.txt")
     assert shell == direct
     assert shell["verdict"] == "deny"
@@ -1122,7 +1150,7 @@ def test_if_else_tracks_failed_cd_branch_cwd(topology):
 def test_git_pathspec_normalization_and_no_separator_forms_deny(topology, argv):
     board = _load(f"git_anchor_pathspec_{abs(hash(tuple(argv)))}", BOARD_PY)
     home, _slot = topology
-    got = board.judge_git_anchor(home, "S", str(home), argv)
+    got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), argv)
     assert got["verdict"] == "deny"
 
 
@@ -1157,9 +1185,9 @@ def test_attached_redirection_still_recognizes_git(topology, command):
 def test_pathspecs_resolve_from_invocation_cwd(topology):
     board = _load("git_anchor_pathspec_cwd", BOARD_PY)
     home, _slot = topology
-    assert board.judge_git_anchor(home, "S", str(home / "tests"), ["git", "add", "shared.txt"])["verdict"] == "deny"
-    assert board.judge_git_anchor(home, "S", str(home), ["git", "-C", "tests", "add", "shared.txt"])["verdict"] == "deny"
-    assert board.judge_git_anchor(home, "S", str(home / "templates"), ["git", "add", "../tests/shared.txt"])["verdict"] == "deny"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home / "tests"), ["git", "add", "shared.txt"])["verdict"] == "deny"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "-C", "tests", "add", "shared.txt"])["verdict"] == "deny"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home / "templates"), ["git", "add", "../tests/shared.txt"])["verdict"] == "deny"
 
 
 def test_work_tree_and_git_dir_overrides_are_never_approved_and_deny_only_destructive_forms(
@@ -1174,14 +1202,14 @@ def test_work_tree_and_git_dir_overrides_are_never_approved_and_deny_only_destru
         (str(slot), [f"GIT_WORK_TREE={home}", "git", "add", "tests/shared.txt"]),
         (str(slot), [f"GIT_DIR={home / '.git'}", "git", "add", "tests/shared.txt"]),
     ]
-    assert all(board.judge_git_anchor(home, "S", cwd, argv)["verdict"] == "warn" for cwd, argv in cases)
+    assert all(engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", cwd, argv)["verdict"] == "warn" for cwd, argv in cases)
     destructive = [
         (str(home), [f"GIT_DIR={slot / '.git'}", "git", "branch", "-D", "main"]),
         (str(home), ["git", f"--git-dir={home / '.repos' / 'product.git'}", "branch", "-D", "main"]),
         (str(home), ["git", "--work-tree", str(slot), "reset", "--hard"]),
     ]
     for cwd, argv in destructive:
-        got = board.judge_git_anchor(home, "S", cwd, argv)
+        got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", cwd, argv)
         assert got["verdict"] == "deny", (argv, got)
         assert got["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
 
@@ -1189,16 +1217,16 @@ def test_work_tree_and_git_dir_overrides_are_never_approved_and_deny_only_destru
 def test_git_clean_exclude_values_are_not_pathspecs(topology):
     board = _load("git_anchor_clean_exclude", BOARD_PY)
     home, _slot = topology
-    assert board.judge_git_anchor(home, "S", str(home), ["git", "clean", "-e", "tests/shared.txt"])["verdict"] == "warn"
-    assert board.judge_git_anchor(home, "S", str(home), ["git", "clean", "--exclude", "tests/shared.txt"])["verdict"] == "warn"
-    assert board.judge_git_anchor(home, "S", str(home), ["git", "clean", "-ne", "tests/shared.txt"])["verdict"] == "warn"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "clean", "-e", "tests/shared.txt"])["verdict"] == "warn"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "clean", "--exclude", "tests/shared.txt"])["verdict"] == "warn"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "clean", "-ne", "tests/shared.txt"])["verdict"] == "warn"
 
 
 def test_r8_parser_boundaries(topology):
     board = _load("git_anchor_r8", BOARD_PY)
     home, slot = topology
-    assert board.judge_git_anchor(home, "S", str(home / "tests"), ["git", "add", ":(top)tests/shared.txt"])["verdict"] == "deny"
-    assert board.judge_git_anchor(home, "S", str(home / "tests"), ["git", "add", ":/tests/shared.txt"])["verdict"] == "deny"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home / "tests"), ["git", "add", ":(top)tests/shared.txt"])["verdict"] == "deny"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home / "tests"), ["git", "add", ":/tests/shared.txt"])["verdict"] == "deny"
     assert board.judge_git_anchor_command(home, "S", str(home), "echo x# <<EOF\ngit add tests/shared.txt\nEOF")["verdict"] != "deny"
     assert board.judge_git_anchor_command(home, "S", str(home), "cat <<''\ngit add tests/shared.txt\n\n")["verdict"] != "deny"
     assert board.judge_git_anchor_command(home, "S", str(home), "'git' add tests/shared.txt")["verdict"] == "deny"
@@ -1302,12 +1330,12 @@ def test_r11_dynamic_command_word_is_ambiguity_not_ok(topology):
 def test_pathspec_file_and_ambiguous_ref_forms_fail_open(topology):
     board = _load("git_anchor_pathspec_fail_open", BOARD_PY)
     home, _slot = topology
-    from_file = board.judge_git_anchor(home, "S", 
+    from_file = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "add", "--pathspec-from-file", "templates/shared.txt"]
     )
-    checkout = board.judge_git_anchor(home, "S", str(home), ["git", "checkout", "tests/shared.txt"])
-    reset = board.judge_git_anchor(home, "S", str(home), ["git", "reset", "tests/shared.txt"])
-    combined_message = board.judge_git_anchor(home, "S", 
+    checkout = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "checkout", "tests/shared.txt"])
+    reset = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "reset", "tests/shared.txt"])
+    combined_message = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "commit", "-am", "tests/shared.txt"]
     )
     top_magic_shell = board.judge_git_anchor_command(home, "S", 
@@ -1328,7 +1356,7 @@ def test_malicious_ledger_parent_and_symlink_slots_are_not_registered(topology, 
     ledger.write_text(json.dumps({"leases": [
         {"slot": "../product-source", "repo": "product", "state": "leased"},
     ]}) + "\n", encoding="utf-8")
-    assert board.judge_git_anchor(home, "S", 
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "add", "tests/shared.txt"]
     )["verdict"] == "warn"
 
@@ -1338,7 +1366,7 @@ def test_malicious_ledger_parent_and_symlink_slots_are_not_registered(topology, 
     ledger.write_text(json.dumps({"leases": [
         {"slot": "work/evil_1", "repo": "evil", "state": "leased"},
     ]}) + "\n", encoding="utf-8")
-    assert board.judge_git_anchor(home, "S", 
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "add", "tests/shared.txt"]
     )["verdict"] == "warn"
 
@@ -1355,7 +1383,7 @@ def test_only_canonical_active_lease_is_slot_identity(topology, lease):
     home, slot = topology
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.write_text(json.dumps({"leases": [lease]}) + "\n", encoding="utf-8")
-    got = board.judge_git_anchor(home, "S", str(slot), ["git", "commit", "-m", "normal"])
+    got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "commit", "-m", "normal"])
     assert got["verdict"] == ("deny" if lease["state"] == "idle" else "warn")
     assert got["cwd_identity"] == "worktree"
 
@@ -1370,8 +1398,8 @@ def test_internal_symlink_slot_alias_and_target_are_not_registered(topology):
         {"slot": "work/evil_1", "repo": "evil", "state": "leased"},
     ]}) + "\n", encoding="utf-8")
 
-    alias_got = board.judge_git_anchor(home, "S", str(alias), ["git", "commit", "-m", "alias"])
-    target_got = board.judge_git_anchor(home, "S", str(slot), ["git", "commit", "-m", "target"])
+    alias_got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(alias), ["git", "commit", "-m", "alias"])
+    target_got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "commit", "-m", "target"])
     assert alias_got["verdict"] == "warn" and alias_got["cwd_identity"] == "worktree"
     assert target_got["verdict"] == "warn" and target_got["cwd_identity"] == "worktree"
 
@@ -1379,7 +1407,7 @@ def test_internal_symlink_slot_alias_and_target_are_not_registered(topology):
 def test_registered_slot_mutation_is_explicitly_allowed(topology):
     board = _load("git_anchor_registered_slot_allow", BOARD_PY)
     home, slot = topology
-    got = board.judge_git_anchor(home, "S", str(slot), ["git", "add", "tests/shared.txt"])
+    got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "add", "tests/shared.txt"])
     assert got["verdict"] == "ok"
     assert got["cwd_identity"] == "slot"
 
@@ -1398,8 +1426,8 @@ def test_additional_mutations_warn_at_home_and_judge_form_in_registered_slot(top
         argv += ["push"]
     else:
         argv += ["tests/shared.txt"]
-    home_got = board.judge_git_anchor(home, "S", str(home), argv)
-    slot_got = board.judge_git_anchor(home, "S", str(slot), argv)
+    home_got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), argv)
+    slot_got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), argv)
     expected_home = {
         "rm": "deny", "mv": "deny", "clean": "deny", "apply": "warn", "stash": "warn",
     }
@@ -2447,7 +2475,7 @@ def destructive_board():
 )
 def test_slot_destructive_git_forms_are_denied(topology, destructive_board, args, label):
     home, slot = topology
-    got = destructive_board.judge_git_anchor(home, "S", str(slot), ["git", *args])
+    got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", *args])
     assert got["verdict"] == "deny", got
     assert got["cwd_identity"] == "slot"
     assert got["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
@@ -2463,7 +2491,7 @@ def test_slot_read_only_and_existing_branch_forms_are_not_denied(
 ):
     """과차단 음성 — 목록·조회·기존 브랜치 전환·미리보기·index 만 되돌리기는 슬롯에서도 통과."""
     home, slot = topology
-    got = destructive_board.judge_git_anchor(home, "S", str(slot), ["git", *args])
+    got = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", *args])
     assert got["verdict"] == "ok", got
     assert got["cwd_identity"] == "slot"
 
@@ -2506,20 +2534,20 @@ def test_shared_repository_and_unleased_worktree_are_protected_targets(topology)
     board = _load("git_destructive_shared_repo", BOARD_PY)
     home, slot = topology
     bare = home / ".repos" / "product.git"
-    direct = board.judge_git_anchor(home, "S", str(bare), ["git", "branch", "-D", "main"])
+    direct = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(bare), ["git", "branch", "-D", "main"])
     assert direct["verdict"] == "deny" and direct["cwd_identity"] == "shared-repo"
-    via_option = board.judge_git_anchor(home, "S", 
+    via_option = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S",
         str(home), ["git", "-C", ".repos/product.git", "worktree", "remove", str(slot)],
     )
     assert via_option["verdict"] == "deny" and via_option["cwd_identity"] == "shared-repo"
-    listing = board.judge_git_anchor(home, "S", str(bare), ["git", "branch"])
+    listing = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(bare), ["git", "branch"])
     assert listing["verdict"] == "warn" and listing["cwd_identity"] == "shared-repo"
-    assert board.judge_git_anchor(home, "S", str(bare), ["git", "fetch"])["verdict"] == "ok"
+    assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(bare), ["git", "fetch"])["verdict"] == "ok"
 
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
                                                "state": "idle"}]}) + "\n", encoding="utf-8")
-    idle = board.judge_git_anchor(home, "S", str(slot), ["git", "stash", "clear"])
+    idle = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "stash", "clear"])
     assert idle["verdict"] == "deny" and idle["cwd_identity"] == "worktree"
 
 
@@ -2535,11 +2563,11 @@ def test_destructive_forms_outside_slot_and_shared_repository_are_not_denied(
         ["branch", "-D", "main"], ["reset", "--hard"], ["push", "--force"],
         ["worktree", "remove", "x"], ["checkout", "-b", "x"], ["stash", "clear"], ["clean", "-fd"],
     ):
-        foreign = destructive_board.judge_git_anchor(home, "S", str(unrelated), ["git", *args])
+        foreign = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(unrelated), ["git", *args])
         assert foreign["verdict"] == "warn" and foreign["cwd_identity"] == "foreign", foreign
-        at_home = destructive_board.judge_git_anchor(home, "S", str(home), ["git", *args])
+        at_home = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", *args])
         assert at_home["verdict"] == "warn" and at_home["cwd_identity"] == "pm-home", at_home
-        non_repo = destructive_board.judge_git_anchor(home, "S", str(plain), ["git", *args])
+        non_repo = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(plain), ["git", *args])
         assert non_repo["verdict"] == "warn" and non_repo["cwd_identity"] == "non-repo", non_repo
     shell = destructive_board.judge_git_anchor_command(home, "S", 
         str(unrelated), "git branch -D main && git push --force",
@@ -2554,10 +2582,10 @@ def test_git_alias_is_resolved_against_the_target_repository(topology):
     _git(slot, "config", "alias.chain", "wipe-stash")
     _git(slot, "config", "alias.wipe-stash", "stash clear")
 
-    repo_alias = board.judge_git_anchor(home, "S", str(slot), ["git", "nuke", "main"])
+    repo_alias = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "nuke", "main"])
     assert repo_alias["verdict"] == "deny"
     assert "브랜치 지우기" in repo_alias["reason"] and "`git branch -D main`" in repo_alias["reason"]
-    chained = board.judge_git_anchor(home, "S", str(slot), ["git", "chain"])
+    chained = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "chain"])
     assert chained["verdict"] == "deny" and "`git stash clear`" in chained["reason"]
     inline = board.judge_git_anchor_command(home, "S", str(slot), "git -c alias.gone='reset --hard' gone")
     assert inline["verdict"] == "deny" and "`git reset --hard`" in inline["reason"]
@@ -2568,12 +2596,12 @@ def test_git_alias_is_resolved_against_the_target_repository(topology):
     assert "대상을 정적으로 정할 수 없어" in shell_alias["reason"]
 
     # git 명령 이름을 가리는 alias 는 git 이 무시한다 — 가드도 풀지 않는다.
-    shadowed = board.judge_git_anchor(home, "S", str(slot), ["git", "-c", "alias.status=branch -D main", "status"])
+    shadowed = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "-c", "alias.status=branch -D main", "status"])
     assert shadowed["verdict"] == "ok"
-    harmless = board.judge_git_anchor(home, "S", str(slot), ["git", "-c", "alias.lg=log --oneline", "lg"])
+    harmless = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "-c", "alias.lg=log --oneline", "lg"])
     assert harmless["verdict"] == "ok"
     # PM 홈은 파괴 형태 거부 대상이 아니므로 alias 도 풀지 않는다(종전 판정).
-    at_home = board.judge_git_anchor(home, "S", str(home), ["git", "-c", "alias.nuke=branch -D", "nuke", "main"])
+    at_home = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "-c", "alias.nuke=branch -D", "nuke", "main"])
     assert at_home["verdict"] == "ok"
 
 
@@ -3403,7 +3431,7 @@ def test_t0931_slot_paths_global_options_alias_and_ownership(topology, mode, com
     home, slot = topology
     _t0931_guard_owner(home, mode)
     board = _load('t0931_anchor_alias', BOARD_PY)
-    result = board.judge_git_anchor(home, 'missing' if mode == 'no-task' else 'S', str(home), ['git', '-C', str(slot), *command])
+    result = engine_guard.judge_git_anchor(pm_paths.home_at(home), 'missing' if mode == 'no-task' else 'S', str(home), ['git', '-C', str(slot), *command])
     assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
 
 
@@ -3428,9 +3456,9 @@ def test_t0931_slot_paths_populated_nested_submodule_joins_parent(topology, tmp_
     status = git(slot, 'submodule', 'status', '--', 'vendor/status').stdout
     assert head in status and not status.startswith('-')
     board = _load('t0931_nested_root', BOARD_PY)
-    result = board.judge_git_anchor(home, 'missing' if mode == 'no-task' else 'S', str(slot), ['git', '-C', 'vendor/status', *command])
+    result = engine_guard.judge_git_anchor(pm_paths.home_at(home), 'missing' if mode == 'no-task' else 'S', str(slot), ['git', '-C', 'vendor/status', *command])
     assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
-    read = board.judge_git_anchor(home, 'S', str(module), ['git', 'submodule', '--quiet', 'status'])
+    read = engine_guard.judge_git_anchor(pm_paths.home_at(home), 'S', str(module), ['git', 'submodule', '--quiet', 'status'])
     assert read['verdict'] != 'deny'
 
 
@@ -3519,7 +3547,7 @@ def test_t0931_foreach_payload_help_ownership(topology, mode, help_arg, form):
         command = ['-C', str(slot), *command]
     elif form == 'alias':
         command = ['-c', 'alias.payload=submodule --quiet foreach --recursive printf %s', 'payload', help_arg]
-    result = board.judge_git_anchor(home, 'missing' if mode == 'no-task' else 'S', str(cwd), ['git', *command])
+    result = engine_guard.judge_git_anchor(pm_paths.home_at(home), 'missing' if mode == 'no-task' else 'S', str(cwd), ['git', *command])
     assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
 
 
@@ -3544,7 +3572,7 @@ def test_t0931_foreach_payload_help_populated_nested_root(topology, tmp_path, mo
     board = _load('t0931_foreach_nested', BOARD_PY)
     session = 'missing' if mode == 'no-task' else 'S'
     for cwd, prefix in [(slot, []), (slot, ['-C', 'vendor/status']), (module, [])]:
-        result = board.judge_git_anchor(home, session, str(cwd), ['git', *prefix, 'submodule', 'foreach', 'printf', '%s', help_arg])
+        result = engine_guard.judge_git_anchor(pm_paths.home_at(home), session, str(cwd), ['git', *prefix, 'submodule', 'foreach', 'printf', '%s', help_arg])
         assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
 
 
@@ -3560,7 +3588,7 @@ def test_t0931_foreach_payload_help_git_query(topology, command):
     home, slot = topology
     _t0931_guard_owner(home, 'foreign')
     board = _load('t0931_foreach_query', BOARD_PY)
-    result = board.judge_git_anchor(home, 'S', str(slot), ['git', *command])
+    result = engine_guard.judge_git_anchor(pm_paths.home_at(home), 'S', str(slot), ['git', *command])
     assert result['verdict'] == 'ok', result
 
 

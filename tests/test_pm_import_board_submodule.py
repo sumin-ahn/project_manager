@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 from pm_engine.domain import areas_rules
 
+from pm_engine.infra import areas_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -187,8 +189,8 @@ def test_empty_remote_areas_scaffold_parses_canonical(pm_import, tmp_path):
     assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
                            "--board-submodule", "--board-remote", str(bare)]) == 0
     areas = (dest / ".project_manager" / "board" / "areas.md").read_text(encoding="utf-8")
-    assert board_mod._areas_header_line() in areas
-    assert board_mod._areas_separator_line() in areas
+    assert areas_store._areas_header_line() in areas
+    assert areas_store._areas_separator_line() in areas
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -433,5 +435,5 @@ def test_areas_scaffold_columns_mirror_board(pm_import):
     board_mod = _load_mod("board")
     assert pm_import._BOARD_AREAS_COLUMNS == areas_rules._AREAS_COLUMNS
     scaffold = pm_import._board_areas_scaffold()
-    assert board_mod._areas_header_line() in scaffold
-    assert board_mod._areas_separator_line() in scaffold
+    assert areas_store._areas_header_line() in scaffold
+    assert areas_store._areas_separator_line() in scaffold

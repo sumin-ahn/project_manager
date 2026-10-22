@@ -9,8 +9,13 @@ monkeypatch 로 흔들어 4조합(_default_python)·3분기(_detect_py)를 검�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+
+
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +26,44 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 # _default_python() 을 동일 헬퍼로 보유하는 세 도구 — 공통적으로 4조합을 검증.
 DEFAULT_PYTHON_TOOLS = ("pm_bootstrap", "pm_handoff", "ticket_finish")
+
+
+@pytest.mark.parametrize("name", ["pm_delegate", "additional_reviewer", "ticket_finish"])
+def test_flat_tool_path_load_without_preloaded_engine(tmp_path, name):
+    """tools 경로와 패키지가 없는 별도 프로세스에서도 경로 적재가 성공한다."""
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+assert str(target.parent) not in sys.path
+assert not any(name == 'pm_engine' or name.startswith('pm_engine.') for name in sys.modules)
+spec = importlib.util.spec_from_file_location(target.stem, target)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+print('loaded:' + target.stem)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(TOOLS / f"{name}.py")],
+        cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == f"loaded:{name}"
+
+
+@pytest.mark.parametrize("name", ["pm_delegate", "additional_reviewer", "ticket_finish"])
+def test_flat_tool_help_in_isolated_python(tmp_path, name):
+    """격리 모드 CLI가 패키지 적재를 마치고 help 파서에 진입한다."""
+    completed = subprocess.run(
+        [sys.executable, "-I", str(TOOLS / f"{name}.py"), "--help"],
+        cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "--help" in completed.stdout
 
 
 def _load(name: str):
@@ -151,21 +194,14 @@ def test_detect_py_literal_fallback_when_neither(monkeypatch, board):
 
 def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     """init 이 local.conf 의 py= 에 _detect_py() 결과를 박는지 (tmp REPO + which monkeypatch)."""
-    local_conf = tmp_path / "local.conf"
-    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
+    local_conf = tmp_path / "proj/.project_manager/local.conf"
     # 부수 파일 생성·훅 설치·추가리뷰 프롬프트는 이 단언과 무관 — 무력화.
-    monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
-    monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "no_such_template.md")
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
     (_pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
-    monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
-    monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
-    monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
     # python3 가 PATH 에 있는 환경 → _detect_py() 는 bare 'python3' 를 기록한다.
     # (which 가 python3 에만 truthy + _interp_runs stub 으로 머신·OS 무관 결정화 — T-0022.)
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
@@ -176,7 +212,7 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
 
     import argparse
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="tester")
-    rc = board.cmd_init(args)
+    rc = board_init.cmd_init(board._home(), args)
 
     assert rc == 0
     written = local_conf.read_text(encoding="utf-8")

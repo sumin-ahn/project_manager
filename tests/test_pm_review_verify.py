@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+
+
+
 import contextlib
 import importlib.util
 import json
@@ -677,9 +680,6 @@ def test_verify_template_cli_rc0_on_full_coverage_and_rc1_on_missing(
     spec, rounds = _basic_ticket(pd)
     spec_path = _materialize(pd, spec, rounds, tickets_dir, "T-0786")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _owner: _fake_board(pd, spec_path, tickets_dir),
-    )
     assert pd.main(["review", "verify-template", "--ticket", "T-0786"]) == 0
     out = capsys.readouterr().out
     assert review_form.PM_REVIEW_CONFIRMATION_BLOCK in out and '"round":2' in out
@@ -699,9 +699,6 @@ def test_verify_template_cli_honors_explicit_round(pd, tmp_path, monkeypatch, ca
     tickets_dir = _home_tickets_dir(tmp_path)
     spec_path = _materialize(pd, spec, [r1, dev2], tickets_dir, "T-0786")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _owner: _fake_board(pd, spec_path, tickets_dir),
-    )
     assert pd.main([
         "review", "verify-template", "--ticket", "T-0786", "--round", "2",
     ]) == 0
@@ -1043,9 +1040,6 @@ def _verify_cli(pd, tmp_path, monkeypatch, spec, rounds, *, extra=()) -> int:
     tickets_dir = _home_tickets_dir(tmp_path)
     spec_path = _materialize(pd, spec, rounds, tickets_dir, "T-0805")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _owner: _fake_board(pd, spec_path, tickets_dir),
-    )
     return pd.main(["review", "verify-template", "--ticket", "T-0805", *extra])
 
 

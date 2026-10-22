@@ -13,6 +13,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.cli import board_prefix
+from pm_engine.cli import board_ticket
+
+
 import importlib.util
 import json
 import os
@@ -31,6 +36,12 @@ from pm_engine.domain import conf_schema, round_rules, ticket_rules
 from pm_engine.infra import conf_store, doc_page_store, manifest_store, pm_paths, pre_push_hook, python_env, round_store, ticket_store
 from conftest import ensure_product_slot
 from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, doc_staleness, freshness_lint, lint_hooks, round_seed, ticket_lint, wiki_lint, wikilink_lint
+
+from pm_engine.app import board_dashboard
+from pm_engine.app import ticket_access
+from pm_engine.infra import conf_store
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -79,8 +90,6 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
         (ideas / status).mkdir(parents=True, exist_ok=True)
     decisions.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", root)
-    monkeypatch.setattr(board, "TICKETS_DIR", tickets)
-    monkeypatch.setattr(board, "IDEAS_DIR", ideas)
     return wiki
 
 
@@ -799,7 +808,6 @@ def _wire_scope_repo(board, monkeypatch, root):
     wiki = _wire_repo(board, monkeypatch, root)
     specs = wiki / "specs"
     specs.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "AREAS_FILE", root / ".project_manager" / "areas.md")
     return wiki
 
 
@@ -905,7 +913,7 @@ def test_lint_scopes_advice_on_unregistered_repo_when_areas_exists(
     """areas.md 에 prefix 등록이 있는데 미등록 repo scope → scope-advice (오타 신호)."""
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     # areas.md 에 PAY 만 등록 — `ghost` scope 는 미등록.
-    board.AREAS_FILE.write_text(
+    pm_paths.areas_file(board._home()).write_text(
         "| repo | prefix | git | test_cmd | owner |\n"
         "|---|---|---|---|---|\n"
         "| pay | PAY | | pytest | pay-pm |\n", encoding="utf-8")
@@ -2580,7 +2588,6 @@ def _wire_conf(board, monkeypatch, tmp_path, conf: dict) -> None:
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     conf_path.write_text(
         "".join(f"{key}={value}\n" for key, value in conf.items()), encoding="utf-8")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
 
@@ -2713,7 +2720,6 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
         "upstream.seen_rev=0ccc02513a7f\n",  # 조상 — 흡수 직후에도 거짓 drift 를 내던 형상.
         encoding="utf-8",
     )
-    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
     monkeypatch.setattr(board, "REPO", dest)
 
     # 어긋난 채로는 advisory 1건(회귀 sensitivity — 이 테스트가 vacuous 하지 않음).
@@ -2889,7 +2895,7 @@ _BROKEN_FRONTMATTER = (
 
 
 def _ticket(board, status: str, tid: str, text: str) -> Path:
-    p = board.TICKETS_DIR / status / f"{tid}-seed.md"
+    p = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
     p.write_text(text, encoding="utf-8")
     return p
 
@@ -2941,13 +2947,12 @@ def test_lint_survives_a_broken_ticket(board, monkeypatch, tmp_path, capsys):
 def test_list_survives_a_broken_ticket(board, monkeypatch, tmp_path, capsys):
     """`list` 도 손상 1건을 건너뛰고 나머지를 출력한다 (보드 전체 조회 불능 폐쇄)."""
     _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
     _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
 
-    rc = board.cmd_list(SimpleNamespace(
+    rc = board_list.cmd_list(board._home(), SimpleNamespace(
         status=None, tag=None, mine=False, all=True, task=None, repo=None, slot=None))
     out, err = capsys.readouterr()
     assert rc == 0
@@ -2958,11 +2963,10 @@ def test_list_survives_a_broken_ticket(board, monkeypatch, tmp_path, capsys):
 def test_board_refresh_survives_a_broken_ticket(board, monkeypatch, tmp_path):
     """claim/complete 가 부르는 board.md 재생성도 손상 1건에 죽지 않는다."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "BOARD_FILE", wiki / "board.md")
     _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
     _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
 
-    board._refresh_board_locked()
+    board_dashboard._refresh_board_locked(board._home())
     rendered = (wiki / "board.md").read_text(encoding="utf-8")
     assert "T-0001" in rendered and "T-0002" not in rendered
 
@@ -2975,20 +2979,15 @@ def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
     _wire_repo(board, monkeypatch, tmp_path)
     pm = tmp_path / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
-                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
-                        ("AREAS_FILE", pm / "areas.md"),
-                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
-        monkeypatch.setattr(board, name, value)
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
     # claim 은 `--task` 와 그 task 폴더(앵커)가 필요하다(T-0962) — 없으면 이 테스트가 보려는
     # 실패(손상 frontmatter fail-loud) 대신 task 미지정으로 먼저 죽는다.
     ensure_product_slot(board, task="pm-1")
-    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     ticket = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
 
     with pytest.raises(Exception):
-        board.cmd_claim(SimpleNamespace(id="T-0002", task="pm-1", user=None))
+        board_ticket.cmd_claim(board._home(), SimpleNamespace(id="T-0002", task="pm-1", user=None))
     assert ticket.exists(), "차단된 claim 이 티켓을 옮겼다"
 
 
@@ -3024,19 +3023,14 @@ def test_designated_mutation_stays_fail_loud_across_lifecycle_commands(
     _wire_repo(board, monkeypatch, tmp_path)
     pm = tmp_path / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
-                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
-                        ("AREAS_FILE", pm / "areas.md"),
-                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
-        monkeypatch.setattr(board, name, value)
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
-    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     ticket = _ticket(board, seed_status, "T-0002", _BROKEN_FRONTMATTER)
     args = SimpleNamespace(id="T-0002", task=None, user=None, **extra_kwargs)
-    command = getattr(board, f"cmd_{mutation}")
+    command = getattr(board_ticket, f"cmd_{mutation}")
 
     with pytest.raises(board.yaml.YAMLError):  # F-006 — strict loader 의 예상 parser 예외로 한정
-        command(args)
+        command(board._home(), args)
     assert ticket.exists(), f"차단된 {mutation} 이 손상 티켓을 옮겼다"
 
 
@@ -3048,17 +3042,12 @@ def test_reid_blocks_on_a_broken_ticket_via_unreadable_scan(board, monkeypatch, 
     _wire_repo(board, monkeypatch, tmp_path)
     pm = tmp_path / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
-                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
-                        ("AREAS_FILE", pm / "areas.md"),
-                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
-        monkeypatch.setattr(board, name, value)
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
-    monkeypatch.setattr(board, "_git_config_email", lambda: None)
-    monkeypatch.setattr(board, "_home_git_status_porcelain", lambda: "")
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
+    monkeypatch.setattr(board_prefix, "_home_git_status_porcelain", lambda _home: "")
     ticket = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
 
-    rc = board.cmd_reid(SimpleNamespace(
+    rc = board_prefix.cmd_reid(board._home(), SimpleNamespace(
         old_id="T-0002", new_id="T-9999", dry_run=False,
         repo=None, slot=None, user=None, user_ack=None))
 
@@ -3084,14 +3073,9 @@ def test_missing_id_field_falls_back_to_filename_for_mutation(board, monkeypatch
     _wire_repo(board, monkeypatch, tmp_path)
     pm = tmp_path / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
-                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
-                        ("AREAS_FILE", pm / "areas.md"),
-                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
-        monkeypatch.setattr(board, name, value)
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
-    monkeypatch.setattr(board, "_git_config_email", lambda: None)
-    monkeypatch.setattr(board, "refresh_board", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
     # `id:` 키 부재 — 나머지는 유효한 매핑 YAML(파싱은 성공·`fm.get("id")` 만 None).
     no_id_text = (
         "---\ntitle: id 없는 티켓\nstatus: open\ndepends_on: []\n---\n"
@@ -3099,14 +3083,14 @@ def test_missing_id_field_falls_back_to_filename_for_mutation(board, monkeypatch
     target = _ticket(board, "open", "T-0005", no_id_text)
     other = _ticket(board, "open", "T-0006", _healthy_ticket_text("T-0006"))
 
-    rc = board.cmd_block(SimpleNamespace(id="T-0005", reason="사유"))
+    rc = board_ticket.cmd_block(board._home(), SimpleNamespace(id="T-0005", reason="사유"))
 
     assert rc == 0, "id: 부재 티켓의 파일명 폴백이 mutation 조회에서 안 먹힘"
     assert not target.exists(), "block 성공인데 원본 경로에 그대로 남음"
-    moved = list((board.TICKETS_DIR / "blocked").glob("T-0005-*.md"))
+    moved = list((pm_paths.tickets_dir(board._home()) / "blocked").glob("T-0005-*.md"))
     assert len(moved) == 1, "폴백이 여러 파일에 걸리거나 못 찾음"
     assert other.exists(), "무관 티켓(T-0006)이 함께 옮겨짐"
-    assert list((board.TICKETS_DIR / "open").glob("T-0006-*.md")), \
+    assert list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0006-*.md")), \
         "무관 티켓이 open/ 밖으로 밀려남"
 
 
@@ -3137,7 +3121,7 @@ def test_distinct_ticket_users_skips_non_mapping_frontmatter(
     _ticket(board, "open", "T-0002", text)
     _ticket(board, "claimed", "T-0001", _claimed_ticket_text("T-0001", claimed_by="pm_1"))
 
-    assert board._distinct_ticket_users() == 1, f"{shape} 형상에서 사용자 신호가 깨졌다"
+    assert ticket_access._distinct_ticket_users(board._home()) == 1, f"{shape} 형상에서 사용자 신호가 깨졌다"
     assert "T-0002" in capsys.readouterr().err       # 조용한 드롭이 아니다
 
 
@@ -3150,16 +3134,13 @@ def test_default_list_view_survives_a_non_mapping_frontmatter_ticket(
     _wire_repo(board, monkeypatch, tmp_path)
     pm = tmp_path / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "AREAS_FILE", pm / "areas.md")
-    monkeypatch.setattr(board, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
     (pm / "local.conf").write_text("session=pm_1\nidentity.user=tester\n", encoding="utf-8")
-    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     _ticket(board, "open", "T-0002", _NON_MAPPING_FRONTMATTER)
     _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
 
-    rc = board.cmd_list(SimpleNamespace(
+    rc = board_list.cmd_list(board._home(), SimpleNamespace(
         status=None, tag=None, mine=False, all=False, task=None, repo=None, slot=None))
 
     out, err = capsys.readouterr()
@@ -3175,7 +3156,7 @@ def test_scan_task_tickets_skips_broken_and_non_mapping(board, monkeypatch, tmp_
     _ticket(board, "claimed", "T-0002", _BROKEN_FRONTMATTER)
     _ticket(board, "claimed", "T-0001", _claimed_ticket_text("T-0001", claimed_by="wave-x"))
 
-    scanned = board.scan_task_tickets("tester", "wave-x")
+    scanned = ticket_access.scan_task_tickets(board._home(), "tester", "wave-x")
 
     assert [row["id"] for row in scanned["claimed"]] == ["T-0001"]
     err = capsys.readouterr().err
@@ -3230,7 +3211,7 @@ def test_fallback_lookup_warns_when_it_answers_with_a_different_ticket(
     )
     monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: tickets)
     monkeypatch.setattr(pm_paths, "drafts_dir", lambda _home: tickets / ".drafts")
-    status, path = board.find_ticket("T-7777")
+    status, path = ticket_store.find_ticket(board._home(), "T-7777")
     assert path.name == "T-7777-001-other.md"
     err = capsys.readouterr().err
     assert "정확 일치 티켓 없음" in err and "T-7777-001" in err
@@ -3686,7 +3667,6 @@ def test_missing_required_surfaces_as_an_advisory_finding(board, monkeypatch, tm
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     findings = conf_lint.lint_local_conf_required(board._home())
@@ -3723,7 +3703,6 @@ def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypat
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("project.name=x\n", encoding="utf-8")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
     for module, fn, stub in _UNRELATED_LINT_FNS:
         monkeypatch.setattr(board if module is None else module, fn, stub)
@@ -3737,7 +3716,6 @@ def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypat
 
 def test_no_local_conf_file_reports_no_missing_required(board, monkeypatch, tmp_path):
     """conf 부재는 정상 형상이다 — 없는 파일에 필수 누락을 씌우지 않는다."""
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
     monkeypatch.setattr(board, "REPO", tmp_path)
     assert conf_lint.lint_local_conf_required(board._home()) == []
 
@@ -3747,10 +3725,9 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
     pm = tmp_path / ".project_manager"
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
-    board._write_init_local_conf()
+    conf_store._write_init_local_conf(board._home())
 
     assert conf_lint.lint_local_conf_required(board._home()) == []
     conf_module = conf_schema
@@ -3772,7 +3749,7 @@ def _unreadable_conf(tmp_path: Path) -> Path:
 
 def test_unreadable_local_conf_surfaces_one_advisory_finding(board, monkeypatch, tmp_path):
     """읽지 못한 conf 는 1줄 advisory 다 — 값 축 kind 들은 침묵한다(같은 사실 재진술 0)."""
-    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+    _unreadable_conf(tmp_path)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     findings = conf_lint.lint_local_conf_readable(board._home())
@@ -3787,7 +3764,6 @@ def test_unreadable_local_conf_surfaces_one_advisory_finding(board, monkeypatch,
 
 def test_no_local_conf_file_reports_nothing_unreadable(board, monkeypatch, tmp_path):
     """파일 부재는 관측 없음이다 — 없는 파일을 못 읽었다고 말하지 않는다."""
-    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     assert conf_lint.lint_local_conf_readable(board._home()) == []
@@ -3798,7 +3774,6 @@ def test_readable_local_conf_reports_nothing_unreadable(board, monkeypatch, tmp_
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("runtime.py=python3\ntest.cmd=pytest -q\n", encoding="utf-8")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     assert conf_lint.lint_local_conf_readable(board._home()) == []
@@ -3810,9 +3785,9 @@ def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tm
     `lint_adapter_drift` 는 대역으로 끄지 않는다 — 그 자리도 같은 판독 seam 을 쓰므로 같은
     트리에서 조용히 빈 목록이다. 끄고 재면 조회면 전체가 traceback 으로 죽는 형상을 못 본다.
     """
+    _unreadable_conf(tmp_path)
     assert "local-conf-unreadable" in board._ADVISORY_LINT_KINDS
     _wire_repo(board, monkeypatch, tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
     monkeypatch.setattr(board, "REPO", tmp_path)
     for module, fn, stub in _UNRELATED_LINT_FNS:
         monkeypatch.setattr(board if module is None else module, fn, stub)
@@ -3856,7 +3831,7 @@ def test_the_real_lint_command_reaches_the_advisory(tmp_path):
 
 def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
     """판독 seam 은 `local_conf.load_strict` 를 부른다 — 삼키는 `load` 로 돌아가면 red."""
-    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+    _unreadable_conf(tmp_path)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     with pytest.raises(conf_lint.LocalConfUnreadable):
@@ -3874,7 +3849,6 @@ def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, t
     _wire_repo(board, monkeypatch, tmp_path)
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "LOCAL_DIR", local)
     # sidecar 좌표 해소는 git(`core.hooksPath`)에 묻는다 — tmp 트리가 자기 저장소라고 선언하지
     # 않으면 이 저장소의 답을 받아 실 PM 홈 기록을 읽는다(tests/_git_fixture 규약).
     init_git_repo(tmp_path)

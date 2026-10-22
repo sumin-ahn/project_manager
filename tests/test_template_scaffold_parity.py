@@ -21,6 +21,10 @@ stdlib + subprocess. lint 는 warning-only(exit 0)라 종료코드가 아니라 
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_cluster
+from pm_engine.domain import cluster_rules
+
+
 import importlib.util
 import inspect
 import re
@@ -449,7 +453,7 @@ def _round_ordinal_labels() -> tuple[str, ...]:
     delegate = _load_engine_module("pm_delegate")
     board = _load_engine_module("board")
     sequence = delegate.cluster_round_sequence(
-        board.CLUSTER_BUDGET_DEFAULT, cluster="C-round-labels",
+        cluster_rules.CLUSTER_BUDGET_DEFAULT, cluster="C-round-labels",
     )
     assert sequence, "엔진 라운드 수열이 비었다 — 파생 입력이 stale"
     return tuple(f"{index:02d}-{role}" for index, role in enumerate(sequence, start=1))
@@ -753,9 +757,9 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     assert "묶음 브랜치 미선언" not in inspect.getsource(closer._step_rebase)
 
     # 발행 자동 장부 축 — `base_branch` 는 기록되고 묶음 브랜치만 빈다.
-    assert "base_branch=base_branch" in inspect.getsource(board._cluster_auto_attach)
-    auto = board._new_cluster_fm(
-        board.cluster_id_for_name("T-9999"), ["T-9999"], base_branch="task/main")
+    assert "base_branch=base_branch" in inspect.getsource(board_cluster._cluster_auto_attach)
+    auto = cluster_rules._new_cluster_fm(
+        cluster_rules.cluster_id_for_name("T-9999"), ["T-9999"], base_branch="task/main")
     assert auto["base_branch"] == "task/main" and auto["branch"] is None
 
     # 카드 전건이 미결속 거부와 기존 명시 재결속을 안내한다.

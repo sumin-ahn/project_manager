@@ -647,6 +647,7 @@ def test_deleted_single_file_devices_are_absent(pd, external):
         assert not hasattr(pd, symbol), symbol
     assert not hasattr(external, "_harvest_target_ticket_body")
     assert not hasattr(external, "_ticket_body_max_bytes")
+    assert not hasattr(external, "_load_board")
 
 
 # ── (g) 기존 티켓 호환 ─────────────────────────────────────────────────
@@ -1270,28 +1271,6 @@ def test_prompt_skeleton_ignores_a_reserved_round_without_output(
     assert reserved.exists()
 
 
-def test_board_commit_seam_is_called_directly_and_is_loud_when_it_is_missing(
-    external, monkeypatch, tmp_path,
-):
-    """부분 동기 사본에서 커밋만 조용히 빠진 rc0 을 만들지 않는다 (이름 폴백 없음)."""
-    source = ADDITIONAL_REVIEWER.read_text(encoding="utf-8")
-    assert "board._rounds_mutation_sync_paths(" in source
-    assert "_growth_mutation_sync_paths" not in source
-    assert 'getattr(board, "_rounds_mutation_sync_paths"' not in source
-
-    _seed_board(tmp_path)
-    real_loader = external._load_board
-
-    def _loader():
-        board = real_loader()
-        del board._rounds_mutation_sync_paths     # 이름이 갈린 사본 재현
-        return board
-
-    monkeypatch.setattr(external, "_load_board", _loader)
-    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")))
-
-    with pytest.raises(AttributeError):
-        _run(external, tmp_path, "--ticket", TICKET)
 
 
 # ── F-025 강등 안내·지연 해소 ───────────────────────────────────────────

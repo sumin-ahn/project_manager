@@ -16,6 +16,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+from pm_engine.cli import board_ticket
+
+
 import argparse
 import ast
 import importlib.util
@@ -28,6 +32,13 @@ from conftest import ensure_product_slot
 from _engine_tree import engine_python_files
 from pm_engine.infra import areas_store, lease_store, pm_paths, pre_push_hook, python_env
 from pm_engine.app import areas_lint
+
+from pm_engine.app import areas_registry
+from pm_engine.cli import task_args
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -364,23 +375,11 @@ def board(tmp_path, monkeypatch):
         (tickets / status).mkdir(parents=True, exist_ok=True)
     (pm_dir / ".local").mkdir(parents=True, exist_ok=True)
     module = _load(f"board_t0779_{id(tmp_path)}", "board.py")
-    for name, value in {
-        "REPO": project,
-        "TICKETS_DIR": tickets,
-        "BOARD_FILE": pm_dir / "wiki" / "board.md",
-        "LOG_FILE": pm_dir / "wiki" / "log" / "current.md",
-        "LOCAL_CONF": pm_dir / "local.conf",
-        "AREAS_FILE": pm_dir / "areas.md",
-        "LOCAL_DIR": pm_dir / ".local",
-        "BOARD_LOCK": pm_dir / ".local" / "board.lock",
-        "LEASES_FILE": pm_dir / ".local" / "worktree-leases.json",
-        "PM_STATE_FILE": pm_dir / "wiki" / "pm_state.md",
-        "PM_STATE_TEMPLATE": pm_dir / "wiki" / "pm_state.template.md",
-    }.items():
+    for name, value in {'REPO': project}.items():
         monkeypatch.setattr(module, name, value)
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
-    monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
-    monkeypatch.setattr(module, "_git_config_email", lambda: None)
+    monkeypatch.setattr(board_init, "_configure_board_submodule", lambda _home: False)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -389,25 +388,25 @@ def board(tmp_path, monkeypatch):
 
 def test_legacy_conf_session_does_not_resolve_a_session(board):
     """`session=pm` 만 있는 구 clone 조회 → None (조용한 폴백 0)."""
-    board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
+    board._home().local_conf.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
     assert lease_store.session_name(board._home()) is None
 
 
 def test_legacy_conf_session_fails_loud_on_attributed_write(board):
     """같은 형상의 귀속 쓰기 → fail-loud 문구를 **실값**으로 단언한다(귀속은 `--task` 만·T-0962)."""
-    board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
+    board._home().local_conf.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
-        board.cmd_new(_new_args())
-    assert str(exc.value) == board.TASK_REQUIRED.format(
+        board_ticket.cmd_new(board._home(), _new_args())
+    assert str(exc.value) == task_args.TASK_REQUIRED.format(
         action="new", command='board.py new "<제목>"')
     assert "`--task <task>`" in str(exc.value)
 
 
 def test_legacy_conf_prefix_does_not_namespace_new_tickets(board):
     """`prefix=ACC` 만 있는 구 clone → 해소 None·발행은 무prefix `T-NNNN`(none 카테고리)."""
-    board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD + "prefix=ACC\n", encoding="utf-8")
+    board._home().local_conf.write_text(LEGACY_INIT_CONF_HEAD + "prefix=ACC\n", encoding="utf-8")
     assert areas_store.id_prefix(board._home(), None) is None
-    assert board.known_prefixes() == frozenset()   # 승인 게이트 3소스에도 없다
+    assert areas_registry.known_prefixes(board._home()) == frozenset()   # 승인 게이트 3소스에도 없다
 
 
 def test_lease_ledger_shape_resolves_the_session(board):
@@ -417,8 +416,8 @@ def test_lease_ledger_shape_resolves_the_session(board):
     (귀속 쓰기는 이 세션이 아니라 `--task` 로만 한다 — T-0962).
     """
     import json
-    board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
-    board.LEASES_FILE.write_text(json.dumps({"leases": [{
+    board._home().local_conf.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{
         "slot": "work/proj_1", "repo": "proj", "session": "proj_1", "state": "leased",
     }]}), encoding="utf-8")
     assert lease_store.session_name(board._home()) == "proj_1"
@@ -426,7 +425,7 @@ def test_lease_ledger_shape_resolves_the_session(board):
 
 def test_env_binding_resolves_the_session(board):
     """env 명시(`PM_SESSION_NAME`)도 그대로 해소된다 — 명시 층은 그대로다."""
-    board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
+    board._home().local_conf.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
     import os
     os.environ["PM_SESSION_NAME"] = "proj_2"
     try:
@@ -460,9 +459,9 @@ def _new_args(**kv):
 def test_init_without_prefix_leaves_no_unregistered_shape(board):
     """무prefix init 1회 → repo 행 등록 + conf 에 정체성 키 0 + 이관 안내 소멸."""
     assert areas_lint.lint_areas_repo_unregistered(board._home())          # 등록 전엔 안내가 붙는다
-    assert board.cmd_init(_init_args()) == 0
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
     assert areas_store.registered_repos(board._home()) == {board.REPO.name}
-    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
+    conf = board._home().local_conf.read_text(encoding="utf-8")
     assert "session=" not in conf and "prefix=" not in conf
     assert areas_lint.lint_areas_repo_unregistered(board._home()) == []    # 등록 후엔 사라진다
 
@@ -485,22 +484,22 @@ def test_both_id_formats_keep_resolving_on_a_mixed_board(board):
     실 보드 건수는 테스트가 셀 수 없으므로(엔진 저장소엔 보드가 없다) 두 형식을 섞은 픽스처로
     같은 성질을 친다 — 폴백 제거가 기존 ID 를 건드리지 않는다.
     """
-    board.cmd_init(_init_args())
+    board_init.cmd_init(board._home(), _init_args())
     for ticket_id in ("T-0778", "T-0779", "T-project_manager-001", "T-project_manager-002"):
-        path = board.TICKETS_DIR / "open" / f"{ticket_id}-seed.md"
-        board.dump_ticket(path, {"id": ticket_id, "title": "seed", "status": "open",
+        path = pm_paths.tickets_dir(board._home()) / "open" / f"{ticket_id}-seed.md"
+        ticket_store.dump_ticket(path, {"id": ticket_id, "title": "seed", "status": "open",
                                  "created": "2026-08-21"}, f"# {ticket_id} — seed\n")
-    board.invalidate_known_prefixes_cache()
-    assert board._ticket_prefix("T-0779") is None
-    assert board._ticket_prefix("T-project_manager-002") == "project_manager"
-    assert board._next_id(None) == "T-0780"
-    assert board._next_id("project_manager") == "T-project_manager-003"
-    assert board.known_prefixes() == frozenset({"project_manager"})
+    areas_registry.invalidate_known_prefixes_cache()
+    assert ticket_rules._ticket_prefix("T-0779") is None
+    assert ticket_rules._ticket_prefix("T-project_manager-002") == "project_manager"
+    assert ticket_store._next_id(board._home(), None) == "T-0780"
+    assert ticket_store._next_id(board._home(), "project_manager") == "T-project_manager-003"
+    assert areas_registry.known_prefixes(board._home()) == frozenset({"project_manager"})
 
 
 def _areas_data_rows(board) -> list[str]:
     """areas.md 의 데이터 행(헤더 제외) 원문 — 행이 몇 개 생겼는지 값으로 센다."""
-    text = board.AREAS_FILE.read_text(encoding="utf-8")
+    text = pm_paths.areas_file(board._home()).read_text(encoding="utf-8")
     return [line for line in text.splitlines()
             if line.startswith("| ") and not line.startswith("| repo |")]
 
@@ -510,26 +509,26 @@ def test_category_init_after_bare_init_updates_the_cell_not_a_second_row(board, 
 
     두 축(repo 칼럼 = 이 clone · prefix 칼럼 = 작업 카테고리)이 분리돼 있어야 재실행이 멱등하다.
     """
-    assert board.cmd_init(_init_args()) == 0
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
     assert areas_store.registered_repos(board._home()) == {"proj"} and areas_store.registered_prefixes(board._home()) == set()
     assert areas_store.id_prefix(board._home(), None) is None
-    assert board._next_id(None) == "T-0001"
+    assert ticket_store._next_id(board._home(), None) == "T-0001"
 
-    assert board.cmd_init(_init_args(prefix="acct", area="회계", user_ack="acct")) == 0
-    board.invalidate_known_prefixes_cache()
+    assert board_init.cmd_init(board._home(), _init_args(prefix="acct", area="회계", user_ack="acct")) == 0
+    areas_registry.invalidate_known_prefixes_cache()
     assert len(_areas_data_rows(board)) == 1                  # 행 추가 없음(셀 갱신)
     assert areas_store.registered_repos(board._home()) == {"proj"}
     assert areas_store.registered_prefixes(board._home()) == {"acct"}
     assert areas_store.id_prefix(board._home(), None) == "acct"
-    assert board._next_id("acct") == "T-acct-001"
+    assert ticket_store._next_id(board._home(), "acct") == "T-acct-001"
     assert "기존 행의 prefix 칼럼 갱신" in capsys.readouterr().out
 
 
 def test_category_named_after_the_clone_folder_stays_one_row(board):
     """카테고리 이름이 clone 폴더명과 같아도 행은 1개다 (prefix 를 repo 이름으로 쓰지 않는다)."""
-    assert board.cmd_init(_init_args()) == 0
-    assert board.cmd_init(_init_args(prefix="proj", area="본체", user_ack="proj")) == 0
-    board.invalidate_known_prefixes_cache()
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
+    assert board_init.cmd_init(board._home(), _init_args(prefix="proj", area="본체", user_ack="proj")) == 0
+    areas_registry.invalidate_known_prefixes_cache()
     assert len(_areas_data_rows(board)) == 1
     assert areas_store.registered_repos(board._home()) == {"proj"} and areas_store.registered_prefixes(board._home()) == {"proj"}
     assert areas_store.id_prefix(board._home(), None) == "proj"
@@ -541,10 +540,10 @@ def test_explicit_repo_flag_names_the_areas_row_not_the_prefix(board):
     repo 칼럼에 카테고리가 들어가면 등록 repo 이름(task 폴더의 repo 와 대조하는 값)이 카테고리로
     오염된다. prefix 는 등록 prefix 1개 count 로 해소된다(세션 토큰 분해 없음·T-0962).
     """
-    assert board.cmd_init(_init_args(repo="svc", prefix="acct", area="회계",
+    assert board_init.cmd_init(board._home(), _init_args(repo="svc", prefix="acct", area="회계",
                                      user_ack="acct")) == 0
     assert areas_store.registered_repos(board._home()) == {"svc"}
-    board.invalidate_known_prefixes_cache()
+    areas_registry.invalidate_known_prefixes_cache()
     assert areas_store.registered_prefixes(board._home()) == {"acct"}
     assert areas_store.id_prefix(board._home(), None) == "acct"                    # 등록 1개 count 해소
 
@@ -555,45 +554,45 @@ def test_repo_only_init_registers_with_zero_active_leases(board):
     등록명 지정은 actor 정체성 해소와 다른 축이다 — 여기서 슬롯 미해소로 중단하면 repo 이름
     유도 실패 안내(`--repo <이름>`)가 그 자리에서 죽는다.
     """
-    assert not board.LEASES_FILE.exists()                    # 장부 자체가 없다
-    assert board.cmd_init(_init_args(repo="billing")) == 0
+    assert not pm_paths.leases_file(board._home()).exists()                    # 장부 자체가 없다
+    assert board_init.cmd_init(board._home(), _init_args(repo="billing")) == 0
     assert areas_store.registered_repos(board._home()) == {"billing"}
     assert _areas_data_rows(board)[0].split("|")[1].strip() == "billing"
 
 
 def test_changing_the_category_by_init_is_refused_with_zero_side_effects(board, capsys):
     """이미 카테고리가 있는 행에 다른 카테고리로 init → 부작용 0 fail-loud + 처방 지목."""
-    board.cmd_init(_init_args(prefix="acct", area="회계", user_ack="acct"))
+    board_init.cmd_init(board._home(), _init_args(prefix="acct", area="회계", user_ack="acct"))
     capsys.readouterr()
-    assert board.cmd_init(_init_args(prefix="ops", area="운영", user_ack="ops")) == 1
+    assert board_init.cmd_init(board._home(), _init_args(prefix="ops", area="운영", user_ack="ops")) == 1
     err = capsys.readouterr().err
     assert "board.py prefix rename acct ops" in err
-    board.invalidate_known_prefixes_cache()
+    areas_registry.invalidate_known_prefixes_cache()
     assert len(_areas_data_rows(board)) == 1
     assert areas_store.registered_prefixes(board._home()) == {"acct"}           # 갈아끼우지 않았다
 
 
 def test_a_category_taken_by_another_repo_is_refused(board, capsys):
     """다른 repo 행이 쓰는 카테고리는 거부 — 두 repo 가 같은 ID 순번을 나눠 쓰지 못한다."""
-    board.areas_append("acct", "회계", "other_1", repo="other")
+    areas_registry.areas_append(board._home(), "acct", "회계", "other_1", repo="other")
     capsys.readouterr()
-    assert board.cmd_init(_init_args(prefix="acct", area="회계", user_ack="acct")) == 1
+    assert board_init.cmd_init(board._home(), _init_args(prefix="acct", area="회계", user_ack="acct")) == 1
     assert "이미 repo 'other' 행에" in capsys.readouterr().err
     assert areas_store.registered_repos(board._home()) == {"other"}             # 이 clone 행은 생기지 않았다
 
 
 def test_completion_surface_prints_only_id_formats_the_board_will_issue(board, capsys):
     """완료 안내의 ID 포맷 = 이 clone 에서 `board.py new` 가 실제로 발행할 값."""
-    board.cmd_init(_init_args())
+    board_init.cmd_init(board._home(), _init_args())
     bare = capsys.readouterr().out
     assert "T-NNNN" in bare and "T-proj-NNN" not in bare
-    assert board._next_id(areas_store.id_prefix(board._home(), None)) == "T-0001"
+    assert ticket_store._next_id(board._home(), areas_store.id_prefix(board._home(), None)) == "T-0001"
 
-    board.cmd_init(_init_args(prefix="acct", area="회계", user_ack="acct"))
-    board.invalidate_known_prefixes_cache()
+    board_init.cmd_init(board._home(), _init_args(prefix="acct", area="회계", user_ack="acct"))
+    areas_registry.invalidate_known_prefixes_cache()
     named = capsys.readouterr().out
     assert "T-acct-NNN" in named
-    assert board._next_id(areas_store.id_prefix(board._home(), None)) == "T-acct-001"
+    assert ticket_store._next_id(board._home(), areas_store.id_prefix(board._home(), None)) == "T-acct-001"
 
 
 def test_completion_surface_flags_ambiguity_instead_of_a_bare_id_it_cannot_issue(board, capsys):
@@ -605,13 +604,13 @@ def test_completion_surface_flags_ambiguity_instead_of_a_bare_id_it_cannot_issue
     가 자신의 ≥2 가드로 거부하는 모호 상태다 — 완료 안내가 `T-NNNN` 을 성공 메시지로 내면 보드가
     발행하지 않을 포맷을 광고하는 것이다.
     """
-    assert board.cmd_init(_init_args()) == 0
-    board.areas_append("ops", "운영", "other_1", repo="other")   # 다른 repo 가 이미 한 카테고리 사용
-    board.invalidate_known_prefixes_cache()
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
+    areas_registry.areas_append(board._home(), "ops", "운영", "other_1", repo="other")   # 다른 repo 가 이미 한 카테고리 사용
+    areas_registry.invalidate_known_prefixes_cache()
     capsys.readouterr()
-    assert board.cmd_init(_init_args(prefix="acct", area="회계", user_ack="acct")) == 0
+    assert board_init.cmd_init(board._home(), _init_args(prefix="acct", area="회계", user_ack="acct")) == 0
     out = capsys.readouterr().out
-    board.invalidate_known_prefixes_cache()
+    areas_registry.invalidate_known_prefixes_cache()
     assert areas_store.registered_prefixes(board._home()) == {"ops", "acct"}
     assert areas_store.id_prefix(board._home(), None) is None                        # 미해소(모호) — count-based 아님
     # 완료 안내는 발행 불가 포맷을 성공 메시지로 내지 않고, 명시 --prefix 커맨드를 지목한다.
@@ -620,7 +619,7 @@ def test_completion_surface_flags_ambiguity_instead_of_a_bare_id_it_cannot_issue
     # 원인은 등록 카테고리 수다 — 세션을 바인딩해도 prefix 는 바뀌지 않는다(세션 유도 층 없음).
     assert "세션이 바인딩" not in out and "세션 미바인딩" not in out
     # 직후 무prefix cmd_new 는 안내가 예고한 대로 실제로 거부된다 — 안내와 실 거동의 정합.
-    assert board.cmd_new(_new_args(task=_TASK)) == 1
+    assert board_ticket.cmd_new(board._home(), _new_args(task=_TASK)) == 1
 
 
 def test_completion_surface_still_issues_the_bare_format_when_unambiguous(board, capsys):
@@ -636,9 +635,9 @@ def test_completion_surface_still_issues_the_bare_format_when_unambiguous(board,
         "touches: []\nestimate: small\ntags: []\n---\n\n# T-NNNN — <제목>\n\n## 목표\n채워라.\n",
         encoding="utf-8",
     )
-    assert board.cmd_init(_init_args()) == 0
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
     out = capsys.readouterr().out
     assert "T-NNNN (none 카테고리)" in out
     assert "--prefix <PFX>" not in out
     ensure_product_slot(board, task=_TASK)                       # 발행은 task 폴더가 필요하다(T-0962)
-    assert board.cmd_new(_new_args(task=_TASK)) == 0             # 안내대로 무prefix 발행이 실제로 된다
+    assert board_ticket.cmd_new(board._home(), _new_args(task=_TASK)) == 0             # 안내대로 무prefix 발행이 실제로 된다

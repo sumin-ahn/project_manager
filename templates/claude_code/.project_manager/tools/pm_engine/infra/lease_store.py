@@ -6,12 +6,18 @@
 """
 from __future__ import annotations
 
+
+
 import json
 import os
 from pathlib import Path
 
 from pm_engine.domain import identity_args
 from pm_engine.infra import fs, pm_paths
+
+from pm_engine.infra import conf_store
+import shutil
+import subprocess
 
 
 _CODEX_HARNESS_SESSION_MARKERS: tuple[str, ...] = (
@@ -455,8 +461,8 @@ def session_name(home, override: str | None = None) -> str | None:
     `--task` 가 없으면 `TASK_REQUIRED` 로 멈춘다. 여기 미해소(None)는 surface(whoami/status/
     list --mine)의 "(비바인딩)" 표시와 소유 대조 거부로 이어진다.
 
-    저장측(lease_store._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
-    소유권이 미스되므로 세 모듈(lease_store.session_name·worktree_pool._default_
+    저장측(_default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
+    소유권이 미스되므로 세 모듈(session_name·worktree_pool._default_
     session·pm_config._default_session)이 같은 우선순위를 공유한다(tail 만 용처별 상이).
 
     장부에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
@@ -499,16 +505,16 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
 
 
 def _default_session(home) -> str:
-    """세션 식별자 기본값 — `lease_store.session_name()` 과 *동형* 우선순위:
+    """세션 식별자 기본값 — `session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` env > `$CLAUDE_SESSION_NAME` env(deprecated alias·silent) >
     lease 장부 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
     `<host>-<pid>`.
 
     `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
     (둘 다면 PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**
-    (lease_store.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
+    (session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
 
-    lease_store.session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
+    session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
     떨어진다. board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌 회피) 리스
     카운팅은 자체 구현한다. 장부 0행에서 세션 이름을 유도하는 층은 없다.
     """
@@ -521,3 +527,101 @@ def _default_session(home) -> str:
     # leased 0(미등록) 또는 ≥2(모호) → host-pid.
     import socket
     return f"{socket.gethostname()}-{os.getpid()}"
+
+
+# user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
+# 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 관례·_interp_runs 동류).
+_GIT_USER_TIMEOUT_SECONDS = 5
+
+
+def _git_config_email(home) -> str | None:
+    """`git config user.email` 을 읽어 반환 — 미설정/git 부재/실패 → None (fail-soft).
+
+    user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf identity.user=` 가 없을 때
+    git 의 commit author email 을 user 식별자로 쓴다. subprocess 는
+    엔진 관례대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
+    (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 강등한다(크래시 0).
+    """
+    git_binary = shutil.which("git")
+    if git_binary is None:
+        return None
+    try:
+        r = subprocess.run(
+            [git_binary, "-C", str(home.root), "config", "user.email"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_GIT_USER_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):  # fail-soft: git 호출 실패는 None(미상)으로 강등.
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def user_name(home, override: str | None = None) -> str | None:
+    """user 식별자 해소 — `session_name()` 과 *동형* 우선순위:
+
+        override > local.conf `identity.user=` > `git config user.email` > None
+
+    `pm`(슬롯)이 *어느 PM 컨텍스트*인지(=`session_name()`)와 직교하는 **누가**(사람) 차원이다
+    multi-user 보드 공유에서 `created_by`(provenance)·`claimed_by`(assignee)·
+    areas `area_owner` 의 user 토큰을 푼다. 단일 사용자(M=1)는 보통 `local.conf identity.user=` 미설정 →
+    `git config user.email` 로 폴백(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
+    user 미상 허용·fail-soft·기존 슬롯-only 동작 무변경).
+    """
+    if override:
+        return override
+    conf_user = conf_store.local_config(home).get("identity.user")
+    if conf_user:
+        return conf_user
+    return _git_config_email(home)
+
+
+def identity_tag(home, session_override: str | None = None,
+                 user_override: str | None = None) -> str | None:
+    """현재 identity 를 `<user>/<pm-slot>` 토큰으로 합성한다.
+
+    `created_by`(provenance)·`claimed_by`(assignee) frontmatter 에 박는 값이다. user 가
+    해소되면 `<user>/<pm>`, 미상(None)이면 슬롯만(`<pm>`) — **기존 슬롯-only 값과 형태가
+    같다**(graceful·하위호환). 읽기측은 `/` 로 split 해 user/slot 을 분리하되, `/` 없는 값
+    (구 ticket·user 미상)은 slot-only 로 읽어야 한다(fail-soft).
+
+    세션 미바인딩(`session_name` None·surface)이면 세션 토큰이 없으므로 user
+    만(있으면) 반환하고 둘 다 없으면 None 이다(graceful). 귀속 쓰기 호출부(new·claim)는
+    `--task` 를 `session_override` 로 넘기므로 pm 이 None 으로 새지 않는다.
+    """
+    pm = session_name(home, session_override)
+    user = user_name(home, user_override)
+    if pm is None:
+        return user
+    return f"{user}/{pm}" if user else pm
+
+
+def _ledger_registration(home, anchor: Path) -> tuple[bool, str | None]:
+    """PM 홈 장부가 `anchor` 슬롯을 등록하는지 strict point-read 한다.
+
+    반환은 (일치, 오류). 부재·손상·스키마 오류는 load-bearing 소유 판정에서 빈 장부로
+    강등하지 않고 오류 문자열로 돌려 호출부가 fail-loud 하게 한다.
+    """
+    ledger = pm_paths.leases_file(home)
+    if not ledger.is_file():
+        return (False, f'{home.root}: worktree lease 장부 없음')
+    try:
+        data = json.loads(fs.read_text_shared(ledger, encoding='utf-8'))
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
+        return (False, f'{home.root}: worktree lease 장부를 읽을 수 없음 ({exc})')
+    if not isinstance(data, dict):
+        return (False, f'{home.root}: worktree lease 장부 최상위 값이 object가 아님')
+    rows = data.get('leases')
+    if not isinstance(rows, list):
+        return (False, f'{home.root}: worktree lease 장부의 leases 값이 list가 아님')
+    target = anchor.resolve()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return (False, f'{home.root}: worktree lease 장부 leases[{index}]가 object가 아님')
+        slot = row.get('slot')
+        if not isinstance(slot, str) or not slot:
+            return (False, f'{home.root}: worktree lease 장부 leases[{index}]의 slot이 유효하지 않음')
+        if (home.root / slot).resolve() == target:
+            return (True, None)
+    return (False, None)

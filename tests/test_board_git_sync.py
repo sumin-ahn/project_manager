@@ -20,6 +20,12 @@ monkeypatch 한다(test_board_root 의 함수-scope 새-모듈 로드 + REPO 재
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
+
+
+
 import argparse
 import importlib.util
 import os
@@ -34,6 +40,15 @@ from conftest import (anchor_board_module, bind_product_cluster, ensure_product_
                       write_cluster_ledger)
 from pm_engine.infra import delegate_ledger, ticket_store
 from pm_engine.app import body_lint
+
+from pm_engine.app import board_claim
+from pm_engine.app import board_sync
+from pm_engine.domain import board_git_rules
+from pm_engine.infra import board_git
+from pm_engine.infra import git
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
 
 _TASK = "binding-task"
 
@@ -129,7 +144,7 @@ def _t0928_prepare_fixture(board, tmp_path, monkeypatch, *, legacy=False):
     spec.write_text(_spec_text("T-0001", status="open"), encoding="utf-8")
     write_cluster_ledger(board_dir, "T-0001", base_branch="task/main")
     if not legacy:
-        board._ensure_board_root_files()
+        board_git._ensure_board_root_files(board._home())
         for name in ("user.staged", "user.unstaged"):
             (board_dir / name).write_text("원본\n", encoding="utf-8")
         assert _git(["add", "-A"], board_dir).returncode == 0
@@ -142,7 +157,6 @@ def _t0928_prepare_fixture(board, tmp_path, monkeypatch, *, legacy=False):
     ignore.write_text(".local/\n", encoding="utf-8")
     assert _git(["add", ".project_manager/.gitignore"], slot).returncode == 0
     assert _git(["commit", "-qm", "slot setup"], slot).returncode == 0
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
     return pd, slot, board_dir
 
 
@@ -157,33 +171,33 @@ def test_t0928_prepare_sync_preserves_scope_and_reports_local_vs_remote(
     if dirty:
         assert _git(["add", "user.staged"], board_dir).returncode == 0
     index_before = _git(["show", ":user.staged"], board_dir).stdout
-    head = board._board_git_head()
+    head = board_git._board_git_head(board._home())
     calls = []
 
-    def pull():
+    def pull(_home):
         calls.append("pull")
         return subprocess.CompletedProcess([], 1 if mode == "offline" else 0, "", "고정 원격 결과")
 
-    def push():
+    def push(_home):
         calls.append("push")
         return subprocess.CompletedProcess([], 1 if mode in ("offline", "push") else 0, "", "고정 원격 결과")
 
-    monkeypatch.setattr(board, "_board_git_pull_rebase", pull)
-    monkeypatch.setattr(board, "_board_git_push", push)
+    monkeypatch.setattr(board_git, "_board_git_pull_rebase", pull)
+    monkeypatch.setattr(board_git, "_board_git_push", push)
     if mode == "commit":
-        monkeypatch.setattr(board, "git_scope_stage_and_commit", lambda *a, **k: None)
+        monkeypatch.setattr(git, "git_scope_stage_and_commit", lambda *a, **k: None)
     plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
     assert plan.path.is_file() and plan.board_path.is_file()
     assert len(delegate_ledger.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
     out = capsys.readouterr()
     diagnostic = out.out + out.err
     if mode == "commit":
-        assert board._board_git_head() == head
+        assert board_git._board_git_head(board._home()) == head
         assert calls == []
         assert "기록 보류" in diagnostic
         assert "로컬 기록 완료" not in diagnostic
     else:
-        assert board._board_git_head() != head
+        assert board_git._board_git_head(board._home()) != head
         committed = _git(["show", "--format=", "--name-only", "HEAD"], board_dir).stdout.splitlines()
         assert committed == ["tickets/rounds/T-0001/01-architect.md"]
         assert "로컬 기록 완료" in diagnostic
@@ -202,10 +216,10 @@ def test_t0928_prepare_sync_preserves_scope_and_reports_local_vs_remote(
 def test_t0928_prepare_sync_legacy_keeps_noop_semantics(board, tmp_path, monkeypatch, capsys):
     pd, slot, _board_dir = _t0928_prepare_fixture(board, tmp_path, monkeypatch, legacy=True)
 
-    def forbidden(*args, **kwargs):
+    def forbidden(_home, *args, **kwargs):
         raise AssertionError("별도 board-git이 없는 경로의 git 호출")
 
-    monkeypatch.setattr(board, "_board_git", forbidden)
+    monkeypatch.setattr(git, "_board_git", forbidden)
     plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
     assert plan.path.is_file()
     captured = capsys.readouterr()
@@ -221,20 +235,20 @@ def test_t0928_prepare_sync_marks_malformed_touches_and_preserves_source(
     spec = ticket_store.find_ticket_exact(board._home(), "T-0001")[1]
     fm, body = ticket_store.load_ticket(spec)
     fm["touches"] = malformed
-    board.dump_ticket(spec, fm, body)
+    ticket_store.dump_ticket(spec, fm, body)
     original = spec.read_bytes()
-    monkeypatch.setattr(board, "_board_git_pull_rebase",
-                        lambda: subprocess.CompletedProcess([], 0, "", ""))
-    monkeypatch.setattr(board, "_board_git_push",
-                        lambda: subprocess.CompletedProcess([], 0, "", ""))
-    head = board._board_git_head()
+    monkeypatch.setattr(board_git, "_board_git_pull_rebase",
+                        lambda _home: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(board_git, "_board_git_push",
+                        lambda _home: subprocess.CompletedProcess([], 0, "", ""))
+    head = board_git._board_git_head(board._home())
     plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
-    assert "touches 형식 오류" in board.BOARD_FILE.read_text(encoding="utf-8")
+    assert "touches 형식 오류" in (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     assert ticket_store.load_ticket(spec)[0]["touches"] == malformed
     assert spec.read_bytes() == original
     assert (plan.run_dir / "spec.md").read_bytes() == original
     assert len(delegate_ledger.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
-    assert board._board_git_head() != head
+    assert board_git._board_git_head(board._home()) != head
     assert _git(["show", "--format=", "--name-only", "HEAD"], board_dir).stdout.splitlines() == [
         "tickets/rounds/T-0001/01-architect.md"]
 
@@ -256,10 +270,6 @@ def board(tmp_path, monkeypatch):
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("identity.user=me\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "LOCAL_CONF", conf)
-    monkeypatch.setattr(
-        mod, "LEASES_FILE",
-        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     ensure_product_slot(mod, task=_TASK)
     mod._tmp = tmp_path
     return mod
@@ -272,7 +282,7 @@ def board(tmp_path, monkeypatch):
 def test_board_git_disabled_when_legacy(board):
     """board 가 별도 git 이 아니면(legacy·wiki 안) `_board_git_enabled()` False → sync no-op."""
     # board/ 자체가 없음 → Home board_root==wiki, wiki/.git 부재 → False.
-    assert board._board_git_enabled() is False
+    assert board_git._board_git_enabled(board._home()) is False
 
 
 @requires_git
@@ -281,7 +291,7 @@ def test_board_git_enabled_when_separated(board, tmp_path):
     _make_board_git(tmp_path, remote=tmp_path / "bare-a")
     bare = tmp_path / "bare-a"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
-    assert board._board_git_enabled() is True
+    assert board_git._board_git_enabled(board._home()) is True
 
 
 @requires_git
@@ -289,12 +299,12 @@ def test_best_effort_noop_on_legacy_does_not_call_git(board, monkeypatch):
     """legacy 면 best-effort sync 가 git 을 *전혀* 부르지 않는다 (현 동작 byte-identical 보증)."""
     called = {"n": 0}
 
-    def _boom(*a, **k):  # 호출되면 게이트가 새는 것 — 즉시 실패.
+    def _boom(_home, *a, **k):  # 호출되면 게이트가 새는 것 — 즉시 실패.
         called["n"] += 1
         raise AssertionError("legacy 에서 git 호출 발생 — sync 게이트 누출")
 
-    monkeypatch.setattr(board, "_board_git", _boom)
-    board._board_git_sync_best_effort("noop", ())  # 예외 없이 통과해야 함(git 미호출).
+    monkeypatch.setattr(git, "_board_git", _boom)
+    board_sync._board_git_sync_best_effort(board._home(), "noop", ())  # 예외 없이 통과해야 함(git 미호출).
     assert called["n"] == 0
 
 
@@ -326,7 +336,7 @@ def test_claim_strict_push_conflict_rolls_back_and_race_lost(board, tmp_path):
     # 우리 claim — pull(우리 클론은 아직 안 당김) 후 로컬은 open 으로 보이지만 push 가 충돌해야 함.
     # 단, pull --rebase 가 remote 의 winner claim 을 끌어오면 ticket 이 claimed/ 로 이동 →
     # 그 경우 find_ticket 단계에서 race-lost(cannot claim). 둘 다 race-lost(작업 차단)면 정답.
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me"))
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
     assert rc == 1, "remote 선점/충돌인데 claim 이 성공함 — 중복작업 방지 깨짐."
     # 거짓 소유 0: 우리 board 에서 ticket 이 claimed/ 에 *우리 이름으로* 남아 있으면 안 된다.
     ours_claimed = list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
@@ -347,7 +357,7 @@ def test_claim_strict_offline_fails_explicitly(board, tmp_path):
     # remote 제거 → pull --rebase 가 도달 불가로 실패.
     remove_git_tree(bare)
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me"))
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
     assert rc == 1, "offline 인데 claim 이 성공함 — claim 은 remote 도달 없이 확정 금지."
     # ticket 은 여전히 open/ 에 있어야 한다(로컬 claim 안 남김).
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
@@ -367,7 +377,7 @@ def _claim_move(board_mod, board_dir: Path, tid: str = "T-0001"):
     dst = board_dir / "tickets" / "claimed" / f"{tid}-t.md"
     original = src.read_bytes()
     src.rename(dst)
-    return board_mod._ClaimFiles(old=src, new=dst, original=original)
+    return board_git_rules._ClaimFiles(old=src, new=dst, original=original)
 
 
 @requires_git
@@ -392,10 +402,10 @@ def test_claim_confirm_push_nonff_rolls_back_scoped(board, tmp_path):
     _git(["push", "-q", "origin", "main"], other)
 
     # anchor = pull 없이 *현재* HEAD(open 상태) — confirm 의 rollback 복귀 지점.
-    anchor = board._board_git_head()
+    anchor = board_git._board_git_head(board._home())
     files = _claim_move(board, board_dir)
 
-    ok = board._board_git_claim_confirm(anchor, files)
+    ok = board_claim._board_git_claim_confirm(board._home(), anchor, files)
     assert ok is False, "remote 가 앞선(push non-FF) 상황인데 confirm 이 소유 확정함 — strict 위반."
     # rollback: ticket 이 open/ 으로 복원돼야 하고 claimed/ 엔 없어야 한다(거짓 소유 0).
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
@@ -406,7 +416,7 @@ def test_claim_confirm_push_nonff_rolls_back_scoped(board, tmp_path):
     # backfill 잔여가 staged 로 남으면 이 pull 이 막혀 우연히 anchor 에 머무르므로, 최종 HEAD 는
     # stale anchor 가 아니라 원격 최신 tip 이어야 복구가 완결된 것이다.
     remote_head = _git(["rev-parse", "main"], bare).stdout.strip()
-    assert board._board_git_head() == remote_head, \
+    assert board_git._board_git_head(board._home()) == remote_head, \
         "롤백 뒤 claim commit 제거·원격 최신화가 완결되지 않음."
     assert remote_head != anchor, "fixture 전제: 원격 winner 가 anchor 를 전진시켜야 한다."
 
@@ -418,7 +428,7 @@ def test_claim_strict_success_confirms_and_pushes(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me"))
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
     assert rc == 0, "경쟁 없는 claim 이 실패함."
     claimed = list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
     assert claimed, "claim 성공인데 ticket 이 claimed/ 로 안 옮겨짐."
@@ -441,23 +451,23 @@ def test_claim_confirm_commit_fail_rolls_back_despite_push_ok(board, tmp_path, m
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    anchor = board._board_git_head()
+    anchor = board_git._board_git_head(board._home())
     files = _claim_move(board, board_dir)
 
     # 실 실패 모드 충실 재현: `add -A` 는 정상 실행(move 가 index 에 stage)되지만 `commit` 만
     # rc≠0 으로 실패시킨다 → 새 commit 이 안 생겨 `_board_git_stage_and_commit` 가 False 를 낸다
     # (판정은 rc 가 아니라 HEAD 전진 여부·ADR-0073).
-    real_git = board._board_git
+    real_git = git._board_git
 
-    def _commit_fails(args, *, check=False, timeout=None):
+    def _commit_fails(_home, args, *, check=False, timeout=None):
         if args[:1] == ["commit"]:
             return subprocess.CompletedProcess(args, 1, "", "simulated commit failure")
-        return real_git(args, check=check, timeout=timeout)
+        return real_git(_home, args, check=check, timeout=timeout)
 
-    monkeypatch.setattr(board, "_board_git", _commit_fails)
+    monkeypatch.setattr(git, "_board_git", _commit_fails)
     # push 는 정상이면 up-to-date rc=0 을 낸다 — commit 실패를 무시했다면 거짓 확정될 조건.
 
-    ok = board._board_git_claim_confirm(anchor, files)
+    ok = board_claim._board_git_claim_confirm(board._home(), anchor, files)
     assert ok is False, "commit 실패인데 push rc=0 으로 거짓 확정함 — must-fix 회귀."
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
         "commit 실패 rollback 후 ticket 이 open/ 으로 복원 안 됨."
@@ -477,25 +487,25 @@ def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, mon
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    anchor = board._board_git_head()
+    anchor = board_git._board_git_head(board._home())
     files = _claim_move(board, board_dir)
 
-    real_git = board._board_git
+    real_git = git._board_git
 
-    def _flaky_git(args, *, check=False, timeout=None):
+    def _flaky_git(_home, args, *, check=False, timeout=None):
         # reset(rollback) 호출은 throw — rollback 이 이를 삼켜야 confirm 이 bool 만 낸다.
         if args[:1] == ["reset"]:
             raise RuntimeError("simulated reset failure (timeout/git 소실)")
-        return real_git(args, check=check, timeout=timeout)
+        return real_git(_home, args, check=check, timeout=timeout)
 
     # commit 은 정상(새 commit 생성), push 는 non-FF 가 아니라도 rollback 경로를 강제하려고
     # push 도 실패시킨다(어떤 push 결과든 rollback 으로 가게) — 그 rollback 의 reset 이 throw.
-    monkeypatch.setattr(board, "_board_git", _flaky_git)
-    monkeypatch.setattr(board, "_board_git_push",
-                        lambda: subprocess.CompletedProcess([], 1, "", "rejected (non-FF)"))
+    monkeypatch.setattr(git, "_board_git", _flaky_git)
+    monkeypatch.setattr(board_git, "_board_git_push",
+                        lambda _home: subprocess.CompletedProcess([], 1, "", "rejected (non-FF)"))
 
     # 예외가 confirm 을 빠져나오면 이 호출이 raise → 테스트 실패. bool 만 나와야 한다.
-    ok = board._board_git_claim_confirm(anchor, files)
+    ok = board_claim._board_git_claim_confirm(board._home(), anchor, files)
     assert ok is False, "push 실패인데 confirm 이 확정함(또는 예외 전파)."
     # reset 이 throw 해도 **파일 복원은 별도 suppress 구간**이라 티켓은 open/ 으로 돌아온다
     # (거짓 소유 0 — 이력만 못 되감은 상태로 남고 다음 mutation 이 catch-up).
@@ -503,7 +513,7 @@ def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, mon
         "reset throw 인데 티켓 파일 복원까지 건너뜀 — 롤백 단계가 서로를 막고 있다."
 
     # 통합: cmd_claim 도 같은 조건에서 traceback 없이 rc=1 을 내야 한다(reset throw 잔존 monkeypatch).
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me"))
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
     assert rc == 1, "reset throw 경로에서 cmd_claim 이 race-lost rc=1 을 안 냄(traceback 위험)."
 
 
@@ -524,15 +534,15 @@ def test_claim_preserves_best_effort_backlog(board, tmp_path):
         _TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
     moved = tmp_path / "bare-backlog-moved"
     bare.rename(moved)  # remote 일시 도달 불가.
-    board._board_git_sync_best_effort(
-        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))  # 로컬 commit O·push 실패(무차단).
+    board_sync._board_git_sync_best_effort(
+        board._home(), "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))  # 로컬 commit O·push 실패(무차단).
     moved.rename(bare)  # remote 복구.
     backlog_head = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     assert _git(["log", "--oneline"], board_dir).stdout.count("\n") >= 2, \
         "best-effort backlog commit 이 로컬에 안 쌓임."
 
     # 2) 이제 claim T-0001 — prefetch pull --rebase 가 backlog 를 보존한 채 진행, 성공 push.
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me"))
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
     assert rc == 0, "backlog 있는 상태의 claim 이 실패함."
     # backlog(T-0002) commit 이 로컬+remote 에 여전히 존재해야 한다(유실 0).
     log = _git(["log", "--oneline"], board_dir).stdout
@@ -568,7 +578,7 @@ def test_claim_prefetch_dirty_board_no_longer_blocks(board, tmp_path):
     tk = board_dir / "tickets" / "open" / "T-0001-t.md"
     tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    result = board._board_git_claim_prefetch("T-0001")
+    result = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
     assert result.block is None, \
         f"무관 dirty 인데 claim 이 차단됨(D1 과차단 재발): {result.block}"
     assert result.anchor == _git(["rev-parse", "HEAD"], board_dir).stdout.strip(), \
@@ -587,7 +597,7 @@ def test_claim_dirty_board_now_claims_and_leaves_dirty_untouched(board, tmp_path
     other = board_dir / "tickets" / "open" / "T-0002-other.md"
     other.write_text(_TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")  # 무관 untracked.
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me"))
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
     assert rc == 0, "무관 dirty 때문에 claim 이 막힘 — 사용자 보고 결함 재발."
     assert other.exists(), "claim 이 무관한 미커밋 파일을 지움(파괴)."
     remote_ls = _git(["ls-tree", "-r", "--name-only", "main"], bare).stdout
@@ -605,10 +615,10 @@ def test_claim_prefetch_fetch_failure_is_offline(board, tmp_path, monkeypatch):
     bare = tmp_path / "bare-clean-off"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     _make_board_git(tmp_path, remote=bare)
-    monkeypatch.setattr(board, "_board_git_fetch", lambda remote: False)
+    monkeypatch.setattr(board_git, "_board_git_fetch", lambda _home, remote: False)
 
-    result = board._board_git_claim_prefetch("T-0001")
-    assert result.block == board._CLAIM_BLOCK_OFFLINE, \
+    result = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    assert result.block == board_git_rules._CLAIM_BLOCK_OFFLINE, \
         f"fetch 실패인데 offline 사유가 아님: {result.block}"
     assert result.anchor is None, "차단인데 anchor 가 나옴(진행 위험)."
 
@@ -620,7 +630,7 @@ def test_claim_prefetch_clean_success_returns_anchor(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    result = board._board_git_claim_prefetch("T-0001")
+    result = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
     expected = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     assert result.anchor == expected, "clean+성공인데 board HEAD anchor 가 아님."
     assert result.block is None, f"정상인데 차단 사유가 붙음: {result.block}"
@@ -639,11 +649,11 @@ def test_pull_is_skipped_when_not_behind(board, tmp_path, monkeypatch):
     tk = board_dir / "tickets" / "open" / "T-0001-t.md"
     tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    def _pull_must_not_run():
+    def _pull_must_not_run(_home):
         raise AssertionError("behind==0 인데 pull --rebase 를 호출함 — 조건 게이트 누출.")
 
-    monkeypatch.setattr(board, "_board_git_pull_rebase", _pull_must_not_run)
-    result = board._board_git_claim_prefetch("T-0001")
+    monkeypatch.setattr(board_git, "_board_git_pull_rebase", _pull_must_not_run)
+    result = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
     assert result.block is None and result.anchor, \
         f"behind==0 + dirty 인데 진행하지 못함: {result}"
 
@@ -669,22 +679,22 @@ def test_best_effort_local_commit_failure_is_loud_and_scope_isolated(
     unrelated = board_dir / "tickets" / "open" / "T-0003-t.md"
     old.rename(changed)
     unrelated.write_text(_TICKET_TEXT.format(tid="T-0003"), encoding="utf-8")
-    before = board._board_git_head()
+    before = board_git._board_git_head(board._home())
 
-    real_git = board._board_git
+    real_git = git._board_git
 
-    def _commit_fails(args, *, check=False, timeout=None):
+    def _commit_fails(_home, args, *, check=False, timeout=None):
         if args[:1] == ["commit"]:
             return subprocess.CompletedProcess(args, 1, "", "simulated permission denied")
-        return real_git(args, check=check, timeout=timeout)
+        return real_git(_home, args, check=check, timeout=timeout)
 
-    monkeypatch.setattr(board, "_board_git", _commit_fails)
+    monkeypatch.setattr(git, "_board_git", _commit_fails)
     sync_calls = []
-    monkeypatch.setattr(board, "_board_git_pull_rebase", lambda: sync_calls.append("pull"))
-    monkeypatch.setattr(board, "_board_git_push", lambda: sync_calls.append("push"))
-    board._board_git_sync_best_effort("block T-0001", (old, changed))
+    monkeypatch.setattr(board_git, "_board_git_pull_rebase", lambda _home: sync_calls.append("pull"))
+    monkeypatch.setattr(board_git, "_board_git_push", lambda _home: sync_calls.append("push"))
+    board_sync._board_git_sync_best_effort(board._home(), "block T-0001", (old, changed))
 
-    assert board._board_git_head() == before, "commit 실패인데 HEAD가 전진함."
+    assert board_git._board_git_head(board._home()) == before, "commit 실패인데 HEAD가 전진함."
     staged = _git(["diff", "--cached", "--name-status"], board_dir).stdout
     assert "tickets/open/T-0001-t.md" in staged
     assert "tickets/claimed/T-0001-t.md" in staged
@@ -713,7 +723,7 @@ def test_best_effort_commit_false_without_scoped_change_is_normal_noop(
         _TICKET_TEXT.format(tid="T-0003"), encoding="utf-8")
     outside = tmp_path / "outside-board.md"
 
-    board._board_git_sync_best_effort("noop", (outside,))
+    board_sync._board_git_sync_best_effort(board._home(), "noop", (outside,))
 
     err = capsys.readouterr().err
     assert "local commit 실패" not in err, err
@@ -733,9 +743,9 @@ def test_promote_reports_board_git_pending_when_local_commit_is_uncommitted(
                      encoding="utf-8")
     bind_product_cluster(board, "T-0002")
     monkeypatch.setattr(body_lint, "_body_lint_issues", lambda *args, **kwargs: [])
-    monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda *args, **kwargs: False)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home,  *args, **kwargs: False)
 
-    assert board.cmd_promote(argparse.Namespace(id="T-0002")) == 0
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id="T-0002")) == 0
 
     out = capsys.readouterr().out
     assert "board-git 승격 완료" not in out, out
@@ -751,16 +761,16 @@ def test_best_effort_pull_exception_after_local_commit_preserves_ready_state(
     board_dir = _make_board_git(tmp_path, remote=bare)
     changed = board_dir / "tickets" / "open" / "T-0002-t.md"
     changed.write_text(_TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
-    before = board._board_git_head()
+    before = board_git._board_git_head(board._home())
 
-    def _pull_timeout():
+    def _pull_timeout(_home):
         raise subprocess.TimeoutExpired(["git", "pull", "--rebase"], 5)
 
-    monkeypatch.setattr(board, "_board_git_pull_rebase", _pull_timeout)
-    ready = board._board_git_sync_best_effort("new T-0002", (changed,))
+    monkeypatch.setattr(board_git, "_board_git_pull_rebase", _pull_timeout)
+    ready = board_sync._board_git_sync_best_effort(board._home(), "new T-0002", (changed,))
 
     assert ready is True, "local commit 성공 뒤 pull 예외를 local-only 실패로 분류함."
-    assert board._board_git_head() != before, "pull 예외 전에 local commit이 생성되지 않음."
+    assert board_git._board_git_head(board._home()) != before, "pull 예외 전에 local commit이 생성되지 않음."
     assert "로컬 commit 은 보존" in capsys.readouterr().err
 
 
@@ -780,8 +790,8 @@ def test_best_effort_push_failure_does_not_block(board, tmp_path, capsys):
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     # 예외 없이 리턴해야 한다(무차단).
-    board._board_git_sync_best_effort(
-        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))
+    board_sync._board_git_sync_best_effort(
+        board._home(), "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))
     head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     assert head_after != head_before, "best-effort 가 로컬 commit 을 안 함 — local-first 위반."
     err = capsys.readouterr().err
@@ -797,10 +807,10 @@ def test_complete_best_effort_offline_still_completes(board, tmp_path, capsys):
     bare = tmp_path / "bare-cmp"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
-    assert board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me")) == 0
+    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me")) == 0
 
     remove_git_tree(bare)  # 이제 remote 도달 불가.
-    rc = board.cmd_complete(argparse.Namespace(
+    rc = board_ticket.cmd_complete(board._home(), argparse.Namespace(
         id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False,
         task=_TASK))
     assert rc == 0, "complete(best-effort)가 offline 에서 차단됨 — best-effort 위반."
@@ -820,7 +830,7 @@ def test_head_detached_false_when_on_branch(board, tmp_path):
     bare = tmp_path / "bare-att"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     _make_board_git(tmp_path, remote=bare)  # HEAD → refs/heads/main (attached).
-    assert board._board_git_head_detached() is False, \
+    assert board_git._board_git_head_detached(board._home()) is False, \
         "브랜치 위인데 detached 로 오판 — attached 판정 오발."
 
 
@@ -831,7 +841,7 @@ def test_head_detached_true_when_detached(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
     _detach_head(board_dir)
-    assert board._board_git_head_detached() is True, \
+    assert board_git._board_git_head_detached(board._home()) is True, \
         "detached HEAD 인데 감지 못 함 — symbolic-ref rc 판정 실패."
 
 
@@ -845,11 +855,11 @@ def test_head_detached_fail_soft_on_exception(board, monkeypatch, failure):
     주입값은 이 docstring 이 이름 붙인 두 실패 그 자체다 — 실제로는 날 수 없는 예외형을
     넣으면 포획이 무엇을 통과시키는지 못 본다.
     """
-    def _boom(*a, **k):
+    def _boom(_home, *a, **k):
         raise failure
 
-    monkeypatch.setattr(board, "_board_git", _boom)
-    assert board._board_git_head_detached() is False, \
+    monkeypatch.setattr(git, "_board_git", _boom)
+    assert board_git._board_git_head_detached(board._home()) is False, \
         "판정 예외인데 True(detached) 로 떨어짐 — fail-soft 위반(정상 경로를 막을 위험)."
 
 
@@ -862,14 +872,14 @@ def test_head_detached_rc1_only_fatal_rc128_is_false(board, monkeypatch):
     import subprocess as _sp
 
     def _fake(rc):
-        def _run(args, **k):
+        def _run(_home, args, **k):
             return _sp.CompletedProcess(args, rc, stdout="", stderr="")
         return _run
 
-    monkeypatch.setattr(board, "_board_git", _fake(1))
-    assert board._board_git_head_detached() is True, "rc=1(detached)인데 False."
-    monkeypatch.setattr(board, "_board_git", _fake(128))
-    assert board._board_git_head_detached() is False, \
+    monkeypatch.setattr(git, "_board_git", _fake(1))
+    assert board_git._board_git_head_detached(board._home()) is True, "rc=1(detached)인데 False."
+    monkeypatch.setattr(git, "_board_git", _fake(128))
+    assert board_git._board_git_head_detached(board._home()) is False, \
         "rc=128(fatal)인데 True(detached) — fatal 을 detached 로 오진(claim 오차단·sync 오skip)."
 
 
@@ -884,12 +894,12 @@ def test_claim_prefetch_detached_branches_not_offline(board, tmp_path):
     board_dir = _make_board_git(tmp_path, remote=bare)
     _detach_head(board_dir)
 
-    result = board._board_git_claim_prefetch("T-0001")
-    assert result.block == board._CLAIM_BLOCK_DETACHED, \
+    result = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    assert result.block == board_git_rules._CLAIM_BLOCK_DETACHED, \
         "detached board 인데 prefetch 가 detached 사유를 안 냄(offline/dirty/anchor 오판)."
-    assert result.block != board._CLAIM_BLOCK_OFFLINE, \
+    assert result.block != board_git_rules._CLAIM_BLOCK_OFFLINE, \
         "detached 가 offline 으로 오판됨 — T-0203 회귀."
-    assert result.block != board._CLAIM_BLOCK_DIRTY, "detached 가 dirty 로 오판됨."
+    assert result.block != board_git_rules._CLAIM_BLOCK_DIRTY, "detached 가 dirty 로 오판됨."
 
 
 @requires_git
@@ -907,10 +917,10 @@ def test_claim_prefetch_detached_precedes_everything(board, tmp_path):
     # detached 상태 위에 unstaged 변경 1건(best-effort commit skip 으로 dirty 잔존 모사).
     tk = board_dir / "tickets" / "open" / "T-0001-t.md"
     tk.write_text(tk.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
-    assert board._board_git_status_porcelain().strip(), "fixture 전제: board 가 dirty 여야 함."
+    assert board_git._board_git_status_porcelain(board._home()).strip(), "fixture 전제: board 가 dirty 여야 함."
 
-    result = board._board_git_claim_prefetch("T-0001")
-    assert result.block == board._CLAIM_BLOCK_DETACHED, \
+    result = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    assert result.block == board_git_rules._CLAIM_BLOCK_DETACHED, \
         "dirty+detached 동시인데 detached 가 우선 안 됨 — 선체크 순서 위반·오도 안내 위험."
 
 
@@ -926,7 +936,7 @@ def test_claim_detached_prints_checkout_guidance_not_offline(board, tmp_path, ca
     board_dir = _make_board_git(tmp_path, remote=bare)
     _detach_head(board_dir)
 
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", task=_TASK, user="me"))
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
     assert rc == 1, "detached board claim 이 차단 안 됨(anchor 없는데 진행)."
     err = capsys.readouterr().err
     assert "detached HEAD" in err and "checkout" in err, \
@@ -959,15 +969,15 @@ def test_best_effort_detached_skips_commit_no_orphan(board, tmp_path, capsys):
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     count_before = _git(["rev-list", "--count", "HEAD"], board_dir).stdout.strip()
-    board._board_git_sync_best_effort(
-        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))  # 예외 없이 리턴(무차단).
+    board_sync._board_git_sync_best_effort(
+        board._home(), "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))  # 예외 없이 리턴(무차단).
     head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     count_after = _git(["rev-list", "--count", "HEAD"], board_dir).stdout.strip()
 
     assert head_after == head_before, \
         "detached 에서 best-effort 가 commit 을 냄 — orphan 누적(HEAD 전진)·T-0204 위반."
     assert count_after == count_before, "detached 에서 commit 개수가 늘어남 — orphan 누적."
-    assert board._board_git_head_detached() is True, \
+    assert board_git._board_git_head_detached(board._home()) is True, \
         "best-effort 가 detached 를 자동 checkout 함 — PM 브랜치 의도 침해(안내만 해야)."
     err = capsys.readouterr().err
     assert "detached HEAD" in err and "보류" in err, \
@@ -990,8 +1000,8 @@ def test_best_effort_attached_still_commits(board, tmp_path):
         _TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
-    board._board_git_sync_best_effort(
-        "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))
+    board_sync._board_git_sync_best_effort(
+        board._home(), "new T-0002", (board_dir / "tickets" / "open" / "T-0002-t.md",))
     head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     assert head_after != head_before, \
         "attached 인데 best-effort 가 commit 을 안 함 — detached 가드가 정상 경로를 오차단."

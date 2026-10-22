@@ -19,11 +19,18 @@ hermetic 패턴은 `test_board_mine_view.py` 와 동형 — board.py 경로 전�
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import importlib.util
 from pathlib import Path
 
 import pytest
+
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -61,18 +68,12 @@ def board(tmp_path, monkeypatch):
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "BOARD_FILE": wiki / "board.md",
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
-        "LEASES_FILE": pm / ".local" / "worktree-leases.json",
+
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # ambient 세션 env 를 먼저 지우고(실환경 격리) 이 파일의 canonical 세션을 명시 바인딩한다 —
     # per-clone conf `session=` 폴백은 폐지됐다(T-0779). 다른 세션이 필요한 테스트는 자기
     # monkeypatch.setenv 로 덮는다(나중이 이김).
@@ -93,14 +94,14 @@ def _conf_key(name: str) -> str:
 
 
 def _write_conf(board, **kv) -> None:
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
-    path = board.TICKETS_DIR / status / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": title, "status": status,
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
+    ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "claimed_by": claimed_by, "created_by": created_by,
                              "depends_on": [], "tags": []}, "# seed\n")
     return path
@@ -111,7 +112,7 @@ def _run(board, capsys, **flags) -> str:
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
                               all=flags.get("all", False), task=flags.get("task"))
-    rc = board.cmd_list(args)
+    rc = board_list.cmd_list(board._home(), args)
     assert rc == 0
     return capsys.readouterr().out
 
@@ -349,10 +350,10 @@ def test_all_does_not_resolve_identity(board, capsys, monkeypatch):
     """`--all` 은 정체성 무해소(필터 없음) — user_name 미호출(default_view 와 대비)."""
     _seed(board, "T-0001", "open")
 
-    def _boom(*a, **k):
+    def _boom(_home, *a, **k):
         raise AssertionError("user_name must not be called with --all")
 
-    monkeypatch.setattr(board, "user_name", _boom)
+    monkeypatch.setattr(lease_store, "user_name", _boom)
     out = _run(board, capsys, all=True)
     assert _ids(out) == ["T-0001"]
 
@@ -360,7 +361,7 @@ def test_all_does_not_resolve_identity(board, capsys, monkeypatch):
 def test_all_mutually_exclusive_with_mine(board):
     """`--all` + `--mine` 는 상호 배타 — fail-loud(뷰 스코프는 하나만)."""
     with pytest.raises(SystemExit) as exc:
-        board.cmd_list(argparse.Namespace(status=None, tag=None, mine=True,
+        board_list.cmd_list(board._home(), argparse.Namespace(status=None, tag=None, mine=True,
                                           all=True, task=None))
     assert "--all" in str(exc.value)
 
@@ -375,7 +376,7 @@ def test_all_mutually_exclusive_with_repo_slot(board):
 def test_all_mutually_exclusive_with_task(board):
     """`--all` + `--task` 도 상호 배타 — fail-loud (뷰 스코프는 하나만)."""
     with pytest.raises(SystemExit) as exc:
-        board.cmd_list(argparse.Namespace(status=None, tag=None, mine=False,
+        board_list.cmd_list(board._home(), argparse.Namespace(status=None, tag=None, mine=False,
                                           all=True, task="refactor"))
     assert "--all" in str(exc.value)
 

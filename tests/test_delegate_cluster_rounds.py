@@ -13,6 +13,13 @@ ignore 된 슬롯 git 트리 한 쌍을 tmp 에 세운다.
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.app import round_maintenance
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import importlib.util
 import json
@@ -27,6 +34,8 @@ from pm_engine.domain import delegate_errors, round_rules
 from pm_engine.infra import delegate_ledger, round_store
 from pm_engine.app import round_seed
 
+from pm_engine.infra import fs
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -39,6 +48,12 @@ _FILLED_DESIGN_SECTION = (
     "- **표면 상한**: 라운드 파일 티켓당 1개\n"
     "- **테스트 전략**: 정상 왕복·부분 시드·위조 경로\n"
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_round_sync(monkeypatch):
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        round_maintenance._rounds_mutation_sync_paths)
 
 
 def _load_pd():
@@ -91,15 +106,13 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
-    board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
 
-    def _sync(message, paths):
+    def _sync(_home, message, paths):
         if sync_log is not None:
             sync_log.append((message, [Path(item) for item in paths]))
         return True
 
-    board._rounds_mutation_sync_paths = _sync
+    round_maintenance._rounds_mutation_sync_paths = _sync
     return board
 
 
@@ -127,9 +140,7 @@ def cluster_env(tmp_path, pd, monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_NAME", "cluster")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "cluster@test.invalid")
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, pm_home),
-    )
+    _fixture_board(pd, pm_home)
     return pm_home, slot, tickets
 
 
@@ -247,7 +258,7 @@ def _t0928_prior_roles(pd, pm_home, tickets, members, role):
             seed = pd._ticket_round_seed(previous_role, spec, None,
                                         today="2026-10-02", rounds=previous)
             path = round_store.reserve_round(tickets.parent, ticket, previous_role, content=seed,
-                                        lock=_fixture_board(pd, pm_home).board_lock())
+                                        lock=fs.board_lock(_fixture_board(pd, pm_home)._home()))
             _fill(path, "## 실측\n- 이전 단계 완료")
 
 
@@ -269,21 +280,20 @@ def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
     _seed_cluster(pm_home, tickets, "C-seeds", members)
     _t0928_prior_roles(pd, pm_home, tickets, members, role)
     board = _fixture_board(pd, pm_home)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
-    original_lock = board.board_lock
+    original_lock = fs.board_lock
     active = []
     syncs = []
 
     @contextmanager
-    def lock():
-        with original_lock():
+    def lock(_home):
+        with original_lock(_home):
             active.append(True)
             try:
                 yield
             finally:
                 active.pop()
 
-    def sync(message, paths):
+    def sync(_home, message, paths):
         assert not active
         rows = _ledger_rows(pm_home)
         assert {row["ticket"] for row in rows} == set(members)
@@ -295,8 +305,8 @@ def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
         syncs.append((message, tuple(paths)))
         return True
 
-    monkeypatch.setattr(board, "board_lock", lock)
-    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", sync)
+    monkeypatch.setattr(fs, "board_lock", lock)
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths", sync)
     if size == 1:
         plans = (pd.prepare_ticket_copy(ticket=members[0], role=role,
                                         cwd=slot, pm_home=pm_home),)
@@ -332,9 +342,8 @@ def test_t0928_prepare_boundaries_use_final_reservation_status(pd, cluster_env,
     _seed_cluster(pm_home, tickets, "C-status", ["T-6111", "T-6112"])
     board = _fixture_board(pd, pm_home)
     syncs = []
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
-    monkeypatch.setattr(board, "_rounds_mutation_sync_paths",
-                        lambda message, paths: syncs.append(tuple(paths)) or True)
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        lambda _home, message, paths: syncs.append(tuple(paths)) or True)
     if state in ("draft", "mixed", "final-formal"):
         _t0928_set_status(board, "T-6112", "draft")
     if state == "draft":
@@ -361,9 +370,8 @@ def test_t0928_prepare_boundaries_reopen_records_nothing(pd, cluster_env, monkey
     _seed_cluster(pm_home, tickets, "C-reopen", ["T-6121"])
     board = _fixture_board(pd, pm_home)
     syncs = []
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
-    monkeypatch.setattr(board, "_rounds_mutation_sync_paths",
-                        lambda message, paths: syncs.append(tuple(paths)) or True)
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        lambda _home, message, paths: syncs.append(tuple(paths)) or True)
     original = pd.prepare_ticket_copy(ticket="T-6121", role="architect",
                                       cwd=slot, pm_home=pm_home)
     _fill(original.board_path, "## 실측\n- 충전된 입력")
@@ -382,15 +390,14 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
     _seed_cluster(pm_home, tickets, "C-failure", ["T-6131", "T-6132"])
     board = _fixture_board(pd, pm_home)
     syncs = []
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
 
-    def sync(message, paths):
+    def sync(_home, message, paths):
         syncs.append(tuple(paths))
         if failure == "sync":
             raise OSError("고정 기록 오류")
         return True
 
-    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", sync)
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths", sync)
     if failure == "before-reserve":
         monkeypatch.setattr(pd, "_ticket_round_seed",
                             lambda *a, **k: (_ for _ in ()).throw(delegate_errors.DelegateError("예약 전 오류")))
@@ -499,11 +506,11 @@ def test_developer_round_after_reopen_is_prepared(pd, cluster_env):
     done.mkdir(parents=True, exist_ok=True)
     (done / "T-6020-legacy.md").write_text(
         _spec_text("T-6020", status="done"), encoding="utf-8", newline="\n")
-    board = pd._load_board_for_repo(pm_home)
+    board = _fixture_board(pd, pm_home)
 
-    assert board.cmd_reopen(argparse.Namespace(id="T-6020", reason="오처리 복구")) == 0
+    assert board_ticket.cmd_reopen(board._home(), argparse.Namespace(id="T-6020", reason="오처리 복구")) == 0
 
-    assert board.load_cluster("C-T-6020")["tickets"] == ["T-6020"]
+    assert cluster_store.load_cluster(board._home(), "C-T-6020")["tickets"] == ["T-6020"]
     assert not _rounds_dir(pm_home, "T-6020").exists()
     architect = pd.prepare_ticket_copy(
         ticket="T-6020", role="architect", cwd=slot, pm_home=pm_home)
@@ -627,7 +634,7 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
         today="2026-01-01")
     board_path = round_store.reserve_round(
         pm_paths.tickets_dir(board._home()), "T-6016", "architect", content=seed,
-        lock=board.board_lock(),
+        lock=fs.board_lock(board._home()),
     )
     legacy_dir = slot / delegate_ledger.TICKET_COPY_REL_ROOT / "T-6016" / ("b" * 32)
     legacy_dir.mkdir(parents=True)
@@ -759,5 +766,5 @@ def test_cluster_prepare_skips_a_discarded_member(pd, cluster_env):
     assert sorted(item.name for item in plan.run_dir.iterdir()) == ["T-6001"]
     assert not _rounds_dir(pm_home, "T-6002").exists()
     board = _fixture_board(pd, pm_home)
-    assert board.cluster_members("C-wave") == ("T-6001", "T-6002")
-    assert board.cluster_live_members("C-wave") == ("T-6001",)
+    assert cluster_store.cluster_members(board._home(), "C-wave") == ("T-6001", "T-6002")
+    assert cluster_store.cluster_live_members(board._home(), "C-wave") == ("T-6001",)

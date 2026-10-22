@@ -12,6 +12,10 @@ import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재�
 """
 from __future__ import annotations
 
+from pm_engine.app import completion_gate
+from pm_engine.cli import board_ticket
+
+
 import argparse
 import importlib.util
 import json
@@ -26,6 +30,8 @@ from pm_engine.domain import manifest_rules, pytest_report
 from pm_engine.infra import conf_store, git, pm_paths, regression_store, review_rounds, ticket_store
 from pm_engine.app import regression, release
 from pm_engine.domain import review_form, review_state, round_rules
+
+from pm_engine.cli import task_args
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -82,9 +88,6 @@ def live_board(tmp_path, monkeypatch):
     init_git_repo(proj)
     mod = _load_board()
     monkeypatch.setattr(mod, "REPO", proj)
-    monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
-    monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: "cafef00dcafef00d0011223344556677")
     mod._proj = proj
     return mod
@@ -178,7 +181,7 @@ def _platform_conf(live_board, monkeypatch, command="run-windows") -> None:
     """
     text = ("test.cmd=core-full\nqa.platforms=windows\n"
             f"test.windows.cmd={command}\n")
-    for conf in (live_board.LOCAL_CONF,
+    for conf in (live_board._home().local_conf,
                  live_board._proj / SLOT / ".project_manager" / "local.conf"):
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(text, encoding="utf-8")
@@ -590,7 +593,7 @@ def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 0
     head = _read_flag(live_board)["head"]
-    live_board.LOCAL_CONF.write_text(
+    live_board._home().local_conf.write_text(
         "delegate_enabled=true\n"
         "qa.platforms=windows\n"
         "test.windows.cmd=run-windows\n",
@@ -793,8 +796,8 @@ def test_record_explicit_cwd_override(live_board, monkeypatch):
 
 def _seed_two_leases(live_board):
     """활성 슬롯 2개(A_1·B_1)를 리스 장부에 심는다 (multi-lease genuine-ambiguity 전제)."""
-    live_board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    live_board.LEASES_FILE.write_text(json.dumps({"leases": [
+    pm_paths.leases_file(live_board._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(live_board._home()).write_text(json.dumps({"leases": [
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "B_1", "state": "leased"},
     ]}), encoding="utf-8")
@@ -858,7 +861,7 @@ def test_record_overwrites_existing_pass_when_engine_copy_shows_marked_skew(
     실제로 부르는 `_resolve_engine_sync_plan`만 스텁으로 skew 를 주입한다(board 경유 전 구간 실행)."""
     upstream = live_board._proj.parent / "upstream"
     _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True, rel=_DRIFT_NON_ENGINE_REL)
-    live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
     pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "pass",
          "n": 22, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
@@ -978,7 +981,7 @@ def test_check_absent_record_blocks(live_board, capsys):
 
 def test_check_red_record_blocks(live_board, capsys):
     """status!=pass 기록 → rc1 + RED 사유 (수집·rc 표면화·rev 무관)."""
-    live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
     pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "fail",
          "n": 5, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
@@ -991,7 +994,7 @@ def test_check_red_record_blocks(live_board, capsys):
 
 def test_check_rev_mismatch_blocks(live_board, capsys):
     """pass 기록이나 head != push rev → rc1 + 'rev 불일치' (재실행 요구·부재/red 와 구분)."""
-    live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
     pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "pass",
          "n": 7, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
@@ -1005,7 +1008,7 @@ def test_check_rev_mismatch_blocks(live_board, capsys):
 
 def test_check_pass_matching_rev_green(live_board, capsys):
     """pass 기록 ∧ head==rev → rc0 green (보호훅 통과 경로)."""
-    live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
     sha = "cafef00dcafef00d0011223344556677"
     pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": sha, "status": "pass", "n": 7, "rc": 0,
@@ -1066,7 +1069,7 @@ _PV_INTERNAL_ROLE = review_form.INTERNAL_REVIEW_ROLE
 # 라운드 채널(code-reviewer)은 장부가 없어 판정 role 이 그 어휘다.
 _PV_BOARD = _load_board()
 _PV_CHANNEL_INTERNAL = _PV_INTERNAL_ROLE
-_PV_CHANNEL_ADDITIONAL = _PV_BOARD.GATE_CHANNEL_ADDITIONAL
+_PV_CHANNEL_ADDITIONAL = completion_gate.GATE_CHANNEL_ADDITIONAL
 
 
 def _pv_seed_ticket_tree(proj: Path) -> None:
@@ -1263,7 +1266,7 @@ def _pv_complete(mod, tid: str) -> list[str]:
     _status, path = ticket_store.find_ticket_exact(mod._home(), tid)
     spec_text = path.read_text(encoding="utf-8")
     _fm, body = ticket_store.load_ticket(path)
-    return mod._complete_gate(tid, _pv_gate_args(), body, spec_text=spec_text)
+    return board_ticket._complete_gate(mod._home(), tid, _pv_gate_args(), body, spec_text=spec_text)
 
 
 def _pv_gate_args() -> argparse.Namespace:
@@ -1287,8 +1290,6 @@ def pm_verified_release(tmp_path, monkeypatch):
     local.mkdir(parents=True, exist_ok=True)
     mod = _load_board()
     monkeypatch.setattr(mod, "REPO", proj)
-    monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: "feedface" * 5)
     runner = _FakeRun(0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 800 deselected in 40.0s")
@@ -1298,7 +1299,7 @@ def pm_verified_release(tmp_path, monkeypatch):
     # 테스트에도 넘겨 판정 함수 대역(민감도)이 실제 배선에 닿게 한다.
     pd = _pm_verified_pd()
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", proj)
-    monkeypatch.setattr(pd, "_load_board", lambda: mod)
+    monkeypatch.setattr(pd, "REPO", proj)
 
     ledger_path = local / "review_rounds.json"
 
@@ -1363,7 +1364,7 @@ def test_pm_verified_declaration_blocks_when_surface_finding_count_is_short(pm_v
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 5)])
-    problem = mod._pm_verified_evidence_problem(
+    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1381,7 +1382,7 @@ def test_pm_verified_declaration_blocks_on_undisposed_finding(pm_verified_releas
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 2)])
-    problem = mod._pm_verified_evidence_problem(
+    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1398,7 +1399,7 @@ def test_pm_verified_declaration_blocks_on_blank_rejection_reason(pm_verified_re
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
-    problem = mod._pm_verified_evidence_problem(
+    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1415,7 +1416,7 @@ def test_pm_verified_declaration_blocks_on_open_accepted_finding(pm_verified_rel
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
-    problem = mod._pm_verified_evidence_problem(
+    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1435,7 +1436,7 @@ def test_pm_verified_declaration_blocks_when_accepted_lacks_machine_confirmation
         {"id": "X-001", "status": "resolved", "evidence": "재검토 결과 해소 확인"},
     ]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
-    problem = mod._pm_verified_evidence_problem(
+    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1500,7 +1501,7 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
     assert review_rounds._gate_disposition_problem(
         tid, entry,
         allow_pm_verified=True,
-        pm_verified_problem=mod._gate_pm_verified_problem(
+        pm_verified_problem=completion_gate._gate_pm_verified_problem(mod._home(),
             tid, entry, _PV_CHANNEL_ADDITIONAL,
         ),
     ) is None
@@ -1595,7 +1596,7 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(live_board, m
     from _pytest_summary import pytest_summary
     rows = _t0929_mock_workspaces(live_board, monkeypatch)
     rows[-1].update(role='readonly', session='')
-    live_board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    pm_paths.leases_file(live_board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     fake = _FakeRun(0, pytest_summary(22))
     monkeypatch.setattr(live_board.subprocess, 'run', fake)
     selected = live_board.REPO / 'work/A_5'
@@ -1611,19 +1612,18 @@ def t0936_release(tmp_path, monkeypatch):
     anchor = tmp_path / 'declared'; execution = tmp_path / 'release'; home = tmp_path / 'engine'
     for tree in [anchor, execution, home]: (tree / '.project_manager/.local').mkdir(parents=True)
     local = home / '.project_manager/.local'
-    for name, value in {'REPO':home, 'LOCAL_DIR':local, 'LOCAL_CONF':anchor/'.project_manager/local.conf',
-                        'LEASES_FILE':local/'worktree-leases.json', 'AREAS_FILE':home/'.project_manager/areas.md'}.items():
+    for name, value in {'REPO': home}.items():
         monkeypatch.setattr(board, name, value)
     head = 'T0936-REV'
     monkeypatch.setattr(git, '_git_head_at', lambda cwd: head)
     monkeypatch.setattr(regression_store, '_resolve_livegate_flag', lambda home, cwd: (pm_paths.livegate_flag(home), regression_store._LG_ENGINE_ROOT))
     monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_ENGINE_ROOT))
-    monkeypatch.setattr(board, '_sync_release_must_fix_marker', lambda flag: [])
+    monkeypatch.setattr(completion_gate, '_sync_release_must_fix_marker', lambda _home, flag: [])
     monkeypatch.setattr(board, '_refuse_release_for_engine_drift', lambda flag, cwd: 0)
     monkeypatch.delenv('PM_SESSION_NAME', raising=False)
     monkeypatch.delenv('CLAUDE_SESSION_NAME', raising=False)
-    board.LOCAL_CONF.write_text('test.cmd=core-full\nqa.platforms=arm,windows\ntest.arm.cmd=arm-full\ntest.windows.cmd=windows-full\n', encoding='utf-8')
-    (home/'.project_manager/local.conf').write_text(board.LOCAL_CONF.read_text(encoding='utf-8'), encoding='utf-8')
+    (anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\nqa.platforms=arm,windows\ntest.arm.cmd=arm-full\ntest.windows.cmd=windows-full\n', encoding='utf-8')
+    (home/'.project_manager/local.conf').write_text((anchor / '.project_manager/local.conf').read_text(encoding='utf-8'), encoding='utf-8')
     core = {'head':head, 'status':'pass', 'rc':0, 'scope':'full', 'collected':3,
             'previous_collected':2, 'conf_anchor':str(anchor), 'command':'core-full', 'ts':'2026-10-02T00:00:00+00:00'}
     pm_paths.regression_flag(board._home()).write_text(json.dumps(core), encoding='utf-8')
@@ -1702,11 +1702,11 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
     f=t0936_release; assert _t0936_record(f)==0
     record=_read_flag(f.board)
     if defect in ['order','add','delete','command']:
-        text=f.board.LOCAL_CONF.read_text(encoding='utf-8')
+        text=(f.anchor / '.project_manager/local.conf').read_text(encoding='utf-8')
         text=text.replace('arm,windows',{'order':'windows,arm','add':'arm,windows,extra','delete':'','command':'arm,windows'}[defect])
         if defect=='add': text+='test.extra.cmd=extra-full\n'
         if defect=='command': text=text.replace('windows-full','changed-full')
-        f.board.LOCAL_CONF.write_text(text,encoding='utf-8')
+        (f.anchor / '.project_manager/local.conf').write_text(text,encoding='utf-8')
     elif defect.startswith('current-'):
         core=dict(f.core); key=defect[8:]
         key,value={'red':('status','fail'),'stale':('head','old'),'collected':('collected',9),'command':('command','old'),'anchor':('conf_anchor',str(f.cwd))}[key]
@@ -1730,8 +1730,8 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
     def mutate():
         changed[0]=True
         if drift in ['declaration','command']:
-            text=f.board.LOCAL_CONF.read_text(encoding='utf-8')
-            f.board.LOCAL_CONF.write_text(text.replace('arm,windows','windows,arm') if drift=='declaration' else text.replace('core-full','changed-core'),encoding='utf-8')
+            text=(f.anchor / '.project_manager/local.conf').read_text(encoding='utf-8')
+            (f.anchor / '.project_manager/local.conf').write_text(text.replace('arm,windows','windows,arm') if drift=='declaration' else text.replace('core-full','changed-core'),encoding='utf-8')
     monkeypatch.setattr(git,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.anchor if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
     def platform(command,cwd,env):
         result=f.platform(command,cwd,env)
@@ -1750,7 +1750,7 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
 @pytest.mark.parametrize('defect', [None,'A-relative','A-missing','A-head','L-missing','L-head','A-F','L-F','broken','clone-only'])
 def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, defect):
     f=t0936_release; assert not (f.cwd/'.project_manager/local.conf').exists()
-    monkeypatch.setattr(f.board,'_actor_session_override',lambda *a,**k: pytest.fail('명시 readonly cwd의 actor 해소'))
+    monkeypatch.setattr(task_args,'_actor_session_override',lambda *a,**k: pytest.fail('명시 readonly cwd의 actor 해소'))
     if defect:
         core=dict(f.core)
         if defect=='A-relative': core['conf_anchor']='relative'
@@ -1776,7 +1776,7 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
     f=t0936_release
     if form=='no-platform-legacy':
         (f.board.REPO/'.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
-        f.board.LOCAL_CONF.write_text('test.cmd=core-full\n',encoding='utf-8')
+        (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
         pm_paths.regression_flag(f.board._home()).unlink()
         assert _t0936_record(f)==0 and f.calls==[] and len(f.live)==1 and _t0936_check(f)==0
     elif form in ['aggregate-pass','aggregate-fail']:
@@ -1786,7 +1786,7 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
         assert _t0936_record(f)==1 and f.calls==f.live==[]
     elif form=='declared-deleted':
         assert _t0936_record(f)==0
-        f.board.LOCAL_CONF.write_text('test.cmd=core-full\n',encoding='utf-8')
+        (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
         assert _t0936_check(f)==1
     else:
         pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
@@ -1797,7 +1797,7 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
 def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypatch, failure):
     f=t0936_release
     pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
-    if failure=='config': f.board.LOCAL_CONF.write_text('test.cmd=core-full\nqa.platforms=windows\n',encoding='utf-8')
+    if failure=='config': (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\nqa.platforms=windows\n',encoding='utf-8')
     elif failure=='core': pm_paths.regression_flag(f.board._home()).unlink()
     elif failure=='coordinate': f.core['conf_anchor']='relative'; pm_paths.regression_flag(f.board._home()).write_text(json.dumps(f.core),encoding='utf-8')
     else:
@@ -1817,7 +1817,7 @@ def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypa
     f=t0936_release
     assert regression.LIVEGATE_RELEASE_PIN==22
     if guard=='sidecar': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.livegate_flag(home),regression_store._LG_BROKEN))
-    elif guard=='must-fix': monkeypatch.setattr(f.board,'_sync_release_must_fix_marker',lambda flag:['must-fix'])
+    elif guard=='must-fix': monkeypatch.setattr(completion_gate,'_sync_release_must_fix_marker',lambda home, flag:['must-fix'])
     elif guard=='drift': monkeypatch.setattr(f.board,'_refuse_release_for_engine_drift',lambda flag,cwd:1)
     else:
         def release(*a,**kw):
@@ -1832,7 +1832,7 @@ def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypa
 def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_release, monkeypatch):
     f = t0936_release
     pm_paths.regression_flag(f.board._home()).unlink()
-    f.board.LOCAL_CONF.write_text("test.cmd=core-full\n", encoding="utf-8")
+    (f.anchor / '.project_manager/local.conf').write_text("test.cmd=core-full\n", encoding="utf-8")
     (f.board.REPO / ".project_manager/local.conf").write_text("test.cmd=core-full\n", encoding="utf-8")
     flag = f.board.REPO / "cold" / ".project_manager" / ".local/livegate.json"
     monkeypatch.setattr(regression_store, "_resolve_livegate_flag", lambda _home, cwd: (flag, regression_store._LG_ENGINE_ROOT))
@@ -1846,7 +1846,7 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
         t0936_release, monkeypatch, consumer):
     f = t0936_release
     pm_paths.regression_flag(f.board._home()).unlink()
-    f.board.LOCAL_CONF.unlink()
+    (f.anchor / '.project_manager/local.conf').unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
     pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({
         "head":f.head, "status":"pass", "rc":0, "n":22, "ts":"now",
@@ -1866,7 +1866,7 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_present_or_da
         t0936_release, monkeypatch, shape):
     f = t0936_release
     pm_paths.regression_flag(f.board._home()).unlink()
-    f.board.LOCAL_CONF.unlink()
+    (f.anchor / '.project_manager/local.conf').unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
     conf = f.cwd / ".project_manager/local.conf"
     if shape == "directory": conf.mkdir()
@@ -1895,10 +1895,7 @@ def t0982_board(tmp_path, monkeypatch):
     home = tmp_path / "pm-home"
     local = home / ".project_manager/.local"
     local.mkdir(parents=True)
-    for name, value in {
-        "REPO":home, "LOCAL_DIR":local, "LOCAL_CONF":home/".project_manager/local.conf",
-        "AREAS_FILE":home/".project_manager/areas.md", "LEASES_FILE":local/"worktree-leases.json",
-    }.items():
+    for name, value in {'REPO': home}.items():
         monkeypatch.setattr(board,name,value)
     flag = local / "livegate.json"
     flag.write_text('{"head":"prior-head","status":"pass"}\n',encoding="utf-8")
@@ -1912,7 +1909,7 @@ def t0982_board(tmp_path, monkeypatch):
         state.effects.append(("flag",cwd))
         return flag,regression_store._LG_NO_HOOK
     monkeypatch.setattr(regression_store,"_resolve_livegate_flag",resolve_flag)
-    monkeypatch.setattr(board,"_sync_release_must_fix_marker",lambda *a: state.effects.append(("marker",None)) or [])
+    monkeypatch.setattr(completion_gate,"_sync_release_must_fix_marker",lambda *a: state.effects.append(("marker",None)) or [])
     monkeypatch.setattr(board,"_refuse_release_for_engine_drift",lambda *a: state.effects.append(("drift",None)) or 0)
     monkeypatch.setattr(release,"_release_core_context",lambda _home,_flag,cwd,_session: (None,cwd,(),None))
     monkeypatch.setattr(git,"_git_head_at",lambda cwd: state.effects.append(("head", cwd)) or "f"*40)
@@ -1967,7 +1964,7 @@ def test_t0982_empty_cwd_is_not_an_implicit_workspace(t0982_board):
 def test_t0982_cwd_only_preserves_unleased_readonly_pin(t0982_board, leased):
     state = t0982_board
     rows=[{"state":"leased","session":"main","repo":"A","slot":f"work/A_{n}"} for n in range(1,leased+1)]
-    state.board.LEASES_FILE.write_text(json.dumps({"leases":rows}),encoding="utf-8")
+    pm_paths.leases_file(state.board._home()).write_text(json.dumps({"leases":rows}),encoding="utf-8")
     selected = state.home / "read only"
     selected.mkdir()
     args = state.board.build_parser().parse_args(["livegate","record","--cwd",str(selected)])

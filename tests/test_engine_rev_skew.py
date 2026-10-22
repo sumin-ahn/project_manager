@@ -11,6 +11,12 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.cli import board_dispatch
+
+
 import importlib.util
 import shutil
 from pathlib import Path
@@ -195,17 +201,6 @@ def test_pm_config_load_module_unstamped_sibling_no_false_positive(tmp_path):
     assert mod is not None and mod.VALUE == 1
 
 
-def test_pm_bootstrap_load_board_normal_returns_module(tmp_path):
-    """정상 동기 pm_bootstrap._load_board → board 모듈 반환(fail-loud 오탐 없음)."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_bootstrap.py": None,
-        "board.py": None,
-        "local_conf.py": None,
-    })
-    pmb = _load(tools, "pm_bootstrap")
-    board = pmb._load_board()
-    assert board is not None and board.ENGINE_REV == _cur_rev()
 
 
 # ── 위임 채널 로더 skew ──────────────────────────────────────────────────
@@ -242,42 +237,6 @@ def test_pm_delegate_delegate_scope_normal_sync_ok(tmp_path):
     assert scope.ENGINE_REV == delegate.ENGINE_REV == _cur_rev()
 
 
-def test_delegate_scope_stale_board_fails_loud_before_attribute_access(tmp_path):
-    """신 delegate_scope → stale board는 find_ticket 속성 접근보다 먼저 skew로 실패한다."""
-    tools = _build_tools(tmp_path, {
-        "delegate_scope.py": None,
-        "board.py": 'ENGINE_REV = "v0.0.0-stale"\n',
-    })
-    scope = _load(tools, "delegate_scope")
-
-    with pytest.raises(RuntimeError) as exc:
-        scope.ticket_touches(tools / "board.py", "T-0001", pm_root=tmp_path)
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    msg = str(exc.value)
-    assert "delegate_scope.py" in msg
-    assert "board.py" in msg
-    assert "AttributeError" not in msg
-
-
-def test_delegate_scope_unregistered_stale_board_name_fails_loud(tmp_path):
-    """등록 밖 이름도 검증해 typo/rename이 stale board를 cryptic 계약 오류로 강등하지 못한다."""
-    tools = _build_tools(tmp_path, {
-        "delegate_scope.py": None,
-        "board_engine.py": 'ENGINE_REV = "v0.0.0-stale"\n',
-    })
-    scope = _load(tools, "delegate_scope")
-
-    with pytest.raises(RuntimeError) as exc:
-        scope.ticket_touches(tools / "board_engine.py", "T-0001", pm_root=tmp_path)
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert not isinstance(exc.value, scope.DelegateScopeError)
-    msg = str(exc.value)
-    assert "board_engine.py" in msg
-    assert "AttributeError" not in msg
-
-
 def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch):
     """stale pm_delegate가 있어도 비소비 read/mutation 경로인 list·claim은 정상 dispatch된다."""
     tools = _build_tools(tmp_path, {
@@ -291,8 +250,8 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
 
     assert board.main(["list"]) == 0
     claimed = []
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _command: False)
-    monkeypatch.setattr(board, "cmd_claim", lambda args: claimed.append(args.id) or 0)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _command: False)
+    monkeypatch.setattr(board_ticket, "cmd_claim", lambda _home, args: claimed.append(args.id) or 0)
 
     assert board.main(["claim", "T-0001"]) == 0
     assert claimed == ["T-0001"]
@@ -340,24 +299,3 @@ def test_pm_delegate_verify_does_not_skip_unregistered_filename(tmp_path):
         delegate._verify_engine_rev(StaleSibling, "renamed_or_typo.py")
     assert getattr(exc.value, "_engine_rev_skew", False) is True
     assert "renamed_or_typo.py" in str(exc.value)
-
-
-def test_delegate_scope_ticket_operation_reraises_nested_skew(tmp_path):
-    """board 조회 호출 중 marker도 두 번째 catch에서 DelegateScopeError로 감싸지 않는다."""
-    nested_board = (
-        f'ENGINE_REV = "{_cur_rev()}"\n'
-        "def find_ticket(_ticket_id):\n"
-        "    err = RuntimeError('ticket operation nested skew')\n"
-        "    err._engine_rev_skew = True\n"
-        "    raise err\n"
-    )
-    tools = _build_tools(tmp_path, {
-        "delegate_scope.py": None,
-        "board.py": nested_board,
-    })
-    scope = _load(tools, "delegate_scope")
-
-    with pytest.raises(RuntimeError, match="ticket operation nested skew") as exc:
-        scope.ticket_touches(tools / "board.py", "T-0001", pm_root=tmp_path)
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert not isinstance(exc.value, scope.DelegateScopeError)

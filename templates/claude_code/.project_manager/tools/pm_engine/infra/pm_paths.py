@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+from pm_engine.domain import ticket_rules
+
 from pathlib import Path
 
 from pm_engine.domain import home
@@ -184,7 +187,7 @@ class PmHomeResolutionError(RuntimeError):
 
 
 # 두-git 형상의 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 놓인다 — 슬롯을 만든
-# 도구(`pm_paths.bare_repo_path` = `pm_config.REPOS_DIR / f"{repo}.git"`)가 써 넣은
+# 도구(`bare_repo_path` = `pm_config.REPOS_DIR / f"{repo}.git"`)가 써 넣은
 # 자리라 조상 추측이 아니라 선언이다.
 _GIT_DIR_NAME = ".git"
 _BARE_REPOS_DIR_NAME = ".repos"
@@ -282,7 +285,7 @@ class AnchorResolutionError(RuntimeError):
 def resolve_pm_home_for_repo(anchor: Path) -> Path:
     """repo/worktree가 소속된 PM 홈을 anchor 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
 
-    판정 입력은 `pm_paths.owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
+    판정 입력은 `owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
     저장소가 소유 PM 홈을 지목하고, 그 홈에 `.project_manager` 가 실재하는지만 확인한다.
     `.git` 이 없거나 디렉터리인 트리(PM 홈 main checkout·일반 clone)는 자기 자신이라는
     확정된 답이다. 미지 commondir·`.project_manager` 부재는 `AnchorResolutionError` 다 —
@@ -367,3 +370,55 @@ def repos_dir(home) -> Path:
 
 def repo_hooks_dir(home) -> Path:
     return home.local_dir / "repo-hooks"
+
+
+def _has_real_board(pm_dir: Path) -> bool:
+    """`.project_manager` 디렉토리(`pm_dir`)가 *실제* board 를 소유하는가.
+
+    board/ 분리(submodule)면 `board/tickets`, legacy 면 `wiki/tickets` 의 상태
+    디렉토리에 실 티켓(`T-*.md`)이 하나라도 있으면 True. 빈 scaffold(README/_template/
+    `.gitkeep` 만 — worktree 출하 형상)는 False: worktree 자신의 scaffold 를 '실 board' 로
+    오인해 가드를 무력화하지 않게 한다.
+    """
+    for base in (pm_dir / 'board' / 'tickets', pm_dir / 'wiki' / 'tickets'):
+        if not base.is_dir():
+            continue
+        for status in ticket_rules.STATUS_DIRS:
+            status_dir = base / status
+            if status_dir.is_dir() and any(status_dir.glob('T-*.md')):
+                return True
+    return False
+
+def _pm_home_worktree_misanchor(home) -> Path | None:
+    """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 면 그 PM 홈 경로를,
+    아니면 None.
+
+    소유 판정은 `owning_pm_home` 유도 하나가 낸다 — anchor 자신이 실 board 를 가지면
+    자기 것이고(자체 board 사용 존중), 그 밖에는 anchor 의 `.git` 선언이 답을 정한다. 유도가
+    실패하면 자기 앵커로 강등하지 않고 그대로 올린다(fail-loud).
+    """
+    if _has_real_board(home.root / '.project_manager'):
+        return None
+    pm_home = owning_pm_home(home.root)
+    return None if pm_home == Path(home.root).resolve() else pm_home
+
+class _ReadBoardResolution(NamedTuple):
+    """read dispatch의 board 해소 결과. home이 None이면 자기 앵커의 board를 그대로 쓴다."""
+    root: Path
+    home: Path | None
+
+def _resolve_read_board(home) -> _ReadBoardResolution:
+    """read-only board를 uniform 규칙으로 해소한다.
+
+    자기 앵커가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `owning_pm_home` 유도가
+    소유 PM 홈을 낸다 — 유도 결과가 앵커 자신이면 legacy/비분리 graceful 경로를 그대로
+    보존하고, 다른 홈이면 그 board를 연다. 유도 실패는 여기서 삼키지 않는다 — 같은 실패가
+    mutation 경로에서는 traceback, read 경로에서는 안내로 갈리지 않도록 번역은 `main()`
+    한 곳이 한다.
+    """
+    if _has_real_board(home.root / '.project_manager'):
+        return _ReadBoardResolution(_board_root_at(home.root), home.root)
+    data_home = owning_pm_home(home.root)
+    if data_home == Path(home.root).resolve():
+        return _ReadBoardResolution(_board_root_at(home.root), None)
+    return _ReadBoardResolution(_board_root_at(data_home), data_home)

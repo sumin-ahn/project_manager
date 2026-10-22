@@ -30,6 +30,17 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import completion_gate
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.cli import board_round
+
+
+from pm_engine.cli import board_round
+from pm_engine.domain import design_rules
+
+
 import argparse
 import datetime
 import importlib.util
@@ -43,6 +54,9 @@ from conftest import anchor_board_module, bind_product_cluster, ensure_product_s
 from pm_engine.domain import design_rules, round_rules, ticket_rules
 from pm_engine.infra import pm_paths, round_store, ticket_store
 from pm_engine.app import body_lint, lint_hooks
+
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -154,26 +168,26 @@ def test_design_state_rejects_unrecognized_value(value):
 ])
 def test_resolve_design_defaults_by_estimate(estimate, expected):
     """발행 기본값: estimate=large → required · 그 외 n/a (전 티켓 강제 아님)."""
-    assert board_mod._resolve_design(None, estimate) == expected
+    assert design_rules._resolve_design(None, estimate) == expected
 
 
 @pytest.mark.parametrize("explicit", ["required", "n/a", "done"])
 def test_resolve_design_honors_explicit_override(explicit):
     """PM 이 발행 시 명시 지정하면 estimate 유도를 덮는다(small 에도 required 지정 가능)."""
-    assert board_mod._resolve_design(explicit, "small") == explicit
+    assert design_rules._resolve_design(explicit, "small") == explicit
 
 
 def test_validate_design_rejects_bad_value_and_accepts_forms():
     """`--design` 입력 sanity — 위반은 사유 문자열, 3형식은 None(`_validate_prefix` 동형)."""
-    assert board_mod._validate_design("bogus")
-    assert "bogus" in board_mod._validate_design("bogus")
+    assert design_rules._validate_design("bogus")
+    assert "bogus" in design_rules._validate_design("bogus")
     for ok in ("required", "done", "n/a"):
-        assert board_mod._validate_design(ok) is None
+        assert design_rules._validate_design(ok) is None
 
 
 def test_validate_design_rejects_the_abolished_exemption_value():
     """폐지된 면제 값은 입력 자리에서 거부된다 — 파일에 박히기 전에 막는다."""
-    reason = board_mod._validate_design("waived: 리뷰 상한 초과")
+    reason = design_rules._validate_design("waived: 리뷰 상한 초과")
     assert reason and "waived" in reason
 
 
@@ -302,22 +316,13 @@ def board(tmp_path, monkeypatch):
     wiki = pm / "wiki"
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
-        "LEASES_FILE": pm / ".local" / "worktree-leases.json",
-        "PM_STATE_FILE": wiki / "pm_state.md",
-        "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
+
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # 귀속 쓰기(new·claim)는 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962) — 실행
     # 환경 세션 값이 새지 않게 env 를 비우고 이 파일의 task 폴더를 준비한다.
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -348,8 +353,8 @@ def _seed_open(board, *, design, body=None, tid="T-0001", estimate=None):
         fm["design"] = design
     if estimate is not None:
         fm["estimate"] = estimate
-    path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
-    board.dump_ticket(path, fm, body if body is not None else _body())
+    path = pm_paths.tickets_dir(board._home()) / "open" / f"{tid}-seed.md"
+    ticket_store.dump_ticket(path, fm, body if body is not None else _body())
     return path
 
 
@@ -357,38 +362,38 @@ def _seed_open(board, *, design, body=None, tid="T-0001", estimate=None):
 
 def test_cmd_new_large_ticket_defaults_to_design_required(board):
     """estimate=large 발행은 `design: required` 로 박힌다(자동 추론은 이 축 하나뿐)."""
-    assert board.cmd_new(_new_args(estimate="large")) == 0
-    fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+    assert board_ticket.cmd_new(board._home(), _new_args(estimate="large")) == 0
+    fm, _ = ticket_store.load_ticket(list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md"))[0])
     assert fm["design"] == design_rules.DESIGN_REQUIRED
 
 
 @pytest.mark.parametrize("estimate", ["small", "medium"])
 def test_cmd_new_small_medium_default_to_na(board, estimate):
     """small/medium 은 `n/a` — 설계 오버헤드가 전 티켓 비용이 되지 않는다."""
-    assert board.cmd_new(_new_args(estimate=estimate)) == 0
-    fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+    assert board_ticket.cmd_new(board._home(), _new_args(estimate=estimate)) == 0
+    fm, _ = ticket_store.load_ticket(list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md"))[0])
     assert fm["design"] == design_rules.DESIGN_NA
 
 
 def test_cmd_new_honors_explicit_design(board):
     """`--design required` 명시가 estimate 유도를 덮는다."""
-    assert board.cmd_new(_new_args(estimate="small", design="required")) == 0
-    fm, _ = ticket_store.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+    assert board_ticket.cmd_new(board._home(), _new_args(estimate="small", design="required")) == 0
+    fm, _ = ticket_store.load_ticket(list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md"))[0])
     assert fm["design"] == design_rules.DESIGN_REQUIRED
 
 
 def test_cmd_new_rejects_invalid_design_before_writing(board, capsys):
     """형식 위반 `--design` 은 발행 시점에 fail-loud — 티켓 파일이 생기지 않는다."""
-    assert board.cmd_new(_new_args(design="requried")) == 1
+    assert board_ticket.cmd_new(board._home(), _new_args(design="requried")) == 1
     assert "[중단]" in capsys.readouterr().err
-    assert not list((board.TICKETS_DIR / "open").glob("T-*.md"))
+    assert not list((pm_paths.tickets_dir(board._home()) / "open").glob("T-*.md"))
 
 
 def test_cmd_new_body_includes_design_section(board):
     """발행 본문에 `## 설계` 절이 실린다(템플릿 절이 티켓으로 흐른다)."""
-    assert board.cmd_new(_new_args()) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args()) == 0
     _fm, body = ticket_store.load_ticket(
-        list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
+        list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md"))[0])
     assert design_rules._DESIGN_SECTION in body
 
 
@@ -397,57 +402,57 @@ def test_cmd_new_body_includes_design_section(board):
 def test_claim_blocked_when_design_required_and_section_unfilled(board, capsys):
     """① required + 설계 절 미충전 → rc=1 · 티켓은 open/ 에 남는다."""
     _seed_open(board, design="required", body=_body(_DESIGN_SKELETON))
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     err = capsys.readouterr().err
     assert "설계 단계 미완" in err and "경계 실측" in err
-    assert list((board.TICKETS_DIR / "open").glob("T-0001-*.md")), \
+    assert list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md")), \
         "차단됐는데 티켓이 open/ 을 떠남."
-    assert not list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))
+    assert not list((pm_paths.tickets_dir(board._home()) / "claimed").glob("T-0001-*.md"))
 
 
 def test_claim_blocked_when_required_even_with_filled_section(board):
     """required 는 설계 절을 다 채워도 차단 — `done` 승격(설계 검토 종료 선언)이 남았다."""
     _seed_open(board, design="required")
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
 
 
 def test_claim_passes_when_design_done(board):
     """② `design: done` + 설계 절 완성 → 통과."""
     _seed_open(board, design="done")
-    assert board.cmd_claim(_claim_args()) == 0
-    assert list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
+    assert list((pm_paths.tickets_dir(board._home()) / "claimed").glob("T-0001-*.md"))
 
 
 def test_claim_blocked_when_done_but_section_unfilled(board):
     """`done` 인데 설계 절이 뼈대면 차단 — 필드값과 절 내용의 어긋남(엔진이 보는 두 축)."""
     _seed_open(board, design="done", body=_body(_DESIGN_SKELETON))
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
 
 
 def test_claim_blocked_when_design_uses_the_abolished_exemption(board):
     """③ 폐지된 면제 값은 통과가 아니라 **차단**이다 — 잔존이 게이트를 조용히 열지 않는다."""
     _seed_open(board, design="waived: 표면 없음", body=_body(_DESIGN_SKELETON))
-    assert board.cmd_claim(_claim_args()) == 1
-    assert list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
+    assert list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md"))
 
 
 def test_claim_unaffected_when_design_na(board):
     """④ `n/a` → 무영향 (설계 절 뼈대여도 통과)."""
     _seed_open(board, design="n/a", body=_body(_DESIGN_SKELETON))
-    assert board.cmd_claim(_claim_args()) == 0
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
 
 
 def test_claim_legacy_ticket_without_design_field_passes(board):
     """구세대 티켓(필드 부재 · 설계 절 부재)은 무영향 — 마이그레이션 불요."""
     _seed_open(board, design=None, body="# T-0001 — 구티켓\n\n## 목표\n옛 본문.\n")
-    assert board.cmd_claim(_claim_args()) == 0
-    assert list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
+    assert list((pm_paths.tickets_dir(board._home()) / "claimed").glob("T-0001-*.md"))
 
 
 def test_claim_blocked_on_invalid_design_value(board, capsys):
     """형식 위반 값은 claim 에서 fail-loud — 오타로 게이트가 조용히 꺼지지 않는다."""
     _seed_open(board, design="requried")
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     assert "인식 불가" in capsys.readouterr().err
 
 
@@ -456,9 +461,9 @@ def test_claim_gate_runs_after_dependency_gate(board):
     _seed_open(board, design="done", tid="T-0002")
     fm = {"id": "T-0001", "title": "seed", "status": "open", "claimed_by": None,
           "depends_on": ["T-0002"], "design": "required"}
-    board.dump_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md", fm,
+    ticket_store.dump_ticket(pm_paths.tickets_dir(board._home()) / "open" / "T-0001-seed.md", fm,
                       _body(_DESIGN_SKELETON))
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
 
 
 # ── lint advisory ───────────────────────────────────────────────────────
@@ -605,8 +610,8 @@ def test_subtitled_headings_are_sliced_by_the_same_rule():
 
     존재 축 강화가 DoD 슬라이서를 함께 조여 실 템플릿의 DoD 가 통째로 안 보이면 안 된다."""
     body = _body()
-    assert board_mod._dod_section_texts(body)
-    assert board_mod._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
+    assert completion_gate._dod_section_texts(body)
+    assert completion_gate._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -697,10 +702,10 @@ def test_claim_blocked_when_done_but_design_section_is_emptied(board, capsys):
     """claim 게이트 e2e — 뼈대를 지운 빈 설계 절 + `design: done` 은 여전히 차단된다 (DoD)."""
     _seed_open(board, design=design_rules.DESIGN_DONE, body=_body("## 설계\n\n"))
 
-    assert board.cmd_claim(_claim_args()) == 1
+    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 1
     err = capsys.readouterr().err
     assert "설계 단계 미완" in err and "항목 부재" in err
-    assert list((board.TICKETS_DIR / "open").glob("T-*.md")), "차단됐는데 티켓이 open/ 을 떠남"
+    assert list((pm_paths.tickets_dir(board._home()) / "open").glob("T-*.md")), "차단됐는데 티켓이 open/ 을 떠남"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -749,13 +754,13 @@ def _draft_path(board_dir: Path) -> Path:
 def test_promote_rejects_design_required_with_unfilled_section(board_git, capsys):
     """`design: required` draft 의 설계 절 미충전은 promote 에서 거부(rc=1)·`.drafts/` 잔류."""
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == design_rules.DESIGN_REQUIRED
-    board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))   # 5절은 채우고 설계만 뼈대
+    ticket_store.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))   # 5절은 채우고 설계만 뼈대
 
-    assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 1
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=fm["id"])) == 1
     assert "design-pending" in capsys.readouterr().err
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
@@ -771,13 +776,13 @@ def test_promote_rejects_design_required_even_when_section_is_filled(board_git, 
     케이스만 있으면 "채우면 통과"로 오독되므로 충전 케이스를 따로 못박는다(T-0594 R1 공백).
     """
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == design_rules.DESIGN_REQUIRED
-    board_git.dump_ticket(draft, fm, _body())      # 설계 절까지 전부 충전·필드만 required
+    ticket_store.dump_ticket(draft, fm, _body())      # 설계 절까지 전부 충전·필드만 required
 
-    assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 1
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=fm["id"])) == 1
     err = capsys.readouterr().err
     assert "design-pending" in err
     assert design_rules.DESIGN_DONE in err, "승격 처방(design: done)이 안내에 없다."
@@ -791,8 +796,8 @@ def _harvest_architect_round(board_git, board_dir: Path, tid: str) -> None:
 
     `design: required|done` 티켓은 이 라운드가 회수되기 전 promote 가 거부한다 — 설계 절
     충전 축만 보려는 케이스는 이 전제를 갖춘 뒤 판정한다."""
-    assert board_git.cmd_section_add(
-        argparse.Namespace(id=tid, role="architect", label=None)) == 0
+    assert board_round.cmd_section_add(
+        board_git._home(), argparse.Namespace(id=tid, role="architect", label=None)) == 0
     path = board_dir / "tickets" / "rounds" / tid / "01-architect.md"
     header = path.read_text(encoding="utf-8").splitlines()[0]
     path.write_text(f"{header}\n\n인용·touches 를 실측 대조했다.\n", encoding="utf-8")
@@ -802,15 +807,15 @@ def _harvest_architect_round(board_git, board_dir: Path, tid: str) -> None:
 def test_promote_accepts_filled_design_section_with_done(board_git):
     """설계 절 완성 + `design: done` + architect 점검 라운드 회수 → 승격(rc=0)·open/ 이동."""
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     fm["design"] = design_rules.DESIGN_DONE
-    board_git.dump_ticket(draft, fm, _body())
+    ticket_store.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, fm["id"])
 
     bind_product_cluster(board_git, fm["id"], task=_TASK)
-    assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=fm["id"])) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md")), \
         "승격된 티켓이 open/ 으로 이동 안 됨."
 
@@ -819,14 +824,14 @@ def test_promote_accepts_filled_design_section_with_done(board_git):
 def test_promote_unaffected_for_na_ticket_with_skeleton_design(board_git):
     """`n/a` 티켓은 설계 절이 뼈대인 채로도 승격된다(설계 단계 비대상)."""
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(estimate="small")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(estimate="small")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     assert fm["design"] == design_rules.DESIGN_NA
-    board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
+    ticket_store.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
 
     bind_product_cluster(board_git, fm["id"], task=_TASK)
-    assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=fm["id"])) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
 
@@ -889,7 +894,7 @@ def test_design_subcommand_is_registered_and_shown_in_help():
     sub = next(a for a in parser._actions
               if isinstance(a, argparse._SubParsersAction))
     assert "design" in sub.choices
-    assert sub.choices["design"].get_default("fn") is board_mod.cmd_design
+    assert sub.choices["design"].get_default("fn") is board_round.cmd_design
 
 
 def _seed_harvested_architect_round(board, tid: str) -> None:
@@ -912,14 +917,14 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     """draft 의 `design: required` 를 `design <ID> done` 으로 올리면 promote 가 거부(rc=1) →
     통과(rc=0) 로 뒤집힌다 — 손편집 없이 1급 수단만으로 막힌 promote 를 푼다."""
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     assert fm["design"] == design_rules.DESIGN_REQUIRED
-    board_git.dump_ticket(draft, fm, _body())   # 5절 + 설계 절 전부 충전 · 필드만 required
+    ticket_store.dump_ticket(draft, fm, _body())   # 5절 + 설계 절 전부 충전 · 필드만 required
 
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 1
     assert "design-pending" in capsys.readouterr().err
     assert list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md")), \
         "1차 거부 후 draft 가 .drafts/ 에 남아야 한다."
@@ -933,7 +938,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     _seed_harvested_architect_round(board_git, tid)
 
     bind_product_cluster(board_git, tid, task=_TASK)
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0
     assert list((board_dir / "tickets" / "open").glob(f"{tid}-*.md")), \
         "승격 후 promote 가 open/ 으로 이동해야 한다."
     assert not list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md"))
@@ -946,7 +951,7 @@ def test_design_setter_refuses_the_abolished_exemption_value(board_git, capsys):
     면제 경로 폐지의 차단 지점은 **값을 파일에 박기 전**이다 — 잔존 값이 생기지 않는다.
     """
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     tid = ticket_store.load_ticket(draft)[0]["id"]
     capsys.readouterr()
@@ -961,15 +966,15 @@ def test_design_setter_refuses_the_abolished_exemption_value(board_git, capsys):
 def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     """open 티켓 전환은 promote와 무관하게 board-git 원격에 값이 도달한다(동기 축 구분)."""
     board_dir = board_git._board_dir
-    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    assert board_ticket.cmd_new(board_git._home(), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
     fm["design"] = design_rules.DESIGN_DONE
-    board_git.dump_ticket(draft, fm, _body())
+    ticket_store.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, tid)
     bind_product_cluster(board_git, tid, task=_TASK)
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0
 
     assert board_git.main(["design", tid, "n/a"]) == 0
 

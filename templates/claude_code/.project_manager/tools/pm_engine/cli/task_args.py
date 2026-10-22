@@ -10,6 +10,10 @@ import sys
 from pm_engine.domain import identity_args
 from pm_engine.infra import areas_store, conf_store, git, lease_store, pm_paths, python_env
 
+from typing import Any
+
+from pm_engine.app import ticket_access
+
 
 # 실행 소비자(claim·new·cluster new·regression·livegate record·rounds resolve)에 `--task` 없이
 # `--repo`/`--slot` 이 왔을 때의 중단 문구. {retry} 는 입력값을 채운 다시 칠 인자다.
@@ -38,33 +42,11 @@ def _execution_actor_session_override(home, args: argparse.Namespace) -> str | N
     except ValueError as exc:
         sys.exit(f"[중단] {exc}")
     if identity.task:
-        _validate_actor_task_or_exit(home, identity.task)
+        ticket_access._validate_actor_task_or_exit(home, identity.task)
         return identity.task
     if identity.kind != "none":
         sys.exit(SLOT_SELECTOR_WITHOUT_TASK.format(retry=_slot_selector_retry(identity)))
     return None
-
-
-def _validate_actor_task_or_exit(home, task: str) -> None:
-    """task 명 공유 validator 소비 — 불법이면 fail-loud (깔때기 단일 지점).
-
-    정체성 깔때기(`_actor_session_override`·귀속)와 실행-위치 해소(`_resolve_task_workspace_cwd`)가
-    **같은 한 지점**을 소비해, 무검증 task 명이 created_by/claimed_by/lease-session 으로 영속되거나
-    실행-위치로 쓰이기 **이전** 부작용 0 로 거부한다. 공유 validator = `identity_args.validate_task_name`
-    (worktree_pool 엔진 validator 와 동형·로직 중복 0). 예약패턴(`<repo>_<N>`) 판정용 registered_repos
-    는 areas 에서 fail-soft 해소(파싱 실패 시 char/traversal 검증만).
-    """
-    try:
-        registered = areas_store.registered_repos(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
-        registered = None
-    try:
-        identity_args.validate_task_name(task, registered)
-    except identity_args.InvalidTaskName as e:
-        sys.exit(
-            f"[중단] {e} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
-            f"(`<repo>_<N>`)은 쓸 수 없다."
-        )
 
 
 def _resolve_task_workspace_cwd(
@@ -104,3 +86,68 @@ def _resolve_task_workspace_cwd(
         if not isinstance(command, str) or not command.strip():
             sys.exit(f"[중단] task 선택 작업공간의 test_cmd를 해소할 수 없다: {tree}")
     return str(tree), command
+
+
+# 귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)에 `--task` 가 없을 때의 중단 문구.
+# 정체성은 task 하나라 다른 값(환경변수·단일 대여)으로 대신하지 않는다.
+TASK_REQUIRED = (
+    "[중단] {action}: 귀속 쓰기는 `--task <task>` 가 필요하다 — 정체성은 task 하나다. "
+    "`{command} --task <task>` 로 다시 실행하라(task 의 폴더가 2개 이상이면 "
+    "`--repo <repo> --slot <N>` 을 함께 준다). task 폴더는 "
+    "`pm-config alloc <repo> --task <task>` 로 빌린다."
+)
+
+
+def _actor_session_override(home, args: argparse.Namespace) -> str | None:
+    """비실행 명령(소유 대조·귀속 쓰기)의 정체성 — 검증한 `--task` 값, 없으면 None.
+
+    이 명령들의 parser 에는 `--repo`/`--slot` 이 없다. 무검증 task 명이 created_by/claimed_by/
+    lease-session 으로 영속되지 않도록 여기서 한 번 검증한다(실행 소비자는
+    `_execution_actor_session_override` 가 같은 검증을 부른다).
+    """
+    task = getattr(args, "task", None)
+    if not task:
+        return None
+    ticket_access._validate_actor_task_or_exit(home, task)
+    return task
+
+
+def _frontmatter_with_claimed_rev(
+    fm: dict[str, Any], claimed_rev: str,
+) -> dict[str, Any]:
+    """`claimed_at` 바로 뒤에 `claimed_rev` 를 둔 frontmatter (앵커 키가 없으면 끝에 붙인다).
+
+    frontmatter 는 삽입 순서대로 직렬화되므로(`sort_keys=False`) 자리를 정하려면 재조립해야
+    한다. claim 3종(주체·시각·rev)이 붙어 있어야 티켓을 연 사람이 한 자리에서 읽는다. 기존
+    값이 있으면 그 자리를 옮겨 덮어써 중복 키가 생기지 않는다."""
+    if "claimed_at" not in fm:
+        return {**fm, "claimed_rev": claimed_rev}
+    rebuilt: dict[str, Any] = {}
+    for key, value in fm.items():
+        if key == "claimed_rev":
+            continue
+        rebuilt[key] = value
+        if key == "claimed_at":
+            rebuilt["claimed_rev"] = claimed_rev
+    return rebuilt
+
+
+def _claim_code_tree(home, args: argparse.Namespace) -> str | None:
+    """claim·발행·묶음 선언·확인 실행이 읽을 코드 트리 — task 가 보유한 작업공간.
+
+    실행 명령 판정 함수를 먼저 거친다 — `--task` 없는 `--repo`/`--slot` 은 여기서 멈추고, 인자가
+    전무하면 None 이다(호출부가 각자의 문구로 멈춘다). task 입력은 leased work·경로·HEAD·브랜치를
+    선검사하고 실패하면 중단한다.
+    """
+    if _execution_actor_session_override(home, args) is None:
+        return None
+    return _resolve_task_workspace_cwd(home, args)[0]
+
+
+def _claim_head_rev(home, args: argparse.Namespace) -> str:
+    """claim 시점 HEAD — task 작업공간의 HEAD(읽지 못하면 중단)."""
+    tree = _claim_code_tree(home, args)
+    rev = git._git_head_at(tree) if tree else ""
+    if not rev:
+        sys.exit(f"[중단] task claim 앵커 HEAD를 읽지 못했다: {tree}")
+    return rev

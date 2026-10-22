@@ -20,6 +20,9 @@ monkeypatch 패턴 동류). board_root/areas_file 가 *함수*라 monkeypatch �
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+
+
 import importlib.util
 import os
 import shutil
@@ -29,6 +32,8 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import pm_paths, pre_push_hook, python_env
 from pm_engine.app import wikilink_lint
+
+from pm_engine.app import areas_registry
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -163,9 +168,8 @@ def test_pm_config_repo_add_writes_board_resolved_areas_legacy(board, tmp_path, 
     pm_config 도 자동 추종한다 — 둘이 *같은* 파일을 가리킴을 직접 단언(대칭 가드)."""
     # legacy: areas_append 가 pm_paths.areas_file 위치에 쓴다.
     (board._tmp / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "BOARD_LOCK", board._tmp / ".project_manager" / ".local" / "board.lock")
     assert not pm_paths.areas_file(board._home()).exists()
-    board.areas_append("PAY", "결제", "alice")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")
     assert pm_paths.areas_file(board._home()).exists(), "areas_append 가 pm_paths.areas_file 위치에 쓰지 않음."
     assert pm_paths.areas_file(board._home()) == board._tmp / ".project_manager" / "areas.md"
 
@@ -174,8 +178,7 @@ def test_areas_append_follows_board_root_when_separated(board, monkeypatch):
     """board/ 분리 시 areas_append 가 board/areas.md(board 안)에 쓴다 — 코드 git 오염 0 형상."""
     _make_board_dir(board._tmp)
     (board._tmp / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(board, "BOARD_LOCK", board._tmp / ".project_manager" / ".local" / "board.lock")
-    board.areas_append("PAY", "결제", "alice")
+    areas_registry.areas_append(board._home(), "PAY", "결제", "alice")
     inside = board._tmp / ".project_manager" / "board" / "areas.md"
     outside = board._tmp / ".project_manager" / "areas.md"
     assert inside.exists(), "board/ 분리 시 areas 가 board 안에 안 쓰임 — 대칭/조건분기 깨짐."
@@ -253,12 +256,12 @@ def test_lint_wikilinks_detects_board_ticket_dangling(board, monkeypatch):
 
 def test_configure_board_submodule_noop_when_not_separated(board):
     """board/.git 부재(솔로·legacy) → no-op·False (git 미실행·솔로 100% 무영향)."""
-    assert board._configure_board_submodule() is False
+    assert board_init._configure_board_submodule(board._home()) is False
 
 
 def test_board_submodule_name_none_without_gitmodules(board):
     """.gitmodules 부재 → _board_submodule_name() None (fail-soft·_configure no-op)."""
-    assert board._board_submodule_name() is None
+    assert board_init._board_submodule_name(board._home()) is None
 
 
 # ════════════════════════════════════════════════════════════════════════

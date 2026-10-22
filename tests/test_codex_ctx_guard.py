@@ -23,6 +23,9 @@ instance-owned(두 파일 모두 manifest 미등록·미전파·trust 재승인 
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+
+
 import argparse
 import functools
 import importlib.util
@@ -627,24 +630,17 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     conf 는 이 clone 이 정한 값만 담고, 하네스별 오버라이드 키의 존재는 레지스트리가 가르친다.
     """
     board = _load_board()
-    conf_path = tmp_path / "local.conf"
+    conf_path = tmp_path / "proj/.project_manager/local.conf"
     # hermetic: LOCAL_CONF 만 tmp·pm_state/훅/opt-in 부수효과 차단 (C8 _init_isolated 미러).
-    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
-    monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
-    monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
     (_pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
-    monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
-    monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
-    monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
 
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
-    assert board.cmd_init(args) == 0
+    assert board_init.cmd_init(board._home(), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
     for harness in ("codex", "claude", "opencode"):

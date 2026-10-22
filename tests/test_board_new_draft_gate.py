@@ -16,6 +16,14 @@ hermetic 패턴은 `test_board_git_sync.py` 와 동형 — 실 board git + bare 
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.app import cluster_binding
+from pm_engine.cli import board_cluster
+from pm_engine.infra import cluster_store
+
+
 import argparse
 import datetime
 import importlib.util
@@ -29,6 +37,12 @@ import pytest
 from conftest import anchor_board_module, ensure_product_slot
 from pm_engine.infra import cluster_store, pm_paths, round_store, ticket_store
 from pm_engine.app import round_seed
+
+from pm_engine.infra import board_git
+from pm_engine.infra import git
+from pm_engine.infra import ticket_store
+
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -100,8 +114,8 @@ def _make_board_git(root: Path, *, remote: Path) -> Path:
 def board(tmp_path, monkeypatch):
     mod = _load_tool("board")
     anchor_board_module(mod, tmp_path, monkeypatch)
-    mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    mod.BOARD_FILE.touch()
+    (pm_paths.wiki_dir(mod._home()) / "board.md").parent.mkdir(parents=True, exist_ok=True)
+    (pm_paths.wiki_dir(mod._home()) / "board.md").touch()
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     mod._tmp = tmp_path
@@ -133,7 +147,7 @@ def test_new_placeholder_body_not_committed_to_board_git(board, tmp_path, capsys
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    rc = board.cmd_new(_new_args("어떤 제목"))
+    rc = board_ticket.cmd_new(board._home(), _new_args("어떤 제목"))
     assert rc == 0
     captured = capsys.readouterr()
     out = captured.out + captured.err
@@ -155,7 +169,7 @@ def test_new_placeholder_body_not_committed_to_board_git(board, tmp_path, capsys
 
     # dirty *판정용* 헬퍼(`_board_git_status_porcelain` — claim prefetch 가 쓴다)는 draft 를
     # pathspec exclude 하므로 clean 으로 봐야 한다(무관 claim 이 draft 때문에 막히면 안 됨).
-    assert not board._board_git_status_porcelain().strip(), (
+    assert not board_git._board_git_status_porcelain(board._home()).strip(), (
         "_board_git_status_porcelain 이 draft 를 dirty 로 오판함 — 무관 claim 이 막힐 위험.")
 
     handoff = _load_tool("pm_handoff")
@@ -179,7 +193,7 @@ def test_first_draft_root_backfill_commit_failure_is_loud_and_pending(
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
 
-    assert board.cmd_new(_new_args("commit 실패 draft")) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args("commit 실패 draft")) == 0
 
     captured = capsys.readouterr()
     err = captured.err
@@ -202,7 +216,7 @@ def test_second_draft_with_deployed_root_rules_never_contacts_remote(
     bare = tmp_path / "bare-noop-draft"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
-    assert board.cmd_new(_new_args("첫 번째")) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args("첫 번째")) == 0
     capsys.readouterr()
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     remote_calls: list[str] = []
@@ -213,10 +227,10 @@ def test_second_draft_with_deployed_root_rules_never_contacts_remote(
             raise AssertionError(f"두 번째 draft가 원격 {op}를 호출함")
         return _call
 
-    monkeypatch.setattr(board, "_board_git_pull_rebase", _unexpected_remote("pull"))
-    monkeypatch.setattr(board, "_board_git_push", _unexpected_remote("push"))
+    monkeypatch.setattr(board_git, "_board_git_pull_rebase", _unexpected_remote("pull"))
+    monkeypatch.setattr(board_git, "_board_git_push", _unexpected_remote("push"))
 
-    assert board.cmd_new(_new_args("두 번째")) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args("두 번째")) == 0
 
     assert remote_calls == []
     assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == head_before
@@ -239,14 +253,14 @@ def test_union_only_board_first_draft_backfills_markdown_lf(
     _git(["commit", "-qm", "seed legacy root rules"], board_dir)
     _git(["push", "-q", "origin", "main"], board_dir)
 
-    assert board._board_git_root_files_need_backfill() is True
-    assert board.cmd_new(_new_args("LF backfill draft")) == 0
+    assert board_git._board_git_root_files_need_backfill(board._home()) is True
+    assert board_ticket.cmd_new(board._home(), _new_args("LF backfill draft")) == 0
 
     local = _git(["show", "HEAD:.gitattributes"], board_dir).stdout
     remote = _git(["show", "main:.gitattributes"], bare).stdout
     assert "*.md text eol=lf" in local
     assert remote == local
-    assert board._board_git_root_files_need_backfill() is False
+    assert board_git._board_git_root_files_need_backfill(board._home()) is False
 
 
 @requires_git
@@ -256,12 +270,12 @@ def test_promote_rejects_still_placeholder(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    board.cmd_new(_new_args("제목"))
+    board_ticket.cmd_new(board._home(), _new_args("제목"))
     tid = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0].name.split("-", 2)
     ticket_id = f"{tid[0]}-{tid[1]}"
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
 
-    rc = board.cmd_promote(argparse.Namespace(id=ticket_id))
+    rc = board_ticket.cmd_promote(board._home(), argparse.Namespace(id=ticket_id))
     assert rc == 1
     assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == head_before, \
         "거부된 promote 가 추가 커밋을 남기면 안 된다."
@@ -278,7 +292,7 @@ def test_promote_commits_when_body_filled(board, tmp_path, monkeypatch):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    board.cmd_new(_new_args("제목"))
+    board_ticket.cmd_new(board._home(), _new_args("제목"))
     path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     ticket_id = path.name.split("-seed")[0] if "seed" in path.name else "-".join(path.stem.split("-")[:2])
 
@@ -293,10 +307,10 @@ def test_promote_commits_when_body_filled(board, tmp_path, monkeypatch):
         "## 참고\n- 실제 참고 사항\n\n"
         "## 메모\n"
     )
-    board.dump_ticket(path, fm, filled_body)
+    ticket_store.dump_ticket(path, fm, filled_body)
 
     _t0930_bind(board, tmp_path, ticket_id, monkeypatch)
-    rc = board.cmd_promote(argparse.Namespace(id=ticket_id))
+    rc = board_ticket.cmd_promote(board._home(), argparse.Namespace(id=ticket_id))
     assert rc == 0
     assert not list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "승격된 draft 가 drafts_dir() 에 남아있으면 안 된다(open/ 으로 이동해야)."
@@ -319,7 +333,7 @@ def test_promote_nonexistent_ticket_errors(board, tmp_path):
     bare = tmp_path / "bare4"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     _make_board_git(tmp_path, remote=bare)
-    rc = board.cmd_promote(argparse.Namespace(id="T-9999"))
+    rc = board_ticket.cmd_promote(board._home(), argparse.Namespace(id="T-9999"))
     assert rc == 2
 
 
@@ -343,12 +357,12 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path, monkeypatch):
     board_dir = _make_board_git(tmp_path, remote=bare)
 
     # 1) T-0001 draft 생성(placeholder 그대로 — board-git 미커밋 상태로 남음).
-    board.cmd_new(_new_args("첫 번째"))
+    board_ticket.cmd_new(board._home(), _new_args("첫 번째"))
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     draft_id = "-".join(draft_path.stem.split("-")[:2])
 
     # 2) 무관한 T-0002 를 만들어 본문을 채우고 promote — 이게 leak 을 유발하던 후속 mutation.
-    board.cmd_new(_new_args("두 번째"))
+    board_ticket.cmd_new(board._home(), _new_args("두 번째"))
     filled_id = None
     for p in (board_dir / "tickets" / ".drafts").glob("T-*-*.md"):
         if p != draft_path:
@@ -362,11 +376,11 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path, monkeypatch):
                 "## 완료 조건 (Definition of Done)\n- [ ] 산출물\n\n"
                 "## 참고\n- 참고\n\n## 메모\n"
             )
-            board.dump_ticket(p, fm, filled_body)
+            ticket_store.dump_ticket(p, fm, filled_body)
     assert filled_id, "두 번째 draft 파일을 못 찾음(테스트 셋업 오류)."
 
     _t0930_bind(board, tmp_path, filled_id, monkeypatch)
-    rc = board.cmd_promote(argparse.Namespace(id=filled_id))
+    rc = board_ticket.cmd_promote(board._home(), argparse.Namespace(id=filled_id))
     assert rc == 0, "무관 티켓의 promote 자체가 실패함(테스트 전제 붕괴)."
 
     # T-0001 draft 는 여전히 drafts_dir() 에 있고 board-git 에 커밋되지 않아야 한다.
@@ -393,7 +407,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
     board_dir = _make_board_git(tmp_path, remote=bare)
 
     # draft(placeholder 그대로) 를 만든다 — board-git 미커밋 상태.
-    board.cmd_new(_new_args("드래프트"))
+    board_ticket.cmd_new(board._home(), _new_args("드래프트"))
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     # seed 티켓(T-0001, _make_board_git 이 만든 기존 open 티켓과 별개로 이번엔 new 로 만든
@@ -402,7 +416,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
     if not seed_path:
         # `_make_board_git` 은 이 fixture 에서 template 만 커밋하므로(테스트용 별도 seed 필요)
         # T-0001 자체를 직접 만든다.
-        board.cmd_new(_new_args("실 티켓"))
+        board_ticket.cmd_new(board._home(), _new_args("실 티켓"))
         for p in (board_dir / "tickets" / ".drafts").glob("T-*-*.md"):
             if p != draft_path:
                 fm, _ = ticket_store.load_ticket(p)
@@ -417,18 +431,18 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
                     "## 완료 조건 (Definition of Done)\n- [x] 산출물\n\n"
                     "## 참고\n- 참고\n\n## 메모\n"
                 )
-                board.dump_ticket(p, fm, filled_body)
+                ticket_store.dump_ticket(p, fm, filled_body)
                 _t0930_bind(board, tmp_path, seed_id, monkeypatch)
-                assert board.cmd_promote(argparse.Namespace(id=seed_id)) == 0
+                assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id=seed_id)) == 0
     else:
         seed_id = "-".join(seed_path[0].stem.split("-")[:2])
 
-    assert board.cmd_claim(
+    assert board_ticket.cmd_claim(board._home(),
         argparse.Namespace(id=seed_id, task=_TASK, user="me")) == 0, \
         "seed 티켓 claim 실패(테스트 전제 붕괴)."
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     _mark_ledger_closing(board, "C-declared")
-    rc = board.cmd_complete(argparse.Namespace(
+    rc = board_ticket.cmd_complete(board._home(), argparse.Namespace(
         id=seed_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
         task=_TASK, user="me", cluster_close="C-declared"))
     assert rc == 0, "seed 티켓 complete 실패(테스트 전제 붕괴)."
@@ -455,12 +469,12 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
 
     called = {"n": 0}
 
-    def _boom(*a, **k):
+    def _boom(_home, *a, **k):
         called["n"] += 1
         raise AssertionError("legacy 인데 board-git 호출 발생 — 게이트 누출")
 
-    monkeypatch.setattr(board, "_board_git", _boom)
-    rc = board.cmd_new(_new_args("제목"))
+    monkeypatch.setattr(git, "_board_git", _boom)
+    rc = board_ticket.cmd_new(board._home(), _new_args("제목"))
     assert rc == 0
     assert called["n"] == 0
     assert list((wiki / "tickets" / "open").glob("T-*-*.md")), \
@@ -506,11 +520,11 @@ def test_discard_accepts_a_draft_and_commits_only_the_new_file(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    board.cmd_new(_new_args("치울 draft"))
+    board_ticket.cmd_new(board._home(), _new_args("치울 draft"))
     tid, draft_path = _draft_id_and_path(board_dir)
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
 
-    rc = board.cmd_discard(_discard_args(tid, "dropped", "폐기 — 대상 아님"))
+    rc = board_ticket.cmd_discard(board._home(), _discard_args(tid, "dropped", "폐기 — 대상 아님"))
 
     assert rc == 0
     assert not draft_path.exists(), "draft 원본이 .drafts/ 에 남아있으면 안 된다."
@@ -530,7 +544,7 @@ def test_discard_accepts_a_draft_and_commits_only_the_new_file(board, tmp_path):
 
     # I4 — 폐기된 번호는 재사용되지 않는다: 다음 발행이 정확히 다음 순번을 받는다
     # (`_ID_SCAN_STATUSES` 가 discarded 를 놓치면 여기서 실패한다).
-    assert board.cmd_new(_new_args("다음 draft")) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args("다음 draft")) == 0
     next_tid, _next_path = _draft_id_and_path(board_dir)
     discarded_number = int(tid.split("-", 1)[1])
     next_number = int(next_tid.split("-", 1)[1])
@@ -547,7 +561,7 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    board.cmd_new(_new_args("라운드 딸린 draft"))
+    board_ticket.cmd_new(board._home(), _new_args("라운드 딸린 draft"))
     tid, draft_path = _draft_id_and_path(board_dir)
     round_dir = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
     round_dir.mkdir(parents=True, exist_ok=True)
@@ -586,7 +600,7 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
     (ledger_dir / "delegate-rounds.jsonl").write_text(
         json.dumps(ledger_row, sort_keys=True) + "\n", encoding="utf-8")
 
-    rc = board.cmd_discard(_discard_args(tid, "dropped", "폐기 — 라운드 미회수"))
+    rc = board_ticket.cmd_discard(board._home(), _discard_args(tid, "dropped", "폐기 — 라운드 미회수"))
 
     err = capsys.readouterr().err
     assert rc == 0, f"미회수 라운드가 discard 를 막았다: {err}"
@@ -619,13 +633,13 @@ def test_reopen_of_a_draft_discard_returns_to_drafts(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
 
-    board.cmd_new(_new_args("되돌릴 draft"))
+    board_ticket.cmd_new(board._home(), _new_args("되돌릴 draft"))
     tid, _draft_path = _draft_id_and_path(board_dir)
-    assert board.cmd_discard(_discard_args(tid, "dropped", "일단 폐기")) == 0
+    assert board_ticket.cmd_discard(board._home(), _discard_args(tid, "dropped", "일단 폐기")) == 0
     discarded_name = list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))[0].name
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
 
-    rc = board.cmd_reopen(_reopen_args(tid, "다시 필요함"))
+    rc = board_ticket.cmd_reopen(board._home(), _reopen_args(tid, "다시 필요함"))
 
     assert rc == 0
     assert not list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))
@@ -652,8 +666,7 @@ def _t0930_bind(board, tmp_path, ticket_id, monkeypatch):
     _git(["init", "-q", "-b", "main"], slot)
     _git(["commit", "--allow-empty", "-qm", "product seed"], slot)
     seed_slot(tmp_path, session=_TASK)
-    monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
-    assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="declared",
+    assert board_cluster.cmd_cluster(board._home(), argparse.Namespace(cluster_cmd="new", name="declared",
         tickets=ticket_id, spike=None, repo=SLOT_REPO, slot=1, task=_TASK)) == 0
     return slot
 
@@ -665,24 +678,24 @@ def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
     board_dir = _make_board_git(tmp_path, remote=bare)
     _git(["init", "-q", "-b", "main"], tmp_path)
     _git(["commit", "--allow-empty", "-qm", "home seed"], tmp_path)
-    assert board.cmd_new(_new_args("초안")) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args("초안")) == 0
     path = next(pm_paths.drafts_dir(board._home()).glob("T-*.md"))
     fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
     from test_board_cluster import _TEMPLATE_TEXT as filled
     body = filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "초안")
-    board.dump_ticket(path, fm, body)
+    ticket_store.dump_ticket(path, fm, body)
     original = path.read_bytes()
     head = _git(["rev-parse", "HEAD"], board_dir).stdout
-    assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id=tid)) == 1
     assert path.read_bytes() == original
     assert cluster_store.all_clusters(board._home()) == []
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
     assert "cluster new" in capsys.readouterr().err
     slot = _t0930_bind(board, tmp_path, tid, monkeypatch)
-    ledger = board.cluster_ledger_path("declared")
+    ledger = cluster_store.cluster_ledger_path(board._home(), "declared")
     recorded = ledger.read_bytes()
-    assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id=tid)) == 0
     assert ledger.read_bytes() == recorded
     assert ticket_store.find_ticket_exact(board._home(), tid)[0] == "open"
     assert _git(["symbolic-ref", "--short", "HEAD"], slot).stdout.strip() == "main"
@@ -694,14 +707,14 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     bare = tmp_path / "corrupt-remote"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
-    assert board.cmd_new(_new_args("검증 초안")) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args("검증 초안")) == 0
     path = next(pm_paths.drafts_dir(board._home()).glob("T-*.md"))
     fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
     from test_board_cluster import _TEMPLATE_TEXT as filled
-    board.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
+    ticket_store.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
     _t0930_bind(board, tmp_path, tid, monkeypatch)
-    ledger = board.load_cluster("declared")
+    ledger = cluster_store.load_cluster(board._home(), "declared")
     if damage in ("branch", "base"):
         ledger["branch" if damage == "branch" else "base_branch"] = None
     elif damage == "absent-base":
@@ -711,13 +724,13 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     elif damage == "reverse":
         fm, body = ticket_store.load_ticket(path)
         fm["cluster"] = "C-other"
-        board.dump_ticket(path, fm, body)
+        ticket_store.dump_ticket(path, fm, body)
     else:
         duplicate = dict(ledger, id="C-duplicate")
-        board.dump_cluster(duplicate)
-    board.dump_cluster(ledger)
+        cluster_store.dump_cluster(board._home(), duplicate)
+    cluster_store.dump_cluster(board._home(), ledger)
     before = (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(board._home()).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout)
-    assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id=tid)) == 1
     assert (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(board._home()).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout) == before
 
 
@@ -726,16 +739,15 @@ def test_t0930_promote_binding_task_draft_without_workspace(board, tmp_path, mon
     bare = tmp_path / "task-remote"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     _make_board_git(tmp_path, remote=bare)
-    monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
     args = _new_args("코드 없는 task 초안")
     args.task = "main"
-    assert board.cmd_new(args) == 0
+    assert board_ticket.cmd_new(board._home(), args) == 0
     path = next(pm_paths.drafts_dir(board._home()).glob("T-*.md"))
     assert ticket_store.load_ticket(path)[0]["created_by"].endswith("/main")
     before = path.read_bytes()
     args.repo, args.slot = "missing", 1
     with pytest.raises(SystemExit):
-        board.cmd_new(args)
+        board_ticket.cmd_new(board._home(), args)
     assert path.read_bytes() == before
     assert len(list(pm_paths.drafts_dir(board._home()).glob("T-*.md"))) == 1
 
@@ -746,20 +758,19 @@ def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypa
     for status in ("open", "claimed", "blocked", "done"):
         (wiki / "tickets" / status).mkdir(parents=True, exist_ok=True)
     (wiki / "tickets/_template.md").write_text(_TEMPLATE_TEXT, encoding="utf-8")
-    monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
-    assert board.cmd_new(_new_args("로컬 발행")) == 0
+    assert board_ticket.cmd_new(board._home(), _new_args("로컬 발행")) == 0
     path = next((wiki / "tickets/open").glob("T-*.md"))
     fm, _ = ticket_store.load_ticket(path)
     tid = fm["id"]
-    before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
-    assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
-    assert (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes()) == before
-    assert board.load_cluster(fm["cluster"])["base_branch"] == "main"
-    assert "cluster new" in board.cluster_binding_problem(fm["cluster"])
+    before = (path.read_bytes(), cluster_store.cluster_ledger_path(board._home(), fm["cluster"]).read_bytes())
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id=tid)) == 0
+    assert (path.read_bytes(), cluster_store.cluster_ledger_path(board._home(), fm["cluster"]).read_bytes()) == before
+    assert cluster_store.load_cluster(board._home(), fm["cluster"])["base_branch"] == "main"
+    assert "cluster new" in cluster_binding.cluster_binding_problem(board._home(), fm["cluster"])
     args = _new_args("잘못된 선택")
     args.repo, args.slot = "missing", 1
     with pytest.raises(SystemExit):
-        board.cmd_new(args)
+        board_ticket.cmd_new(board._home(), args)
     assert len(list((wiki / "tickets/open").glob("T-*.md"))) == 1
 
 
@@ -767,6 +778,6 @@ def _mark_ledger_closing(board, cluster: str) -> None:
     """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
-    ledger = board.load_cluster(cluster)
+    ledger = cluster_store.load_cluster(board._home(), cluster)
     ledger["status"] = "closing"
-    board.dump_cluster(ledger)
+    cluster_store.dump_cluster(board._home(), ledger)

@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import cluster_store
+
+
 import importlib.util
 import shutil
 import subprocess
@@ -153,7 +156,7 @@ def _split_home_shape(
     board = module._board_module_at(tools / "board.py")
     base = current_branch(worktree)
     cluster = bind_product_cluster(board, ticket_id, repo="myrepo", number=1, task=_TASK)
-    branch = board.load_cluster(cluster)["branch"]
+    branch = cluster_store.load_cluster(board._home(), cluster)["branch"]
     _git(worktree, "checkout", "-q", branch)
     _git(worktree, "worktree", "add", "-q", str(tmp_path / "product-integration"), base)
     # 결속 준비의 명세·장부만 baseline에 넣는다. 홈 코드 사본과 산출물의 dirty는 보존한다.

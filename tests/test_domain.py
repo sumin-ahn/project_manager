@@ -30,6 +30,8 @@ from pm_engine.infra import doc_page_store, pm_paths, repo_coordinates
 from pm_engine.domain import doc_drafts, doc_pages
 from pm_engine.app import doc_affected, doc_lint, doc_staleness
 
+from pm_engine.infra import ticket_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -1143,17 +1145,17 @@ def test_touches_from_ticket_strips_list_whitespace_and_drops_empty(dm, tmp_path
     # frontmatter touches 리스트 원소의 앞뒤 공백 strip·빈 토큰 drop — "  src/b.py"
     # 같은 값이 매칭에서 조용히 누락되지 않게 (--touches CLI 와 동형).
     board = _FakeBoard(tmp_path, ["src/a.py", " src/b.py", "  ", "\tsrc/c.py "])
-    monkeypatch.setattr(dm, "_load_board", lambda: board)
+    monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
     assert dm._touches_from_ticket("T-9999") == ["src/a.py", "src/b.py", "src/c.py"]
 
 
 def test_touches_from_ticket_strips_scalar_string(dm, tmp_path, monkeypatch):
     # 스칼라 문자열 touches(list 들여쓰기 누락)도 strip — 빈 문자열은 [] 로.
     board = _FakeBoard(tmp_path, "  src/x.py  ")
-    monkeypatch.setattr(dm, "_load_board", lambda: board)
+    monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
     assert dm._touches_from_ticket("T-9999") == ["src/x.py"]
     board = _FakeBoard(tmp_path, "   ")
-    monkeypatch.setattr(dm, "_load_board", lambda: board)
+    monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
     assert dm._touches_from_ticket("T-9999") == []
 
 
@@ -1172,7 +1174,7 @@ def test_affected_ticket_whitespace_touches_match_both(dm, tmp_path, monkeypatch
     )
     monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path / "domain")
     board = _FakeBoard(tmp_path / "board", ["src/a.py", " src/b.py"])
-    monkeypatch.setattr(dm, "_load_board", lambda: board)
+    monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
     rc = dm.main(["affected", "--ticket", "T-9999"])
     assert rc == 0
     out = capsys.readouterr().out

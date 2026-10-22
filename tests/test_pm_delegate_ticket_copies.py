@@ -27,6 +27,12 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.app import round_maintenance
+
+
 import importlib.util
 import inspect
 import json
@@ -44,9 +50,19 @@ from pm_engine.infra import delegate_ledger, pm_paths, raw_output, round_store, 
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
 from pm_engine.app import body_lint, round_seed
 
+from pm_engine.app import board_sync
+from pm_engine.infra import board_git
+from pm_engine.infra import fs
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_round_sync(monkeypatch):
+    monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths",
+                        round_maintenance._rounds_mutation_sync_paths)
 
 
 def _load_pd():
@@ -115,15 +131,13 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
         "board.py", verifier=pd._verify_engine_rev,
     )
     board.REPO = pm_home
-    board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
 
-    def _sync(message, paths):
+    def _sync(_home, message, paths):
         if sync_log is not None:
             sync_log.append((message, [Path(item) for item in paths]))
         return True
 
-    board._rounds_mutation_sync_paths = _sync
+    round_maintenance._rounds_mutation_sync_paths = _sync
     return board
 
 
@@ -152,9 +166,7 @@ def env(tmp_path, pd, monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "supersede@test.invalid")
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
-    monkeypatch.setattr(
-        pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, pm_home, sync_log),
-    )
+    _fixture_board(pd, pm_home, sync_log)
     return pm_home, slot, tickets, sync_log
 
 
@@ -294,15 +306,14 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     board = _fixture_board(pd, pm_home, sync_log)
     pm_paths.drafts_dir(board._home()).mkdir(parents=True)
     spec.rename(pm_paths.drafts_dir(board._home()) / spec.name)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
     plan = pd.prepare_ticket_copy(ticket="T-9202", role="architect", cwd=slot, pm_home=pm_home)
     active = []
-    original_lock = board.board_lock
+    original_lock = fs.board_lock
     original_replace = round_store.replace_round
 
     @contextmanager
-    def lock():
-        with original_lock():
+    def lock(_home):
+        with original_lock(_home):
             active.append(True)
             try:
                 yield
@@ -313,7 +324,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
         assert active
         return original_replace(*args)
 
-    monkeypatch.setattr(board, "board_lock", lock)
+    monkeypatch.setattr(fs, "board_lock", lock)
     monkeypatch.setattr(round_store, "replace_round", replace)
     _fill(plan.path, "## 실측\n- 설계 완료")
     result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
@@ -323,17 +334,17 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     assert not plan.run_dir.exists()
     published = []
 
-    def publish(message, paths):
+    def publish(_home, message, paths):
         assert not active
         published.append(tuple(paths))
         return True
 
     bind_product_cluster(board, "T-9202")
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: True)
     monkeypatch.setattr(body_lint, "_body_lint_issues", lambda *a, **k: [])
-    monkeypatch.setattr(board, "_board_git_sync_best_effort", publish)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", publish)
     import argparse
-    assert board.cmd_promote(argparse.Namespace(id="T-9202")) == 0
+    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id="T-9202")) == 0
     assert len(published) == 1
     assert plan.board_path.parent in published[0]
     assert ticket_store.find_ticket_exact(board._home(), "T-9202")[0] == "open"

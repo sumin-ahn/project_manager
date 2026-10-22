@@ -45,10 +45,11 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, pm_paths, repo_files  # noqa: E402
+from pm_engine.infra import console, pm_paths  # noqa: E402
 from pm_engine.app import adr_contradiction, adr_issue  # noqa: E402
 from pm_engine.domain import adr_rules  # noqa: E402
-_load_module_from_path = repo_files.load_module
+
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[2]
 DECISIONS_DIR = REPO / ".project_manager" / "wiki" / "decisions"
@@ -63,38 +64,6 @@ LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
 ENGINE_REV = "v1.8.1"
-
-
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
-
-    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
-    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
-    """
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-        )
-        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
-        raise err
-
-
-def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지 (fail-soft 재-raise 식별)."""
-    return getattr(exc, "_engine_rev_skew", False)
-
-
-def _report_engine_rev_skew_at_terminal(exc) -> int:
-    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
-    print(
-        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
-        "동기화한 뒤 다시 실행하세요.",
-        file=sys.stderr,
-    )
-    return 1
 
 
 # ── contradiction lint 트리거 ───────────────────────────────
@@ -125,20 +94,10 @@ def emit_contradiction_advisory(
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def _resolve_default_author() -> "str | None":
-    """`--author` 생략 시 board `identity_tag()` sibling 재사용 — `<user>/<pm-slot>` 해소.
-
-    board.py 의 기존 identity 해소 체인(local.conf identity.user → git config user.email·세션 토큰)을
-    그대로 쓴다(자체 로직 신설 0). 로드/해소 실패는 None
-    (fail-soft — 호출부가 현행 빈 값 경로 유지·발행을 못 깨게)."""
+    """실행 패키지와 현재 Home으로 기본 작성자를 해소한다. 실제 해소 실패는 advisory다."""
     try:
-        board_path = Path(__file__).resolve().parent / "board.py"
-        mod = _load_module_from_path(
-            board_path, "board.py", verifier=_verify_engine_rev,
-        )
-        return mod.identity_tag()
-    except Exception as exc:  # noqa: BLE001 — identity 해소 실패는 advisory 경로로(발행 무영향).
-        if _is_engine_rev_skew(exc):
-            raise  # board 사본 skew 는 fail-loud(삼키지 않는다).
+        return lease_store.identity_tag(pm_paths.home_at(REPO))
+    except Exception:  # noqa: BLE001 — identity 해소 실패는 advisory 경로로(발행 무영향).
         return None
 
 
@@ -267,14 +226,8 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
-    try:
-        console.configure_console_utf8()
-        return _main(argv)
-    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
-        if _is_engine_rev_skew(exc):
-            return _report_engine_rev_skew_at_terminal(exc)
-        raise
+    console.configure_console_utf8()
+    return _main(argv)
 
 
 if __name__ == "__main__":

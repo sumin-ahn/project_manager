@@ -27,6 +27,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.cli import board_ticket
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import contextlib
 import importlib.util
@@ -40,6 +45,10 @@ import pytest
 
 from conftest import ensure_product_slot
 from pm_engine.infra import git, ticket_store
+
+from pm_engine.app import ticket_access
+from pm_engine.domain import ticket_rules
+from pm_engine.infra import lease_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -91,17 +100,8 @@ def board(tmp_path, monkeypatch):
     local = pm / ".local"
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "TEMPLATE_FILE": wiki / "tickets" / "_template.md",
-        "BOARD_FILE": wiki / "board.md",
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": local,
-        "LEASES_FILE": local / "worktree-leases.json",
-        "BOARD_LOCK": local / "board.lock",
-        "PM_STATE_FILE": wiki / "pm_state.md",
-        "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
+
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
@@ -109,7 +109,7 @@ def board(tmp_path, monkeypatch):
     # 실 PM 세션 env·git config 가 hermetic 테스트로 새지 않게 격리(장부/local.conf 만이 세션·user 소스).
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
 
@@ -140,7 +140,7 @@ def _conf_key(name: str) -> str:
 
 
 def _write_conf(board, **kv) -> None:
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
@@ -154,7 +154,7 @@ def _new(board, capsys, *, prefix, session, user, title) -> str:
     repo, slot = _split_session(session)
     task = _task_of(session)
     ensure_product_slot(board, repo=repo, number=slot, task=task)
-    rc = board.cmd_new(argparse.Namespace(
+    rc = board_ticket.cmd_new(board._home(), argparse.Namespace(
         prefix=prefix, repo=repo, slot=slot, task=task, user=user, title=title,
         touches=None, depends=None, tag=None, estimate="small"))
     out = capsys.readouterr().out
@@ -180,7 +180,7 @@ def _claim(board, capsys, tid, *, session, user) -> None:
     """실 `cmd_claim` 으로 claim(claimed_by=<user>/<task> 스탬프) — `--task`(+위치 인자)로 호출한다.
     board-git 비활성이라 즉시 확정."""
     repo, slot = _split_session(session)
-    rc = board.cmd_claim(argparse.Namespace(
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(
         id=tid, task=_task_of(session), repo=repo, slot=slot, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim rc={rc}: {out}"
@@ -197,7 +197,7 @@ def _view(board, capsys, **flags) -> list[str]:
     if session is not None:
         os.environ["PM_SESSION_NAME"] = _task_of(session)
     try:
-        rc = board.cmd_list(argparse.Namespace(
+        rc = board_list.cmd_list(board._home(), argparse.Namespace(
             status=flags.get("status"), tag=None, mine=flags.get("mine", False),
             all=flags.get("all", False), task=flags.get("task")))
     finally:
@@ -224,7 +224,7 @@ def _seed_composite(board, capsys, *, areas: bool = True) -> types.SimpleNamespa
     각 정체성 전환은 `cmd_new`/`cmd_claim` 의 `--session`/`--user` override 로만(local.conf 무관).
     """
     if areas:
-        board.AREAS_FILE.write_text(_COMPOSITE_AREAS, encoding="utf-8")
+        pm_paths.areas_file(board._home()).write_text(_COMPOSITE_AREAS, encoding="utf-8")
     al_pfx, be_pfx = ("al", "be") if areas else (None, None)
 
     def slot(pfx, session, user, tag):
@@ -322,13 +322,13 @@ def _claim_task(board, capsys, tid, *, task, user) -> None:
     tree = init_git_repo(board.REPO / slot, commit=f"task fixture {task}")
     head = git._git_head_at(str(tree))
     assert head and git._cluster_current_branch(str(tree)) == "main"
-    leases = (json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))
-              if board.LEASES_FILE.exists() else {"leases": []})
+    leases = (json.loads(pm_paths.leases_file(board._home()).read_text(encoding="utf-8"))
+              if pm_paths.leases_file(board._home()).exists() else {"leases": []})
     leases["leases"].append({
         "slot": slot, "repo": repo, "session": task, "state": "leased", "role": "work",
     })
-    board.LEASES_FILE.write_text(json.dumps(leases), encoding="utf-8")
-    rc = board.cmd_claim(argparse.Namespace(
+    pm_paths.leases_file(board._home()).write_text(json.dumps(leases), encoding="utf-8")
+    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(
         id=tid, repo=None, slot=None, task=task, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim --task rc={rc}: {out}"
@@ -449,7 +449,7 @@ def _make_board_runner(board):
                                   all="--all" in argv, task=None, repo=None, slot=None)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = board.cmd_list(args)
+            rc = board_list.cmd_list(board._home(), args)
         return rc, buf.getvalue()
     return run
 
@@ -466,7 +466,7 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys):
 
     bs = pm_bootstrap.PmBootstrap(
         run_board_fn=_make_board_runner(board),
-        log_file=board.LOG_FILE, areas_file=board.AREAS_FILE)
+        log_file=(pm_paths.wiki_dir(board._home()) / "log/current.md"), areas_file=pm_paths.areas_file(board._home()))
     result = bs._collect_board()
 
     open_tickets = set(result["open_tickets"])
@@ -490,18 +490,18 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys):
 def _make_pre_fix_is_mine(board):
     """ADR-0053(T-0302) fix **이전**의 `_ticket_is_mine` 재현 — multi_user 게이트 없이
     `my_user is None ∨ not area_owner_in_use` 면 전체 open=mine 으로 degrade(=유출·spike §1)."""
-    def _is_mine(status, fm, my_user, my_slot, area_owner_in_use, multi_user,
+    def _is_mine(_home, status, fm, my_user, my_slot, area_owner_in_use, multi_user,
                  *, slot_scoped=False):
         cb = fm.get("claimed_by") or ""
         if cb:
-            cb_user = board._claimed_by_user(cb)
+            cb_user = ticket_rules._claimed_by_user(cb)
             if (my_user is not None and cb_user == my_user) or \
-                    board._slot_matches(cb, my_slot):
+                    ticket_rules._slot_matches(cb, my_slot):
                 return True
         if status == "open":
             if my_user is None or not area_owner_in_use:
                 return True   # 옛 degrade — 다중사용자 미claim open 유출
-            return board._ticket_area_owner(fm.get("id") or "") == my_user
+            return ticket_access._ticket_area_owner(board._home(), fm.get("id") or "") == my_user
         return False
     return _is_mine
 
@@ -519,7 +519,7 @@ def test_pre_fix_mine_unmigrated_leaks_red_proof(board, capsys, monkeypatch):
     assert not (comp.bob_open & set(_view(board, capsys, mine=True)))
 
     # RED: pre-fix degrade(area_owner 미운영 → 전체 open=mine)는 bob open 을 alice --mine 에 유출.
-    monkeypatch.setattr(board, "_ticket_is_mine", _make_pre_fix_is_mine(board))
+    monkeypatch.setattr(ticket_access, "_ticket_is_mine", _make_pre_fix_is_mine(board))
     leaked = set(_view(board, capsys, mine=True))
     assert comp.bob_open <= leaked, "pre-fix T2 degrade 가 유출을 재현 못함 — RED-proof 무효"
 

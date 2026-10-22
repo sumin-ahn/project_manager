@@ -14,6 +14,9 @@ nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+
+
 from _pool_seams import bind_pool
 
 import importlib.util
@@ -23,6 +26,8 @@ from types import SimpleNamespace
 import pytest
 from _pytest_summary import pytest_summary
 from pm_engine.infra import pre_push_hook
+
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -160,33 +165,26 @@ def test_board_has_no_ctx_threshold_reader(board):
     board 는 init 이 local.conf 에 쓰는 비율 셋(레지스트리 기본값)만 다룬다."""
     assert not hasattr(board, "ctx_thresholds")
     assert not hasattr(board, "_ctx_pct")
-    assert board._conf_default_int("ctx.checkpoint_at_pct") == 70
-    assert board._conf_default_int("ctx.precompact_at_pct") == 80
-    assert board._conf_default_int("ctx.compact_at_pct") == 90
+    assert conf_store._conf_default_int("ctx.checkpoint_at_pct") == 70
+    assert conf_store._conf_default_int("ctx.precompact_at_pct") == 80
+    assert conf_store._conf_default_int("ctx.compact_at_pct") == 90
 
 
 def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
     """board.py init 가 local.conf 에 쓴 % 비율 셋(70·80·90)을 기록한다 (T-0207·T-0923)."""
-    conf_path = tmp_path / "local.conf"
+    conf_path = tmp_path / "proj/.project_manager/local.conf"
     state_path = tmp_path / "pm_state.md"
-    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
-    monkeypatch.setattr(board, "PM_STATE_FILE", state_path)
     # pm_state 생성·pre-push 훅·additional-reviewer opt-in 부수효과를 격리한다.
-    monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
     (_pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", tmp_path / "proj")
-    monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
-    monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
-    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
-    monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
 
     import argparse
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
-    rc = board.cmd_init(args)
+    rc = board_init.cmd_init(board._home(), args)
 
     assert rc == 0
     conf_text = conf_path.read_text(encoding="utf-8")

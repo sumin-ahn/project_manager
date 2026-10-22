@@ -15,11 +15,18 @@ monkeypatch 하고 git 폴백은 stub 한다. querying identity 는 local.conf `
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_list
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import importlib.util
 from pathlib import Path
 
 import pytest
+
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -48,18 +55,13 @@ def board(tmp_path, monkeypatch):
     wiki = pm / "wiki"
     overrides = {
         "REPO": proj,
-        "TICKETS_DIR": wiki / "tickets",
-        "BOARD_FILE": wiki / "board.md",
-        "LOG_FILE": wiki / "log" / "current.md",
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "LOCAL_DIR": pm / ".local",
-        "BOARD_LOCK": pm / ".local" / "board.lock",
+
+
     }
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
 
@@ -76,14 +78,14 @@ def _conf_key(name: str) -> str:
 
 def _write_conf(board, **kv) -> None:
     """local.conf 를 쓴다 — querying identity(user=) 명시용 (ADR-0056 user-first)."""
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
-    path = board.TICKETS_DIR / status / f"{tid}-seed.md"
-    board.dump_ticket(path, {"id": tid, "title": title, "status": status,
+    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
+    ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "created_by": created_by, "claimed_by": claimed_by,
                              "depends_on": [], "tags": []}, "# seed\n")
     return path
@@ -93,7 +95,7 @@ def _list_ids(board, capsys, **flags) -> list[str]:
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
                               all=flags.get("all", False), task=flags.get("task"))
-    rc = board.cmd_list(args)
+    rc = board_list.cmd_list(board._home(), args)
     assert rc == 0
     out = capsys.readouterr().out
     ids = []

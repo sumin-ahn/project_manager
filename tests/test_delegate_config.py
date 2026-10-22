@@ -12,6 +12,10 @@ hermetic: board.py 모듈 전역(REPO·LOCAL_CONF·AREAS_FILE 등)이 import 시
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_init
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import importlib.util
 from pathlib import Path
@@ -41,16 +45,12 @@ def board(tmp_path, monkeypatch):
     mod = _load_board()
     for name, val in {
         "REPO": proj,
-        "LOCAL_CONF": pm / "local.conf",
-        "AREAS_FILE": pm / "areas.md",
-        "PM_STATE_FILE": wiki / "pm_state.md",
-        "PM_STATE_TEMPLATE": wiki / "pm_state.template.md",
     }.items():
         monkeypatch.setattr(mod, name, val)
     # 실 git hook 설치·stdin opt-in 프롬프트·board submodule 조작을 무해 stub 으로 차단
     # (init 의 local.conf 효과만 검증).
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
-    monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
+    monkeypatch.setattr(board_init, "_configure_board_submodule", lambda home: False)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -142,9 +142,9 @@ def test_init_conf_carries_values_only(board):
     설명이 conf 에 살면 값과 어긋난 채 굳는다(그 파일은 아무도 다시 읽지 않는다). 카탈로그의
     자리는 출하 문서이고, conf 는 이 clone 이 실제로 정한 값만 담는다.
     """
-    rc = board.cmd_init(_init_args())
+    rc = board_init.cmd_init(board._home(), _init_args())
     assert rc == 0
-    text = board.LOCAL_CONF.read_text(encoding="utf-8")
+    text = board._home().local_conf.read_text(encoding="utf-8")
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text, f"conf 에 설명 블록 잔존: {marker}"
     # 활성 키는 전부 실값이다 — 위임 축은 한 줄도 없다(기본 허용이라 기록할 값이 없다).
@@ -161,8 +161,8 @@ def test_init_conf_has_no_commented_out_key_examples(board):
     주석 예시는 "설정 0개인 설명"이라 실값과 모순돼도 아무 게이트가 못 본다. 카탈로그가
     문서로 갔으므로 conf 의 주석은 파일 정체를 밝히는 머리말뿐이어야 한다.
     """
-    board.cmd_init(_init_args())
-    for line in board.LOCAL_CONF.read_text(encoding="utf-8").splitlines():
+    board_init.cmd_init(board._home(), _init_args())
+    for line in board._home().local_conf.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped.startswith("#"):
             continue
@@ -172,15 +172,15 @@ def test_init_conf_has_no_commented_out_key_examples(board):
 
 def test_init_merges_without_appending_a_delegate_block(board):
     """기존 conf 로 재실행해도 위임 블록을 덧붙이지 않고 사용자 값을 그대로 둔다(비파괴)."""
-    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    board._home().local_conf.write_text(
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nctx.compact_at_pct=85\n"
         "additional_reviewer.harness=codex\n",
         encoding="utf-8")
 
-    assert board.cmd_init(_init_args()) == 0
+    assert board_init.cmd_init(board._home(), _init_args()) == 0
 
-    text = board.LOCAL_CONF.read_text(encoding="utf-8")
+    text = board._home().local_conf.read_text(encoding="utf-8")
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text
     parsed = conf_store.local_config(board._home())
@@ -195,17 +195,17 @@ def test_init_preserves_an_explicit_delegate_switch(board):
     기본이 허용이라 값이 없는 것과 `false` 는 다른 상태다 — init 이 그 줄을 지우면 위임이
     조용히 다시 켜진다.
     """
-    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    board.LOCAL_CONF.write_text(
+    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
+    board._home().local_conf.write_text(
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\ndelegate.enabled=false\n"
         "delegate.developer.harness=codex\ndelegate.developer.model=gpt-x\n",
         encoding="utf-8")
 
-    board.cmd_init(_init_args())
+    board_init.cmd_init(board._home(), _init_args())
 
     parsed = conf_store.local_config(board._home())
     assert parsed["delegate.enabled"] == "false"
     assert parsed["delegate.developer.harness"] == "codex"
-    active = [ln for ln in board.LOCAL_CONF.read_text(encoding="utf-8").splitlines()
+    active = [ln for ln in board._home().local_conf.read_text(encoding="utf-8").splitlines()
               if ln.strip().startswith("delegate.enabled=")]
     assert active == ["delegate.enabled=false"]             # 재질문/중복 기록 없음

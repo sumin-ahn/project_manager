@@ -17,6 +17,12 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.cli import board_round
+
+
 import argparse
 import importlib.util
 import shutil
@@ -224,14 +230,14 @@ def _draft_id(board_dir: Path) -> str:
 def test_promote_rejects_half_filled_draft(board_git):
     """목표·DoD 만 채우고 인터페이스·결정을 뼈대로 남긴 draft 의 promote 는 거부(rc=1)·open/ 미이동."""
     board_dir = board_git._board_dir
-    board_git.cmd_new(_new_args("절반"))
+    board_ticket.cmd_new(board_git._home(), _new_args("절반"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _HALF_FILLED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _HALF_FILLED_BODY)
 
-    rc = board_git.cmd_promote(argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
     assert rc == 1, "인터페이스/결정 뼈대가 남은 draft 가 promote 통과함(게이트 갭)."
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
@@ -243,15 +249,15 @@ def test_promote_rejects_half_filled_draft(board_git):
 def test_promote_accepts_self_contained_draft(board_git):
     """5절을 실값으로 채운 draft 는 promote 성공(rc=0)·open/ 이동."""
     board_dir = board_git._board_dir
-    board_git.cmd_new(_new_args("자족"))
+    board_ticket.cmd_new(board_git._home(), _new_args("자족"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _FILLED_BODY)
 
     bind_product_cluster(board_git, tid)
-    rc = board_git.cmd_promote(argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
     assert rc == 0, "자족 본문의 draft promote 가 거부됨(오탐)."
     assert not list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "승격된 draft 가 .drafts/ 에 남음(open/ 이동 실패)."
@@ -303,14 +309,14 @@ def test_strict_sections_constant_is_five():
 def test_promote_rejects_section_deleted_draft(board_git):
     """인터페이스·결정 절을 삭제한 draft 의 promote 는 거부(rc=1)·open/ 미이동(strict authoring 게이트)."""
     board_dir = board_git._board_dir
-    board_git.cmd_new(_new_args("절삭제"))
+    board_ticket.cmd_new(board_git._home(), _new_args("절삭제"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _SECTION_DELETED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _SECTION_DELETED_BODY)
 
-    rc = board_git.cmd_promote(argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
     assert rc == 1, "인터페이스/결정 절을 삭제한 draft 가 promote 통과함(절-삭제 우회)."
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
@@ -328,14 +334,14 @@ def test_promote_rejects_section_deleted_draft(board_git):
 @requires_git
 def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     board_dir = board_git._board_dir
-    board_git.cmd_new(_new_args("라운드 동반"))
+    board_ticket.cmd_new(board_git._home(), _new_args("라운드 동반"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft_path)
-    board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
+    ticket_store.dump_ticket(draft_path, fm, _FILLED_BODY)
 
-    rc_section = board_git.cmd_section_add(
-        argparse.Namespace(id=tid, role="architect", label=None))
+    rc_section = board_round.cmd_section_add(
+        board_git._home(), argparse.Namespace(id=tid, role="architect", label=None))
     assert rc_section == 0
     round_rel = f"tickets/rounds/{tid}/01-architect.md"
     assert (board_dir / round_rel).is_file()
@@ -343,7 +349,7 @@ def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     assert round_rel not in tracked_before, "draft 구간에서 이미 커밋됨(promote 소유 위반)"
 
     bind_product_cluster(board_git, tid)
-    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0
 
     tracked = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout
     assert round_rel in tracked, "승격 커밋에 draft 라운드가 빠짐"

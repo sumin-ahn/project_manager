@@ -14,6 +14,14 @@ worktree(`work/<repo>_<N>`) cwd 에서 실행하면 도구가 cwd 기준 자기-
 """
 from __future__ import annotations
 
+from pm_engine.domain import board_command_rules
+
+
+from pm_engine.cli import board_dispatch
+from pm_engine.domain import board_command_rules
+from pm_engine.infra import pm_paths
+
+
 import argparse
 import importlib.util
 import json
@@ -161,20 +169,7 @@ def _fake_runner(git_dir: str, common_dir: str):
 # 하면 이들은 여전히 실 트리를 가리켜, 게이트가 (회귀로) 미발화하면 실 worktree 를 오염시킨다
 # (바로 이 티켓이 닫는 클래스가 테스트 자신을 물었던 실제 사례). 아래로 전부 fixture 트리로
 # 재바인딩해 어떤 mutation 이 돌더라도 실 트리 오염 0(hermetic).
-_WRITE_TARGET_CONSTS: dict[str, str] = {
-    "IDEAS_DIR": "wiki/ideas",
-    "BOARD_FILE": "wiki/board.md",
-    "LOG_FILE": "wiki/log/current.md",
-    "LOCAL_CONF": "local.conf",
-    "TICKETS_DIR": "wiki/tickets",
-    "TEMPLATE_FILE": "wiki/tickets/_template.md",
-    "AREAS_FILE": "areas.md",
-    "PM_STATE_FILE": "wiki/pm_state.md",
-    "PM_STATE_TEMPLATE": "wiki/pm_state.template.md",
-    "LOCAL_DIR": ".local",
-    "BOARD_LOCK": ".local/board.lock",
-    "LEASES_FILE": ".local/worktree-leases.json",
-}
+_WRITE_TARGET_CONSTS: dict[str, str] = {}
 
 
 def _isolate_board_module(b, monkeypatch, root: Path) -> None:
@@ -202,14 +197,14 @@ def test_has_real_board_split_true(tmp_path):
     b = _load_board()
     pm = tmp_path / ".project_manager"
     _make_real_board(pm, split=True)
-    assert b._has_real_board(pm) is True
+    assert pm_paths._has_real_board(pm) is True
 
 
 def test_has_real_board_legacy_wiki_true(tmp_path):
     b = _load_board()
     pm = tmp_path / ".project_manager"
     _make_real_board(pm, split=False)
-    assert b._has_real_board(pm) is True
+    assert pm_paths._has_real_board(pm) is True
 
 
 def test_has_real_board_scaffold_only_false(tmp_path):
@@ -217,12 +212,12 @@ def test_has_real_board_scaffold_only_false(tmp_path):
     b = _load_board()
     pm = tmp_path / ".project_manager"
     _make_scaffold_board(pm)
-    assert b._has_real_board(pm) is False
+    assert pm_paths._has_real_board(pm) is False
 
 
 def test_has_real_board_absent_false(tmp_path):
     b = _load_board()
-    assert b._has_real_board(tmp_path / ".project_manager") is False
+    assert pm_paths._has_real_board(tmp_path / ".project_manager") is False
 
 
 # ── _is_linked_worktree (runner 주입·hermetic) ────────────────────────────
@@ -275,7 +270,7 @@ def _read_argv(subcommand: str) -> list[str]:
     return argv
 
 
-@pytest.mark.parametrize("subcommand", sorted(_load_board()._READ_SUBCOMMANDS))
+@pytest.mark.parametrize("subcommand", sorted(board_command_rules._READ_SUBCOMMANDS))
 def test_every_read_subcommand_surfaces_real_worktree_anchor(
         pm_home_worktree, monkeypatch, capsys, subcommand):
     """REPO가 정하는 실제 등록 worktree 앵커를 모든 read dispatch가 첫 줄에 표시한다.
@@ -291,7 +286,7 @@ def test_every_read_subcommand_surfaces_real_worktree_anchor(
     first_line = capsys.readouterr().out.splitlines()[0]
     assert first_line == (
         f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {pm_home} "
-        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]})"
+        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]})"
     )
 
 
@@ -317,7 +312,7 @@ def test_show_from_boardless_worktree_reads_single_ledger_owner(
     captured = capsys.readouterr()
     assert captured.out.splitlines()[0] == (
         f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {pm_home} "
-        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
+        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
     )
     assert "-- T-0100 (done/) --" in captured.out
     assert "ticket not found" not in (captured.out + captured.err)
@@ -340,9 +335,9 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
             (
                 b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()),
                 pm_paths.decisions_dir(b._home()),
-                b.IDEAS_DIR, pm_paths.specs_dir(b._home()), pm_paths.architecture_file(b._home()),
+                pm_paths.ideas_dir(b._home()), pm_paths.specs_dir(b._home()), pm_paths.architecture_file(b._home()),
                 pm_paths.status_file(b._home()),
-                pm_paths.hooks_dir(b._home()), b.LOCAL_CONF, b.LEASES_FILE, pm_paths.domain_dir(b._home()),
+                pm_paths.hooks_dir(b._home()), b._home().local_conf, pm_paths.leases_file(b._home()), pm_paths.domain_dir(b._home()),
                 *wiki_lint._scope_aware_dirs(b._home()),
             )
         )
@@ -417,7 +412,7 @@ def test_worktree_lint_output_equals_pm_home_and_resolves_pm_wiki_targets(
     assert wt_result.err == pm_result.err
     assert "[dangling-wikilink] ADR-0001" not in wt_result.out
     assert wt_result.out.splitlines()[0].endswith(
-        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND['lint']})"
+        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['lint']})"
     )
     assert b._READ_BOARD_ROOT_OVERRIDE is None
     assert b._READ_PM_HOME_OVERRIDE is None
@@ -549,7 +544,7 @@ def test_boardless_worktree_owner_comes_from_its_own_git_declaration(
     captured = capsys.readouterr()
     assert captured.out.splitlines()[0] == (
         f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {git_home} "
-        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
+        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
     )
     assert f"PM 입력 앵커: {path_home}" not in captured.out
 
@@ -571,16 +566,16 @@ def test_read_anchor_labels_only_real_board_owner_as_pm_home(
     assert capsys.readouterr().out.splitlines()[0] == f"repo 앵커: {plain_clone} (역할 미상)"
 
 
-@pytest.mark.parametrize("subcommand", sorted(_load_board()._MUTATION_SUBCOMMANDS))
+@pytest.mark.parametrize("subcommand", sorted(board_command_rules._MUTATION_SUBCOMMANDS))
 def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
     """모든 mutation leaf는 display-only read 앵커를 타지 않는다(rc/차단 경로 불변)."""
     b = _load_board()
     args = _dispatch_namespace(b, subcommand, lambda _args: 0)
     monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
-    monkeypatch.setattr(b, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     monkeypatch.setattr(
-        b, "_print_read_anchor",
-        lambda: pytest.fail(f"mutation {subcommand!r} printed a read anchor"),
+        board_dispatch, "_print_read_anchor",
+        lambda _home: pytest.fail(f"mutation {subcommand!r} printed a read anchor"),
     )
     assert b.main([]) == 0
 
@@ -593,7 +588,7 @@ def test_detector_flags_registered_two_git_slot(pm_home_worktree):
     """`.repos/<repo>.git` 공용 저장소를 가리키는 등록 슬롯 → 소유 PM 홈."""
     b = _load_board()
     pm_home, worktree = pm_home_worktree
-    assert b._pm_home_worktree_misanchor(worktree) == pm_home.resolve()
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home.resolve()
 
 
 def test_detector_none_when_anchor_is_plain_checkout(tmp_path):
@@ -603,7 +598,7 @@ def test_detector_none_when_anchor_is_plain_checkout(tmp_path):
     plain.mkdir()
     _git(["init", "-q", "-b", "main"], plain)
     _make_scaffold_board(plain / ".project_manager")
-    assert b._pm_home_worktree_misanchor(plain) is None
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(plain)) is None
 
 
 def test_detector_none_when_anchor_owns_real_board(tmp_path):
@@ -611,7 +606,7 @@ def test_detector_none_when_anchor_owns_real_board(tmp_path):
     b = _load_board()
     pm_home, worktree = _make_pm_home_with_worktree(tmp_path)
     _make_real_board(worktree / ".project_manager", split=False)
-    assert b._pm_home_worktree_misanchor(worktree) is None
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) is None
     assert pm_home.is_dir()
 
 
@@ -622,8 +617,8 @@ def test_detector_none_for_markerless_tree_inside_a_pm_home(tmp_path):
     nested = worktree / ".project_manager" / ".local" / "tmp" / "anchor"
     nested.mkdir(parents=True)
     _make_scaffold_board(nested / ".project_manager")
-    assert b._pm_home_worktree_misanchor(nested) is None
-    assert b._pm_home_worktree_misanchor(pm_home / "vendor-tree") is None
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(nested)) is None
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(pm_home / 'vendor-tree')) is None
 
 
 def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
@@ -642,7 +637,7 @@ def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
     _make_scaffold_board(stray / ".project_manager")
 
     with pytest.raises(pm_paths.PmHomeResolutionError, match="PM 홈을 찾지 못했습니다"):
-        b._pm_home_worktree_misanchor(stray)
+        pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(stray))
 
 
 def test_detector_flags_single_git_slot(tmp_path):
@@ -662,14 +657,14 @@ def test_detector_flags_single_git_slot(tmp_path):
     _git(["worktree", "add", "-q", str(slot)], pm_home)
     _make_scaffold_board(slot / ".project_manager")
     _register_slot(pm_home, slot)
-    assert b._pm_home_worktree_misanchor(slot) == pm_home.resolve()
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(slot)) == pm_home.resolve()
 
 
 def test_detector_flags_real_worktree_default_runner(pm_home_worktree):
     # 실 git worktree + default(실) runner 로 end-to-end detector 발화.
     b = _load_board()
     pm_home, worktree = pm_home_worktree
-    assert b._pm_home_worktree_misanchor(worktree) == pm_home
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home
 
 
 # ── mutation dispatch 게이트: 전 mutation subcommand fail-loud (실 git worktree) ──
@@ -714,7 +709,7 @@ def _dispatch_namespace(board, subcommand: str, fn):
     """
     parts = subcommand.split()
     values = {"cmd": parts[0], "fn": fn}
-    dest = board._SUBCOMMAND_GROUP_DESTS.get(parts[0])
+    dest = board_command_rules._SUBCOMMAND_GROUP_DESTS.get(parts[0])
     if dest is not None and len(parts) > 1:
         values[dest] = parts[1]
     return argparse.Namespace(**values)
@@ -724,8 +719,8 @@ def test_mutation_argv_list_covers_all_mutations():
     """_MUTATION_ARGVS 가 _MUTATION_SUBCOMMANDS 전수를 커버 — 신규 mutation 이 분류되면 여기도
     argv 를 추가하도록 강제(fail-loud 재현 테스트 누락 방지)."""
     b = _load_board()
-    covered = {b._resolved_subcommand(b.build_parser().parse_args(a)) for a in _MUTATION_ARGVS}
-    assert covered == set(b._MUTATION_SUBCOMMANDS)
+    covered = {board_dispatch._resolved_subcommand(b.build_parser().parse_args(a)) for a in _MUTATION_ARGVS}
+    assert covered == set(board_command_rules._MUTATION_SUBCOMMANDS)
 
 
 @pytest.mark.parametrize("argv", _MUTATION_ARGVS, ids=lambda a: " ".join(a[:2]))
@@ -789,10 +784,10 @@ def test_lint_falsealarm_root_detected_but_read_paths_ungated(pm_home_worktree, 
     b = _load_board()
     pm_home, worktree = pm_home_worktree
     # (a) 근본 misanchor 가 detector 로 식별됨(오경보 명령의 근본은 이제 잡힌다)
-    assert b._pm_home_worktree_misanchor(worktree) == pm_home
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home
     # (b) lint(오경보 명령)·기타 read 는 mutation 분류 밖 → dispatch 게이트 미발화(§결정: read 무변경)
     for name in ("lint", "list", "show"):
-        assert name in b._READ_SUBCOMMANDS and name not in b._MUTATION_SUBCOMMANDS
+        assert name in board_command_rules._READ_SUBCOMMANDS and name not in board_command_rules._MUTATION_SUBCOMMANDS
     # (c) 행위 확증: worktree 에서 read 명령(list)은 게이트 통과·misanchor 중단 메시지 없음
     _isolate_board_module(b, monkeypatch, worktree)
     rc = b.main(["list"])
@@ -827,8 +822,8 @@ def test_every_subcommand_is_classified():
     (mutation ∪ read ∪ sidecar) 와 정확히 일치해야 한다(미분류/유령분류 즉시 fail)."""
     b = _load_board()
     registered = _all_registered_subcommands(b.build_parser())
-    classified = (set(b._MUTATION_SUBCOMMANDS)
-                  | set(b._READ_SUBCOMMANDS) | set(b._SIDECAR_SUBCOMMANDS))
+    classified = (set(board_command_rules._MUTATION_SUBCOMMANDS)
+                  | set(board_command_rules._READ_SUBCOMMANDS) | set(board_command_rules._SIDECAR_SUBCOMMANDS))
     assert registered == classified, (
         f"미분류(신규 mutation 가능성): {sorted(registered - classified)} · "
         f"유령 분류(제거된 명령): {sorted(classified - registered)}"
@@ -838,27 +833,21 @@ def test_every_subcommand_is_classified():
 def test_read_input_inventory_covers_every_read_leaf():
     """read leaf별 PM 입력 표가 분류 집합과 정확히 일치해 신규 형제 surface 누락을 막는다."""
     b = _load_board()
-    assert set(b._READ_PM_INPUTS_BY_SUBCOMMAND) == set(b._READ_SUBCOMMANDS)
-    assert all(b._READ_PM_INPUTS_BY_SUBCOMMAND.values())
+    assert set(board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND) == set(board_command_rules._READ_SUBCOMMANDS)
+    assert all(board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND.values())
 
 
 def test_pm_owned_path_inventory_is_complete():
     """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
     b = _load_board()
-    expected = {
-        "IDEAS_DIR",
-        "BOARD_FILE", "LOG_FILE", "LOCAL_CONF", "TICKETS_DIR",
-        "TEMPLATE_FILE", "AREAS_FILE", "PM_STATE_FILE", "PM_STATE_TEMPLATE", "LOCAL_DIR",
-        "BOARD_LOCK", "LEASES_FILE",
-        "DELEGATE_CHANNEL_GUARD_PY", "CODEX_DELEGATE_OBSERVATIONS",
-    }
+    expected = {'DELEGATE_CHANNEL_GUARD_PY', 'CODEX_DELEGATE_OBSERVATIONS'}
     assert set(b._READ_PM_PATH_RELS) == expected
 
 
 def test_classification_sets_disjoint():
     b = _load_board()
-    m, r, s = (set(b._MUTATION_SUBCOMMANDS),
-               set(b._READ_SUBCOMMANDS), set(b._SIDECAR_SUBCOMMANDS))
+    m, r, s = (set(board_command_rules._MUTATION_SUBCOMMANDS),
+               set(board_command_rules._READ_SUBCOMMANDS), set(board_command_rules._SIDECAR_SUBCOMMANDS))
     assert m.isdisjoint(r) and m.isdisjoint(s) and r.isdisjoint(s)
 
 
@@ -868,13 +857,15 @@ def test_dispatch_gate_decision_matches_classification():
     b = _load_board()
 
     def _fires(argv):
-        return b._resolved_subcommand(b.build_parser().parse_args(argv)) in b._MUTATION_SUBCOMMANDS
+        return board_dispatch._resolved_subcommand(b.build_parser().parse_args(argv)) in board_command_rules._MUTATION_SUBCOMMANDS
 
     for argv in (["new", "t"], ["claim", "T-0100"], ["refresh"], ["init"],
                  ["migrate-identity"], ["promote-scope", "f.md", "--to", "shared"],
                  ["reid", "T-0100", "T-0101"], ["idea", "new", "t"],
                  ["prefix", "rename", "AAA", "BBB"]):
         assert _fires(argv), argv
+    for argv in (["regression", "run"], ["regression", "run", "--cmd", "echo ok"]):
+        assert board_dispatch._resolved_subcommand(b.build_parser().parse_args(argv)) == "regression"
     for argv in (["list"], ["show", "T-0100"], ["lint"],
                  ["regression", "check"], ["livegate", "check"],
                  ["idea", "list"], ["prefix", "list"]):
@@ -884,9 +875,9 @@ def test_dispatch_gate_decision_matches_classification():
 @pytest.mark.parametrize(
     "subcommand",
     sorted(
-        _load_board()._MUTATION_SUBCOMMANDS
-        | _load_board()._READ_SUBCOMMANDS
-        | _load_board()._SIDECAR_SUBCOMMANDS
+        board_command_rules._MUTATION_SUBCOMMANDS
+        | board_command_rules._READ_SUBCOMMANDS
+        | board_command_rules._SIDECAR_SUBCOMMANDS
     ),
 )
 def test_read_board_resolution_opens_only_read_dispatch(
@@ -895,17 +886,17 @@ def test_read_board_resolution_opens_only_read_dispatch(
     b = _load_board()
     args = _dispatch_namespace(b, subcommand, lambda _args: 0)
     monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
-    monkeypatch.setattr(b, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     calls: list[Path] = []
 
-    def resolve(anchor):
-        calls.append(anchor)
-        return b._ReadBoardResolution(pm_paths._board_root_at(anchor), None)
+    def resolve(home):
+        calls.append(home.root)
+        return pm_paths._ReadBoardResolution(pm_paths._board_root_at(home.root), None)
 
-    monkeypatch.setattr(b, "_resolve_read_board", resolve)
-    monkeypatch.setattr(b, "_print_read_anchor", lambda **_kwargs: None)
+    monkeypatch.setattr(pm_paths, "_resolve_read_board", resolve)
+    monkeypatch.setattr(board_dispatch, "_print_read_anchor", lambda _home,  **_kwargs: None)
     assert b.main([]) == 0
-    assert bool(calls) is (subcommand in b._READ_SUBCOMMANDS)
+    assert bool(calls) is (subcommand in board_command_rules._READ_SUBCOMMANDS)
 
 
 # ── 오탐 0: PM 홈·솔로/standalone 무회귀 ──────────────────────────────────
@@ -915,9 +906,9 @@ def test_pm_home_cwd_no_false_positive(tmp_path, monkeypatch, capsys):
     b = _load_board()
     pm_home = tmp_path / "pmhome"
     _make_real_board(pm_home / ".project_manager", split=True)
-    assert b._pm_home_worktree_misanchor(pm_home) is None
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(pm_home)) is None
     monkeypatch.setattr(b, "REPO", pm_home)
-    assert b._guard_worktree_misanchor("board.py new") is False
+    assert board_dispatch._guard_worktree_misanchor(b._home(), "board.py new") is False
     assert capsys.readouterr().err == ""
 
 
@@ -929,9 +920,9 @@ def test_solo_standalone_first_ticket_no_false_positive(tmp_path, monkeypatch, c
     _make_scaffold_board(solo / ".project_manager")
     _git(["init", "-q", "-b", "main"], solo)
     assert git._is_linked_worktree(solo) is False
-    assert b._pm_home_worktree_misanchor(solo) is None
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(solo)) is None
     monkeypatch.setattr(b, "REPO", solo)
-    assert b._guard_worktree_misanchor("board.py new") is False
+    assert board_dispatch._guard_worktree_misanchor(b._home(), "board.py new") is False
     assert capsys.readouterr().err == ""
 
 
@@ -964,7 +955,7 @@ def test_non_git_tree_no_false_positive(tmp_path):
     (plain / ".project_manager").mkdir(parents=True)
     _make_scaffold_board(plain / ".project_manager")
     assert git._is_linked_worktree(plain, runner=_non_git_runner) is False
-    assert b._pm_home_worktree_misanchor(plain) is None
+    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(plain)) is None
 
 
 def test_pm_home_cwd_new_proceeds_past_guard(tmp_path, monkeypatch, capsys):

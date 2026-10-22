@@ -19,6 +19,14 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+from pm_engine.app import cluster_binding
+
+
+from pm_engine.infra import cluster_store
+
+
 import datetime
 import importlib.util
 import inspect
@@ -34,6 +42,11 @@ import pytest
 
 from _slot_seed import seed_slot
 from pm_engine.app import round_seed
+
+from pm_engine.app import ticket_access
+from pm_engine.app import board_sync
+
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -858,7 +871,7 @@ def test_reconcile_integrated_records_exact_product_head_without_product_or_slot
     assert lease_before == (env.home / ".project_manager" / ".local" /
                             "worktree-leases.json").read_bytes()
     board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = board.load_cluster(_CLUSTER)
+    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
     assert ledger["status"] == "closed"
     assert ledger["close_step"] == "board"
     assert ledger["closure"] == {
@@ -893,7 +906,7 @@ def test_reconcile_reads_the_explicit_slot_not_the_finisher_tree(close_env, caps
     assert rc == 0, captured.out + captured.err
     assert "PM 홈으로 강등됐다" not in captured.err
     board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = board.load_cluster(_CLUSTER)
+    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
     assert ledger["status"] == _CLOSED_STATUS
     assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
 
@@ -1029,7 +1042,7 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
         legacy_env, legacy_evidence, legacy_anchor=legacy_anchor).run() == 0
     board = legacy_env.tf._board_module_at(
         legacy_env.board_dir.parent / "tools" / "board.py")
-    closure = board.load_cluster(_CLUSTER)["closure"]
+    closure = cluster_store.load_cluster(board._home(), _CLUSTER)["closure"]
     assert closure["member_anchors"][legacy_env.ticket] == {
         "anchor": legacy_anchor, "anchor_source": "operator-supplied",
     }
@@ -1094,9 +1107,9 @@ def test_reconcile_integrated_is_idempotent_and_preserves_other_dirty_slots(
     closure, status, problem = first_closer._validate_reconcile()
     assert problem is None and status == "open"
     board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = board.load_cluster(_CLUSTER)
+    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
     ledger.update({"closure": closure, "status": "closed", "close_step": "board"})
-    board.dump_cluster(ledger)
+    cluster_store.dump_cluster(board._home(), ledger)
     pre_resume_board_head = _rev(env.board_dir)
 
     assert first_closer.run() == 0
@@ -1136,7 +1149,7 @@ def test_reconcile_integrated_accepts_the_name_notation_of_the_normal_path(
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
     board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = board.load_cluster(_CLUSTER)
+    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
     assert ledger["status"] == _CLOSED_STATUS
     assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
 
@@ -1746,15 +1759,15 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
 
     namespaces: list[object] = []
     monkeypatch.setattr(
-        closer._board, "cluster_complete_binding_problem",
-        lambda tid, fm, binding: calls.append(f"binding:{tid}") or None)
-    ownership = closer._board._ticket_ownership
+        cluster_binding, "cluster_complete_binding_problem",
+        lambda _home, tid, fm, binding: calls.append(f"binding:{tid}") or None)
+    ownership = ticket_access._ticket_ownership
     monkeypatch.setattr(
-        closer._board, "_ticket_ownership",
-        lambda fm, args: namespaces.append(args) or ownership(fm, args))
+        ticket_access, "_ticket_ownership",
+        lambda home, fm, **kwargs: namespaces.append((home, fm, kwargs)) or ownership(home, fm, **kwargs))
     monkeypatch.setattr(
-        closer._board, "_round_completion_problems",
-        lambda tid, spec_text: calls.append(f"rounds:{tid}") or [])
+        board_ticket, "_round_completion_problems",
+        lambda home, tid, spec_text: calls.append(f"rounds:{tid}") or [])
 
     assert closer._resolve_members() is None
     assert closer.preflight() == []
@@ -1766,10 +1779,12 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
     # 소유 판정이 받는 Namespace 는 `board complete` 가 받는 것과 같은 파서 산출이다 —
     # 손조립하면 이 속성 집합이 조용히 얇아진다(board 가 인자 이름을 바꾸면 여기서 난다).
     assert len(namespaces) == 1
-    board_module = closer._board
+    board_module = closer._board_parser_module
     expected = vars(board_module.build_parser().parse_args(
         ["complete", env.ticket, "--tests-pass"]))
-    assert vars(namespaces[0]) == expected
+    assert namespaces[0] == (closer._home, ticket_store.load_ticket(
+        ticket_store.find_ticket_exact(closer._home, env.ticket)[1])[0],
+        {"task": expected.get("task"), "user": expected.get("user")})
 
 
 @requires_git
@@ -2052,11 +2067,11 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     dry = env.closer(dry_run=True)
     assert dry._resolve_members() is None
     monkeypatch.setattr(
-        dry._board, "_review_resolution_input_problem",
+        board_ticket, "_review_resolution_input_problem",
         lambda *_a, **_k: dry_events.append("preflight") or None,
     )
     monkeypatch.setattr(
-        dry._board, "_review_completion_problem",
+        board_ticket, "_review_completion_problem",
         lambda *_a, **_k: dry_events.append("pending") or "잔여",
     )
     assert dry._pre_resolve() == []
@@ -2074,11 +2089,11 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     actual = env.closer(run_delegate_fn=resolve)
     assert actual._resolve_members() is None
     monkeypatch.setattr(
-        actual._board, "_review_resolution_input_problem",
+        board_ticket, "_review_resolution_input_problem",
         lambda *_a, **_k: actual_events.append("preflight") or None,
     )
     monkeypatch.setattr(
-        actual._board, "_review_completion_problem", lambda *_a, **_k: "잔여",
+        board_ticket, "_review_completion_problem", lambda *_a, **_k: "잔여",
     )
     assert actual._pre_resolve() == []
     assert actual._step_resolve() is None
@@ -2099,19 +2114,6 @@ def test_close_resolves_the_cluster_once(close_env, monkeypatch):
         assert not hasattr(env.tf.ClusterCloser, removed), removed
 
 
-@requires_git
-def test_close_review_seam_absence_is_an_observation_failure(close_env, monkeypatch):
-    """판정 seam 이 없는 board 사본은 잔여 없음이 아니라 관측 실패로 멈춘다."""
-    env = close_env
-    closer = env.closer()
-    monkeypatch.delattr(closer._board, "_review_completion_problem")
-    monkeypatch.delattr(closer._board, "_review_resolution_input_problem")
-
-    with pytest.raises(env.tf._CloseObservationFailure, match="_review_completion_problem"):
-        closer._pending_gates()
-    with pytest.raises(env.tf._CloseObservationFailure,
-                       match="_review_resolution_input_problem"):
-        closer._pre_resolve()
 
 
 @requires_git
@@ -2210,7 +2212,7 @@ def test_size_one_cluster_matches_the_single_ticket_finish(close_env, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
-def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, capsys):
+def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, capsys, monkeypatch):
     """board-git 로컬 커밋이 안 생기면 마지막 단계에서 멈추고 종결 표시도 남기지 않는다.
 
     `False` 는 board 가 "이 경로가 아직 미커밋" 이라고 확정 보고한 값이다 — 경고로 강등하면
@@ -2218,7 +2220,8 @@ def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, caps
     """
     env = close_env
     closer = env.closer()
-    closer._board._board_git_sync_best_effort = lambda message, paths=None: False
+    real_sync = board_sync._board_git_sync_best_effort
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", lambda _home, message, paths=None: False)
 
     rc = closer.run()
     captured = capsys.readouterr()
@@ -2230,6 +2233,7 @@ def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, caps
     assert env.home_log()[0] == "home seed"              # 포인터 커밋도 없다
 
     # 기록 채널이 돌아오면 재실행이 그 단계부터 이어간다(앞 단계 미반복).
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", real_sync)
     second = env.closer().run()
     out = capsys.readouterr().out
 

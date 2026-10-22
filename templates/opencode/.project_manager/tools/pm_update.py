@@ -67,7 +67,6 @@ import warnings
 import zlib
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from types import SimpleNamespace
 from typing import NamedTuple
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -79,6 +78,8 @@ from pm_engine.infra import branch_store, protected_hooks
 from pm_engine.infra import areas_store, conf_store, console, fs, manifest_store, pm_paths, repo_files  # noqa: E402
 from pm_engine.infra import pool_store
 from pm_engine.infra.harness import contract  # noqa: E402
+
+from pm_engine.app import areas_registry
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -4426,22 +4427,8 @@ def _entry_doc_backup(dest_root: Path, rel: str, backup_root: Path) -> None:
 
 
 def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:
-    """흡수 말미 1회 — areas.md 자기 행(폴더 이름 행)의 `git`·`base` 가 둘 다 비었으면 채운다.
-
-    설치가 자기 행에 두 칸을 기록하기 전의 채택자 데이터 이관이다. 규칙(대상 행·값·덮어쓰지
-    않음)은 dest 의 board `fill_self_repo_row` 가 소유한다 — 이 함수는 방금 동기된 dest 엔진을
-    로드해 부르고 결과 한 줄만 낸다. dest 에 pm_config.py 가 없으면(엔진 미배치 dest) 무동작
-    (`reinstall_protected_hooks` 와 같은 판정). `write=False`(dry-run)는 판정만 한다.
-    """
-    pm_config = _load_dest_pm_config(effective_dest)
-    if pm_config is None:
-        return
-    board = pm_config._load_module("board", "board.py")
-    if board is None:
-        raise RuntimeError(
-            f"{effective_dest}/.project_manager/tools/board.py 를 로드하지 못했다 — areas.md 자기 행 "
-            "이관 불가. 엔진 사본을 다시 동기한 뒤 pm-update 를 재실행하라.")
-    filled = board.fill_self_repo_row(write=write)
+    """대상 Home의 빈 자기 행을 채우고 기존 write/dry-run 결과를 출력한다."""
+    filled = areas_registry.fill_self_repo_row(pm_paths.home_at(Path(effective_dest)), write=write)
     if filled is None:
         return
     if write:
@@ -5268,21 +5255,6 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
 #
 # 완료 프로세스에서 실행 트리의 보호 패키지를 import하고 대상 Home의 데이터를 읽는다.
 # --target export는 이 완료 경로를 실행하지 않는다.
-def _load_dest_pm_config(dest_root: Path):
-    """자기 repo 행 채움에 필요한 대상 pm_config를 적재한다.
-
-    자기 행 채움의 평면 board 소비가 남아 있어 이 로더를 유지한다.
-    보호 훅 재설치는 완료 프로세스의 패키지와 대상 Home을 사용한다.
-    부재는 None, 적재 예외는 호출부로 전파한다.
-    """
-    pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"
-    if not pm_config_py.exists():
-        return None
-    return _load_module_from_path(
-        pm_config_py, "pm_config.py", allow_unverified=True,
-    )
-
-
 def _read_hook_artifact(path: Path) -> str | None:
     """설치된 훅 산출물(훅 본문·sidecar) 1개를 읽는다 — 부재/읽기 실패는 **None**.
 

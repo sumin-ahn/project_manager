@@ -15,6 +15,9 @@ git 은 argv 를 분기하는 hermetic runner 로 대역(rev-parse/merge-base/di
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_dispatch
+
+
 import importlib.util
 import os
 import re
@@ -188,7 +191,6 @@ def _domain_page(domain_dir: Path, name: str, *, covers, verified_at=None,
 
 def _wire(board, domain, monkeypatch, repo: Path):
     monkeypatch.setattr(board, "REPO", repo)
-    monkeypatch.setattr(board, "LOCAL_CONF", repo / ".project_manager" / "local.conf")
     domain_dir = pm_paths.domain_dir(board._home())
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     return domain_dir
@@ -623,7 +625,6 @@ def test_two_repo_owner_change_closes_unsynced_copy_window(
     ) == "VERSION = 1\n"
 
     monkeypatch.setattr(board, "REPO", pm_home)
-    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
 
     # 종전 PM-home 시계는 import 사본 경로 변경이 없어 clean이었다(조용한 오답 창의 대조군).
@@ -881,7 +882,7 @@ def test_repin_page_selector_changes_only_selected_document_bytes(
     before = {path: path.read_bytes() for path in (architecture, status, page)}
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main([
         "verified-at-repin", "--repo", "self", "--sha", pin,
@@ -947,7 +948,7 @@ def test_repin_page_selector_rejects_vacuous_inputs_without_changes(
     status.write_text(original, encoding="utf-8")
     before = {path: path.read_bytes() for path in (architecture, status)}
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main([
         "verified-at-repin", "--repo", "self", "--sha", pin,
@@ -1032,7 +1033,7 @@ def test_repin_page_selector_rejects_noncanonical_targets_without_any_write(
 
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     before = {path: path.read_bytes() for path in documents}
 
     rc = board.main([
@@ -1335,7 +1336,7 @@ def test_repin_cli_dry_run_writes_nothing(
     original = "---\ntitle: architecture\ntype: architecture\nverified_at: deadbeef\n---\n"
     architecture.write_text(original, encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main([
         "verified-at-repin", "--repo", "self", "--sha", pin, "--dry-run"])
@@ -1355,7 +1356,7 @@ def test_repin_cli_invalid_sha_fails_loud_without_writing(
     original = "---\ntitle: architecture\ntype: architecture\nverified_at: deadbeef\n---\n"
     architecture.write_text(original, encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main([
         "verified-at-repin", "--repo", "self", "--sha", "definitely-not-a-sha"])
@@ -1380,7 +1381,7 @@ def test_repin_validation_failure_is_nonzero_and_changes_nothing(
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(freshness_pin, "_verified_at_backfill_targets",
                         lambda home: [good, broken])
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
     assert rc != 0
@@ -1491,8 +1492,7 @@ def test_repin_cli_unexpandable_upstream_user_fails_before_writing(
     local_conf.write_text(
         "upstream.path=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main(["verified-at-repin", "--repo", "upstream"])
     assert rc != 0
@@ -1518,7 +1518,7 @@ def test_repin_domain_parse_error_aborts_enumeration_and_changes_nothing(
     broken.write_text(broken_original, encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
     assert rc != 0

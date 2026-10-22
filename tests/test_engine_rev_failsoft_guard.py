@@ -1268,7 +1268,8 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `domain` 의 `_repository_identity`·`coverage_report`·`load_pages`(옮기며), `ticket_finish` 의
     #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
     #   `TicketFinisher._notify_affected_domain`).
-    assert len(report.boundaries) == 99, "propagation sweep boundary ratchet changed"
+    # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
+    assert len(report.boundaries) == 78, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1398,24 +1399,6 @@ def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
     sources = _canonical_sources()
     sources["pm_log.py"] = _blank_recovery_reason(sources["pm_log.py"])
     assert collect_failsoft_report(sources).violations
-
-
-@pytest.mark.parametrize(
-    ("source_name", "function", "occurrence"),
-    [
-        ("delegate_scope.py", "ticket_touches", 0),
-        ("delegate_scope.py", "ticket_touches", 1),
-    ],
-)
-def test_guard_sensitivity_s1b_each_transforming_handler_turns_red(
-    source_name, function, occurrence,
-):
-    sources = _canonical_sources()
-    sources[source_name] = _remove_marker_branch(
-        sources[source_name], function, occurrence,
-    )
-    report = collect_failsoft_report(sources)
-    assert any(source_name in violation for violation in report.violations)
 
 
 
@@ -1643,23 +1626,6 @@ def _remove_marker_statement(source: str, function: str, occurrence: int = 0) ->
     return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
 
 
-@pytest.mark.parametrize(
-    ("source_name", "function"),
-    [
-        ("ticket_finish.py", "TicketFinisher._warn_pm_direct_conditions"),
-        # pm_bootstrap 행은 뺐다 — 슬롯 모드 삭제로 러너 cwd 해소가 형제 모듈을 읽지 않게
-        # 되면서 이 경계까지 스큐가 도달하지 않는다(마커 분기는 방어로 남는다).
-    ],
-)
-def test_guard_sensitivity_instance_callable_attribute_plain_absorb_turns_red(
-    source_name, function,
-):
-    """`self.<attr>(...)` 경계는 마커 문장을 통째로 지운 신규 코드 모양에서도 잡힌다."""
-    sources = _canonical_sources()
-    sources[source_name] = _remove_marker_statement(sources[source_name], function)
-    report = collect_failsoft_report(sources)
-    assert any(source_name in violation and f": {function} " in violation
-               for violation in report.violations)
 
 
 def _runtime_tool(filename: str):
@@ -1750,11 +1716,8 @@ def test_template_mirror_missing_pm_update_render_capability_is_drift(
     ("filename", "arguments", "witness"),
     [
         ("board.py", ["lint"], "delegate_channel_guard.py"),
-        ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"], "board.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
-        ("pm_bootstrap.py", ["--task", "probe"], "board.py"),
         ("pm_handoff.py", [], "pm_log.py"),
-        ("ticket_finish.py", [], "board.py"),
     ],
 )
 def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(

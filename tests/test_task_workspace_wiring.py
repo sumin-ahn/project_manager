@@ -12,6 +12,13 @@ hermetic — board/ticket_finish 의 경로 전역(`REPO`·`LEASES_FILE` 등)이
 """
 from __future__ import annotations
 
+from pm_engine.cli import board_ticket
+
+
+from pm_engine.cli import board_cluster
+from pm_engine.cli import board_dispatch
+
+
 import argparse
 import importlib.util
 import io
@@ -25,6 +32,13 @@ from _pytest_summary import pytest_summary
 from pm_engine.infra import areas_store, git, lease_store, pm_paths, regression_store
 from pm_engine.app import regression
 from pm_engine.cli import regression_cmd
+
+from pm_engine.app import board_dashboard
+from pm_engine.app import board_sync
+from pm_engine.cli import task_args
+from pm_engine.infra import board_git
+from pm_engine.infra import lease_store
+from pm_engine.infra import ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -54,9 +68,6 @@ def board(tmp_path, monkeypatch):
     # `LOCAL_CONF` 는 import 시점에 **실 repo** 로 굳으므로 REPO 재지정만으론 안 따라온다 —
     # 핀하지 않으면 개발 머신 local.conf 의 선언(test.cmd·qa.platforms)이 스텁 회귀에
     # 새어들어 엉뚱한 명령을 돌린다. tmp 로 핀해 conf 면역을 만든다.
-    monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
-    monkeypatch.setattr(mod, "LOCAL_DIR", local)
-    monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(git, "_git_head", lambda _home: "deadbeefdeadbeef")
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: "deadbeefdeadbeef")
     monkeypatch.setattr(git, "_cluster_current_branch", lambda tree: "task/main")
@@ -107,7 +118,7 @@ def _reg_args(task=None, repo=None, slot=None, cmd=None, cwd=None):
 
 def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatch, capsys):
     """--task 로 F6 해소된 슬롯 worktree 절대경로가 (a) subprocess cwd 로 고정·(b) surface 된다."""
-    _write_leases(board.LEASES_FILE, [
+    _write_leases(pm_paths.leases_file(board._home()), [
         {"slot": "work/A_1", "repo": "A", "session": "job1", "state": "leased",
          "test_cmd": "pytest -q"},
     ])
@@ -126,7 +137,7 @@ def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatc
 
 def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
     """--task 가 통틀어 2개↑ 보유(모호·⑦) → fail-loud(SystemExit) — 암묵 선택 안 함."""
-    _write_leases(board.LEASES_FILE, [
+    _write_leases(pm_paths.leases_file(board._home()), [
         {"slot": "work/A_1", "repo": "A", "session": "job2", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "job2", "state": "leased"},
     ])
@@ -137,7 +148,7 @@ def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
 
 def test_regression_run_task_repo_selects_unique_owned_workspace(board, monkeypatch):
     """task가 다른 repo 슬롯을 여럿 보유해도 repo 유일 선택은 허용한다."""
-    _write_leases(board.LEASES_FILE, [
+    _write_leases(pm_paths.leases_file(board._home()), [
         {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased", "test_cmd": "pytest -q"},
         {"slot": "work/B_1", "repo": "B", "session": "job3", "state": "leased"},
     ])
@@ -179,7 +190,7 @@ def _lg_args(task=None, repo=None, slot=None, cwd=None):
 
 def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     """livegate record --task → F6 슬롯 worktree 절대경로를 cwd 로 고정·surface (release cmd 고정)."""
-    _write_leases(board.LEASES_FILE, [
+    _write_leases(pm_paths.leases_file(board._home()), [
         {"slot": "work/A_2", "repo": "A", "session": "job4", "state": "leased"},
     ])
     (board.REPO / "work/A_2/.git").mkdir(parents=True)
@@ -241,7 +252,7 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
 def test_actor_session_override_task_mode_returns_task(board):
     """task 지정 시 귀속 세션 override = task 이름 — claim/new created_by 가 <user>/<task>."""
     ns = argparse.Namespace(task="myjob")
-    assert board._actor_session_override(ns) == "myjob"
+    assert task_args._actor_session_override(board._home(), ns) == "myjob"
     # 비실행 명령은 task+repo/slot 혼합을 조용히 task 우선하지 않는다 — parser 가 `--repo`/`--slot`
     # 자체를 받지 않는다(T-0962).
     with pytest.raises(SystemExit) as exc:
@@ -273,14 +284,14 @@ def test_board_provenance_commands_reject_task_repo_mix_at_ingress(board, comman
 
 def test_new_task_prefix_and_created_by(board, monkeypatch):
     """new --task: --prefix 생략 시 task 설정 prefix 사용·created_by=<user>/<task> (F5·F5b)."""
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(json.dumps({
+    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(json.dumps({
         "leases": [],
         "tasks": [{"name": "job5", "prefix": "PAY"}],
     }), encoding="utf-8")
     # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
-    monkeypatch.setattr(board, "_cluster_publish_base_branch",
-                        lambda args: (str(board.REPO / "product"), "task/main")
+    monkeypatch.setattr(board_cluster, "_cluster_publish_base_branch",
+                        lambda _home, args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
     seen = {}
 
@@ -288,21 +299,21 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         seen["override"] = override
         return override
 
-    def _fake_tag(session_override=None, user_override=None):
+    def _fake_tag(_home, session_override=None, user_override=None):
         seen["created_by"] = f"{user_override or 'u'}/{session_override}"
         return seen["created_by"]
 
     monkeypatch.setattr(areas_store, "id_prefix", _fake_id_prefix)
-    monkeypatch.setattr(board, "identity_tag", _fake_tag)
+    monkeypatch.setattr(lease_store, "identity_tag", _fake_tag)
     monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
-    monkeypatch.setattr(board, "refresh_board", lambda: None)
-    monkeypatch.setattr(board, "_board_git_sync_best_effort",
-                        lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort",
+                        lambda _home, msg, paths=None: None)   # 스코프 인자(ADR-0073)
     # 발행 prefix 는 `_next_id` 인자가 관측점이다 — T-0660 이후 cmd_new 는 명시/task 값을
     # `id_prefix` 로 canonical화하지 않고 4소스 funnel 로 바로 넘긴다(비결정 선택 제거).
-    monkeypatch.setattr(board, "_next_id",
-                        lambda prefix: seen.__setitem__("override", prefix) or "PAY-0001")
+    monkeypatch.setattr(ticket_store, "_next_id",
+                        lambda _home, prefix: seen.__setitem__("override", prefix) or "PAY-0001")
     # 티켓 파일 실쓰기는 tmp 로 격리 (tickets_dir/template_file 은 REPO 파생이라 tmp).
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
@@ -313,7 +324,7 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
 
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix=None, user="smahn", task="job5")
-    rc = board.cmd_new(ns)
+    rc = board_ticket.cmd_new(board._home(), ns)
     assert rc == 0
     assert seen["override"] == "PAY"                 # task 설정 prefix 적용(F5)
     assert seen["created_by"] == "smahn/job5"         # created_by=<user>/<task>(F5b)
@@ -321,24 +332,24 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
 
 def _stub_new_env(board, monkeypatch, *, tasks):
     """cmd_new 3단 해소 테스트용 공통 stub — id_prefix override 캡처 + 부작용 격리(F5·T-0357)."""
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
+    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
     # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
-    monkeypatch.setattr(board, "_cluster_publish_base_branch",
-                        lambda args: (str(board.REPO / "product"), "task/main")
+    monkeypatch.setattr(board_cluster, "_cluster_publish_base_branch",
+                        lambda _home, args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
     seen = {}
     monkeypatch.setattr(areas_store, "id_prefix",
                         lambda _home, override: seen.__setitem__("override", override) or override)
-    monkeypatch.setattr(board, "identity_tag",
-                        lambda session_override=None, user_override=None: "u/x")
+    monkeypatch.setattr(lease_store, "identity_tag",
+                        lambda _home, session_override=None, user_override=None: "u/x")
     monkeypatch.setattr(areas_store, "registered_prefixes", lambda _home: [])
-    monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
-    monkeypatch.setattr(board, "refresh_board", lambda: None)
-    monkeypatch.setattr(board, "_board_git_sync_best_effort",
-                        lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
-    monkeypatch.setattr(board, "_next_id",
-                        lambda prefix: seen.__setitem__("override", prefix)
+    monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
+    monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: None)
+    monkeypatch.setattr(board_sync, "_board_git_sync_best_effort",
+                        lambda _home, msg, paths=None: None)   # 스코프 인자(ADR-0073)
+    monkeypatch.setattr(ticket_store, "_next_id",
+                        lambda _home, prefix: seen.__setitem__("override", prefix)
                         or f"{prefix or 'T'}-0001")
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
@@ -355,7 +366,7 @@ def test_new_explicit_prefix_wins_over_task(board, monkeypatch):
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix="ACC", user="smahn", task="job5",
                             user_ack="ACC")
-    assert board.cmd_new(ns) == 0
+    assert board_ticket.cmd_new(board._home(), ns) == 0
     assert seen["override"] == "ACC"                 # 명시 --prefix 가 task 설정(PAY)을 이김(tier1)
 
 
@@ -364,7 +375,7 @@ def test_new_no_prefix_no_task_defaults_none(board, monkeypatch):
     seen = _stub_new_env(board, monkeypatch, tasks=[{"name": "job0"}])
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix=None, user="smahn", task="job0")
-    assert board.cmd_new(ns) == 0
+    assert board_ticket.cmd_new(board._home(), ns) == 0
     assert seen["override"] is None                  # 무prefix → id_prefix(None) → legacy T-NNNN(tier3)
 
 
@@ -377,7 +388,7 @@ def tf(tmp_path, monkeypatch):
     mod = _load("ticket_finish")
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LEASES_FILE", proj / ".project_manager" / ".local" / "worktree-leases.json")
-    monkeypatch.setattr(mod, "_guard_worktree_misanchor", lambda: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home: False)
     mod._proj = proj
     return mod
 
@@ -466,7 +477,7 @@ def test_actor_override_rejects_unsafe_task_before_side_effect(board, bad):
     """_actor_session_override 깔때기가 불법 task 명을 SystemExit 로 거부(char/traversal 검증)."""
     ns = argparse.Namespace(repo=None, slot=None, task=bad)
     with pytest.raises(SystemExit):
-        board._actor_session_override(ns)
+        task_args._actor_session_override(board._home(), ns)
 
 
 def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
@@ -474,7 +485,7 @@ def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
     monkeypatch.setattr(areas_store, "registered_repos", lambda _home: {"project_manager"})
     ns = argparse.Namespace(repo=None, slot=None, task="project_manager_1")
     with pytest.raises(SystemExit):
-        board._actor_session_override(ns)
+        task_args._actor_session_override(board._home(), ns)
 
 
 def test_actor_override_registered_repos_failsoft(board, monkeypatch):
@@ -483,16 +494,16 @@ def test_actor_override_registered_repos_failsoft(board, monkeypatch):
         raise RuntimeError("areas broken")
     monkeypatch.setattr(areas_store, "registered_repos", _boom)
     # 정상 task 는 통과(예약패턴만 완화·char 검증 유지).
-    assert board._actor_session_override(argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
+    assert task_args._actor_session_override(board._home(), argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
     # 불법 char 는 여전히 거부.
     with pytest.raises(SystemExit):
-        board._actor_session_override(argparse.Namespace(repo=None, slot=None, task="../evil"))
+        task_args._actor_session_override(board._home(), argparse.Namespace(repo=None, slot=None, task="../evil"))
 
 
 def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):
     """new --task <불법> → rc≠0(SystemExit) · 티켓 파일/기록 부작용 0 (깔때기 경유)."""
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": []}), encoding="utf-8")
+    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [], "tasks": []}), encoding="utf-8")
     tickets_open = board.REPO / "tickets" / "open"
     monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     tickets_open.mkdir(parents=True, exist_ok=True)
@@ -500,7 +511,7 @@ def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix=None, user="smahn", task="../evil")
     with pytest.raises(SystemExit):
-        board.cmd_new(ns)
+        board_ticket.cmd_new(board._home(), ns)
     assert list(tickets_open.glob("*.md")) == []   # 부작용 0
 
 
@@ -508,7 +519,7 @@ def test_claim_rejects_unsafe_task_before_mutation(board, monkeypatch):
     """claim --task <불법> → SystemExit(깔때기) · claimed_by 영속 이전 (board mutation 미도달)."""
     ns = argparse.Namespace(id="T-0001", repo=None, slot=None, task="foo)bar", user=None)
     with pytest.raises(SystemExit):
-        board.cmd_claim(ns)
+        board_ticket.cmd_claim(board._home(), ns)
 
 
 def test_ticket_finish_rejects_unsafe_task(tf, monkeypatch, capsys):
@@ -532,7 +543,7 @@ def _t0929_mock_workspaces(board, monkeypatch):
         (path / 'tests').mkdir()
         rows.append({'slot': f'work/A_{n}', 'repo': 'A', 'session': 'main',
                      'role': 'work', 'state': 'leased', 'test_cmd': f'pytest -q -k slot{n}'})
-    _write_leases(board.LEASES_FILE, rows)
+    _write_leases(pm_paths.leases_file(board._home()), rows)
     monkeypatch.setattr(git, '_cluster_current_branch', lambda tree: f'task/slot{Path(tree).name[-1]}')
     monkeypatch.setattr(git, '_git_head_at', lambda tree: f'head{Path(tree).name[-1]}')
     return rows
@@ -554,7 +565,7 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
 def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
     rows = _t0929_mock_workspaces(board, monkeypatch)
     rows[-1]['role'] = 'readonly'
-    _write_leases(board.LEASES_FILE, rows)
+    _write_leases(pm_paths.leases_file(board._home()), rows)
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
