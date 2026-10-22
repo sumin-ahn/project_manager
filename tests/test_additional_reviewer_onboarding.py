@@ -449,7 +449,7 @@ def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
 _ACTIVITY_SWEEP_ENGINE_FILES = (
     "pm_delegate.py", "additional_reviewer.py", "pm_engine/app/session/relay.py",
     "pm_engine/infra/harness/contract.py", "pm_engine/infra/harness/watchdog.py",
-    "pm_engine/infra/raw_output.py", "pm_handoff.py", "pm_import.py",
+    "pm_engine/infra/raw_output.py", "pm_engine/cli/handoff.py", "pm_import.py",
 )
 
 
@@ -527,7 +527,7 @@ def test_role_rename_keeps_transport_identifiers_and_history():
     assert "reviewer_cmd" in playbook       # 레거시 채택자 키도 이름이 바뀌지 않는다
 
     # 과거 codex 게이트가 낸 지적 인용은 엔진 주석의 히스토리다 — 인벤토리 대상이 아니다.
-    history = TOOLS / "pm_handoff.py"
+    history = TOOLS / "pm_engine/cli/handoff.py"
     assert "codex must-fix" in history.read_text(encoding="utf-8")
     assert history not in set(_active_pm_surfaces())
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 353,
+  "count": 349,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -135,10 +135,62 @@
         "count": 1
       }
     ],
+    ".project_manager/tools/pm_engine/domain/handoff_text.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
     ".project_manager/tools/pm_engine/domain/task_rules.py": [
       {
         "kind": "session_stamp",
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "hash": "0e2abf992d859c41306b1840c67c465533776e449730a3c210191c5a30cc408e",
         "count": 1
       },
       {
@@ -224,63 +276,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    ".project_manager/tools/pm_handoff.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
-        "count": 3
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
         "count": 1
       }
     ],
@@ -516,10 +511,62 @@
         "count": 1
       }
     ],
+    "templates/claude_code/.project_manager/tools/pm_engine/domain/handoff_text.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
     "templates/claude_code/.project_manager/tools/pm_engine/domain/task_rules.py": [
       {
         "kind": "session_stamp",
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "hash": "0e2abf992d859c41306b1840c67c465533776e449730a3c210191c5a30cc408e",
         "count": 1
       },
       {
@@ -605,63 +652,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/claude_code/.project_manager/tools/pm_handoff.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
-        "count": 3
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
         "count": 1
       }
     ],
@@ -900,10 +890,62 @@
         "count": 1
       }
     ],
+    "templates/codex/.project_manager/tools/pm_engine/domain/handoff_text.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
     "templates/codex/.project_manager/tools/pm_engine/domain/task_rules.py": [
       {
         "kind": "session_stamp",
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "hash": "0e2abf992d859c41306b1840c67c465533776e449730a3c210191c5a30cc408e",
         "count": 1
       },
       {
@@ -989,63 +1031,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/codex/.project_manager/tools/pm_handoff.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
-        "count": 3
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
         "count": 1
       }
     ],
@@ -1475,10 +1460,62 @@
         "count": 1
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/domain/handoff_text.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
+        "count": 2
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
+        "count": 3
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
+        "count": 1
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_engine/domain/task_rules.py": [
       {
         "kind": "session_stamp",
-        "hash": "627a292e1fb599f099fad27360bf2c1d03b9f3e00ba49798c6f9195142251830",
+        "hash": "0e2abf992d859c41306b1840c67c465533776e449730a3c210191c5a30cc408e",
         "count": 1
       },
       {
@@ -1564,63 +1601,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.project_manager/tools/pm_handoff.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1d3d915cd4576395726d8bb7ba03afecefebf94d23c1b0af41acabd4850ed16b",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "1fcbcd59709bfeff4c4e74374a609317e81468e167909adb9c45e24ae91e40ee",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "5a64bd24ed4cbfe047f5f6de70f7728a8469fba77185be01d5de5dfc7fcd6788",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6625c4538dce08f532878768db3aa9f1434a9a1079cfab5f0e627c60e6e2838d",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "6fbe6a6dbfdfb03a6b676bc14935076e6ae1a46c20cd9a1ae9bd0a05cf65f6f3",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "8c800c99f5ea6ed31f003244253209eb6059a0410a379e4666073a284ae8ba8f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "9eba43c94c0c1a79ad05cff0439f5d372a0d4c8555b5471f1e937aeca9ece35e",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "a1091fdfeb724908b3b7e335c8b6a8b000e911bc7bc3710412622cd6899ddca4",
-        "count": 2
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "ba20375fb14872ce7a39298000cdf86fc81dd9a37a5f655a2a2a4760b3a8a60f",
-        "count": 3
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
         "count": 1
       }
     ],

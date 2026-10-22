@@ -1,4 +1,5 @@
 
+from pm_engine.app import session_snapshot
 from pm_engine.app import engine_guard
 from pm_engine.infra import pm_paths
 
@@ -77,7 +78,7 @@ def test_board_todo_uses_execution_code(tmp_path):
 def test_snapshot_todo_uses_target_home_without_flat_engine(tmp_path):
     home = _seed(tmp_path)
     task_lifecycle.add_task_todo(home, "job", "visible todo")
-    assert "visible todo" in _tool("pm_log")._todo_section(tmp_path, "job")
+    assert "visible todo" in session_snapshot._todo_section(home, "job")
 
 
 def test_registered_protection_overrides_default(tmp_path):

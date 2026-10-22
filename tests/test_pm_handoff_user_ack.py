@@ -1,6 +1,11 @@
 """T-0648 pm_handoff 사용자-명시 값-결속 ack 게이트."""
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff_dirty
+import pm_engine.cli.log
+import pm_engine.cli.handoff
+
 from _pool_seams import bind_pool
 
 import importlib.util
@@ -44,37 +49,40 @@ def _capture_run(monkeypatch, module):
         calls.append({"task": task, **kwargs})
         return 0
 
-    monkeypatch.setattr(module.PmHandoff, "run", fake_run)
+    monkeypatch.setattr(pm_engine.cli.handoff.PmHandoff, "run", fake_run)
     return calls
 
 
-def test_cli_passes_missing_user_ack_to_engine_without_validating(monkeypatch):
+def test_cli_passes_missing_user_ack_to_engine_without_validating(monkeypatch, tmp_path):
+    home = pm_paths.home_at(tmp_path)
     handoff = _load_handoff()
     calls = _capture_run(monkeypatch, handoff)
 
-    rc = handoff.main(["--task", "main"])
+    rc = pm_engine.cli.handoff.main(home, ['--task', 'main'])
 
     assert rc == 0
     assert calls[0]["task"] == "main"
     assert calls[0]["user_ack"] is None
 
 
-def test_cli_passes_mismatched_user_ack_to_engine_without_validating(monkeypatch):
+def test_cli_passes_mismatched_user_ack_to_engine_without_validating(monkeypatch, tmp_path):
+    home = pm_paths.home_at(tmp_path)
     handoff = _load_handoff()
     calls = _capture_run(monkeypatch, handoff)
 
-    rc = handoff.main(["--task", "main", "--user-ack", "other"])
+    rc = pm_engine.cli.handoff.main(home, ['--task', 'main', '--user-ack', 'other'])
 
     assert rc == 0
     assert calls[0]["task"] == "main"
     assert calls[0]["user_ack"] == "other"
 
 
-def test_matching_task_ack_reaches_existing_handoff_pipeline(monkeypatch, capsys):
+def test_matching_task_ack_reaches_existing_handoff_pipeline(monkeypatch, capsys, tmp_path):
+    home = pm_paths.home_at(tmp_path)
     handoff = _load_handoff()
     calls = _capture_run(monkeypatch, handoff)
 
-    rc = handoff.main(["--task", "main", "--user-ack", "main"])
+    rc = pm_engine.cli.handoff.main(home, ['--task', 'main', '--user-ack', 'main'])
 
     assert rc == 0
     assert len(calls) == 1 and calls[0]["task"] == "main"
@@ -84,11 +92,12 @@ def test_matching_task_ack_reaches_existing_handoff_pipeline(monkeypatch, capsys
 
 
 
-def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(monkeypatch, capsys):
+def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(monkeypatch, capsys, tmp_path):
+    home = pm_paths.home_at(tmp_path)
     handoff = _load_handoff()
     calls = _capture_run(monkeypatch, handoff)
 
-    rc = handoff.main(["--task", "main", "--dry-run"])
+    rc = pm_engine.cli.handoff.main(home, ['--task', 'main', '--dry-run'])
 
     assert rc == 0
     assert len(calls) == 1 and calls[0]["dry_run"] is True
@@ -99,13 +108,12 @@ def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(mon
 
 
 def test_direct_run_missing_ack_is_rejected_before_pipeline(monkeypatch, tmp_path, capsys):
+    home = pm_paths.home_at(tmp_path)
     handoff = _load_handoff()
     bind_pool(monkeypatch, _TaskPool())
-    runner = handoff.PmHandoff(
-        pm_state_file=tmp_path / "pm_state.md",
-    )
+    runner = pm_engine.cli.handoff.PmHandoff(home, pm_state_file=tmp_path / 'pm_state.md')
     monkeypatch.setattr(
-        runner,
+        pm_engine.cli.handoff_dirty,
         "_dirty_tree_gate",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("ack 뒤 pipeline 진입 금지")),
     )
@@ -120,13 +128,12 @@ def test_direct_run_missing_ack_is_rejected_before_pipeline(monkeypatch, tmp_pat
 
 
 def test_direct_run_mismatched_ack_is_value_bound(monkeypatch, tmp_path, capsys):
+    home = pm_paths.home_at(tmp_path)
     handoff = _load_handoff()
     bind_pool(monkeypatch, _TaskPool())
-    runner = handoff.PmHandoff(
-        pm_state_file=tmp_path / "pm_state.md",
-    )
+    runner = pm_engine.cli.handoff.PmHandoff(home, pm_state_file=tmp_path / 'pm_state.md')
     monkeypatch.setattr(
-        runner,
+        pm_engine.cli.handoff_dirty,
         "_dirty_tree_gate",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("mismatch 뒤 pipeline 진입 금지")),
     )
@@ -148,7 +155,7 @@ def test_compaction_checkpoint_parser_has_no_handoff_ack_gate():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    args = module.build_parser().parse_args([
+    args = pm_engine.cli.log.build_parser().parse_args([
         "checkpoint", "--task", "main", "--trigger", "compaction",
     ])
 

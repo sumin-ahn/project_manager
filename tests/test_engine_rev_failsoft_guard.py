@@ -1269,7 +1269,8 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `affected_domain_titles` 두 곳·`affected_domain_titles.runner_for_page`·
     #   `TicketFinisher._notify_affected_domain`).
     # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
-    assert len(report.boundaries) == 72, "propagation sweep boundary ratchet changed"
+    # handoff/log/finisher의 적재 전용 전파 책임 6곳 제거.
+    assert len(report.boundaries) == 66, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1298,18 +1299,6 @@ def test_guard_turns_red_when_one_reraise_is_removed():
     assert any("pm_import.py" in violation for violation in report.violations)
 
 
-def test_guard_turns_red_when_recovery_marker_is_removed():
-    sources = _canonical_sources()
-    tree = ast.parse(sources["pm_log.py"])
-    call = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _called_name(node) == _RECOVERY_MARKER
-    )
-    call.func = ast.copy_location(ast.Name(id="_is_engine_rev_skew", ctx=ast.Load()), call.func)
-    call.args = call.args[:1]
-    sources["pm_log.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
-    report = collect_failsoft_report(sources)
-    assert any("pm_log.py" in violation for violation in report.violations)
 
 
 def test_guard_excludes_shipped_snapshot_tree(tmp_path):
@@ -1367,23 +1356,8 @@ def _blank_recovery_reason(source: str) -> str:
 
 
 
-def test_guard_sensitivity_s6_recovery_marker_turns_red():
-    sources = _canonical_sources()
-    tree = ast.parse(sources["pm_log.py"])
-    call = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _called_name(node) == _RECOVERY_MARKER
-    )
-    call.func = ast.copy_location(ast.Name(id="_is_engine_rev_skew", ctx=ast.Load()), call.func)
-    call.args = call.args[:1]
-    sources["pm_log.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
-    assert collect_failsoft_report(sources).violations
 
 
-def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
-    sources = _canonical_sources()
-    sources["pm_log.py"] = _blank_recovery_reason(sources["pm_log.py"])
-    assert collect_failsoft_report(sources).violations
 
 
 
@@ -1694,7 +1668,6 @@ def test_template_mirror_missing_pm_update_render_capability_is_drift(
     [
         ("board.py", ["lint"], "delegate_channel_guard.py"),
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
-        ("pm_handoff.py", [], "pm_log.py"),
     ],
 )
 def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(

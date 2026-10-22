@@ -14,6 +14,7 @@ pm_state 를 *슬롯별*로 분리한다 — multi-PM 연속성(여러 PM 슬롯
 (호출 시점 REPO 추종)라 monkeypatch 된 tmp REPO 를 추종한다.
 """
 from __future__ import annotations
+import pm_engine.cli.handoff
 from pm_engine.app import bootstrap_history
 from pm_engine.domain import bootstrap_rules
 from pm_engine.cli import bootstrap as bootstrap_cli
@@ -24,7 +25,6 @@ from pathlib import Path
 
 import pytest
 from pm_engine.app import slot_resolution
-from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -184,7 +184,7 @@ def test_regression_cwd_default_1_setup_falls_back_to_repo(hf):
 def test_handoff_init_explicit_pm_state_honored(hf, tmp_path):
     """명시 pm_state_file 주입(테스트/override) → 그 경로 고정·explicit 플래그 True."""
     explicit = tmp_path / "explicit" / "pm_state.md"
-    inst = hf.PmHandoff(pm_state_file=explicit)
+    inst = pm_engine.cli.handoff.PmHandoff(pm_paths.home_at(tmp_path), pm_state_file=explicit)
     assert inst._pm_state_file == explicit
     assert inst._pm_state_file_explicit is True
 
@@ -268,7 +268,8 @@ def _make_handoff_production(
         sp.parent.mkdir(parents=True, exist_ok=True)
         sp.write_text(_SESSION_SECTION, encoding="utf-8")
 
-    inst = hf.PmHandoff(
+    inst = pm_engine.cli.handoff.PmHandoff(
+        pm_paths.home_at(tmp),
         run_pytest_fn=run_pytest_fn or
             (lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 인데 호출"))),
         run_git_fn=lambda args: (0, ""),

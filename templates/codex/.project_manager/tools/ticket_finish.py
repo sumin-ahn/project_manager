@@ -83,7 +83,7 @@ LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"  # 리스 장부 (task 해소 read-only)
-TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵커 (회귀 cwd 해소)
+TOOLS_DIR = REPO / ".project_manager" / "tools"  # 남은 형제 도구 적재 앵커 (회귀 cwd 해소)
 # areas.md 경로는 상수로 굳히지 않는다 — board/ 분리 시 board/ 안으로
 # 옮겨가므로, `_resolve_per_repo_test_cmd` 가 `pm_paths.areas_file`(board 루트 추종)을 쓰는 해소 체인에 위임.
 
@@ -132,11 +132,6 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
     return 1
 
 
-def _load_pm_log():
-    """공유 log writer seam을 같은 tools/의 pm_log.py에서 로드한다."""
-    return _load_module_from_path(
-        TOOLS_DIR / "pm_log.py", "pm_log.py", verifier=_verify_engine_rev,
-    )
 
 
 def _load_additional_reviewer():
@@ -1989,25 +1984,13 @@ class TicketFinisher:
         return "\n".join(line for line in lines if line)
 
     def _home_state_prefixes(self, tree: Path) -> tuple[str, ...]:
-        """`tree` 안에 PM 홈 dev-state(board 루트·wiki 루트)가 있으면 그 트리-상대 접두를 낸다.
-
-        새 경로를 여기서 하드코딩하지 않는다 — Home 의 board 루트·`pm_log.WIKI_DIR` 은 엔진이
-        이미 소유한 PM 홈 값이다. 분리 형상에서는 두 루트가 PM 홈(`REPO`)에 있고 `tree` 는 다른
-        코드 worktree라 결과가 빈 튜플이다(제외 대상 자체가 없다 — 규칙이 약해지지 않는다).
-        임베디드 형상에서는 `tree == REPO` 라 둘 다 그 안에 있어, 다른 PM 세션의 wiki WIP 로 내
-        완료가 막히지 않는다. 해소 실패는 빈 튜플(fail-soft·제외 없음 = 판정 인구에 남겨 더
-        엄격한 쪽으로 접는다)."""
+        '`tree` 안에 PM 홈 dev-state(board 루트·wiki 루트)가 있으면 그 트리-상대 접두를 낸다.\n\n        새 경로를 여기서 하드코딩하지 않는다 — Home 의 board 루트·`Home wiki` 은 엔진이\n        이미 소유한 PM 홈 값이다. 분리 형상에서는 두 루트가 PM 홈(`REPO`)에 있고 `tree` 는 다른\n        코드 worktree라 결과가 빈 튜플이다(제외 대상 자체가 없다 — 규칙이 약해지지 않는다).\n        임베디드 형상에서는 `tree == REPO` 라 둘 다 그 안에 있어, 다른 PM 세션의 wiki WIP 로 내\n        완료가 막히지 않는다. 해소 실패는 빈 튜플(fail-soft·제외 없음 = 판정 인구에 남겨 더\n        엄격한 쪽으로 접는다).'
         try:
             tree_resolved = tree.resolve()
         except OSError:
             return ()
         candidates: list[Path] = [pm_paths.home_at(REPO).board_root]
-        try:
-            pm_log = _load_pm_log()
-            candidates.append(Path(pm_log.WIKI_DIR))
-        except Exception as exc:  # noqa: BLE001
-            if _is_engine_rev_skew(exc):
-                raise
+        candidates.append(pm_paths.wiki_dir(pm_paths.home_at(REPO)))
         prefixes: list[str] = []
         for candidate in candidates:
             try:

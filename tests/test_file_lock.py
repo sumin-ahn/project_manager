@@ -19,6 +19,9 @@
 from __future__ import annotations
 
 from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff
+import pm_engine.infra.session_store
+
 
 import ast
 import errno
@@ -158,8 +161,8 @@ _REPLACE_PRIMITIVE = "replace"
 # 판정 대상이 아니라 **위임이 실제로 있는지**를 보는 소비 확인용이다 — 재복제 판정 자체는
 # `tools/*.py` 전수 스캔이라 사람이 목록을 관리하지 않는다.
 _ATOMIC_REPLACE_CONSUMERS = (
-    "board.py", "delegate_channel_guard.py", "pm_handoff.py", "pm_import.py",
-    "pm_log.py", "pm_engine/infra/raw_output.py", "pm_update.py",
+    "board.py", "delegate_channel_guard.py", "pm_engine/cli/handoff.py", "pm_import.py",
+    "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_update.py",
     "pm_engine/infra/review_rounds.py", "pm_engine/infra/pool_store.py",
 )
 
@@ -699,7 +702,7 @@ def test_relay_raw_ledger_lock_keeps_its_path_and_permission_convention(
 
 def test_pm_log_lock_path_stays_in_project_local(tmp_path):
     """log 락 = `.project_manager/.local/log.lock` (수렴 전 경로 규약 보존)."""
-    pm_log = _load(TOOLS / "pm_log.py", "pm_log_file_lock_seam")
+    pm_log = _load(TOOLS / "pm_engine/infra/log_store.py", "pm_log_file_lock_seam")
     current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     with log_store.log_write_lock(current):
         pass
@@ -722,17 +725,13 @@ def _record_seam_opens(lock_module, monkeypatch) -> list[tuple]:
 def test_handoff_dashboard_lock_keeps_its_path_and_permission_convention(
     tmp_path, monkeypatch,
 ):
-    """대시보드 락 = `.project_manager/.local/dashboard.lock` · 0o644 (수렴 전 규약 보존)."""
-    handoff = _load(TOOLS / "pm_handoff.py", "pm_handoff_file_lock_seam")
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    seen = _record_seam_opens(handoff.fs, monkeypatch)
-
-    with handoff._dashboard_lock():
+    '대시보드 락 = `.project_manager/.local/dashboard.lock` · 0o644 (수렴 전 규약 보존).'
+    handoff = _load(TOOLS / 'pm_handoff.py', 'pm_handoff_file_lock_seam')
+    home = pm_paths.home_at(tmp_path)
+    seen = _record_seam_opens(pm_engine.cli.handoff.fs, monkeypatch)
+    with pm_engine.infra.session_store._dashboard_lock(home):
         pass
-
-    assert seen == [
-        (tmp_path / ".project_manager" / ".local" / "dashboard.lock", 0o644)
-    ]
+    assert seen == [(tmp_path / '.project_manager' / '.local' / 'dashboard.lock', 420)]
 
 
 def test_worktree_pool_lease_lock_keeps_its_path_and_permission_convention(
@@ -778,7 +777,7 @@ def test_lock_convergence_has_no_pending_duplicates():
 def test_converged_tools_delegate_instead_of_reimplementing():
     """수렴 도구는 락 컨텍스트를 seam 위임으로만 연다 (자체 open+acquire 재구현 0)."""
     for tool in (
-        "pm_engine/app/completion_gate.py", "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_handoff.py",
+        "pm_engine/app/completion_gate.py", "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_engine/infra/session_store.py",
         "pm_engine/infra/pool_store.py",
         "additional_reviewer.py",
     ):
@@ -1534,7 +1533,7 @@ def test_os_replace_guard_ignores_the_name_in_comments_and_strings():
 
 def test_a_new_unregistered_exception_is_red():
     """등재 없는 새 예외는 가드가 red 로 잡는다 (등재부가 곧 상한·감도 실증)."""
-    source = (TOOLS / "pm_log.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine/infra/log_store.py").read_text(encoding="utf-8")
     mutated = source.replace(
         "        fs.atomic_replace(tmp, path)",
         "        os.replace(str(tmp), str(path))",
@@ -1544,7 +1543,7 @@ def test_a_new_unregistered_exception_is_red():
     sites = _os_replace_call_sites(mutated)
     assert sites, "변이가 실제로 직접 호출을 만들지 않았다"
     assert all(
-        ("pm_log.py", function) not in ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS
+        ("pm_engine/infra/log_store.py", function) not in ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS
         for function, _line in sites
     ), "이 변이 지점이 이미 등재돼 있다 — 감도 실증이 성립하지 않는다"
 

@@ -1,0 +1,35 @@
+"""세션 정체성 source와 미해소 사유."""
+from __future__ import annotations
+
+
+
+
+IDENTITY_SOURCE_CWD_LEASE = "cwd→lease"
+
+
+IDENTITY_SOURCE_SINGLE_ACTIVE_TASK = "단일 활성 task"
+
+
+IDENTITY_SOURCE_UNRESOLVED = "정체성 미해소"
+
+
+SNAPSHOT_IDENTITY_SOURCES = frozenset({
+    IDENTITY_SOURCE_CWD_LEASE,
+    IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
+    IDENTITY_SOURCE_UNRESOLVED,
+})
+
+
+HANDOFF_TASK_MODE_IDENTITY_SOURCES = frozenset({
+    IDENTITY_SOURCE_CWD_LEASE,
+    IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
+})
+
+
+SESSION_TASK_REASON_NO_SESSION = "세션 ID 없음"
+
+
+SESSION_TASK_REASON_NO_TASK = "이 세션이 연 task 없음 (세션 {session})"
+
+
+SESSION_TASK_REASON_MANY_TASKS = "이 세션이 연 task 여럿 (세션 {session}: {names})"

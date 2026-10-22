@@ -62,7 +62,7 @@ _IDENTITY_FLAGS = frozenset({"--task"})
 
 
 def _load(tools_dir: Path, name: str):
-    spec = importlib.util.spec_from_file_location(f"{tools_dir.parent.parent.name}_{name}",
+    spec = importlib.util.spec_from_file_location(f"{tools_dir.parent.parent.name}_{name.replace('/', '_')}",
                                                   tools_dir / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -97,7 +97,11 @@ def _leaves_by_tool(tools_dir: Path) -> dict[str, dict[tuple, set]]:
     """파서-backed 도구별 {leaf: options}. 도구명(파일명) → leaf-options 맵."""
     result: dict[str, dict[tuple, set]] = {}
     for tool in _PARSER_TOOLS:
-        mod = _load(tools_dir, tool[:-3])  # strip ".py"
+        implementation = {
+            "pm_handoff.py": "pm_engine/cli/handoff",
+            "pm_log.py": "pm_engine/cli/log",
+        }.get(tool, tool[:-3])
+        mod = _load(tools_dir, implementation)
         result[tool] = _leaf_options(mod.build_parser())
     return result
 

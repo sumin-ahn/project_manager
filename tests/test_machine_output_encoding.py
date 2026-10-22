@@ -23,11 +23,15 @@ T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 �
       쓴다(서브프로세스 실측).
 """
 from __future__ import annotations
+
+from pm_engine.infra import pm_paths
+import pm_engine.app.session_snapshot
+import pm_engine.cli.log
+import pm_engine.domain.ctx_recovery
 from pm_engine.cli import bootstrap_report
 
 from pm_engine.cli import bootstrap as bootstrap_cli
 
-from pm_engine.infra import pm_paths
 
 
 import ast
@@ -43,7 +47,6 @@ from types import SimpleNamespace
 
 import pytest
 from _engine_tree import engine_python_files
-from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -204,14 +207,14 @@ def test_pm_log_ctx_guidance_json_payload_is_utf8(capture_console, monkeypatch):
     """ctx 가드 훅 엔벨로프(`--json`)가 UTF-8 로 나간다(호스트가 파싱하는 systemMessage)."""
     pm_log = _load("pm_log")
     monkeypatch.setattr(
-        pm_log, "build_ctx_guard_guidance", lambda *args, **kwargs: LOSSY_SAMPLE
+        pm_engine.domain.ctx_recovery, "build_ctx_guard_guidance", lambda *args, **kwargs: LOSSY_SAMPLE
     )
     stream = capture_console()
 
     args = SimpleNamespace(
         band="warn", used_pct=80.0, precompact_at_pct=95.0, json=True
     )
-    assert pm_log.cmd_ctx_guidance(args) == 0
+    assert pm_engine.cli.log.cmd_ctx_guidance(args) == 0
 
     assert _machine_payload(stream) == {
         "systemMessage": LOSSY_SAMPLE, "suppressOutput": False,
@@ -219,22 +222,17 @@ def test_pm_log_ctx_guidance_json_payload_is_utf8(capture_console, monkeypatch):
 
 
 def test_pm_log_snapshot_json_payload_is_utf8(capture_console, monkeypatch, tmp_path):
-    """snapshot 훅 페이로드는 ASCII 이스케이프지만 같은 seam 을 지나 UTF-8 bytes 로 나간다."""
-    pm_log = _load("pm_log")
-    monkeypatch.setattr(pm_paths, "owning_pm_home", lambda anchor: anchor)
-    monkeypatch.setattr(
-        pm_log, "build_snapshot", lambda *args, **kwargs: (LOSSY_SAMPLE, "")
-    )
+    'snapshot 훅 페이로드는 ASCII 이스케이프지만 같은 seam 을 지나 UTF-8 bytes 로 나간다.'
+    home = pm_paths.home_at(tmp_path)
+    pm_log = _load('pm_log')
+    monkeypatch.setattr(pm_paths, 'owning_pm_home', lambda anchor: anchor)
+    monkeypatch.setattr(pm_engine.app.session_snapshot, 'build_snapshot', lambda _home, *args, **kwargs: (LOSSY_SAMPLE, ''))
     stream = capture_console()
-
-    args = SimpleNamespace(session_id="s-main", json=True)
-    assert pm_log.cmd_snapshot(args) == 0
-
+    args = SimpleNamespace(session_id='s-main', json=True)
+    assert pm_engine.cli.log.cmd_snapshot(home, args) == 0
     raw = _written_bytes(stream)
-    assert raw.decode("ascii")  # ensure_ascii=True 계약 유지(형태 변경 없음).
-    assert json.loads(raw.decode("utf-8")) == {
-        "systemMessage": LOSSY_SAMPLE, "suppressOutput": False,
-    }
+    assert raw.decode('ascii')
+    assert json.loads(raw.decode('utf-8')) == {'systemMessage': LOSSY_SAMPLE, 'suppressOutput': False}
 
 
 def test_board_git_anchor_hook_json_is_utf8(capture_console, monkeypatch):
@@ -441,14 +439,14 @@ def test_human_text_path_of_the_same_command_is_not_utf8(capture_console, monkey
     """`--json` 없는 ctx 가드 안내(같은 커맨드의 사람 분기)도 콘솔 코덱을 그대로 탄다."""
     pm_log = _load("pm_log")
     monkeypatch.setattr(
-        pm_log, "build_ctx_guard_guidance", lambda *args, **kwargs: LOSSY_SAMPLE
+        pm_engine.domain.ctx_recovery, "build_ctx_guard_guidance", lambda *args, **kwargs: LOSSY_SAMPLE
     )
     stream = capture_console()
 
     args = SimpleNamespace(
         band="warn", used_pct=80.0, precompact_at_pct=95.0, json=False
     )
-    assert pm_log.cmd_ctx_guidance(args) == 0
+    assert pm_engine.cli.log.cmd_ctx_guidance(args) == 0
 
     raw = _written_bytes(stream)
     with pytest.raises(UnicodeDecodeError):
@@ -705,8 +703,8 @@ def test_allowed_exceptions_are_reasoned():
     ("relative", "current", "reverted", "shape", "text_visible"),
     (
         (
-            ".project_manager/tools/pm_log.py",
-            "        _write_machine_line(\n"
+            ".project_manager/tools/pm_engine/cli/log.py",
+            "        console.write_machine_line(\n"
             "            json.dumps(payload, ensure_ascii=True, separators=(\",\", \":\"))\n"
             "        )\n",
             "        print(json.dumps(payload, ensure_ascii=True, separators=(\",\", \":\")))\n",

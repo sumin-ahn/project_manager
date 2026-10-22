@@ -10,6 +10,10 @@ PmHandoff DI/주입 패턴 재사용).
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff
+import pm_engine.domain.handoff_text
+
 from pm_engine.domain import session_history
 
 from _pool_seams import bind_pool
@@ -20,7 +24,6 @@ from pathlib import Path
 import pytest
 from _slot_seed import SLOT, seed_areas, seed_slot
 from pm_engine.app import slot_resolution
-from pm_engine.infra import pm_paths
 
 TASK = "alpha"
 
@@ -72,38 +75,22 @@ def handoff():
 
 @pytest.fixture(autouse=True)
 def _registered_home(handoff, tmp_path, monkeypatch):
-    """모든 테스트의 기본 형상 = **등록된 홈**(N=1 슬롯 행) — 정체성이 장부에서 온다.
-
-    다른 형상을 보는 테스트는 같은 파일들을 덮어써서 자기 형상을 만든다(모호·미등록).
-    """
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
+    '모든 테스트의 기본 형상 = **등록된 홈**(N=1 슬롯 행) — 정체성이 장부에서 온다.\n\n    다른 형상을 보는 테스트는 같은 파일들을 덮어써서 자기 형상을 만든다(모호·미등록).\n    '
+    home = pm_paths.home_at(tmp_path)
     seed_areas(tmp_path)
-    seed_slot(tmp_path, session=TASK, tasks=[{"name": TASK, "prefix": None}])
+    seed_slot(tmp_path, session=TASK, tasks=[{'name': TASK, 'prefix': None}])
 
 
 def _make_handoff_missing_state(handoff, tmp_path: Path):
-    """pm_state.md 가 부재한 경로를 주입한 PmHandoff 인스턴스를 만든다.
-
-    log/playbook 은 격리된 tmp, subprocess 는 결정론 DI. pm_state_file 은
-    tmp_path 아래 **만들지 않은** 경로 → .exists() False 분기를 탄다.
-    """
-    log_file = tmp_path / "current.md"
-    playbook_file = tmp_path / "pm_playbook.md"
-    missing_state = tmp_path / "does_not_exist" / "pm_state.md"
-    log_file.write_text("# log\n", encoding="utf-8")
-    # 인계 프롬프트 템플릿 앵커가 없어도 step 5 는 경고만 내고 크래시하지 않는다.
-    playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
-
-    inst = handoff.PmHandoff(
-        # 회귀(step 1)는 skip_pytest=True 로 건너뛰므로 호출되면 폭발.
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 인데 pytest 호출")),
-        # git status(step 6)는 호출됨 — 결정론 stub.
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file,
-        pm_playbook_file=playbook_file,
-        pm_state_file=missing_state,
-    )
-    return inst, log_file, missing_state
+    'pm_state.md 가 부재한 경로를 주입한 PmHandoff 인스턴스를 만든다.\n\n    log/playbook 은 격리된 tmp, subprocess 는 결정론 DI. pm_state_file 은\n    tmp_path 아래 **만들지 않은** 경로 → .exists() False 분기를 탄다.\n    '
+    home = pm_paths.home_at(tmp_path)
+    log_file = tmp_path / 'current.md'
+    playbook_file = tmp_path / 'pm_playbook.md'
+    missing_state = tmp_path / 'does_not_exist' / 'pm_state.md'
+    log_file.write_text('# log\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('skip_pytest 인데 pytest 호출')), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_playbook_file=playbook_file, pm_state_file=missing_state)
+    return (inst, log_file, missing_state)
 
 
 # ── pm_state.md 부재: 3·4단계 skip, 나머지 진행, rc 0 ─────────────────────────
@@ -164,18 +151,14 @@ def _make_multipm_ambiguous_repo(tmp_path: Path) -> None:
 
 
 def _bare_handoff(handoff, tmp_path: Path):
-    """pm_state_file 미주입(=explicit False) PmHandoff — run() 진입부 guard 경로를 탄다."""
-    log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
+    'pm_state_file 미주입(=explicit False) PmHandoff — run() 진입부 guard 경로를 탄다.'
+    home = pm_paths.home_at(tmp_path)
+    log_file = tmp_path / '.project_manager' / 'wiki' / 'log' / 'current.md'
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    log_file.write_text("# log\n", encoding="utf-8")
-    playbook = tmp_path / "pm_playbook.md"
-    playbook.write_text("# pm_playbook\n", encoding="utf-8")
-    return handoff.PmHandoff(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("guard 전에 pytest 호출 안 됨")),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file,
-        pm_playbook_file=playbook,
-    ), log_file
+    log_file.write_text('# log\n', encoding='utf-8')
+    playbook = tmp_path / 'pm_playbook.md'
+    playbook.write_text('# pm_playbook\n', encoding='utf-8')
+    return (pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('guard 전에 pytest 호출 안 됨')), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_playbook_file=playbook), log_file)
 
 
 
@@ -188,26 +171,19 @@ def _bare_handoff(handoff, tmp_path: Path):
 # self-split(② 홈엔 tests/ 없음)에서 회귀 cwd 가 활성 worktree(slot1)로 가야 한다(REPO 폴백 X).
 
 def _bare_handoff_capturing_cwd(handoff, tmp_path: Path):
-    """pm_state 미주입 PmHandoff — run_pytest stub 이 _regression_cwd(self._worktree_slot)를 캡처."""
-    log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
+    'pm_state 미주입 PmHandoff — run_pytest stub 이 _regression_cwd(self._worktree_slot)를 캡처.'
+    home = pm_paths.home_at(tmp_path)
+    log_file = tmp_path / '.project_manager' / 'wiki' / 'log' / 'current.md'
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    log_file.write_text("# log\n", encoding="utf-8")
-    playbook = tmp_path / "pm_playbook.md"
-    playbook.write_text("# pm_playbook\n", encoding="utf-8")
+    log_file.write_text('# log\n', encoding='utf-8')
+    playbook = tmp_path / 'pm_playbook.md'
+    playbook.write_text('# pm_playbook\n', encoding='utf-8')
     captured = {}
-
     def _capture_pytest():
-        # 회귀 단계에서 실제 cwd 해소 경로(_regression_cwd)를 그대로 호출해 캡처(green 반환).
-        captured["cwd"] = slot_resolution._regression_cwd(pm_paths.home_at(handoff.REPO), inst._worktree_slot)
-        return 0, "1 passed in 0.01s"
-
-    inst = handoff.PmHandoff(
-        run_pytest_fn=_capture_pytest,
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file,
-        pm_playbook_file=playbook,
-    )
-    return inst, log_file, captured
+        captured['cwd'] = slot_resolution._regression_cwd(pm_paths.home_at(home.root), inst._worktree_slot)
+        return (0, '1 passed in 0.01s')
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=_capture_pytest, run_git_fn=lambda args: (0, ''), log_file=log_file, pm_playbook_file=playbook)
+    return (inst, log_file, captured)
 
 
 
@@ -232,32 +208,17 @@ _PM_STATE_NO_ANCHOR = (
 
 
 def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str, *, monkeypatch):
-    """세션 식별 앵커가 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스.
-
-    log 에는 이 task 의 직전 handoff entry 를 깔아 둔다 — 차수는 state 와 log 에서 함께
-    복구되므로, state 가 깨진 채택자도 log 가 있으면 차수(4차→5차)가 나오고 그제야 step3
-    앵커 부재가 드러난다(둘 다 없으면 차수 미해소로 그 앞에서 중단이다).
-    """
-    log_file = tmp_path / "current.md"
-    playbook_file = tmp_path / "pm_playbook.md"
-    pm_state = tmp_path / "pm_state.md"
-    log_file.write_text(
-        "# log\n\n## [2026-07-05] handoff | PM 4차 (task:alpha) → 다음 PM 세션\n\n"
-        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\n",
-        encoding="utf-8",
-    )
-    playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
-    pm_state.write_text(state_text, encoding="utf-8")
+    '세션 식별 앵커가 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스.\n\n    log 에는 이 task 의 직전 handoff entry 를 깔아 둔다 — 차수는 state 와 log 에서 함께\n    복구되므로, state 가 깨진 채택자도 log 가 있으면 차수(4차→5차)가 나오고 그제야 step3\n    앵커 부재가 드러난다(둘 다 없으면 차수 미해소로 그 앞에서 중단이다).\n    '
+    home = pm_paths.home_at(tmp_path)
+    log_file = tmp_path / 'current.md'
+    playbook_file = tmp_path / 'pm_playbook.md'
+    pm_state = tmp_path / 'pm_state.md'
+    log_file.write_text('# log\n\n## [2026-07-05] handoff | PM 4차 (task:alpha) → 다음 PM 세션\n\n- 이 세션 박제 entries: (이 세션 박제 entry 없음)\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
+    pm_state.write_text(state_text, encoding='utf-8')
     bind_pool(monkeypatch, _TaskPool())
-    inst = handoff.PmHandoff(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 인데 pytest 호출")),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file,
-        pm_playbook_file=playbook_file,
-        pm_state_file=pm_state,
-
-    )
-    return inst, log_file, pm_state
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('skip_pytest 인데 pytest 호출')), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_playbook_file=playbook_file, pm_state_file=pm_state)
+    return (inst, log_file, pm_state)
 
 
 def test_extract_session_section_none_when_anchor_absent(handoff):
@@ -268,7 +229,7 @@ def test_extract_session_section_none_when_anchor_absent(handoff):
 def test_update_session_window_raises_when_anchor_absent(handoff):
     """부재 시 update_session_window 는 종전대로 ValueError (앵커 못 찾으면 지어내지 않음)."""
     with pytest.raises(ValueError):
-        handoff.update_session_window(
+        pm_engine.domain.handoff_text.update_session_window(
             _PM_STATE_NO_ANCHOR, 5, "2026-07-06", "요약"
         )
 

@@ -447,3 +447,9 @@ def _resolve_log_file(home) -> Path:
 def _dashboard_file(home) -> Path:
     """Home 데이터 소유 wiki의 dashboard 경로를 반환한다."""
     return wiki_dir(home) / "log" / "dashboard.md"
+
+
+
+def _dashboard_lock_file(home) -> Path:
+    """대시보드 read-modify-write 직렬화 락 파일 (`.local/dashboard.lock`·*호출 시점* REPO 추종)."""
+    return home.local_dir / "dashboard.lock"

@@ -14,6 +14,12 @@ nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff
+import pm_engine.cli.handoff_prompt
+import pm_engine.domain.handoff_text
+import pm_engine.infra.pm_paths
+
 from pm_engine.domain import session_history
 
 from pm_engine.cli import board_init
@@ -116,7 +122,7 @@ def test_interactive_skeleton_lists_session_entries(handoff):
 
 ## [2026-06-14] checkpoint — compaction 전
 """
-    sk = handoff.build_handoff_log_skeleton(
+    sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(
         session_num=9, date="2026-06-14", log_text=log_text,
     )
     assert "- 이 세션 박제 entries:\n" in sk
@@ -127,9 +133,9 @@ def test_interactive_skeleton_lists_session_entries(handoff):
 
 def test_interactive_skeleton_marks_no_session_entries(handoff):
     """수집할 박제 entry가 없으면 빈 자동 목록을 명시하고 pending intent는 손-채움으로 둔다."""
-    sk = handoff.build_handoff_log_skeleton(session_num=9, date="2026-06-14")
+    sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-14")
     assert "- 이 세션 박제 entries: (이 세션 박제 entry 없음)" in sk
-    assert f"- pending user intent: {handoff.PENDING_INTENT_PLACEHOLDER}" in sk
+    assert f"- pending user intent: {pm_engine.domain.handoff_text.PENDING_INTENT_PLACEHOLDER}" in sk
 
 
 def test_interactive_skeleton_task_entries_are_scoped(handoff):
@@ -140,7 +146,7 @@ def test_interactive_skeleton_task_entries_are_scoped(handoff):
 ## [2026-06-14] complete | T-0549 — 자기 완료 (task:alpha)
 ## [2026-06-14] checkpoint | (task:alpha) — compaction
 """
-    sk = handoff.build_handoff_log_skeleton(
+    sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(
         session_num=4, date="2026-06-14", log_text=log_text, task="alpha",
     )
     assert "T-0549 — 자기 완료 (task:alpha)" in sk
@@ -152,8 +158,8 @@ def test_thread_tail_adapter_interface_is_absent(handoff):
     """폐기된 thread-tail 추출 경로가 API·CLI·헬퍼/상수 표면에 남지 않는다."""
     import inspect
 
-    assert "thread_tail" not in inspect.signature(handoff.build_handoff_log_skeleton).parameters
-    assert "--thread-tail" not in handoff.build_parser()._option_string_actions
+    assert "thread_tail" not in inspect.signature(pm_engine.domain.handoff_text.build_handoff_log_skeleton).parameters
+    assert "--thread-tail" not in pm_engine.cli.handoff.build_parser()._option_string_actions
     for name in ("_flatten_thread_tail", "_next_intent_lines",
                  "THREAD_TAIL_PLACEHOLDER", "THREAD_TAIL_MAX_CHARS"):
         assert not hasattr(handoff, name)
@@ -201,7 +207,7 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
 
 def test_interactive_skeleton_lean_schema(handoff):
     """대화형 handoff skeleton은 자동 목록 + 손-채움 3줄의 신 스키마이고 구 필드는 없다."""
-    sk = handoff.build_handoff_log_skeleton(session_num=9, date="2026-06-14")
+    sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-14")
     assert sk.startswith("## [2026-06-14] handoff | PM 9차 → 다음 PM 세션")
     assert "- 이 세션 박제 entries:" in sk
     assert "- 메타 학습:" in sk
@@ -215,68 +221,42 @@ def test_interactive_skeleton_lean_schema(handoff):
     assert "reason=" not in sk
 
 
-def test_interactive_main_unresolved_identity_is_rc1(handoff):
-    """무인자 진입에서 task 가 해소되지 않으면 쓸 자리를 지어내지 않고 rc 1 로 멈춘다."""
-    assert handoff.main(
-        ["--no-pytest"],
-        identity_resolver=lambda: (None, "정체성 미해소"),
-    ) == 1
+def test_interactive_main_unresolved_identity_is_rc1(handoff, tmp_path):
+    '무인자 진입에서 task 가 해소되지 않으면 쓸 자리를 지어내지 않고 rc 1 로 멈춘다.'
+    home = pm_paths.home_at(tmp_path)
+    assert pm_engine.cli.handoff.main(home, ['--no-pytest'], identity_resolver=lambda: (None, '정체성 미해소')) == 1
 
 
 def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, monkeypatch, tmp_path, capsys):
-    """대화형 run() 불변 — 인계 프롬프트는 [5/7] stdout 로만 나가고 log entry 에 박제하지 않는다.
-
-    run() 은 모델이 살아 있어 stdout 가 권위적이다 — log 파일은 인계 프롬프트 헤더를
-    포함하지 않아야 한다(경로 분리·불변).
-    """
-    log_file = tmp_path / "current.md"
-    state_file = tmp_path / "pm_state.md"
-    playbook_file = tmp_path / "pm_playbook.md"
-    log_file.write_text("# log\n", encoding="utf-8")
-    state_file.write_text(_PM_STATE_FIXTURE, encoding="utf-8")
-    playbook_file.write_text(_PM_PLAYBOOK_FIXTURE, encoding="utf-8")
-    bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name="alpha", open=False)))
-    inst = handoff.PmHandoff(
-        run_pytest_fn=lambda: (0, pytest_summary()),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file,
-        pm_state_file=state_file,
-        pm_playbook_file=playbook_file,
-        dashboard_file=tmp_path / "dashboard.md",
-
-    )
-    rc = inst.run("alpha", dry_run=False, skip_pytest=True, user_ack="alpha")
+    '대화형 run() 불변 — 인계 프롬프트는 [5/7] stdout 로만 나가고 log entry 에 박제하지 않는다.\n\n    run() 은 모델이 살아 있어 stdout 가 권위적이다 — log 파일은 인계 프롬프트 헤더를\n    포함하지 않아야 한다(경로 분리·불변).\n    '
+    home = pm_paths.home_at(tmp_path)
+    log_file = tmp_path / 'current.md'
+    state_file = tmp_path / 'pm_state.md'
+    playbook_file = tmp_path / 'pm_playbook.md'
+    log_file.write_text('# log\n', encoding='utf-8')
+    state_file.write_text(_PM_STATE_FIXTURE, encoding='utf-8')
+    playbook_file.write_text(_PM_PLAYBOOK_FIXTURE, encoding='utf-8')
+    bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name='alpha', open=False)))
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (0, pytest_summary()), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_state_file=state_file, pm_playbook_file=playbook_file, dashboard_file=tmp_path / 'dashboard.md')
+    rc = inst.run('alpha', dry_run=False, skip_pytest=True, user_ack='alpha')
     assert rc == 0
     out = capsys.readouterr().out
-    # 인계 프롬프트는 stdout 으로 나간다 ([5/7]).
-    assert "=== 인계 프롬프트 (PM " in out
-    # 그러나 run() 은 log 파일을 인계 프롬프트로 오염시키지 않는다 (경로 분리·불변).
-    assert "=== 인계 프롬프트" not in log_file.read_text(encoding="utf-8")
+    assert '=== 인계 프롬프트 (PM ' in out
+    assert '=== 인계 프롬프트' not in log_file.read_text(encoding='utf-8')
 
 
-def test_handoff_prompt_template_is_lean(handoff):
-    """인계 프롬프트 템플릿(pm_playbook.md §부트스트랩 프롬프트)이 트리거(역할 framing +
-    /pm-bootstrap)로 축소돼 있고, 옛 'board 상태 … 5~10개 불릿' 재열거 유도가 없다
-    (T-0180 트리거화·ADR-0008 lean).
-
-    lean handoff 스키마(박제 entries·메타 학습·pending intent·회귀/incident)의 거처는 *log entry
-    skeleton*(`HANDOFF_LOG_SKELETON_TEMPLATE`·test_pm_bootstrap_lease 가 가드)이지 이 프롬프트가
-    아니다 — 부트스트랩이 그 log entry 를 dump 하므로(T-0179) 프롬프트가 같은 라벨을 재기술하면
-    중복 사족이고, 다음 PM 이 부트스트랩 실패 시에도 그 서술대로 수동 재구성·과잉 보고하게 유도한다.
-    그래서 라벨 재기술의 *부재*를 가드한다(과거엔 반대로 존재를 강제해 사족을 박제했음).
-    """
-    text = handoff.PM_PLAYBOOK_FILE.read_text(encoding="utf-8")
-    template = handoff.extract_handoff_prompt_template(text)
-    assert template is not None, "프롬프트 템플릿 앵커/코드블록 추출 실패"
-    # 공유 canonical은 실제 Claude/OpenCode 입력값인 slash 표기를 유지한다.
-    assert "/pm-bootstrap" in template
-    assert "당신은" not in template, "2인칭 역할문구 잔존 — bare(T-0193)와 모순"
-    # 폐기: 인계 본문 라벨 재기술 사족 (부트스트랩 dump·log skeleton 이 단일 진실).
-    for label in ("이 세션 박제 entries", "메타 학습", "pending user intent", "회귀/incident"):
+def test_handoff_prompt_template_is_lean(handoff, tmp_path):
+    "인계 프롬프트 템플릿(pm_playbook.md §부트스트랩 프롬프트)이 트리거(역할 framing +\n    /pm-bootstrap)로 축소돼 있고, 옛 'board 상태 … 5~10개 불릿' 재열거 유도가 없다\n    (T-0180 트리거화·ADR-0008 lean).\n\n    lean handoff 스키마(박제 entries·메타 학습·pending intent·회귀/incident)의 거처는 *log entry\n    skeleton*(`HANDOFF_LOG_SKELETON_TEMPLATE`·test_pm_bootstrap_lease 가 가드)이지 이 프롬프트가\n    아니다 — 부트스트랩이 그 log entry 를 dump 하므로(T-0179) 프롬프트가 같은 라벨을 재기술하면\n    중복 사족이고, 다음 PM 이 부트스트랩 실패 시에도 그 서술대로 수동 재구성·과잉 보고하게 유도한다.\n    그래서 라벨 재기술의 *부재*를 가드한다(과거엔 반대로 존재를 강제해 사족을 박제했음).\n    "
+    home = pm_paths.home_at(REPO)
+    text = (pm_paths.wiki_dir(home) / 'pm_playbook.md').read_text(encoding='utf-8')
+    template = pm_engine.cli.handoff_prompt.extract_handoff_prompt_template(text)
+    assert template is not None, '프롬프트 템플릿 앵커/코드블록 추출 실패'
+    assert '/pm-bootstrap' in template
+    assert '당신은' not in template, '2인칭 역할문구 잔존 — bare(T-0193)와 모순'
+    for label in ('이 세션 박제 entries', '메타 학습', 'pending user intent', '회귀/incident'):
         assert label not in template, f"프롬프트에 인계 라벨 '{label}' 재기술 사족 잔존 (트리거만·T-0180)"
-    # 옛 재열거 유도 문구 부재 (ADR-0008 금지).
-    assert "5~10개 불릿" not in template, "옛 '5~10개 불릿' 재열거 유도 잔존"
-    assert "board 상태 / 진행 중 작업" not in template, "옛 'board 상태' 재열거 유도 잔존"
+    assert '5~10개 불릿' not in template, "옛 '5~10개 불릿' 재열거 유도 잔존"
+    assert 'board 상태 / 진행 중 작업' not in template, "옛 'board 상태' 재열거 유도 잔존"
 
 
 # ── 5. 세션 종료 기록 — 이 세션이 연 기록을 한 자리에서 닫는다 (거동 핀) ──────────
@@ -313,26 +293,26 @@ class _TaskLedgerStub:
         return self._record
 
 
-def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, monkeypatch, capsys):
-    """task 모드는 그 task 레코드를 닫고(open=False) 성공을 보고한다."""
-    pool = bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name="t1", open=False)))
+def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, monkeypatch, capsys, tmp_path):
+    'task 모드는 그 task 레코드를 닫고(open=False) 성공을 보고한다.'
+    home = pm_paths.home_at(tmp_path)
+    pool = bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name='t1', open=False)))
     bind_pool(monkeypatch, pool)
-    tool = handoff.PmHandoff()
+    tool = pm_engine.cli.handoff.PmHandoff(home)
+    assert tool._close_session_records('t1') is True
+    assert pool.calls == ['t1'], '장부 write 는 그 프리미티브 한 번뿐이다'
+    assert '닫힘' in capsys.readouterr().out
 
-    assert tool._close_session_records("t1") is True
-    assert pool.calls == ["t1"], "장부 write 는 그 프리미티브 한 번뿐이다"
-    assert "닫힘" in capsys.readouterr().out
 
-
-def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, monkeypatch, capsys):
-    """장부에 그 task 가 없으면 신호를 못 남긴 것이다 — 성공으로 접지 않는다(log 무접촉)."""
+def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, monkeypatch, capsys, tmp_path):
+    '장부에 그 task 가 없으면 신호를 못 남긴 것이다 — 성공으로 접지 않는다(log 무접촉).'
+    home = pm_paths.home_at(tmp_path)
     pool = bind_pool(monkeypatch, _TaskLedgerStub(None))
     bind_pool(monkeypatch, pool)
-    tool = handoff.PmHandoff()
-
-    assert tool._close_session_records("t1") is False
-    assert pool.calls == ["t1"]
-    assert "장부에 없음" in capsys.readouterr().err
+    tool = pm_engine.cli.handoff.PmHandoff(home)
+    assert tool._close_session_records('t1') is False
+    assert pool.calls == ['t1']
+    assert '장부에 없음' in capsys.readouterr().err
 
 
 

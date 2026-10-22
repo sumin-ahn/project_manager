@@ -229,7 +229,7 @@ def read_lease(home, slot: str) -> "Lease | None":
     """슬롯 lease 를 장부에서 읽어 반환한다 — read-only 조회 프리미티브 (`record_git_snapshot` 짝).
 
     `record_git_snapshot` 이 갱신하는 `lease.git`(도착 기대 스냅)을 *갱신 전에* 조회하려는
-    호출부(pm_handoff `_record_slot_snapshot` 의 실갱신/무변경 판별)를 위한 얇은 단일-lease
+    호출부(cli.handoff.PmHandoff._record_slot_snapshot 의 실갱신/무변경 판별)를 위한 얇은 단일-lease
     read. `_read_ledger` 를 짧게 lock 안에서 훑어 slot 일치 lease 를 반환한다(없으면 None).
     부작용/git 조회 없음(순수 장부 read)."""
     with _lease_lock(home):

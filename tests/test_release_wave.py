@@ -17,6 +17,9 @@ probe.txt(=developer 서브에이전트가 작성)·ticket done 전이가 핵심
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.app.session_identity
+
 import ast
 import importlib.util
 import inspect
@@ -2041,12 +2044,12 @@ def test_record_wave_task_session_keeps_the_bootstrapped_task(tmp_path):
     assert ledger.read_bytes() == before
     rows = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
     assert [row["name"] for row in rows if row["session"] == "ses_wave"] == ["main"]
-    assert pm_log.resolve_session_task(bootstrapped, "ses_wave") == ("main", None)
+    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(bootstrapped), "ses_wave") == ("main", None)
 
     fresh = tmp_path / "fresh"
     _record_wave_task_session(fresh, "ses_wave")
 
-    assert pm_log.resolve_session_task(fresh, "ses_wave") == (_RELEASE_WAVE_TASK, None)
+    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(fresh), "ses_wave") == (_RELEASE_WAVE_TASK, None)
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):

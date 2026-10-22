@@ -14,10 +14,13 @@ work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff
+import pm_engine.domain.handoff_text
+
 from pm_engine.cli import bootstrap as bootstrap_cli
 from pm_engine.cli import bootstrap_report
 
-from pm_engine.infra import pm_paths
 
 from pm_engine.app import task_lifecycle
 from pm_engine.domain import worktree_records
@@ -37,7 +40,6 @@ import pytest
 
 from _slot_seed import fake_slot_path
 from pm_engine.app import slot_resolution
-from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -424,11 +426,11 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
 
 def test_handoff_skeleton_solo_omits_slot_line(handoff):
     """솔로면 worktree를 생략하고 자동 박제 목록 + 손-채움 신 스키마를 보존한다."""
-    sk = handoff.build_handoff_log_skeleton(session_num=9, date="2026-06-16")
+    sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-16")
     assert "worktree: slot" not in sk
     assert "- 이 세션 박제 entries: (이 세션 박제 entry 없음)" in sk
     assert "- 메타 학습:" in sk
-    assert f"- pending user intent: {handoff.PENDING_INTENT_PLACEHOLDER}" in sk
+    assert f"- pending user intent: {pm_engine.domain.handoff_text.PENDING_INTENT_PLACEHOLDER}" in sk
     assert "- 회귀/incident:" in sk
     assert "회귀 \"N passed / 상태\" 1줄" in sk
     assert "- 읽기 범위:" not in sk
@@ -452,6 +454,7 @@ _PM_STATE_FIXTURE = """\
 
 
 def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True, monkeypatch):
+    home = pm_paths.home_at(tmp_path)
     log_file = tmp_path / "current.md"
     state_file = tmp_path / "pm_state.md"
     playbook_file = tmp_path / "pm_playbook.md"
@@ -463,14 +466,7 @@ def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True, m
     )
     pytest_out = "5 passed in 0.1s" if green_pytest else "1 failed, 4 passed"
     bind_pool(monkeypatch, worktree_pool)
-    inst = handoff.PmHandoff(
-        run_pytest_fn=lambda: (0 if green_pytest else 1, pytest_out),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file,
-        pm_state_file=state_file,
-        pm_playbook_file=playbook_file,
-
-    )
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (0 if green_pytest else 1, pytest_out), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_state_file=state_file, pm_playbook_file=playbook_file)
     return inst, log_file, state_file
 
 

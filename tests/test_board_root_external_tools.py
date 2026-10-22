@@ -18,9 +18,9 @@ monkeypatch 한 fresh 모듈 인스턴스를 매 테스트마다 로드한다(te
 board-path 해소가 *함수*(또는 None-default 호출 시점 해소)라 monkeypatch 된 tmp REPO 를 추종한다.
 """
 from __future__ import annotations
+from pm_engine.infra import pm_paths
 
 from pm_engine.cli import bootstrap as bootstrap_cli
-from pm_engine.infra import pm_paths
 
 import importlib.util
 from pathlib import Path
@@ -71,7 +71,7 @@ def handoff(tmp_path, monkeypatch):
 
 def test_handoff_tickets_dir_legacy_is_wiki(handoff):
     """legacy(board/ 부재) → _tickets_dir() == wiki/tickets (현 위치·무변경)."""
-    assert handoff._tickets_dir() == handoff._tmp / ".project_manager" / "wiki" / "tickets"
+    assert pm_paths.tickets_dir(pm_paths.home_at(handoff._tmp)) == handoff._tmp / ".project_manager" / "wiki" / "tickets"
 
 
 def test_handoff_tickets_dir_present_is_board_tickets(handoff):
@@ -79,7 +79,7 @@ def test_handoff_tickets_dir_present_is_board_tickets(handoff):
 
     *수정 전*: TICKETS_DIR 상수가 wiki/tickets 에 굳어 이 단언이 fail 했다(stale→fail 실증)."""
     _make_board_dir(handoff._tmp)
-    assert handoff._tickets_dir() == handoff._tmp / ".project_manager" / "board" / "tickets"
+    assert pm_paths.tickets_dir(pm_paths.home_at(handoff._tmp)) == handoff._tmp / ".project_manager" / "board" / "tickets"
 
 
 # ════════════════════════════════════════════════════════════════════════

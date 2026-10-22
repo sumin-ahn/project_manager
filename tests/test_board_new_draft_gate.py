@@ -16,6 +16,9 @@ hermetic 패턴은 `test_board_git_sync.py` 와 동형 — 실 board git + bare 
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.infra.handoff_git
+
 from pm_engine.cli import board_ticket
 
 
@@ -42,7 +45,6 @@ from pm_engine.infra import board_git
 from pm_engine.infra import git
 from pm_engine.infra import ticket_store
 
-from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -173,7 +175,7 @@ def test_new_placeholder_body_not_committed_to_board_git(board, tmp_path, capsys
         "_board_git_status_porcelain 이 draft 를 dirty 로 오판함 — 무관 claim 이 막힐 위험.")
 
     handoff = _load_tool("pm_handoff")
-    assert handoff._dirty_paths_in_tree(str(board_dir), handoff._module_run_git) == [], \
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree(str(board_dir), pm_engine.infra.handoff_git._module_run_git) == [], \
         "cmd_new→draft 뒤 handoff 실제 dirty seam 이 draft 잔여를 검출함."
 
     log = _git(["log", "--oneline"], board_dir).stdout

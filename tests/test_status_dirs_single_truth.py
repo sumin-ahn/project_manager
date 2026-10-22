@@ -15,10 +15,13 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.app.session_snapshot
+
+from pm_engine.app import session_snapshot
 from pm_engine.cli import bootstrap_report
 from pm_engine.domain import bootstrap_rules
 
-from pm_engine.infra import pm_paths
 
 
 import ast
@@ -127,7 +130,7 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
 
 def _census_line(pm_log_mod, pm_home: Path) -> str:
     line = [
-        row for row in pm_log_mod._ledger_section(pm_home, "main").splitlines()
+        row for row in pm_engine.app.session_snapshot._ledger_section(pm_paths.home_at(pm_home), "main").splitlines()
         if row.startswith("- board tickets: ")
     ]
     assert len(line) == 1, f"census 줄 유일성 — {line!r}"
@@ -143,7 +146,7 @@ def test_pm_log_census_counts_every_status_dir(pm_log, board, tmp_path):
             _seed_ticket(tickets, status, f"T-{index}{serial:03d}")
         expected[status] = index
 
-    _tickets_dir, counts = pm_log._ticket_counts(tmp_path)
+    _tickets_dir, counts = pm_engine.app.session_snapshot._ticket_counts(pm_paths.home_at(tmp_path))
     assert counts == expected
 
     rendered = _census_line(pm_log, tmp_path)
@@ -161,7 +164,7 @@ def test_pm_log_census_follows_injected_status_without_code_change(
     _seed_ticket(tickets, FAKE_STATUS, "T-9200")
     _seed_ticket(tickets, FAKE_STATUS, "T-9201")
 
-    _tickets_dir, counts = pm_log._ticket_counts(tmp_path)
+    _tickets_dir, counts = pm_engine.app.session_snapshot._ticket_counts(pm_paths.home_at(tmp_path))
     assert counts[FAKE_STATUS] == 2
     assert _census_line(pm_log, tmp_path).endswith(f" / {FAKE_STATUS} 2")
 
@@ -337,7 +340,8 @@ def test_no_hardcoded_status_set_left_in_consumers(board, tool):
     """
     sources = (
         [TOOLS / "pm_engine/domain/bootstrap_rules.py", TOOLS / "pm_engine/cli/bootstrap_report.py"]
-        if tool == "pm_bootstrap" else [TOOLS / f"{tool}.py"]
+        if tool == "pm_bootstrap" else [TOOLS / "pm_engine/app/session_snapshot.py"]
+        if tool == "pm_log" else [TOOLS / f"{tool}.py"]
     )
     source = "\n".join(path.read_text(encoding="utf-8") for path in sources)
     copies = _find_status_set_copies(source, set(ticket_rules.STATUS_DIRS))

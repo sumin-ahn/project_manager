@@ -21,6 +21,12 @@ pm_state 는 tmp 주입, `REPO` 는 monkeypatch. 마지막 절만 **실 git 바�
 의미(gitignored 제외·staged 신규·tracked 수정)와 unborn HEAD 를 실측한다.
 """
 from __future__ import annotations
+
+import pm_engine.cli.handoff_dirty
+from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff
+import pm_engine.domain.handoff_text
+import pm_engine.infra.handoff_git
 from pm_engine.infra import submodule_git
 
 from _pool_seams import bind_pool
@@ -188,51 +194,27 @@ _TASK_PM_STATE = """# task state
 
 
 def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None, task_mode: bool=False, task: str=TASK):
-    """REPO 를 tmp 로 핀한 hermetic PmHandoff — log/playbook/dashboard 는 tmp 주입.
-
-    `REPO` 핀이 load-bearing 이다: 게이트의 판정 앵커(PM 홈 트리)가 곧 `REPO` 라, 실 repo 를
-    보면 개발 중 작업트리 상태에 따라 결과가 흔들린다(결정성 상실).
-
-    `task_mode=True` 면 **pm_state 를 명시 주입하지 않는다** — 명시 주입은
-    `_pm_state_file_explicit` 를 세워 `task_mode` 를 False 로 만들고, 그러면 task pid=0 기록
-    같은 task 장부 경로가 아예 실행되지 않아 "게이트가 그 앞에서 멈췄다"를 검증할 수 없다.
-    대신 task 서술 공간(`.local/tasks/<task>/pm_state.md`)에 실제 state 를 깔아 준다.
-    """
-    monkeypatch.setattr(hf, "REPO", tmp_path)
-    # 등록된 홈 형상 — 정체성(승인 대상값·회귀 cwd)이 이 장부 행에서 온다. 슬롯 행의 `session`
-    # 이 곧 그 슬롯을 잡은 task 이름이라, 게이트의 "보유 작업 폴더" 집합이 여기서 해소된다.
-    seed_slot(tmp_path, session=task, tasks=[{"name": task, "prefix": None}])
-    # task 장부 조회는 worktree_pool seam 이 답한다 — 주입이 없으면 실 엔진이 이 tmp 홈 밖
-    # 장부를 보므로 "미등록 task" 로 멈춘다. 슬롯 트리를 보는 축은 각 테스트가 pool 을 준다.
+    'REPO 를 tmp 로 핀한 hermetic PmHandoff — log/playbook/dashboard 는 tmp 주입.\n\n    `REPO` 핀이 load-bearing 이다: 게이트의 판정 앵커(PM 홈 트리)가 곧 `REPO` 라, 실 repo 를\n    보면 개발 중 작업트리 상태에 따라 결과가 흔들린다(결정성 상실).\n\n    `task_mode=True` 면 **pm_state 를 명시 주입하지 않는다** — 명시 주입은\n    `_pm_state_file_explicit` 를 세워 `task_mode` 를 False 로 만들고, 그러면 task pid=0 기록\n    같은 task 장부 경로가 아예 실행되지 않아 "게이트가 그 앞에서 멈췄다"를 검증할 수 없다.\n    대신 task 서술 공간(`.local/tasks/<task>/pm_state.md`)에 실제 state 를 깔아 준다.\n    '
+    home = pm_paths.home_at(tmp_path)
+    seed_slot(tmp_path, session=task, tasks=[{'name': task, 'prefix': None}])
     if pool is None:
         pool = bind_pool(monkeypatch, _TaskPool())
-    log_file = tmp_path / "current.md"
-    playbook_file = tmp_path / "pm_playbook.md"
-    log_file.write_text("# log\n", encoding="utf-8")
-    playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
+    log_file = tmp_path / 'current.md'
+    playbook_file = tmp_path / 'pm_playbook.md'
+    log_file.write_text('# log\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
     kwargs = {}
     if task_mode:
-        task_state = tmp_path / ".project_manager" / ".local" / "tasks" / task / "pm_state.md"
+        task_state = tmp_path / '.project_manager' / '.local' / 'tasks' / task / 'pm_state.md'
         task_state.parent.mkdir(parents=True, exist_ok=True)
-        task_state.write_text(_TASK_PM_STATE, encoding="utf-8")
+        task_state.write_text(_TASK_PM_STATE, encoding='utf-8')
     else:
-        # 명시 주입 경로 — 이 인스턴스는 task 의 영속 기록(장부 종료 기록)을 소유하지 않는다.
-        # 파일은 **실재**해야 한다: 차수는 pm_state 에서만 추론하므로 부재는 중단이고, 그러면
-        # 게이트 뒤 단계가 통째로 안 돌아 이 모듈의 판정 축을 관찰할 수 없다.
-        explicit_state = tmp_path / "explicit_pm_state.md"
-        explicit_state.write_text(_TASK_PM_STATE, encoding="utf-8")
-        kwargs["pm_state_file"] = explicit_state
+        explicit_state = tmp_path / 'explicit_pm_state.md'
+        explicit_state.write_text(_TASK_PM_STATE, encoding='utf-8')
+        kwargs['pm_state_file'] = explicit_state
     bind_pool(monkeypatch, pool)
-    inst = hf.PmHandoff(
-        run_pytest_fn=lambda: (0, "120 passed in 1.0s\n"),
-        run_git_fn=git_runner,
-        log_file=log_file,
-        pm_playbook_file=playbook_file,
-        dashboard_file=tmp_path / "dashboard.md",
-
-        **kwargs,
-    )
-    return inst, log_file
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (0, '120 passed in 1.0s\n'), run_git_fn=git_runner, log_file=log_file, pm_playbook_file=playbook_file, dashboard_file=tmp_path / 'dashboard.md', **kwargs)
+    return (inst, log_file)
 
 
 _DIRTY_TWO = ([".claude/agents/developer.md"], ["docs/new-note.md"])
@@ -258,7 +240,7 @@ def test_clean_tree_entry_has_no_ack_line(hf, tmp_path, monkeypatch):
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
 
     assert _run_handoff(inst, dry_run=False, skip_pytest=True) == 0
-    assert hf.DIRTY_ACK_ENTRY_LABEL not in log_file.read_text(encoding="utf-8")
+    assert pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL not in log_file.read_text(encoding="utf-8")
 
 
 # ── dirty 차단 (rc 1 · 파일 목록 · 회귀보다 앞 · 첫 mutation 전) ──────────────
@@ -490,32 +472,29 @@ def test_task_force_handoff_keeps_held_slot_and_records_note(hf, tmp_path, monke
     assert pool.snapped == ["work/app_1"]
 
 
-def test_cli_force_handoff_flag_defaults_off_and_reaches_run(hf, monkeypatch):
-    """`--force-handoff` 는 명시할 때만 참이고, CLI 가 그 값을 엔진 run() 에 넘긴다."""
-    parser = hf.build_parser()
+def test_cli_force_handoff_flag_defaults_off_and_reaches_run(hf, monkeypatch, tmp_path):
+    '`--force-handoff` 는 명시할 때만 참이고, CLI 가 그 값을 엔진 run() 에 넘긴다.'
+    home = pm_paths.home_at(tmp_path)
+    parser = pm_engine.cli.handoff.build_parser()
     assert parser.parse_args([]).force_handoff is False
     captured: dict = {}
-
     def fake_run(self, task, **kwargs):
-        captured.update({"task": task, **kwargs})
+        captured.update({'task': task, **kwargs})
         return 0
-
-    monkeypatch.setattr(hf.PmHandoff, "run", fake_run)
-    assert hf._main(["--task", "alpha", "--force-handoff"]) == 0
-    assert captured["task"] == "alpha"
-    assert captured["force_handoff"] is True
+    monkeypatch.setattr(pm_engine.cli.handoff.PmHandoff, 'run', fake_run)
+    assert pm_engine.cli.handoff._main(home, ['--task', 'alpha', '--force-handoff']) == 0
+    assert captured['task'] == 'alpha'
+    assert captured['force_handoff'] is True
 
 
 
 
 def test_gate_trees_dedup_pm_home_and_stale_slot(hf, tmp_path, monkeypatch):
-    """stale 슬롯(디렉토리 부재)은 `_regression_cwd` 가 REPO 로 폴백 — 중복 판정하지 않는다."""
-    monkeypatch.setattr(hf, "REPO", tmp_path)
-    inst = hf.PmHandoff(run_git_fn=_git_stub())
-    inst._task_slots_snapshot = ("alpha", ("work/missing_9",))
-
-    trees = inst._dirty_gate_trees("alpha")
-
+    'stale 슬롯(디렉토리 부재)은 `_regression_cwd` 가 REPO 로 폴백 — 중복 판정하지 않는다.'
+    home = pm_paths.home_at(tmp_path)
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_git_fn=_git_stub())
+    inst._task_slots_snapshot = ('alpha', ('work/missing_9',))
+    trees = pm_engine.cli.handoff_dirty._dirty_gate_trees(home, held_slots=inst._task_slots_snapshot[1])
     assert trees == [str(tmp_path)]
 
 
@@ -542,7 +521,7 @@ def test_submodule_discovery_reuses_shared_parser_requests_recursive_and_skips_u
 
     monkeypatch.setattr(submodule_git, "_parse_submodule_entries", SharedParser._parse_submodule_entries)
 
-    paths = hf._submodule_paths_in_tree("/super", _runner)
+    paths = pm_engine.infra.handoff_git._submodule_paths_in_tree("/super", _runner)
 
     assert paths == ["vendor/my lib"]
     assert parser_calls == ["shared-parser-input"]
@@ -675,7 +654,7 @@ def test_ack_dirty_passes_and_stamps_reason(hf, tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     entry = log_file.read_text(encoding="utf-8")
-    assert hf.DIRTY_ACK_ENTRY_LABEL in entry
+    assert pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL in entry
     assert "어댑터 사본은 다음 세션 릴리즈 wave 에서 커밋" in entry
     assert "미커밋 2건" in entry
     assert "--ack-dirty override" in capsys.readouterr().out
@@ -689,7 +668,7 @@ def test_ack_dirty_on_clean_tree_stamps_nothing(hf, tmp_path, monkeypatch, capsy
                   ack_dirty="사유")
 
     assert rc == 0
-    assert hf.DIRTY_ACK_ENTRY_LABEL not in log_file.read_text(encoding="utf-8")
+    assert pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL not in log_file.read_text(encoding="utf-8")
     assert "--ack-dirty 무시" in capsys.readouterr().out
 
 
@@ -710,25 +689,22 @@ def test_blank_ack_reason_aborts_engine_path(hf, tmp_path, monkeypatch, blank, c
     assert log_file.read_bytes() == before
 
 
-def test_cli_rejects_blank_ack_reason(hf, capsys):
-    """CLI `--ack-dirty ""` → usage error(rc 2) — 사유 없는 override 를 파서에서 닫는다."""
+def test_cli_rejects_blank_ack_reason(hf, capsys, tmp_path):
+    'CLI `--ack-dirty ""` → usage error(rc 2) — 사유 없는 override 를 파서에서 닫는다.'
+    home = pm_paths.home_at(tmp_path)
     with pytest.raises(SystemExit) as excinfo:
-        hf.main(
-            ["--ack-dirty", ""],
-            identity_resolver=lambda: (_ for _ in ()).throw(
-                AssertionError("인자 오류보다 identity 해소가 먼저 실행됨")
-            ),
-        )
+        pm_engine.cli.handoff.main(home, ['--ack-dirty', ''], identity_resolver=lambda: (_ for _ in ()).throw(AssertionError('인자 오류보다 identity 해소가 먼저 실행됨')))
     assert excinfo.value.code == 2
-    assert "--ack-dirty 는 사유가 필수" in capsys.readouterr().err
+    assert '--ack-dirty 는 사유가 필수' in capsys.readouterr().err
 
 
-def test_cli_rejects_bare_ack_flag(hf, capsys):
-    """CLI `--ack-dirty` 를 인자 없이 주면 argparse 가 usage error — bare 플래그 불가."""
+def test_cli_rejects_bare_ack_flag(hf, capsys, tmp_path):
+    'CLI `--ack-dirty` 를 인자 없이 주면 argparse 가 usage error — bare 플래그 불가.'
+    home = pm_paths.home_at(tmp_path)
     with pytest.raises(SystemExit) as excinfo:
-        hf.main(["--ack-dirty"])
+        pm_engine.cli.handoff.main(home, ['--ack-dirty'])
     assert excinfo.value.code == 2
-    assert "--ack-dirty" in capsys.readouterr().err
+    assert '--ack-dirty' in capsys.readouterr().err
 
 
 # ── 사유 개행 무해화 (가짜 entry 위조 차단) ──────────────────────────────────
@@ -741,7 +717,7 @@ def test_cli_rejects_bare_ack_flag(hf, capsys):
 ])
 def test_flatten_ack_reason_is_single_line(hf, raw, expected):
     """개행/탭/연속 공백을 단일 공백으로 평탄화한다 — 사유는 언제나 한 줄."""
-    flattened = hf.flatten_ack_reason(raw)
+    flattened = pm_engine.domain.handoff_text.flatten_ack_reason(raw)
     assert flattened == expected
     assert "\n" not in flattened and "\r" not in flattened
 
@@ -764,7 +740,7 @@ def test_multiline_ack_reason_cannot_forge_entry(hf, tmp_path, monkeypatch):
     header_lines = [line for line in text.splitlines() if line.startswith("## [")]
     assert len(header_lines) == 1
     assert "PM 99차" not in header_lines[0]
-    ack_lines = [l for l in text.splitlines() if l.startswith(hf.DIRTY_ACK_ENTRY_LABEL)]
+    ack_lines = [l for l in text.splitlines() if l.startswith(pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL)]
     assert len(ack_lines) == 1
     # 사유 전체가 그 한 줄 안에 평탄화돼 들어갔다(줄 분리 아님).
     assert "위조: 있음" in ack_lines[0] and "PM 99차" in ack_lines[0]
@@ -772,12 +748,12 @@ def test_multiline_ack_reason_cannot_forge_entry(hf, tmp_path, monkeypatch):
 
 def test_cli_flattens_multiline_ack_reason(hf):
     """CLI 층도 같은 무해화를 태운다 — 파서 통과 값이 이미 단일행."""
-    parser = hf.build_parser()
+    parser = pm_engine.cli.handoff.build_parser()
     args = parser.parse_args(
         ["--ack-dirty", "앞\n뒤"]
     )
     assert "\n" in args.ack_dirty            # 전제: argparse 는 그대로 받는다.
-    assert hf.flatten_ack_reason(args.ack_dirty) == "앞 뒤"
+    assert pm_engine.domain.handoff_text.flatten_ack_reason(args.ack_dirty) == "앞 뒤"
 
 
 # ── 비대화 자동 트리거 (전용 신호 · 차단 아님 · 사유 자동 박제) ──────────────
@@ -840,7 +816,7 @@ def test_env_noninteractive_does_not_degrade_gate(hf, tmp_path, monkeypatch, env
 
 def test_cli_auto_trigger_flag_defaults_off(hf):
     """`--auto-trigger` 는 명시할 때만 참 — 기본은 차단 계약."""
-    parser = hf.build_parser()
+    parser = pm_engine.cli.handoff.build_parser()
     assert parser.parse_args([]).auto_trigger is False
     assert parser.parse_args(
         ["--auto-trigger"]
@@ -880,7 +856,7 @@ def test_same_session_rerun_ack_is_idempotent(hf, tmp_path, monkeypatch):
 
     assert log_file.read_bytes() == first
     text = log_file.read_text(encoding="utf-8")
-    assert len([l for l in text.splitlines() if l.startswith(hf.DIRTY_ACK_ENTRY_LABEL)]) == 1
+    assert len([l for l in text.splitlines() if l.startswith(pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL)]) == 1
 
 
 def test_upsert_dirty_ack_line_replaces_existing(hf):
@@ -888,15 +864,15 @@ def test_upsert_dirty_ack_line_replaces_existing(hf):
     entry = (
         "## [2026-08-09] handoff | PM 2차 → 다음 PM 세션\n\n"
         "- 이 세션 박제 entries: (없음)\n"
-        f"{hf.DIRTY_ACK_ENTRY_LABEL}: 옛 사유\n"
+        f"{pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL}: 옛 사유\n"
         "- 회귀/incident: <PM 손>\n"
     )
 
-    updated = hf.upsert_dirty_ack_line(entry, "새 사유")
+    updated = pm_engine.domain.handoff_text.upsert_dirty_ack_line(entry, "새 사유")
 
     assert "옛 사유" not in updated
-    assert f"{hf.DIRTY_ACK_ENTRY_LABEL}: 새 사유" in updated
-    assert updated.count(hf.DIRTY_ACK_ENTRY_LABEL) == 1
+    assert f"{pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL}: 새 사유" in updated
+    assert updated.count(pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL) == 1
 
 
 def test_upsert_dirty_ack_line_inserts_before_incident(hf):
@@ -907,10 +883,10 @@ def test_upsert_dirty_ack_line_inserts_before_incident(hf):
         "- 회귀/incident: <PM 손>\n"
     )
 
-    lines = hf.upsert_dirty_ack_line(entry, "사유").splitlines()
+    lines = pm_engine.domain.handoff_text.upsert_dirty_ack_line(entry, "사유").splitlines()
 
     assert lines[lines.index("- 회귀/incident: <PM 손>") - 1] == (
-        f"{hf.DIRTY_ACK_ENTRY_LABEL}: 사유"
+        f"{pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL}: 사유"
     )
 
 
@@ -918,9 +894,9 @@ def test_upsert_dirty_ack_line_appends_when_no_anchor(hf):
     """incident 앵커가 없어도(사람이 지운 entry) 끝에 붙여 박제를 잃지 않는다."""
     entry = "## [2026-08-09] handoff | PM 2차 → 다음 PM 세션\n\n- 메타 학습: 없음\n"
 
-    updated = hf.upsert_dirty_ack_line(entry, "사유")
+    updated = pm_engine.domain.handoff_text.upsert_dirty_ack_line(entry, "사유")
 
-    assert updated.endswith(f"{hf.DIRTY_ACK_ENTRY_LABEL}: 사유\n")
+    assert updated.endswith(f"{pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL}: 사유\n")
 
 
 _CRLF_ENTRY = (
@@ -934,20 +910,20 @@ _CRLF_ENTRY = (
 
 def test_upsert_dirty_ack_line_preserves_crlf_terminator(hf):
     """CRLF entry — 삽입도 교체도 줄 종결자가 CRLF 로 유지된다(bare LF 혼입 0)."""
-    inserted = hf.upsert_dirty_ack_line(_CRLF_ENTRY, "사유", "\r\n")
-    ack_line = [l for l in inserted.split("\r\n") if l.startswith(hf.DIRTY_ACK_ENTRY_LABEL)]
-    assert ack_line == [f"{hf.DIRTY_ACK_ENTRY_LABEL}: 사유"]
+    inserted = pm_engine.domain.handoff_text.upsert_dirty_ack_line(_CRLF_ENTRY, "사유", "\r\n")
+    ack_line = [l for l in inserted.split("\r\n") if l.startswith(pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL)]
+    assert ack_line == [f"{pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL}: 사유"]
     assert "\n" not in inserted.replace("\r\n", "")      # LF 는 전부 CRLF 의 일부.
 
-    replaced = hf.upsert_dirty_ack_line(inserted, "새 사유", "\r\n")
+    replaced = pm_engine.domain.handoff_text.upsert_dirty_ack_line(inserted, "새 사유", "\r\n")
     assert "\n" not in replaced.replace("\r\n", "")
-    assert f"{hf.DIRTY_ACK_ENTRY_LABEL}: 새 사유\r\n" in replaced
+    assert f"{pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL}: 새 사유\r\n" in replaced
 
 
 def test_upsert_dirty_ack_line_crlf_replacement_is_byte_idempotent(hf):
     """CRLF entry 에 같은 사유를 다시 upsert 하면 byte 동일 (재실행 멱등)."""
-    once = hf.upsert_dirty_ack_line(_CRLF_ENTRY, "같은 사유", "\r\n")
-    twice = hf.upsert_dirty_ack_line(once, "같은 사유", "\r\n")
+    once = pm_engine.domain.handoff_text.upsert_dirty_ack_line(_CRLF_ENTRY, "같은 사유", "\r\n")
+    twice = pm_engine.domain.handoff_text.upsert_dirty_ack_line(once, "같은 사유", "\r\n")
 
     assert once == twice
 
@@ -971,15 +947,15 @@ def test_same_session_rerun_ack_is_idempotent_on_crlf_log(hf, tmp_path, monkeypa
     assert b"\r\n" in first and first.replace(b"\r\n", b"").count(b"\n") == 0
     text = first.decode("utf-8")
     assert text.count("handoff | PM 2차") == 1
-    ack_lines = [l for l in text.split("\r\n") if l.startswith(hf.DIRTY_ACK_ENTRY_LABEL)]
+    ack_lines = [l for l in text.split("\r\n") if l.startswith(pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL)]
     assert len(ack_lines) == 1
     assert "같은 사유" in ack_lines[0]
 
 
 def test_upsert_dirty_ack_line_raises_when_unstampable(hf):
     """박제할 자리가 전혀 없으면(빈 entry) 조용히 통과시키지 않고 fail-loud."""
-    with pytest.raises(hf.DirtyAckStampError):
-        hf.upsert_dirty_ack_line("   \n", "사유")
+    with pytest.raises(pm_engine.domain.handoff_text.DirtyAckStampError):
+        pm_engine.domain.handoff_text.upsert_dirty_ack_line("   \n", "사유")
 
 
 def test_unstampable_ack_blocks_handoff(hf, tmp_path, monkeypatch, capsys):
@@ -989,8 +965,8 @@ def test_unstampable_ack_blocks_handoff(hf, tmp_path, monkeypatch, capsys):
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
     monkeypatch.setattr(
-        hf, "upsert_dirty_ack_line",
-        lambda *a, **k: (_ for _ in ()).throw(hf.DirtyAckStampError("자리 없음")),
+        pm_engine.domain.handoff_text, "upsert_dirty_ack_line",
+        lambda *a, **k: (_ for _ in ()).throw(pm_engine.domain.handoff_text.DirtyAckStampError("자리 없음")),
     )
     # 같은-세션 재실행 경로로 들어가도록 기존 entry 를 미리 깔아 둔다.
     inst._run_git_fn = _git_stub()
@@ -1036,7 +1012,7 @@ def test_dry_run_preview_shows_ack_line_in_skeleton(hf, tmp_path, monkeypatch, c
                   ack_dirty="릴리즈 wave 에서 커밋")
 
     assert rc == 0
-    assert hf.DIRTY_ACK_ENTRY_LABEL in capsys.readouterr().out
+    assert pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL in capsys.readouterr().out
 
 
 # ── 판정 축: unborn HEAD / 비-git / 예외 ─────────────────────────────────────
@@ -1094,7 +1070,7 @@ def test_unborn_head_unions_staged_and_untracked(hf):
         unborn_trees=("/wt",),
     )
 
-    assert sorted(hf._dirty_paths_in_tree("/wt", runner)) == ["dup.md", "s.md", "u.md"]
+    assert sorted(pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", runner)) == ["dup.md", "s.md", "u.md"]
 
 
 def test_unborn_head_staged_query_failure_is_unjudgeable(hf):
@@ -1108,7 +1084,7 @@ def test_unborn_head_staged_query_failure_is_unjudgeable(hf):
             return 0, ""
         return 128, ""
 
-    assert hf._dirty_paths_in_tree("/wt", _runner) is None
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", _runner) is None
 
 
 def test_non_git_tree_warns_on_stderr_without_blocking(hf, tmp_path, monkeypatch, capsys):
@@ -1138,13 +1114,13 @@ def test_dirty_paths_in_tree_failsoft_on_exception(hf):
     def _boom(args):
         raise RuntimeError("git boom")
 
-    assert hf._dirty_paths_in_tree("/wt", _boom) is None
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", _boom) is None
 
 
 def test_dirty_paths_in_tree_unions_tracked_and_untracked(hf):
     """판정 축 = tracked 미커밋 ∪ untracked-unignored (출하 surface 와 같은 seam)."""
     runner = _git_stub({"/wt": (["a.py"], ["b.md"])})
-    assert sorted(hf._dirty_paths_in_tree("/wt", runner)) == ["a.py", "b.md"]
+    assert sorted(pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", runner)) == ["a.py", "b.md"]
 
 
 def test_dirty_paths_in_tree_none_when_commits_exist_but_diff_fails(hf):
@@ -1156,24 +1132,24 @@ def test_dirty_paths_in_tree_none_when_commits_exist_but_diff_fails(hf):
             return 0, "abc123\n"      # 커밋 있음.
         return 128, "boom"            # diff 실패.
 
-    assert hf._dirty_paths_in_tree("/wt", _runner) is None
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", _runner) is None
 
 
 # ── 목록 접기 (메시지 상한) ───────────────────────────────────────────────────
 
 def test_format_dirty_paths_folds_over_limit(hf):
     """limit 초과분은 '… 외 N건' 한 줄로 접는다 (수백 건 dump 방지)."""
-    paths = [f"f{index:03d}.md" for index in range(hf.DIRTY_GATE_LIST_LIMIT + 5)]
+    paths = [f"f{index:03d}.md" for index in range(pm_engine.domain.handoff_text.DIRTY_GATE_LIST_LIMIT + 5)]
 
-    lines = hf._format_dirty_paths(paths)
+    lines = pm_engine.domain.handoff_text._format_dirty_paths(paths)
 
-    assert len(lines) == hf.DIRTY_GATE_LIST_LIMIT + 1
+    assert len(lines) == pm_engine.domain.handoff_text.DIRTY_GATE_LIST_LIMIT + 1
     assert lines[-1].strip() == "… 외 5건"
 
 
 def test_format_dirty_paths_keeps_all_within_limit(hf):
     """limit 이하면 전부 열거한다 (접기 표기 없음)."""
-    lines = hf._format_dirty_paths(["b.md", "a.md"])
+    lines = pm_engine.domain.handoff_text._format_dirty_paths(["b.md", "a.md"])
 
     assert [line.strip() for line in lines] == ["a.md", "b.md"]
 
@@ -1221,12 +1197,12 @@ def test_real_git_ignore_all_is_overridden_for_gitlink_drift(hf, tmp_path):
     _git("fetch", "-q", cwd=checkout)
     _git("checkout", "-q", drift_sha, cwd=checkout)
 
-    rc_plain, out_plain = hf._module_run_git(
+    rc_plain, out_plain = pm_engine.infra.handoff_git._module_run_git(
         ["-C", str(superproject), "diff", "--name-only", "HEAD"]
     )
     assert rc_plain == 0 and out_plain.strip() == ""  # ignore=all 전제 실측.
-    assert hf._dirty_paths_in_tree(
-        str(superproject), hf._module_run_git,
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree(
+        str(superproject), pm_engine.infra.handoff_git._module_run_git,
     ) == ["vendor/lib"]
 
 
@@ -1257,8 +1233,8 @@ def test_real_git_recursive_submodule_paths_are_superproject_relative(hf, tmp_pa
     raw = _git_output("submodule", "status", "--recursive", cwd=superproject)
     nested = "vendor/outer lib/deps/inner lib"
     assert nested in raw  # Git 자체 출력 좌표계 실측.
-    assert hf._submodule_paths_in_tree(
-        str(superproject), hf._module_run_git,
+    assert pm_engine.infra.handoff_git._submodule_paths_in_tree(
+        str(superproject), pm_engine.infra.handoff_git._module_run_git,
     ) == ["vendor/outer lib", nested]
 
 
@@ -1286,7 +1262,7 @@ def test_real_git_dirty_paths_respect_exclude_standard(hf, tmp_path):
     (repo / "ignored_dir").mkdir()
     (repo / "ignored_dir" / "runtime.json").write_text("{}", encoding="utf-8")
 
-    paths = hf._dirty_paths_in_tree(str(repo), hf._module_run_git)
+    paths = pm_engine.infra.handoff_git._dirty_paths_in_tree(str(repo), pm_engine.infra.handoff_git._module_run_git)
 
     assert sorted(paths) == ["staged_new.md", "tracked.md", "untracked.md"]
     assert not any("ignored_dir" in path for path in paths)
@@ -1302,7 +1278,7 @@ def test_real_git_unborn_head_reports_untracked(hf, tmp_path):
     (repo / "first.md").write_text("first\n", encoding="utf-8")
     (repo / "ignored.txt").write_text("x\n", encoding="utf-8")
 
-    paths = hf._dirty_paths_in_tree(str(repo), hf._module_run_git)
+    paths = pm_engine.infra.handoff_git._dirty_paths_in_tree(str(repo), pm_engine.infra.handoff_git._module_run_git)
 
     assert sorted(paths) == [".gitignore", "first.md"]
 
@@ -1324,12 +1300,12 @@ def test_real_git_unborn_all_staged_is_dirty(hf, tmp_path):
     _git("add", ".gitignore", "a.md", "sub/b.md", cwd=repo)
 
     # 전제 실측: untracked 축은 비어 있다(전량 staged) — 그래도 dirty 여야 한다.
-    rc_others, out_others = hf._module_run_git(
+    rc_others, out_others = pm_engine.infra.handoff_git._module_run_git(
         ["-C", str(repo), "ls-files", "--others", "--exclude-standard"]
     )
     assert rc_others == 0 and out_others.strip() == ""
 
-    paths = hf._dirty_paths_in_tree(str(repo), hf._module_run_git)
+    paths = pm_engine.infra.handoff_git._dirty_paths_in_tree(str(repo), pm_engine.infra.handoff_git._module_run_git)
 
     assert sorted(paths) == [".gitignore", "a.md", "sub/b.md"]
 
@@ -1346,7 +1322,7 @@ def test_real_git_clean_tree_reports_empty(hf, tmp_path):
     _git("add", "a.md", cwd=repo)
     _git("commit", "-q", "-m", "init", cwd=repo)
 
-    assert hf._dirty_paths_in_tree(str(repo), hf._module_run_git) == []
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree(str(repo), pm_engine.infra.handoff_git._module_run_git) == []
 
 
 @requires_git_binary
@@ -1361,4 +1337,4 @@ def test_real_git_non_repo_is_unjudgeable(hf, tmp_path, monkeypatch):
     (plain / "file.md").write_text("x\n", encoding="utf-8")
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
 
-    assert hf._dirty_paths_in_tree(str(plain), hf._module_run_git) is None
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree(str(plain), pm_engine.infra.handoff_git._module_run_git) is None
