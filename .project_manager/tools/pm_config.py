@@ -1060,9 +1060,6 @@ def _print_protected_status(
 
     path = protected_hooks._protected_sidecar_path(pm_paths.home_at(REPO), name)
     sidecar = protected_hooks._read_protected_sidecar(pm_paths.home_at(REPO), name)
-    if path is None:
-        print("  훅 sidecar: (해소 불가 — worktree_pool 엔진 부재)")
-        return 0
     if sidecar is None:
         print(f"  훅 sidecar: {path} → (미설치) "
               f"⚠ 이 clone 엔 보호 훅이 아직 없다")
