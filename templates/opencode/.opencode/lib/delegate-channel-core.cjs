@@ -59,7 +59,7 @@ function pythonCandidates(platform = process.platform) {
     : [python3, python, py];
 }
 
-// local.conf의 기존 KEY=value·주석·last-wins 규약. ctx core도 이 파서를 재수출한다.
+// local.conf의 기존 KEY=value·주석·last-wins 규약. 실행기 선택(`runtime.py`)에만 쓴다.
 function parseLocalConf(text) {
   const conf = {};
   if (typeof text !== "string") return conf;
@@ -110,34 +110,76 @@ function validatedVersion(result) {
   return {version};
 }
 
-function* supportedPythonCandidates(root, {
-  spawnSync = childProcess.spawnSync,
-  platform = process.platform,
-  timeout = DECIDE_TIMEOUT_MS,
-  attempts = [],
-} = {}) {
+// local.conf `runtime.py`(program 한 토큰)의 실행기. 미설정이면 null, 판독 실패는 예외로 올린다.
+function runtimeCandidate(root, platform) {
   let runtime;
   try {
     runtime = parseLocalConf(fs.readFileSync(
       path.join(root, ".project_manager", "local.conf"), "utf8",
     ))["runtime.py"];
   } catch (error) {
-    if (error.code !== "ENOENT") {
-      attempts.push({label: "local.conf", failure: `local.conf 판독 실패(${error.message})`});
-      return;
+    if (error.code === "ENOENT") return null;
+    throw new Error(`local.conf 판독 실패(${error.message})`);
+  }
+  if (!runtime) return null;
+  const absolute = path.isAbsolute(runtime)
+    || (platform === "win32" && path.win32.isAbsolute(runtime));
+  const relative = runtime.includes("/") || (platform === "win32" && runtime.includes("\\"));
+  const command = !absolute && relative ? path.resolve(root, runtime) : runtime;
+  // runtime.py는 program 한 토큰이다. launcher 인자로 분할하거나 기본 후보로 강등하지 않는다.
+  return {command, prefixArgs: [], label: runtime};
+}
+
+// PATH(Windows 는 PATHEXT 확장자 포함)에서 실행 가능한 파일을 찾는다 — 프로세스를 띄우지 않는다.
+function findOnPath(command, platform, env) {
+  const pathValue = env.PATH || env.Path || "";
+  const delimiter = platform === "win32" ? ";" : ":";
+  const extensions = platform === "win32"
+    ? ["", ...String(env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)]
+    : [""];
+  for (const directory of pathValue.split(delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const file = path.join(directory, command + extension);
+      try {
+        if (!fs.statSync(file).isFile()) continue;
+        if (platform !== "win32") fs.accessSync(file, fs.constants.X_OK);
+        return file;
+      } catch {
+        // 없는 파일·실행 권한 없음은 다음 위치를 본다.
+      }
     }
   }
-  let candidates;
-  if (runtime) {
-    const absolute = path.isAbsolute(runtime)
-      || (platform === "win32" && path.win32.isAbsolute(runtime));
-    const relative = runtime.includes("/") || (platform === "win32" && runtime.includes("\\"));
-    const command = !absolute && relative ? path.resolve(root, runtime) : runtime;
-    // runtime.py는 program 한 토큰이다. launcher 인자로 분할하거나 기본 후보로 강등하지 않는다.
-    candidates = [{command, prefixArgs: [], label: runtime}];
-  } else {
-    candidates = pythonCandidates(platform);
+  return null;
+}
+
+// 일반 도구 판정용 실행기 하나를 고른다 — 버전 확인 subprocess 없이 runtime.py 또는 OS별 후보 순서 중
+// PATH 에 있는 첫 파일. 하한(3.11) 검사는 실제 board.py 가 같은 process 안에서 하고, 다른 후보로
+// 다시 실행하지 않는다.
+function selectPython(root, {platform = process.platform, env = process.env} = {}) {
+  const configured = runtimeCandidate(root, platform);
+  if (configured) return configured;
+  const candidates = pythonCandidates(platform);
+  for (const candidate of candidates) {
+    const file = findOnPath(candidate.command, platform, env);
+    if (file) return {...candidate, command: file};
   }
+  throw new Error(`Python 실행기 없음(PATH 에 ${candidates.map((item) => item.command).join("·")} 없음)`);
+}
+
+function* supportedPythonCandidates(root, {
+  spawnSync = childProcess.spawnSync,
+  platform = process.platform,
+  timeout = DECIDE_TIMEOUT_MS,
+  attempts = [],
+} = {}) {
+  let configured;
+  try {
+    configured = runtimeCandidate(root, platform);
+  } catch (error) {
+    attempts.push({label: "local.conf", failure: error.message});
+    return;
+  }
+  const candidates = configured ? [configured] : pythonCandidates(platform);
   const floorProbe = path.join(root, ".project_manager", "tools", "python_floor.py");
   const spawnOptions = {
     encoding: "utf8", timeout: Math.min(timeout || DECIDE_TIMEOUT_MS, DECIDE_TIMEOUT_MS), input: "",
@@ -310,5 +352,6 @@ module.exports = {
   pythonCandidates,
   supportedPythonCandidates,
   resolveSurface,
+  selectPython,
   validJudgment,
 };

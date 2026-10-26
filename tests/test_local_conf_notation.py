@@ -30,7 +30,6 @@ from pm_engine.app import repo_protection
 import importlib.util
 import inspect
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -478,22 +477,21 @@ def test_invariant_three_one_supply_path_per_value(conf_module):
 
 
 def test_adapter_parsers_read_the_new_per_harness_key(conf_module):
-    """엔진을 import 하지 않는 어댑터 파서도 같은 신표기를 읽는다(문법이 갈리면 값이 갈린다).
+    """하네스 어댑터는 local.conf 를 스스로 읽지 않는다 — 사용 한도·비율·구표기 판정은 엔진 한 벌이다.
 
-    Python 어댑터는 자체 파서 없이 엔진 공개 진입으로 conf 를 읽으므로 대상은 JS 파서다."""
+    Python 어댑터는 엔진 공개 진입으로, OpenCode JS core 는 `board.py hook-context`·`hook-tool` 로 conf 를
+    엔진이 읽게 한다. JS core 에 conf 키 이름·파일 경로가 다시 생기면 문법이 갈려 값이 갈린다."""
     adapters = (
         REPO / "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
     )
     for path in adapters:
         text = path.read_text(encoding="utf-8")
-        # suffix 표기는 **차단 대상 이름**으로만 등장한다(조회 자리 0) — 그 선언은 엔진 생성분이다.
         for harness in conf_schema.HARNESS_CHOICES:
             assert f"ctx_window_tokens_{harness}" not in text, path
-        assert conf_module.LEGACY_SUFFIX_PREFIX in text, path      # 차단 접두는 있어야 한다
-        assert "ctx_window_tokens" in text, path
-        # 사용 한도·비율은 어댑터가 해석하지 않는다 — 읽은 conf 를 엔진 읽기 함수(압축 한도 기록)에
-        # 넘긴다(T-0943).
-        assert "read_ctx_budget(" in text or "engine.ctx_budget(" in text, path
+        assert conf_module.LEGACY_SUFFIX_PREFIX not in text, path   # 차단 키 사본도 없다
+        assert "ctx_window_tokens" not in text and "local.conf" not in text, path
+        # 사용 한도·비율은 어댑터가 해석하지 않는다 — 관측만 엔진 ctx 판정에 넘긴다(T-0943).
+        assert "runHookContext(" in text, path
 
 
 # ── ⑤ 교체 안내 (키 단위 지목 · 자동 이관 없음) ────────────────────────────
@@ -804,45 +802,6 @@ def test_adapter_parser_stops_on_legacy_conf_before_resolving_values(
     install_ctx_record(tmp_path, {f"harness.{harness}.ctx_window_tokens": str(window)}, harness=harness)
     resolved = cli_hooks.context_status(home, harness=harness, tokens=window // 2, model=None)
     assert (resolved["status"], resolved["used_pct"]) == ("ok", 50)
-
-
-def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
-        conf_module, tmp_path):
-    """JS 파서도 같은 계약이다 — 같은 conf 를 넣고 node 프로세스로 값을 단언한다."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node 없음")
-    core = REPO / "templates/opencode/.opencode/lib/ctx-guard-core.cjs"
-    script = (
-        f'const m = require({str(core)!r});'
-        'const c = m.loadLocalConf(process.argv[1]);'
-        'console.log(c["ctx.precompact_at_pct"], c["harness.opencode.ctx_window_tokens"]);'
-    )
-    _write_conf(tmp_path, _ADAPTER_LEGACY_CONF)
-    blocked = subprocess.run([node, "-e", script, str(tmp_path)], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=120)
-
-    assert blocked.returncode != 0, blocked.stdout
-    assert blocked.stdout.strip() == ""
-    assert local_conf_cli.adapter_stop_message(
-        tmp_path / ".project_manager" / "local.conf",
-        sorted(_ADAPTER_LEGACY_KEYS)) in blocked.stderr
-
-    _write_conf(tmp_path, _ADAPTER_NEW_CONF)
-    resolved = subprocess.run([node, "-e", script, str(tmp_path)], capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=120)
-    assert resolved.returncode == 0, resolved.stderr
-    assert resolved.stdout.strip() == "10 23456"
-
-
-@pytest.mark.parametrize("relpath", [
-    "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
-])
-def test_adapter_blocked_key_block_is_generated_not_hand_copied(conf_module, relpath):
-    """각 파서가 품은 차단 키 선언이 엔진 생성 산출과 **글자 단위로** 같다(사본 drift 0)."""
-    style = {".py": "python", ".cjs": "js"}[Path(relpath).suffix]
-    assert local_conf_cli.render_adapter_block(style) in (
-        REPO / relpath).read_text(encoding="utf-8")
 
 
 @pytest.fixture

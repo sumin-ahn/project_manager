@@ -390,91 +390,112 @@ def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(home, mon
     }, home) == {}
 
 
-def test_opencode_write_tools_reach_the_board_with_session_and_cwd():
+def _opencode_engine_root(tmp_path: Path) -> Path:
+    """판정 경계가 설치 확인·실행기 선택에 쓰는 최소 엔진 루트 — board.py 자리와 runtime.py 한 토큰."""
+    root = tmp_path / "engine"
+    (root / ".project_manager" / "tools").mkdir(parents=True)
+    (root / ".project_manager" / "tools" / "board.py").write_text("", encoding="utf-8")
+    (root / ".project_manager" / "local.conf").write_text("runtime.py=python3\n", encoding="utf-8")
+    return root
+
+
+_OPENCODE_REPLY = r"""
+function reply(verdict) {
+  return {status:0, stdout:JSON.stringify({version:1, git:{verdict, cwd_identity:"slot", reason:"x"}, context:null,
+    context_error:null, recall:null, recall_error:null}) + "\n", stderr:""};
+}
+"""
+
+
+def test_opencode_write_tools_reach_the_board_with_session_and_cwd(tmp_path):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node 없음")
-    script = r'''
+    script = _OPENCODE_REPLY + r'''
 const assert = require("node:assert");
 const m = require("./git-anchor-core.cjs");
 const path = require("node:path");
-for (const tool of ["write", "edit", "apply_patch"]) assert.strictEqual(m.toolInputNeedsJudgment(tool, {}), true);
-assert.strictEqual(m.toolInputNeedsJudgment("read", {filePath: "/x"}), false);
-for (const platform of ["linux", "win32"]) {
-const prefix = platform === "win32" ? ["-3"] : [];
-const program = platform === "win32" ? "py" : "python3";
+const root = process.argv[1];
+(async () => {
 const seen = [];
-const probes = [];
 const spy = (py, argv, opts) => {
-  assert.strictEqual(py, program);
-  if (argv[argv.length-1].endsWith("python_floor.py")) {
-    probes.push(argv);
-    assert.deepStrictEqual(argv, [...prefix, path.join("/engine", ".project_manager", "tools", "python_floor.py")]);
-    assert.deepStrictEqual(opts, {encoding:"utf8", timeout:10000, input:""});
-    return {status:0, stdout:"Python 3.12\n"};
-  }
-  assert.deepStrictEqual(argv.slice(0, prefix.length), prefix);
-  assert.strictEqual(argv[prefix.length], path.join("/engine", ".project_manager", "tools", "board.py"));
-  assert.deepStrictEqual(opts, {encoding:"utf8", timeout:10000, input:JSON.stringify({filePath:"/h/work/app_2/a.py"})});
-  seen.push([argv.slice(prefix.length+1), opts.input]);
-  return {status: 0, stdout: JSON.stringify({verdict: "deny", cwd_identity: "slot", reason: "x"}) + "\n", stderr: ""};
+  assert.strictEqual(py, "python3");
+  assert.deepStrictEqual(argv, [path.join(root, ".project_manager", "tools", "board.py"), "hook-tool", "--session", "S"]);
+  assert.deepStrictEqual(Object.keys(opts).sort(), ["encoding", "input", "maxBuffer", "timeout"]);
+  const request = JSON.parse(opts.input);
+  seen.push([request.tool_name, request.cwd, request.tool_input, request.shell_command]);
+  return reply(request.tool_name === "read" ? "ok" : "deny");
 };
-const got = m.judgeToolInput("/engine", "write", {filePath: "/h/work/app_2/a.py"}, {session: "S", cwd: "/h", spawnSync: spy, platform});
-assert.strictEqual(got.verdict, "deny");
-assert.strictEqual(probes.length, 1);
-assert.strictEqual(seen.length, 1);
-assert.deepStrictEqual(seen[0], [["git-tool-input", "--session", "S", "--cwd", "/h", "--tool", "write"], JSON.stringify({filePath: "/h/work/app_2/a.py"})]);
+const boundary = m.createToolBoundary({root, directory:"/h", worktree:"/h", spawnSync:spy,
+  client:{tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}},
+  contextFor:() => null, acceptContext:async () => {}});
+const args = {filePath: "/h/work/app_2/a.py"};
+for (const tool of ["write", "edit", "apply_patch"]) {
+  await assert.rejects(boundary.before({tool, sessionID:"S"}, {args}), /\[git-anchor\/deny\] x/);
 }
+// 읽기 도구도 같은 판정 경계를 지난다(선필터 없음) — 판정은 엔진이 한다.
+await boundary.before({tool:"read", sessionID:"S"}, {args});
+assert.deepStrictEqual(seen, ["write", "edit", "apply_patch", "read"].map((tool) => [tool, "/h", args, null]));
 console.log("OPENCODE_SLOT_WRITE_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
 '''
     result = subprocess.run(
-        [node, "-e", script], cwd=OPEN_CORE.parent, check=True,
+        [node, "-e", script, str(_opencode_engine_root(tmp_path))], cwd=OPEN_CORE.parent, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "OPENCODE_SLOT_WRITE_OK" in result.stdout
 
 
-def test_opencode_child_session_is_judged_as_its_root_session():
+def test_opencode_child_session_is_judged_as_its_root_session(tmp_path):
     """native task 자식 세션(parentID 있음)은 task 를 연 최상위 세션 ID 로 판정받는다."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node 없음")
-    script = r'''
+    script = _OPENCODE_REPLY + r'''
 const assert = require("node:assert");
 const m = require("./git-anchor-core.cjs");
+const root = process.argv[1];
 (async () => {
   const sessions = {C: {id: "C", parentID: "B"}, B: {id: "B", parentID: "A"}, A: {id: "A"}};
   const lookups = [];
   const judged = [];
-  const hooks = await m.makeGitAnchorPlugin(
-    (_root, cwd, command, options) => { judged.push(options.session); return {verdict: "ok", cwd_identity: "slot", reason: "x"}; },
-    (_root, tool, args, options) => { judged.push(options.session); return {verdict: "ok", cwd_identity: "slot", reason: "x"}; },
-  )({directory: "/h", worktree: "/h", client: {
-    tui: {showToast: async () => {}},
-    session: {get: async ({path}) => { lookups.push(path.id); return {data: sessions[path.id]}; }},
-  }});
-  await hooks["tool.execute.before"]({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}});
-  await hooks["tool.execute.before"]({tool: "bash", sessionID: "C"}, {args: {command: "git commit -m x"}});
+  const recalls = [];
+  const boundary = m.createToolBoundary({root, directory: "/h", worktree: "/h",
+    spawnSync: (_py, argv, opts) => {
+      judged.push(argv[argv.length - 1]);
+      recalls.push(JSON.parse(opts.input).recall);
+      return reply("ok");
+    },
+    client: {
+      tui: {showToast: async () => {}},
+      session: {get: async ({path}) => { lookups.push(path.id); return {data: sessions[path.id]}; }},
+    }, contextFor: () => null, acceptContext: async () => {}});
+  await boundary.before({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}});
+  await boundary.before({tool: "bash", sessionID: "C"}, {args: {command: "git commit -m x"}});
   assert.deepStrictEqual(judged, ["A", "A"]);
   assert.deepStrictEqual(lookups, ["C", "B", "A"]);
+  // 원칙 recall 은 호출한 자식 세션 자신의 ID 로, 자식이라 main_thread=false(면제)다.
+  assert.deepStrictEqual(recalls, [
+    {session: "C", on: "edit", text: "/h/work/app_1/a.py", main_thread: false},
+    {session: "C", on: "shell", text: "git commit -m x", main_thread: false},
+  ]);
 
   const toasts = [];
-  const failing = await m.makeGitAnchorPlugin(
-    () => { throw new Error("판정까지 오면 안 됨"); },
-    () => { throw new Error("판정까지 오면 안 됨"); },
-  )({directory: "/h", worktree: "/h", client: {
-    tui: {showToast: async (value) => toasts.push(value)},
-    session: {get: async () => { throw new Error("SDK down"); }},
-  }});
-  await failing["tool.execute.before"]({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}});
+  const failing = m.createToolBoundary({root, directory: "/h", worktree: "/h",
+    spawnSync: () => { throw new Error("판정까지 오면 안 됨"); },
+    client: {
+      tui: {showToast: async (value) => toasts.push(value)},
+      session: {get: async () => { throw new Error("SDK down"); }},
+    }, contextFor: () => null, acceptContext: async () => {}});
+  await failing.before({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}});
   const context = {system: []};
-  await failing["experimental.chat.system.transform"]({sessionID: "C"}, context);
-  assert.match(context.system[0], /판정 인프라 예외\(SDK down\)/);
+  failing.inject({sessionID: "C"}, context);
+  assert.match(context.system[0], /판정 인프라 예외\(세션 확인 실패: SDK down\)/);
   console.log("OPENCODE_ROOT_SESSION_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
     result = subprocess.run(
-        [node, "-e", script], cwd=OPEN_CORE.parent, check=True,
+        [node, "-e", script, str(_opencode_engine_root(tmp_path))], cwd=OPEN_CORE.parent, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "OPENCODE_ROOT_SESSION_OK" in result.stdout

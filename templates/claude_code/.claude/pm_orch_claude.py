@@ -40,35 +40,10 @@ DEFAULT_MODEL = "claude-opus-5"  # PM 세션 기본 = opus (품질 우선·사�
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
 
 
-# Bash 명령 선필터(성능 전용 — 판정은 엔진 `pm_engine.cli.hooks` 가 한다). 대상은 git 호출(앵커·파괴 형태) · 엔진 도구
-# 호출(사본 정체) · pytest(트리 정체) · cd 잔존 · 파일 삭제·이동 명령과 삭제 API · 허용 표식이다.
-# opencode `git-anchor-core.cjs`·codex `pm_orch_codex.py` 선필터와 같은 집합이다(테스트가 대조).
-GIT_ANCHOR_SHELL_PREFILTERS = (
-    r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>,])",
-    r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)",
-    r"(?:^|[;&|])\s*cd(?=\s)",
-    r"(?<![A-Za-z0-9_.-])(?:rm|rmdir|unlink|shred|mv|find|rsync)(?=\s|$)",
-    r"(?<![A-Za-z0-9_])(?:rmtree|remove|removedirs|unlink|rmdir|rmSync|rmdirSync|unlinkSync"
-    r"|rm_rf|rm_r|rename|replace|move|renameSync)(?![A-Za-z0-9_])",
-    r"git[ \t]+허용[ \t]*:",
-)
+# 사용자 1회 허용 표식 — 사용자 프롬프트 훅이 허용 기록 진입 여부를 고르는 데만 쓴다.
 GIT_GRANT_MARKER = r"git[ \t]+허용[ \t]*:"
-GIT_GRANT_DIR_NAME = "git-grants"
-# 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
-GIT_ANCHOR_SLOT_PATH_MARK = "/work/"
 # git-anchor 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 엔진이 입력을 본다.
 GIT_ANCHOR_SHELL_TOOL = "Bash"
-
-
-def _shell_command_needs_judgment(command: str) -> bool:
-    prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
-    normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
-    return (
-        any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
-        or ".project_manager/tools/" in normalized
-        or GIT_GRANT_DIR_NAME in normalized
-        or GIT_ANCHOR_SLOT_PATH_MARK in normalized
-    )
 
 
 def _hook_session_id(stdin: dict) -> str:
@@ -156,8 +131,8 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
             hooks.judge_tool_input(hooks.adapter_home(root), session, anchor, tool, tool_input)
         )
     command = tool_input.get("command")
-    # Bash 는 매 호출 훅이 뜬다 — 판정 대상 비포함은 엔진 import조차 하지 않는 선필터(핫패스 비용 0).
-    if not isinstance(command, str) or not _shell_command_needs_judgment(command):
+    # 셸 명령 원문은 거르지 않고 전부 엔진 판정에 넘긴다 — 판정 대상인지는 엔진이 정한다.
+    if not isinstance(command, str):
         return None
     from pm_engine.cli import hooks
 

@@ -1419,10 +1419,12 @@ def test_claude_hook_prefilter_warn_and_deny(monkeypatch, topology):
 
     monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", FakeBoard.judge_git_anchor_command)
     base = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(home)}
-    assert driver.git_anchor_hook_evaluate(
+    # 선필터 없음 — git 이 아닌 명령도 원문 그대로 엔진 판정에 도달한다.
+    plain = driver.git_anchor_hook_evaluate(
         {**base, "tool_input": {"command": "python3 build.py"}}, home
-    ) is None
-    assert calls == []  # 성능 DoD: 비-git은 seam import/호출 0.
+    )["hookSpecificOutput"]
+    assert plain["additionalContext"] == "[git-anchor/warn] fixture"
+    assert calls == [(str(home), "python3 build.py")]
     warn = driver.git_anchor_hook_evaluate(
         {**base, "tool_input": {"command": "git commit -m x"}}, home
     )["hookSpecificOutput"]
@@ -1812,33 +1814,6 @@ def test_codex_bash_axis_ok_stays_the_measured_allow_shape_not_zero_bytes(topolo
     assert dispatcher.git_anchor_hook_evaluate(non_bash, home) == {}
 
 
-def test_codex_prefilter_skips_board_import_for_non_git_bash(monkeypatch, topology):
-    """git·엔진·pytest·cd 관련이 아닌 Bash 명령은 board import 조차 하지 않는다(핫패스 비용 0
-    — claude `git_anchor_hook_evaluate` 와 같은 선필터를 그대로 옮겨왔다)."""
-    dispatcher = _load("git_anchor_codex_prefilter", CODEX_DISPATCHER)
-    home, _slot = topology
-    calls = []
-
-    class FakeBoard:
-        @staticmethod
-        def judge_git_anchor_command(root, session, cwd, command, grants=False):
-            calls.append((cwd, command))
-            return {"verdict": "warn", "cwd_identity": "pm-home", "reason": "fixture"}
-
-    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", FakeBoard.judge_git_anchor_command)
-    payload = _codex_live_bash_event()
-    payload["cwd"] = str(home)
-    payload["tool_input"] = {"command": "python3 build.py"}
-
-    assert dispatcher.git_anchor_hook_evaluate(payload, home) == {}
-    assert calls == []
-
-    payload["tool_input"] = {"command": "git commit -m x"}
-    warn = dispatcher.git_anchor_hook_evaluate(payload, home)
-    assert warn == {"systemMessage": "[git-anchor/warn] fixture", "suppressOutput": False}
-    assert calls == [(str(home), "git commit -m x")]
-
-
 def test_codex_dispatcher_routes_bash_tool_names_to_the_self_invoking_child(topology):
     """`dispatch_hook` 이 Bash tool_name 이면 git-anchor 기능(자기참조 `--git-anchor-hook`)을
     스폰한다(등록 축은 tool_name 만 본다 — git 관련성 선별은 그 자식 안에서 돈다). 다른
@@ -1959,299 +1934,191 @@ def test_codex_run_git_anchor_hook_writes_the_measured_allow_shape_for_ok(topolo
     assert stdout.getvalue() == "{}\n"
 
 
-def test_claude_and_opencode_prefilter_target_sets_match(monkeypatch, topology):
-    """R2 26명령과 F-006 4명령의 양 어댑터 선필터 집합은 동형이어야 한다."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node 없음")
-    driver = _load("git_anchor_prefilter_parity", CLAUDE_DRIVER)
-    home, _slot = topology
-    cases = [
-        ("python3 build.py", False),
-        ("echo x && git status", True),
-        ("/usr/bin/git>out status", True),
-        ("g''it add tests/shared.txt", True),
-        ("git\\\n add tests/shared.txt", True),
-        ('echo \\"; git\\\n add tests/shared.txt', True),
-        ("$WRAPPER git add tests/shared.txt", True),
-        ("python3 .project_manager/tools/board.py list", True),
-        (r"python .project_manager\tools\board.py list", True),
-        ("python3 -m pytest tests/ -q", True),
-        ("pytest tests/", True),
-        ("cd /tmp && python3 build.py", True),
-        ("sed -n '1,5p' .project_manager/tools/board.py", True),
-        ("find . -name '*.py' | xargs grep -l pytest", True),
-        ("docker run img pytest tests/", True),
-        ("npm test -- --grep 'cd foo && bar'", False),
-        ("echo '.project_manager/tools/'", True),
-        ("(cd /tmp && ls)", False),
-        ("cat <<'EOF'\ncd /tmp && ls\nEOF", False),
-        ("cat <<'EOF'\ngit status\nEOF", True),
-        ("env -C /elsewhere pytest tests/", True),
-        ("command git status", True),
-        ("echo git status", True),
-        ("legit status", False),
-        ('python3 ".project_manager/tools/board.py" list', True),
-        ("printf cd", False),
-        # F-006: R2의 26명령 대조에 추가한 과소 매칭 네 형태.
-        ("python3 .project_manager//tools/board.py claim T-1", True),
-        ('cd "/tmp/my dir" && ls', True),
-        ("cd X; cmd", True),
-        ("cmd && cd X", True),
-        # 파일 삭제·이동 명령·삭제 API·허용 표식·허용 기록 폴더(슬롯·공용 저장소 우회와 허용 위조).
-        ("rm -rf work/product_1", True),
-        ("sudo /bin/mv a b", True),
-        ("find . -delete", True),
-        ("rsync -a --delete src/ dst/", True),
-        ("python3 -c \"import shutil; shutil.rmtree('x')\"", True),
-        ("python3 -c \"subprocess.run(['git', 'branch', '-D', 'x'])\"", True),
-        ("node -e \"require('fs').rmSync('x')\"", True),
-        ("echo 'git 허용: git branch -D x'", True),
-        ("cat .project_manager/.local/git-grants/a.json", True),
-        ("echo confirm firmware removed", False),
-        ("npm run format", False),
-        # 명령 속 슬롯 경로(셸 쓰기 경고 대상).
-        ("sed -i s/a/b/ /srv/pm/work/app_1/a.txt", True),
-    ]
-    commands = [command for command, _expected in cases]
-    expected_matches = [expected for _command, expected in cases]
-    calls = []
-
-    class FakeBoard:
-        @staticmethod
-        def judge_git_anchor_command(root, session, cwd, command, grants=False):
-            calls.append((cwd, command))
-            return {"verdict": "ok", "cwd_identity": "pm-home", "reason": "fixture"}
-
-    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", FakeBoard.judge_git_anchor_command)
-    claude_matches = []
-    for command in commands:
-        before = len(calls)
-        payload = {
-            "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(home),
-            "tool_input": {"command": command},
-        }
-        assert driver.git_anchor_hook_evaluate(payload, home) is None
-        claude_matches.append(len(calls) == before + 1)
-
-    script = r'''
-const m = require("./git-anchor-core.cjs");
-const commands = JSON.parse(process.argv[1]);
-process.stdout.write(JSON.stringify(commands.map((command) => m.containsGitCommand(command))));
-'''
-    result = subprocess.run(
-        [node, "-e", script, json.dumps(commands)], cwd=OPEN_CORE.parent, check=True,
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    opencode_matches = json.loads(result.stdout)
-
-    dispatcher = _load("git_anchor_prefilter_parity_codex", CODEX_DISPATCHER)
-    codex_calls = []
-
-    class CodexFakeBoard:
-        @staticmethod
-        def judge_git_anchor_command(root, session, cwd, command, grants=False):
-            codex_calls.append((cwd, command))
-            return {"verdict": "ok", "cwd_identity": "pm-home", "reason": "fixture"}
-
-    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", CodexFakeBoard.judge_git_anchor_command)
-    codex_matches = []
-    for command in commands:
-        before = len(codex_calls)
-        payload = _codex_live_bash_event()
-        payload["cwd"] = str(home)
-        payload["tool_input"] = {"command": command}
-        dispatcher.git_anchor_hook_evaluate(payload, home)
-        codex_matches.append(len(codex_calls) == before + 1)
-    assert claude_matches == opencode_matches == codex_matches == expected_matches
-
-
 def test_t0934_board_spawn_once_prefix_input_and_failure(tmp_path):
+    """판정 board.py 는 버전 확인 process 없이 고른 실행기로 정확히 한 번 뜨고, 실패는 재시도 없이 올린다.
+
+    실행기는 runtime.py 한 토큰, 없으면 OS별 후보 순서 중 PATH(Windows 는 PATHEXT)의 첫 실행 파일이다.
+    응답은 LF 로 끝나는 JSON 한 줄 전체여야 하고 hook-tool 6키·ctx 11키 형식이 맞아야 한다."""
     node = shutil.which("node")
     assert node is not None, "Node가 있어야 board spawn 계약을 검증할 수 있다"
     root = tmp_path / "engine"
-    tools = root / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    shutil.copyfile(BOARD_PY.with_name("python_floor.py"), tools / "python_floor.py")
-    script = r'''
+    (root / ".project_manager" / "tools").mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, mode in (("python3", 0o644), ("python", 0o755), ("py.EXE", 0o644)):
+        (bin_dir / name).write_text("", encoding="utf-8")
+        (bin_dir / name).chmod(mode)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    script = r"""
 const assert = require("node:assert");
 const path = require("node:path");
 const fs = require("node:fs");
 const m = require("./git-anchor-core.cjs");
 const leaf = require("./delegate-channel-core.cjs");
-const root = process.argv[1];
+const [root, bin, emptyBin] = process.argv.slice(1);
 const conf = path.join(root, ".project_manager", "local.conf");
-const floor = path.join(root, ".project_manager", "tools", "python_floor.py");
 const board = path.join(root, ".project_manager", "tools", "board.py");
+const git = {verdict:"deny", cwd_identity:"slot", reason:"원문\r\n거부"};
+const decision = {version:1, status:"ok", measured:true, used_pct:78, level:"nudge2", notice:null,
+  guidance:"안내", emit:true, compaction_new:false, compaction_guidance:null, compaction_boundary_id:null};
+const toolRequest = {version:1, cwd:root, tool_name:"write", tool_input:{filePath:"원문\r\n파일", content:"UTF-8 원문"},
+  shell_command:null, context:null, recall:null};
+const operations = {
+  tool: {argv:["hook-tool", "--session", "ROOT"], input:JSON.stringify(toolRequest),
+    reply:{version:1, git, context:null, context_error:null, recall:null, recall_error:null},
+    call:(options) => m.runHookTool(root, "ROOT", toolRequest, options)},
+  context: {argv:["hook-context", "--harness", "opencode", "--session", "ses 1"],
+    input:JSON.stringify({version:1, tokens:156000, model:null, main_thread:true, boundary:null}), reply:decision,
+    call:(options) => m.runHookContext(root, {session:"ses 1", tokens:156000, model:null, main_thread:true,
+      boundary:null}, options)},
+  grant: {argv:["git-grant", "--session", "SID", "--cwd", root], input:"허용 원문\r\n", reply:{granted:["git reset --hard"]},
+    call:(options) => m.recordGrants(root, "SID", root, "허용 원문\r\n", options)},
+};
 for (const platform of ["linux", "win32"]) {
   for (const configured of [false, true]) {
     const runtime = path.join(root, "Python with space", "python.exe");
     fs.writeFileSync(conf, "runtime.py=" + (configured ? runtime : "") + "\n");
-    const chosen = configured ? {command:runtime, prefixArgs:[]} : leaf.pythonCandidates(platform)[0];
-    for (const operation of ["command", "tool", "grant"]) {
-      for (const outcome of ["success", "rc", "missing", "timeout", "throw", "json", "null"]) {
+    const env = {PATH: bin, PATHEXT: ".EXE"};
+    // linux: python3 은 실행 권한이 없어 건너뛰고 python. win32: py(PATHEXT .EXE) 와 -3.
+    const chosen = configured ? {command:runtime, prefixArgs:[]}
+      : platform === "win32" ? {command:path.join(bin, "py.EXE"), prefixArgs:["-3"]}
+      : {command:path.join(bin, "python"), prefixArgs:[]};
+    const selected = leaf.selectPython(root, {platform, env});
+    assert.deepStrictEqual([selected.command, selected.prefixArgs], [chosen.command, chosen.prefixArgs]);
+    for (const [name, operation] of Object.entries(operations)) {
+      for (const outcome of ["success", "rc", "missing", "timeout", "throw", "json", "null", "diagnostic", "shape"]) {
         const calls = [];
-        const prompt = "git 허용: git reset --hard\r\n원문";
-        const payload = {filePath: "원문\r\n파일", content:"UTF-8 원문"};
-        const argv = operation === "command"
-          ? ["git-anchor", "--session", "SID", "--cwd", root, "--command", "git reset --hard", "--grants"]
-          : operation === "tool"
-          ? ["git-tool-input", "--session", "SID", "--cwd", root, "--tool", "write"]
-          : ["git-grant", "--session", "SID", "--cwd", root];
-        const input = operation === "command" ? undefined : operation === "tool" ? JSON.stringify(payload) : prompt;
         const spawnSync = (command, args, options) => {
-          const probe = args[args.length-1] === floor;
-          calls.push({probe,command,args,options});
+          calls.push(command);
           assert.strictEqual(command, chosen.command);
-          if (probe) {
-            assert.deepStrictEqual(args, [...chosen.prefixArgs, floor]);
-            assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, input:""});
-            return {status:0, stdout:"Python 3.12\n"};
-          }
-          assert.deepStrictEqual(args, [...chosen.prefixArgs, board, ...argv]);
-          assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, input});
+          assert.deepStrictEqual(args, [...chosen.prefixArgs, board, ...operation.argv]);
+          assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, maxBuffer:1048576, input:operation.input});
           if (outcome === "throw") throw new Error("engine throw");
           if (outcome === "null") return null;
           if (outcome === "rc") return {status:7, stderr:"engine rc"};
           if (outcome === "missing") return {status:null, error:{code:"ENOENT", message:"engine missing"}};
           if (outcome === "timeout") return {status:null, error:{code:"ETIMEDOUT", message:"engine timeout"}};
-          return {status:0, stdout:outcome === "json" ? "bad JSON\r\n" : JSON.stringify(
-            operation === "grant" ? {granted:["git reset --hard"]}
-              : {verdict:"deny", cwd_identity:"slot", reason:"원문\r\n거부"}) + "\r\n"};
+          if (outcome === "json") return {status:0, stdout:"bad JSON\n"};
+          const line = JSON.stringify(operation.reply) + "\n";
+          if (outcome === "diagnostic") return {status:0, stdout:"진단 출력\n" + line};
+          if (outcome === "shape") return {status:0, stdout:JSON.stringify({version:1}) + "\n"};
+          return {status:0, stdout:line};
         };
-        const options = {spawnSync, platform, session:"SID", cwd:root, grants:true};
-        const call = () => operation === "command" ? m.judgeCommand(root, root, "git reset --hard", options)
-          : operation === "tool" ? m.judgeToolInput(root, "write", payload, options)
-          : m.recordGrants(root, "SID", root, prompt, options);
-        if (outcome === "throw") assert.throws(call, /engine throw/);
-        else if (operation === "grant" && outcome !== "success") assert.throws(call);
-        else {
+        const call = () => operation.call({spawnSync, platform, env});
+        if (outcome === "success") {
           const got = call();
-          if (operation === "grant") assert.deepStrictEqual(got, ["git reset --hard"]);
-          else if (outcome === "success") assert.deepStrictEqual(got, {
-            verdict:"deny", cwd_identity:"slot", reason:"원문\r\n거부"});
-          else assert.strictEqual(got.verdict, "warn");
+          assert.deepStrictEqual(got, name === "grant" ? ["git reset --hard"] : operation.reply);
+        } else if (outcome === "rc") {
+          assert.throws(call, /engine rc/);
+        } else if (outcome === "shape" && name === "grant") {
+          assert.throws(call, /허용 기록 결과 JSON 형식 불명/);
+        } else {
+          assert.throws(call, Error, name + ":" + outcome);
         }
-        assert.strictEqual(calls.length, 2, "one probe, one actual engine, no retry");
-        assert.strictEqual(calls[1].probe, false);
+        assert.strictEqual(calls.length, 1, "one actual engine, no probe, no retry");
       }
     }
   }
 }
 fs.writeFileSync(conf, "runtime.py=broken-runtime\n");
 let calls = 0;
-const spawnSync = () => {calls += 1; return {status:9009, error:null, stderr:"Store alias"};};
-const warned = m.judgeCommand(root, root, "git reset --hard", {spawnSync,platform:"win32"});
-assert.strictEqual(warned.verdict, "warn");
-assert.match(warned.reason, /broken-runtime.*rc=9009/);
-assert.strictEqual(calls, 1, "failed explicit runtime must not execute board or another program");
+const spawnSync = (command) => {
+  calls += 1;
+  assert.strictEqual(command, "broken-runtime");
+  return {status:9009, error:null, stderr:"Store alias"};
+};
+assert.throws(() => m.runHookTool(root, "ROOT", toolRequest, {spawnSync, platform:"win32"}), /Store alias/);
+assert.strictEqual(calls, 1, "failed explicit runtime must not execute another program");
+fs.writeFileSync(conf, "runtime.py=\n");
+let none = 0;
+assert.throws(() => m.runHookTool(root, "ROOT", toolRequest, {spawnSync:() => { none += 1; }, platform:"linux",
+  env:{PATH: emptyBin}}), /Python 실행기 없음/);
+assert.strictEqual(none, 0, "no interpreter means no process");
 console.log("T0934_BOARD_ONCE_OK");
-'''
-    result = subprocess.run([node, "-e", script, str(root)], cwd=OPEN_CORE.parent,
+"""
+    result = subprocess.run([node, "-e", script, str(root), str(bin_dir), str(empty_bin)], cwd=OPEN_CORE.parent,
                             capture_output=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
     assert "T0934_BOARD_ONCE_OK" in result.stdout
 
 
-def test_opencode_thin_plugin_and_core_node_selfcheck():
+def test_opencode_thin_plugin_and_core_node_selfcheck(tmp_path):
     assert OPEN_PLUGIN.is_file() and OPEN_CORE.is_file()
     plugin = OPEN_PLUGIN.read_text(encoding="utf-8")
     assert plugin.count("export const") == 1 and "GitAnchorPlugin" in plugin
     node = shutil.which("node")
     if node is None:
         pytest.skip("node 없음")
-    script = r'''
+    root = tmp_path / "engine"
+    (root / ".project_manager" / "tools").mkdir(parents=True)
+    (root / ".project_manager" / "tools" / "board.py").write_text("", encoding="utf-8")
+    (root / ".project_manager" / "local.conf").write_text("runtime.py=python3\n", encoding="utf-8")
+    script = r"""
 const m = require("./git-anchor-core.cjs");
 const assert = require("node:assert");
-assert.strictEqual(m.containsGitCommand("python3 build.py"), false);
-assert.strictEqual(m.containsGitCommand("echo x && git status"), true);
-assert.strictEqual(m.containsGitCommand("/usr/bin/git>out status"), true);
-assert.strictEqual(m.containsGitCommand("g''it add tests/shared.txt"), true);
-assert.strictEqual(m.containsGitCommand("git\\\n add tests/shared.txt"), true);
-assert.strictEqual(m.containsGitCommand('echo \\"; git\\\n add tests/shared.txt'), true);
-assert.strictEqual(m.containsGitCommand('$WRAPPER git add tests/shared.txt'), true);
-assert.strictEqual(m.containsGitCommand("python3 .project_manager/tools/board.py list"), true);
-assert.strictEqual(m.containsGitCommand("python3 -m pytest tests/ -q"), true);
-assert.strictEqual(m.containsGitCommand("cd /tmp && python3 build.py"), true);
-assert.strictEqual(m.containsGitCommand("python3 .project_manager//tools/board.py claim T-1"), true);
-assert.strictEqual(m.containsGitCommand('cd "/tmp/my dir" && ls'), true);
-assert.strictEqual(m.containsGitCommand("cd X; cmd"), true);
-assert.strictEqual(m.containsGitCommand("cmd && cd X"), true);
-let calls = 0;
-const fake = (py, argv, opts) => {
-  if (argv[argv.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
-  calls += 1;
-  return {status:0, stdout:JSON.stringify({verdict:"warn",cwd_identity:"pm-home",reason:"fixture"})+"\n", stderr:""};
-};
-assert.strictEqual(m.judgeCommand("/r", "/r", "python3 build.py", {spawnSync: fake}).verdict, "ok");
-assert.strictEqual(calls, 0);
-assert.strictEqual(m.judgeCommand("/r", "/r", "git commit -m x", {spawnSync: fake}).verdict, "warn");
-assert.strictEqual(calls, 1);
-assert.strictEqual(m.judgeCommand("/r", "/r", "python3 .project_manager/tools/board.py list", {spawnSync: fake}).verdict, "warn");
-assert.strictEqual(m.judgeCommand("/r", "/r", "python3 -m pytest tests/ -q", {spawnSync: fake}).verdict, "warn");
-assert.strictEqual(m.judgeCommand("/r", "/r", "cd /tmp && python3 build.py", {spawnSync: fake}).verdict, "warn");
-assert.strictEqual(calls, 4);
+const root = process.argv[1];
 assert.strictEqual(typeof m.GitAnchorPlugin, "function");
 assert.strictEqual(typeof m.makeGitAnchorPlugin, "function");
+assert.strictEqual(typeof m.createToolBoundary, "function");
+
+function reply(git) {
+  return {status:0, stdout:JSON.stringify({version:1, git, context:null, context_error:null, recall:null,
+    recall_error:null}) + "\n", stderr:""};
+}
 
 (async () => {
   const toasts = [];
-  const judge = (_root, cwd, command) => ({
-    verdict: command.includes("git add") ? "deny" : "warn",
-    cwd_identity: cwd.endsWith("slot") ? "slot" : "pm-home",
-    reason: cwd.endsWith("slot") ? "slot fixture" : "home fixture",
-  });
-  const factory = m.makeGitAnchorPlugin(judge);
-  const hooks = await factory({
-    directory: "/repo",
-    worktree: "/repo",
+  const spawnSync = (_command, _args, options) => {
+    const request = JSON.parse(options.input);
+    const command = request.shell_command;
+    return reply({
+      verdict: command.includes("git add") ? "deny" : "warn",
+      cwd_identity: request.cwd.endsWith("slot") ? "slot" : "pm-home",
+      reason: request.cwd.endsWith("slot") ? "slot fixture" : "home fixture",
+    });
+  };
+  const boundary = m.createToolBoundary({
+    root, directory: "/repo", worktree: "/repo", spawnSync,
     client: {tui: {showToast: async (value) => toasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
+    contextFor: () => null, acceptContext: async () => {},
   });
-  await hooks["tool.execute.before"](
-    {tool:"bash", sessionID:"A"}, {args:{command:"git commit -m a", cwd:"/repo"}}
-  );
-  await hooks["tool.execute.before"](
-    {tool:"bash", sessionID:"B"}, {args:{command:"git commit -m b", cwd:"/repo/slot"}}
-  );
+  await boundary.before({tool:"bash", sessionID:"A"}, {args:{command:"git commit -m a", cwd:"/repo"}});
+  await boundary.before({tool:"bash", sessionID:"B"}, {args:{command:"git commit -m b", cwd:"/repo/slot"}});
   const a1 = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID:"A"}, a1);
+  boundary.inject({sessionID:"A"}, a1);
   assert.strictEqual(a1.system.length, 1);
   assert.match(a1.system[0], /home fixture/);
   const a2 = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID:"A"}, a2);
+  boundary.inject({sessionID:"A"}, a2);
   assert.strictEqual(a2.system.length, 0);
   const b1 = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID:"B"}, b1);
+  boundary.inject({sessionID:"B"}, b1);
   assert.strictEqual(b1.system.length, 1);
   assert.match(b1.system[0], /slot fixture/);
   assert.strictEqual(toasts.length, 2);
   await assert.rejects(
-    hooks["tool.execute.before"](
-      {tool:"bash", sessionID:"A"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}}
-    ),
+    boundary.before({tool:"bash", sessionID:"A"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}}),
     /git-anchor\/deny/
   );
 
   const errorToasts = [];
-  const failingFactory = m.makeGitAnchorPlugin(() => { throw new Error("fixture boom"); });
-  const failingHooks = await failingFactory({
-    directory: "/repo",
-    worktree: "/repo",
+  const failing = m.createToolBoundary({
+    root, directory: "/repo", worktree: "/repo", spawnSync: () => { throw new Error("fixture boom"); },
     client: {tui: {showToast: async (value) => errorToasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
+    contextFor: () => null, acceptContext: async () => {},
   });
-  await failingHooks["tool.execute.before"](
-    {tool:"bash", sessionID:"ERR"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}}
-  );
+  await failing.before({tool:"bash", sessionID:"ERR"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}});
   const errorContext = {system: []};
-  await failingHooks["experimental.chat.system.transform"]({sessionID:"ERR"}, errorContext);
+  failing.inject({sessionID:"ERR"}, errorContext);
   assert.strictEqual(errorContext.system.length, 1);
   assert.match(errorContext.system[0], /git-anchor\/warn/);
   assert.match(errorContext.system[0], /판정 인프라 예외\(fixture boom\)/);
   assert.strictEqual(errorToasts.length, 1);
   console.log("GIT_ANCHOR_CORE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
-'''
-    result = subprocess.run([node, "-e", script], cwd=OPEN_CORE.parent, check=True,
+"""
+    result = subprocess.run([node, "-e", script, str(root)], cwd=OPEN_CORE.parent, check=True,
                             capture_output=True, text=True, encoding="utf-8")
     assert "GIT_ANCHOR_CORE_OK" in result.stdout
 
@@ -2260,38 +2127,38 @@ def test_opencode_git_anchor_blocks_when_engine_absent_at_install_root(tmp_path)
     """설치 트리에 board.py 가 없으면 경고로 낮추지 않고 `tool.execute.before` 에서 막는다.
 
     payload `directory` 와 조상(이 저장소)에는 board.py 가 있다 — 그 둘 중 하나로 엔진 루트를
-    잡는 코드라면 판정이 호출돼 통과한다. 자기 설치 트리를 보는 코드만 차단한다.
+    잡는 코드라면 판정이 호출돼 통과한다. 자기 설치 트리를 보는 코드만 차단한다. 선필터가 없으므로
+    git 이 아닌 명령도 같은 경계를 지나 막힌다. 사용자 허용 입력도 같은 설치 확인을 한다.
     """
     node = shutil.which("node")
     if node is None:
         pytest.skip("node 없음")
     lib = tmp_path / "install" / ".opencode" / "lib"
     lib.mkdir(parents=True)
-    for name in ("git-anchor-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
+    for name in ("ctx-guard-core.cjs", "git-anchor-core.cjs", "principle-recall-core.cjs",
+                 "delegate-channel-core.cjs", "warning-channel-core.cjs"):
         shutil.copyfile(OPEN_CORE.parent / name, lib / name)
     assert not (tmp_path / "install" / ".project_manager").exists()
 
-    script = r'''
+    script = r"""
 const assert = require("node:assert");
-const m = require("./git-anchor-core.cjs");
+const ctx = require("./ctx-guard-core.cjs");
+const git = require("./git-anchor-core.cjs");
 const repoWithEngine = process.argv[1];
 
 (async () => {
   const toasts = [];
-  const judge = () => { throw new Error("설치가 깨졌는데 판정을 호출함"); };
-  const hooks = await m.makeGitAnchorPlugin(judge)({
-    directory: repoWithEngine,
-    worktree: repoWithEngine,
-    client: {tui: {showToast: async (value) => toasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
-  });
-  // 설치 확인은 선필터 뒤다 — git 이 아닌 명령은 그대로 지나간다.
-  await hooks["tool.execute.before"](
-    {tool:"bash", sessionID:"S"}, {args:{command:"echo hello"}},
-  );
+  const client = {tui: {showToast: async (value) => toasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}};
+  const hooks = await ctx.CtxGuardPlugin({directory: repoWithEngine, worktree: repoWithEngine, client});
+  for (const command of ["echo hello", "git commit -m x"]) {
+    await assert.rejects(
+      hooks["tool.execute.before"]({tool:"bash", sessionID:"S"}, {args:{command}}),
+      /\[git-anchor\/설치\]/,
+    );
+  }
+  const grants = await git.GitAnchorPlugin({directory: repoWithEngine, worktree: repoWithEngine, client});
   await assert.rejects(
-    hooks["tool.execute.before"](
-      {tool:"bash", sessionID:"S"}, {args:{command:"git commit -m x"}},
-    ),
+    grants["chat.message"]({sessionID:"S"}, {parts:[{type:"text", text:process.argv[2]}]}),
     /\[git-anchor\/설치\]/,
   );
   const context = {system: []};
@@ -2300,9 +2167,10 @@ const repoWithEngine = process.argv[1];
   assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 강등됨");
   console.log("GIT_ANCHOR_INSTALL_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
-'''
+"""
+    grant_line = "git " + "허용" + ": git branch -D x"
     result = subprocess.run(
-        [node, "-e", script, str(REPO)], cwd=lib, check=True,
+        [node, "-e", script, str(REPO), grant_line], cwd=lib, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "GIT_ANCHOR_INSTALL_BLOCK_OK" in result.stdout
@@ -2687,12 +2555,18 @@ const [engineRoot, slot] = process.argv.slice(1);
 
 (async () => {
   const toasts = [];
-  const judge = (_root, cwd, command) => m.judgeCommand(engineRoot, cwd, command);
-  const hooks = await m.makeGitAnchorPlugin(judge)({
+  const boundary = m.createToolBoundary({
+    root: engineRoot,
     directory: slot,
     worktree: slot,
     client: {tui: {showToast: async (value) => toasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
+    contextFor: () => null,
+    acceptContext: async () => {},
   });
+  const hooks = {
+    "tool.execute.before": boundary.before,
+    "experimental.chat.system.transform": async (input, output) => boundary.inject(input, output),
+  };
   await assert.rejects(
     hooks["tool.execute.before"](
       {tool:"bash", sessionID:"S"}, {args:{command:"git worktree remove ../product_2", cwd:slot}},
@@ -2708,8 +2582,9 @@ const [engineRoot, slot] = process.argv.slice(1);
   console.log("GIT_ANCHOR_DESTRUCTIVE_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
+    shutil.copytree(BOARD_PY.parent, home / ".project_manager/tools")
     result = subprocess.run(
-        [node, "-e", script, str(REPO), str(slot)], cwd=OPEN_CORE.parent, check=True,
+        [node, "-e", script, str(home), str(slot)], cwd=OPEN_CORE.parent, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "GIT_ANCHOR_DESTRUCTIVE_BLOCK_OK" in result.stdout
@@ -3218,6 +3093,7 @@ def test_opencode_prompt_grant_and_tool_input_guard(topology):
     home, slot = topology
     script = r'''
 const assert = require("node:assert");
+const childProcess = require("node:child_process");
 const m = require("./git-anchor-core.cjs");
 const [engineRoot, slot] = process.argv.slice(1);
 
@@ -3232,29 +3108,38 @@ const [engineRoot, slot] = process.argv.slice(1);
     "git 허용: git branch -D main",
   );
   const recorded = [];
-  const judged = [];
-  const hooks = await m.makeGitAnchorPlugin(
-    (_root, cwd, command, options) => {
-      judged.push([cwd, command, options.session, options.grants]);
-      return {verdict: "ok", cwd_identity: "slot", reason: "fixture"};
-    },
-    (_root, tool, args, options) => m.judgeToolInput(engineRoot, tool, args, options),
+  const grantHooks = await m.makeGitAnchorPlugin(
     async (_root, sessionID, cwd, prompt) => {
       recorded.push([sessionID, cwd, prompt]);
       return ["git branch -D main"];
     },
   )({directory: slot, worktree: slot, client: {tui: {showToast: async () => {}}, session: {get: async ({path}) => ({data: {id: path.id}})}}});
 
-  await hooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", text: "ok\ngit 허용: git branch -D main"}]});
+  await grantHooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", text: "ok\ngit 허용: git branch -D main"}]});
   assert.deepStrictEqual(recorded, [["S", slot, "ok\ngit 허용: git branch -D main"]]);
   const context = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
+  await grantHooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
   assert.match(context.system[0], /\[git-anchor\/허용\].*`git branch -D main`/);
-  await hooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", synthetic: true, text: "git 허용: git reset --hard"}]});
+  await grantHooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", synthetic: true, text: "git 허용: git reset --hard"}]});
   assert.strictEqual(recorded.length, 1);
 
+  // 일반 도구 호출은 판정 경계 하나가 실제 board.py hook-tool 로 보낸다. bash 한 건만 요청을 기록하고 ok 로 답한다.
+  const judged = [];
+  const spawnSync = (command, args, options) => {
+    const request = JSON.parse(options.input);
+    if (request.tool_name === "bash") {
+      judged.push([args.slice(-3), request.cwd, request.shell_command, request.tool_input.command]);
+      return {status: 0, stdout: JSON.stringify({version: 1, git: {verdict: "ok", cwd_identity: "slot", reason: "fixture"},
+        context: null, context_error: null, recall: null, recall_error: null}) + "\n", stderr: ""};
+    }
+    return childProcess.spawnSync(command, args, options);
+  };
+  const boundary = m.createToolBoundary({root: engineRoot, directory: slot, worktree: slot,
+    client: {tui: {showToast: async () => {}}, session: {get: async ({path}) => ({data: {id: path.id}})}},
+    contextFor: () => null, acceptContext: async () => {}, spawnSync});
+  const hooks = {"tool.execute.before": boundary.before};
   await hooks["tool.execute.before"]({tool: "bash", sessionID: "S"}, {args: {command: "git branch -D main", workdir: slot}});
-  assert.deepStrictEqual(judged, [[slot, "git branch -D main", "S", true]]);
+  assert.deepStrictEqual(judged, [[["hook-tool", "--session", "S"], slot, "git branch -D main", "git branch -D main"]]);
   await assert.rejects(
     hooks["tool.execute.before"]({tool: "write", sessionID: "S"}, {args: {filePath: slot + "/.project_manager/.local/git-grants/k.json", content: "{}"}}),
     /\[git-anchor\/deny\] 다른 명령으로 같은 일을 하지 마라\./,
@@ -3268,32 +3153,22 @@ const [engineRoot, slot] = process.argv.slice(1);
   // 허용 기록 실패는 조용히 넘기지 않는다.
   const calls = [];
   const failing = (py, argv, opts) => {
-    if (argv[argv.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
-    calls.push([argv.slice((py === "py" ? 1 : 0) + 1), opts.input]);
+    calls.push([argv.slice(1), opts.input]);
     return {status: 1, stdout: "", stderr: "[중단] 형식 오류"};
   };
   assert.throws(
     () => m.recordGrants(engineRoot, "S", slot, "git 허용: x", {spawnSync: failing}),
     /\[git-anchor\/허용 거부\] \[중단\] 형식 오류/,
   );
-  assert.deepStrictEqual(calls[0], [["git-grant", "--session", "S", "--cwd", slot], "git 허용: x"]);
-  const granted = (py, argv, opts) => argv[argv.length-1].endsWith("python_floor.py")
-    ? {status:0, stdout:"Python 3.12\n"}
-    : {status: 0, stdout: JSON.stringify({granted: ["git branch -D main"]}) + "\n", stderr: ""};
+  assert.deepStrictEqual(calls, [[["git-grant", "--session", "S", "--cwd", slot], "git 허용: x"]]);
+  const granted = () => ({status: 0, stdout: JSON.stringify({granted: ["git branch -D main"]}) + "\n", stderr: ""});
   assert.deepStrictEqual(m.recordGrants(engineRoot, "S", slot, "git 허용: git branch -D main", {spawnSync: granted}), ["git branch -D main"]);
-  const seen = [];
-  const spy = (py, argv, opts) => {
-    if (argv[argv.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
-    seen.push(argv.slice((py === "py" ? 1 : 0) + 1));
-    return {status: 0, stdout: JSON.stringify({verdict: "deny", cwd_identity: "slot", reason: "x"}) + "\n", stderr: ""};
-  };
-  m.judgeCommand(engineRoot, slot, "git branch -D main", {session: "S", grants: true, spawnSync: spy});
-  assert.deepStrictEqual(seen[0], ["git-anchor", "--session", "S", "--cwd", slot, "--command", "git branch -D main", "--grants"]);
   console.log("GIT_GRANT_OPENCODE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
+    shutil.copytree(BOARD_PY.parent, home / ".project_manager/tools")
     result = subprocess.run(
-        [node, "-e", script, str(REPO), str(slot)], cwd=OPEN_CORE.parent, check=True,
+        [node, "-e", script, str(home), str(slot)], cwd=OPEN_CORE.parent, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "GIT_GRANT_OPENCODE_OK" in result.stdout
@@ -3425,10 +3300,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const [home, slot] = process.argv.slice(1);
 (async () => {
- const judge = (_root, cwd, command, options) => core.judgeCommand(home, cwd, command, options);
- const hooks = await core.makeGitAnchorPlugin(judge)({directory:slot, worktree:slot, client:{
+ const boundary = core.createToolBoundary({root:home, directory:slot, worktree:slot, client:{
   tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}
- }});
+ }, contextFor:() => null, acceptContext:async () => {}});
+ const hooks = {'tool.execute.before': boundary.before};
  for (const command of ['git sparse-checkout set src', 'git submodule --quiet update -- status'])
   await assert.rejects(hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}}), /git-anchor\/deny/);
  for (const command of ['git sparse-checkout list', 'git submodule'])
@@ -3545,10 +3420,10 @@ const assert = require('node:assert');
 const core = require('./git-anchor-core.cjs');
 const [home, slot, session, command, denied] = process.argv.slice(1);
 (async () => {
- const judge = (_root, cwd, command, options) => core.judgeCommand(home, cwd, command, options);
- const hooks = await core.makeGitAnchorPlugin(judge)({directory:slot, worktree:slot, client:{
+ const boundary = core.createToolBoundary({root:home, directory:slot, worktree:slot, client:{
   tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}
- }});
+ }, contextFor:() => null, acceptContext:async () => {}});
+ const hooks = {'tool.execute.before': boundary.before};
  const run = () => hooks['tool.execute.before']({tool:'bash',sessionID:session},{args:{command,cwd:slot}});
  if (denied === 'true') await assert.rejects(run(), /git-anchor\/deny/);
  else await run();

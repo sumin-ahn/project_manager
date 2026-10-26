@@ -24,7 +24,7 @@ from typing import Any
 from pm_engine.app import ctx_hooks, engine_guard, principle_recall
 from pm_engine.app import hooks as app_hooks
 from pm_engine.app.session import relay
-from pm_engine.domain import git_policy
+from pm_engine.domain import conf_schema, git_policy
 from pm_engine.domain import home
 from pm_engine.domain import principle_rules
 from pm_engine.infra import console, fs, pm_paths, principle_store, raw_output
@@ -216,8 +216,11 @@ _NOTICE_STATUS = {True: "claimed", False: "seen", None: "unavailable"}
 # 기계 JSON 입력 세대와 키 집합 — 누락·추가 키는 업무 실행 전에 거부한다.
 HOOK_WIRE_VERSION = 1
 HOOK_CONTEXT_KEYS = frozenset({"version", "tokens", "model", "main_thread", "boundary"})
-HOOK_TOOL_KEYS = frozenset({"version", "cwd", "tool_name", "tool_input", "shell_command", "recall"})
+HOOK_TOOL_KEYS = frozenset({"version", "cwd", "tool_name", "tool_input", "shell_command", "context", "recall"})
+HOOK_TOOL_CONTEXT_KEYS = frozenset({"session", "tokens", "model", "main_thread", "boundary"})
 HOOK_RECALL_KEYS = frozenset({"session", "on", "text", "main_thread"})
+# `hook-tool` 의 ctx 관측을 보내는 하네스 — 일반 도구 호출 1회에 ctx 를 싣는 어댑터는 OpenCode 하나다.
+HOOK_TOOL_HARNESS = "opencode"
 # 기계 입력 형식 오류의 종료 코드(argparse 사용 오류와 같은 값).
 HOOK_WIRE_ERROR_RC = 2
 
@@ -417,6 +420,13 @@ def _hook_tool_request(request: dict) -> None:
         _check_type("tool_input", tool_input, (dict,))
         if tool_input.get("command") != request["shell_command"]:
             raise ValueError("shell_command 가 tool_input.command 와 다르다")
+    context = request["context"]
+    if context is not None:
+        _check_type("context", context, (dict,))
+        if set(context) != HOOK_TOOL_CONTEXT_KEYS:
+            raise HookWireError(
+                f"context 키 집합이 다름: {sorted(context)} (기대 {sorted(HOOK_TOOL_CONTEXT_KEYS)})")
+        _check_context_input(harness=HOOK_TOOL_HARNESS, **context)
     recall = request["recall"]
     if recall is not None:
         _check_type("recall", recall, (dict,))
@@ -425,11 +435,16 @@ def _hook_tool_request(request: dict) -> None:
         _check_recall_input(**recall)
 
 
-def cmd_hook_tool(home: home.Home, args: argparse.Namespace) -> int:
-    """일반 도구 호출 1회의 git 판정과 원칙 recall 을 한 JSON 줄(version·git·recall·recall_error)로 낸다.
+def _error_text(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
 
-    git 거부면 recall 을 돌리지 않는다(seen 미소비). recall 의 판독·기록 실패는 git 판정을 보존한 채
-    ``recall_error`` 로 싣는다. 입력 형식 오류는 rc 2, git 판정 오류는 예외로 올린다(rc 1)."""
+
+def cmd_hook_tool(home: home.Home, args: argparse.Namespace) -> int:
+    """일반 도구 호출 1회의 git 판정·ctx 판정·원칙 recall 을 한 JSON 줄로 낸다.
+
+    출력 6키는 version·git·context·context_error·recall·recall_error 다. git 거부면 ctx·recall 을 돌리지
+    않는다(밴드·seen marker 미소비). ctx 의 설정·IO 실패와 recall 의 판독·기록 실패는 git 판정을 보존한 채
+    각 ``*_error`` 로 싣는다. 입력 형식 오류는 rc 2, git 판정 오류는 예외로 올린다(rc 1)."""
     try:
         request = _read_wire_object(HOOK_TOOL_KEYS)
         _hook_tool_request(request)
@@ -439,14 +454,21 @@ def cmd_hook_tool(home: home.Home, args: argparse.Namespace) -> int:
         git = judge_git_anchor_command(home, args.session, request["cwd"], request["shell_command"], grants=True)
     else:
         git = judge_tool_input(home, args.session, request["cwd"], request["tool_name"], request["tool_input"])
-    recall, recall_error = None, None
-    if request["recall"] is not None and git["verdict"] != "deny":
-        try:
-            recall = recall_principles(home, **request["recall"])
-        except (OSError, UnicodeError) as exc:
-            recall_error = f"{type(exc).__name__}: {exc}"
+    context, context_error, recall, recall_error = None, None, None, None
+    if git["verdict"] != "deny":
+        if request["context"] is not None:
+            try:
+                context = judge_context(home, harness=HOOK_TOOL_HARNESS, **request["context"])
+            except (OSError, UnicodeError, conf_schema.LegacyConfKeyError) as exc:
+                context_error = _error_text(exc)
+        if request["recall"] is not None:
+            try:
+                recall = recall_principles(home, **request["recall"])
+            except (OSError, UnicodeError) as exc:
+                recall_error = _error_text(exc)
     console.write_machine_line(json.dumps(
-        {"version": HOOK_WIRE_VERSION, "git": git, "recall": recall, "recall_error": recall_error},
+        {"version": HOOK_WIRE_VERSION, "git": git, "context": context, "context_error": context_error,
+         "recall": recall, "recall_error": recall_error},
         ensure_ascii=False,
     ))
     return 0

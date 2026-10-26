@@ -106,7 +106,9 @@ def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log
     # Claude 훅은 엔진 공개 진입(`judge_context`)의 안내를 그대로 싣고 정책 문구 사본을 두지 않는다.
     assert "hooks.judge_context(" in sources["claude-template"]
     assert policy_marker not in sources["claude-template"]
-    assert "ctx-guidance" in sources["opencode"]
+    # OpenCode core 는 엔진 ctx 판정(`board.py hook-context`)의 안내를 그대로 싣고 정책 문구 사본을 두지 않는다.
+    assert "runHookContext(" in sources["opencode"]
+    assert policy_marker not in sources["opencode"]
     assert "ctx-guidance --band precompact --json" in sources["codex"]
     # 정상 경로의 단일 진실은 domain.ctx_recovery 상수다.
     assert Path(pm_engine.domain.ctx_recovery.__file__).read_text(encoding="utf-8").count(policy_marker) == 1
@@ -194,24 +196,37 @@ def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log, tmp_path):
     assert output["hookSpecificOutput"]["additionalContext"] == expected
 
 
-def test_t0934_guidance_execution_real_runtime_and_raw_utf8(tmp_path):
+def _opencode_guidance_home(tmp_path):
+    """실 엔진 PM 홈 + OpenCode 압축 한도 기록(사용 한도 200,000·70/80) + 설치 형상 core 사본."""
     from _manager_home import make_pm_home, set_conf_key
+    from test_harness_ctx_limits import install_ctx_record
     from test_opencode_ctx_guard import _install_core
 
-    node = shutil.which("node")
-    assert node is not None, "Node가 있어야 실제 guidance 소비를 검증할 수 있다"
     root = make_pm_home(tmp_path / "engine")
     set_conf_key(root, "runtime.py", sys.executable)
-    lib = _install_core(root)
+    install_ctx_record(root, harness="opencode")
+    return root, _install_core(root)
+
+
+def _pm_log_guidance(root, band, used_pct):
+    command = [sys.executable, str(root / ".project_manager" / "tools" / "pm_log.py"),
+               "ctx-guidance", "--band", band, "--used-pct", str(used_pct), "--precompact-at-pct", "80"]
+    return subprocess.run(command, cwd=root, capture_output=True, env=utf8_child_env(), check=True)
+
+
+def test_t0934_guidance_execution_real_runtime_and_raw_utf8(tmp_path):
+    node = shutil.which("node")
+    assert node is not None, "Node가 있어야 실제 guidance 소비를 검증할 수 있다"
+    root, lib = _opencode_guidance_home(tmp_path)
     floor = root / ".project_manager" / "tools" / "python_floor.py"
     assert floor.read_bytes() == PM_LOG.with_name("python_floor.py").read_bytes()
-    command = [sys.executable, str(root / ".project_manager" / "tools" / "pm_log.py"),
-               "ctx-guidance", "--band", "nudge", "--used-pct", "82", "--precompact-at-pct", "80"]
-    producer = subprocess.run(command, cwd=root, capture_output=True, env=utf8_child_env(), check=True)
-    script = r'''
-const m = require("./ctx-guard-core.cjs");
-process.stdout.write(m.buildEngineCtxGuidance(process.argv[1], "nudge", {usedPct:82}, {precompact_at_pct:80}));
-'''
+    producer = _pm_log_guidance(root, "nudge", 75)
+    script = r"""
+const m = require("./git-anchor-core.cjs");
+const decision = m.runHookContext(process.argv[1], {session:"ses_t0934", tokens:150000, model:null,
+  main_thread:true, boundary:null});
+process.stdout.write(decision.guidance);
+"""
     consumed = subprocess.run([node, "-e", script, str(root)], cwd=lib,
                               capture_output=True, check=True, timeout=30, env=utf8_child_env())
     assert consumed.stdout.decode("utf-8") == producer.stdout.decode("utf-8").strip()
@@ -225,47 +240,55 @@ process.stdout.write(m.buildEngineCtxGuidance(process.argv[1], "nudge", {usedPct
     producer = subprocess.run([sys.executable, str(engine), "snapshot"], cwd=root,
                               capture_output=True, check=True)
     assert producer.stdout == payload.encode("utf-8")
-    script = r'''
-const m = require("./ctx-guard-core.cjs");
+    script = r"""
+const ctx = require("./ctx-guard-core.cjs");
+const git = require("./git-anchor-core.cjs");
 const root = process.argv[1];
-process.stdout.write(JSON.stringify({
-  guidance:m.buildEngineCtxGuidance(root,"nudge",{usedPct:82},{precompact_at_pct:80}),
-  snapshot:m.buildCompactionSnapshot(root,"ses_t0934"),
-}));
-'''
+let guidanceError = null;
+try {
+  git.runHookContext(root, {session:"ses_t0934_b", tokens:150000, model:null, main_thread:true, boundary:null});
+} catch (error) {
+  guidanceError = error.message;
+}
+process.stdout.write(JSON.stringify({guidanceError, snapshot:ctx.buildCompactionSnapshot(root,"ses_t0934")}));
+"""
     result = subprocess.run([node, "-e", script, str(root)], cwd=lib,
                             capture_output=True, check=True, timeout=30)
     parsed = json.loads(result.stdout)
-    assert parsed == {"guidance": payload.strip(), "snapshot": {"ok": True, "text": payload}}
+    assert parsed == {"guidanceError": None, "snapshot": {"ok": True, "text": payload}}
     assert parsed["snapshot"]["text"].encode("utf-8") == producer.stdout
+    from _manager_home import set_conf_key
+
     set_conf_key(root, "runtime.py", str(root / "absent-python"))
-    failed = subprocess.run([node, "-e", script, str(root)], cwd=lib,
-                            capture_output=True, check=True, timeout=30)
-    failed_snapshot = json.loads(failed.stdout)["snapshot"]
-    assert failed_snapshot["ok"] is False
-    assert failed_snapshot["text"].startswith("[ctx-checkpoint] 압축 기록 실패: ")
-    assert json.loads(failed.stdout)["guidance"] != payload.strip()
+    failed = json.loads(subprocess.run([node, "-e", script, str(root)], cwd=lib,
+                                       capture_output=True, check=True, timeout=30).stdout)
+    assert failed["snapshot"]["ok"] is False
+    assert failed["snapshot"]["text"].startswith("[ctx-checkpoint] 압축 기록 실패: ")
+    # 엔진을 실행할 수 없으면 대체 문구를 만들지 않고 원인 있는 오류로 올린다.
+    assert "absent-python" in failed["guidanceError"] and "ENOENT" in failed["guidanceError"]
 
 
-def test_opencode_consumes_pm_log_guidance_verbatim(pm_log):
+def test_opencode_consumes_pm_log_guidance_verbatim(pm_log, tmp_path):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node 없음")
-    script = (
-        "const m=require('./ctx-guard-core.cjs');"
-        "process.stdout.write(m.buildEngineCtxGuidance("
-        f"{json.dumps(str(ROOT))},'nudge',{{usedPct:82}},"
-        "{checkpoint_at_pct:70,precompact_at_pct:80}));"
-    )
-    result = subprocess.run(
-        [node, "-e", script], cwd=OPENCODE.parent,
-        capture_output=True, check=True,
-    )
-    producer = subprocess.run(
-        [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "nudge", "--used-pct", "82", "--precompact-at-pct", "80"],
-        cwd=ROOT, capture_output=True, env=utf8_child_env(), check=True,
-    )
-    assert result.stdout.decode("utf-8") == producer.stdout.decode("utf-8").strip()
+    root, lib = _opencode_guidance_home(tmp_path)
+    script = r"""
+const m = require("./ctx-guard-core.cjs");
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => ({data:{id}})}},
+    directory:process.argv[1]});
+  await hooks.event({event:{type:"message.updated", properties:{info:{
+    sessionID:"ses_verbatim", role:"assistant", tokens:{input:150000}}}}});
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:"ses_verbatim"}, output);
+  process.stdout.write(JSON.stringify(output.system));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run([node, "-e", script, str(root)], cwd=lib, capture_output=True, check=True,
+                            timeout=30)
+    producer = _pm_log_guidance(root, "nudge", 75)
+    assert json.loads(result.stdout) == [producer.stdout.decode("utf-8").strip()]
 
 
 def test_codex_json_payload_is_engine_owned_shared_value(pm_log):

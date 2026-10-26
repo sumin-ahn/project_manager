@@ -1114,21 +1114,6 @@ def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int
 #   codex 엔벨로프로 옮기는 자리다 — `.codex/hooks.json` 은 여전히 `--hook-dispatch PreToolUse`
 #   만 알고, 이 기능은 위 `CODEX_HOOK_FEATURES` registry 에 자기 자신을 다시 부르는 항목으로만
 #   등록된다.
-# Bash 명령 선필터(성능 전용 — 판정은 엔진 `pm_engine.cli.hooks` 가 한다). claude `pm_orch_claude.py`·opencode
-#   `git-anchor-core.cjs` 선필터와 같은 집합이다(테스트가 대조). 대상은 git 호출 · pytest · cd 잔존 ·
-#   파일 삭제·이동 명령과 삭제 API · 허용 표식 · 엔진 도구 경로 · 허용 기록 폴더다.
-GIT_ANCHOR_SHELL_PREFILTERS = (
-    r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>,])",
-    r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)",
-    r"(?:^|[;&|])\s*cd(?=\s)",
-    r"(?<![A-Za-z0-9_.-])(?:rm|rmdir|unlink|shred|mv|find|rsync)(?=\s|$)",
-    r"(?<![A-Za-z0-9_])(?:rmtree|remove|removedirs|unlink|rmdir|rmSync|rmdirSync|unlinkSync"
-    r"|rm_rf|rm_r|rename|replace|move|renameSync)(?![A-Za-z0-9_])",
-    r"git[ \t]+허용[ \t]*:",
-)
-GIT_GRANT_DIR_NAME = "git-grants"
-# 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
-GIT_ANCHOR_SLOT_PATH_MARK = "/work/"
 # 파일 쓰기 도구 — 대상 경로는 패치 본문에 있고 엔진이 푼다(`hooks.judge_tool_input`).
 GIT_ANCHOR_PATCH_TOOL = "apply_patch"
 # codex 는 사용자 1회 허용을 쓰지 않는다 — 사용자 프롬프트를 허용 기록으로 남기는 배선이 없다. 그래서
@@ -1180,18 +1165,7 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
         command = tool_input.get("command")
         if not isinstance(command, str):
             return {}
-        # claude `pm_orch_claude.git_anchor_hook_evaluate` 와 같은 선필터 — 판정 대상 비포함은 엔진
-        #   import 조차 하지 않는다(핫패스 비용 0 — 이 함수 자체는 이미 자식 프로세스라 프로세스 spawn
-        #   비용은 등록 축(tool_pattern)이 진다).
-        prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
-        normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
-        if not (
-            any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
-            or ".project_manager/tools/" in normalized
-            or GIT_GRANT_DIR_NAME in normalized
-            or GIT_ANCHOR_SLOT_PATH_MARK in normalized
-        ):
-            return {}
+        # 셸 명령 원문은 거르지 않고 전부 엔진 판정에 넘긴다 — 판정 대상인지는 엔진이 정한다.
         from pm_engine.cli import hooks
 
         judgment = hooks.judge_git_anchor_command(hooks.adapter_home(root), session, anchor, command)

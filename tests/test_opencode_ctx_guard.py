@@ -82,18 +82,34 @@ def _install_core(root: Path) -> Path:
     """
     lib = root / ".opencode" / "lib"
     lib.mkdir(parents=True, exist_ok=True)
-    for name in ("ctx-guard-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
+    for name in CORE_DEPENDENCIES:
         shutil.copyfile(CORE_DIR / name, lib / name)
     return lib
+
+
+# ctx core 가 require 하는 lib 모듈 전부 — 일반 도구 판정 경계(git-anchor)와 그 의존(principle·delegate·warning).
+CORE_DEPENDENCIES = ("ctx-guard-core.cjs", "git-anchor-core.cjs", "principle-recall-core.cjs",
+                     "delegate-channel-core.cjs", "warning-channel-core.cjs")
+ENGINE_TOOLS = REPO / ".project_manager" / "tools"
+
+
+def _install_engine(root: Path) -> Path:
+    """실제 판정 엔진(`board.py`·`pm_engine`)을 픽스처 `<root>/.project_manager/tools/` 에 둔다."""
+    tools = root / ".project_manager" / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    for name in ("board.py", "python_floor.py"):
+        shutil.copyfile(ENGINE_TOOLS / name, tools / name)
+    if not (tools / "pm_engine").exists():
+        shutil.copytree(ENGINE_TOOLS / "pm_engine", tools / "pm_engine",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    return tools
 
 
 def _make_ctx_guard_project(tmp_path: Path, *, snapshot: bool = True) -> Path:
     """최소 project 를 pytest tmp_path 아래에 만든다(소스 트리 무오염)."""
     root = tmp_path / "ctx-guard-project"
-    tools = root / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
+    tools = _install_engine(root)
     _install_core(root)
-    shutil.copyfile(REPO / ".project_manager" / "tools" / "python_floor.py", tools / "python_floor.py")
     source = "import sys\n"
     if snapshot:
         source += (
@@ -147,7 +163,6 @@ const leaf = require("./delegate-channel-core.cjs");
 const fs = require("node:fs");
 const root = process.argv[1];
 const conf = path.join(root, ".project_manager", "local.conf");
-assert.strictEqual(m.parseLocalConf, leaf.parseLocalConf, "parser must be moved and re-exported");
 const floor = path.join(root, ".project_manager", "tools", "python_floor.py");
 const engine = path.join(root, ".project_manager", "tools", "pm_log.py");
 const missing = {status:null, error:{code:"ENOENT", message:"missing"}};
@@ -412,19 +427,22 @@ def test_plugin_subscribes_message_events():
 
 
 def test_plugin_removes_stop_consumers_and_allowlist():
-    """stop 판정은 유지하되 deny/throw/marker/allow-list 소비 표면은 완전히 제거한다."""
+    """stop 판정은 엔진이 하고 plugin 은 deny/throw/marker/allow-list 소비 표면을 두지 않는다.
+
+    일반 도구 before 는 판정 경계(`createToolBoundary`) 하나뿐이다 — ctx 밴드로 도구를 막는 분기는 없다."""
     src = _plugin_src()
-    assert 'level = "stop"' in src, "computeCtxState stop 레벨 반환이 사라짐"
+    assert src.count('"tool.execute.before"') == 1, "일반 도구 before 는 하나여야 한다"
+    assert '"tool.execute.before": boundary.before' in src, "일반 도구 before 가 판정 경계가 아니다"
     for removed in (
         "fired.stop",
         "writeStopMarker",
         '"permission.ask"',
-        '"tool.execute.before"',
         "isHandoffTool",
         "isHandoffBash",
         "isHandoffTarget",
         "isNewWorkPermission",
         "ctx-stop handoff triggered",
+        "computeCtxState",
     ):
         assert removed not in src, f"폐기된 stop 소비 표면 잔존: {removed}"
 
@@ -453,14 +471,12 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
 # ── 2c. ctx 예산 (ADR-0041 · T-0943): 압축 한도 기록 · modelLimit 폐기 ─────────
 
 def test_plugin_reads_budget_and_ratios_from_the_engine_record():
-    """분모 E 와 두 비율은 엔진 압축 한도 기록(`conf_store.read_ctx_budget`)에서 온다 — 플러그인이
-    local.conf 비율을 따로 해석하거나 기본값으로 바꾸지 않는다(T-0943 · 설계 Q1)."""
+    """분모 E·두 비율·밴드는 엔진(`board.py hook-context`)이 압축 한도 기록에서 판정한다 — 플러그인은
+    local.conf 를 읽거나 비율·구표기를 해석하지 않고 토큰·모델 관측만 넘긴다(T-0943 · 설계 Q1)."""
     src = _plugin_src()
-    assert "function readBudget" in src
-    assert 'conf_store.read_ctx_budget(root,conf,"opencode",model)' in src
-    assert "readBudget(loadLocalConf(root), root, `${info.providerID}/${info.modelID}`)" in src
-    assert "const t = result.budget;" in src and "computeCtxState(used, t.E, t)" in src
-    for removed in ("readPct(", "resolveThresholds", "resolveBudget", "validatedBudget",
+    assert "runHookContext(root, { session: sessionID, tokens, model, main_thread: true, boundary: null })" in src
+    for removed in ("function readBudget", "read_ctx_budget", "loadLocalConf", "parseLocalConf", "LEGACY_CONF_KEYS",
+                    "computeCtxState", "readPct(", "resolveThresholds", "resolveBudget", "validatedBudget",
                     "CTX_WINDOW_TOKENS_DEFAULT", "CHECKPOINT_AT_PCT_DEFAULT", "PRECOMPACT_AT_PCT_DEFAULT"):
         assert removed not in src, removed
 
@@ -475,12 +491,11 @@ def test_plugin_uses_engine_budget_not_model_limit():
 
 
 def test_plugin_has_idempotency_guard():
-    """nudge/nudge2 는 세션별·compaction 사이클별 1회이며 compaction 뒤 재무장한다."""
+    """밴드 1회 발화는 엔진 durable marker 가 맡고, plugin 은 세션별 관측·compaction 사이클만 분리한다."""
     src = _plugin_src()
     assert re.search(r"sessionStates\s*=\s*new Map", src), "세션별 상태 Map 없음"
-    assert "fired.nudge" in src and "fired.nudge2" in src, "밴드 멱등 가드 없음"
-    assert re.search(r"fired\.nudge\s*=\s*false", src), "compaction 후 nudge re-arm 없음"
-    assert re.search(r"fired\.nudge2\s*=\s*false", src), "compaction 후 nudge2 re-arm 없음"
+    assert "fired." not in src, "밴드 발화 기억을 plugin 메모리에 두면 재시작·다른 process 에서 다시 발화한다"
+    assert re.search(r"session\.observation\s*=\s*null", src), "compaction 후 옛 관측 폐기 없음"
     assert re.search(r"cycleEpoch\s*\+=\s*1", src), "compaction re-arm cycle epoch 증가 없음"
 
 
@@ -503,8 +518,10 @@ const projectRoot = __PROJECT_ROOT__;
   const childHooks = await m.CtxGuardPlugin({client:{session:{
     get: async (opts) => {
       childCalls++;
-      assert.deepStrictEqual(opts, {path:{id:childID}}, "SDK session.get 호출 형식");
-      return {data:{id:childID, parentID:"ses_parent_cache"}};
+      // 최상위까지 부모를 따라 올라간다 — 자식 다음 부모(부모 없음) 순서로 한 번씩.
+      const expected = childCalls === 1 ? childID : "ses_parent_cache";
+      assert.deepStrictEqual(opts, {path:{id:expected}}, "SDK session.get 호출 형식");
+      return {data:childCalls === 1 ? {id:childID, parentID:"ses_parent_cache"} : {id:"ses_parent_cache"}};
     },
   }}, directory:projectRoot});
   const nudge = {event:{type:"message.updated", properties:{info:{
@@ -515,7 +532,7 @@ const projectRoot = __PROJECT_ROOT__;
   const childSystem = {system:[]};
   await childHooks["experimental.chat.system.transform"]({sessionID:childID}, childSystem);
   assert.deepStrictEqual(childSystem.system, [], "child injection must bypass");
-  assert.strictEqual(childCalls, 1, "same session lookup must be cached");
+  assert.strictEqual(childCalls, 2, "same session lookup must be cached (child + parent once)");
 
   const failureID = "ses_lookup_failure";
   let failureCalls = 0;
@@ -528,8 +545,11 @@ const projectRoot = __PROJECT_ROOT__;
   }}}});
   const failureSystem = {system:[]};
   await failureHooks["experimental.chat.system.transform"]({sessionID:failureID}, failureSystem);
-  assert.strictEqual(failureSystem.system.length, 1, "lookup failure must not exempt main session");
-  assert.strictEqual(failureCalls, 1, "failed lookup result must stay cached");
+  // SDK 불능은 main·child 어느 쪽으로도 추정하지 않는다 — 원인 경고만 남고 ctx 안내는 없다.
+  assert.strictEqual(failureSystem.system.length, 1, "lookup failure must surface a warning");
+  assert.ok(failureSystem.system[0].includes("[ctx-guard] 세션 확인 실패(SDK unavailable)"), failureSystem.system[0]);
+  assert.ok(!failureSystem.system[0].includes("[ctx-nudge"), "lookup failure must not be treated as main");
+  assert.strictEqual(failureCalls, 2, "failed lookup must be retried on the next event");
 
   const timeoutID = "ses_lookup_timeout";
   let timeoutCalls = 0;
@@ -545,9 +565,10 @@ const projectRoot = __PROJECT_ROOT__;
   }}}});
   const timeoutSystem = {system:[]};
   await timeoutHooks["experimental.chat.system.transform"]({sessionID:timeoutID}, timeoutSystem);
-  assert.ok(Date.now() - timeoutStarted < 3000, "never-resolving session.get did not time out");
-  assert.strictEqual(timeoutSystem.system.length, 1, "lookup timeout must not exempt main session");
-  assert.strictEqual(timeoutCalls, 1, "timed-out lookup result must stay cached");
+  assert.ok(Date.now() - timeoutStarted < 4000, "never-resolving session.get did not time out");
+  assert.strictEqual(timeoutSystem.system.length, 1, "lookup timeout must surface a warning");
+  assert.ok(timeoutSystem.system[0].includes("조회 시간 초과"), timeoutSystem.system[0]);
+  assert.strictEqual(timeoutCalls, 2, "timed-out lookup must be retried on the next event");
 
   console.log("JS_SUBSESSION_GUARD_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -584,9 +605,10 @@ const nudgeEvent = () => ({
     tui:{showToast: async (toast) => { toasts.push(toast.body.message); }},
   }, directory:projectRoot});
 
+  // 일반 도구 before 는 판정 경계 하나뿐이다 — stop 밴드로 도구를 막지 않는다(아래 before 호출).
   assert.deepStrictEqual(
     Object.keys(hooks).sort(),
-    ["event", "experimental.chat.system.transform"].sort(),
+    ["event", "experimental.chat.system.transform", "tool.execute.before"].sort(),
     "stop deny/throw hooks must be absent",
   );
   await hooks.event({event:{type:"message.updated", properties:{info:{
@@ -595,8 +617,9 @@ const nudgeEvent = () => ({
   let output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.strictEqual(output.system.length, 1, "stop band must be absorbed by final nudge guidance");
-  assert.ok(output.system[0].includes("[ctx-nudge/강화]"), "stop band did not reuse final guidance");
+  assert.ok(output.system[0].includes("[ctx-nudge/최종]"), "stop band did not use final guidance");
   assert.ok(output.system[0].includes("pm_log.py checkpoint"), "stop-band guidance lacks checkpoint");
+  await hooks["tool.execute.before"]({tool:"read", sessionID}, {args:{filePath:"README.md"}});
 
   await hooks.event(nudgeEvent());
   output = {system:[]};
@@ -616,7 +639,7 @@ const nudgeEvent = () => ({
   assert.ok(output.system[0].startsWith("## PM 정체성 (compaction 복구)"), "engine snapshot missing");
   assert.ok(!/compaction\s+\d+회/.test(output.system[0]), "display-only count must not be exposed");
   assert.ok(output.system[0].includes("- task: main"), "snapshot identity missing");
-  assert.ok(toasts.some((text) => text.includes("compaction이 방금 일어남")), "human toast missing");
+  assert.ok(toasts.some((text) => text.includes("compaction 경계가 감지됐다")), "human toast missing");
   assert.ok(toasts.every((text) => !/compaction\s+\d+회/.test(text)), "toast exposed count");
 
   await hooks.event(nudgeEvent());
@@ -652,8 +675,8 @@ const sessionID = "ses_snapshot_null";
   const output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.strictEqual(output.system.length, 1, "null snapshot erased model-facing notice");
-  assert.ok(output.system[0].includes("[ctx-checkpoint]"), "fallback marker missing");
-  assert.ok(output.system[0].includes("pm_state"), "fallback recovery pointer missing");
+  assert.ok(output.system[0].startsWith("[ctx-checkpoint] 압축 기록 실패: "), "snapshot failure reason missing");
+  assert.ok(output.system[0].includes("[ctx-checkpoint] compaction 경계가 감지됐다"), "engine guidance missing");
   console.log("JS_COMPACTION_FALLBACK_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
@@ -1888,7 +1911,10 @@ const sessionID = __SESSION_ID__;
   await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
   const output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.strictEqual(output.system.length, 1, "IO failure blocked in-memory delivery");
+  // 엔진의 압축 경계 marker 도 같은 ctx-stop 경로라 실제 IO 실패를 원인 경고로 싣고, snapshot 은 memory 로 전달한다.
+  assert.strictEqual(output.system.length, 2, "IO failure blocked in-memory delivery");
+  assert.ok(output.system[0].startsWith("[ctx-guard] 압축 경계 판정 실패("), output.system[0]);
+  assert.ok(output.system[1].startsWith("## PM 정체성 (compaction 복구)"), "in-memory snapshot missing");
 
   const restarted = await m.CtxGuardPlugin({client, directory:projectRoot});
   const freshOutput = {system:[]};
@@ -2094,7 +2120,7 @@ def test_plugin_stages_compacted_notice_after_child_lookup_before_event_hook_set
 
     src = _plugin_src()
     branch = src.index('if (event.type === "session.compacted")')
-    child_check = src.index("if (await isChildSession", branch)
+    child_check = src.index('if ((await sessionOwner(sessionID)) !== "main") return;', branch)
     snapshot = src.index("buildCompactionSnapshot(root, sessionID)", branch)
     assert child_check < snapshot, "자식 판정 전에 동기 snapshot subprocess를 실행함"
 
@@ -2330,7 +2356,7 @@ def _run_node_check(
 def test_plugin_pure_logic_node_selfcheck():
     """node 로 plugin 의 순수 결정 로직을 자가검증 (이벤트/opencode 런타임 없이).
 
-    검증: 임계 분기(nudge/stop 경계·쓴 %) · 토큰 누적 · 비율 기본값 대체 함수 부재(T-0943).
+    검증: 토큰 누적 · 판정 사본(밴드·예산·설정·문구)과 비율 기본값 대체 함수 부재(T-0943).
     node 부재 시 skip (정적 검증으로 게이트).
     """
     if _NODE is None:
@@ -2342,26 +2368,19 @@ def test_plugin_pure_logic_node_selfcheck():
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 
-// export 표면 (테스트 가능한 순수 함수가 떼어져 있어야 한다).
-for (const fn of ["parseLocalConf","readBudget","accumulateTokens","computeCtxState","CtxGuardPlugin"]) {
+// export 표면 — native 관측 헬퍼와 팩토리만. 밴드·예산·설정·문구 판정은 엔진이 소유한다.
+for (const fn of ["accumulateTokens","CtxGuardPlugin"]) {
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
-for (const removed of ["resolveThresholds","resolveBudget","CHECKPOINT_AT_PCT_DEFAULT","CTX_WINDOW_TOKENS_DEFAULT"]) {
+for (const removed of ["resolveThresholds","resolveBudget","CHECKPOINT_AT_PCT_DEFAULT","CTX_WINDOW_TOKENS_DEFAULT",
+                       "parseLocalConf","loadLocalConf","readBudget","computeCtxState","nudge2Threshold",
+                       "buildNudgeGuidance","buildEngineCtxGuidance","NUDGE2_MARGIN_PCT"]) {
   assert.strictEqual(m[removed], undefined, "removed export present: " + removed);
 }
 
 // 토큰 누적.
 assert.strictEqual(m.accumulateTokens({input:100,output:20,reasoning:5,cache:{read:10,write:3}}), 138);
 assert.strictEqual(m.accumulateTokens(null), 0);
-
-// ctx 상태 판정 (limit 1000, 쓴 % 80/90 명시 임계 · nudge2 = max(87, 80) = 87 · 경계 검증용).
-const t = {checkpoint_at_pct:80, precompact_at_pct:90};
-assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");    // 쓴 50%
-assert.strictEqual(m.computeCtxState(800, 1000, t).level, "nudge"); // 쓴 80% (경계·>=)
-assert.strictEqual(m.computeCtxState(850, 1000, t).level, "nudge"); // 쓴 85%
-assert.strictEqual(m.computeCtxState(900, 1000, t).level, "stop");  // 쓴 90% (경계·>=)
-assert.strictEqual(m.computeCtxState(950, 1000, t).level, "stop");  // 쓴 95%
-assert.strictEqual("remainingPct" in m.computeCtxState(500, 1000, t), false); // 남은 % 는 없다
 
 console.log("NODE_SELFCHECK_OK");
 """
@@ -2389,74 +2408,16 @@ def test_plugin_injects_nudge_to_model():
     """nudge 안내를 모델 컨텍스트에 비차단 주입한다 (toast=사람 / system.transform=모델).
 
     chat.message 의 full Part 구성(id/sessionID/messageID 필수)보다 system[] string push 가
-    안전 — experimental.chat.system.transform 채택. event(nudge)서 pendingNudgeText 세팅 →
+    안전 — experimental.chat.system.transform 채택. 엔진 발화 응답에서 pendingNudgeText 세팅 →
     다음 모델 호출에 1회 소비.
     """
     src = _plugin_src()
     assert "experimental.chat.system.transform" in src, "모델 주입 훅(system.transform) 없음"
-    assert "buildNudgeGuidance" in src, "nudge 안내 빌더 없음"
     assert "pendingNudgeText" in src, "nudge 주입 대기 플래그 없음"
     assert "output.system.push" in src, "system[] 에 push 하는 주입 경로 없음"
-    # nudge 분기가 pendingNudgeText 를 세팅한다(toast 와 함께).
-    assert 'buildEngineCtxGuidance(root, "nudge", state, t)' in src
-    assert "session.pendingNudgeText = guidance" in src, "nudge 감지 시 중앙 안내 세팅 누락"
-
-
-def test_js_build_nudge_guidance():
-    """node 로 buildNudgeGuidance 가 실제 checkpoint 명령을 포함하는지 검증.
-
-    claude build_nudge_guidance 와 동형 문구. node 부재 시 skip(정적 검증으로 게이트).
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — JS buildNudgeGuidance 순수 단위 skip (정적 검증만 적용)")
-
-    script = r"""
-const m = require("./ctx-guard-core.cjs");
-const assert = require("node:assert");
-assert.strictEqual(typeof m.buildNudgeGuidance, "function", "missing export: buildNudgeGuidance");
-const g = m.buildNudgeGuidance({ usedPct: 82 });
-assert.ok(g.includes("ctx-nudge"), "ctx-nudge 누락");
-assert.ok(g.includes("컨텍스트 사용 82%"), "쓴 % 누락: " + g);
-assert.ok(!g.includes("잔여"), "남은 % 가 남았다: " + g);
-assert.ok(g.includes("ticket 경계"), "ticket 경계 마무리 안내 누락");
-assert.ok(g.includes("complete entry"), "complete 박제 안내 누락");
-assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <task>"), "실 checkpoint 명령 누락");
-console.log("JS_NUDGE_GUIDANCE_OK");
-"""
-    out = _run_node_check(script)
-    assert "JS_NUDGE_GUIDANCE_OK" in out, f"JS buildNudgeGuidance 검증 실패. out={out!r}"
-
-
-def test_js_engine_failure_fallback_keeps_continuity_policy_in_all_bands(tmp_path):
-    """중앙 pm_log 호출 실패 시 네 band fallback도 필수 정책 두 사실을 보존한다.
-
-    실패 형상은 *엔진이 그 자리에 없는* 루트다(pm_log.py 없는 픽스처 → spawn rc!=0).
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — ctx fallback 순수 단위 skip")
-
-    engineless_root = tmp_path / "no-engine"
-    engineless_root.mkdir()
-    script = r"""
-const m = require("./ctx-guard-core.cjs");
-const assert = require("node:assert");
-const root = process.argv[1];
-const state = {usedPct:92};
-const thresholds = {checkpoint_at_pct:70, precompact_at_pct:80};
-for (const band of ["nudge", "nudge2", "final", "precompact"]) {
-  const guidance = m.buildEngineCtxGuidance(root, band, state, thresholds);
-  assert.ok(guidance.includes("압축은 자동이고 세션은 그대로 이어진다"), band + ": continuity missing");
-  assert.ok(guidance.includes("핸드오프는 사용자 명시 지시로만 한다"), band + ": handoff policy missing");
-  assert.ok(!guidance.includes("새 큰 작업보다 현재 서사 기록을 우선"), band + ": forbidden phrase present");
-}
-console.log("JS_CTX_FALLBACK_POLICY_OK");
-"""
-    out = _run_node_check(script, node_args=[str(engineless_root)])
-    assert "JS_CTX_FALLBACK_POLICY_OK" in out
+    # 엔진 응답이 발화(emit)면 그 안내를 그대로 pendingNudgeText 에 세팅한다(toast 와 함께).
+    assert "if (!decision.emit) return;" in src
+    assert "state.pendingNudgeText = decision.guidance" in src, "nudge 감지 시 중앙 안내 세팅 누락"
 
 
 # ── checkpoint 2단(strong·compaction 임박) — 정적 + node 순수 검증 ────────────
@@ -2464,73 +2425,65 @@ console.log("JS_CTX_FALLBACK_POLICY_OK");
 
 
 def test_plugin_injects_nudge2_to_model():
-    """2단(strong) nudge 도 모델 컨텍스트에 비차단 주입 + 사람용 2단 toast (T-0328).
+    """2단(strong)·최종 nudge 도 모델 컨텍스트에 비차단 주입 + 사람용 2단 toast (T-0328).
 
-    1단(soft) 유지 + 2단(strong) 추가: computeCtxState 가 nudge2 레벨을 내고, event 가 그때
-    pendingNudgeText 를 2단 안내로 세팅(fired.nudge2 멱등·1단과 독립)하며 사람용 toast 도 2단 표시.
-    """
+    2단 임계 파생·밴드 판정·안내 문구·사이클당 1회는 엔진이 소유한다. plugin 은 엔진 응답 level 로
+    toast 강도만 고르고 같은 pendingNudgeText 채널에 싣는다."""
     src = _plugin_src()
-    # 2단 임계 파생(마진 상수·nudge2Threshold) — claude CTX_NUDGE2_MARGIN_PCT 미러.
-    assert re.search(r"const\s+NUDGE2_MARGIN_PCT\s*=\s*3", src), "NUDGE2_MARGIN_PCT=3 상수(claude 미러) 없음"
-    assert "function nudge2Threshold" in src, "2단 임계 파생함수(nudge2Threshold) 없음"
-    # computeCtxState 가 nudge2 레벨을 낸다.
-    assert '"nudge2"' in src, "computeCtxState 에 nudge2 레벨 없음"
-    # 2단 안내 빌더 + 감지 시 주입 대기 세팅 + fired.nudge2 멱등.
-    assert "buildNudge2Guidance" in src, "2단 안내 빌더(buildNudge2Guidance) 없음"
-    assert 'buildEngineCtxGuidance(root, "nudge2", state, t)' in src
-    assert "session.pendingNudgeText = guidance" in src, "nudge2 감지 시 중앙 안내 세팅 누락"
-    assert "fired.nudge2" in src, "2단 1회 가드(fired.nudge2) 없음"
-    # 사람용 2단 toast.
-    assert "notifyNudge2" in src, "2단 toast(notifyNudge2) 경로 없음"
+    for removed in ("NUDGE2_MARGIN_PCT", "nudge2Threshold", "buildNudge2Guidance", "fired.nudge2"):
+        assert removed not in src, f"2단 판정 사본 잔존: {removed}"
+    assert 'if (decision.level === "nudge") await notifyNudge(decision.guidance);' in src
+    assert "else await notifyNudge2(decision.guidance);" in src, "2단 toast(notifyNudge2) 경로 없음"
+    assert "state.pendingNudgeText = decision.guidance" in src, "nudge2 감지 시 중앙 안내 세팅 누락"
 
+def test_js_nudge2_band_and_guidance(tmp_path):
+    """plugin 이 실제 엔진 판정의 4-밴드·2단 임계·안내문을 그대로 모델 채널에 싣는다.
 
-def test_js_nudge2_band_and_guidance():
-    """node 로 2단 임계 파생(nudge2Threshold)·4-밴드 판정(computeCtxState)·2단 안내문 검증.
-
-    claude ctx_guard.nudge2_threshold·classify·build_nudge2_guidance 동형. node 부재 시 skip.
+    분모 E=200,000·70/80 기록에서 쓴 % 는 반올림 정수다 — 76%(nudge)·77%(nudge2 = max(80 − 3, 70))·
+    80%(final). 안내문은 엔진 `build_ctx_guard_guidance` 와 같은 문자열이다. node 부재 시 skip.
     """
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — 2단 nudge 순수 단위 skip (정적 검증만 적용)")
+        pytest.skip("node 없음 — 2단 nudge 단위 skip")
 
+    sys.path.insert(0, str(ENGINE_TOOLS))
+    from pm_engine.domain import ctx_recovery
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    cases = [("ses_ok", 138_000), ("ses_nudge", 153_000), ("ses_nudge2", 154_000),
+             ("ses_nudge2_upper", 158_000), ("ses_final", 160_000)]
     script = r"""
 const m = require("./ctx-guard-core.cjs");
-const assert = require("node:assert");
-for (const fn of ["nudge2Threshold","buildNudge2Guidance","computeCtxState"]) {
-  assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
-}
-assert.strictEqual(m.NUDGE2_MARGIN_PCT, 3, "NUDGE2_MARGIN_PCT 미러(3) 아님");
-
-// nudge2Threshold = max(precompact_at − 3, checkpoint_at) 파생 (checkpoint_at 이 하한).
-assert.strictEqual(m.nudge2Threshold({checkpoint_at_pct:70, precompact_at_pct:80}), 77);
-assert.strictEqual(m.nudge2Threshold({checkpoint_at_pct:80, precompact_at_pct:90}), 87);
-assert.strictEqual(m.nudge2Threshold({checkpoint_at_pct:79, precompact_at_pct:80}), 79); // nudge 밴드 좁으면 하한.
-
-// computeCtxState 4-밴드 (limit 1000, 70/80 → nudge2_threshold 77).
-const t = {checkpoint_at_pct:70, precompact_at_pct:80};
-assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");     // 쓴 50%
-assert.strictEqual(m.computeCtxState(700, 1000, t).level, "nudge");  // 쓴 70% (nudge 경계·>=)
-assert.strictEqual(m.computeCtxState(760, 1000, t).level, "nudge");  // 쓴 76% (<77)
-assert.strictEqual(m.computeCtxState(770, 1000, t).level, "nudge2"); // 쓴 77% (nudge2 경계·>=)
-assert.strictEqual(m.computeCtxState(790, 1000, t).level, "nudge2"); // 쓴 79%
-assert.strictEqual(m.computeCtxState(800, 1000, t).level, "stop");   // 쓴 80% (stop 경계·>=)
-
-// buildNudge2Guidance 문구 (compaction 임박 checkpoint 지시).
-const g = m.buildNudge2Guidance({usedPct:82});
-assert.ok(g.includes("ctx-nudge/강화"), "ctx-nudge/강화 누락: " + g);
-assert.ok(g.includes("컨텍스트 사용 82%"), "쓴 % 누락: " + g);
-assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <task>"), "실 checkpoint 명령 누락");
-assert.ok(g.includes("구간·서사"), "checkpoint 서사 박제 지시 누락");
-// 1단 문구와 구별된다 (별개 강도 표지).
-const g1 = m.buildNudgeGuidance({usedPct:82});
-assert.ok(g !== g1, "2단 문구가 1단과 동일 — 강도 구별 없음");
-
-console.log("JS_NUDGE2_OK");
+const cases = JSON.parse(process.argv[1]);
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => ({data:{id}})}},
+    directory:process.argv[2]});
+  const delivered = {};
+  for (const [sessionID, input] of cases) {
+    await hooks.event({event:{type:"message.updated", properties:{info:{
+      sessionID, role:"assistant", tokens:{input}}}}});
+    const output = {system:[]};
+    await hooks["experimental.chat.system.transform"]({sessionID}, output);
+    delivered[sessionID] = output.system;
+  }
+  console.log(JSON.stringify(delivered));
+})().catch((err) => { console.error(err); process.exitCode = 1; });
 """
-    out = _run_node_check(script)
-    assert "JS_NUDGE2_OK" in out, f"JS 2단 nudge 검증 실패. out={out!r}"
+    out = _run_node_check(script, project_root, [json.dumps(cases), str(project_root)])
+    delivered = json.loads(out)
 
+    def guidance(band, used):
+        return [ctx_recovery.build_ctx_guard_guidance(band, used_pct=used, precompact_at_pct=80)]
+
+    assert delivered == {
+        "ses_ok": [],
+        "ses_nudge": guidance("nudge", 76),
+        "ses_nudge2": guidance("nudge2", 77),
+        "ses_nudge2_upper": guidance("nudge2", 79),
+        "ses_final": guidance("final", 80),
+    }
+    assert delivered["ses_nudge2"] != guidance("nudge", 77), "2단 문구가 1단과 동일 — 강도 구별 없음"
 
 # ── 5. 라이브-로드 게이트 (T-0283 · 실 opencode autoload · release-tier · 기본 skip) ──
 # 이 게이트의 존재이유: 유닛/정적 테스트는 순수함수(node require)만 봐서, opencode 가 plugin export
@@ -2581,7 +2534,7 @@ def _stage_opencode_project(root: Path, plugin_body: str | None = None) -> Path:
     oc = root / ".opencode"
     (oc / "plugins").mkdir(parents=True)
     (oc / "lib").mkdir(parents=True)
-    for name in ("ctx-guard-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
+    for name in CORE_DEPENDENCIES:
         shutil.copy2(CORE_DIR / name, oc / "lib" / name)
     if plugin_body is None:
         shutil.copy2(PLUGIN_FILE, oc / "plugins" / "ctx-guard.js")
@@ -2647,7 +2600,8 @@ _T0943_CONF = {"harness.opencode.ctx_window_tokens": "600000", "ctx.checkpoint_a
 _T0943_SCRIPT = r'''
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
-const [providerID, modelID, input] = [process.argv[1], process.argv[2], Number(process.argv[3])];
+const [providerID, modelID, input, sessionID] = [process.argv[1], process.argv[2], Number(process.argv[3]),
+  process.argv[4]];
 (async () => {
   const toasts = [];
   const hooks = await m.CtxGuardPlugin({client:{
@@ -2655,11 +2609,11 @@ const [providerID, modelID, input] = [process.argv[1], process.argv[2], Number(p
     tui:{showToast: async (toast) => { toasts.push(toast.body.message); }},
   }, directory: process.cwd()});
   const event = {event:{type:"message.updated", properties:{info:{
-    sessionID:"t0943", role:"assistant", providerID, modelID, tokens:{input}}}}};
+    sessionID, role:"assistant", providerID, modelID, tokens:{input}}}}};
   await hooks.event(event);
   await hooks.event(event);
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:"t0943"}, output);
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
   console.log(JSON.stringify({toasts, system: output.system}));
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''
@@ -2673,8 +2627,8 @@ def _t0943_project(tmp_path: Path) -> Path:
     return root
 
 
-def _t0943_plugin_run(root: Path, provider: str, model: str, tokens: int) -> dict:
-    proc = subprocess.run([_NODE, "-e", _T0943_SCRIPT, provider, model, str(tokens)],
+def _t0943_plugin_run(root: Path, provider: str, model: str, tokens: int, session: str = "t0943") -> dict:
+    proc = subprocess.run([_NODE, "-e", _T0943_SCRIPT, provider, model, str(tokens), session],
                           cwd=str(root / ".opencode" / "lib"), capture_output=True, text=True,
                           encoding="utf-8", timeout=30)
     assert proc.returncode == 0, proc.stderr
@@ -2687,11 +2641,12 @@ def test_t0943_plugin_recorded_model_nudges_other_model_warns(tmp_path):
     from test_harness_ctx_limits import install_ctx_record
     root = _t0943_project(tmp_path)
     assert install_ctx_record(root, _T0943_CONF, harness="opencode", capacity=200000) == "ollama/glm-5.2:cloud"
-    same = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 162000)              # 81% of E 200,000
-    assert len(same["system"]) == 1 and "--used-pct 81" in same["system"][0]
+    # 밴드 1회 발화는 세션별 durable marker 라 두 실행은 서로 다른 세션으로 본다.
+    same = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 162000, "t0943-same")  # 81% of E 200,000
+    assert len(same["system"]) == 1 and "[ctx-nudge] 컨텍스트 사용 81%" in same["system"][0]
     assert not [text for text in same["toasts"] if "[ctx-budget]" in text]
-    other = _t0943_plugin_run(root, "openrouter", "glm-5.2:cloud", 162000)
-    assert len(other["system"]) == 1 and "--used-pct 81" in other["system"][0]
+    other = _t0943_plugin_run(root, "openrouter", "glm-5.2:cloud", 162000, "t0943-other")
+    assert len(other["system"]) == 1 and "[ctx-nudge] 컨텍스트 사용 81%" in other["system"][0]
     warnings = [text for text in other["toasts"] if "[ctx-budget]" in text]
     assert len(warnings) == 1 and "모델이 바뀌었습니다" in warnings[0] and "openrouter/glm-5.2:cloud" in warnings[0]
 

@@ -79,20 +79,18 @@ def _transcript_pct(guard, transcript, budget: int) -> int:
     ],
     ids=["engine-tool", "pytest", "persistent-cd"],
 )
-def test_git_anchor_prefilter_routes_new_command_classes_to_board(
+def test_git_anchor_routes_new_command_classes_to_central_judgment(
     monkeypatch, tmp_path, command,
 ):
-    """T-0697 선필터 세 분기는 모두 중앙 board 판정 seam까지 도달한다."""
+    """T-0697 명령 세 갈래는 거르는 단계 없이 원문 그대로 설치 루트 Home 과 함께 엔진 공개 판정에 도달한다."""
     driver = _load("pm_orch_claude")
     calls = []
 
-    class FakeBoard:
-        @staticmethod
-        def judge_git_anchor_command(_root, _session, cwd, shell_command, grants=False):
-            calls.append((cwd, shell_command))
-            return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
+    def judge_git_anchor_command(home, _session, cwd, shell_command, grants=False):
+        calls.append((home, cwd, shell_command, grants))
+        return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 
-    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", FakeBoard.judge_git_anchor_command)
+    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", judge_git_anchor_command)
     payload = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
@@ -100,7 +98,7 @@ def test_git_anchor_prefilter_routes_new_command_classes_to_board(
         "tool_input": {"command": command},
     }
     assert driver.git_anchor_hook_evaluate(payload, tmp_path) is None
-    assert calls == [(str(tmp_path), command)]
+    assert calls == [(cli_hooks.adapter_home(tmp_path), str(tmp_path), command, False)]
 
 
 # ── transcript JSONL fixture 헬퍼 ──────────────────────────────────────────

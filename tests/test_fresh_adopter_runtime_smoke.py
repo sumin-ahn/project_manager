@@ -442,7 +442,7 @@ def _run_opencode_nudge(dest: Path, attempts: int = 2) -> str:
     opencode 는 수 분 병리적 task hang(upstream·tool-loop 데드락) 이 있어 timeout + 1회 재시도까지만
     (PM 지침·실측: opencode 1.17.19 + glm-5.2 에서 tool 사용 세션이 0바이트로 걸림·`--pure` 로 플러그인
     빼도 걸림=upstream·플러그인 무관). 그 hang 이 풀린 환경에서만 이 라이브가 통과한다(default-skip 이라
-    회귀 무영향). 메커니즘 자체는 Tier1(node computeCtxState nudge2·buildNudge2Guidance·system.transform)
+    회귀 무영향). 메커니즘 자체는 Tier1(실제 엔진 hook-context nudge2 판정·plugin system.transform 전달)
     + T-0283 로드게이트 + claude 라이브(동일 채널·주입-도달 실증)로 커버.
 
     NOTE(플래그): `--pure` 는 안 쓴다 — `--pure`=external plugin 미로드라 ctx-guard 플러그인(주입 메커니즘

@@ -1,17 +1,14 @@
 // opencode 판단 원칙 recall core.
 //
-// 판정은 Python `pm_principles.judge_recall` 단일 진실을 subprocess 로 호출하고, 이 모듈은
-// 선필터(도구 이름 → `on` 매핑) + opencode hook 배선 + 비차단 주입만 소유한다
-// (git-anchor-core.cjs 동형 — `judgeCommand`/`makeGitAnchorPlugin` 과 같은 구조).
+// 판정은 Python 원칙 recall 단일 진실이 하고, 이 모듈은 도구 이름 → `on` 매핑(`toolSignal`)과 사용자
+// 프롬프트 recall 배선만 소유한다.
 //
-// `on` 4어휘 중 shell/edit/delegate 는 `tool.execute.before`(input.tool·output.args — safe-write
-// -core.cjs 실측 필드) 에서 판별한다. prompt 축은 이미 이 저장소에서 검증된 `event` 훅
-// (ctx-guard-core.cjs 의 `message.updated` 배선)을 재사용한다 — 미검증 훅 키를 새로 추가하면
-// 플러그인 로드 자체가 깨질 위험이 있어(opencode 는 알려진 훅 키만 기대), 이미 라이브로 확인된
-// 훅만 쓴다. `info.parts` 텍스트 추출은 방어적이며, 필드 형태가 다르면 조용히 넘어간다(비차단).
-// 같은 `event` 훅의 `session.compacted`(ctx-guard-core.cjs 가 압축 재무장에 이미 쓰는 사건축)에서
-// (세션, 규칙) marker 를 지워 다음 사이클을 재무장한다 — 압축 직후가 규칙이 컨텍스트에서 사라지는
-// 지점이므로 재무장 시점이 정확히 그 자리다(claude `ctx_stop_hook._rearm_principle_recall` 동형).
+// `on` 4어휘 중 shell/edit/delegate 는 일반 도구 호출 판정(git-anchor-core.cjs `createToolBoundary`)이
+// `toolSignal` 로 recall 입력을 만들어 `board.py hook-tool` 한 번에 함께 싣는다. prompt 축은 이미 이
+// 저장소에서 검증된 `event` 훅(ctx-guard-core.cjs 의 `message.updated` 배선)을 재사용한다 — 미검증 훅
+// 키를 새로 추가하면 플러그인 로드 자체가 깨질 위험이 있어(opencode 는 알려진 훅 키만 기대), 이미
+// 라이브로 확인된 훅만 쓴다. `info.parts` 텍스트 추출은 방어적이며, 필드 형태가 다르면 조용히
+// 넘어간다(비차단). 압축 경계의 recall 재무장은 ctx 판정(`hook-context` 의 압축 경계 처리)이 한다.
 // 라이브 도달 확인은 PM 이 채택자 환경에서 별도로 수행한다.
 const path = require("node:path");
 const childProcess = require("node:child_process");
@@ -98,56 +95,14 @@ function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSy
   return { count: 0, keys: [], text: "", infra_error: lastError };
 }
 
-// `pm_principles.py rearm` subprocess 호출 — 세션 marker 를 지워 다음 사이클을 재무장한다
-// (부작용만, 반환값 없음). 실패해도 침묵한다 — 최악의 결과는 다음 압축까지 재주입이 늦는
-// 것뿐이라 도구 실행을 막을 이유가 없다.
-function rearmRecall(root, sessionID, spawnSync = childProcess.spawnSync, platform = process.platform) {
-  const engine = path.join(root, ".project_manager", "tools", "pm_principles.py");
-  const candidate = supportedPythonCandidates(root, {spawnSync, platform}).next().value;
-  if (!candidate) return;
-  try {
-    spawnSync(candidate.command,
-      [...candidate.prefixArgs, engine, "rearm", "--root", root, "--session", String(sessionID || "unknown")],
-      {encoding: "utf8", timeout: 10000});
-  } catch (error) {
-    // 재무장 인프라 실패는 기존 비차단 침묵을 유지하며 엔진을 재실행하지 않는다.
-  }
-}
-
-function makePrincipleRecallPlugin(judge = judgeRecall, rearm = rearmRecall) {
+function makePrincipleRecallPlugin(judge = judgeRecall) {
   return async ({ client }) => {
     const root = ENGINE_ROOT;
     const warnings = createWarningChannel(client);
 
-    async function inject(sessionID, text) {
-      if (!text) return;
-      await warnings.publish(sessionID || "__global__", text);
-    }
-
     return {
-      "tool.execute.before": async (input, output) => {
-        const signal = toolSignal(input && input.tool, output && output.args);
-        if (!signal) return;
-        let result;
-        try {
-          result = judge(root, signal.on, signal.text, input && input.sessionID);
-        } catch (error) {
-          return; // 판정 예외는 비차단 침묵 — 도구 실행을 막지 않는다.
-        }
-        if (result && result.text) await inject(input && input.sessionID, result.text);
-      },
       event: async ({ event }) => {
-        if (!event) return;
-        if (event.type === "session.compacted") {
-          const sessionID = event.properties && event.properties.sessionID;
-          try {
-            rearm(root, sessionID);
-          } catch (error) {
-            // 재무장 실패는 비차단 — 다음 압축 경계로 넘긴다.
-          }
-          return;
-        }
-        if (event.type !== "message.updated") return;
+        if (!event || event.type !== "message.updated") return;
         const info = event.properties && event.properties.info;
         if (!info || info.role !== "user") return;
         const promptText = extractPromptText(info);
@@ -158,7 +113,7 @@ function makePrincipleRecallPlugin(judge = judgeRecall, rearm = rearmRecall) {
         } catch (error) {
           return;
         }
-        if (result && result.text) await inject(info.sessionID, result.text);
+        if (result && result.text) await warnings.publish(info.sessionID || "__global__", result.text);
       },
       "experimental.chat.system.transform": async (input, output) => {
         warnings.inject(input, output);
@@ -175,5 +130,4 @@ module.exports = {
   toolSignal,
   extractPromptText,
   judgeRecall,
-  rearmRecall,
 };

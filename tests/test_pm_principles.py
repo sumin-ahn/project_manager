@@ -468,12 +468,16 @@ def _install_recall_core(root: Path) -> Path:
 
     core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 소스
     트리에서 require 하면 judge-recall 이 `templates/opencode` 의 registry 를 읽고 그 트리에
-    marker 를 쓴다. 팩토리를 구동하는 검증은 이 사본을 cwd 로 돌린다.
+    marker 를 쓴다. 팩토리를 구동하는 검증은 이 사본을 cwd 로 돌린다. 도구 호출 recall 은 ctx core
+    의 일반 도구 판정 경계가 실제 board.py 로 판정하므로 그 의존과 board.py 도 둔다.
     """
     lib = root / ".opencode" / "lib"
     lib.mkdir(parents=True, exist_ok=True)
-    for name in ("principle-recall-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
+    for name in ("ctx-guard-core.cjs", "git-anchor-core.cjs", "principle-recall-core.cjs",
+                 "delegate-channel-core.cjs", "warning-channel-core.cjs"):
         shutil.copyfile(_OPENCODE_LIB / name, lib / name)
+    # 도구 호출 recall 은 일반 도구 판정 경계(`board.py hook-tool`)가 함께 판정한다.
+    shutil.copyfile(TOOLS / "board.py", root / ".project_manager" / "tools" / "board.py")
     return lib
 
 
@@ -498,13 +502,11 @@ for (const platform of ["win32", "linux"]) {
     const runtime = path.join(root, "venv with space", "python.exe");
     fs.writeFileSync(conf, "runtime.py=" + (configured ? runtime : "") + "\n");
     const chosen = configured ? {command:runtime, prefixArgs:[]} : leaf.pythonCandidates(platform)[0];
-    for (const operation of ["judge", "rearm"]) {
+    for (const operation of ["judge"]) {
       for (const outcome of ["success", "rc", "missing", "timeout", "throw", "null", "json"]) {
         const calls = [];
         const expected = {count:1, keys:["K"], text:"원문\r\n회상"};
-        const argv = operation === "judge"
-          ? ["judge-recall", "--root", root, "--on", "edit", "--text", "원문\r\n입력", "--session", "SID"]
-          : ["rearm", "--root", root, "--session", "SID"];
+        const argv = ["judge-recall", "--root", root, "--on", "edit", "--text", "원문\r\n입력", "--session", "SID"];
         const fake = (command, args, options) => {
           const probe = args[args.length-1] === floor;
           calls.push({probe,command,args,options});
@@ -523,11 +525,8 @@ for (const platform of ["win32", "linux"]) {
           if (outcome === "null") return null;
           return {status:0, stdout:outcome === "json" ? "bad JSON" : JSON.stringify(expected) + "\r\n"};
         };
-        const got = operation === "judge"
-          ? m.judgeRecall(root, "edit", "원문\r\n입력", "SID", fake, platform)
-          : m.rearmRecall(root, "SID", fake, platform);
-        if (operation === "rearm") assert.strictEqual(got, undefined);
-        else if (outcome === "success") assert.deepStrictEqual(got, expected);
+        const got = m.judgeRecall(root, "edit", "원문\r\n입력", "SID", fake, platform);
+        if (outcome === "success") assert.deepStrictEqual(got, expected);
         else {
           assert.deepStrictEqual({count:got.count, keys:got.keys, text:got.text}, {count:0, keys:[], text:""});
           assert.ok(got.infra_error);
@@ -540,15 +539,12 @@ for (const platform of ["win32", "linux"]) {
   }
 }
 fs.writeFileSync(conf, "runtime.py=broken-runtime\n");
-for (const operation of ["judge", "rearm"]) {
-  let probes = 0;
-  const fake = () => {probes += 1; return {status:9009,error:null};};
-  const got = operation === "judge" ? m.judgeRecall(root,"edit","text","SID",fake,"win32")
-    : m.rearmRecall(root,"SID",fake,"win32");
-  assert.strictEqual(probes, 1, "no actual engine or fallback for broken configured runtime");
-  if (operation === "judge") assert.match(got.infra_error, /broken-runtime.*9009/);
-  else assert.strictEqual(got, undefined);
-}
+let probes = 0;
+const brokenFake = () => {probes += 1; return {status:9009,error:null};};
+const broken = m.judgeRecall(root,"edit","text","SID",brokenFake,"win32");
+assert.strictEqual(probes, 1, "no actual engine or fallback for broken configured runtime");
+assert.match(broken.infra_error, /broken-runtime.*9009/);
+assert.strictEqual(m.rearmRecall, undefined, "compaction rearm belongs to the ctx boundary API");
 console.log("T0934_RECALL_ONCE_OK");
 '''
     result = subprocess.run([_NODE, "-e", script, str(root)], cwd=_OPENCODE_LIB,
@@ -601,9 +597,9 @@ console.log("SELFCHECK_OK");
 
 
 def test_opencode_principle_recall_core_fires_suppresses_and_rearms_on_compaction(tmp_path):
-    """실 python subprocess(judge-recall/rearm) 를 통한 값 사이클 — 발화 → 같은 세션 재호출
-    억제(marker dedup) → `session.compacted` 재무장 → 재발화. 순수함수 자가검증과 달리 마커
-    파일 IO 를 실제로 태운다(judge 인자를 mock 하지 않는다)."""
+    """실 python subprocess(board.py hook-tool/hook-context) 를 통한 값 사이클 — 발화 → 같은 세션
+    재호출 억제(marker dedup) → `session.compacted` 재무장 → 재발화. 순수함수 자가검증과 달리
+    마커 파일 IO 를 실제로 태운다(판정을 mock 하지 않는다)."""
     if _NODE is None:
         pytest.skip("node 없음 — 재무장 사이클 skip")
     _write_engine_tools(tmp_path / ".project_manager" / "tools")
@@ -615,24 +611,26 @@ def test_opencode_principle_recall_core_fires_suppresses_and_rearms_on_compactio
     )
     script = f"""
 const assert = require("node:assert");
-const m = require("./principle-recall-core.cjs");
+const ctx = require("./ctx-guard-core.cjs");
 const root = {json.dumps(str(tmp_path))};
 const sessionID = "rearm-cycle-session";
 
+const client = {{ session: {{ get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}) }} }};
+
+// 도구 호출 recall 은 ctx core 의 일반 도구 판정 경계 하나가 판정한다(별도 recall before 없음).
 async function fireCount() {{
-  const plugin = m.makePrincipleRecallPlugin();
-  const instance = await plugin({{ client: {{}}, directory: root }});
+  const instance = await ctx.CtxGuardPlugin({{ client, directory: root }});
   const output = {{ system: [] }};
   await instance["tool.execute.before"](
     {{ tool: "Bash", sessionID }}, {{ args: {{ command: "git push" }} }},
   );
-  instance["experimental.chat.system.transform"]({{ sessionID }}, output);
-  return output.system.length;
+  await instance["experimental.chat.system.transform"]({{ sessionID }}, output);
+  return output.system.filter((text) => text.includes("재무장 사이클 확인용 규칙 본문")).length;
 }}
 
+// 압축 경계 재무장은 ctx 판정(hook-context 의 압축 경계 처리)이 한다.
 async function compact() {{
-  const plugin = m.makePrincipleRecallPlugin();
-  const instance = await plugin({{ client: {{}}, directory: root }});
+  const instance = await ctx.CtxGuardPlugin({{ client, directory: root }});
   await instance.event({{ event: {{ type: "session.compacted", properties: {{ sessionID }} }} }});
 }}
 
@@ -670,18 +668,18 @@ def test_opencode_principle_recall_core_surfaces_broken_registry_warning(tmp_pat
     )
     script = f"""
 const assert = require("node:assert");
-const m = require("./principle-recall-core.cjs");
+const ctx = require("./ctx-guard-core.cjs");
 const root = {json.dumps(str(tmp_path))};
 const sessionID = "broken-registry-session";
 
 (async () => {{
-  const plugin = m.makePrincipleRecallPlugin();
-  const instance = await plugin({{ client: {{}}, directory: root }});
+  const client = {{ session: {{ get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}) }} }};
+  const instance = await ctx.CtxGuardPlugin({{ client, directory: root }});
   const output = {{ system: [] }};
   await instance["tool.execute.before"](
     {{ tool: "Bash", sessionID }}, {{ args: {{ command: "ls -la" }} }},
   );
-  instance["experimental.chat.system.transform"]({{ sessionID }}, output);
+  await instance["experimental.chat.system.transform"]({{ sessionID }}, output);
   assert.strictEqual(output.system.length, 1, "파손 경고가 표면화되지 않음: " + JSON.stringify(output));
   assert.ok(output.system[0].includes("[principle-recall]"), output.system[0]);
   assert.ok(output.system[0].includes("파손"), output.system[0]);
