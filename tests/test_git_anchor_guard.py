@@ -3155,7 +3155,8 @@ const [engineRoot, slot] = process.argv.slice(1);
   // 허용 기록 실패는 조용히 넘기지 않는다.
   const calls = [];
   const failing = (py, argv, opts) => {
-    calls.push([argv.slice(1), opts.input]);
+    // 실행기 접두 인자 수는 OS마다 다르다(Windows `py -3 board.py …`) — board.py 다음부터 기록한다.
+    calls.push([argv.slice(argv.findIndex((arg) => arg.endsWith("board.py")) + 1), opts.input]);
     return {status: 1, stdout: "", stderr: "[중단] 형식 오류"};
   };
   assert.throws(
