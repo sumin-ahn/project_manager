@@ -29,6 +29,7 @@ from _win_skip import posix_filenames_supported
 from pm_engine.infra import doc_page_store, pm_paths, repo_coordinates
 from pm_engine.domain import doc_drafts, doc_pages
 from pm_engine.app import doc_affected, doc_lint, doc_staleness
+from pm_engine.cli import domain_cmd
 
 from pm_engine.infra import ticket_store
 
@@ -60,6 +61,12 @@ def _declare_repo(dm, monkeypatch, root: Path) -> Path:
     init_git_repo(root, commit="seed")
     monkeypatch.setattr(dm, "REPO", root)
     return root
+
+
+def _declare_domain_dir(dm, monkeypatch, root: Path) -> Path:
+    """`dm.REPO` 를 `root` 로 두고 그 Home 의 domain 페이지 디렉토리를 돌려준다."""
+    monkeypatch.setattr(dm, "REPO", root)
+    return pm_paths.domain_dir(pm_paths.home_at(root))
 
 
 def _write_page(domain_dir: Path, name: str, *, frontmatter: str, body: str = "\nbody\n") -> Path:
@@ -666,7 +673,7 @@ def test_multi_repo_same_relative_touch_matches_only_page_owner_checkout(
         encoding="utf-8",
     )
     monkeypatch.setattr(dm, "REPO", tmp_path)
-    touches = dm._normalize_ticket_touches([
+    touches = domain_cmd._normalize_ticket_touches(pm_paths.home_at(dm.REPO), [
         "work/repo_a_1/.project_manager/tools/board.py",
         "work/repo_b_1/.project_manager/tools/board.py",
     ])
@@ -849,8 +856,8 @@ def test_capture_repository_identity_failure_is_consistent_then_next_query_retri
 
         return runner
 
-    monkeypatch.setattr(dm, "_touches_from_tickets", lambda _tids: [touch])
-    monkeypatch.setattr(dm, "_normalize_ticket_touches", lambda touches: touches)
+    monkeypatch.setattr(domain_cmd, "_touches_from_tickets", lambda _home, _tids: [touch])
+    monkeypatch.setattr(domain_cmd, "_normalize_ticket_touches", lambda _home, touches: touches)
     monkeypatch.setattr(doc_page_store, "load_pages", lambda _domain_dir=None: [page])
     monkeypatch.setattr(doc_staleness, "_page_owner_repo", lambda home, _page: (checkout, None))
     monkeypatch.setattr(doc_staleness, "_real_git_runner", transient_factory)
@@ -893,11 +900,11 @@ def test_pages_for_touches_skips_blank_touch(dm, touch_pages):
 
 
 def test_affected_touches_renders_matched(dm, tmp_path, monkeypatch, capsys):
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: 분석페이지\ntype: concept\ncovers:\n  - src/analysis/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     rc = dm.main(["affected", "--touches", "src/analysis/x.py"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -906,15 +913,15 @@ def test_affected_touches_renders_matched(dm, tmp_path, monkeypatch, capsys):
 
 
 def test_affected_touches_comma_separated_union(dm, tmp_path, monkeypatch, capsys):
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a/**",
     )
     _write_page(
-        tmp_path, "b.md",
+        domain_dir, "b.md",
         frontmatter="title: B\ntype: concept\ncovers:\n  - src/b/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     rc = dm.main(["affected", "--touches", "src/a/x.py, src/b/y.py"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -922,11 +929,11 @@ def test_affected_touches_comma_separated_union(dm, tmp_path, monkeypatch, capsy
 
 
 def test_affected_no_match_prints_none_message(dm, tmp_path, monkeypatch, capsys):
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     rc = dm.main(["affected", "--touches", "other/unrelated.py"])
     assert rc == 0
     assert "(영향 domain 페이지 없음)" in capsys.readouterr().out
@@ -935,14 +942,14 @@ def test_affected_no_match_prints_none_message(dm, tmp_path, monkeypatch, capsys
 def test_affected_ticket_reads_touches_via_board(dm, tmp_path, monkeypatch, capsys):
     # --ticket 경로: _touches_from_ticket(board.find_ticket+load_ticket) 를 대역으로
     # 가로채 ticket touches 를 hermetic 하게 주입한다(실 board 미접촉).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: 티켓영향\ntype: concept\ncovers:\n  - src/analysis/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(
-        dm, "_touches_from_ticket",
-        lambda tid: ["src/analysis/x.py"] if tid == "T-9999" else [],
+        domain_cmd, "_touches_from_ticket",
+        lambda _home, tid: ["src/analysis/x.py"] if tid == "T-9999" else [],
     )
     rc = dm.main(["affected", "--ticket", "T-9999"])
     assert rc == 0
@@ -960,7 +967,7 @@ def test_affected_ticket_normalizes_pm_home_worktree_touch(dm, tmp_path, monkeyp
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
     )
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir,
         "coordinates.md",
@@ -973,7 +980,6 @@ def test_affected_ticket_normalizes_pm_home_worktree_touch(dm, tmp_path, monkeyp
         ),
     )
     monkeypatch.setattr(dm, "REPO", tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(
         doc_staleness,
         "_page_owner_repo",
@@ -982,9 +988,9 @@ def test_affected_ticket_normalizes_pm_home_worktree_touch(dm, tmp_path, monkeyp
     monkeypatch.setattr(
         doc_staleness, "_same_repository_checkouts", lambda left, right: (True, None))
     monkeypatch.setattr(
-        dm,
+        domain_cmd,
         "_touches_from_ticket",
-        lambda tid: [f"{slot}/src/analysis/x.py"],
+        lambda _home, tid: [f"{slot}/src/analysis/x.py"],
     )
 
     assert dm.main(["affected", "--ticket", "T-0473"]) == 0
@@ -1005,7 +1011,7 @@ def test_affected_ticket_directory_touch_summons_exact_cover(
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
     )
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir,
         "domain.md",
@@ -1018,7 +1024,6 @@ def test_affected_ticket_directory_touch_summons_exact_cover(
         ),
     )
     _declare_repo(dm, monkeypatch, tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(
         doc_staleness,
         "_page_owner_repo",
@@ -1027,8 +1032,8 @@ def test_affected_ticket_directory_touch_summons_exact_cover(
     monkeypatch.setattr(
         doc_staleness, "_same_repository_checkouts", lambda left, right: (True, None))
     monkeypatch.setattr(
-        dm, "_touches_from_ticket",
-        lambda tid: [f"{slot}/.project_manager/tools"],
+        domain_cmd, "_touches_from_ticket",
+        lambda _home, tid: [f"{slot}/.project_manager/tools"],
     )
 
     assert dm.main(["affected", "--ticket", "T-0473"]) == 0
@@ -1048,14 +1053,13 @@ def test_affected_ticket_worktree_slot_mismatch_warns_and_continues(
         encoding="utf-8",
     )
     monkeypatch.setattr(dm, "REPO", tmp_path)
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir, "valid.md",
         frontmatter="title: 유효 페이지\ntype: concept\ncovers:\n  - src/valid.py",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(dm, "_touches_from_ticket",
-                        lambda tid: [
+    monkeypatch.setattr(domain_cmd, "_touches_from_ticket",
+                        lambda _home, tid: [
                             "work/project_manager_2/src/x.py",
                             "src/valid.py",
                         ])
@@ -1089,7 +1093,7 @@ def test_ticket_touch_unsafe_relative_warns_and_is_excluded_from_query(
     )
     monkeypatch.setattr(dm, "REPO", tmp_path)
 
-    assert dm._normalize_ticket_touches([touch]) == []
+    assert domain_cmd._normalize_ticket_touches(pm_paths.home_at(dm.REPO), [touch]) == []
     err = capsys.readouterr().err
     assert "좌표 정규화 경고" in err
     assert "이 경로는 제외" in err
@@ -1103,14 +1107,14 @@ def test_ticket_touches_without_worktree_prefix_skip_coordinate_loader(
         repo_coordinates, "normalize_repo_path",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
     )
-    assert dm._normalize_ticket_touches(["src/a.py", "tests"]) == [
+    assert domain_cmd._normalize_ticket_touches(pm_paths.home_at(dm.REPO), ["src/a.py", "tests"]) == [
         "src/a.py", "tests",
     ]
 
 
 def test_affected_ticket_no_touches_prints_none(dm, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
-    monkeypatch.setattr(dm, "_touches_from_ticket", lambda tid: [])
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
+    monkeypatch.setattr(domain_cmd, "_touches_from_ticket", lambda _home, tid: [])
     rc = dm.main(["affected", "--ticket", "T-0000"])
     assert rc == 0
     assert "(영향 domain 페이지 없음)" in capsys.readouterr().out
@@ -1146,17 +1150,17 @@ def test_touches_from_ticket_strips_list_whitespace_and_drops_empty(dm, tmp_path
     # 같은 값이 매칭에서 조용히 누락되지 않게 (--touches CLI 와 동형).
     board = _FakeBoard(tmp_path, ["src/a.py", " src/b.py", "  ", "\tsrc/c.py "])
     monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
-    assert dm._touches_from_ticket("T-9999") == ["src/a.py", "src/b.py", "src/c.py"]
+    assert domain_cmd._touches_from_ticket(pm_paths.home_at(dm.REPO), "T-9999") == ["src/a.py", "src/b.py", "src/c.py"]
 
 
 def test_touches_from_ticket_strips_scalar_string(dm, tmp_path, monkeypatch):
     # 스칼라 문자열 touches(list 들여쓰기 누락)도 strip — 빈 문자열은 [] 로.
     board = _FakeBoard(tmp_path, "  src/x.py  ")
     monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
-    assert dm._touches_from_ticket("T-9999") == ["src/x.py"]
+    assert domain_cmd._touches_from_ticket(pm_paths.home_at(dm.REPO), "T-9999") == ["src/x.py"]
     board = _FakeBoard(tmp_path, "   ")
     monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
-    assert dm._touches_from_ticket("T-9999") == []
+    assert domain_cmd._touches_from_ticket(pm_paths.home_at(dm.REPO), "T-9999") == []
 
 
 def test_affected_ticket_whitespace_touches_match_both(dm, tmp_path, monkeypatch, capsys):
@@ -1164,15 +1168,15 @@ def test_affected_ticket_whitespace_touches_match_both(dm, tmp_path, monkeypatch
     # _touches_from_ticket 에서 strip 돼 cmd_affected 가 두 페이지 모두 매칭한다 (strip
     # 전이면 " src/b.py" 가 조용히 누락됐다). _load_board 만 대역(ticket 위치 주입)하고
     # strip 로직은 실제 코드를 거친다.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path / "domain", "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a.py",
     )
     _write_page(
-        tmp_path / "domain", "b.md",
+        domain_dir, "b.md",
         frontmatter="title: B\ntype: concept\ncovers:\n  - src/b.py",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path / "domain")
     board = _FakeBoard(tmp_path / "board", ["src/a.py", " src/b.py"])
     monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
     rc = dm.main(["affected", "--ticket", "T-9999"])
@@ -1185,21 +1189,21 @@ def test_affected_ticket_whitespace_touches_match_both(dm, tmp_path, monkeypatch
 
 
 def test_main_list_empty(dm, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path / "empty")
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path / "empty")
     rc = dm.main(["list"])
     assert rc == 0
     assert "(domain 페이지 없음)" in capsys.readouterr().out
 
 
 def test_main_list_renders_pages(dm, tmp_path, monkeypatch, capsys):
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "p.md",
+        domain_dir, "p.md",
         frontmatter=(
             "title: 데모페이지\ntype: guide\n"
             "covers:\n  - src/x/**\nupdated: 2026-06-19"
         ),
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     rc = dm.main(["list"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -1354,11 +1358,11 @@ def test_page_stale_single_star_passes_original_glob_not_prefix(dm):
 
 def test_list_marks_stale_page_with_warning(dm, tmp_path, monkeypatch, capsys):
     # stale(True) 페이지 줄 앞에 ⚠. page_stale 을 대역으로 가로채 결정적으로 stale 화.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "p.md",
+        domain_dir, "p.md",
         frontmatter="title: 낡은페이지\ntype: concept\ncovers:\n  - src/x/**\nupdated: 2026-06-19",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: True)
     rc = dm.main(["list"])
     assert rc == 0
@@ -1369,8 +1373,9 @@ def test_list_marks_stale_page_with_warning(dm, tmp_path, monkeypatch, capsys):
 
 def test_list_stale_marker_uses_page_owner_runner(dm, tmp_path, monkeypatch, capsys):
     """list 마커의 page_stale 기본 경로도 repo:upstream 소유 시계를 해소한다."""
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "p.md",
+        domain_dir, "p.md",
         frontmatter=(
             "title: 원본소유\n"
             "type: concept\n"
@@ -1380,7 +1385,6 @@ def test_list_stale_marker_uses_page_owner_runner(dm, tmp_path, monkeypatch, cap
             "updated: 2026-06-19"
         ),
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     seen = []
 
     def owner_runner(home, page):
@@ -1396,15 +1400,15 @@ def test_list_stale_marker_uses_page_owner_runner(dm, tmp_path, monkeypatch, cap
 
 def test_list_fresh_and_unknown_have_no_warning(dm, tmp_path, monkeypatch, capsys):
     # False(fresh)·None(unknown) 은 ⚠ 무표시.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "fresh.md",
+        domain_dir, "fresh.md",
         frontmatter="title: 최신\ntype: concept\ncovers:\n  - src/x/**\nupdated: 2026-06-19",
     )
     _write_page(
-        tmp_path, "unk.md",
+        domain_dir, "unk.md",
         frontmatter="title: 미상\ntype: concept",  # covers 없음 = unknown
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(
         doc_staleness, "page_stale",
         lambda home, page, **kw: None if not page["covers"] else False,
@@ -1418,11 +1422,11 @@ def test_list_fresh_and_unknown_have_no_warning(dm, tmp_path, monkeypatch, capsy
 
 def test_affected_marks_stale_page_with_warning(dm, tmp_path, monkeypatch, capsys):
     # affected 출력도 stale 페이지에 ⚠.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: 영향낡음\ntype: concept\ncovers:\n  - src/analysis/**\nupdated: 2026-06-19",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: True)
     rc = dm.main(["affected", "--touches", "src/analysis/x.py"])
     assert rc == 0
@@ -1435,17 +1439,17 @@ def test_affected_marks_stale_page_with_warning(dm, tmp_path, monkeypatch, capsy
 
 def test_lint_clean_prints_ok(dm, tmp_path, monkeypatch, capsys):
     # 인링크 상호참조 + 작은 본문 + non-stale → clean.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "alpha.md",
+        domain_dir, "alpha.md",
         frontmatter="title: 알파\ntype: concept",
         body="\n[[beta]] 를 본다.\n",
     )
     _write_page(
-        tmp_path, "beta.md",
+        domain_dir, "beta.md",
         frontmatter="title: 베타\ntype: concept",
         body="\n[[alpha]] 로 돌아간다.\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     rc = dm.main(["lint"])
     assert rc == 0
@@ -1455,17 +1459,17 @@ def test_lint_clean_prints_ok(dm, tmp_path, monkeypatch, capsys):
 
 def test_lint_detects_orphan(dm, tmp_path, monkeypatch, capsys):
     # orphan = 다른 페이지에서 인링크 0. hub 는 island 를 안 가리킨다.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "hub.md",
+        domain_dir, "hub.md",
         frontmatter="title: 허브\ntype: concept",
         body="\n혼자 있다.\n",
     )
     _write_page(
-        tmp_path, "island.md",
+        domain_dir, "island.md",
         frontmatter="title: 외딴섬\ntype: concept",
         body="\n[[hub]] 를 가리킨다(나로의 인링크는 0).\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     rc = dm.main(["lint"])
     assert rc == 0
@@ -1479,17 +1483,17 @@ def test_lint_detects_orphan(dm, tmp_path, monkeypatch, capsys):
 def test_lint_self_reference_does_not_save_from_orphan(dm, tmp_path, monkeypatch, capsys):
     # 자기참조(자기 body 의 자기링크)는 인링크로 안 침 → 여전히 orphan.
     # peer 를 둬 ≥2 페이지(T-0097 single-page skip 회피) — solo 는 self-ref 만이라 여전히 고립.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "solo.md",
+        domain_dir, "solo.md",
         frontmatter="title: 솔로\ntype: concept",
         body="\n나는 [[solo]] 다(자기참조). [[peer]] 도 본다.\n",
     )
     _write_page(
-        tmp_path, "peer.md",
+        domain_dir, "peer.md",
         frontmatter="title: 피어\ntype: concept",
         body="\n독립 — solo 를 안 가리킨다.\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     rc = dm.main(["lint"])
     assert rc == 0
@@ -1502,17 +1506,17 @@ def test_lint_title_self_reference_does_not_save_from_orphan(dm, tmp_path, monke
     # 자기 *title* 로의 자기참조(`[[알파]]`·stem=alpha·title=알파)도 인링크로 안 침 → orphan.
     # (slug 자기참조는 위 test 가 커버. 여기선 title 자기참조 갭 — slug 만 제외하던 false-negative.)
     # peer 로 ≥2 페이지(T-0097) — alpha 는 title 자기참조뿐이라 여전히 고립.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "alpha.md",
+        domain_dir, "alpha.md",
         frontmatter="title: 알파\ntype: concept",
         body="\n나는 [[알파]] 다(title 자기참조). [[peer]] 도.\n",
     )
     _write_page(
-        tmp_path, "peer.md",
+        domain_dir, "peer.md",
         frontmatter="title: 피어\ntype: concept",
         body="\n독립 — alpha 를 안 가리킨다.\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     rc = dm.main(["lint"])
     assert rc == 0
@@ -1522,17 +1526,17 @@ def test_lint_title_self_reference_does_not_save_from_orphan(dm, tmp_path, monke
 
 def test_lint_orphan_inlink_by_title_counts(dm, tmp_path, monkeypatch, capsys):
     # title 표기(`[[베타]]`)로 인링크해도 orphan 아님(슬러그/title 둘 다 인정).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "alpha.md",
+        domain_dir, "alpha.md",
         frontmatter="title: 알파\ntype: concept",
         body="\n[[베타]] 를 title 로 가리킨다.\n",
     )
     _write_page(
-        tmp_path, "beta.md",
+        domain_dir, "beta.md",
         frontmatter="title: 베타\ntype: concept",
         body="\n[[알파]] 로 돌아간다.\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     rc = dm.main(["lint"])
     assert rc == 0
@@ -1542,12 +1546,12 @@ def test_lint_orphan_inlink_by_title_counts(dm, tmp_path, monkeypatch, capsys):
 
 def test_lint_single_page_skips_orphan(dm, tmp_path, monkeypatch, capsys):
     # T-0097 — 페이지가 1개뿐이면 orphan 판정 skip (peer 가 없어 자연 고립·perpetual noise 제거).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "solo.md",
+        domain_dir, "solo.md",
         frontmatter="title: 솔로\ntype: concept",
         body="\n혼자 있는 첫 페이지.\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     rc = dm.main(["lint"])
     assert rc == 0
@@ -1556,7 +1560,7 @@ def test_lint_single_page_skips_orphan(dm, tmp_path, monkeypatch, capsys):
     assert "✓ domain freshness 양호" in out
     # sensitivity — 페이지가 2개(서로 안 링크)가 되면 orphan 이 다시 평가된다.
     _write_page(
-        tmp_path, "second.md",
+        domain_dir, "second.md",
         frontmatter="title: 둘째\ntype: concept",
         body="\n나도 혼자 — solo 를 안 가리킨다.\n",
     )
@@ -1568,18 +1572,18 @@ def test_lint_single_page_skips_orphan(dm, tmp_path, monkeypatch, capsys):
 
 def test_lint_detects_oversized(dm, tmp_path, monkeypatch, capsys):
     # 본문 라인수 > 임계 → oversized finding(상호참조로 orphan 은 회피).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     big_body = "\n" + "\n".join(f"line {i}" for i in range(20)) + "\n[[other]]\n"
     _write_page(
-        tmp_path, "big.md",
+        domain_dir, "big.md",
         frontmatter="title: 큰페이지\ntype: concept",
         body=big_body,
     )
     _write_page(
-        tmp_path, "other.md",
+        domain_dir, "other.md",
         frontmatter="title: 기타\ntype: concept",
         body="\n[[big]]\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     # 임계를 10 으로 낮춰 hermetic 하게 oversized 유발(상수 기본 200 의존 안 함).
     monkeypatch.setattr(doc_lint, "OVERSIZED_LINES", 10)
@@ -1600,10 +1604,10 @@ def test_lint_oversized_threshold_is_strict_gt(dm, tmp_path, monkeypatch):
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
     # 임계 5 → 5줄은 > 아니라 oversized 없음(단일 페이지 — T-0097 로 orphan 도 skip).
-    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, oversized_lines=5, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, oversized_lines=5, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))
     assert not any(k == "oversized" for k, _p, _d in findings)
     # 임계 4 → 5줄 > 4 라 oversized.
-    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, oversized_lines=4, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, oversized_lines=4, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))
     assert any(k == "oversized" for k, _p, _d in findings)
 
 
@@ -1623,17 +1627,17 @@ def _history_details(findings: list[tuple[str, str, str]]) -> list[str]:
 
 def test_lint_detects_session_delta_blockquote(dm, tmp_path, monkeypatch, capsys):
     # `> **YYYY-MM-DD (PM N차) delta:**` = 세션 delta 항목 → history finding.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "adapter.md",
+        domain_dir, "adapter.md",
         frontmatter="title: 어댑터\ntype: concept",
         body="\n지금의 형상은 이렇다. [[peer]]\n" + _HISTORY_DELTA_BLOCK,
     )
     _write_page(
-        tmp_path, "peer.md",
+        domain_dir, "peer.md",
         frontmatter="title: 피어\ntype: concept",
         body="\n[[adapter]] 를 본다.\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     assert dm.main(["lint"]) == 0
     out = capsys.readouterr().out
@@ -1651,13 +1655,13 @@ def test_lint_history_sensitivity_fires_on_reaccrual(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)) == []
+    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))) == []
 
     # 다음 세션이 같은 관행으로 delta 를 덧붙인다 → 가드가 다시 운다.
     page.write_text(page.read_text(encoding="utf-8") + _HISTORY_DELTA_BLOCK,
                     encoding="utf-8")
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST))
+    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO))))
     assert len(details) == 1
     assert "1개" in details[0]
 
@@ -1674,7 +1678,7 @@ def test_lint_history_detects_stamp_headed_heading(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST))
+    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO))))
     assert len(details) == 1
     assert "2개" in details[0]
 
@@ -1693,7 +1697,7 @@ def test_lint_history_counts_run_on_dated_quote_list(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST))
+    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO))))
     assert len(details) == 1
     assert "3개" in details[0]
 
@@ -1714,7 +1718,7 @@ def test_lint_history_detects_label_only_heading(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST))
+    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO))))
     assert len(details) == 1
     assert "3개" in details[0]
 
@@ -1731,7 +1735,7 @@ def test_lint_history_label_only_axis_is_start_anchored(dm, tmp_path, monkeypatc
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)) == []
+    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))) == []
 
 
 def test_lint_history_detects_bold_leadin_outside_quote(dm, tmp_path, monkeypatch):
@@ -1751,7 +1755,7 @@ def test_lint_history_detects_bold_leadin_outside_quote(dm, tmp_path, monkeypatc
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST))
+    details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO))))
     assert len(details) == 1
     assert "1개" in details[0]          # 정상 bold 불릿은 안 센다
 
@@ -1771,7 +1775,7 @@ def test_lint_history_ignores_evidence_citation_in_prose(dm, tmp_path, monkeypat
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)) == []
+    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))) == []
 
 
 def test_lint_history_ignores_fenced_code(dm, tmp_path, monkeypatch):
@@ -1787,7 +1791,7 @@ def test_lint_history_ignores_fenced_code(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)) == []
+    assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))) == []
 
 
 def test_lint_history_applies_to_research_type(dm, tmp_path, monkeypatch):
@@ -1799,7 +1803,7 @@ def test_lint_history_applies_to_research_type(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    assert len(_history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST))) == 1
+    assert len(_history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO))))) == 1
 
 
 def test_lint_history_is_independent_of_page_size(dm, tmp_path, monkeypatch):
@@ -1816,7 +1820,7 @@ def test_lint_history_is_independent_of_page_size(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, oversized_lines=10, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, oversized_lines=10, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))
     assert [p for k, p, _d in findings if k == "history"] == ["작음"]
     assert [p for k, p, _d in findings if k == "oversized"] == ["큼"]
 
@@ -1837,17 +1841,17 @@ def test_history_detail_caps_quoted_leadins(dm):
 
 def test_lint_detects_stale_finding(dm, tmp_path, monkeypatch, capsys):
     # page_stale==True → stale finding (상호참조로 orphan 회피).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "stale.md",
+        domain_dir, "stale.md",
         frontmatter="title: 낡음\ntype: concept\ncovers:\n  - src/x/**\nupdated: 2026-06-19",
         body="\n[[peer]]\n",
     )
     _write_page(
-        tmp_path, "peer.md",
+        domain_dir, "peer.md",
         frontmatter="title: 동료\ntype: concept",
         body="\n[[stale]]\n",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     # stale 슬러그만 stale True·나머지 None.
     monkeypatch.setattr(
         doc_staleness, "page_stale",
@@ -1875,7 +1879,7 @@ def test_lint_unknown_stale_is_not_finding(dm, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))
     assert not any(k == "stale" for k, _p, _d in findings)
 
 
@@ -1894,13 +1898,13 @@ def test_lint_factory_unresolved_owner_does_not_fall_back_to_default_runner(
         doc_staleness, "_page_owner_git_runner",
         lambda home, _page: _fixed_git("2026-06-20T00:00:00Z\n"),
     )
-    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, git_runner_factory=lambda _page: None, domain_dir=dm.DOMAIN_DIR, manifest_path=dm.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, git_runner_factory=lambda _page: None, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))
     assert not any(kind == "stale" for kind, _label, _detail in findings)
 
 
 def test_lint_empty_domain_is_clean(dm, tmp_path, monkeypatch, capsys):
     # 페이지 0 → clean(스캔 대상 없음).
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path / "empty")
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path / "empty")
     rc = dm.main(["lint"])
     assert rc == 0
     assert "✓ domain freshness 양호" in capsys.readouterr().out
@@ -2332,11 +2336,11 @@ def test_uncovered_directory_reconstruction_failure_preserves_each_file_coordina
 
 def test_capture_touches_renders_affected_and_gap(dm, tmp_path, monkeypatch, capsys):
     # 영향 페이지 + coverage gap 둘 다 출력 — 매칭은 영향 절, 미매칭은 gap 절.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: 분석페이지\ntype: concept\ncovers:\n  - src/analysis/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     rc = dm.main(["capture", "--touches", "src/analysis/x.py, src/core/new.py"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -2358,14 +2362,13 @@ def test_capture_directory_touch_renders_each_uncovered_file(
     src.mkdir()
     (src / "covered.py").write_text("# covered\n", encoding="utf-8")
     (src / "new.py").write_text("# uncovered\n", encoding="utf-8")
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir,
         "a.md",
         frontmatter="title: 담당페이지\ntype: concept\ncovers:\n  - src/covered.py",
     )
     _declare_repo(dm, monkeypatch, tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src"]) == 0
     out = capsys.readouterr().out
@@ -2382,21 +2385,20 @@ def test_capture_directory_touch_folds_gaps_at_limit_with_exact_summary(
     """디렉토리 gap은 상위 K개 뒤에 정확한 숨김/전체 개수와 원 디렉토리를 표시한다."""
     src = tmp_path / "src"
     src.mkdir()
-    total = dm.DIRECTORY_GAP_DISPLAY_LIMIT + 3
+    total = domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT + 3
     for index in range(total):
         (src / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
-    domain_dir = tmp_path / "domain"
-    domain_dir.mkdir()
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
+    domain_dir.mkdir(parents=True)
     _declare_repo(dm, monkeypatch, tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src"]) == 0
     gap_lines = capsys.readouterr().out.splitlines()[1:]
 
-    assert len(gap_lines) == dm.DIRECTORY_GAP_DISPLAY_LIMIT + 1
-    assert gap_lines[:dm.DIRECTORY_GAP_DISPLAY_LIMIT] == [
+    assert len(gap_lines) == domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT + 1
+    assert gap_lines[:domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT] == [
         f"  src/gap_{index:02}.py"
-        for index in range(dm.DIRECTORY_GAP_DISPLAY_LIMIT)
+        for index in range(domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT)
     ]
     assert gap_lines[-1] == f"  … 외 3개 (총 {total}개) — 디렉토리 src"
 
@@ -2406,13 +2408,12 @@ def test_capture_all_gaps_shows_complete_directory_expansion(
     """--all-gaps는 디렉토리 표시 상한을 해제해 전체 gap을 복원한다."""
     src = tmp_path / "src"
     src.mkdir()
-    total = dm.DIRECTORY_GAP_DISPLAY_LIMIT + 2
+    total = domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT + 2
     for index in range(total):
         (src / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
-    domain_dir = tmp_path / "domain"
-    domain_dir.mkdir()
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
+    domain_dir.mkdir(parents=True)
     _declare_repo(dm, monkeypatch, tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src", "--all-gaps"]) == 0
     gap_lines = capsys.readouterr().out.splitlines()[1:]
@@ -2429,13 +2430,12 @@ def test_capture_folds_only_large_directory_group_and_keeps_file_touches(
     """혼합 입력에서 큰 디렉토리 그룹만 접고 독립 파일 touch는 전량 표시한다."""
     bulk = tmp_path / "bulk"
     bulk.mkdir()
-    total = dm.DIRECTORY_GAP_DISPLAY_LIMIT + 3
+    total = domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT + 3
     for index in range(total):
         (bulk / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
-    domain_dir = tmp_path / "domain"
-    domain_dir.mkdir()
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
+    domain_dir.mkdir(parents=True)
     _declare_repo(dm, monkeypatch, tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     file_touches = ["loose/one.py", "loose/two.py", "loose/three.py"]
     touches = ["bulk", *file_touches]
 
@@ -2445,7 +2445,7 @@ def test_capture_folds_only_large_directory_group_and_keeps_file_touches(
     assert gap_lines == [
         *[
             f"  bulk/gap_{index:02}.py"
-            for index in range(dm.DIRECTORY_GAP_DISPLAY_LIMIT)
+            for index in range(domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT)
         ],
         f"  … 외 3개 (총 {total}개) — 디렉토리 bulk",
         *[f"  {touch}" for touch in file_touches],
@@ -2454,11 +2454,11 @@ def test_capture_folds_only_large_directory_group_and_keeps_file_touches(
 
 def test_capture_stale_page_marked(dm, tmp_path, monkeypatch, capsys):
     # 영향 페이지가 stale 이면 ⚠ 마커가 붙는다(T-0082 _stale_marker 재사용).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: 스테일\ntype: concept\ncovers:\n  - src/analysis/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     # page_stale 를 True 로 강제 — git 무의존 hermetic(_stale_marker 가 ⚠ 를 붙인다).
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: True)
     rc = dm.main(["capture", "--touches", "src/analysis/x.py"])
@@ -2470,11 +2470,11 @@ def test_capture_stale_page_marked(dm, tmp_path, monkeypatch, capsys):
 
 def test_capture_no_change_prints_none_message(dm, tmp_path, monkeypatch, capsys):
     # 영향 페이지·gap 둘 다 없으면(touches 비어) "(채록할 domain 변화 없음)".
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     # 빈 토큰만 → touches 비어 → 영향 0·gap 0.
     rc = dm.main(["capture", "--touches", "  ,  "])
     assert rc == 0
@@ -2491,11 +2491,11 @@ def test_capture_affected_prints_current_truth_replacement_rule(
     행동이 *그 세션 delta 를 페이지에 덧붙이는 것*이었다(실측: 11 페이지에 44 항목 누적). 이제
     같은 지점에서 히스토리의 행선지(log/ADR)를 함께 알린다.
     """
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     assert dm.main(["capture", "--touches", "src/a/x.py"]) == 0
     out = capsys.readouterr().out
     assert "영향 페이지" in out
@@ -2508,14 +2508,13 @@ def test_capture_directory_leading_wildcard_is_affected_without_gap(
     src = tmp_path / "src"
     src.mkdir()
     (src / "README.md").write_text("# readme\n", encoding="utf-8")
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir,
         "readme.md",
         frontmatter="title: README 담당\ntype: concept\ncovers:\n  - '**/README.md'",
     )
     _declare_repo(dm, monkeypatch, tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src"]) == 0
     out = capsys.readouterr().out
@@ -2533,10 +2532,9 @@ def test_capture_guard_remains_for_other_empty_judgment_inconsistencies(
     src = tmp_path / "src"
     src.mkdir()
     (src / "owned.py").write_text("# owned\n", encoding="utf-8")
-    domain_dir = tmp_path / "domain"
-    domain_dir.mkdir()
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
+    domain_dir.mkdir(parents=True)
     _declare_repo(dm, monkeypatch, tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(doc_affected, "pages_for_touches", lambda home, _touches, _pages: [])
     monkeypatch.setattr(
         doc_affected,
@@ -2556,10 +2554,9 @@ def test_capture_empty_directory_keeps_no_change_message(
         dm, tmp_path, monkeypatch, capsys):
     """빈 디렉토리 touch는 판정 대상 파일 0개라 정상 no-change다."""
     (tmp_path / "empty").mkdir()
-    domain_dir = tmp_path / "domain"
-    domain_dir.mkdir()
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
+    domain_dir.mkdir(parents=True)
     monkeypatch.setattr(dm, "REPO", tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "empty"]) == 0
     out = capsys.readouterr().out
@@ -2576,10 +2573,9 @@ def test_capture_all_ignored_directory_keeps_no_change_message(
     ignored = repo / "ignored"
     ignored.mkdir()
     (ignored / "only.tmp").write_text("ignored\n", encoding="utf-8")
-    domain_dir = tmp_path / "domain"
-    domain_dir.mkdir()
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(repo))
+    domain_dir.mkdir(parents=True)
     monkeypatch.setattr(dm, "REPO", repo)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "ignored"]) == 0
     out = capsys.readouterr().out
@@ -2590,11 +2586,11 @@ def test_capture_all_ignored_directory_keeps_no_change_message(
 
 def test_capture_gap_only_omits_affected_section(dm, tmp_path, monkeypatch, capsys):
     # 매칭 0·gap 만 있으면 영향 페이지 절은 생략하고 gap 절만 출력.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     rc = dm.main(["capture", "--touches", "src/unrelated/z.py"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -2605,11 +2601,11 @@ def test_capture_gap_only_omits_affected_section(dm, tmp_path, monkeypatch, caps
 
 def test_capture_affected_only_omits_gap_section(dm, tmp_path, monkeypatch, capsys):
     # gap 0(모든 touch 가 covered)·영향만 있으면 gap 절 생략.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A\ntype: concept\ncovers:\n  - src/a/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     rc = dm.main(["capture", "--touches", "src/a/x.py"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -2619,19 +2615,19 @@ def test_capture_affected_only_omits_gap_section(dm, tmp_path, monkeypatch, caps
 
 def test_capture_tickets_aggregates_touches(dm, tmp_path, monkeypatch, capsys):
     # --tickets T-a,T-b — 각 ticket touches 를 집계(union)해 채록 대상을 띄운다.
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
-        tmp_path, "a.md",
+        domain_dir, "a.md",
         frontmatter="title: A페이지\ntype: concept\ncovers:\n  - src/a/**",
     )
     _write_page(
-        tmp_path, "b.md",
+        domain_dir, "b.md",
         frontmatter="title: B페이지\ntype: concept\ncovers:\n  - src/b/**",
     )
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     # _touches_from_ticket 를 hermetic 가로채 — ticket 별 touches 주입(실 board 미접촉).
     ticket_touches = {"T-1": ["src/a/x.py"], "T-2": ["src/b/y.py", "src/gap/z.py"]}
     monkeypatch.setattr(
-        dm, "_touches_from_ticket", lambda tid: ticket_touches.get(tid, [])
+        domain_cmd, "_touches_from_ticket", lambda _home, tid: ticket_touches.get(tid, [])
     )
     rc = dm.main(["capture", "--tickets", "T-1, T-2"])
     assert rc == 0
@@ -2654,7 +2650,7 @@ def test_capture_tickets_normalizes_pm_home_worktree_touches(
         '"session":"T-0473","state":"leased"}]}',
         encoding="utf-8",
     )
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir,
         "capture-coordinates.md",
@@ -2667,7 +2663,6 @@ def test_capture_tickets_normalizes_pm_home_worktree_touches(
         ),
     )
     monkeypatch.setattr(dm, "REPO", tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(
         doc_staleness,
         "_page_owner_repo",
@@ -2676,9 +2671,9 @@ def test_capture_tickets_normalizes_pm_home_worktree_touches(
     monkeypatch.setattr(
         doc_staleness, "_same_repository_checkouts", lambda left, right: (True, None))
     monkeypatch.setattr(
-        dm,
+        domain_cmd,
         "_touches_from_tickets",
-        lambda tids: [f"{slot}/src/x.py"],
+        lambda _home, tids: [f"{slot}/src/x.py"],
     )
 
     assert dm.main(["capture", "--tickets", "T-0473"]) == 0
@@ -2697,7 +2692,7 @@ def test_capture_upstream_touch_matching_self_page_warns_repin_once(
         '"session":"T-0473","state":"leased"}]}',
         encoding="utf-8",
     )
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir,
         "default-self.md",
@@ -2709,9 +2704,8 @@ def test_capture_upstream_touch_matching_self_page_warns_repin_once(
         ),
     )
     monkeypatch.setattr(dm, "REPO", tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(
-        dm, "_touches_from_tickets", lambda tids: [f"{slot}/src/x.py"])
+        domain_cmd, "_touches_from_tickets", lambda _home, tids: [f"{slot}/src/x.py"])
 
     assert dm.main(["capture", "--tickets", "T-0473"]) == 0
     captured = capsys.readouterr()
@@ -2736,16 +2730,15 @@ def test_capture_tickets_bad_coordinate_warns_and_keeps_valid_paths(
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
     )
-    domain_dir = tmp_path / "domain"
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(tmp_path))
     _write_page(
         domain_dir, "valid.md",
         frontmatter="title: Capture 생존\ntype: concept\ncovers:\n  - src/valid.py",
     )
     monkeypatch.setattr(dm, "REPO", tmp_path)
-    monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(
-        dm, "_touches_from_tickets",
-        lambda tids: ["work/project_manager_2/src/bad.py", "src/valid.py"],
+        domain_cmd, "_touches_from_tickets",
+        lambda _home, tids: ["work/project_manager_2/src/bad.py", "src/valid.py"],
     )
     assert dm.main(["capture", "--tickets", "T-1", "T-2"]) == 0
     captured = capsys.readouterr()
@@ -2756,33 +2749,33 @@ def test_capture_tickets_bad_coordinate_warns_and_keeps_valid_paths(
 def test_capture_tickets_dedups_aggregated_touches(dm, tmp_path, monkeypatch):
     # 두 ticket 이 같은 touch 를 가져도 집계 시 dedup(순서 보존).
     monkeypatch.setattr(
-        dm, "_touches_from_ticket",
-        lambda tid: ["src/x.py", "src/y.py"] if tid == "T-1" else ["src/x.py", "src/z.py"],
+        domain_cmd, "_touches_from_ticket",
+        lambda _home, tid: ["src/x.py", "src/y.py"] if tid == "T-1" else ["src/x.py", "src/z.py"],
     )
-    assert dm._touches_from_tickets("T-1,T-2") == ["src/x.py", "src/y.py", "src/z.py"]
+    assert domain_cmd._touches_from_tickets(pm_paths.home_at(dm.REPO), "T-1,T-2") == ["src/x.py", "src/y.py", "src/z.py"]
 
 
 def test_capture_tickets_blank_token_skipped(dm, monkeypatch):
     # 빈 토큰(콤마 잉여)은 건너뛴다.
     calls = []
 
-    def fake(tid):
+    def fake(_home, tid):
         calls.append(tid)
         return ["src/x.py"]
 
-    monkeypatch.setattr(dm, "_touches_from_ticket", fake)
-    assert dm._touches_from_tickets("T-1, , T-2,") == ["src/x.py"]
+    monkeypatch.setattr(domain_cmd, "_touches_from_ticket", fake)
+    assert domain_cmd._touches_from_tickets(pm_paths.home_at(dm.REPO), "T-1, , T-2,") == ["src/x.py"]
     assert calls == ["T-1", "T-2"]  # 빈 토큰엔 _touches_from_ticket 호출 안 함.
 
 
 def test_capture_tickets_space_separated_nargs(dm, tmp_path, monkeypatch, capsys):
     # nargs='+' — 공백 나열(T-1 T-2 를 별개 argv 로)을 수용해 집계한다. 자연스러운 나열이
     # usage 에러로 실패하던 클래스 소멸(mechanize don't instruct·T-0346).
-    _write_page(tmp_path, "a.md", frontmatter="title: A페이지\ntype: concept\ncovers:\n  - src/a/**")
-    _write_page(tmp_path, "b.md", frontmatter="title: B페이지\ntype: concept\ncovers:\n  - src/b/**")
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
+    _write_page(domain_dir, "a.md", frontmatter="title: A페이지\ntype: concept\ncovers:\n  - src/a/**")
+    _write_page(domain_dir, "b.md", frontmatter="title: B페이지\ntype: concept\ncovers:\n  - src/b/**")
     ticket_touches = {"T-1": ["src/a/x.py"], "T-2": ["src/b/y.py"]}
-    monkeypatch.setattr(dm, "_touches_from_ticket", lambda tid: ticket_touches.get(tid, []))
+    monkeypatch.setattr(domain_cmd, "_touches_from_ticket", lambda _home, tid: ticket_touches.get(tid, []))
     rc = dm.main(["capture", "--tickets", "T-1", "T-2"])  # 공백 나열 = 별개 argv 토큰.
     assert rc == 0
     out = capsys.readouterr().out
@@ -2793,12 +2786,12 @@ def test_capture_tickets_mixed_space_and_comma(dm, tmp_path, monkeypatch, capsys
     # 혼합 형식 — 일부 argv 는 콤마분리, 일부는 공백 나열. join(",")→split 이 양형식을 흡수해
     # 세 ticket 모두 집계(콤마-단일-문자열 backward compat 은 test_capture_tickets_aggregates_touches
     # 가 이미 잠근다 — 여기선 혼합·nargs 경로를 잠근다·T-0346).
-    _write_page(tmp_path, "a.md", frontmatter="title: A페이지\ntype: concept\ncovers:\n  - src/a/**")
-    _write_page(tmp_path, "b.md", frontmatter="title: B페이지\ntype: concept\ncovers:\n  - src/b/**")
-    _write_page(tmp_path, "c.md", frontmatter="title: C페이지\ntype: concept\ncovers:\n  - src/c/**")
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
+    _write_page(domain_dir, "a.md", frontmatter="title: A페이지\ntype: concept\ncovers:\n  - src/a/**")
+    _write_page(domain_dir, "b.md", frontmatter="title: B페이지\ntype: concept\ncovers:\n  - src/b/**")
+    _write_page(domain_dir, "c.md", frontmatter="title: C페이지\ntype: concept\ncovers:\n  - src/c/**")
     ticket_touches = {"T-1": ["src/a/x.py"], "T-2": ["src/b/y.py"], "T-3": ["src/c/z.py"]}
-    monkeypatch.setattr(dm, "_touches_from_ticket", lambda tid: ticket_touches.get(tid, []))
+    monkeypatch.setattr(domain_cmd, "_touches_from_ticket", lambda _home, tid: ticket_touches.get(tid, []))
     rc = dm.main(["capture", "--tickets", "T-1,T-2", "T-3"])  # 콤마 토큰 + 공백 나열.
     assert rc == 0
     out = capsys.readouterr().out
@@ -2907,12 +2900,12 @@ def test_capture_draft_source_file_prose_verbatim(dm, tmp_path, monkeypatch):
 
 def test_capture_draft_source_stdin(dm, tmp_path, monkeypatch):
     # --source -: stdin prose 를 읽어 verbatim 배치(CLI main 경로).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     import io
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr("sys.stdin", io.StringIO("stdin 으로 들어온 조사 결과 prose.\n"))
     rc = dm.main(["capture-draft", "--title", "Stdin Page", "--slug", "stdin-page", "--source", "-"])
     assert rc == 0
-    text = _read_draft(tmp_path, "stdin-page")
+    text = _read_draft(domain_dir, "stdin-page")
     assert "stdin 으로 들어온 조사 결과 prose." in text
     assert "status: draft" in text
 
@@ -3042,14 +3035,14 @@ def test_promote_simulation_status_removal_includes_page(dm, tmp_path):
 
 def test_capture_draft_cli_exit_code_success(dm, tmp_path, monkeypatch, capsys):
     # CLI 성공 → exit 0 + 생성 경로/promote 안내 출력.
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     rc = dm.main(["capture-draft", "--title", "조사X", "--slug", "research-x"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "draft 생성" in out
     assert "research-x.draft.md" in out
     assert "promote" in out
-    assert (tmp_path / "research-x.draft.md").exists()
+    assert (domain_dir / "research-x.draft.md").exists()
 
 
 def test_capture_draft_requires_title(dm):
@@ -3060,13 +3053,13 @@ def test_capture_draft_requires_title(dm):
 
 def test_capture_draft_missing_source_file_errors(dm, tmp_path, monkeypatch, capsys):
     # --source 파일 부재 → 명시 에러(rc 1·stderr)·잘못된 빈 페이지 생성 안 함.
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     rc = dm.main(["capture-draft", "--title", "X", "--slug", "x",
                   "--source", str(tmp_path / "does-not-exist.txt")])
     assert rc == 1
     err = capsys.readouterr().err
     assert "capture-draft 실패" in err
-    assert not (tmp_path / "x.draft.md").exists()  # 페이지 생성 안 됨.
+    assert not (domain_dir / "x.draft.md").exists()  # 페이지 생성 안 됨.
 
 
 def test_capture_draft_invalid_type_rejected(dm):
@@ -3077,11 +3070,11 @@ def test_capture_draft_invalid_type_rejected(dm):
 
 def test_capture_draft_covers_csv_parsed(dm, tmp_path, monkeypatch):
     # --covers CSV → 콤마분리·공백 trim·빈 토큰 제거된 covers 리스트.
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     rc = dm.main(["capture-draft", "--title", "C", "--slug", "c",
                   "--covers", "src/a/** , src/b/** ,"])
     assert rc == 0
-    text = _read_draft(tmp_path, "c")
+    text = _read_draft(domain_dir, "c")
     assert "covers: [src/a/**, src/b/**]" in text
     assert "TODO PM: covers" not in text  # covers 있으므로 placeholder 없음.
 
@@ -3181,12 +3174,12 @@ def test_capture_draft_demote_mixed_fence_no_mistoggle(dm, tmp_path):
 
 def test_capture_draft_source_stdin_is_placeholder(dm, tmp_path, monkeypatch):
     # --source - (stdin) → source: 는 자유서술 placeholder(stdin 은 경로 박제 불가).
+    domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     import io
-    monkeypatch.setattr(dm, "DOMAIN_DIR", tmp_path)
     monkeypatch.setattr("sys.stdin", io.StringIO("stdin prose.\n"))
     rc = dm.main(["capture-draft", "--title", "S", "--slug", "s-stdin", "--source", "-"])
     assert rc == 0
-    text = _read_draft(tmp_path, "s-stdin")
+    text = _read_draft(domain_dir, "s-stdin")
     assert f'source: "{doc_drafts.SOURCE_TODO_PLACEHOLDER}"' in text
     assert "stdin prose." in text  # prose 본문은 여전히 배치.
 

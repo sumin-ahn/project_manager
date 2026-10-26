@@ -34,6 +34,7 @@ from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
 from test_terminology import _shipped_text_surface
+from pm_engine.cli import additional_reviewer as cli_additional_reviewer
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -798,7 +799,7 @@ def test_no_entry_carries_an_optin_prompt_or_force_flag(board, pm_update):
             assert not hasattr(module, retired), (module.__name__, retired)
     actions = {
         action.option_strings[0]
-        for action in core.build_arg_parser()._actions if action.option_strings
+        for action in cli_additional_reviewer.build_arg_parser()._actions if action.option_strings
     }
     assert "--force" not in actions
 

@@ -1195,7 +1195,7 @@ def _shared_board_adopter(tmp_path: Path, monkeypatch, *, folders: int) -> Path:
     pm_import = _load_pm_import()
     dest = tmp_path / "shared-board"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual",
-                           "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV) == 0
+                           "--board-submodule", "--board-remote", str(bare)]) == 0
     _baseline_adopter(dest)
     repo = dest.name
     steps = [("worktree", "add", repo, "--user-ack", repo)] * folders
@@ -2038,7 +2038,7 @@ def _board_submodule_adopter(tmp_path: Path) -> Path:
     assert _git_out("init", "--bare", "-q", str(bare)).returncode == 0
     dest = tmp_path / "adopter-sub"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Sub",
-                           "--board-submodule", "--board-remote", str(bare), "--fill", "manual"], engine_rev=pm_import.ENGINE_REV) == 0
+                           "--board-submodule", "--board-remote", str(bare), "--fill", "manual"]) == 0
     _run_in(dest, "-c", "advice.addEmbeddedRepo=false", "add", "-A")
     _run_in(dest, "commit", "-q", "--no-gpg-sign", "-m", "seed")
     repo = dest.name

@@ -33,8 +33,6 @@
   - 편집은 entry(`## [YYYY-MM-DD] ...`) 경계 기준·멱등·실패 시 비편집 (ticket_finish.py 패턴 계승).
   - LLM 미호출 — stdlib 만.
 """
-from __future__ import annotations
-
 import os
 import sys
 from pathlib import Path
@@ -42,11 +40,10 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, pm_paths
 from pm_engine.cli import log
+from pm_engine.infra import console, pm_paths
 
 REPO = Path(__file__).resolve().parents[2]
-ENGINE_REV = "v1.8.1"
 
 
 def main(argv=None):
@@ -55,4 +52,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

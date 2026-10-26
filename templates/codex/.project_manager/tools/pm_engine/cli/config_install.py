@@ -85,8 +85,6 @@ def cmd_apply(home, args, *, dest_root: Path | None = None) -> int:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1 if exc.write_stage else config_models._APPLY_REFUSED
     except RuntimeError as exc:
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         # 옛 키가 남은 conf(또는 `--set` 이 옛 키) — 값을 읽는 지점의 fail-loud 를 반영 전 거부로 낸다.
         if not getattr(exc, "_legacy_conf_key", False):
             raise

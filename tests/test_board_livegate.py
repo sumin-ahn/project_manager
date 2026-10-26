@@ -41,6 +41,7 @@ from pm_engine.app import update_plan
 from pm_engine.infra import install_conf
 from pm_engine.cli import regression_cmd
 from pm_engine.cli import update_cmd
+import subprocess
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -105,7 +106,7 @@ def live_board(tmp_path, monkeypatch):
 
 
 class _FakeRun:
-    """board.subprocess.run 대역 — 고정 (rc, stdout) 을 돌려주고 호출을 기록한다.
+    """subprocess.run 대역 — 고정 (rc, stdout) 을 돌려주고 호출을 기록한다.
 
     pytest 자식을 실기동하지 않고 rc·요약행만 주입한다. `_git_head_at` 은 별도 대역이라 이
     대역은 record 의 pytest 호출만 받는다.
@@ -122,7 +123,7 @@ class _FakeRun:
 
 
 class _ShellOnlySpy:
-    """board.subprocess.run 대역 — `shell=True`(livegate 의 `pytest -m release` 호출)만 가로채고
+    """subprocess.run 대역 — `shell=True`(livegate 의 `pytest -m release` 호출)만 가로채고
     그 외(엔진 drift 판정 내부의 `git ls-files` 등 list-argv 호출)는 실 `subprocess.run` 에 위임한다.
 
     drift-차단 테스트는 "라이브 wave 미실행"을 **부작용 없는 spy**로 단언해야 하는데, 무조건
@@ -219,7 +220,7 @@ def _platform_conf(live_board, monkeypatch, command="run-windows") -> None:
     """
     text = ("test.cmd=core-full\nqa.platforms=windows\n"
             f"test.windows.cmd={command}\n")
-    for conf in (live_board._home().local_conf,
+    for conf in (pm_paths.home_at(live_board.REPO).local_conf,
                  live_board._proj / SLOT / ".project_manager" / "local.conf"):
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(text, encoding="utf-8")
@@ -241,12 +242,12 @@ def _platform_regression_record(live_board, *, status="pass", head=None,
         "ts": "2026-08-28T00:00:00+00:00",
         "command": "core-full",
     }
-    pm_paths.regression_flag(live_board._home()).write_text(json.dumps(record), encoding="utf-8")
+    pm_paths.regression_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(record), encoding="utf-8")
     return record
 
 
 def _read_flag(live_board) -> dict:
-    return json.loads(pm_paths.livegate_flag(live_board._home()).read_text(encoding="utf-8"))
+    return json.loads(pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).read_text(encoding="utf-8"))
 
 
 # ── _livegate_ran_count 파서 (수집 N 추출) ─────────────────────────────────
@@ -340,26 +341,6 @@ def test_drift_changes_none_when_manifest_absent(tmp_path, pm_update_module):
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.path={upstream}\n", encoding="utf-8")
     assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) is None
-
-
-def test_drift_changes_reraises_marked_engine_rev_skew(
-        tmp_path, pm_update_module, monkeypatch):
-    """사본 rev 불일치는 판정 불능(`None`)으로 접지 않고 그대로 올린다.
-
-    `None` 은 호출부에서 "이 형상엔 게이트 미적용(무차단)" 으로 읽힌다 — 사본끼리 rev 가 갈린
-    트리는 이 게이트가 잡으라고 만들어진 형상이라, 접으면 거기서만 릴리즈 drift 게이트가 조용히
-    통과한다. 다른 판정 불능 클래스(upstream 미설정·URL·경로 부재)는 종전대로 `None` 이다.
-    """
-    dest, upstream = tmp_path / "dest", tmp_path / "upstream"
-    _seed_engine_drift_fixture(dest, upstream, drift=True, rel=_DRIFT_NON_ENGINE_REL)
-    skew = RuntimeError("injected engine rev skew")
-    skew._engine_rev_skew = True
-    monkeypatch.setattr(
-        update_plan, "_resolve_engine_sync_plan",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
-    )
-    with pytest.raises(RuntimeError, match="engine rev skew"):
-        update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest)
 
 
 def test_drift_changes_matches_main_dry_run_relpaths(
@@ -561,12 +542,12 @@ def test_resolve_engine_sync_plan_applies_notation_rewrite_for_target_render_ent
 def test_record_rc0_pin_match_records_pass(live_board, monkeypatch, capsys):
     """rc0 이고 수집 N==pin(22) → status='pass' 기록 + rc0 (정상 릴리즈 green)."""
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "run", fake)
     head_calls = []
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: (
         head_calls.append(cwd) or "cafef00dcafef00d0011223344556677"
     ))
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 0
     data = _read_flag(live_board)
     assert data["n"] == regression.LIVEGATE_RELEASE_PIN == 22
@@ -585,8 +566,8 @@ def test_declared_platform_missing_regression_evidence_blocks_before_release(
         live_board, monkeypatch):
     _platform_conf(live_board, monkeypatch)
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 1
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 1
     assert not any(call["kwargs"].get("shell") for call in fake.calls)
 
 
@@ -599,8 +580,8 @@ def test_declared_platform_red_or_stale_regression_blocks_before_release(
     _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board, status=status, head=head)
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 1
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 1
     assert not any(call["kwargs"].get("shell") for call in fake.calls)
 
 
@@ -610,11 +591,11 @@ def test_declared_platform_unverified_core_blocks_before_release(
     record = _platform_regression_record(live_board, status="fail")
     record["rc"] = regression.REGRESSION_RC_UNVERIFIED_COLLECTION
     record["collected"] = None
-    pm_paths.regression_flag(live_board._home()).write_text(json.dumps(record), encoding="utf-8")
+    pm_paths.regression_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(record), encoding="utf-8")
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "run", fake)
 
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 1
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 1
     assert not any(call["kwargs"].get("shell") for call in fake.calls)
 
 
@@ -627,8 +608,8 @@ def test_declared_platform_valid_same_head_core_executes_platform_and_snapshots(
     original = importlib.import_module("pm_engine.app.regression")._run_regression_cmd
     monkeypatch.setattr("pm_engine.app.regression._run_regression_cmd", lambda *a: (platform_calls.append(a) or original(*a)))
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 0
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 0
     shell_calls = [call for call in fake.calls if call["kwargs"].get("shell")]
     assert len(shell_calls) == 1
     assert shell_calls[0]["args"][0] == release.LIVEGATE_TEST_CMD
@@ -641,7 +622,7 @@ def test_declared_platform_valid_same_head_core_executes_platform_and_snapshots(
     assert len(platform_calls) == 1 and platform_calls[0][0] == "run-windows"
     assert data["platforms"][0]["name"] == "windows" and data["platforms"][0]["status"] == "pass"
     assert data["command"] == regression["command"]
-    assert regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev=data["head"])) == 0
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev=data["head"])) == 0
 
 
 def test_declared_platform_livegate_check_rejects_current_command_change(
@@ -649,11 +630,11 @@ def test_declared_platform_livegate_check_rejects_current_command_change(
     _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board)
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 0
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 0
     head = _read_flag(live_board)["head"]
     _platform_conf(live_board, monkeypatch, command="changed-wrapper")
-    assert regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev=head)) == 1
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev=head)) == 1
 
 
 def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
@@ -662,17 +643,17 @@ def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
     _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board)
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 0
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 0
     head = _read_flag(live_board)["head"]
-    live_board._home().local_conf.write_text(
+    pm_paths.home_at(live_board.REPO).local_conf.write_text(
         "delegate_enabled=true\n"
         "qa.platforms=windows\n"
         "test.windows.cmd=run-windows\n",
         encoding="utf-8",
     )
 
-    assert regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev=head)) == 1
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev=head)) == 1
     captured = capsys.readouterr()
     assert "platform 설정 오류" in captured.err
     assert "Traceback" not in captured.err
@@ -701,20 +682,20 @@ def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
             record["unexpected"] = "member"
 
     corrupt(regression)
-    pm_paths.regression_flag(live_board._home()).write_text(json.dumps(regression), encoding="utf-8")
+    pm_paths.regression_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(regression), encoding="utf-8")
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 1
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 1
     assert not any(call["kwargs"].get("shell") for call in fake.calls)
 
     valid = _platform_regression_record(live_board)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 0
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 0
     snapshot = _read_flag(live_board)
     for key in ("scope", "collected", "previous_collected"):
         assert snapshot[key] == valid[key]
     corrupt(snapshot)
-    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(snapshot), encoding="utf-8")
-    assert regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev=snapshot["head"])) == 1
+    pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(snapshot), encoding="utf-8")
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev=snapshot["head"])) == 1
 
 
 def test_declared_platform_release_head_drift_records_red(live_board, monkeypatch):
@@ -728,8 +709,8 @@ def test_declared_platform_release_head_drift_records_red(live_board, monkeypatc
         if kwargs.get("shell"):
             head[0] = "moved-head"
         return result
-    monkeypatch.setattr(live_board.subprocess, "run", run)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 1
+    monkeypatch.setattr(subprocess, "run", run)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 1
     data = _read_flag(live_board)
     assert data["status"] == "fail" and data["rc"] == "head-drift"
 
@@ -743,8 +724,8 @@ def test_record_rc0_pin_mismatch_records_fail(live_board, monkeypatch, capsys):
     수집 위장을 red 로 세운다(T-0190/T-0220 원칙의 라이브 확장).
     """
     fake = _FakeRun(0, "5 passed, 814 deselected in 30.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", fake)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 1, "수집 미달인데 pass(0)를 반환하면 위장 차단이 뚫린 것"
     data = _read_flag(live_board)
     assert data["status"] == "fail"
@@ -758,8 +739,8 @@ def test_record_rc0_pin_mismatch_records_fail(live_board, monkeypatch, capsys):
 def test_record_rc5_no_tests_records_fail(live_board, monkeypatch):
     """rc5(수집 0·"no tests ran") → fail (wrong-cwd/마커 전멸 vacuous-pass 근절)."""
     fake = _FakeRun(5, "no tests ran in 0.01s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", fake)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 1
     data = _read_flag(live_board)
     assert data["status"] == "fail"
@@ -779,8 +760,8 @@ def test_record_missing_codex_axis_blocks(live_board, monkeypatch, capsys):
     통과하는 false-green 을 막는다. (over-collection 마커 소실 5↔16 과 대칭인, codex-특정 under-collection.)"""
     without_codex = regression.LIVEGATE_RELEASE_PIN - 1  # codex relay smoke 누락 → 17에서 16으로.
     fake = _FakeRun(0, f"{without_codex} passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", fake)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 1, "codex 축 누락(수집<pin)인데 pass(0) 면 codex green 없이 릴리즈 통과(false-green)"
     data = _read_flag(live_board)
     assert data["status"] == "fail"
@@ -799,8 +780,8 @@ def test_record_rc_nonzero_records_fail(live_board, monkeypatch, capsys):
     rc 게이트가 수집 N 과 독립임을 확인: 22개 실행(1 red)이라 N=22 이지만 rc1 → fail.
     """
     fake = _FakeRun(1, "1 failed, 21 passed, 810 deselected in 40.0s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", fake)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 1
     data = _read_flag(live_board)
     assert data["status"] == "fail"
@@ -821,8 +802,8 @@ def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
     # `_active_slot_path(session=None)` 시그니처(ADR-0040 D2) — 선택 인자 수용.
     monkeypatch.setattr(regression, "_active_slot_path", lambda _home, session=None: worktree)
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", fake)
+    regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert fake.calls, "pytest subprocess 가 호출되지 않았다"
     # record 는 pytest run 前에 `_resolve_livegate_flag`(→ git config)를 먼저 호출한다(T-0287
     # fail-fast). 순서 무관하게 pytest run(shell=True)을 골라 cwd 를 검증한다.
@@ -840,8 +821,8 @@ def test_record_explicit_cwd_skips_actor_slot_resolution(live_board, monkeypatch
         raise AssertionError("--cwd 명시인데 actor session 해소가 호출됨 (eager 해소 재발)")
     monkeypatch.setattr(task_args, "_execution_actor_session_override", _boom)
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args(cwd=override))
+    monkeypatch.setattr(subprocess, "run", fake)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args(cwd=override))
     assert rc == 0
     pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
     assert pytest_call is not None and pytest_call["kwargs"]["cwd"] == override
@@ -851,8 +832,8 @@ def test_record_explicit_cwd_override(live_board, monkeypatch):
     """명시 `--cwd` 는 활성 slot 해소를 우회해 그 경로에서 돈다 (ADR-0014 override)."""
     override = str(live_board._proj / "elsewhere")
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    regression_cmd.cmd_livegate(live_board._home(), _rec_args(cwd=override))
+    monkeypatch.setattr(subprocess, "run", fake)
+    regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args(cwd=override))
     # pytest run(shell=True)을 순서 무관하게 선택 — record 는 그 前에 git config 를 부른다(T-0287 fail-fast).
     pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
     assert pytest_call is not None, "pytest -m release subprocess 가 호출되지 않았다"
@@ -868,8 +849,8 @@ def test_record_explicit_cwd_override(live_board, monkeypatch):
 
 def _seed_two_leases(live_board):
     """활성 슬롯 2개(A_1·B_1)를 리스 장부에 심는다 (multi-lease genuine-ambiguity 전제)."""
-    pm_paths.leases_file(live_board._home()).parent.mkdir(parents=True, exist_ok=True)
-    pm_paths.leases_file(live_board._home()).write_text(json.dumps({"leases": [
+    pm_paths.leases_file(pm_paths.home_at(live_board.REPO)).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(live_board.REPO)).write_text(json.dumps({"leases": [
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "B_1", "state": "leased"},
     ]}), encoding="utf-8")
@@ -881,9 +862,9 @@ def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _seed_two_leases(live_board)
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "run", fake)
     with pytest.raises(SystemExit) as exc:
-        regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+        regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     msg = str(exc.value)
     assert "--repo" in msg and "--cwd" in msg
     # fail-loud 는 값비싼 pytest -m release 를 돌리기 전에 거부해야 한다(cwd seam·record 앞단).
@@ -894,11 +875,11 @@ def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
 def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):
     """기록은 atomic write(temp + os.replace) — 성공 후 .tmp 잔재가 없다."""
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    regression_cmd.cmd_livegate(live_board._home(), _rec_args())
-    tmp = pm_paths.livegate_flag(live_board._home()).with_suffix(pm_paths.livegate_flag(live_board._home()).suffix + ".tmp")
+    monkeypatch.setattr(subprocess, "run", fake)
+    regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
+    tmp = pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).with_suffix(pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).suffix + ".tmp")
     assert not tmp.exists(), "atomic write 후 .tmp 잔재가 남았다"
-    assert pm_paths.livegate_flag(live_board._home()).exists()
+    assert pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).exists()
 
 
 # ── record ⑤ 실행 엔진 사본 drift — 라이브 wave 전 조기 거부 ──────────────────────
@@ -908,10 +889,10 @@ def test_record_blocks_on_engine_drift_before_live_wave(live_board, monkeypatch,
     (spy 로 호출 0 을 값으로 단언) · drift relpath + 처방이 stderr 에 남는다."""
     upstream = live_board._proj.parent / "upstream"
     _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True)
-    real_run = live_board.subprocess.run
+    real_run = subprocess.run
     spy = _ShellOnlySpy(real_run, rc=0, stdout="22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", spy)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", spy)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 1
     assert spy.calls == [], "drift 차단인데 라이브 wave(shell=True 호출) 가 실행됐다"
     data = _read_flag(live_board)
@@ -925,48 +906,14 @@ def test_record_blocks_on_engine_drift_before_live_wave(live_board, monkeypatch,
     assert "pm_update.py" in err   # 처방(재동기 커맨드)
 
 
-def test_record_overwrites_existing_pass_when_engine_copy_shows_marked_skew(
-        live_board, monkeypatch, capsys):
-    """마킹된 사본 skew(형제끼리 rev 가 갈린 트리)는 drift 판정 불능이 아니라 이 게이트의 확정
-    양성이다 — **사전 pass 기록이 남아 있어도** fail(reason=engine-drift)로 교체하고(false-green
-    잔존 0) rc1 · 라이브 wave(`shell=True` 호출) 미실행. 실 drift 픽스처 위에서 `drift_changes`가
-    실제로 부르는 `_resolve_engine_sync_plan`만 스텁으로 skew 를 주입한다(board 경유 전 구간 실행)."""
-    upstream = live_board._proj.parent / "upstream"
-    _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True, rel=_DRIFT_NON_ENGINE_REL)
-    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
-    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
-        {"head": "cafef00dcafef00d0011223344556677", "status": "pass",
-         "n": 22, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
-    skew = RuntimeError("injected engine rev skew")
-    skew._engine_rev_skew = True
-    monkeypatch.setattr(
-        update_plan, "_resolve_engine_sync_plan",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
-    )
-    real_run = live_board.subprocess.run
-    spy = _ShellOnlySpy(real_run, rc=0, stdout="22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", spy)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
-    assert rc == 1
-    assert spy.calls == [], "마킹된 skew 인데 라이브 wave(shell=True 호출) 가 실행됐다"
-    data = _read_flag(live_board)
-    assert data["status"] == "fail", "사전 pass 기록이 덮이지 않고 남았다(false-green 잔존)"
-    assert data["reason"] == "engine-drift"
-    assert data["rc"] is None
-    assert data["n"] == 0
-    err = capsys.readouterr().err
-    assert "injected engine rev skew" in err
-    assert "pm-update" in err   # 재동기 안내
-
-
 def test_record_proceeds_when_engine_copy_in_sync(live_board, monkeypatch, capsys):
     """drift 0(byte-identical) — 기존 pass 경로와 기록 바이트·rc·stdout 이 동일하다(역방향 확인)."""
     upstream = live_board._proj.parent / "upstream"
     _seed_engine_drift_fixture(live_board.REPO, upstream, drift=False)
-    real_run = live_board.subprocess.run
+    real_run = subprocess.run
     spy = _ShellOnlySpy(real_run, rc=0, stdout="22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", spy)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", spy)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 0
     assert len(spy.calls) == 1, "drift 0 인데 라이브 wave 가 실행되지 않았다"
     data = _read_flag(live_board)
@@ -982,8 +929,8 @@ def test_record_warns_and_proceeds_when_upstream_unset(live_board, monkeypatch, 
     """판정 불능(upstream 미등록·`local.conf` 부재) — 거부하지 않고 stderr 경고 1줄 후 현행
     경로(라이브 wave 실행)를 그대로 진행한다."""
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", fake)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 0
     assert any(c["kwargs"].get("shell") for c in fake.calls), \
         "판정 불능인데 라이브 wave(shell=True 호출) 가 차단됐다"
@@ -1028,8 +975,8 @@ def test_record_engine_drift_judgment_incapable_warns_exactly_one_line(
     정확히 1줄이고(splitlines 로 확인) 라이브 wave 를 차단하지 않는다."""
     seed(live_board)
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = regression_cmd.cmd_livegate(live_board._home(), _rec_args())
+    monkeypatch.setattr(subprocess, "run", fake)
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 0
     assert any(c["kwargs"].get("shell") for c in fake.calls), \
         "판정 불능인데 라이브 wave(shell=True 호출) 가 차단됐다"
@@ -1043,7 +990,7 @@ def test_record_engine_drift_judgment_incapable_warns_exactly_one_line(
 
 def test_check_absent_record_blocks(live_board, capsys):
     """기록 부재 → rc1 + '기록 없음' 사유 (record 선행 요구)."""
-    rc = regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev="cafef00dcafef00d0011223344556677"))
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev="cafef00dcafef00d0011223344556677"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "기록 없음" in err
@@ -1051,11 +998,11 @@ def test_check_absent_record_blocks(live_board, capsys):
 
 def test_check_red_record_blocks(live_board, capsys):
     """status!=pass 기록 → rc1 + RED 사유 (수집·rc 표면화·rev 무관)."""
-    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
-    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
+    pm_paths.home_at(live_board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
+    pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "fail",
          "n": 5, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
-    rc = regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev="cafef00dcafef00d0011223344556677"))
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev="cafef00dcafef00d0011223344556677"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "RED" in err
@@ -1064,11 +1011,11 @@ def test_check_red_record_blocks(live_board, capsys):
 
 def test_check_rev_mismatch_blocks(live_board, capsys):
     """pass 기록이나 head != push rev → rc1 + 'rev 불일치' (재실행 요구·부재/red 와 구분)."""
-    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
-    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
+    pm_paths.home_at(live_board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
+    pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(
         {"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "pass",
          "n": 7, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
-    rc = regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "rev 불일치" in err
@@ -1078,12 +1025,12 @@ def test_check_rev_mismatch_blocks(live_board, capsys):
 
 def test_check_pass_matching_rev_green(live_board, capsys):
     """pass 기록 ∧ head==rev → rc0 green (보호훅 통과 경로)."""
-    live_board._home().local_dir.mkdir(parents=True, exist_ok=True)
+    pm_paths.home_at(live_board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     sha = "cafef00dcafef00d0011223344556677"
-    pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
+    pm_paths.livegate_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(
         {"head": sha, "status": "pass", "n": 7, "rc": 0,
          "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
-    rc = regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev=sha))
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev=sha))
     assert rc == 0
     out = capsys.readouterr().out
     assert "green @ cafef00d" in out
@@ -1091,7 +1038,7 @@ def test_check_pass_matching_rev_green(live_board, capsys):
 
 def test_check_requires_rev(live_board, capsys):
     """check 는 `--rev` 없으면 rc1 (push 대상 sha 필수)."""
-    rc = regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev=None))
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev=None))
     assert rc == 1
     err = capsys.readouterr().err
     assert "--rev" in err
@@ -1102,11 +1049,11 @@ def test_check_requires_rev(live_board, capsys):
 def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys):
     """record 로 pass 기록 후, 그 head 로 check 하면 green (실행=기록→소비 일관)."""
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args()) == 0
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args()) == 0
     recorded_head = _read_flag(live_board)["head"]
     capsys.readouterr()  # drain record 출력
-    rc = regression_cmd.cmd_livegate(live_board._home(), _chk_args(rev=recorded_head))
+    rc = regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _chk_args(rev=recorded_head))
     assert rc == 0
     assert "green" in capsys.readouterr().out
 
@@ -1333,10 +1280,10 @@ def _pv_round_tuple(ordinal: int, role: str, text: str):
 
 def _pv_complete(mod, tid: str) -> list[str]:
     """`_complete_gate` 를 `cmd_complete` 처럼 부른다 — 본문·명세를 넘겨야 리뷰 잔여까지 본다."""
-    _status, path = ticket_store.find_ticket_exact(mod._home(), tid)
+    _status, path = ticket_store.find_ticket_exact(pm_paths.home_at(mod.REPO), tid)
     spec_text = path.read_text(encoding="utf-8")
     _fm, body = ticket_store.load_ticket(path)
-    return board_ticket._complete_gate(mod._home(), tid, _pv_gate_args(), body, spec_text=spec_text)
+    return board_ticket._complete_gate(pm_paths.home_at(mod.REPO), tid, _pv_gate_args(), body, spec_text=spec_text)
 
 
 def _pv_gate_args() -> argparse.Namespace:
@@ -1363,7 +1310,7 @@ def pm_verified_release(tmp_path, monkeypatch):
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: "feedface" * 5)
     runner = _FakeRun(0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 800 deselected in 40.0s")
-    monkeypatch.setattr(mod.subprocess, "run", runner)
+    monkeypatch.setattr(subprocess, "run", runner)
 
     # 완료 판정은 board 가 로드한 pm_delegate 로 리뷰 잔여를 판정한다 — 같은 모듈 인스턴스를
     # 테스트에도 넘겨 판정 함수 대역(민감도)이 실제 배선에 닿게 한다.
@@ -1382,7 +1329,7 @@ def pm_verified_release(tmp_path, monkeypatch):
         write_ledger=write_ledger,
         read_ledger=lambda: json.loads(ledger_path.read_text(encoding="utf-8")),
         complete=lambda gate: _pv_complete(mod, gate),
-        record=lambda: regression_cmd.cmd_livegate(mod._home(), argparse.Namespace(
+        record=lambda: regression_cmd.cmd_livegate(pm_paths.home_at(mod.REPO), argparse.Namespace(
             action="record", rev=None, cwd=str(proj), repo=None, slot=None, task=None)),
         flag=lambda: json.loads((local / "livegate.json").read_text(encoding="utf-8")),
     )
@@ -1434,7 +1381,7 @@ def test_pm_verified_declaration_blocks_when_surface_finding_count_is_short(pm_v
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 5)])
-    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
+    problem = completion_gate._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1452,7 +1399,7 @@ def test_pm_verified_declaration_blocks_on_undisposed_finding(pm_verified_releas
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 2)])
-    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
+    problem = completion_gate._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1469,7 +1416,7 @@ def test_pm_verified_declaration_blocks_on_blank_rejection_reason(pm_verified_re
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
-    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
+    problem = completion_gate._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1486,7 +1433,7 @@ def test_pm_verified_declaration_blocks_on_open_accepted_finding(pm_verified_rel
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
-    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
+    problem = completion_gate._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1506,7 +1453,7 @@ def test_pm_verified_declaration_blocks_when_accepted_lacks_machine_confirmation
         {"id": "X-001", "status": "resolved", "evidence": "재검토 결과 해소 확인"},
     ]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
-    problem = completion_gate._pm_verified_evidence_problem(mod._home(),
+    problem = completion_gate._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
@@ -1571,7 +1518,7 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
     assert review_rounds._gate_disposition_problem(
         tid, entry,
         allow_pm_verified=True,
-        pm_verified_problem=completion_gate._gate_pm_verified_problem(mod._home(),
+        pm_verified_problem=completion_gate._gate_pm_verified_problem(pm_paths.home_at(mod.REPO),
             tid, entry, _PV_CHANNEL_ADDITIONAL,
         ),
     ) is None
@@ -1653,10 +1600,10 @@ def test_t0929_selected_workspace_livegate_head_and_cwd(live_board, monkeypatch)
     from _pytest_summary import pytest_summary
     _t0929_mock_workspaces(live_board, monkeypatch)
     fake = _FakeRun(0, pytest_summary(22))
-    monkeypatch.setattr(live_board.subprocess, 'run', fake)
+    monkeypatch.setattr(subprocess, 'run', fake)
     args = _rec_args(repo='A', slot=5)
     args.task = 'main'
-    assert regression_cmd.cmd_livegate(live_board._home(), args) == 0
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), args) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(live_board.REPO / 'work/A_5')
     assert _read_flag(live_board)['head'] == 'head5'
 
@@ -1666,11 +1613,11 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(live_board, m
     from _pytest_summary import pytest_summary
     rows = _t0929_mock_workspaces(live_board, monkeypatch)
     rows[-1].update(role='readonly', session='')
-    pm_paths.leases_file(live_board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    pm_paths.leases_file(pm_paths.home_at(live_board.REPO)).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     fake = _FakeRun(0, pytest_summary(22))
-    monkeypatch.setattr(live_board.subprocess, 'run', fake)
+    monkeypatch.setattr(subprocess, 'run', fake)
     selected = live_board.REPO / 'work/A_5'
-    assert regression_cmd.cmd_livegate(live_board._home(), _rec_args(cwd=str(selected))) == 0
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(live_board.REPO), _rec_args(cwd=str(selected))) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(selected)
     assert _read_flag(live_board)['head'] == 'head5'
 
@@ -1696,7 +1643,7 @@ def t0936_release(tmp_path, monkeypatch):
     (home/'.project_manager/local.conf').write_text((anchor / '.project_manager/local.conf').read_text(encoding='utf-8'), encoding='utf-8')
     core = {'head':head, 'status':'pass', 'rc':0, 'scope':'full', 'collected':3,
             'previous_collected':2, 'conf_anchor':str(anchor), 'command':'core-full', 'ts':'2026-10-02T00:00:00+00:00'}
-    pm_paths.regression_flag(board._home()).write_text(json.dumps(core), encoding='utf-8')
+    pm_paths.regression_flag(pm_paths.home_at(board.REPO)).write_text(json.dumps(core), encoding='utf-8')
     calls = []; live = []
     def platform(command, cwd, env):
         calls.append((command,cwd,dict(env)))
@@ -1704,22 +1651,23 @@ def t0936_release(tmp_path, monkeypatch):
     monkeypatch.setattr(regression, '_run_regression_cmd', platform)
     def release(*a, **kw):
         live.append((a,kw)); return types.SimpleNamespace(returncode=0,stdout='22 passed in 0.01s\n',stderr='')
-    monkeypatch.setattr(board.subprocess, 'run', release)
+    monkeypatch.setattr(subprocess, 'run', release)
     return types.SimpleNamespace(board=board, anchor=anchor, cwd=execution, head=head, core=core, calls=calls, live=live, platform=platform, release=release)
 
 
-def _t0936_record(f):
-    return regression_cmd.cmd_livegate(f.board._home(), _rec_args(cwd=str(f.cwd)))
+def _t0936_record(f, home=None):
+    home = pm_paths.home_at(f.board.REPO) if home is None else home
+    return regression_cmd.cmd_livegate(home, _rec_args(cwd=str(f.cwd)))
 
 
 def _t0936_check(f):
     args = _chk_args(f.head); args.cwd=str(f.cwd)
-    return regression_cmd.cmd_livegate(f.board._home(), args)
+    return regression_cmd.cmd_livegate(pm_paths.home_at(f.board.REPO), args)
 
 
 def test_t0936_record_executes_platforms_before_live(t0936_release):
     f=t0936_release
-    original=pm_paths.regression_flag(f.board._home()).read_bytes()
+    original=pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).read_bytes()
     assert _t0936_record(f)==0
     assert [c[0] for c in f.calls]==['arm-full','windows-full']
     assert all(c[1]==str(f.cwd) and c[2]['PM_QA_EXPECTED_HEAD']==f.head for c in f.calls)
@@ -1731,7 +1679,7 @@ def test_t0936_record_executes_platforms_before_live(t0936_release):
     assert snapshot['command']=='core-full' and snapshot['collected']==3 and snapshot['previous_collected']==2
     assert [cell['name'] for cell in snapshot['platforms']]==['arm','windows']
     assert _t0936_check(f)==0
-    assert len(f.calls)==2 and len(f.live)==1 and pm_paths.regression_flag(f.board._home()).read_bytes()==original
+    assert len(f.calls)==2 and len(f.live)==1 and pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).read_bytes()==original
 
 
 @pytest.mark.parametrize('defect', ['missing','red','stale','unknown','zero','bool','command','anchor','schema','other-F','old-aggregate'])
@@ -1740,10 +1688,10 @@ def test_t0936_record_rejects_unusable_core_before_children(t0936_release, defec
     changes={'red':('status','fail'),'stale':('head','old'),'unknown':('collected',None),'zero':('collected',0),'bool':('collected',True),'command':('command','old-core'),'anchor':('conf_anchor','relative'),'schema':('extra',1),'old-aggregate':('platforms',[])}
     if defect in ['missing','other-F']:
         if defect=='other-F': (f.anchor/'regression.json').write_text(json.dumps(core),encoding='utf-8')
-        pm_paths.regression_flag(f.board._home()).unlink()
+        pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
     else:
         key,value=changes[defect]; core[key]=value
-        pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
+        pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(core),encoding='utf-8')
     assert _t0936_record(f)==1
     assert f.calls==f.live==[] and _t0936_check(f)==1
 
@@ -1780,7 +1728,7 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
     elif defect.startswith('current-'):
         core=dict(f.core); key=defect[8:]
         key,value={'red':('status','fail'),'stale':('head','old'),'collected':('collected',9),'command':('command','old'),'anchor':('conf_anchor',str(f.cwd))}[key]
-        core[key]=value; pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
+        core[key]=value; pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(core),encoding='utf-8')
     else:
         if defect=='missing-cell': record['platforms'].pop()
         elif defect.startswith('cell-'):
@@ -1788,7 +1736,7 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
         elif defect=='command-missing': record.pop('command')
         else:
             key,value={'core-scope':('scope','scoped'),'core-collected':('collected',9),'core-previous':('previous_collected',True),'core-command':('command','old'),'core-anchor':('conf_anchor',str(f.cwd)),'core-session':('session','wrong'),'rc':('rc',True),'pin':('n',21),'rev':('head','old'),'cwd-relative':('cwd','relative')}[defect]; record[key]=value
-        pm_paths.livegate_flag(f.board._home()).write_text(json.dumps(record),encoding='utf-8')
+        pm_paths.livegate_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(record),encoding='utf-8')
     count=(len(f.calls),len(f.live))
     assert _t0936_check(f)==1 and count==(len(f.calls),len(f.live))
 
@@ -1796,7 +1744,7 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
 @pytest.mark.parametrize('phase', ['platform','before-live','after-live'])
 @pytest.mark.parametrize('drift', ['A-head','L-head','declaration','command'])
 def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase, drift):
-    f=t0936_release; original=pm_paths.regression_flag(f.board._home()).read_bytes(); changed=[False]
+    f=t0936_release; original=pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).read_bytes(); changed=[False]
     def mutate():
         changed[0]=True
         if drift in ['declaration','command']:
@@ -1811,9 +1759,9 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
         result=f.release(*a,**kw)
         if phase=='after-live': mutate()
         return result
-    monkeypatch.setattr(regression,'_run_regression_cmd',platform); monkeypatch.setattr(f.board.subprocess,'run',release)
+    monkeypatch.setattr(regression,'_run_regression_cmd',platform); monkeypatch.setattr(subprocess,'run',release)
     assert _t0936_record(f)==1 and _read_flag(f.board)['status']=='fail'
-    assert pm_paths.regression_flag(f.board._home()).read_bytes()==original
+    assert pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).read_bytes()==original
     if phase!='after-live': assert f.live==[]
 
 
@@ -1821,6 +1769,7 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
 def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, defect):
     f=t0936_release; assert not (f.cwd/'.project_manager/local.conf').exists()
     monkeypatch.setattr(task_args,'_actor_session_override',lambda *a,**k: pytest.fail('명시 readonly cwd의 actor 해소'))
+    record_home = None
     if defect:
         core=dict(f.core)
         if defect=='A-relative': core['conf_anchor']='relative'
@@ -1831,13 +1780,13 @@ def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, 
         elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.anchor/'livegate.json',regression_store._LG_ENGINE_ROOT))
         elif defect=='broken': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.livegate_flag(home),regression_store._LG_BROKEN))
         elif defect=='clone-only':
-            engine_home=f.board._home(); called=pm_paths.home_at(f.board.REPO, f.anchor)
+            engine_home=pm_paths.home_at(f.board.REPO); called=pm_paths.home_at(f.board.REPO, f.anchor)
             pm_paths.regression_flag(engine_home).unlink()
             monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(pm_paths.livegate_flag(engine_home),regression_store._LG_ENGINE_ROOT))
-            monkeypatch.setattr(f.board,'_home',lambda: called)
+            record_home = called
             pm_paths.regression_flag(called).write_text(json.dumps(core),encoding='utf-8')
-        if defect!='clone-only': pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
-    assert _t0936_record(f)==(0 if defect is None else 1)
+        if defect!='clone-only': pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(core),encoding='utf-8')
+    assert _t0936_record(f, record_home)==(0 if defect is None else 1)
     if defect is not None: assert f.calls==f.live==[]
 
 
@@ -1847,29 +1796,29 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
     if form=='no-platform-legacy':
         (f.board.REPO/'.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
         (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
-        pm_paths.regression_flag(f.board._home()).unlink()
+        pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
         assert _t0936_record(f)==0 and f.calls==[] and len(f.live)==1 and _t0936_check(f)==0
     elif form in ['aggregate-pass','aggregate-fail']:
         core=dict(f.core); core.pop('command'); core['platforms']=[]
         if form=='aggregate-fail': core['status']='fail'
-        pm_paths.regression_flag(f.board._home()).write_text(json.dumps(core),encoding='utf-8')
+        pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(core),encoding='utf-8')
         assert _t0936_record(f)==1 and f.calls==f.live==[]
     elif form=='declared-deleted':
         assert _t0936_record(f)==0
         (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
         assert _t0936_check(f)==1
     else:
-        pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
+        pm_paths.livegate_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
         assert _t0936_check(f)==1
 
 
 @pytest.mark.parametrize('failure', ['config','core','platform','coordinate','interrupted'])
 def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypatch, failure):
     f=t0936_release
-    pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
+    pm_paths.livegate_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
     if failure=='config': (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\nqa.platforms=windows\n',encoding='utf-8')
-    elif failure=='core': pm_paths.regression_flag(f.board._home()).unlink()
-    elif failure=='coordinate': f.core['conf_anchor']='relative'; pm_paths.regression_flag(f.board._home()).write_text(json.dumps(f.core),encoding='utf-8')
+    elif failure=='core': pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
+    elif failure=='coordinate': f.core['conf_anchor']='relative'; pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(f.core),encoding='utf-8')
     else:
         def run(*a):
             assert _read_flag(f.board)['status']=='fail'
@@ -1894,14 +1843,14 @@ def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypa
             f.live.append((a,kw))
             assert kw['env']['PYTHONUTF8']=='1' and kw['env']['PYTHONIOENCODING']=='utf-8'
             return types.SimpleNamespace(returncode=1 if guard in ['opt-in','live-rc'] else 0,stdout='21 passed\n' if guard=='live-pin' else '22 passed\n',stderr='')
-        monkeypatch.setattr(f.board.subprocess,'run',release)
+        monkeypatch.setattr(subprocess,'run',release)
     assert _t0936_record(f)==1
     if guard in ['sidecar','must-fix','drift']: assert f.calls==f.live==[]
 
 
 def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_release, monkeypatch):
     f = t0936_release
-    pm_paths.regression_flag(f.board._home()).unlink()
+    pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
     (f.anchor / '.project_manager/local.conf').write_text("test.cmd=core-full\n", encoding="utf-8")
     (f.board.REPO / ".project_manager/local.conf").write_text("test.cmd=core-full\n", encoding="utf-8")
     flag = f.board.REPO / "cold" / ".project_manager" / ".local/livegate.json"
@@ -1915,10 +1864,10 @@ def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_relea
 def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
         t0936_release, monkeypatch, consumer):
     f = t0936_release
-    pm_paths.regression_flag(f.board._home()).unlink()
+    pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
     (f.anchor / '.project_manager/local.conf').unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
-    pm_paths.livegate_flag(f.board._home()).write_text(json.dumps({
+    pm_paths.livegate_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps({
         "head":f.head, "status":"pass", "rc":0, "n":22, "ts":"now",
     }), encoding="utf-8")
     calls = []
@@ -1935,7 +1884,7 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
 def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_present_or_damaged_conf(
         t0936_release, monkeypatch, shape):
     f = t0936_release
-    pm_paths.regression_flag(f.board._home()).unlink()
+    pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
     (f.anchor / '.project_manager/local.conf').unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
     conf = f.cwd / ".project_manager/local.conf"
@@ -1987,7 +1936,7 @@ def t0982_board(tmp_path, monkeypatch):
         assert kwargs.get("shell") is True, "실 Git/다른 subprocess 호출 금지"
         state.waves.append((args,kwargs))
         return types.SimpleNamespace(returncode=0,stdout=f"{regression.LIVEGATE_RELEASE_PIN} passed in 0.01s\n",stderr="")
-    monkeypatch.setattr(board.subprocess,"run",wave)
+    monkeypatch.setattr(subprocess,"run",wave)
     return state
 
 
@@ -2001,7 +1950,7 @@ def test_t0982_cwd_rejects_each_selector_combination_before_effects(t0982_board,
     before = state.flag.read_bytes()
     args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
     with pytest.raises(SystemExit) as caught:
-        regression_cmd.cmd_livegate(state.board._home(), args)
+        regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     message = str(caught.value)
     assert "--cwd" in message and "--task" in message and "--repo" in message and "--slot" in message
     assert state.effects == [] and state.waves == []
@@ -2014,7 +1963,7 @@ def test_t0982_supplied_falsey_selectors_are_not_ignored(t0982_board, selector):
     before = state.flag.read_bytes()
     args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
     with pytest.raises(SystemExit):
-        regression_cmd.cmd_livegate(state.board._home(), args)
+        regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     assert state.effects == [] and state.waves == []
     assert state.flag.read_bytes() == before
 
@@ -2024,7 +1973,7 @@ def test_t0982_empty_cwd_is_not_an_implicit_workspace(t0982_board):
     before = state.flag.read_bytes()
     args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",""])
     with pytest.raises(SystemExit) as caught:
-        regression_cmd.cmd_livegate(state.board._home(), args)
+        regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     assert "--cwd" in str(caught.value) and "비어" in str(caught.value)
     assert state.effects == [] and state.waves == []
     assert state.flag.read_bytes() == before
@@ -2034,11 +1983,11 @@ def test_t0982_empty_cwd_is_not_an_implicit_workspace(t0982_board):
 def test_t0982_cwd_only_preserves_unleased_readonly_pin(t0982_board, leased):
     state = t0982_board
     rows=[{"state":"leased","session":"main","repo":"A","slot":f"work/A_{n}"} for n in range(1,leased+1)]
-    pm_paths.leases_file(state.board._home()).write_text(json.dumps({"leases":rows}),encoding="utf-8")
+    pm_paths.leases_file(pm_paths.home_at(state.board.REPO)).write_text(json.dumps({"leases":rows}),encoding="utf-8")
     selected = state.home / "read only"
     selected.mkdir()
     args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(selected)])
-    assert regression_cmd.cmd_livegate(state.board._home(), args) == 0
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args) == 0
     assert len(state.waves) == 1 and state.waves[0][1]["cwd"] == str(selected)
     assert state.effects[0] == ("flag",str(selected))
     assert json.loads(state.flag.read_text(encoding="utf-8"))["status"] == "pass"
@@ -2056,7 +2005,7 @@ def test_t0982_task_workspace_injection_is_not_explicit_cwd(t0982_board, monkeyp
         return str(selected),None
     monkeypatch.setattr(task_args,"_resolve_task_workspace_cwd",resolve)
     args = board_cmd.build_parser().parse_args(["livegate","record",*selector])
-    assert regression_cmd.cmd_livegate(state.board._home(), args) == 0
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args) == 0
     assert state.tasks == ["main"] and len(state.waves) == 1
     assert state.waves[0][1]["cwd"] == str(selected)
 
@@ -2069,5 +2018,5 @@ def test_t0982_selectors_without_task_keep_existing_rejection(t0982_board, monke
     before=state.flag.read_bytes()
     args=board_cmd.build_parser().parse_args(["livegate","record",*selector])
     with pytest.raises(SystemExit):
-        regression_cmd.cmd_livegate(state.board._home(), args)
+        regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     assert state.effects == [] and state.waves == [] and state.flag.read_bytes() == before

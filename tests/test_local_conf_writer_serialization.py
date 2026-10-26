@@ -794,7 +794,7 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
     monkeypatch.setattr(board, "REPO", conf.parents[1])
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     taken: list[str] = []
-    _spy_lock(board.fs, monkeypatch, taken)
+    _spy_lock(fs, monkeypatch, taken)
 
     conf_store._write_init_local_conf(pm_paths.home_at(conf.parents[1]))
 

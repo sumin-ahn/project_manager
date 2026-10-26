@@ -1005,7 +1005,7 @@ def _import_multipm_home(tmp_path: Path, harness: str,
     home = tmp_path / f"mpm-home-{harness}"
     origins = tmp_path / f"origins-{harness}"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
-        ["--new", str(home), "--harness", harness, "--name", "MPM", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
+        ["--new", str(home), "--harness", harness, "--name", "MPM", "--fill", "manual"]
     )
     assert rc == 0, f"{harness} multi-PM home import 실패 (rc={rc})"
 
@@ -2389,8 +2389,8 @@ _RELEASE_TEST_FILES = (
 # + 2(pm_release_live: claude hard/opencode best-effort 릴리즈 스킬 라이브·ADR-0049·T-0349)
 # + 1(test_task_cycle_e2e: task 사이클 완주 기계 e2e·ADR-0068 사이클 게이트·T-0400 — 라이브 LLM
 #     불요·순수 기계지만 release 티어에 편입해 릴리즈마다 사이클 완주를 강제).
-# + 1(test_engine_rev_release: engine_rev.ENGINE_REV ↔ CHANGELOG 최신 릴리스 버전 정합·T-0397 —
-#     기계·릴리즈마다 rev bump 를 강제·bump 누락을 릴리즈 게이트에서 red).
+# + 1(test_engine_rev_release: pm_engine.ENGINE_REV ↔ CHANGELOG 최신 릴리스 버전 정합·T-0397 —
+#     기계·릴리즈마다 값 갱신을 강제·갱신 누락을 릴리즈 게이트에서 red).
 # + 1(test_pm_relay_codex: codex relay 라이브 smoke·spawn→resume·tid==marker·usage 누적·ADR-0070 D7·
 #     T-0407 — codex 라이브 green 을 릴리즈 pin 에 편입·codex green 없이 v1.4.0 push 차단).
 # + 4(test_pm_delegate_live: 기존 Codex smoke 1 + 선택 cross Claude→Codex·Claude→OpenCode·

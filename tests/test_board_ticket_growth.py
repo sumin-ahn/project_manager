@@ -265,7 +265,7 @@ def test_section_add_seed_is_the_shared_seam_render(board_env):
     written = (_rounds_dir(board_dir, "T-1014") / "01-developer.md").read_text(
         encoding="utf-8")
     assert written == expected
-    loaded = round_seed.load_rounds(pm_paths.tickets_dir(board._home()), "T-1014", ticket_text=spec_text)
+    loaded = round_seed.load_rounds(pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-1014", ticket_text=spec_text)
     assert [item.pending for item in loaded] == [True], "예약 직후 라운드는 산출 없음이어야 한다"
 
 
@@ -625,7 +625,7 @@ def test_section_add_still_opens_a_ledgerless_draft_architect_round(
     assert board.main(["section-add", "T-1018", "--role", "architect"]) == 0
 
     fm, _body = ticket_store.load_ticket(path)
-    assert cluster_store.load_cluster(board._home(), cluster_rules.ticket_cluster("T-1018", fm)) is None
+    assert cluster_store.load_cluster(pm_paths.home_at(board.REPO), cluster_rules.ticket_cluster("T-1018", fm)) is None
     assert _round_names(board_dir, "T-1018") == ["01-architect.md"]
     assert sync_calls == [] and _head(board_dir) == before_head
     assert "local draft; promote가 출하 소유" in capsys.readouterr().out
@@ -951,7 +951,7 @@ def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
 
     def run_migration():
         try:
-            results["migration"] = board_migrate_identity._migrate_tickets_apply(board._home(),
+            results["migration"] = board_migrate_identity._migrate_tickets_apply(pm_paths.home_at(board.REPO),
                 "alice", "repo_1", ("open",))
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
@@ -1101,7 +1101,7 @@ def test_promote_ships_the_draft_rounds_with_the_spec(board_env):
     assert board.main(["section-add", "T-1007", "--role", "architect"]) == 0
     assert _round_names(board_dir, "T-1007") == ["01-architect.md"]
     # `design: done` 은 회수된 점검 라운드도 함께 요구한다 — 시드 그대로면 승격이 막힌다.
-    round_path = (pm_paths.tickets_dir(board._home()) / "rounds" / "T-1007" / "01-architect.md")
+    round_path = (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "rounds" / "T-1007" / "01-architect.md")
     round_path.write_text(
         round_path.read_text(encoding="utf-8") + "\n## 경계 실측\n- 실측 대조 근거\n",
         encoding="utf-8", newline="")

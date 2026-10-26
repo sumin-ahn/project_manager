@@ -486,13 +486,13 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
 
     status·whoami 는 같은 데이터·같은 핸들러 — whoami 는 이 세션 줄을 머리에 둔다. 데이터는
     전부 장부(기계)에서 파생([[living-truth-docs-anti-ossification]]) — 신설 저장소 없음. 전
-    surface(task/slot/git)는 일반 조회 실패에 fail-soft 이되 marked engine skew 는 막는다.
+    surface(task/slot/git)는 일반 조회 실패에 fail-soft 다.
 
     `status --json` 은 같은 수집을 **기계 계약**으로 낸다(`_emit_status_json` — 관리자 읽기
     표면). 텍스트 출력은 그 플래그가 없을 때 종전 바이트 그대로다. `--json` 은 `status` 전용이라
     `whoami` 는 텍스트 별칭으로 남는다(계약 하나).
 
-    경로는 명시 Home 에서 해소하고, `engine_rev` 는 JSON 문서의 각인 필드에만 쓴다.
+    경로는 명시 Home 에서 해소하고, `engine_rev` 는 JSON 문서의 엔진 세대 값 필드에만 쓴다.
     """
     usage_error = _status_json_usage_error(args)
     if usage_error is not None:

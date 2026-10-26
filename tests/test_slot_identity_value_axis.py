@@ -308,7 +308,7 @@ def trio(home, monkeypatch):
 
 def _trio_sessions(trio):
     board, wp, pm_config = trio
-    return lease_store.session_name(board._home()), lease_store._default_session(pm_paths.home_at(wp.REPO)), lease_store.session_name(pm_paths.home_at(pm_config.REPO))
+    return lease_store.session_name(pm_paths.home_at(board.REPO)), lease_store._default_session(pm_paths.home_at(wp.REPO)), lease_store.session_name(pm_paths.home_at(pm_config.REPO))
 
 
 @pytest.mark.parametrize("env_var", ["PM_SESSION_NAME", "CLAUDE_SESSION_NAME"])
@@ -353,7 +353,7 @@ def test_trio_zero_rows_does_not_derive_from_registration(home, trio):
     board, wp, pm_config = trio
     home.write_areas(["A"])
     home.write_ledger([])
-    assert lease_store.session_name(board._home()) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
+    assert lease_store.session_name(pm_paths.home_at(board.REPO)) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
     assert lease_store._default_session(pm_paths.home_at(wp.REPO)) != "A_1"
 
 
@@ -366,12 +366,12 @@ def test_trio_ambiguous_and_corrupt_share_unresolved_judgment(home, trio):
     board, wp, pm_config = trio
     home.write_areas(["A"])
     home.write_ledger([_pool_row("A", 1, "A_1"), _pool_row("A", 2, "A_2")])
-    assert lease_store.session_name(board._home()) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
+    assert lease_store.session_name(pm_paths.home_at(board.REPO)) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
     ambiguous_tail = lease_store._default_session(pm_paths.home_at(wp.REPO))
     assert ambiguous_tail not in {"A_1", "A_2"}
 
     home.ledger.write_text("{not valid json", encoding="utf-8")
-    assert lease_store.session_name(board._home()) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
+    assert lease_store.session_name(pm_paths.home_at(board.REPO)) is None and lease_store.session_name(pm_paths.home_at(pm_config.REPO)) is None
     assert lease_store._default_session(pm_paths.home_at(wp.REPO)) not in {"A_1", "A_2"}
 
 

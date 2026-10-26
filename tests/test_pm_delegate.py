@@ -68,6 +68,7 @@ from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract, watchdog
 from pm_engine.domain import delegate_errors, model_lint, review_form, review_state, review_verdict, round_rules
 from pm_engine.app import round_seed
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -380,7 +381,7 @@ def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
             cwd = Path(isolated_argv[isolated_argv.index("--cwd") + 1])
             raw_dir = cwd.parent / f".{cwd.name}-raw"
         isolated_argv += ["--output-dir", str(raw_dir)]
-    return pd.main(isolated_argv, run_fn=run_fn)
+    return cli_delegate_run.main(pm_paths.home_at(pd.REPO), isolated_argv, run_fn=run_fn)
 
 
 def test_disabled_returns_rc3(pd, monkeypatch, tmp_path, capsys):
@@ -2797,7 +2798,7 @@ def test_empty_config_is_allowed_but_unmapped_rc1(pd, monkeypatch, tmp_path, cap
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: {})
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     fake = _FakeRun(stdout=_codex_stdout())
-    rc = pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO), ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
                  run_fn=fake)
     assert rc == 1
     err = capsys.readouterr().err
@@ -2825,7 +2826,7 @@ def test_cwd_not_git_repo_fail_loud(pd, monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     fake = _FakeRun(stdout=_codex_stdout())
     bad_git = lambda *a, **k: type("R", (), {"returncode": 128, "stdout": ""})()
-    rc = pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO), ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
                  run_fn=fake, git_run_fn=bad_git)
     assert rc == 1
     assert "git 저장소" in capsys.readouterr().err
@@ -3875,25 +3876,6 @@ def test_role_preambles_include_prohibition_phrases(pd):
         for adapter_dir in adapter_directories:
             assert adapter_dir in text, f"{role}: 등록 어댑터 {adapter_dir} 수정 금지 문구 누락"
         assert text.count(delegate_prompt_rules._prohibition(install_rules.adapter_directories())) == 1, f"{role}: 공통 금지 문구를 정확히 한 번 써야 함"
-
-
-def _isolated_delegate(tmp_path: Path, registry_source: str):
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    # 엔진 패키지(`pm_engine/`)도 함께 둔다 — 엔진 소스 판독이 공유 읽기 seam 을 지나므로(T-0729)
-    # 그것이 없으면 registry 해소가 skew 이전에 부재로 죽어 회귀가 다른 것을 잰다.
-    shutil.copy2(TOOLS / "pm_delegate.py", tools / "pm_delegate.py")
-    shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    (tools / "pm_import.py").write_text(
-        f'ENGINE_REV = "{_load("pm_delegate_rev", TOOLS / "pm_delegate.py").ENGINE_REV}"\n'
-        f"{registry_source}\n",
-        encoding="utf-8",
-    )
-    return _load(f"pm_delegate_isolated_{id(tmp_path)}", tools / "pm_delegate.py"), tools
-
-
-
 
 
 def test_adapter_registry_old_value_shape_fails_explicitly_without_character_spread(monkeypatch):

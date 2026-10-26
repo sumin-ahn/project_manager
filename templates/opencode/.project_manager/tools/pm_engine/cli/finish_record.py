@@ -339,8 +339,8 @@ class TicketFinisher:
             return None
         if not any(finish_rules._has_worktree_touch_prefix(touch) for touch in touches):
             return list(touches)
-        # 측정 트리 해소는 try **밖**이다 — 그쪽은 형제 엔진 로더를 타므로(회귀 cwd 자동해소)
-        # 여기 좌표 예외 처리에 섞이면 사본 skew 가 "정규화 실패" 한 줄로 위장된다.
+        # 측정 트리 해소는 try **밖**이다 — 그쪽 실패가 여기 좌표 예외 처리에 섞이면
+        # "정규화 실패" 한 줄로 위장된다.
         workspace = self._code_tree()
         try:
             return list(repo_coordinates.normalize_repo_paths(

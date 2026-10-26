@@ -52,7 +52,7 @@ def _subagent_start() -> dict[str, object]:
 
 def _observation_home(board, tmp_path):
     """board 실행 Home 에서 PM 로컬 입력(관측 로그 폴더)만 임시 경로로 바꾼 Home."""
-    return board._home()._replace(local_dir=tmp_path / "local")
+    return pm_paths.home_at(board.REPO)._replace(local_dir=tmp_path / "local")
 
 
 def _observation_dir(home):

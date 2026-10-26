@@ -12,6 +12,7 @@ cmd_set_test_cmd)는 monkeypatch 로 가로채 *어떤 핸들러가 어떤 인�
 """
 from __future__ import annotations
 
+import pm_engine
 from pm_engine.app import import_fill
 from pm_engine.cli import config_console
 from pm_engine.app import board_dashboard
@@ -372,19 +373,6 @@ def test_console_w_empty_repo_cancels(pc, monkeypatch):
     assert called["n"] == 0
 
 
-class _SkewWorktreePool(FakeWorktreePool):
-    """create_slot 이 marked engine skew(엔진 사본 불일치)를 던지는 풀 대역."""
-
-    def create_slot(self, repo, **kwargs):
-        exc = RuntimeError("worktree_pool.py 사본 불일치")
-        exc._engine_rev_skew = True
-        raise exc
-
-
-
-
-
-
 def test_console_b_routes_to_set_test_cmd(pc, monkeypatch):
     """`b` → _console_set_test_cmd → cmd_set_test_cmd(slot, cmd) 호출."""
     seen = {}
@@ -715,7 +703,7 @@ def _status_out(pc, monkeypatch, capsys, *, user, area_owners):
     monkeypatch.setattr(lease_store, 'session_name', lambda _home: "s1")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     return capsys.readouterr().out
 
@@ -776,7 +764,7 @@ def test_status_surface_never_loads_board(pc, monkeypatch, capsys):
     monkeypatch.setattr(lease_store, 'session_name', lambda _home: "s1")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert _MARK_DEGRADE in out              # isolation surface 렌더됨

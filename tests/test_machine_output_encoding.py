@@ -59,6 +59,7 @@ from types import SimpleNamespace
 
 import pytest
 from _engine_tree import engine_python_files
+from pm_engine.cli import delegate_channel_guard as cli_delegate_channel_guard
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -350,7 +351,7 @@ def test_delegate_channel_guard_hook_payloads_are_utf8(
         build_stdin_payload(tmp_path) if build_stdin_payload is not None else None
     )
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         argv or None,
         stdin=io.StringIO(json.dumps(stdin_payload or {})),
         stdout=stream,
@@ -365,13 +366,13 @@ def test_delegate_channel_guard_hook_payloads_are_utf8(
 
 
 def _break_console_seam_loader(guard, monkeypatch):
-    """가드 진입의 콘솔 설정(`console.configure_console_utf8`)만 실패시킨다."""
+    """가드 패키지 CLI 의 콘솔 seam(`console.write_machine_line`)만 실패시킨다."""
 
-    def _broken_configure():
+    def _broken_write(*_args, **_kwargs):
         raise RuntimeError("simulated missing console_encoding")
 
     monkeypatch.setattr(
-        guard, "console", SimpleNamespace(configure_console_utf8=_broken_configure))
+        cli_delegate_channel_guard, "console", SimpleNamespace(write_machine_line=_broken_write))
 
 
 def test_delegate_channel_guard_fallback_line_survives_a_missing_seam(
@@ -383,7 +384,7 @@ def test_delegate_channel_guard_fallback_line_survives_a_missing_seam(
     stream = capture_console()
     stderr = io.StringIO()
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["supervise", "PreToolUse", sys.executable, "-c", "pass"],
         stdin=io.StringIO("{}"),
         stdout=stream,
@@ -407,7 +408,7 @@ def test_missing_seam_fallback_still_writes_utf8_bytes(
     _break_console_seam_loader(guard, monkeypatch)
     stream = capture_console()
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["decide", "--role", "developer", "--harness", "claude"],
         stdout=stream,
         stderr=io.StringIO(),
@@ -546,7 +547,7 @@ def test_guard_hook_line_is_unchanged_on_a_capture_stream(tmp_path):
     guard = _load("delegate_channel_guard")
     sink = io.StringIO()
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["decide", "--role", "developer", "--harness", "opencode"],
         stdout=sink,
         config_loader=_guard_conf,
@@ -723,7 +724,7 @@ def test_allowed_exceptions_are_reasoned():
             True,
         ),
         (
-            ".project_manager/tools/delegate_channel_guard.py",
+            ".project_manager/tools/pm_engine/cli/delegate_channel_guard.py",
             "            _write_machine_line(\n"
             "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"
@@ -737,7 +738,7 @@ def test_allowed_exceptions_are_reasoned():
             True,
         ),
         (
-            ".project_manager/tools/delegate_channel_guard.py",
+            ".project_manager/tools/pm_engine/cli/delegate_channel_guard.py",
             "            _write_machine_line(\n"
             "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"

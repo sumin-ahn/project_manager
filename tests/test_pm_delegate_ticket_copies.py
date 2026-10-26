@@ -145,7 +145,7 @@ def _spec_text(ticket: str, *, status: str = "claimed") -> str:
 def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = pm_home
 
@@ -320,8 +320,8 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     spec.write_text(spec.read_text(encoding="utf-8").replace(
         "tags: []", "cluster: C-T-9202\ntags: []"), encoding="utf-8")
     board = _fixture_board(pd, pm_home, sync_log)
-    pm_paths.drafts_dir(board._home()).mkdir(parents=True)
-    spec.rename(pm_paths.drafts_dir(board._home()) / spec.name)
+    pm_paths.drafts_dir(pm_paths.home_at(board.REPO)).mkdir(parents=True)
+    spec.rename(pm_paths.drafts_dir(pm_paths.home_at(board.REPO)) / spec.name)
     plan = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9202", role="architect", cwd=slot, )
     active = []
     original_lock = fs.board_lock
@@ -360,10 +360,10 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     monkeypatch.setattr(body_lint, "_body_lint_issues", lambda *a, **k: [])
     monkeypatch.setattr(board_sync, "_board_git_sync_best_effort", publish)
     import argparse
-    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id="T-9202")) == 0
+    assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id="T-9202")) == 0
     assert len(published) == 1
     assert plan.board_path.parent in published[0]
-    assert ticket_store.find_ticket_exact(board._home(), "T-9202")[0] == "open"
+    assert ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), "T-9202")[0] == "open"
 
 
 # ── R2 자기 참조 거부 ────────────────────────────────────────────────────────

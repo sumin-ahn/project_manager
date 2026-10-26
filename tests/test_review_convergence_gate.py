@@ -908,8 +908,8 @@ def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
     monkeypatch.setattr(external, "REPO", tmp_path)
 
     # ① 회귀 강등 스코프 (board)
-    assert regression._ticket_touches(board._home(), "T-0036") == ["src/pay.py"]
-    assert regression._gate_ticket(board._home(), "T-0036")[1].name.startswith("T-0036-본래")
+    assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036") == ["src/pay.py"]
+    assert regression._gate_ticket(pm_paths.home_at(board.REPO), "T-0036")[1].name.startswith("T-0036-본래")
     # ② 리뷰 범위 (추가 리뷰어)
     assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036", ) == ["src/pay.py"]
     # ③ 완료 게이트 티켓 로드 (ticket_finish)
@@ -919,7 +919,7 @@ def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
     # prefixed 티켓 자신의 조회는 그대로 자기 값을 본다 (좁힘이 정상 조회를 삼키지 않는다).
     assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036-001", ) == ["src/unrelated.py"]
     assert finish_store.get_ticket_touches(finish_home, "T-0036-001") == ["src/unrelated.py"]
-    assert regression._ticket_touches(board._home(), "T-0036-001") == ["src/unrelated.py"]
+    assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036-001") == ["src/unrelated.py"]
 
 
 def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
@@ -931,7 +931,7 @@ def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
     monkeypatch.setattr(external, "REPO", tmp_path)
     finish_home = pm_paths.home_at(tmp_path)
 
-    assert regression._ticket_touches(board._home(), "T-0036-002") == []              # 스코프 없음 = FULL
+    assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036-002") == []              # 스코프 없음 = FULL
     assert finish_store.get_ticket_touches(finish_home, "T-0036-002") == []
     with pytest.raises(pm_paths.AnchorResolutionError):           # touches 는 fail-loud 유지
         round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036-002", )
@@ -974,7 +974,7 @@ def test_non_mapping_frontmatter_never_crashes_the_lookup(tmp_path, monkeypatch,
     path = _write_raw_ticket(tmp_path, "T-0050-x.md", f"---\n{frontmatter}\n---\n\n# 본문\n")
 
     assert ticket_store._canonical_ticket_id(path) == "T-0050"      # AttributeError 없이 폴백
-    assert ticket_store.find_ticket_exact(board._home(), "T-0050") == ("claimed", path)
+    assert ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), "T-0050") == ("claimed", path)
 
 
 def test_a_broken_ticket_does_not_hide_the_healthy_one(tmp_path, monkeypatch):
@@ -986,8 +986,8 @@ def test_a_broken_ticket_does_not_hide_the_healthy_one(tmp_path, monkeypatch):
         tmp_path, "T-0051-ok.md",
         "---\nid: T-0051\ntouches:\n- src/pay.py\n---\n\n# 본문\n")
 
-    assert ticket_store.find_ticket_exact(board._home(), "T-0051") == ("claimed", healthy)
-    assert regression._ticket_touches(board._home(), "T-0051") == ["src/pay.py"]
+    assert ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), "T-0051") == ("claimed", healthy)
+    assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0051") == ["src/pay.py"]
 
 
 def test_a_broken_ticket_scope_is_unresolved_not_a_crash(tmp_path, monkeypatch):
@@ -996,7 +996,7 @@ def test_a_broken_ticket_scope_is_unresolved_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "REPO", tmp_path)
     _write_raw_ticket(tmp_path, "T-0052-x.md", "---\n스칼라\n---\n\n# 본문\n")
 
-    assert regression._ticket_touches(board._home(), "T-0052") is None
+    assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0052") is None
 
 
 # ══ ⑤ touches 형식 불명 = 강등 취소 (T-0605 ③) ══════════════════════════════
@@ -1015,7 +1015,7 @@ def test_ticket_touches_forces_a_list_of_strings(tmp_path, monkeypatch, declarat
     monkeypatch.setattr(board, "REPO", tmp_path)
     _write_raw_ticket(tmp_path, "T-0053-x.md", f"---\nid: T-0053\n{declaration}\n---\n\n# 본문\n")
 
-    assert regression._ticket_touches(board._home(), "T-0053") == expected
+    assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0053") == expected
 
 
 # ══ ⑥ 구세대 outcome 은 신기록보다 앞 (T-0605 ⑥) ════════════════════════════

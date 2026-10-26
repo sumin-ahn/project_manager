@@ -129,7 +129,7 @@ def test_update_preview_shows_the_pending_engine_files_in_the_engines_own_words(
 
     stdout = api.update_preview(str(pm_home))["stdout"]
 
-    assert "[update] .project_manager/tools/engine_rev.py" in stdout
+    assert REPLACE_DIR_PREFIX + ".project_manager/tools/pm_engine" in stdout
     assert "변경 예정" in stdout
 
 
@@ -151,7 +151,7 @@ def test_the_source_is_the_copys_own_upstream_not_the_manager_bundle(api, pm_hom
     stdout = api.update_preview(str(pm_home))["stdout"]
 
     assert "최신 — 변경 없음" not in stdout
-    assert "[update] .project_manager/tools/board.py" in stdout
+    assert REPLACE_DIR_PREFIX + ".project_manager/tools/pm_engine" in stdout
 
 
 # ── ③ 미리보기는 아무것도 쓰지 않는다 ────────────────────────────────────────
@@ -264,7 +264,7 @@ def test_the_update_call_only_changes_what_the_engine_announced(api, pm_home, up
                  for line in preview for prefix in ANNOUNCE_PREFIXES if prefix in line}
     announced_packages = {line.split(REPLACE_DIR_PREFIX, 1)[1].split(" (", 1)[0].strip()
                           for line in preview if REPLACE_DIR_PREFIX in line}
-    assert announced, "상류가 앞서 있지 않다 — 픽스처 전제 붕괴"
+    # 상류 버전 값은 패키지 안에만 있어 평면 파일 예고 행은 없을 수 있다 — 앞섬은 패키지 교체 예고로 잰다.
     assert announced_packages, "상류 패키지 변경이 예고되지 않았다 — 픽스처 전제 붕괴"
     before = _durable(tree_snapshot(pm_home))
 

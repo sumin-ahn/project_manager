@@ -348,8 +348,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                     effective_ticket, pm_root=board_repo, workspace=cwd_repo,
                 )
             except (delegate_errors.DelegateError, OSError, UnicodeError, ValueError) as exc:
-                # 조용히 삼키지 않는다 — 계산이 죽으면 "겹침 0" 과 구분되지 않는다. 엔진 사본 skew
-                # 등 marked 예외는 여기서 잡지 않고 그대로 올린다(형제 로드 규율).
+                # 조용히 삼키지 않는다 — 계산이 죽으면 "겹침 0" 과 구분되지 않는다.
                 print(
                     f"경고: 병렬 위임 touches 교집합 계산 실패({type(exc).__name__}: {exc}) "
                     "— 비차단 진행.",

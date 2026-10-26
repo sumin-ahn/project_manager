@@ -34,8 +34,6 @@ def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[s
             try:
                 shipped = list(install_source._iter_source_files(root, "full"))
             except Exception as exc:  # noqa: BLE001 — 열거 실패는 판별자 0(구조 판정으로 강등).
-                if getattr(exc, "_engine_rev_skew", False):
-                    raise
                 continue
             for rel, _src in shipped:
                 rel_posix = rel.as_posix()

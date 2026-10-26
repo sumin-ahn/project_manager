@@ -70,16 +70,6 @@ def _write_machine_line(text: str) -> None:
     console.write_machine_line(text)
 
 
-def _report_engine_rev_skew_at_terminal(exc) -> int:
-    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
-    print(
-        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
-        "동기화한 뒤 다시 실행하세요.",
-        file=sys.stderr,
-    )
-    return 1
-
-
 def cmd_refresh(home, _args: argparse.Namespace) -> int:
     board_dashboard.refresh_board(home)
     print(f"board refreshed: {pm_paths._rel_to_repo(home, pm_paths.wiki_dir(home) / "board.md")}")

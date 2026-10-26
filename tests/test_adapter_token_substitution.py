@@ -94,7 +94,7 @@ def _import_new(pm_import, dest: Path, harness: str) -> None:
     with redirect_stdout(buf):
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
             ["--new", str(dest), "--harness", harness,
-             "--name", PROJECT_NAME, "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
+             "--name", PROJECT_NAME, "--fill", "manual"]
         )
     assert rc == 0, f"{harness} import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
 

@@ -66,7 +66,6 @@ from pm_engine.app import upstream_changes
 from pm_engine.app import upstream_revisions
 from pm_engine.cli import update_changes
 from pm_engine.domain import manifest_rules
-from pm_engine.infra import console
 from pm_engine.infra import engine_transfer as package_transfer
 from pm_engine.infra import install_conf
 from pm_engine.infra import repo_files
@@ -325,10 +324,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         print(f"[중단] retired-path manifest 자기치유 실패 — {exc}", file=sys.stderr)
         return 1
     except update_plan._EngineSyncNotationContextError as exc:
-        # 엔진 사본 skew 는 이 타입으로 감싸이지 않는다(`_resolve_engine_sync_plan` 이 원본 그대로
-        #   재-raise 해 이 except 를 지나쳐 아래 `main()` 의 최외곽 skew 재-raise 로 올라간다) —
-        #   그걸 "context 실패 rc2" 로 덮으면 로드 경계 진단이 사라진다. 여기 도달한 것만 진짜
-        #   notation context 해소 실패다(무진단 침묵 금지).
+        # 여기 도달한 것만 notation context 해소 실패다(무진단 침묵 금지).
         print(f"오류: {exc}", file=sys.stderr)
         return 2
     selfheal = sync_plan["selfheal"]
@@ -732,7 +728,6 @@ def main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") -> 
     패키지 교체 실패(`PackageReplaceError`)는 단계·원인과 남은 stage·backup 위치를 담아 rc 1 이다.
     apply/render/IO 등 다른 예외는 프로그래밍·시퀀싱 오류이므로 기존처럼 호출자에게 전파한다.
     """
-    console.configure_console_utf8()
     try:
         return _main(home, argv, prog=prog)
     except manifest_rules.EmptyShippingInventoryError as exc:
@@ -749,10 +744,6 @@ def main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") -> 
                 "세대로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)
         return 1
     except Exception as exc:
-        # 엔진 사본 skew 는 분류 이전에 그대로 올린다 — 아래 분기도 결과적으로 re-raise 하지만,
-        #   skew 가 이 경계를 지난다는 사실을 명시해 둔다.
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         if not isinstance(exc, repo_files.RepoFilesGitError):
             raise
         print(

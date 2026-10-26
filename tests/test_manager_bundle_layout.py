@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from manager import BUNDLED_TOOLS, PACKAGE_ROOT, REPO_ROOT, build, load_engine_module, runner
+from manager import BUNDLED_TOOLS, PACKAGE_ROOT, REPO_ROOT, build, runner
 from manager.bridge_update import BUILD_INFO_MODULE, bundle_root, import_argv
 from pm_engine.infra import upstream_git
 

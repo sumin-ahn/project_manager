@@ -348,7 +348,7 @@ def imported(pm_import, tmp_path_factory):
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude",
-                             "--name", PROJECT_NAME, "--fill", "manual"], engine_rev=pm_import.ENGINE_REV)
+                             "--name", PROJECT_NAME, "--fill", "manual"])
     assert rc == 0, f"import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
     return dest
 
@@ -411,7 +411,6 @@ def test_ensure_task_pm_state_renders_creation_date(tmp_path):
 
     wp = _load("worktree_pool", alias="wp_for_token_ownership_test")
     wp.REPO = proj
-    wp.LOCAL_DIR = local
     wp.TASKS_DIR = local / "tasks"
 
     state = task_store.ensure_task_pm_state(pm_paths.home_at(wp.REPO), "tokenjob")
@@ -443,7 +442,7 @@ def test_board_init_seeds_pm_state_with_creation_date(board, monkeypatch, tmp_pa
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = board_init.cmd_init(board._home(), args)
+        rc = board_init.cmd_init(pm_paths.home_at(board.REPO), args)
 
     assert rc == 0, buf.getvalue()[-2000:]
     text = state_file.read_text(encoding="utf-8")
@@ -507,7 +506,7 @@ def test_import_then_update_roundtrip_does_not_oscillate(
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", PROJECT_NAME,
-                             "--fill", "manual", "--from", str(framework)], engine_rev=pm_import.ENGINE_REV)
+                             "--fill", "manual", "--from", str(framework)])
     assert rc == 0, f"import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
 
     monkeypatch.setattr(pm_update, "REPO", dest)

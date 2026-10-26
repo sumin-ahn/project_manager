@@ -398,7 +398,7 @@ def test_root_gitattributes_keeps_inline_union_declaration(board):
 def test_ensure_noop_on_legacy_inline(board, tmp_path):
     """board 미분리(legacy·솔로) → no-op·파일 생성 0 (100% 무영향)."""
     (tmp_path / ".project_manager" / "wiki").mkdir(parents=True)
-    assert board_git._ensure_board_gitattributes(board._home()) is False
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is False
     assert not (tmp_path / ".project_manager" / "wiki" / ".gitattributes").exists()
     assert not (tmp_path / ".gitattributes").exists()
 
@@ -406,7 +406,7 @@ def test_ensure_noop_on_legacy_inline(board, tmp_path):
 @requires_git
 def test_ensure_creates_gitattributes_in_board_git(board, tmp_path):
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
-    assert board_git._ensure_board_gitattributes(board._home()) is True
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is True
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
     assert board_git._board_text_lf_declared(text) is True
@@ -416,9 +416,9 @@ def test_ensure_creates_gitattributes_in_board_git(board, tmp_path):
 def test_ensure_is_idempotent_no_duplicate_line(board, tmp_path):
     """두 번째 호출은 False + 파일 무변경 (멱등 no-write — 줄 중복 0)."""
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
-    assert board_git._ensure_board_gitattributes(board._home()) is True
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is True
     first = (board_dir / ".gitattributes").read_text(encoding="utf-8")
-    assert board_git._ensure_board_gitattributes(board._home()) is False
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is False
     second = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert second == first
     assert second.count("areas.md merge=union") == 1
@@ -434,7 +434,7 @@ def test_ensure_preserves_adopter_custom_lines(board, tmp_path):
     _git(["add", "--", ".gitattributes"], board_dir)
     _git(["commit", "-qm", "seed custom attributes"], board_dir)
 
-    assert board_git._ensure_board_gitattributes(board._home()) is True
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is True
 
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert text.startswith(custom), "기존 내용이 앞에 그대로 보존돼야 한다"
@@ -450,7 +450,7 @@ def test_ensure_appends_cleanly_when_file_lacks_trailing_newline(board, tmp_path
     _git(["add", "--", ".gitattributes"], board_dir)
     _git(["commit", "-qm", "seed attributes without newline"], board_dir)
 
-    assert board_git._ensure_board_gitattributes(board._home()) is True
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is True
 
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert "*.md text eol=lf\n" in text
@@ -463,7 +463,7 @@ def test_ensure_respects_existing_union_and_text_lf_declarations(board, tmp_path
     custom = "/areas.md merge=union\n" + _lf_declaration(board)
     (board_dir / ".gitattributes").write_text(custom, encoding="utf-8")
 
-    assert board_git._ensure_board_gitattributes(board._home()) is False
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is False
     assert (board_dir / ".gitattributes").read_text(encoding="utf-8") == custom
 
 
@@ -477,10 +477,10 @@ def test_ensure_backfills_text_lf_into_union_only_board_idempotently(
     _git(["add", "--", ".gitattributes"], board_dir)
     _git(["commit", "-qm", "seed legacy attributes"], board_dir)
 
-    assert board_git._ensure_board_gitattributes(board._home()) is True
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is True
     first = attrs.read_bytes()
     assert b"*.md text eol=lf\n" in first
-    assert board_git._ensure_board_gitattributes(board._home()) is False
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is False
     assert attrs.read_bytes() == first
 
 
@@ -494,7 +494,7 @@ def test_check_attr_resolves_union_after_backfill(board, tmp_path):
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     assert _check_attr_merge(board_dir) == "unspecified"
 
-    assert board_git._ensure_board_gitattributes(board._home()) is True
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is True
 
     assert _check_attr_merge(board_dir) == "union"
 
@@ -518,7 +518,7 @@ def test_check_attr_resolves_engine_text_lf_after_backfill(board, tmp_path):
     before = _check_attr_text_eol(board_dir, targets)
     assert set(before.values()) == {("unspecified", "unspecified")}
 
-    assert board_git._ensure_board_gitattributes(board._home()) is True
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is True
 
     after = _check_attr_text_eol(board_dir, targets)
     assert set(after.values()) == {("set", "lf")}
@@ -575,7 +575,7 @@ def test_stage_and_commit_backfills_and_commits_gitattributes(board, tmp_path):
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     assert not (board_dir / ".gitattributes").exists()
 
-    assert board_git._board_git_stage_and_commit(board._home(), "mutation") is True
+    assert board_git._board_git_stage_and_commit(pm_paths.home_at(board.REPO), "mutation") is True
 
     tracked = _git(["ls-files", "--", ".gitattributes"], board_dir).stdout.strip()
     assert tracked == ".gitattributes", "backfill 이 commit 에 실려야 remote 로 전파된다"
@@ -596,16 +596,16 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
     board_dir = _make_board_dir(board, tmp_path, real_git=True, remote=bare, ticket="T-0001")
     monkeypatch.setattr(pre_push_hook, "install_pre_push_hook", lambda _home: False)
 
-    assert board_init.cmd_init(board._home(), argparse.Namespace(
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), argparse.Namespace(
         prefix=None, area=None, owner=None, repo=None, task="pm")) == 0
 
     porcelain = _git(["status", "--porcelain"], board_dir).stdout.strip()
     assert porcelain == "", f"init 이 board 를 dirty 로 남김: {porcelain!r}"
     # prefetch 가 차단 없이 anchor 를 낸다(ADR-0073 — 옛 dirty sentinel 비교의 후신).
-    assert board_claim._board_git_claim_prefetch(board._home(), "T-0001").block is None
+    assert board_claim._board_git_claim_prefetch(pm_paths.home_at(board.REPO), "T-0001").block is None
 
     ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
-    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(
+    assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(
         id="T-0001", task="pm", user="me")) == 0
     assert (board_dir / "tickets" / "claimed" / "T-0001-t.md").exists()
     assert _check_attr_merge(board_dir) == "union", "claim commit 이 backfill 을 싣지 않았다"
@@ -619,7 +619,7 @@ def test_backfill_commit_excludes_drafts(board, tmp_path):
     drafts.mkdir(parents=True, exist_ok=True)
     (drafts / "T-9999-draft.md").write_text("draft\n", encoding="utf-8")
 
-    assert board_git._board_git_stage_and_commit(board._home(), "mutation") is True
+    assert board_git._board_git_stage_and_commit(pm_paths.home_at(board.REPO), "mutation") is True
 
     tracked = _git(["ls-files"], board_dir).stdout.split()
     assert ".gitattributes" in tracked
@@ -642,7 +642,7 @@ def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypa
     monkeypatch.setattr(board_claim, "_board_git_claim_prefetch", lambda _home, tid: blocked)
 
     ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
-    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(
+    assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(
         id="T-0001", task="pm", user="me")) == 1
 
     err = capsys.readouterr().err
@@ -661,7 +661,7 @@ def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypa
 
 def test_advisory_fires_when_board_git_lacks_declaration(board, tmp_path):
     _make_board_dir(board, tmp_path)
-    findings = areas_lint.lint_areas_merge_union(board._home())
+    findings = areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO))
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "areas-merge-union"
@@ -676,9 +676,9 @@ def test_advisory_is_never_blocking(board):
 @requires_git
 def test_advisory_resolved_after_backfill(board, tmp_path):
     _make_board_dir(board, tmp_path, real_git=True)
-    assert areas_lint.lint_areas_merge_union(board._home())
-    board_git._ensure_board_gitattributes(board._home())
-    assert areas_lint.lint_areas_merge_union(board._home()) == []
+    assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO))
+    board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO))
+    assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO)) == []
 
 
 @requires_git
@@ -698,7 +698,7 @@ def test_missing_rule_in_dirty_gitattributes_is_preserved(
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
 
-    assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
+    assert board_git._board_git_stage_and_commit(pm_paths.home_at(board.REPO), "mutation", (ticket,)) is True
 
     assert attrs.read_text(encoding="utf-8") == wip
     assert _git(["show", "HEAD:.gitattributes"], board_dir).stdout == committed
@@ -716,14 +716,14 @@ def test_advisory_silent_for_inline_with_root_declaration(board, tmp_path):
     (tmp_path / ".project_manager" / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     (tmp_path / ".gitattributes").write_text(
         ".project_manager/areas.md merge=union\n", encoding="utf-8")
-    assert areas_lint.lint_areas_merge_union(board._home()) == []
+    assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO)) == []
 
 
 def test_advisory_fires_for_inline_without_root_declaration(board, tmp_path):
     """inline 형상인데 루트 선언이 없으면(선언 제거·미배포 clone) 표면화한다."""
     (tmp_path / ".project_manager").mkdir(parents=True)
     (tmp_path / ".project_manager" / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
-    findings = areas_lint.lint_areas_merge_union(board._home())
+    findings = areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO))
     assert len(findings) == 1
     assert findings[0][1] == "areas-merge-union"
     assert ".project_manager/areas.md merge=union" in findings[0][2]
@@ -731,7 +731,7 @@ def test_advisory_fires_for_inline_without_root_declaration(board, tmp_path):
 
 def test_advisory_silent_without_areas_file(board, tmp_path):
     """areas.md 부재(솔로 미등록) → 무발화."""
-    assert areas_lint.lint_areas_merge_union(board._home()) == []
+    assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO)) == []
 
 
 def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
@@ -758,7 +758,7 @@ def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
         (areas_lint, "lint_areas_repo_unregistered", lambda home: []),
     ):
         monkeypatch.setattr(module, name, stub)
-    assert ticket_lint.lint_tickets(board._home()) == [("areas.md", "areas-merge-union", "x")]
+    assert ticket_lint.lint_tickets(pm_paths.home_at(board.REPO)) == [("areas.md", "areas-merge-union", "x")]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -787,7 +787,7 @@ def test_new_board_submodule_seed_deploys_union(board, tmp_path, monkeypatch):
     dest = tmp_path / "home"
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
-                           "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV) == 0
+                           "--board-submodule", "--board-remote", str(bare)]) == 0
 
     board_dir = dest / ".project_manager" / "board"
     assert (board_dir / ".gitattributes").is_file()
@@ -807,6 +807,6 @@ def test_ensure_fail_soft_on_non_utf8_gitattributes(board, tmp_path):
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     (board_dir / ".gitattributes").write_bytes(b"\xff\xfe areas.md merge=union\n")
 
-    assert board_git._ensure_board_gitattributes(board._home()) is False
-    assert board_git._board_git_stage_and_commit(board._home(), "mutation") is True   # commit 은 정상 진행.
-    assert areas_lint.lint_areas_merge_union(board._home()) == []                    # lint 도 안 깨진다(무발화).
+    assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is False
+    assert board_git._board_git_stage_and_commit(pm_paths.home_at(board.REPO), "mutation") is True   # commit 은 정상 진행.
+    assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO)) == []                    # lint 도 안 깨진다(무발화).

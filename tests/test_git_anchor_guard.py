@@ -24,6 +24,7 @@ import pytest
 from pm_engine.app import hooks
 from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import git_policy, shell_policy
+from pm_engine.infra import fs
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -676,7 +677,7 @@ def test_relative_engine_copy_hash_read_failure_is_fail_soft(
         raise OSError("fixture unreadable")
 
     # 사본 해시 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
-    monkeypatch.setattr(board.fs, "read_bytes_shared", unreadable)
+    monkeypatch.setattr(fs, "read_bytes_shared", unreadable)
     got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
     )

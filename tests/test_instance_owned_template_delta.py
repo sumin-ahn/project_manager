@@ -297,7 +297,7 @@ def test_lite_import_receipt_records_actual_renamed_entry_source(pm_import, tmp_
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", "claude", "--weight", "lite",
         "--from", str(REPO), "--name", "Lite Coordinate",
-    ], engine_rev=pm_import.ENGINE_REV) == 0
+    ]) == 0
 
     receipt = json.loads(
         (dest / ".project_manager" / "install.json").read_text(encoding="utf-8"))

@@ -114,7 +114,7 @@ def _spec_text(ticket: str, *, design: str = "done", status: str = "claimed") ->
 def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = pm_home
 
@@ -268,13 +268,13 @@ def _t0928_prior_roles(pd, pm_home, tickets, members, role):
             seed = delegate_prepare._ticket_round_seed(previous_role, spec, None,
                                         today="2026-10-02", rounds=previous)
             path = round_store.reserve_round(tickets.parent, ticket, previous_role, content=seed,
-                                        lock=fs.board_lock(_fixture_board(pd, pm_home)._home()))
+                                        lock=fs.board_lock(pm_paths.home_at(_fixture_board(pd, pm_home).REPO)))
             _fill(path, "## 실측\n- 이전 단계 완료")
 
 
 def _t0928_set_status(board, ticket, status):
-    old_status, path = ticket_store.find_ticket_exact(board._home(), ticket)
-    target_dir = pm_paths.drafts_dir(board._home()) if status == "draft" else pm_paths.tickets_dir(board._home()) / status
+    old_status, path = ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), ticket)
+    target_dir = pm_paths.drafts_dir(pm_paths.home_at(board.REPO)) if status == "draft" else pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status
     target_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(path.read_text(encoding="utf-8").replace(
         f"status: {old_status}", f"status: {status}"), encoding="utf-8")
@@ -516,9 +516,9 @@ def test_developer_round_after_reopen_is_prepared(pd, cluster_env):
         _spec_text("T-6020", status="done"), encoding="utf-8", newline="\n")
     board = _fixture_board(pd, pm_home)
 
-    assert board_ticket.cmd_reopen(board._home(), argparse.Namespace(id="T-6020", reason="오처리 복구")) == 0
+    assert board_ticket.cmd_reopen(pm_paths.home_at(board.REPO), argparse.Namespace(id="T-6020", reason="오처리 복구")) == 0
 
-    assert cluster_store.load_cluster(board._home(), "C-T-6020")["tickets"] == ["T-6020"]
+    assert cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-T-6020")["tickets"] == ["T-6020"]
     assert not _rounds_dir(pm_home, "T-6020").exists()
     architect = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6020", role="architect", cwd=slot, )
@@ -634,8 +634,8 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
         "architect", (tickets / "T-6016-cluster.md").read_text(encoding="utf-8"),
         today="2026-01-01")
     board_path = round_store.reserve_round(
-        pm_paths.tickets_dir(board._home()), "T-6016", "architect", content=seed,
-        lock=fs.board_lock(board._home()),
+        pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-6016", "architect", content=seed,
+        lock=fs.board_lock(pm_paths.home_at(board.REPO)),
     )
     legacy_dir = slot / delegate_ledger.TICKET_COPY_REL_ROOT / "T-6016" / ("b" * 32)
     legacy_dir.mkdir(parents=True)
@@ -762,5 +762,5 @@ def test_cluster_prepare_skips_a_discarded_member(pd, cluster_env):
     assert sorted(item.name for item in plan.run_dir.iterdir()) == ["T-6001"]
     assert not _rounds_dir(pm_home, "T-6002").exists()
     board = _fixture_board(pd, pm_home)
-    assert cluster_store.cluster_members(board._home(), "C-wave") == ("T-6001", "T-6002")
-    assert cluster_store.cluster_live_members(board._home(), "C-wave") == ("T-6001",)
+    assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-wave") == ("T-6001", "T-6002")
+    assert cluster_store.cluster_live_members(pm_paths.home_at(board.REPO), "C-wave") == ("T-6001",)

@@ -18,6 +18,7 @@ from test_board_ticket_growth import _ticket_text
 from pm_engine.app import ticket_lint
 
 from pm_engine.domain import board_git_rules
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -106,6 +107,6 @@ def test_board_lint_skips_quoted_indented_and_fenced_markers(tmp_path, monkeypat
         encoding="utf-8", newline="")
 
     board_findings = sorted(
-        name for name, _kind, _detail in ticket_lint.lint_legacy_growth_sections(board._home()))
+        name for name, _kind, _detail in ticket_lint.lint_legacy_growth_sections(pm_paths.home_at(board.REPO)))
 
     assert board_findings == ["T-4201"], "인용/들여쓰기/펜스 marker 가 board lint 에 잡혔다"

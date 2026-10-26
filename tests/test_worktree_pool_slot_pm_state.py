@@ -71,7 +71,6 @@ def wp(project: Path):
     module = _load("worktree_pool")
     local = project / ".project_manager" / ".local"
     module.REPO = project
-    module.LOCAL_DIR = local
     module.LEASES_FILE = local / "worktree-leases.json"
     module.LEASES_LOCK = local / "worktree-leases.lock"
     module.TASKS_DIR = local / "tasks"

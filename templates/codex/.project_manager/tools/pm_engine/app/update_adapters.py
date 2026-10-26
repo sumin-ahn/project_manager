@@ -76,9 +76,7 @@ def _instance_owned_template_delta_lines(
     """세대 델타 관측 채널 — 실패도 변경 없음으로 접지 않는 advisory 한 줄."""
     try:
         return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)
-    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud(표식 skew 는 올린다).
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
+    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud.
         return [
             "⚠️  인스턴스 소유 템플릿 세대 판정 unavailable — "
             f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
@@ -102,11 +100,9 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
               "managed_converged": False}
     try:
         judgments = adapter_report.judge_adapter_configs(dest_root, source_root)
-    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(표식 skew 는 올린다).
+    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다.
         # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한
         #   엔진 파일은 그대로 선다).
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         return {**result, "status": "unavailable", "reason": str(exc)}
 
     backfill_candidates = {
@@ -162,9 +158,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
         # 갱신분·in-sync backfill 을 한 번에 기록한다(record 는 template 일치분만 담는다).
         try:
             adapter_accept.record_adapter_baseline(dest_root, source_root)
-        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격(표식 skew 는 올린다).
-            if getattr(exc, "_engine_rev_skew", False):
-                raise
+        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격.
             result["degraded"].append({
                 "relpath": ", ".join(sorted(backfill_candidates)) or "adapter_baseline.json",
                 "status": "ledger-failed",
@@ -176,9 +170,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
     # 그대로 판정하므로 write 0 계약을 유지한다.
     try:
         final_judgments = adapter_report.judge_adapter_configs(dest_root, source_root)
-    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red(표식 skew 는 올린다).
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
+    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red.
         return {**result, "status": "unavailable", "reason": str(exc)}
     unconverged = adapter_report.unconverged_managed_adapter_configs(final_judgments)
     result["blocking"] = [
@@ -328,7 +320,7 @@ def check_adapter_hook_sets(home, dest_root: Path, source_root: Path) -> dict:
     """훅 세트 세대 정합을 1회 판정한다 — 결과 dict(출력은 호출부·write 0).
 
     판정 실패는 `status="unavailable"` 로 내린다(형제 `sync_adapter_configs` 와 같은 fail-soft
-    — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다). 엔진 사본 skew 만 예외."""
+    — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다)."""
     result: dict = {"status": "ok", "findings": [], "entrypoints": [], "reason": None}
     try:
         # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
@@ -346,9 +338,7 @@ def check_adapter_hook_sets(home, dest_root: Path, source_root: Path) -> dict:
         entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines
         entrypoint_findings = hook_sets.judge_adapter_hook_entrypoints(
             dest_root, source_root, declarations=generation.declarations)
-    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다(표식 skew 는 올린다).
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
+    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
         return {**result, "status": "unavailable", "reason": str(exc)}
     result["findings"] = [
         {"harness": finding.harness, "config_relpath": finding.config_relpath,
@@ -423,8 +413,6 @@ def refuse_partial_hook_set_scope(home, scoped_changes, planned_changes,
             updated, _change_dest_paths(planned_changes),
             declarations=generation.declarations)
     except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         partial = None
         # **인식 상태는 위 폴백과 같다** — 결합 묶음을 검증할 방법이 없다. 그러니 처분도 같아야
         #   한다: 훅 네임스페이스 하위만 거부하고(무관 경로는 종전대로 통과) 탈출구는 스코프 없는

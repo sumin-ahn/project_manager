@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from pm_engine.infra import install_source
 
+import ast
 import importlib.util
 import re
 from pathlib import Path
@@ -32,6 +33,7 @@ from _git_fixture import init_git_repo
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.infra import manifest_store
 from pm_engine.domain import adapter_specs
+from pm_engine.domain import manifest_rules
 from pm_engine.infra import retired_paths
 
 REPO = Path(__file__).resolve().parents[1]
@@ -733,3 +735,41 @@ def test_facade_guard_is_sensitive_to_missing_facade():
     assert missing == expected, (
         f"facade 가드가 누락을 못 잡음(vacuous 위험) — 검출 {missing}, 예상 {expected}"
     )
+
+
+def _imports_engine_package(tree: ast.Module) -> bool:
+    """모듈 최상위가 엔진 패키지를 import 하는지(`import pm_engine` 또는 `from pm_engine... import`)."""
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "pm_engine":
+            return True
+        if isinstance(node, ast.Import) and any(
+                alias.name.split(".")[0] == "pm_engine" for alias in node.names):
+            return True
+    return False
+
+
+def test_manifest_ships_engine_package_before_entry_files():
+    """네 manifest 에서 엔진 패키지 행이 패키지를 import 하는 모든 진입 파일 행보다 앞선다.
+
+    파일 단위로 차례대로 복사하는 옛 갱신기는 manifest 순서대로 옮기므로, 패키지가 먼저 와야
+    중간에 멈춘 사본에서도 새 진입 파일이 옛 패키지를 부르지 않는다.
+    """
+    package_row = ".project_manager/tools/pm_engine"
+    entry_rows = sorted(
+        f".project_manager/tools/{source.name}"
+        for source in TOOLS.glob("*.py")
+        if _imports_engine_package(ast.parse(source.read_text(encoding="utf-8"), filename=str(source)))
+    )
+    assert entry_rows, "pm_engine 을 import 하는 진입 파일이 없다(공허 검사)"
+    for path in (ROOT_MANIFEST, CC_MANIFEST, CODEX_MANIFEST, OC_MANIFEST):
+        # 물리 행 순서 그대로 읽는다 — `read_manifest` 는 패키지 행을 앞으로 정렬해 돌려주므로 옛
+        # 갱신기가 보는 순서를 가린다.
+        manifest = [
+            str(entry) for entry in map(manifest_rules._parse_manifest_line,
+                                        path.read_text(encoding="utf-8").splitlines())
+            if entry is not None
+        ]
+        package_index = manifest.index(package_row)
+        late = [row for row in entry_rows if row in manifest and manifest.index(row) < package_index]
+        missing = [row for row in entry_rows if row not in manifest]
+        assert not late and not missing, (path, late, missing)

@@ -23,6 +23,7 @@
   - 텍스트 경로 바이트 불변(골든) · 기본 호출이 board 를 로드하지 않음 · `whoami --json` 없음.
 """
 from __future__ import annotations
+import pm_engine
 from pm_engine.infra import fs
 from pm_engine.cli import config_cmd
 from pm_engine.domain import worktree_records
@@ -207,7 +208,7 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
     document = _status_json(home)
 
     assert document["schema"] == config_status.STATUS_JSON_SCHEMA == 1
-    assert document["engine_rev"] == pc.ENGINE_REV
+    assert document["engine_rev"] == pm_engine.ENGINE_REV
     assert document["pm_home"] == str(home.resolve())
     assert document["generated_at"].endswith("+00:00")
     assert document["board"] is None and document["adapters"] is None
@@ -618,7 +619,7 @@ def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, caps
                         lambda _home, runner: {"branch": None, "head": None, "dirty": None})
     args = config_cmd.build_parser().parse_args(["status", "--json"])
     bind_pool(monkeypatch, _Wp())
-    assert config_status.cmd_status(pm_paths.home_at(pc.REPO), args, engine_rev=pc.ENGINE_REV) == 0
+    assert config_status.cmd_status(pm_paths.home_at(pc.REPO), args, engine_rev=pm_engine.ENGINE_REV) == 0
     assert "board" not in loaded, f"기본 호출이 board 를 로드했다: {loaded}"
 
 

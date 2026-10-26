@@ -25,6 +25,7 @@ from pm_engine.app import hooks
 from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import git_policy
 from pm_engine.infra import conf_store
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -361,7 +362,7 @@ def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatc
         reply = {"type": "item.completed", "item": {"type": "agent_message", "text": "DONE"}}
         return {"returncode": 0, "stdout": json.dumps(reply), "stderr": "", "timed_out": False}
 
-    assert pm_delegate.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(slot),
+    assert cli_delegate_run.main(pm_paths.home_at(pm_delegate.REPO), ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(slot),
                       "--output-dir", str(home.parent / "raw")], run_fn=_capture) == 0
     assert seen and seen[0]["PM_DELEGATE_TASK"] == "alpha"
 

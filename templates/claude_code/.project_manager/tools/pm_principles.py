@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """판단 원칙 조회·recall·재무장 CLI 진입점."""
-from __future__ import annotations
-
 import os
 import sys
 
@@ -11,13 +9,11 @@ if _TOOLS_DIR not in sys.path:
 from pm_engine.cli import principles
 from pm_engine.infra import console
 
-ENGINE_REV = "v1.8.1"
 
-
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     console.configure_console_utf8()
     return principles.main(argv)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main(sys.argv[1:]))

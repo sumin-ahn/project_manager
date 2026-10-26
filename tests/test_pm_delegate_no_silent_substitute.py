@@ -25,6 +25,8 @@ import json
 from pathlib import Path
 
 import pytest
+from pm_engine.cli import delegate_run as cli_delegate_run
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 PM_DELEGATE = REPO / ".project_manager" / "tools" / "pm_delegate.py"
@@ -110,7 +112,7 @@ def _run(pd, monkeypatch, tmp_path, fake, conf=None) -> tuple[int, Path]:
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf if conf is not None else _conf())
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     outdir = tmp_path / "raw"
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "developer", "--prompt-file", str(_write_prompt(tmp_path)),
          "--cwd", str(tmp_path), "--output-dir", str(outdir)],
         run_fn=fake,

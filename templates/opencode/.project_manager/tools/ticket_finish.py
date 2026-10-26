@@ -27,13 +27,10 @@
   - fail-soft 가 아니다 — 명시적 실패 (비-0 종료 + 명확한 메시지).
   - LLM 미호출 — stdlib + pm_engine 패키지만.
 
-이 파일은 안정된 CLI 진입점이다 — 콘솔 설정과 설치 앵커(`REPO`)만 두고, 기록·종결 흐름의
+이 파일은 안정된 CLI 진입점이다 — 콘솔 설정과 설치 앵커(`REPO`)의 Home 만 넘기고, 기록·종결 흐름의
 본체는 `pm_engine.cli.ticket_finish`(argv·배선)·`cli.finish_record`(완료 기록)·
 `cli.cluster_close`(묶음 종결)와 finish_* 소유 모듈에 있다.
 """
-
-from __future__ import annotations
-
 import os
 import sys
 from pathlib import Path
@@ -41,41 +38,16 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.cli import ticket_finish  # noqa: E402
-from pm_engine.infra import console, pm_paths  # noqa: E402
+from pm_engine.cli import ticket_finish
+from pm_engine.infra import console, pm_paths
+
+REPO = Path(__file__).resolve().parents[2]
 
 
-# ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
-# 설치 깊이는 `pm_import` 가 못 박는다 — 도구는 `<root>/.project_manager/tools/` 에만 놓인다.
-# REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch 할 수 있게 한다.
-
-def _find_repo_root() -> Path:
-    """엔진 루트 — 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다.
-
-    상향 탐색을 하지 않는다. 설치 경로를 만드는 쪽(`pm_import`)이 그 깊이를 못 박으므로
-    다른 깊이는 나올 수 없고, 탐색은 합성 트리에서 **자기 위 실 인스턴스**를 답으로 주는
-    부작용만 낸다(실측: 실 PM 홈 log 오염·등록 안 된 worktree 가 등록으로 판정).
-    나머지 도구 20곳과 같은 규칙이다.
-    """
-    return Path(__file__).resolve().parents[2]
-
-
-REPO = _find_repo_root()
-
-# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
-# baked 리터럴 — 이 값은 이 파일 코드 안에 고정된다(engine_rev.py 런타임 읽기 아님). 부분/수동
-# 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다(런타임
-# 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
-# vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
-# (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.8.1"
-
-
-def main(argv: list[str] | None = None) -> int:
-    """콘솔 인코딩 설정 후 종결 CLI를 실행한다."""
+def main(argv=None):
     console.configure_console_utf8()
     return ticket_finish.main(pm_paths.home_at(REPO), argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

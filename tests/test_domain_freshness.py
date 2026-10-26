@@ -194,8 +194,7 @@ def _domain_page(domain_dir: Path, name: str, *, covers, verified_at=None,
 
 def _wire(board, domain, monkeypatch, repo: Path):
     monkeypatch.setattr(board, "REPO", repo)
-    domain_dir = pm_paths.domain_dir(board._home())
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(board.REPO))
     return domain_dir
 
 
@@ -206,7 +205,7 @@ def test_present_path_with_delta_flags_stale(board, domain, monkeypatch, tmp_pat
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="cafe0001",
                  title="모듈")
-    findings = doc_lint.lint_domain_freshness(board._home(),
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(tracked={"src/mod/**"}, post_pin={"src/mod/**"}))
     assert len(findings) == 1
     label, kind, detail = findings[0]
@@ -218,7 +217,7 @@ def test_present_path_with_delta_flags_stale(board, domain, monkeypatch, tmp_pat
 def test_present_path_no_delta_is_clean(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="cafe0001")
-    assert doc_lint.lint_domain_freshness(board._home(),
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(tracked={"src/mod/**"}, post_pin=())) == []
 
 
@@ -227,7 +226,7 @@ def test_never_tracked_path_flags_unverifiable(board, domain, monkeypatch, tmp_p
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"],
                  verified_at="cafe0002", title="codex 어댑터")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(tracked=(), post_pin=()))
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(tracked=(), post_pin=()))
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("codex 어댑터", "domain-unverifiable")
@@ -241,7 +240,7 @@ def test_unresolved_sha_flags_unverifiable(board, domain, monkeypatch, tmp_path)
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="deadbeef",
                  title="모듈")
-    findings = doc_lint.lint_domain_freshness(board._home(),
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(resolves=False, tracked={"src/mod/**"}, post_pin={"src/mod/**"}))
     assert len(findings) == 1
     label, kind, detail = findings[0]
@@ -253,7 +252,7 @@ def test_non_ancestor_sha_flags_unverifiable(board, domain, monkeypatch, tmp_pat
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="beef0042",
                  title="모듈")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(
         resolves=True, ancestor=False, tracked={"src/mod/**"}, post_pin={"src/mod/**"}))
     assert len(findings) == 1
     _label, kind, detail = findings[0]
@@ -273,7 +272,7 @@ def test_ambiguous_abbrev_sha_flags_unverifiable(board, domain, monkeypatch, tmp
             return (128, "", _REAL_AMBIGUOUS_STDERR)            # non-quiet 진단 → 모호 stderr
         return (0, "")
 
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=runner)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=runner)
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable" and "모호" in detail and "재핀" in detail
@@ -284,7 +283,7 @@ def test_moving_ref_verified_at_is_unverifiable(board, domain, monkeypatch, tmp_
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="HEAD",
                  title="모듈")
-    findings = doc_lint.lint_domain_freshness(board._home(),
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(tracked={"src/mod/**"}, post_pin={"src/mod/**"}))
     assert len(findings) == 1
     _label, kind, detail = findings[0]
@@ -296,7 +295,7 @@ def test_hex_named_ref_verified_at_is_unverifiable(board, domain, monkeypatch, t
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="deadbeef",
                  title="모듈")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(
         resolved_oid="1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
         tracked={"src/mod/**"}, post_pin={"src/mod/**"}))
     assert len(findings) == 1
@@ -309,7 +308,7 @@ def test_unverifiable_sha_skips_covers_judgment(board, domain, monkeypatch, tmp_
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"],
                  verified_at="3cf0f731", title="codex 어댑터")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(resolves=False, tracked=(), post_pin=()))
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(resolves=False, tracked=(), post_pin=()))
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable"
@@ -322,7 +321,7 @@ def test_deleted_after_pin_flags_stale(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/old/**"], verified_at="cafe0007",
                  title="삭제된 모듈")
-    findings = doc_lint.lint_domain_freshness(board._home(),
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(tracked=(), post_pin={"src/old/**"}))   # 미추적 + pin 이후 삭제 델타
     assert len(findings) == 1
     label, kind, _detail = findings[0]
@@ -334,7 +333,7 @@ def test_deleted_before_pin_flags_unverifiable(board, domain, monkeypatch, tmp_p
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/gone/**"], verified_at="cafe0008",
                  title="이전-삭제 모듈")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(tracked=(), post_pin=()))
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(tracked=(), post_pin=()))
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("이전-삭제 모듈", "domain-unverifiable")
@@ -350,7 +349,7 @@ def test_mixed_present_stale_and_absent_yields_both_findings(
     _domain_page(domain_dir, "p.md",
                  covers=["src/mod/**", "templates/codex/**"],
                  verified_at="cafe0003", title="혼합")
-    kinds = sorted(k for _l, k, _d in doc_lint.lint_domain_freshness(board._home(),
+    kinds = sorted(k for _l, k, _d in doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(tracked={"src/mod/**"}, post_pin={"src/mod/**"})))
     assert kinds == ["domain-stale", "domain-unverifiable"]
 
@@ -363,7 +362,7 @@ def test_prefixless_glob_is_judged_not_skipped(board, domain, monkeypatch, tmp_p
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["**/*.py"], verified_at="cafe0009",
                  title="전역 파이썬")
-    findings = doc_lint.lint_domain_freshness(board._home(),
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(tracked={"**/*.py"}, post_pin={"**/*.py"}))
     assert len(findings) == 1
     label, kind, _detail = findings[0]
@@ -393,14 +392,14 @@ def test_covers_pathspecs_passes_original_glob_as_magic_pathspec(domain, tmp_pat
 def test_env_error_rev_parse_is_silent_skip(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="cafe0006")
-    assert doc_lint.lint_domain_freshness(board._home(),
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(rev_rc=128, tracked={"src/mod/**"})) == []
 
 
 def test_env_error_merge_base_is_silent_skip(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="cafe0006")
-    assert doc_lint.lint_domain_freshness(board._home(),
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(resolves=True, mb_rc=128, tracked={"src/mod/**"})) == []
 
 
@@ -408,26 +407,26 @@ def test_git_unavailable_is_silent_skip(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"],
                  verified_at="cafe0004")
-    assert doc_lint.lint_domain_freshness(board._home(), runner=_raising_git) == []
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git) == []
 
 
 def test_verified_at_absent_is_skip(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"], verified_at=None)
-    assert doc_lint.lint_domain_freshness(board._home(), runner=_git(tracked=(), post_pin=())) == []
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(tracked=(), post_pin=())) == []
 
 
 def test_no_covers_is_skip(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "concept.md", covers=None, verified_at="cafe0005")
-    assert doc_lint.lint_domain_freshness(board._home(), runner=_git(resolves=False)) == []
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(resolves=False)) == []
 
 
 def test_all_blank_covers_is_skip(board, domain, monkeypatch, tmp_path):
     # covers 가 전부 공백 글롭 → 매핑 가능 글롭 0 → 코드-무관 skip(false-green 아님).
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "concept.md", covers=["   "], verified_at="cafe0005")
-    assert doc_lint.lint_domain_freshness(board._home(), runner=_git(resolves=False)) == []
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(resolves=False)) == []
 
 
 # ── advisory / never-block ────────────────────────────────────────────────────
@@ -456,8 +455,8 @@ def test_unverifiable_never_blocks_gate(board, monkeypatch):
         monkeypatch.setattr(module, fn, stub)
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [
         ("codex 어댑터", "domain-unverifiable", "이 저장소에서 freshness 검증 불가")])
-    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
 
 
 # ── 유닛: domain.covers_glob_pathspec / covers_pathspecs (R6 :(glob) 매핑) ────
@@ -526,7 +525,7 @@ def test_downstream_omits_absent_upstream_only_hierarchy(
 
     assert covered.exists()
     assert not (downstream / "templates").exists()
-    assert doc_lint.lint_domain_freshness(board._home()) == []
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO)) == []
 
 
 def test_owner_repo_keeps_full_covers_validation(
@@ -549,10 +548,10 @@ def test_owner_repo_keeps_full_covers_validation(
     local_conf.write_text(f"upstream.path={owner}\n", encoding="utf-8")
     _commit(owner, "owner page")
 
-    assert doc_lint.lint_domain_freshness(board._home()) == []
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO)) == []
     covered.unlink()
     _commit(owner, "delete covered path")
-    findings = doc_lint.lint_domain_freshness(board._home())
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO))
     assert [kind for _label, kind, _detail in findings] == ["domain-stale"]
 
 
@@ -580,7 +579,7 @@ def test_downstream_existing_hierarchy_keeps_absent_finding(
     local_conf.write_text(f"upstream.path={owner}\n", encoding="utf-8")
     _commit(downstream, "downstream source page")
 
-    findings = doc_lint.lint_domain_freshness(board._home())
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO))
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("upstream source", "domain-unverifiable")
@@ -628,16 +627,15 @@ def test_two_repo_owner_change_closes_unsynced_copy_window(
     ) == "VERSION = 1\n"
 
     monkeypatch.setattr(board, "REPO", pm_home)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
 
     # 종전 PM-home 시계는 import 사본 경로 변경이 없어 clean이었다(조용한 오답 창의 대조군).
-    assert freshness_lint._git_commits_between(board._home(),
+    assert freshness_lint._git_commits_between(pm_paths.home_at(board.REPO),
         pin, [".project_manager/tools"], repo=pm_home) is False
-    assert [kind for _label, kind, _detail in doc_lint.lint_domain_freshness(board._home())] == [
+    assert [kind for _label, kind, _detail in doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO))] == [
         "domain-stale"]
-    assert [kind for _label, kind, _detail in freshness_lint.lint_architecture_freshness(board._home())] == [
+    assert [kind for _label, kind, _detail in freshness_lint.lint_architecture_freshness(pm_paths.home_at(board.REPO))] == [
         "architecture-stale"]
-    assert [kind for _label, kind, _detail in freshness_lint.lint_status_freshness(board._home())] == [
+    assert [kind for _label, kind, _detail in freshness_lint.lint_status_freshness(pm_paths.home_at(board.REPO))] == [
         "status-stale"]
 
 
@@ -647,7 +645,7 @@ def test_upstream_owner_unresolved_stays_advisory(
     _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
                  title="외부소유", repo="upstream")
     # local.conf/upstream 부재 — runner를 호출해 self로 green 흡수하면 안 된다.
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("외부소유", "domain-unverifiable")
@@ -665,7 +663,7 @@ def test_explicit_null_owner_is_unverifiable_not_self(
         "verified_at: cafe0001\nrepo: null\n---\n\nbody\n",
         encoding="utf-8",
     )
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("null소유", "domain-unverifiable")
@@ -679,7 +677,7 @@ def test_unsupported_repo_values_including_falsy_stay_advisory(
     _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
                  title="잘못된소유", repo=repo_literal)
     # false/0/[]를 `owner or "self"`로 흡수하면 runner가 호출돼 조용한 green이 된다.
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("잘못된소유", "domain-unverifiable")
@@ -694,7 +692,7 @@ def test_date_freshness_lint_uses_owner_repo_runner(
     self_repo.mkdir()
     owner_repo.mkdir()
     monkeypatch.setattr(board, "REPO", self_repo)
-    domain_dir = pm_paths.domain_dir(board._home())
+    domain_dir = pm_paths.domain_dir(pm_paths.home_at(board.REPO))
     _domain_page(domain_dir, "p.md", covers=["src/**"], title="소유페이지",
                  repo="upstream")
     # helper의 기본 updated가 없으므로 date 축 대상이 되도록 명시 교체한다.
@@ -718,13 +716,13 @@ def test_date_freshness_lint_uses_owner_repo_runner(
         return lambda _argv: (0, dates[Path(repo)])
 
     monkeypatch.setattr(doc_staleness, "_real_git_runner", runner_for)
-    assert not any(kind == "stale" for _label, kind, _detail in doc_lint.lint_domain(board._home()))
+    assert not any(kind == "stale" for _label, kind, _detail in doc_lint.lint_domain(pm_paths.home_at(board.REPO)))
     assert seen == [owner_repo]
 
     dates[self_repo] = "2026-06-18T00:00:00Z\n"   # 잘못된 self 시계면 false green
     dates[owner_repo] = "2026-06-20T00:00:00Z\n"  # 실제 owner 시계는 stale
     seen.clear()
-    assert [kind for _label, kind, _detail in doc_lint.lint_domain(board._home())] == ["stale"]
+    assert [kind for _label, kind, _detail in doc_lint.lint_domain(pm_paths.home_at(board.REPO))] == ["stale"]
     assert seen == [owner_repo]
 
 
@@ -767,7 +765,7 @@ def test_unusable_upstream_paths_stay_advisory(
         upstream = str(candidate)
     local_conf.write_text(f"upstream.path={upstream}\n", encoding="utf-8")
 
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable"
@@ -795,7 +793,7 @@ def test_unusable_upstream_paths_stay_advisory(
         for path_shaped in ("./a://b", "dir/name://rest"):
             assert upstream_rules.classify_upstream(path_shaped) == "path"
             local_conf.write_text(f"upstream.path={path_shaped}\n", encoding="utf-8")
-            findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+            findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
             assert len(findings) == 1, path_shaped
             _label, kind, detail = findings[0]
             assert kind == "domain-unverifiable"
@@ -823,7 +821,7 @@ def test_unexpandable_upstream_user_stays_advisory(
     local_conf.write_text(
         "upstream.path=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
 
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable"
@@ -844,7 +842,7 @@ def test_current_user_home_expansion_keeps_resolving(
     local_conf.parent.mkdir(parents=True, exist_ok=True)
     local_conf.write_text("upstream.path=~/owner\n", encoding="utf-8")
 
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable"
@@ -864,7 +862,7 @@ def test_solo_self_owner_naturally_uses_same_repo(
     _commit(tmp_path, "docs")
     src.write_text("v2\n", encoding="utf-8")
     _commit(tmp_path, "engine change")
-    findings = doc_lint.lint_domain_freshness(board._home())
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO))
     assert [kind for _label, kind, _detail in findings] == ["domain-stale"]
 
 
@@ -880,9 +878,8 @@ def test_repin_migration_replaces_owner_and_anchor_for_all_current_truth_docs(
     page = _domain_page(domain_dir, "p.md", covers=["src/**"],
                         verified_at="deadbeef", title="page")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     full = "cafe0001" + "0" * 32
-    results = freshness_pin.repin_verified_at(board._home(), full, "upstream")
+    results = freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO), full, "upstream")
     assert [state for _path, state in results] == ["updated", "updated", "updated"]
     for path in (wiki / "architecture.md", wiki / "status.md", page):
         text = path.read_text(encoding="utf-8")
@@ -914,7 +911,6 @@ def test_repin_page_selector_changes_only_selected_document_bytes(
         title="engine", repo="upstream")
     before = {path: path.read_bytes() for path in (architecture, status, page)}
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main([
@@ -945,7 +941,7 @@ def test_repin_page_selector_validates_entire_selected_set_before_writing(
     monkeypatch.setattr(board, "REPO", tmp_path)
 
     full = "cafe0001" + "0" * 32
-    results = dict(freshness_pin.repin_verified_at(board._home(),
+    results = dict(freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO),
         full,
         "upstream",
         pages=[
@@ -1065,7 +1061,6 @@ def test_repin_page_selector_rejects_noncanonical_targets_without_any_write(
         selected = outside.relative_to(tmp_path).as_posix()
 
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     before = {path: path.read_bytes() for path in documents}
 
@@ -1084,7 +1079,7 @@ def test_page_selector_reuses_domain_module_selection_contract(
         board, monkeypatch, tmp_path):
     """domain 디렉터리·비페이지 집합·parse_page가 선택자의 단일 규칙 원천이다."""
     monkeypatch.setattr(board, "REPO", tmp_path)
-    custom_domain_dir = pm_paths.domain_dir(board._home())
+    custom_domain_dir = pm_paths.domain_dir(pm_paths.home_at(board.REPO))
     custom_domain_dir.mkdir(parents=True)
     page = custom_domain_dir / "page.md"
     page.write_text("parser owns this contract\n", encoding="utf-8")
@@ -1101,10 +1096,10 @@ def test_page_selector_reuses_domain_module_selection_contract(
     monkeypatch.setattr(doc_page_store, "parse_page", parse_page)
 
     selected = page.relative_to(tmp_path).as_posix()
-    assert freshness_pin._verified_at_targets(board._home(), [selected]) == [page.resolve()]
+    assert freshness_pin._verified_at_targets(pm_paths.home_at(board.REPO), [selected]) == [page.resolve()]
     assert parse_calls == [page.resolve()]
     with pytest.raises(freshness_pin._VerifiedAtPageSelectionError, match="canonical domain"):
-        freshness_pin._verified_at_targets(board._home(), [non_page.relative_to(tmp_path).as_posix()])
+        freshness_pin._verified_at_targets(pm_paths.home_at(board.REPO), [non_page.relative_to(tmp_path).as_posix()])
     assert parse_calls == [page.resolve()]
 
 
@@ -1123,10 +1118,9 @@ def test_page_selector_rejects_domain_symlink_to_repo_internal_non_domain_docume
     link = domain_dir / "link.md"
     link.symlink_to(outside)
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     selected = ".project_manager/wiki/domain/link.md"
 
-    results = freshness_pin.repin_verified_at(board._home(),
+    results = freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO),
         "cafe0001" + "0" * 32, "self", pages=[selected])
     assert len(results) == 1
     assert results[0][1].startswith("error:enumeration:")
@@ -1151,13 +1145,12 @@ def test_page_selector_rejects_symlink_loop_as_controlled_selection_error(
     left.symlink_to(right)
     right.symlink_to(left)
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     selected = ".project_manager/wiki/domain/loop-a.md"
 
     with pytest.raises(freshness_pin._VerifiedAtPageSelectionError, match="symlink loop"):
-        freshness_pin._verified_at_targets(board._home(), [selected])
+        freshness_pin._verified_at_targets(pm_paths.home_at(board.REPO), [selected])
 
-    results = freshness_pin.repin_verified_at(board._home(),
+    results = freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO),
         "cafe0001" + "0" * 32, "self", pages=[selected])
     assert len(results) == 1
     assert results[0][1].startswith("error:enumeration:")
@@ -1175,14 +1168,13 @@ def test_page_selector_resolves_normal_domain_path_and_deduplicates_symlink_alia
     alias = domain_dir / "engine-alias.md"
     alias.symlink_to(page)
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     selected = [
         ".project_manager/wiki/domain/engine.md",
         ".project_manager/wiki/domain/engine-alias.md",
     ]
 
-    assert freshness_pin._verified_at_targets(board._home(), selected) == [page.resolve()]
-    results = freshness_pin.repin_verified_at(board._home(),
+    assert freshness_pin._verified_at_targets(pm_paths.home_at(board.REPO), selected) == [page.resolve()]
+    results = freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO),
         "cafe0001" + "0" * 32, "upstream", pages=selected)
 
     assert results == [(page.resolve(), "updated")]
@@ -1207,14 +1199,13 @@ def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_
     original = f"---\n{frontmatter}\n---\n\nbody\n"
     page.write_text(original, encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     full = "cafe0001" + "0" * 32
     monkeypatch.setattr(board_repin, "_canonical_commit_oid", lambda *_args, **_kwargs: full)
     selected = ".project_manager/wiki/domain/malformed.md"
 
     parsed, _body = ticket_store.load_ticket(page)
     assert isinstance(parsed, parsed_type)
-    results = freshness_pin.repin_verified_at(board._home(), full, "self", pages=[selected])
+    results = freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO), full, "self", pages=[selected])
     assert len(results) == 1
     assert "error:enumeration:" in results[0][1]
     assert "domain 문서 실소비 파싱 실패" in results[0][1]
@@ -1265,7 +1256,7 @@ def test_repin_indented_fence_in_block_scalar_preserves_content(
         freshness_pin, "_verified_at_backfill_targets", lambda home: [path])
 
     full = "cafe0001" + "0" * 32
-    assert freshness_pin.repin_verified_at(board._home(), full, "upstream") == [(path, "updated")]
+    assert freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO), full, "upstream") == [(path, "updated")]
     replaced = path.read_text(encoding="utf-8")
     assert "notes: |\n  first line\n  ---\n  repo: prose-owner\n" in replaced
     assert freshness_pin._frontmatter_mapping(replaced)["notes"] == (
@@ -1310,7 +1301,7 @@ def test_repin_multiline_yaml_value_aborts_all_without_damage(
     )
 
     full = "cafe0001" + "0" * 32
-    results = freshness_pin.repin_verified_at(board._home(), full, "upstream")
+    results = freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO), full, "upstream")
     states = {path: state for path, state in results}
     assert states[good] == "not-written:validation-failed"
     assert states[multiline].startswith("error:yaml:")
@@ -1348,7 +1339,7 @@ def test_repin_aborts_all_when_result_is_unreadable_by_consumer_parser(
     with pytest.raises(ValueError):
         ticket_store.load_ticket(invalid)
     full = "cafe0001" + "0" * 32
-    results = dict(freshness_pin.repin_verified_at(board._home(), full, "upstream"))
+    results = dict(freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO), full, "upstream"))
 
     assert results[good] == "not-written:validation-failed"
     assert results[invalid].startswith("error:yaml:")
@@ -1463,7 +1454,7 @@ def test_repin_write_failure_reports_changed_prefix_and_stops(
 
     monkeypatch.setattr(board.os, "fsync", fail_second)
     full = "cafe0001" + "0" * 32
-    results = freshness_pin.repin_verified_at(board._home(), full, "self")
+    results = freshness_pin.repin_verified_at(pm_paths.home_at(board.REPO), full, "self")
     assert [state.split(":", 2)[0] for _path, state in results] == [
         "updated", "error", "not-written"]
     assert f'verified_at: "{full}"' in paths[0].read_text(encoding="utf-8")
@@ -1495,7 +1486,7 @@ def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
         return real_fsync(_fd)
 
     monkeypatch.setattr(board.os, "fsync", fail_second)
-    rc = board_repin.cmd_verified_at_repin(board._home(),
+    rc = board_repin.cmd_verified_at_repin(pm_paths.home_at(board.REPO),
         SimpleNamespace(repo="self", sha=None, dry_run=False))
     assert rc != 0
     captured = capsys.readouterr()
@@ -1550,7 +1541,6 @@ def test_repin_domain_parse_error_aborts_enumeration_and_changes_nothing(
     broken_original = "---\ntitle: [invalid\n---\n"
     broken.write_text(broken_original, encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
 
     rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
@@ -1639,7 +1629,7 @@ def test_repo_outside_glob_page_flags_unverifiable(board, domain, monkeypatch, t
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["../outside/**"], verified_at="cafe0011",
                  title="repo밖")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(tracked=set(), post_pin=set()))
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(tracked=set(), post_pin=set()))
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable" and "../outside/**" in detail
@@ -1708,7 +1698,7 @@ def test_wildcard_prefix_starstar_page_flags_unverifiable(board, domain, monkeyp
     # codex R20: `*/**` 페이지 → 조용한 false-green 아니라 domain-unverifiable advisory.
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["*/**"], verified_at="cafe0012", title="와일드prefix")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(tracked=set(), post_pin=set()))
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(tracked=set(), post_pin=set()))
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable" and "*/**" in detail
@@ -1749,7 +1739,7 @@ def test_unsupported_glob_page_flags_unverifiable(board, domain, monkeypatch, tm
     # 미지원-only covers 페이지 → 조용히 skip(false-green) 아니라 domain-unverifiable advisory(codex R8).
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["**.py"], verified_at="cafe0010", title="비경계")
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=_git(tracked={"**.py"}, post_pin={"**.py"}))
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_git(tracked={"**.py"}, post_pin={"**.py"}))
     assert len(findings) == 1
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable" and "미지원" in detail and "**.py" in detail
@@ -1894,59 +1884,59 @@ def _anchor_git(rev=0, mb=0, oid=None, ambig=False):
 
 # `_sha_anchor_status` 는 `(verdict, full_oid)` 반환 — full_oid 는 OK 일 때만(codex R16).
 def test_sha_anchor_status_ok_returns_full_oid(board):
-    verdict, full_oid = freshness_lint._sha_anchor_status(board._home(), "cafe0001", runner=_anchor_git(0, 0))
+    verdict, full_oid = freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_anchor_git(0, 0))
     assert verdict == freshness_lint._ANCHOR_OK
     assert full_oid == "cafe0001".ljust(40, "0")   # rev-parse 해소 canonical full OID
 
 
 def test_sha_anchor_status_unresolved(board):
-    assert freshness_lint._sha_anchor_status(board._home(), "deadbeef", runner=_anchor_git(1, 0)) == \
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_anchor_git(1, 0)) == \
         (freshness_lint._ANCHOR_UNRESOLVED, None)
 
 
 def test_sha_anchor_status_non_ancestor(board):
-    assert freshness_lint._sha_anchor_status(board._home(), "beef0042", runner=_anchor_git(0, 1)) == \
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "beef0042", runner=_anchor_git(0, 1)) == \
         (freshness_lint._ANCHOR_NON_ANCESTOR, None)
 
 
 def test_sha_anchor_status_non_sha(board):
-    assert freshness_lint._sha_anchor_status(board._home(), "HEAD", runner=_anchor_git(0, 0)) == \
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "HEAD", runner=_anchor_git(0, 0)) == \
         (freshness_lint._ANCHOR_NON_SHA, None)
 
 
 def test_sha_anchor_status_hex_named_ref_is_non_sha(board):
     # codex R5: rev-parse 해소(rc0)하나 OID 가 입력 prefix 아님(ref 로 해소) → non-sha.
     ref_oid = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
-    assert freshness_lint._sha_anchor_status(board._home(),
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO),
         "deadbeef", runner=_anchor_git(0, 0, oid=ref_oid))[0] == freshness_lint._ANCHOR_NON_SHA
-    assert freshness_lint._sha_anchor_status(board._home(),
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO),
         "deadbeef", runner=_anchor_git(0, 0, oid="deadbeef" + "0" * 32))[0] == freshness_lint._ANCHOR_OK
 
 
 def test_sha_anchor_status_unknown_env_error(board):
-    assert freshness_lint._sha_anchor_status(board._home(), "deadbeef", runner=_anchor_git(128, 0))[0] == freshness_lint._ANCHOR_UNKNOWN
-    assert freshness_lint._sha_anchor_status(board._home(), "deadbeef", runner=_anchor_git(0, 128))[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_anchor_git(128, 0))[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_anchor_git(0, 128))[0] == freshness_lint._ANCHOR_UNKNOWN
 
 
 def test_sha_anchor_status_ambiguous(board):
     # codex R22: --quiet rev-parse 실패(rc1·stderr 억제) + non-quiet 진단이 모호 stderr → ambiguous
     # (env/unresolved 아님). rc≥2 로 억제되는 git 버전도 진단이 잡게(양쪽 rev 확인).
     for rev in (1, 128):
-        assert freshness_lint._sha_anchor_status(board._home(),
+        assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO),
             "25b0abc", runner=_anchor_git(rev, 0, ambig=True))[0] == freshness_lint._ANCHOR_AMBIGUOUS
 
 
 def test_rev_parse_ambiguous_signal(board):
     # non-quiet stderr 3-tuple 에 모호 신호가 있으면 True, 2-tuple(대역 stderr 없음)·예외는 False.
-    assert freshness_lint._rev_parse_ambiguous(board._home(),
+    assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO),
         "25b0", runner=lambda a: (128, "", _REAL_AMBIGUOUS_STDERR)) is True
-    assert freshness_lint._rev_parse_ambiguous(board._home(), "25b0", runner=lambda a: (1, "")) is False
-    assert freshness_lint._rev_parse_ambiguous(board._home(), "25b0", runner=_raising_git) is False
+    assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=lambda a: (1, "")) is False
+    assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=_raising_git) is False
 
 
 def test_sha_anchor_status_unknown_empty_or_raise(board):
-    assert freshness_lint._sha_anchor_status(board._home(), "", runner=_anchor_git())[0] == freshness_lint._ANCHOR_UNKNOWN
-    assert freshness_lint._sha_anchor_status(board._home(), "cafe0001", runner=_raising_git)[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "", runner=_anchor_git())[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)[0] == freshness_lint._ANCHOR_UNKNOWN
 
 
 # codex R16: 검증 후 하류 명령이 **canonical full OID** 를 쓰는지 argv 로 단언 (원 입력 재해석 제거).
@@ -1972,7 +1962,7 @@ def test_downstream_commands_use_full_oid_not_input(board, domain, monkeypatch, 
             return (0, "abc commit\n")    # delta → stale
         return (0, "")
 
-    findings = doc_lint.lint_domain_freshness(board._home(), runner=runner)
+    findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=runner)
     assert any(k == "domain-stale" for _l, k, _d in findings)
     # merge-base·log range 가 full OID 를 쓰고, bare 입력("cafe0001" 단독)은 argv element 로 안 온다.
     mb = [a for a in seen if a and a[0] == "merge-base"]

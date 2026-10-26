@@ -423,8 +423,7 @@ def _create_read_role_temp(home, harness: str, cwd: Path) -> _ReadRoleTemp | Non
                     _remove_read_tmp_tree(attempt_path, parent_fd=parent_fd)
             except (OSError, RuntimeError) as cleanup_exc:
                 # 롤백 정리 실패는 주 예외를 덮지 않는다(아래 `raise` 가 원인을 그대로 올린다).
-                # 다만 침묵하지도 않는다 — 삭제 수단이 형제 모듈이라 사본 불일치가 여기 닿을 수
-                # 있고, 그게 조용히 사라지면 재동기 처방이 함께 사라진다.
+                # 다만 침묵하지도 않는다 — 정리 실패는 경고로 남긴다.
 
                 _warn_read_tmp_cleanup_failure(
                     attempt_path, cleanup_exc)

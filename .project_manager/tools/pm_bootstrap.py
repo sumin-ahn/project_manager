@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """PM 세션 부트스트랩 CLI 진입점."""
-from __future__ import annotations
-
 import os
 import sys
 from pathlib import Path
@@ -13,13 +11,12 @@ from pm_engine.cli import bootstrap
 from pm_engine.infra import console, pm_paths
 
 REPO = Path(__file__).resolve().parents[2]
-ENGINE_REV = "v1.8.1"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     console.configure_console_utf8()
     return bootstrap.main(pm_paths.home_at(REPO), argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

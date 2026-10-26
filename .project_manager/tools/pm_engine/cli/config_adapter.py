@@ -261,8 +261,6 @@ def cmd_sync_adapter_config(
             delta_lines = adapter_report.instance_owned_template_delta_lines(
                 dest, source_root)
         except Exception as exc:  # noqa: BLE001 — 관측 실패는 advisory 로 내고 check 본류는 계속한다.
-            if getattr(exc, "_engine_rev_skew", False):
-                raise
             delta_lines = [
                 "⚠️  인스턴스 소유 템플릿 세대 판정 unavailable — "
                 f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
@@ -273,8 +271,6 @@ def cmd_sync_adapter_config(
     try:
         judgments = adapter_report.judge_adapter_configs(dest, source_root)
     except Exception as exc:  # noqa: BLE001 — 판정 채널 unavailable은 완료 게이트 red.
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         print(f"[중단] 어댑터 config 판정 채널 unavailable: {exc}", file=sys.stderr)
         print(
             "  → `--from <framework checkout>`이 해당 managed template을 포함한 올바른 "

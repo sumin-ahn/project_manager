@@ -7,6 +7,7 @@ from pathlib import Path
 import argparse
 import datetime
 import sys
+import pm_engine
 from pm_engine.app import adapter_accept
 from pm_engine.app import add_harness
 from pm_engine.app import harness_ctx
@@ -18,7 +19,6 @@ from pm_engine.cli import import_args
 from pm_engine.domain import install_rules
 from pm_engine.domain import upstream_rules
 from pm_engine.infra import adapter_baseline
-from pm_engine.infra import console
 from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
 from pm_engine.infra import install_git
@@ -30,8 +30,7 @@ from pm_engine.infra import upstream_git
 
 
 @install_board._translate_dest_safety_errors
-def main(home, argv: list[str] | None = None, *, engine_rev: str) -> int:
-    console.configure_console_utf8()
+def main(home, argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="pm_import.py",
         description=import_args._cli_description(),
@@ -99,8 +98,8 @@ def main(home, argv: list[str] | None = None, *, engine_rev: str) -> int:
                          "구조+areas.md 로 초기화 후 push, 내용 있으면 재사용(합류). URL 안전검증 "
                          "(credential-in-url·leading-dash·비허용 scheme 거부).")
     args = ap.parse_args(argv)
-    # 제거 기한에 도달한 legacy harness alias 가 남아 있으면 설치 인자 해석을 막는다(실제 각인 값).
-    install_rules._enforce_legacy_harness_alias_deadline(engine_rev)
+    # 제거 기한에 도달한 legacy harness alias 가 남아 있으면 설치 인자 해석을 막는다(엔진 세대 값).
+    install_rules._enforce_legacy_harness_alias_deadline(pm_engine.ENGINE_REV)
 
     # --upstream 명시값은 *부작용 전* 입구에서 fail-closed 검증. 나쁜 값
     # (빈/leading-dash/credential-in-URL/비허용 scheme)을 silently 기록하지 않게 입구에서 거른다.
@@ -283,11 +282,6 @@ def main(home, argv: list[str] | None = None, *, engine_rev: str) -> int:
         if selected_shared_agents:
             entry_notation_templates["AGENTS.md"] = selected_shared_agents
     except (OSError, ValueError, RuntimeError) as exc:
-        # 엔진 사본 skew 는 삼키지 않는다 — 이 블록은 설치 하네스 판별(`installed_harnesses` →
-        #   출하 인벤토리 열거)까지 품어 skew 가 도달할 수 있고, 그걸 "context 실패 rc1" 로
-        #   덮으면 로드 경계 진단이 사라진다(엔진 관례: fail-soft 하되 skew 만 재-raise).
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         print(
             "오류: 선택된 어댑터의 스킬 표기 context를 만들 수 없어 복사 전에 중단합니다 — "
             f"{exc}",
@@ -396,8 +390,6 @@ def main(home, argv: list[str] | None = None, *, engine_rev: str) -> int:
         try:
             cap_warning = import_fill.fill_harness_cap_advisory(fill_harness, dest_root)
         except Exception as exc:  # noqa: BLE001 — advisory는 import를 막지 않는다.
-            if getattr(exc, "_engine_rev_skew", False):
-                raise
             print(f"[fill auto] 경고: 하네스 상한 판정 실패({exc})", file=sys.stderr)
         else:
             if cap_warning is not None:

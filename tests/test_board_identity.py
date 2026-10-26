@@ -44,6 +44,7 @@ from pm_engine.app import regression, release, ticket_lint
 
 from pm_engine.infra import lease_store
 from pm_engine.infra import ticket_store
+import subprocess
 
 # 귀속 쓰기 정체성 — 픽스처가 이 task 의 제품 폴더를 준비한다(T-0962).
 _TASK = "pm-1"
@@ -127,7 +128,7 @@ def _conf_key(name: str) -> str:
 
 
 def _write_conf(board, **kv) -> None:
-    board._home().local_conf.write_text(
+    pm_paths.home_at(board.REPO).local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
@@ -136,11 +137,11 @@ def _write_leases(board, *rows) -> None:
     """리스 장부(`LEASES_FILE`)에 (repo, slot 정수) 행을 leased 상태로 쓴다 — `identity_args.
     resolve_actor_slot` 이 읽는 실 스키마(repo·slot=`work/<repo>_<N>`·session·state) 동형
     (test_identity_args.py `_write_leases` 동형)."""
-    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     leases = [{"repo": r["repo"], "slot": f"work/{r['repo']}_{r['slot']}",
                "session": f"{r['repo']}_{r['slot']}", "state": r.get("state", "leased")}
               for r in rows]
-    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": leases}), encoding="utf-8")
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": leases}), encoding="utf-8")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -152,33 +153,33 @@ def test_user_name_local_conf_wins(board, monkeypatch):
     _write_conf(board, user="alice")
     # git 폴백이 다른 값을 줘도 local.conf 가 이긴다.
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "bob@x.com")
-    assert lease_store.user_name(board._home()) == "alice"
+    assert lease_store.user_name(pm_paths.home_at(board.REPO)) == "alice"
 
 
 def test_user_name_override_wins(board):
     """명시 override 가 local.conf 보다도 우선(session_name 패턴 동형)."""
     _write_conf(board, user="alice")
-    assert lease_store.user_name(board._home(), "carol") == "carol"
+    assert lease_store.user_name(pm_paths.home_at(board.REPO), "carol") == "carol"
 
 
 def test_user_name_falls_back_to_git_email(board, monkeypatch):
     """local.conf user= 부재 → git config user.email 로 폴백."""
     # local.conf 없음(user 키 부재).
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "dev@example.com")
-    assert lease_store.user_name(board._home()) == "dev@example.com"
+    assert lease_store.user_name(pm_paths.home_at(board.REPO)) == "dev@example.com"
 
 
 def test_user_name_none_when_neither(board):
     """local.conf user= 도 git email 도 없으면 None (graceful·user 미상 허용)."""
     # fixture 가 _git_config_email→None stub·local.conf 부재.
-    assert lease_store.user_name(board._home()) is None
+    assert lease_store.user_name(pm_paths.home_at(board.REPO)) is None
 
 
 def test_user_name_empty_conf_value_ignored(board, monkeypatch):
     """local.conf user= 가 빈 값이면 미설정 취급 → git 폴백으로 내려간다."""
     _write_conf(board, user="")
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "fallback@x.com")
-    assert lease_store.user_name(board._home()) == "fallback@x.com"
+    assert lease_store.user_name(pm_paths.home_at(board.REPO)) == "fallback@x.com"
 
 
 # ── _git_config_email fail-soft (실 git 미주입 — git 부재/실패 graceful) ──────
@@ -192,7 +193,7 @@ def test_git_config_email_fail_soft_when_git_absent(board, monkeypatch):
     fresh = _load_board()
     monkeypatch.setattr(fresh, "REPO", board.REPO)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
-    assert lease_store._git_config_email(fresh._home()) is None
+    assert lease_store._git_config_email(pm_paths.home_at(fresh.REPO)) is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -202,18 +203,18 @@ def test_git_config_email_fail_soft_when_git_absent(board, monkeypatch):
 def test_identity_tag_user_slash_slot(board):
     """user 해소되면 `<user>/<pm-slot>`."""
     _write_conf(board, user="alice")
-    assert lease_store.identity_tag(board._home()) == "alice/pm-1"
+    assert lease_store.identity_tag(pm_paths.home_at(board.REPO)) == "alice/pm-1"
 
 
 def test_identity_tag_slot_only_when_user_unknown(board):
     """user 미상(None)이면 슬롯만 — 기존 슬롯-only 값과 형태 동일(graceful)."""
     _write_conf(board)  # user 키 없음·git 폴백 None(fixture)
-    assert lease_store.identity_tag(board._home()) == "pm-1"
+    assert lease_store.identity_tag(pm_paths.home_at(board.REPO)) == "pm-1"
 
 
 def test_identity_tag_honors_overrides(board):
     """session/user override 를 둘 다 존중한다."""
-    assert lease_store.identity_tag(board._home(), session_override="s2", user_override="u2") == "u2/s2"
+    assert lease_store.identity_tag(pm_paths.home_at(board.REPO), session_override="s2", user_override="u2") == "u2/s2"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -229,8 +230,8 @@ def _new_args(title="t", prefix=None, user=None):
 def test_cmd_new_sets_created_by_user_slot(board):
     """cmd_new 가 created_by 를 `<user>/<pm-slot>` 으로 박는다 (provenance)."""
     _write_conf(board, user="alice")
-    assert board_ticket.cmd_new(board._home(), _new_args()) == 0
-    created = list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md"))
+    assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args()) == 0
+    created = list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open").glob("T-0001-*.md"))
     assert len(created) == 1
     fm, _ = ticket_store.load_ticket(created[0])
     assert fm["created_by"] == "alice/pm-1"
@@ -239,8 +240,8 @@ def test_cmd_new_sets_created_by_user_slot(board):
 def test_cmd_new_created_by_honors_explicit_user(board):
     """args.user 명시가 local.conf 보다 우선해 created_by 에 반영된다."""
     _write_conf(board, user="alice")
-    assert board_ticket.cmd_new(board._home(), _new_args(user="carol")) == 0
-    fm, _ = ticket_store.load_ticket(list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md"))[0])
+    assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args(user="carol")) == 0
+    fm, _ = ticket_store.load_ticket(list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open").glob("T-0001-*.md"))[0])
     assert fm["created_by"] == "carol/pm-1"
 
 
@@ -249,7 +250,7 @@ def test_cmd_new_created_by_honors_explicit_user(board):
 # ════════════════════════════════════════════════════════════════════════
 
 def _seed_open(board, tid="T-0001"):
-    path = pm_paths.tickets_dir(board._home()) / "open" / f"{tid}-seed.md"
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / f"{tid}-seed.md"
     ticket_store.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
                              "claimed_by": None, "depends_on": []}, "# seed\n")
     return path
@@ -263,8 +264,8 @@ def test_cmd_claim_sets_claimed_by_user_slot(board):
     """cmd_claim 이 claimed_by 를 `<user>/<slot>` 으로 박는다 (assignee)."""
     _write_conf(board, user="alice")
     _seed_open(board)
-    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
-    claimed = list((pm_paths.tickets_dir(board._home()) / "claimed").glob("T-0001-*.md"))
+    assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 0
+    claimed = list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "claimed").glob("T-0001-*.md"))
     assert len(claimed) == 1
     fm, _ = ticket_store.load_ticket(claimed[0])
     assert fm["claimed_by"] == "alice/pm-1"
@@ -280,7 +281,7 @@ def test_cmd_claim_slot_alone_without_repo_fails_loud(board):
     (ADR-0057 결정 2 — uniform·solo 예외 없음)."""
     _seed_open(board)
     with pytest.raises(SystemExit) as exc:
-        board_ticket.cmd_claim(board._home(), _claim_args(slot=3, user="bob"))
+        board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args(slot=3, user="bob"))
     assert "--repo" in str(exc.value)
 
 
@@ -309,7 +310,7 @@ def _unblock_args(tid="T-0001"):
 
 def _ticket_in_status(board, tid, status):
     """`status` 디렉터리에서 `tid` 티켓 정확히 1개를 찾아 frontmatter/본문을 반환한다."""
-    files = list((pm_paths.tickets_dir(board._home()) / status).glob(f"{tid}-*.md"))
+    files = list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status).glob(f"{tid}-*.md"))
     assert len(files) == 1, f"{tid} 가 {status}/ 에 정확히 1개 있어야 한다: {files}"
     return ticket_store.load_ticket(files[0])
 
@@ -318,31 +319,31 @@ def test_claimed_block_unblock_round_trip_preserves_identity(board):
     """claimed(u) → block → unblock 은 claimed(u) 로 돌아온다 — claimed_by·claimed_at 값 보존."""
     _write_conf(board, user="alice")
     _seed_open(board)
-    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
+    assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 0
     fm_before, _ = _ticket_in_status(board, "T-0001", "claimed")
     claimed_by, claimed_at = fm_before["claimed_by"], fm_before["claimed_at"]
 
-    assert board_ticket.cmd_block(board._home(), _block_args()) == 0
+    assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args()) == 0
     fm_blocked, _ = _ticket_in_status(board, "T-0001", "blocked")
     assert fm_blocked["claimed_by"] == claimed_by, "block 이 claimed_by 를 건드렸다(I4 위반)"
     assert fm_blocked["claimed_at"] == claimed_at, "block 이 claimed_at 을 건드렸다(I4 위반)"
 
-    assert board_ticket.cmd_unblock(board._home(), _unblock_args()) == 0
+    assert board_ticket.cmd_unblock(pm_paths.home_at(board.REPO), _unblock_args()) == 0
     fm_after, _ = _ticket_in_status(board, "T-0001", "claimed")
     assert fm_after["claimed_by"] == claimed_by
     assert fm_after["claimed_at"] == claimed_at
-    assert not list((pm_paths.tickets_dir(board._home()) / "open").glob("T-0001-*.md")), \
+    assert not list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open").glob("T-0001-*.md")), \
         "unblock 이 claimed_by 보유 티켓을 open/ 으로 잘못 옮겼다"
 
 
 def test_open_block_unblock_round_trip_unchanged(board):
     """open → block → unblock 은 현행과 동일 — open 으로 돌아오고 claimed_by 는 계속 null."""
     _seed_open(board)
-    assert board_ticket.cmd_block(board._home(), _block_args()) == 0
+    assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args()) == 0
     fm_blocked, _ = _ticket_in_status(board, "T-0001", "blocked")
     assert fm_blocked["claimed_by"] is None
 
-    assert board_ticket.cmd_unblock(board._home(), _unblock_args()) == 0
+    assert board_ticket.cmd_unblock(pm_paths.home_at(board.REPO), _unblock_args()) == 0
     fm_after, _ = _ticket_in_status(board, "T-0001", "open")
     assert fm_after["claimed_by"] is None
     assert fm_after.get("claimed_at") is None
@@ -352,8 +353,8 @@ def test_open_block_unblock_round_trip_is_idempotent_twice(board):
     """open ↔ blocked 왕복을 두 번 반복해도 매번 open 으로 안정 수렴한다(멱등)."""
     _seed_open(board)
     for _ in range(2):
-        assert board_ticket.cmd_block(board._home(), _block_args()) == 0
-        assert board_ticket.cmd_unblock(board._home(), _unblock_args()) == 0
+        assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args()) == 0
+        assert board_ticket.cmd_unblock(pm_paths.home_at(board.REPO), _unblock_args()) == 0
     fm, _ = _ticket_in_status(board, "T-0001", "open")
     assert fm["claimed_by"] is None
 
@@ -362,10 +363,10 @@ def test_claimed_block_unblock_round_trip_is_idempotent_twice(board):
     """claimed(u) ↔ blocked 왕복을 두 번 반복해도 매번 claimed(u) 로 안정 수렴한다(멱등)."""
     _write_conf(board, user="alice")
     _seed_open(board)
-    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
+    assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 0
     for _ in range(2):
-        assert board_ticket.cmd_block(board._home(), _block_args()) == 0
-        assert board_ticket.cmd_unblock(board._home(), _unblock_args()) == 0
+        assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args()) == 0
+        assert board_ticket.cmd_unblock(pm_paths.home_at(board.REPO), _unblock_args()) == 0
     fm, _ = _ticket_in_status(board, "T-0001", "claimed")
     assert fm["claimed_by"] == "alice/pm-1"
 
@@ -375,15 +376,15 @@ def test_no_transition_leaves_open_with_claimed_by_residue(board):
     잔존"(I1 위반) 형상이 하나도 없다."""
     _write_conf(board, user="alice")
     _seed_open(board, tid="T-0001")
-    assert board_ticket.cmd_claim(board._home(), _claim_args(tid="T-0001")) == 0
-    assert board_ticket.cmd_block(board._home(), _block_args(tid="T-0001")) == 0
-    assert board_ticket.cmd_unblock(board._home(), _unblock_args(tid="T-0001")) == 0
+    assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args(tid="T-0001")) == 0
+    assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args(tid="T-0001")) == 0
+    assert board_ticket.cmd_unblock(pm_paths.home_at(board.REPO), _unblock_args(tid="T-0001")) == 0
 
     _seed_open(board, tid="T-0002")
-    assert board_ticket.cmd_block(board._home(), _block_args(tid="T-0002")) == 0
-    assert board_ticket.cmd_unblock(board._home(), _unblock_args(tid="T-0002")) == 0
+    assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args(tid="T-0002")) == 0
+    assert board_ticket.cmd_unblock(pm_paths.home_at(board.REPO), _unblock_args(tid="T-0002")) == 0
 
-    for status, fm in ticket_store._all_tickets(board._home()):
+    for status, fm in ticket_store._all_tickets(pm_paths.home_at(board.REPO)):
         if status == "open":
             assert fm.get("claimed_by") is None, \
                 f"{fm.get('id')} 가 open/ 인데 claimed_by 잔존: {fm.get('claimed_by')!r}"
@@ -397,17 +398,17 @@ def test_blocked_with_claimed_by_stays_visible_in_default_and_mine_views(board, 
 
     _write_conf(board, user="alice")
     _seed_open(board)
-    assert board_ticket.cmd_claim(board._home(), _claim_args()) == 0
-    assert board_ticket.cmd_block(board._home(), _block_args()) == 0
+    assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 0
+    assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args()) == 0
     capsys.readouterr()  # claim/block 안내 출력 비우기
 
-    rc = board_list.cmd_list(board._home(), SimpleNamespace(
+    rc = board_list.cmd_list(pm_paths.home_at(board.REPO), SimpleNamespace(
         status=None, tag=None, mine=False, all=False, task=None, repo=None, slot=None))
     out = capsys.readouterr().out
     assert rc == 0
     assert "T-0001" in out, "blocked+claimed_by 티켓이 무인자 기본 뷰에서 사라졌다"
 
-    rc = board_list.cmd_list(board._home(), SimpleNamespace(
+    rc = board_list.cmd_list(pm_paths.home_at(board.REPO), SimpleNamespace(
         status=None, tag=None, mine=True, all=False, task=None, repo=None, slot=None))
     out = capsys.readouterr().out
     assert rc == 0
@@ -437,7 +438,7 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
     """AT-002 — task 가 폴더를 보유해도 `--task` 없는 `--repo`/`--slot` 은 정체성이 아니다."""
     from _git_fixture import init_git_repo
     init_git_repo(board._proj / "work" / "proj_1", commit="proj fixture")
-    pm_paths.leases_file(board._home()).write_text(json.dumps({
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({
         "leases": [{"slot": "work/proj_1", "repo": "proj", "session": "mytask",
                     "state": "leased", "role": "work"}],
         "tasks": [{"name": "mytask"}]}), encoding="utf-8")
@@ -447,29 +448,29 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
                         lambda *a, **k: runner_calls.append(a) or (0, "", ""))
     monkeypatch.setattr(regression, "_run_platform_cells",
                         lambda *a, **k: runner_calls.append(a) or ([], [], 0))
-    real_run = board.subprocess.run
+    real_run = subprocess.run
 
     def guarded_run(cmd, *args, **kwargs):
         if cmd == release.LIVEGATE_TEST_CMD:
             runner_calls.append(cmd)
         return real_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr(board.subprocess, "run", guarded_run)
+    monkeypatch.setattr(subprocess, "run", guarded_run)
 
     def snapshot() -> dict:
-        tickets = pm_paths.tickets_dir(board._home())
+        tickets = pm_paths.tickets_dir(pm_paths.home_at(board.REPO))
         folders = (tickets, *(tickets / name for name in (*ticket_rules.STATUS_DIRS, ".drafts")),
-                   cluster_store.clusters_dir(board._home()))
+                   cluster_store.clusters_dir(pm_paths.home_at(board.REPO)))
         files = {path.relative_to(tickets).as_posix(): path.read_bytes()
                  for folder in folders for path in folder.glob("*") if path.is_file()}
-        for flag in (pm_paths.regression_flag(board._home()), pm_paths.livegate_flag(board._home())):
+        for flag in (pm_paths.regression_flag(pm_paths.home_at(board.REPO)), pm_paths.livegate_flag(pm_paths.home_at(board.REPO))):
             files[flag.name] = flag.read_bytes() if flag.exists() else None
         return files
 
     before = snapshot()
     args = board_cmd.build_parser().parse_args(_T0962_COMMANDS[command] + _T0962_FORMS[form])
     with pytest.raises(SystemExit) as exc:
-        args.fn(board._home(), args)
+        args.fn(pm_paths.home_at(board.REPO), args)
     message = str(exc.value.code)
     assert "위치 인자" in message and "--task" in message
     if form == "repo-slot":

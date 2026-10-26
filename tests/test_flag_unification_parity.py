@@ -213,6 +213,7 @@ _ADOPTING_TOOL_FILES = (
 # 공개 CLI 파일명 → parser 를 실제로 정의한 source (평면 진입점은 패키지 CLI 로 위임한다).
 _ADOPTING_TOOL_PARSER_SOURCES = {
     "board.py": "pm_engine/cli/board_cmd.py", "ticket_finish.py": "pm_engine/cli/ticket_finish.py",
+    "worktree_pool.py": "pm_engine/cli/worktree_cmd.py",
 }
 
 

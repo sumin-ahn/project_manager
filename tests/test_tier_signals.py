@@ -14,6 +14,7 @@ from pathlib import Path
 
 from _git_fixture import init_git_repo
 from pm_engine.infra import ticket_store
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -72,22 +73,6 @@ def test_shared_code_list_is_derived_from_current_import_statements(tmp_path):
     (tools / "beta.py").write_text("from solo import VALUE\n", encoding="utf-8")
     after = tier_signals._shared_tool_code(tools)
     assert after == ()
-
-
-def test_shared_code_derives_literal_dynamic_loader_dependencies(tmp_path):
-    board = _load_board()
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    (tools / "shared.py").write_text("VALUE = 1\n", encoding="utf-8")
-    loader = (
-        "path = ROOT / 'shared.py'\n"
-        "module = _load_module_from_path(path, 'shared.py', verifier=verify)\n"
-    )
-    (tools / "alpha.py").write_text(loader, encoding="utf-8")
-    (tools / "beta.py").write_text(loader, encoding="utf-8")
-    init_git_repo(tmp_path)
-
-    assert tier_signals._shared_tool_code(tools) == (".project_manager/tools/shared.py",)
 
 
 def test_shared_scan_inventory_is_owned_seam_not_disk_walk(tmp_path):
@@ -216,7 +201,7 @@ def test_tier_signals_cli_is_advisory_rc_zero(tmp_path, monkeypatch, capsys):
         "touches": [".project_manager/tools/shared.py"],
     }, ""))
 
-    assert board_round.cmd_tier_signals(board._home(), types.SimpleNamespace(id="T-0677")) == 0
+    assert board_round.cmd_tier_signals(pm_paths.home_at(board.REPO), types.SimpleNamespace(id="T-0677")) == 0
     out = capsys.readouterr().out
     assert "advisory" in out and "h1 tool modules: 1" in out
     assert "h2 shared code: yes" in out and "docs-only: no" in out

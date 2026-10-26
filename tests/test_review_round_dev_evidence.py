@@ -59,6 +59,7 @@ from pm_engine.infra import pm_paths
 from pm_engine.app import round_seed
 
 from pm_engine.app import board_dashboard
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -126,7 +127,7 @@ def _spec_text(ticket: str) -> str:
 def _fixture_board(pd, pm_home: Path, sync_log: list, monkeypatch):
     board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = pm_home
 
@@ -446,7 +447,7 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
                 "stderr": "", "timed_out": False,
             }
 
-    pd.main([
+    cli_delegate_run.main(pm_paths.home_at(pd.REPO), [
         "--role", "code-reviewer", "--cluster", f"C-{ticket}", "--cwd", str(slot),
         "--harness", "claude", "--model", "opus",
         "--output-dir", str(tmp_path / "raw"),

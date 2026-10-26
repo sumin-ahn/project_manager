@@ -81,17 +81,6 @@ def _shared_tool_code(tools_dir: Path, *, list_owned=None) -> tuple[str, ...]:
                     names.add(node.module.rsplit('.', 1)[-1])
                 elif node.level:
                     names.update((alias.name.rsplit('.', 1)[-1] for alias in node.names))
-            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and (node.func.id == '_load_module_from_path'):
-                literal = None
-                if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-                    literal = node.args[1].value
-                if literal is None:
-                    for keyword in node.keywords:
-                        if keyword.arg == 'expected_filename' and isinstance(keyword.value, ast.Constant):
-                            literal = keyword.value.value
-                            break
-                if isinstance(literal, str) and literal.endswith('.py'):
-                    names.add(Path(literal).stem)
         for name in names:
             candidates = by_stem.get(name, ())
             if len(candidates) == 1 and candidates[0] != importer:

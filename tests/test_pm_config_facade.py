@@ -17,6 +17,7 @@ DI seam·test_pm_update.py 의 monkeypatch 격리 패턴 동류. 실 git/board/w
 """
 from __future__ import annotations
 
+import pm_engine
 from pm_engine.domain import conf_schema
 from pm_engine.infra import fs
 from pm_engine.domain import areas_rules
@@ -60,12 +61,6 @@ def _load_pm_config():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def _marked_skew(message="injected engine rev skew"):
-    exc = RuntimeError(message)
-    exc._engine_rev_skew = True
-    return exc
 
 
 @pytest.fixture(scope="module")
@@ -1976,35 +1971,6 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
 
 
 
-def test_protected_hook_resolution_boundaries_rethrow_marked_engine_rev_skew(pc, tmp_path, monkeypatch):
-    """A1 — gate/install 관련 보조 fail-soft 경계도 marker를 None/default로 강등하지 않는다."""
-    skew = _marked_skew()
-
-    class _Board:
-        REPO = pc.REPO
-
-        @staticmethod
-        def _areas_git_url(_repo):
-            raise skew
-
-        @staticmethod
-        def _repo_protected(_repo):
-            raise skew
-
-        @staticmethod
-        def _repo_base(_repo):
-            raise skew
-
-
-    with pytest.raises(RuntimeError):
-        bind_board(monkeypatch, _Board())
-        areas_store._repo_base(pm_paths.home_at(pc.REPO), "svc")
-
-
-
-
-
-
 @pytest.mark.parametrize("upstream", ["~pm_user_that_cannot_exist_0524/repo", "bad\0path"])
 def test_install_protected_hook_gate_resolution_error_is_fail_soft(pc, tmp_path, monkeypatch, upstream):
     """B4 — gate config의 expanduser/Path 오류도 등록·슬롯 생성을 깨지 않고 False로 강등한다."""
@@ -2408,7 +2374,7 @@ def test_status_lists_leases(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     assert wp.did("list_leases")
     out = capsys.readouterr().out
@@ -2426,7 +2392,7 @@ def test_status_surfaces_readonly_role(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     full = out.split("풀 전체 리스 장부")[1]
@@ -2445,7 +2411,7 @@ def test_whoami_highlights_my_lease(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="whoami"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="whoami"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "이 세션의 리스:" in out
@@ -2459,7 +2425,7 @@ def test_status_empty_pool(pc, monkeypatch, capsys):
     """리스 없으면 빈 풀 안내(크래시 없음)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     assert "리스 없음" in capsys.readouterr().out
 
@@ -2477,7 +2443,7 @@ def test_status_unbound_session_surfaces_placeholder(pc, monkeypatch, tmp_path, 
         FakeLease(slot="work/svc_1", repo="svc", session="other", state="leased"),
     ]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="whoami"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="whoami"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "(비바인딩)" in out
@@ -2497,7 +2463,7 @@ def test_status_shows_live_branch_from_current_branch(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, live_branches={"work/svc_1": "live-feat"}))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "live-feat" in out, "live branch(current_branch) 가 surface 안 됨"
@@ -2517,7 +2483,7 @@ def test_status_detached_branch_shows_placeholder(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     assert "(detached/조회불가)" in capsys.readouterr().out
 
@@ -2553,7 +2519,7 @@ def test_status_task_axis_lists_named_tasks_and_workspaces(pc, monkeypatch, caps
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     task_axis = out.split("task 상황")[1].split("slot 풀")[0]
@@ -2571,7 +2537,7 @@ def test_status_task_axis_empty_when_no_named_tasks(pc, monkeypatch, capsys):
     leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=[]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "task 상황" in out
@@ -2589,7 +2555,7 @@ def test_status_slot_git_summary_shows_parent_ahead_behind(pc, monkeypatch, caps
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     # branch@head(단축 8) + 부모 이름@갈라진 커밋(단축 8) + 앞/뒤.
@@ -2606,7 +2572,7 @@ def test_status_slot_git_summary_without_parent_record(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "feat-x@abc12345 (부모 기록 없음)" in out
@@ -2622,7 +2588,7 @@ def test_status_slot_git_summary_parent_branch_deleted(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "feat@99887766 (부모: dev@00112233 · 부모 브랜치 없음)" in out
@@ -2641,7 +2607,7 @@ def test_status_readonly_slot_git_shows_detached_and_role(pc, monkeypatch, capsy
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     pool = out.split("slot 풀")[1]
@@ -2662,7 +2628,7 @@ def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     pool = capsys.readouterr().out.split("slot 풀")[1]
     svc1 = pool.split("work/svc_1")[1].split("work/svc_2")[0]
@@ -2685,7 +2651,7 @@ def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, _Boom(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "work/svc_1" in out                  # 리스 장부 축은 정상 surface
@@ -2700,7 +2666,7 @@ def test_status_idle_lease_not_attributed_to_none_task(pc, monkeypatch, capsys):
     tasks = [SimpleNamespace(name=None, prefix=None)]   # name 미보유 레코드(방어 대상)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=tasks))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     pool = capsys.readouterr().out.split("slot 풀")[1]
     assert "보유 task=None" not in pool          # None 오귀인 없음
@@ -2715,7 +2681,7 @@ def test_status_surfaces_orphan_drift(pc, monkeypatch, capsys):
     orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([orphan], [], [])))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     assert wp.did("reconcile_worktrees")
     out = capsys.readouterr().out
@@ -2731,7 +2697,7 @@ def test_status_surfaces_stale_and_incomplete_drift(pc, monkeypatch, capsys):
     incomplete = FakeLease(slot="work/svc_5", repo="svc", session="me", state="creating")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([], [stale], [incomplete])))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "[stale] work/svc_9" in out
@@ -2745,7 +2711,7 @@ def test_status_no_drift_omits_section(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))   # reconcile 미지정 → 빈 결과
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "drift" not in out
@@ -2760,7 +2726,7 @@ def test_status_reconcile_failure_does_not_break_status(pc, monkeypatch, capsys)
 
     wp = bind_pool(monkeypatch, _Boom(leases=[FakeLease(slot="work/svc_1", repo="svc", state="idle")]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "work/svc_1" in out          # 리스 장부는 정상 surface
@@ -2774,7 +2740,7 @@ def test_status_drift_guidance_recommends_prune_not_force_release(pc, monkeypatc
     orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([orphan], [stale], [])))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "prune-stale" in out                 # 안전 프리미티브 안내

@@ -653,8 +653,8 @@ class ConfResult:
 class LegacyConfKeyError(RuntimeError):
     """구표기 키가 남은 conf 를 **값 소비 지점**이 만났다(조용한 기본값 강등 차단)."""
 
-    # fail-soft 해소 경로가 이 예외를 **import 없이** 식별하는 표식이다(`_engine_rev_skew` 와
-    # 같은 규약) — 중앙 로더가 멈춘 것을 호출부가 일반 해소 실패로 삼키면 fail-loud 가 무효가 된다.
+    # fail-soft 해소 경로가 이 예외를 **import 없이** 식별하는 표식이다 — 중앙 로더가 멈춘 것을
+    # 호출부가 일반 해소 실패로 삼키면 fail-loud 가 무효가 된다.
     _legacy_conf_key = True
 
     def __init__(self, legacy: dict[str, str | None], path: Path | None = None) -> None:

@@ -84,7 +84,7 @@ def _seed_ticket(board, tid: str, *, created: str = "2026-07-01",
                  depends_on: list[str] | None = None,
                  blocks: list[str] | None = None) -> Path:
     """`{tid}-slug.md` 티켓을 심는다 (claimed_by·depends_on·blocks 지정 가능)."""
-    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-slug.md"
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status / f"{tid}-slug.md"
     fm: dict = {"id": tid, "title": "t", "status": status, "created": created}
     if claimed_by is not None:
         fm["claimed_by"] = claimed_by
@@ -106,7 +106,7 @@ def _ids_on_disk(board) -> set[str]:
     """디스크의 모든 티켓 파일명에서 canonical ID 를 추출한다 (파일 rename 검증용·.drafts 포함)."""
     out = set()
     for status in (*ticket_rules.STATUS_DIRS, ".drafts"):
-        for p in (pm_paths.tickets_dir(board._home()) / status).glob("T-*.md"):
+        for p in (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status).glob("T-*.md"):
             tid = ticket_rules._ticket_id_from_filename(p.name)
             if tid:
                 out.add(tid)
@@ -150,24 +150,24 @@ def test_is_valid_ticket_id_rejects_non_ids(board, tid):
 
 def test_reid_number_change_renames_and_updates_frontmatter(board):
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0250"}
-    renamed = pm_paths.tickets_dir(board._home()) / "open" / "T-0250-slug.md"
+    renamed = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0250-slug.md"
     fm, _ = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-0250"
 
 
 def test_reid_adds_prefix(board):
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-finance-036", user_ack="finance"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-finance-036", user_ack="finance"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-finance-036"}
 
 
 def test_reid_changes_prefix(board):
     _seed_ticket(board, "T-PAY-001")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-PAY-001", "T-ACC-001", user_ack="ACC"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-PAY-001", "T-ACC-001", user_ack="ACC"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-ACC-001"}
 
@@ -175,7 +175,7 @@ def test_reid_changes_prefix(board):
 def test_reid_strips_prefix_reverse(board):
     """역방향 — prefix 제거(T-finance-036 → T-0036)."""
     _seed_ticket(board, "T-finance-036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-finance-036", "T-0036"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-finance-036", "T-0036"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0036"}
 
@@ -183,7 +183,7 @@ def test_reid_strips_prefix_reverse(board):
 def test_reid_accepts_approved_uppercase_prefix(board):
     """reid 소비 문법은 대문자 legacy prefix를 받고, 신설은 값-결속 승인을 요구한다."""
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-PAY-036", user_ack="PAY"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-PAY-036", user_ack="PAY"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-PAY-036"}
 
@@ -192,7 +192,7 @@ def test_reid_existing_prefix_fold_match_is_frictionless_and_canonical(board):
     """기존 `PAY`에 `pay`로 reid하면 ack 없이 canonical case로 재사용한다."""
     _seed_ticket(board, "T-PAY-002")
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-pay-003"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-pay-003"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-PAY-002", "T-PAY-003"}
 
@@ -200,7 +200,7 @@ def test_reid_existing_prefix_fold_match_is_frictionless_and_canonical(board):
 def test_reid_rejects_new_hyphen_prefix_even_with_user_ack(board, capsys):
     _seed_ticket(board, "T-0036")
 
-    rc = board_prefix.cmd_reid(board._home(), _ns(
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns(
         "T-0036", "T-new-label-001", user_ack="new-label",
     ))
 
@@ -213,19 +213,19 @@ def test_reid_reuses_existing_legacy_hyphen_prefix(board):
     _seed_ticket(board, "T-new-label-002")
     _seed_ticket(board, "T-0036")
 
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-new-label-001"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-new-label-001"))
 
     assert rc == 0
     assert _ids_on_disk(board) == {"T-new-label-001", "T-new-label-002"}
 
 
 def test_reid_preserves_slug_in_filename(board):
-    path = pm_paths.tickets_dir(board._home()) / "open" / "T-0036-my-detailed-slug.md"
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0036-my-detailed-slug.md"
     ticket_store.dump_ticket(path, {"id": "T-0036", "title": "t", "status": "open"},
                       "# T-0036 — t\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
-    assert (pm_paths.tickets_dir(board._home()) / "open" / "T-0250-my-detailed-slug.md").exists()
+    assert (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0250-my-detailed-slug.md").exists()
     assert not path.exists()
 
 
@@ -236,13 +236,13 @@ def test_reid_numeric_ending_slug_preserves_slug_on_rename(board):
     파일명-only 파서는 `T-0036-fix-123` 을 prefixed ID 로 오인해 rename 을 누락(파일명↔content
     불일치) → frontmatter `id:` 1차 진실(`_canonical_ticket_id`)로 해소. 이 fix 전엔 파일명이
     `T-0036-fix-123.md` 로 남아 renamed.exists() 가 False(sensitivity)."""
-    path = pm_paths.tickets_dir(board._home()) / "open" / "T-0036-fix-123.md"     # legacy T-0036 + 숫자-끝 slug.
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0036-fix-123.md"     # legacy T-0036 + 숫자-끝 slug.
     ticket_store.dump_ticket(path, {"id": "T-0036", "title": "t", "status": "open"},
                       "# T-0036 — t\nrefs [[T-0036]]\n")
     wiki = _seed_wiki(board, "0001-x.md", "see [[T-0036]]\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
-    renamed = pm_paths.tickets_dir(board._home()) / "open" / "T-0250-fix-123.md"
+    renamed = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0250-fix-123.md"
     assert renamed.exists() and not path.exists()              # 파일명 rename·slug 보존.
     fm, body = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-0250"
@@ -252,17 +252,17 @@ def test_reid_numeric_ending_slug_preserves_slug_on_rename(board):
 
 def test_reid_ticket_in_done_status(board):
     _seed_ticket(board, "T-0036", status="done")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
-    assert (pm_paths.tickets_dir(board._home()) / "done" / "T-0250-slug.md").exists()
+    assert (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "done" / "T-0250-slug.md").exists()
 
 
 def test_reid_ticket_in_drafts(board):
-    (pm_paths.tickets_dir(board._home()) / ".drafts").mkdir(exist_ok=True)
+    (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / ".drafts").mkdir(exist_ok=True)
     draft = _seed_ticket(board, "T-0036", status=".drafts")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
-    assert (pm_paths.tickets_dir(board._home()) / ".drafts" / "T-0250-slug.md").exists()
+    assert (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / ".drafts" / "T-0250-slug.md").exists()
     assert not draft.exists()
 
 
@@ -273,7 +273,7 @@ def test_reid_ticket_in_drafts(board):
 def test_reid_rewrites_depends_on_and_blocks_in_other_ticket(board):
     _seed_ticket(board, "T-0036")
     other = _seed_ticket(board, "T-0040", depends_on=["T-0036"], blocks=["T-0036"])
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     fm, _ = ticket_store.load_ticket(other)
     assert fm["depends_on"] == ["T-0250"]
@@ -283,7 +283,7 @@ def test_reid_rewrites_depends_on_and_blocks_in_other_ticket(board):
 def test_reid_rewrites_wikilink_and_inline_in_wiki(board):
     _seed_ticket(board, "T-0036")
     wiki = _seed_wiki(board, "0001-x.md", "see [[T-0036]] and bare T-0036 here\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert wiki.read_text(encoding="utf-8") == "see [[T-0250]] and bare T-0250 here\n"
 
@@ -291,7 +291,7 @@ def test_reid_rewrites_wikilink_and_inline_in_wiki(board):
 def test_reid_rewrites_reference_in_body_of_other_ticket(board):
     _seed_ticket(board, "T-0036")
     other = _seed_ticket(board, "T-0041", body="이 작업은 [[T-0036]] 뒤에 온다·(T-0036) 참고")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     _, body = ticket_store.load_ticket(other)
     assert "[[T-0250]]" in body and "(T-0250)" in body
@@ -304,7 +304,7 @@ def test_reid_boundary_no_false_substitution(board):
     wiki = _seed_wiki(
         board, "0002-boundary.md",
         "hit [[T-0036]] T-0036 ; skip T-00361 T-0036abc fooT-0036 T-0036-2 T-0036_x\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert wiki.read_text(encoding="utf-8") == (
         "hit [[T-0250]] T-0250 ; skip T-00361 T-0036abc fooT-0036 T-0036-2 T-0036_x\n")
@@ -316,7 +316,7 @@ def test_reid_boundary_no_false_substitution(board):
 
 def test_reid_same_old_new_rejected(board, capsys):
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0036"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0036"))
     assert rc == 1
     assert "같다" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0036"}
@@ -324,7 +324,7 @@ def test_reid_same_old_new_rejected(board, capsys):
 
 def test_reid_invalid_new_id_format_rejected(board, capsys):
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "not-an-id"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "not-an-id"))
     assert rc == 1
     assert "형식 위반" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0036"}  # 무변경
@@ -332,7 +332,7 @@ def test_reid_invalid_new_id_format_rejected(board, capsys):
 
 def test_reid_invalid_new_id_checked_before_old_lookup(board, capsys):
     """형식 sanity 는 값싼 정적 거부라 OLD 실재 여부와 무관하게 먼저 rc1 (부작용 0)."""
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-9999", "bad"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-9999", "bad"))
     assert rc == 1
     assert "형식 위반" in capsys.readouterr().err
 
@@ -348,7 +348,7 @@ def test_reid_invalid_old_id_format_rejected(board, capsys, malformed_old):
     rewrite 는 리터럴 키라 no-op 인데 rc0 성공처럼 끝나는 silent-noop 을 원천 차단한다.
     """
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns(malformed_old, "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns(malformed_old, "T-0250"))
     assert rc == 1
     assert "OLD-ID" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0036"}  # 무변경·무 rename
@@ -357,7 +357,7 @@ def test_reid_invalid_old_id_format_rejected(board, capsys, malformed_old):
 def test_reid_glob_old_id_does_not_silently_match_existing(board, capsys):
     """`T-*` 가 실재 T-0036 에 glob-매치해 성공처럼 끝나는 경로가 없어야 한다 (sensitivity)."""
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-*", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-*", "T-0250"))
     assert rc == 1
     ids = _ids_on_disk(board)
     assert "T-0036" in ids and "T-0250" not in ids
@@ -371,7 +371,7 @@ def test_reid_glob_matches_numeric_prefix_ticket_but_canonical_mismatch_aborts(b
     old_id 와 정확히 같지 않으면 실제 대상이 아니므로 rc2 abort·무변경(리터럴-키 rewrite silent-noop
     방지). 형식 가드(`_is_valid_ticket_id`)는 `T-0036` 을 통과시키므로 이 검증이 유일한 방벽이다."""
     _seed_ticket(board, "T-0036-001")   # 파일 T-0036-001-slug.md — T-0036-*.md glob 에 걸림.
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 2
     assert "찾을 수 없다" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0036-001"}   # 무변경 (T-0036-001 은 그대로).
@@ -386,11 +386,11 @@ def test_reid_legacy_and_numeric_prefix_coexist_targets_exact_canonical(board):
     전 티켓 canonical 스캔으로 정확 매치를 골라 legacy 만 relabel·숫자-prefix 는 불변."""
     _seed_ticket(board, "T-0036")        # 파일 T-0036-slug.md (canonical T-0036)
     _seed_ticket(board, "T-0036-001")    # 파일 T-0036-001-slug.md (canonical T-0036-001)
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0250", "T-0036-001"}   # legacy 만 변경·숫자-prefix 불변
-    assert (pm_paths.tickets_dir(board._home()) / "open" / "T-0250-slug.md").exists()
-    assert (pm_paths.tickets_dir(board._home()) / "open" / "T-0036-001-slug.md").exists()
+    assert (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0250-slug.md").exists()
+    assert (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0036-001-slug.md").exists()
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -399,7 +399,7 @@ def test_reid_legacy_and_numeric_prefix_coexist_targets_exact_canonical(board):
 
 def test_reid_old_not_found_aborts(board, capsys):
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-9999", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-9999", "T-0250"))
     assert rc == 2
     assert "찾을 수 없다" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0036"}  # 무변경
@@ -408,7 +408,7 @@ def test_reid_old_not_found_aborts(board, capsys):
 def test_reid_collision_with_existing_aborts(board, capsys):
     _seed_ticket(board, "T-0001")
     _seed_ticket(board, "T-0002")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0001", "T-0002"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0001", "T-0002"))
     assert rc == 1
     assert "collision" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0001", "T-0002"}  # 무변경
@@ -418,7 +418,7 @@ def test_reid_collision_normalizes_zero_pad_width(board, capsys):
     """collision 은 문자열이 아니라 (prefix, 논리번호)로 판정 — T-002 와 T-0002 는 같은 논리 ID."""
     _seed_ticket(board, "T-0002")
     _seed_ticket(board, "T-foo-005")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-foo-005", "T-002"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-foo-005", "T-002"))
     assert rc == 1
     assert "collision" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0002", "T-foo-005"}
@@ -426,10 +426,10 @@ def test_reid_collision_normalizes_zero_pad_width(board, capsys):
 
 def test_reid_collision_with_draft_ticket_aborts(board, capsys):
     """NEW 미존재 검사는 전 상태 디렉토리 + .drafts 를 포함한다."""
-    (pm_paths.tickets_dir(board._home()) / ".drafts").mkdir(exist_ok=True)
+    (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / ".drafts").mkdir(exist_ok=True)
     _seed_ticket(board, "T-0250", status=".drafts")
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 1
     assert "collision" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0036", "T-0250"}
@@ -441,7 +441,7 @@ def test_reid_collision_with_draft_ticket_aborts(board, capsys):
 
 def test_reid_other_session_claim_aborts(board, capsys):
     _seed_ticket(board, "T-0036", status="claimed", claimed_by="alice/other_1")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250", task="mine"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250", task="mine"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "claim 중" in err and "단일세션" in err
@@ -450,9 +450,9 @@ def test_reid_other_session_claim_aborts(board, capsys):
 
 def test_reid_own_session_claim_allowed(board):
     _seed_ticket(board, "T-0036", status="claimed", claimed_by="me/proj-task")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250", task="proj-task"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250", task="proj-task"))
     assert rc == 0
-    renamed = pm_paths.tickets_dir(board._home()) / "claimed" / "T-0250-slug.md"
+    renamed = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "claimed" / "T-0250-slug.md"
     fm, _ = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-0250"
     assert fm["claimed_by"] == "me/proj-task"   # claim 은 보존(reid 는 ID 만 바꾼다)
@@ -461,7 +461,7 @@ def test_reid_own_session_claim_allowed(board):
 def test_reid_claimed_without_session_aborts(board, capsys):
     """claim 중인데 세션 미해소(None)면 소유 증명 불가 → 안전하게 abort."""
     _seed_ticket(board, "T-0036", status="claimed", claimed_by="alice/other_1")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))  # --session 없음·env/lease/local.conf 다 부재
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))  # --session 없음·env/lease/local.conf 다 부재
     assert rc == 1
     assert "claim 중" in capsys.readouterr().err
     assert _ids_on_disk(board) == {"T-0036"}
@@ -470,7 +470,7 @@ def test_reid_claimed_without_session_aborts(board, capsys):
 def test_reid_open_ticket_needs_no_session(board):
     """open(미claim) 티켓은 세션 없이도 reid 가능 — claim 가드는 claimed 티켓 한정."""
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0250"}
 
@@ -482,7 +482,7 @@ def test_reid_open_ticket_needs_no_session(board):
 def test_reid_dry_run_no_write(board, capsys):
     _seed_ticket(board, "T-0036")
     _seed_wiki(board, "0001-x.md", "ref [[T-0036]]\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250", dry_run=True))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250", dry_run=True))
     assert rc == 0
     out = capsys.readouterr().out
     assert "[dry-run]" in out and "reid" in out
@@ -493,7 +493,7 @@ def test_reid_dry_run_no_write(board, capsys):
 def test_reid_dry_run_reports_scale(board, capsys):
     _seed_ticket(board, "T-0036")
     _seed_wiki(board, "0001-x.md", "ref [[T-0036]] and T-0036\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250", dry_run=True))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250", dry_run=True))
     assert rc == 0
     out = capsys.readouterr().out
     assert "refs" in out and "파일명 rename" in out
@@ -507,11 +507,11 @@ def test_reid_second_identical_run_is_noop(board, capsys):
     """1회 적용 후 같은 reid 재실행 → OLD 소멸이라 rc2·추가 변경 0(이중 적용 없음)."""
     _seed_ticket(board, "T-0036")
     wiki = _seed_wiki(board, "0001-x.md", "ref [[T-0036]]\n")
-    assert board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250")) == 0
+    assert board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250")) == 0
     after_first = _ids_on_disk(board)
     wiki_after_first = wiki.read_text(encoding="utf-8")
     capsys.readouterr()
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))   # 재실행 — OLD 없음.
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))   # 재실행 — OLD 없음.
     assert rc == 2
     assert "찾을 수 없다" in capsys.readouterr().err
     assert _ids_on_disk(board) == after_first == {"T-0250"}
@@ -526,7 +526,7 @@ def test_reid_home_git_dirty_does_not_abort(board, monkeypatch, capsys):
     """남의 미커밋 변경이 있어도 reid 는 진행된다 — 과차단 폐기(ADR-0074·상속)."""
     _seed_ticket(board, "T-0036")
     monkeypatch.setattr(board_prefix, "_home_git_status_porcelain", lambda _home: " M wiki/x.md\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert "무관한 미커밋 변경" in capsys.readouterr().out
     assert _ids_on_disk(board) == {"T-0250"}  # dirty 여도 적용됨
@@ -535,7 +535,7 @@ def test_reid_home_git_dirty_does_not_abort(board, monkeypatch, capsys):
 def test_reid_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
     _seed_ticket(board, "T-0036")
     monkeypatch.setattr(board_prefix, "_home_git_status_porcelain", lambda _home: " M wiki/x.md\n")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250", dry_run=True))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250", dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
 
@@ -552,7 +552,7 @@ def test_reid_board_git_backup_commit_when_separated(board, monkeypatch, capsys)
         board_git, "_board_git_stage_and_commit",
         lambda _home, msg, paths=None: calls["commit"].append((msg, paths)) or True)
     ticket = _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     # noun="reid"·verb="" → op="reid" (double-space 없음).
     assert [msg for msg, _ in calls["commit"]] == ["reid T-0036 → T-0250"]
@@ -567,7 +567,7 @@ def test_reid_board_git_backup_commit_when_separated(board, monkeypatch, capsys)
 def test_reid_board_git_legacy_skips_with_guidance(board, monkeypatch, capsys):
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
     _seed_ticket(board, "T-0036")
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert "legacy" in capsys.readouterr().out
     assert _ids_on_disk(board) == {"T-0250"}  # relabel 은 그래도 적용
@@ -603,7 +603,7 @@ def _lock_depth_spy(board, monkeypatch):
 def test_reid_mutation_runs_under_single_board_lock(board, monkeypatch):
     _seed_ticket(board, "T-0036")
     with _lock_depth_spy(board, monkeypatch) as rec:
-        rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+        rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
     assert rc == 0
     assert rec["count"] >= 1
     assert rec["max_depth"] == 1           # 재진입 없음(데드락 위험 0)
@@ -614,7 +614,7 @@ def test_reid_mutation_runs_under_single_board_lock(board, monkeypatch):
 def test_reid_dry_run_takes_no_lock(board, monkeypatch, capsys):
     _seed_ticket(board, "T-0036")
     with _lock_depth_spy(board, monkeypatch) as rec:
-        rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250", dry_run=True))
+        rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250", dry_run=True))
     assert rc == 0
     assert rec["count"] == 0
     assert "[dry-run]" in capsys.readouterr().out
@@ -645,14 +645,14 @@ def test_cli_reid_dispatches_to_cmd_reid(board):
 # 티켓이 되고 옛 ID 자리엔 티켓 없는 라운드가 남는다.
 
 def _seed_round(board, tid: str, name: str, text: str) -> Path:
-    path = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home())) / name
+    path = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(pm_paths.home_at(board.REPO))) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="")
     return path
 
 
 def _rounds_dir(board, tid: str) -> Path:
-    return round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(board._home()))
+    return round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(pm_paths.home_at(board.REPO)))
 
 
 def test_reid_moves_the_rounds_directory_with_the_ticket(board):
@@ -663,7 +663,7 @@ def test_reid_moves_the_rounds_directory_with_the_ticket(board):
     _seed_round(board, "T-0036", "02-code-reviewer.md",
                 "## 리뷰 (code-reviewer · 2026-01-02)\n\n리뷰 본문.\n")
 
-    assert board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250")) == 0
+    assert board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250")) == 0
 
     assert not _rounds_dir(board, "T-0036").exists(), "옛 ID 자리에 라운드가 남음"
     moved = _rounds_dir(board, "T-0250")
@@ -679,7 +679,7 @@ def test_reid_rewrites_ticket_references_inside_round_bodies(board):
                 "## 구현 보충 (developer · 2026-01-02)\n\n"
                 "[[T-0036]] 의 후속이고 T-0036 을 참조한다. T-00361 은 건드리지 않는다.\n")
 
-    assert board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250")) == 0
+    assert board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250")) == 0
 
     text = (_rounds_dir(board, "T-0250") / "01-developer.md").read_text(encoding="utf-8")
     assert "[[T-0250]]" in text and "T-0250 을 참조한다" in text
@@ -693,7 +693,7 @@ def test_reid_aborts_when_the_target_rounds_directory_is_occupied(board, capsys)
     _seed_round(board, "T-0036", "01-developer.md", "## 구현 보충 (developer · 2026-01-02)\n\nA\n")
     _seed_round(board, "T-0250", "01-developer.md", "## 구현 보충 (developer · 2026-01-02)\n\nB\n")
 
-    rc = board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250"))
+    rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250"))
 
     assert rc == 1
     assert "중단" in capsys.readouterr().err
@@ -707,6 +707,6 @@ def test_reid_aborts_when_the_target_rounds_directory_is_occupied(board, capsys)
 def test_reid_without_rounds_is_unaffected(board):
     """라운드가 없는 티켓(대다수)의 reid 는 종전 경로 그대로다."""
     _seed_ticket(board, "T-0036")
-    assert board_prefix.cmd_reid(board._home(), _ns("T-0036", "T-0250")) == 0
+    assert board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-0250")) == 0
     assert _ids_on_disk(board) == {"T-0250"}
     assert not _rounds_dir(board, "T-0250").exists()

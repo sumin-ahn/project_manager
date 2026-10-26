@@ -101,7 +101,7 @@ def _make_fake_framework(root: Path, harness: str) -> Path:
 
 def _build_live_instance(pm_import, dest: Path, harness: str) -> Path:
     """`--new` 로 라이브 인스턴스 트리를 만든다(scoped-core·templates 부재)."""
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", harness, "--name", "Live Inst"], engine_rev=pm_import.ENGINE_REV)
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", harness, "--name", "Live Inst"])
     assert rc == 0, f"라이브 인스턴스 셋업 실패(rc={rc}·harness={harness})."
     return dest
 

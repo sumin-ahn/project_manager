@@ -27,6 +27,7 @@ from _git_fixture import init_git_repo
 from pm_engine.domain import delegate_errors
 from pm_engine.infra.harness import contract
 import test_harness_parity_guard as parity_guard
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -452,7 +453,7 @@ def dry_run_argv(pd, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(delegate_temp, '_create_read_role_temp', _no_side_effect)
         monkeypatch.setattr(delegate_transport, '_probe_writable_target', _no_side_effect)
         spawned: list = []
-        rc = pd.main(["--role", role, "--prompt-file", str(prompt), "--cwd", str(cwd),
+        rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO), ["--role", role, "--prompt-file", str(prompt), "--cwd", str(cwd),
                       "--output-dir", str(tmp_path / "raw"), "--dry-run"],
                      run_fn=lambda *a, **k: spawned.append(a))
         out = capsys.readouterr().out

@@ -43,7 +43,7 @@ registry completeness: `_TOOLS` 는 수동 하드코딩이라, 미래에 새 도
 
 from __future__ import annotations
 
-from pm_engine.cli import log
+from pm_engine.cli import adr_cmd, log
 
 import argparse
 import ast
@@ -72,6 +72,9 @@ _CMD_WORD = re.compile(r"^[a-z][a-z0-9-]*$")
 
 # 평면 진입 도구의 `사용:` 문서와 build_parser() 를 함께 소유하는 패키지 모듈(도구 stem → tools 상대경로).
 _DOC_AND_PARSER_OWNERS = {"pm_config": "pm_engine/cli/config_cmd.py"}
+# `사용:` 문서는 평면 진입 파일에 두고 build_parser() 만 소유하는 패키지 모듈.
+_PARSER_OWNERS = {"pm_log": "pm_engine/cli/log.py", "pm_adr": "pm_engine/cli/adr_cmd.py"}
+_PARSER_MODULES = {"pm_log": log, "pm_adr": adr_cmd}
 
 
 def _owner_path(name: str) -> Path:
@@ -183,7 +186,7 @@ def _declared_leaves(doc: str, prog: str) -> set[tuple[str, ...]]:
 def test_usage_block_matches_subparsers(name: str, prog: str) -> None:
     """손-작성 `사용:` 블록의 서브커맨드 나열 ↔ 등록 subparser 집합이 양방향 일치."""
     module = _load(name)
-    registered = _registered_leaves((log if name == "pm_log" else module).build_parser())
+    registered = _registered_leaves(_PARSER_MODULES.get(name, module).build_parser())
     declared = _declared_leaves(module.__doc__, prog)
 
     # sensitivity: 대상 도구가 실제로 서브커맨드를 갖는다(파싱 실패로 인한 vacuous 방지).
@@ -216,7 +219,8 @@ def _tools_with_usage_block_and_subparsers() -> set[str]:
         source = _owner_path(path.stem).read_text(encoding="utf-8")
         docstring = ast.get_docstring(ast.parse(source)) or ""
         has_usage_block = any(line.strip() == "사용:" for line in docstring.splitlines())
-        implementation = (TOOLS / "pm_engine/cli/log.py").read_text(encoding="utf-8") if path.stem == "pm_log" else source
+        owner = _PARSER_OWNERS.get(path.stem)
+        implementation = (TOOLS / owner).read_text(encoding="utf-8") if owner else source
         if has_usage_block and "add_subparsers" in implementation:
             found.add(path.stem)
     return found

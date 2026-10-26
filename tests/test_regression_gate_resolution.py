@@ -455,7 +455,7 @@ def adopter_board(tmp_path, monkeypatch):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     # `pm-config repo add` 가 부르는 그 writer 로 등록 — prefix 는 빈 값이다.
-    areas_registry.areas_append(board._home(), "", "", "me", repo="heru", git="git@h:me/heru.git",
+    areas_registry.areas_append(pm_paths.home_at(board.REPO), "", "", "me", repo="heru", git="git@h:me/heru.git",
                        test_cmd=NON_PYTEST_CMD, base="main", protected="",
                        area_owner="me@example.com")
     assert not (tmp_path / "tests").exists()   # 채택자 형상 — pytest 스위트가 없다.
@@ -465,9 +465,9 @@ def adopter_board(tmp_path, monkeypatch):
 def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
                                                          monkeypatch):
     '실 areas.md(prefix 빈 값)에서 두 도구가 채택자 게이트를 해소한다 — 하드코딩 폴백 아님.'
-    assert areas_store.id_prefix(adopter_board._home()) is None
-    assert areas_store.registered_prefixes(adopter_board._home()) == set()
-    assert areas_store.registered_repos(adopter_board._home()) == {'heru'}
+    assert areas_store.id_prefix(pm_paths.home_at(adopter_board.REPO)) is None
+    assert areas_store.registered_prefixes(pm_paths.home_at(adopter_board.REPO)) == set()
+    assert areas_store.registered_repos(pm_paths.home_at(adopter_board.REPO)) == {'heru'}
     home = pm_paths.home_at(adopter_board.REPO)
     assert tf._resolve_per_repo_test_cmd(home) == NON_PYTEST_CMD
     assert pm_engine.app.regression._resolve_gate_cmd(home) == NON_PYTEST_CMD

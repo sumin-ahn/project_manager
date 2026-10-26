@@ -603,7 +603,7 @@ def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    assert render_lint.lint_render_leak(board._home()) == []
+    assert render_lint.lint_render_leak(pm_paths.home_at(board.REPO)) == []
 
 
 def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_path):
@@ -623,7 +623,7 @@ def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    findings = render_lint.lint_render_leak(board._home())
+    findings = render_lint.lint_render_leak(pm_paths.home_at(board.REPO))
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "render-leak"
@@ -648,7 +648,7 @@ def test_render_leak_clean_when_render_path_fully_rendered(board, monkeypatch, t
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- core/**\nbody\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    assert render_lint.lint_render_leak(board._home()) == []
+    assert render_lint.lint_render_leak(pm_paths.home_at(board.REPO)) == []
 
 
 # ── 2. plan render_enabled=False (--target copy2·토큰-form 보존·T-0133) ───────

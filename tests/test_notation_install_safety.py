@@ -77,7 +77,7 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
 
 def _live_instance(pm_import, dest: Path, harness: str = "claude") -> Path:
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
-        ["--new", str(dest), "--harness", harness, "--name", "Notation Inst"], engine_rev=pm_import.ENGINE_REV)
+        ["--new", str(dest), "--harness", harness, "--name", "Notation Inst"])
     assert rc == 0, f"라이브 인스턴스 셋업 실패(rc={rc})"
     return dest
 
@@ -111,7 +111,7 @@ def test_import_stops_before_installing_files_for_unregistered_notation(
 
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Unregistered"], engine_rev=pm_import.ENGINE_REV)
+         "--from", str(REPO), "--name", "Unregistered"])
 
     assert rc == 1
     assert not dest.exists(), "복사가 시작됨(부분 설치 잔존 — 설치 전 중단 위반)"
@@ -128,7 +128,7 @@ def test_into_stops_before_copy_when_a_reader_manifest_is_missing(
     dest = tmp_path / "missing_manifest"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "MissingManifest"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "MissingManifest"]) == 0
     claude_marker = dest / ".claude" / "settings.json"
     assert not claude_marker.exists()
     # 설치된 codex 의 flavor 트리를 소스에서 못 찾는 상황(부분 checkout 동치).
@@ -137,7 +137,7 @@ def test_into_stops_before_copy_when_a_reader_manifest_is_missing(
 
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "MissingManifest"], engine_rev=pm_import.ENGINE_REV)
+         "--from", str(REPO), "--name", "MissingManifest"])
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -435,14 +435,14 @@ def test_into_existing_instance_renders_for_both_reader_harnesses(
     dest = tmp_path / "into_inst"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Inst"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Into Inst"]) == 0
     state = dest / ".project_manager" / "wiki" / "pm_state.md"
     assert "`$pm-handoff`" in state.read_text(encoding="utf-8")  # 사전조건(codex 단독).
     capsys.readouterr()
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Inst"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Into Inst"]) == 0
 
     out = capsys.readouterr().out
     assert "[rerender] .project_manager/wiki/pm_state.md" in out, out
@@ -657,7 +657,7 @@ def test_self_update_on_adopter_owned_codex_tree_injects_no_codex_notation(rende
     (dest / "AGENTS.md").write_text("# 우리 프로젝트 규약\n", encoding="utf-8")
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "OwnCodexUpdate"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "OwnCodexUpdate"]) == 0
 
     selected = update_manifest._installed_entry_notation_manifests(dest, REPO, [])
     assert [p.parent.parent.name for p in selected] == ["claude_code"], selected
@@ -683,7 +683,7 @@ def test_into_claude_on_adopter_owned_codex_tree_ships_claude_only_notation(
 
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "OwnCodex"], engine_rev=pm_import.ENGINE_REV)
+         "--from", str(REPO), "--name", "OwnCodex"])
 
     assert rc == 0
     role = (dest / ".project_manager" / "wiki" / "pm_role.md").read_text(encoding="utf-8")
@@ -728,14 +728,14 @@ def test_into_does_not_substitute_or_fill_untouched_existing_docs(pm_import, tmp
     dest = tmp_path / "into_nosubst"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Subst"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Into Subst"]) == 0
     state = dest / ".project_manager" / "wiki" / "pm_state.md"
     poisoned = state.read_text(encoding="utf-8") + "\n리터럴 {{PROJECT_NAME}} 보존 확인\n"
     state.write_text(poisoned, encoding="utf-8")
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Subst"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Into Subst"]) == 0
 
     after = state.read_text(encoding="utf-8")
     assert "리터럴 {{PROJECT_NAME}} 보존 확인" in after, "복사 밖 기존 문서가 치환됨"
@@ -844,7 +844,7 @@ def test_root_identity_failure_is_loud_not_a_disabled_check(pm_import, tmp_path,
     capsys.readouterr()
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(missing), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "No Root"], engine_rev=pm_import.ENGINE_REV)
+         "--from", str(REPO), "--name", "No Root"])
     assert rc == 1
     assert not missing.exists(), "복사가 시작됨(적용 전 중단 위반)"
 
@@ -1078,7 +1078,7 @@ def test_copy_channel_refuses_ancestor_swapped_between_plan_and_copy(
     dest = tmp_path / "ancestor_swap"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Ancestor Swap"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Ancestor Swap"]) == 0
     outside = tmp_path / "outside_tree"
     outside.mkdir()
     wiki = dest / ".project_manager" / "wiki"
@@ -1096,7 +1096,7 @@ def test_copy_channel_refuses_ancestor_swapped_between_plan_and_copy(
 
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Ancestor Swap"], engine_rev=pm_import.ENGINE_REV)
+         "--from", str(REPO), "--name", "Ancestor Swap"])
 
     err = capsys.readouterr().err
     assert rc == 0, "적용 단계 파일 단위 제외가 전체 중단으로 바뀜(rc 정책 위반)"
@@ -1538,7 +1538,7 @@ def test_into_refuses_swap_between_plan_and_backup(
     dest = tmp_path / "into_swap"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Swap"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Into Swap"]) == 0
     seed = dest / ".project_manager" / "wiki" / "raw" / "README.md"
     state = dest / ".project_manager" / "wiki" / "pm_state.md"
     outside = tmp_path / "OUTSIDE_SEED.md"
@@ -1555,7 +1555,7 @@ def test_into_refuses_swap_between_plan_and_backup(
 
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Swap"], engine_rev=pm_import.ENGINE_REV)
+         "--from", str(REPO), "--name", "Into Swap"])
 
     err = capsys.readouterr().err
     assert rc == 0
@@ -2453,7 +2453,7 @@ def test_receipt_skips_a_harness_whose_copies_were_all_excluded(
     dest = tmp_path / "excluded_harness"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Excluded"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Excluded"]) == 0
     before = (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     # add-harness 의 복사를 전부 제외시킨다(계획 뒤 상태 변화와 같은 결과).
     monkeypatch.setattr(
@@ -2477,7 +2477,7 @@ def test_receipt_keeps_preexisting_harness_even_if_files_are_gone(
     dest = tmp_path / "keep_preexisting"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Keep"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Keep"]) == 0
     shutil.rmtree(dest / ".claude")
     (dest / "CLAUDE.md").unlink()
     capsys.readouterr()

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 from pm_engine.infra.harness import contract
 from pm_engine.domain import delegate_errors
+from pm_engine.cli import delegate_channel_guard as cli_delegate_channel_guard
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -295,7 +296,7 @@ def test_config_error_is_one_line_fail_open(guard):
     def broken_config(_home):
         raise OSError("broken\nlocal.conf")
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,
@@ -327,13 +328,14 @@ conf = {
     "delegate.developer.model": "opus",
 }
 stdout = io.StringIO()
-rc = guard.main(
+rc = guard.delegate_channel_guard.main(
+    guard.pm_paths.home_at(guard.REPO),
     ["decide", "--role", "developer", "--harness", "claude"],
     stdout=stdout,
     config_loader=lambda home: conf,
 )
 decision = json.loads(stdout.getvalue())
-hook = guard.delegate_channel.evaluate_hook(
+hook = guard.delegate_channel_guard.delegate_channel.evaluate_hook(
     guard.pm_paths.home_at(guard.Path(guard_path).resolve().parents[2]),
     {
         "hook_event_name": "PreToolUse",
@@ -374,7 +376,7 @@ def test_malformed_json_is_one_line_fail_open(guard):
         loader_calls.append(True)
         return {}
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         stdin=io.StringIO("{not-json"),
         stdout=stdout,
         stderr=stderr,
@@ -395,7 +397,7 @@ def test_deny_json_schema_and_remediation(guard):
         "delegate.researcher.model": "qwen3-coder",
     }
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         stdin=io.StringIO(json.dumps(_payload("researcher"))),
         stdout=stdout,
         stderr=stderr,
@@ -617,7 +619,7 @@ def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
             raise AssertionError("decide CLI must not read stdin")
 
     stdout = io.StringIO()
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         argv,
         stdin=UnreadableInput("must-not-be-read"),
         stdout=stdout,
@@ -639,7 +641,7 @@ def test_decide_cli_internal_error_is_one_line_allow_reason(guard):
         raise RuntimeError("broken\nconfig")
 
     stdout = io.StringIO()
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["decide", "--role", "developer", "--harness", "opencode"],
         stdout=stdout,
         config_loader=broken_config,
@@ -1433,7 +1435,7 @@ def test_decide_cli_surfaces_native_warning_in_stable_four_fields(guard):
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "sonnet",
     }
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["decide", "--role", "developer", "--harness", "claude"],
         stdout=stdout,
         config_loader=lambda _home: conf,

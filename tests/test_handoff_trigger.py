@@ -192,7 +192,7 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
 
     import argparse
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
-    rc = board_init.cmd_init(board._home(), args)
+    rc = board_init.cmd_init(pm_paths.home_at(board.REPO), args)
 
     assert rc == 0
     conf_text = conf_path.read_text(encoding="utf-8")

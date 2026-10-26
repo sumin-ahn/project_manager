@@ -6,9 +6,8 @@
 인스턴스*를 답으로 주는 부작용만 냈다(실측: 실 PM 홈 log 오염 · 등록 안 된 worktree 가
 등록으로 판정).
 
-hermetic seam: `_find_repo_root()` 는 모듈 전역 `__file__` 을 읽으므로, fresh 모듈 인스턴스의
-`__file__` 을 tmp 합성 경로로 monkeypatch 해 실제 파일 이동 없이 임의 깊이를 모사한다
-(test_board_root_external_tools 의 모듈-레벨 REPO monkeypatch 관용구와 동류).
+진입 파일의 REPO 식은 R5 문법(tests/test_engine_structure.py)이 고정하고, CLI 본체는
+`pm_engine.cli.additional_reviewer` 가 넘겨받은 Home 으로 돈다.
 """
 from __future__ import annotations
 
@@ -37,20 +36,6 @@ def _load(name: str = "additional_reviewer"):
 @pytest.fixture
 def external():
     return _load("additional_reviewer")
-
-
-def test_repo_root_is_the_own_root_not_the_enclosing_home(external, tmp_path, monkeypatch):
-    """중첩 `.project_manager`(PM 홈 안 worktree) → 자기 루트를 낸다(바깥 홈 아님).
-
-    self-host 형상(② 홈 안 ① worktree·ADR-0027)에서 각 도구가 *자기* worktree 로 해소되게
-    하는 핵심이다. 설치 깊이가 고정이라 바깥 홈이 답이 될 수 없다."""
-    outer = tmp_path / "home"
-    inner = outer / "work" / "wt1"
-    (outer / ".project_manager").mkdir(parents=True)
-    tools = inner / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    monkeypatch.setattr(external, "__file__", str(tools / "additional_reviewer.py"))
-    assert external._find_repo_root() == inner
 
 
 def test_repo_constant_anchors_at_the_install_depth(external):

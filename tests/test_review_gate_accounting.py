@@ -42,6 +42,7 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import pm_paths
+from pm_engine.cli import additional_reviewer as cli_additional_reviewer
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -298,7 +299,7 @@ def test_real_send_help_examples_choose_gate_accounting(external):
     prefix = "python3 .project_manager/tools/additional_reviewer.py"
     commands = [
         shlex.split(line.strip())
-        for line in external.build_arg_parser().format_help().splitlines()
+        for line in cli_additional_reviewer.build_arg_parser().format_help().splitlines()
         if line.strip().startswith(prefix)
     ]
     non_sending_modes = {"--dry-run", "--rounds-report", "--resolve-gate"}

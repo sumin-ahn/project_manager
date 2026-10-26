@@ -511,8 +511,6 @@ def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
     try:
         return watchdog.format_partial_output(head, exc)
     except Exception as formatter_exc:  # noqa: BLE001 — 일반 formatter 실패는 fail-soft.
-        if getattr(formatter_exc, "_engine_rev_skew", False):
-            raise
         return head
 
 
@@ -621,8 +619,6 @@ def _real_harness_runner(
             file=sys.stderr,
         )
     except Exception as exc:  # noqa: BLE001 — 일반 프로필 준비 실패만 fill fail-soft.
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         return False, _fill_failure_with_partial(f"[하니스 프로필 준비 오류: {exc}]", exc)
 
     try:
@@ -651,8 +647,6 @@ def _real_harness_runner(
     except FileNotFoundError:
         return False, f"[하니스 명령 '{argv[0] if argv else '?'}' 를 찾을 수 없음 — 설치/PATH 확인]"
     except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         if isinstance(exc, watchdog.StallWatchdogError):
             axis = getattr(exc, "timeout_axis", None)
             threshold = getattr(exc, "threshold_seconds", None)
@@ -675,8 +669,6 @@ def _real_harness_runner(
             output += f"\n[stderr]\n{result.stderr}"
         return result.returncode == 0, output
     except Exception as exc:  # noqa: BLE001 — 결과 정규화 실패도 fill fail-soft.
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         return False, _fill_failure_with_partial(f"[하니스 결과 처리 오류: {exc}]", exc)
 
 
