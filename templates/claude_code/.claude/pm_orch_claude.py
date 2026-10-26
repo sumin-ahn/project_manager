@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """claude relay driver — `claude -p` subprocess 세션 구동 (어댑터·얇음).
 
-엔진 세션 연속성 모듈(`pm_engine.app.session.relay`)의 SessionDriver Protocol 구현체. relay/respawn/marker 로직은
-*엔진* 에 있고(루트 `.project_manager/tools/`·DI 로 테스트), 이 파일은 **claude CLI 고유**한
-부분만 — `claude -p [--session-id <uuid>|--resume <uuid>] --output-format stream-json` 을
+엔진 세션 연속성(Supervisor)의 SessionDriver 구현체. relay/respawn/marker 로직은 *엔진* 에 있고,
+엔진 공개 진입 `pm_engine.cli.hooks.run_relay` 가 이 클래스에 실제 파서·실행기·회전 판정·marker
+writer 를 공급해 구성한다. 이 파일은 **claude CLI 고유**한 부분만 —
+`claude -p [--session-id <uuid>|--resume <uuid>] --output-format stream-json` 을
 subprocess 로 호출하고 stream-json 을 파싱한다(PoC `run_turn` 골격 재사용).
 
 CLI 진입점: `python3 pm_orch_claude.py [--cwd <PM repo root>] [--model opus]`.
@@ -18,8 +19,6 @@ nested claude 실행은 OAuth 상속(PoC 확증) — SDK 없이 CLI subprocess �
 from __future__ import annotations
 
 import argparse
-import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -27,70 +26,24 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 엔진 core 를 import — 어댑터는 엔진 사본 경로에 묶이지 않게 repo_root 로 동적 해석한다
-# (ctx_guard.repo_root 와 동일 관례). SessionDriver Protocol·new_session_id 등을 빌려 쓴다.
+# 같은 디렉토리 어댑터 코어 — 설치 루트(repo_root)와 usage 입력 토큰 관측을 빌려 쓴다.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ctx_guard  # noqa: E402  (repo_root 재사용 — 같은 디렉토리 어댑터 코어)
+import ctx_guard  # noqa: E402  (같은 디렉토리 어댑터 코어)
+
+# 엔진 공개 진입(`pm_engine.cli.hooks`)은 이 어댑터가 설치된 루트의 엔진에서 import 한다.
+_engine_tools = str(Path(__file__).resolve().parents[1] / ".project_manager" / "tools")
+if _engine_tools not in sys.path:
+    sys.path.insert(0, _engine_tools)
 
 CLAUDE_BIN = "claude"
 DEFAULT_MODEL = "claude-opus-5"  # PM 세션 기본 = opus (품질 우선·사용자 결정). CLI `--model` 로 frugal override 가능.
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
-GIT_ANCHOR_ONCE_NAMESPACE = "git-anchor"  # 세션 1회 발화 멤버십 파일 접미사(엔진 claim_session_once).
-GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자(문구 전문을 파일에 남기지 않는다).
 
 
-def _load_engine():
-    """루트 `.project_manager/tools` 의 엔진 패키지에서 세션 연속성 모듈을 import 한다.
-
-    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 tools 경로를 `sys.path` 에 넣은 뒤
-    `pm_engine.app.session.relay` 를 import 한다(`ctx_guard.read_budget` 과 같은 관례).
-    """
-    root = ctx_guard.repo_root(Path(__file__).resolve().parent)
-    tools = root / ".project_manager" / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    from pm_engine.app.session import relay
-    return relay, root
-
-
-def _load_board(root: Path):
-    """raw git 훅 판정의 단일 진실인 board.py를 root 기준으로 로드한다."""
-    board_path = root / ".project_manager" / "tools" / "board.py"
-    spec = importlib.util.spec_from_file_location("pm_git_anchor_board", board_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-# Bash 명령 선필터(성능 전용 — 판정은 board 가 한다). 대상은 git 호출(앵커·파괴 형태) · 엔진 도구
-# 호출(사본 정체) · pytest(트리 정체) · cd 잔존 · 파일 삭제·이동 명령과 삭제 API · 허용 표식이다.
-# opencode `git-anchor-core.cjs`·codex `pm_orch_codex.py` 선필터와 같은 집합이다(테스트가 대조).
-GIT_ANCHOR_SHELL_PREFILTERS = (
-    r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>,])",
-    r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)",
-    r"(?:^|[;&|])\s*cd(?=\s)",
-    r"(?<![A-Za-z0-9_.-])(?:rm|rmdir|unlink|shred|mv|find|rsync)(?=\s|$)",
-    r"(?<![A-Za-z0-9_])(?:rmtree|remove|removedirs|unlink|rmdir|rmSync|rmdirSync|unlinkSync"
-    r"|rm_rf|rm_r|rename|replace|move|renameSync)(?![A-Za-z0-9_])",
-    r"git[ \t]+허용[ \t]*:",
-)
+# 사용자 1회 허용 표식 — 사용자 프롬프트 훅이 허용 기록 진입 여부를 고르는 데만 쓴다.
 GIT_GRANT_MARKER = r"git[ \t]+허용[ \t]*:"
-GIT_GRANT_DIR_NAME = "git-grants"
-# 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
-GIT_ANCHOR_SLOT_PATH_MARK = "/work/"
-# git-anchor 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 board 가 입력을 본다.
+# git-anchor 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 엔진이 입력을 본다.
 GIT_ANCHOR_SHELL_TOOL = "Bash"
-
-
-def _shell_command_needs_judgment(command: str) -> bool:
-    prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
-    normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
-    return (
-        any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
-        or ".project_manager/tools/" in normalized
-        or GIT_GRANT_DIR_NAME in normalized
-        or GIT_ANCHOR_SLOT_PATH_MARK in normalized
-    )
 
 
 def _hook_session_id(stdin: dict) -> str:
@@ -129,9 +82,10 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
         return None
     cwd = stdin.get("cwd")
     anchor = cwd if isinstance(cwd, str) and cwd else str(root)
-    board = _load_board(root)
+    from pm_engine.cli import hooks
+
     try:
-        granted = board.record_git_grants(root, _hook_session_id(stdin), anchor, prompt)
+        granted = hooks.record_git_grants(hooks.adapter_home(root), _hook_session_id(stdin), anchor, prompt)
     except ValueError as exc:
         return {
             "decision": "block",
@@ -155,7 +109,7 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
 
 
 def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
-    """Claude 훅 입력을 중앙 판정(board)에 배선한다.
+    """Claude 훅 입력을 엔진 공개 판정(`pm_engine.cli.hooks`)에 배선한다.
 
     PreToolUse(Bash) 는 ``judge_git_anchor_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
     PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는 ``judge_tool_input`` 으로(허용 위조·
@@ -171,16 +125,20 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     anchor = cwd if isinstance(cwd, str) and cwd else str(root)
     session = _hook_session_id(stdin)
     if tool != GIT_ANCHOR_SHELL_TOOL:
+        from pm_engine.cli import hooks
+
         return _pre_tool_use_output(
-            _load_board(root).judge_tool_input(root, session, anchor, tool, tool_input)
+            hooks.judge_tool_input(hooks.adapter_home(root), session, anchor, tool, tool_input)
         )
     command = tool_input.get("command")
-    # Bash 는 매 호출 훅이 뜬다 — 판정 대상 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
-    if not isinstance(command, str) or not _shell_command_needs_judgment(command):
+    # 셸 명령 원문은 거르지 않고 전부 엔진 판정에 넘긴다 — 판정 대상인지는 엔진이 정한다.
+    if not isinstance(command, str):
         return None
+    from pm_engine.cli import hooks
+
     return _pre_tool_use_output(
-        _load_board(root).judge_git_anchor_command(
-            root, session, anchor, command, grants=bool(session),
+        hooks.judge_git_anchor_command(
+            hooks.adapter_home(root), session, anchor, command, grants=bool(session),
         )
     )
 
@@ -239,25 +197,16 @@ def _git_anchor_already_emitted(root: Path, payload: dict, output: dict | None) 
     컨텍스트만 태운다(실측 — 발화 1,261회 중 52.7% 가 세션 내 완전일치 중복).
     판정 로직·차단 동작은 건드리지 않고 *같은 말을 두 번 하지 않을* 뿐이다.
 
-    세션키는 훅 stdin 의 `session_id`(엔진 `_sanitize_session_id` 가 파일명 안전화·빈 값은
-    `unknown`)이고 namespace 는 `git-anchor` 고정이라, 다른 세션·다른 경고 클래스의 멤버십과
-    섞이지 않는다. 마커 I/O 실패(None)·비-advisory 는 False — 발화를 유지한다(fail-open).
+    세션 1회 판정은 엔진 ``claim_notice`` 가 한다(세션키 파일명 안전화·문구 해시 키). ``seen`` 만
+    억제하고 ``unavailable``(멤버십 파일 I/O 실패)·비-advisory 는 False — 발화를 유지한다(fail-open).
     """
     text = _git_anchor_advisory_text(output) if output is not None else None
     if text is None:
         return False
-    try:
-        engine, _engine_root = _load_engine()
-        key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:GIT_ANCHOR_ONCE_KEY_CHARS]
-        claimed = engine.claim_session_once(
-            root,
-            payload.get("session_id") or payload.get("sessionId") or "",
-            GIT_ANCHOR_ONCE_NAMESPACE,
-            key,
-        )
-    except BaseException:  # 멤버십 판정 손상은 훅 판정을 깨지 않는다 — 발화 유지(fail-open).
-        return False
-    return claimed is False
+    from pm_engine.cli import hooks
+
+    claimed = hooks.claim_notice(hooks.adapter_home(root), session=_hook_session_id(payload), text=text)
+    return claimed["status"] == "seen"
 
 
 def run_git_anchor_hook(root: Path) -> int:
@@ -461,17 +410,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _make_resolving_runner(engine):
-    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`contract.resolve_executable`)로 찾아 실행한다.
-
-    Windows npm 설치의 `claude.cmd` 는 이름 그대로 실행하지 못한다. 해소 실패는 `FileNotFoundError`
-    (PATH 부재)라 driver `_turn` 의 실행 실패 처리를 그대로 탄다."""
-    def runner(cmd, **kwargs):
-        return subprocess.run(
-            [engine.resolve_executable(cmd[0], kwargs.get("env")), *cmd[1:]], **kwargs)
-    return runner
-
-
 def main(argv: list[str] | None = None) -> int:
     actual_argv = list(sys.argv[1:] if argv is None else argv)
     hook_requested = "--git-anchor-hook" in actual_argv
@@ -488,31 +426,26 @@ def main(argv: list[str] | None = None) -> int:
         # relay 는 회전된 세션을 `/pm-bootstrap --task <task>` 로 다시 연다 — 부트스트랩이 `--task`
         # 필수라 task 없는 relay 는 시작하지 않는다. 훅 진입(같은 파서)은 task 를 받지 않아 여기서 본다.
         parser.error("relay 에는 --task <task> 가 필요하다")
-    engine, root = _load_engine()
-    from pm_engine.infra.harness import contract
+    root = ctx_guard.repo_root(Path(__file__).resolve().parent)
+    from pm_engine.cli import hooks
 
     cwd = args.cwd or os.getcwd()
-    # 압축 한도 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
-    ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "claude", None)
-    driver = ClaudeCliDriver(
-        contract.parse_stream_json,
-        runner=_make_resolving_runner(contract),
-        ctx_budget=ctx_budget,
-        budget_reader=lambda model: engine.ctx_budget(root, "claude", model),
-        precompact_at_pct=precompact_at_pct,
-        root=root,
-        mark_stop=engine.mark_ctx_post_turn_if_over,
-        spawn_result=engine.SpawnResult,
-        model=args.model,
-    )
-    supervisor = engine.Supervisor(driver, root=root, task=args.task)
 
-    sys.stderr.write(
-        f"[pm-orch] claude supervisor 시작 (cwd={cwd} model={args.model}). "
-        "ctx 한계 도달 시 자동 회전. 종료 = /quit 또는 EOF.\n"
+    def announced_driver(*driver_args, **driver_kwargs) -> ClaudeCliDriver:
+        # 시작 안내는 엔진이 예산 기록을 확인하고 driver 를 구성한 뒤에 낸다(설정 오류가 먼저 보인다).
+        driver = ClaudeCliDriver(*driver_args, **driver_kwargs)
+        sys.stderr.write(
+            f"[pm-orch] claude supervisor 시작 (cwd={cwd} model={args.model}). "
+            "ctx 한계 도달 시 자동 회전. 종료 = /quit 또는 EOF.\n"
+        )
+        sys.stderr.flush()
+        return driver
+
+    # 압축 한도 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
+    return hooks.run_relay(
+        hooks.adapter_home(root), announced_driver, harness="claude", task=args.task, cwd=cwd,
+        model=args.model, stdin=sys.stdin, stdout=sys.stdout,
     )
-    sys.stderr.flush()
-    return supervisor.run_loop(cwd, sys.stdin, sys.stdout)
 
 
 if __name__ == "__main__":

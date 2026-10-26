@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import shutil
 from pm_engine.cli import board_list
+from pm_engine.cli import board_cmd
 from pm_engine.cli import board_ticket
-from pm_engine.cli import regression_cmd, board_cluster
 
 
 import argparse
@@ -467,12 +467,9 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
         return files
 
     before = snapshot()
-    args = board.build_parser().parse_args(_T0962_COMMANDS[command] + _T0962_FORMS[form])
+    args = board_cmd.build_parser().parse_args(_T0962_COMMANDS[command] + _T0962_FORMS[form])
     with pytest.raises(SystemExit) as exc:
-        if command == "cluster-new":
-            (args.fn(board._home(), args) if args.fn in (board_ticket.cmd_claim, board_ticket.cmd_new, board_cluster.cmd_cluster, regression_cmd.cmd_livegate) else args.fn(args))
-        else:
-            (args.fn(board._home(), args) if args.fn in (board_ticket.cmd_claim, board_ticket.cmd_new, board_cluster.cmd_cluster, regression_cmd.cmd_livegate) else args.fn(args))
+        args.fn(board._home(), args)
     message = str(exc.value.code)
     assert "위치 인자" in message and "--task" in message
     if form == "repo-slot":

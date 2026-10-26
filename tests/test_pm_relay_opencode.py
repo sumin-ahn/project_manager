@@ -29,8 +29,9 @@ from pathlib import Path
 import pytest
 
 from pm_engine.app.session import relay
+from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import conf_schema
-from pm_engine.infra import raw_output
+from pm_engine.infra import pm_paths, raw_output
 from pm_engine.infra.harness import contract, watchdog
 from pm_engine.app import harness_ctx
 
@@ -529,7 +530,7 @@ def test_opencode_driver_parser_accepts_task(driver_mod, monkeypatch, capsys):
     """opencode driver 가 `--task <이름>` 을 받고, 빠뜨리면 엔진을 적재하기 전에 rc 2 로 거부한다([[T-0960]])."""
     parser = driver_mod.build_parser()
     assert parser.parse_args(["--task", "mytask"]).task == "mytask"
-    monkeypatch.setattr(driver_mod, "_load_engine", lambda: pytest.fail("task 없이 엔진 적재"))
+    monkeypatch.setattr(cli_hooks, "run_relay", lambda *a, **k: pytest.fail("task 없이 엔진 실행"))
     with pytest.raises(SystemExit) as exc:
         driver_mod.main([])
     assert exc.value.code == 2
@@ -537,11 +538,8 @@ def test_opencode_driver_parser_accepts_task(driver_mod, monkeypatch, capsys):
 
 
 def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_path):
-    """main 이 task와 local.conf 예산을 주입하고 supervisor 전 예산 검증을 호출한다."""
+    """main 이 task와 local.conf 예산을 주입하고 supervisor 전 예산 검증을 호출한다(run_relay 구성)."""
     captured: dict = {}
-
-    def _fake_spawn_result(sid, reply):
-        return sid, reply
 
     class _FakeSup:
         def __init__(self, driver, *, root, task=None):
@@ -551,15 +549,6 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
         def run_loop(self, cwd, in_stream, out_stream):
             return 0
 
-    class _FakeEngine:
-        Supervisor = _FakeSup
-
-        @staticmethod
-        def mark_ctx_post_turn_if_over(*args):
-            return False
-
-        SpawnResult = staticmethod(_fake_spawn_result)
-
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.opencode.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n",
@@ -567,16 +556,20 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
     )
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, harness="opencode")
-    _FakeEngine.ctx_budget = staticmethod(
-        lambda root, harness, model: captured.setdefault("budget", relay.ctx_budget(root, harness, model)))
-    monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    real_budget = relay.ctx_budget
+    monkeypatch.setattr(relay, "ctx_budget", lambda home, harness, model: captured.setdefault(
+        "budget", real_budget(home, harness, model)))
+    monkeypatch.setattr(relay, "Supervisor", _FakeSup)
+    monkeypatch.setattr(driver_mod, "repo_root", lambda start: tmp_path)
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
     assert captured["budget"] == (333000, 85, None)
-    assert captured["driver"]._ctx_budget == 333000
-    assert captured["driver"]._precompact_at_pct == 85
-    assert captured["driver"]._mark_stop is _FakeEngine.mark_ctx_post_turn_if_over
-    assert captured["driver"]._spawn_result is _FakeEngine.SpawnResult
+    driver = captured["driver"]
+    assert isinstance(driver, driver_mod.OpencodeCliDriver)
+    assert driver._ctx_budget == 333000
+    assert driver._precompact_at_pct == 85
+    assert driver._mark_stop.func is relay.mark_ctx_post_turn_if_over
+    assert driver._spawn_result is relay.SpawnResult
 
 
 def test_opencode_main_rejects_unsafe_budget_before_supervisor(
@@ -586,20 +579,14 @@ def test_opencode_main_rejects_unsafe_budget_before_supervisor(
         def __init__(self, *args, **kwargs):
             raise AssertionError("예산 검증 실패 전에 supervisor를 만들면 안 됨")
 
-    class _FakeEngine:
-        Supervisor = _UnexpectedSup
-        SpawnResult = orch.SpawnResult
-        validate_relay_budget = staticmethod(orch.validate_relay_budget)
-        mark_ctx_post_turn_if_over = staticmethod(orch.mark_ctx_post_turn_if_over)
-
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.opencode.ctx_window_tokens=50500\nctx.precompact_at_pct=80\n", encoding="utf-8",
     )
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, harness="opencode")
-    _FakeEngine.ctx_budget = staticmethod(orch.ctx_budget)
-    monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    monkeypatch.setattr(relay, "Supervisor", _UnexpectedSup)
+    monkeypatch.setattr(driver_mod, "repo_root", lambda start: tmp_path)
     with pytest.raises(ValueError, match="즉시 세션 회전 위험"):
         driver_mod.main(["--task", "demo-task", "--cwd", str(tmp_path)])
 
@@ -1161,10 +1148,27 @@ def test_engine_spawn_argv_carries_no_multiline_value(orch, driver_mod, tmp_path
     ("pm_orch_codex_runner", "templates/codex/.codex/pm_orch_codex.py"),
     ("pm_orch_claude_runner", "templates/claude_code/.claude/pm_orch_claude.py"),
 ])
-def test_relay_driver_runner_resolve_executable(orch, monkeypatch, module_name, relative):
-    """codex·claude relay 의 프로덕션 runner 는 엔진 해소 함수로 찾은 경로로 실행한다(opencode relay 는
-    엔진 워치독 `_WatchedPopen` 이 해소한다). 해소 실패는 실행 없이 `FileNotFoundError`(PATH 부재)다."""
+def test_relay_driver_runner_resolve_executable(orch, monkeypatch, tmp_path, module_name, relative):
+    """codex·claude relay 의 프로덕션 runner(run_relay 가 공급)는 엔진 해소 함수로 찾은 경로로 실행한다
+    (opencode relay 는 엔진 워치독 `_WatchedPopen` 이 해소한다). 해소 실패는 실행 없이 `FileNotFoundError`
+    (PATH 부재)다."""
     driver = _load(module_name, REPO / relative)
+    factory, harness = ((driver.CodexCliDriver, "codex") if "codex" in relative
+                        else (driver.ClaudeCliDriver, "claude"))
+    built = {}
+
+    class _CaptureSup:
+        def __init__(self, relay_driver, *, root, task=None):
+            built["driver"] = relay_driver
+
+        def run_loop(self, cwd, in_stream, out_stream):
+            return 0
+
+    monkeypatch.setattr(relay, "ctx_budget", lambda home, name, model: (100_000, 80, None))
+    monkeypatch.setattr(relay, "Supervisor", _CaptureSup)
+    cli_hooks.run_relay(pm_paths.home_at(tmp_path), factory, harness=harness, task="t", cwd=str(tmp_path),
+                        model="m", stdin=None, stdout=None)
+    runner = built["driver"].runner
     seen = {}
 
     def _run(argv, **kwargs):
@@ -1174,7 +1178,6 @@ def test_relay_driver_runner_resolve_executable(orch, monkeypatch, module_name, 
 
     monkeypatch.setattr(driver.subprocess, "run", _run)
     monkeypatch.setattr(contract.shutil, "which", lambda name, path=None: rf"C:\npm\{name}.cmd")
-    runner = driver._make_resolving_runner(contract)
     runner(["codex", "exec", "--json"], input="첫 줄\n둘째 줄", capture_output=True)
     assert seen["argv"] == [r"C:\npm\codex.cmd", "exec", "--json"]
     assert seen["kwargs"]["input"] == "첫 줄\n둘째 줄"

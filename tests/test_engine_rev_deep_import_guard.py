@@ -1052,31 +1052,48 @@ def _set_literal_mapping_value(path: Path, name: str, key, value) -> None:
     path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 
 
-def _rename_literal_gate_and_remove_member(
-    path: Path, old_name: str, new_name: str, member: str | None,
-) -> None:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    assignment = _module_assignment(tree, old_name)
-    value = assignment.value
-    if isinstance(value, ast.Call):
-        assert len(value.args) == 1
-        value = value.args[0]
-    assert isinstance(value, (ast.Set, ast.Tuple, ast.List))
-    if member is not None:
-        value.elts = [
-            item for item in value.elts
-            if not (isinstance(item, ast.Constant) and item.value == member)
-        ]
+# 실제 트리의 평면 엔진에는 검증 적재 호출이 남아 있지 않다. 정책 스캐너의 민감도는 아래 합성
+# 적재기(각인 형제 게이트 + verifier/면제 두 갈래)를 복사본에 덧붙여 검증한다.
+_SYNTHETIC_GATED_LOADER = """
 
-    class Rename(ast.NodeTransformer):
-        def visit_Name(self, node: ast.Name):
-            if node.id == old_name:
-                return ast.copy_location(ast.Name(id=new_name, ctx=node.ctx), node)
-            return node
+from pm_engine.infra import repo_files
+_load_module_from_path = repo_files.load_module
+TOOLS_DIR = REPO / ".project_manager" / "tools"
+_STAMPED_SIBLINGS = frozenset({"board.py", "worktree_pool.py"})
 
-    tree = Rename().visit(tree)
-    ast.fix_missing_locations(tree)
-    path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    if getattr(sibling_module, "ENGINE_REV", None) != ENGINE_REV:
+        raise RuntimeError(sibling_filename)
+
+
+def _load_module(name, filename):
+    path = TOOLS_DIR / filename
+    if filename in _STAMPED_SIBLINGS:
+        return _load_module_from_path(
+            path, filename, verifier=_verify_engine_rev,
+        )
+    return _load_module_from_path(
+        path, filename, allow_unverified=True,
+    )
+
+
+def _synthetic_board_consumer():
+    return _load_module("board", "board.py")
+"""
+
+
+def _with_synthetic_gated_loader(tools: Path) -> Path:
+    """복사본 `pm_config.py` 에 합성 적재기를 덧붙이고 그 경로를 돌려준다.
+
+    변형 전 합성본이 위반 0·적재 호출 2건임을 먼저 확인한다(변형 시험의 red 가 합성본 자체 결함이 아니다).
+    """
+    path = tools / "pm_config.py"
+    path.write_text(path.read_text(encoding="utf-8") + _SYNTHETIC_GATED_LOADER, encoding="utf-8")
+    baseline = collect_central_guard_report(tools)
+    assert not baseline.violations, "\n".join(baseline.violations)
+    assert len(baseline.loader_calls) == 2
+    return path
 
 
 def _move_central_spec_call_to_same_named_scope(path: Path, nested_source: str) -> None:
@@ -1108,7 +1125,8 @@ def test_canonical_deep_import_invariant_is_green():
     assert [
         (source, function) for source, function, _line in report.spec_calls
     ] == [_CENTRAL_LOADER]
-    assert report.loader_calls
+    # 평면 엔진의 마지막 형제 적재(pm-config → board)가 사라져 검증 적재 호출은 0건이다.
+    assert report.loader_calls == ()
 
 
 def test_legacy_deep_import_oracle_is_clean_on_canonical_tree():
@@ -1140,7 +1158,7 @@ def test_manifest_ships_central_loader_before_every_consumer():
 
 def test_mutation_noop_verifier_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    path = tools / "pm_config.py"
+    path = _with_synthetic_gated_loader(tools)
     tree = ast.parse(path.read_text(encoding="utf-8"))
     replaced = False
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
@@ -1168,6 +1186,7 @@ def test_mutation_noop_verifier_is_red(tmp_path):
 
 def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
+    _with_synthetic_gated_loader(tools)
     engine_path = tools / "engine_rev.py"
     tree = ast.parse(engine_path.read_text(encoding="utf-8"))
     assignment = _module_assignment(tree, "STAMPED_MODULES")
@@ -1202,19 +1221,6 @@ def test_mutation_class_body_deep_import_is_red(tmp_path):
     report = collect_central_guard_report(tools)
     assert any(
         "pm_delegate.py" in item and "outside central loader" in item
-        for item in report.violations
-    )
-
-
-def test_mutation_stamped_sibling_gate_omission_is_red(tmp_path):
-    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    _rename_literal_gate_and_remove_member(
-        tools / "pm_config.py", "_STAMPED_SIBLINGS", "_STAMPED_SIBLINGS", "board.py"
-    )
-
-    report = collect_central_guard_report(tools)
-    assert any(
-        "pm_config.py" in item and "board.py" in item and "verifier gate" in item
         for item in report.violations
     )
 
@@ -1519,7 +1525,7 @@ def test_same_named_nested_scope_cannot_impersonate_central_loader(
 )
 def test_mutation_nonliteral_conditional_verifier_is_red(tmp_path, condition):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    loader = tools / "pm_config.py"
+    loader = _with_synthetic_gated_loader(tools)
     source = loader.read_text(encoding="utf-8")
     needle = 'path, filename, verifier=_verify_engine_rev,'
     assert needle in source

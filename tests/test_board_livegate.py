@@ -13,6 +13,7 @@ import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재�
 from __future__ import annotations
 
 from pm_engine.infra import skill_inventory
+from pm_engine.cli import board_cmd
 
 from pm_engine.domain import render_rules
 
@@ -1998,7 +1999,7 @@ def t0982_board(tmp_path, monkeypatch):
 def test_t0982_cwd_rejects_each_selector_combination_before_effects(t0982_board, selector):
     state = t0982_board
     before = state.flag.read_bytes()
-    args = state.board.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
+    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
     with pytest.raises(SystemExit) as caught:
         regression_cmd.cmd_livegate(state.board._home(), args)
     message = str(caught.value)
@@ -2011,7 +2012,7 @@ def test_t0982_cwd_rejects_each_selector_combination_before_effects(t0982_board,
 def test_t0982_supplied_falsey_selectors_are_not_ignored(t0982_board, selector):
     state = t0982_board
     before = state.flag.read_bytes()
-    args = state.board.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
+    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
     with pytest.raises(SystemExit):
         regression_cmd.cmd_livegate(state.board._home(), args)
     assert state.effects == [] and state.waves == []
@@ -2021,7 +2022,7 @@ def test_t0982_supplied_falsey_selectors_are_not_ignored(t0982_board, selector):
 def test_t0982_empty_cwd_is_not_an_implicit_workspace(t0982_board):
     state = t0982_board
     before = state.flag.read_bytes()
-    args = state.board.build_parser().parse_args(["livegate","record","--cwd",""])
+    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",""])
     with pytest.raises(SystemExit) as caught:
         regression_cmd.cmd_livegate(state.board._home(), args)
     assert "--cwd" in str(caught.value) and "비어" in str(caught.value)
@@ -2036,7 +2037,7 @@ def test_t0982_cwd_only_preserves_unleased_readonly_pin(t0982_board, leased):
     pm_paths.leases_file(state.board._home()).write_text(json.dumps({"leases":rows}),encoding="utf-8")
     selected = state.home / "read only"
     selected.mkdir()
-    args = state.board.build_parser().parse_args(["livegate","record","--cwd",str(selected)])
+    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(selected)])
     assert regression_cmd.cmd_livegate(state.board._home(), args) == 0
     assert len(state.waves) == 1 and state.waves[0][1]["cwd"] == str(selected)
     assert state.effects[0] == ("flag",str(selected))
@@ -2054,7 +2055,7 @@ def test_t0982_task_workspace_injection_is_not_explicit_cwd(t0982_board, monkeyp
         state.tasks.append(args.task)
         return str(selected),None
     monkeypatch.setattr(task_args,"_resolve_task_workspace_cwd",resolve)
-    args = state.board.build_parser().parse_args(["livegate","record",*selector])
+    args = board_cmd.build_parser().parse_args(["livegate","record",*selector])
     assert regression_cmd.cmd_livegate(state.board._home(), args) == 0
     assert state.tasks == ["main"] and len(state.waves) == 1
     assert state.waves[0][1]["cwd"] == str(selected)
@@ -2066,7 +2067,7 @@ def test_t0982_selectors_without_task_keep_existing_rejection(t0982_board, monke
     state=t0982_board
     monkeypatch.setattr(task_args,"_execution_actor_session_override",state.actual_execution)
     before=state.flag.read_bytes()
-    args=state.board.build_parser().parse_args(["livegate","record",*selector])
+    args=board_cmd.build_parser().parse_args(["livegate","record",*selector])
     with pytest.raises(SystemExit):
         regression_cmd.cmd_livegate(state.board._home(), args)
     assert state.effects == [] and state.waves == [] and state.flag.read_bytes() == before

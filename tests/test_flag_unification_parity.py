@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 from pm_engine.infra import pm_paths
+from pm_engine.cli import board_cmd, config_cmd
 import pm_engine.cli.handoff
 
 from pm_engine.cli import bootstrap as bootstrap_cli
@@ -83,11 +84,10 @@ def tool_parsers():
     도구 내 서브간 drift 는 `test_board_identity.py`/`test_board_list_scope.py` 몫).
     ticket_finish 는 위치 인자 `ticket_id` 가 필수라 더미 `T-0001` 을 둔다.
     """
-    board = _load_tool("board.py")
     pm_bootstrap = _load_tool("pm_bootstrap.py")
     pm_handoff = _load_tool("pm_handoff.py")
     return {
-        "board.py": (board.build_parser(), ["claim", "T-0001"]),
+        "board.py": (board_cmd.build_parser(), ["claim", "T-0001"]),
         "pm_bootstrap.py": (bootstrap_cli.build_parser(), []),
         "pm_handoff.py": (pm_engine.cli.handoff.build_parser(), []),
         "ticket_finish.py": (ticket_finish_cli.build_parser(), ["T-0001"]),
@@ -165,12 +165,7 @@ def _all_option_strings(parser: argparse.ArgumentParser) -> set[str]:
     return opts
 
 
-@pytest.fixture(scope="module")
-def pm_config_mod():
-    return _load_tool("pm_config.py")
-
-
-def test_pm_config_has_no_explicit_repo_slot_or_session_cli_flags(pm_config_mod):
+def test_pm_config_has_no_explicit_repo_slot_or_session_cli_flags():
     """pm_config 는 나머지 6 도구와 달리 `--repo`/`--slot` CLI 플래그를 노출하지 않는다 —
     설계상 예외(실 코드 감사로 확인, T-0317). identity_args 는 리스 IO 층(`leased_sessions`)만
     `_default_session` 내부에서 재사용하고(B-1), CLI 인자 레이어(`add_identity_args`)는
@@ -180,7 +175,7 @@ def test_pm_config_has_no_explicit_repo_slot_or_session_cli_flags(pm_config_mod)
     이 사실을 고정해 향후 누군가 이 도구에만 부분적으로 `--repo`/`--slot` 를 추가(다른 5 도구와
     비일관 drift)하는 것을 막는다 — 추가한다면 이 가드를 의식적으로 갱신해야 한다.
     """
-    opts = _all_option_strings(pm_config_mod.build_parser())
+    opts = _all_option_strings(config_cmd.build_parser())
     assert "--repo" not in opts
     assert "--slot" not in opts
     # 구 alias 전수 부재 — 이 설계-예외 도구에 옛 정체성 플래그가 부분 재유입되는 것까지 잠근다.
@@ -216,7 +211,9 @@ _ADOPTING_TOOL_FILES = (
     "board.py", "ticket_finish.py", "worktree_pool.py",
 )
 # 공개 CLI 파일명 → parser 를 실제로 정의한 source (평면 진입점은 패키지 CLI 로 위임한다).
-_ADOPTING_TOOL_PARSER_SOURCES = {"ticket_finish.py": "pm_engine/cli/ticket_finish.py"}
+_ADOPTING_TOOL_PARSER_SOURCES = {
+    "board.py": "pm_engine/cli/board_cmd.py", "ticket_finish.py": "pm_engine/cli/ticket_finish.py",
+}
 
 
 @pytest.mark.parametrize("filename", _ADOPTING_TOOL_FILES)

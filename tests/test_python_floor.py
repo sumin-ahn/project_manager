@@ -10,10 +10,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tokenize
 from pathlib import Path
 
 import pytest
+
+from _textio import utf8_child_env
 
 from pm_engine.infra import process, python_env
 import pm_engine
@@ -63,9 +66,18 @@ def test_min_python_single_source_and_tomllib_rationale():
         and any(isinstance(target, ast.Name) and target.id == "MIN_PYTHON"
                 for target in stmt.targets)
     )
+    board_tree = ast.parse((TOOLS / "board.py").read_text(encoding="utf-8"))
+    board_value = next(
+        ast.literal_eval(stmt.value)
+        for stmt in board_tree.body
+        if isinstance(stmt, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "MIN_PYTHON"
+                for target in stmt.targets)
+    )
     source = (TOOLS / "pm_engine" / "__init__.py").read_text(encoding="utf-8")
     assert pm_engine.MIN_PYTHON == (3, 11)
     assert floor_value == pm_engine.MIN_PYTHON
+    assert board_value == pm_engine.MIN_PYTHON  # 훅 진입 board 의 같은 프로세스 하한 선검사.
     assert "tomllib" in source
     assert "지배 제약" in source
 
@@ -120,6 +132,49 @@ def test_python_floor_remains_python27_parse_safe_ascii_bootstrap():
         and not token.string.isascii()
     ]
     assert not non_ascii_code, f"docstring·주석 밖 non-ASCII: {non_ascii_code}"
+    _assert_board_facade_checks_floor_before_engine()
+
+
+_BOARD_FLOOR_SIMULATION = """
+import runpy, sys
+sys.version_info = (3, 10, 0, "final", 0)
+try:
+    runpy.run_path(sys.argv[1], run_name="__main__")
+except SystemExit as exc:
+    sys.stderr.write("\\nrc=%s engine=%s\\n" % (exc.code, "pm_engine" in sys.modules))
+    raise
+"""
+
+
+def _assert_board_facade_checks_floor_before_engine():
+    """훅이 한 번 실행하는 board.py 도 하한 미만 Python 이 파싱할 수 있고, 패키지 import·Home 생성 전에
+    같은 프로세스에서 하한을 확인해 원인과 rc 1 로 멈춘다(stdout 0바이트)."""
+    path = TOOLS / "board.py"
+    source = path.read_text(encoding="utf-8")
+    assert any(re.search(r"coding[:=]\s*utf-8", line) for line in source.splitlines()[:2])
+    tree = ast.parse(source)
+    futures = [alias.name for stmt in tree.body if isinstance(stmt, ast.ImportFrom)
+               and stmt.module == "__future__" for alias in stmt.names]
+    assert futures == ["print_function"]
+    assert not any(isinstance(node, (ast.JoinedStr, ast.NamedExpr, ast.AnnAssign)) for node in ast.walk(tree))
+    assert not any(
+        (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None)
+        or (isinstance(node, ast.arg) and node.annotation is not None)
+        for node in ast.walk(tree)
+    )
+    floor_index = next(i for i, stmt in enumerate(tree.body) if isinstance(stmt, ast.If)
+                       and "version_info" in ast.unparse(stmt.test))
+    imports_before = [stmt for stmt in tree.body[:floor_index] if isinstance(stmt, (ast.Import, ast.ImportFrom))]
+    assert {alias.name for stmt in imports_before for alias in stmt.names} == {"print_function", "sys"}
+
+    completed = subprocess.run(
+        [sys.executable, "-c", _BOARD_FLOOR_SIMULATION, str(path), "list"],
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(), timeout=60,
+    )
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "[중단] Python 3.11+ 필요 · 현재 3.10" in completed.stderr
+    assert "rc=1 engine=False" in completed.stderr
 
 
 def test_board_interp_runs_rejects_old_but_executable_python(monkeypatch):

@@ -101,6 +101,10 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         "어댑터 설치 — codex 스캐폴드 채우기의 CLI 형식 분기"),
     ("import_fill.py", "run_fill", "opencode"): Site(
         "어댑터 설치 — opencode 스캐폴드 채우기의 CLI 형식 분기"),
+    ("hooks.py", "run_relay", "claude"): Site(
+        "CLI 형식 — claude relay driver 의 출력 파서·실행기·회전 협력자 구성"),
+    ("hooks.py", "run_relay", "codex"): Site(
+        "CLI 형식 — codex relay driver 의 출력 파서·실행기·회전 협력자 구성"),
 }
 
 # ── ② 하네스 이름을 키로 갖는 선언표 ──────────────────────────────────────

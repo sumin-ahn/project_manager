@@ -13,6 +13,7 @@ hermetic 패턴은 `test_delegate_cluster_rounds.py`(라운드 예약)와 `test_
 from __future__ import annotations
 
 from pm_engine.cli import delegate_cmd
+from pm_engine.cli import board_cmd
 
 from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_harvest
@@ -1499,14 +1500,14 @@ def _issue(board, title: str) -> str:
 def test_cluster_replan_is_not_a_parser_surface(board_env):
     board, _board_dir = board_env
     with pytest.raises(SystemExit):
-        board.build_parser().parse_args([
+        board_cmd.build_parser().parse_args([
             "cluster", "replan", "wave", "--reason", "설계 축 지적",
         ])
 
 
 def test_cluster_help_exposes_only_new_and_show(board_env):
     board, _board_dir = board_env
-    actions = board.build_parser()._subparsers._group_actions[0].choices["cluster"]
+    actions = board_cmd.build_parser()._subparsers._group_actions[0].choices["cluster"]
     cluster_actions = actions._subparsers._group_actions[0].choices
     assert set(cluster_actions) == {"new", "show"}
 

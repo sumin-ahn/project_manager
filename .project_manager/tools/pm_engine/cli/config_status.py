@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import argparse
-import contextlib
 import datetime
 import json
 import subprocess
@@ -95,39 +94,6 @@ def _distinct_area_owners(home) -> int:
     """
     return len({owner for owner in (row.get("area_owner") for row in _areas_rows(home))
                 if owner})
-
-
-# ── 위임 forward 시 usage prog 정합 ────────────────────────
-
-
-@contextlib.contextmanager
-def _forwarded_prog(prog_map: "dict[str, str]"):
-    """위임 동안 argparse ArgumentParser 의 지정된 top-level prog 만 치환한다.
-
-    board.py 는 prog 를 파일명으로 하드코딩하고 main() 에 prog 인자가 없어, pm-config init 이
-    위임할 때 usage 줄에 파일명이 새어 나온다. board 를 수정하지 않고(CLI 규격 단일 진실 보존)
-    파서 *생성 시점*에 명시 `prog=` kwarg 가 매핑 키와 정확히 일치할 때만 값을 갈아끼운다:
-      - board: "board.py"→"pm-config" — init 서브파서 usage 는 부모 prog 에서 "pm-config init"
-        로 **자동 파생**(argparse add_parser 관례)되므로 이 top-level 치환 하나로 forward 된
-        전 usage 줄이 정합한다.
-    add-harness 위임 경계도 같은 치환으로 감싼다("pm_import.py"→"pm-config add-harness").
-    갱신(`pm-config update`)은 `cli.update_cmd.main` 에 prog 를 값으로 넘기므로 이 치환을 쓰지 않는다.
-    파생된 subparser prog(예: "pm-config init")·매핑 밖 prog 는 그대로 통과한다. 위임 종료
-    후 `__init__` 를 원복한다 — `--help`/인자 에러의 SystemExit·기타 예외에도 finally 로 복구.
-    """
-    original_init = argparse.ArgumentParser.__init__
-
-    def _patched_init(self, *args, **kwargs):
-        prog = kwargs.get("prog")
-        if prog in prog_map:
-            kwargs["prog"] = prog_map[prog]
-        original_init(self, *args, **kwargs)
-
-    argparse.ArgumentParser.__init__ = _patched_init
-    try:
-        yield
-    finally:
-        argparse.ArgumentParser.__init__ = original_init
 
 
 def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:

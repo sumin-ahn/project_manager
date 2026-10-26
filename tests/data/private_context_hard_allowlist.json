@@ -48,14 +48,6 @@
       "count": 1
     },
     {
-      "path": ".project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0036",
-      "surface": "python-non-prose",
-      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
-      "count": 1
-    },
-    {
       "path": ".project_manager/tools/engine_rev.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -125,6 +117,14 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_engine/cli/board_cmd.py",
+      "kind": "work_item",
+      "match": "T-0036",
+      "surface": "python-non-prose",
+      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
       "count": 1
     },
     {
@@ -352,14 +352,6 @@
       "count": 1
     },
     {
-      "path": "templates/claude_code/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0036",
-      "surface": "python-non-prose",
-      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
-      "count": 1
-    },
-    {
       "path": "templates/claude_code/.project_manager/tools/engine_rev.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -429,6 +421,14 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/cli/board_cmd.py",
+      "kind": "work_item",
+      "match": "T-0036",
+      "surface": "python-non-prose",
+      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
       "count": 1
     },
     {
@@ -768,14 +768,6 @@
       "count": 1
     },
     {
-      "path": "templates/codex/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0036",
-      "surface": "python-non-prose",
-      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
-      "count": 1
-    },
-    {
       "path": "templates/codex/.project_manager/tools/engine_rev.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -845,6 +837,14 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_engine/cli/board_cmd.py",
+      "kind": "work_item",
+      "match": "T-0036",
+      "surface": "python-non-prose",
+      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
       "count": 1
     },
     {
@@ -1408,14 +1408,6 @@
       "count": 1
     },
     {
-      "path": "templates/opencode/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0036",
-      "surface": "python-non-prose",
-      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
-      "count": 1
-    },
-    {
       "path": "templates/opencode/.project_manager/tools/engine_rev.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -1485,6 +1477,14 @@
       "match": "ADR-0062",
       "surface": "python-prose",
       "hash": "4fe419566b61e1da97cfe5e8d27dbd3fb2bc785f1b76de6498009399662cdf43",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_engine/cli/board_cmd.py",
+      "kind": "work_item",
+      "match": "T-0036",
+      "surface": "python-non-prose",
+      "hash": "2d5c2cfc2eb1338c19854a0f47ec1cd6f218a4f26311e5455aec04cb9f5351b8",
       "count": 1
     },
     {

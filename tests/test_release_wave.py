@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from pm_engine.domain import conf_schema
+from pm_engine.domain import conf_schema, ctx_recovery
 from pm_engine.infra import conf_store
 
 from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
@@ -1648,7 +1648,8 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
 
     # 실 transcript 가 극소 window 대비 used=100%/stop 으로 판정되는지(같은 machinery 로 실증).
     ctx_guard = _load_adopter_ctx_guard(dest)
-    used = ctx_guard.context_used_pct_from_transcript(str(transcript), _TINY_CTX_WINDOW)
+    used = ctx_recovery.context_used_pct(
+        ctx_guard.context_tokens_from_transcript(str(transcript))[0], _TINY_CTX_WINDOW)
     assert used == 100, (
         f"실 transcript 가 used=100% 로 판정되지 않음(used={used}·window={_TINY_CTX_WINDOW}) — "
         f"stop 밴드 진입 실패.\ntranscript={transcript}"

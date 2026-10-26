@@ -1101,13 +1101,11 @@ def test_harness_window_member_label_default_and_rule(conf_module, keys_document
 
 
 def _assert_blocking_removed_key(conf_module, key: str) -> None:
-    """대체 없는 차단 구키 — 표에 None 으로 있고 비차단 집합 밖이며 어댑터 블록 두 벌에 실린다."""
+    """대체 없는 차단 구키 — 표에 None 으로 있고 비차단 집합 밖이며 키 표에 없다."""
     assert key in conf_module.LEGACY_KEY_MAP and conf_module.LEGACY_KEY_MAP[key] is None, key
     assert key not in conf_module.NON_BLOCKING_LEGACY_KEYS, key
     assert key not in conf_module.KEY_REGISTRY, key
     assert conf_module.key_spec(key) is None, key
-    for style in ("python", "js"):
-        assert f'"{key}",' in local_conf_cli.render_adapter_block(style), (style, key)
 
 
 def _assert_conf_line_is_blocked(conf_module, tmp_path: Path, line: str, key: str) -> None:

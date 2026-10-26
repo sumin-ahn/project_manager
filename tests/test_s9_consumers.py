@@ -26,6 +26,7 @@ from _textio import utf8_child_env
 # 현황 JSON 계약 시험의 상태 트리 해시를 그대로 쓴다(전후 비교 기준 하나).
 from test_pm_config_status_json import _tree_digest
 from pm_engine.app import adapter_report
+from pm_engine.cli import config_cmd
 from pm_engine.app import board_dashboard
 from pm_engine.cli import config_install
 from pm_engine.cli import config_status
@@ -103,7 +104,7 @@ def _state_digest(home) -> str:
 
 def test_status_sections_use_explicit_home_and_keep_json_atomic(tmp_path, monkeypatch, capsysbinary):
     pm_config = _load_pm_config()
-    parser = pm_config.build_parser()
+    parser = config_cmd.build_parser()
     home_one, slot_one = _status_home(tmp_path / "one" / "home", "alpha", separate_board=False,
                                       collected=11)
     home_two, slot_two = _status_home(tmp_path / "two" / "home", "beta", separate_board=True,

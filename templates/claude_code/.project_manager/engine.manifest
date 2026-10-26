@@ -87,7 +87,7 @@
 # pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
 .project_manager/tools/pm_config.py
-# local_conf: CLI 진입 파일(--keys·--keys --json·--render-adapter-block), 구현은 pm_engine
+# local_conf: CLI 진입 파일(--keys·--keys --json), 구현은 pm_engine
 #   (domain/conf_schema·infra/conf_store·cli/local_conf). 관리자가 프로젝트 사본마다 `--keys --json` 으로
 #   부른다.
 .project_manager/tools/local_conf.py

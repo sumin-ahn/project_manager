@@ -13,12 +13,14 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.cli import hooks as cli_hooks
+
 REPO = Path(__file__).resolve().parents[1]
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 TOOLS = REPO / ".project_manager" / "tools"
 PM_PRINCIPLES_PY = TOOLS / "pm_principles.py"
-# 로더가 import 하는 엔진 패키지(경로 적재기·공용 읽기·기계 출력) — 채택자 트리엔 항상
-# 함께 있으므로 사본 fixture 도 같은 패키지를 깔아야 실제 훅 경로와 같아진다.
+# 훅이 import 하는 엔진 패키지(공개 진입 `cli.hooks`) — 채택자 트리엔 항상 함께 있으므로 사본 fixture 도
+# 같은 패키지를 깔아야 실제 훅 경로와 같아진다.
 ENGINE_PACKAGE = "pm_engine"
 
 
@@ -39,9 +41,9 @@ def _write_transcript(tmp_path: Path, input_tokens: int) -> Path:
 def _write_registry(root: Path, text: str, *, with_loader: bool = True) -> None:
     """레지스트리 wiki 파일 + (기본) 로더 사본을 tmp root 에 배치한다.
 
-    `_load_principles(root)` 는 `<root>/.project_manager/tools/pm_principles.py` 를 경로 로드하므로,
-    실제 훅 경로를 태우려면 tmp root 에도 로더 사본이 있어야 한다(with_loader=False 는 로더 부재
-    시나리오 전용)."""
+    원칙 판정은 엔진 공개 진입(`hooks.recall_principles`)이 Home 의 wiki 레지스트리를 읽는다. 사본
+    fixture 는 채택자 트리처럼 엔진 사본도 함께 둔다(with_loader=False 는 엔진 사본 없이 레지스트리만
+    두는 시나리오)."""
     wiki = root / ".project_manager" / "wiki"
     wiki.mkdir(parents=True, exist_ok=True)
     (wiki / "pm_principles.md").write_text(text, encoding="utf-8")
@@ -68,7 +70,7 @@ def test_recall_and_ctx_band_additional_context_coexist(tmp_path):
         "transcript_path": str(_write_transcript(tmp_path, 190_000)),
         "session_id": "sess-recall-merge",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
     hso = output["hookSpecificOutput"]
     guidance = hso["additionalContext"]
@@ -92,7 +94,7 @@ def test_recall_alone_when_ctx_band_is_ok(tmp_path):
         "tool_input": {"file_path": "tests/test_something.py"},
         "session_id": "sess-recall-only",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
     assert output is not None
     assert "[principle-recall]" in output["hookSpecificOutput"]["additionalContext"]
@@ -108,7 +110,7 @@ def test_missing_registry_leaves_ctx_band_output_unchanged(tmp_path):
         "transcript_path": str(_write_transcript(tmp_path, 190_000)),
         "session_id": "sess-no-registry",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
     guidance = output["hookSpecificOutput"]["additionalContext"]
     assert "ctx-nudge/최종" in guidance
@@ -129,7 +131,7 @@ def test_no_match_and_no_band_returns_none(tmp_path):
         "transcript_path": str(_write_transcript(tmp_path, 1_000)),
         "session_id": "sess-quiet",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
     assert output is None
 
@@ -142,7 +144,7 @@ def test_boundary_rearm_does_not_raise_without_registry(tmp_path):
         json.dumps({"type": "system", "subtype": "compact_boundary"}) + "\n", encoding="utf-8")
     stdin = {"hook_event_name": "UserPromptSubmit", "session_id": "sess-rearm",
              "transcript_path": str(transcript), "prompt": "계속"}
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
     assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-rearm.compact-1").is_file()
     assert output["systemMessage"] == "[ctx-checkpoint] 압축 기록 실패: pm_log.py 없음"
@@ -159,7 +161,7 @@ def test_broken_registry_surfaces_a_non_blocking_warning_in_additional_context(t
         "tool_input": {"command": "ls -la"},
         "session_id": "sess-broken",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
     assert output is not None
     guidance = output["hookSpecificOutput"]["additionalContext"]
@@ -205,4 +207,4 @@ def test_recall_uses_package_without_flat_principles_cli(tmp_path):
     (wiki / 'pm_principles.md').write_text('#### rules\n- `[shell: git]` package rule\n', encoding='utf-8')
     assert not (tmp_path / '.project_manager' / 'tools' / 'pm_principles.py').exists()
     event = {'hook_event_name':'PreToolUse','tool_name':'Bash', 'tool_input':{'command':'git status'},'session_id':'package-rule'}
-    assert 'package rule' in hook._principle_recall_text(event, tmp_path)
+    assert 'package rule' in hook._principle_recall_text(event, cli_hooks.adapter_home(tmp_path))

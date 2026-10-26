@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 from pm_engine.app import completion_gate
+from pm_engine.cli import board_cmd
 from pm_engine.cli import board_ticket
 
 
@@ -890,7 +891,7 @@ def test_shipped_skill_cards_include_design_stage(shipped):
 
 def test_design_subcommand_is_registered_and_shown_in_help():
     """`design` 이 parser choices에 등록되고 `--help` 에 노출된다(CLI 배선 확인)."""
-    parser = board_mod.build_parser()
+    parser = board_cmd.build_parser()
     help_text = parser.format_help()
     assert "design" in help_text
     sub = next(a for a in parser._actions

@@ -13,6 +13,7 @@ tmp 프로젝트로 재지정한다(test_board_livegate hermetic 패턴 동류).
 from __future__ import annotations
 
 from pm_engine.cli import board_ticket
+from pm_engine.cli import board_cmd
 
 
 from pm_engine.cli import board_cluster
@@ -257,7 +258,7 @@ def test_actor_session_override_task_mode_returns_task(board):
     # 비실행 명령은 task+repo/slot 혼합을 조용히 task 우선하지 않는다 — parser 가 `--repo`/`--slot`
     # 자체를 받지 않는다(T-0962).
     with pytest.raises(SystemExit) as exc:
-        board.build_parser().parse_args(
+        board_cmd.build_parser().parse_args(
             ["complete", "T-0001", "--task", "myjob", "--repo", "A", "--slot", "1"])
     assert exc.value.code == 2
 
@@ -276,7 +277,7 @@ def test_board_provenance_commands_reject_task_repo_mix_at_ingress(board, comman
     폴더를 고르지 않는 명령이라 `--slot` 이 없다(init 의 `--repo` 는 등록 이름이라 남는다·T-0962).
     """
     with pytest.raises(SystemExit) as exc:
-        board.build_parser().parse_args(_PROVENANCE_MIX_ARGV[command])
+        board_cmd.build_parser().parse_args(_PROVENANCE_MIX_ARGV[command])
     assert exc.value.code == 2
 
 
@@ -582,7 +583,7 @@ def test_t0929_consumers_session_commands_keep_mix_refusal(board, monkeypatch, c
     argv = {'init': ['init'], 'reid': ['reid', 'T-0001', 'T-0002'],
             'migrate-identity': ['migrate-identity']}[command]
     with pytest.raises(SystemExit) as exc:   # 위치 인자 `--slot` 은 parser 가 받지 않는다(T-0962)
-        board.build_parser().parse_args([*argv, '--task', 'main', '--repo', 'A', '--slot', '5'])
+        board_cmd.build_parser().parse_args([*argv, '--task', 'main', '--repo', 'A', '--slot', '5'])
     assert exc.value.code == 2
 
 

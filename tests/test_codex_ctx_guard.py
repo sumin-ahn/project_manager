@@ -43,7 +43,7 @@ import pytest
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from _hook_commands import inline_script_payloads, powershell_native_arguments
-from pm_engine.domain import conf_schema
+from pm_engine.domain import conf_schema, ctx_recovery
 from pm_engine.infra import conf_store, pre_push_hook
 
 REPO = Path(__file__).resolve().parents[1]
@@ -296,12 +296,12 @@ def test_hooks_warning_is_inline_and_only_calls_engine_script():
     engine_tools = {"{tools}/pm_log.py"}
     for feature in _features("PreCompact") + _features("PostCompact"):
         if not feature.argv:
-            # in-process 재무장은 실행 패키지의 marker 저장소를 직접 사용한다.
+            # in-process 재무장은 엔진 공개 진입(`cli.hooks`)의 원칙 재무장을 부른다.
             handler = getattr(feature, "handler", None)
             assert handler is not None, f"argv 도 handler 도 없는 기능: {feature}"
             source = inspect.getsource(handler)
-            assert "principle_store.rearm_seen_marker" in source, (
-                f"in-process handler 가 엔진 모듈을 적재하지 않음: {feature}")
+            assert "hooks.rearm_principles(" in source, (
+                f"in-process handler 가 엔진 공개 진입을 쓰지 않음: {feature}")
             continue
         assert feature.argv[0] == "{py}", feature
         assert feature.argv[1] in engine_tools, f"어댑터 소유 스크립트 호출: {feature}"
@@ -655,14 +655,12 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     assert spec is not None and "사용 한도" in spec.description
 
 
-# ── 4. 세션 안 ctx 넛지 (T-0770 · claude 미러) ────────────────────────────────
-# codex 어댑터엔 옆에 ctx_guard 모듈이 없어 relay driver 파일(pm_orch_codex.py)이 곧 훅 축의
-# 판정 사이트다. 여기서는 그 축만 본다 — 밴드 경계·임계 키·예산 우선순위가 claude 와 **같은
-# 값**인지, 점유 파서가 실제 rollout bytes 를 읽는지, 밴드 밖·측정 실패가 침묵인지.
+# ── 4. 세션 안 ctx 넛지 (T-0770) ────────────────────────────────
+# codex 어댑터엔 옆에 ctx_guard 모듈이 없어 relay driver 파일(pm_orch_codex.py)이 rollout 점유를
+# 관측하고 엔진 공개 진입(`judge_context`)의 판정을 봉투로 옮긴다. 여기서는 그 축만 본다 — 점유
+# 파서가 실제 rollout bytes 를 읽는지, 밴드 발화가 엔진 안내 원문인지, 밴드 밖·측정 실패가 침묵인지.
 
 DISPATCHER = CODEX / "pm_orch_codex.py"
-CLAUDE_CTX_GUARD = (
-    REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py")
 # T-0835 라이브 프로브(architect R1·2026-08-22) 픽스처 — 첫 turn(rollout에 token_count 아직
 # 없음) 훅 payload 4건 + 그 시점 rollout 6레코드. 두 파일 모두 `evidence`/새 fixture 헤더에
 # 조달 경로(elide 스크립트)를 남긴다.
@@ -704,12 +702,6 @@ def _load_module(name: str, path: Path):
 def codex_ctx():
     """훅 축 판정이 사는 codex 어댑터 모듈."""
     return _load_module("pm_orch_codex_ctx", DISPATCHER)
-
-
-@pytest.fixture(scope="module")
-def claude_ctx():
-    """미러 기준이 되는 claude 공유 코어."""
-    return _load_module("claude_ctx_guard", CLAUDE_CTX_GUARD)
 
 
 def _write_rollout(tmp_path: Path, lines=LIVE_ROLLOUT_LINES, *, filler_bytes: int = 0) -> Path:
@@ -860,47 +852,50 @@ def _first_turn_payload(rollout: Path, event: str) -> dict:
     return payload
 
 
+def _record_guidance_renders(monkeypatch) -> list:
+    """엔진 안내 렌더(domain.ctx_recovery) 호출 기록 — 측정 없음이 안내를 만들었는지 값으로 본다."""
+    calls = []
+    real = ctx_recovery.build_ctx_guard_guidance
+
+    def recording(band, **kwargs):
+        calls.append((band, kwargs))
+        return real(band, **kwargs)
+
+    monkeypatch.setattr(ctx_recovery, "build_ctx_guard_guidance", recording)
+    return calls
+
+
 @pytest.mark.parametrize("event", ("UserPromptSubmit", "PreToolUse"))
-def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, event):
+def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, monkeypatch, event):
     """첫 turn(rollout 에 token_count 0건)은 두 채널 모두 침묵 — 엔진 문구 생성 자체가 없다.
 
-    존재 검사가 아니라 runner 호출 리스트가 **비었음**을 값으로 단언한다(=측정 없음을 실측
+    존재 검사가 아니라 렌더 호출 리스트가 **비었음**을 값으로 단언한다(=측정 없음을 실측
     0%로 오인해 안내를 만들지 않았다). I1-a·I1-c."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
-    calls = []
+    calls = _record_guidance_renders(monkeypatch)
 
-    def runner(argv, **kwargs):
-        calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout=b"GUIDANCE", stderr=b"")
-
-    envelope = codex_ctx.ctx_nudge_envelope(
-        _first_turn_payload(rollout, event), root, runner=runner)
+    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, event), root)
 
     assert envelope == {}
     assert calls == [], "측정 없음이 엔진 문구 생성을 호출했다 — 0%를 실측치로 오인했다는 뜻"
 
 
 @pytest.mark.parametrize("event", ("UserPromptSubmit", "PreToolUse"))
-def test_first_turn_never_reports_a_usage_percentage(codex_ctx, tmp_path, event):
-    """첫 turn 엔벨로프 직렬화·엔진 호출 어디에도 사용률 수치가 없다(거짓 안내 부재·I1-b).
+def test_first_turn_never_reports_a_usage_percentage(codex_ctx, tmp_path, monkeypatch, event):
+    """첫 turn 엔벨로프 직렬화·엔진 렌더 호출 어디에도 사용률 수치가 없다(거짓 안내 부재·I1-b).
 
-    감도: 측정 없음을 정상 관측치(used_pct=0)로 바꾸는 회귀가 있으면 `--used-pct` 인자가
+    감도: 측정 없음을 정상 관측치(used_pct=0)로 바꾸는 회귀가 있으면 `used_pct` 인자가
     새로 나타나 이 단언이 red 가 된다."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
-    calls = []
+    calls = _record_guidance_renders(monkeypatch)
 
-    def runner(argv, **kwargs):
-        calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout=b"GUIDANCE", stderr=b"")
-
-    envelope = codex_ctx.ctx_nudge_envelope(
-        _first_turn_payload(rollout, event), root, runner=runner)
+    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, event), root)
 
     serialized = json.dumps(envelope, ensure_ascii=False)
     assert "%" not in serialized and "컨텍스트 사용" not in serialized
-    assert not any("--used-pct" in call for call in calls)
+    assert not any("used_pct" in kwargs for _band, kwargs in calls)
 
 
 def test_unmeasured_first_turn_preserves_existing_band_markers(codex_ctx, tmp_path):
@@ -977,30 +972,6 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
             f"{label}: direct TUI 미실측 caveat 부재")
 
 
-# ── 4.2 밴드가 claude 와 같은 값인가 ─────────────────────────────────────────
-
-@pytest.mark.parametrize("thresholds", (
-    {"checkpoint_at_pct": 70, "precompact_at_pct": 80},
-    {"checkpoint_at_pct": 60, "precompact_at_pct": 75},
-    {"checkpoint_at_pct": 70, "precompact_at_pct": 95},
-))
-def test_band_classification_mirrors_claude_for_every_used_pct(codex_ctx, claude_ctx, thresholds):
-    """0~100% 전 구간에서 밴드 이름이 claude 와 같다 — codex 전용 경계 신설 0."""
-    assert codex_ctx.nudge2_threshold(thresholds) == claude_ctx.nudge2_threshold(thresholds)
-    for used_pct in range(0, 101):
-        assert (codex_ctx.classify(used_pct, thresholds)
-                == claude_ctx.classify(used_pct, thresholds)), used_pct
-
-
-@pytest.mark.parametrize("tokens,budget", (
-    (0, 200000), (1, 200000), (15328, 20000), (199999, 200000), (400000, 200000),
-    (15328, 0), (-5, 200000),
-))
-def test_used_pct_from_tokens_mirrors_claude(codex_ctx, claude_ctx, tokens, budget):
-    assert (codex_ctx.context_used_pct_from_tokens(tokens, budget)
-            == claude_ctx.context_used_pct_from_tokens(tokens, budget))
-
-
 # ── 4.3 배선: registry 한 줄이고 채택자 config 는 무변경 ──────────────────────
 
 def test_ctx_nudge_is_wired_through_the_dispatcher_registry(codex_ctx):
@@ -1029,7 +1000,7 @@ def test_ctx_wiring_adds_nothing_to_the_adopter_hooks_config():
 # ── 4.4 밴드 발화·침묵·멱등 (판정 함수) ──────────────────────────────────────
 
 def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
-    """밴드 안에서는 pm_log ctx-guidance stdout 을 **그대로** additionalContext 로 낸다."""
+    """밴드 안에서는 엔진 공유 안내 렌더 결과를 **그대로** additionalContext 로 낸다."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
@@ -1038,11 +1009,9 @@ def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
     hook_output = envelope["hookSpecificOutput"]
     assert hook_output["hookEventName"] == "PreToolUse"
     guidance = hook_output["additionalContext"]
-    assert guidance.startswith("ENGINE-GUIDANCE ")
-    # 엔진에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → nudge2).
-    assert "ctx-guidance --band nudge2" in guidance
-    assert "--used-pct 77" in guidance and "--precompact-at-pct 80" in guidance
-    assert "--remaining-pct" not in guidance and "--stop-pct" not in guidance
+    # 렌더에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → nudge2).
+    assert guidance == ctx_recovery.build_ctx_guard_guidance("nudge2", used_pct=77, precompact_at_pct=80)
+    assert "잔여" not in guidance
     # 비차단 — 어떤 결정 필드도 내지 않는다(ADR-0081 D1·codex 는 allow/ask 자체를 거부한다).
     assert set(envelope) == {"hookSpecificOutput"}
     assert "permissionDecision" not in hook_output and "decision" not in envelope
@@ -1140,55 +1109,6 @@ def test_unrelated_hook_events_are_not_touched(codex_ctx, tmp_path):
 
     assert codex_ctx.ctx_nudge_envelope(
         _payload(rollout, hook_event_name="PostToolUse"), root) == {}
-
-
-def test_guidance_engine_absence_is_silent_and_keeps_the_cycle_open(codex_ctx, tmp_path):
-    """엔진 문구를 못 읽으면 문구를 복제하지 않고 침묵하며, marker 도 안 쓴다(다음 호출 재시도)."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET)  # pm_log.py 없음.
-    rollout = _write_rollout(tmp_path)
-
-    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
-    assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
-
-
-def test_guidance_command_shape_is_the_engine_single_source(codex_ctx, tmp_path):
-    """어댑터는 `pm_log.py ctx-guidance` 를 부를 뿐 문구를 만들지 않는다(호출 argv 실값)."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
-    rollout = _write_rollout(tmp_path)
-    calls = []
-
-    def runner(argv, **kwargs):
-        calls.append((list(argv), kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout=b"GUIDANCE", stderr=b"")
-
-    envelope = codex_ctx.ctx_nudge_envelope(_payload(rollout), root, runner=runner)
-
-    assert envelope["hookSpecificOutput"]["additionalContext"] == "GUIDANCE"
-    argv, kwargs = calls[0]
-    assert argv[0] == sys.executable
-    assert argv[1] == str(root / ".project_manager" / "tools" / "pm_log.py")
-    assert argv[2:] == ["ctx-guidance", "--band", "nudge2", "--used-pct", "77",
-                        "--precompact-at-pct", "80"]
-    assert kwargs["cwd"] == str(root)
-    assert 0 < kwargs["timeout"] <= codex_ctx.CTX_GUIDANCE_TIMEOUT_SEC
-
-
-def test_guidance_failure_modes_are_silent(codex_ctx, tmp_path):
-    """엔진 rc≠0·timeout·OSError 어느 것도 문구 복제나 예외로 새지 않는다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
-    rollout = _write_rollout(tmp_path)
-
-    def failing(argv, **kwargs):
-        return subprocess.CompletedProcess(argv, 3, stdout=b"partial", stderr=b"")
-
-    def timing_out(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, 3.0)
-
-    def exploding(argv, **kwargs):
-        raise OSError("no interpreter")
-
-    for runner in (failing, timing_out, exploding):
-        assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root, runner=runner) == {}
 
 
 # ── 4.5 디스패처 합본·출하 CLI (침묵이 실제로 침묵인가) ──────────────────────
@@ -1348,7 +1268,8 @@ def test_t0943_model_only_hook_input_runs_the_band(codex_ctx, tmp_path):
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     envelope = codex_ctx.ctx_nudge_envelope(
         _t0943_hook_input(_write_rollout(tmp_path), root, "PreToolUse", _RECORD_MODEL), root)
-    assert "ctx-guidance --band nudge2" in envelope["hookSpecificOutput"]["additionalContext"]
+    assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
+        "nudge2", used_pct=77, precompact_at_pct=80)
     assert "systemMessage" not in envelope
 
 
@@ -1358,7 +1279,8 @@ def test_t0943_other_model_and_missing_record_use_system_message(codex_ctx, tmp_
     rollout = _write_rollout(tmp_path)
     envelope = codex_ctx.ctx_nudge_envelope(
         _t0943_hook_input(rollout, root, "UserPromptSubmit", "gpt-other"), root)
-    assert "ctx-guidance --band nudge2" in envelope["hookSpecificOutput"]["additionalContext"]
+    assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
+        "nudge2", used_pct=77, precompact_at_pct=80)
     assert "모델이 바뀌었습니다" in envelope["systemMessage"] and "gpt-other" in envelope["systemMessage"]
 
     (root / ".project_manager/.local/ctx-budget.json").unlink()

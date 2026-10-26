@@ -217,7 +217,7 @@ def test_stop_wrapper_userpromptsubmit_injects_final_nudge(tmp_path):
     guidance = hso["additionalContext"]
     assert "ctx-nudge/최종" in guidance
     assert "pm_log.py checkpoint" in guidance
-    assert "auto-compact" in guidance
+    assert "압축은 자동이고 세션은 그대로 이어진다" in guidance
     assert "decision" not in data and "permissionDecision" not in hso
     marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
     assert sorted(path.name for path in marker_dir.iterdir()) == ["sess-ups.final"]

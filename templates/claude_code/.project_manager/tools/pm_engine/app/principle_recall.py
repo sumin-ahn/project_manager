@@ -14,7 +14,7 @@ def load(home) -> tuple[principle_rules.Rule, ...]:
 def judge_recall(home, *, on: str, text: str, seen=None) -> dict | None:
     """일치한 미주입 규칙의 count·keys·text와 파손 건수 broken을 반환한다.
 
-    기존 레지스트리 판독·정규식 실패는 비차단 값으로 처리한다. 실행 패키지 import 오류는 호출 전 노출된다."""
+    형식이 틀린 항목·정규식 오류는 파손 건수로 세고, 레지스트리 판독 불능은 예외로 올린다."""
     if on not in principle_rules.ON_VALUES:
         return None
     rules, broken = principle_store._load_all(home)

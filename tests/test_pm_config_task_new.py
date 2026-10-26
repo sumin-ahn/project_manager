@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 from pm_engine.cli import config_slots
+from pm_engine.cli import config_cmd
 from pm_engine.cli import config_tasks
 
 from _pool_seams import bind_pool
@@ -292,23 +293,22 @@ def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validati
 
 def test_task_new_parser_leaf_is_wired_to_cmd_task_new(pc):
     """`task new <이름>` 이 파서 leaf 로 등록되고 `cmd_task_new` 로 배선된다."""
-    args = pc.build_parser().parse_args(["task", "new", "job"])
+    args = config_cmd.build_parser().parse_args(["task", "new", "job"])
     assert args.command == "task" and args.task_command == "new"
     assert args.name == "job"
-    assert args.func.func is config_tasks.cmd_task_new
-    assert args.func.args == (pm_paths.home_at(pc.REPO),)
+    assert args.func is config_tasks.cmd_task_new
 
 
 def test_task_new_has_no_prefix_flag(pc):
     """`--prefix` 는 두지 않는다 — 새 prefix 신설 승인 게이트는 `task prefix` 단일 지점."""
     with pytest.raises(SystemExit) as exc_info:
-        pc.build_parser().parse_args(["task", "new", "job", "--prefix", "pay"])
+        config_cmd.build_parser().parse_args(["task", "new", "job", "--prefix", "pay"])
     assert exc_info.value.code == 2
 
 
 def test_task_group_help_lists_new(pc):
     """`task` 그룹 help 가 `new` 를 표면화한다(진입점이 둘이 된 사실)."""
-    help_text = pc.build_parser().format_help()
+    help_text = config_cmd.build_parser().format_help()
     assert "task 정체성 관리 (new·prefix·branch·close·end·reopen)" in help_text
 
 

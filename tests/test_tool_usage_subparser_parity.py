@@ -7,8 +7,9 @@
 `worktree prune-stale` 이 빠져 있었다(subparser 엔 있음).
 
 이 `사용:` 블록이 `--help` 에 *실제로 뜨는지*는 도구마다 다르다 — 가드는 두 경우 다 지킨다:
-  - **pm_config**: `ArgumentParser(description=__doc__, formatter_class=RawDescriptionHelpFormatter)`
-    라 모듈 docstring(=`사용:` 블록 포함)이 `--help` 에 verbatim 표면화된다. drift = 문자 그대로
+  - **pm_config**: 파서 소유 모듈 `pm_engine.cli.config_cmd` 가 `ArgumentParser(description=__doc__,
+    formatter_class=RawDescriptionHelpFormatter)` 라 그 모듈 docstring(=`사용:` 블록 포함)이 `--help` 에
+    verbatim 표면화된다. drift = 문자 그대로
     *틀린 `--help`*.
   - **pm_log**: `build_parser()`(pm_log.py:233)가 짧은 하드코딩 `description=` 을 써서 `--help` 에
     모듈 docstring 이 안 뜬다. 여기선 가드가 "`--help` 표면"이 아니라 *소스-doc `사용:` 블록*
@@ -69,8 +70,16 @@ _TOOLS = [
 _CMD_WORD = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
+# 평면 진입 도구의 `사용:` 문서와 build_parser() 를 함께 소유하는 패키지 모듈(도구 stem → tools 상대경로).
+_DOC_AND_PARSER_OWNERS = {"pm_config": "pm_engine/cli/config_cmd.py"}
+
+
+def _owner_path(name: str) -> Path:
+    return TOOLS / _DOC_AND_PARSER_OWNERS.get(name, f"{name}.py")
+
+
 def _load(name: str):
-    spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, _owner_path(name))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -204,7 +213,7 @@ def _tools_with_usage_block_and_subparsers() -> set[str]:
     가벼운 발견 휴리스틱(should-fix·registry drift 방지)이다."""
     found: set[str] = set()
     for path in sorted(TOOLS.glob("*.py")):
-        source = path.read_text(encoding="utf-8")
+        source = _owner_path(path.stem).read_text(encoding="utf-8")
         docstring = ast.get_docstring(ast.parse(source)) or ""
         has_usage_block = any(line.strip() == "사용:" for line in docstring.splitlines())
         implementation = (TOOLS / "pm_engine/cli/log.py").read_text(encoding="utf-8") if path.stem == "pm_log" else source

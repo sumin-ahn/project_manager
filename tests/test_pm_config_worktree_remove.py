@@ -22,6 +22,7 @@ import 하지 않는다(보호목록은 `_resolve_protected` 를 monkeypatch 한
 """
 from __future__ import annotations
 from pm_engine.cli import config_slots
+from pm_engine.cli import config_cmd
 
 from _pool_seams import bind_pool
 
@@ -1425,8 +1426,6 @@ def test_cmd_remove_forced_state_warns_on_stderr(pc, monkeypatch, engine, capsys
 def test_main_routes_worktree_remove_with_user_ack_and_force(pc, engine, monkeypatch):
     """main 파싱 e2e — `--user-ack` 반복 값이 모여 엔진에 가고, `--force` 가 전달된다."""
     wp = bind_pool(monkeypatch, FakeWP(engine))
-    monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: bind_pool(monkeypatch, wp) if name == "worktree_pool" else None)
     assert pc.main(["worktree", "remove", "work/A_1", "--user-ack", "work/A_1",
                     "--user-ack", "A_1"]) == 0
     assert pc.main(["worktree", "remove", "work/A_1", "--user-ack", "work/A_1", "--force"]) == 0
@@ -1439,27 +1438,24 @@ def test_main_routes_worktree_remove_with_user_ack_and_force(pc, engine, monkeyp
 def test_main_worktree_remove_without_user_ack_rc1(pc, engine, monkeypatch):
     """main 파싱 e2e — `--user-ack` 없이 부르면 엔진 호출 0·rc1."""
     wp = bind_pool(monkeypatch, FakeWP(engine))
-    monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: bind_pool(monkeypatch, wp) if name == "worktree_pool" else None)
     assert pc.main(["worktree", "remove", "work/A_1"]) == 1
     assert wp.calls == []
 
 
 def test_build_parser_worktree_remove_parses_slot_user_ack_and_force(pc):
     """`worktree remove <slot> --user-ack ... [--force]` 파싱 — user_ack 는 목록(반복)·기본 빈 목록."""
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     args = parser.parse_args(["worktree", "remove", "work/A_1", "--user-ack", "work/A_1",
                               "--user-ack", "A_1", "--force"])
     assert (args.slot, args.user_ack, args.force) == ("work/A_1", ["work/A_1", "A_1"], True)
-    assert args.func.func is config_slots.cmd_worktree_remove
-    assert args.func.args == (pm_paths.home_at(pc.REPO),)
+    assert args.func is config_slots.cmd_worktree_remove
     bare_args = parser.parse_args(["worktree", "remove", "work/A_1"])
     assert (bare_args.user_ack, bare_args.force) == ([], False)
 
 
 def test_worktree_help_surfaces_remove_ack_and_distinguishes_prune(pc, capsys):
     """`worktree --help` 이 remove(승인값·합쳐지지 않은 브랜치 보존 캐비앗) + prune-stale 역할 구분을 surface."""
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["worktree", "--help"])
     out = capsys.readouterr().out

@@ -37,6 +37,7 @@ import pytest
 # codex 라이브 공용 헬퍼 (격리 CODEX_HOME + auth·conftest 소유·ADR-0070 T-0407·live smoke 절).
 from conftest import codex_auth_available, codex_live_env, drop_codex_auth, make_codex_home
 from pm_engine.app.session import relay
+from pm_engine.cli import hooks as cli_hooks
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -553,11 +554,12 @@ def test_codex_maybe_mark_ctx_marks_when_turn_delta_is_over_budget(orch, driver_
 
 
 def test_codex_maybe_mark_ctx_warns_when_marker_write_fails(
-        orch, driver_mod, tmp_path, capsys):
-    """임계 초과지만 marker writer가 실패하면 기존 fail-soft stderr 경고를 남긴다."""
+        orch, driver_mod, tmp_path, capsys, monkeypatch):
+    """임계 초과지만 marker writer가 실패하면 run_relay 가 구성한 writer 가 stderr 경고를 남긴다."""
+    monkeypatch.setattr(relay, "write_post_turn_marker", lambda *_args: False)
     driver = driver_mod.CodexCliDriver(
         contract.parse_codex_json, spawn_result=relay.SpawnResult, ctx_budget=1000, precompact_at_pct=80, root=tmp_path,
-        mark_stop=lambda *_args: False,
+        mark_stop=cli_hooks._marker_writer("codex"),
         mark_ctx_if_over=orch.mark_ctx_post_turn_if_over,
     )
 
@@ -792,7 +794,7 @@ def test_codex_driver_parser_flags(driver_mod):
 
 def test_codex_main_without_task_is_refused_before_engine(driver_mod, monkeypatch, capsys):
     """[[T-0960]] — relay 는 task 없이 시작하지 않는다(rc 2 · 엔진 적재 전 · 훅 진입은 그대로)."""
-    monkeypatch.setattr(driver_mod, "_load_engine", lambda: pytest.fail("task 없이 엔진 적재"))
+    monkeypatch.setattr(cli_hooks, "run_relay", lambda *a, **k: pytest.fail("task 없이 엔진 실행"))
     with pytest.raises(SystemExit) as exc:
         driver_mod.main(["--cwd", "/some/repo"])
     assert exc.value.code == 2
@@ -800,7 +802,7 @@ def test_codex_main_without_task_is_refused_before_engine(driver_mod, monkeypatc
 
 
 def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatch, tmp_path):
-    """main이 task/local.conf와 엔진 판정·SpawnResult seam을 driver에 명시 주입한다."""
+    """main이 task/local.conf와 엔진 판정·SpawnResult seam을 driver에 명시 주입한다(run_relay 구성)."""
     captured: dict = {}
 
     class _FakeSup:
@@ -811,31 +813,27 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
         def run_loop(self, cwd, in_stream, out_stream):
             return 0
 
-    def _fake_write_marker(root, sid):
-        return True
-
-    class _FakeEngine:
-        Supervisor = _FakeSup
-        SpawnResult = staticmethod(lambda sid, reply: (sid, reply))
-        write_post_turn_marker = staticmethod(_fake_write_marker)
-        mark_ctx_post_turn_if_over = staticmethod(lambda *args: False)
-
     # local.conf codex 예산·정지임계 주입 확인(해소 precedence 가 main 배선에 실제로 닿음).
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.codex.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n", encoding="utf-8")
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, harness="codex")
-    _FakeEngine.ctx_budget = staticmethod(
-        lambda root, harness, model: captured.setdefault("budget", relay.ctx_budget(root, harness, model)))
-    monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    real_budget = relay.ctx_budget
+    monkeypatch.setattr(relay, "ctx_budget", lambda home, harness, model: captured.setdefault(
+        "budget", real_budget(home, harness, model)))
+    monkeypatch.setattr(relay, "Supervisor", _FakeSup)
+    monkeypatch.setattr(driver_mod, "repo_root", lambda start: tmp_path)
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
-    assert captured["driver"]._ctx_budget == 333000
-    assert captured["driver"]._precompact_at_pct == 85
-    assert captured["driver"]._mark_stop is _fake_write_marker
-    assert captured["driver"]._mark_ctx_if_over is _FakeEngine.mark_ctx_post_turn_if_over
-    assert captured["driver"]._spawn_result is _FakeEngine.SpawnResult
+    driver = captured["driver"]
+    assert isinstance(driver, driver_mod.CodexCliDriver)
+    assert driver._ctx_budget == 333000
+    assert driver._precompact_at_pct == 85
+    assert driver._mark_stop(tmp_path, "tid_main") is True
+    assert relay.stop_marker_present(tmp_path, "tid_main") is True
+    assert driver._mark_ctx_if_over is relay.mark_ctx_post_turn_if_over
+    assert driver._spawn_result is relay.SpawnResult
     assert captured["budget"] == (333000, 85, None)
 
 

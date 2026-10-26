@@ -20,6 +20,7 @@ worktree_pool·git runner 는 DI mock — 실 clone/훅 설치/네트워크 0.
 """
 from __future__ import annotations
 from pm_engine.cli import config_repo
+from pm_engine.cli import config_cmd
 from pm_engine.infra import console
 from pm_engine.cli import bootstrap_report
 from pm_engine.cli import bootstrap_card
@@ -903,30 +904,28 @@ def test_repo_list_empty_registry_guides_to_repo_add(pc, board, capsys):
 
 def test_cli_repo_protected_get_parses_without_value(pc):
     """`repo protected <name>` 은 value 없이 파싱돼 조회 핸들러로 간다."""
-    args = pc.build_parser().parse_args(["repo", "protected", "svc"])
-    assert args.func.func is config_repo.cmd_repo_protected
-    assert args.func.args == (pm_paths.home_at(pc.REPO),)
+    args = config_cmd.build_parser().parse_args(["repo", "protected", "svc"])
+    assert args.func is config_repo.cmd_repo_protected
     assert args.name == "svc" and args.value is None
 
 
 def test_cli_repo_protected_set_parses_value(pc):
     """`repo protected <name> <목록>` 은 value 를 받아 설정 경로로 간다."""
-    args = pc.build_parser().parse_args(["repo", "protected", "svc", "main,release"])
+    args = config_cmd.build_parser().parse_args(["repo", "protected", "svc", "main,release"])
     assert args.value == "main,release"
 
 
 def test_cli_repo_add_accepts_protected_flag(pc):
     """`repo add --protected` 플래그가 파서에 있다(종전 "후속 플래그 여지" 자인 해소)."""
-    args = pc.build_parser().parse_args(
+    args = config_cmd.build_parser().parse_args(
         ["repo", "add", "svc", "--git", "u", "--protected", "main,develop"])
     assert args.protected == "main,develop"
 
 
 def test_cli_repo_list_parses(pc):
     """`repo list` 가 조회 핸들러로 간다."""
-    args = pc.build_parser().parse_args(["repo", "list"])
-    assert args.func.func is config_repo.cmd_repo_list
-    assert args.func.args == (pm_paths.home_at(pc.REPO),)
+    args = config_cmd.build_parser().parse_args(["repo", "list"])
+    assert args.func is config_repo.cmd_repo_list
 
 
 # ════════════════════════════════════════════════════════════════════════

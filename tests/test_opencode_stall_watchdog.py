@@ -8,7 +8,7 @@ opencode `run` 이 스타트업 network fetch stall 에 빠지면 `--format json
   ① 엔진 헬퍼 `run_with_first_event_watchdog` — 주입 popen/clock hermetic(바이너리 불요·CI 상시):
      stall 소진→StallWatchdogError · 재시도 성공 경로 · overall(mid-turn) drain 백스톱 · kill · loud.
   ② env 노브 `PM_OC_FIRST_EVENT_TIMEOUT`/`PM_OC_STALL_RETRIES` 해소기 동작.
-  ③ opencode driver 배선 — `_make_watchdog_runner` 가 엔진 워치독 호출 · `_turn` 이 stall 소진에
+  ③ opencode driver 배선 — run_relay 가 공급한 runner 가 엔진 워치독 호출 · `_turn` 이 stall 소진에
      loud + fail-soft(stall_error 주입 시) · 미주입 시 전파(sensitivity).
   ④ pm_import `--fill auto` 세 하네스 공용 워치독 경유 · opencode startup 재시도 불변.
    ⑤ **결정적 e2e**(skipif opencode 부재) — 무응답 소켓 서버(연결 수락·응답 0)를 baseURL 로 물린
@@ -42,7 +42,8 @@ from _textio import normalize_newlines
 
 import pytest
 from pm_engine.app.session import relay
-from pm_engine.infra import raw_output
+from pm_engine.cli import hooks as cli_hooks
+from pm_engine.infra import pm_paths, raw_output
 from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
@@ -303,30 +304,34 @@ def test_env_knob_stall_retries(monkeypatch):
 
 # ── ③ opencode driver 배선 ─────────────────────────────────────────────────────
 
-def test_driver_watchdog_runner_calls_engine():
-    """`_make_watchdog_runner` 가 엔진 워치독을 env 노브·overall_timeout 로 호출한다."""
+def test_driver_watchdog_runner_calls_engine(monkeypatch, tmp_path):
+    """run_relay 가 공급한 OpenCode runner 가 엔진 워치독을 env 노브·overall_timeout 로 호출한다."""
     driver_mod = _load_driver()
     calls: dict = {}
+    built: dict = {}
 
-    class FakeEngine:
-        StallWatchdogError = watchdog.StallWatchdogError
+    def fake_watchdog(cmd, **kw):
+        calls["cmd"] = cmd
+        calls["kw"] = kw
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
-        @staticmethod
-        def first_event_timeout_default():
-            return 7.0
+    class _CaptureSup:
+        def __init__(self, relay_driver, *, root, task=None):
+            built["driver"] = relay_driver
 
-        @staticmethod
-        def stall_retries_default():
-            return 3
+        def run_loop(self, cwd, in_stream, out_stream):
+            return 0
 
-        @staticmethod
-        def run_with_first_event_watchdog(cmd, **kw):
-            calls["cmd"] = cmd
-            calls["kw"] = kw
-            return subprocess.CompletedProcess(cmd, 0, "ok", "")
-
-    runner = driver_mod._make_watchdog_runner(FakeEngine)
-    result = runner(["opencode", "run", "x"], capture_output=True, text=True, timeout=600)
+    monkeypatch.setattr(watchdog, "first_event_timeout_default", lambda: 7.0)
+    monkeypatch.setattr(watchdog, "stall_retries_default", lambda: 3)
+    monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", fake_watchdog)
+    monkeypatch.setattr(relay, "ctx_budget", lambda home, harness, model: (100_000, 80, None))
+    monkeypatch.setattr(relay, "Supervisor", _CaptureSup)
+    cli_hooks.run_relay(pm_paths.home_at(tmp_path), driver_mod.OpencodeCliDriver, harness="opencode",
+                        task="t", cwd=str(tmp_path), agent="pm", stdin=None, stdout=None)
+    driver = built["driver"]
+    assert driver._stall_error_types == (watchdog.StallWatchdogError,)
+    result = driver.runner(["opencode", "run", "x"], capture_output=True, text=True, timeout=600)
     assert result.returncode == 0 and result.stdout == "ok"
     assert calls["cmd"] == ["opencode", "run", "x"]
     assert calls["kw"]["first_event_timeout"] == 7.0

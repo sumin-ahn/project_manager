@@ -1,8 +1,9 @@
 """claude 어댑터 ctx compaction-native 넛지 단위 테스트 (T-0550).
 
 어댑터 스크립트(templates/claude_code/.claude/ctx_guard·ctx_statusline·ctx_stop_hook)를
-importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·subprocess 호출 없이
-가짜 transcript JSONL·가짜 statusline stdin·격리 tmp 만 본다.
+importlib 로 직접 로드해 검증한다. 라이브 claude·subprocess 호출 없이 가짜 transcript JSONL·가짜
+statusline stdin·격리 tmp 만 본다. 점유 토큰은 어댑터 native 관측(ctx_guard)이, 쓴 %·밴드·marker 는
+엔진 공개 진입(`cli.hooks`)과 그 소유자(conf_store·domain.ctx_recovery·infra.compaction_store)가 낸다.
 
 검증 축:
   1. 분모·임계 — 압축 한도 기록(E·비율)과 세션 모델 확인(T-0943).
@@ -16,6 +17,9 @@ importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·s
 """
 from __future__ import annotations
 
+from pm_engine.cli import hooks as cli_hooks
+from pm_engine.domain import ctx_recovery
+from pm_engine.infra import compaction_store, conf_store, pm_paths
 import importlib.util
 import json
 from pathlib import Path
@@ -49,6 +53,23 @@ def stop_hook():
     return _load("ctx_stop_hook")
 
 
+def _home(root: Path):
+    """어댑터가 설치 루트에서 만드는 것과 같은 Home."""
+    return cli_hooks.adapter_home(root)
+
+
+def _statusline_pct(guard, stdin: dict, budget: int) -> int:
+    """statusLine 입력의 native 점유 토큰(ctx_guard) → 엔진 쓴 %(domain.ctx_recovery)."""
+    window = stdin.get("context_window")
+    tokens = guard._statusline_used_tokens(window) if isinstance(window, dict) else 0
+    return ctx_recovery.context_used_pct(tokens, budget)
+
+
+def _transcript_pct(guard, transcript, budget: int) -> int:
+    """대화 기록의 native 점유 토큰(ctx_guard) → 엔진 쓴 %(domain.ctx_recovery)."""
+    return ctx_recovery.context_used_pct(guard.context_tokens_from_transcript(transcript)[0], budget)
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -58,20 +79,18 @@ def stop_hook():
     ],
     ids=["engine-tool", "pytest", "persistent-cd"],
 )
-def test_git_anchor_prefilter_routes_new_command_classes_to_board(
+def test_git_anchor_routes_new_command_classes_to_central_judgment(
     monkeypatch, tmp_path, command,
 ):
-    """T-0697 선필터 세 분기는 모두 중앙 board 판정 seam까지 도달한다."""
+    """T-0697 명령 세 갈래는 거르는 단계 없이 원문 그대로 설치 루트 Home 과 함께 엔진 공개 판정에 도달한다."""
     driver = _load("pm_orch_claude")
     calls = []
 
-    class FakeBoard:
-        @staticmethod
-        def judge_git_anchor_command(_root, _session, cwd, shell_command, grants=False):
-            calls.append((cwd, shell_command))
-            return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
+    def judge_git_anchor_command(home, _session, cwd, shell_command, grants=False):
+        calls.append((home, cwd, shell_command, grants))
+        return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 
-    monkeypatch.setattr(driver, "_load_board", lambda _root: FakeBoard)
+    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", judge_git_anchor_command)
     payload = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
@@ -79,7 +98,7 @@ def test_git_anchor_prefilter_routes_new_command_classes_to_board(
         "tool_input": {"command": command},
     }
     assert driver.git_anchor_hook_evaluate(payload, tmp_path) is None
-    assert calls == [(str(tmp_path), command)]
+    assert calls == [(cli_hooks.adapter_home(tmp_path), str(tmp_path), command, False)]
 
 
 # ── transcript JSONL fixture 헬퍼 ──────────────────────────────────────────
@@ -131,14 +150,14 @@ def test_load_local_config_parses(guard, tmp_path):
         "# comment\nctx.checkpoint_at_pct=75\n\nctx.precompact_at_pct = 92\nprefix=PAY\n",
         encoding="utf-8"
     )
-    conf = guard.load_local_config(tmp_path)
+    conf = conf_store.local_config(_home(tmp_path))
     assert conf["ctx.checkpoint_at_pct"] == "75"
     assert conf["ctx.precompact_at_pct"] == "92"
     assert conf["prefix"] == "PAY"
 
 
 def test_load_local_config_missing(guard, tmp_path):
-    assert guard.load_local_config(tmp_path / "elsewhere") == {}
+    assert conf_store.local_config(_home(tmp_path / "elsewhere")) == {}
 
 
 # ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 넛지 ────────
@@ -150,51 +169,51 @@ def test_statusline_used_pct_current_usage(guard):
         "cache_creation_input_tokens": 40_000,
         "cache_read_input_tokens": 40_000,
     }}}
-    assert guard.context_used_pct_from_statusline(sl, 200_000) == 90
+    assert _statusline_pct(guard, sl, 200_000) == 90
 
 
 def test_statusline_current_usage_null_with_stale_total_input_is_zero(guard):
     # codex T-0234 must-fix: current_usage null(post-/compact) + 누적성 total_input 잔존 →
     # 폴백하면 과대 표시→넛지 오판정. 반드시 0% graceful.
     sl = {"context_window": {"current_usage": None, "total_input_tokens": 150_000}}
-    assert guard.context_used_pct_from_statusline(sl, 200_000) == 0
+    assert _statusline_pct(guard, sl, 200_000) == 0
 
 
 def test_statusline_current_usage_empty_dict_is_zero(guard):
     # current_usage 가 빈 dict 여도 0% (토큰 신호 없음 = graceful).
     sl = {"context_window": {"current_usage": {}, "total_input_tokens": 99_000}}
-    assert guard.context_used_pct_from_statusline(sl, 200_000) == 0
+    assert _statusline_pct(guard, sl, 200_000) == 0
 
 def test_statusline_budget_is_denominator(guard):
     # 물리 window% 폐기 — 같은 토큰이라도 예산 분모가 다르면 다른 % (표시=정지 일관 근거).
     sl = {"context_window": {"current_usage": {"input_tokens": 100_000}}}
-    assert guard.context_used_pct_from_statusline(sl, 200_000) == 50
-    assert guard.context_used_pct_from_statusline(sl, 500_000) == 20
-    assert guard.context_used_pct_from_statusline(sl, 1_000_000) == 10
+    assert _statusline_pct(guard, sl, 200_000) == 50
+    assert _statusline_pct(guard, sl, 500_000) == 20
+    assert _statusline_pct(guard, sl, 1_000_000) == 10
 
 
 def test_statusline_ignores_native_physical_pct(guard):
     # ADR-0041: native used_percentage(물리%)는 안 읽는다 — current_usage 예산 분모만.
     sl = {"context_window": {"used_percentage": 73,
                              "current_usage": {"input_tokens": 100_000}}}
-    assert guard.context_used_pct_from_statusline(sl, 200_000) == 50  # native 73 무시.
+    assert _statusline_pct(guard, sl, 200_000) == 50  # native 73 무시.
     # current_usage/total_input 없이 native 만 → 0 (native 안 읽음).
-    assert guard.context_used_pct_from_statusline(
+    assert _statusline_pct(guard, 
         {"context_window": {"used_percentage": 73}}, 200_000) == 0
 
 
 def test_statusline_current_usage_null_zero(guard):
     # current_usage null/부재(세션초·/compact 직후) + total_input 없음 → 0% graceful.
-    assert guard.context_used_pct_from_statusline(
+    assert _statusline_pct(guard, 
         {"context_window": {"current_usage": None}}, 200_000) == 0
-    assert guard.context_used_pct_from_statusline({"context_window": {}}, 200_000) == 0
+    assert _statusline_pct(guard, {"context_window": {}}, 200_000) == 0
 
 
 def test_statusline_no_signal_zero(guard):
-    assert guard.context_used_pct_from_statusline({}, 200_000) == 0
-    assert guard.context_used_pct_from_statusline({"context_window": "bad"}, 200_000) == 0
+    assert _statusline_pct(guard, {}, 200_000) == 0
+    assert _statusline_pct(guard, {"context_window": "bad"}, 200_000) == 0
     # budget<=0(비정상)도 0.
-    assert guard.context_used_pct_from_statusline(
+    assert _statusline_pct(guard, 
         {"context_window": {"current_usage": {"input_tokens": 100_000}}}, 0) == 0
 
 
@@ -203,16 +222,16 @@ def test_statusline_render_colors(guard, statusline,tmp_path):
     def _sl(tokens):
         return {"context_window": {"current_usage": {"input_tokens": tokens}}}
     # ok (used 50 < 70): 회색·checkpoint 문구 없음.
-    ok = statusline.build_statusline(_sl(100_000), {},root=tmp_path)
+    ok = statusline.build_statusline(_sl(100_000), home=_home(tmp_path))
     assert "\033[90m" in ok and "ctx 50%" in ok and "checkpoint" not in ok
     # nudge (70 <= used 75 < 77): 노랑·checkpoint 준비.
-    nudge = statusline.build_statusline(_sl(150_000), {},root=tmp_path)
+    nudge = statusline.build_statusline(_sl(150_000), home=_home(tmp_path))
     assert "\033[33m" in nudge and "checkpoint 준비" in nudge
     # nudge2 (77[=max(80-3,70)] <= used 78 < 80): 빨강·checkpoint 권고.
-    nudge2 = statusline.build_statusline(_sl(156_000), {},root=tmp_path)
+    nudge2 = statusline.build_statusline(_sl(156_000), home=_home(tmp_path))
     assert "\033[31m" in nudge2 and "checkpoint 권고" in nudge2
     # stop (used 92 >= 80): 빨강·checkpoint 최종 알림.
-    stop = statusline.build_statusline(_sl(184_000), {},root=tmp_path)
+    stop = statusline.build_statusline(_sl(184_000), home=_home(tmp_path))
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
 
 
@@ -220,18 +239,19 @@ def test_statusline_render_colors_respects_budget_override(guard, statusline,tmp
     # 하네스 오버라이드로 예산이 커지면 같은 토큰이 낮은 %로 표시(표시=밴드 일관·per-harness).
     sl = {"context_window": {"current_usage": {"input_tokens": 184_000}}}
     # 기본 200K: 92% used → stop(빨강).
-    stop = statusline.build_statusline(sl, {},root=tmp_path)
+    stop = statusline.build_statusline(sl, home=_home(tmp_path))
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
     # claude 오버라이드 1M(다시 적용한 기록): 18% used → ok(회색).
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, {"harness.claude.ctx_window_tokens": "1000000"})
-    ok = statusline.build_statusline(sl, {"harness.claude.ctx_window_tokens": "1000000"},root=tmp_path)
+    ok = statusline.build_statusline(sl, home=_home(tmp_path))
     assert "\033[90m" in ok and "ctx 18%" in ok and "checkpoint" not in ok
 
 
 def test_classify_boundaries(guard):
     # nudge2_threshold = max(precompact_at − CTX_NUDGE2_MARGIN_PCT, checkpoint_at) = max(87, 80) = 87.
     th = {"checkpoint_at_pct": 80, "precompact_at_pct": 90}
+    guard = ctx_recovery  # 밴드 판정 소유자 — 훅·statusLine 은 엔진 공개 진입으로 이 규칙을 쓴다.
     assert guard.classify(50, th) == "ok"
     assert guard.classify(80, th) == "nudge"    # 쓴 80 == checkpoint_at → nudge (1단).
     assert guard.classify(79, th) == "ok"       # 쓴 79 < checkpoint_at → ok.
@@ -244,6 +264,7 @@ def test_classify_boundaries(guard):
 
 def test_nudge2_threshold_derivation(guard):
     # 2단 임계 = precompact_at − margin(3), checkpoint_at 으로 하한 (config 노브 신설 없이 파생).
+    guard = ctx_recovery  # 마진·임계 파생의 단일 소유자.
     assert guard.CTX_NUDGE2_MARGIN_PCT == 3
     assert guard.nudge2_threshold({"checkpoint_at_pct": 70, "precompact_at_pct": 80}) == 77
     assert guard.nudge2_threshold({"checkpoint_at_pct": 80, "precompact_at_pct": 90}) == 87
@@ -294,12 +315,12 @@ def test_transcript_used_pct(guard, tmp_path):
     path = _write_transcript(tmp_path, [
         ("assistant", {"input_tokens": 180_000}),
     ])
-    assert guard.context_used_pct_from_transcript(path, 200_000) == 90
+    assert _transcript_pct(guard, path, 200_000) == 90
 
 
 def test_transcript_missing_file_zero(guard, tmp_path):
     assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None, 0)
-    assert guard.context_used_pct_from_transcript(tmp_path / "nope.jsonl", 200_000) == 0
+    assert _transcript_pct(guard, tmp_path / "nope.jsonl", 200_000) == 0
 
 
 def test_transcript_malformed_lines_skipped(guard, tmp_path):
@@ -317,7 +338,7 @@ def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
     # 쓴 % 낮음 (used 50) → 출력 없이 통과.
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 100_000})])
     stdin = {"transcript_path": str(path), "session_id": "sess-ok"}
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0 and output is None
     assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop").exists()
 
@@ -335,7 +356,7 @@ def test_hook_stop_userpromptsubmit_injects_final_nudge(stop_hook, tmp_path):
         "hook_event_name": "UserPromptSubmit",
         "prompt": "다음 작업도 진행해줘",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
@@ -343,7 +364,7 @@ def test_hook_stop_userpromptsubmit_injects_final_nudge(stop_hook, tmp_path):
     assert "ctx-nudge/최종" in guidance
     assert "python3 .project_manager/tools/pm_log.py checkpoint --task <task> --trigger compaction" in guidance
     assert "<task>`에는 현재 task 이름" in guidance
-    assert "auto-compact" in guidance
+    assert "압축은 자동이고 세션은 그대로 이어진다" in guidance
     assert "permissionDecision" not in hso
     assert "decision" not in output
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
@@ -357,8 +378,8 @@ def test_hook_final_nudge_idempotent_within_cycle(stop_hook, tmp_path):
         "session_id": "sess-final-idem",
         "hook_event_name": "UserPromptSubmit",
     }
-    rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
-    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
+    rc1, out1 = stop_hook.evaluate(stdin, _home(tmp_path))
+    rc2, out2 = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc1 == rc2 == 0
     assert "additionalContext" in out1["hookSpecificOutput"]
     assert out2 is None
@@ -367,13 +388,14 @@ def test_hook_final_nudge_idempotent_within_cycle(stop_hook, tmp_path):
 
 def test_hook_no_transcript_passes(stop_hook, tmp_path):
     # transcript_path 없음 → used 0 → 통과.
-    rc, output = stop_hook.evaluate({"session_id": "x"}, tmp_path, {})
+    rc, output = stop_hook.evaluate({"session_id": "x"}, _home(tmp_path))
     assert rc == 0 and output is None
 
 
 def test_hook_final_marker_claim_failure_does_not_inject_and_retries(
         stop_hook, tmp_path, monkeypatch):
-    # marker 선점 실패 호출은 무주입이고, 파일이 없으면 다음 호출에서 다시 선점할 수 있다.
+    # marker 를 만들 수 없으면 무출력 성공으로 삼키지 않고 원인 예외가 올라간다(엔진 marker 저장소).
+    # 파일이 없으면 다음 호출에서 다시 선점할 수 있다.
     stdin = {
         "transcript_path": str(_stop_transcript(tmp_path)),
         "session_id": "sess-heal",
@@ -384,33 +406,34 @@ def test_hook_final_marker_claim_failure_does_not_inject_and_retries(
         raise PermissionError("marker unavailable")
 
     with monkeypatch.context() as patch:
-        patch.setattr(stop_hook.os, "open", fail_open)
-        rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
+        patch.setattr(compaction_store.os, "open", fail_open)
+        with pytest.raises(PermissionError, match="marker unavailable"):
+            stop_hook.evaluate(stdin, _home(tmp_path))
     marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-heal.final"
     assert not marker.exists()
-    assert rc1 == 0 and out1 is None
 
-    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
+    rc2, out2 = stop_hook.evaluate(stdin, _home(tmp_path))
     assert marker.exists()
     assert rc2 == 0
     assert "additionalContext" in out2["hookSpecificOutput"]
+    assert stop_hook.evaluate(stdin, _home(tmp_path)) == (0, None)
 
 
 def test_hook_atomic_marker_claim_race_loser_does_not_inject(
         stop_hook, tmp_path, monkeypatch):
     """경쟁 호출이 직전에 marker를 선점하면 `.nudge`/`.nudge2`/`.final` loser는 무주입."""
     cases = (("nudge", 150_000), ("nudge2", 156_000), ("final", 190_000))
-    real_open = stop_hook.os.open
+    real_open = compaction_store.os.open
     claimed = []
 
     def competing_open(path, flags, mode=0o777):
-        # evaluate의 O_EXCL 시점에 경쟁 호출이 같은 marker를 먼저 생성한 상황을 결정적으로 재현한다.
+        # marker 선점의 O_EXCL 시점에 경쟁 호출이 같은 marker를 먼저 생성한 상황을 결정적으로 재현한다.
         fd = real_open(path, flags, mode)
-        stop_hook.os.close(fd)
+        compaction_store.os.close(fd)
         claimed.append(Path(path).suffix.removeprefix("."))
         raise FileExistsError(path)
 
-    monkeypatch.setattr(stop_hook.os, "open", competing_open)
+    monkeypatch.setattr(compaction_store.os, "open", competing_open)
     for suffix, tokens in cases:
         transcript = _write_transcript(
             tmp_path, [("assistant", {"input_tokens": tokens})])
@@ -418,7 +441,7 @@ def test_hook_atomic_marker_claim_race_loser_does_not_inject(
             "transcript_path": str(transcript),
             "session_id": f"sess-race-{suffix}",
             "hook_event_name": "PreToolUse",
-        }, tmp_path, {})
+        }, _home(tmp_path))
         marker = (
             tmp_path / ".project_manager" / ".local" / "ctx-stop" /
             f"sess-race-{suffix}.{suffix}"
@@ -438,7 +461,7 @@ def test_hook_final_pretooluse_injects_without_permission_decision(stop_hook, tm
         "tool_name": "Bash",
         "tool_input": {"command": "python3 build.py"},
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
@@ -462,10 +485,13 @@ def test_settings_wires_pretool_and_userprompt_only():
     assert data["hooks"]["PreToolUse"][0].get("matcher") == "*"
 
 
-def test_hook_session_id_sanitized(stop_hook):
-    # 경로 traversal 문자는 제거된다 (marker 파일명 안전).
-    assert "/" not in stop_hook._session_id({"session_id": "../../etc/passwd"})
-    assert stop_hook._session_id({}) == "unknown"
+def test_hook_session_id_sanitized(stop_hook, tmp_path):
+    # 경로 traversal 문자는 제거된다 (marker 파일명 안전) — 훅은 원문을 넘기고 엔진 세션 키가 안전화한다.
+    assert "/" not in ctx_recovery.safe_session_id(stop_hook._session_id({"session_id": "../../etc/passwd"}))
+    assert ctx_recovery.safe_session_id(stop_hook._session_id({})) == "unknown"
+    marker = compaction_store.ctx_marker_path(_home(tmp_path), stop_hook._session_id(
+        {"session_id": "../../etc/passwd"}), "nudge")
+    assert marker.parent == tmp_path / ".project_manager" / ".local" / "ctx-stop"
 
 
 # ── 4. main() stdin 경로 (가짜 stdin → stdout JSON) ────────────────────────
@@ -537,7 +563,7 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
         "session_id": "sess-nudge",
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
@@ -556,7 +582,7 @@ def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {"transcript_path": str(path), "session_id": "sess-nudge-ptu",
              "hook_event_name": "PreToolUse"}
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
@@ -564,7 +590,7 @@ def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
     assert "permissionDecision" not in hso and "decision" not in output
     assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.nudge").exists()
     stdin["hook_event_name"] = "UserPromptSubmit"
-    assert stop_hook.evaluate(stdin, tmp_path, {}) == (0, None)
+    assert stop_hook.evaluate(stdin, _home(tmp_path)) == (0, None)
 
 
 def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
@@ -575,8 +601,8 @@ def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
         "session_id": "sess-nudge-idem",
         "hook_event_name": "UserPromptSubmit",
     }
-    rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
-    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
+    rc1, out1 = stop_hook.evaluate(stdin, _home(tmp_path))
+    rc2, out2 = stop_hook.evaluate(stdin, _home(tmp_path))
     assert "additionalContext" in out1["hookSpecificOutput"]   # 1회차 주입.
     assert out2 is None                                        # 2회차 통과(이미 주입).
 
@@ -587,14 +613,14 @@ def test_hook_nudge_independent_from_final(stop_hook, tmp_path):
     nudge_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     nudge_stdin = {"transcript_path": str(nudge_tx), "session_id": sid,
                    "hook_event_name": "UserPromptSubmit"}
-    stop_hook.evaluate(nudge_stdin, tmp_path, {})  # nudge 주입.
+    stop_hook.evaluate(nudge_stdin, _home(tmp_path))  # nudge 주입.
     stop_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
     stop_stdin = {
         "transcript_path": str(stop_tx),
         "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stop_stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stop_stdin, _home(tmp_path))
     guidance = output["hookSpecificOutput"]["additionalContext"]
     assert "ctx-nudge/최종" in guidance
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
@@ -613,7 +639,7 @@ def test_hook_ok_rearms_all_cycle_markers(stop_hook, tmp_path):
         "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(ok, tmp_path, {})
+    rc, output = stop_hook.evaluate(ok, _home(tmp_path))
     assert rc == 0 and output is None
     assert not any((marker_dir / f"{sid}.{suffix}").exists() for suffix in ("nudge", "nudge2", "final"))
 
@@ -630,13 +656,13 @@ def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path)
         marker.write_text("fired\n", encoding="utf-8")
 
     transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 4_000})])
-    assert stop_hook.ctx_guard.context_used_pct_from_transcript(transcript, 1_000_000) == 0
+    assert _transcript_pct(stop_hook.ctx_guard, transcript, 1_000_000) == 0
     stdin = {
         "transcript_path": str(transcript),
         "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {"harness.claude.ctx_window_tokens": "1000000"})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0 and output is None
     assert not any(marker.exists() for marker in markers)
 
@@ -660,7 +686,7 @@ def test_hook_unmeasurable_raw_zero_preserves_cycle_markers(
     elif measurement == "usage-missing":
         stdin["transcript_path"] = str(_write_transcript(tmp_path, [("assistant", None)]))
 
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0 and output is None
     assert all(marker.exists() for marker in markers)
 
@@ -674,7 +700,7 @@ def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
                 tmp_path, [("assistant", {"input_tokens": tokens})])),
             "session_id": sid,
             "hook_event_name": "UserPromptSubmit",
-        }, tmp_path, {})
+        }, _home(tmp_path))
 
     _, first = evaluate_at(150_000)   # nudge → marker 생성.
     _, duplicate = evaluate_at(150_000)
@@ -687,7 +713,7 @@ def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
 def test_hook_nudge_refires_after_boundary_without_ok_observation(
         stop_hook, tmp_path, monkeypatch):
     """nudge 뒤 ok 관측 없이 경계가 늘면 첫 주 스레드 훅이 marker를 지워 재상승 넛지를 허용한다."""
-    monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a: None)
+    monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a, **_k: None)
     sid = "sess-boundary-rearm"
     transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     prompt = {
@@ -696,15 +722,15 @@ def test_hook_nudge_refires_after_boundary_without_ok_observation(
         "hook_event_name": "UserPromptSubmit",
     }
 
-    rc1, first = stop_hook.evaluate(prompt, tmp_path, {})
-    rc2, duplicate = stop_hook.evaluate(prompt, tmp_path, {})
+    rc1, first = stop_hook.evaluate(prompt, _home(tmp_path))
+    rc2, duplicate = stop_hook.evaluate(prompt, _home(tmp_path))
     _append_transcript_entry(transcript, _compact_boundary())
     _append_transcript_entry(transcript, {
         "type": "assistant",
         "message": {"role": "assistant", "usage": {"input_tokens": 150_000}},
     })
-    rc3, next_cycle = stop_hook.evaluate(prompt, tmp_path, {})
-    rc4, duplicate_again = stop_hook.evaluate(prompt, tmp_path, {})
+    rc3, next_cycle = stop_hook.evaluate(prompt, _home(tmp_path))
+    rc4, duplicate_again = stop_hook.evaluate(prompt, _home(tmp_path))
 
     assert rc1 == rc2 == rc3 == rc4 == 0
     assert first is not None and duplicate is None
@@ -715,7 +741,7 @@ def test_hook_nudge_refires_after_boundary_without_ok_observation(
 def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
         stop_hook, tmp_path, monkeypatch):
     """경계 뒤 첫 prompt는 marker를 재무장하고 old usage로 재생성하지 않으며 새 usage를 기다린다."""
-    monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a: None)
+    monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a, **_k: None)
     sid = "sess-boundary-wait"
     transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
     prompt = {
@@ -726,12 +752,12 @@ def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("nudge", "nudge2", "final")]
 
-    rc1, first = stop_hook.evaluate(prompt, tmp_path, {})
+    rc1, first = stop_hook.evaluate(prompt, _home(tmp_path))
     assert rc1 == 0 and first is not None
     assert markers[-1].exists()
 
     _append_transcript_entry(transcript, _compact_boundary())
-    rc3, first_prompt = stop_hook.evaluate(prompt, tmp_path, {})
+    rc3, first_prompt = stop_hook.evaluate(prompt, _home(tmp_path))
     assert rc3 == 0 and first_prompt is None
     assert not any(marker.exists() for marker in markers)
     assert (marker_dir / f"{sid}.compact-1").exists()
@@ -740,7 +766,7 @@ def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
         "type": "assistant",
         "message": {"role": "assistant", "usage": {"input_tokens": 190_000}},
     })
-    rc4, next_high = stop_hook.evaluate(prompt, tmp_path, {})
+    rc4, next_high = stop_hook.evaluate(prompt, _home(tmp_path))
     assert rc4 == 0 and next_high is not None
     assert markers[-1].exists()
 
@@ -755,25 +781,6 @@ def _nudge2_transcript(tmp_path: Path) -> Path:
     return _write_transcript(tmp_path, [("assistant", {"input_tokens": 156_000})])
 
 
-@pytest.mark.parametrize("band", ["nudge", "nudge2", "final"])
-def test_engine_failure_fallback_keeps_continuity_policy_in_every_band(
-    stop_hook, tmp_path, band,
-):
-    """pm_log 부재 fallback도 세션 종료/핸드오프 신호로 퇴행하지 않는다."""
-    guidance = stop_hook._build_ctx_guidance(
-        tmp_path,
-        band=band,
-        used_pct=92,
-        thresholds={"checkpoint_at_pct": 70, "precompact_at_pct": 80},
-    )
-
-    assert "압축은 자동이고 세션은 그대로 이어진다" in guidance
-    assert "핸드오프는 사용자 명시 지시로만 한다" in guidance
-    assert "새 큰 작업보다 현재 서사 기록을 우선" not in guidance
-    # 사용률은 쓴 % 하나다 — 남은 % 를 다시 계산해 싣지 않는다.
-    assert "컨텍스트 사용 92%" in guidance and "잔여" not in guidance
-
-
 def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     # nudge2 레벨(쓴 78 — nudge2_threshold 77 <= 78 < precompact_at 80) + UserPromptSubmit → strong 주입.
     stdin = {
@@ -781,7 +788,7 @@ def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
         "session_id": "sess-nudge2",
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
@@ -800,7 +807,7 @@ def test_hook_nudge2_pretooluse_injects_without_permission_decision(stop_hook, t
     # nudge2 레벨도 PreToolUse additionalContext 비차단 주입(제결정 없음).
     stdin = {"transcript_path": str(_nudge2_transcript(tmp_path)), "session_id": "sess-n2-ptu",
              "hook_event_name": "PreToolUse"}
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
@@ -816,8 +823,8 @@ def test_hook_nudge2_idempotent_single_injection(stop_hook, tmp_path):
         "session_id": "sess-n2-idem",
         "hook_event_name": "UserPromptSubmit",
     }
-    rc1, out1 = stop_hook.evaluate(stdin, tmp_path, {})
-    rc2, out2 = stop_hook.evaluate(stdin, tmp_path, {})
+    rc1, out1 = stop_hook.evaluate(stdin, _home(tmp_path))
+    rc2, out2 = stop_hook.evaluate(stdin, _home(tmp_path))
     assert "additionalContext" in out1["hookSpecificOutput"]   # 1회차 주입.
     assert out2 is None                                        # 2회차 통과(이미 주입).
 
@@ -830,7 +837,7 @@ def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
         "session_id": "sess-n2-solo",
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert "ctx-nudge/강화" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / "sess-n2-solo.nudge2").exists()
@@ -845,14 +852,14 @@ def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
-    rc1, out1 = stop_hook.evaluate(nudge_stdin, tmp_path, {})
+    rc1, out1 = stop_hook.evaluate(nudge_stdin, _home(tmp_path))
     assert "ctx-nudge]" in out1["hookSpecificOutput"]["additionalContext"]  # 1단 표지.
     # 2단: 같은 세션이 nudge2 밴드 진입 (transcript 경로 덮어씀).
     nudge2_stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
-    rc2, out2 = stop_hook.evaluate(nudge2_stdin, tmp_path, {})
+    rc2, out2 = stop_hook.evaluate(nudge2_stdin, _home(tmp_path))
     assert "ctx-nudge/강화" in out2["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / f"{sid}.nudge").exists()
@@ -866,30 +873,17 @@ def test_hook_nudge2_independent_from_final(stop_hook, tmp_path):
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
-    stop_hook.evaluate(nudge2_stdin, tmp_path, {})  # nudge2 주입.
+    stop_hook.evaluate(nudge2_stdin, _home(tmp_path))  # nudge2 주입.
     stop_stdin = {
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])),
         "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stop_stdin, tmp_path, {})
+    rc, output = stop_hook.evaluate(stop_stdin, _home(tmp_path))
     assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / f"{sid}.nudge2").exists()
     assert (ctx / f"{sid}.final").exists()
-
-
-def test_nudge2_margin_mirrors_opencode(guard):
-    # 양 하네스 파리티: 2단 임계 마진(+3)이 claude·opencode 어댑터에서 동일 (한 곳만 바꾸면 어긋남).
-    import re
-    opencode_core = (
-        REPO / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
-    ).read_text(encoding="utf-8")
-    m = re.search(r"const\s+NUDGE2_MARGIN_PCT\s*=\s*(\d+)", opencode_core)
-    assert m, "opencode ctx-guard-core.cjs 에 NUDGE2_MARGIN_PCT 상수 없음"
-    assert int(m.group(1)) == guard.CTX_NUDGE2_MARGIN_PCT, (
-        f"2단 마진 미러 불일치: claude={guard.CTX_NUDGE2_MARGIN_PCT} opencode={m.group(1)}"
-    )
 
 
 def test_settings_auto_compact_enabled_true():
@@ -937,12 +931,12 @@ def test_t0943_statusline_model_check_and_record_error(statusline, tmp_path):
     payload = {"model": {"id": model, "display_name": "Fixture"},
                "transcript_path": str(tmp_path / "t.jsonl"),
                "context_window": {"current_usage": {"input_tokens": 180000}}}
-    line = statusline.build_statusline(payload, _T0943_CONF, root=tmp_path)
+    line = statusline.build_statusline(payload, home=_home(tmp_path))
     assert "ctx 90%" in line and "모델이 바뀌었습니다" not in line
-    other = statusline.build_statusline({**payload, "model": {"id": "claude-other"}}, _T0943_CONF, root=tmp_path)
+    other = statusline.build_statusline({**payload, "model": {"id": "claude-other"}}, home=_home(tmp_path))
     assert "ctx 90%" in other and "모델이 바뀌었습니다" in other and "claude-other" in other
     (tmp_path / ".project_manager/.local/ctx-budget.json").unlink()
-    missing = statusline.build_statusline(payload, _T0943_CONF, root=tmp_path)
+    missing = statusline.build_statusline(payload, home=_home(tmp_path))
     assert "ctx 한도 기록 오류" in missing and "`pm_config.py apply`" in missing
 
 
@@ -952,12 +946,11 @@ def test_t0943_hook_real_input_fields_nudge_and_model_warning(stop_hook, tmp_pat
     from test_harness_ctx_limits import install_ctx_record
     model = install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
     transcript = _t0943_model_transcript(tmp_path, 162000, model)               # 81%
-    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), tmp_path, _T0943_CONF)
+    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), _home(tmp_path))
     assert rc == 0 and "additionalContext" in output["hookSpecificOutput"] and "systemMessage" not in output
 
     transcript = _t0943_model_transcript(tmp_path, 182000, "claude-other")      # 91%
-    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "UserPromptSubmit", transcript), tmp_path,
-                                    _T0943_CONF)
+    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "UserPromptSubmit", transcript), _home(tmp_path))
     assert rc == 0 and "additionalContext" in output["hookSpecificOutput"]
     assert "모델이 바뀌었습니다" in output["systemMessage"] and "claude-other" in output["systemMessage"]
 
@@ -966,11 +959,11 @@ def test_t0943_hook_missing_record_is_reported(stop_hook, tmp_path, capsys):
     """기록이 없으면 UserPromptSubmit 은 `systemMessage`, PreToolUse 는 stderr 로 알린다(조용히 넘기지 않는다)."""
     (tmp_path / ".project_manager/.local/ctx-budget.json").unlink()
     transcript = _t0943_model_transcript(tmp_path, 190000, "fixture-model")
-    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "UserPromptSubmit", transcript), tmp_path, {})
+    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "UserPromptSubmit", transcript), _home(tmp_path))
     assert rc == 0 and output == {"systemMessage": output["systemMessage"]}
     assert output["systemMessage"].startswith("[ctx-budget]") and "`pm_config.py apply`" in output["systemMessage"]
     capsys.readouterr()
-    assert stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), tmp_path, {}) == (0, None)
+    assert stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), _home(tmp_path)) == (0, None)
     assert "[ctx-budget]" in capsys.readouterr().err
 
 
@@ -1039,7 +1032,7 @@ def test_t0953_main_hook_after_boundary_runs_checkpoint_and_snapshot_once(
     calls: list = []
     monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(calls))
 
-    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), _home(tmp_path))
 
     assert rc == 0
     assert _t0953_engine_calls(calls) == [
@@ -1054,7 +1047,7 @@ def test_t0953_main_hook_after_boundary_runs_checkpoint_and_snapshot_once(
     assert not (marker_dir / "s-1.nudge").exists() and not (marker_dir / "s-1.final").exists()
 
     calls.clear()
-    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), _home(tmp_path))
     assert rc == 0 and calls == []
     assert "PM 정체성" not in json.dumps(output, ensure_ascii=False)
 
@@ -1070,14 +1063,14 @@ def test_t0953_subagent_exemption_uses_agent_id_not_agent_type(stop_hook, tmp_pa
     monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(calls))
 
     subagent = _t0953_pretool(transcript, tmp_path, agent_id="a1", agent_type="Explore")
-    assert stop_hook.evaluate(subagent, tmp_path, {}) == (0, None)
+    assert stop_hook.evaluate(subagent, _home(tmp_path)) == (0, None)
     assert calls == []
     assert not (marker_dir / "s-1.compact-1").exists()
     assert (marker_dir / "s-1.nudge").read_text(encoding="utf-8") == "fired\n"
     assert not (marker_dir / "s-1.final").exists()
 
     agent_session = _t0953_pretool(transcript, tmp_path, agent_type="pm")
-    rc, output = stop_hook.evaluate(agent_session, tmp_path, {})
+    rc, output = stop_hook.evaluate(agent_session, _home(tmp_path))
     assert rc == 0 and output is not None
     assert (marker_dir / "s-1.compact-1").is_file()
     assert [call[0] for call in _t0953_engine_calls(calls)].count("checkpoint") == 1
@@ -1093,7 +1086,7 @@ def test_t0953_failure_signal_carries_engine_reason_once(stop_hook, tmp_path, mo
     monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(
         calls, checkpoint=(1, "", f"경고\n{reason}\n")))
 
-    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), _home(tmp_path))
 
     assert rc == 0
     assert [call[0] for call in _t0953_engine_calls(calls)] == ["checkpoint"]
@@ -1102,7 +1095,7 @@ def test_t0953_failure_signal_carries_engine_reason_once(stop_hook, tmp_path, mo
     assert output["systemMessage"] in output["hookSpecificOutput"]["additionalContext"]
 
     calls.clear()
-    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), _home(tmp_path))
     assert rc == 0 and calls == []
     assert output is None or "systemMessage" not in output
 
@@ -1113,7 +1106,7 @@ def test_t0953_failure_signal_carries_engine_reason_once(stop_hook, tmp_path, mo
     snapshot_reason = "[pm-snapshot] 세션 task 미해소: 세션 ID 없음. 재주입 생략."
     monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(
         calls, snapshot=(1, "", snapshot_reason + "\n")))
-    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), _home(tmp_path))
     assert rc == 0
     assert output["systemMessage"] == "[ctx-checkpoint] 압축 기록 실패: " + snapshot_reason
 

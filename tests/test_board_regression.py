@@ -14,6 +14,7 @@ pytest 자식은 절대 실기동하지 않는다 — 회귀 러너 seam(`subpro
 from __future__ import annotations
 
 from pm_engine.infra import pm_paths
+from pm_engine.cli import board_cmd
 import pm_engine.domain.handoff_text
 from pm_engine.domain import finish_rules, handoff_text
 
@@ -3283,11 +3284,11 @@ def test_t0936_single_slot_core_command_priority(board, monkeypatch, prefix, pla
     # 선택은 `--task`(+위치 인자) 또는 `--cwd` 핀이다 — `--task` 없는 `--repo/--slot` 은 없다(T-0962).
     argv = ["regression", "run", "--final"]
     argv += ["--task", "main", "--repo", "A", "--slot", "1"] if task else ["--cwd", str(target)]
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(argv)) == 0
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(argv)) == 0
     assert _flag(board)["command"] == ("repo-core" if task or prefix else "local-core")
     check = ["regression", "check"]
     check += ["--task", "main", "--repo", "A", "--slot", "1"] if task else ["--cwd", str(target)]
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(check)) == 0
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(check)) == 0
     assert len(calls) == 1
 
 
@@ -3300,11 +3301,11 @@ def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, mo
     if layer=="default": board._home().local_conf.write_text("", encoding="utf-8")
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_bad\n", encoding="utf-8")
     expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":python_env.default_pytest_cmd()}[layer]
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
     assert _flag(board)["command"]==expected+" --deselect tests/test_sample.py::test_bad"
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==0
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(["regression","check","--cwd",str(target)]))==0
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_other\n", encoding="utf-8")
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--cwd",str(target)]))==1
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(["regression","check","--cwd",str(target)]))==1
 
 
 @pytest.mark.parametrize("explicit_cwd", [False, True])
@@ -3321,18 +3322,18 @@ def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explic
     pm_paths.leases_file(board._home()).write_text(json.dumps(ledger), encoding="utf-8")
     run=["regression","run","--final"]
     run += ["--task","main","--repo","A","--slot","1"] if task else ["--cwd",str(target)]
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(run))==0
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(run))==0
     original=pm_paths.regression_flag(board._home()).read_bytes()
     same=["regression","check","--task","main","--repo","A","--slot","1"]
     different=["regression","check","--task","main","--repo","A","--slot","2"]
     if explicit_cwd:
         for argv, cwd in ((same, target), (different, sibling)):
             with pytest.raises(SystemExit):
-                regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args([*argv, "--cwd", str(cwd)]))
+                regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args([*argv, "--cwd", str(cwd)]))
     else:
         # 선택 없이 `--cwd` 로 잰 기록은 task 가 고른 폴더의 green 으로 인정되지 않는다(명령 축 불일치).
-        assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(same))==(0 if task else 1)
-        assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(different))==1
+        assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(same))==(0 if task else 1)
+        assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(different))==1
     # check는 자식을 실행하거나 기록을 바꾸지 않는다.
     assert len(calls)==1 and pm_paths.regression_flag(board._home()).read_bytes()==original
 
@@ -3342,13 +3343,13 @@ def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(boar
     ledger["leases"][0]["test_cmd"]="core-A"
     pm_paths.leases_file(board._home()).write_text(json.dumps(ledger), encoding="utf-8")
     other=board.REPO / "other"; other.mkdir()
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
     # `--task` 없는 `--repo/--slot` 선택은 기록 좌표 대조 전에 위치 인자 문구로 멈춘다(T-0962).
     with pytest.raises(SystemExit) as exc:
-        regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(other)]))
+        regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(other)]))
     assert "--task" in str(exc.value.code)
-    assert regression_cmd.cmd_regression(board._home(), board.build_parser().parse_args(["regression","check"]))==0
+    assert regression_cmd.cmd_regression(board._home(), board_cmd.build_parser().parse_args(["regression","check"]))==0
     assert len(calls)==1
 
 # T-0983 다중 작업공간 순회

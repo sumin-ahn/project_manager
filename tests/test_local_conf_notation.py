@@ -30,7 +30,6 @@ from pm_engine.app import repo_protection
 import importlib.util
 import inspect
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -477,26 +476,6 @@ def test_invariant_three_one_supply_path_per_value(conf_module):
     assert [key for key in conf_module.LEGACY_KEY_MAP if key in known] == []
 
 
-def test_adapter_parsers_read_the_new_per_harness_key(conf_module):
-    """엔진을 import 하지 않는 어댑터 4파서도 같은 신표기를 읽는다(문법이 갈리면 값이 갈린다)."""
-    adapters = (
-        REPO / "templates/claude_code/.claude/ctx_guard.py",
-        REPO / "templates/codex/.codex/pm_orch_codex.py",
-        REPO / "templates/opencode/.opencode/pm_orch_opencode.py",
-        REPO / "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
-    )
-    for path in adapters:
-        text = path.read_text(encoding="utf-8")
-        # suffix 표기는 **차단 대상 이름**으로만 등장한다(조회 자리 0) — 그 선언은 엔진 생성분이다.
-        for harness in conf_schema.HARNESS_CHOICES:
-            assert f"ctx_window_tokens_{harness}" not in text, path
-        assert conf_module.LEGACY_SUFFIX_PREFIX in text, path      # 차단 접두는 있어야 한다
-        assert "ctx_window_tokens" in text, path
-        # 사용 한도·비율은 어댑터가 해석하지 않는다 — 읽은 conf 를 엔진 읽기 함수(압축 한도 기록)에
-        # 넘긴다(T-0943).
-        assert "read_ctx_budget(" in text or "engine.ctx_budget(" in text, path
-
-
 # ── ⑤ 교체 안내 (키 단위 지목 · 자동 이관 없음) ────────────────────────────
 
 
@@ -747,13 +726,12 @@ def test_board_lint_is_quiet_on_a_clean_conf(tmp_path, monkeypatch):
     assert conf_lint.lint_local_conf(board._home()) == []
 
 
-# ── ⑩ 어댑터 파서·셸 훅 (엔진을 import 하지 않는 독립 해소 경로) ───────────
+# ── ⑩ 어댑터 conf 해소 경로 ──────────────────────────────────────────────
 #
-# 이 넷은 엔진 로더를 쓰지 않는다(어댑터는 엔진 사본 경로에 묶이지 않는다는 계약). 그래서 엔진의
-# fail-loud 가 여기까지 오지 않고, 구표기 conf 를 발견하고도 **조용히 엔진 기본값**(임계 70/80 ·
-# 예산 200000)으로 강등할 수 있다 — 채택자 관점에서는 conf 를 고쳤는데 아무 일도 안 일어난다.
-# 그래서 각 파서를 **프로세스로 띄우고 실 local.conf 를 넣어** 값으로 단언한다(문자열 존재 검사가
-# 아니다). 차단 키 목록은 각 파서가 손으로 복제하지 않고 엔진 생성 블록을 그대로 품는다.
+# Python 어댑터 셋(claude ctx_guard·codex·opencode driver)은 자체 파서가 없고 엔진 공개 진입
+# (`cli.hooks`)으로 local.conf 를 읽는다 — 구표기 conf 는 엔진의 fail-loud(`LegacyConfKeyError`)가
+# 값 해소 전에 멈춘다. 엔진을 import 하지 않는 JS 파서·셸 훅은 차단 키 목록을 손으로 복제하지 않고
+# 엔진 생성 블록을 그대로 품으며, 각 파서를 **프로세스로 띄우고 실 local.conf 를 넣어** 값으로 단언한다.
 
 _ADAPTER_LEGACY_CONF = (
     "ctx_nudge_pct=91\n"
@@ -778,99 +756,34 @@ _ADAPTER_LEGACY_KEYS = ("ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_
                         "ctx_nudge_pct", "ctx_stop_pct", "ctx_window_tokens",
                         "ctx_window_tokens_claude", "test_cmd")
 
-_PY_ADAPTER_DRIVER = """
-import importlib.util, sys
-from pathlib import Path
-spec = importlib.util.spec_from_file_location("adapter_under_test", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-conf = module.load_local_config(Path(sys.argv[2]))
-print(sys.argv[3].join(str(part) for part in eval(sys.argv[4])))
-"""
-
 # 어댑터는 값을 해석하지 않는다 — 비율·적용 한도는 압축 한도 기록에서 온다(T-0943). 여기서는 구표기
-# 차단과, 신표기 conf 를 그대로 읽는지만 본다.
+# 차단과, 신표기 conf 의 하네스 사용 한도가 적용 한도로 쓰이는지만 본다.
+# claude 는 하네스 설정 반영 하한(autoCompactWindow 100,000) 때문에 더 큰 사용 한도로 적용한다.
 _PY_ADAPTERS = (
-    pytest.param("templates/claude_code/.claude/ctx_guard.py",
-                 '(conf["ctx.precompact_at_pct"], conf["harness.claude.ctx_window_tokens"])',
-                 "10 54321", id="claude-shipped"),
-    pytest.param("templates/codex/.codex/pm_orch_codex.py",
-                 '(conf["ctx.precompact_at_pct"], conf["harness.codex.ctx_window_tokens"])',
-                 "10 12345", id="codex-shipped"),
-    pytest.param("templates/opencode/.opencode/pm_orch_opencode.py",
-                 '(conf["ctx.precompact_at_pct"], conf["harness.opencode.ctx_window_tokens"])',
-                 "10 23456", id="opencode-shipped"),
+    pytest.param("claude", 543210, id="claude-shipped"),
+    pytest.param("codex", 12345, id="codex-shipped"),
+    pytest.param("opencode", 23456, id="opencode-shipped"),
 )
 
 
-def _run_py_adapter(adapter: Path, root: Path, expression: str):
-    """어댑터 파서를 **별도 프로세스**로 띄워 실 conf 에서 값을 해소시킨다."""
-    return subprocess.run(
-        [sys.executable, "-c", _PY_ADAPTER_DRIVER, str(adapter), str(root), " ", expression],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
-    )
-
-
-@pytest.mark.parametrize("relpath,expression,expected", _PY_ADAPTERS)
+@pytest.mark.parametrize("harness,window", _PY_ADAPTERS)
 def test_adapter_parser_stops_on_legacy_conf_before_resolving_values(
-        conf_module, tmp_path, relpath, expression, expected):
-    """구표기 conf 에서는 멈추고(rc≠0·키 지목), 신표기 conf 에서는 **그 값**을 해소한다."""
-    adapter = REPO / relpath
-    _write_conf(tmp_path, _ADAPTER_LEGACY_CONF)
-    blocked = _run_py_adapter(adapter, tmp_path, expression)
+        conf_module, tmp_path, harness, window):
+    """구표기 conf 에서는 값 해소·기록 판독 전에 키를 지목하며 멈추고, 신표기 conf 에서는 **그 값**을 쓴다."""
+    from pm_engine.cli import hooks as cli_hooks
+    from test_harness_ctx_limits import install_ctx_record
 
-    assert blocked.returncode != 0, blocked.stdout
-    assert blocked.stdout.strip() == "", "값 해소 뒤에 멈췄다(기본값이 이미 쓰였다)"
-    assert local_conf_cli.adapter_stop_message(
-        tmp_path / ".project_manager" / "local.conf",
-        sorted(_ADAPTER_LEGACY_KEYS)) in blocked.stderr
+    home = pm_paths.home_at(tmp_path)
+    _write_conf(tmp_path, _ADAPTER_LEGACY_CONF)
+    with pytest.raises(conf_schema.LegacyConfKeyError) as blocked:
+        cli_hooks.context_status(home, harness=harness, tokens=window // 2, model=None)
+    assert all(f"`{key}`" in str(blocked.value) for key in _ADAPTER_LEGACY_KEYS), str(blocked.value)
+    assert not home.local_dir.exists(), "값 해소 뒤에 멈췄다(기록·marker 자리를 이미 건드렸다)"
 
     _write_conf(tmp_path, _ADAPTER_NEW_CONF)
-    resolved = _run_py_adapter(adapter, tmp_path, expression)
-    assert resolved.returncode == 0, resolved.stderr
-    assert resolved.stdout.strip() == expected
-
-
-def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
-        conf_module, tmp_path):
-    """JS 파서도 같은 계약이다 — 같은 conf 를 넣고 node 프로세스로 값을 단언한다."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node 없음")
-    core = REPO / "templates/opencode/.opencode/lib/ctx-guard-core.cjs"
-    script = (
-        f'const m = require({str(core)!r});'
-        'const c = m.loadLocalConf(process.argv[1]);'
-        'console.log(c["ctx.precompact_at_pct"], c["harness.opencode.ctx_window_tokens"]);'
-    )
-    _write_conf(tmp_path, _ADAPTER_LEGACY_CONF)
-    blocked = subprocess.run([node, "-e", script, str(tmp_path)], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=120)
-
-    assert blocked.returncode != 0, blocked.stdout
-    assert blocked.stdout.strip() == ""
-    assert local_conf_cli.adapter_stop_message(
-        tmp_path / ".project_manager" / "local.conf",
-        sorted(_ADAPTER_LEGACY_KEYS)) in blocked.stderr
-
-    _write_conf(tmp_path, _ADAPTER_NEW_CONF)
-    resolved = subprocess.run([node, "-e", script, str(tmp_path)], capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=120)
-    assert resolved.returncode == 0, resolved.stderr
-    assert resolved.stdout.strip() == "10 23456"
-
-
-@pytest.mark.parametrize("relpath", [
-    "templates/claude_code/.claude/ctx_guard.py",
-    "templates/codex/.codex/pm_orch_codex.py",
-    "templates/opencode/.opencode/pm_orch_opencode.py",
-    "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
-])
-def test_adapter_blocked_key_block_is_generated_not_hand_copied(conf_module, relpath):
-    """각 파서가 품은 차단 키 선언이 엔진 생성 산출과 **글자 단위로** 같다(사본 drift 0)."""
-    style = {".py": "python", ".cjs": "js"}[Path(relpath).suffix]
-    assert local_conf_cli.render_adapter_block(style) in (
-        REPO / relpath).read_text(encoding="utf-8")
+    install_ctx_record(tmp_path, {f"harness.{harness}.ctx_window_tokens": str(window)}, harness=harness)
+    resolved = cli_hooks.context_status(home, harness=harness, tokens=window // 2, model=None)
+    assert (resolved["status"], resolved["used_pct"]) == ("ok", 50)
 
 
 @pytest.fixture

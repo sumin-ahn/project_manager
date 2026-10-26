@@ -1,4 +1,4 @@
-"""컨텍스트 복구 문안과 표시 상한."""
+"""컨텍스트 복구 문안·표시 상한과 ctx 사용률·밴드·회전 임계 순수 규칙."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -227,6 +227,56 @@ def build_ctx_guard_guidance(
             "`<task>`에는 현재 task 이름을 사용한다. "
         )
     return f"[{labels[band]}] {status}{command}{CTX_GUARD_CONTINUITY_GUIDANCE}"
+
+
+# 2단 넛지 임계 마진(%p). nudge2 밴드 = max(precompact_at − 이 마진, checkpoint_at) <= 쓴 % <
+# precompact_at 이다. 설정 키를 두지 않고 두 비율에서 파생한다.
+CTX_NUDGE2_MARGIN_PCT = 3
+
+
+# 세션 키 파일명 길이 상한 — ctx marker·회전 marker·멤버십 파일이 같은 규칙을 쓴다.
+_SESSION_KEY_MAX_CHARS = 64
+
+
+def context_used_pct(tokens: int, budget: int) -> int:
+    """점유 토큰을 적용 한도 E 대비 쓴 % 정수(0~100)로 바꾼다.
+
+    반올림은 Python ``round``(동률은 짝수 쪽)이다. 점유 0 은 미측정 sentinel 이라 0 이고, 한도 0 이하도
+    판정할 신호가 없어 0 이다."""
+    if tokens <= 0 or budget <= 0:
+        return 0
+    return max(0, min(100, round(tokens / float(budget) * 100)))
+
+
+def nudge2_threshold(budget: dict) -> int:
+    """2단 넛지 임계(쓴 %) — precompact_at − 마진, checkpoint_at 으로 하한."""
+    return max(budget["precompact_at_pct"] - CTX_NUDGE2_MARGIN_PCT, budget["checkpoint_at_pct"])
+
+
+def classify(used_pct: int, budget: dict) -> str:
+    """쓴 % → ``ok`` | ``nudge`` | ``nudge2`` | ``stop``. 세 경계는 모두 그 값을 포함한다."""
+    if used_pct >= budget["precompact_at_pct"]:
+        return "stop"
+    if used_pct >= nudge2_threshold(budget):
+        return "nudge2"
+    if used_pct >= budget["checkpoint_at_pct"]:
+        return "nudge"
+    return "ok"
+
+
+def rotation_due(tokens: int, budget: int, precompact_at_pct: int) -> bool:
+    """post-turn 회전 임계 도달 여부 — 원시 정수 곱 ``tokens*100 >= E*precompact_at_pct``.
+
+    반올림 백분율을 쓰지 않는다. 점유 0 이하·한도 0 이하는 신호 없음이라 False 다."""
+    if tokens <= 0 or budget <= 0:
+        return False
+    return tokens * 100 >= budget * precompact_at_pct
+
+
+def safe_session_id(session_id: str) -> str:
+    """세션 ID 를 marker 파일명 키로 — 영숫자·``-``·``_`` 만 남기고 64자로 자른다(빈 값은 unknown)."""
+    safe = "".join(c for c in session_id.strip() if c.isalnum() or c in "-_")[:_SESSION_KEY_MAX_CHARS]
+    return safe or "unknown"
 
 
 def _snapshot_within_limits(text: str) -> bool:

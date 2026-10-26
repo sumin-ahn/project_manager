@@ -16,6 +16,7 @@ hermetic 패턴은 `test_board_new_draft_gate.py` 와 동형 — 실 board git +
 from __future__ import annotations
 
 from pm_engine.cli import board_ticket
+from pm_engine.cli import board_cmd
 
 
 from pm_engine.app import cluster_binding
@@ -386,7 +387,7 @@ def test_cluster_new_help_declares_the_code_tree_requirement(board):
     거부 판정은 `_cmd_cluster_new` 가 소유하고 help 는 그것을 인용만 한다. help 가 침묵하면
     `--help` 만 읽고 실행한 사람이 첫 쓰기 앞 rc=1 을 실행 시점에야 만난다.
     """
-    help_text = _subparser_help(board.build_parser(), "cluster", "new")
+    help_text = _subparser_help(board_cmd.build_parser(), "cluster", "new")
 
     assert "--repo" in help_text and "--slot" in help_text
     assert "--task" in help_text

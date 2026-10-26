@@ -185,21 +185,6 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
     ]
 
 
-def test_pm_config_load_module_unstamped_sibling_no_false_positive(tmp_path):
-    """pm_config._load_module 은 미계측 형제(_STAMPED_SIBLINGS 밖)엔 verify 를 안 걸어 오탐 없음.
-
-    정상 사본에서도 ENGINE_REV 가 없는 pm_update/pm_import 류를 로드해도 skew 오판이 안 난다."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "pm_config.py": None,
-        # ENGINE_REV 없는 미계측 형제 — allow-set 밖이라 verify 미발화(정상 로드).
-        "some_tool.py": "VALUE = 1\n",
-    })
-    pmc = _load(tools, "pm_config")
-    mod = pmc._load_module("some_tool", "some_tool.py")   # no raise
-    assert mod is not None and mod.VALUE == 1
-
-
 def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch):
     """stale pm_delegate가 있어도 비소비 read/mutation 경로인 list·claim은 정상 dispatch된다."""
     tools = _build_tools(tmp_path, {

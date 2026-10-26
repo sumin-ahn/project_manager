@@ -31,6 +31,9 @@ import pytest
 
 from test_opencode_permission_guard import _load_agent_frontmatter
 from pm_engine.app.session import relay
+from pm_engine.cli import hooks as cli_hooks
+from pm_engine.domain import ctx_recovery
+from pm_engine.infra import pm_paths
 from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
@@ -202,7 +205,7 @@ def _make_driver(orch, tmp_path, **kw):
     return FakeDriver(
         tmp_path,
         marker_dir=orch.MARKER_DIR,
-        sanitize=orch._sanitize_session_id,
+        sanitize=ctx_recovery.safe_session_id,
         **kw,
     )
 
@@ -239,12 +242,12 @@ def test_clear_marker_removes(orch, tmp_path):
 
 
 def test_sanitize_session_id_matches_hook_rule(orch):
-    # ctx_stop_hook._session_id 와 동일 규칙 — 파일명 안전 문자만·traversal 제거.
-    assert "/" not in orch._sanitize_session_id("../../etc/passwd")
-    assert orch._sanitize_session_id("a/b") == "ab"
-    assert orch._sanitize_session_id("  ") == "unknown"
+    # ctx marker·회전 marker 가 공유하는 세션 키 규칙(domain.ctx_recovery) — 파일명 안전 문자만·traversal 제거.
+    assert "/" not in ctx_recovery.safe_session_id("../../etc/passwd")
+    assert ctx_recovery.safe_session_id("a/b") == "ab"
+    assert ctx_recovery.safe_session_id("  ") == "unknown"
     # uuid4 형태는 보존(하이픈 안전 문자).
-    assert orch._sanitize_session_id("11111111-2222-3333-4444-555555555555") == \
+    assert ctx_recovery.safe_session_id("11111111-2222-3333-4444-555555555555") == \
         "11111111-2222-3333-4444-555555555555"
 
 
@@ -742,7 +745,7 @@ def test_supervisor_task_bakes_and_forwards_on_respawn(orch, tmp_path):
             return super().spawn(cwd, session_id, bootstrap)
 
     driver = _RecordDriver(
-        tmp_path, marker_dir=orch.MARKER_DIR, sanitize=orch._sanitize_session_id,
+        tmp_path, marker_dir=orch.MARKER_DIR, sanitize=ctx_recovery.safe_session_id,
         stop_after_relays=1,
     )
     sup = orch.Supervisor(driver, root=tmp_path, task="mytask")
@@ -764,7 +767,7 @@ def test_claude_driver_parser_accepts_task(driver_mod, monkeypatch, capsys):
     필수 여부는 relay 진입(main)이 본다."""
     parser = driver_mod.build_parser()
     assert parser.parse_args(["--task", "mytask"]).task == "mytask"
-    monkeypatch.setattr(driver_mod, "_load_engine", lambda: pytest.fail("task 없이 엔진 적재"))
+    monkeypatch.setattr(cli_hooks, "run_relay", lambda *a, **k: pytest.fail("task 없이 엔진 실행"))
     with pytest.raises(SystemExit) as exc:
         driver_mod.main([])
     assert exc.value.code == 2
@@ -796,35 +799,31 @@ def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tm
         def __init__(self, driver, *, root, task=None):
             captured["task"] = task
             captured["driver"] = driver
+            captured["root"] = root
             captured["events"].append("supervisor")
 
         def run_loop(self, cwd, in_stream, out_stream):
             return 0
 
-    class _FakeEngine:
-        Supervisor = _FakeSup
-        SpawnResult = staticmethod(lambda sid, reply: (sid, reply))
-
-        @staticmethod
-        def mark_ctx_post_turn_if_over(*args):
-            captured["marked"] = args
-
-        @staticmethod
-        def ctx_budget(root, harness, session_model):
-            captured["budget"] = (root, harness, session_model)
-            captured["events"].append("budget")
-            return 123_456, 83, None
+    def fake_budget(home, harness, session_model):
+        captured["budget"] = (home, harness, session_model)
+        captured["events"].append("budget")
+        return 123_456, 83, None
 
     captured["events"] = []
-    monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
+    monkeypatch.setattr(driver_mod.ctx_guard, "repo_root", lambda start: tmp_path)
+    monkeypatch.setattr(relay, "ctx_budget", fake_budget)
+    monkeypatch.setattr(relay, "Supervisor", _FakeSup)
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
-    assert captured["budget"] == (tmp_path, "claude", None)
+    assert captured["budget"] == (pm_paths.home_at(tmp_path), "claude", None)
     assert captured["events"] == ["budget", "supervisor"]
     driver = captured["driver"]
+    assert isinstance(driver, driver_mod.ClaudeCliDriver)
     assert driver._ctx_budget == 123_456 and driver._precompact_at_pct == 83
-    assert driver._root == tmp_path
-    assert driver._mark_stop is _FakeEngine.mark_ctx_post_turn_if_over
+    assert driver._root == tmp_path and captured["root"] == tmp_path
+    assert driver._mark_stop.func is relay.mark_ctx_post_turn_if_over
+    assert driver._spawn_result is relay.SpawnResult
 
 
 def test_new_session_id_unique_uuid(orch):
@@ -1283,9 +1282,10 @@ def test_t0943_relay_budget_reads_the_record(orch, tmp_path, harness):
     from test_harness_ctx_limits import install_ctx_record
     conf = {f"harness.{harness}.ctx_window_tokens": "600000", **_T0943_CONF}
     model = install_ctx_record(tmp_path, conf, harness=harness, capacity=200000)
-    assert orch.ctx_budget(tmp_path, harness, model) == (200000, 90, None)
-    assert orch.ctx_budget(tmp_path, harness, None) == (200000, 90, None)
-    budget, pct, warning = orch.ctx_budget(tmp_path, harness, "other/model")
+    home = pm_paths.home_at(tmp_path)
+    assert orch.ctx_budget(home, harness, model) == (200000, 90, None)
+    assert orch.ctx_budget(home, harness, None) == (200000, 90, None)
+    budget, pct, warning = orch.ctx_budget(home, harness, "other/model")
     assert (budget, pct) == (200000, 90) and "모델이 바뀌었습니다" in warning
 
 
@@ -1301,7 +1301,7 @@ def test_t0943_relay_budget_errors_without_default(orch, tmp_path, damage):
         conf.write_text(conf.read_text(encoding="utf-8").replace("ctx.precompact_at_pct=90", "ctx.precompact_at_pct=abc"),
                         encoding="utf-8")
     with pytest.raises(ValueError, match="`pm_config.py apply`"):
-        orch.ctx_budget(tmp_path, "codex", None)
+        orch.ctx_budget(pm_paths.home_at(tmp_path), "codex", None)
     with pytest.raises(TypeError):
         orch.validate_relay_budget(None, 90)
 
@@ -1311,4 +1311,4 @@ def test_t0943_relay_budget_bootstrap_minimum(orch, tmp_path):
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, {"harness.codex.ctx_window_tokens": "600000"}, harness="codex", capacity=30000)
     with pytest.raises(ValueError, match="40400"):
-        orch.ctx_budget(tmp_path, "codex", None)
+        orch.ctx_budget(pm_paths.home_at(tmp_path), "codex", None)

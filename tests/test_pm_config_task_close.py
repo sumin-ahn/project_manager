@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 from pm_engine.cli import config_tasks
+from pm_engine.cli import config_cmd
 
 from _pool_seams import bind_pool
 
@@ -164,7 +165,7 @@ def test_close_writes_through_the_existing_primitive(pc, monkeypatch, capsys):
 
 def test_close_takes_no_expiry_or_grace_argument(pc):
     """만료 시각·유예 시간 같은 새 축을 인자로도 받지 않는다."""
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
 
     with pytest.raises(SystemExit):
         parser.parse_args(["task", "close", "job", "--after", "10m"])
@@ -186,7 +187,7 @@ def test_the_record_has_only_two_values(home, *, monkeypatch):
 
 def test_the_work_folder_side_uses_the_existing_release_force(home, pc):
     """작업 폴더 쪽 짝은 기존 명령이다 — 이 티켓이 슬롯용 새 명령을 만들지 않았다."""
-    commands = pc.build_parser()._subparsers._group_actions[0].choices
+    commands = config_cmd.build_parser()._subparsers._group_actions[0].choices
 
     assert "release" in commands
     assert "--force" in commands["release"].format_help()
