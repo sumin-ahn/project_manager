@@ -60,7 +60,6 @@ STAMPED_MODULES = (
     "pm_render.py",
     "pm_import.py",
     "pm_log.py",
-    "private_refs.py",
     "pm_principles.py",
 )
 

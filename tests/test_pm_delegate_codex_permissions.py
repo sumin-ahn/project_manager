@@ -50,11 +50,6 @@ def pd():
     return _load("pm_delegate", TOOLS / "pm_delegate.py")
 
 
-@pytest.fixture(autouse=True)
-def _fresh_config_anchor(pd, monkeypatch):
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
-
-
 def _committed_repo(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")
@@ -218,7 +213,7 @@ def test_metadata_write_argv_adds_global_root_and_network(pd, tmp_path, role):
 def test_metadata_write_attempt_transport_adds_git_root(pd, tmp_path):
     repo = _committed_repo(tmp_path / "repo")
     argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "developer", repo, "task",
+        pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, "developer", repo, "task",
     )
     assert read_tmp is None and prompt_path is None
     assert _global_added_dirs(argv) == [str(_real(repo / ".git"))]
@@ -241,7 +236,7 @@ def test_scope_read_reanchor_never_opens_source_git(
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     _forbid_git_metadata_lookup(pd, monkeypatch)
     argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, role, source, "review",
+        pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, role, source, "review",
         SESSION_ID if resume else None, run_dir if with_run_dir else None,
     )
     try:
@@ -268,7 +263,7 @@ def test_scope_read_without_tmp_stays_read_only_without_git_roots(
     monkeypatch.setattr(delegate_temp, '_create_read_role_temp', lambda *_a, **_k: None)
     _forbid_git_metadata_lookup(pd, monkeypatch)
     argv, _stdin, _prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, role, source, "review",
+        pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, role, source, "review",
     )
     assert read_tmp is None
     assert argv[argv.index("-s") + 1] == "read-only"
@@ -373,7 +368,7 @@ def test_failure_git_error_stops_before_child_spawn(pd, tmp_path, monkeypatch):
     spawned: list = []
     with pytest.raises(delegate_errors.DelegateError, match="fatal: boom"):
         delegate_execute._execute_attempt(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="developer", cwd=repo,
+            pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="developer", cwd=repo,
             prompt="task", timeout=30, output_dir=tmp_path / "raw",
             run_fn=lambda *a, **k: spawned.append(a), attempt="primary",
         )
@@ -392,7 +387,7 @@ def test_failure_after_read_tmp_cleans_the_attempt_tmp(pd, tmp_path, monkeypatch
 
     monkeypatch.setattr(delegate_transport, '_apply_workspace_git_dirs', _broken)
     with pytest.raises(delegate_errors.DelegateError, match="finalizer 실패"):
-        delegate_transport._prepare_attempt_transport(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", source, "r")
+        delegate_transport._prepare_attempt_transport(pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, "code-reviewer", source, "r")
     assert list(temp_root.iterdir()) == []
 
 
@@ -417,7 +412,7 @@ def test_resume_read_run_dir_is_global_not_resume_option(pd, tmp_path, monkeypat
     run_dir.mkdir()
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", source, "r", SESSION_ID, run_dir,
+        pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, "code-reviewer", source, "r", SESSION_ID, run_dir,
     )
     try:
         resume_index = argv.index("resume")
@@ -484,7 +479,7 @@ def test_dry_run_read_hides_source_git_root_and_keeps_preamble(
     assert argv[argv.index("-s") + 1] == "read-only"
     assert _network_override_count(argv) == 1
     if delegate_temp._read_tmp_strategy() is not None:
-        predicted_exec_root, _writable = delegate_transport._predict_read_tmp_paths(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex")
+        predicted_exec_root, _writable = delegate_transport._predict_read_tmp_paths(pm_paths.home_at(pd.REPO), "codex")
         assert str(predicted_exec_root.parent) in out   # 예측 프리앰블 보존(이름 꼬리는 무작위)
 
 
@@ -535,7 +530,7 @@ def test_cli_formats_no_legacy_mode_knob(pd, tmp_path, monkeypatch):
     conf = {**_codex_conf("developer"), "delegate.codex.network": "false"}
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf)
     argv, _stdin, _prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "developer", repo, "task",
+        pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, "developer", repo, "task",
     )
     assert read_tmp is None
     assert _network_override_count(argv) == 1

@@ -20,7 +20,7 @@ WAVE_FINISH_DOCS = [
     REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-wave-finish.md",
 ]
 
-TICKET_FINISH = REPO / ".project_manager" / "tools" / "ticket_finish.py"
+TICKET_FINISH = REPO / ".project_manager" / "tools" / "pm_engine" / "cli" / "ticket_finish.py"
 
 
 def test_wave_finish_docs_have_no_status_scalar_claim():

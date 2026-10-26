@@ -47,6 +47,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pm_engine.infra import repo_files
+
 import pytest
 
 from conftest import write_cluster_ledger
@@ -120,7 +122,7 @@ def _spec_text(ticket: str) -> str:
 
 
 def _fixture_board(pd, pm_home: Path, sync_log: list, monkeypatch):
-    board = pd._load_module_from_path(
+    board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
         "board.py", verifier=pd._verify_engine_rev,
     )
@@ -382,15 +384,15 @@ def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7807", rounds=("developer", "code-reviewer"))
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ], adapter_roots = pd._resolved_adapter_directories()) == 0
+    ], adapter_directories_fn=pd._resolved_adapter_directories) == 0
     capsys.readouterr()
 
     with pytest.raises(SystemExit) as exc:
-        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ], adapter_roots = pd._resolved_adapter_directories())
+        ], adapter_directories_fn=pd._resolved_adapter_directories)
 
     assert exc.value.code == 2
     assert sorted(path.name for path in _rounds_dir(pm_home, "T-7807").iterdir()) == [

@@ -154,11 +154,11 @@ def test_declared_wall_backstops_stay_under_harness_bash_cap():
     """유효 primary+fallback 최악 예산 + 여유가 claude MAX/opencode 상한 모두 이하."""
     delegate = _load_tool("pm_delegate")
     margin = delegate_run_rules._HARNESS_CAP_MARGIN_SEC
-    worst = delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    worst = delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO))
     assert worst == 29220  # opencode 2시도: 2×(14400 + 2×90 + 3×10 정리)
     # codex→opencode 직접 반려 시나리오: 각 timeout/retry 뒤 wait+drain 10초를 시도마다 산입.
-    assert delegate_env._harness_timeout_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), "codex", 3600) + \
-        delegate_env._harness_timeout_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), "opencode", 14400) == 18220
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(delegate.REPO), "codex", 3600) + \
+        delegate_env._harness_timeout_budget(pm_paths.home_at(delegate.REPO), "opencode", 14400) == 18220
     for surface, cap in (
             ("claude settings", _harness_bash_cap_sec()),
             ("opencode instructions", _opencode_bash_cap_sec())):
@@ -204,7 +204,7 @@ def _execution_command_budget_seconds(card_text: str) -> list[tuple[str, int]]:
     budgets: list[tuple[str, int]] = []
     delegate = _load_tool("pm_delegate")
     command_budgets = {
-        "pm_delegate.py": delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE)),
+        "pm_delegate.py": delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO)),
         # 추가 리뷰어 대상은 `additional_reviewer.harness`+`.model` 로 해소된다 — 엔진 기본
         # 커맨드가 없으므로 어느 하네스가 설정돼도 담기는 값, 곧 선언 프로필 중 가장 긴 벽시계를
         # 최악 예산으로 본다.
@@ -352,7 +352,7 @@ def test_harness_bash_cap_margin_is_positive():
     measured = delegate_run_rules._HARNESS_CAP_MEASURED_AUX_BUDGET_SEC
     assert delegate_run_rules._HARNESS_CAP_MARGIN_SEC == watchdog.HARNESS_CAP_MARGIN_SEC
     assert delegate_run_rules._HARNESS_CAP_MARGIN_SEC == ((measured + 9) // 10) * 10 == 10
-    actual_slack = _harness_bash_cap_sec() - delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    actual_slack = _harness_bash_cap_sec() - delegate_env.max_declared_execution_path_budget(pm_paths.home_at(delegate.REPO))
     assert actual_slack >= 2 * delegate_run_rules._HARNESS_CAP_MARGIN_SEC, (
         f"출하 상한 실여유 {actual_slack:g}s가 측정 기반 margin "
         f"{delegate_run_rules._HARNESS_CAP_MARGIN_SEC}s의 2배 미만")

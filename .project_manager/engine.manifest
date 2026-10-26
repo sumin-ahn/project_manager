@@ -112,11 +112,8 @@
 #   하네스 계약(pm_engine.infra.harness)의 3파서/워치독을 재사용. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 #   local.conf delegate.* 매핑은 인스턴스 소유(manifest 밖)
 .project_manager/tools/pm_delegate.py
-# private_refs: 사설 참조 판정식 공용 seam — 출하 산문(주석·문서 표현식)에서 사설 작업-항목
-#   참조를 기계 판정하고, 출하 표면(python·markdown)을 repo-owned 열거에서 분류한다
-#   (`shipping_paths`). 스트립 도구(scripts/)와 재유입 가드가 같은 한 벌을 소비해야 판정이
-#   갈리지 않으므로 엔진에 둔다. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
-.project_manager/tools/private_refs.py
+# 사설 참조 규칙과 출하 표면은 pm_engine 디렉터리로 배송한다.
+# pm-retired-path: .project_manager/tools/private_refs.py -> .project_manager/tools/pm_engine/domain/private_refs.py
 # pm_principles: 판단 원칙 레지스트리 로더 + recall 판정. 출하층 `wiki/pm_principles.md`
 #   와 PM 홈 로컬층 `wiki/pm_principles.local.md`(미출하·manifest 미등재)를 합성해 세 어댑터가
 #   공유하는 `judge_recall` 하나로 판정한다. stdlib-only. 신설 도구라 등록 필수(미등록=전파 안 됨·

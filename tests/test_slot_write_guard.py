@@ -20,8 +20,10 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import git, init_git_repo
 from pm_engine.app import hooks
 from pm_engine.domain import git_policy
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -336,6 +338,31 @@ def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatc
     assert delegate_execute._delegate_task_env(pm_paths.home_at(home), home / "work" / "app_4" / "src") == {"PM_DELEGATE_TASK": "beta"}
     assert delegate_execute._delegate_task_env(pm_paths.home_at(home), home / "work" / "app_2") == {}
     assert delegate_execute._delegate_task_env(pm_paths.home_at(home), home) == {}
+
+    # 위임 CLI 종단 — --cwd 가 대여 슬롯이면 실행 Home 의 root 는 실행 엔진 루트다(슬롯 git 루트 아님).
+    # root 가 슬롯으로 바뀌면 슬롯 주인 task 를 못 찾아 하네스 env 에서 PM_DELEGATE_TASK 가 빠진다.
+    source = init_git_repo(home.parent / "app-source", commit="seed")
+    bare = home / ".repos" / "app.git"
+    bare.parent.mkdir(parents=True)
+    git(home.parent, "clone", "-q", "--bare", str(source), str(bare))
+    slot = home / "work" / "app_1"
+    slot.rmdir()
+    git(bare, "worktree", "add", "-q", str(slot))
+    monkeypatch.setattr(conf_store, "local_config", lambda _home: {
+        "delegate.enabled": "true",
+        "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"})
+    prompt = home.parent / "prompt.md"
+    prompt.write_text("구현하라.", encoding="utf-8")
+    seen = []
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        seen.append(env)
+        reply = {"type": "item.completed", "item": {"type": "agent_message", "text": "DONE"}}
+        return {"returncode": 0, "stdout": json.dumps(reply), "stderr": "", "timed_out": False}
+
+    assert pm_delegate.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(slot),
+                      "--output-dir", str(home.parent / "raw")], run_fn=_capture) == 0
+    assert seen and seen[0]["PM_DELEGATE_TASK"] == "alpha"
 
 
 def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(board, home, monkeypatch):

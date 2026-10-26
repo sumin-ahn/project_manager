@@ -21,6 +21,9 @@ from pathlib import Path
 
 import pytest
 from pm_engine.app import lint_hooks, wikilink_lint
+from pm_engine.cli import finish_record
+from pm_engine.cli import ticket_finish as ticket_finish_cli
+from pm_engine.domain import finish_rules, handoff_text
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -58,10 +61,11 @@ def test_board_exposes_lint_seams(board):
 def test_ticket_finish_pytest_parser_seams(ticket_finish):
     # ADR-0023(T-0103): status 스칼라 갱신 단계 제거 — ticket_finish 의 남은 순수 로직
     # (회귀 green 게이트·pytest 출력 파서)만 노출 확인. update_status/status_total_style 제거.
-    assert callable(ticket_finish.parse_pytest_output)
-    assert callable(ticket_finish.is_pytest_green)
-    assert not hasattr(ticket_finish, "update_status")
-    assert not hasattr(ticket_finish, "status_total_style")
+    assert callable(finish_rules.parse_pytest_output)
+    assert callable(handoff_text.is_pytest_green)
+    for module in (ticket_finish, finish_record, ticket_finish_cli):
+        assert not hasattr(module, "update_status")
+        assert not hasattr(module, "status_total_style")
 
 
 def test_additional_reviewer_symbols(additional_reviewer):
@@ -74,9 +78,9 @@ def test_additional_reviewer_symbols(additional_reviewer):
 
 def test_pytest_output_parse_green(ticket_finish):
     # status 갱신 대신 — green 게이트·파서 순수 로직 (status.md = judgment-only·ADR-0023).
-    assert ticket_finish.parse_pytest_output("12 passed, 3 deselected in 1s") == (12, 3)
-    assert ticket_finish.is_pytest_green("12 passed in 1s", returncode=0) is True
-    assert ticket_finish.is_pytest_green("1 failed, 11 passed in 1s", returncode=1) is False
+    assert finish_rules.parse_pytest_output("12 passed, 3 deselected in 1s") == (12, 3)
+    assert handoff_text.is_pytest_green("12 passed in 1s", returncode=0) is True
+    assert handoff_text.is_pytest_green("1 failed, 11 passed in 1s", returncode=1) is False
 
 
 def test_verdict_and_exit(additional_reviewer, tmp_path):

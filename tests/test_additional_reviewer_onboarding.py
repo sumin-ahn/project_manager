@@ -469,7 +469,7 @@ def test_engine_cli_help_names_the_activity_as_additional_review(capsys):
     """
     delegate = _load("pm_delegate")
     with pytest.raises(SystemExit):
-        delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), ["--help"])
+        delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--help"])
     help_text = capsys.readouterr().out
 
     assert "추가 리뷰" in help_text

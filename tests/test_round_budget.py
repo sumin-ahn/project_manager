@@ -41,6 +41,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pm_engine.infra import repo_files
+
 import pytest
 
 from _test_exec import python_argv_command
@@ -134,7 +136,7 @@ def _spec_text(ticket: str, cluster: str) -> str:
 
 
 def _fixture_board(pd, pm_home: Path):
-    board = pd._load_module_from_path(
+    board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
         "board.py", verifier=pd._verify_engine_rev,
     )

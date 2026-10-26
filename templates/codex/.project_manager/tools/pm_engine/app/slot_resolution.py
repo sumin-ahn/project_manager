@@ -87,7 +87,7 @@ def _regression_cwd(
 
 
 # ── 명시 `--repo --slot` → 복구 문 제품 트리 (ticket_finish 공용 seam) ──────────
-# 핸드오프는 쓰지 않는다 — 핸드오프 정체성은 task 하나다. ticket_finish `_resolve_finish_slot`
+# 핸드오프는 쓰지 않는다 — 핸드오프 정체성은 task 하나다. `cli.ticket_finish.main`
 # (복구 문 `--reconcile-integrated`)이 자기 `--repo`/`--slot` 을 파싱한 뒤 리스-조인 검증을 위해
 # 부른다(판정 복붙 0).
 def _resolve_explicit_identity_slot(

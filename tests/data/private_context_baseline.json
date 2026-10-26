@@ -16,13 +16,6 @@
         "count": 1
       }
     ],
-    ".project_manager/tools/pm_delegate.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
-        "count": 1
-      }
-    ],
     ".project_manager/tools/pm_engine/app/delegate_execute.py": [
       {
         "kind": "session_stamp",
@@ -77,6 +70,13 @@
       {
         "kind": "session_stamp",
         "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_engine/cli/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
     ],
@@ -396,13 +396,6 @@
         "count": 1
       }
     ],
-    "templates/claude_code/.project_manager/tools/pm_delegate.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
-        "count": 1
-      }
-    ],
     "templates/claude_code/.project_manager/tools/pm_engine/app/delegate_execute.py": [
       {
         "kind": "session_stamp",
@@ -457,6 +450,13 @@
       {
         "kind": "session_stamp",
         "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/cli/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
     ],
@@ -779,13 +779,6 @@
         "count": 1
       }
     ],
-    "templates/codex/.project_manager/tools/pm_delegate.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
-        "count": 1
-      }
-    ],
     "templates/codex/.project_manager/tools/pm_engine/app/delegate_execute.py": [
       {
         "kind": "session_stamp",
@@ -840,6 +833,13 @@
       {
         "kind": "session_stamp",
         "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/cli/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
     ],
@@ -1353,13 +1353,6 @@
         "count": 1
       }
     ],
-    "templates/opencode/.project_manager/tools/pm_delegate.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
-        "count": 1
-      }
-    ],
     "templates/opencode/.project_manager/tools/pm_engine/app/delegate_execute.py": [
       {
         "kind": "session_stamp",
@@ -1414,6 +1407,13 @@
       {
         "kind": "session_stamp",
         "hash": "975c22dafa2b21135202ffe72affa12141ff1355449e7e6a09e0a6765aa51b8f",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/cli/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
     ],

@@ -265,8 +265,8 @@ def lint_clusters(home) -> list[tuple[str, str, str]]:
     있다: 이 표면은 인자를 받지 않고 장부에도 코드 트리·repo 를 적는 자리가 없어
     (`CLUSTER_LEDGER_KEYS`) 통합 브랜치 실재를 잴 트리를 지목할 방법이 없다. 트리를 추측해서
     재면 PM 홈(코드 없는 트리)에서 "브랜치 부재"가 상시 참이 된다 — 그래서 브랜치 실재는
-    **트리를 든 표면**(생성 `_cluster_ensure_branch` · 확인 실행 `pm_delegate.
-    _cluster_confirmation_tree` · 완료 기록 `ticket_finish`)만 판정한다.
+    **트리를 든 표면**(생성 `_cluster_ensure_branch` · 확인 실행 `cli.delegate_cmd._cluster_confirmation_tree` ·
+    공용 트리 해소 `app.cluster_code_tree.resolve_code_tree`)만 판정한다.
     """
     clusters = cluster_store.all_clusters(home)
     if not clusters:

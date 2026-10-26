@@ -11,7 +11,7 @@ from test_gate_anchor_resolution import (
     _managed_worktree,
     _unregistered_worktree,
 )
-from pm_engine.infra import pm_paths
+from pm_engine.infra import conf_store, pm_paths
 
 
 def test_shape_a_pm_home_and_registered_worktree_keep_existing_owner(tmp_path):
@@ -46,6 +46,12 @@ def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
 
     delegate = _load("pm_delegate_shape_b_linked_owner")
     monkeypatch.setattr(delegate, "REPO", worktree)
+    observed_homes = []
+    real_config = conf_store.local_config
+    def observe_config(owner_home):
+        observed_homes.append(owner_home)
+        return real_config(owner_home)
+    monkeypatch.setattr(conf_store, "local_config", observe_config)
     assert delegate.main([
         "--role", "researcher", "--prompt-file", str(prompt),
         "--cwd", str(linked), "--dry-run", "--ticket", ticket,
@@ -53,7 +59,7 @@ def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
     captured = capsys.readouterr()
     assert f"local_conf={local_conf}" in captured.err
     assert "PM 홈 해소 실패" not in captured.err
-    assert delegate._CONFIG_REPO_OVERRIDE == home.resolve()
+    assert observed_homes and observed_homes[-1].local_dir.parent.parent == home.resolve()
 
 
 def test_shape_b_bare_common_dir_uses_registered_checkout_owner(tmp_path):

@@ -1158,7 +1158,7 @@ def test_mutation_unregistered_unverified_call_is_red(tmp_path):
 
 def test_mutation_noop_verifier_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    path = tools / "pm_delegate.py"
+    path = tools / "pm_import.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     replaced = False
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
@@ -1179,7 +1179,7 @@ def test_mutation_noop_verifier_is_red(tmp_path):
 
     report = collect_central_guard_report(tools)
     assert any(
-        "pm_delegate.py" in item and "effective verifier" in item
+        "pm_import.py" in item and "effective verifier" in item
         for item in report.violations
     )
 
@@ -1193,14 +1193,14 @@ def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
     assignment.value.elts = [
         node
         for node in assignment.value.elts
-        if not (isinstance(node, ast.Constant) and node.value == "ticket_finish.py")
+        if not (isinstance(node, ast.Constant) and node.value == "pm_render.py")
     ]
     ast.fix_missing_locations(tree)
     engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 
     report = collect_central_guard_report(tools)
     assert any(
-        "ticket_finish.py" in item and "STAMPED_MODULES" in item
+        "pm_render.py" in item and "STAMPED_MODULES" in item
         for item in report.violations
     )
 
@@ -1537,11 +1537,11 @@ def test_same_named_nested_scope_cannot_impersonate_central_loader(
 )
 def test_mutation_nonliteral_conditional_verifier_is_red(tmp_path, condition):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    loader = tools / "pm_delegate.py"
+    loader = tools / "pm_import.py"
     source = loader.read_text(encoding="utf-8")
-    needle = '"ticket_finish.py",\n            verifier=_verify_engine_rev,'
+    needle = 'render_py, "pm_render.py", verifier=_verify_engine_rev,'
     assert needle in source
-    loader.write_text(source.replace(needle, '"ticket_finish.py",', 1), encoding="utf-8")
+    loader.write_text(source.replace(needle, 'render_py, "pm_render.py",', 1), encoding="utf-8")
     report = collect_central_guard_report(tools)
     assert any("exactly one explicit policy" in item for item in report.violations)
 

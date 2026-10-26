@@ -639,7 +639,7 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
             yield
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+
     assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
     output = capsys.readouterr().out
     assert "F-001" in output and "허용 수정 범위" in output
@@ -710,7 +710,7 @@ def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys)
             yield
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+
     assert pd.main(["review", "delta", "--ticket", "T-0685"]) == 1
     error = capsys.readouterr().err
     assert "round-gap" in error and "빠진 순번" in error
@@ -872,7 +872,7 @@ def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path
             yield
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+
     assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
     assert "F-001" in capsys.readouterr().out
 
@@ -915,7 +915,7 @@ def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch
             yield
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+
     assert pd.main(["review", "verify-template", "--ticket", "T-0786"]) == 0
     assert review_form.PM_REVIEW_CONFIRMATION_BLOCK in capsys.readouterr().out
 

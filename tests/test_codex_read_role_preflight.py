@@ -89,7 +89,7 @@ def _fail_if_called(*args, **kwargs):
 
 def _run_attempt(pd, *, harness, role, cwd, tmp_path, run_fn):
     return delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness=harness, model="gpt-x" if harness == "codex" else (
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness=harness, model="gpt-x" if harness == "codex" else (
             "opus" if harness == "claude" else "prov/m"
         ),
         reasoning=None, role=role, cwd=cwd, prompt="role preamble + task",
@@ -236,7 +236,7 @@ def test_reanchor_preamble_carries_three_absolute_values_and_declaration(pd, tmp
 
 def test_predict_read_tmp_paths_has_no_side_effects(pd):
     """dry-run 예측 경로는 실제 mkdir을 하지 않는다 — 이름 규칙만 계산."""
-    predicted_path, predicted_writable = delegate_transport._predict_read_tmp_paths(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex")
+    predicted_path, predicted_writable = delegate_transport._predict_read_tmp_paths(pm_paths.home_at(pd.REPO), "codex")
     assert predicted_path.name.startswith(delegate_run_rules._READ_TMP_PREFIX)
     assert not predicted_path.exists()
     assert not predicted_writable.exists()

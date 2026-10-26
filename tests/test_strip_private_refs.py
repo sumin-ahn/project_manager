@@ -17,7 +17,12 @@ from _git_fixture import init_git_repo
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/strip_private_refs.py"
-PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
+PRIVATE_REFS_MODULES = tuple(
+    REPO / ".project_manager/tools/pm_engine" / name
+    for name in ("domain/private_refs.py", "infra/private_surface.py")
+)
+from pm_engine.domain import private_refs
+from pm_engine.infra import private_surface
 
 # 엔진 사본 규약이 소유하는 이름 — 판정식이 아니라 스탬프·엔진 패키지 import 머리 표면이라
 # 스크립트가 재수출하지 않는다.
@@ -91,7 +96,7 @@ def test_reference_sharing_a_unit_with_any_other_token_is_residual(
 ):
     text = template.format(t=_ticket(), a=_decision())
     assert stripper.strip_prose_text(text) == (text, 0)
-    assert not stripper._actionable_matches(text)
+    assert not private_refs._actionable_matches(text)
 
 
 def test_placeholders_are_unchanged(stripper):
@@ -130,7 +135,7 @@ def test_unclosed_inline_code_block_does_not_protect_reference(stripper):
 
 
 def _marker(stripper, suffix: str = "") -> str:
-    return "# " + stripper._DATA_LITERAL_MARKER + suffix
+    return "# " + private_refs._DATA_LITERAL_MARKER + suffix
 
 
 def _guest_marker_source(stripper, ref: str, *, marked: bool) -> str:
@@ -226,7 +231,7 @@ def test_data_literal_spans_report_line_and_block_forms(stripper):
         )
         + "\n"
     )
-    covered = [source[start:end] for start, end in stripper._data_literal_spans(source)]
+    covered = [source[start:end] for start, end in private_refs._data_literal_spans(source)]
     assert len(covered) == 2
     assert covered[0] == f'LINE = "({ref})"  {_marker(stripper)}\n'
     assert covered[1].splitlines() == [
@@ -250,22 +255,22 @@ def test_unbalanced_block_markers_fail_loudly(stripper, suffixes, expected):
     source = "".join(
         f"{_marker(stripper, suffix)}\nVALUE = 1\n" for suffix in suffixes
     )
-    with pytest.raises(stripper.DataLiteralMarkerError, match=expected):
-        stripper._data_literal_spans(source)
-    with pytest.raises(stripper.DataLiteralMarkerError, match=expected):
+    with pytest.raises(private_refs.DataLiteralMarkerError, match=expected):
+        private_refs._data_literal_spans(source)
+    with pytest.raises(private_refs.DataLiteralMarkerError, match=expected):
         stripper.rewrite_python(source)
 
 
 def test_marked_regions_are_not_prose_for_downstream_consumers(stripper):
     ref = _ticket()
     source = _guest_marker_source(stripper, ref, marked=True)
-    assert stripper.prose_token_spans(source) == []
-    assert stripper._prose_count(source) == 0
+    assert private_refs.prose_token_spans(source) == []
+    assert private_refs._prose_count(source) == 0
     # 출하 lint 는 산문 span 단위로 소비한다 — 표식 구간은 span 자체가 없어 검사 대상 밖이다.
     assert not [
         match
-        for span in stripper.prose_token_spans(source)
-        for match in stripper._actionable_matches(span.text)
+        for span in private_refs.prose_token_spans(source)
+        for match in private_refs._actionable_matches(span.text)
     ]
 
 
@@ -274,7 +279,7 @@ def test_marker_text_inside_string_literal_is_not_a_marker(stripper):
     ref = _ticket()
     source = f'VALUE = "payload {_marker(stripper)}"  # 산문 참조 ({ref})\n'
     rewritten, count = stripper.rewrite_python(source)
-    assert stripper._data_literal_spans(source) == []
+    assert private_refs._data_literal_spans(source) == []
     assert count == 1
     assert rewritten == f'VALUE = "payload {_marker(stripper)}"  # 산문 참조\n'
 
@@ -289,7 +294,7 @@ def test_marker_text_inside_triple_quoted_string_does_not_break_pairing(stripper
         '"""\n'
     )
     rewritten, count = stripper.rewrite_python(source)
-    assert stripper._data_literal_spans(source) == []
+    assert private_refs._data_literal_spans(source) == []
     assert count == 1
     assert "표식 밖 참조 는 정리된다" in rewritten
 
@@ -308,7 +313,7 @@ def test_marked_line_does_not_shield_the_rest_of_a_multiline_token(stripper):
     assert "둘째 줄 도 표식 밖이다" in rewritten
     assert f'"""  {_marker(stripper)}' in rewritten
     # lint 축도 나머지 줄을 본다 — 토큰 전체가 아니라 보호된 줄만 빠진다.
-    assert stripper._prose_count(source) == 2
+    assert private_refs._prose_count(source) == 2
 
 
 def test_standalone_marker_protects_the_whole_following_statement(stripper):
@@ -338,7 +343,7 @@ def test_block_marker_after_code_is_not_a_boundary_and_does_not_raise(stripper):
         f"Z = 1  # prose ({ref})\n"
     )
     rewritten, count = stripper.rewrite_python(source)
-    assert stripper._data_literal_spans(source) == []
+    assert private_refs._data_literal_spans(source) == []
     assert count == 1
     assert f'Y = "wire ({ref})"' in rewritten
     assert "Z = 1  # prose\n" in rewritten
@@ -348,8 +353,8 @@ def test_block_marker_after_code_is_not_a_boundary_and_does_not_raise(stripper):
 def test_line_input_of_a_boundary_marker_is_inert_in_exposed_api(stripper, suffix):
     """노출 API 에 라인 하나만 들어와도 표식 판정이 재적용돼 죽지 않는다."""
     line = f"X = 1  {_marker(stripper, suffix)}"
-    assert stripper.remove_matched_spans(line) == line
-    assert stripper._specific_matches(line) == []
+    assert private_refs.remove_matched_spans(line) == line
+    assert private_refs._specific_matches(line) == []
     assert stripper.strip_prose_text(line) == (line, 0)
 
 
@@ -362,10 +367,10 @@ def test_near_miss_marker_fails_loudly(stripper, suffix):
     """오탈자 표식은 보호를 못 만든 채 조용히 지나가면 안 된다."""
     ref = _ticket()
     source = f"{_marker(stripper, suffix)}\nV = 1  # prose ({ref})\n"
-    with pytest.raises(stripper.DataLiteralMarkerError, match="정확 형태가 아니다"):
+    with pytest.raises(private_refs.DataLiteralMarkerError, match="정확 형태가 아니다"):
         stripper.rewrite_python(source)
-    with pytest.raises(stripper.DataLiteralMarkerError, match="정확 형태가 아니다"):
-        stripper._data_literal_spans(source)
+    with pytest.raises(private_refs.DataLiteralMarkerError, match="정확 형태가 아니다"):
+        private_refs._data_literal_spans(source)
 
 
 def test_prose_mentioning_the_marker_mid_comment_is_not_a_marker(stripper):
@@ -373,7 +378,7 @@ def test_prose_mentioning_the_marker_mid_comment_is_not_a_marker(stripper):
     ref = _ticket()
     source = f"# 표식은 {_marker(stripper)[2:]} 를 쓴다 ({ref})\n"
     rewritten, count = stripper.rewrite_python(source)
-    assert stripper._data_literal_spans(source) == []
+    assert private_refs._data_literal_spans(source) == []
     assert count == 1
     assert rewritten == f"# 표식은 {_marker(stripper)[2:]} 를 쓴다\n"
 
@@ -408,8 +413,8 @@ def test_lone_carriage_return_with_markers_is_rejected(stripper, shape):
     """표식이 있는 소스의 홀로 선 CR 은 거부한다 — 구간이 의도 밖까지 번지면 참조가 샌다."""
     ref = _ticket()
     source = _lone_carriage_return_sources(stripper, ref)[shape]
-    for call in (stripper._data_literal_spans, stripper.rewrite_python):
-        with pytest.raises(stripper.DataLiteralMarkerError, match="CR"):
+    for call in (private_refs._data_literal_spans, stripper.rewrite_python):
+        with pytest.raises(private_refs.DataLiteralMarkerError, match="CR"):
             call(source)
     # 거부이므로 산출물이 없다 — 표식 밖 참조가 조용히 사라질 여지 자체가 없다.
     assert source.count(ref) >= 2
@@ -419,7 +424,7 @@ def test_lone_carriage_return_without_markers_keeps_previous_behaviour(stripper)
     """표식이 없는 소스는 종전대로다 — 거부는 표식이 있는 입력에만 적용한다."""
     ref = _ticket()
     source = f"A = 1  # 산문 ({ref})\rB = 2\n"
-    assert stripper._data_literal_spans(source) == []
+    assert private_refs._data_literal_spans(source) == []
     rewritten, count = stripper.rewrite_python(source)
     assert count == 1
     assert rewritten == "A = 1  # 산문\rB = 2\n"
@@ -518,14 +523,14 @@ def test_line_prefix_and_orphan_punctuation_are_preserved(
     before = template.format(t=_ticket(), a=_decision())
     after = expected.format(t=_ticket(), a=_decision())
     assert stripper.strip_prose_text(before) == (after, removed)
-    assert stripper._leading_whitespace(before) == stripper._leading_whitespace(after)
+    assert private_refs._leading_whitespace(before) == private_refs._leading_whitespace(after)
     if removed:
-        assert after == stripper.remove_matched_spans(before)
+        assert after == private_refs.remove_matched_spans(before)
 
 
 def test_line_invariant_requires_exact_matched_span_reconstruction(stripper):
     before = f"A·{_ticket()}·B"
-    exact = stripper.remove_matched_spans(before)
+    exact = private_refs.remove_matched_spans(before)
     assert stripper.line_invariant(before, exact)["matched_span_reconstruction"]
     assert not stripper.line_invariant(
         before, exact.replace("·", "", 1)
@@ -601,17 +606,17 @@ def test_verification_mode_fails_before_write(stripper, tmp_path, monkeypatch):
 def test_prose_spans_include_comments_and_documentation_only(stripper):
     ref = _decision()
     source = f'"""docs {ref}"""\nvalue = "{ref}"  # note {ref}\n'
-    spans = stripper.prose_token_spans(source)
+    spans = private_refs.prose_token_spans(source)
     assert len(spans) == 2
-    assert sum(len(stripper.SPECIFIC_REF_RE.findall(span.text)) for span in spans) == 2
+    assert sum(len(private_refs.SPECIFIC_REF_RE.findall(span.text)) for span in spans) == 2
 
 
 def test_all_implicitly_concatenated_doc_strings_are_prose(stripper):
     ref = _ticket()
     source = f'"""head""" """reason ({ref})"""\n'
-    spans = stripper.prose_token_spans(source)
+    spans = private_refs.prose_token_spans(source)
     assert [span.text for span in spans] == ['"""head"""', f'"""reason ({ref})"""']
-    assert stripper._prose_count(source) == 1
+    assert private_refs._prose_count(source) == 1
     rewritten, count = stripper.rewrite_python(source)
     assert rewritten == '"""head""" """reason"""\n'
     assert count == 1
@@ -722,18 +727,18 @@ def test_dry_run_residual_report_uses_transformed_snapshot(stripper, tmp_path):
 
 # ── 판정식 이관 (엔진 모듈 소유 · 스크립트는 재수출만) ────────────────────────
 #
-# 판정식은 `.project_manager/tools/private_refs.py` 가 소유한다. 이 스크립트는 출하 대상이
-# 아니라서 엔진과 가드가 그 판정을 소비할 수 없었다. 아래 세 축이 이관을 잠근다 — 재수출이
-# 사본이 아니라 같은 객체인가, 스크립트가 옮긴 이름을 다시 정의하지 않는가, 그리고 같은
-# 입력에서 이관 전과 같은 판정 결과가 나오는가.
+# 판정식과 파일 표면은 domain.private_refs와 infra.private_surface가 소유한다.
+# 스크립트의 본체 복제·재수출 부재와 기존 입력의 판정 값을 검사한다.
 
 
 def _engine_judgment_names() -> list[str]:
     """엔진 모듈이 소유한 판정식 이름을 모듈 소스 AST 에서 파생한다.
 
-    손으로 든 목록은 심볼이 늘 때 재수출 누락을 놓친다. 형제 로드/스탬프 표면만 뺀다.
+    두 실제 소유자의 함수·타입·값 이름을 합친다.
     """
-    tree = ast.parse(PRIVATE_REFS_MODULE.read_text(encoding="utf-8"))
+    tree = ast.Module(body=[node for path in PRIVATE_REFS_MODULES
+                            for node in ast.parse(path.read_text(encoding="utf-8")).body],
+                      type_ignores=[])
     names: list[str] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -751,30 +756,10 @@ def _engine_judgment_names() -> list[str]:
     ]
 
 
-def test_script_reexports_the_engine_judgment_as_the_same_objects(stripper):
-    """스크립트의 이름 하나하나가 엔진 모듈의 **같은 객체**를 가리킨다 (복제 0).
-
-    값을 복사하면 두 벌이 되어 한쪽만 고쳐진 채 판정이 갈린다. 문자열 grep 은 그 실패를
-    증명하지 못하므로 객체 동일성(``is``)으로 단언한다.
-    """
-    engine = stripper.private_refs
-    assert Path(engine.__file__).resolve() == PRIVATE_REFS_MODULE.resolve()
-
-    names = _engine_judgment_names()
-    # 목록이 비면 아래 단언이 공허하게 통과한다 — 하중을 받는 seam 이 실제로 들어 있는지 본다.
-    assert {"shipping_paths", "prose_token_spans", "_actionable_matches"} <= set(names)
-
-    missing = [name for name in names if not hasattr(stripper, name)]
-    assert not missing, f"엔진 판정식 재수출 누락: {missing}"
-
-    copied = [
-        name for name in names if getattr(stripper, name) is not getattr(engine, name)
-    ]
-    assert not copied, f"재수출이 같은 객체가 아니다(사본 발생): {copied}"
 
 
 def test_script_defines_no_copy_of_the_migrated_judgment():
-    """스크립트가 옮긴 이름을 다시 정의하지 않는다 — 재수출 위에 사본을 얹는 경로를 닫는다."""
+    """스크립트가 판정식 본체를 복제하거나 재수출하지 않는다."""
     moved = set(_engine_judgment_names())
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
     redefined = sorted(
@@ -784,13 +769,18 @@ def test_script_defines_no_copy_of_the_migrated_judgment():
         and node.name in moved
     )
     assert not redefined, f"스크립트가 옮긴 판정식을 다시 정의한다: {redefined}"
+    assert not (REPO / ".project_manager/tools/private_refs.py").exists()
+    reexports = [target.id for node in tree.body if isinstance(node, ast.Assign)
+                 for target in node.targets if isinstance(target, ast.Name)
+                 and target.id in moved]
+    assert not reexports, f"판정식 재수출 잔존: {reexports}"
 
 
 def _parity_cases(stripper):
     """(이름, 입력, 이관 전 구현이 낸 판정 결과) — 기대값은 이관 전에 실측해 박은 값이다."""
     ticket = _ticket()
     decision = _decision()
-    marker = "# " + stripper._DATA_LITERAL_MARKER
+    marker = "# " + private_refs._DATA_LITERAL_MARKER
     return (
         (
             "comment-removable-unit",
@@ -910,20 +900,20 @@ def _parity_cases(stripper):
 
 def _verdict(stripper, source):
     """한 입력에 대한 판정 결과 전부 — 존재가 아니라 값으로 대조하기 위한 표현."""
-    spans = stripper.prose_token_spans(source)
+    spans = private_refs.prose_token_spans(source)
     rewritten, replacements = stripper.rewrite_python(source)
     return {
         "spans": [(span.start, span.end, span.line, span.text) for span in spans],
-        "data_literal_spans": stripper._data_literal_spans(source),
+        "data_literal_spans": private_refs._data_literal_spans(source),
         "actionable": [
             (span.line, match.group())
             for span in spans
-            for match in stripper._actionable_matches(span.text)
+            for match in private_refs._actionable_matches(span.text)
         ],
-        "prose_before": stripper._prose_count(source),
+        "prose_before": private_refs._prose_count(source),
         "rewritten": rewritten,
         "replacements": replacements,
-        "prose_after": stripper._prose_count(rewritten),
+        "prose_after": private_refs._prose_count(rewritten),
     }
 
 
@@ -947,5 +937,5 @@ def test_parity_pins_are_load_bearing(stripper, monkeypatch):
     source = f"y = 2  # 표기 `({ticket})` 는 보존한다\n"
     assert stripper.rewrite_python(source) == (source, 0)
 
-    monkeypatch.setattr(stripper.private_refs, "_INLINE_CODE_RE", re.compile(r"(?!x)x"))
+    monkeypatch.setattr(private_refs, "_INLINE_CODE_RE", re.compile(r"(?!x)x"))
     assert stripper.rewrite_python(source) != (source, 0)

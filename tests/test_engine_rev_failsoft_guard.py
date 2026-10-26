@@ -42,6 +42,8 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import utf8_child_env
+from pm_engine.cli import finish_record
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1271,7 +1273,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
     # reviewer/guard의 마지막 적재와 전용 recovery 경계 9개를 제거했다.
     # 세션 진입·handoff/log/finisher 이동으로 적재 전용 경계 12개를 더 제거했다(50→38).
-    assert len(report.boundaries) == 38, "propagation sweep boundary ratchet changed"
+    # 묶음 소유 선검사의 parser 전용 loader 경계 1개를 제거했다(38→37).
+    # 공용 해소·CLI 이동과 private loader 은퇴에 따른 경계 재고는 실제 스캔으로 확인한다.
+    assert len(report.boundaries) == 26, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1626,8 +1630,8 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
     이 fail-soft 핸들러들에 도달한다 — 미존재/빈 목록/빈 보고로 강등하면 안 된다.
     """
     skew = _marked_skew()
-    module = _runtime_tool("ticket_finish.py")
-    instance = object.__new__(module.TicketFinisher)
+    instance = object.__new__(finish_record.TicketFinisher)
+    instance._home = pm_paths.home_at(REPO)
     instance._status_entries_fn = _raiser(skew)
     invoke = lambda: instance._dirty_split(["src/file.py"])
     with pytest.raises(RuntimeError) as raised:
