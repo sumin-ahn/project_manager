@@ -1976,7 +1976,8 @@ const operations = {
   grant: {argv:["git-grant", "--session", "SID", "--cwd", root], input:"허용 원문\r\n", reply:{granted:["git reset --hard"]},
     call:(options) => m.recordGrants(root, "SID", root, "허용 원문\r\n", options)},
 };
-for (const platform of ["linux", "win32"]) {
+// Windows 호스트는 linux 흉내를 못 낸다(PATH 의 드라이브 콜론·실행 권한 비트 없음) — win32 만 본다.
+for (const platform of process.platform === "win32" ? ["win32"] : ["linux", "win32"]) {
   for (const configured of [false, true]) {
     const runtime = path.join(root, "Python with space", "python.exe");
     fs.writeFileSync(conf, "runtime.py=" + (configured ? runtime : "") + "\n");
@@ -3154,7 +3155,8 @@ const [engineRoot, slot] = process.argv.slice(1);
   // 허용 기록 실패는 조용히 넘기지 않는다.
   const calls = [];
   const failing = (py, argv, opts) => {
-    calls.push([argv.slice(1), opts.input]);
+    // 실행기 접두 인자 수는 OS마다 다르다(Windows `py -3 board.py …`) — board.py 다음부터 기록한다.
+    calls.push([argv.slice(argv.findIndex((arg) => arg.endsWith("board.py")) + 1), opts.input]);
     return {status: 1, stdout: "", stderr: "[중단] 형식 오류"};
   };
   assert.throws(
@@ -3169,9 +3171,10 @@ const [engineRoot, slot] = process.argv.slice(1);
 '''
     shutil.copytree(BOARD_PY.parent, home / ".project_manager/tools")
     result = subprocess.run(
-        [node, "-e", script, str(home), str(slot)], cwd=OPEN_CORE.parent, check=True,
+        [node, "-e", script, str(home), str(slot)], cwd=OPEN_CORE.parent,
         capture_output=True, text=True, encoding="utf-8",
     )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "GIT_GRANT_OPENCODE_OK" in result.stdout
 
 

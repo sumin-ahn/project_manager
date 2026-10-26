@@ -346,7 +346,10 @@ def imported(pm_import, tmp_path_factory):
     """fresh `--new` claude 채택자 (모듈 1회 — import 는 비싸다)."""
     dest = tmp_path_factory.mktemp("adopter") / "instance"
     buf = io.StringIO()
-    with redirect_stdout(buf):
+    # 모듈 범위 픽스처는 함수 범위 `known_ctx_io` 보다 먼저 돈다 — 모델 한도 조회 고정을 여기서 직접 건다.
+    from _manager_home import install_known_ctx_io
+    with pytest.MonkeyPatch.context() as patch, redirect_stdout(buf):
+        install_known_ctx_io(patch)
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude",
                              "--name", PROJECT_NAME, "--fill", "manual"])
     assert rc == 0, f"import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"

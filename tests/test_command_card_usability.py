@@ -64,6 +64,8 @@ import pytest
 # release_wave/runtime_smoke 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·ticket 상태 조회.
 from test_fresh_adopter_runtime_smoke import _live_env, _load_pm_import, _tickets_in
+# 설치 구간의 모델 한도 조회 고정(실제 하네스 CLI 미호출).
+from _manager_home import install_known_ctx_io
 # release 마커 AST 카운트(자기 파일 pin 가드용) — 마커 소실/개명 방어 도구 재사용. 안내 경로로 첫
 # 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0956]]).
 from test_release_wave import (
@@ -1194,8 +1196,10 @@ def _shared_board_adopter(tmp_path: Path, monkeypatch, *, folders: int) -> Path:
     assert subprocess.run(["git", "init", "--bare", "-q", str(bare)], capture_output=True).returncode == 0
     pm_import = _load_pm_import()
     dest = tmp_path / "shared-board"
-    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual",
-                           "--board-submodule", "--board-remote", str(bare)]) == 0
+    with pytest.MonkeyPatch.context() as patch:
+        install_known_ctx_io(patch)
+        assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual",
+                               "--board-submodule", "--board-remote", str(bare)]) == 0
     _baseline_adopter(dest)
     repo = dest.name
     steps = [("worktree", "add", repo, "--user-ack", repo)] * folders
@@ -2037,8 +2041,10 @@ def _board_submodule_adopter(tmp_path: Path) -> Path:
     bare = tmp_path / "board.git"
     assert _git_out("init", "--bare", "-q", str(bare)).returncode == 0
     dest = tmp_path / "adopter-sub"
-    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Sub",
-                           "--board-submodule", "--board-remote", str(bare), "--fill", "manual"]) == 0
+    with pytest.MonkeyPatch.context() as patch:
+        install_known_ctx_io(patch)
+        assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Sub",
+                               "--board-submodule", "--board-remote", str(bare), "--fill", "manual"]) == 0
     _run_in(dest, "-c", "advice.addEmbeddedRepo=false", "add", "-A")
     _run_in(dest, "commit", "-q", "--no-gpg-sign", "-m", "seed")
     repo = dest.name
