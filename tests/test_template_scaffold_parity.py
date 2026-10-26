@@ -25,7 +25,7 @@ from pm_engine.domain import install_rules
 
 from pm_engine.domain import delegate_rounds
 
-from pm_engine.cli import board_cluster
+from pm_engine.cli import board_cluster, cluster_close
 from pm_engine.domain import cluster_rules
 
 
@@ -35,6 +35,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+from pm_engine.app import cluster_code_tree
+from pm_engine.infra import cluster_store, pm_paths
 
 import pytest
 
@@ -465,8 +468,7 @@ def _round_ordinal_labels() -> tuple[str, ...]:
 
 def _close_step_labels() -> tuple[str, ...]:
     """엔진이 정한 종결 단계 이름 — 고정 순서 그대로."""
-    finish = _load_engine_module("ticket_finish")
-    steps = tuple(label for _key, label, _pre in finish.ClusterCloser.STEPS)
+    steps = tuple(label for _key, label, _pre in cluster_close.ClusterCloser.STEPS)
     assert steps, "엔진 종결 단계가 비었다 — 파생 입력이 stale"
     return steps
 
@@ -730,26 +732,23 @@ def _close_branch_surfaces() -> list[Path]:
 
 def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     """F-002: 카드의 5·6단계 안내가 엔진의 차단/건너뛰기 계약과 같은 값을 말한다."""
-    finish = _load_engine_module("ticket_finish")
     board = _load_engine_module("board")
-    closer = finish.ClusterCloser
+    closer = cluster_close.ClusterCloser
 
     # 살아 있는 멤버의 미결속은 동명 기준 브랜치로 해소하지 않고 조회 전에 거부한다.
-    probe = object.__new__(closer)
-    probe._cluster = "C-guidance"
     ledger = {"branch": None, "base_branch": "main"}
-    probe._ledger = lambda: ledger
+    monkeypatch.setattr(cluster_store, "load_cluster", lambda home, cluster: ledger)
     reads = []
     monkeypatch.setattr(
         lease_store, "_read_lease_rows_status",
         lambda path: reads.append(path) or (identity_args.LEDGER_OK, []),
     )
-    tree, problem = probe._resolve_code_tree()
+    tree, problem = cluster_code_tree.resolve_code_tree(pm_paths.home_at(REPO), "C-guidance")
     assert tree is None and "미결속" in problem and "cluster new" in problem
     assert reads == [] and ledger == {"branch": None, "base_branch": "main"}
 
     # 기준 브랜치 부재의 기존 단계별 차단도 유지한다.
-    blocking = finish._CLOSE_INTEGRATION_UNDECLARED
+    blocking = cluster_close._CLOSE_INTEGRATION_UNDECLARED
     assert "base_branch" in blocking
     prechecks = {key: precheck for key, _label, precheck in closer.STEPS}
     for key in ("rebase", "merge"):

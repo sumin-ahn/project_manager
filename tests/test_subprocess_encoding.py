@@ -26,6 +26,7 @@ from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
 import pm_engine.infra.harness.reviewer_run
 import pm_engine.cli.handoff
+from pm_engine.cli import finish_record
 
 import argparse
 import ast
@@ -194,10 +195,10 @@ def test_pm_import_board_init_passes_utf8(pm_import, monkeypatch, tmp_path):
 # ── ticket_finish (_default_run_* 직접 호출) ────────────────────────────────
 
 
-def test_ticket_finish_default_runs_pass_utf8(ticket_finish, monkeypatch):
+def test_ticket_finish_default_runs_pass_utf8(ticket_finish, monkeypatch, tmp_path):
     rec = _Recorder()
-    monkeypatch.setattr(ticket_finish.subprocess, "run", rec)
-    finisher = ticket_finish.TicketFinisher()
+    monkeypatch.setattr(finish_record.subprocess, "run", rec)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(tmp_path))
     finisher._default_run_pytest()
     finisher._default_run_board(["list"])
     finisher._default_run_git(["status"])

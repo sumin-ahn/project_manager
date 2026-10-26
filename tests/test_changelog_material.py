@@ -26,6 +26,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pm_engine.infra import repo_files
+
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -97,7 +99,7 @@ def _done_ticket_text(
 
 
 def _fixture_board(pd, home: Path):
-    board = pd._load_module_from_path(
+    board = repo_files.load_module(
         home / ".project_manager" / "tools" / "board.py",
         "board.py", verifier=pd._verify_engine_rev,
     )

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pm_engine.infra import pm_paths
 import pm_engine.domain.handoff_text
+from pm_engine.domain import finish_rules, handoff_text
 
 from pm_engine.domain import bootstrap_rules
 
@@ -1284,7 +1285,7 @@ _FAKE_LOG = (
 )
 
 # seam 을 소비하는 도구 — 여기에 자기 요약행 정규식이 남아 있으면 승격이 반쪽이다.
-_SEAM_CONSUMER_TOOLS = ("board.py", "pm_bootstrap.py", "ticket_finish.py", "pm_engine/domain/handoff_text.py")
+_SEAM_CONSUMER_TOOLS = ("board.py", "pm_bootstrap.py", "pm_engine/domain/finish_rules.py", "pm_engine/domain/handoff_text.py")
 # 소스에 박힌 outcome 정규식 리터럴(`(\d+) passed`·`\d+ failed` …) 탐지용.
 _LOCAL_OUTCOME_REGEX = re.compile(r"\\d\+\)? (?:passed|failed|deselected|skipped|errors?)")
 
@@ -1380,19 +1381,19 @@ def test_bootstrap_counts_contract_unchanged(bootstrap):
 def test_ticket_finish_output_uses_last_summary_line(ticket_finish):
     """(passed, deselected) 도 끝의 요약행 기준."""
     out = _FAKE_LOG + "1467 passed, 24 deselected in 12.34s\n"
-    assert ticket_finish.parse_pytest_output(out) == (1467, 24)
+    assert finish_rules.parse_pytest_output(out) == (1467, 24)
 
 
 def test_ticket_finish_green_ignores_mid_output_failed_log(ticket_finish):
     """중간 로그의 `1 failed` 로 green 회귀를 red 로 뒤집지 않는다(false-RED 폐쇄)."""
     out = _FAKE_LOG + "7577 passed in 145.23s\n"
-    assert ticket_finish.is_pytest_green(out, returncode=0) is True
+    assert handoff_text.is_pytest_green(out, returncode=0) is True
 
 
 def test_ticket_finish_green_still_red_on_summary_failure(ticket_finish):
     """요약행에 failed 가 있으면 여전히 red — 판정 방향은 바뀌지 않는다."""
     out = "3 failed, 7574 passed in 149.90s\n"
-    assert ticket_finish.is_pytest_green(out, returncode=0) is False
+    assert handoff_text.is_pytest_green(out, returncode=0) is False
 
 
 # ── 소비처 ④ 핸드오프 ────────────────────────────────────────────────────
@@ -1446,9 +1447,9 @@ def test_bootstrap_counts_ignore_trailing_fake(bootstrap):
 def test_ticket_finish_ignores_trailing_fake(ticket_finish):
     """마감 판정 — 꼬리 오염이면 (5, 0) 으로 오판하고 wrapper 의 `1 failed` 는 green 을 뒤집는다."""
     real = "1467 passed, 24 deselected in 12.34s\n"
-    assert ticket_finish.parse_pytest_output(real + _TRAILING_FAKE) == (1467, 24)
-    assert ticket_finish.parse_pytest_output(real + _TRAILING_FAKE_WRAPPER) == (1467, 24)
-    assert ticket_finish.is_pytest_green(real + _TRAILING_FAKE_WRAPPER, returncode=0) is True
+    assert finish_rules.parse_pytest_output(real + _TRAILING_FAKE) == (1467, 24)
+    assert finish_rules.parse_pytest_output(real + _TRAILING_FAKE_WRAPPER) == (1467, 24)
+    assert handoff_text.is_pytest_green(real + _TRAILING_FAKE_WRAPPER, returncode=0) is True
 
 
 def test_handoff_summary_ignores_trailing_fake(handoff):

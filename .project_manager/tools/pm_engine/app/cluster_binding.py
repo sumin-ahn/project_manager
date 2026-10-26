@@ -252,8 +252,8 @@ def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
     """통합 브랜치를 만든다(있으면 그대로) — 결과를 사람이 읽는 1줄로 돌려준다.
 
     브랜치 생성 실패는 장부 생성을 막지 않는다 — 이 1줄이 `cluster new` 출력에 그대로 실리고,
-    그 뒤의 브랜치 부재는 **트리를 든 표면**(확인 실행 `pm_delegate._cluster_confirmation_tree` ·
-    완료 기록 `ticket_finish`)이 자기 자리에서 판정한다(조용한 통과 아님).
+    그 뒤의 브랜치 부재는 **트리를 든 표면**(확인 실행 `cli.delegate_cmd._cluster_confirmation_tree` ·
+    공용 트리 해소 `app.cluster_code_tree.resolve_code_tree`)가 자기 자리에서 판정한다(조용한 통과 아님).
     """
     state = _cluster_branch_state(tree, branch)
     if state is None:

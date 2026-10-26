@@ -436,7 +436,7 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
         delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
 
     def killed_runner(*_args, **_kwargs):
         rows = _ledger(ledger_path)["records"]
@@ -446,7 +446,7 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
 
     with pytest.raises(SimulatedHarnessKill):
         delegate_execute._execute_attempt(
-            pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), harness="codex",
+            pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), harness="codex",
             model="gpt-x",
             reasoning=None,
             role="developer",
@@ -462,7 +462,7 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
     assert len(unfinished) == 1
     raw_path = Path(unfinished[0]["raw_path"])
     assert raw_path.is_file()
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), ["--unfinished"]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--unfinished"]) == 0
     output = capsys.readouterr().out
     assert output.splitlines()[0] == f"조회 장부: {ledger_path.resolve()}"
     assert "미마감 raw 1건" in output
@@ -473,10 +473,10 @@ def test_raw_empty_still_prints_resolved_ledger_on_first_line(
         delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
 
     assert not ledger_path.exists()
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), []) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
 
     lines = capsys.readouterr().out.splitlines()
     assert lines == [
@@ -504,7 +504,7 @@ def test_raw_output_dir_reads_that_ledger(
         attempt="primary",
     )
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), ["--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--output-dir", str(output_dir)]) == 0
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"조회 장부: {ledger_path.resolve()}"
@@ -554,7 +554,7 @@ def test_raw_close_rejects_already_finished_record(
         ledger_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
     )
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), [
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", record_id, "--output-dir", str(output_dir),
     ]) == 1
     assert "이미 마감" in capsys.readouterr().err
@@ -567,7 +567,7 @@ def test_raw_close_rejects_unknown_record_id(
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), [
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", "missing-record", "--output-dir", str(output_dir),
     ]) == 1
     assert "미발견: missing-record" in capsys.readouterr().err
@@ -583,7 +583,7 @@ def test_raw_close_rejects_live_pid(
     record_id = _unfinished_record(ledger_path, tmp_path)
     assert _ledger(ledger_path)["records"][0]["pid"] == os.getpid()
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), [
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", record_id, "--output-dir", str(output_dir),
     ]) == 1
     assert "PID가 실행 중" in capsys.readouterr().err
@@ -598,7 +598,7 @@ def test_raw_close_force_bypasses_live_pid_and_preserves_note(
     ledger_path = output_dir / "raw_outputs.json"
     record_id = _unfinished_record(ledger_path, tmp_path)
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), [
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", record_id,
         "--note", "PM 확인 후 강제 마감",
         "--force",
@@ -630,7 +630,7 @@ def test_raw_close_warns_when_old_completion_is_pruned(
         now=started,
     )
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), [
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", record_id, "--force", "--output-dir", str(output_dir),
     ]) == 0
 
@@ -645,7 +645,7 @@ def test_raw_close_warns_when_old_completion_is_pruned(
 
 def test_raw_help_exposes_close_surface(delegate, capsys):
     with pytest.raises(SystemExit) as exc_info:
-        delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), ["--help"])
+        delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--help"])
     assert exc_info.value.code == 0
     assert "close <RECORD-ID> ..." in capsys.readouterr().out
 
@@ -678,7 +678,7 @@ def test_raw_warns_about_peer_engine_ledger_without_reading_it(
     )
 
     assert not current_ledger.exists()
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), []) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"조회 장부: {current_ledger.resolve()}"
@@ -790,7 +790,7 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
     ])
 
     result = delegate_execute._execute_attempt(
-        pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), harness="codex",
+        pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), harness="codex",
         model="gpt-x",
         reasoning=None,
         role="developer",
@@ -811,12 +811,12 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
     assert "# rc: 0" in content
     assert "# elapsed_sec:" in content
     assert "# silence_sec: 0.2" in content
-    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
     rows = _ledger(ledger_path)["records"]
     assert len(rows) == 1
     assert rows[0]["rc"] == 0
     assert rows[0]["silence_sec"] == 0.2
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), []) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
     query = capsys.readouterr().out
     assert "최근 raw 1건" in query
     assert "완료(rc=0)" in query
@@ -919,12 +919,12 @@ def test_delegate_raw_storage_refuses_unresolved_config_owner(
     명시 output_dir 은 마커 검사보다 앞이라 같은 앵커에서도 통과한다(복구 채널 자기잠김 0).
     """
     unresolved = tmp_path / "config-owner-without-pm-home"
-    monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", unresolved)
+
     with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
-        raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+        raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=unresolved))
 
     explicit = tmp_path / "explicit-output"
-    assert raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), explicit) == (
+    assert raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=unresolved), explicit) == (
         explicit, explicit / "raw_outputs.json",
     )
 
@@ -962,7 +962,7 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     assert not (worktree / ".project_manager" / ".local").exists()
 
     monkeypatch.setattr(delegate, "REPO", pm_home)
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), []) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
     query = capsys.readouterr().out
     assert query.splitlines()[0] == f"조회 장부: {home_ledger.resolve()}"
     assert "최근 raw 1건" in query
@@ -1390,13 +1390,13 @@ def test_raw_cmd_surfaces_orphan_warning_and_list_even_when_ledger_is_empty(
     나온다 — 이 티켓이 잡는 역전(요약 소실 후 원문만 남는 상태)의 핵심 재현이다."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
     orphan = _engine_named_raw(
         delegate_dir, f"pm_delegate_codex_{os.getpid()}_deadbeef.txt", size=42,
     )
     pm_authored = _engine_named_raw(delegate_dir, "T-0002-notes.txt", size=999)
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), []) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
     output = capsys.readouterr().out
     lines = output.splitlines()
 
@@ -1412,13 +1412,13 @@ def test_raw_cmd_orphan_list_respects_limit_and_notes_omission(
     """`--limit` 을 넘는 고아는 그만큼만 나열되고 생략 건수가 명시된다."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
     for index in range(3):
         _engine_named_raw(
             delegate_dir, f"pm_delegate_codex_{index}_orphan{index}.txt", size=1,
         )
 
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), ["--limit", "2"]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--limit", "2"]) == 0
     output = capsys.readouterr().out
 
     assert "경고: 장부 미참조 원문 3건 3바이트" in output
@@ -1430,7 +1430,7 @@ def test_raw_queries_never_delete_files(delegate, monkeypatch, tmp_path):
     않는다(참조 원문·고아 원문 모두)."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    delegate_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
 
     referenced = _engine_named_raw(delegate_dir, "pm_delegate_codex_1_ref.txt")
     orphan = _engine_named_raw(delegate_dir, "pm_delegate_codex_2_orphan.txt")
@@ -1445,7 +1445,7 @@ def test_raw_queries_never_delete_files(delegate, monkeypatch, tmp_path):
     before = sorted(p.name for p in delegate_dir.iterdir())
     raw_output.raw_records(ledger_path)
     raw_output.unfinished_raw_records(ledger_path)
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), []) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
     after = sorted(p.name for p in delegate_dir.iterdir())
 
     assert before == after

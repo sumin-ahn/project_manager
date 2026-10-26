@@ -274,9 +274,9 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", lambda _home, **_kwargs: plan)
     stream = capture_console()
 
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, pm_home=pm_delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pm_delegate._CONFIG_REPO_OVERRIDE or pm_delegate.REPO)), [
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, board_root=pm_paths._board_root_at(pm_delegate.REPO)), [
         "prepare", "--ticket", "T-2000", "--role", "developer", "--cwd", str(slot),
-    ], adapter_roots = install_rules.adapter_directories()) == 0
+    ]) == 0
 
     prepared = _machine_payload(stream)
     assert prepared == {
@@ -290,9 +290,9 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
         lambda _home, **_kwargs: delegate_rounds.TicketHarvestResult(False, True),
     )
 
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, pm_home=pm_delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pm_delegate._CONFIG_REPO_OVERRIDE or pm_delegate.REPO)), [
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, board_root=pm_paths._board_root_at(pm_delegate.REPO)), [
         "harvest", "--copy", str(plan.path), "--cwd", str(slot),
-    ], adapter_roots = install_rules.adapter_directories()) == 0
+    ]) == 0
 
     assert _machine_payload(harvest_stream) == {
         "copy": str(plan.path.resolve()), "changed": False, "sync_ready": True,

@@ -52,6 +52,8 @@ import threading
 import unittest.mock
 from pathlib import Path
 
+from pm_engine.infra import repo_files
+
 import pytest
 
 from _test_exec import python_argv_command
@@ -259,7 +261,7 @@ def _spec_text(ticket: str, *, status: str = "claimed", body: str = "") -> str:
 
 
 def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
-    board = pd._load_module_from_path(
+    board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
         "board.py", verifier=pd._verify_engine_rev,
     )
@@ -1382,7 +1384,7 @@ def _board_round_is_pending(pd, pm_home: Path, ticket: str, ordinal: int) -> boo
 
 def _verify_template_rc(pd, pm_home: Path, monkeypatch, ticket: str) -> int:
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
+
     return pd.main(["review", "verify-template", "--ticket", ticket])
 
 
@@ -1957,7 +1959,7 @@ def test_codex_reviewer_opens_the_legacy_row_run_dir(pd, monkeypatch, tmp_path):
     copy = _plan_for(pd, tmp_path, "T-2001", "a" * 32)
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", tmp_path / "worktree", "review",
+        pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, "code-reviewer", tmp_path / "worktree", "review",
         cluster_run_dir=copy.parent,
     )
     try:
@@ -2001,7 +2003,7 @@ def test_codex_reviewer_opens_the_whole_cluster_run_dir(
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
 
     argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", slot, "review",
+        pm_paths.home_at(pd.REPO), "codex", "gpt-x", None, "code-reviewer", slot, "review",
         cluster_run_dir=_round_write_scope_of(pd, plan.rounds[0]),
     )
 
@@ -2046,7 +2048,7 @@ def test_non_codex_reviewer_warns_and_keeps_selected_target(
     copy = _plan_for(pd, tmp_path, "T-2002", "b" * 32)
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), harness, model, None, "code-reviewer", tmp_path / "worktree", "review",
+        pm_paths.home_at(pd.REPO), harness, model, None, "code-reviewer", tmp_path / "worktree", "review",
         cluster_run_dir=copy.parent,
     )
     try:
@@ -2514,7 +2516,7 @@ def _spec_and_rounds(pd, pm_home: Path, tickets: Path, ticket: str):
 def _harvest_rc(pd, monkeypatch, pm_home: Path, slot: Path, copy_path: Path) -> int:
     """실 CLI rc — 소유 PM 홈 해소만 픽스처 좌표로 고정한다(판정은 엔진 그대로)."""
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = install_rules.adapter_directories())
+    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
 
 
 def test_redeclared_prior_finding_id_is_refused_at_harvest(
@@ -2695,7 +2697,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
 ):
     """채널 파리티 — 같은 형상에 두 채널이 같은 사유를 내고 어느 쪽도 산출을 잃지 않는다."""
     pm_home, slot, tickets, sync_log = rounds_env
-    external = pd._load_module_from_path(
+    external = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "additional_reviewer.py",
         "additional_reviewer.py", verifier=pd._verify_engine_rev,
     )
@@ -3073,11 +3075,11 @@ def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
     produced = plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- x\n"
     plan.path.write_text(produced, encoding="utf-8", newline="")
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(plan.path), "--cwd", str(slot)], adapter_roots = install_rules.adapter_directories())
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(plan.path), "--cwd", str(slot)])
     assert rc == 0
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
-    rc2 = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["copies", "--ticket", "T-8006"], adapter_roots = install_rules.adapter_directories())
+
+    rc2 = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8006"])
     assert rc2 == 0
 
 
@@ -3694,7 +3696,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
         _attempt_rejected_prepare()
     assert (_round_files(), _run_dirs(), _unterminated_ledger_rows()) == baseline
 
-    file_lock = pd.fs
+    file_lock = fs
     expected_run_dirs = baseline[1]
     for exc_factory, label in [
         (lambda: RuntimeError("정리 폭발(probe)"), "RuntimeError"),
@@ -4237,7 +4239,7 @@ def _prepare_cli(pd, slot: Path, ticket: str, role: str, *, tier: str | None = N
     argv = ["prepare", "--ticket", ticket, "--role", role, "--cwd", str(slot)]
     if tier is not None:
         argv += ["--tier", tier]
-    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), argv, adapter_roots = install_rules.adapter_directories())
+    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), argv)
 
 
 def test_cross_role_prepare_is_denied_with_no_board_or_ledger_side_effect(
@@ -4289,7 +4291,7 @@ def test_native_role_prepare_is_unaffected_by_a_cross_mapping_elsewhere(
         copy_path.read_text(encoding="utf-8") + "\n## 산출\n- 값\n", encoding="utf-8", newline="",
     )
 
-    harvest_rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = install_rules.adapter_directories())
+    harvest_rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
 
     assert harvest_rc == 0
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["changed"] is True
@@ -4455,7 +4457,7 @@ def test_prepare_denies_using_owner_conf_even_when_engine_copy_conf_lacks_mappin
     engine_copy = tmp_path / "engine-copy-without-mapping"
     engine_copy.mkdir()
     monkeypatch.setattr(pd, "REPO", engine_copy)
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
         "delegate.architect.harness": "codex",
@@ -4466,7 +4468,7 @@ def test_prepare_denies_using_owner_conf_even_when_engine_copy_conf_lacks_mappin
     _write_spec(tickets, "T-7908")
 
     # 선-단언 — REPO(엔진 사본) conf 로 읽으면 매핑이 비어 no-op 이 된다는 전제 자체를 확인한다.
-    assert conf_store.local_config(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE)) == {}
+    assert conf_store.local_config(pm_paths.home_at(pd.REPO)) == {}
 
     rc = _prepare_cli(pd, slot, "T-7908", "architect")
 
@@ -4485,12 +4487,12 @@ def test_master_switch_denial_follows_owner_conf_not_engine_copy_conf(
     engine_copy = tmp_path / "engine-copy-without-switch"
     engine_copy.mkdir()
     monkeypatch.setattr(pd, "REPO", engine_copy)
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
 
     # 선-단언 — REPO(엔진 사본) conf 로 읽으면 스위치 설정이 아예 없다는 전제 자체를 확인한다.
-    assert conf_store.local_config(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE)) == {}
+    assert conf_store.local_config(pm_paths.home_at(pd.REPO)) == {}
 
     _write_local_conf(pm_home, {
         "delegate.enabled": "false",
@@ -4560,7 +4562,7 @@ def test_reject_cross_role_prepare_does_not_misclassify_a_master_switch_deny_as_
     monkeypatch.setenv("CLAUDECODE", "1")
     conf = {"delegate.enabled": "false"}
 
-    delegate_cmd._reject_cross_role_prepare(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), "developer", "normal", conf)  # raise 없이 통과해야 한다
+    delegate_cmd._reject_cross_role_prepare(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), "developer", "normal", conf)  # raise 없이 통과해야 한다
 
     captured = capsys.readouterr()
     assert "위임이 꺼져 있습니다" in captured.err

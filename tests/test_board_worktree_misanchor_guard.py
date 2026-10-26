@@ -36,11 +36,11 @@ import pytest
 from conftest import ensure_product_slot
 from pm_engine.infra import git, pm_paths
 from pm_engine.app import wiki_lint
+from pm_engine.cli import ticket_finish as ticket_finish_cli
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
-TICKET_FINISH_PY = TOOLS / "ticket_finish.py"
 
 
 def _load(name: str, path: Path):
@@ -52,10 +52,6 @@ def _load(name: str, path: Path):
 
 def _load_board():
     return _load("board_misanchor_test", BOARD_PY)
-
-
-def _load_tf():
-    return _load("tf_misanchor_test", TICKET_FINISH_PY)
 
 
 # ── fixture helpers ──────────────────────────────────────────────────────
@@ -761,13 +757,9 @@ def test_new_from_worktree_creates_no_stray_ticket(pm_home_worktree, monkeypatch
 def test_ticket_finish_from_worktree_fails_loud_no_stray_log(pm_home_worktree,
                                                              monkeypatch, capsys):
     # 실측 사례 (2): worktree cwd `ticket_finish` → stray `wiki/log/current.md` 미생성.
-    tf = _load_tf()
     pm_home, worktree = pm_home_worktree
-    monkeypatch.setattr(tf, "REPO", worktree)
-    monkeypatch.setattr(tf, "BOARD_PY", BOARD_PY)   # detector deep-import 은 실 board.py
     log_file = worktree / ".project_manager" / "wiki" / "log" / "current.md"
-    monkeypatch.setattr(tf, "LOG_FILE", log_file)
-    rc = tf.main(["T-0100"])
+    rc = ticket_finish_cli.main(pm_paths.home_at(worktree), ["T-0100"])
     assert rc == 1
     err = capsys.readouterr().err
     assert "worktree" in err

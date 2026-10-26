@@ -40,6 +40,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pm_engine.domain import finish_rules
+
+from pm_engine.infra import finish_git
+from pm_engine.app import finish_context
+from pm_engine.cli import cluster_close, finish_record
+from pm_engine.cli import ticket_finish as ticket_finish_cli
+
 import pytest
 
 from _slot_seed import seed_slot
@@ -48,7 +55,7 @@ from pm_engine.app import round_seed
 from pm_engine.app import ticket_access
 from pm_engine.app import board_sync
 
-from pm_engine.infra import ticket_store
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -241,7 +248,7 @@ def _order_repo(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _finisher(tf, root: Path):
-    return tf.TicketFinisher(
+    return finish_record.TicketFinisher(pm_paths.home_at(root),
         board_py=root / ".project_manager" / "tools" / "board.py",
         task_workspace=root,
     )
@@ -335,7 +342,7 @@ def test_line_the_integration_branch_already_had_leaves_the_width(tf, tmp_path):
 
     _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
                           base_branch=None)
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _block_with_stderr(tf, root)
     assert "통합 브랜치(base_branch)를 선언하지 않았다" in str(caught.value)
 
@@ -384,7 +391,7 @@ def test_unresolvable_integration_branch_stops_the_judgment(tf, tmp_path):
     (root / _TOUCH).write_text(offending, encoding="utf-8")
     _commit(root, "cluster work")
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _block_with_stderr(tf, root)
 
     assert "task/absent" in str(caught.value) and "찾지 못했다" not in str(caught.value)
@@ -392,10 +399,10 @@ def test_unresolvable_integration_branch_stops_the_judgment(tf, tmp_path):
 
 def test_cli_takes_exactly_one_close_target(tf, monkeypatch, capsys):
     """완료 기록 대상은 하나다 — 둘 다 주거나 둘 다 없으면 거부한다(부작용 앞)."""
-    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
     for argv in ([], [_TICKET, "--cluster", _CLUSTER]):
         with pytest.raises(SystemExit) as excinfo:
-            tf._main(argv)
+            ticket_finish_cli.main(pm_paths.home_at(REPO), argv)
         assert excinfo.value.code == 2
         assert "완료 기록 대상은 하나다" in capsys.readouterr().err
 
@@ -404,7 +411,7 @@ def test_reconcile_cli_requires_explicit_repo_and_slot_and_rejects_task(
     tf, monkeypatch, capsys,
 ):
     """Recovery selector는 제품 repo+slot 둘 다 명시하며 task/암묵 해소를 받지 않는다."""
-    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
     cases = (
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--repo", "code"],
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--task", "main"],
@@ -412,7 +419,7 @@ def test_reconcile_cli_requires_explicit_repo_and_slot_and_rejects_task(
     )
     for argv in cases:
         with pytest.raises(SystemExit) as excinfo:
-            tf._main(argv)
+            ticket_finish_cli.main(pm_paths.home_at(REPO), argv)
         assert excinfo.value.code == 2
     err = capsys.readouterr().err
     assert "--repo <repo> --slot <N>" in err
@@ -638,7 +645,7 @@ class _CloseEnv:
         `overrides` 는 판정 DI 를 케이스가 골라 **진짜 판정으로 되돌리는** 자리다
         (`dod_block_fn=None` → 생성자 기본값 = 실제 DoD 판정).
         """
-        cls = finisher_class or self.tf.TicketFinisher
+        cls = finisher_class or finish_record.TicketFinisher
         values = dict(
             board_py=self.board_dir.parent / "tools" / "board.py",
             log_file=self.home / ".project_manager" / "wiki" / "log" / "current.md",
@@ -652,7 +659,7 @@ class _CloseEnv:
             affected_domain_fn=lambda tid: None,
         )
         values.update(overrides)
-        return cls(**values)
+        return cls(pm_paths.home_at(self.home), **values)
 
     def closer(self, *, cluster: str = _CLUSTER, closer_class=None, **kwargs):
         """이 환경의 종결 대역 — `cluster` 는 호출 표기 축(장부 id / 사람 이름 둘 다 받는다)."""
@@ -663,8 +670,8 @@ class _CloseEnv:
             run_delegate_fn=self.run_delegate,
         )
         values.update(kwargs)
-        cls = closer_class or self.tf.ClusterCloser
-        return cls(cluster, **values)
+        cls = closer_class or cluster_close.ClusterCloser
+        return cls(pm_paths.home_at(self.home), cluster, **values)
 
     # ── 관측 ────────────────────────────────────────────────────────
     def slot_log(self) -> list[str]:
@@ -785,15 +792,7 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     # 판정을 그대로 부르므로(사본 0) 세션이 해소돼야 각 케이스가 재려던 축만 남는다 — 세션
     # 미해소는 소유 거부라는 다른 축이다.
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(tf, "REPO", home)
-    monkeypatch.setattr(tf, "TOOLS_DIR", home / ".project_manager" / "tools")
-    monkeypatch.setattr(tf, "BOARD_PY", home / ".project_manager" / "tools" / "board.py")
-    monkeypatch.setattr(
-        tf, "LOG_FILE", home / ".project_manager" / "wiki" / "log" / "current.md")
-    monkeypatch.setattr(
-        tf, "LEASES_FILE",
-        home / ".project_manager" / ".local" / "worktree-leases.json")
-    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
     return _CloseEnv(tf, home, code, slot, board_dir, ticket)
 
 
@@ -872,8 +871,8 @@ def test_reconcile_integrated_records_exact_product_head_without_product_or_slot
     )
     assert lease_before == (env.home / ".project_manager" / ".local" /
                             "worktree-leases.json").read_bytes()
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     assert ledger["status"] == "closed"
     assert ledger["close_step"] == "board"
     assert ledger["closure"] == {
@@ -907,8 +906,8 @@ def test_reconcile_reads_the_explicit_slot_not_the_finisher_tree(close_env, caps
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
     assert "PM 홈으로 강등됐다" not in captured.err
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     assert ledger["status"] == _CLOSED_STATUS
     assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
 
@@ -1004,7 +1003,7 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
         ledger_path = env.board_dir / "tickets" / "clusters" / f"{_CLUSTER}.md"
         ledger_path.write_text(
             ledger_path.read_text(encoding="utf-8").replace(
-                "status: open", f"status: {env.tf._CLUSTER_STATUS_CLOSING}"),
+                "status: open", f"status: {cluster_close._CLUSTER_STATUS_CLOSING}"),
             encoding="utf-8")
         return _reconcile_closer(env, evidence)
 
@@ -1042,9 +1041,8 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
     legacy_anchor = _rev(legacy_env.slot, "HEAD~1")
     assert _reconcile_closer(
         legacy_env, legacy_evidence, legacy_anchor=legacy_anchor).run() == 0
-    board = legacy_env.tf._board_module_at(
-        legacy_env.board_dir.parent / "tools" / "board.py")
-    closure = cluster_store.load_cluster(board._home(), _CLUSTER)["closure"]
+    home = pm_paths.home_at(legacy_env.home)
+    closure = cluster_store.load_cluster(home, _CLUSTER)["closure"]
     assert closure["member_anchors"][legacy_env.ticket] == {
         "anchor": legacy_anchor, "anchor_source": "operator-supplied",
     }
@@ -1108,10 +1106,10 @@ def test_reconcile_integrated_is_idempotent_and_preserves_other_dirty_slots(
     assert first_closer._resolve_members() is None
     closure, status, problem = first_closer._validate_reconcile()
     assert problem is None and status == "open"
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     ledger.update({"closure": closure, "status": "closed", "close_step": "board"})
-    cluster_store.dump_cluster(board._home(), ledger)
+    cluster_store.dump_cluster(home, ledger)
     pre_resume_board_head = _rev(env.board_dir)
 
     assert first_closer.run() == 0
@@ -1150,8 +1148,8 @@ def test_reconcile_integrated_accepts_the_name_notation_of_the_normal_path(
 
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     assert ledger["status"] == _CLOSED_STATUS
     assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
 
@@ -1185,7 +1183,7 @@ def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
     # 게이트는 좁다 — 같은 픽스처의 장부를 `closing` 으로 두면 정상 재개가 그대로 돈다.
     ledger_path.write_text(
         ledger_path.read_text(encoding="utf-8").replace(
-            "status: open", f"status: {env.tf._CLUSTER_STATUS_CLOSING}"),
+            "status: open", f"status: {cluster_close._CLUSTER_STATUS_CLOSING}"),
         encoding="utf-8")
     resumed = env.closer().run()
     resumed_out = capsys.readouterr()
@@ -1208,7 +1206,7 @@ def test_close_runs_the_six_steps_and_leaves_no_hand_work(close_env, capsys):
     assert rc == 0, out
     order = [line.split("] ", 1)[1].removesuffix("...") for line in out.splitlines()
              if line.startswith("[") and "/6] " in line]
-    assert order == [label for _key, label, _pre in env.tf.ClusterCloser.STEPS], order
+    assert order == [label for _key, label, _pre in cluster_close.ClusterCloser.STEPS], order
     # 단계 2 — 완료 기록이 돌았다(board complete 1회).
     assert [args[0] for args in env.board_calls] == ["complete"]
     # 단계 3 — 슬롯 커밋 문안은 티켓 제목이다.
@@ -1268,7 +1266,7 @@ def test_close_of_an_all_discarded_cluster_runs_no_code_step(close_env, capsys):
                       env.slot_log(), _git(env.slot, "status", "--porcelain").stdout)
     # 장부는 닫혔고 그 종결이 board-git·PM 홈에 기록됐다.
     assert env.ledger()["status"] == _CLOSED_STATUS
-    assert env.ledger()["close_step"] == env.tf.ClusterCloser.STEPS[-1][0]
+    assert env.ledger()["close_step"] == cluster_close.ClusterCloser.STEPS[-1][0]
     assert env.home_log()[0].startswith(f"{env.ticket} board — ")
 
 
@@ -1366,15 +1364,15 @@ def test_task_holding_two_slots_closes_and_keeps_both_leases(close_env, monkeypa
     ]}, ensure_ascii=False), encoding="utf-8")
     lease_before = env.lease_bytes()
     finisher = env.finisher()
-    monkeypatch.setattr(env.tf, "TicketFinisher", lambda **kwargs: finisher)
+    monkeypatch.setattr(finish_record, "TicketFinisher", lambda home, **kwargs: finisher)
 
-    rc = env.tf._main(["--cluster", _CLUSTER, "--task", "t", "--no-pytest"])
+    rc = ticket_finish_cli.main(pm_paths.home_at(env.home), ["--cluster", _CLUSTER, "--task", "t", "--no-pytest"])
 
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
     order = [line.split("] ", 1)[1].removesuffix("...") for line in captured.out.splitlines()
              if line.startswith("[") and "/6] " in line]
-    assert order == [label for _key, label, _pre in env.tf.ClusterCloser.STEPS], order
+    assert order == [label for _key, label, _pre in cluster_close.ClusterCloser.STEPS], order
     assert f"작업 트리 → {env.slot} (묶음 기록 branch {_CLUSTER_BRANCH})" in captured.out
     assert env.integration_log()[0] == f"{env.ticket} merge — 종결 픽스처"
     assert _git(integration_slot, "symbolic-ref", "--short", "HEAD").stdout.strip() == \
@@ -1616,7 +1614,7 @@ def _reason_bodies(reasons: list[str]) -> list[str]:
 
 
 def _step_label(tf, key: str) -> str:
-    return next(label for step, label, _pre in tf.ClusterCloser.STEPS if step == key)
+    return next(label for step, label, _pre in cluster_close.ClusterCloser.STEPS if step == key)
 
 
 @requires_git
@@ -1718,7 +1716,7 @@ def test_close_steps_declare_preflight_membership(close_env):
     종결은 슬롯을 건드리지 않는다.
     """
     env = close_env
-    closer_class = env.tf.ClusterCloser
+    closer_class = cluster_close.ClusterCloser
     keys = [key for key, _label, _pre in closer_class.STEPS]
 
     assert keys == ["resolve", "record", "commit", "rebase", "merge", "board"]
@@ -1727,7 +1725,7 @@ def test_close_steps_declare_preflight_membership(close_env):
                     "_delete_cluster_branch"):
         assert not hasattr(closer_class, removed), removed
     assert "release_fn" not in inspect.signature(closer_class).parameters
-    assert "반납" not in env.tf.build_parser().format_help()
+    assert "반납" not in ticket_finish_cli.build_parser().format_help()
     for key, _label, precheck in closer_class.STEPS:
         assert callable(getattr(closer_class, f"_step_{key}", None)), key
         assert precheck is None or callable(getattr(closer_class, precheck, None)), key
@@ -1759,14 +1757,14 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
     )
     closer = env.closer(finisher=finisher)
 
-    namespaces: list[object] = []
+    ownership_calls: list[object] = []
     monkeypatch.setattr(
         cluster_binding, "cluster_complete_binding_problem",
         lambda _home, tid, fm, binding: calls.append(f"binding:{tid}") or None)
     ownership = ticket_access._ticket_ownership
     monkeypatch.setattr(
         ticket_access, "_ticket_ownership",
-        lambda home, fm, **kwargs: namespaces.append((home, fm, kwargs)) or ownership(home, fm, **kwargs))
+        lambda home, fm, **kwargs: ownership_calls.append((home, fm, kwargs)) or ownership(home, fm, **kwargs))
     monkeypatch.setattr(
         board_ticket, "_round_completion_problems",
         lambda home, tid, spec_text: calls.append(f"rounds:{tid}") or [])
@@ -1778,15 +1776,11 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
         f"private_ref:{env.ticket}", f"dod:{env.ticket}",
         f"residual:{env.ticket}", f"binding:{env.ticket}", f"rounds:{env.ticket}",
     ]
-    # 소유 판정이 받는 Namespace 는 `board complete` 가 받는 것과 같은 파서 산출이다 —
-    # 손조립하면 이 속성 집합이 조용히 얇아진다(board 가 인자 이름을 바꾸면 여기서 난다).
-    assert len(namespaces) == 1
-    board_module = closer._board_parser_module
-    expected = vars(board_module.build_parser().parse_args(
-        ["complete", env.ticket, "--tests-pass"]))
-    assert namespaces[0] == (closer._home, ticket_store.load_ticket(
+    # 이 픽스처의 명시 task와 기본 user는 모두 None이다.
+    assert len(ownership_calls) == 1
+    assert ownership_calls[0] == (closer._home, ticket_store.load_ticket(
         ticket_store.find_ticket_exact(closer._home, env.ticket)[1])[0],
-        {"task": expected.get("task"), "user": expected.get("user")})
+        {"task": None, "user": None})
 
 
 @requires_git
@@ -1853,7 +1847,7 @@ def test_close_records_progress_in_the_cluster_ledger(close_env):
     env = close_env
     assert env.closer().run() == 0
     ledger = env.ledger()
-    assert ledger["close_step"] == env.tf.ClusterCloser.STEPS[-1][0]
+    assert ledger["close_step"] == cluster_close.ClusterCloser.STEPS[-1][0]
     assert ledger["status"] == "closed"
 
 
@@ -1931,7 +1925,6 @@ def test_close_preflight_refuses_a_member_without_a_harvested_review(
         review.unlink()
         expected = "code-reviewer 리뷰 라운드가 없습니다"
     else:
-        board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
         spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
         review.write_text(
             round_seed.render_round_seed(
@@ -2062,7 +2055,7 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
 ):
     """선검사가 confirmation 부재를 허용하는 입력 판정, step 1이 실제 생성 소유자다."""
     env = close_env
-    first_key, _first_label, first_precheck = env.tf.ClusterCloser.STEPS[0]
+    first_key, _first_label, first_precheck = cluster_close.ClusterCloser.STEPS[0]
     assert (first_key, first_precheck) == ("resolve", "_pre_resolve")
 
     dry_events: list[str] = []
@@ -2113,7 +2106,7 @@ def test_close_resolves_the_cluster_once(close_env, monkeypatch):
     assert env.delegate_calls == [
         ["rounds", "resolve", "--cluster", _CLUSTER, "--pm-verified"]]
     for removed in ("_gate_ledger", "_resolve_argv_sets", "_delegate_supports_cluster"):
-        assert not hasattr(env.tf.ClusterCloser, removed), removed
+        assert not hasattr(cluster_close.ClusterCloser, removed), removed
 
 
 
@@ -2333,11 +2326,11 @@ def _close_through_main(tf, base: Path, monkeypatch, argv: list[str],
     """
     env = _build_close_env(tf, base, monkeypatch)
     finisher = env.finisher(finisher_class)
-    monkeypatch.setattr(tf, "TicketFinisher", lambda **kwargs: finisher)
+    monkeypatch.setattr(finish_record, "TicketFinisher", lambda home, **kwargs: finisher)
 
     # 이 대조의 축은 티켓형↔묶음형 동형이지 정체성 해소가 아니다 — 양쪽에 같은 task 를 실어
     # 무인자 해소(정체성 미해소 중단)를 축 밖으로 뺀다.
-    rc = tf._main([*argv, "--task", "t"])  # 픽스처 티켓의 소유 task
+    rc = ticket_finish_cli.main(pm_paths.home_at(env.home), [*argv, "--task", "t"])  # 픽스처 티켓의 소유 task
 
     return (rc, tuple(tuple(args) for args in env.board_calls),
             env.rounds_entries(), tuple(sorted(env.ledger().items())))
@@ -2351,7 +2344,7 @@ def test_the_ticket_form_and_the_cluster_form_take_the_same_path(tf, tmp_path,
     티켓 하나는 크기 1 묶음이다 — 두 호출의 rc·board 결과·라운드 파일 위치·장부 변경이 값으로
     같아야 한다. 옛 형상에서는 티켓 호출만 장부 기록·반납·포인터 커밋 단계를 아예 돌지 않았다.
     """
-    finisher_class = tf.TicketFinisher
+    finisher_class = finish_record.TicketFinisher
     ticket_side = _close_through_main(
         tf, tmp_path / "ticket", monkeypatch, [_TICKET], finisher_class)
     cluster_side = _close_through_main(
@@ -2368,7 +2361,7 @@ def test_the_ticket_form_and_the_cluster_form_take_the_same_path(tf, tmp_path,
         (f"tickets/rounds/{_TICKET}/{_DEVELOPER_ROUND_FILE}", "## 구현 표본\n"),
         (f"tickets/rounds/{_TICKET}/{_REVIEW_ROUND_FILE}", _review_round_text([])),
     )
-    assert dict(ledger)["close_step"] == tf.ClusterCloser.STEPS[-1][0]
+    assert dict(ledger)["close_step"] == cluster_close.ClusterCloser.STEPS[-1][0]
     assert dict(ledger)["status"] == _CLOSED_STATUS
 
 
@@ -2414,11 +2407,6 @@ def _residual_repo(tf, tmp_path: Path, monkeypatch, *, members: tuple[str, ...])
     if _MEMBER_B in members:
         _write_ticket(board_dir, _MEMBER_B, claimed_rev=seed, touches=(_TOUCH_B,))
     _write_cluster_ledger(board_dir, tickets=members)
-    monkeypatch.setattr(tf, "REPO", root)
-    monkeypatch.setattr(tf, "TOOLS_DIR", root / ".project_manager" / "tools")
-    monkeypatch.setattr(tf, "BOARD_PY", root / ".project_manager" / "tools" / "board.py")
-    monkeypatch.setattr(
-        tf, "LOG_FILE", root / ".project_manager" / "wiki" / "log" / "current.md")
     return root
 
 
@@ -2431,7 +2419,7 @@ def _commit_paths(root: Path, *paths: str) -> str:
 
 def _residual_verdict(tf, root: Path, ticket: str) -> tuple[str | None, str]:
     """(차단 문자열 또는 None, 그 실행이 낸 stderr) — 실 preflight 호출."""
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(root),
         board_py=root / ".project_manager" / "tools" / "board.py",
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
         task_workspace=root,
@@ -2532,14 +2520,14 @@ def test_declared_change_population_requires_a_member_change(tf, tmp_path, monke
     assert _residual_verdict(tf, root, _MEMBER_A)[0] is None
 
     _write_ticket(root / ".project_manager" / "board", _MEMBER_A, claimed_rev=_rev(root), touches=(_TOUCH_A,))
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(root),
         board_py=root / ".project_manager" / "tools" / "board.py",
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
         task_workspace=root,
         run_git_stdout_at_fn=lambda cwd, args: ((1, "") if args[:2] == ["diff", "--name-only"]
-                                                else tf.TicketFinisher._default_run_git_stdout_at(cwd, args)),
+                                                else finish_git._default_run_git_stdout_at(cwd, args)),
     )
-    with pytest.raises(tf._CloseObservationFailure):
+    with pytest.raises(finish_rules._CloseObservationFailure):
         finisher._declared_change_problem(_MEMBER_A, root)
 
 
@@ -2569,14 +2557,14 @@ def test_home_new_path_query_failure_stops(tf, tmp_path, monkeypatch):
     def run(cwd, args):
         if args[:1] == ["ls-files"]:
             return 128, "fatal: 합성 관측 실패"
-        return tf.TicketFinisher._default_run_git_stdout_at(cwd, args)
+        return finish_git._default_run_git_stdout_at(cwd, args)
 
-    finisher = tf.TicketFinisher(board_py=root / ".project_manager" / "tools" / "board.py",
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(root),board_py=root / ".project_manager" / "tools" / "board.py",
                                  log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
                                  task_workspace=root, run_git_stdout_at_fn=run)
-    with pytest.raises(tf._CloseObservationFailure, match="git ls-files rc=128"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="git ls-files rc=128"):
         finisher._home_new_paths(["notes/new.md"])
-    assert tf.TicketFinisher(board_py=root / ".project_manager" / "tools" / "board.py",
+    assert finish_record.TicketFinisher(pm_paths.home_at(root),board_py=root / ".project_manager" / "tools" / "board.py",
                              log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
                              task_workspace=root)._home_new_paths(
         ["notes/new.md", _TOUCH_A, ".project_manager/wiki/log/new.md"]) == ["notes/new.md"]
@@ -2598,27 +2586,28 @@ def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
         def run(cwd, args):
             if predicate(args):
                 return 128, "fatal: 합성 관측 실패"
-            return tf.TicketFinisher._default_run_git_stdout_at(cwd, args)
+            return finish_git._default_run_git_stdout_at(cwd, args)
         return run
 
     status_fails = failing_at(lambda args: args[:1] == ["status"] and "--untracked-files=no" in args)
-    finisher = tf.TicketFinisher(board_py=board_py, log_file=log_file, task_workspace=root,
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(root), board_py=board_py, log_file=log_file, task_workspace=root,
                                  run_git_stdout_at_fn=status_fails)
     (root / _TOUCH_A).unlink()
-    with pytest.raises(tf._CloseObservationFailure, match="추적 여부를 관측하지 못했다"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="추적 여부를 관측하지 못했다"):
         finisher._tracked_in(root, _TOUCH_A)
 
     staged_deletion_fails = failing_at(lambda args: args[:2] == ["diff", "--cached"])
-    scope = tf.stage_scope(_MEMBER_A, board_py, log_file, lambda args: staged_deletion_fails(root, args),
-                           repo=root, include_engine_outputs=False, touches=("src",))
+    scope = finish_context.stage_scope(pm_paths.home_at(root), _MEMBER_A, log_file,
+                                       lambda args: staged_deletion_fails(root, args),
+                                       repo=root, include_engine_outputs=False, touches=("src",))
     assert scope.pathspec == ()
     assert scope.error is not None and "staged 삭제를 관측하지 못했다" in scope.error, scope
 
     (ticket,) = (root / ".project_manager" / "board" / "tickets" / "claimed").glob(f"{_MEMBER_A}-*.md")
     ticket.write_text(ticket.read_text(encoding="utf-8").replace("touches:\n", "touches: [unclosed\n", 1),
                       encoding="utf-8")
-    reader = tf.TicketFinisher(board_py=board_py, log_file=log_file, task_workspace=root)
-    with pytest.raises(tf._CloseObservationFailure, match="티켓을 읽지 못해"):
+    reader = finish_record.TicketFinisher(pm_paths.home_at(root), board_py=board_py, log_file=log_file, task_workspace=root)
+    with pytest.raises(finish_rules._CloseObservationFailure, match="티켓을 읽지 못해"):
         reader._declared_change_problem(_MEMBER_A, root)
 
 
@@ -2637,7 +2626,7 @@ def test_residual_population_stops_without_an_integration_tip(
     (root / _UNDECLARED).write_text(_CHANGED_BODY, encoding="utf-8")
     _commit_paths(root, _UNDECLARED)
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _residual_verdict(tf, root, _MEMBER_A)
 
     assert _MEMBER_A in str(caught.value)
@@ -2683,15 +2672,7 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
     _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,),
                           base_branch=_UNBORN_BRANCH, branch=_UNBORN_BRANCH)
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(tf, "REPO", root)
-    monkeypatch.setattr(tf, "TOOLS_DIR", root / ".project_manager" / "tools")
-    monkeypatch.setattr(tf, "BOARD_PY", root / ".project_manager" / "tools" / "board.py")
-    monkeypatch.setattr(
-        tf, "LOG_FILE", root / ".project_manager" / "wiki" / "log" / "current.md")
-    monkeypatch.setattr(
-        tf, "LEASES_FILE",
-        root / ".project_manager" / ".local" / "worktree-leases.json")
-    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
     return root
 
 
@@ -2720,7 +2701,7 @@ def test_unborn_baseline_requires_head_on_the_declared_branch(tf, tmp_path, monk
     detached_head = _unborn_repo(tf, tmp_path / "other-head", monkeypatch,
                                  head_branch=_OTHER_BRANCH)
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _residual_verdict(tf, detached_head, _MEMBER_A)
     assert _UNBORN_BRANCH in str(caught.value) and "이 코드 트리에 없다" in str(caught.value)
 
@@ -2729,7 +2710,7 @@ def test_unborn_baseline_requires_head_on_the_declared_branch(tf, tmp_path, monk
     _write_cluster_ledger(committed / ".project_manager" / "board",
                           tickets=(_MEMBER_A,), base_branch="task/absent")
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _residual_verdict(tf, committed, _MEMBER_A)
     assert "task/absent" in str(caught.value) and "이 코드 트리에 없다" in str(caught.value)
 
@@ -2755,7 +2736,8 @@ def test_fresh_single_clone_home_requires_explicit_binding(
                 encoding="utf-8")
         return 0, "ok"
 
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(root),
         board_py=board_py,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
         task_workspace=root,
@@ -2765,8 +2747,8 @@ def test_fresh_single_clone_home_requires_explicit_binding(
         self_axis_block_fn=lambda tid: None,
         affected_domain_fn=lambda tid: None,
     )
-    closer = tf.ClusterCloser(
-        _CLUSTER, finisher=finisher, board_py=board_py,
+    closer = cluster_close.ClusterCloser(
+        pm_paths.home_at(root), _CLUSTER, finisher=finisher, board_py=board_py,
         run_delegate_fn=lambda args: (0, ""),
     )
     _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,), base_branch=_UNBORN_BRANCH, branch=None)
@@ -2795,17 +2777,18 @@ def test_status_query_failure_stops_residual_gate_and_report(tf, tmp_path, capsy
     def _failing(_args: list[str]) -> tuple[int, str]:
         return 128, "fatal: 합성 관측 실패"
 
-    assert tf.status_entries(_failing) == ()
-    with pytest.raises(tf.StatusObservationError):
-        tf.status_entries(_failing, strict=True)
+    assert finish_git.status_entries(_failing) == ()
+    with pytest.raises(finish_rules.StatusObservationError):
+        finish_git.status_entries(_failing, strict=True)
 
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         log_file=tmp_path / "log.md",
-        status_entries_at_fn=lambda _cwd: tf.status_entries(_failing, strict=True),
+        status_entries_at_fn=lambda _cwd: finish_git.status_entries(_failing, strict=True),
     )
-    with pytest.raises(tf._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
         finisher._residual_split(tmp_path, (_TOUCH_A,), (), ticket_id=_MEMBER_A)
-    with pytest.raises(tf._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
         finisher._report_dirty_after_stage((_TOUCH_A,), cwd=tmp_path)
 
     assert "스코프 밖 잔여 변경 없음" not in capsys.readouterr().out

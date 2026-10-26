@@ -1298,7 +1298,7 @@ def pm_verified_release(tmp_path, monkeypatch):
     # 완료 판정은 board 가 로드한 pm_delegate 로 리뷰 잔여를 판정한다 — 같은 모듈 인스턴스를
     # 테스트에도 넘겨 판정 함수 대역(민감도)이 실제 배선에 닿게 한다.
     pd = _pm_verified_pd()
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", proj)
+
     monkeypatch.setattr(pd, "REPO", proj)
 
     ledger_path = local / "review_rounds.json"

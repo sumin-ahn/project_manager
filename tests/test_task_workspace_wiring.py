@@ -7,8 +7,8 @@ lease_store.resolve_task_workspace 의 단위 검증은 test_identity_args.py �
 `--task` 는 소유 확인 정체성으로만 가고 작업 트리는 종결이 묶음 기록의 브랜치로 찾는다.
 실 pytest·git 은 절대 기동하지 않는다(subprocess.run 대역·전량 mock — 프로덕션 라이브 실행 금지).
 
-hermetic — board/ticket_finish 의 경로 전역(`REPO`·`LEASES_FILE` 등)이 import 시점에 실 repo
-절대경로로 굳으므로 tmp 프로젝트로 재지정한다(test_board_livegate hermetic 패턴 동류).
+hermetic — board/ticket_finish 의 앵커 전역(`REPO`)이 import 시점에 실 repo 절대경로로 굳으므로
+tmp 프로젝트로 재지정한다(test_board_livegate hermetic 패턴 동류). 경로는 그 앵커의 Home 에서 나온다.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from pm_engine.cli import board_ticket
 
 from pm_engine.cli import board_cluster
 from pm_engine.cli import board_dispatch
+from pm_engine.cli import cluster_close, finish_record
 
 
 import argparse
@@ -387,7 +388,6 @@ def tf(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     mod = _load("ticket_finish")
     monkeypatch.setattr(mod, "REPO", proj)
-    monkeypatch.setattr(mod, "LEASES_FILE", proj / ".project_manager" / ".local" / "worktree-leases.json")
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home: False)
     mod._proj = proj
     return mod
@@ -404,19 +404,19 @@ def _capture_finish_forward(tf, monkeypatch) -> dict:
     captured: dict = {}
 
     class _FakeFinisher:
-        def __init__(self, **kwargs):
+        def __init__(self, home, **kwargs):
             captured["finisher_kwargs"] = kwargs
 
     class _SpyCloser:
-        def __init__(self, cluster, **kwargs):
+        def __init__(self, home, cluster, **kwargs):
             captured["cluster"] = cluster
             captured.update(kwargs)
 
         def run(self) -> int:
             return 0
 
-    monkeypatch.setattr(tf, "TicketFinisher", _FakeFinisher)
-    monkeypatch.setattr(tf, "ClusterCloser", _SpyCloser)
+    monkeypatch.setattr(finish_record, "TicketFinisher", _FakeFinisher)
+    monkeypatch.setattr(cluster_close, "ClusterCloser", _SpyCloser)
     return captured
 
 
@@ -427,7 +427,7 @@ def test_ticket_finish_task_forwards_identity_only(tf, monkeypatch, capsys):
     멈췄다. 작업 트리는 종결이 묶음 기록의 브랜치로 찾으므로 `TicketFinisher` 에 트리 인자가
     없고, task 는 board complete 소유 대조(T-0781)의 `--task` 축으로만 간다.
     """
-    _write_leases(tf.LEASES_FILE, [
+    _write_leases(pm_paths.leases_file(pm_paths.home_at(tf._proj)), [
         {"slot": "work/A_1", "repo": "A", "session": "job7", "state": "leased"},
         {"slot": "work/A_2", "repo": "A", "session": "job7", "state": "leased"},
     ])
@@ -452,9 +452,9 @@ def test_ticket_finish_rejects_task_workspace_pin_mix_before_finisher(
     """ticket_finish task+repo/slot 혼합은 usage error이며 finisher 부작용에 도달하지 않는다(E-b)."""
     called = {"finisher": False}
     monkeypatch.setattr(
-        tf,
+        finish_record,
         "TicketFinisher",
-        lambda **kw: called.__setitem__("finisher", True),
+        lambda home, **kw: called.__setitem__("finisher", True),
     )
     with pytest.raises(SystemExit) as exc:
         tf.main(["T-0001", "--task", "job10", *extra])
@@ -525,8 +525,8 @@ def test_claim_rejects_unsafe_task_before_mutation(board, monkeypatch):
 def test_ticket_finish_rejects_unsafe_task(tf, monkeypatch, capsys):
     """ticket_finish --task <불법> → rc1 (F6 해소 이전 공유 validator·기록 부작용 0)."""
     called = {"finisher": False}
-    monkeypatch.setattr(tf, "TicketFinisher",
-                        lambda **kw: called.__setitem__("finisher", True))
+    monkeypatch.setattr(finish_record, "TicketFinisher",
+                        lambda home, **kw: called.__setitem__("finisher", True))
     rc = tf.main(["T-0001", "--task", "../evil"])
     assert rc == 1
     assert called["finisher"] is False          # finisher 미도달(기록 부작용 0)

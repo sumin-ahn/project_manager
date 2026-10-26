@@ -36,6 +36,8 @@ import pytest
 from conftest import current_branch
 
 from pm_engine.infra import git
+from pm_engine.cli import finish_record
+from pm_engine.infra import finish_git, finish_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -472,14 +474,14 @@ def test_split_dirty_sees_staged_out_of_scope(tf):
                ("M ", "mine/a.py"),         # staged·스코프 안
                (" M", "others/edit.md"),    # 미스테이지
                ("??", "others/new.md"))     # untracked
-    staged_out, unstaged = tf.split_dirty(entries, ("mine/a.py",))
+    staged_out, unstaged = finish_git.split_dirty(entries, ("mine/a.py",))
     assert staged_out == ("M  others/wip.md",)
     assert unstaged == (" M others/edit.md", "?? others/new.md")
 
 
 def test_split_dirty_scope_covers_declared_directory(tf):
     """선언이 디렉토리면 그 아래 경로는 스코프 안으로 본다(보고가 자기 것을 오탐하지 않게)."""
-    staged_out, _ = tf.split_dirty((("M ", "src/deep/a.py"),), ("src",))
+    staged_out, _ = finish_git.split_dirty((("M ", "src/deep/a.py"),), ("src",))
     assert staged_out == ()
 
 
@@ -493,7 +495,7 @@ def test_split_dirty_excludes_all_project_manager_local_runtime_state(tf):
         ("??", ".project_manager/.locality/keep.md"),
     )
 
-    staged_out, unstaged = tf.split_dirty(entries, ("src",))
+    staged_out, unstaged = finish_git.split_dirty(entries, ("src",))
 
     assert staged_out == ()
     assert unstaged == ("?? .project_manager/.locality/keep.md",)
@@ -505,7 +507,7 @@ def test_split_dirty_scope_covers_excludes_unstaged_before_stage(tf):
     파일 자신의 아직 안 올라간 변경까지 거짓 잔여로 잡힌다.
     """
     entries = ((" M", "src/a.py"), ("??", "others/new.md"))
-    staged_out, unstaged = tf.split_dirty(entries, ("src/a.py",))
+    staged_out, unstaged = finish_git.split_dirty(entries, ("src/a.py",))
     assert staged_out == ()
     assert unstaged == ("?? others/new.md",)   # 스코프 밖만 남는다
 
@@ -513,8 +515,8 @@ def test_split_dirty_scope_covers_excludes_unstaged_before_stage(tf):
 def test_split_dirty_scope_filter_is_a_noop_after_staging(tf):
     """stage **후** 호출(기존 사후 보고 용법)에서는 스코프 경로가 이미 `Y == " "` 라 새 필터가
     항등이다 — 무행동 변화(기존 보고 단언을 깨지 않는다)."""
-    before_stage = tf.split_dirty(((" M", "src/a.py"),), ("src/a.py",))
-    after_stage = tf.split_dirty((("M ", "src/a.py"),), ("src/a.py",))   # add 후 Y == " "
+    before_stage = finish_git.split_dirty(((" M", "src/a.py"),), ("src/a.py",))
+    after_stage = finish_git.split_dirty((("M ", "src/a.py"),), ("src/a.py",))   # add 후 Y == " "
     assert before_stage == ((), ())
     assert after_stage == ((), ())
 
@@ -555,7 +557,7 @@ def test_status_entries_reads_non_ascii_paths_as_real_paths(tf, board, tmp_path)
     runner = lambda args: (lambda r: (r.returncode, r.stdout))(   # noqa: E731 — 테스트 러너
         subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
                        text=True, encoding="utf-8", errors="replace", check=False))
-    paths = {path for _code, path in tf.status_entries(runner)}
+    paths = {path for _code, path in finish_git.status_entries(runner)}
     assert korean in paths and spaced in paths, f"실경로로 안 읽힘: {paths}"
 
 
@@ -568,8 +570,8 @@ def test_parsing_seam_returns_stdout_only_while_diagnostic_seam_keeps_stderr(
     둔갑한다. 관측으로 못박는다 — `git checkout -b` 는 rc=0 인데 안내를 **stderr** 로만 낸다.
     """
     root = _make_home_repo(tmp_path / "home")
-    monkeypatch.setattr(tf, "REPO", root)
-    finisher = tf.TicketFinisher(log_file=root / ".project_manager" / "wiki" / "log" / "current.md")
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(root), log_file=root / ".project_manager" / "wiki" / "log" / "current.md")
 
     rc_parse, out_parse = finisher._run_git_stdout_fn(["checkout", "-b", "probe-a"])
     assert rc_parse == 0 and out_parse.strip() == "", \
@@ -587,11 +589,11 @@ def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch,
     출력을. 보고가 합본 seam 을 쓰면 잡음 줄이 잔여 목록에 뜬다.
     """
     root = _make_home_repo(tmp_path / "home")
-    monkeypatch.setattr(tf, "REPO", root)
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: [])
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: [])
     noise = "warning: LF will be replaced by CRLF in noisy.md"
 
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(root),
         run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
         run_board_fn=lambda args: (0, "ok"),
         run_git_fn=lambda args: (0, f"{noise}\n M real.md\0"),        # 합본(진단) seam
@@ -625,7 +627,7 @@ def test_status_entries_degraded_branch_reports_real_paths(tf, tmp_path):
     runner = lambda args: (lambda r: (r.returncode, r.stdout))(   # noqa: E731 — 테스트 러너
         subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
                        text=True, encoding="utf-8", errors="replace", check=False))
-    paths = {path for _code, path in tf.status_entries(runner)}   # board=None → degraded
+    paths = {path for _code, path in finish_git.status_entries(runner)}   # board=None → degraded
     assert "남의-한글-WIP.py" in paths, f"degraded 갈래가 이스케이프 경로를 냄: {paths}"
 
 
@@ -637,7 +639,7 @@ def test_status_entries_degraded_branch_consumes_rename_tokens(tf):
     빠져 있었다.
     """
     out = "R  new.md\0old.md\0 M kept.md\0"
-    entries = tf.status_entries(lambda args: (0, out))
+    entries = finish_git.status_entries(lambda args: (0, out))
     assert entries == (("R ", "new.md"), (" M", "kept.md"))
 
 
@@ -655,7 +657,7 @@ def test_status_entries_expands_new_untracked_directory(tf, board, tmp_path):
     runner = lambda args: (lambda r: (r.returncode, r.stdout))(   # noqa: E731 — 테스트 러너
         subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
                        text=True, encoding="utf-8", errors="replace", check=False))
-    paths = {path for _code, path in tf.status_entries(runner)}
+    paths = {path for _code, path in finish_git.status_entries(runner)}
     assert "raw/spikes/new.md" in paths, f"디렉토리로 접혀 파일이 안 보임: {paths}"
     assert "raw/" not in paths
 
@@ -709,7 +711,7 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
                    board_py: Path | None = None, run_board_fn=None, run_pytest_fn=None):
     """실 git(root)에서 도는 TicketFinisher — git 만 실물, 나머지는 DI 대역.
 
-    `REPO` 를 tmp 홈으로 재지정하면 (1) 기본 git 러너의 cwd, (2) board 모듈 재-앵커
+    tmp 홈의 명시 Home 을 넘기면 (1) 기본 git 러너의 cwd, (2) board 조회
     (`Home.board_root`·`tickets_dir`·`_board_git_enabled()`)가 모두 그 트리를 따라온다.
     티켓 `touches` 조회와 **묶음 장부의 통합 브랜치 선언**만 stub 한다 — 실 보드가 tmp 에 없을
     수 있어서다(스코프 계산·필터·실제 `git add`·잔여 판정은 전부 실 코드 경로). 통합 브랜치는
@@ -717,15 +719,15 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
     돌려준다. `run_board_fn`/`run_pytest_fn` 은 미지정이면 종전 대역(성공 고정값)이고, poison
     stub 을 넘기면 "차단된 실행이 이 seam 을 부르지 않는다" 를 값으로 증명하는 데 쓴다.
     """
-    monkeypatch.setattr(tf, "REPO", root)
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: list(touches))
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: list(touches))
     monkeypatch.setattr(
-        tf, "_cluster_integration_branch",
-        lambda _board_py, _tid: current_branch(root))
+        finish_store, "_cluster_integration_branch",
+        lambda _home, _tid: current_branch(root))
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     kwargs = {} if board_py is None else {"board_py": board_py}
-    return tf.TicketFinisher(
+    return finish_record.TicketFinisher(
+        pm_paths.home_at(root),
         run_pytest_fn=run_pytest_fn or (lambda: (0, "100 passed, 0 deselected in 0.1s")),
         run_board_fn=run_board_fn or (lambda args: (0, "board ok")),
         board_count_fn=lambda: 10,
@@ -1165,10 +1167,9 @@ def test_engine_written_paths_are_this_runs_outputs_only(tf, tmp_path, monkeypat
     티켓이 없는 명시 Home이면 log 하나. 여기서 decisions/·domain/·ideas/ 가 나오면 그건 *다른
     실행* 의 산출물을 선언분으로 착각한 것이다(ADR-0074 must-fix 의 재발).
     """
-    monkeypatch.setattr(tf, "REPO", tmp_path)
     log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-    assert tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0001", log_file) == [log_file]
-    doc = tf.engine_written_paths.__doc__ or ""
+    assert finish_store.engine_written_paths(pm_paths.home_at(tmp_path), "T-0001", log_file) == [log_file]
+    doc = finish_store.engine_written_paths.__doc__ or ""
     assert "선작성 entry가 있으면 append하지 않더라도" in doc
     assert "항상 append" not in doc
 

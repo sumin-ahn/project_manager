@@ -156,7 +156,7 @@ def _read_tmp_parent(home, harness: str) -> tuple[Path, str | None]:
 
 
 # 검토 표면 밖 판정의 접두 — clone-local 런타임 자리. gitignore(`.project_manager/.gitignore` 의
-# `.local/`)·잔여 인구 제외(`ticket_finish._is_local_runtime_path`)·pytest 수집 제외가 **이미** 이
+# `.local/`)·잔여 인구 제외(`finish_rules._is_local_runtime_path`)·pytest 수집 제외가 **이미** 이
 # 접두에 걸려 있다. 새 접두를 만들면 같은 뜻의 제외를 세 곳에 더 달아야 한다.
 _LOCAL_RUNTIME_PREFIX_PARTS: tuple[str, ...] = (".project_manager", ".local")
 

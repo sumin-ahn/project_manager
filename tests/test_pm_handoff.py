@@ -19,6 +19,7 @@ from __future__ import annotations
 from pm_engine.infra import pm_paths
 import pm_engine.app.handoff_log
 import pm_engine.app.session_identity
+import pm_engine.cli.finish_record
 import pm_engine.cli.handoff
 import pm_engine.cli.handoff_prompt
 import pm_engine.domain.ctx_recovery
@@ -815,10 +816,9 @@ def test_collect_session_entries_filters_mixed_task_log(hf):
 
 def test_collect_session_entries_round_trip_prefixed_id_from_real_producers(hf):
     """ticket_finish의 prefixed ID 헤더와 pm_log 헤더를 생산→소비 round-trip한다."""
-    ticket_finish = _load_tool("ticket_finish")
     pm_log = _load_tool("pm_log")
     task = "orch-dev-T0549-r3"
-    finish = ticket_finish.build_log_skeleton(
+    finish = pm_engine.cli.finish_record.build_log_skeleton(
         "T-service-a-001", "수집기 실 round-trip", 42, 1, 2,
         entry_type="feat", date="2026-08-06", task=task,
     )
@@ -842,7 +842,6 @@ def test_session_entries_collect_canonical_wikilink_ticket_headings(
     hf, mode, legacy_raw,
 ):
     """ticket_finish heading을 task·solo 모두 수집하며 raw legacy도 계속 읽는다."""
-    ticket_finish = _load_tool("ticket_finish")
     ticket = "T-service-a-001"
     if mode == "task":
         finish_kwargs = {"task": "alpha"}
@@ -853,7 +852,7 @@ def test_session_entries_collect_canonical_wikilink_ticket_headings(
         handoff_kwargs = {}
         boundary = "## [2026-08-05] handoff | PM 2차 → 다음 PM 세션"
 
-    finish = ticket_finish.build_log_skeleton(
+    finish = pm_engine.cli.finish_record.build_log_skeleton(
         ticket, "완료 entry", 42, 1, 2,
         entry_type="fix", date="2026-08-06", **finish_kwargs,
     )

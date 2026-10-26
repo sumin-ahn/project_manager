@@ -51,6 +51,8 @@ import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
+from pm_engine.infra import repo_files
+
 import pytest
 
 from conftest import bind_product_cluster
@@ -141,7 +143,7 @@ def _spec_text(ticket: str, *, status: str = "claimed") -> str:
 
 
 def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
-    board = pd._load_module_from_path(
+    board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
         "board.py", verifier=pd._verify_engine_rev,
     )
@@ -535,7 +537,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
     delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
 
     # run-dir 삭제만 실패하도록 주입해 "ledger 는 닫혔지만 run-dir 은 남은" 중간 상태를 만든다.
-    real_rmtree = pd.fs.force_rmtree
+    real_rmtree = fs.force_rmtree
     state = {"calls": 0}
 
     def _flaky_rmtree(path):
@@ -544,7 +546,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
             raise OSError("주입 실패")
         return real_rmtree(path)
 
-    monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
+    monkeypatch.setattr(fs, "force_rmtree", _flaky_rmtree)
 
     with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         delegate_prepare.abandon_ticket_copy(
@@ -640,7 +642,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-922"]))
     delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
 
-    real_rmtree = pd.fs.force_rmtree
+    real_rmtree = fs.force_rmtree
     state = {"calls": 0}
 
     def _flaky_rmtree(path):
@@ -649,7 +651,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
             raise OSError("주입 실패")
         return real_rmtree(path)
 
-    monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
+    monkeypatch.setattr(fs, "force_rmtree", _flaky_rmtree)
 
     with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         delegate_prepare.abandon_ticket_copy(
@@ -729,7 +731,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
 
     # run-dir 삭제만 실패하도록 주입 — round1 은 이 시점에 산출이 없어(시드 그대로) 마감 행이
     # `superseded_by_ordinal` 없이 정상 닫힌다.
-    real_rmtree = pd.fs.force_rmtree
+    real_rmtree = fs.force_rmtree
     state = {"calls": 0}
 
     def _flaky_rmtree(path):
@@ -738,7 +740,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
             raise OSError("주입 실패")
         return real_rmtree(path)
 
-    monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
+    monkeypatch.setattr(fs, "force_rmtree", _flaky_rmtree)
 
     with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         delegate_prepare.abandon_ticket_copy(
@@ -846,10 +848,10 @@ def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
     delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
     _cli_ticket_owner(pd, monkeypatch, pm_home)
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "abandon", "--copy", str(round1.path), "--cwd", str(slot),
         "--assume-dead", "--superseded-by", str(round2.ordinal),
-    ], adapter_roots = install_rules.adapter_directories())
+    ])
 
     assert rc == 0
     assert not round1.run_dir.exists()

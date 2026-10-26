@@ -41,7 +41,7 @@ from pm_engine.infra import delegate_scope_git
 from pm_engine.domain import delegate_scope_rules
 from pm_engine.infra.harness import delegate_temp
 from pm_engine.infra.harness import delegate_transport
-from pm_engine.infra import pm_paths
+from pm_engine.infra import fs, pm_paths
 
 import datetime as _datetime
 import errno
@@ -83,16 +83,6 @@ def _load(name: str, path: Path):
 @pytest.fixture(scope="module")
 def pd():
     return _load("pm_delegate", TOOLS / "pm_delegate.py")
-
-
-@pytest.fixture(autouse=True)
-def _fresh_config_anchor(pd, monkeypatch):
-    """설정 앵커(`_CONFIG_REPO_OVERRIDE`)를 테스트마다 비운다.
-
-    `main` 은 `--cwd` 로 해소한 소유 PM 홈을 모듈 전역에 남긴다. pytest 임시 폴더가 PM 홈에 등록된
-    작업 폴더 안에 있으면 그 값이 실 PM 홈이 되고, 뒤 테스트의 `local_config()` 가 실 PM 홈
-    local.conf 를 읽는다 — 결과가 개발 환경의 conf 에 따라 갈린다."""
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
 
 
 # ── canned 하네스 출력 (파서 재사용 확인·하네스 계약 실측 형식) ──────────────────────
@@ -476,7 +466,7 @@ def test_successful_delegation_stdout_reply(pd, monkeypatch, tmp_path, capsys):
 
 def test_reserve_raw_output_is_o_excl_0600(pd, tmp_path, monkeypatch):
     """raw 선점 = O_EXCL 원자 생성 + mode 0600 + PID/UUID 파일명(감사·권한 유출 회귀·§3.4)."""
-    dest = raw_output._reserve_raw_output(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", tmp_path)
+    dest = raw_output._reserve_raw_output(pm_paths.home_at(pd.REPO), "codex", tmp_path)
     assert dest.is_file()
     assert dest.name.startswith("pm_delegate_codex_")
     if posix_mode_supported():
@@ -493,7 +483,7 @@ def test_reserve_raw_output_is_o_excl_0600(pd, tmp_path, monkeypatch):
 
     monkeypatch.setattr(raw_output, "uuid", _ReservedUuid)
     with pytest.raises(FileExistsError):
-        raw_output._reserve_raw_output(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", tmp_path)
+        raw_output._reserve_raw_output(pm_paths.home_at(pd.REPO), "codex", tmp_path)
 
 
 def test_empty_reply_fail_loud(pd, monkeypatch, tmp_path, capsys):
@@ -970,7 +960,7 @@ def test_opencode_execute_checks_containment_again_immediately_before_send(
     monkeypatch.setattr(delegate_temp, '_assert_opencode_transport_path', _counting_assert)
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1021,7 +1011,7 @@ def test_opencode_raw_reservation_failure_rolls_back_transport(
 
     with pytest.raises(OSError, match="의도한 raw 예약 실패"):
         delegate_execute._execute_attempt(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
+            pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode",
             model="prov/m",
             reasoning=None,
             role="developer",
@@ -1060,7 +1050,7 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
     try:
         with pytest.raises(delegate_errors.DelegateError, match="전달 부모.*symlink"):
             delegate_execute._execute_attempt(
-                pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
+                pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode",
                 model="prov/m",
                 reasoning=None,
                 role="developer",
@@ -1087,7 +1077,7 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
     assert "pre-spawn rejection" in raw_text
 
     capsys.readouterr()
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
     assert "미마감 raw 없음" in capsys.readouterr().out
 
 
@@ -1106,7 +1096,7 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     )
 
     capsys.readouterr()
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
     out = capsys.readouterr()
     assert "미마감 raw 1건" in out.out
     assert "경고" not in out.err          # 부재를 손상으로 읽지 않는다 — 경고 0
@@ -1125,7 +1115,7 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     assert "run_id" not in finished[0] and "copy" not in finished[0]
 
     capsys.readouterr()
-    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["--output-dir", str(output_dir)]) == 0
     assert "경고" not in capsys.readouterr().err
 
 
@@ -1154,7 +1144,7 @@ def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
         }
 
     result = delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1213,7 +1203,7 @@ def test_opencode_non_root_cwd_transport_is_hidden_while_running(pd, tmp_path):
         }
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1239,7 +1229,7 @@ def test_opencode_pm_uninstalled_repo_leaves_no_marker_skeleton(pd, tmp_path):
     assert not (repo / ".project_manager").exists()
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1431,7 +1421,7 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
     cwd = tmp_path / "work" / "slot-1"
     (pm_home / ".project_manager").mkdir(parents=True)
     cwd.mkdir(parents=True)
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", pm_home)
+
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd: str, env, timeout, harness):
@@ -1464,7 +1454,7 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
         }
 
     result = delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
+        pm_paths.home_at(pd.REPO, pm_home=pm_home, board_root=pm_paths._board_root_at(pm_home or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1640,7 +1630,7 @@ def test_opencode_execution_injects_exact_runtime_role_after_env_sanitizing(
                 "stderr": "", "timed_out": False}
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="provider/model", reasoning="high",
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode", model="provider/model", reasoning="high",
         role="code-reviewer", cwd=tmp_path, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -1708,7 +1698,7 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
         }
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1767,7 +1757,7 @@ def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
     target = worktree / "tracked.py"
     target.write_text("sentinel = 1\n", encoding="utf-8")
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: pm_home_temp)
-    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", worktree)
+    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO), "codex", worktree)
     assert read_tmp is not None
     temp_probe = read_tmp.path / "probe"
     before = (
@@ -1851,7 +1841,7 @@ def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
         }
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1898,7 +1888,7 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
         }
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1943,7 +1933,7 @@ def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
                 "stderr": "", "timed_out": False}
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness=harness, model=model, reasoning=None, role="code-reviewer",
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness=harness, model=model, reasoning=None, role="code-reviewer",
         cwd=cwd, prompt="role preamble + task", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -2000,7 +1990,7 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
-    file_lock = pd.fs
+    file_lock = fs
     restricted: list[Path] = []
     removed: list[Path] = []
     real_rmtree = file_lock.force_rmtree
@@ -2014,7 +2004,7 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
 
     monkeypatch.setattr(file_lock, "force_rmtree", _tracked_rmtree)
 
-    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", cwd)
+    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO), "opencode", cwd)
     assert read_tmp is not None
     assert read_tmp.parent_fd is None and read_tmp.owned_fds == []
     (read_tmp.writable_path / "artifact").write_text("ok", encoding="utf-8")
@@ -2040,7 +2030,7 @@ def test_acl_platform_read_tmp_cleanup_on_runner_exception(
 
     with pytest.raises(RuntimeError, match="의도한 runner 예외"):
         delegate_execute._execute_attempt(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
+            pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
             output_dir=tmp_path / "raw", run_fn=_explode, attempt="primary",
         )
@@ -2203,7 +2193,7 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
 
     with pytest.raises(delegate_errors.DelegateError, match=_NEVER_SET_ENV_KEY):
         delegate_execute._execute_attempt(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
+            pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
             output_dir=tmp_path / "raw", run_fn=_never_called, attempt="primary",
         )
@@ -2217,7 +2207,7 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
 def test_transport_prompt_write_restricts_owner_access_via_shared_seam(
         pd, monkeypatch, tmp_path):
     """`os.open` 의 0600 mode 인자는 ACL 플랫폼에서 무효 — 공용 소유자-제한 seam 이 배선돼 있다."""
-    file_lock = pd.fs
+    file_lock = fs
     restricted: list[Path] = []
     monkeypatch.setattr(
         file_lock, "restrict_to_owner",
@@ -2307,7 +2297,7 @@ def test_read_tmp_unsupported_platform_preamble_is_explicit(
         }
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -2334,7 +2324,7 @@ def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
                 "stderr": "", "timed_out": False}
 
     delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
         cwd=cwd, prompt="role preamble + task", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -2358,7 +2348,7 @@ def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="의도한 runner 예외"):
         delegate_execute._execute_attempt(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
+            pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review",
             timeout=30, output_dir=tmp_path / "raw", run_fn=_explode,
             attempt="primary",
@@ -2384,7 +2374,7 @@ def test_read_tmp_cleanup_on_timeout_child_kill_result(pd, monkeypatch, tmp_path
         }
 
     result = delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review",
         timeout=1, output_dir=tmp_path / "raw", run_fn=_timed_out,
         attempt="primary",
@@ -2409,7 +2399,7 @@ def test_read_tmp_cleanup_on_raw_reservation_failure(
 
     with pytest.raises(OSError, match="raw reserve failed"):
         delegate_execute._execute_attempt(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
+            pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review",
             timeout=30, output_dir=tmp_path / "raw",
             run_fn=lambda *args, **kwargs: pytest.fail("runner must not start"),
@@ -2439,18 +2429,18 @@ def test_read_role_temp_place_is_the_project_temp_root(pd, monkeypatch, tmp_path
     cwd = tmp_path / "worktree"
     cwd.mkdir()
     monkeypatch.setattr(pd, "REPO", pm_home)
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+
     anchor = raw_output.temp_root(pm_home)
 
     for harness in ("codex", "claude", "opencode"):
-        temp_parent, component = delegate_temp._read_tmp_parent(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), harness)
+        temp_parent, component = delegate_temp._read_tmp_parent(pm_paths.home_at(pd.REPO), harness)
 
         assert anchor == temp_parent or anchor in temp_parent.parents
         # 하네스별 부모 이름 규칙은 자리를 옮겨도 불변이다.
         assert component == delegate_run_rules._READ_TMP_PARENT_COMPONENT_BY_HARNESS[harness]
         assert temp_parent == (anchor / component if component else anchor)
 
-        read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), harness, cwd)
+        read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO), harness, cwd)
         assert read_tmp is not None
         try:
             # 격리 보호 셋이 옮긴 자리에서도 같은 단언으로 성립한다.
@@ -2479,9 +2469,9 @@ def test_read_role_temp_survives_a_cwd_that_owns_the_temp_root(
     """
     pm_home = _pm_home_tree(tmp_path)
     monkeypatch.setattr(pd, "REPO", pm_home)
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
 
-    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", pm_home)   # cwd == PM 홈
+
+    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO), "claude", pm_home)   # cwd == PM 홈
     assert read_tmp is not None
     try:
         assert read_tmp.path.is_relative_to(pm_home)          # cwd 트리 **안**인데 통과한다
@@ -2495,7 +2485,7 @@ def test_read_role_temp_survives_a_cwd_that_owns_the_temp_root(
     tracked_root.mkdir()
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: tracked_root)
     with pytest.raises(delegate_errors.DelegateError, match="검토 표면 안으로 해소되어 거부"):
-        delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", pm_home)
+        delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO), "claude", pm_home)
     assert list(tracked_root.iterdir()) == []                 # 거부 뒤 잔여 0
 
 
@@ -2524,7 +2514,7 @@ def test_read_tmp_cleanup_removes_a_read_only_subtree(pd, monkeypatch, tmp_path)
                 "stderr": "", "timed_out": False}
 
     attempt = delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_leave_read_only_tree,
         attempt="primary",
@@ -2542,7 +2532,7 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
-    file_lock = pd.fs
+    file_lock = fs
     monkeypatch.setattr(
         file_lock, "force_rmtree",
         lambda path, **kwargs: (_ for _ in ()).throw(
@@ -2554,7 +2544,7 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
                 "stderr": "", "timed_out": False}
 
     attempt = delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_succeed, attempt="primary",
     )
@@ -2704,7 +2694,7 @@ class _FakeRelayWatchdog:
 def test_default_run_fn_launch_error_all_drivers(pd, monkeypatch, harness):
     """3드라이버 전부 바이너리 미설치(워치독 스폰 FileNotFoundError) → rc≠0·진단(traceback 아님)."""
     _FakeRelayWatchdog(FileNotFoundError(2, "nope", "bin")).install(monkeypatch)
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["returncode"] != 0 and res["timed_out"] is False
     assert "실행 불가" in res["stderr"]
 
@@ -2726,7 +2716,7 @@ def test_default_run_fn_timeout_all_drivers(pd, monkeypatch, harness):
     프로세스그룹 kill 자체는 이제 워치독 소관이다(watchdog 실-Popen 테스트가 잔존 0을 단언) —
     여기서는 위임층의 정규화(분류 가능한 timed_out 신호)만 본다."""
     _FakeRelayWatchdog(subprocess.TimeoutExpired(cmd="x", timeout=1)).install(monkeypatch)
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["timed_out"] is True and res["returncode"] != 0
     assert delegate_run.classify_infrastructure_failure(res) == delegate_run_rules.FAILURE_CLASS_TIMEOUT
 
@@ -2775,14 +2765,14 @@ def test_conf_delegate_timeout_failsoft(pd):
     """conf delegate.timeout 비수치/≤0 은 traceback 대신 **하네스 프로필 선언값**으로 fail-soft."""
     ns = type("NS", (), {"timeout": None})()
     declared = int(watchdog.HARNESS_PROFILES["codex"].wall_timeout)
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "abc"}, "codex") == declared
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "-5"}, "codex") == declared
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "600"}, "codex") == 600
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), ns, {"delegate.timeout": "abc"}, "codex") == declared
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), ns, {"delegate.timeout": "-5"}, "codex") == declared
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), ns, {"delegate.timeout": "600"}, "codex") == 600
     # 하네스별 키가 표면-flat legacy 키를 이긴다(더 구체적인 선언).
     assert delegate_env._resolve_timeout(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "600", "harness.codex.wall_timeout": "900"}, "codex") == 900
+        pm_paths.home_at(pd.REPO), ns, {"delegate.timeout": "600", "harness.codex.wall_timeout": "900"}, "codex") == 900
     ns2 = type("NS", (), {"timeout": 42})()
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns2, {}, "codex") == 42   # CLI 가 가장 강함
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), ns2, {}, "codex") == 42   # CLI 가 가장 강함
 
 
 # ══ R2 must-fix 1: opencode positional message 필수 ══════════════════════════
@@ -4333,7 +4323,7 @@ def test_launch_failure_needs_explicit_signal_not_rc127(pd):
 def test_default_run_fn_launch_error_carries_explicit_signal(pd, monkeypatch, harness):
     """실 드라이버의 launch 정규화도 rc 가 아니라 명시 신호를 싣는다(분류 근거 단일화)."""
     _FakeRelayWatchdog(FileNotFoundError(2, "No such file", "bin")).install(monkeypatch)
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1,
                              harness=harness)
     assert res[delegate_run_rules.RUN_RESULT_LAUNCH_FAILED] is True
     assert delegate_run.classify_infrastructure_failure(res) == delegate_run_rules.FAILURE_CLASS_LAUNCH
@@ -4348,7 +4338,7 @@ def test_opencode_first_event_stall_is_infrastructure_class(pd, monkeypatch):
     stalled.output = "startup partial stdout\n"
     stalled.stderr = "startup partial stderr\n"
     _FakeRelayWatchdog(stalled).install(monkeypatch)
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
                              timeout=1, harness="opencode")
     assert res["returncode"] == 1 and res["timed_out"] is False
     assert res[delegate_run_rules.RUN_RESULT_STALLED] is True
@@ -4372,7 +4362,7 @@ def test_startup_watchdog_wall_axis_is_timeout_not_first_event_stall(pd, monkeyp
     _FakeRelayWatchdog(expired).install(monkeypatch)
 
     res = delegate_run._default_run_fn(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
+        pm_paths.home_at(pd.REPO), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
         timeout=30, harness="opencode",
     )
     assert res["returncode"] == 1 and res["timed_out"] is True
@@ -4676,15 +4666,15 @@ def test_harness_timeout_budget_counts_opencode_retry_windows(pd, monkeypatch):
     분기) 실행 예산 = timeout + retries×min(창, timeout), 정리는 각 시도마다 10초다."""
     _FakeStallKnobs(retries=2,
                                                                    first_event_timeout=90.0).install(monkeypatch)
-    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", 600) == 610      # 단일 시도 정리 10초
-    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", 600) == 610
-    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 600) == 810   # 600 + 2×90 + 3×10
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO), "codex", 600) == 610      # 단일 시도 정리 10초
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO), "claude", 600) == 610
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO), "opencode", 600) == 810   # 600 + 2×90 + 3×10
     # wall 이 첫-이벤트 창보다 짧으면 중복 호출 없이 첫 시도에서 끝난다.
-    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 30) == 40     # 30 + 단일 정리 10
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO), "opencode", 30) == 40     # 30 + 단일 정리 10
     # 노브를 못 읽으면 기본 최대 2회가 wall 전부를 쓰는 안전 상한으로 낮게 예고하지 않는다.
     monkeypatch.setattr(watchdog, "stall_retries_default",
                         lambda: (_ for _ in ()).throw(OSError("no knob")))
-    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 600) == 1830
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO), "opencode", 600) == 1830
 
 
 def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch):
@@ -4692,20 +4682,20 @@ def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch
     _FakeStallKnobs(
         retries=2, first_event_timeout=90.0).install(monkeypatch)
     # HARNESS_PROFILES 는 실 watchdog 선언을 그대로 쓴다.
-    assert delegate_env.max_declared_execution_path_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE)) == 2 * (14400 + 2 * 90 + 3 * 10)
+    assert delegate_env.max_declared_execution_path_budget(pm_paths.home_at(pd.REPO)) == 2 * (14400 + 2 * 90 + 3 * 10)
 
 
 def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypatch):
     """engine.manifest 밖 기존 adapter 설정이 낮으면 실행 시 조용히 무력화되지 않는다."""
     monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 18220)
-    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), {
         "CLAUDECODE": "1",
         "BASH_MAX_TIMEOUT_MS": "1800000",
     })
     assert warning is not None
     assert "1800s <" in warning and "부분 산출물 보존 전에" in warning
     assert "18230000ms" in warning
-    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {
+    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), {
         "CLAUDECODE": "1",
         "BASH_MAX_TIMEOUT_MS": "18230000",
     }) is None
@@ -4713,7 +4703,7 @@ def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypat
 
 def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
     monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 18220)
-    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {"OPENCODE": "1"})
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), {"OPENCODE": "1"})
     assert warning is not None
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
 
@@ -4748,7 +4738,7 @@ def test_runtime_harness_cap_warns_for_all_nested_session_axes(pd, monkeypatch):
         ("claude", "BASH_MAX_TIMEOUT_MS"),
         ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
     )
-    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), env)
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), env)
     assert warning is not None
     assert warning.count("[pm-delegate] 경고:") == 2
     assert "BASH_MAX_TIMEOUT_MS" in warning
@@ -4770,7 +4760,7 @@ def test_runtime_harness_cap_unknown_marker_is_never_blocking(pd, monkeypatch):
     env = {"GEMINI_SESSION": "session"}
 
     assert _harness_cap_pairs(pd, env) == (("gemini", None),)
-    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), env) is None
+    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), env) is None
 
 
 def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
@@ -5728,7 +5718,7 @@ def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
     잡아 kill 후 재전파한다(tests/test_idle_progress_watchdog.py 가 단언)."""
     broken = OSError(32, "Broken pipe")
     _FakeRelayWatchdog(broken).install(monkeypatch)
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["codex"], stdin_text="x", cwd="/tmp", env={}, timeout=5,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["codex"], stdin_text="x", cwd="/tmp", env={}, timeout=5,
                              harness="codex")
     assert res["returncode"] == 1 and delegate_run_rules.RUN_RESULT_LAUNCH_FAILED not in res
     assert delegate_run.classify_infrastructure_failure(res) is None
@@ -5872,13 +5862,13 @@ def test_ticket_prepare_rejects_review_role_on_a_ticket(pd, monkeypatch, tmp_pat
 
     monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", _prepare)
 
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ], adapter_roots = install_rules.adapter_directories()) == 0
+    ]) == 0
     with pytest.raises(SystemExit) as exc:
-        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ], adapter_roots = install_rules.adapter_directories())
+        ])
     assert exc.value.code == 2
     assert prepared_roles == ["developer"]
 
@@ -5991,7 +5981,7 @@ def test_t0650_cold_guard_uses_real_ledger_shapes(
         (output_dir / "raw_outputs.json").write_text("{broken", encoding="utf-8")
 
     record = delegate_raw.cold_reinjection_record(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), _T0650_TICKET, "developer", output_dir,
+        pm_paths.home_at(pd.REPO), _T0650_TICKET, "developer", output_dir,
     )
     captured = capsys.readouterr()
     assert (record is not None) is blocked
@@ -6112,7 +6102,7 @@ def test_t0650_attach_raw_selects_latest_completed_and_preserves_reply_in_prompt
     assert sent.count(exact_reply) == 1
     assert "오래된 보고" not in sent
     assert delegate_raw.resolve_attached_raw(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), latest_id, output_dir=output_dir,
+        pm_paths.home_at(pd.REPO), latest_id, output_dir=output_dir,
     ).reply == exact_reply
 
 

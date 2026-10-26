@@ -11,40 +11,24 @@ import pytest
 
 from test_private_context_guard import _marker_label_hits
 from _engine_tree import engine_python_files
+from pm_engine.domain import private_refs
+from pm_engine.infra import private_surface
 
 
 REPO = Path(__file__).resolve().parents[1]
-PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
-
 # T-0810 — 스트립이 사설 참조 토큰만 지우고 감싸던 괄호를 남긴 잔재(`()`)를 잡는다. 코드 호출/
 # 식별자(`foo()`)·백틱 인라인코드(`` `()` ``)·키워드형 표기(`touches=()`)·callable 타입 표기
 # (`() ->`)는 정당한 표기라 제외한다.
 _EMPTY_PAREN_RE = re.compile(r"(?<![A-Za-z0-9_\]\.\>=])\(\s*\)(?!\s*->)")
 
 
-def _load_scanner():
-    """출하 표면 판정식을 엔진 모듈에서 로드한다 — lint 와 스트립이 같은 한 벌을 쓴다."""
-    spec = importlib.util.spec_from_file_location(
-        "public_reference_scanner", PRIVATE_REFS_MODULE
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.fixture(scope="module")
-def scanner():
-    return _load_scanner()
-
-
-def test_shipped_engine_prose_has_no_mechanically_removable_private_refs(scanner):
+def test_shipped_engine_prose_has_no_mechanically_removable_private_refs():
     offenders: list[str] = []
-    python_paths, _ = scanner.shipping_paths(REPO)
+    python_paths, _ = private_surface.shipping_paths(REPO)
     for path in python_paths:
         source = path.read_text(encoding="utf-8")
-        for span in scanner.prose_token_spans(source):
-            if scanner._actionable_matches(span.text):
+        for span in private_refs.prose_token_spans(source):
+            if private_refs._actionable_matches(span.text):
                 relative = path.relative_to(REPO).as_posix()
                 offenders.append(f"{relative}:{span.line}")
     assert not offenders, (
@@ -53,13 +37,13 @@ def test_shipped_engine_prose_has_no_mechanically_removable_private_refs(scanner
     )
 
 
-def test_shipped_language_axis_prose_has_no_mechanically_removable_private_refs(scanner):
+def test_shipped_language_axis_prose_has_no_mechanically_removable_private_refs():
     """언어 축(셸·JS·TOML·manifest 등) 산문에도 기계 제거 가능한 사설 참조가 0 이어야 한다."""
     offenders: list[str] = []
-    for path in scanner.language_paths(REPO):
+    for path in private_surface.language_paths(REPO):
         source = path.read_text(encoding="utf-8")
-        for span in scanner.language_prose_spans(path, source):
-            if scanner._actionable_matches(span.text):
+        for span in private_refs.language_prose_spans(path, source):
+            if private_refs._actionable_matches(span.text):
                 relative = path.relative_to(REPO).as_posix()
                 offenders.append(f"{relative}:{span.line}")
     assert not offenders, (
@@ -68,18 +52,18 @@ def test_shipped_language_axis_prose_has_no_mechanically_removable_private_refs(
     )
 
 
-def _empty_delimiter_offenders(source: str, scanner, *, spans=None) -> list[tuple[int, str]]:
+def _empty_delimiter_offenders(source: str, *, spans=None) -> list[tuple[int, str]]:
     """산문(주석·docstring) 토큰 안 빈 괄호 잔재를 (line, matched_text) 로 낸다.
 
     ``spans`` 미지정 시 python 축(``prose_token_spans``) — 언어 축 호출부는 자신의
     ``language_prose_spans`` 결과를 넘긴다(판정 사본을 두지 않고 같은 매칭 로직을 공유).
     """
     offenders: list[tuple[int, str]] = []
-    for span in (spans if spans is not None else scanner.prose_token_spans(source)):
+    for span in (spans if spans is not None else private_refs.prose_token_spans(source)):
         text = span.text
         protected = [
             (match.start(), match.end())
-            for match in scanner._INLINE_CODE_RE.finditer(text)
+            for match in private_refs._INLINE_CODE_RE.finditer(text)
         ]
         for match in _EMPTY_PAREN_RE.finditer(text):
             if any(start <= match.start() < end for start, end in protected):
@@ -89,11 +73,11 @@ def _empty_delimiter_offenders(source: str, scanner, *, spans=None) -> list[tupl
     return offenders
 
 
-def test_shipped_engine_prose_has_no_empty_delimiter_remnants(scanner):
+def test_shipped_engine_prose_has_no_empty_delimiter_remnants():
     """스트립 잔재(토큰만 지우고 남은 빈 괄호) 0 — 시야·민감도·실 표면을 한 게이트로 잠근다(T-0810)."""
     # 시야 == 출하 표면: shipping_paths() 파생 목록이 독립 glob 을 전부 포함해야 한다
     # (T-0814 의 _engine_surfaces() 개편과 결합을 만들지 않기 위해 이 표면을 직접 소비한다).
-    python_paths, _ = scanner.shipping_paths(REPO)
+    python_paths, _ = private_surface.shipping_paths(REPO)
     python_paths_set = set(python_paths)
     independent_canonical = set(engine_python_files(REPO / ".project_manager/tools"))
     missing = independent_canonical - python_paths_set
@@ -122,15 +106,15 @@ def test_shipped_engine_prose_has_no_empty_delimiter_remnants(scanner):
         "# 빈 dict {} · 빈 list []",
     ]
     for sample in positive_samples:
-        assert _empty_delimiter_offenders(sample, scanner), f"놓친 잔재: {sample!r}"
+        assert _empty_delimiter_offenders(sample), f"놓친 잔재: {sample!r}"
     for sample in negative_samples:
-        assert not _empty_delimiter_offenders(sample, scanner), f"오탐: {sample!r}"
+        assert not _empty_delimiter_offenders(sample), f"오탐: {sample!r}"
 
     # 실 표면 — offender 0 (실패 시 count 와 path:line 표시).
     offenders: list[str] = []
     for path in python_paths:
         source = path.read_text(encoding="utf-8")
-        for line, _matched in _empty_delimiter_offenders(source, scanner):
+        for line, _matched in _empty_delimiter_offenders(source):
             relative = path.relative_to(REPO).as_posix()
             offenders.append(f"{relative}:{line}")
     assert not offenders, (
@@ -139,13 +123,13 @@ def test_shipped_engine_prose_has_no_empty_delimiter_remnants(scanner):
     )
 
 
-def test_shipped_language_axis_prose_has_no_empty_delimiter_remnants(scanner):
+def test_shipped_language_axis_prose_has_no_empty_delimiter_remnants():
     """언어 축 산문에도 토큰 제거 잔재(빈 괄호) 0 — 스트립 잔재 클래스 재유입 금지를 언어 축으로 확장."""
     offenders: list[str] = []
-    for path in scanner.language_paths(REPO):
+    for path in private_surface.language_paths(REPO):
         source = path.read_text(encoding="utf-8")
-        spans = scanner.language_prose_spans(path, source)
-        for line, _matched in _empty_delimiter_offenders(source, scanner, spans=spans):
+        spans = private_refs.language_prose_spans(path, source)
+        for line, _matched in _empty_delimiter_offenders(source, spans=spans):
             relative = path.relative_to(REPO).as_posix()
             offenders.append(f"{relative}:{line}")
     assert not offenders, (
@@ -154,11 +138,11 @@ def test_shipped_language_axis_prose_has_no_empty_delimiter_remnants(scanner):
     )
 
 
-def test_lint_allows_placeholders_and_runtime_data_strings(scanner):
+def test_lint_allows_placeholders_and_runtime_data_strings():
     placeholder = "T-" + "N" * 4
     data_ref = "T-" + "7" * 4
     source = f'\"\"\"Use {placeholder}.\"\"\"\nvalue = \"{data_ref}\"\n'
-    assert scanner._prose_count(source) == 0
+    assert private_refs._prose_count(source) == 0
 
 
 # G3 예외 3건 — 채택자가 실제로 읽는 argparse `help=` 문자열이라 데이터 리터럴 표식으로
@@ -171,7 +155,7 @@ _ORCH_DRIVERS_WITH_HELP_EXCEPTION = (
 )
 
 
-def test_orch_driver_help_text_has_no_private_work_item_refs(scanner):
+def test_orch_driver_help_text_has_no_private_work_item_refs():
     """3개 하네스 driver 의 `--help` 출력(``--task`` help= 문자열)에 사설 참조가 없다."""
     for relpath in _ORCH_DRIVERS_WITH_HELP_EXCEPTION:
         path = REPO / relpath
@@ -180,14 +164,14 @@ def test_orch_driver_help_text_has_no_private_work_item_refs(scanner):
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         help_text = module.build_parser().format_help()
-        assert not scanner.RAW_REF_RE.search(help_text), (
+        assert not private_refs.RAW_REF_RE.search(help_text), (
             f"{relpath} --help 출력에 사설 참조 잔존: {help_text}"
         )
-def test_shipped_engine_prose_has_no_circled_marker_or_design_label_residue(scanner):
+def test_shipped_engine_prose_has_no_circled_marker_or_design_label_residue():
     """circled 마커·`F1`·`F6` 류 사설 fault 라벨 잔재 0 — 판정면은 STRING·FSTRING_MIDDLE·
     COMMENT 전부라 런타임 문자열(f-string)도 덮는다. 실패 시 count 와 `path:line` 을 낸다."""
     offenders: list[str] = []
-    python_paths, _ = scanner.shipping_paths(REPO)
+    python_paths, _ = private_surface.shipping_paths(REPO)
     for path in python_paths:
         source = path.read_text(encoding="utf-8")
         relative = path.relative_to(REPO).as_posix()

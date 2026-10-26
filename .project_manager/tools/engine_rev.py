@@ -59,7 +59,6 @@ STAMPED_MODULES = (
     "additional_reviewer.py",
     "pm_import.py",
     "pm_log.py",
-    "private_refs.py",
     "pm_principles.py",
 )
 

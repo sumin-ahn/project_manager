@@ -565,7 +565,7 @@ def test_disposition_template_rejects_confirmation_only_round(
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     spec_path = _materialize(pd, "", [first, second], tickets_dir, "T-0700")
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+
     assert pd.main([
         "review", "disposition-template", "--ticket", "T-0700", "--ordinal", "2",
     ]) == 1
@@ -591,7 +591,7 @@ def test_disposition_template_cli_and_pending_error_prescribe_same_command(
         pd, "", [_reviewer_round(pd, _review_payload("F-007"))], tickets_dir, "T-0700",
     )
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+
     assert pd.main([
         "review", "disposition-template", "--ticket", "T-0700",
     ]) == 0

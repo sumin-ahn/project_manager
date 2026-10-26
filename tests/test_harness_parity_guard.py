@@ -173,8 +173,8 @@ DELEGATION_AUTHORITY_SITES: dict[LedgerKey, Site] = {
     ("delegate_execute.py", "_execute_and_collect", "RESUME_MUTATING_ROLES"): Site(
         "역할축 — 재실행이 라운드를 하나 더 만드는 역할을 mutating 으로 다룬다"),
     ('delegate_transport.py', '_prepare_attempt_transport', 'READ_ROLES'): Site(_ROLE_AXIS_REASON),
-    ("pm_delegate.py", "_run_delegate_cli", "READ_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("pm_delegate.py", "_run_delegate_cli", "WRITE_ROLES"): Site(
+    ("delegate_run.py", "main", "READ_ROLES"): Site(_ROLE_AXIS_REASON),
+    ("delegate_run.py", "main", "WRITE_ROLES"): Site(
         _ROLE_AXIS_REASON, expected_count=2),
     ("delegate_execute.py", "check_write_target_reanchor", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("delegate_scope_audit.py", "report_scope_audit", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),

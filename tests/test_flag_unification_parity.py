@@ -33,6 +33,7 @@ from pm_engine.infra import pm_paths
 import pm_engine.cli.handoff
 
 from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import ticket_finish as ticket_finish_cli
 
 import argparse
 import importlib.util
@@ -85,12 +86,11 @@ def tool_parsers():
     board = _load_tool("board.py")
     pm_bootstrap = _load_tool("pm_bootstrap.py")
     pm_handoff = _load_tool("pm_handoff.py")
-    ticket_finish = _load_tool("ticket_finish.py")
     return {
         "board.py": (board.build_parser(), ["claim", "T-0001"]),
         "pm_bootstrap.py": (bootstrap_cli.build_parser(), []),
         "pm_handoff.py": (pm_engine.cli.handoff.build_parser(), []),
-        "ticket_finish.py": (ticket_finish.build_parser(), ["T-0001"]),
+        "ticket_finish.py": (ticket_finish_cli.build_parser(), ["T-0001"]),
     }
 
 
@@ -215,6 +215,8 @@ def test_pm_relay_engine_core_exposes_no_identity_cli_surface():
 _ADOPTING_TOOL_FILES = (
     "board.py", "ticket_finish.py", "worktree_pool.py",
 )
+# 공개 CLI 파일명 → parser 를 실제로 정의한 source (평면 진입점은 패키지 CLI 로 위임한다).
+_ADOPTING_TOOL_PARSER_SOURCES = {"ticket_finish.py": "pm_engine/cli/ticket_finish.py"}
 
 
 @pytest.mark.parametrize("filename", _ADOPTING_TOOL_FILES)
@@ -225,7 +227,7 @@ def test_flag_bearing_tool_source_adopts_shared_identity_args_module(filename):
     red — semantics parity(위 두 그룹)가 "우연히" 같은 결과를 내더라도, 그 근거가 공용 모듈
     단일 진실인지까지 이 테스트가 확인한다.
     """
-    text = (TOOLS / filename).read_text(encoding="utf-8")
+    text = (TOOLS / _ADOPTING_TOOL_PARSER_SOURCES.get(filename, filename)).read_text(encoding="utf-8")
     assert re.search(r"\.add_identity_args\(", text), (
         f"{filename} 이 공용 identity_args.add_identity_args 를 호출하지 않는다(로컬 재구현 의심)."
     )

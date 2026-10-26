@@ -607,7 +607,7 @@ def test_all_current_log_writers_use_shared_seam_grep_guard():
     """complete·handoff·decide·archive/checkpoint에 직접 current RMW가 재발하지 않는다."""
     consumer_sources = {
         name: (TOOLS / name).read_text(encoding="utf-8")
-        for name in ("ticket_finish.py", "pm_engine/app/handoff_log.py", "pm_engine/app/adr_issue.py")
+        for name in ("pm_engine/cli/finish_record.py", "pm_engine/app/handoff_log.py", "pm_engine/app/adr_issue.py")
     }
     for name, source in consumer_sources.items():
         assert "log_store." in source, name

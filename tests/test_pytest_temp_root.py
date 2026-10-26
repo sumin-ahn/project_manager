@@ -280,12 +280,12 @@ def test_read_role_temp_place_passes_the_project_anchor(monkeypatch, tmp_path):
     outside_the_pm_home = tmp_path / "os-temp"
     outside_the_pm_home.mkdir()
     monkeypatch.setattr(delegate, "REPO", pm_home)
-    monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", None)
+
     monkeypatch.setattr(raw_output, '_gettempdir', lambda: str(outside_the_pm_home))
     anchor = raw_output.temp_root(pm_home).resolve()
 
     for harness in ("codex", "claude", "opencode"):
-        temp_parent, _component = delegate_temp._read_tmp_parent(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), harness)
+        temp_parent, _component = delegate_temp._read_tmp_parent(pm_paths.home_at(delegate.REPO), harness)
         assert anchor == temp_parent or anchor in temp_parent.parents, (
             f"{harness} 격리 자리가 앵커 밖이다: {temp_parent}")
 

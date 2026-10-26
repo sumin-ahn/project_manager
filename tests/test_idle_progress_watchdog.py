@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from pm_engine.app import import_fill
 from pm_engine.domain import install_rules
+import argparse
 
 from pm_engine.app import reviewer_run
 import pm_engine.infra.harness.reviewer_run
@@ -339,7 +340,7 @@ def _unexpected_harness_literal_hits(
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd",
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd", "pm_engine/cli/delegate_run",
                      *_PM_IMPORT_MOVED_MODULES)
     }
     unexpected = {}
@@ -560,7 +561,7 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
         if len(calls) > 1:
             return {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}
         return delegate_run._default_run_fn(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), [sys.executable, "-c", parent_code, str(pid_file)],
+            pm_paths.home_at(pd.REPO), [sys.executable, "-c", parent_code, str(pid_file)],
             stdin_text=None,
             cwd=kwargs["cwd"],
             env=kwargs["env"],
@@ -570,7 +571,7 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
 
     try:
         rc = delegate_execute._execute_and_collect(
-            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), args=pd.argparse.Namespace(role="developer"),
+            pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), args=argparse.Namespace(role="developer"),
             harness="codex", model="test-model", reasoning=None,
             fallback=("claude", "fallback-model", None), fallback_skip=None,
             cwd=tmp_path, prompt="test", timeout=1, fallback_timeout=1,
@@ -1314,7 +1315,7 @@ def test_profile_table_covers_every_declared_harness(pd):
     assert watchdog.HARNESS_PROFILES["opencode"].startup_watchdog is True
     assert watchdog.HARNESS_PROFILES["codex"].startup_watchdog is False
     assert watchdog.HARNESS_PROFILES["claude"].startup_watchdog is False
-    assert delegate_env.harness_profile(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "nope", {}).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
+    assert delegate_env.harness_profile(pm_paths.home_at(pd.REPO), "nope", {}).progress_signal == conf_schema.PROGRESS_SIGNAL_NONE
 
 
 def test_unknown_defaults_are_derived_from_most_permissive_profile():
@@ -1359,7 +1360,7 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd",
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd", "pm_engine/cli/delegate_run",
                      *_PM_IMPORT_MOVED_MODULES)
         for qualname in _module_harness_literal_hits(
             module_name, (TOOLS / f"{module_name}.py").read_text(encoding="utf-8"))
@@ -1451,19 +1452,19 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
             "    started = time.monotonic()\n",
         ),
         # 내부 리뷰 C: dry-run 표시 사유로 함수 통째 면제됐던 CLI 본체 안의 timeout 강제값.
-        # 소유 함수는 `main` 의 CLI 본체(`_run_delegate_cli`)다 — main 은 콘솔 설정과 백그라운드
-        # 실행 마감만 감싸는 wrapper 이고 timeout 해소는 본체가 쥔다.
+        # 소유 함수는 cli.delegate_run.main이다. 평면 main은 콘솔 설정과 Home 배선만 담당한다.
         # 앵커는 main()의 실제 들여쓰기(T-0846 예약 try/finally 안 8칸)를 그대로 고정한다 — 4칸
         # 부분 문자열 앵커는 main()이 재구성돼도 count()==1로 조용히 살아남아 자리만 어긋난
         # 변이본(IndentationError)을 만든다(T-0853).
-        (
-            "pm_delegate",
-            "_run_delegate_cli",
-            "        timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n",
+        pytest.param(
+            "pm_engine/cli/delegate_run",
+            "main",
+            "        timeout = delegate_env._resolve_timeout(home, args, conf, harness)\n",
             '        if harness == "opencode":\n'
             "            timeout = 60\n"
             "        else:\n"
-            "            timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n",
+            "            timeout = delegate_env._resolve_timeout(home, args, conf, harness)\n",
+            id="pm_delegate-_run_delegate_cli-        timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n-        if harness == \"opencode\":\n            timeout = 60\n        else:\n            timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n",
         ),
         # 세 번째 표면: fill runner가 공용 profile을 받은 뒤 특정 하네스만 idle 축을 끄는 우회.
         (
@@ -1485,7 +1486,7 @@ def test_structural_guard_rejects_new_timeout_bypass_callers(
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd",
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd", "pm_engine/cli/delegate_run",
                      *_PM_IMPORT_MOVED_MODULES)
     }
     sources[module_name] = _apply_mutation_anchor(
@@ -1817,7 +1818,7 @@ def test_delegate_routes_every_driver_through_shared_watchdog(pd, monkeypatch, h
     """3 드라이버 **전부** 워치독 경유 — codex/claude 도 증분 관측 대상(옛 구조는 벽시계 단독)."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
     monkeypatch.setattr(delegate_run.subprocess, "Popen", _forbidden_popen)
-    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="prompt", cwd="/tmp", env={}, timeout=600,
+    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text="prompt", cwd="/tmp", env={}, timeout=600,
                        harness=harness)
     assert len(fake.calls) == 1
     call = fake.calls[0]
@@ -1833,7 +1834,7 @@ def test_delegate_idle_value_differs_by_axis(pd, monkeypatch):
     seen = {}
     for harness in ("codex", "opencode"):
         fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
-        delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+        delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                            harness=harness)
         seen[harness] = fake.calls[0]["idle_timeout"]
     assert seen["opencode"] > seen["codex"], (
@@ -1846,7 +1847,7 @@ def test_delegate_harness_conf_override_reaches_the_watchdog(pd, monkeypatch):
     """local.conf `harness.<name>.idle_timeout` 이 실제 판정까지 도달한다(배포별 조정 배선)."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay(),
                        conf={"harness.opencode.idle_timeout": "60"})
-    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                        harness="opencode")
     assert fake.calls[0]["idle_timeout"] == 60.0
 
@@ -1860,7 +1861,7 @@ def _forbidden_popen(*a, **k):
 def test_delegate_startup_window_follows_declaration(pd, monkeypatch, harness, startup):
     """첫-이벤트 창/재시도는 **선언** 을 따른다 — 분기 특례가 아니라 테이블."""
     fake = _wire_relay(pd, monkeypatch, _RecordingRelay())
-    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+    delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                        harness=harness)
     call = fake.calls[0]
     if startup:
@@ -1872,12 +1873,12 @@ def test_delegate_startup_window_follows_declaration(pd, monkeypatch, harness, s
 def test_delegate_wall_timeout_resolution_is_per_harness(pd):
     """벽시계 백스톱도 하네스별 — CLI > 하네스 키 > flat legacy > 선언 순으로 해소된다."""
     unset = type("NS", (), {"timeout": None})()
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), unset, {}, "codex") == int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), unset, {}, "opencode") == int(watchdog.LOCAL_GPU_WALL_TIMEOUT_SEC)
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), unset, {"harness.opencode.wall_timeout": "20000"},
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), unset, {}, "codex") == int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), unset, {}, "opencode") == int(watchdog.LOCAL_GPU_WALL_TIMEOUT_SEC)
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), unset, {"harness.opencode.wall_timeout": "20000"},
                                "opencode") == 20000
     cli = type("NS", (), {"timeout": 11})()
-    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), cli, {"harness.opencode.wall_timeout": "20000"}, "opencode") == 11
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO), cli, {"harness.opencode.wall_timeout": "20000"}, "opencode") == 11
 
 
 def test_delegate_timeout_preserves_partial_output_and_silence(pd, monkeypatch):
@@ -1885,7 +1886,7 @@ def test_delegate_timeout_preserves_partial_output_and_silence(pd, monkeypatch):
     exc = subprocess.TimeoutExpired(["bin"], 900.0, output="HALF DONE", stderr="warn")
     exc.idle_seconds = 931.0
     _wire_relay(pd, monkeypatch, _RecordingRelay(exc=exc))
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
                              harness="codex")
     assert res["stdout"] == "HALF DONE", "kill 시점 산출물이 버려졌다(전량 폐기 재발)"
     assert res["timed_out"] is True
@@ -1904,7 +1905,7 @@ def test_delegate_wall_clock_timeout_is_labelled_apart_from_idle(
         ["bin"], 3700.0, silence_seconds=12.5, output="PART"
     )
     _wire_relay(pd, monkeypatch, _RecordingRelay(exc=exc))
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=3600,
                              harness="codex")
     assert "벽시계 백스톱 3700s" in res["stderr"] and "무진행" not in res["stderr"]
     assert "실측 침묵 12s" in res["stderr"]
@@ -1920,14 +1921,14 @@ def test_delegate_success_carries_silence_observation(pd, monkeypatch):
     """정상 완주도 관측 침묵 초를 실어 감사 헤더에 남긴다."""
     completed = subprocess.CompletedProcess(["bin"], 0, "out", "")
     _wire_relay(pd, monkeypatch, _RecordingRelay(completed=completed, silence=3.5))
-    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO), ["bin"], stdin_text=None, cwd="/tmp", env={}, timeout=600,
                              harness="codex")
     assert res[delegate_run_rules.RUN_RESULT_SILENCE_SEC] == 3.5 and res["timed_out"] is False
 
 
 def test_delegate_legacy_flat_conf_keys_still_honoured(pd):
     """기존 채택자의 표면-flat 키(`delegate.timeout`·`delegate.idle_timeout`)는 계속 유효하다."""
-    profile = delegate_env.harness_profile(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", {"delegate.timeout": "1234",
+    profile = delegate_env.harness_profile(pm_paths.home_at(pd.REPO), "codex", {"delegate.timeout": "1234",
                                            "delegate.idle_timeout": "88"})
     assert (profile.wall_timeout, profile.idle_timeout) == (1234.0, 88.0)
 
@@ -2132,7 +2133,7 @@ def test_execute_attempt_writes_silence_into_raw(pd, tmp_path):
                 delegate_run_rules.RUN_RESULT_SILENCE_SEC: 902.0, delegate_run_rules.RUN_RESULT_IDLE_KILLED: True}
 
     attempt = delegate_execute._execute_attempt(
-        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="m", reasoning=None, role="developer", cwd=tmp_path,
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="codex", model="m", reasoning=None, role="developer", cwd=tmp_path,
         prompt="p", timeout=1700, output_dir=tmp_path, run_fn=_run, attempt="primary",
     )
     raw = attempt.raw_path.read_text(encoding="utf-8")
@@ -2439,7 +2440,7 @@ def test_both_surfaces_share_retry_cleanup_budget_formula(external, pd):
     assert watchdog.watchdog_execution_budget(
         14400, first_event_timeout=90, retries=2
     ) == expected
-    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 14400) == expected
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO), "opencode", 14400) == expected
     assert pm_engine.infra.harness.reviewer_run._reviewer_execution_budget(
         pm_paths.home_at(external.REPO), "opencode run --format json", 14400
     ) == expected
