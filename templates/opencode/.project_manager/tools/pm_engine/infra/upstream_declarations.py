@@ -80,11 +80,6 @@ class DeclarationWireError(ValueError):
     """자식이 낸 선언 JSON 이 wire 형식과 다르다(키·타입·중복·잔여 출력)."""
 
 
-def _hook_set_declaration_source(source_root) -> Path:
-    """상류 트리에서 선언을 담은 파일 — package 의 `domain/adapter_specs.py`."""
-    return Path(source_root) / _PACKAGE_RELDIR / _DECLARATION_MEMBER
-
-
 def _snapshot_digest(payloads: dict[str, bytes]) -> str:
     """경로 정렬 순서로 (경로 길이, 경로, 내용 길이, 내용)을 이어 붙인 SHA-256."""
     digest = hashlib.sha256(_SNAPSHOT_DOMAIN)
