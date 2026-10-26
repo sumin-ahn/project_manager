@@ -48,7 +48,7 @@ from pm_engine.app import round_seed
 from pm_engine.app import ticket_access
 from pm_engine.app import board_sync
 
-from pm_engine.infra import ticket_store
+from pm_engine.infra import pm_paths, ticket_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -872,8 +872,8 @@ def test_reconcile_integrated_records_exact_product_head_without_product_or_slot
     )
     assert lease_before == (env.home / ".project_manager" / ".local" /
                             "worktree-leases.json").read_bytes()
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     assert ledger["status"] == "closed"
     assert ledger["close_step"] == "board"
     assert ledger["closure"] == {
@@ -907,8 +907,8 @@ def test_reconcile_reads_the_explicit_slot_not_the_finisher_tree(close_env, caps
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
     assert "PM 홈으로 강등됐다" not in captured.err
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     assert ledger["status"] == _CLOSED_STATUS
     assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
 
@@ -1042,9 +1042,8 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
     legacy_anchor = _rev(legacy_env.slot, "HEAD~1")
     assert _reconcile_closer(
         legacy_env, legacy_evidence, legacy_anchor=legacy_anchor).run() == 0
-    board = legacy_env.tf._board_module_at(
-        legacy_env.board_dir.parent / "tools" / "board.py")
-    closure = cluster_store.load_cluster(board._home(), _CLUSTER)["closure"]
+    home = pm_paths.home_at(legacy_env.home)
+    closure = cluster_store.load_cluster(home, _CLUSTER)["closure"]
     assert closure["member_anchors"][legacy_env.ticket] == {
         "anchor": legacy_anchor, "anchor_source": "operator-supplied",
     }
@@ -1108,10 +1107,10 @@ def test_reconcile_integrated_is_idempotent_and_preserves_other_dirty_slots(
     assert first_closer._resolve_members() is None
     closure, status, problem = first_closer._validate_reconcile()
     assert problem is None and status == "open"
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     ledger.update({"closure": closure, "status": "closed", "close_step": "board"})
-    cluster_store.dump_cluster(board._home(), ledger)
+    cluster_store.dump_cluster(home, ledger)
     pre_resume_board_head = _rev(env.board_dir)
 
     assert first_closer.run() == 0
@@ -1150,8 +1149,8 @@ def test_reconcile_integrated_accepts_the_name_notation_of_the_normal_path(
 
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    home = pm_paths.home_at(env.home)
+    ledger = cluster_store.load_cluster(home, _CLUSTER)
     assert ledger["status"] == _CLOSED_STATUS
     assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
 
@@ -1759,14 +1758,14 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
     )
     closer = env.closer(finisher=finisher)
 
-    namespaces: list[object] = []
+    ownership_calls: list[object] = []
     monkeypatch.setattr(
         cluster_binding, "cluster_complete_binding_problem",
         lambda _home, tid, fm, binding: calls.append(f"binding:{tid}") or None)
     ownership = ticket_access._ticket_ownership
     monkeypatch.setattr(
         ticket_access, "_ticket_ownership",
-        lambda home, fm, **kwargs: namespaces.append((home, fm, kwargs)) or ownership(home, fm, **kwargs))
+        lambda home, fm, **kwargs: ownership_calls.append((home, fm, kwargs)) or ownership(home, fm, **kwargs))
     monkeypatch.setattr(
         board_ticket, "_round_completion_problems",
         lambda home, tid, spec_text: calls.append(f"rounds:{tid}") or [])
@@ -1778,15 +1777,11 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
         f"private_ref:{env.ticket}", f"dod:{env.ticket}",
         f"residual:{env.ticket}", f"binding:{env.ticket}", f"rounds:{env.ticket}",
     ]
-    # 소유 판정이 받는 Namespace 는 `board complete` 가 받는 것과 같은 파서 산출이다 —
-    # 손조립하면 이 속성 집합이 조용히 얇아진다(board 가 인자 이름을 바꾸면 여기서 난다).
-    assert len(namespaces) == 1
-    board_module = closer._board_parser_module
-    expected = vars(board_module.build_parser().parse_args(
-        ["complete", env.ticket, "--tests-pass"]))
-    assert namespaces[0] == (closer._home, ticket_store.load_ticket(
+    # 이 픽스처의 명시 task와 기본 user는 모두 None이다.
+    assert len(ownership_calls) == 1
+    assert ownership_calls[0] == (closer._home, ticket_store.load_ticket(
         ticket_store.find_ticket_exact(closer._home, env.ticket)[1])[0],
-        {"task": expected.get("task"), "user": expected.get("user")})
+        {"task": None, "user": None})
 
 
 @requires_git
@@ -1931,7 +1926,6 @@ def test_close_preflight_refuses_a_member_without_a_harvested_review(
         review.unlink()
         expected = "code-reviewer 리뷰 라운드가 없습니다"
     else:
-        board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
         spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
         review.write_text(
             round_seed.render_round_seed(

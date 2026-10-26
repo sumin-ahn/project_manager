@@ -5,9 +5,12 @@
 """
 from __future__ import annotations
 
-from pm_engine.infra import cluster_store
+from pm_engine.infra import cluster_store, pm_paths
+from pm_engine.cli import board_cluster
+from pm_engine.domain import cluster_rules
 
 
+import argparse
 import importlib.util
 import shutil
 import subprocess
@@ -16,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from _slot_seed import seed_slot
-from conftest import bind_product_cluster, current_branch, write_cluster_ledger
+from conftest import current_branch, write_cluster_ledger
 from test_cluster_close import _review_round_text
 
 
@@ -126,7 +129,8 @@ def _split_home_shape(
     tools.parent.mkdir(parents=True)
     shutil.copytree(TOOLS, tools)
     slot_name = slot.rsplit("/", 1)[-1]
-    seed_slot(home, slot=slot, repo=slot_name.rsplit("_", 1)[0], session=_TASK)
+    seed_slot(home, slot=slot, repo=slot_name.rsplit("_", 1)[0], session=_TASK,
+              tasks=[{"name": _TASK}])
     _write_claimed_ticket(home, ticket_id, touches)
     log_dir = home / ".project_manager" / "wiki" / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -153,10 +157,14 @@ def _split_home_shape(
     spec.loader.exec_module(module)
     # 완료 파이프라인은 명시 제품 branch를 요구한다. 기존 명령으로 실제 결속하고,
     # 제품 통합 브랜치를 가진 별도 worktree를 준비한다 (측정·stage oracle은 그대로).
-    board = module._board_module_at(tools / "board.py")
+    owner = pm_paths.home_at(home)
     base = current_branch(worktree)
-    cluster = bind_product_cluster(board, ticket_id, repo="myrepo", number=1, task=_TASK)
-    branch = cluster_store.load_cluster(board._home(), cluster)["branch"]
+    name = f"bound-{ticket_id.lower()}"
+    assert board_cluster.cmd_cluster(owner, argparse.Namespace(
+        cluster_cmd="new", name=name, tickets=ticket_id, spike=None,
+        repo="myrepo", slot=1, task=_TASK)) == 0
+    cluster = cluster_rules.cluster_id_for_name(name)
+    branch = cluster_store.load_cluster(owner, cluster)["branch"]
     _git(worktree, "checkout", "-q", branch)
     _git(worktree, "worktree", "add", "-q", str(tmp_path / "product-integration"), base)
     # 결속 준비의 명세·장부만 baseline에 넣는다. 홈 코드 사본과 산출물의 dirty는 보존한다.

@@ -1078,18 +1078,6 @@ def _board_home(board_py: Path):
     return pm_paths.home_at(Path(board_py).resolve().parents[2])
 
 
-def _board_module_at(board_py: Path):
-    """완료 CLI의 build_parser 전용 사본을 적재한다. 데이터 조회는 명시 Home과 패키지가 소유한다."""
-    try:
-        return _load_module_from_path(
-            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — 로드 실패는 판정 불능(차단 아님).
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-
-
 def ticket_cluster_ledger(board_py: Path, ticket_id: str) -> tuple[str | None, dict | None]:
     """티켓과 명시 Home의 장부에서 묶음 ID와 frontmatter를 읽는다.
 
@@ -3182,7 +3170,6 @@ class ClusterCloser:
         self._explicit_slot = explicit_slot
         # 리뷰 처분 실행 함수. 묶음 표면 rounds resolve --cluster 를 한 번 부른다.
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
-        self._board_parser_module = _board_module_at(board_py)
         self._home = home if home is not None else _board_home(board_py)
         # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
         # 기록 축(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 축(완료 기록·커밋·
@@ -3514,16 +3501,8 @@ class ClusterCloser:
         """`board complete` 가 첫 거부에서 멈추는 판정 셋을 읽기로 **전건** 모은다(사본 0).
 
         `cmd_complete` 는 결속 → 소유 → 게이트 순서로 첫 거부에서 return 하므로, 그 셋을 여기서
-        각각 불러 누적한다. Namespace 는 `cmd_complete` 가 받는 것과 **같은 파서**로 만든다 —
-        손으로 조립하면 소유 판정이 보는 속성이 조용히 빠진다.
+        각각 불러 누적한다. 소유 판정에는 자기 CLI가 검증한 task와 명시 user=None을 넘긴다.
         """
-        parser_module = self._board_parser_module
-        seams = {"build_parser": getattr(parser_module, "build_parser", None) if parser_module else None}
-        missing = sorted(name for name, seam in seams.items() if seam is None)
-        if missing:
-            raise _CloseObservationFailure(
-                f"완료 게이트 판정 seam 을 로드하지 못했다 ({self._board_py}: {missing}) — "
-                "차단 사유를 관측할 수 없다. board 사본을 확인하라.")
         found = ticket_store.find_ticket_exact(self._home, tid)
         if found is None:
             raise _CloseObservationFailure(
@@ -3536,9 +3515,8 @@ class ClusterCloser:
             self._home, tid, frontmatter, self._cluster)
         if binding is not None:
             problems.append(f"{tid}: {binding}")
-        namespace = seams["build_parser"]().parse_args(
-            ["complete", tid, "--tests-pass", *self._board_identity_args])
-        verdict = ticket_access._ticket_ownership(self._home, frontmatter, task=getattr(namespace, "task", None), user=getattr(namespace, "user", None))
+        verdict = ticket_access._ticket_ownership(
+            self._home, frontmatter, task=self._task, user=None)
         if not verdict.ok:
             problems.append(ticket_rules._ownership_rejection("complete", tid, verdict))
         problems.extend(

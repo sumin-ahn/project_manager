@@ -3014,7 +3014,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     from test_cluster_close import _build_close_env, _write_cluster_ledger, _CLUSTER, _CLUSTER_BRANCH, _INTEGRATION_BRANCH, _git, _rev
     env = _build_close_env(_load_module(), tmp_path / "rebound", monkeypatch)
     closer = env.closer()
-    board = closer._board_parser_module
+    owner_home = pm_paths.home_at(env.home)
     _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), branch=None)
     board_py = env.home / ".project_manager/tools/board.py"
     assert env.tf._cluster_integration_branch(board_py, env.ticket) is None
@@ -3024,25 +3024,25 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     _git(env.code, "checkout", "-b", "user-held")
     _git(env.slot, "checkout", _INTEGRATION_BRANCH)
     _git(env.code, "branch", "-D", _CLUSTER_BRANCH)
-    assert board_cluster.cmd_cluster(board._home(), argparse.Namespace(cluster_cmd="new", name="rebound",
+    assert board_cluster.cmd_cluster(owner_home, argparse.Namespace(cluster_cmd="new", name="rebound",
         tickets=env.ticket, spike=None, repo="code", slot=1, task="t")) == 0
-    ledger = cluster_store.cluster_ledger_path(board._home(), "rebound")
-    declaration = cluster_store.load_cluster(board._home(), "rebound")
+    ledger = cluster_store.cluster_ledger_path(owner_home, "rebound")
+    declaration = cluster_store.load_cluster(owner_home, "rebound")
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
-    assert cluster_store.cluster_tickets(cluster_store.load_cluster(board._home(), _CLUSTER)) == []
+    assert cluster_store.cluster_tickets(cluster_store.load_cluster(owner_home, _CLUSTER)) == []
     # 재결속 장부를 보존하면서 실제 draft 승격과 claim을 이어 실행한다.
-    path = ticket_store.find_ticket_exact(board._home(), env.ticket)[1]
+    path = ticket_store.find_ticket_exact(owner_home, env.ticket)[1]
     fm, _ = ticket_store.load_ticket(path)
     from test_board_cluster import _TEMPLATE_TEXT as filled
     body = filled.split("---", 2)[2].replace("T-NNNN", env.ticket).replace("<제목>", "종결 픽스처").replace("- [ ]", "- [x]")
     fm["status"] = "draft"
-    draft = ticket_store.move_ticket(board._home(), path, ".drafts")
+    draft = ticket_store.move_ticket(owner_home, path, ".drafts")
     ticket_store.dump_ticket(draft, fm, body)
-    assert board_sync._board_git_sync_best_effort(board._home(), "fixture draft conversion", (path,))
+    assert board_sync._board_git_sync_best_effort(owner_home, "fixture draft conversion", (path,))
     before = ledger.read_bytes()
-    assert board_ticket.cmd_promote(board._home(), argparse.Namespace(id=env.ticket)) == 0
+    assert board_ticket.cmd_promote(owner_home, argparse.Namespace(id=env.ticket)) == 0
     assert ledger.read_bytes() == before
-    assert board_ticket.cmd_claim(board._home(), argparse.Namespace(id=env.ticket, repo="code", slot=1, task="t")) == 0
+    assert board_ticket.cmd_claim(owner_home, argparse.Namespace(id=env.ticket, repo="code", slot=1, task="t")) == 0
     fork = _git(env.slot, "config", f"branch.{declaration['branch']}.pm-fork").stdout.strip()
     assert fork == _rev(env.slot)
     assert _git(env.slot, "config", f"branch.{declaration['branch']}.pm-parent").stdout.strip() == _INTEGRATION_BRANCH
@@ -3052,7 +3052,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     leases, home = env.lease_bytes(), env.home_log()
     assert env.tf._cluster_integration_branch(board_py, env.ticket) == _INTEGRATION_BRANCH
     assert env.closer(cluster="rebound").run() == 0
-    after = cluster_store.load_cluster(board._home(), "rebound")
+    after = cluster_store.load_cluster(owner_home, "rebound")
     assert after["branch"] == declaration["branch"] and after["base_branch"] == declaration["base_branch"]
     assert env.lease_bytes() == leases
     assert env.home_log()[1:] == home
