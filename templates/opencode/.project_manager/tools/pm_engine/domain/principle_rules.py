@@ -70,9 +70,3 @@ def _dedup_key(rule: Rule):
     if rule.on is not None:
         return ("recall", rule.on, rule.match)
     return ("judgment", rule.text)
-
-
-def _safe_session_id(session_id) -> str:
-    text = str(session_id or "unknown").strip()
-    safe = "".join((c for c in text if c.isalnum() or c in "-_"))[:64]
-    return safe or "unknown"

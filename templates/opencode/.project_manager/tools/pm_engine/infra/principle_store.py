@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pm_engine.infra import fs, pm_paths
 from pathlib import Path
-from pm_engine.domain import principle_rules
+from pm_engine.domain import ctx_recovery, principle_rules
 
 _SHIPPED_REL = Path("pm_principles.md")
 _LOCAL_REL = Path("pm_principles.local.md")
@@ -43,7 +43,7 @@ def _marker_path(home, session_id) -> Path:
     return (
         home.local_dir
         / _MARKER_DIR_REL
-        / f"{principle_rules._safe_session_id(session_id)}.json"
+        / f"{ctx_recovery.safe_session_id(session_id)}.json"
     )
 
 

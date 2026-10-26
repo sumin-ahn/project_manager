@@ -31,6 +31,8 @@ TEMPLATES = REPO / "templates"
 # 기본 입력 기록 — 사용 한도 200,000 · 중간 기록 권고 70% · 압축 임박 경고 80%.
 E = 200_000
 THRESHOLDS = {"checkpoint_at_pct": 70, "precompact_at_pct": 80}
+# 디렉터리 자리를 파일로 열 때 올라오는 오류 타입 — Windows(CreateFileW)는 PermissionError, 그 밖은 IsADirectoryError.
+DIRECTORY_OPEN_ERROR = PermissionError if sys.platform == "win32" else IsADirectoryError
 STATUS_KEYS = {"version", "status", "measured", "used_pct", "level", "notice"}
 DECISION_KEYS = STATUS_KEYS | {"guidance", "emit", "compaction_new", "compaction_guidance",
                                "compaction_boundary_id"}
@@ -297,12 +299,12 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
         _judge(root, 150_000, harness="opencode", session="legacy")
     conf.unlink()
     conf.mkdir()
-    with pytest.raises(IsADirectoryError):
+    with pytest.raises(DIRECTORY_OPEN_ERROR):
         _judge(root, 150_000, harness="opencode", session="io")
     failed = _hook_context(board, {"version": 1, "tokens": 150_000, "model": None, "main_thread": True,
                                    "boundary": None}, session="io")
     assert (failed.returncode, failed.stdout) == (1, b"")
-    assert "IsADirectoryError" in failed.stderr.decode("utf-8", "replace")
+    assert DIRECTORY_OPEN_ERROR.__name__ in failed.stderr.decode("utf-8", "replace")
     conf.rmdir()
     conf.write_text(conf_text, encoding="utf-8")
 
@@ -334,7 +336,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
                                            "tool_input": {}, "shell_command": None, "context": None,
                                            "recall": {**recall, "session": "ses-q"}}).stdout)
     assert broken["git"]["verdict"] == "ok" and broken["recall"] is None
-    assert broken["recall_error"].startswith("IsADirectoryError: ")
+    assert broken["recall_error"].startswith(f"{DIRECTORY_OPEN_ERROR.__name__}: ")
     mismatch = _hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "bash",
                                   "tool_input": {"command": "ls"}, "shell_command": "pwd", "context": None,
                                   "recall": None})
@@ -356,7 +358,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
                                               "tool_input": {}, "shell_command": None,
                                               "context": {**observed, "session": "ses-io"}, "recall": None}).stdout)
     assert io_failed["git"]["verdict"] == "ok" and io_failed["context"] is None
-    assert io_failed["context_error"].startswith("IsADirectoryError: ")
+    assert io_failed["context_error"].startswith(f"{DIRECTORY_OPEN_ERROR.__name__}: ")
     conf.rmdir()
     conf.write_text(conf_text, encoding="utf-8")
     for bad_context in ({**observed, "tokens": True}, {**observed, "extra": 1}, {**observed, "boundary": ""},
@@ -393,10 +395,10 @@ def test_principle_markers_and_errors_are_visible(tmp_path, capsys):
 
     seen = root / ".project_manager" / ".local" / "principle-recall" / "ses-3.json"
     seen.mkdir(parents=True)
-    with pytest.raises(IsADirectoryError):
+    with pytest.raises(DIRECTORY_OPEN_ERROR):
         hooks.recall_principles(home, session="ses-3", **{k: call[k] for k in ("on", "text")}, main_thread=True)
     (wiki / "pm_principles.local.md").mkdir()
-    with pytest.raises(IsADirectoryError):
+    with pytest.raises(DIRECTORY_OPEN_ERROR):
         hooks.recall_principles(home, session="ses-4", **{k: call[k] for k in ("on", "text")}, main_thread=True)
     (wiki / "pm_principles.local.md").rmdir()
 
@@ -410,7 +412,7 @@ def test_principle_markers_and_errors_are_visible(tmp_path, capsys):
                                      "tool_name": "Bash", "tool_input": {"command": "git push --force"},
                                      "transcript_path": str(transcript)}, home)
     context = output["hookSpecificOutput"]["additionalContext"]
-    assert rc == 0 and "[ctx-nudge/최종]" in context and "[principle-recall] 판정 실패(IsADirectoryError" in context
+    assert rc == 0 and "[ctx-nudge/최종]" in context and f"[principle-recall] 판정 실패({DIRECTORY_OPEN_ERROR.__name__}" in context
 
     assert hooks.claim_notice(home, session="ses-1", text="[git-anchor/warn] 같은 말") == {"status": "claimed"}
     assert hooks.claim_notice(home, session="ses-1", text="[git-anchor/warn] 같은 말") == {"status": "seen"}
