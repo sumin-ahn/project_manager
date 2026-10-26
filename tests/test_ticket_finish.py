@@ -445,11 +445,18 @@ def test_soft_step_runs_in_dry_run_too(tf, tmp_path, capsys):
 # 잃었다. 완료 흐름이 정상 완주하되 status.md(있어도) 를 전혀 안 건드림을 단언한다.
 
 def test_status_update_machinery_removed(tf):
-    """update_status·status_total_style·_replace_once·앵커 정규식이 제거됐다(ADR-0023)."""
-    for sym in ("update_status", "status_total_style", "_replace_once",
-                "_RE_HEADER", "_RE_REGRESSION", "_RE_TOTAL_ROW",
-                "_RE_INLINE_SUBTOTAL", "_build_section_re", "STATUS_FILE"):
-        assert not hasattr(tf, sym), f"{sym} 가 남아 있다 (ADR-0023 로 제거됐어야 함)"
+    """update_status·status_total_style·_replace_once·앵커 정규식이 제거됐다(ADR-0023).
+
+    평면 진입 파일과 완료 코드의 실제 소유 모듈 전부에서 부재를 단언한다.
+    """
+    owners = (tf, finish_record, cluster_close, ticket_finish_cli, finish_rules,
+              finish_store, finish_context, finish_private_refs, finish_baseline, finish_git)
+    for module in owners:
+        for sym in ("update_status", "status_total_style", "_replace_once",
+                    "_RE_HEADER", "_RE_REGRESSION", "_RE_TOTAL_ROW",
+                    "_RE_INLINE_SUBTOTAL", "_build_section_re", "STATUS_FILE"):
+            assert not hasattr(module, sym), (
+                f"{module.__name__}.{sym} 가 남아 있다 (ADR-0023 로 제거됐어야 함)")
 
 
 def test_run_does_not_touch_status_md(tf, tmp_path, capsys):

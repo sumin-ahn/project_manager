@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 
 import pytest
+from pm_engine.cli import cluster_close, finish_record
+from pm_engine.cli import ticket_finish as ticket_finish_cli
 from pm_engine.domain import identity_args
 from pm_engine.infra import lease_store
 
@@ -571,5 +573,6 @@ def test_t0962_identity_has_no_session_and_slot_helpers_are_gone(ia):
                  "_reject_slot_identity_on_task_folder", "_reject_task_slot_identity_mix",
                  "UNREGISTERED_SESSION_ABORT"):
         assert not hasattr(board, name), name
-    finish = _load("ticket_finish")
-    assert not hasattr(finish, "_board_identity_argv")
+    finish_owners = (_load("ticket_finish"), ticket_finish_cli, cluster_close, finish_record)
+    for module in finish_owners:
+        assert not hasattr(module, "_board_identity_argv"), module.__name__
