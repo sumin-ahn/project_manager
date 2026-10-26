@@ -264,7 +264,7 @@ def test_the_imprint_module_carries_the_build_checkout_upstream_and_nothing_else
     # 단독 실행 — 관리자 package 초기화가 번들 엔진 tools 를 import 경로에 올린 뒤 엔진을 읽는다.
     standalone = tmp_path / "standalone_build_info.py"
     completed = subprocess.run(
-        [sys.executable, "-I", "-B", "-c", _STANDALONE_IMPRINT,
+        [sys.executable, "-I", "-B", "-X", "utf8", "-c", _STANDALONE_IMPRINT,
          str(PACKAGE_ROOT / "build.py"), str(standalone), _IMPRINT_FIXED_URL],
         capture_output=True, text=True, encoding="utf-8", check=False)
     assert completed.returncode == 0, completed.stderr

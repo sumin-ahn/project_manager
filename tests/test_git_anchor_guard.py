@@ -1976,7 +1976,8 @@ const operations = {
   grant: {argv:["git-grant", "--session", "SID", "--cwd", root], input:"허용 원문\r\n", reply:{granted:["git reset --hard"]},
     call:(options) => m.recordGrants(root, "SID", root, "허용 원문\r\n", options)},
 };
-for (const platform of ["linux", "win32"]) {
+// Windows 호스트는 linux 흉내를 못 낸다(PATH 의 드라이브 콜론·실행 권한 비트 없음) — win32 만 본다.
+for (const platform of process.platform === "win32" ? ["win32"] : ["linux", "win32"]) {
   for (const configured of [false, true]) {
     const runtime = path.join(root, "Python with space", "python.exe");
     fs.writeFileSync(conf, "runtime.py=" + (configured ? runtime : "") + "\n");
@@ -3169,9 +3170,10 @@ const [engineRoot, slot] = process.argv.slice(1);
 '''
     shutil.copytree(BOARD_PY.parent, home / ".project_manager/tools")
     result = subprocess.run(
-        [node, "-e", script, str(home), str(slot)], cwd=OPEN_CORE.parent, check=True,
+        [node, "-e", script, str(home), str(slot)], cwd=OPEN_CORE.parent,
         capture_output=True, text=True, encoding="utf-8",
     )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "GIT_GRANT_OPENCODE_OK" in result.stdout
 
 
