@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -992,7 +991,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
     CodexHookFeature(
         # raw git cwd-anchor 가드가 claude_code·opencode 두 타깃엔 배선돼 있었는데 codex 엔
         #   없었다(도그푸딩 사각). 판정은 새로 만들지 않고 세 타깃이 공유하는
-        #   `board.judge_git_anchor_command` 를 그대로 부른다(claude `pm_orch_claude.py
+        #   `pm_engine.cli.hooks.judge_git_anchor_command` 를 그대로 부른다(claude `pm_orch_claude.py
         #   git_anchor_hook_evaluate` 와 동형). git-anchor 엔 delegate-channel 처럼 부를 별도
         #   엔진 파일이 없어 `{self}` 로 이 디스패처가 자기 자신을 다시 부른다.
         #   파일 쓰기 도구 apply_patch 도 같은 판정(슬롯 쓰기 주인)을 받는다.
@@ -1391,14 +1390,14 @@ def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int
 
 
 # ── git-anchor 훅 축 (claude `pm_orch_claude.py --git-anchor-hook` 대칭) ──────────────────────
-# raw git cwd-anchor 판정은 세 하네스가 공유하는 단일 진실 `board.judge_git_anchor_command` 다
+# raw git cwd-anchor 판정은 세 하네스가 공유하는 단일 진실 `pm_engine.cli.hooks.judge_git_anchor_command` 다
 #   (새 판정 로직 없음). 이 절은 codex PreToolUse(Bash) payload 를 그 판정에 배선하고 verdict 를
 #   codex 엔벨로프로 옮기는 자리다 — `.codex/hooks.json` 은 여전히 `--hook-dispatch PreToolUse`
 #   만 알고, 이 기능은 위 `CODEX_HOOK_FEATURES` registry 에 자기 자신을 다시 부르는 항목으로만
 #   등록된다.
 GIT_ANCHOR_ONCE_NAMESPACE = "git-anchor"  # 세션 1회 발화 멤버십 namespace(엔진 claim_session_once).
 GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자(문구 전문을 파일에 남기지 않는다).
-# Bash 명령 선필터(성능 전용 — 판정은 board 가 한다). claude `pm_orch_claude.py`·opencode
+# Bash 명령 선필터(성능 전용 — 판정은 엔진 `pm_engine.cli.hooks` 가 한다). claude `pm_orch_claude.py`·opencode
 #   `git-anchor-core.cjs` 선필터와 같은 집합이다(테스트가 대조). 대상은 git 호출 · pytest · cd 잔존 ·
 #   파일 삭제·이동 명령과 삭제 API · 허용 표식 · 엔진 도구 경로 · 허용 기록 폴더다.
 GIT_ANCHOR_SHELL_PREFILTERS = (
@@ -1413,19 +1412,10 @@ GIT_ANCHOR_SHELL_PREFILTERS = (
 GIT_GRANT_DIR_NAME = "git-grants"
 # 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
 GIT_ANCHOR_SLOT_PATH_MARK = "/work/"
-# 파일 쓰기 도구 — 대상 경로는 패치 본문에 있고 board 가 푼다(`judge_tool_input`).
+# 파일 쓰기 도구 — 대상 경로는 패치 본문에 있고 엔진이 푼다(`hooks.judge_tool_input`).
 GIT_ANCHOR_PATCH_TOOL = "apply_patch"
 # codex 는 사용자 1회 허용을 쓰지 않는다 — 사용자 프롬프트를 허용 기록으로 남기는 배선이 없다. 그래서
 #   판정에 허용 세션을 넘기지 않고, 거부 문구는 "사용자가 터미널에서 직접 실행" 이다.
-
-
-def _load_board(root: Path):
-    """raw git 훅 판정의 단일 진실인 board.py 를 root 기준으로 로드한다(claude 어댑터 동형)."""
-    board_path = root / ".project_manager" / "tools" / "board.py"
-    spec = importlib.util.spec_from_file_location("pm_git_anchor_board", board_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
@@ -1436,7 +1426,7 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
     `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 경고로 강등한다. 그래서
     codex 축의 "침묵"은 claude 처럼 0바이트가 아니라 **측정된 allow 형태 `{}`** 다(`merge_hook_
     envelopes` 가 이미 그 값을 "기여 없음"으로 다룬다). ok·정상 미매칭·세션 내 완전일치 중복
-    warn 이 이 값을 낸다. 판정불능(uncertain)은 board 가 이미 warn 으로 접어 넣으므로 여기서
+    warn 이 이 값을 낸다. 판정불능(uncertain)은 엔진이 이미 warn 으로 접어 넣으므로 여기서
     별도로 다루지 않는다(중앙 판정 결정 승계 — 판정불능은 침묵시키지 않는다)."""
     event = payload.get("hook_event_name") or payload.get("hookEventName")
     tool = payload.get("tool_name") or payload.get("toolName")
@@ -1468,12 +1458,14 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
         anchor = os.path.abspath(anchor)
         break
     if tool == GIT_ANCHOR_PATCH_TOOL:
-        judgment = _load_board(root).judge_tool_input(root, session, anchor, tool, tool_input)
+        from pm_engine.cli import hooks
+
+        judgment = hooks.judge_tool_input(hooks.adapter_home(root), session, anchor, tool, tool_input)
     else:
         command = tool_input.get("command")
         if not isinstance(command, str):
             return {}
-        # claude `pm_orch_claude.git_anchor_hook_evaluate` 와 같은 선필터 — 판정 대상 비포함은 board
+        # claude `pm_orch_claude.git_anchor_hook_evaluate` 와 같은 선필터 — 판정 대상 비포함은 엔진
         #   import 조차 하지 않는다(핫패스 비용 0 — 이 함수 자체는 이미 자식 프로세스라 프로세스 spawn
         #   비용은 등록 축(tool_pattern)이 진다).
         prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
@@ -1485,7 +1477,9 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
             or GIT_ANCHOR_SLOT_PATH_MARK in normalized
         ):
             return {}
-        judgment = _load_board(root).judge_git_anchor_command(root, session, anchor, command)
+        from pm_engine.cli import hooks
+
+        judgment = hooks.judge_git_anchor_command(hooks.adapter_home(root), session, anchor, command)
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")
     if (
@@ -1546,6 +1540,10 @@ def run_git_anchor_hook(root: Path, *, stdin=None, stdout=None) -> int:
         payload = json.loads(raw) if raw else {}
         if not isinstance(payload, dict):
             payload = {}
+        # 판정은 설치 루트 엔진의 공개 진입(`pm_engine.cli.hooks`)이 한다 — 그 tools 를 import 경로에 둔다.
+        tools = str(root / ".project_manager" / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
         envelope = git_anchor_hook_evaluate(payload, root)
     except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash 를 막지 않는다.
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__

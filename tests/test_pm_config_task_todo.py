@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 from pm_engine.cli import config_tasks
+from pm_engine.cli import config_cmd
 
 from _pool_seams import bind_pool
 
@@ -242,16 +243,13 @@ def test_todo_done_missing_task_is_rc1(pc, monkeypatch, wp, capsys):
 
 def test_parser_wires_three_todo_subcommands(pc):
     """`task todo <add|list|done>` 이 각 핸들러로 배선된다(인자 모양 포함)."""
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     add = parser.parse_args(["task", "todo", "add", "job", "할 일"])
-    assert (add.func.func, add.name, add.text) == (config_tasks.cmd_task_todo_add, "job", "할 일")
-    assert add.func.args == (pm_paths.home_at(pc.REPO),)
+    assert (add.func, add.name, add.text) == (config_tasks.cmd_task_todo_add, "job", "할 일")
     listed = parser.parse_args(["task", "todo", "list", "job"])
-    assert (listed.func.func, listed.name) == (config_tasks.cmd_task_todo_list, "job")
-    assert listed.func.args == (pm_paths.home_at(pc.REPO),)
+    assert (listed.func, listed.name) == (config_tasks.cmd_task_todo_list, "job")
     done = parser.parse_args(["task", "todo", "done", "job", "3"])
-    assert (done.func.func, done.name, done.todo_id) == (config_tasks.cmd_task_todo_done, "job", 3)
-    assert done.func.args == (pm_paths.home_at(pc.REPO),)
+    assert (done.func, done.name, done.todo_id) == (config_tasks.cmd_task_todo_done, "job", 3)
 
 
 @pytest.fixture(autouse=True)

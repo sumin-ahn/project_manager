@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import board_cmd
 
 from pm_engine.cli import board_list
 from pm_engine.cli import board_ticket
@@ -427,7 +428,7 @@ def test_task_lens_mutually_exclusive_with_other_scopes(board, capsys):
     assert "--task" in str(exc.value)
     for extra in (["--repo", "alpha"], ["--repo", "alpha", "--slot", "1"]):
         with pytest.raises(SystemExit) as exc:
-            board.build_parser().parse_args(["list", "--task", "refactor", *extra])
+            board_cmd.build_parser().parse_args(["list", "--task", "refactor", *extra])
         assert exc.value.code == 2
 
 

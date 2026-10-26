@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -53,16 +52,7 @@ def _load_engine():
     return relay, root
 
 
-def _load_board(root: Path):
-    """raw git 훅 판정의 단일 진실인 board.py를 root 기준으로 로드한다."""
-    board_path = root / ".project_manager" / "tools" / "board.py"
-    spec = importlib.util.spec_from_file_location("pm_git_anchor_board", board_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-# Bash 명령 선필터(성능 전용 — 판정은 board 가 한다). 대상은 git 호출(앵커·파괴 형태) · 엔진 도구
+# Bash 명령 선필터(성능 전용 — 판정은 엔진 `pm_engine.cli.hooks` 가 한다). 대상은 git 호출(앵커·파괴 형태) · 엔진 도구
 # 호출(사본 정체) · pytest(트리 정체) · cd 잔존 · 파일 삭제·이동 명령과 삭제 API · 허용 표식이다.
 # opencode `git-anchor-core.cjs`·codex `pm_orch_codex.py` 선필터와 같은 집합이다(테스트가 대조).
 GIT_ANCHOR_SHELL_PREFILTERS = (
@@ -78,7 +68,7 @@ GIT_GRANT_MARKER = r"git[ \t]+허용[ \t]*:"
 GIT_GRANT_DIR_NAME = "git-grants"
 # 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
 GIT_ANCHOR_SLOT_PATH_MARK = "/work/"
-# git-anchor 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 board 가 입력을 본다.
+# git-anchor 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 엔진이 입력을 본다.
 GIT_ANCHOR_SHELL_TOOL = "Bash"
 
 
@@ -129,9 +119,10 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
         return None
     cwd = stdin.get("cwd")
     anchor = cwd if isinstance(cwd, str) and cwd else str(root)
-    board = _load_board(root)
+    from pm_engine.cli import hooks
+
     try:
-        granted = board.record_git_grants(root, _hook_session_id(stdin), anchor, prompt)
+        granted = hooks.record_git_grants(hooks.adapter_home(root), _hook_session_id(stdin), anchor, prompt)
     except ValueError as exc:
         return {
             "decision": "block",
@@ -155,7 +146,7 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
 
 
 def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
-    """Claude 훅 입력을 중앙 판정(board)에 배선한다.
+    """Claude 훅 입력을 엔진 공개 판정(`pm_engine.cli.hooks`)에 배선한다.
 
     PreToolUse(Bash) 는 ``judge_git_anchor_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
     PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는 ``judge_tool_input`` 으로(허용 위조·
@@ -171,16 +162,20 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     anchor = cwd if isinstance(cwd, str) and cwd else str(root)
     session = _hook_session_id(stdin)
     if tool != GIT_ANCHOR_SHELL_TOOL:
+        from pm_engine.cli import hooks
+
         return _pre_tool_use_output(
-            _load_board(root).judge_tool_input(root, session, anchor, tool, tool_input)
+            hooks.judge_tool_input(hooks.adapter_home(root), session, anchor, tool, tool_input)
         )
     command = tool_input.get("command")
-    # Bash 는 매 호출 훅이 뜬다 — 판정 대상 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
+    # Bash 는 매 호출 훅이 뜬다 — 판정 대상 비포함은 엔진 import조차 하지 않는 선필터(핫패스 비용 0).
     if not isinstance(command, str) or not _shell_command_needs_judgment(command):
         return None
+    from pm_engine.cli import hooks
+
     return _pre_tool_use_output(
-        _load_board(root).judge_git_anchor_command(
-            root, session, anchor, command, grants=bool(session),
+        hooks.judge_git_anchor_command(
+            hooks.adapter_home(root), session, anchor, command, grants=bool(session),
         )
     )
 
@@ -269,6 +264,10 @@ def run_git_anchor_hook(root: Path) -> int:
     if not isinstance(payload, dict):
         payload = {}
     try:
+        # 판정은 설치 루트 엔진의 공개 진입(`pm_engine.cli.hooks`)이 한다 — 그 tools 를 import 경로에 둔다.
+        tools = str(root / ".project_manager" / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
         output = git_anchor_hook_evaluate(payload, root)
     except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash를 막지 않는다.
         event = payload.get("hook_event_name") or payload.get("hookEventName")

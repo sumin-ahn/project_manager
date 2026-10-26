@@ -45,7 +45,7 @@ def _delegate_task_env(home, cwd: Path) -> dict[str, str]:
     """위임 하네스에 실을 슬롯 주인 task — 위임 세션은 세션 ID 가 따로라 슬롯 쓰기 가드가 이 값으로 판정한다.
 
     `cwd` 가 task 가 잡은 슬롯이면 `{PM_DELEGATE_TASK: <task>}` 다. 슬롯 밖이거나 task 가 잡지 않은
-    슬롯이면 빈 dict 다 — 그 위임의 슬롯 쓰기는 가드가 거부한다(`board.judge_tool_input`)."""
+    슬롯이면 빈 dict 다 — 그 위임의 슬롯 쓰기는 가드가 거부한다(`cli.hooks.judge_tool_input`)."""
     found = hooks.slot_containing(home.root, cwd)
     if found is None:
         return {}

@@ -18,6 +18,7 @@ fresh 채택자는 탈출 불능). 이 절이 고정하는 성질:
 from __future__ import annotations
 
 from pm_engine.domain import install_rules
+from pm_engine.cli import config_cmd
 
 import hashlib
 import importlib.util
@@ -1713,10 +1714,10 @@ def test_accept_all_reports_no_candidates_when_already_in_sync(pm_config, tmp_pa
 
 def test_build_parser_routes_accept_all_and_excludes_other_modes(pm_config):
     """`--accept-all` 이 같은 커맨드로 라우팅되고 조회/단건 수용과 상호 배타다."""
-    parser = pm_config.build_parser()
+    parser = config_cmd.build_parser()
     parsed = parser.parse_args(["sync-adapter-config", "--accept-all"])
 
-    assert parsed.func.func is config_adapter.cmd_sync_adapter_config and parsed.accept_all is True
+    assert parsed.func is config_adapter.cmd_sync_adapter_config and parsed.accept_all is True
     with pytest.raises(SystemExit):
         parser.parse_args(["sync-adapter-config", "--accept-all", "--accept", _SETTINGS_REL])
     with pytest.raises(SystemExit):

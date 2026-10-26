@@ -24,6 +24,7 @@ worktree_pool/board/git/log 를 DI mock 으로 hermetic 하게 구동한다(실 
 from __future__ import annotations
 
 from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import board_cmd
 from pm_engine.cli import bootstrap_card
 
 from pm_engine.infra import pm_paths
@@ -259,7 +260,7 @@ def _assert_command_parses(tool: str, tokens: list[str], parsers: dict, ia) -> N
 
 def test_card_drift_guard_is_sensitive(bootstrap, board_mod):
     """sensitivity — 존재하지 않는 옵션을 넣은 가짜 카드 줄은 가드가 잡는다(non-vacuous)."""
-    parser = board_mod.build_parser()
+    parser = board_cmd.build_parser()
     # 실 CLI 에 없는 옵션 — parse_args 가 SystemExit 로 실패해야 가드가 유효.
     with pytest.raises(SystemExit):
         parser.parse_args(["claim", "T-0001", "--no-such-flag", "x"])

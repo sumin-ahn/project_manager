@@ -22,6 +22,7 @@ local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`
 from __future__ import annotations
 
 from pm_engine.domain import jsonc
+from pm_engine.cli import config_cmd
 
 from pm_engine.domain import install_rules
 from pm_engine.infra import install_conf
@@ -906,7 +907,7 @@ def test_t0943_record_write_failure_returns_rc1(local_conf, tmp_path, monkeypatc
     조회·검사 단계의 거부는 그대로 rc 3 이다(역방향). 사용 한도 키만 보내 렌더 단계는 돌지 않는다."""
     _t0943_seams(monkeypatch)
     pm_config = _load("pm_config")
-    parser = pm_config.build_parser()
+    parser = config_cmd.build_parser()
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     same = ["apply", "--set", "ctx.compact_at_pct=94"]
     assert config_install.cmd_apply(pm_paths.home_at(pm_config.REPO), parser.parse_args(same), dest_root=root) == 0

@@ -20,6 +20,7 @@ hermetic 패턴은 `test_board_mine_view.py` 와 동형 — board.py 경로 전�
 from __future__ import annotations
 
 from pm_engine.cli import board_list
+from pm_engine.cli import board_cmd
 from pm_engine.infra import pm_paths
 
 
@@ -369,7 +370,7 @@ def test_all_mutually_exclusive_with_mine(board):
 def test_all_mutually_exclusive_with_repo_slot(board):
     """`list` 는 `--repo/--slot` 을 받지 않는다 — `--all` 과 함께여도 parser 가 거부(rc 2)."""
     with pytest.raises(SystemExit) as exc:
-        board.build_parser().parse_args(["list", "--all", "--repo", "proj", "--slot", "1"])
+        board_cmd.build_parser().parse_args(["list", "--all", "--repo", "proj", "--slot", "1"])
     assert exc.value.code == 2
 
 
@@ -387,5 +388,5 @@ def test_all_mutually_exclusive_with_task(board):
 
 def test_list_all_flag_parses(board):
     """`list --all` 이 argparse 레벨에서 파싱된다(파서 등록·카드↔CLI 정합 입력)."""
-    args = board.build_parser().parse_args(["list", "--all"])
+    args = board_cmd.build_parser().parse_args(["list", "--all"])
     assert args.all is True

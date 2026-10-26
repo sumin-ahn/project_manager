@@ -27,6 +27,7 @@ from __future__ import annotations
 from pm_engine.domain import install_rules
 
 from pm_engine.cli import delegate_cmd
+from pm_engine.cli import hooks as cli_hooks
 
 from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_harvest
@@ -248,15 +249,14 @@ def test_pm_log_snapshot_json_payload_is_utf8(capture_console, monkeypatch, tmp_
 
 def test_board_git_anchor_hook_json_is_utf8(capture_console, monkeypatch):
     """git-anchor 하네스 훅 판정 JSON(한글 사유)이 cp949 콘솔에서도 무손실이다."""
-    board = _load("board")
     verdict = {"verdict": "deny", "reason": LOSSY_SAMPLE}
     monkeypatch.setattr(
-        board, "judge_git_anchor_command", lambda root, session, cwd, command, **_grants: verdict
+        cli_hooks, "judge_git_anchor_command", lambda home, session, cwd, command, **_grants: verdict
     )
     stream = capture_console()
 
     args = SimpleNamespace(session="S", cwd="/repo", command="git commit", grants=False)
-    assert board.cmd_git_anchor(args) == 0
+    assert cli_hooks.cmd_git_anchor(cli_hooks.adapter_home("/repo"), args) == 0
 
     assert _machine_payload(stream) == verdict
 

@@ -16,6 +16,7 @@ monkeypatch 하고 git 폴백은 stub 한다. querying identity 는 local.conf `
 from __future__ import annotations
 
 from pm_engine.cli import board_list
+from pm_engine.cli import board_cmd
 from pm_engine.infra import pm_paths
 
 
@@ -112,11 +113,7 @@ def _list_ids(board, capsys, **flags) -> list[str]:
 
 
 def test_list_status_all_flag_parses_without_error():
-    import importlib.util as _il
-    spec = _il.spec_from_file_location("board_cli3", TOOLS / "board.py")
-    mod = _il.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    parser = mod.build_parser()
+    parser = board_cmd.build_parser()
     args = parser.parse_args(["list", "--status", "all"])
     assert args.status == "all"
 
@@ -124,14 +121,14 @@ def test_list_status_all_flag_parses_without_error():
 def test_list_slot_alone_without_repo_fails_loud(board):
     """`--slot N` 단독은 거부된다 — list 에는 슬롯·repo 렌즈가 없어 parser 가 받지 않는다(T-0962, rc 2)."""
     with pytest.raises(SystemExit) as exc:
-        board.build_parser().parse_args(["list", "--slot", "3"])
+        board_cmd.build_parser().parse_args(["list", "--slot", "3"])
     assert exc.value.code == 2
 
 
 def test_list_mine_and_repo_mutually_exclusive_at_dispatch(board):
     """`--mine` 과 `--repo` 를 함께 줄 수 없다 — list 에는 `--repo` 렌즈가 없어 parser 가 거부한다(T-0962, rc 2)."""
     with pytest.raises(SystemExit) as exc:
-        board.build_parser().parse_args(["list", "--mine", "--repo", "a"])
+        board_cmd.build_parser().parse_args(["list", "--mine", "--repo", "a"])
     assert exc.value.code == 2
 
 
@@ -194,11 +191,7 @@ _TICKET_ID_SUBCOMMANDS = (
 
 
 def _fresh_parser():
-    import importlib.util as _il
-    spec = _il.spec_from_file_location("board_help_cli", TOOLS / "board.py")
-    mod = _il.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.build_parser()
+    return board_cmd.build_parser()
 
 
 def _subparsers_action(parser):

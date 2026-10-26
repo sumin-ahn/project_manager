@@ -16,6 +16,7 @@ importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·s
 """
 from __future__ import annotations
 
+from pm_engine.cli import hooks as cli_hooks
 import importlib.util
 import json
 from pathlib import Path
@@ -71,7 +72,7 @@ def test_git_anchor_prefilter_routes_new_command_classes_to_board(
             calls.append((cwd, shell_command))
             return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 
-    monkeypatch.setattr(driver, "_load_board", lambda _root: FakeBoard)
+    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", FakeBoard.judge_git_anchor_command)
     payload = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",

@@ -21,7 +21,7 @@ def cmd_update(home, forward_args: list[str]) -> int:
     `cli.update_cmd.main(home, forward_args, prog="pm-config update")` 로 verbatim forward 한다 —
     갱신 CLI 규격의 단일 진실은 update_cmd 이고, 이 서브커맨드는 위임만 한다(중복 구현 0).
     forward_args 는 `update` 뒤의 raw 토큰을 *그대로*(argparse 미가공) 넘긴다 —
-    `--from`·`--dry-run` 등 option-like 플래그를 디스패처가 가로채지 않게 `pm_config.main`
+    `--from`·`--dry-run` 등 option-like 플래그를 디스패처가 가로채지 않게 `config_cmd._main`
     이 (raw[0]=="update" special-case 로) argparse 를 우회해 이 핸들러로 raw 토큰을 넘긴다.
     usage 줄의 prog 는 값으로 넘긴다(에이전트가 칠 실 커맨드 `pm-config update` 와 정합).
     """

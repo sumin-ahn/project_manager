@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 from pm_engine.infra import fs
+from pm_engine.cli import config_cmd
 from pm_engine.domain import worktree_records
 
 from _pool_seams import bind_pool
@@ -615,7 +616,7 @@ def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, caps
 
     monkeypatch.setattr(config_status, "_status_json_git",
                         lambda _home, runner: {"branch": None, "head": None, "dirty": None})
-    args = pc.build_parser().parse_args(["status", "--json"])
+    args = config_cmd.build_parser().parse_args(["status", "--json"])
     bind_pool(monkeypatch, _Wp())
     assert config_status.cmd_status(pm_paths.home_at(pc.REPO), args, engine_rev=pc.ENGINE_REV) == 0
     assert "board" not in loaded, f"기본 호출이 board 를 로드했다: {loaded}"
@@ -978,9 +979,9 @@ def test_from_without_json_is_usage_error(home):
 def test_whoami_has_no_json_flag(pc):
     """`--json` 은 `status` 전용 — `whoami --json` 은 파서가 거부한다(계약 하나)."""
     with pytest.raises(SystemExit) as excinfo:
-        pc.build_parser().parse_args(["whoami", "--json"])
+        config_cmd.build_parser().parse_args(["whoami", "--json"])
     assert excinfo.value.code == 2
-    assert pc.build_parser().parse_args(["status", "--json"]).json is True
+    assert config_cmd.build_parser().parse_args(["status", "--json"]).json is True
 
 
 def test_status_json_schema_constant_is_single_source(pc):

@@ -7,6 +7,7 @@ plan/apply 분리 설계 덕에 임시 디렉토리만으로 외부 의존 없�
 from __future__ import annotations
 
 from pm_engine.domain import jsonc
+from pm_engine.cli import config_cmd
 
 from _manager_home import render_home
 from pm_engine.app import import_fill
@@ -6222,23 +6223,22 @@ def test_build_parser_routes_sync_adapter_config(pm_config):
     """build_parser 가 `sync-adapter-config` 를 파싱하고 cmd_sync_adapter_config 로 라우팅한다.
 
     핸들러가 있어도 파서 배선이 없으면 채택자에겐 없는 커맨드다(배선 자체가 판정 대상)."""
-    parser = pm_config.build_parser()
+    parser = config_cmd.build_parser()
     listed = parser.parse_args(["sync-adapter-config", "--list"])
-    assert listed.func.func is config_adapter.cmd_sync_adapter_config
-    assert listed.func.args == (pm_paths.home_at(pm_config.REPO),)
+    assert listed.func is config_adapter.cmd_sync_adapter_config
     assert listed.list is True and listed.accept is None and listed.source is None
     accepted = parser.parse_args(
         ["sync-adapter-config", "--accept", ".codex/hooks.json", "--from", "/tmp/fw"])
-    assert accepted.func.func is config_adapter.cmd_sync_adapter_config
+    assert accepted.func is config_adapter.cmd_sync_adapter_config
     assert accepted.accept == ".codex/hooks.json" and accepted.source == "/tmp/fw"
     # 무인자 = 조회(기본 동작)로 떨어진다.
     bare = parser.parse_args(["sync-adapter-config"])
-    assert bare.func.func is config_adapter.cmd_sync_adapter_config and bare.accept is None
+    assert bare.func is config_adapter.cmd_sync_adapter_config and bare.accept is None
 
 
 def test_sync_adapter_config_list_and_accept_are_mutually_exclusive(pm_config):
     """`--list` 와 `--accept` 를 함께 주면 argparse 가 거부한다(한쪽 조용한 무시 금지)."""
-    parser = pm_config.build_parser()
+    parser = config_cmd.build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["sync-adapter-config", "--list", "--accept", ".codex/hooks.json"])
     # 각각 단독은 정상 파싱(가드가 정상 사용을 막지 않음).

@@ -1,6 +1,6 @@
 """슬롯 쓰기 가드 — 세션이 연 task 가 잡은 슬롯에만 쓴다.
 
-판정 단일 진실은 board(`judge_tool_input`·`judge_git_anchor_command`)다. 이 파일은 파일 쓰기·편집
+판정 단일 진실은 엔진 공개 진입 cli.hooks(`judge_tool_input`·`judge_git_anchor_command`)다. 이 파일은 파일 쓰기·편집
 도구와 패치 도구의 대상 판정, 셸 명령의 슬롯 경고, 부트스트랩 세션 기록, 위임 task 환경변수를 본다.
 git 쓰기 주인 판정은 실제 linked worktree 가 필요해 `test_git_anchor_guard.py` 에 있다.
 """
@@ -22,6 +22,7 @@ import pytest
 
 from _git_fixture import git, init_git_repo
 from pm_engine.app import hooks
+from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import git_policy
 from pm_engine.infra import conf_store
 
@@ -94,15 +95,15 @@ def _set_todos(home: Path, task: str, todos: list[dict]) -> None:
 # ── 열린 todo 없으면 파일 쓰기 때 경고 ──────────────────────────────────────
 
 
-def test_write_warns_when_the_session_task_has_no_open_todo(board, home):
+def test_write_warns_when_the_session_task_has_no_open_todo(home):
     """열린 todo 가 없으면 자기 슬롯이어도 경고가 붙는다 — 막지는 않는다.
 
     막지 않는 이유: 셸 쓰기(`sed -i`·리다이렉션)는 이 판정을 타지 않아 막아도 우회로가 남고,
     이 축은 나머지 여덟 판정과 달리 "명령이 위험한가" 가 아니라 "일을 적었나" 다.
     """
     _set_todos(home, "alpha", [])
-    judgment = board.judge_tool_input(
-        home, "S-alpha", str(home / "work" / "app_1"), "Write",
+    judgment = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-alpha", str(home / "work" / "app_1"), "Write",
         {"file_path": str(home / "work" / "app_1" / "x.py"), "content": "x"},
     )
     assert judgment["verdict"] == "warn"
@@ -110,37 +111,37 @@ def test_write_warns_when_the_session_task_has_no_open_todo(board, home):
     assert "task alpha 에 열린 todo 가 없다" in judgment["reason"]
 
 
-def test_write_outside_any_slot_also_warns_without_an_open_todo(board, home, tmp_path):
+def test_write_outside_any_slot_also_warns_without_an_open_todo(home, tmp_path):
     """슬롯 밖 쓰기도 말한다 — 기록 없이 바뀌는 파일에 슬롯 안팎 구분이 없다."""
     _set_todos(home, "alpha", [])
-    judgment = board.judge_tool_input(
-        home, "S-alpha", str(tmp_path), "Write",
+    judgment = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-alpha", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
     assert judgment["verdict"] == "warn"
     assert _action(git_policy._GIT_GUARD_CASE_NO_OPEN_TODO) in judgment["reason"]
 
 
-def test_write_passes_once_an_open_todo_exists(board, home, tmp_path):
+def test_write_passes_once_an_open_todo_exists(home, tmp_path):
     """열린 todo 가 하나라도 있으면 통과한다(슬롯 밖 쓰기는 슬롯 주인 판정 대상이 아니다)."""
     _set_todos(home, "alpha", [{"text": "일", "created": "2026-09-16T00:00:00+00:00"}])
-    judgment = board.judge_tool_input(
-        home, "S-alpha", str(tmp_path), "Write",
+    judgment = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-alpha", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
     assert judgment["verdict"] == "ok"
 
 
-def test_todo_rule_does_not_fire_when_no_task_resolves(board, home, tmp_path):
+def test_todo_rule_does_not_fire_when_no_task_resolves(home, tmp_path):
     """task 를 해소 못 하면 todo 규칙은 안 민다 — 그 거부는 슬롯 주인 판정 몫이다(중복 거부 0)."""
     _set_todos(home, "alpha", [])
-    outside = board.judge_tool_input(
-        home, "S-unknown", str(tmp_path), "Write",
+    outside = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-unknown", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
     assert outside["verdict"] == "ok"
-    inside = board.judge_tool_input(
-        home, "S-unknown", str(home / "work" / "app_1"), "Write",
+    inside = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-unknown", str(home / "work" / "app_1"), "Write",
         {"file_path": str(home / "work" / "app_1" / "x.py"), "content": "x"},
     )
     assert inside["verdict"] == "deny"
@@ -149,16 +150,16 @@ def test_todo_rule_does_not_fire_when_no_task_resolves(board, home, tmp_path):
         "같은 사실로 두 번 거부했다"
 
 
-def test_todo_rule_only_applies_to_write_tools(board, home, tmp_path):
+def test_todo_rule_only_applies_to_write_tools(home, tmp_path):
     """읽기 도구는 todo 유무와 무관하다 — 막는 것은 파일을 바꾸는 호출뿐이다."""
     _set_todos(home, "alpha", [])
-    judgment = board.judge_tool_input(
-        home, "S-alpha", str(tmp_path), "Read", {"file_path": str(tmp_path / "note.md")},
+    judgment = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-alpha", str(tmp_path), "Read", {"file_path": str(tmp_path / "note.md")},
     )
     assert judgment["verdict"] == "ok"
 
 
-def test_write_without_an_engine_copy_uses_execution_engine(board, tmp_path):
+def test_write_without_an_engine_copy_uses_execution_engine(tmp_path):
     """대상 Home에 평면 엔진이 없어도 실행 엔진으로 열린 할 일을 판정한다."""
     root = tmp_path / "no-engine"
     ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
@@ -167,26 +168,26 @@ def test_write_without_an_engine_copy_uses_execution_engine(board, tmp_path):
         "leases": [],
         "tasks": [{"name": "alpha", "session": "S-alpha"}],
     }) + "\n", encoding="utf-8")
-    judgment = board.judge_tool_input(
-        root, "S-alpha", str(tmp_path), "Write",
+    judgment = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(root), "S-alpha", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
     assert judgment["verdict"] == "warn"
 
 
-def test_delegated_session_inherits_the_owner_task_todos(board, home, tmp_path, monkeypatch):
+def test_delegated_session_inherits_the_owner_task_todos(home, tmp_path, monkeypatch):
     """위임 세션은 자기 세션 ID 가 없다 — 위임 환경변수의 task todo 로 판정한다."""
     monkeypatch.setenv("PM_DELEGATE_TASK", "alpha")
     _set_todos(home, "alpha", [])
-    warned = board.judge_tool_input(
-        home, "", str(tmp_path), "Write",
+    warned = cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
     assert warned["verdict"] == "warn"
     assert _action(git_policy._GIT_GUARD_CASE_NO_OPEN_TODO) in warned["reason"]
     _set_todos(home, "alpha", [{"text": "일", "created": "2026-09-16T00:00:00+00:00"}])
-    assert board.judge_tool_input(
-        home, "", str(tmp_path), "Write",
+    assert cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )["verdict"] == "ok"
 
@@ -196,9 +197,9 @@ def test_delegated_session_inherits_the_owner_task_todos(board, home, tmp_path, 
     [("Write", "file_path"), ("Edit", "file_path"), ("NotebookEdit", "notebook_path"),
      ("write", "filePath"), ("edit", "filePath")],
 )
-def test_write_tools_pass_only_in_the_slot_of_the_sessions_task(board, home, tool, key):
+def test_write_tools_pass_only_in_the_slot_of_the_sessions_task(home, tool, key):
     def judge(session: str, target: Path) -> dict:
-        return board.judge_tool_input(home, session, str(home), tool, {key: str(target)})
+        return cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), session, str(home), tool, {key: str(target)})
 
     assert judge("S-alpha", home / "work" / "app_1" / "src" / "a.py")["verdict"] == "ok"
     for number in (2, 3, 4):
@@ -214,87 +215,87 @@ def test_write_tools_pass_only_in_the_slot_of_the_sessions_task(board, home, too
     assert judge("", home.parent / "elsewhere" / "a.py")["verdict"] == "ok"
 
 
-def test_relative_write_target_resolves_from_the_tool_cwd(board, home):
+def test_relative_write_target_resolves_from_the_tool_cwd(home):
     slot = home / "work" / "app_1"
-    assert board.judge_tool_input(home, "S-alpha", str(slot), "Write", {"file_path": "a.py"})["verdict"] == "ok"
-    escaped = board.judge_tool_input(home, "S-alpha", str(slot), "Write", {"file_path": "../app_2/a.py"})
+    assert cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "S-alpha", str(slot), "Write", {"file_path": "a.py"})["verdict"] == "ok"
+    escaped = cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "S-alpha", str(slot), "Write", {"file_path": "../app_2/a.py"})
     assert escaped["verdict"] == "deny"
 
 
-def test_patch_tools_judge_every_file_header(board, home):
+def test_patch_tools_judge_every_file_header(home):
     slot_4 = home / "work" / "app_4"
     codex_patch = (
         "*** Begin Patch\n*** Update File: notes.md\n@@\n-a\n+b\n"
         f"*** Add File: {slot_4}/x.py\n+print(1)\n*** End Patch\n"
     )
-    got = board.judge_tool_input(home, "S-alpha", str(home), "apply_patch", {"command": codex_patch})
+    got = cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "S-alpha", str(home), "apply_patch", {"command": codex_patch})
     assert got["verdict"] == "deny"
     assert "work/app_4" in got["reason"] and "notes.md" not in got["reason"]
     moved = "*** Begin Patch\n*** Update File: a.py\n*** Move to: ../app_2/a.py\n*** End Patch\n"
     slot_1 = home / "work" / "app_1"
-    assert board.judge_tool_input(
-        home, "S-alpha", str(slot_1), "apply_patch", {"patchText": moved},
+    assert cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "apply_patch", {"patchText": moved},
     )["verdict"] == "deny"
     inside = "*** Begin Patch\n*** Delete File: old.py\n*** End Patch\n"
-    assert board.judge_tool_input(
-        home, "S-alpha", str(slot_1), "apply_patch", {"patchText": inside},
+    assert cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "apply_patch", {"patchText": inside},
     )["verdict"] == "ok"
 
 
-def test_delegated_harness_writes_as_the_open_task_it_was_given(board, home, monkeypatch):
+def test_delegated_harness_writes_as_the_open_task_it_was_given(home, monkeypatch):
     slot_1 = str(home / "work" / "app_1" / "a.py")
     slot_4 = str(home / "work" / "app_4" / "a.py")
     monkeypatch.setenv("PM_DELEGATE_TASK", "alpha")
-    assert board.judge_tool_input(home, "child", str(home), "Write", {"file_path": slot_1})["verdict"] == "ok"
-    assert board.judge_tool_input(home, "child", str(home), "Write", {"file_path": slot_4})["verdict"] == "deny"
+    assert cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "child", str(home), "Write", {"file_path": slot_1})["verdict"] == "ok"
+    assert cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "child", str(home), "Write", {"file_path": slot_4})["verdict"] == "deny"
     # 닫힌 task 이름은 위임 근거가 되지 않는다.
     monkeypatch.setenv("PM_DELEGATE_TASK", "beta")
-    closed = board.judge_tool_input(home, "child", str(home), "Write", {"file_path": slot_4})
+    closed = cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "child", str(home), "Write", {"file_path": slot_4})
     assert closed["verdict"] == "deny"
     assert closed["reason"].splitlines()[1] == _action(git_policy._GIT_GUARD_CASE_SLOT_NO_TASK)
 
 
-def test_shell_command_naming_a_foreign_slot_warns_once_per_slot(board, home):
+def test_shell_command_naming_a_foreign_slot_warns_once_per_slot(home):
     slot_4 = home / "work" / "app_4"
-    got = board.judge_git_anchor_command(
-        home, "S-alpha", str(home), f"sed -i s/a/b/ {slot_4}/a.txt {slot_4}/b.txt",
+    got = cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "S-alpha", str(home), f"sed -i s/a/b/ {slot_4}/a.txt {slot_4}/b.txt",
     )
     assert got["verdict"] == "warn"
     assert got["reason"].count("work/app_4") == 1
-    own = board.judge_git_anchor_command(
-        home, "S-alpha", str(home / "work" / "app_1"), f"sed -i s/a/b/ {home}/work/app_1/a.txt",
+    own = cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "S-alpha", str(home / "work" / "app_1"), f"sed -i s/a/b/ {home}/work/app_1/a.txt",
     )
     assert own["verdict"] == "ok"
 
 
-def test_corrupt_ledger_is_raised_not_read_as_empty(board, home):
+def test_corrupt_ledger_is_raised_not_read_as_empty(home):
     (home / ".project_manager" / ".local" / "worktree-leases.json").write_text("{", encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
-        board.judge_tool_input(home, "S-alpha", str(home), "Write", {"file_path": str(home / "work" / "app_1" / "a.py")})
+        cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "S-alpha", str(home), "Write", {"file_path": str(home / "work" / "app_1" / "a.py")})
 
 
-def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(board, home):
+def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(home):
     claims = home / ".project_manager" / ".local" / "task-session-claims"
-    got = board.judge_git_anchor_command(
-        home, "S-new", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task gamma",
+    got = cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task gamma",
     )
     assert got["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
-    board.judge_git_anchor_command(
-        home, "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=delta",
+    cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=delta",
     )
     assert (claims / "delta.json").is_file()
     # 인자를 정적으로 못 정하거나 세션 ID 가 없으면 남기지 않는다 — 부트스트랩이 기록 없음으로 멈춘다.
-    board.judge_git_anchor_command(
-        home, "S-new", str(home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"',
+    cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"',
     )
-    board.judge_git_anchor_command(
-        home, "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon",
+    cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon",
     )
     assert sorted(path.name for path in claims.iterdir()) == ["delta.json", "gamma.json"]
 
 
-def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(board, home, tmp_path):
+def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(home, tmp_path):
     """다른 홈 B 의 부트스트랩 호출이면 그 기록은 B 의 엔진이 쓴다(이 프로세스의 `pm_engine` 이 아니다).
 
     B 의 `pm_engine/infra/fs.py` 의 `atomic_replace` 가 표식 파일을 남기게 덧붙인다 — 이 프로세스에
@@ -311,8 +312,8 @@ def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(board, 
         "    return _original_atomic_replace(src, dst, *args, **kwargs)\n"), encoding="utf-8")
     claims = other / ".project_manager" / ".local" / "task-session-claims"
 
-    got = board.judge_git_anchor_command(
-        home, "S-new", str(other), "python3 .project_manager/tools/pm_bootstrap.py --task gamma",
+    got = cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "S-new", str(other), "python3 .project_manager/tools/pm_bootstrap.py --task gamma",
     )
 
     assert got["verdict"] != "deny"
@@ -320,10 +321,10 @@ def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(board, 
     assert (claims / "gamma.json.written_by_B").is_file(), "B 의 기록을 B 엔진이 아닌 코드가 썼다"
 
 
-def test_denied_bootstrap_command_records_nothing(board, home):
+def test_denied_bootstrap_command_records_nothing(home):
     marker = "git " + "허용" + ":"
-    got = board.judge_git_anchor_command(
-        home, "S-new", str(home),
+    got = cli_hooks.judge_git_anchor_command(
+        cli_hooks.adapter_home(home), "S-new", str(home),
         f"python3 .project_manager/tools/pm_bootstrap.py --task gamma; echo '{marker} x'",
     )
     assert got["verdict"] == "deny"
@@ -365,9 +366,8 @@ def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatc
     assert seen and seen[0]["PM_DELEGATE_TASK"] == "alpha"
 
 
-def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(board, home, monkeypatch):
+def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(home, monkeypatch):
     claude = _load("slot_write_guard_claude", CLAUDE_DRIVER)
-    monkeypatch.setattr(claude, "_load_board", lambda _root: board)
     target = str(home / "work" / "app_2" / "a.py")
     output = claude.git_anchor_hook_evaluate({
         "session_id": "S-alpha", "hook_event_name": "PreToolUse", "tool_name": "Write",
@@ -377,7 +377,6 @@ def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(board, ho
     assert _action(git_policy._GIT_GUARD_CASE_SLOT_NOT_OWNED) in output["permissionDecisionReason"]
 
     codex = _load("slot_write_guard_codex", CODEX_DISPATCHER)
-    monkeypatch.setattr(codex, "_load_board", lambda _root: board)
     patch = f"*** Begin Patch\n*** Add File: {target}\n+x\n*** End Patch\n"
     envelope = codex.git_anchor_hook_evaluate({
         "session_id": "S-alpha", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",

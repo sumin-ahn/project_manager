@@ -13,6 +13,7 @@ rename/merge(T-0239)와 *같은 파이프라인*(`_prefix_relabel`)을 재사용
 from __future__ import annotations
 
 from pm_engine.cli import board_prefix
+from pm_engine.cli import board_cmd
 
 
 import argparse
@@ -625,7 +626,7 @@ def test_reid_dry_run_takes_no_lock(board, monkeypatch, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_cli_reid_dispatches_to_cmd_reid(board):
-    parser = board.build_parser()
+    parser = board_cmd.build_parser()
     args = parser.parse_args([
         "reid", "T-0036", "T-finance-036", "--user-ack", "finance", "--dry-run",
     ])

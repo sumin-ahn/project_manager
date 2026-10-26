@@ -6,6 +6,7 @@ section-add 는 명세 파일을 건드리지 않는다 — 쓰는 것은 `ticke
 from __future__ import annotations
 
 from pm_engine.cli import board_migrate_identity
+from pm_engine.cli import board_cmd
 from pm_engine.cli import board_ticket
 
 
@@ -1126,7 +1127,7 @@ def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations
         ("complete", "T-1"): board_ticket.cmd_complete,
         ("lint",): board_lint.cmd_lint,
     }
-    parser = board.build_parser()
+    parser = board_cmd.build_parser()
     for argv, expected_fn in existing.items():
         args = parser.parse_args(list(argv))
         assert args.fn is expected_fn

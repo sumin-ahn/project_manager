@@ -17,6 +17,7 @@ from __future__ import annotations
 from pm_engine.domain import board_command_rules
 
 
+from pm_engine.cli import board_cmd
 from pm_engine.cli import board_dispatch
 from pm_engine.domain import board_command_rules
 from pm_engine.infra import pm_paths
@@ -312,8 +313,7 @@ def test_show_from_boardless_worktree_reads_single_ledger_owner(
     )
     assert "-- T-0100 (done/) --" in captured.out
     assert "ticket not found" not in (captured.out + captured.err)
-    assert b._READ_BOARD_ROOT_OVERRIDE is None, "read dispatch 뒤 override가 누출됨"
-    assert b._READ_PM_HOME_OVERRIDE is None, "read dispatch 뒤 PM 홈 override가 누출됨"
+    assert b._home() == pm_paths.home_at(worktree), "read dispatch 뒤 앵커 Home이 바뀜"
 
 
 def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
@@ -327,22 +327,22 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
         cmd="list",
         idea_cmd=None,
         prefix_cmd=None,
-        fn=lambda _args: observed.append(
+        fn=lambda home, _args: observed.append(
             (
-                b._home().board_root, pm_paths.tickets_dir(b._home()), pm_paths.areas_file(b._home()),
-                pm_paths.decisions_dir(b._home()),
-                pm_paths.ideas_dir(b._home()), pm_paths.specs_dir(b._home()), pm_paths.architecture_file(b._home()),
-                pm_paths.status_file(b._home()),
-                pm_paths.hooks_dir(b._home()), b._home().local_conf, pm_paths.leases_file(b._home()), pm_paths.domain_dir(b._home()),
-                *wiki_lint._scope_aware_dirs(b._home()),
+                home.board_root, pm_paths.tickets_dir(home), pm_paths.areas_file(home),
+                pm_paths.decisions_dir(home),
+                pm_paths.ideas_dir(home), pm_paths.specs_dir(home), pm_paths.architecture_file(home),
+                pm_paths.status_file(home),
+                pm_paths.hooks_dir(home), home.local_conf, pm_paths.leases_file(home), pm_paths.domain_dir(home),
+                *wiki_lint._scope_aware_dirs(home),
             )
         )
         or 0,
     )
     monkeypatch.setattr(
-        b,
+        board_cmd,
         "build_parser",
-        lambda: types.SimpleNamespace(parse_args=lambda _argv: args),
+        lambda **_kwargs: types.SimpleNamespace(parse_args=lambda _argv: args),
     )
 
     assert b.main([]) == 0
@@ -360,8 +360,7 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
         )
     ]
     assert b._home().board_root == worktree / ".project_manager" / "wiki"
-    assert b._READ_BOARD_ROOT_OVERRIDE is None
-    assert b._READ_PM_HOME_OVERRIDE is None
+    assert b._home() == pm_paths.home_at(worktree)
     capsys.readouterr()
 
 
@@ -410,8 +409,7 @@ def test_worktree_lint_output_equals_pm_home_and_resolves_pm_wiki_targets(
     assert wt_result.out.splitlines()[0].endswith(
         f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['lint']})"
     )
-    assert b._READ_BOARD_ROOT_OVERRIDE is None
-    assert b._READ_PM_HOME_OVERRIDE is None
+    assert b._home() == pm_paths.home_at(worktree)
 
 
 def test_worktree_idea_list_reads_pm_home_idea_content(
@@ -566,8 +564,8 @@ def test_read_anchor_labels_only_real_board_owner_as_pm_home(
 def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
     """모든 mutation leaf는 display-only read 앵커를 타지 않는다(rc/차단 경로 불변)."""
     b = _load_board()
-    args = _dispatch_namespace(b, subcommand, lambda _args: 0)
-    monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
+    args = _dispatch_namespace(b, subcommand, lambda _home, _args: 0)
+    monkeypatch.setattr(board_cmd, "build_parser", lambda **_kwargs: types.SimpleNamespace(parse_args=lambda _argv: args))
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     monkeypatch.setattr(
         board_dispatch, "_print_read_anchor",
@@ -715,7 +713,7 @@ def test_mutation_argv_list_covers_all_mutations():
     """_MUTATION_ARGVS 가 _MUTATION_SUBCOMMANDS 전수를 커버 — 신규 mutation 이 분류되면 여기도
     argv 를 추가하도록 강제(fail-loud 재현 테스트 누락 방지)."""
     b = _load_board()
-    covered = {board_dispatch._resolved_subcommand(b.build_parser().parse_args(a)) for a in _MUTATION_ARGVS}
+    covered = {board_dispatch._resolved_subcommand(board_cmd.build_parser().parse_args(a)) for a in _MUTATION_ARGVS}
     assert covered == set(board_command_rules._MUTATION_SUBCOMMANDS)
 
 
@@ -813,7 +811,7 @@ def test_every_subcommand_is_classified():
     """신규 mutation subcommand 추가 시 가드 누락 클래스를 잡는다 — 실 등록 subcommand 전수가
     (mutation ∪ read ∪ sidecar) 와 정확히 일치해야 한다(미분류/유령분류 즉시 fail)."""
     b = _load_board()
-    registered = _all_registered_subcommands(b.build_parser())
+    registered = _all_registered_subcommands(board_cmd.build_parser())
     classified = (set(board_command_rules._MUTATION_SUBCOMMANDS)
                   | set(board_command_rules._READ_SUBCOMMANDS) | set(board_command_rules._SIDECAR_SUBCOMMANDS))
     assert registered == classified, (
@@ -842,7 +840,7 @@ def test_dispatch_gate_decision_matches_classification():
     b = _load_board()
 
     def _fires(argv):
-        return board_dispatch._resolved_subcommand(b.build_parser().parse_args(argv)) in board_command_rules._MUTATION_SUBCOMMANDS
+        return board_dispatch._resolved_subcommand(board_cmd.build_parser().parse_args(argv)) in board_command_rules._MUTATION_SUBCOMMANDS
 
     for argv in (["new", "t"], ["claim", "T-0100"], ["refresh"], ["init"],
                  ["migrate-identity"], ["promote-scope", "f.md", "--to", "shared"],
@@ -850,7 +848,7 @@ def test_dispatch_gate_decision_matches_classification():
                  ["prefix", "rename", "AAA", "BBB"]):
         assert _fires(argv), argv
     for argv in (["regression", "run"], ["regression", "run", "--cmd", "echo ok"]):
-        assert board_dispatch._resolved_subcommand(b.build_parser().parse_args(argv)) == "regression"
+        assert board_dispatch._resolved_subcommand(board_cmd.build_parser().parse_args(argv)) == "regression"
     for argv in (["list"], ["show", "T-0100"], ["lint"],
                  ["regression", "check"], ["livegate", "check"],
                  ["idea", "list"], ["prefix", "list"]):
@@ -869,8 +867,8 @@ def test_read_board_resolution_opens_only_read_dispatch(
         monkeypatch, subcommand):
     """실 등록 leaf 전수에서 PM 홈 board 해소는 read 축에만 열리고 mutation/sidecar는 닫힌다."""
     b = _load_board()
-    args = _dispatch_namespace(b, subcommand, lambda _args: 0)
-    monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
+    args = _dispatch_namespace(b, subcommand, lambda _home, _args: 0)
+    monkeypatch.setattr(board_cmd, "build_parser", lambda **_kwargs: types.SimpleNamespace(parse_args=lambda _argv: args))
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     calls: list[Path] = []
 
@@ -972,7 +970,7 @@ def test_read_fallback_does_not_weaken_following_mutation_gate(
     _isolate_board_module(b, monkeypatch, worktree)
 
     assert b.main(["show", "T-0100"]) == 0
-    assert b._READ_BOARD_ROOT_OVERRIDE is None
+    assert b._home() == pm_paths.home_at(worktree)
     assert b.main(["new", "stray 유발"]) == 1
     captured = capsys.readouterr()
     assert "worktree(코드 전용) 트리에서 실행" in captured.err

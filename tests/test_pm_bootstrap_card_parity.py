@@ -98,6 +98,8 @@ def _leaves_by_tool(tools_dir: Path) -> dict[str, dict[tuple, set]]:
     result: dict[str, dict[tuple, set]] = {}
     for tool in _PARSER_TOOLS:
         implementation = {
+            "board.py": "pm_engine/cli/board_cmd",
+            "pm_config.py": "pm_engine/cli/config_cmd",
             "pm_handoff.py": "pm_engine/cli/handoff",
             "pm_log.py": "pm_engine/cli/log",
             "ticket_finish.py": "pm_engine/cli/ticket_finish",

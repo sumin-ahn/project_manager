@@ -19,6 +19,7 @@ DI seam 동류).
 from __future__ import annotations
 
 from pm_engine.infra import install_files
+from pm_engine.cli import config_cmd
 from pm_engine.infra import lease_store
 from pm_engine.app import repo_protection
 from pm_engine.infra import pm_paths
@@ -503,10 +504,10 @@ def test_sync_adapter_config_check_partial_managed_dest_unrecorded_is_rc1(
 
 
 def test_sync_adapter_config_parser_check_is_exclusive(pc):
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     checked = parser.parse_args(
         ["sync-adapter-config", "--check", "--from", "/tmp/framework"])
-    assert checked.func.func is config_adapter.cmd_sync_adapter_config
+    assert checked.func is config_adapter.cmd_sync_adapter_config
     assert checked.check is True and checked.source == "/tmp/framework"
     with pytest.raises(SystemExit):
         parser.parse_args(["sync-adapter-config", "--check", "--list"])
@@ -574,7 +575,7 @@ def test_apply_checks_before_writing_and_reports_json(pc, tmp_path, capsys):
     settings.write_bytes((REPO / "templates" / "claude_code" / ".claude" / "settings.json").read_bytes())
     conf = dest / ".project_manager" / "local.conf"
     conf.write_text("ctx.compact_at_pct=85\ntest.cmd=pytest -q\n", encoding="utf-8")
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     conf_before, settings_before = conf.read_bytes(), settings.read_bytes()
 
     refused = config_install.cmd_apply(pm_paths.home_at(pc.REPO),
@@ -629,7 +630,7 @@ def test_apply_rc1_for_missing_conf_and_write_stage_failure(pc, tmp_path, capsys
     """`apply` rc 1 갈래 — `--set` 인데 local.conf 가 없으면 반영 없이 rc 1, 반영 함수가 쓰기 단계에서
     멈추면(`write_stage` 참) rc 1, 반영 전 거부(`write_stage` 거짓)면 rc 3 이다."""
     from pm_engine.app import conf_apply
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     dest = tmp_path / "dest"
     (dest / ".project_manager").mkdir(parents=True)
     called: list[object] = []
@@ -655,7 +656,7 @@ def test_apply_forwards_same_values_to_conf_apply(pc, tmp_path, capsys, monkeypa
     """`apply` 는 반영 함수에 실행 Home(이 엔진 루트)·dest·updates(빈 값은 None)·opencode 전역 설정 폴더를
     그대로 넘기고, 그 결과를 JSON 한 줄로 낸다."""
     from pm_engine.app import conf_apply, harness_ctx
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     dest = tmp_path / "dest"
     (dest / ".project_manager").mkdir(parents=True)
     (dest / ".project_manager" / "local.conf").write_text("test.cmd=pytest -q\n", encoding="utf-8")
@@ -686,7 +687,7 @@ def test_apply_cli_contract(pc, tmp_path, capsys):
 
     source = make_committed_source(tmp_path / "source")
     home = make_pm_home(tmp_path / "home", upstream=source, source=source)
-    parser = pc.build_parser()
+    parser = config_cmd.build_parser()
     conf = home / ".project_manager" / "local.conf"
     settings = home / ".claude" / "settings.json"
     conf_before, settings_before = conf.read_bytes(), settings.read_bytes()

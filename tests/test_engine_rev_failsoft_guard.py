@@ -1315,19 +1315,18 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 열거는 package 로 옮겨 marked 재전파를 그대로 두었고, 표기 재렌더 판정의 렌더 오류 흡수는 지웠다.
     # 묶음 소유 선검사의 parser 전용 loader 경계 1개를 제거했다.
     # 공용 해소·CLI 이동과 private loader 은퇴에 따른 경계 재고는 실제 스캔으로 확인한다(38→18).
-    # 24 = 평면 진입 파일 4 + `pm_engine` package 20. 스캔 원장은 평면 `tools/*.py` 와 package 전체다.
-    # 평면 4: board·pm_config·worktree_pool 의 terminal 보고 3, `pm_config._load_module` 재전파 1.
+    # 23 = 평면 진입 파일 3 + `pm_engine` package 20. 스캔 원장은 평면 `tools/*.py` 와 package 전체다.
+    # 평면 3: board·pm_config·worktree_pool 의 terminal 보고 3(pm-config 의 마지막 형제 적재 재전파는 적재와 함께 제거).
     # package 의 CLI 7: import 진입 2·update 진입 1·adapter accept 2·apply 1 의 marked 재전파, release
     # drift 거부의 terminal 보고 1. package 의 app·infra 13: 갱신 본체(`app.update_plan` 1·
     # `app.update_adapters` 6), fill 실행(`app.import_fill` 4), 설치 증거 열거(`infra.install_receipt` 1),
     # 미소유 wiki 후보 열거(`app.add_harness` 1)의 marked 재전파. package 의 직접 판독
     # (`getattr(exc, "_engine_rev_skew", False)`)도 같은 marker 다.
-    assert len(report.boundaries) == 24, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 23, "propagation sweep boundary ratchet changed"
     assert {
         (item.source, item.function, item.disposition) for item in report.boundaries
     } == {
         ("board.py", "main", "terminal-report"),
-        ("pm_config.py", "_load_module", "reraises"),
         ("pm_config.py", "main", "terminal-report"),
         ("pm_engine/app/add_harness.py", "_unowned_shipped_wiki_relpaths", "reraises"),
         ("pm_engine/app/import_fill.py", "_fill_failure_with_partial", "reraises"),

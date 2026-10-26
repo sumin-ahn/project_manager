@@ -7,6 +7,7 @@
 
 import ast
 from pm_engine.app import completion_gate
+from pm_engine.cli import board_cmd
 
 
 import importlib.util
@@ -66,8 +67,7 @@ def test_wave_claim_docs_match_required_sections():
 
 
 def test_regression_skill_references_only_real_board_subcommands():
-    board = _load_board()
-    parser = board.build_parser()
+    parser = board_cmd.build_parser()
     sub = next(
         a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction"
     )
@@ -188,8 +188,8 @@ TICKETS_README_COPIES = (
 )
 
 
-def _board_subcommands(board) -> set[str]:
-    parser = board.build_parser()
+def _board_subcommands() -> set[str]:
+    parser = board_cmd.build_parser()
     sub = next(
         a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction"
     )
@@ -210,8 +210,7 @@ def test_tickets_readme_lists_every_status_dir():
 
 def test_tickets_readme_documents_disposition_and_reopen_commands():
     """처분·복구 명령과 처분 종류가 실제 파서·상수와 일치한다(없는 명령을 부르지 않는다)."""
-    board = _load_board()
-    real = _board_subcommands(board)
+    real = _board_subcommands()
     assert {"discard", "reopen"} <= real, "board.py 에 discard/reopen 이 없다 — 가드 갱신 필요"
     for rel in TICKETS_README_COPIES:
         text = _read(rel)
