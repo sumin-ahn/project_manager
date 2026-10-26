@@ -17,6 +17,8 @@ r"""경로 표기 직렬화 규칙의 **사본 대조** — 확장 길이 prefix
 """
 from __future__ import annotations
 
+from pm_engine.infra import install_files
+
 from pm_engine.cli import bootstrap_report
 
 import importlib.util
@@ -32,7 +34,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 EXTENDED_PREFIX = "\\\\?\\"
 EXTENDED_PREFIX_SLASH = "//?/"
 # 이 규칙을 구현해도 되는 유일한 모듈.
-RULE_OWNER = "pm_import.py"
+RULE_OWNER = "pm_engine/infra/install_files.py"
 
 
 def _load(name: str):
@@ -75,10 +77,10 @@ def test_the_extended_prefix_rule_has_exactly_one_implementation():
 def test_the_owner_module_strips_the_prefix_on_both_spellings(modules, monkeypatch):
     """소유 모듈의 규칙 값 단언 — 백슬래시 표기와 `as_posix()` 표기 둘 다 벗긴다."""
     pm_import, _handoff, _bootstrap = modules
-    monkeypatch.setattr(pm_import, "_WINDOWS_PATH_NOTATION", True)
+    monkeypatch.setattr(install_files, "_WINDOWS_PATH_NOTATION", True)
 
-    assert pm_import._path_notation_text("\\\\?\\C:\\pm\\a.md") == "C:\\pm\\a.md"
-    assert pm_import._path_notation_text("//?/C:/pm/a.md") == "C:/pm/a.md"
+    assert install_files._path_notation_text("\\\\?\\C:\\pm\\a.md") == "C:\\pm\\a.md"
+    assert install_files._path_notation_text("//?/C:/pm/a.md") == "C:/pm/a.md"
 
 
 def test_posix_serialization_alone_does_not_close_the_prefix_axis(modules, monkeypatch):
@@ -91,8 +93,8 @@ def test_posix_serialization_alone_does_not_close_the_prefix_axis(modules, monke
 
     assert extended.as_posix().startswith(EXTENDED_PREFIX_SLASH)
     assert bootstrap_report._display_path_text(extended).startswith(EXTENDED_PREFIX_SLASH)
-    monkeypatch.setattr(pm_import, "_WINDOWS_PATH_NOTATION", True)
-    assert not pm_import._path_notation_text(extended.as_posix()).startswith(
+    monkeypatch.setattr(install_files, "_WINDOWS_PATH_NOTATION", True)
+    assert not install_files._path_notation_text(extended.as_posix()).startswith(
         EXTENDED_PREFIX_SLASH)
 
 
@@ -110,7 +112,7 @@ def test_the_three_serializers_agree_on_the_same_slot_path(modules, tmp_path):
 
     texts = {
         "pm_bootstrap": bootstrap_report._display_path_text(relative),
-        "pm_import": Path(pm_import._path_notation_text(relative)).as_posix(),
+        "pm_import": Path(install_files._path_notation_text(relative)).as_posix(),
     }
 
     assert set(texts.values()) == {"work/proj_1"}, texts

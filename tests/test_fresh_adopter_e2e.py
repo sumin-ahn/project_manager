@@ -15,6 +15,10 @@ push(pre-push 훅)에 자동 포함된다.
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_source
+
 import importlib.util
 import json
 import os
@@ -163,7 +167,6 @@ def _load_pm_import():
 def pm_import():
     mod = _load_pm_import()
     # opencode import 가 라이브 `opencode models` 를 호출하지 않게 고정 — hermetic(설치 여부 무관·토큰 0).
-    mod._real_models_runner = lambda source=None: (False, [])
     return mod
 
 
@@ -191,7 +194,7 @@ def test_fresh_adopter_default_installs_every_registered_harness_adapter(
     ])
 
     assert rc == 0, f"default import 실패 (rc={rc})"
-    assert set(HARNESSES) == set(pm_import.REGISTERED_HARNESSES)
+    assert set(HARNESSES) == set(install_rules.REGISTERED_HARNESSES)
     assert len(HARNESSES) == 3, "현재 출하 계약은 claude·opencode·codex 세 하네스다"
     for harness in HARNESSES:
         for adapter_dir in HARNESS_ADAPTER_DIRS[harness]:
@@ -205,7 +208,7 @@ def test_fresh_adopter_default_installs_every_registered_harness_adapter(
     receipt = json.loads(
         (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     )
-    assert receipt["harnesses"] == list(pm_import.REGISTERED_HARNESSES)
+    assert receipt["harnesses"] == list(install_rules.REGISTERED_HARNESSES)
 
 
 def test_fresh_adopter_default_folds_shared_agents_entry_to_neutral_source(
@@ -783,7 +786,7 @@ def _template_roots() -> list[Path]:
     """`templates/<dir>` 단일-어댑터 타깃 루트 (엔진 HARNESS_TEMPLATE_DIRS 파생)."""
     return [
         REPO / "templates" / dirs[0]
-        for dirs in _PM_IMPORT.HARNESS_TEMPLATE_DIRS.values() if len(dirs) == 1
+        for dirs in install_rules.HARNESS_TEMPLATE_DIRS.values() if len(dirs) == 1
     ]
 
 
@@ -1060,7 +1063,7 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
     """파생 HARNESSES 축의 모든 template이 README와 상태-dir keep 파일을 출하한다."""
-    (template_dir,) = pm_import.HARNESS_TEMPLATE_DIRS[harness]
+    (template_dir,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     tickets = REPO / "templates" / template_dir / ".project_manager" / "wiki" / "tickets"
     assert (tickets / "README.md").is_file(), f"{harness}: tickets/README.md 미출하"
     missing = [status for status in _TICKET_STATUS_DIRS
@@ -1191,7 +1194,7 @@ def test_readme_axis_is_derived_and_covers_all_keyword():
     codex 는 정당 대상(templates/codex/README.md 존재하나 top README 미출하·wiki README 유지·
     dangling 0·실측). 파생이라 새 단일 하네스/콤보 키가 자동 편입된다(T-0434 가짜-하네스 패턴).
     """
-    assert set(_README_HARNESS_ARGS) == {*_PM_IMPORT.HARNESS_TEMPLATE_DIRS, "all"}
+    assert set(_README_HARNESS_ARGS) == {*install_rules.HARNESS_TEMPLATE_DIRS, "all"}
     assert {"claude", "codex", "opencode", "all"} <= set(_README_HARNESS_ARGS)
 
 
@@ -1490,8 +1493,8 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     #   namespace 상한만으론 오탐 — flavor 선언 경로를 상한에 포함한다. claude host + opencode 는
     #   `.claude/skills` 가 host-소유(before 에 이미 존재)라 added_rels 밖이고, flavor 미선언 stray 는
     #   여전히 red 라 clobber 탐지력은 유지된다.
-    cross_ns_allowed = pm_import._flavor_render_relpaths(
-        REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[added][0])
+    cross_ns_allowed = install_source._flavor_render_relpaths(
+        REPO / "templates" / install_rules.HARNESS_TEMPLATE_DIRS[added][0])
     outside = sorted(
         r for r in added_rels
         if not _in_adapter_ns_bound(r, added)
@@ -1568,7 +1571,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     # (3-a) 설치 기록의 변경 내용 — 정확히 base∪added(registry 순서)여야 한다. 표기 독자 집합이
     #   여기서 갈리므로 하나라도 빠지면 이후 공유 문서 재렌더가 그 하네스 표기를 지운다.
     receipt_after = json.loads(after[_RECEIPT_REL].decode("utf-8"))["harnesses"]
-    assert receipt_after == [h for h in pm_import.REGISTERED_HARNESSES if h in {base, added}], (
+    assert receipt_after == [h for h in install_rules.REGISTERED_HARNESSES if h in {base, added}], (
         f"{base}→{added}: 설치 기록이 base∪added 가 아님: {receipt_after}")
 
     # (3-b) 예외 2경로는 "바이트 변경 허용"에서 끝내지 않고 **무엇이 바뀌었는지** 못박는다 —
@@ -1736,7 +1739,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
                               encoding="utf-8", newline="\n")
             planted.append(rel)
     assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 축)"
-    instance_owned = sorted({*pm_import.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})
+    instance_owned = sorted({*install_rules.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})
 
     # 렌더물 축 — guest `@render` 아래 실 파일도 stale 로 만든다. 렌더물은 conf 파생이라 update 가
     #   다시 렌더해야 하고(설치 시점 사본 동결 금지), 손편집은 그때 되돌아간다.
@@ -1988,3 +1991,9 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     assert crlf_drift == [], (
         "CRLF 채택자에서 self-update 가 전파 트리를 되썼다(표기만 다른 파일을 '변경'으로 판정 "
         f"또는 LF 로 되쓰기): {crlf_drift}")
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

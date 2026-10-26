@@ -1,0 +1,239 @@
+"""설치 공통 install_conf (infra)."""
+from __future__ import annotations
+
+
+from pathlib import Path
+from pm_engine.domain import conf_schema
+from pm_engine.infra import fs
+from pm_engine.infra import install_files
+from pm_engine.infra import python_env
+import os
+import shutil
+
+# 인터프리터 탐지는 `python_env._detect_py()` 가 단일 진실. pm_import 가 자체 탐지를 신설하지
+# 않는다 — 플랫폼별 python3/python 해석을 한 곳에 둔다. 탐지가 실패하면 리눅스 현행과 동치인
+# "python3" 로 폴백.
+_DEFAULT_PY_FALLBACK = "python3"
+
+
+def _detected_py() -> str:
+    """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 탐지한다.
+
+    `python_env._detect_py()` 를 재사용(단일 진실). 호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
+    """
+    try:
+        return python_env._detect_py()
+    except Exception:  # noqa: BLE001 — 탐지 실패는 폴백.
+        return _DEFAULT_PY_FALLBACK
+
+
+def _default_test_cmd() -> str:
+    """기본 test_cmd — `python_env.default_pytest_cmd` 의 xdist 가용성 판정과 같은 명령을 사용한다.
+
+    상수 하드코딩(`python3 -m pytest`)은 Windows 에서 깨진다(`python3`=비기능 shim 또는
+    엉뚱한 Store Python). `_detected_py()` 를 경유해 `python_env._detect_py()` 의 실행검증된
+    인터프리터를 쓴다 — local.conf `runtime.py=` 와 동일 소스라 일관.
+    """
+    return python_env.default_pytest_cmd(_detected_py())
+
+
+def _set_conf_keys(text: str, updates: dict[str, str | None]) -> str:
+    """local.conf 텍스트에서 지정 키를 유일한 한 줄로 정규화한다(값 `None` 은 그 키를 지운다).
+
+    첫 등장 자리에 `key=value`를 기록하고 뒤의 활성 중복은 제거한다. 없으면 끝에
+    추가하며, 갱신하지 않는 줄·주석은 그대로 보존한다. reader들이 모두 last-wins이므로
+    갱신 뒤 옛 중복이 실효값을 되돌리지 않게 하는 일반 set-or-replace 규칙이다.
+
+    값이 `None` 이면 그 키의 줄을 **지운다**(중복 줄도 함께·없으면 무변경). 이름이 바뀐 키를
+    옮길 때 새 줄만 쓰고 옛 줄을 남기면 값을 소비하는 지점이 구표기 잔존으로 멈추므로, 쓰기와
+    지우기가 같은 교체 안에서 끝나야 반쪽 상태가 생기지 않는다.
+    """
+    remaining = {key: value for key, value in updates.items() if value is not None}
+    lines = text.splitlines(keepends=True)
+    default_newline = "\r\n" if "\r\n" in text else "\n"
+    out: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                if key in remaining:
+                    newline = ("\r\n" if line.endswith("\r\n") else
+                               "\n" if line.endswith("\n") else "")
+                    out.append(f"{key}={remaining.pop(key)}{newline}")
+                continue
+        out.append(line)
+    if remaining:
+        if out and not out[-1].endswith("\n"):
+            out[-1] = out[-1] + default_newline
+        for key, value in updates.items():
+            if key in remaining:
+                out.append(f"{key}={value}{default_newline}")
+    return "".join(out)
+
+
+def _force_rmtree(path: Path) -> None:
+    """트리를 **실제로** 지운다 — 공용 seam(`fs.force_rmtree`)·실패는 올린다.
+
+    `shutil.rmtree(..., ignore_errors=True)` 를 쓰지 않는다: git object·packfile 은 read-only 라
+    Windows 에서 삭제가 거부되는데, 그 실패를 삼키면 부분 board·임시 clone 이 채택자 트리에 남고도
+    rc=0 이 된다(`.git/modules` 잔재 실측). 부재는 성공이다(정리의 목적은 "없다").
+    """
+    target = Path(path)
+    if not os.path.lexists(target):
+        return
+    fs.force_rmtree(target)
+
+
+def _write_conf_keys(path: Path, updates: dict[str, str | None]) -> bool:
+    """local.conf 키들을 중복 없이 atomic 기록하고 실효값을 검증한다(값 `None` 은 삭제).
+
+    `_set_conf_keys`로 모든 갱신 키를 유일화한 뒤 같은 디렉터리의 임시파일을
+    원자 교체하여 부분 쓰기를 막는다. 변경이 없어도 reader와 같은 last-wins 파서로
+    postcondition을 확인하며, 불일치는 성공으로 흡수하지 않고 fail-loud한다.
+
+    읽기→교체→검증 전체가 **전 writer 공용 배타락** 안이다. 이 writer 는 커밋 전 내용을 읽고
+    나중에 통째로 갈아끼우므로, 그 사이에 다른 진입이 원자적으로 append 한 결정(추가 리뷰어·
+    위임 opt-in)이 교체본에 없어 사라진다 — 원자성만으로는 못 막고 같은 락을 공유해야 막힌다.
+    실효값 검증도 같은 구간에 둔다(락 밖에서 다시 읽으면 남의 정상 append 를 불일치로 오판한다).
+
+    **재진입 금지** — 호출부는 이 함수를 conf 락을 쥔 채 부르지 않는다(현 호출부는 전부 락 밖:
+    pm_import 의 sync_local_conf/record_*, pm_config upstream set). 이미 락을 쥔 구간
+    (install_conf.reapply_preserved_conf_keys·pm_update.record_upstream_revs)은
+    `_write_conf_keys_locked` 를 직접 부른다.
+    """
+    with fs.local_conf_write_lock(path):
+        return _write_conf_keys_locked(path, updates)
+
+
+def _write_conf_keys_locked(path: Path, updates: dict[str, str | None]) -> bool:
+    """`_write_conf_keys` 의 임계 구간 본문 — 락을 **이미 쥔** 호출부 전용."""
+    text = fs.read_text_shared(path, encoding="utf-8", newline="")
+    new_text = _set_conf_keys(text, updates)
+    changed = new_text != text
+    if changed:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(new_text, encoding="utf-8", newline="")
+        fs.atomic_replace(tmp, path)
+    effective = conf_schema.parse(fs.read_text_shared(path, encoding="utf-8"))
+
+    def _mismatched(key: str, value: str | None) -> bool:
+        # 삭제 요청(`None`)의 실효 조건은 값 일치가 아니라 **그 키가 없음** 이다.
+        if value is None:
+            return key in effective
+        return effective.get(key) != value.strip()
+
+    mismatches = {
+        key: (value, effective.get(key))
+        for key, value in updates.items()
+        if _mismatched(key, value)
+    }
+    if mismatches:
+        detail = ", ".join(
+            f"{key}: 요청={'삭제' if requested is None else repr(requested)}, 실효={actual!r}"
+            for key, (requested, actual) in mismatches.items()
+        )
+        raise RuntimeError(f"local.conf 기록 후 실효값 불일치 — {detail}; 파일={path}")
+    return changed
+
+
+def backup_existing_local_conf(dest_root: Path, backup_root: Path | None) -> str | None:
+    """--into 재-import 전, 기존 local.conf 가 있으면 백업하고 원본 텍스트를 반환한다.
+
+    MF1: board.py init 은 local.conf 를 무조건 write_text 로 덮으므로, 이미 프레임워크를
+    쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(추가 리뷰어 대상 튜플
+    `additional_reviewer.harness`/`.model`/`.reasoning` 등)이
+    무백업 손실된다. local.conf 는 pm_import 의
+    copy/backup 대상 트리 밖이라 CopyAction 의 백업 로직을 안 탄다 — init 호출 전 여기서
+    명시적으로 백업한다.
+
+    백업은 형제 `*.backup.<DATE>` 가 아니라 중앙 디렉토리
+    `backup_root/.project_manager/local.conf` 로 라우팅한다(한 곳 원칙). local.conf 는
+    보통 git-ignored(미추적)라 git-safe 아님 — 중앙 백업 유지(내용을 git 이 복원 못 함).
+    backup_root=None(--new)이면 빈 디렉토리 보장이라 기존 local.conf 가 없으므로 호출되지 않음.
+    중앙 경로 충돌은 _free_backup_path 로 순번 부여(원본 보존). 반환값(원본 텍스트)은
+    reapply_preserved_conf_keys 가 사용자 키 재병합에 쓴다. None = 기존 local.conf 없음.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        return None
+    original_text = fs.read_text_shared(local_conf, encoding="utf-8")
+    if backup_root is None:
+        return original_text  # --new 빈 디렉토리 — 보존만(백업 위치 없음·실질 도달 안 함).
+    backup = install_files._free_backup_path(backup_root / local_conf.relative_to(dest_root))
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(local_conf, backup)
+    rel = backup.relative_to(dest_root).as_posix()
+    print(f"✓ 기존 local.conf 백업: {rel}")
+    return original_text
+
+
+def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
+    """board.py init 이 새로 쓴 local.conf 위에, 기존 파일의 사용자 키를 재병합한다.
+
+    MF1: board.py init 은 local.conf 를 통째로 덮으므로, init 이 *안 쓴* 사용자 키
+    (추가 리뷰어 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning`
+    등)는 init 후 사라진다. 따라서 init 산출 local.conf 에 *없는* 기존 키만
+    _set_conf_keys 로 다시 얹는다. init 이 쓴 키(`runtime.py`·`test.cmd`·`project.name`·ctx 예산)는
+    init/operational sync 값을 우선해 덮지 않는다. 결과: import 후 local.conf = board init 기본 + operational sync
+    + 사용자 기존 설정 보존. 재병합으로 변경 시 True.
+
+    보존은 **키 이름을 열거하지 않는 일반 규칙**이다 — `_parse_conf_keys` 가 `key=value` 를
+    문자열로만 다루므로 점 표기(`additional_reviewer.harness`)든 채택자가 만든 커스텀
+    `additional_reviewer.<임의>` 든 그대로 왕복한다. 사라진 이름만 예외다 — 구표기·제거 키는
+    되얹지 않고 한 줄로 알린다. 신표기로 **자동 마이그레이션하지 않고**(값 추측 금지), 사용자가
+    이미 쓴 튜플 값도 덮지 않는다(원문 보존).
+
+    보존 대상 계산은 **쓰기와 같은 락 구간 안**이다. 현재 conf 를 락 밖에서 읽어 계획을 세우면
+    그사이 다른 진입(추가 리뷰어 대상 튜플 기록 등)이 남긴 새 결정이 "현재 conf 에 없는 키" 로
+    남아, 백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `additional_reviewer.model=old` 가
+    방금 기록된 값을 되돌린다). 백업 텍스트 파싱은 대상 conf 와 경쟁하지 않으므로 락 밖이다.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        # conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축(pm_update.record_upstream_revs
+        # 와 같은 규약) — "쓰지 않는다" 만 결정하고 어떤 write 계획의 입력도 아니다. 권위 판정은
+        # 락 안에서 다시 한다.
+        return False
+    original_keys = conf_schema.parse(original_text)  # 대상 conf 와 무경쟁 — 락 밖.
+    legacy = conf_schema.is_legacy_key
+    with fs.local_conf_write_lock(local_conf):
+        if not local_conf.is_file():
+            return False
+        current_keys = conf_schema.parse(fs.read_text_shared(local_conf, encoding="utf-8"))
+        # board init 이 새로 쓴 local.conf 에 *없는* 기존 사용자 키만 복원(init 값 우선).
+        # 사라진 이름(`conf_schema.LEGACY_KEY_MAP`)은 되얹지 않는다 — 재병합이 그것을 되살리면
+        # 그 clone 은 다음 실행부터 구표기 정지로 멈춘다. 판정 원장은 로더 하나다.
+        missing = {key: value for key, value in original_keys.items()
+                   if key not in current_keys}
+        preserved = {key: value for key, value in missing.items() if not legacy(key)}
+        dropped = sorted(key for key in missing if legacy(key))
+        # 락을 이미 쥐었으므로 임계 구간 본문을 직접 부른다(`_write_conf_keys` 재호출 = 재진입).
+        changed = _write_conf_keys_locked(local_conf, preserved) if preserved else False
+    if dropped:
+        # 조용히 지우지 않는다 — 채택자가 자기 파일에서 무엇이 빠졌는지 이 줄로 안다.
+        print(f"✓ 백업의 사라진 키는 재병합하지 않음(제거): {'·'.join(dropped)}")
+    if changed:
+        kept = "·".join(sorted(preserved))
+        print(f"✓ 기존 local.conf 사용자 키 보존: {kept}")
+        return True
+    return False
+
+
+def _instance_project_name(dest_root: Path) -> str:
+    """라이브 인스턴스의 프로젝트 이름을 local.conf `project.name` 에서 읽는다(없으면 디렉토리명 폴백).
+
+    add_harness 의 operational 토큰 치환이 인스턴스의 실제 이름을 존중하도록 —
+    최초 import 가 local.conf 에 박아 둔 값을 재사용한다(_parse_conf_keys). local.conf 부재·
+    `project.name` 미설정이면 dest 디렉토리명(main 의 --name 기본값과 동형).
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if local_conf.is_file():
+        try:
+            conf = conf_schema.parse(fs.read_text_shared(local_conf, encoding="utf-8"))
+        except (UnicodeDecodeError, OSError):
+            conf = {}
+        name = conf.get("project.name", "").strip()
+        if name:
+            return name
+    return dest_root.name

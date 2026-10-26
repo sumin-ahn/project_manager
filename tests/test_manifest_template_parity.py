@@ -21,6 +21,8 @@ canonical ↔ 각 템플릿 byte-identical 로 강제해 그 갭을 메운다. �
 """
 from __future__ import annotations
 
+from pm_engine.infra import install_source
+
 import importlib.util
 import re
 from pathlib import Path
@@ -205,7 +207,7 @@ def _shared_import_diffs(template_roots: dict[str, Path]) -> list[str]:
     pm_import = _load_pm_import()
     sources: dict[str, list[Path]] = {}
     for root in template_roots.values():
-        for rel, source in pm_import._iter_source_files(root, "full"):
+        for rel, source in install_source._iter_source_files(root, "full"):
             rel_s = rel.as_posix()
             if rel_s not in _IMPORT_MERGED_EXCEPTIONS:
                 sources.setdefault(rel_s, []).append(source)

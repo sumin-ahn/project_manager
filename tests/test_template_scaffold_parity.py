@@ -21,6 +21,8 @@ stdlib + subprocess. lint 는 warning-only(exit 0)라 종료코드가 아니라 
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.domain import delegate_rounds
 
 from pm_engine.cli import board_cluster
@@ -50,7 +52,7 @@ TEMPLATES = REPO / "templates"
 TEMPLATE_NAMES = sorted(
     dirname
     for harness in HARNESSES
-    for dirname in _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness]
+    for dirname in install_rules.HARNESS_TEMPLATE_DIRS[harness]
 )
 
 

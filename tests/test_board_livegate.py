@@ -12,6 +12,10 @@ import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재�
 """
 from __future__ import annotations
 
+from pm_engine.infra import skill_inventory
+
+from pm_engine.domain import render_rules
+
 from pm_engine.app import completion_gate
 from pm_engine.cli import board_ticket
 
@@ -65,11 +69,7 @@ def pm_update_module():
 
 
 def _load_pm_render():
-    """pm_render.py 를 독립 로드 — notation 토큰(`SKILL_ENTRY_NAMES`) 실 픽스처 구성용."""
-    spec = importlib.util.spec_from_file_location("pm_render", TOOLS / "pm_render.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return render_rules
 
 
 @pytest.fixture
@@ -444,7 +444,7 @@ def _seed_target_render_notation_fixture(
     """`.project_manager/wiki/` 아래 `@render` 항목 1개 — 실 스킬 호출 토큰이 담긴 파일로
     render·notation 경로를 재현한다. `rendered=False` 면 dest 에 미렌더 원문을 깔아 update
     경로를 유발한다. 돌려주는 값은 사용한 스킬 이름."""
-    skill = pm_render_module.SKILL_ENTRY_NAMES[0]
+    skill = skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO))[0]
     text = f"참고: /{skill} 를 실행하라.\n"
     src_file = source_root / _NOTATION_WIKI_REL
     src_file.parent.mkdir(parents=True, exist_ok=True)

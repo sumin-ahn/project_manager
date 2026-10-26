@@ -68,6 +68,8 @@ hermetic — 실 파일 읽기/JSON 파싱만 한다(하네스 실행·LLM 진�
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import importlib.util
 import json
 import shutil
@@ -126,7 +128,7 @@ _CLAUDE_HOOK_COMMAND_TO_ROWS = {
 
 def _template_root(templates_dir: Path, harness: str) -> Path:
     """등록 하네스 → 그 하네스의 출하 template 트리 루트(엔진 레지스트리에서 파생·손-열거 아님)."""
-    (dirname,) = _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness]
+    (dirname,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     return templates_dir / dirname
 
 

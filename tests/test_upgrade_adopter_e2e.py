@@ -33,6 +33,9 @@ add-harness 를 안 쓰는 형상이라 도그푸딩으로도 안 걸린다([[do
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.domain import install_rules
+
 import hashlib
 import json
 import os
@@ -182,7 +185,7 @@ def test_update_renders_cards_whose_tokens_only_the_new_renderer_knows(tmp_path)
     source = make_committed_source(tmp_path / "source")
     home = make_pm_home(tmp_path / "home", upstream=source, source=source)
     card_rel = Path(".claude") / "agents" / "architect.md"
-    _teach_renderer_next_gen_token(source / ".project_manager" / "tools" / "pm_render.py")
+    _teach_renderer_next_gen_token(source / ".project_manager" / "tools" / "pm_engine" / "app" / "adapter_render.py")
     template = source / card_rel
     template.write_text(template.read_text(encoding="utf-8")
                         + f"\n다음 세대 표식: {_NEXT_GEN_TOKEN}\n", encoding="utf-8")
@@ -261,9 +264,8 @@ _SKILL_MANIFEST_COPY_RE = re.compile(
 def _engine_pm_import():
     """canonical pm_import 모듈 — 라이브 `opencode models` 조회를 막은 hermetic 인스턴스.
 
-    `_load_pm_import` 는 호출마다 새 모듈 객체를 만드므로 이 stub 은 이 파일 안에만 남는다."""
+    모델 조회 대역은 autouse fixture가 테스트마다 설정하고 복원한다."""
     module = _load_pm_import()
-    module._real_models_runner = lambda source=None: (False, [])
     return module
 
 
@@ -640,7 +642,7 @@ def _skill_manifest_copy_source(skill_text: str, *, host: str) -> Path | None:
         return None
     assert match.group("target") == _ADOPTER_MANIFEST_REL, (
         f"스킬 cp 대상이 채택자 manifest 가 아니다: {match.group('target')!r}")
-    (template_dir,) = _PM_IMPORT.HARNESS_TEMPLATE_DIRS[host]
+    (template_dir,) = install_rules.HARNESS_TEMPLATE_DIRS[host]
     resolved = Path(
         match.group("source")
         .replace("<cache-or-path>", str(REPO))
@@ -910,7 +912,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "b90ebb29097bcb8c88e91fbfb7ad12aab63d5485c959541bfb8c71038b4047b6"
+_T0585_PM_UPDATE_SHA256 = "85e1a9263e13eadf66ef2f6f434c83fa4dd3e5d3828842995aae6925d5916efd"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -943,7 +945,7 @@ _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, sourc
                 result["backfilled"].append(judgment.relpath)
             continue
         summary = pm_import.adapter_config_drift_summary(judgment, dest_root)
-        managed = judgment.mode == pm_import.ADAPTER_CONFIG_MANAGED
+        managed = judgment.mode == install_rules.ADAPTER_CONFIG_MANAGED
         if managed and judgment.status == "unedited":
             backup_rel = None
             if write:
@@ -974,7 +976,7 @@ _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, sourc
             result["updated"].append({
                 "relpath": judgment.relpath,
                 "backup_rel": backup_rel,
-                "note": pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(judgment.relpath),
+                "note": install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(judgment.relpath),
             })
             continue
         bucket = "preserved" if managed else "drift"
@@ -1035,7 +1037,7 @@ _TWO_PROCESS_UPDATE_REVERSALS = (
 # 상류에서 사라진 경우)은 흡수 덕에 계획까지 갔다 — 역적용해 그 세대 동작을 되살린다.
 _RENDER_EQ_DST_RAISE = (
     "    rendered = _render_text(\n"
-    "        sp, conf, render_mod, entry_notation_template, flat_command_skill,\n"
+    "        sp, conf, entry_notation_template, flat_command_skill,\n"
     "        codex_operational_skill, _dest_relative_path(dst, dest_root),\n"
     "    )\n"
     "    return _rendered_text_matches_dest(rendered, dst)\n"
@@ -1043,7 +1045,7 @@ _RENDER_EQ_DST_RAISE = (
 _RENDER_EQ_DST_ABSORB = (
     "    try:\n"
     "        rendered = _render_text(\n"
-    "            sp, conf, render_mod, entry_notation_template, flat_command_skill,\n"
+    "            sp, conf, entry_notation_template, flat_command_skill,\n"
     "            codex_operational_skill, _dest_relative_path(dst, dest_root),\n"
     "        )\n"
     "    except Exception:  # noqa: BLE001 — 렌더 실패는 '다름'으로 보수 처리.\n"
@@ -1502,6 +1504,11 @@ def _t0585_pm_update_source() -> str:
     (marker assert·anachronism 부재 단언 선통과), 배달 경계(source/manifest planning → apply →
     self-update 순서)와 배달 파일 집합의 계획 규칙은 그대로다 — manifest 의 디렉터리 행은 같은 계획이
     파일들로 펼친다. 현재화한 것은 기대 SHA 하나뿐이다.
+
+    설치 공급자 이동 반영: 렌더·JSONC·등록부 호출을 실제 package 소유자로 전환했다.
+    동결 fixture의 렌더 실패 흡수 anchor도 module 인자가 없는 현행 호출 형태로 맞췄다.
+    배달 계획·적용·퇴역 순서와 역적용 delta는 유지하며, exact-marker와 시대착오 부재
+    단언을 통과한 합성본의 지문을 재수집했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1654,7 +1661,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
 # T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
 # 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "e3c62fac2807634e72b8778a54e2338f4436fba45edaad1ae320aff0ad569f13"
+_PRE_T0876_PM_UPDATE_SHA256 = "bb59bac0de01920017020eff9d6eebc5f3417a01e7f035d2ec7151055d6600d5"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1733,6 +1740,11 @@ def _pre_t0876_pm_update_source() -> str:
     delta(T-0878·T-0876)의 exact-marker 는 그 절 밖이라 그대로 유일 해소되고(marker assert 선통과),
     RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이다. 이관이
     만지는 것은 manifest 밖의 areas.md 한 행뿐이라 합성본 지문만 갱신했다.
+
+    설치 공급자 이동 반영: 렌더·JSONC·등록부 호출을 실제 package 소유자로 전환했다.
+    동결 fixture의 렌더 실패 흡수 anchor도 module 인자가 없는 현행 호출 형태로 맞췄다.
+    배달 계획·적용·퇴역 순서와 역적용 delta는 유지하며, exact-marker와 시대착오 부재
+    단언을 통과한 합성본의 지문을 재수집했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -2733,3 +2745,9 @@ def test_stale_sibling_copy_converges_in_one_update(tmp_path):
     assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
     assert _T0951_SKEW_NOTICE not in run.stdout + run.stderr
     assert stale.read_bytes() == (source / ".project_manager/tools/pm_import.py").read_bytes()
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

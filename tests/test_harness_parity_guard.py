@@ -83,11 +83,11 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         expected_count=2),
     ('delegate_transport.py', '_prepare_attempt_transport', 'opencode'): Site(
         "CLI 형식 — opencode 만 프롬프트 파일 sandbox 를 준비한다"),
-    ("pm_import.py", "_build_runner_argv", "claude"): Site(
+    ("import_fill.py", "_build_runner_argv", "claude"): Site(
         "어댑터 설치 — 라이브 스모크 러너의 claude CLI argv"),
-    ("pm_import.py", "_build_runner_argv", "codex"): Site(
+    ("import_fill.py", "_build_runner_argv", "codex"): Site(
         "어댑터 설치 — 라이브 스모크 러너의 codex CLI argv"),
-    ("pm_import.py", "_build_runner_argv", "opencode"): Site(
+    ("import_fill.py", "_build_runner_argv", "opencode"): Site(
         "어댑터 설치 — 라이브 스모크 러너의 opencode CLI argv"),
     ("pm_import.py", "add_harness", "claude"): Site(
         "어댑터 설치 — claude 타깃의 어댑터 디렉터리 배치"),
@@ -97,9 +97,9 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         "어댑터 설치 — `--harness claude` 스캐폴드 선택"),
     ("pm_import.py", "main", "codex"): Site(
         "어댑터 설치 — `--harness codex` 스캐폴드 선택"),
-    ("pm_import.py", "run_fill", "codex"): Site(
+    ("import_fill.py", "run_fill", "codex"): Site(
         "어댑터 설치 — codex 스캐폴드 채우기의 CLI 형식 분기"),
-    ("pm_import.py", "run_fill", "opencode"): Site(
+    ("import_fill.py", "run_fill", "opencode"): Site(
         "어댑터 설치 — opencode 스캐폴드 채우기의 CLI 형식 분기"),
 }
 
@@ -123,19 +123,19 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
         "CLI 형식 — TMPDIR/TMP/TEMP 표기를 CLI 가 어떻게 읽는지의 실측값", HARNESS_NAMES),
     ('delegate_run_rules.py', '_READ_TMP_WRITABLE_COMPONENT_BY_HARNESS'): (
         "CLI 형식 — 임시 쓰기 자리 이름 표기 실측값", HARNESS_NAMES),
-    ("pm_import.py", "ADAPTER_CONFIG_CHANNEL"): (
+    ("install_rules.py", "ADAPTER_CONFIG_CHANNEL"): (
         "어댑터 설치 — 하네스마다 config 파일 채널이 다르다", HARNESS_NAMES),
     ("pm_import.py", "ADAPTER_HOOK_SET"): (
         "어댑터 설치 — 하네스마다 훅 등록 파일 집합이 다르다", HARNESS_NAMES),
-    ("pm_import.py", "ADD_HARNESS_ADAPTER"): (
+    ("install_rules.py", "ADD_HARNESS_ADAPTER"): (
         "어댑터 설치 — 하네스마다 어댑터 디렉터리 이름이 다르다", HARNESS_NAMES),
-    ("pm_import.py", "ADD_HARNESS_CREATE_IF_ABSENT"): (
+    ("install_rules.py", "ADD_HARNESS_CREATE_IF_ABSENT"): (
         "어댑터 설치 — 부재 시 새로 만들 config 파일이 하네스마다 다르다", HARNESS_NAMES),
     ("pm_import.py", "ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS"): (
         "어댑터 설치 — 손편집 보존 대상 필드가 하네스 config 포맷마다 다르다", HARNESS_NAMES),
-    ("pm_import.py", "HARNESS_TEMPLATE_DIRS"): (
+    ("install_rules.py", "HARNESS_TEMPLATE_DIRS"): (
         "어댑터 설치 — 하네스마다 출하 template 디렉터리가 다르다", HARNESS_NAMES),
-    ("pm_import.py", "INSTANCE_OWNED_ADAPTER_FILES"): (
+    ("install_rules.py", "INSTANCE_OWNED_ADAPTER_FILES"): (
         "어댑터 설치 — 인스턴스 소유 config 파일 이름이 하네스마다 다르다", HARNESS_NAMES),
     ("watchdog.py", "HARNESS_CAP_ENV"): (
         "CLI 형식 — 호출층 상한을 관측할 수 있는 env 이름이 하네스마다 다르다", HARNESS_NAMES),
@@ -155,9 +155,9 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
     ("contract.py", "_RUNTIME_ROLE_CONFIG_BUILDERS"): (
         "CLI 형식 — 역할 config 를 argv/파일 중 무엇으로 넘기는지가 CLI 마다 다르다",
         HARNESS_NAMES),
-    ("pm_render.py", "SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR"): (
+    ("render_rules.py", "SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR"): (
         "어댑터 설치 — 스킬 호출 표기 접두가 하네스마다 다르다", ("codex", "opencode")),
-    ("pm_render.py", "_HARNESS_LABEL_BY_TEMPLATE_DIR"): (
+    ("render_rules.py", "_HARNESS_LABEL_BY_TEMPLATE_DIR"): (
         "안내 문구 — 카드에 찍는 하네스 표기 라벨", ("codex", "opencode")),
 }
 

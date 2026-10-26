@@ -11,6 +11,8 @@ cmd_set_test_cmd)는 monkeypatch 로 가로채 *어떤 핸들러가 어떤 인�
 액션 동작 자체는 facade 테스트가 검증하고, 여기선 라우팅/렌더/견고성만 본다.
 """
 from __future__ import annotations
+
+from pm_engine.app import import_fill
 from pm_engine.cli import config_console
 from pm_engine.cli import config_repo
 from pm_engine.cli import config_slots
@@ -865,9 +867,11 @@ class _FakePmImport:
 
     REGISTERED_HARNESSES = ("claude", "opencode", "codex")
 
-    def __init__(self, installed):
+    def __init__(self, installed, monkeypatch):
         self._installed = set(installed)
         self.queried = 0
+        monkeypatch.setattr(import_fill, "_harness_binary_available", self._harness_binary_available)
+        monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: self._real_models_runner(source))
 
     def _harness_binary_available(self, harness):
         return harness in self._installed
@@ -877,9 +881,9 @@ class _FakePmImport:
         return True, ["provider/real-a", "provider/real-b"]
 
 
-def test_model_guidance_lists_only_installed_harnesses(pc, capsys):
+def test_model_guidance_lists_only_installed_harnesses(pc, capsys, monkeypatch):
     """설치되지 않은 하네스의 모델은 안내하지 않는다 — 못 쓰는 값을 고르게 만들지 않는다."""
-    fake = _FakePmImport(installed=("claude",))
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
     rc = pc._print_delegate_model_guidance(pm_import=fake, conf={})
     out = capsys.readouterr().out
 
@@ -889,9 +893,9 @@ def test_model_guidance_lists_only_installed_harnesses(pc, capsys):
     assert fake.queried == 0, "미설치 opencode 인데 목록을 조회했다"
 
 
-def test_model_guidance_shows_opencode_real_list(pc, capsys):
+def test_model_guidance_shows_opencode_real_list(pc, capsys, monkeypatch):
     """조회 수단이 있는 하네스(opencode)만 실조회 목록을 보여준다 — 하드코딩 0."""
-    fake = _FakePmImport(installed=("opencode",))
+    fake = _FakePmImport(installed=("opencode",), monkeypatch=monkeypatch)
     pc._print_delegate_model_guidance(pm_import=fake, conf={})
     out = capsys.readouterr().out
 
@@ -900,11 +904,11 @@ def test_model_guidance_shows_opencode_real_list(pc, capsys):
     assert "가용 모델 2개" in out
 
 
-def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys):
+def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys, monkeypatch):
     """목록이 길면 앞부분만 보여주고 전량 확인 명령을 지목한다(한 화면 상한)."""
     total = pc._DELEGATE_MODEL_LIST_LIMIT + 3
     models = [f"provider/model-{index}" for index in range(total)]
-    fake = _FakePmImport(installed=("opencode",))
+    fake = _FakePmImport(installed=("opencode",), monkeypatch=monkeypatch)
     fake._real_models_runner = lambda source=None: (True, models)
 
     pc._print_delegate_model_guidance(pm_import=fake, conf={})
@@ -917,9 +921,9 @@ def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys)
 
 
 @pytest.mark.parametrize("outcome", [(False, []), (True, [])])
-def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome):
+def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome, monkeypatch):
     """조회 실패·빈 목록은 형식 안내로 **강등**하되 그 사실을 말한다(조용한 강등 금지)."""
-    fake = _FakePmImport(installed=("opencode",))
+    fake = _FakePmImport(installed=("opencode",), monkeypatch=monkeypatch)
     fake._real_models_runner = lambda source=None: outcome
 
     pc._print_delegate_model_guidance(pm_import=fake, conf={})
@@ -929,9 +933,9 @@ def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome
     assert "provider/model" in out, "형식 안내까지 사라지면 강등이 아니라 침묵이다"
 
 
-def test_model_guidance_shows_declared_alias_members(pc, capsys):
+def test_model_guidance_shows_declared_alias_members(pc, capsys, monkeypatch):
     """`delegate.model_alias` 를 선언했으면 그 멤버를 이 환경의 모델로 함께 보여준다."""
-    fake = _FakePmImport(installed=("claude",))
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
     pc._print_delegate_model_guidance(
         pm_import=fake,
         conf={"delegate.model_alias.high": "opus, claude-opus-5"},
@@ -947,7 +951,7 @@ def test_model_guidance_without_injected_conf_reads_the_real_local_conf(pc, caps
     conf.parent.mkdir(parents=True)
     conf.write_text("delegate.model_alias.high=opus, claude-opus-5\n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", tmp_path)
-    fake = _FakePmImport(installed=("claude",))
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
 
     assert pc._print_delegate_model_guidance(pm_import=fake) == 0
     out = capsys.readouterr().out
@@ -955,9 +959,9 @@ def test_model_guidance_without_injected_conf_reads_the_real_local_conf(pc, caps
     assert "high" in out and "claude-opus-5" in out
 
 
-def test_model_guidance_does_not_require_alias_declaration(pc, capsys):
+def test_model_guidance_does_not_require_alias_declaration(pc, capsys, monkeypatch):
     """alias 미선언은 정상 형상 — 목록을 위해 alias 를 만들라고 하지 않는다."""
-    fake = _FakePmImport(installed=("claude",))
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
     pc._print_delegate_model_guidance(pm_import=fake, conf={})
     out = capsys.readouterr().out
 
@@ -965,9 +969,9 @@ def test_model_guidance_does_not_require_alias_declaration(pc, capsys):
     assert "목록을 위해 만들 필요는 없다" in out
 
 
-def test_model_guidance_handles_no_installed_harness(pc, capsys):
+def test_model_guidance_handles_no_installed_harness(pc, capsys, monkeypatch):
     """설치된 하네스가 하나도 없으면 빈 안내가 아니라 그 사실을 말한다."""
-    fake = _FakePmImport(installed=())
+    fake = _FakePmImport(installed=(), monkeypatch=monkeypatch)
     pc._print_delegate_model_guidance(pm_import=fake, conf={})
     out = capsys.readouterr().out
 

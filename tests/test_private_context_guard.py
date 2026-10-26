@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+
 import argparse
 import contextlib
 import hashlib
@@ -26,6 +27,8 @@ from typing import TypeVar
 import pytest
 
 from conftest import current_branch, write_cluster_ledger
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_source
 from _engine_tree import engine_python_files
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
@@ -108,14 +111,13 @@ def _import_channel_python_paths(repo: Path) -> set[Path]:
     template 트리 목록은 ``HARNESS_TEMPLATE_DIRS`` registry 에서 파생하므로 새 하네스가
     등록되면 자동 편입된다.
     """
-    pm_import_module = _load_tool_module("pm_import")
     sources: set[Path] = set()
-    for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values():
+    for dirnames in install_rules.HARNESS_TEMPLATE_DIRS.values():
         for dirname in dirnames:
             template_root = repo / "templates" / dirname
             if not template_root.is_dir():
                 continue
-            for _dest_relative, source in pm_import_module._iter_source_files(
+            for _dest_relative, source in install_source._iter_source_files(
                 template_root
             ):
                 if source.suffix == ".py":
@@ -130,8 +132,7 @@ def _manifest_dest_roots(repo: Path) -> list[Path]:
     manifest 도 자동으로 대조 대상이 된다.
     """
     roots = [repo]
-    pm_import_module = _load_tool_module("pm_import")
-    for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values():
+    for dirnames in install_rules.HARNESS_TEMPLATE_DIRS.values():
         for dirname in dirnames:
             roots.append(repo / "templates" / dirname)
     return roots
@@ -203,14 +204,13 @@ _LANGUAGE_ORACLE_UNREGISTERED_ROOT_DESTINATIONS: tuple[Path, ...] = (
 
 def _import_channel_language_paths(repo: Path) -> set[Path]:
     """import 채널 언어 축 — ``pm_import`` 실제 출하 열거에서 python·markdown 이 아닌 것."""
-    pm_import_module = _load_tool_module("pm_import")
     sources: set[Path] = set()
-    for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values():
+    for dirnames in install_rules.HARNESS_TEMPLATE_DIRS.values():
         for dirname in dirnames:
             template_root = repo / "templates" / dirname
             if not template_root.is_dir():
                 continue
-            for _dest_relative, source in pm_import_module._iter_source_files(
+            for _dest_relative, source in install_source._iter_source_files(
                 template_root
             ):
                 if source.suffix not in (".py", ".md"):
@@ -923,9 +923,8 @@ def test_sensitivity_new_harness_update_only_python_makes_equality_red(
             f"{template}/.future/rendered.py": '"""목적지 사본."""\n',
         },
     )
-    pm_import_module = _load_tool_module("pm_import")
     monkeypatch.setattr(
-        pm_import_module,
+        install_rules,
         "HARNESS_TEMPLATE_DIRS",
         {_FUTURE_HARNESS: (_FUTURE_HARNESS,)},
     )
@@ -2541,11 +2540,10 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
     그 template 사본 전부를 선언해도 남는 것은 canonical 하나다 — 같은 유입을 사본 수만큼
     중복 지목하지 않는다(제외 술어는 `additional_reviewer` 소유)."""
     external = _load_tool_module("additional_reviewer")
-    pm_import_module = _load_tool_module("pm_import")
     canonical = ".project_manager/tools/ticket_finish.py"
     mirrors = sorted({
         f"templates/{dirname}/{canonical}"
-        for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values()
+        for dirnames in install_rules.HARNESS_TEMPLATE_DIRS.values()
         for dirname in dirnames
     })
     assert len(mirrors) == 3

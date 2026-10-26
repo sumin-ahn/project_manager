@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import importlib.util
 from pathlib import Path
 
@@ -76,17 +78,17 @@ _PM_IMPORT = _load_pm_import()
 
 # 하네스 축 단일 출처 — 엔진 상수 ∩ templates/ 디렉토리 실존에서 파생(위 derive_harnesses).
 #   실트리 = ("claude", "codex", "opencode"). 네 번째가 제대로 추가되면 자동 편입된다.
-HARNESSES: tuple[str, ...] = derive_harnesses(TEMPLATES, _PM_IMPORT.HARNESS_TEMPLATE_DIRS)
+HARNESSES: tuple[str, ...] = derive_harnesses(TEMPLATES, install_rules.HARNESS_TEMPLATE_DIRS)
 
 # 하네스별 어댑터 네임스페이스(채택자가 소비하는 산출물 트리) — 엔진 ADD_HARNESS_ADAPTER 에서 파생.
 #   값 = adapter_dirs 튜플. codex 는 dual namespace(.codex + .agents).
 HARNESS_ADAPTER_DIRS: dict[str, tuple[str, ...]] = {
-    h: dirs for h, (dirs, _doc) in _PM_IMPORT.ADD_HARNESS_ADAPTER.items()
+    h: dirs for h, (dirs, _doc) in install_rules.ADD_HARNESS_ADAPTER.items()
 }
 
 # 하네스별 루트 진입 문서 — 엔진 ADD_HARNESS_ADAPTER 에서 파생(claude=CLAUDE.md·opencode/codex=AGENTS.md).
 HARNESS_ROOT_DOC: dict[str, str] = {
-    h: doc for h, (_dirs, doc) in _PM_IMPORT.ADD_HARNESS_ADAPTER.items()
+    h: doc for h, (_dirs, doc) in install_rules.ADD_HARNESS_ADAPTER.items()
 }
 
 

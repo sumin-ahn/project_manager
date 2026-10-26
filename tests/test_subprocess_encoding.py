@@ -18,6 +18,10 @@ shutil.which 패치로 강제한다(ambient PYTHONUTF8 가 버그를 가리지 �
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.app import import_render
+from pm_engine.infra import install_conf
+
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
 import pm_engine.infra.harness.reviewer_run
@@ -165,7 +169,7 @@ def test_pm_import_harness_runner_uses_utf8_watchdog(pm_import, monkeypatch):
     # 실행 파일 찾기가 이 머신 PATH(claude 설치 여부)에 매이지 않게 이름 그대로 돌려준다.
     monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
     monkeypatch.setattr(pm_import.subprocess, "Popen", recording_forbidden_popen)
-    ok, _ = pm_import._real_harness_runner(
+    ok, _ = import_fill._real_harness_runner(
         ["claude", "-p", "분석 프롬프트"], "프롬프트")
 
     assert ok is False
@@ -233,8 +237,8 @@ def test_bench_weight_subprocess_passes_utf8(bench_weight, monkeypatch):
 
 def test_pm_substitution_py_matches_detected(pm_import):
     """치환맵의 {{PY}} 가 _detected_py() 결과와 일치(하드코딩 상수 아님)."""
-    sub = pm_import._substitution_map("Proj", REPO, "2026-06-14")
-    assert sub["{{PY}}"] == pm_import._detected_py()
+    sub = import_render._substitution_map("Proj", REPO, "2026-06-14")
+    assert sub["{{PY}}"] == install_conf._detected_py()
 
 
 def _stub_interp_runs(monkeypatch):
@@ -270,7 +274,7 @@ def test_detected_py_routes_through_detection_not_hardcoded(pm_import, monkeypat
 
     _stub_interp_runs(monkeypatch)
     monkeypatch.setattr(shutil, "which", fake_which)
-    assert pm_import._detected_py() == "python"
+    assert install_conf._detected_py() == "python"
 
 
 def test_substitution_py_uses_python_when_python3_absent(pm_import, monkeypatch):
@@ -282,7 +286,7 @@ def test_substitution_py_uses_python_when_python3_absent(pm_import, monkeypatch)
 
     _stub_interp_runs(monkeypatch)
     monkeypatch.setattr(shutil, "which", fake_which)
-    sub = pm_import._substitution_map("Proj", REPO, "2026-06-14")
+    sub = import_render._substitution_map("Proj", REPO, "2026-06-14")
     assert sub["{{PY}}"] == "python"
     assert sub["{{PY}}"] != "python3"
 

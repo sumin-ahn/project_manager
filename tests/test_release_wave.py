@@ -17,6 +17,8 @@ probe.txt(=developer 서브에이전트가 작성)·ticket done 전이가 핵심
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+
 from pm_engine.infra import pm_paths
 import pm_engine.app.session_identity
 
@@ -999,7 +1001,6 @@ def _import_multipm_home(tmp_path: Path, harness: str,
     (`_import_multiuser_home`·T-0309). 미지정(기본·None)이면 현행 동작(빈 area_owner·단일 user).
     """
     pm_import = _load_pm_import()
-    pm_import._real_models_runner = lambda source: (False, [])
     home = tmp_path / f"mpm-home-{harness}"
     origins = tmp_path / f"origins-{harness}"
     rc = pm_import.main(
@@ -2450,3 +2451,9 @@ def test_release_marker_count_is_pinned():
         f"의심(게이트 selection 에서 조용히 누락될 위험). 라이브 테스트를 의도적으로 늘렸다면 "
         f"_EXPECTED_RELEASE_TESTS 를 함께 갱신하라."
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

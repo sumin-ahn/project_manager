@@ -57,7 +57,6 @@ STAMPED_MODULES = (
     "pm_delegate.py",
     "delegate_channel_guard.py",
     "additional_reviewer.py",
-    "pm_render.py",
     "pm_import.py",
     "pm_log.py",
     "private_refs.py",

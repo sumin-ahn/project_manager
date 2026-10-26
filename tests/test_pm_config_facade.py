@@ -16,6 +16,9 @@ DI seam·test_pm_update.py 의 monkeypatch 격리 패턴 동류. 실 git/board/w
   - release 배선 — release / --force=force_release.
 """
 from __future__ import annotations
+
+from pm_engine.domain import conf_schema
+from pm_engine.infra import fs
 from pm_engine.domain import areas_rules
 from pm_engine.cli import config_repo
 from pm_engine.cli import config_slots
@@ -846,7 +849,7 @@ def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
     text = conf.read_text(encoding="utf-8")
     assert text.count("upstream.path=") == 1
     assert repo_protection._local_conf_value(pm_paths.home_at(pc.REPO), "upstream.path") == requested
-    assert _load_pm_import()._parse_conf_keys(text)["upstream.path"] == requested
+    assert conf_schema.parse(text)["upstream.path"] == requested
     assert conf_store.local_config(pm_paths.home_at(conf.parents[1]))["upstream.path"] == requested
     assert "session=pm" in text and "test.cmd=pytest -q" in text and "footer=keep" in text
     assert text.startswith("# header\n")
@@ -856,7 +859,7 @@ def test_upstream_set_postcondition_mismatch_fails_loud(pc, tmp_path, monkeypatc
     """A2 — 쓰기 뒤 last-wins 실효값이 요청과 다르면 성공을 출력하지 않는다."""
     _setup_repo_conf(pc, tmp_path, "upstream.path=/old\n")
     pm_import = _load_pm_import()
-    monkeypatch.setattr(pm_import, "_parse_conf_keys", lambda _text: {"upstream.path": "/raced"})
+    monkeypatch.setattr(conf_schema, 'parse', lambda _text: {"upstream.path": "/raced"})
 
     rc = pc.cmd_upstream(
         argparse.Namespace(upstream_action="set", value="https://github.com/acme/new.git"),

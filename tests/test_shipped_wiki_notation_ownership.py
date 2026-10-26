@@ -22,6 +22,11 @@ manifest 미소유 출하 wiki = **인스턴스 상태 seed**(`status.md`·`log/
 
 from __future__ import annotations
 
+from _manager_home import render_home
+from pm_engine.app import import_render
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_files
+
 from pathlib import Path
 
 import pytest
@@ -63,7 +68,7 @@ UNOWNED_SHIPPED_WIKI_LEDGER = frozenset({
 
 
 def _template_dir(harness: str) -> str:
-    (dirname,) = _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness]
+    (dirname,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     return dirname
 
 
@@ -164,7 +169,7 @@ def test_every_ledger_entry_is_inside_the_notation_fallback_scope():
     """원장 전부가 폴백 범위 안 — 등재 없이도 표기가 해소된다(①의 (a) 택일과 정합)."""
     outside = sorted(
         rel for rel in UNOWNED_SHIPPED_WIKI_LEDGER
-        if not _PM_IMPORT._is_notation_fallback_scope(rel)
+        if not install_files._is_notation_fallback_scope(rel)
     )
     assert not outside, f"폴백 범위 밖 미등재 출하 wiki: {outside}"
 
@@ -188,11 +193,11 @@ def test_fallback_scope_excludes_engine_backbone_and_root_entry_docs():
 
     `tools/**` 는 하네스별 표면이 아니고(런타임 표기는 `_runtime_skill_entry` 소관),
     `AGENTS.md` 는 그 문서를 읽는 하네스 부분집합이 독자라 호출부가 멤버십을 명시 전달한다."""
-    assert not _PM_IMPORT._is_notation_fallback_scope(
+    assert not install_files._is_notation_fallback_scope(
         ".project_manager/tools/pm_bootstrap.py")
-    assert not _PM_IMPORT._is_notation_fallback_scope("AGENTS.md")
-    assert not _PM_IMPORT._is_notation_fallback_scope("CLAUDE.md")
-    assert not _PM_IMPORT._is_notation_fallback_scope(".claude/skills/pm-adr/SKILL.md")
+    assert not install_files._is_notation_fallback_scope("AGENTS.md")
+    assert not install_files._is_notation_fallback_scope("CLAUDE.md")
+    assert not install_files._is_notation_fallback_scope(".claude/skills/pm-adr/SKILL.md")
 
 
 # ── ① 폴백 렌더 동작 ─────────────────────────────────────────────────────────
@@ -211,10 +216,10 @@ def _seed_instance(tmp_path: Path, wiki_body: str) -> tuple[Path, set[Path], dic
     return dest, {Path(".project_manager/wiki/raw/README.md")}, {}
 
 
-def test_unowned_wiki_gets_installed_harness_context_and_is_loud(tmp_path, capsys):
+def test_unowned_wiki_gets_installed_harness_context_and_is_loud(render_home, tmp_path, capsys):
     """manifest 미소유 wiki 가 설치 하네스 전체 표기로 렌더되고 그 사실이 loud 하게 남는다."""
     dest, copied, subs = _seed_instance(tmp_path, "박제는 `/spike-new` 스킬이 한다\n")
-    changed = _PM_IMPORT.render_managed_files(
+    changed = import_render.render_managed_files(render_home,
         dest, subs, copied, installed_notation_context=("codex", "opencode"))
     assert changed == 1
     body = (dest / ".project_manager/wiki/raw/README.md").read_text(encoding="utf-8")
@@ -223,25 +228,25 @@ def test_unowned_wiki_gets_installed_harness_context_and_is_loud(tmp_path, capsy
     assert "폴백" in err and ".project_manager/wiki/raw/README.md" in err, err
 
 
-def test_single_harness_fallback_uses_that_harness_notation(tmp_path):
+def test_single_harness_fallback_uses_that_harness_notation(render_home, tmp_path):
     dest, copied, subs = _seed_instance(tmp_path, "박제는 `/spike-new` 스킬이 한다\n")
-    _PM_IMPORT.render_managed_files(
+    import_render.render_managed_files(render_home,
         dest, subs, copied, installed_notation_context=("codex",))
     assert (dest / ".project_manager/wiki/raw/README.md").read_text(
         encoding="utf-8") == "박제는 `$spike-new` 스킬이 한다\n"
 
 
-def test_without_fallback_context_the_defect_reproduces(tmp_path):
+def test_without_fallback_context_the_defect_reproduces(render_home, tmp_path):
     """sensitivity — 폴백을 되돌리면(context 미전달) 옛 조용한 skip 이 그대로 재현된다."""
     source = "박제는 `/spike-new` 스킬이 한다\n"
     dest, copied, subs = _seed_instance(tmp_path, source)
-    changed = _PM_IMPORT.render_managed_files(dest, subs, copied)
+    changed = import_render.render_managed_files(render_home, dest, subs, copied)
     assert changed == 0
     assert (dest / ".project_manager/wiki/raw/README.md").read_text(
         encoding="utf-8") == source
 
 
-def test_fallback_does_not_touch_engine_backbone_copies(tmp_path):
+def test_fallback_does_not_touch_engine_backbone_copies(render_home, tmp_path):
     """엔진 backbone 사본은 폴백 대상이 아니다 — 런타임 안내 문자열이 하네스 표기로 변조되면 안 된다."""
     dest = tmp_path / "inst"
     manifest = dest / ".project_manager" / "engine.manifest"
@@ -251,7 +256,7 @@ def test_fallback_does_not_touch_engine_backbone_copies(tmp_path):
     tool.parent.mkdir(parents=True)
     body = 'print("먼저 `/pm-bootstrap` 을 실행하라")\n'
     tool.write_text(body, encoding="utf-8")
-    changed = _PM_IMPORT.render_managed_files(
+    changed = import_render.render_managed_files(render_home,
         dest, {}, {Path(".project_manager/tools/pm_bootstrap.py")},
         installed_notation_context=("codex", "opencode"))
     assert changed == 0

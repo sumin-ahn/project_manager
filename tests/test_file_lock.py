@@ -2016,7 +2016,7 @@ SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
         "같은 순환 위에서 자기 rev 를 포함해 전 모듈 리터럴을 다시 쓰는 경로 — 스탬프가 바뀌는 "
         "도중이라 형제 rev 대조가 성립하지 않는다"
     ),
-    ("pm_render.py", "render_file"): (
+    ("pm_engine/app/import_render.py", "render_file"): (
         "인자가 상류 템플릿 원본(원자 교체 대상 아님)인지 목적지 사본(pm_import 가 원자 교체)인지 "
         "**정적으로 구분되지 않는다**. 렌더는 순수 변환이라 이 판독이 상태를 만들지 않고, 호출부의 "
         "목적지 판독은 이미 seam 을 지난다"

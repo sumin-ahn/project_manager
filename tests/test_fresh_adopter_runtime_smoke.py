@@ -22,6 +22,9 @@ subprocess 가 부모 env 통째 상속이 아니라 화이트리스트(`_live_e
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.domain import install_rules
+
 from pm_engine.cli import bootstrap as bootstrap_cli
 from pm_engine.cli import bootstrap_card
 from pm_engine.infra import pm_paths
@@ -108,7 +111,6 @@ def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-m
     `ctx_model` 은 고정 한도 픽스처가 기록할 모델 이름이다 — 설치 뒤 실제 세션 모델과 대조하는
     훅 출력을 단언하는 테스트는 그 세션 모델을 준다."""
     pm_import = _load_pm_import(ctx_model=ctx_model)
-    pm_import._real_models_runner = lambda source: (False, [])
     dest = tmp_path / f"adopter-{harness}"
     rc = pm_import.main(
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
@@ -195,7 +197,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     # @source 재렌더 산출물엔 리터럴 모델 토큰 0 — 미해소 OPENCODE_PRO_MODEL 은 leak 이 아니라
     # `# model: "<provider/model>"  # TODO:` 로 graceful 중화(자족 유지·render leak 0·T-0310).
     dev_text = (dest / ".opencode" / "agents" / "developer.md").read_text(encoding="utf-8")
-    assert pm_import.OPENCODE_MODEL_TOKEN not in dev_text, \
+    assert install_rules.OPENCODE_MODEL_TOKEN not in dev_text, \
         "pm_update 후 .opencode/agents 에 리터럴 모델 토큰 잔존(@render leak·중화 안 됨)"
     # 2) post-update 운영성: 실 opencode 가 update 후 AGENTS.md 로 ticket 발행.
     open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
@@ -633,3 +635,9 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
     assert "trust" in import_out and "/hooks" in import_out, (
         f"codex import 출력에 loud trust 2단계 안내 부재 (D5·_print_codex_trust_guidance):\n"
         f"--- import 출력(tail) ---\n{import_out[-800:]}")
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

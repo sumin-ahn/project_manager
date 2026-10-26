@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 # ── 설정 어휘 (conf 키의 허용값·패턴을 만드는 상수 · 단일 정의) ─────────────
-# 하네스 드라이버(`pm_engine.infra.harness`)·위임(`pm_delegate`)·안내 문서 렌더(`pm_render`)와 이 레지스트리가 같은
+# 하네스 드라이버(`pm_engine.infra.harness`)·위임(`pm_delegate`)·안내 문서 렌더(`adapter_render`)와 이 레지스트리가 같은
 # 이름 집합을 쓴다. 정의는 여기 하나이고 그 모듈들은 이 모듈을 import 해 읽는다.
 
 HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
@@ -70,7 +70,7 @@ DELEGATE_ENABLED_VALUES: tuple[str, ...] = ("true", "1", "yes", "on")
 # 안내 문서 operational token-key → local.conf 키. 규칙(uppercase→lowercase)으로 유도할 수 없다 —
 # conf 표기가 dot notation 이라 세그먼트 경계가 토큰 이름에 남아 있지 않다(`PROJECT_NAME` 은
 # `project.name` 이고 `OPENCODE_PRO_MODEL` 은 `harness.opencode.pro_model`). 힌트가 실재하지 않는
-# 키를 제시하면 채택자가 그 키를 conf 에 적고도 해소되지 않으므로 표로 고정한다(`pm_render`).
+# 키를 제시하면 채택자가 그 키를 conf 에 적고도 해소되지 않으므로 표로 고정한다(`render_rules`).
 OPERATIONAL_CONF_KEYS: dict[str, str] = {
     "PROJECT_NAME": "project.name",
     "PROJECT_TAGLINE": "project.tagline",
@@ -319,7 +319,7 @@ _REVIEWER_UNIT = "additional_reviewer"
 _TOOL_DEFAULT_TIME = "도구마다 정해진 기본 시간을 씁니다."
 # 안내 문서에 박히는 키가 안 채워졌을 때 — 출하 안내 문서는 설치 때 이미 값이 박혀 평소엔
 # 이 키를 다시 읽지 않는다. 그 자리가 남은 원본을 다시 그릴 때만 채우라며 멈춘다
-# (`pm_render._assert_no_leak`).
+# (`render_rules._assert_no_leak`).
 _RENDER_ONLY_UNSET = "평소에는 영향이 없습니다. 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춥니다."
 
 KEY_REGISTRY: dict[str, KeySpec] = {
@@ -477,7 +477,7 @@ KNOWN_KEYS: tuple[str, ...] = tuple(KEY_REGISTRY)
 
 # `harness.<name>.*` 의 기본값은 접미마다 다르다 — 사용 한도만 한 값(모든 하네스 공통 200000)을
 # 갖고, 나머지는 기본값이 없어 안 채웠을 때 일어나는 일을 적는다: 시간 두 축은 하네스 프로필이
-# 받고, 모델 이름은 안내 문서 렌더가 자리를 TODO 로 남긴다(`pm_render.neutralize_model_todo`).
+# 받고, 모델 이름은 안내 문서 렌더가 자리를 TODO 로 남긴다(`render_rules.neutralize_model_todo`).
 _HARNESS_MEMBER_DEFAULTS: dict[str, str] = {
     "ctx_window_tokens": "200000",
 }

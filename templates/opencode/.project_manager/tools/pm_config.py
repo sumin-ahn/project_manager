@@ -81,6 +81,7 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
 
 from __future__ import annotations
 
+
 import argparse
 import contextlib
 import datetime
@@ -103,6 +104,9 @@ from pm_engine.domain import conf_schema, upstream_rules
 from pm_engine.infra import conf_store, console, fs, lease_store, pm_paths, repo_files
 from pm_engine.infra.harness import contract
 from pm_engine.app import repo_protection
+from pm_engine.app import import_fill
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_conf
 from pm_engine.infra import branch_store, git
 from pm_engine.infra import pool_store
 from pm_engine.infra import task_store
@@ -588,7 +592,7 @@ def _status_json_adapters(pm_import_mod, source_root: Path) -> dict:
     files.extend(
         {"path": target.relpath, "ownership": "instance", "status": "unchecked"}
         for target in pm_import_mod.instance_owned_template_targets(REPO, source_root)
-        if target.mode == pm_import_mod.ADAPTER_CONFIG_NO_CHANNEL
+        if target.mode == install_rules.ADAPTER_CONFIG_NO_CHANNEL
     )
     files.sort(key=lambda row: row["path"])
     return {"source": str(Path(source_root).resolve()), "files": files}
@@ -984,7 +988,7 @@ def cmd_upstream(
       `upstream.path=` atomic 재기록(타 키 보존). 나쁜 값은 거부(rc 1·기록 안 함). 값 self-describing
       이라 path↔URL 전환이 자동(스킬 freshness 분기가 모양으로 적응).
 
-    local.conf set-or-replace(pm_import._set_conf_keys·타 키·주석 보존)·URL 안전 검증(pm_import.
+    local.conf set-or-replace(install_conf._set_conf_keys·타 키·주석 보존)·URL 안전 검증(pm_import.
     validate_upstream_value)을 재사용한다(중복 0). pm_import/git_runner 주입으로 hermetic 테스트
     (라이브 git/실 conf-write 없이 배선·검증 분기 검증).
     """
@@ -1004,7 +1008,7 @@ def cmd_upstream(
         if not local_conf.is_file():
             print(f"upstream: (local.conf 없음 — {local_conf})")
             return 0
-        conf = pm_import_mod._parse_conf_keys(fs.read_text_shared(local_conf, encoding="utf-8"))
+        conf = conf_schema.parse(fs.read_text_shared(local_conf, encoding="utf-8"))
         value = conf.get("upstream.path", "").strip()
         if not value:
             print("upstream: (미등록) — `pm-config upstream set <url|path>` 로 설정하라.")
@@ -1032,7 +1036,7 @@ def cmd_upstream(
         return 1
 
     try:
-        pm_import_mod._write_conf_keys(local_conf, {"upstream.path": value})
+        install_conf._write_conf_keys(local_conf, {"upstream.path": value})
     except RuntimeError as exc:
         print(
             f"[중단] {exc}",
@@ -1270,7 +1274,7 @@ def _accept_adapter_config_one(pm_import_mod, dest: Path, source_root: Path,
     print(f"✓ 어댑터 config 수용: {relpath} "
           f"(백업 {_dest_relative_label(outcome.backup, dest)})")
     print("  원장 기록까지 확인했다 — 다음 동기부터 무편집 판정(자동 갱신 궤도)이다.")
-    note = pm_import_mod.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(relpath)
+    note = install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(relpath)
     if note:
         print(f"  ⚠️ {note}")
     ctx_files = getattr(pm_import_mod, "HARNESS_CTX_FILES", None)
@@ -1393,7 +1397,7 @@ def _accept_adapter_config_set(pm_import_mod, dest: Path, source_root: Path,
 def _adapter_config_label(judgment, pm_import_mod) -> str:
     """판정 → 표시 라벨 (mode 와 status 를 함께 본다·mode 상수는 엔진 소유)."""
     common = _ADAPTER_CONFIG_STATUS_LABEL.get(judgment.status, judgment.status)
-    if judgment.mode == pm_import_mod.ADAPTER_CONFIG_REPORT:
+    if judgment.mode == install_rules.ADAPTER_CONFIG_REPORT:
         return _ADAPTER_CONFIG_REPORT_LABEL.get(judgment.status, common)
     return common
 
@@ -1578,13 +1582,13 @@ def _installed_harnesses(pm_import_mod) -> list[str]:
     """등록 하네스 중 **이 환경에 설치된** 것만 (registry 순서 보존).
 
     설치되지 않은 하네스의 모델을 안내하지 않는다 — 채택자가 쓸 수 없는 값을 고르게 만드는
-    안내는 안내가 아니다. 판정은 `pm_import._harness_binary_available`(shutil.which) 재사용이라
+    안내는 안내가 아니다. 판정은 `import_fill._harness_binary_available`(shutil.which) 재사용이라
     새 감지 수단을 만들지 않는다.
     """
     return [
         harness
-        for harness in pm_import_mod.REGISTERED_HARNESSES
-        if pm_import_mod._harness_binary_available(harness)
+        for harness in install_rules.REGISTERED_HARNESSES
+        if import_fill._harness_binary_available(harness)
     ]
 
 
@@ -1641,7 +1645,7 @@ def _print_delegate_model_guidance(
         print(f"  - {harness}: 값 형식 {value_format} · 확인 {how_to_check}")
         if source.kind != "live":
             continue
-        runner = pm_import_mod._real_models_runner
+        runner = import_fill._real_models_runner
         ok, models = runner(source)
         if not ok or not models:
             print(

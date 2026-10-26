@@ -16,6 +16,8 @@ live 원천(codex·opencode)은 **실 subprocess 층**으로 친다: 조회 함�
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+
 import importlib.util
 import inspect
 import json
@@ -161,8 +163,7 @@ def test_a_live_harness_without_its_binary_fails_loudly(tmp_path):
 def test_the_live_lookup_reuses_the_relay_model_listing(pc):
     """두 번째 조회 코드를 만들지 않는다 — pm_config 와 설치 래퍼가 같은 `model_listing` 을 부른다."""
     source = inspect.getsource(pc.cmd_delegate_models)
-    wrapper = inspect.getsource(_load("pm_import_for_delegate_models", TOOLS / "pm_import.py")
-                                ._real_models_runner)
+    wrapper = inspect.getsource(import_fill._real_models_runner)
 
     assert "model_listing" in source and "model_listing" in wrapper
     assert "subprocess" not in source and "subprocess" not in wrapper, "조회를 여기서 다시 구현했다"

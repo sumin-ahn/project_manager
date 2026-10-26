@@ -48,6 +48,7 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
 
 from __future__ import annotations
 
+
 import argparse
 import base64
 import datetime
@@ -65,13 +66,20 @@ import tempfile
 import threading
 import warnings
 import zlib
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app import adapter_render
+from pm_engine.domain import install_rules
+from pm_engine.domain import jsonc
+from pm_engine.domain import render_rules
+from pm_engine.infra import install_conf
+from pm_engine.infra import install_source
+from pm_engine.infra import skill_inventory
 from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
 from pm_engine.app import repo_protection
 from pm_engine.infra import branch_store, protected_hooks
@@ -609,21 +617,8 @@ def resolve_hook_set_predicate(source_root=None):
         pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
 
 
-def _load_pm_render():
-    """pm_render 모듈을 같은 tools/ 디렉토리에서 직접 로드 (sys.path 오염 없이·stdlib seam).
-
-    pm_import._detected_py 가 board.py 를 로드하는 패턴과 동형 — pm_update 는 stdlib-only
-    철학이나 render 분기는 pm_render(같은 엔진 동기 대상)에 위임한다. import 실패는 호출부가
-    안전쪽으로 처리하게 예외를 전파(render path 인데 렌더러 없음 = 명확한 에러가 옳다).
-    """
-    render_py = Path(__file__).resolve().parent / "pm_render.py"
-    return _load_module_from_path(
-        render_py, "pm_render.py", allow_unverified=True,
-    )
-
-
 def _load_pm_import():
-    """pm_import 모듈을 같은 tools/ 에서 직접 로드 (_load_pm_render 패턴 동형).
+    """pm_import 모듈을 같은 tools/ 에서 직접 로드 (남은 설치 기능의 평면 경계).
 
     upstream.rev baseline 기록(매 sync)에 pm_import 의 URL 안전 git 호출
     (read_upstream_rev — argv-list·timeout·GIT_TERMINAL_PROMPT=0)과 local.conf set-or-replace
@@ -884,10 +879,9 @@ def _guest_engine_backfill_entries(
     dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
         dest_owned = manifest_rules._core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))
-        pm_import = _load_pm_import()
         harness_by_flavor = {
             template_dir: harness
-            for harness, template_dirs in pm_import.HARNESS_TEMPLATE_DIRS.items()
+            for harness, template_dirs in install_rules.HARNESS_TEMPLATE_DIRS.items()
             for template_dir in template_dirs
         }
     except Exception as exc:  # noqa: BLE001 — 파생 실패는 현행 거동 유지(sync 자체는 계속).
@@ -902,13 +896,13 @@ def _guest_engine_backfill_entries(
     for flavor in flavors:
         harness = harness_by_flavor.get(flavor)
         template_root = Path(source_root) / "templates" / flavor
-        if harness not in pm_import.ADD_HARNESS_ADAPTER:
+        if harness not in install_rules.ADD_HARNESS_ADAPTER:
             continue
         if not (template_root / ".project_manager" / "engine.manifest").is_file():
             continue
-        adapter_dirs, root_doc = pm_import.ADD_HARNESS_ADAPTER[harness]
+        adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER[harness]
         try:
-            lines = pm_import._guest_manifest_lines(
+            lines = install_source._guest_manifest_lines(
                 template_root, adapter_dirs, root_doc, dest_owned)
         except Exception as exc:  # noqa: BLE001 — 한 flavor 실패가 나머지를 막지 않는다.
             print(f"note: guest flavor {flavor} 의 엔진 행 파생 실패(그 flavor 만 건너뛴다): {exc}",
@@ -1384,7 +1378,7 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
         if not local_conf.is_file():
             return _warn_missing_conf_for_rev(local_conf)
         updates = _upstream_rev_updates(rev)
-        changed = pm_import._write_conf_keys_locked(local_conf, updates)
+        changed = install_conf._write_conf_keys_locked(local_conf, updates)
     return changed, updates
 
 
@@ -2143,7 +2137,7 @@ def _installed_entry_notation_manifests(
     paths = list(upstream_manifests)
     pm_import = _load_pm_import()
     harnesses = pm_import.installed_harnesses(effective_dest, source_root)
-    template_registry = pm_import.HARNESS_TEMPLATE_DIRS
+    template_registry = install_rules.HARNESS_TEMPLATE_DIRS
     seen = {Path(path).resolve() for path in paths}
     for harness in harnesses:
         template_dir = template_registry[harness][0]
@@ -2160,7 +2154,7 @@ def _installed_entry_notation_manifests(
     return paths
 
 
-# local.conf key → operational token key(uppercase·pm_render). board.py init 은
+# local.conf key → operational token key(uppercase·render_rules). board.py init 은
 # runtime.py·test.cmd·project.name 만 기록 — 나머지(project.root·project.tagline·project.date)는
 # local.conf 에 없으므로 매핑 부재 시 빈값(render 시 그 토큰이 남아있으면 leak assertion 이 잡는다·
 # 그러나 출하 어댑터의 operational 토큰은 import sed 로 이미 리터럴이라 render 시점엔 보통 부재 → no-op).
@@ -2175,25 +2169,24 @@ _LOCAL_CONF_TO_OPERATIONAL = {
     # self-update 의 @source 재렌더가 `.opencode/agents` 를 렌더할 때 이 매핑으로
     # local.conf 재유도. **미해소**(opencode 없이 import 한 채택자·local.conf 에 harness.opencode.pro_model
     # 부재)면 render_adapter 가 leak 으로 rc-fail 하지 않고 intentional-TODO 로 graceful 중화한다
-    # (pm_render.neutralize_model_todo·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
+    # (render_rules.neutralize_model_todo·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
     # 전체를 막지 않는다(부분-graceful). claude tree 엔 토큰 부재 → no-op.
     "harness.opencode.pro_model": "OPENCODE_PRO_MODEL",
     # 위임 모델/추론 토큰(`delegate.<role>[.<tier>].{model,reasoning}`)은 여기 손으로 적지 않는다 —
-    # pm_render.DELEGATE_MODEL_CONF_KEYS 한 표를 역전해 얹는다(`_local_conf_operational_map`).
+    # render_rules.DELEGATE_MODEL_CONF_KEYS 한 표를 역전해 얹는다(`_local_conf_operational_map`).
 }
 
 
 def _local_conf_operational_map() -> dict[str, str]:
     """local.conf key → operational token key — 고정 배선 + **위임 토큰(파생)**.
 
-    위임 토큰의 단일 표는 `pm_render.DELEGATE_MODEL_CONF_KEYS`(token→conf key)다. 여기에 사본을
+    위임 토큰의 단일 표는 `render_rules.DELEGATE_MODEL_CONF_KEYS`(token→conf key)다. 여기에 사본을
     두면 새 역할/티어가 한쪽에만 늘어 그 토큰이 조용히 미배선된다(카드가 영영 TODO 로 중화). 표를
     역전해 쓰므로 표가 자라면 배선도 같이 자란다.
 
-    pm_render 로드 실패는 그대로 올린다 — 이 표의 소비자(`_operational_from_local_conf`)는 세 호출처
-    모두 바로 앞줄에서 pm_render 를 무방비로 로드하므로, 여기서 접어도 같은 실패를 한 줄 뒤로 미룰 뿐이다.
+    실행 패키지의 선언을 직접 소비하며, 적재 오류는 실행 실패로 전파한다.
     """
-    delegate = _load_pm_render().DELEGATE_MODEL_CONF_KEYS
+    delegate = render_rules.DELEGATE_MODEL_CONF_KEYS
     return {
         **_LOCAL_CONF_TO_OPERATIONAL,
         **{conf_key: token_key for token_key, conf_key in delegate.items()},
@@ -2204,10 +2197,10 @@ def _delegate_harness_from_local_conf(conf: Mapping[str, str]) -> dict[str, str]
     """위임 token-key → 그 역할/티어의 conf 하네스 — 카드의 **미사용 프로필** 판정 입력.
 
     카드가 선언하는 하네스(렌더 소스 경로)와 이 값이 다르면 그 카드는 이번 형상에서 스폰되지
-    않는다 — render 가 값 대신 사유를 중화로 남긴다(`pm_render.unused_delegate_profiles`).
+    않는다 — render 가 값 대신 사유를 중화로 남긴다(`render_rules.unused_delegate_profiles`).
     키 부재/빈값은 담지 않는다(판정 불가 = 현행 거동 유지).
     """
-    harness_keys = _load_pm_render().DELEGATE_HARNESS_CONF_KEYS
+    harness_keys = render_rules.DELEGATE_HARNESS_CONF_KEYS
     return {
         token_key: conf[conf_key]
         for token_key, conf_key in harness_keys.items()
@@ -2216,7 +2209,7 @@ def _delegate_harness_from_local_conf(conf: Mapping[str, str]) -> dict[str, str]
 
 
 def _operational_from_local_conf(conf: Mapping[str, str]) -> tuple[dict[str, str], list[str]]:
-    """local.conf 값(`conf`)의 operational 해소값을 pm_render 의 token-key dict 로 변환.
+    """local.conf 값(`conf`)의 operational 해소값을 adapter_render의 token-key dict 로 변환.
 
     local.conf 키(lowercase) → operational token key(uppercase). board.py init 이 안 쓴 키는
     포함하지 않는다(빈값 강제 안 함). 출하 어댑터의 operational 토큰은 import sed 로 이미
@@ -2261,7 +2254,7 @@ def _normalize_newlines(text: str) -> str:
 def _dominant_newline(text: str, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
     """번역 없이 읽은 본문의 지배 개행 — 다수결, 동수면 첫 등장, 개행 0 이면 `default`.
 
-    `pm_import.dominant_newline` 과 같은 규칙이다(테스트가 두 구현의 일치를 못박는다). 엔진
+    `install_files.dominant_newline` 과 같은 규칙이다(테스트가 두 구현의 일치를 못박는다). 엔진
     모듈 간 import 를 늘리지 않으려고 각자 이 작은 원시 함수만 둔다."""
     crlf = text.count("\r\n")
     lf = text.count("\n") - crlf
@@ -2302,7 +2295,6 @@ def _write_rendered_text(dst: Path, source, rendered: str) -> None:
 def _render_text(
     source_path: Path,
     conf: Mapping[str, str],
-    render_mod,
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
@@ -2314,9 +2306,7 @@ def _render_text(
     canonical home 에서 전담). 결과는 자족(잔여 `{{...}}` 0·assertion).
     호출부(plan·apply·저장 `apply_conf`)가 dst 와 비교/기록한다.
 
-    렌더러(`render_mod`)는 호출부가 한 번 읽어 넘긴다 — 계획은 설치 렌더러, `apply` 는 tools 를 쓴 뒤의
-    렌더러다. 렌더 거부는 그 인스턴스의 `RenderLeakError` 로 올라간다(pm_render 는 캐시 없이 읽혀
-    클래스가 로드마다 다르므로, 거부를 가르는 호출부가 같은 인스턴스를 쥐어야 한다).
+    실행 패키지 adapter_render를 직접 호출하며 RenderLeakError를 그대로 전파한다.
 
     `card_path` 는 이 산출물의 **인스턴스 상대 좌표**(계획의 dest 경로)다 — 카드 하네스 판정
     (미사용 프로필 중화)의 입력이라, 상류 절대경로가 아니라 dest 좌표를 넘겨야 체크아웃 위치가
@@ -2324,7 +2314,7 @@ def _render_text(
     """
     operational, empty_keys = _operational_from_local_conf(conf)
     text = fs.read_text_shared(Path(source_path), encoding="utf-8")
-    rendered = render_mod.render_adapter(
+    rendered = adapter_render.render_adapter(pm_paths.home_at(REPO),
         text,
         operational=operational,
         empty_keys=empty_keys,
@@ -2349,9 +2339,9 @@ def render_skill_entry_notation(
     source: str | None = None,
 ) -> str:
     """호출 표기 최소 렌더 public seam — board mirror 판정도 같은 경로를 재사용한다."""
-    render_mod = _load_pm_render()
-    return render_mod.render_skill_entry_notation(
-        text, template_dir, source=source
+
+    return render_rules.render_skill_entry_notation(
+        text, template_dir, source=source, skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO))
     )
 
 
@@ -2519,7 +2509,6 @@ def _render_eq_dst(
     dst: Path,
     dest_root: Path,
     conf: Mapping[str, str],
-    render_mod,
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
@@ -2533,7 +2522,7 @@ def _render_eq_dst(
     분기와 판정 사본 0).
     """
     rendered = _render_text(
-        sp, conf, render_mod, entry_notation_template, flat_command_skill,
+        sp, conf, entry_notation_template, flat_command_skill,
         codex_operational_skill, _dest_relative_path(dst, dest_root),
     )
     return _rendered_text_matches_dest(rendered, dst)
@@ -2552,7 +2541,7 @@ def plan(
     dest_inventory_out: set[str] | None = None,
     guest_backfill_lines: list[str] | None = None,
     conf: Mapping[str, str],
-    render_mod=None,
+
 ) -> tuple[list[tuple], list[str]]:
     """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
 
@@ -2561,9 +2550,7 @@ def plan(
     conf: render path 판정에 쓸 local.conf 값. 갱신은 dest local.conf 를, 저장(`apply_conf`)은 쓰기 전의
     제안 값을 넘긴다 — 계획이 디스크를 따로 읽지 않는다.
 
-    render_mod: render path 판정에 쓸 렌더러. 저장(`apply_conf`)은 산출물을 그릴 렌더러를 넘겨 계획 판정과
-    그리기가 인스턴스 하나(모델 목록 조회 기억 하나)를 쓴다. 넘기지 않으면 첫 render path 판정 때 설치
-    렌더러를 한 번 읽는다.
+    계획과 적용은 같은 실행 패키지를 사용하며, 모델 목록 조회 기억은 contract가 소유한다.
 
     manifest 항목이 `ManifestEntry`(render 플래그 운반·read_manifest 산출)면 그 path 의 render
     여부를 dst(`_RenderDst` 래퍼)에 실어 apply 가 byte-copy vs render 를 분기하게 한다. 평문
@@ -2717,10 +2704,9 @@ def plan(
             elif file_render:
                 # render path: 템플릿이 산출물과 byte-equal 일 수 없으므로 filecmp 는 항상 오보.
                 # 렌더한 결과가 dst 와 다를 때만 update(정직 판정).
-                if render_mod is None:
-                    render_mod = _load_pm_render()
+
                 if not _render_eq_dst(
-                    sp, dst, effective_dest, conf, render_mod, item_notation_template,
+                    sp, dst, effective_dest, conf, item_notation_template,
                     flat_command_skill,
                     codex_operational_skill,
                 ):
@@ -2777,13 +2763,12 @@ def _resolve_engine_sync_plan(
     dest_inventory_out: set[str] | None = None,
     report: bool = False,
     conf: Mapping[str, str],
-    render_mod=None,
+
 ) -> dict:
     """manifest 자기치유 → notation 템플릿 해소 → guest backfill 기록 판정 → `plan()` 을 한
     호출로 묶어 반환하는 **구조화 계획**. `_main`(self-update·`--target` export 공용)과 드리프트
     게이트(`drift_changes`)가 이 함수를 실제로 공동 호출한다 — 별도 diff/계획 구현을 두지 않는다.
     `conf` 는 `plan()` 의 render path 판정 값이다(저장 `apply_conf` 는 쓰기 전의 제안 값을 넘긴다).
-    `render_mod` 는 `plan()` 에 그대로 넘긴다(저장은 산출물을 그릴 렌더러를 넘긴다).
 
     `guest_entries`/`guest_backfill`/`guest_backfill_flavors` 는 호출부가 이미 해소했으면 넘기고
     (중복 IO 회피), 없으면(`guest_backfill is None`) 여기서 해소한다.
@@ -2901,7 +2886,7 @@ def _resolve_engine_sync_plan(
         dest_inventory_out=dest_inventory_out,
         guest_backfill_lines=persisted_guest_backfill,
         conf=conf,
-        render_mod=render_mod,
+
     )
     return {
         "changes": changes,
@@ -3268,15 +3253,14 @@ class _RenderOutput(NamedTuple):
     text: str
 
 
-def _render_outputs(changes: list[tuple], conf: Mapping[str, str], render_mod) -> list[_RenderOutput]:
+def _render_outputs(changes: list[tuple], conf: Mapping[str, str]) -> list[_RenderOutput]:
     """render change 전부를 `_render_text` 로 메모리에서 그린다 — 하나라도 렌더가 거부되면 그 예외가
     그대로 올라가고 아무 파일도 쓰지 않는다(뒤 카드의 실패가 앞 카드를 바꾼 채 남기지 않는다)."""
     outputs: list[_RenderOutput] = []
     for rel, sp, dst, _kind in changes:
         relpath = str(rel).replace("\\", "/")
         outputs.append(_RenderOutput(relpath, Path(dst), Path(sp), _render_text(
-            Path(sp), conf, render_mod,
-            getattr(dst, "entry_notation_template", None),
+            Path(sp), conf, getattr(dst, "entry_notation_template", None),
             getattr(dst, "flat_command_skill", None),
             getattr(dst, "codex_operational_skill", None),
             card_path=relpath,
@@ -3297,10 +3281,9 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
     dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
     (레거시 직접 호출)는 render 비대상 → copy2(후방호환·현 pm_update 동작 불변).
 
-    두 단계다. (1) render 아닌 change(tools 포함)를 순서대로 쓴다 — 렌더러(pm_render·pm_engine)도 여기서
-    바뀐다. (2) 렌더러를 한 번 읽어 render change 전부를 메모리에서 그리고(`_render_outputs`), 전부
-    그린 뒤에만 쓴다(`_write_render_outputs`). 렌더가 하나라도 거부되면 render 파일은 하나도 바뀌지
-    않는다(앞 단계의 파일은 이미 쓰였을 수 있다). 렌더 값은 dest local.conf 를 한 번 읽은 것이다.
+    render가 아닌 change를 쓴 뒤 실행 패키지로 render change 전부를 메모리에서 그린다.
+    렌더가 전부 성공한 뒤 `_write_render_outputs`로 기록한다. 하나라도 거부되면 render 파일은
+    바뀌지 않는다(앞 단계의 파일은 이미 쓰였을 수 있다). 렌더 값은 dest local.conf를 한 번 읽는다.
 
     engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(위 헬퍼). 그 재부착에
     함께 기록할 파생 엔진 행은 dst(`_RenderDst.guest_backfill_lines`)가 실어 나른다 — `entry_
@@ -3314,7 +3297,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
     """
     hook_set_path = (is_hook_set_path if is_hook_set_path is not None
                      else resolve_hook_set_predicate())
-    render_mod = None  # 렌더러가 필요한 첫 자리에서 한 번 읽는다(tools 를 쓴 뒤다).
+
     render_changes = [change for change in changes if getattr(change[2], "render", False)]
     for _r, sp, dst, _kind in changes:
         if getattr(dst, "render", False):
@@ -3325,15 +3308,14 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
             or getattr(dst, "flat_command_skill", None) is not None
             or getattr(dst, "codex_operational_skill", None) is not None
         ):
-            if render_mod is None:
-                render_mod = _load_pm_render()
+
             text = fs.read_text_shared(Path(sp), encoding="utf-8")
             rendered = text
             if getattr(dst, "entry_notation_template", None) is not None:
-                rendered = render_mod.render_skill_entry_notation(
+                rendered = render_rules.render_skill_entry_notation(
                     rendered,
                     dst.entry_notation_template,
-                    source=str(sp),
+                    source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO)),
                 )
             if getattr(dst, "flat_command_skill", None) is not None:
                 rendered = _render_flat_command_reference(
@@ -3354,11 +3336,10 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
             shutil.copy2(sp, dst)
     if not render_changes:
         return
-    if render_mod is None:
-        render_mod = _load_pm_render()
+
     first_rel, _sp, first_dst, _kind = render_changes[0]
     conf = _read_local_conf(_dest_root_for(first_dst, first_rel) / ".project_manager" / "local.conf")
-    _write_render_outputs(_render_outputs(render_changes, conf, render_mod))
+    _write_render_outputs(_render_outputs(render_changes, conf))
 
 
 def _dest_root_for(dst: Path, rel: str) -> Path:
@@ -3415,7 +3396,7 @@ def render_input_conf_keys() -> frozenset[str]:
     새 표를 두지 않는다: 렌더 값을 만드는 두 함수(`_operational_from_local_conf`·
     `_delegate_harness_from_local_conf`)가 읽는 표에서 파생한다."""
     return (frozenset(_local_conf_operational_map())
-            | frozenset(_load_pm_render().DELEGATE_HARNESS_CONF_KEYS.values()))
+            | frozenset(render_rules.DELEGATE_HARNESS_CONF_KEYS.values()))
 
 
 def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_import) -> Path:
@@ -3446,7 +3427,7 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_im
     return source_root
 
 
-def _plan_harness_ctx(dest_root: Path, values: dict, pm_import, opencode_config_dir: Path, _render_mod):
+def _plan_harness_ctx(dest_root: Path, values: dict, pm_import, opencode_config_dir: Path):
     """사용 한도 묶음 계획 — 검사·모델 한도 조회·계산과 원장 쓰기 가능 확인. 거부는 `ConfApplyError`."""
     try:
         changed, lines, entries = pm_import._harness_ctx_plan(dest_root, values, opencode_config_dir)
@@ -3467,18 +3448,18 @@ def _commit_harness_ctx(dest_root: Path, planned, pm_import) -> tuple[tuple[str,
     return lines, written
 
 
-def _plan_render_outputs(dest_root: Path, values: dict, pm_import, _opencode_config_dir: Path, render_mod):
+def _plan_render_outputs(dest_root: Path, values: dict, pm_import, _opencode_config_dir: Path):
     """렌더 입력 묶음 계획 — 설치 세대 원본을 확인하고, 제안 값으로 계획한 render change 전부를 메모리에서
-    그린다. 계획 판정과 그리기가 렌더러 `render_mod` 하나를 쓴다. 렌더 거부는 계획 판정에서 나든 그리기에서
-    나든 `ConfApplyError`(같은 세대라 설치 렌더러의 실패는 확정 실패다)."""
+    그린다. 계획과 그리기는 같은 실행 패키지를 사용한다. 렌더 거부는 어느 단계에서 발생해도
+    `ConfApplyError`로 전파한다."""
     source_root = _installed_generation_source(dest_root, values, pm_import)
     try:
         sync_plan = _resolve_engine_sync_plan(
-            dest_root, source_root, conf=values, render_mod=render_mod)
+            dest_root, source_root, conf=values)
         render_changes = [change for change in sync_plan["changes"]
                           if getattr(change[2], "render", False)]
-        return _render_outputs(render_changes, values, render_mod)
-    except render_mod.RenderLeakError as exc:
+        return _render_outputs(render_changes, values)
+    except render_rules.RenderLeakError as exc:
         raise ConfApplyError([str(exc)]) from exc
 
 
@@ -3527,8 +3508,7 @@ def _reasoning_values(conf: Mapping[str, str]) -> list[tuple[str, str, str, str 
     return found
 
 
-def _plan_per_model_reasoning(dest_root: Path, values: dict, _pm_import, _opencode_config_dir: Path,
-                              _render_mod) -> None:
+def _plan_per_model_reasoning(dest_root: Path, values: dict, _pm_import, _opencode_config_dir: Path) -> None:
     """추론 값 묶음 계획 — 모델별 허용값 하네스 프로필(주·대체·추가 리뷰어)의 제안 추론 값이 그 모델이 받는
     값인지 카드 유무와 무관하게 확인한다. 밖이거나 판정할 수 없으면(조회 실패·모델 값 없음·목록에 모델
     없음) `ConfApplyError` 다. 저장은 값을 지우지 않는다. 조회는 카드 렌더 확인과 같은 하네스 계약
@@ -3595,10 +3575,10 @@ def apply_conf(dest_root: Path, *, updates: Mapping[str, str | None] | None,
         values = pm_import._conf_values(conf_path, updates)
         steps = [step for step in CONF_APPLY_STEPS
                  if not updates or any(map(step.key_filter(pm_import), updates))]
-        render_mod = _load_pm_render()
-        planned = [(step, step.plan(dest_root, values, pm_import, opencode_config_dir, render_mod))
+
+        planned = [(step, step.plan(dest_root, values, pm_import, opencode_config_dir))
                    for step in steps]
-        changed = pm_import._write_conf_keys_locked(conf_path, dict(updates)) if updates else False
+        changed = install_conf._write_conf_keys_locked(conf_path, dict(updates)) if updates else False
         written: list[str] = [_LOCAL_CONF_RELPATH] if changed else []
         applied: list[str] = []
         for step, step_plan in planned:
@@ -3778,7 +3758,7 @@ def _resolve_local_manifest(effective_dest: Path, source_root: Path) -> list:
 #
 # 판정 = **미수정 여부 단 하나**(mechanize·추측 0). @render 치환(operational 토큰)·manual-fill TODO
 # 마커가 채택자본을 세대 원본에서 벌려 놓으므로 순수 해시 대조는 불가능하다(ticket 열린 질문). →
-# **치환-불변 정규화**로 판정한다: (1) manual-fill 마커(pm_import._mark_todos)를 벗겨 정규화하고,
+# **치환-불변 정규화**로 판정한다: (1) manual-fill 마커(import_fill._mark_todos)를 벗겨 정규화하고,
 # (2) 세대 원본에서 operational 토큰을 줄-경계 wildcard 로, free-form 토큰(`{{PROJECT_CONSTRAINTS}}`)
 # 을 *리터럴*(미채움=pristine 요구)로 둔 패턴에 re.fullmatch 한다. operational=출하 렌더(전 채택자
 # 결정적)라 wildcard(=미수정), free-form=채택자 FILL 영역이라 리터럴 요구(채웠으면 커스텀 흔적→무손
@@ -3786,7 +3766,7 @@ def _resolve_local_manifest(effective_dest: Path, source_root: Path) -> list:
 # `test.cmd`·`project.name` 만 기록) 세대 판정이 성립한다 — 재렌더 대조(local.conf 미보유 토큰서 실패)보다 강건.
 # 매칭 시 operational 값을 *포획*해 신형 재렌더에 재사용(채택자 tagline 보존).
 
-# pm_import._mark_todos 가 manual-fill 시 free-form placeholder 줄 끝에 덧붙이는 마커 — 정규화로
+# import_fill._mark_todos 가 manual-fill 시 free-form placeholder 줄 끝에 덧붙이는 마커 — 정규화로
 # 벗겨낸다(세대 원본엔 없음). pm_import 리터럴과 동일해야 한다(단일 진실·거기서 바뀌면 여기도).
 _ENTRY_DOC_MANUAL_TODO_MARKER = " <!-- TODO: 손으로 채우세요 -->"
 
@@ -3956,12 +3936,11 @@ def _decode_entry_doc_generation(b64: str) -> str:
 
 
 def _entry_doc_operational_keys() -> frozenset:
-    """세대 대조에서 wildcard(=출하 렌더)로 볼 operational 토큰 집합 = pm_render.OPERATIONAL_KEYS.
-    그 밖의 `{{...}}`(free-form·`{{PROJECT_CONSTRAINTS}}`)은 리터럴(pristine 요구). pm_render 는
-    같은 tools/ 에 동기되는 엔진 파일이라 로드 실패는 설치 파손이고, `_load_pm_render` 의 계약대로
-    그대로 올린다 — 사본을 두면 새 토큰이 한쪽에만 늘어 조용히 빠진다(실제로 갈라져 있었다:
-    폴백에는 OPENCODE_PRO_MODEL 과 위임 모델 토큰이 없었다)."""
-    return frozenset(_load_pm_render().OPERATIONAL_KEYS)
+    """세대 대조에서 wildcard(=출하 렌더)로 볼 operational 토큰 집합 = render_rules.OPERATIONAL_KEYS.
+    그 밖의 `{{...}}`(free-form·`{{PROJECT_CONSTRAINTS}}`)은 리터럴(pristine 요구)이다.
+    실행 패키지의 토큰 선언을 직접 소비하므로 새 토큰이 소비자마다 누락되지 않는다.
+    """
+    return frozenset(render_rules.OPERATIONAL_KEYS)
 
 
 def _build_entry_doc_pattern(generation_text: str, operational_keys) -> tuple[str, dict]:
@@ -3994,7 +3973,7 @@ def _match_entry_doc_generation(
 ) -> dict | None:
     """정규화한 채택자 AGENTS.md 가 세대 원본 구조와 byte-match 하면 포획 operational 값 dict, 아니면 None.
 
-    정규화 = manual-fill 마커 제거(pm_import._mark_todos). operational 토큰의 복수 occurrence 는
+    정규화 = manual-fill 마커 제거(import_fill._mark_todos). operational 토큰의 복수 occurrence 는
     같은 값이어야 한다(출하 시 uniform 치환) — 불일치면 손편집 신호로 None(안전·loud 로 낙하)."""
     normalized = adopter_text.replace(_ENTRY_DOC_MANUAL_TODO_MARKER, "")
     pattern, group_token = _build_entry_doc_pattern(generation_text, operational_keys)
@@ -4028,276 +4007,6 @@ def _render_new_entry_doc(
         if "{{" + key + "}}" in text:
             return None  # operational 미해소 잔존 — 자족 위반 방지(free-form 은 허용)
     return text
-
-
-# quoted-string 원소 추출 (escape-aware) — 등록-확인을 substring 이 아니라 *정확 원소* 대조로
-# `.opencode/pm-instructions.md.bak` 같은 suffix 나 문자열-내
-# 부분일치를 "이미 등록"으로 오인하지 않게 한다.
-_JSONC_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
-# 최상위(depth==1) `"instructions"` 키 + 배열 여는 `[` — brace-depth 스캐너가 이 위치에서 match.
-_INSTR_KEY_RE = re.compile(r'"instructions"\s*:\s*\[')
-
-
-def _mask_jsonc_comments(text: str) -> str:
-    """jsonc 주석(`//…`·`/* */`)을 같은 길이 공백(개행 보존)으로 마스킹 — **오프셋 보존**(원본과 1:1).
-
-    문자열 리터럴은 존중한다 — 문자열 안의 `//`(예: `$schema` URL `https://…`)는 주석이 아니므로
-    마스킹하지 않는다. 탐지/삽입 위치를 이 마스킹본에서 구하고 실제 write 는 원본에 같은 오프셋으로
-    적용해, 주석-아웃된 `"instructions"`/경로를 오탐 없이 걸러내면서 원본 주석·서식을 보존한다."""
-    out: list[str] = []
-    i, n = 0, len(text)
-    in_str = False
-    while i < n:
-        c = text[i]
-        if in_str:
-            out.append(c)
-            if c == "\\" and i + 1 < n:  # escape — 다음 문자 그대로(짝으로 소비)
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if c == '"':
-                in_str = False
-            i += 1
-            continue
-        if c == '"':
-            in_str = True
-            out.append(c)
-            i += 1
-            continue
-        if c == "/" and i + 1 < n and text[i + 1] == "/":  # 라인 주석 → EOL 까지 blank
-            j = i
-            while j < n and text[j] != "\n":
-                out.append(" ")
-                j += 1
-            i = j
-            continue
-        if c == "/" and i + 1 < n and text[i + 1] == "*":  # 블록 주석 → `*/` 까지 blank(개행 보존)
-            j = i
-            while j < n and not (text[j] == "*" and j + 1 < n and text[j + 1] == "/"):
-                out.append("\n" if text[j] == "\n" else " ")
-                j += 1
-            if j < n:  # 닫는 `*/`
-                out.append("  ")
-                j += 2
-            i = j
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out)
-
-
-def _strip_jsonc_trailing_commas(text: str) -> str:
-    """`}`/`]` 앞의 후행 쉼표를 공백 1글자로 치환 — **길이 보존**(원본과 1:1).
-
-    jsonc 는 후행 쉼표를 허용하지만 `json.loads` 는 거부한다. 채택자가 배열·객체에서 항목 하나를
-    손으로 지우면 바로 그 형상이 되고, 그 파일이 통째로 빈 문서로 읽히면 선언 키가 전부 없는
-    것으로 실린다(유효한 파일을 오판).
-
-    문자열 리터럴은 존중한다 — 문자열 안의 `,` 는 문법 쉼표가 아니다. 주석은 마스킹
-    (`_mask_jsonc_comments`)이 이미 같은 길이 공백으로 바꾼 뒤라 공백 건너뛰기에 흡수된다.
-    치환이 1:1 이라 마스킹의 오프셋 보존 계약이 이 변환 뒤에도 그대로다."""
-    out = list(text)
-    i, n = 0, len(text)
-    in_str = False
-    comma: int | None = None            # 뒤 문자를 아직 못 본 최근 쉼표 위치
-    while i < n:
-        char = text[i]
-        if in_str:
-            if char == "\\" and i + 1 < n:   # escape — 다음 문자를 짝으로 소비
-                i += 2
-                continue
-            if char == '"':
-                in_str = False
-            i += 1
-            continue
-        if char == '"':
-            in_str = True
-            comma = None
-        elif char == ",":
-            comma = i
-        elif not char.isspace():
-            if char in "}]" and comma is not None:
-                out[comma] = " "
-            comma = None
-        i += 1
-    return "".join(out)
-
-
-# ── jsonc 키 경로 편집 (하네스 설정 반영 · `pm_import.apply_harness_ctx`) ──────────
-# 위 두 함수와 같은 규칙이다: 위치는 주석을 가린 사본(오프셋 == 원본)에서 찾고 원본의 같은
-# 오프셋을 고친다. 재직렬화하지 않으므로 주석·키 순서·들여쓰기·개행 표기가 그대로 남는다.
-# JSON 은 JSONC 의 부분집합이라 `.claude/settings.json` 도 같은 함수로 고친다.
-_JSONC_WHITESPACE = " \t\r\n"
-_JSONC_INDENT_STEP = "  "
-
-
-class _JsoncMember(NamedTuple):
-    """객체 멤버 하나의 좌표 — 키 따옴표 시작·값 리터럴의 [시작, 끝)."""
-    key: str
-    key_start: int
-    value_start: int
-    value_end: int
-
-
-def _jsonc_skip_whitespace(masked: str, index: int) -> int:
-    while index < len(masked) and masked[index] in _JSONC_WHITESPACE:
-        index += 1
-    return index
-
-
-def _jsonc_value_end(masked: str, start: int) -> int:
-    """값 리터럴 시작 오프셋 → 끝 오프셋(배타) — 문자열·중첩 괄호를 존중한다."""
-    length = len(masked)
-    if start >= length:
-        raise ValueError("jsonc 값 자리가 비어 있다(파일 끝)")
-    first = masked[start]
-    index = start + 1
-    if first == '"':
-        while index < length:
-            if masked[index] == "\\":
-                index += 2
-                continue
-            if masked[index] == '"':
-                return index + 1
-            index += 1
-        raise ValueError(f"jsonc 문자열이 닫히지 않았다 (오프셋 {start})")
-    if first in "{[":
-        depth, in_string = 1, False
-        while index < length:
-            char = masked[index]
-            if in_string:
-                if char == "\\":
-                    index += 2
-                    continue
-                if char == '"':
-                    in_string = False
-            elif char == '"':
-                in_string = True
-            elif char in "{[":
-                depth += 1
-            elif char in "}]":
-                depth -= 1
-                if depth == 0:
-                    return index + 1
-            index += 1
-        raise ValueError(f"jsonc 괄호가 닫히지 않았다 (오프셋 {start})")
-    while index < length and masked[index] not in ",}]" + _JSONC_WHITESPACE:
-        index += 1
-    if first in ",}]" + _JSONC_WHITESPACE:
-        raise ValueError(f"jsonc 값 자리에 값이 없다 (오프셋 {start})")
-    return index
-
-
-def _jsonc_object_members(masked: str, open_index: int) -> tuple[list[_JsoncMember], int]:
-    """`{` 오프셋 → (멤버 목록, 닫는 `}` 오프셋). 후행 쉼표를 허용한다."""
-    members: list[_JsoncMember] = []
-    index = _jsonc_skip_whitespace(masked, open_index + 1)
-    while True:
-        if index >= len(masked):
-            raise ValueError(f"jsonc 객체가 닫히지 않았다 (오프셋 {open_index})")
-        if masked[index] == "}":
-            return members, index
-        if masked[index] != '"':
-            raise ValueError(f"jsonc 객체 키 자리에 문자열이 없다 (오프셋 {index})")
-        key_end = _jsonc_value_end(masked, index)
-        key = json.loads(masked[index:key_end])
-        colon = _jsonc_skip_whitespace(masked, key_end)
-        if colon >= len(masked) or masked[colon] != ":":
-            raise ValueError(f"jsonc 키 {key!r} 뒤에 `:` 가 없다 (오프셋 {colon})")
-        value_start = _jsonc_skip_whitespace(masked, colon + 1)
-        value_end = _jsonc_value_end(masked, value_start)
-        members.append(_JsoncMember(key, index, value_start, value_end))
-        index = _jsonc_skip_whitespace(masked, value_end)
-        if index < len(masked) and masked[index] == ",":
-            index = _jsonc_skip_whitespace(masked, index + 1)
-            continue
-        if index < len(masked) and masked[index] == "}":
-            return members, index
-        raise ValueError(f"jsonc 멤버 {key!r} 뒤에 `,` 나 `}}` 가 없다 (오프셋 {index})")
-
-
-def _jsonc_member_text(path: tuple[str, ...], literal: str, indent: str, newline: str) -> str:
-    """`path[0]` 멤버 하나의 텍스트 — 남은 조각은 한 줄에 멤버 하나인 중첩 객체로 만든다."""
-    key = json.dumps(path[0], ensure_ascii=False)
-    if len(path) == 1:
-        return f"{key}: {literal}"
-    inner = indent + _JSONC_INDENT_STEP
-    return (f"{key}: {{{newline}{inner}"
-            f"{_jsonc_member_text(path[1:], literal, inner, newline)}{newline}{indent}}}")
-
-
-def _jsonc_inline_member_text(path: tuple[str, ...], literal: str) -> str:
-    """한 줄에 멤버를 늘어놓은 객체에 넣는 멤버 — 줄을 새로 만들지 않는다."""
-    key = json.dumps(path[0], ensure_ascii=False)
-    if len(path) == 1:
-        return f"{key}: {literal}"
-    return f"{key}: {{{_jsonc_inline_member_text(path[1:], literal)}}}"
-
-
-def _jsonc_line_indent(text: str, offset: int) -> str:
-    """`offset` 이 든 줄의 앞 공백."""
-    line_start = text.rfind("\n", 0, offset) + 1
-    line = text[line_start:]
-    return line[:len(line) - len(line.lstrip(" \t"))]
-
-
-def _jsonc_set_value(text: str, path: tuple[str, ...], value: int) -> tuple[str, str | None]:
-    """jsonc 텍스트의 키 경로에 정수 값을 쓴다 — (새 텍스트, 옛 값 리터럴 또는 None).
-
-    키가 있으면 값 리터럴 자리만 바꾼다(같은 키가 여럿이면 읽는 쪽이 쓰는 마지막 것). 없으면 그
-    객체의 마지막 멤버 뒤에 쉼표와 함께 넣고, 경로 중간의 없는 객체는 차례로 만든다. 새 멤버의
-    들여쓰기는 형제 멤버를 따르고, 형제가 없으면 여는 괄호 줄 들여쓰기에 2칸을 더한다. 줄바꿈은
-    파일의 개행 표기를 따른다. 경로 조각은 문서 키 그대로다(점·슬래시가 든 모델 id 를 가르지
-    않는다). 경로가 객체가 아닌 값을 지나거나 문법이 깨졌으면 `ValueError` 다 — 채택자 값을
-    덮어써서 지우지 않는다.
-    """
-    if not path:
-        raise ValueError("jsonc 키 경로가 비어 있다")
-    masked = _mask_jsonc_comments(text)
-    newline = "\r\n" if "\r\n" in text else "\n"
-    literal = json.dumps(value)
-    open_index = _jsonc_skip_whitespace(masked, 0)
-    if open_index >= len(masked) or masked[open_index] != "{":
-        raise ValueError("jsonc 최상위가 객체가 아니다")
-    for depth, key in enumerate(path):
-        members, close_index = _jsonc_object_members(masked, open_index)
-        found = [member for member in members if member.key == key]
-        if not found:
-            return _jsonc_insert_member(
-                text, open_index, close_index, members, path[depth:], literal,
-                newline), None
-        member = found[-1]
-        if depth == len(path) - 1:
-            old = text[member.value_start:member.value_end]
-            return text[:member.value_start] + literal + text[member.value_end:], old
-        if masked[member.value_start] != "{":
-            raise ValueError(
-                f"jsonc `{'.'.join(path[:depth + 1])}` 가 객체가 아니다 — 그 아래에 쓸 수 없다")
-        open_index = member.value_start
-    raise AssertionError("unreachable")
-
-
-def _jsonc_insert_member(text: str, open_index: int, close_index: int,
-                         members: list[_JsoncMember], path: tuple[str, ...], literal: str,
-                         newline: str) -> str:
-    """객체(`{`…`}`)에 `path[0]` 멤버를 넣은 텍스트 — 형제가 있으면 마지막 형제 뒤다."""
-    if members:
-        last = members[-1]
-        line_start = text.rfind("\n", 0, last.key_start) + 1
-        sibling_indent = text[line_start:last.key_start]
-        if sibling_indent.strip(" \t"):
-            piece = ", " + _jsonc_inline_member_text(path, literal)
-        else:
-            piece = ("," + newline + sibling_indent
-                     + _jsonc_member_text(path, literal, sibling_indent, newline))
-        return text[:last.value_end] + piece + text[last.value_end:]
-    parent_indent = _jsonc_line_indent(text, open_index)
-    indent = parent_indent + _JSONC_INDENT_STEP
-    member = newline + indent + _jsonc_member_text(path, literal, indent, newline)
-    if text[open_index + 1:close_index].strip(_JSONC_WHITESPACE):
-        # 빈 객체 안에 주석만 있다 — 주석을 지우지 않게 여는 괄호 바로 뒤에 넣는다.
-        return text[:open_index + 1] + member + text[open_index + 1:]
-    return text[:open_index + 1] + member + newline + parent_indent + text[close_index:]
 
 
 def _scan_array_end(masked: str, body_start: int) -> int:
@@ -4356,7 +4065,7 @@ def _find_toplevel_instructions(masked: str) -> tuple[int | None, int | None, in
         if c == '"':
             # 최상위(depth==1)의 "instructions" 키만 후보 — 중첩(depth>1)은 무시.
             if depth == 1:
-                m = _INSTR_KEY_RE.match(masked, i)
+                m = jsonc._INSTR_KEY_RE.match(masked, i)
                 if m:
                     body_start = m.end()  # 여는 `[` 직후
                     return body_start, _scan_array_end(masked, body_start), None
@@ -4389,10 +4098,10 @@ def _ensure_jsonc_instructions(jsonc_text: str) -> tuple[str, bool]:
     먼저 나와도 그 중첩 배열에 삽입하지 않는다 — opencode 가 로드하는 진입 지침은 최상위 키다.
     등록-확인은 **quoted-string 원소 정확 대조**(substring 오인 방지·주석-아웃/`.bak` suffix)."""
     rel = _ENTRY_DOC_PM_INSTRUCTIONS_REL
-    masked = _mask_jsonc_comments(jsonc_text)  # 주석 blank(오프셋 == 원본)
+    masked = jsonc._mask_jsonc_comments(jsonc_text)  # 주석 blank(오프셋 == 원본)
     body_start, body_end, root_end = _find_toplevel_instructions(masked)
     if body_start is not None:
-        elements = _JSONC_STRING_RE.findall(masked[body_start:body_end])  # 주석-아웃 원소 제외
+        elements = jsonc._JSONC_STRING_RE.findall(masked[body_start:body_end])  # 주석-아웃 원소 제외
         if rel in elements:
             return jsonc_text, False  # idempotent — 최상위 배열에 이미 등록
         # **빈 배열**에 `"…",` 를 넣으면 뒤에 이을 원소가 없어 후행 쉼표만 남는다
@@ -4581,7 +4290,7 @@ def prune_unavailable_reasoning(dest_root: Path, conf: Mapping[str, str], *,
             current = _read_local_conf(conf_path)
             if any(current.get(key) != value for key, value, *_ in misses):
                 raise ReasoningPruneError("local.conf 가 판정 중에 바뀌었다 — 다시 실행한다")
-            _load_pm_import()._write_conf_keys_locked(
+            install_conf._write_conf_keys_locked(
                 conf_path, {key: None for key, *_ in misses})
     lead = (f"  ✓ local.conf 추론 값 {len(misses)}개 지움" if write
             else f"[dry-run] local.conf 추론 값 {len(misses)}개 지울 예정")
@@ -4619,7 +4328,7 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
                 return {}
             moved = {old: new for old, new in result.legacy.items()
                      if new is not None and old in updates}
-            _load_pm_import()._write_conf_keys_locked(conf_path, updates)
+            install_conf._write_conf_keys_locked(conf_path, updates)
             remaining = conf_schema.rename_updates(conf_store.load(conf_path))
             if remaining:
                 raise RuntimeError(
@@ -4850,7 +4559,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
             # 재판정으로 확인한 뒤에만 ``backfilled`` 로 보고한다(원장 write 실패 false-green 금지).
             continue
         summary = pm_import.adapter_config_drift_summary(judgment, dest_root)
-        managed = judgment.mode == pm_import.ADAPTER_CONFIG_MANAGED
+        managed = judgment.mode == install_rules.ADAPTER_CONFIG_MANAGED
         if managed and judgment.status == "unedited":
             backup_rel = None
             if write:
@@ -4881,7 +4590,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
             result["updated"].append({
                 "relpath": judgment.relpath,
                 "backup_rel": backup_rel,
-                "note": pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(judgment.relpath),
+                "note": install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(judgment.relpath),
             })
             continue
         bucket = "preserved" if managed else "drift"

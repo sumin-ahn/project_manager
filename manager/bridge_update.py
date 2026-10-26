@@ -20,6 +20,8 @@ rc·stdout·stderr 를 가공 없이 넘기고, 어댑터 drift 줄 강조는 �
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import importlib
 import importlib.util
 import subprocess
@@ -69,7 +71,7 @@ def imprinted_upstream() -> str:
 def registered_harnesses() -> list[str]:
     """하네스 라디오의 값 — 번들 엔진의 어댑터 registry(= template 디렉터리 표) 그대로."""
     with ENGINE_LOCK:
-        return list(load_engine_module("pm_import.py").REGISTERED_HARNESSES)
+        return list(install_rules.REGISTERED_HARNESSES)
 
 
 def update_argv(pm_home: Path, *, dry_run: bool) -> list[str]:

@@ -371,3 +371,16 @@ def close_session(pool, session: str) -> None:
     assert held, f"세션 {session!r} 이 잡은 행이 장부에 없다"
     for slot in held:
         worktree_pool.force_release(pm_paths.home_at(pool.REPO), slot)
+
+
+@pytest.fixture
+def render_home(tmp_path):
+    """실행 코드의 스킬 inventory를 임시 Home에 복제한다."""
+    from pm_engine.infra import pm_paths, skill_inventory
+    root = tmp_path / "render-engine"
+    root.mkdir(exist_ok=True)
+    for name in skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO)):
+        copied = root / ".agents/skills" / name / "SKILL.md"
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        copied.write_text("fixture", encoding="utf-8")
+    return pm_paths.home_at(root)

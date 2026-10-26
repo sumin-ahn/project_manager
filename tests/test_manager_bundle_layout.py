@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import shutil
 import subprocess
 import sys
@@ -71,7 +73,7 @@ def test_the_source_trees_exist_and_only_the_screen_is_a_build_product():
 
 def test_every_registered_harness_template_is_bundled():
     """하네스가 넷이 되면 여기서 red 다 — 번들은 `pm_import --new` 가 복사할 트리를 다 실어야 한다."""
-    template_dirs = load_engine_module("pm_import.py").HARNESS_TEMPLATE_DIRS
+    template_dirs = install_rules.HARNESS_TEMPLATE_DIRS
 
     expected = {f"templates/{name}" for names in template_dirs.values() for name in names}
     assert expected <= set(_destinations()), f"{expected - set(_destinations())} 가 번들에 없다"

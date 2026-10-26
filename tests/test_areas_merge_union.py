@@ -21,6 +21,9 @@ skip 한다(내용 판정 단위 테스트는 항상 실행).
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.app import install_board
+
 from pm_engine.cli import board_init
 from pm_engine.cli import board_ticket
 
@@ -760,18 +763,18 @@ def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
 def test_import_scaffold_mirrors_board_block(board):
     """pm_import 미러 상수가 board 의 배포 블록과 동일(문구 drift 가드·둘 다 stdlib-only)."""
     pm_import = _load_mod("pm_import")
-    assert pm_import._BOARD_GITATTRIBUTES_SCAFFOLD == board_git_rules._BOARD_GITATTRIBUTES_BLOCK
+    assert install_board._BOARD_GITATTRIBUTES_SCAFFOLD == board_git_rules._BOARD_GITATTRIBUTES_BLOCK
     assert gitattributes_rules._areas_union_declared(
-        pm_import._BOARD_GITATTRIBUTES_SCAFFOLD, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
+        install_board._BOARD_GITATTRIBUTES_SCAFFOLD, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
     assert board_git._board_text_lf_declared(
-        pm_import._BOARD_GITATTRIBUTES_SCAFFOLD) is True
+        install_board._BOARD_GITATTRIBUTES_SCAFFOLD) is True
 
 
 @requires_git
 def test_new_board_submodule_seed_deploys_union(board, tmp_path, monkeypatch):
     """`pm-import --new --board-submodule` seed 된 board 가 곧바로 union 으로 해소된다."""
     pm_import = _load_mod("pm_import")
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     bare = tmp_path / "board.git"

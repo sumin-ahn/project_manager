@@ -17,6 +17,8 @@ fresh 채택자는 탈출 불능). 이 절이 고정하는 성질:
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import hashlib
 import importlib.util
 import json
@@ -313,7 +315,7 @@ def test_broken_config_json_is_not_a_finding(pm_import, tmp_path):
 
 def test_every_registered_harness_declares_a_hook_set(pm_import):
     """등록 하네스 전수가 훅 세트 선언을 갖는다 — 네 번째 하네스가 조용히 미검사로 못 떨어진다."""
-    assert set(pm_import.ADAPTER_HOOK_SET) == set(pm_import.REGISTERED_HARNESSES)
+    assert set(pm_import.ADAPTER_HOOK_SET) == set(install_rules.REGISTERED_HARNESSES)
 
 
 def test_flag_support_targets_are_declared_live_files(pm_import):
@@ -1613,14 +1615,14 @@ def test_accept_downgrades_loudly_on_legacy_sibling_engine(pm_config, pm_import,
 
     class LegacyPmImport:
         """T-0606 이전 세대 — 세대 게이트도, 스냅샷 결속 키워드도 없다."""
-        ADAPTER_CONFIG_REAPPROVAL_NOTE = pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE
+        ADAPTER_CONFIG_REAPPROVAL_NOTE = install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE
         resolve_adapter_config_source = staticmethod(
             pm_import.resolve_adapter_config_source)
         judge_adapter_configs = staticmethod(pm_import.judge_adapter_configs)
         unconverged_managed_adapter_configs = staticmethod(
             pm_import.unconverged_managed_adapter_configs)
-        ADAPTER_CONFIG_REPORT = pm_import.ADAPTER_CONFIG_REPORT
-        ADAPTER_CONFIG_MANAGED = pm_import.ADAPTER_CONFIG_MANAGED
+        ADAPTER_CONFIG_REPORT = install_rules.ADAPTER_CONFIG_REPORT
+        ADAPTER_CONFIG_MANAGED = install_rules.ADAPTER_CONFIG_MANAGED
 
         @staticmethod
         def accept_adapter_config(dest_root, source_root, relpath, *,
@@ -1643,9 +1645,9 @@ def _previous_generation_pm_import(pm_import):
     """직전 세대 형제 — 신 API(`hook_set_accept_decision`)는 없고 구 blocker 판정만 있는 사본."""
 
     class PreviousGeneration:
-        ADAPTER_CONFIG_REAPPROVAL_NOTE = pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE
-        ADAPTER_CONFIG_REPORT = pm_import.ADAPTER_CONFIG_REPORT
-        ADAPTER_CONFIG_MANAGED = pm_import.ADAPTER_CONFIG_MANAGED
+        ADAPTER_CONFIG_REAPPROVAL_NOTE = install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE
+        ADAPTER_CONFIG_REPORT = install_rules.ADAPTER_CONFIG_REPORT
+        ADAPTER_CONFIG_MANAGED = install_rules.ADAPTER_CONFIG_MANAGED
         resolve_adapter_config_source = staticmethod(
             pm_import.resolve_adapter_config_source)
         judge_adapter_configs = staticmethod(pm_import.judge_adapter_configs)
@@ -1720,8 +1722,8 @@ def test_check_downgrades_loudly_on_legacy_sibling_engine(pm_config, pm_import,
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
 
     class LegacyJudgePmImport:
-        ADAPTER_CONFIG_REPORT = pm_import.ADAPTER_CONFIG_REPORT
-        ADAPTER_CONFIG_MANAGED = pm_import.ADAPTER_CONFIG_MANAGED
+        ADAPTER_CONFIG_REPORT = install_rules.ADAPTER_CONFIG_REPORT
+        ADAPTER_CONFIG_MANAGED = install_rules.ADAPTER_CONFIG_MANAGED
         resolve_adapter_config_source = staticmethod(
             pm_import.resolve_adapter_config_source)
         judge_adapter_configs = staticmethod(pm_import.judge_adapter_configs)
@@ -2229,7 +2231,7 @@ def _shipped_hook_configs(pm_import) -> list[tuple[str, Path, dict]]:
     for harness, spec in pm_import.ADAPTER_HOOK_SET.items():
         if not spec.config_relpath:
             continue
-        template_root = REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
+        template_root = REPO / "templates" / install_rules.HARNESS_TEMPLATE_DIRS[harness][0]
         out.append((harness, template_root, json.loads(
             (template_root / spec.config_relpath).read_text(encoding="utf-8"))))
     assert out, "훅 선언 config 를 가진 하네스가 없다(공허 가드)"
@@ -2245,11 +2247,11 @@ def test_hook_set_spec_fields_are_unchanged_by_the_settings_key_declaration(pm_i
     assert pm_import.AdapterHookSetSpec._fields == (
         "config_relpath", "live_files", "flag_support", "coupled_groups", "entrypoints")
     channel_paths = {relpath
-                     for channel in pm_import.ADAPTER_CONFIG_CHANNEL.values()
+                     for channel in install_rules.ADAPTER_CONFIG_CHANNEL.values()
                      for relpath in channel}
-    assert set(pm_import.ADAPTER_SETTINGS_KEYS) <= channel_paths, \
+    assert set(install_rules.ADAPTER_SETTINGS_KEYS) <= channel_paths, \
         "설정 키 선언의 키는 config 파일 relpath 여야 한다(하네스 이름 축 금지)"
-    assert all(keys for keys in pm_import.ADAPTER_SETTINGS_KEYS.values()), \
+    assert all(keys for keys in install_rules.ADAPTER_SETTINGS_KEYS.values()), \
         "빈 키 목록은 그 파일의 기능 축을 통째로 끈다"
 
 
@@ -2262,15 +2264,15 @@ def test_declared_settings_keys_resolve_in_the_shipped_templates(pm_import):
     (`test_shipped_config_has_no_feature_distance_against_itself`)는 양쪽 부재를 same 으로 접어
     이 축을 못 잡는다."""
     template_dir_by_relpath = {
-        relpath: pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
-        for harness, channel in pm_import.ADAPTER_CONFIG_CHANNEL.items()
+        relpath: install_rules.HARNESS_TEMPLATE_DIRS[harness][0]
+        for harness, channel in install_rules.ADAPTER_CONFIG_CHANNEL.items()
         for relpath in channel
     }
-    declared = sum(len(keys) for keys in pm_import.ADAPTER_SETTINGS_KEYS.values())
+    declared = sum(len(keys) for keys in install_rules.ADAPTER_SETTINGS_KEYS.values())
     assert declared > 0, "선언이 비면 이 가드는 공허하다"
 
     resolved = 0
-    for relpath, keys in pm_import.ADAPTER_SETTINGS_KEYS.items():
+    for relpath, keys in install_rules.ADAPTER_SETTINGS_KEYS.items():
         template_path = (REPO / "templates" / template_dir_by_relpath[relpath] / relpath)
         document = pm_import._load_adapter_config_document(template_path)
         assert document, f"{relpath}: 출하 template 을 문서로 못 읽었다"
@@ -2384,10 +2386,10 @@ def test_shipped_config_has_no_feature_distance_against_itself(pm_import):
 
     (`pm-config status --json --with-adapters` 의 거리 축·실측 회귀: codex 훅 커맨드 형상에서
     손대지 않은 `.codex/hooks.json` 이 거리 6 으로 실렸다.)"""
-    for harness, channel in pm_import.ADAPTER_CONFIG_CHANNEL.items():
-        template_root = REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
+    for harness, channel in install_rules.ADAPTER_CONFIG_CHANNEL.items():
+        template_root = REPO / "templates" / install_rules.HARNESS_TEMPLATE_DIRS[harness][0]
         for relpath, mode in channel.items():
-            if mode == pm_import.ADAPTER_CONFIG_NO_CHANNEL:
+            if mode == install_rules.ADAPTER_CONFIG_NO_CHANNEL:
                 continue
             document = pm_import._load_adapter_config_document(template_root / relpath)
             assert document, f"{relpath}: 출하 template 을 문서로 못 읽었다"

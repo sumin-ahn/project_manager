@@ -49,15 +49,14 @@ SAVE_ENTERS_THE_WAIT_SECONDS = 0.3
 
 # 락을 실제로 쥐는 **다른 프로세스** — 엔진 자신의 writer 로 결정 하나를 쓰고 창을 연 채 기다린다.
 LOCK_HOLDER = '''
-import importlib.util, sys, time
+import sys, time
 from pathlib import Path
 
 tools, conf, ready, hold = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), float(sys.argv[4])
-spec = importlib.util.spec_from_file_location("pm_import_holder", Path(tools) / "pm_import.py")
-pm_import = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pm_import)
-with pm_import._local_conf_write_lock(conf):
-    pm_import._write_conf_keys_locked(conf, {"identity.user": "holder@example.invalid"})
+sys.path.insert(0, tools)
+from pm_engine.infra import fs, install_conf
+with fs.local_conf_write_lock(conf):
+    install_conf._write_conf_keys_locked(conf, {"identity.user": "holder@example.invalid"})
     ready.write_text("held", encoding="utf-8")
     time.sleep(hold)
 '''

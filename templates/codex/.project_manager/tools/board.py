@@ -872,10 +872,10 @@ def cmd_promote_scope(args: argparse.Namespace) -> int:
 #
 # 스캔 대상 = **@render manifest path 의 산출물**
 #    .opencode/agents·command). 토큰은 @render 산출물 path 에서만 leak 으로 간주된다 —
-#    pm_render(post-render assertion) + 이 lint(상시 backstop)가 함께 자족성을 보증한다.
+#    adapter_render(post-render assertion) + 이 lint(상시 backstop)가 함께 자족성을 보증한다.
 
 # leak 스캔 토큰 — 대문자/언더스코어 placeholder (`{{PROJECT_NAME}}`·`{{PROTECTED_PATHS}}` 등).
-# pm_render._ANY_TOKEN_RE 와 동형(소문자/공백 토큰은 산문이라 제외·오탐 0).
+# render_rules._ANY_TOKEN_RE 와 동형(소문자/공백 토큰은 산문이라 제외·오탐 0).
 _RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
 
@@ -1131,7 +1131,7 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     — 루트 manifest 가 `.claude/* @render` 여도 소스 트리에선 무발화, 채택 인스턴스(local.conf
     보유·render 산출물)에선 미해소 토큰을 잡는다. **단 도그푸딩 worktree 는 local.conf 를 보유해
     트리 게이트가 부족하다** — 출하 템플릿과 byte-identical 인 토큰-form 원본은 파일 단위로
-    면제한다(`_template_mirror_state`). pm_render 의 post-render assertion 과 2중
+    면제한다(`_template_mirror_state`). adapter_render의 post-render assertion 과 2중
     backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
 
     fail-soft: manifest 부재·파싱 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·신규 무영향).

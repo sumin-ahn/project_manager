@@ -36,6 +36,8 @@ claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0*
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+
 from pm_engine.cli import bootstrap as bootstrap_cli
 from pm_engine.cli import bootstrap_card
 from pm_engine.infra import pm_paths
@@ -1190,7 +1192,6 @@ def _shared_board_adopter(tmp_path: Path, monkeypatch, *, folders: int) -> Path:
     bare = tmp_path / "board.git"
     assert subprocess.run(["git", "init", "--bare", "-q", str(bare)], capture_output=True).returncode == 0
     pm_import = _load_pm_import()
-    pm_import._real_models_runner = lambda source: (False, [])
     dest = tmp_path / "shared-board"
     assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual",
                            "--board-submodule", "--board-remote", str(bare)]) == 0
@@ -2032,7 +2033,6 @@ def _board_submodule_adopter(tmp_path: Path) -> Path:
     from test_fresh_adopter_runtime_smoke import _load_pm_import
 
     pm_import = _load_pm_import()
-    pm_import._real_models_runner = lambda source: (False, [])
     bare = tmp_path / "board.git"
     assert _git_out("init", "--bare", "-q", str(bare)).returncode == 0
     dest = tmp_path / "adopter-sub"
@@ -2733,3 +2733,9 @@ def test_handoff_guides_name_task_trigger():
         assert lines, path
         for line in lines:
             assert "--task" in line and "or 직접" not in line, (path, line)
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

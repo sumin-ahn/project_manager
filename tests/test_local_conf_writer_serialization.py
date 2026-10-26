@@ -28,6 +28,9 @@ read → 판단/계획 → write → postcondition 전체의 직렬화다.
 """
 from __future__ import annotations
 
+from pm_engine.domain import conf_schema
+from pm_engine.infra import install_conf
+
 from pm_engine.cli import board_init
 
 import ast
@@ -104,8 +107,8 @@ def test_t0927_migration_lock_replans_new_user_value(tmp_path, pm_update, pm_imp
     @contextmanager
     def competing_writer(path):
         # 계획을 읽고 락을 얻는 사이 사용자가 새 키를 저장한 실제 경합 순서다.
-        pm_import._write_conf_keys(path, {"ctx.precompact_at_pct": "87"})
-        with pm_import._local_conf_write_lock(path):
+        install_conf._write_conf_keys(path, {"ctx.precompact_at_pct": "87"})
+        with fs.local_conf_write_lock(path):
             yield
 
     monkeypatch.setattr(pm_update, "_local_conf_write_lock", competing_writer)
@@ -127,7 +130,7 @@ HOLDS_LOCK = "holds-lock"
 UNDER_CALLER_LOCK = "under-caller-lock"
 DELEGATES = "delegates"
 
-LOCK_SEAM_CALL = "_local_conf_write_lock("
+LOCK_SEAM_CALL = "local_conf_write_lock("
 
 # 등재된 conf writer 전수. 값 = (처분, 사유). 스캐너가 새 writer 를 잡으면 이 표와 어긋나 red 다.
 LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
@@ -137,13 +140,13 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (HOLDS_LOCK, "형상 판정(upstream=)→updates 계획→키 write→검증이 한 구간"),
     ("pm_update.py", "migrate_renamed_conf_keys"):
         (HOLDS_LOCK, "구표기 판정→이름 이동 계획→키 write+옛 줄 삭제가 한 구간"),
-    ("pm_import.py", "_write_conf_keys"):
+    ("pm_engine/infra/install_conf.py", "_write_conf_keys"):
         (HOLDS_LOCK, "키 단위 RMW 백엔드(pm_import·pm_update·pm_config 공용)"),
-    ("pm_import.py", "_write_conf_keys_locked"):
+    ("pm_engine/infra/install_conf.py", "_write_conf_keys_locked"):
         (UNDER_CALLER_LOCK, "임계 구간 본문(temp write + os.replace + 실효값 검증)"),
     ("pm_import.py", "sync_local_conf"):
         (DELEGATES, "import 직후 operational 키 정렬"),
-    ("pm_import.py", "reapply_preserved_conf_keys"):
+    ("pm_engine/infra/install_conf.py", "reapply_preserved_conf_keys"):
         (HOLDS_LOCK, "현재 conf 읽기→보존 대상 계산→키 write→검증이 한 구간"),
     ("pm_import.py", "record_upstream"):
         (DELEGATES, "upstream 값 기록"),
@@ -172,10 +175,12 @@ def _called_name(call: ast.Call) -> str | None:
     """호출 노드의 피호출 이름 — 이름 호출(`f()`)·속성 호출(`mod.f()`) 둘 다 같은 폭으로 본다."""
     func = call.func
     if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return None
+        name = func.id
+    elif isinstance(func, ast.Attribute):
+        name = func.attr
+    else:
+        return None
+    return "local_conf_write_lock" if name == "_local_conf_write_lock" else name
 
 
 def _function_scopes(tree: ast.Module):
@@ -319,7 +324,7 @@ def test_no_lock_holder_calls_another_conf_writer_inside_its_lock_body():
         for node in ast.walk(ast.parse(_source_of(module_file, function))):
             if not isinstance(node, ast.With) or not any(
                 isinstance(item.context_expr, ast.Call)
-                and _called_name(item.context_expr) == "_local_conf_write_lock"
+                and _called_name(item.context_expr) == "local_conf_write_lock"
                 for item in node.items
             ):
                 continue
@@ -347,7 +352,7 @@ def test_every_entry_derives_the_same_lock_path(
     expected = conf.parent / ".local" / "local-conf.lock"
     assert file_lock.conf_lock_path(conf) == expected
     assert conf_store._local_conf_lock_path(conf) == expected
-    assert pm_import._local_conf_lock_path(conf) == expected
+    assert fs.conf_lock_path(conf) == expected
 
 
 def test_the_path_rule_lives_only_in_the_shared_seam():
@@ -419,7 +424,7 @@ def test_a_concurrent_key_writer_never_loses_the_init_merge(
     """
     conf = _conf_at(tmp_path, "session=pm\n")
     barrier = _Barrier()
-    real_set_conf_keys = pm_import._set_conf_keys
+    real_set_conf_keys = install_conf._set_conf_keys
 
     def _blocking_set(text, updates):
         # 락을 쥔 채 "읽은 뒤" 멈춘다 — 경쟁 상대가 이 창에 끼어들 기회를 실제로 준다.
@@ -427,9 +432,9 @@ def test_a_concurrent_key_writer_never_loses_the_init_merge(
         assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(pm_import, "_set_conf_keys", _blocking_set)
+    monkeypatch.setattr(install_conf, "_set_conf_keys", _blocking_set)
     rmw = barrier.run(
-        lambda: pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
+        lambda: install_conf._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "RMW writer 가 임계 구간에 못 들어갔다"
 
     merged = threading.Event()
@@ -476,7 +481,7 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_init_merge(
     written = threading.Event()
 
     def _rmw():
-        pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
+        install_conf._write_conf_keys(conf, {"upstream.rev": "rev-2"})
         written.set()
 
     rmw_thread = threading.Thread(target=_rmw, daemon=True)
@@ -556,7 +561,7 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
     preserved = threading.Event()
 
     def _preserve():
-        pm_import.reapply_preserved_conf_keys(conf.parent.parent, backup)
+        install_conf.reapply_preserved_conf_keys(conf.parent.parent, backup)
         preserved.set()
 
     preserve_thread = threading.Thread(target=_preserve, daemon=True)
@@ -590,7 +595,7 @@ def test_an_in_flight_preserve_blocks_a_later_merge_and_keeps_both_decisions(
               "additional_reviewer.model=gpt-5.6-sol\n")
     commit = _init_merge(board, monkeypatch, conf)
     barrier = _Barrier()
-    real_parse = pm_import._parse_conf_keys
+    real_parse = conf_schema.parse
 
     def _blocking_parse(text):
         if text != backup and not barrier.entered.is_set():
@@ -599,9 +604,9 @@ def test_an_in_flight_preserve_blocks_a_later_merge_and_keeps_both_decisions(
             assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_parse(text)
 
-    monkeypatch.setattr(pm_import, "_parse_conf_keys", _blocking_parse)
+    monkeypatch.setattr(conf_schema, 'parse', _blocking_parse)
     preserve = barrier.run(
-        lambda: pm_import.reapply_preserved_conf_keys(conf.parent.parent, backup))
+        lambda: install_conf.reapply_preserved_conf_keys(conf.parent.parent, backup))
     assert barrier.entered.wait(SYNC_TIMEOUT), "보존 재병합이 현재 상태를 읽지 않았다"
 
     done = threading.Event()
@@ -651,15 +656,15 @@ def _run_rev_record_against_an_upstream_flip(
     conf = _conf_at(tmp_path, f"session=pm\nupstream.path={stored}\n")
     _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
     barrier = _Barrier()
-    real_set_conf_keys = pm_import._set_conf_keys
+    real_set_conf_keys = install_conf._set_conf_keys
 
     def _blocking_set(text, updates):
         barrier.entered.set()
         assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(pm_import, "_set_conf_keys", _blocking_set)
-    flip = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream.path": flipped}))
+    monkeypatch.setattr(install_conf, "_set_conf_keys", _blocking_set)
+    flip = barrier.run(lambda: install_conf._write_conf_keys(conf, {"upstream.path": flipped}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "upstream 플립이 임계 구간에 못 들어갔다"
 
     recorded: list[tuple[bool, dict[str, str]]] = []
@@ -719,7 +724,7 @@ def _vanishing_conf_lock(module, monkeypatch):
         Path(conf_path).unlink()
         yield None
 
-    monkeypatch.setattr(module, "_local_conf_write_lock", _lock)
+    monkeypatch.setattr(module, "local_conf_write_lock" if module is fs else "_local_conf_write_lock", _lock)
 
 
 def test_rev_record_skips_an_absent_conf_without_leaving_a_lock_file(
@@ -752,8 +757,8 @@ def test_the_existence_check_inside_the_lock_is_the_authoritative_one(
         _vanishing_conf_lock(pm_update, monkeypatch)
         assert pm_update.record_upstream_revs(conf.parent.parent, tmp_path / "src") == (False, {})
     else:
-        _vanishing_conf_lock(pm_import, monkeypatch)
-        assert pm_import.reapply_preserved_conf_keys(
+        _vanishing_conf_lock(fs, monkeypatch)
+        assert install_conf.reapply_preserved_conf_keys(
             conf.parent.parent, "my_custom_key=값\n") is False
     assert not conf.exists(), "락 안에서 사라진 conf 를 되살려 썼다"
 
@@ -795,7 +800,7 @@ def test_key_writer_takes_the_shared_lock(pm_import, monkeypatch, tmp_path):
     taken: list[str] = []
     _spy_lock(pm_import.fs, monkeypatch, taken)
 
-    assert pm_import._write_conf_keys(conf, {"upstream.path": "/u"}) is True
+    assert install_conf._write_conf_keys(conf, {"upstream.path": "/u"}) is True
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
 
@@ -831,7 +836,7 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
 
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     conf_store._write_init_local_conf(pm_paths.home_at(conf.parents[1]))
-    pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
+    install_conf._write_conf_keys(conf, {"upstream.rev": "rev-2"})
 
     text = conf.read_text(encoding="utf-8")
     parsed = _parse_conf(text)
@@ -850,8 +855,8 @@ def test_t0932_commit_writer_lock_sensitivity():
     tree = ast.parse(source)
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _called_name(n) == '_write_conf_keys_locked']
     assert calls
-    locks = [n for n in ast.walk(tree) if isinstance(n, ast.With) and any(isinstance(i.context_expr, ast.Call) and _called_name(i.context_expr) == '_local_conf_write_lock' for i in n.items)]
+    locks = [n for n in ast.walk(tree) if isinstance(n, ast.With) and any(isinstance(i.context_expr, ast.Call) and _called_name(i.context_expr) == 'local_conf_write_lock' for i in n.items)]
     assert locks and all(any(call in list(ast.walk(lock)) for lock in locks) for call in calls)
-    broken = source.replace('_local_conf_write_lock(', '_removed_lock(')
+    broken = source.replace('local_conf_write_lock(', 'removed_lock(')
     with pytest.raises(AssertionError):
         assert LOCK_SEAM_CALL in broken, '동결 commit 락 누락'

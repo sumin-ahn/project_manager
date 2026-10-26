@@ -17,6 +17,8 @@ DI seam 동류).
     AncestorConflict 를 친화 메시지 + rc 1 로 번역(traceback 0·pm_import.main 동형).
 """
 from __future__ import annotations
+
+from pm_engine.infra import install_files
 from pm_engine.infra import lease_store
 from pm_engine.app import repo_protection
 from pm_engine.infra import pm_paths
@@ -231,8 +233,8 @@ def test_add_harness_surfaced_in_help(pc, capsys):
 @pytest.mark.parametrize("make_exc, needle", [
     (lambda pim: ValueError("미지원 harness"), "미지원 harness"),
     (lambda pim: FileNotFoundError("dest 없음"), "dest 없음"),
-    (lambda pim: pim.FileVsDirConflict("dst 에 디렉토리"), "dst 에 디렉토리"),
-    (lambda pim: pim.AncestorConflict("조상 symlink"), "조상 symlink"),
+    (lambda pim: install_files.FileVsDirConflict("dst 에 디렉토리"), "dst 에 디렉토리"),
+    (lambda pim: install_files.AncestorConflict("조상 symlink"), "조상 symlink"),
 ])
 def test_add_harness_cli_translates_contract_exc_to_rc1(
     pim, monkeypatch, capsys, make_exc, needle,

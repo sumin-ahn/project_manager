@@ -1271,7 +1271,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
     # reviewer/guard의 마지막 적재와 전용 recovery 경계 9개를 제거했다.
     # 세션 진입·handoff/log/finisher 이동으로 적재 전용 경계 12개를 더 제거했다(50→38).
-    assert len(report.boundaries) == 38, "propagation sweep boundary ratchet changed"
+    # 렌더 형제 로더 1개 은퇴와 fill의 패키지 직접 호출 전환으로 평면 경계 5개가 줄었다.
+    # 이동한 formatter 1곳·runner 3곳의 marked IO 재전파는 fill 런타임 시험에서 보존한다.
+    assert len(report.boundaries) == 33, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

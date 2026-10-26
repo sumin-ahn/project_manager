@@ -11,6 +11,9 @@ areas.md 로 초기화 후 push(신규), 내용 있으면 재사용(2번째 유�
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.app import install_board
+
 import importlib.util
 import os
 import shutil
@@ -55,7 +58,7 @@ def pm_import():
 @pytest.fixture(autouse=True)
 def _hermetic(pm_import, monkeypatch):
     """opencode `models` 라이브 호출 차단(설치 여부로 분기하지 않게) + 결정적 git identity."""
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
 
@@ -300,7 +303,7 @@ def test_submodule_add_failure_cleans_partial_board(pm_import, tmp_path, monkeyp
     bare = tmp_path / "board.git"
     _make_bare(bare)
     dest = tmp_path / "home"
-    real = pm_import._board_setup_git
+    real = install_board._board_setup_git
 
     def wrapper(argv, cwd):
         if argv[:2] == ["submodule", "add"]:
@@ -309,7 +312,7 @@ def test_submodule_add_failure_cleans_partial_board(pm_import, tmp_path, monkeyp
             subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
         return real(argv, cwd)
 
-    monkeypatch.setattr(pm_import, "_board_setup_git", wrapper)
+    monkeypatch.setattr(install_board, "_board_setup_git", wrapper)
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
                          "--board-submodule", "--board-remote", str(bare)])
     assert rc != 0
@@ -351,7 +354,7 @@ def test_partial_board_cleanup_removes_read_only_git_objects(pm_import, tmp_path
     _read_only_object_tree(modules_board)
     _read_only_object_tree(board_dir / ".git")
 
-    pm_import._cleanup_partial_board(dest)
+    install_board._cleanup_partial_board(dest)
 
     assert not modules_board.exists(), ".git/modules 잔재 — 정리 실패가 삼켜졌다"
     assert not board_dir.exists(), "board/ 잔재 — 정리 실패가 삼켜졌다"
@@ -433,7 +436,7 @@ def test_dry_run_no_board_side_effects(pm_import, tmp_path, capsys):
 
 def test_areas_scaffold_columns_mirror_board(pm_import):
     board_mod = _load_mod("board")
-    assert pm_import._BOARD_AREAS_COLUMNS == areas_rules._AREAS_COLUMNS
-    scaffold = pm_import._board_areas_scaffold()
+    assert install_board._BOARD_AREAS_COLUMNS == areas_rules._AREAS_COLUMNS
+    scaffold = install_board._board_areas_scaffold()
     assert areas_store._areas_header_line() in scaffold
     assert areas_store._areas_separator_line() in scaffold

@@ -1261,7 +1261,7 @@ def test_bump_round_trip_rewrites_every_newly_measured_target(tmp_path):
     isolated = _load_module(tools, "engine_rev")
     next_rev = "v99.0.1"
     newly_measured = {
-        "additional_reviewer.py", "pm_render.py", "pm_import.py", "pm_log.py",
+        "additional_reviewer.py", "pm_import.py", "pm_log.py",
     }
 
     assert isolated.main(["--bump", next_rev]) == 0
@@ -1818,10 +1818,6 @@ def test_guard_is_portable_and_needs_no_git_or_wiki(tmp_path):
 
 _LOADER_CASES = (
     (
-        "pm_import", "pm_render", lambda mod, _tools: mod._load_pm_render_module(),
-        "_load_pm_render_module",
-    ),
-    (
         "pm_config", "pm_import", lambda mod, _tools: mod._load_module("pm_import", "pm_import.py"),
         "_load_module",
     ),
@@ -1936,32 +1932,3 @@ def test_sensitivity_removing_each_loader_guard_defeats_the_red_oracle(
 
 def _handler_reraises_marked_skew(handler: ast.ExceptHandler) -> bool:
     return _handler_reraises_verifier_skew(handler)
-
-
-
-
-@pytest.mark.parametrize(
-    ("loader_name", "target_name", "call", "function_name"),
-    (
-        (
-            "pm_import", "pm_render", lambda mod: mod._load_pm_render_module(),
-            "_load_pm_render_module",
-        ),
-    ),
-)
-def test_sensitivity_removing_each_failsoft_reraise_loses_skew(
-    tmp_path, loader_name, target_name, call, function_name,
-):
-    names = {loader_name, target_name}
-    if loader_name == "pm_import" or target_name == "repo_owned_files":
-        names.add("engine_rev")
-    tools = _copy_tools(tmp_path, *sorted(names))
-    loader_path = tools / f"{loader_name}.py"
-    _remove_skew_reraise_from_function(loader_path, function_name)
-    _make_target_stale(tools / f"{target_name}.py")
-    loader = _load_module(tools, loader_name)
-
-    try:
-        call(loader)
-    except Exception as exc:
-        assert getattr(exc, "_engine_rev_skew", False) is not True

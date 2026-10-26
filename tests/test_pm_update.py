@@ -8,6 +8,13 @@ self-location(--target 생략) 모드는 effective_dest=REPO 이므로 pm_update
 monkeypatch 해 실 REPO 를 건드리지 않고 local.conf upstream 해소를 검증한다.
 """
 from __future__ import annotations
+
+from _manager_home import render_home
+from pm_engine.app import adapter_render
+from pm_engine.app import import_fill
+from pm_engine.domain import install_rules
+from pm_engine.domain import render_rules
+from pm_engine.infra import install_conf
 from pm_engine.app import repo_protection
 from pm_engine.infra import protected_hooks, pm_paths
 
@@ -644,9 +651,9 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "onepassrev5")
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     calls: list[dict] = []
-    real_write = pm_import._write_conf_keys_locked
+    real_write = install_conf._write_conf_keys_locked
     monkeypatch.setattr(
-        pm_import, "_write_conf_keys_locked",
+        install_conf, "_write_conf_keys_locked",
         lambda path, updates: (calls.append(dict(updates)), real_write(path, updates))[1])
 
     assert pm_update.record_upstream_revs(dest, source)[0] is True
@@ -3432,12 +3439,7 @@ def test_target_export_wiring_sensitivity_identity_renderer_leaves_wrong_prefix(
     skill.write_text("# /pm-bootstrap — entry\n", encoding="utf-8")
     _track_source_tree(source)
     dest = tmp_path / "dest"
-    real_render = pm_update._load_pm_render()
-    fake_render = SimpleNamespace(
-        render_skill_entry_notation=lambda text, _template, **_kwargs: text,
-        render_adapter=real_render.render_adapter,
-    )
-    monkeypatch.setattr(pm_update, "_load_pm_render", lambda: fake_render)
+    monkeypatch.setattr(render_rules, "render_skill_entry_notation", lambda text, _template, **_kwargs: text)
 
     changes, missing = pm_update.plan(
         source,
@@ -7521,9 +7523,9 @@ def test_adapter_config_outer_candidate_paths_match_channel_declaration(pm_updat
     pm_import = pm_update._load_pm_import()
     declared = {
         relpath
-        for channel in pm_import.ADAPTER_CONFIG_CHANNEL.values()
+        for channel in install_rules.ADAPTER_CONFIG_CHANNEL.values()
         for relpath, mode in channel.items()
-        if mode != pm_import.ADAPTER_CONFIG_NO_CHANNEL
+        if mode != install_rules.ADAPTER_CONFIG_NO_CHANNEL
     }
     assert set(pm_update._ADAPTER_CONFIG_DEST_CANDIDATES) == declared
 
@@ -7701,16 +7703,16 @@ def test_delegate_model_tokens_wired_in_both_channels(pm_update):
 
     한쪽만 있으면 (a) 토큰이 영영 미해소 leak 이거나 (b) conf 값이 아무 산출도 안 바꾼다.
     배선은 표 하나(`DELEGATE_MODEL_CONF_KEYS`)의 파생이라, 표를 실제로 순회해 검사한다."""
-    pm_render = pm_update._load_pm_render()
-    assert pm_render.DELEGATE_MODEL_CONF_KEYS == DELEGATE_CONF_KEYS, \
+
+    assert render_rules.DELEGATE_MODEL_CONF_KEYS == DELEGATE_CONF_KEYS, \
         "위임 토큰 표가 기대 집합과 갈렸다(역할/티어가 조용히 늘거나 줄었다)"
     conf_channel = pm_update._local_conf_operational_map()
-    for token_key, conf_key in pm_render.DELEGATE_MODEL_CONF_KEYS.items():
-        assert token_key in pm_render.OPERATIONAL_KEYS, \
+    for token_key, conf_key in render_rules.DELEGATE_MODEL_CONF_KEYS.items():
+        assert token_key in render_rules.OPERATIONAL_KEYS, \
             f"{token_key} 가 render operational 채널에 미등재 — 재렌더가 토큰을 leak 시킨다"
         assert conf_channel.get(conf_key) == token_key, \
             f"local.conf `{conf_key}` → {token_key} 매핑 부재 — 선언이 실행면에 닿지 않는다"
-    assert pm_render.DELEGATE_HARNESS_CONF_KEYS == {
+    assert render_rules.DELEGATE_HARNESS_CONF_KEYS == {
         token_key: conf_key.rsplit(".", 1)[0] + ".harness"
         for token_key, conf_key in DELEGATE_CONF_KEYS.items()
     }, "미사용 프로필 판정이 읽는 harness 키가 모델 키와 같은 프로필을 가리키지 않는다"
@@ -7751,9 +7753,9 @@ def test_agent_cards_use_role_model_tokens_and_no_literal_model():
             )
 
 
-def test_agent_card_renders_conf_model_through_local_conf(pm_update, tmp_path):
+def test_agent_card_renders_conf_model_through_local_conf(render_home, pm_update, tmp_path):
     """dest local.conf 의 `delegate.<role>.model` 이 카드 렌더 결과가 된다(역할별 개별)."""
-    pm_render = pm_update._load_pm_render()
+
     dest = tmp_path / "dest"
     _write_local_conf(dest, "\n".join([
         "delegate.developer.model=sonnet",
@@ -7775,7 +7777,7 @@ def test_agent_card_renders_conf_model_through_local_conf(pm_update, tmp_path):
     }
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
     for name, model_line in expected.items():
-        rendered = pm_render.render_adapter(
+        rendered = adapter_render.render_adapter(render_home,
             (template_tree / name).read_text(encoding="utf-8"),
             operational,
             source=name,
@@ -7784,19 +7786,19 @@ def test_agent_card_renders_conf_model_through_local_conf(pm_update, tmp_path):
             f"{name} 이 conf 해소값으로 렌더되지 않았다"
 
 
-def test_agent_card_unset_delegate_model_is_graceful_todo(pm_update, tmp_path):
+def test_agent_card_unset_delegate_model_is_graceful_todo(render_home, pm_update, tmp_path):
     """위임 매핑 미설정 채택자 — rc-fail 0·TODO 표기·다른 토큰은 정상 렌더(부분-graceful).
 
     미설정은 오설정이 아니라 정상 형상이다(local.conf 시드는 delegate.* 를 전부 주석으로 낸다).
     한 토큰 미해소가 어댑터 update 전체를 막으면 채택자가 엔진 fix 를 받을 수 없다
     (`{{OPENCODE_PRO_MODEL}}` 선례와 동형)."""
-    pm_render = pm_update._load_pm_render()
+
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.researcher.model=haiku\n")
 
     operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
-    rendered = pm_render.render_adapter(
+    rendered = adapter_render.render_adapter(render_home,
         (template_tree / "developer.md").read_text(encoding="utf-8"),
         operational, source="developer.md", empty_keys=empty_keys,
     )
@@ -7807,19 +7809,19 @@ def test_agent_card_unset_delegate_model_is_graceful_todo(pm_update, tmp_path):
     assert "delegate.developer.model=" in line, "TODO 가 채울 conf 키를 지목하지 않는다"
     assert "{{" not in rendered, "중화 산출물에 리터럴 토큰 잔존(자족 위반)"
     # 해소된 역할은 같은 실행에서 정상 렌더 — 미해소 하나가 전체를 끌어내리지 않는다.
-    resolved = pm_render.render_adapter(
+    resolved = adapter_render.render_adapter(render_home,
         (template_tree / "researcher.md").read_text(encoding="utf-8"),
         operational, source="researcher.md", empty_keys=empty_keys,
     )
     assert _card_model_line(resolved) == 'model: "haiku"'
     # 멱등 — 중화된 산출물을 다시 렌더해도 같은 bytes(재렌더 왕복 0).
-    assert pm_render.render_adapter(
+    assert adapter_render.render_adapter(render_home,
         rendered, operational, source="developer.md", empty_keys=empty_keys) == rendered
 
 
-def test_agent_card_empty_delegate_model_is_loud_leak(pm_update, tmp_path):
+def test_agent_card_empty_delegate_model_is_loud_leak(render_home, pm_update, tmp_path):
     """`delegate.<role>.model=` 빈값(오설정)은 중화하지 않고 leak 으로 표면화한다."""
-    pm_render = pm_update._load_pm_render()
+
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.developer.model=\n")
 
@@ -7827,8 +7829,8 @@ def test_agent_card_empty_delegate_model_is_loud_leak(pm_update, tmp_path):
 
     assert empty_keys == ["DELEGATE_MODEL_DEVELOPER"]
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
-    with pytest.raises(pm_render.RenderLeakError, match="delegate.developer.model"):
-        pm_render.render_adapter(
+    with pytest.raises(render_rules.RenderLeakError, match="delegate.developer.model"):
+        adapter_render.render_adapter(render_home,
             (template_tree / "developer.md").read_text(encoding="utf-8"),
             operational, source="developer.md", empty_keys=empty_keys,
         )
@@ -7872,7 +7874,7 @@ def test_render_text_claude_cards_render_conf_reasoning(pm_update, tmp_path):
     }
     for name, effort in expected.items():
         rendered = pm_update._render_text(
-            REPO / ".claude" / "agents" / name, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=f".claude/agents/{name}")
+            REPO / ".claude" / "agents" / name, _local_conf_of(pm_update, dest), card_path=f".claude/agents/{name}")
         assert _card_effort_line(rendered) == f'effort: "{effort}"', \
             f"{name} 의 effort 가 conf reasoning 으로 렌더되지 않았다"
         assert _card_model_line(rendered) == 'model: "opus"', name
@@ -7892,7 +7894,7 @@ def test_render_text_rejects_reasoning_outside_harness_ladder(pm_update, tmp_pat
     # 클래스 동일성 대신 base + 이름으로 잡는다.
     with pytest.raises(RuntimeError) as excinfo:
         pm_update._render_text(
-            REPO / ".claude" / "agents" / "architect.md", _local_conf_of(pm_update, dest), pm_update._load_pm_render(),
+            REPO / ".claude" / "agents" / "architect.md", _local_conf_of(pm_update, dest),
             card_path=".claude/agents/architect.md")
     assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
     assert "delegate.architect.reasoning=ultra" in str(excinfo.value)
@@ -7968,7 +7970,7 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     delegate_channel_guard 경고 0.
     """
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
     _import_adopter(pm_import, dest, "claude")
     card = dest / ".claude" / "agents" / "developer.md"
@@ -8039,7 +8041,7 @@ def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
     재실행 변경 0(멱등).
     """
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
     dest = tmp_path / "guest-adopter"
     _import_adopter(pm_import, dest, "codex")
@@ -8085,7 +8087,7 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
     이번 형상에서 스폰되지 않으므로 claude 용 모델을 박으면 카드가 conf 와 어긋난 사실을 감춘다.
     렌더는 실패하지 않는다 — 미해소가 update rc 를 바꾸지 않는다."""
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
     dest = tmp_path / "unused-profile"
     _import_adopter(pm_import, dest, "codex")
@@ -8152,7 +8154,7 @@ def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch)
     import tomllib
 
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
     _import_adopter(pm_import, dest, "claude,codex")
     conf = dest / ".project_manager" / "local.conf"
@@ -8203,7 +8205,7 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
     HOME 아래 `.config/opencode` 와 `OPENCODE_CONFIG_DIR` 의 설정은 대상이 아니다. 전역 파일은
     읽기만 하고, dry-run 은 프로젝트 파일을 바꾸지 않는다."""
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
     _import_adopter(pm_import, dest, "opencode")
     xdg = tmp_path / "xdg"
@@ -8598,7 +8600,7 @@ _T0951_PROBE = ".project_manager/tools/zz_engine_probe.py"
 _T0951_FILES = {_T0951_PROBE: "# probe\n", "adapterdir/one.md": "# one\n", "adapterdir/two.md": "# two\n"}
 # 전달 프로세스가 부르면 안 되는 완료 단계 함수 — 하나라도 불리면 같은 프로세스가 완료 단계를 실행한 것이다.
 _T0951_COMPLETION_STEPS = (
-    "apply", "_load_pm_render", "_installed_entry_notation_manifests", "prune_unavailable_reasoning",
+    "apply", "_installed_entry_notation_manifests", "prune_unavailable_reasoning",
     "migrate_entry_doc", "drop_self_lease_rows", "idle_legacy_slot_session_rows",
     "migrate_renamed_conf_keys", "reinstall_protected_hooks", "sync_adapter_configs",
     "apply_harness_ctx_limits", "check_adapter_hook_sets", "converge_upstream_revs",
@@ -8782,8 +8784,8 @@ def test_apply_conf_translates_render_failure_found_while_planning(
     home, _source = _t0945_home(tmp_path)
     before = tree_snapshot(home)
 
-    def refused(_source_path, _conf, render_mod, *_args, **_kwargs):
-        raise render_mod.RenderLeakError("주입한 렌더 거부")
+    def refused(_source_path, _conf, *_args, **_kwargs):
+        raise render_rules.RenderLeakError("주입한 렌더 거부")
 
     monkeypatch.setattr(pm_update, "_render_text", refused)
     with pytest.raises(pm_update.ConfApplyError) as caught:

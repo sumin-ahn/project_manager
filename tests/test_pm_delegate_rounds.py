@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.infra import ticket_store
 from pm_engine.app import round_seed
 
@@ -2512,7 +2514,7 @@ def _spec_and_rounds(pd, pm_home: Path, tickets: Path, ticket: str):
 def _harvest_rc(pd, monkeypatch, pm_home: Path, slot: Path, copy_path: Path) -> int:
     """실 CLI rc — 소유 PM 홈 해소만 픽스처 좌표로 고정한다(판정은 엔진 그대로)."""
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = pd._resolved_adapter_directories())
+    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = install_rules.adapter_directories())
 
 
 def test_redeclared_prior_finding_id_is_refused_at_harvest(
@@ -3071,11 +3073,11 @@ def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
     produced = plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- x\n"
     plan.path.write_text(produced, encoding="utf-8", newline="")
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(plan.path), "--cwd", str(slot)], adapter_roots = pd._resolved_adapter_directories())
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(plan.path), "--cwd", str(slot)], adapter_roots = install_rules.adapter_directories())
     assert rc == 0
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
-    rc2 = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["copies", "--ticket", "T-8006"], adapter_roots = pd._resolved_adapter_directories())
+    rc2 = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["copies", "--ticket", "T-8006"], adapter_roots = install_rules.adapter_directories())
     assert rc2 == 0
 
 
@@ -3403,7 +3405,7 @@ def test_propagated_exception_before_handoff_refunds_the_reserved_ticket_copy(
     def _raise():
         raise delegate_errors.DelegateError("probe: adapter directories 조회 실패")
 
-    monkeypatch.setattr(pd, "_resolved_adapter_directories", _raise)
+    monkeypatch.setattr(install_rules, 'adapter_directories', _raise)
 
     before = (
         _refund_round_file_count(pd, home, ticket),
@@ -3605,7 +3607,7 @@ def test_gate_refund_original_control_exception_still_propagates_when_cleanup_su
     def _raise():
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr(pd, "_resolved_adapter_directories", _raise)
+    monkeypatch.setattr(install_rules, 'adapter_directories', _raise)
 
     before = (
         _refund_round_file_count(pd, home, ticket),
@@ -4235,7 +4237,7 @@ def _prepare_cli(pd, slot: Path, ticket: str, role: str, *, tier: str | None = N
     argv = ["prepare", "--ticket", ticket, "--role", role, "--cwd", str(slot)]
     if tier is not None:
         argv += ["--tier", tier]
-    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), argv, adapter_roots = pd._resolved_adapter_directories())
+    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), argv, adapter_roots = install_rules.adapter_directories())
 
 
 def test_cross_role_prepare_is_denied_with_no_board_or_ledger_side_effect(
@@ -4287,7 +4289,7 @@ def test_native_role_prepare_is_unaffected_by_a_cross_mapping_elsewhere(
         copy_path.read_text(encoding="utf-8") + "\n## 산출\n- 값\n", encoding="utf-8", newline="",
     )
 
-    harvest_rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = pd._resolved_adapter_directories())
+    harvest_rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)], adapter_roots = install_rules.adapter_directories())
 
     assert harvest_rc == 0
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["changed"] is True

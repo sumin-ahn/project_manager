@@ -15,6 +15,8 @@ hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)�
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.app import delegate_changelog
 from pm_engine.cli import delegate_cmd
 
@@ -307,7 +309,7 @@ def _prepare_native_review(pd, home: Path, capsys, *extra: str) -> list[dict]:
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "prepare", "--cluster", _CLUSTER, "--role", "code-reviewer",
         "--cwd", str(home), *extra,
-    ], adapter_roots = pd._resolved_adapter_directories())
+    ], adapter_roots = install_rules.adapter_directories())
     captured = capsys.readouterr()
     assert rc == 0, captured.err
     return _machine_lines(captured.out)
@@ -346,7 +348,7 @@ def test_review_prepare_refuses_a_dirty_slot(pd, review_env, monkeypatch, capsys
 
         rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "prepare", "--cluster", _CLUSTER, "--role", "code-reviewer", "--cwd", str(home),
-        ], adapter_roots = pd._resolved_adapter_directories())
+        ], adapter_roots = install_rules.adapter_directories())
 
         err = capsys.readouterr().err
         assert rc == 1, err
@@ -843,7 +845,7 @@ def test_ticket_prepare_review_takes_the_cluster_only(
     _native_review_harness(pd, monkeypatch)
 
     with pytest.raises(SystemExit) as caught:
-        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["prepare", *extra, "--cwd", str(home)], adapter_roots = pd._resolved_adapter_directories())
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["prepare", *extra, "--cwd", str(home)], adapter_roots = install_rules.adapter_directories())
 
     assert caught.value.code == 2
     assert delegate_ledger.ticket_copy_records(home) == []
@@ -878,7 +880,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
         evidence = [prepared_head, _git(home, "rev-parse", "HEAD").stdout.strip()]
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(run_dir), "--cwd", str(home)], adapter_roots = pd._resolved_adapter_directories())
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(run_dir), "--cwd", str(home)], adapter_roots = install_rules.adapter_directories())
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -907,7 +909,7 @@ def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypat
 
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
-    ], adapter_roots = pd._resolved_adapter_directories())
+    ], adapter_roots = install_rules.adapter_directories())
 
     assert rc == 0, capsys.readouterr().err
     for ticket in _MEMBERS:
@@ -935,7 +937,7 @@ def test_review_harvest_refuses_a_row_without_base_rev(pd, review_env, capsys):
     seed = seat.board_path.read_bytes()
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(seat.path), "--cwd", str(home)], adapter_roots = pd._resolved_adapter_directories())
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["harvest", "--copy", str(seat.path), "--cwd", str(home)], adapter_roots = install_rules.adapter_directories())
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -958,7 +960,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
         assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "abandon", "--copy", line["copy"], "--cwd", str(home), "--assume-dead",
             "--discard-reason", "리뷰 뒤 슬롯이 앞서 감",
-        ], adapter_roots = pd._resolved_adapter_directories()) == 0
+        ], adapter_roots = install_rules.adapter_directories()) == 0
     (home / "seed.txt").write_text("fix 뒤\n", encoding="utf-8", newline="\n")
     assert _git(home, "commit", "-qam", "slot moves on").returncode == 0
     new_head = _git(home, "rev-parse", "HEAD").stdout.strip()
@@ -981,7 +983,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
     capsys.readouterr()
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "harvest", "--copy", reopened[0]["run_dir"], "--cwd", str(home),
-    ], adapter_roots = pd._resolved_adapter_directories())
+    ], adapter_roots = install_rules.adapter_directories())
     assert rc == 0, capsys.readouterr().err
 
 
@@ -1002,7 +1004,7 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
         _write_seat(pd, Path(line["copy"]), [finding] if line["ticket"] == _MEMBERS[0] else [])
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
-    ], adapter_roots = pd._resolved_adapter_directories()) == 0
+    ], adapter_roots = install_rules.adapter_directories()) == 0
     board = _fixture_board(pd, home)
     ticket = _MEMBERS[0]
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()

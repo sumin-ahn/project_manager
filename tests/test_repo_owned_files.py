@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+
 import importlib.util
 import subprocess
 import types
@@ -715,7 +717,7 @@ def test_pm_import_dest_fallback_uses_owned_mode(repo_files, tmp_path):
     (repo / "cache.derived").write_text("derived\n", encoding="utf-8")
     _git(repo, "add", ".gitignore", "tracked.md")
 
-    got = pm_import._resolve_fill_scope(repo, None)
+    got = import_fill._resolve_fill_scope(repo, None)
 
     assert got == {Path(".gitignore"), Path("tracked.md"), Path("new.md")}
 
@@ -734,7 +736,7 @@ def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path, monkeypatc
         repo_files.RepoFilesFallbackWarning,
         match="filesystem 전수 순회에 강등",
     ):
-        assert pm_import._resolve_fill_scope(dest, None) == {Path("copied.md")}
+        assert import_fill._resolve_fill_scope(dest, None) == {Path("copied.md")}
 
 
 @requires_symlink
@@ -748,7 +750,7 @@ def test_pm_import_dest_walk_excludes_directory_symlink(repo_files, tmp_path):
     (repo / "directory-link").symlink_to(outside, target_is_directory=True)
     _git(repo, "add", "kept.md", "directory-link")
 
-    assert pm_import._resolve_fill_scope(repo, None) == {Path("kept.md")}
+    assert import_fill._resolve_fill_scope(repo, None) == {Path("kept.md")}
 
 
 def test_repo_owned_loader_cache_preserves_warning_class_identity():
@@ -779,4 +781,4 @@ def test_pm_import_normal_copied_scope_never_enters_dest_walk(tmp_path, monkeypa
         ),
     )
 
-    assert pm_import._resolve_fill_scope(tmp_path, copied) is copied
+    assert import_fill._resolve_fill_scope(tmp_path, copied) is copied

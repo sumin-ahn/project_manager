@@ -13,6 +13,8 @@ upstream 값은 실 로컬 bare 다(네트워크 0). 가짜 runner 로 rc 를 �
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import inspect
 import json
 import subprocess
@@ -283,6 +285,6 @@ def test_the_dialog_defaults_come_from_the_bundle_engine(api):
     defaults = api.apply_defaults()
 
     engine = load_engine_module("pm_import.py")
-    assert defaults["harnesses"] == list(engine.REGISTERED_HARNESSES)
+    assert defaults["harnesses"] == list(install_rules.REGISTERED_HARNESSES)
     assert defaults["upstream"] == engine.derive_origin_url(bundle_root())
     assert defaults["upstream"], "번들 트리의 origin 을 읽지 못했다 — 화면 필드가 빈다"

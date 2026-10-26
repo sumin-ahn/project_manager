@@ -29,6 +29,11 @@ manifest 에 **bare**(무 `@render`) 로 등재된 경로는 `pm_update` 가 byt
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.app import import_render
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_source
+
 from pm_engine.cli import board_init
 
 
@@ -86,7 +91,6 @@ def _load(name: str, alias: str | None = None):
 def pm_import():
     mod = _load("pm_import")
     # hermetic — 라이브 `opencode models` CLI 미호출(미설치 동치).
-    mod._real_models_runner = lambda source=None: (False, [])
     return mod
 
 
@@ -117,7 +121,7 @@ def _flavor_manifests(pm_import) -> dict[str, Path]:
     매트릭스에 자동 편입된다(손으로 세 번째를 적어 넣던 클래스 회피).
     """
     manifests = {"root": REPO / ".project_manager" / "engine.manifest"}
-    for template_dirs in pm_import.HARNESS_TEMPLATE_DIRS.values():
+    for template_dirs in install_rules.HARNESS_TEMPLATE_DIRS.values():
         for dirname in template_dirs:
             manifests[dirname] = (
                 REPO / "templates" / dirname / ".project_manager" / "engine.manifest")
@@ -160,7 +164,7 @@ def _operational_tokens(pm_import) -> tuple[str, ...]:
 
 
 def _substitution_map(pm_import) -> dict[str, str]:
-    return pm_import._substitution_map(PROJECT_NAME, REPO, "2026-01-01")
+    return import_render._substitution_map(PROJECT_NAME, REPO, "2026-01-01")
 
 
 def _ownership_violation(pm_import, dest_rel: str, token: str, sed_exclude) -> str | None:
@@ -170,9 +174,9 @@ def _ownership_violation(pm_import, dest_rel: str, token: str, sed_exclude) -> s
     bytes 라 byte-copy 가 no-op 이다. 둘 다 아니면 설치가 값으로 굳히고 다음 sync 가 되돌린다.
     """
     rel = Path(dest_rel)
-    if not pm_import._should_substitute(rel, sed_exclude):
+    if not install_source._should_substitute(rel, sed_exclude):
         return None  # ③ 엔진 소유 상시 토큰(엔진 소스·manifest·방법론 문서) — 설치가 안 건드림
-    if token in pm_import._consumption_time_tokens(rel):
+    if token in install_source._consumption_time_tokens(rel):
         return None  # ② 소비 시점 소유 — 설치가 그 토큰만 비켜간다
     return (
         f"{dest_rel} 의 {token} 이 소유자 없이 떠 있다 — 설치(pm_import)가 값으로 굳히는데 "
@@ -196,7 +200,7 @@ def test_bare_registered_tokens_have_a_single_owner(pm_import, pm_update, repo_f
     scanned = 0
     for flavor, manifest_path in _flavor_manifests(pm_import).items():
         assert manifest_path.is_file(), f"{flavor} manifest 부재: {manifest_path}"
-        sed_exclude = pm_import._derive_sed_exclude_relpaths(manifest_path)
+        sed_exclude = install_source._derive_sed_exclude_relpaths(manifest_path)
         for dest_rel, source_path in _bare_entry_files(pm_update, repo_files, manifest_path):
             try:
                 text = source_path.read_text(encoding="utf-8")
@@ -245,7 +249,7 @@ def test_engine_declaration_matches_ledger(pm_import):
     """엔진 선언과 이 파일의 allow 원장이 정확히 일치한다 — 선언이 조용히 늘 수 없다."""
     ledger = {rel: frozenset(tokens) for rel, tokens in CONSUMPTION_TIME_OWNERS.items()}
     engine = {rel: frozenset(tokens)
-              for rel, tokens in pm_import.CONSUMPTION_TIME_TOKENS.items()}
+              for rel, tokens in install_source.CONSUMPTION_TIME_TOKENS.items()}
     assert engine == ledger, (
         "pm_import.CONSUMPTION_TIME_TOKENS 와 이 파일의 CONSUMPTION_TIME_OWNERS 가 어긋난다 — "
         "소비 시점 소유를 새로 선언했다면 소비처와 함께 원장에도 적어라(선언만 늘면 진동이 "
@@ -311,7 +315,7 @@ def test_declared_consumer_exists_and_handles_the_token(pm_import, rel, token, c
     채택자 산출물에 리터럴로 남는다(조용한 degrade). 그 자리에서 red 를 낸다.
     """
     if consumer == SCAFFOLD_COPY:
-        assert pm_import._is_template_scaffold(Path(rel).name), (
+        assert install_source._is_template_scaffold(Path(rel).name), (
             f"{rel} 은 템플릿 스캐폴드 관례가 아닌데 '사람이 복사할 때 채운다'로 선언됐다 — "
             "실 소비처를 적어라.")
         return
@@ -373,7 +377,7 @@ def test_other_tokens_in_same_file_still_substituted(pm_import, tmp_path):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("created: {{DATE}}\nowner: {{PROJECT_NAME}}\n", encoding="utf-8")
 
-    changed = pm_import.substitute_placeholders(
+    changed = import_render.substitute_placeholders(
         dest, {"{{DATE}}": "2026-01-01", "{{PROJECT_NAME}}": PROJECT_NAME}, {rel})
 
     assert changed == 1
@@ -527,3 +531,9 @@ def test_import_then_update_roundtrip_does_not_oscillate(
         assert (dest / rel).read_bytes() == before[rel], (
             f"pm_update 가 {rel} 을 덮지 않았다 — (1) 의 불변이 '채널이 죽어서' 인지 "
             f"구분할 수 없다(공허 가드).")
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

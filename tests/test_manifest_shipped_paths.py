@@ -24,6 +24,8 @@ hermetic — 실 파일 존재만 본다(LLM·subprocess 미진입). manifest �
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import functools
 import importlib.util
 from pathlib import Path
@@ -191,7 +193,7 @@ def test_guard_is_sensitive_to_a_registered_but_unshipped_path(tmp_path):
 
 def _flavor_template_dir(harness: str) -> str:
     """하네스의 `templates/` 어댑터 트리 디렉토리명 (엔진 HARNESS_TEMPLATE_DIRS 파생)."""
-    (dirname,) = _load_pm_import().HARNESS_TEMPLATE_DIRS[harness]
+    (dirname,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     return dirname
 
 
@@ -252,7 +254,7 @@ def test_shipped_adapter_files_are_registered_or_declared_instance_owned(harness
         "(가드가 vacuous)")
     covered = _manifest_covered_relpaths(
         template_root / ".project_manager" / "engine.manifest", template_root)
-    instance_owned = _load_pm_import().INSTANCE_OWNED_ADAPTER_FILES[harness]
+    instance_owned = install_rules.INSTANCE_OWNED_ADAPTER_FILES[harness]
 
     unclassified = _unclassified_shipped_files(shipped, covered, instance_owned)
 
@@ -274,7 +276,7 @@ def test_instance_owned_declaration_ships_and_stays_out_of_manifest(harness):
     template_root = REPO / "templates" / flavor
     covered = _manifest_covered_relpaths(
         template_root / ".project_manager" / "engine.manifest", template_root)
-    declared = sorted(_load_pm_import().INSTANCE_OWNED_ADAPTER_FILES[harness])
+    declared = sorted(install_rules.INSTANCE_OWNED_ADAPTER_FILES[harness])
     assert declared, f"'{harness}' instance-owned 선언이 비었다 — 루트 doc 은 늘 채택자 소유다"
 
     missing = [rel for rel in declared if not (template_root / rel).is_file()]
@@ -294,8 +296,8 @@ def test_create_if_absent_policy_is_subset_of_instance_owned_declaration():
     create-if-absent 는 '소유' 가 아니라 그 소유에 딸린 **add-harness 복사 정책**이다. 선언에 없는
     경로를 정책에만 넣으면 소유 진실이 둘로 갈린다(가드는 그 경로를 미분류로 red)."""
     pm_import = _load_pm_import()
-    for harness, policy in pm_import.ADD_HARNESS_CREATE_IF_ABSENT.items():
-        declared = pm_import.INSTANCE_OWNED_ADAPTER_FILES[harness]
+    for harness, policy in install_rules.ADD_HARNESS_CREATE_IF_ABSENT.items():
+        declared = install_rules.INSTANCE_OWNED_ADAPTER_FILES[harness]
         assert set(policy) <= set(declared), (
             f"'{harness}' create-if-absent 정책에 instance-owned 미선언 경로: "
             f"{sorted(set(policy) - set(declared))}")

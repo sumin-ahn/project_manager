@@ -3,7 +3,7 @@
 파싱·판정·레지스트리는 `pm_engine.domain.conf_schema` 가 소유하고, 이 모듈은 파일을 읽어 그쪽에
 넘긴다. 파싱 계약과 `load` 가 raise 하지 않는 이유는 `conf_schema` 모듈 docstring 에 있다.
 
-`local.conf` 는 키 갱신이 **원자 교체**로 이뤄지는 파일이다(`pm_import._write_conf_keys`). 일반
+`local.conf` 는 키 갱신이 **원자 교체**로 이뤄지는 파일이다(`install_conf._write_conf_keys`). 일반
 `open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로 판독도 공용 seam 의
 공유 읽기(`fs.read_text_shared`)를 지난다.
 """
@@ -149,9 +149,8 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
     """local.conf 텍스트에서 지정 키만 set-or-replace. 나머지 줄·주석은 보존.
 
     있으면 그 자리에서 `key=value` 로 교체(첫 등장만), 없으면 끝에 추가. stdlib only.
-    pm_import._set_conf_keys 와 동형 — board 는 pm_import 를 import 하지 않으므로
-    (의존 방향: pm_import 가 board init 을 subprocess 로 부르는 상위) board-local 사본을
-    둔다(중복 최소·순수 프리미티브). cmd_init 의 비파괴 병합에 쓴다.
+    install_conf._set_conf_keys와 같은 규칙이다. cmd_init의 비파괴 병합에 쓰는
+    순수 변환이며, 설치 writer의 텍스트 정책과 일치한다.
     """
     remaining = dict(updates)
     lines = text.splitlines(keepends=True)

@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import jsonc
+
 import importlib.util
 import json
 import re
@@ -214,7 +216,7 @@ def test_jsonc_comment_only_array_insert_parses_masked(pm_update):
     new, changed = pm_update._ensure_jsonc_instructions(src)
     assert changed
     assert "// 아직 없음" in new, "주석이 소실됐다(비파괴 위반)"
-    masked = pm_update._mask_jsonc_comments(new)
+    masked = jsonc._mask_jsonc_comments(new)
     assert json.loads(masked) == {"instructions": [".opencode/pm-instructions.md"]}, \
         f"주석-마스킹 기준으로도 파싱 불가(후행 쉼표 잔존?): {new!r}"
 
@@ -271,7 +273,7 @@ def test_jsonc_commented_out_path_not_idempotent(pm_update):
     new, changed = pm_update._ensure_jsonc_instructions(src)
     assert changed, "주석-아웃 경로를 이미 등록으로 오인하면 안 된다."
     # 비-주석 배열 원소로 실제 등록됐는지 (마스킹본에서 확인).
-    masked = pm_update._mask_jsonc_comments(new)
+    masked = jsonc._mask_jsonc_comments(new)
     body = re.search(r'"instructions"\s*:\s*\[(.*?)\]', masked, re.DOTALL).group(1)
     assert ".opencode/pm-instructions.md" in re.findall(r'"([^"]*)"', body)
 
@@ -281,7 +283,7 @@ def test_jsonc_suffix_string_not_idempotent(pm_update):
     src = '{\n  "instructions": [\n    ".opencode/pm-instructions.md.bak"\n  ]\n}\n'
     new, changed = pm_update._ensure_jsonc_instructions(src)
     assert changed, "`.bak` suffix 를 이미 등록으로 오인하면 안 된다."
-    masked = pm_update._mask_jsonc_comments(new)
+    masked = jsonc._mask_jsonc_comments(new)
     body = re.search(r'"instructions"\s*:\s*\[(.*?)\]', masked, re.DOTALL).group(1)
     elements = re.findall(r'"([^"]*)"', body)
     assert ".opencode/pm-instructions.md" in elements      # 정확 경로 추가
@@ -299,7 +301,7 @@ def test_jsonc_ignores_comment_inside_string(pm_update):
 
 def _toplevel_elements(pm_update, jsonc_text):
     """결과 jsonc 의 최상위 instructions 배열 원소 목록(테스트 단언용)."""
-    masked = pm_update._mask_jsonc_comments(jsonc_text)
+    masked = jsonc._mask_jsonc_comments(jsonc_text)
     bs, be, _ = pm_update._find_toplevel_instructions(masked)
     assert bs is not None, "최상위 instructions 배열이 없다."
     return re.findall(r'"([^"]*)"', masked[bs:be])

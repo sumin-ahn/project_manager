@@ -20,6 +20,9 @@ URL upstream 은 로컬 소스(경로 upstream·dest 자기전환)가 없을 때
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.infra import install_git
+
 import argparse
 import datetime
 import importlib.util
@@ -63,7 +66,7 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
     """T-0033 동형 — apply 경로(resolve_opencode_model)가 라이브 `opencode models` CLI 를 치지
     않도록 (False, []) 고정(미설치 동치). 이 파일의 add_harness 는 전부 dry_run 이라 실제로 도달
     하지 않지만 hermetic 보험."""
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
@@ -523,7 +526,7 @@ def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(
     # "채택자가 git work tree 가 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
     # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
-        pm_import, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
+        install_git, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     pm_import.add_harness(dest, "codex", dry_run=False)             # source_root=None → upstream 해소
     backup_root = dest / pm_import.BACKUP_DIR_NAME / today
     # 전제: 비-git 이라 engine-managed 충돌이 중앙 백업됨(git_safe None → 전부 백업).

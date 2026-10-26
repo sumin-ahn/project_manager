@@ -21,6 +21,11 @@ local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`
 """
 from __future__ import annotations
 
+from pm_engine.domain import jsonc
+
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_conf
+
 import difflib
 import hashlib
 import importlib.util
@@ -503,7 +508,7 @@ def _ledger(root: Path, relpath: str, digest: str) -> Path:
 
 
 def test_report_skips_managed_keys_and_ledger_follows_apply(pm_import, tmp_path):
-    assert "model_auto_compact_token_limit" not in pm_import.ADAPTER_SETTINGS_KEYS[".codex/config.toml"]
+    assert "model_auto_compact_token_limit" not in install_rules.ADAPTER_SETTINGS_KEYS[".codex/config.toml"]
 
     latest = _jsonc(pm_import, TEMPLATE_FILES["opencode"][0])
     project = json.loads(json.dumps(latest))
@@ -695,7 +700,7 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
     for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
         setattr(module, name, seam)
     if values:
-        module._write_conf_keys(conf, dict(values))
+        install_conf._write_conf_keys(conf, dict(values))
     module.apply_harness_ctx(root, write=True, opencode_config_dir=root / "global")
     return "ollama/glm-5.2:cloud" if harness == "opencode" else model
 
@@ -1423,17 +1428,7 @@ def test_t0949_apply_reread_refuses_unwritten_value(pm_import, tmp_path, monkeyp
     반영하면 재판독이 거부하고 어떤 파일도 바뀌지 않는다."""
     _t0943_seams(pm_import, monkeypatch)
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
-    real = pm_import._harness_ctx_jsonc_seam()
-
-    class Unwritten:
-        _mask_jsonc_comments = staticmethod(real._mask_jsonc_comments)
-        _strip_jsonc_trailing_commas = staticmethod(real._strip_jsonc_trailing_commas)
-
-        @staticmethod
-        def _jsonc_set_value(text, path, value):
-            return text, None
-
-    monkeypatch.setattr(pm_import, "_harness_ctx_jsonc_seam", lambda: Unwritten)
+    monkeypatch.setattr(jsonc, "_jsonc_set_value", lambda text, path, value: (text, None))
     before = _t0943_watched(root)
     with pytest.raises(pm_import.HarnessCtxError) as caught:
         _apply(pm_import, root, _global_dir(tmp_path))
@@ -1491,7 +1486,7 @@ def test_t0952_apply_manages_idle_compaction_false(pm_import, local_conf, tmp_pa
 def _t0949_set_jsonc(pm_import, root: Path, relpath: str, path: tuple[str, ...], value) -> None:
     """엔진 JSONC 편집기로 값 하나를 쓴다(없던 경로는 만든다)."""
     target = root / relpath
-    text, _old = pm_import._harness_ctx_jsonc_seam()._jsonc_set_value(target.read_text(encoding="utf-8"), path, value)
+    text, _old = jsonc._jsonc_set_value(target.read_text(encoding="utf-8"), path, value)
     target.write_text(text, encoding="utf-8")
 
 

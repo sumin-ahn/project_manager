@@ -7,11 +7,12 @@ pm_playbook.md 는 manifest-synced *공유* 방법론 — 루트·claude_code·o
 이 가드는 그 포인터의 *존재*를 못박는다(claude 어휘 제거가 아니라 opencode 안내 누락 차단).
 """
 
+from pm_engine.domain import install_rules
 from pathlib import Path
 
 import pytest
 
-from _harness_matrix import HARNESSES, _PM_IMPORT
+from _harness_matrix import HARNESSES
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -23,7 +24,7 @@ PLAYBOOK_REL = Path(".project_manager") / "wiki" / "pm_playbook.md"
 PLAYBOOKS = [REPO / PLAYBOOK_REL] + [
     REPO / "templates" / dirname / PLAYBOOK_REL
     for harness in HARNESSES
-    for dirname in _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness]
+    for dirname in install_rules.HARNESS_TEMPLATE_DIRS[harness]
 ]
 
 _DELEGATION_HEADER = "## 위임"

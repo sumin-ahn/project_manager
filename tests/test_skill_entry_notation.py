@@ -26,6 +26,13 @@ opencode          ``.opencode/command/*.md``                ``/<card>``
 
 from __future__ import annotations
 
+from _manager_home import render_home
+from pm_engine.domain import install_rules
+from pm_engine.domain import render_rules
+from pm_engine.infra import install_files
+from pm_engine.infra import pm_paths
+from pm_engine.infra import skill_inventory
+
 import importlib.util
 import re
 import shutil
@@ -45,11 +52,7 @@ from pm_engine.infra import manifest_store
 
 
 def _load_pm_render():
-    path = REPO / ".project_manager" / "tools" / "pm_render.py"
-    spec = importlib.util.spec_from_file_location("skill_entry_pm_render", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return render_rules
 
 
 _PM_RENDER = _load_pm_render()
@@ -67,7 +70,7 @@ _PM_UPDATE = _load_pm_update()
 
 
 def _template_dir(harness: str) -> str:
-    (dirname,) = _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness]
+    (dirname,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     return dirname
 
 
@@ -75,12 +78,12 @@ def _template_dir(harness: str) -> str:
 _ENTRY_PREFIX = {"claude": "/", "codex": "$", "opencode": "/"}
 _ENTRY_NAME_ALT = "|".join(
     re.escape(name)
-    for name in sorted(_PM_RENDER.SKILL_ENTRY_NAMES, key=len, reverse=True)
+    for name in sorted(skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO)), key=len, reverse=True)
 )
 _PM_ENTRY_NAME_ALT = "|".join(
     re.escape(name)
     for name in sorted(
-        (name for name in _PM_RENDER.SKILL_ENTRY_NAMES if name.startswith("pm-")),
+        (name for name in skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO)) if name.startswith("pm-")),
         key=len,
         reverse=True,
     )
@@ -165,7 +168,7 @@ def _render_channel(harness: str, path: Path) -> str | None:
         for entry in entries
     ):
         return "manifest"
-    if _PM_IMPORT._is_notation_fallback_scope(rel):
+    if install_files._is_notation_fallback_scope(rel):
         return "install-fallback"
     return None
 
@@ -204,16 +207,16 @@ def _entry_card_name(harness: str, path: Path) -> str:
 def test_measured_entry_notation_table_covers_derived_harness_axis():
     assert set(_ENTRY_PREFIX) == set(HARNESSES)
     derived_template_dirs = {_template_dir(harness) for harness in HARNESSES}
-    assert set(_PM_RENDER.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR) == derived_template_dirs
+    assert set(render_rules.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR) == derived_template_dirs
     assert {
-        harness: _PM_RENDER.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR[_template_dir(harness)]
+        harness: render_rules.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR[_template_dir(harness)]
         for harness in HARNESSES
     } == _ENTRY_PREFIX
     canonical_names = {
         path.parent.name
         for path in (REPO / ".claude" / "skills").glob("*/SKILL.md")
     }
-    assert set(_PM_RENDER.SKILL_ENTRY_NAMES) == canonical_names
+    assert set(skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO))) == canonical_names
     assert canonical_names
     assert {
         harness: {_entry_card_name(harness, path) for path in _entry_cards(harness)}
@@ -223,17 +226,17 @@ def test_measured_entry_notation_table_covers_derived_harness_axis():
 
 def test_measured_oracle_is_independent_from_registry_mutation(monkeypatch):
     monkeypatch.setitem(
-        _PM_RENDER.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR, "opencode", ""
+        render_rules.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR, "opencode", ""
     )
     derived = {
-        harness: _PM_RENDER.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR[_template_dir(harness)]
+        harness: render_rules.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR[_template_dir(harness)]
         for harness in HARNESSES
     }
     assert derived != _ENTRY_PREFIX, "production registry 오염이 실측 oracle과 함께 움직임"
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
-def test_renderer_changes_only_canonical_call_tokens(harness):
+def test_renderer_changes_only_canonical_call_tokens(render_home, harness):
     prefix = _ENTRY_PREFIX[harness]
     source = (
         "`/pm-bootstrap --task main` "
@@ -247,32 +250,32 @@ def test_renderer_changes_only_canonical_call_tokens(harness):
         "codex example `$pm-handoff` "
         "python3 .project_manager/tools/pm_update.py\n"
     )
-    rendered = _PM_RENDER.render_skill_entry_notation(
-        source, _template_dir(harness)
+    rendered = render_rules.render_skill_entry_notation(
+        source, _template_dir(harness), skill_names=skill_inventory._installed_skill_entry_names(render_home)
     )
     assert rendered == expected
-    assert _PM_RENDER.render_skill_entry_notation(
-        rendered, _template_dir(harness)
+    assert render_rules.render_skill_entry_notation(
+        rendered, _template_dir(harness), skill_names=skill_inventory._installed_skill_entry_names(render_home)
     ) == rendered
 
 
-def test_renderer_combines_only_installed_harnesses_on_shared_path():
+def test_renderer_combines_only_installed_harnesses_on_shared_path(render_home):
     source = "run `/pm-bootstrap --task main`\n"
-    rendered = _PM_RENDER.render_skill_entry_notation(
-        source, ("codex", "opencode")
+    rendered = render_rules.render_skill_entry_notation(
+        source, ("codex", "opencode"), skill_names=skill_inventory._installed_skill_entry_names(render_home)
     )
     assert rendered == "run `$pm-bootstrap --task main`(codex) / `/pm-bootstrap --task main`(opencode)\n"
-    assert _PM_RENDER.render_skill_entry_notation(
-        rendered, ("codex", "opencode")
+    assert render_rules.render_skill_entry_notation(
+        rendered, ("codex", "opencode"), skill_names=skill_inventory._installed_skill_entry_names(render_home)
     ) == rendered
-    assert _PM_RENDER.render_skill_entry_notation(
-        source, ("claude_code", "codex", "opencode")
+    assert render_rules.render_skill_entry_notation(
+        source, ("claude_code", "codex", "opencode"), skill_names=skill_inventory._installed_skill_entry_names(render_home)
     ) == (
         "run `/pm-bootstrap --task main`(claude·opencode) / "
         "`$pm-bootstrap --task main`(codex)\n"
     )
-    assert _PM_RENDER.render_skill_entry_notation(
-        rendered, ("claude_code", "codex", "opencode")
+    assert render_rules.render_skill_entry_notation(
+        rendered, ("claude_code", "codex", "opencode"), skill_names=skill_inventory._installed_skill_entry_names(render_home)
     ) == (
         "run `/pm-bootstrap --task main`(claude·opencode) / "
         "`$pm-bootstrap --task main`(codex)\n"
@@ -289,8 +292,8 @@ def test_renderer_combines_only_installed_harnesses_on_shared_path():
         ".claude/skills/pm-bootstrap/SKILL.md",
     ),
 )
-def test_renderer_excludes_extensions_paths_and_hyphen_identifiers(non_call):
-    assert _PM_RENDER.render_skill_entry_notation(non_call, "codex") == non_call
+def test_renderer_excludes_extensions_paths_and_hyphen_identifiers(render_home, non_call):
+    assert render_rules.render_skill_entry_notation(non_call, "codex", skill_names=skill_inventory._installed_skill_entry_names(render_home)) == non_call
 
 
 @pytest.mark.parametrize(
@@ -302,28 +305,17 @@ def test_renderer_excludes_extensions_paths_and_hyphen_identifiers(non_call):
         ("/pm-handoff.", "$pm-handoff."),
     ),
 )
-def test_renderer_limits_path_boundary_to_inside_inline_code(source, expected):
-    assert _PM_RENDER.render_skill_entry_notation(source, "codex") == expected
+def test_renderer_limits_path_boundary_to_inside_inline_code(render_home, source, expected):
+    assert render_rules.render_skill_entry_notation(source, "codex", skill_names=skill_inventory._installed_skill_entry_names(render_home)) == expected
 
 
-def test_renderer_fails_loud_for_unregistered_template_with_call_token():
-    with pytest.raises(_PM_RENDER.RenderLeakError, match="미등록"):
-        _PM_RENDER.render_skill_entry_notation("/pm-bootstrap\n", "fourth")
+def test_renderer_fails_loud_for_unregistered_template_with_call_token(render_home):
+    with pytest.raises(render_rules.RenderLeakError, match="미등록"):
+        render_rules.render_skill_entry_notation("/pm-bootstrap\n", "fourth", skill_names=skill_inventory._installed_skill_entry_names(render_home))
 
 
-def _pm_render_in_empty_install_root(tmp_path: Path):
-    """스킬 카드가 하나도 없는 설치 root 에 놓인 pm_render 인스턴스(실 형상 재현).
-
-    `SKILL_ENTRY_NAMES` 는 모듈 로드 시점에 설치 root 를 스캔해 확정되고 정규식도 그때 만들어
-    지므로, 상수만 monkeypatch 하면 정규식이 안 따라와 빈-root 위험이 재현되지 않는다."""
-    tools = tmp_path / "empty_install_root" / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    target = tools / "pm_render.py"
-    shutil.copy2(REPO / ".project_manager" / "tools" / "pm_render.py", target)
-    spec = importlib.util.spec_from_file_location("empty_root_pm_render", target)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _pm_render_in_empty_install_root(tmp_path):
+    return pm_paths.home_at(tmp_path / "empty_install_root")
 
 
 def test_renderer_is_a_noop_when_no_skill_card_is_installed(tmp_path):
@@ -333,29 +325,31 @@ def test_renderer_is_a_noop_when_no_skill_card_is_installed(tmp_path):
     가 호출 토큰으로 매칭돼 `'a / b 로 구분한다'` → `'a $ b 로 구분한다'` 가 됐다(실측·주석은
     반대로 "유지되며" 라고 단언했다). 입구 가드를 지우면 아래 단언이 red 가 된다."""
     module = _pm_render_in_empty_install_root(tmp_path)
-    assert module.SKILL_ENTRY_NAMES == ()
+    assert skill_inventory._installed_skill_entry_names(module) == ()
     prose = "옵션은 a / b 로 구분한다\n"
-    # 위험 실재 확인 — 이 인스턴스의 정규식은 실제로 맨 `/` 에 매칭한다(가드 비공허성).
-    assert module._CANONICAL_SKILL_ENTRY_RE.search(prose) is not None
-    assert module.render_skill_entry_notation(prose, "codex") == prose
-    assert module.render_skill_entry_notation(prose, ("codex", "opencode")) == prose
+    # 카드가 주어지면 실제 호출을 바꾼다. 빈 inventory의 무동작이 렌더 전체 비활성은 아니다.
+    assert render_rules.render_skill_entry_notation(
+        "`/pm-bootstrap`", "codex", skill_names=("pm-bootstrap",)
+    ) == "`$pm-bootstrap`"
+    assert render_rules.render_skill_entry_notation(prose, "codex", skill_names=skill_inventory._installed_skill_entry_names(module)) == prose
+    assert render_rules.render_skill_entry_notation(prose, ("codex", "opencode"), skill_names=skill_inventory._installed_skill_entry_names(module)) == prose
 
 
 def test_empty_install_root_renderer_keeps_operational_text_intact(tmp_path):
     """빈 root 무동작이 산문 전반에 적용된다(경로·달러 표기 포함 원문 보존)."""
     module = _pm_render_in_empty_install_root(tmp_path)
     text = "`/pm-bootstrap` 와 `$pm-handoff` 와 a / b 와 .claude/skills/pm-adr/SKILL.md\n"
-    assert module.render_skill_entry_notation(text, ("claude_code", "codex")) == text
+    assert render_rules.render_skill_entry_notation(text, ("claude_code", "codex"), skill_names=skill_inventory._installed_skill_entry_names(module)) == text
 
 
-def test_renderer_unknown_template_without_call_token_is_noop():
+def test_renderer_unknown_template_without_call_token_is_noop(render_home):
     text = ".claude/skills/pm-bootstrap/SKILL.md and `$pm-bootstrap`\n"
-    assert _PM_RENDER.render_skill_entry_notation(text, "fourth") == text
+    assert render_rules.render_skill_entry_notation(text, "fourth", skill_names=skill_inventory._installed_skill_entry_names(render_home)) == text
 
 
-def test_renderer_includes_non_pm_skill_discovered_from_card_inventory():
-    assert _PM_RENDER.render_skill_entry_notation(
-        "run `/spike-new topic`\n", "codex"
+def test_renderer_includes_non_pm_skill_discovered_from_card_inventory(render_home):
+    assert render_rules.render_skill_entry_notation(
+        "run `/spike-new topic`\n", "codex", skill_names=skill_inventory._installed_skill_entry_names(render_home)
     ) == "run `$spike-new topic`\n"
 
 
@@ -367,8 +361,8 @@ def test_renderer_includes_non_pm_skill_discovered_from_card_inventory():
         "[x](/pm-handoff)",
     ),
 )
-def test_renderer_excludes_url_korean_adjacency_and_markdown_link_target(non_call):
-    assert _PM_RENDER.render_skill_entry_notation(non_call, "codex") == non_call
+def test_renderer_excludes_url_korean_adjacency_and_markdown_link_target(render_home, non_call):
+    assert render_rules.render_skill_entry_notation(non_call, "codex", skill_names=skill_inventory._installed_skill_entry_names(render_home)) == non_call
     assert not _notation_issues("codex", non_call)
 
 
@@ -386,7 +380,7 @@ def test_shared_canonical_keeps_slash_skill_entries():
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
-def test_every_shipping_text_rejects_other_harness_prefixes(harness):
+def test_every_shipping_text_rejects_other_harness_prefixes(render_home, harness):
     docs = _shipping_texts(harness)
     assert docs, f"{harness} shipping text inventory is empty"
     failures = {}
@@ -398,8 +392,8 @@ def test_every_shipping_text_rejects_other_harness_prefixes(harness):
             ".project_manager/wiki/" in path.as_posix()
             and _has_render_channel(harness, path)
         ):
-            text = _PM_RENDER.render_skill_entry_notation(
-                text, _template_dir(harness), source=path.as_posix()
+            text = render_rules.render_skill_entry_notation(
+                text, _template_dir(harness), source=path.as_posix(), skill_names=skill_inventory._installed_skill_entry_names(render_home)
             )
         if issues := _notation_issues(harness, text):
             failures[path.relative_to(REPO).as_posix()] = issues

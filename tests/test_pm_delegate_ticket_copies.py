@@ -27,6 +27,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.cli import delegate_cmd
 
 from pm_engine.app import delegate_execute
@@ -847,7 +849,7 @@ def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "abandon", "--copy", str(round1.path), "--cwd", str(slot),
         "--assume-dead", "--superseded-by", str(round2.ordinal),
-    ], adapter_roots = pd._resolved_adapter_directories())
+    ], adapter_roots = install_rules.adapter_directories())
 
     assert rc == 0
     assert not round1.run_dir.exists()

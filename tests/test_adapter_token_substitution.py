@@ -24,6 +24,11 @@
 """
 from __future__ import annotations
 
+from _manager_home import render_home
+from pm_engine.app import import_fill
+from pm_engine.app import import_render
+from pm_engine.infra import install_source
+
 import importlib.util
 import io
 import re
@@ -63,7 +68,6 @@ def _load(name: str):
 def pm_import():
     mod = _load("pm_import")
     # hermetic — 라이브 `opencode models` CLI 미호출(미설치 동치).
-    mod._real_models_runner = lambda source: (False, [])
     return mod
 
 
@@ -181,7 +185,7 @@ def test_import_codex_declares_toml_render_entry(imported):
         "codex flavor manifest 에 `.codex/agents @render` 선언이 없다 — 결함의 전제가 바뀌었다.")
 
 
-def test_render_managed_files_covers_non_md_declared_paths(pm_import, tmp_path):
+def test_render_managed_files_covers_non_md_declared_paths(render_home, pm_import, tmp_path):
     """`render_managed_files` 는 확장자가 아니라 **@render 선언**으로만 대상을 고른다(T-0424).
 
     옛 `.md` 하드 필터는 manifest 선언을 덮는 중복·모순 판정이었다. `.toml` 산출물이 렌더되는지
@@ -195,7 +199,7 @@ def test_render_managed_files_covers_non_md_declared_paths(pm_import, tmp_path):
     agent.write_text('description = "{{PROJECT_NAME}} 구현 subagent"\n', encoding="utf-8")
 
     rel = Path(".codex/agents/developer.toml")
-    changed = pm_import.render_managed_files(
+    changed = import_render.render_managed_files(render_home,
         dest, {"{{PROJECT_NAME}}": PROJECT_NAME}, {rel})
 
     assert changed == 1, "render 채널이 @render 선언된 `.toml` 을 건너뛰었다(확장자 필터 재발)."
@@ -261,7 +265,7 @@ def test_substitute_suffix_allowlist_is_gone(pm_import):
 ])
 def test_should_substitute_includes_any_adapter_format(pm_import, rel):
     """치환 대상 판정은 확장자를 묻지 않는다 — 제외 사유가 없으면 대상이다."""
-    assert pm_import._should_substitute(Path(rel), frozenset()), (
+    assert install_source._should_substitute(Path(rel), frozenset()), (
         f"{rel} 이 치환 대상에서 빠졌다 — 확장자 열거가 되살아났는지 확인하라.")
 
 
@@ -272,7 +276,7 @@ def test_should_substitute_includes_any_adapter_format(pm_import, rel):
 ])
 def test_should_substitute_excludes_engine_assets(pm_import, rel, why):
     """엔진 소유 자산은 판정 역전 후에도 계속 제외된다(동작 무변경)."""
-    assert not pm_import._should_substitute(Path(rel), frozenset()), (
+    assert not install_source._should_substitute(Path(rel), frozenset()), (
         f"{rel} 이 치환 대상이 됐다 — {why}.")
 
 
@@ -284,7 +288,7 @@ def test_should_substitute_excludes_methodology_docs(pm_import, rel):
     """manifest 파생 치환-제외 집합(방법론 문서)은 그대로 존중된다(T-0329 무변경)."""
     exclude = frozenset({".project_manager/wiki/pm_role.md",
                          ".project_manager/wiki/pm_playbook.md"})
-    assert not pm_import._should_substitute(Path(rel), exclude)
+    assert not install_source._should_substitute(Path(rel), exclude)
 
 
 # ── (e-2) 채택자 산출물에서의 동일 무변경 확인 ────────────────────────────────
@@ -324,7 +328,7 @@ def test_empty_sub_value_still_leaves_token(pm_import, tmp_path):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text('description = "{{PROJECT_NAME}} subagent"\n', encoding="utf-8")
 
-    changed = pm_import.substitute_placeholders(
+    changed = import_render.substitute_placeholders(
         dest, {"{{PROJECT_NAME}}": ""}, {Path(".codex/agents/developer.toml")})
 
     assert changed == 0
@@ -346,9 +350,15 @@ def test_substitution_scope_stays_copied_relpaths(pm_import, tmp_path):
     copied.parent.mkdir(parents=True, exist_ok=True)
     copied.write_text('description = "{{PROJECT_NAME}}"\n', encoding="utf-8")
 
-    changed = pm_import.substitute_placeholders(
+    changed = import_render.substitute_placeholders(
         dest, {"{{PROJECT_NAME}}": PROJECT_NAME}, {Path(".codex/agents/developer.toml")})
 
     assert changed == 1
     assert untouched.read_text(encoding="utf-8") == original, (
         "복사 목록 밖 사용자 파일이 치환됐다 — copied_relpaths 비파괴 불변식 위반(MF1).")
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

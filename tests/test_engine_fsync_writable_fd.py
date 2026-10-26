@@ -117,6 +117,8 @@ def _call_writability(
         return None
     if not isinstance(func, ast.Attribute):
         return None
+    if func.attr in _FDOPEN_WRAPPERS:
+        return _mode_writability(_literal_mode(call, 1))
     if isinstance(func.value, ast.Name) and func.value.id in os_aliases:
         if func.attr == "open":
             flags_node = call.args[1] if len(call.args) > 1 else None
@@ -390,7 +392,7 @@ def test_fsync_guard_sees_every_engine_call_site():
         (
             "fdopen-wrapper-binary",
             "import os\ndef f(p):\n"
-            '    with _fdopen_binary(_open_nofollow(p), "wb") as handle:\n'
+            '    with install_files._fdopen_binary(_open_nofollow(p), "wb") as handle:\n'
             "        os.fsync(handle.fileno())\n",
             True,
         ),
