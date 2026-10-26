@@ -693,10 +693,10 @@ def test_update_propagates_pm_update_returncode(pc, monkeypatch):
 
 
 # ── init/update forward usage prog 정합 (T-0249·ADR-0043) ────────────────────
-# board.py / pm_update.py 의 main() 은 argparse prog 를 파일명으로 하드코딩(prog="board.py"/
-# "pm_update.py")하고 main(argv) 에 prog 인자가 없어, pm-config 가 위임하면 usage 줄에 그
-# 파일명이 새어 나온다(에이전트가 칠 실 커맨드 pm-config init/update 와 불일치·ADR-0043 부수
-# CLI 위생). `_forwarded_prog` 가 위임 동안만 top-level prog 를 facade 이름으로 치환함을 검증한다.
+# board/pm_update 명령 진입의 argparse prog 기본값은 파일명("board.py"/"pm_update.py")이라,
+# pm-config 가 위임할 때 usage 줄에 그 파일명이 새면 에이전트가 칠 실 커맨드 pm-config init/update
+# 와 어긋난다(ADR-0043 부수 CLI 위생). pm-config 는 `main(home, argv, prog=...)` 에 facade 이름을
+# 값으로 넘기고, 여기서는 그 결과 usage 줄이 facade 이름을 보임을 검증한다.
 # 아래 소수 테스트는 mock 을 주입하지 않고 **실 board/pm_update forward 를 관통**해 *실제 usage
 # 출력*을 관찰한다(DoD 증거) — `--help`/인자 에러는 argparse 가 핸들러 dispatch *전*에 usage 만
 # 찍고 SystemExit 하므로 board init·엔진 sync 부작용 0(안전).

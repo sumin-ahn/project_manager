@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """local.conf 키 표 CLI 진입 파일. 구현은 pm_engine 에 있다.
 
-`--keys`·`--keys --json`·`--render-adapter-block <python|js|sh>` 를 `pm_engine.cli.local_conf.main` 에
+`--keys`·`--keys --json` 을 `pm_engine.cli.local_conf.main` 에
 넘긴다. 관리자는 프로젝트 사본마다 이 파일을 `--keys --json` 으로 부른다.
 """
 import os

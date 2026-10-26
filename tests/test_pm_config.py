@@ -11,7 +11,7 @@ DI seam 동류).
   - forward 배선 — cmd_add_harness → pm_import.add_harness_cli(dest, harness, dry_run=) verbatim.
   - dest 해소 — 미주입 시 pm_config 규약(REPO=인스턴스 루트)으로 폴백.
   - dispatch 라우팅 — `main(["add-harness", ...])` 가 이 핸들러로 간다.
-  - usage prog 정합 — `_forwarded_prog` 위임-경계 가드 + 서브파서 usage=`pm-config add-harness`(파일명 leak 0).
+  - usage prog 정합 — 서브파서 usage=`pm-config add-harness`(파일명 leak 0).
   - 엔진 부재 격리 — pm_import 부재면 명시 에러 rc 1.
   - **계약 예외 경계(codex)** — add_harness_cli 가 ValueError/FileNotFoundError/FileVsDirConflict/
     AncestorConflict 를 친화 메시지 + rc 1 로 번역(traceback 0·pm_import.main 동형).
@@ -75,7 +75,7 @@ class FakePmImport:
     """`app.add_harness.add_harness_cli` 대역 — (home, dest, harness, dry_run=) 호출 인자를 기록한다.
 
     실 복사/plan_copy 없이 *pm_config 가 어떤 인자로 위임하는지*(배선)만 결정적으로 친다.
-    on_call 훅으로 위임 *중* 동작(예: _forwarded_prog 활성 여부 관찰)을 주입할 수 있다.
+    on_call 훅으로 위임 *중* 동작을 주입할 수 있다.
     `install(monkeypatch)` 가 실제 소유 함수 자리에 이 대역을 붙인다.
     """
 

@@ -476,24 +476,6 @@ def test_invariant_three_one_supply_path_per_value(conf_module):
     assert [key for key in conf_module.LEGACY_KEY_MAP if key in known] == []
 
 
-def test_adapter_parsers_read_the_new_per_harness_key(conf_module):
-    """하네스 어댑터는 local.conf 를 스스로 읽지 않는다 — 사용 한도·비율·구표기 판정은 엔진 한 벌이다.
-
-    Python 어댑터는 엔진 공개 진입으로, OpenCode JS core 는 `board.py hook-context`·`hook-tool` 로 conf 를
-    엔진이 읽게 한다. JS core 에 conf 키 이름·파일 경로가 다시 생기면 문법이 갈려 값이 갈린다."""
-    adapters = (
-        REPO / "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
-    )
-    for path in adapters:
-        text = path.read_text(encoding="utf-8")
-        for harness in conf_schema.HARNESS_CHOICES:
-            assert f"ctx_window_tokens_{harness}" not in text, path
-        assert conf_module.LEGACY_SUFFIX_PREFIX not in text, path   # 차단 키 사본도 없다
-        assert "ctx_window_tokens" not in text and "local.conf" not in text, path
-        # 사용 한도·비율은 어댑터가 해석하지 않는다 — 관측만 엔진 ctx 판정에 넘긴다(T-0943).
-        assert "runHookContext(" in text, path
-
-
 # ── ⑤ 교체 안내 (키 단위 지목 · 자동 이관 없음) ────────────────────────────
 
 

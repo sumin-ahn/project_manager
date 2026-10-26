@@ -1,8 +1,7 @@
-"""local.conf 키 표 CLI — `--keys`·`--keys --json`·`--render-adapter-block` (층: cli).
+"""local.conf 키 표 CLI — `--keys`·`--keys --json` (층: cli).
 
 진입 파일 `.project_manager/tools/local_conf.py` 가 `main` 에 위임한다. 레지스트리·판정은
-`pm_engine.domain.conf_schema` 가 소유하고, 이 모듈은 그것을 사람 표·기계 JSON·어댑터 생성 블록으로
-낸다.
+`pm_engine.domain.conf_schema` 가 소유하고, 이 모듈은 그것을 사람 표·기계 JSON 으로 낸다.
 """
 from __future__ import annotations
 
@@ -13,49 +12,6 @@ import unicodedata
 from pm_engine.domain import conf_schema
 from pm_engine.infra import console
 
-
-# ── 어댑터 파서용 데이터 내보내기 (엔진 미import 파서 + 셸 훅) ────────
-# Python 어댑터와 OpenCode JS core 는 엔진(`cli.hooks`·`board.py hook-tool`/`hook-context`)이
-# local.conf 를 읽게 하므로 자체 파서가 없다. 엔진을 import 하지 않는 독립 파서(run-tests 셸 훅)는
-# 이 표를 **손으로 복제하면** 표와 파서가 갈린다. 그래서 이 모듈이 블록 텍스트를 **생성**하고, 그
-# 파서는 산출을 그대로 품는다(동일성은 회귀가 값으로 단언).
-# 재생성: `python3 local_conf.py --render-adapter-block <python|js|sh>`.
-ADAPTER_BLOCK_BEGIN = "생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)"
-ADAPTER_BLOCK_END = "생성 끝 — 차단 구키"
-
-
-def blocking_legacy_key_names() -> tuple[str, ...]:
-    """차단 구키 이름 전수 — 생성 블록의 단일 입력(안내 전용 키는 뺀다)."""
-    return tuple(sorted(key for key in conf_schema.LEGACY_KEY_MAP
-                        if key not in conf_schema.NON_BLOCKING_LEGACY_KEYS))
-
-
-def render_adapter_block(style: str) -> str:
-    """어댑터 파서가 품는 차단 구키 선언 블록을 그 언어 문법으로 낸다(마커 포함)."""
-    names = blocking_legacy_key_names()
-    if style == "python":
-        body = "\n".join(f'    "{name}",' for name in names)
-        return (f"# {ADAPTER_BLOCK_BEGIN}\n"
-                f"LEGACY_CONF_KEYS = (\n{body}\n)\n"
-                f'LEGACY_CONF_KEY_PREFIX = "{conf_schema.LEGACY_SUFFIX_PREFIX}"\n'
-                f"# {ADAPTER_BLOCK_END}")
-    if style == "js":
-        body = "\n".join(f'  "{name}",' for name in names)
-        return (f"// {ADAPTER_BLOCK_BEGIN}\n"
-                f"const LEGACY_CONF_KEYS = [\n{body}\n];\n"
-                f'const LEGACY_CONF_KEY_PREFIX = "{conf_schema.LEGACY_SUFFIX_PREFIX}";\n'
-                f"// {ADAPTER_BLOCK_END}")
-    raise ValueError(f"모르는 생성 스타일: {style}")
-
-
-def adapter_stop_message(path, found) -> str:
-    """어댑터 파서가 멈출 때 내는 문구 — 엔진 안내와 같은 사실을 짧게 말한다.
-
-    어댑터는 매핑표를 들지 않으므로 신표기 이름을 말하지 못한다. 대신 **무엇이 걸렸는지**와
-    전수 지목을 어디서 받는지를 말한다(엔진 도구가 그 표의 소유자다)."""
-    return (f"오류: local.conf 에 구표기 키가 남아 있습니다 ({path}) — "
-            f"{', '.join(found)}. 값이 조용히 기본값으로 떨어지지 않도록 여기서 멈춥니다. "
-            "전수 지목은 `board.py lint` 또는 `pm_update.py` 안내가 냅니다.")
 
 # 절 이름의 사람 말. 묶음 id 는 코드 좌표라 화면에 그대로 세우면 영문 변수명이 보인다 —
 # 이름의 주인도 이 표 하나다(화면이 짓지 않는다).
@@ -368,7 +324,7 @@ def _declared_groups() -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """키 표(`--keys`)와 어댑터 생성 블록 출력 — 사람이 손으로 옮겨 적는 표면을 없앤다."""
+    """키 표(`--keys`)와 기계 JSON(`--keys --json`) 출력 — 사람이 손으로 옮겨 적는 표면을 없앤다."""
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ["--keys"] and args[1:] in ([], ["--json"]):
         if args[1:]:
@@ -379,10 +335,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(render_key_table())
         return 0
-    if len(args) == 2 and args[0] == "--render-adapter-block":
-        print(render_adapter_block(args[1]))
-        return 0
-    print("사용법: local_conf.py [--keys [--json] | --render-adapter-block <python|js|sh>]",
-          file=sys.stderr)
+    print("사용법: local_conf.py --keys [--json]", file=sys.stderr)
     return 2
 

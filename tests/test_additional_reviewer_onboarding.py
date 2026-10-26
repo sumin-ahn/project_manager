@@ -712,28 +712,19 @@ KNOB_KEYS = tuple(_KNOB_RESOLVERS)
 
 
 # 출하 표면 전량 스캔의 유일한 예외 — 제거키 **원장**. 그 자리는 "그 이름은 사라졌다" 를 선언
-# 하므로 이름을 들고 있어야 한다: 엔진 매핑표 한 줄과, 그 표에서 생성돼 어댑터 파서가 품는 블록
-# (`local_conf.render_adapter_block`). CHANGELOG 는 기록이라 시야 밖이다(`_historical_record`).
+# 하므로 이름을 들고 있어야 한다: 엔진 매핑표 한 줄. CHANGELOG 는 기록이라 시야 밖이다
+# (`_historical_record`).
 RETIRED_SWITCH_MAP_LINE = f'"{RETIRED_SWITCH_KEY}": None,'
 
 
 def _retired_switch_offenders(files):
     """출하 표면에서 삭제된 채널 스위치 키를 산 전제로 든 줄 전수."""
-    local_conf = local_conf_cli
     offenders = []
     for path in files:
-        inside_generated_ledger = False
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if local_conf.ADAPTER_BLOCK_BEGIN in line:
-                inside_generated_ledger = True
-            elif local_conf.ADAPTER_BLOCK_END in line:
-                inside_generated_ledger = False
             if RETIRED_SWITCH_KEY not in line:
                 continue
             if line.strip() == RETIRED_SWITCH_MAP_LINE:
-                continue
-            if (inside_generated_ledger
-                    and line.strip().strip(",").strip('"') == RETIRED_SWITCH_KEY):
                 continue
             offenders.append(f"{path.relative_to(REPO).as_posix()}:{lineno}")
     return offenders
