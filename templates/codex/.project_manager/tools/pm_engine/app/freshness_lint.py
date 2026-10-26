@@ -229,7 +229,9 @@ def _freshness_owner_repo(home, owner) -> tuple[Path | None, str | None]:
     if not upstream:
         return (None, "local.conf upstream.path 미설정으로 소유 repo 미해소")
     try:
-        # upstream_rules.classify_upstream 과 같은 self-describing 경계의 필요한 부분만 유지한다.
+        # 문서 소유자의 로컬 checkout 판정이다(네트워크 0). Windows 드라이브를 빼고 `://` 포함 또는
+        # scp 모양이면 모두 비로컬로 본다 — source 형태 분류(`upstream_rules.classify_upstream`)와는
+        # 책임·판정식이 다르다(예: `./a://b` 는 그쪽에서 path, 여기서는 미해소).
         is_windows_path = bool(_WINDOWS_DRIVE_PATH_RE.match(upstream))
         is_url = (not is_windows_path and
                   ("://" in upstream or bool(_SCP_STYLE_UPSTREAM_RE.match(upstream))))

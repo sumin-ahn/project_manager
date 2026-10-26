@@ -1,4 +1,8 @@
-"""설치 공통 install_conf (infra)."""
+"""설치 공통 install_conf (infra).
+
+local.conf 키 writer(`_write_conf_keys`·`_write_conf_keys_locked`)의 파일·락·원자 교체·실효값
+검증을 소유한다. 키 갱신의 텍스트 규칙은 `pm_engine.domain.conf_schema._set_conf_keys` 가 소유한다.
+"""
 from __future__ import annotations
 
 
@@ -39,41 +43,6 @@ def _default_test_cmd() -> str:
     return python_env.default_pytest_cmd(_detected_py())
 
 
-def _set_conf_keys(text: str, updates: dict[str, str | None]) -> str:
-    """local.conf 텍스트에서 지정 키를 유일한 한 줄로 정규화한다(값 `None` 은 그 키를 지운다).
-
-    첫 등장 자리에 `key=value`를 기록하고 뒤의 활성 중복은 제거한다. 없으면 끝에
-    추가하며, 갱신하지 않는 줄·주석은 그대로 보존한다. reader들이 모두 last-wins이므로
-    갱신 뒤 옛 중복이 실효값을 되돌리지 않게 하는 일반 set-or-replace 규칙이다.
-
-    값이 `None` 이면 그 키의 줄을 **지운다**(중복 줄도 함께·없으면 무변경). 이름이 바뀐 키를
-    옮길 때 새 줄만 쓰고 옛 줄을 남기면 값을 소비하는 지점이 구표기 잔존으로 멈추므로, 쓰기와
-    지우기가 같은 교체 안에서 끝나야 반쪽 상태가 생기지 않는다.
-    """
-    remaining = {key: value for key, value in updates.items() if value is not None}
-    lines = text.splitlines(keepends=True)
-    default_newline = "\r\n" if "\r\n" in text else "\n"
-    out: list[str] = []
-    for line in lines:
-        stripped = line.lstrip()
-        if not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in updates:
-                if key in remaining:
-                    newline = ("\r\n" if line.endswith("\r\n") else
-                               "\n" if line.endswith("\n") else "")
-                    out.append(f"{key}={remaining.pop(key)}{newline}")
-                continue
-        out.append(line)
-    if remaining:
-        if out and not out[-1].endswith("\n"):
-            out[-1] = out[-1] + default_newline
-        for key, value in updates.items():
-            if key in remaining:
-                out.append(f"{key}={value}{default_newline}")
-    return "".join(out)
-
-
 def _force_rmtree(path: Path) -> None:
     """트리를 **실제로** 지운다 — 공용 seam(`fs.force_rmtree`)·실패는 올린다.
 
@@ -90,8 +59,8 @@ def _force_rmtree(path: Path) -> None:
 def _write_conf_keys(path: Path, updates: dict[str, str | None]) -> bool:
     """local.conf 키들을 중복 없이 atomic 기록하고 실효값을 검증한다(값 `None` 은 삭제).
 
-    `_set_conf_keys`로 모든 갱신 키를 유일화한 뒤 같은 디렉터리의 임시파일을
-    원자 교체하여 부분 쓰기를 막는다. 변경이 없어도 reader와 같은 last-wins 파서로
+    `conf_schema._set_conf_keys`(텍스트 규칙 소유자)로 모든 갱신 키를 유일화한 뒤 같은 디렉터리의
+    임시파일을 원자 교체하여 부분 쓰기를 막는다. 변경이 없어도 reader와 같은 last-wins 파서로
     postcondition을 확인하며, 불일치는 성공으로 흡수하지 않고 fail-loud한다.
 
     읽기→교체→검증 전체가 **전 writer 공용 배타락** 안이다. 이 writer 는 커밋 전 내용을 읽고
@@ -111,7 +80,7 @@ def _write_conf_keys(path: Path, updates: dict[str, str | None]) -> bool:
 def _write_conf_keys_locked(path: Path, updates: dict[str, str | None]) -> bool:
     """`_write_conf_keys` 의 임계 구간 본문 — 락을 **이미 쥔** 호출부 전용."""
     text = fs.read_text_shared(path, encoding="utf-8", newline="")
-    new_text = _set_conf_keys(text, updates)
+    new_text = conf_schema._set_conf_keys(text, updates)
     changed = new_text != text
     if changed:
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -176,7 +145,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     MF1: board.py init 은 local.conf 를 통째로 덮으므로, init 이 *안 쓴* 사용자 키
     (추가 리뷰어 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning`
     등)는 init 후 사라진다. 따라서 init 산출 local.conf 에 *없는* 기존 키만
-    _set_conf_keys 로 다시 얹는다. init 이 쓴 키(`runtime.py`·`test.cmd`·`project.name`·ctx 예산)는
+    `_write_conf_keys_locked` 로 다시 얹는다. init 이 쓴 키(`runtime.py`·`test.cmd`·`project.name`·ctx 예산)는
     init/operational sync 값을 우선해 덮지 않는다. 결과: import 후 local.conf = board init 기본 + operational sync
     + 사용자 기존 설정 보존. 재병합으로 변경 시 True.
 

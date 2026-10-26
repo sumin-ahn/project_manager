@@ -810,6 +810,9 @@ def test_classify_upstream_url_vs_path(pm_import):
     assert upstream_rules.classify_upstream("../rel/path") == "path"
     assert upstream_rules.classify_upstream("C:\\repo") == "path"   # Windows 드라이브
     assert upstream_rules.classify_upstream("C:/repo") == "path"
+    # `://` 가 경로 중간에 있어도 허용 scheme 으로 시작하지 않으면 path 다(문서 소유자 판정과 별개).
+    assert upstream_rules.classify_upstream("./a://b") == "path"
+    assert upstream_rules.classify_upstream("dir/name://rest") == "path"
 
 
 def test_validate_upstream_value_safety_contract(pm_import):
@@ -972,7 +975,7 @@ def test_t0933_runner_platforms(pm_import, monkeypatch, os_name, argv):
     assert dict(os.environ) == parent_env
 
 
-def test_set_conf_keys_replaces_in_place(pm_import):
+def test_set_conf_keys_replaces_in_place():
     """_set_conf_keys: 기존 키는 제자리 교체, 없는 키만 추가. 주석·타 키·순서 보존."""
     text = (
         "# header comment\n"
@@ -981,7 +984,7 @@ def test_set_conf_keys_replaces_in_place(pm_import):
         "test.cmd=pytest -q\n"
         "project.name=\n"
     )
-    out = install_conf._set_conf_keys(text, {
+    out = conf_schema._set_conf_keys(text, {
         "project.name": "X",
         "test.cmd": "python3 -m pytest tests/ -q",
         "runtime.py": "python3",
@@ -1000,10 +1003,10 @@ def test_set_conf_keys_replaces_in_place(pm_import):
     assert len(out.splitlines()) == len(text.splitlines())
 
 
-def test_set_conf_keys_appends_missing(pm_import):
+def test_set_conf_keys_appends_missing():
     """_set_conf_keys: 키가 없으면 끝에 추가한다."""
     text = "session=pm\n"
-    out = install_conf._set_conf_keys(text, {"project.name": "Y"})
+    out = conf_schema._set_conf_keys(text, {"project.name": "Y"})
     assert "project.name=Y" in out
     assert "session=pm" in out
 

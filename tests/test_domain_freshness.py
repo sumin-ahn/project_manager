@@ -33,7 +33,7 @@ from _textio import write_lf
 from _win_skip import PROJECT_TEMP_ROOT, posix_filenames_supported
 from pm_engine.infra import doc_page_store, git, pm_paths, ticket_store
 from pm_engine.app import body_lint, conf_lint, doc_lint, doc_staleness, freshness_lint, freshness_pin, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
-from pm_engine.domain import doc_pages
+from pm_engine.domain import doc_pages, upstream_rules
 from pm_engine.cli import board_lint
 from pm_engine.app import render_lint
 from pm_engine.cli import board_repin
@@ -772,6 +772,36 @@ def test_unusable_upstream_paths_stay_advisory(
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable"
     assert detail_fragment in detail
+
+    if case == "url":
+        # source 형태 분류는 path 로 보지만 문서 소유자 판정은 URL 로 남기는 입력 — 두 판정은 합치지
+        # 않는다. URL 판정은 경로 확장·git 확인 전에 끝나야 한다.
+        expanded: list[str] = []
+        checked: list[object] = []
+        real_expand = pm_paths._expanded_user_path
+        real_git_run = git._git_run
+
+        def _recording_expand(value):
+            expanded.append(value)
+            return real_expand(value)
+
+        def _recording_git_run(argv, *, runner=None, repo=None):
+            if list(argv) == ["rev-parse", "--is-inside-work-tree"]:
+                checked.append(repo)
+            return real_git_run(argv, runner=runner, repo=repo)
+
+        monkeypatch.setattr(pm_paths, "_expanded_user_path", _recording_expand)
+        monkeypatch.setattr(git, "_git_run", _recording_git_run)
+        for path_shaped in ("./a://b", "dir/name://rest"):
+            assert upstream_rules.classify_upstream(path_shaped) == "path"
+            local_conf.write_text(f"upstream.path={path_shaped}\n", encoding="utf-8")
+            findings = doc_lint.lint_domain_freshness(board._home(), runner=_raising_git)
+            assert len(findings) == 1, path_shaped
+            _label, kind, detail = findings[0]
+            assert kind == "domain-unverifiable"
+            assert "URL" in detail, detail
+        assert expanded == []
+        assert checked == []
 
 
 @pytest.mark.parametrize("expansion", ["posix", "windows"])

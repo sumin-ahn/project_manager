@@ -16,12 +16,17 @@
 새 엔진 파일은 받아야 안내대로 고칠 수 있다(막으면 고칠 수단 없이 갇힌다). 그래서 apply 경로만
 판정을 부르지 않고, 값을 **실제로 소비하는** 지점이 부른다.
 
+키 갱신의 텍스트 규칙(`_set_conf_keys` — 첫 활성 자리 교체·뒤 활성 중복 제거·`None` 삭제·
+LF/CRLF 보존)도 이 모듈이 소유한다. 그 규칙을 파일에 적용하는 락·판독·기록은 두 IO 소비자
+(`infra.conf_store._write_init_local_conf`·`infra.install_conf._write_conf_keys`)가 각자 맡는다.
+
 파일 읽기는 `pm_engine.infra.conf_store`, 키 표·JSON·어댑터 블록 출력은 `pm_engine.cli.local_conf`
 가 맡는다. 이 모듈은 파일을 열지 않는다.
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -669,6 +674,45 @@ def parse(text: str) -> dict[str, str]:
         conf[key.strip()] = value.strip()
     return conf
 
+
+
+def _set_conf_keys(text: str, updates: Mapping[str, str | None]) -> str:
+    """local.conf 텍스트에서 지정 키를 유일한 한 줄로 정규화한다(값 `None` 은 그 키를 지운다).
+
+    첫 활성 등장 자리에 `key=value` 를 기록하고 뒤의 활성 중복은 제거한다. 없으면 끝에
+    요청 순서대로 추가하며, 갱신하지 않는 줄·주석·다른 키의 중복은 그대로 보존한다. reader 가
+    모두 last-wins(`parse`)이므로 갱신 뒤 옛 중복이 실효값을 되돌리지 않게 하는 규칙이다.
+
+    값이 `None` 이면 그 키의 활성 줄을 **지운다**(중복 줄도 함께·없으면 무변경). 이름이 바뀐 키를
+    옮길 때 새 줄만 쓰고 옛 줄을 남기면 값을 소비하는 지점이 구표기 잔존으로 멈추므로, 쓰기와
+    지우기가 같은 교체 안에서 끝나야 반쪽 상태가 생기지 않는다.
+
+    개행: 교체 행은 자기 끝 표기(CRLF·LF·개행 없음)를 유지하고, 추가 행은 원문에 CRLF 가 한 번이라도
+    있으면 CRLF·아니면 LF 다. 정상 행 형식은 LF·CRLF 이며 CR 단독·Unicode 줄 구분자의 보존과
+    재적용 동일성은 약속하지 않는다. 파일·락·기록은 호출하는 IO 소비자가 맡는다.
+    """
+    remaining = {key: value for key, value in updates.items() if value is not None}
+    lines = text.splitlines(keepends=True)
+    default_newline = "\r\n" if "\r\n" in text else "\n"
+    out: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                if key in remaining:
+                    newline = ("\r\n" if line.endswith("\r\n") else
+                               "\n" if line.endswith("\n") else "")
+                    out.append(f"{key}={remaining.pop(key)}{newline}")
+                continue
+        out.append(line)
+    if remaining:
+        if out and not out[-1].endswith("\n"):
+            out[-1] = out[-1] + default_newline
+        for key, value in updates.items():
+            if key in remaining:
+                out.append(f"{key}={value}{default_newline}")
+    return "".join(out)
 
 def legacy_keys(values: dict[str, str]) -> dict[str, str | None]:
     """`values` 안의 구표기 키 → 신표기(대체 없으면 None) — 선언 순서 보존."""

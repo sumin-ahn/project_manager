@@ -430,15 +430,18 @@ def test_a_concurrent_key_writer_never_loses_the_init_merge(
     """
     conf = _conf_at(tmp_path, "session=pm\n")
     barrier = _Barrier()
-    real_set_conf_keys = install_conf._set_conf_keys
+    real_set_conf_keys = conf_schema._set_conf_keys
 
     def _blocking_set(text, updates):
-        # 락을 쥔 채 "읽은 뒤" 멈춘다 — 경쟁 상대가 이 창에 끼어들 기회를 실제로 준다.
-        barrier.entered.set()
-        assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
+        # 락을 쥔 채 "읽은 뒤" 멈춘다 — 경쟁 상대가 이 창에 끼어들 기회를 실제로 준다. 두 writer 가
+        # 같은 규칙 함수를 쓰므로 요청 값으로 표적(RMW)만 멈춘다 — 경쟁 writer 까지 같은 Event 에서
+        # 기다리면 락 없이도 차단처럼 보인다.
+        if updates == {"upstream.rev": "rev-2"}:
+            barrier.entered.set()
+            assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(install_conf, "_set_conf_keys", _blocking_set)
+    monkeypatch.setattr(conf_schema, "_set_conf_keys", _blocking_set)
     rmw = barrier.run(
         lambda: install_conf._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "RMW writer 가 임계 구간에 못 들어갔다"
@@ -473,14 +476,16 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_init_merge(
     conf = _conf_at(tmp_path, "session=pm\n")
     barrier = _Barrier()
     commit = _init_merge(board, monkeypatch, conf)
-    real_set_conf_keys = conf_store._set_conf_keys
+    real_set_conf_keys = conf_schema._set_conf_keys
 
     def _blocking_set(text, updates):
-        barrier.entered.set()
-        assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
+        # 표적은 init 병합의 기본키 요청이다 — upstream.rev 만 갱신하는 RMW 는 기다리지 않는다.
+        if updates.get("runtime.py") == "python3":
+            barrier.entered.set()
+            assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(conf_store, "_set_conf_keys", _blocking_set)
+    monkeypatch.setattr(conf_schema, "_set_conf_keys", _blocking_set)
     merge = barrier.run(commit)
     assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
 
@@ -551,16 +556,18 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
     backup = "runtime.py=oldpy\nmy_custom_key=값\n"
     barrier = _Barrier()
     commit = _init_merge(board, monkeypatch, conf)
-    real_set_conf_keys = conf_store._set_conf_keys
+    real_set_conf_keys = conf_schema._set_conf_keys
 
     def _blocking_set(text, updates):
         # init 병합이 락을 쥔 채 **아직 쓰지 않은** 창 — 보존 재병합이 이 창에서 계획을 세우면
-        # 그 계획은 곧 낡는다.
-        barrier.entered.set()
-        assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
+        # 그 계획은 곧 낡는다. 표적은 init 병합의 기본키 요청이다(백업의 `runtime.py=oldpy`·
+        # 사용자 키 요청은 기다리지 않는다).
+        if updates.get("runtime.py") == "python3":
+            barrier.entered.set()
+            assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(conf_store, "_set_conf_keys", _blocking_set)
+    monkeypatch.setattr(conf_schema, "_set_conf_keys", _blocking_set)
     merge = barrier.run(commit)
     assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
 
@@ -658,14 +665,16 @@ def _run_rev_record_against_an_upstream_flip(
     conf = _conf_at(tmp_path, f"session=pm\nupstream.path={stored}\n")
     _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
     barrier = _Barrier()
-    real_set_conf_keys = install_conf._set_conf_keys
+    real_set_conf_keys = conf_schema._set_conf_keys
 
     def _blocking_set(text, updates):
-        barrier.entered.set()
-        assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
+        # 표적은 플립 요청이다 — rev 기록의 upstream.rev·upstream.seen_rev 요청은 기다리지 않는다.
+        if updates == {"upstream.path": flipped}:
+            barrier.entered.set()
+            assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
         return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(install_conf, "_set_conf_keys", _blocking_set)
+    monkeypatch.setattr(conf_schema, "_set_conf_keys", _blocking_set)
     flip = barrier.run(lambda: install_conf._write_conf_keys(conf, {"upstream.path": flipped}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "upstream 플립이 임계 구간에 못 들어갔다"
 

@@ -75,7 +75,7 @@ def cmd_upstream(
       `upstream.path=` atomic 재기록(타 키 보존). 나쁜 값은 거부(rc 1·기록 안 함). 값 self-describing
       이라 path↔URL 전환이 자동(스킬 freshness 분기가 모양으로 적응).
 
-    local.conf set-or-replace(install_conf._set_conf_keys·타 키·주석 보존)·URL 안전 검증(upstream_rules.
+    local.conf set-or-replace(conf_schema._set_conf_keys·타 키·주석 보존)·URL 안전 검증(upstream_rules.
     validate_upstream_value)을 재사용한다(중복 0). git_runner 주입으로 hermetic 테스트
     (라이브 git/실 conf-write 없이 배선·검증 분기 검증).
     """
