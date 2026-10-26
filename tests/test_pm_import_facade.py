@@ -28,6 +28,8 @@ import pytest
 from pathlib import Path
 
 from _harness_matrix import HARNESSES as _HARNESS_IDS, _PM_IMPORT
+from pm_engine.cli import import_cmd
+from pm_engine.infra import pm_paths
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -312,7 +314,7 @@ def test_update_facade_deployed_to_adopter_root(harness: str, tmp_path: Path,
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
 
     dest = tmp_path / "adopter"
-    rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "P"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", harness, "--name", "P"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"pm_import rc={rc}"
 
     # 채택자 루트에 update 파사드 배포 + deep 엔진 진입점 존재.

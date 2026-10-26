@@ -53,6 +53,7 @@ from test_fresh_adopter_runtime_smoke import (
 from pm_engine.infra.harness import watchdog
 from pm_engine.app import regression
 from pm_engine.domain import review_form
+from pm_engine.cli import import_cmd
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
@@ -1003,8 +1004,8 @@ def _import_multipm_home(tmp_path: Path, harness: str,
     pm_import = _load_pm_import()
     home = tmp_path / f"mpm-home-{harness}"
     origins = tmp_path / f"origins-{harness}"
-    rc = pm_import.main(
-        ["--new", str(home), "--harness", harness, "--name", "MPM", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(home), "--harness", harness, "--name", "MPM", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"{harness} multi-PM home import 실패 (rc={rc})"
 

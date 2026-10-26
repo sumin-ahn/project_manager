@@ -16,6 +16,7 @@ from pm_engine.app import update_plan
 from pm_engine.infra import install_conf
 from pm_engine.infra import shipping_targets
 from pm_engine.infra import pm_paths
+from pm_engine.cli import update_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -39,10 +40,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 # ── 심볼 존재 확인 ─────────────────────────────────────────────────────────
@@ -294,7 +295,7 @@ def test_main_target_opencode_dry_run(pm_update, tmp_path, monkeypatch):
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source),
         "--target", "opencode",
         "--dry-run",
@@ -311,7 +312,7 @@ def test_main_target_unknown_returns_error(pm_update, tmp_path):
     source.mkdir()
 
     # templates/ 하위에 절대 존재하지 않을 이름 사용
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source),
         "--target", "no_such_target_xyz_should_not_exist",
         "--dry-run",
@@ -448,7 +449,7 @@ def test_main_target_dotdot_returns_error(pm_update, tmp_path):
     """main() 에서 --target .. 은 rc=1 을 반환하고 REPO 루트를 dest 로 삼지 않는다."""
     source = tmp_path / "upstream"
     source.mkdir()
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source),
         "--target", "..",
         "--dry-run",
@@ -460,7 +461,7 @@ def test_main_target_dotdot_slash_x_returns_error(pm_update, tmp_path):
     """main() 에서 --target ../x 는 rc=1 을 반환한다."""
     source = tmp_path / "upstream"
     source.mkdir()
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source),
         "--target", "../x",
         "--dry-run",
@@ -472,7 +473,7 @@ def test_main_target_nested_returns_error(pm_update, tmp_path):
     """main() 에서 --target a/b 는 rc=1 을 반환한다."""
     source = tmp_path / "upstream"
     source.mkdir()
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source),
         "--target", "a/b",
         "--dry-run",
@@ -504,7 +505,7 @@ def test_main_missing_manifest_entries_returns_rc2(pm_update, tmp_path, monkeypa
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source),
         "--dry-run",
     ])
@@ -531,7 +532,7 @@ def test_main_no_missing_all_present_returns_rc0(pm_update, tmp_path, monkeypatc
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source),
         "--target", "mytarget",
         "--dry-run",

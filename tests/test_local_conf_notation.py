@@ -48,6 +48,7 @@ from pm_engine.infra import conf_store
 from pm_engine.infra import install_conf
 from pm_engine.app import update_render
 from pm_engine.infra import retired_paths
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -731,7 +732,7 @@ def test_board_lint_surfaces_legacy_keys_and_restated_comments(tmp_path, monkeyp
 
     assert findings, "실 conf 의 구표기가 조회면에 뜨지 않는다"
     assert {kind for _where, kind, _detail in findings} == {"local-conf"}
-    assert "local-conf" in board._ADVISORY_LINT_KINDS          # never-block
+    assert "local-conf" in board_lint._ADVISORY_LINT_KINDS          # never-block
     assert "`delegate_enabled` → `delegate.enabled`" in details
     assert "주석이 실값과 다른 값을 재진술한다: `test.cmd=pytest" in details
     assert "실값 `make test`" in details

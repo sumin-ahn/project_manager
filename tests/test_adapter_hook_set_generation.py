@@ -46,6 +46,8 @@ from pm_engine.infra import upstream_declarations
 from pm_engine.app import update_adapters
 from pm_engine.app import update_render
 from pm_engine.infra import engine_transfer as engine_copy_io
+from pm_engine.cli import config_adapter
+from pm_engine.cli import update_cmd
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -91,10 +93,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 @pytest.fixture(scope="module")
@@ -814,7 +816,7 @@ def test_main_sync_run_returns_rc1_on_mixed_generation(pm_update, tmp_path,
     _write_source_manifest(source, ["# 합성 manifest — 엔진 변경 0 경로"])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     assert rc == 1, capsys.readouterr()
     err = capsys.readouterr().err
@@ -838,7 +840,7 @@ def test_main_post_apply_gate_returns_rc1_after_engine_files_land(
     _write_source_manifest(source, [engine_rel])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     out, err = capsys.readouterr()
     assert (dest / engine_rel).read_text(encoding="utf-8") == "# 상류 엔진 파일\n", \
@@ -972,7 +974,7 @@ def test_partial_scope_over_hook_set_is_refused_before_writing(
     _write_source_manifest(source, [_WRAPPER_REL, _DRIVER_REL])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--from", str(source), "--paths", _WRAPPER_REL])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--paths", _WRAPPER_REL])
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -999,7 +1001,7 @@ def test_partial_scope_in_source_coordinates_is_refused(pm_update, tmp_path,
     _write_source_manifest(source, _SOURCE_COORDINATE_MANIFEST)
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO),
         ["--from", str(source), "--paths", f"templates/claude_code/{_WRAPPER_REL}"])
 
     err = capsys.readouterr().err
@@ -1018,7 +1020,7 @@ def test_full_hook_set_scope_in_source_coordinates_is_allowed(
     _write_source_manifest(source, _SOURCE_COORDINATE_MANIFEST)
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source), "--paths",
         f"templates/claude_code/{_WRAPPER_REL}", f"templates/claude_code/{_DRIVER_REL}",
     ])
@@ -1041,7 +1043,7 @@ def test_full_hook_set_scope_is_allowed(pm_update, tmp_path, monkeypatch, capsys
     _write_source_manifest(source, [_WRAPPER_REL, _DRIVER_REL])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--from", str(source), "--paths", _WRAPPER_REL, _DRIVER_REL])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--paths", _WRAPPER_REL, _DRIVER_REL])
 
     assert rc == 0, capsys.readouterr()
     assert (dest / _DRIVER_REL).read_text(encoding="utf-8") == _DRIVER_NEW
@@ -1246,7 +1248,7 @@ def test_unreadable_hook_file_is_lenient_for_report_but_blocks_mutation(
 
     assert hook_sets.judge_adapter_hook_sets(dest, source) == [], \
         "조회 판정이 판정 불가 파일을 red 로 올렸다(거짓 처방)"
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
     assert rc == 1
@@ -1263,7 +1265,7 @@ def test_check_reports_hook_set_generation_mismatch(pm_config, tmp_path, capsys)
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, check=True), dest_root=dest)
 
     assert rc == 1
@@ -1279,7 +1281,7 @@ def test_check_sees_hook_sets_even_when_config_channel_is_empty(
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
     (source / "templates" / "claude_code" / _SETTINGS_REL).unlink()  # 채널 대상 0.
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, check=True), dest_root=dest)
 
     out, err = capsys.readouterr()
@@ -1294,7 +1296,7 @@ def test_check_stays_green_when_hook_set_matches(pm_config, tmp_path, capsys):
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, check=True), dest_root=dest)
 
     assert rc == 0, capsys.readouterr()
@@ -1309,7 +1311,7 @@ def test_accept_refuses_when_engine_files_are_behind(pm_config, tmp_path, capsys
         template_settings=_settings(git_anchor=True))
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
     assert rc == 1
@@ -1326,7 +1328,7 @@ def test_accept_proceeds_when_engine_files_are_current(pm_config, tmp_path):
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
         template_settings=_settings(git_anchor=True))
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
     assert rc == 0
@@ -1341,7 +1343,7 @@ def test_accept_of_absent_config_reports_channel_error_not_order_refusal(
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
     (dest / _SETTINGS_REL).unlink()
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
     err = capsys.readouterr().err
@@ -1357,7 +1359,7 @@ def test_accept_all_accepts_the_set_through_the_same_gate(pm_config, tmp_path, c
         template_settings=_settings(git_anchor=True),
         ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
 
     assert rc == 0, capsys.readouterr()
@@ -1375,7 +1377,7 @@ def test_accept_all_refuses_blocked_member_without_touching_it(pm_config, tmp_pa
         ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
 
     assert rc == 1
@@ -1395,7 +1397,7 @@ def test_accept_all_excludes_adopter_edits_and_says_so(pm_config, tmp_path, caps
         template_settings=_settings(git_anchor=True),
         ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
 
     out = capsys.readouterr().out
@@ -1414,7 +1416,7 @@ def test_accept_all_prints_targets_before_touching_them(pm_config, tmp_path, cap
         template_settings=_settings(git_anchor=True),
         ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
     out = capsys.readouterr().out
 
@@ -1463,7 +1465,7 @@ def test_accept_gate_judges_with_upstream_generation_not_installed(
     installed_only = hook_sets.hook_set_accept_decision(
         dest, source, _SETTINGS_REL,
         declarations=hook_sets.hook_set_declarations(_run_home(tmp_path), None))
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
     assert installed_only.blockers == [], \
@@ -1513,7 +1515,7 @@ def test_accept_gate_is_fail_closed_when_upstream_generation_is_unreadable(
         upstream_tail=None)  # 상류 트리에 선언 package 없음.
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
     err = capsys.readouterr().err
@@ -1541,7 +1543,7 @@ def test_partial_guard_sees_a_coupled_group_only_upstream_knows(
 
     assert hook_sets.hook_set_partial_update([alpha], [alpha, beta]) == [], \
         "픽스처 전제 붕괴 — 설치본 선언이 이미 그 묶음을 안다"
-    rc = pm_update.main(["--from", str(source), "--paths", alpha])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--paths", alpha])
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -1620,7 +1622,7 @@ def test_partial_guard_refuses_upstream_only_group_when_upstream_is_unreadable(
 
     assert hook_sets.hook_set_partial_update([alpha], [alpha, beta]) == [], \
         "픽스처 전제 붕괴 — 로컬 선언이 그 묶음을 안다(구멍 재현 불가)"
-    rc = pm_update.main(["--from", str(source), "--paths", alpha])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--paths", alpha])
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -1642,7 +1644,7 @@ def test_partial_guard_is_fail_closed_when_upstream_generation_is_unreadable(
     _write_source_manifest(source, [_WRAPPER_REL, _DRIVER_REL])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO),
         ["--from", str(source), "--paths", _WRAPPER_REL, _DRIVER_REL])
 
     err = capsys.readouterr().err
@@ -1664,7 +1666,7 @@ def test_partial_guard_leaves_non_hook_scope_alone_without_upstream(
     _write_source_manifest(source, [engine_rel])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--from", str(source), "--paths", engine_rel])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--paths", engine_rel])
 
     assert rc == 0, capsys.readouterr()
     assert (dest / engine_rel).read_text(encoding="utf-8") == "# 상류 엔진 파일\n"
@@ -1684,7 +1686,7 @@ def test_accept_all_excludes_unrecorded_because_edits_cannot_be_judged(
     assert [item.status for item in adapter_report.judge_adapter_configs(dest, source)] \
         == ["unrecorded"], "픽스처 전제(원장 부재 판정)가 아니다"
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
 
     out = capsys.readouterr().out
@@ -1701,7 +1703,7 @@ def test_accept_all_reports_no_candidates_when_already_in_sync(pm_config, tmp_pa
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
 
     assert rc == 0
@@ -1714,7 +1716,7 @@ def test_build_parser_routes_accept_all_and_excludes_other_modes(pm_config):
     parser = pm_config.build_parser()
     parsed = parser.parse_args(["sync-adapter-config", "--accept-all"])
 
-    assert parsed.func is pm_config.cmd_sync_adapter_config and parsed.accept_all is True
+    assert parsed.func.func is config_adapter.cmd_sync_adapter_config and parsed.accept_all is True
     with pytest.raises(SystemExit):
         parser.parse_args(["sync-adapter-config", "--accept-all", "--accept", _SETTINGS_REL])
     with pytest.raises(SystemExit):
@@ -1800,7 +1802,7 @@ def test_check_surfaces_the_query_axis_downgrade_reason(pm_config, tmp_path, cap
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
         upstream_tail=None)  # 상류 트리에 선언 package 없음 → 로컬 선언으로 강등.
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, check=True), dest_root=dest)
 
     err = capsys.readouterr().err
@@ -1815,7 +1817,7 @@ def test_check_stays_quiet_when_the_upstream_generation_resolves(pm_config, tmp_
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, check=True), dest_root=dest)
 
     err = capsys.readouterr().err
@@ -1960,7 +1962,7 @@ def test_query_fallback_wording_has_one_owner(pm_update, pm_config,
 
     update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
     sync_err = capsys.readouterr().err
-    pm_config.cmd_sync_adapter_config(
+    config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, check=True), dest_root=dest)
     check_err = capsys.readouterr().err
 

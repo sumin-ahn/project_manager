@@ -260,7 +260,7 @@ _HARNESS_LITERAL_EXEMPTIONS = {
         "하네스별 wire 출력 parser를 고르는 fill reply 디코더(timeout 비소유)",
     ("pm_engine/app/add_harness", "add_harness"):
         "추가할 어댑터 namespace의 안내 문구 소유(fill 실행 판정과 무관)",
-    ("pm_import", "main"):
+    ("pm_engine/cli/import_cmd", "main"):
         "import CLI의 어댑터 선택·안내 표현 소유(timeout 판정은 _real_harness_runner 단독)",
 }
 
@@ -272,6 +272,7 @@ _PM_IMPORT_MOVED_MODULES = (
     "pm_engine/app/install_board", "pm_engine/domain/adapter_specs", "pm_engine/domain/upstream_rules",
     "pm_engine/infra/adapter_baseline", "pm_engine/infra/adapter_documents", "pm_engine/infra/install_conf",
     "pm_engine/infra/install_receipt", "pm_engine/infra/upstream_declarations", "pm_engine/infra/upstream_git",
+    "pm_engine/cli/import_cmd",
 )
 
 

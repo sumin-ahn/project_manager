@@ -67,10 +67,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 def _home(tmp_path: Path, name: str):

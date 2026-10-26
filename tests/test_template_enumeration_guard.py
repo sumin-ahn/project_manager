@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 
 import pytest
+from pm_engine.cli import update_cmd
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -96,13 +98,13 @@ def test_all_targets_discovers_a_new_directory_at_runtime(tmp_path: Path, monkey
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    real_main = pm_update.main
+    real_main = update_cmd.main
     child_calls: list[list[str]] = []
     monkeypatch.setattr(
-        pm_update, "main", lambda argv: child_calls.append(list(argv)) or 0
+        update_cmd, "main", lambda _home, argv, **_kw: child_calls.append(list(argv)) or 0
     )
 
-    assert real_main(["--from", str(source), "--all-targets", "--dry-run"]) == 0
+    assert real_main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--all-targets", "--dry-run"]) == 0
     assert child_calls == [
         ["--from", str(source), "--target", "alpha", "--dry-run"],
         ["--from", str(source), "--target", "fourth_harness", "--dry-run"],
@@ -125,12 +127,12 @@ def test_all_targets_rejects_changes_only_options(
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     child_calls: list[list[str]] = []
-    real_main = pm_update.main
+    real_main = update_cmd.main
     monkeypatch.setattr(
-        pm_update, "main", lambda argv: child_calls.append(list(argv)) or 0
+        update_cmd, "main", lambda _home, argv, **_kw: child_calls.append(list(argv)) or 0
     )
 
-    assert real_main(["--all-targets", *extra]) == 1
+    assert real_main(pm_paths.home_at(pm_update.REPO), ["--all-targets", *extra]) == 1
     assert child_calls == []  # 자식 동기화 호출 0 — 오사용이 실 sync 로 새지 않는다.
     assert "--changes 전용" in capsys.readouterr().err
 
@@ -142,5 +144,5 @@ def test_all_targets_rejects_changes_mode(tmp_path: Path, monkeypatch, capsys):
     (fake_repo / "templates" / "alpha").mkdir(parents=True)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    assert pm_update.main(["--all-targets", "--changes"]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--all-targets", "--changes"]) == 1
     assert "--changes 와 함께 쓸 수 없다" in capsys.readouterr().err

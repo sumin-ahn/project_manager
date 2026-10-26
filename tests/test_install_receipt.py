@@ -34,6 +34,8 @@ from pm_engine.infra import manifest_store, pm_paths
 from pm_engine.app import add_harness
 from pm_engine.infra import install_receipt
 from pm_engine.app import update_manifest
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -63,10 +65,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 @pytest.fixture(autouse=True)
@@ -76,9 +78,9 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
 
 
 def _new_instance(pm_import, dest: Path, harness: str = "claude") -> Path:
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", harness, "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"])
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"인스턴스 셋업 실패(rc={rc})"
     return dest
 
@@ -118,9 +120,9 @@ def test_into_records_the_union_of_existing_and_selected(pm_import, tmp_path):
     """`--into` 는 이번 선택만이 아니라 **기존 독자까지** 기록한다(표기 독자 집합과 같은 값)."""
     dest = _new_instance(pm_import, tmp_path / "into_union", "codex")
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex"]
 
@@ -140,9 +142,9 @@ def test_planning_paths_do_not_write_a_receipt(pm_import, tmp_path, capsys):
     add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True, source_root=REPO)
     assert not _receipt_path(pm_import, dest).exists(), "dry-run 이 기록을 만들었다"
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "codex", "--fill", "manual", "--dry-run",
-         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
     assert not _receipt_path(pm_import, dest).exists(), "import dry-run 이 기록을 만들었다"
 
 
@@ -240,9 +242,9 @@ def test_legacy_instance_backfills_on_reimport(pm_import, tmp_path):
     dest = _new_instance(pm_import, tmp_path / "backfill_into", "claude")
     _drop_receipt(pm_import, dest)
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude"]
 
@@ -286,7 +288,7 @@ def test_update_does_not_clobber_the_receipt(pm_import, pm_update, tmp_path, mon
     before = _receipt_path(pm_import, dest).read_bytes()
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
 
     assert _receipt_path(pm_import, dest).read_bytes() == before
 

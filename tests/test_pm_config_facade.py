@@ -42,6 +42,12 @@ import pytest
 from pm_engine.infra import areas_store, conf_store, pm_paths
 
 from _pool_seams import bind_board
+from pm_engine.cli import config_console
+from pm_engine.cli import config_install
+from pm_engine.cli import config_models
+from pm_engine.cli import config_status
+from pm_engine.cli import config_upstream
+from pm_engine.cli import update_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -554,14 +560,18 @@ class FakeGitRecorder:
 
 
 class FakePmUpdate:
-    """pm_update 모듈 대역 — main(argv) 호출 인자를 기록한다 (forward verbatim 검증)."""
+    """`cli.update_cmd.main` 대역 — 호출 인자(Home·argv·prog)를 기록한다 (forward verbatim 검증)."""
 
     def __init__(self, *, rc=0):
         self.main_argv = None
+        self.home = None
+        self.prog = None
+        self.calls = 0
         self._rc = rc
 
-    def main(self, argv):
-        self.main_argv = argv
+    def main(self, home, argv, *, prog):
+        self.home, self.main_argv, self.prog = home, argv, prog
+        self.calls += 1
         return self._rc
 
 
@@ -639,10 +649,11 @@ def test_init_engine_missing_errors_isolated(pc, monkeypatch, capsys):
 # ── update forward — verbatim (argparse 미가공) ──────────────────────────────
 
 
-def test_update_forwards_verbatim_to_pm_update(pc):
-    """`update --from X --dry-run` → pm_update.main(["--from","X","--dry-run"]) 그대로."""
+def test_update_forwards_verbatim_to_pm_update(pc, monkeypatch):
+    """`update --from X --dry-run` → update_cmd.main(home, ["--from","X","--dry-run"]) 그대로."""
     fake = FakePmUpdate(rc=0)
-    rc = pc.cmd_update(["--from", "/up/stream", "--dry-run"], pm_update=fake)
+    monkeypatch.setattr(update_cmd, "main", fake.main)
+    rc = config_install.cmd_update(pm_paths.home_at(pc.REPO), ["--from", "/up/stream", "--dry-run"])
     assert rc == 0
     assert fake.main_argv == ["--from", "/up/stream", "--dry-run"]
 
@@ -653,25 +664,17 @@ def test_update_forwards_through_main_dispatch(pc, monkeypatch):
     디스패처가 `--dry-run` 을 자기 플래그로 오인하지 않음을 검증 (argparse 우회 special-case).
     """
     fake = FakePmUpdate(rc=0)
-    monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: fake if name == "pm_update" else None)
+    monkeypatch.setattr(update_cmd, "main", fake.main)
     rc = pc.main(["update", "--dry-run", "--from", "/x"])
     assert rc == 0
     assert fake.main_argv == ["--dry-run", "--from", "/x"]
 
 
-def test_update_propagates_pm_update_returncode(pc):
-    """pm_update.main 의 rc 가 그대로 전파된다 (위임·중복 로직 0)."""
+def test_update_propagates_pm_update_returncode(pc, monkeypatch):
+    """update_cmd.main 의 rc 가 그대로 전파된다 (위임·중복 로직 0)."""
     fake = FakePmUpdate(rc=2)
-    assert pc.cmd_update(["--from", "/x"], pm_update=fake) == 2
-
-
-def test_update_engine_missing_errors_isolated(pc, monkeypatch, capsys):
-    """_load_module 가 None(엔진 부재)이면 명시 에러 rc 1."""
-    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
-    rc = pc.cmd_update(["--dry-run"])
-    assert rc == 1
-    assert "pm_update.py 엔진을 찾을 수 없다" in capsys.readouterr().err
+    monkeypatch.setattr(update_cmd, "main", fake.main)
+    assert config_install.cmd_update(pm_paths.home_at(pc.REPO), ["--from", "/x"]) == 2
 
 
 # ── init/update forward usage prog 정합 (T-0249·ADR-0043) ────────────────────
@@ -743,7 +746,7 @@ def test_update_error_usage_shows_facade_prog_not_pm_update_py(pc, capsys):
 def test_forwarded_prog_remaps_only_mapped_and_restores(pc):
     """`_forwarded_prog` — 매핑 prog 만 치환·매핑 밖은 통과·블록 종료 후 __init__ 원복 (T-0249)."""
     original_init = argparse.ArgumentParser.__init__
-    with pc._forwarded_prog({"board.py": "pm-config"}):
+    with config_status._forwarded_prog({"board.py": "pm-config"}):
         # 매핑된 top-level prog → 치환.
         assert argparse.ArgumentParser(prog="board.py").prog == "pm-config"
         # 매핑 밖 prog(파생 subparser·타 도구)는 그대로 통과 — 오염 0.
@@ -756,7 +759,7 @@ def test_forwarded_prog_restores_on_exception(pc):
     """`_forwarded_prog` — 블록 안 예외(SystemExit 포함)에도 finally 로 __init__ 원복 (T-0249)."""
     original_init = argparse.ArgumentParser.__init__
     with pytest.raises(SystemExit):
-        with pc._forwarded_prog({"board.py": "pm-config"}):
+        with config_status._forwarded_prog({"board.py": "pm-config"}):
             raise SystemExit(2)
     assert argparse.ArgumentParser.__init__ is original_init
 
@@ -790,7 +793,7 @@ def test_upstream_show_surfaces_value(pc, tmp_path, monkeypatch, capsys):
     """`upstream show` → 현재 upstream 값 + self-describing 분류 surface."""
     conf = _setup_repo_conf(pc, tmp_path, "upstream.path=https://github.com/x/y.git\n")
     args = argparse.Namespace(upstream_action="show")
-    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=_good_upstream_runner)
     assert rc == 0
     out = capsys.readouterr().out
     assert "https://github.com/x/y.git" in out
@@ -801,7 +804,7 @@ def test_upstream_show_unregistered(pc, tmp_path, capsys):
     """upstream 미등록이면 안내(미등록) surface · rc 0."""
     _setup_repo_conf(pc, tmp_path, "session=pm\n")
     args = argparse.Namespace(upstream_action="show")
-    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=_good_upstream_runner)
     assert rc == 0
     assert "미등록" in capsys.readouterr().out
 
@@ -812,7 +815,7 @@ def test_upstream_set_url_valid_records_and_preserves_keys(pc, tmp_path):
         pc, tmp_path, "# header\nsession=pm\nupstream.path=/old\ntest.cmd=pytest\n")
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/foo/bar.git")
-    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=_good_upstream_runner)
     assert rc == 0
     text = conf.read_text(encoding="utf-8")
     assert "upstream.path=https://github.com/foo/bar.git" in text
@@ -832,7 +835,7 @@ def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
     )
     requested = "https://github.com/acme/framework.git"
 
-    rc = pc.cmd_upstream(
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO),
         argparse.Namespace(upstream_action="set", value=requested),
         git_runner=_good_upstream_runner,
     )
@@ -852,7 +855,7 @@ def test_upstream_set_postcondition_mismatch_fails_loud(pc, tmp_path, monkeypatc
     _setup_repo_conf(pc, tmp_path, "upstream.path=/old\n")
     monkeypatch.setattr(conf_schema, 'parse', lambda _text: {"upstream.path": "/raced"})
 
-    rc = pc.cmd_upstream(
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO),
         argparse.Namespace(upstream_action="set", value="https://github.com/acme/new.git"),
         git_runner=_good_upstream_runner,
     )
@@ -877,7 +880,7 @@ def test_upstream_set_recomputes_installed_gate_contract(pc, tmp_path, monkeypat
         upstream_action="set", value="https://github.com/acme/framework.git")
 
     bind_pool(monkeypatch, pool)
-    assert pc.cmd_upstream(
+    assert config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO),
         args, git_runner=_good_upstream_runner,
 
     ) == 0
@@ -890,7 +893,7 @@ def test_upstream_set_url_unreachable_rejected(pc, tmp_path, capsys):
     conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/no/such.git")
-    rc = pc.cmd_upstream(args, git_runner=_bad_upstream_runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=_bad_upstream_runner)
     assert rc == 1
     assert "도달 불가" in capsys.readouterr().err
     assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"  # 무변경
@@ -902,7 +905,7 @@ def test_upstream_set_path_valid_records(pc, tmp_path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     args = argparse.Namespace(upstream_action="set", value=str(checkout))
-    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=_good_upstream_runner)
     assert rc == 0
     assert f"upstream.path={checkout}" in conf.read_text(encoding="utf-8")
 
@@ -912,7 +915,7 @@ def test_upstream_set_path_nonexistent_rejected(pc, tmp_path, capsys):
     conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     args = argparse.Namespace(
         upstream_action="set", value=str(tmp_path / "does_not_exist"))
-    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=_good_upstream_runner)
     assert rc == 1
     assert "디렉토리가 아니거나 존재하지 않음" in capsys.readouterr().err
     assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"
@@ -932,7 +935,7 @@ def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys)
 
     args = argparse.Namespace(
         upstream_action="set", value="https://user:pass@github.com/x.git")
-    rc = pc.cmd_upstream(args, git_runner=runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=runner)
     assert rc == 1
     assert called["n"] == 0, "순수 검증 실패인데도 git(네트워크)이 호출됨"
     assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"
@@ -956,7 +959,7 @@ def test_upstream_set_missing_conf_skips_network(pc, tmp_path, monkeypatch, caps
 
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/x/y.git")
-    rc = pc.cmd_upstream(args, git_runner=runner)
+    rc = config_upstream.cmd_upstream(pm_paths.home_at(pc.REPO), args, git_runner=runner)
     assert rc == 1
     assert "local.conf 없음" in capsys.readouterr().err
     assert called["n"] == 0, "conf 부재인데 git(네트워크)이 호출됨(네트워크 낭비)"
@@ -2411,7 +2414,7 @@ def test_status_lists_leases(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     assert wp.did("list_leases")
     out = capsys.readouterr().out
@@ -2429,7 +2432,7 @@ def test_status_surfaces_readonly_role(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     full = out.split("풀 전체 리스 장부")[1]
@@ -2448,7 +2451,7 @@ def test_whoami_highlights_my_lease(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="whoami"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="whoami"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "이 세션의 리스:" in out
@@ -2462,7 +2465,7 @@ def test_status_empty_pool(pc, monkeypatch, capsys):
     """리스 없으면 빈 풀 안내(크래시 없음)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     assert "리스 없음" in capsys.readouterr().out
 
@@ -2480,7 +2483,7 @@ def test_status_unbound_session_surfaces_placeholder(pc, monkeypatch, tmp_path, 
         FakeLease(slot="work/svc_1", repo="svc", session="other", state="leased"),
     ]))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="whoami"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="whoami"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "(비바인딩)" in out
@@ -2500,7 +2503,7 @@ def test_status_shows_live_branch_from_current_branch(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, live_branches={"work/svc_1": "live-feat"}))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "live-feat" in out, "live branch(current_branch) 가 surface 안 됨"
@@ -2520,7 +2523,7 @@ def test_status_detached_branch_shows_placeholder(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     assert "(detached/조회불가)" in capsys.readouterr().out
 
@@ -2556,7 +2559,7 @@ def test_status_task_axis_lists_named_tasks_and_workspaces(pc, monkeypatch, caps
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     task_axis = out.split("task 상황")[1].split("slot 풀")[0]
@@ -2574,7 +2577,7 @@ def test_status_task_axis_empty_when_no_named_tasks(pc, monkeypatch, capsys):
     leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=[]))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "task 상황" in out
@@ -2592,7 +2595,7 @@ def test_status_slot_git_summary_shows_parent_ahead_behind(pc, monkeypatch, caps
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     # branch@head(단축 8) + 부모 이름@갈라진 커밋(단축 8) + 앞/뒤.
@@ -2609,7 +2612,7 @@ def test_status_slot_git_summary_without_parent_record(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "feat-x@abc12345 (부모 기록 없음)" in out
@@ -2625,7 +2628,7 @@ def test_status_slot_git_summary_parent_branch_deleted(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "feat@99887766 (부모: dev@00112233 · 부모 브랜치 없음)" in out
@@ -2644,7 +2647,7 @@ def test_status_readonly_slot_git_shows_detached_and_role(pc, monkeypatch, capsy
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, slot_git=slot_git))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     pool = out.split("slot 풀")[1]
@@ -2665,7 +2668,7 @@ def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     pool = capsys.readouterr().out.split("slot 풀")[1]
     svc1 = pool.split("work/svc_1")[1].split("work/svc_2")[0]
@@ -2688,7 +2691,7 @@ def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, _Boom(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "work/svc_1" in out                  # 리스 장부 축은 정상 surface
@@ -2703,7 +2706,7 @@ def test_status_idle_lease_not_attributed_to_none_task(pc, monkeypatch, capsys):
     tasks = [SimpleNamespace(name=None, prefix=None)]   # name 미보유 레코드(방어 대상)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=tasks))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     pool = capsys.readouterr().out.split("slot 풀")[1]
     assert "보유 task=None" not in pool          # None 오귀인 없음
@@ -2718,7 +2721,7 @@ def test_status_surfaces_orphan_drift(pc, monkeypatch, capsys):
     orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([orphan], [], [])))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     assert wp.did("reconcile_worktrees")
     out = capsys.readouterr().out
@@ -2734,7 +2737,7 @@ def test_status_surfaces_stale_and_incomplete_drift(pc, monkeypatch, capsys):
     incomplete = FakeLease(slot="work/svc_5", repo="svc", session="me", state="creating")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([], [stale], [incomplete])))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "[stale] work/svc_9" in out
@@ -2748,7 +2751,7 @@ def test_status_no_drift_omits_section(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases))   # reconcile 미지정 → 빈 결과
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "drift" not in out
@@ -2763,7 +2766,7 @@ def test_status_reconcile_failure_does_not_break_status(pc, monkeypatch, capsys)
 
     wp = bind_pool(monkeypatch, _Boom(leases=[FakeLease(slot="work/svc_1", repo="svc", state="idle")]))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "work/svc_1" in out          # 리스 장부는 정상 surface
@@ -2777,7 +2780,7 @@ def test_status_drift_guidance_recommends_prune_not_force_release(pc, monkeypatc
     orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([orphan], [stale], [])))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "prune-stale" in out                 # 안전 프리미티브 안내
@@ -3005,12 +3008,12 @@ def test_main_routes_delegate_models_to_the_lookup(pc, monkeypatch):
     """`delegate models --harness <h> --json` 이 조회 핸들러로 간다(파싱된 인자 그대로)."""
     seen = {}
 
-    def _capture(args):
+    def _capture(_home, args):
         seen["harness"] = args.harness
         seen["json"] = args.json
         return 0
 
-    monkeypatch.setattr(pc, "cmd_delegate_models", _capture)
+    monkeypatch.setattr(config_models, "cmd_delegate_models", _capture)
     rc = pc.main(["delegate", "models", "--harness", "codex", "--json"])
 
     assert rc == 0
@@ -3434,12 +3437,12 @@ def test_main_no_args_tty_enters_console(pc, monkeypatch):
     """무인자 + tty → run_console 진입(help 아님). run_console 을 stub 해 진입만 관찰."""
     called = {}
 
-    def fake_console():
+    def fake_console(_home):
         called["console"] = True
         return 0
 
     monkeypatch.setattr(console, '_stdin_is_tty', lambda: True)
-    monkeypatch.setattr(pc, "run_console", fake_console)
+    monkeypatch.setattr(config_console, "run_console", fake_console)
     rc = pc.main([])
     assert rc == 0
     assert called.get("console") is True
@@ -3449,8 +3452,8 @@ def test_main_no_args_non_tty_shows_help(pc, monkeypatch, capsys):
     """무인자 + 비-tty(파이프/CI) → 현행 help(rc 1) — 콘솔로 안 멈춘다(기존 계약 보존)."""
     console_called = {}
     monkeypatch.setattr(console, '_stdin_is_tty', lambda: False)
-    monkeypatch.setattr(pc, "run_console",
-                        lambda: console_called.setdefault("c", True) or 0)
+    monkeypatch.setattr(config_console, "run_console",
+                        lambda _home: console_called.setdefault("c", True) or 0)
     rc = pc.main([])
     assert rc == 1
     assert "c" not in console_called   # 콘솔 진입 안 함
@@ -3463,7 +3466,7 @@ def test_main_subcommand_with_tty_does_not_enter_console(pc, monkeypatch):
     """서브커맨드를 주면 tty 라도 콘솔 미진입 — 커맨드형 경로 그대로(동작 0 변경)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     monkeypatch.setattr(console, '_stdin_is_tty', lambda: True)
-    monkeypatch.setattr(pc, "run_console",
+    monkeypatch.setattr(config_console, "run_console",
                         lambda: (_ for _ in ()).throw(AssertionError("콘솔 진입하면 안 됨")))
     monkeypatch.setattr(pc, "_load_module",
                         lambda name, filename: bind_pool(monkeypatch, wp) if name == "worktree_pool" else None)

@@ -23,6 +23,8 @@ from _git_fixture import init_git_repo
 from pm_engine.app import adapter_report
 from pm_engine.infra import adapter_baseline
 from pm_engine.app import update_adapters
+from pm_engine.cli import config_adapter
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -195,7 +197,7 @@ def test_crlf_checkout_config_is_converged(pm_import, pm_config, tmp_path, capsy
     assert adapter_report.adapter_config_convergence_status(judgment) == "converged"
 
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
-    rc = pm_config.cmd_sync_adapter_config(args, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO), args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert rc == 0, captured.err
@@ -284,7 +286,7 @@ def test_crlf_set_accept_does_not_exclude_unedited_as_adopter_edit(
     args = argparse.Namespace(
         list=False, check=False, accept=None, accept_all=True, source=str(source))
 
-    pm_config.cmd_sync_adapter_config(args, dest_root=dest)
+    config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO), args, dest_root=dest)
 
     out = capsys.readouterr().out
     excluded = [line for line in out.splitlines() if "세트 수용 제외" in line]

@@ -69,6 +69,7 @@ from pm_engine.app import add_harness
 from pm_engine.app import hook_sets
 from pm_engine.domain import adapter_specs
 from pm_engine.infra import pm_paths
+from pm_engine.cli import import_cmd
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -459,8 +460,10 @@ def _build_upgraded_adopter(
     dest = tmp_path / f"upgraded-{host}-{guest}-{guest_marker_generation}"
 
     # ① 현행 엔진으로 설치 + 엔진 사본 canonical 승격(게이트 전제).
-    assert _PM_IMPORT.main(
-        ["--new", str(dest), "--harness", host, "--name", _ADOPTER_NAME, "--fill", "manual"]
+    assert import_cmd.main(
+        pm_paths.home_at(_PM_IMPORT.REPO),
+        ["--new", str(dest), "--harness", host, "--name", _ADOPTER_NAME, "--fill", "manual"],
+        engine_rev=_PM_IMPORT.ENGINE_REV,
     ) == 0, f"{host} import 실패"
     _prime_engine_to_canonical(dest)
 
@@ -920,7 +923,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "f1a5b2ceb0fb1cad523efae40bcbe1d4bd32ca410ce0645fd3ccc9a4b2e5ddd8"
+_T0585_PM_UPDATE_SHA256 = "49f1e211d0a5623d434251c7dfb3e55e97ae3e06b82be4b6ee73bb1d71be1a05"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1169,6 +1172,18 @@ _PRE_S9_UPDATE_IMPORTS = (
 )
 
 
+# 평면 진입이 CLI 를 소유하던 세대의 REPO 뒤 정의. 동결 세대의 역델타 원문(보호 훅 재설치 등)이
+# 이 판정 helper 를 부른다 — 현행 CLI 는 표식을 직접 읽어 이 정의가 원천에 없다.
+_PRE_S9_FLAT_ENTRY_HELPERS = (
+    'MANIFEST = REPO / ".project_manager" / "engine.manifest"\n'
+    '\n'
+    '\n'
+    'def _is_engine_rev_skew(exc) -> bool:\n'
+    '    """stamped sibling 로더가 표시한 사본 불일치인가."""\n'
+    '    return getattr(exc, "_engine_rev_skew", False)\n'
+)
+
+
 def _top_level_segments(text: str) -> dict[str, str]:
     """모듈 최상위 정의 이름 → 원문(바로 위 주석 묶음 포함)."""
     lines = text.splitlines(keepends=True)
@@ -1227,11 +1242,20 @@ def _flat_updater_source() -> str:
             return match.group(2) if owner_leaf.get(match.group(2)) == match.group(1) else match.group(0)
         return re.sub(r"(?<![\w.])(?:pm_engine\.(?:app|cli|domain|infra)\.)?(\w+)\.(\w+)\b", replace, text)
 
-    head, rest = flat.split("import argparse\n", 1)
-    _imports, rest = rest.split("REPO = Path(__file__)", 1)
-    before_main, after_main = rest.split("\n\ndef _main(", 1)
-    return (head + "".join(_PRE_S9_UPDATE_IMPORTS) + "REPO = Path(__file__)" + before_main
-            + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(after_main))
+    # CLI(`_main`·`main`)는 `cli.update_cmd` 가, 실행 진입(shebang·REPO·`__main__`)은 평면 파일이
+    # 소유한다. 옛 평면 배치로 합치며 CLI 한정자(`update_cmd.main`)도 같은 규칙으로 걷어낸다.
+    cli = (tools / "pm_engine" / "cli" / "update_cmd.py").read_text(encoding="utf-8")
+    owner_leaf.update({"_main": "update_cmd", "main": "update_cmd"})
+    shebang = flat.split("\n", 1)[0] + "\n"
+    doc_end = cli.index('"""\n', 3) + len('"""\n')
+    _cli_imports, cli_body = cli[doc_end:].split("\n\ndef _main(", 1)
+    repo_line = next(line for line in flat.splitlines(keepends=True)
+                     if line.startswith("REPO = Path(__file__)"))
+    entry = flat[flat.index('\n\nif __name__ == "__main__":'):]
+    return (shebang + cli[:doc_end] + "\nfrom __future__ import annotations\n\n\n"
+            + "".join(_PRE_S9_UPDATE_IMPORTS) + repo_line + _PRE_S9_FLAT_ENTRY_HELPERS
+            + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(cli_body.rstrip("\n") + "\n")
+            + unqualify(entry))
 
 
 def _slice_replace(source: str, start_marker: str, end_marker: str, replacement: str) -> str:
@@ -1689,6 +1713,13 @@ def _t0585_pm_update_source() -> str:
     (배치만 되돌리고 본문은 현행). 실행 Home 첫 인자가 생긴 세 anchor(전달 분기·렌더 실패 흡수·적용
     호출)는 현행 호출 형태로 맞췄고 시대착오 부재 단언도 현행 호출 형태로 옮겼다. marker 전부가 유일
     해소되고 RUN1 의 결함 제어 흐름·RUN2 의 수용 게이트를 실행으로 확인한 뒤 지문을 재수집했다.
+
+    갱신 CLI package 이동 반영: `_main`·`main` 이 `cli.update_cmd` 로 옮겨 실행 Home 을 첫 인자로
+    받는다. `_flat_updater_source` 가 CLI 원문과 평면 실행 진입(shebang·REPO·`__main__`)을 옛 배치로
+    합친다. 이전 합성본과의 차이는 CLI 서명(Home·prog)·`--all-targets` 자식 호출·`__main__` 의 Home
+    계산 위치·직접 marker 판독뿐이다(평면 진입의 MANIFEST·판정 helper 는 역델타가 부르므로 옛 정의
+    그대로 합친다). marker 전부와 시대착오 부재 단언을 선통과했고 RUN1·RUN2 실행을 확인한 뒤 지문을
+    재수집했다.
     """
     source = _flat_updater_source()
     source = _slice_replace(
@@ -1840,7 +1871,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
 # T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
 # 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "d5be6592588c04fbc4d54e70b713ade61575427dc46fe1abce68e36c6eaf80cb"
+_PRE_T0876_PM_UPDATE_SHA256 = "edd374635473f4ad9ccfc9c59b6a0b5cc0ded321a9a40d182cd6295c140dee32"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1934,6 +1965,11 @@ def _pre_t0876_pm_update_source() -> str:
     평면 파일에서 시작한다. 퇴역 경로 delta 의 exact-marker 는 그대로 유일 해소되고(전달 분기 anchor 만
     실행 Home 인자를 포함한 현행 호출 형태로 맞췄다), RUN1 의 단독 자기 배달과 RUN2 의 구 파일 퇴역을
     실행으로 확인한 뒤 합성본 지문만 갱신했다.
+
+    갱신 CLI package 이동 반영: `_main`·`main` 이 `cli.update_cmd` 로 옮겨 실행 Home 을 첫 인자로
+    받는다. 합성본 차이는 CLI 서명·자식 호출·`__main__` 의 Home 계산 위치·직접 marker 판독뿐이고
+    퇴역 경로 delta 의 exact-marker 는 그대로 유일 해소된다.
+    RUN1·RUN2 실행을 확인한 뒤 합성본 지문만 갱신했다.
     """
     source = _flat_updater_source()
     # T-0878은 아래 T-0876 은퇴 기능 위에 쌓인 flavor 자기치유 보강이다. 먼저 그 delta만
@@ -2230,10 +2266,10 @@ def test_legacy_updater_run1_delivers_new_reviewer_and_run2_retires_old(tmp_path
 def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
     """구 updater RUN1 → 신 zero-change RUN2 red → accept/backfill → check green 전체 경로."""
     dest = tmp_path / "legacy-adapter-adopter"
-    assert _PM_IMPORT.main([
+    assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual",
-    ]) == 0
+    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
     # 먼저 나머지 엔진을 canonical과 맞춰 RUN2의 엔진 change를 정확히 0으로 만든다.
     _prime_engine_to_canonical(dest)
 
@@ -2319,10 +2355,10 @@ def _renotate_dest_to_crlf(dest: Path, relpaths) -> list[str]:
 def test_upgrade_adopter_crlf_dest_reaches_zero_change_and_keeps_notation(tmp_path):
     """표기만 CRLF 인 dest 는 zero-change 로 수렴하고 표기가 보존된다 — 내용 차이는 여전히 update."""
     dest = tmp_path / "crlf-dest-adopter"
-    assert _PM_IMPORT.main([
+    assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual",
-    ]) == 0
+    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
     _prime_engine_to_canonical(dest)
     # 대조군: 승격 직후는 변경 0 이어야 이 게이트가 **CRLF 변환분만** 재는 측정기가 된다.
     settled = _run_pm_update(dest)
@@ -2425,10 +2461,10 @@ def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_pat
     """진입점이 열린 채택자 + 상류 기능 추가 → pm_update 1회로 발화(채택자 config 무변경)."""
     framework = _build_codex_framework(tmp_path)
     dest = tmp_path / "codex-adopter"
-    assert _PM_IMPORT.main([
+    assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual", "--from", str(framework),
-    ]) == 0
+    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
 
     hooks_rel = ".codex/hooks.json"
     hooks_before = (dest / hooks_rel).read_bytes()
@@ -2513,10 +2549,10 @@ def test_upgrade_adopter_absorbs_the_widened_entrypoint_set_without_advisory_noi
         + "\n", encoding="utf-8", newline="\n")
 
     dest = tmp_path / "codex-adopter"
-    assert _PM_IMPORT.main([
+    assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual", "--from", str(framework),
-    ]) == 0
+    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
     # 전제: 이 세대 채택자에는 진입점이 3건 빠져 있다(소견이 발화할 수 있는 상태).
     before = hook_sets.judge_adapter_hook_entrypoints(dest, framework, ["codex"])
     assert {finding.event for finding in before} == set(_T0806_MIGRATED_EVENTS), before
@@ -2597,10 +2633,10 @@ def _make_engine_file_stale(dest: Path) -> Path:
 def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_path):
     """구표기 conf 채택자: 안내 → 교체 → 게이트 동작이 실 CLI 로 닫힌다."""
     dest = tmp_path / "legacy-conf-adopter"
-    assert _PM_IMPORT.main([
+    assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME,
         "--fill", "manual",
-    ]) == 0
+    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
     _prime_engine_to_canonical(dest)
     conf = dest / ".project_manager" / "local.conf"
     conf.write_text(f"upstream={REPO}\n" + _OPERATIONAL_CONF + _LEGACY_AXES_CONF,
@@ -2703,8 +2739,8 @@ def _lease_slots(ledger: Path) -> list[str]:
 def test_upgrade_adopter_drops_the_legacy_home_row_on_sync(tmp_path):
     """흡수가 옛 홈 자신 행을 지운다 — 작업 폴더 행은 그대로 · 재실행은 byte 불변(멱등)."""
     dest = tmp_path / "legacy-home-row"
-    assert _PM_IMPORT.main(
-        ["--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME, "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO),
+        ["--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME, "--fill", "manual"], engine_rev=_PM_IMPORT.ENGINE_REV
     ) == 0
     _prime_engine_to_canonical(dest)
     ledger = _seed_legacy_home_row(dest)

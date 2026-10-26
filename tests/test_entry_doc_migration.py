@@ -24,6 +24,8 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.cli import update_cmd
+from pm_engine.infra import pm_paths
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -64,10 +66,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 @pytest.fixture(scope="module")
@@ -571,7 +573,7 @@ def test_target_export_does_not_migrate(pm_update, monkeypatch, capsys):
         return orig(*a, **k)
 
     monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", _spy)
-    rc = pm_update.main(["--target", "opencode", "--from", str(REPO), "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "opencode", "--from", str(REPO), "--dry-run"])
     assert rc == 0
     assert calls == [], "--target 모드에서 migrate_entry_doc 가 호출됐다(비발화 위반)."
 
@@ -599,7 +601,7 @@ def test_self_update_invokes_migration(pm_update, monkeypatch, tmp_path):
         return orig(*a, **k)
 
     monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", _spy)
-    rc = pm_update.main(["--from", str(isolated), "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(isolated), "--dry-run"])
     assert rc == 0
     assert calls == [False], "self-update dry-run 이 migrate_entry_doc(write=False)를 1회 호출해야 한다."
     assert _snapshot_fixture_bytes(isolated) == before
@@ -642,7 +644,7 @@ def test_sequencing_migration_after_apply_success(pm_update, old_gen_text, tmp_p
     monkeypatch.setattr(pm_update, "REPO", dest)      # self-location dest = tmp
     monkeypatch.setattr(update_render, "apply", spy_apply)
     monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", spy_migrate)
-    rc = pm_update.main(["--from", str(src)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(src)])
     assert rc == 0
     assert order == ["apply", ("migrate", True)], order
 
@@ -668,7 +670,7 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
     monkeypatch.setattr(update_render, "apply", boom_apply)
     monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", spy_migrate)
     with pytest.raises(ExpectedApplyFailure, match="apply failed"):
-        pm_update.main(["--from", str(src)])
+        update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(src)])
     # 전환 write(write=True) 미발화 — apply 뒤라 도달 못 함.
     assert True not in migrate_writes, "apply 실패 후 migrate(write=True) 가 발화됐다(반쪽 상태 위험)."
     # 구형 무손 — AGENTS.md·opencode.jsonc 원본 그대로.

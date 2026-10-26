@@ -38,6 +38,7 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import git, pm_paths, regression_store
 from pm_engine.app import regression
+from pm_engine.cli import regression_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -196,7 +197,7 @@ def test_record_writes_to_hook_read_location_not_called_copy(tmp_path, monkeypat
     fake = _PytestOnlyFake(real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
-    rc = mod.cmd_livegate(_rec_args(cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _rec_args(cwd=str(worktree)))
 
     assert rc == 0
     hook_flag = _hook_read_flag(hooks_dir)
@@ -233,14 +234,14 @@ def test_platform_record_uses_engine_root_evidence_and_recorded_anchor_with_read
             "status": "pass", "collected": 3,
         }) + "\n", ""
     monkeypatch.setattr(regression, "_run_regression_cmd", platform)
-    assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 0
+    assert regression_cmd.cmd_livegate(mod._home(), _rec_args(cwd=str(readonly))) == 0
     assert len(platform_calls) == 1
     assert platform_calls[0][0] == "run-windows" and platform_calls[0][1] == str(readonly)
     assert platform_calls[0][2]["PM_QA_EXPECTED_HEAD"] == _HEAD_SHA
     data = json.loads(_hook_read_flag(hooks_dir).read_text(encoding="utf-8"))
     assert data["conf_anchor"] == str(worktree.resolve())
     assert data["platforms"][0]["name"] == "windows"
-    assert mod.cmd_livegate(_chk_args(_HEAD_SHA, cwd=str(readonly))) == 0
+    assert regression_cmd.cmd_livegate(mod._home(), _chk_args(_HEAD_SHA, cwd=str(readonly))) == 0
 
 
 @_git_required
@@ -258,12 +259,12 @@ def test_platform_evidence_in_called_copy_only_blocks_readonly_record(
         real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
-    assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 1
+    assert regression_cmd.cmd_livegate(mod._home(), _rec_args(cwd=str(readonly))) == 1
     assert "engine-root 좌표와 불일치" in capsys.readouterr().err
     assert not fake.pytest_ran
     denied = json.loads(_hook_read_flag(hooks_dir).read_text(encoding="utf-8"))
     assert denied["status"] == "fail"
-    assert mod.cmd_livegate(_chk_args(_HEAD_SHA, cwd=str(readonly))) == 1
+    assert regression_cmd.cmd_livegate(mod._home(), _chk_args(_HEAD_SHA, cwd=str(readonly))) == 1
 
 
 # ── ② 단일-repo/솔로 폴백: 훅 없음 → 현행 REPO/.local (채택자 무변경) ─────────
@@ -301,7 +302,7 @@ def test_record_solo_records_at_repo_local(tmp_path, monkeypatch):
     fake = _PytestOnlyFake(real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
-    rc = mod.cmd_livegate(_rec_args(cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _rec_args(cwd=str(worktree)))
 
     assert rc == 0
     assert pm_paths.livegate_flag(mod._home()).exists()
@@ -342,7 +343,7 @@ def test_record_broken_engine_root_fails_loud_no_write(tmp_path, monkeypatch, ca
     fake = _PytestOnlyFake(real_run, 0, f"{regression.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
-    rc = mod.cmd_livegate(_rec_args(cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _rec_args(cwd=str(worktree)))
 
     assert rc == 1, "engine-root 무효인데 pass(0)를 반환하면 false-green 백스톱이 뚫린 것"
     err = capsys.readouterr().err
@@ -451,7 +452,7 @@ def test_check_worktree_cwd_reads_engine_root_record(tmp_path, monkeypatch, caps
     # 호출-사본(worktree)의 순진한 위치엔 상충 fail — check 가 이걸 읽으면 안 된다.
     _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="fail", head=_HEAD_SHA, n=0, rc=1)
 
-    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
     assert rc == 0, "worktree cwd check 가 engine-root(훅 기록) green 을 읽지 못함"
     assert "green" in capsys.readouterr().out
@@ -469,7 +470,7 @@ def test_check_default_cwd_resolves_engine_root_not_module_const(tmp_path, monke
                          n=regression.LIVEGATE_RELEASE_PIN, rc=0)
     _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="fail", head=_HEAD_SHA, n=0, rc=1)
 
-    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=None))   # default → str(REPO)=worktree
+    rc = regression_cmd.cmd_livegate(mod._home(), _chk_args(rev=_HEAD_SHA, cwd=None))   # default → str(REPO)=worktree
 
     assert rc == 0, "default cwd check 가 모듈상수(worktree 상충 fail)를 직독함 — single-source 깨짐"
 
@@ -481,7 +482,7 @@ def test_check_rev_mismatch_against_engine_root(tmp_path, monkeypatch, capsys):
     _write_livegate_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
                          n=regression.LIVEGATE_RELEASE_PIN, rc=0)
 
-    rc = mod.cmd_livegate(_chk_args(rev="deadbeef" * 5, cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _chk_args(rev="deadbeef" * 5, cwd=str(worktree)))
 
     assert rc == 1
     assert "rev 불일치" in capsys.readouterr().err
@@ -497,7 +498,7 @@ def test_check_broken_engine_root_fails_loud(tmp_path, monkeypatch, capsys):
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, board_in_engine=False)
 
-    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
     assert rc == 1, "engine-root 무효인데 check 가 조용히 통과/red 판정하면 fail-loud 백스톱이 뚫린 것"
     err = capsys.readouterr().err
@@ -513,7 +514,7 @@ def test_check_solo_no_hookspath_reads_repo_local(tmp_path, monkeypatch, capsys)
     _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="pass", head=_HEAD_SHA,
                          n=regression.LIVEGATE_RELEASE_PIN, rc=0)
 
-    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
     assert rc == 0, "솔로 폴백에서 check 가 REPO/.local 기록을 못 읽음(회귀)"
     assert "green" in capsys.readouterr().out
@@ -530,7 +531,7 @@ def test_check_absent_record_at_engine_root_blocks(tmp_path, monkeypatch, capsys
     _write_livegate_json(pm_paths.livegate_flag(mod._home()), status="pass", head=_HEAD_SHA,
                          n=regression.LIVEGATE_RELEASE_PIN, rc=0)   # 호출-사본 stale pass
 
-    rc = mod.cmd_livegate(_chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
+    rc = regression_cmd.cmd_livegate(mod._home(), _chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
     assert rc == 1, "engine-root 무기록인데 호출-사본 stale pass 를 green 으로 오독함(single-source 깨짐)"
     assert "기록 없음" in capsys.readouterr().err

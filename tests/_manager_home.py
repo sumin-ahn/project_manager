@@ -158,39 +158,34 @@ def use_known_ctx_env(monkeypatch, native_bin: Path) -> None:
 
 
 @contextlib.contextmanager
-def complete_in_process(flat_cli):
-    """같은 프로세스 테스트의 완료 단계 교체 구간 — 평면 갱신기 `flat_cli` 를 돌려준다.
+def complete_in_process(monkeypatch):
+    """같은 프로세스 테스트의 완료 단계 교체 구간.
 
     전달 프로세스는 받은 갱신기를 새 프로세스로 띄운다(`app.engine_transfer._launch_completion`). 합성
-    dest 에는 그 갱신기가 없으므로 이 구간 동안 그 IO 함수를 바꿔, 인계 값(`PM_UPDATE_COMPLETION`)과
-    평면 갱신기의 `REPO`·`MANIFEST` 를 인계된 dest 로 묶은 채 같은 `flat_cli.main` 을 부르고 모두 원래대로
-    돌린다. 구간을 벗어나면 교체도 풀린다(다른 테스트에 남지 않는다). 이 교체가 빠진 자기 갱신 호출은
-    dest 에 갱신기가 없어 rc 2 로 실패한다(조용히 지나가지 않는다)."""
+    dest 에는 그 갱신기가 없으므로 이 구간 동안 그 IO 함수를 바꿔, 인계 값(`PM_UPDATE_COMPLETION`)을
+    인계된 dest·source·전달 수로 묶은 채 `cli.update_cmd.main` 을 인계 dest 의 Home 과 원래 argv 로 부르고
+    인계 값을 원래대로 돌린다. 구간을 벗어나면 교체도 풀린다(다른 테스트에 남지 않는다). 이 교체가 빠진
+    자기 갱신 호출은 dest 에 갱신기가 없어 rc 2 로 실패한다(조용히 지나가지 않는다)."""
     from pm_engine.app import engine_transfer
+    from pm_engine.cli import update_cmd
+    from pm_engine.infra import pm_paths
 
     def launch(dest_root, source_root, transferred, argv):
         name = engine_transfer.COMPLETION_ENV
         previous = os.environ.get(name)
-        previous_repo, previous_manifest = flat_cli.REPO, flat_cli.MANIFEST
         os.environ[name] = json.dumps({"dest": str(dest_root), "source": str(source_root),
                                        "transferred": transferred})
-        flat_cli.REPO = Path(dest_root)
-        flat_cli.MANIFEST = Path(dest_root) / ".project_manager" / "engine.manifest"
         try:
-            return flat_cli.main(list(argv))
+            return update_cmd.main(pm_paths.home_at(Path(dest_root)), list(argv))
         finally:
-            flat_cli.REPO, flat_cli.MANIFEST = previous_repo, previous_manifest
             if previous is None:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = previous
 
-    original = engine_transfer._launch_completion
-    engine_transfer._launch_completion = launch
-    try:
-        yield flat_cli
-    finally:
-        engine_transfer._launch_completion = original
+    with monkeypatch.context() as patch:
+        patch.setattr(engine_transfer, "_launch_completion", launch)
+        yield
 
 
 def make_pm_home(destination: Path, *, upstream: Path | str | None = None,

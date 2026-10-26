@@ -38,6 +38,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pm_engine.cli import import_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -117,8 +118,8 @@ def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-m
     with pytest.MonkeyPatch.context() as patch:
         for name, seam in known_ctx_seams(model=ctx_model).items():
             patch.setattr(harness_ctx, name, seam)
-        rc = pm_import.main(
-            ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+        rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+            ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
         )
     assert rc == 0, f"{harness} adopter import 실패 (rc={rc})"
     return dest

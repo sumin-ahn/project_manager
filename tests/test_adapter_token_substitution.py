@@ -40,6 +40,8 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -80,19 +82,19 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 def _import_new(pm_import, dest: Path, harness: str) -> None:
     """`--new` 로 채택자 인스턴스를 만든다(출력은 삼킴 — 테스트 로그 오염 방지)."""
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = pm_import.main(
+        rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
             ["--new", str(dest), "--harness", harness,
-             "--name", PROJECT_NAME, "--fill", "manual"]
+             "--name", PROJECT_NAME, "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
         )
     assert rc == 0, f"{harness} import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
 
@@ -241,7 +243,7 @@ def test_pm_update_renders_toml_adapter(pm_update, tmp_path, monkeypatch, capsys
         encoding="utf-8")
 
     monkeypatch.setattr(pm_update, "REPO", adopter)
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     captured = capsys.readouterr()
     assert rc == 0, f"codex TOML @render 재전파 실패: {captured.err!r}"
@@ -304,8 +306,10 @@ def test_should_substitute_excludes_methodology_docs(pm_import, rel):
 
 @pytest.mark.parametrize("harness", sorted(HARNESS_ADAPTER_DIRS))
 def test_engine_python_source_stays_verbatim(imported, harness):
-    """엔진 `.py` 사본은 판정 역전 후에도 토큰-문서를 그대로 갖는다(verbatim·T-0133)."""
-    engine = imported[harness] / ".project_manager" / "tools" / "pm_import.py"
+    """엔진 `.py` 사본은 판정 역전 후에도 토큰-문서를 그대로 갖는다(verbatim·T-0133).
+
+    토큰을 담은 설치 도움말 문서는 `cli.import_args` 모듈 문서가 소유한다."""
+    engine = imported[harness] / ".project_manager" / "tools" / "pm_engine" / "cli" / "import_args.py"
     assert "{{PROJECT_NAME}}" in engine.read_text(encoding="utf-8"), (
         "엔진 소스가 치환됐다 — 주석·docstring 의 토큰은 placeholder 가 아니라 문서다.")
 

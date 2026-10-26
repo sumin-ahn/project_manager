@@ -42,6 +42,8 @@ from pm_engine.domain import ticket_rules
 from pm_engine.infra import ticket_store
 
 from pm_engine.infra import lease_store
+from pm_engine.app import ticket_lint
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -477,8 +479,8 @@ def test_unregistered_shape_advisory_names_the_init_rerun(board):
     assert (label, kind) == ("areas.md", "areas-repo-unregistered")
     assert "board.py init" in detail
     assert "session=" in detail and "prefix=" in detail   # 더 이상 읽지 않음을 명시
-    assert kind in board._ADVISORY_LINT_KINDS            # push 미차단(advisory)
-    assert findings[0] in board.lint_tickets()           # 집계에 배선됨
+    assert kind in board_lint._ADVISORY_LINT_KINDS            # push 미차단(advisory)
+    assert findings[0] in ticket_lint.lint_tickets(board._home())           # 집계에 배선됨
 
 
 def test_both_id_formats_keep_resolving_on_a_mixed_board(board):

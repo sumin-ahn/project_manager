@@ -1175,14 +1175,14 @@ def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
     assignment.value.elts = [
         node
         for node in assignment.value.elts
-        if not (isinstance(node, ast.Constant) and node.value == "pm_import.py")
+        if not (isinstance(node, ast.Constant) and node.value == "board.py")
     ]
     ast.fix_missing_locations(tree)
     engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 
     report = collect_central_guard_report(tools)
     assert any(
-        "pm_import.py" in item and "STAMPED_MODULES" in item
+        "board.py" in item and "STAMPED_MODULES" in item
         for item in report.violations
     )
 
@@ -1788,71 +1788,6 @@ def test_guard_is_portable_and_needs_no_git_or_wiki(tmp_path):
     assert not collect_central_guard_report(tools).violations
 
 
-_LOADER_CASES = (
-    (
-        "pm_config", "pm_import", lambda mod, _tools: mod._load_module("pm_import", "pm_import.py"),
-        "_load_module",
-    ),
-)
-
-
-@pytest.mark.parametrize(
-    ("loader_name", "target_name", "call", "_loader_function"),
-    _LOADER_CASES,
-)
-def test_each_added_loader_guard_rejects_stale_sibling(
-    tmp_path, loader_name, target_name, call, _loader_function,
-):
-    names = {loader_name, target_name}
-    if target_name == "repo_owned_files":
-        names.add("engine_rev")
-    if loader_name == "worktree_pool":
-        # import 시점 바인딩 형제 — identity_args(ADR-0057)·file_lock(T-0565·리스 장부 락).
-        names.update(("identity_args", "file_lock"))
-    tools = _copy_tools(tmp_path, *sorted(names))
-    _make_target_stale(tools / f"{target_name}.py")
-    loader = _load_module(tools, loader_name)
-
-    with pytest.raises(RuntimeError) as exc:
-        call(loader, tools)
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert f"{target_name}.py" in str(exc.value)
-
-
-def _remove_verifier_from_function(path: Path, function_name: str) -> None:
-    """AST-mutate one loader verifier without depending on source formatting."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    functions = [
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
-    ]
-    assert len(functions) == 1, f"loader function lookup failed: {function_name}"
-    verifier_statements = [
-        node for node in ast.walk(functions[0])
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and _is_verifier_call(node.value)
-    ]
-    verifier_keywords = [
-        keyword
-        for node in ast.walk(functions[0])
-        if isinstance(node, ast.Call)
-        for keyword in node.keywords
-        if keyword.arg == "verifier"
-        and isinstance(keyword.value, ast.Name)
-        and keyword.value.id == "_verify_engine_rev"
-    ]
-    assert verifier_statements or verifier_keywords, f"verifier lookup failed: {function_name}"
-    for statement in verifier_statements:
-        statement.value = ast.Constant(value=None)
-    for keyword in verifier_keywords:
-        keyword.value = ast.Constant(value=None)
-    ast.fix_missing_locations(tree)
-    path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
-
-
 def _remove_skew_reraise_from_function(path: Path, function_name: str) -> None:
     """AST-mutate the marked-skew branch without depending on except formatting/comments."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -1874,32 +1809,6 @@ def _remove_skew_reraise_from_function(path: Path, function_name: str) -> None:
         node.body = [ast.copy_location(ast.Pass(), node.body[0])]
     ast.fix_missing_locations(tree)
     path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
-
-
-@pytest.mark.parametrize(
-    ("loader_name", "target_name", "call", "loader_function"),
-    _LOADER_CASES,
-)
-def test_sensitivity_removing_each_loader_guard_defeats_the_red_oracle(
-    tmp_path, loader_name, target_name, call, loader_function,
-):
-    """Each production guard is load-bearing: deleting it makes its stale-sibling oracle fail."""
-    names = {loader_name, target_name}
-    if target_name == "repo_owned_files":
-        names.add("engine_rev")
-    if loader_name == "worktree_pool":
-        # import 시점 바인딩 형제 — identity_args(ADR-0057)·file_lock(T-0565·리스 장부 락).
-        names.update(("identity_args", "file_lock"))
-    tools = _copy_tools(tmp_path, *sorted(names))
-    loader_path = tools / f"{loader_name}.py"
-    _remove_verifier_from_function(loader_path, loader_function)
-    _make_target_stale(tools / f"{target_name}.py")
-    loader = _load_module(tools, loader_name)
-
-    try:
-        call(loader, tools)
-    except Exception as exc:  # the domain wrapper remains loud, but must lose the skew marker
-        assert getattr(exc, "_engine_rev_skew", False) is not True
 
 
 def _handler_reraises_marked_skew(handler: ast.ExceptHandler) -> bool:

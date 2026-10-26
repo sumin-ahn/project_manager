@@ -50,6 +50,17 @@ TOOLS = REPO / ".project_manager" / "tools"
 _RECOVERY_MARKER = "_absorb_engine_rev_skew_for_recovery"
 _RECOVERY_REASONS = "_ENGINE_REV_SKEW_RECOVERY_REASONS"
 _TERMINAL_MARKER = "_report_engine_rev_skew_at_terminal"
+_SKEW_PREDICATE = "_is_engine_rev_skew"
+_SKEW_ATTRIBUTE = "_engine_rev_skew"
+# 평면 진입점에서 package 로 옮긴 CLI·명령 handler 의 원천. marked catch 가 위치만 바뀌었으므로 같은
+# 원장에 남긴다(평면 진입점의 원천과 함께 스캔).
+_MOVED_PACKAGE_SOURCES = (
+    "pm_engine/cli/config_adapter.py",
+    "pm_engine/cli/config_install.py",
+    "pm_engine/cli/import_cmd.py",
+    "pm_engine/cli/regression_cmd.py",
+    "pm_engine/cli/update_cmd.py",
+)
 
 
 @dataclass(frozen=True)
@@ -259,6 +270,23 @@ def _call_in_try_body(call: ast.Call, try_node: ast.Try | ast.TryStar,
     return node is try_node and child in try_node.body
 
 
+def _is_inline_skew_marker(node: ast.AST, exception_name: str) -> bool:
+    """package 의 직접 판독 `getattr(exc, "_engine_rev_skew", False)` 정확한 3인자 형태만 인정한다."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) == 3
+        and not node.keywords
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == exception_name
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == _SKEW_ATTRIBUTE
+        and isinstance(node.args[2], ast.Constant)
+        and node.args[2].value is False
+    )
+
+
 def _marker_call(handler: ast.ExceptHandler, name: str) -> ast.Call | None:
     if not isinstance(handler.name, str):
         return None
@@ -266,10 +294,18 @@ def _marker_call(handler: ast.ExceptHandler, name: str) -> ast.Call | None:
         (
             node for node in ast.walk(handler)
             if isinstance(node, ast.Call)
-            and _called_name(node) == name
-            and node.args
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == handler.name
+            and (
+                (
+                    _called_name(node) == name
+                    and node.args
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == handler.name
+                )
+                or (
+                    name == _SKEW_PREDICATE
+                    and _is_inline_skew_marker(node, handler.name)
+                )
+            )
         ),
         None,
     )
@@ -858,15 +894,25 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
     )
 
 
-def _canonical_sources(tools: Path = TOOLS) -> dict[str, str]:
+def _flat_sources(tools: Path) -> dict[str, str]:
     return {
         path.name: path.read_text(encoding="utf-8")
         for path in sorted(tools.glob("*.py"), key=lambda item: item.name)
     }
 
 
+def _canonical_sources() -> dict[str, str]:
+    sources = _flat_sources(TOOLS)
+    sources.update(
+        (relative, (TOOLS / relative).read_text(encoding="utf-8"))
+        for relative in _MOVED_PACKAGE_SOURCES
+    )
+    return sources
+
+
 def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
-    report = collect_failsoft_report(_canonical_sources())
+    sources = _canonical_sources()
+    report = collect_failsoft_report(sources)
     assert report.boundaries, "scanner found no marked-skew boundaries"
     # 158 = 155 + T-0591 완료 게이트의 원장 기록·쓰기 후 재판정·pm_config 판정 unavailable
     #   세 경계. 모두 마킹된 skew 는 re-raise 하고 그 밖만 rc1 결과로 번역한다.
@@ -1281,7 +1327,39 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 갱신 본체가 package(`app.update_plan`·`app.update_adapters`)로 옮겨 평면 경계 7개가 줄었다(18→11):
     # `_resolve_engine_sync_plan` 1·`_instance_owned_template_delta_lines` 1·`sync_adapter_configs` 3·
     # `check_adapter_hook_sets` 1·`refuse_partial_hook_set_scope` 1. 옮긴 핸들러의 marked 재전파는 그대로다.
+    # 설치·갱신 CLI 와 설정·보드 명령이 package(`pm_engine.cli`)로 옮겨 같은 11경계가 위치만 바뀌었다:
+    # import 진입 2·update 진입 1·adapter accept 2·apply 1 의 marked 재전파, release drift 거부의
+    # terminal 보고 1. package 의 직접 판독(`getattr(exc, "_engine_rev_skew", False)`)도 같은 marker 다.
     assert len(report.boundaries) == 11, "propagation sweep boundary ratchet changed"
+    assert {
+        (item.source, item.function, item.disposition) for item in report.boundaries
+    } == {
+        ("board.py", "main", "terminal-report"),
+        ("pm_config.py", "_load_module", "reraises"),
+        ("pm_config.py", "main", "terminal-report"),
+        ("pm_engine/cli/config_adapter.py", "cmd_sync_adapter_config", "reraises"),
+        ("pm_engine/cli/config_install.py", "cmd_apply", "reraises"),
+        ("pm_engine/cli/import_cmd.py", "main", "reraises"),
+        ("pm_engine/cli/regression_cmd.py", "_refuse_release_for_engine_drift",
+         "terminal-report"),
+        ("pm_engine/cli/update_cmd.py", "main", "reraises"),
+        ("worktree_pool.py", "main", "terminal-report"),
+    }
+    # 보드 terminal 진단은 `cli.board_dispatch` 하나가 소유한다(평면 board.py 에 사본·별칭 없음).
+    terminal_owners = sorted(
+        name
+        for name, tree in (
+            ("board.py", ast.parse(sources["board.py"])),
+            ("pm_engine/cli/board_dispatch.py",
+             ast.parse((TOOLS / "pm_engine" / "cli" / "board_dispatch.py").read_text(
+                 encoding="utf-8"))),
+        )
+        if any(
+            isinstance(node, ast.FunctionDef) and node.name == _TERMINAL_MARKER
+            for node in tree.body
+        )
+    )
+    assert terminal_owners == ["pm_engine/cli/board_dispatch.py"]
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1303,11 +1381,77 @@ def _mutate_one_reraise(source: str) -> str:
     raise AssertionError("no skew re-raise found to mutate")
 
 
+_IMPORT_CLI = "pm_engine/cli/import_cmd.py"
+_RELEASE_DRIFT_CLI = "pm_engine/cli/regression_cmd.py"
+_EXACT_INLINE_MARKER = 'getattr(exc, "_engine_rev_skew", False)'
+# 정확하지 않은 직접 판독 네 형태: 다른 예외 변수·다른 속성 문자열·False 아닌 기본값·기본값 생략.
+_INEXACT_INLINE_MARKERS = (
+    'getattr(other, "_engine_rev_skew", False)',
+    'getattr(exc, "_engine_rev_skew_x", False)',
+    'getattr(exc, "_engine_rev_skew", None)',
+    'getattr(exc, "_engine_rev_skew")',
+)
+
+
+def _remove_terminal_return(source: str, function: str) -> str:
+    """marked 분기의 `return _report_engine_rev_skew_at_terminal(exc)` 를 지운다(stderr 만 남김)."""
+    tree = ast.parse(source)
+    scope = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    )
+    removed = 0
+    for branch in ast.walk(scope):
+        if not isinstance(branch, ast.If):
+            continue
+        kept = [
+            statement for statement in branch.body
+            if not (
+                isinstance(statement, ast.Return)
+                and isinstance(statement.value, ast.Call)
+                and _called_name(statement.value) == _TERMINAL_MARKER
+            )
+        ]
+        if len(kept) != len(branch.body):
+            removed += len(branch.body) - len(kept)
+            branch.body = kept or [ast.copy_location(ast.Pass(), branch.body[0])]
+    assert removed == 1, f"terminal return lookup failed: {function}"
+    return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
+
+
 def test_guard_turns_red_when_one_reraise_is_removed():
     sources = _canonical_sources()
-    sources["pm_import.py"] = _mutate_one_reraise(sources["pm_import.py"])
+    sources[_IMPORT_CLI] = _mutate_one_reraise(sources[_IMPORT_CLI])
     report = collect_failsoft_report(sources)
-    assert any("pm_import.py" in violation for violation in report.violations)
+    assert any(_IMPORT_CLI in violation for violation in report.violations)
+
+    # 옮긴 release drift 거부의 terminal return 을 지우면 같은 catch 가 흡수로 판정돼야 한다.
+    sources = _canonical_sources()
+    sources[_RELEASE_DRIFT_CLI] = _remove_terminal_return(
+        sources[_RELEASE_DRIFT_CLI], "_refuse_release_for_engine_drift",
+    )
+    assert any(
+        _RELEASE_DRIFT_CLI in violation
+        for violation in collect_failsoft_report(sources).violations
+    )
+
+    # 정확하지 않은 직접 판독은 marker 가 아니다 — 그 catch 는 marked 경계 원장에서 빠져
+    # 경계 수·집합 단언이 red 가 된다(위반으로 잡히거나).
+    canonical_lines = {
+        item.line for item in collect_failsoft_report(_canonical_sources()).boundaries
+        if item.source == _IMPORT_CLI
+    }
+    assert len(canonical_lines) == 2
+    for inexact in _INEXACT_INLINE_MARKERS:
+        sources = _canonical_sources()
+        mutated = sources[_IMPORT_CLI].replace(_EXACT_INLINE_MARKER, inexact)
+        assert mutated != sources[_IMPORT_CLI]
+        sources[_IMPORT_CLI] = mutated
+        mutated_report = collect_failsoft_report(sources)
+        mutated_lines = {
+            item.line for item in mutated_report.boundaries if item.source == _IMPORT_CLI
+        }
+        assert mutated_report.violations or mutated_lines < canonical_lines, inexact
 
 
 
@@ -1319,7 +1463,7 @@ def test_guard_excludes_shipped_snapshot_tree(tmp_path):
     snapshot = tmp_path / "templates" / "sample" / ".project_manager" / "tools"
     snapshot.mkdir(parents=True)
     (snapshot / "bad.py").write_text("this is not valid python !\n", encoding="utf-8")
-    assert _canonical_sources(canonical) == {"good.py": "VALUE = 1\n"}
+    assert _flat_sources(canonical) == {"good.py": "VALUE = 1\n"}
 
 
 def _scope_handler(

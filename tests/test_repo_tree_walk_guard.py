@@ -152,7 +152,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*.md'",
     ): WalkException("wiki/tickets/adapter scaffold라는 닫힌 엔진 관리 문서 집합만 열거", 3),
     (
-        ".project_manager/tools/board.py",
+        ".project_manager/tools/pm_engine/app/render_lint.py",
         "lint_render_leak",
         "rglob",
         "'*'",

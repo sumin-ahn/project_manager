@@ -488,6 +488,42 @@ def _has_main_guard(tree: ast.AST) -> bool:
     )
 
 
+def _delegated_package_main(tree: ast.Module) -> list[ast.FunctionDef]:
+    """평면 진입점이 `__main__` 에서 부르는 `pm_engine.cli.<module>.main` 정의를 돌려준다.
+
+    설치·갱신 CLI 처럼 main 본체가 package 로 옮긴 진입점도 같은 선행 helper 계약을 받는다.
+    """
+    cli_aliases = {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "pm_engine.cli"
+        for alias in node.names
+    }
+    guard = next(
+        node for node in tree.body
+        if isinstance(node, ast.If) and _has_main_guard(ast.Module(body=[node], type_ignores=[]))
+    )
+    targets = {
+        cli_aliases[call.func.value.id]
+        for call in ast.walk(guard)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "main"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in cli_aliases
+    }
+    definitions = []
+    for module in sorted(targets):
+        package_tree = ast.parse(
+            (TOOLS / "pm_engine" / "cli" / f"{module}.py").read_text(encoding="utf-8"),
+        )
+        definitions.extend(
+            node for node in package_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
+        )
+    return definitions
+
+
 def test_console_codepage_helper_has_single_definition():
     """codepage 제어 구현은 공용 모듈 한 곳뿐이다(복붙 재도입 차단)."""
     definitions = []
@@ -520,7 +556,7 @@ def test_every_main_entrypoint_calls_common_console_helper():
         main_defs = [
             node for node in tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
-        ]
+        ] or _delegated_package_main(tree)
         if len(main_defs) != 1:
             missing.append(f"{filename}: top-level main 정의 {len(main_defs)}개")
             continue

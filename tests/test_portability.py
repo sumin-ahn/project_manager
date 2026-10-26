@@ -9,6 +9,7 @@ monkeypatch 로 흔들어 4조합(_default_python)·3분기(_detect_py)를 검�
 """
 from __future__ import annotations
 
+import shutil
 from pm_engine.cli import board_init
 
 
@@ -163,7 +164,7 @@ def test_detect_py_prefers_python3(monkeypatch, board):
     """
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(
-        board.shutil, "which",
+        shutil, "which",
         lambda cmd: "/usr/bin/python3" if cmd == "python3" else None,
     )
     assert python_env._detect_py() == "python3"
@@ -173,7 +174,7 @@ def test_detect_py_falls_back_to_python(monkeypatch, board):
     """py·python3 부재·python 존재 → bare 'python' (which 가 python 에만 truthy·_interp_runs stub)."""
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(
-        board.shutil, "which",
+        shutil, "which",
         lambda cmd: r"C:\Python\python.exe" if cmd == "python" else None,
     )
     assert python_env._detect_py() == "python"
@@ -181,7 +182,7 @@ def test_detect_py_falls_back_to_python(monkeypatch, board):
 
 def test_detect_py_literal_fallback_when_neither(monkeypatch, board):
     """python3·python 둘 다 부재 → 'python3' 리터럴 폴백."""
-    monkeypatch.setattr(board.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
     assert python_env._detect_py() == "python3"
 
 
@@ -201,7 +202,7 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     # (which 가 python3 에만 truthy + _interp_runs stub 으로 머신·OS 무관 결정화 — T-0022.)
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(
-        board.shutil, "which",
+        shutil, "which",
         lambda cmd: "/usr/bin/python3" if cmd == "python3" else None,
     )
 

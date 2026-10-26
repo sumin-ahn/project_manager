@@ -15,6 +15,7 @@ import _repo_owned_inventory as test_inventory
 from _win_skip import _can_symlink
 from pm_engine.domain import manifest_rules
 from pm_engine.infra import manifest_store
+from pm_engine.cli import update_cmd
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -440,7 +441,7 @@ def test_pm_update_nested_checkout_keeps_git_ignore_guarantee(tmp_path):
 
 def test_pm_update_non_git_directory_rc128_warns_and_falls_back(tmp_path, monkeypatch):
     pm_update = _load("pm_update_nongit_fallback_test", "pm_update.py")
-    repo_files = pm_update.repo_files
+    repo_files = update_cmd.repo_files
     source = tmp_path / "source"
     ship = source / "ship"
     ship.mkdir(parents=True)
@@ -751,21 +752,6 @@ def test_pm_import_dest_walk_excludes_directory_symlink(repo_files, tmp_path):
     _git(repo, "add", "kept.md", "directory-link")
 
     assert import_fill._resolve_fill_scope(repo, None) == {Path("kept.md")}
-
-
-def test_repo_owned_loader_cache_preserves_warning_class_identity():
-    pm_update = _load("pm_update_repo_files_identity_test", "pm_update.py")
-    pm_import = _load("pm_import_repo_files_identity_test", "pm_import.py")
-
-    update_first = pm_update.repo_files
-    update_second = pm_update.repo_files
-    import_module = import_fill.repo_files
-
-    assert update_first is update_second is import_module
-    assert (
-        update_first.RepoFilesFallbackWarning
-        is import_module.RepoFilesFallbackWarning
-    )
 
 
 def test_pm_import_normal_copied_scope_never_enters_dest_walk(tmp_path, monkeypatch):

@@ -8,6 +8,8 @@ from pm_engine.infra import git
 from pm_engine.infra import pool_store
 from pm_engine.cli import config_repo
 from pm_engine.cli import config_slots
+from pm_engine.cli import config_install
+from pm_engine.cli import config_models
 
 
 # ── 대화형 콘솔 ──────────────────────────────────────────────────────
@@ -183,3 +185,76 @@ def _console_set_test_cmd(home, input_fn):
     cmd = cmd.strip()
     config_slots.cmd_set_test_cmd(home, slot, cmd or None)
     return None
+
+
+def _console_update(home) -> None:
+    """`[u]` — 엔진 갱신을 `config_install.cmd_update(home, [])` 로 위임 (= update_cmd verbatim).
+
+    `[r]`/`[w]`/`[b]` 와 동형의 얇은 래퍼 — 입력 프롬프트 없이(인자 없는 갱신) 기존 핸들러로
+    위임만 한다(중복 0). 갱신은 repos/slots 장부를 안 바꿔도(엔진 파일 동기화) 호출부가
+    상태를 재렌더한다(무해·일관).
+    """
+    config_install.cmd_update(home, [])
+    return None
+
+
+def run_console(
+    home,
+    *,
+    input_fn: Callable[[str], str] = input,
+) -> int:
+    """대화형 콘솔 루프 — 상태 렌더 + 메뉴 + 액션 + 재렌더 (tty 전용).
+
+    무인자 `pm-config`(tty)가 진입한다(비-tty 는 main 이 help 로 분기). 흐름:
+      1. 상태 렌더(repos via areas · slots via 리스) — cmd_status/list_leases/areas 파서 재사용.
+      2. 메뉴 프롬프트 → 키 1자.
+      3. 액션(`[r]`·`[w]`·`[b]`·`[m]`·`[u]`)은 *기존 핸들러*로 위임 → 상태 재렌더.
+      4. `[s]` 새로고침(재렌더만)·`[q]` 종료. (`[u]` 엔진 갱신 = cmd_update.)
+
+    입력 견고성: 빈 입력/오타 메뉴키 → 재프롬프트(크래시 0)·`EOFError`/`KeyboardInterrupt`
+    → 우아 종료(메시지 + rc 0). **메뉴 입력뿐 아니라 모든 액션 내부 프롬프트**(`[r]`·`[w]`·
+    `[b]` 의 이름/git/repo/slot 입력)가 공유 `_console_input` 헬퍼를 거친다 — 어느 프롬프트서
+    중단해도 액션이 `_CONSOLE_ABORT` 를 반환하고 루프가 우아 종료한다(must-fix 2·codex —
+    "우아 종료/크래시 0" 보장·traceback 0·rc 0). 현재 Home을 콘솔 소유 함수에 전달하고
+    실제 handler seam과 input_fn으로 시험을 격리한다.
+    """
+    _render_state(home)
+    while True:
+        print(config_models._CONSOLE_MENU)
+        # 메뉴 선택도 액션 프롬프트와 *같은* 공유 헬퍼로 통일 — 중단(EOF/Ctrl-C) → 우아 종료.
+        choice = _console_input(input_fn, "선택: ")
+        if choice is _CONSOLE_ABORT:
+            print("\n콘솔 종료.")
+            return 0
+        choice = choice.strip().lower()
+
+        if choice == "q":
+            print("콘솔 종료.")
+            return 0
+        if choice == "s":
+            _render_state(home)
+            continue
+        if choice == "r":
+            result = _console_repo_add(home, input_fn)
+        elif choice == "w":
+            result = _console_worktree_add(home, input_fn)
+        elif choice == "b":
+            result = _console_set_test_cmd(home, input_fn)
+        elif choice == "m":
+            # 위임 모델 안내 — 출력 전용(장부 변경 0). 입력 프롬프트가 없어 중단 축이 없다.
+            result = config_models._console_delegate_models(home)
+        elif choice == "u":
+            # 엔진 갱신— 입력 프롬프트 없이 cmd_update([]) 위임 후 재렌더.
+            result = _console_update(home)
+        else:
+            # 빈 입력/오타 메뉴키 → 재프롬프트(크래시 0). 액션 안 함·상태 재렌더 안 함.
+            if choice:
+                print(f"  (알 수 없는 선택 {choice!r} — r/w/b/m/u/s/q 중 하나)")
+            continue
+        # 액션 내부 프롬프트가 중단(EOF/Ctrl-C)됐으면 _CONSOLE_ABORT 를 반환 — 루프 우아 종료
+        # (must-fix 2 — 메뉴뿐 아니라 액션 프롬프트 중단도 traceback 0·rc 0).
+        if result is _CONSOLE_ABORT:
+            print("\n콘솔 종료.")
+            return 0
+        # 액션 수행 후 바뀐 상태를 재렌더(입력마다 상태 변화 확인).
+        _render_state(home)

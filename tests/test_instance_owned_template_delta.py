@@ -15,6 +15,10 @@ from pm_engine.app import adapter_report
 from pm_engine.app import entry_doc_migration
 from pm_engine.app import update_adapters
 from pm_engine.app import upstream_revisions
+from pm_engine.cli import config_adapter
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
+from pm_engine.infra import pm_paths
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -46,10 +50,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 def _sha(text: str) -> str:
@@ -290,10 +294,10 @@ def test_lite_import_receipt_records_actual_renamed_entry_source(pm_import, tmp_
     """설치 경로가 `CLAUDE.lite.md → CLAUDE.md`의 weight/source 좌표를 영수증에 남긴다."""
     dest = tmp_path / "lite-installed"
 
-    assert pm_import.main([
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", "claude", "--weight", "lite",
         "--from", str(REPO), "--name", "Lite Coordinate",
-    ]) == 0
+    ], engine_rev=pm_import.ENGINE_REV) == 0
 
     receipt = json.loads(
         (dest / ".project_manager" / "install.json").read_text(encoding="utf-8"))
@@ -462,7 +466,7 @@ def test_sync_adapter_config_check_exposes_the_same_delta_lines(
     args = argparse.Namespace(
         list=False, check=True, accept=None, accept_all=False, source=str(source))
 
-    rc = pm_config.cmd_sync_adapter_config(
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         args, dest_root=dest)
 
     captured = capsys.readouterr()
@@ -499,7 +503,7 @@ def test_pm_update_exit_exposes_final_delta_lines(
         lambda _dest, _source: expected,
     )
 
-    rc = pm_update.main(["--from", str(source), "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0, captured
@@ -553,7 +557,7 @@ def test_pm_update_managed_auto_update_does_not_prescribe_accept(
         lambda *_args, **_kwargs: {"status": "ok", "findings": []})
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *_args: False)
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     captured = capsys.readouterr()
     assert rc == 0, captured

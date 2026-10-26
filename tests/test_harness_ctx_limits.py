@@ -47,6 +47,7 @@ from pm_engine.infra import adapter_documents
 from pm_engine.app import conf_apply
 from pm_engine.app import update_adapters
 from pm_engine.infra import pm_paths
+from pm_engine.cli import config_install
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -908,7 +909,7 @@ def test_t0943_record_write_failure_returns_rc1(local_conf, tmp_path, monkeypatc
     parser = pm_config.build_parser()
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     same = ["apply", "--set", "ctx.compact_at_pct=94"]
-    assert pm_config.cmd_apply(parser.parse_args(same), dest_root=root) == 0
+    assert config_install.cmd_apply(pm_paths.home_at(pm_config.REPO), parser.parse_args(same), dest_root=root) == 0
     before = _t0943_watched(root)
     row = {**T0943_CLAUDE_ROW, "basis": {"model_window": 1000100, "auto_compact_threshold": 967100}}  # d 33,000 그대로
     monkeypatch.setattr(harness_ctx, "_read_harness_ctx_metadata", lambda *args: [dict(row)])
@@ -917,11 +918,11 @@ def test_t0943_record_write_failure_returns_rc1(local_conf, tmp_path, monkeypatc
         False if Path(rel) == local_conf.CTX_BUDGET_RELPATH else replace(dest_root, rel, payload, **kwargs)))
     capsys.readouterr()
 
-    assert pm_config.cmd_apply(parser.parse_args(same), dest_root=root) == 1
+    assert config_install.cmd_apply(pm_paths.home_at(pm_config.REPO), parser.parse_args(same), dest_root=root) == 1
     assert "압축 한도 기록(.project_manager/.local/ctx-budget.json)을 쓰지 못했습니다" in capsys.readouterr().err
     assert _t0943_watched(root) == before
 
-    refused = pm_config.cmd_apply(parser.parse_args(["apply", "--set", "ctx.precompact_at_pct=95"]),
+    refused = config_install.cmd_apply(pm_paths.home_at(pm_config.REPO), parser.parse_args(["apply", "--set", "ctx.precompact_at_pct=95"]),
                                   dest_root=root)
     assert refused == 3 and "ctx.precompact_at_pct=95" in capsys.readouterr().err
     assert _t0943_watched(root) == before

@@ -101,7 +101,7 @@ def _make_fake_framework(root: Path, harness: str) -> Path:
 
 def _build_live_instance(pm_import, dest: Path, harness: str) -> Path:
     """`--new` 로 라이브 인스턴스 트리를 만든다(scoped-core·templates 부재)."""
-    rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "Live Inst"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", harness, "--name", "Live Inst"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"라이브 인스턴스 셋업 실패(rc={rc}·harness={harness})."
     return dest
 
@@ -287,6 +287,8 @@ def test_add_harness_imported_instance_reports_cache_failure(pm_import, tmp_path
 
 import shutil as _shutil_for_git       # noqa: E402 — 실 git 가용 게이트(explicit commit 케이스).
 import subprocess as _sp_for_git       # noqa: E402
+from pm_engine.cli import config_install
+from pm_engine.cli import import_cmd
 
 requires_git = pytest.mark.skipif(
     _shutil_for_git.which("git") is None,
@@ -569,7 +571,7 @@ def test_cmd_add_harness_forwards_source_root(pm_config, monkeypatch):
     """`--from` 값(args.source)이 add_harness_cli 로 source_root 로 forward 된다."""
     fake = _FakePmImport().install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=True, source=str(REPO))
-    rc = pm_config.cmd_add_harness(args, dest_root=Path("/live/inst"))
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pm_config.REPO), args, dest_root=Path("/live/inst"))
     assert rc == 0
     assert fake.calls[0]["source_root"] == str(REPO)
 
@@ -578,7 +580,7 @@ def test_cmd_add_harness_source_defaults_none(pm_config, monkeypatch):
     """source 미보유 Namespace(구 호출/테스트)도 getattr 폴백으로 source_root=None(하위호환)."""
     fake = _FakePmImport().install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=False)   # source 없음
-    rc = pm_config.cmd_add_harness(args, dest_root=Path("/x"))
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pm_config.REPO), args, dest_root=Path("/x"))
     assert rc == 0
     assert fake.calls[0]["source_root"] is None
 

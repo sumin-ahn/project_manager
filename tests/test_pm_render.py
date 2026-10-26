@@ -5,7 +5,7 @@
      (free-form value-fill 기계 = overlay/slot-fill/conditional-omit 은 ADR-0031 로 제거됨 —
       free-form 은 pm_import FILL 채널이 canonical home 에서 전담.)
   2. manifest_store.read_manifest(@render 파싱·후방호환) + plan/apply render 분기(합성 manifest).
-  3. board.lint_render_leak — @render 산출물 한정·활성화 전 무발화·blocking(advisory 밖).
+  3. render_lint.lint_render_leak — @render 산출물 한정·활성화 전 무발화·blocking(advisory 밖).
 
 실 트리/네트워크 무의존 — tmp_path 합성 + 모듈 직접 로드(다른 엔진 테스트 패턴 동형).
 """
@@ -32,6 +32,8 @@ from pm_engine.app import update_plan
 from pm_engine.app import update_render
 from pm_engine.infra import install_conf
 from pm_engine.infra import pm_paths
+from pm_engine.app import render_lint
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -575,11 +577,11 @@ def test_apply_non_render_byte_copies(pm_update, tmp_path):
     assert dst_f.read_text(encoding="utf-8") == "# engine {{NOT_A_RENDER_TOKEN}}\n"
 
 
-# ── 3. board.lint_render_leak — @render 한정·활성화 전 무발화·blocking ───────
+# ── 3. render_lint.lint_render_leak — @render 한정·활성화 전 무발화·blocking ───────
 
 def test_render_leak_not_advisory_is_blocking(board):
     """render-leak 은 `_ADVISORY_LINT_KINDS` 밖 → `--gate` 차단(blocking)."""
-    assert "render-leak" not in board._ADVISORY_LINT_KINDS
+    assert "render-leak" not in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
@@ -601,7 +603,7 @@ def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    assert board.lint_render_leak() == []
+    assert render_lint.lint_render_leak(board._home()) == []
 
 
 def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_path):
@@ -621,7 +623,7 @@ def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    findings = board.lint_render_leak()
+    findings = render_lint.lint_render_leak(board._home())
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "render-leak"
@@ -646,7 +648,7 @@ def test_render_leak_clean_when_render_path_fully_rendered(board, monkeypatch, t
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- core/**\nbody\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    assert board.lint_render_leak() == []
+    assert render_lint.lint_render_leak(board._home()) == []
 
 
 # ── 2. plan render_enabled=False (--target copy2·토큰-form 보존·T-0133) ───────

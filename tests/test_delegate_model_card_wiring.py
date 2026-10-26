@@ -50,6 +50,7 @@ from pm_engine.infra.harness import contract
 from pm_engine.app import update_render
 from pm_engine.infra import install_conf
 from pm_engine.infra import pm_paths
+from pm_engine.cli import update_cmd
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -641,7 +642,7 @@ def test_hard_cards_are_git_tracked(pm_update):
     untracked 파일은 조용히 전파에서 빠진다 — 카드를 만들고 add 하지 않으면 채택자 트리엔
     영원히 안 나가고, 그 사실은 어느 렌더 가드에도 걸리지 않는다.
     """
-    repo_files = pm_update.repo_files
+    repo_files = update_cmd.repo_files
     for tree in CARD_TREES:
         relative = Path(tree.relative_dir)
         tracked = {

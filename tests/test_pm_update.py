@@ -57,6 +57,8 @@ from pm_engine.app import upstream_changes
 from pm_engine.app import upstream_revisions
 from pm_engine.infra import retired_paths
 from pm_engine.infra import update_paths
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 # 설치·추가를 실행하는 엔진 Home(이 checkout).
@@ -95,10 +97,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 def _make_upstream(root: Path, rel: str = SENTINEL_REL) -> None:
@@ -218,7 +220,7 @@ def test_explicit_from_takes_priority_over_local_conf(pm_update, tmp_path, monke
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--from", str(explicit), "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(explicit), "--dry-run"])
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -233,7 +235,7 @@ def test_cli_classified_git_failure_is_one_line_without_raw_traceback(
     (fake_repo / "templates" / "tgt").mkdir(parents=True)
     source = tmp_path / "source"
     _make_upstream(source)
-    repo_files = pm_update.repo_files
+    repo_files = update_cmd.repo_files
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     monkeypatch.setattr(
         repo_files,
@@ -241,7 +243,7 @@ def test_cli_classified_git_failure_is_one_line_without_raw_traceback(
         lambda _root: lambda _argv: (129, "error: unknown option `stage'"),
     )
 
-    rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--target", "tgt"])
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -281,7 +283,7 @@ def test_empty_tracked_manifest_inventory_is_nonzero_in_apply_and_dry_run(
     if dry_run:
         argv.append("--dry-run")
 
-    rc = pm_update.main(argv)
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), argv)
 
     captured = capsys.readouterr()
     assert rc == 1
@@ -306,14 +308,14 @@ def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
     # "이 source 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처가 어디에 놓이든
     # 같은 답이 나오도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
-        pm_update.repo_files,
+        update_cmd.repo_files,
         "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
     )
 
     with pytest.warns(
-            pm_update.repo_files.RepoFilesFallbackWarning,
+            update_cmd.repo_files.RepoFilesFallbackWarning,
             match="filesystem 전수 순회"):
-        rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+        rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--target", "tgt"])
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -334,7 +336,7 @@ def test_shipping_inventory_guard_covers_both_silent_seam_shapes(
     rel = "ship"
     if subtree_state == "empty":
         (source / rel).mkdir()
-    repo_files = pm_update.repo_files
+    repo_files = update_cmd.repo_files
     assert subprocess.run(
         ["git", "-C", str(source), "ls-files"],
         check=True,
@@ -379,7 +381,7 @@ def test_omitted_from_uses_local_conf_upstream(pm_update, tmp_path, monkeypatch,
     _write_local_conf(fake_repo, f"# conf\nupstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -395,7 +397,7 @@ def test_no_from_no_upstream_errors(pm_update, tmp_path, monkeypatch, capsys):
     _write_local_conf(fake_repo, "session=pm\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     assert rc != 0
     err = capsys.readouterr().err
@@ -409,7 +411,7 @@ def test_no_local_conf_file_errors(pm_update, tmp_path, monkeypatch, capsys):
     (fake_repo / ".project_manager").mkdir(parents=True)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     assert rc != 0
     assert "upstream 미등록" in capsys.readouterr().err
@@ -424,7 +426,7 @@ def test_stale_upstream_path_errors(pm_update, tmp_path, monkeypatch, capsys):
     _write_local_conf(fake_repo, f"upstream.path={stale}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     assert rc != 0
     err = capsys.readouterr().err
@@ -440,7 +442,7 @@ def test_stale_explicit_from_errors(pm_update, tmp_path, monkeypatch, capsys):
     missing = tmp_path / "does_not_exist"
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--from", str(missing), "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(missing), "--dry-run"])
 
     assert rc != 0
     err = capsys.readouterr().err
@@ -456,7 +458,7 @@ def test_upstream_file_not_dir_errors(pm_update, tmp_path, monkeypatch, capsys):
     _write_local_conf(fake_repo, f"upstream.path={a_file}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     assert rc != 0
     assert "디렉토리가 아니거나 존재하지 않음" in capsys.readouterr().err
@@ -511,7 +513,7 @@ def test_main_records_upstream_rev_on_successful_sync(pm_update, tmp_path, monke
     # baseline rev 읽기를 결정적으로 stub(라이브 git 0).
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "syncedrev42")
 
-    rc = pm_update.main([])  # 실 sync(dry-run 아님) — sentinel 1개 복사.
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])  # 실 sync(dry-run 아님) — sentinel 1개 복사.
     assert rc == 0
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "syncedrev42", \
@@ -528,7 +530,7 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
     assert rc == 0
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
@@ -677,7 +679,7 @@ def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, c
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "bothkeysrev1")
 
-    assert pm_update.main([]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "bothkeysrev1", \
         f"경로 sync 후 두 키 불일치(거짓 drift 재발): {conf!r}"
@@ -707,7 +709,7 @@ def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monk
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "currentrev")
 
-    assert pm_update.main([]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "currentrev"
     assert "baseline 갱신" in capsys.readouterr().out
@@ -739,7 +741,7 @@ def test_main_no_changes_with_matching_path_revs_is_quiet(pm_update, tmp_path, m
 
     monkeypatch.setattr(Path, "write_text", spy_write_text)
 
-    assert pm_update.main([]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
     assert local_conf.read_text(encoding="utf-8") == before
     assert local_conf_writes == [], "정합된 revision인데 local.conf write가 발생했다"
     assert "local.conf upstream_rev baseline 갱신" not in capsys.readouterr().out
@@ -763,7 +765,7 @@ def test_main_no_changes_dry_run_does_not_converge_path_revs(
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "currentrev")
 
-    assert pm_update.main(["--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"]) == 0
     assert local_conf.read_text(encoding="utf-8") == before
     assert "local.conf upstream_rev baseline 갱신" not in capsys.readouterr().out
 
@@ -786,7 +788,7 @@ def test_main_no_changes_skew_suppresses_both_path_revs(
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     monkeypatch.setattr(update_manifest, "detect_manifest_skew", lambda *a, **k: ("skew", ["new.py"]))
 
-    assert pm_update.main([]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
     assert local_conf.read_text(encoding="utf-8") == before
     out = capsys.readouterr().out
     assert "manifest skew" in out and "억제" in out
@@ -806,7 +808,7 @@ def test_main_url_sync_records_both_keys(pm_update, tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "cachehead77")
 
-    assert pm_update.main(["--from", str(cache)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(cache)]) == 0
     out = capsys.readouterr().out
     assert "baseline 갱신" in out, f"URL sync 인데 baseline 갱신 안내 부재: {out!r}"
     assert "upstream.seen_rev 동시 기록" in out, f"동시 기록 안내 부재: {out!r}"
@@ -831,7 +833,7 @@ def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypa
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
-    assert pm_update.main([]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
     out = capsys.readouterr().out
     assert "manifest skew" in out and "억제" in out, f"skew 억제 안내 미출력: {out!r}"
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
@@ -951,7 +953,7 @@ def test_main_selfheal_supersedes_skew_suppression(pm_update, tmp_path, monkeypa
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "amendrev")
 
-    rc = pm_update.main([])  # 실 sync.
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])  # 실 sync.
     assert rc == 0
     out = capsys.readouterr().out
     assert "manifest skew" not in out and "억제" not in out, \
@@ -973,7 +975,7 @@ def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkey
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "insyncrev7")
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
     assert rc == 0
     out = capsys.readouterr().out
     assert "manifest skew" not in out, f"정합인데 skew 오탐: {out!r}"
@@ -997,7 +999,7 @@ def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "failsoftrev")
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
     assert rc == 0
     out = capsys.readouterr().out
     assert "fail-soft" in out, f"upstream manifest 부재 fail-soft note 미출력: {out!r}"
@@ -1018,7 +1020,7 @@ def test_main_dry_run_shows_selfheal_not_skew_without_recording(pm_update, tmp_p
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "manifest skew" not in out and "억제" not in out, \
@@ -1046,7 +1048,7 @@ def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch,
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "targetrev1")
 
-    rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--target", "tgt"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "manifest skew" not in out and "억제" not in out, \
@@ -1496,14 +1498,14 @@ def test_guest_rows_join_plan_engine_copy_and_render_rerender(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(framework), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework), "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert "[render] .opencode/agents/pm.md" in preview, \
         f"dry-run 이 guest 렌더물 재렌더를 예고하지 않았다: {preview!r}"
     assert (dest / ".opencode" / "agents" / "pm.md").read_text(
         encoding="utf-8") == "adopter-owned agent\n", "dry-run 이 파일을 바꿨다"
 
-    assert pm_update.main(["--from", str(framework)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     out = capsys.readouterr().out
 
     assert (dest / ".opencode" / "lib" / "relay.js").read_text(
@@ -1516,7 +1518,7 @@ def test_guest_rows_join_plan_engine_copy_and_render_rerender(
     assert "[render] .opencode/agents/pm.md" in out, f"렌더물이 계획에 없다: {out!r}"
 
     # 멱등 — 수렴 후 재실행은 변경 0(렌더 산출이 안정).
-    assert pm_update.main(["--from", str(framework)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     assert "최신 — 변경 없음" in capsys.readouterr().out
 
 
@@ -1532,7 +1534,7 @@ def test_guest_engine_backfill_persists_rows_once_then_idempotent(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(framework)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     first = capsys.readouterr().out
     assert "guest 엔진 행 2건 파생" in first, f"파생 보고 누락: {first!r}"
 
@@ -1544,7 +1546,7 @@ def test_guest_engine_backfill_persists_rows_once_then_idempotent(
     assert entries[".opencode/agents"].render, "렌더물 행이 파생 병합으로 훼손됐다"
 
     after_first = manifest.read_bytes()
-    assert pm_update.main(["--from", str(framework)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     second = capsys.readouterr().out
     assert "최신 — 변경 없음" in second, f"2차 실행이 멱등하지 않다: {second!r}"
     assert "파생" not in second, f"기록 뒤에도 파생 보고 반복: {second!r}"
@@ -1564,7 +1566,7 @@ def test_legacy_guest_first_run_reports_backfill_without_frozen_warning(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(framework)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     captured = capsys.readouterr()
 
     assert "guest 엔진 행 2건 파생" in captured.out, f"파생 보고 누락: {captured.out!r}"
@@ -1589,7 +1591,7 @@ def test_guest_engine_backfill_dry_run_writes_nothing(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(framework), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework), "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert ".opencode/pm_orch_opencode.py" in out, \
         f"dry-run 계획에 guest 엔진 행이 없다(파생 미발화): {out!r}"
@@ -1702,7 +1704,7 @@ def test_guest_engine_backfill_not_persisted_when_legacy_preserved(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(framework)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     captured = capsys.readouterr()
     assert "정확히 하나와 완전 일치하지 않는다" in captured.err, \
         f"픽스처 전제 붕괴 — legacy_preserved 가 아니다: {captured.err!r}"
@@ -1803,7 +1805,7 @@ def test_guest_engine_row_missing_source_skips_with_rc0(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(framework)]) == 0, \
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0, \
         "상류 부재 guest 엔진 행이 rc2 로 전체를 막았다(@target-owned 누락)"
     out = capsys.readouterr().out
     assert "[skip] .opencode/retired.py" in out, f"조용한 skip(loud 아님): {out!r}"
@@ -1821,14 +1823,14 @@ def test_scope_paths_accepts_guest_engine_row_before_persistence(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    rc = pm_update.main(
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO),
         ["--from", str(framework), "--paths", ".opencode/pm_orch_opencode.py"])
     captured = capsys.readouterr()
     assert rc == 0, f"파생 엔진 행 경로가 오거부됐다: {captured.err!r}"
     assert (dest / ".opencode" / "pm_orch_opencode.py").read_text(
         encoding="utf-8") == "# driver v2\n"
     # 렌더물 행도 같은 update 채널이라 스코프로 지정할 수 있다(옛 "guest 절 소속" 오거부 소멸).
-    rc_render = pm_update.main(
+    rc_render = update_cmd.main(pm_paths.home_at(pm_update.REPO),
         ["--from", str(framework), "--paths", ".opencode/agents"])
     assert rc_render == 0, "guest 렌더물 경로가 스코프에서 오거부됐다"
     assert "[미등재]" not in capsys.readouterr().err
@@ -2568,7 +2570,7 @@ def test_no_local_manifest_rejects_malformed_retirement_before_apply(
         lambda *args, **kwargs: baseline_calls.append((args, kwargs)) or True,
     )
 
-    assert pm_update.main(["--from", str(source)]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 1
     assert apply_calls == [], "malformed directive 검증 전에 engine apply가 실행됐다"
     assert baseline_calls == []
     assert existing.read_bytes() == b"old payload\n"
@@ -2711,7 +2713,7 @@ def test_legacy_nonmatch_keeps_manifest_and_updates_declared_local_rows(
 
     manifest_path = dest / ".project_manager" / "engine.manifest"
     before_manifest = manifest_path.read_bytes()
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     assert rc == 0
     captured = capsys.readouterr()
@@ -2737,7 +2739,7 @@ def test_empty_legacy_manifest_does_not_promote_arbitrary_flavor(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO), "--dry-run"]) == 0
     captured = capsys.readouterr()
     err = captured.err
     assert "정확히 하나와 완전 일치하지 않는다" in err
@@ -2850,7 +2852,7 @@ def test_main_selfheal_reaches_new_entry_in_one_run(pm_update, tmp_path, monkeyp
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "healedrev")
 
-    rc = pm_update.main([])  # 단일 실행.
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])  # 단일 실행.
     assert rc == 0
     # ① 신규 엔진 파일이 한 번의 실행으로 dest 에 도달(자기치유 핵심 DoD).
     assert (fake_repo / NEW_ENGINE_REL).exists(), \
@@ -2878,7 +2880,7 @@ def test_main_dry_run_shows_selfheal_without_side_effects(pm_update, tmp_path, m
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "자기치유 예정" in out and NEW_ENGINE_REL in out, \
@@ -2906,7 +2908,7 @@ def test_main_target_mode_skips_selfheal(pm_update, tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "targetrev2")
 
-    rc = pm_update.main(["--from", str(source), "--target", "tgt"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--target", "tgt"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "자기치유" not in out, f"--target 에서 자기치유 발화(오탐): {out!r}"
@@ -2949,7 +2951,7 @@ def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "flavorrev")
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
     assert rc == 0
     out = capsys.readouterr().out
     assert "manifest skew" not in out and "억제" not in out, \
@@ -2991,7 +2993,7 @@ def test_version_arg_rejected_by_argparse(pm_update):
     부재(파일 미생성) 단언은 트리거(--version) 없인 write 블록 복원해도 통과하는 tautology 라 폐기.
     """
     with pytest.raises(SystemExit) as exc:
-        pm_update.main(["--version", "x"])
+        update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--version", "x"])
     assert exc.value.code == 2, \
         f"--version 이 argparse 에서 거부 안 됨(ADR-0036 인자 제거 회귀): exit={exc.value.code}"
 
@@ -3010,7 +3012,7 @@ def test_url_upstream_explicit_from_local_still_works(pm_update, tmp_path, monke
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "localrev1")
 
-    rc = pm_update.main(["--from", str(local_src)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(local_src)])
     assert rc == 0, f"명시 --from(로컬)인데 URL 게이트가 막음: {capsys.readouterr().err!r}"
 
 
@@ -3032,7 +3034,7 @@ def test_target_mode_omitted_from_uses_target_local_conf(pm_update, tmp_path, mo
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--target", "oc", "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "oc", "--dry-run"])
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -3047,7 +3049,7 @@ def test_target_mode_no_upstream_errors(pm_update, tmp_path, monkeypatch, capsys
     _write_local_conf(target_dir, "session=pm\n")  # upstream 없음
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--target", "oc", "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "oc", "--dry-run"])
 
     assert rc != 0
     assert "upstream 미등록" in capsys.readouterr().err
@@ -3084,7 +3086,7 @@ def test_target_mode_skips_target_owned_source_absent_with_log(pm_update, tmp_pa
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--target", "oc", "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "oc", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0, "target-owned source 부재가 rc2 로 전체를 막았다(graceful skip 실패)."
@@ -3121,7 +3123,7 @@ def test_target_mode_non_target_owned_source_absent_errors(pm_update, tmp_path, 
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--target", "oc", "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "oc", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 2, "non-@target-owned 엔진경로 부재가 skip 됐다(silent skip — rc2 이어야 함)."
@@ -3153,7 +3155,7 @@ def test_target_mode_render_only_source_absent_errors(pm_update, tmp_path, monke
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--target", "oc", "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "oc", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 2, "@render-only(target_owned 아님) 엔진 리소스 부재가 skip 됐다(은폐 — rc2 이어야 함)."
@@ -3181,7 +3183,7 @@ def test_target_mode_mixed_absent_engine_missing_wins(pm_update, tmp_path, monke
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--target", "oc", "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "oc", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 2, "혼합 부재에서 non-@target-owned 엔진 누락이 rc2 로 막지 못함."
@@ -3208,7 +3210,7 @@ def test_self_location_source_absent_still_errors(pm_update, tmp_path, monkeypat
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 2, "self-update 경로의 source 부재가 rc2 로 멈추지 않음(기존 동작 깨짐)."
@@ -3244,7 +3246,7 @@ def test_self_location_skips_target_owned_source_absent_with_log(
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0, \
@@ -3277,7 +3279,7 @@ def test_self_location_render_only_source_absent_errors(
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 2, "self-update 의 @render-only 엔진 리소스 부재가 skip 됐다(은폐 — rc2 이어야 함)."
@@ -3305,7 +3307,7 @@ def test_self_location_mixed_absent_engine_missing_wins(
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 2, "self-update 혼합 부재에서 non-@target-owned 엔진 누락이 rc2 로 막지 못함."
@@ -3344,7 +3346,7 @@ def test_main_target_passes_render_disabled(pm_update, tmp_path, monkeypatch):
     captured: dict = {}
     _spy_render_enabled(pm_update, monkeypatch, captured)
 
-    assert pm_update.main(["--target", "oc", "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "oc", "--dry-run"]) == 0
     assert captured["render_enabled"] is False, "--target 인데 render 가 켜졌다(템플릿 토큰 렌더 위험)."
     assert captured["entry_notation_template"] == "oc"
 
@@ -3359,7 +3361,7 @@ def test_main_self_location_passes_render_enabled(pm_update, tmp_path, monkeypat
     captured: dict = {}
     _spy_render_enabled(pm_update, monkeypatch, captured)
 
-    assert pm_update.main(["--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"]) == 0
     assert captured["render_enabled"] is True, "채택자 self-update 인데 render 가 꺼졌다(토큰 출하 위험)."
     assert captured["entry_notation_template"] is None
 
@@ -4019,7 +4021,7 @@ def test_self_update_propagates_opencode_adapters_from_templates_source(
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main([])  # 실 sync(apply)
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])  # 실 sync(apply)
 
     captured = capsys.readouterr()
     assert rc == 0, f"self-update 전파 실패(rc={rc}): {captured.err!r}"
@@ -4054,7 +4056,7 @@ def test_self_update_source_templates_absent_errors_rc2(
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 2, "@source 소스(templates/opencode) 부재가 rc2 로 멈추지 않음(엔진/템플릿 누락 은폐)."
@@ -4086,7 +4088,7 @@ def test_target_opencode_source_channel_self_copy_noop(pm_update, tmp_path, monk
     _track_source_tree(fake_repo)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main(["--target", "opencode", "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "opencode", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0, f"--target opencode self-copy 가 rc0 아님: {captured.err!r}"
@@ -4115,7 +4117,7 @@ def test_claude_render_only_entry_unaffected_by_source_channel(
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     captured = capsys.readouterr()
     assert rc == 0, f"claude @render-only 전파 실패(source 채널 도입이 native 경로 깸): {captured.err!r}"
@@ -4150,7 +4152,7 @@ def test_render_with_source_marker_renders_operational_tokens(
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     captured = capsys.readouterr()
     assert rc == 0, f"@render+@source 렌더 전파 실패: {captured.err!r}"
@@ -4515,7 +4517,7 @@ def test_changes_main_normal_three_blocks(pm_update, tmp_path, monkeypatch, caps
     )
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "baseline base12345678" in out
@@ -4542,7 +4544,7 @@ def test_changes_main_count_only(pm_update, tmp_path, monkeypatch, capsys):
         head="h", log_lines=["a x", "b y", "c z"], diff_lines=["M\tREADME.md"])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes", "--count-only"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes", "--count-only"])
     assert rc == 0
     out = capsys.readouterr().out.strip()
     assert out == "3", f"count-only 가 개수 1줄이 아님: {out!r}"
@@ -4563,7 +4565,7 @@ def test_changes_main_log_tail(pm_update, tmp_path, monkeypatch, capsys):
     )
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes", "--log"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes", "--log"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "abc1234 first commit" in out
@@ -4579,7 +4581,7 @@ def test_changes_main_baseline_unrecorded_graceful(pm_update, tmp_path, monkeypa
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "baseline 미기록" in out
@@ -4597,7 +4599,7 @@ def test_changes_main_head_equals_baseline(pm_update, tmp_path, monkeypatch, cap
     runner = _make_fake_git_runner(head="samerev00000", log_lines=[], diff_lines=[])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "변경 0" in out and "최신" in out
@@ -4614,7 +4616,7 @@ def test_changes_main_baseline_unreachable(pm_update, tmp_path, monkeypatch, cap
     runner = _make_fake_git_runner(baseline_reachable=False)
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "도달 불가" in out
@@ -4637,7 +4639,7 @@ def test_changes_main_url_upstream_explicit_local_from_works(pm_update, tmp_path
         head="h", log_lines=["a x"], diff_lines=["M\t.project_manager/tools/board.py"])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes", "--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes", "--from", str(source)])
     captured = capsys.readouterr()
     assert rc == 0, f"명시 --from(로컬)인데 URL 게이트가 막음: {captured.err!r}"
     assert "엔진 영향" in captured.out
@@ -4661,7 +4663,7 @@ def test_changes_does_not_sync(pm_update, tmp_path, monkeypatch, capsys):
         head="h", log_lines=["a x"], diff_lines=["M\t.project_manager/tools/board.py"])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     assert called["apply"] is False, "--changes 가 apply 를 불렀다(read-only 위반)."
     # source 의 board.py 가 dest(fake_repo)로 복사되지 않았다.
@@ -4699,7 +4701,7 @@ def test_changes_uses_dest_manifest_when_present(pm_update, tmp_path, monkeypatc
     )
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     out = capsys.readouterr().out
     # dest manifest 권위 → .claude/agents 가 엔진 영향, board.py 는 그 외.
@@ -4729,7 +4731,7 @@ def test_changes_falls_back_to_source_manifest_when_no_dest(pm_update, tmp_path,
         diff_lines=["M\t.project_manager/tools/board.py", "M\tREADME.md"])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "엔진 영향 (manifest 경로·이번 동기가 받는 것): 1 files" in out
@@ -4770,7 +4772,7 @@ def _dry_run_plan_targets(pm_update, monkeypatch) -> set[str]:
         return changes, missing
 
     monkeypatch.setattr(update_plan, "plan", spy_plan)
-    assert pm_update.main(["--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"]) == 0
     monkeypatch.setattr(update_plan, "plan", real_plan)
     return recorded["targets"]
 
@@ -4806,7 +4808,7 @@ def test_changes_uses_selfheal_promoted_manifest(pm_update, tmp_path, monkeypatc
         diff_lines=[f"A\t{NEW_ENGINE_REL}", "M\tREADME.md"])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0
     out = capsys.readouterr().out
     engine_block = out.split("엔진 영향")[1].split("그 외 변경")[0]
@@ -4828,7 +4830,7 @@ def test_changes_engine_set_equals_dry_run_plan_targets(
         diff_lines=[f"A\t{NEW_ENGINE_REL}", "M\tREADME.md"])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
     changes_engine = _changes_engine_paths(capsys.readouterr().out)
 
     assert changes_engine == _dry_run_plan_targets(pm_update, monkeypatch), (
@@ -4888,7 +4890,7 @@ def test_changes_matches_plan_in_legacy_preserved_cohort(
         diff_lines=[f"M\t{shared_rel}", f"M\t{MANIFEST_SELF_REL}"])
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
     changes_engine = _changes_engine_paths(capsys.readouterr().out)
 
     assert MANIFEST_SELF_REL not in changes_engine, \
@@ -4910,7 +4912,7 @@ def test_changes_with_selfheal_leaves_dest_tree_unchanged(
     _patch_upstream_runner(pm_update, monkeypatch, runner)
     before = _tree_digest(fake_repo)
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
 
     assert _tree_digest(fake_repo) == before, "--changes 가 dest 트리를 변경했다(read-only 위반)"
     assert not (fake_repo / NEW_ENGINE_REL).exists(), "--changes 가 신규 파일을 전파했다"
@@ -4939,7 +4941,7 @@ def test_changes_main_summary_failed_surfaces(pm_update, tmp_path, monkeypatch, 
 
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    rc = pm_update.main(["--changes"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"])
     assert rc == 0  # read-only 안내 — 진행은 막지 않되 명확히 surface.
     captured = capsys.readouterr()
     assert "집계 실패" in captured.err or "요약 불가" in captured.err, \
@@ -4958,7 +4960,7 @@ def test_count_only_without_changes_errors(pm_update, tmp_path, monkeypatch, cap
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main(["--count-only"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--count-only"])
     assert rc == 1, "--count-only 가 --changes 없이도 통과(일반 sync 진행·조용한 무시)."
     err = capsys.readouterr().err
     assert "--count-only" in err and "--changes" in err
@@ -4972,7 +4974,7 @@ def test_log_without_changes_errors(pm_update, tmp_path, monkeypatch, capsys):
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main(["--log"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--log"])
     assert rc == 1, "--log 가 --changes 없이도 통과(조용한 무시)."
     err = capsys.readouterr().err
     assert "--log" in err and "--changes" in err
@@ -5023,7 +5025,7 @@ def test_retired_upstream_file_survives_sync_and_is_reported(
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     argv = ["--dry-run"] if dry_run else []
-    assert pm_update.main(argv) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), argv) == 0
 
     out = capsys.readouterr().out
     assert retired.is_file(), "동기가 은퇴 파일을 지웠다(삭제 전파 금지 계약 위반)"
@@ -5051,7 +5053,7 @@ def test_adopter_local_asset_is_reported_as_indistinguishable(
     _track_source_tree(fake_repo)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    assert pm_update.main([]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
 
     out = capsys.readouterr().out
     assert local_asset.is_file(), "채택자 로컬 자산이 삭제됨(자산 파괴)"
@@ -5069,7 +5071,7 @@ def test_retired_report_is_silent_when_dest_matches_upstream(
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    assert pm_update.main([]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
 
     assert "상류 부재 파일" not in capsys.readouterr().out
 
@@ -5213,7 +5215,7 @@ def test_changes_labels_upstream_delete_as_not_removed_by_sync(
     )
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
 
     out = capsys.readouterr().out
     assert "엔진 영향 (manifest 경로·이번 동기가 받는 것): 1 files" in out
@@ -5247,7 +5249,7 @@ def test_changes_inherits_guest_channel_split(
     )
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
     out = capsys.readouterr().out
     engine_block = out.split("엔진 영향")[1].split("그 외 변경")[0]
     assert "엔진 영향 (manifest 경로·이번 동기가 받는 것): 1 files" in out, out
@@ -5285,7 +5287,7 @@ def test_changes_prints_retired_report_for_dangling_pointer(
     )
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
     out = capsys.readouterr().out
     assert "상류 부재 파일" in out, f"'아래 보고 참조' 가 빈 포인터: {out!r}"
     assert f"{RETIRED_DIR_REL}/retired.md" in out
@@ -5322,7 +5324,7 @@ def test_retired_scan_does_not_leak_repo_files_fallback_warning(
     # "dest 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
     # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
-        pm_update.repo_files,
+        update_cmd.repo_files,
         "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
     )
 
@@ -5533,7 +5535,7 @@ def test_retired_path_main_failure_suppresses_baseline(pm_update, tmp_path, monk
         lambda *_args: (_ for _ in ()).throw(PermissionError("open handle")),
     )
 
-    assert pm_update.main(["--from", str(source)]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 1
     assert old.is_file()
     assert baseline_calls == [], "retired move 실패 뒤 baseline을 전진시킴"
 
@@ -5549,7 +5551,7 @@ def test_retired_path_main_dry_run_predicts_install_then_changes_zero_retires(
 
     # NEW 는 엔진 코드라 이 미리보기는 받을 엔진 코드만 보여 준다(퇴역 예고는 엔진 코드를 받은 뒤의
     #   미리보기가 낸다).
-    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert f"[new] {_RETIRED_REVIEWER_NEW}" in preview and "엔진 코드 1 파일 변경 예정" in preview
     assert "퇴역 예정" not in preview
@@ -5560,11 +5562,11 @@ def test_retired_path_main_dry_run_predicts_install_then_changes_zero_retires(
     (dest / _RETIRED_REVIEWER_NEW).write_bytes(
         (source / _RETIRED_REVIEWER_NEW).read_bytes()
     )
-    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert "퇴역 예정" in preview and _RETIRED_REVIEWER_OLD in preview
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *a, **k: False)
-    assert pm_update.main(["--from", str(source)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 0
     assert not old.exists()
     backups = list((dest / ".pm_import_backups").glob(
         "*/.project_manager/tools/external_review.py"
@@ -5623,7 +5625,7 @@ def test_v1711_copy_first_full_sync_stops_on_the_retired_path(
     """A — 구 manifest 가 소유한 퇴역 OLD 는 source 에 없어 첫 full sync 가 rc 2 로 멈춘다."""
     source, _dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "first")
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     err = capsys.readouterr().err
     assert rc == 2, err
@@ -5642,7 +5644,7 @@ def test_v1711_copy_updater_scope_run_is_refused_by_the_current_updater(
     """
     source, dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "scope")
 
-    rc = pm_update.main(["--from", str(source), "--paths", _V1711_UPDATER_REL])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--paths", _V1711_UPDATER_REL])
 
     assert rc == 1
     assert "부분 전파" in capsys.readouterr().err
@@ -5659,7 +5661,7 @@ def test_v1711_copy_second_full_sync_installs_new_and_retires_old(
     _write_dest_manifest(dest, _V1711_NEW_MANIFEST)
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *a, **k: False)
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     assert rc == 0
     assert (dest / _RETIRED_REVIEWER_NEW).read_text(encoding="utf-8") == "new reviewer\n"
@@ -5685,7 +5687,7 @@ def test_changes_reports_rename_old_path_leaving_manifest(
     )
     _patch_upstream_runner(pm_update, monkeypatch, runner)
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
 
     out = capsys.readouterr().out
     removed_block = out.split("상류 삭제·rename")[1]
@@ -5868,7 +5870,7 @@ def test_dry_run_board_separated_does_not_revive_wiki_template(pm_update, tmp_pa
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert _TEMPLATE_REL not in out, \
@@ -5886,7 +5888,7 @@ def test_dry_run_legacy_ships_wiki_template(pm_update, tmp_path, monkeypatch, ca
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert _TEMPLATE_REL in out, \
@@ -5909,7 +5911,7 @@ def test_apply_board_separated_writes_template_into_board(pm_update, tmp_path, m
     # baseline rev 기록은 본 테스트 무관 — 라이브 git 없이 graceful 생략되게 stub None.
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
-    rc = pm_update.main([])  # 실 sync.
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])  # 실 sync.
     assert rc == 0
     board_tmpl = fake_repo / _BOARD_TEMPLATE_REL
     wiki_tmpl = fake_repo / _TEMPLATE_REL
@@ -6062,7 +6064,7 @@ def test_self_prop_target_sync_preserves_flavor_manifest(
     dest_manifest = fake_repo / "templates" / target / ".project_manager" / "engine.manifest"
     before = dest_manifest.read_text(encoding="utf-8")
 
-    rc = pm_update.main(["--from", str(fake_repo), "--target", target])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(fake_repo), "--target", target])
     assert rc == 0, f"--target {target} sync 실패 (rc={rc})"
 
     after = dest_manifest.read_text(encoding="utf-8")
@@ -6083,7 +6085,7 @@ def test_self_prop_self_update_preserves_root_flavor(pm_update, tmp_path, monkey
 
     root_manifest = fake_repo / ".project_manager" / "engine.manifest"
     before = root_manifest.read_text(encoding="utf-8")
-    rc = pm_update.main([])  # self-location: dest=REPO=fake_repo.
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])  # self-location: dest=REPO=fake_repo.
     assert rc == 0
     after = root_manifest.read_text(encoding="utf-8")
     assert "FLAVOR: root" in after and "FLAVOR: claude" not in after and "FLAVOR: opencode" not in after
@@ -6233,7 +6235,7 @@ def test_main_reinstalls_protected_hooks_after_apply(pm_update, tmp_path, monkey
     monkeypatch.setattr(pm_update, "REPO", dest)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
     assert rc == 0
     assert (_hook_dir(dest, "svc") / "pre-commit").exists(), \
         "sync 후 pre-commit 훅이 배포되지 않음 — 엔진 업그레이드가 훅에 도달 안 함"
@@ -6249,7 +6251,7 @@ def test_main_dry_run_previews_reinstall_without_installing(pm_update, tmp_path,
     _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run"])
     assert rc == 0
     assert "보호 브랜치 훅 (재)설치 예정" in capsys.readouterr().out
     assert not _hook_dir(dest, "svc").exists(), "dry-run 이 훅을 설치했다"
@@ -6268,7 +6270,7 @@ def test_main_target_mode_does_not_reinstall_hooks(pm_update, tmp_path, monkeypa
     monkeypatch.setattr(pm_update, "REPO", framework)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
-    rc = pm_update.main(["--from", str(framework), "--target", "opencode"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework), "--target", "opencode"])
     assert rc == 0
     assert not _hook_dir(framework, "svc").exists(), \
         "--target export 가 PM 홈 보호 훅을 (재)설치했다(경계 위반)"
@@ -6302,7 +6304,7 @@ def test_main_reinstalls_protected_hooks_when_no_changes(pm_update, tmp_path, mo
     monkeypatch.setattr(pm_update, "REPO", dest)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
     assert rc == 0
     out = capsys.readouterr().out
     assert "최신 — 변경 없음." in out, f"changes 0 경로가 아님(테스트 전제 깨짐): {out!r}"
@@ -6323,9 +6325,9 @@ def test_main_second_run_is_quiet_when_hooks_in_sync(pm_update, tmp_path, monkey
     monkeypatch.setattr(pm_update, "REPO", dest)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
-    assert pm_update.main([]) == 0          # 1회차 — 설치(changes>0)
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0          # 1회차 — 설치(changes>0)
     capsys.readouterr()
-    assert pm_update.main([]) == 0          # 2회차 — changes 0 + 훅 정합
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0          # 2회차 — changes 0 + 훅 정합
     cap = capsys.readouterr()
     assert "훅" not in cap.out and cap.err == "", \
         f"정합 상태인데 훅 관련 출력이 났다(매 sync 노이즈): {cap.out!r}"
@@ -6569,7 +6571,7 @@ def test_paths_scope_propagates_only_the_named_file(pm_update, tmp_path, monkeyp
     """명시한 파일 하나만 착지한다 — 같은 manifest 의 나머지 등재분은 손대지 않는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "single")
 
-    rc = pm_update.main(["--paths", "scopefiles/__scope_alpha__.py"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "scopefiles/__scope_alpha__.py"])
 
     assert rc == 0
     assert _landed(dest) == {"scopefiles/__scope_alpha__.py"}
@@ -6582,7 +6584,7 @@ def test_paths_scope_picks_one_file_inside_a_directory_entry(pm_update, tmp_path
     산출한 파일 목록에서 고르므로 경로 리매핑·render 판정은 그대로 물려받는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "indir")
 
-    rc = pm_update.main(["--paths", "adapterdir/one.md"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"])
 
     assert rc == 0
     assert _landed(dest) == {"adapterdir/one.md"}
@@ -6592,7 +6594,7 @@ def test_paths_scope_directory_request_covers_its_files(pm_update, tmp_path, mon
     """디렉토리를 지정하면 그 아래 전부 — 파일/디렉토리 지정이 같은 규칙을 탄다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "dir")
 
-    rc = pm_update.main(["--paths", "adapterdir"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir"])
 
     assert rc == 0
     assert _landed(dest) == {"adapterdir/one.md", "adapterdir/two.md"}
@@ -6602,7 +6604,7 @@ def test_paths_scope_accepts_repeated_and_multi_value_flags(pm_update, tmp_path,
     """반복 지정과 다중 값이 함께 쌓인다(누적) — 마지막 `--paths` 가 앞을 덮지 않는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "multi")
 
-    rc = pm_update.main([
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--paths", "scopefiles/__scope_alpha__.py", "adapterdir/one.md",
         "--paths", "scopefiles/__scope_beta__.py",
     ])
@@ -6619,7 +6621,7 @@ def test_paths_scope_refuses_unregistered_path_loudly(pm_update, tmp_path, monke
     """manifest 미등재 경로는 조용한 무전파가 아니라 rc1 — 오타·인스턴스 소유 파일 지정을 잡는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "unreg")
 
-    rc = pm_update.main(["--paths", ".project_manager/wiki/status.md"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", ".project_manager/wiki/status.md"])
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -6636,7 +6638,7 @@ def test_paths_scope_refuses_unsafe_values_before_any_work(
     """절대경로·`..`·빈 값은 입구에서 거부한다(스코프가 저장소 밖을 가리킬 수 없다)."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, f"bad_{case}")
 
-    rc = pm_update.main(["--paths", bad])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", bad])
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -6648,7 +6650,7 @@ def test_paths_scope_is_refused_with_changes_mode(pm_update, tmp_path, monkeypat
     """`--changes`(read-only 확인)와는 함께 쓸 수 없다 — 조용히 무시되는 옵션 0."""
     _dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "chg")
 
-    rc = pm_update.main(["--changes", "--paths", "adapterdir"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes", "--paths", "adapterdir"])
 
     assert rc == 1
     assert "--paths" in capsys.readouterr().err
@@ -6658,7 +6660,7 @@ def test_paths_scope_dry_run_writes_nothing(pm_update, tmp_path, monkeypatch, ca
     """dry-run 은 스코프 안 계획만 보여주고 파일을 만들지 않는다(무변경 계약 유지)."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "dry")
 
-    rc = pm_update.main(["--dry-run", "--paths", "adapterdir/one.md"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--dry-run", "--paths", "adapterdir/one.md"])
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -6673,11 +6675,11 @@ def test_paths_scope_does_not_record_upstream_baseline(pm_update, tmp_path, monk
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "baseline")
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "scopedrev7")
 
-    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"]) == 0
     conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf, "부분 전파가 baseline 을 최신으로 박음(거짓 최신)"
 
-    assert pm_update.main([]) == 0  # 대조군 — 전량 sync 는 기존대로 기록한다.
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0  # 대조군 — 전량 sync 는 기존대로 기록한다.
     conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "scopedrev7"
 
@@ -6696,7 +6698,7 @@ def test_paths_scope_skips_whole_instance_steps(pm_update, tmp_path, monkeypatch
         retired_paths, "_run_retired_path_migration",
         lambda *a, **k: called.append("retire") or True)
 
-    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"]) == 0
 
     assert called == [], f"부분 전파가 전량 흡수 후속 단계를 태웠다: {called}"
 
@@ -6713,7 +6715,7 @@ def test_target_mode_never_runs_retired_path_migration(
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("target retire fired")),
     )
 
-    assert pm_update.main([
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), [
         "--from", str(source), "--target", "tgt", "--dry-run",
     ]) == 0
 
@@ -6727,7 +6729,7 @@ def test_paths_scope_forwards_to_every_target(pm_update, tmp_path, monkeypatch, 
     _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    rc = pm_update.main(
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO),
         ["--from", str(source), "--all-targets", "--paths", "adapterdir/one.md"])
 
     assert rc == 0
@@ -6775,7 +6777,7 @@ def test_paths_scope_reports_a_missing_source_entry_that_holds_the_request(
     _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--paths", "adapterdir/one.md"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"])
 
     err = capsys.readouterr().err
     assert rc == 2
@@ -6790,7 +6792,7 @@ def test_paths_scope_matches_equivalent_path_spellings(pm_update, tmp_path, monk
     for index, spelling in enumerate(("./adapterdir/one.md", "adapterdir//one.md")):
         dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, f"spell{index}")
 
-        rc = pm_update.main(["--paths", spelling])
+        rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", spelling])
 
         assert rc == 0
         assert _landed(dest) == {"adapterdir/one.md"}, f"{spelling!r} 가 매칭되지 않음"
@@ -6813,7 +6815,7 @@ def test_paths_scope_refusal_writes_nothing_to_dest(
     거부인데 write 가 선행하면 "rc1 인데 파일이 바뀐다" 가 된다(무변경 계약 위반)."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "nowrite")
 
-    rc = pm_update.main(["--paths", ".project_manager/wiki/status.md"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", ".project_manager/wiki/status.md"])
 
     assert rc == 1
     assert _landed(dest) == set()
@@ -6838,7 +6840,7 @@ def test_paths_scope_accepts_guest_clause_path(pm_update, tmp_path, monkeypatch,
         encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--paths", ".opencode/agents"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", ".opencode/agents"])
 
     err = capsys.readouterr().err
     assert rc == 0, f"guest 절 경로가 미등재로 거부됐다: {err!r}"
@@ -6862,7 +6864,7 @@ def test_paths_scope_reports_missing_source_for_source_remapped_entry(
     _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--paths", "templates/opencode/.opencode/agents"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "templates/opencode/.opencode/agents"])
 
     err = capsys.readouterr().err
     assert rc == 2, f"source 부재가 접혀 성공으로 끝남(err={err!r})"
@@ -6877,7 +6879,7 @@ def test_paths_scope_refuses_a_typo_under_a_registered_directory(
     과 구분되지 않는다 → 옛 형상은 아무것도 전파하지 않고 rc0 으로 끝났다(조용한 무전파)."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "typo")
 
-    rc = pm_update.main(["--paths", "adapterdir/typo.md"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/typo.md"])
 
     err = capsys.readouterr().err
     assert rc == 1, "오타가 조용한 rc0 무전파로 끝남"
@@ -6888,10 +6890,10 @@ def test_paths_scope_refuses_a_typo_under_a_registered_directory(
 def test_paths_scope_accepts_an_already_in_sync_path(pm_update, tmp_path, monkeypatch):
     """이미 최신인 경로는 정상이다 — 대응 검증이 "변경 0" 을 오타로 오분류하지 않는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "insync")
-    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"]) == 0
     assert _landed(dest) == {"adapterdir/one.md"}
 
-    rc = pm_update.main(["--paths", "adapterdir/one.md"])  # 두 번째 실행 — 변경 0.
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"])  # 두 번째 실행 — 변경 0.
 
     assert rc == 0
     assert _landed(dest) == {"adapterdir/one.md"}
@@ -6916,7 +6918,7 @@ def test_paths_scope_accepts_the_manifest_union_self_prop(pm_update, tmp_path, m
     _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--paths", ".project_manager/engine.manifest"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", ".project_manager/engine.manifest"])
 
     assert rc == 0, "합집합 self-prop 좌표가 인벤토리에서 빠져 유효 요청이 거부됨"
     assert (dest / ".project_manager" / "engine.manifest").is_file()
@@ -6938,7 +6940,7 @@ def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypa
     monkeypatch.setattr(pm_update, "REPO", dest)
     assert manifest_store._is_board_separated(dest), "픽스처 전제(board 분리 판정)"
 
-    rc = pm_update.main(["--paths", board_rel])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", board_rel])
 
     assert rc == 0, "board 분리 좌표를 미등재로 거부함"
     assert (dest / board_rel).read_text(encoding="utf-8") == "# ticket 템플릿\n"
@@ -7320,7 +7322,7 @@ def test_pm_update_adapter_nonconvergence_is_rc1_without_hiding_engine_result(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     captured = capsys.readouterr()
     assert rc == 1
@@ -7354,7 +7356,7 @@ def test_pm_update_adapter_channel_unavailable_is_rc1(
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError("판정 채널 고장")))
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(source)]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 1
     captured = capsys.readouterr()
     assert "어댑터 config 채널을 건너뛰었다" in captured.err
     assert "최신 — 변경 없음" not in captured.out
@@ -7389,7 +7391,7 @@ def test_pm_update_managed_dest_missing_source_template_is_rc1_without_rev_conve
 
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", _must_not_converge)
 
-    assert pm_update.main(["--from", str(source)]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 1
     captured = capsys.readouterr()
     assert "비교 기준 unavailable" in captured.err
     assert "최신 — 변경 없음" not in captured.out
@@ -7420,7 +7422,7 @@ def test_pm_update_partial_engine_without_adapter_candidates_is_vacuous_green(
 
     monkeypatch.setattr(update_adapters, "sync_adapter_configs", _must_not_run)
 
-    assert pm_update.main(["--from", str(source)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 0
     captured = capsys.readouterr()
     assert "최신 — 변경 없음" in captured.out
     assert "어댑터 config 채널" not in captured.err
@@ -7499,7 +7501,7 @@ def test_pm_update_explicit_claude_receipt_ignores_foreign_codex_managed_file(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(source)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 0
 
     captured = capsys.readouterr()
     assert "최신 — 변경 없음" in captured.out
@@ -7540,7 +7542,7 @@ def test_pm_update_partial_managed_dest_blocks_zero_change_revision_convergence(
 
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", _must_not_converge)
 
-    assert pm_update.main(["--from", str(source)]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 1
     captured = capsys.readouterr()
     assert "managed 어댑터 config가 미수렴" in captured.err
     assert "sync-adapter-config --accept" in captured.err
@@ -7872,10 +7874,10 @@ def _import_adopter(dest: Path, harness: str = "claude") -> None:
     spec.loader.exec_module(pm_import)
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = pm_import.main([
+        rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), [
             "--new", str(dest), "--harness", harness,
             "--name", "Acme", "--fill", "manual",
-        ])
+        ], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"fresh import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
 
 
@@ -7934,7 +7936,7 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     )
     monkeypatch.setattr(pm_update, "REPO", dest)
     for run in ("초회", "수렴"):
-        assert pm_update.main(["--from", str(REPO)]) == 0, f"{run} pm-update rc≠0"
+        assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0, f"{run} pm-update rc≠0"
         assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "sonnet"', \
             f"{run} 실행 후 카드가 conf 해소값이 아니다"
         assert _card_model_line(
@@ -7991,19 +7993,19 @@ def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO), "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert "[render] .claude/agents/developer.md" in preview, \
         f"dry-run 이 guest 카드 재렌더를 예고하지 않았다: {preview!r}"
     assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "opus"', \
         "dry-run 이 파일을 바꿨다(무변경 계약 위반)"
 
-    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
     assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "sonnet"', \
         "흡수 후에도 guest 카드가 conf 값이 아니다(add-harness 재실행을 요구하는 옛 형상)"
 
     settled = card.read_bytes()
-    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
     assert card.read_bytes() == settled, "재렌더가 멱등하지 않다(매 흡수 churn)"
 
 
@@ -8030,7 +8032,7 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
-    assert pm_update.main(["--from", str(REPO)]) == 0, "미사용 프로필이 update rc 를 바꿨다"
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0, "미사용 프로필이 update rc 를 바꿨다"
 
     toml = (dest / ".codex" / "agents" / "developer-hard.toml").read_text(encoding="utf-8")
     model_line = next(ln for ln in toml.splitlines() if ln.lstrip("# ").startswith("model ="))
@@ -8555,7 +8557,7 @@ def test_transfer_stage_runs_no_completion_step(pm_update, tmp_path, monkeypatch
         monkeypatch.setattr(owner, name, trapped)
     launched = _t0951_record_launch(pm_update, monkeypatch)
 
-    assert pm_update.main(["--from", str(source)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 0
 
     assert launched == [(dest, source, 1, ["--from", str(source)])]
     assert (dest / _T0951_PROBE).read_text(encoding="utf-8") == "# probe\n"
@@ -8588,7 +8590,7 @@ def test_completion_handoff_is_validated_before_any_write(
     monkeypatch.setenv(engine_transfer.COMPLETION_ENV, raw)
     before = _t0951_tree(dest)
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     invalid_handoff = f"인계 값({engine_transfer.COMPLETION_ENV})이 올바르지 않다"
     expected_message = {
@@ -8632,7 +8634,7 @@ def test_dry_run_defers_preview_while_engine_code_is_pending(
     launched = _t0951_record_launch(pm_update, monkeypatch)
     before = _t0951_tree(dest)
 
-    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"]) == 0
 
     out = capsys.readouterr().out
     assert f"[update] {_T0951_PROBE}" in out and "엔진 코드 1 파일 변경 예정" in out, out
@@ -8640,7 +8642,7 @@ def test_dry_run_defers_preview_while_engine_code_is_pending(
     assert launched == [] and _t0951_tree(dest) == before
 
     (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
-    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"]) == 0
     assert launched == [(dest, source, 0, ["--from", str(source), "--dry-run"])]
 
 
@@ -8650,14 +8652,14 @@ def test_paths_scope_is_refused_while_engine_code_is_pending(
     dest, source = _t0951_case(pm_update, tmp_path, monkeypatch)
     before = _t0951_tree(dest)
 
-    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"]) == 1
     err = capsys.readouterr().err
     assert "부분 전파" in err and _T0951_PROBE in err, err
     assert _t0951_tree(dest) == before
 
     (dest / _T0951_PROBE).parent.mkdir(parents=True)
     (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
-    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"]) == 0
     assert (dest / "adapterdir" / "one.md").is_file()
     assert not (dest / "adapterdir" / "two.md").exists(), "스코프 밖 파일이 착지했다"
 
@@ -8667,7 +8669,7 @@ def test_paths_scope_is_refused_while_engine_code_is_pending(
     _write_local_conf(target, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", repo)
     target_before = _t0951_tree(target)
-    assert pm_update.main(["--target", "tgt", "--paths", "adapterdir/one.md"]) == 1
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "tgt", "--paths", "adapterdir/one.md"]) == 1
     assert "부분 전파" in capsys.readouterr().err
     assert _t0951_tree(target) == target_before
 
@@ -8748,7 +8750,7 @@ def test_directory_row_retirement_completes_in_one_update(pm_update, tmp_path, m
     old.parent.mkdir(parents=True)
     old.write_text("# old\n", encoding="utf-8")
 
-    assert pm_update.main(["--from", str(source)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 0
 
     assert (dest / _T0951_NEW).read_text(encoding="utf-8") == "# new\n"
     assert not old.exists(), "은퇴 OLD 가 dest 에 남았다"

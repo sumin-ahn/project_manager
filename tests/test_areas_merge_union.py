@@ -42,9 +42,13 @@ from pm_engine.infra import pre_push_hook, round_store
 from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_lint, ticket_lint, wiki_lint, wikilink_lint
 
 from pm_engine.app import board_claim
+from pm_engine.app import render_lint
 from pm_engine.domain import board_git_rules
 from pm_engine.infra import areas_store
 from pm_engine.infra import board_git
+from pm_engine.cli import board_lint
+from pm_engine.cli import import_cmd
+from pm_engine.infra import pm_paths
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -666,7 +670,7 @@ def test_advisory_fires_when_board_git_lacks_declaration(board, tmp_path):
 
 def test_advisory_is_never_blocking(board):
     """`--gate` 종료코드에 기여하지 않는다(advisory 등재)."""
-    assert "areas-merge-union" in board._ADVISORY_LINT_KINDS
+    assert "areas-merge-union" in board_lint._ADVISORY_LINT_KINDS
 
 
 @requires_git
@@ -749,12 +753,12 @@ def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
         (freshness_lint, "lint_status_freshness", lambda home: []),
         (doc_lint, "lint_domain_freshness", lambda home: []),
         (conf_lint, "lint_adapter_drift", lambda home: []),
-        (board, "lint_render_leak", list),
+        (render_lint, "lint_render_leak", lambda home: []),
         (areas_lint, "lint_areas_duplicate_repo", lambda home: []),
         (areas_lint, "lint_areas_repo_unregistered", lambda home: []),
     ):
         monkeypatch.setattr(module, name, stub)
-    assert board.lint_tickets() == [("areas.md", "areas-merge-union", "x")]
+    assert ticket_lint.lint_tickets(board._home()) == [("areas.md", "areas-merge-union", "x")]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -782,8 +786,8 @@ def test_new_board_submodule_seed_deploys_union(board, tmp_path, monkeypatch):
     subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
     dest = tmp_path / "home"
 
-    assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                           "--board-submodule", "--board-remote", str(bare)]) == 0
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                           "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV) == 0
 
     board_dir = dest / ".project_manager" / "board"
     assert (board_dir / ".gitattributes").is_file()

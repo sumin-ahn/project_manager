@@ -53,6 +53,8 @@ from pm_engine.infra import manifest_store, pre_push_hook
 from pm_engine.infra import pm_paths
 from pm_engine.infra import upstream_git
 from pm_engine.infra import task_store
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -102,10 +104,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 @pytest.fixture(scope="module")
@@ -345,8 +347,8 @@ def imported(pm_import, tmp_path_factory):
     dest = tmp_path_factory.mktemp("adopter") / "instance"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = pm_import.main(["--new", str(dest), "--harness", "claude",
-                             "--name", PROJECT_NAME, "--fill", "manual"])
+        rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude",
+                             "--name", PROJECT_NAME, "--fill", "manual"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
     return dest
 
@@ -504,8 +506,8 @@ def test_import_then_update_roundtrip_does_not_oscillate(
     dest = tmp_path / "adopter"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", PROJECT_NAME,
-                             "--fill", "manual", "--from", str(framework)])
+        rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", PROJECT_NAME,
+                             "--fill", "manual", "--from", str(framework)], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
 
     monkeypatch.setattr(pm_update, "REPO", dest)
@@ -515,7 +517,7 @@ def test_import_then_update_roundtrip_does_not_oscillate(
 
     # (1) 왕복 불변 — 진동 0.
     with redirect_stdout(io.StringIO()):
-        rc = pm_update.main(["--from", str(framework)])
+        rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)])
     assert rc == 0, "self-update 가 rc0 아님"
     oscillated = sorted(rel for rel in _ROUNDTRIP_WATCHED
                         if (dest / rel).read_bytes() != before[rel])
@@ -532,7 +534,7 @@ def test_import_then_update_roundtrip_does_not_oscillate(
     for rel in canaries:
         (dest / rel).write_text("OSCILLATION-CANARY\n", encoding="utf-8")
     with redirect_stdout(io.StringIO()):
-        rc = pm_update.main(["--from", str(framework)])
+        rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)])
     assert rc == 0
     for rel in canaries:
         assert (dest / rel).read_bytes() == before[rel], (

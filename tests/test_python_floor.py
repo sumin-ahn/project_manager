@@ -166,7 +166,7 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
             return Result(returncode=0 if version >= (3, 11) else 1)
         return Result(stdout=f"Python {version[0]}.{version[1]}\n")
 
-    monkeypatch.setattr(board.shutil, "which", lambda cmd: f"/fake/{cmd}" if cmd in versions else None)
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/fake/{cmd}" if cmd in versions else None)
     monkeypatch.setattr(board.subprocess, "run", fake_run)
     assert python_env._detect_py() == "python"
 
@@ -183,7 +183,7 @@ def test_board_detect_all_old_falls_back_and_reports_versions(monkeypatch, capsy
     board = _load("board")
     _fresh_detect_cache(monkeypatch)
     monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
-    monkeypatch.setattr(board.shutil, "which", lambda cmd: f"/fake/{cmd}")
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/fake/{cmd}")
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: False)
     versions = {"python": "python=3.9", "py": "py=2.7", "python3": "python3=3.10"}
     monkeypatch.setattr(python_env, "_interp_version_label", versions.get)

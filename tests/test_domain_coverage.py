@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from pm_engine.infra import doc_page_store, manifest_store, pm_paths
 from pm_engine.app import doc_coverage, doc_lint, doc_staleness, lint_hooks
+from pm_engine.app import ticket_lint
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -875,9 +877,9 @@ def test_coverage_finding_flows_through_board_and_gate_stays_zero(
     findings = doc_lint.lint_domain(board._home())
     assert any(label == "beta.py" and kind == "coverage"
                for label, kind, _detail in findings)
-    monkeypatch.setattr(board, "lint_tickets", lambda: findings)
+    monkeypatch.setattr(ticket_lint, "lint_tickets", lambda _home: findings)
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
 
-    assert "coverage" in board._ADVISORY_LINT_KINDS
-    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
-    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+    assert "coverage" in board_lint._ADVISORY_LINT_KINDS
+    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=False)) == 1

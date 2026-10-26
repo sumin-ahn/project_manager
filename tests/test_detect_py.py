@@ -12,6 +12,7 @@ board.py 는 패키지가 아니므로 importlib 로 경로 로드하고(test_po
 """
 from __future__ import annotations
 
+import shutil
 import importlib.util
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def _patch(monkeypatch, board, *, name: str, present: set[str], runs: set[str]):
     """
     monkeypatch.setattr(process, "_probe_os_name", lambda: name)
     monkeypatch.setattr(
-        board.shutil, "which",
+        shutil, "which",
         lambda cmd: f"/fake/{cmd}" if cmd in present else None,
     )
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: cmd in runs)
@@ -102,7 +103,7 @@ def test_posix_prefers_python3(monkeypatch, board):
         return f"/usr/bin/{cmd}" if cmd in {"python3", "python"} else None
 
     monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
-    monkeypatch.setattr(board.shutil, "which", _which)
+    monkeypatch.setattr(shutil, "which", _which)
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: cmd in {"python3", "python"})
 
     assert python_env._detect_py() == "python3"

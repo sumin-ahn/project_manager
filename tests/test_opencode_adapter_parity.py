@@ -19,6 +19,7 @@ from pm_engine.app import update_plan
 from pm_engine.app import update_render
 from pm_engine.infra import install_conf
 from pm_engine.infra import pm_paths
+from pm_engine.cli import update_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
@@ -144,7 +145,7 @@ def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
     "source 가 git checkout 이 아니다"는 이 헬퍼의 명시 전제다 — 픽스처 위치가 그 답을 정하지
     않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     """
-    repo_files = pm_update.repo_files
+    repo_files = update_cmd.repo_files
     monkeypatch.setattr(
         repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     fallback_warning = repo_files.RepoFilesFallbackWarning

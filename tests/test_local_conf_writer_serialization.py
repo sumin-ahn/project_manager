@@ -160,7 +160,7 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (DELEGATES, "import 시 baseline rev 기록"),
     ("pm_engine/infra/install_conf.py", "record_opencode_model"):
         (DELEGATES, "해소된 opencode 모델 기록"),
-    ("pm_config.py", "cmd_upstream"):
+    ("pm_engine/cli/config_upstream.py", "cmd_upstream"):
         (DELEGATES, "`pm-config upstream set` → install_conf._write_conf_keys"),
     ("pm_engine/app/conf_apply.py", "apply_conf"):
         (HOLDS_LOCK, "제안 값→반영 단계 계획 전부→conf 키 쓰기→단계 기록이 공용 락 안 한 흐름"),

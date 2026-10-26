@@ -40,6 +40,7 @@ from pm_engine.app import board_dashboard
 from pm_engine.app import board_sync
 from pm_engine.infra import board_git
 from pm_engine.infra import ticket_store
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -1123,7 +1124,7 @@ def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations
         ("claim", "T-1"): board_ticket.cmd_claim,
         ("promote", "T-1"): board_ticket.cmd_promote,
         ("complete", "T-1"): board_ticket.cmd_complete,
-        ("lint",): board.cmd_lint,
+        ("lint",): board_lint.cmd_lint,
     }
     parser = board.build_parser()
     for argv, expected_fn in existing.items():

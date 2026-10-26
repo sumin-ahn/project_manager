@@ -34,6 +34,9 @@ from _win_skip import PROJECT_TEMP_ROOT, posix_filenames_supported
 from pm_engine.infra import doc_page_store, git, pm_paths, ticket_store
 from pm_engine.app import body_lint, conf_lint, doc_lint, doc_staleness, freshness_lint, freshness_pin, lint_hooks, ticket_lint, wiki_lint, wikilink_lint
 from pm_engine.domain import doc_pages
+from pm_engine.cli import board_lint
+from pm_engine.app import render_lint
+from pm_engine.cli import board_repin
 
 # 리터럴 `?`/`[]` 파일명은 Windows 에서 불법이라 실 git 이스케이프 테스트는 POSIX 전용 (codex R7).
 _posix_only = pytest.mark.skipif(not posix_filenames_supported(),
@@ -430,7 +433,7 @@ def test_all_blank_covers_is_skip(board, domain, monkeypatch, tmp_path):
 # ── advisory / never-block ────────────────────────────────────────────────────
 
 def test_unverifiable_in_advisory_kinds(board):
-    assert "domain-unverifiable" in board._ADVISORY_LINT_KINDS
+    assert "domain-unverifiable" in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_unverifiable_never_blocks_gate(board, monkeypatch):
@@ -447,14 +450,14 @@ def test_unverifiable_never_blocks_gate(board, monkeypatch):
         (freshness_lint, "lint_architecture_freshness", lambda home: []),
         (freshness_lint, "lint_status_freshness", lambda home: []),
         (conf_lint, "lint_adapter_drift", lambda home: []),
-        (board, "lint_render_leak", lambda: []),
+        (render_lint, "lint_render_leak", lambda home: []),
         (lint_hooks, "_run_lint_hooks", lambda home: []),
     ):
         monkeypatch.setattr(module, fn, stub)
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [
         ("codex 어댑터", "domain-unverifiable", "이 저장소에서 freshness 검증 불가")])
-    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
-    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=False)) == 1
 
 
 # ── 유닛: domain.covers_glob_pathspec / covers_pathspecs (R6 :(glob) 매핑) ────
@@ -1176,7 +1179,7 @@ def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
     full = "cafe0001" + "0" * 32
-    monkeypatch.setattr(board, "_canonical_commit_oid", lambda *_args, **_kwargs: full)
+    monkeypatch.setattr(board_repin, "_canonical_commit_oid", lambda *_args, **_kwargs: full)
     selected = ".project_manager/wiki/domain/malformed.md"
 
     parsed, _body = ticket_store.load_ticket(page)
@@ -1448,7 +1451,7 @@ def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
         write_lf(path, original)
     full = "cafe0001" + "0" * 32
     monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "_repo_head_sha", lambda _repo=None: full)
+    monkeypatch.setattr(board_repin, "_repo_head_sha", lambda _home, _repo=None: full)
     monkeypatch.setattr(freshness_pin, "_verified_at_backfill_targets",
                         lambda home: paths)
     real_fsync = board.os.fsync
@@ -1462,7 +1465,7 @@ def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
         return real_fsync(_fd)
 
     monkeypatch.setattr(board.os, "fsync", fail_second)
-    rc = board.cmd_verified_at_repin(
+    rc = board_repin.cmd_verified_at_repin(board._home(),
         SimpleNamespace(repo="self", sha=None, dry_run=False))
     assert rc != 0
     captured = capsys.readouterr()

@@ -265,9 +265,9 @@ def _translate_dest_safety_errors(func: Callable) -> Callable:
     래핑 함수를 쪼개지 않고 데코레이터로 두는 이유: `main` 본문을 별도 함수로 옮기면 엔진 관용구
     가드(진입 `main()` 의 console helper 선행·하네스 이름 분기 면제)가 이름 기준이라 함께 깨진다."""
     @functools.wraps(func)
-    def wrapper(argv: list[str] | None = None) -> int:
+    def wrapper(*args, **kwargs) -> int:
         try:
-            return func(argv)
+            return func(*args, **kwargs)
         except (install_files.DestRootSwappedError, install_files.UnsafeDestPathError) as exc:
             print(f"오류: {exc}", file=sys.stderr)
             return 1

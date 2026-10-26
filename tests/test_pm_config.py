@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 from pm_engine.infra import python_env
+from pm_engine.cli import config_adapter
+from pm_engine.cli import config_install
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -102,7 +104,7 @@ def test_add_harness_forwards_to_pm_import(pc, monkeypatch):
     """`add-harness opencode` → add_harness.add_harness_cli(home, dest, "opencode", dry_run=False) 그대로."""
     fake = FakePmImport(rc=0).install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=False)
-    rc = pc.cmd_add_harness(args, dest_root=Path("/live/inst"))
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args, dest_root=Path("/live/inst"))
     assert rc == 0
     assert len(fake.calls) == 1
     call = fake.calls[0]
@@ -116,7 +118,7 @@ def test_add_harness_dry_run_flag_forwarded(pc, monkeypatch):
     """`--dry-run` 이 dry_run=True 로 위임된다 (플래그 verbatim 전달)."""
     fake = FakePmImport(rc=0).install(monkeypatch)
     args = argparse.Namespace(harness="claude", dry_run=True)
-    rc = pc.cmd_add_harness(args, dest_root=Path("/x"))
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args, dest_root=Path("/x"))
     assert rc == 0
     assert fake.calls[0]["harness"] == "claude"
     assert fake.calls[0]["dry_run"] is True
@@ -126,14 +128,14 @@ def test_add_harness_propagates_returncode(pc, monkeypatch):
     """add_harness_cli 의 rc 가 그대로 전파된다 (위임·중복 로직 0)."""
     FakePmImport(rc=1).install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=False)
-    assert pc.cmd_add_harness(args, dest_root=Path("/x")) == 1
+    assert config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args, dest_root=Path("/x")) == 1
 
 
 def test_add_harness_dest_defaults_to_repo(pc, monkeypatch):
     """dest_root 미주입 시 pm_config 규약(REPO=인스턴스 루트)으로 해소해 위임한다."""
     fake = FakePmImport(rc=0).install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=False)
-    rc = pc.cmd_add_harness(args)  # dest_root 미주입
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args)  # dest_root 미주입
     assert rc == 0
     assert fake.calls[0]["dest_root"] == pc.REPO
 
@@ -167,7 +169,7 @@ def test_add_harness_forward_remaps_foreign_prog(pc, monkeypatch):
 
     FakePmImport(rc=0, on_call=_surface_usage).install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=False)
-    rc = pc.cmd_add_harness(args, dest_root=Path("/x"))
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args, dest_root=Path("/x"))
     assert rc == 0
     assert observed["prog"] == "pm-config add-harness"   # 위임 중 파일명 leak 0
     # 위임 종료 후 전역 argparse 원복(누수 0).
@@ -257,7 +259,7 @@ def test_add_harness_bad_harness_end_to_end_rc1(pc, tmp_path, capsys):
     """전체 스택(cmd_add_harness → 실 add_harness_cli → add_harness): 미지원 harness 는
     복사 전 입구 검증에서 ValueError → rc 1·부작용 0(어댑터 파일 미생성·traceback 0)."""
     args = argparse.Namespace(harness="both", dry_run=True)   # 'both' 는 최초 import 소관·add-harness 미지원
-    rc = pc.cmd_add_harness(args, dest_root=tmp_path)
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args, dest_root=tmp_path)
     assert rc == 1
     err = capsys.readouterr().err
     assert "Traceback" not in err
@@ -268,7 +270,7 @@ def test_add_harness_missing_dest_end_to_end_rc1(pc, tmp_path, capsys):
     """존재하지 않는 dest → 실 add_harness_cli 가 FileNotFoundError 를 rc 1 로 번역(traceback 0)."""
     missing = tmp_path / "no-such-instance"
     args = argparse.Namespace(harness="opencode", dry_run=True)
-    rc = pc.cmd_add_harness(args, dest_root=missing)
+    rc = config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args, dest_root=missing)
     assert rc == 1
     err = capsys.readouterr().err
     assert "Traceback" not in err
@@ -392,7 +394,7 @@ def test_sync_adapter_config_check_exit_and_actionable_remedy(
     args = argparse.Namespace(
         list=False, check=True, accept=None, source=str(source))
 
-    rc = pc.cmd_sync_adapter_config(args, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO), args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert rc == expected_rc
@@ -414,7 +416,7 @@ def test_sync_adapter_config_check_in_sync_unrecorded_prescribes_real_pm_update(
         tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=None)
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
-    assert pc.cmd_sync_adapter_config(args, dest_root=dest) == 1
+    assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO), args, dest_root=dest) == 1
 
     err = capsys.readouterr().err
     assert "pm-update" in err and "backfill" in err
@@ -427,7 +429,7 @@ def test_sync_adapter_config_check_report_only_drift_is_nonblocking(
         tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=_sha(_CHECK_UPSTREAM_HOOKS))
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
-    assert pc.cmd_sync_adapter_config(
+    assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO),
         args, dest_root=dest) == 0
 
     out = capsys.readouterr().out
@@ -444,7 +446,7 @@ def test_sync_adapter_config_check_unavailable_is_rc1(pc, tmp_path, capsys, monk
     args = argparse.Namespace(
         list=False, check=True, accept=None, source=str(tmp_path / "source"))
 
-    assert pc.cmd_sync_adapter_config(
+    assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO),
         args, dest_root=tmp_path / "dest") == 1
     err = capsys.readouterr().err
     assert "unavailable" in err and "ledger read failed" in err
@@ -458,7 +460,7 @@ def test_sync_adapter_config_check_managed_dest_missing_source_template_is_rc1(
     (source / "templates" / "codex" / _CHECK_HOOKS_REL).unlink()
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
-    assert pc.cmd_sync_adapter_config(
+    assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO),
         args, dest_root=dest) == 1
 
     err = capsys.readouterr().err
@@ -475,7 +477,7 @@ def test_sync_adapter_config_check_report_only_only_missing_managed_template_is_
     (source / "templates" / "codex" / _CHECK_HOOKS_REL).unlink()
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
-    assert pc.cmd_sync_adapter_config(
+    assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO),
         args, dest_root=dest) == 0
     out = capsys.readouterr().out
     assert _CHECK_REPORT_REL in out and "수렴 확인" in out
@@ -493,7 +495,7 @@ def test_sync_adapter_config_check_partial_managed_dest_missing_template_is_rc1(
     assert install_receipt.installed_harnesses(dest, source) == []
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
-    assert pc.cmd_sync_adapter_config(args, dest_root=dest) == 1
+    assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO), args, dest_root=dest) == 1
 
     err = capsys.readouterr().err
     assert "unavailable" in err and _CHECK_HOOKS_REL in err
@@ -512,7 +514,7 @@ def test_sync_adapter_config_check_partial_managed_dest_unrecorded_is_rc1(
     hooks.write_text(_CHECK_OLD_HOOKS, encoding="utf-8")
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
-    assert pc.cmd_sync_adapter_config(args, dest_root=dest) == 1
+    assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO), args, dest_root=dest) == 1
 
     err = capsys.readouterr().err
     assert "unrecorded" in err and "--accept .codex/hooks.json" in err
@@ -522,7 +524,7 @@ def test_sync_adapter_config_parser_check_is_exclusive(pc):
     parser = pc.build_parser()
     checked = parser.parse_args(
         ["sync-adapter-config", "--check", "--from", "/tmp/framework"])
-    assert checked.func is pc.cmd_sync_adapter_config
+    assert checked.func.func is config_adapter.cmd_sync_adapter_config
     assert checked.check is True and checked.source == "/tmp/framework"
     with pytest.raises(SystemExit):
         parser.parse_args(["sync-adapter-config", "--check", "--list"])
@@ -558,7 +560,7 @@ def test_accept_reapplies_harness_ctx(pc, tmp_path, capsys):
     args = argparse.Namespace(list=False, check=False, accept=".codex/config.toml",
                               accept_all=False, source=str(REPO))
 
-    rc = pc.cmd_sync_adapter_config(args, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO), args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert rc == 0, captured.err
@@ -593,7 +595,7 @@ def test_apply_checks_before_writing_and_reports_json(pc, tmp_path, capsys):
     parser = pc.build_parser()
     conf_before, settings_before = conf.read_bytes(), settings.read_bytes()
 
-    refused = pc.cmd_apply(
+    refused = config_install.cmd_apply(pm_paths.home_at(pc.REPO),
         parser.parse_args(["apply", "--json", "--set", "ctx.precompact_at_pct=85"]), dest_root=dest)
     captured = capsys.readouterr()
     assert refused == 3
@@ -601,13 +603,13 @@ def test_apply_checks_before_writing_and_reports_json(pc, tmp_path, capsys):
     assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
 
     # 인자 없는 반영 — 렌더 단계까지 돌아 upstream 미등록으로 거부된다(무변경).
-    bare = pc.cmd_apply(parser.parse_args(["apply", "--json"]), dest_root=dest)
+    bare = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args(["apply", "--json"]), dest_root=dest)
     captured = capsys.readouterr()
     assert bare == 3 and "upstream 미등록" in captured.err and captured.out == ""
     assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
 
     # 같은 값 — 현재 conf(압축 85%)로 검사·반영만 한다(conf 는 바꾸지 않는다).
-    current = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=85"]),
+    current = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=85"]),
                            dest_root=dest)
     assert current == 0
     assert json.loads(capsys.readouterr().out) == {
@@ -616,7 +618,7 @@ def test_apply_checks_before_writing_and_reports_json(pc, tmp_path, capsys):
     assert _ctx_budget_record(dest)["harnesses"]["claude"]["E"] == 200000
     assert conf.read_bytes() == conf_before
 
-    applied = pc.cmd_apply(
+    applied = config_install.cmd_apply(pm_paths.home_at(pc.REPO),
         parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=",
                            "--set", "identity.user=me@example.invalid"]),
         dest_root=dest)
@@ -630,7 +632,7 @@ def test_apply_checks_before_writing_and_reports_json(pc, tmp_path, capsys):
     assert "ctx.compact_at_pct" not in text and "identity.user=me@example.invalid" in text
 
     # 바뀐 값이 없으면 changed=false · applied 빈 목록(멱등).
-    again = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct="]),
+    again = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct="]),
                          dest_root=dest)
     assert again == 0
     assert json.loads(capsys.readouterr().out) == {"changed": False, "applied": []}
@@ -651,7 +653,7 @@ def test_apply_rc1_for_missing_conf_and_write_stage_failure(pc, tmp_path, capsys
     called: list[object] = []
     monkeypatch.setattr(conf_apply, "apply_conf", lambda *args, **kwargs: called.append(args))
 
-    missing = pc.cmd_apply(parser.parse_args(["apply", "--set", "ctx.compact_at_pct=85"]), dest_root=dest)
+    missing = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args(["apply", "--set", "ctx.compact_at_pct=85"]), dest_root=dest)
     captured = capsys.readouterr()
     assert missing == 1 and "local.conf 없음" in captured.err
     assert called == [] and sorted(p.name for p in (dest / ".project_manager").iterdir()) == []
@@ -661,7 +663,7 @@ def test_apply_rc1_for_missing_conf_and_write_stage_failure(pc, tmp_path, capsys
         def refuse(*_args, _stage=write_stage, **_kwargs):
             raise conf_apply.ConfApplyError(["거부 사유"], written=(), write_stage=_stage)
         monkeypatch.setattr(conf_apply, "apply_conf", refuse)
-        rc = pc.cmd_apply(parser.parse_args(["apply", "--set", "ctx.compact_at_pct=85"]), dest_root=dest)
+        rc = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args(["apply", "--set", "ctx.compact_at_pct=85"]), dest_root=dest)
         captured = capsys.readouterr()
         assert rc == expected, (write_stage, captured.err)
         assert "거부 사유" in captured.err and captured.out == ""
@@ -682,7 +684,7 @@ def test_apply_forwards_same_values_to_conf_apply(pc, tmp_path, capsys, monkeypa
         return conf_apply.ConfApplyResult(True, ("반영 줄",))
 
     monkeypatch.setattr(conf_apply, "apply_conf", observe)
-    rc = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=85",
+    rc = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=85",
                                          "--set", "identity.user="]), dest_root=dest)
     assert rc == 0
     assert seen == [(pm_paths.home_at(pc.REPO), dest,
@@ -707,13 +709,13 @@ def test_apply_cli_contract(pc, tmp_path, capsys):
     settings = home / ".claude" / "settings.json"
     conf_before, settings_before = conf.read_bytes(), settings.read_bytes()
 
-    refused = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.precompact_at_pct=95"]),
+    refused = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args(["apply", "--json", "--set", "ctx.precompact_at_pct=95"]),
                            dest_root=home)
     captured = capsys.readouterr()
     assert refused == 3 and "ctx.precompact_at_pct=95" in captured.err and captured.out == ""
     assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
 
-    saved = pc.cmd_apply(parser.parse_args([
+    saved = config_install.cmd_apply(pm_paths.home_at(pc.REPO), parser.parse_args([
         "apply", "--json", "--set", "delegate.architect.harness=claude",
         "--set", "delegate.architect.model=opus", "--set", "delegate.architect.reasoning=high"]),
         dest_root=home)

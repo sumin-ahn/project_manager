@@ -30,6 +30,9 @@ from types import SimpleNamespace
 import pytest
 from pm_engine.infra import upstream_git
 from pm_engine.infra import install_conf
+from pm_engine.cli import config_adapter
+from pm_engine.cli import update_cmd
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -59,10 +62,10 @@ def _pm_update_cli():
 
 
 @pytest.fixture
-def pm_update(_pm_update_cli):
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    with complete_in_process(_pm_update_cli) as flat_cli:
-        yield flat_cli
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 @pytest.fixture(scope="module")
@@ -200,7 +203,7 @@ def test_url_upstream_omitted_from_clones_cache_and_syncs(
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     assert (dest / SENTINEL_REL).read_text(encoding="utf-8") == "# v1\n", \
         "URL upstream 에서 엔진 파일이 배달되지 않음"
@@ -220,13 +223,13 @@ def test_url_cache_result_matches_explicit_from(pm_update, tmp_path, monkeypatch
     auto = tmp_path / "auto"
     _dest_with_url_upstream(auto, url)
     monkeypatch.setattr(pm_update, "REPO", auto)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
     cache = _only_cache(auto)
 
     explicit = tmp_path / "explicit"
     _dest_with_url_upstream(explicit, url)
     monkeypatch.setattr(pm_update, "REPO", explicit)
-    assert pm_update.main(["--from", str(cache)]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(cache)]) == 0, capsys.readouterr().err
 
     assert _snapshot(auto) == _snapshot(explicit), \
         "URL 자동 해소와 캐시 명시 --from 의 산출물이 다르다"
@@ -243,14 +246,14 @@ def test_second_run_fetches_into_same_cache(pm_update, tmp_path, monkeypatch, ca
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
     cache = _only_cache(dest)
     marker = cache / ".git" / "T0908_SAME_CACHE"     # 재clone 이면 사라진다.
     marker.write_text("same\n", encoding="utf-8")
 
     _push_commit(source, bare, "# v2\n", "upstream v2")
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     assert marker.is_file(), "두 번째 실행이 캐시를 다시 clone 했다(fetch 재사용 아님)"
     assert (dest / SENTINEL_REL).read_text(encoding="utf-8") == "# v2\n", \
@@ -275,7 +278,7 @@ def test_clone_failure_is_loud_and_changes_nothing(pm_update, tmp_path, monkeypa
     monkeypatch.setattr(pm_update, "REPO", dest)
     before = _snapshot(dest)
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     assert rc != 0, "clone 실패인데 rc 0(조용한 진행)"
     err = capsys.readouterr().err
@@ -298,13 +301,13 @@ def test_fetch_failure_does_not_advance_or_reuse_old_cache(
     dest = tmp_path / "dest"
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
     first_rev = _conf(pm_update, dest)["upstream.rev"]
 
     bare.rename(tmp_path / "fw.git.moved")           # 상류 소실 → fetch 실패
     before = _snapshot(dest)
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     assert rc != 0, "fetch 실패인데 옛 캐시로 진행했다(rc 0)"
     assert "캐시 fetch 실패" in capsys.readouterr().err
@@ -322,12 +325,12 @@ def test_changes_uses_cache_for_url_upstream(pm_update, tmp_path, monkeypatch, c
     dest = tmp_path / "dest"
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     _push_commit(source, bare, "# v2\n", "upstream v2 for changes")
     capsys.readouterr()
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
     out = capsys.readouterr().out
     assert "upstream v2 for changes" in out or "엔진 영향" in out, \
         f"URL upstream 에서 변경점 요약이 나오지 않음: {out!r}"
@@ -342,12 +345,12 @@ def test_count_only_keeps_machine_output_on_url_upstream(
     dest = tmp_path / "dest"
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     _push_commit(source, bare, "# v2\n", "one more")
     capsys.readouterr()
 
-    assert pm_update.main(["--changes", "--count-only"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes", "--count-only"]) == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == "1", f"기계 판독 stdout 이 한 줄 값이 아님: {captured.out!r}"
     assert "캐시" in captured.err, "캐시 동기 표시가 stderr 로 나가지 않았다"
@@ -362,7 +365,7 @@ def test_path_upstream_creates_no_cache(pm_update, tmp_path, monkeypatch, capsys
     _write(dest / ".project_manager" / "local.conf", f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     assert (dest / SENTINEL_REL).is_file()
     assert not _cache_root(dest).exists(), "경로 upstream 인데 캐시를 만들었다"
@@ -421,7 +424,7 @@ def test_sync_adapter_config_check_resolves_url_upstream(
            json.dumps(ledger, indent=2) + "\n")
     args = argparse.Namespace(list=False, check=True, accept=None, source=None)
 
-    rc = pm_config.cmd_sync_adapter_config(args, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO), args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert "[중단]" not in captured.err, f"URL upstream 소스 미해소로 멈춤: {captured.err!r}"
@@ -435,7 +438,7 @@ def test_sync_adapter_config_reports_cache_failure_loudly(
     dest = _imported_codex_instance(tmp_path / "inst", (tmp_path / "absent.git").as_uri())
     args = argparse.Namespace(list=False, check=True, accept=None, source=None)
 
-    rc = pm_config.cmd_sync_adapter_config(args, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO), args, dest_root=dest)
 
     assert rc == 1
     err = capsys.readouterr().err

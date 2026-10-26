@@ -30,6 +30,7 @@ from pm_engine.app import areas_lint, regression
 from pm_engine.app import areas_registry
 from pm_engine.infra import areas_store
 from pm_engine.infra import fs
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1307,7 +1308,7 @@ def test_lint_areas_duplicate_repo_clean_registry_is_silent(board):
 
 def test_areas_duplicate_repo_is_advisory_never_blocks(board):
     """kind 가 `_ADVISORY_LINT_KINDS` 등재 — `lint --gate` 종료코드에 기여하지 않는다."""
-    assert "areas-duplicate-repo" in board._ADVISORY_LINT_KINDS
+    assert "areas-duplicate-repo" in board_lint._ADVISORY_LINT_KINDS
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -44,6 +44,7 @@ from pm_engine.app import add_harness
 from pm_engine.infra import install_receipt
 from pm_engine.infra import pm_paths
 from pm_engine.app import update_manifest
+from pm_engine.cli import import_cmd
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -75,8 +76,8 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
 
 
 def _live_instance(pm_import, dest: Path, harness: str = "claude") -> Path:
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Notation Inst"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Notation Inst"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"라이브 인스턴스 셋업 실패(rc={rc})"
     return dest
 
@@ -108,9 +109,9 @@ def test_import_stops_before_installing_files_for_unregistered_notation(
         pm_import, monkeypatch, "codex", "SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR")
     dest = tmp_path / "unregistered"
 
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Unregistered"])
+         "--from", str(REPO), "--name", "Unregistered"], engine_rev=pm_import.ENGINE_REV)
 
     assert rc == 1
     assert not dest.exists(), "복사가 시작됨(부분 설치 잔존 — 설치 전 중단 위반)"
@@ -125,18 +126,18 @@ def test_into_stops_before_copy_when_a_reader_manifest_is_missing(
     조용히 빼면 그 독자가 없는 것처럼 공유 문서를 단독 표기로 재렌더한다(기존 codex 인스턴스에
     claude 단독 표기) — 이 티켓이 닫은 클래스가 소스 불완전 경로로 되살아난다."""
     dest = tmp_path / "missing_manifest"
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "MissingManifest"]) == 0
+         "--from", str(REPO), "--name", "MissingManifest"], engine_rev=pm_import.ENGINE_REV) == 0
     claude_marker = dest / ".claude" / "settings.json"
     assert not claude_marker.exists()
     # 설치된 codex 의 flavor 트리를 소스에서 못 찾는 상황(부분 checkout 동치).
     monkeypatch.setitem(install_rules.HARNESS_TEMPLATE_DIRS, "codex", ("codex_absent",))
     capsys.readouterr()
 
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "MissingManifest"])
+         "--from", str(REPO), "--name", "MissingManifest"], engine_rev=pm_import.ENGINE_REV)
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -432,16 +433,16 @@ def test_into_existing_instance_renders_for_both_reader_harnesses(
     """codex 인스턴스에 `--into claude` — 공유 문서가 **두 독자** 표기로 나가고 생성 산출물
     (`pm_state.md`)도 계획·백업을 거쳐 따라온다(이번 run 의 하네스 집합만 보면 오표기)."""
     dest = tmp_path / "into_inst"
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Inst"]) == 0
+         "--from", str(REPO), "--name", "Into Inst"], engine_rev=pm_import.ENGINE_REV) == 0
     state = dest / ".project_manager" / "wiki" / "pm_state.md"
     assert "`$pm-handoff`" in state.read_text(encoding="utf-8")  # 사전조건(codex 단독).
     capsys.readouterr()
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Inst"]) == 0
+         "--from", str(REPO), "--name", "Into Inst"], engine_rev=pm_import.ENGINE_REV) == 0
 
     out = capsys.readouterr().out
     assert "[rerender] .project_manager/wiki/pm_state.md" in out, out
@@ -654,9 +655,9 @@ def test_self_update_on_adopter_owned_codex_tree_injects_no_codex_notation(rende
     (dest / ".agents" / "skills" / "my-skill").mkdir(parents=True)
     (dest / ".agents" / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
     (dest / "AGENTS.md").write_text("# 우리 프로젝트 규약\n", encoding="utf-8")
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "OwnCodexUpdate"]) == 0
+         "--from", str(REPO), "--name", "OwnCodexUpdate"], engine_rev=pm_import.ENGINE_REV) == 0
 
     selected = update_manifest._installed_entry_notation_manifests(dest, REPO, [])
     assert [p.parent.parent.name for p in selected] == ["claude_code"], selected
@@ -680,9 +681,9 @@ def test_into_claude_on_adopter_owned_codex_tree_ships_claude_only_notation(
     (dest / ".agents" / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
     (dest / "AGENTS.md").write_text("# 우리 프로젝트 규약\n", encoding="utf-8")
 
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "OwnCodex"])
+         "--from", str(REPO), "--name", "OwnCodex"], engine_rev=pm_import.ENGINE_REV)
 
     assert rc == 0
     role = (dest / ".project_manager" / "wiki" / "pm_role.md").read_text(encoding="utf-8")
@@ -725,16 +726,16 @@ def test_add_harness_does_not_substitute_or_fill_existing_docs(pm_import, tmp_pa
 def test_into_does_not_substitute_or_fill_untouched_existing_docs(pm_import, tmp_path):
     """`--into` 도 같다 — 복사하지 않는 기존 문서는 표기 렌더만 받는다."""
     dest = tmp_path / "into_nosubst"
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Subst"]) == 0
+         "--from", str(REPO), "--name", "Into Subst"], engine_rev=pm_import.ENGINE_REV) == 0
     state = dest / ".project_manager" / "wiki" / "pm_state.md"
     poisoned = state.read_text(encoding="utf-8") + "\n리터럴 {{PROJECT_NAME}} 보존 확인\n"
     state.write_text(poisoned, encoding="utf-8")
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Subst"]) == 0
+         "--from", str(REPO), "--name", "Into Subst"], engine_rev=pm_import.ENGINE_REV) == 0
 
     after = state.read_text(encoding="utf-8")
     assert "리터럴 {{PROJECT_NAME}} 보존 확인" in after, "복사 밖 기존 문서가 치환됨"
@@ -841,9 +842,9 @@ def test_root_identity_failure_is_loud_not_a_disabled_check(pm_import, tmp_path,
 
     # `--into` 는 그 실패를 rc1 로 번역하고 복사를 시작하지 않는다.
     capsys.readouterr()
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(missing), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "No Root"])
+         "--from", str(REPO), "--name", "No Root"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 1
     assert not missing.exists(), "복사가 시작됨(적용 전 중단 위반)"
 
@@ -1075,9 +1076,9 @@ def test_copy_channel_refuses_ancestor_swapped_between_plan_and_copy(
     거부는 **파일 단위 제외 + loud** 다(rc 0) — 이미 복사된 파일이 있는 적용 단계에서 전체를
     중단하면 오히려 부분 설치가 남는다(모듈 docstring 의 rc 정책). 루트 교체만 전체 중단이다."""
     dest = tmp_path / "ancestor_swap"
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Ancestor Swap"]) == 0
+         "--from", str(REPO), "--name", "Ancestor Swap"], engine_rev=pm_import.ENGINE_REV) == 0
     outside = tmp_path / "outside_tree"
     outside.mkdir()
     wiki = dest / ".project_manager" / "wiki"
@@ -1093,9 +1094,9 @@ def test_copy_channel_refuses_ancestor_swapped_between_plan_and_copy(
     monkeypatch.setattr(install_plan, "plan_copy", plan_then_swap_ancestor)
     capsys.readouterr()
 
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Ancestor Swap"])
+         "--from", str(REPO), "--name", "Ancestor Swap"], engine_rev=pm_import.ENGINE_REV)
 
     err = capsys.readouterr().err
     assert rc == 0, "적용 단계 파일 단위 제외가 전체 중단으로 바뀜(rc 정책 위반)"
@@ -1225,7 +1226,7 @@ def test_main_translates_dest_safety_errors_to_rc1(pm_import, capsys):
         assert rc == 1
         assert err.startswith("오류: ") and "Traceback" not in err, err
     # 실제 진입도 그 데코레이터를 쓴다(래핑 누락이면 이 단언이 red).
-    assert pm_import.main.__wrapped__ is not None
+    assert import_cmd.main.__wrapped__ is not None
 
 
 @requires_symlink
@@ -1535,9 +1536,9 @@ def test_into_refuses_swap_between_plan_and_backup(
         pm_import, tmp_path, monkeypatch, capsys):
     """`--into` 축(두 번째 호출부)도 같은 제외·loud 배선을 탄다 — rc 0·저장소 밖 쓰기 0."""
     dest = tmp_path / "into_swap"
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Swap"]) == 0
+         "--from", str(REPO), "--name", "Into Swap"], engine_rev=pm_import.ENGINE_REV) == 0
     seed = dest / ".project_manager" / "wiki" / "raw" / "README.md"
     state = dest / ".project_manager" / "wiki" / "pm_state.md"
     outside = tmp_path / "OUTSIDE_SEED.md"
@@ -1552,9 +1553,9 @@ def test_into_refuses_swap_between_plan_and_backup(
     monkeypatch.setattr(install_files, "_backup_before_inplace_edit", swap_then_backup)
     capsys.readouterr()
 
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "codex", "--fill", "manual",
-         "--from", str(REPO), "--name", "Into Swap"])
+         "--from", str(REPO), "--name", "Into Swap"], engine_rev=pm_import.ENGINE_REV)
 
     err = capsys.readouterr().err
     assert rc == 0
@@ -2450,9 +2451,9 @@ def test_receipt_skips_a_harness_whose_copies_were_all_excluded(
         pm_import, tmp_path, monkeypatch, capsys):
     """복사가 전부 제외돼 어댑터가 서지 않으면 기록에 올리지 않는다 — 기록이 유령을 만들지 않는다."""
     dest = tmp_path / "excluded_harness"
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Excluded"]) == 0
+         "--from", str(REPO), "--name", "Excluded"], engine_rev=pm_import.ENGINE_REV) == 0
     before = (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     # add-harness 의 복사를 전부 제외시킨다(계획 뒤 상태 변화와 같은 결과).
     monkeypatch.setattr(
@@ -2474,9 +2475,9 @@ def test_receipt_keeps_preexisting_harness_even_if_files_are_gone(
         pm_import, tmp_path, capsys):
     """이미 기록된 하네스는 파일이 없어도 이번 실행이 철회하지 않는다(철회는 명시 편집 채널)."""
     dest = tmp_path / "keep_preexisting"
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Keep"]) == 0
+         "--from", str(REPO), "--name", "Keep"], engine_rev=pm_import.ENGINE_REV) == 0
     shutil.rmtree(dest / ".claude")
     (dest / "CLAUDE.md").unlink()
     capsys.readouterr()

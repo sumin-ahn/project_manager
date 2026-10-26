@@ -93,9 +93,9 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         "어댑터 설치 — claude 타깃의 어댑터 디렉터리 배치"),
     ("add_harness.py", "add_harness", "codex"): Site(
         "어댑터 설치 — codex 타깃의 어댑터 디렉터리 배치"),
-    ("pm_import.py", "main", "claude"): Site(
+    ("import_cmd.py", "main", "claude"): Site(
         "어댑터 설치 — `--harness claude` 스캐폴드 선택"),
-    ("pm_import.py", "main", "codex"): Site(
+    ("import_cmd.py", "main", "codex"): Site(
         "어댑터 설치 — `--harness codex` 스캐폴드 선택"),
     ("import_fill.py", "run_fill", "codex"): Site(
         "어댑터 설치 — codex 스캐폴드 채우기의 CLI 형식 분기"),

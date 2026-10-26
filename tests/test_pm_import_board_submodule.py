@@ -26,6 +26,8 @@ import pytest
 from pm_engine.domain import areas_rules
 
 from pm_engine.infra import areas_store
+from pm_engine.cli import import_cmd
+from pm_engine.infra import pm_paths
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -157,8 +159,8 @@ def _config_ignore(dest: Path) -> str:
 def test_empty_remote_scaffolds_and_configures(pm_import, tmp_path):
     bare = _make_bare(tmp_path / "board.git")
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                         "--board-submodule", "--board-remote", str(bare)])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                         "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0
 
     board = dest / ".project_manager" / "board"
@@ -190,8 +192,8 @@ def test_empty_remote_areas_scaffold_parses_canonical(pm_import, tmp_path):
     board_mod = _load_mod("board")
     bare = _make_bare(tmp_path / "board.git")
     dest = tmp_path / "home"
-    assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                           "--board-submodule", "--board-remote", str(bare)]) == 0
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                           "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV) == 0
     areas = (dest / ".project_manager" / "board" / "areas.md").read_text(encoding="utf-8")
     assert areas_store._areas_header_line() in areas
     assert areas_store._areas_separator_line() in areas
@@ -206,8 +208,8 @@ def test_existing_remote_reused_not_reinitialized(pm_import, tmp_path):
     bare = _make_bare(tmp_path / "board.git")
     _seed_remote_with_ticket(bare, tmp_path, "T-0042")
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                         "--board-submodule", "--board-remote", str(bare)])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                         "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0
     board = dest / ".project_manager" / "board"
     # 기존 board 내용을 그대로 재사용 — 우리 스캐폴드가 덮어쓰지 않는다(합류).
@@ -224,8 +226,8 @@ def test_existing_remote_reused_not_reinitialized(pm_import, tmp_path):
 
 def test_board_submodule_requires_remote(pm_import, tmp_path, capsys):
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude",
-                         "--board-submodule"])  # --board-remote 없음
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude",
+                         "--board-submodule"], engine_rev=pm_import.ENGINE_REV)  # --board-remote 없음
     assert rc == 1
     assert "--board-remote" in capsys.readouterr().err
     # 부작용 전 거부 — dest 미생성.
@@ -235,8 +237,8 @@ def test_board_submodule_requires_remote(pm_import, tmp_path, capsys):
 def test_board_submodule_requires_new(pm_import, tmp_path, capsys):
     existing = tmp_path / "existing"
     existing.mkdir()
-    rc = pm_import.main(["--into", str(existing), "--harness", "claude",
-                         "--board-submodule", "--board-remote", "/some/board.git"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--into", str(existing), "--harness", "claude",
+                         "--board-submodule", "--board-remote", "/some/board.git"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 1
     assert "--new" in capsys.readouterr().err
     # board 미셋업(부작용 전 거부).
@@ -246,8 +248,8 @@ def test_board_submodule_requires_new(pm_import, tmp_path, capsys):
 
 def test_board_remote_without_submodule_rejected(pm_import, tmp_path, capsys):
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude",
-                         "--board-remote", "/some/board.git"])  # --board-submodule 없음
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude",
+                         "--board-remote", "/some/board.git"], engine_rev=pm_import.ENGINE_REV)  # --board-submodule 없음
     assert rc == 1
     assert "--board-submodule" in capsys.readouterr().err
     assert not dest.exists()
@@ -255,8 +257,8 @@ def test_board_remote_without_submodule_rejected(pm_import, tmp_path, capsys):
 
 def test_board_remote_credential_in_url_rejected(pm_import, tmp_path, capsys):
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--board-submodule",
-                         "--board-remote", "https://user:pass@example.com/board.git"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--board-submodule",
+                         "--board-remote", "https://user:pass@example.com/board.git"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 1
     assert "거부" in capsys.readouterr().err
     assert not dest.exists()
@@ -265,8 +267,8 @@ def test_board_remote_credential_in_url_rejected(pm_import, tmp_path, capsys):
 def test_board_remote_leading_dash_rejected(pm_import, tmp_path):
     dest = tmp_path / "home"
     # `=` 형(argparse 가 값을 통과시킴) — leading-dash 값을 validate_upstream_value 가 거부해야 한다.
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--board-submodule",
-                         "--board-remote=-oProxyCommand=evil"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--board-submodule",
+                         "--board-remote=-oProxyCommand=evil"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 1
     assert not dest.exists()
 
@@ -285,8 +287,8 @@ def test_non_board_remote_rejected_wiki_preserved(pm_import, tmp_path, capsys):
     bare = _make_bare(tmp_path / "board.git")
     _seed_remote_non_board(bare, tmp_path)
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                         "--board-submodule", "--board-remote", str(bare)])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                         "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV)
     assert rc != 0
     assert "유효한 board repo" in capsys.readouterr().err
     # 부작용 0 — board 미셋업 + 폴백 wiki/tickets 온전(깨진 board 아님).
@@ -314,8 +316,8 @@ def test_submodule_add_failure_cleans_partial_board(pm_import, tmp_path, monkeyp
         return real(argv, cwd)
 
     monkeypatch.setattr(install_board, "_board_setup_git", wrapper)
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                         "--board-submodule", "--board-remote", str(bare)])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                         "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV)
     assert rc != 0
     # cleanup: 부분 board 잔재 0.
     assert not (dest / ".project_manager" / "board").exists(), "board/ 잔재"
@@ -370,8 +372,8 @@ def test_partial_board_cleanup_removes_read_only_git_objects(pm_import, tmp_path
 def test_board_ops_target_submodule(pm_import, tmp_path):
     bare = _make_bare(tmp_path / "board.git")
     dest = tmp_path / "home"
-    assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                           "--board-submodule", "--board-remote", str(bare)]) == 0
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                           "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV) == 0
     board = dest / ".project_manager" / "board"
 
     # list — submodule board(빈)를 읽고 rc 0.
@@ -408,7 +410,7 @@ def test_board_ops_target_submodule(pm_import, tmp_path):
 @requires_git
 def test_inline_default_unchanged(pm_import, tmp_path):
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0
     # board submodule 미셋업 — inline(legacy) 형상 그대로.
     assert not (dest / ".project_manager" / "board").exists()
@@ -421,8 +423,8 @@ def test_inline_default_unchanged(pm_import, tmp_path):
 def test_dry_run_no_board_side_effects(pm_import, tmp_path, capsys):
     bare = _make_bare(tmp_path / "board.git")
     dest = tmp_path / "home"
-    rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "H",
-                         "--board-submodule", "--board-remote", str(bare), "--dry-run"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
+                         "--board-submodule", "--board-remote", str(bare), "--dry-run"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert "board submodule" in out  # 계획에 board submodule 명시.

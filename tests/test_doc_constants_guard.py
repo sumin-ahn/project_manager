@@ -88,7 +88,7 @@ def test_regression_skill_references_only_real_board_subcommands():
 
 
 def test_adopt_harness_default_matches_pm_import():
-    src = _read(".project_manager/tools/pm_import.py")
+    src = _read(".project_manager/tools/pm_engine/cli/import_cmd.py")
     arguments = [
         node for node in ast.walk(ast.parse(src))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -150,7 +150,7 @@ _README_MODEL_EXAMPLE = re.compile(r"--opencode-model\s+([a-z][\w./:+-]+)")
 
 
 def _pm_import_opencode_model_example() -> str:
-    src = _read(".project_manager/tools/pm_import.py")
+    src = _read(".project_manager/tools/pm_engine/cli/import_cmd.py")
     m = re.search(
         r"""add_argument\(["']--opencode-model["'].*?예 ['"]([^'"]+)['"]""",
         src,
