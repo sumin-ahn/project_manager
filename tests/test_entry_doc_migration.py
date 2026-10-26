@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 from pm_engine.domain import jsonc
+from pm_engine.app import entry_doc_migration
+from pm_engine.app import update_render
 
 import importlib.util
 import json
@@ -52,21 +54,27 @@ def _load_pm_update():
 # 임베드 세대 수 + 세대 index → git 출하 blob ref (provenance lock). parametrize collection 시점에
 # 필요해 모듈 로드 시 1회 계산. 새 세대 추가 시 _GEN_GIT_REFS 에 그 세대 ref 를 등록해야
 # test_all_generations_have_provenance_ref 가 통과한다(lock 자동 강제).
-_NUM_GENERATIONS = len(_load_pm_update()._OLD_OPENCODE_AGENTS_GENERATIONS)
+_NUM_GENERATIONS = len(entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS)
 _GEN_GIT_REFS = {0: "0ccc025:templates/opencode/AGENTS.md"}
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load_pm_update()
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load_pm_update())
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 @pytest.fixture(scope="module")
-def old_gen_text(pm_update):
+def old_gen_text():
     """임베드 세대 원본(구형 opencode AGENTS.md·토큰 form) 텍스트."""
-    return pm_update._decode_entry_doc_generation(
-        pm_update._OLD_OPENCODE_AGENTS_GENERATIONS[0])
+    return entry_doc_migration._decode_entry_doc_generation(
+        entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS[0])
 
 
 def _sim_old_adopter(gen_text: str, op: dict, *, manual_markers: bool = True) -> str:
@@ -146,9 +154,9 @@ def _make_selfupdate_pair(tmp_path: Path, agents: str) -> tuple[Path, Path]:
 @pytest.mark.parametrize("idx", range(_NUM_GENERATIONS))
 def test_generation_decodes_and_structure(pm_update, idx):
     """각 임베드 세대(zlib+base64)가 온전히 디코드되고 구형 세대 구조를 갖는다."""
-    text = pm_update._decode_entry_doc_generation(
-        pm_update._OLD_OPENCODE_AGENTS_GENERATIONS[idx])
-    assert pm_update._ENTRY_DOC_OLD_GEN_MARKER in text  # 구형 세대 판별자
+    text = entry_doc_migration._decode_entry_doc_generation(
+        entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS[idx])
+    assert entry_doc_migration._ENTRY_DOC_OLD_GEN_MARKER in text  # 구형 세대 판별자
     assert "{{PROJECT_CONSTRAINTS}}" in text            # free-form 토큰 form 보존
 
 
@@ -162,8 +170,8 @@ def test_generation_provenance_matches_git(pm_update, idx, git_ref):
         ).stdout
     except (subprocess.SubprocessError, OSError, FileNotFoundError):
         pytest.skip("git 미가용 — provenance 대조 skip (자산 무결성은 decode 로만 검증)")
-    decoded = pm_update._decode_entry_doc_generation(
-        pm_update._OLD_OPENCODE_AGENTS_GENERATIONS[idx])
+    decoded = entry_doc_migration._decode_entry_doc_generation(
+        entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS[idx])
     assert decoded == git, f"임베드 세대 #{idx} 가 git {git_ref} 와 다르다(자산 stale/손상)."
 
 
@@ -177,7 +185,7 @@ def test_all_generations_have_provenance_ref():
 # ── _ensure_jsonc_instructions (idempotent·comment-preserving) ──────────────
 
 def test_jsonc_insert_when_absent(pm_update):
-    new, changed = pm_update._ensure_jsonc_instructions(_MINIMAL_OLD_JSONC)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(_MINIMAL_OLD_JSONC)
     assert changed
     assert '".opencode/pm-instructions.md"' in new
     assert '"instructions"' in new
@@ -186,14 +194,14 @@ def test_jsonc_insert_when_absent(pm_update):
 
 def test_jsonc_noop_when_present(pm_update):
     src = '{\n  "instructions": [\n    ".opencode/pm-instructions.md"\n  ],\n  "x": 1\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert not changed
     assert new == src
 
 
 def test_jsonc_append_when_array_without_path(pm_update):
     src = '{\n  "instructions": [\n    ".opencode/other.md"\n  ]\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     assert ".opencode/pm-instructions.md" in new
     assert ".opencode/other.md" in new  # 기존 원소 보존
@@ -205,7 +213,7 @@ def test_jsonc_empty_array_insert_parses_strict(pm_update):
     앞머리에 `"…",` 를 넣던 옛 삽입은 이을 원소가 없어 `[ "…",]` 가 됐고 opencode 가 config 를
     못 읽었다(실측)."""
     src = '{\n  "instructions": []\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     assert json.loads(new) == {"instructions": [".opencode/pm-instructions.md"]}, \
         f"빈 배열 삽입 산출이 strict JSON 이 아니다: {new!r}"
@@ -214,7 +222,7 @@ def test_jsonc_empty_array_insert_parses_strict(pm_update):
 def test_jsonc_comment_only_array_insert_parses_masked(pm_update):
     """주석만 있는 배열도 '원소 0' — 쉼표 없이 삽입되고 주석은 보존된다(마스킹 기준 parse 통과)."""
     src = '{\n  "instructions": [\n    // 아직 없음\n  ]\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     assert "// 아직 없음" in new, "주석이 소실됐다(비파괴 위반)"
     masked = jsonc._mask_jsonc_comments(new)
@@ -225,11 +233,11 @@ def test_jsonc_comment_only_array_insert_parses_masked(pm_update):
 def test_jsonc_nonempty_array_insert_keeps_comma_and_parses(pm_update):
     """비어있지 않은 배열은 현행 동작 무변경 — 앞머리 쉼표 삽입·기존 원소 보존·재실행 멱등."""
     src = '{\n  "instructions": [\n    ".opencode/other.md"\n  ]\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     assert json.loads(new) == {
         "instructions": [".opencode/pm-instructions.md", ".opencode/other.md"]}
-    again, changed_again = pm_update._ensure_jsonc_instructions(new)
+    again, changed_again = entry_doc_migration._ensure_jsonc_instructions(new)
     assert not changed_again and again == new
 
 
@@ -239,7 +247,7 @@ def test_jsonc_nonstring_element_array_keeps_comma(pm_update):
     "문자열 원소가 있나" 로 좁히면 이런 배열을 빈 배열로 오인해 쉼표를 빼고, `[ "…"  123]` 처럼
     구분자 없는 산출이 된다(같은 결함의 다른 모양). 판정을 '비-공백 바디' 로 두어 클래스를 닫는다."""
     src = '{\n  "instructions": [123]\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     assert json.loads(new) == {"instructions": [".opencode/pm-instructions.md", 123]}, \
         f"비-문자열 원소 배열 삽입 산출이 strict JSON 이 아니다: {new!r}"
@@ -247,14 +255,14 @@ def test_jsonc_nonstring_element_array_keeps_comma(pm_update):
 
 def test_jsonc_empty_array_insert_is_idempotent(pm_update):
     """빈 배열에 삽입한 산출을 다시 통과시켜도 무변경(멱등) — 세대 왕복에서 중복 등록 없음."""
-    once, _ = pm_update._ensure_jsonc_instructions('{\n  "instructions": []\n}\n')
-    twice, changed = pm_update._ensure_jsonc_instructions(once)
+    once, _ = entry_doc_migration._ensure_jsonc_instructions('{\n  "instructions": []\n}\n')
+    twice, changed = entry_doc_migration._ensure_jsonc_instructions(once)
     assert not changed and twice == once
 
 
 def test_jsonc_idempotent_double_run(pm_update):
-    once, _ = pm_update._ensure_jsonc_instructions(_MINIMAL_OLD_JSONC)
-    twice, changed = pm_update._ensure_jsonc_instructions(once)
+    once, _ = entry_doc_migration._ensure_jsonc_instructions(_MINIMAL_OLD_JSONC)
+    twice, changed = entry_doc_migration._ensure_jsonc_instructions(once)
     assert not changed
     assert twice == once
 
@@ -262,7 +270,7 @@ def test_jsonc_idempotent_double_run(pm_update):
 def test_jsonc_comment_mention_not_false_positive(pm_update):
     """주석의 'instructions 배열' 서술은 코드 배열이 아니라 신설 블록이 삽입된다(quote+colon+bracket 판별)."""
     src = '{\n  // instructions 배열로 로드한다\n  "x": 1\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     assert '"instructions"' in new
 
@@ -271,7 +279,7 @@ def test_jsonc_commented_out_path_not_idempotent(pm_update):
     """주석-아웃된 경로는 '등록'이 아니다 (codex R2) — 실제 (비-주석) 배열 원소로 추가돼야 한다."""
     src = ('{\n  "instructions": [\n    // ".opencode/pm-instructions.md"\n'
            '    ".other.md"\n  ]\n}\n')
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed, "주석-아웃 경로를 이미 등록으로 오인하면 안 된다."
     # 비-주석 배열 원소로 실제 등록됐는지 (마스킹본에서 확인).
     masked = jsonc._mask_jsonc_comments(new)
@@ -282,7 +290,7 @@ def test_jsonc_commented_out_path_not_idempotent(pm_update):
 def test_jsonc_suffix_string_not_idempotent(pm_update):
     """suffix 문자열(`.bak`)은 다른 경로 (codex R2) — substring 오인 없이 정확 경로가 추가된다."""
     src = '{\n  "instructions": [\n    ".opencode/pm-instructions.md.bak"\n  ]\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed, "`.bak` suffix 를 이미 등록으로 오인하면 안 된다."
     masked = jsonc._mask_jsonc_comments(new)
     body = re.search(r'"instructions"\s*:\s*\[(.*?)\]', masked, re.DOTALL).group(1)
@@ -295,7 +303,7 @@ def test_jsonc_ignores_comment_inside_string(pm_update):
     """문자열 내부 `//`($schema URL)는 주석이 아니다 — 마스킹이 문자열을 존중(오프셋 보존)."""
     src = ('{\n  "$schema": "https://opencode.ai/config.json",\n'
            '  "instructions": [\n    ".opencode/pm-instructions.md"\n  ]\n}\n')
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert not changed  # 이미 등록 — idempotent
     assert new == src
 
@@ -303,7 +311,7 @@ def test_jsonc_ignores_comment_inside_string(pm_update):
 def _toplevel_elements(pm_update, jsonc_text):
     """결과 jsonc 의 최상위 instructions 배열 원소 목록(테스트 단언용)."""
     masked = jsonc._mask_jsonc_comments(jsonc_text)
-    bs, be, _ = pm_update._find_toplevel_instructions(masked)
+    bs, be, _ = entry_doc_migration._find_toplevel_instructions(masked)
     assert bs is not None, "최상위 instructions 배열이 없다."
     return re.findall(r'"([^"]*)"', masked[bs:be])
 
@@ -311,7 +319,7 @@ def _toplevel_elements(pm_update, jsonc_text):
 def test_jsonc_nested_instructions_ignored(pm_update):
     """중첩 객체의 "instructions" 는 대상 아님 (codex R2) — 최상위 신설·중첩 배열 보존."""
     src = '{\n  "agent": {\n    "x": {\n      "instructions": ["x.md"]\n    }\n  }\n}\n'
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     assert '"x.md"' in new  # 중첩 배열 보존
     top = _toplevel_elements(pm_update, new)
@@ -323,7 +331,7 @@ def test_jsonc_nested_and_toplevel_append_toplevel_only(pm_update):
     """중첩+최상위 공존 시 최상위에만 append (중첩 배열 무변경·정확 1회 등록)."""
     src = ('{\n  "agent": {\n    "x": { "instructions": ["nested.md"] }\n  },\n'
            '  "instructions": [\n    "top.md"\n  ]\n}\n')
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert changed
     top = _toplevel_elements(pm_update, new)
     assert ".opencode/pm-instructions.md" in top  # 최상위에 등록
@@ -337,7 +345,7 @@ def test_jsonc_nested_before_toplevel_idempotent(pm_update):
     """중첩 "instructions" 가 먼저 나와도 최상위(이미 등록)를 찾아 no-op (오삽입 안 함)."""
     src = ('{\n  "agent": { "instructions": ["nested.md"] },\n'
            '  "instructions": [\n    ".opencode/pm-instructions.md"\n  ]\n}\n')
-    new, changed = pm_update._ensure_jsonc_instructions(src)
+    new, changed = entry_doc_migration._ensure_jsonc_instructions(src)
     assert not changed
     assert new == src
 
@@ -346,8 +354,8 @@ def test_jsonc_nested_before_toplevel_idempotent(pm_update):
 
 def test_match_rendered_no_markers(pm_update, old_gen_text):
     adopter = _sim_old_adopter(old_gen_text, _SIM_OP, manual_markers=False)
-    keys = pm_update._entry_doc_operational_keys()
-    captured = pm_update._match_entry_doc_generation(old_gen_text, adopter, keys)
+    keys = entry_doc_migration._entry_doc_operational_keys()
+    captured = entry_doc_migration._match_entry_doc_generation(old_gen_text, adopter, keys)
     assert captured is not None
     assert captured["PY"] == "python3"
     assert captured["PROJECT_TAGLINE"] == "UNIQUE_TAGLINE_XYZ_12345"
@@ -357,8 +365,8 @@ def test_match_rendered_with_manual_markers(pm_update, old_gen_text):
     """manual-fill TODO 마커가 붙어도 정규화로 벗겨 매칭(pristine 판정)."""
     adopter = _sim_old_adopter(old_gen_text, _SIM_OP, manual_markers=True)
     assert _MANUAL_MARKER in adopter
-    keys = pm_update._entry_doc_operational_keys()
-    captured = pm_update._match_entry_doc_generation(old_gen_text, adopter, keys)
+    keys = entry_doc_migration._entry_doc_operational_keys()
+    captured = entry_doc_migration._match_entry_doc_generation(old_gen_text, adopter, keys)
     assert captured is not None
     assert captured["PROJECT_TAGLINE"] == "UNIQUE_TAGLINE_XYZ_12345"
 
@@ -367,15 +375,15 @@ def test_match_none_when_freeform_filled(pm_update, old_gen_text):
     """free-form 채움(커스텀) → 리터럴 토큰 부재 → 불일치(None)."""
     adopter = _sim_old_adopter(old_gen_text, _SIM_OP).replace(
         "{{PROJECT_CONSTRAINTS}}", "MY CUSTOM CONSTRAINT")
-    keys = pm_update._entry_doc_operational_keys()
-    assert pm_update._match_entry_doc_generation(old_gen_text, adopter, keys) is None
+    keys = entry_doc_migration._entry_doc_operational_keys()
+    assert entry_doc_migration._match_entry_doc_generation(old_gen_text, adopter, keys) is None
 
 
 def test_match_none_when_structural_edit(pm_update, old_gen_text):
     """구조 손편집 → 불일치(None)."""
     adopter = _sim_old_adopter(old_gen_text, _SIM_OP) + "\n\n## 채택자가 덧붙인 절\n"
-    keys = pm_update._entry_doc_operational_keys()
-    assert pm_update._match_entry_doc_generation(old_gen_text, adopter, keys) is None
+    keys = entry_doc_migration._entry_doc_operational_keys()
+    assert entry_doc_migration._match_entry_doc_generation(old_gen_text, adopter, keys) is None
 
 
 def test_match_none_when_inconsistent_operational(pm_update, old_gen_text):
@@ -383,8 +391,8 @@ def test_match_none_when_inconsistent_operational(pm_update, old_gen_text):
     adopter = _sim_old_adopter(old_gen_text, _SIM_OP, manual_markers=False)
     # 첫 `python3 .project_manager` 를 다른 인터프리터로 손편집 → occurrence 불일관.
     adopter = adopter.replace("python3 .project_manager", "py -3.12 .project_manager", 1)
-    keys = pm_update._entry_doc_operational_keys()
-    assert pm_update._match_entry_doc_generation(old_gen_text, adopter, keys) is None
+    keys = entry_doc_migration._entry_doc_operational_keys()
+    assert entry_doc_migration._match_entry_doc_generation(old_gen_text, adopter, keys) is None
 
 
 # ── migrate_entry_doc 시나리오 (DoD) ───────────────────────────────────────
@@ -395,7 +403,7 @@ def test_scenario_unmodified_auto_migrate(pm_update, old_gen_text, tmp_path):
     dest = _make_dest(tmp_path, old_agents, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path)
 
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
 
     assert result["status"] == "migrated"
     assert result["agents_replaced"] is True
@@ -404,7 +412,7 @@ def test_scenario_unmodified_auto_migrate(pm_update, old_gen_text, tmp_path):
 
     new = (dest / "AGENTS.md").read_text(encoding="utf-8")
     # 신형 교체 — 구형 marker 소거·신형 title.
-    assert pm_update._ENTRY_DOC_OLD_GEN_MARKER not in new
+    assert entry_doc_migration._ENTRY_DOC_OLD_GEN_MARKER not in new
     assert new.splitlines()[0] == "# AGENTS.md — PM 어댑터 공통 코어"
     # operational 해소(leak 0) + 채택자 tagline 보존.
     assert "{{PY}}" not in new and "{{PROJECT_NAME}}" not in new
@@ -427,9 +435,9 @@ def test_scenario_unmodified_auto_migrate_no_markers(pm_update, old_gen_text, tm
     old_agents = _sim_old_adopter(old_gen_text, _SIM_OP, manual_markers=False)
     dest = _make_dest(tmp_path, old_agents, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "migrated"
-    assert pm_update._ENTRY_DOC_OLD_GEN_MARKER not in (
+    assert entry_doc_migration._ENTRY_DOC_OLD_GEN_MARKER not in (
         dest / "AGENTS.md"
     ).read_text(encoding="utf-8")
 
@@ -441,7 +449,7 @@ def test_scenario_modified_loud_no_touch(pm_update, old_gen_text, tmp_path):
     dest = _make_dest(tmp_path, modified, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path)
 
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
 
     assert result["status"] == "loud_manual"
     assert result["agents_replaced"] is False
@@ -456,7 +464,7 @@ def test_scenario_modified_structural_loud(pm_update, old_gen_text, tmp_path):
     modified = _sim_old_adopter(old_gen_text, _SIM_OP) + "\n## 손편집 절\n"
     dest = _make_dest(tmp_path, modified, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "loud_manual"
     assert (dest / "AGENTS.md").read_text(encoding="utf-8") == modified
 
@@ -467,13 +475,13 @@ def test_scenario_rerun_noop_idempotent(pm_update, old_gen_text, tmp_path):
     dest = _make_dest(tmp_path, old_agents, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path)
 
-    first = pm_update.migrate_entry_doc(dest, src, write=True)
+    first = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert first["status"] == "migrated"
 
     agents_after = (dest / "AGENTS.md").read_text(encoding="utf-8")
     jsonc_after = (dest / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8")
 
-    second = pm_update.migrate_entry_doc(dest, src, write=True)
+    second = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert second["status"] == "noop"
     assert second["agents_replaced"] is False
     assert second["jsonc_updated"] is False
@@ -489,7 +497,7 @@ def test_scenario_fresh_newgen_noop(pm_update, tmp_path):
     jsonc = '{\n  "instructions": [\n    ".opencode/pm-instructions.md"\n  ],\n  "x": 1\n}\n'
     dest = _make_dest(tmp_path, new_rendered, jsonc)
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "noop"
     assert result["jsonc_updated"] is False
 
@@ -501,7 +509,7 @@ def test_scenario_partial_recovery(pm_update, tmp_path):
         "{{PROJECT_TAGLINE}}", "tag").replace("{{TEST_CMD}}", "pytest -q")
     dest = _make_dest(tmp_path, new_rendered, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "recovered"
     assert result["jsonc_updated"] is True
     assert ".opencode/pm-instructions.md" in (
@@ -514,7 +522,7 @@ def test_gate_not_opencode(pm_update, tmp_path):
     (dest / ".project_manager").mkdir(parents=True)
     (dest / "AGENTS.md").write_text("whatever", encoding="utf-8")
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "not_opencode"
 
 
@@ -524,7 +532,7 @@ def test_gate_no_agents(pm_update, tmp_path):
     (dest / ".opencode").mkdir(parents=True)
     (dest / ".opencode" / "opencode.jsonc").write_text(_MINIMAL_OLD_JSONC, encoding="utf-8")
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "no_agents"
 
 
@@ -533,7 +541,7 @@ def test_no_new_template_failsoft(pm_update, old_gen_text, tmp_path):
     old_agents = _sim_old_adopter(old_gen_text, _SIM_OP)
     dest = _make_dest(tmp_path, old_agents, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path, new_template=False)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "no_new_template"
     assert (dest / "AGENTS.md").read_text(encoding="utf-8") == old_agents
 
@@ -543,7 +551,7 @@ def test_dry_run_no_write(pm_update, old_gen_text, tmp_path):
     old_agents = _sim_old_adopter(old_gen_text, _SIM_OP)
     dest = _make_dest(tmp_path, old_agents, _MINIMAL_OLD_JSONC)
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=False)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=False)
     assert result["status"] == "migrated"
     assert result["backup_rel"] is None
     # 미 write — 원본 그대로.
@@ -556,13 +564,13 @@ def test_dry_run_no_write(pm_update, old_gen_text, tmp_path):
 def test_target_export_does_not_migrate(pm_update, monkeypatch, capsys):
     """`--target`(엔진 export)은 진입 doc 마이그레이션을 발화하지 않는다(skew/selfheal 동일 경계)."""
     calls = []
-    orig = pm_update.migrate_entry_doc
+    orig = entry_doc_migration.migrate_entry_doc
 
     def _spy(*a, **k):
         calls.append((a, k))
         return orig(*a, **k)
 
-    monkeypatch.setattr(pm_update, "migrate_entry_doc", _spy)
+    monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", _spy)
     rc = pm_update.main(["--target", "opencode", "--from", str(REPO), "--dry-run"])
     assert rc == 0
     assert calls == [], "--target 모드에서 migrate_entry_doc 가 호출됐다(비발화 위반)."
@@ -584,13 +592,13 @@ def test_self_update_invokes_migration(pm_update, monkeypatch, tmp_path):
     before = _snapshot_fixture_bytes(isolated)
     monkeypatch.setattr(pm_update, 'REPO', isolated)
     calls = []
-    orig = pm_update.migrate_entry_doc
+    orig = entry_doc_migration.migrate_entry_doc
 
     def _spy(*a, **k):
         calls.append(k.get("write"))
         return orig(*a, **k)
 
-    monkeypatch.setattr(pm_update, "migrate_entry_doc", _spy)
+    monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", _spy)
     rc = pm_update.main(["--from", str(isolated), "--dry-run"])
     assert rc == 0
     assert calls == [False], "self-update dry-run 이 migrate_entry_doc(write=False)를 1회 호출해야 한다."
@@ -606,7 +614,7 @@ def test_migrate_without_local_conf(pm_update, old_gen_text, tmp_path):
     (dest / ".opencode" / "opencode.jsonc").write_text(_MINIMAL_OLD_JSONC, encoding="utf-8")
     # local.conf 없음(.project_manager 미생성).
     src = _make_source(tmp_path)
-    result = pm_update.migrate_entry_doc(dest, src, write=True)
+    result = entry_doc_migration.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "migrated"
     new = (dest / "AGENTS.md").read_text(encoding="utf-8")
     assert "{{PY}}" not in new and "{{TEST_CMD}}" not in new
@@ -622,9 +630,9 @@ def test_sequencing_migration_after_apply_success(pm_update, old_gen_text, tmp_p
     config = dest / ".opencode/opencode.jsonc"
     config.write_text(_MINIMAL_OLD_JSONC.replace("{", '{"model":"fixture-provider/fixture-model",', 1), encoding="utf-8")
     order = []
-    real_migrate = pm_update.migrate_entry_doc
+    real_migrate = entry_doc_migration.migrate_entry_doc
 
-    def spy_apply(changes, **_kwargs):  # 호출부가 훅 세트 판정자를 함께 넘긴다(T-0606).
+    def spy_apply(_home, changes, **_kwargs):  # 호출부가 훅 세트 판정자를 함께 넘긴다(T-0606).
         order.append("apply")
 
     def spy_migrate(*a, **k):
@@ -632,8 +640,8 @@ def test_sequencing_migration_after_apply_success(pm_update, old_gen_text, tmp_p
         return real_migrate(*a, **k)
 
     monkeypatch.setattr(pm_update, "REPO", dest)      # self-location dest = tmp
-    monkeypatch.setattr(pm_update, "apply", spy_apply)
-    monkeypatch.setattr(pm_update, "migrate_entry_doc", spy_migrate)
+    monkeypatch.setattr(update_render, "apply", spy_apply)
+    monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", spy_migrate)
     rc = pm_update.main(["--from", str(src)])
     assert rc == 0
     assert order == ["apply", ("migrate", True)], order
@@ -644,12 +652,12 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
     old_agents = _sim_old_adopter(old_gen_text, _SIM_OP)
     dest, src = _make_selfupdate_pair(tmp_path, old_agents)
     migrate_writes = []
-    real_migrate = pm_update.migrate_entry_doc
+    real_migrate = entry_doc_migration.migrate_entry_doc
 
     class ExpectedApplyFailure(RuntimeError):
         pass
 
-    def boom_apply(changes, **_kwargs):  # 호출부가 훅 세트 판정자를 함께 넘긴다(T-0606).
+    def boom_apply(_home, changes, **_kwargs):  # 호출부가 훅 세트 판정자를 함께 넘긴다(T-0606).
         raise ExpectedApplyFailure("apply failed (render/IO)")
 
     def spy_migrate(*a, **k):
@@ -657,8 +665,8 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
         return real_migrate(*a, **k)
 
     monkeypatch.setattr(pm_update, "REPO", dest)
-    monkeypatch.setattr(pm_update, "apply", boom_apply)
-    monkeypatch.setattr(pm_update, "migrate_entry_doc", spy_migrate)
+    monkeypatch.setattr(update_render, "apply", boom_apply)
+    monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", spy_migrate)
     with pytest.raises(ExpectedApplyFailure, match="apply failed"):
         pm_update.main(["--from", str(src)])
     # 전환 write(write=True) 미발화 — apply 뒤라 도달 못 함.
@@ -671,7 +679,7 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
 
 def test_finding_printer_loud_manual(pm_update, capsys):
     """loud_manual finding 이 안내 + 커맨드를 출력한다."""
-    pm_update._print_entry_doc_migration_finding(
+    entry_doc_migration._print_entry_doc_migration_finding(
         {"status": "loud_manual"}, dry_run=False)
     out = capsys.readouterr().out
     assert "자동 전환하지 않는다" in out
@@ -679,7 +687,7 @@ def test_finding_printer_loud_manual(pm_update, capsys):
 
 
 def test_finding_printer_migrated_backup(pm_update, capsys):
-    pm_update._print_entry_doc_migration_finding(
+    entry_doc_migration._print_entry_doc_migration_finding(
         {"status": "migrated", "matched_generation": 0, "jsonc_updated": True,
          "backup_rel": ".pm_import_backups/2026-07-21"}, dry_run=False)
     out = capsys.readouterr().out

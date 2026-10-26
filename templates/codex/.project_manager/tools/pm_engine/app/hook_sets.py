@@ -12,6 +12,7 @@ from pm_engine.infra import install_receipt
 from pm_engine.infra import upstream_declarations
 from typing import NamedTuple
 import json
+import sys
 
 
 # ── 훅 세트 세대 정합 (판정 단일 진실 — pm_update/pm_config 는 소비만) ────────────
@@ -622,3 +623,23 @@ def is_live_hook_set_path(relpath: str, declarations=None) -> bool:
         elif text == declared:
             return True
     return False
+
+
+def resolve_hook_set_predicate(home, source_root=None):
+    """훅 세트 원자-write 판정자 — 상류 세대 선언(못 읽으면 `home` 설치본 선언)으로 만든다.
+
+    선언 해소·판정은 이 모듈의 세대 값(`hook_set_declarations`)이 단일 진실이다(사본을 두면 "검사는
+    하는데 원자 write 는 안 하는" 파일이 조용히 생긴다). 해소는 실행당 1회이고 결과를 `apply` 에
+    넘긴다 — 상류 선언 조회는 매번 별도 프로세스를 띄우므로 파일마다 부르지 않는다.
+
+    상류를 주고도 그 선언을 못 읽으면 설치본 선언으로 판정하고 그 사실을 stderr 한 줄로 남긴다 —
+    이번 상류가 새로 등재하는 훅 파일은 그 판정에서 빠져 일반 복사로 떨어진다."""
+    generation = hook_set_declarations(home, source_root)
+    if source_root is not None and generation.reasons:
+        print(
+            "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
+            f"등재하는 훅 파일은 원자 교체 대상에서 빠진다. {' / '.join(generation.reasons)}",
+            file=sys.stderr,
+        )
+    return lambda rel, _t=generation.declarations: bool(
+        is_live_hook_set_path(str(rel).replace("\\", "/"), _t))

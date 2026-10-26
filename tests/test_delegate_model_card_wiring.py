@@ -12,7 +12,7 @@
       파생한다(`pm_render.CARD_FIELD_TOKEN_PREFIXES` 의 그 트리 어댑터 디렉터리 행) — 모델
       토큰과 추론 토큰 모두 세 타깃 전부다(추론 필드는 claude `effort`·codex
       `model_reasoning_effort`·opencode `variant`).
-  (2) **실 해소 경로** — 문자열 존재 검사가 아니라 `local.conf` → `pm_update._render_text`
+  (2) **실 해소 경로** — 문자열 존재 검사가 아니라 `local.conf` → `update_render._render_text`
       (추론 허용집합 확인 포함 — opencode 는 가짜 실행 파일의 모델 목록 조회) 를 그대로 태워
       렌더된 필드 값이 conf 값과 같은지 본다. 카드와 conf 가 어긋나면 그 자리에서 red 다.
   (3) **민감도** — 카드 한 장에서 토큰 한 줄을 지우면 (1) 이 실제로 red 를 내는지 실측한다.
@@ -47,6 +47,9 @@ import yaml
 from _fake_opencode import install_fake_opencode, listing_for, path_with
 from _win_skip import posix_bash_supported
 from pm_engine.infra.harness import contract
+from pm_engine.app import update_render
+from pm_engine.infra import install_conf
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -57,7 +60,7 @@ DELEGATE_TOKEN_RE = re.compile(r"\{\{(DELEGATE_[A-Z0-9_]+)\}\}")
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load_tool(name: str):
@@ -413,20 +416,20 @@ def test_cards_render_local_conf_values_through_the_real_path(
     """`local.conf` → 해소 → 렌더까지 실 경로를 태워 카드 필드가 conf 값이 되는지 본다.
 
     문자열 존재 검사가 아니라 **반환값**을 본다: 토큰이 있어도 채널 배선이 빠지면 여기서 red 다
-    (선언이 실행면에 닿지 않는 상태를 그 자리에서 표면화한다). 렌더는 `pm_update._render_text` 를
+    (선언이 실행면에 닿지 않는 상태를 그 자리에서 표면화한다). 렌더는 `update_render._render_text` 를
     거친다 — 추론 허용집합 확인(`contract.reasoning_allowed`)까지 실 경로다.
     """
     dest = tmp_path / f"dest-{tree.harness}"
     conf_text, expected = _conf_text(pm_render, tree.harness)
     _write_local_conf(dest, conf_text)
 
-    _operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
+    _operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dest))
     assert empty_keys == []
 
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = pm_update._render_text(source, _local_conf_of(pm_update, dest), card_path=relative)
+        rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), source, _local_conf_of(pm_update, dest), card_path=relative)
         assert "{{" not in rendered, f"{relative}: 미해소 토큰 잔존"
         for field, token in _expected_tokens(pm_render, tree, stem).items():
             line = f"{field}{tree.assignment}\"{expected[token]}\""
@@ -463,7 +466,7 @@ def test_card_conf_mismatch_is_red_on_the_resolution_path(
             original_line, tree.field_line("model", "DELEGATE_MODEL_ARCHITECT")),
         encoding="utf-8",
     )
-    rendered = pm_update._render_text(swapped, _local_conf_of(pm_update, dest), card_path=relative)
+    rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), swapped, _local_conf_of(pm_update, dest), card_path=relative)
     developer_line = f"model{tree.assignment}\"{expected['DELEGATE_MODEL_DEVELOPER']}\""
     assert developer_line not in rendered, (
         "카드 토큰을 다른 역할 것으로 바꿨는데 해소 결과가 그대로다 — 값을 재지 않고 있다"
@@ -499,7 +502,7 @@ def test_unused_profile_neutralizes_model_and_reasoning_together(
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = pm_update._render_text(source, _local_conf_of(pm_update, dest), card_path=relative)
+        rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), source, _local_conf_of(pm_update, dest), card_path=relative)
         assert "{{" not in rendered, f"{relative}: 중화 후에도 토큰 잔존"
         assert not card_fields & _active_card_fields(tree, rendered), (
             f"{relative}: 미사용 프로필인데 {sorted(card_fields)} 중 살아 있는 키가 있다"
@@ -523,7 +526,7 @@ def test_empty_hard_model_fails_loud_with_the_conf_key(render_home, pm_render, p
     """
     dest = tmp_path / "dest"
     _write_local_conf(dest, "delegate.developer.hard.model=\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dest))
     assert empty_keys == ["DELEGATE_MODEL_DEVELOPER_HARD"]
 
     source = (REPO / ".claude/agents/developer-hard.md").read_text(encoding="utf-8")

@@ -32,6 +32,7 @@ from _git_fixture import init_git_repo
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.infra import manifest_store
 from pm_engine.domain import adapter_specs
+from pm_engine.infra import retired_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -227,7 +228,7 @@ def test_reviewer_retired_path_directive_is_identical_and_comment_compatible():
     """4 manifest가 같은 이주를 선언하고 기존 path parser에는 행으로 안 샌다."""
     pm_update = _load_pm_update()
     directives = {
-        manifest: pm_update.parse_retired_path_directives(manifest)
+        manifest: retired_paths.parse_retired_path_directives(manifest)
         for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST)
     }
     assert len({tuple(found) for found in directives.values()}) == 1, directives
@@ -248,9 +249,9 @@ def test_t0953_precompact_capture_hook_retired_in_all_manifests():
     pm_update = _load_pm_update()
     manifests = (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST)
     for manifest in manifests:
-        assert RETIRED_PRECOMPACT_PATH in pm_update.parse_retired_path_directives(manifest)
+        assert RETIRED_PRECOMPACT_PATH in retired_paths.parse_retired_path_directives(manifest)
         assert RETIRED_PRECOMPACT_PATH[0] not in _manifest_path_set(manifest), manifest
-        pm_update.validated_retired_path_directives(REPO, [manifest])
+        retired_paths.validated_retired_path_directives(REPO, [manifest])
     assert not (TEMPLATE_ROOTS["claude_code"] / RETIRED_PRECOMPACT_PATH[0]).exists()
     assert not (REPO / RETIRED_PRECOMPACT_PATH[0]).exists()
     spec = importlib.util.spec_from_file_location(

@@ -47,12 +47,14 @@ from pm_engine.domain import board_command_rules
 from pm_engine.infra import worktree_paths
 
 from pm_engine.app import completion_gate
+from pm_engine.app import update_plan
+from pm_engine.app import update_render
+from pm_engine.infra import shipping_targets
 from pm_engine.cli import board_init
 from pm_engine.cli import board_migrate_identity
 from pm_engine.cli import board_prefix
 from pm_engine.cli import board_ticket
 
-_load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -351,28 +353,20 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
 def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
     """실행 엔진 사본(REPO)이 upstream 과 drift 상태면 fail 기록 + rc1 — 라이브 wave **전** 조기 거부.
 
-    판정은 `pm_update.drift_changes(REPO)` 하나뿐이다(별도 diff 재구현 없음). 판정 불능
+    판정은 `app.update_plan.drift_changes(_home(), REPO)` 하나뿐이다(별도 diff 재구현 없음). 판정 불능
     (`None` — upstream 미설정·URL upstream·upstream 경로 미존재·manifest 부재·engine_root 에
     local.conf 부재는 모두 같은 "upstream 미설정" 경로로 수렴)은 **거부가 아니다** — 게이트 부재가
     아니라 이 형상엔 적용 불가이므로 stderr 경고 1줄만 내고 기존 경로를 그대로 진행한다(upstream
     미등록 채택자의 릴리즈를 막지 않는다). fail 기록은 must-fix 축과 **같은 기록 함수**
     (`fs.write_json_atomic`)를 쓴다(손기록 경로 신설 금지).
 
-    마킹된 엔진 사본 skew(`pm_update.drift_changes` 가 접지 않고 그대로 올리는 그 예외 —
+    마킹된 엔진 사본 skew(`drift_changes` 가 접지 않고 그대로 올리는 그 예외 —
     `_is_engine_rev_skew`)는 판정 불능이 아니라 이 게이트의 가장 강한 **확정 양성**이다 — 사본끼리
     rev 가 갈린 트리는 drift 판정 자체가 신뢰 불가하므로, must-fix 축과 같은 원자 fail 기록으로
     번역해 rc1·라이브 wave 미실행을 고정한다(사전 pass 기록이 남아 있어도 이 fail 로 교체한다).
     """
-    pm_update = _load_pm_update_module()
-    if pm_update is None:
-        # 형제 로더 실패 — `_load_pm_update_module` 의 기존 계약(호출부가 검사 대상 0 으로 흡수)과
-        # 같은 무차단이되, 이 게이트는 원인을 stderr 로 알린다(완전 침묵은 "적용됐는데 통과"와
-        # "판정 자체를 못 함"을 구분 못 하게 한다).
-        print("livegate: 경고 — pm_update 로더 실패로 엔진 drift 판정 불능(무차단으로 진행).",
-              file=sys.stderr)
-        return 0
     try:
-        changes = pm_update.drift_changes(REPO)
+        changes = update_plan.drift_changes(_home(), REPO)
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
             # 원자 fail 기록(must-fix 축과 같은 기록 함수) 뒤 표준 skew 진단 경계로 넘긴다 —
@@ -948,23 +942,6 @@ def _engine_manifest_paths() -> list[Path]:
     return out
 
 
-def _load_pm_update_module():
-    """pm_update 모듈을 같은 tools/ 디렉토리에서 로드 (drift 판정·출하 타깃 탐색·스킬 표기 렌더·텍스트 판정 재사용).
-
-    board.py 가 _detected_py 류 seam 으로 형제 모듈을 로드하는 패턴과 동형. 실패 시 None →
-    호출부가 검사 대상 0(무발화)으로 흡수한다.
-
-    ⚠️ **memoize 금지**: `_shipping_template_render_scopes` 가 반환 모듈의 `REPO` 를 board.REPO 로
-    덮어쓴다 — 호출마다 새 exec 라 그 대입이 갇히는데, 캐시를 도입하면 전역 오염이 된다."""
-    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
-    try:
-        return _load_module_from_path(
-            pm_update_py, "pm_update.py", allow_unverified=True,
-        )
-    except Exception:  # noqa: BLE001 — 로드 실패는 무발화(검사 대상 0).
-        return None
-
-
 def _is_render_managed(rel_posix: str, managed: set[str]) -> bool:
     """rel_posix 가 @render manifest path(파일 정확일치 OR 디렉토리 prefix) 하위인지."""
     for m in managed:
@@ -983,13 +960,10 @@ def _shipping_template_render_scopes() -> list[tuple[Path, set[str]]]:
     """면제 후보 = `(출하 템플릿 루트, 그 manifest 의 @render 경로 집합)` 목록.
 
     세 겹 파생 — 손-열거 0 + 성격 게이트 + 범위 게이트:
-      이름 축 = `pm_update.discover_target_names()` 재사용(`_load_pm_update_module` seam·
-         `--all-targets` 가 쓰는 그 규칙). 판정 사본을 새로 만들지 않는다(인접 규범 동일).
-         *앵커 정렬*: 그 함수는 pm_update 자신의 `REPO` 를 본다 — 프로덕션에선 board.REPO 와 같은
-         파일-앵커지만(형제 tools/), render-leak 판정 축은 board.REPO 이므로 갓 exec 한 모듈 사본의
-         `REPO` 를 board.REPO 로 맞춰 호출한다(`_load_pm_update_module` 은 호출마다 새 모듈을
-         exec 한다 — 캐시 없음 → 이 대입은 이 호출에만 갇힌다).
-      경로 축 = `pm_update.resolve_target_root(name)` 재사용 — 단일 path segment 검증 + resolve()
+      이름 축 = `infra.shipping_targets.discover_target_names(_home())` 재사용(`--all-targets` 가 쓰는
+         그 규칙). 판정 사본을 새로 만들지 않는다(인접 규범 동일). render-leak 판정 축과 같은 실행
+         Home(board.REPO)을 넘긴다.
+      경로 축 = `infra.shipping_targets.resolve_target_root(_home(), name)` 재사용 — 단일 path segment 검증 + resolve()
          후 parent 가 `templates/` 실경로임을 이중 확인한다(symlink 탈출 거부·거기 이미 있는 검증).
          `templates/alias -> ..` 같은 링크를 막지 않으면 candidate 가 루트 파일 *자기 자신*으로
          해소돼 byte-identical 이 자명 성립 → 전 파일 면제라는 백스톱 붕괴가 난다.
@@ -999,21 +973,18 @@ def _shipping_template_render_scopes() -> list[tuple[Path, set[str]]]:
          파일 정확일치/디렉토리 prefix 판정) 하위일 때만 면제 근거가 된다. @render 0 개인 트리는
          후보에서 아예 빠진다(디렉토리 이름·엔진 사본만 흉내낸 트리 봉쇄).
 
-    pm_update 로드/열거·manifest 파싱 실패 시 그 후보 제외(전부 실패면 빈 목록) — **면제는 특권이지
+    타깃 열거·manifest 파싱 실패 시 그 후보 제외(전부 실패면 빈 목록) — **면제는 특권이지
     기본값이 아니다**(판정원이 없으면 면제하지 않고 leak 을 보고하는 쪽이 보수적)."""
-    pm_update = _load_pm_update_module()
-    if pm_update is None:
-        return []
+    home = _home()
     try:
-        pm_update.REPO = REPO
-        names = pm_update.discover_target_names()
+        names = shipping_targets.discover_target_names(home)
     except Exception:  # noqa: BLE001 — 열거 실패는 면제 없음(보수 방향).
         return []
     scopes: list[tuple[Path, set[str]]] = []
     for name in names:
         try:
             # 탈출 검증 포함(ValueError) + 디렉토리 부재(FileNotFoundError) → 후보 제외.
-            root = pm_update.resolve_target_root(name)
+            root = shipping_targets.resolve_target_root(home, name)
         except Exception:  # noqa: BLE001 — 검증 실패는 면제 없음(보수 방향).
             continue
         manifest = root / ".project_manager" / "engine.manifest"
@@ -1067,7 +1038,7 @@ def _template_mirror_report(path: Path, rel_posix: str,
 
     반환은 `(state, drifted_targets)` — drift 후보의 타깃 이름(정렬)을 함께 돌려 finding 문구가 *어느*
     타깃이 어긋났는지 지목하게 한다. `template_scopes` 는 호출부가 루프 밖에서 한 번 구한 결과를
-    재사용하기 위한 주입 지점(파일마다 pm_update 재로드 방지)."""
+    재사용하기 위한 주입 지점(파일마다 타깃 열거·manifest 재파싱 방지)."""
     try:
         source_bytes = fs.read_bytes_shared(path)
     except OSError:
@@ -1078,8 +1049,8 @@ def _template_mirror_report(path: Path, rel_posix: str,
         source_resolved = path
     scopes = (_shipping_template_render_scopes() if template_scopes is None else template_scopes)
     # 조건부 표기 렌더가 켜진 @render source는 타깃 사본과 의도적으로 byte-different다. 비교 전에
-    # pm_update의 실제 최소-render seam으로 source를 같은 타깃 산출값으로 바꿔야 진짜 drift만 남는다.
-    pm_update = _load_pm_update_module()
+    # 갱신기의 최소 표기 렌더(`app.update_render`)로 source를 같은 타깃 산출값으로 바꿔야 진짜 drift만 남는다.
+    home = _home()
     matched = 0                     # 판정 참여 후보 수(@render 선언 + 비-자기참조).
     drifted_targets: list[str] = []  # 그중 drift(내용 불일치·사본 부재·확인 실패·트리 밖 링크) 타깃.
     for template_root, render_managed in scopes:
@@ -1098,18 +1069,14 @@ def _template_mirror_report(path: Path, rel_posix: str,
                 drifted = True
             else:
                 # 범위 안인데 사본이 **아예 없으면** 신규 파일 미전파 = drift 다(면제 근거 아님).
-                if pm_update is None or not hasattr(
-                    pm_update, "render_skill_entry_notation",
-                ):
-                    drifted = True
-                else:
-                    expected = pm_update.render_skill_entry_notation(
-                        source_bytes.decode("utf-8"),
-                        template_root.name,
-                        source=str(path),
-                    ).encode("utf-8")
-                    drifted = (not exists) or fs.read_bytes_shared(candidate) != expected
-        except (OSError, UnicodeError, RuntimeError, AttributeError):
+                expected = update_render.render_skill_entry_notation(
+                    home,
+                    source_bytes.decode("utf-8"),
+                    template_root.name,
+                    source=str(path),
+                ).encode("utf-8")
+                drifted = (not exists) or fs.read_bytes_shared(candidate) != expected
+        except (OSError, UnicodeError, RuntimeError):
             drifted = True  # 사본 상태를 확인 못 했다 — 확인 못 한 것을 면제하지 않는다(보수).
         matched += 1
         if drifted:
@@ -1139,14 +1106,12 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     managed = _render_managed_relpaths()
     if not managed:
         return []  # @render path 0 → 검사 대상 0 (활성화 전 무발화).
-    # 텍스트 판정은 pm_update._is_text_source 를 **공유**한다: render-leak 은
+    # 텍스트 판정은 `app.update_render._is_text_source` 를 **공유**한다: render-leak 은
     # `.md` 뿐 아니라 @render 산출물 하위 *모든 텍스트 파일*(.toml·.json·.yaml·확장자 없는 텍스트
     # 등)의 미해소 토큰을 잡아야 한다 — `.md` 만 스캔하면 새 하니스 형식을 조용히 놓치는 클래스
     # (codex `.codex/agents/*.toml`)가 이 blocking 백스톱을 통과한다. 확장자 열거·판정 사본을 새로
-    # 만들지 않고 render 채널(pm_update.plan)이 쓰는 그 함수에 위임한다(네 번째 판정 지점 방지).
-    # pm_update 적재가 None 이면 아래 read 의 넓힌 except 가 바이너리를 흡수한다(graceful degrade).
-    pm_update = _load_pm_update_module()
-    # 출하 템플릿 후보는 파일마다 다시 구하지 않는다(pm_update 재로드·manifest 재파싱 방지).
+    # 만들지 않고 render 채널(`app.update_plan.plan`)이 쓰는 그 함수에 위임한다(네 번째 판정 지점 방지).
+    # 출하 템플릿 후보는 파일마다 다시 구하지 않는다(타깃 열거·manifest 재파싱 방지).
     template_scopes = _shipping_template_render_scopes()
     issues: list[tuple[str, str, str]] = []
     seen: set[str] = set()
@@ -1163,11 +1128,11 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
                 continue
             seen.add(rel_posix)
             # 바이너리 리소스(폰트·이미지 등)는 스캔 대상 아님 — 텍스트 판정 공유(위 주석).
-            if pm_update is not None and not pm_update._is_text_source(p):
+            if not update_render._is_text_source(p):
                 continue
             try:
                 # rglob("*") 로 넓히면 바이너리가 섞여 UnicodeDecodeError 로 죽을 수 있어
-                # OSError 와 함께 잡는다 (_is_text_source 통과 후 TOCTOU·pm_update None 폴백 안전판).
+                # OSError 와 함께 잡는다 (_is_text_source 통과 후 TOCTOU 안전판).
                 text = fs.read_text_shared(p, encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue

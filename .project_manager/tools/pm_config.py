@@ -67,7 +67,7 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
                   분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
                   명시적으로 받는 유일한 채널이다(소스 해소는 add-harness 와 같은 규칙).
                   수용한 파일이 하네스 설정 파일이면 수용 직후 사용 한도를 다시 반영한다.
-  - apply → pm_update.apply_conf(키 묶음 표·한 락·전부 계획 뒤 기록). 관리자 저장은 키와 무관하게
+  - apply → app.conf_apply.apply_conf(키 묶음 표·한 락·전부 계획 뒤 기록). 관리자 저장은 키와 무관하게
                   이 명령 한 번이다. 반영 전 거부는 rc 3 이고 local.conf·파생 파일을 바꾸지 않는다 —
                   처리하지 못한 예외의 rc 1 과 겹치지 않아 관리자 화면은 rc 3 만 잘못된 값으로 보인다.
 
@@ -106,6 +106,7 @@ from pm_engine.app import adapter_accept
 from pm_engine.app import adapter_report
 from pm_engine.app import adapter_templates
 from pm_engine.app import add_harness
+from pm_engine.app import conf_apply
 from pm_engine.app import harness_ctx
 from pm_engine.app import hook_sets
 from pm_engine.app import import_fill
@@ -1595,26 +1596,18 @@ def _conf_assignment(text: str) -> tuple[str, str]:
 _APPLY_REFUSED = 3
 
 
-def cmd_apply(args, *, pm_update=None, dest_root: Path | None = None) -> int:
+def cmd_apply(args, *, dest_root: Path | None = None) -> int:
     """`apply [--json] [--set 키=값 ...]` — 값 검사 → local.conf 기록 → 파생 파일 반영.
 
     설정 저장의 유일한 입구다(관리자 저장·[기본값으로] 포함). `--set` 이 있으면 바뀐 키가 걸리는 반영
     단계만, 없으면 모든 단계를 다시 돈다(손으로 고친 local.conf 를 반영할 때). 단계는 사용 한도(하네스
     설정 파일·압축 한도 기록)와 렌더 입력(`@render` 산출물을 설치 세대 원본으로 다시 그림) 둘이고,
-    어느 묶음에도 없는 키는 local.conf 기록만 한다(`pm_update.apply_conf`).
+    어느 묶음에도 없는 키는 local.conf 기록만 한다(`app.conf_apply.apply_conf`).
 
     rc 0 반영(바뀐 줄 0 포함) · 3 반영 전 거부(값 검사·모델 한도 조회·렌더 검사·렌더 원본 세대·옛 키 —
-    local.conf·파생 파일 무변경 · 사유는 stderr) · 1 그 밖의 실패(엔진·local.conf 부재, 쓰기 단계 실패,
+    local.conf·파생 파일 무변경 · 사유는 stderr) · 1 그 밖의 실패(local.conf 부재, 쓰기 단계 실패,
     처리하지 못한 예외 — 쓰기 단계에서 멈추면 stderr 가 교체한 파일을 적는다) · 2 인자 오류(argparse).
     `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 반영 줄}` 이다."""
-    pm_update_mod = pm_update or _load_module("pm_update", "pm_update.py")
-    if pm_update_mod is None:
-        print(
-            "[중단] pm_update.py 엔진을 찾을 수 없다 — 설정 반영 불가 "
-            f"({TOOLS_DIR / 'pm_update.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
     dest = dest_root if dest_root is not None else REPO
     conf_file = dest / ".project_manager" / "local.conf"
     updates = dict(getattr(args, "set", None) or ())
@@ -1623,10 +1616,10 @@ def cmd_apply(args, *, pm_update=None, dest_root: Path | None = None) -> int:
               file=sys.stderr)
         return 1
     try:
-        result = pm_update_mod.apply_conf(
-            dest, updates={key: value or None for key, value in updates.items()},
+        result = conf_apply.apply_conf(
+            pm_paths.home_at(REPO), dest, updates={key: value or None for key, value in updates.items()},
             opencode_config_dir=harness_ctx.opencode_global_config_dir(os.environ, Path.home()))
-    except pm_update_mod.ConfApplyError as exc:
+    except conf_apply.ConfApplyError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1 if exc.write_stage else _APPLY_REFUSED
     except RuntimeError as exc:

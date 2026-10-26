@@ -18,6 +18,7 @@ from pm_engine.infra import install_conf
 from pm_engine.app import repo_protection
 from pm_engine.infra import protected_hooks, pm_paths
 
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -44,6 +45,18 @@ from pm_engine.app import harness_ctx
 from pm_engine.infra import adapter_baseline
 from pm_engine.infra import adapter_documents
 from pm_engine.infra import upstream_git
+from pm_engine.app import conf_apply
+from pm_engine.app import engine_transfer
+from pm_engine.app import entry_doc_migration
+from pm_engine.app import update_adapters
+from pm_engine.app import update_finish
+from pm_engine.app import update_manifest
+from pm_engine.app import update_plan
+from pm_engine.app import update_render
+from pm_engine.app import upstream_changes
+from pm_engine.app import upstream_revisions
+from pm_engine.infra import retired_paths
+from pm_engine.infra import update_paths
 
 REPO = Path(__file__).resolve().parents[1]
 # 설치·추가를 실행하는 엔진 Home(이 checkout).
@@ -57,7 +70,7 @@ SENTINEL_REL = "sentinel/__pm_update_upstream_sentinel__.py"
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load_pm_update():
@@ -77,9 +90,15 @@ def _known_native_capacity(monkeypatch):
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load_pm_update()
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load_pm_update())
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 def _make_upstream(root: Path, rel: str = SENTINEL_REL) -> None:
@@ -160,7 +179,7 @@ def test_read_local_conf_parses_key_value(pm_update, tmp_path):
         "  runtime.py = python3  \n",
         encoding="utf-8",
     )
-    result = pm_update._read_local_conf(conf)
+    result = install_conf._read_local_conf(conf)
     assert result["session"] == "pm"
     assert result["upstream.path"] == "/home/u/checkout"
     assert result["runtime.py"] == "python3"  # 양쪽 공백 strip
@@ -171,13 +190,13 @@ def test_read_local_conf_parses_key_value(pm_update, tmp_path):
 
 
 def test_read_local_conf_missing_returns_empty(pm_update, tmp_path):
-    assert pm_update._read_local_conf(tmp_path / "nope.conf") == {}
+    assert install_conf._read_local_conf(tmp_path / "nope.conf") == {}
 
 
 def test_read_local_conf_last_value_wins(pm_update, tmp_path):
     conf = tmp_path / "local.conf"
     conf.write_text("upstream.path=/first\nupstream.path=/second\n", encoding="utf-8")
-    assert pm_update._read_local_conf(conf)["upstream.path"] == "/second"
+    assert install_conf._read_local_conf(conf)["upstream.path"] == "/second"
 
 
 # ── ① 명시 --from 우선 (local.conf upstream 무시) ───────────────────────────
@@ -340,7 +359,7 @@ def test_missing_manifest_entry_keeps_existing_missing_report_path(
     source.mkdir()
     subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
 
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         [".project_manager/tools/absent.py"],
         dest_root=tmp_path / "dest", conf=_local_conf_of(pm_update, tmp_path / "dest"),
@@ -458,9 +477,9 @@ def test_record_upstream_rev_baseline_records_head(pm_update, tmp_path, monkeypa
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "headcommit99")
 
-    changed = pm_update.record_upstream_rev_baseline(dest, source)
+    changed = upstream_revisions.record_upstream_rev_baseline(dest, source)
     assert changed is True
-    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf["upstream.rev"] == "headcommit99"
     assert conf["upstream.path"] == "/some/checkout"  # 별개 키 보존(한 키 2역 금지)
     assert conf["session"] == "pm"
@@ -475,9 +494,9 @@ def test_record_upstream_rev_baseline_skips_when_source_not_git(pm_update, tmp_p
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
-    changed = pm_update.record_upstream_rev_baseline(dest, source)
+    changed = upstream_revisions.record_upstream_rev_baseline(dest, source)
     assert changed is False
-    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf
 
 
@@ -494,7 +513,7 @@ def test_main_records_upstream_rev_on_successful_sync(pm_update, tmp_path, monke
 
     rc = pm_update.main([])  # 실 sync(dry-run 아님) — sentinel 1개 복사.
     assert rc == 0
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "syncedrev42", \
         f"매 sync 후 upstream_rev baseline 미갱신: {conf.get('upstream.rev')!r}"
 
@@ -511,7 +530,7 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
 
     rc = pm_update.main(["--dry-run"])
     assert rc == 0
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
 
 
@@ -530,8 +549,8 @@ def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "pathrev1234")
 
-    assert pm_update.record_upstream_rev_baseline(dest, source) is True
-    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert upstream_revisions.record_upstream_rev_baseline(dest, source) is True
+    conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf["upstream.rev"] == "pathrev1234"
     assert conf["upstream.seen_rev"] == "pathrev1234", \
         f"경로 upstream 인데 seen 미기록(두 키 어긋남 잔존): {conf!r}"
@@ -559,9 +578,9 @@ def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "nextsyncrev9")
 
-    assert pm_update.record_upstream_rev_baseline(dest, source) is True
+    assert upstream_revisions.record_upstream_rev_baseline(dest, source) is True
     text = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
-    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf["upstream.rev"] == conf["upstream.seen_rev"] == "nextsyncrev9", \
         f"다음 sync 1회로 수렴 안 됨: {conf!r}"
     assert "# per-clone" in text and conf["runtime.py"] == "python3"  # 주석·타 키 보존
@@ -586,8 +605,8 @@ def test_record_upstream_rev_baseline_records_seen_for_url_upstream(
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "cacheheadrev")
 
-    assert pm_update.record_upstream_rev_baseline(dest, source) is True
-    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    assert upstream_revisions.record_upstream_rev_baseline(dest, source) is True
+    conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf["upstream.rev"] == "cacheheadrev"
     assert conf["upstream.seen_rev"] == "cacheheadrev", \
         f"URL 형상에서 seen 이 옛 관찰값에 굳었다(단일 writer 위반): {conf!r}"
@@ -607,7 +626,7 @@ def test_record_upstream_revs_reports_same_keys_for_both_shapes(
 
     path_dest = tmp_path / "path_dest"
     _write_local_conf(path_dest, "upstream.path=/w/project_manager_1\n")
-    changed, recorded = pm_update.record_upstream_revs(path_dest, source)
+    changed, recorded = upstream_revisions.record_upstream_revs(path_dest, source)
     assert changed is True
     assert recorded == both
 
@@ -617,7 +636,7 @@ def test_record_upstream_revs_reports_same_keys_for_both_shapes(
         "upstream.path=https://github.com/example/project_manager.git\n"
         "upstream.seen_rev=staleobserved\n",
     )
-    changed, recorded = pm_update.record_upstream_revs(url_dest, source)
+    changed, recorded = upstream_revisions.record_upstream_revs(url_dest, source)
     assert changed is True
     assert recorded == both, f"URL 형상에서 기록 키가 갈렸다(단일 writer 위반): {recorded!r}"
 
@@ -643,7 +662,7 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
         install_conf, "_write_conf_keys_locked",
         lambda path, updates: (calls.append(dict(updates)), real_write(path, updates))[1])
 
-    assert pm_update.record_upstream_revs(dest, source)[0] is True
+    assert upstream_revisions.record_upstream_revs(dest, source)[0] is True
     assert calls == [{"upstream.rev": "onepassrev5", "upstream.seen_rev": "onepassrev5"}], \
         f"두 키가 단일 write 로 묶이지 않음(반쪽 상태 위험): {calls!r}"
 
@@ -659,7 +678,7 @@ def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, c
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "bothkeysrev1")
 
     assert pm_update.main([]) == 0
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "bothkeysrev1", \
         f"경로 sync 후 두 키 불일치(거짓 drift 재발): {conf!r}"
     assert "upstream.seen_rev 동시 기록" in capsys.readouterr().out
@@ -689,7 +708,7 @@ def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monk
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "currentrev")
 
     assert pm_update.main([]) == 0
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "currentrev"
     assert "baseline 갱신" in capsys.readouterr().out
 
@@ -765,7 +784,7 @@ def test_main_no_changes_skew_suppresses_both_path_revs(
     )
     before = local_conf.read_text(encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    monkeypatch.setattr(pm_update, "detect_manifest_skew", lambda *a, **k: ("skew", ["new.py"]))
+    monkeypatch.setattr(update_manifest, "detect_manifest_skew", lambda *a, **k: ("skew", ["new.py"]))
 
     assert pm_update.main([]) == 0
     assert local_conf.read_text(encoding="utf-8") == before
@@ -791,7 +810,7 @@ def test_main_url_sync_records_both_keys(pm_update, tmp_path, monkeypatch, capsy
     out = capsys.readouterr().out
     assert "baseline 갱신" in out, f"URL sync 인데 baseline 갱신 안내 부재: {out!r}"
     assert "upstream.seen_rev 동시 기록" in out, f"동시 기록 안내 부재: {out!r}"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "cachehead77"
 
 
@@ -808,14 +827,14 @@ def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypa
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     skew_stub = ".project_manager/tools/__pm_update_skew_stub__.py"  # 합성 신규 등재분.
     monkeypatch.setattr(
-        pm_update, "detect_manifest_skew", lambda *a, **k: ("skew", [skew_stub]))
+        update_manifest, "detect_manifest_skew", lambda *a, **k: ("skew", [skew_stub]))
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
     assert pm_update.main([]) == 0
     out = capsys.readouterr().out
     assert "manifest skew" in out and "억제" in out, f"skew 억제 안내 미출력: {out!r}"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf, f"skew 인데 baseline 기록됨: {conf!r}"
     assert "upstream.seen_rev" not in conf, \
         f"skew 인데 seen 만 앞섬(반대 방향 거짓 경보): {conf!r}"
@@ -832,7 +851,7 @@ def test_detect_manifest_skew_flags_new_upstream_entries(pm_update, tmp_path):
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
     local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
-    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    status, new_entries = update_manifest.detect_manifest_skew(local_manifest, source)
     assert status == "skew"
     assert new_entries == [NEW_ENGINE_REL], f"신규 등재분 미탐지/오탐: {new_entries!r}"
 
@@ -843,7 +862,7 @@ def test_detect_manifest_skew_in_sync_when_manifests_match(pm_update, tmp_path):
     _make_upstream_manifest(source, [SENTINEL_REL])
     local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
-    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    status, new_entries = update_manifest.detect_manifest_skew(local_manifest, source)
     assert status == "in_sync" and new_entries == []
 
 
@@ -855,7 +874,7 @@ def test_detect_manifest_skew_markers_stripped_before_compare(pm_update, tmp_pat
         SENTINEL_REL + "  @render\n", encoding="utf-8")
     local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
-    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    status, new_entries = update_manifest.detect_manifest_skew(local_manifest, source)
     assert status == "in_sync" and new_entries == [], \
         "마커만 다른 동일 경로를 신규 등재분으로 오탐(순수 경로 비교 위반)"
 
@@ -866,7 +885,7 @@ def test_detect_manifest_skew_upstream_missing_fail_soft(pm_update, tmp_path):
     source.mkdir(parents=True, exist_ok=True)
     local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
-    status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
+    status, new_entries = update_manifest.detect_manifest_skew(local_manifest, source)
     assert status == "upstream_missing" and new_entries == []
 
 
@@ -902,14 +921,14 @@ def test_detect_manifest_skew_uses_all_selected_upstream_manifests(
         "@source=templates/second/.project_manager/engine.manifest\n",
         encoding="utf-8",
     )
-    selfheal = pm_update.resolve_manifest_selfheal(dest, source)
+    selfheal = update_manifest.resolve_manifest_selfheal(dest, source)
     assert selfheal["status"] == "diverged"
     assert [p.parents[1].name for p in selfheal["upstream_manifests"]] == [
         "first", "second",
     ]
 
     local_entries = manifest_store.read_manifest(dest_manifest)
-    status, new_entries = pm_update.detect_manifest_skew(
+    status, new_entries = update_manifest.detect_manifest_skew(
         local_entries,
         source,
         upstream_manifests=selfheal["upstream_manifests"],
@@ -938,7 +957,7 @@ def test_main_selfheal_supersedes_skew_suppression(pm_update, tmp_path, monkeypa
     assert "manifest skew" not in out and "억제" not in out, \
         f"읽기 가능한 구형 로컬인데 T-0395 억제가 자기치유로 대체 안 됨: {out!r}"
     assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "amendrev", \
         f"치유 후 정합인데 baseline 미갱신(억제 잔존): {conf.get('upstream.rev')!r}"
 
@@ -958,7 +977,7 @@ def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkey
     assert rc == 0
     out = capsys.readouterr().out
     assert "manifest skew" not in out, f"정합인데 skew 오탐: {out!r}"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "insyncrev7", \
         f"정합 sync 인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
 
@@ -982,7 +1001,7 @@ def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path
     assert rc == 0
     out = capsys.readouterr().out
     assert "fail-soft" in out, f"upstream manifest 부재 fail-soft note 미출력: {out!r}"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "failsoftrev", \
         f"fail-soft 인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
 
@@ -1006,7 +1025,7 @@ def test_main_dry_run_shows_selfheal_not_skew_without_recording(pm_update, tmp_p
         f"dry-run 이 읽기 가능한 구형 로컬을 skew 억제로 오표시: {out!r}"
     assert "자기치유 예정" in out and NEW_ENGINE_REL in out, \
         f"dry-run 이 자기치유 예정을 표시하지 않음: {out!r}"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf, "dry-run 인데 baseline 기록됨(부작용 누출)"
 
 
@@ -1032,7 +1051,7 @@ def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert "manifest skew" not in out and "억제" not in out, \
         f"--target 에서 skew 검출/억제가 발화함(오탐): {out!r}"
-    conf = pm_update._read_local_conf(target_root / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(target_root / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "targetrev1", \
         f"--target 인데 baseline 미갱신(현행 거동 위반): {conf.get('upstream.rev')!r}"
 
@@ -1050,7 +1069,7 @@ def test_resolve_manifest_selfheal_promotes_upstream_on_new_entry(pm_update, tmp
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
     _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL])  # 구형 로컬 manifest.
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "heal"
     assert result["added"] == [NEW_ENGINE_REL] and result["removed"] == []
     assert {str(e) for e in result["manifest"]} == {SENTINEL_REL, NEW_ENGINE_REL}, \
@@ -1066,7 +1085,7 @@ def test_resolve_manifest_selfheal_diverged_when_local_only_paths(pm_update, tmp
     _make_upstream_manifest(source, [SENTINEL_REL])
     _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL, NEW_ENGINE_REL])  # 로컬-전용 경로.
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "diverged" and result["manifest"] is None
     assert result["removed"] == [NEW_ENGINE_REL]
 
@@ -1081,7 +1100,7 @@ def test_resolve_manifest_selfheal_ignores_guest_block_and_heals(pm_update, tmp_
     # dest = 구형 core(SENTINEL) + guest 절(.codex/agents·로컬-전용).
     _write_dest_manifest(tmp_path / "dest", [
         SENTINEL_REL, begin, ".codex/agents    @render @target-owned", end])
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "heal", f"guest 절이 core 비교를 오염(diverged): {result['status']}"
     assert result["added"] == [NEW_ENGINE_REL]
     assert ".codex/agents" not in result["removed"], result["removed"]
@@ -1103,7 +1122,7 @@ def test_plan_engine_manifest_self_prop_no_churn_with_guest_block(pm_update, tmp
         core.rstrip("\n") + "\n\n" + begin
         + "\n.codex/agents    @render @target-owned\n" + end + "\n", encoding="utf-8")
     manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]  # bare self-prop.
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"guest 절 때문에 engine.manifest 가 영구 churn(update): {changes}"
 
@@ -1123,7 +1142,7 @@ def test_plan_manifest_self_prop_no_churn_with_trailing_blank_upstream(pm_update
         core + begin + "\n.codex/agents    @render @target-owned\n" + end + "\n",
         encoding="utf-8")
     manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"트레일링 블랭크 upstream 에서 engine.manifest churn(반복 update): {changes}"
 
@@ -1140,7 +1159,7 @@ def test_copy_manifest_preserving_guest_prunes_promoted_paths(pm_update, tmp_pat
     sp.write_text("# m\n.codex/agents    @render @source=templates/codex/.codex/agents\n",
                   encoding="utf-8")
     dst.write_text("# m\n\n" + guest + "\n", encoding="utf-8")  # old dest: core(no codex) + guest 절.
-    pm_update._copy_manifest_preserving_guest(sp, dst)
+    manifest_store._copy_manifest_preserving_guest(sp, dst)
     ents = manifest_store.read_manifest(dst)
     codex = [e for e in ents if str(e) == ".codex/agents"]
     assert len(codex) == 1, f".codex/agents 이중 등재(전환 후 {len(codex)}개)"
@@ -1158,13 +1177,13 @@ def test_prune_guest_block_ancestor_and_full_promotion(pm_update):
     begin, end = manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END
     guest = begin + "\n.opencode/agents    @render @target-owned\n" + end
     # core 가 상위 `.opencode` 소유 → guest `.opencode/agents` 차감 → 남는 guest 0 → 절 제거(None).
-    assert pm_update._prune_guest_block_owned_by_core(
+    assert manifest_store._prune_guest_block_owned_by_core(
         guest, ".opencode    @render @source=x\n") is None
     # core 무관 → 절 그대로(무차감).
-    assert pm_update._prune_guest_block_owned_by_core(
+    assert manifest_store._prune_guest_block_owned_by_core(
         guest, ".claude/agents    @render\n") == guest
     # guest_block None → None(무동작).
-    assert pm_update._prune_guest_block_owned_by_core(None, ".opencode\n") is None
+    assert manifest_store._prune_guest_block_owned_by_core(None, ".opencode\n") is None
 
 
 # ── guest 마커 세대 하위호환 (T-0571) ────────────────────────────────────────
@@ -1207,17 +1226,17 @@ def test_migrate_legacy_guest_markers_replaces_and_is_idempotent(pm_update):
     """옛 시작 마커 → 현행 리터럴 치환(changed=True) · 현행 입력은 무변경(changed=False)."""
     legacy = (GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 + "\n.codex/agents    @render @target-owned\n"
               + GUEST_END_LITERAL + "\n")
-    migrated, changed = pm_update._migrate_legacy_guest_markers(legacy)
+    migrated, changed = manifest_store._migrate_legacy_guest_markers(legacy)
     assert changed is True
     assert GUEST_BEGIN_LITERAL_CURRENT in migrated
     assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 not in migrated
     assert migrated.endswith("\n"), "트레일링 개행이 사라졌다(멱등 비교가 어긋난다)"
     # 멱등 — 이미 현행이면 재치환 0.
-    again, changed_again = pm_update._migrate_legacy_guest_markers(migrated)
+    again, changed_again = manifest_store._migrate_legacy_guest_markers(migrated)
     assert changed_again is False and again == migrated
     # 마커 자체가 없는 텍스트도 무변경.
     plain = "# m\n.project_manager/tools/board.py\n"
-    assert pm_update._migrate_legacy_guest_markers(plain) == (plain, False)
+    assert manifest_store._migrate_legacy_guest_markers(plain) == (plain, False)
 
 
 def test_copy_manifest_preserving_guest_migrates_legacy_marker(pm_update, tmp_path, capsys):
@@ -1230,7 +1249,7 @@ def test_copy_manifest_preserving_guest_migrates_legacy_marker(pm_update, tmp_pa
         + ".codex/agents    @render @target-owned\n"
         + GUEST_END_LITERAL + "\n", encoding="utf-8")
 
-    pm_update._copy_manifest_preserving_guest(sp, dst)
+    manifest_store._copy_manifest_preserving_guest(sp, dst)
 
     after = dst.read_text(encoding="utf-8")
     assert GUEST_BEGIN_LITERAL_CURRENT in after, "재부착 마커가 현행 리터럴이 아님"
@@ -1239,7 +1258,7 @@ def test_copy_manifest_preserving_guest_migrates_legacy_marker(pm_update, tmp_pa
     assert "guest 절 마커 세대 마이그레이션" in capsys.readouterr().out, \
         "조용한 변환(표기 없음)"
     # 재실행 멱등 — 이미 현행이라 마이그레이션 표기가 다시 뜨지 않는다.
-    pm_update._copy_manifest_preserving_guest(sp, dst)
+    manifest_store._copy_manifest_preserving_guest(sp, dst)
     assert "guest 절 마커 세대 마이그레이션" not in capsys.readouterr().out
 
 
@@ -1258,7 +1277,7 @@ def test_plan_manifest_self_prop_updates_on_legacy_guest_marker(pm_update, tmp_p
         encoding="utf-8")
     manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
 
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         "옛 세대 마커 dest 가 계획에 안 실려 마이그레이션이 영영 도달하지 않는다"
@@ -1289,13 +1308,13 @@ def test_plan_multi_harness_manifest_updates_on_legacy_guest_marker(pm_update, t
         dest, core, GUEST_BEGIN_LITERAL_LEGACY_V1_4_3)
     manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
 
-    changes, _missing = pm_update.plan(
+    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source, manifest, dest_root=dest, manifest_source_text=core, conf=_local_conf_of(pm_update, dest))
 
     assert any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         "합집합 분기에서 옛 세대 마커 dest 가 계획에 안 실림(마이그레이션 미도달)"
 
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
 
     after = manifest_file.read_text(encoding="utf-8")
     assert GUEST_BEGIN_LITERAL_CURRENT in after, "적용 후 마커가 현행 리터럴이 아님"
@@ -1312,7 +1331,7 @@ def test_plan_multi_harness_manifest_no_churn_with_current_marker(pm_update, tmp
     _write_selfprop_dest_manifest(dest, core, GUEST_BEGIN_LITERAL_CURRENT)
     manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
 
-    changes, _missing = pm_update.plan(
+    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source, manifest, dest_root=dest, manifest_source_text=core, conf=_local_conf_of(pm_update, dest))
 
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
@@ -1327,7 +1346,7 @@ def test_resolve_manifest_selfheal_ignores_legacy_guest_block_and_heals(pm_updat
         SENTINEL_REL, GUEST_BEGIN_LITERAL_LEGACY_V1_4_3,
         ".codex/agents    @render @target-owned", GUEST_END_LITERAL])
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
 
     assert result["status"] == "heal", \
         f"옛 세대 guest 절이 core 비교를 오염(diverged): {result['status']}"
@@ -1430,7 +1449,7 @@ def _guest_block_entries(pm_update, manifest: Path) -> dict:
     """dest guest 절 → {경로: ManifestEntry} (테스트 판독 편의)."""
     return {
         str(entry).replace("\\", "/"): entry
-        for entry in pm_update._dest_guest_manifest_entries(manifest.parent.parent)
+        for entry in update_manifest._dest_guest_manifest_entries(manifest.parent.parent)
     }
 
 
@@ -1587,11 +1606,11 @@ def test_infer_guest_flavors_ignores_cross_namespace_shared_paths(pm_update):
     codex_guest = {".codex/agents", ".agents/skills"}
     opencode_guest = {".opencode/agents", ".opencode/pm-instructions.md", ".claude/skills"}
 
-    assert pm_update._infer_guest_flavors(REPO, opencode_guest) == ["opencode"], \
+    assert update_manifest._infer_guest_flavors(REPO, opencode_guest) == ["opencode"], \
         "cross-ns `.claude/skills` 가 claude_code 증거로 오인됐다"
-    assert pm_update._infer_guest_flavors(REPO, codex_guest) == ["codex"]
-    assert pm_update._infer_guest_flavors(REPO, {".claude/agents"}) == ["claude_code"]
-    assert pm_update._infer_guest_flavors(REPO, set()) == []
+    assert update_manifest._infer_guest_flavors(REPO, codex_guest) == ["codex"]
+    assert update_manifest._infer_guest_flavors(REPO, {".claude/agents"}) == ["claude_code"]
+    assert update_manifest._infer_guest_flavors(REPO, set()) == []
 
 
 def test_guest_engine_backfill_resolves_mixed_generation_cohort(pm_update, tmp_path):
@@ -1620,8 +1639,8 @@ def test_guest_engine_backfill_resolves_mixed_generation_cohort(pm_update, tmp_p
         + manifest_rules._GUEST_MANIFEST_END + "\n",
         encoding="utf-8")
 
-    guest_entries = pm_update._dest_guest_manifest_entries(dest)
-    backfill, flavors = pm_update._guest_engine_backfill_entries(
+    guest_entries = update_manifest._dest_guest_manifest_entries(dest)
+    backfill, flavors = update_manifest._guest_engine_backfill_entries(
         dest, REPO, guest_entries)
     paths = {str(entry).replace("\\", "/") for entry in backfill}
 
@@ -1654,8 +1673,8 @@ def test_guest_engine_backfill_cross_namespace_creates_no_foreign_files(
         + manifest_rules._GUEST_MANIFEST_END + "\n",
         encoding="utf-8")
 
-    guest_entries = pm_update._dest_guest_manifest_entries(dest)
-    backfill, flavors = pm_update._guest_engine_backfill_entries(
+    guest_entries = update_manifest._dest_guest_manifest_entries(dest)
+    backfill, flavors = update_manifest._guest_engine_backfill_entries(
         dest, REPO, guest_entries)
 
     assert flavors == ["opencode"], f"cross-ns 행으로 flavor 오인: {flavors}"
@@ -1715,7 +1734,7 @@ def test_guest_source_declarations_do_not_promote_flavor_union(pm_update, tmp_pa
             + manifest_rules._GUEST_MANIFEST_END),
         encoding="utf-8")
 
-    selfheal = pm_update.resolve_manifest_selfheal(dest, framework)
+    selfheal = update_manifest.resolve_manifest_selfheal(dest, framework)
     selected = [p.as_posix() for p in selfheal["upstream_manifests"]]
     assert selected == [
         (framework / "templates" / "claude_code" / ".project_manager"
@@ -1740,7 +1759,7 @@ def test_copy_manifest_preserving_guest_backfills_and_prunes_promoted(pm_update,
         + GUEST_END_LITERAL + "\n",
         encoding="utf-8")
 
-    pm_update._copy_manifest_preserving_guest(
+    manifest_store._copy_manifest_preserving_guest(
         upstream, dest_manifest,
         [".opencode/lib    @target-owned    @source=templates/opencode/.opencode/lib"])
 
@@ -1759,10 +1778,10 @@ def test_copy_manifest_preserving_guest_backfills_and_prunes_promoted(pm_update,
 
 def test_merge_guest_backfill_lines_is_noop_without_block(pm_update):
     """절이 없으면 백필이 절을 새로 만들지 않는다 — 파생은 절의 존재를 전제한다 (⑦ 경계)."""
-    assert pm_update._merge_guest_backfill_lines(None, [".x    @target-owned"]) is None
+    assert manifest_store._merge_guest_backfill_lines(None, [".x    @target-owned"]) is None
     block = (manifest_rules._GUEST_MANIFEST_BEGIN + "\n.a    @render @target-owned\n"
              + manifest_rules._GUEST_MANIFEST_END)
-    assert pm_update._merge_guest_backfill_lines(block, []) == block
+    assert manifest_store._merge_guest_backfill_lines(block, []) == block
 
 
 def test_guest_engine_row_missing_source_skips_with_rc0(
@@ -1834,7 +1853,7 @@ def test_resolve_manifest_selfheal_flavor_source_not_clobbered_by_root(pm_update
     # 채택자(dest) manifest — flavor self-prop(@source)·구형(NEW_ENGINE_REL 미등재).
     _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL, flavor_self])
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "heal", \
         f"flavor 채택자가 flavor upstream 과 자기치유 안 됨(root 대조로 diverged?): {result['status']}"
     assert result["added"] == [NEW_ENGINE_REL]
@@ -1853,12 +1872,12 @@ def test_selected_manifest_order_is_primary_then_declared_flavors_without_selfpr
     manifest = _write_dest_manifest(dest, [])
     manifest.write_text(merged["text"], encoding="utf-8")
 
-    result = pm_update.resolve_manifest_selfheal(dest, REPO)
+    result = update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     assert [path.parents[1].name for path in result["upstream_manifests"]] == [
         "opencode", "claude_code",
     ]
-    pm_update._print_manifest_merge_conflicts(result)
+    update_manifest._print_manifest_merge_conflicts(result)
     err = capsys.readouterr().err
     assert ".project_manager/engine.manifest" not in err
     assert "선언 순서상 첫 flavor" not in err
@@ -1877,7 +1896,7 @@ def test_manifest_merge_conflict_warning_surfaces_real_marker_conflict(
     merged = manifest_store.merge_manifest_sources([first, second])
     assert merged["conflicts"] == [".shared/x"]
 
-    pm_update._print_manifest_merge_conflicts({"merge_conflicts": merged["conflicts"]})
+    update_manifest._print_manifest_merge_conflicts({"merge_conflicts": merged["conflicts"]})
     err = capsys.readouterr().err
     assert "선언 순서상 첫 flavor" in err
     assert ".shared/x" in err
@@ -1931,7 +1950,7 @@ def test_declared_second_flavor_missing_manifest_is_preserved_and_warned(
     )
     second.unlink()
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "upstream_missing"
     assert result["upstream_manifests"] == [first, second], \
@@ -1971,7 +1990,7 @@ def test_declared_manifest_warns_on_undeclared_flavor_tree_without_promoting(
     (dest / ".second").mkdir()
     (dest / ".second" / "a").write_text("frozen\n", encoding="utf-8")
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "in_sync"
     assert result["upstream_manifests"] == [first]
@@ -2025,7 +2044,7 @@ def test_declared_manifest_excludes_guest_paths_but_warns_on_non_guest_file(
     (dest / ".second" / "render").write_text("guest\n", encoding="utf-8")
     (dest / ".second" / "hook").write_text("guest hook\n", encoding="utf-8")
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["upstream_manifests"] == [first], \
         "경고는 자동 승격이 아니다 — 선택 목록은 선언된 flavor 그대로여야 한다"
@@ -2065,13 +2084,13 @@ def test_add_harness_adopter_shape_backfill_silences_frozen_warning(
     (dest / ".codex").mkdir()
     (dest / ".codex" / "pm_orch_codex.py").write_text("# frozen\n", encoding="utf-8")
 
-    backfill, flavors = pm_update._guest_engine_backfill_entries(
-        dest, REPO, pm_update._dest_guest_manifest_entries(dest))
+    backfill, flavors = update_manifest._guest_engine_backfill_entries(
+        dest, REPO, update_manifest._dest_guest_manifest_entries(dest))
     assert flavors == ["codex"], f"구 세대 절에서 flavor 미해소: {flavors}"
     assert ".codex/pm_orch_codex.py" in {str(e).replace("\\", "/") for e in backfill}, \
         "동결됐던 파일이 파생에 없다(채널 부재인데 경고만 사라지면 회귀다)"
 
-    pm_update.resolve_manifest_selfheal(dest, REPO)
+    update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     err = capsys.readouterr().err
     assert "미등재 flavor 파일 관측" not in err, \
@@ -2112,7 +2131,7 @@ def test_frozen_warning_silent_when_all_flavor_paths_are_guest_owned(
     (dest / ".second").mkdir()
     (dest / ".second" / "render").write_text("guest\n", encoding="utf-8")
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["upstream_manifests"] == [first]
     assert "미등재 flavor 파일 관측" not in capsys.readouterr().err, \
@@ -2126,9 +2145,9 @@ def test_frozen_evidence_drops_only_guest_owned_paths(pm_update):
         manifest_rules.ManifestEntry(".second/hook"),
     ]
 
-    assert pm_update._frozen_flavor_evidence(
+    assert update_manifest._frozen_flavor_evidence(
         entries, set(), set(), {".second/render"}) == [".second/hook"]
-    assert pm_update._frozen_flavor_evidence(
+    assert update_manifest._frozen_flavor_evidence(
         entries, set(), set(), {".second"}) is None, \
         "고유 경로 전부가 guest 소유(상위 포함)면 None이어야 한다"
 
@@ -2144,14 +2163,14 @@ def test_frozen_evidence_drops_paths_covered_by_host_core_directory(pm_update):
         manifest_rules.ManifestEntry(".second/stray"),
     ]
 
-    assert pm_update._frozen_flavor_evidence(
+    assert update_manifest._frozen_flavor_evidence(
         entries, set(), {".claude/skills"}, set()) == [".second/stray"], \
         "host core 디렉터리 등재가 덮는 파일이 evidence에 남았다(오탐) — stray만 남아야 한다"
-    assert pm_update._frozen_flavor_evidence(
+    assert update_manifest._frozen_flavor_evidence(
         entries, set(),
         {".claude/skills/pm-dev-delegate/SKILL.md"}, set()) == [".second/stray"], \
         "exact 등재 제외는 그대로 유지돼야 한다"
-    assert pm_update._frozen_flavor_evidence(
+    assert update_manifest._frozen_flavor_evidence(
         entries, set(), set(), set()) == [
             ".claude/skills/pm-dev-delegate/SKILL.md", ".second/stray"], \
         "어느 core 등재로도 안 덮이면 둘 다 evidence다(판정이 무뎌지면 red)"
@@ -2177,7 +2196,7 @@ def test_frozen_warning_silent_for_core_directory_covered_flavor_file(
     shared_skill.parent.mkdir(parents=True)
     shared_skill.write_text("# rendered by .agents/skills\n", encoding="utf-8")
 
-    pm_update.resolve_manifest_selfheal(dest, REPO)
+    update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     err = capsys.readouterr().err
     assert "미등재 flavor 파일 관측" not in err, \
@@ -2187,7 +2206,7 @@ def test_frozen_warning_silent_for_core_directory_covered_flavor_file(
     stray.parent.mkdir(parents=True)
     stray.write_text("# stray\n", encoding="utf-8")
 
-    pm_update.resolve_manifest_selfheal(dest, REPO)
+    update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     err = capsys.readouterr().err
     assert "미등재 flavor 파일 관측" in err, \
@@ -2213,7 +2232,7 @@ def test_claude_only_adopter_shape_stays_quiet_across_repeat_runs(
     skill.write_text("# rendered by .claude/skills\n", encoding="utf-8")
 
     for run in ("초회", "수렴"):
-        result = pm_update.resolve_manifest_selfheal(dest, REPO)
+        result = update_manifest.resolve_manifest_selfheal(dest, REPO)
         assert result["upstream_manifests"] == [claude]
         err = capsys.readouterr().err
         assert "미등재 flavor 파일 관측" not in err, \
@@ -2246,7 +2265,7 @@ def test_declared_single_flavor_without_other_tree_has_no_frozen_warning(
         first.read_text(encoding="utf-8"), encoding="utf-8"
     )
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["upstream_manifests"] == [first]
     assert "미등재 flavor 파일 관측" not in capsys.readouterr().err
@@ -2283,7 +2302,7 @@ def test_unresolvable_source_declaration_disables_legacy_presence_fallback(
         encoding="utf-8",
     )
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["upstream_manifests"] == [first]
     assert second not in result["upstream_manifests"]
@@ -2322,7 +2341,7 @@ def test_legacy_candidate_manifest_non_utf8_is_fail_soft(
     (dest / ".primary" / "a").write_text("installed\n", encoding="utf-8")
     _write_dest_manifest(dest, [".primary/a", MANIFEST_SELF_REL])
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "heal"
     assert result["upstream_manifests"] == [primary]
@@ -2352,7 +2371,7 @@ def test_legacy_exact_path_set_must_match_exactly_one_candidate(
     manifest = _write_dest_manifest(dest, [".shared/a", MANIFEST_SELF_REL])
     before = manifest.read_bytes()
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "legacy_preserved"
     assert result["manifest"] is None
@@ -2399,7 +2418,7 @@ def test_retirement_inverse_exact_match_selects_unique_legacy_flavor_and_heals(
     dest = tmp_path / "dest"
     _write_dest_manifest(dest, [".shared/a", _RETIRE_OLD])
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "heal"
     assert result["upstream_manifests"] == [selected]
@@ -2423,7 +2442,7 @@ def test_retirement_inverse_requires_exactly_one_candidate(
         local.append(".local/unapproved")
     _write_dest_manifest(dest, local)
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "legacy_preserved"
     assert result["manifest"] is None
@@ -2443,7 +2462,7 @@ def test_retirement_filter_keeps_undeclared_local_only_path_diverged(
         dest, [".shared/a", _RETIRE_OLD, ".local/unapproved", selfprop]
     )
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "diverged"
     assert result["upstream_manifests"] == [selected]
@@ -2469,7 +2488,7 @@ def test_declared_flavor_validates_only_selected_retirement_manifests(
         "@source=templates/selected/.project_manager/engine.manifest",
     ])
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "heal"
     assert result["upstream_manifests"] == [selected]
@@ -2502,18 +2521,18 @@ def test_retirement_heals_and_moves_old_when_local_manifest_already_has_new(
     new = dest / _RETIRE_NEW
     new.write_bytes((source / _RETIRE_NEW).read_bytes())
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "heal"
     assert result["added"] == []
     assert result["removed"] == []
     assert result["retired_removed"] == [_RETIRE_OLD]
     assert result["manifest"] is not None
-    changes, missing = pm_update.plan(source, result["manifest"], dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, result["manifest"], dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert missing == [], "검증된 OLD가 계획에 남아 source-missing으로 되돌아갔다"
     assert all(rel != _RETIRE_OLD for rel, *_rest in changes)
-    pm_update.apply(changes)
-    moved = pm_update.retire_manifest_paths(
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
+    moved = retired_paths.retire_manifest_paths(
         dest, source, result["manifest"], [selected], write=True,
     )
     assert not old.exists()
@@ -2541,11 +2560,11 @@ def test_no_local_manifest_rejects_malformed_retirement_before_apply(
     apply_calls = []
     baseline_calls = []
     monkeypatch.setattr(
-        pm_update, "apply",
+        update_render, "apply",
         lambda *args, **kwargs: apply_calls.append((args, kwargs)),
     )
     monkeypatch.setattr(
-        pm_update, "converge_upstream_revs",
+        upstream_revisions, "converge_upstream_revs",
         lambda *args, **kwargs: baseline_calls.append((args, kwargs)) or True,
     )
 
@@ -2579,8 +2598,8 @@ def test_validated_retirement_rejects_unowned_marked_or_missing_replacement(
         replacement.parent.mkdir(parents=True)
         replacement.write_text("new\n", encoding="utf-8")
 
-    with pytest.raises(pm_update.RetiredPathError, match=expected):
-        pm_update.validated_retired_path_directives(source, [manifest])
+    with pytest.raises(retired_paths.RetiredPathError, match=expected):
+        retired_paths.validated_retired_path_directives(source, [manifest])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows symlink 권한과 무관한 POSIX 경계")
@@ -2599,8 +2618,8 @@ def test_validated_retirement_rejects_symlink_replacement(pm_update, tmp_path):
     replacement.parent.mkdir(parents=True, exist_ok=True)
     replacement.symlink_to(target)
 
-    with pytest.raises(pm_update.RetiredPathError, match="symlink/reparse|regular file"):
-        pm_update.validated_retired_path_directives(source, [manifest])
+    with pytest.raises(retired_paths.RetiredPathError, match="symlink/reparse|regular file"):
+        retired_paths.validated_retired_path_directives(source, [manifest])
 
 
 def test_legacy_opencode_proper_subset_does_not_promote_or_rewrite_manifest(
@@ -2619,7 +2638,7 @@ def test_legacy_opencode_proper_subset_does_not_promote_or_rewrite_manifest(
     manifest.write_text("\n".join(local_lines) + "\n", encoding="utf-8")
     before = manifest.read_bytes()
 
-    result = pm_update.resolve_manifest_selfheal(dest, source)
+    result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["status"] == "legacy_preserved"
     assert result["manifest"] is None
@@ -2638,7 +2657,7 @@ def test_frozen_evidence_requires_candidate_exclusive_path(pm_update):
         manifest_rules.ManifestEntry(".first/unique"),
     ]
 
-    evidence = pm_update._frozen_flavor_evidence(
+    evidence = update_manifest._frozen_flavor_evidence(
         entries,
         {".claude/skills", ".second/unique"},
         set(),
@@ -2759,7 +2778,7 @@ def test_pm_home_root_manifest_ignores_three_full_stray_adapter_trees(
     shutil.copytree(REPO / "templates" / "codex" / ".codex", dest / ".codex")
     shutil.copytree(REPO / "templates" / "codex" / ".agents", dest / ".agents")
 
-    result = pm_update.resolve_manifest_selfheal(dest, REPO)
+    result = update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     assert result["status"] == "in_sync"
     assert result["upstream_manifests"] == [
@@ -2777,7 +2796,7 @@ def test_resolve_manifest_selfheal_diverged_on_marker_edit(pm_update, tmp_path):
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])  # root: bare SENTINEL + NEW.
     _write_dest_manifest(tmp_path / "dest", [f"{SENTINEL_REL}    @render"])  # SENTINEL 에 @render 로컬 편집.
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "diverged" and result["manifest"] is None, \
         f"공통 경로 마커 divergence 인데 승격됨(클로버): {result['status']}"
 
@@ -2791,7 +2810,7 @@ def test_resolve_manifest_selfheal_in_sync_when_identical(pm_update, tmp_path):
     (tmp_path / "dest" / ".project_manager" / "engine.manifest").write_text(
         SENTINEL_REL + "\n", encoding="utf-8")
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "in_sync" and result["manifest"] is None
 
 
@@ -2801,7 +2820,7 @@ def test_resolve_manifest_selfheal_upstream_missing_fail_soft(pm_update, tmp_pat
     source.mkdir(parents=True, exist_ok=True)
     _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL])
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "upstream_missing" and result["manifest"] is None
 
 
@@ -2811,7 +2830,7 @@ def test_resolve_manifest_selfheal_no_local_manifest(pm_update, tmp_path):
     _make_upstream_manifest(source, [SENTINEL_REL])
     (tmp_path / "dest").mkdir(parents=True, exist_ok=True)  # dest manifest 없음.
 
-    result = pm_update.resolve_manifest_selfheal(tmp_path / "dest", source)
+    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
     assert result["status"] == "no_local" and result["manifest"] is None
 
 
@@ -2843,7 +2862,7 @@ def test_main_selfheal_reaches_new_entry_in_one_run(pm_update, tmp_path, monkeyp
     out = capsys.readouterr().out
     assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
     assert "manifest skew" not in out, f"치유 후에도 skew 발화(정합 위반): {out!r}"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "healedrev", \
         f"치유 후 정합인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
 
@@ -2867,7 +2886,7 @@ def test_main_dry_run_shows_selfheal_without_side_effects(pm_update, tmp_path, m
     assert not (fake_repo / NEW_ENGINE_REL).exists(), "dry-run 인데 신규 파일 복사됨(부작용)"
     healed = (fake_repo / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
     assert NEW_ENGINE_REL not in healed, "dry-run 인데 로컬 manifest 갱신됨(부작용)"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf, "dry-run 인데 baseline 기록됨(부작용)"
 
 
@@ -2937,7 +2956,7 @@ def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
         f"flavor 채택자가 root-only 경로를 skew 오탐(대조 기준 불일치): {out!r}"
     assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
     assert (fake_repo / NEW_ENGINE_REL).exists(), "flavor 자기치유가 신규 파일 미도달"
-    conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "flavorrev", \
         f"flavor 치유 후 정합인데 baseline 미갱신(root skew 오탐 억제?): {conf.get('upstream.rev')!r}"
 
@@ -3303,15 +3322,15 @@ def test_self_location_mixed_absent_engine_missing_wins(
 # 렌더를 하며 claude/opencode는 byte-copy다.
 
 def _spy_render_enabled(pm_update, monkeypatch, captured):
-    """pm_update.plan 을 감싸 main() 이 전달한 render_enabled 키워드를 포착한다(실 plan 위임)."""
-    real_plan = pm_update.plan
+    """update_plan.plan 을 감싸 main() 이 전달한 render_enabled 키워드를 포착한다(실 plan 위임)."""
+    real_plan = update_plan.plan
 
     def spy(*args, **kwargs):
         captured["render_enabled"] = kwargs.get("render_enabled")
         captured["entry_notation_template"] = kwargs.get("entry_notation_template")
         return real_plan(*args, **kwargs)
 
-    monkeypatch.setattr(pm_update, "plan", spy)
+    monkeypatch.setattr(update_plan, "plan", spy)
 
 
 def test_main_target_passes_render_disabled(pm_update, tmp_path, monkeypatch):
@@ -3365,7 +3384,7 @@ def test_target_export_conditionally_renders_only_skill_entry_notation(
     dest = tmp_path / f"dest-{template_dir}"
     manifest = [manifest_rules.ManifestEntry(".claude/skills", render=True)]
 
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         manifest,
         dest_root=dest,
@@ -3375,7 +3394,7 @@ def test_target_export_conditionally_renders_only_skill_entry_notation(
     assert not missing and len(changes) == 1
     assert changes[0][2].render is False
     assert changes[0][2].entry_notation_template == notation_template
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
 
     rendered = (dest / ".claude/skills/pm-bootstrap/SKILL.md").read_text(encoding="utf-8")
     assert f"# {expected} — entry" in rendered
@@ -3394,7 +3413,7 @@ def test_target_export_wiring_sensitivity_identity_renderer_leaves_wrong_prefix(
     dest = tmp_path / "dest"
     monkeypatch.setattr(render_rules, "render_skill_entry_notation", lambda text, _template, **_kwargs: text)
 
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         [manifest_rules.ManifestEntry(".claude/skills", render=True)],
         dest_root=dest,
@@ -3402,7 +3421,7 @@ def test_target_export_wiring_sensitivity_identity_renderer_leaves_wrong_prefix(
         entry_notation_template="codex", conf=_local_conf_of(pm_update, dest),
     )
     assert not missing
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     rendered = (dest / ".claude/skills/pm-bootstrap/SKILL.md").read_text(encoding="utf-8")
     assert "/pm-bootstrap" in rendered and "$pm-bootstrap" not in rendered
 
@@ -3426,7 +3445,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
     dst.parent.mkdir(parents=True)
     dst.write_bytes(b"/pm-bootstrap\r\n")
 
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
@@ -3437,7 +3456,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
 
     # 내용이 실제로 바뀌면 update 로 잡히고, 기록은 dest 의 CRLF 표기를 유지한다.
     src.write_bytes(b"/pm-bootstrap\nsecond line\n")
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
@@ -3446,7 +3465,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
     assert not missing and [(rel, kind) for rel, _, _, kind in changes] == [
         ("card.md", "update")
     ]
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert dst.read_bytes() == b"/pm-bootstrap\r\nsecond line\r\n"
 
 
@@ -3459,7 +3478,7 @@ def test_render_write_uses_source_notation_for_new_destination(pm_update, tmp_pa
     _track_source_tree(source)
     dest = tmp_path / "dest"
 
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
@@ -3468,7 +3487,7 @@ def test_render_write_uses_source_notation_for_new_destination(pm_update, tmp_pa
     assert not missing and [(rel, kind) for rel, _, _, kind in changes] == [
         ("card.md", "new")
     ]
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert (dest / "card.md").read_bytes() == b"/pm-bootstrap\r\ncard\r\n"
 
 
@@ -3483,14 +3502,14 @@ def test_render_comparison_treats_non_utf8_destination_as_update(pm_update, tmp_
     dst.parent.mkdir(parents=True)
     dst.write_bytes(b"\xff\xfe\x00")
 
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
         entry_notation_template="codex", conf=_local_conf_of(pm_update, dest),
     )
     assert not missing and len(changes) == 1 and changes[0][3] == "update"
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert dst.read_bytes() == b"$pm-bootstrap\n"
 
 
@@ -3519,27 +3538,27 @@ def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
 
     entries = manifest_store.merge_manifest_sources([first, second])["entries"]
     broken_dest = tmp_path / "broken-dest"
-    broken_changes, _ = pm_update.plan(
+    broken_changes, _ = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         entries,
         dest_root=broken_dest,
         entry_notation_template="opencode",  # 옛 first-manifest 전역 적용
         conf=_local_conf_of(pm_update, broken_dest),
     )
-    pm_update.apply(broken_changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), broken_changes)
     assert (broken_dest / ".agents/skills/pm-bootstrap/SKILL.md").read_text(
         encoding="utf-8"
     ).startswith("# /pm-bootstrap"), "전역 flavor 파손 재현이 공허함"
 
     dest = tmp_path / "dest"
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         entries,
         dest_root=dest,
         entry_notation_templates=contexts, conf=_local_conf_of(pm_update, dest),
     )
     assert not missing
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert (dest / ".claude/skills/pm-bootstrap/SKILL.md").read_text(
         encoding="utf-8"
     ).startswith("# /pm-bootstrap")
@@ -3566,14 +3585,14 @@ def test_multi_harness_shared_path_combines_selected_flavors(pm_update, tmp_path
     assert contexts == {
         ".project_manager/wiki/pm_role.md": ("codex", "opencode")
     }
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         source,
         manifest_store.merge_manifest_sources([first, second])["entries"],
         dest_root=tmp_path / "dest",
         entry_notation_templates=contexts, conf=_local_conf_of(pm_update, tmp_path / "dest"),
     )
     assert not missing
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert (tmp_path / "dest" / ".project_manager" / "wiki" / "pm_role.md").read_text(
         encoding="utf-8"
     ) == (
@@ -3692,7 +3711,7 @@ def test_domain_template_planned_as_managed(pm_update, tmp_path):
     _track_source_tree(src)
 
     # manifest 에 domain/_template.md 만 둔 최소 plan — 동기 대상 인식만 검증.
-    changes, missing = pm_update.plan(src, [DOMAIN_TEMPLATE_REL], dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, [DOMAIN_TEMPLATE_REL], dest_root=dst, conf=_local_conf_of(pm_update, dst))
 
     assert missing == [], "domain/_template.md 가 source 에서 missing 으로 잡힘"
     planned = {rel: kind for rel, _sp, _dst, kind in changes}
@@ -3905,7 +3924,7 @@ def test_plan_specific_file_source_overrides_shared_directory_source(pm_update, 
     ]))
     _track_source_tree(source)
 
-    changes, missing = pm_update.plan(source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     assert [(rel, src, kind) for rel, src, _dst, kind in changes] == [
@@ -3931,7 +3950,7 @@ def test_plan_missing_specific_override_never_falls_back_to_shared_skill(pm_upda
     ]))
     _track_source_tree(source)
 
-    changes, missing = pm_update.plan(source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert changes == [], "specific source 부재 때 Claude shared skill로 silent fallback 하면 안 됨"
     assert missing == [override_dest]
@@ -3958,7 +3977,7 @@ def test_plan_specific_override_is_idempotent_not_replaced_by_parent(pm_update, 
     ]))
     _track_source_tree(source)
 
-    changes, missing = pm_update.plan(source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     assert changes == []
@@ -4221,7 +4240,7 @@ def test_summarize_normal_splits_engine_and_other(pm_update, tmp_path):
             "D\t.project_manager/wiki/status.md",   # other
         ],
     )
-    s = pm_update.summarize_upstream_changes(source, "base000000", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "base000000", manifest, git_runner=runner)
     assert s["status"] == "ok"
     assert s["head"] == "abcdef1234567890"
     assert s["count"] == 2
@@ -4258,7 +4277,7 @@ def test_summarize_classifies_source_mapped_entry_as_engine(pm_update, tmp_path)
             "M\ttemplates/opencode/.opencode/agents/x.md",     # 미등재 매핑 → other
         ],
     )
-    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "base", manifest, git_runner=runner)
     engine_paths = {p for _c, p in s["engine"]}
     assert engine_paths == {
         "templates/claude_code/.claude/ctx_guard.py",
@@ -4278,7 +4297,7 @@ def test_path_under_manifest_covers_shipped_source_entries(pm_update):
     assert mapped, f"출하 manifest 에 @source 엔트리가 없다(픽스처 전제 붕괴): {shipped}"
     misclassified = [
         e.source_rel for e in mapped
-        if not pm_update._path_under_manifest(e.source_rel, manifest)
+        if not upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), e.source_rel, manifest)
     ]
     assert not misclassified, \
         f"출하 @source 엔트리의 상류 경로가 manifest 밖으로 오분류: {misclassified}"
@@ -4290,11 +4309,11 @@ def test_path_under_manifest_bare_entry_unchanged(pm_update, tmp_path):
         ".project_manager/tools/board.py",   # 파일 항목
         ".claude/agents",                    # 디렉토리 항목
     ], tmp_path)
-    assert pm_update._path_under_manifest(".project_manager/tools/board.py", manifest)
-    assert pm_update._path_under_manifest(".claude/agents/x.md", manifest)
-    assert not pm_update._path_under_manifest("README.md", manifest)
+    assert upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), ".project_manager/tools/board.py", manifest)
+    assert upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), ".claude/agents/x.md", manifest)
+    assert not upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), "README.md", manifest)
     # bare 엔트리는 source 좌표가 dest 와 같으므로 templates/ 경로가 새로 딸려오지 않는다.
-    assert not pm_update._path_under_manifest(
+    assert not upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO),
         "templates/claude_code/.claude/agents/x.md", manifest)
 
 
@@ -4314,14 +4333,14 @@ def test_path_under_manifest_respects_specific_source_override(pm_update, tmp_pa
         f"{override_dest}    @render @source={override_source}",
     ], tmp_path)
     # ① override 가 소유하는 파일의 **상위 source** 변경 — 그 파일은 override 에서 오므로 비분류.
-    assert not pm_update._path_under_manifest(
+    assert not upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO),
         f"{parent_source}/pm-dev-delegate/SKILL.md", manifest), \
         "override 된 경로인데 상위 항목 source 변경을 엔진 영향으로 과분류"
     # ② override 자신의 source 변경 — 그 파일의 실제 공급원이므로 분류.
-    assert pm_update._path_under_manifest(override_source, manifest), \
+    assert upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), override_source, manifest), \
         "override 자신의 source 변경이 엔진 영향에서 누락"
     # ③ override 가 없는 형제 경로는 상위 항목이 그대로 공급 — 분류(과교정 방지).
-    assert pm_update._path_under_manifest(f"{parent_source}/pm-adr/SKILL.md", manifest)
+    assert upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), f"{parent_source}/pm-adr/SKILL.md", manifest)
 
 
 def test_path_under_manifest_shipped_codex_override_not_overclassified(pm_update):
@@ -4343,9 +4362,9 @@ def test_path_under_manifest_shipped_codex_override_not_overclassified(pm_update
             other for other in manifest
             if str(other) != str(override) and str(override).startswith(str(other) + "/"))
         via_parent = str(override).replace(str(parent), _source_root_rel_of(parent), 1)
-        assert not pm_update._path_under_manifest(via_parent, manifest), \
+        assert not upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), via_parent, manifest), \
             f"상위 항목 source 좌표({via_parent})가 override 된 파일 때문에 과분류"
-        assert pm_update._path_under_manifest(override.source_rel, manifest), \
+        assert upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), override.source_rel, manifest), \
             f"override 자신의 source({override.source_rel})가 엔진 영향에서 누락"
 
 
@@ -4359,13 +4378,13 @@ def test_path_under_manifest_mapped_entry_ignores_dest_coordinate(pm_update, tmp
         ".codex/agents    @render @source=templates/codex/.codex/agents",
         ".project_manager/tools/board.py",
     ], tmp_path)
-    assert pm_update._path_under_manifest(
+    assert upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO),
         "templates/codex/.codex/agents/reviewer.md", manifest), \
         "매핑 엔트리의 상류 좌표가 엔진 영향에서 누락"
-    assert not pm_update._path_under_manifest(".codex/agents/reviewer.md", manifest), \
+    assert not upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), ".codex/agents/reviewer.md", manifest), \
         "매핑 엔트리의 dest 좌표를 엔진 영향으로 과분류(계획이 읽지 않는 경로)"
     # bare 엔트리는 dest 좌표가 곧 읽기 좌표 — 회귀 없음.
-    assert pm_update._path_under_manifest(".project_manager/tools/board.py", manifest)
+    assert upstream_changes._path_under_manifest(pm_paths.home_at(pm_update.REPO), ".project_manager/tools/board.py", manifest)
 
 
 def _source_root_rel_of(entry) -> str:
@@ -4379,7 +4398,7 @@ def test_summarize_head_equals_baseline_empty_log(pm_update, tmp_path):
     source.mkdir()
     manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"], tmp_path)
     runner = _make_fake_git_runner(head="samehead0000", log_lines=[], diff_lines=[])
-    s = pm_update.summarize_upstream_changes(source, "samehead0000", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "samehead0000", manifest, git_runner=runner)
     assert s["status"] == "up_to_date"
     assert s["count"] == 0
     assert s["engine"] == [] and s["other"] == []
@@ -4391,7 +4410,7 @@ def test_summarize_baseline_unreachable(pm_update, tmp_path):
     source.mkdir()
     manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"], tmp_path)
     runner = _make_fake_git_runner(baseline_reachable=False)
-    s = pm_update.summarize_upstream_changes(source, "gonerev00000", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "gonerev00000", manifest, git_runner=runner)
     assert s["status"] == "baseline_unreachable"
     # 도달불가면 log/diff 집계는 하지 않는다(early-return).
     assert s["count"] == 0
@@ -4408,7 +4427,7 @@ def test_summarize_rename_code_first_letter_and_new_path(pm_update, tmp_path):
         log_lines=["aaa renamed tool"],
         diff_lines=["R100\t.project_manager/tools/old.py\t.project_manager/tools/board.py"],
     )
-    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "base", manifest, git_runner=runner)
     assert ("R", ".project_manager/tools/board.py") in s["engine"]
 
 
@@ -4419,7 +4438,7 @@ def test_summarize_empty_manifest_all_other(pm_update, tmp_path):
     runner = _make_fake_git_runner(
         head="h", log_lines=["x commit"],
         diff_lines=["M\t.project_manager/tools/board.py"])
-    s = pm_update.summarize_upstream_changes(source, "base", [], git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "base", [], git_runner=runner)
     assert s["engine"] == []
     assert ("M", ".project_manager/tools/board.py") in s["other"]
 
@@ -4439,7 +4458,7 @@ def test_summarize_log_failure_surfaces(pm_update, tmp_path):
             return 128, "fatal: bad revision"  # log 호출 실패
         return 1, "unexpected"
 
-    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "base", manifest, git_runner=runner)
     assert s["status"] == "summary_failed"
     # 빈 결과를 "변경 0"으로 오판하지 않게 — count 0 이어도 status 로 실패를 구분한다.
     assert s["engine"] == [] and s["other"] == []
@@ -4462,7 +4481,7 @@ def test_summarize_diff_failure_surfaces(pm_update, tmp_path):
             return 128, "fatal: diff failed"  # diff 호출 실패
         return 1, "unexpected"
 
-    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "base", manifest, git_runner=runner)
     assert s["status"] == "summary_failed"
 
 
@@ -4636,7 +4655,7 @@ def test_changes_does_not_sync(pm_update, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     called = {"apply": False}
-    monkeypatch.setattr(pm_update, "apply", lambda *a, **k: called.__setitem__("apply", True))
+    monkeypatch.setattr(update_render, "apply", lambda *a, **k: called.__setitem__("apply", True))
 
     runner = _make_fake_git_runner(
         head="h", log_lines=["a x"], diff_lines=["M\t.project_manager/tools/board.py"])
@@ -4742,7 +4761,7 @@ def _changes_engine_paths(out: str) -> set[str]:
 def _dry_run_plan_targets(pm_update, monkeypatch) -> set[str]:
     """같은 픽스처에서 dry-run 이 실제로 계획한 대상 집합 — plan 을 감싸 산출을 포획한다."""
     recorded: dict[str, set[str]] = {}
-    real_plan = pm_update.plan
+    real_plan = update_plan.plan
 
     def spy_plan(*args, **kwargs):
         changes, missing = real_plan(*args, **kwargs)
@@ -4750,9 +4769,9 @@ def _dry_run_plan_targets(pm_update, monkeypatch) -> set[str]:
             str(rel).replace("\\", "/") for rel, _sp, _dst, _kind in changes}
         return changes, missing
 
-    monkeypatch.setattr(pm_update, "plan", spy_plan)
+    monkeypatch.setattr(update_plan, "plan", spy_plan)
     assert pm_update.main(["--dry-run"]) == 0
-    monkeypatch.setattr(pm_update, "plan", real_plan)
+    monkeypatch.setattr(update_plan, "plan", real_plan)
     return recorded["targets"]
 
 
@@ -4860,7 +4879,7 @@ def test_changes_matches_plan_in_legacy_preserved_cohort(
     shared_rel = ".project_manager/tools/__pm_update_shared__.py"
     fake_repo, source = _legacy_preserved_preview_fixture(
         pm_update, tmp_path, monkeypatch, shared_rel)
-    assert pm_update.resolve_manifest_selfheal(fake_repo, source)["status"] \
+    assert update_manifest.resolve_manifest_selfheal(fake_repo, source)["status"] \
         == "legacy_preserved", "픽스처가 legacy_preserved 를 만들지 못했다(전제 붕괴)"
     capsys.readouterr()  # 픽스처 검증이 낸 경고는 비운다.
 
@@ -5072,7 +5091,7 @@ def test_retired_manifest_files_reverses_source_remap(pm_update, tmp_path):
         ".codex/agents    @source=templates/codex/.codex/agents",
     ], tmp_path)
 
-    retired = pm_update._retired_manifest_files(source, manifest, dest, set())
+    retired = update_manifest._retired_manifest_files(source, manifest, dest, set())
 
     assert retired == [".codex/agents/retired.md"], \
         f"@source 역방향 매핑 실패(상류가 공급하는 파일까지 은퇴로 오보?): {retired}"
@@ -5103,10 +5122,10 @@ def test_retired_manifest_files_skips_target_owned_and_supplied_paths(pm_update,
     ], tmp_path)
 
     # keep.md 는 상류에 없지만 계획 인벤토리(dest_map)에 있으면 상류가 공급하는 파일이다.
-    assert pm_update._retired_manifest_files(
+    assert update_manifest._retired_manifest_files(
         source, manifest, dest, {f"{RETIRED_DIR_REL}/keep.md"}) == []
     # dest_map 이 비면 그때만 후보 — target-owned 항목은 어느 경우에도 후보가 아니다.
-    assert pm_update._retired_manifest_files(source, manifest, dest, set()) == [
+    assert update_manifest._retired_manifest_files(source, manifest, dest, set()) == [
         f"{RETIRED_DIR_REL}/keep.md"
     ]
 
@@ -5136,13 +5155,13 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
         ".opencode/lib    @target-owned",
     ], tmp_path)
 
-    retired = pm_update._retired_manifest_files(source, manifest, dest, set())
+    retired = update_manifest._retired_manifest_files(source, manifest, dest, set())
 
     assert retired == [
         f"{RETIRED_DIR_REL}/a.md", f"{RETIRED_DIR_REL}/nested/b.md",
     ], f"상류 디렉토리 통째 소멸 시 dest 잔존이 누락됨: {retired}"
     # 계획이 공급하는 좌표는 여전히 접힌다(제외 규칙 우선순위 유지).
-    assert pm_update._retired_manifest_files(
+    assert update_manifest._retired_manifest_files(
         source, manifest, dest, {f"{RETIRED_DIR_REL}/a.md"}) == [
         f"{RETIRED_DIR_REL}/nested/b.md"
     ]
@@ -5165,13 +5184,13 @@ def test_retired_manifest_files_skips_deleted_but_indexed_paths(pm_update, tmp_p
     _track_source_tree(dest)  # 두 파일 모두 index 에 등록.
     manifest = _manifest_entries(pm_update, [RETIRED_DIR_REL], tmp_path)
 
-    assert sorted(pm_update._retired_manifest_files(source, manifest, dest, set())) == [
+    assert sorted(update_manifest._retired_manifest_files(source, manifest, dest, set())) == [
         f"{RETIRED_DIR_REL}/deleted.md", f"{RETIRED_DIR_REL}/kept.md",
     ], "픽스처 전제 붕괴 — 두 파일 모두 후보여야 한다"
 
     deleted.unlink()  # working tree 에서만 삭제(index 엔 잔존).
 
-    assert pm_update._retired_manifest_files(source, manifest, dest, set()) == [
+    assert update_manifest._retired_manifest_files(source, manifest, dest, set()) == [
         f"{RETIRED_DIR_REL}/kept.md"
     ], "index 에만 남은 삭제분이 은퇴 후보로 보고됐다(디스크 잔존물 없음)"
 
@@ -5276,10 +5295,10 @@ def test_changes_prints_retired_report_for_dangling_pointer(
 
 def test_retired_report_caps_listing_with_remainder_count(pm_update, capsys):
     """은퇴 후보 나열은 상한을 두되 건수는 정확히 알린다 (suggestion 채택)."""
-    limit = pm_update._RETIRED_REPORT_LIST_LIMIT
+    limit = update_manifest._RETIRED_REPORT_LIST_LIMIT
     retired = [f"adapter/f{index:03d}.md" for index in range(limit + 7)]
 
-    pm_update._print_retired_manifest_files(retired)
+    update_manifest._print_retired_manifest_files(retired)
 
     out = capsys.readouterr().out
     assert f"상류 부재 파일 {limit + 7}건" in out, "총 건수가 잘렸다(정보 손실)"
@@ -5307,7 +5326,7 @@ def test_retired_scan_does_not_leak_repo_files_fallback_warning(
         "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
     )
 
-    assert pm_update._retired_manifest_files(source, manifest, dest, set()) == [
+    assert update_manifest._retired_manifest_files(source, manifest, dest, set()) == [
         f"{RETIRED_DIR_REL}/retired.md"
     ], "폴백 억제가 열거 자체를 죽였다(보고 0)"
     leaked = [w for w in recwarn.list
@@ -5334,11 +5353,11 @@ def test_retired_planned_filter_uses_dest_coordinates_only(pm_update, tmp_path):
 
     # dest 좌표만 담긴 인벤토리 — 잔존물은 그대로 후보다.
     dest_only = {".codex/agents/reviewer.md"}
-    assert pm_update._retired_manifest_files(source, manifest, dest, dest_only) == [
+    assert update_manifest._retired_manifest_files(source, manifest, dest, dest_only) == [
         ".codex/agents/retired.md"
     ]
     # dest 좌표에 잔존물이 있으면(=상류가 공급) 후보에서 빠진다 — 필터 자체는 살아 있다.
-    assert pm_update._retired_manifest_files(
+    assert update_manifest._retired_manifest_files(
         source, manifest, dest, dest_only | {".codex/agents/retired.md"}) == []
 
 
@@ -5391,8 +5410,8 @@ def test_retired_path_parser_rejects_duplicate_conflict_cycle_and_escape(
     ]
     for text, expected in invalid:
         manifest.write_text(text, encoding="utf-8")
-        with pytest.raises(pm_update.RetiredPathError, match=expected):
-            pm_update.parse_retired_path_directives(manifest)
+        with pytest.raises(retired_paths.RetiredPathError, match=expected):
+            retired_paths.parse_retired_path_directives(manifest)
 
 
 def test_retired_path_dry_run_accepts_planned_new_but_changes_zero_requires_hash(
@@ -5402,7 +5421,7 @@ def test_retired_path_dry_run_accepts_planned_new_but_changes_zero_requires_hash
     )
     source_new = source / _RETIRED_REVIEWER_NEW
 
-    planned = pm_update.retire_manifest_paths(
+    planned = retired_paths.retire_manifest_paths(
         dest, source, manifest, [source_manifest], write=False,
         prospective_replacements={_RETIRED_REVIEWER_NEW: source_new},
     )
@@ -5410,8 +5429,8 @@ def test_retired_path_dry_run_accepts_planned_new_but_changes_zero_requires_hash
     assert planned and planned[0][0] == _RETIRED_REVIEWER_OLD
     assert old.read_bytes() == b"locally modified old reviewer\n"
     assert not (dest / ".pm_import_backups").exists(), "dry-run이 backup 디렉터리를 쓸"
-    with pytest.raises(pm_update.RetiredPathError, match="destination replacement"):
-        pm_update.retire_manifest_paths(
+    with pytest.raises(retired_paths.RetiredPathError, match="destination replacement"):
+        retired_paths.retire_manifest_paths(
             dest, source, manifest, [source_manifest], write=False,
         )
 
@@ -5425,7 +5444,7 @@ def test_retired_path_moves_modified_old_bytes_and_mode_then_is_idempotent(
     if posix_mode_supported():
         old.chmod(0o751)
 
-    moved = pm_update.retire_manifest_paths(
+    moved = retired_paths.retire_manifest_paths(
         dest, source, manifest, [source_manifest], write=True,
     )
 
@@ -5435,7 +5454,7 @@ def test_retired_path_moves_modified_old_bytes_and_mode_then_is_idempotent(
     assert backup.read_bytes() == original
     if posix_mode_supported():
         assert stat.S_IMODE(backup.stat().st_mode) == 0o751
-    assert pm_update.retire_manifest_paths(
+    assert retired_paths.retire_manifest_paths(
         dest, source, manifest, [source_manifest], write=True,
     ) == []
 
@@ -5446,8 +5465,8 @@ def test_retired_path_hash_or_symlink_failure_keeps_old_and_writes_no_backup(
         pm_update, tmp_path,
     )
     (dest / _RETIRED_REVIEWER_NEW).write_bytes(b"wrong generation\n")
-    with pytest.raises(pm_update.RetiredPathError, match="hash 불일치"):
-        pm_update.retire_manifest_paths(
+    with pytest.raises(retired_paths.RetiredPathError, match="hash 불일치"):
+        retired_paths.retire_manifest_paths(
             dest, source, manifest, [source_manifest], write=True,
         )
     assert old.is_file()
@@ -5458,8 +5477,8 @@ def test_retired_path_hash_or_symlink_failure_keeps_old_and_writes_no_backup(
     )
     old.unlink()
     old.symlink_to(source / _RETIRED_REVIEWER_NEW)
-    with pytest.raises(pm_update.RetiredPathError, match="symlink/reparse"):
-        pm_update.retire_manifest_paths(
+    with pytest.raises(retired_paths.RetiredPathError, match="symlink/reparse"):
+        retired_paths.retire_manifest_paths(
             dest, source, manifest, [source_manifest], write=True,
         )
     assert old.is_symlink()
@@ -5476,7 +5495,7 @@ def test_retired_path_os_replace_failure_keeps_old_and_surfaces_error(
 
     monkeypatch.setattr(pm_update.os, "replace", blocked_replace)
     with pytest.raises(PermissionError, match="open handle"):
-        pm_update.retire_manifest_paths(
+        retired_paths.retire_manifest_paths(
             dest, source, manifest, [source_manifest], write=True,
         )
     assert old.is_file()
@@ -5486,12 +5505,12 @@ def test_retired_path_blocked_backup_keeps_old(pm_update, tmp_path):
     source, dest, source_manifest, manifest, old = _retired_path_fixture(
         pm_update, tmp_path,
     )
-    date_root = dest / ".pm_import_backups" / pm_update.datetime.date.today().isoformat()
+    date_root = dest / ".pm_import_backups" / datetime.date.today().isoformat()
     date_root.parent.mkdir(parents=True)
     date_root.write_text("backup path blocker\n", encoding="utf-8")
 
     with pytest.raises(OSError):
-        pm_update.retire_manifest_paths(
+        retired_paths.retire_manifest_paths(
             dest, source, manifest, [source_manifest], write=True,
         )
     assert old.is_file()
@@ -5506,7 +5525,7 @@ def test_retired_path_main_failure_suppresses_baseline(pm_update, tmp_path, monk
     monkeypatch.setattr(pm_update, "REPO", dest)
     baseline_calls = []
     monkeypatch.setattr(
-        pm_update, "converge_upstream_revs",
+        upstream_revisions, "converge_upstream_revs",
         lambda *a, **k: baseline_calls.append((a, k)) or True,
     )
     monkeypatch.setattr(
@@ -5544,7 +5563,7 @@ def test_retired_path_main_dry_run_predicts_install_then_changes_zero_retires(
     assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert "퇴역 예정" in preview and _RETIRED_REVIEWER_OLD in preview
-    monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *a, **k: False)
+    monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *a, **k: False)
     assert pm_update.main(["--from", str(source)]) == 0
     assert not old.exists()
     backups = list((dest / ".pm_import_backups").glob(
@@ -5638,7 +5657,7 @@ def test_v1711_copy_second_full_sync_installs_new_and_retires_old(
     source, dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "second")
     # RUN1 이 배달한 새 updater 가 신 manifest 로 계획하는 상태(= 2회차 진입 형상).
     _write_dest_manifest(dest, _V1711_NEW_MANIFEST)
-    monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *a, **k: False)
+    monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *a, **k: False)
 
     rc = pm_update.main(["--from", str(source)])
 
@@ -5687,7 +5706,7 @@ def test_summarize_rename_inside_manifest_keeps_new_path_as_engine(pm_update, tm
         diff_lines=["R100\t.project_manager/tools/old.py\t.project_manager/tools/new.py"],
     )
 
-    s = pm_update.summarize_upstream_changes(source, "base", manifest, git_runner=runner)
+    s = upstream_changes.summarize_upstream_changes(pm_paths.home_at(pm_update.REPO), source, "base", manifest, git_runner=runner)
 
     assert ("R", ".project_manager/tools/new.py") in s["engine"]
     assert ("R", ".project_manager/tools/old.py") in s["removed_upstream"]
@@ -5785,7 +5804,7 @@ def test_plan_writes_template_to_board_when_separated(pm_update, tmp_path):
     _make_board_separated(dest)
 
     manifest = manifest_store.read_manifest(source / ".project_manager" / "engine.manifest")
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     rels = [c[0] for c in changes]
@@ -5806,7 +5825,7 @@ def test_plan_writes_template_to_wiki_when_legacy(pm_update, tmp_path):
     (dest / ".project_manager").mkdir(parents=True)  # board/ 없음 = legacy
 
     manifest = manifest_store.read_manifest(source / ".project_manager" / "engine.manifest")
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     rels = [c[0] for c in changes]
@@ -5829,7 +5848,7 @@ def test_plan_template_already_at_board_no_change(pm_update, tmp_path):
     board_tmpl.write_text((source / _TEMPLATE_REL).read_text(encoding="utf-8"), encoding="utf-8")
 
     manifest = manifest_store.read_manifest(source / ".project_manager" / "engine.manifest")
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     assert changes == [], f"board 위치에 동일 템플릿이 있는데 변경이 떴다(idempotent 깨짐): {changes}"
@@ -5936,12 +5955,12 @@ def test_self_update_propagates_engine_safety_hook_via_source_remap(pm_update, t
 
     # plan: dest=adopter·render_enabled=True(hook 은 .sh → @render 없어도 byte-copy). @source 라
     #   source_root/src_rel 읽고 dest 엔 dst_rel 로 기록(remap·root 어댑터엔 ctx 훅 부재 비대칭 해소).
-    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
     assert not missing, f"@source 소스가 upstream 에 실재하는데 missing(rc2 위험): {missing}"
     assert [c[0] for c in changes] == [dst_rel], f"dest remap 경로 불일치: {[c[0] for c in changes]}"
 
     # apply → 채택자 frozen 사본이 엔진 NEW 로 덮인다(전파 착지·frozen 근절 실증).
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     landed = frozen.read_text(encoding="utf-8")
     assert "NEW hard-stop safety fix" in landed, "엔진 safety-훅 변경이 채택자에 미전파(frozen 잔존)"
     assert "OLD frozen hook" not in landed, "채택자 frozen 사본이 엔진 NEW 로 덮이지 않음"
@@ -5966,10 +5985,10 @@ def test_self_update_bare_engine_file_propagates(pm_update, tmp_path):
     frozen.write_text("# OLD frozen tool\n", encoding="utf-8")
 
     entries = _manifest_entries(pm_update, [rel], tmp_path)  # bare (source_rel None → 루트 상대 = rel)
-    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
     assert not missing
     assert [c[0] for c in changes] == [rel]
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert "NEW engine tool" in frozen.read_text(encoding="utf-8")
 
 
@@ -5984,7 +6003,7 @@ def test_source_remapped_hook_missing_source_reports_rc2_class(pm_update, tmp_pa
     dst_rel = ".claude/ctx_guard.py"
     src_rel = "templates/claude_code/.claude/ctx_guard.py"
     entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"], tmp_path)
-    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
     assert changes == []
     assert missing == [dst_rel], f"@source 소스 부재가 missing(rc2 입력)으로 안 잡힘: {missing}"
     # @source 엔트리는 target_owned=False → main 이 skip 아닌 rc2(엔진 누락).
@@ -6121,7 +6140,7 @@ def test_reinstall_protected_hooks_installs_both_hooks(pm_update, tmp_path, caps
     이게 이 티켓의 값-연결이다: 엔진 업그레이드(파일 복사)만으론 훅이 안 바뀐다 — 재설치가
     dest 의 *새* worktree_pool 훅 본문을 깔아야 채택자에게 도달한다."""
     dest = _make_pm_home(tmp_path / "home")
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
 
     assert result["status"] == "done"
     assert result["targets"] == ["svc"] and result["drifted"] == ["svc"]
@@ -6143,7 +6162,7 @@ def test_reinstall_protected_hooks_deploys_adopter_self_test_contract(pm_update,
     dest = _make_pm_home(tmp_path / "adopter-home")
     _write_local_conf(dest, f"upstream.path={tmp_path / 'framework-upstream'}\n")
 
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
 
     assert result["failed"] == [] and result["drifted"] == ["svc"]
     hooks = _hook_dir(dest, "svc")
@@ -6157,7 +6176,7 @@ def test_reinstall_protected_hooks_deploys_adopter_self_test_contract(pm_update,
 def test_reinstall_protected_hooks_dry_run_writes_nothing(pm_update, tmp_path):
     """`write=False`(dry-run) — 판정만 하고 훅 파일은 쓰지 않는다 (무부작용)."""
     dest = _make_pm_home(tmp_path / "home")
-    result = pm_update.reinstall_protected_hooks(dest, write=False)
+    result = update_adapters.reinstall_protected_hooks(dest, write=False)
     assert result["status"] == "done" and result["drifted"] == ["svc"]
     assert not _hook_dir(dest, "svc").exists(), "dry-run 이 훅을 실제로 설치했다"
 
@@ -6169,11 +6188,11 @@ def test_reinstall_protected_hooks_bare_absent_is_not_failure(pm_update, tmp_pat
     게이트할 미러가 없으면 훅도 무의미하다(install 이 no-op). 매 sync 마다 실패 경고를 울리면
     진짜 실패가 묻힌다 — 그렇다고 침묵하지도 않는다(요약 1줄로 surface)."""
     dest = _make_pm_home(tmp_path / "home", bare_repos=())
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["status"] == "done"
     assert result["targets"] == [] and result["drifted"] == []
     assert result["failed"] == [] and result["no_bare"] == ["svc"]
-    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    update_adapters._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
     assert "bare" in cap.out and "svc" in cap.out
     assert cap.err == "", "bare 부재는 실패가 아니다(경고로 울리면 진짜 실패가 묻힌다)"
@@ -6183,9 +6202,9 @@ def test_reinstall_protected_hooks_bare_absent_is_not_failure(pm_update, tmp_pat
 def test_reinstall_protected_hooks_no_registered_repos_is_quiet(pm_update, tmp_path, capsys):
     """등록 repo 0(솔로·미등록) → `no_repos`·완전 무출력 (걸 대상 없음 = 정상)."""
     dest = _make_pm_home(tmp_path / "home", areas=None, bare_repos=())
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["status"] == "no_repos"
-    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    update_adapters._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
     assert cap.out == "" and cap.err == ""
 
@@ -6194,9 +6213,9 @@ def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tm
     """대상 flat 엔진과 registry가 모두 없어도 정상 미등록 Home으로 판정한다."""
     dest = tmp_path / "no-engine"
     dest.mkdir()
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["status"] == "no_repos" and result["reason"] is None
-    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    update_adapters._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
     assert cap.out == "" and cap.err == ""
 
@@ -6317,11 +6336,11 @@ def test_main_second_run_is_quiet_when_hooks_in_sync(pm_update, tmp_path, monkey
 def test_reinstall_protected_hooks_skips_when_in_sync(pm_update, tmp_path, capsys):
     """정합 판정 — 2회차는 `in_sync`(재설치·출력 0)."""
     dest = _make_pm_home(tmp_path / "home")
-    assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"]
+    assert update_adapters.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"]
     capsys.readouterr()
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["in_sync"] == ["svc"] and result["drifted"] == []
-    pm_update._print_protected_hook_reinstall_finding(result, dry_run=False)
+    update_adapters._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
     assert cap.out == "" and cap.err == ""
 
@@ -6333,9 +6352,9 @@ def test_reinstall_protected_hooks_heals_wiped_hook_dir(pm_update, tmp_path):
     bootstrap 의 sidecar reconcile 은 sidecar 파일이 없으면 즉시 return 이라 이 상태를 영구
     침묵한다 — pm_update 축이 유일한 복구 채널이다."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     shutil.rmtree(_hook_dir(dest, "svc"))
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["drifted"] == ["svc"] and result["failed"] == []
     assert (_hook_dir(dest, "svc") / "pre-commit").exists()
 
@@ -6347,11 +6366,11 @@ def test_reinstall_protected_hooks_detects_stale_hook_body(pm_update, tmp_path):
     구 엔진이 깐 pre-push 만 있고 pre-commit 이 없거나 본문이 낡은 상태가 정확히 업그레이드
     경계의 모습이다."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     stale = _hook_dir(dest, "svc") / "pre-commit"
     stale.write_text("#!/bin/sh\n# 구버전 훅\nexit 0\n", encoding="utf-8")
-    assert pm_update.reinstall_protected_hooks(dest, write=False)["drifted"] == ["svc"]
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    assert update_adapters.reinstall_protected_hooks(dest, write=False)["drifted"] == ["svc"]
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     assert "PM_ALLOW_PROTECTED_COMMIT" in stale.read_text(encoding="utf-8")
 
 
@@ -6359,10 +6378,10 @@ def test_reinstall_protected_hooks_detects_stale_hook_body(pm_update, tmp_path):
 def test_reinstall_protected_hooks_detects_stale_sidecar(pm_update, tmp_path):
     """sidecar 보호목록이 areas 실효값과 어긋나도 drift — 두 축(본문·목록) 모두 본다."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     sidecar = _hook_dir(dest, "svc") / "protected"
     sidecar.write_text("mian\n", encoding="utf-8")       # 옛/오타 목록
-    assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"]
+    assert update_adapters.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"]
     assert sidecar.read_text(encoding="utf-8").splitlines() == ["main", "release"]
 
 
@@ -6383,17 +6402,17 @@ def test_reinstall_protected_hooks_unreadable_artifact_is_drift_not_unavailable(
         pm_update, tmp_path, artifact):
     """훅 산출물이 **읽기 불가**(non-UTF-8)여도 `unavailable` 이 아니라 `drifted` → 재설치 복구."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     broken = _hook_dir(dest, "svc") / artifact
     broken.write_bytes(_UNDECODABLE)
 
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["status"] == "done", \
         f"{artifact} 읽기 실패가 unavailable 로 새 나감(복구 채널 소실): {result['reason']!r}"
     assert result["drifted"] == ["svc"] and result["failed"] == []
     # 실제로 복구됐다 — 깨진 바이트가 현 엔진 산출물로 덮였다.
     assert broken.read_bytes() != _UNDECODABLE
-    assert pm_update.reinstall_protected_hooks(dest, write=False)["in_sync"] == ["svc"]
+    assert update_adapters.reinstall_protected_hooks(dest, write=False)["in_sync"] == ["svc"]
 
 
 # ── 실행 비트도 drift 축이다 + 축은 **명세에서 유도**한다 (codex must-fix 2R) ──────
@@ -6414,7 +6433,7 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
     축을 친다. install 이 새 산출물을 추가하면(명세에 추가해야 하므로) 이 테스트가 자동으로
     그 산출물까지 검사한다 — "다음에 또 축이 샌다" 를 닫는 장치."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     gate_mode, test_cmd = repo_protection._protected_push_gate_config(pm_paths.home_at(dest), "svc")
     spec = protected_hooks.protected_hook_artifacts(pm_paths.home_at(dest),
         "svc", ["main", "release"], gate_mode=gate_mode, test_cmd=test_cmd)
@@ -6424,17 +6443,17 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
         name = artifact.path.name
         # ① 내용 훼손 → drift → 재설치로 복구.
         artifact.path.write_text("tampered\n", encoding="utf-8")
-        assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
+        assert update_adapters.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
             f"{name} 내용 훼손이 drift 로 안 잡힘(미검사 축)"
         assert artifact.path.read_text(encoding="utf-8") == artifact.content
         # ② 실행권한 상실 → drift → 0755 복구 (실행권한을 요구하는 산출물만).
         if artifact.executable and posix_mode_supported():
             artifact.path.chmod(0o644)
-            assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
+            assert update_adapters.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
                 f"{name} 실행권한 상실이 drift 로 안 잡힘 — git 이 훅을 조용히 건너뛴다"
             assert artifact.path.stat().st_mode & 0o111, f"{name} 0755 복구 실패"
         # ③ 전부 정합이면 조용(무한 재설치 회귀 방지).
-        assert pm_update.reinstall_protected_hooks(dest, write=True)["in_sync"] == ["svc"]
+        assert update_adapters.reinstall_protected_hooks(dest, write=True)["in_sync"] == ["svc"]
 
 
 @_git_required
@@ -6447,12 +6466,12 @@ def test_reinstall_protected_hooks_missing_exec_bit_is_drift(pm_update, tmp_path
 
     본문 동일이라 내용 축으로는 절대 안 잡히는 상태다 — 이게 "보호 훅 침묵 비활성화" 의 모습."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     hook = _hook_dir(dest, "svc") / hook_name
     body_before = hook.read_text(encoding="utf-8")
     hook.chmod(0o644)
 
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["status"] == "done" and result["drifted"] == ["svc"], \
         f"{hook_name} 실행권한 상실이 in_sync 로 오판됨(보호 침묵 비활성)"
     assert hook.stat().st_mode & 0o111, f"{hook_name} 실행권한이 재설치로 복구되지 않음"
@@ -6468,11 +6487,11 @@ def test_exec_bit_axis_disabled_on_windows(pm_update, tmp_path, monkeypatch):
     git-for-windows 는 훅을 sh 로 돌리며 실행 비트를 요구하지도 않아 축 자체가 무의미하다.
     플랫폼 분기는 상수 하나(`_EXEC_BIT_MEANINGFUL`)라 hermetic 하게 뒤집어 친다."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     (_hook_dir(dest, "svc") / "pre-commit").chmod(0o644)
 
-    monkeypatch.setattr(pm_update, "_EXEC_BIT_MEANINGFUL", False)   # = Windows
-    result = pm_update.reinstall_protected_hooks(dest, write=True)
+    monkeypatch.setattr(update_adapters, "_EXEC_BIT_MEANINGFUL", False)   # = Windows
+    result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["in_sync"] == ["svc"] and result["drifted"] == [], \
         "Windows 에서 실행 비트 축이 거짓 drift 를 냈다(매 sync 재설치)"
 
@@ -6483,10 +6502,10 @@ def test_exec_bit_axis_disabled_on_windows(pm_update, tmp_path, monkeypatch):
 def test_protected_hook_in_sync_never_raises_on_unreadable(pm_update, tmp_path, artifact):
     """판정 함수 자체의 계약 — 읽기 실패에 예외 대신 `False`(drift) (4축 동형)."""
     dest = _make_pm_home(tmp_path / "home")
-    pm_update.reinstall_protected_hooks(dest, write=True)
+    update_adapters.reinstall_protected_hooks(dest, write=True)
     (_hook_dir(dest, "svc") / artifact).write_bytes(_UNDECODABLE)
 
-    assert pm_update._protected_hook_in_sync(pm_paths.home_at(dest),
+    assert update_adapters._protected_hook_in_sync(pm_paths.home_at(dest),
         "svc",  ) is False
 
 
@@ -6655,11 +6674,11 @@ def test_paths_scope_does_not_record_upstream_baseline(pm_update, tmp_path, monk
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "scopedrev7")
 
     assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
-    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf, "부분 전파가 baseline 을 최신으로 박음(거짓 최신)"
 
     assert pm_update.main([]) == 0  # 대조군 — 전량 sync 는 기존대로 기록한다.
-    conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "scopedrev7"
 
 
@@ -6668,13 +6687,13 @@ def test_paths_scope_skips_whole_instance_steps(pm_update, tmp_path, monkeypatch
     _dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "steps")
     called: list = []
     monkeypatch.setattr(
-        pm_update, "migrate_entry_doc",
+        entry_doc_migration, "migrate_entry_doc",
         lambda *a, **k: called.append("migrate") or {"status": "skipped"})
     monkeypatch.setattr(
-        pm_update, "reinstall_protected_hooks",
+        update_adapters, "reinstall_protected_hooks",
         lambda *a, **k: called.append("hooks") or {"status": "skipped"})
     monkeypatch.setattr(
-        pm_update, "_run_retired_path_migration",
+        retired_paths, "_run_retired_path_migration",
         lambda *a, **k: called.append("retire") or True)
 
     assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
@@ -6690,7 +6709,7 @@ def test_target_mode_never_runs_retired_path_migration(
     _make_upstream(source)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     monkeypatch.setattr(
-        pm_update, "_run_retired_path_migration",
+        retired_paths, "_run_retired_path_migration",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("target retire fired")),
     )
 
@@ -6718,26 +6737,26 @@ def test_paths_scope_forwards_to_every_target(pm_update, tmp_path, monkeypatch, 
 
 def test_scope_helpers_normalize_and_match(pm_update):
     """정규화·등재 판정·후보 파생의 단위 규칙(호출부가 의존하는 성질)."""
-    normalized, rejected = pm_update._normalize_scope_paths(
+    normalized, rejected = upstream_changes._normalize_scope_paths(
         [" a/b/ ", "a\\b", "a/b", "", "/abs", "x/../y"])
     assert normalized == ["a/b"]  # 공백·백슬래시·꼬리 슬래시·중복 접기
     assert len(rejected) == 3
 
     manifest = ["pkg", "tools/one.py"]
     # 양방향 겹침 — 디렉토리 등재 아래 파일, 여러 등재를 담는 상위 디렉토리 모두 등재로 본다.
-    assert pm_update._unregistered_scope_paths(manifest, ["pkg/deep/f.md"]) == []
-    assert pm_update._unregistered_scope_paths(manifest, ["tools"]) == []
-    assert pm_update._unregistered_scope_paths(manifest, ["other/f.md"]) == ["other/f.md"]
+    assert upstream_changes._unregistered_scope_paths(manifest, ["pkg/deep/f.md"]) == []
+    assert upstream_changes._unregistered_scope_paths(manifest, ["tools"]) == []
+    assert upstream_changes._unregistered_scope_paths(manifest, ["other/f.md"]) == ["other/f.md"]
 
     # `@source` 리매핑 항목은 dest·upstream 경로가 다르다 — 둘 다 후보여야 어느 쪽으로 지정해도 걸린다.
     source_root = Path("/src")
-    assert pm_update._scope_change_candidates(
+    assert upstream_changes._scope_change_candidates(
         ".opencode/agents/pm.md", source_root / "templates/opencode/.opencode/agents/pm.md",
         source_root) == [".opencode/agents/pm.md",
                          "templates/opencode/.opencode/agents/pm.md"]
     # 인메모리 source(manifest 합집합)는 파일 경로가 없어 dest 후보만 남는다(TypeError 로 안 샌다).
-    assert pm_update._scope_change_candidates(
-        ".project_manager/engine.manifest", pm_update._ManifestTextSource("x"),
+    assert upstream_changes._scope_change_candidates(
+        ".project_manager/engine.manifest", update_paths._ManifestTextSource("x"),
         source_root) == [".project_manager/engine.manifest"]
 
 
@@ -6779,7 +6798,7 @@ def test_paths_scope_matches_equivalent_path_spellings(pm_update, tmp_path, monk
 
 def test_scope_normalization_folds_equivalent_spellings(pm_update):
     """정규화 단위 규칙 — 동치 표기는 한 항목으로 접히고 `.`/`..` 는 사유별로 거부된다."""
-    normalized, rejected = pm_update._normalize_scope_paths(
+    normalized, rejected = upstream_changes._normalize_scope_paths(
         ["a/b", "./a/b", "a//b", ".", "../x"])
     assert normalized == ["a/b"]
     assert len(rejected) == 2
@@ -6993,8 +7012,8 @@ def test_adapter_config_unedited_is_backed_up_updated_and_rerecorded(
         tmp_path, hooks=_INSTALLED_HOOKS,
         ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
-    pm_update._print_adapter_config_finding(result, dry_run=False)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
+    update_adapters._print_adapter_config_finding(result, dry_run=False)
 
     assert [item["relpath"] for item in result["updated"]] == [_ADAPTER_HOOKS_REL]
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _UPSTREAM_HOOKS
@@ -7014,8 +7033,8 @@ def test_adapter_config_edited_is_preserved_with_accept_guidance(
         tmp_path, hooks=_EDITED_HOOKS,
         ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
-    pm_update._print_adapter_config_finding(result, dry_run=False)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
+    update_adapters._print_adapter_config_finding(result, dry_run=False)
 
     assert result["updated"] == [], "편집분을 덮었다(하한선 위반)"
     assert [item["status"] for item in result["preserved"]] == ["edited"]
@@ -7033,8 +7052,8 @@ def test_adapter_config_unrecorded_is_preserved_as_safe_default(
     채택자 전원의 커스텀이 업그레이드 한 번에 사라진다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_INSTALLED_HOOKS)
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
-    pm_update._print_adapter_config_finding(result, dry_run=False)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
+    update_adapters._print_adapter_config_finding(result, dry_run=False)
 
     assert result["updated"] == []
     assert [item["status"] for item in result["preserved"]] == ["unrecorded"]
@@ -7058,8 +7077,8 @@ def test_adapter_config_report_only_target_is_never_updated(
     dest, source = _make_adapter_config_case(
         tmp_path, hooks=_UPSTREAM_HOOKS, config=adopter_config, ledger=ledger)
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
-    pm_update._print_adapter_config_finding(result, dry_run=False)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
+    update_adapters._print_adapter_config_finding(result, dry_run=False)
 
     assert result["updated"] == [], f"{ledger_state}: 보고-전용 대상을 갱신했다"
     assert [item["relpath"] for item in result["drift"]] == [_ADAPTER_CONFIG_REL]
@@ -7076,8 +7095,8 @@ def test_adapter_config_dry_run_changes_nothing(pm_update, tmp_path, capsys):
         ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
     before_ledger = _read_ledger(dest)
 
-    result = pm_update.sync_adapter_configs(dest, source, write=False)
-    pm_update._print_adapter_config_finding(result, dry_run=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=False)
+    update_adapters._print_adapter_config_finding(result, dry_run=True)
 
     assert [item["relpath"] for item in result["updated"]] == [_ADAPTER_HOOKS_REL], \
         "판정 자체가 사라짐(dry-run 이 무동작이 아니라 무write 여야 한다)"
@@ -7095,7 +7114,7 @@ def test_adapter_config_in_sync_backfills_ledger_without_touching_file(
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
     assert _read_ledger(dest) == {}, "픽스처 전제(원장 부재)"
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert sorted(result["backfilled"]) == sorted(
         {_ADAPTER_HOOKS_REL, _ADAPTER_CONFIG_REL})
@@ -7109,7 +7128,7 @@ def test_adapter_config_accept_enters_auto_update_track(pm_update, tmp_path):
 
     구세대 채택자가 보고 모드를 빠져나가는 경로 전체를 한 번에 태운다(수용 없이는 영구 보고)."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_EDITED_HOOKS)
-    assert pm_update.sync_adapter_configs(dest, source, write=True)["preserved"], \
+    assert update_adapters.sync_adapter_configs(dest, source, write=True)["preserved"], \
         "픽스처 전제(수용 전에는 보존+보고)"
 
     outcome = adapter_accept.accept_adapter_config(
@@ -7126,7 +7145,7 @@ def test_adapter_config_accept_enters_auto_update_track(pm_update, tmp_path):
     (source / "templates" / "codex" / ".codex" / "hooks.json").write_text(
         next_upstream, encoding="utf-8")
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert [item["relpath"] for item in result["updated"]] == [_ADAPTER_HOOKS_REL], \
         "수용 후에도 자동 갱신 궤도에 못 들었다(원장 기록 누락)"
@@ -7210,7 +7229,7 @@ def test_adapter_config_future_schema_ledger_is_not_overwritten(pm_update, tmp_p
     assert ledger_path.read_text(encoding="utf-8") == future, "미래 schema 원장을 덮었다"
 
     # 동기 채널·수용도 같은 판정을 받는다 — 파일은 손대지 않고 loud 하게 보존한다.
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
     assert result["updated"] == []
     assert ledger_path.read_text(encoding="utf-8") == future
     outcome = adapter_accept.accept_adapter_config(dest, source, _ADAPTER_HOOKS_REL)
@@ -7249,7 +7268,7 @@ def test_adapter_config_backfill_is_green_only_after_ledger_verification(
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
     monkeypatch.setattr(adapter_accept, "record_adapter_baseline", lambda *_a, **_kw: [])
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert result["managed_converged"] is False
     assert result["backfilled"] == [], "원장 기록 실패를 backfill 성공으로 보고함"
@@ -7271,7 +7290,7 @@ def test_adapter_config_ledger_exception_is_rc_contract_not_traceback(
 
     monkeypatch.setattr(adapter_accept, "record_adapter_baseline", _raise)
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert result["managed_converged"] is False
     assert result["blocking"][0]["status"] == "unrecorded"
@@ -7368,7 +7387,7 @@ def test_pm_update_managed_dest_missing_source_template_is_rc1_without_rev_conve
     def _must_not_converge(*_args, **_kwargs):
         raise AssertionError("adapter unavailable인데 revision baseline을 수렴시켰다")
 
-    monkeypatch.setattr(pm_update, "converge_upstream_revs", _must_not_converge)
+    monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", _must_not_converge)
 
     assert pm_update.main(["--from", str(source)]) == 1
     captured = capsys.readouterr()
@@ -7399,7 +7418,7 @@ def test_pm_update_partial_engine_without_adapter_candidates_is_vacuous_green(
     def _must_not_run(*_args, **_kwargs):
         raise AssertionError("adapter 후보 0인데 판정 채널을 실행했다")
 
-    monkeypatch.setattr(pm_update, "sync_adapter_configs", _must_not_run)
+    monkeypatch.setattr(update_adapters, "sync_adapter_configs", _must_not_run)
 
     assert pm_update.main(["--from", str(source)]) == 0
     captured = capsys.readouterr()
@@ -7420,12 +7439,12 @@ def test_adapter_config_outer_gate_counts_any_existing_path_entry(
     else:
         candidate.symlink_to(tmp_path / "missing-hooks-target.json")
 
-    assert pm_update._has_adapter_config_candidate(tmp_path) is True
+    assert update_adapters._has_adapter_config_candidate(tmp_path) is True
 
 
 def test_adapter_config_outer_gate_candidate_zero_is_false(pm_update, tmp_path):
     """순수 partial-engine 트리의 vacuous-green 전제: config 경로 엔트리 0."""
-    assert pm_update._has_adapter_config_candidate(tmp_path) is False
+    assert update_adapters._has_adapter_config_candidate(tmp_path) is False
 
 
 def test_adapter_config_outer_candidate_paths_match_channel_declaration(pm_update):
@@ -7436,7 +7455,7 @@ def test_adapter_config_outer_candidate_paths_match_channel_declaration(pm_updat
         for relpath, mode in channel.items()
         if mode != install_rules.ADAPTER_CONFIG_NO_CHANNEL
     }
-    assert set(pm_update._ADAPTER_CONFIG_DEST_CANDIDATES) == declared
+    assert set(update_adapters._ADAPTER_CONFIG_DEST_CANDIDATES) == declared
 
 
 def test_adapter_config_dry_run_in_sync_unrecorded_prescribes_real_backfill(
@@ -7444,8 +7463,8 @@ def test_adapter_config_dry_run_in_sync_unrecorded_prescribes_real_backfill(
     """dry-run은 accept 교체가 아니라 다음 실 pm-update의 byte-불변 원장 backfill을 안내한다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
 
-    result = pm_update.sync_adapter_configs(dest, source, write=False)
-    pm_update._print_adapter_config_finding(result, dry_run=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=False)
+    update_adapters._print_adapter_config_finding(result, dry_run=True)
 
     err = capsys.readouterr().err
     assert "실 pm-update" in err and "backfill" in err
@@ -7519,7 +7538,7 @@ def test_pm_update_partial_managed_dest_blocks_zero_change_revision_convergence(
     def _must_not_converge(*_args, **_kwargs):
         raise AssertionError("partial managed 판정 실패인데 revision baseline을 수렴시켰다")
 
-    monkeypatch.setattr(pm_update, "converge_upstream_revs", _must_not_converge)
+    monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", _must_not_converge)
 
     assert pm_update.main(["--from", str(source)]) == 1
     captured = capsys.readouterr()
@@ -7534,17 +7553,17 @@ def test_flat_opencode_command_rewrites_only_operational_detail_target(pm_update
         "before [references/operational-details.md]"
         "(references/operational-details.md) after\n"
     )
-    assert pm_update._flat_command_skill_name(
+    assert update_render._flat_command_skill_name(
         ".opencode/command/pm-review.md"
     ) == "pm-review"
-    assert pm_update._flat_command_skill_name(
+    assert update_render._flat_command_skill_name(
         ".claude/skills/pm-review/SKILL.md"
     ) is None
     # 링크 rewrite + command 전용 인자 전달 절이 이 렌더의 전부다.
-    assert pm_update._render_flat_command_reference(source, "pm-review") == (
+    assert update_render._render_flat_command_reference(source, "pm-review") == (
         "before [references/operational-details.md]"
         "(../../.claude/skills/pm-review/references/operational-details.md) after\n"
-        + pm_update._FLAT_COMMAND_ARGUMENTS_SECTION
+        + update_render._FLAT_COMMAND_ARGUMENTS_SECTION
     )
 
 
@@ -7554,7 +7573,7 @@ def test_flat_opencode_command_rewrites_only_operational_detail_target(pm_update
 """])
 def test_flat_opencode_command_rewrite_fails_loud_on_link_count(pm_update, source):
     with pytest.raises(ValueError, match="정확히 1개"):
-        pm_update._render_flat_command_reference(source, "pm-x")
+        update_render._render_flat_command_reference(source, "pm-x")
 
 
 # ── claude native agent 카드 model = delegate conf 해소값 (T-0731) ────────────
@@ -7615,7 +7634,7 @@ def test_delegate_model_tokens_wired_in_both_channels(pm_update):
 
     assert render_rules.DELEGATE_MODEL_CONF_KEYS == DELEGATE_CONF_KEYS, \
         "위임 토큰 표가 기대 집합과 갈렸다(역할/티어가 조용히 늘거나 줄었다)"
-    conf_channel = pm_update._local_conf_operational_map()
+    conf_channel = update_render._local_conf_operational_map()
     for token_key, conf_key in render_rules.DELEGATE_MODEL_CONF_KEYS.items():
         assert token_key in render_rules.OPERATIONAL_KEYS, \
             f"{token_key} 가 render operational 채널에 미등재 — 재렌더가 토큰을 leak 시킨다"
@@ -7639,7 +7658,7 @@ def test_delegate_harness_from_local_conf_reads_profile_harness(pm_update, tmp_p
         "",
     ]))
 
-    assert pm_update._delegate_harness_from_local_conf(_local_conf_of(pm_update, dest)) == {
+    assert update_render._delegate_harness_from_local_conf(_local_conf_of(pm_update, dest)) == {
         "DELEGATE_MODEL_DEVELOPER": "claude",
         "DELEGATE_REASONING_DEVELOPER": "claude",
         "DELEGATE_MODEL_DEVELOPER_HARD": "codex",
@@ -7675,7 +7694,7 @@ def test_agent_card_renders_conf_model_through_local_conf(render_home, pm_update
         "",
     ]))
 
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dest))
 
     assert empty_keys == []
     expected = {
@@ -7705,7 +7724,7 @@ def test_agent_card_unset_delegate_model_is_graceful_todo(render_home, pm_update
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.researcher.model=haiku\n")
 
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dest))
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
     rendered = adapter_render.render_adapter(render_home,
         (template_tree / "developer.md").read_text(encoding="utf-8"),
@@ -7734,7 +7753,7 @@ def test_agent_card_empty_delegate_model_is_loud_leak(render_home, pm_update, tm
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.developer.model=\n")
 
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dest))
 
     assert empty_keys == ["DELEGATE_MODEL_DEVELOPER"]
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
@@ -7782,7 +7801,7 @@ def test_render_text_claude_cards_render_conf_reasoning(pm_update, tmp_path):
         "researcher.md": "high",
     }
     for name, effort in expected.items():
-        rendered = pm_update._render_text(
+        rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO),
             REPO / ".claude" / "agents" / name, _local_conf_of(pm_update, dest), card_path=f".claude/agents/{name}")
         assert _card_effort_line(rendered) == f'effort: "{effort}"', \
             f"{name} 의 effort 가 conf reasoning 으로 렌더되지 않았다"
@@ -7802,7 +7821,7 @@ def test_render_text_rejects_reasoning_outside_harness_ladder(pm_update, tmp_pat
     # RenderLeakError 는 RuntimeError 서브클래스 — pm_update 가 pm_render 를 격리 로드하므로
     # 클래스 동일성 대신 base + 이름으로 잡는다.
     with pytest.raises(RuntimeError) as excinfo:
-        pm_update._render_text(
+        update_render._render_text(pm_paths.home_at(pm_update.REPO),
             REPO / ".claude" / "agents" / "architect.md", _local_conf_of(pm_update, dest),
             card_path=".claude/agents/architect.md")
     assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
@@ -7824,9 +7843,9 @@ def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp
     dest = tmp_path / "dest"
     conf = _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
 
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert missing == []
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     card = dest / ".claude" / "agents" / "architect.md"
     assert _card_effort_line(card.read_text(encoding="utf-8")) == 'effort: "max"'
     settled = card.read_bytes()
@@ -7837,7 +7856,7 @@ def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError) as excinfo:  # RenderLeakError (격리 로드·base 로 잡음)
-        pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+        update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
     assert "delegate.architect.reasoning=ultra" in str(excinfo.value)
     assert card.read_bytes() == settled, "허용값 밖 값으로 카드가 다시 기록됐다"
@@ -8169,7 +8188,7 @@ def test_apply_conf_rerenders_render_outputs_with_proposed_conf(pm_update, tmp_p
     card = home / _T0945_ARCHITECT_CARD
     assert 'effort: "high"' not in card.read_text(encoding="utf-8").splitlines()
 
-    result = pm_update.apply_conf(home, updates={
+    result = conf_apply.apply_conf(pm_paths.home_at(pm_update.REPO), home, updates={
         "delegate.architect.harness": "claude", "delegate.architect.model": "opus",
         "delegate.architect.reasoning": "high"}, opencode_config_dir=tmp_path / "global")
 
@@ -8186,8 +8205,8 @@ def test_apply_conf_refusal_leaves_tree_unchanged(pm_update, tmp_path):
     home, _source = _t0945_home(tmp_path)
     before = tree_snapshot(home)
 
-    with pytest.raises(pm_update.ConfApplyError) as caught:
-        pm_update.apply_conf(home, updates={
+    with pytest.raises(conf_apply.ConfApplyError) as caught:
+        conf_apply.apply_conf(pm_paths.home_at(pm_update.REPO), home, updates={
             "delegate.architect.harness": "claude", "delegate.architect.model": "opus",
             "delegate.architect.reasoning": "ultra"}, opencode_config_dir=tmp_path / "global")
 
@@ -8207,15 +8226,15 @@ def test_apply_conf_refuses_render_when_source_moved(pm_update, tmp_path):
     before = tree_snapshot(home)
 
     for updates in ({"delegate.architect.reasoning": "high"}, None):
-        with pytest.raises(pm_update.ConfApplyError, match="upstream.rev") as caught:
-            pm_update.apply_conf(home, updates=updates, opencode_config_dir=tmp_path / "global")
+        with pytest.raises(conf_apply.ConfApplyError, match="upstream.rev") as caught:
+            conf_apply.apply_conf(pm_paths.home_at(pm_update.REPO), home, updates=updates, opencode_config_dir=tmp_path / "global")
         assert caught.value.write_stage is False
         assert tree_snapshot(home) == before, updates
 
-    result = pm_update.apply_conf(home, updates={"identity.user": "tester"},
+    result = conf_apply.apply_conf(pm_paths.home_at(pm_update.REPO), home, updates={"identity.user": "tester"},
                                   opencode_config_dir=tmp_path / "global")
     after = tree_snapshot(home)
-    assert result == pm_update.ConfApplyResult(True, ())
+    assert result == conf_apply.ConfApplyResult(True, ())
     assert {name for name in set(before) | set(after) if before.get(name) != after.get(name)} == {
         ".project_manager/local.conf"}
     assert "identity.user=tester" in _t0945_conf_lines(home)
@@ -8235,10 +8254,10 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(manifest_file)
     dest = tmp_path / "dest"
     conf = _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest,
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest,
                                       conf=_local_conf_of(pm_update, dest))
     assert missing == []
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     cards = sorted((dest / ".claude" / "agents").glob("*.md"))
     assert [card.name for card in cards][-1] == "researcher.md" and len(cards) == 5
     settled = {card.name: card.read_bytes() for card in cards}
@@ -8247,14 +8266,14 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
     #   마지막 카드 추론 값을 허용값 밖으로 바꾼다 — `apply` 는 디스크 conf 로 그린다.
     sonnet_conf = "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF.replace("model=opus", "model=sonnet")
     conf.write_text(sonnet_conf, encoding="utf-8")
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest,
+    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest,
                                        conf=_local_conf_of(pm_update, dest))
     assert sorted(Path(str(rel)).name for rel, _sp, _dst, _kind in changes) == sorted(settled)
     conf.write_text(sonnet_conf.replace(
         "delegate.researcher.reasoning=high", "delegate.researcher.reasoning=ultra"), encoding="utf-8")
 
     with pytest.raises(RuntimeError) as caught:  # RenderLeakError (격리 로드·base 로 잡음)
-        pm_update.apply(changes)
+        update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert type(caught.value).__name__ == "RenderLeakError", caught.value
     assert "delegate.researcher.reasoning=ultra" in str(caught.value)
     assert {card.name: card.read_bytes() for card in cards} == settled
@@ -8263,7 +8282,7 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
 def test_conf_apply_key_groups_select_steps(pm_update):
     """키 묶음 판정 — 사용 한도 키는 다른 묶음과 겹치지 않고, 추론 값 묶음은 추론 값이 있는 프로필(위임
     세트·대체 세트·추가 리뷰어)의 하네스·모델·추론 키 전부다. 위임 세트 키는 렌더 입력 묶음에도 걸린다."""
-    render_keys = pm_update.render_input_conf_keys()
+    render_keys = conf_apply.render_input_conf_keys()
     local_conf = conf_schema
     ctx_keys = set(local_conf.CTX_INPUT_KEYS)
     assert len(render_keys) == 22, sorted(render_keys)
@@ -8280,7 +8299,7 @@ def test_conf_apply_key_groups_select_steps(pm_update):
         "identity.user": [False, False, False],
     }
     for key, steps in expected.items():
-        assert [step.key_filter(key) for step in pm_update.CONF_APPLY_STEPS] == steps, key
+        assert [step.key_filter(key) for step in conf_apply.CONF_APPLY_STEPS] == steps, key
 
 
 # ── 갱신의 추론 값 정리(conf 이관) — 그 모델이 받지 않는 opencode 추론 값을 지우고 알린다 (T-0946) ──
@@ -8317,13 +8336,13 @@ def test_prune_unavailable_reasoning_removes_per_model_misses(
     before = conf_path.read_bytes()
     conf = _local_conf_of(pm_update, home)
 
-    previewed = pm_update.prune_unavailable_reasoning(home, conf, write=False)
+    previewed = conf_apply.prune_unavailable_reasoning(home, conf, write=False)
     preview = capsys.readouterr().out
     assert conf_path.read_bytes() == before, "dry-run 이 local.conf 를 바꿨다"
     assert preview.startswith("[dry-run]"), preview
     assert not set(_PRUNED_KEYS) & set(previewed)
 
-    pruned = pm_update.prune_unavailable_reasoning(home, conf, write=True)
+    pruned = conf_apply.prune_unavailable_reasoning(home, conf, write=True)
     out = capsys.readouterr().out
     after = _local_conf_of(pm_update, home)
     assert not set(_PRUNED_KEYS) & set(after), after
@@ -8353,8 +8372,8 @@ def test_prune_unavailable_reasoning_stops_without_deleting(pm_update, tmp_path,
         conf_path = _write_local_conf(home, text)
         before = conf_path.read_bytes()
 
-        with pytest.raises(pm_update.ReasoningPruneError) as excinfo:
-            pm_update.prune_unavailable_reasoning(
+        with pytest.raises(conf_apply.ReasoningPruneError) as excinfo:
+            conf_apply.prune_unavailable_reasoning(
                 home, _local_conf_of(pm_update, home), write=True)
         message = str(excinfo.value)
         assert "delegate.researcher.reasoning=high" in message, (name, message)
@@ -8365,15 +8384,6 @@ def test_prune_unavailable_reasoning_stops_without_deleting(pm_update, tmp_path,
 # ── 저장의 추론 값 확인(T-0946 리뷰 03 F-002·F-003) — 카드 유무와 무관하게 거부, 저장 한 번에 조회 한 번 ──
 _GLM = "ollama/glm-5.2:cloud"           # variants 없음
 _ORNITH = "ollama/ornith1.5:35b-a3b"    # low·medium·high
-
-
-def _home_pm_update(home: Path):
-    """그 홈에 설치된 pm_update — 렌더러·하네스 계약도 그 홈의 tools 에서 읽는다(설치 폴더 = 조회 cwd)."""
-    spec = importlib.util.spec_from_file_location(
-        "home_pm_update", home / ".project_manager" / "tools" / "pm_update.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 @_needs_posix_fake
@@ -8389,10 +8399,10 @@ def test_apply_conf_refuses_per_model_reasoning_outside_variants(pm_update, tmp_
     home, _source = _t0945_home(tmp_path)
     opencode_dir = tmp_path / "global"
 
-    accepted = pm_update.apply_conf(home, updates={
+    accepted = conf_apply.apply_conf(pm_paths.home_at(pm_update.REPO), home, updates={
         "additional_reviewer.harness": "opencode", "additional_reviewer.model": _ORNITH,
         "additional_reviewer.reasoning": "high"}, opencode_config_dir=opencode_dir)
-    assert accepted == pm_update.ConfApplyResult(True, ())
+    assert accepted == conf_apply.ConfApplyResult(True, ())
     assert "additional_reviewer.reasoning=high" in _t0945_conf_lines(home)
 
     refused = {
@@ -8410,8 +8420,8 @@ def test_apply_conf_refuses_per_model_reasoning_outside_variants(pm_update, tmp_
     }
     for name, (updates, needle) in refused.items():
         before = tree_snapshot(home)
-        with pytest.raises(pm_update.ConfApplyError) as caught:
-            pm_update.apply_conf(home, updates=updates, opencode_config_dir=opencode_dir)
+        with pytest.raises(conf_apply.ConfApplyError) as caught:
+            conf_apply.apply_conf(pm_paths.home_at(pm_update.REPO), home, updates=updates, opencode_config_dir=opencode_dir)
         assert caught.value.write_stage is False and caught.value.written == (), name
         assert needle in str(caught.value), (name, str(caught.value))
         assert tree_snapshot(home) == before, name
@@ -8441,24 +8451,23 @@ def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
     _run([sys.executable, str(TOOLS / "pm_import.py"), "--new", str(home),
           "--harness", "opencode", "--from", str(source), "--upstream", str(source)], cwd=REPO,
          env=known_ctx_env(native_bin=tmp_path / "known-ctx-native"))
-    module = _home_pm_update(home)
+    # 실행 Home 은 그 홈이다 — 카드 렌더의 코드 inventory·조회 cwd 가 설치 폴더다.
     card = home / ".opencode" / "agents" / "developer.md"
 
     monkeypatch.setattr(contract, "_MODEL_LISTING_MEMO", {})
     installed = len(calls(fakebin))
-    result = module.apply_conf(home, updates={
+    result = conf_apply.apply_conf(pm_paths.home_at(home), home, updates={
         "delegate.developer.harness": "opencode", "delegate.developer.model": _ORNITH,
         "delegate.developer.reasoning": "high"}, opencode_config_dir=tmp_path / "global")
     assert ".opencode/agents/developer.md 다시 그림" in result.applied, result.applied
     assert 'variant: "high"' in card.read_text(encoding="utf-8").splitlines()
     assert len(calls(fakebin)) - installed == 1, "\n".join(map(str, calls(fakebin)))
 
-    module = _home_pm_update(home)
     monkeypatch.setattr(contract, "_MODEL_LISTING_MEMO", {})
     saved = len(calls(fakebin))
-    with pytest.raises(module.ConfApplyError):
-        module.apply_conf(home, updates={"delegate.developer.model": _GLM},
-                          opencode_config_dir=tmp_path / "global")
+    with pytest.raises(conf_apply.ConfApplyError):
+        conf_apply.apply_conf(pm_paths.home_at(home), home, updates={"delegate.developer.model": _GLM},
+                              opencode_config_dir=tmp_path / "global")
     assert len(calls(fakebin)) - saved == 1, calls(fakebin)
 
 
@@ -8480,7 +8489,7 @@ def test_gate_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_p
         entries = {str(entry).replace("\\", "/") for entry in manifest_store.read_manifest(manifest)}
         assert _GATE_SNAPSHOT_OLD not in entries, manifest
         assert (_GATE_SNAPSHOT_OLD, _GATE_SNAPSHOT_NEW) in (
-            pm_update.validated_retired_path_directives(REPO, [manifest])
+            retired_paths.validated_retired_path_directives(REPO, [manifest])
         ), manifest
 
     flavor_manifest = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
@@ -8491,7 +8500,7 @@ def test_gate_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_p
         encoding="utf-8",
     )
 
-    result = pm_update.resolve_manifest_selfheal(dest, REPO)
+    result = update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     assert result["status"] == "heal"
     assert _GATE_SNAPSHOT_OLD in result["retired_removed"]
@@ -8503,11 +8512,15 @@ _T0951_PROBE = ".project_manager/tools/zz_engine_probe.py"
 _T0951_FILES = {_T0951_PROBE: "# probe\n", "adapterdir/one.md": "# one\n", "adapterdir/two.md": "# two\n"}
 # 전달 프로세스가 부르면 안 되는 완료 단계 함수 — 하나라도 불리면 같은 프로세스가 완료 단계를 실행한 것이다.
 _T0951_COMPLETION_STEPS = (
-    "apply", "_installed_entry_notation_manifests", "prune_unavailable_reasoning",
-    "migrate_entry_doc", "drop_self_lease_rows", "idle_legacy_slot_session_rows",
-    "migrate_renamed_conf_keys", "reinstall_protected_hooks", "sync_adapter_configs",
-    "apply_harness_ctx_limits", "check_adapter_hook_sets", "converge_upstream_revs",
-    "_run_retired_path_migration",
+    (update_render, "apply"), (update_manifest, "_installed_entry_notation_manifests"),
+    (conf_apply, "prune_unavailable_reasoning"),
+    (entry_doc_migration, "migrate_entry_doc"), (update_finish, "drop_self_lease_rows"),
+    (update_finish, "idle_legacy_slot_session_rows"),
+    (entry_doc_migration, "migrate_renamed_conf_keys"), (update_adapters, "reinstall_protected_hooks"),
+    (update_adapters, "sync_adapter_configs"),
+    (update_adapters, "apply_harness_ctx_limits"), (update_adapters, "check_adapter_hook_sets"),
+    (upstream_revisions, "converge_upstream_revs"),
+    (retired_paths, "_run_retired_path_migration"),
 )
 
 
@@ -8528,7 +8541,7 @@ def _t0951_tree(root: Path) -> dict[str, bytes]:
 
 def _t0951_record_launch(pm_update, monkeypatch) -> list:
     launched: list = []
-    monkeypatch.setattr(pm_update, "_launch_completion",
+    monkeypatch.setattr(engine_transfer, "_launch_completion",
                         lambda *args: launched.append(args) or 0)
     return launched
 
@@ -8536,10 +8549,10 @@ def _t0951_record_launch(pm_update, monkeypatch) -> list:
 def test_transfer_stage_runs_no_completion_step(pm_update, tmp_path, monkeypatch):
     """AT-004 — 전달 프로세스는 엔진 코드만 옮기고 완료 단계 함수를 하나도 부르지 않는다."""
     dest, source = _t0951_case(pm_update, tmp_path, monkeypatch)
-    for name in _T0951_COMPLETION_STEPS:
+    for owner, name in _T0951_COMPLETION_STEPS:
         def trapped(*_args, _name=name, **_kwargs):
             raise AssertionError(f"전달 프로세스가 완료 단계 {_name} 를 불렀다")
-        monkeypatch.setattr(pm_update, name, trapped)
+        monkeypatch.setattr(owner, name, trapped)
     launched = _t0951_record_launch(pm_update, monkeypatch)
 
     assert pm_update.main(["--from", str(source)]) == 0
@@ -8572,12 +8585,12 @@ def test_completion_handoff_is_validated_before_any_write(
         "missing_source": json.dumps({**handoff, "source": str(tmp_path / "no-such-source")}),
         "pending_engine_code": json.dumps(handoff),
     }[case]
-    monkeypatch.setenv(pm_update.COMPLETION_ENV, raw)
+    monkeypatch.setenv(engine_transfer.COMPLETION_ENV, raw)
     before = _t0951_tree(dest)
 
     rc = pm_update.main(["--from", str(source)])
 
-    invalid_handoff = f"인계 값({pm_update.COMPLETION_ENV})이 올바르지 않다"
+    invalid_handoff = f"인계 값({engine_transfer.COMPLETION_ENV})이 올바르지 않다"
     expected_message = {
         "invalid_json": invalid_handoff,
         "missing_field": invalid_handoff,
@@ -8590,7 +8603,7 @@ def test_completion_handoff_is_validated_before_any_write(
     err = capsys.readouterr().err
     assert expected_message in err, err
     assert _t0951_tree(dest) == before, "인계 값 오류인데 dest 를 바꿨다"
-    assert pm_update.COMPLETION_ENV not in os.environ, "인계 값이 실행 뒤에 남았다"
+    assert engine_transfer.COMPLETION_ENV not in os.environ, "인계 값이 실행 뒤에 남았다"
 
 
 def test_known_ctx_env_requires_a_test_scoped_native_folder(tmp_path):
@@ -8671,12 +8684,12 @@ def test_drift_changes_reports_engine_code_before_rendering(pm_update, tmp_path,
     (dest / "renderdir").mkdir()
     (dest / "renderdir" / "card.md").write_text("# 카드\n", encoding="utf-8")
 
-    assert pm_update.drift_changes(dest) == [_T0951_PROBE]
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update.REPO), dest) == [_T0951_PROBE]
 
     (dest / _T0951_PROBE).parent.mkdir(parents=True)
     (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
     with pytest.raises(RuntimeError) as raised:
-        pm_update.drift_changes(dest)
+        update_plan.drift_changes(pm_paths.home_at(pm_update.REPO), dest)
     assert type(raised.value).__name__ == "RenderLeakError", raised.value
 
 
@@ -8690,9 +8703,9 @@ def test_apply_conf_translates_render_failure_found_while_planning(
     def refused(_source_path, _conf, *_args, **_kwargs):
         raise render_rules.RenderLeakError("주입한 렌더 거부")
 
-    monkeypatch.setattr(pm_update, "_render_text", refused)
-    with pytest.raises(pm_update.ConfApplyError) as caught:
-        pm_update.apply_conf(home, updates={"delegate.architect.reasoning": "high"},
+    monkeypatch.setattr(update_render, "_render_text", refused)
+    with pytest.raises(conf_apply.ConfApplyError) as caught:
+        conf_apply.apply_conf(pm_paths.home_at(pm_update.REPO), home, updates={"delegate.architect.reasoning": "high"},
                              opencode_config_dir=tmp_path / "global")
 
     assert caught.value.write_stage is False and caught.value.written == ()
@@ -8713,18 +8726,18 @@ def test_retired_replacement_may_live_under_a_directory_row(pm_update, tmp_path)
                         [".project_manager/tools/zz_pkg", _T0951_RETIRE])
     manifest = source / ".project_manager" / "engine.manifest"
 
-    assert pm_update.validated_retired_path_directives(source, [manifest]) == [
+    assert retired_paths.validated_retired_path_directives(source, [manifest]) == [
         (_T0951_OLD, _T0951_NEW)]
 
     manifest.write_text(f".project_manager/tools/zz_pkg    @render\n{_T0951_RETIRE}\n",
                         encoding="utf-8")
-    with pytest.raises(pm_update.RetiredPathError, match="bare"):
-        pm_update.validated_retired_path_directives(source, [manifest])
+    with pytest.raises(retired_paths.RetiredPathError, match="bare"):
+        retired_paths.validated_retired_path_directives(source, [manifest])
 
     manifest.write_text(f".project_manager/tools/zz_pkg\n{_T0951_RETIRE}\n", encoding="utf-8")
     (source / _T0951_NEW).unlink()
-    with pytest.raises(pm_update.RetiredPathError, match="regular file"):
-        pm_update.validated_retired_path_directives(source, [manifest])
+    with pytest.raises(retired_paths.RetiredPathError, match="regular file"):
+        retired_paths.validated_retired_path_directives(source, [manifest])
 
 
 def test_directory_row_retirement_completes_in_one_update(pm_update, tmp_path, monkeypatch):

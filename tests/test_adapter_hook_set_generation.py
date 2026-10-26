@@ -43,6 +43,9 @@ from pm_engine.infra import install_conf
 from pm_engine.infra import pm_paths
 from pm_engine.infra import raw_output
 from pm_engine.infra import upstream_declarations
+from pm_engine.app import update_adapters
+from pm_engine.app import update_render
+from pm_engine.infra import engine_transfer as engine_copy_io
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -83,9 +86,15 @@ def _load(name: str, filename: str):
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update", "pm_update.py")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update", "pm_update.py"))
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 @pytest.fixture(scope="module")
@@ -733,8 +742,8 @@ def test_sync_path_reports_missing_entrypoint_without_blocking(
     (source / "templates" / "codex" / ".codex").mkdir(parents=True)
     _plant_upstream_package(source)
 
-    result = pm_update.check_adapter_hook_sets(dest, source)
-    pm_update._print_adapter_hook_set_finding(result, dry_run=False)
+    result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
+    update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
     err = capsys.readouterr().err
 
     assert result["status"] == "ok" and result["findings"] == []
@@ -743,7 +752,7 @@ def test_sync_path_reports_missing_entrypoint_without_blocking(
     assert "어댑터 훅 진입점 누락(codex)" in err
     for event in set(_CODEX_ENTRYPOINT_EVENTS) - {"PreToolUse"}:
         assert event in err, event
-    assert not pm_update._adapter_hook_set_gate_failed(result), \
+    assert not update_adapters._adapter_hook_set_gate_failed(result), \
         "advisory 축이 완료 게이트를 막았다 — 훅을 끈 채택자의 흡수가 영구히 잠긴다"
 
 
@@ -755,8 +764,8 @@ def test_sync_path_is_silent_when_every_entrypoint_is_present(
     (source / "templates" / "codex" / ".codex").mkdir(parents=True)
     _plant_upstream_package(source)
 
-    result = pm_update.check_adapter_hook_sets(dest, source)
-    pm_update._print_adapter_hook_set_finding(result, dry_run=False)
+    result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
+    update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
 
     assert result["entrypoints"] == []
     assert "진입점" not in capsys.readouterr().err
@@ -771,11 +780,11 @@ def test_sync_path_reports_mixed_generation_loudly_and_blocks(pm_update, tmp_pat
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
 
-    result = pm_update.check_adapter_hook_sets(dest, source)
-    pm_update._print_adapter_hook_set_finding(result, dry_run=False)
+    result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
+    update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
 
     assert result["status"] == "ok" and len(result["findings"]) == 1
-    assert pm_update._adapter_hook_set_gate_failed(result)
+    assert update_adapters._adapter_hook_set_gate_failed(result)
     err = capsys.readouterr().err
     assert "훅 세트 세대 불일치" in err, err
     assert _GIT_ANCHOR_FLAG in err and _DRIVER_REL in err, err
@@ -788,10 +797,10 @@ def test_sync_path_is_silent_when_generations_match(pm_update, tmp_path, capsys)
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
 
-    result = pm_update.check_adapter_hook_sets(dest, source)
-    pm_update._print_adapter_hook_set_finding(result, dry_run=False)
+    result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
+    update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
 
-    assert not pm_update._adapter_hook_set_gate_failed(result)
+    assert not update_adapters._adapter_hook_set_gate_failed(result)
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
 
@@ -864,11 +873,11 @@ def test_apply_writes_hook_set_atomically_and_others_in_place(pm_update, tmp_pat
     tool_inode = tool_dst.stat().st_ino
 
     atomic_calls: list[str] = []
-    original = pm_update._atomic_copy2
-    monkeypatch.setattr(pm_update, "_atomic_copy2",
+    original = engine_copy_io._atomic_copy2
+    monkeypatch.setattr(engine_copy_io, "_atomic_copy2",
                         lambda src, dst: (atomic_calls.append(str(dst)), original(src, dst))[1])
 
-    pm_update.apply([
+    update_render.apply(pm_paths.home_at(pm_update.REPO), [
         (_WRAPPER_REL, hook_src, hook_dst, "M"),
         (".project_manager/tools/board.py", tool_src, tool_dst, "M"),
     ])
@@ -911,18 +920,18 @@ def test_apply_uses_source_generation_declaration_not_the_installed_one(
     hook_src.write_text("# 신 훅\n", encoding="utf-8")
     hook_inode = hook_dst.stat().st_ino
 
-    installed = pm_update.resolve_hook_set_predicate()
-    incoming = pm_update.resolve_hook_set_predicate(source)
+    installed = hook_sets.resolve_hook_set_predicate(pm_paths.home_at(pm_update.REPO))
+    incoming = hook_sets.resolve_hook_set_predicate(pm_paths.home_at(pm_update.REPO), source)
     assert not installed(_NEXT_GENERATION_HOOK_REL), \
         "픽스처 전제 붕괴 — 설치된 세대가 이미 그 경로를 안다"
     assert incoming(_NEXT_GENERATION_HOOK_REL), "상류 세대 선언이 해소되지 않았다"
 
     atomic_calls: list[str] = []
-    original = pm_update._atomic_copy2
-    monkeypatch.setattr(pm_update, "_atomic_copy2",
+    original = engine_copy_io._atomic_copy2
+    monkeypatch.setattr(engine_copy_io, "_atomic_copy2",
                         lambda src, dst: (atomic_calls.append(str(dst)),
                                           original(src, dst))[1])
-    pm_update.apply([(_NEXT_GENERATION_HOOK_REL, hook_src, hook_dst, "M")],
+    update_render.apply(pm_paths.home_at(pm_update.REPO), [(_NEXT_GENERATION_HOOK_REL, hook_src, hook_dst, "M")],
                     is_hook_set_path=incoming)
 
     assert atomic_calls == [str(hook_dst)], atomic_calls
@@ -937,7 +946,7 @@ def test_source_generation_predicate_falls_back_to_local_when_absent(
     source = tmp_path / "framework"
     source.mkdir()
 
-    predicate = pm_update.resolve_hook_set_predicate(source)
+    predicate = hook_sets.resolve_hook_set_predicate(pm_paths.home_at(pm_update.REPO), source)
 
     assert predicate(_WRAPPER_REL), "폴백이 로컬 세대 선언을 못 읽었다"
     assert not predicate(".project_manager/tools/board.py")
@@ -1822,7 +1831,7 @@ def test_sync_check_surfaces_the_query_axis_downgrade_reason(pm_update, tmp_path
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
         upstream_tail=None)
 
-    result = pm_update.check_adapter_hook_sets(dest, source)
+    result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
 
     err = capsys.readouterr().err
     assert result["status"] == "ok" and result["findings"] == [], result
@@ -1949,7 +1958,7 @@ def test_query_fallback_wording_has_one_owner(pm_update, pm_config,
         hook_sets.hook_set_declarations(_run_home(tmp_path), source))
     assert owned and "설치본 선언으로 판정한다" in owned[0], owned
 
-    pm_update.check_adapter_hook_sets(dest, source)
+    update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
     sync_err = capsys.readouterr().err
     pm_config.cmd_sync_adapter_config(
         _accept_args(source, check=True), dest_root=dest)

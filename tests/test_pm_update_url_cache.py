@@ -29,6 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 from pm_engine.infra import upstream_git
+from pm_engine.infra import install_conf
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -53,9 +54,15 @@ def _load(name: str):
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 @pytest.fixture(scope="module")
@@ -111,7 +118,7 @@ def _dest_with_url_upstream(dest: Path, url: str, extra: str = "") -> Path:
 
 
 def _conf(pm_update, dest: Path) -> dict:
-    return pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
 
 
 def _head(repo: Path) -> str:

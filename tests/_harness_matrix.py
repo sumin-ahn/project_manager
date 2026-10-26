@@ -9,7 +9,7 @@
 
 ## 파생 원칙 (손-열거 금지 · [[ADR-0006]])
   - `pm_import.HARNESS_TEMPLATE_DIRS` = 하네스 → `templates/` 어댑터 트리 디렉토리명(엔진 권위 목록).
-  - `templates/<dir>/` 디렉토리 실존 = "디렉토리 존재만으로 발견"(pm_update.resolve_target_root).
+  - `templates/<dir>/` 디렉토리 실존 = "디렉토리 존재만으로 발견"(infra.shipping_targets.resolve_target_root).
 `HARNESSES` = 그 둘의 **교집합**(단일-어댑터 하네스만). 새 하네스가 제대로
 추가되면(상수 + 디렉토리) 게이트에 자동 편입되고, `templates/` 밑 stray 디렉토리(빈 dir·파일만
 있는 dir·`.hidden`)는 상수에 없어 **하네스로 오인되지 않는다**(파생 로직 자체의 강건성).

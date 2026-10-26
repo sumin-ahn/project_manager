@@ -261,7 +261,7 @@ def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path
 def _conf_values(conf_path: Path, updates) -> dict[str, str]:
     """local.conf 값에 `updates`(None·빈 값은 줄 삭제)를 덮은 제안 값 — 옛 키가 남았거나 들어오면 멈춘다.
 
-    저장(`pm_update.apply_conf`)의 모든 반영 단계와 이 모듈의 반영이 같은 값 하나를 쓴다."""
+    저장(`app.conf_apply.apply_conf`)의 모든 반영 단계와 이 모듈의 반영이 같은 값 하나를 쓴다."""
     loaded = conf_store.load(conf_path)
     conf_schema.assert_no_legacy(loaded)
     values = {key: value for key, value in loaded.values.items() if key not in (updates or {})}

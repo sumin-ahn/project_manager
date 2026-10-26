@@ -44,6 +44,8 @@ from pm_engine.app import ticket_access
 from pm_engine.infra import conf_store
 from pm_engine.infra import lease_store
 from pm_engine.infra import ticket_store
+from pm_engine.app import update_render
+from pm_engine.app import upstream_revisions
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1873,7 +1875,7 @@ def test_render_leak_fires_on_rendered_tree_with_localconf(board, monkeypatch, t
 # local.conf 트리 게이트는 도그푸딩 worktree(adopter#0·local.conf 보유)를 못 가른다. 그 트리의
 # 토큰-form 출하 원본은 `templates/<harness>/` 사본과 byte-identical 인지로 파일 단위 판정한다
 # (`_template_mirror_state`). 후보는 손-열거가 아니라 세 겹 파생 —
-# `pm_update.discover_target_names()`(이름) + `resolve_target_root`(symlink 탈출 거부) +
+# `shipping_targets.discover_target_names(home)`(이름) + `resolve_target_root`(symlink 탈출 거부) +
 # 그 템플릿 manifest 의 `@render` 선언 범위(성격·범위). 무관 `templates/<이름>/` 우연 일치·
 # 빈 manifest 흉내·`templates/alias -> ..` 자기참조 면제를 전부 봉쇄한다.
 
@@ -2018,7 +2020,7 @@ def test_render_leak_template_mirror_rejects_symlink_escape(board, monkeypatch, 
 
     링크를 허용하면 candidate 가 루트 산출물 *자기 자신*으로 해소돼 byte-identical 이 자명
     성립한다 — 한 줄 symlink 로 render-leak 백스톱 전체가 무력화된다. 후보 트리는
-    `pm_update.resolve_target_root`(resolve 후 parent 가 `templates/` 실경로) 로 걸러낸다.
+    `shipping_targets.resolve_target_root`(resolve 후 parent 가 `templates/` 실경로) 로 걸러낸다.
     """
     fake_repo = tmp_path / "symlink_root"
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
@@ -2228,33 +2230,6 @@ def test_template_mirror_missing_copy_in_scope_is_drift(board, monkeypatch, tmp_
     assert board.lint_render_leak() == [], "전 타깃 전파 후에도 면제되지 않았다."
 
 
-def test_template_mirror_no_exemption_without_pm_update_seam(board, monkeypatch, tmp_path):
-    """pm_update 로드 실패 → 면제 없음(보수 방향·면제는 특권이지 기본값이 아니다).
-
-    판정원(`discover_target_names`·`resolve_target_root`)이 없으면 후보 0 →
-    byte-identical 사본이 있어도 mirror 로 인정하지 않는다. lint 경유가 아니라 술어를 직접
-    단언한다.
-    """
-    fake_repo = tmp_path / "seam_root"
-    _write_root_manifest(fake_repo, ".claude/agents @render\n")
-    adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
-    _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
-                             adapter.read_text(encoding="utf-8"))
-    monkeypatch.setattr(board, "REPO", fake_repo)
-
-    assert (board._template_mirror_report(adapter, ".claude/agents/architect.md")[0]
-            == board._TEMPLATE_MIRROR_IDENTICAL), (
-        "정상 seam 에서는 byte-identical 출하 원본이 mirror 로 인정돼야 한다(대조군)."
-    )
-
-    monkeypatch.setattr(board, "_load_pm_update_module", lambda: None)
-    assert board._shipping_template_render_scopes() == []
-    assert not (board._template_mirror_report(adapter, ".claude/agents/architect.md")[0]
-            == board._TEMPLATE_MIRROR_IDENTICAL), (
-        "pm_update 로드 실패인데 면제가 났다 — 판정원 부재 시엔 면제하지 않아야 한다."
-    )
-
-
 def test_render_leak_differing_mirror_message_hints_propagation(board, monkeypatch, tmp_path):
     """전파-대상(적용 후보 있음)인데 drift 면 finding 에 전파 누락 힌트를 붙인다.
 
@@ -2369,7 +2344,7 @@ def test_render_leak_public_claude_token_form_mirrors_are_clean(board, monkeypat
 # ── render-leak 이 @render 하위 *모든 텍스트 파일*을 스캔 (T-0427·확장자 열거 세 번째 지점 마감) ──
 # 옛 구현은 `rglob("*.md")` 로만 순회해 .toml·.json·.yaml·확장자 없는 텍스트의 미해소 토큰을
 # 놓쳤다(codex `.codex/agents/*.toml` 이 정확히 이 갭을 통과) — blocking 백스톱이 조용히 반쪽.
-# 텍스트 판정은 pm_update._is_text_source 를 **공유**하고(세 번째 사본 신설 0), 바이너리는 크래시
+# 텍스트 판정은 update_render._is_text_source 를 **공유**하고(세 번째 사본 신설 0), 바이너리는 크래시
 # 없이 건너뛴다(`except (UnicodeDecodeError, OSError)`). fixture 는 성공 입력만 고르지 않도록
 # 실 바이너리·비-ASCII 파일명/내용·빈 디렉토리·부재 경로를 직접 심는다.
 
@@ -2470,14 +2445,13 @@ def test_render_leak_binary_survives_when_text_judgment_lies(board, monkeypatch,
                         data=b"\xff\xfe\x00\x01{{PROJECT_NAME}}\x80\x81")
     monkeypatch.setattr(board, "REPO", fake_repo)
 
-    lying = SimpleNamespace(_is_text_source=lambda p: True)  # 바이너리도 '텍스트'라 우김
-    monkeypatch.setattr(board, "_load_pm_update_module", lambda: lying)
+    monkeypatch.setattr(update_render, "_is_text_source", lambda p: True)  # 바이너리도 '텍스트'라 우김
 
     board.lint_render_leak()  # 예외 없이 반환해야 함(넓힌 except 가 UnicodeDecodeError 흡수)
 
 
 def test_render_leak_delegates_text_judgment_to_pm_update(board, monkeypatch, tmp_path):
-    """판정 공유(DoD): 텍스트 판정을 pm_update._is_text_source 에 **위임**함을 박제(세 번째 사본 0).
+    """판정 공유(DoD): 텍스트 판정을 update_render._is_text_source 에 **위임**함을 박제(세 번째 사본 0).
 
     render 채널이 쓰는 그 함수를 호출한다 — 스텁이 False 를 주면(그 파일 텍스트 아님) 스캔에서
     빠져야 한다. board 가 확장자 재열거 등 자체 인라인 판정으로 회귀하면 스텁이 무시돼 red.
@@ -2494,8 +2468,7 @@ def test_render_leak_delegates_text_judgment_to_pm_update(board, monkeypatch, tm
         calls.append(str(p))
         return False  # 전부 '텍스트 아님' 강제 → 스캔에서 빠져야
 
-    stub = SimpleNamespace(_is_text_source=_stub_is_text_source)
-    monkeypatch.setattr(board, "_load_pm_update_module", lambda: stub)
+    monkeypatch.setattr(update_render, "_is_text_source", _stub_is_text_source)
 
     issues = board.lint_render_leak()
     assert calls, "_is_text_source 미호출 — 판정이 공유되지 않고 인라인 사본일 가능성(세 번째 지점)"
@@ -2706,7 +2679,7 @@ def test_adapter_drift_neutral_when_seen_is_older_than_baseline(board, monkeypat
 def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch, tmp_path):
     """연결 검증(T-0413) — 경로 upstream sync 1회 후 lint 의 adapter-drift 가 실제로 0이 된다.
 
-    엔진 기록(pm_update.record_upstream_rev_baseline)과 판정(board.lint_adapter_drift)을 실
+    엔진 기록(upstream_revisions.record_upstream_rev_baseline)과 판정(board.lint_adapter_drift)을 실
     local.conf 파일로 이어 붙인다 — 두 쪽 단위테스트가 각자 green 이어도 배선이 끊기면 거짓
     경보가 남으므로, 어긋난 conf(baseline 신·seen 구)가 sync 로 수렴함을 파일 왕복으로 본다.
     """
@@ -2728,7 +2701,7 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
     assert len(conf_lint.lint_adapter_drift(board._home())) == 1
 
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "converged9999")
-    assert pm_update.record_upstream_rev_baseline(dest, source) is True
+    assert upstream_revisions.record_upstream_rev_baseline(dest, source) is True
 
     assert conf_lint.lint_adapter_drift(board._home()) == [], \
         f"경로 sync 후에도 drift advisory 잔존: {local_conf.read_text(encoding='utf-8')!r}"

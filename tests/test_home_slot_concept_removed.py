@@ -22,6 +22,7 @@ from pathlib import Path
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.infra import fs
+from pm_engine.app import update_finish
 import pytest
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
@@ -150,7 +151,7 @@ def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
             release.wait(_RELEASE_WAIT_SECONDS)
 
     def migrate():
-        dropped.append(pm_update.drop_self_lease_rows(dest, write=True))
+        dropped.append(update_finish.drop_self_lease_rows(dest, write=True))
         done.set()
 
     holder_thread = threading.Thread(target=holder)

@@ -65,6 +65,9 @@ from pm_engine.infra import upstream_git
 from pm_engine.infra import fs
 from pm_engine.infra import python_env
 from pm_engine.infra import repo_files
+from pm_engine.app import update_adapters
+from pm_engine.app import update_manifest
+from pm_engine.app import update_plan
 
 REPO = Path(__file__).resolve().parents[1]
 # 설치·추가를 실행하는 엔진 Home(이 checkout).
@@ -74,7 +77,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _track_source_tree(root: Path) -> None:
@@ -158,12 +161,18 @@ def pm_config():
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(mod)
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 @pytest.fixture(autouse=True)
@@ -2197,7 +2206,7 @@ def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_updat
 
     # 디렉터리 선언을 실제 파일로 펼친 관리 plan에도 opencode 산출물이 실린다.
     empty_dest = tmp_path / "empty-plan"
-    changes, missing = pm_update.plan(REPO, installed, dest_root=empty_dest, conf=_local_conf_of(pm_update, empty_dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), REPO, installed, dest_root=empty_dest, conf=_local_conf_of(pm_update, empty_dest))
     opencode_files = {
         str(rel).replace("\\", "/")
         for rel, _src, _dst, _kind in changes
@@ -2433,7 +2442,7 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     user_bytes = b"# user-owned stray; must survive\n"
     stray.write_bytes(user_bytes)
 
-    selected = pm_update.resolve_manifest_selfheal(dest, REPO)
+    selected = update_manifest.resolve_manifest_selfheal(dest, REPO)
     selected_flavors = {
         path.parents[1].name
         for path in selected["upstream_manifests"]
@@ -2490,7 +2499,7 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
         paths for path, paths in candidate_paths.items()
         if path != stray_manifest
     ))
-    evidence_paths = set(pm_update._flavor_exclusive_paths(
+    evidence_paths = set(update_manifest._flavor_exclusive_paths(
         manifest_store.read_manifest(stray_manifest), other_paths
     )) - local_core_paths
     if stray_flavor == "opencode":
@@ -2518,7 +2527,7 @@ def test_legacy_opencode_manifest_provenance_upgrade_avoids_bare_source_rc2(
         re.sub(r"\s+@source=\S+", "", manifest.read_text(encoding="utf-8")),
         encoding="utf-8",
     )
-    preview = pm_update.resolve_manifest_selfheal(dest, REPO)
+    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
     assert preview["status"] == "heal"
     assert preview["added"] == []
     assert preview["provenance_upgrade"] is True
@@ -2554,7 +2563,7 @@ def test_legacy_opencode_primary_with_missing_file_heals_in_one_run(
     victim.unlink()
     assert not victim.exists(), "가드 fixture가 manifest 엔트리 경로 자체를 제거하지 못함"
 
-    preview = pm_update.resolve_manifest_selfheal(dest, REPO)
+    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
     assert preview["status"] == "heal"
     assert preview["provenance_upgrade"] is True
     assert preview["upstream_manifests"][0].parents[1].name == "opencode", \
@@ -2585,7 +2594,7 @@ def test_declared_claude_manifest_with_opencode_tree_warns_without_promoting(
     dest_manifest = dest / ".project_manager" / "engine.manifest"
     dest_manifest.write_bytes(claude_manifest.read_bytes())
 
-    preview = pm_update.resolve_manifest_selfheal(dest, REPO)
+    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
     assert not preview.get("multi_flavor_recovery")
     diagnostic = capsys.readouterr().err
@@ -2614,7 +2623,7 @@ def test_declared_clean_claude_adopter_has_no_frozen_warning(
         REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
     )
 
-    preview = pm_update.resolve_manifest_selfheal(dest, REPO)
+    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
     assert "미등재 flavor 파일 관측" not in capsys.readouterr().err
 
@@ -2652,7 +2661,7 @@ def test_declared_claude_with_opencode_guest_has_channel_not_frozen_warning(
     # 절이 어댑터 엔진 파일을 담는다(채널 존재의 근거).
     guest_engine = {
         str(e).replace("\\", "/")
-        for e in pm_update._dest_guest_manifest_entries(dest)
+        for e in update_manifest._dest_guest_manifest_entries(dest)
         if not getattr(e, "render", False)
     }
     assert ".opencode/pm_orch_opencode.py" in guest_engine, \
@@ -2702,7 +2711,7 @@ def test_codex_rules_converge_on_update_for_main_harness_and_guest(
 
     guest_engine_rows = {
         str(entry).replace("\\", "/")
-        for entry in pm_update._dest_guest_manifest_entries(guest_dest)
+        for entry in update_manifest._dest_guest_manifest_entries(guest_dest)
         if not getattr(entry, "render", False)
     }
     assert rules_rel in guest_engine_rows, (
@@ -2756,7 +2765,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
         for flavor in dirs
     ])["text"].encode("utf-8")
 
-    preview = pm_update.resolve_manifest_selfheal(dest, REPO)
+    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
     diagnostic = capsys.readouterr().err
     assert "미등재 flavor 파일 관측" in diagnostic
@@ -4737,7 +4746,7 @@ def test_add_harness_registers_flavor_engine_rows(
         f"추가/제거했다면 _GUEST_ENGINE_ROW_COUNT 를 갱신하라: {sorted(expected)}")
 
     add_harness.add_harness(ENGINE_HOME, dest, added, dry_run=False, source_root=REPO)
-    block_entries = pm_update._dest_guest_manifest_entries(dest)
+    block_entries = update_manifest._dest_guest_manifest_entries(dest)
     engine_rows = [e for e in block_entries if not getattr(e, "render", False)]
     got = {str(e).replace("\\", "/") for e in engine_rows}
     assert got == expected, (
@@ -4793,7 +4802,7 @@ def test_render_managed_relpaths_excludes_guest_engine_rows(pm_import, pm_update
     managed = import_render._render_managed_relpaths(dest)
     engine_paths = {
         str(e).replace("\\", "/")
-        for e in pm_update._dest_guest_manifest_entries(dest)
+        for e in update_manifest._dest_guest_manifest_entries(dest)
         if not getattr(e, "render", False)
     }
     assert engine_paths, "픽스처 전제 붕괴 — guest 엔진 행이 하나도 등재되지 않았다"
@@ -5071,10 +5080,10 @@ def test_add_harness_claude_guest_survives_pm_update_roundtrip(pm_import, pm_upd
     assert ".claude/agents" in {str(e) for e in manifest_store.read_manifest(mani) if getattr(e, "render", False)}
     # 2차 sync 무churn — engine.manifest 가 plan changes 에 없음.
     manifest = manifest_store.read_manifest(manifest_store.resolve_manifest_for_dest(oc, REPO))
-    sh = pm_update.resolve_manifest_selfheal(oc, REPO)
+    sh = update_manifest.resolve_manifest_selfheal(oc, REPO)
     if sh["manifest"] is not None:
         manifest = sh["manifest"]
-    changes, _m = pm_update.plan(REPO, manifest, dest_root=oc, conf=_local_conf_of(pm_update, oc))
+    changes, _m = update_plan.plan(pm_paths.home_at(pm_update.REPO), REPO, manifest, dest_root=oc, conf=_local_conf_of(pm_update, oc))
     assert not any(str(r).replace("\\", "/") == ".project_manager/engine.manifest"
                    for r, _s, _d, _k in changes), "claude guest 절로 engine.manifest 영구 churn"
 
@@ -5385,7 +5394,7 @@ def test_pm_update_diverged_selfheal_keeps_local_only_core_declaration(
     user_bytes = b"# USER GUEST OVERRIDE\n"
     guest_file.write_bytes(user_bytes)
 
-    preview = pm_update.resolve_manifest_selfheal(dest, fw)
+    preview = update_manifest.resolve_manifest_selfheal(dest, fw)
     assert preview["status"] == "diverged"
     assert ".local/custom-core" in preview["removed"]
     assert preview["manifest"] is None
@@ -6097,7 +6106,7 @@ def test_sync_updates_legacy_raw_digest_managed_config_without_requiring_accept(
     assert adapter_baseline.file_sha256(hooks) != adapter_baseline.content_sha256(hooks), \
         "픽스처가 CRLF 축을 싣지 못했다(구 원장 상태 재현 실패·공허 회귀)"
 
-    result = pm_update.sync_adapter_configs(dest, REPO, write=True)
+    result = update_adapters.sync_adapter_configs(dest, REPO, write=True)
 
     assert result["status"] == "ok"
     assert [item["relpath"] for item in result["updated"]] == [".codex/hooks.json"], \

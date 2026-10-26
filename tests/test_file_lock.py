@@ -163,7 +163,7 @@ _REPLACE_PRIMITIVE = "replace"
 _ATOMIC_REPLACE_CONSUMERS = (
     "board.py", "pm_engine/infra/codex_observation.py", "pm_engine/cli/handoff.py",
     "pm_engine/infra/adapter_baseline.py",
-    "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_update.py",
+    "pm_engine/infra/log_store.py", "pm_engine/infra/raw_output.py", "pm_engine/infra/engine_transfer.py",
     "pm_engine/infra/review_rounds.py", "pm_engine/infra/pool_store.py",
 )
 
@@ -174,7 +174,7 @@ _ATOMIC_REPLACE_CONSUMERS = (
 # `atomic_replace` 가 있으면 그것을 쓰고, 없거나 로드가 실패할 때만 loud 강등한다. 등재 밖 직접
 # 호출도, 사유가 빈 등재도 red 다 — 예외가 조용히 늘어나지 못하게 한다([[T-0729]] §결정).
 ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS: dict[tuple[str, str], str] = {
-    ("pm_update.py", "retire_manifest_paths"): (
+    ("pm_engine/infra/retired_paths.py", "retire_manifest_paths"): (
         "manifest 퇴역 파일의 원본 bytes/mode를 백업 경로로 그대로 옮겨야 하며, 전용 락 안의 "
         "동일 파일시스템 rename 자체가 계약이라 복사 후 교체 seam으로 바꿀 수 없다"
     ),
@@ -2022,7 +2022,7 @@ SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
         "**정적으로 구분되지 않는다**. 렌더는 순수 변환이라 이 판독이 상태를 만들지 않고, 호출부의 "
         "목적지 판독은 이미 seam 을 지난다"
     ),
-    ("pm_update.py", "_copy_manifest_preserving_guest"): (
+    ("pm_engine/infra/manifest_store.py", "_copy_manifest_preserving_guest"): (
         "`sp` 가 파일 경로가 아니라 **인메모리 소스**(`_ManifestTextSource`·flavor manifest "
         "합집합)일 수 있는 자리다 — 같은 문에서 `isinstance(sp, Path)` 로 갈라 경로일 때만 seam 을 "
         "지난다"

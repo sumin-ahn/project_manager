@@ -75,9 +75,15 @@ def pm_import():
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 def _import_new(pm_import, dest: Path, harness: str) -> None:

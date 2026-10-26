@@ -37,6 +37,7 @@ from pm_engine.infra import pm_paths
 from pm_engine.infra import raw_output
 from pm_engine.infra import repo_files
 from pm_engine.infra import upstream_declarations
+from pm_engine.app import update_adapters
 
 from test_adapter_hook_set_generation import (
     _DRIVER_NEW, _DRIVER_OLD, _DRIVER_REL, _SETTINGS_REL, _UPSTREAM_DECLARATION_REL,
@@ -61,9 +62,15 @@ def _load(name: str):
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 def _home(tmp_path: Path, name: str):
@@ -436,7 +443,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
     monkeypatch.setattr(pm_update, "REPO", dest)
     change = (_WRAPPER_REL, source / _WRAPPER_REL, dest / _WRAPPER_REL, "M")
     peer = (_DRIVER_REL, source / _DRIVER_REL, dest / _DRIVER_REL, "M")
-    rc = pm_update.refuse_partial_hook_set_scope([change], [change, peer], source)
+    rc = update_adapters.refuse_partial_hook_set_scope(pm_paths.home_at(pm_update.REPO), [change], [change, peer], source)
     assert rc == 1
     assert "상류 훅 세트 세대 선언을 확인할 수 없어" in capsys.readouterr().err
     assert (dest / _SETTINGS_REL).read_bytes() == config_before

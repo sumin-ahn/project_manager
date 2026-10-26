@@ -33,6 +33,7 @@ from _win_skip import _can_symlink
 from pm_engine.infra import manifest_store, pm_paths
 from pm_engine.app import add_harness
 from pm_engine.infra import install_receipt
+from pm_engine.app import update_manifest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -57,9 +58,15 @@ def pm_import():
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 @pytest.fixture(autouse=True)
@@ -197,7 +204,7 @@ def test_self_update_notation_reader_set_follows_the_receipt(
     dest = _new_instance(pm_import, tmp_path / "update_seam", "opencode")
     _erase_exclusive_evidence(dest, "opencode")
 
-    selected = pm_update._installed_entry_notation_manifests(dest, REPO, [])
+    selected = update_manifest._installed_entry_notation_manifests(dest, REPO, [])
 
     assert [p.parent.parent.name for p in selected] == ["opencode"], selected
 

@@ -46,6 +46,8 @@ from pm_engine.app import conf_lint, finish_context, regression
 
 from pm_engine.infra import conf_store
 from pm_engine.infra import install_conf
+from pm_engine.app import update_render
+from pm_engine.infra import retired_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -214,11 +216,11 @@ def test_pm_update_apply_delivers_engine_files_on_a_legacy_conf(tmp_path, capsys
     stale.write_text("# 구세대 사본\n", encoding="utf-8")
 
     # change tuple = (relpath, source, dest, kind) — planning 산출과 같은 모양이다.
-    update.apply([(".project_manager/tools/local_conf.py",
+    update_render.apply(pm_paths.home_at(update.REPO), [(".project_manager/tools/local_conf.py",
                    TOOLS / "local_conf.py", stale, "update")])
 
     assert stale.read_bytes() == (TOOLS / "local_conf.py").read_bytes()
-    update.print_conf_migration_notice(dest)
+    retired_paths.print_conf_migration_notice(dest)
     out = capsys.readouterr().out
     assert "additional_reviewer_enabled" in out and "delegate_enabled" in out
 

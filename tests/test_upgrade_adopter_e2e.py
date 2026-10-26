@@ -920,7 +920,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "ebfe28826eeaacbc95a2a3b4008e4c5540d9a53436e21cfba7abea57493155a4"
+_T0585_PM_UPDATE_SHA256 = "f1a5b2ceb0fb1cad523efae40bcbe1d4bd32ca410ce0645fd3ccc9a4b2e5ddd8"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1026,7 +1026,7 @@ def _reverse_harness_ctx_apply(source: str) -> str:
 # updater 의 `--paths` 단독 자기 배달이 바로 그 세대의 동작이다.
 _TWO_PROCESS_UPDATE_REVERSALS = (
     "    if handoff is None and not args.target:\n"
-    "        return _transfer_engine_code(args, raw_argv, scope_paths)\n",
+    "        return _transfer_engine_code(home, args, raw_argv, scope_paths)\n",
     "    # 내보내기의 `--paths` 도 같은 규칙이다 — 엔진 코드는 세대 단위로만 옮긴다.\n"
     "    if scope_paths:\n"
     "        rc = _refuse_scope_with_pending_engine_code(changes)\n"
@@ -1040,7 +1040,7 @@ _TWO_PROCESS_UPDATE_REVERSALS = (
 # 상류에서 사라진 경우)은 흡수 덕에 계획까지 갔다 — 역적용해 그 세대 동작을 되살린다.
 _RENDER_EQ_DST_RAISE = (
     "    rendered = _render_text(\n"
-    "        sp, conf, entry_notation_template, flat_command_skill,\n"
+    "        home, sp, conf, entry_notation_template, flat_command_skill,\n"
     "        codex_operational_skill, _dest_relative_path(dst, dest_root),\n"
     "    )\n"
     "    return _rendered_text_matches_dest(rendered, dst)\n"
@@ -1048,7 +1048,7 @@ _RENDER_EQ_DST_RAISE = (
 _RENDER_EQ_DST_ABSORB = (
     "    try:\n"
     "        rendered = _render_text(\n"
-    "            sp, conf, entry_notation_template, flat_command_skill,\n"
+    "            home, sp, conf, entry_notation_template, flat_command_skill,\n"
     "            codex_operational_skill, _dest_relative_path(dst, dest_root),\n"
     "        )\n"
     "    except Exception:  # noqa: BLE001 — 렌더 실패는 '다름'으로 보수 처리.\n"
@@ -1070,6 +1070,168 @@ def _reverse_two_process_update(source: str) -> str:
         source = source.replace(current, "", 1)
     assert "return _transfer_engine_code(" not in source   # 호출 지점 0
     return source
+
+
+# 갱신 본체 package 이동 역적용. 동결 updater 는 계획·적용·전달·완료 경계가 한 평면 파일에 있던 세대다.
+# 평면 진입(`pm_update.py`)과 실제 소유 모듈의 원문 정의(앞에 붙은 주석 포함)를 옛 정의 순서대로 한
+# 파일로 합친 뒤, 소유 모듈 한정자만 걷어낸다. 정의 본문·호출 형태(Home 인자 포함)는 현행 그대로다 —
+# 그 세대의 제어 흐름을 되살리는 것은 아래 역델타의 몫이고, 이 합성은 배치만 되돌린다.
+_S9_FLAT_UPDATER_ORDER = (
+    ("infra/retired_paths.py", ("RETIRED_PATH_DIRECTIVE_PREFIX", "RETIRED_PATH_LOCK_REL", "RETIRED_PATH_BACKUP_ROOT_REL",)),
+    ("infra/update_paths.py", ("_RenderDst", "_ManifestTextSource",)),
+    ("infra/retired_paths.py", ("print_conf_migration_notice", "RetiredPathError", "_retired_repo_rel", "parse_retired_path_directives", "validated_retired_path_directives", "_path_is_link_or_reparse", "_assert_no_link_components", "_retired_backup_path", "_validate_retired_path_plan", "retire_manifest_paths", "_run_retired_path_migration",)),
+    ("infra/install_conf.py", ("_read_local_conf",)),
+    ("infra/engine_transfer.py", ("_atomic_copy2",)),
+    ("app/hook_sets.py", ("resolve_hook_set_predicate",)),
+    ("app/upstream_changes.py", ("_NAME_STATUS_LABELS", "_path_under_manifest",)),
+    ("domain/manifest_rules.py", ("_ENGINE_TOOLS_PREFIX",)),
+    ("app/upstream_changes.py", ("_normalize_scope_paths",)),
+    ("domain/manifest_rules.py", ("_paths_overlap",)),
+    ("app/upstream_changes.py", ("_unregistered_scope_paths", "_in_scope_paths",)),
+    ("app/update_manifest.py", ("_dest_guest_manifest_entries",)),
+    ("app/upstream_changes.py", ("_FLAVOR_SOURCE_PREFIX",)),
+    ("app/update_manifest.py", ("_guest_declared_flavors", "_flavor_manifest_entries_by_name", "_infer_guest_flavors", "_guest_engine_backfill_entries",)),
+    ("app/upstream_changes.py", ("_refuse_unregistered_scope_paths", "_scope_validation_manifest", "_scope_change_candidates", "summarize_upstream_changes", "_resolve_dest", "_resolve_source", "_source_dir_exists", "_resolve_dest_source",)),
+    ("cli/update_changes.py", ("_run_changes",)),
+    ("app/upstream_revisions.py", ("_SEEN_REV_KEY", "_upstream_rev_updates", "_warn_missing_conf_for_rev", "record_upstream_revs", "record_upstream_rev_baseline", "converge_upstream_revs",)),
+    ("app/update_manifest.py", ("detect_manifest_skew", "_print_manifest_skew_finding", "_selfprop_upstream_rel", "_print_frozen_flavor_warning", "_flavor_exclusive_paths", "_frozen_flavor_evidence", "_print_legacy_nonmatch_warning", "_selected_upstream_manifests", "resolve_manifest_selfheal", "_print_manifest_selfheal_finding", "_print_manifest_merge_conflicts", "_installed_entry_notation_manifests",)),
+    ("app/update_render.py", ("_LOCAL_CONF_TO_OPERATIONAL", "_local_conf_operational_map", "_delegate_harness_from_local_conf", "_operational_from_local_conf",)),
+    ("infra/render_io.py", ("_DEFAULT_TEXT_NEWLINE", "_normalize_newlines", "_dominant_newline", "_path_newline", "_write_rendered_text",)),
+    ("app/update_render.py", ("_render_text", "render_skill_entry_notation", "_render_skill_entry_text", "_FLAT_COMMAND_DETAIL_LINK", "_flat_command_skill_name", "_FLAT_COMMAND_ARGUMENTS_SECTION", "_render_flat_command_reference", "_CODEX_OPERATIONAL_PATHS", "_codex_operational_skill_name", "_replace_exactly_once", "_render_codex_operational_detail", "_is_text_source", "_rendered_text_matches_dest", "_dest_relative_path", "_render_eq_dst",)),
+    ("app/update_plan.py", ("plan", "_EngineSyncNotationContextError", "_resolve_engine_sync_plan", "drift_changes",)),
+    ("app/update_manifest.py", ("_retired_manifest_files", "_RETIRED_REPORT_LIST_LIMIT", "_print_retired_manifest_files",)),
+    ("infra/manifest_store.py", ("_migrate_legacy_guest_markers",)),
+    ("app/update_manifest.py", ("_manifest_self_prop_needs_update",)),
+    ("infra/manifest_store.py", ("_reattach_guest_block", "_prune_guest_block_owned_by_core", "_merge_guest_backfill_lines", "_copy_manifest_preserving_guest",)),
+    ("app/update_render.py", ("_RenderOutput", "_render_outputs", "_write_render_outputs", "apply", "_dest_root_for",)),
+    ("app/conf_apply.py", ("_LOCAL_CONF_RELPATH", "ConfApplyError", "ConfApplyResult", "render_input_conf_keys", "_installed_generation_source", "_plan_harness_ctx", "_commit_harness_ctx", "_plan_render_outputs", "_commit_render_outputs", "_is_reasoning_profile_key", "_reasoning_values", "_plan_per_model_reasoning", "_commit_per_model_reasoning", "_STEP_CTX", "_STEP_REASONING", "_STEP_RENDER", "_ConfApplyStep", "CONF_APPLY_STEPS", "_plan_step", "_commit_step", "apply_conf",)),
+    ("infra/shipping_targets.py", ("resolve_target_root", "discover_target_names",)),
+    ("app/update_manifest.py", ("_join_guest_channels", "_resolve_planning_manifest", "_resolve_local_manifest",)),
+    ("app/entry_doc_migration.py", ("_ENTRY_DOC_MANUAL_TODO_MARKER", "_ENTRY_DOC_OLD_GEN_MARKER", "_ENTRY_DOC_PM_INSTRUCTIONS_REL", "_ENTRY_DOC_BACKUP_DIR", "_ENTRY_DOC_TOKEN_RE", "_OLD_OPENCODE_AGENTS_V1_3_5_B64", "_OLD_OPENCODE_AGENTS_GENERATIONS", "_decode_entry_doc_generation", "_entry_doc_operational_keys", "_build_entry_doc_pattern", "_match_entry_doc_generation", "_render_new_entry_doc", "_scan_array_end", "_find_toplevel_instructions", "_ensure_jsonc_instructions", "_entry_doc_backup_root", "_entry_doc_backup",)),
+    ("app/update_finish.py", ("fill_self_repo_row", "drop_self_lease_rows", "_LEGACY_SLOT_SESSION_RE", "idle_legacy_slot_session_rows",)),
+    ("app/conf_apply.py", ("ReasoningPruneError", "prune_unavailable_reasoning",)),
+    ("app/entry_doc_migration.py", ("migrate_renamed_conf_keys", "migrate_entry_doc", "_print_entry_doc_migration_finding",)),
+    ("app/update_adapters.py", ("_ADAPTER_CONFIG_ACCEPT_HINT", "_ADAPTER_CONFIG_LIST_HINT", "_ADAPTER_CONFIG_WINDOWS_HINT", "_ADAPTER_BACKUP_HINT", "_ADAPTER_CONFIG_DEST_CANDIDATES", "_has_adapter_config_candidate", "_instance_owned_template_delta_lines", "_print_instance_owned_template_delta", "sync_adapter_configs", "apply_harness_ctx_limits", "_adapter_config_gate_failed", "_print_adapter_config_finding", "check_adapter_hook_sets", "_unverified_hook_scope_paths", "_change_dest_paths", "refuse_partial_hook_set_scope", "_adapter_hook_set_gate_failed", "_print_adapter_hook_set_finding", "_read_hook_artifact", "_EXEC_BIT_MEANINGFUL", "_hook_artifact_executable", "_protected_hook_in_sync", "reinstall_protected_hooks", "_print_protected_hook_reinstall_finding", "_refuse_missing_sources",)),
+    ("app/engine_transfer.py", ("COMPLETION_ENV", "_COMPLETION_FIELDS", "CompletionHandoffError", "_take_completion_handoff",)),
+    ("domain/manifest_rules.py", ("_is_engine_code",)),
+    ("app/update_plan.py", ("_engine_code_plan",)),
+    ("app/engine_transfer.py", ("_refuse_scope_with_pending_engine_code", "_transfer_engine_code", "_launch_completion", "_relay_lines",)),
+)
+
+
+_PRE_S9_UPDATE_IMPORTS = (
+    'import argparse\n'
+    'import base64\n'
+    'import datetime\n'
+    'import filecmp\n'
+    'import hashlib\n'
+    'import io\n'
+    'import json\n'
+    'import os\n'
+    'import re\n'
+    'import shutil\n'
+    'import stat\n'
+    'import subprocess\n'
+    'import sys\n'
+    'import tempfile\n'
+    'import threading\n'
+    'import warnings\n'
+    'import zlib\n'
+    'from collections.abc import Mapping\n'
+    'from pathlib import Path, PurePosixPath, PureWindowsPath\n'
+    'from typing import NamedTuple\n'
+    '\n'
+    '_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))\n'
+    'if _TOOLS_DIR not in sys.path:\n'
+    '    sys.path.insert(0, _TOOLS_DIR)\n'
+    'from pm_engine.app import adapter_accept\n'
+    'from pm_engine.app import adapter_render\n'
+    'from pm_engine.app import adapter_report\n'
+    'from pm_engine.app import harness_ctx\n'
+    'from pm_engine.app import hook_sets\n'
+    'from pm_engine.domain import install_rules\n'
+    'from pm_engine.domain import jsonc\n'
+    'from pm_engine.domain import render_rules\n'
+    'from pm_engine.infra import install_conf\n'
+    'from pm_engine.infra import install_receipt\n'
+    'from pm_engine.infra import install_source\n'
+    'from pm_engine.infra import skill_inventory\n'
+    'from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402\n'
+    'from pm_engine.app import repo_protection\n'
+    'from pm_engine.infra import branch_store, protected_hooks\n'
+    'from pm_engine.infra import areas_store, conf_store, console, fs, manifest_store, pm_paths, repo_files  # noqa: E402\n'
+    'from pm_engine.infra import pool_store\n'
+    'from pm_engine.infra.harness import contract  # noqa: E402\n'
+    '\n'
+    'from pm_engine.app import areas_registry\n'
+    'from pm_engine.infra import upstream_git\n'
+    '\n'
+)
+
+
+def _top_level_segments(text: str) -> dict[str, str]:
+    """모듈 최상위 정의 이름 → 원문(바로 위 주석 묶음 포함)."""
+    lines = text.splitlines(keepends=True)
+    segments: dict[str, str] = {}
+    previous_end = 0
+    for node in ast.parse(text).body:
+        start = node.lineno
+        if getattr(node, "decorator_list", None):
+            start = min([start, *(decorator.lineno for decorator in node.decorator_list)])
+        attach = start
+        index = start - 1
+        while index > previous_end and (not lines[index - 1].strip()
+                                        or lines[index - 1].lstrip().startswith("#")):
+            if lines[index - 1].strip():
+                attach = index
+            index -= 1
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            name = getattr(node, "name", None)
+        if name is not None:
+            segments[name] = "".join(lines[attach - 1:node.end_lineno])
+        previous_end = node.end_lineno
+    return segments
+
+
+def _flat_updater_source() -> str:
+    """현행 평면 진입 + 소유 모듈 원문을 package 이동 전 한 파일 배치로 합친 updater 원문."""
+    tools = REPO / ".project_manager" / "tools"
+    flat = (tools / "pm_update.py").read_text(encoding="utf-8")
+    owner_leaf: dict[str, str] = {}
+    parts: list[str] = []
+    for rel, names in _S9_FLAT_UPDATER_ORDER:
+        segments = _top_level_segments((tools / "pm_engine" / rel).read_text(encoding="utf-8"))
+        # 기존 모듈을 확장한 자리는 그 모듈의 다른 정의를 같은 모듈 안에서 맨 이름으로 부른다 —
+        # 평면 파일로 옮기면 그 모듈 한정자를 붙인다.
+        stay = set(segments) - set(names)
+        for name in names:
+            assert name not in owner_leaf, name
+            owner_leaf[name] = Path(rel).stem
+            segment = segments[name]
+            for node in sorted((node for node in ast.walk(ast.parse(segment))
+                                if isinstance(node, ast.Name) and node.id in stay),
+                               key=lambda node: (node.lineno, node.col_offset), reverse=True):
+                lines = segment.splitlines(keepends=True)
+                line = lines[node.lineno - 1]
+                lines[node.lineno - 1] = (line[:node.col_offset] + f"{Path(rel).stem}."
+                                          + line[node.col_offset:])
+                segment = "".join(lines)
+            parts.append(segment.rstrip("\n") + "\n")
+
+    def unqualify(text: str) -> str:
+        def replace(match: re.Match) -> str:
+            return match.group(2) if owner_leaf.get(match.group(2)) == match.group(1) else match.group(0)
+        return re.sub(r"(?<![\w.])(?:pm_engine\.(?:app|cli|domain|infra)\.)?(\w+)\.(\w+)\b", replace, text)
+
+    head, rest = flat.split("import argparse\n", 1)
+    _imports, rest = rest.split("REPO = Path(__file__)", 1)
+    before_main, after_main = rest.split("\n\ndef _main(", 1)
+    return (head + "".join(_PRE_S9_UPDATE_IMPORTS) + "REPO = Path(__file__)" + before_main
+            + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(after_main))
 
 
 def _slice_replace(source: str, start_marker: str, end_marker: str, replacement: str) -> str:
@@ -1521,9 +1683,14 @@ def _t0585_pm_update_source() -> str:
     현행 문구로 맞췄다. `_main`·`plan`·`apply`·`_adapter_config_gate_failed` 의 AST 는 기준 HEAD 와
     같고, marker 4곳과 시대착오 부재 단언을 선통과한 뒤 RUN1 의 결함 제어 흐름·RUN2 전파를 실행으로
     확인하고 지문을 재수집했다.
+
+    갱신 본체 package 이동 반영: 계획·적용·전달·완료 정의가 소유 모듈로 옮겨 가 평면 파일에는 CLI 만
+    남았다. 원문은 `_flat_updater_source` 가 소유 모듈 원문을 옛 정의 순서로 합친 평면 파일에서 시작한다
+    (배치만 되돌리고 본문은 현행). 실행 Home 첫 인자가 생긴 세 anchor(전달 분기·렌더 실패 흡수·적용
+    호출)는 현행 호출 형태로 맞췄고 시대착오 부재 단언도 현행 호출 형태로 옮겼다. marker 전부가 유일
+    해소되고 RUN1 의 결함 제어 흐름·RUN2 의 수용 게이트를 실행으로 확인한 뒤 지문을 재수집했다.
     """
-    source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
-        encoding="utf-8")
+    source = _flat_updater_source()
     source = _slice_replace(
         source,
         "# 채널 판정 전에 적용 여부를 가르는 최소 좌표.\n",
@@ -1609,7 +1776,7 @@ def _t0585_pm_update_source() -> str:
         source,
         "    # 훅 세트 판정자는 **상류 세대**로 미리 해소해 넘긴다",
         "    print(f\"✓ {transferred + len(changes)} 파일 동기화\")",
-        "    apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).\n",
+        "    apply(home, changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).\n",
     )
     source = _reverse_harness_ctx_apply(source)
     source = _reverse_two_process_update(source)
@@ -1618,7 +1785,7 @@ def _t0585_pm_update_source() -> str:
     # 세대 시대착오 부재를 **기계로** 못박는다 — 전제(“codex 판정이 늘 빈 결과”)에 기대지 않는다.
     #   대조 대상은 `_main` 의 **호출 지점**이다(`apply` 시그니처의 기본값 파라미터는 호출하지
     #   않으면 발화하지 않으므로 이 합성본의 동작 축이 아니다).
-    for anachronism in ("check_adapter_hook_sets(effective_dest",
+    for anachronism in ("check_adapter_hook_sets(home, effective_dest",
                         "is_hook_set_path=resolve_hook_set_predicate(",
                         "not apply_harness_ctx_limits("):
         assert anachronism not in source, (
@@ -1639,7 +1806,7 @@ def _install_t0585_updater(dest: Path) -> None:
     # 동결 source의 SHA는 그대로 확인한다. 제거된 target board 적재 구간만 현재 데이터
     # 공급자로 교체해 실제 adapter planning/apply/RUN2 게이트 검증을 유지한다.
     source = _t0585_pm_update_source()
-    current = (REPO / ".project_manager/tools/pm_update.py").read_text(encoding="utf-8")
+    current = (REPO / ".project_manager/tools/pm_engine/app/update_finish.py").read_text(encoding="utf-8")
     old_node = next(n for n in ast.parse(source).body if getattr(n, "name", None) == "fill_self_repo_row")
     new_node = next(n for n in ast.parse(current).body if getattr(n, "name", None) == "fill_self_repo_row")
     source = source.replace(ast.get_source_segment(source, old_node),
@@ -1673,7 +1840,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
 # T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
 # 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "ffd9c4b394e2a88d35a1a2f4faf53087c662741d5acbe8626ac8ee56708bc7bf"
+_PRE_T0876_PM_UPDATE_SHA256 = "d5be6592588c04fbc4d54e70b713ade61575427dc46fe1abce68e36c6eaf80cb"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1762,9 +1929,13 @@ def _pre_t0876_pm_update_source() -> str:
     어댑터·ctx 공급자를 package 소유자의 직접 호출로 바꿨다. 퇴역 경로 delta 의 exact-marker 는 그대로
     유일 해소되고, RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)와
     `_main`·`plan`·`apply` 의 AST 는 무편집이다. 실행 확인 뒤 합성본 지문만 갱신했다.
+
+    갱신 본체 package 이동 반영: 원문은 `_flat_updater_source` 가 소유 모듈 원문을 옛 정의 순서로 합친
+    평면 파일에서 시작한다. 퇴역 경로 delta 의 exact-marker 는 그대로 유일 해소되고(전달 분기 anchor 만
+    실행 Home 인자를 포함한 현행 호출 형태로 맞췄다), RUN1 의 단독 자기 배달과 RUN2 의 구 파일 퇴역을
+    실행으로 확인한 뒤 합성본 지문만 갱신했다.
     """
-    source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
-        encoding="utf-8")
+    source = _flat_updater_source()
     # T-0878은 아래 T-0876 은퇴 기능 위에 쌓인 flavor 자기치유 보강이다. 먼저 그 delta만
     # exact-marker로 걷어내야 이어지는 T-0876 역적용이 역사적 구 source bytes로 수렴한다.
     source = _slice_replace(

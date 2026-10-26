@@ -49,6 +49,7 @@ from _harness_matrix import (
 )
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.infra import manifest_store
+from pm_engine.app import update_render
 
 
 def _load_pm_render():
@@ -123,7 +124,7 @@ def _shipping_texts(harness: str) -> list[Path]:
         path
         for path in repo_owned_paths(REPO, root.relative_to(REPO), mode=OWNED)
         # 확장자 목록을 만들지 않고 board render-leak과 같은 production 판정을 재사용한다.
-        if _PM_UPDATE._is_text_source(path)
+        if update_render._is_text_source(path)
         # tools 사본은 모든 하네스에 byte-identical인 엔진 backbone이다. 하네스별 어댑터 진입
         # 표면이 아니며 per-harness 치환 대상이 아니므로 제외한다. hook/config/JS/driver는 포함한다.
         if ".project_manager/tools" not in path.as_posix()
@@ -134,7 +135,7 @@ def _shared_docs(root: Path = REPO / ".project_manager" / "wiki") -> list[Path]:
     return sorted(
         path
         for path in repo_owned_paths(REPO, root.relative_to(REPO), mode=OWNED)
-        if _PM_UPDATE._is_text_source(path)
+        if update_render._is_text_source(path)
     )
 
 

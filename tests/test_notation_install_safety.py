@@ -43,6 +43,7 @@ from pm_engine.infra import manifest_store
 from pm_engine.app import add_harness
 from pm_engine.infra import install_receipt
 from pm_engine.infra import pm_paths
+from pm_engine.app import update_manifest
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -657,7 +658,7 @@ def test_self_update_on_adopter_owned_codex_tree_injects_no_codex_notation(rende
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
          "--from", str(REPO), "--name", "OwnCodexUpdate"]) == 0
 
-    selected = pm_update._installed_entry_notation_manifests(dest, REPO, [])
+    selected = update_manifest._installed_entry_notation_manifests(dest, REPO, [])
     assert [p.parent.parent.name for p in selected] == ["claude_code"], selected
 
     contexts = manifest_store._entry_notation_templates_from_manifests(selected, REPO)

@@ -22,6 +22,7 @@ import pytest
 from _git_fixture import init_git_repo
 from pm_engine.app import adapter_report
 from pm_engine.infra import adapter_baseline
+from pm_engine.app import update_adapters
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -211,7 +212,7 @@ def test_crlf_checkout_sync_leaves_dest_bytes_verbatim(pm_update, tmp_path):
         tmp_path, dest_hooks=_crlf(_UPSTREAM_HOOKS), ledger_sha=_sha(_UPSTREAM_HOOKS))
     before = (dest / _HOOKS_REL).read_bytes()
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert result["status"] == "ok" and result["managed_converged"], result
     assert result["updated"] == [] and result["blocking"] == [], result
@@ -237,7 +238,7 @@ def test_legacy_raw_ledger_entry_is_backfilled_without_touching_dest(
     assert adapter_report.adapter_config_convergence_status(judgment) == "unrecorded", \
         "구 축 원장은 backfill 대상이어야 한다"
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert result["backfilled"] == [_HOOKS_REL], result
     assert result["managed_converged"], result
@@ -259,7 +260,7 @@ def test_crlf_checkout_unedited_is_accepted_not_raced(pm_import, pm_update, tmp_
     judgment = _judgment(pm_import, dest, source)
     assert judgment.status == "unedited", judgment
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert [item["relpath"] for item in result["updated"]] == [_HOOKS_REL], result
     assert result["managed_converged"], result
@@ -305,7 +306,7 @@ def test_adopter_edit_on_crlf_checkout_is_still_preserved(
     judgment = _judgment(pm_import, dest, source)
     assert judgment.status == "edited", judgment
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert [item["relpath"] for item in result["preserved"]] == [_HOOKS_REL], result
     assert (dest / _HOOKS_REL).read_bytes() == before, "채택자 편집분을 덮었다"
@@ -323,7 +324,7 @@ def test_undecodable_config_keeps_raw_bytes_judgment(pm_import, pm_update, tmp_p
     assert judgment.status == "unedited", judgment  # 원장(raw)과는 같고 template 과는 다르다
     assert judgment.dest_sha256 == _sha(_BINARY_HOOKS_CRLF)
 
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
+    result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert [item["relpath"] for item in result["updated"]] == [_HOOKS_REL], result
     assert (dest / _HOOKS_REL).read_bytes() == _BINARY_HOOKS_LF

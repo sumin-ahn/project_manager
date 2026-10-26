@@ -12,6 +12,10 @@ import pytest
 
 from _git_fixture import init_git_repo
 from pm_engine.infra import manifest_store
+from pm_engine.app import update_plan
+from pm_engine.infra import install_conf
+from pm_engine.infra import shipping_targets
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -19,7 +23,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load_pm_update():
@@ -30,15 +34,21 @@ def _load_pm_update():
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load_pm_update()
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load_pm_update())
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 # ── 심볼 존재 확인 ─────────────────────────────────────────────────────────
 
 def test_pm_update_exposes_new_symbols(pm_update):
-    assert callable(pm_update.resolve_target_root)
+    assert callable(shipping_targets.resolve_target_root)
     assert callable(manifest_store.resolve_manifest_for_dest)
     # KNOWN_TARGETS 는 제거됨 — 타깃 발견은 templates/*/ 디렉토리 존재로 (ADR-0006)
     assert not hasattr(pm_update, "KNOWN_TARGETS"), (
@@ -62,25 +72,25 @@ def test_opencode_update_command_routes_v171_bridge_without_hand_copy():
 
 def test_resolve_target_root_opencode_ok(pm_update):
     """실제 REPO/templates/opencode/ 가 있으면 REPO 기준 경로를 반환한다."""
-    result = pm_update.resolve_target_root("opencode")
+    result = shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "opencode")
     assert result == REPO / "templates" / "opencode"
 
 
 def test_resolve_target_root_claude_code_ok(pm_update):
     """실제 REPO/templates/claude_code/ 가 있으면 REPO 기준 경로를 반환한다."""
-    result = pm_update.resolve_target_root("claude_code")
+    result = shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "claude_code")
     assert result == REPO / "templates" / "claude_code"
 
 
 def test_resolve_target_root_unknown_raises(pm_update):
     """templates/ 하위에 디렉토리가 없는 타깃 이름은 FileNotFoundError 를 발생시킨다."""
     with pytest.raises(FileNotFoundError, match="알 수 없는 타깃 또는 디렉토리 없음"):
-        pm_update.resolve_target_root("nonexistent_target_xyz_should_not_exist")
+        shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "nonexistent_target_xyz_should_not_exist")
 
 
 def test_resolve_target_root_result_is_under_repo(pm_update):
     """반환 경로가 항상 REPO 하위임을 보장한다 (source 와 독립적)."""
-    result = pm_update.resolve_target_root("opencode")
+    result = shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "opencode")
     assert result.is_relative_to(pm_update.REPO), (
         f"dest({result})가 REPO({pm_update.REPO}) 하위가 아님 — source 가 오염됐을 가능성."
     )
@@ -151,7 +161,7 @@ def test_plan_with_dest_root_new_files(pm_update, tmp_path):
     _make_source(source, {".project_manager/tools/board.py": "# board"})
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert len(changes) == 1
     rel, src_path, dst_path, kind = changes[0]
@@ -168,7 +178,7 @@ def test_plan_with_dest_root_update_when_different(pm_update, tmp_path):
     _make_source(dest, {".project_manager/tools/board.py": "# old content"})
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert len(changes) == 1
     assert changes[0][3] == "update"
@@ -183,7 +193,7 @@ def test_plan_with_dest_root_no_change_when_identical(pm_update, tmp_path):
     _make_source(dest, {".project_manager/tools/board.py": content})
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert len(changes) == 0
     assert len(missing) == 0
@@ -202,7 +212,7 @@ def test_plan_without_dest_root_defaults_to_repo(pm_update, tmp_path):
     init_git_repo(source, commit="seed")
 
     manifest = [rel]
-    changes, missing = pm_update.plan(source, manifest, dest_root=None, conf=_local_conf_of(pm_update, pm_update.REPO))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=None, conf=_local_conf_of(pm_update, pm_update.REPO))
 
     # REPO 하위에 파일이 없으므로 "new" 로 계획돼야 한다
     assert len(changes) == 1
@@ -224,7 +234,7 @@ def test_resolve_target_root_dest_is_repo_not_external_source(pm_update, tmp_pat
       - --from <external> --target opencode 시 dest 가 external/templates/ 를 덮어쓰면 안 된다.
     """
     # resolve_target_root 는 이제 source 인자가 없다 — REPO 만 사용
-    dest = pm_update.resolve_target_root("opencode")
+    dest = shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "opencode")
 
     assert dest == pm_update.REPO / "templates" / "opencode"
     # 외부 경로(tmp_path)와 무관해야 한다
@@ -247,7 +257,7 @@ def test_plan_dest_is_repo_templates_when_source_is_external(pm_update, tmp_path
     dest = REPO / "templates" / "opencode"
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     # changes 가 있든 없든 dst 가 항상 dest(REPO/templates/opencode) 하위여야 한다
     for _rel, _src, dst_path, _kind in changes:
@@ -386,7 +396,7 @@ def test_resolve_target_root_uses_directory_discovery(pm_update, tmp_path, monke
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    result = pm_update.resolve_target_root("my_new_target")
+    result = shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "my_new_target")
     assert result == fake_repo / "templates" / "my_new_target"
 
 
@@ -399,7 +409,7 @@ def test_resolve_target_root_error_lists_available_targets(pm_update, tmp_path, 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     with pytest.raises(FileNotFoundError, match="alpha"):
-        pm_update.resolve_target_root("nonexistent")
+        shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "nonexistent")
 
 
 # ── 보안: path traversal 방어 ────────────────────────────────────────────────
@@ -407,31 +417,31 @@ def test_resolve_target_root_error_lists_available_targets(pm_update, tmp_path, 
 def test_resolve_target_root_rejects_dotdot(pm_update):
     """--target .. 은 path traversal 로 거부된다 (ValueError)."""
     with pytest.raises(ValueError, match="단일 path segment"):
-        pm_update.resolve_target_root("..")
+        shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "..")
 
 
 def test_resolve_target_root_rejects_dotdot_slash(pm_update):
     """--target ../x 는 path traversal 로 거부된다."""
     with pytest.raises(ValueError, match="단일 path segment"):
-        pm_update.resolve_target_root("../x")
+        shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "../x")
 
 
 def test_resolve_target_root_rejects_slash_in_name(pm_update):
     """--target a/b 는 단일 segment 가 아니므로 거부된다."""
     with pytest.raises(ValueError, match="단일 path segment"):
-        pm_update.resolve_target_root("a/b")
+        shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "a/b")
 
 
 def test_resolve_target_root_rejects_empty(pm_update):
     """--target '' (빈 문자열)는 거부된다."""
     with pytest.raises(ValueError, match="단일 path segment"):
-        pm_update.resolve_target_root("")
+        shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "")
 
 
 def test_resolve_target_root_rejects_absolute_path(pm_update):
     """--target /etc/passwd 처럼 절대 경로 형태도 거부된다."""
     with pytest.raises(ValueError, match="단일 path segment"):
-        pm_update.resolve_target_root("/etc/passwd")
+        shipping_targets.resolve_target_root(pm_paths.home_at(pm_update.REPO), "/etc/passwd")
 
 
 def test_main_target_dotdot_returns_error(pm_update, tmp_path):

@@ -101,7 +101,7 @@ def _write_conf_keys(path: Path, updates: dict[str, str | None]) -> bool:
 
     **재진입 금지** — 호출부는 이 함수를 conf 락을 쥔 채 부르지 않는다(현 호출부는 전부 락 밖:
     pm_import 의 sync_local_conf/record_*, pm_config upstream set). 이미 락을 쥔 구간
-    (install_conf.reapply_preserved_conf_keys·pm_update.record_upstream_revs)은
+    (install_conf.reapply_preserved_conf_keys·app.upstream_revisions.record_upstream_revs)은
     `_write_conf_keys_locked` 를 직접 부른다.
     """
     with fs.local_conf_write_lock(path):
@@ -193,7 +193,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
-        # conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축(pm_update.record_upstream_revs
+        # conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축(app.upstream_revisions.record_upstream_revs
         # 와 같은 규약) — "쓰지 않는다" 만 결정하고 어떤 write 계획의 입력도 아니다. 권위 판정은
         # 락 안에서 다시 한다.
         return False
@@ -313,7 +313,7 @@ def record_upstream_rev(dest_root: Path, rev: str) -> bool:
 
     drift-lint의 baseline 입력 — "마지막 동기 이후 upstream 변경분"을 재는 기준점이다
     import 시(이 함수)와 pm_update 매 sync 시 갱신된다. 현재 관찰값 `upstream.seen_rev` 는
-    **별개 키**이고 writer 도 하나뿐이다 — `pm_update.record_upstream_revs`(한 키 2역
+    **별개 키**이고 writer 도 하나뿐이다 — `app.upstream_revisions.record_upstream_revs`(한 키 2역
     금지·race/자기비교 회피). rev 가
     빈 값(git repo 아님·HEAD 해소 실패)이면 호출부가 이 함수를 부르지 않는다(기록 생략·graceful).
     공용 writer의 중복 정규화·atomic replace·실효값 검증을 거치며 다른 키·주석은 보존한다.
@@ -330,7 +330,7 @@ def record_opencode_model(dest_root: Path, model: str) -> bool:
 
     {{OPENCODE_PRO_MODEL}} 가 import 때 파일에 직접 치환되지만, local.conf 엔 안 들어가
     pm_update 의 @render 가 그 토큰을 local.conf 에서 재유도할 때(`harness.opencode.pro_model` →
-    OPENCODE_PRO_MODEL · pm_update._LOCAL_CONF_TO_OPERATIONAL) 키 부재로 leak assertion 에
+    OPENCODE_PRO_MODEL · app.update_render._LOCAL_CONF_TO_OPERATIONAL) 키 부재로 leak assertion 에
     걸려 채택자 렌더가 crash 한다. 따라서 *실제로 모델이 해소된* 경로(flag·interactive)에서만
     그 값을 local.conf 에 박아 둔다 — todo(미해소)는 토큰이 YAML 주석으로 남아 렌더 leak 이
     없으므로 기록하지 않는다(호출부 게이트). 공용 writer의 중복 정규화·atomic replace·실효값
@@ -342,3 +342,19 @@ def record_opencode_model(dest_root: Path, model: str) -> bool:
               file=sys.stderr)
         return False
     return _write_conf_keys(local_conf, {"harness.opencode.pro_model": model})
+
+
+def _read_local_conf(path: Path) -> dict[str, str]:
+    """local.conf → key=value dict (공용 로더 `conf_store.load` · **판정 없음**).
+
+    apply 경로가 이 함수를 지난다 — 구표기 conf 를 가진 채택자도 **엔진 파일은 받아야** 안내대로
+    고칠 수 있다. 그래서 여기서는 `assert_no_legacy` 를 부르지 않는다(값을 실제로 소비하는
+    지점이 부른다·§교체 절차). 미존재/읽기 실패 → {}.
+
+    파일이 없으면 형제 로더를 읽지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — 갱신 입구가
+    계획에 넘길 conf 를 한 번 읽는데, conf 가 없는 트리(init 전·출하 템플릿·형제가 빠진 복구 트리)에서
+    없는 파일을 읽으려고 형제를 싣다 멈추면 그 형제를 되살릴 동기 자신이 죽는다.
+    """
+    if not Path(path).is_file():
+        return {}
+    return conf_store.load(path).values

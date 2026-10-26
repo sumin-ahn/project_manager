@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from _git_fixture import init_git_repo
-from pm_engine.app import adapter_render, import_render, install_plan
+from pm_engine.app import adapter_render, import_render, install_plan, update_render
 from pm_engine.domain import jsonc
 from pm_engine.infra import install_files, pm_paths, repo_files, skill_inventory
 from pm_engine.infra.harness import contract
@@ -60,14 +59,13 @@ def test_install_plan_and_render_work_with_flat_library_lookup_forbidden(tmp_pat
 
 
 def test_target_export_uses_execution_code_inventory(tmp_path, monkeypatch):
-    update = repo_files.load_module(Path(__file__).resolve().parents[1] / ".project_manager/tools/pm_update.py", "pm_update.py", allow_unverified=True)
     engine = tmp_path / "engine"
     target = tmp_path / "target"
     _write(engine, ".agents/skills/engine-call/SKILL.md", "fixture")
     _write(target, ".agents/skills/target-call/SKILL.md", "fixture")
     source = _write(target, "note.md", "`/engine-call` `/target-call`\n")
-    monkeypatch.setattr(update, "REPO", engine)
-    assert update._render_skill_entry_text(source, "codex") == "`$engine-call` `/target-call`\n"
+    assert update_render._render_skill_entry_text(
+        pm_paths.home_at(engine), source, "codex") == "`$engine-call` `/target-call`\n"
     assert skill_inventory._installed_skill_entry_names(pm_paths.home_at(engine)) == ("engine-call",)
 
 

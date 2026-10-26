@@ -319,3 +319,18 @@ def _path_owned_by(path: str, owner_paths) -> bool:
     return any(
         p == c or p.startswith(c.rstrip("/") + "/")
         for c in (str(o).replace("\\", "/") for o in owner_paths))
+
+
+# 엔진 코드 접두사 — 이 아래 행이 전달 프로세스가 옮기는 엔진 코드다(`_is_engine_code`). 평면 진입과
+# `pm_engine` 패키지가 한 세대로 맞물려 있으므로 세대 단위로만 옮긴다.
+_ENGINE_TOOLS_PREFIX = ".project_manager/tools/"
+
+
+def _paths_overlap(one: str, other: str) -> bool:
+    """두 경로가 겹치는가 — 같거나 한쪽이 다른 쪽의 상위 디렉토리(양방향)."""
+    return one == other or one.startswith(other + "/") or other.startswith(one + "/")
+
+
+def _is_engine_code(rel) -> bool:
+    """manifest 행(또는 change 의 dest 경로)이 엔진 코드인가 — `.project_manager/tools/` 아래."""
+    return str(rel).replace("\\", "/").startswith(_ENGINE_TOOLS_PREFIX)

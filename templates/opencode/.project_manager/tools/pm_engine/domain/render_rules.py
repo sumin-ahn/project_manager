@@ -71,7 +71,7 @@ CARD_HARNESS_BY_ADAPTER_DIR: dict[str, str] = {
 #
 # ⚠️ forward-flag (@render 활성화 시점): local.conf(board.py init 산출)는 이 중
 #    일부만 보유한다 — DATE·PROJECT_ROOT·PROJECT_TAGLINE 는 init 이 채우지 않을 수 있어
-#    pm_update._operational_from_local_conf 가 그 token-key 를 dict 에 안 넣는다. 엄격 가드
+#    app.update_render._operational_from_local_conf 가 그 token-key 를 dict 에 안 넣는다. 엄격 가드
 #    (_assert_no_leak·토큰 0) 하에선, @render 활성화된 어댑터 파일이 그런 미보유 operational
 #    토큰을 *담고 있으면 렌더가 실패한다 — 그게 옳다*(미해소를 침묵 출하 대신 표면화). 현재
 #    @render path 0 이라 안 깨진다. 활성화 시점에 그 파일들의 operational 해소(또는

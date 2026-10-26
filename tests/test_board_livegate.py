@@ -36,6 +36,8 @@ from pm_engine.app import regression, release
 from pm_engine.domain import review_form, review_state, round_rules
 
 from pm_engine.cli import task_args
+from pm_engine.app import update_plan
+from pm_engine.infra import install_conf
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -43,7 +45,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load_board():
@@ -62,10 +64,16 @@ def _load_pm_update():
     return mod
 
 
+@pytest.fixture(scope="module")
+def _pm_update_module_cli():
+    return _load_pm_update()
+
+
 @pytest.fixture
-def pm_update_module():
+def pm_update_module(_pm_update_module_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load_pm_update())
+    with complete_in_process(_pm_update_module_cli) as flat_cli:
+        yield flat_cli
 
 
 def _load_pm_render():
@@ -226,27 +234,27 @@ def test_livegate_ran_count_parses_summary(live_board, output, expected):
     assert pytest_report._livegate_ran_count(output) == expected
 
 
-# ── pm_update.drift_changes — 판정 불능 클래스 전수 + 바이트 drift 판정 ─────────────
+# ── update_plan.drift_changes — 판정 불능 클래스 전수 + 바이트 drift 판정 ─────────────
 
 def test_drift_changes_detects_byte_diff(tmp_path, pm_update_module):
     """등재 파일 1개의 바이트가 다르면 그 relpath 1개가 changes 로 나온다."""
     dest, upstream = tmp_path / "dest", tmp_path / "upstream"
     _seed_engine_drift_fixture(dest, upstream, drift=True)
-    assert pm_update_module.drift_changes(dest) == [_DRIFT_MANIFEST_REL]
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) == [_DRIFT_MANIFEST_REL]
 
 
 def test_drift_changes_empty_when_in_sync(tmp_path, pm_update_module):
     """dest 가 upstream 과 byte-identical 이면 빈 목록(drift 0)."""
     dest, upstream = tmp_path / "dest", tmp_path / "upstream"
     _seed_engine_drift_fixture(dest, upstream, drift=False)
-    assert pm_update_module.drift_changes(dest) == []
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) == []
 
 
 def test_drift_changes_none_when_local_conf_absent(tmp_path, pm_update_module):
     """`local.conf` 자체가 없음 → None(판정 불능 클래스 ①)."""
     dest = tmp_path / "dest"
     dest.mkdir(parents=True)
-    assert pm_update_module.drift_changes(dest) is None
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) is None
 
 
 def test_drift_changes_none_when_upstream_key_absent(tmp_path, pm_update_module):
@@ -255,7 +263,7 @@ def test_drift_changes_none_when_upstream_key_absent(tmp_path, pm_update_module)
     (dest / ".project_manager").mkdir(parents=True)
     (dest / ".project_manager" / "local.conf").write_text(
         "project.name=x\n", encoding="utf-8")
-    assert pm_update_module.drift_changes(dest) is None
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) is None
 
 
 def test_drift_changes_none_when_upstream_is_url(tmp_path, pm_update_module):
@@ -265,7 +273,7 @@ def test_drift_changes_none_when_upstream_is_url(tmp_path, pm_update_module):
     (dest / ".project_manager").mkdir(parents=True)
     (dest / ".project_manager" / "local.conf").write_text(
         "upstream.path=https://example.invalid/framework.git\n", encoding="utf-8")
-    assert pm_update_module.drift_changes(dest) is None
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) is None
 
 
 def test_drift_changes_none_when_upstream_path_missing(tmp_path, pm_update_module):
@@ -274,7 +282,7 @@ def test_drift_changes_none_when_upstream_path_missing(tmp_path, pm_update_modul
     (dest / ".project_manager").mkdir(parents=True)
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.path={tmp_path / 'nowhere'}\n", encoding="utf-8")
-    assert pm_update_module.drift_changes(dest) is None
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) is None
 
 
 def test_drift_changes_none_when_manifest_absent(tmp_path, pm_update_module):
@@ -284,7 +292,7 @@ def test_drift_changes_none_when_manifest_absent(tmp_path, pm_update_module):
     upstream.mkdir(parents=True)
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.path={upstream}\n", encoding="utf-8")
-    assert pm_update_module.drift_changes(dest) is None
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) is None
 
 
 def test_drift_changes_reraises_marked_engine_rev_skew(
@@ -300,11 +308,11 @@ def test_drift_changes_reraises_marked_engine_rev_skew(
     skew = RuntimeError("injected engine rev skew")
     skew._engine_rev_skew = True
     monkeypatch.setattr(
-        pm_update_module, "_resolve_engine_sync_plan",
+        update_plan, "_resolve_engine_sync_plan",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
     )
     with pytest.raises(RuntimeError, match="engine rev skew"):
-        pm_update_module.drift_changes(dest)
+        update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest)
 
 
 def test_drift_changes_matches_main_dry_run_relpaths(
@@ -321,7 +329,7 @@ def test_drift_changes_matches_main_dry_run_relpaths(
         match.group(1) for line in out.splitlines()
         if (match := _DRY_RUN_CHANGE_RE.match(line))
     }
-    assert dry_run_paths == set(pm_update_module.drift_changes(dest)) == {_DRIFT_MANIFEST_REL}
+    assert dry_run_paths == set(update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest)) == {_DRIFT_MANIFEST_REL}
 
 
 def _seed_missing_source_fixture(dest_root: Path, upstream_root: Path) -> None:
@@ -346,7 +354,7 @@ def test_drift_changes_none_when_manifest_entry_source_missing(
     오판된다(main 의 rc2·`[source 에 없음]` 과 같은 판정 신호를 공유한다는 증거)."""
     dest, upstream = tmp_path / "dest", tmp_path / "upstream"
     _seed_missing_source_fixture(dest, upstream)
-    assert pm_update_module.drift_changes(dest) is None, \
+    assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) is None, \
         "manifest 등재 source 부재를 확정 drift 0 으로 오판했다"
 
     monkeypatch.setattr(pm_update_module, "REPO", dest)
@@ -371,7 +379,7 @@ def test_drift_changes_detects_legacy_add_harness_guest_backfill_manifest_update
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.path={framework}\n", encoding="utf-8")
 
-    result = pm_update_module.drift_changes(dest)
+    result = update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest)
     assert result is not None, (
         "target-owned missing(.opencode/agents) 만으로도 판정 불능이 됐다 — missing 필터가 "
         "@target-owned 를 걸러내지 못했다"
@@ -401,7 +409,7 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.path={framework}\n", encoding="utf-8")
 
-    real_fn = pm_update_module._resolve_engine_sync_plan
+    real_fn = update_plan._resolve_engine_sync_plan
     calls: list[tuple[dict, dict]] = []
 
     def _spy(*args, **kwargs):
@@ -409,7 +417,7 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
         calls.append((kwargs, returned))
         return returned
 
-    monkeypatch.setattr(pm_update_module, "_resolve_engine_sync_plan", _spy)
+    monkeypatch.setattr(update_plan, "_resolve_engine_sync_plan", _spy)
     monkeypatch.setattr(pm_update_module, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
@@ -421,7 +429,7 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
     main_kwargs, main_plan = calls.pop()
     assert main_kwargs["target"] is None
 
-    result = pm_update_module.drift_changes(dest)
+    result = update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest)
     assert len(calls) == 1, (
         "drift_changes() 가 공유 함수를 호출하지 않는다 — 별도 계획 경로가 있다면 복제다"
     )
@@ -473,7 +481,7 @@ def test_resolve_engine_sync_plan_applies_notation_rewrite_for_target_render_ent
     _seed_target_render_notation_fixture(
         pm_render_module, source_root, dest_root, rendered=False)
 
-    sync_plan = pm_update_module._resolve_engine_sync_plan(
+    sync_plan = update_plan._resolve_engine_sync_plan(pm_paths.home_at(pm_update_module.REPO),
         dest_root, source_root, target="codex", report=False, conf=_local_conf_of(pm_update_module, dest_root))
     changes = {str(rel): (kind, dst) for rel, _src, dst, kind in sync_plan["changes"]}
     assert _NOTATION_WIKI_REL in changes, "notation 토큰이 치환될 파일이 계획에 없다"
@@ -865,14 +873,12 @@ def test_record_overwrites_existing_pass_when_engine_copy_shows_marked_skew(
     pm_paths.livegate_flag(live_board._home()).write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "pass",
          "n": 22, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
-    real_pm_update = live_board._load_pm_update_module()
     skew = RuntimeError("injected engine rev skew")
     skew._engine_rev_skew = True
     monkeypatch.setattr(
-        real_pm_update, "_resolve_engine_sync_plan",
+        update_plan, "_resolve_engine_sync_plan",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
     )
-    monkeypatch.setattr(live_board, "_load_pm_update_module", lambda: real_pm_update)
     real_run = live_board.subprocess.run
     spy = _ShellOnlySpy(real_run, rc=0, stdout="22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", spy)

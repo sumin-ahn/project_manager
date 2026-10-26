@@ -7,6 +7,7 @@ from __future__ import annotations
 from pm_engine.app import worktree_pool
 from pm_engine.infra import pm_paths, pool_store
 
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -156,27 +157,40 @@ def use_known_ctx_env(monkeypatch, native_bin: Path) -> None:
             monkeypatch.setenv(key, value)
 
 
-def complete_in_process(module):
-    """같은 프로세스 테스트의 완료 단계 교체 지점 — 갱신기 `module` 을 돌려준다.
+@contextlib.contextmanager
+def complete_in_process(flat_cli):
+    """같은 프로세스 테스트의 완료 단계 교체 구간 — 평면 갱신기 `flat_cli` 를 돌려준다.
 
-    전달 프로세스는 받은 갱신기를 새 프로세스로 띄운다(`_launch_completion`). 합성 dest 에는 그
-    갱신기가 없으므로 같은 프로세스 테스트는 인계 값(`PM_UPDATE_COMPLETION`)을 환경에 넣고 같은 모듈의
-    `main` 을 부른 뒤 환경을 원래대로 돌린다. 이 교체가 빠진 자기 갱신 호출은 dest 에 갱신기가 없어
-    rc 2 로 실패한다(조용히 지나가지 않는다)."""
+    전달 프로세스는 받은 갱신기를 새 프로세스로 띄운다(`app.engine_transfer._launch_completion`). 합성
+    dest 에는 그 갱신기가 없으므로 이 구간 동안 그 IO 함수를 바꿔, 인계 값(`PM_UPDATE_COMPLETION`)과
+    평면 갱신기의 `REPO`·`MANIFEST` 를 인계된 dest 로 묶은 채 같은 `flat_cli.main` 을 부르고 모두 원래대로
+    돌린다. 구간을 벗어나면 교체도 풀린다(다른 테스트에 남지 않는다). 이 교체가 빠진 자기 갱신 호출은
+    dest 에 갱신기가 없어 rc 2 로 실패한다(조용히 지나가지 않는다)."""
+    from pm_engine.app import engine_transfer
+
     def launch(dest_root, source_root, transferred, argv):
-        name = module.COMPLETION_ENV
+        name = engine_transfer.COMPLETION_ENV
         previous = os.environ.get(name)
+        previous_repo, previous_manifest = flat_cli.REPO, flat_cli.MANIFEST
         os.environ[name] = json.dumps({"dest": str(dest_root), "source": str(source_root),
                                        "transferred": transferred})
+        flat_cli.REPO = Path(dest_root)
+        flat_cli.MANIFEST = Path(dest_root) / ".project_manager" / "engine.manifest"
         try:
-            return module.main(list(argv))
+            return flat_cli.main(list(argv))
         finally:
+            flat_cli.REPO, flat_cli.MANIFEST = previous_repo, previous_manifest
             if previous is None:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = previous
-    module._launch_completion = launch
-    return module
+
+    original = engine_transfer._launch_completion
+    engine_transfer._launch_completion = launch
+    try:
+        yield flat_cli
+    finally:
+        engine_transfer._launch_completion = original
 
 
 def make_pm_home(destination: Path, *, upstream: Path | str | None = None,

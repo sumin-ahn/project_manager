@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -638,6 +639,56 @@ def test_apply_checks_before_writing_and_reports_json(pc, tmp_path, capsys):
     with pytest.raises(SystemExit) as caught:
         parser.parse_args(["apply", "--set", "no-equals"])
     assert caught.value.code == 2
+
+
+def test_apply_rc1_for_missing_conf_and_write_stage_failure(pc, tmp_path, capsys, monkeypatch):
+    """`apply` rc 1 갈래 — `--set` 인데 local.conf 가 없으면 반영 없이 rc 1, 반영 함수가 쓰기 단계에서
+    멈추면(`write_stage` 참) rc 1, 반영 전 거부(`write_stage` 거짓)면 rc 3 이다."""
+    from pm_engine.app import conf_apply
+    parser = pc.build_parser()
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    called: list[object] = []
+    monkeypatch.setattr(conf_apply, "apply_conf", lambda *args, **kwargs: called.append(args))
+
+    missing = pc.cmd_apply(parser.parse_args(["apply", "--set", "ctx.compact_at_pct=85"]), dest_root=dest)
+    captured = capsys.readouterr()
+    assert missing == 1 and "local.conf 없음" in captured.err
+    assert called == [] and sorted(p.name for p in (dest / ".project_manager").iterdir()) == []
+
+    (dest / ".project_manager" / "local.conf").write_text("test.cmd=pytest -q\n", encoding="utf-8")
+    for write_stage, expected in ((True, 1), (False, 3)):
+        def refuse(*_args, _stage=write_stage, **_kwargs):
+            raise conf_apply.ConfApplyError(["거부 사유"], written=(), write_stage=_stage)
+        monkeypatch.setattr(conf_apply, "apply_conf", refuse)
+        rc = pc.cmd_apply(parser.parse_args(["apply", "--set", "ctx.compact_at_pct=85"]), dest_root=dest)
+        captured = capsys.readouterr()
+        assert rc == expected, (write_stage, captured.err)
+        assert "거부 사유" in captured.err and captured.out == ""
+
+
+def test_apply_forwards_same_values_to_conf_apply(pc, tmp_path, capsys, monkeypatch):
+    """`apply` 는 반영 함수에 실행 Home(이 엔진 루트)·dest·updates(빈 값은 None)·opencode 전역 설정 폴더를
+    그대로 넘기고, 그 결과를 JSON 한 줄로 낸다."""
+    from pm_engine.app import conf_apply, harness_ctx
+    parser = pc.build_parser()
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "local.conf").write_text("test.cmd=pytest -q\n", encoding="utf-8")
+    seen: list[tuple] = []
+
+    def observe(home, dest_root, *, updates, opencode_config_dir):
+        seen.append((home, dest_root, updates, opencode_config_dir))
+        return conf_apply.ConfApplyResult(True, ("반영 줄",))
+
+    monkeypatch.setattr(conf_apply, "apply_conf", observe)
+    rc = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=85",
+                                         "--set", "identity.user="]), dest_root=dest)
+    assert rc == 0
+    assert seen == [(pm_paths.home_at(pc.REPO), dest,
+                     {"ctx.compact_at_pct": "85", "identity.user": None},
+                     harness_ctx.opencode_global_config_dir(os.environ, Path.home()))]
+    assert json.loads(capsys.readouterr().out) == {"changed": True, "applied": ["반영 줄"]}
 
 
 def test_apply_cli_contract(pc, tmp_path, capsys):

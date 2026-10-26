@@ -37,7 +37,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -1165,13 +1164,13 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 266 = 269 − T-0919 가 지운 세 경계: 홈 자신 등재가 사라지며 흡수 말미의 dest 사본 로드·
     #   호출 두 경계와, 그 등재의 대상 판정 입력이던 `worktree_pool._registered_repos_for_
     #   session` 의 board 형제 로드 한 경계. 자리를 대신한 옛 행 제거 마이그레이션
-    #   (`pm_update.drop_self_lease_rows`)은 장부를 직접 읽고 쓰므로 접을 예외가 없다.
+    #   (`update_finish.drop_self_lease_rows`)은 장부를 직접 읽고 쓰므로 접을 예외가 없다.
     # 271 = 266 + T-0920 의 인계 표시 다섯 경계(`pm_bootstrap._handover_*`). 인계 표시는 **읽기
     #   전용 부가 정보**라 조회 실패가 진입을 막지 않지만, marked skew 만은 그대로 올린다
     #   (형제 사본 불일치를 "표시할 게 없음"으로 숨기지 않는다).
     # 272 = 271 + 슬롯 종료 기록 한 경계(`pm_handoff._close_session_records` 의 슬롯 축).
     #   기록 실패는 서사를 쓰기 전에 False 로 차단하고, marked skew 만 그대로 올린다.
-    # 273 = 272 + 갱신 시점 conf 키 이관 한 경계(`pm_update.migrate_renamed_conf_keys`). 이 단계는
+    # 273 = 272 + 갱신 시점 conf 키 이관 한 경계(`entry_doc_migration.migrate_renamed_conf_keys`). 이 단계는
     #   apply **이후**라 형제 사본 rev 혼합으로 죽으면 채택자가 새 엔진을 받은 채 동기가
     #   traceback 으로 끝난 트리를 갖는다. 이동은 멱등이라 건너뛴 몫을 다음 실행이 그대로 하고,
     #   marked skew 만은 그대로 올린다.
@@ -1191,7 +1190,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (흡수 규칙이 느슨해진 게 아니다).
     # 254 = 252 + T-0923 사용 한도 반영의 두 경계. `pm_config` 의 설정 반영 명령(지금 `apply` · `cmd_apply`)은
     #   local.conf 옛 키(`_legacy_conf_key`)만 검사 거부(rc 3) 안내로 번역하고 marked skew 는 그대로 올린다.
-    #   `pm_update.apply_harness_ctx_limits` 는 apply 이후 단계라 `migrate_renamed_conf_keys` 와 같은
+    #   `update_adapters.apply_harness_ctx_limits` 는 apply 이후 단계라 `migrate_renamed_conf_keys` 와 같은
     #   규칙으로 등록된 사유가 흡수한다(반영은 멱등).
     # 252 = 254 − T-0925 가 지운 두 경계. 종결의 반납 단계가 사라지며 `ticket_finish.py:
     #   ClusterCloser` 의 `_default_release`(반납 거부 사유를 값으로)와 `_slot_state`(대여 상태
@@ -1237,7 +1236,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (`pm_engine.app.session.relay`·`pm_engine.infra.harness.contract`·`watchdog`·`pm_engine.infra.raw_output`)
     #   로 바뀌었다: 로더 정의(`pm_handoff._load_pm_relay`), 적재만 감싼 try(`pm_import._real_harness_runner`
     #   한 곳), try 본문이 적재한 모듈 변수 호출에서 모듈 속성 호출로 바뀐 두 자리(`pm_delegate._execute_attempt`·
-    #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `pm_update.drift_changes`.
+    #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `update_plan.drift_changes`.
     # 202 = 203 − T-0968 이 지운 1 경계. 상류 분류 형제 로더 `pm_config._classify_upstream` 이 패키지
     #   import(`pm_engine.domain.upstream_rules`)로 바뀌어 코드째 없어졌다.
     # 187 = 202 − T-0971 이 지운 15 경계. board 의 경로·티켓·areas·conf 이름이 패키지(`pm_paths`·
@@ -1279,7 +1278,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 열거는 package 로 옮겨 marked 재전파를 그대로 두었고, 표기 재렌더 판정의 렌더 오류 흡수는 지웠다.
     # 묶음 소유 선검사의 parser 전용 loader 경계 1개를 제거했다.
     # 공용 해소·CLI 이동과 private loader 은퇴에 따른 경계 재고는 실제 스캔으로 확인한다(38→18).
-    assert len(report.boundaries) == 18, "propagation sweep boundary ratchet changed"
+    # 갱신 본체가 package(`app.update_plan`·`app.update_adapters`)로 옮겨 평면 경계 7개가 줄었다(18→11):
+    # `_resolve_engine_sync_plan` 1·`_instance_owned_template_delta_lines` 1·`sync_adapter_configs` 3·
+    # `check_adapter_hook_sets` 1·`refuse_partial_hook_set_scope` 1. 옮긴 핸들러의 marked 재전파는 그대로다.
+    assert len(report.boundaries) == 11, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1641,35 +1643,6 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew
-
-
-def test_template_mirror_missing_pm_update_render_capability_is_drift(
-    monkeypatch, tmp_path,
-):
-    module = _runtime_tool("board.py")
-    source = tmp_path / "source" / "SKILL.md"
-    target_root = tmp_path / "templates" / "legacy"
-    target = target_root / ".claude" / "skills" / "demo" / "SKILL.md"
-    source.parent.mkdir(parents=True)
-    target.parent.mkdir(parents=True)
-    source.write_text("same\n", encoding="utf-8")
-    target.write_text("same\n", encoding="utf-8")
-    monkeypatch.setattr(
-        module, "_load_pm_update_module", lambda: SimpleNamespace(),
-    )
-
-    state, drifted = module._template_mirror_report(
-        source,
-        ".claude/skills/demo/SKILL.md",
-        [(target_root, {".claude/skills"})],
-    )
-
-    assert state == module._TEMPLATE_MIRROR_DIFFERS
-    assert drifted == ["legacy"]
-
-
-
-
 
 
 @pytest.mark.parametrize(

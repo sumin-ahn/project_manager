@@ -30,6 +30,7 @@ from pathlib import Path
 from _engine_tree import engine_python_files
 
 from pm_engine.infra import ticket_store
+from pm_engine.infra import render_io
 
 
 _ALLOWED: set[tuple[str, str, str, str]] = {
@@ -386,7 +387,7 @@ _NEWLINE_CASES = {
 def test_newline_notation_primitives_agree_across_engine_modules():
     implementations = {
         "pm_import.dominant_newline": install_files.dominant_newline,
-        "pm_update._dominant_newline": _load_engine_module("pm_update")._dominant_newline,
+        "render_io._dominant_newline": render_io._dominant_newline,
         "ticket_store._dominant_newline": ticket_store._dominant_newline,
     }
     for text, expected in _NEWLINE_CASES.items():

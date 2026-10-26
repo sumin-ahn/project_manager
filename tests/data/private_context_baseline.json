@@ -30,6 +30,13 @@
         "count": 3
       }
     ],
+    ".project_manager/tools/pm_engine/app/entry_doc_migration.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
+      }
+    ],
     ".project_manager/tools/pm_engine/app/ticket_access.py": [
       {
         "kind": "session_stamp",
@@ -264,6 +271,18 @@
         "count": 1
       }
     ],
+    ".project_manager/tools/pm_engine/infra/shipping_targets.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
     ".project_manager/tools/pm_engine/infra/ticket_store.py": [
       {
         "kind": "session_stamp",
@@ -280,23 +299,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    ".project_manager/tools/pm_update.py": [
-      {
-        "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
         "count": 1
       }
     ],
@@ -408,6 +410,13 @@
         "kind": "decision_label",
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
         "count": 3
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/app/entry_doc_migration.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
       }
     ],
     "templates/claude_code/.project_manager/tools/pm_engine/app/ticket_access.py": [
@@ -644,6 +653,18 @@
         "count": 1
       }
     ],
+    "templates/claude_code/.project_manager/tools/pm_engine/infra/shipping_targets.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
     "templates/claude_code/.project_manager/tools/pm_engine/infra/ticket_store.py": [
       {
         "kind": "session_stamp",
@@ -660,23 +681,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/claude_code/.project_manager/tools/pm_update.py": [
-      {
-        "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
         "count": 1
       }
     ],
@@ -791,6 +795,13 @@
         "kind": "decision_label",
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
         "count": 3
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/app/entry_doc_migration.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
       }
     ],
     "templates/codex/.project_manager/tools/pm_engine/app/ticket_access.py": [
@@ -1027,6 +1038,18 @@
         "count": 1
       }
     ],
+    "templates/codex/.project_manager/tools/pm_engine/infra/shipping_targets.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
     "templates/codex/.project_manager/tools/pm_engine/infra/ticket_store.py": [
       {
         "kind": "session_stamp",
@@ -1043,23 +1066,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/codex/.project_manager/tools/pm_update.py": [
-      {
-        "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
         "count": 1
       }
     ],
@@ -1367,6 +1373,13 @@
         "count": 3
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/app/entry_doc_migration.py": [
+      {
+        "kind": "decision_label",
+        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "count": 1
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_engine/app/ticket_access.py": [
       {
         "kind": "session_stamp",
@@ -1601,6 +1614,18 @@
         "count": 1
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/infra/shipping_targets.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
+        "count": 1
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_engine/infra/ticket_store.py": [
       {
         "kind": "session_stamp",
@@ -1617,23 +1642,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.project_manager/tools/pm_update.py": [
-      {
-        "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "cf188d29e754910a4df335228217659ab0fc861c88d18105f03fa682b9132485",
         "count": 1
       }
     ],

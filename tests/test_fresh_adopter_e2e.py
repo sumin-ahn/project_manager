@@ -49,6 +49,7 @@ from pm_engine.infra import adapter_baseline
 from pm_engine.infra import install_receipt
 from pm_engine.infra import upstream_git
 from pm_engine.infra import pm_paths
+from pm_engine.app import update_manifest
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -186,9 +187,15 @@ def _load_pm_update():
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load_pm_update()
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load_pm_update())
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 def test_fresh_adopter_default_installs_every_registered_harness_adapter(
@@ -1674,7 +1681,7 @@ def _guest_engine_rows(pm_update, dest: Path) -> dict[str, object]:
     """dest guest 절의 **엔진 행**(비-`@render`) → {경로: ManifestEntry}."""
     return {
         str(entry).replace("\\", "/"): entry
-        for entry in pm_update._dest_guest_manifest_entries(dest)
+        for entry in update_manifest._dest_guest_manifest_entries(dest)
         if not getattr(entry, "render", False)
     }
 
@@ -1683,7 +1690,7 @@ def _guest_render_paths(pm_update, dest: Path) -> list[str]:
     """dest guest 절의 **렌더물 행**(`@render`) 경로 — 재렌더 채널 대상."""
     return sorted(
         str(entry).replace("\\", "/")
-        for entry in pm_update._dest_guest_manifest_entries(dest)
+        for entry in update_manifest._dest_guest_manifest_entries(dest)
         if getattr(entry, "render", False)
     )
 

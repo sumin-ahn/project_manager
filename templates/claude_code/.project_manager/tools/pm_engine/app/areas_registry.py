@@ -120,7 +120,7 @@ def fill_self_repo_row(home, *, write: bool) -> str | None:
     """갱신 이관 — 폴더 이름 행의 `git`·`base` 가 **둘 다 비어** 있으면 이 clone 의 값으로 채운다.
 
     설치(`cmd_init`)가 자기 행에 두 칸을 기록하기 전에 만들어진 채택자의 데이터 이관이다(갱신 완료
-    단계 `pm_update.fill_self_repo_row` 가 부른다). 대상 행이 없거나 어느 한 칸이라도 차 있으면
+    단계 `app.update_finish.fill_self_repo_row` 가 부른다). 대상 행이 없거나 어느 한 칸이라도 차 있으면
     아무것도 하지 않는다(덮어쓰지 않는다·다른 repo 행은 보지 않는다). 같은 이름 행이 둘 이상이면
     `AreasDuplicateRepo` 를 그대로 올린다(`board.py lint` 의 areas-duplicate-repo 와 같은 처방).
     값을 정하지 못하면 알림 한 줄 뒤 무동작. `write=False` 는 판정만 한다.

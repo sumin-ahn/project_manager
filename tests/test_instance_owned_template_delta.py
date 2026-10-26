@@ -12,6 +12,9 @@ import pytest
 
 from _git_fixture import init_git_repo
 from pm_engine.app import adapter_report
+from pm_engine.app import entry_doc_migration
+from pm_engine.app import update_adapters
+from pm_engine.app import upstream_revisions
 
 pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
@@ -37,10 +40,16 @@ def pm_config():
     return _load("pm_config")
 
 
-@pytest.fixture()
-def pm_update():
+@pytest.fixture(scope="module")
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(_pm_update_cli) as flat_cli:
+        yield flat_cli
 
 
 def _sha(text: str) -> str:
@@ -486,7 +495,7 @@ def test_pm_update_exit_exposes_final_delta_lines(
     ]
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setattr(
-        pm_update, "_instance_owned_template_delta_lines",
+        update_adapters, "_instance_owned_template_delta_lines",
         lambda _dest, _source: expected,
     )
 
@@ -531,18 +540,18 @@ def test_pm_update_managed_auto_update_does_not_prescribe_accept(
         return []
 
     monkeypatch.setattr(pm_update, "REPO", dest)
-    monkeypatch.setattr(pm_update, "sync_adapter_configs", sync_configs)
-    monkeypatch.setattr(pm_update, "_instance_owned_template_delta_lines", final_delta)
+    monkeypatch.setattr(update_adapters, "sync_adapter_configs", sync_configs)
+    monkeypatch.setattr(update_adapters, "_instance_owned_template_delta_lines", final_delta)
     monkeypatch.setattr(
-        pm_update, "migrate_entry_doc", lambda *_args, **_kwargs: {"status": "current"})
-    monkeypatch.setattr(pm_update, "_print_entry_doc_migration_finding", lambda *_a, **_k: None)
+        entry_doc_migration, "migrate_entry_doc", lambda *_args, **_kwargs: {"status": "current"})
+    monkeypatch.setattr(entry_doc_migration, "_print_entry_doc_migration_finding", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        pm_update, "reinstall_protected_hooks", lambda *_args, **_kwargs: {"status": "ok"})
-    monkeypatch.setattr(pm_update, "_print_protected_hook_reinstall_finding", lambda *_a, **_k: None)
+        update_adapters, "reinstall_protected_hooks", lambda *_args, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(update_adapters, "_print_protected_hook_reinstall_finding", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        pm_update, "check_adapter_hook_sets",
+        update_adapters, "check_adapter_hook_sets",
         lambda *_args, **_kwargs: {"status": "ok", "findings": []})
-    monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *_args: False)
+    monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *_args: False)
 
     rc = pm_update.main(["--from", str(source)])
 

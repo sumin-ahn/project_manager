@@ -44,6 +44,9 @@ from pm_engine.app import adapter_report
 from pm_engine.app import harness_ctx
 from pm_engine.infra import adapter_baseline
 from pm_engine.infra import adapter_documents
+from pm_engine.app import conf_apply
+from pm_engine.app import update_adapters
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -762,11 +765,6 @@ def _t0943_watched(root: Path) -> dict:
     return {path: path.read_bytes() if path.exists() else None for path in paths}
 
 
-def _t0945_pm_update():
-    """설정 저장 본문(`pm_update.apply_conf`) — 조회 교체 지점은 같은 `app.harness_ctx` 를 지난다."""
-    return _load("pm_update")
-
-
 def test_t0943_record_three_tools_fields_and_values(local_conf, tmp_path, monkeypatch):
     """AT-001 — 세 도구 적용 뒤 기록은 schema 5 의 정해진 필드뿐이고 E·P·설정값이 확정 값이다."""
     root, _values = _t0943_applied(local_conf, tmp_path, monkeypatch)
@@ -907,11 +905,10 @@ def test_t0943_record_write_failure_returns_rc1(local_conf, tmp_path, monkeypatc
     조회·검사 단계의 거부는 그대로 rc 3 이다(역방향). 사용 한도 키만 보내 렌더 단계는 돌지 않는다."""
     _t0943_seams(monkeypatch)
     pm_config = _load("pm_config")
-    pm_update = _t0945_pm_update()
     parser = pm_config.build_parser()
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     same = ["apply", "--set", "ctx.compact_at_pct=94"]
-    assert pm_config.cmd_apply(parser.parse_args(same), pm_update=pm_update, dest_root=root) == 0
+    assert pm_config.cmd_apply(parser.parse_args(same), dest_root=root) == 0
     before = _t0943_watched(root)
     row = {**T0943_CLAUDE_ROW, "basis": {"model_window": 1000100, "auto_compact_threshold": 967100}}  # d 33,000 그대로
     monkeypatch.setattr(harness_ctx, "_read_harness_ctx_metadata", lambda *args: [dict(row)])
@@ -920,12 +917,12 @@ def test_t0943_record_write_failure_returns_rc1(local_conf, tmp_path, monkeypatc
         False if Path(rel) == local_conf.CTX_BUDGET_RELPATH else replace(dest_root, rel, payload, **kwargs)))
     capsys.readouterr()
 
-    assert pm_config.cmd_apply(parser.parse_args(same), pm_update=pm_update, dest_root=root) == 1
+    assert pm_config.cmd_apply(parser.parse_args(same), dest_root=root) == 1
     assert "압축 한도 기록(.project_manager/.local/ctx-budget.json)을 쓰지 못했습니다" in capsys.readouterr().err
     assert _t0943_watched(root) == before
 
     refused = pm_config.cmd_apply(parser.parse_args(["apply", "--set", "ctx.precompact_at_pct=95"]),
-                                  pm_update=pm_update, dest_root=root)
+                                  dest_root=root)
     assert refused == 3 and "ctx.precompact_at_pct=95" in capsys.readouterr().err
     assert _t0943_watched(root) == before
 
@@ -969,9 +966,8 @@ def test_t0943_claude_refuses_without_writing(local_conf, tmp_path, monkeypatch,
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     before = _t0943_watched(root)
     window = "600000" if case == "threshold" else "70000"          # 70,000 → P 65,800 → 창 98,800
-    pm_update = _t0945_pm_update()
-    with pytest.raises(pm_update.ConfApplyError) as caught:
-        pm_update.apply_conf(root, opencode_config_dir=_global_dir(tmp_path),
+    with pytest.raises(conf_apply.ConfApplyError) as caught:
+        conf_apply.apply_conf(pm_paths.home_at(REPO), root, opencode_config_dir=_global_dir(tmp_path),
                              updates={"harness.claude.ctx_window_tokens": window})
     assert caught.value.write_stage is False
     assert _t0943_watched(root) == before
@@ -1029,10 +1025,9 @@ def test_t0943_codex_refuses_without_writing(local_conf, tmp_path, monkeypatch, 
     _t0943_codex_cache(tmp_path, monkeypatch, rows)
     root = _project(tmp_path, harnesses=("codex",), conf=T0943_CONF)
     before = _t0943_watched(root)
-    pm_update = _t0945_pm_update()
-    with pytest.raises(pm_update.ConfApplyError) as caught:
+    with pytest.raises(conf_apply.ConfApplyError) as caught:
         # 95% → P 541,500 > 600,000 × 90% = 540,000
-        pm_update.apply_conf(root, opencode_config_dir=_global_dir(tmp_path),
+        conf_apply.apply_conf(pm_paths.home_at(REPO), root, opencode_config_dir=_global_dir(tmp_path),
                              updates={"ctx.compact_at_pct": "94" if case == "missing-row" else "95"})
     assert caught.value.write_stage is False
     assert _t0943_watched(root) == before
@@ -1341,15 +1336,14 @@ def test_t0955_opencode_install_without_provider_settings(local_conf, tmp_path):
 
 
 def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, capsys):
-    """AT-005 — 빈 전역 설정·빈 캐시에서 갱신의 반영 단계(`pm_update.apply_harness_ctx_limits`)가 True 를
+    """AT-005 — 빈 전역 설정·빈 캐시에서 갱신의 반영 단계(`update_adapters.apply_harness_ctx_limits`)가 True 를
     돌려주고 멈춤 문구 없이 제외 모델을 알린다."""
     _use_real_ctx_queries(monkeypatch)
-    pm_update = _load("pm_update")
     for name, value in _t0955_empty_opencode_env(tmp_path).items():
         monkeypatch.setenv(name, value)
     root = _project(tmp_path, harnesses=("opencode",), conf=T0943_CONF)
     capsys.readouterr()
-    assert pm_update.apply_harness_ctx_limits(root, write=True) is True
+    assert update_adapters.apply_harness_ctx_limits(root, write=True) is True
     err = capsys.readouterr().err
     assert "ollama/glm-5.2:cloud" in err and "[중단]" not in err, err
 

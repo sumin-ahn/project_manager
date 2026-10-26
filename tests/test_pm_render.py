@@ -28,6 +28,10 @@ from _repo_owned_inventory import OWNED, repo_owned_paths
 from _textio import write_lf
 from pm_engine.infra import manifest_store
 from pm_engine.infra.harness import contract
+from pm_engine.app import update_plan
+from pm_engine.app import update_render
+from pm_engine.infra import install_conf
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -35,7 +39,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load(name: str):
@@ -448,7 +452,7 @@ def test_plan_non_render_uses_copy_semantics(pm_update, tmp_path):
     # 출하 인벤토리는 `git ls-files` 가 낸다 — 픽스처 트리가 자기 checkout 이라고 선언한다.
     _track_source_tree(src)
     # 평문 str manifest (레거시 호출) → render=False.
-    changes, missing = pm_update.plan(src, [".project_manager/tools/board.py"], dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, [".project_manager/tools/board.py"], dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     assert len(changes) == 1
     assert changes[0][3] == "update"
@@ -470,7 +474,7 @@ def test_plan_render_path_compares_rendered_output(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     # 템플릿("- {{PROJECT_NAME}}\nbody\n") != dst, 그러나 *렌더 산출물* == dst → 변경 없음.
     rendered_paths = [c for c in changes if c[0] == rel]
@@ -491,7 +495,7 @@ def test_plan_render_path_update_when_output_differs(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     target = [c for c in changes if c[0] == rel]
     assert len(target) == 1
     assert target[0][3] == "update"
@@ -510,8 +514,8 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
-    pm_update.apply(changes)
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     # operational 토큰 둘 다 해소·잔여 토큰 0.
     assert written == "- acme\n- /r\nbody\n"
@@ -541,14 +545,14 @@ def test_render_dir_text_files_rendered_binary_copied(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     by_rel = {c[0]: c for c in changes}
     # 텍스트(.md·.toml) → render=True, 바이너리 → render=False(copy2).
     assert getattr(by_rel[md_rel][2], "render", False) is True
     assert getattr(by_rel[toml_rel][2], "render", False) is True
     assert getattr(by_rel[bin_rel][2], "render", False) is False
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert (dst / md_rel).read_text(encoding="utf-8") == "- acme\nbody\n"
     assert (dst / toml_rel).read_text(encoding="utf-8") == 'description = "acme"\n'
     assert (dst / bin_rel).read_bytes() == b"\xff\xfe\x00binary\x00"
@@ -566,7 +570,7 @@ def test_apply_non_render_byte_copies(pm_update, tmp_path):
     dst_f.write_text("# old\n", encoding="utf-8")
     # 평문 Path dst 로 직접 change 구성 → render 속성 없음 → copy2 그대로.
     changes = [(".project_manager/tools/board.py", src_f, dst_f, "update")]
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     # 토큰이 있어도 byte-copy(렌더 안 함) — 순수 엔진 후방호환.
     assert dst_f.read_text(encoding="utf-8") == "# engine {{NOT_A_RENDER_TOKEN}}\n"
 
@@ -666,7 +670,7 @@ def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_pat
     _track_source_tree(src)
 
     # render_enabled=False → @render 무시·copy2. leak/crash 없이 new 변경 1건.
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         src, manifest, dest_root=dst, render_enabled=False, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     target = [c for c in changes if c[0] == rel]
@@ -674,7 +678,7 @@ def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_pat
     assert target[0][3] == "new"
     assert getattr(target[0][2], "render", False) is False
     # apply 도 copy2 — 토큰-form 이 byte 그대로 보존(렌더 안 됨).
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert (dst / rel).read_text(encoding="utf-8") == src_text
 
 
@@ -692,12 +696,12 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     _track_source_tree(src)
 
     # 기본 render_enabled=True → render path (dst 가 산출물과 다르므로 render 변경).
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     target = [c for c in changes if c[0] == rel]
     assert len(target) == 1
     assert getattr(target[0][2], "render", False) is True
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     # PROJECT_NAME(local.conf) 해소·잔여 토큰 0.
     assert written == "- acme\nbody\n"
@@ -706,10 +710,10 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
 
 def test_opencode_pro_model_local_conf_mapping(pm_update, tmp_path):
     """local.conf `harness.opencode.pro_model=...` → operational dict 의 OPENCODE_PRO_MODEL 매핑(T-0133)."""
-    assert pm_update._LOCAL_CONF_TO_OPERATIONAL["harness.opencode.pro_model"] == "OPENCODE_PRO_MODEL"
+    assert update_render._LOCAL_CONF_TO_OPERATIONAL["harness.opencode.pro_model"] == "OPENCODE_PRO_MODEL"
     dst = tmp_path / "dst"
     _seed_render_dest(dst, local_conf="harness.opencode.pro_model=anthropic/claude-opus-4\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dst))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dst))
     assert operational["OPENCODE_PRO_MODEL"] == "anthropic/claude-opus-4"
     assert empty_keys == []
 
@@ -725,9 +729,9 @@ def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path)
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     assert written == "model: anthropic/claude-opus-4\nbody\n"
     assert "{{" not in written
@@ -751,10 +755,10 @@ def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path)
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     # apply 가 crash 하지 않고 중화 산출을 기록(leak 0).
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     assert "{{OPENCODE_PRO_MODEL}}" not in written          # 리터럴 토큰 제거(자족)
     assert written.splitlines()[0].startswith("# model:")   # model: 줄 주석화
@@ -781,9 +785,9 @@ def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
         ".project_manager/tools/board.py",
     ]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
-    pm_update.apply(changes)  # 한 토큰 미해소로 전체가 막히지 않음(crash 0).
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)  # 한 토큰 미해소로 전체가 막히지 않음(crash 0).
     # 엔진 파일 정상 update.
     assert (dst / ".project_manager/tools/board.py").read_text(encoding="utf-8") == "v2\n"
     # @render agent 는 graceful 중화(리터럴 토큰 0).
@@ -802,7 +806,7 @@ def test_operational_from_local_conf_excludes_empty_value(pm_update, tmp_path):
     dst = tmp_path / "dst"
     # project_name 은 빈값, py 는 정상값 — 빈값만 제외되고 정상값은 보존돼야 한다.
     _seed_render_dest(dst, local_conf="project.name=\nruntime.py=python3\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dst))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dst))
     assert "PROJECT_NAME" not in operational  # 빈값 → dict 에서 제외(부재 동일 취급)
     assert empty_keys == ["PROJECT_NAME"]  # 빈값 token-key 표면화
     assert operational["PY"] == "python3"  # 정상값은 보존(회귀 무변경)
@@ -812,7 +816,7 @@ def test_operational_from_local_conf_all_normal_no_empty_keys(pm_update, tmp_pat
     """정상값만 있으면 empty_keys 는 빈 리스트(빈값 가드가 정상 경로를 오탐 안 함·회귀)."""
     dst = tmp_path / "dst"
     _seed_render_dest(dst, local_conf="project.name=acme\ntest.cmd=pytest -q\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dst))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dst))
     assert operational["PROJECT_NAME"] == "acme"
     assert operational["TEST_CMD"] == "pytest -q"
     assert empty_keys == []
@@ -833,7 +837,7 @@ def test_render_text_empty_local_conf_raises_with_hint(pm_update, tmp_path):
     # RenderLeakError 는 RuntimeError 서브클래스 — pm_update 가 pm_render 를 격리 로드하므로
     # 클래스 동일성 대신 base + 이름으로 잡는다(모듈 인스턴스 간 클래스 객체 상이).
     with pytest.raises(RuntimeError) as exc:
-        pm_update._render_text(src_f, _local_conf_of(pm_update, dst))
+        update_render._render_text(pm_paths.home_at(pm_update.REPO), src_f, _local_conf_of(pm_update, dst))
     assert type(exc.value).__name__ == "RenderLeakError"
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
@@ -852,10 +856,10 @@ def test_apply_render_empty_local_conf_raises(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     with pytest.raises(RuntimeError) as exc:  # RenderLeakError (격리 로드·base 로 잡음)
-        pm_update.apply(changes)
+        update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert type(exc.value).__name__ == "RenderLeakError"
     # silent 로 빈 이름(" 프로젝트")이 기록되지 않았음을 확인(파일 미생성 or 토큰 보존).
     assert not (dst / rel).exists()

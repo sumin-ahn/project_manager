@@ -51,6 +51,8 @@ from pm_engine.infra import conf_store
 from pm_engine.domain import board_git_rules
 
 from pm_engine.infra import pm_paths
+from pm_engine.app import entry_doc_migration
+from pm_engine.app import upstream_revisions
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -105,15 +107,18 @@ def test_t0927_migration_lock_replans_new_user_value(tmp_path, pm_update, pm_imp
     conf.parent.mkdir()
     conf.write_text("ctx.stop_pct=10\n", encoding="utf-8")
 
+    real_lock = fs.local_conf_write_lock
+
     @contextmanager
-    def competing_writer(path):
+    def competing_writer(path, **kwargs):
         # 계획을 읽고 락을 얻는 사이 사용자가 새 키를 저장한 실제 경합 순서다.
-        install_conf._write_conf_keys(path, {"ctx.precompact_at_pct": "87"})
-        with fs.local_conf_write_lock(path):
+        with real_lock(path, **kwargs):
+            install_conf._write_conf_keys_locked(path, {"ctx.precompact_at_pct": "87"})
+        with real_lock(path, **kwargs):
             yield
 
-    monkeypatch.setattr(pm_update, "_local_conf_write_lock", competing_writer)
-    pm_update.migrate_renamed_conf_keys(tmp_path, write=True)
+    monkeypatch.setattr(fs, "local_conf_write_lock", competing_writer)
+    entry_doc_migration.migrate_renamed_conf_keys(tmp_path, write=True)
     values = _parse_conf(conf.read_text(encoding="utf-8"))
     assert values["ctx.precompact_at_pct"] == "87"
     assert "ctx.stop_pct" not in values
@@ -137,9 +142,9 @@ LOCK_SEAM_CALL = "local_conf_write_lock("
 LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
     ("pm_engine/infra/conf_store.py", "_write_init_local_conf"):
         (HOLDS_LOCK, "init 최초 전체 생성 + 비파괴 병합(read→merge→write_text)"),
-    ("pm_update.py", "record_upstream_revs"):
+    ("pm_engine/app/upstream_revisions.py", "record_upstream_revs"):
         (HOLDS_LOCK, "형상 판정(upstream=)→updates 계획→키 write→검증이 한 구간"),
-    ("pm_update.py", "migrate_renamed_conf_keys"):
+    ("pm_engine/app/entry_doc_migration.py", "migrate_renamed_conf_keys"):
         (HOLDS_LOCK, "구표기 판정→이름 이동 계획→키 write+옛 줄 삭제가 한 구간"),
     ("pm_engine/infra/install_conf.py", "_write_conf_keys"):
         (HOLDS_LOCK, "키 단위 RMW 백엔드(pm_import·pm_update·pm_config 공용)"),
@@ -157,9 +162,9 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (DELEGATES, "해소된 opencode 모델 기록"),
     ("pm_config.py", "cmd_upstream"):
         (DELEGATES, "`pm-config upstream set` → install_conf._write_conf_keys"),
-    ("pm_update.py", "apply_conf"):
+    ("pm_engine/app/conf_apply.py", "apply_conf"):
         (HOLDS_LOCK, "제안 값→반영 단계 계획 전부→conf 키 쓰기→단계 기록이 공용 락 안 한 흐름"),
-    ("pm_update.py", "prune_unavailable_reasoning"):
+    ("pm_engine/app/conf_apply.py", "prune_unavailable_reasoning"):
         (HOLDS_LOCK, "판정(모델 목록 조회)은 락 밖, 락 안에서 다시 읽어 판정 때 값과 대조→키 삭제"),
 }
 
@@ -669,7 +674,7 @@ def _run_rev_record_against_an_upstream_flip(
 
     def _record():
         recorded.append(
-            pm_update.record_upstream_revs(conf.parent.parent, tmp_path / "src"))
+            upstream_revisions.record_upstream_revs(conf.parent.parent, tmp_path / "src"))
         done.set()
 
     rev_thread = threading.Thread(target=_record, daemon=True)
@@ -732,7 +737,7 @@ def test_rev_record_skips_an_absent_conf_without_leaving_a_lock_file(
     (dest / ".project_manager").mkdir(parents=True)
     _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
 
-    assert pm_update.record_upstream_revs(dest, tmp_path / "src") == (False, {})
+    assert upstream_revisions.record_upstream_revs(dest, tmp_path / "src") == (False, {})
 
     assert not (dest / ".project_manager" / ".local").exists(), (
         "conf 없는 트리에 락 파일을 남겼다")
@@ -751,8 +756,8 @@ def test_the_existence_check_inside_the_lock_is_the_authoritative_one(
     conf = _conf_at(tmp_path, "session=pm\nupstream.path=/local/upstream\n")
     if entry == "rev-record":
         _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
-        _vanishing_conf_lock(pm_update, monkeypatch)
-        assert pm_update.record_upstream_revs(conf.parent.parent, tmp_path / "src") == (False, {})
+        _vanishing_conf_lock(fs, monkeypatch)
+        assert upstream_revisions.record_upstream_revs(conf.parent.parent, tmp_path / "src") == (False, {})
     else:
         _vanishing_conf_lock(fs, monkeypatch)
         assert install_conf.reapply_preserved_conf_keys(
@@ -807,9 +812,9 @@ def test_pm_update_rev_record_takes_the_shared_lock(pm_update, monkeypatch, tmp_
     conf = _conf_at(tmp_path, "session=pm\nupstream.path=/somewhere\n")
     _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
     taken: list[str] = []
-    _spy_lock(pm_update.fs, monkeypatch, taken)
+    _spy_lock(fs, monkeypatch, taken)
 
-    assert pm_update.record_upstream_revs(conf.parent.parent, tmp_path / "src")[0]
+    assert upstream_revisions.record_upstream_revs(conf.parent.parent, tmp_path / "src")[0]
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-new"
@@ -848,7 +853,7 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
 
 
 def test_t0932_commit_writer_lock_sensitivity():
-    source = _source_of('pm_update.py', 'apply_conf')
+    source = _source_of('pm_engine/app/conf_apply.py', 'apply_conf')
     tree = ast.parse(source)
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _called_name(n) == '_write_conf_keys_locked']
     assert calls
