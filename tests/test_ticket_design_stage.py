@@ -57,6 +57,8 @@ from pm_engine.app import body_lint, lint_hooks
 
 from pm_engine.infra import lease_store
 from pm_engine.infra import ticket_store
+from pm_engine.app import ticket_lint
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -470,7 +472,7 @@ def test_claim_gate_runs_after_dependency_gate(board):
 
 def test_design_pending_is_advisory_kind():
     """`design-pending` 은 advisory 등재 — pre-push 게이트(`lint --gate`)를 막지 않는다."""
-    assert "design-pending" in board_mod._ADVISORY_LINT_KINDS
+    assert "design-pending" in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_lint_bodies_emits_single_design_advisory(board):
@@ -490,11 +492,11 @@ def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
     """`--gate` 는 design-pending 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1).
 
     남의 설계-중 티켓이 내 push 를 막지 않아야 한다 — 차단은 claim 게이트가 한다."""
-    monkeypatch.setattr(board, "lint_tickets",
-                        lambda: [("T-0001", "design-pending", "설계 절 미충전")])
+    monkeypatch.setattr(ticket_lint, "lint_tickets",
+                        lambda _home: [("T-0001", "design-pending", "설계 절 미충전")])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
-    assert board.cmd_lint(argparse.Namespace(gate=False)) == 1
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=True)) == 0
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=False)) == 1
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -507,7 +509,7 @@ def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
 
 def test_design_estimate_is_advisory_kind():
     """`design-estimate` 는 advisory 등재 — pre-push 게이트를 막지 않는다."""
-    assert "design-estimate" in board_mod._ADVISORY_LINT_KINDS
+    assert "design-estimate" in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_large_estimate_with_na_design_is_readvised():
@@ -554,11 +556,11 @@ def test_lint_bodies_silent_for_a_large_ticket_already_on_the_design_track(board
 
 def test_cmd_lint_gate_does_not_block_on_design_estimate(board, monkeypatch):
     """`--gate` 는 design-estimate 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1)."""
-    monkeypatch.setattr(board, "lint_tickets",
-                        lambda: [("T-0001", "design-estimate", "estimate=large 인데 n/a")])
+    monkeypatch.setattr(ticket_lint, "lint_tickets",
+                        lambda _home: [("T-0001", "design-estimate", "estimate=large 인데 n/a")])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
-    assert board.cmd_lint(argparse.Namespace(gate=False)) == 1
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=True)) == 0
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=False)) == 1
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -10,6 +10,7 @@ from pm_engine.app import body_lint
 from pm_engine.app import cluster_binding
 from pm_engine.app import completion_gate
 from pm_engine.app import round_maintenance
+from pm_engine.app import wiki_lint
 from pm_engine.app import round_seed
 from pm_engine.app import ticket_access
 from pm_engine.cli import board_cluster
@@ -33,7 +34,6 @@ from pm_engine.infra import ticket_store
 from typing import Any
 import argparse
 import datetime
-import json
 import re
 import sys
 
@@ -1000,10 +1000,58 @@ def cmd_idea_kill(home, args: argparse.Namespace) -> int:
     return _transition_idea(home, args.id, "killed")
 
 
-def _sidecar_document(path: Path) -> dict | None:
-    """기계 기록 sidecar 한 개를 읽는다 — 부재·손상·비-dict 는 None(판정 없음)."""
+# ── family wiki scope 태그 + 승격 ─────────────────────────────
+# multi-PM wiki 하나 + repo 전용 문서를 `family_scope:` frontmatter 태그로 구분한다.
+#   - 값 = `shared`(기본) / repo 명(areas.md 의 등록 prefix). 부재 → shared 로 간주.
+#   - "완료 시 공유" = 물리 머지 아니라 scope 승격(`repoA → shared` retag·idea-promote 동형).
+#   - `board.py lint` 가 family_scope 를 *인지*(파싱·기본 shared)하되 차단은 최소 —
+#     알 수 없는 형식만 자문성 권고(`scope-advice`·never-blocks). scope 자체로 hard-fail 안 함.
+#
+# 키 선택(`family_scope:` ≠ `scope:`): 기존 ADR frontmatter 의 `scope:` 는 이미 문서 전략
+# 분류(`mission`·`internal-process`)로 점유돼 있어, 같은 키에 repo 네임스페이스를 얹으면 기존
+# 의미를 깨고 오탐을 부른다. family wiki scope 는 전용 키 `family_scope:` 로 박제해 두 의미체계를
+# 분리한다 — 키 부재 회귀 0.
+
+
+# 승격 destination 으로 허용할 약식 (board.py promote-scope <file> --to <scope>).
+# 임의 repo prefix 도 허용하되, 형식 검증(`_FAMILY_SCOPE_RE`)은 통과해야 한다.
+def cmd_promote_scope(home, args: argparse.Namespace) -> int:
+    """family_scope retag — `repoA → shared` 등 scope 값을 교체한다 (idea-promote 동형).
+
+    "완료 시 공유" = 물리 머지 아니라 scope 승격. 대상 문서(decisions/·specs/ 의
+    .md)의 frontmatter `family_scope:` 를 `--to` 값으로 교체(부재면 신규 기록)한다. 단순·최소 —
+    파일 한 개 retag. `--to` 형식은 `_FAMILY_SCOPE_RE` 로 검증한다(깨진 값 차단). 대상은
+    scope-aware 디렉토리(decisions/·specs/) 안이어야 한다
+    승격 명령이므로 임의 frontmatter 문서 retag 는 거부한다.
+    """
+    target = args.file
+    new_scope = args.to.strip()
+    if not wiki_lint._FAMILY_SCOPE_RE.match(new_scope):
+        print(f"invalid --to scope {new_scope!r}: `shared` 또는 repo prefix "
+              "(영숫자·-·_) 여야 함.", file=sys.stderr)
+        return 1
+    path = Path(target)
+    if not path.is_absolute():
+        path = (home.root / target).resolve()
+    else:
+        path = path.resolve()
+    if not wiki_lint._in_scope_aware_dir(home, path):
+        print(f"refusing to retag {pm_paths._rel_to_repo(home, path)}: scope 승격은 decisions/·specs/ "
+              "문서만 대상 (ADR/spec scope 승격 명령).", file=sys.stderr)
+        return 1
+    if not path.exists():
+        print(f"file not found: {pm_paths._rel_to_repo(home, path)}", file=sys.stderr)
+        return 2
     try:
-        data = json.loads(fs.read_text_shared(path, encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+        fm, body = ticket_store.load_ticket(path)
+    except ValueError as exc:
+        print(f"cannot retag {pm_paths._rel_to_repo(home, path)}: {exc}", file=sys.stderr)
+        return 1
+    old_scope = wiki_lint.family_scope(fm)
+    if old_scope == new_scope and isinstance(fm.get("family_scope"), str):
+        print(f"family_scope already {new_scope!r} — no change ({pm_paths._rel_to_repo(home, path)})")
+        return 0
+    fm["family_scope"] = new_scope
+    ticket_store.dump_ticket(path, fm, body)
+    print(f"promoted scope {old_scope!r} → {new_scope!r} ({pm_paths._rel_to_repo(home, path)})")
+    return 0

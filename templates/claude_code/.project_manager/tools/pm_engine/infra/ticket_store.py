@@ -248,7 +248,7 @@ DEFAULT_TEXT_NEWLINE = "\n"
 def _dominant_newline(text: str, default: str = DEFAULT_TEXT_NEWLINE) -> str:
     """번역 없이 읽은 본문의 지배 개행 — 다수결, 동수면 첫 등장, 개행 0 이면 `default`.
 
-    `pm_import.dominant_newline` 과 같은 규칙이다(두 구현의 일치는 테스트가 못박는다). board 는
+    `install_files.dominant_newline` 과 같은 규칙이다(두 구현의 일치는 테스트가 못박는다). board 는
     엔진 모듈을 import 하지 않으므로 이 작은 원시 함수만 각자 둔다."""
     crlf = text.count("\r\n")
     lf = text.count("\n") - crlf

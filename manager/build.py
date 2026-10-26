@@ -8,7 +8,7 @@
 1. **각인** — 빌드 checkout 의 origin URL 을 `manager/_build_info.py`(git-ignored)에 쓴다. 이
    값이 새 프로젝트 적용(`pm_import.py --new --upstream …`)의 기본값이라, 각인 없이 만든 실행
    파일은 새 프로젝트에 갱신 경로를 주지 못한다(번들이 풀린 임시 폴더가 upstream 으로 박힌다).
-   URL 은 손으로 박지 않는다 — 엔진 `pm_import.derive_origin_url` 이 읽는 그 값 그대로다.
+   URL 은 손으로 박지 않는다 — 엔진 `upstream_git.derive_origin_url` 이 읽는 그 값 그대로다.
 2. **화면 빌드**(`npm ci` → `npm run build`) — 창이 여는 것은 Vite 산출물 하나다.
 3. **화면 테스트**(`npm test`) — 실행 파일에 실을 화면을 먼저 재고 넣는다.
 4. **PyInstaller**(`manager/manager.spec`) — onefile 실행 파일 1개.
@@ -175,15 +175,6 @@ def build_info_source(upstream_url: str) -> str:
     )
 
 
-def _engine_module(filename: str):
-    """번들 엔진 모듈 하나 — 관리자와 같은 로더를 지난다(경로 import 를 두 번 쓰지 않는다)."""
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
-    from manager import load_engine_module
-
-    return load_engine_module(filename)
-
-
 def _engine_console():
     """번들 엔진의 콘솔 설정 모듈 — 관리자 패키지가 import 한 그 모듈이다."""
     if str(REPO_ROOT) not in sys.path:
@@ -194,8 +185,15 @@ def _engine_console():
 
 
 def imprint_build_info() -> Path:
-    """빌드 checkout 의 origin URL 을 각인한다."""
-    upstream_url = _engine_module("pm_import.py").derive_origin_url(REPO_ROOT)
+    """빌드 checkout 의 origin URL 을 각인한다.
+
+    엔진 package 는 관리자 패키지 초기화가 import 경로에 올린 번들 엔진 사본(`BUNDLED_TOOLS`)에서 읽는다."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import manager  # noqa: F401 — 번들 엔진 tools 를 import 경로에 올린다.
+    from pm_engine.infra import upstream_git
+
+    upstream_url = upstream_git.derive_origin_url(REPO_ROOT)
     if not upstream_url:
         raise SystemExit(
             f"[중단] 빌드 checkout 의 origin 을 읽지 못했다: {REPO_ROOT}\n"

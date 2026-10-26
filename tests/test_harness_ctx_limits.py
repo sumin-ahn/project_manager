@@ -1,7 +1,7 @@
 """하네스 사용 한도·압축 비율 반영 (T-0923 AT-001~AT-011·AT-023 · 리뷰 F-001~F-003 · T-0943 AT-001~AT-005 · T-0955 AT-001~AT-005).
 
 local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`)와 세 비율(쓴 %)로 하네스 설정
-파일 세 종류에 압축 지점을 쓰는 엔진 함수(`pm_import.apply_harness_ctx` 와 그 부품)를 잰다. 모델 한도 C 는
+파일 세 종류에 압축 지점을 쓰는 엔진 함수(`app.harness_ctx.apply_harness_ctx` 와 그 부품)를 잰다. 모델 한도 C 는
 적용 시점에 한 번 조회해 압축 한도 기록(`local_conf.CTX_BUDGET_RELPATH`)에 고정한다.
 
 입력은 **실제 출하 템플릿**(`templates/*/` 의 settings.json·config.toml·opencode.jsonc)과 그 변형이다 —
@@ -21,6 +21,11 @@ local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`
 """
 from __future__ import annotations
 
+from pm_engine.domain import jsonc
+
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_conf
+
 import difflib
 import hashlib
 import importlib.util
@@ -35,6 +40,14 @@ import pytest
 from _manager_home import _known_ctx_installation, known_ctx_seams
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
+from pm_engine.app import adapter_report
+from pm_engine.app import harness_ctx
+from pm_engine.infra import adapter_baseline
+from pm_engine.infra import adapter_documents
+from pm_engine.app import conf_apply
+from pm_engine.app import update_adapters
+from pm_engine.infra import pm_paths
+from pm_engine.cli import config_install
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -55,9 +68,15 @@ def _load(name: str):
     return module
 
 
-@pytest.fixture(scope="module")
-def pm_import():
-    return _load("pm_import")
+# 모델 한도 조회의 실제 함수 — 축 7 의 조회 시험은 고정 값 대신 이 함수로 되돌려 교체 지점 아래를 잰다.
+_REAL_CTX_QUERIES = {name: getattr(harness_ctx, name)
+                     for name in ("_read_harness_ctx_metadata", "_ctx_claude_threshold")}
+
+
+def _use_real_ctx_queries(monkeypatch) -> None:
+    """이 시험에서 모델 한도 조회를 실제 함수로 되돌린다(교체 지점은 그 아래 `_ctx_native_protocol` 등)."""
+    for name, function in _REAL_CTX_QUERIES.items():
+        monkeypatch.setattr(harness_ctx, name, function)
 
 
 @pytest.fixture(scope="module")
@@ -66,10 +85,10 @@ def local_conf():
 
 
 @pytest.fixture(autouse=True)
-def _known_capacity(pm_import, monkeypatch):
+def _known_capacity(monkeypatch):
     """축 1~6 의 모델 한도 — C 200,000 · 모델 창 232,000 · Claude 압축 예약 0(autoCompactWindow = P)."""
     for name, seam in known_ctx_seams(capacity=200000, context=232000).items():
-        monkeypatch.setattr(pm_import, name, seam)
+        monkeypatch.setattr(harness_ctx, name, seam)
 
 
 def _project(tmp_path: Path, *, conf: str = "", harnesses=("claude", "codex", "opencode"),
@@ -98,13 +117,13 @@ def _global_dir(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
     return folder
 
 
-def _apply(pm_import, root: Path, config_dir: Path, *, write: bool = True):
-    return pm_import.apply_harness_ctx(root, write=write, opencode_config_dir=config_dir)
+def _apply(root: Path, config_dir: Path, *, write: bool = True):
+    return harness_ctx.apply_harness_ctx(root, write=write, opencode_config_dir=config_dir)
 
 
-def _jsonc(pm_import, path: Path) -> dict:
+def _jsonc(path: Path) -> dict:
     """엔진 JSONC 로더로 다시 읽는다(보고 채널이 쓰는 그 로더)."""
-    return pm_import._load_adapter_config_document(path)
+    return adapter_documents._load_adapter_config_document(path)
 
 
 def _only_insertions(old: str, new: str) -> bool:
@@ -132,10 +151,10 @@ def _sha(path: Path) -> str:
 # ── AT-001 · AT-002 검사 ─────────────────────────────────────────────────────
 
 
-def test_validate_collects_order_and_range_violations(pm_import):
+def test_validate_collects_order_and_range_violations():
     """위반을 하나만 알리지 않는다 — 순서 위반과 100 미만 위반이 한 예외에 함께 실린다."""
-    with pytest.raises(pm_import.HarnessCtxError) as caught:
-        pm_import.validate_harness_ctx(
+    with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+        harness_ctx.validate_harness_ctx(
             {"ctx.checkpoint_at_pct": "80", "ctx.precompact_at_pct": "80",
              "ctx.compact_at_pct": "100"}, frozenset())
     violations = caught.value.violations
@@ -147,39 +166,39 @@ def test_validate_collects_order_and_range_violations(pm_import):
     assert all(line in str(caught.value) for line in violations)
 
     # 역방향 — 순서를 지킨 99 는 정상 값이다(Codex 가 없으면).
-    pm_import.validate_harness_ctx(
+    harness_ctx.validate_harness_ctx(
         {"ctx.checkpoint_at_pct": "70", "ctx.precompact_at_pct": "80",
          "ctx.compact_at_pct": "99"}, frozenset({"claude", "opencode"}))
-    pm_import.validate_harness_ctx({}, frozenset({"claude", "codex", "opencode"}))
+    harness_ctx.validate_harness_ctx({}, frozenset({"claude", "codex", "opencode"}))
 
     for key in ("ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct"):
         for bad in ("0", "100", "abc", "1.5"):
-            with pytest.raises(pm_import.HarnessCtxError) as caught:
-                pm_import.validate_harness_ctx({key: bad}, frozenset())
+            with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+                harness_ctx.validate_harness_ctx({key: bad}, frozenset())
             assert any(f"`{key}=" in line for line in caught.value.violations), (key, bad)
 
 
-def test_validate_harness_specific_limits(pm_import):
+def test_validate_harness_specific_limits():
     """claude 압축 지점 범위·codex 95 규칙은 그 파일이 있을 때만, 한도 검사는 있는 하네스만."""
     # 입력 검사는 W만 검증한다. native P 범위는 C를 적용한 계획에서 검사한다.
     for window in ("199998", "2000002", "200000", "2000000"):
-        pm_import.validate_harness_ctx({"harness.claude.ctx_window_tokens": window}, frozenset({"claude"}))
-    pm_import.validate_harness_ctx({"ctx.compact_at_pct": "95"}, frozenset({"codex"}))
+        harness_ctx.validate_harness_ctx({"harness.claude.ctx_window_tokens": window}, frozenset({"claude"}))
+    harness_ctx.validate_harness_ctx({"ctx.compact_at_pct": "95"}, frozenset({"codex"}))
 
     for harness in ("claude", "codex", "opencode"):
         key = f"harness.{harness}.ctx_window_tokens"
         for bad in ("0", "-1", "abc", "1.5"):
-            with pytest.raises(pm_import.HarnessCtxError) as caught:
-                pm_import.validate_harness_ctx({key: bad}, frozenset({harness}))
+            with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+                harness_ctx.validate_harness_ctx({key: bad}, frozenset({harness}))
             assert any(f"`{key}={bad}`" in line for line in caught.value.violations)
     # 역방향 — 설정 파일이 없는 하네스의 한도는 검사하지 않는다(그 값은 어디에도 쓰이지 않는다).
-    pm_import.validate_harness_ctx({"harness.codex.ctx_window_tokens": "abc"}, frozenset({"claude"}))
+    harness_ctx.validate_harness_ctx({"harness.codex.ctx_window_tokens": "abc"}, frozenset({"claude"}))
 
 
 # ── AT-003 목표값 ────────────────────────────────────────────────────────────
 
 
-def test_targets_floor_and_reserved(pm_import):
+def test_targets_floor_and_reserved():
     """설정값은 도구 기록 항목(E·P·모델 행)에서 나온다 — Claude 창 = P + d, opencode reserved = E − P."""
     def entries(effective):
         point = effective * 90 // 100
@@ -191,7 +210,7 @@ def test_targets_floor_and_reserved(pm_import):
                                 "model_context_window": None, "percent": 40}}]},
             "opencode": {"E": effective, "P": point, "models": [{"id": "glm-5.2:cloud", "provider": "ollama",
                          "C": 400000, "basis": {"context": 1000000, "output": 32000, "source": "fixture"}}]}}
-    targets = pm_import.harness_ctx_targets({("ollama", "glm-5.2:cloud"): 32768}, entries(200000))
+    targets = harness_ctx.harness_ctx_targets({("ollama", "glm-5.2:cloud"): 32768}, entries(200000))
 
     assert targets[".claude/settings.json"] == {("autoCompactWindow",): 213000, ("idleCompaction",): False}
     assert targets[".codex/config.toml"] == {
@@ -200,7 +219,7 @@ def test_targets_floor_and_reserved(pm_import):
         (*GLM, "context"): 1000000, (*GLM, "input"): 200000, (*GLM, "output"): 32768,
         ("compaction", "reserved"): 20000}
 
-    odd = pm_import.harness_ctx_targets({("ollama", "glm-5.2:cloud"): 32768}, entries(333333))
+    odd = harness_ctx.harness_ctx_targets({("ollama", "glm-5.2:cloud"): 32768}, entries(333333))
     assert odd[".claude/settings.json"][("autoCompactWindow",)] == 299999 + 33000   # 내림(반올림 300000 아님)
     assert odd[".codex/config.toml"][("model_auto_compact_token_limit",)] == 299999
     assert odd[".opencode/opencode.jsonc"][("compaction", "reserved")] == 33334
@@ -209,7 +228,7 @@ def test_targets_floor_and_reserved(pm_import):
 # ── AT-004 · AT-005 · AT-006 파일 형식별 반영 ─────────────────────────────────
 
 
-def test_apply_claude_settings_keeps_other_bytes(pm_import, tmp_path):
+def test_apply_claude_settings_keeps_other_bytes(tmp_path):
     """재직렬화하지 않는다 — 4칸 들여쓰기 파일에 키를 넣어도 나머지 바이트는 그대로다."""
     shipped = json.loads(TEMPLATE_FILES["claude"][0].read_text(encoding="utf-8"))
     shipped.pop("autoCompactWindow")
@@ -219,26 +238,26 @@ def test_apply_claude_settings_keeps_other_bytes(pm_import, tmp_path):
     config_dir = _global_dir(tmp_path)
     path = root / ".claude" / "settings.json"
 
-    assert _apply(pm_import, root, config_dir) == (
+    assert _apply(root, config_dir) == (
         ".claude/settings.json autoCompactWindow (없음) → 180000",)
     after = path.read_text(encoding="utf-8")
     inserted = ',\n    "autoCompactWindow": 180000'
     assert after.count(inserted) == 1
     assert after.replace(inserted, "", 1) == four_space, "관리 키 밖 바이트가 바뀌었다"
     assert json.loads(after)["autoCompactWindow"] == 180000
-    assert _apply(pm_import, root, config_dir) == (), "두 번째 반영이 또 바꿨다(멱등 아님)"
+    assert _apply(root, config_dir) == (), "두 번째 반영이 또 바꿨다(멱등 아님)"
 
     # 값만 다른 기존 키 — 값 자리만 바뀐다(출하 템플릿 그대로의 2칸 파일).
     shipped_text = TEMPLATE_FILES["claude"][0].read_text(encoding="utf-8")
     root2 = _project(tmp_path / "second", harnesses=("claude",), conf="ctx.compact_at_pct=85\n")
-    assert _apply(pm_import, root2, config_dir) == (
+    assert _apply(root2, config_dir) == (
         ".claude/settings.json autoCompactWindow 180000 → 170000",)
     assert (root2 / ".claude" / "settings.json").read_text(encoding="utf-8") == shipped_text.replace(
         '"autoCompactWindow": 180000', '"autoCompactWindow": 170000', 1)
-    assert _apply(pm_import, root2, config_dir) == ()
+    assert _apply(root2, config_dir) == ()
 
 
-def test_apply_codex_config_top_level_keys(pm_import, tmp_path):
+def test_apply_codex_config_top_level_keys(tmp_path):
     """두 키는 최상위에 들어간다 — 첫 표 뒤에 넣으면 `[features]` 아래 키가 된다."""
     shipped = TEMPLATE_FILES["codex"][0].read_text(encoding="utf-8")
     managed = "model_auto_compact_token_limit = 180000\n"
@@ -250,7 +269,7 @@ def test_apply_codex_config_top_level_keys(pm_import, tmp_path):
     config_dir = _global_dir(tmp_path)
     path = root / ".codex" / "config.toml"
 
-    lines = _apply(pm_import, root, config_dir)
+    lines = _apply(root, config_dir)
     assert lines == (".codex/config.toml model_auto_compact_token_limit 900000 → 180000",)
     after = path.read_text(encoding="utf-8")
     document = tomllib.loads(after)
@@ -264,27 +283,27 @@ def test_apply_codex_config_top_level_keys(pm_import, tmp_path):
         "값 자리·넣은 한 줄 밖의 바이트(주석 포함)가 바뀌었다")
     comments = [line for line in previous.splitlines() if line.lstrip().startswith("#")]
     assert [line for line in after.splitlines() if line.lstrip().startswith("#")] == comments
-    assert _apply(pm_import, root, config_dir) == ()
+    assert _apply(root, config_dir) == ()
 
 
-def test_toml_bracket_lines_inside_multiline_values_are_not_the_first_table(pm_import):
+def test_toml_bracket_lines_inside_multiline_values_are_not_the_first_table():
     """여러 줄 문자열·배열 안의 `[이름]` 꼴 줄은 표 머리가 아니다 — 관리 키를 그 값 안에 넣지 않는다.
 
     재현(2026-09-30 T-0923 수정 라운드 발견): 최상위 `notes = \"\"\"…\"\"\"` 안에 `[memo]` 줄이 있으면
     그 줄을 첫 표 머리로 보아 키 줄을 문자열 안에 넣었고, 반영할 때마다 다시 넣었다."""
     text = 'notes = """\n[memo]\n"""\nids = [\n  [3],\n  [4]\n]\n[features]\nhooks = true\n'
-    new, old = pm_import._toml_set_top_level_integer(text, "model_context_window", 200000)
+    new, old = harness_ctx._toml_set_top_level_integer(text, "model_context_window", 200000)
     assert old is None
     doc = tomllib.loads(new)
     assert doc["notes"] == "[memo]\n"
     assert doc["ids"] == [[3], [4]]
     assert doc["model_context_window"] == 200000
     assert "model_context_window" not in doc["features"]
-    again, again_old = pm_import._toml_set_top_level_integer(new, "model_context_window", 200000)
+    again, again_old = harness_ctx._toml_set_top_level_integer(new, "model_context_window", 200000)
     assert (again, again_old) == (new, "200000")
 
 
-def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
+def test_apply_codex_config_crlf_and_quoted_table_headers(tmp_path):
     """표 머리 판정은 TOML 키 문법과 CRLF 줄 끝을 따른다 (T-0923 리뷰 F-001).
 
     CRLF 로 저장한 앞 세대 파일(한도 키 하나 · 900000)에서도 두 키가 최상위에 들어가고, 넣은 줄도
@@ -298,7 +317,7 @@ def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
     crlf = previous.replace("\n", "\r\n")
     root = _project(tmp_path / "crlf", harnesses=("codex",), texts={".codex/config.toml": crlf})
     path = root / ".codex" / "config.toml"
-    assert _apply(pm_import, root, config_dir) == (
+    assert _apply(root, config_dir) == (
         ".codex/config.toml model_auto_compact_token_limit 900000 → 180000",)
     after = path.read_bytes().decode("utf-8")
     assert after == crlf.replace(
@@ -310,7 +329,7 @@ def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
     assert document["model_auto_compact_token_limit"] == 180000
     assert all("model_context_window" not in table
                for table in document.values() if isinstance(table, dict))
-    assert _apply(pm_import, root, config_dir) == ()
+    assert _apply(root, config_dir) == ()
 
     for index, header in enumerate(('[profiles."team/a"]', "[profiles.'ops@host:1']",
                                     '[ profiles . "한글 팀" ]')):
@@ -319,13 +338,13 @@ def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
         current = shipped.replace("[features]\n", table, 1)
         root = _project(tmp_path / f"quoted-{index}", harnesses=("codex",),
                         texts={".codex/config.toml": current})
-        assert _apply(pm_import, root, config_dir) == (), header
+        assert _apply(root, config_dir) == (), header
         assert (root / ".codex" / "config.toml").read_text(encoding="utf-8") == current, header
         # 최상위 키가 없으면 그 표 머리 앞에 넣는다.
         old_generation = previous.replace("[features]\n", table, 1)
         root = _project(tmp_path / f"quoted-previous-{index}", harnesses=("codex",),
                         texts={".codex/config.toml": old_generation})
-        _apply(pm_import, root, config_dir)
+        _apply(root, config_dir)
         after = (root / ".codex" / "config.toml").read_text(encoding="utf-8")
         assert after == old_generation.replace(
             "model_auto_compact_token_limit = 900000\n",
@@ -334,7 +353,7 @@ def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
         assert profile == {"model_context_window": 128000}, header
 
 
-def test_apply_opencode_writes_limits_for_every_config_model(pm_import, tmp_path):
+def test_apply_opencode_writes_limits_for_every_config_model(tmp_path):
     """설정 파일에 적힌 모델 전부 — 전역에만 있는 모델도 프로젝트 파일에 `limit` 이 생긴다."""
     config_dir = _global_dir(tmp_path, {
         "opencode.jsonc": (
@@ -349,12 +368,12 @@ def test_apply_opencode_writes_limits_for_every_config_model(pm_import, tmp_path
     path = root / ".opencode" / "opencode.jsonc"
     before = path.read_text(encoding="utf-8")
 
-    lines = _apply(pm_import, root, config_dir)
+    lines = _apply(root, config_dir)
 
     after = path.read_text(encoding="utf-8")
     restored = after.replace('"context": 232000', '"context": 200000', 1)
     assert _only_insertions(before, restored), "관리 context 외의 주석·다른 멤버 바이트를 지우거나 바꿨다"
-    document = _jsonc(pm_import, path)
+    document = _jsonc(path)
     ollama = document["provider"]["ollama"]["models"]
     assert ollama["glm-5.2:cloud"]["limit"] == {"context": 232000, "input": 200000, "output": 32768}
     assert ollama["qwen3.8:27b-unc"]["limit"] == {"context": 232000, "input": 200000, "output": 32000}
@@ -371,15 +390,15 @@ def test_apply_opencode_writes_limits_for_every_config_model(pm_import, tmp_path
     assert ".opencode/opencode.jsonc provider.openrouter.models.anthropic/claude-x.limit.output (없음) → 16000" in lines
     assert {name: _sha(config_dir / name) for name in global_before} == global_before, (
         "opencode 전역 설정을 썼다")
-    assert _apply(pm_import, root, config_dir) == ()
+    assert _apply(root, config_dir) == ()
 
 
 # ── AT-007 전역 폴더 해소·주입·격리 ─────────────────────────────────────────
 
 
-def test_opencode_global_dir_resolution_and_isolation(pm_import, tmp_path, monkeypatch,
+def test_opencode_global_dir_resolution_and_isolation(tmp_path, monkeypatch,
                                                       tmp_path_factory):
-    resolve = pm_import.opencode_global_config_dir
+    resolve = harness_ctx.opencode_global_config_dir
     assert resolve({"XDG_CONFIG_HOME": "/cfg"}, Path("/h")) == Path("/cfg/opencode")
     assert resolve({"XDG_CONFIG_HOME": ""}, Path("/h")) == Path("/h/.config/opencode")
     assert resolve({}, Path("/h")) == Path("/h/.config/opencode")
@@ -393,7 +412,7 @@ def test_opencode_global_dir_resolution_and_isolation(pm_import, tmp_path, monke
     monkeypatch.setenv("HOME", str(home))
     empty = _global_dir(tmp_path)
     root = _project(tmp_path, harnesses=("opencode",))
-    _apply(pm_import, root, empty)
+    _apply(root, empty)
     assert "home-model" not in (root / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8")
 
     # `harness.opencode.pro_model` 은 반영 입력이 아니다 — 있든 없든 결과가 같다.
@@ -401,38 +420,38 @@ def test_opencode_global_dir_resolution_and_isolation(pm_import, tmp_path, monke
     for index, conf in enumerate(("ctx.compact_at_pct=85\n",
                                   "ctx.compact_at_pct=85\nharness.opencode.pro_model=ollama/nothing\n")):
         project = _project(tmp_path / f"pro-{index}", harnesses=("opencode",), conf=conf)
-        lines = _apply(pm_import, project, empty)
+        lines = _apply(project, empty)
         outcomes.append((lines, (project / ".opencode" / "opencode.jsonc").read_bytes()))
     assert outcomes[0] == outcomes[1]
-    assert not pm_import.is_harness_ctx_input_key("harness.opencode.pro_model")
+    assert not harness_ctx.is_harness_ctx_input_key("harness.opencode.pro_model")
     for key in ("ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct",
                 "harness.claude.ctx_window_tokens", "harness.codex.ctx_window_tokens",
                 "harness.opencode.ctx_window_tokens"):
-        assert pm_import.is_harness_ctx_input_key(key), key
+        assert harness_ctx.is_harness_ctx_input_key(key), key
 
     # 스위트 격리 — 이 프로세스(와 자식)가 보는 전역 설정은 pytest 임시 루트 아래 빈 폴더다.
     base = tmp_path_factory.getbasetemp().resolve()
     isolated = Path(os.environ["XDG_CONFIG_HOME"]).resolve()
     assert base in isolated.parents, isolated
     global_dir = resolve(os.environ, Path.home())
-    assert not any((global_dir / name).exists() for name in pm_import.OPENCODE_GLOBAL_CONFIG_NAMES)
+    assert not any((global_dir / name).exists() for name in harness_ctx.OPENCODE_GLOBAL_CONFIG_NAMES)
 
 
 # ── AT-008 템플릿 고정점 ─────────────────────────────────────────────────────
 
 
-def test_shipped_defaults_and_resolved_native_fixed_point(pm_import, tmp_path):
+def test_shipped_defaults_and_resolved_native_fixed_point(tmp_path):
     root = _project(tmp_path)
     config_dir = _global_dir(tmp_path)
     before = {relpath: (root / relpath).read_bytes() for _template, relpath in TEMPLATE_FILES.values()}
 
     expected=('.opencode/opencode.jsonc provider.ollama.models."glm-5.2:cloud".limit.context 200000 → 232000',)
-    assert _apply(pm_import, root, config_dir, write=False) == expected
+    assert _apply(root, config_dir, write=False) == expected
     assert {relpath: (root / relpath).read_bytes() for relpath in before} == before
-    assert _apply(pm_import, root, config_dir) == expected
-    assert _apply(pm_import, root, config_dir) == ()
+    assert _apply(root, config_dir) == expected
+    assert _apply(root, config_dir) == ()
 
-    document = _jsonc(pm_import, TEMPLATE_FILES["opencode"][0])
+    document = _jsonc(TEMPLATE_FILES["opencode"][0])
     assert document["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == {
         "context": 200000, "input": 200000, "output": 32768}
     assert document["compaction"] == {"reserved": 20000}
@@ -502,15 +521,15 @@ def _ledger(root: Path, relpath: str, digest: str) -> Path:
     return path
 
 
-def test_report_skips_managed_keys_and_ledger_follows_apply(pm_import, tmp_path):
-    assert "model_auto_compact_token_limit" not in pm_import.ADAPTER_SETTINGS_KEYS[".codex/config.toml"]
+def test_report_skips_managed_keys_and_ledger_follows_apply(tmp_path):
+    assert "model_auto_compact_token_limit" not in install_rules.ADAPTER_SETTINGS_KEYS[".codex/config.toml"]
 
-    latest = _jsonc(pm_import, TEMPLATE_FILES["opencode"][0])
+    latest = _jsonc(TEMPLATE_FILES["opencode"][0])
     project = json.loads(json.dumps(latest))
     project["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"]["context"] = 50000
     project["provider"]["ollama"]["models"]["qwen"] = {"limit": {"context": 1, "output": 1}}
     project["provider"]["lmstudio"] = {"models": {"x": {"limit": {"context": 1, "output": 1}}}}
-    rows = pm_import._adapter_feature_rows(".opencode/opencode.jsonc", project, latest)
+    rows = adapter_report._adapter_feature_rows(".opencode/opencode.jsonc", project, latest)
     assert all(row.verdict == "same" for row in rows if row.name == "provider"), rows
     # 모델 항목에 limit 밖 값이 있는 변형 — 행이 서고 same 이다.
     options = {"baseURL": "http://localhost:11434/v1"}
@@ -518,12 +537,12 @@ def test_report_skips_managed_keys_and_ledger_follows_apply(pm_import, tmp_path)
     latest_with_options["provider"]["ollama"]["options"] = dict(options)
     project_with_options = json.loads(json.dumps(project))
     project_with_options["provider"]["ollama"]["options"] = dict(options)
-    provider_rows = [row for row in pm_import._adapter_feature_rows(
+    provider_rows = [row for row in adapter_report._adapter_feature_rows(
         ".opencode/opencode.jsonc", project_with_options, latest_with_options)
         if row.name == "provider"]
     assert [row.verdict for row in provider_rows] == ["same"]
     project_with_options["provider"]["ollama"]["options"]["baseURL"] = "http://other/v1"
-    provider_rows = [row for row in pm_import._adapter_feature_rows(
+    provider_rows = [row for row in adapter_report._adapter_feature_rows(
         ".opencode/opencode.jsonc", project_with_options, latest_with_options)
         if row.name == "provider"]
     assert [row.verdict for row in provider_rows] == ["differs"]
@@ -531,23 +550,23 @@ def test_report_skips_managed_keys_and_ledger_follows_apply(pm_import, tmp_path)
     # 원장이 증언하던 파일 — 반영 뒤 sha256 만 새 내용 해시, template_rev·recorded_at 은 그대로.
     root = _project(tmp_path, harnesses=("claude",), conf="ctx.compact_at_pct=85\n")
     settings = root / ".claude" / "settings.json"
-    ledger = _ledger(root, ".claude/settings.json", pm_import.content_sha256(settings))
-    _apply(pm_import, root, _global_dir(tmp_path))
+    ledger = _ledger(root, ".claude/settings.json", adapter_baseline.content_sha256(settings))
+    _apply(root, _global_dir(tmp_path))
     entry = json.loads(ledger.read_text(encoding="utf-8"))["files"][".claude/settings.json"]
-    assert entry == {"sha256": pm_import.content_sha256(settings),
+    assert entry == {"sha256": adapter_baseline.content_sha256(settings),
                      "recorded_at": "2026-09-01T00:00:00+09:00", "template_rev": "rev-at-install"}
-    judged = pm_import.judge_adapter_configs(root, REPO, harnesses=["claude"])
+    judged = adapter_report.judge_adapter_configs(root, REPO, harnesses=["claude"])
     assert [(item.relpath, item.status) for item in judged] == [(".claude/settings.json", "unedited")]
 
     # 편집된 파일 — 원장 항목을 건드리지 않는다.
     edited_root = _project(tmp_path / "edited", harnesses=("claude",), conf="ctx.compact_at_pct=85\n")
     edited_ledger = _ledger(edited_root, ".claude/settings.json", "0" * 64)
     ledger_before = edited_ledger.read_bytes()
-    _apply(pm_import, edited_root, _global_dir(tmp_path))
+    _apply(edited_root, _global_dir(tmp_path))
     assert edited_ledger.read_bytes() == ledger_before
 
 
-def test_partial_write_failure_keeps_ledger_for_written_files(pm_import, tmp_path, monkeypatch):
+def test_partial_write_failure_keeps_ledger_for_written_files(tmp_path, monkeypatch):
     """한 파일을 교체하지 못해도 이미 교체한 파일의 원장은 기록한다 (T-0923 리뷰 F-002).
 
     원장이 무편집을 증언하던 settings.json 은 교체 뒤에도 무편집으로 판정되고(편집됨이면 세트 수용에서
@@ -558,49 +577,49 @@ def test_partial_write_failure_keeps_ledger_for_written_files(pm_import, tmp_pat
     ledger = root / ".project_manager" / "adapter_baseline.json"
     recorded = {"recorded_at": "2026-09-01T00:00:00+09:00", "template_rev": "rev-at-install"}
     ledger.write_text(json.dumps({"schema": 1, "files": {
-        relpath: {"sha256": pm_import.content_sha256(root / relpath), **recorded}
+        relpath: {"sha256": adapter_baseline.content_sha256(root / relpath), **recorded}
         for relpath in (".claude/settings.json", ".codex/config.toml")}}), encoding="utf-8")
     config_before = config.read_bytes()
     config_entry = json.loads(ledger.read_text(encoding="utf-8"))["files"][".codex/config.toml"]
-    replace = pm_import._atomic_write_dest_bytes
+    replace = adapter_baseline._atomic_write_dest_bytes
 
     def codex_folder_is_read_only(dest_root, rel, payload, **kwargs):
         if Path(rel).as_posix() == ".codex/config.toml":
             return False                    # 엔진 교체 함수의 실패 답(원본은 손대지 않음)
         return replace(dest_root, rel, payload, **kwargs)
 
-    monkeypatch.setattr(pm_import, "_atomic_write_dest_bytes", codex_folder_is_read_only)
-    with pytest.raises(pm_import.HarnessCtxError) as caught:
-        _apply(pm_import, root, _global_dir(tmp_path))
+    monkeypatch.setattr(adapter_baseline, "_atomic_write_dest_bytes", codex_folder_is_read_only)
+    with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+        _apply(root, _global_dir(tmp_path))
     message = str(caught.value)
     assert message.startswith("사용 한도·압축 비율을 .claude/settings.json 에 반영한 뒤 멈췄습니다"), message
     assert ".codex/config.toml 를 쓰지 못했습니다" in message and "반영하지 않았습니다" not in message
 
     assert json.loads(settings.read_text(encoding="utf-8"))["autoCompactWindow"] == 170000
     entries = json.loads(ledger.read_text(encoding="utf-8"))["files"]
-    assert entries[".claude/settings.json"] == {"sha256": pm_import.content_sha256(settings), **recorded}
+    assert entries[".claude/settings.json"] == {"sha256": adapter_baseline.content_sha256(settings), **recorded}
     assert config.read_bytes() == config_before and entries[".codex/config.toml"] == config_entry
     judged = {item.relpath: item.status
-              for item in pm_import.judge_adapter_configs(root, REPO, harnesses=["claude", "codex"])}
+              for item in adapter_report.judge_adapter_configs(root, REPO, harnesses=["claude", "codex"])}
     assert judged[".claude/settings.json"] == "unedited", judged
 
-    monkeypatch.setattr(pm_import, "_atomic_write_dest_bytes", replace)
-    assert _apply(pm_import, root, _global_dir(tmp_path)) == (
+    monkeypatch.setattr(adapter_baseline, "_atomic_write_dest_bytes", replace)
+    assert _apply(root, _global_dir(tmp_path)) == (
         ".codex/config.toml model_auto_compact_token_limit 180000 → 170000",)
     judged = {item.relpath: item.status
-              for item in pm_import.judge_adapter_configs(root, REPO, harnesses=["claude", "codex"])}
+              for item in adapter_report.judge_adapter_configs(root, REPO, harnesses=["claude", "codex"])}
     assert (judged[".claude/settings.json"], judged[".codex/config.toml"]) == ("unedited", "unedited")
 
 
 # ── AT-023 opencode 출력 상한 우선순위·전역 읽기 실패 ─────────────────────────
 
 
-def _model_limit(pm_import, root: Path) -> dict:
-    return _jsonc(pm_import, root / ".opencode" / "opencode.jsonc")[
+def _model_limit(root: Path) -> dict:
+    return _jsonc(root / ".opencode" / "opencode.jsonc")[
         "provider"]["ollama"]["models"]["m"]["limit"]
 
 
-def test_opencode_output_precedence_and_global_read_errors(pm_import, tmp_path):
+def test_opencode_output_precedence_and_global_read_errors(tmp_path):
     config_dir = _global_dir(tmp_path, {
         "config.json": '{"provider": {"ollama": {"models": {"m": {"limit": '
                        '{"context": 9, "output": 1000}}}}}}',
@@ -610,8 +629,8 @@ def test_opencode_output_precedence_and_global_read_errors(pm_import, tmp_path):
         "opencode.jsonc": '{"provider": {"ollama": {"models": {"m": {"name": "m"}}}}}',
     })
     root = _project(tmp_path / "global-wins", harnesses=("opencode",))
-    _apply(pm_import, root, config_dir)
-    assert _model_limit(pm_import, root)["output"] == 2000
+    _apply(root, config_dir)
+    assert _model_limit(root)["output"] == 2000
 
     shipped = TEMPLATE_FILES["opencode"][0].read_text(encoding="utf-8")
     with_project_output = shipped.replace(
@@ -620,13 +639,13 @@ def test_opencode_output_precedence_and_global_read_errors(pm_import, tmp_path):
         '          }\n        },\n        "glm-5.2:cloud": {', 1)
     root = _project(tmp_path / "project-wins", harnesses=("opencode",),
                     texts={".opencode/opencode.jsonc": with_project_output})
-    _apply(pm_import, root, config_dir)
-    assert _model_limit(pm_import, root)["output"] == 3000
+    _apply(root, config_dir)
+    assert _model_limit(root)["output"] == 3000
 
     root = _project(tmp_path / "nothing", harnesses=("opencode",))
-    _apply(pm_import, root, _global_dir(tmp_path / "only-name", {
+    _apply(root, _global_dir(tmp_path / "only-name", {
         "opencode.jsonc": '{"provider": {"ollama": {"models": {"m": {}}}}}'}))
-    assert _model_limit(pm_import, root)["output"] == 32000
+    assert _model_limit(root)["output"] == 32000
 
     # 전역 파일을 풀지 못하거나 가져다 쓸 값이 정수가 아니면 멈춘다 — 빈 전역으로 반영하지 않는다.
     for folder, files in (
@@ -635,17 +654,17 @@ def test_opencode_output_precedence_and_global_read_errors(pm_import, tmp_path):
                                          '{"limit": {"context": 9, "output": "big"}}}}}}'})):
         broken_dir = _global_dir(tmp_path / folder, files)
         root = _project(tmp_path / f"stop-{folder}", conf="ctx.compact_at_pct=85\n")
-        _ledger(root, ".claude/settings.json", pm_import.content_sha256(root / ".claude/settings.json"))
+        _ledger(root, ".claude/settings.json", adapter_baseline.content_sha256(root / ".claude/settings.json"))
         watched = [root / relpath for _template, relpath in TEMPLATE_FILES.values()]
         watched.append(root / ".project_manager" / "adapter_baseline.json")
         before = {path: path.read_bytes() for path in watched}
-        with pytest.raises(pm_import.HarnessCtxError) as caught:
-            _apply(pm_import, root, broken_dir)
+        with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+            _apply(root, broken_dir)
         assert str(broken_dir / "opencode.json") in str(caught.value), caught.value
         assert {path: path.read_bytes() for path in watched} == before, folder
 
 
-def test_object_slots_are_checked_only_in_opencode_documents(pm_import, tmp_path):
+def test_object_slots_are_checked_only_in_opencode_documents(tmp_path):
     """객체 자리 검사(`provider`·`compaction` …)는 opencode 문서에만 건다.
 
     claude 설정에 같은 이름의 키가 있어도 반영을 막지 않고, opencode 전역 문서의 `provider` 가 객체가
@@ -654,14 +673,14 @@ def test_object_slots_are_checked_only_in_opencode_documents(pm_import, tmp_path
     claude_text = shipped.replace("{\n", '{\n  "provider": "anthropic",\n', 1)
     root = _project(tmp_path / "claude", harnesses=("claude",), conf="ctx.compact_at_pct=85\n",
                     texts={".claude/settings.json": claude_text})
-    _apply(pm_import, root, _global_dir(tmp_path))
-    assert _jsonc(pm_import, root / ".claude" / "settings.json")["autoCompactWindow"] == 170000
+    _apply(root, _global_dir(tmp_path))
+    assert _jsonc(root / ".claude" / "settings.json")["autoCompactWindow"] == 170000
 
     broken_dir = _global_dir(tmp_path / "non-object", {"opencode.json": '{"provider": "x"}'})
     root = _project(tmp_path / "opencode", harnesses=("opencode",))
     before = (root / ".opencode" / "opencode.jsonc").read_bytes()
-    with pytest.raises(pm_import.HarnessCtxError) as caught:
-        _apply(pm_import, root, broken_dir)
+    with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+        _apply(root, broken_dir)
     assert f"{broken_dir / 'opencode.json'} 의 `provider` 가 객체가 아닙니다" in str(caught.value)
     assert (root / ".opencode" / "opencode.jsonc").read_bytes() == before
 
@@ -675,7 +694,6 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
     `values` 가 있으면 local.conf 에 그 값을 쓴 뒤 적용한다(기록 입력과 local.conf 가 같다). 훅·구동기가
     그 트리의 엔진 사본을 싣도록 필요한 도구 파일을 복사한다."""
     root = Path(root)
-    module = _load("pm_import")
     conf = root / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     if not conf.exists():
@@ -692,11 +710,13 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
     if not (tools / "pm_engine").exists():
         shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
                         ignore=shutil.ignore_patterns("__pycache__"))
-    for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
-        setattr(module, name, seam)
     if values:
-        module._write_conf_keys(conf, dict(values))
-    module.apply_harness_ctx(root, write=True, opencode_config_dir=root / "global")
+        install_conf._write_conf_keys(conf, dict(values))
+    # 고정 모델 한도는 이 적용 구간에만 건다(끝나면 원래 조회 함수로 돌아간다).
+    with pytest.MonkeyPatch.context() as patch:
+        for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
+            patch.setattr(harness_ctx, name, seam)
+        harness_ctx.apply_harness_ctx(root, write=True, opencode_config_dir=root / "global")
     return "ollama/glm-5.2:cloud" if harness == "opencode" else model
 
 
@@ -719,7 +739,7 @@ T0943_RETIRED_FIELDS = ("verification", "physical", "fingerprint", "valid_until"
                         "digest", "environment", "native", "profile", "identity", "receipt")
 
 
-def _t0943_seams(pm_import, monkeypatch, *, threshold_offset=T0943_CLAUDE_RESERVE):
+def _t0943_seams(monkeypatch, *, threshold_offset=T0943_CLAUDE_RESERVE):
     """모델 한도 조회 교체 — 확정 값 행과 Claude 확인 조회(창 − d)."""
     def reader(root, harness, documents, models):
         if harness == "claude":
@@ -729,14 +749,14 @@ def _t0943_seams(pm_import, monkeypatch, *, threshold_offset=T0943_CLAUDE_RESERV
         return [{"id": model, "provider": provider, "C": 230144,
                  "basis": {"context": 262144, "output": 32000, "source": "http://localhost:11434/v1"}}
                 for (provider, model) in models]
-    monkeypatch.setattr(pm_import, "_read_harness_ctx_metadata", reader)
-    monkeypatch.setattr(pm_import, "_ctx_claude_threshold", lambda root, window: window - threshold_offset)
+    monkeypatch.setattr(harness_ctx, "_read_harness_ctx_metadata", reader)
+    monkeypatch.setattr(harness_ctx, "_ctx_claude_threshold", lambda root, window: window - threshold_offset)
 
 
-def _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch):
-    _t0943_seams(pm_import, monkeypatch)
+def _t0943_applied(local_conf, tmp_path, monkeypatch):
+    _t0943_seams(monkeypatch)
     root = _project(tmp_path, conf=T0943_CONF)
-    _apply(pm_import, root, _global_dir(tmp_path))
+    _apply(root, _global_dir(tmp_path))
     return root, local_conf.load(root / ".project_manager" / "local.conf").values
 
 
@@ -746,16 +766,9 @@ def _t0943_watched(root: Path) -> dict:
     return {path: path.read_bytes() if path.exists() else None for path in paths}
 
 
-def _t0945_pm_update(pm_import, monkeypatch):
-    """설정 저장 본문(`pm_update.apply_conf`)이 이 테스트의 pm_import(조회 교체 지점 포함)를 쓰게 한다."""
-    pm_update = _load("pm_update")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
-    return pm_update
-
-
-def test_t0943_record_three_tools_fields_and_values(pm_import, local_conf, tmp_path, monkeypatch):
+def test_t0943_record_three_tools_fields_and_values(local_conf, tmp_path, monkeypatch):
     """AT-001 — 세 도구 적용 뒤 기록은 schema 5 의 정해진 필드뿐이고 E·P·설정값이 확정 값이다."""
-    root, _values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    root, _values = _t0943_applied(local_conf, tmp_path, monkeypatch)
     text = (root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8")
     record = json.loads(text)
     assert set(record) == {"schema", "applied_at", "inputs", "harnesses"} and record["schema"] == 5
@@ -782,19 +795,19 @@ def test_t0943_record_three_tools_fields_and_values(pm_import, local_conf, tmp_p
     assert json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))["autoCompactWindow"] == 597000
     assert tomllib.loads((root / ".codex/config.toml").read_text(encoding="utf-8"))[
         "model_auto_compact_token_limit"] == 535800
-    opencode = _jsonc(pm_import, root / ".opencode/opencode.jsonc")
+    opencode = _jsonc(root / ".opencode/opencode.jsonc")
     assert opencode["compaction"]["reserved"] == 12000
     assert opencode["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == {
         "context": 262144, "input": 200000, "output": 32768}
-    assert _apply(pm_import, root, _global_dir(tmp_path)) == ()
+    assert _apply(root, _global_dir(tmp_path)) == ()
     # 같은 값의 재적용은 기록도 다시 쓰지 않는다(적용 시각만 바뀌는 재기록 없음).
     assert (root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8") == text
 
 
-def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, local_conf, tmp_path,
+def test_t0943_reader_value_survives_time_cache_environment_and_path(local_conf, tmp_path,
                                                                       monkeypatch):
     """AT-002 — 기록 값은 시각·Codex 캐시·환경변수·실행 파일 경로가 바뀌어도 그대로다(None 반환 없음)."""
-    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
     first = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in conf_schema.CTX_HARNESSES}
     assert first["claude"] == {"E": 600000, "P": 564000, "checkpoint": 480000, "precompact": 540000,
                                "checkpoint_at_pct": 80, "precompact_at_pct": 90, "models": ["claude-opus-5-5"],
@@ -820,14 +833,14 @@ def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, 
     later = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in conf_schema.CTX_HARNESSES}
     for harness in conf_schema.CTX_HARNESSES:
         assert {**later[harness], "applied_at": None} == {**first[harness], "applied_at": None}, harness
-    assert all(row["status"] == "ok" for row in pm_import.ctx_budget_status(root, values).values())
+    assert all(row["status"] == "ok" for row in harness_ctx.ctx_budget_status(root, values).values())
 
 
 @pytest.mark.parametrize("damage", ["missing", "broken", "schema4", "tool", "window", "ratio", "basis", "basis-type"])
-def test_t0943_reader_errors_name_the_apply_command(pm_import, local_conf, tmp_path, monkeypatch, damage):
+def test_t0943_reader_errors_name_the_apply_command(local_conf, tmp_path, monkeypatch, damage):
     """AT-002 — 부재·손상·이전 형식·도구 항목 없음·입력 변경은 `CtxBudgetError`(`pm_config.py apply` 안내)다.
     모델 출처(basis)가 세 형식의 키를 갖추지 않았거나 값 형식이 다르면 읽기 단계의 기록 손상이다(F-004)."""
-    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
     path = root / local_conf.CTX_BUDGET_RELPATH
     record = json.loads(path.read_text(encoding="utf-8"))
     if damage == "missing":
@@ -850,15 +863,15 @@ def test_t0943_reader_errors_name_the_apply_command(pm_import, local_conf, tmp_p
         values = {**values, "ctx.compact_at_pct": "93"}
     with pytest.raises(conf_schema.CtxBudgetError, match="`pm_config.py apply`"):
         local_conf.read_ctx_budget(root, values, "claude", "claude-opus-5-5")
-    status = pm_import.ctx_budget_status(root, values)["claude"]
+    status = harness_ctx.ctx_budget_status(root, values)["claude"]
     assert status == {"status": "error", "reason": status["reason"]}
     assert "`pm_config.py apply`" in status["reason"]
 
 
-def test_t0943_reader_session_model_mismatch_warns_and_keeps_budget(pm_import, local_conf, tmp_path,
+def test_t0943_reader_session_model_mismatch_warns_and_keeps_budget(local_conf, tmp_path,
                                                                     monkeypatch):
     """AT-002 — 세션 모델이 기록 모델과 다르면 값은 그대로이고 `warning` 만 붙는다."""
-    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
     read = local_conf.read_ctx_budget
     assert read(root, values, "claude", "claude-opus-5-5")["warning"] is None
     assert read(root, values, "codex", "gpt-6.1-sol")["warning"] is None
@@ -874,44 +887,43 @@ def test_t0943_reader_session_model_mismatch_warns_and_keeps_budget(pm_import, l
 @pytest.mark.parametrize("basis", [
     {"context_window": 272000, "max_context_window": None, "model_context_window": None, "percent": 95},
     {"context": 400000, "input": 272000, "output": 16000, "source": "models.dev 목록"}])
-def test_t0943_reader_accepts_every_basis_form(pm_import, local_conf, tmp_path, monkeypatch, basis):
+def test_t0943_reader_accepts_every_basis_form(local_conf, tmp_path, monkeypatch, basis):
     """F-004 역방향 — 출처 형식 검사는 적용이 쓰는 형식을 거부하지 않는다. 세 도구 기본 형식은 AT-002 의
     `ctx_budget_status` 전부 ok 가 덮고, 여기는 Codex 설정 창 null·opencode input 있음을 본다(도구 이름 무관)."""
-    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
     path = root / local_conf.CTX_BUDGET_RELPATH
     record = json.loads(path.read_text(encoding="utf-8"))
     record["harnesses"]["claude"]["models"][0]["basis"] = basis
     path.write_text(json.dumps(record), encoding="utf-8")
     assert local_conf.read_ctx_budget(root, values, "claude")["E"] == 600000
-    status = pm_import.ctx_budget_status(root, values)["claude"]
+    status = harness_ctx.ctx_budget_status(root, values)["claude"]
     assert status["status"] == "ok" and status["basis_text"]
 
 
-def test_t0943_record_write_failure_returns_rc1(pm_import, local_conf, tmp_path, monkeypatch, capsys):
+def test_t0943_record_write_failure_returns_rc1(local_conf, tmp_path, monkeypatch, capsys):
     """F-005 — 쓰기 단계 실패는 바꾼 파일이 없어도 `apply` rc 1 이다. 같은 입력의 재적용에서 Claude 출처
     표시값만 달라 기록만 다시 써야 할 때 기록 쓰기가 실패하면 local.conf·설정 파일·기록은 그대로다.
     조회·검사 단계의 거부는 그대로 rc 3 이다(역방향). 사용 한도 키만 보내 렌더 단계는 돌지 않는다."""
-    _t0943_seams(pm_import, monkeypatch)
+    _t0943_seams(monkeypatch)
     pm_config = _load("pm_config")
-    pm_update = _t0945_pm_update(pm_import, monkeypatch)
     parser = pm_config.build_parser()
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     same = ["apply", "--set", "ctx.compact_at_pct=94"]
-    assert pm_config.cmd_apply(parser.parse_args(same), pm_update=pm_update, dest_root=root) == 0
+    assert config_install.cmd_apply(pm_paths.home_at(pm_config.REPO), parser.parse_args(same), dest_root=root) == 0
     before = _t0943_watched(root)
     row = {**T0943_CLAUDE_ROW, "basis": {"model_window": 1000100, "auto_compact_threshold": 967100}}  # d 33,000 그대로
-    monkeypatch.setattr(pm_import, "_read_harness_ctx_metadata", lambda *args: [dict(row)])
-    replace = pm_import._atomic_write_dest_bytes
-    monkeypatch.setattr(pm_import, "_atomic_write_dest_bytes", lambda dest_root, rel, payload, **kwargs: (
+    monkeypatch.setattr(harness_ctx, "_read_harness_ctx_metadata", lambda *args: [dict(row)])
+    replace = adapter_baseline._atomic_write_dest_bytes
+    monkeypatch.setattr(adapter_baseline, "_atomic_write_dest_bytes", lambda dest_root, rel, payload, **kwargs: (
         False if Path(rel) == local_conf.CTX_BUDGET_RELPATH else replace(dest_root, rel, payload, **kwargs)))
     capsys.readouterr()
 
-    assert pm_config.cmd_apply(parser.parse_args(same), pm_update=pm_update, dest_root=root) == 1
+    assert config_install.cmd_apply(pm_paths.home_at(pm_config.REPO), parser.parse_args(same), dest_root=root) == 1
     assert "압축 한도 기록(.project_manager/.local/ctx-budget.json)을 쓰지 못했습니다" in capsys.readouterr().err
     assert _t0943_watched(root) == before
 
-    refused = pm_config.cmd_apply(parser.parse_args(["apply", "--set", "ctx.precompact_at_pct=95"]),
-                                  pm_update=pm_update, dest_root=root)
+    refused = config_install.cmd_apply(pm_paths.home_at(pm_config.REPO), parser.parse_args(["apply", "--set", "ctx.precompact_at_pct=95"]),
+                                  dest_root=root)
     assert refused == 3 and "ctx.precompact_at_pct=95" in capsys.readouterr().err
     assert _t0943_watched(root) == before
 
@@ -932,11 +944,11 @@ def _t0943_claude_protocol(calls, *, offset=T0943_CLAUDE_RESERVE):
 
 def test_t0943_claude_default_window_and_confirm_query(local_conf, tmp_path, monkeypatch):
     """AT-003 — 기본 창 조회로 C 967,000·d 33,000, 창 597,000 확인 조회의 압축 기준 = P 564,000."""
-    engine = _load("pm_import")
+    _use_real_ctx_queries(monkeypatch)
     calls = []
-    monkeypatch.setattr(engine, "_ctx_native_protocol", _t0943_claude_protocol(calls))
+    monkeypatch.setattr(harness_ctx, "_ctx_native_protocol", _t0943_claude_protocol(calls))
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
-    assert _apply(engine, root, _global_dir(tmp_path)) == (
+    assert _apply(root, _global_dir(tmp_path)) == (
         ".claude/settings.json autoCompactWindow 180000 → 597000",)
     assert calls == ["auto", "597000"]
     entry = json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))["harnesses"]["claude"]
@@ -948,16 +960,15 @@ def test_t0943_claude_default_window_and_confirm_query(local_conf, tmp_path, mon
 @pytest.mark.parametrize("case", ["threshold", "below-range"])
 def test_t0943_claude_refuses_without_writing(local_conf, tmp_path, monkeypatch, case):
     """AT-003 — 확인 조회 압축 기준 ≠ P, 창이 100,000 미만이면 거부하고 어떤 파일도 바뀌지 않는다."""
-    engine = _load("pm_import")
+    _use_real_ctx_queries(monkeypatch)
     calls = []
     offset = 30000 if case == "threshold" else T0943_CLAUDE_RESERVE
-    monkeypatch.setattr(engine, "_ctx_native_protocol", _t0943_claude_protocol(calls, offset=offset))
+    monkeypatch.setattr(harness_ctx, "_ctx_native_protocol", _t0943_claude_protocol(calls, offset=offset))
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     before = _t0943_watched(root)
     window = "600000" if case == "threshold" else "70000"          # 70,000 → P 65,800 → 창 98,800
-    pm_update = _t0945_pm_update(engine, monkeypatch)
-    with pytest.raises(pm_update.ConfApplyError) as caught:
-        pm_update.apply_conf(root, opencode_config_dir=_global_dir(tmp_path),
+    with pytest.raises(conf_apply.ConfApplyError) as caught:
+        conf_apply.apply_conf(pm_paths.home_at(REPO), root, opencode_config_dir=_global_dir(tmp_path),
                              updates={"harness.claude.ctx_window_tokens": window})
     assert caught.value.write_stage is False
     assert _t0943_watched(root) == before
@@ -993,12 +1004,12 @@ _T0943_CODEX_CACHE_ROW = {"slug": "gpt-6.1-sol", "context_window": 272000, "max_
 
 def test_t0943_codex_app_server_and_cache_row(local_conf, tmp_path, monkeypatch):
     """AT-004 — 실효 창 600,000(설정) ≤ 최대 872,000 × 95% = C 570,000 → E 570,000 · P 535,800."""
-    engine = _load("pm_import")
+    _use_real_ctx_queries(monkeypatch)
     calls = []
-    monkeypatch.setattr(engine, "_ctx_native_protocol", _t0943_codex_protocol(calls))
+    monkeypatch.setattr(harness_ctx, "_ctx_native_protocol", _t0943_codex_protocol(calls))
     _t0943_codex_cache(tmp_path, monkeypatch, [{"slug": "other", "context_window": 1}, _T0943_CODEX_CACHE_ROW])
     root = _project(tmp_path, harnesses=("codex",), conf=T0943_CONF)
-    assert _apply(engine, root, _global_dir(tmp_path)) == (
+    assert _apply(root, _global_dir(tmp_path)) == (
         ".codex/config.toml model_auto_compact_token_limit 180000 → 535800",)
     assert len(calls) == 1
     entry = json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))["harnesses"]["codex"]
@@ -1009,16 +1020,15 @@ def test_t0943_codex_app_server_and_cache_row(local_conf, tmp_path, monkeypatch)
 @pytest.mark.parametrize("case", ["missing-row", "above-limit"])
 def test_t0943_codex_refuses_without_writing(local_conf, tmp_path, monkeypatch, case):
     """AT-004 — 캐시에 모델 행이 없거나 P 가 실효 창의 90% 를 넘으면 거부, 어떤 파일도 바뀌지 않는다."""
-    engine = _load("pm_import")
-    monkeypatch.setattr(engine, "_ctx_native_protocol", _t0943_codex_protocol([]))
+    _use_real_ctx_queries(monkeypatch)
+    monkeypatch.setattr(harness_ctx, "_ctx_native_protocol", _t0943_codex_protocol([]))
     rows = [{**_T0943_CODEX_CACHE_ROW, "slug": "gpt-6.1"}] if case == "missing-row" else [_T0943_CODEX_CACHE_ROW]
     _t0943_codex_cache(tmp_path, monkeypatch, rows)
     root = _project(tmp_path, harnesses=("codex",), conf=T0943_CONF)
     before = _t0943_watched(root)
-    pm_update = _t0945_pm_update(engine, monkeypatch)
-    with pytest.raises(pm_update.ConfApplyError) as caught:
+    with pytest.raises(conf_apply.ConfApplyError) as caught:
         # 95% → P 541,500 > 600,000 × 90% = 540,000
-        pm_update.apply_conf(root, opencode_config_dir=_global_dir(tmp_path),
+        conf_apply.apply_conf(pm_paths.home_at(REPO), root, opencode_config_dir=_global_dir(tmp_path),
                              updates={"ctx.compact_at_pct": "94" if case == "missing-row" else "95"})
     assert caught.value.write_stage is False
     assert _t0943_watched(root) == before
@@ -1082,14 +1092,14 @@ def _t0943_opencode_tree(tmp_path: Path, monkeypatch, origin: str) -> tuple[Path
 def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monkeypatch, output_max):
     """AT-005 — 대상 모델 5개의 C 최솟값(qwen 262,144 − 32,000 = 230,144)으로 E 200,000·P 188,000,
     reserved 12,000, 모든 `limit.input` 200,000. 출력 상한 환경변수는 C 에 반영된다. CLI 는 부르지 않는다."""
-    engine = _load("pm_import")
-    monkeypatch.setattr(engine, "_ctx_native_protocol", lambda *args: pytest.fail("opencode 는 CLI 를 부르지 않는다"))
+    _use_real_ctx_queries(monkeypatch)
+    monkeypatch.setattr(harness_ctx, "_ctx_native_protocol", lambda *args: pytest.fail("opencode 는 CLI 를 부르지 않는다"))
     if output_max:
         monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", output_max)
     ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576, "qwen3.8:27b-unc": 262144})
     try:
         root, global_dir = _t0943_opencode_tree(tmp_path, monkeypatch, ollama.origin)
-        _apply(engine, root, global_dir)
+        _apply(root, global_dir)
     finally:
         ollama.close()
     entry = json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))["harnesses"]["opencode"]
@@ -1100,13 +1110,13 @@ def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monk
         "openrouter/anthropic/claude-x": 272000, "openrouter/z-ai/glm-x": 300000 - output,
         "opencode/big-pickle": 1000000 - output}
     assert entry["C"] == 262144 - output and (entry["E"], entry["P"]) == (200000, 188000)
-    document = _jsonc(pm_import=engine, path=root / ".opencode/opencode.jsonc")
+    document = _jsonc(path=root / ".opencode/opencode.jsonc")
     assert document["compaction"]["reserved"] == 12000
     limits = [model["limit"] for provider in document["provider"].values() for model in provider["models"].values()]
     assert len(limits) == 5 and all(limit["input"] == 200000 for limit in limits)
     assert document["provider"]["ollama"]["models"]["qwen3.8:27b-unc"]["limit"] == {
         "context": 262144, "input": 200000, "output": 32000}
-    text = engine.ctx_budget_status(root, local_conf.load(root / ".project_manager/local.conf").values)[
+    text = harness_ctx.ctx_budget_status(root, local_conf.load(root / ".project_manager/local.conf").values)[
         "opencode"]["basis_text"]
     assert text == f"ollama/qwen3.8:27b-unc · 창 262,144 − 출력 {output:,} ({ollama.origin})"
 
@@ -1134,14 +1144,14 @@ def _t0955_record(root: Path, local_conf) -> dict:
 def test_t0955_unconfigured_provider_model_is_excluded_and_named(local_conf, tmp_path, monkeypatch, capsys):
     """AT-001 — 연결 키 없는 전역 설정 공급자(lmstudio)의 모델은 조회하지 않고 빼며 이름을 알린다. 연결된
     대상 5개(ollama 2 · openrouter 2 · opencode 1)로 반영하고 프로젝트 파일에 lmstudio 항목을 만들지 않는다."""
-    engine = _load("pm_import")
+    _use_real_ctx_queries(monkeypatch)
     ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576, "qwen3.8:27b-unc": 262144})
     try:
         root, global_dir = _t0943_opencode_tree(tmp_path, monkeypatch, ollama.origin)
         (global_dir / "opencode.jsonc").write_text('{"provider": {"lmstudio": {"models": {"local-x": {}}}}}',
                                                    encoding="utf-8")
         capsys.readouterr()
-        _apply(engine, root, global_dir)
+        _apply(root, global_dir)
     finally:
         ollama.close()
     entry = _t0955_record(root, local_conf)["harnesses"]["opencode"]
@@ -1149,7 +1159,7 @@ def test_t0955_unconfigured_provider_model_is_excluded_and_named(local_conf, tmp
         "ollama/glm-5.2:cloud", "ollama/qwen3.8:27b-unc", "opencode/big-pickle",
         "openrouter/anthropic/claude-x", "openrouter/z-ai/glm-x"]
     assert entry["C"] == 262144 - 32000 and entry["E"] == 200000
-    document = _jsonc(pm_import=engine, path=root / ".opencode/opencode.jsonc")
+    document = _jsonc(path=root / ".opencode/opencode.jsonc")
     assert "lmstudio" not in document["provider"]
     assert f"{T0955_EXCLUDED}: lmstudio/local-x" in capsys.readouterr().err
 
@@ -1171,7 +1181,7 @@ def test_t0955_unconfigured_provider_model_is_excluded_and_named(local_conf, tmp
 def test_t0955_connection_keys_decide_exclusion(documents, catalog, unconnected):
     """연결 판정 입력표 — 목록의 공급자, 주소 키 세 개(빈 `options.baseURL` 은 없음), 패키지(모델 값이 공급자
     값을 이긴다)를 병합 순서의 모든 설정 문서에서 본다."""
-    assert _load("pm_import")._ctx_opencode_unconnected(documents, catalog, "lm", "x") is unconnected
+    assert harness_ctx._ctx_opencode_unconnected(documents, catalog, "lm", "x") is unconnected
 
 
 def _t0955_without_provider_block(text: str) -> str:
@@ -1185,7 +1195,7 @@ def _t0955_without_provider_block(text: str) -> str:
 def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, monkeypatch, capsys, case):
     """AT-002 — 쓸 수 있는 opencode 모델이 0개면 반영하지 않는다. 반환 빈 튜플, 설정 파일 바이트 그대로,
     기록 `harnesses` 빈 객체, 미반영 알림. 출하 모델(ollama/glm-5.2:cloud)이 있으면 그 이름도 알린다."""
-    engine = _load("pm_import")
+    _use_real_ctx_queries(monkeypatch)
     cache = tmp_path / "cache"
     (cache / "opencode").mkdir(parents=True)
     if case == "catalog-without-provider":
@@ -1202,7 +1212,7 @@ def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, mon
     before = config.read_bytes()
     capsys.readouterr()
 
-    assert _apply(engine, root, _global_dir(tmp_path)) == ()
+    assert _apply(root, _global_dir(tmp_path)) == ()
 
     assert config.read_bytes() == before
     assert _t0955_record(root, local_conf)["harnesses"] == {}
@@ -1222,7 +1232,7 @@ def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path
 
     선택 model 키 anthropic/claude-x(설정 블록 없음 · `opencode auth login` 연결 형상)를 둔 프로젝트에서
     전역 설정에 연결된 ollama 가 없으면 남은 행 0개, 있으면 그 모델로 반영한다."""
-    engine = _load("pm_import")
+    _use_real_ctx_queries(monkeypatch)
     cache = tmp_path / "cache"
     cache.mkdir()
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
@@ -1237,7 +1247,7 @@ def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path
     unconnected_global.mkdir()
     capsys.readouterr()
 
-    assert _apply(engine, root, unconnected_global) == ()
+    assert _apply(root, unconnected_global) == ()
     err = capsys.readouterr().err
     assert f"{excluded}: " in err and "anthropic/claude-x" in err and "ollama/glm-5.2:cloud" in err, err
     assert T0955_NOT_APPLIED in err and T0955_CATALOG_HINT in err, err
@@ -1247,7 +1257,7 @@ def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path
     try:
         global_dir = _global_dir(tmp_path, {"opencode.json": json.dumps({"provider": {"ollama": {
             "npm": "@ai-sdk/openai-compatible", "options": {"baseURL": ollama.origin}}}})})
-        _apply(engine, root, global_dir)
+        _apply(root, global_dir)
     finally:
         ollama.close()
     err = capsys.readouterr().err
@@ -1268,7 +1278,7 @@ def _t0955_closed_port() -> int:
 def test_t0955_routed_model_lookup_failure_still_refuses(local_conf, tmp_path, monkeypatch, case):
     """AT-003 — 연결 설정이 있는 모델(비기본 패키지만 있거나 주소가 있음)의 한도를 읽지 못하면 T-0943 대로
     반영 전체를 거부하고 어떤 파일도 바뀌지 않는다. 제외 규칙이 조회 실패 전반으로 넓어지면 실패한다."""
-    engine = _load("pm_import")
+    _use_real_ctx_queries(monkeypatch)
     port = _t0955_closed_port()
     lmstudio = ({"npm": "@ai-sdk/anthropic", "models": {"local-x": {}}} if case == "npm-only" else
                 {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": f"http://127.0.0.1:{port}/v1"},
@@ -1279,8 +1289,8 @@ def test_t0955_routed_model_lookup_failure_still_refuses(local_conf, tmp_path, m
         (global_dir / "opencode.jsonc").write_text(json.dumps({"provider": {"lmstudio": lmstudio}}),
                                                    encoding="utf-8")
         before = _t0943_watched(root)
-        with pytest.raises(engine.HarnessCtxError) as caught:
-            _apply(engine, root, global_dir)
+        with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+            _apply(root, global_dir)
     finally:
         ollama.close()
     expected = "lmstudio/local-x" if case == "npm-only" else f"127.0.0.1:{port}/api/show"
@@ -1318,7 +1328,7 @@ def test_t0955_opencode_install_without_provider_settings(local_conf, tmp_path):
         encoding="utf-8", errors="replace", timeout=300)
     output = f"--- stdout ---\n{completed.stdout[-3000:]}\n--- stderr ---\n{completed.stderr[-3000:]}"
     assert completed.returncode == 0, output
-    document = _jsonc(pm_import=_load("pm_import"), path=dest / ".opencode/opencode.jsonc")
+    document = _jsonc(path=dest / ".opencode/opencode.jsonc")
     assert document["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == T0955_SHIPPED_LIMIT
     assert document["compaction"]["reserved"] == 20000
     assert "opencode" not in _t0955_record(dest, local_conf)["harnesses"]
@@ -1327,14 +1337,14 @@ def test_t0955_opencode_install_without_provider_settings(local_conf, tmp_path):
 
 
 def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, capsys):
-    """AT-005 — 빈 전역 설정·빈 캐시에서 갱신의 반영 단계(`pm_update.apply_harness_ctx_limits`)가 True 를
+    """AT-005 — 빈 전역 설정·빈 캐시에서 갱신의 반영 단계(`update_adapters.apply_harness_ctx_limits`)가 True 를
     돌려주고 멈춤 문구 없이 제외 모델을 알린다."""
-    pm_update = _load("pm_update")
+    _use_real_ctx_queries(monkeypatch)
     for name, value in _t0955_empty_opencode_env(tmp_path).items():
         monkeypatch.setenv(name, value)
     root = _project(tmp_path, harnesses=("opencode",), conf=T0943_CONF)
     capsys.readouterr()
-    assert pm_update.apply_harness_ctx_limits(root, write=True) is True
+    assert update_adapters.apply_harness_ctx_limits(root, write=True) is True
     err = capsys.readouterr().err
     assert "ollama/glm-5.2:cloud" in err and "[중단]" not in err, err
 
@@ -1347,9 +1357,9 @@ T0949_LOOKUPS = ("_read_harness_ctx_metadata", "_ctx_claude_threshold", "_ctx_na
 T0949_GLM_INPUT = 'provider.ollama.models."glm-5.2:cloud".limit.input'
 
 
-def _t0949_no_lookup(pm_import, monkeypatch) -> None:
+def _t0949_no_lookup(monkeypatch) -> None:
     for name in T0949_LOOKUPS:
-        monkeypatch.setattr(pm_import, name, lambda *args, _name=name, **kwargs: pytest.fail(f"상태 조회가 {_name} 를 불렀다"))
+        monkeypatch.setattr(harness_ctx, name, lambda *args, _name=name, **kwargs: pytest.fail(f"상태 조회가 {_name} 를 불렀다"))
 
 
 def _t0949_rewrite(root: Path, relpath: str, old: str, new: str) -> None:
@@ -1360,10 +1370,10 @@ def _t0949_rewrite(root: Path, relpath: str, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-def _t0949_status(pm_import, root: Path, values) -> dict:
+def _t0949_status(root: Path, values) -> dict:
     """상태 조회 한 번 — 전후로 설정 파일 3개·local.conf·기록 바이트가 같다."""
     before = _t0943_watched(root)
-    status = pm_import.ctx_budget_status(root, values)
+    status = harness_ctx.ctx_budget_status(root, values)
     assert _t0943_watched(root) == before
     return status
 
@@ -1376,18 +1386,18 @@ def _t0949_status(pm_import, root: Path, values) -> dict:
     ("opencode", ".opencode/opencode.jsonc", '"input": 200000', '"input": 210000',
      T0949_GLM_INPUT, 210000, 200000),
 ])
-def test_t0949_settings_mismatch_each_tool(pm_import, local_conf, tmp_path, monkeypatch, harness, relpath, old, new,
+def test_t0949_settings_mismatch_each_tool(local_conf, tmp_path, monkeypatch, harness, relpath, old, new,
                                            path, file_value, record_value):
     """AT-001 — 반영 직후 세 도구 모두 빈 목록이고, 한 도구의 값을 바꾸면 그 도구만 경로·파일 값·기록 값 한 건."""
-    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
-    _t0949_no_lookup(pm_import, monkeypatch)
-    untouched = _t0949_status(pm_import, root, values)
+    root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
+    _t0949_no_lookup(monkeypatch)
+    untouched = _t0949_status(root, values)
     assert {name: row["status"] for name, row in untouched.items()} == dict.fromkeys(conf_schema.CTX_HARNESSES, "ok")
     assert {name: row["settings_mismatch"] for name, row in untouched.items()} == dict.fromkeys(
         conf_schema.CTX_HARNESSES, [])
 
     _t0949_rewrite(root, relpath, old, new)
-    status = _t0949_status(pm_import, root, values)
+    status = _t0949_status(root, values)
     assert status[harness]["settings_mismatch"] == [{"path": path, "file": file_value, "record": record_value}]
     assert {name: row["settings_mismatch"] for name, row in status.items() if name != harness} == dict.fromkeys(
         set(conf_schema.CTX_HARNESSES) - {harness}, [])
@@ -1396,14 +1406,14 @@ def test_t0949_settings_mismatch_each_tool(pm_import, local_conf, tmp_path, monk
         key: value for key, value in untouched[harness].items() if key != "settings_mismatch"}
 
 
-def test_t0949_absent_bool_and_unreadable(pm_import, local_conf, tmp_path, monkeypatch):
+def test_t0949_absent_bool_and_unreadable(local_conf, tmp_path, monkeypatch):
     """AT-002 — 키가 없으면 `file` null, bool 은 정수로 보지 않는다. 풀지 못하는 설정 파일은 그 도구만 error 이고
     사유는 그 파일과 원인이다(반영 머리말 없음)."""
-    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
-    _t0949_no_lookup(pm_import, monkeypatch)
+    root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
+    _t0949_no_lookup(monkeypatch)
     _t0949_rewrite(root, ".codex/config.toml", "model_auto_compact_token_limit = 535800\n", "")
     _t0949_rewrite(root, ".claude/settings.json", '"autoCompactWindow": 597000', '"autoCompactWindow": true')
-    status = _t0949_status(pm_import, root, values)
+    status = _t0949_status(root, values)
     assert status["codex"]["settings_mismatch"] == [
         {"path": "model_auto_compact_token_limit", "file": None, "record": 535800}]
     assert status["claude"]["settings_mismatch"] == [{"path": "autoCompactWindow", "file": True, "record": 597000}]
@@ -1411,55 +1421,45 @@ def test_t0949_absent_bool_and_unreadable(pm_import, local_conf, tmp_path, monke
 
     codex = root / ".codex/config.toml"
     codex.write_text("<<<<<<< HEAD\n" + codex.read_text(encoding="utf-8"), encoding="utf-8")
-    status = _t0949_status(pm_import, root, values)
+    status = _t0949_status(root, values)
     assert set(status["codex"]) == {"status", "reason"} and status["codex"]["status"] == "error"
     assert status["codex"]["reason"].startswith(".codex/config.toml 를 풀지 못했습니다"), status["codex"]["reason"]
     assert "반영하지 않았습니다" not in status["codex"]["reason"]
     assert status["claude"]["status"] == "ok" and status["opencode"]["status"] == "ok"
 
 
-def test_t0949_apply_reread_refuses_unwritten_value(pm_import, tmp_path, monkeypatch):
+def test_t0949_apply_reread_refuses_unwritten_value(tmp_path, monkeypatch):
     """AT-003 — 같음 규칙(`_harness_ctx_same`)을 반영 재판독과 함께 쓴다. 값을 쓰지 않는 JSONC 편집 대역으로
     반영하면 재판독이 거부하고 어떤 파일도 바뀌지 않는다."""
-    _t0943_seams(pm_import, monkeypatch)
+    _t0943_seams(monkeypatch)
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
-    real = pm_import._harness_ctx_jsonc_seam()
-
-    class Unwritten:
-        _mask_jsonc_comments = staticmethod(real._mask_jsonc_comments)
-        _strip_jsonc_trailing_commas = staticmethod(real._strip_jsonc_trailing_commas)
-
-        @staticmethod
-        def _jsonc_set_value(text, path, value):
-            return text, None
-
-    monkeypatch.setattr(pm_import, "_harness_ctx_jsonc_seam", lambda: Unwritten)
+    monkeypatch.setattr(jsonc, "_jsonc_set_value", lambda text, path, value: (text, None))
     before = _t0943_watched(root)
-    with pytest.raises(pm_import.HarnessCtxError) as caught:
-        _apply(pm_import, root, _global_dir(tmp_path))
+    with pytest.raises(harness_ctx.HarnessCtxError) as caught:
+        _apply(root, _global_dir(tmp_path))
     assert "반영 결과를 다시 읽었더니" in str(caught.value) and "autoCompactWindow" in str(caught.value)
     assert _t0943_watched(root) == before
 
 
-def test_t0949_bool_is_not_integer_one(pm_import):
+def test_t0949_bool_is_not_integer_one():
     """F-001 — 같음 규칙은 bool 을 정수로 보지 않는다. 파이썬에서 `True == 1` 이라 bool 검사가 판정을 바꾸는
     기록 값은 1 뿐이다: 설정 파일 true · 기록 1 은 다름, 설정 파일 1 · 기록 1 은 같음."""
-    assert pm_import._harness_ctx_same(True, True, 1) is False
-    assert pm_import._harness_ctx_same(True, 1, 1) is True
+    assert harness_ctx._harness_ctx_same(True, True, 1) is False
+    assert harness_ctx._harness_ctx_same(True, 1, 1) is True
 
 
 # ── T-0952 유휴 압축 끄기 관리 키 ─────────────────────────────────────────────
 
 
-def test_t0952_bool_target_equals_only_bool(pm_import):
+def test_t0952_bool_target_equals_only_bool():
     """AT-012 — bool 목표는 같은 bool 만 같다. 정수 0·반대 bool·키 없음은 다르다."""
-    assert pm_import._harness_ctx_same(True, False, False) is True
-    assert pm_import._harness_ctx_same(True, 0, False) is False
-    assert pm_import._harness_ctx_same(True, True, False) is False
-    assert pm_import._harness_ctx_same(False, None, False) is False
+    assert harness_ctx._harness_ctx_same(True, False, False) is True
+    assert harness_ctx._harness_ctx_same(True, 0, False) is False
+    assert harness_ctx._harness_ctx_same(True, True, False) is False
+    assert harness_ctx._harness_ctx_same(False, None, False) is False
 
 
-def test_t0952_apply_manages_idle_compaction_false(pm_import, local_conf, tmp_path):
+def test_t0952_apply_manages_idle_compaction_false(local_conf, tmp_path):
     """AT-007 — `idleCompaction` 이 없는 Claude 설정 파일에 반영이 값 자리만 넣고, 기록·차이 표시가 함께 다룬다."""
     shipped = TEMPLATE_FILES["claude"][0].read_text(encoding="utf-8")
     idle_line = '  "idleCompaction": false,\n'
@@ -1469,39 +1469,39 @@ def test_t0952_apply_manages_idle_compaction_false(pm_import, local_conf, tmp_pa
     config_dir = _global_dir(tmp_path)
     path = root / ".claude" / "settings.json"
 
-    assert _apply(pm_import, root, config_dir) == (".claude/settings.json idleCompaction (없음) → false",)
+    assert _apply(root, config_dir) == (".claude/settings.json idleCompaction (없음) → false",)
     after = path.read_text(encoding="utf-8")
     assert _only_insertions(without_idle, after)
     assert after.count('"idleCompaction": false') == 1
     assert json.loads(after)["idleCompaction"] is False
-    assert _apply(pm_import, root, config_dir) == ()
+    assert _apply(root, config_dir) == ()
 
     record = json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))
     assert record["harnesses"]["claude"]["settings"] == {"autoCompactWindow": 180000, "idleCompaction": False}
     values = local_conf.load(root / ".project_manager" / "local.conf").values
-    assert pm_import.ctx_budget_status(root, values)["claude"]["settings_mismatch"] == []
+    assert harness_ctx.ctx_budget_status(root, values)["claude"]["settings_mismatch"] == []
 
     path.write_text(after.replace('"idleCompaction": false', '"idleCompaction": true', 1), encoding="utf-8")
-    assert pm_import.ctx_budget_status(root, values)["claude"]["settings_mismatch"] == [
+    assert harness_ctx.ctx_budget_status(root, values)["claude"]["settings_mismatch"] == [
         {"path": "idleCompaction", "file": True, "record": False}]
-    assert _apply(pm_import, root, config_dir) == (".claude/settings.json idleCompaction true → false",)
+    assert _apply(root, config_dir) == (".claude/settings.json idleCompaction true → false",)
     assert path.read_text(encoding="utf-8") == after
 
 
-def _t0949_set_jsonc(pm_import, root: Path, relpath: str, path: tuple[str, ...], value) -> None:
+def _t0949_set_jsonc(root: Path, relpath: str, path: tuple[str, ...], value) -> None:
     """엔진 JSONC 편집기로 값 하나를 쓴다(없던 경로는 만든다)."""
     target = root / relpath
-    text, _old = pm_import._harness_ctx_jsonc_seam()._jsonc_set_value(target.read_text(encoding="utf-8"), path, value)
+    text, _old = jsonc._jsonc_set_value(target.read_text(encoding="utf-8"), path, value)
     target.write_text(text, encoding="utf-8")
 
 
 @pytest.mark.parametrize("case", ["string", "float-equal", "other-key", "unrecorded-model", "parent-not-object",
                                   "missing-file", "not-utf8", "not-object", "record-missing"])
-def test_t0949_file_state_matrix(pm_import, local_conf, tmp_path, monkeypatch, case):
+def test_t0949_file_state_matrix(local_conf, tmp_path, monkeypatch, case):
     """T-0949 열거 — 판독 실패·키 없음·bool(AT-002)·같음·다름 밖의 설정 파일 상태. 기록에 없는 경로·다른 키는
     비교하지 않고, 판독 실패는 차이 없음으로 접히지 않는다. 기록 오류이면 설정 파일을 읽지 않는다."""
-    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
-    _t0949_no_lookup(pm_import, monkeypatch)
+    root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
+    _t0949_no_lookup(monkeypatch)
     claude, opencode = ".claude/settings.json", ".opencode/opencode.jsonc"
     expected_claude: object = []
     if case == "string":
@@ -1510,11 +1510,11 @@ def test_t0949_file_state_matrix(pm_import, local_conf, tmp_path, monkeypatch, c
     elif case == "float-equal":
         _t0949_rewrite(root, claude, '"autoCompactWindow": 597000', '"autoCompactWindow": 597000.0')
     elif case == "other-key":
-        _t0949_set_jsonc(pm_import, root, claude, ("env", "UNRELATED_KEY"), "1")
+        _t0949_set_jsonc(root, claude, ("env", "UNRELATED_KEY"), "1")
     elif case == "unrecorded-model":
-        _t0949_set_jsonc(pm_import, root, opencode, ("provider", "ollama", "models", "new-model", "limit", "input"), 1)
+        _t0949_set_jsonc(root, opencode, ("provider", "ollama", "models", "new-model", "limit", "input"), 1)
     elif case == "parent-not-object":
-        _t0949_set_jsonc(pm_import, root, opencode, ("compaction",), 3)
+        _t0949_set_jsonc(root, opencode, ("compaction",), 3)
     elif case == "missing-file":
         (root / claude).unlink()
         expected_claude = ".claude/settings.json 를 읽지 못했습니다"
@@ -1528,7 +1528,7 @@ def test_t0949_file_state_matrix(pm_import, local_conf, tmp_path, monkeypatch, c
         (root / local_conf.CTX_BUDGET_RELPATH).unlink()
         (root / claude).unlink()
         expected_claude = "압축 한도 기록이 없습니다"
-    status = _t0949_status(pm_import, root, values)
+    status = _t0949_status(root, values)
     if isinstance(expected_claude, list):
         assert status["claude"]["status"] == "ok" and status["claude"]["settings_mismatch"] == expected_claude
     else:

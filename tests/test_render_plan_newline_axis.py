@@ -11,6 +11,7 @@ command·codex operational **최소 렌더** 분기만 raw bytes 로 대조했�
 무디게 만드는 반대 사고(내용 차이까지 삼킴)를 같은 자리에서 막는다.
 """
 from __future__ import annotations
+from pm_engine.app import update_render
 
 import importlib.util
 from pathlib import Path
@@ -49,7 +50,7 @@ def test_crlf_dest_with_same_content_is_unchanged(pm_update, tmp_path):
     """표기만 다른 dest 는 '변경 없음' 이다 — 아니면 sync 가 수렴하지 않는다."""
     dest = _crlf_dest(tmp_path, _RENDERED_LF)
 
-    assert pm_update._rendered_text_matches_dest(_RENDERED_LF, dest) is True
+    assert update_render._rendered_text_matches_dest(_RENDERED_LF, dest) is True
 
 
 @pytest.mark.parametrize(
@@ -66,7 +67,7 @@ def test_crlf_dest_with_different_content_is_still_update(
     """개행 정규화는 **표기만** 지운다 — 내용이 한 글자라도 다르면 여전히 update 다."""
     dest = _crlf_dest(tmp_path, _RENDERED_LF)
 
-    assert pm_update._rendered_text_matches_dest(changed, dest) is False, \
+    assert update_render._rendered_text_matches_dest(changed, dest) is False, \
         f"정규화가 내용 차이({label})까지 삼켰다 — 판정이 무뎌졌다"
 
 
@@ -75,8 +76,8 @@ def test_lf_dest_axis_is_unchanged_by_normalization(pm_update, tmp_path):
     dest = tmp_path / "dest.md"
     write_lf(dest, _RENDERED_LF)
 
-    assert pm_update._rendered_text_matches_dest(_RENDERED_LF, dest) is True
-    assert pm_update._rendered_text_matches_dest(_RENDERED_LF + "꼬리\n", dest) is False
+    assert update_render._rendered_text_matches_dest(_RENDERED_LF, dest) is True
+    assert update_render._rendered_text_matches_dest(_RENDERED_LF + "꼬리\n", dest) is False
 
 
 def test_unreadable_or_binary_dest_is_conservative_difference(pm_update, tmp_path):
@@ -85,16 +86,17 @@ def test_unreadable_or_binary_dest_is_conservative_difference(pm_update, tmp_pat
     binary.write_bytes(b"\xff\xfe\x00\x01")
     missing = tmp_path / "absent.md"
 
-    assert pm_update._rendered_text_matches_dest(_RENDERED_LF, binary) is False
-    assert pm_update._rendered_text_matches_dest(_RENDERED_LF, missing) is False
+    assert update_render._rendered_text_matches_dest(_RENDERED_LF, binary) is False
+    assert update_render._rendered_text_matches_dest(_RENDERED_LF, missing) is False
 
 
 def test_full_render_branch_shares_the_same_comparison_seam(pm_update):
     """전면 렌더 판정은 이 대조 규칙을 **호출**한다 — 축이 두 벌로 갈리지 않는다."""
-    source = (TOOLS / "pm_update.py").read_text(encoding="utf-8")
+    source = (TOOLS / "pm_engine" / "app" / "update_render.py").read_text(encoding="utf-8")
     body = source.split("def _render_eq_dst(", 1)[1].split("\ndef ", 1)[0]
     assert "_rendered_text_matches_dest(" in body, \
         "전면 렌더 분기가 자기 대조 규칙을 되살렸다(판정 사본)"
-    plan_body = source.split("\ndef plan(", 1)[1].split("\ndef ", 1)[0]
+    plan_source = (TOOLS / "pm_engine" / "app" / "update_plan.py").read_text(encoding="utf-8")
+    plan_body = plan_source.split("\ndef plan(", 1)[1].split("\ndef ", 1)[0]
     assert "!= dst.read_bytes()" not in plan_body, \
         "plan 의 렌더 분기에 raw bytes 대조가 되살아났다(CRLF 수렴 불가 재발)"

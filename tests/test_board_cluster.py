@@ -46,6 +46,7 @@ from pm_engine.infra import ticket_store
 from pm_engine.infra import pm_paths
 
 from pm_engine.app import board_sync
+from pm_engine.cli import board_lint
 
 # 코드 트리를 보유한 task — claim·new·cluster new 는 `--task` 정체성이 필요하다(T-0962).
 _TASK = "main"
@@ -833,7 +834,7 @@ def test_lint_reports_member_and_duplicate_as_advisory(env, capsys):
         ticket_lint._CLUSTER_DUPLICATE_LINT_KIND,
     }, findings
     # 두 kind 다 advisory 다 — `lint --gate` 차단 집합에 들지 않는다.
-    assert kinds <= board._ADVISORY_LINT_KINDS
+    assert kinds <= board_lint._ADVISORY_LINT_KINDS
     duplicate = [item for item in findings
                  if item[1] == ticket_lint._CLUSTER_DUPLICATE_LINT_KIND][0]
     assert duplicate[0] == first and "C-obs" in duplicate[2] and "C-shadow" in duplicate[2]

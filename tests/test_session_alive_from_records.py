@@ -25,6 +25,7 @@ from pm_engine.infra import pool_store
 from pm_engine.app import worktree_pool
 from pm_engine.domain import worktree_records
 from pm_engine.app import worktree_status
+from pm_engine.cli import config_status
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -159,8 +160,8 @@ def test_the_status_json_rows_have_no_pid_key(wp, tmp_path, monkeypatch):
     monkeypatch.setattr(pool_store, "slots_for_task", lambda _home, _name: [], raising=False)
     task = worktree_records.Task(name="proj_1", session="s-test", started="t")
 
-    slot_rows = pc._status_json_slots( [lease], {"proj_1"})
-    task_rows = pc._status_json_tasks( [task])
+    slot_rows = config_status._status_json_slots(pm_paths.home_at(pc.REPO),  [lease], {"proj_1"})
+    task_rows = config_status._status_json_tasks(pm_paths.home_at(pc.REPO),  [task])
 
     assert slot_rows[0]["alive"] is True and "pid" not in slot_rows[0]
     assert task_rows[0]["alive"] is True and "pid" not in task_rows[0]

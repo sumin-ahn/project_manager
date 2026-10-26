@@ -1,59 +1,8 @@
-#!/usr/bin/env python3
-"""어댑터 render 엔진 — 어댑터 파일을 *생성 산출물* 로 렌더한다.
-
-framework 본문 템플릿 → 자족 .md. operational 토큰(`{{KEY}}` placeholder)을 local.conf
-재유도값으로 plain string replace 한다(Jinja/표현식/루프 없음·DSL 아님). (엔진 fix →
-어댑터 전파)의 근본 fix: framework 본문 변경을 전파하면서 채택자 customization(local.conf)을
-영영 clobber 하지 않는다 — 손편집되던 출하 .md 가 템플릿의 재렌더 산출물이 된다.
-
-토큰 (어댑터 .md 의 `{{KEY}}` placeholder):
-  - **operational** (OPERATIONAL_KEYS) — import 시 sed 치환된 리터럴(local.conf 재유도).
-    plain string replace(omit 없음). 출하 파일엔 이미 리터럴이라 렌더는 보통 no-op.
-
-free-form(채택자 손편집 산문 — `{{PROJECT_CONSTRAINTS}}` 등)은 *이 엔진이 다루지 않는다*:
-free-form 을 canonical home(root doc §프로젝트 고유 제약 + `pm_role.local.md`
-§보호 영역)으로 일원화하고, pm_import 의 FILL 채널(`FREE_FORM_TOKENS`)이 전담한다. render-overlay
-free-form value-fill 기계(overlay.local.yaml·`FREEFORM_KEYS`·slot-fill·conditional-omit)는
-free-form 은 FILL 채널 단일 채널이고 어댑터는 free-form-free 다
-(`tests/test_adapter_free_form_free.py` lock-in).
-
-자족 산출물 = 토큰 0: 렌더 결과에 잔여 `{{[A-Z_]+}}` 가 *하나라도* 있으면
-post-render assertion 이 emission 순간 hard-fail(allow-list 없음). operational 은 plain replace
-로 해소돼야 한다 — 미해소 operational(local.conf 미보유 key 등)·템플릿 저자가 새로 넣은
-`{{FOO}}`·미배선 토큰을 침묵 출하 대신 큰소리로 표면화한다. board.py `render-leak` lint 가
-상시 backstop(2중 차단).
-
-**유일한 예외 = intentional-TODO placeholder(모델 토큰)**: `{{OPENCODE_PRO_MODEL}}`(채택자가
-opencode 없이 import)과 `{{DELEGATE_MODEL_<ROLE>}}`(local.conf 에 `delegate.<role>.model` 부재,
-또는 그 역할이 다른 하네스로 가는 **미사용 프로필** 카드)은
-결정적 해소가 불가능한 토큰이라, 미해소 시 leak(자족 위반)이 아니라 `# model: …  # TODO: …` 로
-graceful 중화한다(pm_import --fill manual 과 대칭·채택자-fill 대기). 이건 자족 산출물 위반이 아니다
-— 리터럴 `{{...}}` 토큰이 제거되고(자족 유지) 채택자가 나중에 채우는 지점만 남는다.
-neutralize_model_todo·neutralize_delegate_model_todo 참조. 그 밖의 미해소 토큰은
-여전히 fail-loud(false-green 근절 유지).
-
-순수 함수 중심(stdlib). pm_update(재렌더)·pm_import(최초) 양쪽이 호출한다. 형제 로드는 카드에
-추론 값을 채울 때 하네스 계약(`contract.reasoning_allowed`)을 부르는 한 곳이고, opencode 카드는
-이때 모델 목록 조회가 돈다.
-"""
-
+"""설치 공통 render_rules (domain)."""
 from __future__ import annotations
 
-import os
+from pm_engine.domain import conf_schema
 import re
-import sys
-from pathlib import Path
-
-_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _TOOLS_DIR not in sys.path:
-    sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra.harness import contract  # noqa: E402
-
-
-# baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.8.1"
-
 
 # 하네스 agent 카드의 역할별 모델/추론 토큰 → local.conf 해소 키. **위임 토큰의 단일 표**다
 # (하네스별 사본 금지): claude `.claude/agents/*.md`·codex `.codex/agents/*.toml`·opencode
@@ -81,6 +30,7 @@ DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
     "DELEGATE_REASONING_CODE_REVIEWER": "delegate.code-reviewer.reasoning",
 }
 
+
 # 어댑터 네임스페이스 디렉터리 → (토큰 접두 → 그 값을 실을 카드 필드). **카드 형식이 소비 기대를
 # 정한다**(하네스별 예외 아님): 형식은 카드가 놓인 어댑터 디렉터리가 정하므로 키도 그 디렉터리다.
 # `.claude` frontmatter 는 `model`·`effort`, `.codex` TOML 은 `model`·`model_reasoning_effort`,
@@ -105,6 +55,7 @@ DELEGATE_HARNESS_CONF_KEYS: dict[str, str] = {
     for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items()
 }
 
+
 # 어댑터 네임스페이스 디렉터리 → 하네스 이름. 카드가 **어느 하네스 프로필인가**의 단일 판정원
 # (렌더 소스 경로가 그 사실을 들고 있다 — 토큰 이름엔 하네스가 없다).
 CARD_HARNESS_BY_ADAPTER_DIR: dict[str, str] = {
@@ -113,13 +64,14 @@ CARD_HARNESS_BY_ADAPTER_DIR: dict[str, str] = {
     ".opencode": "opencode",
 }
 
+
 # operational — import sed 치환된 리터럴 (local.conf 재유도). plain replace·omit 없음.
-# pm_import.OPERATIONAL_TOKENS(중괄호 포함)와 동일 집합을 bare key 로 + opencode 전용
+# adapter_specs.OPERATIONAL_TOKENS(중괄호 포함)와 동일 집합을 bare key 로 + opencode 전용
 # OPENCODE_PRO_MODEL(opencode 채택자 local.conf 만 보유·claude tree 엔 토큰 부재 → no-op).
 #
 # ⚠️ forward-flag (@render 활성화 시점): local.conf(board.py init 산출)는 이 중
 #    일부만 보유한다 — DATE·PROJECT_ROOT·PROJECT_TAGLINE 는 init 이 채우지 않을 수 있어
-#    pm_update._operational_from_local_conf 가 그 token-key 를 dict 에 안 넣는다. 엄격 가드
+#    app.update_render._operational_from_local_conf 가 그 token-key 를 dict 에 안 넣는다. 엄격 가드
 #    (_assert_no_leak·토큰 0) 하에선, @render 활성화된 어댑터 파일이 그런 미보유 operational
 #    토큰을 *담고 있으면 렌더가 실패한다 — 그게 옳다*(미해소를 침묵 출하 대신 표면화). 현재
 #    @render path 0 이라 안 깨진다. 활성화 시점에 그 파일들의 operational 해소(또는
@@ -145,14 +97,17 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
     *DELEGATE_MODEL_CONF_KEYS,
 )
 
+
 # 잔여 leak 스캔 — 대문자/언더스코어 토큰 (post-render assertion·잔존 시 무조건 raise).
 _ANY_TOKEN_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
+
 
 # stray omit-marker 스캔 — 산출물에 잔존한 옛 free-form drop-section 마커는 무음 출하 금지.
 # `<!-- pm:omit-if-empty KEY -->` 류는
 # 이제 *어느 어댑터에도 없어야 한다*(어댑터 free-form-free). 잔존 시 미마이그레이션
 # 신호로 leak 처리한다(침묵 출하 대신 표면화).
 _STRAY_MARKER_RE = re.compile(r"<!--\s*/?pm:omit-if-empty\b[^>]*-->")
+
 
 # ── intentional-TODO placeholder (import↔self-update 대칭) ──────────────
 # `{{OPENCODE_PRO_MODEL}}` 은 채택자가 opencode 없이/모델조회 실패로 import 하면 *결정적으로
@@ -165,8 +120,13 @@ _STRAY_MARKER_RE = re.compile(r"<!--\s*/?pm:omit-if-empty\b[^>]*-->")
 # 토큰(다른 위치의 OPENCODE_PRO_MODEL 포함·다른 `{{...}}`)은 계속 _assert_no_leak 가 fail-loud
 # (false-green 근절 유지·불변식 c).
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
+
+
 _OPENCODE_MODEL_KEY = "OPENCODE_PRO_MODEL"  # bare operational key — all_empty 판정용(빈값 vs 부재)
+
+
 _MODEL_TODO_PLACEHOLDER = "<provider/model>"
+
 
 # 중화 대상 줄 = **카드 필드 줄**. 하네스마다 필드 이름과 대입 표기(YAML `:` · TOML `=`)가 다르나
 # 판정은 하나여야 import 와 self-update 가 같은 산출을 낸다. 필드 이름은 CARD_FIELD_TOKEN_PREFIXES
@@ -177,12 +137,19 @@ _CARD_FIELD_NAMES: tuple[str, ...] = tuple(sorted(
     {field for fields in CARD_FIELD_TOKEN_PREFIXES.values() for field in fields.values()},
     key=lambda field: (-len(field), field),
 ))
+
+
 _MODEL_FIELD_LINE_RE = re.compile(
     r"^(?:" + "|".join(re.escape(field) for field in _CARD_FIELD_NAMES) + r")\s*[:=]"
 )
 
+
 _DELEGATE_MODEL_TODO_PLACEHOLDER = "<model>"
+
+
 _DELEGATE_REASONING_TODO_PLACEHOLDER = "<reasoning>"
+
+
 # 추론 토큰 접두사 — 중화 placeholder 를 값의 종류에 맞춘다(`<model>` 자리에 추론 등급을 쓰면
 # 채택자가 무엇을 채울지 오해한다).
 _DELEGATE_REASONING_TOKEN_PREFIX = "DELEGATE_REASONING_"
@@ -405,81 +372,18 @@ SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR: dict[str, str] = {
 }
 
 
-def _installed_project_root() -> Path:
-    """이 렌더러가 설치된 폴더(`<root>/.project_manager/tools/pm_render.py` 의 `<root>`)."""
-    return Path(__file__).resolve().parents[2]
-
-
-def _installed_skill_entry_names() -> tuple[str, ...]:
-    """현재 설치 root의 모든 실제 스킬 카드 이름을 파생한다.
-
-    canonical/Claude/OpenCode는 ``.claude/skills``, Codex는 ``.agents/skills``를 쓴다.
-    두 root를 모두 열어 특정 접두사나 손 목록 없이 ``*/SKILL.md`` 실재 카드만 소비한다.
-    """
-    project_root = _installed_project_root()
-    return tuple(sorted({
-        card.parent.name
-        for skills_root in (
-            project_root / ".claude" / "skills",
-            project_root / ".agents" / "skills",
-        )
-        for card in skills_root.glob("*/SKILL.md")
-    }))
-
-
-# 일반 하이픈 식별자를 전부 호출로 간주하지 않고 실제 설치 카드 집합만 렌더한다. 새 비-pm
-# 카드도 파일을 추가하는 순간 자동 편입된다. 빈 설치 root면 이 집합이 비고, 그러면 아래
-# `_SKILL_ENTRY_NAME_ALT`가 빈 문자열이라 정규식이 **맨 `/`·`$`에 매칭해 산문을 훼손한다**
-# (`'a / b 로 구분한다'` → `'a $ b 로 구분한다'` 실측). 그래서 render_skill_entry_notation이
-# 입구에서 빈 집합을 무동작 반환으로 막는다(아래 가드). 출하 형상의 비어 있음 자체는 출하
-# inventory 테스트가 fail-loud한다.
-SKILL_ENTRY_NAMES: tuple[str, ...] = _installed_skill_entry_names()
-
 _HARNESS_LABEL_BY_TEMPLATE_DIR: dict[str, str] = {
     "claude_code": "claude",
     "codex": "codex",
     "opencode": "opencode",
 }
 
-# canonical 스킬 카드에서 렌더 대상으로 삼는 것은 설치 카드 이름과 일치하는 호출 토큰뿐이다. 양쪽 경계가
-# 경로/확장자/식별자 문자가 아니어야 하므로 `.claude/skills/pm-*`·`/pm-bootstrap.md`·
-# `/pm-bootstrap/sub`·`/pm-bootstrap-extra`를 그대로 둔다. inline-code 호출은 인자까지 함께
-# 소비해 다중 하네스 산출에서 각 전체 호출을 독립 inline-code로 쓴다. 이미 병기된 slash 대안 뒤의
-# harness label은 멱등 재렌더 대상이 아니다. `$<설치 카드>`는 이미 concrete라 source token으로 보지 않는다.
-_SKILL_ENTRY_NAME_ALT = "|".join(
-    re.escape(name) for name in sorted(SKILL_ENTRY_NAMES, key=len, reverse=True)
-)
-_CANONICAL_INLINE_SKILL_ENTRY_RE = re.compile(
-    rf"(?<![A-Za-z0-9_.>/\-])`/(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
-    rf"(?P<args>(?:[ \t][^`\n]*)?)`"
-    # 경로 판정은 위의 opening/closing backtick **안**에서 끝낸다. 닫는 backtick 뒤의
-    # ``.``/``/`` 등은 코드 스팬 밖 문장부호·산문이므로 확장자/경로 경계가 아니다. 이미
-    # 하네스 label이 붙은 렌더 산출만 멱등성을 위해 제외한다.
-    rf"(?!\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))"
-)
-_CANONICAL_SKILL_ENTRY_RE = re.compile(
-    rf"(?<![\w.>/=\-`])(?<!\]\()/(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
-    # 문장부호 ``.``는 호출 경계지만 ``.md`` 같은 확장자는 경로다.
-    rf"(?![\w>/\-]|\.[A-Za-z0-9_])"
-)
-_CONCRETE_CODEX_SKILL_ENTRY_RE = re.compile(
-    rf"(?<![A-Za-z0-9_.>/\-])\$(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
-    rf"(?![A-Za-z0-9_.>/\-])"
-    rf"(?![^`\n]*`\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))"
-)
-_ANNOTATED_SKILL_ENTRY_GROUP_RE = re.compile(
-    rf"`[/\$](?P<skill>{_SKILL_ENTRY_NAME_ALT})"
-    rf"(?P<args>(?:[ \t][^`\n]*)?)`"
-    rf"\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\)"
-    rf"(?: / `[/\$](?P=skill)(?P=args)`"
-    rf"\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))+"
-)
-
 
 def render_skill_entry_notation(
     text: str,
     template_dir: str | tuple[str, ...] | list[str],
     *,
+    skill_names: tuple[str, ...],
     source: str | None = None,
 ) -> str:
     """canonical ``/<설치 카드>`` 호출 토큰만 선택 template 하네스의 실제 표기로 치환한다.
@@ -493,8 +397,40 @@ def render_skill_entry_notation(
     설치 카드가 하나도 없으면(빈 root) 아래 정규식들의 대안이 비어 맨 `/`·`$`에 매칭하므로
     산문을 훼손한다 — 그 경우는 렌더 대상 자체가 없으니 입구에서 원문을 그대로 돌려준다.
     """
-    if not SKILL_ENTRY_NAMES:
+    if not skill_names:
         return text
+    _SKILL_ENTRY_NAME_ALT = "|".join(
+        re.escape(name) for name in sorted(skill_names, key=len, reverse=True)
+    )
+
+    _CANONICAL_INLINE_SKILL_ENTRY_RE = re.compile(
+        rf"(?<![A-Za-z0-9_.>/\-])`/(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+        rf"(?P<args>(?:[ \t][^`\n]*)?)`"
+        # 경로 판정은 위의 opening/closing backtick **안**에서 끝낸다. 닫는 backtick 뒤의
+        # ``.``/``/`` 등은 코드 스팬 밖 문장부호·산문이므로 확장자/경로 경계가 아니다. 이미
+        # 하네스 label이 붙은 렌더 산출만 멱등성을 위해 제외한다.
+        rf"(?!\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))"
+    )
+
+    _CANONICAL_SKILL_ENTRY_RE = re.compile(
+        rf"(?<![\w.>/=\-`])(?<!\]\()/(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+        # 문장부호 ``.``는 호출 경계지만 ``.md`` 같은 확장자는 경로다.
+        rf"(?![\w>/\-]|\.[A-Za-z0-9_])"
+    )
+
+    _CONCRETE_CODEX_SKILL_ENTRY_RE = re.compile(
+        rf"(?<![A-Za-z0-9_.>/\-])\$(?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+        rf"(?![A-Za-z0-9_.>/\-])"
+        rf"(?![^`\n]*`\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))"
+    )
+
+    _ANNOTATED_SKILL_ENTRY_GROUP_RE = re.compile(
+        rf"`[/\$](?P<skill>{_SKILL_ENTRY_NAME_ALT})"
+        rf"(?P<args>(?:[ \t][^`\n]*)?)`"
+        rf"\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\)"
+        rf"(?: / `[/\$](?P=skill)(?P=args)`"
+        rf"\((?:claude|codex|opencode)(?:·(?:claude|codex|opencode))*\))+"
+    )
     template_dirs = (template_dir,) if isinstance(template_dir, str) else tuple(template_dir)
     template_dirs = tuple(dict.fromkeys(template_dirs))
     if len(template_dirs) > 1:
@@ -605,135 +541,6 @@ _MODEL_TOKEN_BY_CONF_KEY: dict[str, str] = {
 }
 
 
-def _check_card_reasoning_values(
-    text: str,
-    operational: dict,
-    *,
-    card_path: str | None,
-    source: str | None,
-) -> None:
-    """카드에 채울 추론 값이 그 카드 하네스·모델의 허용집합 원소인지 확인한다(밖이면 RenderLeakError).
-
-    대상은 텍스트에 토큰이 있고 operational 에 비어 있지 않은 값이 있는 추론 토큰뿐이다 — 부재는
-    중화가, 빈 값은 `_assert_no_leak` 가 처리한다. 허용집합은 그런 값이 있을 때만 하네스 계약
-    (`contract.reasoning_allowed`)에 묻는다 — 정적 허용값 하네스는 표를, 모델별 허용값 하네스
-    (opencode)는 같은 프로필 모델의 variants 를 설치 폴더·이 프로세스 env 로 조회한다. 채울 값이
-    없는 렌더는 하네스 계약을 묻지 않는다. 하네스가 무효 값을 에러 없이 버리므로 값을 빼거나 기본값으로
-    바꾸지 않고 렌더를 멈춘다. 카드 하네스를 판정할 수 없거나 허용집합을 확인할 수 없어도 멈춘다.
-    """
-    adapter_dir = _card_adapter_dir(card_path)
-    card_harness = card_harness_from_path(card_path)
-    where = f" ({source})" if source else ""
-    for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items():
-        if not token_key.startswith(_DELEGATE_REASONING_TOKEN_PREFIX):
-            continue
-        value = operational.get(token_key)
-        token = "{{" + token_key + "}}"
-        if value is None or str(value) == "" or token not in text:
-            continue
-        setting = f"`{conf_key}={value}`"
-        if adapter_dir is None:
-            raise RenderLeakError(
-                f"추론 값 렌더{where} 실패 — 카드 하네스를 판정할 수 없어 {setting} 를 검증할 수 "
-                f"없다(card_path={card_path!r}). 추론 값은 하네스가 정해진 카드에만 채운다.")
-        model_token = _MODEL_TOKEN_BY_CONF_KEY[conf_key.rsplit(".", 1)[0] + ".model"]
-        model = str(operational.get(model_token) or "") or None
-        try:
-            allowed = contract.reasoning_allowed(
-                card_harness, model, cwd=_installed_project_root(), env=dict(os.environ))
-        except contract.HarnessContractError as exc:
-            raise RenderLeakError(
-                f"추론 값 렌더{where} 실패 — {setting} 를 확인할 수 없다: {exc}. opencode 를 이 "
-                "프로세스에서 실행할 수 있게 하거나 local.conf 의 그 줄을 고친 뒤 다시 실행한다."
-            ) from exc
-        if str(value) not in allowed:
-            subject = f"{card_harness} {model}" if model else card_harness
-            raise RenderLeakError(
-                f"추론 값 렌더{where} 실패 — {setting} 는 {subject} 허용집합"
-                f"({', '.join(allowed) if allowed else '없음'}) 밖이다. 하네스는 허용집합 밖 값을 "
-                "오류 없이 버리므로 카드에 싣지 않고 멈춘다. 저장이면 허용집합 안 값을 고르거나 "
-                "비운다. 갱신 중이면 local.conf 의 그 줄을 고치거나, OpenCode variant 처럼 모델마다 "
-                "허용집합이 다른 값은 pm-config update 를 다시 실행한다(새 갱신기의 conf 이관이 그 "
-                "줄을 지우고 알린다).")
-
-
-def render_adapter(
-    template_text: str,
-    operational: dict | None = None,
-    *,
-    source: str | None = None,
-    empty_keys: list[str] | None = None,
-    template_dir: str | tuple[str, ...] | list[str] | None = None,
-    delegate_harness: dict[str, str] | None = None,
-    card_path: str | None = None,
-) -> str:
-    """어댑터 템플릿 → 자족 .md (operational plain replace).
-
-    source: leak 에러에 실을 파일 경로(선택·render_file 이 전달). 진단용일 뿐 렌더엔 무영향.
-    empty_keys: 호출자(pm_update)가 local.conf 빈값이라 dict 에서 제외한 token-key 목록(선택).
-    렌더러가 직접 감지한 빈값 key 와 합쳐 leak 힌트("값을 채우라")에 싣는다.
-    delegate_harness: 위임 token-key → conf 의 그 역할/티어 하네스(선택·pm_update 가 local.conf
-    에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
-    card_path: 이 산출물의 **인스턴스 상대 경로**(선택·pm_update 가 계획의 dest 좌표를 넘긴다).
-    카드 하네스 판정의 유일한 입력이다 — 미배선이면 미사용 프로필 규칙이 발화하지 않는다.
-    카드에 추론 값을 채울 때 그 값이 카드 하네스·모델의 허용집합(`contract.reasoning_allowed`) 밖이거나
-    확인할 수 없으면 RenderLeakError 다(`_check_card_reasoning_values`).
-
-    template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
-    치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.
-
-    operational 은 행-문맥 무관 plain string replace(omit 없음) → 템플릿 전체에 whole-text
-    패스로 적용한다(멱등). 결과는 자족(잔여 `{{...}}`·stray 마커 0) — post-render assertion 이
-    잔존 시 RenderLeakError(자족 위반). free-form 토큰·omit-marker 는 어댑터에 없어야 하며
-    잔존하면 leak 으로 표면화된다(미마이그레이션 신호).
-    """
-    operational = operational or {}
-    # 미사용 프로필(카드 하네스 ≠ conf 의 그 역할 하네스)은 **치환 전에** 제외한다 — 값을 먼저
-    # 채우면 아래 중화가 볼 토큰이 없어져 다른 하네스용 모델이 그대로 카드에 박힌다.
-    unused = unused_delegate_profiles(card_path, delegate_harness)
-    if unused:
-        operational = {
-            key: value for key, value in operational.items() if key not in unused
-        }
-    result = (
-        render_skill_entry_notation(
-            template_text, template_dir, source=source
-        )
-        if template_dir is not None
-        else template_text
-    )
-    # 추론 값 검증은 미사용 프로필을 뺀 **뒤**, 치환 **전**이다 — 이 카드에 실제로 채울 값만 본다.
-    _check_card_reasoning_values(
-        result, operational, card_path=card_path, source=source,
-    )
-    result, detected_empty = _fill_operational(result, operational)
-    # pm_update 가 excluded 한 빈값 key(empty_keys) + 렌더러가 직접 감지한 빈값 key 를 합쳐
-    # leak 힌트에 싣는다(중복 제거·순서 보존).
-    all_empty = list(dict.fromkeys([*(empty_keys or []), *detected_empty]))
-    # intentional-TODO graceful (import 대칭): harness.opencode.pro_model 이 local.conf 에
-    # *부재*(채택자가 opencode 없이 import — 키 자체가 없음)면 `{{OPENCODE_PRO_MODEL}}` 을 leak
-    # 시키는 대신 model: 줄을 주석화·중화한다(import --fill manual 과 byte-동일·재렌더 왕복 0·
-    # 불변식 a: 이미 해소돼 있으면 위 _fill_operational 가 치환해 no-op).
-    #   ⚠ **`harness.opencode.pro_model=` 빈값(present-but-empty)은 중화하지 않는다** — 빈값은 미설정이
-    #   아니라 *오설정* 신호다(pm_import 는 해소 시에만 이 키를 쓰므로 빈값=손-편집/손상).
-    #   대로 leak 시켜 "값을 채우라" 로 표면화한다. 빈값은
-    #   all_empty 에 실리므로 그때는 중화를 건너뛰어 토큰을 남긴다 → _assert_no_leak 가 잡는다.
-    # 그 밖의 미해소 토큰(다른 위치·다른 `{{...}}`)도 계속 fail-loud(불변식 c).
-    if _OPENCODE_MODEL_KEY not in all_empty:
-        result, _ = neutralize_model_todo(result)
-    # 같은 intentional-TODO 규약 — 역할 카드의 `{{DELEGATE_MODEL_<ROLE>}}` 는 local.conf 에
-    # `delegate.<role>[.<tier>].model` 이 없는 채택자(위임 매핑 미설정)에서 결정적으로 해소되지
-    # 않는다. 빈값(present-but-empty) 키는 all_empty 로 넘겨 중화에서 빼고 leak 으로 표면화한다
-    # (오설정 신호). 미사용 프로필은 해소값 유무와 무관하게 사유 꼬리로 중화한다(위 unused).
-    result, _ = neutralize_delegate_model_todo(
-        result, all_empty,
-        unused_profiles=unused,
-        card_harness=card_harness_from_path(card_path),
-    )
-    _assert_no_leak(result, source=source, empty_keys=all_empty)
-    return result
-
-
 def _assert_no_leak(
     text: str,
     *,
@@ -774,18 +581,3 @@ def _assert_no_leak(
             f"stray omit-marker 잔존: {', '.join(dict.fromkeys(stray))} — 옛 free-form "
             f"drop-section 마커(제거)는 어댑터에 절대 없어야 한다.")
     raise RenderLeakError(f"렌더 산출물{where} 위반 — " + " / ".join(parts))
-
-
-def render_file(
-    template_path: Path,
-    operational: dict | None = None,
-) -> str:
-    """템플릿 파일 → 렌더 텍스트 (편의 래퍼·source 를 leak 에러에 명시).
-
-    **공유 읽기 seam 의 등재 예외다**([[T-0729]] 가드 등재부). 인자는 상류 체크아웃의 템플릿
-    *원본*(원자 교체 대상 아님)일 수도, 같은 상대경로의 목적지 사본(`pm_import` 가 원자 교체)일
-    수도 있어 **정적으로 구분되지 않는다**. 렌더는 순수 변환이라 이 판독이 상태를 만들지 않고,
-    호출부(`pm_update`·`pm_import`)의 목적지 판독은 이미 각자 seam 경로를 지난다.
-    """
-    text = Path(template_path).read_text(encoding="utf-8")
-    return render_adapter(text, operational, source=str(template_path))

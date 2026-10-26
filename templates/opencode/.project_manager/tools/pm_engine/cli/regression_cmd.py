@@ -14,6 +14,12 @@ from pm_engine.domain import identity_args, pytest_report
 from pm_engine.infra import clock, fs, git, lease_store, pre_push_hook, regression_store
 from pm_engine.app import regression
 from pm_engine.cli import task_args
+import subprocess
+from pm_engine.app import completion_gate
+from pm_engine.app import release
+from pm_engine.app import update_plan
+from pm_engine.cli import board_dispatch
+from pm_engine.infra import pm_paths
 
 
 # ── M>1 회귀 슬롯 해소 ────────────────────────────────────
@@ -360,3 +366,233 @@ def _livegate_cwd(home, override: str | None = None, session: str | None = None)
         "`--task <task>`(폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)로 실행하거나 "
         f"`--cwd <worktree 절대경로>` 로 직접 지정하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
     )
+
+
+def _refuse_release_for_engine_drift(home, flag: Path, cwd: str) -> int:
+    """실행 엔진 사본(`home.root`)이 upstream 과 drift 상태면 fail 기록 + rc1 — 라이브 wave **전** 조기 거부.
+
+    판정은 `app.update_plan.drift_changes(home, home.root)` 하나뿐이다(별도 diff 재구현 없음). 판정 불능
+    (`None` — upstream 미설정·URL upstream·upstream 경로 미존재·manifest 부재·engine_root 에
+    local.conf 부재는 모두 같은 "upstream 미설정" 경로로 수렴)은 **거부가 아니다** — 게이트 부재가
+    아니라 이 형상엔 적용 불가이므로 stderr 경고 1줄만 내고 기존 경로를 그대로 진행한다(upstream
+    미등록 채택자의 릴리즈를 막지 않는다). fail 기록은 must-fix 축과 **같은 기록 함수**
+    (`fs.write_json_atomic`)를 쓴다(손기록 경로 신설 금지).
+
+    마킹된 엔진 사본 skew(`drift_changes` 가 접지 않고 그대로 올리는 그 예외 —
+    `_engine_rev_skew` 표식)는 판정 불능이 아니라 이 게이트의 가장 강한 **확정 양성**이다 — 사본끼리
+    rev 가 갈린 트리는 drift 판정 자체가 신뢰 불가하므로, must-fix 축과 같은 원자 fail 기록으로
+    번역해 rc1·라이브 wave 미실행을 고정한다(사전 pass 기록이 남아 있어도 이 fail 로 교체한다).
+    """
+    try:
+        changes = update_plan.drift_changes(home, home.root)
+    except RuntimeError as exc:
+        if getattr(exc, "_engine_rev_skew", False):
+            # 원자 fail 기록(must-fix 축과 같은 기록 함수) 뒤 표준 skew 진단 경계로 넘긴다 —
+            # 사전 pass 기록이 남아 있어도 이 fail 로 교체한다(false-green 잔존 0).
+            flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
+            fs.write_json_atomic(flag, {
+                "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+                "ts": clock.now_utc(), "reason": release._LIVEGATE_ENGINE_DRIFT_REASON,
+            })
+            return board_dispatch._report_engine_rev_skew_at_terminal(exc)
+        raise   # 마킹 안 된 RuntimeError(예 EmptyShippingInventoryError)는 종전대로 전파.
+    if changes is None:
+        print("livegate: 경고 — 실행 엔진 사본 drift 판정 불능(upstream 미설정/URL/경로 미존재/"
+              "manifest 부재) — 이 게이트는 이 형상에 적용되지 않는다(무차단). upstream 을 등록하려면 "
+              "python3 .project_manager/tools/pm_update.py --dry-run 안내를 따르세요.",
+              file=sys.stderr)
+        return 0
+    if not changes:
+        return 0
+    flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
+    fs.write_json_atomic(flag, {
+        "head": git._git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+        "ts": clock.now_utc(), "reason": release._LIVEGATE_ENGINE_DRIFT_REASON,
+    })
+    shown = changes[:release._ENGINE_DRIFT_LISTED_MAX]
+    items = "\n".join(f"  · {rel}" for rel in shown)
+    remainder = len(changes) - len(shown)
+    if remainder > 0:
+        items += f"\n  … 외 {remainder}건"
+    print(release._ENGINE_DRIFT_BLOCK_GUIDANCE.format(count=len(changes), items=items), file=sys.stderr)
+    return 1
+
+
+def _livegate_record(home, args: argparse.Namespace) -> int:
+    """`pytest -m release` 를 실행·측정하고 결과를 livegate.json 에 기록한다 (실행=기록).
+
+    슬롯 cwd 해소(`_livegate_cwd` — 활성 slot worktree)로 subprocess 실행 →
+    **rc0 그리고 수집 N==pin** 일 때만 `pass @ <worktree HEAD>` 기록. rc!=0 또는 N!=pin 이면
+    `fail` 기록 + rc1(사유 표면화). 손기록 경로는 없다(위조/착오 차단). 기록 위치는
+    push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
+    (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일).
+
+    직접 `--cwd`는 단독으로 지정하며 `--task`/`--repo`/`--slot`과 함께 쓰거나 비울 수 없다.
+    `--task`(폴더가 2개 이상이면 `--repo`/`--slot` 위치 인자 추가)가 실행 위치를 고른다(M>1 홈에서
+    슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회 불요). `--task` 없는 `--repo`/`--slot` 은 실행
+    명령 판정 함수가 거부한다. 무명시 + leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그
+    메시지가 안내하는 `--task <task>` 가 실제로 이 subparser 에서 수용돼 dead-end 가 아니다
+    (remedy 정직·anti-pattern 회피).
+    """
+    # 호출자가 준 cwd를 task 경로 주입 전에 검사한다.
+    requested_cwd = getattr(args, "cwd", None)
+    if requested_cwd is not None:
+        if any(getattr(args, key, None) is not None for key in ("task", "repo", "slot")):
+            sys.exit(
+                "[중단] livegate record의 --cwd는 --task/--repo/--slot과 함께 쓸 수 없다. "
+                "외부 경로 override를 허용하지 않는다. "
+                "경로 핀은 --cwd <경로>만, task 작업공간은 --cwd 없이 "
+                "--task <task> [--repo <repo> --slot <N>]로 실행하라."
+            )
+        if requested_cwd == "":
+            sys.exit("[중단] livegate record의 --cwd 경로가 비어 있다. 검증할 코드 트리 경로를 지정하라.")
+    # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd 로
+    # 고정하고 surface 한다(cwd 비참여·livegate 는 고정 release cmd 라 test_cmd 는 불요).
+    if getattr(args, "task", None):
+        task_cwd, _ = task_args._resolve_task_workspace_cwd(home, args)
+        if getattr(args, "cwd", None) is None:
+            args.cwd = task_cwd
+        print(f"livegate: 작업공간(task {args.task}) → {task_cwd}")
+    # `--cwd` 명시(릴리즈 readonly 슬롯 핀)면 session 해소 자체를 생략한다 —
+    # `_livegate_cwd` 는 override 최우선이라 session 이 불요하다.
+    _explicit_cwd = getattr(args, "cwd", None)
+    live_session = (None if _explicit_cwd
+                    else lease_store.session_name(home, task_args._execution_actor_session_override(home, args)))
+    cwd = _livegate_cwd(home, _explicit_cwd, session=live_session)
+    # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스) — **실행 전에** 해소한다. 훅과 같은
+    # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
+    # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
+    # release`(라이브 wave)를 헛돌리기 전에 fail-loud 로 조기 거부한다.
+    flag, mode = regression_store._resolve_livegate_flag(home, cwd)
+    if mode == regression_store._LG_BROKEN:
+        # 보호훅은 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소)
+        # → 기록 위치와 훅 read 위치가 갈릴 수 있어 pass 위장을 찍지 않고 fail-loud 거부한다
+        # (false-green 백스톱). engine-root sidecar 수리 또는 `pm-config repo add` 재실행.
+        print("livegate: fail — 보호훅 engine-root sidecar 무효 "
+              "(hooksPath 설치됐으나 PM 홈 board.py 미해소) — 기록 위치와 훅 read 위치가 갈릴 수 "
+              "있어 거부(false-green 차단). engine-root sidecar 수리 또는 "
+              "`pm-config repo add` 재실행. 릴리즈 차단.", file=sys.stderr)
+        return 1
+    cwd = os.path.abspath(cwd)
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    fs.write_json_atomic(flag, {"head": "", "status": "fail",
+                              "n": 0, "rc": "pending", "ts": clock.now_utc()})
+    # 미해소 must-fix 잔여 — 값비싼 라이브 wave 를 돌리기 **전에** 본다(BROKEN 조기 거부와 같은
+    # 축). 장부가 없는 형상(추가 리뷰어 비활성 채택자)은 무대상이라 그대로 지나간다.
+    try:
+        # 장부 판정과 shell 소비 표식을 같은 review_rounds.lock 아래 갱신한다. 표식 쓰기 실패는
+        # 우회 경로를 현행화하지 못한 상태라 release wave 를 돌리지 않고 fail-closed 한다.
+        problems = completion_gate._sync_release_must_fix_marker(home, flag)
+    except OSError as exc:
+        print("livegate: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
+              f"({type(exc).__name__}: {exc}). 장부/`.local` 권한을 복구한 뒤 다시 실행하세요.",
+              file=sys.stderr)
+        return 1
+    if problems:
+        return release._refuse_release_for_must_fix(flag, cwd, problems)
+    # 실행 엔진 사본 drift — must-fix 거부 직후·라이브 wave **전**(같은 축: 값비싼 wave 를 헛돌리기
+    # 전에 조기 거부). stale 사본이면 이 판정 자체가 false 가 되므로 wave 보다 앞에 둔다.
+    drift_rc = _refuse_release_for_engine_drift(home, flag, cwd)
+    if drift_rc:
+        return drift_rc
+    regression_session = (
+        live_session
+        if live_session and len(lease_store.leased_sessions(pm_paths.leases_file(home))) >= 2
+        else None
+    )
+    regression_data, platform_anchor, platform_commands, problem = release._release_core_context(
+        home, flag, cwd, regression_session,
+    )
+    start_head = git._git_head_at(cwd) if platform_commands else ""
+    snapshot = {}
+    cells = []
+    provisional = None
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    if problem is None and platform_commands:
+        if not start_head or regression_data is None:
+            problem = "core evidence missing"
+        else:
+            problem = regression._core_record_problem(
+                home, regression_data, platform_anchor, start_head, session=regression_session,
+                local_dir=flag.parent, release=True,
+            )
+            core_flag, core_mode = regression_store._resolve_regression_flag(home, platform_anchor)
+            if core_mode == regression_store._LG_BROKEN or core_flag.parent != flag.parent:
+                problem = "core evidence coordinates mismatch"
+        if problem is None and not Path(cwd).is_dir():
+            problem = "release cwd missing"
+        if problem is None:
+            snapshot = {key: regression_data[key]
+                        for key in ("scope", "collected", "previous_collected", "command", "conf_anchor")}
+            if "session" in regression_data:
+                snapshot["session"] = regression_data["session"]
+            cells, platforms_passed, platform_rc = regression._run_platform_cells(
+                platform_commands, cwd, start_head, env,
+                core_passed=True, head_after_core=start_head,
+            )
+            provisional = {"head": start_head, "status": "pass", "n": regression.LIVEGATE_RELEASE_PIN,
+                           "rc": 0, "ts": clock.now_utc(), "cwd": cwd,
+                           "platforms": cells, **snapshot}
+            if not platforms_passed:
+                provisional.update(status="fail", n=0, rc=platform_rc)
+                fs.write_json_atomic(flag, provisional)
+                problem = f"platform red: {platform_rc}"
+            else:
+                problem = release._release_evidence_problem(home, provisional, flag, start_head)
+    if problem is not None:
+        if provisional is None:
+            fs.write_json_atomic(flag, {"head": start_head, "status": "fail", "n": 0,
+                                      "rc": problem, "ts": clock.now_utc()})
+        elif provisional["status"] == "pass":
+            provisional.update(status="fail", n=0, rc="evidence-drift")
+            fs.write_json_atomic(flag, provisional)
+        print(f"livegate: fail — {problem}. 릴리즈 차단.", file=sys.stderr)
+        return 1
+    print(f"livegate: $ {release.LIVEGATE_TEST_CMD}  (cwd={cwd})")
+    # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run(release.LIVEGATE_TEST_CMD, shell=True, cwd=cwd, env=env,
+                            capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    rc = result.returncode
+    output = (result.stdout or "") + (result.stderr or "")
+    if output.strip():
+        print(output if output.endswith("\n") else output + "\n", end="")
+    n = pytest_report._livegate_ran_count(output)
+    head = git._git_head_at(cwd)
+    passed = (rc == 0 and n == regression.LIVEGATE_RELEASE_PIN
+              and (not platform_commands or (bool(start_head) and head == start_head)))
+    status = "pass" if passed else "fail"
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    record = {"head": head, "status": status, "n": n, "rc": rc, "ts": clock.now_utc()}
+    if platform_commands:
+        record.update(snapshot)
+        record.update(head=start_head, cwd=cwd, platforms=cells)
+        if passed:
+            problem = release._release_evidence_problem(home, record, flag, start_head)
+            if problem is not None:
+                record.update(status="fail", rc="evidence-drift")
+                passed = False
+        elif head != start_head:
+            record["rc"] = "head-drift"
+    fs.write_json_atomic(flag, record)
+    if passed:
+        print(f"livegate: pass @ {head[:8] or '?'} "
+              f"(release {n}/{regression.LIVEGATE_RELEASE_PIN} green) ✓")
+        return 0
+    if platform_commands and head != start_head:
+        reason = f"HEAD drift ({start_head[:8]} → {head[:8] or '?'})"
+    elif rc != 0:
+        reason = f"release red (rc={rc})"
+    else:
+        reason = (f"수집 {n} ≠ pin {regression.LIVEGATE_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
+                  " (수집 위장 차단)")
+    print(f"livegate: fail @ {head[:8] or '?'} — {reason}. 릴리즈 차단.", file=sys.stderr)
+    return 1
+
+
+def cmd_livegate(home, args: argparse.Namespace) -> int:
+    """record = `pytest -m release` 실행+기록 / check = push HEAD green 검증 (보호훅용)."""
+    if args.action == "record":
+        return _livegate_record(home, args)
+    return completion_gate._livegate_check(home, args)

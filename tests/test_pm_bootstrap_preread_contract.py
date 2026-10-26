@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
 import re
 from pathlib import Path
 
 import pytest
 
-from _harness_matrix import HARNESSES, TEMPLATES, _PM_IMPORT, entry_docs
+from _harness_matrix import HARNESSES, TEMPLATES, entry_docs
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -19,7 +20,7 @@ ENTRY_DOCS = tuple(
     if (
         path := (
             TEMPLATES
-            / _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness][0]
+            / install_rules.HARNESS_TEMPLATE_DIRS[harness][0]
             / relative
         )
     ).is_file()

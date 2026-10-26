@@ -9,6 +9,7 @@ PYTHONUTF8 가 버그를 가리지 않게, 파일 I/O 단언은 (locale 에 의�
 """
 from __future__ import annotations
 
+import shutil
 from pm_engine.cli import board_init
 
 
@@ -145,7 +146,7 @@ def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     # python3 부재·python 존재 → _detect_py() == 'python'.
     monkeypatch.setattr(
-        board.shutil, "which",
+        shutil, "which",
         lambda cmd: r"C:\Python\python.exe" if cmd == "python" else None,
     )
 
@@ -166,7 +167,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
-    monkeypatch.setattr(board.shutil, "which", lambda cmd: "/usr/bin/python3" if cmd == "python3" else None)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/python3" if cmd == "python3" else None)
 
     captured: dict = {}
     orig = Path.write_text

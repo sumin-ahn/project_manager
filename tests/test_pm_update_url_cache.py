@@ -1,7 +1,7 @@
 """T-0908 — URL upstream 을 엔진이 직접 캐시 clone/fetch 한다 (스킬 셸 절차 폐지).
 
 `pm-config update`(=`pm_update.py`)는 `--from` 없이도 URL upstream 을 소스로 쓴다. URL 을 로컬
-트리로 바꾸는 코드는 엔진 한 자리(`pm_import.resolve_upstream_url_cache`)뿐이고, 캐시는 dest PM
+트리로 바꾸는 코드는 엔진 한 자리(`upstream_git.resolve_upstream_url_cache`)뿐이고, 캐시는 dest PM
 홈 안 `.project_manager/.local/upstream-cache/<URL 해시>/`(git-ignored)에 산다. 같은 자리를
 `add-harness`·`sync-adapter-config` 의 소스 해소도 부른다.
 
@@ -28,6 +28,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pm_engine.infra import upstream_git
+from pm_engine.infra import install_conf
+from pm_engine.cli import config_adapter
+from pm_engine.cli import update_cmd
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -52,14 +57,15 @@ def _load(name: str):
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
-
-
-@pytest.fixture(scope="module")
-def pm_import():
-    return _load("pm_import")
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 @pytest.fixture(scope="module")
@@ -115,7 +121,7 @@ def _dest_with_url_upstream(dest: Path, url: str, extra: str = "") -> Path:
 
 
 def _conf(pm_update, dest: Path) -> dict:
-    return pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
 
 
 def _head(repo: Path) -> str:
@@ -148,7 +154,7 @@ def _snapshot(root: Path) -> dict:
 _HOOKS = '{"hooks": {"PreCompact": ["new"]}}\n'
 
 
-def test_t0933_long_cache_clone_uses_the_real_runner(pm_import, tmp_path, monkeypatch):
+def test_t0933_long_cache_clone_uses_the_real_runner(tmp_path, monkeypatch):
     """265자 이상 pack keep 경로의 실제 file URL clone과 HEAD를 검증한다."""
     source = _make_framework_repo(tmp_path / "fw")
     url = _make_bare(source, tmp_path / "fw.git")
@@ -168,16 +174,16 @@ def test_t0933_long_cache_clone_uses_the_real_runner(pm_import, tmp_path, monkey
         assert len(str(old_dest)) == len(str(dest))
         # 모듈 로컬 대역으로 longpaths 추가 전의 설정 6항목만 전달한다.
         with monkeypatch.context() as before:
-            before.setattr(pm_import, "os", SimpleNamespace(
+            before.setattr(upstream_git, "os", SimpleNamespace(
                 name="posix", environ=os.environ, devnull=os.devnull))
-            old_runner = pm_import._real_upstream_git_runner(
-                timeout=pm_import.UPSTREAM_CLONE_TIMEOUT_SECONDS)
+            old_runner = upstream_git._real_upstream_git_runner(
+                timeout=upstream_git.UPSTREAM_CLONE_TIMEOUT_SECONDS)
             old_rc, old_out = old_runner(["clone", "--", url, str(old_dest)])
         assert old_rc == 128, old_out
         assert "Filename too long" in old_out, old_out
 
-    runner = pm_import._real_upstream_git_runner(
-        timeout=pm_import.UPSTREAM_CLONE_TIMEOUT_SECONDS)
+    runner = upstream_git._real_upstream_git_runner(
+        timeout=upstream_git.UPSTREAM_CLONE_TIMEOUT_SECONDS)
     rc, out = runner(["clone", "--", url, str(dest)])
     assert rc == 0, out
     committed = _git(["-C", str(source), "show", f"HEAD:{SENTINEL_REL}"], binary=True).stdout
@@ -197,7 +203,7 @@ def test_url_upstream_omitted_from_clones_cache_and_syncs(
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     assert (dest / SENTINEL_REL).read_text(encoding="utf-8") == "# v1\n", \
         "URL upstream 에서 엔진 파일이 배달되지 않음"
@@ -217,13 +223,13 @@ def test_url_cache_result_matches_explicit_from(pm_update, tmp_path, monkeypatch
     auto = tmp_path / "auto"
     _dest_with_url_upstream(auto, url)
     monkeypatch.setattr(pm_update, "REPO", auto)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
     cache = _only_cache(auto)
 
     explicit = tmp_path / "explicit"
     _dest_with_url_upstream(explicit, url)
     monkeypatch.setattr(pm_update, "REPO", explicit)
-    assert pm_update.main(["--from", str(cache)]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(cache)]) == 0, capsys.readouterr().err
 
     assert _snapshot(auto) == _snapshot(explicit), \
         "URL 자동 해소와 캐시 명시 --from 의 산출물이 다르다"
@@ -240,14 +246,14 @@ def test_second_run_fetches_into_same_cache(pm_update, tmp_path, monkeypatch, ca
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
     cache = _only_cache(dest)
     marker = cache / ".git" / "T0908_SAME_CACHE"     # 재clone 이면 사라진다.
     marker.write_text("same\n", encoding="utf-8")
 
     _push_commit(source, bare, "# v2\n", "upstream v2")
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     assert marker.is_file(), "두 번째 실행이 캐시를 다시 clone 했다(fetch 재사용 아님)"
     assert (dest / SENTINEL_REL).read_text(encoding="utf-8") == "# v2\n", \
@@ -272,7 +278,7 @@ def test_clone_failure_is_loud_and_changes_nothing(pm_update, tmp_path, monkeypa
     monkeypatch.setattr(pm_update, "REPO", dest)
     before = _snapshot(dest)
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     assert rc != 0, "clone 실패인데 rc 0(조용한 진행)"
     err = capsys.readouterr().err
@@ -295,13 +301,13 @@ def test_fetch_failure_does_not_advance_or_reuse_old_cache(
     dest = tmp_path / "dest"
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
     first_rev = _conf(pm_update, dest)["upstream.rev"]
 
     bare.rename(tmp_path / "fw.git.moved")           # 상류 소실 → fetch 실패
     before = _snapshot(dest)
 
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     assert rc != 0, "fetch 실패인데 옛 캐시로 진행했다(rc 0)"
     assert "캐시 fetch 실패" in capsys.readouterr().err
@@ -319,12 +325,12 @@ def test_changes_uses_cache_for_url_upstream(pm_update, tmp_path, monkeypatch, c
     dest = tmp_path / "dest"
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     _push_commit(source, bare, "# v2\n", "upstream v2 for changes")
     capsys.readouterr()
 
-    assert pm_update.main(["--changes"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes"]) == 0
     out = capsys.readouterr().out
     assert "upstream v2 for changes" in out or "엔진 영향" in out, \
         f"URL upstream 에서 변경점 요약이 나오지 않음: {out!r}"
@@ -339,12 +345,12 @@ def test_count_only_keeps_machine_output_on_url_upstream(
     dest = tmp_path / "dest"
     _dest_with_url_upstream(dest, url)
     monkeypatch.setattr(pm_update, "REPO", dest)
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     _push_commit(source, bare, "# v2\n", "one more")
     capsys.readouterr()
 
-    assert pm_update.main(["--changes", "--count-only"]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes", "--count-only"]) == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == "1", f"기계 판독 stdout 이 한 줄 값이 아님: {captured.out!r}"
     assert "캐시" in captured.err, "캐시 동기 표시가 stderr 로 나가지 않았다"
@@ -359,7 +365,7 @@ def test_path_upstream_creates_no_cache(pm_update, tmp_path, monkeypatch, capsys
     _write(dest / ".project_manager" / "local.conf", f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main([]) == 0, capsys.readouterr().err
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0, capsys.readouterr().err
 
     assert (dest / SENTINEL_REL).is_file()
     assert not _cache_root(dest).exists(), "경로 upstream 인데 캐시를 만들었다"
@@ -381,31 +387,31 @@ def _imported_codex_instance(dest: Path, url: str) -> Path:
     return dest
 
 
-def test_add_harness_source_resolves_url_upstream_via_cache(pm_import, tmp_path):
+def test_add_harness_source_resolves_url_upstream_via_cache(tmp_path):
     """URL upstream 인 imported 인스턴스의 어댑터 소스가 캐시로 해소된다(`[중단]` 대상 아님)."""
     source = _make_framework_repo(tmp_path / "fw")
     url = _make_bare(source, tmp_path / "fw.git")
     dest = _imported_codex_instance(tmp_path / "inst", url)
 
-    got = pm_import._resolve_add_harness_source(dest, "codex", None)
+    got = upstream_git._resolve_add_harness_source(dest, "codex", None)
 
     assert got == _only_cache(dest), f"캐시가 아닌 다른 소스로 해소됨: {got}"
     assert (got / "templates" / "codex").is_dir()
 
 
-def test_local_source_wins_over_url_cache(pm_import, tmp_path):
+def test_local_source_wins_over_url_cache(tmp_path):
     """dest 가 프레임워크 checkout 이면 URL upstream 이어도 네트워크를 타지 않는다(차단 추가 0)."""
     dest = _make_framework_repo(tmp_path / "fwdest")
     _dest_with_url_upstream(dest, (tmp_path / "absent.git").as_uri())
 
-    got = pm_import._resolve_add_harness_source(dest, "codex", None)
+    got = upstream_git._resolve_add_harness_source(dest, "codex", None)
 
     assert got == dest.resolve(), f"로컬 templates 가 있는데 캐시로 갔다: {got}"
     assert not _cache_root(dest).exists(), "로컬 소스로 끝나는 형상에서 캐시를 만들었다"
 
 
 def test_sync_adapter_config_check_resolves_url_upstream(
-        pm_config, pm_import, tmp_path, capsys):
+        pm_config, tmp_path, capsys):
     """`sync-adapter-config --check` 가 URL upstream 에서 `--from` 없이 판정을 낸다."""
     source = _make_framework_repo(tmp_path / "fw")
     url = _make_bare(source, tmp_path / "fw.git")
@@ -418,7 +424,7 @@ def test_sync_adapter_config_check_resolves_url_upstream(
            json.dumps(ledger, indent=2) + "\n")
     args = argparse.Namespace(list=False, check=True, accept=None, source=None)
 
-    rc = pm_config.cmd_sync_adapter_config(args, pm_import=pm_import, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO), args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert "[중단]" not in captured.err, f"URL upstream 소스 미해소로 멈춤: {captured.err!r}"
@@ -427,12 +433,12 @@ def test_sync_adapter_config_check_resolves_url_upstream(
 
 
 def test_sync_adapter_config_reports_cache_failure_loudly(
-        pm_config, pm_import, tmp_path, capsys):
+        pm_config, tmp_path, capsys):
     """캐시 clone 실패는 traceback 이 아니라 `[중단]` + rc 1 로 나온다."""
     dest = _imported_codex_instance(tmp_path / "inst", (tmp_path / "absent.git").as_uri())
     args = argparse.Namespace(list=False, check=True, accept=None, source=None)
 
-    rc = pm_config.cmd_sync_adapter_config(args, pm_import=pm_import, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO), args, dest_root=dest)
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -441,22 +447,22 @@ def test_sync_adapter_config_reports_cache_failure_loudly(
 
 # ── 캐시 자리·재사용 판정의 단위 (경로 안전) ─────────────────────────────────
 
-def test_cache_dir_is_per_url_inside_dest_local(pm_import, tmp_path):
+def test_cache_dir_is_per_url_inside_dest_local(tmp_path):
     """캐시 자리는 dest `.project_manager/.local/upstream-cache/<해시>` 이고 URL 마다 갈린다."""
     dest = tmp_path / "dest"
-    one = pm_import.upstream_cache_dir(dest, "https://example.invalid/a.git")
-    two = pm_import.upstream_cache_dir(dest, "https://example.invalid/b.git")
+    one = upstream_git.upstream_cache_dir(dest, "https://example.invalid/a.git")
+    two = upstream_git.upstream_cache_dir(dest, "https://example.invalid/b.git")
 
     assert one.parent == (dest.resolve() / CACHE_RELDIR) and one != two
     assert one.name.isalnum() and len(one.name) == 16, f"캐시 이름에 URL 문자가 샜다: {one.name}"
 
 
-def test_rejected_upstream_value_never_reaches_git(pm_import, tmp_path):
+def test_rejected_upstream_value_never_reaches_git(tmp_path):
     """형태 안전 계약 위반 값(평문 http)은 clone 도 시도하지 않고 거부된다."""
     called: list = []
 
-    with pytest.raises(pm_import.UpstreamCacheError):
-        pm_import.resolve_upstream_url_cache(
+    with pytest.raises(upstream_git.UpstreamCacheError):
+        upstream_git.resolve_upstream_url_cache(
             tmp_path / "dest", "http://example.invalid/x.git",
             git_runner=lambda argv: (called.append(argv), (0, ""))[1])
 

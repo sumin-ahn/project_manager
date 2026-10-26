@@ -18,6 +18,10 @@ shutil.which 패치로 강제한다(ambient PYTHONUTF8 가 버그를 가리지 �
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.app import import_render
+from pm_engine.infra import install_conf
+
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
 import pm_engine.infra.harness.reviewer_run
@@ -40,6 +44,7 @@ from _engine_tree import engine_python_files
 from pm_engine.infra.harness import contract
 from pm_engine.cli import regression_cmd
 from pm_engine.infra import pre_push_hook, python_env
+from pm_engine.app import install_board
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -165,8 +170,8 @@ def test_pm_import_harness_runner_uses_utf8_watchdog(pm_import, monkeypatch):
 
     # 실행 파일 찾기가 이 머신 PATH(claude 설치 여부)에 매이지 않게 이름 그대로 돌려준다.
     monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", recording_forbidden_popen)
-    ok, _ = pm_import._real_harness_runner(
+    monkeypatch.setattr(subprocess, "Popen", recording_forbidden_popen)
+    ok, _ = import_fill._real_harness_runner(
         ["claude", "-p", "분석 프롬프트"], "프롬프트")
 
     assert ok is False
@@ -181,8 +186,8 @@ def test_pm_import_board_init_passes_utf8(pm_import, monkeypatch, tmp_path):
     tools.mkdir(parents=True)
     (tools / "pm_config.py").write_text("# stub", encoding="utf-8")
     rec = _Recorder()
-    monkeypatch.setattr(pm_import.subprocess, "run", rec)
-    pm_import.run_board_init(tmp_path)
+    monkeypatch.setattr(subprocess, "run", rec)
+    install_board.run_board_init(tmp_path)
     assert rec.calls
     _assert_utf8(rec.calls[0])
 
@@ -234,8 +239,8 @@ def test_bench_weight_subprocess_passes_utf8(bench_weight, monkeypatch):
 
 def test_pm_substitution_py_matches_detected(pm_import):
     """치환맵의 {{PY}} 가 _detected_py() 결과와 일치(하드코딩 상수 아님)."""
-    sub = pm_import._substitution_map("Proj", REPO, "2026-06-14")
-    assert sub["{{PY}}"] == pm_import._detected_py()
+    sub = import_render._substitution_map("Proj", REPO, "2026-06-14")
+    assert sub["{{PY}}"] == install_conf._detected_py()
 
 
 def _stub_interp_runs(monkeypatch):
@@ -271,7 +276,7 @@ def test_detected_py_routes_through_detection_not_hardcoded(pm_import, monkeypat
 
     _stub_interp_runs(monkeypatch)
     monkeypatch.setattr(shutil, "which", fake_which)
-    assert pm_import._detected_py() == "python"
+    assert install_conf._detected_py() == "python"
 
 
 def test_substitution_py_uses_python_when_python3_absent(pm_import, monkeypatch):
@@ -283,7 +288,7 @@ def test_substitution_py_uses_python_when_python3_absent(pm_import, monkeypatch)
 
     _stub_interp_runs(monkeypatch)
     monkeypatch.setattr(shutil, "which", fake_which)
-    sub = pm_import._substitution_map("Proj", REPO, "2026-06-14")
+    sub = import_render._substitution_map("Proj", REPO, "2026-06-14")
     assert sub["{{PY}}"] == "python"
     assert sub["{{PY}}"] != "python3"
 
@@ -483,6 +488,42 @@ def _has_main_guard(tree: ast.AST) -> bool:
     )
 
 
+def _delegated_package_main(tree: ast.Module) -> list[ast.FunctionDef]:
+    """평면 진입점이 `__main__` 에서 부르는 `pm_engine.cli.<module>.main` 정의를 돌려준다.
+
+    설치·갱신 CLI 처럼 main 본체가 package 로 옮긴 진입점도 같은 선행 helper 계약을 받는다.
+    """
+    cli_aliases = {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "pm_engine.cli"
+        for alias in node.names
+    }
+    guard = next(
+        node for node in tree.body
+        if isinstance(node, ast.If) and _has_main_guard(ast.Module(body=[node], type_ignores=[]))
+    )
+    targets = {
+        cli_aliases[call.func.value.id]
+        for call in ast.walk(guard)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "main"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in cli_aliases
+    }
+    definitions = []
+    for module in sorted(targets):
+        package_tree = ast.parse(
+            (TOOLS / "pm_engine" / "cli" / f"{module}.py").read_text(encoding="utf-8"),
+        )
+        definitions.extend(
+            node for node in package_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
+        )
+    return definitions
+
+
 def test_console_codepage_helper_has_single_definition():
     """codepage 제어 구현은 공용 모듈 한 곳뿐이다(복붙 재도입 차단)."""
     definitions = []
@@ -515,7 +556,7 @@ def test_every_main_entrypoint_calls_common_console_helper():
         main_defs = [
             node for node in tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
-        ]
+        ] or _delegated_package_main(tree)
         if len(main_defs) != 1:
             missing.append(f"{filename}: top-level main 정의 {len(main_defs)}개")
             continue

@@ -5,6 +5,7 @@
 재드리프트를 기계로 차단한다 — redefine/수리 후 lint·test 로 못박는 확립 패턴(T-0094/0098/0099/0100).
 """
 
+import ast
 from pm_engine.app import completion_gate
 
 
@@ -87,12 +88,16 @@ def test_regression_skill_references_only_real_board_subcommands():
 
 
 def test_adopt_harness_default_matches_pm_import():
-    src = _read(".project_manager/tools/pm_import.py")
-    m = re.search(
-        r"--harness[\"'],[^)]*?default=[\"'](\w+)[\"']", src, flags=re.S
-    )
-    assert m, "pm_import.py 에서 --harness default 추출 실패 — 가드 갱신 필요"
-    default = m.group(1)
+    src = _read(".project_manager/tools/pm_engine/cli/import_cmd.py")
+    arguments = [
+        node for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        and any(isinstance(arg, ast.Constant) and arg.value == "--harness" for arg in node.args)
+    ]
+    assert len(arguments) == 1, "--harness 인자 선언은 정확히 1개여야 한다"
+    default = next(keyword.value.value for keyword in arguments[0].keywords
+                   if keyword.arg == "default" and isinstance(keyword.value, ast.Constant))
     adopt = _read("ADOPT.md")
     assert f"CLI default 은 `{default}`" in adopt or f"default: {default}" in adopt, (
         f"ADOPT.md 의 --harness default 서술이 실 default '{default}' 와 어긋남"
@@ -145,7 +150,7 @@ _README_MODEL_EXAMPLE = re.compile(r"--opencode-model\s+([a-z][\w./:+-]+)")
 
 
 def _pm_import_opencode_model_example() -> str:
-    src = _read(".project_manager/tools/pm_import.py")
+    src = _read(".project_manager/tools/pm_engine/cli/import_cmd.py")
     m = re.search(
         r"""add_argument\(["']--opencode-model["'].*?예 ['"]([^'"]+)['"]""",
         src,

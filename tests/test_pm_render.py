@@ -5,11 +5,17 @@
      (free-form value-fill 기계 = overlay/slot-fill/conditional-omit 은 ADR-0031 로 제거됨 —
       free-form 은 pm_import FILL 채널이 canonical home 에서 전담.)
   2. manifest_store.read_manifest(@render 파싱·후방호환) + plan/apply render 분기(합성 manifest).
-  3. board.lint_render_leak — @render 산출물 한정·활성화 전 무발화·blocking(advisory 밖).
+  3. render_lint.lint_render_leak — @render 산출물 한정·활성화 전 무발화·blocking(advisory 밖).
 
 실 트리/네트워크 무의존 — tmp_path 합성 + 모듈 직접 로드(다른 엔진 테스트 패턴 동형).
 """
 from __future__ import annotations
+
+from _manager_home import render_home
+from pm_engine.app import adapter_render
+from pm_engine.app import import_fill
+from pm_engine.app import import_render
+from pm_engine.domain import render_rules
 
 import ast
 import importlib.util
@@ -22,6 +28,12 @@ from _repo_owned_inventory import OWNED, repo_owned_paths
 from _textio import write_lf
 from pm_engine.infra import manifest_store
 from pm_engine.infra.harness import contract
+from pm_engine.app import update_plan
+from pm_engine.app import update_render
+from pm_engine.infra import install_conf
+from pm_engine.infra import pm_paths
+from pm_engine.app import render_lint
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -29,7 +41,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load(name: str):
@@ -41,7 +53,7 @@ def _load(name: str):
 
 @pytest.fixture(scope="module")
 def pm_render():
-    return _load("pm_render")
+    return adapter_render
 
 
 @pytest.fixture(scope="module")
@@ -61,22 +73,22 @@ def pm_import():
 
 # ── 1. render_adapter — operational plain replace ───────────────────────────
 
-def test_operational_plain_replace_no_omit(pm_render):
+def test_operational_plain_replace_no_omit(render_home, pm_render):
     """operational 토큰은 plain replace(omit 없음·값으로 치환·host 행 유지)."""
     tpl = "session for {{PROJECT_NAME}} runs {{TEST_CMD}}\n"
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         tpl, operational={"PROJECT_NAME": "acme", "TEST_CMD": "pytest -q"})
     assert out == "session for acme runs pytest -q\n"
 
 
-def test_operational_token_alone_not_dropped(pm_render):
+def test_operational_token_alone_not_dropped(render_home, pm_render):
     """operational 토큰 단독 행은 drop 대상 아님(plain replace·host 행 유지)."""
     tpl = "{{PROJECT_ROOT}}\n"
-    out = pm_render.render_adapter(tpl, operational={"PROJECT_ROOT": "/repo"})
+    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_ROOT": "/repo"})
     assert out == "/repo\n"
 
 
-def test_operational_missing_key_leaks_not_silently_emptied(pm_render):
+def test_operational_missing_key_leaks_not_silently_emptied(render_home, pm_render):
     """OPERATIONAL_KEYS 에 있으나 operational dict 에 부재인 키(intentional-TODO 아님)는 빈
     문자열로 silently 치환하지 않고 토큰을 남겨 RenderLeakError 로 잡는다 (codex·침묵 비움 금지).
 
@@ -85,12 +97,12 @@ def test_operational_missing_key_leaks_not_silently_emptied(pm_render):
     intentional-TODO 예외라 별도 — test_opencode_pro_model_missing_graceful_todo_not_leak 참조.)
     """
     tpl = "root: {{PROJECT_ROOT}}\n"
-    with pytest.raises(pm_render.RenderLeakError):
+    with pytest.raises(render_rules.RenderLeakError):
         # operational 에 다른 키만 보유·PROJECT_ROOT 부재 → 빈 치환 아닌 leak.
-        pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
+        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
 
 
-def test_operational_empty_value_leaks_not_silently_emptied(pm_render):
+def test_operational_empty_value_leaks_not_silently_emptied(render_home, pm_render):
     """operational dict 에 *있되 빈 문자열* 인 키는 빈 치환하지 않고 토큰을 남겨 RenderLeakError.
 
     T-0218 발단(PM 49차 라이브): local.conf `project.name=` 빈값 → 렌더가 `{{PROJECT_NAME}}` 를
@@ -99,8 +111,8 @@ def test_operational_empty_value_leaks_not_silently_emptied(pm_render):
     한다(silent-empty = leak 클래스·렌더러 이중화·호출자 무관). 에러엔 빈값 힌트가 실린다.
     """
     tpl = "{{PROJECT_NAME}} 프로젝트\n"
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, operational={"PROJECT_NAME": ""})
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": ""})
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
     # 빈값 원인 힌트: local.conf `<key>=` 가 빈값 — 값을 채우라.
@@ -108,15 +120,15 @@ def test_operational_empty_value_leaks_not_silently_emptied(pm_render):
     assert "빈값" in msg
 
 
-def test_operational_empty_value_hint_only_for_leaked_token(pm_render):
+def test_operational_empty_value_hint_only_for_leaked_token(render_home, pm_render):
     """빈값 키라도 그 토큰이 텍스트에 없으면 힌트에 등장하지 않는다(스퓨리어스 힌트 0).
 
     PROJECT_ROOT 가 빈값이지만 템플릿엔 `{{PROJECT_ROOT}}` 가 없다 → leak 아님. 반면 UNKNOWN 은
     다른 원인의 leak. 힌트는 *빈값이라 leak 된* 토큰에만 붙어야 한다(_assert_no_leak 정밀도).
     """
     tpl = "value: {{UNKNOWN}}\n"
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home,
             tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": ""})
     msg = str(exc.value)
     assert "{{UNKNOWN}}" in msg
@@ -125,10 +137,10 @@ def test_operational_empty_value_hint_only_for_leaked_token(pm_render):
     assert "빈값" not in msg
 
 
-def test_multiple_operational_tokens_one_line_both_resolved(pm_render):
+def test_multiple_operational_tokens_one_line_both_resolved(render_home, pm_render):
     """한 행의 operational 토큰 2개 모두 plain replace 로 해소(whole-text 패스·잔여 토큰 0)."""
     tpl = "{{PROJECT_NAME}}: {{PROJECT_ROOT}}\n"
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": "/r"})
     assert out == "acme: /r\n"
     assert "{{" not in out
@@ -136,13 +148,13 @@ def test_multiple_operational_tokens_one_line_both_resolved(pm_render):
 
 def test_opencode_pro_model_in_operational_keys(pm_render):
     """OPENCODE_PRO_MODEL ∈ OPERATIONAL_KEYS — opencode 어댑터 토큰이 operational 채널에 배선됨(T-0133)."""
-    assert "OPENCODE_PRO_MODEL" in pm_render.OPERATIONAL_KEYS
+    assert "OPENCODE_PRO_MODEL" in render_rules.OPERATIONAL_KEYS
 
 
-def test_opencode_pro_model_operational_resolved(pm_render):
+def test_opencode_pro_model_operational_resolved(render_home, pm_render):
     """operational 에 OPENCODE_PRO_MODEL 공급 → `{{OPENCODE_PRO_MODEL}}` plain replace 해소(leak 0)."""
     tpl = "pro model: {{OPENCODE_PRO_MODEL}}\n"
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         tpl, operational={"OPENCODE_PRO_MODEL": "anthropic/claude-opus-4"})
     assert out == "pro model: anthropic/claude-opus-4\n"
     assert "{{" not in out
@@ -150,7 +162,7 @@ def test_opencode_pro_model_operational_resolved(pm_render):
 
 # ── 1. render_adapter — intentional-TODO graceful (T-0310·import↔self-update 대칭) ──
 
-def test_opencode_pro_model_missing_graceful_todo_not_leak(pm_render):
+def test_opencode_pro_model_missing_graceful_todo_not_leak(render_home, pm_render):
     """OPENCODE_PRO_MODEL 미해소(local.conf 미보유)는 leak(자족 위반)이 아니라 intentional-TODO
     로 graceful 중화된다 (T-0310·불변식 c 예외·import 대칭).
 
@@ -159,7 +171,7 @@ def test_opencode_pro_model_missing_graceful_todo_not_leak(pm_render):
     model: 줄을 주석화·토큰 제거해 자족 유지하고 채택자-fill 지점만 남긴다(rc0).
     """
     tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\nbody\n'
-    out = pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
+    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
     # 리터럴 토큰 제거(자족 유지) — render leak 안 남.
     assert "{{OPENCODE_PRO_MODEL}}" not in out
     # model: 줄 주석화(YAML frontmatter 에 model 키 부재 → opencode 기본 모델·T-0077).
@@ -170,13 +182,13 @@ def test_opencode_pro_model_missing_graceful_todo_not_leak(pm_render):
     assert "body" in out
 
 
-def test_leak_assert_integrity_other_token_still_leaks_with_model_todo(pm_render):
+def test_leak_assert_integrity_other_token_still_leaks_with_model_todo(render_home, pm_render):
     """불변식 c: OPENCODE_PRO_MODEL 이 graceful 중화돼도 산출물의 *다른* 미해소 토큰은 여전히
     leak fail-loud — intentional-TODO placeholder 만 예외(false-green 근절 유지·T-0310).
     """
     tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\nvalue: {{GENUINELY_UNWIRED}}\n'
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, operational={})
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl, operational={})
     msg = str(exc.value)
     # 진짜 미배선 토큰은 leak 목록에 올라 fail-loud.
     assert "{{GENUINELY_UNWIRED}}" in msg
@@ -184,16 +196,16 @@ def test_leak_assert_integrity_other_token_still_leaks_with_model_todo(pm_render
     assert "{{OPENCODE_PRO_MODEL}}" not in msg
 
 
-def test_opencode_pro_model_off_model_line_still_leaks(pm_render):
+def test_opencode_pro_model_off_model_line_still_leaks(render_home, pm_render):
     """intentional-TODO 예외는 `model:` 필드 줄 한정 — 산문/헤더의 미해소 OPENCODE_PRO_MODEL 은
     중화 대상 아님 → 여전히 leak(진짜 미배선·불변식 c·false-green 근절)."""
     tpl = "설명: {{OPENCODE_PRO_MODEL}} 사용 예시\n"
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, operational={})
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl, operational={})
     assert "{{OPENCODE_PRO_MODEL}}" in str(exc.value)
 
 
-def test_opencode_pro_model_empty_in_conf_still_leaks(pm_render):
+def test_opencode_pro_model_empty_in_conf_still_leaks(render_home, pm_render):
     """`harness.opencode.pro_model=` 빈값(present-but-empty)은 intentional-TODO 로 중화하지 않고 leak 한다
     (T-0218 빈값 가드 보존·codex T-0310 must-fix). 부재(absent)만 graceful TODO — 빈값은 오설정 신호.
 
@@ -203,13 +215,13 @@ def test_opencode_pro_model_empty_in_conf_still_leaks(pm_render):
     """
     tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
     # 경로 ①: operational 에 빈 문자열로 존재 → _fill_operational 가 detected_empty 로 기록.
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, operational={"OPENCODE_PRO_MODEL": ""})
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl, operational={"OPENCODE_PRO_MODEL": ""})
     assert "{{OPENCODE_PRO_MODEL}}" in str(exc.value)
     assert "빈값" in str(exc.value), "빈값 원인 힌트(값을 채우라)가 소실."
     # 경로 ②: 호출자(pm_update)가 local.conf `harness.opencode.pro_model=` 를 excluded → empty_keys 로 전달.
-    with pytest.raises(pm_render.RenderLeakError) as exc2:
-        pm_render.render_adapter(
+    with pytest.raises(render_rules.RenderLeakError) as exc2:
+        adapter_render.render_adapter(render_home,
             tpl, operational={"PROJECT_NAME": "acme"}, empty_keys=["OPENCODE_PRO_MODEL"])
     assert "{{OPENCODE_PRO_MODEL}}" in str(exc2.value)
 
@@ -219,7 +231,7 @@ def test_opencode_pro_model_empty_in_conf_still_leaks(pm_render):
 def test_neutralize_model_todo_comments_and_neutralizes(pm_render):
     """model: 줄을 주석화하고 토큰을 <provider/model> 로 중화 + TODO 꼬리(가용목록 없음 형식)."""
     text = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
-    out, marked = pm_render.neutralize_model_todo(text)
+    out, marked = render_rules.neutralize_model_todo(text)
     assert marked is True
     assert out == (
         '# model: "<provider/model>"'
@@ -231,7 +243,7 @@ def test_neutralize_model_todo_comments_and_neutralizes(pm_render):
 def test_neutralize_model_todo_available_inlined(pm_render):
     """조회된 가용 모델 목록은 TODO 꼬리에 인라인된다(사람이 바로 고르게)."""
     text = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
-    out, marked = pm_render.neutralize_model_todo(
+    out, marked = render_rules.neutralize_model_todo(
         text, available=["ollama/glm-5.2:cloud", "anthropic/opus"])
     assert marked is True
     assert "가용: ollama/glm-5.2:cloud, anthropic/opus" in out
@@ -241,7 +253,7 @@ def test_neutralize_model_todo_available_inlined(pm_render):
 def test_neutralize_model_todo_noop_without_token(pm_render):
     """토큰 부재(이미 해소된 model 값)면 무동작·marked False(회귀 0)."""
     text = 'model: "anthropic/opus"\nbody\n'
-    out, marked = pm_render.neutralize_model_todo(text)
+    out, marked = render_rules.neutralize_model_todo(text)
     assert marked is False
     assert out == text
 
@@ -249,8 +261,8 @@ def test_neutralize_model_todo_noop_without_token(pm_render):
 def test_neutralize_model_todo_idempotent(pm_render):
     """이미 주석/TODO 붙은 줄은 재처리 안 함 — 멱등(self-update 재렌더 안정)."""
     text = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
-    once, marked1 = pm_render.neutralize_model_todo(text)
-    twice, marked2 = pm_render.neutralize_model_todo(once)
+    once, marked1 = render_rules.neutralize_model_todo(text)
+    twice, marked2 = render_rules.neutralize_model_todo(once)
     assert marked1 is True
     assert marked2 is False
     assert twice == once
@@ -259,12 +271,12 @@ def test_neutralize_model_todo_idempotent(pm_render):
 def test_neutralize_model_todo_only_model_field_line(pm_render):
     """`model:` 시작 줄만 대상 — 산문 줄의 토큰은 안 건드린다(markdown 무손상)."""
     text = "설명: {{OPENCODE_PRO_MODEL}} 예시\n"
-    out, marked = pm_render.neutralize_model_todo(text)
+    out, marked = render_rules.neutralize_model_todo(text)
     assert marked is False
     assert out == text
 
 
-def test_render_neutralize_matches_import_fallback_output(pm_render, pm_import, tmp_path):
+def test_render_neutralize_matches_import_fallback_output(render_home, pm_render, pm_import, tmp_path):
     """pm_import 폴백(_mark_model_todos)과 render_adapter 의 중화가 byte-동일 (단일 진실·T-0310).
 
     import 은 pm_render.neutralize_model_todo 에 위임하므로, 같은 model: 템플릿 줄에서 양쪽이
@@ -277,67 +289,67 @@ def test_render_neutralize_matches_import_fallback_output(pm_render, pm_import, 
     f = dest / rel
     f.parent.mkdir(parents=True)
     f.write_text(model_tpl, encoding="utf-8")
-    pm_import._mark_model_todos(dest, {rel}, [])
+    import_fill._mark_model_todos(render_home, dest, {rel}, [])
     import_out = f.read_text(encoding="utf-8")
     # render_adapter 중화(operational 미해소) — self-update 경로.
-    render_out = pm_render.render_adapter(model_tpl, operational={})
+    render_out = adapter_render.render_adapter(render_home, model_tpl, operational={})
     assert import_out == render_out
     assert "{{OPENCODE_PRO_MODEL}}" not in import_out
 
 
 # ── 1. render_adapter — leak assertion ──────────────────────────────────────
 
-def test_leak_raises_on_unknown_token(pm_render):
+def test_leak_raises_on_unknown_token(render_home, pm_render):
     """allow-list 밖 토큰(`{{FOO}}`)이 산출물에 잔존하면 RenderLeakError."""
     tpl = "value: {{FOO}}\n"
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl)
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl)
     assert "{{FOO}}" in str(exc.value)
 
 
-def test_render_file_leak_reports_source(pm_render, tmp_path):
+def test_render_file_leak_reports_source(render_home, pm_render, tmp_path):
     """render_file 의 leak 에러에 source 파일 경로가 실린다(진단)."""
     p = tmp_path / "developer.md"
     p.write_text("v: {{UNKNOWN}}\n", encoding="utf-8")
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_file(p)
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        import_render.render_file(render_home, p)
     assert str(p) in str(exc.value)
     assert "{{UNKNOWN}}" in str(exc.value)
 
 
-def test_stray_omit_marker_raises(pm_render):
+def test_stray_omit_marker_raises(render_home, pm_render):
     """옛 free-form drop-section 마커(ADR-0031 제거)가 잔존하면 RenderLeakError(미마이그 표면화).
 
     어댑터는 free-form-free(ADR-0030)라 `<!-- pm:omit-if-empty ... -->` 류 마커가 절대 없어야
     한다 — 잔존하면 미마이그레이션 신호로 무음 출하를 막는다(_assert_no_leak·stray 검출).
     """
     tpl = "body\n<!-- /pm:omit-if-empty -->\ntail\n"
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl)
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl)
     assert "omit-marker" in str(exc.value)
 
 
-def test_unfilled_operational_token_is_leak_strict(pm_render):
+def test_unfilled_operational_token_is_leak_strict(render_home, pm_render):
     """operational 토큰을 안 채우면(값 미공급) 잔여 리터럴 → RenderLeakError(엄격·자족 산출물).
 
     이전 allow-list 는 미해소 operational 을 통과시켰으나, ADR-0028 자족 산출물 = 토큰 0 이므로
     이제 미해소 토큰은 *침묵 출하 대신* 큰소리로 표면화한다(D17-2 forward-flag 의 fail-loud 근거).
     """
     tpl = "host: {{PROJECT_NAME}}\n"
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, operational={})
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl, operational={})
     assert "{{PROJECT_NAME}}" in str(exc.value)
 
 
-def test_filled_operational_token_no_leak(pm_render):
+def test_filled_operational_token_no_leak(render_home, pm_render):
     """operational 토큰을 값으로 채우면 잔여 0 → leak 아님(plain replace 정상 경로)."""
     tpl = "host: {{PROJECT_NAME}}\n"
-    out = pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
+    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
     assert out == "host: acme\n"
     assert "{{" not in out
 
 
-def test_freeform_token_left_literal_is_leak(pm_render):
+def test_freeform_token_left_literal_is_leak(render_home, pm_render):
     """free-form 토큰(`{{PROTECTED_PATHS}}` 등)은 이 엔진이 채우지 않으므로 잔존 → RenderLeakError.
 
     ADR-0031 로 free-form value-fill 기계가 제거됐다 — free-form 은 pm_import FILL 채널이
@@ -345,8 +357,8 @@ def test_freeform_token_left_literal_is_leak(pm_render):
     잔존하면 엄격 가드가 자족 위반(미마이그레이션)으로 표면화한다.
     """
     tpl = "보호: {{PROTECTED_PATHS}}\n"
-    with pytest.raises(pm_render.RenderLeakError) as exc:
-        pm_render.render_adapter(tpl, operational={"PROJECT_NAME": "acme"})
+    with pytest.raises(render_rules.RenderLeakError) as exc:
+        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
     assert "{{PROTECTED_PATHS}}" in str(exc.value)
 
 
@@ -442,7 +454,7 @@ def test_plan_non_render_uses_copy_semantics(pm_update, tmp_path):
     # 출하 인벤토리는 `git ls-files` 가 낸다 — 픽스처 트리가 자기 checkout 이라고 선언한다.
     _track_source_tree(src)
     # 평문 str manifest (레거시 호출) → render=False.
-    changes, missing = pm_update.plan(src, [".project_manager/tools/board.py"], dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, [".project_manager/tools/board.py"], dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     assert len(changes) == 1
     assert changes[0][3] == "update"
@@ -464,7 +476,7 @@ def test_plan_render_path_compares_rendered_output(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     # 템플릿("- {{PROJECT_NAME}}\nbody\n") != dst, 그러나 *렌더 산출물* == dst → 변경 없음.
     rendered_paths = [c for c in changes if c[0] == rel]
@@ -485,7 +497,7 @@ def test_plan_render_path_update_when_output_differs(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     target = [c for c in changes if c[0] == rel]
     assert len(target) == 1
     assert target[0][3] == "update"
@@ -504,8 +516,8 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
-    pm_update.apply(changes)
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     # operational 토큰 둘 다 해소·잔여 토큰 0.
     assert written == "- acme\n- /r\nbody\n"
@@ -535,14 +547,14 @@ def test_render_dir_text_files_rendered_binary_copied(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     by_rel = {c[0]: c for c in changes}
     # 텍스트(.md·.toml) → render=True, 바이너리 → render=False(copy2).
     assert getattr(by_rel[md_rel][2], "render", False) is True
     assert getattr(by_rel[toml_rel][2], "render", False) is True
     assert getattr(by_rel[bin_rel][2], "render", False) is False
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert (dst / md_rel).read_text(encoding="utf-8") == "- acme\nbody\n"
     assert (dst / toml_rel).read_text(encoding="utf-8") == 'description = "acme"\n'
     assert (dst / bin_rel).read_bytes() == b"\xff\xfe\x00binary\x00"
@@ -560,16 +572,16 @@ def test_apply_non_render_byte_copies(pm_update, tmp_path):
     dst_f.write_text("# old\n", encoding="utf-8")
     # 평문 Path dst 로 직접 change 구성 → render 속성 없음 → copy2 그대로.
     changes = [(".project_manager/tools/board.py", src_f, dst_f, "update")]
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     # 토큰이 있어도 byte-copy(렌더 안 함) — 순수 엔진 후방호환.
     assert dst_f.read_text(encoding="utf-8") == "# engine {{NOT_A_RENDER_TOKEN}}\n"
 
 
-# ── 3. board.lint_render_leak — @render 한정·활성화 전 무발화·blocking ───────
+# ── 3. render_lint.lint_render_leak — @render 한정·활성화 전 무발화·blocking ───────
 
 def test_render_leak_not_advisory_is_blocking(board):
     """render-leak 은 `_ADVISORY_LINT_KINDS` 밖 → `--gate` 차단(blocking)."""
-    assert "render-leak" not in board._ADVISORY_LINT_KINDS
+    assert "render-leak" not in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
@@ -591,7 +603,7 @@ def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    assert board.lint_render_leak() == []
+    assert render_lint.lint_render_leak(board._home()) == []
 
 
 def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_path):
@@ -611,7 +623,7 @@ def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    findings = board.lint_render_leak()
+    findings = render_lint.lint_render_leak(board._home())
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "render-leak"
@@ -636,7 +648,7 @@ def test_render_leak_clean_when_render_path_fully_rendered(board, monkeypatch, t
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- core/**\nbody\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", fake_repo)
-    assert board.lint_render_leak() == []
+    assert render_lint.lint_render_leak(board._home()) == []
 
 
 # ── 2. plan render_enabled=False (--target copy2·토큰-form 보존·T-0133) ───────
@@ -660,7 +672,7 @@ def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_pat
     _track_source_tree(src)
 
     # render_enabled=False → @render 무시·copy2. leak/crash 없이 new 변경 1건.
-    changes, missing = pm_update.plan(
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
         src, manifest, dest_root=dst, render_enabled=False, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     target = [c for c in changes if c[0] == rel]
@@ -668,7 +680,7 @@ def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_pat
     assert target[0][3] == "new"
     assert getattr(target[0][2], "render", False) is False
     # apply 도 copy2 — 토큰-form 이 byte 그대로 보존(렌더 안 됨).
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert (dst / rel).read_text(encoding="utf-8") == src_text
 
 
@@ -686,12 +698,12 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     _track_source_tree(src)
 
     # 기본 render_enabled=True → render path (dst 가 산출물과 다르므로 render 변경).
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     target = [c for c in changes if c[0] == rel]
     assert len(target) == 1
     assert getattr(target[0][2], "render", False) is True
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     # PROJECT_NAME(local.conf) 해소·잔여 토큰 0.
     assert written == "- acme\nbody\n"
@@ -700,10 +712,10 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
 
 def test_opencode_pro_model_local_conf_mapping(pm_update, tmp_path):
     """local.conf `harness.opencode.pro_model=...` → operational dict 의 OPENCODE_PRO_MODEL 매핑(T-0133)."""
-    assert pm_update._LOCAL_CONF_TO_OPERATIONAL["harness.opencode.pro_model"] == "OPENCODE_PRO_MODEL"
+    assert update_render._LOCAL_CONF_TO_OPERATIONAL["harness.opencode.pro_model"] == "OPENCODE_PRO_MODEL"
     dst = tmp_path / "dst"
     _seed_render_dest(dst, local_conf="harness.opencode.pro_model=anthropic/claude-opus-4\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dst))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dst))
     assert operational["OPENCODE_PRO_MODEL"] == "anthropic/claude-opus-4"
     assert empty_keys == []
 
@@ -719,9 +731,9 @@ def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path)
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     assert written == "model: anthropic/claude-opus-4\nbody\n"
     assert "{{" not in written
@@ -745,10 +757,10 @@ def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path)
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     # apply 가 crash 하지 않고 중화 산출을 기록(leak 0).
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
     assert "{{OPENCODE_PRO_MODEL}}" not in written          # 리터럴 토큰 제거(자족)
     assert written.splitlines()[0].startswith("# model:")   # model: 줄 주석화
@@ -775,9 +787,9 @@ def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
         ".project_manager/tools/board.py",
     ]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
-    pm_update.apply(changes)  # 한 토큰 미해소로 전체가 막히지 않음(crash 0).
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)  # 한 토큰 미해소로 전체가 막히지 않음(crash 0).
     # 엔진 파일 정상 update.
     assert (dst / ".project_manager/tools/board.py").read_text(encoding="utf-8") == "v2\n"
     # @render agent 는 graceful 중화(리터럴 토큰 0).
@@ -796,7 +808,7 @@ def test_operational_from_local_conf_excludes_empty_value(pm_update, tmp_path):
     dst = tmp_path / "dst"
     # project_name 은 빈값, py 는 정상값 — 빈값만 제외되고 정상값은 보존돼야 한다.
     _seed_render_dest(dst, local_conf="project.name=\nruntime.py=python3\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dst))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dst))
     assert "PROJECT_NAME" not in operational  # 빈값 → dict 에서 제외(부재 동일 취급)
     assert empty_keys == ["PROJECT_NAME"]  # 빈값 token-key 표면화
     assert operational["PY"] == "python3"  # 정상값은 보존(회귀 무변경)
@@ -806,7 +818,7 @@ def test_operational_from_local_conf_all_normal_no_empty_keys(pm_update, tmp_pat
     """정상값만 있으면 empty_keys 는 빈 리스트(빈값 가드가 정상 경로를 오탐 안 함·회귀)."""
     dst = tmp_path / "dst"
     _seed_render_dest(dst, local_conf="project.name=acme\ntest.cmd=pytest -q\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dst))
+    operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dst))
     assert operational["PROJECT_NAME"] == "acme"
     assert operational["TEST_CMD"] == "pytest -q"
     assert empty_keys == []
@@ -827,7 +839,7 @@ def test_render_text_empty_local_conf_raises_with_hint(pm_update, tmp_path):
     # RenderLeakError 는 RuntimeError 서브클래스 — pm_update 가 pm_render 를 격리 로드하므로
     # 클래스 동일성 대신 base + 이름으로 잡는다(모듈 인스턴스 간 클래스 객체 상이).
     with pytest.raises(RuntimeError) as exc:
-        pm_update._render_text(src_f, _local_conf_of(pm_update, dst), pm_update._load_pm_render())
+        update_render._render_text(pm_paths.home_at(pm_update.REPO), src_f, _local_conf_of(pm_update, dst))
     assert type(exc.value).__name__ == "RenderLeakError"
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
@@ -846,10 +858,10 @@ def test_apply_render_empty_local_conf_raises(pm_update, tmp_path):
     manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
-    changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     assert missing == []
     with pytest.raises(RuntimeError) as exc:  # RenderLeakError (격리 로드·base 로 잡음)
-        pm_update.apply(changes)
+        update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert type(exc.value).__name__ == "RenderLeakError"
     # silent 로 빈 이름(" 프로젝트")이 기록되지 않았음을 확인(파일 미생성 or 토큰 보존).
     assert not (dst / rel).exists()
@@ -865,7 +877,7 @@ def _seed_render_managed_tree(dest_root: Path, rel: str, body: str) -> None:
     f.write_text(body, encoding="utf-8")
 
 
-def test_render_managed_files_empty_sub_leaks(pm_import, tmp_path):
+def test_render_managed_files_empty_sub_leaks(render_home, pm_import, tmp_path):
     """pm_import 경로(render_managed_files)도 빈값 sub → RenderLeakError(동일 가드·T-0218 DoD ③).
 
     subs 의 값이 빈 문자열이면 렌더가 토큰을 silent 로 비우지 않고 leak 으로 표면화해야 한다
@@ -878,19 +890,19 @@ def test_render_managed_files_empty_sub_leaks(pm_import, tmp_path):
     # RenderLeakError 는 RuntimeError 서브클래스 — pm_import 가 pm_render 를 격리 로드하므로
     # base + 이름으로 잡는다(모듈 인스턴스 간 클래스 객체 상이).
     with pytest.raises(RuntimeError) as exc:
-        pm_import.render_managed_files(
+        import_render.render_managed_files(render_home,
             dest, subs={"{{PROJECT_NAME}}": ""}, copied_relpaths={Path(rel)})
     assert type(exc.value).__name__ == "RenderLeakError"
     # silent 로 빈 이름이 기록되지 않고 원본(토큰) 보존 — 파일이 " 프로젝트" 로 안 덮임.
     assert (dest / rel).read_text(encoding="utf-8") == "description: {{PROJECT_NAME}} 프로젝트\n"
 
 
-def test_render_managed_files_normal_sub_renders(pm_import, tmp_path):
+def test_render_managed_files_normal_sub_renders(render_home, pm_import, tmp_path):
     """정상값 sub 는 render_managed_files 가 정상 치환·기록(회귀 무변경·T-0218 DoD ②)."""
     dest = tmp_path / "adopter"
     rel = ".claude/agents/developer.md"
     _seed_render_managed_tree(dest, rel, "description: {{PROJECT_NAME}} 프로젝트\n")
-    changed = pm_import.render_managed_files(
+    changed = import_render.render_managed_files(render_home,
         dest, subs={"{{PROJECT_NAME}}": "acme"}, copied_relpaths={Path(rel)})
     assert changed == 1
     written = (dest / rel).read_text(encoding="utf-8")
@@ -964,14 +976,14 @@ def _model_fields(text: str) -> dict:
 
 def test_card_harness_from_path_uses_first_component(pm_render):
     """카드 하네스는 **인스턴스 상대 경로의 첫 컴포넌트**(어댑터 네임스페이스)가 정한다."""
-    assert pm_render.card_harness_from_path(_CODEX_HARD_CARD) == "codex"
-    assert pm_render.card_harness_from_path(".claude/agents/developer.md") == "claude"
-    assert pm_render.card_harness_from_path(".opencode/agents/developer.md") == "opencode"
+    assert render_rules.card_harness_from_path(_CODEX_HARD_CARD) == "codex"
+    assert render_rules.card_harness_from_path(".claude/agents/developer.md") == "claude"
+    assert render_rules.card_harness_from_path(".opencode/agents/developer.md") == "opencode"
     # 한 인스턴스가 담은 타 네임스페이스 파일(cross-ns 의존물)도 그 네임스페이스 소속이다.
-    assert pm_render.card_harness_from_path(".claude/skills/pm-x/SKILL.md") == "claude"
+    assert render_rules.card_harness_from_path(".claude/skills/pm-x/SKILL.md") == "claude"
     # 판정 불가(어댑터 밖·인메모리 렌더)는 None — 미사용 프로필 규칙이 발화하지 않는다.
-    assert pm_render.card_harness_from_path(".project_manager/wiki/README.md") is None
-    assert pm_render.card_harness_from_path(None) is None
+    assert render_rules.card_harness_from_path(".project_manager/wiki/README.md") is None
+    assert render_rules.card_harness_from_path(None) is None
 
 
 def test_card_harness_ignores_components_outside_instance_root(pm_render):
@@ -979,17 +991,17 @@ def test_card_harness_ignores_components_outside_instance_root(pm_render):
 
     체크아웃이 `~/.claude/...` 아래면 절대경로 훑기는 어댑터 밖 파일(공유 wiki·엔진 문서)까지
     claude 로 오분류한다 — 그 오분류는 토큰이 산문으로 번지는 순간 조용한 오중화가 된다."""
-    assert pm_render.card_harness_from_path(
+    assert render_rules.card_harness_from_path(
         "/home/me/.claude/projects/inst/.project_manager/wiki/README.md") is None
-    assert pm_render.card_harness_from_path(
+    assert render_rules.card_harness_from_path(
         "/home/me/.claude/projects/inst/.codex/agents/developer-hard.toml") is None
     # 상류 좌표(`templates/<flavor>/…`)도 인스턴스 상대가 아니므로 판정 대상이 아니다.
-    assert pm_render.card_harness_from_path(_CODEX_HARD_SOURCE) is None
+    assert render_rules.card_harness_from_path(_CODEX_HARD_SOURCE) is None
 
 
-def test_codex_tier_toml_renders_hard_profile_values(pm_render):
+def test_codex_tier_toml_renders_hard_profile_values(render_home, pm_render):
     """codex 티어 프로필 TOML 이 `delegate.developer.hard.*` 해소값으로 렌더된다(모델+추론)."""
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         _CODEX_HARD_TOML,
         operational={
             "DELEGATE_MODEL_DEVELOPER_HARD": "gpt-5.6-sol",
@@ -1008,9 +1020,9 @@ def test_codex_tier_toml_renders_hard_profile_values(pm_render):
     assert "{{" not in out
 
 
-def test_codex_tier_toml_unset_conf_is_graceful_todo(pm_render):
+def test_codex_tier_toml_unset_conf_is_graceful_todo(render_home, pm_render):
     """위임 매핑 미설정 채택자 — TOML 도 leak 대신 intentional-TODO 중화(키 부재 = config 기본 상속)."""
-    out = pm_render.render_adapter(_CODEX_HARD_TOML, operational={},
+    out = adapter_render.render_adapter(render_home, _CODEX_HARD_TOML, operational={},
                                    source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD)
     fields = _model_fields(out)
     assert fields["model"].startswith('# model = "<model>"')
@@ -1020,13 +1032,13 @@ def test_codex_tier_toml_unset_conf_is_graceful_todo(pm_render):
     assert "delegate.developer.hard.model=" in fields["model"]
     assert "{{" not in out
     # 멱등 — 중화 산출물을 다시 렌더해도 같은 bytes(재렌더 왕복 0).
-    assert pm_render.render_adapter(
+    assert adapter_render.render_adapter(render_home,
         out, operational={}, source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD) == out
 
 
-def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(pm_render):
+def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(render_home, pm_render):
     """conf 하네스 ≠ 카드 하네스면 **해소값이 있어도** 값 대신 사유를 남긴다(미사용 프로필)."""
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         _CODEX_HARD_TOML,
         operational={
             "DELEGATE_MODEL_DEVELOPER_HARD": "opus",
@@ -1047,10 +1059,10 @@ def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(pm_re
     assert "opus" not in out and "xhigh" not in out, "다른 하네스 값이 카드에 새어 들어갔다"
 
 
-def test_unused_profile_judgment_is_per_role(pm_render):
+def test_unused_profile_judgment_is_per_role(render_home, pm_render):
     """미사용 프로필 판정은 역할별이다 — 한 역할이 타 하네스라고 다른 역할까지 중화하지 않는다."""
     tpl = 'model: "{{DELEGATE_MODEL_DEVELOPER}}"\n'
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         tpl,
         operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
         card_path=".claude/agents/developer.md",
@@ -1062,10 +1074,10 @@ def test_unused_profile_judgment_is_per_role(pm_render):
     assert out == 'model: "sonnet"\n'
 
 
-def test_delegate_harness_unknown_keeps_current_render(pm_render):
+def test_delegate_harness_unknown_keeps_current_render(render_home, pm_render):
     """conf 하네스 미설정(판정 불가)은 미사용 프로필이 아니다 — 해소값이 있으면 그대로 렌더한다."""
     tpl = 'model: "{{DELEGATE_MODEL_DEVELOPER}}"\n'
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         tpl, operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
         card_path=".codex/agents/developer.toml", delegate_harness={})
     assert out == 'model: "sonnet"\n'
@@ -1097,20 +1109,20 @@ def _effort_line(text: str) -> str:
 
 def test_card_field_table_is_per_adapter_dir(pm_render):
     """카드 필드 표는 어댑터 디렉터리 행 셋이고, 중화 줄 판정 정규식은 그 필드 합집합에서 파생된다."""
-    assert pm_render.CARD_FIELD_TOKEN_PREFIXES == {
+    assert render_rules.CARD_FIELD_TOKEN_PREFIXES == {
         ".claude": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "effort"},
         ".codex": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "model_reasoning_effort"},
         ".opencode": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "variant"},
     }
-    assert set(pm_render.CARD_FIELD_TOKEN_PREFIXES) == set(
-        pm_render.CARD_HARNESS_BY_ADAPTER_DIR), \
+    assert set(render_rules.CARD_FIELD_TOKEN_PREFIXES) == set(
+        render_rules.CARD_HARNESS_BY_ADAPTER_DIR), \
         "카드 필드 표의 키가 어댑터 네임스페이스 디렉터리 집합과 갈렸다"
-    assert set(pm_render._CARD_FIELD_NAMES) == {
+    assert set(render_rules._CARD_FIELD_NAMES) == {
         field
-        for fields in pm_render.CARD_FIELD_TOKEN_PREFIXES.values()
+        for fields in render_rules.CARD_FIELD_TOKEN_PREFIXES.values()
         for field in fields.values()
     }, "중화 줄 판정의 필드 이름이 표의 합집합에서 파생되지 않았다"
-    field_line = pm_render._MODEL_FIELD_LINE_RE
+    field_line = render_rules._MODEL_FIELD_LINE_RE
     for line in ('effort: "x"', 'model: "x"', 'model = "x"', 'model_reasoning_effort = "x"',
                  'variant: "x"'):
         assert field_line.match(line), f"카드 필드 줄인데 판정이 놓쳤다: {line!r}"
@@ -1118,9 +1130,9 @@ def test_card_field_table_is_per_adapter_dir(pm_render):
         assert not field_line.match(line), f"카드 필드 줄이 아닌데 판정이 잡았다: {line!r}"
 
 
-def test_claude_effort_renders_conf_value(pm_render):
+def test_claude_effort_renders_conf_value(render_home, pm_render):
     """claude 카드의 `effort` 줄이 그 프로필의 `delegate.<role>.reasoning` 값으로 렌더된다."""
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         _CLAUDE_ARCHITECT_TEMPLATE,
         operational={
             "DELEGATE_MODEL_ARCHITECT": "opus",
@@ -1132,12 +1144,12 @@ def test_claude_effort_renders_conf_value(pm_render):
     assert out == '---\nname: architect\nmodel: "opus"\neffort: "max"\n---\n'
 
 
-def test_claude_effort_unresolved_is_neutralized(pm_render):
+def test_claude_effort_unresolved_is_neutralized(render_home, pm_render):
     """추론 키 부재(위임 매핑 미설정)는 leak 이 아니라 model 줄과 같은 TODO 중화다.
 
     채울 값이 없으면 검증도 없다(pm_import 최초 렌더가 이 형상이다).
     """
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         _CLAUDE_ARCHITECT_TEMPLATE,
         operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
         card_path=_CLAUDE_ARCHITECT_CARD,
@@ -1147,14 +1159,14 @@ def test_claude_effort_unresolved_is_neutralized(pm_render):
     assert "delegate.architect.reasoning=" in line, "TODO 가 채울 conf 키를 지목하지 않는다"
     assert 'model: "opus"\n' in out, "추론 중화가 해소된 model 줄을 건드렸다"
     assert "{{" not in out
-    assert pm_render.render_adapter(
+    assert adapter_render.render_adapter(render_home,
         out, operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
         card_path=_CLAUDE_ARCHITECT_CARD) == out, "중화 산출물 재렌더가 멱등하지 않다"
 
 
-def test_claude_effort_unused_profile_is_neutralized(pm_render):
+def test_claude_effort_unused_profile_is_neutralized(render_home, pm_render):
     """conf 하네스 ≠ claude 면 effort 줄도 model 줄과 함께 사유 중화된다(값은 싣지 않는다)."""
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         _CLAUDE_ARCHITECT_TEMPLATE,
         operational={
             "DELEGATE_MODEL_ARCHITECT": "gpt-5.6-sol",
@@ -1174,13 +1186,13 @@ def test_claude_effort_unused_profile_is_neutralized(pm_render):
     assert "max" not in out and "gpt-5.6-sol" not in out, "다른 하네스 값이 카드에 새어 들어갔다"
 
 
-def test_unused_profile_skips_reasoning_value_check(pm_render):
+def test_unused_profile_skips_reasoning_value_check(render_home, pm_render):
     """미사용 프로필의 추론 값은 이 카드에 실리지 않으므로 이 카드 하네스의 허용값으로 재지 않는다.
 
     opencode 로 가는 역할의 `minimal`(그 모델 variant 일 수 있는 값·claude 허용값 밖)이 claude 카드
     렌더를 멈추면, 그 역할을 다른 하네스로 보낸 정상 형상에서 갱신 전체가 막힌다.
     """
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         _CLAUDE_ARCHITECT_TEMPLATE,
         operational={
             "DELEGATE_MODEL_ARCHITECT": "ollama/glm-5.2:cloud",
@@ -1196,14 +1208,14 @@ def test_unused_profile_skips_reasoning_value_check(pm_render):
     assert "minimal" not in out
 
 
-def test_claude_effort_empty_value_is_loud_leak(pm_render):
+def test_claude_effort_empty_value_is_loud_leak(render_home, pm_render):
     """`delegate.<role>.reasoning=` 빈값(오설정)은 중화하지 않고 leak 으로 표면화한다."""
     for operational, empty_keys in (
         ({"DELEGATE_MODEL_ARCHITECT": "opus"}, ["DELEGATE_REASONING_ARCHITECT"]),
         ({"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": ""}, None),
     ):
-        with pytest.raises(pm_render.RenderLeakError) as excinfo:
-            pm_render.render_adapter(
+        with pytest.raises(render_rules.RenderLeakError) as excinfo:
+            adapter_render.render_adapter(render_home,
                 _CLAUDE_ARCHITECT_TEMPLATE, operational=operational, empty_keys=empty_keys,
                 card_path=_CLAUDE_ARCHITECT_CARD, delegate_harness=_CLAUDE_ARCHITECT_HARNESS,
                     )
@@ -1211,14 +1223,14 @@ def test_claude_effort_empty_value_is_loud_leak(pm_render):
 
 
 @pytest.mark.parametrize("value", ["ultra", "3", "minimal", "HIGH"])
-def test_reasoning_outside_ladder_fails_render(pm_render, value):
+def test_reasoning_outside_ladder_fails_render(render_home, pm_render, value):
     """claude 카드에 채울 추론 값이 허용값 밖이면(정수·다른 하네스 어휘·대소문자 포함) 렌더 에러다.
 
     claude 는 무효 effort 를 에러 없이 버리고 세션 effort 로 스폰한다 — 렌더가 멈추지 않으면 conf
     선언이 실행면에 닿지 않는 사실이 조용히 묻힌다.
     """
-    with pytest.raises(pm_render.RenderLeakError) as excinfo:
-        pm_render.render_adapter(
+    with pytest.raises(render_rules.RenderLeakError) as excinfo:
+        adapter_render.render_adapter(render_home,
             _CLAUDE_ARCHITECT_TEMPLATE,
             operational={
                 "DELEGATE_MODEL_ARCHITECT": "opus",
@@ -1232,10 +1244,10 @@ def test_reasoning_outside_ladder_fails_render(pm_render, value):
     assert "xhigh" in message, "허용값 목록을 메시지에 싣지 않는다"
 
 
-def test_codex_reasoning_outside_ladder_fails_render(pm_render):
+def test_codex_reasoning_outside_ladder_fails_render(render_home, pm_render):
     """codex 카드도 같은 규칙이다 — `model_reasoning_effort` 에 허용값 밖 값을 싣지 않는다."""
-    with pytest.raises(pm_render.RenderLeakError) as excinfo:
-        pm_render.render_adapter(
+    with pytest.raises(render_rules.RenderLeakError) as excinfo:
+        adapter_render.render_adapter(render_home,
             _CODEX_HARD_TOML,
             operational={
                 "DELEGATE_MODEL_DEVELOPER_HARD": "gpt-5.6-sol",
@@ -1249,7 +1261,7 @@ def test_codex_reasoning_outside_ladder_fails_render(pm_render):
 
 @pytest.mark.parametrize("value", _REASONING_LADDER)
 @pytest.mark.parametrize("harness", ["claude", "codex"])
-def test_reasoning_ladder_values_render_on_both_formats(pm_render, harness, value):
+def test_reasoning_ladder_values_render_on_both_formats(render_home, pm_render, harness, value):
     """허용값 5개는 claude·codex 두 형식 모두에서 그대로 렌더된다(검증이 정상 값을 막지 않는다)."""
     if harness == "claude":
         template, card_path, token = (
@@ -1258,7 +1270,7 @@ def test_reasoning_ladder_values_render_on_both_formats(pm_render, harness, valu
     else:
         template, card_path, token = _CODEX_HARD_TOML, _CODEX_HARD_CARD, "DEVELOPER_HARD"
         expected = f'model_reasoning_effort = "{value}"'
-    out = pm_render.render_adapter(
+    out = adapter_render.render_adapter(render_home,
         template,
         operational={f"DELEGATE_MODEL_{token}": "m", f"DELEGATE_REASONING_{token}": value},
         card_path=card_path,
@@ -1266,10 +1278,10 @@ def test_reasoning_ladder_values_render_on_both_formats(pm_render, harness, valu
     assert expected in out.splitlines(), out
 
 
-def test_reasoning_fill_without_card_harness_fails(pm_render):
+def test_reasoning_fill_without_card_harness_fails(render_home, pm_render):
     """채울 추론 값이 있는데 카드 하네스를 판정할 수 없으면(card_path 부재) 렌더 에러다."""
-    with pytest.raises(pm_render.RenderLeakError) as excinfo:
-        pm_render.render_adapter(
+    with pytest.raises(render_rules.RenderLeakError) as excinfo:
+        adapter_render.render_adapter(render_home,
             _CLAUDE_ARCHITECT_TEMPLATE,
             operational={
                 "DELEGATE_MODEL_ARCHITECT": "opus",
@@ -1284,7 +1296,7 @@ def test_reasoning_fill_without_card_harness_fails(pm_render):
 def test_reasoning_allowed_is_read_from_sibling_pm_relay():
     """허용값은 `contract.reasoning_allowed` 하나에서 오고 pm_render 에 사본이 없다."""
     assert contract.reasoning_allowed("claude", "opus", cwd=REPO, env={}) == _REASONING_LADDER
-    tree = ast.parse((TOOLS / "pm_render.py").read_text(encoding="utf-8"))
+    tree = ast.parse((TOOLS / "pm_engine" / "app" / "adapter_render.py").read_text(encoding="utf-8"))
     literals = {
         node.value for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
@@ -1309,8 +1321,8 @@ _needs_posix_fake = pytest.mark.skipif(
     not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
 
 
-def _render_opencode_researcher(pm_render, operational, **kwargs):
-    return pm_render.render_adapter(
+def _render_opencode_researcher(pm_render, operational, *, render_home, **kwargs):
+    return adapter_render.render_adapter(render_home,
         _OPENCODE_RESEARCHER_TEMPLATE.read_text(encoding="utf-8"),
         operational={"PROJECT_NAME": "Acme", **operational},
         card_path=_OPENCODE_RESEARCHER_CARD,
@@ -1327,12 +1339,12 @@ def fake_opencode_path(tmp_path, monkeypatch):
 
 
 @_needs_posix_fake
-def test_opencode_card_renders_variant_from_model_variants(pm_render, fake_opencode_path):
+def test_opencode_card_renders_variant_from_model_variants(render_home, pm_render, fake_opencode_path):
     """그 모델의 variants 에 있는 값은 카드 `model:` 다음 줄 `variant:` 로 실린다."""
     out = _render_opencode_researcher(pm_render, {
         "DELEGATE_MODEL_RESEARCHER": "ollama/ornith1.5:35b-a3b",
         "DELEGATE_REASONING_RESEARCHER": "high",
-    })
+    }, render_home=render_home)
     lines = out.splitlines()
     assert lines[3] == 'model: "ollama/ornith1.5:35b-a3b"'
     assert lines[4] == 'variant: "high"'
@@ -1340,52 +1352,52 @@ def test_opencode_card_renders_variant_from_model_variants(pm_render, fake_openc
 
 
 @_needs_posix_fake
-def test_opencode_card_refuses_reasoning_the_model_lacks(pm_render, tmp_path, monkeypatch,
+def test_opencode_card_refuses_reasoning_the_model_lacks(render_home, pm_render, tmp_path, monkeypatch,
                                                          fake_opencode_path):
     """그 모델이 받지 않는 variant·모델 없음·조회 불가는 카드에 싣지 않고 렌더를 멈춘다."""
-    with pytest.raises(pm_render.RenderLeakError) as excinfo:
+    with pytest.raises(render_rules.RenderLeakError) as excinfo:
         _render_opencode_researcher(pm_render, {
             "DELEGATE_MODEL_RESEARCHER": "ollama/glm-5.2:cloud",
             "DELEGATE_REASONING_RESEARCHER": "high",
-        })
+        }, render_home=render_home)
     message = str(excinfo.value)
     for expected in ("delegate.researcher.reasoning=high", "ollama/glm-5.2:cloud", "저장이면",
                      "pm-config update 를 다시 실행"):
         assert expected in message, message
 
-    with pytest.raises(pm_render.RenderLeakError) as excinfo:
-        _render_opencode_researcher(pm_render, {"DELEGATE_REASONING_RESEARCHER": "high"})
+    with pytest.raises(render_rules.RenderLeakError) as excinfo:
+        _render_opencode_researcher(pm_render, {"DELEGATE_REASONING_RESEARCHER": "high"}, render_home=render_home)
     assert "delegate.researcher.reasoning=high" in str(excinfo.value)
 
     empty = tmp_path / "empty-bin"
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
-    with pytest.raises(pm_render.RenderLeakError) as excinfo:
+    with pytest.raises(render_rules.RenderLeakError) as excinfo:
         _render_opencode_researcher(pm_render, {
             "DELEGATE_MODEL_RESEARCHER": "ollama/ornith1.5:35b-a3b",
             "DELEGATE_REASONING_RESEARCHER": "high",
-        })
+        }, render_home=render_home)
     assert "PATH 부재" in str(excinfo.value)
 
 
 @_needs_posix_fake
-def test_opencode_variant_line_neutralized_without_lookup(pm_render, fake_opencode_path):
+def test_opencode_variant_line_neutralized_without_lookup(render_home, pm_render, fake_opencode_path):
     """추론 값이 없거나 미사용 프로필이면 `variant` 줄은 중화되고 모델 목록을 조회하지 않는다."""
     unset = _render_opencode_researcher(
-        pm_render, {"DELEGATE_MODEL_RESEARCHER": "ollama/glm-5.2:cloud"}).splitlines()[4]
+        pm_render, {"DELEGATE_MODEL_RESEARCHER": "ollama/glm-5.2:cloud"}, render_home=render_home).splitlines()[4]
     assert unset.startswith("# variant: ")
-    assert unset.endswith(pm_render._delegate_model_todo_tail("delegate.researcher.reasoning"))
+    assert unset.endswith(render_rules._delegate_model_todo_tail("delegate.researcher.reasoning"))
 
     unused = _render_opencode_researcher(
         pm_render,
         {"DELEGATE_MODEL_RESEARCHER": "opus", "DELEGATE_REASONING_RESEARCHER": "high"},
         delegate_harness={"DELEGATE_MODEL_RESEARCHER": "claude",
-                          "DELEGATE_REASONING_RESEARCHER": "claude"},
+                          "DELEGATE_REASONING_RESEARCHER": "claude"}, render_home=render_home,
     ).splitlines()[4]
     assert unused.startswith("# variant: ") and "delegate.researcher.harness" in unused
 
     assert not (fake_opencode_path / "opencode-calls.txt").exists(), "조회가 일어났다"
-    with pytest.raises(pm_render.RenderLeakError):
+    with pytest.raises(render_rules.RenderLeakError):
         _render_opencode_researcher(
             pm_render, {"DELEGATE_MODEL_RESEARCHER": "ollama/ornith1.5:35b-a3b"},
-            empty_keys=["DELEGATE_REASONING_RESEARCHER"])
+            empty_keys=["DELEGATE_REASONING_RESEARCHER"], render_home=render_home)

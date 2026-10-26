@@ -15,6 +15,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.domain import install_rules
+
 import importlib.util
 import os
 import shutil
@@ -25,6 +28,10 @@ import pytest
 from pathlib import Path
 
 from _harness_matrix import HARNESSES as _HARNESS_IDS, _PM_IMPORT
+from pm_engine.cli import import_cmd
+from pm_engine.infra import pm_paths
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
 SH = REPO / "pm-import.sh"
@@ -43,7 +50,7 @@ def _facade_axis(harness_ids, harness_template_dirs) -> tuple[str, ...]:
 
 
 # update 파사드 — templates 각 하네스 루트(채택자 루트로 배포·T-0054). 축은 파생(손-열거 아님·T-0434).
-HARNESSES = _facade_axis(_HARNESS_IDS, _PM_IMPORT.HARNESS_TEMPLATE_DIRS)
+HARNESSES = _facade_axis(_HARNESS_IDS, install_rules.HARNESS_TEMPLATE_DIRS)
 UPDATE_SH = {h: REPO / "templates" / h / "pm-update.sh" for h in HARNESSES}
 UPDATE_CMD = {h: REPO / "templates" / h / "pm-update.cmd" for h in HARNESSES}
 
@@ -76,8 +83,7 @@ def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", tools / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 # --- POSIX e2e: 임의 cwd 에서 파사드가 pm_import dry-run 에 도달 ---
@@ -280,10 +286,10 @@ def test_facade_axis_auto_includes_new_harness() -> None:
     파사드 게이트(UPDATE_SH/CMD·드리프트·forward 토큰)에 손 편집 0 으로 흐르는 게 티켓 핵심.
     """
     # 실축 = 파생 하네스 정체성을 템플릿-dir 로 매핑한 것과 동일.
-    assert HARNESSES == _facade_axis(_HARNESS_IDS, _PM_IMPORT.HARNESS_TEMPLATE_DIRS)
+    assert HARNESSES == _facade_axis(_HARNESS_IDS, install_rules.HARNESS_TEMPLATE_DIRS)
     # 가짜 4번째 하네스(상수 + templates dir) → 축에 자동 편입(dir 명 매핑 경유).
     fake_ids = (*_HARNESS_IDS, "fourth")
-    fake_map = {**_PM_IMPORT.HARNESS_TEMPLATE_DIRS, "fourth": ("fourth_tmpl",)}
+    fake_map = {**install_rules.HARNESS_TEMPLATE_DIRS, "fourth": ("fourth_tmpl",)}
     got = _facade_axis(fake_ids, fake_map)
     assert got[-1] == "fourth_tmpl", got
     assert set(HARNESSES) < set(got), got
@@ -305,10 +311,10 @@ def test_update_facade_deployed_to_adopter_root(harness: str, tmp_path: Path,
     """
     pm_import = _load_pm_import()
     # opencode models CLI 라이브 호출 차단(설치 환경서도 hermetic).
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
 
     dest = tmp_path / "adopter"
-    rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "P"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", harness, "--name", "P"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"pm_import rc={rc}"
 
     # 채택자 루트에 update 파사드 배포 + deep 엔진 진입점 존재.

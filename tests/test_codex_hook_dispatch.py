@@ -36,6 +36,8 @@ import pytest
 from _slot_seed import seed_slot
 from _hook_commands import powershell_native_arguments
 from _win_skip import posix_bash_supported
+from pm_engine.app import hook_sets
+from pm_engine.domain import adapter_specs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -100,7 +102,7 @@ def test_engine_reverse_declaration_names_the_same_entrypoints(dispatcher, pm_im
     """엔진 역방향 선언과 디스패처가 같은 (이벤트, matcher, 디스패처, 플래그)를 말한다.
 
     두 벌이 갈리면 한쪽만 진입점을 늘려 놓고 다른 쪽은 그 사실을 모른 채 green 이 된다."""
-    declared = pm_import.ADAPTER_HOOK_SET["codex"].entrypoints
+    declared = adapter_specs.ADAPTER_HOOK_SET["codex"].entrypoints
 
     assert tuple(item.event for item in declared) == tuple(
         dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS)
@@ -1499,11 +1501,11 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
         json.dumps(_legacy_hooks_document(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8", newline="\n")
 
-    findings = pm_import.judge_adapter_hook_entrypoints(root, None, ["codex"])
+    findings = hook_sets.judge_adapter_hook_entrypoints(root, None, ["codex"])
 
     assert [finding.event for finding in findings] == list(_MIGRATED_EVENTS)
     for finding in findings:
-        assert finding.kind == pm_import.HOOK_ENTRYPOINT_MISSING
+        assert finding.kind == hook_sets.HOOK_ENTRYPOINT_MISSING
         assert "앞으로 등록될 가드는 발화하지 않는다" in finding.detail
         assert "한 번도 발화하지 않는다" not in finding.detail
     # 문구가 참인지의 판정 근거 — 그 채택자에서 옛 커맨드는 지금도 정상 발화한다.

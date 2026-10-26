@@ -9,7 +9,7 @@
 
 ## 파생 원칙 (손-열거 금지 · [[ADR-0006]])
   - `pm_import.HARNESS_TEMPLATE_DIRS` = 하네스 → `templates/` 어댑터 트리 디렉토리명(엔진 권위 목록).
-  - `templates/<dir>/` 디렉토리 실존 = "디렉토리 존재만으로 발견"(pm_update.resolve_target_root).
+  - `templates/<dir>/` 디렉토리 실존 = "디렉토리 존재만으로 발견"(infra.shipping_targets.resolve_target_root).
 `HARNESSES` = 그 둘의 **교집합**(단일-어댑터 하네스만). 새 하네스가 제대로
 추가되면(상수 + 디렉토리) 게이트에 자동 편입되고, `templates/` 밑 stray 디렉토리(빈 dir·파일만
 있는 dir·`.hidden`)는 상수에 없어 **하네스로 오인되지 않는다**(파생 로직 자체의 강건성).
@@ -18,6 +18,8 @@
 단일 어댑터 dir, codex 는 dual `.codex`+`.agents`). 게이트가 스캔할 트리를 손으로 적지 않는다.
 """
 from __future__ import annotations
+
+from pm_engine.domain import install_rules
 
 import importlib.util
 from pathlib import Path
@@ -76,17 +78,17 @@ _PM_IMPORT = _load_pm_import()
 
 # 하네스 축 단일 출처 — 엔진 상수 ∩ templates/ 디렉토리 실존에서 파생(위 derive_harnesses).
 #   실트리 = ("claude", "codex", "opencode"). 네 번째가 제대로 추가되면 자동 편입된다.
-HARNESSES: tuple[str, ...] = derive_harnesses(TEMPLATES, _PM_IMPORT.HARNESS_TEMPLATE_DIRS)
+HARNESSES: tuple[str, ...] = derive_harnesses(TEMPLATES, install_rules.HARNESS_TEMPLATE_DIRS)
 
 # 하네스별 어댑터 네임스페이스(채택자가 소비하는 산출물 트리) — 엔진 ADD_HARNESS_ADAPTER 에서 파생.
 #   값 = adapter_dirs 튜플. codex 는 dual namespace(.codex + .agents).
 HARNESS_ADAPTER_DIRS: dict[str, tuple[str, ...]] = {
-    h: dirs for h, (dirs, _doc) in _PM_IMPORT.ADD_HARNESS_ADAPTER.items()
+    h: dirs for h, (dirs, _doc) in install_rules.ADD_HARNESS_ADAPTER.items()
 }
 
 # 하네스별 루트 진입 문서 — 엔진 ADD_HARNESS_ADAPTER 에서 파생(claude=CLAUDE.md·opencode/codex=AGENTS.md).
 HARNESS_ROOT_DOC: dict[str, str] = {
-    h: doc for h, (_dirs, doc) in _PM_IMPORT.ADD_HARNESS_ADAPTER.items()
+    h: doc for h, (_dirs, doc) in install_rules.ADD_HARNESS_ADAPTER.items()
 }
 
 

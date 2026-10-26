@@ -27,7 +27,7 @@ def normalized_bytes(path: Path) -> bytes:
     return normalize_newline_bytes(path.read_bytes())
 
 
-# command 사본에만 붙는 인자 전달 절 — 엔진 `pm_update._FLAT_COMMAND_ARGUMENTS_SECTION` 미러.
+# command 사본에만 붙는 인자 전달 절 — 엔진 `app.update_render._FLAT_COMMAND_ARGUMENTS_SECTION` 미러.
 ARGUMENTS_SECTION = (
     "\n## 이번 호출 인자\n\n"
     "`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이"

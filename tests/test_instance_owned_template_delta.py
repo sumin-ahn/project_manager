@@ -11,6 +11,16 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.app import adapter_report
+from pm_engine.app import entry_doc_migration
+from pm_engine.app import update_adapters
+from pm_engine.app import upstream_revisions
+from pm_engine.cli import config_adapter
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
+from pm_engine.infra import pm_paths
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -21,8 +31,7 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(module)
+    return module
 
 
 @pytest.fixture()
@@ -35,10 +44,16 @@ def pm_config():
     return _load("pm_config")
 
 
-@pytest.fixture()
-def pm_update():
+@pytest.fixture(scope="module")
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 def _sha(text: str) -> str:
@@ -139,7 +154,7 @@ def test_entry_document_template_change_is_loud_with_manual_remedy(
     history = _unchanged_history(current)
     history[("entry-base", "templates/codex/AGENTS.md")] = "# Old entry\n\nstable\n"
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
 
     assert len(lines) == 1, lines
@@ -156,7 +171,7 @@ def test_config_template_change_points_to_explicit_accept(pm_import, tmp_path):
     history[("config-base", "templates/codex/.codex/config.toml")] = (
         "sandbox = 'read-only'\n")
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
 
     assert len(lines) == 1, lines
@@ -170,7 +185,7 @@ def test_unchanged_template_generation_is_completely_silent(pm_import, tmp_path)
     """baseline과 현행 template byte가 같으면 요약 라인은 0개다."""
     dest, source, current = _case(tmp_path)
 
-    assert pm_import.instance_owned_template_delta_lines(
+    assert adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(_unchanged_history(current))) == []
 
 
@@ -180,7 +195,7 @@ def test_terminal_newline_only_change_is_not_folded_as_unchanged(pm_import, tmp_
     history = _unchanged_history(current)
     history[("entry-base", "templates/codex/AGENTS.md")] = current["AGENTS.md"].removesuffix("\n")
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
 
     assert len(lines) == 1, lines
@@ -199,11 +214,11 @@ def test_edited_managed_delta_repeats_until_explicit_accept(pm_import, tmp_path)
     ledger = dest / ".project_manager" / "adapter_baseline.json"
     ledger_before = ledger.read_bytes()
 
-    judgments = {item.relpath: item for item in pm_import.judge_adapter_configs(dest, source)}
+    judgments = {item.relpath: item for item in adapter_report.judge_adapter_configs(dest, source)}
     assert judgments[config_rel].status == "edited"
-    first = pm_import.instance_owned_template_delta_lines(
+    first = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
-    second = pm_import.instance_owned_template_delta_lines(
+    second = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
 
     assert first == second
@@ -219,9 +234,9 @@ def test_converged_managed_delta_does_not_prescribe_accept(pm_import, tmp_path):
     history[("config-base", "templates/codex/.codex/hooks.json")] = (
         '{"hooks": {"old": true}}\n')
 
-    judgments = {item.relpath: item for item in pm_import.judge_adapter_configs(dest, source)}
-    assert pm_import.adapter_config_convergence_status(judgments[managed_rel]) == "converged"
-    lines = pm_import.instance_owned_template_delta_lines(
+    judgments = {item.relpath: item for item in adapter_report.judge_adapter_configs(dest, source)}
+    assert adapter_report.adapter_config_convergence_status(judgments[managed_rel]) == "converged"
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
 
     assert not any(managed_rel in line for line in lines), lines
@@ -254,7 +269,7 @@ def test_lite_entry_uses_recorded_lite_coordinate_and_detects_change(
     history[("entry-base", "templates/codex/AGENTS.lite.md")] = (
         "# Old lite entry\n\nlite stable\n")
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
 
     assert len(lines) == 1, lines
@@ -268,7 +283,7 @@ def test_lite_entry_ignores_full_only_template_change(pm_import, tmp_path):
         "# Full-only new generation\n", encoding="utf-8")
     runner = FakeGenerationGit(history)
 
-    assert pm_import.instance_owned_template_delta_lines(
+    assert adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=runner) == []
     assert not any(
         call[-1].endswith(":templates/codex/AGENTS.md")
@@ -279,10 +294,10 @@ def test_lite_import_receipt_records_actual_renamed_entry_source(pm_import, tmp_
     """설치 경로가 `CLAUDE.lite.md → CLAUDE.md`의 weight/source 좌표를 영수증에 남긴다."""
     dest = tmp_path / "lite-installed"
 
-    assert pm_import.main([
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", "claude", "--weight", "lite",
         "--from", str(REPO), "--name", "Lite Coordinate",
-    ]) == 0
+    ], engine_rev=pm_import.ENGINE_REV) == 0
 
     receipt = json.loads(
         (dest / ".project_manager" / "install.json").read_text(encoding="utf-8"))
@@ -297,7 +312,7 @@ def test_legacy_receipt_without_template_coordinate_is_one_manual_line(
     """구 설치본은 full 좌표를 추측해 오탐하지 않고 좌표 미기록 한 줄로 강등한다."""
     dest, source, current = _case(tmp_path, with_coordinates=False)
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(_unchanged_history(current)))
 
     assert lines == [
@@ -310,7 +325,7 @@ def test_missing_baseline_is_one_fail_soft_line_not_false_unchanged(pm_import, t
     """원장 rev와 직전 upstream_rev가 모두 없으면 전량 확인 경고 정확히 한 줄."""
     dest, source, _current = _case(tmp_path, with_baseline=False)
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit({}))
 
     assert lines == [
@@ -331,7 +346,7 @@ def test_non_git_source_is_generation_out_of_scope_not_permanent_unreachable_war
                 return 128, "fatal: not a git repository"
             return super().__call__(argv)
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=NonGitSource({}))
 
     assert lines == ["ℹ️  이 소스는 git 이 아니라 세대 판정 비대상."]
@@ -344,7 +359,7 @@ def test_historical_file_absence_is_reported_as_full_add(pm_import, tmp_path):
     history = _unchanged_history(current)
     history.pop(("entry-base", "templates/codex/AGENTS.md"))
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=FakeGenerationGit(history))
 
     assert len(lines) == 1, lines
@@ -380,7 +395,7 @@ def test_source_root_subdirectory_uses_git_toplevel_prefix(pm_import, tmp_path):
     (nested_source / "templates" / "codex" / ".codex" / "config.toml").write_text(
         "sandbox = 'read-only'\n", encoding="utf-8")
 
-    lines = pm_import.instance_owned_template_delta_lines(dest, nested_source)
+    lines = adapter_report.instance_owned_template_delta_lines(dest, nested_source)
 
     config_lines = [line for line in lines if ".codex/config.toml" in line]
     assert len(config_lines) == 1, lines
@@ -399,7 +414,7 @@ def test_git_prefix_resolution_failure_is_basis_unavailable(pm_import, tmp_path)
                 return 128, "fatal: prefix unavailable"
             return super().__call__(argv)
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=PrefixFailure(_unchanged_history(current)))
 
     assert lines == [
@@ -425,7 +440,7 @@ def test_git_show_error_is_basis_unavailable_not_full_add(
                 return 128, detail
             return super().__call__(argv)
 
-    lines = pm_import.instance_owned_template_delta_lines(
+    lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=GitIOError(_unchanged_history(current)))
 
     assert lines == [
@@ -445,14 +460,14 @@ def test_sync_adapter_config_check_exposes_the_same_delta_lines(
         "현재 파일을 백업한 뒤 수동 병합 또는 ADOPT.md 절차로 재-import"
     ]
     monkeypatch.setattr(
-        pm_import, "instance_owned_template_delta_lines",
+        adapter_report, "instance_owned_template_delta_lines",
         lambda _dest, _source: expected,
     )
     args = argparse.Namespace(
         list=False, check=True, accept=None, accept_all=False, source=str(source))
 
-    rc = pm_config.cmd_sync_adapter_config(
-        args, pm_import=pm_import, dest_root=dest)
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
+        args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert rc == 0, captured
@@ -484,11 +499,11 @@ def test_pm_update_exit_exposes_final_delta_lines(
     ]
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setattr(
-        pm_update, "_instance_owned_template_delta_lines",
+        update_adapters, "_instance_owned_template_delta_lines",
         lambda _dest, _source: expected,
     )
 
-    rc = pm_update.main(["--from", str(source), "--dry-run"])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0, captured
@@ -529,20 +544,20 @@ def test_pm_update_managed_auto_update_does_not_prescribe_accept(
         return []
 
     monkeypatch.setattr(pm_update, "REPO", dest)
-    monkeypatch.setattr(pm_update, "sync_adapter_configs", sync_configs)
-    monkeypatch.setattr(pm_update, "_instance_owned_template_delta_lines", final_delta)
+    monkeypatch.setattr(update_adapters, "sync_adapter_configs", sync_configs)
+    monkeypatch.setattr(update_adapters, "_instance_owned_template_delta_lines", final_delta)
     monkeypatch.setattr(
-        pm_update, "migrate_entry_doc", lambda *_args, **_kwargs: {"status": "current"})
-    monkeypatch.setattr(pm_update, "_print_entry_doc_migration_finding", lambda *_a, **_k: None)
+        entry_doc_migration, "migrate_entry_doc", lambda *_args, **_kwargs: {"status": "current"})
+    monkeypatch.setattr(entry_doc_migration, "_print_entry_doc_migration_finding", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        pm_update, "reinstall_protected_hooks", lambda *_args, **_kwargs: {"status": "ok"})
-    monkeypatch.setattr(pm_update, "_print_protected_hook_reinstall_finding", lambda *_a, **_k: None)
+        update_adapters, "reinstall_protected_hooks", lambda *_args, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(update_adapters, "_print_protected_hook_reinstall_finding", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        pm_update, "check_adapter_hook_sets",
+        update_adapters, "check_adapter_hook_sets",
         lambda *_args, **_kwargs: {"status": "ok", "findings": []})
-    monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *_args: False)
+    monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *_args: False)
 
-    rc = pm_update.main(["--from", str(source)])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])
 
     captured = capsys.readouterr()
     assert rc == 0, captured

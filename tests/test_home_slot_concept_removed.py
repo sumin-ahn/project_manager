@@ -22,6 +22,10 @@ from pathlib import Path
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.infra import fs
+from pm_engine.app import update_finish
+import pytest
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -106,8 +110,7 @@ def _load_engine(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(module)
+    return module
 
 
 def _seed_ledger(dest: Path, leases: list[dict]) -> Path:
@@ -148,7 +151,7 @@ def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
             release.wait(_RELEASE_WAIT_SECONDS)
 
     def migrate():
-        dropped.append(pm_update.drop_self_lease_rows(dest, write=True))
+        dropped.append(update_finish.drop_self_lease_rows(dest, write=True))
         done.set()
 
     holder_thread = threading.Thread(target=holder)

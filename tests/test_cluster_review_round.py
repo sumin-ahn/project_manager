@@ -15,6 +15,8 @@ hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)�
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.app import delegate_changelog
 from pm_engine.cli import cluster_close, delegate_cmd, finish_record
 
@@ -312,7 +314,7 @@ def _prepare_native_review(pd, home: Path, capsys, *extra: str) -> list[dict]:
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "prepare", "--cluster", _CLUSTER, "--role", "code-reviewer",
         "--cwd", str(home), *extra,
-    ], adapter_directories_fn=pd._resolved_adapter_directories)
+    ])
     captured = capsys.readouterr()
     assert rc == 0, captured.err
     return _machine_lines(captured.out)
@@ -351,7 +353,7 @@ def test_review_prepare_refuses_a_dirty_slot(pd, review_env, monkeypatch, capsys
 
         rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
             "prepare", "--cluster", _CLUSTER, "--role", "code-reviewer", "--cwd", str(home),
-        ], adapter_directories_fn=pd._resolved_adapter_directories)
+        ])
 
         err = capsys.readouterr().err
         assert rc == 1, err
@@ -819,7 +821,7 @@ def test_ticket_prepare_code_reviewer_writes_engine_prompt(
     def observe_prompt(*args, **kwargs):
         assert kwargs["adapter_roots"] is snapshot
         return real_prompt(*args, **kwargs)
-    monkeypatch.setattr(pd, "_resolved_adapter_directories", read_registry)
+    monkeypatch.setattr(install_rules, "adapter_directories", read_registry)
     monkeypatch.setattr(delegate_cluster_review, "cluster_review_prompt", observe_prompt)
     lines = _prepare_native_review(pd, home, capsys, "--focus", str(focus))
 
@@ -864,8 +866,9 @@ def test_ticket_prepare_review_takes_the_cluster_only(
     def unused_reader():
         reader_calls.append("read")
         raise AssertionError("usage 오류에서 등록부를 읽음")
+    monkeypatch.setattr(install_rules, "adapter_directories", unused_reader)
     with pytest.raises(SystemExit) as caught:
-        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["prepare", *extra, "--cwd", str(home)], adapter_directories_fn=unused_reader)
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["prepare", *extra, "--cwd", str(home)])
 
     assert caught.value.code == 2
     assert delegate_ledger.ticket_copy_records(home) == []
@@ -902,7 +905,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
         evidence = [prepared_head, _git(home, "rev-parse", "HEAD").stdout.strip()]
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(run_dir), "--cwd", str(home)], adapter_directories_fn=pd._resolved_adapter_directories)
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(run_dir), "--cwd", str(home)])
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -931,7 +934,7 @@ def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypat
 
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
-    ], adapter_directories_fn=pd._resolved_adapter_directories)
+    ])
 
     assert rc == 0, capsys.readouterr().err
     for ticket in _MEMBERS:
@@ -959,7 +962,7 @@ def test_review_harvest_refuses_a_row_without_base_rev(pd, review_env, capsys):
     seed = seat.board_path.read_bytes()
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(seat.path), "--cwd", str(home)], adapter_directories_fn=pd._resolved_adapter_directories)
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(seat.path), "--cwd", str(home)])
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -982,7 +985,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
         assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
             "abandon", "--copy", line["copy"], "--cwd", str(home), "--assume-dead",
             "--discard-reason", "리뷰 뒤 슬롯이 앞서 감",
-        ], adapter_directories_fn=pd._resolved_adapter_directories) == 0
+        ]) == 0
     (home / "seed.txt").write_text("fix 뒤\n", encoding="utf-8", newline="\n")
     assert _git(home, "commit", "-qam", "slot moves on").returncode == 0
     new_head = _git(home, "rev-parse", "HEAD").stdout.strip()
@@ -1005,7 +1008,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
     capsys.readouterr()
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "harvest", "--copy", reopened[0]["run_dir"], "--cwd", str(home),
-    ], adapter_directories_fn=pd._resolved_adapter_directories)
+    ])
     assert rc == 0, capsys.readouterr().err
 
 
@@ -1026,7 +1029,7 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
         _write_seat(pd, Path(line["copy"]), [finding] if line["ticket"] == _MEMBERS[0] else [])
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
-    ], adapter_directories_fn=pd._resolved_adapter_directories) == 0
+    ]) == 0
     board = _fixture_board(pd, home)
     ticket = _MEMBERS[0]
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()

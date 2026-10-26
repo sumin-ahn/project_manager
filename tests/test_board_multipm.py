@@ -593,7 +593,7 @@ def test_cmd_init_without_prefix_registers_repo_row_with_empty_prefix(init_board
     """무prefix init 도 areas repo 행을 등록한다 — prefix 칼럼만 빈다(등록 0 형상 폐지).
 
     repo 이름은 clone 루트 폴더명에서 유도한다. `--area`·사용자 승인 없이 통과해야
-    비대화형 온보딩(`pm_import.run_board_init`)이 인자 0으로 성립한다.
+    비대화형 온보딩(`install_board.run_board_init`)이 인자 0으로 성립한다.
     """
     rc = board_init.cmd_init(init_board._home(), _init_args())
     assert rc == 0

@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import install_board
+
 from pm_engine.infra import round_store
 
 from pm_engine.infra import pm_paths
@@ -393,4 +395,4 @@ def test_hardcoded_status_guard_detects_a_reintroduced_copy(board, shape):
 def test_pm_import_seeded_status_dirs_equal_board_status_dirs(board):
     """pm_import 가 신규 공유 board 에 스캐폴드하는 상태 디렉토리는 `ticket_rules.STATUS_DIRS` 와 값이 같다."""
     mod = _load("pm_import")
-    assert mod._SEEDED_STATUS_DIRS == ticket_rules.STATUS_DIRS
+    assert install_board._SEEDED_STATUS_DIRS == ticket_rules.STATUS_DIRS

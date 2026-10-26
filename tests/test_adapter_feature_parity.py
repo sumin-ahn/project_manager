@@ -68,6 +68,8 @@ hermetic — 실 파일 읽기/JSON 파싱만 한다(하네스 실행·LLM 진�
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import importlib.util
 import json
 import shutil
@@ -77,6 +79,7 @@ from typing import NamedTuple
 import pytest
 
 from _harness_matrix import HARNESS_ADAPTER_DIRS, HARNESSES, TEMPLATES, _PM_IMPORT, entry_docs
+from pm_engine.infra import adapter_documents
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -126,7 +129,7 @@ _CLAUDE_HOOK_COMMAND_TO_ROWS = {
 
 def _template_root(templates_dir: Path, harness: str) -> Path:
     """등록 하네스 → 그 하네스의 출하 template 트리 루트(엔진 레지스트리에서 파생·손-열거 아님)."""
-    (dirname,) = _PM_IMPORT.HARNESS_TEMPLATE_DIRS[harness]
+    (dirname,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     return templates_dir / dirname
 
 
@@ -164,9 +167,9 @@ def _claude_hook_rows(templates_dir: Path) -> set[str]:
         raise RuntimeError(f"claude settings.json 없음: {settings_path}")
     document = json.loads(settings_path.read_text(encoding="utf-8"))
     rows: set[str] = set()
-    for command in _PM_IMPORT._hook_commands(document):
-        tokens = _PM_IMPORT._split_hook_command(command)
-        script_rel, arguments = _PM_IMPORT._hook_script_and_arguments(tokens)
+    for command in adapter_documents._hook_commands(document):
+        tokens = adapter_documents._split_hook_command(command)
+        script_rel, arguments = adapter_documents._hook_script_and_arguments(tokens)
         if script_rel is None:
             continue
         script_name = Path(script_rel).name

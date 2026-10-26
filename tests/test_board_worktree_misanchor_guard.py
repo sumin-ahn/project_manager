@@ -829,13 +829,6 @@ def test_read_input_inventory_covers_every_read_leaf():
     assert all(board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND.values())
 
 
-def test_pm_owned_path_inventory_is_complete():
-    """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
-    b = _load_board()
-    expected = {'CODEX_DELEGATE_OBSERVATIONS'}
-    assert set(b._READ_PM_PATH_RELS) == expected
-
-
 def test_classification_sets_disjoint():
     b = _load_board()
     m, r, s = (set(board_command_rules._MUTATION_SUBCOMMANDS),

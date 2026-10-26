@@ -39,7 +39,6 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
 from __future__ import annotations
 
 
-import ast
 import os
 import sys
 from pathlib import Path
@@ -49,7 +48,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.cli import delegate_run
-from pm_engine.infra import console, fs, pm_paths
+from pm_engine.infra import console, pm_paths
 
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -95,122 +94,6 @@ def _find_repo_root() -> Path:
 
 REPO = _find_repo_root()
 
-# role preamble — 최소 4개(정체성 1줄 + 금지사항 + 결과 보고). identity 는 codex `exec`
-# `--agent` 부재로 prompt 합성해야 하므로 엔진이 harness-중립 최소본을 소유한다. 합성 =
-# preamble + "\n\n" + prompt-file 내용.
-class _AdapterRegistryNotationError(RuntimeError):
-    """등록부의 정적 literal 표기를 해석할 수 없음(프롬프트는 일반 문구로 degrade)."""
-
-
-class _AdapterRegistrySchemaError(RuntimeError):
-    """등록부 literal은 읽혔지만 `(tuple[str, ...], str)` 값 계약이 깨짐."""
-
-
-def _module_assignment_value(
-        tree: ast.Module, name: str, source: Path) -> ast.expr:
-    """모듈 최상위 Assign/AnnAssign 하나의 RHS를 반환한다."""
-    matches: list[ast.expr] = []
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            if any(isinstance(target, ast.Name) and target.id == name
-                   for target in node.targets):
-                matches.append(node.value)
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == name
-            and node.value is not None
-        ):
-            matches.append(node.value)
-    if len(matches) != 1:
-        raise _AdapterRegistryNotationError(
-            f"어댑터 단일 출처 {name}의 최상위 Assign/AnnAssign 하나를 찾지 못함: {source}"
-        )
-    return matches[0]
-
-
-def _adapter_directories_from_engine_source() -> tuple[str, ...]:
-    """pm_import 등록부에서 어댑터 루트 합집합을 순서 보존 파생한다.
-
-    pm_import 전체 import는 위임 CLI 시작에 무관한 엔진을 실행하므로 정적 선언만 AST로 읽는다.
-    다만 이 읽기도 stamped sibling 경계다. 따라서 registry를 소비하기 전에 같은 source의 baked
-    ENGINE_REV를 `_verify_engine_rev`로 검증하며 skew는 fail-loud다.
-
-    등록부는 ``dict[str, tuple[tuple[str, ...], str]]`` literal이어야 한다. 읽힌 literal의 값
-    shape가 다르면 문자 단위 펼침 같은 조용한 오염을 막기 위해 명시 실패한다. 반면 변수 참조나
-    ``frozenset(...)``처럼 AST literal이 아닌 *표기*는 `_resolved_adapter_directories`가 일반
-    금지 문구로 degrade한다. 최소 형제 hermetic 사본의 파일 부재도 같은 빈 튜플 경로다.
-    """
-    source = Path(__file__).resolve().parent / "pm_import.py"
-    if not source.is_file():
-        return ()
-    tree = ast.parse(fs.read_text_shared(source, encoding="utf-8"), filename=str(source))
-
-    try:
-        rev_node = _module_assignment_value(tree, "ENGINE_REV", source)
-        sibling_rev = ast.literal_eval(rev_node)
-    except _AdapterRegistryNotationError:
-        sibling_rev = None
-    except (ValueError, TypeError):
-        sibling_rev = None
-    source_module = type("_AdapterRegistryRev", (), {"ENGINE_REV": sibling_rev})()
-    _verify_engine_rev(source_module, source.name)
-
-    registry_node = _module_assignment_value(tree, "ADD_HARNESS_ADAPTER", source)
-    try:
-        registry = ast.literal_eval(registry_node)
-    except (ValueError, TypeError) as exc:
-        raise _AdapterRegistryNotationError(
-            f"어댑터 단일 출처 ADD_HARNESS_ADAPTER가 정적 literal 표기가 아님: {source}"
-        ) from exc
-
-    if not isinstance(registry, dict) or not registry:
-        raise _AdapterRegistrySchemaError(
-            "ADD_HARNESS_ADAPTER는 비어 있지 않은 "
-            "dict[str, tuple[tuple[str, ...], str]]여야 한다"
-        )
-
-    directories: list[str] = []
-    for harness, value in registry.items():
-        if (
-            not isinstance(harness, str)
-            or not harness
-            or not isinstance(value, tuple)
-            or len(value) != 2
-        ):
-            raise _AdapterRegistrySchemaError(
-                f"ADD_HARNESS_ADAPTER[{harness!r}] 값은 "
-                "(adapter_dirs: tuple[str, ...], root_doc: str)여야 한다"
-            )
-        adapter_dirs, root_doc = value
-        if (
-            not isinstance(adapter_dirs, tuple)
-            or not adapter_dirs
-            or not all(isinstance(item, str) and item for item in adapter_dirs)
-            or not isinstance(root_doc, str)
-            or not root_doc
-        ):
-            raise _AdapterRegistrySchemaError(
-                f"ADD_HARNESS_ADAPTER[{harness!r}] 값은 "
-                "(adapter_dirs: tuple[str, ...], root_doc: str)여야 한다"
-            )
-        directories.extend(adapter_dirs)
-    return tuple(dict.fromkeys(directories))
-
-
-def _resolved_adapter_directories() -> tuple[str, ...]:
-    """금지 preamble 과 어댑터 경고 축이 **함께** 소비하는 파생 어댑터 루트.
-
-    표기 변화(비-literal 등록부)는 빈 tuple 로 보수 강등하되 schema/skew 는 숨기지 않는다.
-    강등 시 preamble 은 일반 문구로, 경고 축은 "판정 불가" advisory 로 각자 처리한다 —
-    두 소비자가 같은 값을 봐야 하므로(실행 전 1회 파생해 ScopeAudit 에 스냅샷) 이 헬퍼
-    밖에서 등록부를 재조회하지 마라.
-    """
-    try:
-        return _adapter_directories_from_engine_source()
-    except _AdapterRegistryNotationError:
-        return ()
-
 
 def main(argv: list[str] | None = None, run_fn: Callable | None = None,
          git_run_fn: Callable | None = None) -> int:
@@ -218,7 +101,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     같은 콘솔 설정 아래 있어야 한다 · 형제 진입점 관용구와 동형)."""
     console.configure_console_utf8()
     return delegate_run.main(pm_paths.home_at(REPO), argv, run_fn=run_fn,
-                             git_run_fn=git_run_fn, adapter_directories_fn=_resolved_adapter_directories)
+                             git_run_fn=git_run_fn)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,11 @@ import pytest
 from _skill_command import expected_command_bytes, normalized_bytes
 from _textio import dominant_newline_bytes, renotated, write_crlf, write_lf
 from pm_engine.infra import manifest_store
+from pm_engine.app import update_plan
+from pm_engine.app import update_render
+from pm_engine.infra import install_conf
+from pm_engine.infra import pm_paths
+from pm_engine.cli import update_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
@@ -58,7 +63,7 @@ ALLOWED_ENGINE_PATH_BASES = frozenset(("ENGINE_ROOT", "root"))
 
 def _local_conf_of(pm_update, root):
     """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
-    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+    return install_conf._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load_pm_update():
@@ -106,10 +111,10 @@ def test_manifest_maps_every_command_to_root_canonical_skill():
 def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     pm_update = _load_pm_update()
     entries = _command_entries(pm_update)
-    changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False, conf=_local_conf_of(pm_update, tmp_path))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), REPO, entries, dest_root=tmp_path, render_enabled=False, conf=_local_conf_of(pm_update, tmp_path))
     assert missing == []
     assert len(changes) == 15 and {kind for _rel, _src, _dst, kind in changes} == {"new"}
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     generated = tmp_path / ".opencode/command/pm-bootstrap.md"
     canonical = REPO / ".claude/skills/pm-bootstrap/SKILL.md"
     assert normalized_bytes(generated) == _expected_command(canonical, "pm-bootstrap")
@@ -126,7 +131,7 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
         delegate, "pm-dev-delegate")
 
     generated.write_text("stale\n", encoding="utf-8")
-    changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False, conf=_local_conf_of(pm_update, tmp_path))
+    changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), REPO, entries, dest_root=tmp_path, render_enabled=False, conf=_local_conf_of(pm_update, tmp_path))
     assert missing == []
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-bootstrap.md", "update")
@@ -140,12 +145,12 @@ def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
     "source 가 git checkout 이 아니다"는 이 헬퍼의 명시 전제다 — 픽스처 위치가 그 답을 정하지
     않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     """
-    repo_files = pm_update.repo_files
+    repo_files = update_cmd.repo_files
     monkeypatch.setattr(
         repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     fallback_warning = repo_files.RepoFilesFallbackWarning
     with pytest.warns(fallback_warning, match="filesystem 전수 순회"):
-        changes, missing = pm_update.plan(
+        changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
             source_root, manifest_store.read_manifest(manifest),
             dest_root=dest_root, render_enabled=False, conf=_local_conf_of(pm_update, dest_root))
     assert missing == []
@@ -180,7 +185,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path, monkey
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-x.md", "new")
     ]
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
 
     generated = dest_root / ".opencode" / "command" / "pm-x.md"
     expected_lf = _expected_command(skill, "pm-x")
@@ -194,7 +199,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path, monkey
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-x.md", "update")
     ]
-    pm_update.apply(changes)
+    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     assert generated.read_bytes() == expected_lf, \
         "기존 사본(LF)의 표기를 보존하지 않았다"
 
@@ -223,7 +228,7 @@ def test_synced_crlf_command_copy_plans_no_change(tmp_path, monkeypatch):
         ".opencode/command/pm-x.md @render @source=.claude/skills/pm-x/SKILL.md\n",
     )
     dest_root = tmp_path / "dest"
-    pm_update.apply(_plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root))
+    update_render.apply(pm_paths.home_at(pm_update.REPO), _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root))
     generated = dest_root / ".opencode" / "command" / "pm-x.md"
     # 주입 선-단언: 사본이 실제로 CRLF고, LF 렌더층과 byte가 갈려 있어야 이 축이 시험된다.
     assert b"\r\n" in generated.read_bytes(), "픽스처가 CRLF 사본을 만들지 못했다(공허 회귀)"

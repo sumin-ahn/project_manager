@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import git, review_rounds
 from pm_engine.app import regression
+from pm_engine.cli import regression_cmd
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -151,7 +152,7 @@ def release(tmp_path, monkeypatch):
 
 def test_unresolved_must_fix_blocks_before_release_wave(release, capsys):
     _write_ledger(release.root, {"T-0610": _rejected_entry()})
-    assert release.board.cmd_livegate(release.args) == 1
+    assert regression_cmd.cmd_livegate(release.board._home(), release.args) == 1
     assert release.runner.calls == []
     err = capsys.readouterr().err
     assert "처분 선언 없음" in err and "--pm-verified" in err
@@ -162,7 +163,7 @@ def test_legacy_ledger_resolution_does_not_open_release(kind, release, capsys):
     _write_ledger(release.root, {"T-0610": _rejected_entry(resolution={
         "kind": kind, "round_sequence": 1, "rounds": 1,
     })})
-    assert release.board.cmd_livegate(release.args) == 1
+    assert regression_cmd.cmd_livegate(release.board._home(), release.args) == 1
     assert release.runner.calls == []
     assert "처분 선언 없음" in capsys.readouterr().err
 
@@ -174,13 +175,13 @@ def test_suggestion_only_and_reserved_wave_section_do_not_block(release):
             {"sequence": 1, "verdict": 0, "must_fix": 0, "suggestions": 2},
         ]},
     })
-    assert release.board.cmd_livegate(release.args) == 0
+    assert regression_cmd.cmd_livegate(release.board._home(), release.args) == 0
     assert len(release.runner.calls) == 1
 
 
 def test_corrupt_gate_entry_fails_closed_before_release_wave(release, capsys):
     _write_ledger(release.root, {"T-0610": {"rounds": "broken"}})
-    assert release.board.cmd_livegate(release.args) == 1
+    assert regression_cmd.cmd_livegate(release.board._home(), release.args) == 1
     assert release.runner.calls == []
     assert "형식 오류" in capsys.readouterr().err
 

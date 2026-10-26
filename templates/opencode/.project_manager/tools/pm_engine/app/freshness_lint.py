@@ -66,7 +66,7 @@ _HEX_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 
 def _is_hex_sha(value: str) -> bool:
     """`value` 가 고정 16진 commit sha 형식인가 (freshness anchor 자격·`_sha_anchor_status`/
-    `_canonical_commit_oid` 공유 형식 규칙·사본 금지). `HEAD`·브랜치명·태그·너무 짧은 값은 False —
+    `cli.board_repin._canonical_commit_oid` 공유 형식 규칙·사본 금지). `HEAD`·브랜치명·태그·너무 짧은 값은 False —
     움직이는 ref 는 안정적 검증 기준이 못 된다(codex MF2)."""
     return bool(_HEX_SHA_RE.fullmatch((value or "").strip()))
 
@@ -141,7 +141,8 @@ def _sha_anchor_status(home, sha: str, *, runner=None,
         ). 모호는 환경이 아니라 pin 속성 → unverifiable(full OID 로 재핀 안내).
     환경적 판정불가 → `_ANCHOR_UNKNOWN`(silent skip): 빈 sha·git 부재·rev-parse/merge-base **rc≥2**
     (rc128 non-repo·safe.directory·권한 등 fatal). 환경 오류를 unverifiable 로 오인하지 않는다(MF1).
-    `_canonical_commit_oid`(repin 쓰기 검증)는 verdict==OK 면 full_oid 반환(read/write 대칭).
+    쓰기 소비자 `cli.board_repin._canonical_commit_oid`(repin 검증)는 이 판정이 OK 면 full_oid 를
+    기록한다(read/write 대칭·판정 알고리즘은 이 함수 하나).
     `runner` = 테스트 hermetic seam(argv→(rc, stdout[, stderr]))·미주입 시 실 subprocess
     (`git -C repo`; 부재=REPO)."""
     sha = (sha or "").strip()
@@ -228,7 +229,9 @@ def _freshness_owner_repo(home, owner) -> tuple[Path | None, str | None]:
     if not upstream:
         return (None, "local.conf upstream.path 미설정으로 소유 repo 미해소")
     try:
-        # upstream_rules.classify_upstream 과 같은 self-describing 경계의 필요한 부분만 유지한다.
+        # 문서 소유자의 로컬 checkout 판정이다(네트워크 0). Windows 드라이브를 빼고 `://` 포함 또는
+        # scp 모양이면 모두 비로컬로 본다 — source 형태 분류(`upstream_rules.classify_upstream`)와는
+        # 책임·판정식이 다르다(예: `./a://b` 는 그쪽에서 path, 여기서는 미해소).
         is_windows_path = bool(_WINDOWS_DRIVE_PATH_RE.match(upstream))
         is_url = (not is_windows_path and
                   ("://" in upstream or bool(_SCP_STYLE_UPSTREAM_RE.match(upstream))))

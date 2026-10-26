@@ -24,6 +24,8 @@ T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 �
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.cli import delegate_cmd
 
 from pm_engine.app import delegate_execute
@@ -274,7 +276,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
 
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, board_root=pm_paths._board_root_at(pm_delegate.REPO)), [
         "prepare", "--ticket", "T-2000", "--role", "developer", "--cwd", str(slot),
-    ], adapter_directories_fn=pm_delegate._resolved_adapter_directories) == 0
+    ]) == 0
 
     prepared = _machine_payload(stream)
     assert prepared == {
@@ -290,7 +292,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
 
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, board_root=pm_paths._board_root_at(pm_delegate.REPO)), [
         "harvest", "--copy", str(plan.path), "--cwd", str(slot),
-    ], adapter_directories_fn=pm_delegate._resolved_adapter_directories) == 0
+    ]) == 0
 
     assert _machine_payload(harvest_stream) == {
         "copy": str(plan.path.resolve()), "changed": False, "sync_ready": True,

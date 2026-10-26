@@ -57,7 +57,6 @@ STAMPED_MODULES = (
     "pm_delegate.py",
     "delegate_channel_guard.py",
     "additional_reviewer.py",
-    "pm_render.py",
     "pm_import.py",
     "pm_log.py",
     "pm_principles.py",
@@ -79,15 +78,10 @@ EXEMPT_FROM_STAMP = {
 # 호출자/채택자 경로를 받는 loader도 verifier 보유를 AST 가드가 단언한다. 이 예외 축은
 # ``EXEMPT_FROM_STAMP``의 엔진 모듈/복구채널 축과 별개인 *adopter/dest 경로* 축이다. 따라서
 # dest 사본의 리터럴 파일명이 우연히 stamped 형제와 같아도, 여기에 호출 지점과 사유를 등록하면
-# canonical sibling 검증을 잘못 강요하지 않는다. 현재는 pm_import 상류 훅 세트 선언 적재만 해당한다
-# (채택자 lint 훅 적재는 pm_engine.app.lint_hooks 에 있고 구조 테스트의 경로 적재 허용 목록이 맡는다). 예외는
-# 코드 소유·빈 사유 금지라 새 미검증 loader가 자동으로 섞이지 않는다.
-EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
-    ("pm_import.py", "_upstream_hook_set_declarations"):
-        "훅 세트 세대 선언을 읽으려 **다른 세대**의 상류 pm_import 를 의도적으로 로드한다 — "
-        "rev 대조로 거르면 이 판정의 목적(세대 차 확인) 자체가 불가능해진다. 읽는 것은 선언 "
-        "데이터뿐이고 판정 코드는 실행 중 엔진 것을 쓴다",
-}
+# canonical sibling 검증을 잘못 강요하지 않는다(채택자 lint 훅 적재는 pm_engine.app.lint_hooks 에 있고
+# 구조 테스트의 경로 적재 허용 목록이 맡는다). 예외는 코드 소유·빈 사유 금지라 새 미검증 loader가
+# 자동으로 섞이지 않는다.
+EXEMPT_UNVERIFIED_DEEP_IMPORTS: dict[tuple[str, str], str] = {}
 
 _REV_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 # 모듈-레벨 baked 리터럴 (줄 시작·문자열 리터럴). `--bump`/가드 스캔이 공유하는 단일 패턴.

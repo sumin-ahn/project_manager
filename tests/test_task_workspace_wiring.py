@@ -198,7 +198,7 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
     # engine-root sidecar 해소를 솔로 폴백으로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
-    board.cmd_livegate(_lg_args(task="job4"))
+    regression_cmd.cmd_livegate(board._home(), _lg_args(task="job4"))
     expected_cwd = str(board.REPO / "work" / "A_2")
     # 마지막(release) subprocess 호출의 cwd 가 F6 슬롯 절대경로.
     assert fake.calls[-1]["kwargs"]["cwd"] == expected_cwd
@@ -211,7 +211,7 @@ def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypa
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
     with pytest.raises(SystemExit) as exc:
-        board.cmd_livegate(_lg_args(task="job4", slot=2))
+        regression_cmd.cmd_livegate(board._home(), _lg_args(task="job4", slot=2))
     assert "--slot 은 --repo 필수" in str(exc.value)
     assert fake.calls == []
 
@@ -222,7 +222,7 @@ def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, 
     _install_fake(board, monkeypatch, fake)
 
     with pytest.raises(SystemExit) as exc:
-        board.cmd_livegate(_lg_args(task="job4", cwd=str(tmp_path / "outside")))
+        regression_cmd.cmd_livegate(board._home(), _lg_args(task="job4", cwd=str(tmp_path / "outside")))
 
     assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
@@ -242,7 +242,7 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
         lambda home, cwd: (pm_paths.livegate_flag(home), regression_store._LG_NO_HOOK),
     )
 
-    assert board.cmd_livegate(_lg_args(cwd=str(target))) == 0
+    assert regression_cmd.cmd_livegate(board._home(), _lg_args(cwd=str(target))) == 0
 
     assert fake.calls[-1]["kwargs"]["cwd"] == str(target)
 
@@ -555,7 +555,7 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
-    call = (lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else board.cmd_livegate
+    call = (lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else (lambda a: regression_cmd.cmd_livegate(board._home(), a))
     assert call(args) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
     assert lease_store.session_name(board._home(), 'main') == 'main'
@@ -570,7 +570,7 @@ def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
     with pytest.raises(SystemExit, match='readonly'):
-        ((lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else board.cmd_livegate)(args)
+        ((lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else (lambda a: regression_cmd.cmd_livegate(board._home(), a)))(args)
     assert fake.calls == []
     assert not pm_paths.regression_flag(board._home()).exists()
     assert not pm_paths.livegate_flag(board._home()).exists()

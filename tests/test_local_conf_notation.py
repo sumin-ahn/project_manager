@@ -45,6 +45,10 @@ from pm_engine.infra import conf_store, pm_paths, python_env
 from pm_engine.app import conf_lint, finish_context, regression
 
 from pm_engine.infra import conf_store
+from pm_engine.infra import install_conf
+from pm_engine.app import update_render
+from pm_engine.infra import retired_paths
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -213,11 +217,11 @@ def test_pm_update_apply_delivers_engine_files_on_a_legacy_conf(tmp_path, capsys
     stale.write_text("# 구세대 사본\n", encoding="utf-8")
 
     # change tuple = (relpath, source, dest, kind) — planning 산출과 같은 모양이다.
-    update.apply([(".project_manager/tools/local_conf.py",
+    update_render.apply(pm_paths.home_at(update.REPO), [(".project_manager/tools/local_conf.py",
                    TOOLS / "local_conf.py", stale, "update")])
 
     assert stale.read_bytes() == (TOOLS / "local_conf.py").read_bytes()
-    update.print_conf_migration_notice(dest)
+    retired_paths.print_conf_migration_notice(dest)
     out = capsys.readouterr().out
     assert "additional_reviewer_enabled" in out and "delegate_enabled" in out
 
@@ -538,13 +542,12 @@ def test_import_into_an_existing_tree_delivers_engine_then_refuses_init(
     구표기 conf 로 init 을 돌리면 그 안에서 conf 를 소비해 traceback 이 나고, 채택자는 무엇을
     고쳐야 하는지 대신 스택을 본다. 엔진 파일은 이미 새것이므로 키만 바꾸고 재실행하면 된다.
     """
-    imp = _load("pm_import", "notice_pm_import")
     dest = tmp_path / "adopter"
     (dest / ".project_manager").mkdir(parents=True)
     _write_conf(dest, _LEGACY_CONF)
 
-    assert imp._local_conf_has_blocking_legacy(dest) is True
-    imp.print_conf_migration_notice(dest)
+    assert install_conf._local_conf_has_blocking_legacy(dest) is True
+    install_conf.print_conf_migration_notice(dest)
     out = capsys.readouterr().out
     assert "additional_reviewer_enabled" in out
     assert "제거(대체 키 없음)" in out
@@ -729,7 +732,7 @@ def test_board_lint_surfaces_legacy_keys_and_restated_comments(tmp_path, monkeyp
 
     assert findings, "실 conf 의 구표기가 조회면에 뜨지 않는다"
     assert {kind for _where, kind, _detail in findings} == {"local-conf"}
-    assert "local-conf" in board._ADVISORY_LINT_KINDS          # never-block
+    assert "local-conf" in board_lint._ADVISORY_LINT_KINDS          # never-block
     assert "`delegate_enabled` → `delegate.enabled`" in details
     assert "주석이 실값과 다른 값을 재진술한다: `test.cmd=pytest" in details
     assert "실값 `make test`" in details

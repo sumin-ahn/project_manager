@@ -23,14 +23,13 @@ from pm_engine.domain import delegate_run_rules
 from pm_engine.infra.harness import delegate_temp
 from pm_engine.infra.harness import delegate_transport
 from pm_engine.domain import reviewer_result
-from pm_engine.domain import conf_schema, delegate_errors, review_form
+from pm_engine.domain import conf_schema, delegate_errors, install_rules, review_form
 from pm_engine.infra import delegate_ledger, fs, pm_paths
 from pm_engine.infra.harness import contract
 
 
 def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
-         git_run_fn: Callable | None = None, *,
-         adapter_directories_fn: Callable[[], tuple[str, ...]]) -> int:
+         git_run_fn: Callable | None = None) -> int:
     engine_home = home
     # `lint` 서브커맨드 — flat 위임 옵션(--role/--prompt-file/--cwd required)과 분리한 별도 경로.
     # 위임과 인자 형상이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지
@@ -43,7 +42,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
     if resolved and resolved[0] == "rounds":
         return delegate_cmd._cmd_rounds(home, resolved[1:])
     if resolved and resolved[0] == "ticket":
-        return delegate_cmd._cmd_ticket(home, resolved[1:], adapter_directories_fn=adapter_directories_fn)
+        return delegate_cmd._cmd_ticket(home, resolved[1:])
     if resolved and resolved[0] == "review":
         return delegate_cmd._cmd_review(home, resolved[1:])
     if resolved and resolved[0] == "changelog":
@@ -230,9 +229,9 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
     # 빠져나가면 전부 환불(abandon) 로 정리한다.
     _ticket_copy_handed_off = False
     try:
-        # 프롬프트 합성과 회수 판정이 같은 실행-전 등록부 스냅샷을 쓴다. 위임 중 pm_import.py가
+        # 프롬프트 합성과 회수 판정이 같은 실행-전 등록부 스냅샷을 쓴다. 위임 중 등록부 값이
         # 바뀌어도 전달한 금지 루트와 다른 현재값으로 재판정하지 않는다.
-        adapter_roots = adapter_directories_fn()
+        adapter_roots = install_rules.adapter_directories()
         if cluster_sources is not None:
             # native 준비가 프롬프트 파일에 쓰는 것과 같은 조립이다(`cluster_review_prompt`).
             task_text = delegate_raw.append_attached_raw(delegate_cluster_review.build_cluster_review_prompt(

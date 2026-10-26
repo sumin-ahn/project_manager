@@ -41,6 +41,7 @@ from pm_engine.app import areas_lint, regression
 
 from pm_engine.infra import lease_store
 from pm_engine.infra import ticket_store
+from pm_engine.cli import board_lint
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
@@ -2815,13 +2816,13 @@ def test_a_previous_generation_hook_also_blocks_the_lint_gate(
     # 이 테스트의 판정축(훅 세대)이 아니므로 격리한다.
     monkeypatch.setattr(areas_lint, "lint_areas_repo_unregistered", lambda home: [])
 
-    assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=True)) == 1
 
     assert hook.read_text(encoding="utf-8") == rev2  # 고치지 않는다
     err = capsys.readouterr().err
     assert "구버전" in err and "board.py init" in err
     # 보고 전용 `lint`(무 `--gate`)는 차단 표면이 아니다 — 부착은 게이트 모드에만.
-    assert board.cmd_lint(argparse.Namespace(gate=False)) == 0
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=False)) == 0
     assert "구버전" not in capsys.readouterr().err
 
 
@@ -2830,7 +2831,7 @@ def test_the_lint_gate_stays_silent_under_a_current_hook(
     """현행 세대 훅에서는 lint 게이트가 무소음 통과 — 부착이 과차단을 만들지 않는다."""
     _hooked_repo(board, monkeypatch, tmp_path, pre_push_hook.pre_push_hook_body("python3"))
 
-    assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=True)) == 0
     assert "구버전" not in capsys.readouterr().err
 
 
@@ -2913,7 +2914,7 @@ def test_the_lint_gate_refusal_carries_the_neutral_prefix(
                 if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     _hooked_repo(board, monkeypatch, tmp_path, rev2)
 
-    assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
+    assert board_lint.cmd_lint(board._home(), argparse.Namespace(gate=True)) == 1
 
     err = capsys.readouterr().err
     assert err.startswith(pre_push_hook.PM_HOOK_NOTICE_PREFIX)

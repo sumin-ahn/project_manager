@@ -22,6 +22,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.cli import delegate_cmd
 from pm_engine.infra import review_diff
 from pm_engine.app import reviewer_harvest
@@ -386,13 +388,13 @@ def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ], adapter_directories_fn=pd._resolved_adapter_directories) == 0
+    ]) == 0
     capsys.readouterr()
 
     with pytest.raises(SystemExit) as exc:
         delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ], adapter_directories_fn=pd._resolved_adapter_directories)
+        ])
 
     assert exc.value.code == 2
     assert sorted(path.name for path in _rounds_dir(pm_home, "T-7807").iterdir()) == [

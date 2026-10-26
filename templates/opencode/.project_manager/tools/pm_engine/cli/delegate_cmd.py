@@ -12,7 +12,7 @@ from pm_engine.infra import console
 import datetime
 from pm_engine.app import cluster_binding, cluster_code_tree, ticket_access
 from pm_engine.cli import task_args
-from pm_engine.domain import finish_rules, identity_args
+from pm_engine.domain import finish_rules, identity_args, install_rules
 from pm_engine.infra import git
 from pm_engine.app import delegate_changelog
 from pm_engine.app import delegate_channel
@@ -475,7 +475,7 @@ def _review_prompt_path(owner: Path, run_id: str) -> Path:
 
 def _prepare_native_review(
     home, cluster: str, *, cwd: Path, focus_path: Path | None,
-    reopen_ordinal: int | None, adapter_directories_fn: Callable[[], tuple[str, ...]],
+    reopen_ordinal: int | None,
 ) -> int:
     """같은 하네스 리뷰 준비 — 교차 실행과 같은 준비·조립으로 프롬프트 파일을 쓴다.
 
@@ -488,7 +488,7 @@ def _prepare_native_review(
         home, cluster=cluster, cwd=cwd, focus_path=focus_path,
         owner_pid=None, reopen_ordinal=reopen_ordinal,
     )
-    adapter_roots = adapter_directories_fn()
+    adapter_roots = install_rules.adapter_directories()
     prompt = delegate_cluster_review.cluster_review_prompt(
         home, sources, tree=cwd, plan=plan, adapter_roots=adapter_roots,
     )
@@ -521,7 +521,7 @@ def _prepare_native_review(
     return 0
 
 
-def _cmd_ticket(home, argv: list[str], *, adapter_directories_fn: Callable[[], tuple[str, ...]]) -> int:
+def _cmd_ticket(home, argv: list[str]) -> int:
     """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/harvest CLI."""
     parser = build_subcommand_parser("ticket")
     assert parser is not None  # 같은 모듈의 literal command — introspection/실행 단일 parser.
@@ -594,7 +594,7 @@ def _cmd_ticket(home, argv: list[str], *, adapter_directories_fn: Callable[[], t
             if args.role == review_form.INTERNAL_REVIEW_ROLE:
                 return _prepare_native_review(
                     home, args.cluster, cwd=cwd_repo, focus_path=Path(args.focus) if args.focus else None,
-                    reopen_ordinal=args.reopen_ordinal, adapter_directories_fn=adapter_directories_fn,
+                    reopen_ordinal=args.reopen_ordinal,
                 )
             if args.cluster:
                 cluster_plan = delegate_prepare.prepare_cluster_copy(

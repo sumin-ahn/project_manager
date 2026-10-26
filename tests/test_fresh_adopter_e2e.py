@@ -15,6 +15,10 @@ push(pre-push 훅)에 자동 포함된다.
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+from pm_engine.domain import install_rules
+from pm_engine.infra import install_source
+
 import importlib.util
 import json
 import os
@@ -40,8 +44,21 @@ from _harness_matrix import (
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from _skill_command import ARGUMENTS_SECTION
 from pm_engine.domain import ticket_rules
+from pm_engine.app import add_harness
+from pm_engine.infra import adapter_baseline
+from pm_engine.infra import install_receipt
+from pm_engine.infra import upstream_git
+from pm_engine.infra import pm_paths
+from pm_engine.app import update_manifest
+from pm_engine.app import update_plan
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
+# 설치·추가를 실행하는 엔진 Home(이 checkout).
+ENGINE_HOME = pm_paths.home_at(REPO)
 TOOLS = REPO / ".project_manager" / "tools"
 
 _RAW_PM_SKILLS = (
@@ -155,15 +172,13 @@ def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
 def pm_import():
     mod = _load_pm_import()
     # opencode import 가 라이브 `opencode models` 를 호출하지 않게 고정 — hermetic(설치 여부 무관·토큰 0).
-    mod._real_models_runner = lambda source=None: (False, [])
     return mod
 
 
@@ -171,14 +186,19 @@ def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load_pm_update()
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    return complete_in_process(_load_pm_update())
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 def test_fresh_adopter_default_installs_every_registered_harness_adapter(
@@ -186,12 +206,12 @@ def test_fresh_adopter_default_installs_every_registered_harness_adapter(
     """``--harness`` 생략은 ``all``과 같아 등록된 세 하네스 어댑터를 전부 설치한다."""
     dest = tmp_path / "adopter-default-all"
 
-    rc = pm_import.main([
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--name", "Default All", "--fill", "manual",
-    ])
+    ], engine_rev=pm_import.ENGINE_REV)
 
     assert rc == 0, f"default import 실패 (rc={rc})"
-    assert set(HARNESSES) == set(pm_import.REGISTERED_HARNESSES)
+    assert set(HARNESSES) == set(install_rules.REGISTERED_HARNESSES)
     assert len(HARNESSES) == 3, "현재 출하 계약은 claude·opencode·codex 세 하네스다"
     for harness in HARNESSES:
         for adapter_dir in HARNESS_ADAPTER_DIRS[harness]:
@@ -203,9 +223,9 @@ def test_fresh_adopter_default_installs_every_registered_harness_adapter(
         )
 
     receipt = json.loads(
-        (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
+        (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     )
-    assert receipt["harnesses"] == list(pm_import.REGISTERED_HARNESSES)
+    assert receipt["harnesses"] == list(install_rules.REGISTERED_HARNESSES)
 
 
 def test_fresh_adopter_default_folds_shared_agents_entry_to_neutral_source(
@@ -213,12 +233,12 @@ def test_fresh_adopter_default_folds_shared_agents_entry_to_neutral_source(
     """3하네스 기본 공존은 opencode+codex 공유 AGENTS.md를 중립 codex 원본 하나로 접는다."""
     dest = tmp_path / "adopter-default-shared-entry"
 
-    assert pm_import.main([
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--name", "Shared Entry", "--fill", "manual",
-    ]) == 0
+    ], engine_rev=pm_import.ENGINE_REV) == 0
 
     receipt = json.loads(
-        (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
+        (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     )
     assert receipt["instance_owned_templates"]["AGENTS.md"] == {
         "weight": "full",
@@ -234,10 +254,10 @@ def test_default_import_partial_templates_error_suggests_narrow_harness(
     source = tmp_path / "partial-framework"
     (source / "templates" / "claude_code").mkdir(parents=True)
 
-    rc = pm_import.main([
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(tmp_path / "adopter-partial"), "--from", str(source),
         "--name", "Partial",
-    ])
+    ], engine_rev=pm_import.ENGINE_REV)
 
     captured = capsys.readouterr()
     assert rc == 1
@@ -253,10 +273,10 @@ def test_real_install_codex_readable_surfaces_have_no_unannotated_slash_entries(
         pm_import, tmp_path, selection, weight):
     """실제 import 조합의 Codex 가 읽는 전체 문서 표면을 renderer와 독립 스캐너로 검사한다."""
     dest = tmp_path / f"notation-{selection.replace(',', '-')}-{weight}"
-    assert pm_import.main([
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", selection, "--name", "Notation Probe",
         "--weight", weight, "--fill", "manual",
-    ]) == 0
+    ], engine_rev=pm_import.ENGINE_REV) == 0
     paths = _codex_readable_text_paths(dest)
     assert paths and any(".project_manager/wiki/" in path.as_posix() for path in paths)
     failures = {
@@ -296,8 +316,8 @@ def _ticket_finish(dest: Path, *args: str) -> subprocess.CompletedProcess:
 def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path, harness):
     """깨끗한 import → adopter lint clean → ticket new/claim/complete 작동 (전 하네스·codex 포함)."""
     dest = tmp_path / f"adopter-{harness}"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"{harness} import 실패 (rc={rc})"
     assert (dest / ".project_manager" / "tools" / "board.py").is_file()
@@ -524,10 +544,10 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     bare = tmp_path / "board.git"
     _git(["init", "--bare", "-q", str(bare)], tmp_path)
     dest = tmp_path / "adopter-4step"
-    rc = pm_import.main([
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", "claude", "--name", "FourStep",
         "--board-submodule", "--board-remote", str(bare), "--fill", "manual",
-    ])
+    ], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"board-submodule import 실패 (rc={rc})"
     # PM 홈 첫 커밋 — import 직후 홈 git 은 unborn 이라 발행이 장부에 싣는 기준 브랜치가
     # commit 으로 해소되지 않는다. 채택자의 실제 형상(커밋 있는 홈)을 만들어 준다.
@@ -673,8 +693,8 @@ def test_fresh_adopter_task_without_a_work_folder_says_how_to_get_one(
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     dest = tmp_path / "adopter-no-work-folder"
-    assert pm_import.main(
-        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0
     leases_file = dest / ".project_manager" / ".local" / "worktree-leases.json"
     rows = (json.loads(leases_file.read_text(encoding="utf-8")).get("leases") or []
@@ -698,8 +718,8 @@ def test_fresh_adopter_task_entry_dumps_its_work_folder(
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     dest = tmp_path / "adopter-one-work-folder"
-    assert pm_import.main(
-        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0
     # 슬롯 행의 session = task 이름 — 이 연결이 task 가 그 폴더를 가졌다는 기록이다.
     slot = _seed_work_slot(dest, tree="standalone", session="probe")
@@ -783,7 +803,7 @@ def _template_roots() -> list[Path]:
     """`templates/<dir>` 단일-어댑터 타깃 루트 (엔진 HARNESS_TEMPLATE_DIRS 파생)."""
     return [
         REPO / "templates" / dirs[0]
-        for dirs in _PM_IMPORT.HARNESS_TEMPLATE_DIRS.values() if len(dirs) == 1
+        for dirs in install_rules.HARNESS_TEMPLATE_DIRS.values() if len(dirs) == 1
     ]
 
 
@@ -826,8 +846,8 @@ def test_delegation_docs_drop_single_file_container_vocabulary():
 def test_fresh_adopter_delegation_docs_drop_stale_vocabulary(pm_import, tmp_path, harness):
     """실 import 산출물의 위임 문서에도 옛 어휘가 0이다 (전파 누락 = 채택자만 red 방지)."""
     dest = tmp_path / f"round-docs-{harness}"
-    assert pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0
     docs = _delegation_docs(dest)
     assert docs, f"{harness}: 실 설치본에 위임 문서가 하나도 없다 — 어댑터 미출하?"
@@ -868,8 +888,8 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     사본에서 돌아야 위임이 성립하므로, 엔진만 고치고 template 전파를 빠뜨리면 여기서 red 다.
     """
     dest = tmp_path / f"round-cycle-{harness}"
-    assert pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0
     _git_init_adopter(dest)
     _seed_work_slot(dest, tree="standalone", session=_SMOKE_TASK)
@@ -1023,13 +1043,20 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, harness):
-    """세 flavor 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다."""
+    """세 flavor 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다.
+
+    대상 패키지에만 있던 모듈(ghost)은 실제 self-update(전달 + 새 완료 프로세스) 뒤 사라지고, 출하하지
+    않는 인스턴스 파일의 바이트는 그대로이며, 다음 엔진 코드 계획은 0 이다."""
     dest = tmp_path / f"central-loader-{harness}"
-    assert pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0
     seam = dest / ".project_manager" / "tools" / "pm_engine" / "infra" / "repo_files.py"
     assert seam.is_file() and "def load_module(" in seam.read_text(encoding="utf-8")
+    ghost = dest / ".project_manager" / "tools" / "pm_engine" / "app" / "zz_ghost_module.py"
+    ghost.write_text("# 상류에 없는 대상 전용 모듈\n", encoding="utf-8")
+    sentinel = dest / ".project_manager" / "wiki" / "zz_instance_sentinel.md"
+    sentinel.write_bytes("# 인스턴스 상태 — 출하하지 않는다\r\n".encode("utf-8"))
 
     from _manager_home import known_ctx_env
     updated = subprocess.run(
@@ -1051,6 +1078,10 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     assert updated.returncode == 0, (
         f"{harness} self-update failed\nstdout={updated.stdout}\nstderr={updated.stderr}"
     )
+    assert "[replace-dir] .project_manager/tools/pm_engine" in updated.stdout, updated.stdout
+    assert not ghost.exists(), f"{harness}: 대상 전용 모듈이 self-update 뒤에도 남았다"
+    assert sentinel.read_bytes() == "# 인스턴스 상태 — 출하하지 않는다\r\n".encode("utf-8")
+    assert update_plan._engine_code_plan(pm_paths.home_at(dest), dest, REPO)["changes"] == []
     lint = _board(dest, "lint", "--gate")
     assert lint.returncode == 0, (
         f"{harness} post-update board bootstrap failed\nstdout={lint.stdout}\nstderr={lint.stderr}"
@@ -1060,7 +1091,7 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
     """파생 HARNESSES 축의 모든 template이 README와 상태-dir keep 파일을 출하한다."""
-    (template_dir,) = pm_import.HARNESS_TEMPLATE_DIRS[harness]
+    (template_dir,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     tickets = REPO / "templates" / template_dir / ".project_manager" / "wiki" / "tickets"
     assert (tickets / "README.md").is_file(), f"{harness}: tickets/README.md 미출하"
     missing = [status for status in _TICKET_STATUS_DIRS
@@ -1080,8 +1111,8 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     즉시 FileNotFoundError로 red가 된다.
     """
     dest = tmp_path / "adopter-missing-status-dirs"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", "codex", "--name", "Adopter", "--fill", "manual"])
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", "codex", "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0
     tickets = dest / ".project_manager" / "wiki" / "tickets"
     for status in _TICKET_STATUS_DIRS:
@@ -1121,8 +1152,8 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
 def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
     """claude import 후 settings.json 에 절대경로·{{PROJECT_ROOT}} 잔존 0."""
     dest = tmp_path / "adopter-portable"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"import 실패 (rc={rc})"
     dest_abs = str(dest.resolve())
@@ -1164,8 +1195,8 @@ _README_HARNESS_ARGS = (*HARNESSES, "all")
 def test_fresh_adopter_excludes_framework_internal_readme(pm_import, tmp_path, harness):
     """import 후 최상위 README.md 미출하 · 하위 wiki README 유지 · dangling 프레임워크 링크 0."""
     dest = tmp_path / f"adopter-readme-{harness}"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"{harness} import 실패 (rc={rc})"
 
@@ -1191,7 +1222,7 @@ def test_readme_axis_is_derived_and_covers_all_keyword():
     codex 는 정당 대상(templates/codex/README.md 존재하나 top README 미출하·wiki README 유지·
     dangling 0·실측). 파생이라 새 단일 하네스/콤보 키가 자동 편입된다(T-0434 가짜-하네스 패턴).
     """
-    assert set(_README_HARNESS_ARGS) == {*_PM_IMPORT.HARNESS_TEMPLATE_DIRS, "all"}
+    assert set(_README_HARNESS_ARGS) == {*install_rules.HARNESS_TEMPLATE_DIRS, "all"}
     assert {"claude", "codex", "opencode", "all"} <= set(_README_HARNESS_ARGS)
 
 
@@ -1238,8 +1269,8 @@ def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
     """
     src_dir, dest_rel, is_dir = _RENDER_SKILL_SRC[harness]
     dest = tmp_path / f"adopter-{harness}"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"{harness} import 실패 (rc={rc})"
 
@@ -1291,8 +1322,8 @@ def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
 def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, harness):
     """실 local.conf 2키로 adapter-drift advisory 발화 + never-block (전 하네스·engine 중립)."""
     dest = tmp_path / f"adopter-{harness}"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"{harness} import 실패 (rc={rc})"
     conf = dest / ".project_manager" / "local.conf"
@@ -1343,8 +1374,8 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
 def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
     """claude import 후 settings.json 이 portable(유효 JSON·토큰 0·절대경로 0) + 훅 파일 실재·실행비트."""
     dest = tmp_path / "adopter-settings"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"import 실패 (rc={rc})"
 
@@ -1453,8 +1484,8 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     "신규 추가 또는 byte-identical 무변" 둘 다 허용해 그 수렴을 함께 못박는다(D3 C-v2).
     """
     dest = tmp_path / f"adopter-{base}-add-{added}"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"]
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     )
     assert rc == 0, f"{base} import 실패 (rc={rc})"
 
@@ -1473,7 +1504,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     # 는 소스를 명시 --from > dest upstream(path) > dest(templates) 순으로 해소하는데, fresh 인스턴스는
     # upstream 을 *URL*(origin)로 기록하므로 자동 해소 대상이 아니다 — 채택자는 로컬 checkout 을 명시한다.
     # 이 e2e 의 초점은 소스 해소가 아니라 복사 스코프/바이트 불변이라 REPO 를 명시해 결정화한다.
-    plan = pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    plan = add_harness.add_harness(ENGINE_HOME, dest, added, dry_run=False, source_root=REPO)
     assert plan, f"{base}→{added}: add-harness plan 이 비어 있다."
 
     after = _snapshot_tree(dest)
@@ -1490,8 +1521,8 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     #   namespace 상한만으론 오탐 — flavor 선언 경로를 상한에 포함한다. claude host + opencode 는
     #   `.claude/skills` 가 host-소유(before 에 이미 존재)라 added_rels 밖이고, flavor 미선언 stray 는
     #   여전히 red 라 clobber 탐지력은 유지된다.
-    cross_ns_allowed = pm_import._flavor_render_relpaths(
-        REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[added][0])
+    cross_ns_allowed = install_source._flavor_render_relpaths(
+        REPO / "templates" / install_rules.HARNESS_TEMPLATE_DIRS[added][0])
     outside = sorted(
         r for r in added_rels
         if not _in_adapter_ns_bound(r, added)
@@ -1528,8 +1559,8 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     #   (dev-state metadata·설치 기록과 같은 성질). 보존된 편집분은 애초에 기록되지 않으므로 이 예외가
     #   clobber 를 가리지 않는다 — 원장의 기록 규칙 자체는 `test_pm_import.py` 의 절이 못박는다.
     _MANIFEST_REL = ".project_manager/engine.manifest"
-    _RECEIPT_REL = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
-    _BASELINE_REL = pm_import.ADAPTER_BASELINE_RELPATH.as_posix()
+    _RECEIPT_REL = install_receipt.INSTALL_RECEIPT_RELPATH.as_posix()
+    _BASELINE_REL = adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()
     _CTX_RECORD_REL = ".project_manager/.local/ctx-budget.json"
     notation_shared = {
         ".project_manager/wiki/README.md",
@@ -1568,7 +1599,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     # (3-a) 설치 기록의 변경 내용 — 정확히 base∪added(registry 순서)여야 한다. 표기 독자 집합이
     #   여기서 갈리므로 하나라도 빠지면 이후 공유 문서 재렌더가 그 하네스 표기를 지운다.
     receipt_after = json.loads(after[_RECEIPT_REL].decode("utf-8"))["harnesses"]
-    assert receipt_after == [h for h in pm_import.REGISTERED_HARNESSES if h in {base, added}], (
+    assert receipt_after == [h for h in install_rules.REGISTERED_HARNESSES if h in {base, added}], (
         f"{base}→{added}: 설치 기록이 base∪added 가 아님: {receipt_after}")
 
     # (3-b) 예외 2경로는 "바이트 변경 허용"에서 끝내지 않고 **무엇이 바뀌었는지** 못박는다 —
@@ -1640,15 +1671,15 @@ def test_add_harness_preserves_crlf_manifest_notation(pm_import, tmp_path):
     claude→opencode 는 실측 clobber 시나리오이자 guest 절이 실제로 등재되는 쌍이다(등재 0 이면
     표기 판정이 공허해지므로 아래에서 변경 자체를 단언한다)."""
     dest = tmp_path / "adopter-crlf-manifest"
-    assert pm_import.main(
-        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0, "claude import 실패"
 
     manifest = dest / ".project_manager" / "engine.manifest"
     before = _to_crlf(manifest)
     assert _stray_lf(before) == 0, "픽스처가 CRLF 단일 표기를 못 만들었다(공허 게이트)"
 
-    assert pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO), \
+    assert add_harness.add_harness(ENGINE_HOME, dest, "opencode", dry_run=False, source_root=REPO), \
         "add-harness plan 이 비어 있다"
 
     after = manifest.read_bytes()
@@ -1664,7 +1695,7 @@ def _guest_engine_rows(pm_update, dest: Path) -> dict[str, object]:
     """dest guest 절의 **엔진 행**(비-`@render`) → {경로: ManifestEntry}."""
     return {
         str(entry).replace("\\", "/"): entry
-        for entry in pm_update._dest_guest_manifest_entries(dest)
+        for entry in update_manifest._dest_guest_manifest_entries(dest)
         if not getattr(entry, "render", False)
     }
 
@@ -1673,7 +1704,7 @@ def _guest_render_paths(pm_update, dest: Path) -> list[str]:
     """dest guest 절의 **렌더물 행**(`@render`) 경로 — 재렌더 채널 대상."""
     return sorted(
         str(entry).replace("\\", "/")
-        for entry in pm_update._dest_guest_manifest_entries(dest)
+        for entry in update_manifest._dest_guest_manifest_entries(dest)
         if getattr(entry, "render", False)
     )
 
@@ -1691,10 +1722,10 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
     일치** · (b) 어댑터 렌더물도 같은 채널로 **재렌더**(stale 사본 소멸) · (c) 어느 manifest 에도
     없는 instance-owned 설정은 byte **불변**."""
     dest = tmp_path / f"guest-engine-{base}-{added}"
-    assert pm_import.main(
-        ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"]
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
+        ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0
-    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, added, dry_run=False, source_root=REPO)
 
     engine_rows = _guest_engine_rows(pm_update, dest)
     assert engine_rows, f"{base}->{added}: guest 엔진 행 미등재(동기 채널 부재)"
@@ -1736,7 +1767,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
                               encoding="utf-8", newline="\n")
             planted.append(rel)
     assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 축)"
-    instance_owned = sorted({*pm_import.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})
+    instance_owned = sorted({*install_rules.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})
 
     # 렌더물 축 — guest `@render` 아래 실 파일도 stale 로 만든다. 렌더물은 conf 파생이라 update 가
     #   다시 렌더해야 하고(설치 시점 사본 동결 금지), 손편집은 그때 되돌아간다.
@@ -1758,9 +1789,8 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
-    assert pm_update.main(["--from", str(REPO)]) == 0, f"{base}->{added}: self-update rc≠0"
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0, f"{base}->{added}: self-update rc≠0"
 
     after = _snapshot_tree(dest)
     unsynced = sorted(
@@ -1886,15 +1916,14 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
 
     # hermetic self-update: read_upstream_rev(라이브 git baseline)를 stub + pm_update 가 이 stub 된
     #   pm_import 를 쓰게 배선(서브프로세스/네트워크 0·framework 는 비-git 이라 어차피 None 이지만 명시 격리).
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
     # fresh opencode 채택자 — 결정적 모델 flag(라이브 opencode 미실행·models seam 은 fixture stub).
     dest = tmp_path / "adopter-opencode"
-    rc = pm_import.main([
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", "opencode", "--name", "Adopter",
         "--fill", "manual", "--opencode-model", _OPENCODE_MODEL, "--from", str(framework),
-    ])
+    ], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"opencode import 실패 (rc={rc})"
     conf = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
     assert f"harness.opencode.pro_model={_OPENCODE_MODEL}" in conf, (
@@ -1905,7 +1934,7 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     monkeypatch.setattr(pm_update, "REPO", dest)
 
     def _self_update() -> int:
-        return pm_update.main(["--from", str(framework)])
+        return update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)])
 
     # 전파 대상 스냅샷: `.opencode`(agents/command/lib/plugins/pm_orch) +
     # `.claude/skills`(모델 skill tool) 두 채널 전부 — 공허참 방지 sanity 포함.
@@ -1988,3 +2017,9 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     assert crlf_drift == [], (
         "CRLF 채택자에서 self-update 가 전파 트리를 되썼다(표기만 다른 파일을 '변경'으로 판정 "
         f"또는 LF 로 되쓰기): {crlf_drift}")
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

@@ -72,6 +72,16 @@ from pm_engine.cli import board_cluster
 from pm_engine.domain import cluster_rules
 
 
+@pytest.fixture
+def known_ctx_io(monkeypatch):
+    """모델 한도 조회 IO 고정(`app.harness_ctx`) — 쓰는 파일이 usefixtures 로 고른다.
+
+    본문은 `_manager_home.install_known_ctx_io` 가 소유한다. 이 conftest 를 단독 사본으로 쓰는 시험이
+    있어 helper 는 fixture 실행 때 적재한다."""
+    from _manager_home import install_known_ctx_io
+    install_known_ctx_io(monkeypatch)
+
+
 # 테스트가 raw 목적지를 tempdir 로 주면 tempdir에 감사 raw가 영구 누적된다.
 # 세션 기본 tempdir를 pytest 소유 디렉터리로 격리해 다른 checkout/PM 프로세스 출력과 섞지 않는다.
 _PROJECT_TEMPDIR_GLOBS = (
@@ -271,7 +281,7 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
 def _isolate_opencode_global_config(tmp_path_factory):
     """`XDG_CONFIG_HOME` 을 pytest 임시 루트 아래 빈 폴더로 둔다 — 세션 전체·자식 프로세스 포함.
 
-    하네스 사용 한도 반영(`pm_import.apply_harness_ctx`)은 opencode 전역 설정 디렉터리
+    하네스 사용 한도 반영(`harness_ctx.apply_harness_ctx`)은 opencode 전역 설정 디렉터리
     (`$XDG_CONFIG_HOME/opencode`, 없으면 `~/.config/opencode`)의 모델까지 대상으로 삼는다. 이 격리가
     없으면 opencode 를 설치하는 테스트가 개발 머신의 전역 모델을 프로젝트 파일에 더해 머신마다
     결과가 달라진다. 전역 모델이 필요한 테스트는 in-process 면 `opencode_config_dir` 로, 자식

@@ -32,6 +32,7 @@ from pm_engine.app.session import relay
 from pm_engine.domain import conf_schema
 from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract, watchdog
+from pm_engine.app import harness_ctx
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1097,7 +1098,7 @@ def test_ctx_native_protocol_resolves_through_the_relay(tmp_path):
     """사용 한도 조회(`pm_import._ctx_native_protocol`)도 같은 해소를 쓴다 — 없으면 PATH 부재."""
     pm_import = _load("pm_import_ctx_resolve", TOOLS / "pm_import.py")
     with pytest.raises(FileNotFoundError) as excinfo:
-        pm_import._ctx_native_protocol(["no-such-harness-cli-xyz", "-p"], tmp_path, [])
+        harness_ctx._ctx_native_protocol(["no-such-harness-cli-xyz", "-p"], tmp_path, [])
     assert "no-such-harness-cli-xyz 실행 파일 PATH 부재" in str(excinfo.value)
 
 

@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.cli import delegate_cmd
 
 from pm_engine.infra import delegate_copy_store
@@ -24,7 +26,7 @@ from pm_engine.app import delegate_execute
 from pm_engine.app import delegate_harvest
 from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
-from pm_engine.infra import pm_paths
+from pm_engine.infra import fs, pm_paths
 from pm_engine.domain import review_contract
 
 from pm_engine.app import round_maintenance
@@ -507,7 +509,7 @@ def test_owner_pid_is_recorded_only_when_the_caller_owns_the_run(pd, env, monkey
 
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "prepare", "--ticket", "T-8034", "--role", "architect", "--cwd", str(env.slot),
-    ], adapter_directories_fn=pd._resolved_adapter_directories)
+    ])
 
     assert rc == 0
     rows = {row["ticket"]: row for row in _ledger_rows(env)}
@@ -594,7 +596,7 @@ def test_run_dir_removal_failure_converges_on_the_next_call(pd, env, monkeypatch
     """5단계(run-dir 삭제) 실패 뒤 재호출이 '이미 포기된 준비'로 막히지 않는다."""
     _write_spec(env, "T-8052")
     plan = _prepare(pd, env, "T-8052")
-    real_file_lock = pd.fs
+    real_file_lock = fs
 
     class _FileLock:
         def __getattr__(self, name):
@@ -1018,7 +1020,7 @@ def test_cli_reports_the_convergence_assertion_as_machine_fields(pd, env, monkey
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "abandon", "--copy", str(plan.path), "--cwd", str(env.slot),
         delegate_rounds.ABANDON_ASSUME_DEAD_FLAG,
-    ], adapter_directories_fn=pd._resolved_adapter_directories)
+    ])
 
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert rc == 0
@@ -1038,7 +1040,7 @@ def test_cli_abandon_wires_the_discard_reason_flag(pd, env, monkeypatch, capsys)
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "abandon", "--copy", str(plan.path), "--cwd", str(env.slot),
         delegate_rounds.ABANDON_ASSUME_DEAD_FLAG, delegate_rounds.ABANDON_DISCARD_REASON_FLAG, _DISCARD_REASON,
-    ], adapter_directories_fn=pd._resolved_adapter_directories)
+    ])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out.strip().splitlines()[-1])
@@ -1056,9 +1058,9 @@ def test_cli_copies_query_labels_abandoned_rows(pd, env, monkeypatch, capsys):
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: env.pm_home)
     capsys.readouterr()
 
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111"], adapter_directories_fn=pd._resolved_adapter_directories) == 0
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111"]) == 0
     listed = capsys.readouterr().out
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111", "--unharvested"], adapter_directories_fn=pd._resolved_adapter_directories) == 0
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111", "--unharvested"]) == 0
     unharvested = capsys.readouterr().out
 
     assert "포기(" in listed and str(plan.path) in listed

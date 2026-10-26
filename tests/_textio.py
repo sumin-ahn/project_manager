@@ -41,7 +41,7 @@ _LF_BYTES = b"\n"
 def dominant_newline_bytes(data: bytes, default: bytes = _LF_BYTES) -> bytes:
     """바이트 본문의 지배 개행 표기 — 다수결, 동수면 첫 등장, 개행 0이면 ``default``.
 
-    엔진의 표기 보존 규칙(`pm_import.dominant_newline`·`pm_update._dominant_newline`)과 같은
+    엔진의 표기 보존 규칙(`pm_import.dominant_newline`·`infra.render_io._dominant_newline`)과 같은
     판정을 **테스트 쪽에서 독립 구현**한다. 엔진 함수를 그대로 빌려 판정하면 그 함수가 무너질 때
     기대값과 실측값이 함께 무너져 대조가 조용히 통과한다([[guard-must-cover-its-own-surface]]).
     """

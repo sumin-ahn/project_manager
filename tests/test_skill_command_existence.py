@@ -39,6 +39,8 @@ import shlex
 from pathlib import Path
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.cli import update_cmd
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -99,7 +101,7 @@ def _load_parser(stem: str) -> "argparse.ArgumentParser | None":
     """도구 `stem` 의 argparse 파서를 얻는다 — `build_parser()` 우선, 없으면 `main()` 캡처.
 
     대부분 도구는 `build_parser()` 를 노출한다(test_flag_unification_parity 등 관례). 일부
-    (worktree_pool·pm_update)는 파서를 `main()` 내부에 인라인으로 짓는다 — 그 경우
+    (worktree_pool·pm_update 의 `cli.update_cmd`)는 파서를 `main()` 내부에 인라인으로 짓는다 — 그 경우
     `parse_args` 를 일시 후킹해 완성된 파서를 낚아챈다(부작용 없음: 두 도구 모두 parse_args
     이전에 네트워크/쓰기가 없음을 소스 확인). 얻지 못하면 None → 호출측이 fail-loud 로 표면화
     (조용한 skip = 공허 가드라 금지).
@@ -119,8 +121,11 @@ def _load_parser(stem: str) -> "argparse.ArgumentParser | None":
             raise _ParserCaptured
 
         argparse.ArgumentParser.parse_args = _spy  # type: ignore[assignment]
+        # pm_update.py 는 실행 진입만 두고 parser 는 `cli.update_cmd.main` 이 짓는다(그 사본 Home 으로 부른다).
+        entry = ((lambda argv: update_cmd.main(pm_paths.home_at(mod.REPO), argv))
+                 if stem == "pm_update" else mod.main)
         try:
-            mod.main([])
+            entry([])
         except _ParserCaptured:
             pass
         except SystemExit:

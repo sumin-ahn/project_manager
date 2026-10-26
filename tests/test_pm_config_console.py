@@ -11,7 +11,10 @@ cmd_set_test_cmd)는 monkeypatch 로 가로채 *어떤 핸들러가 어떤 인�
 액션 동작 자체는 facade 테스트가 검증하고, 여기선 라우팅/렌더/견고성만 본다.
 """
 from __future__ import annotations
+
+from pm_engine.app import import_fill
 from pm_engine.cli import config_console
+from pm_engine.app import board_dashboard
 from pm_engine.cli import config_repo
 from pm_engine.cli import config_slots
 from pm_engine.infra import lease_store
@@ -29,6 +32,9 @@ import pytest
 from pm_engine.infra import areas_store
 
 from _pool_seams import bind_board
+from pm_engine.cli import config_install
+from pm_engine.cli import config_models
+from pm_engine.cli import config_status
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -197,7 +203,7 @@ def test_console_renders_repos_from_areas(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.run_console(input_fn=_inputs("q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("q"))
     assert rc == 0
     out = capsys.readouterr().out
     assert "repos" in out
@@ -212,7 +218,7 @@ def test_console_renders_slots_from_leases(pc, monkeypatch, capsys):
     ]))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.run_console(input_fn=_inputs("q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("q"))
     assert rc == 0
     out = capsys.readouterr().out
     assert "slots" in out
@@ -224,7 +230,7 @@ def test_console_empty_state_does_not_crash(pc, monkeypatch, capsys):
     """등록 repo·슬롯 0 이어도 빈 안내로 surface(크래시 0)."""
     bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO),
         input_fn=_inputs("q"),
 
     )
@@ -243,7 +249,7 @@ def test_console_q_quits_immediately(pc, monkeypatch, capsys):
     """`q` → 즉시 종료 rc 0 + 종료 메시지(액션 0)."""
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO),
         input_fn=_inputs("q"),
 
     )
@@ -261,7 +267,7 @@ def test_console_r_routes_to_repo_add(pc, monkeypatch):
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "develop", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert seen == {"name": "svc", "git": "git@h:me/svc.git",
                     "test": "pytest -q", "base": "develop"}
@@ -276,7 +282,7 @@ def test_console_r_empty_test_passes_none(pc, monkeypatch):
     reader = _inputs("r", "svc", "git@h:me/svc.git", "", "", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert seen == {"test": None}
 
@@ -289,7 +295,7 @@ def test_console_r_base_passes_through(pc, monkeypatch):
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "release/24", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert seen == {"base": "release/24"}
 
@@ -302,7 +308,7 @@ def test_console_r_empty_base_passes_none(pc, monkeypatch):
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert seen == {"base": None}
 
@@ -328,7 +334,7 @@ def test_console_r_empty_name_cancels(pc, monkeypatch):
     monkeypatch.setattr(config_repo, 'cmd_repo_add', lambda *a, **k: called.update(n=1) or 0)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("r", "", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("r", "", "q"))
     assert rc == 0
     assert called["n"] == 0
 
@@ -347,7 +353,7 @@ def test_console_w_routes_to_worktree_add(pc, monkeypatch):
     monkeypatch.setattr(config_slots, 'cmd_worktree_add', fake_wt_add)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("w", "svc", "svc", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("w", "svc", "svc", "q"))
     assert rc == 0
     assert seen["repo"] == "svc"
     assert seen["test"] is None            # 빌드명령은 핸들러가 프롬프트(콘솔 [w] 경로)
@@ -361,7 +367,7 @@ def test_console_w_empty_repo_cancels(pc, monkeypatch):
     monkeypatch.setattr(config_slots, 'cmd_worktree_add', lambda *a, **k: called.update(n=1) or 0)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("w", "", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("w", "", "q"))
     assert rc == 0
     assert called["n"] == 0
 
@@ -389,7 +395,7 @@ def test_console_b_routes_to_set_test_cmd(pc, monkeypatch):
     reader = _inputs("b", "work/svc_1", "ctest -R hil2", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert seen == {"slot": "work/svc_1", "cmd": "ctest -R hil2"}
 
@@ -404,7 +410,7 @@ def test_console_b_empty_cmd_passes_none(pc, monkeypatch):
     reader = _inputs("b", "work/svc_1", "", "q")
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert seen == {"slot": "work/svc_1", "cmd": None}
 
@@ -415,7 +421,7 @@ def test_console_b_empty_slot_cancels(pc, monkeypatch):
     monkeypatch.setattr(config_slots, 'cmd_set_test_cmd', lambda *a, **k: called.update(n=1) or 0)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("b", "", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("b", "", "q"))
     assert rc == 0
     assert called["n"] == 0
 
@@ -425,7 +431,7 @@ def test_console_s_refreshes_state(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("s", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("s", "q"))
     assert rc == 0
     # 첫 렌더 + s 재렌더 → list_leases 최소 2회.
     assert wp.calls.count(("list_leases",)) >= 2
@@ -438,23 +444,23 @@ def test_console_u_routes_to_cmd_update(pc, monkeypatch):
     """`u` → _console_update → cmd_update([]) 호출(엔진 갱신 위임·입력 프롬프트 없음)."""
     seen = {}
     monkeypatch.setattr(
-        pc, "cmd_update",
-        lambda forward_args, **kw: seen.update(args=forward_args) or 0,
+        config_install, "cmd_update",
+        lambda _home, forward_args: seen.update(args=forward_args) or 0,
     )
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("u", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("u", "q"))
     assert rc == 0
     assert seen == {"args": []}                      # forward_args = [] (인자 없는 갱신)
 
 
 def test_console_u_rerenders_after_update(pc, monkeypatch):
     """`u` 후 상태 재렌더 — list_leases 가 첫 렌더 + update후 재렌더로 2회+ 불림."""
-    monkeypatch.setattr(pc, "cmd_update", lambda *a, **k: 0)
+    monkeypatch.setattr(config_install, "cmd_update", lambda *a, **k: 0)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("u", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("u", "q"))
     assert rc == 0
     assert wp.calls.count(("list_leases",)) >= 2     # 첫 렌더 + update후 재렌더
 
@@ -462,21 +468,21 @@ def test_console_u_rerenders_after_update(pc, monkeypatch):
 def test_console_u_case_insensitive(pc, monkeypatch):
     """메뉴키 대문자 'U' 도 update 로 라우팅(.lower() 정규화 — 입력 견고성)."""
     called = {"n": 0}
-    monkeypatch.setattr(pc, "cmd_update", lambda *a, **k: called.update(n=called["n"] + 1) or 0)
+    monkeypatch.setattr(config_install, "cmd_update", lambda *a, **k: called.update(n=called["n"] + 1) or 0)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("U", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("U", "q"))
     assert rc == 0
     assert called["n"] == 1
 
 
 def test_console_u_eof_after_update_quits_gracefully(pc, monkeypatch, capsys):
     """`u` 후 다음 메뉴서 EOF(입력 소진) → 우아 종료 rc 0(abort 정합·크래시 0)."""
-    monkeypatch.setattr(pc, "cmd_update", lambda *a, **k: 0)
+    monkeypatch.setattr(config_install, "cmd_update", lambda *a, **k: 0)
     # "u" 후 입력 소진 → 다음 메뉴 프롬프트서 EOFError → 우아 종료.
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("u"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("u"))
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
@@ -485,7 +491,7 @@ def test_console_menu_surfaces_update_action(pc, monkeypatch, capsys):
     """메뉴 출력에 `[u]`/`update`(엔진 갱신) surface — 사용자 노출."""
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("q"))
     assert rc == 0
     out = capsys.readouterr().out
     assert "[u]" in out and "갱신" in out
@@ -495,7 +501,7 @@ def test_console_unknown_key_help_lists_update(pc, monkeypatch, capsys):
     """오타 메뉴키 안내가 `r/w/b/m/u/s/q`(모델 안내·update 포함)를 surface."""
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("z", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("z", "q"))
     assert rc == 0
     out = capsys.readouterr().out
     assert "r/w/b/m/u/s/q" in out
@@ -511,7 +517,7 @@ def test_console_blank_input_reprompts(pc, monkeypatch):
     # "" (빈) → 재프롬프트 → "q" 종료. 빈 입력에 어떤 액션도 안 일어남.
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("", "q"))
     assert rc == 0
     assert called["r"] == 0
 
@@ -520,7 +526,7 @@ def test_console_unknown_key_reprompts(pc, monkeypatch, capsys):
     """오타 메뉴키(예: 'z') → 안내 + 재프롬프트(다음 입력으로·크래시 0)."""
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("z", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("z", "q"))
     assert rc == 0
     out = capsys.readouterr().out
     assert "알 수 없는 선택" in out
@@ -533,7 +539,7 @@ def test_console_eof_quits_gracefully(pc, monkeypatch, capsys):
 
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
@@ -545,7 +551,7 @@ def test_console_keyboardinterrupt_quits_gracefully(pc, monkeypatch, capsys):
 
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
@@ -554,7 +560,7 @@ def test_console_case_insensitive_menu_key(pc, monkeypatch, capsys):
     """메뉴키 대문자 'Q' 도 종료(.lower() 정규화 — 입력 견고성)."""
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=_inputs("Q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("Q"))
     assert rc == 0
     assert "콘솔 종료" in capsys.readouterr().out
 
@@ -606,7 +612,7 @@ def test_console_action_prompt_abort_graceful(pc, monkeypatch, capsys, lead, exc
     reader = _inputs_then_exc(*lead, exc=exc)
     bind_pool(monkeypatch, FakeWorktreePool())
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO),
         input_fn=reader,
 
     )
@@ -628,7 +634,7 @@ def test_console_build_cmd_prompt_abort_graceful(pc, monkeypatch, capsys, exc):
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoardAreas(rows=_SVC_ROWS))
     bind_board(monkeypatch, FakeBoardAreas(rows=_SVC_ROWS))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     # 빌드명령 중단은 None 폴백(크래시 0) — 슬롯 생성은 진행(create_slot test_cmd=None).
     assert ("create_slot", "svc", None) in wp.calls
@@ -669,7 +675,7 @@ def test_console_rerenders_after_action(pc, monkeypatch):
     reader = _inputs("r", "svc", "git@h:me/svc.git", "pytest -q", "q")
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoardAreas(rows=[]))
-    rc = pc.run_console(input_fn=reader)
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
     assert wp.calls.count(("list_leases",)) >= 2   # 첫 렌더 + 액션후 재렌더
 
@@ -681,7 +687,7 @@ def test_console_autoloads_engines_when_not_injected(pc, monkeypatch, capsys):
     """평면 loader 주입 없이 실제 패키지 슬롯 조회로 콘솔을 렌더한다."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
 
-    rc = pc.run_console(input_fn=_inputs("q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("q"))
     assert rc == 0
     assert wp.calls.count(("list_leases",)) >= 1   # 패키지에 연결한 슬롯 조회가 렌더에 쓰임
 
@@ -705,11 +711,11 @@ _CANON_SEP = "|---|---|---|---|---|---|---|---|"
 def _status_out(pc, monkeypatch, capsys, *, user, area_owners):
     """cmd_status 를 hermetic 하게 돌려 stdout 을 돌려준다 (두 신호를 직접 주입)."""
     monkeypatch.setattr(lease_store, 'user_name', lambda _home: user)
-    monkeypatch.setattr(pc, "_distinct_area_owners", lambda: area_owners)
+    monkeypatch.setattr(config_status, "_distinct_area_owners", lambda _home: area_owners)
     monkeypatch.setattr(lease_store, 'session_name', lambda _home: "s1")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     return capsys.readouterr().out
 
@@ -757,25 +763,24 @@ def test_status_surface_single_user_unresolved_user_not_falsely_reassure(pc, mon
 
 
 def test_status_surface_never_loads_board(pc, monkeypatch, capsys):
-    """cmd_status 는 isolation posture 를 board.py 로드 없이 낸다(ADR-0013 isolation·자체 해소)."""
+    """cmd_status 는 isolation posture 를 board 집계(`board_dashboard.status_snapshot`) 실행 없이 낸다(자체 해소)."""
     loaded: list[str] = []
-    orig = pc._load_module
 
-    def spy(name, filename):
-        loaded.append(name)
-        return orig(name, filename)
+    def spy(home):
+        loaded.append("board")
+        return {}
 
-    monkeypatch.setattr(pc, "_load_module", spy)
+    monkeypatch.setattr(board_dashboard, "status_snapshot", spy)
     monkeypatch.setattr(lease_store, 'user_name', lambda _home: None)
-    monkeypatch.setattr(pc, "_distinct_area_owners", lambda: 2)
+    monkeypatch.setattr(config_status, "_distinct_area_owners", lambda _home: 2)
     monkeypatch.setattr(lease_store, 'session_name', lambda _home: "s1")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_status(argparse.Namespace(command="status"))
+    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pc.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
     assert _MARK_DEGRADE in out              # isolation surface 렌더됨
-    assert "board" not in loaded             # board.py 로드 0(자체 해소로 신호 산출)
+    assert "board" not in loaded             # board 집계 실행 0(자체 해소로 신호 산출)
 
 
 # ── _distinct_area_owners 자체 파싱 단위 (board import 없이 다중사용자 신호) ────
@@ -793,14 +798,14 @@ def test_distinct_area_owners_multi(pc, monkeypatch, tmp_path):
                  f"# Areas\n\n{_CANON_HEADER}\n{_CANON_SEP}\n"
                  "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
                  "| beta | BE | g:b | pytest -q | reg | develop | main | bob |\n")
-    assert pc._distinct_area_owners() == 2
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 2
 
 
 def test_distinct_area_owners_single(pc, monkeypatch, tmp_path):
     _write_areas(pc, monkeypatch, tmp_path,
                  f"{_CANON_HEADER}\n{_CANON_SEP}\n"
                  "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n")
-    assert pc._distinct_area_owners() == 1
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 1
 
 
 def test_distinct_area_owners_dedup(pc, monkeypatch, tmp_path):
@@ -809,7 +814,7 @@ def test_distinct_area_owners_dedup(pc, monkeypatch, tmp_path):
                  f"{_CANON_HEADER}\n{_CANON_SEP}\n"
                  "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
                  "| gamma | GA | g:g | pytest -q | reg | develop | main | alice |\n")
-    assert pc._distinct_area_owners() == 1
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 1
 
 
 def test_distinct_area_owners_empty_cells_ignored(pc, monkeypatch, tmp_path):
@@ -818,12 +823,12 @@ def test_distinct_area_owners_empty_cells_ignored(pc, monkeypatch, tmp_path):
                  f"{_CANON_HEADER}\n{_CANON_SEP}\n"
                  "| alpha | AL | g:a | pytest -q | reg | develop | main |  |\n"
                  "| beta | BE | g:b | pytest -q | reg | develop | main | bob |\n")
-    assert pc._distinct_area_owners() == 1   # bob 만(빈 셀 제외)
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 1   # bob 만(빈 셀 제외)
 
 
 def test_distinct_area_owners_absent_is_zero(pc, monkeypatch, tmp_path):
     monkeypatch.setattr(pc, "REPO", tmp_path)   # areas.md 부재 → solo 취급
-    assert pc._distinct_area_owners() == 0
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 0
 
 
 def test_distinct_area_owners_corrupt_utf8_is_zero(pc, monkeypatch, tmp_path):
@@ -832,7 +837,7 @@ def test_distinct_area_owners_corrupt_utf8_is_zero(pc, monkeypatch, tmp_path):
     proj.mkdir(parents=True, exist_ok=True)
     (proj / "areas.md").write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
     monkeypatch.setattr(pc, "REPO", tmp_path)
-    assert pc._distinct_area_owners() == 0
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 0
 
 
 def test_distinct_area_owners_old_schema_no_column_zero(pc, monkeypatch, tmp_path):
@@ -841,7 +846,7 @@ def test_distinct_area_owners_old_schema_no_column_zero(pc, monkeypatch, tmp_pat
                  "| repo | prefix | git | test_cmd | owner |\n"
                  "|---|---|---|---|---|\n"
                  "| alpha | AL | g:a | pytest -q | reg |\n")
-    assert pc._distinct_area_owners() == 0
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 0
 
 
 def test_distinct_area_owners_upgrade_wider_row(pc, monkeypatch, tmp_path):
@@ -851,7 +856,7 @@ def test_distinct_area_owners_upgrade_wider_row(pc, monkeypatch, tmp_path):
                  "|---|---|---|---|---|\n"
                  "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
                  "| beta | BE | g:b | pytest -q | reg | develop | main | bob |\n")
-    assert pc._distinct_area_owners() == 2
+    assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 2
 
 
 # ── 위임 모델 안내 (`[m]`) — 설치된 하네스만·조회 실패는 loud 강등 ──────────────
@@ -865,9 +870,11 @@ class _FakePmImport:
 
     REGISTERED_HARNESSES = ("claude", "opencode", "codex")
 
-    def __init__(self, installed):
+    def __init__(self, installed, monkeypatch):
         self._installed = set(installed)
         self.queried = 0
+        monkeypatch.setattr(import_fill, "_harness_binary_available", self._harness_binary_available)
+        monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: self._real_models_runner(source))
 
     def _harness_binary_available(self, harness):
         return harness in self._installed
@@ -877,10 +884,10 @@ class _FakePmImport:
         return True, ["provider/real-a", "provider/real-b"]
 
 
-def test_model_guidance_lists_only_installed_harnesses(pc, capsys):
+def test_model_guidance_lists_only_installed_harnesses(pc, capsys, monkeypatch):
     """설치되지 않은 하네스의 모델은 안내하지 않는다 — 못 쓰는 값을 고르게 만들지 않는다."""
-    fake = _FakePmImport(installed=("claude",))
-    rc = pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
+    rc = config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
 
     assert rc == 0
@@ -889,10 +896,10 @@ def test_model_guidance_lists_only_installed_harnesses(pc, capsys):
     assert fake.queried == 0, "미설치 opencode 인데 목록을 조회했다"
 
 
-def test_model_guidance_shows_opencode_real_list(pc, capsys):
+def test_model_guidance_shows_opencode_real_list(pc, capsys, monkeypatch):
     """조회 수단이 있는 하네스(opencode)만 실조회 목록을 보여준다 — 하드코딩 0."""
-    fake = _FakePmImport(installed=("opencode",))
-    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    fake = _FakePmImport(installed=("opencode",), monkeypatch=monkeypatch)
+    config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
 
     assert fake.queried == 1
@@ -900,40 +907,39 @@ def test_model_guidance_shows_opencode_real_list(pc, capsys):
     assert "가용 모델 2개" in out
 
 
-def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys):
+def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys, monkeypatch):
     """목록이 길면 앞부분만 보여주고 전량 확인 명령을 지목한다(한 화면 상한)."""
-    total = pc._DELEGATE_MODEL_LIST_LIMIT + 3
+    total = config_models._DELEGATE_MODEL_LIST_LIMIT + 3
     models = [f"provider/model-{index}" for index in range(total)]
-    fake = _FakePmImport(installed=("opencode",))
+    fake = _FakePmImport(installed=("opencode",), monkeypatch=monkeypatch)
     fake._real_models_runner = lambda source=None: (True, models)
 
-    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
 
     assert f"가용 모델 {total}개" in out
-    assert models[pc._DELEGATE_MODEL_LIST_LIMIT - 1] in out
-    assert models[pc._DELEGATE_MODEL_LIST_LIMIT] not in out
+    assert models[config_models._DELEGATE_MODEL_LIST_LIMIT - 1] in out
+    assert models[config_models._DELEGATE_MODEL_LIST_LIMIT] not in out
     assert "opencode models" in out
 
 
 @pytest.mark.parametrize("outcome", [(False, []), (True, [])])
-def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome):
+def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome, monkeypatch):
     """조회 실패·빈 목록은 형식 안내로 **강등**하되 그 사실을 말한다(조용한 강등 금지)."""
-    fake = _FakePmImport(installed=("opencode",))
+    fake = _FakePmImport(installed=("opencode",), monkeypatch=monkeypatch)
     fake._real_models_runner = lambda source=None: outcome
 
-    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
 
     assert "목록 조회 실패" in out and "강등" in out
     assert "provider/model" in out, "형식 안내까지 사라지면 강등이 아니라 침묵이다"
 
 
-def test_model_guidance_shows_declared_alias_members(pc, capsys):
+def test_model_guidance_shows_declared_alias_members(pc, capsys, monkeypatch):
     """`delegate.model_alias` 를 선언했으면 그 멤버를 이 환경의 모델로 함께 보여준다."""
-    fake = _FakePmImport(installed=("claude",))
-    pc._print_delegate_model_guidance(
-        pm_import=fake,
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
+    config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO),
         conf={"delegate.model_alias.high": "opus, claude-opus-5"},
     )
     out = capsys.readouterr().out
@@ -947,28 +953,28 @@ def test_model_guidance_without_injected_conf_reads_the_real_local_conf(pc, caps
     conf.parent.mkdir(parents=True)
     conf.write_text("delegate.model_alias.high=opus, claude-opus-5\n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", tmp_path)
-    fake = _FakePmImport(installed=("claude",))
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
 
-    assert pc._print_delegate_model_guidance(pm_import=fake) == 0
+    assert config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO)) == 0
     out = capsys.readouterr().out
 
     assert "high" in out and "claude-opus-5" in out
 
 
-def test_model_guidance_does_not_require_alias_declaration(pc, capsys):
+def test_model_guidance_does_not_require_alias_declaration(pc, capsys, monkeypatch):
     """alias 미선언은 정상 형상 — 목록을 위해 alias 를 만들라고 하지 않는다."""
-    fake = _FakePmImport(installed=("claude",))
-    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
+    config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
 
     assert "선언 없음" in out
     assert "목록을 위해 만들 필요는 없다" in out
 
 
-def test_model_guidance_handles_no_installed_harness(pc, capsys):
+def test_model_guidance_handles_no_installed_harness(pc, capsys, monkeypatch):
     """설치된 하네스가 하나도 없으면 빈 안내가 아니라 그 사실을 말한다."""
-    fake = _FakePmImport(installed=())
-    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    fake = _FakePmImport(installed=(), monkeypatch=monkeypatch)
+    config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
 
     assert "설치된 하네스 없음" in out
@@ -976,7 +982,7 @@ def test_model_guidance_handles_no_installed_harness(pc, capsys):
 
 def test_alias_members_parses_comma_list_and_ignores_blanks(pc):
     """alias 파싱 — 콤마 분리·공백 제거·빈 선언 무시(의미 변경 0)."""
-    assert pc._model_alias_members({
+    assert config_models._model_alias_members({
         "delegate.model_alias.a": " x , y ,, ",
         "delegate.model_alias.b": "   ",
         "delegate.developer.model": "opus",
@@ -986,13 +992,13 @@ def test_alias_members_parses_comma_list_and_ignores_blanks(pc):
 def test_console_menu_routes_m_to_model_guidance(pc, monkeypatch, capsys):
     """`[m]` 이 모델 안내 핸들러로 라우팅되고 장부는 건드리지 않는다."""
     calls = []
-    monkeypatch.setattr(pc, "_print_delegate_model_guidance", lambda: calls.append(1))
+    monkeypatch.setattr(config_models, "_print_delegate_model_guidance", lambda _home: calls.append(1))
     board = FakeBoardAreas(rows=[])
     wp = bind_pool(monkeypatch, FakeWorktreePool())
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.run_console(input_fn=_inputs("m", "q"))
+    rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=_inputs("m", "q"))
 
     assert rc == 0
     assert calls == [1]

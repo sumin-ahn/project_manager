@@ -24,7 +24,8 @@ import pytest
 
 from _manager_home import git_required, make_bare_with_tags, make_pm_home, set_conf_key
 
-from manager import REPO_ROOT, load_engine_module, runner
+from manager import REPO_ROOT, runner
+from pm_engine.infra import upstream_git
 from manager.bridge_update import (
     BUILD_INFO_MODULE, bundle_root, import_argv, imprinted_upstream, init_argv, update_argv,
 )
@@ -132,9 +133,9 @@ def test_the_imprinted_upstream_wins_when_the_build_left_one(monkeypatch):
 
 @git_required
 def test_without_an_imprint_the_bundle_trees_origin_is_read():
-    """개발 트리에는 각인 모듈이 없다 — `pm_import` 가 쓰는 바로 그 도출 함수로 간다."""
+    """개발 트리에는 각인 모듈이 없다 — 설치가 쓰는 바로 그 도출 함수(`upstream_git`)로 간다."""
     assert BUILD_INFO_MODULE not in sys.modules
 
-    derived = load_engine_module("pm_import.py").derive_origin_url(bundle_root())
+    derived = upstream_git.derive_origin_url(bundle_root())
     assert derived, "번들 트리가 git checkout 이 아니다 — 이 회귀의 전제 붕괴"
     assert imprinted_upstream() == derived

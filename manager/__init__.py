@@ -57,7 +57,7 @@ class CallError(RuntimeError):
 
 
 def load_engine_module(filename: str):
-    """번들 엔진 평면 모듈 하나를 로드한다 (`pm_import.py`·`engine_rev.py`).
+    """번들 엔진 평면 모듈 하나를 로드한다 (현재 소비는 `engine_rev.py`).
 
     `allow_unverified=True` 는 형제 rev 대조를 포기한다는 뜻이 아니라, 관리자에는 대조 기준이
     될 baked rev 가 없다는 사실의 명시다 — 읽는 트리가 관리자와 함께 배포된 사본 하나뿐이라

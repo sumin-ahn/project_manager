@@ -11,6 +11,8 @@ from pathlib import Path
 
 from pm_engine.domain import manifest_rules
 from pm_engine.infra import fs, repo_files
+import shutil
+from pm_engine.infra import render_io
 
 
 def read_manifest(path: Path) -> list[manifest_rules.ManifestEntry]:
@@ -237,7 +239,7 @@ def _iter_files(root: Path, rel: str):
     relpath 는 **항상 posix(슬래시) 정규화**한다(`as_posix()`) — 모듈 전체의 슬래시 관례
     (`_path_under_manifest`·`_dest_relpath_for` 는 `.replace("\\","/")` 로 슬래시 전제)과 통일.
     `str(Path.relative_to)` 는 OS-네이티브 구분자라 Windows 에선 역슬래시(`.claude\\agents\\x.md`)
-    를 산출해 plan change 튜플 key 가 소비자/테스트(슬래시)와 어긋났다(pm_render 4건 red).
+    를 산출해 plan change 튜플 key 가 소비자/테스트(슬래시)와 어긋났다(렌더 경로 대조 실패).
     POSIX 에선 `str(p.relative_to(root)) == p.relative_to(root).as_posix()` 라 동작 무변경.
     """
     src = root / rel
@@ -391,3 +393,135 @@ def resolve_manifest_for_dest(dest_root: Path, source_root: Path) -> Path:
     if source_manifest.exists():
         return source_manifest
     raise FileNotFoundError("engine.manifest 없음 (dest·source 둘 다).")
+
+
+def _migrate_legacy_guest_markers(text: str) -> tuple[str, bool]:
+    """옛 세대 guest 마커 라인을 현행 리터럴로 치환 — (치환된 텍스트, 변경 여부).
+
+    마커가 없거나 이미 현행이면 `(text, False)`(멱등). 쓰기 경로는 이 함수를 통과한 뒤에만 절을
+    재부착하므로 디스크에 남는 세대는 항상 하나다(읽기 관용·쓰기 단일)."""
+    lines = text.splitlines()
+    migrated: list[str] = []
+    changed = False
+    for line in lines:
+        s = line.strip()
+        if s in manifest_rules._GUEST_MANIFEST_BEGIN_LEGACY:
+            migrated.append(manifest_rules._GUEST_MANIFEST_BEGIN)
+            changed = True
+        elif s in manifest_rules._GUEST_MANIFEST_END_LEGACY:
+            migrated.append(manifest_rules._GUEST_MANIFEST_END)
+            changed = True
+        else:
+            migrated.append(line)
+    if not changed:
+        return text, False
+    out = "\n".join(migrated)
+    return (out + "\n" if text.endswith("\n") else out), True
+
+
+def _reattach_guest_block(new_text: str, guest_block: str | None) -> str:
+    """upstream 사본(new_text) 뒤에 guest 절(guest_block)을 재부착 — block 없으면 new_text 그대로."""
+    if not guest_block:
+        return new_text
+    sep = "" if new_text.endswith("\n") or not new_text else "\n"
+    return new_text + sep + "\n" + guest_block + "\n"
+
+
+def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) -> str | None:
+    """upstream core 가 소유하게 된 경로(**동일 OR 상위**)를 guest 절에서 차감.
+
+    guest 경로가 추후 upstream core manifest 로 승격되면 apply 재부착이 기존 `@target-owned` guest 를
+    그대로 붙여 **같은 경로가 core+guest 이중 등재** → 뒤쪽 guest 가 owner 로 이겨 upstream 소스가 영구
+    skip 된다. 재부착 전 core 소유 경로를 `_path_owned_by`(경로-포함·add-측과 공유)로 차감해 닫는다.
+    남는 guest 라인 0 이면 None(절 제거)."""
+    if not guest_block:
+        return None
+    core_paths = manifest_rules._core_manifest_paths(core_text)
+    kept: list[str] = []
+    guest_count = 0
+    for ln in guest_block.splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            kept.append(ln)  # 마커/빈 줄 보존.
+            continue
+        if manifest_rules._path_owned_by(s.split()[0], core_paths):
+            continue  # core 가 소유(동일/상위) — 차감.
+        kept.append(ln)
+        guest_count += 1
+    if guest_count == 0:
+        return None  # 전량 승격 — 절 제거.
+    return "\n".join(kept)
+
+
+def _merge_guest_backfill_lines(
+        guest_block: str | None, backfill_lines: list[str]) -> str | None:
+    """guest 절에 파생 엔진 행을 병합 — 같은 경로는 파생 행으로 **덮어쓰고**, 없으면 추가.
+
+    절이 없으면(비-add-harness) 아무것도 만들지 않는다 — 파생 자체가 절의 존재를 전제한다. 본문은
+    경로 정렬로 재조립하며(add-harness 등재와 같은 순서·멱등), 마커 경계와 절 안 주석은 보존한다."""
+    if not guest_block or not backfill_lines:
+        return guest_block
+    block_lines = guest_block.splitlines()
+    if len(block_lines) < 2:
+        return guest_block
+    body = block_lines[1:-1]
+    comments = [line for line in body
+                if not line.strip() or line.strip().startswith("#")]
+    rows: dict[str, str] = {}
+    for line in body:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        rows[stripped.split()[0].replace("\\", "/")] = line.rstrip()
+    for line in backfill_lines:
+        rows[line.split()[0].replace("\\", "/")] = line
+    return "\n".join([
+        block_lines[0], *comments,
+        *(rows[path] for path in sorted(rows)),
+        block_lines[-1],
+    ])
+
+
+def _copy_manifest_preserving_guest(
+        sp, dst: Path, backfill_lines: list[str] | None = None) -> None:
+    """engine.manifest 를 upstream(sp)으로 덮되 dest 의 add-harness guest 절을 재부착.
+
+    재부착 전 **upstream core 가 소유하게 된 경로를 guest 절에서 차감**한다(소유권 전환·이중 등재
+    방지). guest 절이 없거나(비-add-harness) 전량 승격되면 순수 copy2 와 동일(무영향).
+
+    dest 가 **옛 세대 마커**로 기록돼 있으면 읽기 직전에 현행 리터럴로 1 회 치환한다 — 재부착되는
+    절은 항상 현행 리터럴이라 다음 sync 부터는 단일 세대만 남는다(별도 마이그레이션 커맨드 없이
+    채택자의 다음 `pm_update` 한 번으로 정상화).
+
+    `backfill_lines`(파생 엔진 행)를 주면 **마커 세대 마이그레이션 뒤** 그 절에 병합해 기록한다 —
+    절을 쓰는 지점이 여기 하나뿐이라 파생분 지속화도 같은 write 에 실린다(`--paths` 선검증이 파일만
+    읽어도 정합). dry-run 은 apply 를 타지 않으므로 자동으로 무기록이다.
+
+    ⚠ 알려진 한계: self-heal 이 `legacy_preserved` 인 코호트는 self-prop 자체가 계획에서 빠지므로
+    (로컬 manifest 불가침) 이 치환이 도달하지 않는다 — 읽기 관용 덕에 동작은 정상이고, 세대 수렴은
+    그 채택자가 legacy 상태를 벗어나는 시점으로 미뤄진다."""
+    guest_block = None
+    try:
+        if dst.is_file():
+            dst_text, migrated = _migrate_legacy_guest_markers(
+                render_io._normalize_newlines(fs.read_text_shared(dst, encoding="utf-8")))
+            if migrated:
+                print("✓ guest 절 마커 세대 마이그레이션 (구 리터럴 → 현행)")
+            guest_block = manifest_rules._extract_guest_manifest_block(dst_text)
+    except OSError:
+        guest_block = None
+    # 세대 마이그레이션 → 파생 백필 순서(치환된 현행 절 위에 기록·조합 시 절 소실 0).
+    guest_block = _merge_guest_backfill_lines(guest_block, backfill_lines or [])
+    # `sp` 는 파일 경로이거나 **인메모리 소스**(`_ManifestTextSource`·합집합 manifest)다. 공유
+    # 읽기는 실제 파일에만 의미가 있으므로 경로일 때만 seam 을 지난다(아래 `isinstance` 분기와
+    # 같은 판정).
+    new_text = render_io._normalize_newlines(
+        fs.read_text_shared(sp, encoding="utf-8") if isinstance(sp, Path)
+        else sp.read_text(encoding="utf-8"))
+    guest_block = _prune_guest_block_owned_by_core(guest_block, new_text)
+    if not guest_block and isinstance(sp, Path):
+        shutil.copy2(sp, dst)  # 비-add-harness 또는 전량 승격 — copy2(바이트/메타 무변경).
+        return
+    # 표기는 dest 의 현재 것을 유지한다(부재면 소스) — 재부착은 guest 절만 바꾸는 것이지
+    # 채택자 manifest 전체를 다른 bytes 로 되쓰는 게 아니다(CRLF 체크아웃 전면 diff·churn 방지).
+    render_io._write_rendered_text(dst, sp, _reattach_guest_block(new_text, guest_block))

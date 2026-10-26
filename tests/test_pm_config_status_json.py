@@ -47,6 +47,9 @@ from pm_engine.domain import conf_schema
 from test_pm_update_url_cache import (  # noqa: E402
     _make_bare, _make_framework_repo, _only_cache,
 )
+from pm_engine.cli import config_status
+from pm_engine.app import board_dashboard
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -202,7 +205,7 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
 
     document = _status_json(home)
 
-    assert document["schema"] == pc.STATUS_JSON_SCHEMA == 1
+    assert document["schema"] == config_status.STATUS_JSON_SCHEMA == 1
     assert document["engine_rev"] == pc.ENGINE_REV
     assert document["pm_home"] == str(home.resolve())
     assert document["generated_at"].endswith("+00:00")
@@ -584,16 +587,15 @@ def test_with_board_keeps_emitting_json_when_lint_has_issues(home):
 
 
 def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, capsys):
-    """기본 호출은 board 를 **로드하지 않는다**(티켓 전수 스캔 비용을 지지 않는다)."""
+    """기본 호출은 board 집계를 **실행하지 않는다**(티켓 전수 스캔 비용을 지지 않는다)."""
     loaded: list[str] = []
-    real_load = pc._load_module
 
-    def spy(name, filename):
-        loaded.append(name)
-        return real_load(name, filename)
+    def spy(home):
+        loaded.append("board")
+        return {}
 
-    monkeypatch.setattr(pc, "_load_module", spy)
-    monkeypatch.setattr(pc, "_write_machine_line", lambda text: None)
+    monkeypatch.setattr(board_dashboard, "status_snapshot", spy)
+    monkeypatch.setattr(config_status, "_write_machine_line", lambda text: None)
 
     class _Wp:
         def list_leases(self):
@@ -611,11 +613,11 @@ def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, caps
         def _pid_alive(self, pid):
             return False
 
-    monkeypatch.setattr(pc, "_status_json_git",
-                        lambda runner: {"branch": None, "head": None, "dirty": None})
+    monkeypatch.setattr(config_status, "_status_json_git",
+                        lambda _home, runner: {"branch": None, "head": None, "dirty": None})
     args = pc.build_parser().parse_args(["status", "--json"])
     bind_pool(monkeypatch, _Wp())
-    assert pc.cmd_status(args) == 0
+    assert config_status.cmd_status(pm_paths.home_at(pc.REPO), args, engine_rev=pc.ENGINE_REV) == 0
     assert "board" not in loaded, f"기본 호출이 board 를 로드했다: {loaded}"
 
 
@@ -983,7 +985,7 @@ def test_whoami_has_no_json_flag(pc):
 
 def test_status_json_schema_constant_is_single_source(pc):
     """스키마 번호는 상수 하나다 — 문서의 값이 그 상수와 같아야 한다."""
-    assert pc.STATUS_JSON_SCHEMA == 1
+    assert config_status.STATUS_JSON_SCHEMA == 1
 
 
 # ── 슬롯 없는 보존 브랜치 — 홈 엔진이 슬롯을 만들고 지워 남긴 기록 ─────────────────
@@ -1208,7 +1210,7 @@ def test_t0943_status_ctx_budget_shape_and_readonly(tmp_path, monkeypatch):
     install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
     monkeypatch.setattr(module, "REPO", tmp_path)
     before = _snapshot_fixture_bytes(tmp_path)
-    conf = module._status_json_conf(load_engine("pm_import"), None)
+    conf = config_status._status_json_conf(pm_paths.home_at(module.REPO), None)
     assert "ctx_applied" not in conf
     claude = conf["ctx_budget"]["claude"]
     assert set(claude) == {"status", "E", "P", "checkpoint", "precompact", "checkpoint_at_pct", "precompact_at_pct",
@@ -1233,7 +1235,7 @@ def test_t0949_status_ctx_budget_settings_mismatch(tmp_path, monkeypatch):
     assert text.count('"autoCompactWindow": 188000') == 1
     settings.write_text(text.replace('"autoCompactWindow": 188000', '"autoCompactWindow": 190000'), encoding="utf-8")
     before = _snapshot_fixture_bytes(tmp_path)
-    claude = module._status_json_conf(load_engine("pm_import"), None)["ctx_budget"]["claude"]
+    claude = config_status._status_json_conf(pm_paths.home_at(module.REPO), None)["ctx_budget"]["claude"]
     assert claude["status"] == "ok" and "settings_mismatch" in claude
     assert claude["settings_mismatch"] == [{"path": "autoCompactWindow", "file": 190000, "record": 188000}]
     assert _snapshot_fixture_bytes(tmp_path) == before

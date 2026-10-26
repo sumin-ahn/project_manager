@@ -195,3 +195,12 @@ def _resolve_regression_flag(home, cwd: str) -> tuple[Path, str]:
     livegate_flag, mode = _resolve_livegate_flag(home, cwd)
     local_dir = livegate_flag.parent if mode == _LG_ENGINE_ROOT else home.local_dir
     return _regression_flag_for(home, None, local_dir=local_dir), mode
+
+
+def _sidecar_document(path: Path) -> dict | None:
+    """기계 기록 sidecar 한 개를 읽는다 — 부재·손상·비-dict 는 None(판정 없음)."""
+    try:
+        data = json.loads(fs.read_text_shared(path, encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None

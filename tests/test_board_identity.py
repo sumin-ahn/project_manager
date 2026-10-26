@@ -24,8 +24,10 @@ import 시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 m
 """
 from __future__ import annotations
 
+import shutil
 from pm_engine.cli import board_list
-from pm_engine.cli import board_ticket, board_cluster
+from pm_engine.cli import board_ticket
+from pm_engine.cli import regression_cmd, board_cluster
 
 
 import argparse
@@ -189,7 +191,7 @@ def test_git_config_email_fail_soft_when_git_absent(board, monkeypatch):
     """
     fresh = _load_board()
     monkeypatch.setattr(fresh, "REPO", board.REPO)
-    monkeypatch.setattr(fresh.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     assert lease_store._git_config_email(fresh._home()) is None
 
 
@@ -468,9 +470,9 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
     args = board.build_parser().parse_args(_T0962_COMMANDS[command] + _T0962_FORMS[form])
     with pytest.raises(SystemExit) as exc:
         if command == "cluster-new":
-            (args.fn(board._home(), args) if args.fn in (board_ticket.cmd_claim, board_ticket.cmd_new, board_cluster.cmd_cluster) else args.fn(args))
+            (args.fn(board._home(), args) if args.fn in (board_ticket.cmd_claim, board_ticket.cmd_new, board_cluster.cmd_cluster, regression_cmd.cmd_livegate) else args.fn(args))
         else:
-            (args.fn(board._home(), args) if args.fn in (board_ticket.cmd_claim, board_ticket.cmd_new, board_cluster.cmd_cluster) else args.fn(args))
+            (args.fn(board._home(), args) if args.fn in (board_ticket.cmd_claim, board_ticket.cmd_new, board_cluster.cmd_cluster, regression_cmd.cmd_livegate) else args.fn(args))
     message = str(exc.value.code)
     assert "위치 인자" in message and "--task" in message
     if form == "repo-slot":

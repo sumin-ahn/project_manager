@@ -51,6 +51,8 @@ from pm_engine.app import body_lint, conf_lint, doc_lint, freshness_lint, lint_h
 from pm_engine.infra import conf_store
 
 from pm_engine.infra import lease_store
+from pm_engine.cli import board_lint
+from pm_engine.app import render_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -149,7 +151,7 @@ def test_no_local_conf_file_is_quiet(board, monkeypatch, tmp_path):
 
 
 def test_local_conf_unknown_key_kind_is_advisory(board):
-    assert "local-conf-unknown-key" in board._ADVISORY_LINT_KINDS
+    assert "local-conf-unknown-key" in board_lint._ADVISORY_LINT_KINDS
 
 
 _UNRELATED_LINT_FNS = (
@@ -163,7 +165,7 @@ _UNRELATED_LINT_FNS = (
     (doc_lint, "lint_domain", lambda home: []),
     (wiki_lint, "lint_adr_lifecycle", lambda home: []),
     (freshness_lint, "lint_architecture_freshness", lambda home: []),
-    (None, "lint_render_leak", lambda: []),
+    (render_lint, "lint_render_leak", lambda home: []),
     (lint_hooks, "_run_lint_hooks", lambda home: []),
 )
 
@@ -173,9 +175,9 @@ def test_lint_tickets_includes_the_unknown_key_finding(board, monkeypatch, tmp_p
     _write_conf(tmp_path, "runtime.py=python3\nadditional_reviewer.enalbed=true\n")
     monkeypatch.setattr(board, "REPO", tmp_path)
     for module, fn, stub in _UNRELATED_LINT_FNS:
-        monkeypatch.setattr(board if module is None else module, fn, stub)
+        monkeypatch.setattr(module, fn, stub)
 
-    issues = board.lint_tickets()
+    issues = ticket_lint.lint_tickets(board._home())
 
     assert any(kind == "local-conf-unknown-key" and "additional_reviewer.enalbed" in detail
                for _name, kind, detail in issues), issues
@@ -187,10 +189,10 @@ def test_gate_zero_on_unknown_key_only(board, monkeypatch, tmp_path):
     _write_conf(tmp_path, "runtime.py=python3\nreview_ticket_body_max_bytes=65536\n")
     monkeypatch.setattr(board, "REPO", tmp_path)
     for module, fn, stub in _UNRELATED_LINT_FNS:
-        monkeypatch.setattr(board if module is None else module, fn, stub)
+        monkeypatch.setattr(module, fn, stub)
 
-    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
-    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=False)) == 1
 
 
 # ── ③ 유입 경로 전수 — 오타·폐기 키·섹션 오기·대소문자 ──────────────────────

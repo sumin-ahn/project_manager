@@ -9,6 +9,15 @@ from collections.abc import Sequence
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import cluster_store, pm_paths, round_store, ticket_store
 from pm_engine.app import round_seed
+from pm_engine.app import areas_lint
+from pm_engine.app import body_lint
+from pm_engine.app import conf_lint
+from pm_engine.app import doc_lint
+from pm_engine.app import freshness_lint
+from pm_engine.app import render_lint
+from pm_engine.app import wiki_lint
+from pm_engine.app import wikilink_lint
+from pm_engine.infra import codex_observation
 
 
 # ── 구 역할 절(명세 본문 marker) 탐지 ─────────────────────────────────────
@@ -316,3 +325,89 @@ def lint_legacy_growth_sections(home) -> list[tuple[str, str, str]]:
                 f"본문에 구 역할 절 주석이 남아 있다 — {_LEGACY_GROWTH_MIGRATION_HINT}",
             ))
     return findings
+
+
+def lint_codex_delegate_observations(home) -> list[tuple[str, str, str]]:
+    """Surface unmatched Codex SubagentStart observations once (never-block).
+
+    The guard owns JSONL rotation and the idempotent set comparison.  Board lint
+    only aggregates all retained misses into one PM-facing advisory line.
+    """
+    try:
+        misses = codex_observation.scan_codex_observation_misses(
+            home, state_dir=home.local_dir / "delegate-channel",
+        )
+    except Exception as exc:  # noqa: BLE001 — observation visibility never blocks lint.
+        return []
+    if not misses:
+        return []
+
+    identities: list[str] = []
+    for entry in misses:
+        identity = "/".join(
+            str(entry.get(field) or "?")
+            for field in ("session_id", "turn_id", "agent_id")
+        )
+        if identity not in identities:
+            identities.append(identity)
+    sample = ", ".join(identities[:3])
+    remainder = len(identities) - min(len(identities), 3)
+    suffix = f" 외 {remainder}개 identity" if remainder else ""
+    return [(
+        "Codex SubagentStart",
+        "codex-delegate-matcher-miss",
+        f"일치하는 PreToolUse 처리 기록이 없는 SubagentStart {len(misses)}건 — "
+        f"spawn matcher drift 또는 가드 미발화 가능({sample}{suffix}). "
+        "append-only 관측은 소비하지 않았으며 native spawn은 사후 관측만 한다.",
+    )]
+
+
+def lint_tickets(home) -> list[tuple[str, str, str]]:
+    """All lint issues — ticket dependency graph + body self-containment +
+    idea status/directory agreement + status.md ✅ 완성 행 누적 권고(judgment-only) +
+    dangling wikilink + unstable (slug/filename) refs +
+    family wiki scope 인지+
+    domain freshness advisory(stale/orphan/oversized/history·never-block) +
+    architecture.md freshness advisory(architecture-stale·never-block) +
+    adapter-layer drift advisory(adapter-drift·never-block·baseline rev 비교) +
+    render-leak(리터럴 `{{...}}` 누출·blocking·@render 산출물 한정·활성화 전 무발화) +
+    adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·advisory·never-block) +
+    현재-진실 문서 freshness(architecture-stale·status-stale·domain-stale·verified_at sha 판정·
+    advisory·never-block) +
+    areas-repo-unregistered(areas.md 등록 repo 행 0 → 구 clone 이관 안내·advisory·never-block) +
+    areas-duplicate-repo(areas.md 중복 repo 행 → first-match 고착 가시화·advisory·
+    never-block) +
+    areas-merge-union(areas.md 를 담은 git 에 merge=union 미배포 → 동시 등록 안전 상실 가시화·
+    advisory·never-block) +
+    delegate-same-model(delegate dev/reviewer 동일-모델 해소 → 맹점 공유로 인한 검출력 저하 가시화·
+    advisory·never-block) +
+    codex-delegate-matcher-miss(unmatched SubagentStart → PM 표면 1줄·advisory·never-block) +
+    round-*(라운드 순번 유일성·연속성·산출 없음·임시 파일 잔여 가시화·advisory·never-block·
+    차단은 완료 게이트) + legacy-growth-section(명세 본문에 남은 구 역할 절 → 사람이
+    라운드 파일로 옮기거나 marker 를 지워 해소·blocking) +
+    design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
+    advisory·never-block·차단은 claim 게이트) +
+    open-claimed-contradiction(status=open 인데 claimed_by 잔존 — 상태-소유 모순 가시화·
+    advisory·never-block) +
+    local-conf-unknown-key(local.conf 의 레지스트리 밖 키 — 오타/폐기 키 조용한 무시 표면화·
+    advisory·never-block) +
+    local-conf-missing-required(local.conf 에 필수 키 미선언 — 핵심 명령이 못 도는 형상 표면화·
+    advisory·never-block) +
+    local-conf-unreadable(local.conf 가 있는데 판독 실패 — 값 0 개로 위장되던 상태 표면화·
+    advisory·never-block) +
+    cluster-*(클러스터 장부의 멤버 부재·통합 브랜치 부재·중복 귀속 가시화·advisory·
+    never-block)."""
+    return (lint_dependencies(home) + body_lint.lint_bodies(home) + body_lint.lint_ideas(home)
+            + wiki_lint.lint_status(home)
+            + wikilink_lint.lint_wikilinks(home) + wikilink_lint.lint_unstable_refs(home) + wiki_lint.lint_scopes(home)
+            + doc_lint.lint_domain(home) + wiki_lint.lint_adr_lifecycle(home) + wiki_lint.lint_adr_author(home)
+            + freshness_lint.lint_architecture_freshness(home) + freshness_lint.lint_status_freshness(home)
+            + doc_lint.lint_domain_freshness(home) + conf_lint.lint_adapter_drift(home)
+            + render_lint.lint_render_leak(home)
+            + areas_lint.lint_areas_repo_unregistered(home)
+            + areas_lint.lint_areas_duplicate_repo(home) + areas_lint.lint_areas_merge_union(home)
+            + conf_lint.lint_delegate(home) + conf_lint.lint_local_conf(home) + conf_lint.lint_local_conf_keys(home)
+            + conf_lint.lint_local_conf_required(home) + conf_lint.lint_local_conf_readable(home)
+            + lint_rounds(home) + lint_clusters(home)
+            + lint_legacy_growth_sections(home)
+            + lint_codex_delegate_observations(home) + lint_claim_identity(home))

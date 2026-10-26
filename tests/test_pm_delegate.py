@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 from pm_engine.cli import delegate_cmd
 
 from pm_engine.app import delegate_execute
@@ -39,7 +41,7 @@ from pm_engine.infra import delegate_scope_git
 from pm_engine.domain import delegate_scope_rules
 from pm_engine.infra.harness import delegate_temp
 from pm_engine.infra.harness import delegate_transport
-from pm_engine.infra import pm_paths
+from pm_engine.infra import fs, pm_paths
 
 import datetime as _datetime
 import errno
@@ -416,7 +418,7 @@ def test_dry_run_outputs_argv_and_prompt(pd, monkeypatch, tmp_path, capsys):
 def test_t0658_code_reviewer_role_preamble_contains_parser_derived_contract(pd):
     """code-reviewer 역할 머리말(두 리뷰 경로가 프롬프트 앞에 싣는다)이 판정 선언·목록 0건·허용
     토큰 계약을 모두 싣는다."""
-    out = delegate_prompt._role_preamble(review_form.INTERNAL_REVIEW_ROLE, pd._resolved_adapter_directories())
+    out = delegate_prompt._role_preamble(review_form.INTERNAL_REVIEW_ROLE, install_rules.adapter_directories())
 
     assert "행 선두" in out and "인용문·코드펜스" in out
     assert "`판정: 통과` 또는 `판정: 반려`" in out
@@ -1988,7 +1990,7 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
-    file_lock = pd.fs
+    file_lock = fs
     restricted: list[Path] = []
     removed: list[Path] = []
     real_rmtree = file_lock.force_rmtree
@@ -2205,7 +2207,7 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
 def test_transport_prompt_write_restricts_owner_access_via_shared_seam(
         pd, monkeypatch, tmp_path):
     """`os.open` 의 0600 mode 인자는 ACL 플랫폼에서 무효 — 공용 소유자-제한 seam 이 배선돼 있다."""
-    file_lock = pd.fs
+    file_lock = fs
     restricted: list[Path] = []
     monkeypatch.setattr(
         file_lock, "restrict_to_owner",
@@ -2530,7 +2532,7 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
-    file_lock = pd.fs
+    file_lock = fs
     monkeypatch.setattr(
         file_lock, "force_rmtree",
         lambda path, **kwargs: (_ for _ in ()).throw(
@@ -3856,23 +3858,23 @@ def test_role_preambles_cover_all_four_roles(pd):
     """ROLE_PREAMBLES = 정확히 4역할(developer/researcher/architect/code-reviewer)·비-빈 텍스트."""
     assert set(delegate_prompt_rules._ROLE_IDENTITIES) == {"developer", "researcher", "architect", "code-reviewer"}
     for role in delegate_prompt_rules._ROLE_IDENTITIES:
-        text = delegate_prompt._role_preamble(role, pd._resolved_adapter_directories())
+        text = delegate_prompt._role_preamble(role, install_rules.adapter_directories())
         assert text.strip(), f"{role} preamble 이 비어 있음"
         assert role.split("-")[0] in text or "서브에이전트" in text  # 역할 정체성 서술
 
 
 def test_role_preambles_include_prohibition_phrases(pd):
     """4 preamble 모두 금지 문구(commit/push·board 조작·어댑터 수정 금지)를 포함(drift 가드)."""
-    adapter_directories = tuple(pd._resolved_adapter_directories())
+    adapter_directories = tuple(install_rules.adapter_directories())
     assert adapter_directories, "엔진 등록부에서 파생된 어댑터 디렉토리가 0개"
     for role in delegate_prompt_rules._ROLE_IDENTITIES:
-        text = delegate_prompt._role_preamble(role, pd._resolved_adapter_directories())
+        text = delegate_prompt._role_preamble(role, install_rules.adapter_directories())
         assert "commit" in text and "push" in text, f"{role}: git 비가역 금지 문구 누락"
         assert "board" in text, f"{role}: board 조작 금지 문구 누락"
         assert "엔진 등록 통합 루트 전체" in text, f"{role}: 어댑터 범위 정의 누락"
         for adapter_dir in adapter_directories:
             assert adapter_dir in text, f"{role}: 등록 어댑터 {adapter_dir} 수정 금지 문구 누락"
-        assert text.count(delegate_prompt_rules._prohibition(pd._resolved_adapter_directories())) == 1, f"{role}: 공통 금지 문구를 정확히 한 번 써야 함"
+        assert text.count(delegate_prompt_rules._prohibition(install_rules.adapter_directories())) == 1, f"{role}: 공통 금지 문구를 정확히 한 번 써야 함"
 
 
 def _isolated_delegate(tmp_path: Path, registry_source: str):
@@ -3891,90 +3893,17 @@ def _isolated_delegate(tmp_path: Path, registry_source: str):
     return _load(f"pm_delegate_isolated_{id(tmp_path)}", tools / "pm_delegate.py"), tools
 
 
-def test_adapter_registry_engine_rev_skew_fails_loud_when_lazy_boundary_is_consumed(
-    tmp_path,
-):
-    """A sensitivity: import는 lazy라 살지만 stamped source를 실제 읽으면 skew가 명시 red다."""
-    delegate, tools = _isolated_delegate(
-        tmp_path,
-        'ADD_HARNESS_ADAPTER = {"claude": ((".claude",), "CLAUDE.md")}',
-    )
-    source = tools / "pm_import.py"
-    source.write_text(
-        source.read_text(encoding="utf-8").replace(
-            f'ENGINE_REV = "{delegate.ENGINE_REV}"',
-            'ENGINE_REV = "v0.0.0-stale"',
-        ),
-        encoding="utf-8",
-    )
-
-    for argv, expected in ((["--help"], 0), (["--role"], 2),
-                           (["ticket", "prepare", "--help"], 0)):
-        with pytest.raises(SystemExit) as early:
-            delegate.main(argv)
-        assert early.value.code == expected
-
-    with pytest.raises(RuntimeError, match="엔진 사본 버전 불일치") as exc:
-        tuple(delegate._resolved_adapter_directories())
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert "pm_import.py" in str(exc.value)
 
 
-def test_adapter_registry_old_value_shape_fails_explicitly_without_character_spread(
-    tmp_path,
-):
-    """A schema sensitivity: 구형 `(dir, doc)` 값은 `.claude` 문자 펼침 전에 명시 실패한다."""
-    delegate, _tools = _isolated_delegate(
-        tmp_path,
-        'ADD_HARNESS_ADAPTER = {"claude": (".claude", "CLAUDE.md")}',
-    )
 
-    with pytest.raises(delegate._AdapterRegistrySchemaError, match="adapter_dirs"):
-        tuple(delegate._resolved_adapter_directories())
+def test_adapter_registry_old_value_shape_fails_explicitly_without_character_spread(monkeypatch):
+    """구형 값 형상은 어댑터 경로를 문자별로 펼치기 전에 거부한다."""
+    monkeypatch.setattr(install_rules, "ADD_HARNESS_ADAPTER", {"claude": (".claude", "CLAUDE.md")})
+    with pytest.raises(install_rules._AdapterRegistrySchemaError, match="adapter_dirs"):
+        tuple(install_rules.adapter_directories())
 
 
-@pytest.mark.parametrize(
-    ("registry_source", "expected"),
-    [
-        (
-            'ADD_HARNESS_ADAPTER: dict = '
-            '{"claude": ((".claude",), "CLAUDE.md")}',
-            (".claude",),
-        ),
-        (
-            'REGISTRY = {"claude": ((".claude",), "CLAUDE.md")}\n'
-            "ADD_HARNESS_ADAPTER = REGISTRY",
-            (),
-        ),
-        (
-            'ADD_HARNESS_ADAPTER = '
-            '{"claude": (frozenset({".claude"}), "CLAUDE.md")}',
-            (),
-        ),
-    ],
-    ids=("annotated-assignment", "variable-reference", "frozenset-expression"),
-)
-def test_adapter_registry_notation_changes_do_not_brick_cli(
-    tmp_path, registry_source, expected,
-):
-    """B sensitivity: AnnAssign는 파생하고 비-literal 표기는 일반 문구 degrade·CLI help rc=0."""
-    delegate, tools = _isolated_delegate(tmp_path, registry_source)
-    assert tuple(delegate._resolved_adapter_directories()) == expected
-    prohibition = delegate_prompt._role_preamble("developer", delegate._resolved_adapter_directories())
-    assert "엔진 등록 통합 루트 전체" in prohibition
-    for adapter_dir in expected:
-        assert adapter_dir in prohibition
 
-    completed = subprocess.run(
-        [sys.executable, str(tools / "pm_delegate.py"), "--help"],
-        cwd=tmp_path,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
 
 
 def _template_adapter_surface():
@@ -3982,7 +3911,7 @@ def _template_adapter_surface():
     pm_import = _load("pm_import_adapter_surface", TOOLS / "pm_import.py")
     template_dirs = {
         dirname
-        for names in pm_import.HARNESS_TEMPLATE_DIRS.values()
+        for names in install_rules.HARNESS_TEMPLATE_DIRS.values()
         if len(names) == 1
         for dirname in names
     }
@@ -4007,15 +3936,15 @@ def _assert_adapter_registry_matches_surface(registered, observed):
 def test_adapter_registry_matches_actual_template_surface(pd):
     """단일 출처가 템플릿 3타깃의 실제 어댑터 루트를 빠짐없이 포괄한다."""
     _assert_adapter_registry_matches_surface(
-        pd._resolved_adapter_directories(), _template_adapter_surface())
+        install_rules.adapter_directories(), _template_adapter_surface())
 
 
 def test_adapter_surface_guard_is_sensitive_to_each_omission(pd):
     """등록 어댑터를 어느 하나라도 빼면 표면 대조 가드가 red임을 전 항목으로 입증한다."""
     observed = _template_adapter_surface()
-    _assert_adapter_registry_matches_surface(pd._resolved_adapter_directories(), observed)
-    for omitted in pd._resolved_adapter_directories():
-        reduced = tuple(d for d in pd._resolved_adapter_directories() if d != omitted)
+    _assert_adapter_registry_matches_surface(install_rules.adapter_directories(), observed)
+    for omitted in install_rules.adapter_directories():
+        reduced = tuple(d for d in install_rules.adapter_directories() if d != omitted)
         with pytest.raises(AssertionError, match="실제 템플릿 표면 불일치"):
             _assert_adapter_registry_matches_surface(reduced, observed)
 
@@ -5172,7 +5101,7 @@ def test_adapter_edit_warns_even_when_ticket_touches_allow_it(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """핵심 실측: touches 안 어댑터 변경도 독립 축이 경고하고 rc는 바꾸지 않는다."""
-    adapter_root = tuple(pd._resolved_adapter_directories())[0]
+    adapter_root = tuple(install_rules.adapter_directories())[0]
     relative = f"{adapter_root}/settings/delegated.json"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{adapter_root}",),
@@ -5194,7 +5123,7 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """손상 ticket으로 touches 준비가 실패해도 캡처가 성공했으면 형제 어댑터 축은 경고한다."""
-    adapter_root = tuple(pd._resolved_adapter_directories())[0]
+    adapter_root = tuple(install_rules.adapter_directories())[0]
     relative = f"{adapter_root}/settings/corrupt-ticket.json"
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
     ticket_path = (
@@ -5239,7 +5168,7 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """sensitivity: touches 실패 시 audit 전체를 None으로 되돌리면 어댑터 경고 oracle이 red다."""
-    adapter_root = tuple(pd._resolved_adapter_directories())[0]
+    adapter_root = tuple(install_rules.adapter_directories())[0]
     relative = f"{adapter_root}/settings/coupled-regression.json"
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
     ticket_path = (
@@ -5285,7 +5214,7 @@ def test_adapter_axis_consumes_every_derived_registry_root(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """새 목록 없이 T-0521 파생의 모든 루트 전체(임의 하위 포함)를 경고 대상으로 삼는다."""
-    adapter_roots = tuple(pd._resolved_adapter_directories())
+    adapter_roots = tuple(install_rules.adapter_directories())
     assert adapter_roots, "등록부 파생 루트 0이면 테스트가 vacuous"
     touches = tuple(f"work/demo_1/{root}" for root in adapter_roots)
     relatives = [f"{root}/arbitrary/deep/file.txt" for root in adapter_roots]
@@ -5309,7 +5238,7 @@ def test_adapter_axis_uses_lazy_registry_value_not_a_second_static_list(
 ):
     """실행 전 등록부 파생값이 미래 루트여도 별도 정적 목록 없이 preamble·판정이 함께 따라간다."""
     future_root = ".future-harness"
-    monkeypatch.setattr(pd, "_resolved_adapter_directories", lambda: (future_root,))
+    monkeypatch.setattr(install_rules, 'adapter_directories', lambda: (future_root,))
     relative = f"{future_root}/runtime/adapter.py"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{future_root}",),
@@ -5342,7 +5271,7 @@ def test_adapter_roots_are_snapshotted_with_preamble_before_delegation(
         derived.append(root)
         return (root,)
 
-    monkeypatch.setattr(pd, "_adapter_directories_from_engine_source", _derive_registry)
+    monkeypatch.setattr(install_rules, 'adapter_directories', _derive_registry)
     relative = f"{initial_root}/runtime/adapter.py"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{initial_root}",),
@@ -5389,13 +5318,13 @@ def test_adapter_root_snapshot_oracle_is_sensitive_to_postrun_registry_reread(
     def _derive_registry():
         return (registry_source.read_text(encoding="utf-8"),)
 
-    monkeypatch.setattr(pd, "_adapter_directories_from_engine_source", _derive_registry)
+    monkeypatch.setattr(install_rules, 'adapter_directories', _derive_registry)
     real_adapter_paths = delegate_scope_audit._adapter_edit_paths
 
     def _lazy_adapter_paths(scope, before, after, *, workspace, roots):
         return real_adapter_paths(
             scope, before, after, workspace=workspace,
-            roots=pd._resolved_adapter_directories(),
+            roots=install_rules.adapter_directories(),
         )
 
     monkeypatch.setattr(delegate_scope_audit, "_adapter_edit_paths", _lazy_adapter_paths)
@@ -5430,7 +5359,7 @@ def test_adapter_axis_does_not_match_sibling_prefix(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """등록 루트 '전체'는 경로 경계 기준이며 이름만 비슷한 형제 디렉토리까지 넓히지 않는다."""
-    adapter_root = tuple(pd._resolved_adapter_directories())[0]
+    adapter_root = tuple(install_rules.adapter_directories())[0]
     sibling = f"{adapter_root}-backup"
     relative = f"{sibling}/settings.json"
     workspace, prompt = _scope_workspace(
@@ -5452,7 +5381,7 @@ def test_ticket_omitted_runs_both_policy_axes_for_adapter_edit(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """여집합: --ticket 생략도 새 축을 끄지 않고, 두 정책을 구분해 의도적으로 함께 보고한다."""
-    adapter_root = tuple(pd._resolved_adapter_directories())[0]
+    adapter_root = tuple(install_rules.adapter_directories())[0]
     relative = f"{adapter_root}/settings.json"
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
     fake = _WritingRun(workspace, ([relative], _ok_result()))
@@ -5472,7 +5401,7 @@ def test_nonliteral_registry_degrades_adapter_axis_loudly_without_blocking(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """T-0521 graceful degrade 연장: 파생 0이면 추측 목록 없이 판정 불가를 loud 알리고 rc는 보존."""
-    monkeypatch.setattr(pd, "_resolved_adapter_directories", lambda: ())
+    monkeypatch.setattr(install_rules, 'adapter_directories', lambda: ())
     relative = ".claude/settings.json"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=("work/demo_1/.claude",),
@@ -5495,7 +5424,7 @@ def test_adapter_warning_oracle_is_sensitive_when_axis_is_removed(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """축 formatter를 되돌린 형상에서는 핵심 oracle이 red임을 기계적으로 입증한다."""
-    adapter_root = tuple(pd._resolved_adapter_directories())[0]
+    adapter_root = tuple(install_rules.adapter_directories())[0]
     relative = f"{adapter_root}/settings.json"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{adapter_root}",),
@@ -5935,11 +5864,11 @@ def test_ticket_prepare_rejects_review_role_on_a_ticket(pd, monkeypatch, tmp_pat
 
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ], adapter_directories_fn=pd._resolved_adapter_directories) == 0
+    ]) == 0
     with pytest.raises(SystemExit) as exc:
         delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ], adapter_directories_fn=pd._resolved_adapter_directories)
+        ])
     assert exc.value.code == 2
     assert prepared_roles == ["developer"]
 

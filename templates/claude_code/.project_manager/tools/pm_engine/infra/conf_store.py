@@ -3,9 +3,10 @@
 파싱·판정·레지스트리는 `pm_engine.domain.conf_schema` 가 소유하고, 이 모듈은 파일을 읽어 그쪽에
 넘긴다. 파싱 계약과 `load` 가 raise 하지 않는 이유는 `conf_schema` 모듈 docstring 에 있다.
 
-`local.conf` 는 키 갱신이 **원자 교체**로 이뤄지는 파일이다(`pm_import._write_conf_keys`). 일반
-`open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로 판독도 공용 seam 의
-공유 읽기(`fs.read_text_shared`)를 지난다.
+`local.conf` 의 키 갱신은 설치 key writer(`install_conf._write_conf_keys`)가 **원자 교체**로 하고,
+init(`_write_init_local_conf`)은 같은 락 안에서 직접 기록한다. 두 writer 의 텍스트 규칙은
+`conf_schema._set_conf_keys` 하나다. 일반 `open` 리더가 하나라도 잡고 있으면 Windows 는 원자 교체를
+WinError 32 로 막으므로 판독도 공용 seam 의 공유 읽기(`fs.read_text_shared`)를 지난다.
 """
 from __future__ import annotations
 
@@ -145,35 +146,6 @@ def local_config(home, repo: Path | None = None) -> dict[str, str]:
     return load_checked_readable(path)
 
 
-def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
-    """local.conf 텍스트에서 지정 키만 set-or-replace. 나머지 줄·주석은 보존.
-
-    있으면 그 자리에서 `key=value` 로 교체(첫 등장만), 없으면 끝에 추가. stdlib only.
-    pm_import._set_conf_keys 와 동형 — board 는 pm_import 를 import 하지 않으므로
-    (의존 방향: pm_import 가 board init 을 subprocess 로 부르는 상위) board-local 사본을
-    둔다(중복 최소·순수 프리미티브). cmd_init 의 비파괴 병합에 쓴다.
-    """
-    remaining = dict(updates)
-    lines = text.splitlines(keepends=True)
-    out: list[str] = []
-    for line in lines:
-        stripped = line.lstrip()
-        if not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in remaining:
-                newline = "\n" if line.endswith("\n") else ""
-                out.append(f"{key}={remaining.pop(key)}{newline}")
-                continue
-        out.append(line)
-    if remaining:
-        if out and not out[-1].endswith("\n"):
-            out[-1] = out[-1] + "\n"
-        for key, value in updates.items():
-            if key in remaining:
-                out.append(f"{key}={value}\n")
-    return "".join(out)
-
-
 def _conf_default_int(key: str) -> int:
     """이 conf 키의 엔진 기본값(정수) — 정본은 `conf_schema.KEY_REGISTRY` 다.
 
@@ -259,7 +231,7 @@ def _write_init_local_conf(home) -> None:
         # session·prefix 는 어느 경로에서도 쓰지 않는다 — 이미 파일에 남아 있는 그 키도 건드리지
         # 않는다(비파괴 병합·엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다). 읽는 코드가 없으므로
         # 남아 있어도 동작은 같다.
-        merged = _set_conf_keys(text, updates)
+        merged = conf_schema._set_conf_keys(text, updates)
         # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
         # 원문을 그대로 반환하면 마지막 줄이 개행 없이 끝날 수 있고, 그 conf 에 뒤이어 붙는
         # 어떤 append 도 마지막 키에 그대로 이어져 기존 키를 변질시킨다.

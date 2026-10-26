@@ -49,15 +49,14 @@ SAVE_ENTERS_THE_WAIT_SECONDS = 0.3
 
 # 락을 실제로 쥐는 **다른 프로세스** — 엔진 자신의 writer 로 결정 하나를 쓰고 창을 연 채 기다린다.
 LOCK_HOLDER = '''
-import importlib.util, sys, time
+import sys, time
 from pathlib import Path
 
 tools, conf, ready, hold = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), float(sys.argv[4])
-spec = importlib.util.spec_from_file_location("pm_import_holder", Path(tools) / "pm_import.py")
-pm_import = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pm_import)
-with pm_import._local_conf_write_lock(conf):
-    pm_import._write_conf_keys_locked(conf, {"identity.user": "holder@example.invalid"})
+sys.path.insert(0, tools)
+from pm_engine.infra import fs, install_conf
+with fs.local_conf_write_lock(conf):
+    install_conf._write_conf_keys_locked(conf, {"identity.user": "holder@example.invalid"})
     ready.write_text("held", encoding="utf-8")
     time.sleep(hold)
 '''
@@ -65,9 +64,8 @@ with pm_import._local_conf_write_lock(conf):
 
 from _manager_home import _KNOWN_CTX_READER_PY
 
-# 사본 `pm_config.py` 자식 — 그 명령이 싣는 pm_import(직접 로드와 저장 본문 pm_update 경유 둘 다)의 모델
-# 한도 조회를 고정 값으로 바꾼다(`prepare`). 거부를 재는 테스트는 `install_fixture_capacity(pmi)` 줄을
-# 다른 준비로 바꾼다.
+# 사본 `pm_config.py` 자식 — 그 명령이 싣는 엔진 package 의 모델 한도 조회(`app.harness_ctx`)를 고정 값으로
+# 바꾼다(`prepare`). 거부를 재는 테스트는 `install_fixture_capacity(pmi)` 줄을 다른 준비로 바꾼다.
 _KNOWN_CTX_CHILD = _KNOWN_CTX_READER_PY + r"""
 import sys,importlib.util
 from pathlib import Path
@@ -77,16 +75,8 @@ entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
 def prepare(pmi):
     install_fixture_capacity(pmi)
     return pmi
-original=entry._load_module
-def load(name,filename):
-    module=original(name,filename)
-    if name=='pm_import':
-        return prepare(module)
-    if name=='pm_update':
-        loader=module._load_pm_import
-        module._load_pm_import=lambda: prepare(loader())
-    return module
-entry._load_module=load
+from pm_engine.app import harness_ctx
+prepare(harness_ctx)
 raise SystemExit(entry.main(sys.argv[2:]))
 """
 

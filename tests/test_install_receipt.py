@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+
 import importlib.util
 import json
 import os
@@ -28,10 +30,18 @@ from pathlib import Path
 import pytest
 
 from _win_skip import _can_symlink
-from pm_engine.infra import manifest_store
+from pm_engine.infra import manifest_store, pm_paths
+from pm_engine.app import add_harness
+from pm_engine.infra import install_receipt
+from pm_engine.app import update_manifest
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+# 설치·추가를 실행하는 엔진 Home(이 checkout).
+ENGINE_HOME = pm_paths.home_at(REPO)
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 requires_symlink = pytest.mark.skipif(
     not _can_symlink(), reason="Windows: symlink requires Developer Mode/admin")
@@ -41,8 +51,7 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(module)
+    return module
 
 
 @pytest.fixture(scope="module")
@@ -51,27 +60,33 @@ def pm_import():
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_opencode_models(pm_import, monkeypatch):
     """실 `opencode models` CLI 미호출 고정(미설치 동치·hermetic)."""
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
 
 
 def _new_instance(pm_import, dest: Path, harness: str = "claude") -> Path:
-    rc = pm_import.main(
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", harness, "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"])
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV)
     assert rc == 0, f"인스턴스 셋업 실패(rc={rc})"
     return dest
 
 
 def _receipt_path(pm_import, dest: Path) -> Path:
-    return dest / pm_import.INSTALL_RECEIPT_RELPATH
+    return dest / install_receipt.INSTALL_RECEIPT_RELPATH
 
 
 def _receipt(pm_import, dest: Path) -> dict:
@@ -89,25 +104,25 @@ def test_new_import_records_the_installed_harness(pm_import, tmp_path):
     dest = _new_instance(pm_import, tmp_path / "new_claude", "claude")
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude"]
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]
 
 
 def test_add_harness_extends_the_receipt(pm_import, tmp_path):
     dest = _new_instance(pm_import, tmp_path / "add_codex", "claude")
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex"]
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude", "codex"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "codex"]
 
 
 def test_into_records_the_union_of_existing_and_selected(pm_import, tmp_path):
     """`--into` 는 이번 선택만이 아니라 **기존 독자까지** 기록한다(표기 독자 집합과 같은 값)."""
     dest = _new_instance(pm_import, tmp_path / "into_union", "codex")
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex"]
 
@@ -120,16 +135,16 @@ def test_planning_paths_do_not_write_a_receipt(pm_import, tmp_path, capsys):
     dest = _new_instance(pm_import, tmp_path / "no_write_on_query", "claude")
     _drop_receipt(pm_import, dest)
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
     assert not _receipt_path(pm_import, dest).exists(), "질의가 기록을 만들었다"
 
     capsys.readouterr()
-    pm_import.add_harness(dest, "codex", dry_run=True, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True, source_root=REPO)
     assert not _receipt_path(pm_import, dest).exists(), "dry-run 이 기록을 만들었다"
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "codex", "--fill", "manual", "--dry-run",
-         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
     assert not _receipt_path(pm_import, dest).exists(), "import dry-run 이 기록을 만들었다"
 
 
@@ -138,10 +153,10 @@ def test_recording_is_idempotent_for_the_same_set(pm_import, tmp_path):
     dest = _new_instance(pm_import, tmp_path / "idempotent", "claude")
     before = _receipt_path(pm_import, dest).read_bytes()
 
-    assert pm_import.record_install_receipt(dest, ["claude"]) is False
+    assert install_receipt.record_install_receipt(dest, ["claude"]) is False
     assert _receipt_path(pm_import, dest).read_bytes() == before
 
-    assert pm_import.record_install_receipt(dest, ["claude", "codex"]) is True
+    assert install_receipt.record_install_receipt(dest, ["claude", "codex"]) is True
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex"]
 
 
@@ -175,10 +190,10 @@ def test_receipt_keeps_detection_after_every_exclusive_marker_is_gone(
     dest = _new_instance(pm_import, tmp_path / "evidence_gone", "opencode")
     assert _erase_exclusive_evidence(dest, "opencode"), "픽스처 전제(전용 판별자 실재)"
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["opencode"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["opencode"]
 
     _drop_receipt(pm_import, dest)
-    assert pm_import.installed_harnesses(dest, REPO) == [], \
+    assert install_receipt.installed_harnesses(dest, REPO) == [], \
         "추론 폴백이 이 형상을 검출하면 이 테스트는 한계 케이스가 아니다"
 
 
@@ -191,7 +206,7 @@ def test_self_update_notation_reader_set_follows_the_receipt(
     dest = _new_instance(pm_import, tmp_path / "update_seam", "opencode")
     _erase_exclusive_evidence(dest, "opencode")
 
-    selected = pm_update._installed_entry_notation_manifests(dest, REPO, [])
+    selected = update_manifest._installed_entry_notation_manifests(dest, REPO, [])
 
     assert [p.parent.parent.name for p in selected] == ["opencode"], selected
 
@@ -205,7 +220,7 @@ def test_non_pm_tree_stays_undetected_without_a_receipt(pm_import, tmp_path):
     (dest / ".agents" / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
     (dest / "AGENTS.md").write_text("# 우리 프로젝트 규약\n", encoding="utf-8")
 
-    assert pm_import.installed_harnesses(dest, REPO) == []
+    assert install_receipt.installed_harnesses(dest, REPO) == []
     assert not _receipt_path(pm_import, dest).exists()
 
 
@@ -216,7 +231,7 @@ def test_legacy_instance_falls_back_then_backfills_on_add_harness(pm_import, tmp
     dest = _new_instance(pm_import, tmp_path / "backfill_add", "claude")
     _drop_receipt(pm_import, dest)
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex"], \
         "추론으로 찾은 기존 하네스가 backfill 에서 빠졌다(독자 유실)"
@@ -227,9 +242,9 @@ def test_legacy_instance_backfills_on_reimport(pm_import, tmp_path):
     dest = _new_instance(pm_import, tmp_path / "backfill_into", "claude")
     _drop_receipt(pm_import, dest)
 
-    assert pm_import.main(
+    assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude"]
 
@@ -242,7 +257,7 @@ def test_receipt_is_git_tracked_scope_not_per_clone(pm_import, tmp_path):
     per-clone(local.conf) 자리에 두면 같은 저장소를 clone 한 두 번째 사용자에겐 기록이 없어, 어댑터
     파일이 다 있는데도 판정이 추론으로 내려간다(이 기록이 닫으려는 한계가 그 clone 에서 부활)."""
     dest = _new_instance(pm_import, tmp_path / "tracked", "claude")
-    relpath = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
+    relpath = install_receipt.INSTALL_RECEIPT_RELPATH.as_posix()
 
     ignored = subprocess.run(
         ["git", "-C", str(dest), "check-ignore", "-q", relpath],
@@ -261,7 +276,7 @@ def test_receipt_is_outside_the_engine_manifest(pm_import, pm_update):
         str(entry).replace("\\", "/")
         for entry in manifest_store.read_manifest(REPO / ".project_manager" / "engine.manifest")
     }
-    relpath = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
+    relpath = install_receipt.INSTALL_RECEIPT_RELPATH.as_posix()
 
     assert not any(relpath == d or relpath.startswith(d.rstrip("/") + "/") for d in declared), \
         f"{relpath} 가 manifest 소유 — pm_update 가 덮어 기록이 흔들린다"
@@ -273,7 +288,7 @@ def test_update_does_not_clobber_the_receipt(pm_import, pm_update, tmp_path, mon
     before = _receipt_path(pm_import, dest).read_bytes()
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
 
     assert _receipt_path(pm_import, dest).read_bytes() == before
 
@@ -285,7 +300,7 @@ def test_corrupt_receipt_falls_back_loudly(pm_import, tmp_path, capsys):
     _receipt_path(pm_import, dest).write_text("{ not json", encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
 
     err = capsys.readouterr().err
     assert "설치 기록" in err and "증거 추론" in err, err
@@ -296,7 +311,7 @@ def test_receipt_without_harness_list_falls_back_loudly(pm_import, tmp_path, cap
     _receipt_path(pm_import, dest).write_text('{"schema": 1}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]
     assert "설치 기록" in capsys.readouterr().err
 
 
@@ -307,7 +322,7 @@ def test_unregistered_harness_in_receipt_is_excluded_loudly(pm_import, tmp_path,
         '{"schema": 1, "harnesses": ["claude", "fourth"]}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]
     assert "fourth" in capsys.readouterr().err
 
 
@@ -318,7 +333,7 @@ def test_receipt_with_only_unknown_names_is_treated_as_absent(pm_import, tmp_pat
         '{"schema": 1, "harnesses": ["fourth"]}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
 
 
 @requires_symlink
@@ -334,11 +349,11 @@ def test_receipt_channel_does_not_follow_a_symlinked_path(pm_import, tmp_path, c
     receipt.symlink_to(outside)
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"], \
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"], \
         "링크를 따라가 밖의 기록을 진실로 삼음"
     assert "설치 기록" in capsys.readouterr().err
 
-    assert pm_import.record_install_receipt(dest, ["claude", "codex"]) is False
+    assert install_receipt.record_install_receipt(dest, ["claude", "codex"]) is False
     assert json.loads(outside.read_text(encoding="utf-8"))["harnesses"] == ["codex"], \
         "링크를 따라 저장소 밖 파일을 덮음"
     # 안전하게 **읽을 수 없는** 경로는 쓰기 시도 자체를 하지 않는다(더 이른 거부·같은 결과).
@@ -354,7 +369,7 @@ def test_empty_harness_list_is_loud_not_silent(pm_import, tmp_path, capsys):
         '{"schema": 1, "harnesses": []}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
 
     err = capsys.readouterr().err
     assert "유효한 하네스가 없어" in err, err
@@ -368,7 +383,7 @@ def test_newer_schema_is_refused_loudly(pm_import, tmp_path, capsys):
         '{"schema": 99, "harnesses": ["codex"]}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백(codex 아님).
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백(codex 아님).
 
     err = capsys.readouterr().err
     assert "schema 99" in err and "엔진을 갱신" in err, err
@@ -382,12 +397,12 @@ def test_unregistered_name_survives_a_rewrite(pm_import, tmp_path):
     _receipt_path(pm_import, dest).write_text(
         '{"schema": 1, "harnesses": ["claude", "fourth"]}\n', encoding="utf-8")
 
-    assert pm_import.record_install_receipt(dest, ["claude", "codex"]) is True
+    assert install_receipt.record_install_receipt(dest, ["claude", "codex"]) is True
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex", "fourth"], \
         "미등록 이름이 재기록에서 사라짐(신 엔진 기록 영구 소실)"
     # 판정은 여전히 등록분만 본다(보존 ≠ 사용).
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude", "codex"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "codex"]
 
 
 def test_ghost_receipt_entry_is_reported_with_a_fix_path(pm_import, tmp_path, capsys):
@@ -396,17 +411,17 @@ def test_ghost_receipt_entry_is_reported_with_a_fix_path(pm_import, tmp_path, ca
     기록이 관측을 덮으므로, 잘못 박힌 기록은 사람이 고치지 않으면 영원히 그 하네스를 독자로 붙든다.
     제거 채널이 파일 편집뿐이라 그 위치를 실값으로 준다."""
     dest = _new_instance(pm_import, tmp_path / "ghost", "claude")
-    pm_import.record_install_receipt(dest, ["claude", "codex"])  # codex 어댑터는 없다.
+    install_receipt.record_install_receipt(dest, ["claude", "codex"])  # codex 어댑터는 없다.
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude", "codex"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "codex"]
 
     err = capsys.readouterr().err
     assert "codex" in err and "어댑터가 트리에 없습니다" in err, err
     assert str(_receipt_path(pm_import, dest)) in err, "수정 경로 실값이 없다"
     # 정상 인스턴스는 조용하다(경고가 무차별이 아님).
     capsys.readouterr()
-    pm_import.installed_harnesses(_new_instance(pm_import, tmp_path / "quiet", "claude"), REPO)
+    install_receipt.installed_harnesses(_new_instance(pm_import, tmp_path / "quiet", "claude"), REPO)
     assert "어댑터가 트리에 없습니다" not in capsys.readouterr().err
 
 
@@ -416,7 +431,7 @@ def test_receipt_survives_deleted_marker_files_without_ghost_noise(pm_import, tm
     _erase_exclusive_evidence(dest, "opencode")
     capsys.readouterr()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["opencode"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["opencode"]
     assert "어댑터가 트리에 없습니다" not in capsys.readouterr().err
 
 
@@ -430,7 +445,7 @@ def test_newer_schema_receipt_is_not_overwritten(pm_import, tmp_path, capsys):
     _receipt_path(pm_import, dest).write_text(future, encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.record_install_receipt(dest, ["claude", "codex"]) is False
+    assert install_receipt.record_install_receipt(dest, ["claude", "codex"]) is False
 
     assert _receipt_path(pm_import, dest).read_text(encoding="utf-8") == future, \
         "상위 schema 기록을 구 엔진 형식으로 덮음"
@@ -445,7 +460,7 @@ def test_add_harness_does_not_destroy_a_newer_schema_receipt(pm_import, tmp_path
     _receipt_path(pm_import, dest).write_text(future, encoding="utf-8")
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert _receipt_path(pm_import, dest).read_text(encoding="utf-8") == future
     assert (dest / ".codex").is_dir(), "기록 갱신 거부가 설치를 막았다"
@@ -461,10 +476,10 @@ def test_corrupt_receipt_is_backed_up_before_rewrite(pm_import, tmp_path, capsys
     _receipt_path(pm_import, dest).write_text(broken, encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.record_install_receipt(dest, ["claude", "codex"]) is True
+    assert install_receipt.record_install_receipt(dest, ["claude", "codex"]) is True
 
     kept = _receipt_path(pm_import, dest).with_name(
-        _receipt_path(pm_import, dest).name + pm_import.INSTALL_RECEIPT_CORRUPT_SUFFIX)
+        _receipt_path(pm_import, dest).name + install_receipt.INSTALL_RECEIPT_CORRUPT_SUFFIX)
     assert kept.read_text(encoding="utf-8") == broken, "손상 원본이 보존되지 않음"
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex"]
     assert "손상된 설치 기록을 백업하고 다시 씁니다" in capsys.readouterr().err
@@ -476,11 +491,11 @@ def test_corrupt_receipt_backups_take_a_free_slot(pm_import, tmp_path):
     receipt = _receipt_path(pm_import, dest)
     first, second = "{ 첫 손상\n", "{ 둘째 손상\n"
     receipt.write_text(first, encoding="utf-8")
-    pm_import.record_install_receipt(dest, ["claude"])
+    install_receipt.record_install_receipt(dest, ["claude"])
     receipt.write_text(second, encoding="utf-8")
-    pm_import.record_install_receipt(dest, ["claude", "codex"])
+    install_receipt.record_install_receipt(dest, ["claude", "codex"])
 
-    base = receipt.with_name(receipt.name + pm_import.INSTALL_RECEIPT_CORRUPT_SUFFIX)
+    base = receipt.with_name(receipt.name + install_receipt.INSTALL_RECEIPT_CORRUPT_SUFFIX)
     assert base.read_text(encoding="utf-8") == first
     assert base.with_name(base.name + ".1").read_text(encoding="utf-8") == second
 
@@ -494,7 +509,7 @@ def test_record_does_not_emit_judgment_warnings(pm_import, tmp_path, capsys):
     _receipt_path(pm_import, dest).write_text("{ 깨진 JSON\n", encoding="utf-8")
     capsys.readouterr()
 
-    assert pm_import.record_install_receipt(dest, ["claude", "codex"]) is True
+    assert install_receipt.record_install_receipt(dest, ["claude", "codex"]) is True
 
     err = capsys.readouterr().err
     assert "증거 추론으로 판정합니다" not in err, err

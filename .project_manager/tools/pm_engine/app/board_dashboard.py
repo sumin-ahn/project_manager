@@ -6,6 +6,9 @@ from pm_engine.infra import fs
 from pm_engine.infra import pm_paths
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import ticket_store
+from pm_engine.app import lint_hooks
+from pm_engine.app import ticket_lint
+from pm_engine.infra import regression_store
 
 
 def refresh_board(home) -> None:
@@ -129,3 +132,43 @@ def _refresh_board_locked(home) -> None:
     # wrapper에 기대지 않고 쓸 수 있게 destination parent 생성도 본체의 write 계약에 포함한다.
     (pm_paths.wiki_dir(home) / "board.md").parent.mkdir(parents=True, exist_ok=True)
     (pm_paths.wiki_dir(home) / "board.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")
+
+
+def status_snapshot(home) -> dict:
+    """board 현황 기계 조회 — 상태별 티켓 수 · open 목록 · lint 판정 · 회귀/라이브게이트 기록.
+
+    `pm-config status --json --with-board` 가 부르는 **얇은 조립**이다. 수집은 전부 기존 함수가
+    하고(`_all_tickets` · `lint_tickets` + `_run_lint_hooks` · 회귀/라이브게이트 sidecar) 여기선
+    dict 로 묶기만 한다 — `cmd_list`·`cmd_lint` 의 필터·출력·종료코드 경로는 건드리지 않는다
+    (판정 사본 0). lint 는 **목록으로만** 실린다: 이슈가 있어도 이 함수는 실패하지 않는다(rc 는
+    `cmd_lint` 의 관심사다).
+
+    세는 축은 `STATUS_DIRS` 다섯이다 — `.drafts`(발행 전 초안)는 그 밖이라 세지 않는다.
+    sidecar 좌표는 push 보호훅이 쓰는 것과 **같은 해소**를 거친다(사본/cwd 별 오독 차단).
+    """
+    counts = {status: 0 for status in ticket_rules.STATUS_DIRS}
+    open_rows: list[dict] = []
+    for status, front_matter in ticket_store._all_tickets(home):
+        counts[status] = counts.get(status, 0) + 1
+        if status == "open":
+            open_rows.append({
+                "id": front_matter.get("id"),
+                "title": front_matter.get("title"),
+                # open 티켓의 `claimed_by` 는 불변식상 null 이다(`lint_ticket_status_fields`) —
+                # 값이 실리면 그 자체가 드리프트 신호라 접지 않고 그대로 보인다.
+                "claimed_by": front_matter.get("claimed_by"),
+            })
+    open_rows.sort(key=lambda row: str(row.get("id") or ""))
+    lint: list[dict] = [
+        {"kind": kind, "message": f"{subject}: {detail}"}
+        for subject, kind, detail in ticket_lint.lint_tickets(home)
+    ]
+    lint.extend({"kind": hook_name, "message": detail}
+                for hook_name, detail in lint_hooks._run_lint_hooks(home))
+    return {
+        "counts": counts,
+        "open": open_rows,
+        "lint": lint,
+        "regression": regression_store._sidecar_document(regression_store._resolve_regression_flag(home, str(home.root))[0]),
+        "livegate": regression_store._sidecar_document(regression_store._resolve_livegate_flag(home, str(home.root))[0]),
+    }

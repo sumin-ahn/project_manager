@@ -24,6 +24,13 @@
 """
 from __future__ import annotations
 
+from _manager_home import render_home
+from pm_engine.app import import_fill
+from pm_engine.app import import_render
+from pm_engine.infra import install_source
+from pm_engine.app import add_harness
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import io
 import re
@@ -33,6 +40,10 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.cli import import_cmd
+from pm_engine.cli import update_cmd
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -55,31 +66,35 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
 def pm_import():
     mod = _load("pm_import")
     # hermetic — 라이브 `opencode models` CLI 미호출(미설치 동치).
-    mod._real_models_runner = lambda source: (False, [])
     return mod
 
 
 @pytest.fixture(scope="module")
-def pm_update():
+def _pm_update_cli():
+    return _load("pm_update")
+
+
+@pytest.fixture
+def pm_update(_pm_update_cli, monkeypatch):
     from _manager_home import complete_in_process
-    return complete_in_process(_load("pm_update"))
+    with complete_in_process(monkeypatch):
+        yield _pm_update_cli
 
 
 def _import_new(pm_import, dest: Path, harness: str) -> None:
     """`--new` 로 채택자 인스턴스를 만든다(출력은 삼킴 — 테스트 로그 오염 방지)."""
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = pm_import.main(
+        rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
             ["--new", str(dest), "--harness", harness,
-             "--name", PROJECT_NAME, "--fill", "manual"]
+             "--name", PROJECT_NAME, "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
         )
     assert rc == 0, f"{harness} import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
 
@@ -160,7 +175,7 @@ def test_add_harness_codex_substitutes_toml_via_sed_channel(pm_import, tmp_path)
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+        add_harness.add_harness(pm_paths.home_at(REPO), dest, "codex", dry_run=False, source_root=REPO)
 
     leaks = _token_leaks(dest, HARNESS_ADAPTER_DIRS["codex"])
     assert not leaks, f"add-harness codex 어댑터에 미해소 토큰 잔존(sed 채널 미커버): {leaks}"
@@ -181,7 +196,7 @@ def test_import_codex_declares_toml_render_entry(imported):
         "codex flavor manifest 에 `.codex/agents @render` 선언이 없다 — 결함의 전제가 바뀌었다.")
 
 
-def test_render_managed_files_covers_non_md_declared_paths(pm_import, tmp_path):
+def test_render_managed_files_covers_non_md_declared_paths(render_home, pm_import, tmp_path):
     """`render_managed_files` 는 확장자가 아니라 **@render 선언**으로만 대상을 고른다(T-0424).
 
     옛 `.md` 하드 필터는 manifest 선언을 덮는 중복·모순 판정이었다. `.toml` 산출물이 렌더되는지
@@ -195,7 +210,7 @@ def test_render_managed_files_covers_non_md_declared_paths(pm_import, tmp_path):
     agent.write_text('description = "{{PROJECT_NAME}} 구현 subagent"\n', encoding="utf-8")
 
     rel = Path(".codex/agents/developer.toml")
-    changed = pm_import.render_managed_files(
+    changed = import_render.render_managed_files(render_home,
         dest, {"{{PROJECT_NAME}}": PROJECT_NAME}, {rel})
 
     assert changed == 1, "render 채널이 @render 선언된 `.toml` 을 건너뛰었다(확장자 필터 재발)."
@@ -228,7 +243,7 @@ def test_pm_update_renders_toml_adapter(pm_update, tmp_path, monkeypatch, capsys
         encoding="utf-8")
 
     monkeypatch.setattr(pm_update, "REPO", adopter)
-    rc = pm_update.main([])
+    rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     captured = capsys.readouterr()
     assert rc == 0, f"codex TOML @render 재전파 실패: {captured.err!r}"
@@ -261,7 +276,7 @@ def test_substitute_suffix_allowlist_is_gone(pm_import):
 ])
 def test_should_substitute_includes_any_adapter_format(pm_import, rel):
     """치환 대상 판정은 확장자를 묻지 않는다 — 제외 사유가 없으면 대상이다."""
-    assert pm_import._should_substitute(Path(rel), frozenset()), (
+    assert install_source._should_substitute(Path(rel), frozenset()), (
         f"{rel} 이 치환 대상에서 빠졌다 — 확장자 열거가 되살아났는지 확인하라.")
 
 
@@ -272,7 +287,7 @@ def test_should_substitute_includes_any_adapter_format(pm_import, rel):
 ])
 def test_should_substitute_excludes_engine_assets(pm_import, rel, why):
     """엔진 소유 자산은 판정 역전 후에도 계속 제외된다(동작 무변경)."""
-    assert not pm_import._should_substitute(Path(rel), frozenset()), (
+    assert not install_source._should_substitute(Path(rel), frozenset()), (
         f"{rel} 이 치환 대상이 됐다 — {why}.")
 
 
@@ -284,15 +299,17 @@ def test_should_substitute_excludes_methodology_docs(pm_import, rel):
     """manifest 파생 치환-제외 집합(방법론 문서)은 그대로 존중된다(T-0329 무변경)."""
     exclude = frozenset({".project_manager/wiki/pm_role.md",
                          ".project_manager/wiki/pm_playbook.md"})
-    assert not pm_import._should_substitute(Path(rel), exclude)
+    assert not install_source._should_substitute(Path(rel), exclude)
 
 
 # ── (e-2) 채택자 산출물에서의 동일 무변경 확인 ────────────────────────────────
 
 @pytest.mark.parametrize("harness", sorted(HARNESS_ADAPTER_DIRS))
 def test_engine_python_source_stays_verbatim(imported, harness):
-    """엔진 `.py` 사본은 판정 역전 후에도 토큰-문서를 그대로 갖는다(verbatim·T-0133)."""
-    engine = imported[harness] / ".project_manager" / "tools" / "pm_import.py"
+    """엔진 `.py` 사본은 판정 역전 후에도 토큰-문서를 그대로 갖는다(verbatim·T-0133).
+
+    토큰을 담은 설치 도움말 문서는 `cli.import_args` 모듈 문서가 소유한다."""
+    engine = imported[harness] / ".project_manager" / "tools" / "pm_engine" / "cli" / "import_args.py"
     assert "{{PROJECT_NAME}}" in engine.read_text(encoding="utf-8"), (
         "엔진 소스가 치환됐다 — 주석·docstring 의 토큰은 placeholder 가 아니라 문서다.")
 
@@ -324,7 +341,7 @@ def test_empty_sub_value_still_leaves_token(pm_import, tmp_path):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text('description = "{{PROJECT_NAME}} subagent"\n', encoding="utf-8")
 
-    changed = pm_import.substitute_placeholders(
+    changed = import_render.substitute_placeholders(
         dest, {"{{PROJECT_NAME}}": ""}, {Path(".codex/agents/developer.toml")})
 
     assert changed == 0
@@ -346,9 +363,15 @@ def test_substitution_scope_stays_copied_relpaths(pm_import, tmp_path):
     copied.parent.mkdir(parents=True, exist_ok=True)
     copied.write_text('description = "{{PROJECT_NAME}}"\n', encoding="utf-8")
 
-    changed = pm_import.substitute_placeholders(
+    changed = import_render.substitute_placeholders(
         dest, {"{{PROJECT_NAME}}": PROJECT_NAME}, {Path(".codex/agents/developer.toml")})
 
     assert changed == 1
     assert untouched.read_text(encoding="utf-8") == original, (
         "복사 목록 밖 사용자 파일이 치환됐다 — copied_relpaths 비파괴 불변식 위반(MF1).")
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_model_listing(monkeypatch):
+    """공유 package의 조회 대역을 테스트마다 복원한다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))

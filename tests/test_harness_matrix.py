@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+
 import pytest
 
 import _harness_matrix as hm
@@ -44,7 +46,7 @@ def test_real_tree_every_harness_has_template_dir_and_namespace():
     """실트리 무-불일치: 파생된 각 하네스가 templates/ 어댑터 트리 디렉토리 + 어댑터 네임스페이스를
     실제로 보유(상수엔 있는데 디렉토리 없는 drift 를 실트리에서 loud 로 잡는다)."""
     for h in hm.HARNESSES:
-        (dirname,) = hm._PM_IMPORT.HARNESS_TEMPLATE_DIRS[h]
+        (dirname,) = install_rules.HARNESS_TEMPLATE_DIRS[h]
         assert (hm.TEMPLATES / dirname).is_dir(), f"{h}: templates/{dirname} 디렉토리 부재"
         for ns in hm.HARNESS_ADAPTER_DIRS[h]:
             # 네임스페이스는 채택자 dest 상대 경로(예 .codex)라 소스 트리 dir 명과 다를 수 있어
@@ -74,7 +76,7 @@ def test_derive_auto_includes_new_registered_harness(tmp_path):
     이게 티켓의 핵심 — 네 번째 하네스는 상수 한 줄 + templates/ 트리면 모든 게이트에 자동으로 흐른다.
     """
     templates = _mk_templates(tmp_path, "claude_code", "opencode", "codex", "fourth_tmpl")
-    const = {**hm._PM_IMPORT.HARNESS_TEMPLATE_DIRS, "fourth": ("fourth_tmpl",)}
+    const = {**install_rules.HARNESS_TEMPLATE_DIRS, "fourth": ("fourth_tmpl",)}
     got = hm.derive_harnesses(templates, const)
     assert got == ("claude", "codex", "fourth", "opencode"), got
 
@@ -138,4 +140,4 @@ def test_derive_only_combo_keys_raises_loud(tmp_path):
 def test_derive_missing_templates_dir_raises(tmp_path):
     """templates_dir 자체가 없으면 첫 등록 하네스의 dir 부재로 '등록 ⇒ 실존' loud fail."""
     with pytest.raises(RuntimeError, match="디렉토리가 없다"):
-        hm.derive_harnesses(tmp_path / "no_such_templates", hm._PM_IMPORT.HARNESS_TEMPLATE_DIRS)
+        hm.derive_harnesses(tmp_path / "no_such_templates", install_rules.HARNESS_TEMPLATE_DIRS)

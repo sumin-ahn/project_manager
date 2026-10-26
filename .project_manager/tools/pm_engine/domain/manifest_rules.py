@@ -25,8 +25,34 @@ SOURCE_TAG_PREFIX = "@source="
 # read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들(복수·순서 무관). `@source=<path>` 는
 # 값 운반 마커라 prefix 검사로 별도 처리(이 튜플 밖).
 _MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
-# 엔진 구현 패키지 디렉터리 행 — 평면 엔진 파일보다 먼저 전달한다(read_manifest 정렬).
+# 엔진 구현 패키지 디렉터리 행 — 평면 엔진 파일보다 먼저 전달한다(read_manifest 정렬). 갱신기는 이
+# 디렉터리를 파일 단위로 덮지 않고 통째로 바꾼다(같은 부모의 완성 대기 트리 → 게시).
 _ENGINE_PACKAGE_REL = ".project_manager/tools/pm_engine"
+# 패키지 교체가 패키지 옆(`.project_manager/tools/` 바로 아래)에 남기는 운영 산출물의 예약 이름.
+#   락 파일은 같은 대상의 교체 writer 를 직렬화하려고 지우지 않고 남는다. 완성 대기 트리(stage)와 기존
+#   패키지 보존 트리(backup)는 정상 완료 때 정리되고, 실패하면 수동 복구 자료로 남는다. 어느 쪽도
+#   새 채택자에게 출하하지 않는다(`_is_engine_transfer_artifact`).
+_ENGINE_TRANSFER_LOCK_NAME = ".pm-engine-transfer.lock"
+_ENGINE_TRANSFER_STAGE_PREFIX = ".pm-engine-stage-"
+_ENGINE_TRANSFER_BACKUP_PREFIX = ".pm-engine-backup-"
+
+
+def _is_engine_transfer_artifact(relative: str) -> bool:
+    """repo 상대경로가 패키지 교체의 운영 산출물(락·stage·backup 과 그 하위)인가.
+
+    부모가 정확히 `.project_manager/tools` 인 자리만 본다. 다른 부모의 같은 이름과, 접미사 없는
+    예약 접두사 자체(`.pm-engine-stage-`)는 정상 경로로 둔다."""
+    parts = relative.replace("\\", "/").strip("/").split("/")
+    parent = _ENGINE_PACKAGE_REL.split("/")[:-1]
+    if len(parts) <= len(parent) or parts[:len(parent)] != parent:
+        return False
+    name = parts[len(parent)]
+    if name == _ENGINE_TRANSFER_LOCK_NAME:
+        return len(parts) == len(parent) + 1
+    return any(
+        name.startswith(prefix) and len(name) > len(prefix)
+        for prefix in (_ENGINE_TRANSFER_STAGE_PREFIX, _ENGINE_TRANSFER_BACKUP_PREFIX)
+    )
 
 
 class ManifestEntry(str):
@@ -235,7 +261,7 @@ def _manifest_marker_key(entry) -> tuple:
 # 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
 # 추출 → 덮은 **뒤** 재부착한다. 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의 라인은
 # `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다(판정원 단일 = engine.manifest
-# 최종 뷰 하나). 절의 *값* 은 pm_import.add_harness 가 쓴다(같은 리터럴 공유·아래 상수 블록).
+# 최종 뷰 하나). 절의 *값* 은 app.add_harness 가 쓴다(같은 리터럴 공유·아래 상수 블록).
 # pm:data-literal:begin
 # 아래 네 상수는 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
 # 이 소스의 산문이 아니다. 따라서 스트립·문구 정리·리팩터 대상이 아니며 한 글자만 달라져도 이미
@@ -319,3 +345,18 @@ def _path_owned_by(path: str, owner_paths) -> bool:
     return any(
         p == c or p.startswith(c.rstrip("/") + "/")
         for c in (str(o).replace("\\", "/") for o in owner_paths))
+
+
+# 엔진 코드 접두사 — 이 아래 행이 전달 프로세스가 옮기는 엔진 코드다(`_is_engine_code`). 평면 진입과
+# `pm_engine` 패키지가 한 세대로 맞물려 있으므로 세대 단위로만 옮긴다.
+_ENGINE_TOOLS_PREFIX = ".project_manager/tools/"
+
+
+def _paths_overlap(one: str, other: str) -> bool:
+    """두 경로가 겹치는가 — 같거나 한쪽이 다른 쪽의 상위 디렉토리(양방향)."""
+    return one == other or one.startswith(other + "/") or other.startswith(one + "/")
+
+
+def _is_engine_code(rel) -> bool:
+    """manifest 행(또는 change 의 dest 경로)이 엔진 코드인가 — `.project_manager/tools/` 아래."""
+    return str(rel).replace("\\", "/").startswith(_ENGINE_TOOLS_PREFIX)

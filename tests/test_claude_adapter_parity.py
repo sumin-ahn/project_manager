@@ -29,6 +29,7 @@ from _settings_portability import (
     portability_failures,
     referenced_hook_paths,
 )
+from pm_engine.app import adapter_report
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT_CLAUDE = REPO / ".claude"
@@ -123,10 +124,10 @@ def test_t0953_stale_compaction_entries_show_retired_rows():
         "timeout": 15,
     }]}]
 
-    rows = {row.name: row for row in pm_import._adapter_feature_rows(
+    rows = {row.name: row for row in adapter_report._adapter_feature_rows(
         ".claude/settings.json", project, latest)}
 
-    assert rows["hooks.PreCompact"].verdict == pm_import.ADAPTER_FEATURE_RETIRED == "retired"
+    assert rows["hooks.PreCompact"].verdict == adapter_report.ADAPTER_FEATURE_RETIRED == "retired"
     assert rows["hooks.PostCompact"].verdict == "retired"
 
 

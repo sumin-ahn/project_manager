@@ -23,6 +23,8 @@ lib/stall-watchdog-core.cjs}). T-0336 축은 *프로세스* 첫-이벤트 hang, 
 """
 from __future__ import annotations
 
+from pm_engine.app import import_fill
+
 import importlib.util
 import errno
 import json
@@ -374,10 +376,10 @@ def test_pm_import_opencode_fill_routes_watchdog(monkeypatch):
     monkeypatch.setattr(watchdog, "stall_retries_default", lambda: 1)
     monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(
-        pm_import.subprocess, "Popen",
+        subprocess, "Popen",
         lambda *args, **kwargs: pytest.fail("테스트가 실 opencode를 spawn하려 함"),
     )
-    ok, out = pm_import._real_harness_runner(
+    ok, out = import_fill._real_harness_runner(
         ["opencode", "run", "hi", "--format", "json"], "prompt")
     assert ok is False
     assert "stall" in out and "재시도 소진" in out
@@ -398,10 +400,10 @@ def test_pm_import_claude_fill_routes_shared_watchdog(monkeypatch):
 
     monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(
-        pm_import.subprocess, "Popen",
+        subprocess, "Popen",
         lambda *args, **kwargs: pytest.fail("테스트가 실 claude를 spawn하려 함"),
     )
-    ok, out = pm_import._real_harness_runner(["claude", "-p", "hi"], "prompt")
+    ok, out = import_fill._real_harness_runner(["claude", "-p", "hi"], "prompt")
     assert ok is True and "draft text" in out
     profile = watchdog.HARNESS_PROFILES["claude"]
     assert called["first_event_timeout"] is None

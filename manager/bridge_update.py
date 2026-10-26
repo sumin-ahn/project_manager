@@ -20,18 +20,21 @@ rc·stdout·stderr 를 가공 없이 넘기고, 어댑터 drift 줄 강조는 �
 """
 from __future__ import annotations
 
+from pm_engine.domain import install_rules
+from pm_engine.infra import upstream_git
+
 import importlib
 import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
-from . import CallError, ENGINE_LOCK, REPO_ROOT, load_engine_module
+from . import CallError, ENGINE_LOCK, REPO_ROOT
 from . import registry, runner
 from .bridge_settings import _completed, _pm_home, _run, _tool
 
 # 갱신 한 번의 상한 — URL upstream 이면 엔진이 캐시 clone 을 돌리고 그 상한이 600초다
-# (`pm_import.UPSTREAM_CLONE_TIMEOUT_SECONDS`). 그 위에 파일 복사·훅 재설치 몫을 얹는다.
+# (`upstream_git.UPSTREAM_CLONE_TIMEOUT_SECONDS`). 그 위에 파일 복사·훅 재설치 몫을 얹는다.
 UPDATE_TIMEOUT_SECONDS = 900
 # 적용 한 번의 상한 — 로컬 파일 복사 + `board.py init` 이다(실측 1.0초 · 네트워크 0).
 APPLY_TIMEOUT_SECONDS = 300
@@ -56,20 +59,20 @@ def imprinted_upstream() -> str:
     """새 프로젝트에 박을 upstream 기본값 — 빌드 각인, 없으면 번들 트리의 origin URL.
 
     개발 트리에는 각인 모듈이 없으므로 `derive_origin_url(bundle_root())` 로 간다 —
-    `pm_import` 가 `--upstream` 생략 시 쓰는 바로 그 함수라 새 판정이 아니다. 둘 다 없으면 빈
+    `pm_import.py` 가 `--upstream` 생략 시 쓰는 바로 그 함수(`infra.upstream_git`)라 새 판정이 아니다. 둘 다 없으면 빈
     문자열이고, 화면이 사람에게 값을 묻는다(관리자가 URL 상수를 손으로 박지 않는다).
     """
     if importlib.util.find_spec(BUILD_INFO_MODULE) is not None:
         return importlib.import_module(BUILD_INFO_MODULE).UPSTREAM_URL
     with ENGINE_LOCK:
-        derived = load_engine_module("pm_import.py").derive_origin_url(bundle_root())
+        derived = upstream_git.derive_origin_url(bundle_root())
     return derived or ""
 
 
 def registered_harnesses() -> list[str]:
     """하네스 라디오의 값 — 번들 엔진의 어댑터 registry(= template 디렉터리 표) 그대로."""
     with ENGINE_LOCK:
-        return list(load_engine_module("pm_import.py").REGISTERED_HARNESSES)
+        return list(install_rules.REGISTERED_HARNESSES)
 
 
 def update_argv(pm_home: Path, *, dry_run: bool) -> list[str]:

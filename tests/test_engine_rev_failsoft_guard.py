@@ -37,10 +37,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
+from _engine_tree import engine_python_files
 from _textio import utf8_child_env
 from pm_engine.cli import finish_record
 from pm_engine.infra import pm_paths
@@ -51,6 +51,8 @@ TOOLS = REPO / ".project_manager" / "tools"
 _RECOVERY_MARKER = "_absorb_engine_rev_skew_for_recovery"
 _RECOVERY_REASONS = "_ENGINE_REV_SKEW_RECOVERY_REASONS"
 _TERMINAL_MARKER = "_report_engine_rev_skew_at_terminal"
+_SKEW_PREDICATE = "_is_engine_rev_skew"
+_SKEW_ATTRIBUTE = "_engine_rev_skew"
 
 
 @dataclass(frozen=True)
@@ -260,6 +262,23 @@ def _call_in_try_body(call: ast.Call, try_node: ast.Try | ast.TryStar,
     return node is try_node and child in try_node.body
 
 
+def _is_inline_skew_marker(node: ast.AST, exception_name: str) -> bool:
+    """package 의 직접 판독 `getattr(exc, "_engine_rev_skew", False)` 정확한 3인자 형태만 인정한다."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) == 3
+        and not node.keywords
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == exception_name
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == _SKEW_ATTRIBUTE
+        and isinstance(node.args[2], ast.Constant)
+        and node.args[2].value is False
+    )
+
+
 def _marker_call(handler: ast.ExceptHandler, name: str) -> ast.Call | None:
     if not isinstance(handler.name, str):
         return None
@@ -267,10 +286,18 @@ def _marker_call(handler: ast.ExceptHandler, name: str) -> ast.Call | None:
         (
             node for node in ast.walk(handler)
             if isinstance(node, ast.Call)
-            and _called_name(node) == name
-            and node.args
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == handler.name
+            and (
+                (
+                    _called_name(node) == name
+                    and node.args
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == handler.name
+                )
+                or (
+                    name == _SKEW_PREDICATE
+                    and _is_inline_skew_marker(node, handler.name)
+                )
+            )
         ),
         None,
     )
@@ -859,15 +886,24 @@ def collect_failsoft_report(sources: dict[str, str]) -> FailSoftReport:
     )
 
 
-def _canonical_sources(tools: Path = TOOLS) -> dict[str, str]:
+def _flat_sources(tools: Path) -> dict[str, str]:
     return {
         path.name: path.read_text(encoding="utf-8")
         for path in sorted(tools.glob("*.py"), key=lambda item: item.name)
     }
 
 
+def _canonical_sources() -> dict[str, str]:
+    """평면 진입 파일과 `pm_engine` package 전체를 한 원장으로 스캔한다(엔진 전수 열거 공용)."""
+    return {
+        path.relative_to(TOOLS).as_posix(): path.read_text(encoding="utf-8")
+        for path in engine_python_files(TOOLS)
+    }
+
+
 def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
-    report = collect_failsoft_report(_canonical_sources())
+    sources = _canonical_sources()
+    report = collect_failsoft_report(sources)
     assert report.boundaries, "scanner found no marked-skew boundaries"
     # 158 = 155 + T-0591 완료 게이트의 원장 기록·쓰기 후 재판정·pm_config 판정 unavailable
     #   세 경계. 모두 마킹된 skew 는 re-raise 하고 그 밖만 rc1 결과로 번역한다.
@@ -1165,13 +1201,13 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 266 = 269 − T-0919 가 지운 세 경계: 홈 자신 등재가 사라지며 흡수 말미의 dest 사본 로드·
     #   호출 두 경계와, 그 등재의 대상 판정 입력이던 `worktree_pool._registered_repos_for_
     #   session` 의 board 형제 로드 한 경계. 자리를 대신한 옛 행 제거 마이그레이션
-    #   (`pm_update.drop_self_lease_rows`)은 장부를 직접 읽고 쓰므로 접을 예외가 없다.
+    #   (`update_finish.drop_self_lease_rows`)은 장부를 직접 읽고 쓰므로 접을 예외가 없다.
     # 271 = 266 + T-0920 의 인계 표시 다섯 경계(`pm_bootstrap._handover_*`). 인계 표시는 **읽기
     #   전용 부가 정보**라 조회 실패가 진입을 막지 않지만, marked skew 만은 그대로 올린다
     #   (형제 사본 불일치를 "표시할 게 없음"으로 숨기지 않는다).
     # 272 = 271 + 슬롯 종료 기록 한 경계(`pm_handoff._close_session_records` 의 슬롯 축).
     #   기록 실패는 서사를 쓰기 전에 False 로 차단하고, marked skew 만 그대로 올린다.
-    # 273 = 272 + 갱신 시점 conf 키 이관 한 경계(`pm_update.migrate_renamed_conf_keys`). 이 단계는
+    # 273 = 272 + 갱신 시점 conf 키 이관 한 경계(`entry_doc_migration.migrate_renamed_conf_keys`). 이 단계는
     #   apply **이후**라 형제 사본 rev 혼합으로 죽으면 채택자가 새 엔진을 받은 채 동기가
     #   traceback 으로 끝난 트리를 갖는다. 이동은 멱등이라 건너뛴 몫을 다음 실행이 그대로 하고,
     #   marked skew 만은 그대로 올린다.
@@ -1191,7 +1227,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (흡수 규칙이 느슨해진 게 아니다).
     # 254 = 252 + T-0923 사용 한도 반영의 두 경계. `pm_config` 의 설정 반영 명령(지금 `apply` · `cmd_apply`)은
     #   local.conf 옛 키(`_legacy_conf_key`)만 검사 거부(rc 3) 안내로 번역하고 marked skew 는 그대로 올린다.
-    #   `pm_update.apply_harness_ctx_limits` 는 apply 이후 단계라 `migrate_renamed_conf_keys` 와 같은
+    #   `update_adapters.apply_harness_ctx_limits` 는 apply 이후 단계라 `migrate_renamed_conf_keys` 와 같은
     #   규칙으로 등록된 사유가 흡수한다(반영은 멱등).
     # 252 = 254 − T-0925 가 지운 두 경계. 종결의 반납 단계가 사라지며 `ticket_finish.py:
     #   ClusterCloser` 의 `_default_release`(반납 거부 사유를 값으로)와 `_slot_state`(대여 상태
@@ -1237,7 +1273,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (`pm_engine.app.session.relay`·`pm_engine.infra.harness.contract`·`watchdog`·`pm_engine.infra.raw_output`)
     #   로 바뀌었다: 로더 정의(`pm_handoff._load_pm_relay`), 적재만 감싼 try(`pm_import._real_harness_runner`
     #   한 곳), try 본문이 적재한 모듈 변수 호출에서 모듈 속성 호출로 바뀐 두 자리(`pm_delegate._execute_attempt`·
-    #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `pm_update.drift_changes`.
+    #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `update_plan.drift_changes`.
     # 202 = 203 − T-0968 이 지운 1 경계. 상류 분류 형제 로더 `pm_config._classify_upstream` 이 패키지
     #   import(`pm_engine.domain.upstream_rules`)로 바뀌어 코드째 없어졌다.
     # 187 = 202 − T-0971 이 지운 15 경계. board 의 경로·티켓·areas·conf 이름이 패키지(`pm_paths`·
@@ -1273,9 +1309,58 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
     # reviewer/guard의 마지막 적재와 전용 recovery 경계 9개를 제거했다.
     # 세션 진입·handoff/log/finisher 이동으로 적재 전용 경계 12개를 더 제거했다(50→38).
-    # 묶음 소유 선검사의 parser 전용 loader 경계 1개를 제거했다(38→37).
-    # 공용 해소·CLI 이동과 private loader 은퇴에 따른 경계 재고는 실제 스캔으로 확인한다.
-    assert len(report.boundaries) == 26, "propagation sweep boundary ratchet changed"
+    # 렌더 형제 로더 1개 은퇴와 fill의 패키지 직접 호출 전환으로 평면 경계 5개가 줄었다.
+    # 이동한 formatter 1곳·runner 3곳의 marked IO 재전파는 fill 런타임 시험에서 보존한다.
+    # 설치 기록·add-harness 이동으로 평면 경계 3개가 줄었다: 설치 증거 열거·미소유 wiki 후보
+    # 열거는 package 로 옮겨 marked 재전파를 그대로 두었고, 표기 재렌더 판정의 렌더 오류 흡수는 지웠다.
+    # 묶음 소유 선검사의 parser 전용 loader 경계 1개를 제거했다.
+    # 공용 해소·CLI 이동과 private loader 은퇴에 따른 경계 재고는 실제 스캔으로 확인한다(38→18).
+    # 24 = 평면 진입 파일 4 + `pm_engine` package 20. 스캔 원장은 평면 `tools/*.py` 와 package 전체다.
+    # 평면 4: board·pm_config·worktree_pool 의 terminal 보고 3, `pm_config._load_module` 재전파 1.
+    # package 의 CLI 7: import 진입 2·update 진입 1·adapter accept 2·apply 1 의 marked 재전파, release
+    # drift 거부의 terminal 보고 1. package 의 app·infra 13: 갱신 본체(`app.update_plan` 1·
+    # `app.update_adapters` 6), fill 실행(`app.import_fill` 4), 설치 증거 열거(`infra.install_receipt` 1),
+    # 미소유 wiki 후보 열거(`app.add_harness` 1)의 marked 재전파. package 의 직접 판독
+    # (`getattr(exc, "_engine_rev_skew", False)`)도 같은 marker 다.
+    assert len(report.boundaries) == 24, "propagation sweep boundary ratchet changed"
+    assert {
+        (item.source, item.function, item.disposition) for item in report.boundaries
+    } == {
+        ("board.py", "main", "terminal-report"),
+        ("pm_config.py", "_load_module", "reraises"),
+        ("pm_config.py", "main", "terminal-report"),
+        ("pm_engine/app/add_harness.py", "_unowned_shipped_wiki_relpaths", "reraises"),
+        ("pm_engine/app/import_fill.py", "_fill_failure_with_partial", "reraises"),
+        ("pm_engine/app/import_fill.py", "_real_harness_runner", "reraises"),
+        ("pm_engine/app/update_adapters.py", "_instance_owned_template_delta_lines", "reraises"),
+        ("pm_engine/app/update_adapters.py", "sync_adapter_configs", "reraises"),
+        ("pm_engine/app/update_adapters.py", "check_adapter_hook_sets", "reraises"),
+        ("pm_engine/app/update_adapters.py", "refuse_partial_hook_set_scope", "reraises"),
+        ("pm_engine/app/update_plan.py", "_resolve_engine_sync_plan", "reraises"),
+        ("pm_engine/cli/config_adapter.py", "cmd_sync_adapter_config", "reraises"),
+        ("pm_engine/cli/config_install.py", "cmd_apply", "reraises"),
+        ("pm_engine/cli/import_cmd.py", "main", "reraises"),
+        ("pm_engine/cli/regression_cmd.py", "_refuse_release_for_engine_drift",
+         "terminal-report"),
+        ("pm_engine/cli/update_cmd.py", "main", "reraises"),
+        ("pm_engine/infra/install_receipt.py", "_pm_install_evidence", "reraises"),
+        ("worktree_pool.py", "main", "terminal-report"),
+    }
+    # 보드 terminal 진단은 `cli.board_dispatch` 하나가 소유한다(평면 board.py 에 사본·별칭 없음).
+    terminal_owners = sorted(
+        name
+        for name, tree in (
+            ("board.py", ast.parse(sources["board.py"])),
+            ("pm_engine/cli/board_dispatch.py",
+             ast.parse((TOOLS / "pm_engine" / "cli" / "board_dispatch.py").read_text(
+                 encoding="utf-8"))),
+        )
+        if any(
+            isinstance(node, ast.FunctionDef) and node.name == _TERMINAL_MARKER
+            for node in tree.body
+        )
+    )
+    assert terminal_owners == ["pm_engine/cli/board_dispatch.py"]
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1297,11 +1382,77 @@ def _mutate_one_reraise(source: str) -> str:
     raise AssertionError("no skew re-raise found to mutate")
 
 
+_IMPORT_CLI = "pm_engine/cli/import_cmd.py"
+_RELEASE_DRIFT_CLI = "pm_engine/cli/regression_cmd.py"
+_EXACT_INLINE_MARKER = 'getattr(exc, "_engine_rev_skew", False)'
+# 정확하지 않은 직접 판독 네 형태: 다른 예외 변수·다른 속성 문자열·False 아닌 기본값·기본값 생략.
+_INEXACT_INLINE_MARKERS = (
+    'getattr(other, "_engine_rev_skew", False)',
+    'getattr(exc, "_engine_rev_skew_x", False)',
+    'getattr(exc, "_engine_rev_skew", None)',
+    'getattr(exc, "_engine_rev_skew")',
+)
+
+
+def _remove_terminal_return(source: str, function: str) -> str:
+    """marked 분기의 `return _report_engine_rev_skew_at_terminal(exc)` 를 지운다(stderr 만 남김)."""
+    tree = ast.parse(source)
+    scope = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    )
+    removed = 0
+    for branch in ast.walk(scope):
+        if not isinstance(branch, ast.If):
+            continue
+        kept = [
+            statement for statement in branch.body
+            if not (
+                isinstance(statement, ast.Return)
+                and isinstance(statement.value, ast.Call)
+                and _called_name(statement.value) == _TERMINAL_MARKER
+            )
+        ]
+        if len(kept) != len(branch.body):
+            removed += len(branch.body) - len(kept)
+            branch.body = kept or [ast.copy_location(ast.Pass(), branch.body[0])]
+    assert removed == 1, f"terminal return lookup failed: {function}"
+    return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
+
+
 def test_guard_turns_red_when_one_reraise_is_removed():
     sources = _canonical_sources()
-    sources["pm_import.py"] = _mutate_one_reraise(sources["pm_import.py"])
+    sources[_IMPORT_CLI] = _mutate_one_reraise(sources[_IMPORT_CLI])
     report = collect_failsoft_report(sources)
-    assert any("pm_import.py" in violation for violation in report.violations)
+    assert any(_IMPORT_CLI in violation for violation in report.violations)
+
+    # 옮긴 release drift 거부의 terminal return 을 지우면 같은 catch 가 흡수로 판정돼야 한다.
+    sources = _canonical_sources()
+    sources[_RELEASE_DRIFT_CLI] = _remove_terminal_return(
+        sources[_RELEASE_DRIFT_CLI], "_refuse_release_for_engine_drift",
+    )
+    assert any(
+        _RELEASE_DRIFT_CLI in violation
+        for violation in collect_failsoft_report(sources).violations
+    )
+
+    # 정확하지 않은 직접 판독은 marker 가 아니다 — 그 catch 는 marked 경계 원장에서 빠져
+    # 경계 수·집합 단언이 red 가 된다(위반으로 잡히거나).
+    canonical_lines = {
+        item.line for item in collect_failsoft_report(_canonical_sources()).boundaries
+        if item.source == _IMPORT_CLI
+    }
+    assert len(canonical_lines) == 2
+    for inexact in _INEXACT_INLINE_MARKERS:
+        sources = _canonical_sources()
+        mutated = sources[_IMPORT_CLI].replace(_EXACT_INLINE_MARKER, inexact)
+        assert mutated != sources[_IMPORT_CLI]
+        sources[_IMPORT_CLI] = mutated
+        mutated_report = collect_failsoft_report(sources)
+        mutated_lines = {
+            item.line for item in mutated_report.boundaries if item.source == _IMPORT_CLI
+        }
+        assert mutated_report.violations or mutated_lines < canonical_lines, inexact
 
 
 
@@ -1313,7 +1464,7 @@ def test_guard_excludes_shipped_snapshot_tree(tmp_path):
     snapshot = tmp_path / "templates" / "sample" / ".project_manager" / "tools"
     snapshot.mkdir(parents=True)
     (snapshot / "bad.py").write_text("this is not valid python !\n", encoding="utf-8")
-    assert _canonical_sources(canonical) == {"good.py": "VALUE = 1\n"}
+    assert _flat_sources(canonical) == {"good.py": "VALUE = 1\n"}
 
 
 def _scope_handler(
@@ -1637,35 +1788,6 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew
-
-
-def test_template_mirror_missing_pm_update_render_capability_is_drift(
-    monkeypatch, tmp_path,
-):
-    module = _runtime_tool("board.py")
-    source = tmp_path / "source" / "SKILL.md"
-    target_root = tmp_path / "templates" / "legacy"
-    target = target_root / ".claude" / "skills" / "demo" / "SKILL.md"
-    source.parent.mkdir(parents=True)
-    target.parent.mkdir(parents=True)
-    source.write_text("same\n", encoding="utf-8")
-    target.write_text("same\n", encoding="utf-8")
-    monkeypatch.setattr(
-        module, "_load_pm_update_module", lambda: SimpleNamespace(),
-    )
-
-    state, drifted = module._template_mirror_report(
-        source,
-        ".claude/skills/demo/SKILL.md",
-        [(target_root, {".claude/skills"})],
-    )
-
-    assert state == module._TEMPLATE_MIRROR_DIFFERS
-    assert drifted == ["legacy"]
-
-
-
-
 
 
 @pytest.mark.parametrize(

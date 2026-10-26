@@ -21,6 +21,8 @@ canonical ↔ 각 템플릿 byte-identical 로 강제해 그 갭을 메운다. �
 """
 from __future__ import annotations
 
+from pm_engine.infra import install_source
+
 import importlib.util
 import re
 from pathlib import Path
@@ -29,6 +31,8 @@ from _git_fixture import init_git_repo
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.infra import manifest_store
+from pm_engine.domain import adapter_specs
+from pm_engine.infra import retired_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -205,7 +209,7 @@ def _shared_import_diffs(template_roots: dict[str, Path]) -> list[str]:
     pm_import = _load_pm_import()
     sources: dict[str, list[Path]] = {}
     for root in template_roots.values():
-        for rel, source in pm_import._iter_source_files(root, "full"):
+        for rel, source in install_source._iter_source_files(root, "full"):
             rel_s = rel.as_posix()
             if rel_s not in _IMPORT_MERGED_EXCEPTIONS:
                 sources.setdefault(rel_s, []).append(source)
@@ -224,7 +228,7 @@ def test_reviewer_retired_path_directive_is_identical_and_comment_compatible():
     """4 manifest가 같은 이주를 선언하고 기존 path parser에는 행으로 안 샌다."""
     pm_update = _load_pm_update()
     directives = {
-        manifest: pm_update.parse_retired_path_directives(manifest)
+        manifest: retired_paths.parse_retired_path_directives(manifest)
         for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST)
     }
     assert len({tuple(found) for found in directives.values()}) == 1, directives
@@ -245,16 +249,16 @@ def test_t0953_precompact_capture_hook_retired_in_all_manifests():
     pm_update = _load_pm_update()
     manifests = (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST)
     for manifest in manifests:
-        assert RETIRED_PRECOMPACT_PATH in pm_update.parse_retired_path_directives(manifest)
+        assert RETIRED_PRECOMPACT_PATH in retired_paths.parse_retired_path_directives(manifest)
         assert RETIRED_PRECOMPACT_PATH[0] not in _manifest_path_set(manifest), manifest
-        pm_update.validated_retired_path_directives(REPO, [manifest])
+        retired_paths.validated_retired_path_directives(REPO, [manifest])
     assert not (TEMPLATE_ROOTS["claude_code"] / RETIRED_PRECOMPACT_PATH[0]).exists()
     assert not (REPO / RETIRED_PRECOMPACT_PATH[0]).exists()
     spec = importlib.util.spec_from_file_location(
         "pm_import_t0953_retired", REPO / ".project_manager" / "tools" / "pm_import.py")
     pm_import = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pm_import)
-    assert RETIRED_PRECOMPACT_PATH[0] not in pm_import.ADAPTER_HOOK_SET["claude"].live_files
+    assert RETIRED_PRECOMPACT_PATH[0] not in adapter_specs.ADAPTER_HOOK_SET["claude"].live_files
 
 
 def test_reviewer_executable_has_only_the_new_physical_name_in_all_shipping_trees():

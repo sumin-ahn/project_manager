@@ -23,6 +23,8 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import conf_store, pre_push_hook, python_env
 from pm_engine.app import conf_lint, doc_lint
+from pm_engine.app import ticket_lint
+from pm_engine.cli import board_lint
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -85,7 +87,7 @@ def test_lint_delegate_surfaces_advisory(board, monkeypatch):
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "delegate-same-model"
-    assert kind in board._ADVISORY_LINT_KINDS               # --gate 종료코드 비기여(never-block)
+    assert kind in board_lint._ADVISORY_LINT_KINDS               # --gate 종료코드 비기여(never-block)
     assert "generate≠evaluate" in detail
 
 
@@ -110,7 +112,7 @@ def test_lint_tickets_wires_delegate(board, monkeypatch):
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # 실 DOMAIN_DIR 스캔 격리.
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
-    kinds = {kind for _label, kind, _detail in board.lint_tickets()}
+    kinds = {kind for _label, kind, _detail in ticket_lint.lint_tickets(board._home())}
     assert "delegate-same-model" in kinds
 
 
@@ -119,7 +121,7 @@ def test_cmd_lint_gate_delegate_is_advisory_exit0(board, monkeypatch, capsys):
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # advisory 격리(gate 산술만).
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
-    rc = board.cmd_lint(argparse.Namespace(gate=True))
+    rc = board_lint.cmd_lint(board._home(), argparse.Namespace(gate=True))
     assert rc == 0                                          # block_count 0 → gate 통과
     out = capsys.readouterr().out
     assert "delegate-same-model" in out                    # 보고엔 표면화(가시성 유지)

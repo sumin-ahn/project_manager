@@ -3,6 +3,7 @@ from pathlib import Path
 import importlib.util
 from pm_engine.infra import pm_paths, protected_hooks, areas_store
 from pm_engine.app import repo_protection
+from pm_engine.app import update_adapters
 
 def _tool(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -64,7 +65,7 @@ def test_reinstall_uses_target_data_without_target_flat_modules(tmp_path, monkey
     area = pm_paths.areas_file(home)
     area.parent.mkdir(parents=True)
     area.write_text("| repo | git | protected | test_cmd |\n|---|---|---|---|\n| repo | ssh://h/org/repo | main | pytest -q |\n", encoding="utf-8")
-    result = m.reinstall_protected_hooks(tmp_path, write=False)
+    result = update_adapters.reinstall_protected_hooks(tmp_path, write=False)
     assert result["status"] == "done" and result["no_bare"] == ["repo"]
     assert not pm_paths.repo_hooks_dir(home).exists()
     bare = pm_paths.bare_repo_path(home, "repo")
@@ -72,9 +73,9 @@ def test_reinstall_uses_target_data_without_target_flat_modules(tmp_path, monkey
     home.local_conf.write_text("upstream.path=ssh://h/org/repo\n", encoding="utf-8")
     calls = []
     monkeypatch.setattr(repo_protection, "_install_protected_hook_reporting", lambda h, r, **kw: calls.append((h, r)) or False)
-    result = m.reinstall_protected_hooks(tmp_path, write=False)
+    result = update_adapters.reinstall_protected_hooks(tmp_path, write=False)
     assert result["drifted"] == ["repo"] and result["failed"] == [] and calls == []
-    result = m.reinstall_protected_hooks(tmp_path, write=True)
+    result = update_adapters.reinstall_protected_hooks(tmp_path, write=True)
     assert result["failed"] == ["repo"] and calls == [(home, "repo")]
 
 

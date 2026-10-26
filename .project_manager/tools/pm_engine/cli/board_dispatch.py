@@ -7,6 +7,8 @@ from pm_engine.domain import board_command_rules
 from pm_engine.infra import console
 from pm_engine.infra import pm_paths
 import sys
+from pm_engine.app import board_dashboard
+from pm_engine.app import ticket_lint
 
 
 def _resolved_subcommand(args: argparse.Namespace) -> str:
@@ -66,3 +68,23 @@ def _write_machine_line(text: str) -> None:
     직접 쓴다(콘솔 코덱 전환과 독립).
     """
     console.write_machine_line(text)
+
+
+def _report_engine_rev_skew_at_terminal(exc) -> int:
+    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
+    print(
+        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
+        "동기화한 뒤 다시 실행하세요.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def cmd_refresh(home, _args: argparse.Namespace) -> int:
+    board_dashboard.refresh_board(home)
+    print(f"board refreshed: {pm_paths._rel_to_repo(home, pm_paths.wiki_dir(home) / "board.md")}")
+    issues = ticket_lint.lint_tickets(home)
+    if issues:
+        print(f"⚠️  {len(issues)} lint issue(s) — run `board.py lint` for detail",
+              file=sys.stderr)
+    return 0

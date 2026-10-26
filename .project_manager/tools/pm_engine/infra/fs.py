@@ -325,7 +325,7 @@ def local_conf_write_lock(
     """`conf_path` 의 **모든** writer(전체 write·RMW 교체·opt-in append)가 공유하는 배타 구간.
 
     append 만 서로 직렬화해서는 부족하다 — 커밋 전 내용을 읽고 나중에 통째 교체하는 writer
-    (`board init` 병합·`pm_import._write_conf_keys` 의 temp+원자 교체)가 그 사이의 append 를
+    (`board init` 병합·`install_conf._write_conf_keys` 의 temp+원자 교체)가 그 사이의 append 를
     읽지 못하면, 원자적으로 쓴 append 도 교체에 덮여 사라진다(lost update). 그래서 락의 단위는
     "append" 가 아니라 "이 conf 를 쓰는 구간" 이고, 읽기→판정→쓰기→(검증)까지 한 구간 안에 든다.
 

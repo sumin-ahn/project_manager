@@ -7,6 +7,7 @@ from __future__ import annotations
 from pm_engine.app import worktree_pool
 from pm_engine.infra import pm_paths, pool_store
 
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -85,7 +86,7 @@ def _run(argv: list[str], *, cwd: Path | None = None,
 
 # 모델 한도 조회 교체 지점 두 곳(`_read_harness_ctx_metadata`·`_ctx_claude_threshold`)의 고정 값.
 # 단일 출처는 환경 주입 폴더의 `sitecustomize.py` 다 — 같은 프로세스 교체(`known_ctx_seams`·
-# `known_ctx_module`)와 `-c` 자식 스크립트도 그 본문을 그대로 쓴다(교체 설치는 `sitecustomize` 로
+# `install_known_ctx_io`)와 `-c` 자식 스크립트도 그 본문을 그대로 쓴다(교체 설치는 `sitecustomize` 로
 # 읽힐 때만 일어난다).
 _KNOWN_CTX_SITE = Path(__file__).resolve().parent / "_known_ctx_site"
 _KNOWN_CTX_READER_PY = (_KNOWN_CTX_SITE / "sitecustomize.py").read_text(encoding="utf-8")
@@ -111,28 +112,14 @@ def _known_ctx_installation(tmp_path,monkeypatch):
     return folder
 
 
-def known_ctx_module(module, *, capacity=200000, context=1000000, model="fixture-model"):
-    """모듈(과 그 모듈이 싣는 pm_import·pm_update)의 모델 한도 조회를 고정 값으로 바꾼다.
+def install_known_ctx_io(monkeypatch) -> None:
+    """이 시험 동안 `app.harness_ctx` 의 모델 한도 조회 두 IO 함수를 고정 값으로 바꾼다(teardown 이 복원).
 
-    `model` 은 설치가 기록할 모델 이름이다 — 실제 세션을 띄우는 테스트는 그 세션 모델을 준다."""
-    namespace = {}
-    exec(_KNOWN_CTX_READER_PY, namespace)
-    if hasattr(module, '_read_harness_ctx_metadata'):
-        namespace['install_fixture_capacity'](module, capacity, context, model)
-    if getattr(module, '_known_ctx_loader', False):
-        return module
-    for name in ('_load_pm_import', '_load_pm_update', '_load_module'):
-        original = getattr(module, name, None)
-        if original is None:
-            continue
-        def loaded(*args, _original=original, **kwargs):
-            result = _original(*args, **kwargs)
-            if any(hasattr(result, key) for key in ('_read_harness_ctx_metadata', '_load_pm_import', '_load_pm_update', '_load_module')):
-                known_ctx_module(result, capacity=capacity, context=context, model=model)
-            return result
-        setattr(module, name, loaded)
-    module._known_ctx_loader = True
-    return module
+    엔진 package 는 프로세스에 하나라 설치·갱신·설정 어느 진입이 부르든 같은 함수를 지난다.
+    conftest 의 `known_ctx_io` fixture 가 이 함수를 부른다."""
+    from pm_engine.app import harness_ctx
+    for name, seam in known_ctx_seams().items():
+        monkeypatch.setattr(harness_ctx, name, seam)
 
 
 def known_ctx_env(env: dict | None = None, *, native_bin: Path | None = None,
@@ -170,27 +157,42 @@ def use_known_ctx_env(monkeypatch, native_bin: Path) -> None:
             monkeypatch.setenv(key, value)
 
 
-def complete_in_process(module):
-    """같은 프로세스 테스트의 완료 단계 교체 지점 — 갱신기 `module` 을 돌려준다.
+@contextlib.contextmanager
+def complete_in_process(monkeypatch):
+    """같은 프로세스 테스트의 완료 단계 교체 구간.
 
-    전달 프로세스는 받은 갱신기를 새 프로세스로 띄운다(`_launch_completion`). 합성 dest 에는 그
-    갱신기가 없으므로 같은 프로세스 테스트는 인계 값(`PM_UPDATE_COMPLETION`)을 환경에 넣고 같은 모듈의
-    `main` 을 부른 뒤 환경을 원래대로 돌린다. 이 교체가 빠진 자기 갱신 호출은 dest 에 갱신기가 없어
-    rc 2 로 실패한다(조용히 지나가지 않는다)."""
+    전달 프로세스는 받은 갱신기를 새 프로세스로 띄운다(`app.engine_transfer._launch_completion`). 합성
+    dest 에는 그 갱신기가 없으므로 이 구간 동안 그 IO 함수를 바꿔, 인계 값(`PM_UPDATE_COMPLETION`)을
+    인계된 dest·source·전달 수로 묶은 채 `cli.update_cmd.main` 을 인계 dest 의 Home 과 원래 argv 로 부르고
+    인계 값을 원래대로 돌린다. 구간을 벗어나면 교체도 풀린다(다른 테스트에 남지 않는다). 이 교체가 빠진
+    자기 갱신 호출은 dest 에 갱신기가 없어 rc 2 로 실패한다(조용히 지나가지 않는다).
+
+    교체와 되돌림은 받은 `monkeypatch` 하나에 기록한다. 별도 MonkeyPatch 로 기록하면 같은 테스트가 구간
+    안에서 같은 함수를 다시 바꿨을 때(전달 기록 대역) 두 기록의 되돌림 순서가 엇갈려, 테스트가 끝난 뒤
+    이 교체가 모듈에 남는다(뒤 테스트의 실제 완료 프로세스가 같은 프로세스 호출로 바뀐다)."""
+    from pm_engine.app import engine_transfer
+    from pm_engine.cli import update_cmd
+    from pm_engine.infra import pm_paths
+
     def launch(dest_root, source_root, transferred, argv):
-        name = module.COMPLETION_ENV
+        name = engine_transfer.COMPLETION_ENV
         previous = os.environ.get(name)
         os.environ[name] = json.dumps({"dest": str(dest_root), "source": str(source_root),
                                        "transferred": transferred})
         try:
-            return module.main(list(argv))
+            return update_cmd.main(pm_paths.home_at(Path(dest_root)), list(argv))
         finally:
             if previous is None:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = previous
-    module._launch_completion = launch
-    return module
+
+    previous_launch = engine_transfer._launch_completion
+    monkeypatch.setattr(engine_transfer, "_launch_completion", launch)
+    try:
+        yield
+    finally:
+        monkeypatch.setattr(engine_transfer, "_launch_completion", previous_launch)
 
 
 def make_pm_home(destination: Path, *, upstream: Path | str | None = None,
@@ -371,3 +373,16 @@ def close_session(pool, session: str) -> None:
     assert held, f"세션 {session!r} 이 잡은 행이 장부에 없다"
     for slot in held:
         worktree_pool.force_release(pm_paths.home_at(pool.REPO), slot)
+
+
+@pytest.fixture
+def render_home(tmp_path):
+    """실행 코드의 스킬 inventory를 임시 Home에 복제한다."""
+    from pm_engine.infra import pm_paths, skill_inventory
+    root = tmp_path / "render-engine"
+    root.mkdir(exist_ok=True)
+    for name in skill_inventory._installed_skill_entry_names(pm_paths.home_at(REPO)):
+        copied = root / ".agents/skills" / name / "SKILL.md"
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        copied.write_text("fixture", encoding="utf-8")
+    return pm_paths.home_at(root)

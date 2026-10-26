@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+from pm_engine.infra import install_files
+
 import ast
 import importlib.util
 from collections import Counter
@@ -28,17 +30,18 @@ from pathlib import Path
 from _engine_tree import engine_python_files
 
 from pm_engine.infra import ticket_store
+from pm_engine.infra import render_io
 
 
 _ALLOWED: set[tuple[str, str, str, str]] = {
     (
-        "pm_import.py",
+        "install_files.py",
         "_fdopen_text",
         "os.fdopen",
         "_fdopen_text는 mode/newline을 호출자에게서 받아 전달하는 공용 래퍼다.",
     ),
     (
-        "pm_import.py",
+        "install_files.py",
         "_fdopen_binary",
         "os.fdopen",
         "_fdopen_binary는 binary mode 전용 공용 래퍼다.",
@@ -342,16 +345,16 @@ def test_enclosing_function_names_resolve_by_ast_not_line_shift():
 
 def test_allowed_symbol_key_flags_dead_entry_and_new_sibling_write():
     """리뷰 민감도 B2: 허용된 함수 안에 새 미검증 쓰기가 늘면(또는 사라지면) 매칭 수가 어긋난다."""
-    key = ("pm_import.py", "_fdopen_text", "os.fdopen")
+    key = ("install_files.py", "_fdopen_text", "os.fdopen")
     allowed_keys = {key}
 
     # 정상 상태 — 원래 그 자리 하나만(unresolved mode 경유) 매칭된다.
-    exempted = [("pm_import.py", 2493, "_fdopen_text", "os.fdopen")]
+    exempted = [("install_files.py", 2493, "_fdopen_text", "os.fdopen")]
     assert _allowed_key_match_counts(allowed_keys, [], exempted) == {key: 1}
 
     # 같은 함수 안에 새 os.fdopen(fd, "w") 하나가 더 생기면(리터럴 mode·newline 누락) 2건으로
     # 벌어진다 — 예전 라인-무관 필터는 이 경우를 무탐지했다(T-0748 리뷰 F-003).
-    sibling_write = [("pm_import.py", 2500, "_fdopen_text", "os.fdopen", False)]
+    sibling_write = [("install_files.py", 2500, "_fdopen_text", "os.fdopen", False)]
     assert _allowed_key_match_counts(allowed_keys, sibling_write, exempted) == {key: 2}
 
     # 호출이 사라지면(리네임·삭제) 0건 — 죽은 항목.
@@ -383,8 +386,8 @@ _NEWLINE_CASES = {
 
 def test_newline_notation_primitives_agree_across_engine_modules():
     implementations = {
-        "pm_import.dominant_newline": _load_engine_module("pm_import").dominant_newline,
-        "pm_update._dominant_newline": _load_engine_module("pm_update")._dominant_newline,
+        "pm_import.dominant_newline": install_files.dominant_newline,
+        "render_io._dominant_newline": render_io._dominant_newline,
         "ticket_store._dominant_newline": ticket_store._dominant_newline,
     }
     for text, expected in _NEWLINE_CASES.items():
@@ -400,7 +403,7 @@ def test_newline_preserving_round_trip_keeps_bytes(tmp_path):
     for payload in (b"a\r\nb\r\n", b"a\nb\n", b"a\r\nb\r\nc", b""):
         path = tmp_path / "sample.txt"
         path.write_bytes(payload)
-        text, newline = pm_import.read_text_preserving_newline(path)
+        text, newline = install_files.read_text_preserving_newline(path)
         assert "\r\n" not in text, "판정용 본문은 LF 정규화여야 한다"
-        pm_import.write_text_preserving_newline(path, text, newline)
+        install_files.write_text_preserving_newline(path, text, newline)
         assert path.read_bytes() == payload, f"왕복이 bytes 를 바꿨다: {payload!r}"
