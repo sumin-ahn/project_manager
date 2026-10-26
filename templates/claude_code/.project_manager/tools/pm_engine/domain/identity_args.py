@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 # task pm_state 신규 세션 window의 단일 empty marker. state 생성(worktree_pool)과
-# handoff 갱신(pm_handoff)이 같은 literal을 소비해야 하므로 공용 경계 모듈이 소유한다.
+# handoff 갱신(domain.handoff_text)이 같은 literal을 소비해야 하므로 공용 경계 모듈이 소유한다.
 TASK_PM_STATE_EMPTY_MARKER = "  - (아직 완료된 task 세션 없음)"
 
 

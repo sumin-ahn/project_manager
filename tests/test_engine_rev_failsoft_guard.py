@@ -1270,7 +1270,8 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `TicketFinisher._notify_affected_domain`).
     # 완료 데이터 소비 전환 뒤 호출자가 사라진 _load_tool_module도 제거했다(설계 집계 대비 -1).
     # reviewer/guard의 마지막 적재와 전용 recovery 경계 9개를 제거했다.
-    assert len(report.boundaries) == 50, "propagation sweep boundary ratchet changed"
+    # 세션 진입·handoff/log/finisher 이동으로 적재 전용 경계 12개를 더 제거했다(50→38).
+    assert len(report.boundaries) == 38, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1299,18 +1300,6 @@ def test_guard_turns_red_when_one_reraise_is_removed():
     assert any("pm_import.py" in violation for violation in report.violations)
 
 
-def test_guard_turns_red_when_recovery_marker_is_removed():
-    sources = _canonical_sources()
-    tree = ast.parse(sources["pm_log.py"])
-    call = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _called_name(node) == _RECOVERY_MARKER
-    )
-    call.func = ast.copy_location(ast.Name(id="_is_engine_rev_skew", ctx=ast.Load()), call.func)
-    call.args = call.args[:1]
-    sources["pm_log.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
-    report = collect_failsoft_report(sources)
-    assert any("pm_log.py" in violation for violation in report.violations)
 
 
 def test_guard_excludes_shipped_snapshot_tree(tmp_path):
@@ -1366,40 +1355,10 @@ def _blank_recovery_reason(source: str) -> str:
     return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
 
 
-@pytest.mark.parametrize(
-    ("label", "source_name", "function", "occurrence"),
-    [
-        ("S5", "pm_bootstrap.py", "main", 0),
-    ],
-)
-def test_guard_sensitivity_marker_branches_turn_red(
-    label, source_name, function, occurrence,
-):
-    sources = _canonical_sources()
-    sources[source_name] = _remove_marker_branch(
-        sources[source_name], function, occurrence,
-    )
-    report = collect_failsoft_report(sources)
-    assert report.violations, f"{label} mutation stayed green"
 
 
-def test_guard_sensitivity_s6_recovery_marker_turns_red():
-    sources = _canonical_sources()
-    tree = ast.parse(sources["pm_log.py"])
-    call = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _called_name(node) == _RECOVERY_MARKER
-    )
-    call.func = ast.copy_location(ast.Name(id="_is_engine_rev_skew", ctx=ast.Load()), call.func)
-    call.args = call.args[:1]
-    sources["pm_log.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
-    assert collect_failsoft_report(sources).violations
 
 
-def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
-    sources = _canonical_sources()
-    sources["pm_log.py"] = _blank_recovery_reason(sources["pm_log.py"])
-    assert collect_failsoft_report(sources).violations
 
 
 
@@ -1667,18 +1626,10 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
     이 fail-soft 핸들러들에 도달한다 — 미존재/빈 목록/빈 보고로 강등하면 안 된다.
     """
     skew = _marked_skew()
-    if case == "finish_dirty_split":
-        module = _runtime_tool("ticket_finish.py")
-        instance = object.__new__(module.TicketFinisher)
-        instance._status_entries_fn = _raiser(skew)
-        invoke = lambda: instance._dirty_split(["src/file.py"])
-    else:
-        module = _runtime_tool("pm_bootstrap.py")
-        instance = object.__new__(module.PmBootstrap)
-        instance._bound_slot = None
-        instance._run_git_fn = _raiser(skew)
-        worktree_pool = SimpleNamespace(slot_path=lambda _slot: Path("slot"))
-        invoke = lambda: instance._slot_branch_exists( "work/repo_1", "feature")
+    module = _runtime_tool("ticket_finish.py")
+    instance = object.__new__(module.TicketFinisher)
+    instance._status_entries_fn = _raiser(skew)
+    invoke = lambda: instance._dirty_split(["src/file.py"])
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew
@@ -1717,7 +1668,6 @@ def test_template_mirror_missing_pm_update_render_capability_is_drift(
     ("filename", "arguments", "witness"),
     [
         # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
-        ("pm_handoff.py", [], "pm_log.py"),
     ],
 )
 def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(

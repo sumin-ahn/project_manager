@@ -19,6 +19,15 @@ areas.md `protected` 칼럼이 **단일 진실**이고 훅 sidecar(`.local/repo-
 worktree_pool·git runner 는 DI mock — 실 clone/훅 설치/네트워크 0.
 """
 from __future__ import annotations
+from pm_engine.cli import config_repo
+from pm_engine.infra import console
+from pm_engine.cli import bootstrap_report
+from pm_engine.cli import bootstrap_card
+
+from pm_engine.app import bootstrap_slots
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.infra import pm_paths
+from pm_engine.infra import protected_hooks
 from pm_engine.app import repo_protection
 from pm_engine.domain import areas_rules
 from pm_engine.infra import git, protected_hooks, pm_paths, areas_store
@@ -95,7 +104,6 @@ def bootstrap():
 def _protection_home(tmp_path, monkeypatch, pc, bootstrap):
     home_root = tmp_path / "home"
     monkeypatch.setattr(pc, "REPO", home_root)
-    monkeypatch.setattr(bootstrap, "REPO", home_root)
 
 
 class FakePool:
@@ -213,7 +221,7 @@ def test_repo_add_protected_flag_lands_in_areas(pc, monkeypatch, board, tmp_path
     pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _add_args(protected="main,develop"),  clone_runner=GitFake(),
         repos_dir=tmp_path / ".repos")
     assert rc == 0
@@ -224,7 +232,7 @@ def test_repo_add_without_protected_keeps_default_fallback(pc, monkeypatch, boar
     """`--protected` 생략 = 빈 칼럼 — `_repo_protected` 가 DEFAULT_PROTECTED 폴백(기존 동작 무변경)."""
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _add_args(),  clone_runner=GitFake(),
         repos_dir=tmp_path / ".repos")
     assert rc == 0
@@ -237,7 +245,7 @@ def test_repo_add_protected_normalizes_spacing(pc, monkeypatch, board, tmp_path)
     """`"main, release"` 처럼 쉼표 뒤 공백은 정규화해 기록한다(셀 corruption 0)."""
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_add(
+    config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _add_args(protected="main, release"),  clone_runner=GitFake(),
         repos_dir=tmp_path / ".repos")
     _header, rows = areas_store._parse_areas(board._home())
@@ -251,7 +259,7 @@ def test_repo_add_bad_protected_rejected_before_side_effects(pc, monkeypatch, bo
     pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _add_args(protected=bad),  clone_runner=gitr,
         repos_dir=tmp_path / ".repos")
     assert rc == 1
@@ -270,7 +278,7 @@ def test_repo_add_protected_warns_on_branch_absent_from_bare(pc, monkeypatch, bo
     (repos / "svc.git").mkdir(parents=True)          # 기존 bare 재사용(clone skip)
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _add_args(protected="mian,release"),
         clone_runner=GitFake(existing=("main", "develop")),
         repos_dir=repos)
@@ -286,7 +294,7 @@ def test_repo_add_protected_no_warning_when_branches_exist(pc, monkeypatch, boar
     (repos / "svc.git").mkdir(parents=True)
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_add(_add_args(protected="main,develop"),
+    config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO), _add_args(protected="main,develop"),
                     clone_runner=GitFake(existing=("main", "develop")),
                     repos_dir=repos)
     assert "없는 브랜치" not in capsys.readouterr().err
@@ -304,11 +312,11 @@ def test_repo_add_and_protected_set_share_one_warning_funnel(pc, monkeypatch, bo
     (repos / "svc.git").mkdir(parents=True)
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_add(_add_args(protected="main,release"),
+    config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO), _add_args(protected="main,release"),
                     clone_runner=GitFake(), repos_dir=repos)
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("svc", "main,develop"),
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("svc", "main,develop"),
 
                           clone_runner=GitFake(), repos_dir=repos)
     assert seen == [("svc", ["main", "release"]), ("svc", ["main", "develop"])]
@@ -318,7 +326,7 @@ def test_repo_add_hook_install_failure_is_loud(pc, monkeypatch, board, tmp_path,
     """훅 설치 실패(False 반환)를 조용히 넘기지 않는다 — 훅 미설치 침묵 = 보호 가드 무력화."""
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks", ok=False))
     bind_board(monkeypatch, board)
-    cap_rc = pc.cmd_repo_add(
+    cap_rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _add_args(),  clone_runner=GitFake(),
         repos_dir=tmp_path / ".repos")
     cap = capsys.readouterr()
@@ -338,7 +346,7 @@ def test_repo_add_protected_on_already_registered_repo_is_loud(pc, monkeypatch, 
     (repos / "service-a.git").mkdir(parents=True)
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _add_args(name="service-a", protected="release"),
         clone_runner=GitFake(), repos_dir=repos)
     assert rc == 0
@@ -366,7 +374,7 @@ def test_bare_probe_failure_suppresses_branch_warnings(pc, tmp_path, capsys):
 def test_repo_add_empty_protected_guides_to_default_literal(monkeypatch, pc, board, tmp_path, capsys):
     """빈 `--protected` 거부 메시지는 "보호 없음 표현 불가" + 기본값 경로를 안내한다."""
     bind_board(monkeypatch, board)
-    pc.cmd_repo_add(_add_args(protected=""),  clone_runner=GitFake(),
+    config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO), _add_args(protected=""),  clone_runner=GitFake(),
                     repos_dir=tmp_path / ".repos")
     err = capsys.readouterr().err
     assert "default" in err and "생략" in err
@@ -383,7 +391,7 @@ def test_protected_get_explicit_value_with_matching_sidecar(pc, monkeypatch, boa
     write_sidecar(hooks, "service-a", ["main"])
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO),
         _protected_args("service-a"),
         clone_runner=HooksPathGit(configured=str((hooks / "service-a").resolve())))
     out = capsys.readouterr().out.splitlines()
@@ -400,7 +408,7 @@ def test_protected_get_empty_column_surfaces_default_fallback(pc, monkeypatch, b
     write_sidecar(hooks, "service-b", areas_rules.DEFAULT_PROTECTED)
     bind_pool(monkeypatch, FakePool(hooks))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-b"))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-b"))
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "service-b · protected = main, master, develop"
     assert "기본값 폴백" in out[1] and "비어 있음" in out[1]
@@ -414,7 +422,7 @@ def test_protected_get_drift_surfaces_old_list_and_remedy(pc, monkeypatch, board
     write_sidecar(hooks, "service-a", ["master"])
     bind_pool(monkeypatch, FakePool(hooks))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a"))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"))
     out = capsys.readouterr().out
     assert "⚠ 옛 목록(master)" in out
     assert "아직 옛 값으로 동작" in out
@@ -426,7 +434,7 @@ def test_protected_get_missing_sidecar_is_surfaced(pc, monkeypatch, board, tmp_p
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a"))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"))
     out = capsys.readouterr().out
     assert "(미설치)" in out and "repo add service-a" in out
 
@@ -436,7 +444,7 @@ def test_protected_get_unregistered_repo_says_so(pc, monkeypatch, board, tmp_pat
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("nope"))
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("nope"))
     assert rc == 0
     out = capsys.readouterr().out
     assert "nope · protected = main, master, develop" in out
@@ -450,7 +458,7 @@ def test_protected_get_writes_nothing(pc, monkeypatch, board, tmp_path):
     pool = bind_pool(monkeypatch, FakePool(hooks))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a"))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"))
     assert pool.calls == []
     assert pm_paths.areas_file(board._home()).read_text(encoding="utf-8") == _CANONICAL_AREAS
 
@@ -510,7 +518,7 @@ def test_protected_get_flags_unwired_hook_despite_fresh_sidecar(pc, monkeypatch,
     write_sidecar(hooks, "service-a", ["main"])          # 내용은 실효값과 동일
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a"),
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"),
                           clone_runner=HooksPathGit())   # hooksPath 미설정
     out = capsys.readouterr().out
     assert "✓ 정합" not in out, "훅이 안 걸렸는데 정합으로 보고했다(거짓 정합)"
@@ -526,7 +534,7 @@ def test_protected_get_reports_wired_when_hookspath_set(pc, monkeypatch, board, 
     write_sidecar(hooks, "service-a", ["main"])
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO),
         _protected_args("service-a"),
         clone_runner=HooksPathGit(configured=str((hooks / "service-a").resolve())))
     out = capsys.readouterr().out
@@ -540,7 +548,7 @@ def test_protected_get_wiring_unknown_is_honest(pc, monkeypatch, board, tmp_path
     write_sidecar(hooks, "service-a", ["main"])
     bind_pool(monkeypatch, FakePool(hooks, repos_dir=tmp_path / "absent"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a"))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"))
     out = capsys.readouterr().out
     assert "✓ 목록 정합 (배선 확인 불가" in out
     assert "⚠ 훅 미배선" not in out
@@ -557,8 +565,8 @@ def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: False)
-    assert inst._reconcile_protected_sidecar("svc") is True
+    monkeypatch.setattr(bootstrap_slots, "_protected_hook_wired", lambda _home, repo: False)
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is True
     assert pool.calls == [("svc", ["main"])]
     err = capsys.readouterr().err
     assert "core.hooksPath` 배선" in err
@@ -571,8 +579,8 @@ def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path, m
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: True)
-    assert inst._reconcile_protected_sidecar("svc") is False
+    monkeypatch.setattr(bootstrap_slots, "_protected_hook_wired", lambda _home, repo: True)
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == [] and capsys.readouterr().err == ""
 
 
@@ -583,8 +591,8 @@ def test_bootstrap_wiring_unknown_keeps_current_behaviour(bootstrap, tmp_path, m
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    monkeypatch.setattr(inst, "_protected_hook_wired", lambda repo: None)
-    assert inst._reconcile_protected_sidecar("svc") is False
+    monkeypatch.setattr(bootstrap_slots, "_protected_hook_wired", lambda _home, repo: None)
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == []
 
 
@@ -594,12 +602,12 @@ def test_bootstrap_wiring_judgment_delegates_to_pm_config(bootstrap, pc, tmp_pat
     부트스트랩의 실제 패키지 소유자와 같은 Home 입력의 판정이
     **동일**한지를 본다(로직이 갈라지면 값이 갈린다). ADR-0072 의 "두 벌 금지" 원칙 동형.
     """
-    assert bootstrap.protected_hooks is protected_hooks
+    assert bootstrap_slots.protected_hooks is protected_hooks
     pool, hooks, _repos = _wired_pool(tmp_path, repo="svc")
     write_sidecar(hooks, "svc", ["main"])
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
     bind_pool(monkeypatch, pool)
-    assert inst._protected_hook_wired("svc") == protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO),
+    assert bootstrap_slots._protected_hook_wired(pm_paths.home_at(tmp_path / "home"), 'svc') == protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO),
         "svc")
 
 
@@ -622,7 +630,7 @@ def test_protected_set_updates_areas_then_sidecar(pc, monkeypatch, board, tmp_pa
     try:
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, board)
-        rc = pc.cmd_repo_protected(_protected_args("service-a", "main,release"),
+        rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "main,release"),
 
                                    repos_dir=tmp_path / ".repos")
     finally:
@@ -640,7 +648,7 @@ def test_protected_set_sidecar_receives_resolved_list(pc, monkeypatch, board, tm
     pool = bind_pool(monkeypatch, FakePool(hooks))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-b", "develop"),
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-b", "develop"),
                            repos_dir=tmp_path / ".repos")
     sidecar = (hooks / "service-b" / "protected").read_text(encoding="utf-8")
     assert sidecar.split() == ["develop"]
@@ -653,7 +661,7 @@ def test_protected_set_default_literal_clears_column(pc, monkeypatch, board, tmp
     pool = bind_pool(monkeypatch, FakePool(hooks))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("service-a", "DEFAULT"),
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "DEFAULT"),
                                 repos_dir=tmp_path / ".repos")
     assert rc == 0
     _header, rows = areas_store._parse_areas(board._home())
@@ -668,7 +676,7 @@ def test_protected_set_triggers_board_git_sync(pc, monkeypatch, board, tmp_path)
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a", "release"),
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "release"),
 
                           repos_dir=tmp_path / ".repos")
     # ADR-0073/T-0419 — board 전체가 아니라 **areas.md 만** 이 mutation 의 산출물이다.
@@ -687,7 +695,7 @@ def test_protected_set_is_idempotent(pc, monkeypatch, board, tmp_path):
     for _ in range(2):
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, board)
-        assert pc.cmd_repo_protected(_protected_args("service-a", "main"),
+        assert config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "main"),
 
                                      repos_dir=tmp_path / ".repos") == 0
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main"]
@@ -702,7 +710,7 @@ def test_protected_set_upgrades_old_header(pc, monkeypatch, board, tmp_path):
         encoding="utf-8")
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("service-a", "main,release"),
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "main,release"),
 
                                repos_dir=tmp_path / ".repos")
     assert rc == 0
@@ -717,7 +725,7 @@ def test_protected_set_warns_on_branch_absent_from_bare(pc, monkeypatch, board, 
     (repos / "service-a.git").mkdir(parents=True)
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO),
         _protected_args("service-a", "main,release"),
 
         clone_runner=GitFake(existing=("main",)), repos_dir=repos)
@@ -734,7 +742,7 @@ def test_protected_set_no_warning_when_all_branches_exist(pc, monkeypatch, board
     (repos / "service-a.git").mkdir(parents=True)
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a", "main,develop"),
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "main,develop"),
 
                           clone_runner=GitFake(existing=("main", "develop")),
                           repos_dir=repos)
@@ -747,7 +755,7 @@ def test_protected_set_sidecar_failure_is_loud_but_areas_kept(pc, monkeypatch, b
     pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks", ok=False))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("service-a", "release"),
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "release"),
                                 repos_dir=tmp_path / ".repos")
     cap = capsys.readouterr()
     assert rc == 0
@@ -771,7 +779,7 @@ def test_protected_set_duplicate_rows_fail_loud_no_sidecar(pc, monkeypatch, boar
     pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("service-a", "release"),
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "release"),
                                 repos_dir=tmp_path / ".repos")
     assert rc == 1
     assert pool.calls == [] and board._sync_calls == []
@@ -786,7 +794,7 @@ def test_protected_set_unregistered_repo_fail_loud(pc, monkeypatch, board, tmp_p
     pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("nope", "main"),
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("nope", "main"),
                                 repos_dir=tmp_path / ".repos")
     assert rc == 1
     assert pool.calls == []
@@ -800,7 +808,7 @@ def test_protected_set_bad_value_rejected_before_write(pc, monkeypatch, board, t
     pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("service-a", bad),
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", bad),
                                 repos_dir=tmp_path / ".repos")
     assert rc == 1
     assert pool.calls == []
@@ -813,7 +821,7 @@ def test_protected_set_empty_value_guides_to_default(pc, monkeypatch, board, tmp
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a", ""))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", ""))
     err = capsys.readouterr().err
     assert "default" in err and "표현 불가" in err
 
@@ -823,7 +831,7 @@ def test_protected_bad_repo_name_rejected(pc, monkeypatch, board, tmp_path, caps
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("../evil", "main"))
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("../evil", "main"))
     assert rc == 1
     assert pm_paths.areas_file(board._home()).read_text(encoding="utf-8") == _CANONICAL_AREAS
     assert "형식 위반" in capsys.readouterr().err
@@ -836,7 +844,7 @@ def test_protected_bad_repo_name_rejected(pc, monkeypatch, board, tmp_path, caps
 def test_repo_list_renders_registry_columns(pc, board, capsys):
     """등록 repo 표에 repo·prefix·base·protected·test_cmd·area_owner 가 나온다."""
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
-    rc = pc.cmd_repo_list(argparse.Namespace())
+    rc = config_repo.cmd_repo_list(pm_paths.home_at(pc.REPO), argparse.Namespace())
     out = capsys.readouterr().out
     assert rc == 0
     for column in ("repo", "prefix", "base", "protected", "test_cmd", "area_owner"):
@@ -848,7 +856,7 @@ def test_repo_list_renders_registry_columns(pc, board, capsys):
 def test_repo_list_marks_empty_protected_as_default(pc, board, capsys):
     """빈 `protected` 는 "기본값" 을 명시한다 — 빈 칸을 "보호 없음" 으로 오독하지 않게."""
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
-    pc.cmd_repo_list(argparse.Namespace())
+    config_repo.cmd_repo_list(pm_paths.home_at(pc.REPO), argparse.Namespace())
     out = capsys.readouterr().out
     assert "main,master,develop · 기본값" in out
 
@@ -864,28 +872,28 @@ def test_repo_list_aligns_columns_by_display_width(pc, board, capsys):
         "| aa | P | g | 테스트 명령 | o | main | main | 한글이름 |\n"
         "| bb | Q | g | pytest -q | o | main | main | ascii |\n",
         encoding="utf-8")
-    pc.cmd_repo_list(argparse.Namespace())
+    config_repo.cmd_repo_list(pm_paths.home_at(pc.REPO), argparse.Namespace())
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(("aa", "bb"))]
     assert len(lines) == 2
     # 두 데이터 행에서 마지막 칼럼(area_owner)의 시작 표시 폭이 같아야 정렬이 맞다.
-    starts = [pc._display_width(ln[:ln.index("한글이름" if "한글이름" in ln else "ascii")])
+    starts = [console._display_width(ln[:ln.index("한글이름" if "한글이름" in ln else "ascii")])
               for ln in lines]
     assert starts[0] == starts[1], f"한글 셀에서 정렬이 깨졌다: {lines}"
 
 
 def test_display_width_counts_wide_chars_as_two(pc):
     """`_display_width` 단위 — 전각 2칸·반각 1칸(패딩 헬퍼도 그 기준)."""
-    assert pc._display_width("abc") == 3
-    assert pc._display_width("한글") == 4
-    assert pc._display_width("한a") == 3
-    assert pc._display_width("") == 0
-    assert pc._display_width(pc._pad_display("한글", 8)) == 8
-    assert pc._pad_display("abcdef", 3) == "abcdef"   # 이미 넘치면 자르지 않는다
+    assert console._display_width("abc") == 3
+    assert console._display_width("한글") == 4
+    assert console._display_width("한a") == 3
+    assert console._display_width("") == 0
+    assert console._display_width(console._pad_display("한글", 8)) == 8
+    assert console._pad_display("abcdef", 3) == "abcdef"   # 이미 넘치면 자르지 않는다
 
 
 def test_repo_list_empty_registry_guides_to_repo_add(pc, board, capsys):
     """등록이 없으면 빈 표 대신 `repo add` 안내(rc 0)."""
-    assert pc.cmd_repo_list(argparse.Namespace()) == 0
+    assert config_repo.cmd_repo_list(pm_paths.home_at(pc.REPO), argparse.Namespace()) == 0
     assert "등록된 repo 없음" in capsys.readouterr().out
 
 
@@ -896,7 +904,8 @@ def test_repo_list_empty_registry_guides_to_repo_add(pc, board, capsys):
 def test_cli_repo_protected_get_parses_without_value(pc):
     """`repo protected <name>` 은 value 없이 파싱돼 조회 핸들러로 간다."""
     args = pc.build_parser().parse_args(["repo", "protected", "svc"])
-    assert args.func is pc.cmd_repo_protected
+    assert args.func.func is config_repo.cmd_repo_protected
+    assert args.func.args == (pm_paths.home_at(pc.REPO),)
     assert args.name == "svc" and args.value is None
 
 
@@ -916,7 +925,8 @@ def test_cli_repo_add_accepts_protected_flag(pc):
 def test_cli_repo_list_parses(pc):
     """`repo list` 가 조회 핸들러로 간다."""
     args = pc.build_parser().parse_args(["repo", "list"])
-    assert args.func is pc.cmd_repo_list
+    assert args.func.func is config_repo.cmd_repo_list
+    assert args.func.args == (pm_paths.home_at(pc.REPO),)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -972,15 +982,7 @@ def _reconciler(bootstrap, tmp_path, monkeypatch, *, board, pool):
     areas_file.write_text("| repo | prefix |\n|---|---|\n| X | X |\n", encoding="utf-8")
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    return bootstrap.PmBootstrap(
-        run_board_fn=lambda args: (0, ""),
-        run_pytest_fn=lambda: (0, ""),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file,
-        areas_file=areas_file,
-
-
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path / "home"), run_board_fn=lambda args: (0, ''), run_pytest_fn=lambda: (0, ''), run_git_fn=lambda args: (0, ''), log_file=log_file, areas_file=areas_file)
 
 
 def _marked_skew(message="injected engine rev skew"):
@@ -996,7 +998,7 @@ def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys, monk
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
-    assert inst._reconcile_protected_sidecar("svc") is True
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is True
     assert pool.calls == [("svc", ["main", "release"])]
     assert (hooks / "svc" / "protected").read_text(encoding="utf-8").split() == [
         "main", "release"]
@@ -1021,7 +1023,7 @@ def test_bootstrap_reinstall_preserves_resolved_self_test_contract(bootstrap, tm
         board=_ReconcileBoard(["main", "release"], test_cmd="go test ./..."),
         pool=pool)
 
-    assert inst._reconcile_protected_sidecar("svc") is True
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is True
     assert pool.last_gate == ("self-test", "go test ./...")
 
 
@@ -1039,7 +1041,7 @@ def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(bootstrap, tmp_
     board = _ReconcileBoard(["main"], test_cmd="go test ./...")
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=board, pool=pool)
 
-    assert inst._reconcile_protected_sidecar("svc") is True
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is True
     assert pool.calls == [("svc", ["main"])]
     assert pool.last_gate == ("self-test", "go test ./...")
     assert (hooks / "svc" / "gate-contract").read_text(encoding="utf-8") == (
@@ -1059,7 +1061,7 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(bootstr
     pool = bind_pool(monkeypatch, FakePool(hooks, ok=False))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
-    assert inst._reconcile_protected_sidecar("svc") is False
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == [("svc", ["main", "release"])]      # 시도는 했다
     err = capsys.readouterr().err
     assert "정합화했습니다" not in err, "실패인데 성공 보고가 나갔다(거짓 정합)"
@@ -1081,7 +1083,7 @@ def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, 
 
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
-    assert inst._reconcile_protected_sidecar("svc") is False
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     err = capsys.readouterr().err
     assert "정합화하지 못했습니다" in err
     assert "RuntimeError: hooksPath 설정 실패" in err
@@ -1099,7 +1101,7 @@ def test_bootstrap_no_reconcile_when_in_sync(bootstrap, tmp_path, monkeypatch, c
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch,
                        board=_ReconcileBoard(["main", "release"]), pool=pool)
-    assert inst._reconcile_protected_sidecar("svc") is False
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == []
     assert capsys.readouterr().err == ""
 
@@ -1108,7 +1110,7 @@ def test_bootstrap_reconcile_skips_when_sidecar_absent(bootstrap, tmp_path, monk
     """훅 미설치(sidecar 부재)면 설치하지 않는다 — 설치는 repo add/worktree add 축."""
     pool = bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    assert inst._reconcile_protected_sidecar("svc") is False
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == []
 
 
@@ -1127,7 +1129,7 @@ def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path, 
 
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
-    assert inst._reconcile_protected_sidecar("svc") is False
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
 
 
 
@@ -1143,7 +1145,7 @@ def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(bootstrap
 
     inst = _reconciler(
         bootstrap, tmp_path, monkeypatch, board=_BoomBoard(["main"]), pool=FakePool(hooks))
-    assert inst._reconcile_protected_sidecar("svc") is False
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
 
 
 
@@ -1160,7 +1162,7 @@ def _stub_task_run(inst, monkeypatch, tmp_path, leases):
     )
     monkeypatch.setattr(inst, "_validate_task_slot_set", lambda _name, leases=None: 0)
     monkeypatch.setattr(inst, "_task_slot_set_rows", lambda _name, leases=None: [])
-    monkeypatch.setattr(inst, "_build_task_identity_markdown", lambda _info: "")
+    monkeypatch.setattr(bootstrap_report, "_build_task_identity_markdown", lambda _info: "")
     monkeypatch.setattr(inst, "_collect_freshness", lambda: [])
     monkeypatch.setattr(inst, "_collect_board", lambda: {
         "counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
@@ -1175,7 +1177,7 @@ def _stub_task_run(inst, monkeypatch, tmp_path, leases):
     monkeypatch.setattr(inst, "_collect_user_continuity", lambda _log: None)
     monkeypatch.setattr(inst, "_collect_handoff_context", lambda _log=None: None)
     monkeypatch.setattr(inst, "_collect_dashboard_others", lambda: None)
-    monkeypatch.setattr(inst, "_safe_command_card", lambda: None)
+    monkeypatch.setattr(bootstrap_card, "_safe_command_card", lambda _home, _task_name, *, environment=None: None)
 
 
 class _Lease:
@@ -1189,8 +1191,8 @@ def test_task_entry_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch, 
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]),
                        pool=FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     seen: list[str] = []
-    monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
-                        lambda repo: seen.append(repo) or False)
+    monkeypatch.setattr(bootstrap_slots, "_reconcile_protected_sidecar",
+                        lambda _home, repo: seen.append(repo) or False)
     _stub_task_run(inst, monkeypatch, tmp_path,
                    [_Lease("svc", "work/svc_1"), _Lease("svc", "work/svc_2")])
     assert inst.run(task="mytask") == 0
@@ -1203,8 +1205,8 @@ def test_task_without_slots_does_not_reconcile(bootstrap, tmp_path, monkeypatch,
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]),
                        pool=FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
     seen: list[str] = []
-    monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
-                        lambda repo: seen.append(repo) or False)
+    monkeypatch.setattr(bootstrap_slots, "_reconcile_protected_sidecar",
+                        lambda _home, repo: seen.append(repo) or False)
     _stub_task_run(inst, monkeypatch, tmp_path, [])
     assert inst.run(task="mytask") == 0
     capsys.readouterr()
@@ -1241,7 +1243,7 @@ def test_default_reset_failure_retry_is_not_repo_add(pc, monkeypatch, board, tmp
     pm_paths.areas_file(board._home()).write_text(_CANONICAL_AREAS, encoding="utf-8")
     bind_pool(monkeypatch, FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks", ok=False))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_protected(_protected_args("service-a", "default"),
+    rc = config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a", "default"),
 
                                repos_dir=tmp_path / ".repos")
     assert rc == 0
@@ -1257,7 +1259,7 @@ def test_query_guidance_in_fallback_state_offers_default(pc, monkeypatch, board,
     write_sidecar(hooks, "service-b", ["master"])        # sidecar drift
     bind_pool(monkeypatch, FakePool(hooks))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-b"))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-b"))
     out = capsys.readouterr().out
     assert "repo protected service-b default" in out
     assert "repo protected service-b main,master,develop" not in out
@@ -1270,7 +1272,7 @@ def test_query_guidance_in_explicit_state_keeps_list(pc, monkeypatch, board, tmp
     write_sidecar(hooks, "service-a", ["master"])
     bind_pool(monkeypatch, FakePool(hooks))
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-a"))
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"))
     assert "repo protected service-a main" in capsys.readouterr().out
 
 
@@ -1281,7 +1283,7 @@ def test_unwired_guidance_in_fallback_state_offers_default(pc, monkeypatch, boar
     write_sidecar(hooks, "service-b", list(areas_rules.DEFAULT_PROTECTED))
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board)
-    pc.cmd_repo_protected(_protected_args("service-b"),
+    config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-b"),
                           clone_runner=HooksPathGit())
     out = capsys.readouterr().out
     assert "⚠ 훅 미배선" in out
@@ -1301,7 +1303,7 @@ def test_bootstrap_failure_guidance_in_fallback_state_offers_default(bootstrap, 
         bootstrap, tmp_path, monkeypatch,
         board=_ReconcileBoard(["main", "master", "develop"], cell=""),   # 폴백 상태
         pool=FakePool(hooks, ok=False))
-    assert inst._reconcile_protected_sidecar("svc") is False
+    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     err = capsys.readouterr().err
     assert "repo protected svc default" in err
     assert "repo protected svc main,master,develop" not in err
@@ -1313,7 +1315,7 @@ def test_bootstrap_retry_command_delegates_to_pm_config(bootstrap, pc, tmp_path,
     fake_board = _ReconcileBoard(["main"], cell="")
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=fake_board,
                        pool=FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
-    assert inst._protected_retry_command("svc") == repo_protection.protected_retry_command(pm_paths.home_at(pc.REPO), "svc")
+    assert bootstrap_slots._protected_retry_command(pm_paths.home_at(tmp_path / "home"), 'svc') == repo_protection.protected_retry_command(pm_paths.home_at(pc.REPO), "svc")
 
 
 # ════════════════════════════════════════════════════════════════════════

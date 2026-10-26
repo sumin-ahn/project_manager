@@ -16,6 +16,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.domain.session_identity
+
 from pm_engine.cli import board_init
 from pm_engine.cli import board_ticket
 
@@ -355,12 +358,12 @@ def test_the_three_self_parsing_modules_dropped_their_copies():
     """
     for name, filename in (("pm_config", "pm_config.py"),
                            ("worktree_pool", "worktree_pool.py"),
-                           ("pm_log", "pm_log.py")):
+                           ("pm_log", "pm_engine/app/session_identity.py")):
         module = _load(f"t0779_{name}", filename)
         assert not hasattr(module, "_local_conf_session"), name
     pm_log = _load("t0779_pm_log_sources", "pm_log.py")
-    assert not hasattr(pm_log, "IDENTITY_SOURCE_SOLO_LOCAL_CONF")
-    assert "solo local.conf" not in pm_log.SNAPSHOT_IDENTITY_SOURCES
+    assert not hasattr(pm_engine.domain.session_identity, "IDENTITY_SOURCE_SOLO_LOCAL_CONF")
+    assert "solo local.conf" not in pm_engine.domain.session_identity.SNAPSHOT_IDENTITY_SOURCES
 
 
 # ── ② 동적: 구 clone 형상에서 조용한 폴백이 없다 ────────────────────────────

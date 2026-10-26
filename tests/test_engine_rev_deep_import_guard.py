@@ -1822,10 +1822,6 @@ _LOADER_CASES = (
         "_load_pm_render_module",
     ),
     (
-        "pm_bootstrap", "pm_log", lambda mod, _tools: mod._load_tool("pm_log"),
-        "_load_tool",
-    ),
-    (
         "pm_config", "pm_import", lambda mod, _tools: mod._load_module("pm_import", "pm_import.py"),
         "_load_module",
     ),

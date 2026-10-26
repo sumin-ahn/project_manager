@@ -35,7 +35,7 @@ MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 #   done                                  · 이 파일 `_marker_path` (회전)
 #   nudge · nudge2 · final                · ctx_stop_hook.py:51,83,87 (사이클 넛지)
 #   compact-* (checkpoint·boundary·snapshot·snapshot-receipt)
-#                                         · pm_log.py:1358,1404 · opencode ctx-guard-core.cjs:315,323
+#                                         · infra.compaction_store._compaction_marker_path · opencode ctx-guard-core.cjs:315,323
 RESERVED_MARKER_NAMESPACES = frozenset({"done", "nudge", "nudge2", "final"})
 RESERVED_MARKER_NAMESPACE_PREFIX = "compact-"
 
@@ -224,7 +224,7 @@ def claim_session_once(
 ) -> bool | None:
     """``(세션, namespace)`` 스코프에서 ``key`` 를 처음 보는지 선점한다.
 
-    반환은 3상태다(`pm_log.claim_compaction_checkpoint` 와 동형) — ``True`` 는 이번 호출이
+    반환은 3상태다(`infra.compaction_store.claim_compaction_checkpoint` 와 동형) — ``True`` 는 이번 호출이
     첫 선점, ``False`` 는 같은 세션·namespace 에서 이미 본 키, ``None`` 은 **장부를 쓸 수 없음**
     (멤버십 파일 I/O 실패 또는 예약 marker 이름 요청)이다. 호출부가 ``None`` 을 자기 fail
     방향으로 해석한다(git-anchor 는 fail-open=발화).

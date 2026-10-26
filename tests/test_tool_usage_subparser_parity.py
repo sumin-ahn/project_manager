@@ -42,6 +42,8 @@ registry completeness: `_TOOLS` 는 수동 하드코딩이라, 미래에 새 도
 
 from __future__ import annotations
 
+from pm_engine.cli import log
+
 import argparse
 import ast
 import importlib.util
@@ -172,7 +174,7 @@ def _declared_leaves(doc: str, prog: str) -> set[tuple[str, ...]]:
 def test_usage_block_matches_subparsers(name: str, prog: str) -> None:
     """손-작성 `사용:` 블록의 서브커맨드 나열 ↔ 등록 subparser 집합이 양방향 일치."""
     module = _load(name)
-    registered = _registered_leaves(module.build_parser())
+    registered = _registered_leaves((log if name == "pm_log" else module).build_parser())
     declared = _declared_leaves(module.__doc__, prog)
 
     # sensitivity: 대상 도구가 실제로 서브커맨드를 갖는다(파싱 실패로 인한 vacuous 방지).
@@ -205,7 +207,8 @@ def _tools_with_usage_block_and_subparsers() -> set[str]:
         source = path.read_text(encoding="utf-8")
         docstring = ast.get_docstring(ast.parse(source)) or ""
         has_usage_block = any(line.strip() == "사용:" for line in docstring.splitlines())
-        if has_usage_block and "add_subparsers" in source:
+        implementation = (TOOLS / "pm_engine/cli/log.py").read_text(encoding="utf-8") if path.stem == "pm_log" else source
+        if has_usage_block and "add_subparsers" in implementation:
             found.add(path.stem)
     return found
 

@@ -4,6 +4,7 @@
 기록 위치·wiki 문서와 채택자 훅 위치·`~` 확장 규칙과 작업 폴더의 소유 PM 홈 유도(`owning_pm_home`)를 소유한다. 설치 깊이는 고정이고 상향 탐색을
 하지 않는다.
 """
+
 from __future__ import annotations
 
 from pm_engine.domain import delegate_errors
@@ -26,7 +27,9 @@ def _board_root_at(repo: Path) -> Path:
     return base / "wiki"
 
 
-def home_at(root: Path, pm_home: Path | None = None, board_root: Path | None = None) -> home.Home:
+def home_at(
+    root: Path, pm_home: Path | None = None, board_root: Path | None = None
+) -> home.Home:
     """`root` 트리의 실행 기준 경로를 만든다.
 
     `pm_home` 은 PM 입력(클론별 설정·작업 디렉터리)을 읽을 PM 홈, `board_root` 는 board 루트다.
@@ -166,7 +169,7 @@ def _git_common_dir_from_files(repo: Path) -> Path | None:
             pointer = fs.read_text_shared(dot_git, encoding="utf-8").strip()
             if not pointer.startswith("gitdir:"):
                 return None
-            target = Path(pointer[len("gitdir:"):].strip())
+            target = Path(pointer[len("gitdir:") :].strip())
             git_dir = target if target.is_absolute() else repo / target
         else:
             return None
@@ -277,7 +280,8 @@ def _expanded_user_path(value: str) -> Path:
         home = _expanduser_path(Path(first))
         if not home.is_dir():
             raise RuntimeError(
-                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
+                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}"
+            )
     return expanded
 
 
@@ -383,14 +387,15 @@ def _has_real_board(pm_dir: Path) -> bool:
     `.gitkeep` 만 — worktree 출하 형상)는 False: worktree 자신의 scaffold 를 '실 board' 로
     오인해 가드를 무력화하지 않게 한다.
     """
-    for base in (pm_dir / 'board' / 'tickets', pm_dir / 'wiki' / 'tickets'):
+    for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
         if not base.is_dir():
             continue
         for status in ticket_rules.STATUS_DIRS:
             status_dir = base / status
-            if status_dir.is_dir() and any(status_dir.glob('T-*.md')):
+            if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
                 return True
     return False
+
 
 def _pm_home_worktree_misanchor(home) -> Path | None:
     """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 면 그 PM 홈 경로를,
@@ -400,15 +405,18 @@ def _pm_home_worktree_misanchor(home) -> Path | None:
     자기 것이고(자체 board 사용 존중), 그 밖에는 anchor 의 `.git` 선언이 답을 정한다. 유도가
     실패하면 자기 앵커로 강등하지 않고 그대로 올린다(fail-loud).
     """
-    if _has_real_board(home.root / '.project_manager'):
+    if _has_real_board(home.root / ".project_manager"):
         return None
     pm_home = owning_pm_home(home.root)
     return None if pm_home == Path(home.root).resolve() else pm_home
 
+
 class _ReadBoardResolution(NamedTuple):
     """read dispatch의 board 해소 결과. home이 None이면 자기 앵커의 board를 그대로 쓴다."""
+
     root: Path
     home: Path | None
+
 
 def _resolve_read_board(home) -> _ReadBoardResolution:
     """read-only board를 uniform 규칙으로 해소한다.
@@ -419,7 +427,7 @@ def _resolve_read_board(home) -> _ReadBoardResolution:
     mutation 경로에서는 traceback, read 경로에서는 안내로 갈리지 않도록 번역은 `main()`
     한 곳이 한다.
     """
-    if _has_real_board(home.root / '.project_manager'):
+    if _has_real_board(home.root / ".project_manager"):
         return _ReadBoardResolution(_board_root_at(home.root), home.root)
     data_home = owning_pm_home(home.root)
     if data_home == Path(home.root).resolve():
@@ -540,3 +548,26 @@ def repo_root_from_cwd(cwd: Path | None) -> Path | None:
     if cwd is None:
         return None
     return _path_repo_root(cwd.resolve())
+
+
+def _resolve_log_file(home) -> Path:
+    """Home의 로그 경로를 반환한다. work/ 슬롯의 상위 공유 로그가 실재하면 그 경로를 사용한다."""
+    default = wiki_dir(home) / "log" / "current.md"
+    if home.root.parent.name == "work" and home.local_dir.parent.parent == home.root:
+        shared = (
+            home.root.parent.parent / ".project_manager" / "wiki" / "log" / "current.md"
+        )
+        if shared.exists():
+            return shared
+    return default
+
+
+def _dashboard_file(home) -> Path:
+    """Home 데이터 소유 wiki의 dashboard 경로를 반환한다."""
+    return wiki_dir(home) / "log" / "dashboard.md"
+
+
+
+def _dashboard_lock_file(home) -> Path:
+    """대시보드 read-modify-write 직렬화 락 파일 (`.local/dashboard.lock`·*호출 시점* REPO 추종)."""
+    return home.local_dir / "dashboard.lock"

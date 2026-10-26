@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 260,
+  "count": 252,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 104
+    "python-prose": 96
   },
   "entries": [
     {
@@ -128,11 +128,19 @@
       "count": 1
     },
     {
-      "path": ".project_manager/tools/pm_bootstrap.py",
+      "path": ".project_manager/tools/pm_engine/cli/handoff.py",
       "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
+      "match": "T-0001",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_engine/cli/handoff.py",
+      "kind": "work_item",
+      "match": "T-0002",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
       "count": 1
     },
     {
@@ -230,30 +238,6 @@
       "surface": "python-prose",
       "hash": "b01c8423d7c931b749544ca5c9171dabbf388a1f165637ebf5ec5ad90b87bb4e",
       "count": 2
-    },
-    {
-      "path": ".project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0002",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0596",
-      "surface": "python-prose",
-      "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
-      "count": 1
     },
     {
       "path": ".project_manager/tools/pm_import.py",
@@ -472,11 +456,19 @@
       "count": 1
     },
     {
-      "path": "templates/claude_code/.project_manager/tools/pm_bootstrap.py",
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/cli/handoff.py",
       "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
+      "match": "T-0001",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/cli/handoff.py",
+      "kind": "work_item",
+      "match": "T-0002",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
       "count": 1
     },
     {
@@ -574,30 +566,6 @@
       "surface": "python-prose",
       "hash": "b01c8423d7c931b749544ca5c9171dabbf388a1f165637ebf5ec5ad90b87bb4e",
       "count": 2
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0002",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0596",
-      "surface": "python-prose",
-      "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
-      "count": 1
     },
     {
       "path": "templates/claude_code/.project_manager/tools/pm_import.py",
@@ -928,11 +896,19 @@
       "count": 1
     },
     {
-      "path": "templates/codex/.project_manager/tools/pm_bootstrap.py",
+      "path": "templates/codex/.project_manager/tools/pm_engine/cli/handoff.py",
       "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
+      "match": "T-0001",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_engine/cli/handoff.py",
+      "kind": "work_item",
+      "match": "T-0002",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
       "count": 1
     },
     {
@@ -1030,30 +1006,6 @@
       "surface": "python-prose",
       "hash": "b01c8423d7c931b749544ca5c9171dabbf388a1f165637ebf5ec5ad90b87bb4e",
       "count": 2
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0002",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0596",
-      "surface": "python-prose",
-      "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
-      "count": 1
     },
     {
       "path": "templates/codex/.project_manager/tools/pm_import.py",
@@ -1608,11 +1560,19 @@
       "count": 1
     },
     {
-      "path": "templates/opencode/.project_manager/tools/pm_bootstrap.py",
+      "path": "templates/opencode/.project_manager/tools/pm_engine/cli/handoff.py",
       "kind": "work_item",
-      "match": "T-0164",
-      "surface": "python-prose",
-      "hash": "35fee72a94ac2a5a6fbf0a26219e58f58557d1bce3853d1c9193a2a63f25717e",
+      "match": "T-0001",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_engine/cli/handoff.py",
+      "kind": "work_item",
+      "match": "T-0002",
+      "surface": "python-non-prose",
+      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
       "count": 1
     },
     {
@@ -1710,30 +1670,6 @@
       "surface": "python-prose",
       "hash": "b01c8423d7c931b749544ca5c9171dabbf388a1f165637ebf5ec5ad90b87bb4e",
       "count": 2
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0002",
-      "surface": "python-non-prose",
-      "hash": "b288b150bce9ee96a0d3e2b6312d0460c203e662652aaef93f95a963c62453a8",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_handoff.py",
-      "kind": "work_item",
-      "match": "T-0596",
-      "surface": "python-prose",
-      "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
-      "count": 1
     },
     {
       "path": "templates/opencode/.project_manager/tools/pm_import.py",

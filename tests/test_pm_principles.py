@@ -14,6 +14,10 @@ importlib 로 직접 로드해 검증한다. 실 canonical 레지스트리 파�
 """
 from __future__ import annotations
 
+from pm_engine.app import principle_recall
+from pm_engine.domain import principle_rules
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import json
 import shutil
@@ -97,7 +101,7 @@ def test_tagged_item_parses_as_recall_with_on_and_match(m, tmp_path):
         "#### 번들\n"
         "- `[shell: git\\s+push]` 규칙 본문. 어기면 깨진다.\n"
     ))
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 1
     rule = rules[0]
     assert rule.on == "shell"
@@ -110,7 +114,7 @@ def test_untagged_item_parses_as_judgment(m, tmp_path):
         "#### 번들\n"
         "- 태그 없는 판단 원칙. 어기면 깨진다.\n"
     ))
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 1
     assert rules[0].on is None
     assert rules[0].match is None
@@ -125,9 +129,9 @@ def test_broken_tag_is_excluded_and_not_silently_a_pass(m, tmp_path, broken_line
     """파손 항목은 규칙 목록에서 빠지고(judge_recall 이 아무것도 매칭 안 함), 판정 불능은
     `judge_recall` 의 `broken` 필드로 표면화된다 — 조용한 통과가 아니다."""
     _write_registry(tmp_path, f"#### 번들\n{broken_line}\n")
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert rules == ()
-    result = m.judge_recall(tmp_path, on="shell", text="git push", seen=set())
+    result = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git push', seen=set())
     assert result is not None
     assert result.get("broken", 0) >= 1
     assert result["count"] == 0
@@ -140,24 +144,24 @@ def test_blank_and_non_item_lines_are_ignored(m, tmp_path):
         "#### 번들\n"
         "- 유효한 판단 원칙. 어기면 깨진다.\n"
     ))
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 1
 
 
 def test_missing_registry_file_yields_zero_rules_not_an_error(m, tmp_path):
     """레지스트리 파일 자체가 없어도(신선한 트리) load 는 예외 없이 빈 튜플."""
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert rules == ()
-    assert m.judge_recall(tmp_path, on="shell", text="git push", seen=set()) is None
+    assert principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git push', seen=set()) is None
 
 
 def test_empty_registry_file_yields_zero_rules(m, tmp_path):
     """파일은 존재하되 내용이 빈 문자열이면(부재와 다른 경계) 규칙 0건."""
     _write_registry(tmp_path, "")
     assert (tmp_path / ".project_manager" / "wiki" / "pm_principles.md").is_file()
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert rules == ()
-    assert m.judge_recall(tmp_path, on="shell", text="git push", seen=set()) is None
+    assert principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git push', seen=set()) is None
 
 
 def test_crlf_line_endings_parse_the_same_as_lf(m, tmp_path):
@@ -166,7 +170,7 @@ def test_crlf_line_endings_parse_the_same_as_lf(m, tmp_path):
     _write_registry(tmp_path, text)
     raw = (tmp_path / ".project_manager" / "wiki" / "pm_principles.md").read_bytes()
     assert b"\r\n" in raw  # 실제로 CRLF 로 기록됐다(테스트 전제 확인)
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 1
     assert rules[0].on == "shell"
     assert rules[0].text == "규칙 본문. 어기면 깨진다."
@@ -180,31 +184,31 @@ def test_duplicate_item_within_the_same_file_last_one_wins(m, tmp_path):
         "- `[shell: git\\s+push]` 첫 번째 문구.\n"
         "- `[shell: git\\s+push]` 두 번째 문구(이게 이긴다).\n"
     ))
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 1
     assert rules[0].text == "두 번째 문구(이게 이긴다)."
 
 
 def test_judge_recall_text_at_exact_10000_char_cap_is_not_summarized(m, tmp_path):
     """실제 `_MAX_INJECT_CHARS`(10,000) 경계 — 정확히 상한이면 원문 그대로다(monkeypatch 아님)."""
-    fixed_len = len(m._INJECT_PREFIX) + 3  # f"{prefix} - {rule_text}" 의 고정 부분(공백 1 + "- ").
-    body = "x" * (m._MAX_INJECT_CHARS - fixed_len)
+    fixed_len = len(principle_rules._INJECT_PREFIX) + 3  # f"{prefix} - {rule_text}" 의 고정 부분(공백 1 + "- ").
+    body = "x" * (principle_rules._MAX_INJECT_CHARS - fixed_len)
     _write_registry(tmp_path, f"#### 번들\n- `[shell: git]` {body}\n")
-    result = m.judge_recall(tmp_path, on="shell", text="git", seen=set())
+    result = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git', seen=set())
     assert result is not None
-    assert len(result["text"]) == m._MAX_INJECT_CHARS
+    assert len(result["text"]) == principle_rules._MAX_INJECT_CHARS
     assert "매칭" not in result["text"]  # 요약으로 접히지 않았다.
 
 
 def test_judge_recall_text_at_10001_chars_is_summarized_not_truncated(m, tmp_path):
     """상한을 딱 1자 넘기면(10,001) 원문을 자르지 않고 매칭 수 요약으로 접힌다."""
-    fixed_len = len(m._INJECT_PREFIX) + 3
-    body = "x" * (m._MAX_INJECT_CHARS - fixed_len + 1)
+    fixed_len = len(principle_rules._INJECT_PREFIX) + 3
+    body = "x" * (principle_rules._MAX_INJECT_CHARS - fixed_len + 1)
     _write_registry(tmp_path, f"#### 번들\n- `[shell: git]` {body}\n")
-    result = m.judge_recall(tmp_path, on="shell", text="git", seen=set())
+    result = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git', seen=set())
     assert result is not None
     assert "매칭 1건" in result["text"]
-    assert len(result["text"]) < m._MAX_INJECT_CHARS
+    assert len(result["text"]) < principle_rules._MAX_INJECT_CHARS
     assert "x" * 50 not in result["text"]  # 원문이 절단된 채로 남지 않았다(요약으로 대체).
 
 
@@ -216,7 +220,7 @@ def test_local_layer_overrides_shipped_rule_with_same_match(m, tmp_path):
         "#### 공유\n- `[shell: git\\s+push]` 출하층 문구.\n",
         local="#### 로컬\n- `[shell: git\\s+push]` 로컬층 문구.\n",
     )
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 1
     assert rules[0].text == "로컬층 문구."
     assert rules[0].layer == "local"
@@ -228,7 +232,7 @@ def test_local_layer_adds_distinct_rule_without_dropping_shipped(m, tmp_path):
         "#### 공유\n- `[shell: git\\s+push]` 출하층 문구.\n",
         local="#### 로컬\n- 로컬 전용 판단 원칙.\n",
     )
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 2
     texts = {rule.text for rule in rules}
     assert texts == {"출하층 문구.", "로컬 전용 판단 원칙."}
@@ -238,9 +242,9 @@ def test_adopter_shape_without_local_file_uses_shipped_only(m, tmp_path):
     """로컬층 파일이 아예 없는 채택자 형상에서도 출하층만으로 정상 동작한다."""
     _write_registry(tmp_path, "#### 공유\n- `[edit: tests/]` 출하 문구.\n")
     assert (tmp_path / ".project_manager" / "wiki" / "pm_principles.local.md").exists() is False
-    rules = m.load(tmp_path)
+    rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert len(rules) == 1
-    result = m.judge_recall(tmp_path, on="edit", text="tests/test_x.py", seen=set())
+    result = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='edit', text='tests/test_x.py', seen=set())
     assert result is not None and result["count"] == 1
 
 
@@ -253,31 +257,31 @@ def test_adopter_shape_without_local_file_uses_shipped_only(m, tmp_path):
 def test_judge_recall_never_raises_on_hostile_input(m, tmp_path, text):
     _write_registry(tmp_path, "#### 공유\n- `[shell: git]` 문구. 어기면 깨진다.\n")
     # 예외를 던지면 pytest 가 실패로 잡는다 — 호출 자체가 단언이다.
-    m.judge_recall(tmp_path, on="shell", text=text, seen=set())
+    principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text=text, seen=set())
 
 
 def test_judge_recall_unknown_on_axis_returns_none(m, tmp_path):
     _write_registry(tmp_path, "#### 공유\n- `[shell: git]` 문구.\n")
-    assert m.judge_recall(tmp_path, on="not-a-real-axis", text="git", seen=set()) is None
+    assert principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='not-a-real-axis', text='git', seen=set()) is None
 
 
 def test_judge_recall_dedups_against_seen(m, tmp_path):
     _write_registry(tmp_path, "#### 공유\n- `[shell: git\\s+push]` 문구. 어기면 깨진다.\n")
-    first = m.judge_recall(tmp_path, on="shell", text="git push", seen=set())
+    first = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git push', seen=set())
     assert first["count"] == 1
     seen = set(first["keys"])
-    second = m.judge_recall(tmp_path, on="shell", text="git push", seen=seen)
+    second = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git push', seen=seen)
     assert second is None or second["count"] == 0
 
 
 def test_judge_recall_caps_rendered_text_and_reports_match_count(m, tmp_path, monkeypatch):
     """상한을 넘길 매칭이면 잘라내지 말고 매칭 수를 값으로 싣는다."""
-    monkeypatch.setattr(m, "_MAX_INJECT_CHARS", 10)
+    monkeypatch.setattr(principle_rules, "_MAX_INJECT_CHARS", 10)
     _write_registry(tmp_path, (
         "#### 공유\n"
         "- `[shell: git]` 아주 긴 규칙 본문 하나 — 상한을 넘기기에 충분한 길이로 채운다. 어기면 깨진다.\n"
     ))
-    result = m.judge_recall(tmp_path, on="shell", text="git push", seen=set())
+    result = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git push', seen=set())
     assert result is not None
     assert result["count"] == 1
     assert "매칭 1건" in result["text"]
@@ -291,7 +295,7 @@ def test_broken_registry_pattern_is_undecidable_not_a_pass(m, tmp_path):
         "- `[shell: (unclosed]` 파손 항목.\n"
         "- `[shell: git\\s+push]` 정상 항목. 어기면 깨진다.\n"
     ))
-    result = m.judge_recall(tmp_path, on="shell", text="git push", seen=set())
+    result = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='git push', seen=set())
     assert result is not None
     assert result["count"] == 1
     assert result.get("broken", 0) == 1
@@ -301,7 +305,7 @@ def test_broken_registry_warning_is_carried_in_the_single_text_field_all_adapter
     """매칭 0 이어도 파손이 있으면 `text` 가 비지 않는다 — 세 어댑터 모두 `result.text` 하나만
     보고 주입하므로(F-004), 파손 경고가 이 필드에 없으면 무출력으로 사라진다."""
     _write_registry(tmp_path, "#### 공유\n- `[shell: (unclosed]` 파손 항목.\n")
-    result = m.judge_recall(tmp_path, on="shell", text="아무 텍스트나", seen=set())
+    result = principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text='아무 텍스트나', seen=set())
     assert result is not None
     assert result["count"] == 0
     assert result.get("broken", 0) == 1
@@ -312,21 +316,21 @@ def test_broken_registry_warning_is_carried_in_the_single_text_field_all_adapter
 
 # ── canonical 레지스트리 형태 값 확인 ────────────────────────────────────
 
-def test_canonical_registry_recall_and_judgment_counts(m):
+def test_canonical_registry_recall_and_judgment_counts(m, tmp_path):
     """실 출하 레지스트리의 분류 건수 — RECALL 15(태그) · JUDGMENT 13(무태그)."""
-    rules = m.load(REPO)
+    rules = principle_recall.load(pm_paths.home_at(REPO))
     recall = [rule for rule in rules if rule.on is not None]
     judgment = [rule for rule in rules if rule.on is None]
     assert len(recall) == 15, [rule.match for rule in recall]
     assert len(judgment) == 13
     for rule in recall:
-        assert rule.on in m.ON_VALUES
+        assert rule.on in principle_rules.ON_VALUES
 
 
-def test_canonical_registry_recall_matches_have_no_private_reference(m):
+def test_canonical_registry_recall_matches_have_no_private_reference(m, tmp_path):
     """레지스트리 문구에 티켓/세션/날짜 좌표를 담지 않는다(사설 참조 가드의 보조 값 확인)."""
     import re
-    rules = m.load(REPO)
+    rules = principle_recall.load(pm_paths.home_at(REPO))
     forbidden = re.compile(r"T-\d{4}|PM\s*\d+차|20\d\d-\d\d-\d\d")
     offenders = [rule.text for rule in rules if forbidden.search(rule.text)]
     assert offenders == []
@@ -344,13 +348,13 @@ def test_canonical_delegate_rule_requires_contracts_for_every_finding():
     assert "완전성·실행 가능성을 포함해 읽기로 판정 가능한 차단 사유를" in rule
 
 
-def test_delegator_grants_equal_authority_is_registered(m):
+def test_delegator_grants_equal_authority_is_registered(m, tmp_path):
     """위임 권한 동등 규칙이 레지스트리 항목으로 실려 있고 위임 축에서 회상된다 (T-0887).
 
     카드 산문만으로는 하네스가 바뀌면 규칙이 사라진다 — 세 하네스가 공유하는 이 표에 있어야
     코덱스·오픈코드가 PM 일 때도 같은 규칙을 받는다.
     """
-    rules = m.load(REPO)
+    rules = principle_recall.load(pm_paths.home_at(REPO))
     matched = [rule for rule in rules
                if "위임자는 피위임자에게 자신과 같은 권한을 준다" in rule.text]
     assert len(matched) == 1, [rule.text[:40] for rule in rules]
@@ -359,16 +363,16 @@ def test_delegator_grants_equal_authority_is_registered(m):
     assert rule.on == "edit"
     # 위임을 말하는 편집에서 실제로 회상된다(태그가 하네스 이름만 보면 이 축을 놓친다).
     for probe in ("delegate 경로를 고친다", "위임 경로를 고친다", "codex argv"):
-        recalled = m.judge_recall(REPO, on="edit", text=probe)
+        recalled = principle_recall.judge_recall(pm_paths.home_at(REPO), on='edit', text=probe)
         assert recalled is not None, probe
         assert "같은 권한을 준다" in recalled["text"], probe
 
 
-def test_canonical_registry_loads_from_each_shipped_target(m):
+def test_canonical_registry_loads_from_each_shipped_target(m, tmp_path):
     """3타깃 사본 각자의 트리에서 로더가 항목을 읽는다(값으로 확인 — 채택자 시야)."""
     for target in ("claude_code", "codex", "opencode"):
         target_root = REPO / "templates" / target
-        rules = m.load(target_root)
+        rules = principle_recall.load(pm_paths.home_at(target_root))
         assert len(rules) == 28, target
 
 
@@ -801,3 +805,35 @@ def test_codex_merge_hook_envelopes_caps_the_combined_multi_answer_path(codex):
     assert len(combined) <= cap
     assert "x" * 50 not in combined
     assert "decision" not in merged
+
+
+def test_package_principles_home_isolates_data_and_markers(tmp_path):
+    from pm_engine.app import principle_recall
+    from pm_engine.infra import pm_paths, principle_store
+    code = tmp_path / 'code'
+    first = pm_paths.home_at(code, pm_home=tmp_path / 'first')
+    second = pm_paths.home_at(code, pm_home=tmp_path / 'second')
+    for h, text in [(first, 'first'), (second, 'second')]:
+        wiki = pm_paths.wiki_dir(h)
+        wiki.mkdir(parents=True)
+        (wiki / 'pm_principles.md').write_text('#### rules\n- `[shell: git]` ' + text + '\n', encoding='utf-8')
+    first_result = principle_recall.judge_recall(first, on='shell', text='git status')
+    second_result = principle_recall.judge_recall(second, on='shell', text='git status')
+    assert 'first' in first_result['text'] and 'second' in second_result['text']
+    principle_store.record_seen_marker(first, 'same-session', first_result['keys'])
+    assert principle_store.load_seen_marker(first, 'same-session') == set(first_result['keys'])
+    assert principle_store.load_seen_marker(second, 'same-session') == set()
+    assert not (code / '.project_manager' / '.local').exists()
+
+
+def test_codex_recall_uses_package_without_flat_principles_cli(codex, tmp_path):
+    wiki = tmp_path / '.project_manager' / 'wiki'
+    wiki.mkdir(parents=True)
+    (wiki / 'pm_principles.md').write_text('#### rules\n- `[shell: git]` package rule\n', encoding='utf-8')
+    assert not (tmp_path / '.project_manager' / 'tools' / 'pm_principles.py').exists()
+    event = _codex_live_bash_event()
+    event.pop('agent_id', None)
+    event.pop('agent_type', None)
+    event['tool_input'] = {'command': 'git status'}
+    result = codex.principle_recall_envelope(event, tmp_path)
+    assert 'package rule' in result['hookSpecificOutput']['additionalContext']

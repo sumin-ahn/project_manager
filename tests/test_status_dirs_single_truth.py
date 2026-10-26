@@ -18,6 +18,12 @@ from __future__ import annotations
 from pm_engine.infra import round_store
 
 from pm_engine.infra import pm_paths
+import pm_engine.app.session_snapshot
+
+from pm_engine.app import session_snapshot
+from pm_engine.cli import bootstrap_report
+from pm_engine.domain import bootstrap_rules
+
 
 
 import ast
@@ -126,7 +132,7 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
 
 def _census_line(pm_log_mod, pm_home: Path) -> str:
     line = [
-        row for row in pm_log_mod._ledger_section(pm_home, "main").splitlines()
+        row for row in pm_engine.app.session_snapshot._ledger_section(pm_paths.home_at(pm_home), "main").splitlines()
         if row.startswith("- board tickets: ")
     ]
     assert len(line) == 1, f"census 줄 유일성 — {line!r}"
@@ -142,7 +148,7 @@ def test_pm_log_census_counts_every_status_dir(pm_log, board, tmp_path):
             _seed_ticket(tickets, status, f"T-{index}{serial:03d}")
         expected[status] = index
 
-    _tickets_dir, counts = pm_log._ticket_counts(tmp_path)
+    _tickets_dir, counts = pm_engine.app.session_snapshot._ticket_counts(pm_paths.home_at(tmp_path))
     assert counts == expected
 
     rendered = _census_line(pm_log, tmp_path)
@@ -160,7 +166,7 @@ def test_pm_log_census_follows_injected_status_without_code_change(
     _seed_ticket(tickets, FAKE_STATUS, "T-9200")
     _seed_ticket(tickets, FAKE_STATUS, "T-9201")
 
-    _tickets_dir, counts = pm_log._ticket_counts(tmp_path)
+    _tickets_dir, counts = pm_engine.app.session_snapshot._ticket_counts(pm_paths.home_at(tmp_path))
     assert counts[FAKE_STATUS] == 2
     assert _census_line(pm_log, tmp_path).endswith(f" / {FAKE_STATUS} 2")
 
@@ -180,10 +186,10 @@ def test_pm_bootstrap_dump_counts_and_renders_every_status_dir(bootstrap, board)
         _board_line(status, f"T-93{index:02d}")
         for index, status in enumerate(ticket_rules.STATUS_DIRS)
     )
-    counts = bootstrap.parse_board_counts(output)
+    counts = bootstrap_rules.parse_board_counts(output)
     assert counts == dict.fromkeys(ticket_rules.STATUS_DIRS, 1)
 
-    rendered = bootstrap._format_board_counts_line(counts, "mine")
+    rendered = bootstrap_report._format_board_counts_line(counts, "mine")
     # 종전 4버킷 표기·순서(done 머리)는 bytes 그대로, 새 상태는 꼬리에 추가만.
     assert rendered.startswith(
         "- done: 1 (mine) / open: 1 (mine) / claimed: 1 (mine) / blocked: 1 (mine)")
@@ -197,16 +203,16 @@ def test_pm_bootstrap_dump_follows_injected_status_without_code_change(
     monkeypatch.setattr(ticket_rules, "STATUS_DIRS", (*ticket_rules.STATUS_DIRS, FAKE_STATUS))
     output = _board_line(FAKE_STATUS, "T-9400") + _board_line("open", "T-9401")
 
-    counts = bootstrap.parse_board_counts(output)
+    counts = bootstrap_rules.parse_board_counts(output)
     assert counts[FAKE_STATUS] == 1 and counts["open"] == 1
-    assert bootstrap._format_board_counts_line(counts, "mine").endswith(
+    assert bootstrap_report._format_board_counts_line(counts, "mine").endswith(
         f" / {FAKE_STATUS}: 1 (mine)")
 
 
 def test_pm_bootstrap_still_ignores_status_board_does_not_know(bootstrap, board):
     """board 가 모르는 토큰은 여전히 무시된다 — 파생이 골격을 넓히는 게 아니다(오탐 0)."""
     output = _board_line("archived", "T-9500") + _board_line("open", "T-9501")
-    counts = bootstrap.parse_board_counts(output)
+    counts = bootstrap_rules.parse_board_counts(output)
     assert counts == dict.fromkeys(ticket_rules.STATUS_DIRS, 0) | {"open": 1}
 
 
@@ -225,7 +231,7 @@ _EXEMPT_DICT_KEY = "board"
 
 
 def _exempt_dict_ids(tree: ast.AST) -> frozenset[int]:
-    """`pm_bootstrap._build_json` 의 `board` 하위호환 4키 스키마만 위치/구조로 특정한다.
+    """`bootstrap_report._build_json` 의 `board` 하위호환 4키 스키마만 위치/구조로 특정한다.
 
     둘 다 맞아야 예외다 — (1) 함수 이름이 `_EXEMPT_FUNCTION`(`_build_json`) 이고 (2) 그 함수
     몸통 안에서 어떤 dict 리터럴이 문자열 키 `_EXEMPT_DICT_KEY`(`"board"`) 의 값으로 곧바로
@@ -259,7 +265,7 @@ def _literal_container_strings(
     count("open"), ...}` 처럼 값이 `Call` 인 손사본도 상태 키 자체가 하드코딩이면 잡아야 한다
     (T-0839 라운드 4 반려: 옛 "값도 리터럴" 조건은 이 shape 를 전부 면제했다). 유일한 예외는
     `id(node)` 가 `exempt_ids` 에 있는 dict — `_exempt_dict_ids()` 가 위치/구조로 특정한
-    `pm_bootstrap._build_json` 의 `board` 하위호환 4키 스키마뿐이다.
+    `bootstrap_report._build_json` 의 `board` 하위호환 4키 스키마뿐이다.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
@@ -329,12 +335,17 @@ def _find_status_set_copies(source: str, known: set[str]) -> list[tuple[str, ...
 def test_no_hardcoded_status_set_left_in_consumers(board, tool):
     """소비처 소스에 상태 집합 리터럴 사본이 하나도 남아 있지 않다 (값 단언·재발 차단).
 
-    역방향 확인: 현재 파생 구현(`ticket_rules.STATUS_DIRS` 직접 참조·`pm_bootstrap._board_count_parts` 등)은 이
-    가드를 통과한다 — `pm_bootstrap._build_json` 의 JSON top-level 4키 dict(값이 `Call` 인
+    역방향 확인: 현재 파생 구현(`ticket_rules.STATUS_DIRS` 직접 참조·`bootstrap_report._board_count_parts` 등)은 이
+    가드를 통과한다 — `bootstrap_report._build_json` 의 JSON top-level 4키 dict(값이 `Call` 인
     하위호환 고정 스키마)도 `_exempt_dict_ids()` 가 위치/구조(함수 `_build_json` 안·`"board"`
     키의 값)로 특정해 면제하므로 오탐되지 않는다 — 값 종류(Call 여부)로 면제하지 않는다.
     """
-    source = (TOOLS / f"{tool}.py").read_text(encoding="utf-8")
+    sources = (
+        [TOOLS / "pm_engine/domain/bootstrap_rules.py", TOOLS / "pm_engine/cli/bootstrap_report.py"]
+        if tool == "pm_bootstrap" else [TOOLS / "pm_engine/app/session_snapshot.py"]
+        if tool == "pm_log" else [TOOLS / f"{tool}.py"]
+    )
+    source = "\n".join(path.read_text(encoding="utf-8") for path in sources)
     copies = _find_status_set_copies(source, set(ticket_rules.STATUS_DIRS))
     assert copies == [], f"{tool}.py 에 상태 집합 사본이 남아 있다: {copies}"
 
@@ -371,7 +382,7 @@ def test_hardcoded_status_guard_detects_a_reintroduced_copy(board, shape):
     리터럴, 값은 `Call`)는 "키·값 둘 다 리터럴" 조건 때문에 여전히 놓쳤다(라운드 4 반려 F-002) —
     지금은 값 노드 종류와 무관하게 키만 보므로 다섯 shape 모두 잡힌다. 이 shape 가 red 인 동시에
     `test_no_hardcoded_status_set_left_in_consumers` 가 현재 3 소비처(진짜 파생 구현) green 을
-    유지하는 것이 F-002 민감도의 두 절반이다 — 소비처 쪽엔 `pm_bootstrap._build_json` 의
+    유지하는 것이 F-002 민감도의 두 절반이다 — 소비처 쪽엔 `bootstrap_report._build_json` 의
     Call-valued 고정 스키마 dict 가 실존해, 이 가드 완화가 그것까지 잡지 않는지를 실측한다.
     """
     source = _REINTRODUCED_COPY_SHAPES[shape]

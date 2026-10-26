@@ -12,6 +12,18 @@ pm_log.py 는 227줄·직접 테스트 0 이었다. log/current.md 의 entry 분
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+import pm_engine.app.session_identity
+import pm_engine.app.session_snapshot
+import pm_engine.cli.log
+import pm_engine.domain.ctx_recovery
+import pm_engine.infra.compaction_store
+import pm_engine.infra.log_store
+import pm_engine.infra.pm_paths
+
+from pm_engine.domain import log_entries
+
 import contextlib
 import importlib.util
 import json
@@ -42,42 +54,42 @@ def _load_module(name: str = "pm_log"):
 
 
 def _redirect_paths(mod, monkeypatch, root: Path):
-    """모듈-레벨 경로 상수를 tmp 루트로 갈아끼운다 (실 log/ 보호)."""
-    log_dir = root / "log"
-    archive_dir = log_dir / "archive"
-    monkeypatch.setattr(mod, "REPO", root)
-    monkeypatch.setattr(mod, "WIKI_DIR", root)
-    monkeypatch.setattr(mod, "LOG_DIR", log_dir)
-    monkeypatch.setattr(mod, "CURRENT_FILE", log_dir / "current.md")
-    monkeypatch.setattr(mod, "ARCHIVE_DIR", archive_dir)
-    monkeypatch.setattr(mod, "LEGACY_LOG", root / "log.md")
-    return log_dir, archive_dir
+    '모듈-레벨 경로 상수를 tmp 루트로 갈아끼운다 (실 log/ 보호).'
+    log_dir = root / 'log'
+    archive_dir = log_dir / 'archive'
+    home = pm_paths.home_at(root)
+    monkeypatch.setattr(mod, 'WIKI_DIR', root)
+    monkeypatch.setattr(mod, 'LOG_DIR', log_dir)
+    monkeypatch.setattr(mod, 'CURRENT_FILE', log_dir / 'current.md')
+    monkeypatch.setattr(mod, 'ARCHIVE_DIR', archive_dir)
+    monkeypatch.setattr(mod, 'LEGACY_LOG', root / 'log.md')
+    return (log_dir, archive_dir)
 
 
 @pytest.mark.parametrize("band", ["nudge", "nudge2", "final", "precompact"])
 def test_ctx_guidance_all_bands_preserve_required_and_forbid_accident_phrase(band):
     """중앙 정책 상수의 필수·금지 표현을 네 band 최종 출력 전체에 고정한다."""
     mod = _load_module(f"pm_log_ctx_policy_{band}")
-    guidance = mod.build_ctx_guard_guidance(
+    guidance = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         band,
         used_pct=92,
         precompact_at_pct=80,
     )
 
-    for required in mod.CTX_GUARD_REQUIRED_EXPRESSIONS:
-        assert required in mod.CTX_GUARD_CONTINUITY_GUIDANCE
+    for required in pm_engine.domain.ctx_recovery.CTX_GUARD_REQUIRED_EXPRESSIONS:
+        assert required in pm_engine.domain.ctx_recovery.CTX_GUARD_CONTINUITY_GUIDANCE
         assert required in guidance
-    for forbidden in mod.CTX_GUARD_FORBIDDEN_EXPRESSIONS:
-        assert forbidden not in mod.CTX_GUARD_CONTINUITY_GUIDANCE
+    for forbidden in pm_engine.domain.ctx_recovery.CTX_GUARD_FORBIDDEN_EXPRESSIONS:
+        assert forbidden not in pm_engine.domain.ctx_recovery.CTX_GUARD_CONTINUITY_GUIDANCE
         assert forbidden not in guidance
 
 
 def test_precompact_breadcrumb_is_continuation_not_handoff_completion_signal():
     mod = _load_module("pm_log_precompact_breadcrumb_policy")
-    breadcrumb = mod._PRECOMPACT_BREADCRUMB
+    breadcrumb = pm_engine.domain.ctx_recovery._PRECOMPACT_BREADCRUMB
 
     assert "auto-compact 발생" in breadcrumb
-    assert all(required in breadcrumb for required in mod.CTX_GUARD_REQUIRED_EXPRESSIONS)
+    assert all(required in breadcrumb for required in pm_engine.domain.ctx_recovery.CTX_GUARD_REQUIRED_EXPRESSIONS)
     assert "수동 핸드오프" not in breadcrumb
     assert "미완" not in breadcrumb
 
@@ -95,7 +107,7 @@ def test_split_entries_zero():
     """entry 가 없으면 (전체 텍스트, []) — preamble 에 전체가 남는다."""
     mod = _load_module()
     text = "# Project Log\n\n> entry 없음\n"
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == text
     assert entries == []
 
@@ -103,7 +115,7 @@ def test_split_entries_zero():
 def test_split_entries_one():
     mod = _load_module()
     text = _HEADER + _ENTRY_A
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == _HEADER
     assert len(entries) == 1
     assert entries[0][0] == "2026-06-10"
@@ -114,7 +126,7 @@ def test_split_entries_many_preserves_preamble_and_order():
     """N entry: preamble 보존·날짜 파싱·경계가 다음 `## [..]` 직전까지."""
     mod = _load_module()
     text = _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == _HEADER
     assert [d for d, _ in entries] == ["2026-06-10", "2026-06-12", "2026-06-14"]
     # 각 entry_text 는 자기 `## [..]` 줄부터 다음 entry 직전까지 — 합치면 원문 복원.
@@ -127,7 +139,7 @@ def test_split_entries_no_preamble():
     """첫 줄이 곧 entry 면 preamble 은 빈 문자열."""
     mod = _load_module()
     text = _ENTRY_A + _ENTRY_B
-    preamble, entries = mod.split_entries(text)
+    preamble, entries = log_entries.split_entries(text)
     assert preamble == ""
     assert len(entries) == 2
 
@@ -137,9 +149,9 @@ def test_split_entries_no_preamble():
 def test_next_archive_index_empty_dir_reserves_legacy(tmp_path):
     """빈/부재 디렉토리 → 1 (0000 은 legacy 예약이라 최소 1)."""
     mod = _load_module()
-    assert mod.next_archive_index(tmp_path / "archive") == 1  # 존재 안 함
+    assert pm_engine.infra.log_store.next_archive_index(tmp_path / "archive") == 1  # 존재 안 함
     (tmp_path / "archive").mkdir()
-    assert mod.next_archive_index(tmp_path / "archive") == 1  # 존재하지만 비어 있음
+    assert pm_engine.infra.log_store.next_archive_index(tmp_path / "archive") == 1  # 존재하지만 비어 있음
 
 
 def test_next_archive_index_after_existing(tmp_path):
@@ -149,7 +161,7 @@ def test_next_archive_index_after_existing(tmp_path):
     (arch / "0000-legacy.md").touch()
     (arch / "0001-2026-06-01_to_2026-06-05.md").touch()
     (arch / "0002-2026-06-06_to_2026-06-10.md").touch()
-    assert mod.next_archive_index(arch) == 3
+    assert pm_engine.infra.log_store.next_archive_index(arch) == 3
 
 
 def test_next_archive_index_handles_gaps(tmp_path):
@@ -162,18 +174,18 @@ def test_next_archive_index_handles_gaps(tmp_path):
     # 4자리 NNNN- 패턴 아닌 파일은 무시.
     (arch / "current.md").touch()
     (arch / "README.md").touch()
-    assert mod.next_archive_index(arch) == 6
+    assert pm_engine.infra.log_store.next_archive_index(arch) == 6
 
 
 # ── cmd_tail ─────────────────────────────────────────────────────────────────
 
 def test_cmd_tail_prints_last_entry(tmp_path, monkeypatch, capsys):
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     write_lf(log_dir / "current.md", _HEADER + _ENTRY_A + _ENTRY_C)
 
-    rc = mod.cmd_tail(SimpleNamespace())
+    rc = pm_engine.cli.log.cmd_tail(home, SimpleNamespace())
     assert rc == 0
     out = normalize_newlines(capsys.readouterr().out)
     # 마지막 entry 만 (rstrip). 이전 entry·preamble 은 안 나온다.
@@ -184,22 +196,22 @@ def test_cmd_tail_prints_last_entry(tmp_path, monkeypatch, capsys):
 
 def test_cmd_tail_no_entries(tmp_path, monkeypatch, capsys):
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     (log_dir / "current.md").write_text("# Project Log\n\n> entry 없음\n", encoding="utf-8")
 
-    rc = mod.cmd_tail(SimpleNamespace())
+    rc = pm_engine.cli.log.cmd_tail(home, SimpleNamespace())
     assert rc == 0
     assert "(entry 없음)" in capsys.readouterr().out
 
 
 def test_cmd_tail_missing_current(tmp_path, monkeypatch, capsys):
-    """current.md 부재 → rc 2 + stderr 안내 (migrate 먼저)."""
+    'current.md 부재 → rc 2 + stderr 안내 (migrate 먼저).'
     mod = _load_module()
-    _redirect_paths(mod, monkeypatch, tmp_path)  # 파일 생성 안 함
-    rc = mod.cmd_tail(SimpleNamespace())
+    home = pm_paths.home_at(tmp_path)
+    rc = pm_engine.cli.log.cmd_tail(home, SimpleNamespace())
     assert rc == 2
-    assert "current.md 없음" in capsys.readouterr().err
+    assert 'current.md 없음' in capsys.readouterr().err
 
 
 # ── cmd_checkpoint ──────────────────────────────────────────────────────────
@@ -207,7 +219,7 @@ def test_cmd_tail_missing_current(tmp_path, monkeypatch, capsys):
 def test_build_checkpoint_entry_explicit_date_is_deterministic():
     """날짜 결정성은 CLI args 비공개 seam 없이 순수 빌더 입력으로 검증한다."""
     mod = _load_module()
-    assert mod.build_checkpoint_entry(
+    assert pm_engine.domain.ctx_recovery.build_checkpoint_entry(
         "orch-dev-T0547", "compaction", date="2026-08-06"
     ).startswith(
         "## [2026-08-06] checkpoint | (task:orch-dev-T0547) — compaction\n"
@@ -218,7 +230,7 @@ def test_checkpoint_task_header_remains_byte_compatible():
     """T-0686: task 형상의 기존 헤더는 행 바이트까지 동일하다."""
     mod = _load_module("pm_log_t0686_task_header")
 
-    entry = mod.build_checkpoint_entry(
+    entry = pm_engine.domain.ctx_recovery.build_checkpoint_entry(
         "orch-dev-T0547", "compaction", date="2026-08-06",
     )
 
@@ -251,39 +263,39 @@ def test_t0953_session_task_lookup_rules(tmp_path):
     pm_home = tmp_path / "pm-home"
     ledger = _write_task_records(pm_home, list(_T0953_TASKS))
 
-    assert mod.resolve_session_task(pm_home, "s-main") == ("main", None)
-    assert mod.resolve_session_task(pm_home, "  s-main \n") == ("main", None)
-    assert mod.resolve_session_task(pm_home, "s-zzz") == (
+    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-main") == ("main", None)
+    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "  s-main \n") == ("main", None)
+    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-zzz") == (
         None, "이 세션이 연 task 없음 (세션 s-zzz)")
     for missing in (None, "", "   "):
-        assert mod.resolve_session_task(pm_home, missing) == (None, "세션 ID 없음")
+        assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), missing) == (None, "세션 ID 없음")
 
     _write_task_records(pm_home, [*_T0953_TASKS, {"name": "x", "session": "s-hermes"}])
-    assert mod.resolve_session_task(pm_home, "s-hermes") == (
+    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-hermes") == (
         None, "이 세션이 연 task 여럿 (세션 s-hermes: hermes, x)")
 
     ledger.unlink()
-    task, reason = mod.resolve_session_task(pm_home, "s-main")
+    task, reason = pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-main")
     assert task is None and "이 세션이 연 task 없음" in reason
 
     for broken in ("[1]", '{"tasks": {}}', "{"):
         ledger.write_text(broken, encoding="utf-8")
         with pytest.raises(ValueError):
-            mod.resolve_session_task(pm_home, "s-main")
+            pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-main")
 
 
 def _three_task_pm_home(mod, monkeypatch, tmp_path, tasks: list[dict]) -> Path:
     """열린 task 3개 PM 홈 — REPO·프로세스 cwd 는 PM 홈 루트, log 에 기존 entry 1개."""
     pm_home = tmp_path / "pm-home"
-    log_dir, _ = _redirect_paths(mod, monkeypatch, pm_home)
+    log_dir, _ = ((home := pm_paths.home_at(pm_home)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER + _ENTRY_A, encoding="utf-8")
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER + _ENTRY_A, encoding="utf-8")
     _write_task_records(pm_home, tasks)
     for name in ("main", "hermes", "guard-check"):
         state = pm_home / ".project_manager" / ".local" / "tasks" / name / "pm_state.md"
         state.parent.mkdir(parents=True)
         state.write_text(f"# {name}\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_registered_repos", lambda: set())
+    monkeypatch.setattr(pm_engine.cli.log, "_registered_repos", lambda _home: set())
     monkeypatch.chdir(pm_home)
     return pm_home
 
@@ -291,27 +303,23 @@ def _three_task_pm_home(mod, monkeypatch, tmp_path, tasks: list[dict]) -> Path:
 def test_t0953_compaction_checkpoint_uses_session_task_with_three_open_tasks(
     tmp_path, monkeypatch, capsys,
 ):
-    """PM 홈 루트·열린 task 3개에서도 세션 ID 로 그 세션 task 에 기록하고 경계당 1건이다(AT-002)."""
+    'PM 홈 루트·열린 task 3개에서도 세션 ID 로 그 세션 task 에 기록하고 경계당 1건이다(AT-002).'
+    home = pm_paths.home_at(tmp_path)
     mod = _load_module()
     pm_home = _three_task_pm_home(mod, monkeypatch, tmp_path, list(_T0953_TASKS))
-    argv = [
-        "checkpoint", "--trigger", "compaction", "--session-id", "s-main",
-        "--boundary-id", "claude-s-main-1", "--breadcrumb",
-    ]
-
-    assert mod.main(argv) == 0
-    assert "✓ checkpoint append: task=main" in capsys.readouterr().out
-    text = mod.CURRENT_FILE.read_text(encoding="utf-8")
-    assert text.count("checkpoint | (task:main) — compaction") == 1
-    assert text.count(mod._PRECOMPACT_BREADCRUMB.strip()) == 1
-    marker = (pm_home / ".project_manager" / ".local" / "ctx-stop"
-              / "compact-checkpoint.s-main.claude-s-main-1")
+    home = pm_paths.home_at(pm_home)
+    argv = ['checkpoint', '--trigger', 'compaction', '--session-id', 's-main', '--boundary-id', 'claude-s-main-1', '--breadcrumb']
+    assert pm_engine.cli.log.main(home, argv) == 0
+    assert '✓ checkpoint append: task=main' in capsys.readouterr().out
+    text = (pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding='utf-8')
+    assert text.count('checkpoint | (task:main) — compaction') == 1
+    assert text.count(pm_engine.domain.ctx_recovery._PRECOMPACT_BREADCRUMB.strip()) == 1
+    marker = pm_home / '.project_manager' / '.local' / 'ctx-stop' / 'compact-checkpoint.s-main.claude-s-main-1'
     assert marker.is_file()
-
-    before = mod.CURRENT_FILE.read_bytes()
-    assert mod.main(argv) == 0
-    assert "dedup skip" in capsys.readouterr().out
-    assert mod.CURRENT_FILE.read_bytes() == before
+    before = (pm_paths.wiki_dir(home) / 'log/current.md').read_bytes()
+    assert pm_engine.cli.log.main(home, argv) == 0
+    assert 'dedup skip' in capsys.readouterr().out
+    assert (pm_paths.wiki_dir(home) / 'log/current.md').read_bytes() == before
 
 
 @pytest.mark.parametrize("case", ["no-session", "unknown-session", "two-tasks"])
@@ -319,10 +327,10 @@ def test_t0953_checkpoint_unresolved_session_fails_loud(tmp_path, monkeypatch, c
     """세션 task 미해소는 rc 1·stderr 한 줄·무기록이다 — 단일 활성 task 폴더가 있어도 답하지 않는다(AT-003)."""
     mod = _load_module()
     pm_home = tmp_path / "pm-home"
-    log_dir, _ = _redirect_paths(mod, monkeypatch, pm_home)
+    log_dir, _ = ((home := pm_paths.home_at(pm_home)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     original = _HEADER + _ENTRY_A
-    mod.CURRENT_FILE.write_text(original, encoding="utf-8")
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(original, encoding="utf-8")
     tasks = [{"name": "main", "session": "s-main"}]
     if case == "two-tasks":
         tasks.append({"name": "x", "session": "s-main"})
@@ -341,16 +349,14 @@ def test_t0953_checkpoint_unresolved_session_fails_loud(tmp_path, monkeypatch, c
         "two-tasks": "이 세션이 연 task 여럿 (세션 s-main: main, x)",
     }[case]
 
-    rc = mod.main([
-        "checkpoint", "--trigger", "compaction", *session_args, "--boundary-id", "b-1",
-    ])
+    rc = pm_engine.cli.log.main(home, ['checkpoint', '--trigger', 'compaction', *session_args, '--boundary-id', 'b-1'])
 
     captured = capsys.readouterr()
     assert rc == 1 and captured.out == ""
     lines = captured.err.splitlines()
     assert len(lines) == 1
     assert lines[0].startswith("[중단] checkpoint 세션 task 미해소:") and reason in lines[0]
-    assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
+    assert (pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8") == original
     assert not ctx_stop.exists()
 
 
@@ -362,15 +368,15 @@ def test_t0953_checkpoint_and_snapshot_reject_cwd_option(argv):
     """압축 경로는 cwd 를 입력으로 받지 않는다 — `--cwd` 는 모르는 인자다(AT-005)."""
     mod = _load_module()
     with pytest.raises(SystemExit) as exc_info:
-        mod.build_parser().parse_args(argv)
+        pm_engine.cli.log.build_parser().parse_args(argv)
     assert exc_info.value.code == 2
 
 
 def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
     """`_N` 형상 이름(`foo_1`)의 task 를 그 세션 ID 로 연 task 기록을 실 장부 파일로 세운다."""
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER, encoding="utf-8")
     ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     payload = {
@@ -382,12 +388,10 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
         "tasks": [{"name": "foo_1", "prefix": None, "session": "s-foo", "started": "t"}],
     }
     ledger.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(mod, "_registered_repos", lambda: set())
+    monkeypatch.setattr(pm_engine.cli.log, "_registered_repos", lambda _home: set())
 
-    rc = mod.cmd_checkpoint(SimpleNamespace(
-        task=None, trigger="manual", session_id="s-foo", breadcrumb=False,
-    ))
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task=None, trigger='manual', session_id='s-foo', breadcrumb=False))
+    entries = log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]
     assert rc == 0 and len(entries) == 1
     return entries[0][1]
 
@@ -424,7 +428,7 @@ def test_t0952_checkpoint_and_snapshot_reject_removed_diagnostic_options(argv, c
     """압축 지점 추정 경고의 CLI 옵션 9개는 없다 — parser 가 모르는 인자로 거부한다(AT-003)."""
     mod = _load_module()
     with pytest.raises(SystemExit) as exc_info:
-        mod.build_parser().parse_args(list(argv))
+        pm_engine.cli.log.build_parser().parse_args(list(argv))
     assert exc_info.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
 
@@ -432,15 +436,13 @@ def test_t0952_checkpoint_and_snapshot_reject_removed_diagnostic_options(argv, c
 def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatch):
     """명시 trigger와 task 태그를 가진 골격을 기존 current.md 뒤에 append한다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     current.write_text(_HEADER + _ENTRY_A, encoding="utf-8")
 
-    before_count = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
-    rc = mod.cmd_checkpoint(
-        SimpleNamespace(task="orch-dev-T0547", trigger="compaction")
-    )
+    before_count = len(log_entries.split_entries(current.read_text(encoding="utf-8"))[1])
+    rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task='orch-dev-T0547', trigger='compaction'))
 
     assert rc == 0
     text = current.read_text(encoding="utf-8")
@@ -448,51 +450,47 @@ def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatc
     assert "checkpoint | (task:orch-dev-T0547) — compaction" in text
     assert "- 구간: <직전 박제 경계 이후>" in text
     assert "- 서사: <PM 손>" in text
-    assert len(mod.split_entries(text)[1]) == before_count + 1
+    assert len(log_entries.split_entries(text)[1]) == before_count + 1
 
 
 def test_cmd_checkpoint_appends_entry_boundary_without_trailing_newline(tmp_path, monkeypatch):
     """EOF LF가 없어도 checkpoint 헤더는 앞 entry 본문과 붙지 않고 새 entry로 분리된다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     current.write_text((_HEADER + _ENTRY_A).rstrip("\n"), encoding="utf-8")
-    before_count = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
+    before_count = len(log_entries.split_entries(current.read_text(encoding="utf-8"))[1])
 
-    rc = mod.cmd_checkpoint(
-        SimpleNamespace(task="orch-dev-T0547", trigger="manual")
-    )
+    rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task='orch-dev-T0547', trigger='manual'))
 
     text = current.read_text(encoding="utf-8")
     assert rc == 0
     assert "본문 A\n## [" in text
-    assert len(mod.split_entries(text)[1]) == before_count + 1
+    assert len(log_entries.split_entries(text)[1]) == before_count + 1
 
 
 def test_cmd_checkpoint_missing_current(tmp_path, monkeypatch, capsys):
-    """current.md 부재 → rc 2 + stderr 안내, 파일은 만들지 않는다."""
+    'current.md 부재 → rc 2 + stderr 안내, 파일은 만들지 않는다.'
     mod = _load_module()
-    _redirect_paths(mod, monkeypatch, tmp_path)
-
-    rc = mod.cmd_checkpoint(SimpleNamespace(task="orch-dev-T0547", trigger="manual"))
-
+    home = pm_paths.home_at(tmp_path)
+    rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task='orch-dev-T0547', trigger='manual'))
     assert rc == 2
-    assert "current.md 없음" in capsys.readouterr().err
-    assert not mod.CURRENT_FILE.exists()
+    assert 'current.md 없음' in capsys.readouterr().err
+    assert not (pm_paths.wiki_dir(home) / 'log/current.md').exists()
 
 
 @pytest.mark.parametrize("task", ["foo)bar", "foo\nbar"])
 def test_cmd_checkpoint_rejects_invalid_task_before_write(tmp_path, monkeypatch, capsys, task):
     """공유 validator가 태그 종료·개행 주입 task를 rc 1로 거부하고 log를 보존한다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     original = _HEADER + _ENTRY_A
     current.write_text(original, encoding="utf-8")
 
-    rc = mod.cmd_checkpoint(SimpleNamespace(task=task, trigger="manual"))
+    rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task=task, trigger='manual'))
 
     assert rc == 1
     assert "부적합 task 명" in capsys.readouterr().err
@@ -506,7 +504,7 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
     한다 — pm_log는 락 경로 규약과 부모 디렉토리 생성만 정한다.
     """
     mod = _load_module()
-    lock_mod = mod.fs
+    lock_mod = pm_engine.cli.log.fs
     calls = []
     monkeypatch.setattr(
         lock_mod.os,
@@ -533,7 +531,7 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
 def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch):
     """append_log는 락 구간 *안에서* seam append를 호출한다 (직접 write 0)."""
     mod = _load_module()
-    lock_mod = mod.fs
+    lock_mod = pm_engine.cli.log.fs
     calls = []
     monkeypatch.setattr(
         lock_mod,
@@ -552,7 +550,7 @@ def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch
 def test_append_log_locked_is_the_lock_free_inner_primitive(tmp_path, monkeypatch):
     """판정과 append를 한 외부 lock에 묶는 소비자는 inner primitive를 재락 없이 쓴다."""
     mod = _load_module()
-    lock_mod = mod.fs
+    lock_mod = pm_engine.cli.log.fs
     calls = []
     monkeypatch.setattr(
         lock_mod,
@@ -574,7 +572,7 @@ def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
     한다 — pm_log는 경로 규약만 정한다.
     """
     mod = _load_module()
-    lock_mod = mod.fs
+    lock_mod = pm_engine.cli.log.fs
     current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     calls = []
     monkeypatch.setattr(
@@ -609,56 +607,55 @@ def test_all_current_log_writers_use_shared_seam_grep_guard():
     """complete·handoff·decide·archive/checkpoint에 직접 current RMW가 재발하지 않는다."""
     consumer_sources = {
         name: (TOOLS / name).read_text(encoding="utf-8")
-        for name in ("ticket_finish.py", "pm_handoff.py", "pm_engine/app/adr_issue.py")
+        for name in ("ticket_finish.py", "pm_engine/app/handoff_log.py", "pm_engine/app/adr_issue.py")
     }
     for name, source in consumer_sources.items():
         assert "log_store." in source, name
         assert ".append_log(" in source or ".append_log_locked(" in source, name
         assert not re.search(r"self\._log_file\.write_text\(", source), name
 
-    handoff_source = consumer_sources["pm_handoff.py"]
+    handoff_source = consumer_sources["pm_engine/app/handoff_log.py"]
     if ".append_log_locked(" in handoff_source:
         assert "with log_store.log_write_lock(" in handoff_source
 
-    pm_log_source = PM_LOG_PY.read_text(encoding="utf-8")
+    pm_log_source = (TOOLS / "pm_engine/cli/log.py").read_text(encoding="utf-8")
     archive_source = pm_log_source.split("def cmd_archive", 1)[1].split(
         "def cmd_migrate", 1
     )[0]
     checkpoint_source = pm_log_source.split("def cmd_checkpoint", 1)[1].split(
         "# ── 유틸", 1
     )[0]
-    assert "with log_store.log_write_lock(CURRENT_FILE):" in archive_source
-    assert "_replace_atomic(CURRENT_FILE, new_current)" in archive_source
-    assert "CURRENT_FILE.write_text(" not in archive_source
-    assert "append_log(CURRENT_FILE," in checkpoint_source
-    assert "CURRENT_FILE.write_text(" not in checkpoint_source
+    assert "with log_store.log_write_lock((pm_paths.wiki_dir(home) / 'log/current.md')):" in archive_source
+    assert "_replace_atomic((pm_paths.wiki_dir(home) / 'log/current.md'), new_current)" in archive_source
+    assert "(pm_paths.wiki_dir(home) / 'log/current.md').write_text(" not in archive_source
+    assert "append_log_locked((pm_paths.wiki_dir(home) / 'log/current.md')," in checkpoint_source
+    assert "(pm_paths.wiki_dir(home) / 'log/current.md').write_text(" not in checkpoint_source
 
 
 def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
     """--trigger 생략 시 기본값 manual로 실제 checkpoint entry를 append한다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     current.write_text(_HEADER, encoding="utf-8")
 
-    args = mod.build_parser().parse_args(["checkpoint", "--task", "orch-dev-T0547"])
+    args = pm_engine.cli.log.build_parser().parse_args(["checkpoint", "--task", "orch-dev-T0547"])
     assert args.task == "orch-dev-T0547"
     assert args.trigger == "manual"
-    assert args.fn is mod.cmd_checkpoint
-    assert args.fn(args) == 0
+    assert args.fn is pm_engine.cli.log.cmd_checkpoint
+    assert args.fn(home, args) == 0
     assert "checkpoint | (task:orch-dev-T0547) — manual" in current.read_text(encoding="utf-8")
 
 
-def test_registered_repos_non_utf8_areas_failure_is_fail_soft(monkeypatch):
-    """areas 파싱 실패는 None으로 강등해 기본 task 구문 검증을 유지한다."""
+def test_registered_repos_non_utf8_areas_failure_is_fail_soft(monkeypatch, tmp_path):
+    'areas 파싱 실패는 None으로 강등해 기본 task 구문 검증을 유지한다.'
+    home = pm_paths.home_at(tmp_path)
     mod = _load_module()
-
     def broken(_home):
-        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-
-    monkeypatch.setattr(areas_store, "registered_repos", broken)
-    assert mod._registered_repos() is None
+        raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
+    monkeypatch.setattr(areas_store, 'registered_repos', broken)
+    assert pm_engine.cli.log._registered_repos(home) is None
 
 
 # ── 소유 PM 홈 유도 (T-0888) ────────────────────────────────────────────────
@@ -724,7 +721,7 @@ def test_registered_slot_resolves_from_git_pointer_without_subprocess(
     def _forbidden(*_args, **_kwargs):
         raise AssertionError("PM 홈 유도는 git subprocess 를 부르지 않는다")
 
-    monkeypatch.setattr(mod.subprocess, "run", _forbidden)
+    monkeypatch.setattr(pm_engine.cli.log.subprocess, "run", _forbidden)
 
     for anchor in (slot, absolute_slot, snapshot):
         assert pm_paths.owning_pm_home(anchor) == pm_home.resolve(), anchor
@@ -745,63 +742,48 @@ def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "produc
 def test_main_checkpoint_worktree_anchor_forwards_to_pm_home_engine(
     tmp_path, monkeypatch
 ):
-    """checkpoint는 lease 역참조로 worktree 엔진 대신 PM 홈 엔진을 호출한다."""
+    'checkpoint는 lease 역참조로 worktree 엔진 대신 PM 홈 엔진을 호출한다.'
     mod = _load_module()
-    pm_home = tmp_path / "pm-home"
-    worktree = pm_home / "work" / "product_1"
+    pm_home = tmp_path / 'pm-home'
+    worktree = pm_home / 'work' / 'product_1'
     worktree.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, worktree)
-    monkeypatch.setattr(mod, "REPO", worktree)
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    home = pm_paths.home_at(worktree)
+    ledger = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
     ledger.parent.mkdir(parents=True)
-    ledger.write_text(
-        '{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}',
-        encoding="utf-8",
-    )
-    canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
+    ledger.write_text('{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}', encoding='utf-8')
+    canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
     canonical.parent.mkdir(parents=True)
-    canonical.write_text("# canonical test probe\n", encoding="utf-8")
+    canonical.write_text('# canonical test probe\n', encoding='utf-8')
     calls = []
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=23),
-    )
-
-    rc = mod.main(["checkpoint", "--task", "main", "--trigger", "compaction"])
-
-    assert rc == 23 and len(calls) == 1  # 자식 rc 를 그대로 돌려준다(훅이 실패를 본다).
+    monkeypatch.setattr(pm_engine.cli.log.subprocess, 'run', lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=23))
+    rc = pm_engine.cli.log.main(home, ['checkpoint', '--task', 'main', '--trigger', 'compaction'])
+    assert rc == 23 and len(calls) == 1
     argv, kwargs = calls[0]
     assert Path(argv[1]) == canonical
-    assert argv[2:4] == ["checkpoint", "--task"]
-    assert kwargs["cwd"] == str(pm_home)
-    assert kwargs["timeout"] == 5.0
+    assert argv[2:4] == ['checkpoint', '--task']
+    assert kwargs['cwd'] == str(pm_home)
+    assert kwargs['timeout'] == 5.0
 
 
 def test_main_manual_checkpoint_forwards_pm_home_engine_rc(
     tmp_path, monkeypatch,
 ):
-    """수동 checkpoint는 PM 홈 엔진의 이름/로그/엔진 오류 rc를 성공으로 평탄화하지 않는다."""
+    '수동 checkpoint는 PM 홈 엔진의 이름/로그/엔진 오류 rc를 성공으로 평탄화하지 않는다.'
     mod = _load_module()
-    pm_home = tmp_path / "pm-home"
-    worktree = pm_home / "work" / "product_1"
+    pm_home = tmp_path / 'pm-home'
+    worktree = pm_home / 'work' / 'product_1'
     worktree.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, worktree)
-    monkeypatch.setattr(mod, "REPO", worktree)
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    home = pm_paths.home_at(worktree)
+    ledger = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
     ledger.parent.mkdir(parents=True)
-    ledger.write_text(
-        '{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}',
-        encoding="utf-8",
-    )
-    canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
+    ledger.write_text('{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}', encoding='utf-8')
+    canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
     canonical.parent.mkdir(parents=True)
-    canonical.write_text("# canonical test probe\n", encoding="utf-8")
-    monkeypatch.setattr(
-        mod.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=17),
-    )
-
-    assert mod.main(["checkpoint", "--task", "invalid/name"]) == 17
+    canonical.write_text('# canonical test probe\n', encoding='utf-8')
+    monkeypatch.setattr(pm_engine.cli.log.subprocess, 'run', lambda *_a, **_k: SimpleNamespace(returncode=17))
+    assert pm_engine.cli.log.main(home, ['checkpoint', '--task', 'invalid/name']) == 17
 
 
 @pytest.mark.parametrize(
@@ -814,43 +796,30 @@ def test_main_manual_checkpoint_forwards_pm_home_engine_rc(
 def test_main_external_absolute_lease_uses_file_git_common_dir_pm_home(
     tmp_path, monkeypatch, argv, command,
 ):
-    """PM 홈 밖 absolute slot도 gitdir/commondir를 따라 canonical snapshot/checkpoint로 간다."""
+    'PM 홈 밖 absolute slot도 gitdir/commondir를 따라 canonical snapshot/checkpoint로 간다.'
     mod = _load_module()
-    pm_home = tmp_path / "pm-home"
-    worktree = tmp_path / "external-slots" / "product_1"
+    pm_home = tmp_path / 'pm-home'
+    worktree = tmp_path / 'external-slots' / 'product_1'
     worktree.mkdir(parents=True)
-    git_dir = pm_home / ".repos" / "product.git" / "worktrees" / "product_1"
+    git_dir = pm_home / '.repos' / 'product.git' / 'worktrees' / 'product_1'
     git_dir.mkdir(parents=True)
-    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
-    (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    (worktree / '.git').write_text(f'gitdir: {git_dir}\n', encoding='utf-8')
+    (git_dir / 'commondir').write_text('../..\n', encoding='utf-8')
+    ledger = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
     ledger.parent.mkdir(parents=True)
-    ledger.write_text(
-        json.dumps({
-            "leases": [{
-                "slot": str(worktree), "state": "leased", "session": "main",
-            }],
-        }),
-        encoding="utf-8",
-    )
-    canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
+    ledger.write_text(json.dumps({'leases': [{'slot': str(worktree), 'state': 'leased', 'session': 'main'}]}), encoding='utf-8')
+    canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
     canonical.parent.mkdir(parents=True)
-    canonical.write_text("# canonical test probe\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "REPO", worktree)
+    canonical.write_text('# canonical test probe\n', encoding='utf-8')
+    home = pm_paths.home_at(worktree)
     calls = []
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda call_argv, **kwargs: calls.append((call_argv, kwargs))
-        or SimpleNamespace(returncode=19),
-    )
-
+    monkeypatch.setattr(pm_engine.cli.log.subprocess, 'run', lambda call_argv, **kwargs: calls.append((call_argv, kwargs)) or SimpleNamespace(returncode=19))
     assert pm_paths.owning_pm_home(worktree) == pm_home
-    assert mod.main(argv) == 19
-    assert len(calls) == 1  # PM 홈 해소 자체는 git subprocess를 만들지 않는다.
+    assert pm_engine.cli.log.main(home, argv) == 19
+    assert len(calls) == 1
     call_argv, kwargs = calls[0]
     assert Path(call_argv[1]) == canonical and call_argv[2] == command
-    assert kwargs["cwd"] == str(pm_home)
+    assert kwargs['cwd'] == str(pm_home)
 
 
 @pytest.mark.parametrize("argv", [
@@ -859,58 +828,46 @@ def test_main_external_absolute_lease_uses_file_git_common_dir_pm_home(
      "--boundary-id", "claude-s-main-1"],
 ])
 def test_t0953_forwarding_returns_child_rc_without_cwd(tmp_path, monkeypatch, argv):
-    """등록 슬롯 엔진 사본은 입력 인자 그대로 PM 홈 엔진에 넘기고 자식 rc 를 돌려준다(AT-006)."""
+    '등록 슬롯 엔진 사본은 입력 인자 그대로 PM 홈 엔진에 넘기고 자식 rc 를 돌려준다(AT-006).'
     mod = _load_module()
-    pm_home = tmp_path / "pm-home"
-    worktree = pm_home / "work" / "product_1"
+    pm_home = tmp_path / 'pm-home'
+    worktree = pm_home / 'work' / 'product_1'
     worktree.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, worktree)
-    canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
+    canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
     canonical.parent.mkdir(parents=True)
-    canonical.write_text("# canonical test probe\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "REPO", worktree)
+    canonical.write_text('# canonical test probe\n', encoding='utf-8')
+    home = pm_paths.home_at(worktree)
     calls = []
-    monkeypatch.setattr(
-        mod.subprocess, "run",
-        lambda call_argv, **kwargs: calls.append((call_argv, kwargs))
-        or SimpleNamespace(returncode=19),
-    )
-
-    assert mod.main(list(argv)) == 19
+    monkeypatch.setattr(pm_engine.cli.log.subprocess, 'run', lambda call_argv, **kwargs: calls.append((call_argv, kwargs)) or SimpleNamespace(returncode=19))
+    assert pm_engine.cli.log.main(home, list(argv)) == 19
     assert len(calls) == 1
     call_argv, kwargs = calls[0]
     assert Path(call_argv[1]) == canonical
-    assert call_argv[2:] == argv and "--cwd" not in call_argv
-    assert kwargs["cwd"] == str(pm_home)
+    assert call_argv[2:] == argv and '--cwd' not in call_argv
+    assert kwargs['cwd'] == str(pm_home)
 
 
 def test_main_checkpoint_unregistered_slot_fails_loud_without_self_demotion(
     tmp_path, monkeypatch,
 ):
-    """소유 PM 홈을 확정 못 하는 슬롯은 자기 트리에 stray log를 만들지 않고 그대로 터진다.
-
-    옛 경로는 lease 미등재를 board detector로 재확인해 안내 rc1(수동)·무음 rc0(hook)으로
-    나눴다. 1차 해소가 fail-loud가 되면 그 2차 축은 존재 이유가 없다 — 미해소 상태 자체가
-    생기지 않는다.
-    """
+    '소유 PM 홈을 확정 못 하는 슬롯은 자기 트리에 stray log를 만들지 않고 그대로 터진다.\n\n    옛 경로는 lease 미등재를 board detector로 재확인해 안내 rc1(수동)·무음 rc0(hook)으로\n    나눴다. 1차 해소가 fail-loud가 되면 그 2차 축은 존재 이유가 없다 — 미해소 상태 자체가\n    생기지 않는다.\n    '
     mod = _load_module()
-    pm_home = tmp_path / "pm-home"
-    worktree = pm_home / "work" / "product_1"
+    pm_home = tmp_path / 'pm-home'
+    worktree = pm_home / 'work' / 'product_1'
     worktree.mkdir(parents=True)
-    # 선언은 있으나 그 자리에 PM 홈이 없다(`.project_manager` 부재) — 답이 하나가 아니다.
     _declare_slot_git_pointer(pm_home, worktree)
-    assert not (pm_home / ".project_manager").exists(), "전제 붕괴 — 미해소 형상이 아님"
-    _redirect_paths(mod, monkeypatch, worktree)
-
-    with pytest.raises(pm_paths.PmHomeResolutionError, match="에 .project_manager 가 없습니다"):
-        mod.main(["checkpoint", "--task", "main"])
-    assert not mod.CURRENT_FILE.exists()
+    assert not (pm_home / '.project_manager').exists(), '전제 붕괴 — 미해소 형상이 아님'
+    home = pm_paths.home_at(worktree)
+    with pytest.raises(pm_paths.PmHomeResolutionError, match='에 .project_manager 가 없습니다'):
+        pm_engine.cli.log.main(home, ['checkpoint', '--task', 'main'])
+    assert not (pm_paths.wiki_dir(home) / 'log/current.md').exists()
 
 
 def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
     """read-only tail은 worktree 앵커 판정을 호출하지 않고 현행 동작을 유지한다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     (log_dir / "current.md").write_text(_HEADER + _ENTRY_A, encoding="utf-8")
     monkeypatch.setattr(
@@ -919,7 +876,7 @@ def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
         lambda *_: pytest.fail("tail must not resolve a PM-home anchor"),
     )
 
-    assert mod.main(["tail"]) == 0
+    assert pm_engine.cli.log.main(home, ['tail']) == 0
     assert "첫 작업" in capsys.readouterr().out
 
 
@@ -1013,7 +970,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
     claimed_dir = pm_home / ".project_manager" / "board" / "tickets" / "claimed"
     (claimed_dir / "T-9999-extra.md").write_text("fixture\n", encoding="utf-8")
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None
     assert "## 진행 중 작업 (장부 실측)" in text
@@ -1029,7 +986,7 @@ def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None
     assert "미회수 라운드 준비 0건" in text
@@ -1046,7 +1003,7 @@ def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, 
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_bytes(b"\xff\xfe \xf8\xa1\xa1\xa1\xa1 not valid utf-8\n")
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None and text is not None
     assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
@@ -1054,40 +1011,8 @@ def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, 
     assert "조회 실패" in capsys.readouterr().err
 
 
-def test_inflight_section_absorbs_module_load_failure_as_one_line(tmp_path, monkeypatch, capsys):
-    """T-0787 — fail-soft(형제 부재): 로드 실패도 절 하나만 1줄로 접는다."""
-    mod = _load_module()
-    pm_home, cwd = _snapshot_home(tmp_path)
-
-    def _boom(*_args, **_kwargs):
-        raise FileNotFoundError("pm_delegate.py 형제 부재(시뮬레이션)")
-
-    monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
-    text, warning = mod.build_snapshot(pm_home, "s-main")
-
-    assert warning is None and text is not None
-    assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
-    assert "## 장부 포인터" in text and "## 열린 todo (파일 실측)" in text
-    assert "조회 실패" in capsys.readouterr().err
 
 
-def test_inflight_section_absorbs_engine_rev_skew_and_labels_it(tmp_path, monkeypatch, capsys):
-    """T-0787 — fail-soft(사본 skew): 재-raise 하지 않고 등록 경계에서 흡수해 표출한다."""
-    mod = _load_module()
-    pm_home, cwd = _snapshot_home(tmp_path)
-
-    def _boom(*_args, **_kwargs):
-        err = RuntimeError("엔진 사본 버전 불일치(시뮬레이션)")
-        err._engine_rev_skew = True
-        raise err
-
-    monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
-    text, warning = mod.build_snapshot(pm_home, "s-main")
-
-    assert warning is None and text is not None
-    assert "엔진 사본 불일치" in text
-    stderr = capsys.readouterr().err
-    assert "진행 중 작업" in stderr and "엔진 사본 불일치" in stderr
 
 
 def test_inflight_raw_query_never_enters_ledger_lock(tmp_path, monkeypatch):
@@ -1102,7 +1027,7 @@ def test_inflight_raw_query_never_enters_ledger_lock(tmp_path, monkeypatch):
 
     monkeypatch.setattr(raw_output, "_raw_ledger_lock", _fail_if_locked)
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None
     assert "미마감 위임 raw 1건" in text
@@ -1118,15 +1043,15 @@ def test_inflight_section_folds_pathological_counts_within_line_and_section_caps
     for index in range(300):
         (claimed_dir / f"T-{index + 5000:04d}-extra.md").write_text("f\n", encoding="utf-8")
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None and text is not None
-    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
-    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+    assert len(text) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_BYTES
     section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
     for line in section.splitlines():
-        assert len(line) <= mod._INFLIGHT_MAX_LINE_CHARS
-    assert section.count("\n") <= mod._INFLIGHT_MAX_LINES
+        assert len(line) <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINE_CHARS
+    assert section.count("\n") <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINES
     assert "외 497건" in text  # 500건 중 3건만 나열
     assert "claimed 티켓 301건" in text  # 기본 1 + 신규 300
     assert "## 열린 todo (파일 실측)" in text and "## 복구 포인터" in text
@@ -1136,18 +1061,18 @@ def test_snapshot_cap_keeps_hearsay_when_identity_alone_is_oversized(tmp_path):
     """T-0787 F-001 — 총량 cap 경로: identity 가 거의 상한을 채워도 전언 경고는 always-keep."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
-    oversized = mod._SNAPSHOT_IDENTITY_HEADING + "\n" + ("x" * 7_900)  # 리뷰 repro(7,942c) 규모
-    monkeypatch_target = mod._identity_section
-    mod._identity_section = lambda *_a, **_k: oversized
+    oversized = pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING + "\n" + ("x" * 7_900)  # 리뷰 repro(7,942c) 규모
+    monkeypatch_target = pm_engine.app.session_snapshot._identity_section
+    pm_engine.app.session_snapshot._identity_section = lambda *_a, **_k: oversized
     try:
-        text, warning = mod.build_snapshot(pm_home, "s-main")
+        text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
     finally:
-        mod._identity_section = monkeypatch_target
+        pm_engine.app.session_snapshot._identity_section = monkeypatch_target
 
     assert warning is None and text is not None
     assert "전언 경고" in text
-    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
-    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+    assert len(text) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_BYTES
 
 
 def test_wip_slot_line_recomputes_remaining_budget_per_probe_call(tmp_path):
@@ -1156,8 +1081,8 @@ def test_wip_slot_line_recomputes_remaining_budget_per_probe_call(tmp_path):
     fake_targets = [
         ("slot-a", tmp_path / "a"), ("slot-b", tmp_path / "b"), ("slot-c", tmp_path / "c"),
     ]
-    orig_targets = mod._wip_probe_targets
-    orig_probe = mod._git_status_counts
+    orig_targets = pm_engine.app.session_snapshot._wip_probe_targets
+    orig_probe = pm_engine.app.session_snapshot._git_status_counts
     clock = [0.0]
 
     def fake_monotonic():
@@ -1170,16 +1095,16 @@ def test_wip_slot_line_recomputes_remaining_budget_per_probe_call(tmp_path):
         clock[0] += timeout  # 최악의 hang(=timeout 전량 소요)을 흉내낸다.
         return None
 
-    mod._wip_probe_targets = lambda *_a, **_k: (fake_targets, 0)
-    mod._git_status_counts = fake_git_status_counts
+    pm_engine.app.session_snapshot._wip_probe_targets = lambda *_a, **_k: (fake_targets, 0)
+    pm_engine.app.session_snapshot._git_status_counts = fake_git_status_counts
     try:
         initial_remaining = 0.5
-        line = mod._wip_slot_line(
-            tmp_path, "main", deadline=initial_remaining, monotonic=fake_monotonic,
+        line = pm_engine.app.session_snapshot._wip_slot_line(
+            pm_paths.home_at(tmp_path), "main", deadline=initial_remaining, monotonic=fake_monotonic,
         )
     finally:
-        mod._wip_probe_targets = orig_targets
-        mod._git_status_counts = orig_probe
+        pm_engine.app.session_snapshot._wip_probe_targets = orig_targets
+        pm_engine.app.session_snapshot._git_status_counts = orig_probe
 
     assert sum(calls) <= initial_remaining + 1e-9
     assert len(calls) < len(fake_targets)  # 첫 호출이 예산을 다 써 나머지는 spawn 되지 않는다.
@@ -1199,12 +1124,12 @@ def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tm
         "started_at": forged_started_at, "raw_path": str(tmp_path / "raw.txt"),
     }])
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None and text is not None
     headings = [line for line in text.splitlines() if line.startswith("## ")]
     assert headings == [
-        mod._SNAPSHOT_IDENTITY_HEADING,
+        pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING,
         "## 전언 경고 (요약 속 단언은 미검증)",
         "## 장부 포인터",
         "## 진행 중 작업 (장부 실측)",
@@ -1212,9 +1137,9 @@ def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tm
         "## 복구 포인터",
     ]
     section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
-    assert section.count("\n") <= mod._INFLIGHT_MAX_LINES
+    assert section.count("\n") <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINES
     for line in section.splitlines():
-        assert len(line) <= mod._INFLIGHT_MAX_LINE_CHARS
+        assert len(line) <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINE_CHARS
 
 
 def _seed_task_todos(pm_home: Path, task: str, todos: list[dict]) -> None:
@@ -1238,7 +1163,7 @@ def test_todo_section_lists_open_todos_with_date_and_age(tmp_path):
         {"text": "가드 배선", "created": "2026-09-16T00:00:00+00:00"},
     ])
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None
     section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
@@ -1253,13 +1178,13 @@ def test_todo_section_folds_beyond_the_shown_cap(tmp_path):
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_task_todos(pm_home, "main", [
         {"text": f"일 {index}", "created": "2026-09-16T00:00:00+00:00"}
-        for index in range(mod._TODO_MAX_SHOWN + 3)
+        for index in range(pm_engine.domain.ctx_recovery._TODO_MAX_SHOWN + 3)
     ])
 
-    text, _warning = mod.build_snapshot(pm_home, "s-main")
+    text, _warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
-    assert section.count("\n") <= mod._TODO_MAX_SHOWN + 1
+    assert section.count("\n") <= pm_engine.domain.ctx_recovery._TODO_MAX_SHOWN + 1
     assert "- 외 3건 — `pm-config task todo list main`" in section
 
 
@@ -1268,7 +1193,7 @@ def test_todo_section_without_open_todos_names_the_write_warning(tmp_path):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
-    text, _warning = mod.build_snapshot(pm_home, "s-main")
+    text, _warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert "없음" in section
@@ -1285,13 +1210,13 @@ def test_inflight_section_multiline_exception_does_not_forge_headings(tmp_path, 
         raise RuntimeError("bad ledger\n## forged-exc-1\n## forged-exc-2")
 
     monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None and text is not None
     headings = [line for line in text.splitlines() if line.startswith("## ")]
     assert "## forged-exc-1" not in headings and "## forged-exc-2" not in headings
     section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
-    assert section.count("\n") <= mod._INFLIGHT_MAX_LINES
+    assert section.count("\n") <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINES
 
 
 def test_wip_probe_targets_reserve_pm_home_seat_when_leased_slots_exceed_cap(
@@ -1301,13 +1226,13 @@ def test_wip_probe_targets_reserve_pm_home_seat_when_leased_slots_exceed_cap(
     mod = _load_module()
     pm_home = tmp_path / "pm-home-distinct"
     fake_slots = [(f"slot-{letter}", tmp_path / f"slot-{letter}") for letter in "abcd"]
-    monkeypatch.setattr(mod, "_lease_task_slots", lambda *_a, **_k: fake_slots)
+    monkeypatch.setattr(pm_engine.app.session_snapshot, "_lease_task_slots", lambda _home, *_a, **_k: fake_slots)
 
-    targets, skipped = mod._wip_probe_targets(pm_home, "main")
+    targets, skipped = pm_engine.app.session_snapshot._wip_probe_targets(pm_paths.home_at(pm_home), "main")
 
-    assert len(targets) == mod._WIP_PROBE_MAX_CALLS
+    assert len(targets) == pm_engine.domain.ctx_recovery._WIP_PROBE_MAX_CALLS
     assert targets[-1][0] == "PM 홈"
-    assert skipped == len(fake_slots) - (mod._WIP_PROBE_MAX_CALLS - 1)
+    assert skipped == len(fake_slots) - (pm_engine.domain.ctx_recovery._WIP_PROBE_MAX_CALLS - 1)
 
 
 def test_wip_slot_line_surfaces_skipped_slot_count_without_spawning(tmp_path, monkeypatch):
@@ -1315,20 +1240,20 @@ def test_wip_slot_line_surfaces_skipped_slot_count_without_spawning(tmp_path, mo
     mod = _load_module()
     pm_home = tmp_path / "pm-home-distinct"
     fake_slots = [(f"slot-{letter}", tmp_path / f"slot-{letter}") for letter in "abcd"]
-    monkeypatch.setattr(mod, "_lease_task_slots", lambda *_a, **_k: fake_slots)
+    monkeypatch.setattr(pm_engine.app.session_snapshot, "_lease_task_slots", lambda _home, *_a, **_k: fake_slots)
     probe_calls: list[Path] = []
 
     def fake_git_status_counts(path, _timeout):
         probe_calls.append(path)
         return (0, 0, 0)
 
-    monkeypatch.setattr(mod, "_git_status_counts", fake_git_status_counts)
+    monkeypatch.setattr(pm_engine.app.session_snapshot, "_git_status_counts", fake_git_status_counts)
 
-    line = mod._wip_slot_line(pm_home, "main", deadline=10.0, monotonic=lambda: 0.0)
+    line = pm_engine.app.session_snapshot._wip_slot_line(pm_paths.home_at(pm_home), "main", deadline=10.0, monotonic=lambda: 0.0)
 
     assert "PM 홈" in line
     assert f"외 2개(프로브 생략)" in line
-    assert len(probe_calls) == mod._WIP_PROBE_MAX_CALLS
+    assert len(probe_calls) == pm_engine.domain.ctx_recovery._WIP_PROBE_MAX_CALLS
 
 
 def test_snapshot_max_bytes_fits_opencode_channel_cap():
@@ -1340,17 +1265,17 @@ def test_snapshot_max_bytes_fits_opencode_channel_cap():
     match = re.search(r"maxBuffer:\s*(\d+)\s*\*\s*(\d+)", source)
     assert match, "opencode maxBuffer 상수를 찾지 못함 — ctx-guard-core.cjs 형식 확인"
     opencode_max_buffer = int(match.group(1)) * int(match.group(2))
-    assert mod.SNAPSHOT_MAX_BYTES <= opencode_max_buffer
+    assert pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_BYTES <= opencode_max_buffer
 
 
 def test_snapshot_resolves_cwd_lease_before_multiple_active_tasks(tmp_path):
     mod = _load_module()
     pm_home, _cwd = _snapshot_home(tmp_path, tasks=("doc", "main"), lease_session="main")
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None
-    assert text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
+    assert text.startswith(pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING)
     assert "- task: main" in text and "- 세션: s-main" in text
     assert "활성 tasks (2): doc, main" in text
     assert "open 2 / claimed 1 / blocked 0 / done 3" in text
@@ -1363,39 +1288,35 @@ def test_folder_identity_keeps_cwd_lease_then_single_active_task(tmp_path):
     """pm_handoff·ticket_finish 무인자 진입의 폴더 판정은 그대로다 — cwd lease → 단일 활성 task."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path / "lease", tasks=("doc", "main"), lease_session="main")
-    assert mod.resolve_snapshot_identity(pm_home, cwd) == ("main", "cwd→lease")
+    assert pm_engine.app.session_identity.resolve_snapshot_identity(pm_paths.home_at(pm_home), cwd) == ("main", "cwd→lease")
 
     outside = tmp_path / "outside"
     outside.mkdir()
     single, _ = _snapshot_home(tmp_path / "single", tasks=("only",), lease_session="")
-    assert mod.resolve_snapshot_identity(single, outside) == ("only", "단일 활성 task")
+    assert pm_engine.app.session_identity.resolve_snapshot_identity(pm_paths.home_at(single), outside) == ("only", "단일 활성 task")
 
     multi, _ = _snapshot_home(tmp_path / "multi", tasks=("a", "b"), lease_session="")
-    assert mod.resolve_snapshot_identity(multi, outside) == (None, "정체성 미해소")
+    assert pm_engine.app.session_identity.resolve_snapshot_identity(pm_paths.home_at(multi), outside) == (None, "정체성 미해소")
 
 
 def test_t0953_snapshot_resolves_by_session_id(tmp_path, monkeypatch, capsys):
-    """snapshot 정체성은 세션 ID 로 찾은 task 다 — 열린 task 3개여도 해소된다(AT-004)."""
+    'snapshot 정체성은 세션 ID 로 찾은 task 다 — 열린 task 3개여도 해소된다(AT-004).'
     mod = _load_module()
-    pm_home, _cwd = _snapshot_home(tmp_path, tasks=("main", "hermes", "guard-check"))
-
-    text, warning = mod.build_snapshot(pm_home, "s-main")
-
+    pm_home, _cwd = _snapshot_home(tmp_path, tasks=('main', 'hermes', 'guard-check'))
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), 's-main')
     assert warning is None
-    assert text.startswith("## PM 정체성 (compaction 복구)")
-    assert "- task: main" in text and "- 세션: s-main" in text
-    assert "현재 cwd" not in text and "- 해소:" not in text
-
-    text, warning = mod.build_snapshot(pm_home, "s-zzz")
-    assert text is None and warning.count("\n") == 0
-    assert "세션 task 미해소" in warning and "이 세션이 연 task 없음" in warning
-    assert "재주입 생략" in warning
-
-    monkeypatch.setattr(mod, "REPO", pm_home)
-    assert mod.cmd_snapshot(SimpleNamespace(session_id="s-main", json=True)) == 0
+    assert text.startswith('## PM 정체성 (compaction 복구)')
+    assert '- task: main' in text and '- 세션: s-main' in text
+    assert '현재 cwd' not in text and '- 해소:' not in text
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), 's-zzz')
+    assert text is None and warning.count('\n') == 0
+    assert '세션 task 미해소' in warning and '이 세션이 연 task 없음' in warning
+    assert '재주입 생략' in warning
+    home = pm_paths.home_at(pm_home)
+    assert pm_engine.cli.log.cmd_snapshot(home, SimpleNamespace(session_id='s-main', json=True)) == 0
     out = capsys.readouterr().out
-    assert out.count("\n") == 1
-    assert json.loads(out)["systemMessage"].startswith("## PM 정체성 (compaction 복구)")
+    assert out.count('\n') == 1
+    assert json.loads(out)['systemMessage'].startswith('## PM 정체성 (compaction 복구)')
 
 
 def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):
@@ -1403,10 +1324,10 @@ def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     ticks = iter((10.0, 13.1))
-    text, warning = mod.build_snapshot(pm_home, "s-main", monotonic=lambda: next(ticks))
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main", monotonic=lambda: next(ticks))
     assert warning is None
-    assert text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
-    assert mod.SNAPSHOT_HEARSAY_WARNING.rstrip("\n") in text
+    assert text.startswith(pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING)
+    assert pm_engine.domain.ctx_recovery.SNAPSHOT_HEARSAY_WARNING.rstrip("\n") in text
     assert "## 장부 포인터" not in text and "## 진행 중 작업" not in text
     assert "## pm_state" not in text
 
@@ -1432,7 +1353,7 @@ def test_t0952_snapshot_ignores_logged_window_mismatch_and_unreadable_log(tmp_pa
     current.write_text(_HEADER + "\n" + _T0952_LOGGED_WINDOW_MISMATCH, encoding="utf-8")
     before = current.read_bytes()
 
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert text is not None and warning is None
     assert "ctx 설정 진단" not in text and "ctx-window-mismatch" not in text
@@ -1440,20 +1361,20 @@ def test_t0952_snapshot_ignores_logged_window_mismatch_and_unreadable_log(tmp_pa
 
     current.unlink()
     current.mkdir()
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert text is not None and warning is None
-    assert text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
+    assert text.startswith(pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING)
 
 
 def test_snapshot_caps_from_back_by_whole_section_under_char_and_byte_limits():
     mod = _load_module()
-    identity = mod._SNAPSHOT_IDENTITY_HEADING + "\n- task: main\n"
+    identity = pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING + "\n- task: main\n"
     sections = ["## keep\nsmall\n", "## drop\n" + ("한" * 9_000) + "\n"]
-    text = mod.cap_snapshot_sections(identity, sections)
+    text = pm_engine.domain.ctx_recovery.cap_snapshot_sections(identity, sections)
     assert "## keep" in text and "## drop" not in text
-    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
-    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+    assert len(text) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_BYTES
 
 
 def test_snapshot_timeout_safely_caps_oversized_identity_on_early_return(
@@ -1462,46 +1383,42 @@ def test_snapshot_timeout_safely_caps_oversized_identity_on_early_return(
     """timeout 조기 반환도 초대형 identity 절로 이중 상한을 우회하지 못한다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
-    oversized = mod._SNAPSHOT_IDENTITY_HEADING + "\n" + ("🧭" * 30_000)
-    monkeypatch.setattr(mod, "_identity_section", lambda *_args: oversized)
+    oversized = pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING + "\n" + ("🧭" * 30_000)
+    monkeypatch.setattr(pm_engine.app.session_snapshot, "_identity_section", lambda _home, *_args: oversized)
     ticks = iter((10.0, 13.1))
 
-    text, warning = mod.build_snapshot(
-        pm_home, "s-main", monotonic=lambda: next(ticks),
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(
+        pm_paths.home_at(pm_home), "s-main", monotonic=lambda: next(ticks),
     )
 
-    assert warning is None and text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
-    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
-    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+    assert warning is None and text.startswith(pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING)
+    assert len(text) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_BYTES
 
 
 def test_compaction_checkpoint_claim_is_boundary_scoped_and_atomic(tmp_path, monkeypatch):
     mod = _load_module()
-    _redirect_paths(mod, monkeypatch, tmp_path)
-    marker = mod._compaction_marker_path("main", "session/unsafe", "boundary/7")
-    assert marker.name == "compact-checkpoint.sessionunsafe.boundary7"
-    assert mod.claim_compaction_checkpoint(marker, phase="pre") is True
-    assert mod.claim_compaction_checkpoint(marker, phase="post") is False
-    assert "phase=pre" in marker.read_text(encoding="utf-8")
-
-    # 시간 간격과 무관하게 다른 경계는 즉시 독립 선점된다. 만료 marker unlink는 없다.
-    next_marker = mod._compaction_marker_path("main", "session/unsafe", "boundary/8")
-    assert mod.claim_compaction_checkpoint(next_marker, phase="pre") is True
-    fallback = mod._compaction_marker_path("main", boundary_id="boundary/7")
-    assert fallback.name == "compact-checkpoint.task-main.boundary7"
+    home = pm_paths.home_at(tmp_path)
+    marker = pm_engine.infra.compaction_store._compaction_marker_path(home, 'main', 'session/unsafe', 'boundary/7')
+    assert marker.name == 'compact-checkpoint.sessionunsafe.boundary7'
+    assert pm_engine.infra.compaction_store.claim_compaction_checkpoint(marker, phase='pre') is True
+    assert pm_engine.infra.compaction_store.claim_compaction_checkpoint(marker, phase='post') is False
+    assert 'phase=pre' in marker.read_text(encoding='utf-8')
+    next_marker = pm_engine.infra.compaction_store._compaction_marker_path(home, 'main', 'session/unsafe', 'boundary/8')
+    assert pm_engine.infra.compaction_store.claim_compaction_checkpoint(next_marker, phase='pre') is True
+    fallback = pm_engine.infra.compaction_store._compaction_marker_path(home, 'main', boundary_id='boundary/7')
+    assert fallback.name == 'compact-checkpoint.task-main.boundary7'
 
 
 def test_compaction_checkpoint_parallel_claim_has_one_winner(tmp_path, monkeypatch):
     mod = _load_module()
-    _redirect_paths(mod, monkeypatch, tmp_path)
-    marker = mod._compaction_marker_path("main", "session-1", "boundary-1")
+    home = pm_paths.home_at(tmp_path)
+    marker = pm_engine.infra.compaction_store._compaction_marker_path(home, 'main', 'session-1', 'boundary-1')
     barrier = threading.Barrier(2)
     results = []
-
     def claim():
         barrier.wait()
-        results.append(mod.claim_compaction_checkpoint(marker, phase="pre"))
-
+        results.append(pm_engine.infra.compaction_store.claim_compaction_checkpoint(marker, phase='pre'))
     threads = [threading.Thread(target=claim) for _ in range(2)]
     for thread in threads:
         thread.start()
@@ -1513,23 +1430,23 @@ def test_compaction_checkpoint_parallel_claim_has_one_winner(tmp_path, monkeypat
 def test_compaction_checkpoint_claim_io_failure_is_not_duplicate(tmp_path, monkeypatch):
     mod = _load_module()
     marker = tmp_path / "blocked" / "marker"
-    monkeypatch.setattr(mod.os, "open", lambda *_a, **_k: (_ for _ in ()).throw(PermissionError()))
-    assert mod.claim_compaction_checkpoint(marker, phase="pre") is None
+    monkeypatch.setattr(pm_engine.infra.compaction_store.os, "open", lambda *_a, **_k: (_ for _ in ()).throw(PermissionError()))
+    assert pm_engine.infra.compaction_store.claim_compaction_checkpoint(marker, phase="pre") is None
 
 
 def test_cmd_checkpoint_compaction_appends_at_most_one_entry_per_boundary(
         tmp_path, monkeypatch):
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER, encoding="utf-8")
     args = SimpleNamespace(
         task="main", trigger="compaction", session_id="session-1", cwd=str(tmp_path),
         boundary_id="boundary-1", phase="pre", breadcrumb=False,
     )
-    assert mod.cmd_checkpoint(args) == 0
-    assert mod.cmd_checkpoint(args) == 0
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    assert pm_engine.cli.log.cmd_checkpoint(home, args) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, args) == 0
+    entries = log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]
     assert len(entries) == 1
 
 
@@ -1537,17 +1454,17 @@ def test_cmd_checkpoint_phase_fallback_pairs_pre_post_and_allows_next_boundary(
         tmp_path, monkeypatch):
     """boundary ID가 없는 구 어댑터도 pre/post를 한 경계로 묶고 다음 pre는 새 경계다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER, encoding="utf-8")
     common = dict(
         task="main", trigger="compaction", session_id="session-1", cwd=str(tmp_path),
         boundary_id=None, breadcrumb=False,
     )
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='pre')) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='post')) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='pre')) == 0
+    entries = log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]
     assert len(entries) == 2
 
 
@@ -1556,23 +1473,23 @@ def test_cmd_checkpoint_implicit_boundaries_preserve_two_overlapping_sessions(
 ):
     """ID 없는 Codex 두 Pre가 겹쳐도 각 pending 경계를 두 Post가 하나씩 소비한다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER, encoding="utf-8")
     common = dict(
         task="main", trigger="compaction", session_id=None, cwd=str(tmp_path),
         boundary_id=None, breadcrumb=False,
     )
 
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='pre')) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='pre')) == 0
     state_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert len(list(state_dir.glob("compact-boundary.task-main.*"))) == 2
 
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='post')) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='post')) == 0
 
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    entries = log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]
     assert len(entries) == 2
     assert len(list(state_dir.glob("compact-checkpoint.task-main.*"))) == 2
     assert list(state_dir.glob("compact-boundary.task-main.*")) == []
@@ -1582,16 +1499,16 @@ def test_implicit_compaction_boundary_is_not_reused_after_log_archive(
         tmp_path, monkeypatch):
     """current.md archive로 순번이 0으로 돌아가도 영구 marker와 새 경계가 충돌하지 않는다."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER, encoding="utf-8")
     common = dict(
         task="main", trigger="compaction", session_id="session-archive",
         cwd=str(tmp_path), boundary_id=None, breadcrumb=False,
     )
 
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='pre')) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='post')) == 0
     first_markers = set(
         (tmp_path / ".project_manager" / ".local" / "ctx-stop").glob(
             "compact-checkpoint.session-archive.*"
@@ -1599,10 +1516,10 @@ def test_implicit_compaction_boundary_is_not_reused_after_log_archive(
     )
     assert len(first_markers) == 1
 
-    assert mod.cmd_archive(SimpleNamespace(before="9999-12-31", keep_last=None, dry_run=False)) == 0
-    assert mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1] == []
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="pre")) == 0
-    assert mod.cmd_checkpoint(SimpleNamespace(**common, phase="post")) == 0
+    assert pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='9999-12-31', keep_last=None, dry_run=False)) == 0
+    assert log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1] == []
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='pre')) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(**common, phase='post')) == 0
 
     markers = set(
         (tmp_path / ".project_manager" / ".local" / "ctx-stop").glob(
@@ -1610,86 +1527,73 @@ def test_implicit_compaction_boundary_is_not_reused_after_log_archive(
         )
     )
     assert len(markers) == 2 and markers > first_markers
-    assert len(mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]) == 1
-    assert not mod._implicit_boundary_state_path("main", "session-archive").exists()
+    assert len(log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]) == 1
+    assert not pm_engine.infra.compaction_store._implicit_boundary_state_path(home, 'main', 'session-archive').exists()
 
 
 def test_cmd_checkpoint_dedup_io_failure_warns_but_appends(
         tmp_path, monkeypatch, capsys):
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
-    monkeypatch.setattr(mod, "claim_compaction_checkpoint", lambda *_a, **_k: None)
+    (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER, encoding="utf-8")
+    monkeypatch.setattr(pm_engine.infra.compaction_store, "claim_compaction_checkpoint", lambda *_a, **_k: None)
     args = SimpleNamespace(
         task="main", trigger="compaction", session_id="session-1", cwd=str(tmp_path),
         boundary_id="boundary-io-failure", phase="post", breadcrumb=False,
     )
 
-    assert mod.cmd_checkpoint(args) == 0
+    assert pm_engine.cli.log.cmd_checkpoint(home, args) == 0
     captured = capsys.readouterr()
     assert "dedup 장부 I/O 실패" in captured.err
-    assert len(mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]) == 1
+    assert len(log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]) == 1
 
 
 def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_single_object(
         tmp_path, monkeypatch, capsys):
-    """장부 조회(ticket copies·raw·claimed)는 spawn 0 — WIP 프로브만 상한 내 예외로 허용한다.
-
-    T-0787 이전엔 어떤 ``subprocess.run`` 호출도 즉시 fail 이었다. WIP git 프로브 도입 이후에도
-    가드는 죽지 않는다 — "장부 조회는 spawn 0" 으로 **좁혀서** 재단언한다(가드 삭제 금지).
-    """
+    '장부 조회(ticket copies·raw·claimed)는 spawn 0 — WIP 프로브만 상한 내 예외로 허용한다.\n\n    T-0787 이전엔 어떤 ``subprocess.run`` 호출도 즉시 fail 이었다. WIP git 프로브 도입 이후에도\n    가드는 죽지 않는다 — "장부 조회는 spawn 0" 으로 **좁혀서** 재단언한다(가드 삭제 금지).\n    '
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
-    monkeypatch.setattr(mod, "REPO", pm_home)
+    home = pm_paths.home_at(pm_home)
     probe_calls: list[list[str]] = []
-
     def _fake_run(argv, **kwargs):
-        if argv[:1] != ["git"]:
-            pytest.fail(f"장부 조회가 subprocess 를 spawn 함(spawn 0 계약 위반): {argv!r}")
-        assert "--no-optional-locks" in argv, "WIP 프로브는 --no-optional-locks 필수"
-        assert argv[-2:] == ["status", "--porcelain"]
-        timeout = kwargs.get("timeout")
-        assert timeout is not None and 0 < timeout <= mod._WIP_PROBE_TIMEOUT_SECONDS
+        if argv[:1] != ['git']:
+            pytest.fail(f'장부 조회가 subprocess 를 spawn 함(spawn 0 계약 위반): {argv!r}')
+        assert '--no-optional-locks' in argv, 'WIP 프로브는 --no-optional-locks 필수'
+        assert argv[-2:] == ['status', '--porcelain']
+        timeout = kwargs.get('timeout')
+        assert timeout is not None and 0 < timeout <= pm_engine.domain.ctx_recovery._WIP_PROBE_TIMEOUT_SECONDS
         probe_calls.append(argv)
-        return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal: not a git repository")
-
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
-    args = SimpleNamespace(session_id="s-main", json=True)
-    assert mod.cmd_snapshot(args) == 0
+        return subprocess.CompletedProcess(argv, 128, stdout='', stderr='fatal: not a git repository')
+    monkeypatch.setattr(pm_engine.cli.log.subprocess, 'run', _fake_run)
+    args = SimpleNamespace(session_id='s-main', json=True)
+    assert pm_engine.cli.log.cmd_snapshot(home, args) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["suppressOutput"] is False
-    assert payload["systemMessage"].startswith(mod._SNAPSHOT_IDENTITY_HEADING)
-    assert "조회 불가" in payload["systemMessage"]  # WIP 프로브가 fail-soft 로 표기됐는지
-    assert 0 < len(probe_calls) <= mod._WIP_PROBE_MAX_CALLS
+    assert payload['suppressOutput'] is False
+    assert payload['systemMessage'].startswith(pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING)
+    assert '조회 불가' in payload['systemMessage']
+    assert 0 < len(probe_calls) <= pm_engine.domain.ctx_recovery._WIP_PROBE_MAX_CALLS
 
 
 def test_cmd_snapshot_unresolved_identity_returns_one(tmp_path, monkeypatch, capsys):
-    """세션 task 미해소 snapshot 은 rc 1 · stdout 0줄이다 — `--json` 도 무응답 엔벨로프를 내지 않는다.
-
-    rc 0 + `{"suppressOutput":true}` 는 "주입할 것이 없다" 를 성공으로 위장한다(그 위장이
-    compaction 마다 관측 불가였다).
-    """
-    mod = _load_module("pm_log_snapshot_unresolved_identity")
-    pm_home = tmp_path / "empty"
+    '세션 task 미해소 snapshot 은 rc 1 · stdout 0줄이다 — `--json` 도 무응답 엔벨로프를 내지 않는다.\n\n    rc 0 + `{"suppressOutput":true}` 는 "주입할 것이 없다" 를 성공으로 위장한다(그 위장이\n    compaction 마다 관측 불가였다).\n    '
+    mod = _load_module('pm_log_snapshot_unresolved_identity')
+    pm_home = tmp_path / 'empty'
     pm_home.mkdir()
-    monkeypatch.setattr(mod, "REPO", pm_home)
-
+    home = pm_paths.home_at(pm_home)
     for json_mode in (False, True):
-        rc = mod.cmd_snapshot(
-            SimpleNamespace(session_id="s-main", json=json_mode))
-
+        rc = pm_engine.cli.log.cmd_snapshot(home, SimpleNamespace(session_id='s-main', json=json_mode))
         captured = capsys.readouterr()
-        assert rc == 1 and captured.out == "", json_mode
-        assert captured.err.count("\n") == 1 and "재주입 생략" in captured.err
-        assert "세션 task 미해소: 이 세션이 연 task 없음 (세션 s-main)" in captured.err
+        assert rc == 1 and captured.out == '', json_mode
+        assert captured.err.count('\n') == 1 and '재주입 생략' in captured.err
+        assert '세션 task 미해소: 이 세션이 연 task 없음 (세션 s-main)' in captured.err
 
 
 def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):
     mod = _load_module()
     pm_home = tmp_path / "empty"
     pm_home.mkdir()
-    text, warning = mod.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
     assert text is None
     assert warning and "\n" not in warning and "재주입 생략" in warning
 
@@ -1699,13 +1603,13 @@ def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):
 def test_cmd_archive_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
     """--before cutoff 미만 entry 를 archive 파일로 봉인하고 current.md 엔 잔여만 남긴다."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
     # 2026-06-13 미만 = ENTRY_A(06-10)·ENTRY_B(06-12) 봉인, ENTRY_C(06-14) 유지.
-    rc = mod.cmd_archive(SimpleNamespace(before="2026-06-13", dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=False))
     assert rc == 0
 
     # archive 파일 생성: idx 1(빈 dir·legacy 예약) + 첫/마지막 날짜 범위명.
@@ -1726,15 +1630,13 @@ def test_cmd_archive_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
 def test_cmd_archive_preserves_crlf_bytes_in_kept_current(tmp_path, monkeypatch):
     """archive read/replace는 유니버설 개행 변환 없이 남은 current CRLF를 보존한다."""
     mod = _load_module()
-    log_dir, _archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     original = (_HEADER + _ENTRY_A + _ENTRY_C).replace("\n", "\r\n").encode("utf-8")
     current.write_bytes(original)
 
-    assert mod.cmd_archive(
-        SimpleNamespace(before="2026-06-13", keep_last=None, dry_run=False)
-    ) == 0
+    assert pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', keep_last=None, dry_run=False)) == 0
 
     expected = (_HEADER + _ENTRY_C).replace("\n", "\r\n").encode("utf-8")
     remaining = current.read_bytes()
@@ -1746,7 +1648,7 @@ def test_cmd_archive_preserves_crlf_bytes_in_kept_current(tmp_path, monkeypatch)
 def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypatch):
     """archive 교체 직전 append가 경합해도 lock 순서대로 실행돼 신규 entry를 잃지 않는다."""
     mod = _load_module()
-    log_dir, _archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     current.write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
@@ -1756,7 +1658,7 @@ def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypa
     allow_replace = threading.Event()
     append_done = threading.Event()
     errors = []
-    original_replace = mod._replace_atomic
+    original_replace = pm_engine.infra.log_store._replace_atomic
 
     def paused_replace(path, text):
         replace_entered.set()
@@ -1766,9 +1668,7 @@ def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypa
 
     def run_archive():
         try:
-            assert mod.cmd_archive(
-                SimpleNamespace(before="2026-06-13", dry_run=False)
-            ) == 0
+            assert pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=False)) == 0
         except BaseException as exc:  # thread 예외를 주 테스트로 전달.
             errors.append(exc)
 
@@ -1780,7 +1680,7 @@ def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypa
         finally:
             append_done.set()
 
-    monkeypatch.setattr(mod, "_replace_atomic", paused_replace)
+    monkeypatch.setattr(pm_engine.infra.log_store, "_replace_atomic", paused_replace)
     archive_thread = threading.Thread(target=run_archive)
     append_thread = threading.Thread(target=run_append)
     archive_thread.start()
@@ -1811,7 +1711,7 @@ def test_cmd_archive_cutoff_boundary_is_strict_keeps_on_date(tmp_path, monkeypat
     쪽이다. 이걸 못박지 않으면 비교를 `<= / >`(inclusive)로 뒤집어도 테스트가 통과한다.
     """
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     # ENTRY_A(06-10) = cutoff 미만, BOUNDARY(06-13) = cutoff 와 동일.
@@ -1819,7 +1719,7 @@ def test_cmd_archive_cutoff_boundary_is_strict_keeps_on_date(tmp_path, monkeypat
     current.write_text(_HEADER + _ENTRY_A + entry_boundary, encoding="utf-8")
 
     # --before 2026-06-13: 06-10 만 봉인, 06-13(경계)은 유지돼야 한다.
-    rc = mod.cmd_archive(SimpleNamespace(before="2026-06-13", dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=False))
     assert rc == 0
 
     # 봉인 슬라이스: 엄격히 이전(06-10)만 — 경계 날짜는 범위명·본문에 없음.
@@ -1842,13 +1742,13 @@ def test_cmd_archive_cutoff_boundary_is_strict_keeps_on_date(tmp_path, monkeypat
 def test_cmd_archive_noop_when_nothing_old(tmp_path, monkeypatch, capsys):
     """cutoff 미만 entry 0개면 no-op — archive 파일 미생성·current.md 무변."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     original = _HEADER + _ENTRY_B + _ENTRY_C
     current.write_text(original, encoding="utf-8")
 
-    rc = mod.cmd_archive(SimpleNamespace(before="2026-06-01", dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-01', dry_run=False))
     assert rc == 0
     assert "옮길 entry 없음" in capsys.readouterr().out
     assert not archive_dir.exists() or not list(archive_dir.glob("*.md"))
@@ -1858,13 +1758,13 @@ def test_cmd_archive_noop_when_nothing_old(tmp_path, monkeypatch, capsys):
 def test_cmd_archive_dry_run_no_write(tmp_path, monkeypatch, capsys):
     """--dry-run: 봉인 계획만 출력하고 파일은 안 건드린다."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     original = _HEADER + _ENTRY_A + _ENTRY_C
     current.write_text(original, encoding="utf-8")
 
-    rc = mod.cmd_archive(SimpleNamespace(before="2026-06-13", dry_run=True))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
     # 아무 것도 쓰지 않음.
@@ -1873,34 +1773,34 @@ def test_cmd_archive_dry_run_no_write(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_archive_bad_date(tmp_path, monkeypatch, capsys):
-    """--before 형식 오류 → rc 1 (current.md 존재 여부 판정 전 검증)."""
+    '--before 형식 오류 → rc 1 (current.md 존재 여부 판정 전 검증).'
     mod = _load_module()
-    _redirect_paths(mod, monkeypatch, tmp_path)
-    rc = mod.cmd_archive(SimpleNamespace(before="2026/06/13", dry_run=False))
+    home = pm_paths.home_at(tmp_path)
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026/06/13', dry_run=False))
     assert rc == 1
-    assert "날짜 형식 오류" in capsys.readouterr().err
+    assert '날짜 형식 오류' in capsys.readouterr().err
 
 
 def test_cmd_archive_missing_current(tmp_path, monkeypatch, capsys):
-    """current.md 부재 → rc 2 (날짜는 valid)."""
+    'current.md 부재 → rc 2 (날짜는 valid).'
     mod = _load_module()
-    _redirect_paths(mod, monkeypatch, tmp_path)
-    rc = mod.cmd_archive(SimpleNamespace(before="2026-06-13", dry_run=False))
+    home = pm_paths.home_at(tmp_path)
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=False))
     assert rc == 2
-    assert "current.md 없음" in capsys.readouterr().err
+    assert 'current.md 없음' in capsys.readouterr().err
 
 
 def test_cmd_archive_index_increments_with_existing(tmp_path, monkeypatch):
     """기존 archive 슬라이스가 있으면 다음 인덱스로 봉인 (max+1)."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     archive_dir.mkdir(parents=True)
     (archive_dir / "0000-legacy.md").touch()
     (archive_dir / "0001-old.md").touch()
     (log_dir / "current.md").write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
 
-    rc = mod.cmd_archive(SimpleNamespace(before="2026-06-13", dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=False))
     assert rc == 0
     assert (archive_dir / "0002-2026-06-10_to_2026-06-10.md").exists()
 
@@ -1910,13 +1810,13 @@ def test_cmd_archive_index_increments_with_existing(tmp_path, monkeypatch):
 def test_cmd_archive_keep_last_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
     """--keep-last N: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 연번 봉인."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
     # 최근 1개(ENTRY_C)만 유지 → ENTRY_A·ENTRY_B 봉인.
-    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=1, dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=1, dry_run=False))
     assert rc == 0
 
     # 슬라이스: idx 1(빈 dir·legacy 예약) + 봉인 첫/마지막 날짜 범위명.
@@ -1939,21 +1839,21 @@ def test_cmd_archive_keep_last_seals_old_keeps_recent(tmp_path, monkeypatch, cap
 def test_cmd_archive_keep_last_noop_when_n_ge_len(tmp_path, monkeypatch, capsys):
     """N ≥ entry 수면 봉인할 게 없다 — no-op (archive 파일 미생성·current.md 무변)."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     original = _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C  # entry 3개.
     current.write_text(original, encoding="utf-8")
 
     # N == len(entries): no-op.
-    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=3, dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=3, dry_run=False))
     assert rc == 0
     assert "옮길 entry 없음" in capsys.readouterr().out
     assert not archive_dir.exists() or not list(archive_dir.glob("*.md"))
     assert current.read_text(encoding="utf-8") == original
 
     # N > len(entries): 역시 no-op.
-    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=99, dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=99, dry_run=False))
     assert rc == 0
     assert "옮길 entry 없음" in capsys.readouterr().out
     assert not archive_dir.exists() or not list(archive_dir.glob("*.md"))
@@ -1963,18 +1863,17 @@ def test_cmd_archive_keep_last_noop_when_n_ge_len(tmp_path, monkeypatch, capsys)
 def test_cmd_archive_requires_exactly_one_mode(tmp_path, monkeypatch, capsys):
     """--before/--keep-last 둘 다 또는 둘 다 없음 → rc 1 (정확히 하나 필수)."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     (log_dir / "current.md").write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
 
     # 둘 다 지정 → rc 1.
-    rc = mod.cmd_archive(
-        SimpleNamespace(before="2026-06-13", keep_last=2, dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', keep_last=2, dry_run=False))
     assert rc == 1
     assert "정확히 하나" in capsys.readouterr().err
 
     # 둘 다 없음 → rc 1.
-    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=None, dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=None, dry_run=False))
     assert rc == 1
     assert "정확히 하나" in capsys.readouterr().err
 
@@ -1982,12 +1881,12 @@ def test_cmd_archive_requires_exactly_one_mode(tmp_path, monkeypatch, capsys):
 def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypatch):
     """무손실 불변식: 봉인 entry + 잔여 entry = 원본 entry (순서·본문 보존)."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
-    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=2, dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=2, dry_run=False))
     assert rc == 0
 
     slice_path = archive_dir / "0001-2026-06-10_to_2026-06-10.md"
@@ -1995,8 +1894,8 @@ def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypa
     remaining = current.read_text(encoding="utf-8")
 
     # 봉인본에서 entry 만 추출 + 잔여 current 의 entry = 원본 entry (순서 보존).
-    _pre_sealed, sealed_entries = mod.split_entries(sealed)
-    remaining_preamble, remaining_entries = mod.split_entries(remaining)
+    _pre_sealed, sealed_entries = log_entries.split_entries(sealed)
+    remaining_preamble, remaining_entries = log_entries.split_entries(remaining)
     recombined = [e for _d, e in sealed_entries] + [e for _d, e in remaining_entries]
     assert recombined == [_ENTRY_A, _ENTRY_B, _ENTRY_C]
     # preamble 은 current 에만 남는다 (봉인본엔 봉인 헤더만).
@@ -2006,14 +1905,14 @@ def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypa
 def test_cmd_archive_keep_last_index_continues_after_existing(tmp_path, monkeypatch):
     """슬라이스 연번은 기존 archive 뒤로 이어진다 (모드 무관·max+1 동일 채널)."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     archive_dir.mkdir(parents=True)
     (archive_dir / "0000-legacy.md").touch()
     (archive_dir / "0001-old.md").touch()
     (log_dir / "current.md").write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
 
-    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=1, dry_run=False))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=1, dry_run=False))
     assert rc == 0
     # 기존 max(0001) 뒤 → 0002.
     assert (archive_dir / "0002-2026-06-10_to_2026-06-10.md").exists()
@@ -2022,13 +1921,13 @@ def test_cmd_archive_keep_last_index_continues_after_existing(tmp_path, monkeypa
 def test_cmd_archive_keep_last_dry_run_no_write(tmp_path, monkeypatch, capsys):
     """--keep-last --dry-run: 봉인 계획만 출력, 파일 무변 (멱등·비편집)."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     original = _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C
     current.write_text(original, encoding="utf-8")
 
-    rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=1, dry_run=True))
+    rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=1, dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
     assert not archive_dir.exists()
@@ -2040,7 +1939,7 @@ def test_cmd_archive_keep_last_dry_run_no_write(tmp_path, monkeypatch, capsys):
 def test_parser_archive_keep_last_and_before_mutually_exclusive():
     """argparse mutex 그룹: --before 와 --keep-last 동시 지정은 CLI 에서 거부(SystemExit)."""
     mod = _load_module()
-    parser = mod.build_parser()
+    parser = pm_engine.cli.log.build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["archive", "--before", "2026-06-13", "--keep-last", "2"])
 
@@ -2049,7 +1948,7 @@ def test_parser_archive_keep_last_and_before_mutually_exclusive():
 def test_parser_archive_keep_last_rejects_non_positive_int(bad):
     """--keep-last 는 양의 정수만 — 0·음수·비정수는 argparse 거부."""
     mod = _load_module()
-    parser = mod.build_parser()
+    parser = pm_engine.cli.log.build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["archive", "--keep-last", bad])
 
@@ -2057,7 +1956,7 @@ def test_parser_archive_keep_last_rejects_non_positive_int(bad):
 def test_parser_archive_each_mode_parses_alone():
     """각 모드 단독은 정상 파싱 — 반대 모드는 None (기본)."""
     mod = _load_module()
-    parser = mod.build_parser()
+    parser = pm_engine.cli.log.build_parser()
 
     args = parser.parse_args(["archive", "--keep-last", "3"])
     assert args.keep_last == 3
@@ -2073,12 +1972,13 @@ def test_parser_archive_each_mode_parses_alone():
 def test_cmd_migrate_seals_legacy_and_creates_current(tmp_path, monkeypatch, capsys):
     """기존 log.md → archive/0000-legacy.md 봉인 + current.md(표준 헤더) 생성."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
-    legacy = tmp_path / "log.md"
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
+    legacy = pm_paths.wiki_dir(home) / "log.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy_body = "# Project Log\n\n## [2026-05-01] create | 옛 entry\n옛 본문\n"
     legacy.write_text(legacy_body, encoding="utf-8")
 
-    rc = mod.cmd_migrate(SimpleNamespace(dry_run=False))
+    rc = pm_engine.cli.log.cmd_migrate(home, SimpleNamespace(dry_run=False))
     assert rc == 0
 
     # legacy 원본은 봉인 후 삭제.
@@ -2090,7 +1990,7 @@ def test_cmd_migrate_seals_legacy_and_creates_current(tmp_path, monkeypatch, cap
 
     # current.md 는 표준 헤더로 새로 생성 (legacy 내용 미포함).
     current = (log_dir / "current.md").read_text(encoding="utf-8")
-    assert current == mod.CURRENT_HEADER
+    assert current == pm_engine.domain.ctx_recovery.CURRENT_HEADER
     assert "옛 본문" not in current
     # archive/.gitkeep 도 생성.
     assert (archive_dir / ".gitkeep").exists()
@@ -2099,11 +1999,11 @@ def test_cmd_migrate_seals_legacy_and_creates_current(tmp_path, monkeypatch, cap
 def test_cmd_migrate_no_legacy_creates_empty_current(tmp_path, monkeypatch, capsys):
     """기존 log.md 가 없으면 빈(헤더만) current.md 만 생성, legacy 봉인 없음."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
 
-    rc = mod.cmd_migrate(SimpleNamespace(dry_run=False))
+    rc = pm_engine.cli.log.cmd_migrate(home, SimpleNamespace(dry_run=False))
     assert rc == 0
-    assert (log_dir / "current.md").read_text(encoding="utf-8") == mod.CURRENT_HEADER
+    assert (log_dir / "current.md").read_text(encoding="utf-8") == pm_engine.domain.ctx_recovery.CURRENT_HEADER
     assert not (archive_dir / "0000-legacy.md").exists()
     assert "기존 log.md 없음" in capsys.readouterr().out
 
@@ -2111,14 +2011,15 @@ def test_cmd_migrate_no_legacy_creates_empty_current(tmp_path, monkeypatch, caps
 def test_cmd_migrate_idempotent_when_current_exists(tmp_path, monkeypatch, capsys):
     """current.md 가 이미 있으면 no-op — legacy 미접촉."""
     mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     current.write_text("# 기존 current\n", encoding="utf-8")
-    legacy = tmp_path / "log.md"
+    legacy = pm_paths.wiki_dir(home) / "log.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("legacy 본문\n", encoding="utf-8")
 
-    rc = mod.cmd_migrate(SimpleNamespace(dry_run=False))
+    rc = pm_engine.cli.log.cmd_migrate(home, SimpleNamespace(dry_run=False))
     assert rc == 0
     assert "이미 마이그레이션됨" in capsys.readouterr().out
     # current.md 무변·legacy 보존.
@@ -2129,13 +2030,45 @@ def test_cmd_migrate_idempotent_when_current_exists(tmp_path, monkeypatch, capsy
 def test_cmd_migrate_dry_run_no_write(tmp_path, monkeypatch, capsys):
     """--dry-run: 계획만 출력, log.md·current.md 무변."""
     mod = _load_module()
-    log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
-    legacy = tmp_path / "log.md"
+    log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
+    legacy = pm_paths.wiki_dir(home) / "log.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("legacy 본문\n", encoding="utf-8")
 
-    rc = mod.cmd_migrate(SimpleNamespace(dry_run=True))
+    rc = pm_engine.cli.log.cmd_migrate(home, SimpleNamespace(dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
     assert legacy.exists()  # 삭제 안 됨.
     assert not (log_dir / "current.md").exists()
     assert not (archive_dir / "0000-legacy.md").exists()
+
+
+
+def test_package_identity_uses_home_data_without_target_engine(tmp_path):
+    from pm_engine.app import session_identity, session_snapshot
+    from pm_engine.infra import pm_paths
+    code = tmp_path / "code"
+    homes = []
+    for label in ("alpha", "beta"):
+        data = tmp_path / label
+        home = pm_paths.home_at(code, pm_home=data)
+        home.local_dir.mkdir(parents=True)
+        pm_paths.task_dir(home, label).mkdir(parents=True)
+        ledger = {"leases": [{"state": "leased", "session": label, "slot": "work/repo_1"}], "tasks": [{"name": label, "session": "same-harness"}]}
+        pm_paths.leases_file(home).write_text(json.dumps(ledger), encoding="utf-8")
+        assert not (data / ".project_manager" / "tools").exists()
+        homes.append(home)
+    alpha, beta = homes
+    for home, label in ((alpha, "alpha"), (beta, "beta"), (alpha, "alpha")):
+        cwd = home.local_dir.parent.parent / "work/repo_1/nested"
+        assert session_identity.resolve_snapshot_identity(home, cwd) == (label, "cwd→lease")
+        assert session_identity.resolve_session_task(home, "same-harness") == (label, None)
+        ticks = iter((0.0, 3.0))
+        text, warning = session_snapshot.build_snapshot(home, "same-harness", monotonic=lambda: next(ticks))
+        assert warning is None
+        assert f"- task: {label}\n" in text
+        assert str(pm_paths.task_pm_state_file(home, label)) in text
+    pm_paths.leases_file(beta).write_text("{broken", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        session_identity.resolve_session_task(beta, "same-harness")
+    assert session_identity.resolve_session_task(alpha, "same-harness") == ("alpha", None)

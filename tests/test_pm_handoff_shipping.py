@@ -23,6 +23,11 @@ timeout)는 폐지됐다 — 분류기(`_shipping_paths_in_pending_push`·`SHIPP
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff
+import pm_engine.domain.handoff_text
+import pm_engine.infra.handoff_git
+
 from _pool_seams import bind_pool
 
 import importlib.util
@@ -121,11 +126,11 @@ def hf():
 
 @pytest.fixture(autouse=True)
 def _registered_home(hf, tmp_path, monkeypatch):
-    """기본 형상 = 등록된 홈(N=1 슬롯 행) — 정체성·회귀 cwd 가 이 장부 행에서 온다."""
-    monkeypatch.setattr(hf, "REPO", tmp_path)
+    '기본 형상 = 등록된 홈(N=1 슬롯 행) — 정체성·회귀 cwd 가 이 장부 행에서 온다.'
+    home = pm_paths.home_at(tmp_path)
     seed_areas(tmp_path)
-    seed_slot(tmp_path, session=TASK, tasks=[{"name": TASK, "prefix": None}])
-    (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)   # 회귀 cwd 가 실재 트리로 해소된다.
+    seed_slot(tmp_path, session=TASK, tasks=[{'name': TASK, 'prefix': None}])
+    (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)
 
 
 # ── git_runner stub 빌더 ──────────────────────────────────────────────────────
@@ -186,7 +191,7 @@ def _git_stub(*, baseline_ok: bool = True, diff_paths: list[str] | None = None,
 def test_shipping_paths_fires_on_engine_change(hf):
     """엔진 경로(.project_manager/tools/) 변경 → shipping_hits 비어있지 않음·unknown False."""
     runner = _git_stub(diff_paths=[".project_manager/tools/board.py", "tests/test_x.py"])
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == [".project_manager/tools/board.py"]  # tests/ 는 비-출하라 제외.
     assert unknown is False
 
@@ -202,7 +207,7 @@ def test_shipping_paths_fires_on_template_and_adapter(hf):
         "requirements-dev.txt",
         ".project_manager/wiki/pm_role.md",
     ])
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert set(hits) == {
         "templates/claude_code/CLAUDE.md",
         ".claude/agents/developer.md",
@@ -236,7 +241,7 @@ def test_shipping_paths_skips_non_shipping(hf):
         ".project_manager/wiki/tickets/open/T-9999-some.md",
         "tests/fixtures/sample.template.example",
     ])
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is False
 
@@ -258,7 +263,7 @@ def test_shipping_paths_skips_template_lookalikes(hf):
     wiki ADR 디렉토리의 동명 파일까지 false-fire 했을 것 — 정확 경로로 좁힌 뒤엔 skip.
     """
     runner = _git_stub(diff_paths=list(_NON_SHIPPING_TEMPLATE_LOOKALIKES))
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []  # 정확 경로 글롭이라 동명 비-출하는 미매칭.
     assert unknown is False
 
@@ -271,7 +276,7 @@ def test_template_lookalikes_are_not_shipping(hf):
     한다. 포괄 글롭이면 True(false-fire)였을 것 — 정밀 스코프 회귀 가드.
     """
     for path in _NON_SHIPPING_TEMPLATE_LOOKALIKES:
-        assert not hf._path_is_shipping(path), (
+        assert not pm_engine.domain.handoff_text._path_is_shipping(path), (
             f"비-출하 경로가 SHIPPING_GLOBS 에 false-match (포괄 글롭 회귀): {path}"
         )
 
@@ -279,7 +284,7 @@ def test_template_lookalikes_are_not_shipping(hf):
 def test_shipping_paths_empty_diff_skips(hf):
     """push 대상 없음(diff 비어있음) → 빈 hits·unknown False → skip."""
     runner = _git_stub(diff_paths=[])
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is False
 
@@ -287,7 +292,7 @@ def test_shipping_paths_empty_diff_skips(hf):
 def test_shipping_paths_unknown_when_baseline_unresolved(hf):
     """baseline ref 해소불가(detached/upstream 미설정) → has_unknown=True (ambiguous)."""
     runner = _git_stub(baseline_ok=False)
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is True
 
@@ -295,7 +300,7 @@ def test_shipping_paths_unknown_when_baseline_unresolved(hf):
 def test_shipping_paths_unknown_when_diff_fails(hf):
     """diff 명령 자체 실패(rc≠0) → has_unknown=True (ambiguous)."""
     runner = _git_stub(diff_rc=128)
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is True
 
@@ -303,7 +308,7 @@ def test_shipping_paths_unknown_when_diff_fails(hf):
 def test_shipping_paths_failsoft_on_exception(hf):
     """git 예외(미설치 등) → 크래시 없이 has_unknown=True (fail-soft)."""
     runner = _git_stub(raise_exc=True)
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is True
 
@@ -317,7 +322,7 @@ def test_shipping_paths_failsoft_on_exception(hf):
 def test_shipping_paths_fires_on_uncommitted_tracked(hf):
     """staged/unstaged tracked 출하파일(diff HEAD) → hits·unknown False (커밋 안 됐어도)."""
     runner = _git_stub(uncommitted_paths=[".project_manager/tools/pm_handoff.py", "tests/x.py"])
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == [".project_manager/tools/pm_handoff.py"]  # tests/ 는 비-출하 제외.
     assert unknown is False
 
@@ -325,7 +330,7 @@ def test_shipping_paths_fires_on_uncommitted_tracked(hf):
 def test_shipping_paths_fires_on_untracked_new_file(hf):
     """untracked 신규 출하파일(ls-files --others) → hits·unknown False."""
     runner = _git_stub(untracked_paths=[".claude/agents/new_agent.md", "scratch.txt"])
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == [".claude/agents/new_agent.md"]  # scratch.txt 는 비-출하.
     assert unknown is False
 
@@ -340,7 +345,7 @@ def test_shipping_paths_fires_on_uncommitted_even_when_baseline_unresolved(hf):
         baseline_ok=False,
         uncommitted_paths=["templates/opencode/AGENTS.md"],
     )
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == ["templates/opencode/AGENTS.md"]
     assert unknown is False  # hit 확정 → ambiguous 아님.
 
@@ -352,7 +357,7 @@ def test_shipping_paths_unions_committed_uncommitted_untracked(hf):
         uncommitted_paths=[".project_manager/tools/board.py", "CLAUDE.md"],  # 중복 + 신규.
         untracked_paths=[".opencode/agent/researcher.md"],       # untracked.
     )
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == sorted({
         ".project_manager/tools/board.py",
         "CLAUDE.md",
@@ -367,7 +372,7 @@ def test_shipping_paths_skips_when_only_uncommitted_non_shipping(hf):
         uncommitted_paths=["tests/test_x.py"],
         untracked_paths=[".project_manager/wiki/raw/spikes/s.md"],
     )
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is False
 
@@ -375,7 +380,7 @@ def test_shipping_paths_skips_when_only_uncommitted_non_shipping(hf):
 def test_shipping_paths_unknown_when_uncommitted_diff_fails(hf):
     """작업트리 diff HEAD 자체 실패(rc≠0) → 작업트리 상태 불명 → has_unknown=True."""
     runner = _git_stub(uncommitted_rc=128)
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is True
 
@@ -383,7 +388,7 @@ def test_shipping_paths_unknown_when_uncommitted_diff_fails(hf):
 def test_shipping_paths_unknown_when_ls_files_fails(hf):
     """ls-files --others 실패(rc≠0) → 작업트리 상태 불명 → has_unknown=True."""
     runner = _git_stub(untracked_rc=128)
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == []
     assert unknown is True
 
@@ -392,28 +397,16 @@ def test_shipping_paths_unknown_when_ls_files_fails(hf):
 
 
 def _make_handoff(hf, tmp_path: Path, *, git_runner, monkeypatch):
-    """git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).
-
-    회귀(step 1)는 green stub. log/playbook 은 tmp, pm_state 는 부재 경로(3·4 skip).
-    git_runner 는 출하-변경 분류용 diff 응답. ADR-0039 D4 이후 [1b/7] 은 비차단 surface 라
-    출하 테스트 실행 seam(구 run_shipping_test_fn)은 없다.
-    """
-    log_file = tmp_path / "current.md"
-    playbook_file = tmp_path / "pm_playbook.md"
-    # 차수는 pm_state 에서만 추론하므로 파일이 **실재**해야 한다(부재는 중단이다).
-    pm_state = tmp_path / "explicit_pm_state.md"
-    log_file.write_text("# log\n", encoding="utf-8")
-    playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
-    pm_state.write_text(_TASK_PM_STATE, encoding="utf-8")
+    'git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).\n\n    회귀(step 1)는 green stub. log/playbook 은 tmp, pm_state 는 부재 경로(3·4 skip).\n    git_runner 는 출하-변경 분류용 diff 응답. ADR-0039 D4 이후 [1b/7] 은 비차단 surface 라\n    출하 테스트 실행 seam(구 run_shipping_test_fn)은 없다.\n    '
+    home = pm_paths.home_at(tmp_path)
+    log_file = tmp_path / 'current.md'
+    playbook_file = tmp_path / 'pm_playbook.md'
+    pm_state = tmp_path / 'explicit_pm_state.md'
+    log_file.write_text('# log\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
+    pm_state.write_text(_TASK_PM_STATE, encoding='utf-8')
     bind_pool(monkeypatch, _TaskPool())
-    inst = hf.PmHandoff(
-        run_pytest_fn=lambda: (0, "120 passed in 1.0s\n"),
-        run_git_fn=git_runner,
-        log_file=log_file,
-        pm_playbook_file=playbook_file,
-        pm_state_file=pm_state,
-
-    )
+    inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (0, '120 passed in 1.0s\n'), run_git_fn=git_runner, log_file=log_file, pm_playbook_file=playbook_file, pm_state_file=pm_state)
     return inst
 
 
@@ -514,7 +507,7 @@ def test_run_skips_shipping_surface_when_machine_regression_red(hf, monkeypatch,
 @pytest.mark.parametrize("flag", ["--shipping-test", "--no-shipping-test"])
 def test_removed_shipping_test_flags_error(hf, flag):
     """폐지된 `--shipping-test`/`--no-shipping-test` 는 argparse 가 즉시 거부한다(SystemExit)."""
-    parser = hf.build_parser()
+    parser = pm_engine.cli.handoff.build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["--session-num", "5", "--wave-summary", "x", flag])
 
@@ -525,12 +518,12 @@ def test_removed_shipping_symbols_absent(hf):
     assert not hasattr(hf, "_run_shipping_test")
     assert not hasattr(hf, "_shipping_test_timeout")
     assert not hasattr(hf, "_SHIPPING_TEST_TIMEOUT_DEFAULT")
-    assert not hasattr(hf.PmHandoff, "_fire_shipping_test")
-    assert not hasattr(hf.PmHandoff, "_shipping_test_step")
+    assert not hasattr(pm_engine.cli.handoff.PmHandoff, "_fire_shipping_test")
+    assert not hasattr(pm_engine.cli.handoff.PmHandoff, "_shipping_test_step")
     # 존치 — 분류기(가역 기반)·비차단 surface step.
-    assert hasattr(hf, "_shipping_paths_in_pending_push")
-    assert hasattr(hf, "SHIPPING_GLOBS")
-    assert hasattr(hf.PmHandoff, "_shipping_surface_step")
+    assert hasattr(pm_engine.infra.handoff_git, "_shipping_paths_in_pending_push")
+    assert hasattr(pm_engine.domain.handoff_text, "SHIPPING_GLOBS")
+    assert hasattr(pm_engine.cli.handoff.PmHandoff, "_shipping_surface_step")
 
 
 # ── sensitivity: 분류기 가드 무력화 시 테스트가 실패하는가 (non-vacuous) ────────
@@ -546,17 +539,17 @@ def test_sensitivity_uncommitted_detection_is_load_bearing(hf):
     """
     runner = _git_stub(uncommitted_paths=[".project_manager/tools/pm_handoff.py"])
     # 정상: 미커밋 출하 hit → 탐지.
-    hits, unknown = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     assert hits == [".project_manager/tools/pm_handoff.py"]
     assert unknown is False
 
     # 가드 무력화: 작업트리/untracked 를 안 보는 옛 동작(항상 빈 목록)으로 되돌린다.
-    orig = hf._uncommitted_and_untracked_paths
-    hf._uncommitted_and_untracked_paths = lambda worktree, runner: []  # type: ignore[assignment]
+    orig = pm_engine.infra.handoff_git._uncommitted_and_untracked_paths
+    pm_engine.infra.handoff_git._uncommitted_and_untracked_paths = lambda worktree, runner: []  # type: ignore[assignment]
     try:
-        hits2, unknown2 = hf._shipping_paths_in_pending_push("/wt", git_runner=runner)
+        hits2, unknown2 = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
     finally:
-        hf._uncommitted_and_untracked_paths = orig  # 모듈 전역 복구.
+        pm_engine.infra.handoff_git._uncommitted_and_untracked_paths = orig  # 모듈 전역 복구.
     # 무력화하면 커밋된-미push 만 보므로(여긴 비어있음) 미탐지 → 감지 테스트가 깨질 것.
     assert hits2 == []
     assert unknown2 is False
@@ -610,7 +603,7 @@ def _expand_manifest_shipping_paths(
 def test_manifest_gap_paths_now_shipping(hf):
     """현재 manifest gap 경로가 모두 `_path_is_shipping` True다(T-0154·T-0589)."""
     for path in _MANIFEST_GAP_PATHS:
-        assert hf._path_is_shipping(path), f"manifest 출하 경로가 SHIPPING_GLOBS 미커버: {path}"
+        assert pm_engine.domain.handoff_text._path_is_shipping(path), f"manifest 출하 경로가 SHIPPING_GLOBS 미커버: {path}"
 
 
 def test_engine_manifest_subset_of_shipping_globs(hf):
@@ -622,7 +615,7 @@ def test_engine_manifest_subset_of_shipping_globs(hf):
     """
     expanded = _expand_manifest_shipping_paths()
     assert expanded, "engine.manifest 전개 경로가 비어있다 (manifest 위치·파싱 확인)."
-    uncovered = sorted(p for p in expanded if not hf._path_is_shipping(p))
+    uncovered = sorted(p for p in expanded if not pm_engine.domain.handoff_text._path_is_shipping(p))
     assert uncovered == [], (
         f"engine.manifest 출하 경로 {len(uncovered)}개가 SHIPPING_GLOBS 미커버 — "
         f"SHIPPING_GLOBS 갱신 필요(manifest↔globs drift): {uncovered}"
@@ -631,7 +624,7 @@ def test_engine_manifest_subset_of_shipping_globs(hf):
 
 def test_retired_root_regression_workflow_is_not_shipping(hf):
     """T-0589 역방향 가드 — manifest 제거 후 stale SHIPPING_GLOBS 재유입 차단."""
-    assert not hf._path_is_shipping(".github/workflows/regression.yml")
+    assert not pm_engine.domain.handoff_text._path_is_shipping(".github/workflows/regression.yml")
 
 
 @requires_git_binary
@@ -671,15 +664,15 @@ def test_sensitivity_manifest_conformance_guard_is_load_bearing(hf):
     경로가 다시 미커버가 돼야 한다 → 정합 가드의 단언(uncovered == [])이 무너짐. 모듈 전역 복구.
     """
     removed_glob = ".project_manager/wiki/tickets/_template.md"
-    orig = hf.SHIPPING_GLOBS
+    orig = pm_engine.domain.handoff_text.SHIPPING_GLOBS
     assert removed_glob in orig, "전제 위반 — 제거 대상 정확 경로 글롭이 SHIPPING_GLOBS 에 없다."
     # 정확 경로 글롭 1개 제거 — 그 manifest 갭 경로(ticket 스캐폴드)가 다시 미커버.
-    hf.SHIPPING_GLOBS = tuple(g for g in orig if g != removed_glob)
+    pm_engine.domain.handoff_text.SHIPPING_GLOBS = tuple(g for g in orig if g != removed_glob)
     try:
         expanded = _expand_manifest_shipping_paths()
-        uncovered = [p for p in expanded if not hf._path_is_shipping(p)]
+        uncovered = [p for p in expanded if not pm_engine.domain.handoff_text._path_is_shipping(p)]
     finally:
-        hf.SHIPPING_GLOBS = orig  # 모듈 전역 복구.
+        pm_engine.domain.handoff_text.SHIPPING_GLOBS = orig  # 모듈 전역 복구.
     # 글롭 무력화하면 그 정확 경로가 미커버로 드러나야 정합 가드가 load-bearing.
     assert removed_glob in uncovered, (
         "글롭 제거 후에도 그 경로가 미커버로 안 드러나면 정합 가드가 vacuous — "

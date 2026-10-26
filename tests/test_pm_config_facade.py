@@ -16,6 +16,12 @@ DI seam·test_pm_update.py 의 monkeypatch 격리 패턴 동류. 실 git/board/w
   - release 배선 — release / --force=force_release.
 """
 from __future__ import annotations
+from pm_engine.domain import areas_rules
+from pm_engine.cli import config_repo
+from pm_engine.cli import config_slots
+from pm_engine.cli import config_tasks
+from pm_engine.infra import console
+from pm_engine.infra import lease_store
 from pm_engine.app import repo_protection
 from pm_engine.infra import git, pm_paths, areas_store
 from pm_engine.infra import worktree_paths
@@ -997,7 +1003,7 @@ def test_repo_add_registers_areas_and_clones(monkeypatch, pc, tmp_path):
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", git="git@h:me/svc.git", test="pytest -q",
                        owner="me"),
          clone_runner=gitr, repos_dir=repos,
@@ -1033,7 +1039,7 @@ def test_repo_add_passes_explicit_user_as_area_owner(monkeypatch, pc, tmp_path):
     args = argparse.Namespace(name="svc", git="git@h:me/svc.git", test="pytest -q",
                               owner="me", base=None, user="alice")
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(args,  clone_runner=gitr, repos_dir=repos)
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO), args,  clone_runner=gitr, repos_dir=repos)
     assert rc == 0
     call = board.append_calls[0]
     assert call["owner"] == "me"          # registrant(ADR-0014) — 별개
@@ -1046,7 +1052,7 @@ def test_repo_add_area_owner_falls_back_to_default_user(pc, tmp_path, monkeypatc
     `_default_user` 를 hermetic stub 으로 고정해 local.conf user=/git email 폴백 경로가
     area_owner 로 흐르는 배선을 결정적으로 친다(실 git config 누출 0).
     """
-    monkeypatch.setattr(pc, "_default_user", lambda: "resolved-user")
+    monkeypatch.setattr(lease_store, 'user_name', lambda _home: "resolved-user")
     board = bind_board(monkeypatch, FakeBoard(registered=()))
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
@@ -1054,7 +1060,7 @@ def test_repo_add_area_owner_falls_back_to_default_user(pc, tmp_path, monkeypatc
     args = argparse.Namespace(name="svc", git="git@h:me/svc.git", test="pytest -q",
                               owner="me", base=None)  # user 속성 부재 → getattr None → _default_user
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(args,  clone_runner=gitr, repos_dir=repos)
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO), args,  clone_runner=gitr, repos_dir=repos)
     assert rc == 0
     assert board.append_calls[0]["area_owner"] == "resolved-user"
 
@@ -1065,28 +1071,28 @@ def test_default_user_local_conf_wins_over_git(pc, tmp_path, monkeypatch):
     pm.mkdir(parents=True)
     (pm / "local.conf").write_text("identity.user=alice\nsession=slot\n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", tmp_path)
-    monkeypatch.setattr(pc, "_git_config_email", lambda: "git@x.com")
-    assert pc._default_user() == "alice"
+    monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "git@x.com")
+    assert lease_store.user_name(pm_paths.home_at(pc.REPO)) == "alice"
 
 
 def test_default_user_falls_back_to_git_email(pc, tmp_path, monkeypatch):
     """_default_user — local.conf user= 부재 → git config user.email 폴백 (T-0161)."""
     monkeypatch.setattr(pc, "REPO", tmp_path)   # local.conf 없음
-    monkeypatch.setattr(pc, "_git_config_email", lambda: "dev@example.com")
-    assert pc._default_user() == "dev@example.com"
+    monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "dev@example.com")
+    assert lease_store.user_name(pm_paths.home_at(pc.REPO)) == "dev@example.com"
 
 
 def test_default_user_none_when_neither(pc, tmp_path, monkeypatch):
     """_default_user — local.conf user= 도 git email 도 없으면 None (graceful·T-0161)."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
-    monkeypatch.setattr(pc, "_git_config_email", lambda: None)
-    assert pc._default_user() is None
+    monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: None)
+    assert lease_store.user_name(pm_paths.home_at(pc.REPO)) is None
 
 
 def test_git_config_email_fail_soft_when_git_absent(pc, monkeypatch):
     """_git_config_email — git 바이너리 부재 → None (fail-soft·크래시 0·T-0161)."""
-    monkeypatch.setattr(pc.shutil, "which", lambda _name: None)
-    assert pc._git_config_email() is None
+    monkeypatch.setattr(lease_store.shutil, "which", lambda _name: None)
+    assert lease_store._git_config_email(pm_paths.home_at(pc.REPO)) is None
 
 
 def test_repo_add_already_registered_bare_exists_is_noop(pc, tmp_path, monkeypatch):
@@ -1097,7 +1103,7 @@ def test_repo_add_already_registered_bare_exists_is_noop(pc, tmp_path, monkeypat
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)   # bare 가 이미 있음
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc"),
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1122,7 +1128,7 @@ def test_repo_add_registered_bare_exists_no_git_empty_areas_is_noop(pc, tmp_path
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)     # bare 이미 있음
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", git=None),   # ← 명시적 no `--git`
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1144,7 +1150,7 @@ def test_repo_add_already_registered_bare_missing_retries_clone(pc, tmp_path, mo
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"               # bare 는 없음(clone 미완)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", git="git@h:me/svc.git"),
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1176,7 +1182,7 @@ def test_repo_add_second_user_hydrates_from_areas_url_without_git(pc, tmp_path, 
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"                                # bare mirror 없음(2번째 사용자)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", git=None),              # `--git` 미제공
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1199,7 +1205,7 @@ def test_repo_add_unregistered_without_git_fails_loud_no_side_effects(monkeypatc
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", git=None),   # `--git` 미제공
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1222,7 +1228,7 @@ def test_repo_add_git_mismatch_prefers_areas_url_with_warning(pc, tmp_path, caps
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", git="git@h:other/svc.git"),  # 다른 URL 제공
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1239,7 +1245,7 @@ def test_repo_add_git_provided_new_repo_uses_cli_url(monkeypatch, pc, tmp_path):
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", git="git@h:me/svc.git"),   # CLI URL 제공
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1260,7 +1266,7 @@ def test_repo_add_clone_failure_returns_error(monkeypatch, pc, tmp_path, capsys)
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=128, out="fatal: repository not found")
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1276,7 +1282,7 @@ def test_repo_add_skips_clone_if_bare_exists(monkeypatch, pc, tmp_path):
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc"),
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1335,7 +1341,7 @@ def test_repo_add_base_default_resolves_bare_head(monkeypatch, pc, tmp_path):
     board = FakeBoard(registered=())
     gitr = _BaseAwareGit(head="main")
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base=None),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1356,7 +1362,7 @@ def test_repo_add_base_default_tag_collision_pure_branch(monkeypatch, pc, tmp_pa
     board = FakeBoard(registered=())
     gitr = _BaseAwareGit(head="v1.3.0")   # symbolic-ref HEAD → refs/heads/v1.3.0
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base=None),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1375,7 +1381,7 @@ def test_repo_add_base_explicit_validated_and_recorded(monkeypatch, pc, tmp_path
     board = FakeBoard(registered=())
     gitr = _BaseAwareGit(head="main", valid_branches=("develop",))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base="develop"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1391,7 +1397,7 @@ def test_repo_add_base_missing_rejected(monkeypatch, pc, tmp_path, capsys):
     board = FakeBoard(registered=())
     gitr = _BaseAwareGit(head="main", valid_branches=("develop",))  # nope 은 로컬 브랜치 아님
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base="nope"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1415,7 +1421,7 @@ def test_repo_add_base_non_local_branch_rejected(monkeypatch, pc, tmp_path, caps
     # main/develop 만 로컬 브랜치. 태그(v1.0)·SHA(deadbeef)·HEAD·원격(origin/main)은 거부돼야.
     gitr = _BaseAwareGit(head="main", valid_branches=("main", "develop"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base=bad_base),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1432,7 +1438,7 @@ def test_repo_add_base_local_branch_passes(monkeypatch, pc, tmp_path):
     board = FakeBoard(registered=())
     gitr = _BaseAwareGit(head="develop", valid_branches=("main", "develop"))
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base="main"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1453,7 +1459,7 @@ def test_repo_add_base_head_resolution_failure_falls_back_empty(monkeypatch, pc,
 
     gitr = _NoHeadGit()
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base=None),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1475,7 +1481,7 @@ def test_repo_add_already_registered_skips_base_resolution(pc, tmp_path, monkeyp
     repos = tmp_path / ".repos"
     (repos / "svc.git").mkdir(parents=True)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", base=None),
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1500,13 +1506,13 @@ def test_validate_repo_name_helper(pc):
     """`_validate_repo_name` 헬퍼 — 허용 패턴 `^[A-Za-z0-9][A-Za-z0-9_-]*$` (T-0078)."""
     # 정상 — 영숫자 시작, 이후 영숫자/`_`/`-`.
     for ok in ("billing", "web_api", "svc-1", "A", "9", "a1_b-2"):
-        assert pc._validate_repo_name(ok) is True, ok
+        assert areas_rules._validate_repo_name(ok) is True, ok
     # 위반 — 폴더탈출·경로분리자·공백·`.`·leading `-`·빈 문자열·trailing 개행.
     # trailing-newline(`"billing\n"`)은 `re.match` 의 `$` 가 통과시켜 bare 폴더명 개행·
     # areas.md 줄 corruption 을 부른다 — `fullmatch` 가 거부함을 고정한다(T-0078 재작업).
     for bad in ("../x", "a/b", "a b", "", "-x", ".", "..", "a.b", "a\tb", "a\nb", "_x",
                 "billing\n", "x\n"):
-        assert pc._validate_repo_name(bad) is False, bad
+        assert areas_rules._validate_repo_name(bad) is False, bad
 
 
 @pytest.mark.parametrize("bad_name", ["../x", "a/b", "a b", "", "-x"])
@@ -1519,7 +1525,7 @@ def test_repo_add_invalid_name_rejected_no_side_effects(monkeypatch, pc, tmp_pat
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=0)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name=bad_name),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1537,13 +1543,13 @@ def test_repo_add_unbound_session_owner_fail_loud_no_side_effects(pc, tmp_path, 
     required=True 와 동형). status/whoami surface 테스트가 못 잡던 *쓰기* 경로 회귀 핀.
     """
     _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf 없음 → identity.user 없음
-    monkeypatch.setattr(pc, "_git_config_email", lambda: None)
+    monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: None)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     board = bind_board(monkeypatch, FakeBoard(registered=()))
     gitr = FakeGitRecorder(rc=0)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", owner=None),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1561,7 +1567,7 @@ def test_repo_add_unbound_session_explicit_owner_passes(pc, tmp_path, monkeypatc
     board = bind_board(monkeypatch, FakeBoard(registered=()))
     gitr = FakeGitRecorder(rc=0)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc", owner="alice"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1575,7 +1581,7 @@ def test_repo_add_valid_name_passes_guard(monkeypatch, pc, tmp_path, good_name):
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=0)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name=good_name, git="git@h:me/x.git"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1595,7 +1601,7 @@ def test_worktree_add_calls_create_slot(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
     )
@@ -1614,7 +1620,7 @@ def test_worktree_add_readonly_flag_forwards_readonly(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, readonly=True, user_ack="svc"),
 
     )
@@ -1631,7 +1637,7 @@ def test_worktree_add_default_not_readonly(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
     )
@@ -1645,7 +1651,7 @@ def test_worktree_add_test_flag_forwards_test_cmd(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test="ctest -R hil2", user_ack="svc"),
 
     )
@@ -1665,7 +1671,7 @@ def test_worktree_add_success_output_shows_task_entry_next_step(pc, monkeypatch,
     wp = bind_pool(monkeypatch, FakeWorktreePool())   # create_slot → FakeLease(slot="work/svc_1", repo="svc")
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
     )
@@ -1709,7 +1715,7 @@ def test_worktree_add_passes_areas_base_to_create_slot(pc, monkeypatch, capsys):
     board = bind_board(monkeypatch, FakeBoard(repo_bases={"svc": "develop"}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc")
     )
     assert rc == 0
@@ -1725,7 +1731,7 @@ def test_worktree_add_without_registered_base_refuses_before_create_slot(pc, mon
     board = bind_board(monkeypatch, FakeBoard(repo_bases={}))   # 그 repo base 없음
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc")
     )
     assert rc == 1
@@ -1742,7 +1748,7 @@ def test_worktree_add_missing_test_attr_defaults_none(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", user_ack="svc"))
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), argparse.Namespace(repo="svc", user_ack="svc"))
     assert rc == 0
     assert ("create_slot", "svc", None, "main") in wp.calls
 
@@ -1764,7 +1770,7 @@ def test_worktree_add_installs_protected_hook(pc, monkeypatch, capsys):
     board = bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={"svc": ["main", "develop"]}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc")
     )
     assert rc == 0
@@ -1784,15 +1790,15 @@ def test_worktree_add_installs_the_ticket_copy_exclude(pc, monkeypatch, tmp_path
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    assert pc.cmd_worktree_add(args) == 0
+    assert config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), args) == 0
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    assert pc.cmd_worktree_add(args) == 0
+    assert config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), args) == 0
 
     exclude = tmp_path / ".repos" / "svc.git" / "info" / "exclude"
     lines = exclude.read_text(encoding="utf-8").splitlines()
-    assert [line for line in lines if line.strip() == pc.TICKET_COPY_POOL_IGNORE_RULE] == [
-        pc.TICKET_COPY_POOL_IGNORE_RULE]
+    assert [line for line in lines if line.strip() == config_repo.TICKET_COPY_POOL_IGNORE_RULE] == [
+        config_repo.TICKET_COPY_POOL_IGNORE_RULE]
 
 
 def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, monkeypatch, tmp_path, capsys):
@@ -1808,7 +1814,7 @@ def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, monkeypatch
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
     )
@@ -1839,8 +1845,7 @@ def test_t0956_worktree_add_hydrates_missing_bare(pc, tmp_path, monkeypatch, cap
     원본 조회(ls-remote)가 rc 2(커밋 0개)면 rc 1 이고 `create_slot` 을 부르지 않는다.
     """
     url = "/srv/adopter"
-    monkeypatch.setattr(pc, "REPOS_DIR", tmp_path / ".repos")
-    monkeypatch.setattr(pc, "_default_user", lambda: "me")
+    monkeypatch.setattr(lease_store, 'user_name', lambda _home: "me")
     args = argparse.Namespace(repo="svc", test=None, user_ack="svc")
 
     def scenario(ls_remote_rc, *, monkeypatch):
@@ -1858,7 +1863,7 @@ def test_t0956_worktree_add_hydrates_missing_bare(pc, tmp_path, monkeypatch, cap
         runner = _LsRemoteRecorder(ls_remote_rc=ls_remote_rc, events=events)
         bind_pool(monkeypatch, wp)
         bind_board(monkeypatch, board)
-        rc = pc.cmd_worktree_add(args,   clone_runner=runner)
+        rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), args,   clone_runner=runner)
         return rc, runner, events, board
 
     rc, runner, events, board = scenario(0, monkeypatch=monkeypatch)
@@ -1881,7 +1886,7 @@ def test_worktree_add_install_hook_uses_default_protected(pc, monkeypatch, capsy
     board = bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={}))   # 미지정 → FakeBoard._repo_protected default
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc")
     )
     assert rc == 0
@@ -1896,7 +1901,7 @@ def test_repo_add_installs_protected_hook(pc, monkeypatch, tmp_path):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
 
@@ -1918,7 +1923,7 @@ def test_repo_add_already_registered_reinstalls_hook(pc, tmp_path, monkeypatch):
     (repos / "svc.git").mkdir(parents=True)   # bare 이미 존재(no-op 등록 경로)
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc"),
          clone_runner=gitr, repos_dir=repos,
     )
@@ -1935,7 +1940,7 @@ def test_repo_add_registers_protected_column_empty(pc, monkeypatch, tmp_path):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         _repo_add_args(pc, name="svc"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -1969,7 +1974,7 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
         (repos / "svc.git").mkdir(parents=True)
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, FakeBoard(registered=("svc",)))
-        rc = pc.cmd_repo_add(
+        rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
             _repo_add_args(pc, name="svc"),
              clone_runner=FakeGitRecorder(rc=0),
             repos_dir=repos,
@@ -1977,7 +1982,7 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
     else:
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-        rc = pc.cmd_worktree_add(
+        rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
             argparse.Namespace(repo="svc", test=None, readonly=False, task=None, user_ack="svc"),
 
         )
@@ -2011,7 +2016,7 @@ def test_protected_hook_resolution_boundaries_rethrow_marked_engine_rev_skew(pc,
 
     with pytest.raises(RuntimeError):
         bind_board(monkeypatch, _Board())
-        pc._resolve_repo_base("svc")
+        areas_store._repo_base(pm_paths.home_at(pc.REPO), "svc")
 
 
 
@@ -2378,7 +2383,7 @@ def test_worktree_add_create_failure_errors(pc, monkeypatch, capsys):
     wp.create_slot = boom
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None, user_ack="svc"))
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), argparse.Namespace(repo="svc", test=None, user_ack="svc"))
     assert rc == 1
     assert "슬롯 생성 실패" in capsys.readouterr().err
 
@@ -2402,7 +2407,7 @@ def test_worktree_add_bare_missing_caught_as_runtime_error(pc, monkeypatch, caps
     wp.create_slot = bare_missing
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None, user_ack="svc"))
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), argparse.Namespace(repo="svc", test=None, user_ack="svc"))
     assert rc == 1
     assert "슬롯 생성 실패" in capsys.readouterr().err
 
@@ -2807,7 +2812,7 @@ def test_worktree_prune_stale_wires_to_engine(pc, monkeypatch, capsys):
 
     wp = bind_pool(monkeypatch, _PruneWP())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_worktree_prune_stale(argparse.Namespace())
+    rc = config_slots.cmd_worktree_prune_stale(pm_paths.home_at(pc.REPO), argparse.Namespace())
     assert rc == 0
     assert wp.did("prune_stale_leases")
     out = capsys.readouterr().out
@@ -2820,7 +2825,7 @@ def test_worktree_prune_stale_empty_is_harmless(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     wp.prune_stale_leases = lambda: []
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_worktree_prune_stale(argparse.Namespace())
+    rc = config_slots.cmd_worktree_prune_stale(pm_paths.home_at(pc.REPO), argparse.Namespace())
     assert rc == 0
     assert "없음" in capsys.readouterr().out
 
@@ -2834,7 +2839,7 @@ def test_release_calls_release(pc, monkeypatch, capsys):
     """release <slot> → worktree_pool.release(slot)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", force=False)
     )
     assert rc == 0
@@ -2846,7 +2851,7 @@ def test_release_force_calls_force_release(pc, monkeypatch, capsys):
     """release <slot> --force → worktree_pool.force_release(slot)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(force_returns="present"))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", force=True)
     )
     assert rc == 0
@@ -2858,7 +2863,7 @@ def test_release_force_absent_slot_is_harmless(pc, monkeypatch, capsys):
     """--force 인데 슬롯이 장부에 없으면(None) 무해 종료 rc 0."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(force_returns="absent"))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/gone_9", force=True)
     )
     assert rc == 0
@@ -2869,7 +2874,7 @@ def test_release_dirty_refused(pc, monkeypatch, capsys):
     """release(비-force) 가 커밋 안 한 변경이면 ReleaseRefused → rc 1 + 안내(stash 없음·--force 는 점유만)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(release_raises=FakeWorktreePool.ReleaseRefused))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", force=False)
     )
     assert rc == 1
@@ -2882,7 +2887,7 @@ def test_release_force_uncommitted_changes_refused(pc, monkeypatch, capsys):
     """release --force 도 커밋 안 한 변경이면 ReleaseRefused → rc 1 + 안내(force 는 점유만 넘는다·stash 없음)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(force_release_raises=FakeWorktreePool.ReleaseRefused))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", force=True)
     )
     assert rc == 1
@@ -2896,7 +2901,7 @@ def test_release_readonly_slot_refused(pc, monkeypatch, capsys):
     """release(비-force) 가 readonly 공유 슬롯이면 ReadonlySlotNotLeasable → rc 1 + 안내(⑬·T-0358)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(release_raises=FakeWorktreePool.ReadonlySlotNotLeasable))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", force=False)
     )
     assert rc == 1
@@ -2907,7 +2912,7 @@ def test_release_unknown_slot_errors(pc, monkeypatch, capsys):
     """release(비-force) 가 KeyError(미존재 리스)면 rc 1 + 명시 에러."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(release_raises=KeyError))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/none_0", force=False)
     )
     assert rc == 1
@@ -2953,7 +2958,6 @@ def test_main_routes_repo_add_to_engine(pc, monkeypatch, tmp_path):
         return board if name == "board" else None
     monkeypatch.setattr(pc, "_load_module", fake_load)
     monkeypatch.setattr(git, "_real_clone_runner", lambda: gitr)
-    monkeypatch.setattr(pc, "REPOS_DIR", tmp_path / ".repos")
     # --owner me — 라우팅 검증 테스트(owner 해소 대상 아님)라 미바인딩 fail-loud(ADR-0040)를
     # 피하려 명시한다. argparse 경로엔 _repo_add_args 헬퍼 기본값이 안 걸린다.
     rc = pc.main(["repo", "add", "svc", "--git", "git@h:me/svc.git", "--test", "pytest -q",
@@ -3075,7 +3079,7 @@ def test_default_session_prefers_pm_env(pc, monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     conf.write_text("session=from-conf\n", encoding="utf-8")
     _write_ledger_pc(tmp_path, {"session": "leased-sess"})
-    assert pc._default_session() == "from-pm-env"
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "from-pm-env"
 
 
 def test_default_session_claude_env_is_alias(pc, monkeypatch, tmp_path):
@@ -3084,7 +3088,7 @@ def test_default_session_claude_env_is_alias(pc, monkeypatch, tmp_path):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     conf.write_text("session=from-conf\n", encoding="utf-8")
-    assert pc._default_session() == "from-alias"
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "from-alias"
 
 
 def test_default_session_pm_wins_over_claude(pc, monkeypatch, tmp_path):
@@ -3092,7 +3096,7 @@ def test_default_session_pm_wins_over_claude(pc, monkeypatch, tmp_path):
     _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.setenv("PM_SESSION_NAME", "new")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "old")
-    assert pc._default_session() == "new"
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "new"
 
 
 def test_default_session_single_lease_derives_session(pc, monkeypatch, tmp_path):
@@ -3101,7 +3105,7 @@ def test_default_session_single_lease_derives_session(pc, monkeypatch, tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _write_ledger_pc(tmp_path, {"session": "project_manager_1"})
-    assert pc._default_session() == "project_manager_1"
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "project_manager_1"
 
 
 def test_default_session_single_lease_wins_over_local_conf(pc, monkeypatch, tmp_path):
@@ -3111,7 +3115,7 @@ def test_default_session_single_lease_wins_over_local_conf(pc, monkeypatch, tmp_
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     conf.write_text("session=stale-conf\n", encoding="utf-8")
     _write_ledger_pc(tmp_path, {"session": "derived-1"})
-    assert pc._default_session() == "derived-1"
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "derived-1"
 
 
 def test_default_session_two_leases_returns_none(pc, monkeypatch, tmp_path):
@@ -3121,7 +3125,7 @@ def test_default_session_two_leases_returns_none(pc, monkeypatch, tmp_path):
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     conf.write_text("session=some-conf\n", encoding="utf-8")
     _write_ledger_pc(tmp_path, {"session": "a_1"}, {"session": "b_1"})
-    assert pc._default_session() is None
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
 
 
 def test_default_session_ignores_local_conf_session(pc, monkeypatch, tmp_path):
@@ -3130,7 +3134,7 @@ def test_default_session_ignores_local_conf_session(pc, monkeypatch, tmp_path):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     conf.write_text("session=foo\n", encoding="utf-8")
-    assert pc._default_session() is None
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
 
 
 def test_default_session_solo_unbound_returns_none(pc, monkeypatch, tmp_path):
@@ -3142,7 +3146,7 @@ def test_default_session_solo_unbound_returns_none(pc, monkeypatch, tmp_path):
     _bind_tmp_repo(pc, monkeypatch, tmp_path)  # local.conf 없음·장부 없음
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    assert pc._default_session() is None
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
 
 
 def test_no_local_conf_session_parser_remains(pc):
@@ -3152,7 +3156,7 @@ def test_no_local_conf_session_parser_remains(pc):
     이름이 살아 있으면 다음 호출자가 다시 그 층을 살릴 수 있으므로 부재를 못박는다.
     """
     assert not hasattr(pc, "_local_conf_session")
-    assert hasattr(pc, "_local_conf_user")      # 같은 관용구의 살아 있는 키는 유지
+    assert hasattr(lease_store, "user_name")  # 공용 사용자 해소 공급자
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3174,7 +3178,7 @@ def test_repo_add_without_test_registers_empty_test_cmd(monkeypatch, pc, tmp_pat
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=0)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="svc", git="git@h:me/svc.git", test=None, owner="me"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -3188,7 +3192,7 @@ def test_repo_add_with_test_still_forwards_test_cmd(monkeypatch, pc, tmp_path):
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=0)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_repo_add(
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="svc", git="git@h:me/svc.git", test="pytest -q", owner="me"),
          clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
@@ -3203,7 +3207,6 @@ def test_main_repo_add_without_test_routes_and_registers(pc, monkeypatch, tmp_pa
     monkeypatch.setattr(pc, "_load_module",
                         lambda name, filename: board if name == "board" else None)
     monkeypatch.setattr(git, "_real_clone_runner", lambda: gitr)
-    monkeypatch.setattr(pc, "REPOS_DIR", tmp_path / ".repos")
     # --owner me — 라우팅 검증(owner 해소 대상 아님)·미바인딩 fail-loud(ADR-0040) 회피.
     rc = pc.main(["repo", "add", "svc", "--git", "git@h:me/svc.git", "--owner", "me"])
     assert rc == 0
@@ -3228,7 +3231,7 @@ def test_worktree_add_test_flag_skips_prompt(pc, monkeypatch):
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test="ctest -R hil2", user_ack="svc"),
 
         input_fn=fake_input, is_tty=lambda: True,
@@ -3244,7 +3247,7 @@ def test_worktree_add_no_test_tty_prompts_for_build_cmd(pc, monkeypatch):
     monkeypatch.setattr(repo_protection, "_resolve_repo_test_cmd", lambda _home, repo, **kw: "pytest -q")
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
         input_fn=lambda prompt: "make hil3", is_tty=lambda: True,
@@ -3264,7 +3267,7 @@ def test_worktree_add_prompt_empty_input_binds_none(pc, monkeypatch):
     monkeypatch.setattr(repo_protection, "_resolve_repo_test_cmd", lambda _home, repo, **kw: "pytest -q")
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
         input_fn=lambda prompt: "", is_tty=lambda: True,
@@ -3286,7 +3289,7 @@ def test_worktree_add_no_test_non_tty_skips_prompt(pc, monkeypatch):
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
         input_fn=fake_input, is_tty=lambda: False,
@@ -3335,7 +3338,7 @@ def test_worktree_add_prompt_displays_resolved_default(pc, monkeypatch):
     prompts = []
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
 
         input_fn=lambda prompt: prompts.append(prompt) or "",   # 빈입력
@@ -3355,7 +3358,7 @@ def test_worktree_add_empty_input_does_not_override_areas(pc, monkeypatch):
     board = _FakeBoardAreasRow(bases=_SVC_BASE)
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
           input_fn=lambda prompt: "", is_tty=lambda: True,
     )
@@ -3374,7 +3377,7 @@ def test_worktree_add_prompt_eof_falls_back_none(pc, monkeypatch):
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
           input_fn=boom, is_tty=lambda: True,
     )
@@ -3392,7 +3395,7 @@ def test_worktree_add_prompt_keyboardinterrupt_falls_back_none(pc, monkeypatch):
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
           input_fn=boom, is_tty=lambda: True,
     )
@@ -3409,7 +3412,7 @@ def test_set_test_cmd_calls_engine(pc, monkeypatch, capsys):
     """cmd_set_test_cmd(slot, cmd) → worktree_pool.set_test_cmd(slot, cmd) 위임 + surface."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_set_test_cmd("work/svc_1", "ctest -R hil")
+    rc = config_slots.cmd_set_test_cmd(pm_paths.home_at(pc.REPO), "work/svc_1", "ctest -R hil")
     assert rc == 0
     assert ("set_test_cmd", "work/svc_1", "ctest -R hil") in wp.calls
     out = capsys.readouterr().out
@@ -3420,7 +3423,7 @@ def test_set_test_cmd_empty_normalizes_to_none(pc, monkeypatch, capsys):
     """빈/공백 cmd → None 으로 정규화(바인딩 해제) 후 set_test_cmd(None) 위임."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_set_test_cmd("work/svc_1", "   ")
+    rc = config_slots.cmd_set_test_cmd(pm_paths.home_at(pc.REPO), "work/svc_1", "   ")
     assert rc == 0
     assert ("set_test_cmd", "work/svc_1", None) in wp.calls
     assert "해제" in capsys.readouterr().out
@@ -3430,7 +3433,7 @@ def test_set_test_cmd_missing_slot_errors(pc, monkeypatch, capsys):
     """set_test_cmd 가 KeyError(슬롯 부재)면 rc 1 + 명시 안내(침묵 무력화 금지)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(set_test_raises=KeyError))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_set_test_cmd("work/gone_9", "cmd")
+    rc = config_slots.cmd_set_test_cmd(pm_paths.home_at(pc.REPO), "work/gone_9", "cmd")
     assert rc == 1
     assert "리스가 없다" in capsys.readouterr().err
 
@@ -3450,7 +3453,7 @@ def test_main_no_args_tty_enters_console(pc, monkeypatch):
         called["console"] = True
         return 0
 
-    monkeypatch.setattr(pc, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(console, '_stdin_is_tty', lambda: True)
     monkeypatch.setattr(pc, "run_console", fake_console)
     rc = pc.main([])
     assert rc == 0
@@ -3460,7 +3463,7 @@ def test_main_no_args_tty_enters_console(pc, monkeypatch):
 def test_main_no_args_non_tty_shows_help(pc, monkeypatch, capsys):
     """무인자 + 비-tty(파이프/CI) → 현행 help(rc 1) — 콘솔로 안 멈춘다(기존 계약 보존)."""
     console_called = {}
-    monkeypatch.setattr(pc, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(console, '_stdin_is_tty', lambda: False)
     monkeypatch.setattr(pc, "run_console",
                         lambda: console_called.setdefault("c", True) or 0)
     rc = pc.main([])
@@ -3474,7 +3477,7 @@ def test_main_no_args_non_tty_shows_help(pc, monkeypatch, capsys):
 def test_main_subcommand_with_tty_does_not_enter_console(pc, monkeypatch):
     """서브커맨드를 주면 tty 라도 콘솔 미진입 — 커맨드형 경로 그대로(동작 0 변경)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
-    monkeypatch.setattr(pc, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(console, '_stdin_is_tty', lambda: True)
     monkeypatch.setattr(pc, "run_console",
                         lambda: (_ for _ in ()).throw(AssertionError("콘솔 진입하면 안 됨")))
     monkeypatch.setattr(pc, "_load_module",
@@ -3493,7 +3496,7 @@ def test_alloc_success_leases_under_task_session(pc, monkeypatch, capsys):
     """alloc <repo> --task <이름>(기바인딩) → worktree_pool.alloc(repo, owner_task=task) 로 대여·rc0."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(alloc_returns=FakeLease(slot="work/svc_1", repo="svc", state="leased")))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="job")
     )
     assert rc == 0
@@ -3508,7 +3511,7 @@ def test_alloc_validates_task_name(pc, monkeypatch, capsys):
     """불법/예약 task 명 → 엔진 validator InvalidTaskName → rc1(대여 시도 안 함·must-fix ②)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(validate_raises=True))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="../evil")
     )
     assert rc == 1
@@ -3520,7 +3523,7 @@ def test_alloc_forwards_registered_repos_for_reserved_check(pc, monkeypatch):
     wp = bind_pool(monkeypatch, FakeWorktreePool(alloc_returns=FakeLease(slot="work/svc_1", repo="svc", state="leased")))
     _set_registered(monkeypatch, "svc", "acc")
     bind_pool(monkeypatch, wp)
-    pc.cmd_alloc(argparse.Namespace(repo="svc", task="job"))
+    config_slots.cmd_alloc(pm_paths.home_at(pc.REPO), argparse.Namespace(repo="svc", task="job"))
     val = [c for c in wp.calls if c[0] == "_validate_task_name"]
     assert val and set(val[0][2]) == {"svc", "acc"}    # registered_repos 전달
 
@@ -3529,7 +3532,7 @@ def test_alloc_requires_prebound_task(pc, monkeypatch, capsys):
     """미바인딩 task → rc1 + **두 생성 진입점** 안내(alloc 은 붙이기만·T-0909)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_record=None))   # find_task → None(미바인딩)
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="job")
     )
     assert rc == 1
@@ -3545,7 +3548,7 @@ def test_alloc_pool_exhausted_requests_user_creation(pc, monkeypatch, capsys):
     """idle 슬롯 없음(NeedsCreate) → 자동 생성 안 함·rc1 + `worktree add` 승인 요청(⑤)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(alloc_raises=FakeWorktreePool.NeedsCreate))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="job")
     )
     assert rc == 1
@@ -3559,7 +3562,7 @@ def test_alloc_bare_missing_errors(pc, monkeypatch, capsys):
     """bare 부재(BareRepoMissing) → rc1(안내 surface)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(alloc_raises=FakeWorktreePool.BareRepoMissing))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="job")
     )
     assert rc == 1
@@ -3587,7 +3590,7 @@ def test_alloc_forwards_owner_task_for_always_new_lease(pc, monkeypatch, capsys)
     wp = bind_pool(monkeypatch, FakeWorktreePool(
         alloc_returns=FakeLease(slot="work/svc_2", repo="svc", session="job", state="leased")))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="job")
     )
     assert rc == 0
@@ -3603,7 +3606,7 @@ def test_alloc_reenumerates_held_slots(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, alloc_returns=leases[1],
                           live_branches={"work/svc_1": "svc_1", "work/svc_2": "svc_2"}))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="job")
     )
     assert rc == 0
@@ -3618,7 +3621,7 @@ def test_alloc_pool_exhausted_suggests_add_task(pc, monkeypatch, capsys):
     """풀 소진 거부 메시지가 `worktree add <repo> --task <이름>`(생성+대여 한 흐름)를 제시(ⓓB)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(alloc_raises=FakeWorktreePool.NeedsCreate))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_alloc(
+    rc = config_slots.cmd_alloc(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", task="job")
     )
     assert rc == 1
@@ -3633,7 +3636,7 @@ def test_worktree_add_task_creates_and_leases_and_reenumerates(pc, monkeypatch, 
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, live_branches={"work/svc_1": "svc_1"}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, readonly=False, task="job", user_ack="svc")
     )
     assert rc == 0
@@ -3648,7 +3651,7 @@ def test_worktree_add_task_and_readonly_mutually_exclusive(pc, monkeypatch, caps
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, readonly=True, task="job", user_ack="svc")
     )
     assert rc == 1
@@ -3661,7 +3664,7 @@ def test_worktree_add_task_validates_name(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(validate_raises=True))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, readonly=False, task="../evil", user_ack="svc")
     )
     assert rc == 1
@@ -3674,7 +3677,7 @@ def test_worktree_add_task_requires_prebound(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_record=None))   # find_task → None(미바인딩)
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, readonly=False, task="job", user_ack="svc")
     )
     assert rc == 1
@@ -3695,7 +3698,7 @@ def test_worktree_add_task_reserved_name_rejected_via_resolved_board(pc, capsys,
     monkeypatch.setattr(pc, "_load_module",
                         lambda name, filename: board if name == "board" else None)
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, readonly=False, task="svc_1", user_ack="svc")   # board 미주입 — 내부 해소가 예약 검증을 활성화해야 거부된다
     )
     assert rc == 1
@@ -3712,7 +3715,7 @@ def test_worktree_add_task_forwards_registered_repos_when_injected(pc, monkeypat
     board = bind_board(monkeypatch, FakeBoard(registered=("svc", "acc"), repo_bases=_SVC_BASE))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    pc.cmd_worktree_add(
+    config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, readonly=False, task="job", user_ack="svc")
     )
     val = [c for c in wp.calls if c[0] == "_validate_task_name"]
@@ -3724,7 +3727,7 @@ def test_worktree_add_without_task_no_reenumerate(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-    rc = pc.cmd_worktree_add(
+    rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
         argparse.Namespace(repo="svc", test=None, user_ack="svc")
     )
     assert rc == 0
@@ -3737,7 +3740,7 @@ def test_release_task_reenumerates_remaining(pc, monkeypatch, capsys):
     leases = [FakeLease(slot="work/svc_2", repo="svc", session="job", state="leased")]
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, live_branches={"work/svc_2": "svc_2"}))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", task="job", force=False)
     )
     assert rc == 0
@@ -3750,7 +3753,7 @@ def test_release_no_task_skips_reenumerate(pc, monkeypatch, capsys):
     """--task 없는 slot-only 반납(백스톱)은 대상 task 가 없어 재열거하지 않는다."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", force=False)
     )
     assert rc == 0
@@ -3765,7 +3768,7 @@ def test_task_end_reenumerates_empty_after_release(pc, monkeypatch, capsys):
     board = bind_board(monkeypatch, FakeBoard(task_scan={"claimed": [], "prefix_open": []}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_end(
+    rc = config_tasks.cmd_task_end(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job")
     )
     assert rc == 0
@@ -3783,7 +3786,7 @@ def test_release_task_forwards_owner_task(pc, monkeypatch, capsys):
     """release <slot> --task <이름> → worktree_pool.release(slot, owner_task=이름)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", task="job", force=False)
     )
     assert rc == 0
@@ -3795,7 +3798,7 @@ def test_release_task_not_owner_refused(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(
         release_raises=lambda slot: FakeWorktreePool.NotTaskOwner(slot, "job", "other")))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", task="job", force=False)
     )
     assert rc == 1
@@ -3807,7 +3810,7 @@ def test_release_force_ignores_task(pc, monkeypatch, capsys):
     """release --force 는 force_release(백스톱) — --task 소유검사 우회."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(force_returns="present"))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_release(
+    rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
         argparse.Namespace(slot="work/svc_1", task="job", force=True)
     )
     assert rc == 0
@@ -3832,7 +3835,7 @@ def test_task_end_claimed_gate_refuses(pc, monkeypatch, capsys):
                                  "prefix_open": []}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_end(
+    rc = config_tasks.cmd_task_end(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job")
     )
     assert rc == 1
@@ -3842,13 +3845,62 @@ def test_task_end_claimed_gate_refuses(pc, monkeypatch, capsys):
     assert not wp.did("end_task")
 
 
+@pytest.mark.parametrize("conf_failure", ["invalid_utf8", "os_error"])
+def test_task_end_conf_read_failure_uses_git_identity(tmp_path, monkeypatch, capsys, conf_failure):
+    """설정 판독 실패에도 git 사용자로 claimed를 조회하고 종료를 거부한다."""
+    import _git_fixture
+    from pm_engine.app import task_lifecycle, ticket_access
+    from pm_engine.infra import fs, pool_store
+
+    root = _git_fixture.init_git_repo(tmp_path / "repo")
+    _git_fixture.git(root, "config", "user.email", "fallback@example.com")
+    home = pm_paths.home_at(root, pm_home=tmp_path / "data")
+    home.local_conf.parent.mkdir(parents=True)
+    if conf_failure == "invalid_utf8":
+        home.local_conf.write_bytes(b"identity.user=\xff\n")
+    else:
+        home.local_conf.write_text("identity.user=from-conf\n", encoding="utf-8")
+        read_text = fs.read_text_shared
+
+        def read_with_conf_error(path, *args, **kwargs):
+            if Path(path) == home.local_conf:
+                raise OSError("injected local.conf read failure")
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(fs, "read_text_shared", read_with_conf_error)
+
+    scan_calls = []
+    end_calls = []
+
+    def scan(actual, user, name, prefix):
+        scan_calls.append((actual, user, name, prefix))
+        return {"claimed": [{"id": "T-0009", "title": "wip", "status": "claimed"}],
+                "prefix_open": []}
+
+    def end_task(actual, name):
+        end_calls.append((actual, name))
+        pytest.fail("claimed 티켓이 남은 task의 종료 함수 호출")
+
+    monkeypatch.setattr(pool_store, "find_task", lambda actual, name: SimpleNamespace(prefix="demo"))
+    monkeypatch.setattr(ticket_access, "scan_task_tickets", scan)
+    monkeypatch.setattr(task_lifecycle, "end_task", end_task)
+
+    rc = config_tasks.cmd_task_end(home, argparse.Namespace(name="job"))
+
+    assert rc == 1
+    assert scan_calls == [(home, "fallback@example.com", "job", "demo")]
+    assert end_calls == []
+    err = capsys.readouterr().err
+    assert "T-0009" in err and "종료 거부" in err
+
+
 def test_task_end_dirty_gate_refuses(pc, monkeypatch, capsys):
     """claimed 없음·보유 슬롯 dirty → end_task refused → rc1 + dirty 목록."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(end_task_result=_end_result(dirty=["work/svc_1"])))
     board = bind_board(monkeypatch, FakeBoard(task_scan={"claimed": [], "prefix_open": []}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_end(
+    rc = config_tasks.cmd_task_end(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job")
     )
     assert rc == 1
@@ -3864,7 +3916,7 @@ def test_task_end_clean_success_releases_and_archives(pc, monkeypatch, capsys, t
     board = bind_board(monkeypatch, FakeBoard(task_scan={"claimed": [], "prefix_open": []}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_end(
+    rc = config_tasks.cmd_task_end(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job")
     )
     assert rc == 0
@@ -3881,7 +3933,7 @@ def test_task_end_prefix_open_info_only(pc, monkeypatch, capsys):
                                  "prefix_open": [{"id": "T-PAY-009", "title": "backlog", "status": "open"}]}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_end(
+    rc = config_tasks.cmd_task_end(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job")
     )
     assert rc == 0
@@ -3897,7 +3949,7 @@ def test_task_end_validates_task_name(pc, monkeypatch, capsys):
     board = bind_board(monkeypatch, FakeBoard(task_scan={"claimed": [], "prefix_open": []}))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_end(
+    rc = config_tasks.cmd_task_end(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="../evil")
     )
     assert rc == 1
@@ -3922,7 +3974,7 @@ def test_task_end_close_record_gate_is_rc1(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(end_raises=refusal))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(task_scan={"claimed": [], "prefix_open": []}))
-    rc = pc.cmd_task_end(
+    rc = config_tasks.cmd_task_end(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job"),
 
     )
@@ -3934,14 +3986,14 @@ def test_task_end_close_record_gate_is_rc1(pc, monkeypatch, capsys):
 def test_task_reopen_forwards_archive_and_prints_bootstrap_prescription(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_task_reopen(
+    rc = config_tasks.cmd_task_reopen(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", archive="job-20260827"),
     )
     assert rc == 0
     assert ("reopen_task", "job", "job-20260827") in wp.calls
     out = capsys.readouterr().out
     assert "prefix=None" in out and "닫힘" in out
-    assert f"{pc._runtime_skill_entry('pm-bootstrap')} --task job" in out
+    assert f"{lease_store._runtime_skill_entry('pm-bootstrap')} --task job" in out
 
 
 def test_task_reopen_refusal_lists_candidates(pc, monkeypatch, capsys):
@@ -3950,7 +4002,7 @@ def test_task_reopen_refusal_lists_candidates(pc, monkeypatch, capsys):
         "job", "복수 후보", archives=archives,
     )))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_task_reopen(
+    rc = config_tasks.cmd_task_reopen(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", archive=None),
     )
     assert rc == 1
@@ -3976,7 +4028,7 @@ def test_task_prefix_sets_prefix(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard())
-    rc = pc.cmd_task_prefix(
+    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", value="pay")
     )
     assert rc == 0
@@ -3991,7 +4043,7 @@ def test_task_prefix_none_clears_and_skips_format_validation(pc, monkeypatch, ca
     board = bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_prefix(
+    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", value="none")
     )
     assert rc == 0
@@ -4006,7 +4058,7 @@ def test_task_prefix_none_case_insensitive_clears(pc, monkeypatch):
         wp = bind_pool(monkeypatch, FakeWorktreePool())
         bind_pool(monkeypatch, wp)
         bind_board(monkeypatch, FakeBoard())
-        rc = pc.cmd_task_prefix(
+        rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
             argparse.Namespace(name="job", value=literal)
         )
         assert rc == 0
@@ -4018,7 +4070,7 @@ def test_task_prefix_validates_task_name_before_write(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool(validate_raises=True))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard())
-    rc = pc.cmd_task_prefix(
+    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="../evil", value="pay")
     )
     assert rc == 1
@@ -4032,7 +4084,7 @@ def test_task_prefix_forwards_registered_repos_for_reserved_check(pc, monkeypatc
     board = bind_board(monkeypatch, FakeBoard(registered=("svc", "acc")))
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    pc.cmd_task_prefix(
+    config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", value="pay")
     )
     val = [c for c in wp.calls if c[0] == "_validate_task_name"]
@@ -4048,15 +4100,15 @@ def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, mon
     board = bind_board(monkeypatch, FakeBoard(registered=("ignored",)))
     seen: list = []
 
-    def _spy():
+    def _spy(_home):
         seen.append("_registered_repos")
         return ["svc"]
 
-    monkeypatch.setattr(pc, "_registered_repos", _spy)
+    monkeypatch.setattr(config_slots, '_registered_repos', _spy)
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    rc = pc.cmd_task_prefix(
+    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", value="pay")
     )
 
@@ -4080,7 +4132,7 @@ def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc, monkeypatch
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard())
-    rc = pc.cmd_task_prefix(
+    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", value="pay")
     )
 
@@ -4094,7 +4146,7 @@ def test_task_prefix_bad_format_refused(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard())
-    rc = pc.cmd_task_prefix(
+    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="job", value="bad-prefix")
     )
     assert rc == 1
@@ -4108,7 +4160,7 @@ def test_task_prefix_task_missing_refuses_with_creation_hints(pc, monkeypatch, c
     wp = bind_pool(monkeypatch, FakeWorktreePool(set_prefix_result=None))   # task 부재 모델
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard())
-    rc = pc.cmd_task_prefix(
+    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
         argparse.Namespace(name="ghost", value="pay")
     )
     assert rc == 1
@@ -4163,7 +4215,8 @@ def test_build_parser_task_branch_three_positionals_and_required_from(pc, capsys
     parser = pc.build_parser()
     args = parser.parse_args(["task", "branch", "job", "svc_1", "task/feat", "--from", "main"])
     assert (args.name, args.slot, args.branch, args.parent) == ("job", "svc_1", "task/feat", "main")
-    assert args.func is pc.cmd_task_branch
+    assert args.func.func is config_tasks.cmd_task_branch
+    assert args.func.args == (pm_paths.home_at(pc.REPO),)
     # `--from` 없이는 받지 않는다 — 부모 없는 새 브랜치는 없다.
     with pytest.raises(SystemExit):
         parser.parse_args(["task", "branch", "job", "svc_1", "task/feat"])
@@ -4180,7 +4233,7 @@ def test_task_branch_calls_engine_with_normalized_slot_parent_and_owner(pc, monk
     """성공 경로 — 정규화한 슬롯으로 create_task_branch(slot, branch, parent=, owner_task=이름) 호출 + ✓ 보고."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_task_branch(_task_branch_args())
+    rc = config_tasks.cmd_task_branch(pm_paths.home_at(pc.REPO), _task_branch_args())
     assert rc == 0
     assert ("_normalize_slot", "svc_1") in wp.calls
     assert ("create_task_branch", "work/svc_1", "task/feat", "main", "job") in wp.calls
@@ -4213,7 +4266,7 @@ def test_task_branch_slot_format_refused_rc1_before_engine(pc, monkeypatch, caps
     wp._normalize_slot = lambda slot: normalize_slot(pm_paths.home_at(pc.REPO), slot)
     wp.SlotResolutionError = worktree_records.SlotResolutionError
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_task_branch(_task_branch_args(slot="../evil"))
+    rc = config_tasks.cmd_task_branch(pm_paths.home_at(pc.REPO), _task_branch_args(slot="../evil"))
     assert rc == 1
     captured = capsys.readouterr()
     assert captured.err == f"[중단] {refused.value}\n"
@@ -4233,7 +4286,7 @@ def test_task_branch_engine_refusal_rc1_with_engine_wording(pc, monkeypatch, cap
     """엔진 거부 — TaskBranchRefused·ReadonlySlotMutation 은 rc1 + `[중단] <엔진 문구>` 그대로(가공 없음)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_branch_raises=refusal))
     bind_pool(monkeypatch, wp)
-    rc = pc.cmd_task_branch(_task_branch_args())
+    rc = config_tasks.cmd_task_branch(pm_paths.home_at(pc.REPO), _task_branch_args())
     assert rc == 1
     captured = capsys.readouterr()
     assert captured.err == f"[중단] {refusal}\n"
@@ -4246,7 +4299,7 @@ def test_task_branch_other_engine_errors_propagate(pc, monkeypatch):
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_branch_raises=OSError("장부 쓰기 실패")))
     with pytest.raises(OSError, match="장부 쓰기 실패"):
         bind_pool(monkeypatch, wp)
-        pc.cmd_task_branch(_task_branch_args())
+        config_tasks.cmd_task_branch(pm_paths.home_at(pc.REPO), _task_branch_args())
 
 
 def test_worktree_add_and_alloc_forward_folders(pc, monkeypatch, capsys):
@@ -4257,12 +4310,12 @@ def test_worktree_add_and_alloc_forward_folders(pc, monkeypatch, capsys):
                                             ([] if raw is None else ["--folders", raw]))
         bind_pool(monkeypatch, wp)
         bind_board(monkeypatch, board)
-        assert pc.cmd_worktree_add(args,   is_tty=lambda: False) == 0
+        assert config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), args,   is_tty=lambda: False) == 0
         assert wp.last_folders == expected
         args = pc.build_parser().parse_args(["alloc", "svc", "--task", "job"] +
                                             ([] if raw is None else ["--folders", raw]))
         bind_pool(monkeypatch, wp)
-        assert pc.cmd_alloc(args) == 0
+        assert config_slots.cmd_alloc(pm_paths.home_at(pc.REPO), args) == 0
         assert wp.last_folders == expected
         output = capsys.readouterr().out
         assert "폴더:" in output
@@ -4272,17 +4325,17 @@ def test_worktree_add_and_alloc_forward_folders(pc, monkeypatch, capsys):
                                         "--readonly", "--folders", "a"])
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    assert pc.cmd_worktree_add(args,   is_tty=lambda: False) == 1
+    assert config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), args,   is_tty=lambda: False) == 1
     assert not wp.did("create_slot")
     assert "[중단]" in capsys.readouterr().err
     wp = bind_pool(monkeypatch, FakeWorktreePool(alloc_raises=FakeWorktreePool.NeedsCreate))
     args = pc.build_parser().parse_args(["alloc", "svc", "--task", "job", "--folders", "a, b"])
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_alloc(args) == 1
+    assert config_slots.cmd_alloc(pm_paths.home_at(pc.REPO), args) == 1
     assert "--folders 'a, b'" in capsys.readouterr().err
     wp = bind_pool(monkeypatch, FakeWorktreePool(alloc_raises=FakeWorktreePool.SlotFoldersRefused))
     bind_pool(monkeypatch, wp)
-    assert pc.cmd_alloc(args) == 1
+    assert config_slots.cmd_alloc(pm_paths.home_at(pc.REPO), args) == 1
     assert "[중단]" in capsys.readouterr().err
     def refuse(*args, **kwargs):
         raise wp.SlotFoldersRefused("invalid folders")
@@ -4290,5 +4343,101 @@ def test_worktree_add_and_alloc_forward_folders(pc, monkeypatch, capsys):
     args = pc.build_parser().parse_args(["worktree", "add", "svc", "--user-ack", "svc", "--folders", "nope"])
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
-    assert pc.cmd_worktree_add(args,   is_tty=lambda: False) == 1
+    assert config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO), args,   is_tty=lambda: False) == 1
     assert "[중단]" in capsys.readouterr().err
+
+
+def test_s8c_two_homes_repo_list_reads_each_registry(tmp_path, capsys):
+    homes = []
+    registries = []
+    for name in ("alpha", "beta"):
+        root = tmp_path / "code" / name
+        data = tmp_path / "data" / name
+        board = data / ".project_manager" / "board"
+        (board / "tickets").mkdir(parents=True)
+        home = pm_paths.home_at(root, pm_home=data, board_root=board)
+        registry = pm_paths.areas_file(home)
+        content = ("| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+                   "|---|---|---|---|---|---|---|---|\n"
+                   f"| {name} | | | | | main | | |\n").encode("utf-8")
+        registry.write_bytes(content)
+        homes.append((name, home))
+        registries.append((registry, content))
+
+    for name, home in homes + homes[::-1]:
+        assert config_repo.cmd_repo_list(home, argparse.Namespace()) == 0
+        output = capsys.readouterr().out
+        assert name in output
+        assert ("beta" if name == "alpha" else "alpha") not in output
+    for registry, content in registries:
+        assert registry.read_bytes() == content
+
+
+def test_s8c_prefix_revalidates_before_lease_write(tmp_path, monkeypatch):
+    from pm_engine.app import areas_registry, task_lifecycle
+    from pm_engine.infra import fs
+
+    home = pm_paths.home_at(tmp_path)
+    events = []
+
+    @contextlib.contextmanager
+    def lock(actual):
+        assert actual == home
+        events.append("board-lock")
+        yield
+        events.append("board-unlock")
+
+    def fresh(actual, value, ack, selected, **kwargs):
+        assert actual == home
+        events.append("fresh")
+        return value
+
+    def write(actual, name, value):
+        assert actual == home
+        events.append("lease-write")
+        return object()
+
+    monkeypatch.setattr(fs, "board_lock", lock)
+    monkeypatch.setattr(areas_registry, "require_prefix_user_ack", lambda actual, value, ack, **kw: value)
+    monkeypatch.setattr(areas_registry, "revalidate_prefix_user_ack", fresh)
+    monkeypatch.setattr(areas_registry, "invalidate_known_prefixes_cache", lambda: events.append("invalidate"))
+    monkeypatch.setattr(task_lifecycle, "set_task_prefix", write)
+    assert config_tasks.cmd_task_prefix(home, argparse.Namespace(name="design", value="demo", user_ack="demo")) == 0
+    assert events == ["board-lock", "fresh", "lease-write", "board-unlock", "invalidate"]
+
+
+def test_s8c_worktree_ack_rejects_before_creation(tmp_path, monkeypatch):
+    from pm_engine.app import worktree_pool
+
+    calls = []
+    home = pm_paths.home_at(tmp_path)
+    pm_paths.bare_repo_path(home, "svc").mkdir(parents=True)
+    monkeypatch.setattr(areas_store, "_repo_base", lambda actual, repo: "main")
+
+    def create(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("creation spy")
+
+    monkeypatch.setattr(worktree_pool, "create_slot", create)
+    args = argparse.Namespace(repo="svc", user_ack="wrong", test=None)
+    assert config_slots.cmd_worktree_add(home, args, is_tty=lambda: False) == 1
+    assert calls == []
+
+
+def test_s8c_parser_binds_current_home(tmp_path, monkeypatch):
+    pc = _load_pm_config()
+    calls = []
+    handler = config_repo.cmd_repo_list
+    for name in ("alpha", "beta"):
+        root = tmp_path / name
+        monkeypatch.setattr(pc, "REPO", root)
+        parser = pc.build_parser()
+        parsed = parser.parse_args(["repo", "list"])
+        assert parsed.func.func is handler
+        assert parsed.func.args == (pm_paths.home_at(root),)
+    monkeypatch.setattr(config_repo, "cmd_repo_list", lambda actual, args: calls.append((actual, args.command)) or 17)
+    for name in ("alpha", "beta"):
+        root = tmp_path / name
+        monkeypatch.setattr(pc, "REPO", root)
+        assert pc.main(["repo", "list"]) == 17
+        assert calls[-1] == (pm_paths.home_at(root), "repo")

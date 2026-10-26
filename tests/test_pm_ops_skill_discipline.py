@@ -23,6 +23,10 @@ T-0280 의 카드-구조 test(`test_pm_bootstrap_card.py`)와 비중복: 거긴 
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_card
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import re
 from pathlib import Path
@@ -71,11 +75,11 @@ def bootstrap():
 CARD_TASK = "demo-task"
 
 
-def _render_card(bootstrap, task: str = CARD_TASK) -> str:
+def _render_card(bootstrap, task: str=CARD_TASK, *, tmp_path) -> str:
     """PmBootstrap 인스턴스 없이 카드 헬퍼만 호출한다(순수 함수·I/O 0)."""
-    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+    inst = bootstrap_cli.PmBootstrap.__new__(bootstrap_cli.PmBootstrap)
     inst._task_name = task
-    return inst._build_command_card_markdown()
+    return bootstrap_card._build_command_card_markdown(pm_paths.home_at(tmp_path), getattr(inst, '_task_name', None), environment=getattr(inst, '_command_environment', None))
 
 
 def _pm_role_text() -> str:
@@ -266,9 +270,9 @@ def test_review_operation_docs_keep_current_and_legacy_names_in_the_right_direct
 # ── 2. 카드 pointer → pm_role 섹션 정합 (dangling 방지) ────────────────────────
 
 
-def test_card_pointer_targets_live_pm_role_section(bootstrap):
+def test_card_pointer_targets_live_pm_role_section(bootstrap, *, tmp_path):
     """카드의 `pm_role §스킬 우선 운영 규율` pointer 가 실제 pm_role 헤더로 non-dangling."""
-    card = _render_card(bootstrap)
+    card = _render_card(bootstrap, tmp_path=tmp_path)
     assert _POINTER_ANCHOR in card, f"카드에 규율 pointer {_POINTER_ANCHOR!r} 부재"
     text = _pm_role_text()
     # pointer 가 가리키는 섹션명이 실제 `## ` 헤더로 존재한다(앵커 살아있음).
@@ -299,14 +303,14 @@ def test_catalog_parse_is_non_vacuous():
     assert catalog["/pm-update"] == set()          # facade → skill-only
 
 
-def test_card_demotion_matches_pm_role_catalog(bootstrap):
+def test_card_demotion_matches_pm_role_catalog(bootstrap, *, tmp_path):
     """카드 강등 backbone 이 pm_role 카탈로그 엔진 열과 양방향(exact-set) 정합한다.
 
     각 카드-렌더 skill 에서: 카탈로그 CLI 셀의 (tool, sub-op) 토큰 == 카드 그 skill block 의
     강등 backbone 토큰. 비-CLI(Agent/facade) 셀은 카드 block 에 강등 python3 줄이 없어야(빈 집합).
     카드가 엔진을 빠뜨리거나(강등 줄 삭제)·지어내거나(오귀속) 카탈로그 열이 편집되면 red.
     """
-    card = _render_card(bootstrap)
+    card = _render_card(bootstrap, tmp_path=tmp_path)
     catalog = _parse_catalog(_pm_role_text())
     checked, mismatches = _crosscheck(card, catalog)
     # non-vacuous: 카드-렌더 skill 을 실제로 ≥4 검사했다(파싱 0건이면 가드 무의미).
@@ -321,13 +325,13 @@ def test_card_demotion_matches_pm_role_catalog(bootstrap):
     )
 
 
-def test_card_demotion_guard_is_sensitive_to_drift(bootstrap):
+def test_card_demotion_guard_is_sensitive_to_drift(bootstrap, *, tmp_path):
     """sensitivity(non-vacuous 실증) — 카드/카탈로그 어느 쪽을 깨도 #3 cross-check 가 잡는다.
 
     (a) 카드 강등 엔진 줄을 지우면 forward 방향으로, (b) 카탈로그 엔진 열을 바꾸면 backward
     방향으로 mismatch 가 뜬다 — 원본 소스는 건드리지 않고 파싱 산출물만 변조해 실증한다.
     """
-    card = _render_card(bootstrap)
+    card = _render_card(bootstrap, tmp_path=tmp_path)
     catalog = _parse_catalog(_pm_role_text())
     # baseline 은 정합(green).
     _, base_mismatch = _crosscheck(card, catalog)
@@ -360,9 +364,9 @@ def _line_index(card: str, needle: str) -> int:
     raise AssertionError(f"카드에 {needle!r} 줄이 없음")
 
 
-def test_card_skill_precedes_backbone_representative(bootstrap):
+def test_card_skill_precedes_backbone_representative(bootstrap, *, tmp_path):
     """대표 op(claim·handoff)에서 `/pm-…` 스킬 진입이 강등 backbone 줄보다 먼저(primary)."""
-    card = _render_card(bootstrap)
+    card = _render_card(bootstrap, tmp_path=tmp_path)
     for skill_needle, backbone_needle in (
         ("/pm-wave-claim", "board.py claim T-NNNN"),
         ("/pm-handoff", "pm_handoff.py"),

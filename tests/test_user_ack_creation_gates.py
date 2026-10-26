@@ -6,6 +6,8 @@ worktree add 변형을 hermetic하게 검증한다. 기존 downstream 테스트�
 붙이지 않고, 이 파일에서 거부/승인/오결속을 명시적으로 나눈다.
 """
 from __future__ import annotations
+from pm_engine.cli import config_slots
+from pm_engine.cli import config_tasks
 
 from pm_engine.cli import board_init
 from pm_engine.cli import board_prefix
@@ -134,7 +136,7 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
         ))
     if surface == "task-prefix":
         bind_pool(monkeypatch, _TaskPool())
-        return pm_config.cmd_task_prefix(
+        return config_tasks.cmd_task_prefix(pm_paths.home_at(pm_config.REPO),
             argparse.Namespace(
                 name="job", value=prefix, user_ack=user_ack,
             ),
@@ -539,7 +541,7 @@ def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, m
         ))
     elif surface == "task-prefix":
         bind_pool(monkeypatch, pool)
-        rc = pm_config.cmd_task_prefix(
+        rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pm_config.REPO),
             argparse.Namespace(name="job", value="fresh", user_ack="fresh"),
 
         )
@@ -692,7 +694,7 @@ def test_worktree_add_variants_reject_without_ack(pm_config, monkeypatch, extra,
     pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack=None, **extra)
     bind_pool(monkeypatch, pool)
-    assert pm_config.cmd_worktree_add(args) == 1
+    assert config_slots.cmd_worktree_add(pm_paths.home_at(pm_config.REPO), args) == 1
     assert pool.created == []
     assert "1순위: 사용자에게" in capsys.readouterr().err
 
@@ -701,7 +703,7 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, monkeypatch, ca
     pool = bind_pool(monkeypatch, _SlotPool())
     args = argparse.Namespace(repo="svc", test=None, user_ack="other")
     bind_pool(monkeypatch, pool)
-    assert pm_config.cmd_worktree_add(args) == 1
+    assert config_slots.cmd_worktree_add(pm_paths.home_at(pm_config.REPO), args) == 1
     assert pool.created == []
     assert "결속되지 않았다" in capsys.readouterr().err
 
@@ -718,7 +720,7 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, monkeypatch, ca
 def test_worktree_add_bound_ack_preserves_create_slot_semantics(pm_config, monkeypatch, capsys, tmp_path, readonly, task, expected_role, expected_state):
     pool = bind_pool(monkeypatch, _SlotPool(bare_root=tmp_path / ".repos"))
     monkeypatch.setattr(repo_protection, "_install_protected_hook_reporting", lambda *a, **k: True)
-    monkeypatch.setattr(pm_config, "_render_task_slots", lambda *a, **k: None)
+    monkeypatch.setattr(config_slots, '_render_task_slots', lambda *a, **k: None)
     args = argparse.Namespace(
         repo="svc", test=None, readonly=readonly, task=task, user_ack="svc",
     )
@@ -726,7 +728,7 @@ def test_worktree_add_bound_ack_preserves_create_slot_semantics(pm_config, monke
     monkeypatch.setattr(areas_store, "_repo_base", lambda _home, repo: {"svc": "main"}.get(repo))
 
     bind_pool(monkeypatch, pool)
-    assert pm_config.cmd_worktree_add(
+    assert config_slots.cmd_worktree_add(pm_paths.home_at(pm_config.REPO),
         args,  is_tty=lambda: False,
     ) == 0
 

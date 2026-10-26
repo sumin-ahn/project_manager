@@ -1849,7 +1849,6 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
             path.write_text(text, encoding="utf-8")
 
     completed: list[list[str]] = []
-    monkeypatch.setattr(tf, "_load_pm_log", lambda: _Log)
     finisher = tf.TicketFinisher(
         run_pytest_fn=_green_pytest(100),
         run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1],

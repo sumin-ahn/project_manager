@@ -196,3 +196,13 @@ def _ctx_record(tmp_path):
     """밴드 판정의 분모 — 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록."""
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path)
+
+
+def test_recall_uses_package_without_flat_principles_cli(tmp_path):
+    hook = _load('ctx_stop_hook')
+    wiki = tmp_path / '.project_manager' / 'wiki'
+    wiki.mkdir(parents=True)
+    (wiki / 'pm_principles.md').write_text('#### rules\n- `[shell: git]` package rule\n', encoding='utf-8')
+    assert not (tmp_path / '.project_manager' / 'tools' / 'pm_principles.py').exists()
+    event = {'hook_event_name':'PreToolUse','tool_name':'Bash', 'tool_input':{'command':'git status'},'session_id':'package-rule'}
+    assert 'package rule' in hook._principle_recall_text(event, tmp_path)

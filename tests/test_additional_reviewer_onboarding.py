@@ -18,10 +18,10 @@
 """
 from __future__ import annotations
 
-from pm_engine.cli import delegate_cmd
-from pm_engine.infra import pm_paths
+from pm_engine.cli import delegate_cmd, bootstrap_card
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.infra import pm_paths, reviewer_target
 from pm_engine.domain import reviewer_budget, reviewer_result
-from pm_engine.infra import reviewer_target
 
 import argparse
 import importlib.util
@@ -450,7 +450,7 @@ def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
 _ACTIVITY_SWEEP_ENGINE_FILES = (
     "pm_delegate.py", "additional_reviewer.py", "pm_engine/app/session/relay.py",
     "pm_engine/infra/harness/contract.py", "pm_engine/infra/harness/watchdog.py",
-    "pm_engine/infra/raw_output.py", "pm_handoff.py", "pm_import.py",
+    "pm_engine/infra/raw_output.py", "pm_engine/cli/handoff.py", "pm_import.py",
 )
 
 
@@ -493,9 +493,7 @@ def test_retired_activity_noun_scan_covers_the_swept_surfaces():
     assert expected <= scanned, f"sweep 대상이 스캔 밖: {sorted(expected - scanned)}"
 
 
-def test_bootstrap_first_turn_card_names_the_additional_reviewer(
-    pm_bootstrap, monkeypatch
-):
+def test_bootstrap_first_turn_card_names_the_additional_reviewer(pm_bootstrap, monkeypatch, tmp_path):
     """부트스트랩 첫 턴 카드의 additional_reviewer 줄이 역할을 '추가 리뷰어'로 부른다.
 
     수신 하네스는 채택자 `local.conf` 설정값이라 카드 문구가 고정하지 않는다 — 반면 실행
@@ -503,9 +501,9 @@ def test_bootstrap_first_turn_card_names_the_additional_reviewer(
     """
     for marker in ("CODEX_THREAD_ID", "CODEX_CI"):
         monkeypatch.delenv(marker, raising=False)  # 하네스 감지 절 append 제거(결정론)
-    inst = pm_bootstrap.PmBootstrap.__new__(pm_bootstrap.PmBootstrap)
+    inst = bootstrap_cli.PmBootstrap.__new__(bootstrap_cli.PmBootstrap)
     inst._task_name = "demo-task"
-    card = inst._build_command_card_markdown()
+    card = bootstrap_card._build_command_card_markdown(pm_paths.home_at(tmp_path), getattr(inst, '_task_name', None), environment=getattr(inst, '_command_environment', None))
 
     review_lines = [ln for ln in card.splitlines() if "additional_reviewer.py" in ln]
     assert len(review_lines) == 1, f"additional_reviewer 줄이 1개가 아님: {review_lines}"
@@ -530,7 +528,7 @@ def test_role_rename_keeps_transport_identifiers_and_history():
     assert "reviewer_cmd" in playbook       # 레거시 채택자 키도 이름이 바뀌지 않는다
 
     # 과거 codex 게이트가 낸 지적 인용은 엔진 주석의 히스토리다 — 인벤토리 대상이 아니다.
-    history = TOOLS / "pm_handoff.py"
+    history = TOOLS / "pm_engine/cli/handoff.py"
     assert "codex must-fix" in history.read_text(encoding="utf-8")
     assert history not in set(_active_pm_surfaces())
 

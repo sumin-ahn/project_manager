@@ -15,6 +15,13 @@ upstream 미해소 = 경고 · slot_status 미구현 풀 = graceful(절 생략·
 """
 from __future__ import annotations
 
+from pm_engine.app import bootstrap_slots
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_card
+from pm_engine.cli import bootstrap_report
+from pm_engine.domain import bootstrap_rules
+from pm_engine.infra import python_env
+
 from pm_engine.infra import pm_paths
 
 from pm_engine.infra import branch_store
@@ -342,16 +349,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None, monkey
 
     bind_pool(monkeypatch, worktree_pool)
     bind_board(monkeypatch, _FakeBoard())
-    return bootstrap.PmBootstrap(
-        run_board_fn=fake_board,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
-        run_git_fn=fake_git,
-        log_file=log_file,
-        areas_file=areas_file,
-
-
-        pm_state_file=pm_state_file,
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=fake_git, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file)
 
 
 def test_bind_task_rejects_archived_name_with_reopen_prescription(
@@ -383,7 +381,7 @@ def test_bind_task_rejects_archived_name_with_reopen_prescription(
     assert inst._bind_task_or_reject("job") is None
     err = capsys.readouterr().err
     assert "task reopen job" in err and "job-20260827" in err
-    assert f"{bootstrap._runtime_skill_entry('pm-bootstrap')} --task job" in err
+    assert f"{bootstrap_card._runtime_skill_entry('pm-bootstrap')} --task job" in err
 
 
 # ── S1 (ADR-0056·T-0312): 슬롯 정체성 부트스트랩 = 슬롯-스코프 카운트 ─────────────
@@ -431,16 +429,7 @@ def _make_fresh_bootstrap(bootstrap, wp, tmp_path, *, monkeypatch):
     pool = bind_pool(monkeypatch, FakePool(slot="work/A_2", slot_status_ret=ret))  # slot-2 시나리오 — 0단계 실재 시드도 A_2.
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, _FakeBoard())
-    return bootstrap.PmBootstrap(
-        run_board_fn=fake_board,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
-        run_git_fn=fake_git,
-        log_file=log_file,
-        areas_file=areas_file,
-
-
-        pm_state_file=pm_state_file,
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=fake_git, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file)
 
 
 def test_resolve_log_file_slot_cwd_finds_shared_home(bootstrap, tmp_path):
@@ -455,7 +444,7 @@ def test_resolve_log_file_slot_cwd_finds_shared_home(bootstrap, tmp_path):
     shared_log.write_text("# log\n", encoding="utf-8")
     slot = home / "work" / "project_manager_2"
     slot.mkdir(parents=True)
-    assert bootstrap._resolve_log_file(slot) == shared_log
+    assert pm_paths._resolve_log_file(pm_paths.home_at(slot)) == shared_log
 
 
 def test_resolve_log_file_slot_without_shared_falls_back(bootstrap, tmp_path):
@@ -463,7 +452,7 @@ def test_resolve_log_file_slot_without_shared_falls_back(bootstrap, tmp_path):
     slot = tmp_path / "work" / "A_1"
     slot.mkdir(parents=True)  # 상위(tmp_path)에 공유 로그 없음.
     assert (
-        bootstrap._resolve_log_file(slot)
+        pm_paths._resolve_log_file(pm_paths.home_at(slot))
         == slot / ".project_manager" / "wiki" / "log" / "current.md"
     )
 
@@ -472,7 +461,7 @@ def test_resolve_log_file_standalone_uses_repo_anchor(bootstrap, tmp_path):
     """슬롯이 아닌 REPO(PM 홈 직접·standalone 채택자)는 상위 탐색 없이 REPO-앵커 로그 그대로 (회귀 0)."""
     repo = tmp_path / "myrepo"  # parent.name != "work".
     assert (
-        bootstrap._resolve_log_file(repo)
+        pm_paths._resolve_log_file(pm_paths.home_at(repo))
         == repo / ".project_manager" / "wiki" / "log" / "current.md"
     )
 
@@ -480,24 +469,24 @@ def test_resolve_log_file_standalone_uses_repo_anchor(bootstrap, tmp_path):
 # ── F1 --task 배선 (main·⑥ 예약 거부·auto-slot 제외·T-0353) ─────────────────
 
 
-def test_task_reserved_name_rejected_at_cli(bootstrap, monkeypatch):
+def test_task_reserved_name_rejected_at_cli(bootstrap, monkeypatch, tmp_path):
     """`--task <등록 repo>_<N>` = 슬롯 세션 예약 패턴 → rc2 거부(⑥·run 미도달)."""
     monkeypatch.setattr(slot_resolution, "_registered_repos", lambda *a, **k: ["project_manager"])
-    monkeypatch.setattr(bootstrap.PmBootstrap, "run",
+    monkeypatch.setattr(bootstrap_cli.PmBootstrap, "run",
                         lambda self, **kw: (_ for _ in ()).throw(
                             AssertionError("run 도달 금지 — 예약 거부여야")))
     with pytest.raises(SystemExit) as exc:
-        bootstrap.main(["--task", "project_manager_1"])
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--task', 'project_manager_1'])
     assert exc.value.code == 2
 
 
-def test_task_free_name_reaches_run(bootstrap, monkeypatch):
+def test_task_free_name_reaches_run(bootstrap, monkeypatch, tmp_path):
     """자유 포맷 task 명은 통과해 run(task=…) 으로 전달된다(비공허)."""
     monkeypatch.setattr(slot_resolution, "_registered_repos", lambda *a, **k: ["project_manager"])
     captured = {}
-    monkeypatch.setattr(bootstrap.PmBootstrap, "run",
+    monkeypatch.setattr(bootstrap_cli.PmBootstrap, "run",
                         lambda self, **kw: captured.update(kw) or 0)
-    rc = bootstrap.main(["--task", "payments-refactor"])
+    rc = bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--task', 'payments-refactor'])
     assert rc == 0
     assert captured.get("task") == "payments-refactor"
 
@@ -512,17 +501,17 @@ def test_task_free_name_reaches_run(bootstrap, monkeypatch):
         ["--task", "job1", "--resume", "feature"],
     ],
 )
-def test_task_cli_rejects_slot_identity_mixing_before_run(bootstrap, monkeypatch, argv):
+def test_task_cli_rejects_slot_identity_mixing_before_run(bootstrap, monkeypatch, argv, tmp_path):
     """Python CLI의 task 진입점도 repo/slot/branch/resume 없이 `--task` 하나만 허용한다."""
     monkeypatch.setattr(
-        bootstrap.PmBootstrap,
+        bootstrap_cli.PmBootstrap,
         "run",
         lambda self, **kw: (_ for _ in ()).throw(
             AssertionError("혼합 identity가 run에 도달하면 안 된다")
         ),
     )
     with pytest.raises(SystemExit) as exc:
-        bootstrap.main(argv)
+        bootstrap_cli.main(pm_paths.home_at(tmp_path), argv)
     assert exc.value.code == 2
 
 
@@ -537,9 +526,9 @@ _T0391_BOARD = {"counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
 _T0391_GIT = {"branch": "main", "commits": [], "working_tree": "clean"}
 
 
-def test_task_empty_session_marker_labels_pm_1cha_not_placeholder(bootstrap):
+def test_task_empty_session_marker_labels_pm_1cha_not_placeholder(bootstrap, tmp_path):
     """task 생성 시 state marker → 헤더 `PM 1차` · placeholder 부재."""
-    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     inst._task_name = "payments-refactor"
     inst._pm_state_file = Path("/tmp/task-state")
     handoff_ctx = {
@@ -550,30 +539,28 @@ def test_task_empty_session_marker_labels_pm_1cha_not_placeholder(bootstrap):
         "state_path": str(inst._pm_state_file),
         "fresh_slot": False,
     }
-    md = inst._build_markdown(
-        _T0391_BOARD, None, _T0391_GIT, None, "ts", handoff_ctx, None
-    )
+    md = bootstrap_report._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, 'ts', handoff_ctx, None, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
     assert "## PM 1차 부트스트랩" in md
     assert "PM <?>차" not in md
 
 
-def test_non_task_first_session_keeps_placeholder(bootstrap):
+def test_non_task_first_session_keeps_placeholder(bootstrap, tmp_path):
     """비-task(솔로·_task_name None) + handoff_ctx None → 현행 placeholder/포인터 보존(회귀 0)."""
-    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     # _task_name 은 기본 None — task 분기 미발동.
-    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", None, None)
+    md = bootstrap_report._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, 'ts', None, None, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
     assert "## PM <?>차 부트스트랩" in md
     assert "log/current.md 없음 또는 entry 파싱 실패" in md
     assert "task 1차" not in md
 
 
-def test_task_resume_not_forced_to_task_first_branch(bootstrap):
+def test_task_resume_not_forced_to_task_first_branch(bootstrap, tmp_path):
     """task resume(handoff_ctx 해소·session_num int) → task 첫세션 분기 미발동(현행 `PM N차` 보존)."""
-    inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     inst._task_name = "payments-refactor"
     ctx = {"session_num": 3, "session_stale": False, "state_session_num": 2,
            "todos": [], "state_path": "pm_state.md", "fresh_slot": False}
-    md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", ctx, None)
+    md = bootstrap_report._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, 'ts', ctx, None, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
     assert "## PM 3차 부트스트랩" in md
     assert "task 1차" not in md
     assert "신규 task — 복구할 인계 없음" not in md
@@ -669,38 +656,38 @@ def _remedy_git(*existing_branches, raises=False, expand=None):
     return runner, calls
 
 
-def _remedy_inst(monkeypatch, bootstrap, *, git_fn, protected=("main", "master", "develop")):
+def _remedy_inst(monkeypatch, bootstrap, *, git_fn, protected=('main', 'master', 'develop'), tmp_path):
     bind_board(monkeypatch, _RemedyBoard(protected))
-    return bootstrap.PmBootstrap(run_git_fn=git_fn, )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=git_fn)
 
 
 def test_remedy_branch_prefixes_protected_preferred(bootstrap, tmp_path, *, monkeypatch):
     """(a) preferred 가 보호브랜치(`main`)면 그대로 쓰지 않고 `task/main` 을 제안한다."""
     git_fn, _calls = _remedy_git()          # 기존 브랜치 없음 — 보호목록만이 배제 사유.
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
     pool = bind_pool(monkeypatch, _RemedyPool(tmp_path))
-    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main"
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn) == "task/main"
 
 
 def test_remedy_branch_suffixes_when_prefixed_exists(monkeypatch, bootstrap, tmp_path):
     """(b) `task/main` 까지 이미 존재하면 `task/main-2` 로 첫 미충돌을 고른다."""
     git_fn, _calls = _remedy_git("task/main")
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main-2"
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn) == "task/main-2"
 
 
 def test_remedy_branch_suffix_skips_existing_numbered(monkeypatch, bootstrap, tmp_path):
     """`task/main-2` 도 있으면 `task/main-3` — 첫 미충돌까지 계속 센다(비공허)."""
     git_fn, _calls = _remedy_git("task/main", "task/main-2")
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main-3"
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn) == "task/main-3"
 
 
 def test_remedy_branch_keeps_plain_preferred(monkeypatch, bootstrap, tmp_path):
     """(c) 평범한 task 명(`foo`)은 보호목록 밖 + 미존재 → 접두 없이 그대로 (오탐 0)."""
     git_fn, calls = _remedy_git("main")
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "foo"
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn) == "foo"
     # 존재 확인은 그 슬롯 worktree 에서 argv-list 로 (shell 미경유·`-C <slot_dir>`).
     assert calls[0][:2] == ["-C", str(tmp_path)]
     assert calls[0][2:] == ["show-ref", "--verify", "--quiet", "refs/heads/foo"]
@@ -709,17 +696,17 @@ def test_remedy_branch_keeps_plain_preferred(monkeypatch, bootstrap, tmp_path):
 def test_remedy_branch_prefixes_existing_plain_name(monkeypatch, bootstrap, tmp_path):
     """보호목록 밖이라도 **이미 존재하는** 브랜치면 그대로 쓰지 않는다(`switch -c` 실패 방지)."""
     git_fn, _calls = _remedy_git("foo")
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "task/foo"
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn) == "task/foo"
 
 
 def test_remedy_branch_fail_soft_on_git_error(monkeypatch, bootstrap, tmp_path):
     """(e) git 호출 실패는 fail-soft — 미존재로 간주하고 안내는 계속 나간다(크래시 0)."""
     git_fn, _calls = _remedy_git(raises=True)
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "foo"
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn) == "foo"
     # 보호브랜치 축은 git 무관이라 그대로 살아 있다(fail-soft ≠ 판정 포기).
-    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main"
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn) == "task/main"
 
 
 def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path, *, monkeypatch):
@@ -727,10 +714,10 @@ def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path, *, monkey
     slot_dir = tmp_path / "work" / "X_1"
     slot_dir.mkdir(parents=True)
     git_fn, _calls = _remedy_git()
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
     pool = bind_pool(monkeypatch, _RemedyPool(slot_dir, branch="main"))
     lease = SimpleNamespace(slot="work/X_1", repo="X", session="main", state="leased", role="work")
-    fault = inst._task_slot_fault( lease, "main")
+    fault = bootstrap_slots._task_slot_fault(pm_paths.home_at(tmp_path), lease, 'main', run_git_fn=inst._run_git_fn)
     assert fault is not None
     label, _reason, resolve = fault
     assert "main-참조" in label
@@ -748,8 +735,8 @@ def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path, *, monkey
 def test_remedy_branch_command_is_engine_mediated(monkeypatch, bootstrap, tmp_path):
     """해소 커맨드 = 엔진 단일 커맨드(raw git 아님·복합 `&&` 아님 — PowerShell 5.x 미지원)."""
     git_fn, _calls = _remedy_git()
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_branch_command( "X", "work/X_1", "main")
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    cmd = bootstrap_slots._remedy_branch_command(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn)
     assert cmd == ("python3 .project_manager/tools/pm_config.py task branch main work/X_1 task/main "
                    "--from main")
     assert "&&" not in cmd and not cmd.startswith("git ")
@@ -757,11 +744,11 @@ def test_remedy_branch_command_is_engine_mediated(monkeypatch, bootstrap, tmp_pa
 
 def test_remedy_branch_name_returns_none_when_candidates_exhausted(monkeypatch, bootstrap, tmp_path):
     """(i-1) 후보 상한 도달 = None — 충돌하는 마지막 후보를 그대로 돌려주지 않는다(옛 자기모순)."""
-    limit = bootstrap._REMEDY_BRANCH_SUFFIX_LIMIT
+    limit = bootstrap_rules._REMEDY_BRANCH_SUFFIX_LIMIT
     exhausted = ["foo", "task/foo"] + [f"task/foo-{n}" for n in range(2, limit + 1)]
     git_fn, _calls = _remedy_git(*exhausted)
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    assert inst._remedy_branch_name( "X", "work/X_1", "foo") is None
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn) is None
 
 
 @pytest.mark.parametrize("task_name", ["fix:bug", "fix~1"])
@@ -773,9 +760,9 @@ def test_remedy_branch_rejects_ref_format_invalid_candidates(bootstrap, wp, tmp_
     없으면 remedy 가 `switch <slot> fix:bug` 를 안내하고 실행 쪽(`worktree_pool.switch`)이
     `invalid-ref` 로 튕겨 "실행 가능한 단일 remedy" 가 그 입력에서 깨진다(codex 게이트 must-fix)."""
     git_fn, _calls = _remedy_git()
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
     pool = _remedy_pool(wp, tmp_path)
-    assert inst._remedy_branch_name( "X", "work/X_1", task_name) is None
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', task_name, run_git_fn=inst._run_git_fn) is None
 
 
 def test_remedy_branch_skips_invalid_then_takes_valid_variant(monkeypatch, bootstrap, wp, tmp_path):
@@ -785,16 +772,16 @@ def test_remedy_branch_skips_invalid_then_takes_valid_variant(monkeypatch, boots
     `task/a.lock` rc 128 · `task/a.lock-2` rc 0). 필터가 과잉이면 실행 가능한 이름이 있는데도
     "직접 지정" 으로 떨어진다(오탐 0 sensitivity)."""
     git_fn, _calls = _remedy_git()
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    got = inst._remedy_branch_name( "X", "work/X_1", "a.lock")
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    got = bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'a.lock', run_git_fn=inst._run_git_fn)
     assert got == "task/a.lock-2"
 
 
 def test_remedy_branch_command_invalid_task_name_asks_explicit_branch(monkeypatch, bootstrap, wp, tmp_path):
     """무효 task 명은 "브랜치명 직접 지정" 분기로 수렴한다 — 실행 불가 커맨드를 안내하지 않는다."""
     git_fn, _calls = _remedy_git()
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_branch_command( "X", "work/X_1", "fix:bug")
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    cmd = bootstrap_slots._remedy_branch_command(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'fix:bug', run_git_fn=inst._run_git_fn)
     assert "task branch fix:bug work/X_1 <새-브랜치명> --from main" in cmd
     assert "직접 지정" in cmd
     assert "task/fix:bug" not in cmd.split("(")[0]   # 브랜치 인자로는 안 실린다(안내 문구 설명은 별개)
@@ -803,17 +790,17 @@ def test_remedy_branch_command_invalid_task_name_asks_explicit_branch(monkeypatc
 def test_remedy_branch_valid_name_unaffected_by_ref_filter(bootstrap, wp, tmp_path, *, monkeypatch):
     """정상 task 명은 종전대로 제안된다 — ref-format 필터가 회귀를 안 만든다(sensitivity)."""
     git_fn, _calls = _remedy_git()
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
     pool = _remedy_pool(wp, tmp_path)
-    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "foo"
-    assert inst._remedy_branch_name( "X", "work/X_1", "main") == "task/main"
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn) == "foo"
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn) == "task/main"
 
 
 def test_remedy_branch_skips_candidate_that_expands(monkeypatch, bootstrap, wp, tmp_path):
     """정규화가 원문과 다르면(revspec 확장) 후보에서 배제 — 제안 이름이 다른 브랜치로 해소되면 거짓말."""
     git_fn, _calls = _remedy_git(expand={"weird": "other"})
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    got = inst._remedy_branch_name( "X", "work/X_1", "weird")
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    got = bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'weird', run_git_fn=inst._run_git_fn)
     assert got == "task/weird"          # 확장되는 원문 후보는 건너뛰고 다음 후보
 
 
@@ -824,23 +811,23 @@ def test_remedy_branch_filter_reuses_worktree_pool_judgment(bootstrap, wp, tmp_p
     ② 부트스트랩이 후보마다 그걸 호출했음을 spy 로 확인하며 ③ pm_bootstrap 소스에 `check-ref-format`
     argv 를 **직접 짓는 코드가 없음**(두 번째 구현 부재)을 정적으로 못 박는다."""
     git_fn, _calls = _remedy_git("foo")
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
     pool = _remedy_pool(wp, tmp_path)
     assert pool._normalize is branch_store._normalize_branch_name          # ① 실행 쪽과 같은 판정 함수
     bind_pool(monkeypatch, pool)
-    assert inst._remedy_branch_name( "X", "work/X_1", "foo") == "task/foo"
+    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn) == "task/foo"
     assert pool.normalize_calls[:2] == ["foo", "task/foo"]       # ② 후보마다 그 판정을 탄다
-    source = (TOOLS / "pm_bootstrap.py").read_text(encoding="utf-8")
+    source = Path(bootstrap_slots.__file__).read_text(encoding="utf-8")
     assert '"check-ref-format"' not in source                    # ③ 자체 구현 없음(argv 미생성)
 
 
 def test_remedy_branch_command_exhausted_asks_explicit_branch(monkeypatch, bootstrap, tmp_path):
     """(i-2) 후보 소진 시 안내는 이름 제안 대신 **직접 지정** — 실행 불가 안내 재생산 금지."""
-    limit = bootstrap._REMEDY_BRANCH_SUFFIX_LIMIT
+    limit = bootstrap_rules._REMEDY_BRANCH_SUFFIX_LIMIT
     exhausted = ["foo", "task/foo"] + [f"task/foo-{n}" for n in range(2, limit + 1)]
     git_fn, _calls = _remedy_git(*exhausted)
-    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_branch_command( "X", "work/X_1", "foo")
+    inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
+    cmd = bootstrap_slots._remedy_branch_command(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn)
     assert "task branch foo work/X_1 <새-브랜치명> --from main" in cmd
     assert "직접 지정" in cmd
     # 충돌이 확정된 후보(마지막 이름)를 커맨드 인자로 싣지 않는다.
@@ -853,3 +840,31 @@ def _remedy_path_seam(request, tmp_path, monkeypatch):
         monkeypatch.setattr(pm_paths, "slot_path", lambda home, slot: tmp_path)
         if request.node.name == "test_remedy_branch_keeps_plain_preferred":
             monkeypatch.setattr(branch_store, "_normalize_branch_name", lambda branch, **kwargs: branch)
+
+
+def test_package_home_defaults_and_dump_values_are_isolated(tmp_path):
+    from pm_engine.cli import bootstrap, bootstrap_report
+    from pm_engine.infra import pm_paths, python_env
+    from pm_engine.app import bootstrap_history
+    code = tmp_path / 'work' / 'code'
+    shared = tmp_path / '.project_manager/wiki/log/current.md'
+    shared.parent.mkdir(parents=True)
+    shared.write_text('# shared log\n', encoding='utf-8')
+    a = pm_paths.home_at(code, pm_home=tmp_path / 'a')
+    b = pm_paths.home_at(code, pm_home=tmp_path / 'b')
+    first = bootstrap.PmBootstrap(a, run_board_fn=lambda args:(0,''), run_git_fn=lambda args:(0,''))
+    second = bootstrap.PmBootstrap(b, run_board_fn=lambda args:(0,''), run_git_fn=lambda args:(0,''))
+    assert first._log_file == pm_paths.wiki_dir(a) / 'log/current.md'
+    assert second._log_file == pm_paths.wiki_dir(b) / 'log/current.md'
+    assert first._board_dir == a.local_dir.parent / 'board'
+    board={'counts':{'done':2,'open':1,'claimed':0,'blocked':0},'counts_scope':'task alpha','open_tickets':['T-0123'],'lint':'clean'}
+    git={'branch':'main','commits':[('abcdef','sample')],'working_tree':'clean'}
+    environment=python_env._detect_command_environment(a, system='Linux',os_name='posix')
+    md = bootstrap_report._build_markdown(board,None,git,None,'sample',environment=environment,task_name='alpha',state_path='state')
+    data = bootstrap_report._build_json(board,None,git,None,'sample',environment=environment,task_name='alpha')
+    assert data['board']['counts_task'] == board['counts']
+    assert data['git']['commits'] == [{'sha':'abcdef','subject':'sample'}]
+    assert '- branch: main' in md and 'state' in md
+    log='## [2026-10-22] handoff | PM 3차 (task:alpha) → 다음 PM 세션\n\n- note\n'
+    assert bootstrap_history.parse_last_handoff_session_num(a,log,bound_session='task:alpha') == 3
+    assert bootstrap_history.extract_slot_handoff_entry(a,log,bound_session='task:alpha')['body'] == log.rstrip()

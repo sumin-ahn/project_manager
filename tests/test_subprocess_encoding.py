@@ -21,6 +21,7 @@ from __future__ import annotations
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
 import pm_engine.infra.harness.reviewer_run
+import pm_engine.cli.handoff
 
 import argparse
 import ast
@@ -203,10 +204,11 @@ def test_ticket_finish_default_runs_pass_utf8(ticket_finish, monkeypatch):
 # ── pm_handoff (_default_run_* 직접 호출) ──────────────────────────────────
 
 
-def test_pm_handoff_default_runs_pass_utf8(pm_handoff, monkeypatch):
+def test_pm_handoff_default_runs_pass_utf8(pm_handoff, monkeypatch, tmp_path):
+    home = pm_paths.home_at(tmp_path)
     rec = _Recorder()
-    monkeypatch.setattr(pm_handoff.subprocess, "run", rec)
-    handoff = pm_handoff.PmHandoff()
+    monkeypatch.setattr(pm_engine.cli.handoff.subprocess, "run", rec)
+    handoff = pm_engine.cli.handoff.PmHandoff(home)
     handoff._default_run_pytest()
     handoff._default_run_git(["status"])
     assert len(rec.calls) == 2

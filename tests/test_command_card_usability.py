@@ -36,6 +36,10 @@ claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0*
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_card
+from pm_engine.infra import pm_paths
+
 from pm_engine.domain import cluster_rules
 
 
@@ -123,9 +127,9 @@ def _render_command_card(home: Path, task: str = CARD_TASK) -> str:
     spec = importlib.util.spec_from_file_location(f"_card_bootstrap_{abs(hash(str(path)))}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    inst = mod.PmBootstrap()
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(home))
     inst._task_name = task
-    return inst._build_command_card_markdown()
+    return bootstrap_card._build_command_card_markdown(pm_paths.home_at(home), getattr(inst, '_task_name', None), environment=getattr(inst, '_command_environment', None))
 
 
 def _usability_prompt(card: str) -> str:

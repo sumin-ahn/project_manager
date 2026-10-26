@@ -17,6 +17,7 @@ DI seam 동류).
     AncestorConflict 를 친화 메시지 + rc 1 로 번역(traceback 0·pm_import.main 동형).
 """
 from __future__ import annotations
+from pm_engine.infra import lease_store
 from pm_engine.app import repo_protection
 from pm_engine.infra import pm_paths
 
@@ -300,33 +301,23 @@ def test_pm_config_local_leased_sessions_removed(pc):
 
 
 def test_default_session_delegates_to_identity_args_leased_sessions(pc, tmp_path, monkeypatch):
-    """`_default_session` 이 리스 장부 읽기를 주입된 `identity_args` 대역의 `leased_sessions`
-    로 위임한다 — 배선(호출 인자·반환값 사용) 단언. 장부 경로는 `REPO`(monkeypatch) 기준으로
-    호출 시점 구성됨도 함께 확인한다.
-    """
+    """공용 session_name이 명시 Home의 장부 경로와 leased_sessions 결과를 사용한다."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     calls = []
 
-    class FakeIdentity:
-        @staticmethod
-        def leased_sessions(leases_file):
-            calls.append(leases_file)
-            return ["svc_1"]
+    def leased_sessions(leases_file):
+        calls.append(leases_file)
+        return ["svc_1"]
 
-    assert pc._default_session(identity=FakeIdentity()) == "svc_1"
+    monkeypatch.setattr(lease_store, "leased_sessions", leased_sessions)
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "svc_1"
     assert calls == [tmp_path / ".project_manager" / ".local" / "worktree-leases.json"]
 
 
 def test_default_session_identity_leased_zero_is_unresolved(pc, tmp_path, monkeypatch):
-    """주입 대역이 leased 0개를 돌려주면 conf `session=` 이 있어도 미해소(None)다 (T-0779).
-
-    identity_args 위임 뒤에도 `_default_session` 의 남은 우선순위는 env·단일-lease·단일-등록
-    (F-002 공유 술어)뿐이며, per-clone conf 로 떨어지는 층은 없다. 대역의
-    `single_registration_session` 은 등록 repo 0개(미주입)를 그대로 반영해 None — 실 모듈의
-    동형 계약을 대역이 어긋나게 흉내내지 않는다(interface drift 방지).
-    """
+    """공용 장부 조회가 빈 결과면 local.conf session 값과 무관하게 미해소를 반환한다."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -334,25 +325,17 @@ def test_default_session_identity_leased_zero_is_unresolved(pc, tmp_path, monkey
     pm_dir.mkdir(parents=True, exist_ok=True)
     (pm_dir / "local.conf").write_text("session=from-conf\n", encoding="utf-8")
 
-    class FakeIdentityEmpty:
-        @staticmethod
-        def leased_sessions(leases_file):
-            return []
-
-        @staticmethod
-        def single_registration_session(registered_repos, leases_file):
-            return None
-
-    assert pc._default_session(identity=FakeIdentityEmpty()) is None
+    monkeypatch.setattr(lease_store, "leased_sessions", lambda leases_file: [])
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
 
 
 def test_default_session_no_identity_injected_uses_real_module(pc, tmp_path, monkeypatch):
-    """`identity=` 미주입 시 실 `lease_store` 모듈로 동작한다(스크립트 직접 실행과 동일 경로)."""
+    """장부와 설정이 없는 임시 Home에서 공용 조회가 미해소를 반환한다."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     # 장부·local.conf 둘 다 부재 → 미해소(None) — 크래시 없이 실 모듈 경로가 동작함을 확인.
-    assert pc._default_session() is None
+    assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
 
 
 # ── sync-adapter-config --check 수렴 게이트 (T-0591) ─────────────────────────

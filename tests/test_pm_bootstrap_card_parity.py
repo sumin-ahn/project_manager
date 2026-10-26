@@ -32,6 +32,12 @@ skill(`/pm-…`) 줄은 CLI 가 아니라 대상 밖(backbone 강등 `python3 �
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_card
+from pm_engine.infra import fs
+from pm_engine.infra import pm_paths
+from pm_engine.infra import python_env
+
 import argparse
 import importlib.util
 from pathlib import Path
@@ -56,7 +62,7 @@ _IDENTITY_FLAGS = frozenset({"--task"})
 
 
 def _load(tools_dir: Path, name: str):
-    spec = importlib.util.spec_from_file_location(f"{tools_dir.parent.parent.name}_{name}",
+    spec = importlib.util.spec_from_file_location(f"{tools_dir.parent.parent.name}_{name.replace('/', '_')}",
                                                   tools_dir / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -91,7 +97,11 @@ def _leaves_by_tool(tools_dir: Path) -> dict[str, dict[tuple, set]]:
     """파서-backed 도구별 {leaf: options}. 도구명(파일명) → leaf-options 맵."""
     result: dict[str, dict[tuple, set]] = {}
     for tool in _PARSER_TOOLS:
-        mod = _load(tools_dir, tool[:-3])  # strip ".py"
+        implementation = {
+            "pm_handoff.py": "pm_engine/cli/handoff",
+            "pm_log.py": "pm_engine/cli/log",
+        }.get(tool, tool[:-3])
+        mod = _load(tools_dir, implementation)
         result[tool] = _leaf_options(mod.build_parser())
     return result
 
@@ -115,13 +125,13 @@ def _resolve_leaf(leaf_options: dict[tuple, set], tokens: list[str]) -> tuple:
 
 # ── 카드 CLI 줄 추출 ─────────────────────────────────────────────────────────
 
-def _card_cli_commands(card: str, bootstrap) -> list[tuple[str, list[str]]]:
+def _card_cli_commands(card: str, bootstrap, *, tmp_path) -> list[tuple[str, list[str]]]:
     """카드에서 설정으로 해소된 도구 접두의 줄만 (tool, arg-tokens) 로 추출.
 
     engine 강등 줄(2-스페이스 들여쓰기)·주석(`# …`)을 벗겨 CLI 인자만. skill(`/pm-…`) 줄·평문
     note(`↳ …`)는 도구 접두로 시작하지 않아 제외한다.
     """
-    card_prefix = bootstrap._resolve_card_tool_invoke() + "/"
+    card_prefix = bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path)) + "/"
     out: list[tuple[str, list[str]]] = []
     for raw in card.splitlines():
         s = raw.strip()
@@ -136,11 +146,11 @@ def _card_cli_commands(card: str, bootstrap) -> list[tuple[str, list[str]]]:
     return out
 
 
-def _render_card(bootstrap) -> str:
+def _render_card(bootstrap, *, tmp_path) -> str:
     """카드 렌더 — 정체성은 task 이름 하나다."""
-    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+    inst = bootstrap_cli.PmBootstrap.__new__(bootstrap_cli.PmBootstrap)
     inst._task_name = "refactor"
-    return inst._build_command_card_markdown()
+    return bootstrap_card._build_command_card_markdown(pm_paths.home_at(tmp_path), getattr(inst, '_task_name', None), environment=getattr(inst, '_command_environment', None))
 
 
 def _tool_reference_lines(card: str) -> list[str]:
@@ -161,9 +171,8 @@ def test_card_uses_local_interpreter_for_every_tool_reference(tmp_path, monkeypa
     (conf_dir / "local.conf").write_text(
         "session=demo\nruntime.py=python\n", encoding="utf-8"
     )
-    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
 
-    cards = _render_card(bootstrap)
+    cards = _render_card(bootstrap, tmp_path=tmp_path)
     references = _tool_reference_lines(cards)
     assert references, "카드의 Python 도구 참조가 비어 표기 검사가 공허함"
     assert all("python .project_manager/tools/" in line for line in references)
@@ -180,12 +189,11 @@ def test_card_interpreter_missing_or_empty_uses_platform_default(
         conf_dir = tmp_path / ".project_manager"
         conf_dir.mkdir()
         (conf_dir / "local.conf").write_text(conf_text, encoding="utf-8")
-    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
 
-    cards = _render_card(bootstrap)
+    cards = _render_card(bootstrap, tmp_path=tmp_path)
     references = _tool_reference_lines(cards)
     assert references, "카드의 Python 도구 참조가 비어 폴백 검사가 공허함"
-    expected = bootstrap._resolve_card_tool_invoke(tmp_path)
+    expected = bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path))
     assert all(expected in line for line in references)
 
 
@@ -196,9 +204,8 @@ def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypat
     conf_dir.mkdir()
     conf_path = conf_dir / "local.conf"
     conf_path.write_text("runtime.py=python\n", encoding="utf-8")
-    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
-    seam = bootstrap.fs
+    seam = fs
     original_read_text = seam.read_text_shared
 
     def fail_for_local_conf(path, *args, **kwargs):
@@ -207,11 +214,9 @@ def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypat
         return original_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(seam, "read_text_shared", fail_for_local_conf)
-    expected = bootstrap._detect_command_environment(tmp_path)
+    expected = python_env._detect_command_environment(pm_paths.home_at(tmp_path))
     assert expected.python_source == "os-default"
-    assert bootstrap._resolve_card_tool_invoke() == bootstrap._resolve_card_tool_invoke(
-        environment=expected
-    )
+    assert bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path)) == bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path), environment=expected)
 
 
 # ── 1. 정의서 → 파서 (카드 토큰이 실 CLI 에 있나·양방향 forward) ────────────────
@@ -234,7 +239,7 @@ def test_definition_leaves_and_flags_exist_in_parser(tree):
     leaves = _leaves_by_tool(tools_dir)
 
     checked = 0
-    for rec in bootstrap._CARD_TASK_CLI:
+    for rec in bootstrap_card._CARD_TASK_CLI:
         if rec.tool not in leaves:
             continue  # 파서 없는 도구(additional_reviewer 등) — 강제 제외.
         leaf_opts = leaves[rec.tool]
@@ -274,7 +279,7 @@ def _strip_identity(tokens: list[str]) -> str:
 
 
 @pytest.mark.parametrize("tree", list(_TREES))
-def test_card_render_matches_definition(tree):
+def test_card_render_matches_definition(tree, *, tmp_path):
     """각 모드 카드가 렌더한 **(도구, base-render)** 집합 == 그 모드 정의서 집합 (누락·잉여 둘 다 red).
 
     카드→정의서: 카드가 정의서 밖 커맨드를 지어내지 않음. 정의서→카드: 정의서 커맨드가 전부
@@ -286,16 +291,16 @@ def test_card_render_matches_definition(tree):
     """
     tools_dir = _TREES[tree]
     bootstrap = _load(tools_dir, "pm_bootstrap")
-    records = bootstrap._CARD_TASK_CLI
+    records = bootstrap_card._CARD_TASK_CLI
 
     # 정의서 측 (tool, render) 집합.
     declared = {(rec.tool, rec.render) for rec in records}
 
     # 카드 측 (tool, base-render) 집합 — 정체성 실값만 벗기고 나머지 인자 문자열 정확 대조.
-    card = _render_card(bootstrap)
+    card = _render_card(bootstrap, tmp_path=tmp_path)
     rendered = {
         (tool, _strip_identity(tokens))
-        for tool, tokens in _card_cli_commands(card, bootstrap)
+        for tool, tokens in _card_cli_commands(card, bootstrap, tmp_path=tmp_path)
     }
 
     missing = declared - rendered  # 정의서엔 있으나 카드 미렌더/변형.
@@ -311,7 +316,7 @@ def test_card_render_matches_definition(tree):
 
 
 @pytest.mark.parametrize("tree", list(_TREES))
-def test_card_rendered_flags_exist_in_parser(tree):
+def test_card_rendered_flags_exist_in_parser(tree, *, tmp_path):
     """카드가 렌더한 각 CLI 줄의 비-정체성 flag 가 그 leaf 에 실 등록됐다(카드→파서 flag 방향).
 
     카드 텍스트에서 직접 뽑은 `--flag`(정체성 `--repo/--slot/--task` 제외)가 파서 leaf 옵션에
@@ -320,9 +325,9 @@ def test_card_rendered_flags_exist_in_parser(tree):
     tools_dir = _TREES[tree]
     bootstrap = _load(tools_dir, "pm_bootstrap")
     leaves = _leaves_by_tool(tools_dir)
-    card = _render_card(bootstrap)
+    card = _render_card(bootstrap, tmp_path=tmp_path)
 
-    for tool, tokens in _card_cli_commands(card, bootstrap):
+    for tool, tokens in _card_cli_commands(card, bootstrap, tmp_path=tmp_path):
         if tool not in leaves:
             continue
         leaf = _resolve_leaf(leaves[tool], tokens)
@@ -351,7 +356,7 @@ def test_task_mode_covers_new_task_commands():
     `list`(+`--task` 정체성 suffix·base render `list`)로 렌더된다.)
     """
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
-    declared = {(rec.tool, rec.subpath) for rec in bootstrap._CARD_TASK_CLI}
+    declared = {(rec.tool, rec.subpath) for rec in bootstrap_card._CARD_TASK_CLI}
     required = {
         ("pm_config.py", ("alloc",)),
         ("pm_config.py", ("release",)),
@@ -380,19 +385,19 @@ def test_comparator_detects_bogus_flag_and_leaf():
     assert ("list",) in board_leaves and "--mine" in board_leaves[("list",)]
 
 
-def test_render_granularity_detects_same_leaf_variant_removal():
+def test_render_granularity_detects_same_leaf_variant_removal(*, tmp_path):
     """(tool, render) 대조가 같은 leaf 의 render 변종 제거를 실제로 잡는지 (reviewer mutation·non-vacuous).
 
     leaf-set 대조는 `list --mine`(leaf `list`)를 삭제해도 `list`(전체 보드·같은 leaf)가 남아 통과했다.
     render 급은 `(board.py, "list --mine")` ≠ `(board.py, "list")` 라 삭제가 mismatch 로 잡힌다.
     """
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
-    card = _render_card(bootstrap)
+    card = _render_card(bootstrap, tmp_path=tmp_path)
     rendered = {
         (tool, _strip_identity(tokens))
-        for tool, tokens in _card_cli_commands(card, bootstrap)
+        for tool, tokens in _card_cli_commands(card, bootstrap, tmp_path=tmp_path)
     }
-    declared = {(rec.tool, rec.render) for rec in bootstrap._CARD_TASK_CLI}
+    declared = {(rec.tool, rec.render) for rec in bootstrap_card._CARD_TASK_CLI}
     assert declared == rendered  # baseline green.
     # `list --mine` 줄을 제거한 카드는 leaf `list`(전체 보드)가 남아도 render 대조가 red.
     variant = ("board.py", "list --mine")
@@ -404,7 +409,7 @@ def test_render_granularity_detects_same_leaf_variant_removal():
 def test_card_definition_non_empty():
     """카드 정의서가 비어있지 않다(공허 스코프 → 카드↔정의서 대조 무의미)."""
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
-    assert bootstrap._CARD_TASK_CLI, "카드 정의서가 비었다(가드 vacuous)"
+    assert bootstrap_card._CARD_TASK_CLI, "카드 정의서가 비었다(가드 vacuous)"
 
 
 # ── 5. ㉓ 하네스 파리티 (템플릿 사본이 같은 정의서·같은 파서와 정합) ────────────
@@ -417,9 +422,9 @@ def test_template_copies_share_engine_definition():
     같은 카드) → 어댑터 md 분기 0. 사본이 stale 하면 여기서 red(drift-0 은 pm_update 가 강제하나
     이 가드가 카드-표면 관점에서 이중화).
     """
-    root = _load(_TREES["root"], "pm_bootstrap")
+    root = _load(_TREES["root"], "pm_engine/cli/bootstrap_card")
     root_decl = {(r.tool, r.subpath, r.render, r.flags) for r in root._CARD_TASK_CLI}
     for tree in ("claude_code", "opencode"):
-        mod = _load(_TREES[tree], "pm_bootstrap")
+        mod = _load(_TREES[tree], "pm_engine/cli/bootstrap_card")
         decl = {(r.tool, r.subpath, r.render, r.flags) for r in mod._CARD_TASK_CLI}
         assert decl == root_decl, f"{tree} 템플릿 카드 정의서가 루트와 drift(사본 stale)"

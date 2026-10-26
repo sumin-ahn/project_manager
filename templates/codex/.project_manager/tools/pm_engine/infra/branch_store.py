@@ -560,7 +560,7 @@ def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunne
         (`--branch` rc 0 이 곧 안전은 아니라는 가정).
 
     ⚠ **이 함수가 브랜치명 수용 규칙의 단일 진실**이다 — 0단계 remedy 의 *후보 생성* 쪽
-    (`pm_bootstrap._remedy_branch_ref_ok` → `_remedy_branch_name`)도 판정을 따로 구현하지 않고 이
+    (`bootstrap_slots._remedy_branch_ref_ok` → `_remedy_branch_name`)도 판정을 따로 구현하지 않고 이
     함수를 호출한다(제안 쪽과 실행 쪽이 갈리면 안내가 곧바로 실행 불가·codex 게이트 must-fix)."""
     def resolve(name: str) -> "str | None":
         try:
@@ -596,7 +596,7 @@ def _branch_protected_upstream(branch: str, protected: "list[str]", *,
                                git_runner: worktree_records.GitRunner) -> "str | None":
     """기존 브랜치 `branch` 의 `@{upstream}` 이 **보호 브랜치 원격**이면 그 upstream 명, 아니면 None.
 
-    0단계 main-참조 판정의 **축 2**(`pm_bootstrap._phase0_protected_upstream`·)와 같은 규칙이다:
+    0단계 main-참조 판정의 **축 2**(`bootstrap_slots._phase0_protected_upstream`·)와 같은 규칙이다:
     upstream `<remote>/<branch>` 의 branch 부분(첫 `/` 이후·`feature/x` 도 보존)이 보호목록이면
     main-참조. 자기 feature 브랜치 추적(`origin/a5`)은 정상 작업 슬롯이라 통과시킨다(오탐 0).
 

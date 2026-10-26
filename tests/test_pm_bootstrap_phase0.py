@@ -23,6 +23,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+
 from _pool_seams import bind_board, bind_pool
 
 import importlib.util
@@ -261,7 +263,6 @@ class _OldPool(_Pool):
 
 def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
     """격리된 PmBootstrap. board/git/log/areas/pm_state 를 hermetic stub 으로 두고 pool 을 주입한다."""
-    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     monkeypatch.setattr(areas_store, "_repo_base", lambda _home, _repo: "main")
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
@@ -287,16 +288,7 @@ def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
 
     bind_pool(monkeypatch, worktree_pool)
     bind_board(monkeypatch, board)
-    return bootstrap.PmBootstrap(
-        run_board_fn=fake_board,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨")),
-        run_git_fn=fake_git,
-        log_file=log_file,
-        areas_file=areas_file,
-
-
-        pm_state_file=pm_state_file,
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=fake_git, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file)
 
 
 # ── 1. 엔진 앵커 (무조건·task 바인딩보다 먼저) ────────────────────────────────
@@ -321,7 +313,7 @@ def test_anchor_consumes_pm_home_guard_with_repo(bootstrap, monkeypatch, tmp_pat
     board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home="/home/x/pm_home"))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
     inst.run(task="mytask")
-    assert board.anchor_calls == [pm_paths.home_at(bootstrap.REPO)], "앵커 판정을 REPO 로 board 가드에 위임하지 않음"
+    assert board.anchor_calls == [pm_paths.home_at(tmp_path)], "앵커 판정을 REPO 로 board 가드에 위임하지 않음"
 
 
 def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):

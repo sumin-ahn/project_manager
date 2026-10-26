@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.infra import pm_paths
+
 import ast
 import importlib.util
 import re
@@ -147,13 +150,13 @@ def test_all_tool_modules_have_no_hardcoded_slash_skill_output_string():
 
 
 def test_bootstrap_is_in_mechanically_derived_runtime_modules():
-    assert "pm_bootstrap" in RUNTIME_MODULES
+    assert "pm_engine/cli/bootstrap_card" in RUNTIME_MODULES
 
 
-def test_bootstrap_task_pytest_stop_uses_codex_notation(monkeypatch, capsys):
+def test_bootstrap_task_pytest_stop_uses_codex_notation(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("CODEX_CI", "1")
     bootstrap = _load("pm_bootstrap")
-    inst = bootstrap.PmBootstrap(run_git_fn=lambda _args: (0, ""))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda _args: (0, ''))
     inst._task_name = "probe"
     inst._task_workspace_slots = ()
     with pytest.raises(SystemExit):

@@ -66,3 +66,39 @@ def append_log_locked(path: Path, text: str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fs.append_atomic(path, text)
+
+import os
+import re
+import uuid
+
+def next_archive_index(archive_dir: Path) -> int:
+    """archive/ 의 다음 슬라이스 정수 인덱스. 0000 은 legacy 예약이므로 최소 1."""
+    max_idx = 0
+    if archive_dir.exists():
+        for p in archive_dir.glob("[0-9][0-9][0-9][0-9]-*.md"):
+            m = re.match(r"(\d{4})-", p.name)
+            if m:
+                max_idx = max(max_idx, int(m.group(1)))
+    return max(max_idx + 1, 1)
+
+
+def _replace_atomic(path: Path, text: str) -> None:
+    """같은 디렉터리의 임시 파일을 쓴 뒤 `fs.atomic_replace`로 원자 교체한다."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        # newline=""은 입력 문자열의 LF/CRLF/mixed newline bytes를 그대로 인코딩한다.
+        # read-modify-write 소비자가 PM 작성 본문을 byte-preserve할 때 플랫폼 개행 변환으로
+        # 범위 밖 bytes가 흔들리지 않게 한다.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        fs.atomic_replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _read_text_exact(path: Path) -> str:
+    """UTF-8 파일을 universal-newline 변환 없이 읽어 CRLF/mixed bytes를 보존한다."""
+    return fs.read_bytes_shared(Path(path)).decode("utf-8")

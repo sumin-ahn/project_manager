@@ -29,6 +29,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.cli.handoff
+
+from pm_engine.cli import bootstrap as bootstrap_cli
+
 import argparse
 import importlib.util
 import re
@@ -83,8 +88,8 @@ def tool_parsers():
     ticket_finish = _load_tool("ticket_finish.py")
     return {
         "board.py": (board.build_parser(), ["claim", "T-0001"]),
-        "pm_bootstrap.py": (pm_bootstrap.build_parser(), []),
-        "pm_handoff.py": (pm_handoff.build_parser(), []),
+        "pm_bootstrap.py": (bootstrap_cli.build_parser(), []),
+        "pm_handoff.py": (pm_engine.cli.handoff.build_parser(), []),
         "ticket_finish.py": (ticket_finish.build_parser(), ["T-0001"]),
     }
 

@@ -176,13 +176,12 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
 
     T-0729 가 더했던 **공유 읽기 강등** 경계(`shared_read_seam`)는 T-0963 이 지웠다 — 공용 읽기가
     패키지(`pm_engine.infra.fs`) import 로 바뀌어 판독 경로에 형제 로드가 없다. `pm_log` 는
-    다른 흡수 경계로 남는다."""
+    패키지 전환으로 형제 적재 복구 경계를 갖지 않는다."""
     owners = sorted(
         path.name for path in TOOLS.glob("*.py")
         if "_ENGINE_REV_SKEW_RECOVERY_REASONS" in path.read_text(encoding="utf-8")
         )
     assert owners == [
-        "pm_log.py",
     ]
 
 

@@ -17,6 +17,8 @@ r"""경로 표기 직렬화 규칙의 **사본 대조** — 확장 길이 prefix
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap_report
+
 import importlib.util
 from pathlib import Path, PureWindowsPath
 
@@ -88,7 +90,7 @@ def test_posix_serialization_alone_does_not_close_the_prefix_axis(modules, monke
     extended = PureWindowsPath("\\\\?\\C:\\pm\\a.md")
 
     assert extended.as_posix().startswith(EXTENDED_PREFIX_SLASH)
-    assert bootstrap._display_path_text(extended).startswith(EXTENDED_PREFIX_SLASH)
+    assert bootstrap_report._display_path_text(extended).startswith(EXTENDED_PREFIX_SLASH)
     monkeypatch.setattr(pm_import, "_WINDOWS_PATH_NOTATION", True)
     assert not pm_import._path_notation_text(extended.as_posix()).startswith(
         EXTENDED_PREFIX_SLASH)
@@ -107,7 +109,7 @@ def test_the_three_serializers_agree_on_the_same_slot_path(modules, tmp_path):
     relative = Path("work/proj_1")
 
     texts = {
-        "pm_bootstrap": bootstrap._display_path_text(relative),
+        "pm_bootstrap": bootstrap_report._display_path_text(relative),
         "pm_import": Path(pm_import._path_notation_text(relative)).as_posix(),
     }
 

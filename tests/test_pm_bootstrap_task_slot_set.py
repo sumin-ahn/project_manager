@@ -10,6 +10,10 @@ worktree_pool 은 **DI mock**(실 장부/git 미접촉·folder 존재는 tmp 실
 bootstrap_phase0.py 의 hermetic DI 패턴 동류.
 """
 from __future__ import annotations
+
+from pm_engine.app import bootstrap_slots
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_report
 from pm_engine.domain import home as home_module
 
 from _pool_seams import bind_board, bind_pool
@@ -233,7 +237,6 @@ class _TaskPool:
 def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=None, git_fn=None, monkeypatch):
     """격리 PmBootstrap — board/git/log/areas/pm_state hermetic stub + pool 주입."""
     monkeypatch.setattr(areas_store, "_repo_base", lambda _home, _repo: "main")
-    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
@@ -258,16 +261,7 @@ def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=Non
 
     bind_pool(monkeypatch, pool)
     bind_board(monkeypatch, board or bind_board(monkeypatch, _FakeBoard()))
-    return bootstrap.PmBootstrap(
-        run_board_fn=board_fn or fake_board,
-        run_pytest_fn=pytest_fn or (lambda: (_ for _ in ()).throw(AssertionError("pytest 호출 안 됨"))),
-        run_git_fn=git_fn or fake_git,
-        log_file=log_file,
-        areas_file=areas_file,
-
-
-        pm_state_file=pm_state_file,
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn or fake_board, run_pytest_fn=pytest_fn or (lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨'))), run_git_fn=git_fn or fake_git, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file)
 
 
 # ── 1. 열거 — 0 / 1 / N 슬롯 ─────────────────────────────────────────────────
@@ -424,7 +418,7 @@ def test_task_zero_slots_cwd_stops_at_pm_home(bootstrap, tmp_path, monkeypatch):
         "_auto_slot",
         lambda _home: (_ for _ in ()).throw(AssertionError("task-only가 전역 auto-slot을 호출함")),
     )
-    assert inst._worktree_cwd() == str(bootstrap.REPO)
+    assert inst._worktree_cwd() == str(tmp_path)
 
 
 def test_task_only_first_turn_uses_current_task_pm_state_path(bootstrap, tmp_path, monkeypatch, capsys):
@@ -436,7 +430,7 @@ def test_task_only_first_turn_uses_current_task_pm_state_path(bootstrap, tmp_pat
     assert inst.run(task="mytask") == 0
     first_turn = capsys.readouterr().out.split("### 권장 첫 turn", 1)[1]
     # 표기는 엔진 직렬화(POSIX 단일)로 만든다 — `str(Path)` 로 만들면 Windows 에서만 갈린다.
-    task_state = bootstrap._display_path_text(pm_paths.task_dir(pm_paths.home_at(bootstrap.REPO), "mytask") / "pm_state.md")
+    task_state = bootstrap_report._display_path_text(pm_paths.task_dir(pm_paths.home_at(tmp_path), "mytask") / "pm_state.md")
 
     assert task_state in first_turn
     assert ".project_manager/.local/slots/other_task_repo_9/pm_state.md" not in first_turn
@@ -466,7 +460,7 @@ def test_task_single_slot_becomes_git_cwd_before_collection(
     assert inst.run(task="mytask") == 0
     capsys.readouterr()
     assert inst._task_workspace_slots == ("work/A_1",)
-    assert git_cwds == [str(bootstrap.REPO / "work/A_1")]
+    assert git_cwds == [str(tmp_path / "work/A_1")]
 
 
 def test_task_multiple_slots_use_deterministic_git_and_all_freshness(
@@ -497,9 +491,9 @@ def test_task_multiple_slots_use_deterministic_git_and_all_freshness(
     assert inst.run(task="mytask") == 0
     out = capsys.readouterr().out
     assert inst._task_workspace_slots == ("work/A_1", "work/B_2")
-    assert git_cwds == [str(bootstrap.REPO / "work/A_1")]
-    assert str(bootstrap.REPO / "work/A_1") in fetched_dirs
-    assert str(bootstrap.REPO / "work/B_2") in fetched_dirs
+    assert git_cwds == [str(tmp_path / "work/A_1")]
+    assert str(tmp_path / "work/A_1") in fetched_dirs
+    assert str(tmp_path / "work/B_2") in fetched_dirs
     assert "task Git 대표 cwd: `work/A_1`" in out
     assert "freshness/회귀는 전수" in out
 
@@ -524,8 +518,8 @@ def test_task_multiple_slots_with_pytest_runs_all_owned_workspaces(
     assert inst.run(task="mytask", with_pytest=True) == 0
     out = capsys.readouterr().out
     assert pytest_cwds == [
-        str(bootstrap.REPO / "work/A_1"),
-        str(bootstrap.REPO / "work/B_2"),
+        str(tmp_path / "work/A_1"),
+        str(tmp_path / "work/B_2"),
     ]
     assert "회귀: 2 / 2 통과 (task 작업공간 2개 전수)" in out
 
@@ -561,8 +555,8 @@ def test_task_pytest_failure_in_any_slot_blocks_immediately(
 
     assert exc.value.code == 1
     assert pytest_cwds == [
-        str(bootstrap.REPO / "work/A_1"),
-        str(bootstrap.REPO / "work/B_2"),
+        str(tmp_path / "work/A_1"),
+        str(tmp_path / "work/B_2"),
     ], "실패 뒤 다음 슬롯까지 실행해 합산했다"
     captured = capsys.readouterr()
     assert "pytest 회귀 실패 (slot=work/B_2)" in captured.err
@@ -853,6 +847,6 @@ def test_sensitivity_stale_detection_flips(bootstrap, tmp_path, capsys, monkeypa
                      missing_dirs=("work/A_1",), branches={"work/A_1": "a5"}))
     inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
     # 배선 무력화 — 폴더가 항상 실재한다고 보면 stale fault 가 사라진다.
-    monkeypatch.setattr(inst, "_phase0_slot_folder_exists", lambda slot: True)
+    monkeypatch.setattr(bootstrap_slots, "_phase0_slot_folder_exists", lambda _home, slot: True)
     rc = inst.run(task="mytask")
     assert rc == 0, "폴더 실재 검사를 무력화했는데도 차단됐다(stale 판정이 그 프리미티브 소비가 아님)"

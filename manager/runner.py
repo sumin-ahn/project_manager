@@ -41,7 +41,7 @@ def conf_values(pm_home: Path | str) -> dict[str, str]:
 
 
 def interpreter(pm_home: Path | str, *, os_name: str = os.name) -> tuple[str, ...]:
-    """사본을 부를 인터프리터 argv — 엔진 `pm_bootstrap._resolve_python_argv` 와 같은 규칙.
+    """사본을 부를 인터프리터 argv — 엔진 `pm_engine.infra.python_env._resolve_python_argv` 와 같은 규칙.
 
     비어 있지 않은 `runtime.py` 는 실행 토큰 **한 개** 그대로다(`python3` 같은 PATH 이름과
     절대경로 둘 다 실측된다 · `Path` 로 감싸면 이름이 상대경로가 되어 깨진다). 빈 값이면 OS

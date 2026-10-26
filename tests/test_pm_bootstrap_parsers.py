@@ -13,6 +13,12 @@ happy-path + 최소 1 edge(빈 문자열·malformed·한글/로캘).
 """
 from __future__ import annotations
 
+from pm_engine.app import bootstrap_history
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_report
+from pm_engine.domain import bootstrap_rules
+from pm_engine.domain import log_entries
+
 from pm_engine.infra import pm_paths
 
 
@@ -130,7 +136,7 @@ _BOARD_OUTPUT = """\
 
 def test_parse_board_counts_happy():
     mod = _load_module()
-    counts = mod.parse_board_counts(_BOARD_OUTPUT)
+    counts = bootstrap_rules.parse_board_counts(_BOARD_OUTPUT)
     assert counts == {"open": 2, "claimed": 1, "blocked": 1, "done": 2, "discarded": 0}
 
 
@@ -140,14 +146,14 @@ def test_parse_board_counts_empty():
     골격 키는 `ticket_rules.STATUS_DIRS` 파생이라 손으로 적은 4버킷이 아니다(T-0839).
     """
     mod = _load_module()
-    assert mod.parse_board_counts("") == dict.fromkeys(ticket_rules.STATUS_DIRS, 0)
+    assert bootstrap_rules.parse_board_counts("") == dict.fromkeys(ticket_rules.STATUS_DIRS, 0)
 
 
 def test_parse_board_counts_ignores_unknown_status():
     """board 가 모르는 status 토큰(예: archived)은 무시된다 — `STATUS_DIRS` 키만 카운트."""
     mod = _load_module()
     out = "  [archived] T-0099  옛날 ticket  pm  old\n  [open   ] T-0100  새 ticket  -  new\n"
-    counts = mod.parse_board_counts(out)
+    counts = bootstrap_rules.parse_board_counts(out)
     expected = dict.fromkeys(ticket_rules.STATUS_DIRS, 0) | {"open": 1}
     assert counts == expected
 
@@ -156,14 +162,14 @@ def test_parse_board_counts_ignores_unknown_status():
 
 def test_parse_open_tickets_happy():
     mod = _load_module()
-    assert mod.parse_open_tickets(_BOARD_OUTPUT) == ["T-0010", "T-0026"]
+    assert bootstrap_rules.parse_open_tickets(_BOARD_OUTPUT) == ["T-0010", "T-0026"]
 
 
 def test_parse_open_tickets_none_open():
     """open 이 하나도 없으면 빈 목록 (claimed/blocked/done 은 제외)."""
     mod = _load_module()
     out = "  [done   ] T-0001  x  pm  t\n  [claimed] T-0002  y  pm  t\n"
-    assert mod.parse_open_tickets(out) == []
+    assert bootstrap_rules.parse_open_tickets(out) == []
 
 
 def test_parse_open_tickets_prefixed_ids():
@@ -182,7 +188,7 @@ def test_parse_open_tickets_prefixed_ids():
         "  [open   ] T-0164          legacy 4자리   -  legacy\n"
         "  [claimed] T-PAY-002       진행 중        pm  pay\n"
     )
-    assert mod.parse_open_tickets(out) == [
+    assert bootstrap_rules.parse_open_tickets(out) == [
         "T-PAY-001",
         "T-service-a-001",
         "T-P0-001",
@@ -205,18 +211,18 @@ def test_parse_open_tickets_grammar_matches_board():
         tid = f"T-{prefix}-001"
         assert ticket_rules._ticket_prefix(tid) == prefix  # board grammar 가 prefix 로 인정
         out = f"  [open   ] {tid}  t  -  tag\n"
-        assert mod.parse_open_tickets(out) == [tid]
+        assert bootstrap_rules.parse_open_tickets(out) == [tid]
     # legacy(prefix 없음)도 양쪽에서 일관 — board 는 None, 부트스트랩은 open 으로 잡음.
     # legacy 4자리(`T-0164`·하이픈 1개) vs 숫자 prefix(`T-123-001`·하이픈 2개) 구조적 비충돌.
     assert ticket_rules._ticket_prefix("T-0164") is None
-    assert mod.parse_open_tickets("  [open   ] T-0164  t  -  tag\n") == ["T-0164"]
+    assert bootstrap_rules.parse_open_tickets("  [open   ] T-0164  t  -  tag\n") == ["T-0164"]
 
 
 # ── parse_lint_result ───────────────────────────────────────────────────────
 
 def test_parse_lint_result_clean():
     mod = _load_module()
-    assert mod.parse_lint_result("✓ no lint issues") == "clean"
+    assert bootstrap_report.parse_lint_result("✓ no lint issues") == "clean"
 
 
 def test_parse_lint_result_warnings():
@@ -227,13 +233,13 @@ def test_parse_lint_result_warnings():
         "  [thin-ticket] T-0002: thin ticket\n"
         "  [dangling-wikilink] T-0003: wikilink 깨짐\n"
     )
-    assert mod.parse_lint_result(out) == "3 warnings"
+    assert bootstrap_report.parse_lint_result(out) == "3 warnings"
 
 
 def test_parse_lint_result_empty_is_clean():
     """빈 입력 → 경고 0 → 'clean' (현재 구현 동작)."""
     mod = _load_module()
-    assert mod.parse_lint_result("") == "clean"
+    assert bootstrap_report.parse_lint_result("") == "clean"
 
 
 def test_parse_lint_result_gate_header_excluded():
@@ -249,7 +255,7 @@ def test_parse_lint_result_gate_header_excluded():
         "    [status-done-accum] T-0002: status drift\n"
         "  ✗ [dangling-wikilink] T-0003: 깨진 링크\n"
     )
-    assert mod.parse_lint_result(out) == "3 warnings"
+    assert bootstrap_report.parse_lint_result(out) == "3 warnings"
 
 
 def test_parse_lint_result_clean_marker_is_line_anchored():
@@ -267,10 +273,10 @@ def test_parse_lint_result_clean_marker_is_line_anchored():
         "  [render-leak] b.md: y\n"
         "  [render-leak] c.md: z\n"
     )
-    assert mod.parse_lint_result(poisoned) == "3 warnings"
+    assert bootstrap_report.parse_lint_result(poisoned) == "3 warnings"
     # 진짜 clean 은 앵커 줄이 있든 없든 clean.
-    assert mod.parse_lint_result("repo 앵커: /home/u/repo (PM 홈)\n\u2713 no lint issues\n") == "clean"
-    assert mod.parse_lint_result("\u2713 no lint issues\n") == "clean"
+    assert bootstrap_report.parse_lint_result("repo 앵커: /home/u/repo (PM 홈)\n\u2713 no lint issues\n") == "clean"
+    assert bootstrap_report.parse_lint_result("\u2713 no lint issues\n") == "clean"
 
 
 def test_parse_lint_result_gate_advisory_only():
@@ -281,7 +287,7 @@ def test_parse_lint_result_gate_advisory_only():
         "    [unstable-ref-advice] T-0001: 슬러그 참조 권고\n"
         "    [status-done-accum] T-0002: status drift\n"
     )
-    assert mod.parse_lint_result(out) == "2 warnings"
+    assert bootstrap_report.parse_lint_result(out) == "2 warnings"
 
 
 @pytest.mark.parametrize("lint_argv", [["lint"], ["lint", "--gate"]])
@@ -321,27 +327,27 @@ def test_parse_lint_result_matches_actual_board_lint_output(
         assert re.search(r"^  ✗ \[dangling-wikilink\] ", output, re.MULTILINE)
         assert re.search(r"^    \[unstable-ref-advice\] ", output, re.MULTILINE)
     expected = f"{summary.group(1)} warnings"
-    assert mod.parse_lint_result(output) == expected
+    assert bootstrap_report.parse_lint_result(output) == expected
 
 
 # ── parse_pytest_counts ─────────────────────────────────────────────────────
 
 def test_parse_pytest_counts_passed_only():
     mod = _load_module()
-    assert mod.parse_pytest_counts("279 passed in 6.55s") == (279, 279)
+    assert bootstrap_rules.parse_pytest_counts("279 passed in 6.55s") == (279, 279)
 
 
 def test_parse_pytest_counts_with_failures():
     """passed + failed → total = passed + failed."""
     mod = _load_module()
-    assert mod.parse_pytest_counts("3 failed, 276 passed in 6.55s") == (276, 279)
+    assert bootstrap_rules.parse_pytest_counts("3 failed, 276 passed in 6.55s") == (276, 279)
 
 
 def test_parse_pytest_counts_no_passed_is_none():
     """'passed' 토큰이 없으면 None (예: collection error·빈 입력)."""
     mod = _load_module()
-    assert mod.parse_pytest_counts("ERROR: no tests collected") is None
-    assert mod.parse_pytest_counts("") is None
+    assert bootstrap_rules.parse_pytest_counts("ERROR: no tests collected") is None
+    assert bootstrap_rules.parse_pytest_counts("") is None
 
 
 # ── parse_git_log ───────────────────────────────────────────────────────────
@@ -349,7 +355,7 @@ def test_parse_pytest_counts_no_passed_is_none():
 def test_parse_git_log_happy():
     mod = _load_module()
     out = "abc1234 first commit\ndef5678 두 번째 커밋 — 한글\n"
-    assert mod.parse_git_log(out) == [
+    assert bootstrap_rules.parse_git_log(out) == [
         ("abc1234", "first commit"),
         ("def5678", "두 번째 커밋 — 한글"),
     ]
@@ -358,36 +364,36 @@ def test_parse_git_log_happy():
 def test_parse_git_log_sha_only_line():
     """subject 없는 (공백 없는) 줄은 ('sha', '') 로 — empty/malformed edge."""
     mod = _load_module()
-    assert mod.parse_git_log("deadbee\n") == [("deadbee", "")]
-    assert mod.parse_git_log("") == []
+    assert bootstrap_rules.parse_git_log("deadbee\n") == [("deadbee", "")]
+    assert bootstrap_rules.parse_git_log("") == []
 
 
 # ── parse_git_branch ────────────────────────────────────────────────────────
 
 def test_parse_git_branch_happy():
     mod = _load_module()
-    assert mod.parse_git_branch("main\n") == "main"
+    assert bootstrap_rules.parse_git_branch("main\n") == "main"
 
 
 def test_parse_git_branch_empty():
     """빈/공백 출력 → 빈 문자열 (detached HEAD 등 edge)."""
     mod = _load_module()
-    assert mod.parse_git_branch("   \n") == ""
+    assert bootstrap_rules.parse_git_branch("   \n") == ""
 
 
 # ── parse_git_status ────────────────────────────────────────────────────────
 
 def test_parse_git_status_clean():
     mod = _load_module()
-    assert mod.parse_git_status("") == "clean"
-    assert mod.parse_git_status("\n  \n") == "clean"
+    assert bootstrap_rules.parse_git_status("") == "clean"
+    assert bootstrap_rules.parse_git_status("\n  \n") == "clean"
 
 
 def test_parse_git_status_modified():
     """비-빈 줄 수 → 'N files modified'."""
     mod = _load_module()
     out = " M tools/board.py\n?? tests/test_new.py\n"
-    assert mod.parse_git_status(out) == "2 files modified"
+    assert bootstrap_rules.parse_git_status(out) == "2 files modified"
 
 
 # ── parse_git_ahead_behind (T-0195·board submodule freshness) ────────────────
@@ -420,7 +426,7 @@ def test_parse_log_last_entry_happy():
         "## [2026-06-13] ticket | T-0010 lite 어댑터\n본문1\n\n"
         "## [2026-06-14] handoff | PM 7차 인계 — 다음 우선순위\n본문2\n"
     )
-    assert mod.parse_log_last_entry(text) == {
+    assert bootstrap_history.parse_log_last_entry(text) == {
         "date": "2026-06-14",
         "type": "handoff",
         "title": "PM 7차 인계 — 다음 우선순위",
@@ -430,15 +436,15 @@ def test_parse_log_last_entry_happy():
 def test_parse_log_last_entry_no_entries_is_none():
     """`## [date] type | title` 패턴이 없으면 None (헤더만·빈 입력)."""
     mod = _load_module()
-    assert mod.parse_log_last_entry("# Project Log\n\n> 설명만 있고 entry 없음\n") is None
-    assert mod.parse_log_last_entry("") is None
+    assert bootstrap_history.parse_log_last_entry("# Project Log\n\n> 설명만 있고 entry 없음\n") is None
+    assert bootstrap_history.parse_log_last_entry("") is None
 
 
 def test_parse_log_last_entry_requires_pipe_separator():
     """`|` 구분자가 없는 `## [date] ...` 줄은 매칭 안 됨 → None (malformed edge)."""
     mod = _load_module()
     text = "## [2026-06-14] handoff PM 인계 (pipe 없음)\n본문\n"
-    assert mod.parse_log_last_entry(text) is None
+    assert bootstrap_history.parse_log_last_entry(text) is None
 
 
 # ── extract_last_log_entry_body (T-0179·인계 dump·pm_log.split_entries 재사용) ──
@@ -465,7 +471,7 @@ _LOG_TEXT_NO_HANDOFF = (
 def test_extract_last_log_entry_body_returns_full_body():
     """마지막 entry 의 본문 전체(`## [..]` 줄 + 하위 라인)를 반환한다 (제목만 아님)."""
     mod = _load_module()
-    body = mod.extract_last_log_entry_body(_LOG_TEXT)
+    body = bootstrap_history.extract_last_log_entry_body(_LOG_TEXT)
     assert body is not None
     # 마지막 entry 의 헤더 줄과 본문 라인이 전부 들어간다.
     assert "## [2026-06-14] handoff | PM 7차 인계 — 다음 우선순위" in body
@@ -483,15 +489,15 @@ def test_extract_last_log_entry_body_matches_pm_log_tail():
     spec = importlib.util.spec_from_file_location("pm_log", TOOLS / "pm_log.py")
     real_pm_log = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(real_pm_log)
-    _pre, entries = real_pm_log.split_entries(_LOG_TEXT)
-    assert mod.extract_last_log_entry_body(_LOG_TEXT) == entries[-1][1].rstrip()
+    _pre, entries = log_entries.split_entries(_LOG_TEXT)
+    assert bootstrap_history.extract_last_log_entry_body(_LOG_TEXT) == entries[-1][1].rstrip()
 
 
 def test_extract_last_log_entry_body_no_entries_is_none():
     """entry 가 없으면 None (제목만 표시하던 현행으로 폴백 신호)."""
     mod = _load_module()
-    assert mod.extract_last_log_entry_body("# Project Log\n\n> 설명만\n") is None
-    assert mod.extract_last_log_entry_body("") is None
+    assert bootstrap_history.extract_last_log_entry_body("# Project Log\n\n> 설명만\n") is None
+    assert bootstrap_history.extract_last_log_entry_body("") is None
 
 
 # ── infer_session_num (T-0179·차수 추론·pm_handoff.infer_next_session_num 재사용) ──
@@ -513,13 +519,13 @@ _PM_STATE_TEXT = (
 def test_infer_session_num_returns_next_number():
     """세션 식별 절 최고차(41) + 1 = 42 를 반환한다 (pm_handoff.infer_next_session_num 재사용)."""
     mod = _load_module()
-    assert mod.infer_session_num(_PM_STATE_TEXT) == 42
+    assert bootstrap_history.infer_session_num(_PM_STATE_TEXT) == 42
 
 
 def test_infer_session_num_no_section_returns_placeholder():
     """세션 식별 절/entry 가 없으면 `?` placeholder (pm_handoff 계약 전달)."""
     mod = _load_module()
-    assert mod.infer_session_num("## 다른 절\n- 내용\n") == "?"
+    assert bootstrap_history.infer_session_num("## 다른 절\n- 내용\n") == "?"
 
 
 # ── _format_session_label (T-0179·차수 announce 머리표·crash 금지) ─────────────
@@ -527,15 +533,15 @@ def test_infer_session_num_no_section_returns_placeholder():
 def test_format_session_label_with_int():
     """session_num 이 정수면 `PM <N>차`."""
     mod = _load_module()
-    assert mod._format_session_label({"session_num": 42}) == "PM 42차"
+    assert bootstrap_report._format_session_label({"session_num": 42}) == "PM 42차"
 
 
 def test_format_session_label_placeholder_cases():
     """`?`(entry 부재)·None·handoff_ctx 부재는 전부 placeholder (graceful·crash 금지)."""
     mod = _load_module()
-    assert mod._format_session_label({"session_num": "?"}) == mod._SESSION_LABEL_PLACEHOLDER
-    assert mod._format_session_label({"session_num": None}) == mod._SESSION_LABEL_PLACEHOLDER
-    assert mod._format_session_label(None) == mod._SESSION_LABEL_PLACEHOLDER
+    assert bootstrap_report._format_session_label({"session_num": "?"}) == bootstrap_report._SESSION_LABEL_PLACEHOLDER
+    assert bootstrap_report._format_session_label({"session_num": None}) == bootstrap_report._SESSION_LABEL_PLACEHOLDER
+    assert bootstrap_report._format_session_label(None) == bootstrap_report._SESSION_LABEL_PLACEHOLDER
 
 
 # ── 차수 log-폴백 + stale 교차검증 (T-0208·ADR-0035) ──────────────────────────
@@ -558,82 +564,82 @@ _LOG_HANDOFF_THEN_NOTE = (
 )
 
 
-def test_parse_last_handoff_session_num_returns_num():
+def test_parse_last_handoff_session_num_returns_num(tmp_path):
     """handoff entry 제목 `PM 47차` → 47 (다음 차수 유도 전의 raw N)."""
     mod = _load_module()
-    assert mod.parse_last_handoff_session_num(_LOG_HANDOFF_TEXT) == 47
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _LOG_HANDOFF_TEXT) == 47
 
 
-def test_parse_last_handoff_session_num_ignores_trailing_note():
+def test_parse_last_handoff_session_num_ignores_trailing_note(tmp_path):
     """handoff 뒤 note entry 가 있어도 마지막 *handoff* 의 N(48)을 잡는다 (note 오파싱 방지)."""
     mod = _load_module()
-    assert mod.parse_last_handoff_session_num(_LOG_HANDOFF_THEN_NOTE) == 48
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _LOG_HANDOFF_THEN_NOTE) == 48
 
 
-def test_parse_last_handoff_session_num_takes_latest_handoff():
+def test_parse_last_handoff_session_num_takes_latest_handoff(tmp_path):
     """여러 handoff 면 마지막(최신·최고차)을 취한다."""
     mod = _load_module()
     text = (
         "## [2026-06-14] handoff | PM 7차 인계 — 다음 우선순위\n- a.\n\n"
         "## [2026-07-02] handoff | PM 47차 → 다음 PM 세션\n- b.\n"
     )
-    assert mod.parse_last_handoff_session_num(text) == 47
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), text) == 47
 
 
-def test_parse_last_handoff_session_num_none_when_no_handoff():
+def test_parse_last_handoff_session_num_none_when_no_handoff(tmp_path):
     """handoff type entry 가 없으면(complete/note 만) None (폴백 없음·현행 유지)."""
     mod = _load_module()
-    assert mod.parse_last_handoff_session_num(_LOG_TEXT_NO_HANDOFF) is None
-    assert mod.parse_last_handoff_session_num("") is None
-    assert mod.parse_last_handoff_session_num(None) is None
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _LOG_TEXT_NO_HANDOFF) is None
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), '') is None
+    assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), None) is None
 
 
-def test_last_handoff_header_line_returns_full_line():
+def test_last_handoff_header_line_returns_full_line(tmp_path):
     """pickaxe needle — 마지막 handoff entry 헤더 줄 전체(날짜·type·제목)를 반환한다."""
     mod = _load_module()
-    line = mod.last_handoff_header_line(_LOG_HANDOFF_TEXT)
+    line = bootstrap_history.last_handoff_header_line(pm_paths.home_at(tmp_path), _LOG_HANDOFF_TEXT)
     assert line == "## [2026-07-02] handoff | PM 47차 → 다음 PM 세션"
 
 
-def test_last_handoff_header_line_none_when_absent():
+def test_last_handoff_header_line_none_when_absent(tmp_path):
     mod = _load_module()
-    assert mod.last_handoff_header_line(_LOG_TEXT_NO_HANDOFF) is None
-    assert mod.last_handoff_header_line(None) is None
+    assert bootstrap_history.last_handoff_header_line(pm_paths.home_at(tmp_path), _LOG_TEXT_NO_HANDOFF) is None
+    assert bootstrap_history.last_handoff_header_line(pm_paths.home_at(tmp_path), None) is None
 
 
 def test_reconcile_session_num_state_wins_when_ahead():
     """pm_state 해소값이 log-derived 보다 크면 pm_state 우선·stale 아님 (현행 무변경·회귀 0)."""
     mod = _load_module()
-    assert mod.reconcile_session_num(42, 8) == (42, False)
+    assert bootstrap_rules.reconcile_session_num(42, 8) == (42, False)
     # 동률(log_next == state)도 pm_state 유지·stale 아님(엄격 `>` 비교).
-    assert mod.reconcile_session_num(48, 48) == (48, False)
+    assert bootstrap_rules.reconcile_session_num(48, 48) == (48, False)
 
 
 def test_reconcile_session_num_log_wins_when_stale():
     """pm_state 가 해소돼도 log-derived 가 더 크면 log 우선(max) + stale True (머신 간 미동기)."""
     mod = _load_module()
-    assert mod.reconcile_session_num(48, 49) == (49, True)
+    assert bootstrap_rules.reconcile_session_num(48, 49) == (49, True)
 
 
 def test_reconcile_session_num_falls_back_to_log():
     """pm_state 미해소(`?`/None)면 log-derived 로 폴백(stale 아님·폴백 층)."""
     mod = _load_module()
-    assert mod.reconcile_session_num("?", 48) == (48, False)
-    assert mod.reconcile_session_num(None, 48) == (48, False)
+    assert bootstrap_rules.reconcile_session_num("?", 48) == (48, False)
+    assert bootstrap_rules.reconcile_session_num(None, 48) == (48, False)
 
 
 def test_reconcile_session_num_state_only_and_both_unresolved():
     """log 폴백 없음(None)이면 pm_state 그대로; 둘 다 미해소면 placeholder 그대로."""
     mod = _load_module()
-    assert mod.reconcile_session_num(42, None) == (42, False)
-    assert mod.reconcile_session_num("?", None) == ("?", False)
-    assert mod.reconcile_session_num(None, None) == (None, False)
+    assert bootstrap_rules.reconcile_session_num(42, None) == (42, False)
+    assert bootstrap_rules.reconcile_session_num("?", None) == ("?", False)
+    assert bootstrap_rules.reconcile_session_num(None, None) == (None, False)
 
 
 def test_format_stale_warning_shows_both_numbers():
     """stale=True 면 log 우선 차수 + 뒤처진 pm_state 차수를 함께 담은 경고 1줄."""
     mod = _load_module()
-    line = mod._format_stale_warning(
+    line = bootstrap_report._format_stale_warning(
         {"session_num": 49, "session_stale": True, "state_session_num": 48}
     )
     assert line is not None
@@ -645,8 +651,8 @@ def test_format_stale_warning_shows_both_numbers():
 def test_format_stale_warning_none_when_not_stale():
     """stale 아님·handoff_ctx 부재면 None(줄 생략)."""
     mod = _load_module()
-    assert mod._format_stale_warning({"session_num": 42, "session_stale": False}) is None
-    assert mod._format_stale_warning(None) is None
+    assert bootstrap_report._format_stale_warning({"session_num": 42, "session_stale": False}) is None
+    assert bootstrap_report._format_stale_warning(None) is None
 
 
 # ── _format_board_counts_line (T-0194·`--mine`(scoped) 라벨 명확화) ────────────
@@ -655,7 +661,7 @@ def test_format_board_counts_line_labels_mine():
     """각 status 카운트 뒤에 `(mine)` 이 붙어 --mine 스코프임이 드러난다 — open 도 세션 스코프(ADR-0067)."""
     mod = _load_module()
     counts = {"done": 25, "open": 6, "claimed": 2, "blocked": 0}
-    line = mod._format_board_counts_line(counts)
+    line = bootstrap_report._format_board_counts_line(counts)
     assert "done: 25 (mine)" in line
     assert "open: 6 (mine)" in line   # ADR-0067: open 도 세션 스코프(옛 backlog 라벨 폐기)
     assert "claimed: 2 (mine)" in line
@@ -666,7 +672,7 @@ def test_format_board_counts_line_does_not_imply_total():
     """라벨이 "전체" 를 암시하지 않는다 — 실측 오해 재발 방지(done 25 vs 184)."""
     mod = _load_module()
     counts = {"done": 25, "open": 6, "claimed": 2, "blocked": 0}
-    line = mod._format_board_counts_line(counts)
+    line = bootstrap_report._format_board_counts_line(counts)
     assert "total" not in line
 
 
@@ -675,7 +681,7 @@ def test_format_board_counts_line_does_not_imply_total():
 def test_format_board_git_freshness_clean_no_upstream():
     """dirty=False·ahead/behind 미상(None) → HEAD + clean 만(구간 생략)."""
     mod = _load_module()
-    line = mod._format_board_git_freshness(
+    line = bootstrap_report._format_board_git_freshness(
         {"head": "abc1234", "dirty": False, "ahead": None, "behind": None}
     )
     assert line == "HEAD abc1234 · clean"
@@ -683,7 +689,7 @@ def test_format_board_git_freshness_clean_no_upstream():
 
 def test_format_board_git_freshness_dirty_with_ahead_behind():
     mod = _load_module()
-    line = mod._format_board_git_freshness(
+    line = bootstrap_report._format_board_git_freshness(
         {"head": "def5678", "dirty": True, "ahead": 2, "behind": 1}
     )
     assert line == "HEAD def5678 · dirty · 2 ahead / 1 behind"
@@ -748,7 +754,7 @@ def _make_hermetic_bootstrap(
     else:
         # 미해소 graceful — 존재하지 않는 경로를 주입해 _collect_handoff_context 가 None 으로 폴백.
         kwargs["pm_state_file"] = tmp_path / "absent_pm_state.md"
-    return mod.PmBootstrap(**kwargs)
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), **kwargs)
 
 
 # ── _collect_board_git (T-0195·board submodule freshness) ────────────────────
@@ -757,10 +763,7 @@ def test_collect_board_git_absent_dir_is_none(tmp_path):
     """`.project_manager/board` 가 실 디렉토리가 아니면(솔로/미분리) None (graceful skip)."""
     mod = _load_module()
     board_dir = tmp_path / "board"  # 미생성
-    inst = mod.PmBootstrap(
-        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출 기대")),
-        board_dir=board_dir,
-    )
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError('git 미호출 기대')), board_dir=board_dir)
     assert inst._collect_board_git() is None
 
 
@@ -781,7 +784,7 @@ def test_collect_board_git_present_reports_head_dirty_ahead_behind(tmp_path):
             return (0, "2\t1\n")
         raise AssertionError(f"예상치 못한 board git 호출: {args}")
 
-    inst = mod.PmBootstrap(run_git_fn=_git_fn, board_dir=board_dir)
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_git_fn, board_dir=board_dir)
     result = inst._collect_board_git()
     assert result == {"head": "abc1234", "dirty": True, "ahead": 2, "behind": 1}
 
@@ -802,7 +805,7 @@ def test_collect_board_git_no_upstream_ahead_behind_none(tmp_path):
             return (1, "fatal: no upstream configured\n")
         raise AssertionError(f"예상치 못한 board git 호출: {args}")
 
-    inst = mod.PmBootstrap(run_git_fn=_git_fn, board_dir=board_dir)
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_git_fn, board_dir=board_dir)
     result = inst._collect_board_git()
     assert result == {"head": "abc1234", "dirty": False, "ahead": None, "behind": None}
 
@@ -812,10 +815,7 @@ def test_collect_board_git_head_failure_is_none(tmp_path):
     mod = _load_module()
     board_dir = tmp_path / "board"
     board_dir.mkdir()
-    inst = mod.PmBootstrap(
-        run_git_fn=lambda args: (128, "fatal: not a git repository\n"),
-        board_dir=board_dir,
-    )
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda args: (128, 'fatal: not a git repository\n'), board_dir=board_dir)
     assert inst._collect_board_git() is None
 
 
@@ -853,7 +853,7 @@ _LOG_TEXT_48_HANDOFF = (
 
 # ── user 연속성 1줄 (T-0208·ADR-0033 ③·author 일치/불일치/미해소 3분기) ─────────
 
-def _user_continuity_bootstrap(monkeypatch, mod, *, author_email, user, log_file=None):
+def _user_continuity_bootstrap(monkeypatch, mod, *, author_email, user, log_file=None, tmp_path):
     """`_collect_user_continuity` 직접 검증용 PmBootstrap — pickaxe git·board.user_name 을 mock.
 
     author_email=None → pickaxe 가 빈 출력(author 미해소). user=None → board.user_name 미해소.
@@ -868,38 +868,38 @@ def _user_continuity_bootstrap(monkeypatch, mod, *, author_email, user, log_file
     kwargs = dict(run_git_fn=_git_fn)
     if log_file is not None:
         kwargs["log_file"] = log_file
-    return mod.PmBootstrap(**kwargs)
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), **kwargs)
 
 
-def test_collect_user_continuity_match(monkeypatch):
+def test_collect_user_continuity_match(monkeypatch, *, tmp_path):
     """직전 handoff author == 현재 user → `사용자: … (동일 — 연속)`."""
     mod = _load_module()
-    inst = _user_continuity_bootstrap(monkeypatch, mod, author_email="alice@x.com", user="alice@x.com")
+    inst = _user_continuity_bootstrap(monkeypatch, mod, author_email='alice@x.com', user='alice@x.com', tmp_path=tmp_path)
     line = inst._collect_user_continuity(_LOG_TEXT_47_HANDOFF)
     assert line == "사용자: alice@x.com (직전 handoff 작성자와 동일 — 연속)"
 
 
-def test_collect_user_continuity_mismatch(monkeypatch):
+def test_collect_user_continuity_mismatch(monkeypatch, *, tmp_path):
     """직전 handoff author != 현재 user → ⚠ 다른 사용자(author) 경고."""
     mod = _load_module()
-    inst = _user_continuity_bootstrap(monkeypatch, mod, author_email="bob@x.com", user="alice@x.com")
+    inst = _user_continuity_bootstrap(monkeypatch, mod, author_email='bob@x.com', user='alice@x.com', tmp_path=tmp_path)
     line = inst._collect_user_continuity(_LOG_TEXT_47_HANDOFF)
     assert line == (
         "⚠ 직전 handoff 는 다른 사용자(bob@x.com) — pending intent 는 프로젝트 상태로 취급"
     )
 
 
-def test_collect_user_continuity_unresolved_is_none(monkeypatch):
+def test_collect_user_continuity_unresolved_is_none(monkeypatch, *, tmp_path):
     """author 조회불가·user 미상·handoff 부재 → None(줄 생략·fail-soft)."""
     mod = _load_module()
     # author 미해소(pickaxe 빈 출력).
-    inst_no_author = _user_continuity_bootstrap(monkeypatch, mod, author_email=None, user="alice@x.com")
+    inst_no_author = _user_continuity_bootstrap(monkeypatch, mod, author_email=None, user='alice@x.com', tmp_path=tmp_path)
     assert inst_no_author._collect_user_continuity(_LOG_TEXT_47_HANDOFF) is None
     # user 미상(board.user_name None).
-    inst_no_user = _user_continuity_bootstrap(monkeypatch, mod, author_email="alice@x.com", user=None)
+    inst_no_user = _user_continuity_bootstrap(monkeypatch, mod, author_email='alice@x.com', user=None, tmp_path=tmp_path)
     assert inst_no_user._collect_user_continuity(_LOG_TEXT_47_HANDOFF) is None
     # handoff entry 부재 → git 호출 자체를 안 함(needle 없음)·None.
-    inst_ok = _user_continuity_bootstrap(monkeypatch, mod, author_email="alice@x.com", user="alice@x.com")
+    inst_ok = _user_continuity_bootstrap(monkeypatch, mod, author_email='alice@x.com', user='alice@x.com', tmp_path=tmp_path)
     assert inst_ok._collect_user_continuity(_LOG_TEXT_NO_HANDOFF) is None
 
 
@@ -926,7 +926,7 @@ def _make_blocking_lint_board_fn():
     return _fn
 
 
-def test_collect_board_blocking_lint_does_not_abort():
+def test_collect_board_blocking_lint_does_not_abort(tmp_path):
     """T-0195: blocking lint(rc≠0) 여도 `_collect_board` 는 더 이상 sys.exit 하지 않는다.
 
     (T-0038 이래 회귀 가드였던 `test_pm_bootstrap_failsoft.py::
@@ -935,7 +935,7 @@ def test_collect_board_blocking_lint_does_not_abort():
     이 테스트가 새 동작(dump-then-warn)의 회귀 가드다.)
     """
     mod = _load_module()
-    bootstrap = mod.PmBootstrap(run_board_fn=_make_blocking_lint_board_fn())
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_make_blocking_lint_board_fn())
 
     board = bootstrap._collect_board()  # SystemExit 를 던지면 이 테스트가 실패한다.
 
@@ -944,7 +944,7 @@ def test_collect_board_blocking_lint_does_not_abort():
     assert board["open_tickets"] == ["T-0010"]
 
 
-def test_collect_board_advisory_only_lint_blocking_false():
+def test_collect_board_advisory_only_lint_blocking_false(tmp_path):
     """advisory-only(rc=0) → `lint_blocking=False`(정상 통과 신호 보존)."""
     mod = _load_module()
 
@@ -953,7 +953,7 @@ def test_collect_board_advisory_only_lint_blocking_false():
             return (0, "  [open   ] T-0010  x  -  adapter\n")
         return (0, "✓ no lint issues\n")
 
-    bootstrap = mod.PmBootstrap(run_board_fn=_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_fn)
     board = bootstrap._collect_board()
     assert board["lint_blocking"] is False
 
@@ -976,7 +976,7 @@ def test_blocking_lint_warning_is_bounded_for_large_board():
     """대량 gate 전문은 대표 3건으로 줄고 총계·blocking·opt-in 경로는 보존한다."""
     mod = _load_module()
     detail = _lint_gate_output(total=249, blocking=93)
-    warning = mod.format_blocking_lint_warning(detail)
+    warning = bootstrap_report.format_blocking_lint_warning(detail)
 
     assert "총계 249건 · blocking 93건" in warning
     assert "대표 항목 3건" in warning
@@ -996,17 +996,17 @@ def test_lint_count_parser_falls_back_to_issue_lines_for_noncanonical_header():
         "  ✗ [blocking-kind] T-0001: one\n"
         "    [advisory-kind] T-0002: two\n"
     )
-    assert mod.parse_lint_counts(detail) == (2, 1)
+    assert bootstrap_rules.parse_lint_counts(detail) == (2, 1)
 
 
 def test_lint_count_parser_distinguishes_noncanonical_failure_from_zero_issues():
     """traceback/usage error는 명시 clean ``(0, 0)`` 과 다른 ``None`` 이다."""
     mod = _load_module()
-    assert mod.parse_lint_counts("Traceback (most recent call last):\nRuntimeError: hook boom\n") is None
-    assert mod.parse_lint_counts("✓ no lint issues\n") == (0, 0)
+    assert bootstrap_rules.parse_lint_counts("Traceback (most recent call last):\nRuntimeError: hook boom\n") is None
+    assert bootstrap_rules.parse_lint_counts("✓ no lint issues\n") == (0, 0)
 
 
-def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt():
+def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt(tmp_path):
     """lint nonzero+비정형 출력은 clean으로 위장하지 않고 원문·rc·parse 상태를 보존한다."""
     mod = _load_module()
     lint_error = "Traceback (most recent call last):\nRuntimeError: hook boom\n"
@@ -1018,19 +1018,19 @@ def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt():
             return (2, lint_error)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
-    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
     assert board["lint"] == "gate error (unparsed)"
     assert board["lint_blocking"] is True
     assert board["lint_parse_failed"] is True
     assert board["lint_gate_rc"] == 2
     assert board["lint_gate_output"] == lint_error
 
-    warning = mod.format_blocking_lint_warning(lint_error, lint_rc=2)
+    warning = bootstrap_report.format_blocking_lint_warning(lint_error, lint_rc=2)
     assert "실행/출력 파싱 실패 (rc=2)" in warning
     assert "Traceback" in warning
     assert "RuntimeError: hook boom" in warning
     assert "총계 0건" not in warning
-    assert len(warning.encode("utf-8")) <= mod._LINT_WARNING_BYTE_LIMIT
+    assert len(warning.encode("utf-8")) <= bootstrap_rules._LINT_WARNING_BYTE_LIMIT
 
 
 @pytest.mark.parametrize(
@@ -1041,7 +1041,7 @@ def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt():
         ("미인식 산문", "lint finished, nothing to report\n"),
     ),
 )
-def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint_output):
+def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint_output, tmp_path):
     """rc=0 이어도 출력을 못 읽으면 clean 이 아니다 — 모르는 상태를 성공으로 위장하지 않는다.
 
     `parse_lint_counts` 는 명시 clean 과 canonical 형식만 인식하므로 None 은 "이슈 0건" 이
@@ -1057,7 +1057,7 @@ def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint
             return (0, lint_output)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
-    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
     assert board["lint_parse_failed"] is True, f"{label}: 파싱 실패를 인지해야 한다"
     assert board["lint"] == "gate error (unparsed)", f"{label}: clean 으로 위장하면 안 된다"
     assert board["lint_blocking"] is True, f"{label}: 모르는 상태는 blocking 으로 surface"
@@ -1065,7 +1065,7 @@ def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint
     assert board["lint_gate_output"] == lint_output
 
 
-def test_collect_board_keeps_explicit_clean_nonblocking():
+def test_collect_board_keeps_explicit_clean_nonblocking(tmp_path):
     """명시 clean 은 여전히 비차단이다 — 위 판정이 정상 경로를 오탐 차단하지 않는다."""
     mod = _load_module()
 
@@ -1076,7 +1076,7 @@ def test_collect_board_keeps_explicit_clean_nonblocking():
             return (0, "✓ no lint issues\n")
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
-    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
     assert board["lint_parse_failed"] is False
     assert board["lint_blocking"] is False
     assert board["lint"] == "clean"
@@ -1089,22 +1089,22 @@ def test_blocking_lint_warning_clips_single_extreme_hook_detail():
         "⚠️  1 lint issue(s) (1 blocking 차단):\n"
         f"  ✗ [hook] T-0001: {'가' * 100_000}\n"
     )
-    warning = mod.format_blocking_lint_warning(detail, lint_rc=1)
+    warning = bootstrap_report.format_blocking_lint_warning(detail, lint_rc=1)
 
     assert "총계 1건 · blocking 1건" in warning
     assert "대표 항목 1건" in warning
     assert "[hook] T-0001:" in warning
     assert "전체 진단(opt-in)" in warning
-    assert len(warning.encode("utf-8")) <= mod._LINT_WARNING_BYTE_LIMIT
+    assert len(warning.encode("utf-8")) <= bootstrap_rules._LINT_WARNING_BYTE_LIMIT
     assert max(len(line.encode("utf-8")) for line in warning.splitlines()) <= (
-        mod._LINT_WARNING_LINE_BYTE_LIMIT
+        bootstrap_rules._LINT_WARNING_LINE_BYTE_LIMIT
     )
 
 
 def test_blocking_lint_warning_rejects_negative_representative_limit():
     mod = _load_module()
     with pytest.raises(ValueError, match="0 이상"):
-        mod.format_blocking_lint_warning(_BLOCKING_GATE_OUT, representative_limit=-1)
+        bootstrap_report.format_blocking_lint_warning(_BLOCKING_GATE_OUT, representative_limit=-1)
 
 
 # ── T-0217: git freshness (fetch + behind 표면화 + clean·ff 자동 pull) ─────────
@@ -1114,21 +1114,21 @@ def test_blocking_lint_warning_rejects_negative_representative_limit():
 def test_freshness_decision_latest_no_pull():
     """behind 0 · ahead 0 → '최신' · pull 안 함."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=False, ahead=0, behind=0) == ("최신", False)
 
 
 def test_freshness_decision_behind_clean_ff_pulls():
     """behind>0 · ahead 0 · clean · fetch 성공 → '동기' · pull True (안전조건 전부 충족)."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=False, ahead=0, behind=3) == ("동기", True)
 
 
 def test_freshness_decision_fetch_failed_no_pull():
     """behind>0 · clean · ff 여도 **fetch 실패면 자동 pull 금지** (codex must-fix ① — stale 원격)."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=False, detached=False, dirty=False, ahead=0, behind=3) == (
         "수동 동기 필요", False,
     )
@@ -1137,7 +1137,7 @@ def test_freshness_decision_fetch_failed_no_pull():
 def test_freshness_decision_status_unknown_no_pull():
     """behind>0 · ff 여도 **status 미확인(dirty=None)이면 자동 pull 금지** (codex must-fix ② — clean 미증명)."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=None, ahead=0, behind=3) == (
         "수동 동기 필요", False,
     )
@@ -1147,7 +1147,7 @@ def test_freshness_decision_ahead_unknown_no_pull():
     """behind>0 · fetch 성공 · clean 이어도 **ahead=None(미확인)이면 자동 pull 금지**
     (codex round-2 must-fix — `ahead or 0` 폴백이 미확인을 ff-확정으로 위장하던 구멍)."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=False, ahead=None, behind=2) == (
         "수동 동기 필요", False,
     )
@@ -1164,7 +1164,7 @@ def test_behind_warning_ahead_unknown_reason():
 def test_freshness_decision_behind_dirty_no_pull():
     """behind>0 인데 dirty → '수동 동기 필요' · pull False (표면화만)."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=True, ahead=0, behind=2) == (
         "수동 동기 필요", False,
     )
@@ -1173,7 +1173,7 @@ def test_freshness_decision_behind_dirty_no_pull():
 def test_freshness_decision_diverged_no_pull():
     """behind>0 · ahead>0 (diverged) → '수동 동기 필요' · pull False."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=False, ahead=1, behind=2) == (
         "수동 동기 필요", False,
     )
@@ -1182,7 +1182,7 @@ def test_freshness_decision_diverged_no_pull():
 def test_freshness_decision_detached_no_pull():
     """detached HEAD → 'detached' · pull False (재부착은 PM 판단)."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=True, dirty=False, ahead=0, behind=5) == (
         "detached", False,
     )
@@ -1191,7 +1191,7 @@ def test_freshness_decision_detached_no_pull():
 def test_freshness_decision_no_upstream_no_pull():
     """behind None (upstream 미설정/조회불가) → 'upstream 없음' · pull False."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=False, ahead=None, behind=None) == (
         "upstream 없음", False,
     )
@@ -1200,7 +1200,7 @@ def test_freshness_decision_no_upstream_no_pull():
 def test_freshness_decision_ahead_only_no_pull():
     """behind 0 · ahead>0 → 'ahead-only' · pull False (로컬만 앞섬·push 대기)."""
     mod = _load_module()
-    assert mod.freshness_decision(
+    assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=False, ahead=2, behind=0) == (
         "ahead-only", False,
     )
@@ -1285,8 +1285,7 @@ def test_sync_scope_fetch_failure_behind_no_pull(tmp_path):
     mod = _load_module()
     d = tmp_path / "repo"
     calls: list[list[str]] = []
-    inst = mod.PmBootstrap(
-        run_git_fn=_scope_git_fn(str(d), fetch_rc=1, behind=3, ahead=0, dirty=False, calls=calls))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_scope_git_fn(str(d), fetch_rc=1, behind=3, ahead=0, dirty=False, calls=calls))
     scope = inst._sync_scope("② PM 홈", d)
     assert scope["fetched"] is False
     assert scope["state"] == "수동 동기 필요"
@@ -1306,8 +1305,7 @@ def test_sync_scope_status_failure_behind_no_pull(tmp_path):
     mod = _load_module()
     d = tmp_path / "repo"
     calls: list[list[str]] = []
-    inst = mod.PmBootstrap(
-        run_git_fn=_scope_git_fn(str(d), status_rc=128, behind=2, ahead=0, calls=calls))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_scope_git_fn(str(d), status_rc=128, behind=2, ahead=0, calls=calls))
     scope = inst._sync_scope("① worktree", d)
     assert scope["dirty"] is None  # clean 미확인(tri-state).
     assert scope["state"] == "수동 동기 필요"
@@ -1330,8 +1328,7 @@ def test_collect_scope_git_tag_collision_yields_pure_branch(tmp_path):
     mod = _load_module()
     d = tmp_path / "repo"
     calls: list[list[str]] = []
-    inst = mod.PmBootstrap(
-        run_git_fn=_scope_git_fn(str(d), branch="v1.3.0", behind=0, ahead=0, dirty=False, calls=calls))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_scope_git_fn(str(d), branch='v1.3.0', behind=0, ahead=0, dirty=False, calls=calls))
     scope = inst._sync_scope("① worktree", d)
     # full ref → `refs/heads/` 접두 정확 제거 → 순수명(`heads/v1.3.0` 오염 아님).
     assert scope["branch"] == "v1.3.0"
@@ -1350,7 +1347,7 @@ def test_default_run_git_fetch_timeout_is_failsoft(tmp_path, monkeypatch):
     세션 시작을 막던 hang 을 GIT_NETWORK_TIMEOUT 로 끊고 fail-soft(`fetched=False`) 경로로 흡수.
     """
     mod = _load_module()
-    inst = mod.PmBootstrap()  # 기본 러너(_default_run_git) 사용.
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))  # 기본 러너(_default_run_git) 사용.
 
     captured: dict = {}
 
@@ -1358,19 +1355,19 @@ def test_default_run_git_fetch_timeout_is_failsoft(tmp_path, monkeypatch):
         captured["timeout"] = k.get("timeout")
         raise subprocess.TimeoutExpired(cmd=a[0] if a else k.get("args"), timeout=k.get("timeout"))
 
-    monkeypatch.setattr(mod.subprocess, "run", _raise_timeout)
+    monkeypatch.setattr(bootstrap_cli.subprocess, "run", _raise_timeout)
     rc, out = inst._default_run_git(["-C", str(tmp_path), "fetch", "origin"])
     # 네트워크 계열엔 timeout 이 실제로 전달된다(무-timeout hang 재발 방지).
-    assert captured["timeout"] == mod.GIT_NETWORK_TIMEOUT
+    assert captured["timeout"] == bootstrap_cli.GIT_NETWORK_TIMEOUT
     # fail-soft — SystemExit/TimeoutExpired 전파 아님·rc≠0 로 흡수.
     assert rc != 0
     assert "timeout" in out.lower()
 
 
-def test_default_run_git_local_command_no_timeout(monkeypatch):
+def test_default_run_git_local_command_no_timeout(monkeypatch, tmp_path):
     """로컬 git(status·log 등)엔 timeout 을 걸지 않는다(=None·현행 무변경·정상 완주 보존)."""
     mod = _load_module()
-    inst = mod.PmBootstrap()
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
 
     captured: dict = {}
 
@@ -1383,7 +1380,7 @@ def test_default_run_git_local_command_no_timeout(monkeypatch):
         captured["timeout"] = k.get("timeout")
         return _R()
 
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bootstrap_cli.subprocess, "run", _fake_run)
     rc, _out = inst._default_run_git(["status", "--short"])
     assert rc == 0
     assert captured["timeout"] is None  # 로컬 git 은 timeout 미부여.
@@ -1394,8 +1391,7 @@ def test_sync_scope_behind_clean_ff_performs_pull(tmp_path):
     mod = _load_module()
     d = tmp_path / "repo"
     calls: list[list[str]] = []
-    inst = mod.PmBootstrap(
-        run_git_fn=_scope_git_fn(str(d), behind=3, ahead=0, dirty=False, calls=calls))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_scope_git_fn(str(d), behind=3, ahead=0, dirty=False, calls=calls))
     scope = inst._sync_scope("① worktree", d)
     assert scope["state"] == "동기"
     assert scope["pulled"] is True
@@ -1410,8 +1406,7 @@ def test_sync_scope_behind_dirty_surfaces_no_pull(tmp_path):
     mod = _load_module()
     d = tmp_path / "repo"
     calls: list[list[str]] = []
-    inst = mod.PmBootstrap(
-        run_git_fn=_scope_git_fn(str(d), behind=2, ahead=0, dirty=True, calls=calls))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_scope_git_fn(str(d), behind=2, ahead=0, dirty=True, calls=calls))
     scope = inst._sync_scope("① worktree", d)
     assert scope["state"] == "수동 동기 필요"
     assert scope["pulled"] is False
@@ -1426,8 +1421,7 @@ def test_sync_scope_diverged_surfaces_no_pull(tmp_path):
     mod = _load_module()
     d = tmp_path / "repo"
     calls: list[list[str]] = []
-    inst = mod.PmBootstrap(
-        run_git_fn=_scope_git_fn(str(d), behind=2, ahead=1, dirty=False, calls=calls))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_scope_git_fn(str(d), behind=2, ahead=1, dirty=False, calls=calls))
     scope = inst._sync_scope("① worktree", d)
     assert scope["state"] == "수동 동기 필요"
     assert scope["pulled"] is False
@@ -1439,8 +1433,7 @@ def test_sync_scope_fetch_failure_is_failsoft(tmp_path):
     """④ fetch 실패 → fetched=False · abort 없이 scope dict 반환(현행 측정 계속)."""
     mod = _load_module()
     d = tmp_path / "repo"
-    inst = mod.PmBootstrap(
-        run_git_fn=_scope_git_fn(str(d), fetch_rc=1, behind=0, ahead=0, dirty=False))
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_scope_git_fn(str(d), fetch_rc=1, behind=0, ahead=0, dirty=False))
     scope = inst._sync_scope("② PM 홈", d)  # SystemExit/예외 던지면 실패.
     assert scope["fetched"] is False
     assert scope["pulled"] is False
@@ -1453,9 +1446,7 @@ def test_sync_scope_fetch_failure_is_failsoft(tmp_path):
 def test_sync_board_submodule_absent_is_none(tmp_path):
     """board 미분리(디렉토리 부재) → None (skip·git 미호출)."""
     mod = _load_module()
-    inst = mod.PmBootstrap(
-        run_git_fn=lambda a: (_ for _ in ()).throw(AssertionError("board git 미호출 기대")),
-        board_dir=tmp_path / "board")
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (_ for _ in ()).throw(AssertionError('board git 미호출 기대')), board_dir=tmp_path / 'board')
     assert inst._sync_board_submodule() is None
 
 
@@ -1484,7 +1475,7 @@ def test_sync_board_submodule_branch_preserving_pull(tmp_path):
             return (0, "")
         raise AssertionError(f"예상치 못한 board git 호출: {args}")
 
-    inst = mod.PmBootstrap(run_git_fn=_fn, board_dir=board_dir)
+    inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=_fn, board_dir=board_dir)
     scope = inst._sync_board_submodule()
     assert scope["pulled"] is True
     assert scope["behind"] == 0
@@ -1507,14 +1498,7 @@ def _make_freshness_bootstrap(mod, tmp_path, *, git_fn, log_text=_LOG_TEXT):
     pm_state_file.write_text(_PM_STATE_TEXT, encoding="utf-8")
     areas_file = tmp_path / "areas.md"
     board_dir = tmp_path / "board"  # 미생성 → board rider None(솔로)
-    return mod.PmBootstrap(
-        run_board_fn=lambda a: (0, "✓ no lint issues\n") if a[:1] == ["lint"]
-        else (0, "  [open   ] T-0001  x  pm  tag\n"),
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
-        run_git_fn=git_fn,
-        log_file=log_file, areas_file=areas_file, board_dir=board_dir,
-        pm_state_file=pm_state_file,
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=lambda a: (0, '✓ no lint issues\n') if a[:1] == ['lint'] else (0, '  [open   ] T-0001  x  pm  tag\n'), run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 미호출')), run_git_fn=git_fn, log_file=log_file, areas_file=areas_file, board_dir=board_dir, pm_state_file=pm_state_file)
 
 
 def _repo_scope_git_fn(repo_dir, *, behind, ahead=0, dirty=False, pull_rc=0):
@@ -1550,7 +1534,7 @@ def _repo_scope_git_fn(repo_dir, *, behind, ahead=0, dirty=False, pull_rc=0):
 
 # ── main() CLI 레벨 fail-loud (positional↔--repo 불일치) ──────────────────────
 
-def test_collect_board_names_the_hook_generation_block_instead_of_unparsed():
+def test_collect_board_names_the_hook_generation_block_instead_of_unparsed(tmp_path):
     """`lint --gate` 가 훅 세대 차단으로 끝난 출력은 '파싱 실패'가 아니라 그 사실로 surface 된다.
 
     흡수 직후~`board.py init` 전 창에서 채택자가 실제로 만나는 상태다 — dump 가
@@ -1569,14 +1553,14 @@ def test_collect_board_names_the_hook_generation_block_instead_of_unparsed():
             return (1, hook_block)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
-    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
-    assert board["lint"] == mod._LINT_HOOK_GENERATION_RESULT
+    board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
+    assert board["lint"] == bootstrap_rules._LINT_HOOK_GENERATION_RESULT
     assert "board.py init" in board["lint_gate_output"]
     assert board["lint_blocking"] is True          # 차단 신호는 그대로다
     assert board["lint_parse_failed"] is True      # lint 수치는 여전히 미상
 
 
-def test_collect_board_keeps_unparsed_for_a_non_hook_lint_failure():
+def test_collect_board_keeps_unparsed_for_a_non_hook_lint_failure(tmp_path):
     """훅 세대가 아닌 비정형 실패는 종전대로 `gate error (unparsed)` — 판정이 넓어지지 않았다."""
     mod = _load_module()
 
@@ -1587,5 +1571,5 @@ def test_collect_board_keeps_unparsed_for_a_non_hook_lint_failure():
             return (2, "Traceback (most recent call last):\nRuntimeError: hook boom\n")
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
-    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
     assert board["lint"] == "gate error (unparsed)"

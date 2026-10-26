@@ -21,13 +21,15 @@ skip 한다(내용 판정 단위 테스트는 항상 실행).
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.infra.handoff_git
+
 import importlib.util
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import pm_paths
 
 from pm_engine.domain import board_git_rules
 from pm_engine.infra import areas_store
@@ -505,7 +507,7 @@ def test_pm_handoff_dirty_gate_sees_no_draft_residue(board, tmp_path):
     handoff = _load_mod("pm_handoff")
     board_dir = _make_board_dir(board, tmp_path, real_git=True, ticket="T-0001")
     _write_draft(board_dir)
-    dirty_before = handoff._dirty_paths_in_tree(str(board_dir), handoff._module_run_git)
+    dirty_before = pm_engine.infra.handoff_git._dirty_paths_in_tree(str(board_dir), pm_engine.infra.handoff_git._module_run_git)
     assert dirty_before and any(p.startswith("tickets/.drafts/") for p in dirty_before), \
         f"전제 실측 실패 — 게이트가 draft 를 잔여로 안 봄: {dirty_before}"
 
@@ -513,4 +515,4 @@ def test_pm_handoff_dirty_gate_sees_no_draft_residue(board, tmp_path):
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
     assert board_git._board_git_stage_and_commit(board._home(), "mutation", (ticket,)) is True
 
-    assert handoff._dirty_paths_in_tree(str(board_dir), handoff._module_run_git) == []
+    assert pm_engine.infra.handoff_git._dirty_paths_in_tree(str(board_dir), pm_engine.infra.handoff_git._module_run_git) == []

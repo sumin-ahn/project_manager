@@ -22,6 +22,10 @@ subprocess 가 부모 env 통째 상속이 아니라 화이트리스트(`_live_e
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_card
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import os
 import re
@@ -612,9 +616,9 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
     #     켜고 순수 카드 헬퍼(I/O 0·bare `__new__` 인스턴스)를 렌더 — test_pm_bootstrap_card._card 동형.
     bootstrap = _load_adopter_tool(dest, "pm_bootstrap")
     monkeypatch.setenv("CODEX_THREAD_ID", "019f8003-d535-7a10-adopter")
-    inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
+    inst = bootstrap_cli.PmBootstrap.__new__(bootstrap_cli.PmBootstrap)
     inst._task_name = "probe"
-    card = inst._build_command_card_markdown()
+    card = bootstrap_card._build_command_card_markdown(pm_paths.home_at(dest), getattr(inst, '_task_name', None), environment=getattr(inst, '_command_environment', None))
     assert "# codex 하네스" in card, \
         "import 된 pm_bootstrap 카드에 codex 절 미출현 (env 감지/append 실패·전파 손상?)"
     assert ".codex/agents/{architect,code-reviewer,developer,researcher}" in card, \

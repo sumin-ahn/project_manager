@@ -23,7 +23,7 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
       - **모든 whitespace**(스페이스·탭 등·선행/후행/내부 전부) → task 명은 하류 *인자 경계*다: CLI
         `--task <task>`(shell word)·relay 재진입 프롬프트 `/pm-bootstrap --task <task>`(slash 인자
         경계)이 공백에서 쪼개져 정체성이 파손된다(codex 실증 `my task` → 인자 경계 깨짐).
-      - **괄호 `(`·`)`** → log 헤더 태그 `(task:<task>)`(pm_handoff `_TASK_TAG_PREFIX`)의 delimiter 다:
+      - **괄호 `(`·`)`** → log 헤더 태그 `(task:<task>)`(domain.handoff_text `_TASK_TAG_PREFIX`)의 delimiter 다:
         `)` 포함 명은 태그를 조기 종료시켜 파서(`task:[^)]+`)의 bound_session 매칭이 어긋나 task 연속성
         추론/본문 추출이 파손된다(codex 실증 `foo)bar` → 태그 `(task:foo)bar)` 조기 매칭).
       - path separator(`/`·`\\`) → 선행 `.`(숨김/`.`/`..` 상대) → 단일 컴포넌트 아님(traversal).
@@ -85,7 +85,7 @@ def _render_initial_task_pm_state(template_text: str, date_str: str) -> str:
 
     공용 template의 예시 `1차`는 완료된 세션 기록이 아니다. task 생성 시 그대로 복사하면 첫
     bootstrap이 2차로 오인하므로, 세션 entry·이전 차 포인터를 비우고 명시 marker를 둔다.
-    `pm_handoff.update_session_window`가 첫 핸드오프 때 이 marker를 실제 1차 entry로 교체한다.
+    `domain.handoff_text.update_session_window`가 첫 핸드오프 때 이 marker를 실제 1차 entry로 교체한다.
     """
     rendered = template_text.replace("{{DATE}}", date_str)
     rendered = rendered.replace(
