@@ -27,6 +27,11 @@ red** 로 오판된다. 판정도 게이트 종류로 가른다 — pytest 게�
 from __future__ import annotations
 from pm_engine.cli import config_repo
 
+from pm_engine.infra import pm_paths
+import pm_engine.app.regression
+import pm_engine.cli.handoff
+import pm_engine.domain.handoff_text
+
 import argparse
 import importlib.util
 from pathlib import Path
@@ -64,7 +69,7 @@ def tf():
 
 @pytest.fixture(scope="module")
 def hf():
-    return _load_tool("pm_handoff")
+    return pm_engine.domain.handoff_text
 
 
 @pytest.fixture(params=["pm_handoff", "ticket_finish"])
@@ -130,7 +135,8 @@ def _install_stub(stub, monkeypatch):
 
 def _resolve(mod, stub, monkeypatch):
     _install_stub(stub, monkeypatch)
-    return mod._resolve_per_repo_test_cmd()
+    return (pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
+            if mod is pm_engine.domain.handoff_text else mod._resolve_per_repo_test_cmd())
 
 
 # ── 층별 우선순위 ────────────────────────────────────────────────────────
@@ -321,13 +327,14 @@ _PARITY_EXPECTED = {
 
 
 @pytest.mark.parametrize("case", sorted(_PARITY_BOARDS))
-def test_resolution_parity_across_tools(tf, hf, monkeypatch, case):
-    """같은 board 에서 두 도구의 해소 결과가 같다 — 그리고 기대값과도 같다(비-vacuous)."""
+def test_resolution_parity_across_tools(tf, hf, monkeypatch, case, tmp_path):
+    '같은 board 에서 두 도구의 해소 결과가 같다 — 그리고 기대값과도 같다(비-vacuous).'
+    home = pm_paths.home_at(tmp_path)
     stub = _PARITY_BOARDS[case]
     _install_stub(stub, monkeypatch)
     finish_cmd = tf._resolve_per_repo_test_cmd()
-    handoff_cmd = hf._resolve_per_repo_test_cmd()
-    assert finish_cmd == handoff_cmd, f"{case}: 두 도구의 게이트 해소가 갈렸다"
+    handoff_cmd = pm_engine.app.regression._resolve_gate_cmd(home)
+    assert finish_cmd == handoff_cmd, f'{case}: 두 도구의 게이트 해소가 갈렸다'
     assert finish_cmd == _PARITY_EXPECTED[case]
 
 
@@ -346,7 +353,7 @@ def test_resolution_parity_across_tools(tf, hf, monkeypatch, case):
 def test_verdict_parity_across_tools(tf, hf, output, returncode, gate_cmd, expected):
     """green 판정도 두 도구가 같다 — 게이트 종류 분기가 한쪽에만 들어가면 red."""
     finish_verdict = tf._regression_is_green(output, returncode, gate_cmd)
-    handoff_verdict = hf._regression_is_green(output, returncode, gate_cmd)
+    handoff_verdict = pm_engine.domain.handoff_text._regression_is_green(output, returncode, gate_cmd)
     assert finish_verdict == handoff_verdict, "두 도구의 회귀 판정이 갈렸다"
     assert finish_verdict is expected
 
@@ -356,12 +363,12 @@ def test_gate_surface_parity_across_tools(tf, hf):
     for name in ("_resolve_per_repo_test_cmd", "_gate_is_pytest", "_gate_label",
                  "_regression_is_green"):
         assert callable(getattr(tf, name)), f"ticket_finish 에 {name} 부재"
-        assert callable(getattr(hf, name)), f"pm_handoff 에 {name} 부재"
-    assert tf._DEFAULT_GATE_LABEL == hf._DEFAULT_GATE_LABEL
-    assert tf._PYTEST_GATE_TOKEN == hf._PYTEST_GATE_TOKEN
+        assert callable(getattr(pm_engine.app.regression, "_resolve_gate_cmd") if name == "_resolve_per_repo_test_cmd" else getattr(pm_engine.domain.handoff_text, name)), f"pm_handoff 에 {name} 부재"
+    assert tf._DEFAULT_GATE_LABEL == pm_engine.domain.handoff_text._DEFAULT_GATE_LABEL
+    assert tf._PYTEST_GATE_TOKEN == pm_engine.domain.handoff_text._PYTEST_GATE_TOKEN
     for gate_cmd in (None, "pytest tests/ -q", NON_PYTEST_CMD, LOCAL_CONF_CMD):
-        assert tf._gate_is_pytest(gate_cmd) == hf._gate_is_pytest(gate_cmd)
-        assert tf._gate_label(gate_cmd) == hf._gate_label(gate_cmd)
+        assert tf._gate_is_pytest(gate_cmd) == pm_engine.domain.handoff_text._gate_is_pytest(gate_cmd)
+        assert tf._gate_label(gate_cmd) == pm_engine.domain.handoff_text._gate_label(gate_cmd)
 
 
 # ── 무prefix 채택자 형상 e2e (repo add + tests/ 없음 + 비-pytest 게이트) ──
@@ -452,14 +459,14 @@ def adopter_board(tmp_path, monkeypatch):
 
 def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
                                                          monkeypatch):
-    """실 areas.md(prefix 빈 값)에서 두 도구가 채택자 게이트를 해소한다 — 하드코딩 폴백 아님."""
-    assert areas_store.id_prefix(adopter_board._home()) is None      # 제보 환경 실측과 같은 상태.
+    '실 areas.md(prefix 빈 값)에서 두 도구가 채택자 게이트를 해소한다 — 하드코딩 폴백 아님.'
+    assert areas_store.id_prefix(adopter_board._home()) is None
     assert areas_store.registered_prefixes(adopter_board._home()) == set()
-    assert areas_store.registered_repos(adopter_board._home()) == {"heru"}
-    monkeypatch.setattr(tf, "REPO", adopter_board.REPO)
-    monkeypatch.setattr(hf, "REPO", adopter_board.REPO)
+    assert areas_store.registered_repos(adopter_board._home()) == {'heru'}
+    monkeypatch.setattr(tf, 'REPO', adopter_board.REPO)
+    home = pm_paths.home_at(adopter_board.REPO)
     assert tf._resolve_per_repo_test_cmd() == NON_PYTEST_CMD
-    assert hf._resolve_per_repo_test_cmd() == NON_PYTEST_CMD
+    assert pm_engine.app.regression._resolve_gate_cmd(home) == NON_PYTEST_CMD
 
 
 def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_path,
@@ -519,60 +526,50 @@ def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tm
 
 
 def test_no_prefix_adopter_handoff_verdict_and_command(adopter_board, hf, monkeypatch):
-    """핸드오프도 같은 게이트로 판정하고, 실행은 그 명령을 shell 로 돌린다."""
-    monkeypatch.setattr(hf, "REPO", adopter_board.REPO)
-    gate_cmd = hf._resolve_per_repo_test_cmd()
+    '핸드오프도 같은 게이트로 판정하고, 실행은 그 명령을 shell 로 돌린다.'
+    home = pm_paths.home_at(adopter_board.REPO)
+    gate_cmd = pm_engine.app.regression._resolve_gate_cmd(home)
     assert gate_cmd == NON_PYTEST_CMD
-    assert hf._regression_is_green("✅ 매니페스트 검증 통과", 0, gate_cmd) is True
-    assert hf._regression_is_green("✗ 실패", 1, gate_cmd) is False
-
+    assert pm_engine.domain.handoff_text._regression_is_green('✅ 매니페스트 검증 통과', 0, gate_cmd) is True
+    assert pm_engine.domain.handoff_text._regression_is_green('✗ 실패', 1, gate_cmd) is False
     captured = {}
-
     def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["shell"] = kwargs.get("shell", False)
+        captured['cmd'] = cmd
+        captured['shell'] = kwargs.get('shell', False)
 
         class _Result:
             returncode = 0
-            stdout = "✅ 매니페스트 검증 통과"
-            stderr = ""
-
+            stdout = '✅ 매니페스트 검증 통과'
+            stderr = ''
         return _Result()
-
-    monkeypatch.setattr(hf.subprocess, "run", fake_run)
-    handoff = hf.PmHandoff(venv_python="/venv/bin/python",
-                           run_git_fn=lambda args: (0, ""))
+    monkeypatch.setattr(pm_engine.cli.handoff.subprocess, 'run', fake_run)
+    handoff = pm_engine.cli.handoff.PmHandoff(home, venv_python='/venv/bin/python', run_git_fn=lambda args: (0, ''))
     returncode, output = handoff._default_run_pytest()
     assert returncode == 0
-    assert captured["cmd"] == NON_PYTEST_CMD      # 하드코딩 pytest argv 아님.
-    assert captured["shell"] is True
-    assert "매니페스트" in output
+    assert captured['cmd'] == NON_PYTEST_CMD
+    assert captured['shell'] is True
+    assert '매니페스트' in output
 
 
-def test_solo_shape_keeps_venv_pytest_argv(hf, monkeypatch):
-    """도그푸딩 불변 — 해소 실패(솔로)면 핸드오프는 현행 venv pytest argv 를 그대로 쓴다."""
-    monkeypatch.setattr(hf, "_resolve_per_repo_test_cmd", lambda: None)
+def test_solo_shape_keeps_venv_pytest_argv(hf, monkeypatch, tmp_path):
+    '도그푸딩 불변 — 해소 실패(솔로)면 핸드오프는 현행 venv pytest argv 를 그대로 쓴다.'
+    home = pm_paths.home_at(tmp_path)
+    monkeypatch.setattr(pm_engine.app.regression, '_resolve_gate_cmd', lambda _home: None)
     captured = {}
-
     def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["shell"] = kwargs.get("shell", False)
+        captured['cmd'] = cmd
+        captured['shell'] = kwargs.get('shell', False)
 
         class _Result:
             returncode = 0
-            stdout = "1 passed in 0.01s"
-            stderr = ""
-
+            stdout = '1 passed in 0.01s'
+            stderr = ''
         return _Result()
-
-    monkeypatch.setattr(hf.subprocess, "run", fake_run)
-    handoff = hf.PmHandoff(venv_python="/venv/bin/python",
-                           run_git_fn=lambda args: (0, ""))
+    monkeypatch.setattr(pm_engine.cli.handoff.subprocess, 'run', fake_run)
+    handoff = pm_engine.cli.handoff.PmHandoff(home, venv_python='/venv/bin/python', run_git_fn=lambda args: (0, ''))
     handoff._default_run_pytest()
-    assert captured["cmd"] == [
-        "/venv/bin/python", "-m", "pytest", "tests/", "-q", "-n", "auto",
-    ]
-    assert captured["shell"] is False
+    assert captured['cmd'] == ['/venv/bin/python', '-m', 'pytest', 'tests/', '-q', '-n', 'auto']
+    assert captured['shell'] is False
 
 
 @pytest.mark.parametrize("gate_cmd,output,rc,expected", [
@@ -591,6 +588,7 @@ def test_verdict_parity_across_tools_with_declared_platforms(
     stub = _StubBoard(areas_exists=False, conf=conf)
     _install_stub(stub, monkeypatch)
     for tool in (tf, hf):
-        command = tool._resolve_per_repo_test_cmd()
+        command = (pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
+                   if tool is pm_engine.domain.handoff_text else tool._resolve_per_repo_test_cmd())
         assert command == gate_cmd
         assert tool._regression_is_green(output, rc, command) is expected

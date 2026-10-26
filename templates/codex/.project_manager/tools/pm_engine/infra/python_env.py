@@ -2,7 +2,12 @@
 
 기본 테스트 명령, 엔진 Python 하한, init 이 쓸 인터프리터 탐지를 소유한다.
 """
+
 from __future__ import annotations
+
+import platform
+from pathlib import Path
+from typing import NamedTuple
 
 import functools
 import importlib.util
@@ -14,7 +19,8 @@ import sys
 
 import pm_engine
 
-from pm_engine.infra import process
+from pm_engine.domain import conf_schema
+from pm_engine.infra import fs, process
 
 
 @functools.lru_cache(maxsize=None)
@@ -52,7 +58,9 @@ def _python_floor_probe_path() -> str:
     # _detect_py 의 Windows 분기는 _probe_os_name() seam 주입으로 테스트한다(전역 os.name 은
     # 더 이상 안 바뀐다). 그래도 pathlib 은 실행 시점 os.name 을 참조해 WindowsPath/PosixPath 를
     # 고르므로, 이 함수는 그 선택 자체에 기대지 않도록 import 시 고정된 os.path 를 계속 쓴다.
-    tools_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    tools_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
     return os.path.join(tools_dir, "python_floor.py")
 
 
@@ -67,8 +75,14 @@ def _interp_runs(cmd: str) -> bool:
     시나리오). 짧은 timeout·예외 전부 흡수해 탐지가 절대 실패하지 않게 한다(fail-soft).
     """
     try:
-        r = subprocess.run([cmd, "--version"], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=5)
+        r = subprocess.run(
+            [cmd, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
         if r.returncode != 0:
             return False
         probe = _python_floor_probe_path()
@@ -84,7 +98,11 @@ def _interp_runs(cmd: str) -> bool:
             ]
         r = subprocess.run(
             argv,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
         )
         return r.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -96,11 +114,23 @@ def _interp_version_label(cmd: str) -> str | None:
     try:
         probe = _python_floor_probe_path()
         # probe가 없는 부분 사본은 _interp_runs와 같은 -c 디스패치에서 버전을 읽는다.
-        argv = [cmd, probe] if os.path.isfile(probe) else [
-            cmd, "-c", "import sys; print('Python %d.%d' % sys.version_info[:2])",
-        ]
-        r = subprocess.run(argv, capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=5)
+        argv = (
+            [cmd, probe]
+            if os.path.isfile(probe)
+            else [
+                cmd,
+                "-c",
+                "import sys; print('Python %d.%d' % sys.version_info[:2])",
+            ]
+        )
+        r = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
         output = f"{r.stdout}\n{r.stderr}"
         match = re.search(r"\bPython\s+(\d+)\.(\d+)", output)
         if match:
@@ -130,7 +160,11 @@ def _detect_py() -> str:
     subprocess 가 PATH 해석하고, CLAUDE.md `{{PY}}` 표시에도 가독하다.
     탐지는 후보마다 subprocess를 최대 세 번 실행하므로 프로세스 수명 동안 결과를 캐시한다.
     """
-    candidates = ("python", "py", "python3") if process._probe_os_name() == "nt" else ("python3", "python")
+    candidates = (
+        ("python", "py", "python3")
+        if process._probe_os_name() == "nt"
+        else ("python3", "python")
+    )
     probe_missing = not os.path.isfile(_python_floor_probe_path())
     found: list[str] = []
     for cand in candidates:
@@ -152,3 +186,91 @@ def _detect_py() -> str:
         message = f"Python {major}.{minor}+ 필요, 발견: {discovered}"
     print(message, file=sys.stderr)
     return "python3"
+
+
+class _CommandEnvironment(NamedTuple):
+    """OS-safe command rendering policy for the bootstrap dump and card.
+
+    This deliberately models only the Python launcher as argv.  `platform` and
+    `os.name` cannot identify the active shell, so `chain_policy` is a safe
+    rendering policy, not a claim that bash/PowerShell was detected.
+    """
+
+    os_label: str
+    python_argv: tuple[str, ...]
+    python_source: str
+    chain_policy: str
+
+
+def _command_os_label(*, system: str | None = None, os_name: str | None = None) -> str:
+    """Resolve Windows/Linux/macOS/other without letting probes break bootstrap."""
+    if system is None:
+        try:
+            system = platform.system()
+        except Exception:
+            system = ""
+    if os_name is None:
+        try:
+            os_name = process._probe_os_name()
+        except Exception:
+            os_name = ""
+    normalized = str(system).strip().lower()
+    if str(os_name).strip().lower() == "nt" or normalized == "windows":
+        return "windows"
+    if normalized == "linux":
+        return "linux"
+    if normalized == "darwin":
+        return "macos"
+    return "other"
+
+
+def _resolve_python_argv(home, os_label: str = "linux") -> tuple[tuple[str, ...], str]:
+    """Resolve the launcher argv, preserving the existing final-`runtime.py=` contract.
+
+    A non-empty final `runtime.py=` wins verbatim as one configured executable token.
+    Missing/unreadable config, a missing key, or an empty final value uses the
+    OS default.  In particular, an earlier non-empty value followed by `runtime.py=` is
+    intentionally treated as empty and falls back, matching the previous card
+    resolver.
+    """
+    conf_path = Path(home.local_conf)
+    try:
+        conf_text = fs.read_text_shared(conf_path, encoding="utf-8")
+    except (OSError, UnicodeError):
+        values = {}
+    else:
+        values = conf_schema.parse(conf_text)
+    conf_schema.assert_no_legacy(
+        conf_schema.ConfResult(values, conf_schema.legacy_keys(values), conf_path)
+    )
+    interpreter = (values.get("runtime.py") or "").strip()
+    if interpreter:
+        return ((interpreter,), "local-conf")
+    if os_label == "windows":
+        return (("py", "-3"), "os-default")
+    return (("python3",), "os-default")
+
+
+def _detect_command_environment(
+    home, *, system: str | None = None, os_name: str | None = None
+) -> _CommandEnvironment:
+    """Return one finite OS-safe policy; never inspect or infer the live shell."""
+    os_label = _command_os_label(system=system, os_name=os_name)
+    python_argv, python_source = _resolve_python_argv(home, os_label)
+    chain_policy = "and-if" if os_label in {"linux", "macos"} else "separate-lines"
+    return _CommandEnvironment(os_label, python_argv, python_source, chain_policy)
+
+
+def _default_python(home) -> str:
+    """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 폴백).
+
+    Windows 는 venv/Scripts/python.exe, POSIX 는 venv/bin/python. venv 가 없으면
+    현재 인터프리터로 폴백한다. 이 머신은 시스템 python3 에 pytest 가 없고 venv 에만
+    있으므로, venv 가 있으면 무조건 venv 를 우선해 회귀 측정 인터프리터를 보존한다.
+    """
+    cand = (
+        home.root
+        / "venv"
+        / ("Scripts/python.exe" if process._probe_os_name() == "nt" else "bin/python")
+    )
+    return str(cand) if cand.exists() else sys.executable

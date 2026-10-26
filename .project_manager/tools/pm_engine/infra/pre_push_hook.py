@@ -163,7 +163,7 @@ def install_pre_push_hook(home) -> bool:
               "설치할 자리를 확정할 수 없습니다.", file=sys.stderr)
         return False
     # 대소문자·심볼릭 링크·`..` 를 걷어낸 뒤 비교한다(`Path.is_relative_to` 는 문자열 비교라
-    # 정규화 전 경로로는 같은 자리를 다른 자리로 읽는다 · `pm_log._wip_probe_targets` 동형 관용구).
+    # 정규화 전 경로로는 같은 자리를 다른 자리로 읽는다 · `app.session_snapshot._wip_probe_targets` 동형 관용구).
     own_resolved = Path(os.path.normcase(str(own.resolve(strict=False))))
     hooks_resolved = Path(os.path.normcase(str(hooks.resolve(strict=False))))
     if not hooks_resolved.is_relative_to(own_resolved):

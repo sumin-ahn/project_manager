@@ -1,6 +1,10 @@
 """T-0648 ctx 가드 연속성 문구 단일 진실·금지 표현 회귀 가드."""
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.app.session_snapshot
+import pm_engine.domain.ctx_recovery
+
 import importlib.util
 import json
 import re
@@ -40,8 +44,8 @@ def pm_log():
 
 
 def test_policy_constant_states_auto_continuation_and_user_only_handoff(pm_log):
-    policy = pm_log.CTX_GUARD_CONTINUITY_GUIDANCE
-    assert len(pm_log.CTX_GUARD_REQUIRED_EXPRESSIONS) == 3
+    policy = pm_engine.domain.ctx_recovery.CTX_GUARD_CONTINUITY_GUIDANCE
+    assert len(pm_engine.domain.ctx_recovery.CTX_GUARD_REQUIRED_EXPRESSIONS) == 3
     assert "압축은 자동" in policy
     assert "세션은 그대로 이어진다" in policy
     assert "checkpoint는 압축 후 서사 복구용이지 종료 신호가 아니다" in policy
@@ -54,17 +58,17 @@ def test_policy_constant_states_auto_continuation_and_user_only_handoff(pm_log):
 
 @pytest.mark.parametrize("band", ("nudge", "nudge2", "final", "precompact"))
 def test_every_ctx_band_includes_shared_policy_and_no_winding_down_phrase(pm_log, band):
-    text = pm_log.build_ctx_guard_guidance(
+    text = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         band, used_pct=82, precompact_at_pct=80,
     )
-    assert pm_log.CTX_GUARD_CONTINUITY_GUIDANCE in text
+    assert pm_engine.domain.ctx_recovery.CTX_GUARD_CONTINUITY_GUIDANCE in text
     assert not any(pattern.search(text) for pattern in FORBIDDEN), text
 
 
 @pytest.mark.parametrize("band", ("nudge", "nudge2", "final", "precompact"))
 def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, band):
     """4밴드×필수 3종을 직접 렌더와 실제 raw CLI 출력 양쪽에서 고정한다."""
-    direct = pm_log.build_ctx_guard_guidance(
+    direct = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         band, used_pct=82, precompact_at_pct=80,
     )
     result = subprocess.run(
@@ -78,10 +82,10 @@ def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, 
     cli = result.stdout.rstrip("\n")
 
     assert cli == direct
-    for required in pm_log.CTX_GUARD_REQUIRED_EXPRESSIONS:
+    for required in pm_engine.domain.ctx_recovery.CTX_GUARD_REQUIRED_EXPRESSIONS:
         assert required in direct
         assert required in cli
-    for forbidden in pm_log.CTX_GUARD_FORBIDDEN_EXPRESSIONS:
+    for forbidden in pm_engine.domain.ctx_recovery.CTX_GUARD_FORBIDDEN_EXPRESSIONS:
         assert forbidden not in direct
         assert forbidden not in cli
 
@@ -103,19 +107,19 @@ def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log
     assert "ctx-guidance" in sources["opencode"]
     assert "ctx-guidance --band precompact --json" in sources["codex"]
     # 어댑터의 fail-soft 최소 복제본은 허용하되 정상 경로의 단일 진실은 pm_log 상수다.
-    assert PM_LOG.read_text(encoding="utf-8").count(policy_marker) == 1
+    assert Path(pm_engine.domain.ctx_recovery.__file__).read_text(encoding="utf-8").count(policy_marker) == 1
 
 
 @pytest.mark.parametrize("band", ("nudge", "nudge2", "final", "precompact"))
 def test_forbidden_winding_down_phrases_are_absent_from_rendered_outputs(pm_log, band):
     """검사 상수 선언을 오탐하지 않고 사용자가 받는 최종 출력만 판정한다."""
-    output = pm_log.build_ctx_guard_guidance(
+    output = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         band, used_pct=82, precompact_at_pct=80,
     )
     assert not any(pattern.search(output) for pattern in FORBIDDEN), output
     assert all(
         forbidden not in output
-        for forbidden in pm_log.CTX_GUARD_FORBIDDEN_EXPRESSIONS
+        for forbidden in pm_engine.domain.ctx_recovery.CTX_GUARD_FORBIDDEN_EXPRESSIONS
     )
 
 
@@ -157,18 +161,18 @@ def _snapshot_fixture_pm_home(tmp_path):
 def test_forbidden_phrases_absent_from_compaction_snapshot(pm_log, tmp_path):
     """T-0787 — 전언 경고·진행 중 작업 절을 포함한 snapshot 전문에 FORBIDDEN 정규식 3종 0 hit."""
     pm_home = _snapshot_fixture_pm_home(tmp_path)
-    text, warning = pm_log.build_snapshot(pm_home, "s-main")
+    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
     assert warning is None and text is not None
     assert "## 전언 경고" in text and "## 진행 중 작업" in text
     assert not any(pattern.search(text) for pattern in FORBIDDEN), text
     assert all(
-        forbidden not in text for forbidden in pm_log.CTX_GUARD_FORBIDDEN_EXPRESSIONS
+        forbidden not in text for forbidden in pm_engine.domain.ctx_recovery.CTX_GUARD_FORBIDDEN_EXPRESSIONS
     ), text
 
 
 def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log):
     hook = _load(CLAUDE_TEMPLATE, "t0648_ctx_stop_hook")
-    expected = pm_log.build_ctx_guard_guidance(
+    expected = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         "final", used_pct=82, precompact_at_pct=80,
     )
     actual = hook._build_ctx_guidance(
@@ -262,7 +266,7 @@ def test_codex_json_payload_is_engine_owned_shared_value(pm_log):
     )
     payload = json.loads(result.stdout)
     assert payload == {
-        "systemMessage": pm_log.build_ctx_guard_guidance("precompact"),
+        "systemMessage": pm_engine.domain.ctx_recovery.build_ctx_guard_guidance("precompact"),
         "suppressOutput": False,
     }
 
@@ -278,10 +282,10 @@ def test_ctx_guidance_takes_used_and_precompact_at(pm_log):
     assert result.returncode == 0, result.stderr
     assert "컨텍스트 사용 82% (압축 임박 경고 80% 이상)" in result.stdout
     assert "잔여" not in result.stdout
-    assert result.stdout.rstrip("\n") == pm_log.build_ctx_guard_guidance(
+    assert result.stdout.rstrip("\n") == pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         "final", used_pct=82, precompact_at_pct=80)
     # nudge 밴드는 비율을 받아도 싣지 않는다(최종 밴드만의 표기).
-    assert "압축 임박 경고" not in pm_log.build_ctx_guard_guidance(
+    assert "압축 임박 경고" not in pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         "nudge", used_pct=72, precompact_at_pct=80)
 
     for retired in (["--remaining-pct", "18"], ["--stop-pct", "20"]):

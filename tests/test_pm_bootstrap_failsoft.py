@@ -13,6 +13,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.cli import bootstrap_report
+from pm_engine.infra import pm_paths
+from pm_engine.infra import python_env
+
 import importlib.util
 from pathlib import Path
 
@@ -70,7 +75,7 @@ def _make_board_fn(list_resp: tuple[int, str], lint_resp: tuple[int, str],
 
 # ── _collect_board lint 게이트 정합 (T-0038) ─────────────────────────────────
 
-def test_collect_board_advisory_only_does_not_abort():
+def test_collect_board_advisory_only_does_not_abort(tmp_path):
     """advisory-only 게이트 출력(rc=0) → _collect_board 가 abort 안 함 · summary 정확.
 
     `lint --gate` 는 advisory(unstable-ref-advice·status drift)만 있으면 rc=0 →
@@ -83,7 +88,7 @@ def test_collect_board_advisory_only_does_not_abort():
         "    [status-done-accum] T-0002: status drift\n"
     )
     board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (0, gate_out))
-    bootstrap = mod.PmBootstrap(run_board_fn=board_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)
 
     # sys.exit 가 나면 SystemExit 으로 테스트 실패 — 발생하지 않아야 한다.
     board = bootstrap._collect_board()
@@ -92,7 +97,7 @@ def test_collect_board_advisory_only_does_not_abort():
     assert board["open_tickets"] == ["T-0010"]
 
 
-def test_collect_board_blocking_lint_carries_flag_not_abort():
+def test_collect_board_blocking_lint_carries_flag_not_abort(tmp_path):
     """차단 카테고리 게이트 출력(rc=1) → _collect_board 는 **abort 하지 않고** `lint_blocking`
     플래그를 실어 반환한다 (dump-then-warn·T-0195·ADR-0038 wave). abort-before-dump 폐기 —
     run() 이 board/git/log 전체 dump 를 출력한 *뒤* 경고 + 비-0 종료(그 계약은
@@ -103,7 +108,7 @@ def test_collect_board_blocking_lint_carries_flag_not_abort():
         "  ✗ [dangling-wikilink] T-0003: 깨진 링크\n"
     )
     board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (1, gate_out))
-    bootstrap = mod.PmBootstrap(run_board_fn=board_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)
 
     # sys.exit 가 나면 SystemExit 으로 실패 — dump-then-warn 이라 여기서 abort 하지 않는다.
     board = bootstrap._collect_board()
@@ -112,11 +117,11 @@ def test_collect_board_blocking_lint_carries_flag_not_abort():
     assert board["open_tickets"] == ["T-0010"]
 
 
-def test_collect_board_clean_passes():
+def test_collect_board_clean_passes(tmp_path):
     """clean 게이트 출력(rc=0) → lint='clean' 으로 통과."""
     mod = _load_module()
     board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (0, "✓ no lint issues\n"))
-    bootstrap = mod.PmBootstrap(run_board_fn=board_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)
 
     board = bootstrap._collect_board()
     assert board["lint"] == "clean"
@@ -131,7 +136,7 @@ _BOARD_DONE_OUTPUT = (
 )
 
 
-def test_collect_board_done_count_positive_via_separate_query():
+def test_collect_board_done_count_positive_via_separate_query(tmp_path):
     """done(mine) > 0 인 실제 케이스 — default 뷰(무-status)가 done 을 접어도(T-0197)
     별도 done 전용 재조회(T-0198)가 정확한 카운트를 채운다(0 으로 고착되는 회귀 방지).
 
@@ -143,7 +148,7 @@ def test_collect_board_done_count_positive_via_separate_query():
     board_fn = _make_board_fn(
         (0, _BOARD_LIST_OUTPUT), (0, "✓ no lint issues\n"),
         done_resp=(0, _BOARD_DONE_OUTPUT))
-    bootstrap = mod.PmBootstrap(run_board_fn=board_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)
     bootstrap._task_name = "t"
 
     board = bootstrap._collect_board()
@@ -153,7 +158,7 @@ def test_collect_board_done_count_positive_via_separate_query():
     assert board["counts"]["open"] == 1
 
 
-def test_collect_board_done_query_failure_degrades_to_zero():
+def test_collect_board_done_query_failure_degrades_to_zero(tmp_path):
     """done 전용 재조회가 실패(rc≠0·구버전 board.py 등)해도 `_collect_board` 는 abort 안 하고
     done=0 으로 fail-soft — 핵심 list(default 뷰)가 이미 성공했으므로 전체를 막지 않는다."""
     mod = _load_module()
@@ -165,7 +170,7 @@ def test_collect_board_done_query_failure_degrades_to_zero():
             return (0, _BOARD_LIST_OUTPUT)
         return (0, "✓ no lint issues\n")
 
-    bootstrap = mod.PmBootstrap(run_board_fn=_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_fn)
     board = bootstrap._collect_board()  # sys.exit 가 나면 여기서 실패.
     assert board["counts"]["done"] == 0
     assert board["counts"]["open"] == 1
@@ -173,7 +178,7 @@ def test_collect_board_done_query_failure_degrades_to_zero():
 
 # ── 기본 보드 뷰 = --mine (T-0164·ADR-0033 ④) ────────────────────────────────
 
-def test_collect_board_default_view_is_this_task():
+def test_collect_board_default_view_is_this_task(tmp_path):
     """_collect_board 가 list 를 `--task` 렌즈(이 task 스트림 + done 전용)로만 부른다 (T-0164·T-0198·ADR-0067).
 
     부트스트랩이 전체 contention 을 떠안지 않고 *이 task 스트림*만 surface 한다.
@@ -191,7 +196,7 @@ def test_collect_board_default_view_is_this_task():
             return (0, _BOARD_LIST_OUTPUT)
         return (0, "✓ no lint issues\n")
 
-    bootstrap = mod.PmBootstrap(run_board_fn=_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_fn)
     bootstrap._task_name = "t"
     bootstrap._collect_board()
 
@@ -205,7 +210,7 @@ def test_collect_board_default_view_is_this_task():
 
 # ── 빈 repo: rev-parse rc≠0 + symbolic-ref OK + log rc≠0 → fail-soft ──────────
 
-def test_empty_repo_degrades_without_exit():
+def test_empty_repo_degrades_without_exit(tmp_path):
     """빈 repo서 _collect_git() 가 no_commits=True·branch="main"·commits==[] 로 degrade.
 
     rev-parse 는 빈 repo서 rc≠0(stdout 에 "HEAD" 를 찍기도 하므로 rc 로만 판정),
@@ -223,7 +228,7 @@ def test_empty_repo_degrades_without_exit():
         # status: 빈 repo서도 rc 0 (clean).
         "status": (0, ""),
     })
-    bootstrap = mod.PmBootstrap(run_git_fn=git_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=git_fn)
 
     # sys.exit 가 발생하면 SystemExit 으로 테스트 실패 — 발생하지 않아야 한다.
     git = bootstrap._collect_git()
@@ -234,7 +239,7 @@ def test_empty_repo_degrades_without_exit():
     assert git["working_tree"] == "clean"
 
 
-def test_empty_repo_render_shows_fresh_clone():
+def test_empty_repo_render_shows_fresh_clone(tmp_path):
     """no_commits 면 markdown 렌더가 "초기 커밋 없음 — fresh clone" 을 표시한다."""
     mod = _load_module()
     git_fn = _make_git_fn({
@@ -243,19 +248,19 @@ def test_empty_repo_render_shows_fresh_clone():
         "log": (128, "no commits yet\n"),
         "status": (0, ""),
     })
-    bootstrap = mod.PmBootstrap(run_git_fn=git_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=git_fn)
     git = bootstrap._collect_git()
 
     board = {"counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
              "open_tickets": [], "lint": "clean"}
-    markdown = bootstrap._build_markdown(board, None, git, None, "2026-06-14 00:00 KST")
+    markdown = bootstrap_report._build_markdown(board, None, git, None, '2026-06-14 00:00 KST', environment=getattr(bootstrap, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(bootstrap, '_task_name', None), state_path=bootstrap._pm_state_display_path())
 
     assert "초기 커밋 없음 — fresh clone" in markdown
     # 빈 repo면 "마지막 3 commit:" 헤더는 나오지 않는다.
     assert "마지막 3 commit" not in markdown
 
 
-def test_empty_repo_json_carries_no_commits_flag():
+def test_empty_repo_json_carries_no_commits_flag(tmp_path):
     """JSON 렌더도 no_commits=True 를 그대로 실어 보낸다 (소비자 일관성)."""
     mod = _load_module()
     git_fn = _make_git_fn({
@@ -264,12 +269,12 @@ def test_empty_repo_json_carries_no_commits_flag():
         "log": (128, "no commits yet\n"),
         "status": (0, ""),
     })
-    bootstrap = mod.PmBootstrap(run_git_fn=git_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=git_fn)
     git = bootstrap._collect_git()
 
     board = {"counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
              "open_tickets": [], "lint": "clean"}
-    data = bootstrap._build_json(board, None, git, None, "2026-06-14 00:00 KST")
+    data = bootstrap_report._build_json(board, None, git, None, '2026-06-14 00:00 KST', environment=getattr(bootstrap, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(bootstrap, '_task_name', None))
 
     assert data["git"]["no_commits"] is True
     assert data["git"]["commits"] == []
@@ -277,7 +282,7 @@ def test_empty_repo_json_carries_no_commits_flag():
 
 # ── 정상 repo: rev-parse OK → 기존 동작 보존 ──────────────────────────────────
 
-def test_normal_repo_preserves_existing_behavior():
+def test_normal_repo_preserves_existing_behavior(tmp_path):
     """커밋이 있는 정상 repo는 symbolic-ref 폴백 없이 rev-parse 만으로 동작한다."""
     mod = _load_module()
     git_fn = _make_git_fn({
@@ -285,7 +290,7 @@ def test_normal_repo_preserves_existing_behavior():
         "log": (0, "abc1234 first commit\ndef5678 second commit\n"),
         "status": (0, " M file.py\n"),
     })
-    bootstrap = mod.PmBootstrap(run_git_fn=git_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=git_fn)
     git = bootstrap._collect_git()
 
     assert git["no_commits"] is False
@@ -296,7 +301,7 @@ def test_normal_repo_preserves_existing_behavior():
 
 # ── 진짜 git repo 아님: symbolic-ref·status 전부 실패 → 명확히 중단 ────────────
 
-def test_non_git_repo_aborts_clearly():
+def test_non_git_repo_aborts_clearly(tmp_path):
     """git repo 자체가 아니면(rev-parse·symbolic-ref 둘 다 실패) sys.exit 로 중단.
 
     빈 repo 의 fail-soft 와 달리, 폴백 brnach 조회까지 실패하면 진짜 비-git 상태다.
@@ -307,14 +312,14 @@ def test_non_git_repo_aborts_clearly():
         "rev-parse": (128, "fatal: not a git repository\n"),
         "symbolic-ref": (128, "fatal: not a git repository\n"),
     })
-    bootstrap = mod.PmBootstrap(run_git_fn=git_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=git_fn)
 
     with pytest.raises(SystemExit) as exc:
         bootstrap._collect_git()
     assert exc.value.code == 1
 
 
-def test_non_git_repo_status_failure_aborts(capsys):
+def test_non_git_repo_status_failure_aborts(capsys, tmp_path):
     """rev-parse 정상이라도 status 가 실패하면(드문 비-git 신호) "git repo 아님" 중단."""
     mod = _load_module()
     git_fn = _make_git_fn({
@@ -322,7 +327,7 @@ def test_non_git_repo_status_failure_aborts(capsys):
         "log": (0, "abc1234 c\n"),
         "status": (128, "fatal: not a git repository\n"),
     })
-    bootstrap = mod.PmBootstrap(run_git_fn=git_fn)
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=git_fn)
 
     with pytest.raises(SystemExit) as exc:
         bootstrap._collect_git()

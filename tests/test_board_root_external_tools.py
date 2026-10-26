@@ -18,6 +18,9 @@ monkeypatch 한 fresh 모듈 인스턴스를 매 테스트마다 로드한다(te
 board-path 해소가 *함수*(또는 None-default 호출 시점 해소)라 monkeypatch 된 tmp REPO 를 추종한다.
 """
 from __future__ import annotations
+from pm_engine.infra import pm_paths
+
+from pm_engine.cli import bootstrap as bootstrap_cli
 
 import importlib.util
 from pathlib import Path
@@ -68,7 +71,7 @@ def handoff(tmp_path, monkeypatch):
 
 def test_handoff_tickets_dir_legacy_is_wiki(handoff):
     """legacy(board/ 부재) → _tickets_dir() == wiki/tickets (현 위치·무변경)."""
-    assert handoff._tickets_dir() == handoff._tmp / ".project_manager" / "wiki" / "tickets"
+    assert pm_paths.tickets_dir(pm_paths.home_at(handoff._tmp)) == handoff._tmp / ".project_manager" / "wiki" / "tickets"
 
 
 def test_handoff_tickets_dir_present_is_board_tickets(handoff):
@@ -76,7 +79,7 @@ def test_handoff_tickets_dir_present_is_board_tickets(handoff):
 
     *수정 전*: TICKETS_DIR 상수가 wiki/tickets 에 굳어 이 단언이 fail 했다(stale→fail 실증)."""
     _make_board_dir(handoff._tmp)
-    assert handoff._tickets_dir() == handoff._tmp / ".project_manager" / "board" / "tickets"
+    assert pm_paths.tickets_dir(pm_paths.home_at(handoff._tmp)) == handoff._tmp / ".project_manager" / "board" / "tickets"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -86,7 +89,6 @@ def test_handoff_tickets_dir_present_is_board_tickets(handoff):
 @pytest.fixture
 def bootstrap(tmp_path, monkeypatch):
     mod = _load("pm_bootstrap")
-    monkeypatch.setattr(mod, "REPO", tmp_path)
     mod._tmp = tmp_path
     return mod
 
@@ -100,54 +102,54 @@ def _write_areas(path: Path) -> None:
         encoding="utf-8")
 
 
-def test_bootstrap_registered_repos_reads_board_not_stale_wiki(bootstrap):
+def test_bootstrap_registered_repos_reads_board_not_stale_wiki(bootstrap, *, tmp_path):
     """_registered_repos() 가 board/areas.md(진실)를 읽는다 — stale legacy areas 를 안 봄.
 
     *수정 전*: 기본 인자가 AREAS_FILE(legacy·wiki 밖) 라 board 분리 후 등록 repo 0개로
     오판했다(stale→fail). board/areas.md 에 1 repo, legacy areas.md 엔 *없음* → ['project_manager']."""
-    _make_board_dir(bootstrap._tmp)
-    _write_areas(bootstrap._tmp / ".project_manager" / "board" / "areas.md")
+    _make_board_dir(tmp_path)
+    _write_areas(tmp_path / ".project_manager" / "board" / "areas.md")
     # legacy 위치(.project_manager/areas.md)는 *비어 있음* — stale 위치를 보면 빈 목록이 된다.
-    repos = slot_resolution._registered_repos(pm_paths.home_at(bootstrap.REPO))
+    repos = slot_resolution._registered_repos(pm_paths.home_at(tmp_path))
     assert repos == ["project_manager"], \
         f"_registered_repos 가 board/areas.md(진실)를 안 읽음 — stale legacy 봄: {repos}"
 
 
-def test_bootstrap_registered_repos_legacy_reads_project_manager_areas(bootstrap):
+def test_bootstrap_registered_repos_legacy_reads_project_manager_areas(bootstrap, *, tmp_path):
     """legacy(board/ 부재) → _registered_repos() 가 .project_manager/areas.md 를 읽는다(현행)."""
-    _write_areas(bootstrap._tmp / ".project_manager" / "areas.md")
-    assert slot_resolution._registered_repos(pm_paths.home_at(bootstrap.REPO)) == ["project_manager"]
+    _write_areas(tmp_path / ".project_manager" / "areas.md")
+    assert slot_resolution._registered_repos(pm_paths.home_at(tmp_path)) == ["project_manager"]
 
 
-def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap):
+def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap, *, tmp_path):
     """_auto_slot() 가 board/areas.md + 장부로 단일 self-host 슬롯을 해소한다(추종).
 
     *수정 전*: AREAS_FILE 기본이 stale legacy 라 등록 repo 0개 → 자동바인딩 미해소(None)."""
-    _make_board_dir(bootstrap._tmp)
-    _write_areas(bootstrap._tmp / ".project_manager" / "board" / "areas.md")
-    leases = bootstrap._tmp / ".project_manager" / ".local" / "worktree-leases.json"
+    _make_board_dir(tmp_path)
+    _write_areas(tmp_path / ".project_manager" / "board" / "areas.md")
+    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     leases.parent.mkdir(parents=True, exist_ok=True)
     leases.write_text(
         '{"leases": [{"repo": "project_manager", "slot": "work/project_manager_1"}]}',
         encoding="utf-8")
     # leases_file 만 명시(board_root 추종 areas 는 _registered_repos 가 자동해소).
-    resolved = slot_resolution._auto_slot(pm_paths.home_at(bootstrap.REPO), leases_file=leases)
+    resolved = slot_resolution._auto_slot(pm_paths.home_at(tmp_path), leases_file=leases)
     assert (resolved.key, resolved.slot) == ("project_manager_1", "work/project_manager_1")
 
 
-def test_bootstrap_instance_areas_file_follows_board_root(bootstrap):
+def test_bootstrap_instance_areas_file_follows_board_root(bootstrap, tmp_path):
     """Bootstrapper.__init__ areas_file 미지정 → self._areas_file == board/areas.md (board/ 존재).
 
     *수정 전*: __init__ 기본이 AREAS_FILE(legacy) 라 인스턴스가 stale 위치를 들고 다녔다."""
-    _make_board_dir(bootstrap._tmp)
-    bs = bootstrap.PmBootstrap()
-    assert bs._areas_file == bootstrap._tmp / ".project_manager" / "board" / "areas.md"
+    _make_board_dir(tmp_path)
+    bs = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
+    assert bs._areas_file == tmp_path / ".project_manager" / "board" / "areas.md"
 
 
-def test_bootstrap_instance_areas_file_legacy(bootstrap):
+def test_bootstrap_instance_areas_file_legacy(bootstrap, tmp_path):
     """legacy → self._areas_file == .project_manager/areas.md (현행 보존)."""
-    bs = bootstrap.PmBootstrap()
-    assert bs._areas_file == bootstrap._tmp / ".project_manager" / "areas.md"
+    bs = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
+    assert bs._areas_file == tmp_path / ".project_manager" / "areas.md"
 
 
 # ════════════════════════════════════════════════════════════════════════

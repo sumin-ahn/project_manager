@@ -13,6 +13,11 @@ pytest 자식은 절대 실기동하지 않는다 — 회귀 러너 seam(`subpro
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.domain.handoff_text
+
+from pm_engine.domain import bootstrap_rules
+
 import argparse
 import importlib.util
 import io
@@ -1279,7 +1284,7 @@ _FAKE_LOG = (
 )
 
 # seam 을 소비하는 도구 — 여기에 자기 요약행 정규식이 남아 있으면 승격이 반쪽이다.
-_SEAM_CONSUMER_TOOLS = ("board.py", "pm_bootstrap.py", "ticket_finish.py", "pm_handoff.py")
+_SEAM_CONSUMER_TOOLS = ("board.py", "pm_bootstrap.py", "ticket_finish.py", "pm_engine/domain/handoff_text.py")
 # 소스에 박힌 outcome 정규식 리터럴(`(\d+) passed`·`\d+ failed` …) 탐지용.
 _LOCAL_OUTCOME_REGEX = re.compile(r"\\d\+\)? (?:passed|failed|deselected|skipped|errors?)")
 
@@ -1361,13 +1366,13 @@ def test_livegate_ran_count_keeps_kind_selection(board):
 def test_bootstrap_counts_use_last_summary_line(bootstrap):
     """(passed, total) 은 끝의 요약행 기준 — 중간 로그를 읽으면 (3, 4) 로 오판한다."""
     out = _FAKE_LOG + "3 failed, 7574 passed in 149.90s\n"
-    assert bootstrap.parse_pytest_counts(out) == (7574, 7577)
+    assert bootstrap_rules.parse_pytest_counts(out) == (7574, 7577)
 
 
 def test_bootstrap_counts_contract_unchanged(bootstrap):
     """반환 계약 불변 — total = passed + failed, 요약행 부재는 None."""
-    assert bootstrap.parse_pytest_counts("279 passed in 6.55s") == (279, 279)
-    assert bootstrap.parse_pytest_counts("ERROR: no tests collected") is None
+    assert bootstrap_rules.parse_pytest_counts("279 passed in 6.55s") == (279, 279)
+    assert bootstrap_rules.parse_pytest_counts("ERROR: no tests collected") is None
 
 
 # ── 소비처 ③ ticket 마감 ─────────────────────────────────────────────────
@@ -1395,20 +1400,20 @@ def test_ticket_finish_green_still_red_on_summary_failure(ticket_finish):
 def test_handoff_summary_uses_last_summary_line(handoff):
     """인계문 회귀 1줄은 끝의 요약행에서 뽑는다 — 중간 로그를 실으면 오보가 인계된다."""
     out = _FAKE_LOG + "5 failed, 1467 passed, 24 deselected in 10.00s\n"
-    assert handoff.parse_pytest_summary(out) == "1467 passed, 24 deselected in 10.00s"
+    assert pm_engine.domain.handoff_text.parse_pytest_summary(out) == "1467 passed, 24 deselected in 10.00s"
 
 
 def test_handoff_summary_falls_back_to_output_tail(handoff):
     """요약행이 없으면 현행대로 출력 꼬리, 빈 출력은 빈 문자열(계약 불변)."""
-    assert handoff.parse_pytest_summary("no tests ran in 0.01s") == "no tests ran in 0.01s"
-    assert handoff.parse_pytest_summary("   ") == ""
+    assert pm_engine.domain.handoff_text.parse_pytest_summary("no tests ran in 0.01s") == "no tests ran in 0.01s"
+    assert pm_engine.domain.handoff_text.parse_pytest_summary("   ") == ""
 
 
 def test_handoff_green_ignores_mid_output_failed_log(handoff):
     """중간 로그의 `1 failed` 로 인계 게이트를 막지 않는다."""
     out = _FAKE_LOG + "7577 passed in 145.23s\n"
-    assert handoff.is_pytest_green(out, returncode=0) is True
-    assert handoff.is_pytest_green(out, returncode=1) is False   # rc 가드는 불변.
+    assert pm_engine.domain.handoff_text.is_pytest_green(out, returncode=0) is True
+    assert pm_engine.domain.handoff_text.is_pytest_green(out, returncode=1) is False   # rc 가드는 불변.
 
 
 # ── 소비처 전수 — 요약행 **뒤** 꼬리 오염도 자동 상속으로 걸러진다 ─────────
@@ -1434,8 +1439,8 @@ def test_livegate_ran_count_ignores_trailing_fake(board):
 def test_bootstrap_counts_ignore_trailing_fake(bootstrap):
     """부트스트랩 회귀 dump — 꼬리 오염이면 (5, 5) 로 오판하던 자리(실측)."""
     real = "7577 passed in 145.23s\n"
-    assert bootstrap.parse_pytest_counts(real + _TRAILING_FAKE) == (7577, 7577)
-    assert bootstrap.parse_pytest_counts(real + _TRAILING_FAKE_WRAPPER) == (7577, 7577)
+    assert bootstrap_rules.parse_pytest_counts(real + _TRAILING_FAKE) == (7577, 7577)
+    assert bootstrap_rules.parse_pytest_counts(real + _TRAILING_FAKE_WRAPPER) == (7577, 7577)
 
 
 def test_ticket_finish_ignores_trailing_fake(ticket_finish):
@@ -1449,11 +1454,11 @@ def test_ticket_finish_ignores_trailing_fake(ticket_finish):
 def test_handoff_summary_ignores_trailing_fake(handoff):
     """인계문 회귀 1줄 — 꼬리 오염이면 엉뚱한 줄이 인계문에 실린다(실측)."""
     real = "5 failed, 1467 passed, 24 deselected in 10.00s\n"
-    assert handoff.parse_pytest_summary(real + _TRAILING_FAKE) == \
+    assert pm_engine.domain.handoff_text.parse_pytest_summary(real + _TRAILING_FAKE) == \
         "1467 passed, 24 deselected in 10.00s"
-    assert handoff.parse_pytest_summary(real + _TRAILING_FAKE_WRAPPER) == \
+    assert pm_engine.domain.handoff_text.parse_pytest_summary(real + _TRAILING_FAKE_WRAPPER) == \
         "1467 passed, 24 deselected in 10.00s"
-    assert handoff.is_pytest_green("7577 passed in 145.23s\n" + _TRAILING_FAKE_WRAPPER,
+    assert pm_engine.domain.handoff_text.is_pytest_green("7577 passed in 145.23s\n" + _TRAILING_FAKE_WRAPPER,
                                    returncode=0) is True
 
 
@@ -2973,7 +2978,7 @@ def test_the_delta_is_only_attached_where_the_record_is_read():
     source = "".join(path.read_text(encoding="utf-8") for path in engine_python_files(TOOLS))
     call_sites = source.count("collection_delta_text(")
     assert call_sites == 1 + 3, f"증감 표시 자리가 3곳이 아니다(정의 1 + 호출 {call_sites - 1})"
-    for name in ("pm_bootstrap.py", "pm_handoff.py"):
+    for name in ("pm_bootstrap.py", "pm_engine/cli/handoff.py"):
         text = (TOOLS / name).read_text(encoding="utf-8")
         assert "collection_delta_text" not in text, f"{name} 이 다른 축의 숫자로 증감을 냈다"
         assert "previous_collected" not in text

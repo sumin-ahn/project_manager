@@ -20,8 +20,10 @@ hermetic: 실 `local.conf` **파일**을 tmp 에 만들어 각 도구가 그 파
 (조립한 dict·monkeypatch 상수를 단언하면 파일→값 경로가 통째로 빠진다). 자식 프로세스 스폰 0.
 """
 from __future__ import annotations
-from pm_engine.app import repo_protection
+
 from pm_engine.infra import pm_paths
+import pm_engine.domain.handoff_text
+from pm_engine.app import repo_protection
 
 import importlib.util
 import inspect
@@ -240,7 +242,7 @@ def test_gate_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp_
     assert type(caught.value).__name__ == "LegacyConfKeyError"
     assert "test_cmd" in str(caught.value)
     # 폴백 라벨이 대신 나가지 않았다 — 멈춘 자리에서 무엇을 고칠지 말한다.
-    assert handoff._gate_label(None) not in str(caught.value)
+    assert pm_engine.domain.handoff_text._gate_label(None) not in str(caught.value)
 
 
 def test_the_exception_text_points_at_adopter_owned_files(tmp_path):

@@ -13,6 +13,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+from pm_engine.infra import clock
+from pm_engine.infra import pm_paths
+
 import datetime
 import importlib.util
 import sys
@@ -51,14 +55,16 @@ def test_kst_falls_back_to_fixed_offset_when_zoneinfo_lookup_fails(monkeypatch):
     # 모듈이 import 하는 zoneinfo.ZoneInfo 자체를 ZoneInfoNotFoundError 로 throw 하게.
     monkeypatch.setattr(zoneinfo, "ZoneInfo", _boom)
 
-    mod = _load_module()
+    spec = importlib.util.spec_from_file_location("clock_under_test", clock.__file__)
+    isolated_clock = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isolated_clock)
 
     # 폴백은 datetime.timezone 의 고정 오프셋이어야 한다 (ZoneInfo 가 아님).
-    assert isinstance(mod.KST, datetime.timezone)
-    assert mod.KST.utcoffset(None) == datetime.timedelta(hours=9)
+    assert isinstance(isolated_clock.KST, datetime.timezone)
+    assert isolated_clock.KST.utcoffset(None) == datetime.timedelta(hours=9)
 
     # 실제 타임스탬프가 +09:00 으로 표기되는지 round-trip 검증.
-    now = datetime.datetime.now(tz=mod.KST)
+    now = datetime.datetime.now(tz=isolated_clock.KST)
     assert now.utcoffset() == datetime.timedelta(hours=9)
     assert now.strftime("%z") == "+0900"
     assert now.isoformat().endswith("+09:00")
@@ -81,16 +87,16 @@ def test_kst_uses_zoneinfo_when_available():
         zoneinfo_available = False  # tzdata 부재 Windows 등 — 폴백이 정상
 
     mod = _load_module()
-    now = datetime.datetime.now(tz=mod.KST)
+    now = datetime.datetime.now(tz=clock.KST)
     assert now.utcoffset() == datetime.timedelta(hours=9)
     if zoneinfo_available:
         # 정상 경로 보존 — 폴백으로 조용히 떨어지지 않았는지 가드.
-        assert isinstance(mod.KST, zoneinfo.ZoneInfo)
+        assert isinstance(clock.KST, zoneinfo.ZoneInfo)
 
 
 # ── C3: subprocess 인코딩 ──────────────────────────────────────────────────
 
-def test_run_board_passes_utf8_encoding(monkeypatch):
+def test_run_board_passes_utf8_encoding(monkeypatch, tmp_path):
     """board.py 캡처 subprocess.run 이 encoding="utf-8", errors="replace" 를 넘겨야 한다.
 
     encoding 미지정이면 Windows 부모가 cp949 로 디코딩 → board.py 한글/이모지 출력에
@@ -104,16 +110,16 @@ def test_run_board_passes_utf8_encoding(monkeypatch):
         captured["kwargs"] = kwargs
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bootstrap_cli.subprocess, "run", _fake_run)
 
-    bootstrap = mod.PmBootstrap()
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     bootstrap._default_run_board(["list"])
 
     assert captured["kwargs"].get("encoding") == "utf-8"
     assert captured["kwargs"].get("errors") == "replace"
 
 
-def test_run_board_round_trips_korean_and_emdash(monkeypatch):
+def test_run_board_round_trips_korean_and_emdash(monkeypatch, tmp_path):
     """한글 + em-dash(U+2014) + 이모지 출력이 cp949 디코딩 크래시 없이 round-trip 되어야 한다.
 
     fake subprocess.run 이 결정한 encoding/errors 로 자식 stdout(bytes)을 디코딩하도록
@@ -132,9 +138,9 @@ def test_run_board_round_trips_korean_and_emdash(monkeypatch):
         decoded = raw.decode(decode_enc, errors=errors)
         return SimpleNamespace(returncode=0, stdout=decoded, stderr="")
 
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bootstrap_cli.subprocess, "run", _fake_run)
 
-    bootstrap = mod.PmBootstrap()
+    bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     rc, output = bootstrap._default_run_board(["list"])
 
     assert rc == 0

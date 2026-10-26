@@ -21,7 +21,6 @@ deny/block/회전 marker 를 만들지 않는다.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -30,6 +29,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ctx_guard  # noqa: E402  (같은 디렉토리 공유 코어)
+
+_engine_tools = str(Path(__file__).resolve().parents[1] / ".project_manager" / "tools")
+if _engine_tools not in sys.path:
+    sys.path.insert(0, _engine_tools)
+from pm_engine.app import principle_recall
+from pm_engine.infra import pm_paths, principle_store
 
 # 멱등 marker 디렉토리 (git-ignored 상태 영역 — .project_manager/.gitignore 가 .local/ 커버).
 # 세션 id 별 1파일. 채택자가 `git add -A` 해도 세션 marker 가 커밋되지 않게 이미-ignored 경로 사용.
@@ -249,20 +254,6 @@ def nudge_output(stdin: dict, guidance: str) -> dict | None:
     return None
 
 
-def _load_principles(root: Path):
-    """`pm_principles.py` 를 root 기준으로 로드한다(codex `_load_board`·claude git-anchor 동형).
-
-    부재·파손은 예외를 삼키고 None — 레지스트리가 없거나 깨져도 훅은 도구 실행을 막지 않는다."""
-    path = root / ".project_manager" / "tools" / "pm_principles.py"
-    if not path.is_file():
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location("pm_principles", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    except Exception:  # noqa: BLE001 — 레지스트리 로드 실패는 비차단 침묵.
-        return None
 
 
 def _principle_recall_signal(stdin: dict) -> tuple[str, str] | None:
@@ -296,20 +287,18 @@ def _principle_recall_text(stdin: dict, root: Path) -> str:
     if signal is None:
         return ""
     on, text = signal
-    module = _load_principles(root)
-    if module is None:
-        return ""
+    home = pm_paths.home_at(Path(root))
     session_id = _session_id(stdin)
     try:
-        seen = module.load_seen_marker(root, session_id)
-        result = module.judge_recall(root, on=on, text=text, seen=seen)
+        seen = principle_store.load_seen_marker(home, session_id)
+        result = principle_recall.judge_recall(home, on=on, text=text, seen=seen)
     except Exception:  # noqa: BLE001 — 판정 실패는 비차단 침묵(도구 실행을 막지 않는다).
         return ""
     if not result:
         return ""
     if result.get("keys"):
         try:
-            module.record_seen_marker(root, session_id, result["keys"])
+            principle_store.record_seen_marker(home, session_id, result["keys"])
         except Exception:  # noqa: BLE001 — marker 기록 실패는 소음(재주입)일 뿐.
             pass
     return result.get("text") or ""
@@ -317,17 +306,15 @@ def _principle_recall_text(stdin: dict, root: Path) -> str:
 
 def _rearm_principle_recall(stdin: dict, root: Path) -> None:
     """압축 경계 처리에서 원칙 recall marker 를 지워 다음 사이클을 재무장한다."""
-    module = _load_principles(root)
-    if module is None:
-        return
+    home = pm_paths.home_at(Path(root))
     try:
-        module.rearm_seen_marker(root, _session_id(stdin))
+        principle_store.rearm_seen_marker(home, _session_id(stdin))
     except Exception:  # noqa: BLE001 — 재무장 실패는 다음 경계로 넘긴다(최악 = 재주입 skip).
         pass
 
 
 # claude additionalContext 계약 상한(nudge_output 이 검증하는 것과 같은 값) — recall 채널은
-# 자기 문안만 이 상한 안으로 접지만(pm_principles._MAX_INJECT_CHARS), 다른 채널과 합본한 뒤에는
+# 자기 문안만 이 상한 안으로 접지만(principle_rules._MAX_INJECT_CHARS), 다른 채널과 합본한 뒤에는
 # 재검사하지 않았다. 최종 합본 경계에서 다시 강제한다.
 _MAX_ADDITIONAL_CONTEXT_CHARS = 10_000
 

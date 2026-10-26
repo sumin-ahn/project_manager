@@ -5,7 +5,7 @@
 
 1. **codex ambient env 중화 (autouse·T-0405 리뷰 forward-note)** — 회귀를 codex 하네스로 돌리면
    (에이전트=codex 세션이 pytest 를 기동) 그 세션의 ambient `CODEX_THREAD_ID`/`CODEX_CI` 가 pytest
-   프로세스 env 로 새어들어와 `pm_bootstrap._is_codex_harness()` 를 참으로 만든다 → 부트스트랩 카드
+   프로세스 env 로 새어들어와 `pm_engine.cli.bootstrap_card._is_codex_harness()` 를 참으로 만든다 → 부트스트랩 카드
    codex 절이 주입돼 **카드-정확일치 단언 테스트**(자체 monkeypatch 미보유 파일)가 깨진다. 세션 전역
    autouse 로 기계 테스트에 codex-미감지 baseline 을 준다 — 어느 하네스로 회귀를 돌려도 동일 결과
    (hermetic). 마커를 *원하는* 테스트(codex-card 케이스 등)는 이 fixture 뒤에 자기 monkeypatch.setenv

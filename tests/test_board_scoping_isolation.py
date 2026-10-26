@@ -27,6 +27,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+
 from pm_engine.cli import board_list
 from pm_engine.cli import board_ticket
 from pm_engine.infra import pm_paths
@@ -454,7 +456,7 @@ def _make_board_runner(board):
     return run
 
 
-def test_bootstrap_collect_board_inherits_isolation(board, capsys):
+def test_bootstrap_collect_board_inherits_isolation(board, capsys, tmp_path):
     """부트스트랩 카운트(`_collect_board`=`list --mine`/`--status done --mine`)가 격리를 상속한다.
 
     `pm_bootstrap.py` 코드변경 0 — `_ticket_is_mine` 상속 검증(A-bootstrap). alice 정체성에서
@@ -464,9 +466,7 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys):
     _write_conf(board, user="alice", session="alpha_1")
     pm_bootstrap = _load("pm_bootstrap")
 
-    bs = pm_bootstrap.PmBootstrap(
-        run_board_fn=_make_board_runner(board),
-        log_file=(pm_paths.wiki_dir(board._home()) / "log/current.md"), areas_file=pm_paths.areas_file(board._home()))
+    bs = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_make_board_runner(board), log_file=pm_paths.wiki_dir(board._home()) / 'log/current.md', areas_file=pm_paths.areas_file(board._home()))
     result = bs._collect_board()
 
     open_tickets = set(result["open_tickets"])

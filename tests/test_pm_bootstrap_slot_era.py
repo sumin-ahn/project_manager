@@ -15,10 +15,12 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import bootstrap as bootstrap_cli
+
 from pm_engine.infra import pm_paths
 
 
-from _pool_seams import bind_pool
+from _pool_seams import bind_board, bind_pool
 
 import importlib.util
 from pathlib import Path
@@ -138,17 +140,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, git_fn, worktree_pool, monkeypatch):
 
     bind_pool(monkeypatch, worktree_pool)
     bind_board(monkeypatch, _EraBoard())
-    return bootstrap.PmBootstrap(
-        run_board_fn=fake_board,
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
-        run_git_fn=git_fn,
-        log_file=log_file,
-        areas_file=areas_file,
-        board_dir=board_dir,
-        pm_state_file=pm_state_file,
-
-
-    )
+    return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 미호출')), run_git_fn=git_fn, log_file=log_file, areas_file=areas_file, board_dir=board_dir, pm_state_file=pm_state_file)
 
 
 def _era_git_fn(bootstrap, *, fetch_rc=0):
