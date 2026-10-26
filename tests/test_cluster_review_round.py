@@ -1861,7 +1861,13 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     finisher = finish_record.TicketFinisher(execution_home)
     closer = cluster_close.ClusterCloser(execution_home, _CLUSTER, finisher=finisher,
                                          task='main', board_identity_args=['--task', 'main'])
-    execution_homes = (finisher._home, closer._home)
+    # 종결·확인 경로가 대여 기록을 읽는 Home 은 PM 홈 자체다(다른 트리로 바뀌면 다른 대여 기록을 읽는다).
+    expected_home = (home, pm_paths._board_root_at(home),
+                     home / ".project_manager" / ".local", home / ".project_manager" / "local.conf")
+
+    def home_values(owner):
+        return (owner._home.root, owner._home.board_root, owner._home.local_dir, owner._home.local_conf)
+
     found, problem = cluster_code_tree.resolve_code_tree(closer._home, closer._cluster, run_git_stdout_at=closer._git_stdout)
     assert problem is None and found == five
     forwarded = []
@@ -1876,7 +1882,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert delegate_cmd._cluster_confirmation_tree(
         pm_paths.home_at(home), _CLUSTER, identity=identity) == found
     assert pm_paths.leases_file(board._home()).read_bytes() == before
-    assert (finisher._home, closer._home) == execution_homes
+    assert home_values(finisher) == home_values(closer) == expected_home
     # 실행 엔진과 PM 데이터 홈이 달라도 상대 대여 경로는 PM 홈을 기준으로 해소한다.
     engine = home.parent / "separate-engine"
     engine.mkdir()
@@ -1921,7 +1927,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
         cluster_code_tree.resolve_code_tree(mixed_home, _CLUSTER, run_git_stdout_at=closer._git_stdout)
     with pytest.raises(delegate_errors.DelegateError):
         delegate_cmd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=identity)
-    assert (finisher._home, closer._home) == execution_homes
+    assert home_values(finisher) == home_values(closer) == expected_home
     pm_paths.leases_file(board._home()).write_bytes(before)
 
     # finish argv에서 실제 내부 확인·기입·처분까지 연결하며 외부 명령만 대역으로 둔다.

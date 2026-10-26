@@ -25,7 +25,7 @@ from pm_engine.infra.harness import delegate_transport
 from pm_engine.domain import reviewer_result
 from pm_engine.domain import conf_schema, delegate_errors, review_form
 from pm_engine.infra import delegate_ledger, fs, pm_paths
-from pm_engine.infra.harness import contract  # noqa: E402
+from pm_engine.infra.harness import contract
 
 
 def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
@@ -76,7 +76,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
     except pm_paths.AnchorResolutionError as exc:
         print(f"오류: --cwd 소유 PM 홈 해소 실패 — {exc}", file=sys.stderr)
         return 1
-    home = pm_paths.home_at(cwd_repo, pm_home=config_repo,
+    home = pm_paths.home_at(engine_home.root, pm_home=config_repo,
                             board_root=pm_paths.home_at(config_repo).board_root)
     board_repo = config_repo
     if (

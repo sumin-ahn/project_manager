@@ -94,7 +94,6 @@ def _find_repo_root() -> Path:
 
 
 REPO = _find_repo_root()
-LOCAL_CONF = REPO / ".project_manager" / "local.conf"
 
 # role preamble — 최소 4개(정체성 1줄 + 금지사항 + 결과 보고). identity 는 codex `exec`
 # `--agent` 부재로 prompt 합성해야 하므로 엔진이 harness-중립 최소본을 소유한다. 합성 =
@@ -213,17 +212,6 @@ def _resolved_adapter_directories() -> tuple[str, ...]:
         return ()
 
 
-
-
-
-
-
-
-
-
-
-
-
 def main(argv: list[str] | None = None, run_fn: Callable | None = None,
          git_run_fn: Callable | None = None) -> int:
     """CLI 진입 — 콘솔 인코딩 설정이 첫 동작이다(인자 오류처럼 CLI 본체 앞뒤에서 나가는 출력도
@@ -231,8 +219,6 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     console.configure_console_utf8()
     return delegate_run.main(pm_paths.home_at(REPO), argv, run_fn=run_fn,
                              git_run_fn=git_run_fn, adapter_directories_fn=_resolved_adapter_directories)
-
-
 
 
 if __name__ == "__main__":
